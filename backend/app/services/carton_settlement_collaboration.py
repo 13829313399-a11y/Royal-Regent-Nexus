@@ -30,7 +30,7 @@ def vendor_values(raw_price, quantity, currency):
 
 def build(db, factory, supplier, period, currency, rows, base_fingerprint):
     from app.services.carton_supplier_portal import _shipment_sources
-    from app.services.carton_supplier_settlement import dump
+    from app.services.carton_supplier_settlement import dump, _posting_date
 
     shipments = list(db.scalars(select(SupplierShipment).where(
         SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier
@@ -44,7 +44,9 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
     for shipment in shipments:
         receipt = receipts.get(shipment.receipt_id)
         accepted = json.loads(shipment.acceptance_json or "{}")
-        acceptance_date = receipt.acceptance_date if receipt else accepted.get("acceptance_date")
+        acceptance_date = ((receipt.acceptance_date or accepted.get("acceptance_date")
+            or (_posting_date(receipt.confirmed_at) if receipt.confirmed_at else None))
+            if receipt else accepted.get("acceptance_date"))
         if not (shipment.delivery_date[:7] == period or (acceptance_date or "")[:7] == period):
             continue
         formal, unmatched = _shipment_sources(db, shipment)
@@ -116,6 +118,8 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
             accepted_line = next((entry for entry in shipment["acceptance"].get("lines", [])
                 if entry["shipment_line_id"] in {line["id"], line["snapshot"].get("original_unmatched_line_id")}), {})
             reason = "待仓库验收" if shipment["status"] == "SENT" else "未收到或未形成有效入库"
+            if shipment["acceptance"].get("registration_mode") == "EXISTING_RECEIPT" and not shipment["receipt_id"]:
+                reason = "后补凭证待关联原入库，不新增应结"
             if receipt and receipt.status == "REVERSED":
                 reason = "收料已冲销，待更正"
             elif receipt and receipt.status == "POSTED" and shipment["acceptance_date"] and shipment["acceptance_date"][:7] != period:

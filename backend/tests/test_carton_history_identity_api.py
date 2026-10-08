@@ -104,14 +104,29 @@ def test_concurrent_history_retries_create_only_one_order(monkeypatch):
         _freeze_carton_time(monkeypatch)
         _customer(client, "Alpha")
         barrier = Barrier(2)
+        content = _history_workbook_bytes([_row("Alpha")])
 
         def send():
             barrier.wait(timeout=10)
-            return _upload(client, [_row("Alpha")])
+            return client.post(f"{BASE}/orders/history-imports", params={"factory_id": "huaxing"},
+                files={"file": ("history.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(send) for _ in range(2)]
-            results = [future.result(timeout=30) for future in futures]
+            responses = [future.result(timeout=30) for future in futures]
+        assert any(response.status_code == 201 for response in responses)
+        assert all(response.status_code in {201, 429} for response in responses)
+        # The bounded file worker may decline the overlapping request. Retrying
+        # the same bytes after the winner finishes must still have no new effect.
+        assert len(_orders(client)) == 1
+        results = []
+        for response in responses:
+            if response.status_code == 429:
+                assert "正在处理" in response.text
+                response = send_retry = client.post(f"{BASE}/orders/history-imports", params={"factory_id": "huaxing"},
+                    files={"file": ("history.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+                assert send_retry.status_code == 201, send_retry.text
+            results.append(response.json())
         assert sorted(result["imported_count"] for result in results) == [0, 1]
         assert sorted(result["skipped_count"] for result in results) == [0, 1]
         assert len(_orders(client)) == 1

@@ -303,11 +303,12 @@ QC_INSPECTION_REQUIRED_TABLES = {
     "qc_inspection_audit_events",
     "qc_inspection_idempotency_records",
 }
-CARTON_MARK_LIBRARY_REVISION = "20260819_0080"
+CARTON_MARK_LIBRARY_REVISION = "20261006_0137"
 CARTON_MARK_LIBRARY_REQUIRED_TABLES = {
     "carton_mark_customers",
     "carton_mark_templates",
     "carton_mark_documents",
+    "carton_mark_assets",
 }
 def ensure_carton_mark_library_schema_ready() -> None:
     """Refuse to let create_all silently bypass the persistent library migration."""
@@ -321,12 +322,19 @@ def ensure_carton_mark_library_schema_ready() -> None:
             "SELECT version_num FROM alembic_version"
         ).scalar_one_or_none()
         missing = sorted(CARTON_MARK_LIBRARY_REQUIRED_TABLES - table_names)
+        if "carton_mark_assets" in table_names:
+            kind_constraint = next((c["sqltext"] for c in inspector.get_check_constraints("carton_mark_assets")
+                if c["name"] == "ck_carton_mark_asset_kind"), "")
+            if "'image'" not in kind_constraint:
+                missing.append("carton_mark_assets 图片格式约束")
+            if "photo_group_id" not in {c["name"] for c in inspector.get_columns("carton_mark_assets")}:
+                missing.append("carton_mark_assets 照片分组字段")
         if not missing:
             return
     raise RuntimeError(
         "检测到箱唛资料库尚未完整迁移 "
         f"{CARTON_MARK_LIBRARY_REVISION}；当前版本：{current_revision}；"
-        f"缺少表：{', '.join(missing)}。"
+        f"缺少结构：{', '.join(missing)}。"
         "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
     )
 
@@ -616,12 +624,12 @@ def ensure_carton_master_schema_ready() -> None:
         names = set(inspector.get_table_names())
         if "alembic_version" not in names:
             return
-        missing = [name for name in ("carton_master_records", "carton_master_sources") if name not in names]
-        for name, cols in (("carton_orders", ("master_config_id", "master_config_revision")), ("carton_locations", ("status", "revision")), ("carton_inventory_movements", ("workshop_id", "workshop_name"))):
+        missing = [name for name in ("carton_master_records", "carton_master_sources", "carton_customer_assignments", "carton_mark_asset_order_bindings") if name not in names]
+        for name, cols in (("carton_orders", ("master_config_id", "master_config_revision", "net_weight_kg", "gross_weight_kg")), ("carton_order_lines", ("net_weight_kg", "gross_weight_kg")), ("carton_locations", ("status", "revision")), ("carton_inventory_movements", ("workshop_id", "workshop_name"))):
             found = {c["name"] for c in inspector.get_columns(name)} if name in names else set()
             missing.extend(f"{name}.{c}" for c in cols if c not in found)
         if missing:
-            raise RuntimeError("基础资料尚未迁移至 20260908_0104；请先备份并迁移。缺少：" + ", ".join(missing))
+            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0140 及纸品重量 20261008_0141 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
 def ensure_carton_supplier_settlement_schema_ready() -> None:
@@ -734,6 +742,19 @@ def ensure_identity_schema_ready() -> None:
             raise RuntimeError("IAM V2 requires migration 20260926_0125 before startup: " + ", ".join(missing))
 
 
+def ensure_carton_feedback_schema_ready() -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "auth_users" not in tables:
+        return
+    required = {"carton_feedback", "carton_feedback_replies", "carton_feedback_images", "carton_feature_updates"}
+    from app.models import carton_feedback  # noqa: F401
+    missing_columns = any({column.name for column in Base.metadata.tables[table].columns}
+        - {column["name"] for column in inspector.get_columns(table)} for table in required & tables)
+    if required - tables or missing_columns:
+        raise RuntimeError("纸箱反馈结构未就绪，请先备份数据库并执行 Alembic upgrade head 再启动应用。")
+
+
 def init_db() -> None:
     from app.models import (
         work_center,  # noqa: F401
@@ -742,10 +763,15 @@ def init_db() -> None:
         document_tools,  # noqa: F401
         auth,  # noqa: F401
         carton_mark,  # noqa: F401
+        carton_feedback,  # noqa: F401
         carton_procurement,  # noqa: F401
+        fabric_procurement,  # noqa: F401
+        fabric_receiving,  # noqa: F401
+        fabric_master,  # noqa: F401
         carton_stocktake,  # noqa: F401
         carton_positions,
         carton_master,  # noqa: F401
+        carton_customer_assignment,  # noqa: F401
         carton_supplier_settlement,  # noqa: F401
         carton_supplier_portal,  # noqa: F401
         customer_order,  # noqa: F401
@@ -780,6 +806,7 @@ def init_db() -> None:
     ensure_three_d_printing_schema_ready()
     ensure_qc_inspection_schema_ready()
     ensure_carton_mark_library_schema_ready()
+    ensure_carton_feedback_schema_ready()
     ensure_injection_v3_schema_ready()
     ensure_carton_stocktake_schema_ready()
     ensure_carton_positions_schema_ready()
@@ -820,7 +847,9 @@ def init_db() -> None:
             if missing:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            if not name.startswith("uv_ops_")
+                            # An existing business store upgrades this new domain explicitly.
+                            if (not name.startswith("fabric_") or "auth_users" not in existing_tables)
+                            and not name.startswith("uv_ops_")
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.
                             and (name not in {"three_d_printing_telemetry_rollups", "three_d_printing_telemetry_rollup_state"}

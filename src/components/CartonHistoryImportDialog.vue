@@ -37,7 +37,8 @@ onBeforeUnmount(() => { generation++ })
         <template v-if="preview">
           <p v-if="preview.supplier_name" class="text-slate-600">纸箱供应商：{{ preview.supplier_name }}</p>
           <div class="flex flex-wrap gap-5 rounded-lg bg-teal-50 p-3"><b>{{ preview.group_count }} 张订单 / {{ preview.line_count }} 条纸品</b><span>资料完整 {{ preview.ready_count }} 张</span><span>待完善 {{ preview.draft_count }} 张</span><span>重复跳过 {{ preview.skipped_count }} 张</span></div>
-          <p class="leading-6 text-slate-600">明确填写的纸品需求数量优先；产品数量或装箱数空白保持未记录。确认导入表示这些订单已在系统外下单，直接进入待收料，不重复发行采购单。纸质、规格可在入库时补齐；已在仓数量请另走期初库存。</p>
+          <p class="leading-6 text-slate-600">明确填写的纸品需求数量优先；产品数量或装箱数空白保持未记录。确认导入表示这些订单已在系统外下单，直接进入待收料，不重复生成采购单。纸质、规格可在入库时补齐；已在仓数量请另走期初库存。</p>
+          <p class="leading-6 text-slate-600">原计划交期保持不变；原表已有客户交期则保留，缺少时按计划交期加该客户有效采购保护期补算，并在下方逐单提示。</p>
           <div v-if="preview.errors.length" class="rounded-lg border border-red-200 bg-red-50 p-3 text-red-700"><b>请修正文件后重新选择：</b><p v-for="(item, i) in preview.errors" :key="i" class="mt-1">{{ item }}</p></div>
           <div v-if="preview.warnings.length" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-800"><p v-for="(item, i) in preview.warnings" :key="i">{{ item }}</p></div>
           <article v-for="(order, index) in preview.orders" :key="index" class="overflow-hidden rounded-xl border" :class="order.duplicate ? 'opacity-60' : ''">

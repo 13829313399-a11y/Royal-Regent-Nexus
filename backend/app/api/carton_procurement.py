@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.schemas.carton_customer_assignment import CartonCustomerAssignmentSave
 from app.services import carton_file_jobs as file_jobs
 from app.schemas.carton_order_split import SplitCreate, SplitAction, SplitReceiptPreview
 from app.services import carton_order_split as order_splits
@@ -22,6 +23,7 @@ from app.schemas.carton_order_timeline import CartonOrderTimelineOut
 from app.services.carton_order_timeline import order_timeline
 from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction
 from app.services.carton_stocktake import create_stocktake, stocktake_detail, list_stocktakes, act_stocktake
+from app.services.carton_procurement import audit_query_options
 from app.schemas.carton_procurement import (
     CartonAuditEventListOut,
     CartonClosingGenerateRequest,
@@ -157,6 +159,21 @@ router = APIRouter(
     prefix="/api/carton-procurement",
     tags=["carton-procurement"],
 )
+
+
+@router.get("/customer-responsibilities")
+def get_customer_responsibilities(factory_id: str, summary: bool = False, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return responsibilities.workspace(db, current_user, factory_id, summary=summary)
+
+
+@router.put("/customers/{customer_id}/responsibilities")
+def put_customer_responsibilities(customer_id: str, payload: CartonCustomerAssignmentSave,
+                                  db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    _ensure_permission(db, current_user, "carton_procurement:order_adjust", payload.factory_id)
+    return responsibilities.save(db, current_user, customer_id, payload)
 
 
 def _ensure_permission(
@@ -338,6 +355,7 @@ def get_orders(
     order_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     due_filter: Literal["ALL", "OVERDUE", "TODAY", "DUE_SOON", "UPCOMING"] = "ALL",
     sort: Literal["ORDER_DESC", "DUE_ASC", "DUE_DESC"] = "ORDER_DESC",
+    collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED"] = "ALL",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -354,7 +372,7 @@ def get_orders(
         limit=limit,
         offset=offset,
         customer_name=customer_name, order_from=order_from, order_to=order_to, due_filter=due_filter, sort=sort,
-        statistics=statistics,
+        statistics=statistics, collaboration_filter=collaboration_filter,
     )
     from app.services.carton_order_projection import order_page_out
     return CartonOrderListOut(factory_id=factory_id, total=total, limit=limit,
@@ -605,8 +623,8 @@ def post_history_order_preview(
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id = _ensure_permission(db,current_user,"carton_procurement:order_write",factory_id)
-    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:order_write") as (content, _):
-        return preview_history_orders(db,factory_id,file.filename or "history-orders.xlsx",content)
+    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:order_write") as (content, actor):
+        return preview_history_orders(db,factory_id,file.filename or "history-orders.xlsx",content,actor)
 
 
 @router.get("/orders/{order_no}/purchase-order.xlsx")
@@ -1196,9 +1214,10 @@ def post_history_inventory_preview(
 @router.get("/stocktakes")
 def stocktakes_list(factory_id: str, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0),
                     status: Literal["", "DRAFT", "SUBMITTED", "POSTED", "CANCELLED"] = "",
+                    date_from: str = "", date_to: str = "", sort: Literal["ASC", "DESC"] = "DESC",
                     db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, user, "carton_procurement:read", factory_id)
-    return list_stocktakes(db, factory_id, limit, offset, status)
+    return list_stocktakes(db, factory_id, limit, offset, status, date_from, date_to, sort)
 
 
 @router.get("/stocktakes/{identifier}")
@@ -1352,6 +1371,7 @@ def get_audit_events(
     date_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    sort: Literal["ASC", "DESC"] = "DESC",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1366,6 +1386,7 @@ def get_audit_events(
         date_to=date_to.strip(),
         limit=limit,
         offset=offset,
+        sort=sort,
     )
     return CartonAuditEventListOut(
         factory_id=factory_id,
@@ -1373,6 +1394,7 @@ def get_audit_events(
         limit=limit,
         offset=offset,
         items=items,
+        **audit_query_options(db, factory_id),
     )
 
 

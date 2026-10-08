@@ -253,6 +253,24 @@ def create_carton_mark_template(
             detail="所选客名不在当前厂区箱唛客户库，请联系纸箱部主管维护",
         )
     customer_name = managed_customer.name
+    return _persist_carton_mark_template(
+        db, user, factory_id=factory_id, customer_name=customer_name, po=po,
+        item=item, contract_number=contract_number, excel_file_name=excel_file_name,
+        excel_bytes=excel_bytes, pdf_file_name=pdf_file_name, pdf_bytes=pdf_bytes,
+        check_result=check_result,
+    )
+
+
+def _persist_carton_mark_template(
+    db: Session, user: AuthContext, *, factory_id: str, customer_name: str,
+    po: str, item: str, contract_number: str, excel_file_name: str,
+    excel_bytes: bytes, pdf_file_name: str, pdf_bytes: bytes,
+    check_result: CartonMarkDocumentCheckResponse,
+    supplier_context: dict | None = None,
+) -> CartonMarkTemplateOut:
+    """Persist a pair after the caller has validated its metadata and source boundary."""
+    factory_id = require_carton_factory(factory_id)
+    customer_name = _normalize_required(customer_name, "客户名称", 255)
     item = _normalize_required(item, "ITEM", 128)
     contract_number = _normalize_required(contract_number, "合同号", 128)
     po = " ".join(po.strip().split()) or contract_number
@@ -356,6 +374,7 @@ def create_carton_mark_template(
                 "check_status": check_status,
                 "excel_sha256": excel_sha256,
                 "pdf_sha256": pdf_sha256,
+                **({"supplier_context": supplier_context} if supplier_context else {}),
             },
         )
         db.commit()

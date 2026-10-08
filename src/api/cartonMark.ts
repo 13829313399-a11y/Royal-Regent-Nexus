@@ -125,6 +125,44 @@ export interface CartonMarkCustomerOption {
   name: string
 }
 
+export interface CartonMarkCustomerOrderCandidate {
+  id: string
+  order_no: string
+  contract_no: string
+  item_no: string
+  customer_code: string
+  customer_name: string
+}
+
+export interface CartonMarkCustomerRecognition {
+  status: 'MATCHED' | 'AMBIGUOUS' | 'CONFLICT' | 'NO_MATCH'
+  customer_name: string
+  managed_customer_id: string | null
+  message: string
+  orders: CartonMarkCustomerOrderCandidate[]
+}
+
+export interface CartonMarkCustomerRecognitionRequest {
+  contract_number: string
+  item: string
+  order_id?: string
+  excel_asset_id?: string
+  pdf_asset_id?: string
+}
+
+export interface CartonMarkCustomerInitializationCandidate {
+  name: string
+  order_count: number
+  customer_codes: string[]
+  existing_customer_id: string | null
+  warning: string
+}
+
+export interface CartonMarkCustomerInitializationResult {
+  created_names: string[]
+  existing_names: string[]
+}
+
 export interface CartonMarkCustomer extends CartonMarkCustomerOption {
   factory_id: string
   revision: number
@@ -169,13 +207,92 @@ export interface CartonMarkTemplateCreateRequest {
   contractNumber: string
   excelContract: Blob
   printPdf: Blob
+  excelAssetId?: string
+  pdfAssetId?: string
   signal?: AbortSignal
 }
 
 export type CartonMarkTemplateDocumentKind = 'source_excel' | 'print_pdf'
 
+export interface CartonMarkAsset {
+  id: string
+  factory_id: string
+  file_name: string
+  kind: 'excel' | 'pdf' | 'image'
+  photo_group_id?: string | null
+  size_bytes: number
+  sha256: string
+  contract_number: string
+  bound_order_id: string | null
+  bound_order_ids?: string[]
+  recognition_source: string
+  candidates: string[]
+  warning: string
+  binding_status: 'BOUND' | 'NO_ORDER' | 'UNBOUND' | 'AMBIGUOUS'
+  orders: { id: string; order_no: string; contract_no: string; customer_name: string; item_no: string }[]
+  revision: number
+  created_by_name: string
+  created_at: string
+}
+
+export interface CartonMarkAssetUploadResult {
+  file_name: string
+  status: 'created' | 'duplicate' | 'restored' | 'failed'
+  message: string
+  asset: CartonMarkAsset | null
+}
+
 export function createCartonMarkApi(client = http) {
   return {
+    async listAssets(factoryId: string, orderId?: string, signal?: AbortSignal) {
+      const response = await client.get<CartonMarkAsset[]>('/carton-mark/assets', {
+        params: { factory_id: factoryId, order_id: orderId }, signal,
+      })
+      return response.data
+    },
+    async uploadAssets(factoryId: string, files: File[], signal?: AbortSignal) {
+      const formData = new FormData()
+      formData.set('factory_id', factoryId)
+      files.forEach(file => formData.append('files', file))
+      const response = await client.post<CartonMarkAssetUploadResult[]>('/carton-mark/assets/batch', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS, signal,
+      })
+      return response.data
+    },
+    async bindAsset(factoryId: string, asset: CartonMarkAsset, contractNumber: string, orderId?: string, signal?: AbortSignal, orderIds?: string[]) {
+      const response = await client.put<CartonMarkAsset>(`/carton-mark/assets/${asset.id}/binding`, {
+        contract_number: contractNumber, order_id: orderId || null, revision: asset.revision,
+        ...(orderIds ? { order_ids: orderIds } : {}),
+      }, { params: { factory_id: factoryId }, signal })
+      return response.data
+    },
+    async bindingOrders(factoryId: string, signal?: AbortSignal) {
+      return (await client.get<CartonMarkAsset['orders']>('/carton-mark/assets/binding-orders', { params: { factory_id: factoryId }, signal })).data
+    },
+    async savePhotoGroup(factoryId: string, assets: CartonMarkAsset[], contractNumber: string, orderId: string, groupId?: string, signal?: AbortSignal, orderIds?: string[]) {
+      const body = { assets: assets.map(({ id, revision }) => ({ id, revision })), contract_number: contractNumber, order_id: orderId || null, ...(orderIds ? { order_ids: orderIds } : {}) }
+      const config = { params: { factory_id: factoryId }, signal }
+      return (groupId
+        ? await client.put<CartonMarkAsset[]>(`/carton-mark/assets/photo-groups/${encodeURIComponent(groupId)}/binding`, body, config)
+        : await client.post<CartonMarkAsset[]>('/carton-mark/assets/photo-groups', body, config)).data
+    },
+    async ungroupPhotos(factoryId: string, groupId: string, assets: CartonMarkAsset[], signal?: AbortSignal) {
+      return (await client.post<CartonMarkAsset[]>(`/carton-mark/assets/photo-groups/${encodeURIComponent(groupId)}/ungroup`, {
+        assets: assets.map(({ id, revision }) => ({ id, revision })),
+      }, { params: { factory_id: factoryId }, signal })).data
+    },
+    async downloadAsset(factoryId: string, assetId: string, signal?: AbortSignal) {
+      const response = await client.get<Blob>(`/carton-mark/assets/${assetId}/document`, {
+        params: { factory_id: factoryId }, responseType: 'blob', signal,
+      })
+      return response.data
+    },
+    async archiveAsset(factoryId: string, asset: CartonMarkAsset, signal?: AbortSignal) {
+      await client.delete(`/carton-mark/assets/${asset.id}`, {
+        params: { factory_id: factoryId, revision: asset.revision }, signal,
+      })
+    },
     async listCustomerOptions(factoryId: string, signal?: AbortSignal) {
       const response = await client.get<CartonMarkCustomerOption[]>('/carton-mark/customer-options', {
         params: { factory_id: factoryId },
@@ -188,6 +305,27 @@ export function createCartonMarkApi(client = http) {
       const response = await client.get<CartonMarkCustomer[]>('/carton-mark/customers', {
         params: { factory_id: factoryId },
         signal,
+      })
+      return response.data
+    },
+
+    async recognizeCustomer(factoryId: string, payload: CartonMarkCustomerRecognitionRequest, signal?: AbortSignal) {
+      const response = await client.post<CartonMarkCustomerRecognition>('/carton-mark/customer-recognition', payload, {
+        params: { factory_id: factoryId }, signal,
+      })
+      return response.data
+    },
+
+    async customerInitializationCandidates(factoryId: string, signal?: AbortSignal) {
+      const response = await client.get<CartonMarkCustomerInitializationCandidate[]>('/carton-mark/customers/initialization-candidates', {
+        params: { factory_id: factoryId }, signal,
+      })
+      return response.data
+    },
+
+    async initializeCustomers(factoryId: string, names: string[]) {
+      const response = await client.post<CartonMarkCustomerInitializationResult>('/carton-mark/customers/initialize', { names }, {
+        params: { factory_id: factoryId },
       })
       return response.data
     },
@@ -222,8 +360,10 @@ export function createCartonMarkApi(client = http) {
       if (payload.po?.trim()) formData.set('po', payload.po.trim())
       formData.set('item', payload.item)
       formData.set('contract_number', payload.contractNumber)
-      formData.set('excel_contract', payload.excelContract)
-      formData.set('print_pdf', payload.printPdf)
+      if (payload.excelAssetId) formData.set('excel_asset_id', payload.excelAssetId)
+      else formData.set('excel_contract', payload.excelContract)
+      if (payload.pdfAssetId) formData.set('pdf_asset_id', payload.pdfAssetId)
+      else formData.set('print_pdf', payload.printPdf)
 
       const response = await client.post<CartonMarkTemplateRecordResponse>('/carton-mark/templates', formData, {
         headers: {

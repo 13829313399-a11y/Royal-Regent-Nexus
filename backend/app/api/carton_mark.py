@@ -26,6 +26,17 @@ from app.schemas.carton_mark import (
     CartonMarkDocumentCheckResponse,
     CartonMarkTemplateManualReleaseRequest,
     CartonMarkTemplateOut,
+    CartonMarkAssetOut,
+    CartonMarkAssetBindingRequest,
+    CartonMarkAssetOrderOut,
+    CartonMarkPhotoGroupRequest,
+    CartonMarkPhotoGroupMembers,
+    CartonMarkAssetUploadResult,
+    CartonMarkCustomerRecognitionRequest,
+    CartonMarkCustomerRecognitionOut,
+    CartonMarkCustomerInitializationCandidate,
+    CartonMarkCustomerInitializationRequest,
+    CartonMarkCustomerInitializationOut,
 )
 from app.services.auth import AuthContext, ensure_permission, get_current_user
 from app.services.carton_mark import (
@@ -56,8 +67,121 @@ from app.services.carton_mark_customers import (
     list_carton_mark_customers,
     update_carton_mark_customer,
 )
+from app.services import carton_mark_assets as assets
+from app.services import carton_mark_customer_matching as customer_matching
 
 router = APIRouter()
+
+
+def _asset_scope(db, user, factory, write=False):
+    return ensure_carton_mark_scope(db, user,
+        "carton_mark:template_upload" if write else "carton_mark:read", factory,
+        CARTON_MARK_WRITE_DEPARTMENTS if write else CARTON_MARK_READ_DEPARTMENTS)
+
+
+@router.get("/api/carton-mark/assets", response_model=list[CartonMarkAssetOut])
+def get_assets(factory_id: str, order_id: str | None = None,
+               db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id)
+    return assets.list_assets(db, factory, order_id)
+
+
+@router.post("/api/carton-mark/assets/batch", response_model=list[CartonMarkAssetUploadResult])
+async def upload_assets(factory_id: str = Form(...), files: list[UploadFile] = File(...),
+                        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    if not 1 <= len(files) <= 50:
+        raise HTTPException(422, "每批请选择 1–50 个文件")
+    if sum(file.size or 0 for file in files) > 100 * 1024 * 1024:
+        raise HTTPException(413, "每批文件合计不能超过 100 MB")
+    known = sorted({o.contract_no for o in assets.available_orders(db, factory) if o.contract_no})
+    results = []
+    total = 0
+    for file in files:
+        try:
+            content = await _read_document_upload(file, "箱唛文件")
+            total += len(content)
+            if total > 100 * 1024 * 1024:
+                raise HTTPException(413, "每批文件合计不能超过 100 MB")
+            recognition = await run_in_threadpool(assets.recognize_asset, file.filename or "", content, known)
+            asset, result = assets.save_asset(db, user, factory, content, recognition)
+            results.append(CartonMarkAssetUploadResult(file_name=file.filename or "", status=result, asset=asset))
+        except (HTTPException, CartonMarkDocumentError, CartonMarkDocumentConfigurationError) as exc:
+            db.rollback()
+            message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+            results.append(CartonMarkAssetUploadResult(file_name=file.filename or "", status="failed", message=message))
+    return results
+
+
+@router.get("/api/carton-mark/assets/binding-orders", response_model=list[CartonMarkAssetOrderOut])
+def asset_binding_orders(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id)
+    _asset_scope(db, user, factory_id, True)
+    return assets.binding_orders(db, factory)
+
+
+@router.post("/api/carton-mark/assets/photo-groups", response_model=list[CartonMarkAssetOut])
+def create_photo_group(payload: CartonMarkPhotoGroupRequest, factory_id: str,
+                       db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    _asset_scope(db, user, factory_id)
+    return assets.change_photo_group(db, user, factory, payload)
+
+
+@router.put("/api/carton-mark/assets/photo-groups/{group_id}/binding", response_model=list[CartonMarkAssetOut])
+def bind_photo_group(group_id: str, payload: CartonMarkPhotoGroupRequest, factory_id: str,
+                     db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    _asset_scope(db, user, factory_id)
+    return assets.change_photo_group(db, user, factory, payload, group_id=group_id)
+
+
+@router.post("/api/carton-mark/assets/photo-groups/{group_id}/ungroup", response_model=list[CartonMarkAssetOut])
+def ungroup_photos(group_id: str, payload: CartonMarkPhotoGroupMembers, factory_id: str,
+                   db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    _asset_scope(db, user, factory_id)
+    return assets.change_photo_group(db, user, factory, payload, group_id=group_id, ungroup=True)
+
+
+@router.put("/api/carton-mark/assets/{asset_id}/binding", response_model=CartonMarkAssetOut)
+def bind_asset(asset_id: str, payload: CartonMarkAssetBindingRequest, factory_id: str,
+               db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    return assets.change_binding(db, user, factory, asset_id, payload)
+
+
+@router.get("/api/carton-mark/assets/{asset_id}/document")
+def download_asset(asset_id: str, factory_id: str, preview: bool = False,
+                   db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id)
+    asset = assets.active_asset(db, factory, asset_id)
+    disposition = "inline" if preview and asset.kind in {"pdf", "image"} else "attachment"
+    return Response(content=asset.content, media_type=asset.content_type, headers={
+        "Content-Disposition": f"{disposition}; filename*=UTF-8''{url_quote(asset.file_name, safe='')}",
+        "X-Content-SHA256": asset.sha256, "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff"})
+
+
+@router.delete("/api/carton-mark/assets/{asset_id}", status_code=204)
+def delete_asset(asset_id: str, factory_id: str, revision: int = Query(..., ge=1),
+                 db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    assets.archive_asset(db, user, factory, asset_id, revision)
+
+
+async def _template_source(db, user, factory, upload, asset_id, kind):
+    if upload is not None and asset_id:
+        raise HTTPException(422, "原文件与仓库资料只能选择一种来源")
+    if asset_id:
+        _asset_scope(db, user, factory)
+        asset = assets.active_asset(db, factory, asset_id)
+        if asset.kind != kind:
+            raise HTTPException(422, "仓库资料的文件类型不符")
+        return asset.file_name, asset.content
+    if upload is None:
+        raise HTTPException(422, "请选择 Excel 与 PDF 原文件或仓库资料")
+    return upload.filename or "", await _read_document_upload(upload, "箱唛文件")
 
 
 async def _read_document_upload(upload: UploadFile, label: str) -> bytes:
@@ -109,8 +233,10 @@ async def create_persisted_carton_mark_template(
     po: str = Form(""),
     item: str = Form(...),
     contract_number: str = Form(...),
-    excel_contract: UploadFile = File(...),
-    print_pdf: UploadFile = File(...),
+    excel_contract: UploadFile | None = File(None),
+    print_pdf: UploadFile | None = File(None),
+    excel_asset_id: str | None = Form(None),
+    pdf_asset_id: str | None = Form(None),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -121,14 +247,14 @@ async def create_persisted_carton_mark_template(
         factory_id,
         CARTON_MARK_WRITE_DEPARTMENTS,
     )
-    excel_bytes = await _read_document_upload(excel_contract, "客户 Excel")
-    pdf_bytes = await _read_document_upload(print_pdf, "打印 PDF")
+    excel_name, excel_bytes = await _template_source(db, current_user, factory_id, excel_contract, excel_asset_id, "excel")
+    pdf_name, pdf_bytes = await _template_source(db, current_user, factory_id, print_pdf, pdf_asset_id, "pdf")
     try:
         check_result = await run_in_threadpool(
             build_carton_mark_document_check,
-            excel_file_name=excel_contract.filename or "",
+            excel_file_name=excel_name,
             excel_bytes=excel_bytes,
-            pdf_file_name=print_pdf.filename or "",
+            pdf_file_name=pdf_name,
             pdf_bytes=pdf_bytes,
         )
     except CartonMarkDocumentConfigurationError as exc:
@@ -143,9 +269,9 @@ async def create_persisted_carton_mark_template(
         po=po,
         item=item,
         contract_number=contract_number,
-        excel_file_name=excel_contract.filename or "",
+        excel_file_name=excel_name,
         excel_bytes=excel_bytes,
-        pdf_file_name=print_pdf.filename or "",
+        pdf_file_name=pdf_name,
         pdf_bytes=pdf_bytes,
         check_result=check_result,
     )
@@ -187,6 +313,36 @@ def get_carton_mark_customers(
         CARTON_MARK_READ_DEPARTMENTS,
     )
     return list_carton_mark_customers(db, factory_id=factory_id)
+
+
+@router.post("/api/carton-mark/customer-recognition", response_model=CartonMarkCustomerRecognitionOut)
+def recognize_carton_mark_customer(
+    payload: CartonMarkCustomerRecognitionRequest,
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return customer_matching.recognize_customer(db, current_user, factory_id, payload)
+
+
+@router.get("/api/carton-mark/customers/initialization-candidates", response_model=list[CartonMarkCustomerInitializationCandidate])
+def get_carton_mark_customer_initialization_candidates(
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return customer_matching.initialization_candidates(db, current_user, factory_id)
+
+
+@router.post("/api/carton-mark/customers/initialize", response_model=CartonMarkCustomerInitializationOut)
+def initialize_carton_mark_customers(
+    payload: CartonMarkCustomerInitializationRequest,
+    request: Request,
+    factory_id: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return customer_matching.initialize_customers(db, current_user, factory_id, payload, request)
 
 
 @router.post(

@@ -34,6 +34,8 @@ export interface CartonCustomerSaveRequest {
 
 export interface CartonReplenishmentOption { replenishment_issue_id: string; document_no: string; responsibility: 'OWN' | 'SUPPLIER'; remaining_quantity: string }
 export interface CartonOrderLineResponse {
+  net_weight_kg?: string | null
+  gross_weight_kg?: string | null
   replenishment_review_required?: boolean
   replenishment_options?: CartonReplenishmentOption[]
   replenished_quantity?: string
@@ -64,6 +66,7 @@ export interface CartonSupplierAcceptanceResponse {
   total_line_count: number
   accepted_line_count: number
   accepted_at: string
+  delivery_differences?: { order_line_id: string; packaging_type: string; planned_date: string; promised_date: string; difference_days: number }[]
 }
 
 export interface CartonPurchaseOrderBatchResponse {
@@ -76,6 +79,8 @@ export interface CartonPurchaseOrderBatchResponse {
 export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records'>
 
 export interface CartonOrderResponse {
+  net_weight_kg?: string | null
+  gross_weight_kg?: string | null
   purchase_order_batch?: CartonPurchaseOrderBatchResponse | null
   supplier_acceptance?: CartonSupplierAcceptanceResponse
   split_records?: SplitRecord[]
@@ -148,6 +153,8 @@ export interface CartonPurchaseOrderContextResponse {
 }
 
 export interface CartonOrderCreateRequest {
+  net_weight_kg?: number | null
+  gross_weight_kg?: number | null
   schedule_source?: { batch_id: string; source_sheet: string; source_row: number }
   customer_po?: string
   master_config_id?: string
@@ -167,6 +174,8 @@ export interface CartonOrderCreateRequest {
   status: 'CONFIRMED'
   note: string
   lines: Array<{
+    net_weight_kg?: number | null
+    gross_weight_kg?: number | null
     packaging_type: string
     paper_quality: string
     specification: string
@@ -211,6 +220,8 @@ export interface CartonOrderHistorySuggestionResponse {
   match_type: 'EXACT' | 'PREFIX' | 'CONTAINS' | 'SIMILAR'
   match_score: number
   lines: Array<{
+    net_weight_kg?: string | null
+    gross_weight_kg?: string | null
     line_no: number
     packaging_type: string
     paper_quality: string
@@ -1182,6 +1193,9 @@ export const cartonProcurementApi = {
       resolution_note: resolutionNote,
     })
     return response.data
+  },
+  async listAuditEventsPage(factoryId: string, filters: Record<string, string | number> = {}) {
+    return (await http.get<{ items: CartonAuditEventResponse[]; total: number; limit: number; offset: number; event_types: Record<string, string>; actors: { id: string; name: string }[] }>('/carton-procurement/audit-events', { params: { factory_id: factoryId, limit: 50, ...filters } })).data
   },
   async listAuditEvents(factoryId: string, filters: {
     search?: string

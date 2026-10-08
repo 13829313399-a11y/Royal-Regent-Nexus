@@ -27,6 +27,10 @@ from .image_text_regions import native_regions
 
 IMAGE_TYPES = {"png": "PNG", "jpg": "JPEG", "jpeg": "JPEG", "webp": "WEBP"}
 MAX_PROTOCOL_BYTES = 4 * 1024 * 1024
+# Decode remains bounded even when a working copy is automatically reduced.
+MAX_IMAGE_DECODE_PIXELS = 80_000_000
+MAX_IMAGE_DECODE_EDGE = 65535
+RESIZED_IMAGE_MAX_EDGE = 4096
 
 
 @functools.lru_cache(maxsize=16)
@@ -86,13 +90,34 @@ def read_image(path):
             with Image.open(path) as image:
                 if image.format != IMAGE_TYPES.get(Path(path).suffix.lower().lstrip(".")):
                     raise ToolError("INVALID_IMAGE", "图片内容与文件扩展名不一致")
-                if image.width * image.height > settings.image_translation_max_pixels or max(image.size) > 12000:
-                    raise ToolError("IMAGE_PIXEL_LIMIT", f"图片尺寸过大，请缩小至 {settings.image_translation_max_pixels / 1_000_000:g} 百万像素、最长边 12000 像素以内再上传")
                 if getattr(image, "n_frames", 1) != 1:
                     raise ToolError("ANIMATED_IMAGE_UNSUPPORTED", "请将动态图另存为单张图片后上传")
+                if image.width * image.height > MAX_IMAGE_DECODE_PIXELS or max(image.size) > MAX_IMAGE_DECODE_EDGE:
+                    raise ToolError("IMAGE_PIXEL_LIMIT", "图片超过安全解码尺寸，请缩小至 8000 万像素、最长边 65535 像素以内再上传")
+                original_size = image.size
+                orientation = image.getexif().get(274, 1)
+                if image.width * image.height > settings.image_translation_max_pixels or max(image.size) > 12000:
+                    scale = min(math.sqrt(settings.image_translation_max_pixels / (image.width * image.height)),
+                                RESIZED_IMAGE_MAX_EDGE / max(image.size))
+                    target = tuple(max(1, math.floor(value * scale)) for value in image.size)
+                    if target[0] * target[1] > settings.image_translation_max_pixels:
+                        axis = 0 if target[0] >= target[1] else 1
+                        bounded = list(target)
+                        bounded[axis] = max(1, settings.image_translation_max_pixels // target[1 - axis])
+                        target = tuple(bounded)
+                    # JPEG can decode at a lower resolution before allocating
+                    # its full bitmap; other formats keep the same decode cap.
+                    image.draft("RGB", target)
+                    if image.mode in {"P", "1"}:
+                        image = image.convert("RGBA")
+                    image.thumbnail(target, Image.Resampling.LANCZOS)
                 oriented = ImageOps.exif_transpose(image).convert("RGBA")
                 result = Image.new("RGB", oriented.size, "white")
                 result.paste(oriented, mask=oriented.getchannel("A"))
+                if orientation in {5, 6, 7, 8}:
+                    original_size = original_size[::-1]
+                if result.size != original_size:
+                    result.info["image_resize"] = {"original_size": list(original_size), "processing_size": list(result.size)}
                 return result
     except ToolError:
         raise
@@ -106,10 +131,28 @@ def inspect_image(path, work, progress, cancelled):
     image = read_image(path)
     preview = work / "source-preview.png"
     image.save(preview)
-    page = Page(page_index=0, display_page_number=1, width_pt=image.width, height_pt=image.height, classification="image")
+    page = image_page(image)
     image.close()
     progress("inspect", 1, 1)
-    return EngineResult(DocumentIR(source_type=path.suffix.lstrip("."), pages=[page]), [result_file(preview, "preview")])
+    ir = DocumentIR(source_type=path.suffix.lstrip("."), pages=[page])
+    add_resize_issue(ir, page)
+    return EngineResult(ir, [result_file(preview, "preview")])
+
+
+def image_page(image):
+    page = Page(page_index=0, display_page_number=1, width_pt=image.width, height_pt=image.height, classification="image")
+    if image.info.get("image_resize"):
+        page.image_resize = image.info["image_resize"]
+    return page
+
+
+def add_resize_issue(ir, page):
+    resized = getattr(page, "image_resize", None)
+    if resized:
+        before, after = resized["original_size"], resized["processing_size"]
+        ir.issues.append(Issue(id="image-resized", code="IMAGE_AUTO_RESIZED", severity="info", status="resolved",
+            message=f"高分辨率图片已自动缩小：{before[0]} × {before[1]} → {after[0]} × {after[1]} 像素，原文件保留。",
+            source=SourceAnchor(page_index=page.page_index), action=""))
 
 
 def run_node(pages, options, work, progress, cancelled):
@@ -383,7 +426,7 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
         image = read_image(path)
         file = work / "source-0001.png"
         image.save(file)
-        metadata.append(Page(page_index=0, display_page_number=1, width_pt=image.width, height_pt=image.height, classification="image"))
+        metadata.append(image_page(image))
         image.close()
         inputs.append(file)
 
@@ -451,6 +494,8 @@ def convert_image_translation(path, options, work, progress, cancelled, *, paren
             merged.save(outputs[active[0]])
             merged.close()
     ir.pages = metadata
+    for page in metadata:
+        add_resize_issue(ir, page)
     pdf = PdfWriter()
     files = []
     for i, (page, output) in enumerate(zip(metadata, outputs, strict=True)):

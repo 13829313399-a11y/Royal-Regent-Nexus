@@ -95,6 +95,12 @@ CARTON_SUPPLIER_PERMISSION_CODES = (
     "carton_supplier:approve",
 )
 
+FABRIC_WAREHOUSE_PERMISSION_CODES = (
+    "fabric_warehouse:read",
+    "fabric_warehouse:import",
+    "fabric_warehouse:receive",
+)
+
 THREE_D_PRINTING_PERMISSION_CODES = (
     "three_d_printing:read",
     "three_d_printing:operate",
@@ -160,6 +166,7 @@ INTERNAL_QUOTE_PERMISSION_CODES = (
 )
 
 SYSTEM_MANAGEMENT_PERMISSION_CODES = (
+    "system:feedback_manage",
     "system:user_manage",
     "system:role_manage",
     "system:access_manage",
@@ -170,6 +177,7 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 )
 
 BUSINESS_PERMISSION_CODES = (
+    *FABRIC_WAREHOUSE_PERMISSION_CODES,
     *UV_OPS_PERMISSION_CODES,
     *SPRAY_OPS_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,

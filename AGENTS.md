@@ -38,6 +38,7 @@ These rules apply to:
 ### Default Workflow
 
 - Read the relevant project files before editing.
+- Before implementing a user request, assess its reasonableness and explain any material business implications or conflicts with existing rules. Resolve routine choices autonomously; ask only when a missing business decision affects correctness.
 - Keep changes scoped to the requested module.
 - Do not redesign unrelated code.
 - For simple and well-defined tasks, implement directly.

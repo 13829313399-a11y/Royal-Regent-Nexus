@@ -78,6 +78,8 @@ def test_confirmed_batch_is_one_supplier_document_with_atomic_initial_snapshots(
         batch_orders = [order for order in workspace["orders"] if order["id"] in {row["id"] for row in saved}]
         assert len(batch_orders) == 2
         assert all(not line["accepted"] for order in batch_orders for line in order["lines"])
+        assert merged["supplier_acceptance"]["status"] == "PENDING"
+        assert merged["supplier_acceptance"]["total_line_count"] == 4
         assert client.get(PROCUREMENT + f"/purchase-order-batches/{batch['id']}.xlsx",
                           params={"factory_id": "huaxing"}).status_code == 403
 
@@ -87,7 +89,9 @@ def test_confirmed_batch_is_one_supplier_document_with_atomic_initial_snapshots(
         assert all(row[1] == batch["document_no"] for row in rows[1:])
         assert {row[4] for row in rows[1:]} == {order["order_no"] for order in saved}
         assert {row[18] for row in rows[1:]} == {source["document_no"] for source in merged["source_documents"]}
-        _, imported = workbook_rows(client.post(BASE + "/documents/order-import.xlsx", json={"documents": selections}))
+        assert client.post(BASE + "/documents/order-import.xlsx", json={"documents": selections}).status_code == 409
+        _, imported = workbook_rows(client.post(BASE + "/documents/order-import.xlsx", json={
+            "documents": selections, "acknowledge_unaccepted": True}))
         assert len(imported) == 5
         assert all(row[19] == batch["document_no"] for row in imported[1:])
         assert sum(row[6] for row in imported[1:]) == sum(float(line["change_quantity"]) for line in merged["lines"])
@@ -99,13 +103,19 @@ def test_confirmed_batch_is_one_supplier_document_with_atomic_initial_snapshots(
         assert next(row for row in supplier_documents(client) if row["id"] == batch["id"])["export_count"] == 2
 
         # Acceptance still uses each exact paper and immutable original issue.
-        accepted = client.put(BASE + "/commitments/batch", json={"factory_id": "huaxing", "lines": [
-            {"order_line_id": line["id"], "issue_id": order["issue_id"],
-             "expected_revision": line["commitment_revision"], "promised_date": "2026-10-10"}
-            for order in batch_orders for line in order["lines"]
-        ]})
-        assert accepted.status_code == 200, accepted.text
-        assert set(accepted.json()["order_ids"]) == {order["id"] for order in saved}
+        for index, order in enumerate(batch_orders):
+            accepted = client.put(BASE + "/commitments/batch", json={"factory_id": "huaxing", "lines": [
+                {"order_line_id": line["id"], "issue_id": order["issue_id"],
+                 "expected_revision": line["commitment_revision"], "promised_date": "2026-10-10"}
+                for line in order["lines"]
+            ]})
+            assert accepted.status_code == 200, accepted.text
+            assert accepted.json()["order_ids"] == [order["id"]]
+            current = next(row for row in supplier_documents(client) if row["id"] == batch["id"])
+            assert current["supplier_acceptance"]["status"] == ("PARTIAL" if index == 0 else "ACCEPTED")
+            assert current["supplier_acceptance"]["accepted_line_count"] == (index + 1) * 2
+            exported = client.post(BASE + "/documents/order-import.xlsx", json={"documents": selections})
+            assert exported.status_code == (409 if index == 0 else 200), exported.text
 
         login_as(client, "admin")
         first = saved[0]

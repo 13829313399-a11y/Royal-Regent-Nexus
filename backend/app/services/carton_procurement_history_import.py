@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 import hashlib
 import json
+from datetime import date, timedelta
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -44,6 +45,7 @@ HISTORY_ORDER_SUFFIXES = {".xlsx", ".xlsm", ".xls"}
 MAX_HISTORY_ORDER_GROUPS = 1_000
 
 HISTORY_ORDER_ALIASES = {
+    "customer_due_date": {"客户交期", "客户要求交期", "customerdueDate".lower()},
     "customer_po": {"客户po", "客户po选填", "客户采购单号", "客户订单号", "customerpo"},
     "order_no": {
         "历史订单号",
@@ -221,6 +223,10 @@ def _parse_rows(filename: str, content: bytes) -> tuple[list[dict[str, Any]], li
 
             order_date = _date_text(_cell(row, mapping, "order_date"), datemode)
             due_date = _date_text(_cell(row, mapping, "due_date"), datemode)
+            customer_due_raw = _cell(row, mapping, "customer_due_date")
+            customer_due_date = _date_text(customer_due_raw, datemode) if _text(customer_due_raw) else None
+            if _text(customer_due_raw) and not customer_due_date:
+                errors.append(f"{source} 的“客户交期”无法识别，请填写包含年份的完整日期")
             if not order_date:
                 errors.append(f"{source} 的“下单日期”无法识别")
             if not due_date:
@@ -262,6 +268,7 @@ def _parse_rows(filename: str, content: bytes) -> tuple[list[dict[str, Any]], li
                     "product_order_quantity": product_quantity,
                     "order_date": order_date,
                     "due_date": due_date,
+                    "customer_due_date": customer_due_date,
                     "note": _text(_cell(row, mapping, "order_note")),
                     "line": line,
                 }
@@ -388,25 +395,29 @@ def _fill_master(db: Session, factory: str, group: list[dict]):
 def _payload(factory: str, group: list[dict], customer) -> CartonOrderCreate:
     first=group[0]
     try:
-        return CartonOrderCreate(factory_id=factory,customer_code=customer.customer_code,
+        payload = CartonOrderCreate(factory_id=factory,customer_code=customer.customer_code,
             customer_name=customer.customer_name,contract_no=first["contract_no"],item_no=first["item_no"],customer_po=first.get("customer_po", ""),
             product_name=first["product_name"],quantity_basis=first.get("quantity_basis","CALCULATED"),
             product_order_quantity=first["product_order_quantity"],order_date=first["order_date"],
             due_date=first["due_date"],customer_due_date=first.get("customer_due_date"),
             status="CONFIRMED",note=first["note"],lines=[row["line"] for row in group])
+        # Historical planned dates are independent source evidence, even for the
+        # old calculated-demand layout. Normal new-order calculation stays unchanged.
+        payload.due_date = first["due_date"]
+        return payload
     except ValidationError as exc:
         raise HTTPException(422, detail=f"{first['source']} 所在订单校验失败：{_validation_message(exc)}") from exc
 
 
-def _preview(db: Session, factory: str, filename: str, content: bytes):
+def _preview(db: Session, factory: str, filename: str, content: bytes, user=None):
     """The fingerprint freezes both the uploaded file and mutable lookup/duplicate evidence."""
     masters=db.scalars(select(CartonMasterRecord).where(CartonMasterRecord.factory_id==factory)).all()
     customers=db.scalars(select(CartonCustomer).where(CartonCustomer.factory_id==factory)).all()
     existing=db.scalars(select(CartonOrder).where(CartonOrder.factory_id==factory)).all()
     suppliers=db.scalars(select(CartonSupplier).where(CartonSupplier.factory_id==factory)).all()
-    evidence={"factory":factory,"file":hashlib.sha256(content).hexdigest(),"parser":4,
+    evidence={"factory":factory,"file":hashlib.sha256(content).hexdigest(),"parser":5,
         "masters":sorted((r.id,r.kind,r.code,r.revision,r.status,r.data_json) for r in masters),
-        "customers":sorted((r.customer_code,r.customer_name,r.status) for r in customers),
+        "customers":sorted((r.customer_code,r.customer_name,r.status,r.revision) for r in customers),
         "suppliers":sorted((r.id,r.supplier_code,r.supplier_name,r.status) for r in suppliers),
         "orders":sorted((r.id,r.order_no,r.customer_code,r.contract_no,r.item_no,r.customer_po,r.revision) for r in existing)}
     fingerprint=hashlib.sha256(json.dumps(evidence,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
@@ -433,6 +444,19 @@ def _preview(db: Session, factory: str, filename: str, content: bytes):
         first=group[0]
         try:
             customer=get_active_customer_by_name(db,factory,first["customer_name"])
+            if user is not None:
+                from app.services.carton_customer_assignment import ensure_customer_operation
+                ensure_customer_operation(db, user, factory, customer.customer_code)
+            if not first.get("customer_due_date"):
+                from app.services.carton_master import due_rules
+                lead = due_rules(db, factory, customer.customer_code)["lead_days"]
+                try:
+                    customer_due = (date.fromisoformat(first["due_date"]) + timedelta(days=lead)).isoformat()
+                except (ValueError, OverflowError) as exc:
+                    raise HTTPException(422, "计划交期无法按保护期补算客户交期，请核对日期") from exc
+                for item in group:
+                    item["customer_due_date"] = customer_due
+                first.setdefault("row_warnings", []).append(f"原表缺少客户交期，按原计划交期 {first['due_date']} ＋采购保护期 {lead} 个自然日补为 {customer_due}；原计划交期保留")
             identity=(customer.customer_code,first["contract_no"].casefold(),first["item_no"].casefold(),first.get("customer_po", "").casefold())
             # New explicit IDs identify independent batches; legacy retry behavior is unchanged.
             explicit_batch=first.get("quantity_basis")=="EXPLICIT" and bool(first["order_no"])
@@ -466,11 +490,11 @@ def _preview(db: Session, factory: str, filename: str, content: bytes):
     return result,prepared
 
 
-def preview_history_orders(db: Session, factory_id: str, filename: str, content: bytes) -> dict:
+def preview_history_orders(db: Session, factory_id: str, filename: str, content: bytes, user=None) -> dict:
     factory_id=require_carton_factory(factory_id)
     filename=Path(filename or "").name
     _check_file(filename,content)
-    return _preview(db,factory_id,filename,content)[0]
+    return _preview(db,factory_id,filename,content,user)[0]
 
 
 def import_history_orders(
@@ -492,7 +516,7 @@ def import_history_orders(
     try:
         # Read duplicate candidates only after serializing against other order writers.
         _lock_receipt_factory(db, factory_id)
-        preview, prepared = _preview(db,factory_id,filename,content)
+        preview, prepared = _preview(db,factory_id,filename,content,user)
         if expected_preview_fingerprint and expected_preview_fingerprint != preview["source_fingerprint"]:
             raise HTTPException(409, detail="文件、客户、基础资料或现有订单已变化，请重新预览后确认导入")
         if preview["errors"]:
