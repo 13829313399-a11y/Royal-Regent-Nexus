@@ -2,7 +2,7 @@
 import codecs
 import json
 from contextlib import aclosing, asynccontextmanager
-import httpx2 as httpx
+import httpx
 from app.core.config import settings
 from .capabilities import profile
 from .errors import AssistantError
@@ -65,10 +65,11 @@ async def open_stream(body):
                     code = {401: "provider_auth", 403: "provider_access", 404: "provider_model", 429: "provider_rate_limit"}.get(response.status_code, "provider_unavailable")
                     # Inspect a bounded error code only; never display/log raw bodies.
                     raw = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        raw.extend(chunk[:65536-len(raw)])
-                        if len(raw) >= 65536:
-                            break
+                    async with aclosing(response.aiter_bytes()) as error_chunks:
+                        async for chunk in error_chunks:
+                            raw.extend(chunk[:65536-len(raw)])
+                            if len(raw) >= 65536:
+                                break
                     try:
                         error = json.loads(raw)
                         provider_code = str((error.get("error") or error).get("code", "")).lower()

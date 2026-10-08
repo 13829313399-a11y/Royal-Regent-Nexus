@@ -372,14 +372,14 @@ def test_provider_http_classification_options_and_unconfigured_help(env, tmp_pat
         body=provider.request_body([{"role":"user","content":"original"}],schema.SendMessage(**payload(thinking=mode)))
         if mode=="auto":assert "enable_thinking" not in body
         else:assert body["enable_thinking"] is (mode=="on")
-    import httpx2
-    real_client=httpx2.AsyncClient
+    from app.services.assistant.provider import httpx
+    real_client=httpx.AsyncClient
     from app.services.assistant.errors import AssistantError
     # Restore the actual transport wrapper replaced by the general fixture.
     source=importlib.reload(provider)
     for status,upstream_code,code,retry in [(401,'invalid_api_key','provider_auth',False),(403,'forbidden','provider_access',False),(404,'unknown_model','provider_model',False),(429,'insufficient_quota','provider_budget_exhausted',False),(429,'rate_limit','provider_rate_limit',True)]:
-        transport=httpx2.MockTransport(lambda request:httpx2.Response(status,json={'error':{'code':upstream_code,'message':'private-upstream-detail'}},headers={'Retry-After':'3'}))
-        monkeypatch.setattr(httpx2,'AsyncClient',lambda **kwargs:real_client(transport=transport,**kwargs))
+        transport=httpx.MockTransport(lambda request:httpx.Response(status,json={'error':{'code':upstream_code,'message':'private-upstream-detail'}},headers={'Retry-After':'3'}))
+        monkeypatch.setattr(httpx,'AsyncClient',lambda **kwargs:real_client(transport=transport,**kwargs))
         async def request():
             async with source.open_stream({}) as chunks:
                 return [c async for c in chunks]
