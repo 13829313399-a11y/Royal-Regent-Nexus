@@ -30,6 +30,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { SPRAY_BASE, isSprayFactory, sprayEnabled } from '@/features/spray-production/contracts'
 import { isCuttingFactory } from '@/features/cutting-operations/navigation'
+import { WAREHOUSES, isWarehouseFactory } from '@/features/warehouse-operations/navigation'
 
 const route = useRoute()
 const appStore = useAppStore()
@@ -67,6 +68,7 @@ const visibleModules = computed(() => {
       if (module.id === 'uv-printing' && appStore.activeFactoryId !== 'huakang-a') return false
       if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
       if (module.id === 'cutting' && !isCuttingFactory(appStore.activeFactoryId)) return false
+      if (WAREHOUSES.some(warehouse => warehouse.id === module.id) && !isWarehouseFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
       if (currentDepartmentId.value === 'pmc-warehouse' && module.id === 'carton-procurement'
         && !authStore.can('carton_procurement:read', factory.id)) return false
@@ -80,7 +82,7 @@ const visibleModules = computed(() => {
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
 
-    if (module.id === 'cutting') {
+    if (module.id === 'cutting' || WAREHOUSES.some(warehouse => warehouse.id === module.id)) {
       return { ...scopedModule, stats: module.stats }
     }
 

@@ -749,10 +749,24 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
   'pmc-warehouse': {
     departmentId: 'pmc-warehouse',
     heroTitle: 'PMC / 仓管模块中心',
-    heroSubtitle: '围绕纸箱采购、库存、到货和齐套风险建立统一入口',
+    heroSubtitle: '统一进入纸箱、布料与半成品仓库，跟进到货、收发和月结',
     panelTitle: 'PMC / 仓管模块',
-    panelSubtitle: '适合承载纸箱采购协同、库存预警、入库与月结流程',
+    panelSubtitle: '按仓库办理业务，各入口标明当前开放范围',
     modules: [
+      {
+        id: 'fabric-warehouse', title: '布料仓', owner: '华康C · 仓管',
+        summary: '采购来源、布料辅料收发、批次与缸号库存，沿用纸箱工作区操作方式',
+        status: '采购与入库可用', statusTone: 'teal', stats: '七个工作区 · 追货与实收入库',
+        icon: Boxes, route: '/modules/pmc-warehouse/fabric-warehouse',
+        detailPage: false, factoryIds: ['huakang-c'], statusMetrics: [], todos: [], children: [],
+      },
+      {
+        id: 'semi-finished-warehouse', title: '半成品仓', owner: '华康C · 仓管',
+        summary: '加工回货、多轮发出与回收、在外跟进、返修和包装交接',
+        status: '框架预览', statusTone: 'amber', stats: '八个工作区 · 加工流转待接入',
+        icon: Archive, route: '/modules/pmc-warehouse/semi-finished-warehouse',
+        detailPage: false, factoryIds: ['huakang-c'], statusMetrics: [], todos: [], children: [],
+      },
       {
         id: 'carton-procurement',
         title: '纸箱采购协同',

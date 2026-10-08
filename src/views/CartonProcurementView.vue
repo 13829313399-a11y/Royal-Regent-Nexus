@@ -16,6 +16,7 @@ import { scheduleOrderReminder, type ScheduleOrderReminder } from '@/lib/cartonS
 import { buildBusinessOrderAlerts, type BusinessOrderAlert, type BusinessOrderAlertKind } from '@/features/carton-procurement/businessAlerts'
 import CartonPaperPicker from '@/components/CartonPaperPicker.vue'
 import CartonMasterWorkspace from '@/components/CartonMasterWorkspace.vue'
+import { cartonCustomerResponsibilitiesApi, emptyResponsibilities } from '@/api/cartonCustomerResponsibilities'
 import CartonMasterOrderAssist from '@/components/CartonMasterOrderAssist.vue'
 import CartonNumberRuleHint from '@/components/CartonNumberRuleHint.vue'
 import CartonMasterLookup from '@/components/CartonMasterLookup.vue'
@@ -416,8 +417,24 @@ const masterLoaded = ref(false), masterError = ref('')
 const chosenMaster = ref<MasterRecord | null>(null)
 const outboundWorkshop = ref(''), bulkWorkshops = ref<Record<string, string>>({})
 const workshops = computed(() => masterWorkspace.value.records.filter(r => r.kind === 'WORKSHOP' && r.status === 'ACTIVE'))
+const responsibilities = ref(emptyResponsibilities()), responsibilityError = ref('')
+let responsibilityGeneration = 0
+onBeforeUnmount(() => { responsibilityGeneration++ })
+async function refreshResponsibilities() {
+  const generation = ++responsibilityGeneration, factory = selectedFactoryId.value
+  try {
+    const result = await cartonCustomerResponsibilitiesApi.get(factory, undefined, true)
+    if (generation === responsibilityGeneration && factory === selectedFactoryId.value) { responsibilities.value = result; responsibilityError.value = '' }
+  } catch (cause) {
+    if (generation === responsibilityGeneration && factory === selectedFactoryId.value) { responsibilities.value = emptyResponsibilities(); responsibilityError.value = getApiErrorMessage(cause) }
+  }
+}
+function responsibleForCustomer(code: string) { return responsibilities.value.unrestricted || responsibilities.value.own_customer_codes.includes(code) }
+function responsibleForOrder(number: string) { const row = orderRecords.value.find(order => order.order_no === number); return !!row && responsibleForCustomer(row.customer_code) }
+const orderCustomers = computed(() => customerRecords.value.filter(customer => responsibleForCustomer(customer.customer_code)))
 let masterGeneration = 0
 async function refreshMaster() {
+  void refreshResponsibilities()
   const generation = ++masterGeneration
   const factory = selectedFactoryId.value
   try {
@@ -426,7 +443,7 @@ async function refreshMaster() {
     masterWorkspace.value = data; masterLoaded.value = true; masterError.value = ''
   } catch (e) { if (factory === selectedFactoryId.value && generation === masterGeneration) { masterLoaded.value = false; masterError.value = getApiErrorMessage(e) } }
 }
-async function masterChanged() { await refreshMaster(); await refreshLocations() }
+async function masterChanged() { await refreshMaster(); await refreshLocations(); await refreshResponsibilities() }
 function applyMaster(row: MasterRecord) {
   if (editingOrderStructureLocked.value) return
   orderForm.itemNo = row.code; orderForm.productName = row.data.product_name || ''
@@ -434,6 +451,8 @@ function applyMaster(row: MasterRecord) {
     id: `MASTER-${row.id}-${i}`, packagingType: l.packaging_type, paperQuality: l.paper_quality,
     specification: l.specification, dimensionUnit: l.dimension_unit, unit: l.unit,
     unitsPerCarton: Number(l.usage_quantity), unitPrice: 0, currency: 'CNY', priceSource: 'manual', note: '',
+    netWeight: l.net_weight_kg == null ? '' as const : Number(l.net_weight_kg),
+    grossWeight: l.gross_weight_kg == null ? '' as const : Number(l.gross_weight_kg),
   })))
   chosenMaster.value = row
 }
@@ -696,6 +715,8 @@ const receiptLines = reactive<ReceiptReviewLine[]>(receiptSeed.map((line) => ({
 })))
 
 interface OrderFormMaterialLine extends Omit<CartonMaterialLine, 'id' | 'unitsPerCarton'> {
+  netWeight?: number | ''
+  grossWeight?: number | ''
   unitsPerCarton: number | ''
   requiredQuantity?: number | ''
   id: string
@@ -1000,7 +1021,7 @@ const selectedSubmittableOrderCount = computed(() =>
 )
 const selectedOrdersCanCancel = computed(() =>
   selectedOrders.value.length > 0
-  && selectedOrders.value.every((order) => order.status === 'CONFIRMED'),
+  && selectedOrders.value.every((order) => responsibleForCustomer(order.customer_code) && order.status === 'CONFIRMED'),
 )
 const selectedOrdersCanDelete = computed(() => apiConnected.value && canDeleteOrders.value
   && selectedOrders.value.length > 0 && selectedOrders.value.length <= 100
@@ -2210,7 +2231,7 @@ function rawOrderStatus(orderNo: string) {
 }
 
 function canEditConfirmedOrder(orderNo: string) {
-  return rawOrderStatus(orderNo) === 'CONFIRMED'
+  return canIssuePurchaseOrders.value && responsibleForOrder(orderNo) && rawOrderStatus(orderNo) === 'CONFIRMED'
 }
 
 const replenishPositions = computed(() => {
@@ -2218,7 +2239,7 @@ const replenishPositions = computed(() => {
   return localInventoryBalances.filter(row => row.orderLineId && ids.has(row.orderLineId) && row.balance > 0 && row.locationId)
 })
 function canReplenishOrder(orderNo: string) {
-  return canIssuePurchaseOrders.value && canWriteCartonInventory.value
+  return responsibleForOrder(orderNo) && canIssuePurchaseOrders.value && canWriteCartonInventory.value
     && ['PARTIALLY_RECEIVED', 'COMPLETED'].includes(rawOrderStatus(orderNo))
 }
 async function openReplenishOrder(orderNo: string) {
@@ -2300,7 +2321,7 @@ async function deleteOrder() {
 
 function canAppendOrder(orderNo: string) {
   const status = rawOrderStatus(orderNo)
-  return canIssuePurchaseOrders.value && (status === 'CONFIRMED'
+  return responsibleForOrder(orderNo) && canIssuePurchaseOrders.value && (status === 'CONFIRMED'
     || (['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED'].includes(status) && canAdjustSubmittedOrders.value))
 }
 
@@ -2332,7 +2353,7 @@ function canReduceSubmittedOrder(orderNo: string) {
   return Boolean(
     order
     && ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(order.status)
-    && canAdjustSubmittedOrders.value
+    && responsibleForOrder(orderNo) && canAdjustSubmittedOrders.value
     && maximumReducibleProductQuantity(order) > 0,
   )
 }
@@ -2342,7 +2363,7 @@ function canReceiveOrder(orderNo: string) {
 }
 
 function canReturnOrder(orderNo: string) {
-  return ['PARTIALLY_RECEIVED', 'COMPLETED'].includes(rawOrderStatus(orderNo))
+  return responsibleForOrder(orderNo) && ['PARTIALLY_RECEIVED', 'COMPLETED'].includes(rawOrderStatus(orderNo))
 }
 
 function mapOrder(row: CartonOrderResponse): CartonOrderRow {
@@ -3079,6 +3100,15 @@ async function createLocalOrder() {
     setOrderFeedback('表单核对未通过：请先搜索并选择客户；新客户须由有高级维护权限的人员核对并保存。')
     return
   }
+  if (!responsibleForCustomer(selectedCustomer.customer_code)) {
+    setOrderFeedback('该客户未分配给你，请联系主管分配客户责任范围。')
+    return
+  }
+  if (orderForm.materials.some(material => [material.netWeight, material.grossWeight].some(value => value != null && value !== '' && (!Number.isFinite(Number(value)) || Number(value) < 0))
+    || material.netWeight != null && material.netWeight !== '' && material.grossWeight != null && material.grossWeight !== '' && Number(material.grossWeight) < Number(material.netWeight))) {
+    setOrderFeedback('请核对每条纸品的每箱重量：重量不得为负，毛重不能小于净重。')
+    return
+  }
   if (!orderForm.contractNo.trim() || !orderForm.itemNo.trim() || validMaterials.length !== orderForm.materials.length) {
     setOrderFeedback('表单核对未通过：请填写合同号、货号，并补齐每条纸品明细的类型、纸质、规格和每箱个数。')
     return
@@ -3145,6 +3175,8 @@ async function createLocalOrder() {
       master_config_revision: chosenMaster.value?.revision || 0,
       note: orderForm.note.trim(),
       lines: validMaterials.map((material) => ({
+        net_weight_kg: material.netWeight == null || material.netWeight === '' ? null : Number(material.netWeight),
+        gross_weight_kg: material.grossWeight == null || material.grossWeight === '' ? null : Number(material.grossWeight),
         packaging_type: material.packagingType.trim(),
         paper_quality: material.paperQuality.trim(),
         specification: material.specification.trim(),
@@ -3219,6 +3251,7 @@ function openSubmitSupplierOrder(orderNo: string) {
 }
 
 function openBulkSubmitSupplierOrders() {
+  if (selectedOrders.value.some(order => !responsibleForCustomer(order.customer_code))) { reportActionFailure('所选订单包含未分配给你的客户，请重新勾选。'); return }
   if (!selectedOrders.value.length) {
     reportActionFailure('请先勾选需要确认并锁定的订单。')
     return
@@ -4438,10 +4471,10 @@ async function saveCustomer() {
     if (index >= 0) customerRecords.value.splice(index, 1, saved)
     else customerRecords.value.push(saved)
     customerRecords.value.sort((left, right) => left.customer_name.localeCompare(right.customer_name, 'zh-CN'))
-    if (customerCreatedFromOrder.value && showOrderModal.value && saved.status === 'ACTIVE') orderForm.customerCode = saved.customer_code
+    if (customerCreatedFromOrder.value && showOrderModal.value && saved.status === 'ACTIVE' && responsibleForCustomer(saved.customer_code)) orderForm.customerCode = saved.customer_code
     actionMessage.value = current
       ? `客户 ${saved.customer_name} 的资料已更新。`
-      : `客户 ${saved.customer_name} 已加入 ${activeFactory.value.shortName} 客户主数据。`
+      : `客户 ${saved.customer_name} 已加入 ${activeFactory.value.shortName} 客户主数据。${responsibleForCustomer(saved.customer_code) ? '' : '请由主管在基础设置中分配责任人员后再操作订单。'}`
     resetCustomerForm()
     showCustomerModal.value = false
   } catch (error) {
@@ -4453,6 +4486,7 @@ async function saveCustomer() {
 
 
 async function issueSelectedPurchaseOrders() {
+  if (selectedOrders.value.some(order => !responsibleForCustomer(order.customer_code))) { reportActionFailure('所选订单包含未分配给你的客户，无法生成采购单。'); return }
   if (!selectedOrderNos.value.length || issuingSelectedPurchaseOrders.value) return
   if (!apiConnected.value) {
     combinedPurchaseOrderTone.value = 'error'
@@ -4582,6 +4616,11 @@ function resetOrderForm() {
   })
 }
 
+function orderDetailPaperWeights(id: string) {
+  const line = orderDetailRecord.value?.lines.find(item => item.id === id)
+  return line && (line.net_weight_kg != null || line.gross_weight_kg != null) ? `每箱净重 ${line.net_weight_kg ?? "未记录"} kg · 毛重 ${line.gross_weight_kg ?? "未记录"} kg` : ""
+}
+
 function historyItemMatchLabel(matchType: CartonOrderHistorySuggestionResponse['match_type']) {
   return ({
     EXACT: '完全一致',
@@ -4609,6 +4648,8 @@ function applyHistoryItemSuggestion(suggestion: CartonOrderHistorySuggestionResp
     paperQuality: line.paper_quality,
     specification: line.specification,
     unitsPerCarton: line.usage_quantity == null ? '' as const : Number(line.usage_quantity),
+    netWeight: line.net_weight_kg == null ? '' as const : Number(line.net_weight_kg),
+    grossWeight: line.gross_weight_kg == null ? '' as const : Number(line.gross_weight_kg),
     unit: line.unit,
     dimensionUnit: line.dimension_unit,
     unitPrice: Number(line.unit_price),
@@ -4803,6 +4844,10 @@ function copyOrderInformation(orderNo: string) {
     reportActionFailure('未找到当前厂区需要复制的正式订单，请刷新后重试。')
     return
   }
+  if (!responsibleForCustomer(order.customer_code)) {
+    reportActionFailure('该客户未分配给你，请联系主管分配后再复制下单。')
+    return
+  }
   openOrderMoreMenu.value = ''
   resetOrderForm()
   copiedOrderNo.value = order.order_no
@@ -4824,6 +4869,8 @@ function copyOrderInformation(orderNo: string) {
     paperQuality: line.paper_quality,
     specification: line.specification,
     unitsPerCarton: line.usage_quantity == null ? '' as const : Number(line.usage_quantity),
+    netWeight: line.net_weight_kg == null ? '' as const : Number(line.net_weight_kg),
+    grossWeight: line.gross_weight_kg == null ? '' as const : Number(line.gross_weight_kg),
     unit: line.unit,
     dimensionUnit: line.dimension_unit,
     unitPrice: Number(line.unit_price),
@@ -4868,6 +4915,8 @@ function openEditOrderModal(orderNo: string) {
     paperQuality: line.paper_quality,
     specification: line.specification,
     unitsPerCarton: line.usage_quantity == null ? '' as const : Number(line.usage_quantity),
+    netWeight: line.net_weight_kg == null ? '' as const : Number(line.net_weight_kg),
+    grossWeight: line.gross_weight_kg == null ? '' as const : Number(line.gross_weight_kg),
     unit: line.unit,
     dimensionUnit: line.dimension_unit,
     unitPrice: Number(line.unit_price),
@@ -5824,7 +5873,7 @@ function refreshDemo() {
 }
 const splitOrder = ref<CartonOrderResponse | null>(null)
 const splitReceiptConfirmation = ref('')
-const canCreateSplits = computed(() => canIssuePurchaseOrders.value && canAdjustSubmittedOrders.value)
+const canCreateSplits = computed(() => canIssuePurchaseOrders.value && canAdjustSubmittedOrders.value && !!splitOrder.value && responsibleForCustomer(splitOrder.value.customer_code))
 function splitEntryVisible(number: string) {
   const order = orderRecords.value.find(order => order.order_no === number)
   return !!order && (['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED', 'COMPLETED'].includes(order.status) || !!order.split_records?.length)
@@ -5848,6 +5897,7 @@ async function openOrderSplit(number: string) {
   splitOrder.value = orderRecords.value.find(order => order.order_no === number) ?? null
 }
 function closeOrderSplit() { dashboardActionGeneration++; dashboardActionBusy.value = false; splitOrder.value = null }
+watch([selectedFactoryId, () => authStore.currentUser?.id, () => authStore.authorizationVersion], () => { responsibilities.value = emptyResponsibilities(); void refreshResponsibilities() }, { immediate: true })
 watch(selectedFactoryId, () => { closeOrderSplit(); splitReceiptConfirmation.value = '' })
 watch(showReceiptDialog, () => { splitReceiptConfirmation.value = '' })
 const splitReceiptLines = computed(() => currentReceipt.value
@@ -6269,7 +6319,7 @@ watch([
             <p class="mt-1 text-[11px] text-slate-500">待下单订单确认后整单锁定，并自动生成首次采购单到供应商协同；后续追加或减单仍需另行生成变更单。有权限的仓管或主管可继续调整尚未入库部分。</p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
-            <a href="/templates/carton-history-order-import-template.xlsx" download="纸箱历史订单导入模板.xlsx" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
+            <a href="/templates/carton-history-order-import-template.xlsx?v=carton-weights-v2" download="纸箱历史订单导入模板.xlsx" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
               <Download class="size-4" aria-hidden="true" />
               下载历史订单模板
             </a>
@@ -7307,6 +7357,7 @@ watch([
             <div class="min-w-0"><span class="text-slate-500">备注</span><b class="ml-2 break-words text-slate-900">{{ orderDetailRow.note || '—' }}</b></div>
           </section>
 
+          <p v-if="orderDetailRecord && (orderDetailRecord.net_weight_kg != null || orderDetailRecord.gross_weight_kg != null)" class="px-5 py-2 text-xs text-slate-600">历史整单每箱净重：{{ orderDetailRecord.net_weight_kg ?? '未记录' }} kg · 毛重：{{ orderDetailRecord.gross_weight_kg ?? '未记录' }} kg</p>
           <CartonMarkAssetLibrary v-if="orderDetailPinned && orderDetailRecord" :factory-id="selectedFactoryId" :order-id="orderDetailRecord.id" read-only />
 
           <section aria-label="订单供应商接单信息" class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-[12px]">
@@ -7323,7 +7374,7 @@ watch([
                 </thead>
                 <tbody class="divide-y divide-slate-100">
                   <tr v-for="material in orderDetailRow.materials" :key="material.id" class="text-[12px] text-slate-700">
-                    <td class="truncate px-4 py-3 font-semibold text-slate-950">{{ material.packagingType }}</td>
+                    <td class="px-4 py-3 font-semibold text-slate-950">{{ material.packagingType }}<p v-if="orderDetailPaperWeights(material.id)" class="mt-1 text-[10px] font-normal text-slate-500">{{ orderDetailPaperWeights(material.id) }}</p></td>
                     <td class="truncate px-4 py-3 font-semibold text-slate-900">{{ material.paperQuality }}</td>
                     <td class="truncate px-4 py-3" :title="material.specification">{{ material.specification }}</td>
                     <td class="px-4 py-3 text-right font-semibold tabular-nums">{{ material.unitsPerCarton == null ? '未记录' : formatUnitsPerCarton(material.unitsPerCarton) }}</td>
@@ -7367,7 +7418,7 @@ watch([
           <section>
             <div class="mb-3 text-[11px] font-bold text-slate-900">合同主信息</div>
             <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <CartonCustomerPicker v-model="orderForm.customerCode" :customers="customerRecords" :can-create="masterLoaded && masterWorkspace.can_manage" :disabled="editingOrderStructureLocked" @create="createOrderCustomer" />
+              <CartonCustomerPicker v-model="orderForm.customerCode" :customers="orderCustomers" :can-create="masterLoaded && masterWorkspace.can_manage" :disabled="editingOrderStructureLocked" @create="createOrderCustomer" />
               <label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">纸箱供应商</span><input value="河源东康纸品有限公司（系统固定）" aria-label="纸箱供应商" disabled class="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-slate-500"></label>
               <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">客户 PO（选填）</span><input v-model="orderForm.customerPo" aria-label="客户 PO" maxlength="128" :disabled="editingOrderStructureLocked" placeholder="同合同同货号时，用客户 PO 区分" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50"><CartonNumberRuleHint v-if="masterLoaded && orderForm.customerCode && orderForm.customerPo" :rule="orderMasterRules.customer_po_rule" :value="orderForm.customerPo" label="客户 PO" /><span v-else class="block text-[9px] text-slate-400">选填；格式规则可在基础资料按客户设置</span></label>
               <CartonMasterLookup :records="masterLoaded ? masterWorkspace.records : []" :customer="orderForm.customerCode" :query="orderForm.contractNo" field="contract" :disabled="editingOrderStructureLocked || !masterLoaded" @select="orderForm.contractNo = $event.code"><label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">合同号 *</span><input v-model="orderForm.contractNo" aria-label="合同号" :disabled="editingOrderStructureLocked" placeholder="例如 SC700145365" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-500"></label><template #hint><CartonNumberRuleHint v-if="masterLoaded && orderForm.customerCode" :rule="masterDueRules(masterWorkspace.records, orderForm.customerCode).contract_rule" :value="orderForm.contractNo" label="合同号" /><span v-else class="mt-1.5 block text-[9px] text-slate-400">支持中英文、数字及 - _ . / # ( ) + &</span></template></CartonMasterLookup>
@@ -7396,7 +7447,9 @@ watch([
             </div>
           </section>
 
-          <CartonMasterOrderAssist v-if="masterLoaded && orderForm.quantityBasis !== 'EXPLICIT'" :records="masterWorkspace.records" :customer="orderForm.customerCode" :item="orderForm.itemNo" :contract="orderForm.contractNo" :product="orderForm.productName" :disabled="editingOrderStructureLocked" :lines="orderForm.materials.map(l => ({ packaging_type: l.packagingType, paper_quality: l.paperQuality, specification: l.specification, dimension_unit: l.dimensionUnit, unit: l.unit, usage_quantity: l.unitsPerCarton }))" @select="applyMaster" />
+          <p v-if="responsibilityError" role="alert" class="px-5 pb-3 text-xs text-red-700">客户责任范围读取失败：{{ responsibilityError }}；当前无法操作客户订单，请刷新重试。</p>
+          <p v-else-if="!orderCustomers.length" class="px-5 pb-3 text-xs text-amber-700">尚未分配可操作客户，请联系主管在基础资料中分配客户责任范围。</p>
+          <CartonMasterOrderAssist v-if="masterLoaded && orderForm.quantityBasis !== 'EXPLICIT'" :records="masterWorkspace.records" :customer="orderForm.customerCode" :item="orderForm.itemNo" :contract="orderForm.contractNo" :product="orderForm.productName" :disabled="editingOrderStructureLocked" :lines="orderForm.materials.map(l => ({ packaging_type: l.packagingType, paper_quality: l.paperQuality, specification: l.specification, dimension_unit: l.dimensionUnit, unit: l.unit, usage_quantity: l.unitsPerCarton, net_weight_kg: l.netWeight == null || l.netWeight === '' ? null : l.netWeight, gross_weight_kg: l.grossWeight == null || l.grossWeight === '' ? null : l.grossWeight }))" @select="applyMaster" />
           <p v-else-if="masterError" class="text-xs text-amber-700">基础资料暂未读到，可稍后刷新；{{ masterError }}</p>
           <section class="rounded-xl border border-slate-200">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
@@ -7412,7 +7465,12 @@ watch([
                 <div class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">{{ orderForm.quantityBasis === 'EXPLICIT' ? '纸品需求数量 *' : '纸箱数量（自动）' }}</span><input v-if="orderForm.quantityBasis === 'EXPLICIT'" v-model.number="material.requiredQuantity" :aria-label="`纸品需求数量 ${index + 1}`" type="number" min="0.0001" step="0.0001" :disabled="editingOrderStructureLocked" class="h-9 w-full rounded-lg border border-teal-200 px-2 text-right font-bold text-teal-700"><output v-else :aria-label="`纸箱数量 ${index + 1}`" class="flex h-9 w-full items-center justify-end rounded-lg border border-teal-200 bg-teal-50 px-2 font-bold text-teal-700 tabular-nums">{{ formatRequiredQuantity(material.unitsPerCarton, orderForm.orderQuantity) }}</output></div>
                 <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">单位</span><select v-model="material.unit" :aria-label="`纸品单位 ${index + 1}`" :disabled="editingOrderStructureLocked" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 outline-none focus:border-teal-500 disabled:bg-slate-100"><option v-if="material.unit && !orderUnitOptions.includes(material.unit)">{{ material.unit }}</option><option v-for="value in orderUnitOptions" :key="value">{{ value }}</option></select></label>
                 <button type="button" :disabled="editingOrderStructureLocked" :aria-label="`删除纸品明细 ${index + 1}`" class="flex size-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-400 transition hover:border-red-200 hover:text-red-600 disabled:cursor-not-allowed disabled:bg-slate-100" @click="removeOrderMaterialLine(index)"><X class="size-4" /></button>
+                <div class="grid gap-3 sm:grid-cols-2 lg:col-span-7">
+                  <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">每箱净重（kg，选填）</span><input v-model="material.netWeight" :aria-label="`纸品每箱净重 ${index + 1}`" :disabled="editingOrderStructureLocked" type="number" min="0" step="0.0001" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 disabled:bg-slate-100"></label>
+                  <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">每箱毛重（kg，选填）</span><input v-model="material.grossWeight" :aria-label="`纸品每箱毛重 ${index + 1}`" :disabled="editingOrderStructureLocked" type="number" min="0" step="0.0001" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 disabled:bg-slate-100"></label>
+                </div>
               </div>
+              <p class="text-xs text-slate-500">净重为每箱货物不含纸箱、配卡等包装的重量；毛重为含这些包装的整箱货物总重量。两项按对应纸品的装箱方式记录，单位 kg，毛重不得小于净重；选择货号包装资料可带入，保存后不随基础资料修改。</p>
             </div>
           </section>
           <datalist id="carton-paper-quality-history"><option v-for="value in paperQualitySuggestions" :key="value" :value="value" /></datalist>

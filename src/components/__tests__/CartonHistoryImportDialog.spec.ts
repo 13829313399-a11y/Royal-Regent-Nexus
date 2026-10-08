@@ -50,3 +50,27 @@ describe('historical order review', () => {
     expect(wrapper.text()).not.toContain('客户 · 001')
   })
 })
+
+describe('historical order packed-goods weights', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it('shows both weights before confirmation and distinguishes zero from unknown', async () => {
+    api.previewHistoryOrders.mockResolvedValue({ errors: [], warnings: [], orders: [{
+      customer_name: '迪奇', contract_no: 'C1', item_no: 'ITEM1', source_rows: ['第3行'], warnings: [],
+      lines: [
+        { packaging_type: '外箱', net_weight_kg: '8.125', gross_weight_kg: '9.25', unit_price: '1' },
+        { packaging_type: '内箱', net_weight_kg: '0', gross_weight_kg: '0', unit_price: '1' },
+        { packaging_type: '卡纸', net_weight_kg: null, gross_weight_kg: null, unit_price: '1' },
+      ],
+    }] })
+    const wrapper = mount(Dialog, { props: { file: new File(['xlsx'], 'history.xlsx'), factoryId: 'huaxing' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('净重不含纸箱、配卡等包装')
+    expect(wrapper.findAll('th').map(cell => cell.text())).toContain('每箱净重 kg')
+    expect(wrapper.findAll('th').map(cell => cell.text())).toContain('每箱毛重 kg')
+    const rows = wrapper.findAll('tbody tr')
+    expect(rows[0]!.findAll('td').slice(5, 7).map(cell => cell.text())).toEqual(['8.125', '9.25'])
+    expect(rows[1]!.findAll('td').slice(5, 7).map(cell => cell.text())).toEqual(['0', '0'])
+    expect(rows[2]!.findAll('td').slice(5, 7).map(cell => cell.text())).toEqual(['未记录', '未记录'])
+    expect(api.uploadHistoryOrders).not.toHaveBeenCalled()
+  })
+})

@@ -9,8 +9,14 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.schemas.carton_procurement import CartonOrderLineCreate
+from app.schemas.carton_weights import CartonPackingWeights
 from app.services.carton_procurement_imports import _cell, _date_text, _header_key, _header_mapping, _number, _text
 
+
+WEIGHT_ALIASES = {
+    "net_weight_kg": {"每箱净重kg", "每箱净重kg选填", "每箱净重", "净重kg", "净重", "netweightkg"},
+    "gross_weight_kg": {"每箱毛重kg", "每箱毛重kg选填", "每箱毛重", "毛重kg", "毛重", "grossweightkg"},
+}
 
 ALIASES = {
     "customer_po": {"客户po", "客户po选填", "客户采购单号", "客户订单号", "customerpo"},
@@ -38,10 +44,16 @@ for prefix, label in (("inner", "内箱"), ("outer", "外箱"), ("card", "卡纸
         "paper_quality": {"纸质", "材质"}, "specification": {"规格", "尺寸"},
         "dimension_unit": {"规格单位", "尺寸单位"}, "unit": {"纸品单位", "单位"},
         "usage_quantity": {"每箱个数", "装箱数"}, "unit_price": {"单价"},
+        "net_weight_kg": {"每箱净重kg", "每箱净重", "净重kg", "净重"},
+        "gross_weight_kg": {"每箱毛重kg", "每箱毛重", "毛重kg", "毛重"},
     }.items():
         ALIASES[f"{prefix}_{field}"] = {label + suffix for suffix in suffixes}
 ALIASES["outer_quantity"].add("做箱数量")
+# The main sheet's one unqualified pair always describes the packed outer carton.
+for field, aliases in WEIGHT_ALIASES.items():
+    ALIASES[f"outer_{field}"].update(aliases)
 EXTRA_ALIASES = {
+    **WEIGHT_ALIASES,
     "customer_po": {"客户po", "客户po选填", "客户采购单号", "客户订单号", "customerpo"},
     "order_no": ALIASES["order_no"], "packaging_type": {"纸品类型"},
     "required_quantity": {"纸品需求数量", "需求数量"},
@@ -61,6 +73,23 @@ def number(value: Any, source: str, label: str, *, positive=False) -> Decimal | 
     if result is None or not result.is_finite() or result < 0 or (positive and result == 0):
         fail(source, f"{label}必须为{'大于零' if positive else '非负'}数字")
     return result
+
+
+def check_weight_headers(headers, aliases, source):
+    for field, names in aliases.items():
+        if field.endswith("_weight_kg"):
+            keys = {_header_key(name) for name in names}
+            if sum(_header_key(value) in keys for value in headers) > 1:
+                fail(source, "同一纸品的净重或毛重出现多列，请各保留一列，避免漏读重量")
+
+
+def parse_weights(row, mapping, source, *, prefix=""):
+    values = {field: number(_cell(row, mapping, prefix + field), source, label)
+              for field, label in (("net_weight_kg", "每箱净重（kg）"), ("gross_weight_kg", "每箱毛重（kg）"))}
+    try:
+        return CartonPackingWeights(**values).model_dump()
+    except ValidationError as exc:
+        fail(source, "每箱重量不合法：" + "; ".join(error["msg"] for error in exc.errors()[:3]))
 
 
 def date_value(value: Any, datemode: int, source: str, label: str, required=False) -> str | None:
@@ -110,6 +139,7 @@ def parse_wide(worksheets) -> tuple[list[dict], list[str]] | None:
         if sum(_header_key(value) in card_headers for value in rows[index]) > 1:
             fail(f"“{sheet}”表头", "卡纸数量出现多列，请保留一列总需求；不同卡类或多规格请用附加纸品明细")
         found = True
+        check_weight_headers(rows[index], ALIASES, f"“{sheet}”表头")
         for rownum, row in enumerate(rows[index + 1:], index + 2):
             if not any(_text(_cell(row, mapping, key)) for key in ALIASES):
                 continue
@@ -148,7 +178,9 @@ def parse_wide(worksheets) -> tuple[list[dict], list[str]] | None:
                 if any(value is None for value in pair.values()):
                     fail(source,"装箱数两边都需要数字，例如0/12")
             definitions = []
+            weights = {}
             for prefix, label in (("inner","内箱"),("outer","外箱"),("card","卡纸"),("other",_text(_cell(row,mapping,"other_type")))):
+                weights[prefix] = parse_weights(row, mapping, source, prefix=f"{prefix}_")
                 quantity = number(_cell(row,mapping,f"{prefix}_quantity"),source,f"{label or '其他纸品'}需求数量")
                 usage = number(_cell(row,mapping,f"{prefix}_usage_quantity"),source,f"{label or '其他纸品'}每箱个数")
                 if prefix in pair:
@@ -156,11 +188,15 @@ def parse_wide(worksheets) -> tuple[list[dict], list[str]] | None:
                         fail(source,f"{label}每箱个数与装箱数{packing}不一致")
                     usage = pair[prefix]
                 if quantity == 0:
+                    if any(value is not None for value in weights[prefix].values()):
+                        fail(source, f"已填写{label or '其他纸品'}每箱重量，但对应纸品需求数量为0，请核对")
                     continue
                 if quantity is None and usage and head["product_order_quantity"]:
                     quantity = (head["product_order_quantity"] / usage).to_integral_value(rounding=ROUND_CEILING)
                     head["row_warnings"].append(f"{label}需求数量由产品数量÷每箱个数向上取整计算为{quantity}")
                 if quantity is None:
+                    if any(value is not None for value in weights[prefix].values()):
+                        fail(source, f"已填写{label or '其他纸品'}每箱重量，但没有对应纸品需求数量，请核对")
                     continue
                 if not label:
                     fail(source,"其他纸品必须填写具体纸品类型")
@@ -182,6 +218,7 @@ def parse_wide(worksheets) -> tuple[list[dict], list[str]] | None:
                 values = {key:_text(value(key)) for key in ("paper_quality","specification","dimension_unit")}
                 default_unit = "张" if prefix == "card" else "个"
                 values.update(packaging_type=label,required_quantity=quantity,usage_quantity=usage,
+                    **weights[prefix],
                     unit=_text(value("unit")) or default_unit,unit_price=number(value("unit_price"),source,"单价") or Decimal(0),
                     currency=(_text(_cell(row,mapping,"currency")) or "CNY").upper(),price_source="历史导入",note="")
                 if not _text(value("unit")):
@@ -206,6 +243,7 @@ def parse_wide(worksheets) -> tuple[list[dict], list[str]] | None:
         if not header or not {"order_no","packaging_type","required_quantity"}.issubset(header[1]):
             fail(f"“{sheet}”","缺少历史订单号、纸品类型或纸品需求数量表头")
         index,mapping=header
+        check_weight_headers(rows[index], EXTRA_ALIASES, f"“{sheet}”表头")
         for rownum,row in enumerate(rows[index+1:],index+2):
             if not any(_text(_cell(row,mapping,key)) for key in EXTRA_ALIASES): continue
             source=f"“{sheet}”第 {rownum} 行"
@@ -214,6 +252,7 @@ def parse_wide(worksheets) -> tuple[list[dict], list[str]] | None:
             if head is None: fail(source,"历史订单号未匹配到唯一的主表订单")
             values={key:_text(_cell(row,mapping,key)) for key in ("packaging_type","paper_quality","specification","dimension_unit","note")}
             values.update(required_quantity=number(_cell(row,mapping,"required_quantity"),source,"纸品需求数量",positive=True),
+                **parse_weights(row, mapping, source),
                 usage_quantity=number(_cell(row,mapping,"usage_quantity"),source,"每箱个数",positive=True),
                 unit=_text(_cell(row,mapping,"unit")) or "张",unit_price=number(_cell(row,mapping,"unit_price"),source,"单价") or Decimal(0),
                 currency=(_text(_cell(row,mapping,"currency")) or "CNY").upper(),price_source="历史导入")

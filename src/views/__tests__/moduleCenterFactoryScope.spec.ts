@@ -280,6 +280,28 @@ describe('module center factory scope', () => {
     wrapper.unmount()
   })
 
+  it('opens both warehouse frameworks only from the explicit Huakang C catalog', async () => {
+    routeState.params.department = 'pmc-warehouse'
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useAppStore()
+    store.setActiveFactory('huakang-c')
+    const wrapper = mount(ModuleCenterView, { global: { plugins: [pinia] } })
+    const warehouseIds = ['fabric-warehouse', 'semi-finished-warehouse']
+    for (const id of warehouseIds) {
+      const card = wrapper.findAllComponents(ModuleCard).find(item => item.props('module').id === id)!
+      expect(card.props('module').stats).toBe(id === 'fabric-warehouse' ? '七个工作区 · 追货与实收入库' : '八个工作区 · 加工流转待接入')
+      await card.trigger('keydown', { key: 'Enter' })
+      expect(routerPushMock).toHaveBeenCalledWith(`/modules/pmc-warehouse/${id}?factory=huakang-c`)
+    }
+    for (const factory of ['group', 'huaxing', 'huakang-a', 'huakang-b', 'huakang-d', 'huadeng'] as const) {
+      store.setActiveFactory(factory)
+      await nextTick()
+      expect(wrapper.findAllComponents(ModuleCard).some(item => warehouseIds.includes(item.props('module').id))).toBe(false)
+    }
+    wrapper.unmount()
+  })
+
   it.each(moduleDepartmentIds)(
     'shares the %s module structure while keeping Huakang C and D routes isolated',
     async (departmentId: ModuleDepartmentId) => {
@@ -327,8 +349,8 @@ describe('module center factory scope', () => {
       expect(wrapper.getComponent(PageHeader).props('title')).toContain('华康D · ')
       expect(wrapper.getComponent(PageHeader).props('title')).not.toContain('华兴')
       const huakangDModules = moduleSnapshots(wrapper)
-      // Cutting is exclusive to Huakang C; the shared module structure still matches.
-      expect(sharedStructure(huakangDModules)).toEqual(sharedStructure(huakangCModules.filter(module => module.id !== 'cutting')))
+      // Huakang C discovery workspaces are separate from the shared module structure.
+      expect(sharedStructure(huakangDModules)).toEqual(sharedStructure(huakangCModules.filter(module => !['cutting', 'fabric-warehouse', 'semi-finished-warehouse'].includes(module.id))))
       expectNoForeignFactoryData(wrapper, huakangDModules, 'huakang-d', '华康D')
       if (departmentId === 'pmc-warehouse') {
         const rawMaterialModule = huakangDModules.find((module) => module.id === 'raw-material-management')

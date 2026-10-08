@@ -12,7 +12,10 @@ import { cartonMasterApi, emptyMaster } from '@/api/cartonMaster'
 import type { CartonImportBatchResponse, CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { SplitRecord } from '@/api/cartonOrderSplits'
 import type { WorkEntry } from '@/features/work-center/types'
+import { cartonCustomerResponsibilitiesApi } from '@/api/cartonCustomerResponsibilities'
 import type { PendingSupplierShipments } from '@/api/cartonSupplierPortal'
+
+vi.mock('@/api/cartonCustomerResponsibilities', () => ({ emptyResponsibilities: () => ({ can_manage: false, unrestricted: false, own_customer_codes: [], users: [], customers: [] }), cartonCustomerResponsibilitiesApi: { get: vi.fn(async () => ({ can_manage: true, unrestricted: true, own_customer_codes: [], users: [], customers: [] })) } }))
 
 const dashboardMock = vi.hoisted(() => ({ workspace: vi.fn(), context: vi.fn(), batch: vi.fn() }))
 vi.mock('@/api/cartonDashboard', () => ({ cartonDashboardApi: dashboardMock }))
@@ -1684,20 +1687,36 @@ it('shows supplier date differences in both the internal ledger and order detail
     expect(wrapper.text()).toContain('CT-260805-ABC123 采购单已生成并开始下载')
   })
 
+  it('blocks copying an unassigned customer while keeping warehouse receiving available', async () => {
+    vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({ can_manage: false, unrestricted: false, own_customer_codes: [], users: [], customers: [] })
+    const source = orderFixture('CT-UNASSIGNED', businessDateOffset(2), 'PENDING_SUPPLIER')
+    mockReceiptWorkspace([source])
+    const wrapper = mountView('orders'); await flushPromises()
+    const row = wrapper.get(`[data-order-no="${source.order_no}"]`)
+    expect(row.text()).toContain('登记收料')
+    await openOrderMoreActions(row, source.order_no)
+    await wrapper.get(`[aria-label="复制 ${source.order_no} 订单信息"]`).trigger('click')
+    expect(wrapper.text()).toContain('该客户未分配给你')
+    expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(false)
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('copies a completed order into an editable draft and saves a separate pending order with all paper information', async () => {
     const source = {
       ...orderFixture('CT-COPY-COMPLETED', businessDateOffset(-3), 'COMPLETED'),
       customer_po: 'PO-OLD', product_name: '消防车', product_order_quantity: '240',
       revision: 4, master_config_id: 'SOURCE-CONFIG', master_config_revision: 4, note: '复用合同备注',
+      net_weight_kg: '8.125', gross_weight_kg: '9.25',
       lines: [
         { ...orderFixture('CT-COPY-COMPLETED', businessDateOffset(-3), 'COMPLETED').lines[0]!,
           usage_quantity: '120', required_quantity: '2', received_quantity: '2',
-          dimension_unit: 'cm', note: '外箱资料' },
+          dimension_unit: 'cm', net_weight_kg: '8.125', gross_weight_kg: '9.25', note: '外箱资料' },
         { ...orderFixture('CT-COPY-COMPLETED', businessDateOffset(-3), 'COMPLETED').lines[0]!,
           id: 'SOURCE-LINE-2', line_no: 2, packaging_type: '卡纸', paper_quality: 'A9A',
           specification: '29*19', usage_quantity: '2', required_quantity: '120', received_quantity: '120',
           dimension_unit: 'cm', unit: '张', unit_price: '0.5', currency: 'CNY',
-          price_source: 'supplier', note: '卡纸资料' },
+          price_source: 'supplier', net_weight_kg: '0.4', gross_weight_kg: '0.5', note: '卡纸资料' },
       ],
     }
     const originalSource = JSON.stringify(source)
@@ -1715,6 +1734,8 @@ it('shows supplier date differences in both the internal ledger and order detail
       ['订单客户', 'Dickie'], ['客户 PO', 'PO-OLD'], ['合同号', source.contract_no],
       ['货号', source.item_no], ['产品名称', '消防车'], ['订单数量', '240'],
       ['下单日期', businessDateOffset(0)], ['客户交期', ''], ['计划交期', ''],
+      ['纸品每箱净重 1', '8.125'], ['纸品每箱毛重 1', '9.25'],
+      ['纸品每箱净重 2', '0.4'], ['纸品每箱毛重 2', '0.5'],
       ['纸质 2', 'A9A'], ['规格 2', '29*19'], ['每箱个数 2', '2'],
     ]) expect(form.get<HTMLInputElement>(`input[aria-label="${label}"]`).element.value).toBe(value)
     expect(form.get('input[aria-label="合同号"]').attributes('disabled')).toBeUndefined()
@@ -1731,6 +1752,11 @@ it('shows supplier date differences in both the internal ledger and order detail
     await form.get('input[aria-label="订单数量"]').setValue('360')
     await form.get('input[aria-label="纸质 2"]').setValue('A8A')
     await form.get('input[aria-label="客户交期"]').setValue(businessDateOffset(10))
+    await form.get('input[aria-label="纸品每箱毛重 1"]').setValue('7')
+    await form.trigger('submit')
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    expect(form.get('[data-testid="order-save-feedback"]').text()).toContain('毛重不能小于净重')
+    await form.get('input[aria-label="纸品每箱毛重 1"]').setValue('9.25')
     expect(form.get('output[aria-label="纸箱数量 1"]').text()).toBe('3')
     expect(form.get('output[aria-label="纸箱数量 2"]').text()).toBe('180')
     await form.trigger('submit'); await flushPromises()
@@ -1745,10 +1771,10 @@ it('shows supplier date differences in both the internal ledger and order detail
       lines: [
         { packaging_type: '外箱', paper_quality: 'A33+B', specification: '12*11*5',
           dimension_unit: 'cm', usage_quantity: 120, unit: '个', unit_price: 3.46,
-          currency: 'HKD', price_source: 'manual', note: '外箱资料' },
+          currency: 'HKD', price_source: 'manual', net_weight_kg: 8.125, gross_weight_kg: 9.25, note: '外箱资料' },
         { packaging_type: '卡纸', paper_quality: 'A8A', specification: '29*19',
           dimension_unit: 'cm', usage_quantity: 2, unit: '张', unit_price: 0.5,
-          currency: 'CNY', price_source: 'supplier', note: '卡纸资料' },
+          currency: 'CNY', price_source: 'supplier', net_weight_kg: 0.4, gross_weight_kg: 0.5, note: '卡纸资料' },
       ],
     })
     expect(cartonApiMock.updateOrder).not.toHaveBeenCalled()
@@ -3309,7 +3335,7 @@ it('shows supplier date differences in both the internal ledger and order detail
 
     const template = wrapper.get('a[download="纸箱历史订单导入模板.xlsx"]')
     expect(template.text()).toContain('下载历史订单模板')
-    expect(template.attributes('href')).toBe('/templates/carton-history-order-import-template.xlsx')
+    expect(template.attributes('href')).toBe('/templates/carton-history-order-import-template.xlsx?v=carton-weights-v2')
     expect(findButton(wrapper, '导入历史订单').attributes('disabled')).toBeUndefined()
 
     const input = wrapper.get('input[aria-label="选择历史订单文件"]')
@@ -5182,3 +5208,33 @@ it('creates a customer through explicit review while retaining the order form', 
     }
     wrapper.unmount()
   })
+
+
+it('brings each paper weight from master data into its own order row and clears it on new rows', async () => {
+  mockReceiptWorkspace([])
+  cartonApiMock.listOrdersPage.mockResolvedValue({ items: [], total: 0, statistics: { pending: 0, overdue: 0, today: 0, dueSoon: 0 } })
+  const master = { id: 'PAPER-WEIGHTS', kind: 'CONFIG' as const, code: 'WEIGHT-ITEM', customer_code: '',
+    status: 'ACTIVE' as const, revision: 1, preferred: false, maintained: true, updated_at: '', sources: [],
+    data: { product_name: '纸品重量产品', net_weight_kg: '77', gross_weight_kg: '88', lines: [
+      { packaging_type: '外箱', paper_quality: 'A33', specification: '30*20*15', dimension_unit: 'cm', unit: '个', usage_quantity: '24', net_weight_kg: '8.125', gross_weight_kg: '9.25' },
+      { packaging_type: '内箱', paper_quality: 'A33', specification: '10*10*10', dimension_unit: 'cm', unit: '个', usage_quantity: '6', net_weight_kg: '0.4', gross_weight_kg: '0.5' },
+    ] } }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), records: [master] })
+  const wrapper = mountView('orders')
+  try {
+    await flushPromises()
+    await findButton(wrapper, '新建纸箱订单').trigger('click')
+    await flushPromises()
+    await wrapper.get('input[aria-label="货号"]').setValue('WEIGHT-ITEM')
+    await wrapper.get('[aria-label="带出基础资料 WEIGHT-ITEM PAPER-WEIGHTS"]').trigger('click')
+    const form = wrapper.get('[data-testid="order-form-overlay"] form')
+    expect(form.get<HTMLInputElement>('[aria-label="纸品每箱净重 1"]').element.value).toBe('8.125')
+    expect(form.get<HTMLInputElement>('[aria-label="纸品每箱毛重 1"]').element.value).toBe('9.25')
+    expect(form.get<HTMLInputElement>('[aria-label="纸品每箱净重 2"]').element.value).toBe('0.4')
+    expect(form.get<HTMLInputElement>('[aria-label="纸品每箱毛重 2"]').element.value).toBe('0.5')
+    expect(form.find('[aria-label="每箱净重"]').exists()).toBe(false)
+    await findButton(wrapper, '新增纸品明细').trigger('click')
+    expect(form.get<HTMLInputElement>('[aria-label="纸品每箱净重 3"]').element.value).toBe('')
+    expect(form.get<HTMLInputElement>('[aria-label="纸品每箱毛重 3"]').element.value).toBe('')
+  } finally { wrapper.unmount(); get.mockRestore() }
+})

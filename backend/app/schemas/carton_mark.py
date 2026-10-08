@@ -19,6 +19,7 @@ class CartonMarkAssetOut(BaseModel):
     sha256: str
     contract_number: str
     bound_order_id: str | None
+    bound_order_ids: list[str] = Field(default_factory=list)
     recognition_source: str
     candidates: list[str]
     warning: str
@@ -30,6 +31,7 @@ class CartonMarkAssetOut(BaseModel):
 
 
 class CartonMarkAssetBindingRequest(BaseModel):
+    order_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
     contract_number: str = Field(default="", max_length=128)
     order_id: str | None = Field(default=None, max_length=96)
     revision: int = Field(ge=1)
@@ -52,6 +54,7 @@ class CartonMarkPhotoGroupMembers(BaseModel):
 
 
 class CartonMarkPhotoGroupRequest(CartonMarkPhotoGroupMembers):
+    order_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
     contract_number: str = Field(default="", max_length=128)
     order_id: str | None = Field(default=None, max_length=96)
 

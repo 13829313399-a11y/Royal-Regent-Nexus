@@ -1,3 +1,4 @@
+vi.mock('../CartonCustomerResponsibilities.vue', () => ({ default: { template: '<div />' } }))
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi } from 'vitest'
 import Assist from '../CartonMasterOrderAssist.vue'
@@ -709,4 +710,40 @@ it('persists deletion when a customer has history but no saved rule', async () =
   await wrapper.get('[aria-label="设置客户规则 360"]').trigger('click')
   expect(wrapper.get<HTMLTextAreaElement>('[aria-label="合同号固定格式"]').element.value).toBe('')
   wrapper.unmount(); get.mockRestore(); save.mockRestore()
+})
+
+
+it('maintains independent paper weights and keeps historical header values separate', async () => {
+  const source = record('WEIGHTS')
+  source.data.net_weight_kg = '77'
+  source.data.gross_weight_kg = '88'
+  source.data.lines![0]!.net_weight_kg = '8.125'
+  source.data.lines![0]!.gross_weight_kg = '9.25'
+  const original = JSON.stringify(source)
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [source] })
+  const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(source)
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } })
+  try {
+    await flushPromises()
+    await wrapper.get('[aria-label="修改基础资料 00123"]').trigger('click')
+    const form = wrapper.get('form')
+    expect(form.text()).toContain('历史整单每箱净重 77')
+    expect(form.find('[aria-label="基础资料每箱净重"]').exists()).toBe(false)
+    expect(form.get<HTMLInputElement>('[aria-label="资料纸品每箱净重 1"]').element.value).toBe('8.125')
+    expect(form.get<HTMLInputElement>('[aria-label="资料纸品每箱净重 2"]').element.value).toBe('')
+    await form.get('[aria-label="资料纸品每箱净重 2"]').setValue('0.4')
+    await form.get('[aria-label="资料纸品每箱毛重 2"]').setValue('0.3')
+    await form.trigger('submit'); await flushPromises()
+    expect(save).not.toHaveBeenCalled()
+    expect(form.text()).toContain('第 2 条纸品重量无效')
+    await form.get('[aria-label="资料纸品每箱毛重 2"]').setValue('0.5')
+    await form.trigger('submit'); await flushPromises()
+    expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ data: expect.objectContaining({
+      net_weight_kg: '77', gross_weight_kg: '88', lines: [
+        expect.objectContaining({ net_weight_kg: 8.125, gross_weight_kg: 9.25 }),
+        expect.objectContaining({ net_weight_kg: 0.4, gross_weight_kg: 0.5 }),
+      ],
+    }) }), 'WEIGHTS')
+    expect(JSON.stringify(source)).toBe(original)
+  } finally { wrapper.unmount(); get.mockRestore(); save.mockRestore() }
 })
