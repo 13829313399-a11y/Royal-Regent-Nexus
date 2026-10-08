@@ -345,6 +345,8 @@ function mockReceiptWorkspace(orders: ReturnType<typeof orderFixture>[]) {
   cartonApiMock.listExceptions.mockResolvedValue([])
 }
 
+
+
 function pendingScheduleFixture(contractNo: string, sourceRow = 4, overrides: Partial<CartonImportPreviewRow> = {}): CartonImportPreviewRow {
   return { template: 'unified-item', source_sheet: 'ITEM表', source_row: sourceRow, order_type: '正单',
     contract_no: contractNo, customer_po: `PO-${contractNo}`, item_no: 'ITEM-SCHEDULE', product_name: '消防车',
@@ -369,6 +371,28 @@ function mockWeeklySchedule(rows: CartonImportPreviewRow[]) {
 }
 
 describe('CartonProcurementView frontend workspace', () => {
+it('defaults to own and unclaimed customers and keeps others read-only after switching to all', async () => {
+  const own = orderFixture('CT-OWN', businessDateOffset(5), 'PENDING_SUPPLIER')
+  const other = { ...orderFixture('CT-OTHER', businessDateOffset(5), 'PENDING_SUPPLIER'), customer_code: 'OTHER', customer_name: 'Other' }
+  mockReceiptWorkspace([own, other])
+  vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({
+    can_manage: true, unrestricted: false, own_customer_codes: ['DICKIE'], blocked_customer_codes: ['OTHER'], users: [], customers: [],
+  })
+  const wrapper = mountView('orders'); await flushPromises()
+  expect(wrapper.get<HTMLSelectElement>('[aria-label="查看客户范围"]').element.value).toBe('OWN')
+  expect(cartonApiMock.listOrdersPage).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ responsibility_scope: 'OWN' }))
+  await wrapper.get('[aria-label="查看客户范围"]').setValue('ALL'); await flushPromises()
+  expect(cartonApiMock.listOrdersPage).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ responsibility_scope: 'ALL' }))
+  const otherRow = wrapper.get('[data-order-no="CT-OTHER"]')
+  expect(otherRow.text()).toContain('Other')
+  expect(otherRow.findAll('button').some(button => button.text().includes('登记收料'))).toBe(false)
+  await openOrderMoreActions(otherRow, 'CT-OTHER')
+  expect(wrapper.find('[aria-label="追加 CT-OTHER 订单"]').exists()).toBe(false)
+  expect(wrapper.get('[aria-label="拆单 CT-OTHER"]').exists()).toBe(true)
+  expect(cartonApiMock.updateOrder).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
 it.each(['*', 'system'])('shows the split entry inside More for a global administrator bound to %s', async department => {
   const { useAuthStore } = await vi.importActual<typeof import('@/stores/auth')>('@/stores/auth')
   const administrator = useAuthStore(createPinia())
@@ -1687,8 +1711,8 @@ it('shows supplier date differences in both the internal ledger and order detail
     expect(wrapper.text()).toContain('CT-260805-ABC123 采购单已生成并开始下载')
   })
 
-  it('blocks copying an unassigned customer while keeping warehouse receiving available', async () => {
-    vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({ can_manage: false, unrestricted: false, own_customer_codes: [], users: [], customers: [] })
+  it('allows an unclaimed customer to be copied and received without assignment', async () => {
+    vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({ can_manage: true, unrestricted: false, own_customer_codes: [], blocked_customer_codes: [], users: [], customers: [] })
     const source = orderFixture('CT-UNASSIGNED', businessDateOffset(2), 'PENDING_SUPPLIER')
     mockReceiptWorkspace([source])
     const wrapper = mountView('orders'); await flushPromises()
@@ -1696,8 +1720,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     expect(row.text()).toContain('登记收料')
     await openOrderMoreActions(row, source.order_no)
     await wrapper.get(`[aria-label="复制 ${source.order_no} 订单信息"]`).trigger('click')
-    expect(wrapper.text()).toContain('该客户未分配给你')
-    expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(true)
     expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
     wrapper.unmount()
   })

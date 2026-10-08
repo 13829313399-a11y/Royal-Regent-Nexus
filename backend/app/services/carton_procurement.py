@@ -85,7 +85,7 @@ from app.schemas.carton_procurement import (
 )
 from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine, SupplierCommitment, SupplierAttachment
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext
-from app.services.carton_customer_assignment import ensure_customer_operation
+from app.services.carton_customer_assignment import ensure_customer_operation, ensure_receipt_operation, customer_predicate, unrestricted as unrestricted_customer
 from app.schemas.carton_procurement import CartonLocationAllocation
 from app.services import carton_positions as positions
 from app.services.carton_inventory_valuation import cost_key, load_valuation, value_movements, Valuation
@@ -2336,8 +2336,11 @@ def list_orders(
     customer_name: str = "", order_from: str = "", order_to: str = "",
     due_filter: str = "ALL", sort: str = "ORDER_DESC", collaboration_filter: str = "ALL",
     statistics: dict | None = None,
+    user: AuthContext | None = None,
 ) -> tuple[int, list[CartonOrder]]:
     query = select(CartonOrder).where(CartonOrder.factory_id == factory_id, CartonOrder.deleted_at.is_(None))
+    if user is not None:
+        query = query.where(customer_predicate(user, factory_id, CartonOrder.customer_code))
     if customer_code:
         query = query.where(CartonOrder.customer_code == customer_code)
     if customer_name:
@@ -2444,6 +2447,7 @@ def search_order_history_items(
     *,
     customer_code: str = "",
     limit: int = 8,
+    user: AuthContext | None = None,
 ) -> list[CartonOrderHistorySuggestionOut]:
     factory_id = require_carton_factory(factory_id)
     raw_query = item_no.strip()
@@ -2459,6 +2463,10 @@ def search_order_history_items(
             )
         ).all()
     )
+    if user is not None:
+        permitted = set(db.scalars(select(CartonCustomer.customer_code).where(CartonCustomer.factory_id == factory_id,
+            customer_predicate(user, factory_id, CartonCustomer.customer_code))))
+        active_customers = {code: name for code, name in active_customers.items() if code in permitted}
     if not active_customers:
         return []
 
@@ -2596,7 +2604,9 @@ def create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext)
     if previous is not None:
         if json.loads(previous.detail_json).get("request", {}).get("fingerprint") != fingerprint:
             raise HTTPException(status_code=409, detail="本次提交标识已用于不同的收料内容，请核对原入库结果")
-        return db.get(CartonReceipt, previous.entity_id)
+        receipt = db.get(CartonReceipt, previous.entity_id)
+        ensure_receipt_operation(db, user, factory_id, _receipt_lines(db, receipt.id))
+        return receipt
     try:
         receipt = _create_receipt(db, payload, user, commit=False)
         confirm_receipt(db, receipt.id, CartonReceiptConfirmRequest(
@@ -2673,6 +2683,11 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
             select(CartonOrder).where(CartonOrder.id.in_({line.order_id for line in order_lines}))
         ).all()
     }
+    for order in orders.values():
+        ensure_customer_operation(db, user, factory_id, order.customer_code)
+    for line in payload.lines:
+        if line.source_type != "FORMAL_ORDER":
+            ensure_customer_operation(db, user, factory_id, line.customer_code)
     ineligible_orders = [
         order.order_no
         for order in orders.values()
@@ -2902,8 +2917,14 @@ def list_receipts(
     search: str = "",
     limit: int = 50,
     offset: int = 0,
+    user: AuthContext | None = None,
 ) -> tuple[int, list[CartonReceipt]]:
     query = select(CartonReceipt).where(CartonReceipt.factory_id == factory_id)
+    if user is not None:
+        hidden = select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory_id,
+            ~customer_predicate(user, factory_id, CartonReceiptLine.customer_code)) if not unrestricted_customer(user, factory_id) else None
+        if hidden is not None:
+            query = query.where(CartonReceipt.id.not_in(hidden))
     if customer_code or search:
         line_query = select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory_id)
         if customer_code:
@@ -3006,6 +3027,7 @@ def confirm_receipt(
         date_check(receipt.acceptance_date)
     ensure_open(db, factory_id, receipt.supplier_id, (receipt.acceptance_date or now_text()[:10])[:7])
     lines = _receipt_lines(db, receipt.id)
+    ensure_receipt_operation(db, user, factory_id, lines)
     if not lines:
         raise HTTPException(status_code=409, detail="收料单没有可确认的明细")
     from app.services.carton_replenishment_receipts import receipt_links, select_link, EVENT
@@ -3594,6 +3616,7 @@ def reverse_receipt(
     receipt_guard(db, receipt)
     previous_status = receipt.status
     lines = _receipt_lines(db, receipt.id)
+    ensure_receipt_operation(db, user, factory_id, lines)
     timestamp = now_text()
     reversals = []
     if previous_status == "POSTED":

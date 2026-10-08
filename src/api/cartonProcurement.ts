@@ -688,12 +688,13 @@ export const cartonProcurementApi = {
     dueFrom?: string
     dueTo?: string
     search?: string
+    responsibilityScope?: 'OWN' | 'ALL'
   } = {}) {
     const items: CartonOrderResponse[] = []
     while (true) {
       const response = await http.get<{ items: CartonOrderResponse[]; total: number }>('/carton-procurement/orders', {
         params: { factory_id: factoryId, status_filter: filters.status ?? '', due_from: filters.dueFrom ?? '',
-          due_to: filters.dueTo ?? '', search: filters.search ?? '', limit: 200, offset: items.length },
+          due_to: filters.dueTo ?? '', search: filters.search ?? '', responsibility_scope: filters.responsibilityScope ?? 'OWN', limit: 200, offset: items.length },
       })
       items.push(...response.data.items)
       if (!response.data.items.length || items.length >= response.data.total) return items
@@ -1084,11 +1085,11 @@ export const cartonProcurementApi = {
   async uploadInspectionSchedule(factoryId: string, file: File, advanceDays: number) {
     return importFile(factoryId, file, 'INSPECTION_SCHEDULE', '', advanceDays)
   },
-  async listReceipts(factoryId: string) {
+  async listReceipts(factoryId: string, responsibilityScope: 'OWN' | 'ALL' = 'OWN') {
     const items: CartonReceiptResponse[] = []
     while (true) {
       const response = await http.get<{ items: CartonReceiptResponse[]; total: number }>('/carton-procurement/receipts', {
-        params: { factory_id: factoryId, limit: 200, offset: items.length },
+        params: { factory_id: factoryId, responsibility_scope: responsibilityScope, limit: 200, offset: items.length },
       })
       items.push(...response.data.items)
       if (!response.data.items.length || items.length >= response.data.total) return items

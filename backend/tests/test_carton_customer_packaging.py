@@ -88,51 +88,52 @@ def test_weights_master_copy_snapshot_and_partial_update_validation(monkeypatch)
 
 
 
-def test_responsibility_default_deny_binding_revocation_and_atomic_batch(monkeypatch):
+def test_customer_claim_delegation_revocation_and_atomic_batch(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         first = customer(client); second = customer(client, "OTHER", "另一个客户")
-        ensure_test_user("carton_warehouse")
-        ensure_test_user("warehouse_keeper")
+        ensure_test_user("carton_warehouse"); ensure_test_user("warehouse_keeper")
+        operator_id, colleague_id = "user-warehouse-keeper", "user-carton-warehouse"
         from app.db import SessionLocal
         from app.models.auth import AuthUser
         from sqlalchemy import select
         with SessionLocal() as db:
-            operator = db.scalar(select(AuthUser).where(AuthUser.username == "warehouse_keeper"))
-            operator_id = operator.id
+            operator_id = db.scalar(select(AuthUser.id).where(AuthUser.username == "warehouse_keeper"))
+            colleague_id = db.scalar(select(AuthUser.id).where(AuthUser.username == "carton_warehouse"))
         own = client.post(BASE + "/orders", json=_order_payload()).json()
-        other = client.post(BASE + "/orders", json={**_order_payload(), "customer_code": "OTHER", "customer_name": "另一个客户", "contract_no": "OTHER-001"}).json()
+        other = client.post(BASE + "/orders", json={**_order_payload(), "customer_code": "OTHER", "contract_no": "OTHER-001"}).json()
         login_as(client, "warehouse_keeper")
+        assert client.get(BASE + "/orders", params=SCOPE).json()["total"] == 2
+        assert client.post(BASE + "/orders", json={**_order_payload(), "contract_no": "OPEN-001"}).status_code == 201
+        scope = client.post(BASE + f"/customers/{first['id']}/claim", json={**SCOPE, "expected_revision": 1})
+        assert scope.status_code == 200, scope.text
+        entry = next(row for row in scope.json()["customers"] if row["id"] == first["id"])
+        assert entry["owner"]["id"] == operator_id and entry["can_manage"]
+        login_as(client, "carton_warehouse")
+        assert client.post(BASE + f"/customers/{first['id']}/claim", json={**SCOPE, "expected_revision": 1}).status_code == 409
         assert client.post(BASE + "/orders", json=_order_payload()).status_code == 403
-        assert client.get(BASE + "/customer-responsibilities", params=SCOPE).json()["own_customer_codes"] == []
-        # Maintaining a new customer never self-grants order responsibility.
-        customer(client, "NEW", "新建待分配客户")
-        assert client.post(BASE + "/orders", json={**_order_payload(), "customer_code": "NEW"}).status_code == 403
-        assert client.put(BASE + f"/customers/{first['id']}/responsibilities", json={**SCOPE, "user_ids": [operator_id], "expected_revision": 1, "reason": "自行扩大客户范围"}).status_code == 403
-        login_as(client, "admin"); scope = assign(client, first, [operator_id])
-        summary = client.get(BASE + "/customer-responsibilities", params={**SCOPE, "summary": True}).json()
-        assert summary["unrestricted"] is True and summary["users"] == [] and summary["customers"] == []
-        current = next(item for item in scope["customers"] if item["id"] == first["id"])
-        rename = client.patch(BASE + f"/customers/{first['id']}", json={**SCOPE,
-            "expected_revision": current["revision"], "customer_code": "RENAMED"})
-        assert rename.status_code == 409, rename.text
+        assert client.get(BASE + "/orders", params=SCOPE).json()["total"] == 1
+        assert client.get(BASE + f"/orders/{own['order_no']}/purchase-order-context", params=SCOPE).status_code == 200
+        assert len(client.post(BASE + "/orders/selection", json={**SCOPE, "order_nos": [own["order_no"], other["order_no"]]}).json()["items"]) == 2
         login_as(client, "warehouse_keeper")
-        assert client.get(BASE + "/customer-responsibilities", params=SCOPE).json()["own_customer_codes"] == ["DICKIE"]
-        assert client.post(BASE + "/orders/bulk-submit-supplier", json={**SCOPE, "items": [
-            {"order_no": entry["order_no"], "expected_revision": entry["revision"]} for entry in [own, other]]}).status_code == 403
-        assert {entry["status"] for entry in client.get(BASE + "/orders", params=SCOPE).json()["items"]} == {"CONFIRMED"}
-        assert client.post(BASE + f"/orders/{other['order_no']}/append", json={**SCOPE, "expected_revision": 1, "additional_quantity": 1}).status_code == 403
-        assert client.post(BASE + f"/orders/{own['order_no']}/submit-supplier", json={**SCOPE, "expected_revision": 1}).status_code == 200
+        scope = assign(client, entry, [operator_id, colleague_id])
+        entry = next(row for row in scope["customers"] if row["id"] == first["id"])
+        login_as(client, "carton_warehouse")
+        assert client.get(BASE + "/orders", params=SCOPE).json()["total"] == 3
+        assert client.put(BASE + f"/customers/{first['id']}/responsibilities", json={**SCOPE,
+            "user_ids": [colleague_id], "expected_revision": entry["revision"], "reason": "尝试替换负责人"}).status_code == 403
         login_as(client, "admin")
-        assign(client, {**first, "revision": current["revision"]}, [])
-        stale = client.put(BASE + f"/customers/{first['id']}/responsibilities", json={**SCOPE, "user_ids": [operator_id], "expected_revision": current["revision"], "reason": "使用过期责任版本"})
-        assert stale.status_code == 409
+        assign(client, second, [colleague_id])
         login_as(client, "warehouse_keeper")
-        assert client.post(BASE + f"/orders/{own['order_no']}/append", json={**SCOPE, "expected_revision": 2, "additional_quantity": 1}).status_code == 403
-        # Warehouse reads/stock work retain their independent role authorization.
+        assert client.post(BASE + "/orders/bulk-submit-supplier", json={**SCOPE, "items": [
+            {"order_no": row["order_no"], "expected_revision": row["revision"]} for row in [own, other]]}).status_code == 403
+        assert {row["status"] for row in client.get(BASE + "/orders", params=SCOPE).json()["items"]} == {"CONFIRMED"}
         assert client.get(BASE + "/inventory/movements", params=SCOPE).status_code == 200
+        login_as(client, "admin"); assign(client, entry, [])
+        login_as(client, "carton_warehouse")
+        assert client.post(BASE + f"/orders/{own['order_no']}/append", json={**SCOPE, "expected_revision": 1, "additional_quantity": 1}).status_code == 200
         login_as(client, "carton_supervisor")
-        assert client.post(BASE + f"/orders/{own['order_no']}/append", json={**SCOPE, "expected_revision": 2, "additional_quantity": 1}).status_code == 200
+        assert client.get(BASE + "/orders", params=SCOPE).json()["total"] == 3
 
 
 def test_history_customer_due_fallback_preserves_plan_and_explicit_customer_due(monkeypatch):

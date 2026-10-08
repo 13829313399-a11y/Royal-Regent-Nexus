@@ -176,21 +176,6 @@ def audit(db, user, asset, event, detail):
 
 def save_asset(db, user, factory, content, recognition):
     sha = hashlib.sha256(content).hexdigest()
-    previous = db.scalar(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory, CartonMarkAsset.sha256 == sha))
-    if previous:
-        if previous.is_archived:
-            restored = db.execute(update(CartonMarkAsset).where(
-                CartonMarkAsset.id == previous.id, CartonMarkAsset.is_archived.is_(True),
-                CartonMarkAsset.revision == previous.revision).values(
-                    is_archived=False, revision=previous.revision + 1, updated_at=_now_text()))
-            if restored.rowcount != 1:
-                db.rollback()
-                raise HTTPException(409, "资料发生并发变化，请刷新重试")
-            audit(db, user, previous, "CARTON_MARK_ASSET_RESTORED", {"sha256": sha})
-            db.commit()
-            db.refresh(previous)
-            return asset_out(previous, available_orders(db, factory)), "restored"
-        return asset_out(previous, available_orders(db, factory)), "duplicate"
     timestamp = _now_text()
     asset = CartonMarkAsset(id=f"CMA-{uuid4().hex}", factory_id=factory,
         file_name=recognition["file_name"], kind=recognition["kind"], content=content,
@@ -202,14 +187,7 @@ def save_asset(db, user, factory, content, recognition):
         created_at=timestamp, updated_at=timestamp, revision=1, is_archived=False)
     db.add(asset)
     audit(db, user, asset, "CARTON_MARK_ASSET_CREATED", {"sha256": sha, "contract_number": asset.contract_number})
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        previous = db.scalar(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory, CartonMarkAsset.sha256 == sha))
-        if previous is None or previous.is_archived:
-            raise HTTPException(409, "资料发生并发变化，请刷新重试")
-        return asset_out(previous, available_orders(db, factory)), "duplicate"
+    db.commit()
     return asset_out(asset, available_orders(db, factory)), "created"
 
 

@@ -418,6 +418,7 @@ const chosenMaster = ref<MasterRecord | null>(null)
 const outboundWorkshop = ref(''), bulkWorkshops = ref<Record<string, string>>({})
 const workshops = computed(() => masterWorkspace.value.records.filter(r => r.kind === 'WORKSHOP' && r.status === 'ACTIVE'))
 const responsibilities = ref(emptyResponsibilities()), responsibilityError = ref('')
+const customerViewScope = ref<'OWN' | 'ALL'>('OWN')
 let responsibilityGeneration = 0
 onBeforeUnmount(() => { responsibilityGeneration++ })
 async function refreshResponsibilities() {
@@ -429,8 +430,10 @@ async function refreshResponsibilities() {
     if (generation === responsibilityGeneration && factory === selectedFactoryId.value) { responsibilities.value = emptyResponsibilities(); responsibilityError.value = getApiErrorMessage(cause) }
   }
 }
-function responsibleForCustomer(code: string) { return responsibilities.value.unrestricted || responsibilities.value.own_customer_codes.includes(code) }
+function responsibleForCustomer(code: string) { return responsibilities.value.unrestricted || responsibilities.value.own_customer_codes.includes(code)
+  || (Array.isArray(responsibilities.value.blocked_customer_codes) && !responsibilities.value.blocked_customer_codes.includes(code)) }
 function responsibleForOrder(number: string) { const row = orderRecords.value.find(order => order.order_no === number); return !!row && responsibleForCustomer(row.customer_code) }
+function responsibleForReceipt(receipt: CartonReceiptResponse) { return receipt.lines.every(line => responsibleForCustomer(line.customer_code)) }
 const orderCustomers = computed(() => customerRecords.value.filter(customer => responsibleForCustomer(customer.customer_code)))
 let masterGeneration = 0
 async function refreshMaster() {
@@ -2283,7 +2286,7 @@ async function submitReplenishment() {
 }
 
 function canDeleteOrder(orderNo: string) {
-  return canDeleteOrders.value && orderRecords.value.find(order => order.order_no === orderNo)?.can_delete === true
+  return responsibleForOrder(orderNo) && canDeleteOrders.value && orderRecords.value.find(order => order.order_no === orderNo)?.can_delete === true
 }
 
 function orderDeleteHint(orderNo: string) {
@@ -2359,6 +2362,7 @@ function canReduceSubmittedOrder(orderNo: string) {
 }
 
 function canReceiveOrder(orderNo: string) {
+  if (!responsibleForOrder(orderNo)) return false
   return ['PENDING_SUPPLIER', 'PARTIALLY_RECEIVED'].includes(rawOrderStatus(orderNo))
 }
 
@@ -2870,7 +2874,7 @@ function applyScheduleHistory(weeklyImports: CartonImportBatchResponse[], inspec
 async function loadLedgerOrders(factoryId: string, generation: number) {
   const [page, selected] = await Promise.all([
     cartonProcurementApi.listOrdersPage(factoryId, {
-      limit: orderPageSize, offset: (orderPage.value - 1) * orderPageSize,
+      responsibility_scope: customerViewScope.value, limit: orderPageSize, offset: (orderPage.value - 1) * orderPageSize,
       customer_name: selectedCustomer.value === '全部客户' ? '' : selectedCustomer.value,
       status_filter: orderStatusFilter.value === 'ALL' ? '' : orderStatusFilter.value, collaboration_filter: collaborationFilter.value,
       due_filter: orderDueFilter.value, sort: orderSort.value, search: globalSearch.value.trim(),
@@ -2973,13 +2977,13 @@ async function loadBackendData(factoryId = selectedFactoryId.value, options: { s
       audits,
     ] = await Promise.all([
       cartonProcurementApi.listCustomers(factoryId),
-      cartonProcurementApi.listOrders(factoryId),
+      cartonProcurementApi.listOrders(factoryId, { responsibilityScope: activeTab.value === 'receipts' ? customerViewScope.value : 'ALL' }),
       cartonProcurementApi.listMovements(factoryId),
       cartonProcurementApi.listInventoryBalances(factoryId),
       cartonProcurementApi.listClosings(factoryId),
       cartonProcurementApi.listExceptions(factoryId),
       cartonProcurementApi.latestReceiptImport(factoryId),
-      cartonProcurementApi.listReceipts(factoryId),
+      cartonProcurementApi.listReceipts(factoryId, activeTab.value === 'receipts' ? customerViewScope.value : 'ALL'),
       cartonProcurementApi.listImports(factoryId, 'WEEKLY_SCHEDULE'),
       cartonProcurementApi.listScheduleOrderMarks(factoryId),
       cartonProcurementApi.listImports(factoryId, 'INSPECTION_SCHEDULE'),
@@ -3810,7 +3814,7 @@ function closePurchaseOrderDialog() {
 async function issuePendingPurchaseOrder() {
   const order = purchaseOrderDialogRecord.value
   const context = purchaseOrderContextRecord.value
-  if (!order || !context?.can_generate || issuingPurchaseOrder.value) return
+  if (!order || !context?.can_generate || !canIssuePurchaseOrders.value || !responsibleForCustomer(order.customer_code) || issuingPurchaseOrder.value) return
   issuingPurchaseOrder.value = true
   const factoryId = selectedFactoryId.value
   let issuedDocumentNo = ''
@@ -4092,7 +4096,7 @@ async function refreshInventoryLedger() {
     cartonProcurementApi.listMovements(factoryId),
     cartonProcurementApi.listInventoryBalances(factoryId),
     cartonProcurementApi.listAuditEvents(factoryId),
-    cartonProcurementApi.listOrders(factoryId),
+    cartonProcurementApi.listOrders(factoryId, { responsibilityScope: activeTab.value === 'receipts' ? customerViewScope.value : 'ALL' }),
   ])
   if (selectedFactoryId.value !== factoryId) return
   localMovements.splice(0, localMovements.length, ...movements.map(mapMovement))
@@ -4314,12 +4318,14 @@ watch([selectedFactoryId, activeTab, selectedCustomer, globalSearch, receiptHist
 }, { flush: 'sync' })
 
 function openReceiptCorrection(receipt: CartonReceiptResponse) {
+  if (!responsibleForReceipt(receipt)) { reportActionFailure('此收料单包含其他人负责的客户，需要负责人或主管授权后操作。'); return }
   receiptCorrectionTarget.value = receipt
   receiptCorrectionReason.value = receipt.status === 'POSTED' ? '原单录入有误，冲销重录' : '收料登记有误，作废重录'
   receiptCorrectionError.value = ''
 }
 
 function openReceiptHistoryDocument(receipt: CartonReceiptResponse, reenter = false) {
+  if (reenter && !responsibleForReceipt(receipt)) { reportActionFailure('需要客户授权后才能重新登记此收料单。'); return }
   if (reenter && receipt.status !== 'REVERSED') return
   const linkedOrders = orderRecords.value.filter((order) => order.lines.some((line) =>
     receipt.lines.some((item) => item.order_line_id === line.id)))
@@ -4474,7 +4480,7 @@ async function saveCustomer() {
     if (customerCreatedFromOrder.value && showOrderModal.value && saved.status === 'ACTIVE' && responsibleForCustomer(saved.customer_code)) orderForm.customerCode = saved.customer_code
     actionMessage.value = current
       ? `客户 ${saved.customer_name} 的资料已更新。`
-      : `客户 ${saved.customer_name} 已加入 ${activeFactory.value.shortName} 客户主数据。${responsibleForCustomer(saved.customer_code) ? '' : '请由主管在基础设置中分配责任人员后再操作订单。'}`
+      : `客户 ${saved.customer_name} 已加入 ${activeFactory.value.shortName} 客户主数据。未认领客户可按岗位权限操作，也可到基础资料认领。`
     resetCustomerForm()
     showCustomerModal.value = false
   } catch (error) {
@@ -5897,6 +5903,8 @@ async function openOrderSplit(number: string) {
   splitOrder.value = orderRecords.value.find(order => order.order_no === number) ?? null
 }
 function closeOrderSplit() { dashboardActionGeneration++; dashboardActionBusy.value = false; splitOrder.value = null }
+watch(customerViewScope, () => { selectedOrderNos.value = []; orderPage.value = 1;
+  void loadBackendData(selectedFactoryId.value, { supersede: true }) })
 watch([selectedFactoryId, () => authStore.currentUser?.id, () => authStore.authorizationVersion], () => { responsibilities.value = emptyResponsibilities(); void refreshResponsibilities() }, { immediate: true })
 watch(selectedFactoryId, () => { closeOrderSplit(); splitReceiptConfirmation.value = '' })
 watch(showReceiptDialog, () => { splitReceiptConfirmation.value = '' })
@@ -6313,6 +6321,10 @@ watch([
       </section>
 
       <section v-else-if="activeTab === 'orders'" class="space-y-4">
+        <div class="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs">
+          <label class="font-semibold">客户范围<select v-model="customerViewScope" aria-label="查看客户范围" class="ml-2 rounded-lg border bg-white px-3 py-2"><option value="OWN">{{ responsibilities.unrestricted ? '本厂客户（统筹）' : '我负责的 + 未认领' }}</option><option value="ALL">全部客户（含其他人负责的）</option></select></label>
+          <span class="text-slate-500">可查看同厂其他客户；操作仍需客户授权。客户认领和授权在基础资料中设置。</span>
+        </div>
         <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div>
             <h2 class="font-bold text-slate-950">纸箱合同订单台账</h2>
@@ -6760,6 +6772,10 @@ watch([
       </nav>
       </section>
       <section v-else-if="activeTab === 'receipts'" class="space-y-4">
+        <div class="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs">
+          <label class="font-semibold">客户范围<select v-model="customerViewScope" aria-label="查看客户范围" class="ml-2 rounded-lg border bg-white px-3 py-2"><option value="OWN">{{ responsibilities.unrestricted ? '本厂客户（统筹）' : '我负责的 + 未认领' }}</option><option value="ALL">全部客户（含其他人负责的）</option></select></label>
+          <span class="text-slate-500">可查看同厂其他客户；操作仍需客户授权。客户认领和授权在基础资料中设置。</span>
+        </div>
         <nav aria-label="收料入库子页面" class="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
           <button v-for="page in [{ id: 'PENDING' as const, label: '待收订单' }, { id: 'SUPPLIER' as const, label: '供应商发货待收' }, { id: 'HISTORY' as const, label: '收料历史' }]" :key="page.id" type="button" :aria-current="receiptPage === page.id ? 'page' : undefined" class="rounded-lg px-4 py-2 text-xs font-semibold" :class="receiptPage === page.id ? 'bg-teal-50 text-teal-800 ring-1 ring-teal-200' : 'text-slate-500 hover:bg-slate-50'" @click="openReceiptPage(page.id)">{{ page.label }}</button>
 
@@ -6859,7 +6875,7 @@ watch([
           </div>
         </article>
 
-        <CartonSupplierReceiving ref="supplierReceivingRef" v-if="receiptPage === 'SUPPLIER'" :factory-id="selectedFactoryId" :shipment-id="typeof route.query.shipment === 'string' ? route.query.shipment : undefined" @changed="refreshDemo" @reverse="openSupplierReceiptReversal" />
+        <CartonSupplierReceiving :responsibility-scope="customerViewScope" ref="supplierReceivingRef" v-if="receiptPage === 'SUPPLIER'" :factory-id="selectedFactoryId" :shipment-id="typeof route.query.shipment === 'string' ? route.query.shipment : undefined" @changed="refreshDemo" @reverse="openSupplierReceiptReversal" />
 
         <article v-if="receiptPage === 'HISTORY'" class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
@@ -6895,8 +6911,8 @@ watch([
                   <td class="px-4 py-3"><span class="rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="row.status === 'POSTED' ? toneClass('green') : toneClass('amber')">{{ row.status === 'REVERSED' && !row.receipt.confirmed_at ? '已作废' : receiptStatusLabel(row.status) }}</span><div v-if="row.sourceType === 'AD_HOC'" class="mt-1 text-[9px] font-bold text-amber-700">非正式/打板收料</div></td>
                   <td class="px-4 py-3"><div class="font-semibold">{{ row.operator || '—' }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ (row.confirmedAt || '').replace('T', ' ').slice(0, 16) }}</div></td>
                   <td class="px-4 py-3"><div class="flex justify-end gap-2 whitespace-nowrap">
-                    <button v-if="canCorrectReceipt && ['PENDING_CONFIRMATION', 'POSTED'].includes(row.status)" type="button" class="inline-flex h-8 items-center justify-center rounded-md border border-red-200 bg-white px-2 text-[11px] font-bold text-red-600 transition hover:bg-red-50" :aria-label="`更正收料单 ${row.receiptNo}`" :title="row.status === 'POSTED' ? '冲销整张收料单的入库，需填写原因并确认' : '作废待确认收料单，需填写原因并确认'" @click="openReceiptCorrection(row.receipt)">{{ row.status === 'POSTED' ? '冲销' : '作废' }}</button>
-                    <button v-if="canCorrectReceipt && row.status === 'REVERSED'" type="button" class="inline-flex h-8 items-center justify-center rounded-md border border-teal-200 bg-white px-2 text-[11px] font-bold text-teal-700 transition hover:bg-teal-50" @click="openReceiptHistoryDocument(row.receipt, true)">重新登记</button>
+                    <button v-if="canCorrectReceipt && responsibleForReceipt(row.receipt) && ['PENDING_CONFIRMATION', 'POSTED'].includes(row.status)" type="button" class="inline-flex h-8 items-center justify-center rounded-md border border-red-200 bg-white px-2 text-[11px] font-bold text-red-600 transition hover:bg-red-50" :aria-label="`更正收料单 ${row.receiptNo}`" :title="row.status === 'POSTED' ? '冲销整张收料单的入库，需填写原因并确认' : '作废待确认收料单，需填写原因并确认'" @click="openReceiptCorrection(row.receipt)">{{ row.status === 'POSTED' ? '冲销' : '作废' }}</button>
+                    <button v-if="canCorrectReceipt && responsibleForReceipt(row.receipt) && row.status === 'REVERSED'" type="button" class="inline-flex h-8 items-center justify-center rounded-md border border-teal-200 bg-white px-2 text-[11px] font-bold text-teal-700 transition hover:bg-teal-50" @click="openReceiptHistoryDocument(row.receipt, true)">重新登记</button>
                     <button type="button" class="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-600 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700" :aria-label="`查看收料单 ${row.receiptNo}`" title="悬停预览整单明细，单击后保持显示" aria-haspopup="dialog" @mouseenter="showReceiptDetails(row.receipt)" @mouseleave="closeReceiptDetailPreview" @focus="showReceiptDetails(row.receipt)" @blur="closeReceiptDetailPreview" @click="showReceiptDetails(row.receipt, true)">明细</button>
                   </div></td>
                 </tr>
@@ -7534,10 +7550,10 @@ watch([
                 <p v-if="purchaseOrderContextRecord.pending_type !== 'NONE'" class="mt-1 text-[11px] text-slate-600">产品数量变化 {{ signedQuantity(purchaseOrderContextRecord.pending_product_quantity) }}；{{ purchaseOrderContextRecord.pending_line_count }} 条纸品产生箱数变化。</p>
                 <p v-else class="mt-1 text-[11px] text-slate-500">当前累计数量与最近一次采购单快照一致，无需再次向供应商下单。</p>
               </div>
-              <button v-if="purchaseOrderContextRecord.can_generate && canIssuePurchaseOrders" type="button" :disabled="issuingPurchaseOrder" class="h-9 rounded-lg bg-amber-600 px-4 text-[11px] font-bold text-white disabled:opacity-50" @click="issuePendingPurchaseOrder">{{ issuingPurchaseOrder ? '正在固定生成…' : `生成并下载${purchaseOrderTypeLabel(purchaseOrderContextRecord.pending_type)}` }}</button>
+              <button v-if="purchaseOrderContextRecord.can_generate && canIssuePurchaseOrders && responsibleForOrder(purchaseOrderDialogNo)" type="button" :disabled="issuingPurchaseOrder" class="h-9 rounded-lg bg-amber-600 px-4 text-[11px] font-bold text-white disabled:opacity-50" @click="issuePendingPurchaseOrder">{{ issuingPurchaseOrder ? '正在固定生成…' : `生成并下载${purchaseOrderTypeLabel(purchaseOrderContextRecord.pending_type)}` }}</button>
             </div>
             <p v-if="purchaseOrderContextRecord.pending_type !== 'NONE' && !purchaseOrderContextRecord.can_generate" class="mt-3 rounded-lg bg-white px-3 py-2 text-[11px] font-semibold text-amber-800">请先确认订单并锁定，再生成正式供应商采购单。</p>
-            <p v-else-if="purchaseOrderContextRecord.can_generate && !canIssuePurchaseOrders" class="mt-3 rounded-lg bg-white px-3 py-2 text-[11px] font-semibold text-red-700">当前账号可查看记录，但没有生成供应商采购单的权限。</p>
+            <p v-else-if="purchaseOrderContextRecord.can_generate && (!canIssuePurchaseOrders || !responsibleForOrder(purchaseOrderDialogNo))" class="mt-3 rounded-lg bg-white px-3 py-2 text-[11px] font-semibold text-red-700">当前账号可查看记录，生成采购单需要岗位权限和该客户的操作授权。</p>
           </section>
 
           <section class="overflow-hidden rounded-xl border border-slate-200">
@@ -7593,7 +7609,7 @@ watch([
         <div class="mt-5 flex justify-end gap-3"><button type="button" :disabled="Boolean(closingBusyId)" class="h-9 rounded-lg border px-4" @click="closingDecision = null">取消</button><button type="submit" :disabled="Boolean(closingBusyId)" class="h-9 rounded-lg bg-teal-700 px-4 font-bold text-white disabled:opacity-50">{{ closingBusyId ? '正在处理…' : closingDecision.action === 'LOCK' ? '确认最终锁账' : '确认解锁' }}</button></div>
       </form>
     </div>
-    <CartonReceiptDetail v-if="receiptDetailTarget" :receipt="receiptDetailTarget" :pinned="receiptDetailPinned" :can-continue="canCorrectReceipt" @close="closeReceiptDetails" @continue="continueReceiptDetails" />
+    <CartonReceiptDetail v-if="receiptDetailTarget" :receipt="receiptDetailTarget" :pinned="receiptDetailPinned" :can-continue="canCorrectReceipt && responsibleForReceipt(receiptDetailTarget)" @close="closeReceiptDetails" @continue="continueReceiptDetails" />
 
     <div v-if="receiptCorrectionTarget" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/45 p-4">
       <form role="dialog" aria-modal="true" aria-label="收料纠错确认" class="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl bg-white p-5 shadow-xl" @submit.prevent="confirmReceiptCorrection">
