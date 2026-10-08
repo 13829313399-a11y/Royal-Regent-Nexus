@@ -265,7 +265,7 @@ describe('supplier carton mark templates', () => {
     api.markAssets.mockResolvedValue([{ id: 'mark-1', file_name: 'print.pdf', kind: 'pdf', size_bytes: 400, contract_number: 'SC-A', created_at: '2026-09-21', orders: [{ id: 'ORDER-A', customer_name: 'Dickie', customer_po: 'PO-A', contract_no: 'SC-A', item_no: 'ITEM-A' }] }]); api.downloadMarkAsset.mockRejectedValueOnce(new Error('下载失败，请重试'))
     const wrapper = mount(CartonSupplierMarkTemplatesView, options); await flushPromises()
     expect(api.markAssets).toHaveBeenCalledWith('huaxing', expect.any(AbortSignal))
-    expect(wrapper.text()).toContain('Dickie · ITEM-A')
+    expect(wrapper.text()).toContain('Dickie · SC-A · ITEM-A')
     expect(wrapper.text()).toContain('箱唛资料库')
     expect(wrapper.get('a[aria-label="预览 print.pdf"]').attributes('href')).toBe('/api/preview.pdf')
     await wrapper.get('button[aria-label="下载 print.pdf"]').trigger('click'); await flushPromises()
