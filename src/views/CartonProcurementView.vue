@@ -6319,7 +6319,7 @@ watch([
             <p class="mt-1 text-[11px] text-slate-500">待下单订单确认后整单锁定，并自动生成首次采购单到供应商协同；后续追加或减单仍需另行生成变更单。有权限的仓管或主管可继续调整尚未入库部分。</p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
-            <a href="/templates/carton-history-order-import-template.xlsx" download="纸箱历史订单导入模板.xlsx" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
+            <a href="/templates/carton-history-order-import-template.xlsx?v=carton-weights-v2" download="纸箱历史订单导入模板.xlsx" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
               <Download class="size-4" aria-hidden="true" />
               下载历史订单模板
             </a>
@@ -7470,7 +7470,7 @@ watch([
                   <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">每箱毛重（kg，选填）</span><input v-model="material.grossWeight" :aria-label="`纸品每箱毛重 ${index + 1}`" :disabled="editingOrderStructureLocked" type="number" min="0" step="0.0001" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 disabled:bg-slate-100"></label>
                 </div>
               </div>
-              <p class="text-xs text-slate-500">重量分别记录在对应纸品，选择货号包装资料可带入；保存后不随基础资料修改。每条纸品的毛重不得小于净重。</p>
+              <p class="text-xs text-slate-500">净重为每箱货物不含纸箱、配卡等包装的重量；毛重为含这些包装的整箱货物总重量。两项按对应纸品的装箱方式记录，单位 kg，毛重不得小于净重；选择货号包装资料可带入，保存后不随基础资料修改。</p>
             </div>
           </section>
           <datalist id="carton-paper-quality-history"><option v-for="value in paperQualitySuggestions" :key="value" :value="value" /></datalist>

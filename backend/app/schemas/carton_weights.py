@@ -1,4 +1,7 @@
-"""Optional per-carton packaging weights, in kilograms; blank means unknown."""
+"""Packed-goods weights per carton in kg; net excludes carton/cards, gross includes them.
+
+Both fields are retained independently; blank historical values remain unknown.
+"""
 from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator

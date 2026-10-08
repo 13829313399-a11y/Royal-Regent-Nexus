@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.models.carton_procurement import CartonOrder, CartonCustomer, CartonSupplier
 from app.models.carton_master import CartonMasterRecord
-from app.services.carton_history_wide import parse_wide
+from app.services.carton_history_wide import WEIGHT_ALIASES, check_weight_headers, parse_weights, parse_wide
 from app.services.carton_master import validate_order as validate_master_order
 from app.schemas.carton_procurement import (
     CartonHistoryOrderImportOut,
@@ -45,6 +45,7 @@ HISTORY_ORDER_SUFFIXES = {".xlsx", ".xlsm", ".xls"}
 MAX_HISTORY_ORDER_GROUPS = 1_000
 
 HISTORY_ORDER_ALIASES = {
+    **WEIGHT_ALIASES,
     "customer_due_date": {"客户交期", "客户要求交期", "customerdueDate".lower()},
     "customer_po": {"客户po", "客户po选填", "客户采购单号", "客户订单号", "customerpo"},
     "order_no": {
@@ -173,6 +174,7 @@ def _parse_rows(filename: str, content: bytes) -> tuple[list[dict[str, Any]], li
             continue
         found_header = True
         header_index, mapping = header
+        check_weight_headers(rows[header_index], HISTORY_ORDER_ALIASES, f"“{sheet_name}”表头")
         legacy_usage = _legacy_usage_header(rows, header_index, mapping)
         if legacy_usage:
             warnings.append(
@@ -239,6 +241,7 @@ def _parse_rows(filename: str, content: bytes) -> tuple[list[dict[str, Any]], li
 
             try:
                 line = CartonOrderLineCreate(
+                    **parse_weights(row, mapping, source),
                     packaging_type=packaging_type,
                     paper_quality=paper_quality,
                     specification=specification,
@@ -415,7 +418,7 @@ def _preview(db: Session, factory: str, filename: str, content: bytes, user=None
     customers=db.scalars(select(CartonCustomer).where(CartonCustomer.factory_id==factory)).all()
     existing=db.scalars(select(CartonOrder).where(CartonOrder.factory_id==factory)).all()
     suppliers=db.scalars(select(CartonSupplier).where(CartonSupplier.factory_id==factory)).all()
-    evidence={"factory":factory,"file":hashlib.sha256(content).hexdigest(),"parser":5,
+    evidence={"factory":factory,"file":hashlib.sha256(content).hexdigest(),"parser":6,
         "masters":sorted((r.id,r.kind,r.code,r.revision,r.status,r.data_json) for r in masters),
         "customers":sorted((r.customer_code,r.customer_name,r.status,r.revision) for r in customers),
         "suppliers":sorted((r.id,r.supplier_code,r.supplier_name,r.status) for r in suppliers),

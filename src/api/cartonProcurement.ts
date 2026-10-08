@@ -1228,5 +1228,6 @@ export interface CartonHistoryOrderPreview {
     product_name: string; product_order_quantity: string | null; order_date: string; due_date: string | null; customer_due_date: string | null;
     status: string; quantity_basis: string; duplicate: boolean; ready: boolean; warnings: string[];
     lines: Array<{ packaging_type: string; paper_quality: string; specification: string; dimension_unit: string;
+      net_weight_kg?: string | null; gross_weight_kg?: string | null;
       usage_quantity: string | null; required_quantity: string; unit: string; unit_price: string; currency: string; note: string }> }>
 }

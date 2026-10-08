@@ -3335,7 +3335,7 @@ it('shows supplier date differences in both the internal ledger and order detail
 
     const template = wrapper.get('a[download="纸箱历史订单导入模板.xlsx"]')
     expect(template.text()).toContain('下载历史订单模板')
-    expect(template.attributes('href')).toBe('/templates/carton-history-order-import-template.xlsx')
+    expect(template.attributes('href')).toBe('/templates/carton-history-order-import-template.xlsx?v=carton-weights-v2')
     expect(findButton(wrapper, '导入历史订单').attributes('disabled')).toBeUndefined()
 
     const input = wrapper.get('input[aria-label="选择历史订单文件"]')
