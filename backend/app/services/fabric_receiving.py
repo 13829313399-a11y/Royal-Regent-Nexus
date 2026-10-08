@@ -24,7 +24,7 @@ def schema_ready(db):
 def ensure_schema(db):
     source.ensure_schema(db)
     if not schema_ready(db):
-        raise HTTPException(503, "布料仓实际收料数据库尚未升级，请先备份并执行迁移 20261007_0138")
+        raise HTTPException(503, "布料仓实际收料数据库尚未升级，请先备份并执行迁移 20261008_0143")
 
 
 def valid_reference(value):

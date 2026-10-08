@@ -23,7 +23,7 @@ def migration(filename):
 
 def test_additive_upgrade_preserves_old_receipt_stock_and_protects_unknown_downgrade(tmp_path):
     engine = sa.create_engine("sqlite:///" + str(tmp_path / "migration.db"))
-    versions = [migration(name) for name in ("20261005_0131_fabric_procurement.py", "20261006_0135_fabric_receiving.py", "20261007_0138_fabric_master_chase.py")]
+    versions = [migration(name) for name in ("20261005_0134_fabric_procurement.py", "20261008_0142_fabric_receiving.py", "20261008_0143_fabric_master_chase.py")]
     with engine.begin() as connection, Operations.context(MigrationContext.configure(connection)):
         versions[0].upgrade(); versions[1].upgrade()
         connection.execute(sa.text("INSERT INTO fabric_procurement_lines VALUES ('L','huakang-c','KEY',1,'PENDING','PO','Supplier','MAT','P','{}',1,'NOW')"))
@@ -52,7 +52,7 @@ def test_order_changes_require_chase_confirmation_and_old_schema_still_protects_
     assert result["warehouse_outstanding_quantity"] is None and result["receipt_quantity_conflict"]
     engine = sa.create_engine("sqlite:///" + str(tmp_path / "old.db"))
     with engine.begin() as connection, Operations.context(MigrationContext.configure(connection)):
-        migration("20261005_0131_fabric_procurement.py").upgrade(); migration("20261006_0135_fabric_receiving.py").upgrade()
+        migration("20261005_0134_fabric_procurement.py").upgrade(); migration("20261008_0142_fabric_receiving.py").upgrade()
         connection.execute(sa.text("INSERT INTO fabric_procurement_lines VALUES ('L','huakang-c','KEY',1,'PENDING','PO','Supplier','MAT','P','{}',1,'NOW')"))
         connection.execute(sa.text("INSERT INTO fabric_receipts VALUES ('R','huakang-c','L',1,'REQ','HASH','DN','2026-09-16','2026-09','10','码','50',:facts,'{}','A','Warehouse','NOW')"), {"facts": json.dumps(context["source_facts"])})
     with Session(engine) as db:

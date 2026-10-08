@@ -26,7 +26,7 @@ def ensure_schema(db):
     names = set(inspect(db.get_bind()).get_table_names())
     expected = {model.__tablename__ for model in (FabricProcurementState, FabricProcurementLine, FabricProcurementImport, FabricProcurementEvidence)}
     if not expected <= names:
-        raise HTTPException(503, "布料仓采购来源数据库尚未升级，请先备份并执行迁移 20261005_0131")
+        raise HTTPException(503, "布料仓采购来源数据库尚未升级，请先备份并执行迁移 20261005_0134")
 
 
 def revision(db):

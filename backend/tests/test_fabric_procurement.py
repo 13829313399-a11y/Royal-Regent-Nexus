@@ -306,7 +306,7 @@ def test_migration_upgrade_and_downgrade_protect_source_evidence(tmp_path):
     from alembic.operations import Operations
     from importlib.util import spec_from_file_location, module_from_spec
     from pathlib import Path
-    path = Path(__file__).parents[1] / "alembic/versions/20261005_0131_fabric_procurement.py"
+    path = Path(__file__).parents[1] / "alembic/versions/20261005_0134_fabric_procurement.py"
     spec = spec_from_file_location("fabric_migration", path); module = module_from_spec(spec); spec.loader.exec_module(module)
     engine = sa.create_engine("sqlite:///" + str(tmp_path / "migration.db"))
     with engine.begin() as connection:

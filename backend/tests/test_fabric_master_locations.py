@@ -17,7 +17,7 @@ def setup(tmp_path):
     from alembic.operations import Operations
     engine = create_engine('sqlite:///' + str(tmp_path / 'locations.db'))
     with engine.begin() as conn, Operations.context(MigrationContext.configure(conn)):
-        for name in ('20261005_0131_fabric_procurement.py', '20261006_0135_fabric_receiving.py', '20261007_0138_fabric_master_chase.py'):
+        for name in ('20261005_0134_fabric_procurement.py', '20261008_0142_fabric_receiving.py', '20261008_0143_fabric_master_chase.py'):
             migration(name).upgrade()
     with Session(engine) as db:
         yield db, SimpleNamespace(id='A', display_name='负责人'), importlib.import_module('app.services.fabric_master_locations')

@@ -629,7 +629,7 @@ def ensure_carton_master_schema_ready() -> None:
             found = {c["name"] for c in inspector.get_columns(name)} if name in names else set()
             missing.extend(f"{name}.{c}" for c in cols if c not in found)
         if missing:
-            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0140 及纸品重量 20261008_0141 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
+            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0144 及纸品重量 20261008_0145 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
 def ensure_carton_supplier_settlement_schema_ready() -> None:

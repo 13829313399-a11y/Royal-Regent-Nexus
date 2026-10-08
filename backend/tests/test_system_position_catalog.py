@@ -41,19 +41,19 @@ def test_fixed_system_position_definition_contract():
     positions = importlib.import_module("app.services.system_positions")
 
     definitions = positions.SYSTEM_POSITION_DEFINITIONS
-    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v32"
+    assert positions.SYSTEM_POSITION_DEFINITION_VERSION == "fixed-v33"
     assert len(definitions) == 32
     assert len({item.role_id for item in definitions}) == 32
     assert len({(item.department, item.name) for item in definitions}) == 32
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 151
+    assert len(registered_codes) == 154
     assert "system:feedback_manage" in permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES
     assert "system:feedback_manage" not in permission_codes.BUSINESS_PERMISSION_CODES
     assert permission_codes.MODULE_FEEDBACK_PERMISSION_CODES == ("module_feedback:submit", "module_feedback:manage")
     assert not set(permission_codes.MODULE_FEEDBACK_PERMISSION_CODES) & set(permission_codes.BUSINESS_PERMISSION_CODES)
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 143
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 144
     assert len(permission_codes.UV_OPS_PERMISSION_CODES) == 18
     assert all(not (set(definition.permission_codes) & set(permission_codes.UV_OPS_PERMISSION_CODES)) for definition in definitions)
     assert len(permission_codes.SPRAY_OPS_PERMISSION_CODES) == 14
@@ -278,7 +278,7 @@ def test_fixed_system_position_definition_contract():
     ):
         warehouse = positions.get_system_position(role_id)
         assert warehouse.permission_codes == positions.WAREHOUSE_PERMISSION_CODES
-        assert len(warehouse.permission_codes) == 21
+        assert len(warehouse.permission_codes) == 22
         assert {"carton_mark:read", "carton_mark:template_upload"} <= set(warehouse.permission_codes)
         assert warehouse.scope_mode == (
             positions.CROSS_FACTORY_OPERATE_SCOPE

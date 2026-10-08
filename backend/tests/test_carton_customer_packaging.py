@@ -189,7 +189,7 @@ def test_source_multiple_contracts_atomic_revision_and_deleted_binding(monkeypat
 
 
 def test_additive_migration_preserves_rows_and_enforces_factory_foreign_keys():
-    spec = importlib.util.spec_from_file_location("carton_packaging_migration", BACKEND_DIR / "alembic/versions/20261008_0140_carton_customer_packaging.py")
+    spec = importlib.util.spec_from_file_location("carton_packaging_migration", BACKEND_DIR / "alembic/versions/20261008_0144_carton_customer_packaging.py")
     migration = importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
@@ -209,7 +209,7 @@ def test_additive_migration_preserves_rows_and_enforces_factory_foreign_keys():
 
 
 def test_paper_weight_migration_preserves_legacy_values_and_checks_each_line():
-    spec = importlib.util.spec_from_file_location("carton_paper_weights", BACKEND_DIR / "alembic/versions/20261008_0141_carton_paper_weights.py")
+    spec = importlib.util.spec_from_file_location("carton_paper_weights", BACKEND_DIR / "alembic/versions/20261008_0145_carton_paper_weights.py")
     migration = importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
@@ -305,5 +305,5 @@ def test_schema_guard_requires_the_paper_weight_migration(monkeypatch):
     monkeypatch.setattr(db, "engine", engine)
     with pytest.raises(RuntimeError) as error:
         db.ensure_carton_master_schema_ready()
-    assert "20261008_0141" in str(error.value)
+    assert "20261008_0145" in str(error.value)
     assert "carton_order_lines.net_weight_kg" in str(error.value)
