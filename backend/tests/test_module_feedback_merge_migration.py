@@ -19,10 +19,10 @@ from test_module_feedback import create_payload, png, user
 BACKEND = Path(__file__).resolve().parents[1]
 MERGE = "20261005_0131"
 ASSISTANT_MERGE = "20261008_0140"
-RELEASE_MERGE = "20261008_0146"
+RELEASE_MERGE = "20261008_0147"
 
 
-@pytest.mark.parametrize("start", ["20260929_0130", "20261005_0120", "20260929_0131", "20261006_0139", "20261008_0140", "20261008_0145"])
+@pytest.mark.parametrize("start", ["20260929_0130", "20261005_0120", "20260929_0131", "20261006_0139", "20261008_0140", "20261008_0146"])
 def test_both_branches_upgrade_to_single_head_preserving_existing_rows(tmp_path, start):
     database = tmp_path / (start + ".db")
     env = dict(os.environ, DATABASE_URL="sqlite:///" + database.as_posix(), SEED_ADMIN_PASSWORD="",
@@ -40,7 +40,7 @@ def test_both_branches_upgrade_to_single_head_preserving_existing_rows(tmp_path,
     head = heads[0]
     assert ASSISTANT_MERGE in {revision.revision for revision in script.walk_revisions()}
     assert set(script.get_revision(ASSISTANT_MERGE).down_revision) == {"20260929_0131", "20261006_0139"}
-    assert set(script.get_revision(RELEASE_MERGE).down_revision) == {ASSISTANT_MERGE, "20261008_0145"}
+    assert set(script.get_revision(RELEASE_MERGE).down_revision) == {ASSISTANT_MERGE, "20261008_0146"}
     assert set(script.get_revision(MERGE).down_revision) == {"20260929_0130", "20261005_0120"}
     assert script.get_revision("20261005_0120").down_revision == "20260924_0119"
     upgrade(start)
