@@ -9,7 +9,9 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 
 from app.api.auth import router as auth_router
+from app.api.assistant import router as assistant_router
 from app.api.document_tools import router as document_tools_router
+from app.api.collaborative_sheets import router as collaborative_sheets_router
 from app.api.pdf_rename import router as pdf_rename_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_feedback import router as carton_feedback_router
@@ -42,6 +44,7 @@ from app.api.work_center import router as work_center_router
 from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
 from app.api.spray_operations import router as spray_operations_router
+from app.api.cutting_operations import router as cutting_operations_router
 from app.api.uv_operations import router as uv_operations_router
 from app.api.uv_agent import router as uv_agent_router
 from app.core.config import settings
@@ -177,6 +180,8 @@ async def record_request_timing(request: Request, call_next):
     duration_ms = (perf_counter() - started_at) * 1000
     response.headers["X-Request-ID"] = request_id
     response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
+    if request.url.path.startswith("/api/assistant/"):
+        response.headers["Cache-Control"] = "private, no-store"
     if request.url.path != "/health":
         route = request.scope.get("route")
         route_path = getattr(route, "path", request.url.path)
@@ -192,7 +197,9 @@ async def record_request_timing(request: Request, call_next):
 
 
 app.include_router(auth_router)
+app.include_router(assistant_router)
 app.include_router(document_tools_router)
+app.include_router(collaborative_sheets_router)
 app.include_router(pdf_rename_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_feedback_router)
@@ -222,6 +229,7 @@ from app.api.three_d_operations import router as three_d_operations_router
 app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)
 app.include_router(spray_operations_router)
+app.include_router(cutting_operations_router)
 app.include_router(uv_operations_router)
 app.include_router(uv_agent_router)
 app.include_router(three_d_connector_router)

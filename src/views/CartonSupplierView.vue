@@ -712,7 +712,7 @@ async function download(id: string, factoryId: string, filename: string) {
 </script>
 
 <template>
-  <main class="min-h-screen bg-[#f3f8fc] text-slate-800">
+  <main class="min-h-screen bg-[#f3f8fc] text-slate-800" data-yl-help="carton-supplier.overview">
     <CartonActionNotice :message="error" @dismiss="error = ''" />
     <header :inert="detailDocumentPinned || mergedDocumentsOpen ? true : undefined" class="sticky top-0 z-20 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
       <div class="mx-auto flex max-w-[1720px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">

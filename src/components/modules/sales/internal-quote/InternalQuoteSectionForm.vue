@@ -539,7 +539,11 @@ function setFreightRouteIncluded(routeKey: string, event: Event) {
 }
 const freightSourceCuft = computed(() => primaryCarton.value ? calculateCartonCuft(primaryCarton.value) : 0)
 function calculated(value: number) { return fixedDecimal(value, 3) }
-function measured(value: number) { return value.toFixed(4) }
+function measured(value: unknown) {
+  if (value === '' || value == null) return '—'
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric.toFixed(4) : '—'
+}
 function whole(value: number) { return Math.round(value).toString() }
 function normalizeFreightCapacity(key: string) {
   const value = Number(sales.value.freight_calc[key])
@@ -987,7 +991,7 @@ function addBuzzBeeColorBoxTier() {
                 <td>
                   <div class="injection-row-actions">
                     <button type="button" class="icon" :disabled="disabled" :aria-label="`复制第 ${index + 1} 行注塑明细`" title="复制该行并解除两行的工程同步锁" @click="copyInjection(row)"><Copy /></button>
-                    <button type="button" class="icon" :disabled="disabled || Boolean(row.engineering_source_key && !row.engineering_sync_disabled)" :title="row.engineering_source_key && !row.engineering_sync_disabled ? '此行由工程部模具自动生成；复制后可分别编辑和删除' : '删除注塑行'" :aria-label="`删除第 ${index + 1} 行注塑明细`" @click="removeItem(molding.injection_lines,row)"><Trash2 /></button>
+                    <button type="button" class="icon" :disabled="disabled || Boolean(row.engineering_source_key && !row.engineering_sync_disabled)" :title="row.engineering_source_key && !row.engineering_sync_disabled ? '此行由工程部模具自动生成；请在工程部删除对应模具，或替换导入修正后的模具表' : '删除注塑行'" :aria-label="`删除第 ${index + 1} 行注塑明细`" @click="removeItem(molding.injection_lines,row)"><Trash2 /></button>
                   </div>
                 </td>
               </tr>

@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.app.json",
+  "include": [
+    "src/vite-env.d.ts",
+    "src/env.d.ts",
+    "src/types/**/*.d.ts",
+    "src/features/cutting-operations/__tests__/*.spec.ts",
+    "src/views/__tests__/moduleCenterFactoryScope.spec.ts"
+  ],
+  "exclude": [],
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "types": ["vitest/globals"],
+    "tsBuildInfoFile": "./node_modules/.tmp/cutting-tests.tsbuildinfo"
+  }
+}

@@ -1,0 +1,74 @@
+[
+  {
+    "id": "spray-production.overview",
+    "module_id": "spray-production",
+    "title": "喷油生产工作区",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "spray-overview",
+      "spray-planning",
+      "spray-demands",
+      "spray-execution",
+      "spray-handover",
+      "spray-materials",
+      "spray-finance",
+      "spray-settlements",
+      "spray-imports",
+      "spray-activity"
+    ],
+    "factory_ids": [],
+    "anchor_id": "spray-production.overview",
+    "field_keys": [],
+    "summary": "需求、调度、执行、交收和材料核算分别记录，避免把生产完成当成交收完成。",
+    "content": "喷油工作区支持华兴、华登、华康 A/B；功能启用且当前厂区适用，并具备该厂区生产部读取权限时进入。页面包括总览、调度、需求、执行、交收、材料、财务/结算、基础资料、导入和记录。\n需求先从 draft 确认为 confirmed；生产使用已确认且匹配的工艺。库存按 white/wip/hold/finished 区分白件、在制、待处理与合格成品，单位不同不能直接相加。开工要求已发布的 planned 任务和可用投入，开工为 started，暂停为 paused，恢复回到 started。\n日报的数量、工时与确认状态独立记录，确认和冲回有原业务约束。只有 finished 且关联订单明细的合格库存可送货。送货单 draft 发出为 dispatched，分批验收为 partial_accepted，全部明细的接收加拒收等于送货数量时为 accepted；因此 accepted 不能简单理解成全部良品接收。\n使用调度前核对资源日历、工艺和库存；交收时核对接收、拒收与退货，财务结算再按原记录核算。数量/金额按十进制精度校验。助手不发布计划、不执行开工/日报/送货或结算。",
+    "steps": [
+      {
+        "title": "核对需求与资源",
+        "description": "确认厂区、需求、工艺、库存状态和单位，查看资源日历。",
+        "anchor_id": "spray-production.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "查看调度和执行",
+        "description": "区分计划、开工、暂停与日报确认；在原页面处理实际动作。",
+        "anchor_id": "spray-production.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "核对交收与结算",
+        "description": "逐项核对送货、接收及拒收，再查看对应材料和结算记录。",
+        "anchor_id": "spray-production.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/features/spray-production/routes.ts",
+        "symbol": "sprayProductionRoutes",
+        "sha256": "030448210585c63cf0b1d31c6fd91e4b996dd5771c03aee5c4856427746e60ba"
+      },
+      {
+        "path": "backend/app/services/spray_ops/schemas.py",
+        "symbol": "Factory =",
+        "sha256": "3b33d8861dccac7da2628f967da2492f4182ea43137f6779ace00d305c50ca1e"
+      },
+      {
+        "path": "backend/app/services/spray_ops/production.py",
+        "symbol": "start_task",
+        "sha256": "4431b1636f9b12484e1bec903fb20bbf7f6987709279a11e664f19c0868ae90c"
+      },
+      {
+        "path": "backend/app/services/spray_ops/handover.py",
+        "symbol": "partial_accepted",
+        "sha256": "af46be9214f52dee821d4ff8f6ff958e2fb7d31a6cc56feeb3efc0c3e6ed9a90"
+      }
+    ],
+    "knowledge_version": "2026.10.08-v2",
+    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "status": "verified"
+  }
+]

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { vInjDialog } from "@/features/injection-scheduling/composables/injDialog";
+import { registerAssistantTarget } from '@/features/assistant/anchors';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAppStore } from "@/stores/app";
@@ -184,6 +185,16 @@ function switchTab(key: string) {
   tab.value = key === "planning" ? view.planningView : key;
   store.error = "";
 }
+const unregisterAssistantRemaining = registerAssistantTarget({
+  helpId: 'injection.remaining_shots',
+  element: () => document.querySelector<HTMLElement>('[data-yl-help="injection.remaining_shots"]'),
+  reveal: async () => {
+    if (store.dirty || store.busy) throw new Error('请先保存或取消计划表中的未保存修改。');
+    if (!store.factory) throw new Error('请先选择支持的厂区。');
+    switchTab('table');
+  },
+});
+onBeforeUnmount(unregisterAssistantRemaining);
 function openPlanClear() {
   if (store.dirty || store.busy || !canPlan.value) return;
   moreOpen.value = false;
@@ -466,7 +477,7 @@ const templateLabels1: Record<string, string> = {
     :data-density="view.density"
     :aria-busy="factoryLoading || store.loading || store.busy"
   >
-    <header class="inj-header">
+    <header class="inj-header" data-yl-help="injection-scheduling.overview">
       <RouterLink
         class="inj-back"
         :to="{

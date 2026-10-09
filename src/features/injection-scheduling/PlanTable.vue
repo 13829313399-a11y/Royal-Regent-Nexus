@@ -647,6 +647,7 @@ function restoreView(id: string) {
             <th
               v-for="(column, index) in visible"
               :key="column.id"
+              :data-yl-help="column.id === 'remaining_shots' ? 'injection.remaining_shots' : undefined"
               :style="cellStyle(index)"
             >
               <button

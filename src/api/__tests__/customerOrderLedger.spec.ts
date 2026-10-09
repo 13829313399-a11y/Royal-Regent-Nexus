@@ -45,4 +45,12 @@ describe('customer order ledger api', () => {
     expect(result.reconciled_count).toBe(1)
     expect(customerOrderLedgerSourceUrl('source 1', 'huaxing')).toContain('/customer-order-ledger/sources/source%201?factory_id=huaxing')
   })
+
+  it('restores the same factory-scoped order with revision and explicit acknowledgement', async () => {
+    const post = vi.fn().mockResolvedValue({ data: { id: 'line-1', status: 'active' } })
+    const api = createCustomerOrderLedgerApi({ get: vi.fn(), post })
+    const payload = { expected_revision: 2, reason: '用户误点取消', confirmed: true as const, notify_recipients: true }
+    expect(await api.restore('line/1', 'huakang-a', payload)).toEqual({ id: 'line-1', status: 'active' })
+    expect(post).toHaveBeenCalledWith('/customer-order-ledger/lines/line%2F1/restore?factory_id=huakang-a', payload)
+  })
 })

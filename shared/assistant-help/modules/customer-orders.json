@@ -1,0 +1,60 @@
+[
+  {
+    "id": "customer-orders.overview",
+    "module_id": "customer-orders",
+    "title": "客户订单中心",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "customer-order-center"
+    ],
+    "factory_ids": [],
+    "anchor_id": "customer-orders.overview",
+    "field_keys": [],
+    "summary": "订单台账维护数量与交期，下发和实际走货另行确认。",
+    "content": "订单明细的 active/cancelled 表示有效或取消；已走货数量与订单数量独立。发送前必须有有效数量和走货期，取消后的订单不能修改、再次下发或确认新的走货。修改数量不能低于已确认走货数量。\n取消订单不是关闭窗口：需填写原因，并再次核对厂区、客户、编号、货号和数量。误取消可在已取消订单的详情中选择恢复，填写原因后再次确认。恢复保留原订单 ID、编号、原件、历史期初、实际走货及纠错记录，新增有效版本，不重新导入，不回滚旧快照。未走货量按当前订单数量减已走货计算；数量未知仍须核对。恢复需要本厂订单写入权限；已发送订单还需发送权限，并确认通知原接收部门。恢复不自动安排生产或调整库存。\n数量变化会清空原箱数、金额等派生资料；交期变化会清空相关验货日期、FCD、日期码并提示复核，不能把旧值继续当成确认结果。变更保留版本，并向原接收部门发布新版本。下发不等于接收部门已签收，也不等于实际出货。\n实际走货须单独确认数量、日期和出货单号。日期不能晚于今天，历史期初截止日以内的记录不能再重复登记；数量不能超过剩余量。同一订单明细不能重复登记未冲回的相同出货单号。错误记录先冲回，冲回会扣减已走货数量并保留原因。\n导入预览与确认分开；历史迁移还须核对期初范围。读取、写入、下发、确认走货、部门收件分别检查权限与厂区。版本冲突先刷新核对。助手解释规则，不读取实际订单，也不自动取消、恢复、下发或确认出货。",
+    "steps": [
+      {
+        "title": "核对台账",
+        "description": "确认客户、厂区、数量、走货期和版本。",
+        "anchor_id": "customer-orders.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "核对变更与下发",
+        "description": "修改数量或交期后复核被清空字段，再按授权选择接收部门。",
+        "anchor_id": "customer-orders.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "登记实际走货",
+        "description": "用实际日期、数量和出货单号确认；错误记录走冲回流程。",
+        "anchor_id": "customer-orders.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/services/customer_order_ledger.py",
+        "symbol": "def amend",
+        "sha256": "50416ca5d5925857faf97a0272c289b449d8d3a386f3b3bea088b9817faa745f"
+      },
+      {
+        "path": "backend/app/services/customer_order_ledger.py",
+        "symbol": "def ship",
+        "sha256": "50416ca5d5925857faf97a0272c289b449d8d3a386f3b3bea088b9817faa745f"
+      },
+      {
+        "path": "backend/app/api/customer_order_ledger.py",
+        "symbol": "authorize",
+        "sha256": "3f7416ef7455785b3ac12e7676adba2db730f0612d391e947b7d03407a102717"
+      }
+    ],
+    "knowledge_version": "2026.10.09-v1",
+    "verified_commit": "8c4cf8535299e279b45e64fe58905b73b7143f06",
+    "status": "verified"
+  }
+]

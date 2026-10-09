@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
-    "build": "vue-tsc -b && vite build && npm run build:image-translation",
+    "build": "node scripts/check-assistant-help.mjs && vue-tsc -b && vite build && npm run build:image-translation",
     "build:image-translation": "node scripts/build-image-translation.mjs",
     "preview": "vite preview",
     "test:unit": "vitest run",
     "typecheck:app": "vue-tsc --noEmit -p tsconfig.app.json",
-    "typecheck:test": "vue-tsc --noEmit -p tsconfig.test.json"
+    "typecheck:test": "vue-tsc --noEmit -p tsconfig.test.json",
+    "check:assistant-help": "node scripts/check-assistant-help.mjs"
   },
   "dependencies": {
     "@lucide/vue": "^1.21.0",
@@ -21,6 +22,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "fflate": "^0.8.3",
+    "markdown-it": "^15.0.2",
     "pdfjs-dist": "^6.3.289",
     "pinia": "^3.0.4",
     "reka-ui": "^2.10.0",
@@ -32,6 +34,7 @@
   },
   "devDependencies": {
     "@tsconfig/node24": "^24.0.4",
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^26.0.1",
     "@vitejs/plugin-vue": "^6.0.7",
     "@vue/test-utils": "^2.4.11",

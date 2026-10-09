@@ -1844,7 +1844,10 @@ def test_register_flushes_new_user_before_registration_request(monkeypatch):
         )
 
         assert register_response.status_code == 200
-        assert flush_new_sets[0] == {"AuthUser"}
+        user_flush = next(i for i, pending in enumerate(flush_new_sets) if "AuthUser" in pending)
+        request_flush = next(i for i, pending in enumerate(flush_new_sets) if "AuthRegistrationRequest" in pending)
+        assert flush_new_sets[user_flush] == {"AuthUser"}
+        assert user_flush < request_flush
 
 
 def test_password_reset_request_creates_admin_system_notification(monkeypatch):
