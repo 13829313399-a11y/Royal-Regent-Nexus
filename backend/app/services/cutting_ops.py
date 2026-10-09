@@ -21,9 +21,11 @@ def require(condition, message, status=409):
 
 
 def allowed(user, action):
-    departments = ('engineering',) if action in {'bom_write', 'bom_publish'} else ('production',)
+    departments = ('engineering',) if action in {'bom_write', 'bom_publish', 'requisition_submit'} else ('production',)
+    if action in {'eta_write', 'requisition_reconcile'}:
+        departments = ('pmc-warehouse',)
     if action == 'read':
-        departments = ('production', 'engineering')
+        departments = ('production', 'engineering', 'pmc-warehouse')
     return any(authorization_decision(user, 'cutting_ops:' + action, FACTORY, department)[0] for department in departments)
 
 
@@ -114,15 +116,24 @@ def state(db, user, body, entity_id):
     return append(db, user, item, previous['data'], body.status, body.reason)
 
 
-def command(db: Session, user, body, action, handler):
-    fingerprint = hashlib.sha256(json.dumps(dict(action=action, body=body.model_dump(mode='json')),
+def command_fingerprint(body, action):
+    return payload_fingerprint(body.model_dump(mode='json'), action)
+
+
+def payload_fingerprint(payload, action):
+    return hashlib.sha256(json.dumps(dict(action=action, body=payload),
                                 sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def command(db: Session, user, body, action, handler):
+    fingerprint = command_fingerprint(body, action)
     try:
         lock_transaction(db, 'cutting-master', FACTORY)
         receipt = db.get(CuttingCommand, body.operation_id)
         if receipt:
             require(receipt.actor_id == user.id and receipt.fingerprint == fingerprint,
                     '操作编号已用于其他请求，请核对原保存结果')
+            require(receipt.result.get('operation_status') != 'abandoned', '此操作已核实未执行并停止，请重新提交新操作')
             return receipt.result
         result = handler()
         db.add(CuttingCommand(operation_id=body.operation_id, factory_id=FACTORY, actor_id=user.id,

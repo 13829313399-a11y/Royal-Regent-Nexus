@@ -125,6 +125,27 @@ describe('CustomerOrderLedger', () => {
     wrapper.unmount()
   })
 
+  it('offers cutting only when explicitly enabled and sends it with other recipients', async () => {
+    api.capabilities.mockResolvedValue({ read: true, dispatch: true, cutting_dispatch_enabled: true })
+    const localLine = { ...line, factory_id: 'huakang-c' }
+    api.detail.mockResolvedValue({ line: localLine, versions: [], dispatches: [{ id: 'dispatch-cutting', recipient: 'cutting', version: 2, created_at: '2026-10-09', received_at: '' }], shipments: [], sources: [] })
+    api.dispatch.mockResolvedValue(localLine)
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huakang-c', factoryName: '华康C', detailOnly: true, focusLineId: 'line-1' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('裁床部')
+    await wrapper.get('input[value="cutting"]').setValue(true)
+    await wrapper.get('input[value="pmc"]').setValue(true)
+    await wrapper.findAll('button').find(b => b.text() === '发送订单')!.trigger('click')
+    await flushPromises()
+    expect(api.dispatch).toHaveBeenLastCalledWith('line-1', 'huakang-c', { expected_revision: 4, recipients: ['cutting', 'pmc'] })
+    wrapper.unmount()
+  })
+  it('does not offer the cutting recipient when its feature is disabled', async () => {
+    const wrapper = mountLedger(); await flushPromises()
+    await wrapper.get('button.ledger__link').trigger('click'); await flushPromises()
+    expect(wrapper.find('input[value="cutting"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
   it('opens only the focused order and notifies its schedule after saving', async () => {
     const wrapper = mountLedger()
     await flushPromises()

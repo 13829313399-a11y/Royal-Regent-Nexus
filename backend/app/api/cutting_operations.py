@@ -7,9 +7,10 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
-from app.models.cutting_ops import CuttingMaster, CuttingRevision
+from app.models.cutting_ops import CuttingMaster, CuttingRevision, CuttingOrder, CuttingOrderRevision
 from app.services.auth import AuthContext, get_current_user
 from app.services import cutting_ops as c, cutting_schemas as s
+from app.services import cutting_orders as orders
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -42,7 +43,8 @@ def access(db: Db, user: User, factory_id: str = ''):
     c.authorize(user, factory_id)
     enabled = settings.cutting_ops_enabled
     migrated = c.schema_ready(db.connection()) if enabled else False
-    return dict(enabled=enabled, schema_ready=migrated, permissions=[code.split(':')[1] for code in
+    return dict(enabled=enabled, schema_ready=migrated, orders_schema_ready=orders.schema_ready(db.connection()) if enabled else False,
+                permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
 
 
@@ -88,3 +90,85 @@ def change_state(entity_id: str, body: s.StateChange, db: Db, user: User):
     c.authorize(user, body.factory_id, 'bom_publish' if body.status == 'published' else 'master_write')
     ready(db)
     return c.command(db, user, body, 'state:' + entity_id, lambda: c.state(db, user, body, entity_id))
+
+
+def orders_ready(db):
+    ready(db)
+    c.require(orders.schema_ready(db.connection()), '裁床订单与交期需先完成显式数据库迁移', 503)
+
+
+@router.get('/orders')
+def order_list(db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1), q: str = Query('', max_length=80),
+               status: s.WorkflowStatus | None = None):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return orders.list_orders(db, page, q, status)
+
+
+@router.get('/orders/{line_id}/versions')
+def order_versions(line_id: str, db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1)):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    order = db.get(CuttingOrder, line_id)
+    c.require(order is not None and order.factory_id == c.FACTORY, '裁床订单不存在', 404)
+    numbers = db.scalars(select(CuttingOrderRevision.version).where(CuttingOrderRevision.line_id == line_id)
+        .order_by(CuttingOrderRevision.version.desc()).offset((page-1)*50).limit(50))
+    return dict(data=[orders.revision(db, order, v) for v in numbers], total=order.version, page=page, page_size=50)
+
+
+def order_command(db, user, line_id, body, action, handler):
+    c.authorize(user, body.factory_id, action)
+    orders_ready(db)
+    return c.command(db, user, body, action + ':' + line_id, lambda: handler(db, user, line_id, body))
+
+
+@router.post('/orders/{line_id}/receive')
+def receive_order(line_id: str, body: s.ReceiveOrder, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'order_receive', orders.receive)
+
+
+@router.post('/orders/{line_id}/bom')
+def bind_order_bom(line_id: str, body: s.BindBom, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'bom_write', orders.bind_bom)
+
+
+@router.post('/orders/{line_id}/requisition')
+def submit_requisition(line_id: str, body: s.SubmitRequisition, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'requisition_submit', orders.submit)
+
+
+@router.post('/orders/{line_id}/eta')
+def eta_reply(line_id: str, body: s.ReplyEta, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'eta_write', orders.reply_eta)
+
+
+@router.post('/orders/{line_id}/withdraw')
+def withdraw_requisition(line_id: str, body: s.WithdrawRequisition, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'requisition_submit', orders.withdraw)
+
+
+@router.post('/orders/{line_id}/reconcile')
+def reconcile_requisition(line_id: str, body: s.ReconcileRequisition, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'requisition_reconcile', orders.reconcile)
+
+
+@router.post('/orders/{line_id}/operations/recover')
+def recover_order_operation(line_id: str, body: s.RecoverOperation, db: Db, user: User):
+    contracts = {
+        'receive': (s.ReceiveOrder, 'order_receive'), 'bom': (s.BindBom, 'bom_write'),
+        'requisition': (s.SubmitRequisition, 'requisition_submit'), 'eta': (s.ReplyEta, 'eta_write'),
+        'withdraw': (s.WithdrawRequisition, 'requisition_submit'), 'reconcile': (s.ReconcileRequisition, 'requisition_reconcile'),
+    }
+    model, permission = contracts[body.action]
+    identity = s.OperationIdentity.model_validate({key: body.command.get(key) for key in ('factory_id', 'operation_id')})
+    c.authorize(user, identity.factory_id)
+    c.require(c.schema_ready(db.connection()), '裁床操作记录需先完成迁移', 503)
+    try:
+        original = model.model_validate(body.command)
+    except ValidationError:
+        # Even a lost validation response can be resolved. Fence this operation id under
+        # the same lock; a delayed request cannot write after the editor is released.
+        return orders.recover_operation(db, user, identity, permission + ':' + line_id, invalid_payload=body.command)
+    # Read access plus ownership is enough to resolve/stop an own command after write revocation.
+    # No source-state check here: stale/cancelled orders must still be recoverable.
+    return orders.recover_operation(db, user, original, permission + ':' + line_id)
