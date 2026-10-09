@@ -105,7 +105,14 @@ const importPreview = ref<DeliveryImportPreview | null>(null)
 const selectedImportNotes = ref<string[]>([])
 const importModes = ref<Record<string, DeliveryRegistrationMode>>({})
 let importGeneration = 0
-watch([() => auth.sessionVersion, canEdit], () => {
+// sessionVersion advances on every /auth/me refresh, including window focus.
+// Use stable access facts for both draft resets and in-flight response checks.
+const importContext = computed(() => JSON.stringify([
+  auth.currentUser?.id, auth.authorizationVersion, auth.authzMode,
+  auth.currentUser?.identity?.effective_context_key, auth.currentUser?.identity?.employment_epoch,
+  canEdit.value, auth.can('carton_supplier:read', '*', '*'),
+]))
+watch(importContext, () => {
   importGeneration++; importOpen.value = false; importFile.value = null; importPreview.value = null
   selectedImportNotes.value = []; importModes.value = {}; busy.value = false
 })
@@ -656,7 +663,7 @@ async function accept(order: SupplierOrder, line: PortalPaper) {
 }
 async function onDeliveryFile(event: Event) {
   if (!canEdit.value) return
-  const token = ++importGeneration, session = auth.sessionVersion
+  const token = ++importGeneration, context = importContext.value
   const file = (event.target as HTMLInputElement).files?.[0]
   importFile.value = file ?? null
   importPreview.value = null
@@ -666,14 +673,14 @@ async function onDeliveryFile(event: Event) {
   busy.value = true
   try {
     const preview = await api.previewDeliveryImport(file)
-    if (token !== importGeneration || session !== auth.sessionVersion || !canEdit.value) return
+    if (token !== importGeneration || context !== importContext.value || !canEdit.value) return
     importPreview.value = preview
     importModes.value = Object.fromEntries(preview.groups.map(group => [importNoteKey(group), !group.ready && group.receipt_link_ready ? 'EXISTING_RECEIPT' : 'SHIPMENT']))
     selectedImportNotes.value = preview.groups.filter(importGroupReady).map(importNoteKey)
-  } catch (reason) { if (token === importGeneration && session === auth.sessionVersion) failure(reason) } finally { if (token === importGeneration && session === auth.sessionVersion) busy.value = false }
+  } catch (reason) { if (token === importGeneration && context === importContext.value) failure(reason) } finally { if (token === importGeneration && context === importContext.value) busy.value = false }
 }
 async function confirmDeliveryImport() {
-  const token = importGeneration, session = auth.sessionVersion
+  const token = importGeneration, context = importContext.value
   if (busy.value || !canEdit.value || !importFile.value || !importPreview.value) return
   const selectedGroups = importPreview.value.groups.filter(group => selectedImportNotes.value.includes(importNoteKey(group)))
   if (!selectedGroups.length || selectedGroups.some(group => !importGroupReady(group))) {
@@ -685,7 +692,7 @@ async function confirmDeliveryImport() {
   try {
     const result = await api.confirmDeliveryImport(importFile.value, importPreview.value,
       selectedGroups.map(group => ({ factory_id: group.factory_id, delivery_note_no: group.delivery_note_no, ...(importModes.value[importNoteKey(group)] === 'EXISTING_RECEIPT' ? { registration_mode: 'EXISTING_RECEIPT' as const } : {}) })))
-    if (token !== importGeneration || session !== auth.sessionVersion || !canEdit.value) return
+    if (token !== importGeneration || context !== importContext.value || !canEdit.value) return
     importOpen.value = false
     importFile.value = null
     importPreview.value = null
@@ -695,8 +702,8 @@ async function confirmDeliveryImport() {
     activeTab.value = 'shipments'
     message.value = `已提交 ${result.shipments.length} 张供应商送货单；新发货由仓库验收，后补凭证由仓库关联原入库，不重复入库。`
     const refreshError = await load()
-    if (refreshError) error.value = `${message.value} 发货已保存，但列表刷新失败：${refreshError}。请刷新查看，勿重复发货。`
-  } catch (reason) { if (token === importGeneration && session === auth.sessionVersion) failure(reason) } finally { if (token === importGeneration && session === auth.sessionVersion) busy.value = false }
+    if (token === importGeneration && context === importContext.value && refreshError) error.value = `${message.value} 发货已保存，但列表刷新失败：${refreshError}。请刷新查看，勿重复发货。`
+  } catch (reason) { if (token === importGeneration && context === importContext.value) failure(reason) } finally { if (token === importGeneration && context === importContext.value) busy.value = false }
 }
 async function download(id: string, factoryId: string, filename: string) {
   error.value = ''
