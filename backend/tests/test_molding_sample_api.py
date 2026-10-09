@@ -2322,10 +2322,23 @@ def test_fixed_non_molding_positions_get_all_factory_task_read_without_task_writ
             "description": "只读职位不得上报",
         },
     ).status_code == 403
-    assert client.patch(
+    personal_read = client.patch(
         f"/api/molding-sample-notifications/{home_notification['id']}",
         json={"status": "已读"},
-    ).status_code == 403
+    )
+    assert personal_read.status_code == 200
+    assert personal_read.json()["status"] == "已读"
+    assert client.patch(
+        f"/api/molding-sample-notifications/{home_notification['id']}",
+        json={"status": "已处理"},
+    ).status_code == 409
+    db_module = importlib.import_module("app.db")
+    models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        shared = db.get(models.MoldingSampleNotification, home_notification["id"])
+        assert shared.status == home_notification["status"]
+        assert shared.read_at == home_notification["read_at"]
+        assert db.get(models.MoldingSampleOrder, "BP-FIXED-READONLY-HOME").status == "待生产"
 
     qa_profile = login_fixed_position_test_user(
         client,
@@ -2490,6 +2503,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         "injection_scheduling:plan",
         "injection_scheduling:report",
     }
+    order_inbox_permissions = {"customer_order:inbox_read", "customer_order:inbox_receive"}
     clerk_profile = login_fixed_position_test_user(client, "fixed_molding_clerk")
     clerk_grant = next(
         grant
@@ -2497,7 +2511,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         if grant["role_id"] == "position_molding_clerk"
     )
     assert clerk_grant["scope_mode"] == "cross_factory_read"
-    assert set(clerk_grant["permissions"]) == task_permissions | injection_permissions
+    assert set(clerk_grant["permissions"]) == task_permissions | injection_permissions | order_inbox_permissions
     assert client.get("/api/injection/BP-FIXED-CLERK-FOREIGN").status_code == 200
     foreign_engineering_detail = client.get(
         "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
@@ -2615,7 +2629,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         profile = login_fixed_position_test_user(client, username)
         grant = next(item for item in profile["grants"] if item["role_id"] == role_id)
         assert grant["scope_mode"] == "cross_factory_operate"
-        assert set(grant["permissions"]) == task_permissions | injection_permissions | {
+        assert set(grant["permissions"]) == task_permissions | injection_permissions | order_inbox_permissions | {
             "injection_scheduling:master_write"
         }
         assert client.get(
@@ -4251,10 +4265,11 @@ def test_export_molding_sample_excel_template_has_report_styling(client):
     assert "缺" in sheet_xml
     assert "原料小计" in sheet_xml
     assert "总计" in sheet_xml
-    assert '<mergeCell ref="A1:Z1"/>' in sheet_xml
-    assert '<mergeCell ref="F2:Z2"/>' in sheet_xml
+    assert "报价目标（啤/日）" in sheet_xml
+    assert '<mergeCell ref="A1:AA1"/>' in sheet_xml
+    assert '<mergeCell ref="F2:AA2"/>' in sheet_xml
     assert '<pane ySplit="5" topLeftCell="A6" activePane="bottomLeft" state="frozen"/>' in sheet_xml
-    assert f'<autoFilter ref="A{detail_header_row}:Z{detail_header_row}"/>' in sheet_xml
+    assert f'<autoFilter ref="A{detail_header_row}:AA{detail_header_row}"/>' in sheet_xml
     assert '<cols>' in sheet_xml
     assert 'customWidth="1"' in sheet_xml
     assert '<col min="2" max="2" width="24" customWidth="1"/>' in sheet_xml
