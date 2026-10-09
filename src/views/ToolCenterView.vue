@@ -49,6 +49,10 @@ import '@/features/document-tools/workbench.css'
 const appStore = useAppStore()
 const route = useRoute()
 const router = useRouter()
+const imageTranslationUrl = computed(() => `/image-translation/?${new URLSearchParams({ factory: appStore.activeFactoryId })}`)
+watch(() => route.query.tool, (tool) => {
+  if (tool === 'image-translation') window.location.replace(imageTranslationUrl.value)
+}, { immediate: true })
 // Do not use activeProductionFactory: its group fallback is Huaxing.
 const isHuaxing = computed(() => appStore.activeFactoryId === 'huaxing'
   && (!route.query.factory || route.query.factory === 'huaxing'))
@@ -143,7 +147,7 @@ let poll: ReturnType<typeof setTimeout> | undefined,
   selectionSequence = 0,
   lastCapabilitiesAt = 0
 const batchId = createRandomUuid()
-const toolIds = Object.keys(operationLabels) as Operation[]
+const toolIds: Operation[] = (Object.keys(operationLabels) as Operation[]).filter(id => id !== 'image_translate')
 const engineLabels: Record<string, string> = {
   office: 'Office 渲染',
   pdf: 'PDF 解析',
@@ -373,6 +377,10 @@ async function selectSource(sourceId: string, jobId?: string) {
   }
 }
 async function selectJob(job: Job) {
+  if (job.operation === 'image_translate') {
+    window.location.assign(`${imageTranslationUrl.value}&job=${encodeURIComponent(job.id)}`)
+    return
+  }
   tasksDialog.value?.close()
   if (job.source_id) await selectSource(job.source_id, job.id)
   else {
@@ -885,6 +893,7 @@ onBeforeUnmount(() => {
   <div
     ref="root"
     class="app-page dt-workbench"
+    data-yl-help="document-tools.overview"
     :class="{ 'dt-narrow': narrow, 'dt-phone': phone, 'dt-focus': focused }"
   >
     <PageHeader
@@ -895,6 +904,7 @@ onBeforeUnmount(() => {
       ><template #actions
         ><Button variant="outline" size="sm" :aria-pressed="sheetsActive" @click="selectSheets"
           ><Files :size="15" aria-hidden="true" />{{ sheetsActive ? '返回文档转换' : '协同填表' }}</Button
+        ><Button as-child variant="outline" size="sm"><a :href="imageTranslationUrl"><Languages :size="15" aria-hidden="true" />图片 / PDF 翻译</a></Button
         ><Button v-if="isHuaxing" variant="outline" size="sm" :aria-pressed="renameActive" @click="selectRename(!renameActive)"
           ><Files :size="15" aria-hidden="true" />{{ renameActive ? '返回文档转换' : '批量改名' }}</Button
         ><Button v-if="!renameActive && !sheetsActive" variant="outline" size="sm" @click="openDialog(tasksDialog)"
@@ -973,6 +983,9 @@ onBeforeUnmount(() => {
       <aside v-if="!focused" class="dt-rail" aria-label="文档工具与本批文件">
         <h2>文档工具</h2>
         <nav class="dt-tools" aria-label="选择文档工具">
+          <a :href="imageTranslationUrl" class="dt-image-translation-link">
+            <Languages :size="16" aria-hidden="true" /><span>图片 / PDF 翻译</span><ArrowRight :size="14" aria-hidden="true" />
+          </a>
           <button
             v-for="tool in toolIds"
             :key="tool"

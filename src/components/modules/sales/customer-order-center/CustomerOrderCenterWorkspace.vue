@@ -34,6 +34,7 @@ import { customerOrderApi } from '@/api/customerOrder'
 import type { MappedCustomerCode } from '@/api/customerOrder'
 import { customerOrderLedgerApi } from '@/api/customerOrderLedger'
 import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
+import type { FeedbackContext } from '@/api/moduleFeedback'
 import CustomerOrderLedger from './CustomerOrderLedger.vue'
 import CustomerOrderSchedule from './CustomerOrderSchedule.vue'
 import { getApiErrorMessage } from '@/lib/http'
@@ -231,15 +232,15 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
     {
       code: 'green-toys',
       name: 'Green Toys',
-      version: 'V1·OCR复核',
-      poAccept: '.png,.jpg,.jpeg',
-      poExtensions: ['.png', '.jpg', '.jpeg'],
+      version: 'V2·原单校验',
+      poAccept: '.html,.htm,.png,.jpg,.jpeg',
+      poExtensions: ['.html', '.htm', '.png', '.jpg', '.jpeg'],
       scheduleAccept: '.xlsx,.xlsm',
       scheduleExtensions: ['.xlsx', '.xlsm'],
-      poDescription: 'Green Toys Purchase Order 图片（PNG / JPG）',
+      poDescription: 'Green Toys 原始 Purchase Order（HTML，推荐）或图片（PNG / JPG）',
       templateDescription: '河源华康A Green Toys 客排货表',
       targetTemplate: 'HUAKANG_A_GREEN_TOYS_SCHEDULE_APPEND_V1',
-      ruleDescription: "OCR读取PO号、货号、数量、Deliver By Date及USD单价；按同货号继承中文品名、箱规、国家和落货港，走货方式固定40'YT，USD按7.8换算HKD。",
+      ruleDescription: "原始HTML逐行读取并核对明细及总金额；图片OCR保留可疑行供复核。按同货号继承中文品名、箱规、国家和落货港，走货方式固定40'YT，USD按7.8换算HKD。",
     },
     {
       code: 'headstart',
@@ -436,6 +437,19 @@ if (disneyProfile) {
   })
 }
 
+const seasonsProfile = CUSTOMER_PROFILES_BY_FACTORY.huaxing?.find((profile) => profile.code === 'seasons')
+if (seasonsProfile) {
+  CUSTOMER_PROFILES_BY_FACTORY['huakang-d']!.push({
+    ...seasonsProfile,
+    poExtensions: [...seasonsProfile.poExtensions],
+    scheduleExtensions: ['.xlsx'],
+    scheduleAccept: '.xlsx',
+    targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3',
+    templateDescription: '华康D 施信河源业务统一排期',
+    ruleDescription: '复用 SEASONS（施信）QF 与正式 PO 识别规则，只核对本次上传的华康D统一排期；三张表独立追加并保留已有记录、公式和人工字段，订单只保存到华康D台账。',
+  })
+}
+
 const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([
   'disney', 'edu', '360', 'green-toys', 'headstart', 'yinhui', 'seasons', 'maxx', 'shushupapa', 'barter',
   'casdon', 'jakks', 'simba', 'spin', 'goliath',
@@ -509,6 +523,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   navigate: [section: CustomerOrderCenterSection]
+  feedback: [context: FeedbackContext]
 }>()
 
 const poInput = ref<HTMLInputElement | null>(null)
@@ -545,6 +560,21 @@ const reconciliationLoading = ref(false)
 const reconciliationQuery = ref('')
 const reconciliationPage = ref(1)
 const reconciliationTotal = ref(0)
+
+function feedbackContext(): FeedbackContext {
+  const row = previewBatch.value?.rows.length === 1 ? previewBatch.value.rows[0] : undefined
+  return {
+    section: props.activeSection,
+    page: props.activeSection === 'preview' ? '预览与确认' : 'PO 与排期导入',
+    customer_code: selectedCustomerCode.value || undefined,
+    order_reference: row?.po_no || row?.contract_no || undefined,
+    product_no: row?.product_no || undefined,
+    batch_id: previewBatch.value?.preview_fingerprint?.slice(0, 64),
+    error_message: (parseFailureMessage.value || exportFailureMessage.value).slice(0, 1000) || undefined,
+    file_names: [...poFiles.value.map(file => file.name), ...(scheduleFile.value ? [scheduleFile.value.name] : [])].slice(0, 10),
+  }
+}
+defineExpose({ feedbackContext })
 const testDuplicateIssueCodes = new Set([
   'duplicate_reference',
   'existing_order_line',
@@ -1987,6 +2017,7 @@ onBeforeUnmount(() => {
                   </li>
                 </ul>
               </div>
+              <button type="button" class="button button--ghost" @click="emit('feedback', feedbackContext())">反馈此问题</button>
               <button
                 v-if="previewBatch"
                 type="button"
@@ -2286,7 +2317,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'ledger'" key="ledger" class="order-view" data-testid="order-ledger">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'exceptions'" key="exceptions" class="order-view" data-testid="order-exceptions">
@@ -2379,11 +2410,11 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'customer-schedule'" key="customer-schedule" class="order-view" data-testid="order-customer-schedule">
-        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" />
+        <CustomerOrderSchedule :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'schedule'" key="schedule-live" class="order-view" data-testid="order-schedule">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" @import="navigate('import')" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" initial-view="all" display-mode="schedule" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="false" key="schedule" class="order-view" data-testid="order-schedule-static">

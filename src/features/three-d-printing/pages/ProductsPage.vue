@@ -5,6 +5,8 @@ import LegacyDialog from "../components/LegacyDialog.vue";
 import { reactive } from "vue";
 const brokenImages = reactive(new Set<string>());
 import PageControls from "../components/PageControls.vue";
+import TdpButton from "../components/TdpButton.vue";
+import { Plus, Search } from "@lucide/vue";
 import { useWorkspaceContext } from "../context";
 const {
   listPages,
@@ -41,9 +43,13 @@ watch(pendingProductImage, (file, _previous, onCleanup) => {
   });
 });
 watch(showForm, (open) => {
-  imageError.value = "";
-  if (!open) pendingProductImage.value = null;
+  if (open) imageError.value = "";
 });
+function afterFormClose() {
+  if (showForm.value) return;
+  imageError.value = "";
+  pendingProductImage.value = null;
+}
 watch(imageInputKey, () => {
   imageError.value = "";
 });
@@ -97,9 +103,7 @@ async function saveForm() {
   <template v-if="dashboard">
     <section class="space-y-5">
       <div class="legacy-toolbar">
-        <button v-if="canOperate" class="action-button" @click="openAdd">
-          + 添加产品
-        </button>
+        <TdpButton v-if="canOperate" tone="primary" @click="openAdd"><template #icon><Plus :size="16" /></template>添加产品</TdpButton>
       </div>
       <form
         class="collection-filters flex flex-wrap gap-3 rounded-xl border bg-white p-3"
@@ -114,7 +118,7 @@ async function saveForm() {
           <option value="missing_image">缺图</option>
           <option value="duplicate">重复名称</option>
           <option value="incomplete">资料不完整</option></select
-        ><button type="submit" class="rounded border px-4">查询</button>
+        ><TdpButton tone="soft" type="submit" :busy="listPages.products!.busy"><template #icon><Search :size="16" /></template>查询</TdpButton>
       </form>
       <PageControls
         :page="listPages.products!.page"
@@ -123,9 +127,10 @@ async function saveForm() {
         @change="loadPage('products', $event)"
       />
       <LegacyDialog
-        v-if="showForm"
+        :open="showForm"
         title="产品"
         @close="showForm = false"
+        @after-close="afterFormClose"
         @paste="pasteImage"
       >
         <form
@@ -138,14 +143,14 @@ async function saveForm() {
               <h2>{{ productForm.id ? "编辑产品" : "新增产品" }}</h2>
               <p>填写产品资料；复制图片后可直接在此窗口按 Ctrl+V 粘贴。</p>
             </div>
-            <button
+            <TdpButton
               v-if="productForm.id"
-              class="action-button secondary"
+              tone="secondary"
               type="button"
               @click="resetProductForm"
             >
               取消编辑
-            </button>
+            </TdpButton>
           </div>
           <div class="form-grid">
             <label
@@ -233,22 +238,18 @@ async function saveForm() {
               <p v-if="imageError" role="alert" class="image-error">
                 {{ imageError }}
               </p>
-              <button
+              <TdpButton
                 v-if="pendingProductImage"
                 type="button"
-                class="action-button secondary"
+                tone="secondary"
                 :disabled="saving"
                 @click="clearImage"
               >
                 取消本次图片
-              </button>
+              </TdpButton>
             </div>
           </div>
-          <button class="action-button mt-4" type="submit" :disabled="saving">
-            <Save class="size-4" />{{
-              saving ? "正在保存产品和图片…" : "保存产品"
-            }}
-          </button>
+          <TdpButton class="mt-4" tone="primary" type="submit" :busy="saving"><template #icon><Save class="size-4" /></template>{{ saving ? "正在保存产品和图片…" : "保存产品" }}</TdpButton>
         </form>
       </LegacyDialog>
       <div class="panel-card">
@@ -320,7 +321,7 @@ async function saveForm() {
                 </td>
               </tr>
               <tr v-if="!dashboard.products.length">
-                <td colspan="10">暂无产品，点击“+ 添加产品”</td>
+                <td colspan="10">暂无产品，点击“添加产品”</td>
               </tr>
             </tbody>
           </table>

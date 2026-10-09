@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="510" viewBox="0 0 1080 510" role="img" aria-labelledby="title desc">
+<title id="title">协作页操作区域</title><desc id="desc">从左侧导航查找部门，在中间填写，在右侧查原始资料，底部保存当前款并查看汇总输出。此图是界面结构示意。</desc>
+<rect width="1080" height="510" rx="18" fill="#f8fafc"/>
+<g font-family="Microsoft YaHei, PingFang SC, sans-serif">
+<text x="30" y="44" font-size="22" font-weight="700" fill="#134e4a">填写时用好三个区域</text><text x="30" y="72" font-size="15" fill="#64748b">界面结构示意 · 示例产品 · 不包含真实业务数据</text>
+<rect x="30" y="95" width="195" height="310" rx="12" fill="#e6f6f2"/><rect x="245" y="95" width="535" height="310" rx="12" fill="white" stroke="#cbd5e1"/><rect x="800" y="95" width="250" height="310" rx="12" fill="#eff6ff"/>
+<g font-size="18" font-weight="700"><text x="48" y="131" fill="#0f766e">页面导航</text><text x="266" y="131" fill="#0f766e">当前产品 · 连续填写</text><text x="820" y="131" fill="#0369a1">报价与资料</text></g>
+<g font-size="16" fill="#475569"><text x="48" y="173">报价概览</text><text x="48" y="210">工程 / 啤机</text><text x="48" y="247">装配 / 其他部门</text><text x="48" y="284">业务</text><text x="48" y="321">整单操作</text><text x="48" y="378">展开后定位区域</text><text x="820" y="173">报价：查看成本汇总</text><text x="820" y="213">部门资料：核对原文件</text><text x="820" y="363">按当前部门查看</text><text x="820" y="389">不需要时可收起</text></g>
+<g fill="#f8fafc" stroke="#e2e8f0"><rect x="266" y="153" width="493" height="63" rx="8"/><rect x="266" y="230" width="493" height="63" rx="8"/><rect x="266" y="307" width="493" height="63" rx="8"/></g>
+<g fill="#334155" font-size="16"><text x="284" y="180">工程核价明细</text><text x="284" y="202" font-size="14">核对模具与原始资料</text><text x="284" y="257">参与部门核价明细</text><text x="284" y="279" font-size="14">填写、预览导入、保存草稿</text><text x="284" y="334">业务与包装资料</text><text x="284" y="356" font-size="14">核对装箱、倍率、汇率和启用费用</text></g>
+<rect x="30" y="424" width="1020" height="56" rx="12" fill="#0f766e"/><text x="50" y="459" fill="white" font-size="17" font-weight="700">底部整单操作</text><text x="256" y="459" fill="white" font-size="16">保存当前款 → 查看汇总与输出 → 按当前流程完成输出</text>
+</g></svg>

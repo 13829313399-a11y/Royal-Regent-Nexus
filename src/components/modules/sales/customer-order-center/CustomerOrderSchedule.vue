@@ -7,11 +7,12 @@ import {
   type CustomerOrderScheduleSection,
 } from '@/api/customerOrderSchedule'
 import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
+import type { FeedbackContext } from '@/api/moduleFeedback'
 import { getApiErrorMessage } from '@/lib/http'
 import CustomerOrderLedger from './CustomerOrderLedger.vue'
 
 const props = defineProps<{ factoryId: string; factoryName: string }>()
-const emit = defineEmits<{ import: [] }>()
+const emit = defineEmits<{ import: []; feedback: [context: FeedbackContext] }>()
 
 type SectionKey = 'unshipped' | 'shipped' | 'cancelled'
 type AppliedFilters = { customerCode: string; q: string; dateFrom: string; dateTo: string }
@@ -284,7 +285,7 @@ watch(() => props.factoryId, () => {
       </details>
     </template>
 
-    <CustomerOrderLedger v-if="selectedLineId" :factory-id="factoryId" :factory-name="factoryName" detail-only :focus-line-id="selectedLineId" @changed="refreshSchedule" @close-detail="selectedLineId = ''" />
+    <CustomerOrderLedger v-if="selectedLineId" :factory-id="factoryId" :factory-name="factoryName" detail-only :focus-line-id="selectedLineId" @changed="refreshSchedule" @close-detail="selectedLineId = ''" @feedback="emit('feedback', $event)" />
   </section>
 </template>
 

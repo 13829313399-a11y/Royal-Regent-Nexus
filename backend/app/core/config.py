@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -16,10 +16,14 @@ class Settings(BaseSettings):
     seed_admin_password: str = ""
     authz_mode: Literal["legacy", "shadow", "enforce"] = "legacy"
     authz_writes_enabled: bool = False
+    iam_identity_writes_enabled: bool = False
+    iam_identity_scheduling_enabled: bool = False
     three_d_asset_dir: str = str(BACKEND_DIR / "data" / "three-d-printing-assets")
     three_d_edge_agent_token: str = ""
     three_d_network_health_token: str = ""
-    uv_printing_enabled: bool = False
+    spray_ops_enabled: bool = False
+    uv_ops_enabled: bool = False
+    uv_ops_dispatch_enabled: bool = False
     three_d_connector_enabled: bool = False
     three_d_connector_token: str = ""
     three_d_connector_control_enabled: bool = False
@@ -40,6 +44,31 @@ class Settings(BaseSettings):
     )
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
+    assistant_enabled: bool = False
+    assistant_provider: Literal["qwen_openai_compatible"] = "qwen_openai_compatible"
+    assistant_qwen_api_key: SecretStr = SecretStr("")
+    assistant_qwen_base_url: str = ""
+    assistant_model: str = ""
+    assistant_model_capabilities_file: str = ""
+    assistant_connect_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    assistant_upstream_idle_timeout_seconds: int = Field(default=180, ge=1, le=600)
+    assistant_run_timeout_seconds: int = Field(default=900, ge=1, le=3600)
+    assistant_max_output_tokens: int | None = Field(default=None, ge=1)
+    assistant_context_character_budget: int = Field(default=100000, ge=1000)
+    assistant_per_user_concurrency: int = Field(default=2, ge=1, le=32)
+    assistant_global_concurrency: int = Field(default=8, ge=1, le=128)
+    assistant_storage_dir: str = str(BACKEND_DIR / "data" / "assistant")
+    assistant_trusted_origins: list[str] = []
+    assistant_max_file_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
+    assistant_max_tool_rounds: int = Field(default=5, ge=1, le=16)
+    assistant_daily_token_budget: int | None = Field(default=None, ge=1)
+    assistant_retention_days: int | None = Field(default=None, ge=1)
+
+    @field_validator("assistant_max_output_tokens", "assistant_daily_token_budget", "assistant_retention_days", mode="before")
+    @classmethod
+    def assistant_blank_is_unlimited(cls, value):
+        return None if isinstance(value, str) and not value.strip() else value
+
     document_tools_storage_dir: str = str(BACKEND_DIR / "data" / "document-tools")
     document_tools_worker_concurrency: int = Field(default=2, ge=1, le=8)
     document_tools_lease_seconds: int = Field(default=90, ge=15, le=600)
@@ -58,6 +87,12 @@ class Settings(BaseSettings):
     document_tools_qwen_layout_model: str = "qwen3-vl-plus"
     document_tools_translation_model: str = "qwen3-vl-plus"
     document_tools_qwen_timeout_seconds: int = Field(default=90, ge=5, le=300)
+    image_translation_model_dir: str = str(BACKEND_DIR / "models" / "image-translation")
+    image_translation_runner: str = str(BACKEND_DIR.parent / "shinobu-web" / "server" / "dist" / "runner.mjs")
+    image_translation_node: str = "node"
+    image_translation_timeout_seconds: int = Field(default=1800, ge=30, le=7200)
+    image_translation_max_pixels: int = Field(default=24_000_000, ge=1, le=40_000_000)
+    image_translation_max_total_pixels: int = Field(default=80_000_000, ge=1, le=200_000_000)
     @property
     def effective_session_cookie_secure(self) -> bool:
         return self.session_cookie_secure

@@ -353,9 +353,12 @@ def act(db, *, item_id, payload, user):
 def analytics(db, days=30):
     now = business_now()
     begin = now - timedelta(days=days)
+    record = m.ThreeDPrintingProductionRecord
     records = list(
-        db.scalars(
-            select(m.ThreeDPrintingProductionRecord).where(
+        db.execute(
+            select(record.machine_no, record.business_date, record.print_start_at,
+                   record.print_end_at, record.duration_hours, record.quantity,
+                   record.run_status).where(
                 m.ThreeDPrintingProductionRecord.factory_id == "huakang-a",
                 m.ThreeDPrintingProductionRecord.deleted_at == "",
                 or_(
@@ -364,12 +367,20 @@ def analytics(db, days=30):
                     m.ThreeDPrintingProductionRecord.print_end_at
                     >= begin.date().isoformat(),
                 ),
-            )
+            ).execution_options(yield_per=500)
         )
     )
     from app.services.three_d_efficiency import counters
 
     measured = counters(db, days)
+    maintained = dict(db.execute(select(
+        m.ThreeDPrintingMaintenance.machine_no,
+        func.max(m.ThreeDPrintingMaintenance.business_date),
+    ).where(m.ThreeDPrintingMaintenance.factory_id == "huakang-a")
+      .group_by(m.ThreeDPrintingMaintenance.machine_no)).all())
+    profiles = dict(db.execute(select(MODEL.resource_key, MODEL.data_json).where(
+        MODEL.factory_id == "huakang-a", MODEL.kind == "profile", MODEL.status == "active",
+    )).all())
     result = []
     for number in range(1, 12):
         rows = [r for r in records if r.machine_no == number]
@@ -398,28 +409,14 @@ def analytics(db, days=30):
         )
         availability = min(1, occupied / (days * 24)) if timed_records else None
         performance = min(1, expected / occupied) if occupied and expected else None
-        maintenance = db.scalar(
-            select(m.ThreeDPrintingMaintenance)
-            .where(
-                m.ThreeDPrintingMaintenance.factory_id == "huakang-a",
-                m.ThreeDPrintingMaintenance.machine_no == number,
-            )
-            .order_by(m.ThreeDPrintingMaintenance.business_date.desc())
-        )
-        profile = db.scalar(
-            select(MODEL).where(
-                MODEL.factory_id == "huakang-a",
-                MODEL.kind == "profile",
-                MODEL.resource_key == str(number),
-                MODEL.status == "active",
-            )
-        )
+        maintenance = maintained.get(number)
+        profile = profiles.get(str(number))
         interval = (
-            json.loads(profile.data_json)["service_interval_hours"] if profile else 250
+            json.loads(profile)["service_interval_hours"] if profile else 250
         )
         service_hours = 0.0
         for row in rows:
-            if maintenance and row.business_date <= maintenance.business_date:
+            if maintenance and row.business_date <= maintenance:
                 continue
             start, end = (
                 parse_business_timestamp(row.print_start_at),

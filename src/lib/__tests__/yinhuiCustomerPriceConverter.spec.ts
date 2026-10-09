@@ -1,3 +1,4 @@
+import type { CustomerPricingSettings } from '@/lib/customerPriceConverters/pricingSettings'
 import { readFileSync } from 'node:fs'
 import { strFromU8, unzipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
@@ -62,6 +63,19 @@ function p4(): P4InternalQuoteArtifact {
 }
 
 describe('Silverlit temporary independent mapping', () => {
+  it('uses maintained material, labor and detail rates once for each conversion', () => {
+    const definition = JSON.parse(readFileSync('shared/customerPriceDefaults.json', 'utf8')).yinhui
+    const pricing: CustomerPricingSettings = { factory_id: 'huaxing', customer_id: 'yinhui', revision: 1, snapshot_id: 'y1', materials: definition.materials, rates: Object.fromEntries(Object.entries(definition.rates).map(([k,v]) => [k,(v as {value:number}).value])), texts: {}, updated_at: '', updated_by_name: '' }
+    pricing.materials.find(m => m.material === 'ABS')!.price = 20
+    pricing.rates.material_multiplier = 1.1; pricing.rates.injection_multiplier = 1.3; pricing.rates.detail_multiplier = 1.2
+    const before = convertYinhuiP4InternalQuote(p4(), 'a.xlsx').quoteData
+    const after = convertYinhuiP4InternalQuote(p4(), 'a.xlsx', pricing).quoteData
+    expect(yinhuiMaterialPrice(after, 'ABS')).toBe(22)
+    expect(after.tools[0]!.laborHkd).toBeCloseTo(before.tools[0]!.laborHkd * 1.3)
+    expect(after.mechanical[0]!.amountHkd).toBeCloseTo(before.mechanical[0]!.amountHkd * 1.2)
+    expect(convertYinhuiP4InternalQuote(p4(), 'b.xlsx').quoteData.mechanical).toEqual(before.mechanical)
+  })
+
   it('preserves Chinese BOM descriptions from approved P4 data through export', () => {
     const artifact = p4()
     artifact.productName = '#00012 Sample Robot'

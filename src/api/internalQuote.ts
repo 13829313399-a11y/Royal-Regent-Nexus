@@ -37,6 +37,11 @@ export interface ApiInternalQuoteSection {
 }
 
 export interface ApiInternalQuote {
+  document_product_count?: number
+  document_version_count?: number
+  document_quote_id?: string
+  product_root_id?: string
+  delete_block_reason?: string
   history_sources?: InternalQuoteHistoryEvidence[]
   id: string
   factory_id: string
@@ -302,6 +307,62 @@ export interface ApiInternalQuoteVersionComparison {
   total_delta_hkd: string
 }
 
+export interface ApiPackagingCopyRequest {
+  revision: number
+  targets: Array<{ quote_id: string; revision: number }>
+  include_assembly: boolean
+  reason: string
+  preview_token?: string
+}
+export interface ApiPackagingCopyPreview {
+  preview_token: string
+  source_name: string
+  material_details?: Array<{ item: string; quantity: number | string; price: number | string; currency: string; specification: string }>
+  targets: Array<{ quote_id: string; product_name: string; changed: boolean; packaging_material_count: number; carton_count: number; replaces_existing: boolean }>
+}
+
+export interface ApiAlternativeSyncRequest {
+  revision: number
+  family_revision: number
+  blocks: string[]
+  targets: Array<{ quote_id: string; revision: number; create_version: boolean }>
+  reason: string
+  preview_token?: string
+}
+export interface ApiAlternativeSyncPreview {
+  preview_token: string
+  targets: Array<{ quote_id: string; version_label: string; create_version: boolean; changed: boolean;
+    before: ApiInternalQuote; after: ApiInternalQuote; sections: ApiInternalQuoteSectionComparison[] }>
+}
+
+export interface ApiInternalQuoteAlternative {
+  can_delete?: boolean
+  delete_block_reason?: string
+  quote_id: string
+  scenario_id: string
+  scenario_name: string
+  version_number: number
+  version_label: string
+  source_quote_id: string
+  change_note: string
+  status: string
+  issued_at: string
+  reported_at: string
+  created_at: string
+  quote_no: string
+  product_name: string
+  customer: string
+  quantity: number
+  archived: boolean
+}
+
+export interface ApiInternalQuoteAlternativeFamily {
+  family_id: string
+  revision: number
+  selected_quote_id: string
+  items: ApiInternalQuoteAlternative[]
+}
+
 export interface ApiInternalQuoteBusinessOwner {
   id: string
   username: string
@@ -484,7 +545,7 @@ export interface InternalQuoteCreateRequest {
   target_date: string
   remark: string
   participating_sections: InternalQuoteSectionCode[]
-  workflow_mode: 'section_review' | 'whole_quote_review'
+  workflow_mode: 'section_review' | 'whole_quote_review' | 'direct_output'
   quote_type: 'single' | 'series' | 'multi_region'
   products: Array<{
     product_name: string
@@ -549,7 +610,7 @@ export interface InternalQuoteCloneRequest {
   target_date: string
   remark?: string
   participating_sections?: InternalQuoteSectionCode[]
-  workflow_mode?: 'section_review' | 'whole_quote_review'
+  workflow_mode?: 'section_review' | 'whole_quote_review' | 'direct_output'
 }
 
 export interface InternalQuoteHeaderUpdateRequest {
@@ -609,6 +670,12 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async listBatchProducts(quoteId: string) {
       const response = await client.get<ApiInternalQuoteBatchProduct[]>(`/internal-quotes/${quoteId}/batch-products`)
       return response.data
+    },
+    async previewPackagingCopy(quoteId: string, payload: ApiPackagingCopyRequest) {
+      return (await client.post<ApiPackagingCopyPreview>(`/internal-quotes/${quoteId}/packaging-copy/preview`, payload)).data
+    },
+    async applyPackagingCopy(quoteId: string, payload: ApiPackagingCopyRequest) {
+      return (await client.post<{ targets: ApiInternalQuote[] }>(`/internal-quotes/${quoteId}/packaging-copy/apply`, payload)).data
     },
     async copyBatchBaseline(quoteId: string, targetQuoteId: string, revision: number) {
       const response = await client.post<ApiInternalQuote>(
@@ -871,9 +938,10 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async deleteComponentImage(quoteId: string, componentId: string, revision: number) {
       await client.delete(`/internal-quotes/${quoteId}/components/${encodeURIComponent(componentId)}/image`, { params: { revision } })
     },
-    async uploadProductImage(quoteId: string, file: File) {
+    async uploadProductImage(quoteId: string, file: File, revision?: number) {
       const form = new FormData()
       form.append('file', file)
+      if (revision !== undefined) form.append('revision', String(revision))
       const response = await client.post<ApiInternalQuoteAttachment>(
         `/internal-quotes/${quoteId}/product-image`,
         form,
@@ -907,6 +975,40 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/exports`)
       return response.data
     },
+    async directIssue(quoteId: string, revision: number) {
+      const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/direct-issue`, { revision })
+      return response.data
+    },
+    async exportSeries(quoteId: string, products: Array<{ quote_id: string; revision: number }>) {
+      try {
+        const response = await client.post<Blob>(`/internal-quotes/${quoteId}/series-export`, { products }, { responseType: 'blob' })
+        return response.data
+      } catch (cause) {
+        const data = (cause as { response?: { data?: unknown } })?.response?.data
+        if (data instanceof Blob) {
+          let detail: unknown
+          try { detail = JSON.parse(await data.text()).detail } catch { /* Retain the original transport error. */ }
+          if (typeof detail === 'string') throw new Error(detail)
+          if (detail && typeof detail === 'object' && 'message' in detail) throw new Error(String(detail.message))
+        }
+        throw cause
+      }
+    },
+    async listAlternatives(quoteId: string) {
+      return (await client.get<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/alternatives`)).data
+    },
+    async createAlternative(quoteId: string, payload: { revision: number; family_revision: number; kind: 'scenario' | 'version'; name: string; change_note: string }) {
+      return (await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/alternatives`, payload)).data
+    },
+    async selectAlternative(quoteId: string, payload: { family_revision: number; selected_quote_id: string; reason: string }) {
+      return (await client.patch<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/alternative-selection`, payload)).data
+    },
+    async markReported(quoteId: string, revision: number) {
+      return (await client.post<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/reported`, { revision })).data
+    },
+    async archiveAlternative(quoteId: string, payload: { family_revision: number; reason: string; archived: boolean }) {
+      return (await client.post<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/alternative-archive`, payload)).data
+    },
     async downloadExport(quoteId: string, exportId: string) {
       const response = await client.get<Blob>(`/internal-quotes/${quoteId}/exports/${exportId}/download`, { responseType: 'blob' })
       return response.data
@@ -938,6 +1040,15 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async compareVersion(quoteId: string, baseQuoteId: string) {
       const response = await client.get<ApiInternalQuoteVersionComparison>(`/internal-quotes/${quoteId}/compare/${baseQuoteId}`)
       return response.data
+    },
+    async syncOptions(quoteId: string) {
+      return (await client.get<Array<{ key: string; label: string; department: string }>>(`/internal-quotes/${quoteId}/alternative-sync/options`)).data
+    },
+    async previewAlternativeSync(quoteId: string, payload: ApiAlternativeSyncRequest) {
+      return (await client.post<ApiAlternativeSyncPreview>(`/internal-quotes/${quoteId}/alternative-sync/preview`, payload)).data
+    },
+    async applyAlternativeSync(quoteId: string, payload: ApiAlternativeSyncRequest) {
+      return (await client.post<{ targets: Array<{ quote_id: string; version_label: string; changed: boolean }> }>(`/internal-quotes/${quoteId}/alternative-sync/apply`, payload)).data
     },
   }
 }

@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from starlette.concurrency import run_in_threadpool
+from app.services.customer_order_jobs import run_order_job, order_job_request
 
 from app.core.config import settings
 from app.db import get_db
@@ -78,7 +78,7 @@ from app.services.customer_order_unified import (
 )
 
 
-router = APIRouter(prefix="/api/customer-orders", tags=["customer-orders"])
+router = APIRouter(prefix="/api/customer-orders", tags=["customer-orders"], dependencies=[Depends(order_job_request)])
 SALES_DEPARTMENTS = ("sales-business",)
 XLS_CONTENT_TYPE = "application/vnd.ms-excel"
 MAX_SKIPPED_ISSUE_KEYS = MAX_BATCH_PO_FILES * 200
@@ -119,6 +119,7 @@ for customer_code in HUAKANG_C_CUSTOMER_MAPPINGS:
 CUSTOMER_FACTORY_OPTIONS.pop("spin-master", None)
 CUSTOMER_FACTORY_OPTIONS["jp"] = ("huakang-c",)
 CUSTOMER_FACTORY_OPTIONS["disney"] = ("huaxing", "huakang-d")
+CUSTOMER_FACTORY_OPTIONS["seasons"] = ("huaxing", "huakang-d")
 CUSTOMER_FACTORY_OPTIONS["ubtech"] = ("huakang-d",)
 CUSTOMER_NAMES = {
     "ubtech": "优必选",
@@ -185,7 +186,7 @@ def _get_mapped_customer_spec(customer_code: str, factory_id: str):
     if customer_code == 'ubtech' and factory_id == 'huakang-d':
         from app.services.customer_order_ubtech import SPEC
         return SPEC
-    if customer_code == "disney" and factory_id == "huakang-d":
+    if customer_code in {"disney", "seasons"} and factory_id == "huakang-d":
         return get_huaxing_customer_mapping(customer_code)
     if factory_id == "huakang-a":
         try:
@@ -743,8 +744,9 @@ async def preview_buzzbee_customer_order(
     if not po_content or not schedule_content:
         raise HTTPException(status_code=400, detail="PO 和客户排期文件都不能为空")
     try:
-        preview = await run_in_threadpool(
+        preview = await run_order_job(
             _create_unified_single_preview,
+            db=db,
             customer_code="buzzbee",
             factory_id=normalized_factory_id,
             received_date=received_date,
@@ -789,8 +791,9 @@ async def preview_buzzbee_customer_order_batch(
     if not schedule_content:
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
-        preview = await run_in_threadpool(
+        preview = await run_order_job(
             _create_special_batch_preview,
+            db=db,
             customer_code="buzzbee",
             factory_id=normalized_factory_id,
             received_date=received_date,
@@ -851,8 +854,9 @@ async def export_buzzbee_customer_schedule(
     if not po_content or not schedule_content:
         raise HTTPException(status_code=400, detail="PO 和客户排期文件都不能为空")
     try:
-        output, file_name, preview = await run_in_threadpool(
+        output, file_name, preview = await run_order_job(
             _export_unified_single_schedule,
+            db=db,
             customer_code="buzzbee",
             factory_id=normalized_factory_id,
             received_date=received_date,
@@ -936,8 +940,9 @@ async def export_buzzbee_customer_schedule_batch(
     if not schedule_content:
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
-        output, file_name, preview = await run_in_threadpool(
+        output, file_name, preview = await run_order_job(
             _export_special_batch_schedule,
+            db=db,
             customer_code="buzzbee",
             factory_id=normalized_factory_id,
             received_date=received_date,
@@ -1005,8 +1010,9 @@ async def preview_dickie_customer_order_batch(
     if not schedule_content:
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
-        preview = await run_in_threadpool(
+        preview = await run_order_job(
             _create_special_batch_preview,
+            db=db,
             customer_code="dickie",
             factory_id=normalized_factory_id,
             received_date=received_date,
@@ -1066,8 +1072,9 @@ async def export_dickie_customer_schedule_batch(
     if not schedule_content:
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
-        output, file_name, preview = await run_in_threadpool(
+        output, file_name, preview = await run_order_job(
             _export_special_batch_schedule,
+            db=db,
             customer_code="dickie",
             factory_id=normalized_factory_id,
             received_date=received_date,
@@ -1139,8 +1146,9 @@ async def preview_caixing_customer_order_batch(
     if not schedule_content:
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
-        preview = await run_in_threadpool(
+        preview = await run_order_job(
             _create_special_batch_preview,
+            db=db,
             customer_code="caixing",
             factory_id=normalized_factory_id,
             received_date=received_date,
@@ -1204,8 +1212,9 @@ async def export_caixing_customer_schedule_batch(
     if not schedule_content:
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
     try:
-        output, file_name, preview = await run_in_threadpool(
+        output, file_name, preview = await run_order_job(
             _export_special_batch_schedule,
+            db=db,
             customer_code="caixing",
             factory_id=normalized_factory_id,
             received_date=received_date,
@@ -1320,8 +1329,9 @@ async def preview_mapped_customer_order_batch(
     if len(schedule_content) > MAX_SCHEDULE_BYTES:
         raise HTTPException(status_code=400, detail="客户排期文件超过 35MB 限制")
     try:
-        preview = await run_in_threadpool(
+        preview = await run_order_job(
             _create_mapped_customer_preview,
+            db=db,
             customer_code=customer_code,
             factory_id=normalized_factory_id,
             received_date=received_date,
@@ -1398,8 +1408,9 @@ async def export_mapped_customer_order_batch(
     if len(schedule_content) > MAX_SCHEDULE_BYTES:
         raise HTTPException(status_code=400, detail="客户排期文件超过 35MB 限制")
     try:
-        output, file_name, preview = await run_in_threadpool(
+        output, file_name, preview = await run_order_job(
             _export_mapped_customer_schedule,
+            db=db,
             customer_code=customer_code,
             factory_id=normalized_factory_id,
             received_date=received_date,

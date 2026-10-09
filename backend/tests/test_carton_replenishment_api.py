@@ -204,11 +204,14 @@ def test_replenishment_requires_original_issue_and_available_physical_stock(monk
         row = _orders(client)[0]
         stocks = client.get(BASE + "/inventory/positions", params={"factory_id": "huaxing"}).json()
         before = ledger(client)
-        assert replenish(client, row, body(row, stocks)).status_code == 409
+        # Submission now issues P00 automatically. Exercise the missing-document
+        # guard using a legacy missing-issue fixture without deleting audit data.
+        from app.services import carton_procurement as core
+        with monkeypatch.context() as legacy:
+            legacy.setattr(core, "_purchase_order_issues", lambda *_: [])
+            assert replenish(client, row, body(row, stocks)).status_code == 409
         assert ledger(client) == before
 
-        result = client.post(f"{BASE}/orders/{row['order_no']}/purchase-order-issues.xlsx", json={"factory_id": "huaxing", "expected_revision": row["revision"]})
-        assert result.status_code == 200, result.text
         location = body(row, stocks)["lines"][0]["location_id"]
         result = client.post(BASE + "/inventory/movements", json=outbound(row, 9, location_id=location, issue_kind="USAGE"))
         assert result.status_code == 201, result.text

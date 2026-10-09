@@ -1,0 +1,39 @@
+{
+  "checks": [
+    "synthetic collector persistence to visible browser state under five seconds",
+    "zero-gap shift close and immutable monthly close",
+    "actual XLSX jobs and downloads include linked facts",
+    "desktop and mobile keyboard accessible layouts"
+  ],
+  "errors": [],
+  "failedRequests": [],
+  "latencies": [
+    2401,
+    1889,
+    2396,
+    1869,
+    1873
+  ],
+  "downloads": [
+    {
+      "kind": "production",
+      "path": "D:/RR/.tmp/uv-closure-20260929/browser-export-production.xlsx",
+      "id": "c9f54e2ed9244b1fb24bbad2459f50cb"
+    },
+    {
+      "kind": "handovers",
+      "path": "D:/RR/.tmp/uv-closure-20260929/browser-export-handovers.xlsx",
+      "id": "5b661d00d56d4797a047d1d09203d3f4"
+    },
+    {
+      "kind": "wages",
+      "path": "D:/RR/.tmp/uv-closure-20260929/browser-export-wages.xlsx",
+      "id": "876d160d5c7042afaad8b8d084e50f23"
+    },
+    {
+      "kind": "monthly",
+      "path": "D:/RR/.tmp/uv-closure-20260929/browser-export-monthly.xlsx",
+      "id": "144251458d1f4365ac26e79d88c077cb"
+    }
+  ]
+}

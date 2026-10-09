@@ -1,54 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { Activity, CalendarClock, ClipboardList, Gauge, HardHat, Route } from '@lucide/vue'
-import { useSprayWorkspace, capabilities, localDate, str, amount, type Entity } from '../workspace'
-import SprayStatusPill from '../components/ui/SprayStatusPill.vue'
-const s = useSprayWorkspace()
-/* 泳道顺序固定为手喷、自动、移印、UV，进场级联既有意义也稳定，不随数据顺序抖动。 */
-const lanes = computed(() => capabilities.filter(v => v.value !== 'uv' || s.items('resources').some(r => r.capability === 'uv')))
-const route = (page: string) => ({ path: '/modules/production/spray-production/' + page, query: { factory: s.factory } })
-const tasks = (capability: string) => s.items('tasks').filter(t => !['cancelled', 'completed'].includes(str(t, 'status')) && s.find('steps', t.step_id)?.capability === capability)
-const due = computed(() => [...s.items('orders')].filter(o => o.status === 'active').sort((a, b) => str(a, 'due_date').localeCompare(str(b, 'due_date'))).slice(0, 8))
-const counts = computed(() => s.summary?.counts)
-/* 每个数字同时给出业务口径与图标，避免只看数字不知道范围。 */
-const metrics = computed(() => [
-  { key: 'orders', value: counts.value?.orders, label: '执行工单', hint: '工单交付 · 待跟踪', to: 'orders', icon: ClipboardList },
-  { key: 'running', value: counts.value?.running, label: '正在执行', hint: '资源占用中的任务', to: 'schedule', icon: Activity, live: true },
-  { key: 'planned', value: counts.value?.planned, label: '已排待开工', hint: '已预留资源与时段', to: 'schedule', icon: CalendarClock },
-  { key: 'resources', value: counts.value?.resources, label: '已配置资源', hint: '本厂机台 / 工位 / 班组', to: 'master', icon: HardHat },
-])
-function progress(task: Record<string, unknown>) {
-  const total = Number(task.quantity)
-  return total > 0 ? Math.min(100, Math.max(0, Number(task.reported) / total * 100)) : 0
-}
-/* 交期状态：过期用警告色、未过期用信息色、无日期用中性色，文字始终写明日期。 */
-function dueTone(order: Entity) {
-  const date = str(order, 'due_date')
-  if (!date) return 'neutral' as const
-  return date < localDate() ? 'warn' as const : 'info' as const
-}
+import { ArrowRight, ArrowUpRight, CircleAlert, CheckCheck, CalendarClock, PackageOpen } from '@lucide/vue'
+import { useSprayPage } from '../usePage'
+import { SPRAY_BASE, FACTORY_NAMES, dateTime, number, stateLabel, type Demand, type Task, type Resource } from '../contracts'
+import WorkspaceState from '../components/WorkspaceState.vue'
+const w=useSprayPage(['demands','tasks','resources'])
+const overview=ref<{counts:Record<string,number>;stock:{state:string;unit:string;quantity:string}[]}|null>(null)
+watch(()=>w.ready.value,async ready=>{if(ready)try{overview.value=(await w.query<NonNullable<typeof overview.value>>('overview')).data}catch(cause){w.error.value=w.explain(cause)}},{immediate:true})
+const demands=computed(()=>w.items<Demand>('demands').filter(d=>d.status==='confirmed').flatMap(d=>d.lines.map(l=>({...l,demand:d}))).sort((a,b)=>a.due_date.localeCompare(b.due_date)).slice(0,8))
+const executing=computed(()=>w.items<Task>('tasks').filter(t=>t.status==='started').sort((a,b)=>a.start_at.localeCompare(b.start_at)))
+const resource=(id:string)=>w.items<Resource>('resources').find(r=>r.id===id)?.name??'资源资料待核对'
+const metrics=[{key:'demands',label:'执行订单',hint:'已确认需求'},{key:'started',label:'正在执行',hint:'已开工任务'},{key:'planned',label:'已排待开',hint:'排期已发布'},{key:'quality_batches',label:'质量待判',hint:'待判批次'}]
 </script>
-<template>
-  <div class="spray-toolbar"><div><h2>生产总览</h2><p>沿实体批次查看工序、交接和下一步：哪个部件在哪里、等待谁处理。</p></div><div class="spray-toolbar-actions"><RouterLink :to="route('reports')" class="spray-badge info"><ClipboardList :size="14" aria-hidden="true" />快速报工</RouterLink></div></div>
-  <div v-if="!s.items('orders').length" class="spray-empty"><h3>尚未建立喷油资料</h3><p>先登记工单和实体部件，再记录真实来料。各厂区独立建立资料。</p><RouterLink :to="route('orders')" class="spray-pill">建立第一张工单</RouterLink></div>
-  <template v-else>
-    <div class="spray-metrics-group spray-stagger" role="group" aria-label="本厂生产概况">
-      <RouterLink v-for="metric in metrics" :key="metric.key" class="spray-metric" :to="route(metric.to)">
-        <span class="spray-metric-head"><component :is="metric.icon" :size="15" aria-hidden="true" />{{ metric.label }}</span>
-        <strong>{{ metric.value ?? '—' }}</strong>
-        <small><i class="spray-dot" :class="{ pulse: metric.live && !!metric.value }" aria-hidden="true" />{{ metric.hint }}</small>
-      </RouterLink>
-    </div>
-    <div class="spray-section-title"><h3>在制任务 · 按工序能力</h3><p class="spray-help">同一条实体量只出现在一个状态；返工沿用原批次，不增加来料。</p></div>
-    <section v-for="(lane, laneIndex) in lanes" :key="lane.value" class="spray-lane spray-enter" :style="{ '--spray-enter-delay': laneIndex * 70 + 'ms' }">
-      <div class="spray-lane-head"><h3>{{ lane.label }}</h3><p class="spray-muted"><b class="spray-num">{{ s.items('resources').filter(r => r.capability === lane.value).length }}</b> 个资源</p></div>
-      <div class="spray-lane-body">
-        <button v-for="(task, taskIndex) in tasks(lane.value)" :key="task.id" class="spray-task spray-enter" :class="{ selected: s.selection === task.batch_id }" :style="{ '--spray-enter-delay': Math.min(300, laneIndex * 70 + taskIndex * 40) + 'ms' }" @click="s.selection = str(task, 'batch_id')"><h4>{{ s.lineLabel(s.find('lines', s.find('batches', task.batch_id)?.line_id)) }}</h4><p><Route :size="12" aria-hidden="true" />{{ str(s.find('steps', task.step_id), 'name') }} · {{ str(s.find('resources', task.resource_id), 'name') }}</p><footer><span class="spray-num">{{ amount(task.reported) }} / {{ amount(task.quantity) }} 次</span><SprayStatusPill :status="task.status" :spinning="str(task, 'status') === 'running'" /></footer><div class="spray-progress" role="progressbar" :aria-valuenow="Math.round(progress(task))" aria-valuemin="0" aria-valuemax="100" :aria-label="'已完成 ' + Math.round(progress(task)) + '%'"><span :style="{ width: progress(task) + '%' }" /></div></button>
-        <div v-if="!tasks(lane.value).length" class="spray-muted self-center">暂无执行任务 · <RouterLink :to="route('schedule')">查看可接批次</RouterLink></div>
-      </div>
-    </section>
-    <section class="spray-panel"><div class="spray-section-title"><h3>未来交付窗口</h3><RouterLink :to="route('orders')">全部工单</RouterLink></div><div v-for="order in due" :key="order.id" class="spray-row"><RouterLink :to="route('orders/' + order.id)"><strong>{{ str(order, 'document_no') }}</strong><p class="spray-muted">委托客户：{{ str(order, 'customer') }}</p></RouterLink><span class="spray-due"><SprayStatusPill :status="dueTone(order)" :label="'交期 ' + str(order, 'due_date')" :tone="dueTone(order)" /></span></div><p v-if="!due.length" class="spray-muted">没有已登记的交付窗口。</p></section>
-  </template>
-  <details class="spray-note"><summary><Gauge :size="14" aria-hidden="true" />口径与限制说明</summary><p class="spray-help">实体数量按状态互斥划分，返工尝试不增加来料；排产只生成资源与时段预留，不直接占用库存。工价未定价不阻塞生产确认，金额由后端计算并留存版本快照。</p></details>
-</template>
+<template><div class="spray-page"><header class="spray-page-heading"><div><span class="spray-eyebrow">WORKSPACE / {{w.factory.value?FACTORY_NAMES[w.factory.value]:''}}喷油部</span><h1>从准备，到交付</h1><p>每笔来料、每道工序、每张交收单，都有据可查。</p></div><RouterLink class="spray-primary" :to="{path:`${SPRAY_BASE}/planning`,query:{factory:w.factory.value}}"><CalendarClock :size="16"/>进入计划调度<ArrowRight :size="15"/></RouterLink></header><WorkspaceState/><div class="spray-metrics"><div v-for="metric in metrics" :key="metric.key" class="spray-metric"><small>{{metric.label}}</small><strong>{{overview?number(overview.counts[metric.key]):'—'}}</strong><span>{{metric.hint}}</span></div></div><div class="spray-split"><section class="spray-panel"><div class="spray-panel__header"><h3>交期与需求队列</h3><RouterLink class="spray-text-button" :to="{path:`${SPRAY_BASE}/planning/demands`,query:{factory:w.factory.value}}">全部需求 <ArrowUpRight :size="13" class="inline"/></RouterLink></div><div v-if="!demands.length" class="spray-empty"><PackageOpen :size="30" class="spray-empty-icon"/><strong>从第一笔真实订单开始</strong><p>先核对工艺路线与资源班次，再登记需求及分批来料。</p><RouterLink class="spray-secondary" :to="{path:`${SPRAY_BASE}/master`,query:{factory:w.factory.value}}">维护基础资料</RouterLink></div><button v-for="line in demands" :key="line.id" class="spray-queue-row" @click="w.passportId.value=line.demand.id"><div class="spray-queue-initial">{{line.part.slice(0,1)}}</div><div><strong>{{line.item_no}} · {{line.part}}</strong><small>{{line.demand.counterparty}} · {{line.color}}</small></div><div class="spray-queue-amount"><strong>{{number(line.quantity)}} <small>{{line.unit}}</small></strong><small>交期 {{line.due_date}}</small></div><ArrowRight :size="16"/></button></section><aside class="spray-overview-aside"><section class="spray-panel"><div class="spray-panel__header"><h3>需要跟进</h3><CircleAlert :size="17"/></div><RouterLink class="spray-risk-row" :to="{path:`${SPRAY_BASE}/execution`,query:{factory:w.factory.value}}"><span class="spray-badge spray-badge--amber">{{overview?.counts.quality_batches??'—'}}</span><div><strong>质量待判</strong><small>确认合格、返工或报废去向</small></div><ArrowRight :size="15"/></RouterLink><RouterLink class="spray-risk-row" :to="{path:`${SPRAY_BASE}/handover`,query:{factory:w.factory.value}}"><span class="spray-badge spray-badge--gray">{{overview?.counts.unmatched_batches??'—'}}</span><div><strong>来料待匹配</strong><small>关联需求后才能进入排产</small></div><ArrowRight :size="15"/></RouterLink></section><section class="spray-panel"><div class="spray-panel__header"><h3>实物库存</h3><PackageOpen :size="17"/></div><div class="spray-panel__body"><div v-for="stock in overview?.stock.filter(s=>Number(s.quantity)>0)" :key="stock.state+stock.unit" class="spray-stock-summary"><span>{{stateLabel[stock.state]??stock.state}}</span><strong>{{number(stock.quantity)}} <small>{{stock.unit}}</small></strong></div><p v-if="!overview?.stock.some(s=>Number(s.quantity)>0)" class="spray-muted">尚无实物库存记录</p><p class="spray-muted">按物料状态与单位分别呈现</p></div></section></aside></div><section class="spray-panel"><div class="spray-panel__header"><h3>车间正在执行</h3><span class="spray-muted">以开工、报工实绩为准</span></div><div v-if="!executing.length" class="spray-empty"><CheckCheck :size="24" class="spray-empty-icon"/><strong>当前没有正在执行的任务</strong><p>任务发布后，在现场执行工作区确认开工。</p></div><RouterLink v-for="task in executing.slice(0,8)" :key="task.id" class="spray-queue-row" :to="{path:`${SPRAY_BASE}/execution`,query:{factory:w.factory.value,task:task.id}}"><div><strong>{{resource(task.resource_id)}}</strong><small>实际开工 {{dateTime(task.actual_start)}}</small></div><div class="spray-queue-amount"><strong>{{number(task.reported)}} / {{number(task.quantity)}}</strong><small>按任务工序输入单位</small></div><span class="spray-badge">正在执行</span></RouterLink></section><p class="spray-muted">数据时间 {{dateTime(w.asOf.value)}} · 当前工厂独立核算</p></div></template>

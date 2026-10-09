@@ -13,6 +13,7 @@ from sqlalchemy.orm import load_only
 from app.models.auth import AuthUser, EmployeeProfile
 from app.models.collaborative_sheets import CollaborativeSheet as Task, CollaborativeSheetEvent as Event, CollaborativeSheetSubmission as Submission
 from app.services.auth import ALLOWED_FACTORY_IDS, ALLOWED_DEPARTMENTS
+from app.services.identity_resolver import identity_columns
 from app.services.document_tools import storage
 from app.services import collaborative_sheet_files as files
 
@@ -28,22 +29,25 @@ def uid():
 def scope(user, factory_id):
     if factory_id not in ALLOWED_FACTORY_IDS:
         raise HTTPException(422, "请选择具体厂区")
-    if not user.profile or user.profile.confirmation_status != "confirmed" or user.profile.primary_factory_id != factory_id:
+    if not user.account_available or not user.profile or user.profile.confirmation_status != "confirmed" or user.profile.primary_factory_id != factory_id:
         raise HTTPException(403, "协同填表仅限已确认的本厂账号，不能跨厂区共享")
 
 
 def _eligible_accounts(db, factory_id, grants=None):
     """Resolve current server identities; roles/history never manufacture members."""
-    query = select(AuthUser.id, AuthUser.display_name, AuthUser.username, EmployeeProfile.primary_department).join(
+    # Match auth's runtime identity resolution: a V2 transfer/expiry can change
+    # the primary factory and department without rewriting legacy profile fields.
+    current_factory, current_department, _ = identity_columns()
+    query = select(AuthUser.id, AuthUser.display_name, AuthUser.username, current_department.label("primary_department")).join(
         EmployeeProfile, AuthUser.id == EmployeeProfile.user_id).where(
-        AuthUser.status == "active", EmployeeProfile.primary_factory_id == factory_id,
+        AuthUser.status == "active", EmployeeProfile.employment_status != "left", current_factory == factory_id,
         EmployeeProfile.confirmation_status == "confirmed")
     if grants is not None:
         users = {g["principal_id"] for g in grants if g["principal_type"] == "user"}
         departments = {g["principal_id"] for g in grants if g["principal_type"] == "department"}
         if not users and not departments:
             return []
-        query = query.where(or_(AuthUser.id.in_(users), EmployeeProfile.primary_department.in_(departments)))
+        query = query.where(or_(AuthUser.id.in_(users), current_department.in_(departments)))
     rows = [{"id": row.id, "display_name": row.display_name or row.username, "department": row.primary_department}
             for row in db.execute(query)]
     return sorted(rows, key=lambda row: (row["display_name"].casefold(), row["id"]))

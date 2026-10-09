@@ -1544,7 +1544,7 @@ def list_notifications(
             statement.order_by(MoldingSampleNotification.created_at.desc(), MoldingSampleNotification.id.desc())
         ).all()
     )
-    return [
+    visible = [
         notification for notification in notifications
         if has_notification_scope_permission(
             current_user,
@@ -1557,6 +1557,8 @@ def list_notifications(
             notification,
         )
     ]
+    from app.services.work_center.compatibility import molding_out
+    return molding_out(db, current_user, visible)
 
 
 def update_notification(
@@ -1568,45 +1570,17 @@ def update_notification(
     notification = db.get(MoldingSampleNotification, notification_id)
     if notification is None:
         raise HTTPException(status_code=404, detail="啤办通知不存在")
-    ensure_molding_local_write(db, current_user, notification.factory_id)
-    ensure_notification_scope_permission(
-        db,
-        current_user,
-        "molding_sample:notification_read",
-        notification,
-    )
-    ensure_notification_scope_permission(
-        db,
-        current_user,
-        notification_module_permission(notification.target_module),
-        notification,
-    )
-    if notification.target_module == PRODUCTION_TASK_MODULE:
-        ensure_permission_for_departments(
-            db,
-            current_user,
-            "molding_sample:production_fillback",
-            notification.factory_id,
-            PRODUCTION_DEPARTMENTS,
-        )
+    ensure_notification_scope_permission(db, current_user, "molding_sample:notification_read", notification)
+    ensure_notification_scope_permission(db, current_user, notification_module_permission(notification.target_module), notification)
     if payload.status not in NOTIFICATION_STATUSES:
-        raise HTTPException(status_code=400, detail="通知状态无效")
-
-    status_rank = {"未读": 0, "已读": 1, "已处理": 2}
-    if status_rank[payload.status] < status_rank.get(notification.status, 0):
-        return notification
-
-    timestamp = now_text()
-    notification.status = payload.status
-    notification.actor_name = current_user.display_name
-    if payload.status in {"已读", "已处理"}:
-        notification.read_at = notification.read_at or timestamp
-    if payload.status == "已处理":
-        notification.handled_at = notification.handled_at or timestamp
-
+        raise HTTPException(400, "通知状态无效")
+    if payload.status == "已处理" and notification.status != "已处理":
+        raise HTTPException(409, "当前责任由原业务自动结束，不能手动标记已处理")
+    from app.services.work_center.compatibility import personal_read, molding_out
+    personal_read(db, current_user, "molding", notification.id)
     db.commit()
-    db.refresh(notification)
-    return notification
+    return molding_out(db, current_user, [notification])[0]
+
 
 
 def list_problems(
@@ -1730,6 +1704,8 @@ def update_problem_status(
         ENGINEERING_EDIT_DEPARTMENTS,
     )
 
+    if problem.status != "待处理" and payload.status == "待处理":
+        problem.responsibility_revision += 1
     problem.status = payload.status
     problem.resolved_at = now_text() if payload.status == "已解决" else ""
 

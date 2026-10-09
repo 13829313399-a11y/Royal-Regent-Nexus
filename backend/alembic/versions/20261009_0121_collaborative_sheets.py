@@ -1,7 +1,7 @@
-"""Explicit factory-local spreadsheet collaboration; additive to the local head.
+"""Explicit factory-local spreadsheet collaboration on its original applied branch.
 
-Production 20261005_0131 is not present in this checkout. Reconcile the published
-graph before production deployment; this migration never stamps or edits history.
+The published main history is joined by 20261009_0148 without changing this
+revision's parent or schema operations.
 """
 from alembic import op
 import sqlalchemy as sa

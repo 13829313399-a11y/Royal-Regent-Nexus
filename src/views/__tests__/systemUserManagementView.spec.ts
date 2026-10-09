@@ -38,7 +38,6 @@ describe('SystemUserManagementView source contract', () => {
       '权限职位',
       '调整权限职位',
       '/system/users/${encodeURIComponent(user.id)}/access',
-      'to="/system/iam/roles"',
     ]) {
       expect(source).toContain(requiredSource)
     }
@@ -73,8 +72,9 @@ describe('SystemUserManagementView source contract', () => {
       '恢复',
       'permission-approval-page',
       'class="wrap"',
-      'class="topbar"',
-      'class="grid approval-workspace"',
+      'TabsList',
+      '账号办理',
+      'class="approval-workspace"',
       'class="queue"',
       'class="q-item"',
     ]) {
@@ -84,18 +84,24 @@ describe('SystemUserManagementView source contract', () => {
 
   it('keeps username typography from overriding the shared avatar layout', () => {
     expect(template).toContain('class="user-identity"')
-    expect(source).toContain('.user-identity span {')
+    expect(readFileSync(join(process.cwd(), 'src/views/iam-account.css'), 'utf8')).toContain(
+      '.user-identity span {',
+    )
     expect(source).not.toContain('.user-cell span {')
   })
 
   it('degrades to a protected read-only page without relying on backend 403 responses', () => {
-    expect(source).toContain("const canManageUsers = computed(() => authStore.can('system:user_manage'))")
+    expect(source).toContain(
+      "const canManageUsers = computed(() => authStore.can('system:user_manage'))",
+    )
     expect(source).toContain('data-testid="system-users-protected-notice"')
     expect(source).toContain('页面可访问 · 敏感账号资料受保护')
-    expect(source).toContain("canManageUsers ? '账号管理' : '只读访问'")
-    expect(source).not.toContain("v-if=\"authStore.can('system:permission_catalog_read')\"")
+    expect(source).toContain('if (!canManageUsers.value) return')
+    expect(source).not.toContain('v-if="authStore.can(\'system:permission_catalog_read\')"')
     expect(source.match(/if \(!ensureUserManagementPermission\(\)\) return/g)).toHaveLength(3)
-    expect(source).toMatch(/async function loadData\(\) \{\s+if \(!canManageUsers\.value\) \{[\s\S]*?return\s+\}/)
+    expect(source).toMatch(
+      /async function loadData\(\) \{[\s\S]*?if \(!canManageUsers\.value\) \{[\s\S]*?return\s+\}/,
+    )
   })
 
   it('never receives, displays, copies, or persists a temporary password', () => {

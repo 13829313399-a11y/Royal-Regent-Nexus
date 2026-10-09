@@ -1,0 +1,39 @@
+[
+  {
+    "id": "internal-quote.overview",
+    "module_id": "internal-quote",
+    "title": "先确认报价版本，再看流程",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "internal-quote-desk-home",
+      "internal-quote-collaboration",
+      "internal-quote-summary",
+      "internal-quote-export-summary"
+    ],
+    "factory_ids": [],
+    "anchor_id": "internal-quote.overview",
+    "field_keys": [],
+    "summary": "不同 module_version 的审核流程不同。",
+    "content": "当前代码明确区分 v4、整单审核和分段审核。v4 提示无需审核，保存后直接输出；已输出版本应复制新版修改。整单审核版本不接受分段提交、分段审核或分段重开。不要根据“汇总与放行”路由名推断所有版本流程。当前助手没有读取你的报价单，无法确认它的版本、金额或审批进度；请在原单据核对。",
+    "steps": [
+      {
+        "title": "查看当前工作区域",
+        "description": "不同 module_version 的审核流程不同。",
+        "anchor_id": "internal-quote.overview",
+        "precondition": "页面可见且目标已注册",
+        "completion": "已定位；任何业务写入仍需你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/services/internal_quote.py",
+        "symbol": "_ensure_section_review_workflow",
+        "sha256": "72a481a52dc389732c3dcbec55b1f698b8112b62705b3a3231539f55f2e7af2f"
+      }
+    ],
+    "knowledge_version": "2026.10.08-v1",
+    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "status": "verified"
+  }
+]

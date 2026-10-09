@@ -280,6 +280,48 @@ def test_mold_import_maps_zhanxing_fixed_template_columns_and_embedded_images():
     assert any("已识别并提取 F 列 1 张嵌入图片" in warning for warning in parsed.warnings)
 
 
+def test_mold_import_excludes_numbered_merged_footer_clauses_and_cleans_synced_rows():
+    from app.services.internal_quote_prefill import prefill_molding_from_engineering
+
+    book = load_workbook(BytesIO(zhanxing_workbook_with_image()))
+    sheet = book.active
+    sheet.delete_rows(16, 2)  # Replace the fixture's old footer with the reported footer.
+    terms = ["2. 此报价含税", "3. Payment（付款）：Deposit 40%; After 1ST Test Shot 30%; Within 60 days 30%",
+             "4.Validity(有效期):", "客户确\n认签名（盖章）："]
+    for index, label in enumerate(terms, start=16):
+        sheet.cell(index, 2, label)
+        sheet.merge_cells(start_row=index, start_column=2, end_row=index, end_column=13)
+    output = BytesIO()
+    book.save(output)
+    parsed = parse_internal_quote_workbook(output.getvalue(), 'mold')
+    assert parsed.row_count == 3
+    assert [row['mold_no'] for row in parsed.payload_fragment['molds']] == ['M-01', 'M-02', 'M-03']
+    assert len([warning for warning in parsed.warnings if '未作为模具导入' in warning]) == 4
+    old_payload = {**parsed.payload_fragment, 'molds': [*parsed.payload_fragment['molds'],
+        *[{'mold_no': 'M-03', 'item': label, 'chinese_name': label} for label in terms[:3]] ]}
+    old_molding = prefill_molding_from_engineering(old_payload, {'injection_lines': []})
+    old_molding['injection_lines'][0]['remark'] = '保留已填资料'
+    old_molding['injection_lines'].append({'item': '手工追加行'})
+    refreshed = prefill_molding_from_engineering(parsed.payload_fragment, old_molding)
+    assert len(refreshed['injection_lines']) == 4
+    assert refreshed['injection_lines'][0]['remark'] == '保留已填资料'
+    assert refreshed['injection_lines'][-1]['item'] == '手工追加行'
+    assert not any(row['item'] in terms for row in refreshed['injection_lines'])
+
+
+def test_mold_footer_filter_preserves_real_partial_zero_price_and_continuation_rows():
+    parsed = parse_internal_quote_workbook(workbook_bytes([
+        ['模号', '产品名称', '材质', '出模数', '套数', '模价'],
+        ['M01', '前壳', 'ABS', 1, 1, 100],
+        [None, '后壳', 'ABS', 1, 1, 0],
+        ['M02', 'Payment(按钮)', 'ABS', 1, 1, 0],
+        ['M03', '待补资料模具', None, None, None, None],
+    ]), 'mold')
+    assert [row['item'] for row in parsed.payload_fragment['molds']] == ['前壳', '后壳', 'Payment(按钮)', '待补资料模具']
+    assert parsed.payload_fragment['molds'][1]['mold_no'] == 'M01'
+    assert any('未识别模具价格' in warning for warning in parsed.warnings)
+
+
 def test_mold_import_keeps_legacy_zhanxing_combined_capacity_machine_column():
     parsed = parse_internal_quote_workbook(
         workbook_bytes(
@@ -619,7 +661,7 @@ def test_slush_import_replace_only_replaces_slush_lines():
     assert merged["legacy_note"] == "keep"
 
 
-def test_sewing_import_keeps_usage_rmb_price_markup_and_labor_line():
+def test_sewing_import_keeps_usage_hkd_price_markup_and_labor_line():
     parsed = parse_internal_quote_workbook(
         workbook_bytes(
             [
@@ -635,7 +677,7 @@ def test_sewing_import_keeps_usage_rmb_price_markup_and_labor_line():
     assert parsed.target_department == "sewing"
     assert group["category"] == "clothes"
     assert group["materials"][0]["usage"] == "0.2500"
-    assert group["materials"][0]["unit_price_rmb"] == "12.0000"
+    assert group["materials"][0]["unit_price_hkd"] == "12.0000"
     assert group["materials"][0]["markup"] == "1.1000"
     assert group["materials"][1]["item"] == "车缝人工"
     assert group["labor_rmb"] == "0.0000"
@@ -696,7 +738,7 @@ def test_sewing_import_forward_fills_material_for_following_cutting_parts():
     ]
     assert [row["part"] for row in materials] == ["前身", "后身", "底部", "前朵", "后耳"]
     assert materials[1]["usage"] == "0.0850"
-    assert materials[1]["unit_price_rmb"] == "93.2000"
+    assert materials[1]["unit_price_hkd"] == "93.2000"
     assert materials[1]["markup"] == "1.1000"
 
 
@@ -730,7 +772,7 @@ def test_sewing_import_preserves_source_precision_and_uses_total_row_as_product_
     assert first_group[0]["usage"] == "0.110590277777778"
     assert first_group[1]["usage"] == "0.116666666666667"
     assert first_group[2]["usage"] == "1.0000"
-    assert first_group[2]["unit_price_rmb"] == "0.0000"
+    assert first_group[2]["unit_price_hkd"] == "0.0000"
 
 
 def test_sewing_import_maps_screenshot_fields_multiple_groups_and_ignores_derived_totals():
@@ -765,6 +807,7 @@ def test_sewing_import_maps_screenshot_fields_multiple_groups_and_ignores_derive
         "supplier": "",
         "usage": "0.2500",
         "unit_price_rmb": "12.0000",
+        "unit_price_source_currency": "RMB",
         "markup": "1.1000",
         "remark": "红色",
         "source_row": 3,

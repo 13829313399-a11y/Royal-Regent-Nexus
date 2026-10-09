@@ -4,17 +4,17 @@ This module intentionally has no database or authorization-service imports so
 the fixed system-position catalog can depend on it without creating a cycle.
 """
 
-UV_PRINTING_PERMISSION_CODES = tuple("uv_printing:" + action for action in (
-    "read", "report", "quality", "master_write", "shift_write", "ink_write",
-    "cost_read", "cost_write", "payroll_read", "payroll_write", "import", "export", "close",
+UV_OPS_PERMISSION_CODES = tuple("uv_ops:" + action for action in (
+    "read", "master_write", "plan_write", "production_write", "quality_write",
+    "shift_write", "handover_write", "inventory_write", "cost_read", "cost_write",
+    "payroll_read", "payroll_write", "agent_manage", "dispatch", "close_period",
+    "import", "export", "audit_read",
 ))
 
-SPRAY_PRODUCTION_PERMISSION_CODES = tuple(
-    "spray_production:" + action for action in (
-        "read", "order_write", "plan", "report", "quality", "logistics", "cost_read",
-        "cost_write", "settlement", "master_write", "import", "export",
-    )
-)
+SPRAY_OPS_PERMISSION_CODES = tuple("spray_ops:" + action for action in (
+    "read", "plan", "report", "quality", "stock_write", "procure", "master_write",
+    "cost_read", "cost_write", "payroll_read", "payroll_write", "settle", "import", "export",
+))
 
 INJECTION_SCHEDULING_PERMISSION_CODES = (
     "injection_scheduling:read",
@@ -56,6 +56,8 @@ CARTON_MARK_PERMISSION_CODES = (
 )
 
 CUSTOMER_PRICE_PERMISSION_CODES = (
+    "customer_price:settings_read",
+    "customer_price:settings_manage",
     "customer_price:read",
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
@@ -85,6 +87,18 @@ CARTON_PROCUREMENT_PERMISSION_CODES = (
     "carton_procurement:exception_manage",
     "carton_procurement:customer_manage",
     "carton_procurement:master_manage",
+)
+
+CARTON_SUPPLIER_PERMISSION_CODES = (
+    "carton_supplier:read",
+    "carton_supplier:edit",
+    "carton_supplier:approve",
+)
+
+FABRIC_WAREHOUSE_PERMISSION_CODES = (
+    "fabric_warehouse:read",
+    "fabric_warehouse:import",
+    "fabric_warehouse:receive",
 )
 
 THREE_D_PRINTING_PERMISSION_CODES = (
@@ -152,6 +166,7 @@ INTERNAL_QUOTE_PERMISSION_CODES = (
 )
 
 SYSTEM_MANAGEMENT_PERMISSION_CODES = (
+    "system:feedback_manage",
     "system:user_manage",
     "system:role_manage",
     "system:access_manage",
@@ -162,12 +177,14 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 )
 
 BUSINESS_PERMISSION_CODES = (
-    *UV_PRINTING_PERMISSION_CODES,
-    *SPRAY_PRODUCTION_PERMISSION_CODES,
+    *FABRIC_WAREHOUSE_PERMISSION_CODES,
+    *UV_OPS_PERMISSION_CODES,
+    *SPRAY_OPS_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     *MOLDING_SAMPLE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,
     *CARTON_PROCUREMENT_PERMISSION_CODES,
+    *CARTON_SUPPLIER_PERMISSION_CODES,
     *CUSTOMER_PRICE_PERMISSION_CODES,
     *CUSTOMER_ORDER_PERMISSION_CODES,
     *THREE_D_PRINTING_PERMISSION_CODES,
@@ -175,6 +192,11 @@ BUSINESS_PERMISSION_CODES = (
     *INTERNAL_QUOTE_PERMISSION_CODES,
 )
 
+# Private employee submission and developer review are separate from business
+# entitlements. Submission defaults to confirmed home-factory employees; its
+# catalog entry supports independent disabling and explicit IAM denies.
+MODULE_FEEDBACK_PERMISSION_CODES = ("module_feedback:submit", "module_feedback:manage")
+
 APPLICATION_PERMISSION_CODES = tuple(
-    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES))
+    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES, *MODULE_FEEDBACK_PERMISSION_CODES))
 )

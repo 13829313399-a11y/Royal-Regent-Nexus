@@ -13,6 +13,7 @@ export type InternalQuoteSectionStatus =
   | 'draft'
   | 'pending_review'
   | 'approved'
+  | 'sealed'
   | 'rejected'
   | 'na_pending'
   | 'not_applicable'
@@ -29,7 +30,7 @@ export type InternalQuoteStatus =
 
 export type InternalQuoteInitiatorDepartment = 'sales-business' | 'engineering'
 export type InternalQuoteCurrency = 'HKD' | 'RMB' | 'USD'
-export type InternalQuoteWorkflowMode = 'section_review' | 'whole_quote_review'
+export type InternalQuoteWorkflowMode = 'section_review' | 'whole_quote_review' | 'direct_output'
 
 export interface InternalQuoteCostLine {
   id: string
@@ -222,6 +223,11 @@ export interface InternalQuoteRr2CostSummary {
 }
 
 export interface InternalQuote {
+  documentProductCount?: number
+  documentVersionCount?: number
+  documentQuoteId?: string
+  productRootId?: string
+  deleteBlockReason?: string
   historySources?: InternalQuoteHistoryEvidence[]
   id: string
   quoteNo: string

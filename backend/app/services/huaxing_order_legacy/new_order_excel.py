@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Collection, Iterable, Mapping, Sequence
 
 import openpyxl
+from app.services.sparse_worksheet import insert_rows as insert_sparse_rows
 import xlrd
 from openpyxl import Workbook
 from openpyxl.cell.cell import MergedCell
@@ -1012,7 +1013,7 @@ def append_records_to_workbook(
             if insert_amount:
                 for merged in moved_merges:
                     target.unmerge_cells(str(merged))
-                target.insert_rows(insert_row, insert_amount)
+                insert_sparse_rows(target, insert_row, insert_amount)
                 _shift_target_sheet_structures(target, insert_row, insert_amount, moved_merges)
 
                 for sheet, old_row, column, formula in formulas:
@@ -1261,7 +1262,7 @@ def append_column_records_to_workbook(
             ]
             for merged in moved_merges:
                 target.unmerge_cells(str(merged))
-            target.insert_rows(append_row, amount)
+            insert_sparse_rows(target, append_row, amount)
             _shift_target_sheet_structures(target, append_row, amount, moved_merges)
 
             for sheet, old_row, column, formula in formulas:
@@ -1464,7 +1465,7 @@ def insert_column_records_after_matching_groups(
             ]
             for merged in moved_merges:
                 target.unmerge_cells(str(merged))
-            target.insert_rows(insert_row, amount)
+            insert_sparse_rows(target, insert_row, amount)
             _shift_target_sheet_structures(target, insert_row, amount, moved_merges)
 
             for sheet, old_row, column, formula in formulas:
@@ -1738,7 +1739,7 @@ def append_grouped_column_records_to_workbook(
             if insert_amount:
                 for merged in moved_merges:
                     target.unmerge_cells(str(merged))
-                target.insert_rows(insert_row, insert_amount)
+                insert_sparse_rows(target, insert_row, insert_amount)
                 _shift_target_sheet_structures(target, insert_row, insert_amount, moved_merges)
 
                 for sheet, old_row, column, formula in formulas:

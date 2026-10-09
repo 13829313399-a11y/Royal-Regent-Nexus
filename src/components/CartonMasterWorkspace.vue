@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Database, X } from '@lucide/vue'
 import CartonMasterSettings from './CartonMasterSettings.vue'
-import { cartonMasterApi, masterPaperOptions, defaultMasterData, defaultNumberRule, emptyMaster, automaticNumberRule, historicalNumberSamples, type MasterRecord, type MasterData, type MasterImportKind, type MasterImportResult } from '@/api/cartonMaster'
+import CartonCustomerResponsibilities from './CartonCustomerResponsibilities.vue'
+import { cartonMasterApi, masterPaperOptions, defaultMasterData, defaultNumberRule, effectiveItemRule, emptyMaster, automaticNumberRule, historicalNumberSamples, type MasterRecord, type MasterData, type MasterImportKind, type MasterImportResult } from '@/api/cartonMaster'
 import { recognizeNumberTemplates, parseNumberTemplate, describeNumberTemplate } from '@/lib/cartonNumberPatterns'
 import { cartonPositionsApi, type CartonLocation } from '@/api/cartonPositions'
 import type { CartonCustomerResponse } from '@/api/cartonProcurement'
@@ -11,7 +12,11 @@ const props = defineProps<{ factoryId: string; customers: CartonCustomerResponse
 const emit = defineEmits<{ changed: []; customers: [row?: CartonCustomerResponse]; use: [MasterRecord] }>()
 const workspace = ref(emptyMaster()), busy = ref(false), error = ref(''), loading = ref(false)
 const tab = ref('SETTINGS'), search = ref(''), customer = ref(''), editing = ref(false), editingId = ref('')
-const statusFilter = ref('ALL'), preferredOnly = ref(false)
+const statusFilter = ref('ACTIVE'), preferredOnly = ref(false)
+const configSort = ref('DEFAULT')
+const configToRemove = ref<MasterRecord | null>(null), configActionMessage = ref('')
+let availabilityGeneration = 0
+onBeforeUnmount(() => { availabilityGeneration++ })
 const warehouseDeleting = ref(false)
 const warehouseEditing = ref(false), warehouseOriginal = ref(''), locationWarehouseLocked = ref(false)
 const sourceRow = ref<MasterRecord | null>(null), locationRow = ref<CartonLocation | null>(null)
@@ -39,7 +44,10 @@ async function downloadTemplate(kind: MasterImportKind) {
     anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (e) {
     const message = await getApiErrorMessageAsync(e)
-    if (factory === props.factoryId) error.value = message
+    if (factory === props.factoryId) {
+      if (importKind.value === kind) importError.value = `模板下载失败：${message}`
+      else error.value = `模板下载失败：${message}`
+    }
   }
 }
 async function processImport(apply = false) {
@@ -54,14 +62,20 @@ async function processImport(apply = false) {
       : await cartonMasterApi.importPreview(factory, kind, file)
     if (factory !== props.factoryId || version !== importGeneration) return
     importPreview.value = result
-    if (apply) { importDone.value = true; await load(); if (factory === props.factoryId) emit('changed') }
+    if (apply) {
+      importDone.value = true
+      const refreshError = await load()
+      if (factory !== props.factoryId || version !== importGeneration) return
+      if (refreshError) importError.value = `基础资料已导入，但列表刷新失败：${refreshError}。请刷新查看，勿重复导入。`
+      emit('changed')
+    }
   } catch (e) {
     if (factory === props.factoryId && version === importGeneration) { importError.value = getApiErrorMessage(e); importPreview.value = null }
   } finally { if (version === importGeneration) importBusy.value = false }
 }
 let returnFocus: HTMLElement | null = null
 watch(() => props.initialTab, value => { tab.value = value === 'CONFIG' ? 'CONFIG' : 'SETTINGS' }, { immediate: true })
-watch(() => editing.value || !!locationRow.value || !!sourceRow.value || warehouseEditing.value || !!importKind.value, async open => {
+watch(() => editing.value || !!locationRow.value || !!sourceRow.value || warehouseEditing.value || !!importKind.value || !!configToRemove.value, async open => {
   if (open) {
     returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     await nextTick()
@@ -73,7 +87,7 @@ function dialogKeys(event: KeyboardEvent) {
   if (!dialog) return
   if (event.key === 'Escape') {
     event.stopPropagation(); event.preventDefault()
-    if (!busy.value && !importBusy.value) { editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; closeImport() }
+    if (!busy.value && !importBusy.value) { editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; closeImport() }
   }
   if (event.key === 'Tab') {
     const nodes = [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
@@ -107,14 +121,44 @@ const templateText = reactive({ contract_rule: '', item_rule: '', customer_po_ru
 const recognizedText = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
 const recognitionErrors = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
 const recognitionHints = reactive({ contract_rule: '', item_rule: '', customer_po_rule: '' })
-function resetNumberRule(key: FormatKey) {
-  form.data[key] = { ...defaultNumberRule(), reset: true }
+async function resetNumberRule(key: FormatKey) {
+  if (busy.value) return
+  const label = key === 'customer_po_rule' ? '客户 PO' : key === 'contract_rule' ? '合同号' : '货号'
+  const row = workspace.value.records.find(record => record.id === editingId.value && record.kind === 'RULE')
+  if (row?.data[key]?.mode === 'BLOCK' && form.reason.trim().length < 4) {
+    error.value = `删除${label}强制检查前，请填写具体说明`
+    return
+  }
+  const factory = props.factoryId, editingSession = editingId.value, customerCode = form.customer_code
+  busy.value = true; error.value = ''
+  try {
+    const data = { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), [key]: { ...defaultNumberRule(key === 'item_rule' ? 'OFF' : 'AUTO'), reset: true } } as MasterData
+    const saved = await cartonMasterApi.save(factory, {
+      kind: 'RULE', code: row?.code || '', customer_code: customerCode,
+      status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0,
+      reason: row?.data[key]?.mode === 'BLOCK' ? form.reason.trim() : key === 'item_rule' ? '删除旧货号格式并关闭检查' : `删除旧${label}格式，等待下次正式订单重新记录`, data,
+    }, row?.id || '')
+    if (factory !== props.factoryId || editingId.value !== editingSession || form.customer_code !== customerCode) return
+    workspace.value.records = row
+      ? workspace.value.records.map(record => record.id === row.id ? { ...saved, sources: record.sources } : record)
+      : [...workspace.value.records, saved]
+    editingId.value = saved.id
+    form.expected_revision = saved.revision
+    originalHardCheck.value = ['contract_rule', 'item_rule', 'customer_po_rule'].some(rule => saved.data[rule as FormatKey]?.mode === 'BLOCK')
+    emit('changed')
+  } catch (e) { error.value = getApiErrorMessage(e); return }
+  finally { busy.value = false }
+  form.data[key] = { ...defaultNumberRule(key === 'item_rule' ? 'OFF' : 'AUTO'), reset: true }
   templateText[key] = ''; recognizedText[key] = ''; recognitionErrors[key] = ''
-  recognitionHints[key] = '格式已清空，保存后生效；需要时可重新识别。'
+  recognitionHints[key] = key === 'item_rule' ? '旧货号格式已删除；历史订单保留。货号默认不检查，需要时手动启用。' : `旧${label}格式已删除；历史订单保留。下次确认并锁定该客户订单时，如编号可识别，将自动记录新格式。`
 }
 function identifyNumberRule(key: FormatKey) {
   const rule = form.data[key], raw = (rule.sample_text || '').trim()
   recognitionErrors[key] = ''; recognitionHints[key] = ''
+  if (rule.reset && !raw) {
+    recognitionHints[key] = '旧格式已删除；请填写新样例，或等待下次正式订单自动记录。'
+    return
+  }
   try {
     const values = raw ? raw.split(/[\n\r,，;；]+/).map(value => value.trim()).filter(Boolean) : historicalNumberSamples(workspace.value.records, form.customer_code, key)
     const result = recognizeNumberTemplates(values)
@@ -128,14 +172,14 @@ function editNumberTemplate(key: FormatKey) { recognizedText[key] = (form.data[k
 function resetNumberRules() {
   if (form.kind !== 'RULE') return
   for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
-    form.data[key] = defaultNumberRule(); templateText[key] = ''; recognizedText[key] = ''
-    if (form.customer_code) identifyNumberRule(key)
+    form.data[key] = defaultNumberRule(key === 'item_rule' ? 'OFF' : 'AUTO'); templateText[key] = ''; recognizedText[key] = ''
+    if (form.customer_code && key !== 'item_rule') identifyNumberRule(key)
   }
 }
 
 const itemText = ref(''), warehouseText = ref('')
 const tabs = [{ id: 'CONFIG', label: '货号与包装' }, { id: 'CONTRACT', label: '合同登记' }, { id: 'RULE', label: '客户与交期规则' }, { id: 'WORKSHOP', label: '车间' }, { id: 'LOCATION', label: '仓库与仓位' }, { id: 'ACCESS', label: '仓库维护授权' }]
-const rows = computed(() => workspace.value.records.filter(r => r.kind === 'CONFIG' && (statusFilter.value === 'ALL' || r.status === statusFilter.value) && (!preferredOnly.value || r.preferred) && JSON.stringify([r.code, r.data]).toLowerCase().includes(search.value.toLowerCase())))
+const rows = computed(() => workspace.value.records.filter(r => r.kind === 'CONFIG' && (statusFilter.value === 'ALL' || r.status === statusFilter.value) && (!preferredOnly.value || r.preferred) && JSON.stringify([r.code, r.data]).toLowerCase().includes(search.value.toLowerCase())).sort((a, b) => configSort.value === 'CODE' ? a.code.localeCompare(b.code, 'zh-CN', { numeric: true }) : configSort.value === 'CUSTOMER' ? customerName(a.customer_code).localeCompare(customerName(b.customer_code), 'zh-CN') || a.code.localeCompare(b.code, 'zh-CN', { numeric: true }) : 0))
 function editRule(code: string) {
   const existing = workspace.value.records.find(r => r.kind === 'RULE' && r.customer_code === code)
   edit(existing, 'RULE', code)
@@ -156,19 +200,34 @@ const customerName = (code: string) => props.customers.find(c => c.customer_code
 const canPlace = (warehouse: string) => workspace.value.can_manage || workspace.value.warehouses.includes(warehouse)
 let generation = 0
 async function load() {
-  const version = ++generation; loading.value = true; error.value = ''
-  try { const data = await cartonMasterApi.get(props.factoryId); if (version === generation) workspace.value = data }
-  catch (e) { if (version === generation) error.value = getApiErrorMessage(e) }
+  const version = ++generation, factory = props.factoryId; loading.value = true; error.value = ''
+  try {
+    const data = await cartonMasterApi.get(factory)
+    if (version !== generation || factory !== props.factoryId) return
+    workspace.value = data
+    return ''
+  } catch (e) {
+    if (version !== generation || factory !== props.factoryId) return
+    error.value = getApiErrorMessage(e)
+    return error.value
+  }
   finally { if (version === generation) loading.value = false }
 }
-watch(() => props.factoryId, () => { importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; customer.value = ''; void load() }, { immediate: true })
+async function refreshAfterSave(factory: string, successMessage: string) {
+  const refreshError = await load()
+  if (factory !== props.factoryId) return
+  if (refreshError) error.value = `${successMessage}，但列表刷新失败：${refreshError}。请刷新查看，勿重复保存。`
+  emit('changed')
+}
+watch(() => props.factoryId, () => { availabilityGeneration++; busy.value = false; importGeneration++; importKind.value = null; importPreview.value = null; importFile.value = null; importBusy.value = false; workspace.value = emptyMaster(); editing.value = false; locationRow.value = null; sourceRow.value = null; warehouseEditing.value = false; configToRemove.value = null; configActionMessage.value = ''; configSort.value = 'DEFAULT'; statusFilter.value = 'ACTIVE'; customer.value = ''; void load() }, { immediate: true })
 function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = customer.value) {
   paperOnly.value = false
   ruleScopeLocked.value = (row?.kind || kind) === 'RULE'
   editingId.value = row?.id || ''; error.value = ''
   originalStatus.value = row?.status || 'ACTIVE'
   originalHardCheck.value = row?.data.contract_rule?.mode === 'BLOCK' || row?.data.item_rule?.mode === 'BLOCK' || row?.data.customer_po_rule?.mode === 'BLOCK'
-  Object.assign(form, { kind: row?.kind || kind, code: row?.code || '', customer_code: row?.customer_code ?? code, status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0, reason: '', data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), contract_rule: { ...defaultNumberRule(), ...row?.data.contract_rule }, customer_po_rule: { ...defaultNumberRule(), ...row?.data.customer_po_rule }, item_rule: { ...defaultNumberRule(), ...row?.data.item_rule } } })
+  Object.assign(form, { kind: row?.kind || kind, code: row?.code || '', customer_code: row?.customer_code ?? code, status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0, reason: '', data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), contract_rule: { ...defaultNumberRule(), ...row?.data.contract_rule }, customer_po_rule: { ...defaultNumberRule(), ...row?.data.customer_po_rule }, item_rule: effectiveItemRule(row?.data.item_rule) } })
+  if (form.kind === 'CONFIG') for (const line of form.data.lines) line.dimension_unit = line.dimension_unit?.trim() || 'cm'
   for (const key of ['paper_types', 'paper_qualities', 'specifications'] as const) paperOptionText[key] = (form.data[key] || []).join('\n')
   itemText.value = (form.data.item_nos || []).join('\n'); warehouseText.value = (form.data.warehouses || []).join('\n')
   if (!['CONTRACT', 'RULE'].includes(form.kind)) form.customer_code = ''
@@ -190,6 +249,7 @@ async function save() {
     if (form.kind === 'RULE' && form.customer_code) for (const key of ['contract_rule', 'item_rule', 'customer_po_rule'] as const) {
       const rule = form.data[key]
       if (rule.mode === 'OFF') continue
+      if (key === 'item_rule') rule.user_configured = true
       if (recognitionErrors[key]) throw new Error('请先处理各编号下的识别提示，或重置对应格式')
       if ((rule.sample_text || '').trim() !== recognizedText[key]) throw new Error('样例已修改，请点击识别格式，或手动修改下方格式后再保存')
       const templates = [...new Set(templateText[key].split('\n').map(t => t.trim()).filter(Boolean))]
@@ -198,7 +258,13 @@ async function save() {
       rule.templates = templates; rule.frozen = templates.length > 0
     }
     if (!paperOnly.value) {
+    if (form.kind === 'CONFIG') for (const [index, line] of form.data.lines.entries()) {
+      for (const key of ['net_weight_kg', 'gross_weight_kg'] as const) line[key] = line[key] == null || String(line[key]) === '' ? null : Number(line[key])
+      if ([line.net_weight_kg, line.gross_weight_kg].some(value => value != null && (!Number.isFinite(Number(value)) || Number(value) < 0))
+          || line.net_weight_kg != null && line.gross_weight_kg != null && Number(line.gross_weight_kg) < Number(line.net_weight_kg)) throw new Error(`第 ${index + 1} 条纸品重量无效：重量不得为负，毛重不能小于净重`)
+    }
     form.data.lead_days = form.data.lead_days === null || String(form.data.lead_days) === '' ? null : Number(form.data.lead_days)
+    form.data.production_days = form.data.production_days === null || String(form.data.production_days) === '' ? null : Number(form.data.production_days)
     form.data.customer_days = form.data.customer_days === null || String(form.data.customer_days) === '' ? null : Number(form.data.customer_days)
     }
     if (paperOnly.value) for (const key of Object.keys(paperFields) as (keyof typeof paperFields)[]) {
@@ -213,8 +279,39 @@ async function save() {
     }
     await cartonMasterApi.save(factory, { ...form, data: JSON.parse(JSON.stringify(form.data)) as MasterData }, editingId.value)
     if (factory !== props.factoryId) return
-    editing.value = false; await load(); emit('changed')
-  } catch (e) { error.value = getApiErrorMessage(e) } finally { busy.value = false }
+    editing.value = false; await refreshAfterSave(factory, '基础资料已保存')
+  } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) } finally { busy.value = false }
+}
+async function changeConfigAvailability(row: MasterRecord, status: 'ACTIVE' | 'INACTIVE') {
+  if (busy.value || !workspace.value.can_manage || !['CONFIG', 'CONTRACT'].includes(row.kind)) return
+  const factory = props.factoryId, generation = ++availabilityGeneration
+  const contract = row.kind === 'CONTRACT'
+  busy.value = true; error.value = ''; configActionMessage.value = ''
+  try {
+    const saved = await cartonMasterApi.save(factory, {
+      kind: row.kind, code: row.code, customer_code: contract ? row.customer_code : '', status, preferred: false,
+      expected_revision: row.revision,
+      reason: contract ? (status === 'INACTIVE' ? '删除不再使用的关联合同' : '恢复关联合同')
+        : status === 'INACTIVE' ? '删除不再使用的货号包装资料' : '恢复货号包装资料',
+      data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row.data)) },
+    }, row.id)
+    if (factory !== props.factoryId || generation !== availabilityGeneration) return
+    workspace.value.records = workspace.value.records.map(record => record.id === row.id ? { ...saved, sources: record.sources } : record)
+    configToRemove.value = null
+    statusFilter.value = 'ACTIVE'
+    preferredOnly.value = false
+    configActionMessage.value = contract ? (status === 'INACTIVE'
+      ? `合同 ${row.code} 已停用，不再用于新订单；历史单据和来源记录保留，可在“合同状态”的“停用”中恢复。`
+      : `合同 ${row.code} 已恢复，可继续用于新订单。`) : status === 'INACTIVE'
+      ? `货号 ${row.code} 的这套包装已从可用资料移除；历史订单保留，可在“停用”中恢复。`
+      : `货号 ${row.code} 的这套包装已恢复，可继续用于落单。`
+    emit('changed')
+    const refreshError = await load()
+    if (factory === props.factoryId && generation === availabilityGeneration && refreshError) {
+      error.value = `${configActionMessage.value} 列表刷新失败：${refreshError}。请刷新查看，勿重复操作。`
+    }
+  } catch (e) { if (factory === props.factoryId && generation === availabilityGeneration) error.value = getApiErrorMessage(e) }
+  finally { if (generation === availabilityGeneration) busy.value = false }
 }
 function editLocation(row?: CartonLocation, warehouse?: string) {
   locationWarehouseLocked.value = Boolean(warehouse)
@@ -230,8 +327,8 @@ async function saveLocation() {
     if (locationRow.value.id) await cartonMasterApi.location(factory, locationRow.value.id, locationForm)
     else await cartonPositionsApi.create(factory, locationForm.warehouse, locationForm.bin_code, locationForm.reason)
     if (factory !== props.factoryId) return
-    locationRow.value = null; await load(); emit('changed')
-  } catch (e) { error.value = getApiErrorMessage(e) } finally { busy.value = false }
+    locationRow.value = null; await refreshAfterSave(factory, '仓位资料已保存')
+  } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) } finally { busy.value = false }
 }
 function editWarehouse(name = '') {
   if (!workspace.value.can_manage) return
@@ -250,7 +347,7 @@ async function saveWarehouse() {
     else if (original) await cartonMasterApi.renameWarehouse(factory, original, warehouseForm.name, warehouseForm.revisions, warehouseForm.reason)
     else await cartonMasterApi.createWarehouse(factory, warehouseForm.name, warehouseForm.bin, warehouseForm.reason)
     if (factory !== props.factoryId) return
-    warehouseEditing.value = false; await load(); emit('changed')
+    warehouseEditing.value = false; await refreshAfterSave(factory, warehouseDeleting.value ? '仓库资料已删除' : '仓库资料已保存')
   } catch (e) { if (factory === props.factoryId) error.value = getApiErrorMessage(e) }
   finally { busy.value = false }
 }
@@ -267,22 +364,36 @@ async function saveWarehouse() {
       <button v-for="item in [{ id: 'SETTINGS', label: '基础设置' }, { id: 'CONFIG', label: '货号与包装' }]" :key="item.id" type="button" role="tab" :aria-selected="tab === item.id" class="rounded-lg px-5 py-2 text-sm font-bold" :class="tab === item.id ? 'bg-teal-700 text-white' : 'text-slate-600 hover:bg-slate-50'" @click="tab = item.id">{{ item.label }}</button>
     </div>
     <p v-if="error && !editing && !locationRow" role="alert" class="text-sm text-red-700">{{ error }}</p>
+    <p v-if="configActionMessage && tab === 'SETTINGS'" role="status" class="rounded-lg bg-teal-50 px-3 py-2 text-xs text-teal-800">{{ configActionMessage }}</p>
+    <CartonCustomerResponsibilities v-if="tab === 'SETTINGS'" :factory-id="factoryId" @changed="emit('changed')" />
     <div v-if="loading" class="p-10 text-center text-slate-500">正在整理历史与基础资料…</div>
-    <CartonMasterSettings v-else-if="tab === 'SETTINGS'" :key="factoryId" :workspace="workspace" :customers="customers" @rule="editRule" @paper="editPaperOptions" @paper-template="downloadTemplate('paper-options')" @paper-import="openImport('paper-options')" @location-template="downloadTemplate('locations')" @location-import="openImport('locations')" @edit="edit($event)" @create="createRecord" @location="editLocation" @warehouse="editWarehouse" @customer="emit('customers', $event)" @source="sourceRow = $event" />
+    <CartonMasterSettings v-else-if="tab === 'SETTINGS'" :key="factoryId" :workspace="workspace" :customers="customers" :busy="busy" @remove="configToRemove = $event; error = ''" @restore="changeConfigAvailability($event, 'ACTIVE')" @rule="editRule" @paper="editPaperOptions" @paper-template="downloadTemplate('paper-options')" @paper-import="openImport('paper-options')" @location-template="downloadTemplate('locations')" @location-import="openImport('locations')" @edit="edit($event)" @create="createRecord" @location="editLocation" @warehouse="editWarehouse" @customer="emit('customers', $event)" @source="sourceRow = $event" />
     <article v-else class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-label="货号与包装资料">
       <div class="flex flex-wrap items-center gap-3 border-b bg-slate-50 p-3">
         <span class="text-xs text-slate-500">本厂货号共用，不绑定客户</span>
         <input v-model="search" aria-label="基础资料搜索" placeholder="查找货号、产品名称、纸品或规格" class="h-9 min-w-56 flex-1 rounded-lg border bg-white px-3 text-xs">
-        <select v-model="statusFilter" aria-label="货号资料状态" class="h-9 rounded-lg border px-3 text-xs"><option value="ALL">全部状态</option><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select><label class="text-xs"><input v-model="preferredOnly" type="checkbox"> 仅推荐</label><button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="customer = ''; search = ''; statusFilter = 'ALL'; preferredOnly = false">清空筛选</button>
+        <select v-model="configSort" aria-label="货号资料排序" class="h-9 rounded-lg border px-3 text-xs"><option value="DEFAULT">原顺序</option><option value="CODE">货号顺序</option><option value="CUSTOMER">客户 / 货号顺序</option></select><button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="configSort = 'DEFAULT'">恢复默认排序</button><select v-model="statusFilter" aria-label="货号资料状态" class="h-9 rounded-lg border px-3 text-xs"><option value="ALL">全部状态</option><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select><label class="text-xs"><input v-model="preferredOnly" type="checkbox"> 仅推荐</label><button type="button" class="h-9 rounded-lg border px-3 text-xs" @click="customer = ''; search = ''; statusFilter = 'ACTIVE'; preferredOnly = false">清空筛选</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg bg-teal-700 px-4 text-xs font-bold text-white" @click="edit()">新增货号与包装</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg border px-3 text-xs" @click="downloadTemplate('configurations')">下载货号包装模板</button>
         <button v-if="workspace.can_manage" type="button" class="h-9 rounded-lg border px-3 text-xs" @click="openImport('configurations')">导入货号与包装</button>
       </div>
+      <p v-if="configActionMessage" role="status" class="border-b border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-800">{{ configActionMessage }}</p>
       <p class="border-b border-teal-100 bg-teal-50/60 px-3 py-2 text-xs leading-5 text-teal-800">一个货号可以有多个纸品：手工新增时点击“添加纸品”；模板导入时每个纸品写一行，同一套纸品使用相同的“货号 + 配置组”，并在每行重复填写相同的产品名称、推荐、状态和备注。</p>
       <div class="overflow-x-auto"><table class="w-full min-w-[960px] text-left text-xs"><thead class="bg-slate-50 text-slate-500"><tr><th class="p-3">包装方式</th><th class="p-3">货号 / 产品名称</th><th class="p-3">纸品类型 / 纸质 / 规格 / 单位 / 装箱数</th><th class="p-3">来源 / 状态</th><th class="p-3 text-right">操作</th></tr></thead>
-        <tbody class="divide-y divide-slate-100"><tr v-for="row in rows" :key="row.id" class="hover:bg-slate-50/60"><td class="p-3 font-semibold">{{ row.data.packing_name || '其他包装' }}</td><td class="p-3"><b class="font-mono">{{ row.code }}</b><div class="mt-1 text-slate-500">{{ row.data.product_name }}</div></td><td class="p-3"><div v-for="(line, i) in row.data.lines" :key="i" class="mb-1">{{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · 每箱 {{ line.usage_quantity }} 件</div><span v-if="workspace.records.filter(r => r.kind === 'CONFIG' && r.code === row.code).length > 1" class="text-amber-700">存在不同配置，落单时请核对</span><p class="mt-1 text-slate-500">{{ row.data.note }}</p></td><td class="p-3"><div>{{ row.maintained ? '高级权限维护' : '历史自动加入' }}</div><div class="mt-1" :class="row.status === 'ACTIVE' ? 'text-teal-700' : 'text-slate-400'">{{ row.status === 'ACTIVE' ? '启用' : '停用' }}{{ row.preferred ? ' · 推荐' : '' }}</div><button v-if="row.sources.length" type="button" class="mt-1 text-teal-700 underline" @click="sourceRow = row">{{ row.sources.length }} 条历史来源</button></td><td class="p-3"><div class="flex justify-end gap-2 whitespace-nowrap"><button v-if="workspace.can_manage" type="button" class="rounded-lg border px-3 py-2" :aria-label="`修改基础资料 ${row.code}`" @click="edit(row)">修改</button><button v-if="row.status === 'ACTIVE'" type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700" @click="emit('use', row)">用于落单</button></div></td></tr><tr v-if="!rows.length"><td colspan="5" class="p-12 text-center text-slate-400">暂无对应资料；正式历史订单中的货号与纸品配置会自动加入。</td></tr></tbody>
+        <tbody class="divide-y divide-slate-100"><tr v-for="row in rows" :key="row.id" :data-config-id="row.id" class="hover:bg-slate-50/60"><td class="p-3 font-semibold">{{ row.data.packing_name || '其他包装' }}</td><td class="p-3"><b class="font-mono">{{ row.code }}</b><div class="mt-1 text-slate-500">{{ row.data.product_name }}</div><p v-if="row.data.net_weight_kg != null || row.data.gross_weight_kg != null" class="mt-1 text-slate-500">历史整单每箱净重 {{ row.data.net_weight_kg ?? '未记录' }} kg · 毛重 {{ row.data.gross_weight_kg ?? '未记录' }} kg</p></td><td class="p-3"><div v-for="(line, i) in row.data.lines" :key="i" class="mb-1">{{ line.packaging_type }} · {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · 每箱 {{ line.usage_quantity }} 件<span v-if="line.net_weight_kg != null || line.gross_weight_kg != null" class="ml-2 text-slate-500">每箱净重 {{ line.net_weight_kg ?? '未记录' }} kg · 毛重 {{ line.gross_weight_kg ?? '未记录' }} kg</span></div><span v-if="workspace.records.filter(r => r.kind === 'CONFIG' && r.code === row.code).length > 1" class="text-amber-700">存在不同配置，落单时请核对</span><p class="mt-1 text-slate-500">{{ row.data.note }}</p></td><td class="p-3"><div>{{ row.maintained ? '高级权限维护' : '历史自动加入' }}</div><div class="mt-1" :class="row.status === 'ACTIVE' ? 'text-teal-700' : 'text-slate-400'">{{ row.status === 'ACTIVE' ? '启用' : '停用' }}{{ row.preferred ? ' · 推荐' : '' }}</div><button v-if="row.sources.length" type="button" class="mt-1 text-teal-700 underline" @click="sourceRow = row">{{ row.sources.length }} 条历史来源</button></td><td class="p-3"><div class="flex justify-end gap-2 whitespace-nowrap"><button v-if="workspace.can_manage" type="button" class="rounded-lg border px-3 py-2" :aria-label="`修改基础资料 ${row.code}`" @click="edit(row)">修改</button><button v-if="workspace.can_manage && row.status === 'ACTIVE'" type="button" class="rounded-lg border border-red-200 px-3 py-2 text-red-700" :aria-label="`删除货号包装 ${row.code}`" @click="configToRemove = row; error = ''">删除</button><button v-if="workspace.can_manage && row.status === 'INACTIVE'" type="button" :disabled="busy" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700 disabled:opacity-50" :aria-label="`恢复货号包装 ${row.code}`" @click="changeConfigAvailability(row, 'ACTIVE')">恢复</button><button v-if="row.status === 'ACTIVE'" type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-teal-700" @click="emit('use', row)">用于落单</button></div></td></tr><tr v-if="!rows.length"><td colspan="5" class="p-12 text-center text-slate-400">暂无对应资料；正式历史订单中的货号与纸品配置会自动加入。</td></tr></tbody>
       </table></div>
     </article>
+    <div v-if="configToRemove" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4">
+      <div role="dialog" aria-modal="true" :aria-label="configToRemove.kind === 'CONTRACT' ? '删除关联合同' : '删除货号与包装资料'" class="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl">
+        <h3 class="text-base font-bold text-slate-950"> {{ configToRemove.kind === 'CONTRACT' ? '删除这个关联合同？' : '删除这套货号与包装资料？' }}</h3>
+        <p v-if="configToRemove.kind === 'CONTRACT'" class="mt-3 text-sm leading-6 text-slate-600">合同 {{ configToRemove.code }} · {{ customers.find(c => c.customer_code === configToRemove?.customer_code)?.customer_name || configToRemove.customer_code }} · 关联货号 {{ configToRemove.data.item_nos?.join('、') || '未填写' }}</p>
+        <p v-else class="mt-3 text-sm leading-6 text-slate-600">货号 {{ configToRemove.code }} · {{ configToRemove.data.product_name || '未填写产品名称' }} · {{ configToRemove.data.packing_name || '其他包装' }}</p>
+        <p v-if="configToRemove.kind === 'CONTRACT'" class="mt-2 text-sm leading-6 text-slate-600">删除按停用处理：该客户不能再用此合同新增或确认订单，已有单据、库存、月结和来源记录保留。可在“合同状态”中选择“停用”并恢复。</p>
+        <p v-else class="mt-2 text-sm leading-6 text-slate-600">删除后不再用于新订单。历史订单及 {{ configToRemove.sources.length }} 条来源记录保留；可在状态筛选中选择“停用”并恢复。</p>
+        <p v-if="error" role="alert" class="mt-3 text-sm text-red-700">{{ error }}</p>
+        <div class="mt-5 flex justify-end gap-2"><button type="button" :disabled="busy" class="rounded-lg border px-4 py-2 text-sm" @click="configToRemove = null">取消</button><button type="button" :disabled="busy" class="rounded-lg bg-red-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" @click="changeConfigAvailability(configToRemove, 'INACTIVE')">{{ busy ? '正在删除…' : '确认删除' }}</button></div>
+      </div>
+    </div>
     <div v-if="importKind" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" data-testid="master-import-backdrop">
       <div role="dialog" aria-modal="true" aria-label="基础资料模板导入" class="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-xl bg-white p-5 shadow-xl">
         <div class="flex items-center justify-between"><h3 class="font-bold">导入{{ importLabels[importKind] }}</h3><button type="button" :disabled="importBusy" aria-label="关闭导入" @click="closeImport"><X class="size-5" /></button></div>
@@ -311,9 +422,11 @@ async function saveWarehouse() {
             <label>状态<select v-model="form.status" aria-label="基础资料状态" class="mt-1 h-9 w-full rounded-lg border px-2"><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select></label>
           </div>
           <template v-if="form.kind === 'CONFIG'">
+            <p v-if="form.data.net_weight_kg != null || form.data.gross_weight_kg != null" class="text-xs text-amber-700">历史整单每箱净重 {{ form.data.net_weight_kg ?? '未记录' }} kg · 毛重 {{ form.data.gross_weight_kg ?? '未记录' }} kg；请按纸品分别维护新重量。</p>
+            <p class="text-xs text-slate-500">每箱净重为货物不含纸箱、配卡等包装的重量；每箱毛重为含这些包装的整箱总重量。两项单位均为 kg，按对应纸品的装箱方式分别维护，毛重不得小于净重。</p>
             <p class="text-xs text-teal-700">包装方式：{{ form.data.packing_name || '保存后自动识别' }} · 首次为标准装，后续不同配置请核对。</p>
             <div class="flex items-center gap-3"><label class="flex-1">产品名称<input v-model="form.data.product_name" maxlength="255" aria-label="基础资料产品名称" class="mt-1 h-9 w-full rounded-lg border px-2"></label><label><input v-model="form.preferred" type="checkbox"> 设为推荐配置</label><button type="button" class="rounded-lg border px-3 py-2" @click="addPaper">添加纸品</button></div>
-            <div class="overflow-x-auto"><table class="w-full min-w-[800px] text-left"><thead class="bg-slate-50"><tr><th class="p-2">纸品类型</th><th class="p-2">纸质</th><th class="p-2">规格</th><th class="p-2">尺寸单位</th><th class="p-2">计量单位</th><th class="p-2">每箱装产品数</th><th></th></tr></thead><tbody><tr v-for="(line, i) in form.data.lines" :key="i"><td class="p-1"><input v-model="line.packaging_type" required aria-label="资料纸品类型" class="h-9 w-full rounded border px-2"></td><td class="p-1"><input v-model="line.paper_quality" aria-label="资料纸质" class="h-9 w-full rounded border px-2"></td><td class="p-1"><input v-model="line.specification" aria-label="资料规格" class="h-9 w-full rounded border px-2"></td><td class="p-1"><select v-model="line.dimension_unit" aria-label="资料尺寸单位" class="h-9 rounded border"><option value="">未记录</option><option>mm</option><option>cm</option><option>inch</option></select></td><td class="p-1"><input v-model="line.unit" required aria-label="资料计量单位" class="h-9 w-16 rounded border px-2"></td><td class="p-1"><input v-model="line.usage_quantity" type="number" min="0.00000001" step="any" required aria-label="资料装箱数" class="h-9 w-24 rounded border px-2"></td><td><button type="button" class="text-red-600" @click="form.data.lines.splice(i, 1)">移除</button></td></tr></tbody></table></div>
+            <div class="overflow-x-auto"><table class="w-full min-w-[1080px] text-left"><thead class="bg-slate-50"><tr><th class="p-2">纸品类型</th><th class="p-2">纸质</th><th class="p-2">规格</th><th class="p-2">尺寸单位</th><th class="p-2">计量单位</th><th class="p-2">每箱装产品数</th><th class="p-2">每箱净重 kg</th><th class="p-2">每箱毛重 kg</th><th></th></tr></thead><tbody><tr v-for="(line, i) in form.data.lines" :key="i"><td class="p-1"><input v-model="line.packaging_type" required aria-label="资料纸品类型" class="h-9 w-full rounded border px-2"></td><td class="p-1"><input v-model="line.paper_quality" aria-label="资料纸质" class="h-9 w-full rounded border px-2"></td><td class="p-1"><input v-model="line.specification" aria-label="资料规格" class="h-9 w-full rounded border px-2"></td><td class="p-1"><select v-model="line.dimension_unit" aria-label="资料尺寸单位" class="h-9 rounded border"><option value="">未记录</option><option>mm</option><option>cm</option><option>inch</option></select></td><td class="p-1"><input v-model="line.unit" required aria-label="资料计量单位" class="h-9 w-16 rounded border px-2"></td><td class="p-1"><input v-model="line.usage_quantity" type="number" min="0.00000001" step="any" required aria-label="资料装箱数" class="h-9 w-24 rounded border px-2"></td><td class="p-1"><input v-model="line.net_weight_kg" type="number" min="0" step="0.0001" :aria-label="`资料纸品每箱净重 ${i + 1}`" class="h-9 w-24 rounded border px-2"></td><td class="p-1"><input v-model="line.gross_weight_kg" type="number" min="0" step="0.0001" :aria-label="`资料纸品每箱毛重 ${i + 1}`" class="h-9 w-24 rounded border px-2"></td><td><button type="button" class="text-red-600" @click="form.data.lines.splice(i, 1)">移除</button></td></tr></tbody></table></div>
           </template>
           <label v-if="form.kind === 'CONTRACT'" class="block">关联货号（每行一个）<textarea v-model="itemText" aria-label="合同关联货号" rows="4" class="mt-1 w-full rounded-lg border p-2" /></label>
           <label v-if="form.kind === 'ACCESS'" class="block">允许维护的仓库（每行一个，与仓库名称一致）<textarea v-model="warehouseText" aria-label="允许维护仓库" rows="4" class="mt-1 w-full rounded-lg border p-2" /><span class="text-slate-500">人员还须具备本厂库存业务权限；授权不会允许修改其他基础资料。</span></label>
@@ -324,8 +437,9 @@ async function saveWarehouse() {
             </section>
 
             <div v-if="!paperOnly" class="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-              <div class="grid gap-3 sm:grid-cols-2">
+              <div class="grid gap-3 sm:grid-cols-3">
                 <label class="font-semibold">采购安全提前量 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.lead_days" type="number" min="0" max="365" aria-label="默认采购提前天数" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 3 天' : '默认 3 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"><span class="mt-1 block font-normal leading-5 text-slate-500">计划交期＝客户交期－提前天数。例如客户 20 日要货，提前 3 天，计划 17 日到货。</span></label>
+                <label class="font-semibold">供应商生产送货周期 <span class="font-normal text-slate-500">（自然日）</span><input v-model="form.data.production_days" type="number" min="0" max="365" step="1" aria-label="供应商生产送货周期" :placeholder="form.customer_code ? '空白沿用本厂，未设置时为 7 天' : '默认 7 天'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2"><span class="mt-1 block font-normal leading-5 text-slate-500">最迟下单日＝纸箱需到仓日－生产送货周期。提前 3 天提醒；超过最迟下单日且未下单才报疑似漏单。</span></label>
                 <label class="font-semibold">客户交期建议 <span class="font-normal text-slate-500">（下单后自然日）</span><input v-model="form.data.customer_days" :disabled="form.data.customer_days_disabled" type="number" min="0" max="730" aria-label="客户交期建议天数" :placeholder="form.data.customer_days_disabled ? '已关闭建议' : form.customer_code ? '空白沿用本厂，未设置则不建议' : '空白不提供建议'" class="mt-1 h-9 w-full rounded-lg border bg-white px-2 disabled:bg-slate-100 disabled:text-slate-400"><span class="mt-1 block font-normal leading-5 text-slate-500">建议客户交期＝下单日期＋建议天数。仅供人工采纳，以客户实际要求为准。</span></label>
               </div>
               <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-slate-500"><span>仅新单采用；旧单及追加保留原提前量。</span><label class="inline-flex items-center gap-1.5"><input v-model="form.data.customer_days_disabled" type="checkbox" aria-label="关闭客户交期建议"> 不提供交期建议</label></div>
@@ -335,7 +449,7 @@ async function saveWarehouse() {
                 <div class="flex items-center justify-between gap-2 border-b bg-slate-50 px-3 py-2"><b>{{ key === 'customer_po_rule' ? '客户 PO 格式（选填）' : key === 'contract_rule' ? '合同号格式' : '货号格式' }}</b>
                   <select v-model="form.data[key].mode" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式检查方式`" class="h-8 max-w-[65%] rounded border bg-white px-2"><option value="AUTO">样例识别 · 软提醒</option><option value="OFF">不检查</option><option value="WARN">手动规则 · 软提醒</option><option value="BLOCK">手动规则 · 强制检查</option></select>
                 </div>
-                <div class="px-3 pt-2"><button type="button" :disabled="busy" :aria-label="`重置${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式`" class="text-xs font-semibold text-red-600 disabled:opacity-40" @click="resetNumberRule(key)">重置格式</button></div>
+                <div class="px-3 pt-2"><button type="button" :disabled="busy" :aria-label="`删除旧${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式`" class="text-xs font-semibold text-red-600 disabled:opacity-40" @click="resetNumberRule(key)">删除旧格式</button></div>
                 <p v-if="recognitionErrors[key]" role="alert" class="px-3 pt-2 text-xs text-red-600">{{ key === 'customer_po_rule' ? '客户 PO' : key === 'contract_rule' ? '合同号' : '货号' }}识别失败：{{ recognitionErrors[key] }}</p>
                 <p v-if="recognitionHints[key]" class="px-3 pt-2 text-xs text-amber-700">{{ recognitionHints[key] }}</p>
                 <div v-if="form.data[key].mode !== 'OFF'" class="p-3">
@@ -345,9 +459,9 @@ async function saveWarehouse() {
                     <p v-else class="text-slate-500">尚未识别到格式，展开填写样例。</p>
                   </div>
                   <details class="mt-2 border-t border-slate-100 pt-2">
-                    <summary class="cursor-pointer font-semibold text-teal-700">修改格式 / 重新识别</summary>
+                    <summary class="cursor-pointer font-semibold text-teal-700">修改格式</summary>
                     <div class="mt-3 space-y-2 text-slate-600">
-                      <label class="block">编号样例 <span class="text-slate-400">（每行一个；留空参考历史订单）</span><textarea v-model="form.data[key].sample_text" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}识别样例`" rows="2" maxlength="12000" class="mt-1 w-full rounded border bg-white p-2" :placeholder="key === 'contract_rule' ? 'SC700149169/600\nSC700143393/1600' : key === 'customer_po_rule' ? '粘贴该客户的完整客户 PO' : '粘贴该客户的完整货号'" /></label>
+                      <label class="block">编号样例 <span class="text-slate-400">{{ form.data[key].reset ? '（每行一个；删除后留空不会重新读取旧订单）' : '（每行一个；留空参考历史订单）' }}</span><textarea v-model="form.data[key].sample_text" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}识别样例`" rows="2" maxlength="12000" class="mt-1 w-full rounded border bg-white p-2" :placeholder="key === 'contract_rule' ? 'SC700149169/600\nSC700143393/1600' : key === 'customer_po_rule' ? '粘贴该客户的完整客户 PO' : '粘贴该客户的完整货号'" /></label>
                       <div class="flex flex-wrap items-center gap-2"><button type="button" :disabled="busy" class="rounded-lg border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`识别${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}格式`" @click="identifyNumberRule(key)">识别格式</button><span class="text-[11px] text-slate-500">识别参考：{{ form.data[key].source === 'MANUAL' ? '填写样例' : form.data[key].source === 'HISTORY' ? '历史订单' : '尚未识别' }} · {{ form.data[key].sample_count || 0 }} 个编号</span></div>
                       <label class="block">格式结果（可修改，每行一种）<textarea v-model="templateText[key]" :aria-label="`${key === 'customer_po_rule' ? '客户 PO（选填）' : key === 'contract_rule' ? '合同号' : '货号'}固定格式`" rows="2" maxlength="5200" class="mt-1 w-full rounded border bg-white p-2 font-mono" placeholder="SC{9}/{3,4}" @input="editNumberTemplate(key)" /></label>
                       <p class="text-[11px] leading-5 text-slate-500">{9} = 9 位数字；{3,4} = 3 或 4 位。文字及符号按原样匹配；留空不执行分段检查。</p>
@@ -390,6 +504,6 @@ async function saveWarehouse() {
       </form>
     </div>
     <div v-if="locationRow" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4"><form role="dialog" aria-modal="true" aria-label="维护仓位" class="w-full max-w-lg space-y-4 rounded-xl bg-white p-5 text-sm" @submit.prevent="saveLocation"><div class="flex justify-between"><b>仓库／仓位维护</b><button type="button" :disabled="busy" @click="locationRow = null">关闭</button></div><label class="block">仓库<input v-model="locationForm.warehouse" :readonly="locationWarehouseLocked" required maxlength="64" aria-label="维护仓库名称" class="mt-1 h-9 w-full rounded border px-2"></label><label class="block">仓位<input v-model="locationForm.bin_code" :required="!!locationRow.bin_code || !locationRow.id" maxlength="64" aria-label="维护仓位编号" class="mt-1 h-9 w-full rounded border px-2"></label><label v-if="locationRow.id" class="block">状态<select v-model="locationForm.status" aria-label="仓位状态" class="ml-2 h-9 rounded border"><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select></label><p class="text-xs text-slate-500">更名不移动库存；停用后禁止新增入库，可继续清退及受控纠错。有库存请先核对是否需要调仓。</p><input v-model="locationForm.reason" required minlength="4" placeholder="维护原因，至少 4 个字" aria-label="仓位维护原因" class="h-9 w-full rounded border px-2"><p v-if="error" role="alert" class="text-red-700">{{ error }}</p><button :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-white">保存仓位</button></form></div>
-    <div v-if="sourceRow" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" @click.self="sourceRow = null"><div role="dialog" aria-modal="true" aria-label="基础资料历史来源" class="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-xl bg-white p-5"><div class="flex justify-between"><b>{{ sourceRow.code }} · 历史来源</b><button type="button" @click="sourceRow = null">关闭</button></div><div v-for="(source, i) in sourceRow.sources" :key="i" class="border-b py-3 text-xs"><b>{{ source.order_date }} · {{ source.contract_no }} · {{ source.item_no }}</b><div class="mt-1 text-slate-500">{{ source.order_no }}</div><div v-for="(line, j) in source.configuration.lines" :key="j" class="mt-1">{{ line.packaging_type }} {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · 每箱 {{ line.usage_quantity }} 件</div></div></div></div>
+    <div v-if="sourceRow" class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/45 p-4" @click.self="sourceRow = null"><div role="dialog" aria-modal="true" aria-label="基础资料历史来源" class="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-xl bg-white p-5"><div class="flex justify-between"><b>{{ sourceRow.code }} · 历史来源</b><button type="button" @click="sourceRow = null">关闭</button></div><div v-for="(source, i) in sourceRow.sources" :key="i" class="border-b py-3 text-xs"><b>{{ source.order_date }} · {{ source.contract_no }} · {{ source.item_no }}</b><div class="mt-1 text-slate-500">{{ source.order_no }}</div><div v-for="(line, j) in source.configuration.lines" :key="j" class="mt-1">{{ line.packaging_type }} {{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }} · {{ line.unit }} · 每箱 {{ line.usage_quantity }} 件<span v-if="line.net_weight_kg != null || line.gross_weight_kg != null" class="ml-2 text-slate-500">每箱净重 {{ line.net_weight_kg ?? '未记录' }} kg · 毛重 {{ line.gross_weight_kg ?? '未记录' }} kg</span></div></div></div></div>
   </section>
 </template>

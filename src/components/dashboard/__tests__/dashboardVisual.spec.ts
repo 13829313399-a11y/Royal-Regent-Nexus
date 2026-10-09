@@ -247,7 +247,7 @@ describe('dashboard motion and style isolation', () => {
       expect(selector).toMatch(/^\.dashboard-page\[data-dashboard-ui='jade-v2'\]/)
     }
     // 主题 token 只定义在首页根节点。
-    expect(dashboardCss).toContain(".dashboard-page[data-dashboard-ui='jade-v2'] {\n  --dash-canvas:")
+    expect(dashboardCss).toMatch(/\.dashboard-page\[data-dashboard-ui='jade-v2'\]\s*\{\s*--dash-canvas:/)
     // 首页装饰层不进入键盘焦点顺序，也不接受指针事件。
     expect(dashboardCss).not.toContain('pointer-events: auto')
   })

@@ -9,18 +9,26 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 
 from app.api.auth import router as auth_router
+from app.api.assistant import router as assistant_router
 from app.api.document_tools import router as document_tools_router
 from app.api.collaborative_sheets import router as collaborative_sheets_router
 from app.api.pdf_rename import router as pdf_rename_router
 from app.api.carton_mark import router as carton_mark_router
+from app.api.carton_feedback import router as carton_feedback_router
 from app.api.carton_procurement import router as carton_procurement_router
+from app.api.fabric_procurement import router as fabric_procurement_router
+from app.api.fabric_master import router as fabric_master_router
 from app.api.carton_supplier_settlement import router as carton_supplier_settlement_router
+from app.api.carton_supplier_portal import router as carton_supplier_portal_router
 from app.api.customer_order import router as customer_order_router
 from app.api.customer_order_ledger import router as customer_order_ledger_router
 from app.api.directory import router as directory_router
 from app.api.iam import router as iam_router
+from app.api.identity import router as identity_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.injection_scheduling import router as injection_scheduling_router
+from app.api.module_feedback import router as module_feedback_router
+from app.api.customer_price_settings import router as customer_price_settings_router
 from app.api.internal_quote import (
     customer_price_artifact_router,
 )
@@ -32,13 +40,12 @@ from app.api.pricing import router as pricing_router
 from app.api.qc_inspection import router as qc_inspection_router
 from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
+from app.api.work_center import router as work_center_router
 from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
-from app.api.spray_production import router as spray_production_router
-from app.api.uv_printing import router as uv_printing_router
-from app.api.uv_finance import router as uv_finance_router
-from app.api.uv_ingest import router as uv_ingest_router
-from app.api.uv_handover import router as uv_handover_router
+from app.api.spray_operations import router as spray_operations_router
+from app.api.uv_operations import router as uv_operations_router
+from app.api.uv_agent import router as uv_agent_router
 from app.core.config import settings
 from app.db import init_db
 
@@ -101,9 +108,32 @@ async def lifespan(app: FastAPI):
     from app.services.three_d_live import hub
     hub.start()
     sweep_task = asyncio.create_task(three_d_sweep_loop())
+    from app.services.three_d_telemetry_rollups import worker as telemetry_rollup_worker
+    rollup_task = asyncio.create_task(telemetry_rollup_worker())
+    from app.services.uv_operations.exports import worker as uv_export_worker
+    uv_export_task = asyncio.create_task(uv_export_worker()) if settings.uv_ops_enabled else None
+    from app.services.identity_outbox import worker as identity_worker
+    identity_task = asyncio.create_task(identity_worker()) if settings.iam_identity_writes_enabled else None
     try:
         yield
     finally:
+        rollup_task.cancel()
+        try:
+            await rollup_task
+        except asyncio.CancelledError:
+            pass
+        if identity_task:
+            identity_task.cancel()
+            try:
+                await identity_task
+            except asyncio.CancelledError:
+                pass
+        if uv_export_task:
+            uv_export_task.cancel()
+            try:
+                await uv_export_task
+            except asyncio.CancelledError:
+                pass
         sweep_task.cancel()
         try:
             await sweep_task
@@ -149,6 +179,8 @@ async def record_request_timing(request: Request, call_next):
     duration_ms = (perf_counter() - started_at) * 1000
     response.headers["X-Request-ID"] = request_id
     response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
+    if request.url.path.startswith("/api/assistant/"):
+        response.headers["Cache-Control"] = "private, no-store"
     if request.url.path != "/health":
         route = request.scope.get("route")
         route_path = getattr(route, "path", request.url.path)
@@ -164,33 +196,40 @@ async def record_request_timing(request: Request, call_next):
 
 
 app.include_router(auth_router)
+app.include_router(assistant_router)
 app.include_router(document_tools_router)
 app.include_router(collaborative_sheets_router)
 app.include_router(pdf_rename_router)
 app.include_router(carton_mark_router)
+app.include_router(carton_feedback_router)
 app.include_router(carton_procurement_router)
+app.include_router(fabric_procurement_router)
+app.include_router(fabric_master_router)
 app.include_router(carton_supplier_settlement_router)
+app.include_router(carton_supplier_portal_router)
 app.include_router(customer_order_router)
 app.include_router(customer_order_ledger_router)
 app.include_router(directory_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
+app.include_router(module_feedback_router)
+app.include_router(customer_price_settings_router)
 app.include_router(indonesia_invoice_router)
 app.include_router(injection_scheduling_router)
 app.include_router(iam_router)
+app.include_router(identity_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
 app.include_router(system_router)
+app.include_router(work_center_router)
 from app.api.three_d_operations import router as three_d_operations_router
 app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)
-app.include_router(spray_production_router)
-app.include_router(uv_printing_router)
-app.include_router(uv_finance_router)
-app.include_router(uv_ingest_router, prefix="/api")
-app.include_router(uv_handover_router)
+app.include_router(spray_operations_router)
+app.include_router(uv_operations_router)
+app.include_router(uv_agent_router)
 app.include_router(three_d_connector_router)
 
 

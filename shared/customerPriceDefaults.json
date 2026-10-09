@@ -1,0 +1,512 @@
+{
+  "buzzbee": {
+    "name": "BuzzBee",
+    "factoryId": "huaxing",
+    "materials": [
+      {
+        "material": "PP",
+        "price": 13.9,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "ABS",
+        "price": 16.7,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "PC",
+        "price": 18,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "K",
+        "price": 22,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "GP",
+        "price": 11,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "PE",
+        "price": 15,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "POM",
+        "price": 28,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "475",
+        "price": 12,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "C-ABS",
+        "price": 28.9,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "C-ABS镜片",
+        "price": 23.1,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "EVA",
+        "price": 13,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "Mars",
+        "price": 14,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "PVC",
+        "price": 13.9,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "Nylon",
+        "price": 34,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "TPR",
+        "price": 31.9,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "SAN",
+        "price": 20,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "PP(C)",
+        "price": 18,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "HI/GP",
+        "price": 12,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "HDPE",
+        "price": 13,
+        "currency": "HKD",
+        "unit": "kg"
+      }
+    ],
+    "rates": {
+      "detail_multiplier": {
+        "label": "明细倍率",
+        "value": 1.05,
+        "kind": "multiplier"
+      },
+      "carton_multiplier": {
+        "label": "纸箱倍率",
+        "value": 1.03,
+        "kind": "multiplier"
+      },
+      "sewing_multiplier": {
+        "label": "车缝倍率",
+        "value": 1.05,
+        "kind": "multiplier"
+      },
+      "injection_multiplier": {
+        "label": "注塑倍率",
+        "value": 1,
+        "kind": "multiplier"
+      },
+      "material_multiplier": {
+        "label": "胶料倍率",
+        "value": 1,
+        "kind": "multiplier"
+      },
+      "assembly_multiplier": {
+        "label": "装配倍率",
+        "value": 1,
+        "kind": "multiplier"
+      },
+      "paint_multiplier": {
+        "label": "油漆倍率",
+        "value": 1,
+        "kind": "multiplier"
+      },
+      "spray_multiplier": {
+        "label": "喷油倍率",
+        "value": 1,
+        "kind": "multiplier"
+      },
+      "fsc_multiplier": {
+        "label": "FSC倍率",
+        "value": 1.03,
+        "kind": "multiplier"
+      },
+      "po_rate": {
+        "label": "PO费用比例",
+        "value": 0.1,
+        "kind": "rate"
+      },
+      "hkd_usd": {
+        "label": "港元兑美元",
+        "value": 7.75,
+        "kind": "exchange"
+      }
+    },
+    "texts": {}
+  },
+  "yinhui": {
+    "name": "银辉",
+    "factoryId": "huaxing",
+    "materials": [
+      {
+        "material": "ABS",
+        "price": 15.65,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "TPR",
+        "price": 18.8,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "PP",
+        "price": 12.6,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "POM",
+        "price": 34.07,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "C-ABS",
+        "price": 24,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "PVC",
+        "price": 17.16,
+        "currency": "HKD",
+        "unit": "kg"
+      },
+      {
+        "material": "TPE",
+        "price": 15.9,
+        "currency": "HKD",
+        "unit": "kg"
+      }
+    ],
+    "rates": {
+      "detail_multiplier": {
+        "label": "明细倍率",
+        "value": 1,
+        "kind": "multiplier"
+      },
+      "injection_multiplier": {
+        "label": "注塑倍率",
+        "value": 1,
+        "kind": "multiplier"
+      },
+      "material_multiplier": {
+        "label": "胶料倍率",
+        "value": 1,
+        "kind": "multiplier"
+      },
+      "hkd_usd": {
+        "label": "港元兑美元",
+        "value": 7.8,
+        "kind": "exchange"
+      }
+    },
+    "texts": {}
+  },
+  "caixing": {
+    "name": "彩星",
+    "factoryId": "huaxing",
+    "materials": [],
+    "rates": {
+      "plastic_scrap_rate": {
+          "label": "塑胶外购及包装损耗比例",
+        "value": 0.02,
+        "kind": "rate"
+      },
+        "material_price_uplift_rate": {
+          "label": "塑胶料价换算附加比例",
+          "value": 0.02,
+          "kind": "rate",
+          "description": "内部港币/磅先换算为港币/公斤，再加此比例；不含 Tool Plan 损耗"
+        },
+        "tool_material_scrap_rate": {
+          "label": "Tool Plan 塑胶料重损耗比例",
+          "value": 0.02,
+          "kind": "rate"
+        },
+        "electronic_scrap_rate": {
+          "label": "电子明细损耗比例",
+          "value": 0.02,
+          "kind": "rate"
+        },
+        "special_material_scrap_rate": {
+          "label": "特殊材料明细损耗比例",
+          "value": 0.02,
+          "kind": "rate"
+        },
+        "plush_scrap_rate": {
+          "label": "车衣外购及包装损耗比例",
+          "value": 0.02,
+          "kind": "rate"
+        },
+        "fabric_material_scrap_rate": {
+          "label": "车衣材料损耗比例",
+          "value": 0.02,
+          "kind": "rate"
+        },
+        "fabric_labor_scrap_rate": {
+          "label": "车衣人工损耗比例",
+          "value": 0,
+          "kind": "rate"
+        },
+      "plastic_markup_rate": {
+        "label": "塑胶加价比例",
+        "value": 0.16,
+        "kind": "rate"
+      },
+      "plush_markup_rate": {
+        "label": "毛绒加价比例",
+        "value": 0.17,
+        "kind": "rate"
+      },
+        "plush_special_markup_rate": {
+          "label": "车衣特殊材料加价比例",
+          "value": 0,
+          "kind": "rate"
+        },
+        "plush_electronic_markup_rate": {
+          "label": "车衣电子材料加价比例",
+          "value": 0,
+          "kind": "rate"
+        },
+        "machine_hours_per_day": {
+          "label": "啤机每日计价小时",
+          "value": 24,
+          "kind": "price"
+        },
+        "machine_utilization_factor": {
+          "label": "啤机有效工时系数",
+          "value": 0.98,
+          "kind": "rate"
+        },
+        "hkd_cny": {
+          "label": "人民币兑港元",
+          "value": 1.199,
+          "kind": "exchange"
+        },
+        "minimum_order_qty": {
+          "label": "默认最低订量（每款）",
+          "value": 3000,
+          "kind": "price"
+        },
+      "hkd_usd": {
+        "label": "港元兑美元",
+        "value": 7.8,
+        "kind": "exchange"
+      },
+      "domestic_freight_rate": {
+        "label": "内销运费",
+        "value": 2.11,
+        "kind": "price"
+      },
+      "fob_freight_rate": {
+        "label": "FOB运费",
+        "value": 5.93,
+        "kind": "price"
+      }
+    },
+    "texts": {}
+  },
+  "disney": {
+    "name": "Disney",
+    "factoryId": "huaxing",
+    "materials": [],
+    "rates": {
+      "po_rate": {
+        "label": "PO费用比例",
+        "value": 0.2,
+        "kind": "rate"
+      },
+      "capacity_factor": {
+        "label": "产能系数",
+        "value": 0.9,
+        "kind": "multiplier"
+      },
+      "labor_vehicle": {
+        "label": "车类工价",
+        "value": 6.5,
+        "kind": "price"
+      },
+      "labor_figure": {
+        "label": "公仔工价",
+        "value": 6.4,
+        "kind": "price"
+      },
+      "labor_packaging": {
+        "label": "包装工价",
+        "value": 6,
+        "kind": "price"
+      },
+      "labor_minutes": {
+        "label": "工时分钟",
+        "value": 4,
+        "kind": "price"
+      },
+      "legacy_deco_multiplier": {
+        "label": "旧版装饰倍率",
+        "value": 1.015,
+        "kind": "multiplier"
+      },
+      "legacy_cost_divisor": {
+        "label": "旧版成本除数",
+        "value": 0.98,
+        "kind": "multiplier"
+      },
+      "hkd_usd": {
+        "label": "港元兑美元",
+        "value": 7.8,
+        "kind": "exchange"
+      }
+    },
+    "texts": {}
+  },
+  "three-sixty": {
+    "name": "360",
+    "factoryId": "huakang-a",
+    "materials": [
+      {
+        "material": "ABS",
+        "price": 2.03,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "C-ABS",
+        "price": 3.53,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "PP",
+        "price": 1.7,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "PVC",
+        "price": 1.92,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "C-PVC",
+        "price": 2.26,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "POM",
+        "price": 3.1,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "Roto-PVC",
+        "price": 2.18,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "C-PP",
+        "price": 1.84,
+        "currency": "USD",
+        "unit": "kg"
+      }
+    ],
+    "rates": {
+      "scrap_rate": {
+        "label": "胶料损耗比例",
+        "value": 0.02,
+        "kind": "rate"
+      },
+      "markup_rate": {
+        "label": "加价比例",
+        "value": 0.12,
+        "kind": "rate"
+      },
+      "hkd_usd": {
+        "label": "港元兑美元",
+        "value": 7.8,
+        "kind": "exchange"
+      }
+    },
+    "texts": {}
+  },
+  "dicky": {
+    "name": "Dickie",
+    "factoryId": "huaxing",
+    "materials": [
+      {
+        "material": "PP",
+        "price": 4.8,
+        "currency": "HKD",
+        "unit": "lb"
+      },
+      {
+        "material": "C-ABS",
+        "price": 8.5,
+        "currency": "HKD",
+        "unit": "lb"
+      },
+      {
+        "material": "ABS",
+        "price": 5.8,
+        "currency": "HKD",
+        "unit": "lb"
+      },
+      {
+        "material": "HIPS",
+        "price": 5.1,
+        "currency": "HKD",
+        "unit": "lb"
+      }
+    ],
+    "rates": {},
+    "texts": {}
+  }
+}

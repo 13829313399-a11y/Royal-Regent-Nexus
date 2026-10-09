@@ -1,0 +1,15 @@
+{
+  "model": "REPLACE_WITH_ACTUAL_CHAT_MODEL",
+  "base_url": "https://REPLACE_WITH_ACTUAL_REGIONAL_HOST/compatible-mode/v1",
+  "protocol": "chat_completions",
+  "region": "REPLACE_WITH_ACTUAL_REGION",
+  "documentation": ["https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope"],
+  "verified_at": null,
+  "thinking": "unknown",
+  "vision": false,
+  "function_calling": false,
+  "web_search": false,
+  "output_limit_parameter": "max_tokens",
+  "context_character_budget": 100000,
+  "verified_combinations": []
+}

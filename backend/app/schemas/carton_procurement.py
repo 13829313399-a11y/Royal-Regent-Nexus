@@ -4,6 +4,7 @@ import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from app.schemas.carton_weights import CartonPackingWeights
 
 
 CartonOrderStatus = Literal[
@@ -157,7 +158,7 @@ class CartonCustomerListOut(BaseModel):
     items: list[CartonCustomerOut]
 
 
-class CartonOrderLineCreate(BaseModel):
+class CartonOrderLineCreate(CartonPackingWeights):
     packaging_type: str = Field(min_length=1, max_length=64)
     paper_quality: str = Field(default="", max_length=128)
     specification: str = Field(default="", max_length=255)
@@ -190,7 +191,14 @@ class CartonOrderLineCreate(BaseModel):
         return _strip(value)
 
 
-class CartonOrderCreate(BaseModel):
+class CartonScheduleOrderSource(BaseModel):
+    batch_id: str = Field(min_length=1, max_length=96)
+    source_sheet: str = Field(min_length=1, max_length=128)
+    source_row: int = Field(ge=1)
+
+
+class CartonOrderCreate(CartonPackingWeights):
+    schedule_source: CartonScheduleOrderSource | None = None
     customer_po: str = Field(default="", max_length=128)
 
     @field_validator("customer_po")
@@ -261,7 +269,7 @@ class CartonOrderCreate(BaseModel):
         return self
 
 
-class CartonOrderUpdate(BaseModel):
+class CartonOrderUpdate(CartonPackingWeights):
     customer_po: str = Field(default="", max_length=128)
 
     @field_validator("customer_po")
@@ -448,13 +456,17 @@ class CartonOrderBulkCancelRequest(BaseModel):
         return self
 
 
-class CartonHistoryOrderBulkDeleteRequest(CartonOrderBulkCancelRequest):
+class CartonOrderBulkDeleteRequest(CartonOrderBulkCancelRequest):
     @field_validator("reason")
     @classmethod
     def validate_delete_reason(cls, value: str) -> str:
         if len(value.strip()) < 4:
             raise ValueError("删除原因至少需要四个字符")
         return value.strip()
+
+
+class CartonHistoryOrderBulkDeleteRequest(CartonOrderBulkDeleteRequest):
+    pass
 
 
 class CartonImportBatchUndoRequest(BaseModel):
@@ -483,7 +495,7 @@ class CartonOrderSelectionRequest(BaseModel):
         return normalized
 
 
-class CartonOrderLineOut(BaseModel):
+class CartonOrderLineOut(CartonPackingWeights):
     replenishment_review_required: bool = False
     replenishment_options: list[dict] = Field(default_factory=list)
     replenished_quantity: Decimal = Decimal(0)
@@ -508,7 +520,7 @@ class CartonOrderLineOut(BaseModel):
     note: str
 
 
-class CartonOrderHistoryLineOut(BaseModel):
+class CartonOrderHistoryLineOut(CartonPackingWeights):
     line_no: int
     packaging_type: str
     paper_quality: str
@@ -544,7 +556,40 @@ class CartonOrderHistorySuggestionListOut(BaseModel):
     items: list[CartonOrderHistorySuggestionOut]
 
 
+class CartonSupplierDeliveryDifferenceOut(BaseModel):
+    order_line_id: str
+    packaging_type: str
+    planned_date: str
+    promised_date: str
+    difference_days: int
+
+
+class CartonSupplierAcceptanceOut(BaseModel):
+    status: Literal["NOT_ISSUED", "PENDING", "PARTIAL", "ACCEPTED", "PENDING_CHANGE", "NOT_REQUIRED", "CANCELLED"] = "NOT_ISSUED"
+    label: str = "尚未发送供应商"
+    issue_id: str = ""
+    document_no: str = ""
+    total_line_count: int = 0
+    accepted_line_count: int = 0
+    accepted_at: str = ""
+    delivery_differences: list[CartonSupplierDeliveryDifferenceOut] = Field(default_factory=list)
+
+
+class CartonPurchaseOrderBatchOut(BaseModel):
+    id: str
+    document_no: str
+    order_count: int
+    generated_at: str
+
+
 class CartonOrderOut(BaseModel):
+    net_weight_kg: Decimal | None = None
+    gross_weight_kg: Decimal | None = None
+    purchase_order_batch: CartonPurchaseOrderBatchOut | None = None
+    supplier_acceptance: CartonSupplierAcceptanceOut = Field(default_factory=CartonSupplierAcceptanceOut)
+    split_records: list[dict] = Field(default_factory=list)
+    can_delete: bool = False
+    deletion_block_reason: str = ""
     can_delete_history: bool = False
     customer_po: str = ""
     usage_status: str = "NOT_RECEIVED"
@@ -586,6 +631,7 @@ class CartonOrderListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonOrderOut]
+    statistics: dict[str, int] = Field(default_factory=dict)
 
 
 CartonPurchaseOrderDocumentType = Literal[
@@ -604,6 +650,7 @@ class CartonPurchaseOrderIssueCreate(BaseModel):
 
 
 class CartonPurchaseOrderIssueOut(BaseModel):
+    purchase_order_batch: CartonPurchaseOrderBatchOut | None = None
     is_replenishment: bool = False
     id: str
     factory_id: str
@@ -754,6 +801,7 @@ class CartonReceiptLineCreate(BaseModel):
 class CartonReceiptCreate(BaseModel):
     acceptance_date: str | None = None
     post_immediately: bool = False
+    split_confirmation: str = Field(default="", max_length=64)
     request_id: str | None = Field(default=None, min_length=8, max_length=128)
     factory_id: str = Field(min_length=1, max_length=64)
     delivery_note_no: str = Field(min_length=1, max_length=128)
@@ -849,6 +897,7 @@ class CartonReceiptListOut(BaseModel):
 
 
 class CartonReceiptConfirmRequest(BaseModel):
+    split_confirmation: str = Field(default="", max_length=64)
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
 
@@ -1206,6 +1255,26 @@ class CartonImportBatchListOut(BaseModel):
     items: list[CartonImportBatchOut]
 
 
+class CartonScheduleOrderMarkRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    batch_id: str = Field(min_length=1, max_length=96)
+    source_sheet: str = Field(min_length=1, max_length=128)
+    source_row: int = Field(ge=1)
+    marked: bool
+
+
+class CartonScheduleOrderMarkRow(BaseModel):
+    source_sheet: str = Field(min_length=1, max_length=128)
+    source_row: int = Field(ge=1)
+
+
+class CartonScheduleOrderMarkBulkRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    batch_id: str = Field(min_length=1, max_length=96)
+    rows: list[CartonScheduleOrderMarkRow] = Field(min_length=1, max_length=100)
+    marked: bool
+
+
 class CartonExceptionUpdate(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
@@ -1286,6 +1355,8 @@ class CartonAuditEventListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonAuditEventOut]
+    event_types: dict[str, str] = Field(default_factory=dict)
+    actors: list[dict[str, str]] = Field(default_factory=list)
 
 
 class CartonDashboardOut(BaseModel):

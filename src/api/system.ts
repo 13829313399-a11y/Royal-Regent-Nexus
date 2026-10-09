@@ -17,6 +17,8 @@ export interface RegistrationProfileRequest {
   phone: string
   email: string
   factory_id: string
+  org_unit_id?: string
+  business_factory_ids?: string[]
   department: string
   position: string
 }
@@ -88,6 +90,7 @@ export interface RegistrationRequestResponse {
   phone: string
   email: string
   factory_id: string
+  org_unit_id?: string
   department: string
   position: string
   status: string

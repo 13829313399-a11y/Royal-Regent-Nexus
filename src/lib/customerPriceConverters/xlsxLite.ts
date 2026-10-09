@@ -185,7 +185,7 @@ function resolveWorksheetTargets(zip: Record<string, Uint8Array>) {
   })
 }
 
-export function parseXlsxWorkbook(buffer: ArrayBuffer, options: { sheetNames?: string[]; valuesOnly?: boolean; includeFormulas?: boolean } = {}): XlsxParsedWorkbook {
+export function parseXlsxWorkbook(buffer: ArrayBuffer, options: { sheetNames?: string[]; valuesOnly?: boolean; includeFormulas?: boolean; maxRows?: number } = {}): XlsxParsedWorkbook {
   const zip = unzipSync(new Uint8Array(buffer))
   const sharedStrings = readSharedStrings(zip)
   const cellStyleFillIds = readCellStyleFillIds(zip)
@@ -198,6 +198,8 @@ export function parseXlsxWorkbook(buffer: ArrayBuffer, options: { sheetNames?: s
     // Some legacy workbooks format tens of thousands of otherwise empty rows.
     // Value-only consumers do not need those empty cells, but all value/formula cells retain their addresses.
     if (options.valuesOnly) worksheetXml = worksheetXml.replace(/<c\b[^>]*\/>/g, '').replace(/<row\b[^>]*>\s*<\/row>/g, '')
+    // Discovery reads only the header region; keep original addresses and leave full reads unchanged.
+    if (options.maxRows !== undefined) worksheetXml = worksheetXml.replace(/<row\b[^>]*\br="(\d+)"[^>]*>[\s\S]*?<\/row>/g, (xml, row) => Number(row) <= options.maxRows! ? xml : '')
     const worksheet = parseXml(worksheetXml)
     const rows: XlsxCellValue[][] = []
     const cellFillIds: number[][] = []

@@ -80,7 +80,7 @@ function uiStatus(status: string): InternalQuoteStatus {
 }
 
 function sectionStatus(status: string): InternalQuoteSectionStatus {
-  return ['draft', 'pending_review', 'approved', 'rejected', 'na_pending', 'not_applicable'].includes(status)
+  return ['draft', 'pending_review', 'approved', 'sealed', 'rejected', 'na_pending', 'not_applicable'].includes(status)
     ? status as InternalQuoteSectionStatus
     : 'draft'
 }
@@ -456,6 +456,11 @@ function toQuote(
   const attachments = extras.attachments ?? []
   return {
     id: source.id,
+    documentQuoteId: source.document_quote_id,
+    documentProductCount: source.document_product_count,
+    documentVersionCount: source.document_version_count,
+    productRootId: source.product_root_id,
+    deleteBlockReason: source.delete_block_reason,
     quoteNo: source.quote_no,
     productName: source.product_name,
     quoteType: source.quote_type ?? 'single',
@@ -1216,7 +1221,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           business_owner_id: payload.businessOwnerId, business_owner_name: payload.businessOwner.trim(),
           target_customer_price: payload.targetCustomerPrice.trim(), target_date: payload.targetDate,
           remark: payload.remark, participating_sections: orderedParticipatingSections(payload.participatingSections),
-          workflow_mode: 'whole_quote_review',
+          workflow_mode: 'direct_output',
           quote_type: payload.quoteType ?? 'single',
           products: products.map((product) => ({
             product_name: product.productName.trim(),
@@ -1318,11 +1323,11 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       )
       return this.loadBatchProducts(targetQuoteId)
     },
-    async uploadProductImage(quoteId: string, file: File) {
+    async uploadProductImage(quoteId: string, file: File, revision?: number) {
       this.fileBusy = true
       try {
-        const result = await internalQuoteApi.uploadProductImage(quoteId, file)
-        await this.loadBatchProducts(quoteId)
+        const result = await internalQuoteApi.uploadProductImage(quoteId, file, revision ?? this.getQuoteById(quoteId)?.headerRevision)
+        await this.refreshAfterMutation(quoteId)
         return result
       } catch (error) {
         const message = mutationMessage(error)
@@ -1351,7 +1356,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           business_owner_name: payload.businessOwner.trim(), target_customer_price: payload.targetCustomerPrice.trim(),
           target_date: payload.targetDate, remark: payload.remark,
           participating_sections: orderedParticipatingSections(payload.participatingSections),
-          workflow_mode: 'whole_quote_review',
+          workflow_mode: 'direct_output',
         })
         const quote = toQuote(cloned)
         if (
@@ -1585,6 +1590,13 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         await internalQuoteApi.deleteSupportingAttachment(quoteId, attachmentId, revision)
         this.removeAttachmentReceipt(quoteId, attachmentId)
       })
+    },
+    directIssue(quoteId: string, revision: number) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.directIssue(quoteId, revision))
+    },
+    async exportSeries(quoteId: string, products: Array<{ quote_id: string; revision: number }>, fileName: string) {
+      const blob = await this.executeMutation(quoteId, () => internalQuoteApi.exportSeries(quoteId, products))
+      triggerDownload(blob as Blob, fileName)
     },
     createExport(quoteId: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.createExport(quoteId))

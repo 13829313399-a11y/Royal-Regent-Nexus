@@ -27,6 +27,7 @@ from app.api.collaborative_sheets import router
 from app.core.config import settings
 from app.db import get_db
 from app.models.auth import AuthUser, EmployeeProfile
+from app.models.identity import EmployeeAssignment, IamOrgUnit, IamOrgDepartment
 from app.models.collaborative_sheets import CollaborativeSheet as Task, CollaborativeSheetEvent as Event, CollaborativeSheetSubmission as Submission
 from app.schemas.collaborative_sheets import CellsInput, GrantsInput
 from app.services.auth import AuthContext, AuthProfileContext, get_current_user
@@ -90,7 +91,7 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "document_tools_enabled", True)
     monkeypatch.setattr(settings, "document_tools_storage_dir", str(tmp_path / "files"))
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    for model in (AuthUser, EmployeeProfile, *MODELS):
+    for model in (AuthUser, EmployeeProfile, IamOrgUnit, IamOrgDepartment, EmployeeAssignment, *MODELS):
         model.__table__.create(engine)
     with Session(engine) as db:
         for who in [context(), context("filler"), context("outsider", department="qc"), context("other", factory="huakang-a")]:
@@ -339,11 +340,49 @@ def test_roster_removes_ineligible_members_and_accounts_for_new_membership(api):
     assert [(p["user_id"], p["department"]) for p in task["participants"]] == [("member-b", "qc")]
 
 
+def test_roster_uses_canonical_v2_primary_identity_instead_of_stale_profile(api):
+    client, active, engine = api
+    for identity in ("v2-local", "v2-transferred", "v2-future", "v2-expired", "v2-old-epoch", "left-account"):
+        add_account(engine, identity, department="engineering")
+    with Session(engine) as db:
+        for name, factory in (("local-org", "huaxing"), ("other-org", "huakang-a")):
+            db.add(IamOrgUnit(id=name, name=name, kind="factory", legacy_factory_id=factory))
+            db.add(IamOrgDepartment(org_unit_id=name, department_code="sales-business"))
+        db.flush()
+        for identity in ("v2-local", "v2-transferred", "v2-future", "v2-expired", "v2-old-epoch"):
+            profile = db.get(EmployeeProfile, identity)
+            profile.identity_mode = "v2"
+            db.add(EmployeeAssignment(id="assignment-" + identity, user_id=identity,
+                org_unit_id="other-org" if identity == "v2-transferred" else "local-org", department_code="sales-business",
+                official_position_title="test", is_primary=True,
+                valid_from="2099-01-01T00:00:00.000000Z" if identity == "v2-future" else "2020-01-01T00:00:00.000000Z",
+                valid_until="2021-01-01T00:00:00.000000Z" if identity == "v2-expired" else None,
+                employment_epoch=0 if identity == "v2-old-epoch" else 1, created_by="test", confirmed_by="test",
+                created_at="2020-01-01T00:00:00.000000Z", updated_at="2020-01-01T00:00:00.000000Z"))
+        db.get(EmployeeProfile, "left-account").employment_status = "left"
+        db.commit()
+    result = client.get(BASE + "/recipients" + SCOPE)
+    assert result.status_code == 200, result.text
+    users = {u["id"]: u for u in result.json()["users"]}
+    assert users["v2-local"]["department"] == "sales-business"
+    assert not {"v2-transferred", "v2-future", "v2-expired", "v2-old-epoch", "left-account"} & users.keys()
+    task = publish(api, principal="department", target="sales-business")
+    assert [p["user_id"] for p in task["participants"]] == ["v2-local"]
+    with Session(engine) as db:
+        db.get(IamOrgDepartment, ("local-org", "sales-business")).status = "inactive"
+        db.commit()
+    assert client.get(endpoint(task, "/participants")).json()["participants"] == []
+    active["user"] = replace(context(), account_available=False)
+    assert client.get(endpoint(task, "/participants")).status_code == 403
+
+
 def test_roster_poll_is_lightweight_read_only_and_uses_existing_acl(api):
     client, active, engine = api
     task = create(api)
     active["user"] = context("filler")
     assert client.get(endpoint(task, "/participants")).status_code == 404
+
+
     active["user"] = context()
     task = publish(api)
     statements = []

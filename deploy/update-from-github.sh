@@ -7,6 +7,10 @@ ENV_FILE="${ENV_FILE:-.env.production}"
 UPSTREAM="${UPSTREAM:-origin/main}"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/royal-regent/backups}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-120}"
+MAINTENANCE_NOTICE_ENABLED="${MAINTENANCE_NOTICE_ENABLED:-1}"
+NOTICE_SECONDS="${NOTICE_SECONDS:-300}"
+DEPLOYMENT_NOTICE_DIR="${DEPLOYMENT_NOTICE_DIR:-$APP_DIR/.deployment-notice}"
+export DEPLOYMENT_NOTICE_DIR
 
 compose() {
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
@@ -191,16 +195,55 @@ capture_database_state() {
   "'
 }
 
+notice_id=""
+notice_entered=0
+notice() {
+  python3 deploy/maintenance_notice.py "$@" --notice-dir "$DEPLOYMENT_NOTICE_DIR"
+}
+
+begin_maintenance_notice() {
+  [ "$MAINTENANCE_NOTICE_ENABLED" = "1" ] || return 0
+  command -v python3 >/dev/null 2>&1 || fail "Python 3 is required for the deployment notice"
+  notice_id="$(notice start --seconds "$NOTICE_SECONDS")"
+  # An old Web image or missing host mount cannot notify users. Refuse to
+  # pretend the countdown was published; bootstrap installation is explicit.
+  curl --fail --silent --show-error --max-time 10 http://127.0.0.1/deployment-status.json \
+    | python3 -c 'import json,sys; assert json.load(sys.stdin).get("id") == sys.argv[1]' "$notice_id" \
+    || fail "Web cannot serve the notice. Install the notice-capable Web/mount first; see deployment documentation"
+  echo "All-user maintenance countdown published; cutover begins in ${NOTICE_SECONDS}s"
+  sleep "$NOTICE_SECONDS"
+  notice maintenance --id "$notice_id" >/dev/null
+  notice_entered=1
+  # Validate the business-route gate before changing any running service.
+  code="$(curl --silent --show-error --max-time 10 --output "$backup_dir/maintenance-page.html" --write-out '%{http_code}' http://127.0.0.1/)"
+  [ "$code" = "503" ] || fail "Web did not enter maintenance; refusing cutover"
+}
+
 candidate_id=""
 cleanup_candidate() {
+  if [ -n "$notice_id" ]; then
+    if [ "$notice_entered" = "1" ]; then
+      notice fail --id "$notice_id" >/dev/null || true
+      echo "Maintenance remains active. Verify recovery, then complete notice $notice_id." >&2
+    else
+      notice cancel --id "$notice_id" >/dev/null || true
+    fi
+  fi
   if [ -n "$candidate_id" ]; then
     echo "Deployment stopped before cutover completed; leaving API candidate $candidate_id running." >&2
     echo "After recovery, remove it with: docker rm -f $candidate_id" >&2
   fi
 }
-trap cleanup_candidate EXIT INT TERM
+trap cleanup_candidate EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 cd "$APP_DIR"
+
+case "$MAINTENANCE_NOTICE_ENABLED" in
+  0|1) ;;
+  *) fail "MAINTENANCE_NOTICE_ENABLED must be 0 or 1" ;;
+esac
 
 [ -f "$ENV_FILE" ] || fail "Missing $APP_DIR/$ENV_FILE"
 [ -f "$COMPOSE_FILE" ] || fail "Missing $APP_DIR/$COMPOSE_FILE"
@@ -271,6 +314,8 @@ git merge --ff-only "$target_commit"
 echo "Building API and Web images while the current service remains online"
 compose build api web
 
+begin_maintenance_notice
+
 if [ -z "$migration_changes" ]; then
   network_name="$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$api_id")"
   [ -n "$network_name" ] || fail "Cannot determine the production Docker network"
@@ -316,7 +361,13 @@ else
 fi
 
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1/health > "$backup_dir/health.json"
-curl --fail --silent --show-error --max-time 10 http://127.0.0.1/ > "$backup_dir/home.html"
+if [ -n "$notice_id" ]; then
+  # The business route intentionally returns 503 until all checks finish.
+  compose exec -T web sh -c 'test -s /usr/share/nginx/html/index.html'
+  curl --fail --silent --show-error --max-time 10 http://127.0.0.1/maintenance.html > "$backup_dir/home.html"
+else
+  curl --fail --silent --show-error --max-time 10 http://127.0.0.1/ > "$backup_dir/home.html"
+fi
 compose ps > "$backup_dir/containers-after.txt"
 capture_container_metadata "$db_id" "$api_id" "$web_id" \
   > "$backup_dir/container-metadata-after.txt"
@@ -326,6 +377,10 @@ diff -u "$backup_dir/database-state-before.txt" "$backup_dir/database-state-afte
 (cd "$backup_dir" && sha256sum -c database.dump.sha256)
 
 docker image prune -f >/dev/null
+if [ -n "$notice_id" ]; then
+  notice complete --id "$notice_id" >/dev/null
+  notice_id=""
+fi
 trap - EXIT INT TERM
 
 echo "Deployment completed at $target_commit"

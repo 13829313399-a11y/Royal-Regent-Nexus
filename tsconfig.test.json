@@ -4,10 +4,9 @@
     "src/vite-env.d.ts",
     "src/env.d.ts",
     "src/types/**/*.d.ts",
-    "src/features/ai-assistant/__tests__/*.spec.ts",
-    "src/features/uv-printing/__tests__/*.spec.ts",
-    "src/features/collaborative-sheets/*.spec.ts",
-    "src/api/uvPrinting.spec.ts"
+    "src/features/module-feedback/__tests__/*.spec.ts",
+    "src/features/assistant/__tests__/*.spec.ts",
+    "src/features/collaborative-sheets/*.spec.ts"
   ],
   "exclude": [],
   "compilerOptions": {

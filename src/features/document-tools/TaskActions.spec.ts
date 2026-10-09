@@ -11,6 +11,12 @@ import {
 } from 'vitest'
 import { documentTools, type Job } from '@/api/documentTools'
 import ToolCenterView from '@/views/ToolCenterView.vue'
+import { createPinia, setActivePinia } from 'pinia'
+
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ query: { factory: 'group' } }),
+  useRouter: () => ({ replace: vi.fn() }),
+}))
 
 vi.mock('@/features/document-tools/PdfCanvas.vue', () => ({
   default: { template: '<div />' },
@@ -66,6 +72,7 @@ afterAll(() => {
   Reflect.deleteProperty(HTMLDialogElement.prototype, 'close')
 })
 beforeEach(() => {
+  setActivePinia(createPinia())
   records = [makeJob('first'), makeJob('second', 'succeeded')]
   vi.spyOn(documentTools, 'capabilities').mockResolvedValue({
     operations: [],

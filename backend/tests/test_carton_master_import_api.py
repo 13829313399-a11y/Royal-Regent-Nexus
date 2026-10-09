@@ -260,7 +260,10 @@ def test_concurrent_confirmations_share_factory_lock(monkeypatch):
         preview = upload(client, "configurations", content).json()
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(lambda _: upload(client, "configurations", content, preview["preview_token"]), range(2)))
-        assert sorted(r.status_code for r in responses) == [200, 409]
+        assert sorted(r.status_code for r in responses) in ([200, 409], [200, 429])
+        # The bounded file worker may reject before entering the factory lock.
+        # Once it is free, the original stale preview must still be rejected.
+        assert upload(client, "configurations", content, preview["preview_token"]).status_code == 409
         assert len(read(client)["records"]) == 1
 
 
@@ -360,7 +363,8 @@ def test_locations_snapshot_changes_invalidate_preview_and_concurrent_apply(monk
         preview = upload(client, "locations", content).json()
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(lambda _: upload(client, "locations", content, preview["preview_token"]), range(2)))
-        assert sorted(r.status_code for r in responses) == [200, 409]
+        assert sorted(r.status_code for r in responses) in ([200, 409], [200, 429])
+        assert upload(client, "locations", content, preview["preview_token"]).status_code == 409
         assert len([r for r in read(client)["locations"] if r["warehouse"] == "导入仓"]) == 2
 
 
@@ -390,3 +394,22 @@ def test_locations_failure_rolls_back_rows_and_audit(monkeypatch):
         assert read(client)["locations"] == before
         with SessionLocal() as db:
             assert list(db.scalars(select(CartonAuditEvent.id).where(CartonAuditEvent.event_type == "INVENTORY_LOCATION_CREATED").order_by(CartonAuditEvent.id))) == before_audit
+
+
+def test_paper_weight_import_and_legacy_template_compatibility(monkeypatch):
+    with make_client(monkeypatch) as client:
+        prepare(client)
+        content = excel("configurations", [config(paper="外箱") + ["8.125", "9.25"], config(paper="内箱") + ["0.4", "0.5"]])
+        preview = upload(client, "configurations", content).json()
+        assert preview["errors"] == []
+        assert upload(client, "configurations", content, preview["preview_token"]).status_code == 200
+        papers = read(client)["records"][0]["data"]["lines"]
+        assert {paper["packaging_type"]: (paper["net_weight_kg"], paper["gross_weight_kg"]) for paper in papers} == {"外箱": ("8.125", "9.25"), "内箱": ("0.4", "0.5")}
+        invalid = upload(client, "configurations", excel("configurations", [config(code="BAD") + ["5", "4"]])).json()
+        assert invalid["errors"] and "毛重" in invalid["errors"][0]
+        old = load_workbook(BytesIO(excel("configurations", [config(code="LEGACY")])))
+        old["导入数据"].delete_cols(15, 2)
+        result = BytesIO(); old.save(result)
+        legacy = upload(client, "configurations", result.getvalue()).json()
+        assert legacy["errors"] == [] and legacy["added"] == 1
+        assert upload(client, "configurations", result.getvalue(), legacy["preview_token"]).status_code == 200

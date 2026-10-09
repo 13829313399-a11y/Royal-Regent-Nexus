@@ -11,9 +11,13 @@ import ModuleHealthPanel from '@/components/dashboard/ModuleHealthPanel.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
+import HomePrismArtwork from '@/components/portal/HomePrismArtwork.vue'
+import HomeAppearanceControl from '@/components/portal/HomeAppearanceControl.vue'
+import { useHomeAppearance } from '@/composables/useHomeAppearance'
 import '@/components/dashboard/styles/dashboard.css'
 
 const appStore = useAppStore()
+const { density, effectiveMotion } = useHomeAppearance()
 
 const heroTitle = computed(() =>
   appStore.activeFactoryId === 'group'
@@ -32,21 +36,23 @@ const sourceNote = '示例数据 · 筛选与导出暂未接入'
 </script>
 
 <template>
-  <div class="dashboard-page-container">
-    <div class="app-page dashboard-page space-y-6" data-dashboard-ui="jade-v2">
+  <div class="dashboard-page-container" data-yl-help="portal.overview">
+    <div class="app-page dashboard-page rrn-home space-y-6" data-dashboard-ui="jade-v2" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-home-density="density">
     <div class="dashboard-hero">
       <div class="dashboard-hero__art" aria-hidden="true" />
       <span class="dashboard-hero__breath" aria-hidden="true" />
+      <HomePrismArtwork identity="dashboard" />
 
       <PageHeader
         class="dashboard-hero__header"
         eyebrow="Group Operations"
         :title="heroTitle"
-        description="6 个厂区 · 5 个核心部门 · 统一模块入口与跨厂区事项"
+        description="6 个厂区 · 7 个部门 · 统一模块入口与跨厂区事项"
       >
         <template #actions>
           <div class="dashboard-hero__actions flex flex-wrap items-center gap-2.5">
             <p class="dashboard-hero__note">{{ sourceNote }}</p>
+            <HomeAppearanceControl />
             <Button
               type="button"
               variant="outline"
@@ -64,14 +70,14 @@ const sourceNote = '示例数据 · 筛选与导出暂未接入'
       </PageHeader>
     </div>
 
-    <div class="dashboard-metrics grid gap-4">
+    <section aria-label="运营指标示例"><div class="dashboard-metrics grid gap-4">
       <MetricCard
         v-for="(metric, index) in overviewMetrics"
         :key="metric.label"
         :metric="metric"
         :index="index"
       />
-    </div>
+    </div><p class="home-source">运营指标示例 · 当前展示静态示例数据</p></section>
 
     <div class="dashboard-primary-grid grid gap-6">
       <FactoryHeatmap :active-factory-id="appStore.activeFactoryId" />

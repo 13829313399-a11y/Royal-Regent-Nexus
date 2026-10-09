@@ -337,6 +337,6 @@ describe('P4 customer price adapter', () => {
       p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, false),
       'buzzbee-missing-color-box-tiers.xlsx',
       'buzzbee',
-    )).toThrow('彩盒必须完整填写两档报客价、FSC 与 MOQ')
+    )).toThrow('彩盒必须完整填写两档整箱报客价与 MOQ')
   })
 })

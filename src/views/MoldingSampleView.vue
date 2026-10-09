@@ -3824,6 +3824,7 @@ onUnmounted(() => {
 <template>
   <main
     class="app-shell min-h-screen bg-transparent text-[13px] leading-relaxed text-slate-900"
+    data-yl-help="molding-sample.overview"
     :aria-busy="apiState === 'checking'"
   >
     <header class="sticky top-0 z-40 border-b border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur-xl">

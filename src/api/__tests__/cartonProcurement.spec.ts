@@ -16,6 +16,16 @@ describe('carton history pagination', () => {
     expect(result[200]?.id).toBe('old-record')
     expect(get.mock.calls[1]?.[1].params).toMatchObject({ factory_id: 'huaxing', offset: 200 })
   })
+  it.each(['OWN', 'ALL'] as const)('keeps the chosen %s customer scope across every page', async scope => {
+    for (const method of ['listOrders', 'listReceipts'] as const) {
+      get.mockReset().mockResolvedValueOnce({ data: { items: Array.from({ length: 200 }, (_, id) => ({ id })), total: 201 } })
+        .mockResolvedValueOnce({ data: { items: [{ id: 200 }], total: 201 } })
+      if (method === 'listOrders') await cartonProcurementApi.listOrders('huaxing', { responsibilityScope: scope })
+      else await cartonProcurementApi.listReceipts('huaxing', scope)
+      expect(get.mock.calls).toHaveLength(2)
+      for (const call of get.mock.calls) expect(call[1].params).toMatchObject({ factory_id: 'huaxing', responsibility_scope: scope })
+    }
+  })
 })
 
 it('retries direct receipt posting with the same request identity after a lost response', async () => {
@@ -48,4 +58,25 @@ it('undoes the entire import batch with factory and reason and no row selection'
   expect(post).toHaveBeenCalledExactlyOnceWith('/carton-procurement/imports/BATCH-1/undo', {
     factory_id: 'huaxing', reason: '本次导入文件有误',
   })
+})
+
+it('polls a file job before completing it and never writes after parser failure', async () => {
+  vi.useFakeTimers()
+  get.mockReset(); post.mockReset()
+  try {
+    post.mockResolvedValueOnce({ data: { id: 'J', status: 'PROCESSING' } })
+      .mockResolvedValueOnce({ data: { id: 'BATCH' } })
+    get.mockResolvedValueOnce({ data: { id: 'J', status: 'PROCESSING' } })
+      .mockResolvedValueOnce({ data: { id: 'J', status: 'READY' } })
+    const pending = cartonProcurementApi.uploadWeeklySchedule('huakang-b', new File(['xlsx'], 'schedule.xlsx'), 'TEST')
+    await vi.advanceTimersByTimeAsync(750)
+    expect(post).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(750)
+    expect(await pending).toEqual({ id: 'BATCH' })
+    expect(post.mock.calls[1]).toEqual(['/carton-procurement/file-jobs/J/complete', null,
+      { params: { factory_id: 'huakang-b' }, timeout: 60_000 }])
+    post.mockReset().mockResolvedValueOnce({ data: { id: 'FAIL', status: 'FAILED', error: '文件超限，整批未导入' } })
+    await expect(cartonProcurementApi.uploadReceipt('huakang-b', new File(['bad'], 'bad.xlsx'))).rejects.toThrow('文件超限')
+    expect(post).toHaveBeenCalledTimes(1)
+  } finally { vi.useRealTimers() }
 })

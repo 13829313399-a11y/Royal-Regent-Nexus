@@ -21,7 +21,7 @@ When modifying a feature, Codex may retrieve `PROJECT_MEMORY.md` progressively i
 2. Read the complete relevant paragraphs; prioritize active rules rather than treating dates as a task journal.
 3. Expand retrieval when no useful match exists or context is incomplete, ambiguous or conflicting.
 
-The primary may provide sourced excerpts to a child, which checks originals as needed; do not repeatedly load unrelated full memory. The index cannot replace source contracts or the latest user instruction. Maintain changed long-lived facts in place, not per-task logs.
+Do not repeatedly load unrelated full memory. The index cannot replace source contracts or the latest user instruction. Maintain changed long-lived facts in place, not per-task logs.
 
 ## Scope
 
@@ -38,6 +38,7 @@ These rules apply to:
 ### Default Workflow
 
 - Read the relevant project files before editing.
+- Before implementing a user request, assess its reasonableness and explain any material business implications or conflicts with existing rules. Resolve routine choices autonomously; ask only when a missing business decision affects correctness.
 - Keep changes scoped to the requested module.
 - Do not redesign unrelated code.
 - For simple and well-defined tasks, implement directly.
@@ -73,20 +74,6 @@ Report:
 2. behavior implemented
 3. verification commands run
 4. remaining risks
-
-## Codex Collaboration — V2
-
-Daily default: Terra/medium; ordinary, clear tasks stay with the suitable primary, with zero delegation by default. Do not spawn for a short search, one text edit or one test command.
-
-Astra owns high-impact semantics and highly uncertain work. An Astra primary keeps design, core implementation and key regression together; otherwise delegate one coherent package to `rrn_core`. No fixed scout -> architect -> core -> reviewer pipeline. `rrn_architect` is only for independent design deliverables.
-
-Delegate a sufficiently large, fully specified mechanical batch to `rrn_easy`, or an ordinary independent package to `rrn_worker`, only with a concrete benefit. Supply the goal, sourced evidence, writable files, constraints and acceptance criteria; do not inherit full history or memory by default. Only the primary delegates; one writer per file. Preserve others' uncommitted work and coordinate shared contracts across branches/worktrees; children do not automatically get isolated checkouts.
-
-High-impact final changes still require independent `rrn_reviewer` review. The original owner fixes evidenced defects; lighter models must not rewrite reviewed core semantics. The integration owner coordinates necessary final checks without repeating every full suite in each agent.
-
-Default maximum: one concurrently open child, excluding the primary. Ordinary tasks usually need none; complex implementation and review proceed sequentially. Delegation/retry targets are soft coordination rules, not hard usage budgets. Repeated failed repairs without new evidence require escalation or root-cause investigation; environment failures need environment diagnosis. Missing business facts must be established first.
-
-Read `.agents/skills/rrn-model-routing/SKILL.md` only for nontrivial routing or expert escalation; see `docs/agent-routing/README.md` for activation. Verify actual model/effort with runtime metadata; unavailable target models must be reported, never silently substituted for critical work. Preserve authentication, providers, MCP, plugins and permission settings. Never invent model, test or savings claims.
 
 ## Git Operations
 

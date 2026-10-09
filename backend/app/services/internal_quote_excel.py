@@ -32,7 +32,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v30"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v33"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -5111,7 +5111,7 @@ def _build_sewing_sheet(
     reference_snapshot: dict[str, Any],
 ) -> None:
     sheet = workbook.create_sheet("车缝明细")
-    _style_title(sheet, "车缝报价明细", 12)
+    _style_title(sheet, "车缝报价明细", 13)
     _header_row(
         sheet,
         3,
@@ -5122,12 +5122,13 @@ def _build_sewing_sheet(
             "布料MOQ/Y",
             "低于MOQ/每色费用 RMB",
             "用量/码",
-            "单价 RMB",
+            "单价",
             "汇率",
             "成本 HKD",
             "码点",
             "价钱 HKD",
             "备注",
+            "单价币种",
         ),
     )
     row_index = 4
@@ -5140,7 +5141,7 @@ def _build_sewing_sheet(
             continue
         group_name = _safe_text(group.get("name")) or "车缝产品组"
         group_category = "车发" if str(group.get("category")) == "hair" else "车衣"
-        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=12)
+        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=13)
         group_cell = sheet.cell(row_index, 1)
         group_cell.value = f"{group_name} · {group_category}"
         group_cell.fill = PatternFill("solid", fgColor="F8CBAD")
@@ -5158,7 +5159,10 @@ def _build_sewing_sheet(
             if not isinstance(row, dict):
                 continue
             usage = _number(row.get("usage"))
-            unit_price_rmb = _number(row.get("unit_price_rmb"))
+            source_currency = str(row.get("unit_price_source_currency") or (
+                "HKD" if row.get("unit_price_rmb") in (None, "") and row.get("unit_price_hkd") not in (None, "") else "RMB"
+            )).strip().upper()
+            unit_price = _number(row.get("unit_price_hkd" if source_currency == "HKD" else "unit_price_rmb"))
             exchange_rate = _number(row.get("exchange_rate"))
             if not isinstance(exchange_rate, float) or exchange_rate <= 0:
                 exchange_rate = fx
@@ -5183,16 +5187,17 @@ def _build_sewing_sheet(
                     _number(row.get("fabric_moq_y")),
                     _number(row.get("below_moq_fee_rmb")),
                     usage,
-                    unit_price_rmb,
+                    unit_price,
                     exchange_rate,
                     "",
                     markup,
                     "",
                     remark,
+                    source_currency,
                 ),
                 amount_columns={4, 5, 6, 7, 8, 9, 10, 11},
             )
-            sheet.cell(row_index, 9).value = f"=F{row_index}*G{row_index}/H{row_index}"
+            sheet.cell(row_index, 9).value = f'=IF(M{row_index}="HKD",F{row_index}*G{row_index},F{row_index}*G{row_index}/H{row_index})'
             sheet.cell(row_index, 9).number_format = "#,##0.0000"
             sheet.cell(row_index, 11).value = f"=I{row_index}*J{row_index}"
             sheet.cell(row_index, 11).number_format = "#,##0.0000"
@@ -5205,7 +5210,7 @@ def _build_sewing_sheet(
         sheet.cell(row_index, 11).fill = PatternFill("solid", fgColor="FFF200")
         sheet.cell(row_index, 10).font = Font(name="宋体", size=10, bold=True)
         sheet.cell(row_index, 11).font = Font(name="宋体", size=10, bold=True)
-    _finish_sheet(sheet, (34, 18, 18, 15, 24, 14, 14, 12, 15, 12, 15, 36))
+    _finish_sheet(sheet, (34, 18, 18, 15, 24, 14, 14, 12, 15, 12, 15, 36, 12))
 
 
 def _build_hair_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
@@ -5282,6 +5287,7 @@ def _build_structured_data_sheet(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
     reference_snapshot: dict[str, Any],
+    customer_mapping: dict[str, Any] | None = None,
 ) -> None:
     sheet = workbook.create_sheet("结构化数据")
     _style_title(sheet, "P4 客价转换结构化数据", 12)
@@ -5336,6 +5342,14 @@ def _build_structured_data_sheet(
             text_columns={11},
         )
         row_index += 1
+    if customer_mapping is not None:
+        chunks = _json_chunks(customer_mapping)
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            _body_row(sheet, row_index, (
+                "customer_mapping", "quote", "客户映射", "approved", quote.header_revision,
+                "valid", "current", quote.reference_snapshot_id, chunk_index, len(chunks), chunk, "是",
+            ), text_columns={11})
+            row_index += 1
     by_code = {section.department: section for section in sections}
     for code in SECTION_ORDER:
         section = by_code.get(code)
@@ -5379,7 +5393,8 @@ def _build_approval_sheet(
 ) -> None:
     sheet = workbook.create_sheet("审批与版本")
     _style_title(sheet, "审批、公式与版本清单", 8)
-    is_final_release = manifest.get("release_stage") == "p4_final_approved"
+    is_direct = manifest.get("release_stage") == "p4_direct_issued"
+    is_final_release = manifest.get("release_stage") in {"p4_final_approved", "p4_direct_issued"}
     template_version = str(manifest.get("template_version") or P3_TEMPLATE_VERSION)
     release_label = "P4 最终业务放行" if is_final_release else "P3 分段审批后内部成本快照"
     boundary_label = (
@@ -5387,16 +5402,19 @@ def _build_approval_sheet(
         if is_final_release
         else "最终业务放行与客价交接在 P4 实施"
     )
+    if is_direct:
+        release_label = "P4 直接输出"
+        boundary_label = "报价版本已冻结，可交接客价转换台"
     summary = (
         ("模板版本", template_version, "公式版本", quote.formula_version),
         ("参考快照", quote.reference_snapshot_id, "报价头revision", quote.header_revision),
         ("导出阶段", release_label, "清单SHA-256", manifest.get("manifest_sha256", "")),
         ("边界说明", boundary_label, "", ""),
         (
-            "最终提交人",
-            manifest.get("final_submitted_by_name", ""),
-            "最终放行人/时间",
-            f"{manifest.get('final_reviewed_by_name', '')} {manifest.get('final_reviewed_at', '')}".strip(),
+            "输出人" if is_direct else "最终提交人",
+            manifest.get("issued_by_name" if is_direct else "final_submitted_by_name", ""),
+            "输出时间" if is_direct else "最终放行人/时间",
+            manifest.get("issued_at", "") if is_direct else f"{manifest.get('final_reviewed_by_name', '')} {manifest.get('final_reviewed_at', '')}".strip(),
         ),
     )
     for row_index, values in enumerate(summary, start=2):
@@ -5632,8 +5650,19 @@ def build_internal_quote_workbook(
     _build_sewing_sheet(workbook, by_code.get("sewing"), reference_snapshot or {})
     _build_hair_sheet(workbook, by_code.get("hair"))
     _build_assembly_sheet(workbook, by_code.get("assembly"))
-    if manifest.get("release_stage") == "p4_final_approved":
-        _build_structured_data_sheet(workbook, quote, sections, reference_snapshot or {})
+    if manifest.get("release_stage") in {"p4_final_approved", "p4_direct_issued"}:
+        from app.services.internal_quote_dickie import build_dickie_handoff
+        customer_mapping = build_dickie_handoff(quote, sections, reference_snapshot or {}, cost_context or {})
+        if quote.factory_id == "huaxing" and quote.customer.strip().lower() == "buzzbee":
+            customer_mapping = {
+                "version": "buzzbee-v2", "factory_id": quote.factory_id,
+                "quote_no": quote.quote_no, "version_label": quote.version_label,
+                "customer": quote.customer, "product_name": quote.product_name,
+                "quote_date": str(quote.created_at)[:10],
+                "formula_version": quote.formula_version,
+                "reference_snapshot_id": quote.reference_snapshot_id,
+            }
+        _build_structured_data_sheet(workbook, quote, sections, reference_snapshot or {}, customer_mapping)
     _build_approval_sheet(workbook, quote, sections, manifest)
     for technical_sheet in workbook.worksheets[1:]:
         technical_sheet.sheet_state = "veryHidden"

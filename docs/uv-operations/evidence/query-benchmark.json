@@ -1,0 +1,16 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+  "database": "PostgreSQL 16.15, loopback, separate disposable schema",
+  "network": "localhost database service-query benchmark; excludes HTTP/browser rendering",
+  "machines": 20,
+  "historical_runs": 100000,
+  "concurrent_workers": 50,
+  "measurements": 150,
+  "window_seconds": 3.046,
+  "p50_ms": 879.86,
+  "p95_ms": 1259.1,
+  "failure_rate": 0,
+  "pool_size": 50,
+  "schedule_days_loaded": 0
+}

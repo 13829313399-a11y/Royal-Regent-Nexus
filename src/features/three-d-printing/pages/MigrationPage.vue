@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from "vue";
 import { http, getApiErrorMessage } from "@/lib/http";
 import PageControls from "../components/PageControls.vue";
+import TdpButton from "../components/TdpButton.vue";
+import { Download } from "@lucide/vue";
 interface Batch {
   id: string;
   status: string;
@@ -194,15 +196,8 @@ onMounted(() => load());
         · {{ reconciliation.issue_count }}项问题
       </p>
       <div class="flex gap-2">
-        <button
-          class="action-button secondary"
-          :disabled="busy"
-          @click="report"
-        >
-          下载完整报告 JSON</button
-        ><button class="action-button secondary" @click="csv">
-          下载数量对账 CSV
-        </button>
+        <TdpButton tone="secondary" :busy="busy" @click="report"><template #icon><Download :size="16" /></template>下载完整报告 JSON</TdpButton>
+        <TdpButton tone="secondary" :disabled="busy" @click="csv"><template #icon><Download :size="16" /></template>下载数量对账 CSV</TdpButton>
       </div>
       <div class="table-wrap">
         <table>

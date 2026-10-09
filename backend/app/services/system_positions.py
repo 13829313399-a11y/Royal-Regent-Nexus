@@ -11,10 +11,12 @@ from app.services.iam_scope import (
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
-    UV_PRINTING_PERMISSION_CODES,
-    SPRAY_PRODUCTION_PERMISSION_CODES,
+    FABRIC_WAREHOUSE_PERMISSION_CODES,
+    SPRAY_OPS_PERMISSION_CODES,
+    UV_OPS_PERMISSION_CODES,
     BUSINESS_PERMISSION_CODES,
     CARTON_PROCUREMENT_PERMISSION_CODES,
+    CARTON_SUPPLIER_PERMISSION_CODES,
     INJECTION_SCHEDULING_PERMISSION_CODES,
     INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
     QC_INSPECTION_PERMISSION_CODES,
@@ -22,7 +24,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v28"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v33"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -118,8 +120,6 @@ class SystemPositionDefinition:
 
 
 _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
-    *UV_PRINTING_PERMISSION_CODES,
-    *SPRAY_PRODUCTION_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
     "molding_sample:cross_factory_read",
@@ -148,6 +148,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "carton_mark:photo_upload",
     "carton_mark:review",
     *CARTON_PROCUREMENT_PERMISSION_CODES,
+    *FABRIC_WAREHOUSE_PERMISSION_CODES,
     "customer_price:read",
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
@@ -198,8 +199,13 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
 GENERAL_MANAGER_PERMISSION_CODES = frozenset(_GENERAL_MANAGER_PERMISSION_CODE_LIST)
 GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
     (
+        *UV_OPS_PERMISSION_CODES,
+        *SPRAY_OPS_PERMISSION_CODES,
+        "customer_price:settings_read",
+        "customer_price:settings_manage",
         *THREE_D_PRINTING_PERMISSION_CODES,
         *QC_INSPECTION_PERMISSION_CODES,
+        *CARTON_SUPPLIER_PERMISSION_CODES,
     )
 )
 
@@ -230,6 +236,8 @@ ENGINEERING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_SUPERVISOR_PERMISSION_CODES = (
+    "customer_price:settings_read",
+    "customer_price:settings_manage",
     "customer_order:write",
     "customer_order:dispatch",
     "customer_order:shipment_confirm",
@@ -262,6 +270,7 @@ SALES_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_BUSINESS_PERMISSION_CODES = (
+    "customer_price:settings_read",
     "customer_order:write",
     "customer_order:dispatch",
     "customer_order:shipment_confirm",
@@ -288,7 +297,6 @@ SALES_BUSINESS_PERMISSION_CODES = (
 PRODUCTION_SUPERVISOR_PERMISSION_CODES = (
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
-    *UV_PRINTING_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     "molding_sample:read",
     "molding_sample:export",
@@ -312,7 +320,6 @@ PRODUCTION_MANAGER_PERMISSION_CODES = tuple(
 PRODUCTION_CLERK_PERMISSION_CODES = (
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
-    "uv_printing:read", "uv_printing:report",
     *INJECTION_SCHEDULING_PERMISSION_CODES[:3],
     "molding_sample:read",
     "molding_sample:export",
@@ -325,10 +332,6 @@ PRODUCTION_CLERK_PERMISSION_CODES = (
 )
 
 PAINTING_CLERK_PERMISSION_CODES = (
-    "spray_production:read",
-    "spray_production:order_write",
-    "spray_production:report",
-    "spray_production:logistics",
     PRODUCTION_TASK_READ_PERMISSION_CODE,
     "internal_quote:read",
     "internal_quote:summary_read",
@@ -338,14 +341,6 @@ PAINTING_CLERK_PERMISSION_CODES = (
 
 PAINTING_SUPERVISOR_PERMISSION_CODES = (
     *PAINTING_CLERK_PERMISSION_CODES,
-    "spray_production:plan",
-    "spray_production:quality",
-    "spray_production:master_write",
-    "spray_production:cost_read",
-    "spray_production:cost_write",
-    "spray_production:settlement",
-    "spray_production:import",
-    "spray_production:export",
     "internal_quote:painting_review",
 )
 
@@ -370,6 +365,9 @@ MOLDING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 WAREHOUSE_PERMISSION_CODES = (
+    *FABRIC_WAREHOUSE_PERMISSION_CODES,
+    "carton_mark:read",
+    "carton_mark:template_upload",
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
     "molding_sample:read",

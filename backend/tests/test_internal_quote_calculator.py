@@ -232,6 +232,33 @@ def test_invalid_pallet_space_never_silently_uses_old_defaults(key, value):
         calculate("sales", {"pricing_mode": "component", "justplay_packaging": {key: value}})
 
 
+@pytest.mark.parametrize("override", [20, "20", None])
+def test_justplay_manual_pallet_count_drives_cost_and_packaging_total(override):
+    payload = {"pricing_mode": "component",
+               "color_box_size_in": {"length": 17.25, "width": 11.25, "height": 9},
+               "cartons": [{"item": "主纸箱", "qty_per_carton": 24}],
+               "justplay_packaging": {"cartons_per_pallet_override": override}}
+    for pallet_length, automatic in [(1000, 30), (1400, 45), (1, 0)]:
+        if override is None and not automatic:
+            continue
+        payload["justplay_packaging"]["pallet_length_mm"] = pallet_length
+        result = calculate("sales", payload)
+        rows = [r for r in result["line_breakdown"] if r.get("kind") == "justplay_fixed_packaging"]
+        expected = Decimal(str(override if override is not None else automatic))
+        paper = next(r for r in rows if r["formula_code"] == "paper_pallet")
+        assert Decimal(paper["cartons_per_pallet"]) == expected
+        paper_cost = Decimal(19) / expected / 24
+        assert Decimal(paper["amount_hkd"]) == paper_cost.quantize(Decimal('.0001'), rounding=ROUND_HALF_UP)
+        adhesive = Decimal('3.9') / 2150 * (18 * 2 + 12 * 4 + 6) / 24
+        assert Decimal(result["totals"]["packaging_material_hkd"]) == (paper_cost + adhesive).quantize(Decimal('.0001'), rounding=ROUND_HALF_UP)
+
+
+@pytest.mark.parametrize("override", ["", 0, -1, 1.5, "NaN", "Infinity", True])
+def test_justplay_manual_pallet_count_rejects_invalid_values(override):
+    with pytest.raises(CalculationInputError, match="每托板装箱数"):
+        calculate("sales", {"pricing_mode": "component", "justplay_packaging": {"cartons_per_pallet_override": override}})
+
+
 def test_engineering_electronic_and_molding_decimal_vectors():
     engineering = calculate(
         "engineering",
@@ -1881,3 +1908,49 @@ def test_caixing_tool_plan_is_validated_and_audited_without_changing_internal_co
         "process_cost_hkd": "0.7180",
         "amount_hkd": "0.0000",
     }]
+
+
+def test_caixing_tool_plan_accepts_raw_tariffs_and_61_rows_without_customer_amounts():
+    row = {
+        "process_type": "IN", "tool_no": "T-01", "tooling_cost_hkd": 0,
+        "description": "车身", "sku_no": "68972", "cavities": 1, "up": 1,
+        "net_weight_g": 40, "material_code": 1, "material": "ABS",
+        "material_cost_hkd": 0, "material_price_hkd_lb": 7.2,
+        "machine_size": 14, "cycle_time_seconds": 30,
+        "process_cost_hkd": 0, "machine_daily_hkd": 1000,
+    }
+    rows = [{**row, "ref_no": str(index)} for index in range(1, 62)]
+    result = calculate("molding", {
+        "injection_lines": [], "blow_lines": [], "caixing_tool_plan_rows": rows,
+    })
+    assert result["status"] == "valid"
+    assert result["totals"]["total_hkd"] == "0.0000"
+    assert len(result["line_breakdown"]) == 61
+    assert result["line_breakdown"][0]["material_price_hkd_lb"] == "7.2000"
+    assert result["line_breakdown"][0]["machine_daily_hkd"] == "1000.0000"
+
+    with pytest.raises(CalculationInputError, match="最多允许 100 行"):
+        calculate("molding", {"caixing_tool_plan_rows": [
+            {**row, "ref_no": str(index)} for index in range(101)
+        ]})
+    with pytest.raises(CalculationInputError, match="须填写客户料金额或内部材料磅价"):
+        calculate("molding", {"caixing_tool_plan_rows": [{
+            **row, "ref_no": "missing-price", "material_price_hkd_lb": None,
+        }]})
+    with pytest.raises(CalculationInputError, match="Material Code 必须是 1 至 14 的整数"):
+        calculate("molding", {"caixing_tool_plan_rows": [{
+            **row, "ref_no": "fractional-code", "material_code": 1.5,
+        }]})
+
+    approved = calculate("molding", {
+        "injection_lines": [{
+            "item": "车身", "mold_no": "T-01", "material": "ABS", "grade": "750SW",
+            "net_weight_g": 40, "machine_code": "4A", "sets": 1, "target_output": 1000,
+        }],
+        "caixing_tool_plan_rows": [{
+            **row, "ref_no": "matched", "material": "ABS料",
+            "material_price_hkd_lb": None, "machine_daily_hkd": None,
+        }],
+    })
+    assert approved["status"] == "valid"
+    assert approved["line_breakdown"][1]["ref_no"] == "matched"
