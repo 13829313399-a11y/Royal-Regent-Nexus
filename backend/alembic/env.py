@@ -23,6 +23,7 @@ from app.models import (
     uv_operations,  # noqa: F401
     spray_ops,  # noqa: F401
     document_tools,  # noqa: F401
+    collaborative_sheets,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
     carton_feedback,  # noqa: F401

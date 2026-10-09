@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from app.api.auth import router as auth_router
 from app.api.assistant import router as assistant_router
 from app.api.document_tools import router as document_tools_router
+from app.api.collaborative_sheets import router as collaborative_sheets_router
 from app.api.pdf_rename import router as pdf_rename_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_feedback import router as carton_feedback_router
@@ -197,6 +198,7 @@ async def record_request_timing(request: Request, call_next):
 app.include_router(auth_router)
 app.include_router(assistant_router)
 app.include_router(document_tools_router)
+app.include_router(collaborative_sheets_router)
 app.include_router(pdf_rename_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_feedback_router)
