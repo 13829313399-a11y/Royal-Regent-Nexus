@@ -24,7 +24,9 @@ from openpyxl.utils.cell import get_column_letter, coordinate_to_tuple, range_bo
 from PIL import Image
 import xlrd
 
-MAX_FILE_BYTES = 25 * 1024 * 1024
+MAX_FILE_MB = 100
+MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
+FILE_SIZE_ERROR = f"工作簿不能超过 {MAX_FILE_MB} MB"
 MAX_CELLS = 100_000
 MAX_ROWS = 5000
 MAX_COLUMNS = 256
@@ -534,8 +536,10 @@ def inspect_xls(data):
 
 
 def inspect_workbook(data, kind):
-    if not data or len(data) > MAX_FILE_BYTES:
-        raise WorkbookError("文件为空或超过 25 MB")
+    if not data:
+        raise WorkbookError("文件为空")
+    if len(data) > MAX_FILE_BYTES:
+        raise WorkbookError(FILE_SIZE_ERROR)
     try:
         return inspect_xls(data) if kind == "xls" else inspect_xlsx(data)
     except WorkbookError:

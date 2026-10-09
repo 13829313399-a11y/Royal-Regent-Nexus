@@ -66,7 +66,7 @@ const passwordResetDisplayNameInput = ref<HTMLInputElement | null>(null)
 const passwordResetContactInput = ref<HTMLInputElement | null>(null)
 const passwordResetClaim = ref<PasswordResetClaimResponse | null>(null)
 const isPasswordResetClaimRefreshing = ref(false)
-let passwordResetPollTimer: ReturnType<typeof window.setTimeout> | undefined
+let passwordResetPollTimer: number | undefined
 
 const chinesePasswordPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 const chinesePasswordGlobalPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g
