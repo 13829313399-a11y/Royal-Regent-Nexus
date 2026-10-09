@@ -722,6 +722,7 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
         "material_components",
         "material_usage_type",
         "actual_material_cost_components",
+        "quote_target_daily_qty",
     } <= item_columns
 
 
@@ -3952,13 +3953,13 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
     assert "适配机型" not in sheet_xml
     assert "毛重g" not in sheet_xml
     assert "预计料费HKD" not in sheet_xml
-    assert '<autoFilter ref="A8:N8"/>' in sheet_xml
-    assert '<dimension ref="A1:N38"/>' in sheet_xml
+    assert '<autoFilter ref="A8:O8"/>' in sheet_xml
+    assert '<dimension ref="A1:O38"/>' in sheet_xml
     assert '<row r="38">' in sheet_xml
     assert '<dataValidations count="2">' in sheet_xml
     assert 'sqref="D9:D38"' in sheet_xml
     assert '<formula1>"正式生产,试料"</formula1>' in sheet_xml
-    assert 'sqref="M9:M38"' in sheet_xml
+    assert 'sqref="N9:N38"' in sheet_xml
     assert '<formula1>"在厂,不在厂,待确认"</formula1>' in sheet_xml
 
     assert '<sheet name="啤办单" sheetId="1" r:id="rId1"/>' in workbook_xml
@@ -5107,3 +5108,58 @@ def test_full_order_edit_cannot_switch_between_internal_and_external_flow(client
     unchanged_external = client.get(f"/api/injection/{external_order_id}").json()
     assert unchanged_external["order"]["production_factory_id"] is None
     assert unchanged_external["order"]["send_to"] == "发至模厂"
+
+
+def test_quote_target_template_preview_create_edit_and_exports_round_trip(client):
+    login_as(client, "engineer")
+    excel = importlib.import_module("app.services.molding_sample_excel")
+    response = client.get("/api/injection/import-excel-template", params={"factory_id": "huaxing"})
+    assert response.status_code == 200
+    rows = excel._read_first_sheet_rows(response.content)
+    headers = rows[7]
+    assert headers[headers.index("啤数") + 1] == "报价目标"
+    rows[1] = ["客户", "映射测试客户", "产品编号", "QA-TARGET", "产品名称", "报价目标映射测试"]
+    rows[2] = ["开单日期", "2026-10-09", "阶段", "T0", "填写部", "工程部"]
+    rows[3] = ["发至", "内部", "审核主管", "测试主管", "落单人", "测试工程"]
+    rows = rows[:8]
+    for index, target in enumerate([3000, 5200, ""], 1):
+        values = {"模具编号": f"QA-{index}", "模具名称": f"测试模具{index}", "所需用料": "测试自带料", "用料用途": "试料", "啤/套": "2", "啤数": 50 * index, "报价目标": target, "所需用料(kg)": 2.5, "需办日期": "2026-10-10", "工模尺寸": "400*400*322", "模具状态（是否在厂）": "在厂", "备注": "原备注保留"}
+        rows.append([values.get(header, "") for header in headers])
+    workbook = excel._build_workbook(excel._sheet_xml(rows, header_row_index=8))
+    preview = client.post("/api/injection/import-excel-preview", params={"factory_id": "huaxing"}, content=workbook, headers={"content-type": excel.XLSX_MIME})
+    assert preview.status_code == 200, preview.text
+    payload = preview.json()
+    assert [item["quote_target_daily_qty"] for item in payload["items"]] == [3000, 5200, None]
+    assert [item["shoot_qty"] for item in payload["items"]] == [50, 100, 150]
+    assert payload["items"][0]["required_material_kg"] == 2.5
+    assert payload["items"][0]["completion_time"] == "2026-10-10"
+    assert payload["items"][0]["mold_presence_status"] == "in_factory"
+    assert payload["items"][0]["notes"] == "原备注保留"
+    created = client.post("/api/injection", json=payload)
+    assert created.status_code == 201, created.text
+    order_id = created.json()["order"]["id"]
+    saved = client.get(f"/api/injection/{order_id}").json()
+    assert [item["quote_target_daily_qty"] for item in saved["items"]] == [3000, 5200, None]
+    edit = {"order": saved["order"], "items": saved["items"]}
+    edit["items"][0]["quote_target_daily_qty"] = 3600
+    edit["items"][1]["quote_target_daily_qty"] = None
+    edited = client.put(f"/api/injection/{order_id}", json=edit)
+    assert edited.status_code == 200, edited.text
+    assert client.get(f"/api/injection/{order_id}").json()["items"][0]["quote_target_daily_qty"] == 3600
+    single = client.get(f"/api/injection/{order_id}/export-excel")
+    assert single.status_code == 200
+    imported = excel.parse_order_excel(single.content)
+    assert [item.quote_target_daily_qty for item in imported.items] == [3600, None, None]
+    batch = client.get("/api/injection/export-excel", params={"order_ids": [order_id]})
+    assert batch.status_code == 200, batch.text
+    batch_rows = excel._read_first_sheet_rows(batch.content)
+    target_index = batch_rows[1].index("报价目标（啤/日）")
+    assert batch_rows[2][target_index] == "3600"
+
+
+@pytest.mark.parametrize("value", [-1, 0, 1.5, "abc", 2147483648])
+def test_quote_target_api_rejects_invalid_values(client, value):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-INVALID-TARGET")
+    payload["items"][0]["quote_target_daily_qty"] = value
+    assert client.post("/api/injection", json=payload).status_code == 422

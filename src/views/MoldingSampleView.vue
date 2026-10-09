@@ -286,7 +286,7 @@ const excelImporting = ref(false)
 const excelExporting = ref(false)
 const excelTemplateDownloading = ref(false)
 const excelAccept = `${MOLDING_SAMPLE_XLSX_MIME},.xlsx`
-const createLineGridClass = 'grid-cols-[40px_132px_142px_210px_120px_118px_124px_74px_96px_82px_92px_118px_138px_150px_130px_160px_72px]'
+const createLineGridClass = 'grid-cols-[40px_132px_142px_210px_120px_118px_124px_74px_96px_82px_92px_152px_118px_138px_150px_130px_160px_72px]'
 const createDraftStoragePrefix = 'rr:molding-sample:create-draft'
 const RAW_MATERIAL_PICKER_WIDTH = 360
 const RAW_MATERIAL_PICKER_HEIGHT = 256
@@ -1281,6 +1281,7 @@ function isBlankCreateLine(line: ManualMoldingSampleLineDraft) {
     line.pigment_no,
     line.quantity,
     line.shoot_qty,
+    line.quote_target_daily_qty,
     line.required_material_kg,
     line.required_date,
     line.notes,
@@ -1430,6 +1431,7 @@ function createDraftFromRecord(record: MoldingSampleWorkflowRecord) {
         pigment_no: item.pigment_no,
         quantity: item.quantity,
         shoot_qty: String(item.shoot_qty || ''),
+        quote_target_daily_qty: item.quote_target_daily_qty == null ? '' : String(item.quote_target_daily_qty),
         required_material_kg: formatDraftNumber(item.required_material_kg),
         mold_dimensions: item.mold_dimensions,
         mold_presence_status: normalizeDraftMoldPresenceStatus(item.mold_presence_status),
@@ -1467,6 +1469,7 @@ function createDraftFromExcelPreview(payload: MoldingSampleCreateRequest) {
           pigment_no: item.pigment_no ?? '',
           quantity: item.quantity ?? '',
           shoot_qty: String(item.shoot_qty || ''),
+          quote_target_daily_qty: item.quote_target_daily_qty == null ? '' : String(item.quote_target_daily_qty),
           required_material_kg: formatDraftNumber(item.required_material_kg),
           mold_dimensions: item.mold_dimensions ?? '',
           mold_presence_status: normalizeDraftMoldPresenceStatus(item.mold_presence_status),
@@ -4976,7 +4979,7 @@ onUnmounted(() => {
         </div>
 
         <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-          <div class="space-y-4 xl:contents">
+          <div class="min-w-0 space-y-4 xl:contents">
             <section class="rounded-lg border border-slate-200 bg-white">
               <div class="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
                 <FileText class="size-4 text-slate-400" aria-hidden="true" />
@@ -5082,7 +5085,7 @@ onUnmounted(() => {
               </div>
             </section>
 
-            <section class="rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-2">
+            <section class="min-w-0 rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-2">
               <div class="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
                 <Table2 class="size-4 text-slate-400" aria-hidden="true" />
                 <span class="text-[13px] font-bold">模具明细</span>
@@ -5090,7 +5093,7 @@ onUnmounted(() => {
               </div>
               <div class="space-y-2 p-3">
                 <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-                  <div class="min-w-[2180px]" role="table" aria-label="模具明细录入表">
+                  <div class="min-w-[2340px]" role="table" aria-label="模具明细录入表">
                     <div
                       class="grid items-center gap-x-2 border-b border-slate-200 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold text-slate-500"
                       :class="createLineGridClass"
@@ -5107,6 +5110,7 @@ onUnmounted(() => {
                       <div class="min-w-0 truncate px-2" role="columnheader">色粉</div>
                       <div class="min-w-0 truncate px-2 text-center" role="columnheader">啤/套</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">啤数</div>
+                      <div class="min-w-0 px-2 text-right" role="columnheader">报价目标（啤/日）</div>
                       <div class="min-w-0 truncate px-2 text-right" role="columnheader">所需用料(kg)</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">需办日期</div>
                       <div class="min-w-0 truncate px-2" role="columnheader">工模尺寸</div>
@@ -5275,6 +5279,9 @@ onUnmounted(() => {
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.shoot_qty" data-testid="create-line-shoot-qty" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
+                        </div>
+                        <div class="min-w-0" role="cell">
+                          <input v-model="line.quote_target_daily_qty" data-testid="create-line-quote-target" :aria-label="`第 ${index + 1} 行报价目标（啤/日）`" inputmode="numeric" placeholder="未报价可留空" title="报给客户的每日啤数，与本次试模啤数分开填写" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
                         </div>
                         <div class="min-w-0" role="cell">
                           <input v-model="line.required_material_kg" data-testid="create-line-required-material" inputmode="decimal" placeholder="kg" class="h-9 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-right outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100">
@@ -5924,6 +5931,7 @@ onUnmounted(() => {
                             <span>{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }} 啤</span>
                             <span>{{ formatWeight(item.required_material_kg) }} → {{ formatWeight(item.actual_weight_kg) }}</span>
                           </span>
+                          <span class="mt-1 block text-[10px] tabular-nums opacity-75">报价目标：{{ formatBlank(item.quote_target_daily_qty) }} 啤/日</span>
                         </button>
                       </div>
                     </nav>
@@ -5978,6 +5986,10 @@ onUnmounted(() => {
                               <div>
                                 <dt class="text-[10px] font-medium text-slate-500">需办日期</dt>
                                 <dd class="mt-0.5 text-[12px] font-semibold tabular-nums text-slate-900">{{ formatWorkflowDate(selectedFullItem.completion_time) }}</dd>
+                              </div>
+                              <div>
+                                <dt class="text-[10px] font-medium text-slate-500">报价目标（啤/日）</dt>
+                                <dd class="mt-0.5 text-[12px] font-semibold tabular-nums text-slate-900">{{ formatBlank(selectedFullItem.quote_target_daily_qty) }}</dd>
                               </div>
                               <div>
                                 <dt class="text-[10px] font-medium text-slate-500">数量 / 啤数</dt>
