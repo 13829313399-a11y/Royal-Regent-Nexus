@@ -12,12 +12,18 @@ const api = vi.hoisted(() => ({ memberships: vi.fn(), workspace: vi.fn(), accept
 const router = vi.hoisted(() => ({ replace: vi.fn(), push: vi.fn() }))
 const routeState = vi.hoisted(() => ({ query: { factory: 'huaxing', shipment: undefined as string | undefined } }))
 const can = vi.hoisted(() => vi.fn((_permission: string) => true))
-const authState = reactive({ currentUser: { id: 'supplier-test', display_name: '供应商' }, authorizationVersion: 1 })
+type TestUser = { id: string; display_name: string; identity?: { effective_context_key: string; employment_epoch: number } }
+const authState = reactive({ currentUser: { id: 'supplier-test', display_name: '供应商' } as TestUser | null,
+  authorizationVersion: 1, sessionVersion: 1, authzMode: 'legacy' })
 vi.mock('@/api/cartonSupplierPortal', () => ({ cartonSupplierPortalApi: api }))
 vi.mock('@/api/cartonPositions', () => ({ cartonPositionsApi: { locations: vi.fn(async () => [{ id: 'BIN-A', factory_id: 'huaxing', warehouse: 'A', bin_code: '01', label: 'A / 01', status: 'ACTIVE' }]) } }))
 vi.mock('@/api/cartonProcurement', () => ({ cartonProcurementApi: { listCustomers: vi.fn(async () => [{ customer_code: 'DICKIE', customer_name: 'Dickie', status: 'ACTIVE' }]) } }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ can,
-  get currentUser() { return authState.currentUser }, get authorizationVersion() { return authState.authorizationVersion } }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ can: (permission: string) => {
+  void authState.sessionVersion
+  return authState.currentUser !== null && can(permission)
+},
+  get currentUser() { return authState.currentUser }, get authorizationVersion() { return authState.authorizationVersion },
+  get sessionVersion() { return authState.sessionVersion }, get authzMode() { return authState.authzMode } }) }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ activeProductionFactory: { id: 'huaxing' } }) }))
 vi.mock('vue-router', () => ({ useRoute: () => routeState, useRouter: () => router, RouterLink: { name: 'RouterLink', props: ['to'], template: '<a><slot /></a>' } }))
 function fixture(): PortalWorkspace {
@@ -65,6 +71,142 @@ const guideOptions = { global: { stubs: { ...options.global.stubs,
   CartonUsageGuide: { name: 'CartonUsageGuide', props: ['audience', 'factoryName'], emits: ['close', 'supplierNavigate'], template: '<section data-testid="supplier-usage-guide" />' },
 } } }
 beforeEach(() => { routeState.query.shipment = undefined; vi.resetAllMocks(); can.mockReturnValue(true); api.memberships.mockResolvedValue([{ factory_id: 'huaxing', supplier_name: '河源东康' }]); api.workspace.mockResolvedValue(fixture()); api.members.mockResolvedValue([]); api.ship.mockResolvedValue({ id: 'NEW' }); api.previewDeliveryImport.mockResolvedValue({ filename: '送货明细表.xlsx', sha256: 'abc', row_count: 1, groups: [{ factory_id: 'huaxing', destination: '华兴', delivery_note_no: 'DN-NEW', delivery_date: '2026-09-24', ready: true, issues: [], rows: [{ source_sheet: '送货明细', source_row: 2, contract_no: 'SC-A', item_no: 'ITEM-A', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', delivered_quantity: 4, order_no: 'ORDER-A', child_no: 'ORDER-A/01', order_line_id: 'LINE-0', issue_id: 'ISSUE-A', status: 'READY', reason: '已匹配' }] }] }); api.confirmDeliveryImport.mockResolvedValue({ shipments: [{ id: 'NEW' }] }); api.acceptBatch.mockResolvedValue({ order_ids: [] }); api.documents.mockResolvedValue([]); api.activityPage.mockResolvedValue({ items: [{ id: 'ACT1', factory_id: 'huaxing', action: '送货单已登记', created_at: '2026-09-25', reference_no: 'DN-1', actor_name: '供应商' }], total: 1, limit: 50, offset: 0 }); api.activity.mockResolvedValue([]); api.exportDocuments.mockResolvedValue(undefined); api.exportOrderImport.mockResolvedValue(undefined); api.receiptOptions.mockResolvedValue([]); api.linkReceipt.mockResolvedValue({ id: 'SHIP-A' }); api.receive.mockResolvedValue({ id: 'SHIP-A' }); api.linkSampleReceipt.mockResolvedValue({ receipt_line_id: 'RL-SAMPLE', order_line_id: 'LINE-0', order_no: 'ORDER-A', quantity: '4' }); api.markUploadOrders.mockResolvedValue([]); api.uploadMarkAssets.mockResolvedValue([]); api.markAssets.mockResolvedValue([]); api.markChecks.mockResolvedValue([]); api.previewMarkCheckUrl.mockReturnValue("/api/check.pdf"); api.previewMarkAssetUrl.mockReturnValue('/api/preview.pdf'); api.markTemplates.mockResolvedValue([]); api.previewMarkPdfUrl.mockReturnValue('/api/preview.pdf') })
+
+beforeEach(() => {
+  authState.currentUser = { id: 'supplier-test', display_name: '供应商' }
+  authState.authorizationVersion = 1; authState.sessionVersion = 1; authState.authzMode = 'legacy'
+})
+
+describe('delivery drafts across authorization refreshes', () => {
+  function refreshSameSession() {
+    authState.currentUser = { ...authState.currentUser!, display_name: '更新后的姓名' }
+    authState.sessionVersion++
+  }
+  const boundaryChanges: [string, () => void][] = [
+    ['account', () => { authState.currentUser = { id: 'other-user', display_name: '其他人' } }],
+    ['logout', () => { authState.currentUser = null }],
+    ['authorization version', () => { authState.authorizationVersion++ }],
+    ['authorization mode', () => { authState.authzMode = 'enforce' }],
+    ['identity context', () => { authState.currentUser!.identity = { effective_context_key: 'new-context', employment_epoch: 1 } }],
+    ['employment epoch', () => { authState.currentUser!.identity = { effective_context_key: 'original', employment_epoch: 2 } }],
+    ['permission revocation', () => { can.mockReturnValue(false) }],
+  ]
+  async function openImport() {
+    const wrapper = mount(CartonSupplierView, options)
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '导入送货单')!.trigger('click')
+    const input = wrapper.get('input[type="file"]')
+    const file = new File(['excel'], '送货明细表.xlsx')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+    await input.trigger('change')
+    return { wrapper, file }
+  }
+
+  it('preserves deep-linked warehouse quantities, price, date, reason and bins after same-account refresh', async () => {
+    const wrapper = mount(CartonSupplierReceiving, { ...options, props: { factoryId: 'huaxing', shipmentId: 'SHIP-A' } })
+    await flushPromises()
+    await wrapper.get('[aria-label="SL-0 实收"]').setValue(6)
+    await wrapper.get('[aria-label="SL-0 差异原因"]').setValue('短收四件待核实')
+    await wrapper.get('[aria-label="发货验收日期"]').setValue('2026-09-22')
+    await wrapper.findAll('input[type="number"][step="0.000001"]')[0]!.setValue('3.25')
+    await wrapper.findAll('button').filter(button => button.text() === '此项未到')[1]!.trigger('click')
+    wrapper.findAllComponents(CartonReceiptAllocations)[0]!.vm.$emit('update:modelValue', [{ location_id: 'BIN-A', quantity: 6 }])
+    refreshSameSession(); await flushPromises()
+    expect(api.workspace).toHaveBeenCalledTimes(1)
+    expect(api.receiptOptions).toHaveBeenCalledTimes(1)
+    expect(wrapper.get<HTMLInputElement>('[aria-label="SL-0 实收"]').element.value).toBe('6')
+    await wrapper.get('[role="dialog"]').trigger('submit'); await flushPromises()
+    expect(api.receive).toHaveBeenCalledWith('SHIP-A', expect.objectContaining({ acceptance_date: '2026-09-22', lines: [
+      expect.objectContaining({ received_quantity: 6, unit_price: 3.25, difference_reason: '短收四件待核实', location_allocations: [{ location_id: 'BIN-A', quantity: 6 }] }),
+      expect.objectContaining({ received_quantity: 0 }),
+    ] }))
+    wrapper.unmount()
+  })
+
+  it('keeps warehouse submission pending and handles its result across a same-account refresh', async () => {
+    let finish!: (value: { id: string }) => void
+    api.receive.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = mount(CartonSupplierReceiving, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '核实实际收到')!.trigger('click'); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '整单未到')!.trigger('click')
+    await wrapper.get('[role="dialog"]').trigger('submit')
+    refreshSameSession(); await flushPromises()
+    await wrapper.get('[role="dialog"]').trigger('submit')
+    expect(api.receive).toHaveBeenCalledTimes(1)
+    finish({ id: 'SHIP-A' }); await flushPromises()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.get('[role="status"]').text()).toContain('仓库核实已保存')
+    wrapper.unmount()
+  })
+
+  it.each(boundaryChanges)('clears warehouse drafts and discards old receipt candidates after %s changes', async (_name, change) => {
+    authState.currentUser!.identity = { effective_context_key: 'original', employment_epoch: 1 }
+    let fail!: (reason: Error) => void
+    api.receiptOptions.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject }))
+    const wrapper = mount(CartonSupplierReceiving, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '核实实际收到')!.trigger('click')
+    await wrapper.get('[aria-label="SL-0 实收"]').setValue(6)
+    change(); authState.sessionVersion++; await flushPromises()
+    fail(new Error('旧账号的查询错误')); await flushPromises()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('旧账号的查询错误')
+    expect(api.receive).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('preserves import file, selected notes and registration mode across a same-account refresh', async () => {
+    const preview = await api.previewDeliveryImport()
+    preview.groups[0].receipt_link_ready = true
+    api.previewDeliveryImport.mockResolvedValue(preview)
+    const { wrapper, file } = await openImport(); await flushPromises()
+    const mode = wrapper.get('[role="dialog"]').findAll('select')[0]!
+    await mode.setValue('EXISTING_RECEIPT')
+    await wrapper.get('[aria-label="确认送货单 DN-NEW"]').setValue(false)
+    refreshSameSession(); await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[aria-label="确认送货单 DN-NEW"]').element.checked).toBe(false)
+    expect(wrapper.get<HTMLSelectElement>('[role="dialog"] select').element.value).toBe('EXISTING_RECEIPT')
+    await wrapper.get('[aria-label="确认送货单 DN-NEW"]').setValue(true)
+    await wrapper.findAll('button').find(button => button.text().startsWith('确认 1 张送货单'))!.trigger('click'); await flushPromises()
+    expect(api.confirmDeliveryImport).toHaveBeenCalledWith(file, preview, [{ factory_id: 'huaxing', delivery_note_no: 'DN-NEW', registration_mode: 'EXISTING_RECEIPT' }])
+    wrapper.unmount()
+  })
+
+  it('finishes an in-flight import preview and confirmation across same-account refreshes', async () => {
+    const preview = await api.previewDeliveryImport()
+    let previewDone!: (value: typeof preview) => void
+    let confirmDone!: (value: { shipments: { id: string }[] }) => void
+    api.previewDeliveryImport.mockImplementationOnce(() => new Promise(resolve => { previewDone = resolve }))
+    api.confirmDeliveryImport.mockImplementationOnce(() => new Promise(resolve => { confirmDone = resolve }))
+    const { wrapper } = await openImport()
+    refreshSameSession(); await flushPromises()
+    previewDone(preview); await flushPromises()
+    const submit = wrapper.findAll('button').find(button => button.text() === '确认 1 张送货单发货')!
+    expect(submit.attributes('disabled')).toBeUndefined()
+    await submit.trigger('click')
+    refreshSameSession(); await flushPromises()
+    expect(submit.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+    confirmDone({ shipments: [{ id: 'NEW' }] }); await flushPromises()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('已提交 1 张供应商送货单')
+    expect(api.confirmDeliveryImport).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it.each(boundaryChanges)('discards pending import preview after %s changes', async (_name, change) => {
+    authState.currentUser!.identity = { effective_context_key: 'original', employment_epoch: 1 }
+    const preview = await api.previewDeliveryImport()
+    let finish!: (value: typeof preview) => void
+    api.previewDeliveryImport.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const { wrapper } = await openImport()
+    change(); authState.sessionVersion++; await flushPromises()
+    finish(preview); await flushPromises()
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('DN-NEW')
+    expect(api.confirmDeliveryImport).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
 
 describe('late supplier documents use existing warehouse receipts', () => {
   it('allows viewing other customer shipments without receiving, linking or reversing them', async () => {
@@ -1063,7 +1205,7 @@ describe('internal supplier collaboration', () => {
     expect(wrapper.text()).toContain('不重复过账')
     wrapper.unmount()
   })
-  it('requires an explicit warehouse decision before a no-order sample can be posted', async () => {
+  it.each(['', '打板', '客户打板确认'])('accepts optional sample purpose "%s" after the required warehouse checks', async purpose => {
     const data = fixture()
     data.shipments[0]!.lines = [{ id: 'SL-SAMPLE', order_line_id: null, source_type: 'AD_HOC_REVIEW',
       order_no: '', contract_no: 'SAMPLE-1', customer_po: '', item_no: 'SAMPLE-BOX', customer_name: '',
@@ -1077,13 +1219,17 @@ describe('internal supplier collaboration', () => {
     expect(api.receive).not.toHaveBeenCalled()
     expect(wrapper.get('[role="dialog"]').text()).toContain('必须选')
     await wrapper.get('select[aria-label="SL-SAMPLE 无单处理结论"]').setValue('SAMPLE')
+    const purposeInput = wrapper.get<HTMLInputElement>('input[aria-label="SL-SAMPLE 样板箱用途"]')
+    expect(purposeInput.element.required).toBe(false)
     await wrapper.get('select[aria-label="SL-SAMPLE 样板箱客户"]').setValue('DICKIE')
-    await wrapper.get('input[aria-label="SL-SAMPLE 样板箱用途"]').setValue('客户打板确认')
+    await purposeInput.setValue(purpose)
+    await wrapper.get('[role="dialog"]').trigger('submit'); await flushPromises()
+    expect(api.receive).not.toHaveBeenCalled()
     await wrapper.get('input[aria-label="SL-SAMPLE 样板箱需求人"]').setValue('纸箱部')
     wrapper.findComponent(CartonReceiptAllocations).vm.$emit('update:modelValue', [{ location_id: 'BIN-A', quantity: 4 }])
     await wrapper.get('[role="dialog"]').trigger('submit'); await flushPromises()
     expect(api.receive).toHaveBeenCalledWith('SHIP-A', expect.objectContaining({ lines: [expect.objectContaining({
-      no_order_decision: 'SAMPLE', customer_code: 'DICKIE', sample_purpose: '客户打板确认', requested_by: '纸箱部',
+      no_order_decision: 'SAMPLE', customer_code: 'DICKIE', sample_purpose: purpose, requested_by: '纸箱部',
     })] }))
     wrapper.unmount()
   })

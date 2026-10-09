@@ -1858,7 +1858,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     wrapper.unmount()
   })
 
-  it('shows the failing order step in the editor and distinguishes a saved order from a log refresh failure', async () => {
+  it('binds a complete customer name on leaving the field and distinguishes a saved order from a log refresh failure', async () => {
     const wrapper = mountView('orders'); await flushPromises()
     await findButton(wrapper, '新建纸箱订单').trigger('click')
     const form = wrapper.get('[data-testid="order-form-overlay"] form')
@@ -1866,8 +1866,9 @@ it('shows supplier date differences in both the internal ledger and order detail
     expect(wrapper.get('[data-testid="order-save-feedback"]').text()).toContain('表单核对未通过：请先搜索并选择客户')
     expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
 
-    await wrapper.get('input[aria-label="订单客户"]').trigger('focus')
-    await wrapper.get('[aria-label="选择客户 Dickie"]').trigger('click')
+    await wrapper.get('input[aria-label="订单客户"]').setValue('Dickie')
+    await wrapper.get('input[aria-label="订单客户"]').trigger('focusout')
+    expect(form.text()).not.toContain('请从候选中选择')
     await wrapper.get('input[aria-label="合同号"]').setValue('SC-ERR-001')
     await wrapper.get('input[aria-label="货号"]').setValue('203399998')
     await wrapper.get('input[aria-label="产品名称"]').setValue('测试产品')
@@ -1878,6 +1879,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     await wrapper.get('input[aria-label="规格 1"]').setValue('30 × 20 × 15 cm')
     cartonApiMock.createOrder.mockRejectedValueOnce(new Error('合同号与现有订单重复'))
     await form.trigger('submit'); await flushPromises()
+    expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ customer_code: 'DICKIE' }))
     expect(wrapper.get('[data-testid="order-save-feedback"]').text()).toContain('新建订单未完成（保存到服务器）：合同号与现有订单重复')
     expect(wrapper.get('input[aria-label="合同号"]').element).toHaveProperty('value', 'SC-ERR-001')
     expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(true)

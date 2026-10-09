@@ -898,8 +898,10 @@ def init_db() -> None:
             if missing:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
+                            # Cutting master data is created only by explicit migration.
+                            if not name.startswith("cutting_ops_")
                             # An existing business store upgrades this new domain explicitly.
-                            if (not name.startswith("fabric_") or "auth_users" not in existing_tables)
+                            and (not name.startswith("fabric_") or "auth_users" not in existing_tables)
                             and not name.startswith(("uv_ops_", "nexus_assistant_"))
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.
