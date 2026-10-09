@@ -524,6 +524,89 @@ def test_missing_product_and_material_are_backfilled_from_later_telemetry(enviro
         assert not list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))
 
 
+def test_late_product_match_updates_quotes_for_both_machines_without_consuming_stock(environment):
+    env = environment
+    seed_product(env)
+    with env[1].SessionLocal() as db:
+        product = db.get(env[2].ThreeDPrintingProduct, "product-0")
+        product.quoted_price = 20.06
+        product.duration_hours = 5.27
+        product.default_quantity = 1
+        db.commit()
+    first = session(env)
+    second_base = {"instance_id": first["instance_id"], "printer_id": env[5][1]}
+    grant = post(env, "/leases/acquire", second_base)
+    second = {**second_base, "leader_lease_id": grant["leader_lease_id"],
+              "connection_session_id": "session-second-machine"}
+    post(env, "/sessions/start", {**second, "generation": 1})
+    for ref in (first, second):
+        post(env, "/events", event(env, ref, current_file=""))
+    original_ids = {row.id for row in runs(env)}
+    assert len(original_ids) == 2
+    business = importlib.import_module("app.services.three_d_printing")
+    for ref in (first, second):
+        frame = event(env, ref, 2, current_file="part.3mf")
+        post(env, "/events", frame)
+        assert post(env, "/events", frame)["duplicate"]
+    filled = runs(env)
+    assert {row.id for row in filled} == original_ids
+    for row in filled:
+        data = business.production_record_out(row)
+        assert data["product_id"] == "product-0"
+        assert data["quoted_price"] == 20.06
+        assert data["frozen_totals"]["revenue"] == 20.06
+        assert data["frozen_totals"]["materialCost"] is None
+        assert data["calculated_cost_snapshot"]["material_price_kg"] is None
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 100
+        assert not list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))
+
+
+def test_unchanged_save_repairs_late_match_quote_snapshot_without_repricing_or_stock_writes(environment):
+    from uuid import uuid4
+
+    env = environment
+    seed_product(env)
+    ref = session(env)
+    post(env, "/events", event(env, ref, current_file=""))
+    record = runs(env)[0]
+    # Reproduce data written by the old telemetry backfill: business fields were
+    # filled in, but the original empty pricing snapshot still contained zero.
+    with env[1].SessionLocal() as db:
+        saved = db.get(env[2].ThreeDPrintingProductionRecord, record.id)
+        saved.product_id = "product-0"
+        saved.product_name = "part"
+        saved.material_name = "PLA"
+        saved.weight_g = 194
+        saved.quantity = 2
+        saved.duration_hours = 5.27
+        saved.quoted_price = 20.06
+        saved.design_fee = 3
+        db.commit()
+    business = importlib.import_module("app.services.three_d_printing")
+    data = business.production_record_out(runs(env)[0])
+    assert data["frozen_totals"]["revenue"] == 0
+    old_snapshot = data["calculated_cost_snapshot"]
+    request = {**data, "reason": "修正自动补全后的报价", "idempotency_key": uuid4().hex}
+    for _ in range(2):
+        response = env[0].put(PUBLIC + "/records/" + record.id, json=request)
+        assert response.status_code == 200, response.text
+        assert response.json()["frozen_totals"]["revenue"] == 43.12
+    repaired = response.json()
+    snapshot = repaired["calculated_cost_snapshot"]
+    assert snapshot["settings"] == old_snapshot["settings"]
+    assert snapshot["material_price_kg"] is None
+    assert repaired["frozen_totals"]["materialCost"] is None
+    repeated = env[0].put(PUBLIC + "/records/" + record.id, json={
+        **repaired, "reason": "再次保存", "idempotency_key": uuid4().hex,
+    })
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["calculated_cost_snapshot"] == snapshot
+    with env[1].SessionLocal() as db:
+        assert float(db.get(env[2].ThreeDPrintingInventory, "stock").stock_g) == 100
+        assert not list(db.scalars(select(env[2].ThreeDPrintingInventoryMovement)))
+
+
 def test_open_run_from_an_earlier_day_is_settled_by_device_identity(environment):
     """Cross-midnight closure: settlement never depends on "today's" record.
 
