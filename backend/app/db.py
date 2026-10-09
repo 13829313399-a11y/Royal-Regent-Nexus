@@ -688,6 +688,27 @@ def ensure_document_tools_schema_ready() -> None:
             raise RuntimeError("文档工具尚未迁移至 20260908_0103_docs；请备份并迁移后启动。缺少：" + ", ".join(missing))
 
 
+def ensure_collaborative_sheets_schema_ready() -> None:
+    """Never create a new collaboration schema implicitly in an existing DB."""
+    from app.models import collaborative_sheets  # noqa: F401
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if not names:
+            return
+        missing = []
+        for name, table in Base.metadata.tables.items():
+            if not name.startswith("collaborative_sheet"):
+                continue
+            if name not in names:
+                missing.append(name)
+            else:
+                columns = {column["name"] for column in inspector.get_columns(name)}
+                missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
+        if missing:
+            raise RuntimeError("协同填表需要迁移至 20261009_0121；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def init_db() -> None:
     from app.models import (
         spray_production,
@@ -696,6 +717,7 @@ def init_db() -> None:
         uv_ingest,
         uv_handover,
         document_tools,  # noqa: F401
+        collaborative_sheets,  # noqa: F401
         auth,  # noqa: F401
         carton_mark,  # noqa: F401
         carton_procurement,  # noqa: F401
@@ -722,6 +744,7 @@ def init_db() -> None:
     from app.services.raw_material import seed_raw_material_defaults
     from app.services.three_d_printing import seed_three_d_printing_defaults
 
+    ensure_collaborative_sheets_schema_ready()
     ensure_molding_dispatch_schema_ready()
     ensure_internal_quote_customer_schema_ready()
     ensure_internal_quote_baseline_freight_schema_ready()

@@ -24,6 +24,7 @@ from app.models import (
     uv_ingest,  # noqa: F401
     uv_handover,  # noqa: F401
     document_tools,  # noqa: F401
+    collaborative_sheets,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
     carton_procurement,  # noqa: F401

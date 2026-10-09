@@ -6,6 +6,7 @@
     "src/types/**/*.d.ts",
     "src/features/ai-assistant/__tests__/*.spec.ts",
     "src/features/uv-printing/__tests__/*.spec.ts",
+    "src/features/collaborative-sheets/*.spec.ts",
     "src/api/uvPrinting.spec.ts"
   ],
   "exclude": [],
