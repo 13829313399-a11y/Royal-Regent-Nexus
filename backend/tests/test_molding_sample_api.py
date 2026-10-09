@@ -692,7 +692,19 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
     database_path = TEST_TMP_DIR / f"legacy_molding_sample_{uuid4().hex}.db"
     create_legacy_molding_sample_sqlite_database(database_path)
 
-    with make_client_with_database(monkeypatch, database_path) as legacy_client:
+    legacy_client = make_client_with_database(monkeypatch, database_path)
+    db_module = importlib.import_module("app.db")
+    importlib.import_module("app.models.module_feedback")
+    importlib.import_module("app.models.collaborative_sheets")
+    # Prepare the other current modules before startup so their migration guards
+    # do not turn this focused legacy-molding test into a whole-app migration test.
+    # All legacy molding tables stay untouched until the application's startup.
+    db_module.Base.metadata.create_all(db_module.engine, tables=[
+        table for name, table in db_module.Base.metadata.tables.items()
+        if not name.startswith("molding_sample_")
+    ])
+
+    with legacy_client:
         login_as(legacy_client, "engineer")
         response = legacy_client.get("/api/injection")
 
@@ -1635,7 +1647,9 @@ def test_engineering_board_search_matches_normalized_order_item_component_and_pr
     ]
 
 
-def test_engineering_board_queries_are_factory_isolated_and_keep_cross_factory_cost_redaction(client):
+def test_engineering_board_queries_are_factory_isolated_and_keep_cross_factory_cost_redaction(enforce_client):
+    # Explicit permission overrides are evaluated by canonical authorization.
+    client = enforce_client
     login_as(client, "admin")
     huaxing_payload = sample_order_payload("BP-BOARD-FACTORY-HX")
     huadeng_payload = sample_order_payload("BP-BOARD-FACTORY-HD")
