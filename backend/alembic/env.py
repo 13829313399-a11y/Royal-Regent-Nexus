@@ -18,6 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings
 from app.db import Base
 from app.models import (
+    cutting_ops,  # noqa: F401
     assistant,  # noqa: F401
     work_center,  # noqa: F401
     uv_operations,  # noqa: F401

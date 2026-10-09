@@ -5,14 +5,14 @@ export function isCuttingFactory(factory: unknown): factory is typeof CUTTING_FA
   return factory === CUTTING_FACTORY
 }
 
-// This first delivery contains navigation and business explanations only.
-// Register canonical backend permissions before connecting any business data.
+// Master data uses its own P1b page and canonical backend permissions.
+// Remaining workspaces still contain navigation and business explanations only.
 export const CUTTING_WORKSPACES = [
   {
     path: 'planning', short: '排期', title: '生产排期', icon: 'CalendarRange',
     description: '从订单、工程 BOM 和物料交期出发，安排本厂与外发裁剪。',
     tabs: ['订单总台账', '待排任务', '每日计划'],
-    columns: ['放产日期', '客户', '生产单号', '合同号', '货号', '款式 / 颜色', '订单数量（套）', '物料交期', '贴合 / 捆条', '执行方', '计划开始', '计划完成', '累计计划（套）', '累计完成（套）'],
+    columns: ['放产日期', '客户', '生产单号', '合同号', '货号', '款式 / 颜色', '订单数量（套）', '物料交期', '贴合 / 捆条', '执行方', '计划开始', '计划完成', '累计计划（套）', '累计完成（套）', '累计计划差额（套）', '未完成套数'],
     empty: '订单与物料交期尚未接入',
     next: '接入华康 C 订单下发、工程确认的生产 BOM 和采购交期后，主管可分配本厂及外发任务。',
     rules: ['一般经过 3 个工作日开始供数，起算边界及工作日历待确认。', '按当前阶段必需物料判断可生产批次，其他辅料继续跟进。', '预计交期支持预排，实际可用物料决定可执行数量。'],
