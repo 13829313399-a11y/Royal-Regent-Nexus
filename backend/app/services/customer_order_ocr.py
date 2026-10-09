@@ -6,14 +6,16 @@ group so a hung renderer or Tesseract cannot outlive its deadline.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,6 +105,9 @@ def _ocr_slot():
 
 
 def _stop_process_tree(process: subprocess.Popen) -> None:
+    if process.returncode is not None:
+        # A reaped PID is no longer owned and must never be signalled.
+        return
     try:
         if os.name == "nt":
             if process.poll() is None:
@@ -114,12 +119,18 @@ def _stop_process_tree(process: subprocess.Popen) -> None:
                 )
         else:
             try:
-                if os.getpgid(process.pid) == process.pid:
+                if getattr(process, '_rr_owned_process_group', False) or os.getpgid(process.pid) == process.pid:
                     os.killpg(process.pid, signal.SIGKILL)
                 else:
                     os.kill(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # Darwin can report EPERM for an already empty group whose
+                # leader is an unreaped zombie. Never suppress live-worker or
+                # Linux permission failures.
+                if sys.platform != 'darwin' or not _worker_exited(process):
+                    raise
     finally:
         if process.poll() is None:
             process.kill()
@@ -130,12 +141,14 @@ def _run_worker(command: list[str], budget: OcrBudget) -> int:
     budget.check()
     env = {**os.environ, "OMP_THREAD_LIMIT": "1", "OMP_NUM_THREADS": "1",
            "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
+    owns_group = os.name != "nt" and not os.environ.get("RR_CUSTOMER_ORDER_JOB_WORKER")
     process = subprocess.Popen(
         command, cwd=BACKEND_DIR, env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=os.name != "nt" and not os.environ.get("RR_CUSTOMER_ORDER_JOB_WORKER"),
+        start_new_session=owns_group,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
+    process._rr_owned_process_group = owns_group
     try:
         while not _worker_exited(process):
             budget.check()
@@ -151,7 +164,24 @@ def _worker_exited(process: subprocess.Popen) -> bool:
         return process.poll() is not None
     # Leave the leader unreaped until its entire group has been cleaned up.
     # This keeps the PID reserved even if it exited leaving a child behind.
-    return os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    if hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
+        return os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    # macOS has no Python waitid. Observe NOTE_EXIT without reaping the owned
+    # child, keeping its PID reserved until _stop_process_tree finishes.
+    with closing(select.kqueue()) as queue:
+        event = select.kevent(process.pid, filter=select.KQ_FILTER_PROC,
+                             flags=select.KQ_EV_ADD, fflags=select.KQ_NOTE_EXIT)
+        try:
+            events = queue.control([event], 1, 0)
+            for result in events:
+                if result.flags & select.KQ_EV_ERROR:
+                    if result.data == errno.ESRCH:
+                        return True
+                    raise OSError(result.data, os.strerror(result.data))
+            return any(result.fflags & select.KQ_NOTE_EXIT for result in events)
+        except ProcessLookupError:
+            # Already exited before registration, but not yet reaped by us.
+            return True
 
 
 def read_scanned_order_pdf(content: bytes, page_count: int) -> list[str]:
