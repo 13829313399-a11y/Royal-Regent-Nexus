@@ -12,7 +12,7 @@ from app.services.customer_order_jobs import run_order_job, order_job_request
 from app.api import customer_order as mapping
 from app.db import get_db
 from app.models.customer_order_ledger import OrderLedgerLine as Line, OrderLedgerSource as Source, OrderLedgerDispatch as Dispatch, OrderLedgerShipment as Shipment
-from app.schemas.customer_order_ledger import AmendIn, DispatchIn, ReasonIn, ShipmentIn, HistorySelection, HistoryOpeningIn
+from app.schemas.customer_order_ledger import AmendIn, DispatchIn, ReasonIn, RestoreIn, ShipmentIn, HistorySelection, HistoryOpeningIn
 from app.services.auth import AuthContext, get_current_user, now_text
 from app.services.business_authz import ensure_permission_for_departments, has_permission_for_departments
 from app.services import customer_order_ledger as ledger
@@ -255,11 +255,30 @@ def amend(line_id: str, factory_id: str, body: AmendIn, db: Session = Depends(ge
     return mutate(db, current_user, factory_id, line_id, ledger.amend, body, "write")
 
 
+def authorize_locked_dispatch(db, user, factory_id):
+    # The shared denial helper commits its auth audit. Release/roll back the
+    # business lock first, so a denied notification cannot partially commit it.
+    if not has_permission_for_departments(user, "customer_order:dispatch", factory_id, ("sales-business",)):
+        db.rollback()
+    authorize(db, user, factory_id, "dispatch")
+
+
 @router.post("/lines/{line_id}/cancel")
 def cancel(line_id: str, factory_id: str, body: ReasonIn, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
-    if db.scalar(select(Dispatch.id).where(Dispatch.line_id == line_id, Dispatch.factory_id == factory_id).limit(1)):
-        authorize(db, current_user, factory_id, "dispatch")
-    return mutate(db, current_user, factory_id, line_id, ledger.cancel, body, "write")
+    def action(db, line, body, actor):
+        ledger.cancel(db, line, body, actor,
+            authorize_dispatch=lambda: authorize_locked_dispatch(db, current_user, factory_id))
+    return mutate(db, current_user, factory_id, line_id, action, body, "write")
+
+
+@router.post("/lines/{line_id}/restore")
+def restore(line_id: str, factory_id: str, body: RestoreIn, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    def action(db, line, body, actor):
+        # Recipient authority is checked after taking the optimistic write lock,
+        # so a concurrent dispatch cannot bypass the sent-order permission rule.
+        ledger.restore(db, line, body, actor,
+            authorize_dispatch=lambda: authorize_locked_dispatch(db, current_user, factory_id))
+    return mutate(db, current_user, factory_id, line_id, action, body, "write")
 
 
 @router.post("/lines/{line_id}/dispatch")

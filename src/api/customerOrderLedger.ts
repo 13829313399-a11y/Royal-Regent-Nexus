@@ -89,6 +89,9 @@ export function createCustomerOrderLedgerApi(client: CustomerOrderLedgerHttpClie
     async cancel(id: string, factoryId: string, payload: { expected_revision: number; reason: string }) {
       return (await client.post<CustomerOrderLedgerLine>(`${base}/lines/${encodeURIComponent(id)}/cancel?${query({ factory_id: factoryId })}`, payload)).data
     },
+    async restore(id: string, factoryId: string, payload: { expected_revision: number; reason: string; confirmed: true; notify_recipients: boolean }) {
+      return (await client.post<CustomerOrderLedgerLine>(`${base}/lines/${encodeURIComponent(id)}/restore?${query({ factory_id: factoryId })}`, payload)).data
+    },
     async dispatch(id: string, factoryId: string, payload: { expected_revision: number; recipients: Array<'pmc' | 'warehouse' | 'injection'> }) {
       return (await client.post<CustomerOrderLedgerLine>(`${base}/lines/${encodeURIComponent(id)}/dispatch?${query({ factory_id: factoryId })}`, payload)).data
     },
