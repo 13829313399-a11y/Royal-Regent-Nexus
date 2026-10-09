@@ -105,6 +105,13 @@ FABRIC_WAREHOUSE_PERMISSION_CODES = (
     "fabric_warehouse:receive",
 )
 
+# Separate grants: ordinary receiving never grants quality release or reversal.
+WAREHOUSE_OPERATIONS_PERMISSION_CODES = tuple(
+    f"{family}:{action}"
+    for family in ("fabric_operations", "semi_operations")
+    for action in ("read", "operate", "quality", "correct")
+) + ("semi_operations:master",)
+
 THREE_D_PRINTING_PERMISSION_CODES = (
     "three_d_printing:read",
     "three_d_printing:operate",
@@ -181,6 +188,7 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 )
 
 BUSINESS_PERMISSION_CODES = (
+    *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     *CUTTING_OPS_PERMISSION_CODES,
     *FABRIC_WAREHOUSE_PERMISSION_CODES,
     *UV_OPS_PERMISSION_CODES,

@@ -2,7 +2,7 @@ import { http } from '@/lib/http'
 import type { PurchaseFacts } from './fabricProcurement'
 
 export type MaterialCategory = 'FABRIC' | 'ACCESSORY' | 'THREAD'
-export interface ReceiptBatchInput { quantity: string; location: string; dye_lot: string; roll_no: string }
+export interface ReceiptBatchInput { location_id?: string; quantity: string; location: string; dye_lot: string; roll_no: string }
 export interface ReceiveRequest {
   factory_id: 'huakang-c'; request_id: string; expected_source_revision: number; expected_receipt_count: number
   receipt_date: string; delivery_reference: string; delivery_note_date: string | null

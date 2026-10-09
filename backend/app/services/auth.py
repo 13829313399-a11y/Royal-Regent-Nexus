@@ -58,6 +58,7 @@ from app.services.iam_scope import (
     default_permission_access_kind,
 )
 from app.services.permission_codes import (
+    WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     APPLICATION_PERMISSION_CODES,
     CUTTING_OPS_PERMISSION_CODES,
     CARTON_SUPPLIER_PERMISSION_CODES,
@@ -639,6 +640,7 @@ POSITION_DEPARTMENT_ALIAS_GROUPS = (
 )
 POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
     {
+        *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
         *CUTTING_OPS_PERMISSION_CODES,
         *UV_OPS_PERMISSION_CODES,
         "fabric_warehouse:read",

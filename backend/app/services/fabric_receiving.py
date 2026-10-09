@@ -132,6 +132,10 @@ def receipt_data(db, receipt):
 def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _commit=True):
     ensure_schema(db)
     body = payload.model_dump(mode="json")
+    for item in body.get("items", [body]):
+        for part in item.get("batches", []):
+            if not part.get("location_id"):
+                part.pop("location_id", None)
     if not payload.confirmed:
         raise HTTPException(422, "请核实本次实物数量并确认入库")
     request_hash = digest([actor.id, line_id, body])
@@ -179,7 +183,7 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
         raise HTTPException(409, "该来源的这张送货依据已入库，请查看入库记录；同单分仓位在一次收料中填写")
     from app.services.fabric_master import receipt_references
     master_references = receipt_references(db, facts, payload)
-    location_codes = {row["code"].casefold(): row["code"] for row in master_references["locations"]}
+    location_records = {row["id"]: row for row in master_references["locations"]}
     batches, roll_keys = [], set()
     for batch in payload.batches:
         amount = quantity(batch.quantity, "批次数量")
@@ -191,11 +195,11 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
             raise HTTPException(422, "辅料和线无需填写布料缸号、卷号，请核对分类")
         # A roll can split across bins, but the same roll/bin cannot be entered twice.
         entered_location = batch.location.strip()
-        key = (batch.dye_lot.strip(), batch.roll_no.strip(), location_codes.get(entered_location.casefold(), entered_location))
+        key = (batch.dye_lot.strip(), batch.roll_no.strip(), location_records[batch.location_id]["label"])
         if batch.roll_no.strip() and key in roll_keys:
             raise HTTPException(422, "同缸号、卷号和仓位重复，请合并核对")
         roll_keys.add(key)
-        batches.append({"quantity": decimal_text(amount), "location": key[2], "dye_lot": key[0], "roll_no": key[1]})
+        batches.append({"quantity": decimal_text(amount), "location": key[2], "dye_lot": key[0], "roll_no": key[1], "location_record": location_records[batch.location_id]})
     total = sum((Decimal(batch["quantity"]) for batch in batches), Decimal(0))
     quantity(decimal_text(total), "本次实收总数")
     remaining = valid_reference(progress["warehouse_outstanding_quantity"])
@@ -218,12 +222,15 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
     db.add(receipt)
     db.flush()
     movements = []
+    frozen_body["batch_locations"] = {}
     for item in batches:
         batch = FabricStockBatch(id=uuid4().hex, factory_id=source.FACTORY, receipt_id=receipt.id,
-            material_category=payload.material_category, quality_status="PENDING_INSPECTION", **{k: v for k, v in item.items() if k != "quantity"})
+            material_category=payload.material_category, quality_status="PENDING_INSPECTION", **{k: v for k, v in item.items() if k not in {"quantity", "location_record"}})
+        frozen_body["batch_locations"][batch.id] = item["location_record"]
         db.add(batch)
         movements.append(FabricInventoryMovement(id=uuid4().hex, factory_id=source.FACTORY, receipt_id=receipt.id,
             batch_id=batch.id, kind="RECEIPT", quantity=item["quantity"]))
+    receipt.payload_json = dump(frozen_body)
     db.flush()
     db.add_all(movements)
     state.revision += 1
@@ -244,7 +251,12 @@ def receive_many(db, actor, payload):
     if sum(len(item.batches) for item in payload.items) > 500:
         raise HTTPException(422, "一次最多登记 500 项实物明细，请分批收料")
     batch_id = str(payload.request_id)
-    batch_hash = digest([actor.id, payload.model_dump(mode="json")])
+    batch_body = payload.model_dump(mode="json")
+    for item in batch_body["items"]:
+        for part in item["batches"]:
+            if not part.get("location_id"):
+                part.pop("location_id", None)
+    batch_hash = digest([actor.id, batch_body])
     child_ids = [str(uuid5(payload.request_id, line_id)) for line_id in ids]
     try:
         state = source.lock_factory(db)
