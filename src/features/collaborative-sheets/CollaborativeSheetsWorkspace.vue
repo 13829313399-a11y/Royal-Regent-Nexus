@@ -22,12 +22,14 @@ const editorKind = ref<'auto' | 'text' | 'number' | 'boolean'>('auto'), editorTo
 const changes = ref<FillChange[]>([]), conflict = ref(false), conflictReview = ref<string[]>([])
 const grants = ref<FillGrant[]>([]), grantsDirty = ref(false), showGrants = ref(false)
 const grantType = ref<'user' | 'department'>('department'), grantPrincipal = ref(''), grantRange = ref(''), grantSheet = ref(0)
+const grantDepartments = ref<string[]>([]), departmentPicker = ref<HTMLDetailsElement>()
+const selectedPrincipals = computed(() => grantType.value === 'department' ? [...new Set(grantDepartments.value)] : grantPrincipal.value ? [grantPrincipal.value] : [])
 let alive = true, loadSequence = 0, poll: ReturnType<typeof setInterval> | undefined
 let participantGeneration = 0, refreshingParticipants = false
 const participants = ref<FillParticipant[]>([]), rosterError = ref(''), remoteRevision = ref(0)
 const participantLabels = { not_started: '未填写', in_progress: '已保存 · 未确认完成', completed: '已完成', needs_confirmation: '表格已更新 · 待重新确认' }
 const completedCount = computed(() => participants.value.filter(p => p.status === 'completed').length)
-const selectedPeople = computed(() => recipients.value.users.filter(u => grantType.value === 'department' ? u.department === grantPrincipal.value : u.id === grantPrincipal.value))
+const selectedPeople = computed(() => recipients.value.users.filter(u => grantType.value === 'department' ? selectedPrincipals.value.includes(u.department) : u.id === grantPrincipal.value))
 const sheet = computed(() => task.value?.workbook.sheets.find(s => s.index === activeSheet.value))
 const dirty = computed(() => changes.value.length > 0 || editorTouched.value || grantsDirty.value)
 const visibleTasks = computed(() => tasks.value.filter(t => filter.value === 'all' || (filter.value === 'mine' ? t.is_owner : !t.is_owner)))
@@ -231,15 +233,23 @@ async function reload(keepChanges = false) {
   } catch (e) { if (alive) error.value = getApiErrorMessage(e) }
   finally { if (alive) busy.value = false }
 }
+function resetGrantSelection() {
+  grantPrincipal.value = ''; grantDepartments.value = []
+  if (departmentPicker.value) departmentPicker.value.open = false
+}
 function addGrant() {
   const bounds = rangeBounds(grantRange.value.trim())
   const target = task.value?.workbook.sheets.find(s => s.index === grantSheet.value)
-  if (!grantPrincipal.value || !bounds || !target || bounds[2] >= target.rows || bounds[3] >= target.columns) {
+  if (!selectedPrincipals.value.length || selectedPrincipals.value.some(id => !principalOptions.value.some(p => p.id === id)) || !bounds || !target || bounds[2] >= target.rows || bounds[3] >= target.columns) {
     error.value = '请选择填写对象，并输入原表内有效的范围，例如 C3:N30。'; return
   }
-  const grant: FillGrant = { principal_type: grantType.value, principal_id: grantPrincipal.value, sheet: grantSheet.value, range: grantRange.value.trim().toUpperCase() }
-  if (!grants.value.some(g => JSON.stringify(g) === JSON.stringify(grant))) grants.value.push(grant)
+  const additions: FillGrant[] = selectedPrincipals.value.map(id => ({ principal_type: grantType.value, principal_id: id, sheet: grantSheet.value, range: grantRange.value.trim().toUpperCase() }))
+    .filter(grant => !grants.value.some(g => g.principal_type === grant.principal_type && g.principal_id === grant.principal_id && g.sheet === grant.sheet && g.range === grant.range))
+  if (grants.value.length + additions.length > 200) { error.value = '分配设置最多 200 条，请减少范围后再添加。本次选择尚未添加。'; return }
+  if (!additions.length) { error.value = '所选对象的填写范围已添加，无需重复添加。'; return }
+  grants.value.push(...additions)
   grantsDirty.value = true; error.value = ''; grantRange.value = ''
+  if (departmentPicker.value) departmentPicker.value.open = false
 }
 async function saveGrants() {
   if (!task.value || busy.value) return
@@ -346,12 +356,22 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
           <p>参与人员可查看整张表，只能填写分配的区域。请避开表头；公式始终只读。</p>
           <div class="cs-grant-form">
             <label>工作表<select v-model.number="grantSheet" :disabled="busy"><option v-for="s in task.workbook.sheets" :key="s.index" :value="s.index">{{ s.name }}</option></select></label>
-            <label>分配方式<select v-model="grantType" :disabled="busy" @change="grantPrincipal = ''"><option value="department">指定部门</option><option value="user">指定账号</option></select></label>
-            <label>填写对象<select v-model="grantPrincipal" :disabled="busy"><option value="">请选择</option><option v-for="p in principalOptions" :key="p.id" :value="p.id">{{ p.label }}</option></select></label>
+            <label>分配方式<select v-model="grantType" :disabled="busy" @change="resetGrantSelection"><option value="department">指定部门</option><option value="user">指定账号</option></select></label>
+            <div v-if="grantType === 'department'" class="cs-department-field">
+              <span>填写部门（可多选）</span>
+              <details ref="departmentPicker" class="cs-department-picker">
+                <summary><span>{{ grantDepartments.length ? grantDepartments.map(departmentName).join('、') : '请选择部门' }}</span><small v-if="grantDepartments.length">{{ grantDepartments.length }} 个</small></summary>
+                <fieldset :disabled="busy" class="cs-department-options" aria-label="填写部门（可多选）">
+                  <label v-for="p in principalOptions" :key="p.id"><input v-model="grantDepartments" type="checkbox" :value="p.id" /><span>{{ p.label }}</span></label>
+                  <p v-if="!principalOptions.length" class="cs-empty">当前厂区暂无可选部门。</p>
+                </fieldset>
+              </details>
+            </div>
+            <label v-else>填写对象<select v-model="grantPrincipal" :disabled="busy"><option value="">请选择</option><option v-for="p in principalOptions" :key="p.id" :value="p.id">{{ p.label }}</option></select></label>
             <label>填写范围<input v-model="grantRange" :disabled="busy" placeholder="例如 C3:N30" aria-label="填写范围" /></label>
             <Button variant="outline" :disabled="busy" @click="addGrant"><Plus :size="14" />添加</Button>
           </div>
-          <div v-if="grantPrincipal" class="cs-member-preview" aria-label="所选填写对象的账号">
+          <div v-if="selectedPrincipals.length" class="cs-member-preview" aria-label="所选填写对象的账号">
             <p>当前厂区匹配账号（{{ selectedPeople.length }} 人）</p>
             <span v-for="person in selectedPeople" :key="person.id">{{ person.display_name }}</span>
             <p v-if="!selectedPeople.length">当前没有有效账号。</p>
