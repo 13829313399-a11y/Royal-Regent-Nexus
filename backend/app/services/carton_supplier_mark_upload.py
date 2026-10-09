@@ -54,12 +54,13 @@ def _target(recognition, orders, selected_order):
 
 
 def _visible_duplicate(db, user, factory, existing, order_id):
-    if existing and not existing.is_archived:
-        row = next((row for row in portal.supplier_mark_assets(db, user, factory)
-            if row["id"] == existing.id and any(order["id"] == order_id for order in row["orders"])), None)
-        if row:
-            return dict(status="duplicate", message="已存在，保留原资料和关联", asset=row)
-    # Do not reveal, restore, rename or rebind an inaccessible/archived original.
+    # Warehouse uploads may retain several independent copies of identical bytes.
+    # Reuse only a copy already visible for this supplier's exact selected order.
+    identifiers = {asset.id for asset in existing if not asset.is_archived}
+    row = next((row for row in portal.supplier_mark_assets(db, user, factory)
+        if row["id"] in identifiers and any(order["id"] == order_id for order in row["orders"])), None)
+    if row:
+        return dict(status="duplicate", message="已存在，保留原资料和关联", asset=row)
     raise HTTPException(409, "相同文件已有其他关联或已归档，请联系仓库核实")
 
 
@@ -83,8 +84,8 @@ def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id
             if not order["contract_no"]:
                 raise HTTPException(422, "采购订单缺少合同号，请联系仓库核实")
             sha = hashlib.sha256(content).hexdigest()
-            existing = db.scalar(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory,
-                CartonMarkAsset.sha256 == sha).with_for_update())
+            existing = list(db.scalars(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory,
+                CartonMarkAsset.sha256 == sha).with_for_update()))
             if existing:
                 outcome.update(_visible_duplicate(db, user, factory, existing, order["id"]))
             else:
@@ -100,8 +101,7 @@ def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id
                     created_by=user.id, created_by_name=user.display_name,
                     created_at=timestamp, updated_at=timestamp, revision=1, is_archived=False)
                 try:
-                    # Internal uploads do not take the supplier factory lock. A
-                    # concurrent hash collision must not roll back other files.
+                    # A malformed file must not roll back other files in this batch.
                     with db.begin_nested():
                         db.add(asset)
                         db.flush()
@@ -111,8 +111,8 @@ def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id
                     row = next(row for row in portal.supplier_mark_assets(db, user, factory) if row["id"] == asset.id)
                     outcome.update(status="created", message=recognition["warning"], asset=row)
                 except IntegrityError:
-                    existing = db.scalar(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory,
-                        CartonMarkAsset.sha256 == sha).with_for_update())
+                    existing = list(db.scalars(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory,
+                        CartonMarkAsset.sha256 == sha).with_for_update()))
                     outcome.update(_visible_duplicate(db, user, factory, existing, order["id"]))
         except HTTPException as exc:
             outcome.update(status="failed", message=str(exc.detail), asset=None)

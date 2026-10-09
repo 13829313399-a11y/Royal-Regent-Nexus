@@ -11,7 +11,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.services.document_tools.image_translation import append_preserved_pdf
 from app.services.document_tools.image_text_regions import native_regions
-from app.services.document_tools.image_terminology import translate_image_texts
+from app.services.document_tools.image_terminology import translate_image_texts, image_translation_options
 from app.services.document_tools.document_ir import ToolError
 
 
@@ -185,6 +185,36 @@ def test_online_provider_errors_are_not_silently_hidden():
     def translate(*args):raise ToolError('TRANSLATION_NETWORK','unavailable')
     with pytest.raises(ToolError,match='unavailable'):
         translate_image_texts(['unknown'],'en_to_zh',translate)
+
+
+def test_image_textile_terms_keep_wrappers_and_complete_ocr_letters():
+    def unexpected_model_call(*args):
+        raise AssertionError('known craft captions should use the image glossary')
+    assert translate_image_texts(
+        ['Materials &Swatches', 'Black felt', 'body fleece', '(Thread mix)',
+         'Satin &French', 'knot mix)', 'Debossed', 'cap fabric', 'Di gestives'],
+        'en_to_zh', unexpected_model_call,
+    ) == ['材料与色样', '黑色毛毡', '身体绒布', '(混合绣线)',
+          '缎面绣与法国结绣', '混合结粒绣)', '凹压纹', '帽子面料', '消化饼干']
+    calls = []
+    def model(texts, direction):
+        calls.append((texts, direction))
+        return ['模型译文'] * len(texts)
+    assert translate_image_texts(['Thread mx', 'Thread mix 123', '混合绣线'], 'en_to_zh', model) == ['模型译文'] * 3
+    assert translate_image_texts(['Thread mix'], 'zh_to_en', model) == ['模型译文']
+    assert calls == [(['Thread mx', 'Thread mix 123', '混合绣线'], 'en_to_zh'), (['Thread mix'], 'zh_to_en')]
+
+
+def test_online_image_context_preserves_user_terminology_and_offline_options():
+    options = {'translation_engine': 'online', 'translation_direction': 'en_to_zh'}
+    contextual = image_translation_options(options)
+    assert contextual is not options and options == {'translation_engine': 'online', 'translation_direction': 'en_to_zh'}
+    assert '刺绣' in contextual['glossary'] and 'thread mix=混合绣线' in contextual['glossary']
+    custom = {**options, 'glossary': 'Thread mix=客户混线'}
+    assert image_translation_options(custom)['glossary'].endswith(custom['glossary'])
+    assert 'thread mix=混合绣线' not in image_translation_options(custom)['glossary']
+    for untouched in ({}, {'translation_engine': 'offline'}, {**options, 'translation_direction': 'zh_to_en'}):
+        assert image_translation_options(untouched) == untouched
 
 
 def test_translation_wait_does_not_block_child_cancellation(tmp_path,monkeypatch):

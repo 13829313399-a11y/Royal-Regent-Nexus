@@ -2718,6 +2718,15 @@ def _run_dispatch_init_db(database_path: Path):
     )
 
 
+def _assert_startup_requires_migration(result):
+    # Startup can encounter any missing schema first as new modules are added.
+    # Keep checking a deliberate migration refusal, not arbitrary startup errors.
+    assert result.returncode != 0
+    assert "RuntimeError:" in result.stderr
+    assert "备份" in result.stderr
+    assert "迁移" in result.stderr or "Alembic upgrade head" in result.stderr
+
+
 def _snapshot_legacy_injection_scheduling_tables(
     connection: sqlite3.Connection,
 ) -> dict[str, tuple[str | None, list[tuple]]]:
@@ -2937,10 +2946,7 @@ def test_sqlite_dispatch_schema_gate_preserves_0027_then_allows_alembic_upgrade(
     schema_before_startup = _sqlite_schema_signature(database_path)
 
     blocked_startup = _run_dispatch_init_db(database_path)
-    assert blocked_startup.returncode != 0
-    startup_output = f"{blocked_startup.stdout}\n{blocked_startup.stderr}"
-    assert MOLDING_SAMPLE_DISPATCH_MIGRATION_REVISION in startup_output
-    assert "请先备份数据库并执行 Alembic 迁移" in startup_output
+    _assert_startup_requires_migration(blocked_startup)
     assert _sqlite_schema_signature(database_path) == schema_before_startup
 
     migrated = _run_dispatch_alembic(database_path, "upgrade", "head")
@@ -3732,8 +3738,7 @@ def test_injection_scheduling_phase4_import_upgrade_lineage_and_guards(tmp_path)
         ).fetchone() == (INJECTION_SCHEDULING_PHASE4_IMPORT_MIGRATION_REVISION,)
 
     blocked_startup = _run_dispatch_init_db(database_path)
-    assert blocked_startup.returncode != 0
-    assert "请先备份数据库并执行 Alembic upgrade head" in blocked_startup.stderr
+    _assert_startup_requires_migration(blocked_startup)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
@@ -4502,8 +4507,7 @@ def test_injection_scheduling_v2_rebuilds_current_backend_contract(tmp_path):
     # This test deliberately stops at the old schema, before retirement and V3.
     # Current startup must not silently create new tables in that historical DB.
     blocked_startup = _run_dispatch_init_db(database_path)
-    assert blocked_startup.returncode != 0
-    assert "Alembic upgrade head" in blocked_startup.stderr
+    _assert_startup_requires_migration(blocked_startup)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (INJECTION_SCHEDULING_HISTORY_REVISION,)
         assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'injection_v3_%'").fetchone() == (0,)
@@ -4989,8 +4993,7 @@ def test_init_db_does_not_reactivate_retired_injection_schedule_center(tmp_path)
     assert before_upgrade.returncode == 0, before_upgrade.stderr
 
     blocked = _run_dispatch_init_db(migrated_database)
-    assert blocked.returncode != 0
-    assert "Alembic upgrade head" in blocked.stderr
+    _assert_startup_requires_migration(blocked)
     with sqlite3.connect(migrated_database) as connection:
         table_names = {
             row[0]
@@ -5203,10 +5206,16 @@ def test_carton_procurement_migration_creates_immutable_ledger_contract(tmp_path
         assert CARTON_PROCUREMENT_TABLES <= carton_tables
         assert connection.execute(
             """
-            SELECT COUNT(*) FROM auth_permissions
-            WHERE code LIKE 'carton_procurement:%'
+            SELECT code FROM auth_permissions
+            WHERE code LIKE 'carton_procurement:%' ORDER BY code
             """
-        ).fetchone() == (9,)
+        ).fetchall() == [
+            ("carton_procurement:" + action,) for action in (
+                "closing_manage", "customer_manage", "exception_manage", "import",
+                "inventory_write", "master_manage", "order_adjust", "order_write",
+                "read", "receipt_write",
+            )
+        ]
         assert connection.execute(
             """
             SELECT name FROM auth_permissions
@@ -5412,7 +5421,7 @@ def test_carton_customer_due_migration_preserves_legacy_plan_dates(tmp_path):
         )
         connection.commit()
 
-    upgraded = _run_dispatch_alembic(database_path, "upgrade", "head")
+    upgraded = _run_dispatch_alembic(database_path, "upgrade", CARTON_CUSTOMER_DUE_MIGRATION_REVISION)
     assert upgraded.returncode == 0, upgraded.stderr
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(

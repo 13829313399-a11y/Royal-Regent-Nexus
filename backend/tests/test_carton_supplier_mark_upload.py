@@ -77,6 +77,27 @@ def test_explicit_order_fallback_rejects_wrong_contract_scope_and_hidden_duplica
         assert upload(client, [("print.pdf", _pdf_bytes())], **selected).status_code == 404
 
 
+def test_multiple_identical_warehouse_copies_reuse_only_an_authorized_active_copy(monkeypatch):
+    with make_client(monkeypatch) as client:
+        order = setup_portal(client)
+        from test_carton_mark_assets import upload as warehouse_upload
+        from test_carton_supplier_portal import supplier_login
+        login_as(client, "admin")
+        first, second = [row["asset"] for row in warehouse_upload(client, [
+            (order["contract_no"] + ".pdf", _pdf_bytes()),
+            (order["contract_no"] + ".pdf", _pdf_bytes()),
+        ])]
+        assert first["id"] != second["id"]
+        assert client.delete(f"/api/carton-mark/assets/{first['id']}", params={**SCOPE, "revision": first["revision"]}).status_code == 204
+        supplier_login(client)
+        selected = client.get(BASE + "/upload-orders", params=SCOPE).json()[0]
+        response = upload(client, [("print.pdf", _pdf_bytes())], order_id=order["id"], issue_id=selected["issue_id"])
+        assert response.status_code == 201, response.text
+        outcome = response.json()[0]
+        assert outcome["status"] == "duplicate" and outcome["asset"]["id"] == second["id"]
+        assert client.get(f"{BASE}/assets/{first['id']}/document", params=SCOPE).status_code == 404
+
+
 def test_permissions_limits_and_changes_during_recognition_cannot_write(monkeypatch):
     with make_client(monkeypatch) as client:
         setup_portal(client)

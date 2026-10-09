@@ -624,12 +624,15 @@ def ensure_carton_master_schema_ready() -> None:
         names = set(inspector.get_table_names())
         if "alembic_version" not in names:
             return
-        missing = [name for name in ("carton_master_records", "carton_master_sources", "carton_customer_assignments", "carton_mark_asset_order_bindings") if name not in names]
+        missing = [name for name in ("carton_master_records", "carton_master_sources", "carton_customer_assignments", "carton_customer_owners", "carton_mark_asset_order_bindings") if name not in names]
+        if "carton_mark_assets" in names and any(c.get("name") == "uq_carton_mark_asset_factory_sha"
+                for c in inspector.get_unique_constraints("carton_mark_assets")):
+            missing.append("箱唛独立副本约束迁移")
         for name, cols in (("carton_orders", ("master_config_id", "master_config_revision", "net_weight_kg", "gross_weight_kg")), ("carton_order_lines", ("net_weight_kg", "gross_weight_kg")), ("carton_locations", ("status", "revision")), ("carton_inventory_movements", ("workshop_id", "workshop_name"))):
             found = {c["name"] for c in inspector.get_columns(name)} if name in names else set()
             missing.extend(f"{name}.{c}" for c in cols if c not in found)
         if missing:
-            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0144 及纸品重量 20261008_0145 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
+            raise RuntimeError("基础资料需完成 20260908_0104、20261008_0144、纸品重量 20261008_0145 及客户认领/箱唛独立副本 20261008_0146 迁移；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
 def ensure_carton_supplier_settlement_schema_ready() -> None:
@@ -778,6 +781,7 @@ def ensure_carton_feedback_schema_ready() -> None:
 
 def init_db() -> None:
     from app.models import (
+        assistant,  # noqa: F401
         work_center,  # noqa: F401
         uv_operations,  # noqa: F401
         spray_ops,  # noqa: F401
@@ -872,7 +876,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
                             # An existing business store upgrades this new domain explicitly.
                             if (not name.startswith("fabric_") or "auth_users" not in existing_tables)
-                            and not name.startswith("uv_ops_")
+                            and not name.startswith(("uv_ops_", "nexus_assistant_"))
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.
                             and (name not in {"three_d_printing_telemetry_rollups", "three_d_printing_telemetry_rollup_state"}

@@ -1,0 +1,61 @@
+[
+  {
+    "id": "molding-sample.overview",
+    "module_id": "molding-sample",
+    "title": "啤办与生产任务",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "molding-sample",
+      "molding-sample-production-tasks"
+    ],
+    "factory_ids": [],
+    "anchor_id": "molding-sample.overview",
+    "field_keys": [],
+    "summary": "啤办申请、审核、承接生产、问题与完成记录按实际订单流程衔接。",
+    "content": "啤办与注塑排产是两个业务模块。新啤办单初始为待审核；看板包含待审核、待生产、生产中、已完成、已驳回、已撤回，“待经理审核”归入看板待审核。生产任务队列采用待生产、生产中和已完成状态；读取看板不等于执行审核或开工。\n申请厂区与承接生产厂区分别记录。华康 C/D 没有啤机部，必须选择华康 A/B 承接；A/B、华登和华兴按各自厂区能力处理。先核对申请资料和生产分配，不要把 C/D 当成本地生产任务队列。\n明细包含模号、模具在厂状态、机型、材料成分、颜色、数量、啤数和完成时间。模具状态 unknown/in_factory/out_of_factory 分别为待确认/在厂/不在厂。材料成分按原料与水口来源区分，配比须通过合计校验。计划材料、领料重量、实际重量和成本分别记录，不可互相代替。\n待经理审核、待生产、生产中、已完成属于锁定状态，修改和删除另按角色及订单范围校验。问题状态待处理/已解决独立于订单状态。助手仅解释入口和规则，不代审核、派工、报工或确认成本。",
+    "steps": [
+      {
+        "title": "核对申请与承接厂",
+        "description": "查看申请厂区、承接生产厂区和当前状态，C/D 先确认 A/B 承接。",
+        "anchor_id": "molding-sample.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "检查生产明细",
+        "description": "核对模具在厂状态、材料来源和配比、数量与啤数。",
+        "anchor_id": "molding-sample.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "跟踪处理结果",
+        "description": "按原页面权限处理审核、生产和问题，分别确认订单完成与问题解决。",
+        "anchor_id": "molding-sample.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/services/molding_sample.py",
+        "symbol": "MOLDING_FACTORY_CAPABILITIES",
+        "sha256": "efcbec6ebc5b7260971fb989a626d55a379db393f7bbec1ee4f89aebeef7611a"
+      },
+      {
+        "path": "backend/app/services/molding_sample.py",
+        "symbol": "BOARD_SOURCE_STATUSES",
+        "sha256": "efcbec6ebc5b7260971fb989a626d55a379db393f7bbec1ee4f89aebeef7611a"
+      },
+      {
+        "path": "backend/app/schemas/molding_sample.py",
+        "symbol": "validate_material_components",
+        "sha256": "b9eaaef6205fd5190848c088e335ba1685609f8a264389f6fe5452bfd77c7b74"
+      }
+    ],
+    "knowledge_version": "2026.10.08-v2",
+    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "status": "verified"
+  }
+]

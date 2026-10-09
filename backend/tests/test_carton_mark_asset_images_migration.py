@@ -7,10 +7,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, text, MetaData, Table
 
-from test_carton_mark_assets import seed_order
 from test_carton_mark_assets_migration import _run_alembic
 
 
@@ -28,10 +26,17 @@ def test_image_upgrade_preserves_originals_keys_and_safe_downgrade(tmp_path):
     url = f"sqlite:///{path.as_posix()}"
     result = _run_alembic(url, "upgrade", "20261006_0137")
     assert result.returncode == 0, result.stderr
-    model = importlib.import_module("app.models.carton_procurement")
     engine = create_engine(url)
-    with Session(engine) as db:
-        seed_order(db, model, "image-migration-order")
+    # Seed the historical schema, before later order-weight fields existed.
+    orders = Table("carton_orders", MetaData(), autoload_with=engine)
+    with engine.begin() as db:
+        db.execute(orders.insert().values(id="image-migration-order", factory_id="huaxing",
+            order_no="image-migration-order", customer_code="ZURU", customer_name="ZURU",
+            supplier_id="test-supplier", supplier_name_snapshot="测试供应商",
+            contract_no="4500222793", item_no="100369", quantity_basis="EXPLICIT",
+            product_order_quantity=None, order_date="2026-10-05", due_date="2026-10-10",
+            status="DRAFT", created_by="seed", created_by_name="seed",
+            updated_by="seed", updated_by_name="seed", created_at="2026-10-05", updated_at="2026-10-05"))
     engine.dispose()
     with sqlite3.connect(path) as db:
         db.execute("""INSERT INTO carton_mark_assets

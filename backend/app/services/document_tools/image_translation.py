@@ -22,7 +22,7 @@ from .document_ir import Block, Cancelled, DocumentIR, EngineResult, Issue, Page
 from .pdf_geometry import normalize_pdf, open_pdf, parse_page_groups
 from .storage import safe_name
 from .translation_engine import make_translator, validate_translation_options
-from .image_terminology import translate_image_texts
+from .image_terminology import translate_image_texts, image_translation_options
 from .image_text_regions import native_regions
 
 IMAGE_TYPES = {"png": "PNG", "jpg": "JPEG", "jpeg": "JPEG", "webp": "WEBP"}
@@ -158,7 +158,7 @@ def add_resize_issue(ir, page):
 def run_node(pages, options, work, progress, cancelled):
     """Check cancellation even during silent native inference; always reap the child."""
     stop = threading.Event()
-    translate = make_translator(options, lambda *args: None if stop.is_set() else progress(*args),
+    translate = make_translator(image_translation_options(options), lambda *args: None if stop.is_set() else progress(*args),
                                 lambda: stop.is_set() or cancelled())
     translation_cache = {}
     environment = {key: value for key, value in os.environ.items()

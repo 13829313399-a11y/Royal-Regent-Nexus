@@ -19,7 +19,7 @@ class CartonMarkAsset(Base):
     """Independent source files; storage does not constitute QC approval."""
     __tablename__ = "carton_mark_assets"
     __table_args__ = (
-        UniqueConstraint("factory_id", "sha256", name="uq_carton_mark_asset_factory_sha"),
+        Index("ix_carton_mark_asset_factory_sha", "factory_id", "sha256"),
         Index("uq_carton_mark_asset_id_factory", "id", "factory_id", unique=True),
         ForeignKeyConstraint(["bound_order_id", "factory_id"],
                              ["carton_orders.id", "carton_orders.factory_id"],

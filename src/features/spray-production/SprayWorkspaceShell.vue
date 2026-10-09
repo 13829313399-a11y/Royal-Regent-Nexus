@@ -46,7 +46,7 @@ async function switchFactory(event: Event) {
 </script>
 <template>
   <div class="spray-workspace spray-shell" :class="{ 'has-passport': w.passportId.value }">
-    <header class="spray-identity">
+    <header class="spray-identity" data-yl-help="spray-production.overview">
       <RouterLink class="spray-brand" :to="{ path: '/modules/production', query: { factory: w.factory.value } }" aria-label="返回生产部"><img src="/brand/huadeng_group_dynamic_logo_topbar.svg" alt="华登集团" /><span><strong>喷油生产管理</strong><small>ROYAL REGENT NEXUS</small></span></RouterLink>
       <div class="spray-identity__divider" />
       <label class="spray-factory"><span class="spray-status-dot" /><select :value="w.factory.value ?? ''" aria-label="执行工厂" @change="switchFactory"><option disabled value="">选择工厂</option><option v-for="factory in SPRAY_FACTORIES" :key="factory" :value="factory">{{ FACTORY_NAMES[factory] }} · 喷油部</option></select></label>

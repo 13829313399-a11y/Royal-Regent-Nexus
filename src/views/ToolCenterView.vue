@@ -884,6 +884,7 @@ onBeforeUnmount(() => {
   <div
     ref="root"
     class="app-page dt-workbench"
+    data-yl-help="document-tools.overview"
     :class="{ 'dt-narrow': narrow, 'dt-phone': phone, 'dt-focus': focused }"
   >
     <PageHeader

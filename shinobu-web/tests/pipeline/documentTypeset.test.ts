@@ -1,11 +1,88 @@
 import { describe, it, expect } from 'vitest';
 import { createCanvas } from 'canvas';
 import { resolve } from 'node:path';
-import { prepareRegions, renderDocument, splitRuledRegion, splitMixedWords, verifiedWordParts, documentWordCrops, documentOcrRetry, acceptDocumentOcrRetry, registerDocumentFont, type Region } from '../../server/documentTypeset';
+import { prepareRegions, renderDocument, splitRuledRegion, fragmentedCaptionGroups, verifiedCaptionMerge, splitMixedWords, verifiedWordParts, documentWordCrops, documentOcrRetry, acceptDocumentOcrRetry, registerDocumentFont, type Region } from '../../server/documentTypeset';
 
 registerDocumentFont(resolve('server/dist'));
 const region=(text:string,x:number,width:number):Region=>({id:text,sourceText:text,box:{x,y:40,width,height:30},prob:.99,method:'native'});
 describe('document-safe typesetting',()=>{
+  it('separates overlapping OCR row metrics only at an observed blank row',()=>{
+    const source=createCanvas(260,160),c=source.getContext('2d');c.fillStyle='#fbead7';c.fillRect(0,0,260,160);
+    c.fillStyle='black';c.font='24px Arial';c.fillText('Deep',30,58);c.fillText('Brown',30,88);
+    const first={...region('Deep',28,68),method:'ocr',box:{x:28,y:33,width:68,height:33}};
+    const second={...region('Brown',28,84),method:'ocr',box:{x:28,y:61,width:84,height:32}};
+    const regions=prepareRegions([first,second],'en_to_zh',source);
+    expect(regions.every(r=>!r.skipReason)).toBe(true);
+    regions[0].translatedText='深';regions[1].translatedText='棕色';
+    renderDocument(source,regions);expect(regions.every(r=>r.rendered)).toBe(true);
+    // Same-row numeric collisions still block replacement.
+    expect(prepareRegions([region('Deep',20,80),region('001',95,70)],'en_to_zh',source)[0].skipReason).toBe('overlap');
+  });
+  it('prefers a complete independently recognized caption over its cropped duplicate',()=>{
+    const partial={...region('Chocolate Digest',38,213),method:'ocr',prob:.98,box:{x:38,y:85,width:213,height:43}};
+    const complete={...region('Chocol ate Di gestives',47,276),method:'ocr',prob:.993,box:{x:47,y:95,width:276,height:20}};
+    const next={...region('Comfort in Every Chip',54,224),method:'ocr',box:{x:54,y:122,width:224,height:24}};
+    const regions=prepareRegions([partial,complete,next],'en_to_zh');
+    expect(regions).toHaveLength(2);expect(regions[0].sourceText).toBe(complete.sourceText);
+    expect(regions.every(r=>!r.skipReason)).toBe(true);
+  });
+  it('splits ordinary headers at a brown table rule without requiring digits',()=>{
+    const source=createCanvas(500,200),c=source.getContext('2d');c.fillStyle='#fbead7';c.fillRect(0,0,500,200);
+    c.fillStyle='#87634a';c.fillRect(210,25,2,175);c.fillStyle='black';c.font='24px Arial';
+    c.fillText('Style Name',20,82);c.fillText('Materials',230,82);
+    const split=splitRuledRegion(source,{...region('Style Name Materials',18,400),method:'ocr',box:{x:18,y:50,width:400,height:40}});
+    expect(split).toHaveLength(2);expect(split[0].box.x+split[0].box.width).toBeLessThan(212);
+    expect(split[1].box.x).toBeGreaterThan(210);
+  });
+  it('preserves a curved swatch crossing the padding of an ordinary black caption',()=>{
+    const source=createCanvas(320,180),c=source.getContext('2d');c.fillStyle='#fbead7';c.fillRect(0,0,320,180);
+    c.fillStyle='#382920';c.beginPath();c.ellipse(55,85,43,65,0,0,Math.PI*2);c.fill();
+    c.fillStyle='black';c.font='24px Arial';c.fillText('Black felt',104,90);
+    const r={...region('Black felt',91,131),method:'ocr',box:{x:91,y:65,width:131,height:30},translatedText:'黑色毛毡'};
+    const neighbors=[35,97].map((y,i)=>({...region(String(i),91,131),box:{x:91,y,width:131,height:30},skipReason:'protected'}));
+    const output=renderDocument(source,[r,...neighbors]);expect(r.rendered).toBe(true);
+    expect(output.getContext('2d').getImageData(0,0,100,180).data).toEqual(c.getImageData(0,0,100,180).data);
+  });
+  it('separates row metrics using their shared text column beside a swatch',()=>{
+    const source=createCanvas(300,180),c=source.getContext('2d');c.fillStyle='#fbead7';c.fillRect(0,0,300,180);
+    c.fillStyle='#382920';c.beginPath();c.ellipse(55,85,55,65,0,0,Math.PI*2);c.fill();
+    c.fillStyle='black';c.font='24px Arial';c.fillText('Deep',120,58);c.fillText('chocolate',100,88);
+    const first={...region('Deep',118,68),method:'ocr',box:{x:118,y:33,width:68,height:33}};
+    const second={...region('chocolate',98,110),method:'ocr',box:{x:98,y:61,width:110,height:32}};
+    expect(prepareRegions([first,second],'en_to_zh',source).every(r=>!r.skipReason)).toBe(true);
+  });
+  it('keeps the small colored edge of a swatch wholly outside the caption box',()=>{
+    const source=createCanvas(300,180),c=source.getContext('2d');c.fillStyle='#fbead7';c.fillRect(0,0,300,180);
+    c.fillStyle='#50291e';c.beginPath();c.ellipse(55,30,40,42,0,0,Math.PI*2);c.fill();
+    c.fillStyle='black';c.font='24px Arial';c.fillText('Black felt',104,90);
+    const r={...region('Black felt',102,120),method:'ocr',box:{x:102,y:65,width:120,height:30},translatedText:'黑色毛毡',fgColor:[0,0,0]};
+    const neighbor={...region('123',102,120),box:{x:102,y:35,width:120,height:30},skipReason:'protected'};
+    const output=renderDocument(source,[r,neighbor]);expect(r.rendered).toBe(true);
+    expect(output.getContext('2d').getImageData(0,0,100,180).data).toEqual(c.getImageData(0,0,100,180).data);
+  });
+  it('removes pale glyph halos and tall descenders rather than treating them as artwork',()=>{
+    const source=createCanvas(400,140),c=source.getContext('2d');c.fillStyle='#fbead7';c.fillRect(0,0,400,140);
+    c.font='48px Arial';c.strokeStyle='#fff3e5';c.lineWidth=5;c.strokeText('Embroidery',30,90);c.fillStyle='black';c.fillText('Embroidery',30,90);
+    const r={...region('Embroidery',28,280),method:'ocr',box:{x:28,y:60,width:280,height:28},translatedText:'刺绣'};
+    const result=renderDocument(source,[r]);expect(r.rendered).toBe(true);
+    const pixels=result.getContext('2d').getImageData(115,51,195,46).data;
+    // Allow imperceptible subpixel antialias values; no pale letter outlines.
+    expect(Array.from({length:pixels.length/4},(_,i)=>pixels[i*4+2]).every(v=>Math.abs(v-215)<=4)).toBe(true);
+  });
+  it('translates genuinely conflicting same-column rows as a bounded paragraph',()=>{
+    const source=createCanvas(300,180),c=source.getContext('2d');c.fillStyle='#fbead7';c.fillRect(0,0,300,180);
+    // JPEG caption backgrounds occupy adjacent color bins despite looking flat.
+    c.fillStyle='#fff4e4';c.fillRect(28,34,100,20);
+    c.fillStyle='#ffebdb';c.fillRect(28,54,100,20);
+    c.fillStyle='black';c.font='30px Arial';c.fillText('Deep',30,60);c.fillText('Brown',30,84);
+    const first={...region('Deep',28,90),method:'ocr',box:{x:28,y:34,width:90,height:32}};
+    const second={...region('Brown',28,100),method:'ocr',box:{x:28,y:61,width:100,height:30}};
+    const regions=prepareRegions([first,second],'en_to_zh',source);
+    expect(regions).toHaveLength(1);expect(regions[0].sourceText).toBe('Deep Brown');expect(regions[0].lineCount).toBe(2);
+    regions[0].translatedText='深棕色身体绒布';const result=renderDocument(source,regions);
+    expect(regions[0].rendered).toBe(true);expect(result.getContext('2d').getImageData(160,0,140,180).data).toEqual(c.getImageData(160,0,140,180).data);
+    expect(prepareRegions([first,{...second,sourceText:'Brown 123'}],'en_to_zh',source)).toHaveLength(2);
+  });
   it('uses complete known caption letters to recover OCR word breaks while retaining exact fractions',()=>{
     const source=createCanvas(400,120),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,400,120);
     c.font='24px Arial';c.fillStyle='#d21941';const text='Seam Allowance 3/16';c.fillText(text,20,64);
@@ -16,6 +93,20 @@ describe('document-safe typesetting',()=>{
     readings.set(candidates[2].id,{...candidates[2],sourceText:'31/6',prob:.999});
     expect(verifiedWordParts(source,parent,candidates,readings)).toBeUndefined();
     expect(splitMixedWords(source,{...parent,sourceText:'SKU123'})).toHaveLength(1);
+  });
+  it('re-recognizes clipped title fragments only when all letters and values agree',()=>{
+    const first={...region('Crum',376,103),method:'ocr',box:{x:376,y:10,width:103,height:48}};
+    const rest={...region('b-kin UK Collection - Batch 1',474,557),method:'ocr',box:{x:474,y:0,width:557,height:79}};
+    const groups=fragmentedCaptionGroups([first,rest]);expect(groups).toHaveLength(1);
+    const found={...groups[0].candidate,sourceText:'Crumb-kin UK Collection - Batch 1',prob:.99};
+    expect(verifiedCaptionMerge(groups[0].parents,found)).toBe(true);
+    for(const sourceText of ['Crumb-kin UK Collection - Batch 2','Crumb-kin UK Edition - Batch 1','Crumb-kin UK Collection - Batch 01'])
+      expect(verifiedCaptionMerge(groups[0].parents,{...found,sourceText})).toBe(false);
+    expect(verifiedCaptionMerge(groups[0].parents,{...found,prob:.94})).toBe(true);
+    expect(verifiedCaptionMerge(groups[0].parents,{...found,prob:.89})).toBe(false);
+    expect(verifiedCaptionMerge([{...first,prob:.8},rest],found)).toBe(false);
+    expect(fragmentedCaptionGroups([first,{...rest,method:'native'}])).toHaveLength(0);
+    expect(fragmentedCaptionGroups([first,{...rest,box:{...rest.box,x:500}}])).toHaveLength(0);
   });
   it('isolates inline material codes without quantities and keeps their pixels fixed',()=>{
     const source=createCanvas(300,120),c=source.getContext('2d');c.fillStyle='white';c.fillRect(0,0,300,120);

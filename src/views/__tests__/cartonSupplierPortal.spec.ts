@@ -67,6 +67,25 @@ const guideOptions = { global: { stubs: { ...options.global.stubs,
 beforeEach(() => { routeState.query.shipment = undefined; vi.resetAllMocks(); can.mockReturnValue(true); api.memberships.mockResolvedValue([{ factory_id: 'huaxing', supplier_name: '河源东康' }]); api.workspace.mockResolvedValue(fixture()); api.members.mockResolvedValue([]); api.ship.mockResolvedValue({ id: 'NEW' }); api.previewDeliveryImport.mockResolvedValue({ filename: '送货明细表.xlsx', sha256: 'abc', row_count: 1, groups: [{ factory_id: 'huaxing', destination: '华兴', delivery_note_no: 'DN-NEW', delivery_date: '2026-09-24', ready: true, issues: [], rows: [{ source_sheet: '送货明细', source_row: 2, contract_no: 'SC-A', item_no: 'ITEM-A', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', delivered_quantity: 4, order_no: 'ORDER-A', child_no: 'ORDER-A/01', order_line_id: 'LINE-0', issue_id: 'ISSUE-A', status: 'READY', reason: '已匹配' }] }] }); api.confirmDeliveryImport.mockResolvedValue({ shipments: [{ id: 'NEW' }] }); api.acceptBatch.mockResolvedValue({ order_ids: [] }); api.documents.mockResolvedValue([]); api.activityPage.mockResolvedValue({ items: [{ id: 'ACT1', factory_id: 'huaxing', action: '送货单已登记', created_at: '2026-09-25', reference_no: 'DN-1', actor_name: '供应商' }], total: 1, limit: 50, offset: 0 }); api.activity.mockResolvedValue([]); api.exportDocuments.mockResolvedValue(undefined); api.exportOrderImport.mockResolvedValue(undefined); api.receiptOptions.mockResolvedValue([]); api.linkReceipt.mockResolvedValue({ id: 'SHIP-A' }); api.receive.mockResolvedValue({ id: 'SHIP-A' }); api.linkSampleReceipt.mockResolvedValue({ receipt_line_id: 'RL-SAMPLE', order_line_id: 'LINE-0', order_no: 'ORDER-A', quantity: '4' }); api.markUploadOrders.mockResolvedValue([]); api.uploadMarkAssets.mockResolvedValue([]); api.markAssets.mockResolvedValue([]); api.markChecks.mockResolvedValue([]); api.previewMarkCheckUrl.mockReturnValue("/api/check.pdf"); api.previewMarkAssetUrl.mockReturnValue('/api/preview.pdf'); api.markTemplates.mockResolvedValue([]); api.previewMarkPdfUrl.mockReturnValue('/api/preview.pdf') })
 
 describe('late supplier documents use existing warehouse receipts', () => {
+  it('allows viewing other customer shipments without receiving, linking or reversing them', async () => {
+    const work = fixture()
+    const sent = work.shipments[0]!
+    sent.can_operate = false
+    work.shipments.push({ ...sent, id: 'SHIP-POSTED', delivery_note_no: 'DN-POSTED', status: 'RECEIVED', receipt_id: 'RECEIPT-OTHER', receipt_status: 'POSTED' })
+    api.workspace.mockResolvedValue(work)
+    const wrapper = mount(CartonSupplierReceiving, { ...options, props: { factoryId: 'huaxing', responsibilityScope: 'ALL' } })
+    await flushPromises()
+    expect(api.workspace).toHaveBeenCalledWith('huaxing', true, 'ALL')
+    expect(wrapper.text()).toContain('DN-A')
+    expect(wrapper.text()).not.toContain('核实实际收到')
+    expect(wrapper.text()).not.toContain('关联已入库记录')
+    await wrapper.findAll('button').find(button => button.text() === '已核实记录')!.trigger('click')
+    expect(wrapper.text()).toContain('DN-POSTED')
+    expect(wrapper.find('[aria-label="冲销送货单 DN-POSTED 的收料"]').exists()).toBe(false)
+    expect(api.receive).not.toHaveBeenCalled()
+    expect(api.linkReceipt).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   const originalReceipt = { id: 'RECEIPT-1', revision: 3, status: 'POSTED', receipt_no: 'RCPT-1', delivery_note_no: 'MANUAL-1',
     delivery_date: '2026-09-20', acceptance_date: '2026-09-21', lines: [{ order_line_id: 'LINE-0', contract_no: 'SC-A', item_no: 'ITEM-A',
       packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', received_quantity: '10', damaged_quantity: '0', rejected_quantity: '0',
@@ -265,7 +284,7 @@ describe('supplier carton mark templates', () => {
     api.markAssets.mockResolvedValue([{ id: 'mark-1', file_name: 'print.pdf', kind: 'pdf', size_bytes: 400, contract_number: 'SC-A', created_at: '2026-09-21', orders: [{ id: 'ORDER-A', customer_name: 'Dickie', customer_po: 'PO-A', contract_no: 'SC-A', item_no: 'ITEM-A' }] }]); api.downloadMarkAsset.mockRejectedValueOnce(new Error('下载失败，请重试'))
     const wrapper = mount(CartonSupplierMarkTemplatesView, options); await flushPromises()
     expect(api.markAssets).toHaveBeenCalledWith('huaxing', expect.any(AbortSignal))
-    expect(wrapper.text()).toContain('Dickie · ITEM-A')
+    expect(wrapper.text()).toContain('Dickie · SC-A · ITEM-A')
     expect(wrapper.text()).toContain('箱唛资料库')
     expect(wrapper.get('a[aria-label="预览 print.pdf"]').attributes('href')).toBe('/api/preview.pdf')
     await wrapper.get('button[aria-label="下载 print.pdf"]').trigger('click'); await flushPromises()

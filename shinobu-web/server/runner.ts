@@ -7,7 +7,7 @@ import { type PipelinePlatform, type PipelineConfig } from '@shinobu/image-pipel
 import { createNodeModelRuntime } from '@shinobu/model-runtime/node';
 import { runPipeline } from '../packages/image-pipeline/src/pipeline/orchestrator';
 import { disposePipelineArtifacts } from '../packages/image-pipeline/src/pipeline/resources';
-import { prepareRegions, renderDocument, splitRuledRegion, splitMixedWords, verifiedWordParts, documentWordCrops, documentOcrRetry, acceptDocumentOcrRetry, preserveReason, overlap, registerDocumentFont, type Region } from './documentTypeset';
+import { prepareRegions, renderDocument, splitRuledRegion, fragmentedCaptionGroups, verifiedCaptionMerge, splitMixedWords, verifiedWordParts, documentWordCrops, documentOcrRetry, acceptDocumentOcrRetry, preserveReason, overlap, registerDocumentFont, type Region } from './documentTypeset';
 import { runOcr } from '../packages/image-pipeline/src/pipeline/ocr';
 import { detectSmallTextRegions } from '../packages/image-pipeline/src/pipeline/detect/smallTextDetect';
 import type { TextRegion } from '../packages/image-pipeline/src/types';
@@ -118,6 +118,15 @@ async function main() {
           }
         }
         retry.canvas.width=retry.canvas.height=1;
+        const fragments=fragmentedCaptionGroups(recognized);
+        if(fragments.length) {
+          const corrected=await runOcr(decoded as unknown as PipelineImage,fragments.map(g=>g.candidate) as TextRegion[],'paddleocr_v6_medium',platform,{},runtime);
+          const byId=new Map(corrected.regions.map(r=>[r.id,r]));
+          for(const group of fragments) {
+            const found=byId.get(group.candidate.id);
+            if(verifiedCaptionMerge(group.parents,found))recognized=recognized.filter(r=>!group.parents.includes(r)).concat({...found!,box:{...group.candidate.box}});
+          }
+        }
         const groups=recognized.map(parent=>({parent,parts:splitMixedWords(original,parent)})).filter(group=>group.parts.length>1);
         if(groups.length) {
           const wordCrops=groups.flatMap(g=>documentWordCrops(original,g.parts,recognized.filter(r=>r!==g.parent)));
@@ -146,7 +155,7 @@ async function main() {
           }
         }
       }
-      const regions=prepareRegions(recognized,init.direction);
+      const regions=prepareRegions(recognized,init.direction,original);
       const targets=regions.filter(region=>!region.skipReason);
       if(targets.length) {
         await send({event:'translate',texts:targets.map(region=>region.sourceText)});
