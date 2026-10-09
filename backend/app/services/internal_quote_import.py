@@ -489,6 +489,25 @@ def _parse_mold(
             break
         if re.search(r"^(合计|小计|总计|说明|备注|客户确认|签名)", joined):
             continue
+        # Merged footer clauses occupy the description column just like a
+        # part name. They must not inherit the last mold number. Keep actual
+        # detail rows (including incomplete/zero-price molds) when they carry
+        # any material, dimension, price or production input.
+        footer_label = re.sub(r"^(?:[0-9一二三四五六七八九十]+[.．、:：)])", "", normalized(joined))
+        has_detail_input = any(text(value_at(row, columns[key])) for key in (
+            "material", "material_type", "weight", "cavity", "sets", "price",
+            "machine", "target", "mold_base_type", "mold_base_material",
+            "structure", "process", "cycle", "mold_size", "mold_specification",
+        ))
+        if not has_detail_input and re.match(
+            r"^(?:此报价(?:含|不含|未含)税|此報價(?:含|不含|未含)稅|"
+            r"PAYMENT(?=[(:：]|$)|VALIDITY(?=[(:：]|$)|付款(?:方式|条款|條款)?(?=[(:：]|$)|"
+            r"有效期|客[户戶](?:确认|確認)|签名|簽名)",
+            footer_label,
+        ):
+            last_mold_no = ""
+            warnings.append(f"第 {source_row} 行为报价条款或签名栏，未作为模具导入")
+            continue
         raw_mold_no = text(value_at(row, columns["mold_no"]))
         name = text(value_at(row, columns["name"]))
         chinese_name = text(value_at(row, columns["chinese_name"]))
