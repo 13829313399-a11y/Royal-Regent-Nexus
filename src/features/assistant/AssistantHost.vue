@@ -6,7 +6,7 @@ import { useAppStore } from '@/stores/app'
 import { useAssistantStore } from '@/stores/assistant'
 import { eligible, identityKey, pageContext } from './context'
 import AssistantCore from './AssistantCore.vue'
-import { stateLabels, type PanelMode } from './types'
+import { activeStates, stateLabels, type PanelMode, type RunState } from './types'
 import { defaultPanelHeight, type PanelPosition } from './layout'
 import './assistant.css'
 const Panel = defineAsyncComponent(() => import('./AssistantPanel.vue'))
@@ -19,6 +19,20 @@ const pageHidden = ref(document.hidden)
 const allowed = computed(() => eligible(auth.currentUser, route.name))
 const page = computed(() => pageContext(route.name, app.activeFactoryId, route.query.factory))
 const shown = computed(() => allowed.value && assistant.capabilities?.enabled)
+const unseenResults = ref<Record<string, RunState>>({})
+const pendingResult = computed(() => Object.values(unseenResults.value).at(-1))
+const edgeStatus = computed(() => assistant.anyBusy ? '生成中' : pendingResult.value === 'completed' ? '已完成' : pendingResult.value === 'cancelled' ? '已停止' : pendingResult.value ? '需查看' : '')
+const edgeDescription = computed(() => assistant.anyBusy ? '曜灵正在后台生成，收起不影响回答' : pendingResult.value ? `${stateLabels[pendingResult.value]}，展开查看结果` : '')
+function acknowledgeResult() { if (mode.value !== 'edge' && !pageHidden.value) delete unseenResults.value[assistant.selectedId] }
+watch(() => Object.values(assistant.runs).map(run => ({ sid: run.sessionId, state: run.state })), (current, previous) => {
+  for (const run of current) {
+    if (activeStates.includes(run.state)) delete unseenResults.value[run.sid]
+    else if (previous?.some(old => old.sid === run.sid && activeStates.includes(old.state))) unseenResults.value[run.sid] = run.state
+  }
+  for (const sid of Object.keys(unseenResults.value)) if (!assistant.runs[sid]) delete unseenResults.value[sid]
+  acknowledgeResult()
+})
+watch([mode, pageHidden, () => assistant.selectedId], acknowledgeResult)
 let lastCheck = 0, observer: MutationObserver | undefined
 let dragging: { x: number; y: number; moved: boolean } | null = null
 let suppressClick = false
@@ -66,11 +80,20 @@ async function check() {
     Object.values(assistant.runs).filter(r => ['connecting','answering','thinking','tool_running'].includes(r.state)).forEach(r => { void assistant.stop(r.sessionId) })
   }
 }
-watch(() => identityKey(auth.currentUser), key => { clearHoverTimers(); overLauncher = false; overPanel = false; panelFocused = false; assistant.bindIdentity(key); mode.value = 'edge'; opened.value = false; lastCheck = 0; if (key && allowed.value) void check() }, { immediate: true })
+watch(() => identityKey(auth.currentUser), key => { clearHoverTimers(); overLauncher = false; overPanel = false; panelFocused = false; unseenResults.value = {}; assistant.bindIdentity(key); mode.value = 'edge'; opened.value = false; lastCheck = 0; if (key && allowed.value) void check() }, { immediate: true })
 watch(allowed, value => { if (value) void check(); else mode.value = 'edge' })
-watch(() => [page.value?.factory_id, auth.currentUser?.identity?.effective_context_key, auth.authorizationVersion], () => {
+let contextFactory = page.value?.factory_id ?? app.activeFactoryId
+// Separate watch sources compare primitive values. A getter returning a fresh
+// array also fires on ordinary auth refresh/navigation and used to cancel runs.
+watch([() => app.activeFactoryId, () => page.value?.factory_id, () => auth.currentUser?.identity?.effective_context_key, () => auth.authorizationVersion],
+  ([factory, pageFactory, key, version], [oldFactory, , oldKey, oldVersion]) => {
+  // A page without registered help does not invalidate a frozen request context.
+  const nextFactory = pageFactory ?? (factory !== oldFactory ? factory : contextFactory)
+  const changed = nextFactory !== contextFactory || factory !== oldFactory || key !== oldKey || version !== oldVersion
+  contextFactory = nextFactory
+  if (!changed) return
   for (const run of Object.values(assistant.runs)) {
-    if (run.payload.page_context && ['connecting','answering','thinking','tool_running'].includes(run.state)) void assistant.stop(run.sessionId)
+    if (run.payload.page_context && activeStates.includes(run.state)) void assistant.stop(run.sessionId)
   }
 })
 function visible() { pageHidden.value = document.hidden; if (!pageHidden.value && assistant.capabilities?.enabled) void check() }
@@ -107,8 +130,8 @@ onUnmounted(() => { clearHoverTimers(); document.removeEventListener('visibility
 <template>
   <Teleport to="body">
     <div v-if="shown" class="yl-assistant" :class="{ 'yl-hidden-page': pageHidden }" :data-side="side">
-      <button ref="launcher" v-show="mode !== 'focus'" class="yl-launcher" :class="{ 'yl-launcher-open': mode !== 'edge' }" :style="{ top: `${position*100}%` }" :disabled="businessModal" :aria-label="mode === 'edge' ? '打开曜灵 · Nexus AI' : '收起曜灵边缘面板'" aria-haspopup="dialog" :aria-expanded="mode !== 'edge'" title="移入展开，移开收起 · 点击或 Alt+J 也可打开" @click="toggle" @pointerenter="hoverEnter($event, 'launcher')" @pointerleave="hoverLeave($event, 'launcher')" @pointerdown="dragStart" @pointermove="dragMove" @pointerup="dragEnd" @pointercancel="dragEnd">
-        <AssistantCore :active="assistant.anyBusy" /><span>曜灵</span><i v-if="assistant.anyBusy" aria-label="正在回答" />
+      <button ref="launcher" v-show="mode !== 'focus'" class="yl-launcher" :class="{ 'yl-launcher-open': mode !== 'edge', 'yl-launcher-result': !!pendingResult && !assistant.anyBusy }" :style="{ top: `${position*100}%` }" :disabled="businessModal" :aria-label="mode === 'edge' ? `打开曜灵 · Nexus AI${edgeDescription ? ' · ' + edgeDescription : ''}` : '收起曜灵边缘面板'" aria-haspopup="dialog" :aria-expanded="mode !== 'edge'" :title="edgeDescription || '移入展开，移开收起 · 点击或 Alt+J 也可打开'" @click="toggle" @pointerenter="hoverEnter($event, 'launcher')" @pointerleave="hoverLeave($event, 'launcher')" @pointerdown="dragStart" @pointermove="dragMove" @pointerup="dragEnd" @pointercancel="dragEnd">
+        <AssistantCore :active="assistant.anyBusy" /><span>{{ edgeStatus || '曜灵' }}</span><i v-if="assistant.anyBusy || pendingResult" aria-hidden="true" />
       </button>
       <Panel v-if="opened" :mode="mode" :side="side" :width="width" :height="height" :position="panelPosition" :focus-on-open="focusOnOpen" :page="page" :suspended="businessModal" :page-title="String(route.meta.title || '当前页面')" @mode="changeMode" @side="side = $event" @width="width = $event" @height="height = $event" @position="panelPosition = $event" @layout-end="preferences" @pointer-enter="hoverEnter($event, 'panel')" @pointer-leave="hoverLeave($event, 'panel')" @focus-change="focusChanged" />
       <span class="yl-sr-only" role="status" aria-live="polite">{{ assistant.currentRun ? stateLabels[assistant.currentRun.state] : '' }}</span>

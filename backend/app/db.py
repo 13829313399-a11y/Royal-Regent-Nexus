@@ -55,6 +55,7 @@ SQLITE_LEGACY_COLUMNS = {
         ("avatar_version", "avatar_version VARCHAR(64) NOT NULL DEFAULT ''"),
     ],
     "molding_sample_items": [
+        ("quote_target_daily_qty", "quote_target_daily_qty INTEGER"),
         ("production_machine", "production_machine VARCHAR(128) NOT NULL DEFAULT ''"),
         ("mold_dimensions", "mold_dimensions VARCHAR(128) NOT NULL DEFAULT ''"),
         (

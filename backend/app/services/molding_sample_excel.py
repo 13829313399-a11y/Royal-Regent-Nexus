@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from xml.etree import ElementTree
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -62,6 +63,7 @@ ITEM_COLUMNS = [
     ("色粉编号", "pigment_no"),
     ("数量", "quantity"),
     ("啤数", "shoot_qty"),
+    ("报价目标（啤/日）", "quote_target_daily_qty"),
     ("毛重g", "gross_weight_g"),
     ("需料kg", "required_material_kg"),
     ("预计料费HKD", "expected_amount_hkd"),
@@ -91,6 +93,7 @@ ENGINEERING_IMPORT_COLUMNS = [
     ("色粉", "pigment_no"),
     ("啤/套", "quantity"),
     ("啤数", "shoot_qty"),
+    ("报价目标", "quote_target_daily_qty"),
     ("所需用料(kg)", "required_material_kg"),
     ("需办日期", "required_date"),
     ("工模尺寸", "mold_dimensions"),
@@ -98,7 +101,7 @@ ENGINEERING_IMPORT_COLUMNS = [
     ("备注", "notes"),
 ]
 
-ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 24, 14, 14, 14, 14, 11, 11, 16, 16, 18, 18, 30]
+ENGINEERING_IMPORT_COLUMN_WIDTHS = [14, 22, 24, 14, 14, 14, 14, 11, 11, 18, 16, 16, 18, 18, 30]
 
 BATCH_ORDER_COLUMNS = [
     ("单据ID", "id"),
@@ -195,6 +198,9 @@ ITEM_ALIASES.update(
         "啤数/模数": "shoot_qty",
         "啤办数（啤）": "shoot_qty",
         "啤办数(啤)": "shoot_qty",
+        "报价目标": "quote_target_daily_qty",
+        "报价目标(啤/日)": "quote_target_daily_qty",
+        "报价目标（每日啤数）": "quote_target_daily_qty",
         "毛重": "gross_weight_g",
         "需料": "required_material_kg",
         "需料KG": "required_material_kg",
@@ -280,6 +286,7 @@ ITEM_COLUMN_WIDTHS = [
     15,
     11,
     11,
+    18,
     12,
     12,
     14,
@@ -330,6 +337,7 @@ BATCH_COLUMN_WIDTHS = [
     15,
     11,
     11,
+    18,
     12,
     12,
     14,
@@ -556,6 +564,7 @@ def build_engineering_import_template(factory_id: str | None = None) -> bytes:
         ["模具明细", "用料用途", "使用下拉选择：正式生产 / 试料", "正式生产的所需用料须填写原料数据库中的启用名称；试料可自定义输入且不从原料数据库搜索；试料用量保留，金额不计入物料结余；留空按正式生产处理"],
         ["模具明细", "颜色 / PMS / 色粉", "分别填写颜色、PMS 和色粉", "PMS 会与颜色共同显示，色粉单独保存"],
         ["模具明细", "啤/套 / 啤数", "分别填写每套啤数说明和啤数", "啤数请填写数字"],
+        ["模具明细", "报价目标", "对应系统模具明细中的“报价目标（啤/日）”", "填写报给客户的每日啤数，例如 3000；只填正整数，未报价可留空；与本次试模啤数分开，不参与用料或费用计算"],
         ["模具明细", "所需用料(kg)", "直接填写本行模具所需总重量", "多原料时系统按各成分比例拆分重量"],
         ["模具明细", "需办日期", "建议使用 YYYY-MM-DD", "映射明细的需办 / 完成日期"],
         ["模具明细", "工模尺寸", "直接填写尺寸", "例如 207*789 或 650 × 450 × 380 mm"],
@@ -577,8 +586,8 @@ def build_engineering_import_template(factory_id: str | None = None) -> bytes:
             style_matrix=style_matrix,
             merge_ranges=[f"A1:{last_column}1", "B5:F5", f"A6:{last_column}6"],
             data_validations=[
-                (f"D{detail_start_row}:D{detail_end_row}", ["正式生产", "试料"], "请选择用料用途"),
-                (f"M{detail_start_row}:M{detail_end_row}", ["在厂", "不在厂", "待确认"], "请选择在厂状态"),
+                (f"{_engineering_column('material_usage_type')}{detail_start_row}:{_engineering_column('material_usage_type')}{detail_end_row}", ["正式生产", "试料"], "请选择用料用途"),
+                (f"{_engineering_column('mold_presence_status')}{detail_start_row}:{_engineering_column('mold_presence_status')}{detail_end_row}", ["在厂", "不在厂", "待确认"], "请选择在厂状态"),
             ],
         ),
         additional_sheets=[
@@ -594,6 +603,10 @@ def build_engineering_import_template(factory_id: str | None = None) -> bytes:
             )
         ],
     )
+
+
+def _engineering_column(field: str) -> str:
+    return _column_name(next(index for index, (_, key) in enumerate(ENGINEERING_IMPORT_COLUMNS, 1) if key == field))
 
 
 def _safe_text(value: object, fallback: str = "—") -> str:
@@ -894,6 +907,8 @@ def parse_order_excel(
                 item_data[field] = _normalize_mold_presence_status(value)
             elif field == "material_usage_type":
                 item_data[field] = _normalize_material_usage_type(value)
+            elif field == "quote_target_daily_qty":
+                item_data[field] = _parse_quote_target(value, excel_row_number)
             elif field in NUMERIC_ITEM_FIELDS:
                 item_data[field] = _parse_optional_float(value)
             elif field in {"sort_order", "shoot_qty"}:
@@ -1239,6 +1254,19 @@ def _normalize_date_text(value: object) -> str:
         return (datetime(1899, 12, 30) + timedelta(days=int(serial))).strftime("%Y-%m-%d")
 
     return text
+
+
+def _parse_quote_target(value: object, excel_row_number: int) -> int | None:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return None
+    try:
+        number = Decimal(text)
+        if number.is_finite() and 0 < number <= 2147483647 and number == number.to_integral_value():
+            return int(number)
+    except InvalidOperation:
+        pass
+    raise ValueError(f"Excel 第 {excel_row_number} 行报价目标须为 1–2147483647 的整数（啤/日），未报价可留空")
 
 
 def _parse_optional_float(value: object) -> float | None:

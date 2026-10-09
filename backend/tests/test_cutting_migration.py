@@ -20,7 +20,8 @@ def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path):
         db.execute("INSERT INTO cutting_preservation_probe VALUES ('00001', '真实格式保留')")
         old_tables = db.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version'").fetchall()
         old_rows = {name: db.execute('SELECT * FROM "' + name + '"').fetchall() for name, _ in old_tables}
-    upgrade('head'); upgrade('head')
+    # Verify the cutting release boundary independently of later migrations.
+    upgrade('20261009_0149'); upgrade('20261009_0149')
     with sqlite3.connect(database) as db:
         assert db.execute('SELECT version_num FROM alembic_version').fetchall() == [('20261009_0149',)]
         assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
