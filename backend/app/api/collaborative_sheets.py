@@ -10,7 +10,7 @@ from app.db import get_db
 from app.schemas.collaborative_sheets import CellsInput, GrantsInput, RevisionInput, StateInput
 from app.services.auth import AuthContext, get_current_user
 from app.services import collaborative_sheets as service
-from app.services.collaborative_sheet_files import MAX_FILE_BYTES
+from app.services.collaborative_sheet_files import FILE_SIZE_ERROR, MAX_FILE_BYTES
 
 router = APIRouter(prefix="/api/tools/collaborative-sheets", tags=["collaborative-sheets"], dependencies=[Depends(enabled)])
 User = Annotated[AuthContext, Depends(get_current_user)]
@@ -32,7 +32,7 @@ def upload(user: User, db: DB, file: UploadFile = File(...), factory_id: str = F
     service.scope(user, factory_id)
     data = file.file.read(MAX_FILE_BYTES + 1)
     if len(data) > MAX_FILE_BYTES:
-        raise HTTPException(413, "工作簿不能超过 25 MB")
+        raise HTTPException(413, FILE_SIZE_ERROR)
     return service.create(db, user, factory_id, title, file.filename or "workbook", data)
 
 

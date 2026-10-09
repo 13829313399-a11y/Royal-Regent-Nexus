@@ -1,5 +1,9 @@
 import { http } from '@/lib/http'
 
+export const COLLABORATIVE_SHEET_MAX_FILE_MB = 100
+export const COLLABORATIVE_SHEET_MAX_FILE_BYTES = COLLABORATIVE_SHEET_MAX_FILE_MB * 1024 * 1024
+export const COLLABORATIVE_SHEET_FILE_SIZE_ERROR = `工作簿不能超过 ${COLLABORATIVE_SHEET_MAX_FILE_MB} MB`
+
 export type SheetValue = string | number | boolean | null
 export interface FillCell {
   address: string
@@ -9,6 +13,7 @@ export interface FillCell {
   display: string
   formula: boolean
   style: Record<string, string | number>
+  number_format?: string
   image?: string
 }
 export interface FillSheet {
@@ -80,12 +85,13 @@ export const collaborativeSheetsApi = {
     return (await http.get<{ items: FillTask[] }>(base, config(factoryId))).data
   },
   async create(factoryId: string, title: string, file: File) {
+    if (file.size > COLLABORATIVE_SHEET_MAX_FILE_BYTES) throw new Error(COLLABORATIVE_SHEET_FILE_SIZE_ERROR)
     const body = new FormData()
     body.append('factory_id', factoryId)
     body.append('title', title)
     body.append('file', file)
     return (await http.post<FillTaskDetail>(base, body, {
-      ...config(factoryId), headers: { 'Content-Type': 'multipart/form-data' },
+      ...config(factoryId), timeout: 300_000, headers: { 'Content-Type': 'multipart/form-data' },
     })).data
   },
   async detail(factoryId: string, id: string) {

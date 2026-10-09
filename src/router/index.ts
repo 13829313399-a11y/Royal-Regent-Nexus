@@ -538,7 +538,7 @@ export const router = createRouter({
 })
 
 let routeLoadingStartedAt = 0
-let routeLoadingTimer: ReturnType<typeof window.setTimeout> | undefined
+let routeLoadingTimer: number | undefined
 let lastAuthorizationRefreshAt = 0
 let latestNavigationVersion = 0
 const browserBackExitGuard = installBrowserBackExitGuard(router)
