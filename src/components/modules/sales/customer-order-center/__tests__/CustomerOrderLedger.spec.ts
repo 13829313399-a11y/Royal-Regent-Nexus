@@ -1,10 +1,10 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CustomerOrderLedger from '../CustomerOrderLedger.vue'
 import CustomerOrderHistoryImport from '../CustomerOrderHistoryImport.vue'
 
 const api = vi.hoisted(() => ({
-  capabilities: vi.fn(), list: vi.fn(), detail: vi.fn(), amend: vi.fn(), cancel: vi.fn(), dispatch: vi.fn(), confirmShipment: vi.fn(), reverseShipment: vi.fn(),
+  capabilities: vi.fn(), list: vi.fn(), detail: vi.fn(), amend: vi.fn(), cancel: vi.fn(), restore: vi.fn(), dispatch: vi.fn(), confirmShipment: vi.fn(), reverseShipment: vi.fn(),
 }))
 const historyApi = vi.hoisted(() => ({ customers: vi.fn(), preview: vi.fn(), confirm: vi.fn(), correctOpening: vi.fn() }))
 vi.mock('@/api/customerOrderLedger', () => ({ customerOrderLedgerApi: api, customerOrderLedgerSourceUrl: vi.fn(() => '/api/customer-order-ledger/sources/source-1?factory_id=huaxing') }))
@@ -22,6 +22,109 @@ function mountLedger() {
 }
 
 describe('CustomerOrderLedger', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+  it('requires a second identity confirmation for business cancellation', async () => {
+    const wrapper = mountLedger()
+    await flushPromises()
+    await wrapper.get('button.ledger__link').trigger('click')
+    await flushPromises()
+    const cancel = wrapper.findAll('section').find((section) => section.find('h4').exists() && section.find('h4').text() === '取消订单')!
+    await cancel.get('textarea').setValue('用户误点取消')
+    await cancel.get('button').trigger('click')
+    expect(api.cancel).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alertdialog"]').text()).toContain('0009382481')
+    await wrapper.get('[role="alertdialog"]').findAll('button')[0]!.trigger('click')
+    expect(api.cancel).not.toHaveBeenCalled()
+    await cancel.get('button').trigger('click')
+    api.cancel.mockResolvedValue({ ...line, status: 'cancelled' })
+    await wrapper.get('[role="alertdialog"]').findAll('button')[1]!.trigger('click')
+    await flushPromises()
+    expect(api.cancel).toHaveBeenCalledWith('line-1', 'huaxing', { expected_revision: 4, reason: '用户误点取消' })
+    wrapper.unmount()
+  })
+
+  it('restores the original order only after confirming, prevents double clicks and refreshes schedule detail', async () => {
+    const cancelled = { ...line, status: 'cancelled' as const, remaining_quantity: '0' }
+    api.capabilities.mockResolvedValue({ read: true, write: true, dispatch: false })
+    api.detail.mockResolvedValue({ line: cancelled, versions: [], dispatches: [], shipments: [], sources: [] })
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴厂', detailOnly: true, focusLineId: line.id } })
+    await flushPromises()
+    const restore = wrapper.findAll('section').find((section) => section.find('h4').exists() && section.find('h4').text() === '恢复已取消订单')!
+    await restore.get('button').trigger('click')
+    expect(wrapper.text()).toContain('4 至 500')
+    await restore.get('textarea').setValue('用户确认误取消恢复')
+    await restore.get('button').trigger('click')
+    expect(api.restore).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alertdialog"]').text()).toContain('实际已走货：0020')
+    let finishRestore: (() => void) | undefined
+    api.restore.mockImplementationOnce(() => new Promise<void>((resolve) => { finishRestore = resolve }))
+    await wrapper.get('[role="alertdialog"]').findAll('button')[1]!.trigger('click')
+    await restore.get('button').trigger('click')
+    expect(api.restore).toHaveBeenCalledTimes(1)
+    expect(api.restore).toHaveBeenCalledWith('line-1', 'huaxing', {
+      expected_revision: 4, reason: '用户确认误取消恢复', confirmed: true, notify_recipients: false,
+    })
+    expect(wrapper.get<HTMLButtonElement>('[aria-label="关闭详情"]').element.disabled).toBe(true)
+    api.detail.mockResolvedValue({ line: { ...line, version: 3, revision: 5 }, versions: [], dispatches: [], shipments: [], sources: [] })
+    finishRestore?.()
+    await flushPromises()
+    expect(wrapper.emitted('changed')).toHaveLength(1)
+    expect(wrapper.text()).toContain('V3')
+    expect(wrapper.text()).not.toContain('恢复已取消订单')
+    wrapper.unmount()
+  })
+
+  it('does not expose restore to read-only users and requires dispatch permission for sent orders', async () => {
+    const cancelled = { ...line, status: 'cancelled' as const, dispatch_status: 'sent' as const }
+    api.capabilities.mockResolvedValue({ read: true, write: false, dispatch: false })
+    api.detail.mockResolvedValue({ line: cancelled, versions: [], dispatches: [], shipments: [], sources: [] })
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴厂', detailOnly: true, focusLineId: line.id } })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('恢复已取消订单')
+    api.capabilities.mockResolvedValue({ read: true, write: true, dispatch: false })
+    api.detail.mockResolvedValue({ line: { ...cancelled, id: 'line-2' }, versions: [], dispatches: [], shipments: [], sources: [] })
+    await wrapper.setProps({ focusLineId: 'line-2' })
+    await flushPromises()
+    const button = wrapper.findAll('button').find((button) => button.text() === '恢复该订单明细')!
+    expect(button.element.disabled).toBe(true)
+    expect(wrapper.text()).toContain('还需发送权限')
+    wrapper.unmount()
+  })
+
+  it('acknowledges original-recipient notification and leaves stale failures unmodified', async () => {
+    const cancelled = { ...line, status: 'cancelled' as const, dispatch_status: 'sent' as const }
+    api.capabilities.mockResolvedValue({ read: true, write: true, dispatch: true })
+    api.detail.mockResolvedValue({ line: cancelled, versions: [], dispatches: [], shipments: [], sources: [] })
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴厂', detailOnly: true, focusLineId: line.id } })
+    await flushPromises()
+    const restore = wrapper.findAll('section').find((section) => section.find('h4').exists() && section.find('h4').text() === '恢复已取消订单')!
+    await restore.get('textarea').setValue('用户确认误取消恢复')
+    await restore.get('button').trigger('click')
+    expect(wrapper.get('[role="alertdialog"]').text()).toContain('原接收部门')
+    api.restore.mockRejectedValueOnce(new Error('订单已被其他操作更新，请刷新后重试'))
+    await wrapper.get('[role="alertdialog"]').findAll('button')[1]!.trigger('click')
+    await flushPromises()
+    expect(api.restore).toHaveBeenCalledWith('line-1', 'huaxing', expect.objectContaining({ notify_recipients: true }))
+    expect(wrapper.emitted('changed')).toBeUndefined()
+    expect(wrapper.text()).toContain('请刷新后重试')
+    wrapper.unmount()
+  })
+
+  it('clears pending restore confirmation on factory change', async () => {
+    api.capabilities.mockResolvedValue({ read: true, write: true })
+    api.detail.mockResolvedValue({ line: { ...line, status: 'cancelled' }, versions: [], dispatches: [], shipments: [], sources: [] })
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴厂', detailOnly: true, focusLineId: line.id } })
+    await flushPromises()
+    const restore = wrapper.findAll('section').find((section) => section.find('h4').exists() && section.find('h4').text() === '恢复已取消订单')!
+    await restore.get('textarea').setValue('用户确认误取消恢复')
+    await restore.get('button').trigger('click')
+    await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A厂', focusLineId: '' })
+    await flushPromises()
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+    expect(api.restore).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('offers cutting only when explicitly enabled and sends it with other recipients', async () => {
     api.capabilities.mockResolvedValue({ read: true, dispatch: true, cutting_dispatch_enabled: true })
     const localLine = { ...line, factory_id: 'huakang-c' }

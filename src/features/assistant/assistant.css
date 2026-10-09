@@ -22,3 +22,4 @@
 
 @media(min-width:768px){.yl-assistant .yl-launcher{right:0;width:28px;min-height:82px;border-radius:14px 0 0 14px!important;gap:2px;box-shadow:0 3px 12px #053e3920}.yl-launcher .yl-core{width:24px;height:24px;margin:0}.yl-launcher>span{writing-mode:vertical-rl;font-size:11px;letter-spacing:2px;padding:0 0 4px}.yl-assistant[data-side=left] .yl-launcher{left:0;right:auto;border-radius:0 14px 14px 0!important}.yl-launcher i{right:3px;top:5px;width:5px;height:5px}}
 @media(max-width:767px){.yl-launcher.yl-launcher-open{display:none!important}}
+.yl-assistant .yl-launcher-result{border-color:#c39e52!important}.yl-launcher-result i{background:#f3d588}

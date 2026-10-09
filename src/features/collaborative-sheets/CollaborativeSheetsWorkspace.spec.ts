@@ -24,9 +24,14 @@ const example = (): FillTaskDetail => ({
 let wrapper: VueWrapper | undefined
 const button = (text: string) => wrapper!.findAll('button').find(b => b.text().includes(text))!
 async function render() {
-  wrapper = mount(Workspace, { props: { factoryId: 'huaxing' } })
+  wrapper = mount(Workspace, { props: { factoryId: 'huaxing' }, global: { stubs: {
+    UniverFillGrid: { template: '<div />', methods: { finishEditing: async () => true } },
+  } } })
   await flushPromises()
   await button('协同填写试验').trigger('click')
+  await flushPromises()
+  // These existing DOM-grid regressions exercise the available original-editor fallback.
+  await button('使用原版编辑器').trigger('click')
   await flushPromises()
 }
 beforeEach(() => {
@@ -50,6 +55,85 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.restoreAllMocks() })
 
 describe('协同填表', () => {
+  it('shows the upload limit, rejects an oversized selection, and allows a replacement', async () => {
+    const create = vi.spyOn(api, 'create').mockResolvedValue(example())
+    await render(); await button('上传表格').trigger('click')
+    expect(wrapper!.get('#cs-upload-size').text()).toContain('100 MB')
+    const input = wrapper!.get('input[type="file"]')
+    const oversized = new File(['sample'], 'oversize.xlsx')
+    Object.defineProperty(oversized, 'size', { value: 100 * 1024 * 1024 + 1 })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [oversized] })
+    await input.trigger('change')
+    expect(wrapper!.get('[role="alert"]').text()).toContain('工作簿不能超过 100 MB')
+    expect(button('上传并设置填写范围').attributes('disabled')).toBeDefined()
+    await wrapper!.get('.cs-upload-form').trigger('submit'); await flushPromises()
+    expect(create).not.toHaveBeenCalled()
+    const replacement = new File(['sample'], 'replacement.xlsx')
+    Object.defineProperty(replacement, 'size', { value: 100 * 1024 * 1024 })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [replacement] })
+    await input.trigger('change')
+    expect(wrapper!.find('[role="alert"]').exists()).toBe(false)
+    await wrapper!.get('.cs-upload-form').trigger('submit'); await flushPromises()
+    expect(create).toHaveBeenCalledWith('huaxing', 'replacement', replacement)
+  })
+
+  it('previews multiple departments and saves their shared range once per department', async () => {
+    vi.mocked(api.recipients).mockResolvedValue({ users: [
+      { id: 'u2', display_name: '业务填写人', department: 'sales-business' },
+      { id: 'u3', display_name: '工程填写人', department: 'engineering' },
+      { id: 'u4', display_name: '未选部门人员', department: 'qc' },
+    ], departments: [{ id: 'sales-business', name: '业务部' }, { id: 'engineering', name: '工程部' }, { id: 'qc', name: '品质部' }] })
+    await render(); await button('分配填写').trigger('click')
+    await wrapper!.get('input[value="sales-business"]').setValue(true)
+    await wrapper!.get('input[value="engineering"]').setValue(true)
+    expect(wrapper!.get('.cs-member-preview').text()).toContain('2 人')
+    expect(wrapper!.get('.cs-member-preview').text()).toContain('工程填写人')
+    expect(wrapper!.get('.cs-member-preview').text()).not.toContain('未选部门人员')
+    await wrapper!.get('input[aria-label="填写范围"]').setValue('B3')
+    await button('添加').trigger('click')
+    expect(wrapper!.findAll('.cs-grants li')).toHaveLength(3)
+    await wrapper!.get('input[aria-label="填写范围"]').setValue('B3')
+    await button('添加').trigger('click')
+    expect(wrapper!.findAll('.cs-grants li')).toHaveLength(3)
+    await button('保存分配设置').trigger('click'); await flushPromises()
+    expect(api.grants).toHaveBeenCalledWith('huaxing', expect.anything(), [example().grants[0],
+      { principal_type: 'department', principal_id: 'sales-business', sheet: 0, range: 'B3' },
+      { principal_type: 'department', principal_id: 'engineering', sheet: 0, range: 'B3' },
+    ])
+  })
+  it('clears department selection when switching assignment type and refuses an empty selection', async () => {
+    await render(); await button('分配填写').trigger('click')
+    const department = wrapper!.get('input[value="sales-business"]')
+    await department.setValue(true); await department.setValue(false)
+    expect(wrapper!.find('.cs-member-preview').exists()).toBe(false)
+    await wrapper!.get('input[aria-label="填写范围"]').setValue('B3')
+    await button('添加').trigger('click')
+    expect(wrapper!.findAll('.cs-grants li')).toHaveLength(1)
+    await department.setValue(true)
+    const mode = wrapper!.findAll('select').find(s => s.find('option[value="department"]').exists())!
+    await mode.setValue('user')
+    await wrapper!.findAll('select').find(s => s.find('option[value="u2"]').exists())!.setValue('u2')
+    await button('添加').trigger('click')
+    await mode.setValue('department')
+    expect(wrapper!.get('input[value="sales-business"]').element).toHaveProperty('checked', false)
+    expect(wrapper!.find('.cs-member-preview').exists()).toBe(false)
+    await button('保存分配设置').trigger('click'); await flushPromises()
+    expect(api.grants).toHaveBeenCalledWith('huaxing', expect.anything(), [example().grants[0], { principal_type: 'user', principal_id: 'u2', sheet: 0, range: 'B3' }])
+  })
+  it('rejects a multi-department batch atomically when it exceeds the assignment limit', async () => {
+    const detail = example()
+    detail.grants = Array.from({ length: 199 }, (_, i) => ({ principal_type: 'user', principal_id: `existing-${i}`, sheet: 0, range: 'B2' }))
+    vi.mocked(api.detail).mockResolvedValue(detail)
+    vi.mocked(api.recipients).mockResolvedValue({ users: [], departments: [{ id: 'sales-business', name: '业务部' }, { id: 'engineering', name: '工程部' }] })
+    await render(); await button('分配填写').trigger('click')
+    await wrapper!.get('input[value="sales-business"]').setValue(true)
+    await wrapper!.get('input[value="engineering"]').setValue(true)
+    await wrapper!.get('input[aria-label="填写范围"]').setValue('B3')
+    await button('添加').trigger('click')
+    expect(wrapper!.text()).toContain('本次选择尚未添加')
+    expect(wrapper!.findAll('.cs-grants li')).toHaveLength(199)
+    expect(button('保存分配设置').attributes('disabled')).toBeDefined()
+  })
   it('lists every assigned account with a text and color status, including people with no submissions', async () => {
     const detail = example()
     detail.participants = ['not_started', 'in_progress', 'completed', 'needs_confirmation'].map((status, i) => ({
@@ -234,7 +318,7 @@ describe('协同填表', () => {
   it('preserves pending assignments when cell edits are saved first', async () => {
     await render()
     await button('分配填写').trigger('click')
-    await wrapper!.findAll('select').find(s => s.find('option[value="sales-business"]').exists())!.setValue('sales-business')
+    await wrapper!.get('input[type="checkbox"][value="sales-business"]').setValue(true)
     await wrapper!.get('input[aria-label="填写范围"]').setValue('B3')
     await button('添加').trigger('click')
     await wrapper!.get('[data-cell=B2]').trigger('click')
@@ -250,7 +334,7 @@ describe('协同填表', () => {
     vi.mocked(api.save).mockRejectedValueOnce({ response: { status: 409 } })
     await render()
     await button('分配填写').trigger('click')
-    await wrapper!.findAll('select').find(s => s.find('option[value="sales-business"]').exists())!.setValue('sales-business')
+    await wrapper!.get('input[type="checkbox"][value="sales-business"]').setValue(true)
     await wrapper!.get('input[aria-label="填写范围"]').setValue('B3')
     await button('添加').trigger('click')
     await wrapper!.get('[data-cell=B2]').trigger('click')

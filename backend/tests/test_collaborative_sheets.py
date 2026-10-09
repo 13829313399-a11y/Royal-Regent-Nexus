@@ -4,7 +4,7 @@ from io import BytesIO
 import importlib.util
 from pathlib import Path
 import struct
-from zipfile import ZipFile
+from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
 from unittest.mock import Mock
 
 from alembic.migration import MigrationContext
@@ -136,6 +136,88 @@ def publish(api, kind="xlsx", principal="user", target="filler", region="A2:D6")
 def save(client, task, address="A2", value="0007", revision=None):
     return client.patch(endpoint(task, "/cells"), json={"expected_revision": revision or task["revision"],
                          "changes": [{"sheet": 0, "address": address, "value": value}]})
+
+
+def test_upload_accepts_image_heavy_workbook_above_old_limit(api):
+    # A valid tiny PNG with trailing bytes exercises file size without allocating
+    # a large decoded image. Store the ZIP member so the upload exceeds 25 MiB.
+    stream = BytesIO()
+    with ZipFile(BytesIO(xlsx())) as source, ZipFile(stream, "w") as target:
+        for member in source.infolist():
+            content = source.read(member.filename)
+            if member.filename == "xl/media/image1.png":
+                member.compress_type = ZIP_STORED
+                content += b"\0" * (26 * 1024 * 1024)
+            target.writestr(member, content)
+    original = stream.getvalue()
+    assert 25 * 1024 * 1024 < len(original) < files.MAX_FILE_BYTES
+    client, _, engine = api
+    response = client.post(BASE, data={"factory_id": "huaxing"}, files={"file": ("large.xlsx", original)})
+    assert response.status_code == 201, response.text
+    task = response.json()
+    assert len(task["workbook"]["sheets"]) == 2
+    assert task["workbook"]["sheets"][0]["images"]
+    with Session(engine) as db:
+        row = db.get(Task, task["id"])
+        assert row.byte_size == len(original)
+        assert service.source_bytes(row) == original
+
+
+def test_upload_over_100_mib_reads_only_limit_plus_one_and_stores_nothing(api, monkeypatch):
+    from starlette import formparsers
+    spool_factory = formparsers.SpooledTemporaryFile
+    reads = []
+    def tracked_spool(*args, **kwargs):
+        spool = spool_factory(*args, **kwargs)
+        original_read = spool.read
+        def read(size=-1):
+            reads.append(size)
+            return original_read(size)
+        spool.read = read
+        return spool
+    monkeypatch.setattr(formparsers, "SpooledTemporaryFile", tracked_spool)
+    inspect_workbook = Mock(side_effect=AssertionError("oversize input must not be parsed"))
+    monkeypatch.setattr(files, "inspect_workbook", inspect_workbook)
+    client, _, engine = api
+    assert files.MAX_FILE_BYTES == 100 * 1024 * 1024
+    response = client.post(BASE, data={"factory_id": "huaxing"},
+                           files={"file": ("oversize.xlsx", b"x" * (files.MAX_FILE_BYTES + 2))})
+    assert response.status_code == 413
+    assert response.json()["detail"] == "工作簿不能超过 100 MB"
+    assert reads == [files.MAX_FILE_BYTES + 1]
+    inspect_workbook.assert_not_called()
+    with Session(engine) as db:
+        assert not db.scalars(select(Task)).all()
+        assert not db.scalars(select(Event)).all()
+    assert not list(Path(settings.document_tools_storage_dir).rglob("original.*"))
+
+
+@pytest.mark.parametrize("kind", ["xls", "xlsx"])
+def test_engine_rejects_oversize_before_native_loader(monkeypatch, kind):
+    parser = Mock(side_effect=AssertionError("oversize input must not be parsed"))
+    monkeypatch.setattr(files, "inspect_" + kind, parser)
+    with pytest.raises(files.WorkbookError, match="工作簿不能超过 100 MB"):
+        files.inspect_workbook(b"x" * (files.MAX_FILE_BYTES + 1), kind)
+    parser.assert_not_called()
+
+
+@pytest.mark.parametrize("limit", ["expanded_bytes", "entries"])
+def test_larger_upload_limit_preserves_zip_expansion_guards(monkeypatch, limit):
+    stream = BytesIO()
+    with ZipFile(stream, "w", compression=ZIP_DEFLATED) as archive:
+        if limit == "expanded_bytes":
+            with archive.open("xl/media/padding.bin", "w") as member:
+                for _ in range(161):
+                    member.write(b"\0" * (1024 * 1024))
+        else:
+            for index in range(5001):
+                archive.writestr(f"entry-{index}", b"")
+    parser = Mock(side_effect=AssertionError("ZIP budget checked before native loader"))
+    monkeypatch.setattr(files.openpyxl, "load_workbook", parser)
+    assert len(stream.getvalue()) < files.MAX_FILE_BYTES
+    with pytest.raises(files.WorkbookError, match="解压"):
+        files.inspect_workbook(stream.getvalue(), "xlsx")
+    parser.assert_not_called()
 
 
 def test_draft_is_private_and_requires_explicit_valid_ranges(api):

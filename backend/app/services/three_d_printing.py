@@ -1053,7 +1053,22 @@ def update_production_record(
             _reverse_record(db, record, user.id, _actor_name(user), payload.reason)
             _consume_record(db, record, user.id, _actor_name(user), payload.reason, payload.allow_negative_stock)
     cost_fields = ("weight", "time", "qty", "price", "designFee", "material")
-    if previous_inputs["material"] != record.material_name or any(Decimal(str(previous_inputs[k])) != Decimal(str(record_inputs(record)[k])) for k in cost_fields if k != "material"):
+    current_inputs = record_inputs(record)
+    cost_sources = [previous_inputs]
+    stored_inputs = _load_json(record.calculated_cost_snapshot_json, {}).get("inputs")
+    if not historical and stored_inputs:
+        # Older telemetry backfills updated the record but left the initial zero
+        # quote frozen. An unchanged save must also reconcile that stale snapshot.
+        cost_sources.append(stored_inputs)
+    if any(
+        source.get("material") != current_inputs["material"]
+        or any(
+            source.get(key) is None
+            or Decimal(str(source[key])) != Decimal(str(current_inputs[key]))
+            for key in cost_fields if key != "material"
+        )
+        for source in cost_sources
+    ):
         freeze_cost(record, ensure_settings(db, factory_id), None, reason=payload.reason)
     record.product_snapshot_json = _json({**_load_json(record.product_snapshot_json, {}), **record_inputs(record)})
     add_audit(

@@ -27,11 +27,11 @@
       {
         "path": "src/views/CartonSupplierView.vue",
         "symbol": "shipmentStatus",
-        "sha256": "8ea87215933be1d0c5c4fb5b291910342148d479e624626fc484236e49653172"
+        "sha256": "a468f1dfcb1997a2a99a7a481e93b49f9dbc5c33793b47bf955d1f35b607a4de"
       }
     ],
-    "knowledge_version": "2026.10.08-v1",
-    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "knowledge_version": "2026.10.09-v1",
+    "verified_commit": "fb5e01008f6e5b04f68ad661c2828c71b79f2577",
     "status": "verified"
   }
 ]

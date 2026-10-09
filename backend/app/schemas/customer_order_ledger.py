@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 class RevisionIn(BaseModel):
@@ -18,6 +18,11 @@ class ReasonIn(RevisionIn):
         if len(value.strip()) < 4:
             raise ValueError("请填写至少 4 个字的原因")
         return value.strip()
+
+
+class RestoreIn(ReasonIn):
+    confirmed: StrictBool
+    notify_recipients: StrictBool = False
 
 
 class AmendIn(ReasonIn):

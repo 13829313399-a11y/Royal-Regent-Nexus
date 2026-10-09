@@ -1,3 +1,4 @@
+import pytest
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -148,3 +149,26 @@ def test_external_export_may_keep_production_factory_empty():
     assert rows[3][3] == "—"
     assert rows[3][5] == "外发单（无需派厂）"
     assert rows[3][7] == "—"
+
+
+@pytest.mark.parametrize("header", ["报价目标", "报价目标（啤/日）", "报价目标(啤/日)", "报价目标（每日啤数）"])
+def test_quote_target_maps_by_header_even_when_columns_move(header):
+    rows = [["产品名称", "映射样品"], [header, "备注", "啤数", "模具编号", "模具名称", "所需用料"], ["3000.0", "保留备注", 50, "M1", "模具", "ABS"]]
+    parsed = excel_service.parse_order_excel(excel_service._build_workbook(excel_service._sheet_xml(rows, header_row_index=2)))
+    assert parsed.items[0].quote_target_daily_qty == 3000
+    assert parsed.items[0].shoot_qty == 50
+    assert parsed.items[0].notes == "保留备注"
+
+
+@pytest.mark.parametrize("value", ["-1", "0", "12.5", "3000啤", "NaN", "Infinity", "2147483648"])
+def test_quote_target_excel_rejects_invalid_input_with_row_number(value):
+    rows = [["产品名称", "映射样品"], ["模具编号", "模具名称", "报价目标", "所需用料"], ["M1", "模具", value, "ABS"]]
+    with pytest.raises(ValueError, match="第 3 行报价目标"):
+        excel_service.parse_order_excel(excel_service._build_workbook(excel_service._sheet_xml(rows, header_row_index=2)))
+
+
+def test_old_template_keeps_quote_target_empty_and_quote_cycle_in_notes():
+    rows = [["产品名称", "旧模板"], ["模具编号", "模具名称", "啤数", "报价周期", "所需用料"], ["M1", "模具", 50, "3天", "ABS"]]
+    parsed = excel_service.parse_order_excel(excel_service._build_workbook(excel_service._sheet_xml(rows, header_row_index=2)))
+    assert parsed.items[0].quote_target_daily_qty is None
+    assert parsed.items[0].notes == "报价周期：3天"

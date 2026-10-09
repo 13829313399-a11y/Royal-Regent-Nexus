@@ -2646,6 +2646,8 @@ watchEffect(() => {
                             <div>
                               <dt class="text-[11px] font-medium text-slate-500">数量 / 啤数</dt>
                               <dd class="mt-1 text-[13px] font-semibold tabular-nums text-slate-900">{{ formatBlank(item.quantity) }} / {{ formatBlank(item.shoot_qty) }}</dd>
+                              <dt class="mt-2 text-[10px] font-medium text-slate-500">报价目标（啤/日）</dt>
+                              <dd class="mt-1 text-[13px] font-semibold tabular-nums text-slate-900">{{ formatBlank(item.quote_target_daily_qty) }}</dd>
                             </div>
                             <div>
                               <dt class="text-[11px] font-medium text-slate-500">预计用料</dt>

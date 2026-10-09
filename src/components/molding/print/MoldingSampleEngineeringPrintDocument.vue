@@ -175,6 +175,7 @@ function hasRejectReason(record: MoldingSampleWorkflowRecord) {
               </td>
               <td>
                 <strong class="molding-print-cell-primary">{{ formatBlank(item.quantity) }} 套 · {{ formatBlank(item.shoot_qty) }} 啤</strong>
+                <span>报价目标：{{ formatBlank(item.quote_target_daily_qty) }} 啤/日</span>
                 <span>需办日期：{{ formatDate(item.completion_time) }}</span>
               </td>
               <td>

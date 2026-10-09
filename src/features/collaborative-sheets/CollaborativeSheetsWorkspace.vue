@@ -1,16 +1,26 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { Download, Plus, RefreshCw, Save, Upload, X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import SectionPanel from '@/components/common/SectionPanel.vue'
-import { collaborativeSheetsApi as api, type FillCell, type FillChange, type FillGrant, type FillRecipients, type FillTask, type FillTaskDetail, type FillParticipant, type SheetValue } from '@/api/collaborativeSheets'
+import { collaborativeSheetsApi as api, COLLABORATIVE_SHEET_MAX_FILE_MB, COLLABORATIVE_SHEET_MAX_FILE_BYTES, COLLABORATIVE_SHEET_FILE_SIZE_ERROR, type FillCell, type FillChange, type FillGrant, type FillRecipients, type FillTask, type FillTaskDetail, type FillParticipant, type SheetValue } from '@/api/collaborativeSheets'
 import { getApiErrorMessage } from '@/lib/http'
 import { departments } from '@/data/enterpriseMock'
 import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard'
 import { canFill, clipboardRows, columnName, parseInput, rangeBounds } from './grid'
 import FillGrid from './FillGrid.vue'
+import { stageFillChanges } from './univerAdapter'
 import './workspace.css'
+
+const UniverFillGrid = defineAsyncComponent(() => import('./UniverFillGrid.vue'))
+const trialEditor = ref(true), trialEditing = ref(false)
+const trialGrid = ref<{ finishEditing: () => Promise<boolean> }>()
+async function finishTrial() { return !trialEditor.value || !trialGrid.value || await trialGrid.value.finishEditing() }
+async function toggleTrial() {
+  if (busy.value || !(await finishTrial()) || !applyEditor()) return
+  trialEditor.value = !trialEditor.value; trialEditing.value = false
+}
 
 const props = defineProps<{ factoryId: string }>()
 const tasks = ref<FillTask[]>([]), task = ref<FillTaskDetail>()
@@ -22,14 +32,16 @@ const editorKind = ref<'auto' | 'text' | 'number' | 'boolean'>('auto'), editorTo
 const changes = ref<FillChange[]>([]), conflict = ref(false), conflictReview = ref<string[]>([])
 const grants = ref<FillGrant[]>([]), grantsDirty = ref(false), showGrants = ref(false)
 const grantType = ref<'user' | 'department'>('department'), grantPrincipal = ref(''), grantRange = ref(''), grantSheet = ref(0)
+const grantDepartments = ref<string[]>([]), departmentPicker = ref<HTMLDetailsElement>()
+const selectedPrincipals = computed(() => grantType.value === 'department' ? [...new Set(grantDepartments.value)] : grantPrincipal.value ? [grantPrincipal.value] : [])
 let alive = true, loadSequence = 0, poll: ReturnType<typeof setInterval> | undefined
 let participantGeneration = 0, refreshingParticipants = false
 const participants = ref<FillParticipant[]>([]), rosterError = ref(''), remoteRevision = ref(0)
 const participantLabels = { not_started: '未填写', in_progress: '已保存 · 未确认完成', completed: '已完成', needs_confirmation: '表格已更新 · 待重新确认' }
 const completedCount = computed(() => participants.value.filter(p => p.status === 'completed').length)
-const selectedPeople = computed(() => recipients.value.users.filter(u => grantType.value === 'department' ? u.department === grantPrincipal.value : u.id === grantPrincipal.value))
+const selectedPeople = computed(() => recipients.value.users.filter(u => grantType.value === 'department' ? selectedPrincipals.value.includes(u.department) : u.id === grantPrincipal.value))
 const sheet = computed(() => task.value?.workbook.sheets.find(s => s.index === activeSheet.value))
-const dirty = computed(() => changes.value.length > 0 || editorTouched.value || grantsDirty.value)
+const dirty = computed(() => changes.value.length > 0 || editorTouched.value || trialEditing.value || grantsDirty.value)
 const visibleTasks = computed(() => tasks.value.filter(t => filter.value === 'all' || (filter.value === 'mine' ? t.is_owner : !t.is_owner)))
 const selectedEditable = computed(() => !!(task.value && sheet.value && selected.value && canFill(task.value, sheet.value, selected.value.row, selected.value.column)))
 const principalOptions = computed(() => grantType.value === 'department'
@@ -114,6 +126,12 @@ async function openTask(item: FillTask) {
 function pickFile(event: Event) {
   const input = event.target as HTMLInputElement
   file.value = input.files?.[0]
+  if (file.value && file.value.size > COLLABORATIVE_SHEET_MAX_FILE_BYTES) {
+    error.value = COLLABORATIVE_SHEET_FILE_SIZE_ERROR
+    file.value = undefined; input.value = ''
+    return
+  }
+  error.value = ''
   if (file.value && !title.value) title.value = file.value.name.replace(/\.[^.]+$/, '')
 }
 async function create() {
@@ -134,10 +152,17 @@ function applyEditor(): boolean {
   try {
     const value = parseInput(editorText.value, editorKind.value)
     const key = { sheet: sheet.value.index, address: selected.value.address }
-    changes.value = changes.value.filter(c => c.sheet !== key.sheet || c.address !== key.address)
-    if (value !== selected.value.value) changes.value.push({ ...key, value })
+    changes.value = stageFillChanges(task.value, changes.value, [{ ...key, value }])
     editorTouched.value = false
     return true
+  } catch (e) { error.value = e instanceof Error ? e.message : '填写内容无效'; return false }
+}
+function stageTrialChanges(batch: FillChange[]): boolean {
+  if (!task.value || busy.value) return false
+  try {
+    changes.value = stageFillChanges(task.value, changes.value, batch)
+    error.value = ''; notice.value = '填写内容已暂存，请点击“保存填写”保存到服务器。'
+    cancelEditor(); return true
   } catch (e) { error.value = e instanceof Error ? e.message : '填写内容无效'; return false }
 }
 function selectCell(cell: FillCell) {
@@ -169,23 +194,16 @@ function pasteCells(anchor: FillCell, text: string, literal?: { value: SheetValu
       if (typeof value === 'string' && (value.length > 2000 || value.trimStart().startsWith('=') || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))) throw new Error(`${address} 内容过长、包含公式或不支持的字符，本次粘贴未写入。`)
       batch.push({ sheet: activeSheet.value, address, value })
     }))
-    const replaced = new Set(batch.map(c => c.address))
-    const next = changes.value.filter(c => c.sheet !== activeSheet.value || !replaced.has(c.address))
-    for (const change of batch) {
-      const original = sheet.value.cells.find(c => c.address === change.address)?.value ?? null
-      if (change.value !== original) next.push(change)
-    }
-    if (next.length > 500) throw new Error('待保存内容超过 500 格，请先保存现有填写，再继续粘贴。')
-    changes.value = next; error.value = ''; notice.value = `已粘贴 ${batch.length} 格，点击“保存填写”保存到服务器。`
+    changes.value = stageFillChanges(task.value, changes.value, batch); error.value = ''; notice.value = `已粘贴 ${batch.length} 格，点击“保存填写”保存到服务器。`
     selected.value = anchor; cancelEditor(); return true
   } catch (e) { error.value = e instanceof Error ? e.message : '粘贴失败'; return false }
 }
-function selectSheet(index: number) {
-  if (!applyEditor()) return
+async function selectSheet(index: number) {
+  if (busy.value || !(await finishTrial()) || !applyEditor()) return
   activeSheet.value = index; selected.value = undefined
 }
 async function save(): Promise<boolean> {
-  if (!task.value || busy.value || !applyEditor()) return false
+  if (!task.value || busy.value || !(await finishTrial()) || !applyEditor()) return false
   if (!changes.value.length) return true
   busy.value = true; error.value = ''; notice.value = ''
   try {
@@ -205,7 +223,7 @@ async function save(): Promise<boolean> {
 }
 async function reload(keepChanges = false) {
   if (!task.value || busy.value || (!keepChanges && !confirmLeave())) return
-  if (keepChanges && !applyEditor()) return
+  if (keepChanges && (!(await finishTrial()) || !applyEditor())) return
   busy.value = true; error.value = ''
   try {
     const result = await api.detail(props.factoryId, task.value.id)
@@ -231,19 +249,27 @@ async function reload(keepChanges = false) {
   } catch (e) { if (alive) error.value = getApiErrorMessage(e) }
   finally { if (alive) busy.value = false }
 }
+function resetGrantSelection() {
+  grantPrincipal.value = ''; grantDepartments.value = []
+  if (departmentPicker.value) departmentPicker.value.open = false
+}
 function addGrant() {
   const bounds = rangeBounds(grantRange.value.trim())
   const target = task.value?.workbook.sheets.find(s => s.index === grantSheet.value)
-  if (!grantPrincipal.value || !bounds || !target || bounds[2] >= target.rows || bounds[3] >= target.columns) {
+  if (!selectedPrincipals.value.length || selectedPrincipals.value.some(id => !principalOptions.value.some(p => p.id === id)) || !bounds || !target || bounds[2] >= target.rows || bounds[3] >= target.columns) {
     error.value = '请选择填写对象，并输入原表内有效的范围，例如 C3:N30。'; return
   }
-  const grant: FillGrant = { principal_type: grantType.value, principal_id: grantPrincipal.value, sheet: grantSheet.value, range: grantRange.value.trim().toUpperCase() }
-  if (!grants.value.some(g => JSON.stringify(g) === JSON.stringify(grant))) grants.value.push(grant)
+  const additions: FillGrant[] = selectedPrincipals.value.map(id => ({ principal_type: grantType.value, principal_id: id, sheet: grantSheet.value, range: grantRange.value.trim().toUpperCase() }))
+    .filter(grant => !grants.value.some(g => g.principal_type === grant.principal_type && g.principal_id === grant.principal_id && g.sheet === grant.sheet && g.range === grant.range))
+  if (grants.value.length + additions.length > 200) { error.value = '分配设置最多 200 条，请减少范围后再添加。本次选择尚未添加。'; return }
+  if (!additions.length) { error.value = '所选对象的填写范围已添加，无需重复添加。'; return }
+  grants.value.push(...additions)
   grantsDirty.value = true; error.value = ''; grantRange.value = ''
+  if (departmentPicker.value) departmentPicker.value.open = false
 }
 async function saveGrants() {
   if (!task.value || busy.value) return
-  if (changes.value.length || editorTouched.value) { error.value = '请先保存填写内容，再保存分配设置。'; return }
+  if (changes.value.length || editorTouched.value || trialEditing.value) { error.value = '请先保存填写内容，再保存分配设置。'; return }
   busy.value = true; error.value = ''
   try {
     const result = await api.grants(props.factoryId, task.value, grants.value)
@@ -319,7 +345,7 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
     <SectionPanel v-if="showUpload" title="新建填报任务" subtitle="上传后先设置填写范围，再发布给指定人员。">
       <form class="cs-upload-form" @submit.prevent="create">
         <label>任务名称<input v-model="title" required maxlength="160" placeholder="例如：2026 年货款汇总" :disabled="busy" /></label>
-        <label>Excel 表格<input type="file" accept=".xls,.xlsx" required :disabled="busy" @change="pickFile" /></label>
+        <label>Excel 表格<input type="file" accept=".xls,.xlsx" required :disabled="busy" aria-describedby="cs-upload-size" @change="pickFile" /><small id="cs-upload-size">支持 .xls / .xlsx，单个文件不超过 {{ COLLABORATIVE_SHEET_MAX_FILE_MB }} MB。</small></label>
         <Button type="submit" :disabled="busy || !file || !title.trim()">{{ busy ? '正在处理…' : '上传并设置填写范围' }}</Button>
       </form>
     </SectionPanel>
@@ -346,12 +372,22 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
           <p>参与人员可查看整张表，只能填写分配的区域。请避开表头；公式始终只读。</p>
           <div class="cs-grant-form">
             <label>工作表<select v-model.number="grantSheet" :disabled="busy"><option v-for="s in task.workbook.sheets" :key="s.index" :value="s.index">{{ s.name }}</option></select></label>
-            <label>分配方式<select v-model="grantType" :disabled="busy" @change="grantPrincipal = ''"><option value="department">指定部门</option><option value="user">指定账号</option></select></label>
-            <label>填写对象<select v-model="grantPrincipal" :disabled="busy"><option value="">请选择</option><option v-for="p in principalOptions" :key="p.id" :value="p.id">{{ p.label }}</option></select></label>
+            <label>分配方式<select v-model="grantType" :disabled="busy" @change="resetGrantSelection"><option value="department">指定部门</option><option value="user">指定账号</option></select></label>
+            <div v-if="grantType === 'department'" class="cs-department-field">
+              <span>填写部门（可多选）</span>
+              <details ref="departmentPicker" class="cs-department-picker">
+                <summary><span>{{ grantDepartments.length ? grantDepartments.map(departmentName).join('、') : '请选择部门' }}</span><small v-if="grantDepartments.length">{{ grantDepartments.length }} 个</small></summary>
+                <fieldset :disabled="busy" class="cs-department-options" aria-label="填写部门（可多选）">
+                  <label v-for="p in principalOptions" :key="p.id"><input v-model="grantDepartments" type="checkbox" :value="p.id" /><span>{{ p.label }}</span></label>
+                  <p v-if="!principalOptions.length" class="cs-empty">当前厂区暂无可选部门。</p>
+                </fieldset>
+              </details>
+            </div>
+            <label v-else>填写对象<select v-model="grantPrincipal" :disabled="busy"><option value="">请选择</option><option v-for="p in principalOptions" :key="p.id" :value="p.id">{{ p.label }}</option></select></label>
             <label>填写范围<input v-model="grantRange" :disabled="busy" placeholder="例如 C3:N30" aria-label="填写范围" /></label>
             <Button variant="outline" :disabled="busy" @click="addGrant"><Plus :size="14" />添加</Button>
           </div>
-          <div v-if="grantPrincipal" class="cs-member-preview" aria-label="所选填写对象的账号">
+          <div v-if="selectedPrincipals.length" class="cs-member-preview" aria-label="所选填写对象的账号">
             <p>当前厂区匹配账号（{{ selectedPeople.length }} 人）</p>
             <span v-for="person in selectedPeople" :key="person.id">{{ person.display_name }}</span>
             <p v-if="!selectedPeople.length">当前没有有效账号。</p>
@@ -365,7 +401,7 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
           <span v-else-if="changes.length || editorTouched">有未保存的填写内容</span><span v-else>当前显示已读取的服务器版本</span>
           <div class="cs-actions">
             <template v-if="task.status === 'open'">
-              <Button :disabled="busy || (!changes.length && !editorTouched)" @click="save"><Save :size="15" />保存填写</Button>
+              <Button :disabled="busy || (!changes.length && !editorTouched && !trialEditing)" @click="save"><Save :size="15" />保存填写</Button>
               <Button v-if="task.editable_ranges.length" variant="outline" :disabled="busy || grantsDirty" @click="submit">我已填完</Button>
             </template>
             <Button v-if="task.is_owner && task.status !== 'open'" :disabled="busy || dirty || !task.grants.length" @click="changeState('open')">{{ task.status === 'draft' ? '发布填报' : '重新开放填写' }}</Button>
@@ -389,25 +425,28 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
           <p v-if="!participants.length" class="cs-empty">尚无有效填写账号，请先保存填写对象和范围。</p>
         </section>
         <div v-if="task.workbook.warnings.length" class="cs-warning"><p v-for="warning in task.workbook.warnings" :key="warning">{{ warning }}</p></div>
+        <div class="cs-actions"><Button variant="outline" :disabled="busy" :aria-pressed="trialEditor" @click="toggleTrial">{{ trialEditor ? '使用原版编辑器' : '使用新版编辑器' }}</Button><span>{{ trialEditor ? '新版编辑器' : '原版编辑器' }} · 切换时保留待保存内容</span></div>
         <div class="cs-sheet-tabs" role="tablist" aria-label="工作表"><button v-for="s in task.workbook.sheets" :key="s.index" type="button" role="tab" :aria-selected="s.index === activeSheet" :disabled="busy" @click="selectSheet(s.index)">{{ s.name }}</button></div>
         <div v-if="sheet" class="cs-cell-editor">
           <template v-if="selected">
             <strong>{{ selected.address }}</strong>
-            <template v-if="selectedEditable">
+            <template v-if="selectedEditable && !trialEditor">
               <label class="cs-type-label">类型<select v-model="editorKind" :disabled="busy" @change="editorTouched = true"><option value="auto">自动识别</option><option value="text">文字</option><option value="number">数字</option><option value="boolean">是 / 否</option></select></label>
               <select v-if="editorKind === 'boolean'" v-model="editorText" aria-label="填写内容" :disabled="busy" @change="editorTouched = true"><option value="">空白</option><option value="true">是</option><option value="false">否</option></select>
               <textarea v-else v-model="editorText" aria-label="填写内容" rows="2" :disabled="busy" placeholder="输入内容；清空表示留空" @input="editorTouched = true" />
               <Button variant="outline" :disabled="busy || !editorTouched" @click="applyEditor">确认此格</Button>
             </template>
-            <span v-else>{{ selected.formula ? '公式单元格，只读。' : task.status !== 'open' ? '填报尚未开放或已结束。' : '该单元格不在你的填写范围。' }}</span>
+            <span v-else>{{ selectedEditable ? '可填写，请在下方表格中编辑。' : selected.formula ? '公式单元格，只读。' : task.status !== 'open' ? '填报尚未开放或已结束。' : '该单元格不在你的填写范围。' }}</span>
           </template>
           <span v-else>选中单元格直接打字，或双击修改。Enter / Tab 换格，Esc 取消，支持从 Excel 粘贴多格。</span>
           <small v-if="sheet">范围 A1:{{ columnName(sheet.columns - 1) }}{{ sheet.rows }}</small>
         </div>
-        <FillGrid v-if="sheet" :key="`${task.id}:${sheet.index}`" :task="task" :sheet="sheet" :changes="changes" :selected="selected?.address ?? ''"
+        <UniverFillGrid v-if="sheet && trialEditor" ref="trialGrid" :key="`${task.id}:${sheet.index}:${task.revision}`" :task="task" :sheet="sheet" :changes="changes" :selected="selected?.address ?? ''"
+          :disabled="busy" :select-cell="selectCell" :stage-changes="stageTrialChanges" @editing="trialEditing = $event" @error="error = $event" @save="save" />
+        <FillGrid v-else-if="sheet" :key="`${task.id}:${sheet.index}`" :task="task" :sheet="sheet" :changes="changes" :selected="selected?.address ?? ''"
           :text="editorText" :disabled="busy" :select-cell="selectCell" :commit-editor="applyEditor" :cancel-editor="cancelEditor" :paste-cells="pasteCells"
           @input="inlineInput" @begin="editorKind = 'auto'" @text-mode="editorKind = 'text'" @save="save" />
-        <p class="cs-grid-help">浅绿色区域可填写，黄色表示尚未保存。修改后点击“保存填写”或 Ctrl / ⌘ + S；公式和未授权区域只读。</p>
+        <p class="cs-grid-help">{{ trialEditor ? '选中单元格后，上方会显示是否可填写。' : '浅绿色区域可填写，黄色表示尚未保存。' }}修改后点击“保存填写”或 Ctrl / ⌘ + S；公式和未授权区域只读。</p>
         <div class="cs-evidence">
           <details><summary>最近操作</summary><p v-if="!task.activity?.length">暂无操作记录。</p><p v-for="a in task.activity ?? []" :key="a.id">{{ a.actor_name }} · {{ actionName(a.action) }} · {{ time(a.created_at) }}</p></details>
         </div>
