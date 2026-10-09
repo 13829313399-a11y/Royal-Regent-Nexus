@@ -1196,8 +1196,8 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 continue
             if item.no_order_decision != "SAMPLE":
                 raise HTTPException(422, "无单纸品须明确选择确需入库的样板箱或送错货")
-            if not item.customer_code or len(item.sample_purpose.strip()) < 4 or len(item.requested_by.strip()) < 2:
-                raise HTTPException(422, "样板箱须选择客户，并填写用途和需求人")
+            if not item.customer_code or len(item.requested_by.strip()) < 2:
+                raise HTTPException(422, "样板箱须选择客户，并填写需求人")
             if effective <= 0:
                 raise HTTPException(422, "样板箱有效入库数量须大于 0；全部拒收请选择送错货")
             # A formal order entered after vendor import must be reconciled as a formal receipt.
@@ -1218,7 +1218,7 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 damaged_quantity=item.damaged_quantity, rejected_quantity=item.rejected_quantity,
                 unusable_quantity=item.unusable_quantity, unit_price=item.unit_price,
                 location_allocations=item.location_allocations,
-                feedback_note=f"无正式订单样板箱；用途：{item.sample_purpose}；需求人：{item.requested_by}；{item.difference_reason}"))
+                feedback_note=f"无正式订单样板箱；用途：{item.sample_purpose.strip() or '未填写'}；需求人：{item.requested_by}；{item.difference_reason}"))
             continue
         if item.no_order_decision or item.customer_code or item.sample_purpose or item.requested_by:
             raise HTTPException(422, "正式订单纸品不得选择无单处理")

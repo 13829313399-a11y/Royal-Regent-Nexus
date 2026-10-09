@@ -100,12 +100,12 @@ export const cartonSupplierPortalApi = {
   ship(payload: { factory_id: string; delivery_note_no: string; delivery_date: string; lines: { order_line_id: string; issue_id: string; quantity: number }[] }) { return postCartonInventoryRequest<PortalShipment>(base + '/shipments', payload) },
   async previewDeliveryImport(file: File) {
     const form = new FormData(); form.append('file', file)
-    return (await http.post<DeliveryImportPreview>(base + '/shipments/import-preview', form, { timeout: 120000 })).data
+    return (await http.post<DeliveryImportPreview>(base + '/shipments/import-preview', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 })).data
   },
   async confirmDeliveryImport(file: File, preview: DeliveryImportPreview, selections: { factory_id: string; delivery_note_no: string; registration_mode?: DeliveryRegistrationMode }[]) {
     const form = new FormData(); form.append('file', file); form.append('sha256', preview.sha256)
     form.append('selections', JSON.stringify(selections))
-    return (await http.post<{ shipments: PortalShipment[] }>(base + '/shipments/import-confirm', form, { timeout: 120000 })).data
+    return (await http.post<{ shipments: PortalShipment[] }>(base + '/shipments/import-confirm', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 })).data
   },
   async receiptOptions(factory_id: string, id: string) {
     return (await http.get<ShipmentReceiptOption[]>(`${base}/internal/shipments/${encodeURIComponent(id)}/receipt-options`, { params: { factory_id } })).data
