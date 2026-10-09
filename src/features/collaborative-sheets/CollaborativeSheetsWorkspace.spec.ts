@@ -24,9 +24,14 @@ const example = (): FillTaskDetail => ({
 let wrapper: VueWrapper | undefined
 const button = (text: string) => wrapper!.findAll('button').find(b => b.text().includes(text))!
 async function render() {
-  wrapper = mount(Workspace, { props: { factoryId: 'huaxing' } })
+  wrapper = mount(Workspace, { props: { factoryId: 'huaxing' }, global: { stubs: {
+    UniverFillGrid: { template: '<div />', methods: { finishEditing: async () => true } },
+  } } })
   await flushPromises()
   await button('协同填写试验').trigger('click')
+  await flushPromises()
+  // These existing DOM-grid regressions exercise the available original-editor fallback.
+  await button('使用原版编辑器').trigger('click')
   await flushPromises()
 }
 beforeEach(() => {
@@ -50,6 +55,28 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.restoreAllMocks() })
 
 describe('协同填表', () => {
+  it('shows the upload limit, rejects an oversized selection, and allows a replacement', async () => {
+    const create = vi.spyOn(api, 'create').mockResolvedValue(example())
+    await render(); await button('上传表格').trigger('click')
+    expect(wrapper!.get('#cs-upload-size').text()).toContain('100 MB')
+    const input = wrapper!.get('input[type="file"]')
+    const oversized = new File(['sample'], 'oversize.xlsx')
+    Object.defineProperty(oversized, 'size', { value: 100 * 1024 * 1024 + 1 })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [oversized] })
+    await input.trigger('change')
+    expect(wrapper!.get('[role="alert"]').text()).toContain('工作簿不能超过 100 MB')
+    expect(button('上传并设置填写范围').attributes('disabled')).toBeDefined()
+    await wrapper!.get('.cs-upload-form').trigger('submit'); await flushPromises()
+    expect(create).not.toHaveBeenCalled()
+    const replacement = new File(['sample'], 'replacement.xlsx')
+    Object.defineProperty(replacement, 'size', { value: 100 * 1024 * 1024 })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [replacement] })
+    await input.trigger('change')
+    expect(wrapper!.find('[role="alert"]').exists()).toBe(false)
+    await wrapper!.get('.cs-upload-form').trigger('submit'); await flushPromises()
+    expect(create).toHaveBeenCalledWith('huaxing', 'replacement', replacement)
+  })
+
   it('previews multiple departments and saves their shared range once per department', async () => {
     vi.mocked(api.recipients).mockResolvedValue({ users: [
       { id: 'u2', display_name: '业务填写人', department: 'sales-business' },

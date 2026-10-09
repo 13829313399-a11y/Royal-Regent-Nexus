@@ -57,7 +57,16 @@ watch(modal, async value => {
 }, { immediate: true })
 watch(() => props.mode, async (value, previous) => {
   pointerEnd()
-  if (value !== 'edge' && previous === 'edge') { oldFocus = document.activeElement as HTMLElement; await store.refreshCapabilities(); await nextTick(); if (props.focusOnOpen !== false && props.mode !== 'edge') composer.value?.focus() }
+  if (value !== 'edge' && previous === 'edge') {
+    oldFocus = document.activeElement as HTMLElement
+    await store.refreshCapabilities(); await nextTick()
+    if (props.mode !== 'edge') {
+      // A hidden scroller has zero dimensions; reveal first, then follow the
+      // answer that arrived in the background unless the reader scrolled up.
+      if (nearBottom) await bottom()
+      if (props.focusOnOpen !== false) composer.value?.focus()
+    }
+  }
   if (value === 'edge' && !previewing) { clearHighlight(); guideIndex.value = -1; tab.value = 'chat'; if (panel.value?.contains(document.activeElement)) oldFocus?.focus() }
   if (value !== 'edge') previewing = false
 })

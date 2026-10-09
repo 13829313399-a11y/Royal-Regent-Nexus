@@ -44,7 +44,7 @@ const amend = ref({ quantity: '', requested_ship_date: '', note: '', reason: '' 
 const cancelReason = ref('')
 const restoreReason = ref('')
 const statusConfirmation = ref<'cancel' | 'restore' | null>(null)
-const recipients = ref<Array<'pmc' | 'warehouse' | 'injection'>>([])
+const recipients = ref<Array<'pmc' | 'warehouse' | 'injection' | 'cutting'>>([])
 const shipment = ref({ quantity: '', ship_date: '', document_no: '', note: '', idempotency_key: '' })
 const reversalReason = ref('')
 const historyOpening = ref({ quantity: '', reason: '' })
@@ -260,7 +260,7 @@ function sourceKindLabel(kind: string) {
 }
 
 function recipientLabel(recipient: string) {
-  return ({ pmc: 'PMC', warehouse: '仓库', injection: '啤机部' } as Record<string, string>)[recipient] ?? recipient
+  return ({ pmc: 'PMC', warehouse: '仓库', injection: '啤机部', cutting: '裁床部' } as Record<string, string>)[recipient] ?? recipient
 }
 
 function createIdempotencyKey() {
@@ -503,7 +503,7 @@ onBeforeUnmount(() => {
           <section><h4>版本记录</h4><div class="ledger__versions"><details v-for="item in selected.versions" :key="`${item.version}-${item.created_at}`" class="ledger__details"><summary>V{{ item.version }} · {{ item.reason || '初始确认' }} · {{ item.actor }} · {{ item.created_at }}</summary><dl v-if="businessFields(item.data).length"><template v-for="field in businessFields(item.data)" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl><p v-else class="ledger__muted">该版本没有可展示的客户字段。</p></details></div></section>
           <section><h4>发送记录</h4><p v-if="selected.dispatches.length === 0" class="ledger__muted">尚未发送给接收部门。</p><ul v-else><li v-for="item in selected.dispatches" :key="item.id">{{ recipientLabel(item.recipient) }} · V{{ item.version }} · {{ item.status === 'received' ? '已接收' : '已发送' }} · {{ item.created_at }}<template v-if="item.received_at"> · 接收于 {{ item.received_at }}{{ item.received_by ? `（${item.received_by}）` : '' }}</template></li></ul></section>
           <section v-if="capabilities.write && selected.line.status === 'active'"><h4>修改订单</h4><p v-if="requiresDispatchForEdit && !capabilities.dispatch" class="ledger__muted">该订单已发送；修改或取消需要订单发送权限。</p><div class="ledger__form"><label>数量<input v-model="amend.quantity" type="text"></label><label>客户要求交期<input v-model="amend.requested_ship_date" type="date"></label><label>备注<textarea v-model="amend.note" rows="2" /></label><label>修改原因（必填）<textarea v-model="amend.reason" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy || !canEdit" @click="submitAmend">保存修改</button></div></section>
-          <section v-if="capabilities.dispatch && selected.line.status === 'active'"><h4>发送接收部门</h4><div class="ledger__checks"><label><input v-model="recipients" type="checkbox" value="pmc"> PMC</label><label><input v-model="recipients" type="checkbox" value="warehouse"> 仓库</label><label><input v-model="recipients" type="checkbox" value="injection"> 啤机部</label></div><button class="ledger__button" type="button" :disabled="actionBusy" @click="submitDispatch">发送订单</button></section>
+          <section v-if="capabilities.dispatch && selected.line.status === 'active'"><h4>发送接收部门</h4><div class="ledger__checks"><label><input v-model="recipients" type="checkbox" value="pmc"> PMC</label><label><input v-model="recipients" type="checkbox" value="warehouse"> 仓库</label><label><input v-model="recipients" type="checkbox" value="injection"> 啤机部</label><label v-if="capabilities.cutting_dispatch_enabled"><input v-model="recipients" type="checkbox" value="cutting"> 裁床部</label></div><button class="ledger__button" type="button" :disabled="actionBusy" @click="submitDispatch">发送订单</button></section>
           <section v-if="canShip"><h4>凭出货单确认分批走货</h4><div class="ledger__form"><label>走货数量<input v-model="shipment.quantity" type="text"></label><label>走货日期<input v-model="shipment.ship_date" type="date"></label><label>出货单号<input v-model="shipment.document_no" type="text"></label><label>备注<textarea v-model="shipment.note" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy" @click="submitShipment">确认走货</button></div></section>
           <section><h4>走货批次与纠错</h4><p v-if="selected.shipments.length === 0" class="ledger__muted">暂无走货确认。</p><ul class="ledger__shipments"><li v-for="item in selected.shipments" :key="item.id"><span>{{ item.ship_date }} · {{ item.document_no }} · {{ item.quantity }}{{ item.reversed ? ` · 已撤销：${item.reversal_reason}` : '' }}</span><button v-if="canReverseShipment && !item.reversed" class="ledger__link" type="button" :disabled="actionBusy" @click="submitReversal(item.id)">撤销</button></li></ul><label v-if="canReverseShipment && selected.shipments.some((item) => !item.reversed)">纠错原因（撤销必填）<textarea v-model="reversalReason" rows="2" /></label></section>
           <section v-if="capabilities.write && selected.line.status === 'active'"><h4>取消订单</h4><p class="ledger__muted">这是业务取消，不是关闭窗口。取消后该明细不再计入待走货；原订单与走货记录仍会保留。</p><label>取消原因（必填）<textarea v-model="cancelReason" rows="2" maxlength="500" :disabled="actionBusy" /></label><button class="ledger__button ledger__button--danger" type="button" :disabled="actionBusy || detailLoading || !canEdit" @click="prepareStatusChange('cancel')">取消该订单明细</button></section>

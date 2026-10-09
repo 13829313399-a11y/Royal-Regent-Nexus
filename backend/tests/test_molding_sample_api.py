@@ -692,7 +692,19 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
     database_path = TEST_TMP_DIR / f"legacy_molding_sample_{uuid4().hex}.db"
     create_legacy_molding_sample_sqlite_database(database_path)
 
-    with make_client_with_database(monkeypatch, database_path) as legacy_client:
+    legacy_client = make_client_with_database(monkeypatch, database_path)
+    db_module = importlib.import_module("app.db")
+    importlib.import_module("app.models.module_feedback")
+    importlib.import_module("app.models.collaborative_sheets")
+    # Prepare the other current modules before startup so their migration guards
+    # do not turn this focused legacy-molding test into a whole-app migration test.
+    # All legacy molding tables stay untouched until the application's startup.
+    db_module.Base.metadata.create_all(db_module.engine, tables=[
+        table for name, table in db_module.Base.metadata.tables.items()
+        if not name.startswith("molding_sample_")
+    ])
+
+    with legacy_client:
         login_as(legacy_client, "engineer")
         response = legacy_client.get("/api/injection")
 
@@ -722,6 +734,7 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
         "material_components",
         "material_usage_type",
         "actual_material_cost_components",
+        "quote_target_daily_qty",
     } <= item_columns
 
 
@@ -1634,7 +1647,9 @@ def test_engineering_board_search_matches_normalized_order_item_component_and_pr
     ]
 
 
-def test_engineering_board_queries_are_factory_isolated_and_keep_cross_factory_cost_redaction(client):
+def test_engineering_board_queries_are_factory_isolated_and_keep_cross_factory_cost_redaction(enforce_client):
+    # Explicit permission overrides are evaluated by canonical authorization.
+    client = enforce_client
     login_as(client, "admin")
     huaxing_payload = sample_order_payload("BP-BOARD-FACTORY-HX")
     huadeng_payload = sample_order_payload("BP-BOARD-FACTORY-HD")
@@ -2307,10 +2322,23 @@ def test_fixed_non_molding_positions_get_all_factory_task_read_without_task_writ
             "description": "只读职位不得上报",
         },
     ).status_code == 403
-    assert client.patch(
+    personal_read = client.patch(
         f"/api/molding-sample-notifications/{home_notification['id']}",
         json={"status": "已读"},
-    ).status_code == 403
+    )
+    assert personal_read.status_code == 200
+    assert personal_read.json()["status"] == "已读"
+    assert client.patch(
+        f"/api/molding-sample-notifications/{home_notification['id']}",
+        json={"status": "已处理"},
+    ).status_code == 409
+    db_module = importlib.import_module("app.db")
+    models = importlib.import_module("app.models.molding_sample")
+    with db_module.SessionLocal() as db:
+        shared = db.get(models.MoldingSampleNotification, home_notification["id"])
+        assert shared.status == home_notification["status"]
+        assert shared.read_at == home_notification["read_at"]
+        assert db.get(models.MoldingSampleOrder, "BP-FIXED-READONLY-HOME").status == "待生产"
 
     qa_profile = login_fixed_position_test_user(
         client,
@@ -2475,6 +2503,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         "injection_scheduling:plan",
         "injection_scheduling:report",
     }
+    order_inbox_permissions = {"customer_order:inbox_read", "customer_order:inbox_receive"}
     clerk_profile = login_fixed_position_test_user(client, "fixed_molding_clerk")
     clerk_grant = next(
         grant
@@ -2482,7 +2511,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         if grant["role_id"] == "position_molding_clerk"
     )
     assert clerk_grant["scope_mode"] == "cross_factory_read"
-    assert set(clerk_grant["permissions"]) == task_permissions | injection_permissions
+    assert set(clerk_grant["permissions"]) == task_permissions | injection_permissions | order_inbox_permissions
     assert client.get("/api/injection/BP-FIXED-CLERK-FOREIGN").status_code == 200
     foreign_engineering_detail = client.get(
         "/api/injection/BP-FIXED-ENGINEER-FOREIGN"
@@ -2600,7 +2629,7 @@ def test_fixed_engineering_and_molding_positions_enforce_workflow_and_bell_bound
         profile = login_fixed_position_test_user(client, username)
         grant = next(item for item in profile["grants"] if item["role_id"] == role_id)
         assert grant["scope_mode"] == "cross_factory_operate"
-        assert set(grant["permissions"]) == task_permissions | injection_permissions | {
+        assert set(grant["permissions"]) == task_permissions | injection_permissions | order_inbox_permissions | {
             "injection_scheduling:master_write"
         }
         assert client.get(
@@ -3952,13 +3981,13 @@ def test_download_engineering_import_template_matches_current_manual_fields(clie
     assert "适配机型" not in sheet_xml
     assert "毛重g" not in sheet_xml
     assert "预计料费HKD" not in sheet_xml
-    assert '<autoFilter ref="A8:N8"/>' in sheet_xml
-    assert '<dimension ref="A1:N38"/>' in sheet_xml
+    assert '<autoFilter ref="A8:O8"/>' in sheet_xml
+    assert '<dimension ref="A1:O38"/>' in sheet_xml
     assert '<row r="38">' in sheet_xml
     assert '<dataValidations count="2">' in sheet_xml
     assert 'sqref="D9:D38"' in sheet_xml
     assert '<formula1>"正式生产,试料"</formula1>' in sheet_xml
-    assert 'sqref="M9:M38"' in sheet_xml
+    assert 'sqref="N9:N38"' in sheet_xml
     assert '<formula1>"在厂,不在厂,待确认"</formula1>' in sheet_xml
 
     assert '<sheet name="啤办单" sheetId="1" r:id="rId1"/>' in workbook_xml
@@ -4236,10 +4265,11 @@ def test_export_molding_sample_excel_template_has_report_styling(client):
     assert "缺" in sheet_xml
     assert "原料小计" in sheet_xml
     assert "总计" in sheet_xml
-    assert '<mergeCell ref="A1:Z1"/>' in sheet_xml
-    assert '<mergeCell ref="F2:Z2"/>' in sheet_xml
+    assert "报价目标（啤/日）" in sheet_xml
+    assert '<mergeCell ref="A1:AA1"/>' in sheet_xml
+    assert '<mergeCell ref="F2:AA2"/>' in sheet_xml
     assert '<pane ySplit="5" topLeftCell="A6" activePane="bottomLeft" state="frozen"/>' in sheet_xml
-    assert f'<autoFilter ref="A{detail_header_row}:Z{detail_header_row}"/>' in sheet_xml
+    assert f'<autoFilter ref="A{detail_header_row}:AA{detail_header_row}"/>' in sheet_xml
     assert '<cols>' in sheet_xml
     assert 'customWidth="1"' in sheet_xml
     assert '<col min="2" max="2" width="24" customWidth="1"/>' in sheet_xml
@@ -5107,3 +5137,58 @@ def test_full_order_edit_cannot_switch_between_internal_and_external_flow(client
     unchanged_external = client.get(f"/api/injection/{external_order_id}").json()
     assert unchanged_external["order"]["production_factory_id"] is None
     assert unchanged_external["order"]["send_to"] == "发至模厂"
+
+
+def test_quote_target_template_preview_create_edit_and_exports_round_trip(client):
+    login_as(client, "engineer")
+    excel = importlib.import_module("app.services.molding_sample_excel")
+    response = client.get("/api/injection/import-excel-template", params={"factory_id": "huaxing"})
+    assert response.status_code == 200
+    rows = excel._read_first_sheet_rows(response.content)
+    headers = rows[7]
+    assert headers[headers.index("啤数") + 1] == "报价目标"
+    rows[1] = ["客户", "映射测试客户", "产品编号", "QA-TARGET", "产品名称", "报价目标映射测试"]
+    rows[2] = ["开单日期", "2026-10-09", "阶段", "T0", "填写部", "工程部"]
+    rows[3] = ["发至", "内部", "审核主管", "测试主管", "落单人", "测试工程"]
+    rows = rows[:8]
+    for index, target in enumerate([3000, 5200, ""], 1):
+        values = {"模具编号": f"QA-{index}", "模具名称": f"测试模具{index}", "所需用料": "测试自带料", "用料用途": "试料", "啤/套": "2", "啤数": 50 * index, "报价目标": target, "所需用料(kg)": 2.5, "需办日期": "2026-10-10", "工模尺寸": "400*400*322", "模具状态（是否在厂）": "在厂", "备注": "原备注保留"}
+        rows.append([values.get(header, "") for header in headers])
+    workbook = excel._build_workbook(excel._sheet_xml(rows, header_row_index=8))
+    preview = client.post("/api/injection/import-excel-preview", params={"factory_id": "huaxing"}, content=workbook, headers={"content-type": excel.XLSX_MIME})
+    assert preview.status_code == 200, preview.text
+    payload = preview.json()
+    assert [item["quote_target_daily_qty"] for item in payload["items"]] == [3000, 5200, None]
+    assert [item["shoot_qty"] for item in payload["items"]] == [50, 100, 150]
+    assert payload["items"][0]["required_material_kg"] == 2.5
+    assert payload["items"][0]["completion_time"] == "2026-10-10"
+    assert payload["items"][0]["mold_presence_status"] == "in_factory"
+    assert payload["items"][0]["notes"] == "原备注保留"
+    created = client.post("/api/injection", json=payload)
+    assert created.status_code == 201, created.text
+    order_id = created.json()["order"]["id"]
+    saved = client.get(f"/api/injection/{order_id}").json()
+    assert [item["quote_target_daily_qty"] for item in saved["items"]] == [3000, 5200, None]
+    edit = {"order": saved["order"], "items": saved["items"]}
+    edit["items"][0]["quote_target_daily_qty"] = 3600
+    edit["items"][1]["quote_target_daily_qty"] = None
+    edited = client.put(f"/api/injection/{order_id}", json=edit)
+    assert edited.status_code == 200, edited.text
+    assert client.get(f"/api/injection/{order_id}").json()["items"][0]["quote_target_daily_qty"] == 3600
+    single = client.get(f"/api/injection/{order_id}/export-excel")
+    assert single.status_code == 200
+    imported = excel.parse_order_excel(single.content)
+    assert [item.quote_target_daily_qty for item in imported.items] == [3600, None, None]
+    batch = client.get("/api/injection/export-excel", params={"order_ids": [order_id]})
+    assert batch.status_code == 200, batch.text
+    batch_rows = excel._read_first_sheet_rows(batch.content)
+    target_index = batch_rows[1].index("报价目标（啤/日）")
+    assert batch_rows[2][target_index] == "3600"
+
+
+@pytest.mark.parametrize("value", [-1, 0, 1.5, "abc", 2147483648])
+def test_quote_target_api_rejects_invalid_values(client, value):
+    login_as(client, "engineer")
+    payload = sample_order_payload("BP-INVALID-TARGET")
+    payload["items"][0]["quote_target_daily_qty"] = value
+    assert client.post("/api/injection", json=payload).status_code == 422
