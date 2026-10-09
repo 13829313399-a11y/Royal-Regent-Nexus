@@ -4255,6 +4255,7 @@ describe('molding sample runtime error handling', () => {
           pigment_no: '黑种-11',
           quantity: '5/10',
           shoot_qty: 10,
+          quote_target_daily_qty: 3600,
           required_material_kg: 15,
           mold_dimensions: '207*789',
           mold_presence_status: 'in_factory',
@@ -4300,6 +4301,8 @@ describe('molding sample runtime error handling', () => {
     expect((wrapper.get('[data-testid="create-line-material"]').element as HTMLInputElement).value).toBe('70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料')
     expect((wrapper.get('input[placeholder="PMS"]').element as HTMLInputElement).value).toBe('2487')
 
+    expect((wrapper.get('[data-testid="create-line-quote-target"]').element as HTMLInputElement).value).toBe('3600')
+
     await wrapper.get('[data-testid="create-line-material-composition-0"]').trigger('click')
     expect((wrapper.get('[data-testid="material-component-name-0"]').element as HTMLInputElement).value).toBe('ABS PA-757')
     expect((wrapper.get('[data-testid="material-component-percentage-0"]').element as HTMLInputElement).value).toBe('70')
@@ -4337,6 +4340,7 @@ describe('molding sample runtime error handling', () => {
       pigment_no: '黑种-11',
       quantity: '5/10',
       shoot_qty: 10,
+          quote_target_daily_qty: 3600,
       required_material_kg: 15,
       mold_dimensions: '207*789',
       mold_presence_status: 'in_factory',

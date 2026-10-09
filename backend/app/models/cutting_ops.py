@@ -40,3 +40,27 @@ class CuttingCommand(Base):
     fingerprint: Mapped[str] = mapped_column(String(64))
     result: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[str] = mapped_column(String(40))
+
+
+class CuttingOrder(Base):
+    __tablename__ = 'cutting_ops_orders'
+    __table_args__ = (
+        ForeignKeyConstraint(['line_id'], ['order_ledger_lines.id']),
+        ForeignKeyConstraint(['dispatch_id'], ['order_ledger_dispatches.id']),
+        CheckConstraint("factory_id = 'huakang-c'"),
+    )
+    line_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(32))
+    dispatch_id: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+
+
+class CuttingOrderRevision(Base):
+    __tablename__ = 'cutting_ops_order_revisions'
+    __table_args__ = (ForeignKeyConstraint(['line_id'], ['cutting_ops_orders.line_id']),)
+    line_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    actor_id: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(40))
+    reason: Mapped[str] = mapped_column(String(500))

@@ -37,7 +37,7 @@ class AmendIn(ReasonIn):
 
 
 class DispatchIn(RevisionIn):
-    recipients: list[Literal["pmc", "warehouse", "injection"]] = Field(min_length=1, max_length=3)
+    recipients: list[Literal["pmc", "warehouse", "injection", "cutting"]] = Field(min_length=1, max_length=4)
 
 
 class ShipmentIn(RevisionIn):

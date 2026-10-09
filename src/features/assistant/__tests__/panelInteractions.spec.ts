@@ -31,6 +31,18 @@ async function pointerEvent(target: { element: Element }, type: string, options:
  target.element.dispatchEvent(new PointerEvent(type, { bubbles: true, ...options })); await nextTick()
 }
 describe('assistant panel boundaries',()=>{
+ it('follows a background answer after reveal but preserves an older reading position',async()=>{
+  const w=panel();await flushPromises()
+  const scroller=w.get('.yl-scroll').element as HTMLElement
+  Object.defineProperty(scroller,'scrollHeight',{configurable:true,value:900})
+  Object.defineProperty(scroller,'clientHeight',{configurable:true,value:200})
+  await w.setProps({mode:'edge'});scroller.scrollTop=0
+  await w.setProps({mode:'side'});await flushPromises()
+  expect(scroller.scrollTop).toBe(900)
+  scroller.scrollTop=100;await w.get('.yl-scroll').trigger('scroll')
+  await w.setProps({mode:'edge'});await w.setProps({mode:'side'});await flushPromises()
+  expect(scroller.scrollTop).toBe(100)
+ })
  it('moves the existing about-panel dock action and saves the chosen side',async()=>{
   const w=panel();await flushPromises();await w.setProps({position:{x:500,y:80}})
   await w.get('[aria-label="关于与连接状态"]').trigger('click')
