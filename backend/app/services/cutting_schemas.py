@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import date
 from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -84,3 +85,78 @@ class StateChange(Command):
 
 
 DATA_MODELS = {'material': Material, 'resource': Resource, 'bom': Bom}
+
+
+class ReceiveOrder(Command):
+    dispatch_id: Text
+
+
+class BindBom(Command):
+    bom_id: Text
+    bom_version: Annotated[int, Field(strict=True, ge=1)]
+    target_sets: Annotated[int, Field(strict=True, ge=1, le=1000000000)]
+    quantity_basis: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    bom_match_basis: Annotated[str, StringConstraints(max_length=500)] = ''
+
+
+class DemandLine(Strict):
+    row: Annotated[int, Field(strict=True, ge=0, le=299)]
+    quantity: Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=6, allow_inf_nan=False)]
+    purchase_mode: Literal['purchase', 'no_purchase'] = 'purchase'
+    no_purchase_reason: Annotated[str, StringConstraints(max_length=500)] = ''
+
+    @model_validator(mode='after')
+    def purchase_basis(self):
+        if self.purchase_mode == 'purchase' and self.quantity <= 0:
+            raise ValueError('需要采购时数量必须大于零')
+        if self.purchase_mode == 'no_purchase' and (self.quantity != 0 or not self.no_purchase_reason):
+            raise ValueError('本次不采购必须数量为零并填写原因')
+        return self
+
+
+class SubmitRequisition(Command):
+    lines: Annotated[list[DemandLine], Field(min_length=1, max_length=300)]
+
+
+class EtaBatch(Strict):
+    row: Annotated[int, Field(strict=True, ge=0, le=299)]
+    quantity: Quantity
+    expected_date: date
+    supplier: Text
+    purchase_reference: Text
+
+
+class ReplyEta(Command):
+    requisition_version: Annotated[int, Field(strict=True, ge=1)]
+    batches: Annotated[list[EtaBatch], Field(max_length=1000)]
+
+
+class WithdrawRequisition(Command):
+    requisition_version: Annotated[int, Field(strict=True, ge=1)]
+
+
+class ReconcileRequisition(WithdrawRequisition):
+    disposition: Literal['not_ordered', 'cancelled_or_reallocated']
+    evidence: Annotated[str, StringConstraints(min_length=4, max_length=500)]
+    all_handled: Annotated[bool, Field(strict=True)]
+
+    @model_validator(mode='after')
+    def entire_requisition_handled(self):
+        if not self.all_handled:
+            raise ValueError('只有整张旧需求均已核对处置，才可解除等待')
+        return self
+
+
+OrderAction = Literal['receive', 'bom', 'requisition', 'eta', 'withdraw', 'reconcile']
+WorkflowStatus = Literal['awaiting_receipt', 'cancelled_receipt', 'cancelled', 'reconciliation',
+                         'awaiting_bom', 'awaiting_submission', 'awaiting_reply', 'partial_reply', 'complete_reply', 'no_purchase']
+
+
+class RecoverOperation(Strict):
+    action: OrderAction
+    command: dict
+
+
+class OperationIdentity(Strict):
+    factory_id: Literal['huakang-c']
+    operation_id: Annotated[str, StringConstraints(pattern=r'^[A-Za-z0-9_-]{16,64}$')]

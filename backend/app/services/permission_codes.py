@@ -12,7 +12,7 @@ UV_OPS_PERMISSION_CODES = tuple("uv_ops:" + action for action in (
 ))
 
 CUTTING_OPS_PERMISSION_CODES = tuple("cutting_ops:" + action for action in (
-    "read", "master_write", "bom_write", "bom_publish",
+    "read", "master_write", "bom_write", "bom_publish", "order_receive", "requisition_submit", "eta_write", "requisition_reconcile",
 ))
 
 SPRAY_OPS_PERMISSION_CODES = tuple("spray_ops:" + action for action in (

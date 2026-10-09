@@ -276,6 +276,13 @@ def cancel(db: Session, line: Line, body, actor: str) -> None:
 
 
 def dispatch(db: Session, line: Line, body, actor: str) -> None:
+    if 'cutting' in body.recipients:
+        from app.core.config import settings
+        from app.services import cutting_orders
+        if line.factory_id != 'huakang-c':
+            raise HTTPException(422, '裁床接收方仅限华康C')
+        if not settings.cutting_ops_enabled or not cutting_orders.schema_ready(db.connection()):
+            raise HTTPException(503, '裁床订单接收尚未启用或未完成迁移')
     lock_line(db, line, body.expected_revision)
     if line.status != "active":
         raise HTTPException(409, "已取消订单不能新发送")

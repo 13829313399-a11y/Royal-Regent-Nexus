@@ -53,9 +53,14 @@ def transaction(db, operation):
 def capabilities(factory_id: str, recipient: Literal["pmc", "warehouse", "injection"] = "pmc",
                  db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     valid_factory(factory_id)
-    return {action: has_permission_for_departments(current_user, "customer_order:" + action, factory_id,
+    from app.core.config import settings
+    from app.services import cutting_orders
+    result = {action: has_permission_for_departments(current_user, "customer_order:" + action, factory_id,
             ledger.RECIPIENTS[recipient] if action.startswith("inbox_") else ("sales-business",))
             for action in ("read", "write", "dispatch", "shipment_confirm", "inbox_read", "inbox_receive")}
+    result['cutting_dispatch_enabled'] = bool(factory_id == 'huakang-c' and result['dispatch'] and
+        settings.cutting_ops_enabled and cutting_orders.schema_ready(db.connection()))
+    return result
 
 
 @router.get("/history/customers")
