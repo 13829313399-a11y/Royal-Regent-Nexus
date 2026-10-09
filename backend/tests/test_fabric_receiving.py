@@ -14,16 +14,20 @@ from sqlalchemy.orm import Session
 
 from test_fabric_procurement import BASE, book, row, upload, stored
 from test_fabric_procurement_tracking import save, undo_preview, undo
-from test_molding_sample_api import make_client, login_as
+from test_molding_sample_api import login_as
+from warehouse_location_fixtures import make_client, seed_fabric_locations
 
 
 def request(line, **changes):
-    return {"factory_id": "huakang-c", "request_id": str(uuid4()), "expected_source_revision": line["revision"],
+    body = {"factory_id": "huakang-c", "request_id": str(uuid4()), "expected_source_revision": line["revision"],
         "expected_receipt_count": line.get("receipt_count", 0), "receipt_date": "2026-09-16",
         "delivery_reference": "DN-001", "material_category": "FABRIC",
         "batches": [{"quantity": "20.1", "location": "A01", "dye_lot": "00001", "roll_no": "00002"},
                     {"quantity": "29.9", "location": "A02", "dye_lot": "00001", "roll_no": "00003"}],
         "confirmed": True, **changes}
+    for part in body["batches"]:
+        part.setdefault("location_id", "fabric-" + part["location"].strip())
+    return body
 
 
 def receive(client, line, body):
@@ -297,6 +301,7 @@ def test_concurrent_receiving_posts_once_and_rejects_stale_count(tmp_path, same_
     dbm.Base.metadata.create_all(engine, tables=tables)
     actor = SimpleNamespace(id="actor", display_name="Warehouse")
     with Session(engine) as db:
+        seed_fabric_locations(db)
         parsed = parser.parse_workbook("source.xlsx", book([row()]))
         token = source.preview(db, parsed, actor.id)["preview_token"]
         source.apply(db, parser.parse_workbook("source.xlsx", book([row()])), actor, "source.xlsx", str(uuid4()), token, confirmed=True, acknowledge_excluded=True)

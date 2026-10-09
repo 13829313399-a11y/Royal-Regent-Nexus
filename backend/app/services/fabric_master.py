@@ -105,6 +105,8 @@ def save(db, actor, payload):
         FabricMasterRecord.kind == "SUPPLIER", FabricMasterRecord.name == payload.name, FabricMasterRecord.id != (payload.id or ""))):
         raise HTTPException(409, "供应商名称已存在，请修改现有资料")
     fields = body["data"]
+    if record and payload.kind == "LOCATION" and json.loads(record.data_json).get("warehouse") and fields.get("warehouse") != json.loads(record.data_json).get("warehouse"):
+        raise HTTPException(422, "仓位不能直接改换所属仓库；实物移动请调仓，仓库改名请使用整仓更名")
     if payload.kind == "UNIT" and not fields["ratio"]:
         for existing in records(db):
             if existing.kind == "UNIT" and existing.id != (payload.id or "") and not json.loads(existing.data_json).get("ratio") and {payload.code, payload.name} & {existing.code, existing.name}:
@@ -173,16 +175,12 @@ def receipt_references(db, facts, payload):
     unit = next((row for row in all_records if row.kind == "UNIT" and not json.loads(row.data_json).get("ratio") and facts["unit"] in (row.code, row.name)), None)
     if unit and unit.status == "INACTIVE":
         raise HTTPException(422, "该单位资料已停用，请负责人核对后再收料")
+    from app.services.warehouse_locations import resolve
+    by_id = {row.id: row for row in all_records}
     bins = []
     for batch in payload.batches:
-        matches = [row for row in all_records if row.kind == "LOCATION" and row.code.casefold() == batch.location.strip().casefold()]
-        if len(matches) > 1:
-            raise HTTPException(422, "仓位编码有多个大小写对应，请负责人核对基础资料")
-        item = matches[0] if matches else None
-        if item and item.status != "ACTIVE":
-            raise HTTPException(422, "所选仓位未启用，请更换仓位或完善基础资料")
-        if item:
-            bins.append(record_data(item))
+        resolved = resolve(db, 'fabric', batch.location_id)
+        bins.append({**record_data(by_id[resolved['id']]), **resolved})
     return {"material": material["master_material"] if material["master_material_matches"] and material["material_category"] else None,
             "supplier": record_data(supplier) if supplier and supplier.status == "ACTIVE" else None,
             "unit": record_data(unit) if unit and unit.status == "ACTIVE" else None, "locations": bins}

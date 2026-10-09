@@ -58,7 +58,7 @@ export interface PurchaseLine {
   receipt_quantity_review_required?: boolean; receipt_quantity_conflict?: boolean; receipt_identity_review_required?: boolean; promise_date?: string | null; promise_text?: string; overdue_days?: number; promise_elapsed_days?: number | null
   material_category?: MaterialCategory | null; master_material?: MasterRecord | null
 }
-export interface PurchaseDetail extends Omit<PurchaseLine, 'updated_at'> { can_review?: boolean; can_receive?: boolean; active?: boolean; available_locations?: { code: string; name: string; warehouse: string }[]; chase_resolution_history?: ChaseResolution[]; evidence: { id?: string; withdrawal?: ImportWithdrawal; source_name: string; sheet: string; row_number: number; actor_name: string; occurred_at: string; before: Partial<PurchaseFacts>; after: PurchaseFacts }[] }
+export interface PurchaseDetail extends Omit<PurchaseLine, 'updated_at'> { can_review?: boolean; can_receive?: boolean; active?: boolean; available_locations?: { id: string; label: string; code: string; name: string; warehouse: string }[]; chase_resolution_history?: ChaseResolution[]; evidence: { id?: string; withdrawal?: ImportWithdrawal; source_name: string; sheet: string; row_number: number; actor_name: string; occurred_at: string; before: Partial<PurchaseFacts>; after: PurchaseFacts }[] }
 export interface WithdrawalPreview { id: string; source_name: string; remove_count: number; restore_count: number; preview_token: string; revision: number }
 
 function form(file: File, scope: PurchaseScope) {

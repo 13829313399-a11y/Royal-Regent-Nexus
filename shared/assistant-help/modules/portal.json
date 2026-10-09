@@ -56,11 +56,11 @@
       {
         "path": "src/features/warehouse-operations/navigation.ts",
         "symbol": "WAREHOUSE_FACTORY",
-        "sha256": "4f7efb62bd0d3b6eb7a1229d247f8767595ff45a133fc2032222f6c1c63f9f4b"
+        "sha256": "a886037cbdae00bd31df19166f852e0621ff44dc7fafbb21ff29c99c932953c8"
       }
     ],
-    "knowledge_version": "2026.10.08-v3",
-    "verified_commit": "c8ff83404a0b2dbe63ba0e484cc0f89c3fe8a5ef",
+    "knowledge_version": "2026.10.09-v1",
+    "verified_commit": "working-tree@68b855b61ece37dae93c3573f2aade3805bb2255",
     "status": "verified"
   }
 ]
