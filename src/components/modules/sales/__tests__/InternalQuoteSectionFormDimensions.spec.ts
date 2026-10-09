@@ -1,9 +1,34 @@
+import { reactive } from 'vue'
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import InternalQuoteSectionForm from '@/components/modules/sales/internal-quote/InternalQuoteSectionForm.vue'
 import { calculateCartonCuft, normalizeInternalQuotePayload, type SalesPayload, type SewingPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('InternalQuoteSectionForm dimension units', () => {
+  it('keeps ordinary-customer carton fields visible while clearing and retyping the paper factor', async () => {
+    const payload = reactive(normalizeInternalQuotePayload('sales', {
+      cartons: [{ item: '主纸箱', length_in: 10, width_in: 5, height_in: 4, qty_per_carton: 10, flat_cards: [] }],
+    }))
+    const errors: unknown[] = []
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: { code: 'sales', customer: '普通客户', pricingMode: 'standard', modelValue: payload, disabled: false },
+      global: { config: { errorHandler: (error) => errors.push(error) } },
+    })
+    expect(wrapper.find('.justplay-packaging').exists()).toBe(false)
+    const factor = wrapper.get('input[aria-label="主纸箱纸价系数"]')
+    await factor.setValue('')
+    expect(errors).toEqual([])
+    expect(wrapper.text()).toContain('纸箱计算与包装尺寸部分')
+    expect(wrapper.find('.sales-packaging-materials').exists()).toBe(true)
+    expect(payload.paper_price_factor).toBe('')
+    expect((payload.cartons as SalesPayload['cartons'])[0].length_in).toBe(10)
+    await wrapper.get('input[aria-label="主纸箱纸价系数"]').setValue('3.5')
+    expect(payload.paper_price_factor).toBe(3.5)
+    expect(wrapper.get('.carton-card .calculation-strip').text()).toContain('纸价系数 3.5000')
+    expect(errors).toEqual([])
+    wrapper.unmount()
+  })
+
   it('keeps the main carton fixed and unlocks the inner-carton factor only after adding an inner carton', async () => {
     const payload = normalizeInternalQuotePayload('sales', {}) as unknown as SalesPayload
     const wrapper = mount(InternalQuoteSectionForm, {
