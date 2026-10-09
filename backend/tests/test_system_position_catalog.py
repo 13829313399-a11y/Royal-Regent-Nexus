@@ -48,12 +48,14 @@ def test_fixed_system_position_definition_contract():
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 154
+    assert len(registered_codes) == 158
+    assert len(permission_codes.CUTTING_OPS_PERMISSION_CODES) == 4
+    assert all(not (set(definition.permission_codes) & set(permission_codes.CUTTING_OPS_PERMISSION_CODES)) for definition in definitions)
     assert "system:feedback_manage" in permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES
     assert "system:feedback_manage" not in permission_codes.BUSINESS_PERMISSION_CODES
     assert permission_codes.MODULE_FEEDBACK_PERMISSION_CODES == ("module_feedback:submit", "module_feedback:manage")
     assert not set(permission_codes.MODULE_FEEDBACK_PERMISSION_CODES) & set(permission_codes.BUSINESS_PERMISSION_CODES)
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 144
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 148
     assert len(permission_codes.UV_OPS_PERMISSION_CODES) == 18
     assert all(not (set(definition.permission_codes) & set(permission_codes.UV_OPS_PERMISSION_CODES)) for definition in definitions)
     assert len(permission_codes.SPRAY_OPS_PERMISSION_CODES) == 14
@@ -106,6 +108,7 @@ def test_fixed_system_position_definition_contract():
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
             *permission_codes.SPRAY_OPS_PERMISSION_CODES,
+            *permission_codes.CUTTING_OPS_PERMISSION_CODES,
             *permission_codes.UV_OPS_PERMISSION_CODES,
             *permission_codes.CARTON_SUPPLIER_PERMISSION_CODES,
         )

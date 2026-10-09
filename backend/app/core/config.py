@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     three_d_edge_agent_token: str = ""
     three_d_network_health_token: str = ""
     spray_ops_enabled: bool = False
+    cutting_ops_enabled: bool = False
     uv_ops_enabled: bool = False
     uv_ops_dispatch_enabled: bool = False
     three_d_connector_enabled: bool = False
