@@ -437,6 +437,19 @@ if (disneyProfile) {
   })
 }
 
+const seasonsProfile = CUSTOMER_PROFILES_BY_FACTORY.huaxing?.find((profile) => profile.code === 'seasons')
+if (seasonsProfile) {
+  CUSTOMER_PROFILES_BY_FACTORY['huakang-d']!.push({
+    ...seasonsProfile,
+    poExtensions: [...seasonsProfile.poExtensions],
+    scheduleExtensions: ['.xlsx'],
+    scheduleAccept: '.xlsx',
+    targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3',
+    templateDescription: '华康D 施信河源业务统一排期',
+    ruleDescription: '复用 SEASONS（施信）QF 与正式 PO 识别规则，只核对本次上传的华康D统一排期；三张表独立追加并保留已有记录、公式和人工字段，订单只保存到华康D台账。',
+  })
+}
+
 const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([
   'disney', 'edu', '360', 'green-toys', 'headstart', 'yinhui', 'seasons', 'maxx', 'shushupapa', 'barter',
   'casdon', 'jakks', 'simba', 'spin', 'goliath',

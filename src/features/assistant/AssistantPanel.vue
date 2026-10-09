@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowUp, Square, Minus, Maximize2, Minimize2, History, Plus, Info, X, MapPin, ChevronRight, ArrowDown, Download, Trash2, Pencil, PanelLeftClose, ImagePlus, GripVertical } from '@lucide/vue'
+import { ArrowUp, Square, Minus, Maximize2, Minimize2, History, Plus, Info, X, MapPin, ChevronRight, ArrowDown, Download, Trash2, Pencil, PanelLeftClose, ImagePlus, GripVertical, RotateCcw } from '@lucide/vue'
 import { useAssistantStore } from '@/stores/assistant'
 import { acquireBodyScrollLock } from '@/lib/bodyScrollLock'
 import { assistantApi } from './api'
@@ -8,20 +8,23 @@ import { availableTargetIds, revealTarget } from './anchors'
 import { activeStates, stateLabels, type Conversation, type HelpArticle, type PageContext, type PanelMode, type SendPayload } from './types'
 import AssistantCore from './AssistantCore.vue'
 import AssistantMessage from './AssistantMessage.vue'
-const props = defineProps<{ mode: PanelMode; side: 'left' | 'right'; width: number; page: PageContext | null; pageTitle: string; suspended?: boolean }>()
-const emit = defineEmits<{ mode: [PanelMode]; side: ['left' | 'right']; width: [number] }>()
+import { clamp, defaultPanelHeight, panelBounds, panelMargin, type PanelPosition } from './layout'
+const props = withDefaults(defineProps<{ mode: PanelMode; side: 'left' | 'right'; width: number; height?: number; position?: PanelPosition | null; focusOnOpen?: boolean; page: PageContext | null; pageTitle: string; suspended?: boolean }>(), { focusOnOpen: true })
+const emit = defineEmits<{ mode: [PanelMode]; side: ['left' | 'right']; width: [number]; height: [number]; position: [PanelPosition | null]; 'layout-end': []; 'pointer-enter': [PointerEvent]; 'pointer-leave': [PointerEvent]; 'focus-change': [boolean] }>()
 const store = useAssistantStore(), panel = ref<HTMLElement>(), scroller = ref<HTMLElement>(), composer = ref<HTMLTextAreaElement>()
 const draft = ref(''), tab = ref<'chat' | 'help' | 'pick'>('chat'), historyOpen = ref(false), aboutOpen = ref(false)
 const help = ref<HelpArticle[]>([]), helpError = ref(''), selectedArticle = ref<HelpArticle | null>(null)
 const localError = ref(''), useContext = ref(true), thinking = ref<'auto' | 'on' | 'off'>('auto'), showNew = ref(false)
 const attachments = ref<{ id: string; url: string; name: string }[]>([]), uploading = ref(false), fileInput = ref<HTMLInputElement>()
-const viewport = ref({ width: innerWidth, height: innerHeight, top: 0 }), reducedMotion = ref(false)
+const viewport = ref({ width: innerWidth, height: innerHeight, top: 0, left: 0 }), reducedMotion = ref(false)
 const pickTargets = ref<{ id: string; label: string }[]>([]), highlight = ref<DOMRect | null>(null), guideIndex = ref(-1)
 const renameId = ref(''), renameText = ref(''), deleteId = ref('')
 let nearBottom = true, helpGeneration = 0, highlightElement: HTMLElement | null = null
 let releaseLock: (() => void) | undefined, originalInert: boolean | undefined, oldFocus: HTMLElement | null = null
-let pointer: { kind: 'drag' | 'resize'; x: number; width: number } | null = null
+let pointer: { kind: 'drag' | 'resize' | 'corner'; id: number; target: HTMLElement; x: number; y: number; bounds: ReturnType<typeof panelBounds>; moved: boolean } | null = null
+const manipulating = ref(false)
 let previewing = false, connectorTimer: ReturnType<typeof setTimeout> | undefined
+let keyboardNavigation = true
 const connector = ref(false)
 const connectionPath = computed(() => {
   if (!highlight.value || !panel.value || props.mode === 'edge') return ''
@@ -31,11 +34,13 @@ const connectionPath = computed(() => {
   return `M ${x} ${y} C ${(x+tx)/2} ${y}, ${(x+tx)/2} ${ty}, ${tx} ${ty}`
 })
 const modal = computed(() => props.mode === 'focus' || (props.mode !== 'edge' && viewport.value.width < 768))
-const sizeStyle = computed(() => ({ '--yl-width': `${props.width}px`, '--yl-vh': `${viewport.value.height}px`, '--yl-vtop': `${viewport.value.top}px` }))
+const bounds = computed(() => panelBounds(viewport.value, props.width, props.height ?? defaultPanelHeight, props.position, props.side))
+const sizeStyle = computed(() => ({ '--yl-width': `${bounds.value.width}px`, '--yl-height': `${bounds.value.height}px`, '--yl-vh': `${viewport.value.height}px`, '--yl-vtop': `${viewport.value.top}px`,
+  ...(!modal.value ? { left: `${bounds.value.x}px`, top: `${bounds.value.y}px`, right: 'auto' } : {}) }))
 const canChat = computed(() => store.capabilities?.configuration_status === 'configured' && store.capabilities.schema_status === 'ready')
 const connectionLabel = computed(() => store.capabilities?.schema_status !== 'ready' ? '数据准备待完成' : !canChat.value ? '模型连接待配置' : store.capabilities?.connection_status === 'verified' ? '模型连接已验证' : '模型连接待验证')
 const guide = computed(() => selectedArticle.value?.steps[guideIndex.value])
-function resizeViewport() { viewport.value = { width: window.visualViewport?.width || innerWidth, height: window.visualViewport?.height || innerHeight, top: window.visualViewport?.offsetTop || 0 }; updateHighlight() }
+function resizeViewport() { pointerEnd(); viewport.value = { width: window.visualViewport?.width || innerWidth, height: window.visualViewport?.height || innerHeight, top: window.visualViewport?.offsetTop || 0, left: window.visualViewport?.offsetLeft || 0 }; updateHighlight() }
 function unlock() {
   releaseLock?.(); releaseLock = undefined
   const root = document.getElementById('app')
@@ -51,8 +56,9 @@ watch(modal, async value => {
   }
 }, { immediate: true })
 watch(() => props.mode, async (value, previous) => {
-  if (value !== 'edge' && previous === 'edge') { oldFocus = document.activeElement as HTMLElement; await store.refreshCapabilities(); await nextTick(); composer.value?.focus() }
-  if (value === 'edge' && !previewing) { clearHighlight(); guideIndex.value = -1; tab.value = 'chat'; oldFocus?.focus() }
+  pointerEnd()
+  if (value !== 'edge' && previous === 'edge') { oldFocus = document.activeElement as HTMLElement; await store.refreshCapabilities(); await nextTick(); if (props.focusOnOpen !== false && props.mode !== 'edge') composer.value?.focus() }
+  if (value === 'edge' && !previewing) { clearHighlight(); guideIndex.value = -1; tab.value = 'chat'; if (panel.value?.contains(document.activeElement)) oldFocus?.focus() }
   if (value !== 'edge') previewing = false
 })
 watch(() => props.suspended, value => { if (value) { clearHighlight(); guideIndex.value = -1; previewing = false } })
@@ -96,7 +102,11 @@ function updateHighlight() {
   highlight.value = highlightElement.getBoundingClientRect()
 }
 function clearHighlight() { highlightElement = null; highlight.value = null; connector.value = false }
-function previewEscape(event: KeyboardEvent) { if (props.mode === 'edge' && highlight.value && event.key === 'Escape') { clearHighlight(); guideIndex.value = -1; previewing = false } }
+function previewEscape(event: KeyboardEvent) { if (event.key === 'Tab') keyboardNavigation = true; if (props.mode === 'edge' && highlight.value && event.key === 'Escape') { clearHighlight(); guideIndex.value = -1; previewing = false } }
+function updateFocus(target: EventTarget | null) {
+  emit('focus-change', target instanceof HTMLElement && !!panel.value?.contains(target) && (keyboardNavigation || !!target.closest('input,textarea,select,[contenteditable="true"]')))
+}
+function pointerFocus() { keyboardNavigation = false; updateFocus(document.activeElement) }
 function pickClick(event: MouseEvent) {
   if (tab.value !== 'pick' || (event.target as HTMLElement).closest('.yl-assistant')) return
   const target = (event.target as HTMLElement).closest<HTMLElement>('[data-yl-help]')
@@ -111,6 +121,7 @@ async function guideStep(index: number) {
 }
 function keydown(event: KeyboardEvent) {
   if (props.mode === 'edge' || event.isComposing) return
+  keyboardNavigation = true; updateFocus(document.activeElement)
   if (event.key === 'Escape') {
     event.preventDefault(); event.stopPropagation()
     if (historyOpen.value || aboutOpen.value) { historyOpen.value = false; aboutOpen.value = false }
@@ -170,11 +181,70 @@ async function upload(files: File[]) {
 }
 async function removeImage(index: number) { const image = attachments.value[index]; if (!image) return; try { await assistantApi.removeAttachment(image.id); URL.revokeObjectURL(image.url); attachments.value.splice(index,1) } catch (e) { localError.value = e instanceof Error ? e.message : '移除未完成。' } }
 function paste(event: ClipboardEvent) { const files = [...(event.clipboardData?.files || [])]; if (files.length) { event.preventDefault(); void upload(files) } }
-function pointerDown(event: PointerEvent, kind: 'drag' | 'resize') { if (event.button !== 0 || modal.value) return; pointer = { kind, x: event.clientX, width: props.width }; (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId) }
+function pointerDown(event: PointerEvent, kind: 'drag' | 'resize' | 'corner') {
+  if (event.button !== 0 || modal.value || props.mode === 'edge' || pointer) return
+  if (kind === 'drag' && (event.target as Element).closest('button:not(.yl-drag),input,textarea,select,a')) return
+  event.preventDefault()
+  const target = event.currentTarget as HTMLElement
+  pointer = { kind, id: event.pointerId, target, x: event.clientX, y: event.clientY, bounds: { ...bounds.value }, moved: false }
+  target.setPointerCapture(event.pointerId)
+}
 function pointerMove(event: PointerEvent) {
-  if (!pointer) return
-  if (pointer.kind === 'resize') emit('width', Math.max(360, Math.min(600, pointer.width+(event.clientX-pointer.x)*(props.side === 'left' ? 1 : -1))))
-  else if (Math.abs(event.clientX-pointer.x)>30) emit('side', event.clientX < innerWidth/2 ? 'left' : 'right')
+  if (!pointer || pointer.id !== event.pointerId) return
+  const dx = event.clientX - pointer.x, dy = event.clientY - pointer.y, b = pointer.bounds
+  if (!pointer.moved && Math.hypot(dx, dy) < 4) return
+  pointer.moved = true; manipulating.value = true
+  if (pointer.kind === 'drag') {
+    const next = panelBounds(viewport.value, b.width, b.height, { x: b.x + dx, y: b.y + dy }, props.side)
+    emit('position', { x: next.x, y: next.y })
+  } else {
+    const fromLeft = pointer.kind === 'resize' && props.side === 'right'
+    const maxWidth = fromLeft ? b.x + b.width - viewport.value.left - panelMargin : viewport.value.left + viewport.value.width - panelMargin - b.x
+    const width = clamp(b.width + dx * (fromLeft ? -1 : 1), 360, Math.min(600, maxWidth))
+    emit('width', width)
+    emit('position', { x: fromLeft ? b.x + b.width - width : b.x, y: b.y })
+    if (pointer.kind === 'corner') emit('height', clamp(b.height + dy, Math.min(360, viewport.value.height - panelMargin * 2), Math.min(820, viewport.value.top + viewport.value.height - panelMargin - b.y)))
+  }
+}
+function pointerEnd(event?: PointerEvent) {
+  if (!pointer || (event && pointer.id !== event.pointerId)) return
+  const finished = pointer; pointer = null; manipulating.value = false
+  if (finished.target.hasPointerCapture(finished.id)) finished.target.releasePointerCapture(finished.id)
+  if (finished.moved) {
+    const b = bounds.value
+    emit('side', b.x + b.width / 2 < viewport.value.left + viewport.value.width / 2 ? 'left' : 'right')
+    // Snap only near an edge, after releasing the pointer.
+    const left = viewport.value.left + panelMargin, right = viewport.value.left + viewport.value.width - panelMargin - b.width
+    if (finished.kind === 'drag' && event?.type === 'pointerup') emit('position', { x: b.x - left < 16 ? left : right - b.x < 16 ? right : b.x, y: b.y })
+    emit('layout-end')
+  }
+}
+function resetLayout() {
+  emit('position', null); emit('side', 'right'); emit('width', 432); emit('height', defaultPanelHeight); emit('layout-end')
+}
+function switchSide() {
+  const side = props.side === 'right' ? 'left' : 'right'
+  emit('side', side)
+  emit('position', { x: side === 'left' ? viewport.value.left + panelMargin : viewport.value.left + viewport.value.width - panelMargin - bounds.value.width, y: bounds.value.y })
+  emit('layout-end')
+}
+function layoutKey(event: KeyboardEvent, resize = false) {
+  if (modal.value) return
+  if (event.key === 'Home') { event.preventDefault(); resetLayout(); return }
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+  event.preventDefault()
+  const step = event.shiftKey ? 50 : 20, b = bounds.value
+  const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0
+  const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0
+  if (resize) {
+    const width = clamp(b.width + dx, 360, Math.min(600, viewport.value.left + viewport.value.width - panelMargin - b.x))
+    const height = clamp(b.height + dy, Math.min(360, viewport.value.height - panelMargin * 2), Math.min(820, viewport.value.top + viewport.value.height - panelMargin - b.y))
+    emit('width', width); emit('height', height); emit('position', { x: b.x, y: b.y })
+  } else {
+    const next = panelBounds(viewport.value, b.width, b.height, { x: b.x + dx, y: b.y + dy }, props.side)
+    emit('position', { x: next.x, y: next.y }); emit('side', next.x + b.width / 2 < viewport.value.left + viewport.value.width / 2 ? 'left' : 'right')
+  }
+  emit('layout-end')
 }
 onMounted(() => {
   try { reducedMotion.value = localStorage.getItem('yl-assistant-reduced-motion') === 'true' } catch { /* optional preference */ }
@@ -182,19 +252,19 @@ onMounted(() => {
   oldFocus = document.activeElement as HTMLElement; resizeViewport()
   window.addEventListener('resize', resizeViewport); window.visualViewport?.addEventListener('resize', resizeViewport); window.visualViewport?.addEventListener('scroll', resizeViewport)
   window.addEventListener('scroll', updateHighlight, true); document.addEventListener('click', pickClick, true)
-  void store.history(); void nextTick(() => composer.value?.focus())
+  void store.history(); void nextTick(() => { if (props.focusOnOpen !== false) composer.value?.focus() })
 })
-onUnmounted(() => { helpGeneration++; clearTimeout(connectorTimer); window.removeEventListener('keydown', previewEscape); unlock(); resetAttachments(); window.removeEventListener('resize', resizeViewport); window.visualViewport?.removeEventListener('resize', resizeViewport); window.visualViewport?.removeEventListener('scroll', resizeViewport); window.removeEventListener('scroll', updateHighlight, true); document.removeEventListener('click', pickClick, true) })
+onUnmounted(() => { pointerEnd(); helpGeneration++; clearTimeout(connectorTimer); window.removeEventListener('keydown', previewEscape); unlock(); resetAttachments(); window.removeEventListener('resize', resizeViewport); window.visualViewport?.removeEventListener('resize', resizeViewport); window.visualViewport?.removeEventListener('scroll', resizeViewport); window.removeEventListener('scroll', updateHighlight, true); document.removeEventListener('click', pickClick, true) })
 </script>
 <template>
   <div :class="{ 'yl-reduced': reducedMotion }">
     <div v-if="modal" class="yl-backdrop" @click="emit('mode', 'side')" />
-    <section v-show="mode !== 'edge'" ref="panel" class="yl-panel" :class="{ 'yl-focus': mode === 'focus', 'yl-mobile': viewport.width < 768 }" :style="sizeStyle" role="dialog" :aria-modal="modal || undefined" aria-label="曜灵 · Nexus AI" tabindex="-1" @keydown="keydown">
-      <header class="yl-header">
+    <section v-show="mode !== 'edge'" ref="panel" class="yl-panel" :class="{ 'yl-focus': mode === 'focus', 'yl-mobile': viewport.width < 768, 'yl-manipulating': manipulating }" :style="sizeStyle" role="dialog" :aria-modal="modal || undefined" aria-label="曜灵 · Nexus AI" tabindex="-1" @keydown="keydown" @pointerdown.capture="pointerFocus" @pointerenter="emit('pointer-enter', $event)" @pointerleave="emit('pointer-leave', $event)" @focusin="updateFocus($event.target)" @focusout="updateFocus($event.relatedTarget)">
+      <header class="yl-header" :class="{ 'yl-movable': !modal }" @pointerdown="pointerDown($event, 'drag')" @pointermove="pointerMove" @pointerup="pointerEnd" @pointercancel="pointerEnd" @lostpointercapture="pointerEnd">
         <div class="yl-header-top"><AssistantCore :active="store.anyBusy" /><div class="yl-brand"><strong>曜灵</strong><span>Nexus AI</span></div>
           <div class="yl-header-actions"><button aria-label="历史会话" title="历史会话" @click="historyOpen = !historyOpen; store.history()"><History :size="18" /></button><button aria-label="新建对话" title="新建对话" :disabled="store.creating || store.capabilities?.schema_status !== 'ready'" @click="newChat"><Plus :size="19" /></button><button :aria-label="mode === 'focus' ? '退出专注阅读' : '专注阅读'" @click="emit('mode', mode === 'focus' ? 'side' : 'focus')"><Minimize2 v-if="mode === 'focus'" :size="17" /><Maximize2 v-else :size="17" /></button><button aria-label="收起曜灵" @click="emit('mode', 'edge')"><Minus :size="20" /></button></div>
         </div>
-        <div class="yl-header-bottom"><span class="yl-connection"><i />{{ store.currentRun && store.busy ? stateLabels[store.currentRun.state] : connectionLabel }}</span><button class="yl-drag" aria-label="拖动舱头，或按左右方向键停靠" @pointerdown="pointerDown($event, 'drag')" @pointermove="pointerMove" @pointerup="pointer = null" @pointercancel="pointer = null" @keydown.left="emit('side', 'left')" @keydown.right="emit('side', 'right')"><GripVertical :size="14" />拖动停靠</button><button aria-label="关于与连接状态" @click="aboutOpen = !aboutOpen"><Info :size="16" /></button></div>
+        <div class="yl-header-bottom"><span class="yl-connection"><i />{{ store.currentRun && store.busy ? stateLabels[store.currentRun.state] : connectionLabel }}</span><button v-if="!modal" class="yl-drag" aria-label="移动曜灵浮窗" title="拖动标题栏移动；方向键微调，Home 恢复位置和大小" @keydown="layoutKey($event)"><GripVertical :size="14" />拖动浮窗</button><button v-if="!modal" aria-label="恢复浮窗位置和大小" title="恢复位置和大小" @click="resetLayout"><RotateCcw :size="14" /></button><button aria-label="关于与连接状态" @click="aboutOpen = !aboutOpen"><Info :size="16" /></button></div>
       </header>
       <div v-if="page && useContext" class="yl-context"><span>当前页面</span><b>{{ pageTitle }}</b><button aria-label="移除页面上下文" @click="useContext = false; selectedArticle = null"><X :size="13" /></button></div>
       <div v-else class="yl-context"><span>自由交流</span><b>从你的问题开始</b><button v-if="page" @click="useContext = true">带上本页</button></div>
@@ -233,8 +303,9 @@ onUnmounted(() => { helpGeneration++; clearTimeout(connectorTimer); window.remov
         <p class="yl-disclosure">消息、主动上传的图片及选用的说明会交给配置的模型服务。</p>
       </form>
       <div v-if="historyOpen" class="yl-inner-layer"><header><h2>你的对话</h2><button aria-label="关闭历史" @click="historyOpen = false"><X :size="18" /></button></header><button class="yl-primary" @click="newChat">开启新对话 <Plus :size="17" /></button><div class="yl-history-list"><article v-for="row in store.sessions" :key="row.id"><template v-if="renameId === row.id"><input v-model="renameText" aria-label="对话名称" maxlength="160" @keydown.enter="rename(row)" /><button @click="rename(row)">保存</button><button @click="renameId = ''">取消</button></template><template v-else><button class="yl-history-title" :disabled="row.deletion_state !== 'active'" @click="store.selectSession(row.id); historyOpen = false; tab = 'chat'"><strong>{{ row.title }}</strong><small>{{ row.deletion_state === 'pending' ? '正在删除，稍后刷新重试清理' : new Date(row.updated_at*1000).toLocaleString('zh-CN') }}</small></button><button aria-label="重命名对话" @click="renameId = row.id; renameText = row.title"><Pencil :size="15" /></button><button aria-label="删除对话" @click="deleteId = row.id"><Trash2 :size="15" /></button></template><div v-if="deleteId === row.id" class="yl-delete-confirm"><p>删除此对话和附件？生成会同时停止。</p><button @click="remove(row)">确认删除</button><button @click="deleteId = ''">保留</button></div></article><p v-if="!store.sessions.length" class="yl-muted">还没有对话，从一个问题开始。</p></div><button v-if="store.historyCursor" @click="store.history(true)">更多历史</button><button v-if="store.selectedId" class="yl-export" @click="exportChat"><Download :size="16" />导出当前完整会话 Markdown</button></div>
-      <div v-if="aboutOpen" class="yl-inner-layer"><header><h2>关于曜灵</h2><button aria-label="关闭关于" @click="aboutOpen = false"><X :size="18" /></button></header><AssistantCore /><h3>曜灵 · Nexus AI</h3><p>可以自由交流，也可以讲解有依据的系统规则。</p><dl><dt>模型服务</dt><dd>千问 · OpenAI 兼容协议</dd><dt>实际模型</dt><dd>{{ store.capabilities?.model || '尚未配置' }}</dd><dt>连接</dt><dd>{{ connectionLabel }}</dd><dt>联网与图片</dt><dd>{{ store.capabilities?.profiles[0]?.vision ? '图片已验证；联网暂不可用' : '尚未验证，暂不可用' }}</dd></dl><p>不会自动抓取整页内容。这里的说明不代表读取了实际订单、价格或生产数据。独立图片翻译应用暂未接入此入口。</p><label><input v-model="reducedMotion" type="checkbox" /> 减少装饰动效</label><button @click="emit('side', side === 'left' ? 'right' : 'left')"><PanelLeftClose :size="16" />移到{{ side === 'right' ? '左' : '右' }}侧</button><button @click="store.refreshCapabilities()">刷新连接状态</button></div>
-      <div v-if="!modal" class="yl-resize" role="separator" aria-label="调整曜灵宽度" aria-orientation="vertical" :aria-valuenow="width" aria-valuemin="360" aria-valuemax="600" tabindex="0" @pointerdown="pointerDown($event,'resize')" @pointermove="pointerMove" @pointerup="pointer = null" @pointercancel="pointer = null" @keydown.left.prevent="emit('width',Math.max(360,width-20))" @keydown.right.prevent="emit('width',Math.min(600,width+20))" />
+      <div v-if="aboutOpen" class="yl-inner-layer"><header><h2>关于曜灵</h2><button aria-label="关闭关于" @click="aboutOpen = false"><X :size="18" /></button></header><AssistantCore /><h3>曜灵 · Nexus AI</h3><p>可以自由交流，也可以讲解有依据的系统规则。</p><dl><dt>模型服务</dt><dd>千问 · OpenAI 兼容协议</dd><dt>实际模型</dt><dd>{{ store.capabilities?.model || '尚未配置' }}</dd><dt>连接</dt><dd>{{ connectionLabel }}</dd><dt>联网与图片</dt><dd>{{ store.capabilities?.profiles[0]?.vision ? '图片已验证；联网暂不可用' : '尚未验证，暂不可用' }}</dd></dl><p>不会自动抓取整页内容。这里的说明不代表读取了实际订单、价格或生产数据。独立图片翻译应用暂未接入此入口。</p><label><input v-model="reducedMotion" type="checkbox" /> 减少装饰动效</label><button @click="switchSide"><PanelLeftClose :size="16" />移到{{ side === 'right' ? '左' : '右' }}侧</button><button @click="store.refreshCapabilities()">刷新连接状态</button></div>
+      <div v-if="!modal" class="yl-resize" role="separator" aria-label="调整曜灵宽度" aria-orientation="vertical" :aria-valuenow="width" aria-valuemin="360" aria-valuemax="600" tabindex="0" @pointerdown="pointerDown($event,'resize')" @pointermove="pointerMove" @pointerup="pointerEnd" @pointercancel="pointerEnd" @lostpointercapture="pointerEnd" @keydown.left.prevent="emit('width',Math.max(360,width-20)); emit('layout-end')" @keydown.right.prevent="emit('width',Math.min(600,width+20)); emit('layout-end')" />
+      <button v-if="!modal" class="yl-resize-corner" aria-label="调整曜灵大小" title="拖动调整宽高；方向键微调，Home 恢复" @pointerdown="pointerDown($event,'corner')" @pointermove="pointerMove" @pointerup="pointerEnd" @pointercancel="pointerEnd" @lostpointercapture="pointerEnd" @keydown="layoutKey($event, true)"><span aria-hidden="true">◢</span></button>
     </section>
     <div v-if="highlight" class="yl-target-outline" :style="{ left: `${Math.max(0,highlight.left-4)}px`, top: `${Math.max(0,highlight.top-4)}px`, width: `${Math.min(viewport.width,highlight.width+8)}px`, height: `${Math.min(viewport.height,highlight.height+8)}px` }" aria-hidden="true" />
     <svg v-if="connector && connectionPath && !reducedMotion" class="yl-connector" aria-hidden="true"><path :d="connectionPath" /></svg>
