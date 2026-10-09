@@ -11,6 +11,10 @@ UV_OPS_PERMISSION_CODES = tuple("uv_ops:" + action for action in (
     "import", "export", "audit_read",
 ))
 
+CUTTING_OPS_PERMISSION_CODES = tuple("cutting_ops:" + action for action in (
+    "read", "master_write", "bom_write", "bom_publish",
+))
+
 SPRAY_OPS_PERMISSION_CODES = tuple("spray_ops:" + action for action in (
     "read", "plan", "report", "quality", "stock_write", "procure", "master_write",
     "cost_read", "cost_write", "payroll_read", "payroll_write", "settle", "import", "export",
@@ -170,6 +174,7 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 )
 
 BUSINESS_PERMISSION_CODES = (
+    *CUTTING_OPS_PERMISSION_CODES,
     *UV_OPS_PERMISSION_CODES,
     *SPRAY_OPS_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,

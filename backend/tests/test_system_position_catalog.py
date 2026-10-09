@@ -48,8 +48,10 @@ def test_fixed_system_position_definition_contract():
     assert not hasattr(positions.SystemPositionDefinition, "permission_profile")
 
     registered_codes = set(permission_codes.APPLICATION_PERMISSION_CODES)
-    assert len(registered_codes) == 148
-    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 141
+    assert len(registered_codes) == 152
+    assert len(permission_codes.BUSINESS_PERMISSION_CODES) == 145
+    assert len(permission_codes.CUTTING_OPS_PERMISSION_CODES) == 4
+    assert all(not (set(definition.permission_codes) & set(permission_codes.CUTTING_OPS_PERMISSION_CODES)) for definition in definitions)
     assert len(permission_codes.UV_OPS_PERMISSION_CODES) == 18
     assert all(not (set(definition.permission_codes) & set(permission_codes.UV_OPS_PERMISSION_CODES)) for definition in definitions)
     assert len(permission_codes.SPRAY_OPS_PERMISSION_CODES) == 14
@@ -102,6 +104,7 @@ def test_fixed_system_position_definition_contract():
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
             *permission_codes.SPRAY_OPS_PERMISSION_CODES,
+            *permission_codes.CUTTING_OPS_PERMISSION_CODES,
             *permission_codes.UV_OPS_PERMISSION_CODES,
             *permission_codes.CARTON_SUPPLIER_PERMISSION_CODES,
         )

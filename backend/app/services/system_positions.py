@@ -12,6 +12,7 @@ from app.services.iam_scope import (
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
     SPRAY_OPS_PERMISSION_CODES,
+    CUTTING_OPS_PERMISSION_CODES,
     UV_OPS_PERMISSION_CODES,
     BUSINESS_PERMISSION_CODES,
     CARTON_PROCUREMENT_PERMISSION_CODES,
@@ -199,6 +200,7 @@ GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
     (
         *UV_OPS_PERMISSION_CODES,
         *SPRAY_OPS_PERMISSION_CODES,
+        *CUTTING_OPS_PERMISSION_CODES,
         "customer_price:settings_read",
         "customer_price:settings_manage",
         *THREE_D_PRINTING_PERMISSION_CODES,

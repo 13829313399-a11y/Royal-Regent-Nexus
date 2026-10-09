@@ -38,6 +38,7 @@ from app.api.work_center import router as work_center_router
 from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
 from app.api.spray_operations import router as spray_operations_router
+from app.api.cutting_operations import router as cutting_operations_router
 from app.api.uv_operations import router as uv_operations_router
 from app.api.uv_agent import router as uv_agent_router
 from app.core.config import settings
@@ -214,6 +215,7 @@ from app.api.three_d_operations import router as three_d_operations_router
 app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)
 app.include_router(spray_operations_router)
+app.include_router(cutting_operations_router)
 app.include_router(uv_operations_router)
 app.include_router(uv_agent_router)
 app.include_router(three_d_connector_router)
