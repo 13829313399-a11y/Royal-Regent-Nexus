@@ -14,7 +14,7 @@ def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path):
     def upgrade(revision):
         result = subprocess.run([sys.executable, '-m', 'alembic', 'upgrade', revision], cwd=backend, env=env, capture_output=True, text=True, encoding='utf-8', timeout=180)
         assert result.returncode == 0, result.stdout + result.stderr
-    upgrade('20260929_0130')
+    upgrade('20261009_0148')
     with sqlite3.connect(database) as db:
         db.execute('CREATE TABLE cutting_preservation_probe (id TEXT PRIMARY KEY, value TEXT)')
         db.execute("INSERT INTO cutting_preservation_probe VALUES ('00001', '真实格式保留')")
@@ -22,7 +22,7 @@ def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path):
         old_rows = {name: db.execute('SELECT * FROM "' + name + '"').fetchall() for name, _ in old_tables}
     upgrade('head'); upgrade('head')
     with sqlite3.connect(database) as db:
-        assert db.execute('SELECT version_num FROM alembic_version').fetchall() == [('20261007_0131',)]
+        assert db.execute('SELECT version_num FROM alembic_version').fetchall() == [('20261009_0149',)]
         assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
         for name, ddl in old_tables:

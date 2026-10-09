@@ -25,13 +25,16 @@ def replenished_by_line(db, line_ids):
 def _posted_linked_samples(db, line_ids):
     if not line_ids:
         return
-    for event in db.scalars(select(CartonAuditEvent).where(
+    events = list(db.scalars(select(CartonAuditEvent).where(
         CartonAuditEvent.event_type == "SUPPLIER_SAMPLE_LINKED",
         CartonAuditEvent.entity_type == "carton_order_line",
-        CartonAuditEvent.entity_id.in_(line_ids))).all():
-        sample_id = json.loads(event.detail_json).get("sample_receipt_line_id")
-        sample = db.get(CartonReceiptLine, sample_id) if sample_id else None
-        receipt = db.get(CartonReceipt, sample.receipt_id) if sample else None
+        CartonAuditEvent.entity_id.in_(line_ids))))
+    links = [(event, json.loads(event.detail_json).get("sample_receipt_line_id")) for event in events]
+    samples = {sample.id: (sample, receipt) for sample, receipt in db.execute(select(CartonReceiptLine, CartonReceipt)
+        .join(CartonReceipt, CartonReceipt.id == CartonReceiptLine.receipt_id)
+        .where(CartonReceiptLine.id.in_({sample_id for _, sample_id in links if sample_id})))} if links else {}
+    for event, sample_id in links:
+        sample, receipt = samples.get(sample_id, (None, None))
         if sample and receipt and sample.factory_id == event.factory_id == receipt.factory_id \
                 and sample.source_type == "AD_HOC" and receipt.status == "POSTED":
             yield event.entity_id, sample
@@ -100,6 +103,8 @@ def replenish_order(db, order_no, payload, user):
         return CartonReplenishmentOut.model_validate(evidence["result"])
 
     order = core.get_order_by_no(db, factory, order_no)
+    from app.services.carton_customer_assignment import ensure_customer_operation
+    ensure_customer_operation(db, user, factory, order.customer_code)
     if order.revision != payload.expected_revision:
         raise HTTPException(409, "订单已更新，请刷新后重新核对补单")
     if order.status not in {"PARTIALLY_RECEIVED", "COMPLETED"}:
@@ -129,7 +134,7 @@ def replenish_order(db, order_no, payload, user):
     latest = issues[0] if issues else None
     pending_type, _, _, snapshot = core._purchase_order_pending_change(order, lines, latest)
     if pending_type != "NONE":
-        raise HTTPException(409, "原订单有尚未发行的数量或交期变更，请先发行后再补单")
+        raise HTTPException(409, "原订单有尚未生成的数量或交期变更，请先生成后再补单")
     sequence = (latest.issue_sequence if latest else 0) + 1
     number = 1 + sum(bool(core._purchase_order_snapshot(issue).get("replenishment")) for issue in issues)
     document_no = f"{order.order_no}-B{number:02d}"

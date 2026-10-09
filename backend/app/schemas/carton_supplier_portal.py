@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 from typing import Literal
+from app.schemas.carton_mark import CartonMarkDocumentCheckResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.carton_procurement import CartonLocationAllocation
 
@@ -55,6 +56,7 @@ class SupplierDocumentSelection(BaseModel):
 class SupplierDocumentExport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     documents: list[SupplierDocumentSelection] = Field(min_length=1, max_length=100)
+    acknowledge_unaccepted: bool = False
 
     @model_validator(mode="after")
     def unique_documents(self):
@@ -83,6 +85,7 @@ class UnmatchedShipLine(BaseModel):
     unit_price: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=6)
 
 class ShipmentCreate(Payload):
+    registration_mode: Literal["SHIPMENT", "EXISTING_RECEIPT"] = "SHIPMENT"
     request_id: str = Field(min_length=8, max_length=128)
     delivery_note_no: str = Field(min_length=1, max_length=128)
     delivery_date: date
@@ -117,12 +120,21 @@ class ReceiveLine(BaseModel):
     unit: str = Field(default="", max_length=32)
 
 class ShipmentReceive(Payload):
+    new_delivery_confirmation: bool = False
     correction_reason: str = Field(default="", max_length=1000)
     split_confirmation: str = Field(default="", max_length=64)
     request_id: str = Field(min_length=8, max_length=128)
     expected_revision: int = Field(ge=1)
     acceptance_date: date
     lines: list[ReceiveLine] = Field(min_length=1, max_length=200)
+
+
+class ShipmentReceiptLink(Payload):
+    request_id: str = Field(min_length=8, max_length=128)
+    expected_revision: int = Field(ge=1)
+    receipt_id: str = Field(min_length=1, max_length=96)
+    expected_receipt_revision: int = Field(ge=1)
+    reason: str = Field(min_length=4, max_length=1000)
 
 
 class SampleReceiptLink(Payload):
@@ -137,3 +149,45 @@ class ShipmentLineLink(Payload):
     expected_revision: int = Field(ge=1)
     expected_order_revision: int = Field(ge=1)
     reason: str = Field(min_length=4, max_length=1000)
+
+
+class SupplierMarkAssetOrderOut(BaseModel):
+    id: str
+    issue_id: str
+    customer_name: str
+    contract_no: str
+    customer_po: str
+    item_no: str
+
+
+class SupplierMarkAssetOut(BaseModel):
+    id: str
+    revision: int
+    file_name: str
+    kind: str
+    photo_group_id: str | None = None
+    size_bytes: int
+    contract_number: str
+    created_at: str
+    orders: list[SupplierMarkAssetOrderOut]
+
+
+class SupplierMarkUploadOrderOut(SupplierMarkAssetOrderOut):
+    document_no: str
+    order_date: str
+
+
+class SupplierMarkCheckOut(SupplierMarkTemplateOut):
+    factory_id: str
+    order_id: str
+    issue_id: str
+    excel_asset_id: str
+    qc_ready: bool
+    check_result: CartonMarkDocumentCheckResponse
+
+
+class SupplierMarkAssetUploadOut(BaseModel):
+    file_name: str
+    status: Literal["created", "duplicate", "failed"]
+    message: str = ""
+    asset: SupplierMarkAssetOut | None = None

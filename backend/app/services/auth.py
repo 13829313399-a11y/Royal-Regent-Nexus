@@ -281,6 +281,8 @@ ROLE_PERMISSIONS = {
         "carton_procurement:exception_manage",
     },
     "warehouse_keeper": {
+        "carton_mark:read",
+        "carton_mark:template_upload",
         "molding_sample:read",
         "molding_sample:export",
         "molding_sample:raw_material_write",
@@ -639,6 +641,9 @@ POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
     {
         *CUTTING_OPS_PERMISSION_CODES,
         *UV_OPS_PERMISSION_CODES,
+        "fabric_warehouse:read",
+        "fabric_warehouse:import",
+        "fabric_warehouse:receive",
         "molding_sample:dispatch",
         "molding_sample:notification_read",
         "internal_quote:create",
@@ -1092,6 +1097,44 @@ def seed_carton_master_default_grants_once(db: Session, now: str) -> int:
             updated_at=now,
         )
     )
+    return created_count
+
+
+def seed_carton_mark_warehouse_grants_once(db: Session, now: str) -> int:
+    """Backfill the two warehouse document grants once, retaining scoped bindings and denies."""
+    marker = "carton_mark_warehouse_grants_v1"
+    if db.get(AuthIamState, marker) is not None:
+        return 0
+    codes = {"carton_mark:read", "carton_mark:template_upload"}
+    permissions = {p.code: p for p in db.scalars(select(AuthPermission).where(AuthPermission.code.in_(codes)))}
+    if codes - permissions.keys():
+        raise RuntimeError("Carton mark permissions must be seeded before warehouse grants")
+    role_id = "warehouse_keeper"
+    created_count = 0
+    if db.get(AuthRole, role_id) is not None:
+        for code in sorted(codes):
+            permission = permissions[code]
+            if db.scalar(select(AuthRolePermission.id).where(
+                AuthRolePermission.role_id == role_id, AuthRolePermission.permission_id == permission.id,
+            )) is None:
+                db.add(AuthRolePermission(id=f"{role_id}:{permission.id}", role_id=role_id, permission_id=permission.id))
+                created_count += 1
+    db.flush()
+    if created_count:
+        metadata = db.get(AuthRoleMetadata, role_id)
+        if metadata is not None:
+            metadata.version += 1
+            metadata.updated_at = now
+        for user_id in set(db.scalars(select(AuthUserRole.user_id).where(AuthUserRole.role_id == role_id))):
+            revision = db.get(AuthUserAuthorizationRevision, user_id)
+            if revision is None:
+                db.add(AuthUserAuthorizationRevision(user_id=user_id, revision=1, updated_at=now))
+            else:
+                revision.revision += 1
+                revision.updated_at = now
+    db.add(AuthIamState(key=marker, value_json=json.dumps({
+        "completed_at": now, "created_role_permission_count": created_count,
+    }, ensure_ascii=False, sort_keys=True), updated_at=now))
     return created_count
 
 
@@ -1937,6 +1980,7 @@ def seed_auth_defaults(db: Session) -> None:
     seed_iam_sidecars(db, now)
     seed_raw_material_write_default_grant_once(db, now)
     seed_carton_master_default_grants_once(db, now)
+    seed_carton_mark_warehouse_grants_once(db, now)
     seed_internal_quote_default_grants_once(db, now)
     seed_internal_quote_self_review_grants_once(db, now)
     seed_internal_quote_reference_grants_once(db, now)

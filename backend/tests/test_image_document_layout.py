@@ -11,15 +11,15 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.services.document_tools.image_translation import append_preserved_pdf
 from app.services.document_tools.image_text_regions import native_regions
-from app.services.document_tools.image_terminology import translate_image_texts
+from app.services.document_tools.image_terminology import translate_image_texts, image_translation_options
 from app.services.document_tools.document_ir import ToolError
 
 
-def native_pdf(path):
+def native_pdf(path, text=b'Quantity 00123 Length 0.05mm'):
     writer=PdfWriter();page=writer.add_blank_page(400,200)
     font=DictionaryObject({NameObject('/Type'):NameObject('/Font'),NameObject('/Subtype'):NameObject('/Type1'),NameObject('/BaseFont'):NameObject('/Helvetica')})
     page[NameObject('/Resources')]=DictionaryObject({NameObject('/Font'):DictionaryObject({NameObject('/F1'):writer._add_object(font)})})
-    data=DecodedStreamObject();data.set_data(b'BT /F1 14 Tf 20 130 Td (Quantity 00123 Length 0.05mm) Tj ET BT /F1 14 Tf 20 40 Td (________________) Tj ET 10 50 m 390 50 l S')
+    data=DecodedStreamObject();data.set_data(b'BT /F1 14 Tf 20 130 Td ('+text+b') Tj ET BT /F1 14 Tf 20 40 Td (________________) Tj ET 10 50 m 390 50 l S')
     page[NameObject('/Contents')]=writer._add_object(data);writer.write(path)
 
 
@@ -31,6 +31,14 @@ def test_native_word_boundaries_separate_numbers_before_translation(tmp_path):
     assert [r['sourceText'] for r in regions if r['protected']]==['00123','0.05mm']
     for r in regions:
         assert 0<=r['box']['x']<800 and 0<=r['box']['y']<400
+
+
+def test_native_material_code_and_brand_are_isolated_before_translation(tmp_path):
+    source=tmp_path/'native.pdf';native_pdf(source,b'Yellow BR Tricot PEANUTS')
+    with pdfplumber.open(source) as pdf:
+        regions=native_regions(pdf.pages[0],2)
+    assert [r['sourceText'] for r in regions if not r['protected']]==['Yellow','Tricot']
+    assert [r['sourceText'] for r in regions if r['protected']]==['BR','PEANUTS']
 
 
 def test_pdf_overlay_preserves_original_objects_digits_and_visuals(tmp_path):
@@ -137,6 +145,17 @@ def test_pdf_export_padding_keeps_neighboring_digits_and_rules(tmp_path, monkeyp
         assert np.array_equal(images[0][y0:y1, x0:x1], images[1][y0:y1, x0:x1])
 
 
+def test_image_view_captions_use_manufacturing_meanings_without_model_calls():
+    def unexpected_model_call(*args):
+        raise AssertionError('view captions should use the image glossary')
+    assert translate_image_texts(
+        ['FRONT', 'BACK', 'LEFT', 'RIGHT', 'TOP', 'BOTTOM',
+         'FRONT RIGHT', 'FRONT LEFT', 'BACK RIGHT', 'BACK LEFT', 'Standing Plush', 'Plush Guide'],
+        'en_to_zh', unexpected_model_call,
+    ) == ['正面', '背面', '左侧', '右侧', '顶部', '底部',
+          '右前方', '左前方', '右后方', '左后方', '站立式毛绒玩具', '毛绒玩具指南']
+
+
 def test_bad_translation_is_isolated_without_changing_numbers():
     def translate(texts,direction):
         if 'unknown' in texts: raise ToolError('TRANSLATION_NUMBERS_CHANGED','bad output')
@@ -144,11 +163,58 @@ def test_bad_translation_is_isolated_without_changing_numbers():
     assert translate_image_texts(['Hair','good','unknown'],'en_to_zh',translate)==['头发','安全文字','unknown']
 
 
+def test_plush_pattern_captions_use_parts_and_materials_instead_of_proper_names():
+    def unexpected_model_call(*args):
+        raise AssertionError('pattern captions should use the image glossary')
+    assert translate_image_texts(
+        ['EAR', 'EYE', 'NOSE', 'SPOT', 'LEG', 'SIDE HEAD', 'CENTER HEAD',
+         'ARM', 'UNDER ARM', 'SOLE', 'TAIL', 'FRONT BODY', 'BACK BODY',
+         'Seam Allowance', 'Cut', 'White Plush', 'Black Flock', 'Tricot',
+         'Red Vinyl', 'Snoopy', 'Sitting Plush Pattern', 'Seam Allowanc e'],
+        'en_to_zh', unexpected_model_call,
+    ) == ['耳朵', '眼睛', '鼻子', '斑点', '腿部', '侧头片', '中间头片',
+          '手臂', '内臂片', '脚底', '尾巴', '前身片', '后身片',
+          '缝份', '裁', '白色毛绒布', '黑色植绒布', '经编布',
+          '红色胶片', '史努比', '坐姿毛绒玩具纸样', '缝份']
+    assert translate_image_texts(['WING', 'UPPER', 'UNDER TAIL', 'UPPER TAIL', 'Yellow Plush'],
+        'en_to_zh', unexpected_model_call) == ['翅膀', '上侧', '下尾片', '上尾片', '黄色毛绒布']
+
+
 def test_online_provider_errors_are_not_silently_hidden():
     import pytest
     def translate(*args):raise ToolError('TRANSLATION_NETWORK','unavailable')
     with pytest.raises(ToolError,match='unavailable'):
         translate_image_texts(['unknown'],'en_to_zh',translate)
+
+
+def test_image_textile_terms_keep_wrappers_and_complete_ocr_letters():
+    def unexpected_model_call(*args):
+        raise AssertionError('known craft captions should use the image glossary')
+    assert translate_image_texts(
+        ['Materials &Swatches', 'Black felt', 'body fleece', '(Thread mix)',
+         'Satin &French', 'knot mix)', 'Debossed', 'cap fabric', 'Di gestives'],
+        'en_to_zh', unexpected_model_call,
+    ) == ['材料与色样', '黑色毛毡', '身体绒布', '(混合绣线)',
+          '缎面绣与法国结绣', '混合结粒绣)', '凹压纹', '帽子面料', '消化饼干']
+    calls = []
+    def model(texts, direction):
+        calls.append((texts, direction))
+        return ['模型译文'] * len(texts)
+    assert translate_image_texts(['Thread mx', 'Thread mix 123', '混合绣线'], 'en_to_zh', model) == ['模型译文'] * 3
+    assert translate_image_texts(['Thread mix'], 'zh_to_en', model) == ['模型译文']
+    assert calls == [(['Thread mx', 'Thread mix 123', '混合绣线'], 'en_to_zh'), (['Thread mix'], 'zh_to_en')]
+
+
+def test_online_image_context_preserves_user_terminology_and_offline_options():
+    options = {'translation_engine': 'online', 'translation_direction': 'en_to_zh'}
+    contextual = image_translation_options(options)
+    assert contextual is not options and options == {'translation_engine': 'online', 'translation_direction': 'en_to_zh'}
+    assert '刺绣' in contextual['glossary'] and 'thread mix=混合绣线' in contextual['glossary']
+    custom = {**options, 'glossary': 'Thread mix=客户混线'}
+    assert image_translation_options(custom)['glossary'].endswith(custom['glossary'])
+    assert 'thread mix=混合绣线' not in image_translation_options(custom)['glossary']
+    for untouched in ({}, {'translation_engine': 'offline'}, {**options, 'translation_direction': 'zh_to_en'}):
+        assert image_translation_options(untouched) == untouched
 
 
 def test_translation_wait_does_not_block_child_cancellation(tmp_path,monkeypatch):

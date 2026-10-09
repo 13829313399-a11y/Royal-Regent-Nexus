@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CartonOrderSplitDialog from '../CartonOrderSplitDialog.vue'
 import CartonSplitReceiptReview from '../CartonSplitReceiptReview.vue'
 import type { CartonOrderResponse } from '@/api/cartonProcurement'
@@ -42,8 +42,41 @@ beforeEach(() => {
   api.create.mockResolvedValue(plan)
   api.act.mockResolvedValue({ ...plan, revision: 2, status: 'ACTIVE' })
 })
+afterEach(() => vi.unstubAllGlobals())
 
 describe('订单拆分', () => {
+  it('opens and retries on HTTP browsers without randomUUID, rotating the request only when inputs change', async () => {
+    vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+    const wrapper = mount(CartonOrderSplitDialog, { props: { order, canCreate: true, canConfirm: true }, global: { stubs } })
+    try {
+      await flushPromises()
+      expect(api.context).toHaveBeenCalledWith('huaxing', 'CT-1')
+      await wrapper.get('[aria-label="拆分 1 合同"]').setValue('NEW')
+      await wrapper.get('[aria-label="拆分 1 产品数量"]').setValue(40)
+      api.create.mockRejectedValue(new Error('连接中断'))
+      await wrapper.get('form').trigger('submit'); await flushPromises()
+      const firstRequest = api.create.mock.calls[0]![2]
+      expect(firstRequest.request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+      expect(wrapper.get('[role="alert"]').text()).toContain('连接中断')
+
+      await wrapper.get('form').trigger('submit'); await flushPromises()
+      expect(api.create.mock.calls[1]![2]).toEqual(firstRequest)
+      await wrapper.get('[aria-label="拆分 1 合同"]').setValue('CORRECTED')
+      api.create.mockResolvedValue(plan)
+      await wrapper.get('form').trigger('submit'); await flushPromises()
+      expect(api.create.mock.calls[2]![2].request_id).not.toBe(firstRequest.request_id)
+      expect(wrapper.text()).toContain('库存归属等待仓库确认')
+      expect(wrapper.get('[aria-label="拆分 1 合同"]').element).toHaveProperty('value', '')
+    } finally { wrapper.unmount() }
+  })
+  it('explains missing write permissions while keeping split records readable', async () => {
+    const wrapper = mount(CartonOrderSplitDialog, { props: { order, canCreate: false, canConfirm: false }, global: { stubs } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('当前账号可查看拆分记录')
+    expect(wrapper.find('form').exists()).toBe(false)
+    expect(api.create).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('分别提交待到量与指定仓位库存，使用最新上下文 revision', async () => {
     const wrapper = mount(CartonOrderSplitDialog, { props: { order, canCreate: true, canConfirm: true }, global: { stubs } })
     await flushPromises()

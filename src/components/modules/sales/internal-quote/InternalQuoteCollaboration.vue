@@ -10,6 +10,9 @@ import InternalQuoteDepartmentFilesPanel from './InternalQuoteDepartmentFilesPan
 import InternalQuoteHeaderDialog from './InternalQuoteHeaderDialog.vue'
 import InternalQuoteMaterialsDialog from './InternalQuoteMaterialsDialog.vue'
 import InternalQuoteProductActions from './InternalQuoteProductActions.vue'
+import InternalQuotePackagingCopy from './InternalQuotePackagingCopy.vue'
+import InternalQuoteProductImageUpload from './InternalQuoteProductImageUpload.vue'
+import InternalQuoteSeriesExport from './InternalQuoteSeriesExport.vue'
 import InternalQuoteSectionEditor from './InternalQuoteSectionEditor.vue'
 import InternalQuoteSectionRail from './InternalQuoteSectionRail.vue'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
@@ -62,6 +65,8 @@ const headerDialogError = ref('')
 const headerBusinessOwners = ref<Array<{ id: string; username: string; displayName: string }>>([])
 const headerCustomers = ref<string[]>([])
 const copyBusyQuoteId = ref('')
+const packagingCopyOpen = ref(false)
+const seriesExportOpen = ref(false)
 const productImagePreviewOpen = ref(false)
 const wholeProductSaving = ref(false)
 const materialsDialogOpen = ref(false)
@@ -341,6 +346,7 @@ async function loadQuote() {
 
 async function switchProduct(product: InternalQuoteBatchProduct) {
   if (product.quoteId === quoteId.value) return
+  if (hasUnsavedDepartmentChanges()) { errorMessage.value = '当前页面还有未保存内容，请先保存当前款，再切换产品。'; return }
   rememberInternalQuoteProductScroll(document.scrollingElement?.scrollTop ?? window.scrollY)
   try {
     await router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${product.quoteId}/collaboration`))
@@ -351,6 +357,7 @@ async function switchProduct(product: InternalQuoteBatchProduct) {
 }
 
 async function loadSwitchedProduct() {
+  packagingCopyOpen.value = false
   const scrollTop = consumeInternalQuoteProductScroll()
   await loadQuote()
   if (scrollTop === null) return
@@ -362,7 +369,8 @@ async function loadSwitchedProduct() {
 
 async function copyBaselineToProduct(product: InternalQuoteBatchProduct) {
   if (product.isBaseline || copyBusyQuoteId.value) return
-  if (!window.confirm(`确认用基准款覆盖“${product.productName}”的全部部门报价与资料附件？产品名称和主图会保留。`)) return
+  if (hasUnsavedDepartmentChanges()) { errorMessage.value = '请先保存当前款，再复制基准款。'; return }
+  if (!window.confirm(`确认用基准款覆盖“${product.productName}”的全部部门报价与资料附件？数量和配件名称也会被覆盖，名称不同的配件图会移除。仅复用包装请使用“仅复制包装”。`)) return
   copyBusyQuoteId.value = product.quoteId
   message.value = ''
   errorMessage.value = ''
@@ -376,19 +384,14 @@ async function copyBaselineToProduct(product: InternalQuoteBatchProduct) {
   }
 }
 
-async function uploadCurrentProductImage(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  message.value = ''
-  errorMessage.value = ''
-  try {
-    await quoteStore.uploadProductImage(quote.value.id, file)
-    message.value = `“${quote.value.productName}”的产品主图已更新。`
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '上传产品主图失败。'
-  }
+function openPackagingCopy() {
+  if (hasUnsavedDepartmentChanges()) { errorMessage.value = '请先保存当前款，再复制包装。'; return }
+  packagingCopyOpen.value = true
+}
+async function packagingCopied() {
+  packagingCopyOpen.value = false
+  await loadQuote()
+  message.value = '包装已复制到所选产品，目标款资料和图片已保留。'
 }
 
 async function syncReference() {
@@ -733,6 +736,15 @@ async function directOutput() {
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '输出失败，请检查资料完整性后重试。' }
 }
 
+function openSeriesExport() {
+  if (hasUnsavedDepartmentChanges()) { errorMessage.value = '请先保存当前款，再输出系列报价。'; return }
+  seriesExportOpen.value = true
+}
+function seriesExported() {
+  seriesExportOpen.value = false
+  message.value = '系列报价已输出到一个 Excel，每款一个工作表。'
+}
+
 async function submitWholeReview() {
   message.value = ''
   errorMessage.value = ''
@@ -896,20 +908,17 @@ onBeforeUnmount(() => {
 
     <header id="quote-page-overview" class="quote-collaboration-head">
       <div class="quote-head-product">
+        <div class="quote-head-picture">
         <div class="quote-head-image" :class="{ empty: !currentProductImageUrl }">
           <button v-if="currentProductImageUrl" type="button" class="quote-head-image-preview" :aria-label="`预览 ${quote.productName} 产品主图`" aria-haspopup="dialog" :aria-expanded="productImagePreviewOpen" @click="productImagePreviewOpen = true">
             <img :src="currentProductImageUrl" :alt="`${quote.productName} 产品主图`">
             <span><Maximize2 />点击预览</span>
           </button>
           <span v-else><FileImage /><b>产品主图</b></span>
-          <label v-if="!isComponentPricing && canManageParticipation && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status)" :title="quoteStore.fileBusy ? '主图上传中' : currentProductImageUrl ? '更新产品主图' : '上传产品主图'">
-            <input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" :disabled="quoteStore.fileBusy" @change="uploadCurrentProductImage">
-            <RefreshCw v-if="quoteStore.fileBusy" class="spinning" />
-            <FileImage v-else />
-            <span class="sr-only">{{ quoteStore.fileBusy ? '主图上传中' : currentProductImageUrl ? '更新产品主图' : '上传产品主图' }}</span>
-          </label>
         </div>
-        <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ collaborationStatusLabel }}</span><b v-if="isMultiProduct">第 {{ quote.batchPosition }}/{{ quote.batchSize }} 款</b><em v-if="baselineDifferenceLabel" class="quote-baseline-comparison" :class="{ same: !currentBatchProduct?.differsFromBaseline }">{{ baselineDifferenceLabel }}</em></div><p>{{ quote.batchQuoteNo || quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />{{ isDirectOutput ? '业务负责人' : isContinuousQuote ? '整批审核人' : '全部分段审核' }} · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
+        <InternalQuoteProductImageUpload v-if="loadedQuote" :key="quote.id" :quote="quote" :has-image="!!currentProductImageUrl" :has-unsaved-changes="hasUnsavedDepartmentChanges" @open="openAlternative" />
+        </div>
+        <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ collaborationStatusLabel }}</span><b v-if="isMultiProduct">第 {{ currentBatchProduct?.position ?? quote.batchPosition }}/{{ batchProducts.length }} 款</b><em v-if="baselineDifferenceLabel" class="quote-baseline-comparison" :class="{ same: !currentBatchProduct?.differsFromBaseline }">{{ baselineDifferenceLabel }}</em></div><p>{{ quote.batchQuoteNo || quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />{{ isDirectOutput ? '业务负责人' : isContinuousQuote ? '整批审核人' : '全部分段审核' }} · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
       </div>
       <div class="quote-head-progress"><div><span>{{ isContinuousQuote ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditMaterials" type="button" @click="openMaterialsDialog"><CircleDollarSign />本报价专用料价</button><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isContinuousQuote || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
@@ -921,6 +930,8 @@ onBeforeUnmount(() => {
 
     <p v-if="isReadOnly" class="quote-readonly-banner"><Building2 aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；部门编辑、整单审核、参考同步及其他业务操作仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的部门编辑、整单审核或参考同步权限。' }}</p>
 
+    <InternalQuotePackagingCopy v-if="packagingCopyOpen" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="packagingCopyOpen = false" @copied="packagingCopied" />
+    <InternalQuoteSeriesExport v-if="seriesExportOpen" :key="quote.id" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="seriesExportOpen = false" @completed="seriesExported" />
     <InternalQuoteAlternatives v-if="loadedQuote" :quote="quote" :has-unsaved-changes="hasUnsavedDepartmentChanges" @open="openAlternative" @changed="loadQuote" />
 
     <section v-if="isContinuousQuote" class="quote-whole-review-panel" :class="quote.status">
@@ -961,7 +972,7 @@ onBeforeUnmount(() => {
       <div v-if="isContinuousQuote" class="quote-continuous-sections" aria-label="整单连续报价内容">
         <section v-if="isMultiProduct" class="quote-component-product-level" :aria-label="isComponentPricing ? 'JustPlay 系列产品当前单款' : '系列产品当前单款'">
           <div><strong>系列产品 / 当前单款</strong><span>{{ isComponentPricing ? '先选择系列中的单款，再选择该单款下的配件。' : '在这里切换当前填写的系列单款。' }}</span></div>
-          <InternalQuoteProductActions :products="batchProducts" :current-quote-id="quote.id" :can-manage="canManageParticipation" :copy-busy-quote-id="copyBusyQuoteId" @switch="switchProduct" @copy-baseline="copyBaselineToProduct" />
+          <InternalQuoteProductActions :products="batchProducts" :current-quote-id="quote.id" :can-manage="canManageParticipation" :can-copy-baseline="!quote.productRootId || quote.productRootId === quote.id" :copy-busy-quote-id="copyBusyQuoteId" @switch="switchProduct" @copy-baseline="copyBaselineToProduct" @copy-packaging="openPackagingCopy" />
         </section>
         <InternalQuoteComponentScopePicker v-if="isComponentPricing" v-model="activePricingComponentId" :product-name="quote.productName" :components="pricingComponents" />
         <InternalQuoteComponentImage v-if="isComponentPricing && activePricingComponentId" :key="`${quote.id}:${activePricingComponentId}`" :quote-id="quote.id" :component-id="activePricingComponentId" :component-name="pricingComponents.find(c => c.id === activePricingComponentId)?.name ?? '分项'" :revision="quote.headerRevision" :editable="canManageParticipation && ['drafting', 'rejected'].includes(quote.status)" @changed="quoteStore.loadQuote(quote.id)" />
@@ -975,6 +986,7 @@ onBeforeUnmount(() => {
             <div class="quote-whole-review-actions quote-whole-product-workflow">
               <RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"><BarChart3 />查看汇总与输出</RouterLink>
               <button v-if="isDirectOutput && !['exported', 'archived'].includes(quote.status)" type="button" class="primary" title="输出后保留本版，修改请复制新版本" :disabled="!canDirectOutput || wholeProductSaving || quoteStore.submitting" @click="directOutput">直接输出并保留此版</button>
+              <button v-if="isMultiProduct && quote.status !== 'archived' && authStore.can('internal_quote:export', quote.factoryId, 'sales-business')" type="button" class="primary" :disabled="wholeProductSaving || quoteStore.submitting" @click="openSeriesExport">系列报价一起输出</button>
               <button v-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status)" type="button" class="primary" :title="!canSubmitWholeReview ? '当前账号没有整单提交权限' : !batchReady ? '全部产品完成后可提交审核' : '提交审核'" :disabled="!canSubmitWholeReview || !batchReady || quoteStore.submitting" @click="submitWholeReview"><Send />{{ quoteStore.submitting ? '提交中…' : '提交审核' }}</button>
               <span v-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status) && !canSubmitWholeReview">当前账号无提交权限</span>
               <span v-else-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status) && !batchReady">全部产品完成后可提交</span>

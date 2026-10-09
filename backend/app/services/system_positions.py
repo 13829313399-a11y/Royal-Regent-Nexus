@@ -11,6 +11,7 @@ from app.services.iam_scope import (
 )
 from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
+    FABRIC_WAREHOUSE_PERMISSION_CODES,
     SPRAY_OPS_PERMISSION_CODES,
     CUTTING_OPS_PERMISSION_CODES,
     UV_OPS_PERMISSION_CODES,
@@ -24,7 +25,7 @@ from app.services.permission_codes import (
     THREE_D_PRINTING_PERMISSION_CODES,
 )
 
-SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v30"
+SYSTEM_POSITION_DEFINITION_VERSION = "fixed-v33"
 PRODUCTION_TASK_READ_PERMISSION_CODE = "molding_sample:production_read"
 MOLDING_SAMPLE_DISPATCH_PERMISSION_CODE = "molding_sample:dispatch"
 MOLDING_SAMPLE_DISPATCH_POSITION_ROLE_IDS = frozenset(
@@ -148,6 +149,7 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
     "carton_mark:photo_upload",
     "carton_mark:review",
     *CARTON_PROCUREMENT_PERMISSION_CODES,
+    *FABRIC_WAREHOUSE_PERMISSION_CODES,
     "customer_price:read",
     "customer_price:import_internal_quote",
     "customer_price:export_customer_quote",
@@ -365,6 +367,9 @@ MOLDING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 WAREHOUSE_PERMISSION_CODES = (
+    *FABRIC_WAREHOUSE_PERMISSION_CODES,
+    "carton_mark:read",
+    "carton_mark:template_upload",
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
     "molding_sample:read",

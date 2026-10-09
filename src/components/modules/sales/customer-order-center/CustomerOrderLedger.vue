@@ -11,6 +11,7 @@ import {
 import { customerOrderHistoryApi } from '@/api/customerOrderHistory'
 import CustomerOrderHistoryImport from './CustomerOrderHistoryImport.vue'
 import { getApiErrorMessage } from '@/lib/http'
+import type { FeedbackContext } from '@/api/moduleFeedback'
 
 const props = withDefaults(defineProps<{
   factoryId: string
@@ -21,7 +22,7 @@ const props = withDefaults(defineProps<{
   focusLineId?: string
 }>(), { initialView: 'all', displayMode: 'ledger' })
 
-const emit = defineEmits<{ import: []; changed: []; 'close-detail': [] }>()
+const emit = defineEmits<{ import: []; changed: []; 'close-detail': []; feedback: [context: FeedbackContext] }>()
 const emptyCapabilities: CustomerOrderLedgerCapabilities = {
   read: false, write: false, dispatch: false, shipment_confirm: false, inbox_read: false, inbox_receive: false,
 }
@@ -461,6 +462,7 @@ onBeforeUnmount(() => {
         <template v-else-if="selected">
           <h3>{{ selected.line.customer_name || selected.line.customer_code }} · {{ selected.line.product_no }}</h3>
           <p class="ledger__muted">参考号 {{ selected.line.reference_no }} · V{{ selected.line.version }} · 修订 {{ selected.line.revision }}</p>
+          <button type="button" class="ledger__button" @click="emit('feedback', { page: '订单详情', section: displayMode === 'schedule' ? 'schedule' : 'ledger', order_id: selected.line.id, customer_code: selected.line.customer_code, order_reference: selected.line.reference_no, product_no: selected.line.product_no, error_message: actionError.slice(0, 1000) || undefined })">反馈此订单的问题</button>
           <p v-if="actionError" class="ledger__message">{{ actionError }}</p>
           <p v-if="typeof selected.line.data.recheck_notice === 'string'" class="ledger__recheck">{{ selected.line.data.recheck_notice }}</p>
           <section v-if="historyMigrationFields(selected.line.data).length"><h4>历史排期迁入期初</h4><p class="ledger__muted">历史截止日期包含当日走货。该期初不是新的出货单；截止日期后的实际走货仍须凭出货单确认。</p><dl><template v-for="field in historyMigrationFields(selected.line.data)" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl><div v-if="canCorrectHistoryOpening" class="ledger__history-correction"><h5>更正期初走货</h5><p class="ledger__muted">更正会保留原始期初和原因；已发送订单还需要订单发送权限。</p><div class="ledger__form"><label>更正后的期初已走货数量<input v-model="historyOpening.quantity" type="text"></label><label>更正原因（至少 4 个字）<textarea v-model="historyOpening.reason" rows="2" /></label><button class="ledger__button ledger__button--primary" type="button" :disabled="actionBusy" @click="submitHistoryOpeningCorrection">保存历史期初更正</button></div></div></section>

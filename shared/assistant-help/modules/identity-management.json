@@ -1,0 +1,62 @@
+[
+  {
+    "id": "identity-management.overview",
+    "module_id": "identity-management",
+    "title": "人员与授权",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "system-user-access",
+      "system-users",
+      "iam-role-templates"
+    ],
+    "factory_ids": [],
+    "anchor_id": "identity-management.overview",
+    "field_keys": [],
+    "summary": "先预览权限和任职影响，再由具备范围的管理人员确认变更。",
+    "content": "选择人员后查看当前任职、角色和授权范围，再创建变更草稿。draft 是草稿；pending_approval 为待审核；scheduled 为预约生效；applied 为已生效；rejected/cancelled 分别是驳回和取消。预约到时会按有效时间解释为已生效，应刷新当前身份和交接状态。\n预览会计算新增/失去权限、组织依赖和交接影响。提交须匹配草稿版本、预览令牌和当前授权依据；预览后资料或授权变化时必须重新预览。新增权限、离职或冻结等高风险影响需要明确确认。需审核的变更提交后进入待审核，不能把“提交成功”理解成已授权。\n审核者必须有完整可授予范围，不能用自审绕过限制。已过期的预约生效点需要重新安排；同一提交标识不能用于不同内容。人员可查看范围、任职状态、访问解释和业务交接各有实际校验，岗位名称不是全部权限依据。\n在原人员工作区查看权限解释与交接项，核对厂区、部门和生效时间后操作。助手不读取他人身份详情、不替用户授权；会话的任职周期与权限快照刷新时间也不是同一个概念。",
+    "steps": [
+      {
+        "title": "选择人员与变更",
+        "description": "检查当前任职、厂区部门、角色和拟定生效时间。",
+        "anchor_id": "identity-management.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "核对影响预览",
+        "description": "查看权限增减、交接和高风险提示；信息变化则重新预览。",
+        "anchor_id": "identity-management.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "确认结果状态",
+        "description": "在原页面提交或审核，再确认是待审核、预约还是已生效，并核对交接。",
+        "anchor_id": "identity-management.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/api/identity.py",
+        "symbol": "preview_change",
+        "sha256": "8f38c4a60402dc63ad977c418dfc41063e359cb1a056ad45254580a2f3ba94d9"
+      },
+      {
+        "path": "backend/app/services/identity_changes.py",
+        "symbol": "commit_change",
+        "sha256": "ad7a6bd3ff8e35ad4894197b7b45a61b76bc9e5cb0199edab3f9a68d5d5f9c37"
+      },
+      {
+        "path": "backend/app/services/identity_changes.py",
+        "symbol": "result_out",
+        "sha256": "ad7a6bd3ff8e35ad4894197b7b45a61b76bc9e5cb0199edab3f9a68d5d5f9c37"
+      }
+    ],
+    "knowledge_version": "2026.10.08-v2",
+    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "status": "verified"
+  }
+]

@@ -29,6 +29,25 @@ function setup() {
 beforeEach(() => { vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} }) })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('independent quotation alternatives', () => {
+  it('deletes an unused active draft only after confirmation and returns to its product', async () => {
+    const { pinia, quote } = setup()
+    const rows = family()
+    rows.family_id = 'q1'
+    rows.items[1]!.can_delete = true
+    rows.items[1]!.status = 'drafting'
+    vi.spyOn(internalQuoteApi, 'listAlternatives').mockResolvedValue(rows)
+    vi.spyOn(internalQuoteApi, 'get').mockResolvedValue({ header_revision: 9 } as never)
+    const remove = vi.spyOn(internalQuoteApi, 'deleteQuote').mockResolvedValue(undefined)
+    const wrapper = mount(InternalQuoteAlternatives, { props: { quote: { ...quote, id: 'q2' } }, global: { plugins: [pinia] } })
+    await flushPromises()
+    await wrapper.findAll('button').find(row => row.text() === '删除未使用草稿')!.trigger('click')
+    expect(remove).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(row => row.text() === '确认删除草稿')!.trigger('click')
+    await flushPromises()
+    expect(remove).toHaveBeenCalledWith('q2', 9)
+    expect(wrapper.emitted('open')).toEqual([['q1']])
+    wrapper.unmount()
+  })
   it('copies only saved source into a named independent scenario with both revisions', async () => {
     const { quote, pinia } = setup()
     const create = vi.spyOn(internalQuoteApi, 'createAlternative').mockResolvedValue({ id: 'q3' } as never)

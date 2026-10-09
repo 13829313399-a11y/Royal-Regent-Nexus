@@ -19,6 +19,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteStatus } from '@/types/internalQuoteDesk'
+import InternalQuoteSeriesExport from './InternalQuoteSeriesExport.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -36,6 +37,7 @@ const selectedTemplate = ref('internal-quote-p4-v2')
 const confirmChecked = ref(false)
 const message = ref('')
 const errorMessage = ref('')
+const seriesExportOpen = ref(false)
 const totalHkd = computed(() => quote.value.factoryPriceHkd)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
 const isDirectOutput = computed(() => quote.value.moduleVersion === 'v4')
@@ -179,6 +181,7 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
         <section class="quote-export-checklist"><h2><FileCheck2 aria-hidden="true" />导出前检查</h2><p><CheckCircle2 aria-hidden="true" />{{ isDirectOutput ? '参与部门内容均已保存且计算有效' : '所有参与分段均已审批或获批不适用' }}</p><p><CheckCircle2 aria-hidden="true" />{{ isDirectOutput ? '直接输出，无需人工审核' : '业务最终放行完成' }}</p><p><CheckCircle2 aria-hidden="true" />参考快照与公式版本已锁定</p><p><CheckCircle2 aria-hidden="true" />无阻断级计算警告</p></section>
         <label class="quote-confirm-check"><input v-model="confirmChecked" type="checkbox"><span>{{ isDirectOutput ? '确认当前资料已核对；首次输出将冻结保留此版，后续修改需复制新版' : '确认当前分段 revision 集合与最终放行时一致' }}</span></label>
         <div class="quote-export-actions">
+          <button v-if="batchProducts.length > 1 && quote.status !== 'archived' && canExport" type="button" class="quote-export-button" :disabled="quoteStore.submitting" @click="seriesExportOpen = true"><Download />系列报价一起输出</button>
           <button type="button" class="quote-export-button" :disabled="!eligible || !canExport || quoteStore.submitting || quoteStore.fileBusy" @click="confirmExport"><Download aria-hidden="true" />生成内部报价 XLSX</button>
           <button type="button" class="quote-export-button engineering" :disabled="(isDirectOutput && quote.status !== 'exported') || !eligible || !canExport || quoteStore.submitting || quoteStore.fileBusy" @click="confirmEngineeringExport"><Download aria-hidden="true" />生成工程资料 XLSX</button>
         </div>
@@ -190,6 +193,7 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
       <header><History aria-hidden="true" /><div><strong>内部报价历史导出文件</strong><span>工程资料不进入本记录；重开后保留旧内部报价，并标记为“已取代”</span></div></header>
       <div v-if="quote.exports.length"><article v-for="record in quote.exports" :key="record.id"><FileSpreadsheet aria-hidden="true" /><span><strong>{{ record.fileName }}</strong><small>{{ record.templateName }} · {{ record.exportedBy }} · {{ record.exportedAt }}</small><code>{{ record.sha256 }}</code></span><em :class="record.status">{{ record.status === 'current' ? '当前版本' : '已取代' }}</em><button type="button" :disabled="!canExport" :title="canExport ? '下载受控文件' : isForeignQuote ? '跨厂只读，不能下载' : '当前账号没有下载权限'" @click="downloadRecord(record.id, record.fileName)"><Download />下载</button></article></div><p v-else>尚无历史导出记录。</p>
     </section>
+    <InternalQuoteSeriesExport v-if="seriesExportOpen" :key="quote.id" :quote="quote" :products="batchProducts" :has-unsaved-changes="() => false" @close="seriesExportOpen = false" @completed="seriesExportOpen = false; message = '系列报价已输出到一个 Excel，每款一个工作表。'" />
   </div>
 </template>
 

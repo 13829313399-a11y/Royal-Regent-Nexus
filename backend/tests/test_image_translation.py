@@ -164,13 +164,52 @@ def test_invalid_image_never_becomes_ready(runtime, payload, code):
     assert job['error_code'] == code
 
 
-def test_image_pixel_limit_and_runtime_not_ready(runtime, monkeypatch):
+@pytest.mark.parametrize("format,extension", [("PNG", "png"), ("JPEG", "jpg"), ("WEBP", "webp")])
+def test_oversize_image_is_reduced_for_inspection_and_translation(runtime, image_runtime, monkeypatch, format, extension):
     client, sessions, _ = runtime
-    monkeypatch.setattr(settings, 'image_translation_max_pixels', 100)
-    source = upload(client, 'oversize.png', picture())
-    pipeline.run_one(sessions)
-    assert client.get('/api/tools/jobs/' + source['inspection_job_id']).json()['error_code'] == 'IMAGE_PIXEL_LIMIT'
-    monkeypatch.setattr(settings, 'image_translation_max_pixels', 16_000_000)
+    monkeypatch.setattr(settings, 'image_translation_max_pixels', 20_000)
+    payload = picture(format)
+    source, job = translated(runtime, f'oversize.{extension}', payload)
+    inspected = client.get(f'/api/tools/sources/{source["source_id"]}').json()
+    geometry = inspected['manifest']['pages'][0]
+    resized = geometry['image_resize']
+    original = next(a for a in inspected['artifacts'] if a['role'] == 'source')
+    assert client.get(f'/api/tools/artifacts/{original["id"]}/download').content == payload
+    assert resized['original_size'] == [300, 180]
+    width, height = resized['processing_size']
+    assert width * height <= 20_000
+    assert abs(width / height - 300 / 180) < .03
+    output = next(a for a in job['artifacts'] if a['role'] == 'result_page')
+    with Image.open(io.BytesIO(client.get(f'/api/tools/artifacts/{output["id"]}/content').content)) as image:
+        assert image.size == (width, height)
+    review = next(a for a in job['artifacts'] if a['role'] == 'translation_review')
+    details = client.get(f'/api/tools/artifacts/{review["id"]}/content').json()
+    assert any('自动缩小' in issue for issue in details['issues'])
+
+
+def test_resize_applies_exif_orientation_and_keeps_original_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, 'image_translation_max_pixels', 20_000)
+    path = tmp_path / 'rotated.jpg'
+    exif = Image.Exif(); exif[274] = 6
+    Image.new('RGB', (300, 180), 'red').save(path, exif=exif)
+    before = path.read_bytes()
+    with engine.read_image(path) as image:
+        assert image.height > image.width
+        assert image.info['image_resize']['original_size'] == [180, 300]
+        assert image.width * image.height <= 20_000
+    assert path.read_bytes() == before
+
+
+def test_decode_limit_still_rejects_before_loading_large_bitmap(tmp_path, monkeypatch):
+    path = tmp_path / 'oversize.png'; path.write_bytes(picture())
+    monkeypatch.setattr(engine, 'MAX_IMAGE_DECODE_PIXELS', 100)
+    with pytest.raises(ToolError, match='安全解码尺寸') as error:
+        engine.read_image(path)
+    assert error.value.code == 'IMAGE_PIXEL_LIMIT'
+
+
+def test_image_runtime_not_ready(runtime, monkeypatch):
+    client, sessions, _ = runtime
     source = upload(client, 'image.png', picture())
     pipeline.run_one(sessions)
     monkeypatch.setattr(engine, 'runtime_status', lambda: {'available': False, 'reason': '请联系管理员'})

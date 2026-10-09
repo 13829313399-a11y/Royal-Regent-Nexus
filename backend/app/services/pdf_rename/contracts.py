@@ -20,6 +20,7 @@ class NormalizedRegion:
     ocr_only: bool = False
     ocr_page_segmentation: int = 6
     ocr_engine: str = "tesseract"
+    red_only: bool = False
 
     def __post_init__(self) -> None:
         if self.page_number < 1:
@@ -44,6 +45,7 @@ class NormalizedRegion:
             "ocr_only": self.ocr_only,
             "ocr_page_segmentation": self.ocr_page_segmentation,
             "ocr_engine": self.ocr_engine,
+            "red_only": self.red_only,
         }
 
 

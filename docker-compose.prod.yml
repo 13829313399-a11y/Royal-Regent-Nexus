@@ -34,6 +34,7 @@ services:
     volumes:
       - three-d-assets:/app/backend/data/three-d-printing-assets
       - document-assets:/app/backend/data/document-tools
+      - assistant-assets:/app/backend/data/assistant
       - image-translation-models:/app/backend/models/image-translation:ro
     restart: unless-stopped
     logging: *default-logging
@@ -69,6 +70,8 @@ services:
         condition: service_healthy
     ports:
       - "80:80"
+    volumes:
+      - ${DEPLOYMENT_NOTICE_DIR:-./.deployment-notice}:/var/run/rrn-notice:ro
     restart: unless-stopped
     logging: *default-logging
 
@@ -76,4 +79,5 @@ volumes:
   postgres-data:
   three-d-assets:
   document-assets:
+  assistant-assets:
   image-translation-models:

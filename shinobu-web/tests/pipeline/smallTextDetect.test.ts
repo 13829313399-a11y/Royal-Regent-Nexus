@@ -63,6 +63,37 @@ function asImage(canvas: ReturnType<typeof nodePipelinePlatform.createCanvas>) {
 }
 
 describe('小字增强检测', () => {
+  it('文档补检能分离黑底红字，保持字孔与深色裁片不在笔画掩膜中', () => {
+    const canvas=nodePipelinePlatform.createCanvas(220,80),ctx=requireContext(canvas);
+    ctx.fillStyle='#221f20';ctx.fillRect(0,0,220,80);
+    for(let glyph=0;glyph<6;glyph++) {
+      const x=20+glyph*20;ctx.fillStyle='#e41345';ctx.fillRect(x,30,9,11);
+      ctx.fillStyle='#221f20';ctx.fillRect(x+3,33,3,5);
+    }
+    const result=detectSmallTextRegions(asImage(canvas),nodePipelinePlatform,{documentMode:true});
+    expect(result.regions.some(r=>r.box.x<=20&&r.box.x+r.box.width>=129)).toBe(true);
+    expect(result.mask?.[30*220+20]).toBe(255);
+    expect(result.mask?.[34*220+24]).toBe(0);expect(result.mask?.[0]).toBe(0);
+  });
+  it('色度补检仍拒绝实心裁片和孤立噪点',()=>{
+    const canvas=nodePipelinePlatform.createCanvas(600,400),ctx=requireContext(canvas);
+    ctx.fillStyle='white';ctx.fillRect(0,0,600,400);ctx.fillStyle='#d21941';ctx.fillRect(40,40,240,180);
+    for(let i=0;i<12;i++)ctx.fillRect(320+i*20,50+i*20,2,2);
+    const result=detectSmallTextRegions(asImage(canvas),nodePipelinePlatform,{documentMode:true});
+    expect(result.regions).toEqual([]);
+  });
+  it('色度补检保留细笔画连接的粗体短词，拒绝单个宽空心轮廓',()=>{
+    const canvas=nodePipelinePlatform.createCanvas(220,90),ctx=requireContext(canvas);
+    ctx.fillStyle='#221f20';ctx.fillRect(0,0,220,90);ctx.fillStyle='#e41345';
+    for(let i=0;i<3;i++) {
+      const x=20+i*13;ctx.fillRect(x,20,3,13);ctx.fillRect(x,20,11,3);ctx.fillRect(x,25,11,3);ctx.fillRect(x,30,11,3);
+    }
+    ctx.fillRect(20,31,37,2);
+    ctx.fillRect(100,20,39,13);ctx.fillStyle='#221f20';ctx.fillRect(103,23,33,7);
+    const result=detectSmallTextRegions(asImage(canvas),nodePipelinePlatform,{documentMode:true});
+    expect(result.regions.some(r=>r.box.x<60&&r.box.width>=37)).toBe(true);
+    expect(result.regions.some(r=>r.box.x>90)).toBe(false);
+  });
   it('英文资料不因照片占比高而漏掉附近的彩色标注', () => {
     const canvas = nodePipelinePlatform.createCanvas(WIDTH, HEIGHT);
     const ctx = requireContext(canvas);

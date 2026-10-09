@@ -4,6 +4,7 @@ import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from app.schemas.carton_weights import CartonPackingWeights
 
 
 CartonOrderStatus = Literal[
@@ -157,7 +158,7 @@ class CartonCustomerListOut(BaseModel):
     items: list[CartonCustomerOut]
 
 
-class CartonOrderLineCreate(BaseModel):
+class CartonOrderLineCreate(CartonPackingWeights):
     packaging_type: str = Field(min_length=1, max_length=64)
     paper_quality: str = Field(default="", max_length=128)
     specification: str = Field(default="", max_length=255)
@@ -196,7 +197,7 @@ class CartonScheduleOrderSource(BaseModel):
     source_row: int = Field(ge=1)
 
 
-class CartonOrderCreate(BaseModel):
+class CartonOrderCreate(CartonPackingWeights):
     schedule_source: CartonScheduleOrderSource | None = None
     customer_po: str = Field(default="", max_length=128)
 
@@ -268,7 +269,7 @@ class CartonOrderCreate(BaseModel):
         return self
 
 
-class CartonOrderUpdate(BaseModel):
+class CartonOrderUpdate(CartonPackingWeights):
     customer_po: str = Field(default="", max_length=128)
 
     @field_validator("customer_po")
@@ -494,7 +495,7 @@ class CartonOrderSelectionRequest(BaseModel):
         return normalized
 
 
-class CartonOrderLineOut(BaseModel):
+class CartonOrderLineOut(CartonPackingWeights):
     replenishment_review_required: bool = False
     replenishment_options: list[dict] = Field(default_factory=list)
     replenished_quantity: Decimal = Decimal(0)
@@ -519,7 +520,7 @@ class CartonOrderLineOut(BaseModel):
     note: str
 
 
-class CartonOrderHistoryLineOut(BaseModel):
+class CartonOrderHistoryLineOut(CartonPackingWeights):
     line_no: int
     packaging_type: str
     paper_quality: str
@@ -555,6 +556,14 @@ class CartonOrderHistorySuggestionListOut(BaseModel):
     items: list[CartonOrderHistorySuggestionOut]
 
 
+class CartonSupplierDeliveryDifferenceOut(BaseModel):
+    order_line_id: str
+    packaging_type: str
+    planned_date: str
+    promised_date: str
+    difference_days: int
+
+
 class CartonSupplierAcceptanceOut(BaseModel):
     status: Literal["NOT_ISSUED", "PENDING", "PARTIAL", "ACCEPTED", "PENDING_CHANGE", "NOT_REQUIRED", "CANCELLED"] = "NOT_ISSUED"
     label: str = "尚未发送供应商"
@@ -563,6 +572,7 @@ class CartonSupplierAcceptanceOut(BaseModel):
     total_line_count: int = 0
     accepted_line_count: int = 0
     accepted_at: str = ""
+    delivery_differences: list[CartonSupplierDeliveryDifferenceOut] = Field(default_factory=list)
 
 
 class CartonPurchaseOrderBatchOut(BaseModel):
@@ -573,6 +583,8 @@ class CartonPurchaseOrderBatchOut(BaseModel):
 
 
 class CartonOrderOut(BaseModel):
+    net_weight_kg: Decimal | None = None
+    gross_weight_kg: Decimal | None = None
     purchase_order_batch: CartonPurchaseOrderBatchOut | None = None
     supplier_acceptance: CartonSupplierAcceptanceOut = Field(default_factory=CartonSupplierAcceptanceOut)
     split_records: list[dict] = Field(default_factory=list)
@@ -619,6 +631,7 @@ class CartonOrderListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonOrderOut]
+    statistics: dict[str, int] = Field(default_factory=dict)
 
 
 CartonPurchaseOrderDocumentType = Literal[
@@ -1342,6 +1355,8 @@ class CartonAuditEventListOut(BaseModel):
     limit: int
     offset: int
     items: list[CartonAuditEventOut]
+    event_types: dict[str, str] = Field(default_factory=dict)
+    actors: list[dict[str, str]] = Field(default_factory=list)
 
 
 class CartonDashboardOut(BaseModel):

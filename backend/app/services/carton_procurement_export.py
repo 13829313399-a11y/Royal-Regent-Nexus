@@ -219,7 +219,7 @@ def build_purchase_order_issue_batch_workbook(
     workbook = Workbook()
     workbook.properties.creator = "Royal Regent Nexus"
     workbook.properties.title = (f"{batch_document_no} 合并采购单" if batch_document_no
-                                 else f"供应商采购单发行批次（{len(issues)} 份）")
+                                 else f"供应商采购单生成批次（{len(issues)} 份）")
     sheet = workbook.active
     sheet.title = "合并采购单" if batch_document_no else "供应商采购单批次"
     sheet.sheet_view.showGridLines = False
@@ -231,7 +231,7 @@ def build_purchase_order_issue_batch_workbook(
     white = "FFFFFF"
     thin = Side(style="thin", color="CBD5E1")
     sheet.merge_cells("A1:Q1")
-    sheet["A1"] = f"Royal Regent Nexus · {FACTORY_NAMES.get(issues[0].factory_id, issues[0].factory_id)}{'合并采购单' if batch_document_no else '供应商采购单发行批次'}"
+    sheet["A1"] = f"Royal Regent Nexus · {FACTORY_NAMES.get(issues[0].factory_id, issues[0].factory_id)}{'合并采购单' if batch_document_no else '供应商采购单生成批次'}"
     sheet["A1"].font = Font(name="Microsoft YaHei", size=18, bold=True, color=white)
     sheet["A1"].fill = PatternFill("solid", fgColor=teal_dark)
     sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -459,7 +459,7 @@ def build_purchase_order_workbook(
     sheet.cell(
         row=notice_row,
         column=1,
-        value="本采购单由系统正式订单自动生成，无需供应商回签确认；后续按计划交期进入排期核对、收料和库存流程。",
+        value="生成采购单不代表供应商已接单；请在供应商协同中确认接单及承诺交期，再核对发货、收料和库存。",
     )
     sheet.cell(row=notice_row, column=1).font = Font(name="Microsoft YaHei", size=9, bold=True, color=teal_dark)
     sheet.cell(row=notice_row, column=1).fill = PatternFill("solid", fgColor=teal_light)
@@ -593,6 +593,14 @@ def build_combined_purchase_order_workbook(
 
     current_row = 8
     line_count = 0
+    body_font = Font(name="Microsoft YaHei", size=9, color="0F172A")
+    body_border = Border(left=thin, right=thin, bottom=thin)
+    order_border = Border(left=thin, right=thin, top=medium, bottom=thin)
+    stripe_fill = PatternFill("solid", fgColor="F8FAFC")
+    body_alignment = {column: Alignment(
+        horizontal="center" if column in {1, 7, 8, 15} else "right" if column in {9, 13, 14} else "left",
+        vertical="center", wrap_text=column in {3, 4, 5, 6, 12},
+    ) for column in range(1, 17)}
     for order_index, (order, lines) in enumerate(orders, start=1):
         for line_index, line in enumerate(lines, start=1):
             values = [
@@ -615,15 +623,11 @@ def build_combined_purchase_order_workbook(
             ]
             for column, value in enumerate(values, start=1):
                 cell = sheet.cell(row=current_row, column=column, value=value)
-                cell.font = Font(name="Microsoft YaHei", size=9, color="0F172A")
-                cell.alignment = Alignment(
-                    horizontal="center" if column in {1, 7, 8, 15} else "right" if column in {9, 13, 14} else "left",
-                    vertical="center",
-                    wrap_text=column in {3, 4, 5, 6, 12},
-                )
-                cell.border = Border(left=thin, right=thin, bottom=thin)
+                cell.font = body_font
+                cell.alignment = body_alignment[column]
+                cell.border = order_border if line_index == 1 else body_border
                 if order_index % 2 == 0:
-                    cell.fill = PatternFill("solid", fgColor="F8FAFC")
+                    cell.fill = stripe_fill
             sheet.cell(row=current_row, column=14, value=float(line.required_quantity) if getattr(order, "quantity_basis", "CALCULATED") == "EXPLICIT" else f"=ROUNDUP(I{current_row}/M{current_row},0)")
             sheet.cell(row=current_row, column=9).number_format = (
                 "#,##0" if order.product_order_quantity is not None and order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
@@ -632,14 +636,6 @@ def build_combined_purchase_order_workbook(
                 "#,##0" if line.usage_quantity is not None and line.usage_quantity == line.usage_quantity.to_integral_value() else "#,##0.######"
             )
             sheet.cell(row=current_row, column=14).number_format = "#,##0"
-            if line_index == 1:
-                for column in range(1, 17):
-                    sheet.cell(row=current_row, column=column).border = Border(
-                        left=thin,
-                        right=thin,
-                        top=medium,
-                        bottom=thin,
-                    )
             sheet.row_dimensions[current_row].height = 28
             current_row += 1
             line_count += 1

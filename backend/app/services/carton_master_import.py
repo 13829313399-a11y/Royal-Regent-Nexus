@@ -25,7 +25,7 @@ MAX_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 1000
 HEADERS = {
     "paper-options": ["纸品类型", "纸质", "长", "宽", "高"],
-    "configurations": ["货号", "产品名称", "配置组", "纸品类型", "纸质", "长", "宽", "高", "尺寸单位", "计量单位", "每箱装产品数", "推荐", "状态", "备注"],
+    "configurations": ["货号", "产品名称", "配置组", "纸品类型", "纸质", "长", "宽", "高", "尺寸单位", "计量单位", "每箱装产品数", "推荐", "状态", "备注", "每箱净重kg", "每箱毛重kg"],
     "locations": ["仓库", "仓位或范围"],
 }
 
@@ -47,7 +47,8 @@ def template(kind):
                     "空行忽略；货号、产品名称、单位、装箱数须显式填写，不从相邻行推测。货号必须是真实文本，保留前导零；数字货号一律拒绝，仅修改显示格式无效，请先设为文本后重新输入或以单引号开头输入。",
                     "相同货号+配置组组成一套多纸品配置；配置组空白统一为“默认”。同组产品、推荐、状态和备注必须一致。",
                     "推荐填 是/否（空白为否），状态填 启用/停用（空白为启用）；同货号最多一个启用推荐组。",
-                    "不同配置追加为包装变体；完全相同配置跳过，保留现有状态、推荐和备注。客户与价格不导入。"]
+                    "不同配置追加为包装变体；完全相同配置跳过，保留现有状态、推荐和备注。客户与价格不导入。",
+                    "货号包装的每箱净重kg、每箱毛重kg按每条纸品分别填写，选填、非负、最多四位小数，毛重不得小于净重；仍可导入不含这两列的旧模板。"]
     if kind == "locations":
         messages = ["仅导入“导入数据”页；本页示例不会导入。支持 xlsx / xlsm，最多 5 MB、1000 数据行；所有行展开后合计最多 1000 个仓位（含跳过项）。",
                     "两列均须填写真实文本，禁止公式和数字单元格；请先设为文本后重新输入，或以单引号开头输入，保留 001 等前导零。",
@@ -74,7 +75,7 @@ def template(kind):
     else:
         notes.append(["00123", "示例产品", "标准装", "外箱", "A33", 30, 20, 15, "cm", "个", 24, "是", "启用", "同一货号多纸品示例"])
         notes.append(["00123", "示例产品", "标准装", "内箱", "B25", 18, 12.5, 10, "cm", "个", 24, "是", "启用", "同一货号多纸品示例"])
-    widths = ([18, 22, 14, 14, 14, 10, 10, 10, 12, 12, 16, 10, 10, 24]
+    widths = ([18, 22, 14, 14, 14, 10, 10, 10, 12, 12, 16, 10, 10, 24, 16, 16]
               if kind == "configurations" else [20] * len(HEADERS[kind]))
     for index, width in enumerate(widths, 1):
         notes.column_dimensions[get_column_letter(index)].width = width
@@ -185,7 +186,8 @@ def parse(content, filename, kind):
         # Do not trust cached dimensions: third-party exports can under-report them.
         sheet.reset_dimensions()
         rows = sheet.iter_rows()
-        if [c.value for c in next(rows, [])] != HEADERS[kind]:
+        headers = [c.value for c in next(rows, [])]
+        if headers != HEADERS[kind] and not (kind == "configurations" and headers == HEADERS[kind][:-2]):
             raise HTTPException(422, "模板列名或顺序不正确，请重新下载对应模板")
         for index, cells in enumerate(rows, 2):
             if index > MAX_ROWS + 1 or len(cells) > len(HEADERS[kind]):
@@ -230,6 +232,11 @@ def parse(content, filename, kind):
                              "note": scalar(values[13], "备注", 1000)}
                     if entry["preferred"] not in {"是", "否"} or entry["status"] not in {"启用", "停用"}:
                         raise ValueError("推荐须填是/否，状态须填启用/停用")
+                    from app.schemas.carton_weights import CartonPackingWeights
+                    weights = CartonPackingWeights.model_validate({
+                        field: None if values[position] is None or str(values[position]).strip() == "" else values[position]
+                        for field, position in (("net_weight_kg", 14), ("gross_weight_kg", 15))})
+                    entry["line"].update(weights.model_dump(mode="json"))
                 entries.append((index, entry))
             except ValueError as exc:
                 errors.append(f"第 {index} 行：{exc}")
@@ -350,12 +357,12 @@ def plan(db, factory, kind, entries, errors):
     return {"added": additions, "skipped": skipped, "errors": errors, "details": details}, writes
 
 
-def run(db, user, factory, kind, content, filename, expected=None):
+def run(db, user, factory, kind, content, filename, expected=None, *, parsed=None):
     from app.services.carton_procurement import _lock_receipt_factory, _audit
     master.require_manage(db, user, factory)
     if expected is not None:
         _lock_receipt_factory(db, factory)
-    entries, errors = parse(content, filename, kind)
+    entries, errors = parsed if parsed is not None else parse(content, filename, kind)
     fingerprint = hashlib.sha256(content).hexdigest()
     revision = snapshot(db, factory, kind)
     token = master.digest(["master-import-v1", factory, kind, fingerprint, revision])

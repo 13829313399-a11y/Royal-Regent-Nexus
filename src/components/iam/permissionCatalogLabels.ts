@@ -110,6 +110,8 @@ const PERMISSION_LABELS: Record<string, string> = {
   'customer_price:import_internal_quote': '导入内部报价',
   'customer_price:read': '查看报价中心',
   'customer_order:read': '查看客户订单中心',
+  'module_feedback:manage': '处理模块用户反馈',
+  'module_feedback:submit': '提交并查看自己的模块反馈',
   'customer_order:export': '确认并导出客户排期',
   'customer_order:write': '保存与维护订单台账',
   'customer_order:dispatch': '向下游发送订单及变更',

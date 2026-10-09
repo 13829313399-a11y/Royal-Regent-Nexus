@@ -21,6 +21,23 @@ def _normalize_ocr_text(value: str) -> str:
     return " ".join(line for line in lines if line).strip()
 
 
+def isolate_red_text(image):
+    """Keep visible red ink only; a scan's hidden text layer is not evidence."""
+    import numpy as np
+    from PIL import Image, ImageOps
+
+    pixels = np.asarray(image.convert("RGB"), dtype=np.int16)
+    red, green, blue = pixels[:, :, 0], pixels[:, :, 1], pixels[:, :, 2]
+    mask = (red > 100) & (red - green > 40) & (red - blue > 25)
+    if not mask.any():
+        raise PdfRenameServiceError(
+            "PDF_RENAME_REGION_EMPTY", "发票号码区域没有检测到红色文字。",
+            action="请确认上传了红色发票号清晰可见的 BuzzBee 发票。",
+        )
+    return ImageOps.expand(Image.fromarray(np.where(mask, 0, 255).astype("uint8")),
+                           border=12, fill=255)
+
+
 def _validate_page(pdf_bytes: bytes, page_number: int) -> None:
     try:
         reader = PdfReader(BytesIO(pdf_bytes))
@@ -56,7 +73,7 @@ def recognize_fixed_region(
     from .qwen import qwen_enabled, recognize_qwen_region
     if qwen_enabled():
         return recognize_qwen_region(pdf_bytes, region)
-    if not region.ocr_only:
+    if not region.ocr_only and not region.red_only:
         try:
             with pdfplumber.open(BytesIO(pdf_bytes)) as document:
                 page = document.pages[region.page_number - 1]
@@ -121,6 +138,8 @@ def recognize_fixed_region(
                 round(height * region.bottom),
             )
         )
+        if region.red_only:
+            crop = isolate_red_text(crop)
         requested = [
             language.strip()
             for language in region.language.split("+")
@@ -197,6 +216,8 @@ def _recognize_spatial_region(pdf_bytes: bytes, region: NormalizedRegion) -> Rec
         width, height = image.size
         crop = image.crop((int(width * region.left), int(height * region.top),
                            int(width * region.right), int(height * region.bottom)))
+        if region.red_only:
+            crop = isolate_red_text(crop)
         result = engine(np.asarray(crop))
         boxes = []
         if result is not None and result.boxes is not None:

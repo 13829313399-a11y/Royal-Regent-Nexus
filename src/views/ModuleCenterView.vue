@@ -30,6 +30,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { SPRAY_BASE, isSprayFactory, sprayEnabled } from '@/features/spray-production/contracts'
 import { isCuttingFactory } from '@/features/cutting-operations/navigation'
+import { WAREHOUSES, isWarehouseFactory } from '@/features/warehouse-operations/navigation'
 
 const route = useRoute()
 const appStore = useAppStore()
@@ -67,6 +68,7 @@ const visibleModules = computed(() => {
       if (module.id === 'uv-printing' && appStore.activeFactoryId !== 'huakang-a') return false
       if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
       if (module.id === 'cutting' && !isCuttingFactory(appStore.activeFactoryId)) return false
+      if (WAREHOUSES.some(warehouse => warehouse.id === module.id) && !isWarehouseFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
       if (currentDepartmentId.value === 'pmc-warehouse' && module.id === 'carton-procurement'
         && !authStore.can('carton_procurement:read', factory.id)) return false
@@ -80,7 +82,7 @@ const visibleModules = computed(() => {
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
 
-    if (module.id === 'cutting') {
+    if (module.id === 'cutting' || WAREHOUSES.some(warehouse => warehouse.id === module.id)) {
       return { ...scopedModule, stats: module.stats }
     }
 
@@ -89,13 +91,14 @@ const visibleModules = computed(() => {
         const internal = authStore.can('carton_procurement:read', factory.id)
         const supplier = authStore.can('carton_supplier:read', factory.id, '*')
         return { ...scopedModule, route: supplier ? '/carton-supplier'
-          : internal ? getFactoryScopedRoute('/carton-supplier-management', factory.id) : '/carton-supplier' }
+          : internal ? `${getFactoryScopedRoute('/modules/pmc-warehouse/carton-procurement', factory.id)}&tab=receipts&receipt_page=supplier` : '/carton-supplier' }
       }
-      if (module.id === 'carton-mark-check' && !authStore.can('carton_mark:read', factory.id)) {
+      if (module.id === 'carton-mark-check' && (authStore.can('carton_supplier:read', '*', '*') || !authStore.can('carton_mark:read', factory.id))) {
         return { ...scopedModule, route: '/carton-supplier/carton-mark',
-          summary: '查看并下载与本厂已发行采购单关联、已核对可用的箱唛 Excel 和 PDF',
-          status: '供应商只读', statusTone: 'teal' as const, todos: [],
-          children: scopedModule.children.filter(child => ['客人 Excel', '印刷 PDF'].includes(child.label)) }
+          owner: '供应商协同',
+          summary: '查看本供应商订单的箱唛资料，选择客人 Excel 并上传印刷 PDF 核对',
+          status: '供应商工作区', statusTone: 'teal' as const, todos: [],
+          children: scopedModule.children.filter(child => ['客人 Excel', '印刷 PDF', '内容核对'].includes(child.label)) }
       }
     }
 

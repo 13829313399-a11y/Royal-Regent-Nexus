@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { Calculator } from '@lucide/vue'
-import { computed, nextTick, watch } from 'vue'
+import { BookOpen, Calculator } from '@lucide/vue'
+import { computed, defineAsyncComponent, nextTick, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import SalesModuleWorkbench from '@/components/modules/sales/SalesModuleWorkbench.vue'
 import { useAppStore } from '@/stores/app'
@@ -8,6 +8,29 @@ import { useAppStore } from '@/stores/app'
 const appStore = useAppStore()
 const route = useRoute()
 appStore.setActiveDepartment('sales-business')
+
+const showUsageGuide = ref(false)
+const usageGuideTrigger = ref<HTMLButtonElement | null>(null)
+const usageGuideError = ref('')
+const InternalQuoteUsageGuide = defineAsyncComponent({
+  loader: () => import('@/components/InternalQuoteUsageGuide.vue'),
+  onError(_error, _retry, fail) {
+    usageGuideError.value = '使用教程加载失败，请刷新页面后重试；刷新前请先保存报价内容。'
+    void closeUsageGuide()
+    fail()
+  },
+})
+
+function openUsageGuide() {
+  usageGuideError.value = ''
+  showUsageGuide.value = true
+}
+
+async function closeUsageGuide() {
+  showUsageGuide.value = false
+  await nextTick()
+  usageGuideTrigger.value?.focus()
+}
 
 const backNavigation = computed(() => {
   const quoteId = String(route.params.quoteId ?? '')
@@ -41,7 +64,12 @@ watch(() => route.fullPath, async () => {
     wide-layout
   >
     <template #icon><Calculator aria-hidden="true" /></template>
-    <div class="internal-quote-desk">
+    <div class="internal-quote-desk" data-yl-help="internal-quote.overview">
+      <div class="quote-guide-entry">
+        <span>建单 · 部门核价 · 汇总与输出</span>
+        <button ref="usageGuideTrigger" type="button" aria-label="打开内部报价使用教程" @click="openUsageGuide"><BookOpen aria-hidden="true" />使用教程</button>
+      </div>
+      <p v-if="usageGuideError" role="alert" class="quote-guide-error">{{ usageGuideError }}</p>
       <RouterView v-slot="{ Component, route: childRoute }">
         <Transition name="quote-route" mode="out-in" appear>
           <div :key="`${String(childRoute.name ?? childRoute.path)}:${String(childRoute.params.quoteId ?? '')}`" class="quote-route-page">
@@ -50,10 +78,18 @@ watch(() => route.fullPath, async () => {
         </Transition>
       </RouterView>
     </div>
+    <InternalQuoteUsageGuide v-if="showUsageGuide" :factory-name="appStore.activeFactory.shortName" @close="closeUsageGuide" />
   </SalesModuleWorkbench>
 </template>
 
 <style scoped>
+.quote-guide-entry { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.quote-guide-entry > span { font-size: 11px; color: #64748b; }
+.quote-guide-entry > button { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; border: 1px solid #99f6e4; border-radius: 8px; padding: 7px 11px; background: #f0fdfa; color: #115e59; font-weight: 700; }
+.quote-guide-entry > button:hover { background: #ccfbf1; }
+.quote-guide-entry > button:focus-visible { outline: 2px solid #0d9488; outline-offset: 3px; }
+.quote-guide-entry svg { width: 16px; height: 16px; }
+.quote-guide-error { margin: 0 0 12px; padding: 10px; border-radius: 8px; background: #fff7ed; color: #9a3412; font-size: 12px; }
 .internal-quote-desk {
   min-width: 0;
   font-size: 13px;

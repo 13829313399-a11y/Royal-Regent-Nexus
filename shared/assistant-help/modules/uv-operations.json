@@ -1,0 +1,44 @@
+[
+  {
+    "id": "uv-operations.overview",
+    "module_id": "uv-operations",
+    "title": "UV 厂区与数据口径",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "uv-live",
+      "uv-planning",
+      "uv-shifts",
+      "uv-materials",
+      "uv-analytics",
+      "uv-settings",
+      "uv-imports"
+    ],
+    "factory_ids": [
+      "huakang-a"
+    ],
+    "anchor_id": "uv-operations.overview",
+    "field_keys": [],
+    "summary": "当前 UV 工作区固定为华康 A。",
+    "content": "data_mode=synthetic 表示合成数据，不能当作实际产量、损耗或实绩。未知、离线与采集延迟须分别核实。华康 B、C、D 没有因此获得对应 UV 业务入口。可以讨论通用 UV 知识，实际任务、产量和权限仍由原业务模块确认。",
+    "steps": [
+      {
+        "title": "查看当前工作区域",
+        "description": "当前 UV 工作区固定为华康 A。",
+        "anchor_id": "uv-operations.overview",
+        "precondition": "页面可见且目标已注册",
+        "completion": "已定位；任何业务写入仍需你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/features/uv-operations/contracts.ts",
+        "symbol": "UV_FACTORY",
+        "sha256": "dab5088563e93c1db4c8f2d2d1afee98e71eb2e359d29389c09b2825e23a7276"
+      }
+    ],
+    "knowledge_version": "2026.09.29-v1",
+    "verified_commit": "19332e167e0b990fb0900c868ba0620204f9bd26",
+    "status": "verified"
+  }
+]

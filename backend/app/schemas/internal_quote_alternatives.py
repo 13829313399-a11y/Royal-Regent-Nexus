@@ -15,6 +15,15 @@ class AlternativeCopyRequest(BaseModel):
         return value.strip()
 
 
+class SeriesExportProduct(BaseModel):
+    quote_id: str = Field(min_length=1, max_length=64)
+    revision: int = Field(ge=1)
+
+
+class SeriesExportRequest(BaseModel):
+    products: list[SeriesExportProduct] = Field(min_length=2, max_length=20)
+
+
 class AlternativeSelectionRequest(BaseModel):
     family_revision: int = Field(ge=0)
     selected_quote_id: str = Field(default="", max_length=64)

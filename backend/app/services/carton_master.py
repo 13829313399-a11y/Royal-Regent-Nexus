@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.models.carton_master import CartonMasterRecord as Record, CartonMasterSource as Source
 from app.models.carton_procurement import CartonOrder, CartonOrderLine, CartonCustomer, CartonAuditEvent
 from app.models.auth import AuthUser
-from app.schemas.carton_master import MasterSave
+from app.schemas.carton_master import MasterSave, effective_item_rule
 from app.services.auth import has_permission_in_scope, build_auth_context
 
 PERMISSION = "carton_procurement:master_manage"
@@ -21,6 +21,12 @@ def encoded(value):
 
 def digest(value):
     return hashlib.sha256(encoded(value).encode()).hexdigest()
+
+
+def configuration(data):
+    # Legacy whole-order weights remain in their original records, but cannot
+    # distinguish current paper configurations or cause duplicate enrollment.
+    return {"product_name": data.get("product_name", ""), "lines": canonical_lines(data.get("lines", []))}
 
 
 def can_manage(user, factory):
@@ -46,8 +52,12 @@ def canonical_lines(lines):
     result = []
     for line in lines:
         get = line.get if isinstance(line, dict) else lambda k, default="": getattr(line, k, default)
-        result.append({**{k: str(get(k, "") or "").strip() for k in ("packaging_type", "paper_quality", "specification", "dimension_unit", "unit")},
-                       "usage_quantity": format(Decimal(str((get("usage_quantity", 0) or 0))).normalize(), "f")})
+        paper = {**{k: str(get(k, "") or "").strip() for k in ("packaging_type", "paper_quality", "specification", "dimension_unit", "unit")},
+                 "usage_quantity": format(Decimal(str((get("usage_quantity", 0) or 0))).normalize(), "f")}
+        for field in ("net_weight_kg", "gross_weight_kg"):
+            if get(field, None) is not None:
+                paper[field] = format(Decimal(str(get(field))).normalize(), "f")
+        result.append(paper)
     return sorted(result, key=encoded)
 
 
@@ -88,8 +98,11 @@ def ensure_packing_names(db, factory):
 
 
 def record_out(row, sources=()):
+    data = json.loads(row.data_json)
+    if row.kind == "RULE":
+        data["item_rule"] = effective_item_rule(data.get("item_rule"))
     return {"id": row.id, "kind": row.kind, "customer_code": row.customer_code, "code": row.code,
-            "data": json.loads(row.data_json), "status": row.status, "preferred": bool(row.preferred),
+            "data": data, "status": row.status, "preferred": bool(row.preferred),
             "revision": row.revision, "maintained": bool(row.maintained), "updated_at": row.updated_at,
             "sources": [json.loads(s.snapshot_json) for s in sources]}
 
@@ -116,7 +129,7 @@ def seed_first_number_formats(db, factory, order, user):
             parse_template(template)
         except ValueError:
             continue
-        previous = data.get(key) or {}
+        previous = effective_item_rule(data.get(key)) if key == "item_rule" else data.get(key) or {}
         if previous.get("templates") or previous.get("frozen"):
             continue
         if (previous.get("mode", "AUTO") != "AUTO" or previous.get("prefix") or
@@ -127,6 +140,7 @@ def seed_first_number_formats(db, factory, order, user):
         data[key] = {"mode": "AUTO", "prefix": "", "min_length": 0, "max_length": 128,
                      "characters": "ANY", "templates": [template], "frozen": True,
                      "reset": False, "sample_text": value, "source": "HISTORY", "sample_count": 1}
+        data[key]["user_configured"] = previous.get("user_configured", False)
         captured.append(key)
     if not captured:
         return
@@ -158,13 +172,18 @@ def sync_history(db, factory):
     for row in sorted(by_id.values(), key=lambda r: (r.maintained, r.updated_at)):
         if row.kind == "CONFIG":
             data = json.loads(row.data_json)
-            semantic = {"product_name": data.get("product_name", ""), "lines": canonical_lines(data.get("lines", []))}
+            semantic = configuration(data)
             records[("CONFIG", digest([row.code, semantic]))] = row
     for source in source_rows:
         row = by_id.get(source.record_id)
         if row and row.kind == "CONFIG":
-            data = json.loads(source.snapshot_json)["configuration"]
+            evidence = json.loads(source.snapshot_json)
+            data = evidence["configuration"]
             records.setdefault(("CONFIG", digest([row.code, data])), row)
+            canonical = configuration(data)
+            records.setdefault(("CONFIG", digest([row.code, canonical])), row)
+            signature = digest([canonical, evidence["customer_po"]]) if evidence.get("customer_po") else digest(canonical)
+            sources.add((row.id, source.order_id, signature))
     # Confirmed supplier orders plus explicitly accepted historical imports; OCR/drafts are excluded.
     imported = set(db.scalars(select(CartonAuditEvent.entity_id).where(CartonAuditEvent.factory_id == factory,
         CartonAuditEvent.event_type.in_(["HISTORY_ORDER_IMPORTED", "ORDER_SUBMITTED_SUPPLIER"]))))
@@ -175,7 +194,7 @@ def sync_history(db, factory):
         lines.setdefault(line.order_id, []).append(line)
     added = 0
     for order in orders:
-        config = {"product_name": order.product_name, "lines": canonical_lines(lines.get(order.id, []))}
+        config = configuration({"product_name": order.product_name, "lines": lines.get(order.id, [])})
         for kind, code, data, identity in (
             ("CONFIG", order.item_no, config, digest([order.item_no, config])),
             ("CONTRACT", order.contract_no, {"item_nos": [order.item_no]}, digest([order.customer_code, order.contract_no])),
@@ -219,11 +238,10 @@ def workspace(db, factory, user):
         provenance.setdefault(source.record_id, []).append(source)
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory).order_by(Record.preferred.desc(), Record.updated_at.desc())))
     admin = can_manage(user, factory)
+    # The ACCESS editor is retired (save_record rejects it). Keep its response
+    # field for compatibility without resolving every employee's IAM context
+    # on each master-data read. Existing ACCESS provenance stays visible below.
     users = []
-    if admin:
-        for candidate in db.scalars(select(AuthUser).where(AuthUser.status == "active")):
-            if inventory_allowed(build_auth_context(db, candidate), factory):
-                users.append({"id": candidate.id, "name": candidate.display_name or candidate.username})
     # Saved pending orders contribute scalar suggestions without enrolling configurations.
     paper_history = {}
     for field in ("packaging_type", "paper_quality", "specification"):
@@ -243,9 +261,14 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
     factory = payload.factory_id
     _lock_receipt_factory(db, factory)
     require_manage(db, user, factory)
+    if payload.customer_code:
+        from app.services.carton_customer_assignment import ensure_customer_operation
+        ensure_customer_operation(db, user, factory, payload.customer_code)
     if payload.kind == "ACCESS":
         raise HTTPException(422, "已取消单独仓库授权，请按仓管或主管岗位维护本厂资料")
     data = payload.data.model_dump(mode="json")
+    if payload.kind == "RULE" and payload.customer_code and data["item_rule"]["mode"] != "OFF":
+        data["item_rule"]["user_configured"] = True
     if payload.kind == "CONTRACT" and not payload.customer_code:
         raise HTTPException(422, "请选择客户")
     if payload.customer_code and not db.scalar(select(CartonCustomer.id).where(CartonCustomer.factory_id == factory, CartonCustomer.customer_code == payload.customer_code)):
@@ -269,7 +292,7 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
         if any(not x.strip() or len(x.strip()) > 64 for x in data["warehouses"]):
             raise HTTPException(422, "仓库名称不能为空且不能超过 64 字")
         data["warehouses"] = sorted(set(x.strip().upper() for x in data["warehouses"]))
-    semantic = {"product_name": data["product_name"], "lines": data["lines"]}
+    semantic = configuration(data)
     identity = digest([payload.code, semantic]) if payload.kind == "CONFIG" else digest([payload.customer_code, payload.code if payload.kind != "RULE" else ""])
     row = db.get(Record, identifier) if identifier else None
     if identifier and (not row or row.factory_id != factory):
@@ -277,11 +300,11 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
     if payload.kind == "CONFIG":
         old_data = json.loads(row.data_json) if row else {}
         data["packing_name"] = old_data.get("packing_name", "")
-        old_semantic = {"product_name": old_data.get("product_name", ""), "lines": canonical_lines(old_data.get("lines", []))}
+        old_semantic = configuration(old_data)
         for existing in db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "CONFIG",
                 Record.code == payload.code)):
             previous = json.loads(existing.data_json)
-            current = {"product_name": previous.get("product_name", ""), "lines": canonical_lines(previous.get("lines", []))}
+            current = configuration(previous)
             if existing.id != identifier and current == semantic and (not row or old_semantic != semantic):
                 raise HTTPException(409, "相同包装配置已经存在，请维护原记录；停用配置不会自动重建")
     if row:
@@ -321,7 +344,7 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
 def due_rules(db, factory, customer):
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory, Record.kind == "RULE", Record.status == "ACTIVE",
                                                Record.customer_code.in_(["", customer]))))
-    result = {"lead_days": 3, "production_days": 7, "customer_days": None, "contract_rule": {}, "item_rule": {}, "customer_po_rule": {}, "revision": ""}
+    result = {"lead_days": 3, "production_days": 7, "customer_days": None, "contract_rule": {}, "item_rule": effective_item_rule(None), "customer_po_rule": {}, "revision": ""}
     for row in sorted(rows, key=lambda r: bool(r.customer_code)):
         data = json.loads(row.data_json)
         for key in ("lead_days", "production_days", "customer_days"):
@@ -331,6 +354,7 @@ def due_rules(db, factory, customer):
             result["customer_days"] = None
         if row.customer_code:
             result.update({key: data.get(key, {}) for key in ("contract_rule", "item_rule", "customer_po_rule")})
+            result["item_rule"] = effective_item_rule(data.get("item_rule"))
         result["revision"] += f"{row.id}:{row.revision};"
     return result
 

@@ -99,6 +99,12 @@ CARTON_SUPPLIER_PERMISSION_CODES = (
     "carton_supplier:approve",
 )
 
+FABRIC_WAREHOUSE_PERMISSION_CODES = (
+    "fabric_warehouse:read",
+    "fabric_warehouse:import",
+    "fabric_warehouse:receive",
+)
+
 THREE_D_PRINTING_PERMISSION_CODES = (
     "three_d_printing:read",
     "three_d_printing:operate",
@@ -164,6 +170,7 @@ INTERNAL_QUOTE_PERMISSION_CODES = (
 )
 
 SYSTEM_MANAGEMENT_PERMISSION_CODES = (
+    "system:feedback_manage",
     "system:user_manage",
     "system:role_manage",
     "system:access_manage",
@@ -175,6 +182,7 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 
 BUSINESS_PERMISSION_CODES = (
     *CUTTING_OPS_PERMISSION_CODES,
+    *FABRIC_WAREHOUSE_PERMISSION_CODES,
     *UV_OPS_PERMISSION_CODES,
     *SPRAY_OPS_PERMISSION_CODES,
     *INJECTION_SCHEDULING_PERMISSION_CODES,
@@ -189,6 +197,11 @@ BUSINESS_PERMISSION_CODES = (
     *INTERNAL_QUOTE_PERMISSION_CODES,
 )
 
+# Private employee submission and developer review are separate from business
+# entitlements. Submission defaults to confirmed home-factory employees; its
+# catalog entry supports independent disabling and explicit IAM denies.
+MODULE_FEEDBACK_PERMISSION_CODES = ("module_feedback:submit", "module_feedback:manage")
+
 APPLICATION_PERMISSION_CODES = tuple(
-    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES))
+    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES, *MODULE_FEEDBACK_PERMISSION_CODES))
 )

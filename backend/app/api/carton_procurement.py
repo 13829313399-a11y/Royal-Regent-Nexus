@@ -3,6 +3,9 @@ from datetime import datetime
 from decimal import Decimal
 from fastapi.encoders import jsonable_encoder
 from io import BytesIO
+from pathlib import Path
+from types import SimpleNamespace
+from contextlib import contextmanager
 from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, HTTPException
@@ -10,6 +13,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.schemas.carton_customer_assignment import CartonCustomerAssignmentSave, CartonCustomerClaim
+from app.services import carton_file_jobs as file_jobs
 from app.schemas.carton_order_split import SplitCreate, SplitAction, SplitReceiptPreview
 from app.services import carton_order_split as order_splits
 from app.schemas.carton_inventory_report import CartonInventoryReportOut
@@ -18,6 +23,7 @@ from app.schemas.carton_order_timeline import CartonOrderTimelineOut
 from app.services.carton_order_timeline import order_timeline
 from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction
 from app.services.carton_stocktake import create_stocktake, stocktake_detail, list_stocktakes, act_stocktake
+from app.services.carton_procurement import audit_query_options
 from app.schemas.carton_procurement import (
     CartonAuditEventListOut,
     CartonClosingGenerateRequest,
@@ -155,6 +161,29 @@ router = APIRouter(
 )
 
 
+@router.get("/customer-responsibilities")
+def get_customer_responsibilities(factory_id: str, summary: bool = False, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return responsibilities.workspace(db, current_user, factory_id, summary=summary)
+
+
+@router.put("/customers/{customer_id}/responsibilities")
+def put_customer_responsibilities(customer_id: str, payload: CartonCustomerAssignmentSave,
+                                  db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return responsibilities.save(db, current_user, customer_id, payload)
+
+
+@router.post("/customers/{customer_id}/claim")
+def claim_customer(customer_id: str, payload: CartonCustomerClaim,
+                   db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_customer_assignment as responsibilities
+    _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    return responsibilities.claim(db, current_user, customer_id, payload)
+
+
 def _ensure_permission(
     db: Session,
     user: AuthContext,
@@ -198,6 +227,7 @@ def _ensure_order_deletion_permission(db: Session, user: AuthContext, factory_id
 @router.get("/orders/{order_no}/splits")
 def get_order_splits(order_no: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
     return order_splits.context(db, factory_id, order_no)
 
 
@@ -295,9 +325,34 @@ def get_dashboard(
     return dashboard(db, factory_id)
 
 
+@router.get("/dashboard/workspace")
+def get_dashboard_workspace(
+    factory_id: str,
+    customer: str = Query("", max_length=128), search: str = Query("", max_length=128),
+    status: Literal["OPEN", "ALL"] = "OPEN",
+    kind: Literal["ALL", "MISSING_ORDER", "NEW_ORDER", "QUANTITY_INCREASE", "QUANTITY_DECREASE", "QUANTITY_REVIEW", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_ORDER"] = "ALL",
+    offset: int = Query(0, ge=0), limit: int = Query(8, ge=1, le=50),
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_dashboard import workspace
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return workspace(db, factory_id, customer=customer, search=search, status=status, kind=kind, offset=offset, limit=limit)
+
+
+@router.get("/dashboard/alert-context")
+def get_dashboard_alert_context(
+    factory_id: str, alert_id: str = Query(..., min_length=1, max_length=4096),
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_dashboard import alert_context
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return alert_context(db, factory_id, alert_id)
+
+
 @router.get("/orders", response_model=CartonOrderListOut)
 def get_orders(
     factory_id: str,
+    responsibility_scope: Literal["OWN", "ALL"] = "OWN",
     customer_code: str = Query(default="", max_length=64),
     search: str = Query(default="", max_length=128),
     status_filter: str = Query(default="", max_length=32),
@@ -305,10 +360,17 @@ def get_orders(
     due_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    customer_name: str = Query(default="", max_length=128),
+    order_from: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    order_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    due_filter: Literal["ALL", "OVERDUE", "TODAY", "DUE_SOON", "UPCOMING"] = "ALL",
+    sort: Literal["ORDER_DESC", "DUE_ASC", "DUE_DESC"] = "ORDER_DESC",
+    collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED"] = "ALL",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    statistics = {}
     total, items = list_orders(
         db,
         factory_id,
@@ -319,16 +381,43 @@ def get_orders(
         due_to=due_to.strip(),
         limit=limit,
         offset=offset,
+        customer_name=customer_name, order_from=order_from, order_to=order_to, due_filter=due_filter, sort=sort,
+        statistics=statistics, collaboration_filter=collaboration_filter, user=current_user if responsibility_scope == "OWN" else None,
     )
-    from app.services.carton_usage import usage_by_key
-    usage = usage_by_key(db, factory_id)
-    return CartonOrderListOut(
-        factory_id=factory_id,
-        total=total,
-        limit=limit,
-        offset=offset,
-        items=[order_out(db, item, usage=usage) for item in items],
-    )
+    from app.services.carton_order_projection import order_page_out
+    return CartonOrderListOut(factory_id=factory_id, total=total, limit=limit,
+        offset=offset, items=order_page_out(db, items), statistics=statistics)
+
+
+@router.get("/schedule-orders")
+def get_schedule_orders(factory_id: str, offset: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=500),
+                        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from sqlalchemy import select, func
+    from app.models.carton_procurement import CartonOrder
+    factory_id = _ensure_permission(db, user, "carton_procurement:read", factory_id)
+    query = select(CartonOrder).where(CartonOrder.factory_id == factory_id, CartonOrder.deleted_at.is_(None))
+    total = db.scalar(select(func.count()).select_from(query.subquery()))
+    orders = list(db.scalars(query.order_by(CartonOrder.id).offset(offset).limit(limit)))
+    fields = ("id", "factory_id", "order_no", "customer_code", "customer_name", "contract_no", "item_no",
+              "customer_po", "status", "product_order_quantity", "product_name", "customer_due_date")
+    identifiers = {order.id for order in orders}
+    splits = {}
+    for plan in order_splits.plans(db, factory_id):
+        if plan["order_id"] in identifiers:
+            splits.setdefault(plan["order_id"], []).append(plan)
+    return {"items": [{**{key: getattr(order, key) for key in fields},
+                       "split_records": splits.get(order.id, [])} for order in orders], "total": total}
+
+
+@router.post("/orders/selection")
+def read_selected_orders(payload: CartonOrderSelectionRequest, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from sqlalchemy import select
+    from app.models.carton_procurement import CartonOrder
+    from app.services.carton_order_projection import order_page_out
+    factory = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    orders = list(db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory,
+        CartonOrder.deleted_at.is_(None), CartonOrder.order_no.in_(payload.order_nos))))
+    return {"items": order_page_out(db, orders)}
 
 
 @router.get("/order-history/item-suggestions", response_model=CartonOrderHistorySuggestionListOut)
@@ -521,7 +610,7 @@ def post_orders_bulk_submit_supplier(
     response_model=CartonHistoryOrderImportOut,
     status_code=201,
 )
-async def post_history_order_import(
+def post_history_order_import(
     factory_id: str,
     file: UploadFile = File(...),
     expected_preview_fingerprint: str | None = Form(default=None),
@@ -531,26 +620,21 @@ async def post_history_order_import(
     factory_id = _ensure_permission(
         db, current_user, "carton_procurement:order_write", factory_id
     )
-    content = await file.read()
-    return import_history_orders(
-        db,
-        factory_id,
-        file.filename or "history-orders.xlsx",
-        content,
-        current_user,
-        expected_preview_fingerprint=expected_preview_fingerprint,
-    )
+    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:order_write") as (content, current_user):
+        return import_history_orders(db, factory_id, file.filename or "history-orders.xlsx", content,
+            current_user, expected_preview_fingerprint=expected_preview_fingerprint)
 
 
 @router.post("/history-orders/preview")
-async def post_history_order_preview(
+def post_history_order_preview(
     factory_id: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id = _ensure_permission(db,current_user,"carton_procurement:order_write",factory_id)
-    return preview_history_orders(db,factory_id,file.filename or "history-orders.xlsx",await file.read())
+    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:order_write") as (content, actor):
+        return preview_history_orders(db,factory_id,file.filename or "history-orders.xlsx",content,actor)
 
 
 @router.get("/orders/{order_no}/purchase-order.xlsx")
@@ -643,17 +727,54 @@ def post_combined_purchase_order_workbook(
 ):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
     generated_at = business_now()
-    orders = []
-    for order_no in payload.order_nos:
-        order = get_order_by_no(db, factory_id, order_no)
-        orders.append((order, get_order_lines(db, order.id)))
-    content = build_combined_purchase_order_workbook(orders, generated_at=generated_at)
+    orders = _export_order_snapshot(db, factory_id, payload.order_nos)
+    db.rollback()
+    content = file_jobs.run_file_job("combined_export", orders, generated_at)
     file_name = f"纸箱累计对账表_{generated_at.strftime('%Y%m%d_%H%M%S')}.xlsx"
     return StreamingResponse(
         BytesIO(content),
         media_type=XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}"},
     )
+
+
+def _export_order_snapshot(db, factory, numbers):
+    from collections import defaultdict
+    from sqlalchemy import select
+    from app.models.carton_procurement import CartonOrder, CartonOrderLine
+    orders = {order.order_no: order for order in db.scalars(select(CartonOrder).where(
+        CartonOrder.factory_id == factory, CartonOrder.deleted_at.is_(None), CartonOrder.order_no.in_(numbers)))}
+    if any(number not in orders for number in numbers):
+        raise HTTPException(404, "部分订单不存在或不属于当前厂区，请刷新后重试")
+    lines = defaultdict(list)
+    def snapshot(record):
+        return SimpleNamespace(**{column.name: getattr(record, column.name) for column in record.__table__.columns})
+    for line in db.scalars(select(CartonOrderLine).where(CartonOrderLine.order_id.in_([order.id for order in orders.values()])).order_by(CartonOrderLine.line_no)):
+        lines[line.order_id].append(snapshot(line))
+    return [(snapshot(orders[number]), lines[orders[number].id]) for number in numbers]
+
+
+@router.post("/file-jobs/exports", status_code=202)
+def start_export_job(payload: CartonOrderSelectionRequest, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    snapshot = _export_order_snapshot(db, factory, payload.order_nos)
+    generated = business_now()
+    db.rollback()
+    return file_jobs.start_job(current_user.id, factory, "combined_export", (snapshot, generated),
+        {"filename": f"纸箱累计对账表_{generated.strftime('%Y%m%d_%H%M%S')}.xlsx", "order_nos": payload.order_nos})
+
+
+@router.get("/file-jobs/{job_id}/download")
+def download_export_job(job_id: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    job = file_jobs.get_job(job_id, current_user.id, factory_id)
+    if job.operation != "combined_export":
+        raise HTTPException(422, "此任务不是导出任务")
+    _export_order_snapshot(db, factory_id, job.metadata.get("order_nos", []))
+    with file_jobs.result(job) as (content, _):
+        job.status = "COMPLETED"
+        return StreamingResponse(BytesIO(content), media_type=XLSX_MEDIA_TYPE,
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(job.metadata['filename'])}"})
 
 
 @router.get("/purchase-order-batches/{batch_id}.xlsx")
@@ -699,6 +820,7 @@ def post_purchase_order_issue_batch_workbook(
 @router.get("/receipts", response_model=CartonReceiptListOut)
 def get_receipts(
     factory_id: str,
+    responsibility_scope: Literal["OWN", "ALL"] = "OWN",
     customer_code: str = Query(default="", max_length=64),
     search: str = Query(default="", max_length=128),
     limit: int = Query(default=50, ge=1, le=200),
@@ -713,7 +835,7 @@ def get_receipts(
         customer_code=customer_code.strip(),
         search=search.strip(),
         limit=limit,
-        offset=offset,
+        offset=offset, user=current_user if responsibility_scope == "OWN" else None,
     )
     return CartonReceiptListOut(
         factory_id=factory_id,
@@ -755,20 +877,99 @@ def post_receipt_reversal(
     return receipt_out(db, reverse_receipt(db, receipt_id, payload, current_user))
 
 
+def _read_carton_upload(file):
+    from app.services.carton_procurement import MAX_IMPORT_BYTES, ALLOWED_IMPORT_SUFFIXES
+    if Path(file.filename or "").suffix.lower() not in ALLOWED_IMPORT_SUFFIXES | {".xlsm"}:
+        raise HTTPException(422, "仅支持 Excel、PDF、PNG、JPG 或 HEIC 文件")
+    content = file.file.read(MAX_IMPORT_BYTES + 1)
+    if not content:
+        raise HTTPException(422, "导入文件不能为空")
+    if len(content) > MAX_IMPORT_BYTES:
+        raise HTTPException(413, "导入文件不能超过 20 MB")
+    return content
+
+
+@contextmanager
+def _isolated_sheet_upload(db, file, factory, user, permission):
+    from app.services.carton_procurement_imports import prepared_sheets
+    from app.services.auth import build_auth_context, get_authenticated_user
+    content = _read_carton_upload(file)
+    db.rollback()
+    sheets = file_jobs.run_file_job("sheets", file.filename or "", content)
+    user = build_auth_context(db, get_authenticated_user(db, user))
+    _ensure_permission(db, user, permission, factory)
+    with prepared_sheets(Path(file.filename or "").name, content, sheets):
+        yield content, user
+
+
+def _isolated_import(db, factory, kind, file, user, profile=None):
+    content = _read_carton_upload(file)
+    db.rollback()  # Release the read-only authorization connection before CPU work.
+    parsed = file_jobs.run_file_job("parse", kind, file.filename or "", content)
+    # Permission is checked again after a possibly long file operation.
+    from app.services.auth import build_auth_context, get_authenticated_user
+    user = build_auth_context(db, get_authenticated_user(db, user))
+    _ensure_permission(db, user, "carton_procurement:import", factory)
+    return create_import_batch(db, factory, kind, file, content, user,
+        import_profile=profile, parsed_source=parsed)
+
+
+@router.post("/file-jobs/imports", status_code=202)
+def start_import_job(
+    factory_id: str,
+    import_type: Literal["WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE", "DELIVERY_NOTE"],
+    file: UploadFile = File(...), customer_code: str = Form(default="", max_length=64),
+    advance_days: int = Query(default=3, ge=0, le=30),
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
+    if import_type == "WEEKLY_SCHEDULE":
+        from app.services.carton_procurement import get_active_customer
+        customer_code = get_active_customer(db, factory_id, customer_code).customer_code
+    content = _read_carton_upload(file)
+    profile = {"customer_code": customer_code} if import_type == "WEEKLY_SCHEDULE" else {"advance_days": advance_days} if import_type == "INSPECTION_SCHEDULE" else {}
+    metadata = {"filename": file.filename, "content_type": file.content_type, "profile": profile}
+    db.rollback()
+    return file_jobs.start_job(current_user.id, factory_id, "parse",
+        (import_type, file.filename or "", content), metadata)
+
+
+@router.get("/file-jobs/{job_id}")
+def read_file_job(job_id: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return file_jobs.job_status(file_jobs.get_job(job_id, current_user.id, factory_id))
+
+
+@router.post("/file-jobs/{job_id}/complete", response_model=CartonImportBatchOut)
+def complete_import_job(job_id: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
+    job = file_jobs.get_job(job_id, current_user.id, factory_id)
+    if job.operation != "parse":
+        raise HTTPException(422, "此任务不是导入任务")
+    with file_jobs.result(job) as (parsed, args):
+        if job.batch_id:
+            return get_import_batch(db, factory_id, job.batch_id)
+        kind, filename, content = args
+        upload = SimpleNamespace(filename=filename, content_type=job.metadata["content_type"])
+        batch = create_import_batch(db, factory_id, kind, upload, content, current_user,
+            import_profile=job.metadata["profile"], parsed_source=parsed)
+        job.batch_id, job.status = batch.id, "COMPLETED"
+        return batch
+
+
 @router.post("/receipt-imports", response_model=CartonImportBatchOut, status_code=201)
-async def post_receipt_import(
+def post_receipt_import(
     factory_id: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
-    content = await file.read()
-    return create_import_batch(db, factory_id, "DELIVERY_NOTE", file, content, current_user)
+    return _isolated_import(db, factory_id, "DELIVERY_NOTE", file, current_user)
 
 
 @router.post("/weekly-imports", response_model=CartonImportBatchOut, status_code=201)
-async def post_weekly_import(
+def post_weekly_import(
     factory_id: str,
     customer_code: str = Form(..., min_length=1, max_length=64),
     file: UploadFile = File(...),
@@ -776,9 +977,7 @@ async def post_weekly_import(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
-    content = await file.read()
-    return create_import_batch(db, factory_id, "WEEKLY_SCHEDULE", file, content, current_user,
-                               import_profile={"customer_code": customer_code})
+    return _isolated_import(db, factory_id, "WEEKLY_SCHEDULE", file, current_user, {"customer_code": customer_code})
 
 
 @router.get("/schedule-order-marks")
@@ -819,7 +1018,7 @@ def post_schedule_order_marks_bulk(
 
 
 @router.post("/inspection-imports", response_model=CartonImportBatchOut, status_code=201)
-async def post_inspection_import(
+def post_inspection_import(
     factory_id: str,
     advance_days: int = Query(default=3, ge=0, le=30),
     file: UploadFile = File(...),
@@ -827,16 +1026,7 @@ async def post_inspection_import(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
-    content = await file.read()
-    return create_import_batch(
-        db,
-        factory_id,
-        "INSPECTION_SCHEDULE",
-        file,
-        content,
-        current_user,
-        import_profile={"advance_days": advance_days},
-    )
+    return _isolated_import(db, factory_id, "INSPECTION_SCHEDULE", file, current_user, {"advance_days": advance_days})
 
 
 @router.get("/receipt-imports/latest", response_model=CartonImportBatchOut | None)
@@ -1004,7 +1194,7 @@ def get_inventory_movements(
     response_model=CartonHistoryInventoryImportOut,
     status_code=201,
 )
-async def post_history_inventory_import(
+def post_history_inventory_import(
     factory_id: str,
     file: UploadFile = File(...),
     options: str | None = Form(default=None),
@@ -1015,20 +1205,13 @@ async def post_history_inventory_import(
     factory_id = _ensure_permission(
         db, current_user, "carton_procurement:inventory_write", factory_id
     )
-    content = await file.read()
-    return import_history_inventory(
-        db,
-        factory_id,
-        file.filename or "history-inventory.xlsx",
-        content,
-        current_user,
-        options=options,
-        expected_preview_fingerprint=expected_preview_fingerprint,
-    )
+    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:inventory_write") as (content, current_user):
+        return import_history_inventory(db, factory_id, file.filename or "history-inventory.xlsx", content,
+            current_user, options=options, expected_preview_fingerprint=expected_preview_fingerprint)
 
 
 @router.post("/inventory/history-imports/preview")
-async def post_history_inventory_preview(
+def post_history_inventory_preview(
     factory_id: str,
     file: UploadFile = File(...),
     options: str | None = Form(default=None),
@@ -1036,15 +1219,17 @@ async def post_history_inventory_preview(
     current_user: AuthContext = Depends(get_current_user),
 ):
     factory_id=_ensure_permission(db,current_user,"carton_procurement:inventory_write",factory_id)
-    return preview_history_inventory(db,factory_id,file.filename or "history-inventory.xlsx",await file.read(),options=options)
+    with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:inventory_write") as (content, _):
+        return preview_history_inventory(db,factory_id,file.filename or "history-inventory.xlsx",content,options=options)
 
 
 @router.get("/stocktakes")
 def stocktakes_list(factory_id: str, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0),
                     status: Literal["", "DRAFT", "SUBMITTED", "POSTED", "CANCELLED"] = "",
+                    date_from: str = "", date_to: str = "", sort: Literal["ASC", "DESC"] = "DESC",
                     db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, user, "carton_procurement:read", factory_id)
-    return list_stocktakes(db, factory_id, limit, offset, status)
+    return list_stocktakes(db, factory_id, limit, offset, status, date_from, date_to, sort)
 
 
 @router.get("/stocktakes/{identifier}")
@@ -1198,6 +1383,7 @@ def get_audit_events(
     date_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    sort: Literal["ASC", "DESC"] = "DESC",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1212,6 +1398,7 @@ def get_audit_events(
         date_to=date_to.strip(),
         limit=limit,
         offset=offset,
+        sort=sort,
     )
     return CartonAuditEventListOut(
         factory_id=factory_id,
@@ -1219,6 +1406,7 @@ def get_audit_events(
         limit=limit,
         offset=offset,
         items=items,
+        **audit_query_options(db, factory_id),
     )
 
 
@@ -1336,16 +1524,21 @@ def get_master_import_template(kind: Literal["paper-options", "configurations", 
 
 
 @router.post("/master-data/import/{kind}/{action}", response_model=MasterImportResult)
-async def post_master_import(kind: Literal["paper-options", "configurations", "locations"], action: Literal["preview", "apply"],
+def post_master_import(kind: Literal["paper-options", "configurations", "locations"], action: Literal["preview", "apply"],
                              factory_id: str = Form(...), file: UploadFile = File(...), preview_token: str = Form(""),
                              db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
     master_service.require_manage(db, current_user, factory_id)
-    content = await file.read(master_import_service.MAX_BYTES + 1)
+    content = file.file.read(master_import_service.MAX_BYTES + 1)
     if action == "apply" and not preview_token:
         raise HTTPException(422, "请先预览并确认导入")
+    db.rollback()
+    parsed = file_jobs.run_file_job("master_parse", content, file.filename or "", kind)
+    from app.services.auth import build_auth_context, get_authenticated_user
+    current_user = build_auth_context(db, get_authenticated_user(db, current_user))
+    _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
     return master_import_service.run(db, current_user, factory_id, kind, content, file.filename or "",
-                                     expected=preview_token if action == "apply" else None)
+                                     expected=preview_token if action == "apply" else None, parsed=parsed)
 
 @router.get("/master-data")
 def get_master_data(factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):

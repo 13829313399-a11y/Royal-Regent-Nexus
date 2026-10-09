@@ -120,6 +120,7 @@ DEPARTMENT_NAMES = {
 }
 MODULE_NAMES = {
     "cutting_ops": "裁床基础资料（华康 C）",
+    "module_feedback": "模块反馈（开发处理）",
     "uv_ops": "UV 打印管理（华康 A）",
     "injection_scheduling": "注塑排产中枢",
     "molding_sample": "啤办管理",

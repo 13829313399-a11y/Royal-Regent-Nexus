@@ -36,6 +36,7 @@ READ_PERMISSION_CODES = frozenset(
         "molding_sample:notification_read",
         "carton_mark:read",
         "carton_procurement:read",
+        "fabric_warehouse:read",
         "customer_price:read",
         "customer_price:settings_read",
         "customer_price:compare",

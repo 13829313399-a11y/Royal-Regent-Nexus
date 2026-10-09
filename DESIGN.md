@@ -547,6 +547,10 @@ font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
 - 单一侧栏活动底片和部门胶囊按 DOM 实测定位，关闭动效仍保留定位变换。顶栏高度由 ResizeObserver 测量，窄屏厂区选择调用原 `selectFactory`。
 - 目录规划、待办、驾驶舱指标、四厂示例及五行健康度继续标明示例来源。未接入的新增、筛选和导出动作真实禁用。
 
+### 15.6 曜灵局部设计例外
+
+`src/features/assistant/assistant.css` 使用独立 `.yl-assistant` 根与 `yl-` 类名：深翡翠舱头、香槟轨道 SVG、小面积紫罗兰折射和白色阅读区。侧舱默认宽 432px，可在 360–600px 之间调整；专注态限宽 768px，窄屏根据 visualViewport 处理键盘与安全区。装饰在后台或减少动效模式暂停。贴边入口的定位 transform 不参与按钮按下位移，避免点击目标跳动。侧舱保持页面可操作；专注/手机模式复用共享滚动锁、恢复 inert 并圈定焦点。业务模态优先，助手定位仅使用注册锚点及业务组件 reveal 接口。截图和本地浏览器证据见 `docs/assistant/IMPLEMENTATION.md`。
+
 ## 16. 新页面实施清单
 
 开发新页面前依次确认：

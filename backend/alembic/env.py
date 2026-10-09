@@ -19,21 +19,29 @@ from app.core.config import settings
 from app.db import Base
 from app.models import (
     cutting_ops,  # noqa: F401
+    assistant,  # noqa: F401
     work_center,  # noqa: F401
     uv_operations,  # noqa: F401
     spray_ops,  # noqa: F401
     document_tools,  # noqa: F401
+    collaborative_sheets,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
+    carton_feedback,  # noqa: F401
     carton_procurement,  # noqa: F401
+    fabric_procurement,  # noqa: F401
+    fabric_receiving,  # noqa: F401
+    fabric_master,  # noqa: F401
     carton_stocktake,  # noqa: F401
     carton_positions,
     carton_master,  # noqa: F401
+    carton_customer_assignment,  # noqa: F401
     carton_supplier_settlement,  # noqa: F401
     carton_supplier_portal,  # noqa: F401
     customer_order,  # noqa: F401
     customer_order_ledger,  # noqa: F401
     internal_quote,  # noqa: F401
+    module_feedback,  # noqa: F401
     customer_price_settings,  # noqa: F401
     injection_scheduling,  # noqa: F401
     molding_sample,  # noqa: F401
