@@ -264,14 +264,39 @@ def amend(db: Session, line: Line, body, actor: str) -> None:
     db.flush()
 
 
-def cancel(db: Session, line: Line, body, actor: str) -> None:
+def cancel(db: Session, line: Line, body, actor: str, *, authorize_dispatch=None) -> None:
     lock_line(db, line, body.expected_revision)
     if line.status == "cancelled":
         raise HTTPException(409, "订单已经取消")
+    recipients = _existing_recipients(db, line)
+    if recipients and authorize_dispatch:
+        authorize_dispatch()
     line.status = "cancelled"
     line.version += 1
     record_version(db, line, body.reason, actor)
-    publish(db, line, _existing_recipients(db, line), actor, body.reason)
+    publish(db, line, recipients, actor, body.reason)
+    db.flush()
+
+
+def restore(db: Session, line: Line, body, actor: str, *, authorize_dispatch=None) -> None:
+    if body.confirmed is not True:
+        raise HTTPException(400, "请再次确认恢复此订单明细")
+    lock_line(db, line, body.expected_revision)
+    if line.status != "cancelled":
+        raise HTTPException(409, "只能恢复已取消的订单，请刷新后核对")
+    recipients = _existing_recipients(db, line)
+    if recipients:
+        if not body.notify_recipients:
+            raise HTTPException(400, "已发送订单恢复时必须确认通知原接收部门")
+        if authorize_dispatch:
+            authorize_dispatch()
+    # Preserve current quantities, shipment corrections, sources and identities.
+    # Restoration is a new status version, never a rollback to an old snapshot.
+    line.status = "active"
+    line.version += 1
+    reason = "恢复已取消订单：" + body.reason
+    record_version(db, line, reason, actor)
+    publish(db, line, recipients, actor, reason)
     db.flush()
 
 
