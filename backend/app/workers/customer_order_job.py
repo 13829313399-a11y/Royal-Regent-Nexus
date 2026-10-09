@@ -65,7 +65,10 @@ def main():
         os.environ[key] = str(source.parent)
     if os.name != "nt":
         import resource
-        resource.setrlimit(resource.RLIMIT_AS, (2 * 1024**3, 2 * 1024**3))
+        # Darwin does not support this Linux address-space limit reliably.
+        # Keep Linux production limits unchanged; all platforms retain watchdog.
+        if sys.platform.startswith("linux"):
+            resource.setrlimit(resource.RLIMIT_AS, (2 * 1024**3, 2 * 1024**3))
         resource.setrlimit(resource.RLIMIT_CPU, (max(1, math.ceil(remaining)), max(2, math.ceil(remaining) + 1)))
     try:
         with job_slot(Path(sys.argv[4])):
