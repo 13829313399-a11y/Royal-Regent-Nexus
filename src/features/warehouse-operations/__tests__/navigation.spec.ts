@@ -168,6 +168,13 @@ describe('warehouse framework navigation', () => {
           expect(wrapper!.text()).toContain('待接入')
           continue
         }
+        if (wrapper!.find('.semi-locations').exists()) {
+          expect(wrapper!.get('.semi-locations h2').text()).toBe(view.title)
+          expect(wrapper!.get('.semi-locations .warehouse-empty').text()).toContain('建档不会增加库存')
+          // Operating permission alone must not permit master-data changes.
+          expect(wrapper!.findAll('.semi-locations button').find(button => button.text() === '新增仓库 / 仓位')!.attributes('disabled')).toBeDefined()
+          continue
+        }
         expect(wrapper!.get('.warehouse-table-heading h2, .stock-heading h2').text()).toBe(view.title)
         expect(wrapper!.findAll('th').map(th => th.text())).toEqual(view.columns)
         expect(wrapper!.get('.warehouse-empty').text()).toContain('不代表实际数量为零')

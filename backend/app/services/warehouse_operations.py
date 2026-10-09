@@ -18,7 +18,7 @@ from app.services.fabric_receiving import quantity
 from app.services import warehouse_locations as locations
 
 FACTORY = 'huakang-c'
-REVISION = '20261009_0150'
+REVISION = '20261009_0152'
 OUTBOUND = {'ISSUE', 'PROCESS_SEND', 'PACK_SEND'}
 
 

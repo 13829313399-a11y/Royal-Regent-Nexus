@@ -296,7 +296,7 @@ def test_forward_migration_preserves_existing_data_and_refuses_evidence_loss(mon
         db_module = importlib.import_module('app.db')
         model = importlib.import_module('app.models.warehouse_operations').WarehouseOperation
         model.__table__.drop(db_module.engine)
-        path = Path(__file__).parents[1] / 'alembic/versions/20261009_0150_warehouse_operations.py'
+        path = Path(__file__).parents[1] / 'alembic/versions/20261009_0152_warehouse_operations.py'
         spec = importlib.util.spec_from_file_location('warehouse_migration_test', path)
         migration = importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
         with db_module.engine.begin() as connection:
