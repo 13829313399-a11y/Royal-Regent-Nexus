@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BusinessShareButton from '@/features/collaboration/BusinessShareButton.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import {
   ArrowLeft,
@@ -5391,6 +5392,7 @@ onUnmounted(() => {
           <button type="button" class="hover:text-slate-900" @click="setView('overview')">看板总览</button>
           <ChevronRight class="size-3.5" aria-hidden="true" />
           <span class="font-semibold text-slate-700">单据详情 · {{ selectedOrder.id }}</span>
+          <BusinessShareButton :reference="{ resource_type: 'molding_sample', resource_id: selectedOrder.id, factory_id: selectedOrder.factory_id }" />
         </div>
 
         <section class="rounded-lg border border-slate-200 bg-white p-4">

@@ -15,6 +15,7 @@ import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { collaborationApi, type Capabilities } from '@/api/collaboration'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
 import { identityUiEnabled } from '@/components/iam/workspace/iam-navigation'
@@ -29,6 +30,8 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/messages', name: 'messages', component: () => import('@/views/MessagesView.vue'), meta: { title: '私信', requiresAuth: true } },
+  { path: '/me', name: 'my-space', component: () => import('@/views/MySpaceView.vue'), meta: { title: '我的空间', requiresAuth: true } },
   { path: '/notifications', name: 'notification-center', component: () => import('@/views/NotificationCenterView.vue'), meta: { title: '事项工作台', requiresAuth: true } },
   {
     path: '/carton-supplier', name: 'carton-supplier', component: () => import('@/views/CartonSupplierView.vue'),
@@ -743,6 +746,15 @@ router.beforeEach(async (to, from) => {
 
   if (to.name === 'change-password') {
     return postLoginRedirectLocation(resolvePostLoginRedirect(router, to.query.redirect))
+  }
+
+  if (to.name === 'messages' || to.name === 'my-space' || to.name === 'people-directory') {
+    if (to.name !== 'people-directory' && import.meta.env.VITE_COLLABORATION_ENABLED === 'false') return { name: 'forbidden', replace: true }
+    try {
+      const capability = await collaborationApi.get<Capabilities>('/capabilities')
+      if (navigationVersion !== latestNavigationVersion) return false
+      if (!capability.eligible || (!capability.enabled && to.name !== 'people-directory')) return { name: 'forbidden', replace: true }
+    } catch { return { name: 'forbidden', replace: true } }
   }
 
   if (to.name === 'module-detail') {

@@ -143,7 +143,7 @@ describe('internal quote desk frontend layout', () => {
       expect(sectionFormSource).toContain('text-align:center;vertical-align:middle')
       expect(sectionFormSource).toContain('font-variant-numeric:tabular-nums')
       expect(sectionFormSource).toContain('function calculated(value: number) { return fixedDecimal(value, 3) }')
-      expect(sectionFormSource).toContain('function measured(value: number) { return value.toFixed(4) }')
+      expect(sectionFormSource).toMatch(/function measured\([^)]*\)\s*\{[^}]*\.toFixed\(4\)/)
       expect(sectionEditorSource).toContain('detailAmount(line.amountHkd)')
       expect(sectionEditorSource).toContain('detailAmount(section.totalHkd)')
     for (const text of ['物料名称', '裁片部位', '工艺', '裁片数', '供应商', '布料 MOQ/Y', '低于 MOQ/每色费用 RMB', '用量/码', '单价 RMB', '汇率', '成本 HKD（自动）', '码点', '价钱 HKD（自动）', '含电绣', '<option value="丝印">丝印</option>']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)

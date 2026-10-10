@@ -4,6 +4,7 @@ import { Menu, Search } from '@lucide/vue'
 import { useRoute, useRouter } from 'vue-router'
 import { factoryContexts, type FactoryContextId } from '@/data/enterpriseMock'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import MessageEntry from '@/features/collaboration/MessageEntry.vue'
 import MemberDirectoryEntry from '@/components/directory/MemberDirectoryEntry.vue'
 import NotificationCenter from '@/components/notifications/NotificationCenter.vue'
 import RouteLoadingBar from '@/components/layout/RouteLoadingBar.vue'
@@ -60,7 +61,7 @@ const topBarFactoryContexts = computed(() => {
 })
 
 const getTopBarFactoryLabel = (factory: (typeof factoryContexts)[number]) => (
-  factory.id === 'group' ? '总务' : factory.shortName
+  factory.id === 'group' ? '集团' : factory.shortName
 )
 
 function selectFactory(factoryId: FactoryContextId) {
@@ -126,7 +127,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
 
       <div data-testid="topbar-member-directory-slot" class="ml-auto shrink-0 lg:ml-0">
         <MemberDirectoryEntry
-          :current-factory-id="appStore.activeProductionFactory.id"
+          :current-factory-id="appStore.activeFactoryId"
           :current-department="appStore.activeDepartmentId"
         />
       </div>
@@ -153,6 +154,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
 
       <label v-if="homeScope" class="home-factory-select"><span class="sr-only">当前厂区</span><select aria-label="当前厂区" :value="appStore.activeFactoryId" @change="selectFactory(($event.target as HTMLSelectElement).value as FactoryContextId)"><option v-for="factory in topBarFactoryContexts" :key="factory.id" :value="factory.id">{{ getTopBarFactoryLabel(factory) }}</option></select></label>
       <NotificationCenter />
+      <MessageEntry />
       <AccountMenu />
     </div>
     <RouteLoadingBar />

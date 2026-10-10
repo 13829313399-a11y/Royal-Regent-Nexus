@@ -6,7 +6,7 @@ from math import ceil
 from urllib.parse import quote
 
 from fastapi import HTTPException
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import String, case, cast, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,11 @@ from app.schemas.directory import (
     DirectorySummaryResponse,
 )
 from app.services.auth import AuthContext
+from app.core.config import settings
+from app.models.identity import IamOrgUnit, IamOrgDepartment
+from app.models.collaboration import MemberProfile, MemberContact
+from app.services.internal_members import eligible_member_ids
+from app.services.identity_resolver import stamp
 
 ONLINE_WINDOW_SECONDS = 120
 AWAY_WINDOW_SECONDS = 15 * 60
@@ -82,7 +87,7 @@ def _timestamp(value) -> str:
 def _directory_expressions(now=None):
     checked_at = now or business_now()
     from app.services.identity_resolver import identity_columns
-    identity_factory, identity_department, identity_position = identity_columns(checked_at)
+    identity_factory, identity_department, identity_position, identity_org = identity_columns(checked_at, include_org=True)
     online_cutoff = _timestamp(checked_at - timedelta(seconds=ONLINE_WINDOW_SECONDS))
     away_cutoff = _timestamp(checked_at - timedelta(seconds=AWAY_WINDOW_SECONDS))
 
@@ -112,7 +117,7 @@ def _directory_expressions(now=None):
         func.nullif(func.trim(identity_department), ""),
         FALLBACK_DEPARTMENT,
     )
-    return presence_state, presence_rank, display_name, position, factory, department
+    return presence_state, presence_rank, display_name, position, factory, department, func.coalesce(identity_org, "")
 
 
 def _base_conditions(
@@ -120,10 +125,12 @@ def _base_conditions(
     q: str = "",
     factory_id: str = "",
     department: str = "",
+    org_unit_id: str = "",
+    eligible_ids=(),
     expressions,
 ):
-    _, _, display_name, position, factory, profile_department = expressions
-    conditions = [AuthUser.status == "active"]
+    _, _, display_name, position, factory, profile_department, org = expressions
+    conditions = [AuthUser.status == "active", AuthUser.id.in_(eligible_ids)]
     normalized_query = q.strip()
     if normalized_query:
         pattern = f"%{normalized_query}%"
@@ -132,7 +139,13 @@ def _base_conditions(
             position.ilike(pattern),
             factory.ilike(pattern),
             profile_department.ilike(pattern),
+            org.in_(select(IamOrgUnit.id).where(IamOrgUnit.name.ilike(pattern))),
         ]
+        if settings.collaboration_enabled:
+            search_conditions.append(AuthUser.id.in_(select(MemberProfile.user_id).join(EmployeeProfile,
+                (EmployeeProfile.user_id == MemberProfile.user_id) & (EmployeeProfile.employment_epoch == MemberProfile.epoch))
+                .where(or_(MemberProfile.help_topics.ilike(pattern), MemberProfile.bio.ilike(pattern),
+                           cast(MemberProfile.skill_tags, String).ilike(pattern)))))
         matching_factories = _matching_alias_codes(
             normalized_query, FACTORY_SEARCH_ALIASES
         )
@@ -150,15 +163,17 @@ def _base_conditions(
         conditions.append(
             or_(*search_conditions)
         )
-    if factory_id.strip():
+    if factory_id.strip() and factory_id != "group":
         conditions.append(factory == factory_id.strip())
+    if org_unit_id.strip() and org_unit_id != "group":
+        conditions.append(org == org_unit_id.strip())
     if department.strip():
         conditions.append(profile_department == department.strip())
     return conditions
 
 
 def _member_select(expressions):
-    presence_state, presence_rank, display_name, position, factory, department = (
+    presence_state, presence_rank, display_name, position, factory, department, org = (
         expressions
     )
     return (
@@ -171,11 +186,15 @@ def _member_select(expressions):
             AuthUser.avatar_version.label("avatar_version"),
             AuthUser.avatar_png.is_not(None).label("has_avatar"),
             presence_state.label("presence_state"),
+            org.label("org_unit_id"),
+            select(IamOrgUnit.name).where(IamOrgUnit.id == org).scalar_subquery().label("org_name"),
+            select(IamOrgUnit.kind).where(IamOrgUnit.id == org).scalar_subquery().label("org_kind"),
+            func.coalesce(EmployeeProfile.employment_epoch, 1).label("epoch"),
         )
         .select_from(AuthUser)
         .outerjoin(EmployeeProfile, EmployeeProfile.user_id == AuthUser.id)
         .outerjoin(AuthUserPresence, AuthUserPresence.user_id == AuthUser.id)
-        .order_by(presence_rank.asc(), display_name.asc(), AuthUser.id.asc())
+        .order_by(org.asc(), display_name.asc(), AuthUser.id.asc())
     )
 
 
@@ -197,6 +216,9 @@ def _member_from_row(row) -> DirectoryMemberOut:
         avatar_url=avatar_url,
         avatar_version=avatar_version,
         presence_state=str(row.presence_state),
+        org_unit_id=str(row.org_unit_id or ""),
+        org_name=str(row.org_name or "未登记组织"),
+        org_kind=str(row.org_kind or "unknown"),
     )
 
 
@@ -222,15 +244,16 @@ def _state_counts(db: Session, conditions, expressions) -> DirectoryStateCounts:
 
 def get_directory_summary(db: Session) -> DirectorySummaryResponse:
     expressions = _directory_expressions()
-    conditions = _base_conditions(expressions=expressions)
+    conditions = _base_conditions(expressions=expressions, eligible_ids=eligible_member_ids(db))
     counts = _state_counts(db, conditions, expressions)
     rows = db.execute(
-        _member_select(expressions).where(*conditions).limit(SUMMARY_PREVIEW_LIMIT)
+        _member_select(expressions).where(*conditions, expressions[0] == "online").limit(SUMMARY_PREVIEW_LIMIT)
     ).all()
     return DirectorySummaryResponse(
         total_members=counts.online + counts.away + counts.offline,
         state_counts=counts,
         preview_members=[_member_from_row(row) for row in rows],
+        server_now=stamp(), snapshot_at=stamp(),
     )
 
 
@@ -243,14 +266,27 @@ def list_directory_members(
     presence: str = "all",
     factory_id: str = "",
     department: str = "",
+    org_unit_id: str = "",
+    contacts_only: bool = False,
+    viewer: AuthContext | None = None,
 ) -> DirectoryMembersResponse:
     expressions = _directory_expressions()
     conditions = _base_conditions(
         q=q,
         factory_id=factory_id,
         department=department,
+        org_unit_id=org_unit_id,
+        eligible_ids=eligible_member_ids(db),
         expressions=expressions,
     )
+    if contacts_only:
+        if not settings.collaboration_enabled or viewer is None:
+            conditions.append(AuthUser.id == "")
+        else:
+            epoch = int((viewer.identity or {}).get("employment_epoch", 1))
+            conditions.append(AuthUser.id.in_(select(MemberContact.target_id).join(EmployeeProfile,
+                (EmployeeProfile.user_id == MemberContact.target_id) & (EmployeeProfile.employment_epoch == MemberContact.target_epoch))
+                .where(MemberContact.user_id == viewer.id, MemberContact.epoch == epoch)))
     counts = _state_counts(db, conditions, expressions)
     page_conditions = list(conditions)
     if presence != "all":
@@ -273,13 +309,64 @@ def list_directory_members(
         .limit(page_size)
     ).all()
     return DirectoryMembersResponse(
-        items=[_member_from_row(row) for row in rows],
+        items=_enrich_members(db, rows, viewer),
         total=total,
         page=page,
         page_size=page_size,
         total_pages=ceil(total / page_size) if total else 0,
         state_counts=counts,
+        server_now=stamp(), snapshot_at=stamp(),
     )
+
+
+def _enrich_members(db, rows, viewer=None):
+    profiles, contacts = {}, set()
+    if settings.collaboration_enabled and rows:
+        from app.services.collaboration.core import profile_out
+        ids = [row.id for row in rows]
+        profiles = {(p.user_id, p.epoch): profile_out(p) for p in db.scalars(select(MemberProfile).where(MemberProfile.user_id.in_(ids)))}
+        if viewer:
+            epoch = int((viewer.identity or {}).get("employment_epoch", 1))
+            contacts = {(c.target_id, c.target_epoch) for c in db.scalars(select(MemberContact).where(MemberContact.user_id == viewer.id, MemberContact.epoch == epoch, MemberContact.target_id.in_(ids)))}
+    result = []
+    for row in rows:
+        item = _member_from_row(row)
+        item.self_profile = profiles.get((row.id, row.epoch), {})
+        item.is_contact = (row.id, row.epoch) in contacts
+        can_contact = settings.collaboration_enabled and viewer is not None and row.id != viewer.id
+        item.actions = {"can_message": can_contact, "can_appreciate": can_contact}
+        result.append(item)
+    return result
+
+
+def directory_member(db, viewer, user_id):
+    expressions = _directory_expressions()
+    row = db.execute(_member_select(expressions).where(AuthUser.id == user_id,
+        *_base_conditions(expressions=expressions, eligible_ids=eligible_member_ids(db)))).one_or_none()
+    if row is None:
+        raise HTTPException(404, "成员不存在或不可查看")
+    item = _enrich_members(db, [row], viewer)[0].model_dump()
+    from app.services.identity_resolver import resolve_identity_at
+    resolved = resolve_identity_at(db, user_id)
+    item["additional_assignments"] = [{"org_name": a["org_name"], "department": a["department_code"],
+        "position": a["official_position_title"]} for a in resolved["active_assignments_summary"] if not a["is_primary"]]
+    return item
+
+
+def directory_catalog(db):
+    expressions = _directory_expressions()
+    conditions = _base_conditions(expressions=expressions, eligible_ids=eligible_member_ids(db))
+    rows = db.execute(select(expressions[6].label("org"), func.count(AuthUser.id).label("total"),
+        func.sum(case((expressions[0] == "online", 1), else_=0)).label("online"))
+        .select_from(AuthUser).outerjoin(EmployeeProfile, EmployeeProfile.user_id == AuthUser.id)
+        .outerjoin(AuthUserPresence, AuthUserPresence.user_id == AuthUser.id).where(*conditions).group_by(expressions[6])).all()
+    counts = {r.org: (r.total, int(r.online or 0)) for r in rows}
+    from app.services.identity_catalog import DEPARTMENTS
+    departments = list(db.scalars(select(IamOrgDepartment).where(IamOrgDepartment.status == "active")))
+    return {"organizations": [dict(id=o.id, name=o.name, kind=o.kind, factory_id=o.legacy_factory_id,
+        parent_id=o.parent_id, total=counts.get(o.id, (0, 0))[0], online=counts.get(o.id, (0, 0))[1],
+        departments=[dict(id=d.department_code, name=DEPARTMENTS.get(d.department_code, d.department_code)) for d in departments if d.org_unit_id == o.id])
+        for o in db.scalars(select(IamOrgUnit).where(IamOrgUnit.status == "active", IamOrgUnit.kind != "group").order_by(IamOrgUnit.id))], "server_now": stamp()}
 
 
 def record_presence_heartbeat(
@@ -332,6 +419,7 @@ def read_directory_avatar(db: Session, user_id: str) -> tuple[bytes, str]:
         select(AuthUser.avatar_png, AuthUser.avatar_version).where(
             AuthUser.id == user_id,
             AuthUser.status == "active",
+            AuthUser.id.in_(eligible_member_ids(db)),
         )
     ).one_or_none()
     if row is None or not row.avatar_png:

@@ -23,6 +23,7 @@ from app.api.carton_supplier_portal import router as carton_supplier_portal_rout
 from app.api.customer_order import router as customer_order_router
 from app.api.customer_order_ledger import router as customer_order_ledger_router
 from app.api.directory import router as directory_router
+from app.api.collaboration import router as collaboration_router
 from app.api.iam import router as iam_router
 from app.api.identity import router as identity_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
@@ -115,9 +116,17 @@ async def lifespan(app: FastAPI):
     uv_export_task = asyncio.create_task(uv_export_worker()) if settings.uv_ops_enabled else None
     from app.services.identity_outbox import worker as identity_worker
     identity_task = asyncio.create_task(identity_worker()) if settings.iam_identity_writes_enabled else None
+    from app.services.collaboration.maintenance import worker as collaboration_worker
+    collaboration_task = asyncio.create_task(collaboration_worker()) if settings.collaboration_enabled else None
     try:
         yield
     finally:
+        if collaboration_task:
+            collaboration_task.cancel()
+            try:
+                await collaboration_task
+            except asyncio.CancelledError:
+                pass
         rollup_task.cancel()
         try:
             await rollup_task
@@ -211,6 +220,7 @@ app.include_router(carton_supplier_portal_router)
 app.include_router(customer_order_router)
 app.include_router(customer_order_ledger_router)
 app.include_router(directory_router)
+app.include_router(collaboration_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
 app.include_router(module_feedback_router)

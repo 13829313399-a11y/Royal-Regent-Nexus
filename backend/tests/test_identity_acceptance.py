@@ -304,14 +304,20 @@ def test_late_commit_failure_rolls_back_identity_audit_outbox_and_receipt(client
     plan = preview(client, row)
     with dbm.SessionLocal() as db:
         counts = [db.scalar(select(func.count()).select_from(model)) for model in tables]
+    injected = []
     def fail_durable_commit(db):
-        if any(isinstance(item, identitym.IamMutationReceipt) for item in db.new):
-            db.flush()  # Include the actual audit/outbox/receipt INSERTs in rollback.
+        # Work-center's earlier before_commit listener already flushes db.new.
+        # Inspect this transaction's durable rows so listener order cannot skip
+        # the fault injection, and exercise rollback after all actual INSERTs.
+        db.flush()
+        if db.scalar(select(func.count()).select_from(identitym.IamMutationReceipt)) > counts[-1]:
+            injected.append(True)
             raise HTTPException(409, "injected failure immediately before commit")
     event.listen(Session, "before_commit", fail_durable_commit)
     try:
         failed = commit(client, row, plan)
         assert failed.status_code == 409, failed.text
+        assert injected == [True]
     finally:
         event.remove(Session, "before_commit", fail_durable_commit)
     after = identity(client, user_id)

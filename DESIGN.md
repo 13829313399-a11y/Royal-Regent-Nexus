@@ -551,6 +551,10 @@ font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
 
 `src/features/assistant/assistant.css` 使用独立 `.yl-assistant` 根与 `yl-` 类名：深翡翠舱头、香槟轨道 SVG、小面积紫罗兰折射和白色阅读区。侧舱默认宽 432px，可在 360–600px 之间调整；专注态限宽 768px，窄屏根据 visualViewport 处理键盘与安全区。装饰在后台或减少动效模式暂停。贴边入口的定位 transform 不参与按钮按下位移，避免点击目标跳动。侧舱保持页面可操作；专注/手机模式复用共享滚动锁、恢复 inert 并圈定焦点。业务模态优先，助手定位仅使用注册锚点及业务组件 reveal 接口。截图和本地浏览器证据见 `docs/assistant/IMPLEMENTATION.md`。
 
+### 15.7 成员协作局部设计例外
+
+`src/features/collaboration/connect.css` 仅服务 `.rr-connect` 与 `connect-` 组件：青瓷、翡翠、暮蓝、香槟四主题将材质放在名片封面，正文保持浅底清晰阅读。目录提供真实组织全景与连接状态；感谢收藏使用私人纸卡与小面积金色徽章。桌面聊天为不锁定业务页面的侧栏，手机为带背景 inert、焦点约束和滚动锁的全屏面板。辅助面板协调器统一目录、账号、私信、曜灵；业务模态优先，收起不取消发送与服务端草稿。减少动效与关闭动效保留交互反馈。该例外不改登录、打印、报价计算或事项责任状态。
+
 ## 16. 新页面实施清单
 
 开发新页面前依次确认：

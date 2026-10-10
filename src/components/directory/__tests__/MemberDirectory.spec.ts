@@ -1,11 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { createPinia } from 'pinia'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import AvatarPreviewDialog from '@/components/directory/AvatarPreviewDialog.vue'
 import MemberDirectoryDrawer from '@/components/directory/MemberDirectoryDrawer.vue'
 import MemberDirectoryEntry from '@/components/directory/MemberDirectoryEntry.vue'
 import MemberRow from '@/components/directory/MemberRow.vue'
+import { useAuthStore } from '@/stores/auth'
 import type { DirectoryMember } from '@/api/directory'
 
 const apiMocks = vi.hoisted(() => ({
@@ -43,6 +44,8 @@ function membersResponse() {
 
 describe('member directory experience', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
+    useAuthStore().applySession({ id: 'viewer', username: 'viewer', display_name: '查看者', roles: [], permissions: [], grants: [], factory_scopes: [], department_scopes: [], force_password_change: false, profile: { primary_factory_id: 'huakang-a', primary_department: 'engineering', position: '工程师', confirmation_status: 'confirmed' } })
     vi.useFakeTimers()
     apiMocks.getSummary.mockReset().mockResolvedValue({
       total_members: 2,
@@ -63,19 +66,18 @@ describe('member directory experience', () => {
     const wrapper = mount(MemberDirectoryEntry, {
       props: { currentFactoryId: 'huakang-a', currentDepartment: 'engineering' },
       global: {
-        plugins: [createPinia()],
         stubs: { RouterLink: { template: '<a><slot /></a>' } },
       },
     })
     await flushPromises()
 
     expect(wrapper.get('button').text()).toContain('成员目录')
-    expect(wrapper.get('button').text()).toContain('1/2 在线')
+    expect(wrapper.get('button').text()).toContain('1 位在线')
     expect(wrapper.get('button').attributes('aria-label')).toBe('打开组织成员目录，1 人在线，共 2 人')
     await wrapper.get('button').trigger('click')
     await flushPromises()
 
-    expect(document.body.textContent).toContain('组织成员')
+    expect(document.body.textContent).toContain('成员目录')
     expect(document.body.textContent).toContain('测试成员')
     wrapper.unmount()
   })
@@ -104,25 +106,16 @@ describe('member directory experience', () => {
     expect(apiMocks.getMembers).toHaveBeenCalledTimes(1)
     vi.advanceTimersByTime(1)
     await flushPromises()
-    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ q: '测试' }))
+    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ q: '测试' }), expect.any(AbortSignal))
 
-    const findButton = (label: string) => Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.trim() === label)!
-    findButton('在线').click()
+    const presence = document.body.querySelector<HTMLSelectElement>('select[aria-label="连接状态"]')!
+    presence.value = 'online'; presence.dispatchEvent(new Event('change', { bubbles: true }))
     await flushPromises()
-    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ presence: 'online' }))
-    expect(document.body.querySelector<HTMLElement>('[data-testid="presence-pill-indicator"]')?.style.transform)
-      .toBe('translateX(100%)')
-
-    findButton('当前厂区').click()
+    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ presence: 'online', org_unit_id: 'huakang-a' }), expect.any(AbortSignal))
+    const scope = document.body.querySelector<HTMLSelectElement>('select[aria-label="成员范围"]')!
+    scope.value = 'all'; scope.dispatchEvent(new Event('change', { bubbles: true }))
     await flushPromises()
-    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ factory_id: 'huakang-a' }))
-    expect(document.body.textContent).toContain('已限定当前厂区')
-
-    findButton('当前部门').click()
-    await flushPromises()
-    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ department: 'engineering' }))
-    expect(document.body.textContent).toContain('已限定当前厂区与当前部门')
+    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ org_unit_id: '' }), expect.any(AbortSignal))
     wrapper.unmount()
   })
 
