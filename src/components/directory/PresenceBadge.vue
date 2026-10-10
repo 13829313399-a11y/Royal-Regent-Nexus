@@ -6,7 +6,7 @@ const props = defineProps<{ state: PresenceState }>()
 
 const label = computed(() => ({
   online: '在线',
-  away: '离开',
+  away: '最近在线',
   offline: '离线',
 })[props.state])
 

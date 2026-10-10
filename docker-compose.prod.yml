@@ -35,6 +35,7 @@ services:
       - three-d-assets:/app/backend/data/three-d-printing-assets
       - document-assets:/app/backend/data/document-tools
       - assistant-assets:/app/backend/data/assistant
+      - collaboration-assets:/app/backend/data/collaboration-assets
       - image-translation-models:/app/backend/models/image-translation:ro
     restart: unless-stopped
     logging: *default-logging
@@ -65,6 +66,7 @@ services:
       dockerfile: Dockerfile.frontend
       args:
         VITE_API_BASE_URL: /api
+        VITE_COLLABORATION_ENABLED: "${VITE_COLLABORATION_ENABLED:-true}"
     depends_on:
       api:
         condition: service_healthy
@@ -80,4 +82,5 @@ volumes:
   three-d-assets:
   document-assets:
   assistant-assets:
+  collaboration-assets:
   image-translation-models:

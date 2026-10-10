@@ -13,7 +13,9 @@ import {
   UserRound,
   X,
 } from '@lucide/vue'
-import { useRouter } from 'vue-router'
+import { useRouter, RouterLink } from 'vue-router'
+import { useMessagingStore } from '@/stores/messaging'
+import { registerSurface, requestSurface, releaseSurface } from '@/features/collaboration/panelCoordinator'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import { authApi } from '@/api/auth'
 import { departmentMap, factoryContexts } from '@/data/enterpriseMock'
@@ -35,6 +37,11 @@ const ACCEPTED_AVATAR_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
 const router = useRouter()
 const authStore = useAuthStore()
+const messaging = useMessagingStore()
+const owner = computed(() => `${authStore.currentUser?.id ?? ''}:${authStore.currentUser?.identity?.employment_epoch ?? 0}`)
+const trigger = ref<HTMLElement | null>(null), profileRoot = ref<HTMLElement | null>(null), menuStyle = ref<Record<string,string>>({})
+const unregister = registerSurface('account', () => { isMenuOpen.value = false })
+let disposed = false, releaseProfile: BodyScrollLockRelease | undefined
 const menuRoot = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const isMenuOpen = ref(false)
@@ -49,6 +56,11 @@ const selectedAvatarFile = ref<File | null>(null)
 const previewAvatarUrl = ref('')
 const profileError = ref('')
 const profileNotice = ref('')
+useDialogFocus(() => isProfileDialogOpen.value, profileRoot, { inertBackground: true, returnFocus: () => trigger.value, onEscape: closeProfileDialog })
+watch(isProfileDialogOpen, open => { if (open) releaseProfile ??= acquireBodyScrollLock(); else { releaseProfile?.(); releaseProfile = undefined } })
+watch(owner, () => { isMenuOpen.value = false; isProfileDialogOpen.value = false; isAvatarPreviewOpen.value = false; clearSelectedAvatar(); isSavingAvatar.value = false; isRemovingAvatar.value = false; profileError.value = ''; profileNotice.value = '' })
+watch(isMenuOpen, open => { if (open) positionMenu(); else releaseSurface('account') })
+function positionMenu() { if (!trigger.value) return; const r = trigger.value.getBoundingClientRect(), viewport = window.visualViewport, w = viewport?.width ?? innerWidth, h = viewport?.height ?? innerHeight, top = (viewport?.offsetTop ?? 0)+Math.min(r.bottom+10,h-160); menuStyle.value = { position: 'fixed', top: `${top}px`, left: `${Math.max(12,Math.min(r.right-320,w-332))}px`, width: `${Math.min(320,w-24)}px`, maxHeight: `${Math.max(120,h-top-12)}px`, overflowY: 'auto' } }
 
 const displayName = computed(() =>
   authStore.currentUser?.display_name
@@ -57,7 +69,8 @@ const displayName = computed(() =>
 )
 
 const registeredProfile = computed(() => authStore.currentUser?.profile)
-const registeredPosition = computed(() => registeredProfile.value?.position?.trim() ?? '')
+const registeredIdentity = computed(() => authStore.currentUser?.identity)
+const registeredPosition = computed(() => registeredIdentity.value ? registeredIdentity.value.primary_assignment?.official_position_title?.trim() || registeredIdentity.value.position?.trim() || '' : registeredProfile.value?.position?.trim() || '')
 const roleLabel = computed(() => registeredPosition.value || authStore.roles[0] || '系统用户')
 const accountName = computed(() => authStore.currentUser?.username ?? '当前账号')
 
@@ -89,6 +102,7 @@ useDialogFocus(
   () => isAvatarPreviewOpen.value,
   avatarPreviewRoot,
   {
+    inertBackground: true,
     onEscape: () => closeAvatarPreview(),
     openAnnouncement: () => `已打开${displayName.value}的头像预览`,
     initialFocus: () => avatarPreviewCloseButton.value,
@@ -113,7 +127,8 @@ const internalDepartmentLabels: Record<string, string> = {
 }
 
 const factoryLabel = computed(() => {
-  const factoryId = registeredProfile.value?.primary_factory_id?.trim()
+  if (authStore.currentUser?.identity?.primary_assignment?.org_name) return authStore.currentUser.identity.primary_assignment.org_name
+  const factoryId = (registeredIdentity.value ? registeredIdentity.value.primary_factory_id : registeredProfile.value?.primary_factory_id)?.trim()
   if (!factoryId) {
     return '未登记'
   }
@@ -122,7 +137,7 @@ const factoryLabel = computed(() => {
 })
 
 const departmentLabel = computed(() => {
-  const departmentId = registeredProfile.value?.primary_department?.trim()
+  const departmentId = (registeredIdentity.value ? registeredIdentity.value.primary_assignment?.department_code || registeredIdentity.value.primary_department : registeredProfile.value?.primary_department)?.trim()
   if (!departmentId) {
     return '未登记'
   }
@@ -160,6 +175,7 @@ function closeMenuWhenClickingOutside(event: PointerEvent) {
 }
 
 function toggleMenu() {
+  if (!isMenuOpen.value && !requestSurface('account')) return
   isMenuOpen.value = !isMenuOpen.value
 }
 
@@ -222,6 +238,7 @@ function selectAvatar(event: Event) {
 }
 
 async function saveAvatar() {
+  const key = owner.value
   const file = selectedAvatarFile.value
   if (!file || isAvatarBusy.value) {
     return
@@ -232,17 +249,19 @@ async function saveAvatar() {
   profileNotice.value = ''
   try {
     const user = await authApi.uploadAvatar(file)
+    if (disposed || key !== owner.value) return
     authStore.applySession(user)
     clearSelectedAvatar()
     profileNotice.value = '头像已保存，顶栏会立即更新。'
   } catch (error) {
-    profileError.value = getApiErrorMessage(error)
+    if (!disposed && key === owner.value) profileError.value = getApiErrorMessage(error)
   } finally {
-    isSavingAvatar.value = false
+    if (!disposed && key === owner.value) isSavingAvatar.value = false
   }
 }
 
 async function removeAvatar() {
+  const key = owner.value
   if (!hasServerAvatar.value || isAvatarBusy.value) {
     return
   }
@@ -252,13 +271,14 @@ async function removeAvatar() {
   profileNotice.value = ''
   try {
     const user = await authApi.deleteAvatar()
+    if (disposed || key !== owner.value) return
     authStore.applySession(user)
     clearSelectedAvatar()
     profileNotice.value = '已恢复为默认头像。'
   } catch (error) {
-    profileError.value = getApiErrorMessage(error)
+    if (!disposed && key === owner.value) profileError.value = getApiErrorMessage(error)
   } finally {
-    isRemovingAvatar.value = false
+    if (!disposed && key === owner.value) isRemovingAvatar.value = false
   }
 }
 
@@ -280,10 +300,12 @@ async function handleLogout() {
 }
 
 onMounted(() => {
+  window.addEventListener('resize', positionMenu); window.addEventListener('scroll', positionMenu, true); window.visualViewport?.addEventListener('resize', positionMenu)
   document.addEventListener('pointerdown', closeMenuWhenClickingOutside)
 })
 
 onBeforeUnmount(() => {
+  disposed = true; unregister(); releaseProfile?.(); window.removeEventListener('resize', positionMenu); window.removeEventListener('scroll', positionMenu, true); window.visualViewport?.removeEventListener('resize', positionMenu)
   document.removeEventListener('pointerdown', closeMenuWhenClickingOutside)
   releaseAvatarPreviewScrollLock?.()
   revokePreviewUrl()
@@ -299,20 +321,21 @@ onBeforeUnmount(() => {
     @keydown.esc="isMenuOpen = false"
   >
     <button
+      ref="trigger"
       type="button"
       class="account-menu__trigger inline-flex h-9 items-center gap-2 rounded-lg border px-2 py-1 transition-[transform,border-color,background-color,box-shadow,color] duration-150 focus-visible:outline-none focus-visible:ring-2 active:scale-[0.98]"
       :class="variant === 'obsidian'
         ? 'border-white/15 bg-white/[0.065] text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] hover:border-cyan-200/30 hover:bg-white/[0.11] focus-visible:ring-cyan-300/35'
         : 'border-slate-200 bg-white text-slate-700 hover:border-teal-200 hover:bg-teal-50/60 focus-visible:ring-teal-500/30'"
       aria-label="账号与头像设置"
-      aria-haspopup="menu"
+      aria-haspopup="dialog"
       :aria-expanded="isMenuOpen"
       @click="toggleMenu"
     >
       <UserAvatar :src="avatarUrl" :name="displayName" size="sm" />
       <span v-if="!compact" class="account-menu__details hidden min-w-0 text-left leading-tight sm:block">
         <span class="block max-w-28 truncate text-[12px] font-semibold" :class="variant === 'obsidian' ? 'text-white' : 'text-slate-800'">{{ displayName }}</span>
-        <span class="block max-w-28 truncate text-[10px] text-slate-400">{{ roleLabel }}</span>
+        <span class="block max-w-28 truncate text-[10px] text-slate-400">{{ roleLabel === displayName ? '我的空间' : roleLabel }}</span>
       </span>
       <ChevronDown
         class="account-menu__chevron size-3.5 shrink-0 transition-transform"
@@ -331,8 +354,9 @@ onBeforeUnmount(() => {
     >
       <section
         v-if="isMenuOpen"
-        class="fixed left-3 right-3 top-[68px] z-50 w-auto max-w-none overflow-hidden rounded-xl border border-slate-200 bg-white/98 text-left text-slate-700 shadow-2xl shadow-slate-900/12 backdrop-blur-xl sm:absolute sm:left-auto sm:right-0 sm:top-11 sm:w-[calc(100vw-1.5rem)] sm:max-w-80"
-        role="menu"
+        class="z-50 rounded-xl border border-slate-200 bg-white/98 text-left text-slate-700 shadow-2xl shadow-slate-900/12 backdrop-blur-xl"
+        :style="menuStyle"
+        role="dialog"
         aria-label="账号菜单"
       >
         <div class="flex items-center gap-3 border-b border-slate-100 px-4 py-3.5">
@@ -356,7 +380,7 @@ onBeforeUnmount(() => {
           <div class="flex items-start gap-2 rounded-lg bg-slate-50 px-2.5 py-2">
             <Factory class="mt-0.5 size-4 shrink-0 text-teal-600" aria-hidden="true" />
             <span class="min-w-0">
-              <span class="block text-[11px] font-semibold text-slate-400">厂区</span>
+              <span class="block text-[11px] font-semibold text-slate-400">正式组织</span>
               <span class="block break-words text-[12px] font-semibold text-slate-800">{{ factoryLabel }}</span>
             </span>
           </div>
@@ -377,9 +401,10 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="space-y-1 p-2">
+          <RouterLink v-if="messaging.ready" to="/me" class="flex h-10 items-center gap-2 rounded-lg bg-teal-50 px-2.5 text-sm font-semibold text-teal-800" @click="isMenuOpen = false"><UserRound class="size-4" />我的空间</RouterLink>
+          <RouterLink v-if="messaging.ready" to="/messages" class="flex h-10 items-center gap-2 rounded-lg px-2.5 text-sm text-slate-700" @click="isMenuOpen = false">私信 <span v-if="messaging.unread">{{ messaging.unread }} 未读</span></RouterLink>
           <button
             type="button"
-            role="menuitem"
             class="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-[12px] font-semibold text-slate-700 transition hover:bg-teal-50 hover:text-teal-800"
             @click="openProfileDialog"
           >
@@ -388,7 +413,6 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            role="menuitem"
             class="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-[12px] font-semibold text-slate-700 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-wait disabled:opacity-60"
             :disabled="isLoggingOut"
             @click="handleLogout"
@@ -404,7 +428,7 @@ onBeforeUnmount(() => {
       <Transition name="nav-backdrop">
         <div
           v-if="isAvatarPreviewOpen"
-          class="fixed inset-0 z-[90] grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm"
+          class="account-menu-overlay fixed inset-0 z-[90] grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm"
           role="presentation"
           @click.self="closeAvatarPreview"
         >
@@ -451,11 +475,12 @@ onBeforeUnmount(() => {
 
       <div
         v-if="isProfileDialogOpen"
-        class="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-slate-950/45 px-4 py-6 backdrop-blur-sm"
+        class="account-menu-overlay fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-slate-950/45 px-4 py-6 backdrop-blur-sm"
         role="presentation"
         @click.self="closeProfileDialog"
       >
         <section
+        ref="profileRoot" tabindex="-1"
         class="flex max-h-[calc(100vh-48px)] w-full max-w-[460px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20"
         role="dialog"
         aria-modal="true"

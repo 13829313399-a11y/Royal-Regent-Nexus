@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BusinessShareButton from '@/features/collaboration/BusinessShareButton.vue'
 import { AlertTriangle, ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleDollarSign, CircleUserRound, FileImage, FileText, Layers3, LockKeyhole, Maximize2, Pencil, RefreshCw, Save, Send, ShieldCheck, UserPlus, XCircle } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -904,6 +905,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="quote-collaboration-page">
+    <BusinessShareButton v-if="loadedQuote" :reference="{ resource_type: 'internal_quote', resource_id: quote.id, factory_id: quote.factoryId }" />
     <nav class="quote-breadcrumb" aria-label="内部报价导航"><RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft />报价首页</RouterLink><ChevronRight /><span>{{ quote.quoteNo }}</span><ChevronRight /><strong>{{ isContinuousQuote ? '整单协作' : '部门协作' }}</strong></nav>
 
     <header id="quote-page-overview" class="quote-collaboration-head">

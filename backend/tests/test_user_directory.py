@@ -132,6 +132,7 @@ def test_directory_whitelists_fields_excludes_inactive_and_applies_fallbacks(
         members = response.json()["items"]
         active = next(item for item in members if item["id"] == "member-active")
         assert set(active) == {
+            "org_unit_id", "org_name", "org_kind", "self_profile", "actions", "is_contact",
             "id",
             "display_name",
             "position",
@@ -142,6 +143,8 @@ def test_directory_whitelists_fields_excludes_inactive_and_applies_fallbacks(
             "presence_state",
         }
         assert active == {
+            "org_unit_id": "", "org_name": "未登记组织", "org_kind": "unknown",
+            "self_profile": {}, "actions": {"can_message": False, "can_appreciate": False}, "is_contact": False,
             "id": "member-active",
             "display_name": "未命名成员",
             "position": "职位待完善",
@@ -213,7 +216,15 @@ def test_presence_thresholds_stable_order_filters_and_pagination(monkeypatch):
         assert visible["away-b"] == "away"
         assert visible["offline-c"] == "offline"
         ids = [item["id"] for item in response.json()["items"]]
-        assert ids.index("online-a") < ids.index("away-b") < ids.index("offline-c")
+        assert ids.index("away-b") < ids.index("online-a") < ids.index("offline-c")
+        # Connection changes must not move the row under the user's pointer.
+        with db_module.SessionLocal() as db:
+            db.get(auth_models.AuthUserPresence, "online-a").last_seen_at = ""
+            db.commit()
+        assert [item["id"] for item in client.get("/api/directory/members?page_size=50").json()["items"]] == ids
+        with db_module.SessionLocal() as db:
+            db.get(auth_models.AuthUserPresence, "online-a").last_seen_at = directory_service._timestamp(now)
+            db.commit()
 
         filtered = client.get(
             "/api/directory/members",
@@ -359,4 +370,6 @@ def test_summary_is_fixed_query_count_without_per_member_lookup(monkeypatch):
 
         assert summary.total_members >= 3
         assert len(summary.preview_members) <= 6
-        assert len(statements) == 2
+        # Fourteen bounded IAM provenance reads replace active-only visibility;
+        # counts and online preview remain two SQL queries, with no per-user load.
+        assert len(statements) == 16

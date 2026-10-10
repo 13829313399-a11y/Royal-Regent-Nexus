@@ -824,8 +824,31 @@ def ensure_collaborative_sheets_schema_ready() -> None:
             raise RuntimeError("协同填表需要迁移至 20261009_0121；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def ensure_collaboration_schema_ready() -> None:
+    if not settings.collaboration_enabled:
+        return
+    from app.models import collaboration  # noqa: F401
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if not names:
+            return  # Fresh isolated stores follow the existing bootstrap contract.
+        missing = []
+        for name, table in Base.metadata.tables.items():
+            if not name.startswith(("collab_", "member_")):
+                continue
+            if name not in names:
+                missing.append(name)
+            else:
+                columns = {c["name"] for c in inspector.get_columns(name)}
+                missing.extend(name + "." + c.name for c in table.columns if c.name not in columns)
+        if missing:
+            raise RuntimeError("成员协作需要显式迁移至 20261010_0156；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def init_db() -> None:
     from app.models import (
+        collaboration,  # noqa: F401
         assistant,  # noqa: F401
         work_center,  # noqa: F401
         uv_operations,  # noqa: F401
@@ -870,6 +893,7 @@ def init_db() -> None:
     if not getattr(SessionLocal, "work_center_hooks_installed", False):
         install_projection_hooks(SessionLocal)
         SessionLocal.work_center_hooks_installed = True
+    ensure_collaboration_schema_ready()
     ensure_collaborative_sheets_schema_ready()
     ensure_module_feedback_schema_ready()
     ensure_work_center_schema_ready()
@@ -923,6 +947,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
                             # Cutting master data is created only by explicit migration.
                             if not name.startswith("cutting_ops_")
+                            and (not name.startswith(("collab_", "member_")) or not existing_tables)
                             # An existing business store upgrades this new domain explicitly.
                             and (not name.startswith("fabric_") or "auth_users" not in existing_tables)
                             and (not name.startswith("warehouse_operations_") or "auth_users" not in existing_tables)

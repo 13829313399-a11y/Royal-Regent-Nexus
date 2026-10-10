@@ -4,8 +4,10 @@ import AppShell from '@/components/layout/AppShell.vue'
 import WorkCenterHost from '@/features/work-center/WorkCenterHost.vue'
 import DeploymentNotice from '@/components/layout/DeploymentNotice.vue'
 import AssistantHost from '@/features/assistant/AssistantHost.vue'
+import CollaborationHost from '@/features/collaboration/CollaborationHost.vue'
 import '@/features/work-center/work-center.css'
 const workCenterEnabled = import.meta.env.VITE_WORK_CENTER_ENABLED !== 'false'
+const collaborationEnabled = import.meta.env.VITE_COLLABORATION_ENABLED !== 'false'
 const authorizationChanged = ref(false)
 const onChanged = () => { authorizationChanged.value = true }
 onMounted(() => window.addEventListener('authorization-context-changed', onChanged))
@@ -16,6 +18,7 @@ onUnmounted(() => window.removeEventListener('authorization-context-changed', on
   <AppShell />
   <DeploymentNotice />
   <AssistantHost />
+  <CollaborationHost v-if="collaborationEnabled" />
   <WorkCenterHost v-if="workCenterEnabled" />
   <aside v-if="authorizationChanged" role="status" class="authorization-update-notice">
     <span>任职或授权已更新。提交前请核对当前厂区与可用操作。</span>

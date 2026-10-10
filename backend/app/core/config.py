@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
     assistant_enabled: bool = False
+    collaboration_enabled: bool = False
+    collaboration_storage_dir: str = str(BACKEND_DIR / "data" / "collaboration-assets")
     assistant_provider: Literal["qwen_openai_compatible"] = "qwen_openai_compatible"
     assistant_qwen_api_key: SecretStr = SecretStr("")
     assistant_qwen_base_url: str = ""
