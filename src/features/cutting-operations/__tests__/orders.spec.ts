@@ -275,7 +275,7 @@ describe('P2a preplan editor and protection', () => {
     vi.mocked(ordersApi.command).mockResolvedValue(bound())
     await wrapper.get('form.order-form').trigger('submit'); await flushPromises()
     expect(ordersApi.command).toHaveBeenCalledWith('line-1', 'plan', expect.objectContaining({ tasks: [expect.objectContaining({ resource_id: 'resource-1', resource_version: 1, target_sets: 50, actual_issue_date: '2026-10-12', actual_issue_reference: 'ISSUE-001', days: [] })] }))
-    expect(wrapper.text()).toContain('实际填数、领料和库存记账在后续阶段接入')
+    expect(wrapper.text()).toContain('每日填数单独登记，领料和库存记账在后续阶段接入')
   })
   it('protects task drafts on route exit and freezes the original payload after timeout', async () => {
     await planForm()

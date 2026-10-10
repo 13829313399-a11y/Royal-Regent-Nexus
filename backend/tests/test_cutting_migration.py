@@ -37,7 +37,9 @@ def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path):
     engine = create_engine('sqlite:///' + database.as_posix())
     assert schema_ready(engine)
     assert orders_ready(engine)
-    for table in (*TABLES, *ORDER_TABLES):
+    from app.services.cutting_reporting import TABLE as PRODUCTION_TABLE, schema_ready as production_ready
+    assert production_ready(engine)
+    for table in (*TABLES, *ORDER_TABLES, PRODUCTION_TABLE):
         actual = {column['name']: column for column in inspect(engine).get_columns(table.name)}
         assert set(actual) == {column.name for column in table.columns}
         for column in table.columns:

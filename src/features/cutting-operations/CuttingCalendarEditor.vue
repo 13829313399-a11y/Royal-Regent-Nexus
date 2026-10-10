@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button } from '@/components/ui/button'
 import type { WorkCalendarData } from './api'
 const calendar = defineModel<WorkCalendarData | null>({ required: true })
 const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
@@ -11,11 +12,14 @@ function clear() { if (window.confirm('清除此资源日历？将使用默认�
     <template v-if="calendar">
       <div class="calendar-week"><label v-for="(day, i) in days" :key="day"><input v-model="calendar.weekdays" type="checkbox" :value="i+1" />{{ day }}</label></div>
       <label>日历依据 <input v-model="calendar.basis" required maxlength="500" placeholder="负责人确认的工作周与节假日安排" /></label>
-      <div v-for="(exception, i) in calendar.exceptions" :key="i" class="calendar-exception"><label>例外日期 <input v-model="exception.day" type="date" required /></label><label>安排 <select v-model="exception.working"><option :value="true">工作／加班</option><option :value="false">休息／放假</option></select></label><label>原因 <input v-model="exception.reason" required maxlength="200" /></label><button type="button" @click="calendar.exceptions.splice(i, 1)">移除例外</button></div>
-      <button type="button" @click="calendar.exceptions.push({ day: '', working: false, reason: '' })">增加休息／调休／加班日期</button>
-      <button type="button" @click="clear">清除资源日历</button>
+      <div v-for="(exception, i) in calendar.exceptions" :key="i" class="calendar-exception"><label>例外日期 <input v-model="exception.day" type="date" required /></label><label>安排 <select v-model="exception.working"><option :value="true">工作／加班</option><option :value="false">休息／放假</option></select></label><label>原因 <input v-model="exception.reason" required maxlength="200" /></label><Button variant="outline" type="button" @click="calendar.exceptions.splice(i, 1)">移除例外</Button></div>
+      <Button variant="outline" type="button" @click="calendar.exceptions.push({ day: '', working: false, reason: '' })">增加休息／调休／加班日期</Button>
+      <Button variant="outline" type="button" @click="clear">清除资源日历</Button>
     </template>
-    <template v-else><p>尚未配置：按预计交期提前预排，实际领料后再核定，默认周一至周六工作、周日休息。涉及节假日或调休，请配置后再排期。</p><button type="button" @click="calendar = { weekdays: [1,2,3,4,5,6], exceptions: [], basis: '' }">配置该执行方日历</button></template>
+    <template v-else><p>尚未配置：按预计交期提前预排，实际领料后再核定，默认周一至周六工作、周日休息。涉及节假日或调休，请配置后再排期。</p><Button variant="outline" type="button" @click="calendar = { weekdays: [1,2,3,4,5,6], exceptions: [], basis: '' }">配置该执行方日历</Button></template>
   </section>
 </template>
-<style scoped>.calendar-editor { display: grid; gap: .75rem; border: 1px solid #cbd5e1; padding: 1rem; border-radius: 8px; }.calendar-week,.calendar-exception { display: flex; flex-wrap: wrap; gap: .75rem; }.calendar-editor input,.calendar-editor select { border: 1px solid #cbd5e1; padding: .4rem; max-width: 100%; }.calendar-editor label { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }</style>
+<style scoped>
+.calendar-editor { grid-column: 1 / -1; display: grid; gap: 16px; border: 1px solid var(--border); padding: 16px; border-radius: var(--radius); min-width: 0; }
+.calendar-week, .calendar-exception { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+</style>
