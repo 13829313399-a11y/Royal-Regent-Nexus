@@ -55,6 +55,60 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.restoreAllMocks() })
 
 describe('协同填表', () => {
+  it('closes department choices with outside pointer/focus, Escape or Done while retaining selections', async () => {
+    await render(); await button('分配填写').trigger('click')
+    document.body.appendChild(wrapper!.element)
+    const picker = wrapper!.get('.cs-department-picker').element as HTMLDetailsElement
+    picker.open = true
+    await wrapper!.get('input[value="sales-business"]').setValue(true)
+    await wrapper!.get('input[value="sales-business"]').trigger('pointerdown')
+    expect(picker.open).toBe(true)
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    expect(picker.open).toBe(false)
+    picker.open = true
+    await wrapper!.get('input[aria-label="填写范围"]').trigger('focusin')
+    expect(picker.open).toBe(false)
+    picker.open = true
+    await wrapper!.get('input[value="sales-business"]').trigger('keydown', { key: 'Escape' })
+    expect(picker.open).toBe(false)
+    expect(document.activeElement).toBe(picker.querySelector('summary'))
+    picker.open = true
+    await button('完成选择').trigger('click')
+    expect(picker.open).toBe(false)
+    expect(wrapper!.get('input[value="sales-business"]').element).toHaveProperty('checked', true)
+    wrapper!.element.remove()
+  })
+  it('shows range errors beside Add, preserves the input, then adds and saves a corrected range', async () => {
+    await render(); await button('分配填写').trigger('click')
+    await wrapper!.get('input[value="sales-business"]').setValue(true)
+    const picker = wrapper!.get('.cs-department-picker').element as HTMLDetailsElement
+    picker.open = true
+    const range = wrapper!.get('input[aria-label="填写范围"]')
+    await range.setValue('A1:P100'); await button('添加').trigger('click')
+    expect(picker.open).toBe(false)
+    expect(wrapper!.get('.cs-assignment [role="alert"]').text()).toContain('A1:C3（3 行、3 列）')
+    expect(range.element).toHaveProperty('value', 'A1:P100')
+    expect(wrapper!.findAll('.cs-grants li')).toHaveLength(1)
+    expect(api.grants).not.toHaveBeenCalled()
+    await range.setValue('B3')
+    expect(wrapper!.find('.cs-assignment [role="alert"]').exists()).toBe(false)
+    await range.trigger('keydown', { key: 'Enter' })
+    expect(wrapper!.findAll('.cs-grants li')).toHaveLength(2)
+    expect(wrapper!.get('.cs-assignment [role="status"]').text()).toContain('已添加')
+    await button('保存分配设置').trigger('click'); await flushPromises()
+    expect(api.grants).toHaveBeenCalledWith('huaxing', expect.anything(), [example().grants[0], { principal_type: 'department', principal_id: 'sales-business', sheet: 0, range: 'B3' }])
+    expect(wrapper!.get('.cs-assignment [role="status"]').text()).toBe('填写对象和范围已保存。')
+  })
+  it('keeps assignment save failures visible beside the form and preserves pending grants', async () => {
+    vi.mocked(api.grants).mockRejectedValue(new Error('保存连接失败'))
+    await render(); await button('分配填写').trigger('click')
+    await wrapper!.get('input[value="sales-business"]').setValue(true)
+    await wrapper!.get('input[aria-label="填写范围"]').setValue('B3')
+    await button('添加').trigger('click'); await button('保存分配设置').trigger('click'); await flushPromises()
+    expect(wrapper!.get('.cs-assignment [role="alert"]').text()).toContain('保存连接失败')
+    expect(wrapper!.findAll('.cs-grants li')).toHaveLength(2)
+    expect(button('保存分配设置').attributes('disabled')).toBeUndefined()
+  })
   it('shows the upload limit, rejects an oversized selection, and allows a replacement', async () => {
     const create = vi.spyOn(api, 'create').mockResolvedValue(example())
     await render(); await button('上传表格').trigger('click')
