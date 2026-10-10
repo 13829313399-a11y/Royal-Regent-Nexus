@@ -1979,6 +1979,19 @@ def _calculate_and_apply(
     return calculation
 
 
+def _remove_missing_molding_sources(
+    db: Session, quote: InternalQuote, payload: dict[str, object],
+) -> dict[str, object]:
+    if not isinstance(payload.get("injection_lines"), list):
+        return payload
+    engineering = _get_section(db, quote.id, "engineering")
+    if not engineering.is_required or engineering.status == "not_applicable":
+        return payload
+    return prefill_molding_from_engineering(
+        _json_object(engineering.payload_json), payload, remove_missing_only=True,
+    )
+
+
 def _invalidate_engineering_dependents(
     db: Session,
     quote: InternalQuote,
@@ -2007,9 +2020,14 @@ def _invalidate_engineering_dependents(
                 continue
         elif section.dependency_hash == current_dependency_hash:
             continue
-        if section.calculation_status == "stale" and section.dependency_status == "stale":
+        cleaned_payload_json = canonical_json(_remove_missing_molding_sources(
+            db, quote, _json_object(section.payload_json),
+        ))
+        payload_changed = cleaned_payload_json != canonical_json(_json_object(section.payload_json))
+        if section.calculation_status == "stale" and section.dependency_status == "stale" and not payload_changed:
             continue
         old_revision = section.revision
+        section.payload_json = cleaned_payload_json
         if section.status in REVIEWABLE_SECTION_STATUSES:
             _mark_quote_notifications_handled(
                 db,
@@ -3891,6 +3909,8 @@ def _save_section_in_transaction(
     user: AuthContext,
     request: Request | None,
 ) -> InternalQuoteSection:
+    if section.department == "molding":
+        next_payload = _remove_missing_molding_sources(db, quote, next_payload)
     if section.department == "electronic" and "quote_groups" in _json_object(section.payload_json) and "quote_groups" not in next_payload:
         raise HTTPException(status_code=409, detail="电子部包含多份独立报价，请刷新页面后逐份编辑，不能用旧版单份数据覆盖")
     next_payload_json = canonical_json(next_payload)
