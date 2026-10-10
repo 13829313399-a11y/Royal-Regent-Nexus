@@ -902,6 +902,7 @@ def init_db() -> None:
                             if not name.startswith("cutting_ops_")
                             # An existing business store upgrades this new domain explicitly.
                             and (not name.startswith("fabric_") or "auth_users" not in existing_tables)
+                            and (not name.startswith("warehouse_operations_") or "auth_users" not in existing_tables)
                             and not name.startswith(("uv_ops_", "nexus_assistant_"))
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.

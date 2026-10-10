@@ -23,7 +23,7 @@ def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path):
     # Upgrade the published main schema through the P1c migration; repeated upgrade is a no-op.
     upgrade('head'); upgrade('head')
     with sqlite3.connect(database) as db:
-        assert db.execute('SELECT version_num FROM alembic_version').fetchall() == [('20261009_0151',)]
+        assert db.execute('SELECT version_num FROM alembic_version').fetchall() == [('20261009_0152',)]
         assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
         for name, ddl in old_tables:

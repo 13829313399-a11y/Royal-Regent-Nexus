@@ -8,7 +8,8 @@ from sqlalchemy import select
 from test_fabric_procurement import BASE, book, row, stored
 from test_fabric_procurement_tracking import save, undo_preview
 from test_fabric_receiving import request, receive
-from test_molding_sample_api import make_client, login_as
+from test_molding_sample_api import login_as
+from warehouse_location_fixtures import make_client
 
 MASTER = "/api/fabric-warehouse/master"
 
@@ -89,11 +90,11 @@ def test_master_candidates_require_confirmation_preserve_receipt_snapshots_and_e
         assert client.post(MASTER, json=body).json() == record
         assert client.post(MASTER, json={**body, "name": "different"}).status_code == 409
         assert client.post(MASTER, json=master()).status_code == 409
-        location = client.post(MASTER, json=master("LOCATION", "A1", "布料货架一", data={"warehouse": "布料仓"})).json()
+        location = client.post(MASTER, json=master("LOCATION", "A1", "布料货架一", id="fabric-A1", expected_revision=1, data={"warehouse": "布料一仓"})).json()
         assert location["status"] == "ACTIVE"
         line = stored(client)["items"][0]
         detail = client.get(f"{BASE}/lines/{line['id']}", params={"factory_id": "huakang-c"}).json()
-        assert detail["material_category"] == "FABRIC" and detail["available_locations"][0]["code"] == "A1"
+        assert detail["material_category"] == "FABRIC" and any(r["code"] == "A1" for r in detail["available_locations"])
         posted = receive(client, line, request(line, batches=[{"quantity": "10", "location": "A1", "dye_lot": "0001"}])).json()
         assert posted["master_references"]["material"]["revision"] == 1
         update = {**body, "id": record["id"], "expected_revision": 1, "request_id": str(uuid4()), "status": "INACTIVE"}

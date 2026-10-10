@@ -29,7 +29,7 @@
       {
         "path": "backend/app/services/internal_quote.py",
         "symbol": "_ensure_section_review_workflow",
-        "sha256": "72a481a52dc389732c3dcbec55b1f698b8112b62705b3a3231539f55f2e7af2f"
+        "sha256": "69e5ec639805d45c283607a1489261f00cab8164729660550a763e82cd14c231"
       }
     ],
     "knowledge_version": "2026.10.08-v1",
