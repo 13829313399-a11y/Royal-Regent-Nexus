@@ -1,6 +1,6 @@
 # 成员协作 R1 实施与验收
 
-依据 2026-10-09《成员协作、私信与个人空间》规格。本文记录工程契约、隔离环境验收与现场待验项，不代表上线。所有开发改动保持未提交；未部署，未操作生产数据。
+依据 2026-10-09《成员协作、私信与个人空间》规格。本文记录工程契约、隔离验收和发布边界。用户已授权分支提交、同步 main、PR 合并和生产更新；线上结果以发布回执为准。
 
 ## 实施顺序
 
@@ -17,11 +17,11 @@
 - 兼容资格排除 supplier-only 权限集合；有有效内部任职或混合内部业务权限的账号须独立覆盖测试。
 - 私有所有权为 `(user_id, employment_epoch)`。普通刷新/调岗保留，离职复聘不继承。
 - 数据库锁顺序：IAM mutation → 排序用户流 → 会话 → 排序附件。锁必须在修改 ORM 对象前取得。
-- 不改变实际员工/业务库、历史迁移、当前分支或现有未跟踪测试产物。
+- 不重置实际员工或业务记录，不改写已发布历史迁移，不纳入既有未跟踪测试产物。
 
 ## 当前交付状态（2026-10-10）
 
-P0–P5 对应的核心代码已接入真实 API；P6 完成本地自动化、迁移及浏览器验证，仍有以下明确缺口。当前为未提交工作区实现，未推送、创建 PR 或部署，未修改真实员工、业务或生产数据库。不能将本记录理解为整套 R1 已验收。
+P0–P5 核心代码已接入真实 API；P6 完成自动化、独立评审、浏览器、Linux 容器及完整生产恢复副本验证。下方记录补充证据和用户明确接受的未验收项；Git 与线上发布状态以最终发布回执为准，不能将工程验收理解为现场设备验收全部完成。
 
 ## 实际实现与代码入口
 
@@ -58,7 +58,7 @@ P0–P5 对应的核心代码已接入真实 API；P6 完成本地自动化、�
 
 接口前缀 `/api/collaboration`：capabilities、me/profile、me/preferences、me/contacts、bootstrap、sync、events、conversations/direct、会话 messages/draft/read/preferences/search/attachments、按 client ID 查询消息、撤回、私有附件、references/preview、appreciations。
 
-迁移 `backend/alembic/versions/20261009_0151_member_collaboration.py` 显式创建 11 张表，不导入当前 ORM：member_social_profiles、member_preferences、member_contacts、collab_direct_conversations、collab_conversation_members、collab_messages、collab_user_streams、collab_user_events、collab_attachments、collab_drafts、member_appreciations。
+迁移 `backend/alembic/versions/20261010_0156_member_collaboration.py` 显式创建 11 张表，不导入当前 ORM：member_social_profiles、member_preferences、member_contacts、collab_direct_conversations、collab_conversation_members、collab_messages、collab_user_streams、collab_user_events、collab_attachments、collab_drafts、member_appreciations。
 
 后端 `COLLABORATION_ENABLED=false` 默认关闭，前端 `VITE_COLLABORATION_ENABLED` 控制入口，不能绕过服务端资格。既有库开启前必须显式迁移；缺协作 schema 时拒绝开启。Compose 私有卷与 Nginx 关闭 SSE 缓冲/压缩的配置已写入，本机 Windows Nginx 已实测；Linux 容器和生产代理仍需现场验收。
 
@@ -139,20 +139,38 @@ PostgreSQL 用例通过 `COLLABORATION_TEST_POSTGRES_URL` 显式启用，拒绝�
 
 独立评审使用合成数据和真实组件内存挂载，并未代替上表的真实数据库/代理/浏览器验证。
 
-## 未来开启与回退
+## 发布与回退步骤
 
-本轮未执行以下真实库操作：
+生产切换按以下顺序执行，并将结果保存在发布证据目录：
 
 1. 目标数据库恢复副本演练，核对迁移头、完整性和业务记录数量；备份数据库及私有附件卷。
-2. 停写后在后端实际环境执行 `python -m alembic upgrade 20261009_0151`，核对约束及无关数据不变。
+2. 停写后在后端实际环境执行 `python -m alembic upgrade 20261010_0156`，核对约束及无关数据不变。
 3. 配置私有持久目录、开启后端开关、部署前端和 SSE 代理；验收 Cookie/长连接/冻结终止/重启及文件卷后再开放。
 4. 回退优先关闭功能并保留表和文件；任一新增表非空，迁移会拒绝破坏性 downgrade。
 
-## 仍需现场验收的边界
+## 早期验收边界（补充结果见下方）
 
 - Linux 容器和目标生产代理的上线验收、容器私有持久卷重启；本机证明的是 Windows Nginx 与 API 进程重启后同一私有目录可读。
 - 四标签同时运行真实外部 AI 长回答及真实设备 3D 实时流；本轮验证 4 条并发消息流、4 标签提醒争用，以及 3D 页面账号入口，未调用外部模型或真实设备。
 - 实机中文输入法、手机软键盘、真实浏览器 200% 缩放；composition 事件保护、21 组宽度和短视口模拟已有证据。
 - 账号 light、compact/obsidian 有组件回归，三个业务 fullPage 已实测 light；其余宿主页面/主题组合及真实音频输出仍需对应设备验证。
 
-这些现场项未标为通过；用户明确要求本轮不提交、不部署、不改生产数据，因此本轮不执行上线与真实库切换。
+以上为先前阶段的边界记录。用户后续授权新分支提交、同步 main、PR 合并和上线；下方补充验收覆盖前文已完成的项目，未完成项仍明确保留。
+
+## 授权发布补充验收
+
+发布分支同步 `origin/main` 的 `97c1ec87` 后，原未发布协作迁移改为 `20261010_0156`，接在 `20261010_0155` 之后；切割、仓库、箱唛既有迁移未改写。补齐上游箱唛渲染所需的生产 `reportlab>=4.4,<5` 依赖；Linux 候选使用 4.5.1 并通过 pip check。
+
+- 合并后前端 15 文件 / 170 项通过，完整 build、应用及测试 TypeScript 检查通过。后端定向 32 项通过，另一个迁移测试因文件改名的旧路径失败，修正后单独复跑通过；PostgreSQL 并发 7 项通过。
+- HTTP 随机 ID 统一使用 createRandomUuid。Docker 构建正式传递前端开关。无 Web Locks 时改用 IndexedDB readwrite 事务，真实 Chrome 四标签同时争用只出现一个提醒。
+- 在独立 Chrome 配置的“网页缩放”选择 200%，原有 125% Windows 显示缩放下 devicePixelRatio 从 1.25 变为 2.5。people/me/messages 实测 CSS 视口 518px，均无水平溢出，私信可发送；此处是实际浏览器缩放。
+- Linux 独立 API 容器、独立持久卷重启后，草稿及附件保留；双方仍可下载，666 字节 PNG 的 SHA-256 前后一致。此前 Windows 重启验收的 381,596 字节附件结果仍保留。
+- Linux Nginx 使用实际 SSE 配置，HTTP 200、事件流类型正确，重复验证首帧 14–17ms、30 秒持续心跳正常。Linux 后端定向 32 项通过，旧迁移测试路径修正后该项单独通过，共 33 项。
+- 10 个代表性真实宿主页面的账号入口、我的空间链接及 Escape 关闭通过，无残留 inert；包括实际面料仓、半成品仓路径。light/compact 使用真实宿主，未被当前宿主采用的 obsidian 保留组件契约测试。
+- 浏览器实际 AudioContext 运行、两个振荡器与非零波形通过；这不能证明现场扬声器听感。
+- 完整生产 PostgreSQL 备份（包括全部历史打印机状态事件）已恢复至独立演练库，0152 → 0156 迁移后原有表的记录数、内容摘要和列定义一致；无历史事件省略。
+- 恢复副本启动核对覆盖 358 张受保护表：仅新增上游切割模块的 6 个权限目录及相应说明；全部原有权限记录、员工授权、业务记录摘要不变，新增说明逐字段符合代码定义。
+
+证据目录：本机 `D:\RR\outputs\collaboration-release-20261010`，服务器 `/opt/royal-regent/builds/collaboration-20261010` 与 `/opt/royal-regent/backups/collaboration-20261010`。生产切换另行执行最终停写备份、原有记录摘要比对、镜像哈希和健康检查。
+
+用户明确接受以下项目保留为未验收并继续合并上线：实机中文输入法、手机软键盘、实际扬声器听感，以及四标签真实外部 AI 长回答与真实 3D 设备实时流联合运行。后一项启动命令被自动审批拒绝，仅返回 blocked by policy；没有把合成事件或单项流验收计作真实联合负载通过。

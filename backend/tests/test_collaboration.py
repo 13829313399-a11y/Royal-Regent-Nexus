@@ -241,7 +241,7 @@ def test_migration_empty_rollback_and_nonempty_history_guard(tmp_path):
     from sqlalchemy import create_engine, inspect, text
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
-    path = Path(__file__).parents[1] / "alembic/versions/20261009_0151_member_collaboration.py"
+    path = Path(__file__).parents[1] / "alembic/versions/20261010_0156_member_collaboration.py"
     spec = importlib.util.spec_from_file_location("collaboration_migration_test", path)
     migration = importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
     engine = create_engine(f"sqlite:///{tmp_path / 'migration.db'}")

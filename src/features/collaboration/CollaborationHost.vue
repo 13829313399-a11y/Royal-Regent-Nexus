@@ -8,6 +8,7 @@ import { useNotificationSound } from '@/composables/useNotificationSound'
 import { useDialogFocus } from '@/composables/useDialogFocus'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
 import { registerSurface, preemptSurface, businessPreempted, foregroundSurface } from './panelCoordinator'
+import { claimCollaborationNotification } from './notificationClaims'
 import ChatPanel from './ChatPanel.vue'
 import './connect.css'
 const messaging = useMessagingStore(), auth = useAuthStore(), route = useRoute(), sound = useNotificationSound()
@@ -31,10 +32,9 @@ async function notification(event: Event) {
   const conversation = messaging.conversations.find(c => c.id === item.conversation_id)
   if (conversation?.mute_until && Date.parse(conversation.mute_until) > Date.now()) return
   if (item.type === 'message.created' && messaging.selectedId === item.conversation_id && (sideVisible.value || route.name === 'messages') && document.hasFocus()) return
-  const owner = messaging.identityKey, key = `rr.connect.claims.${owner}`
-  const claim = () => { try { const ids = JSON.parse(localStorage.getItem(key) || '[]') as string[]; if (ids.includes(item.id)) return false; localStorage.setItem(key, JSON.stringify([...ids, item.id].slice(-150))); return true } catch { return true } }
-  const claimed = navigator.locks ? await navigator.locks.request(key, claim) : claim()
-  if (!claimed || owner !== messaging.identityKey) return
+  const owner = messaging.identityKey
+  const claimed = await claimCollaborationNotification(owner, item.id)
+  if (!claimed || owner !== messaging.identityKey || !messaging.ready || document.hidden) return
   notice.value = item; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => notice.value = null, 6000)
   sound.soundEnabled.value = !!messaging.preferences?.sound_enabled
   if (sound.soundEnabled.value) void sound.playNotificationSound()

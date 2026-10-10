@@ -843,7 +843,7 @@ def ensure_collaboration_schema_ready() -> None:
                 columns = {c["name"] for c in inspector.get_columns(name)}
                 missing.extend(name + "." + c.name for c in table.columns if c.name not in columns)
         if missing:
-            raise RuntimeError("成员协作需要显式迁移至 20261009_0151；请先备份并迁移。缺少：" + ", ".join(missing))
+            raise RuntimeError("成员协作需要显式迁移至 20261010_0156；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
 def init_db() -> None:
