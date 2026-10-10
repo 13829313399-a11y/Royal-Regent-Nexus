@@ -2,6 +2,48 @@ import { http } from '../lib/http.js'
 
 export const CARTON_MARK_AUTO_CHECK_TIMEOUT_MS = 120000
 
+export interface CartonMarkQcEvent {
+  revision: number
+  kind: string
+  status: string
+  result: CartonMarkAutoCheckResponse | null
+  error: string
+  note: string
+  actor_name: string
+  created_at: string
+}
+
+export interface CartonMarkQcRecord {
+  id: string
+  factory_id: string
+  template_id: string
+  template_version: number
+  template_snapshot: Record<string, unknown>
+  customer_name: string
+  po: string
+  item: string
+  contract_number: string
+  corrects_record_id: string | null
+  note: string
+  created_by_name: string
+  created_at: string
+  revision: number
+  status: string
+  photos: { id: string, side: string, file_name: string, size_bytes: number, sha256: string }[]
+  events: CartonMarkQcEvent[]
+}
+
+export interface CartonMarkQcSubmission {
+  factoryId: string
+  templateId: string
+  requestId: string
+  frontPhotos: File[]
+  sidePhotos: File[]
+  mode: 'single' | 'batch'
+  note: string
+  correctsRecordId?: string
+}
+
 export interface CartonMarkExtractedField {
   key: string
   label: string
@@ -69,6 +111,11 @@ export interface CartonMarkDocumentContentComparison {
 }
 
 export interface CartonMarkDocumentContentCheckResponse {
+  review_method?: 'excel_pdf' | 'manual_sources'
+  review_note?: string
+  review_order_id?: string
+  source_assets?: { id: string; revision: number; kind: string; file_name: string; sha256: string }[]
+  confirmed_checks?: string[]
   excel_file_name: string
   pdf_file_name: string
   summary: {
@@ -244,6 +291,15 @@ export interface CartonMarkAssetUploadResult {
 
 export function createCartonMarkApi(client = http) {
   return {
+    async submitManualReview(payload: { factory_id: string; order_id: string; issue_id?: string; assets: { id: string; revision: number }[]; note?: string; approve?: boolean }, supplier = false, signal?: AbortSignal) {
+      return (await client.post<{ id: string }>(supplier ? '/carton-supplier/carton-mark/manual-reviews' : '/carton-mark/manual-reviews', payload, { signal })).data
+    },
+    async downloadReviewSource(templateId: string, assetId: string, factoryId: string) {
+      return (await client.get<Blob>(`/carton-mark/templates/${templateId}/sources/${assetId}`, { params: { factory_id: factoryId }, responseType: 'blob' })).data
+    },
+    async downloadQcReviewSource(recordId: string, assetId: string, factoryId: string) {
+      return (await client.get<Blob>(`/carton-mark/qc-records/${recordId}/sources/${assetId}`, { params: { factory_id: factoryId }, responseType: 'blob' })).data
+    },
     async listAssets(factoryId: string, orderId?: string, signal?: AbortSignal) {
       const response = await client.get<CartonMarkAsset[]>('/carton-mark/assets', {
         params: { factory_id: factoryId, order_id: orderId }, signal,
@@ -400,9 +456,10 @@ export function createCartonMarkApi(client = http) {
       return response.data
     },
 
-    async manualReleaseTemplate(templateId: string, factoryId: string, reason: string, signal?: AbortSignal) {
+    async manualReleaseTemplate(templateId: string, factoryId: string, reason = '', signal?: AbortSignal, confirmedChecks?: string[]) {
       const response = await client.post<CartonMarkTemplateRecordResponse>(`/carton-mark/templates/${templateId}/manual-release`, {
         reason,
+        ...(confirmedChecks ? { confirmed_checks: confirmedChecks } : {}),
       }, {
         params: { factory_id: factoryId },
         signal,
@@ -474,6 +531,43 @@ export function createCartonMarkApi(client = http) {
         timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS,
       })
       return response.data
+    },
+
+    async listQcRecords(factoryId: string, offset = 0, filters: { contractNumber: string, item: string } = { contractNumber: '', item: '' }, signal?: AbortSignal) {
+      return (await client.get<{ items: CartonMarkQcRecord[], total: number }>('/carton-mark/qc-records', {
+        params: { factory_id: factoryId, offset, limit: 50, contract_number: filters.contractNumber, item: filters.item }, signal,
+      })).data
+    },
+    async createQcRecords(payload: CartonMarkQcSubmission) {
+      const body = new FormData()
+      body.set('factory_id', payload.factoryId)
+      body.set('template_id', payload.templateId)
+      body.set('request_id', payload.requestId)
+      body.set('mode', payload.mode)
+      body.set('note', payload.note)
+      if (payload.correctsRecordId) body.set('corrects_record_id', payload.correctsRecordId)
+      payload.frontPhotos.forEach(file => body.append('front_photos', file))
+      payload.sidePhotos.forEach(file => body.append('side_photos', file))
+      return (await client.post<CartonMarkQcRecord[]>('/carton-mark/qc-records', body, {
+        headers: { 'Content-Type': 'multipart/form-data' }, timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS,
+      })).data
+    },
+    async qcAction(factoryId: string, recordId: string, payload: {
+      action: '核对通过' | '发现异常' | '重新自动核对' | '作废', expected_revision: number, request_id: string, note: string,
+    }) {
+      return (await client.post<CartonMarkQcRecord>(`/carton-mark/qc-records/${recordId}/actions`, payload, {
+        params: { factory_id: factoryId }, timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS,
+      })).data
+    },
+    async downloadQcPhoto(factoryId: string, recordId: string, photoId: string, signal?: AbortSignal) {
+      return (await client.get<Blob>(`/carton-mark/qc-records/${recordId}/photos/${photoId}`, {
+        params: { factory_id: factoryId }, responseType: 'blob', signal,
+      })).data
+    },
+    async downloadQcTemplate(factoryId: string, recordId: string, signal?: AbortSignal) {
+      return (await client.get<Blob>(`/carton-mark/qc-records/${recordId}/template`, {
+        params: { factory_id: factoryId }, responseType: 'blob', signal,
+      })).data
     },
   }
 }

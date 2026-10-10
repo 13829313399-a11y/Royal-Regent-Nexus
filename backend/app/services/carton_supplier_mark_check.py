@@ -96,11 +96,11 @@ def visible_checks(db, user, factory):
         context = json.loads(event.detail_json).get("supplier_context", {})
         record = templates[event.entity_id]
         if context.get("supplier_id") != supplier.id or own_orders.get(context.get("order_id")) != portal._mark_identity(
-                record.customer_name, record.po, record.item, record.contract_number):
+                record.customer_name, record.po or record.contract_number, record.item, record.contract_number):
             continue
         documents = {row.kind: row for row in db.scalars(select(CartonMarkDocument).where(
             CartonMarkDocument.factory_id == factory, CartonMarkDocument.template_id == record.id))}
-        if {"source_excel", "print_pdf"} <= documents.keys():
+        if "print_pdf" in documents:
             result.append((_check_out(_template_out(record, documents), context), documents))
     return sorted(result, key=lambda row: (row[0].created_at, row[0].id), reverse=True)
 
@@ -110,5 +110,7 @@ def check_document(db, user, factory, identifier, kind):
         raise HTTPException(422, "箱唛文档类型无效")
     for record, documents in visible_checks(db, user, factory):
         if record.id == identifier:
-            return documents[kind]
+            if kind in documents:
+                return documents[kind]
+            raise HTTPException(404, "此人工审核资料没有 Excel 原稿")
     raise HTTPException(404, "未找到可查看的供应商核对资料")

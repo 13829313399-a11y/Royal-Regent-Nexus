@@ -78,7 +78,7 @@ describe('carton mark standalone workspaces', () => {
   it('combines single and batch uploads into independent multi-file front and side selectors', () => {
     for (const requiredCopy of [
       '可一次选择多张',
-      '无需文件配对',
+      '每张照片独立留档',
       '选择正唛',
       '选择侧唛',
       '开始批量核对',
@@ -93,7 +93,7 @@ describe('carton mark standalone workspaces', () => {
       '当前正唛向左旋转 90 度',
       '当前侧唛向右旋转 90 度',
       'submitBatchPhoto',
-      'batchAutoCheck',
+      'createQcRecords',
     ]) {
       expect(cartonPanelSource).toContain(requiredCopy)
     }
@@ -119,20 +119,18 @@ describe('carton mark standalone workspaces', () => {
       'isCurrentFactoryTask',
       'const requestedFactoryId = activeFactoryId.value',
       'const requestedFactoryGeneration = factoryGeneration',
-      'const requestedFrontFiles = [...selectedFrontBatchFiles.value]',
-      'const requestedSideFiles = [...selectedSideBatchFiles.value]',
-      'template.factoryId !== requestedFactoryId',
-      'photo.factoryId !== requestedFactoryId',
-      'factoryId: requestedFactoryId',
-      'factoryName: requestedFactoryName',
+      'const frontPhotos = [...selectedFrontBatchFiles.value], sidePhotos = [...selectedSideBatchFiles.value]',
+      'template.factoryId !== activeFactoryId.value',
+      'factoryId: factory, templateId: template.id',
       "const LEGACY_CARTON_MARK_FACTORY_ID: ProductionFactoryContextId = 'huaxing'",
       'factoryId: record.factoryId ?? LEGACY_CARTON_MARK_FACTORY_ID',
     ]) {
       expect(cartonPanelSource).toContain(requiredContract)
     }
 
-    expect(cartonPanelSource).toMatch(/watch\(activeFactoryId,[\s\S]{0,120}factoryGeneration \+= 1/)
-    expect(cartonPanelSource).toMatch(/createBatchPhotoRecords\([\s\S]{0,180}requestedFactoryId,[\s\S]{0,100}requestedFrontFiles,[\s\S]{0,100}requestedSideFiles/)
+    expect(cartonPanelSource).toMatch(/watch\(\[activeFactoryId,[\s\S]{0,180}factoryGeneration \+= 1/)
+    expect(cartonPanelSource).toContain('const submission = pendingSubmission')
+    expect(cartonPanelSource).toContain('isCurrentFactoryTask(factory, generation)')
   })
 
   it('keeps the warehouse template route focused on customer, ITEM, and contract imports plus customer collections', () => {
@@ -275,9 +273,9 @@ describe('carton mark standalone workspaces', () => {
     expect(cartonPanelSource).toContain('选择箱唛模板')
     expect(cartonPanelSource).toContain('打印 PDF 长框 vs QC 现场正唛')
     expect(cartonPanelSource).toContain('打印 PDF 短框 vs QC 现场侧唛')
-    expect(cartonPanelSource).toContain('cartonMarkApi.batchAutoCheck')
-    expect(cartonPanelSource).toContain('const pdfTemplate = await ensureTemplatePdfBlob(template)')
-    expect(cartonPanelSource).toContain('pdfTemplate,')
-    expect(cartonPanelSource).toMatch(/cartonMarkApi\.batchAutoCheck\(\{[\s\S]*?frontPhotos,[\s\S]*?sidePhotos,[\s\S]*?\}\)/)
+    expect(cartonPanelSource).toContain('cartonMarkApi.createQcRecords(submission)')
+    expect(cartonPanelSource).toContain('templateId: template.id')
+    expect(cartonPanelSource).toContain("frontPhotos, sidePhotos, mode: 'batch'")
+    expect(cartonPanelSource).toContain('downloadQcTemplate(factory, photo.id')
   })
 })

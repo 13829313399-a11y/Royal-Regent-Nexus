@@ -319,6 +319,30 @@ def ensure_carton_mark_library_schema_ready() -> None:
         table_names = set(inspector.get_table_names())
         if "alembic_version" not in table_names:
             return
+        qc_tables = ("carton_mark_qc_records", "carton_mark_qc_photos", "carton_mark_qc_events")
+        qc_missing = []
+        for name in qc_tables:
+            if name not in table_names:
+                qc_missing.append(name)
+            else:
+                columns = {c["name"] for c in inspector.get_columns(name)}
+                qc_missing.extend(name + "." + c.name for c in Base.metadata.tables[name].columns if c.name not in columns)
+        if not qc_missing and engine.dialect.name == "sqlite":
+            guards = set(connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='trigger'").scalars())
+            qc_missing.extend(name + "_no_" + action for name in qc_tables for action in ("update", "delete")
+                              if name + "_no_" + action not in guards)
+        elif not qc_missing and engine.dialect.name == "postgresql":
+            guards = set(connection.exec_driver_sql(
+                "SELECT t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid "
+                "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE NOT t.tgisinternal AND t.tgenabled='O' AND n.nspname=current_schema()"
+            ).scalars())
+            qc_missing.extend(name + "_immutable" for name in qc_tables if name + "_immutable" not in guards)
+        if qc_missing:
+            raise RuntimeError("QC 箱唛留档需要先备份并迁移至 20261010_0153：" + ", ".join(qc_missing))
+        layout_columns = {c["name"] for c in inspector.get_columns("carton_mark_layouts")} if "carton_mark_layouts" in table_names else set()
+        if any(c.name not in layout_columns for c in Base.metadata.tables["carton_mark_layouts"].columns):
+            raise RuntimeError("客户箱唛排版模板需要先备份并迁移至 20261010_0154")
         current_revision = connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
         ).scalar_one_or_none()

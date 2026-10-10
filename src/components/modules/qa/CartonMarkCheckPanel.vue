@@ -5,8 +5,9 @@ import { RouterLink, useRoute } from 'vue-router'
 import {
   cartonMarkApi,
   type CartonMarkAsset,
+  type CartonMarkQcRecord,
+  type CartonMarkQcSubmission,
   type CartonMarkAutoCheckResponse,
-  type CartonMarkBatchCheckResponse,
   type CartonMarkComparisonItem,
   type CartonMarkCustomer,
   type CartonMarkDocumentContentComparison,
@@ -18,6 +19,7 @@ import CartonMarkCustomerDialog from '@/components/modules/qa/CartonMarkCustomer
 import CartonMarkCustomerRecognition from '@/components/modules/qa/CartonMarkCustomerRecognition.vue'
 import type { ProductionFactoryContextId } from '@/data/enterpriseMock'
 import { getApiErrorMessage } from '@/lib/http'
+import { createRandomUuid } from '@/lib/randomUuid'
 import {
   clampRatio,
   cropImageBlob,
@@ -61,6 +63,7 @@ interface CartonMarkTemplateRecord {
 }
 
 interface CartonMarkPhotoRecord {
+  server?: CartonMarkQcRecord
   id: string
   templateId: string
   factoryId: ProductionFactoryContextId
@@ -139,6 +142,8 @@ const form = reactive({
 const photoForm = reactive({
   customerName: ALL_CUSTOMERS,
   templateId: '',
+  note: '',
+  correctsRecordId: '',
 })
 
 const allRecords = ref<CartonMarkTemplateRecord[]>([])
@@ -176,9 +181,43 @@ const frontCameraInput = ref<HTMLInputElement | null>(null)
 const sideCameraInput = ref<HTMLInputElement | null>(null)
 const photoFormPanel = ref<HTMLFormElement | null>(null)
 const comparisonRecord = ref<CartonMarkPhotoRecord | null>(null)
+const comparisonReviewSources = computed(() => {
+  const rows = comparisonRecord.value?.server?.template_snapshot.source_assets
+  return Array.isArray(rows) ? rows.filter(row => typeof row?.id === 'string' && typeof row?.file_name === 'string') as { id: string; file_name: string }[] : []
+})
+async function openQcReviewOriginal(record: CartonMarkPhotoRecord, assetId: string) {
+  const factory = activeFactoryId.value, generation = factoryGeneration
+  try {
+    const blob = await cartonMarkApi.downloadQcReviewSource(record.id, assetId, factory)
+    if (isCurrentFactoryTask(factory, generation) && isPanelMounted) window.open(createImageUrl(blob), '_blank', 'noopener,noreferrer')
+  } catch (cause) {
+    if (isCurrentFactoryTask(factory, generation) && isPanelMounted) photoErrorMessage.value = getApiErrorMessage(cause)
+  }
+}
 const documentComparisonRecord = ref<CartonMarkTemplateRecord | null>(null)
+function isManualReview(record: CartonMarkTemplateRecord) { return record.documentCheckResult?.review_method === 'manual_sources' }
+function hasImageSources(review: { review_method?: unknown; source_assets?: unknown } | undefined) {
+  return review?.review_method === 'manual_sources' && Array.isArray(review.source_assets) && review.source_assets.length > 0 && review.source_assets.every(source => source.kind === 'image')
+}
+function isImageReference(record: CartonMarkTemplateRecord) { return hasImageSources(record.documentCheckResult) }
+function isImageQcRecord(record: CartonMarkPhotoRecord) { return hasImageSources(record.server?.template_snapshot) }
+async function openReviewOriginal(record: CartonMarkTemplateRecord, assetId: string) {
+  const factory = activeFactoryId.value, generation = factoryGeneration
+  try {
+    const blob = await cartonMarkApi.downloadReviewSource(record.id, assetId, factory)
+    if (!isCurrentFactoryTask(factory, generation) || !isPanelMounted) return
+    window.open(createImageUrl(blob), '_blank', 'noopener,noreferrer')
+  } catch (cause) {
+    if (isCurrentFactoryTask(factory, generation) && isPanelMounted) {
+      if (manualReleaseRecord.value) manualReleaseError.value = getApiErrorMessage(cause)
+      else errorMessage.value = getApiErrorMessage(cause)
+    }
+  }
+}
 const autoCheckResult = ref<CartonMarkAutoCheckResponse | null>(null)
 const autoCheckErrorMessage = ref('')
+const viewedAutoRevision = ref<number | null>(null)
+const viewedAutoTime = ref('')
 const recheckingPhotoId = ref('')
 const recheckingDocumentId = ref('')
 const activeCustomer = ref(ALL_CUSTOMERS)
@@ -203,8 +242,16 @@ const isSaving = ref(false)
 const isSavingPhoto = ref(false)
 const isSavingBatchPhoto = ref(false)
 const deletingRecordId = ref('')
-const deletingPhotoRecordId = ref('')
-const photoStorageMode = ref<'indexedDb' | 'localStorage'>('indexedDb')
+const serverPhotoTotal = ref(0)
+const loadingServerPhotos = ref(false)
+const qcContractFilter = ref('')
+const qcItemFilter = ref('')
+const frozenComparisonTemplate = ref<CartonMarkTemplateRecord | null>(null)
+const reviewNote = ref('')
+let qcRequestController: AbortController | null = null
+let qcLoadGeneration = 0
+let pendingSubmission: CartonMarkQcSubmission | null = null
+const pendingActions = new Map<string, { action: '核对通过' | '发现异常' | '重新自动核对' | '作废', expected_revision: number, request_id: string, note: string }>()
 const downloadingDocumentKey = ref('')
 let factoryGeneration = 0
 let appliedQcTemplateRequest = '', qcSelectionGeneration = 0
@@ -261,7 +308,7 @@ const templatePermissionHint = computed(() => canUploadTemplate.value
   : '当前账号只能查看箱唛资料；请使用纸箱部仓管账号上传 Excel 与打印 PDF。')
 const photoPermissionHint = computed(() => {
   if (canUploadPhoto.value) {
-    return '当前账号可选择纸箱部已完成 Excel–PDF 核对的打印 PDF，再上传现场箱唛照片核验。'
+    return '选择已核对或审核通过的订单资料，再上传现场箱唛照片；PDF 支持文字核对，图片资料供人工对照。'
   }
 
   return '当前账号只能查看实拍记录；QC 检验员账号可上传现场照片并核对箱唛。'
@@ -272,7 +319,10 @@ const records = computed(() => {
 })
 
 const photoRecords = computed(() => {
-  return sortPhotoRecords(allPhotoRecords.value.filter((record) => record.factoryId === activeFactoryId.value))
+  if (!canInCurrentWorkspace('carton_mark:read')) return []
+  return sortPhotoRecords(allPhotoRecords.value.filter(record => record.factoryId === activeFactoryId.value
+    && (!qcContractFilter.value.trim() || record.contractNumber === qcContractFilter.value.trim())
+    && (!qcItemFilter.value.trim() || record.item === qcItemFilter.value.trim())))
 })
 
 const photoReadyRecords = computed(() => {
@@ -343,7 +393,7 @@ const comparisonTemplate = computed(() => {
   const photo = comparisonRecord.value
   if (!photo) return null
 
-  return findTemplateForPhoto(photo)
+  return photo.server ? frozenComparisonTemplate.value : findTemplateForPhoto(photo)
 })
 
 const comparisonPdfPreviewUrl = computed(() => {
@@ -356,7 +406,7 @@ const comparisonPdfMissingMessage = computed(() => {
   if (!comparisonRecord.value) return ''
 
   if (!comparisonTemplate.value) {
-    return '没有匹配到同客名、PO、ITEM 的 PDF 模板。'
+    return '未读取到这次核验使用的资料原件。'
   }
 
   return '已匹配到服务器模板，但打印 PDF 暂时无法读取，请稍后重试。'
@@ -415,6 +465,7 @@ const canSubmitBatchPhoto = computed(() => Boolean(
   && batchPhotoCount.value,
 ))
 const photoSubmitLabel = computed(() => {
+  if (selectedTemplateForPhoto.value && isImageReference(selectedTemplateForPhoto.value)) return isSavingBatchPhoto.value ? '保存中' : batchPhotoCount.value ? `保存照片待人工复核（${batchPhotoCount.value} 张）` : '选择照片后保存留档'
   if (isSavingBatchPhoto.value) return '核对中'
   if (batchPhotoCount.value === 1) return '开始核对'
   if (batchPhotoCount.value > 1) return `开始批量核对（${batchPhotoCount.value} 张）`
@@ -544,8 +595,7 @@ onMounted(async () => {
   if (!isPanelMounted) return
 
   if (photosResult.status === 'fulfilled') {
-    photoStorageMode.value = photosResult.value.mode
-    allPhotoRecords.value = sortPhotoRecords(photosResult.value.records.map(hydratePhotoRecord))
+    allPhotoRecords.value = sortPhotoRecords([...photosResult.value.records.map(hydratePhotoRecord), ...allPhotoRecords.value.filter(photo => photo.server)])
   }
 
   if (!isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) return
@@ -560,6 +610,7 @@ onMounted(async () => {
   }
 
   isLoading.value = false
+  if (!isWarehouseWorkspace.value) void loadServerPhotos()
 })
 
 async function loadTemplateRecords(factoryId: ProductionFactoryContextId, factoryName: string, generation: number) {
@@ -591,6 +642,7 @@ function refreshTemplates() {
   if (isWarehouseWorkspace.value) errorMessage.value = ''
   else photoErrorMessage.value = ''
   void loadTemplateRecords(activeFactoryId.value, activeFactory.value.shortName, factoryGeneration)
+  if (!isWarehouseWorkspace.value) void loadServerPhotos()
 }
 
 async function selectQcTemplate(record: CartonMarkTemplateRecord) {
@@ -730,8 +782,14 @@ function revokeTemplateUrls() {
   excelUrls.clear()
 }
 
-watch(activeFactoryId, () => {
+watch([activeFactoryId, () => authStore.currentUser?.id, () => authStore.authorizationVersion], () => {
   factoryGeneration += 1
+  qcRequestController?.abort(); qcLoadGeneration++
+  allPhotoRecords.value = allPhotoRecords.value.filter(photo => !photo.server)
+  serverPhotoTotal.value = 0; comparisonRecord.value = null; frozenComparisonTemplate.value = null; reviewNote.value = ''
+  qcContractFilter.value = ''; qcItemFilter.value = ''
+  photoForm.note = ''; photoForm.correctsRecordId = ''; pendingSubmission = null; pendingActions.clear()
+  if (!isWarehouseWorkspace.value && isPanelMounted) void loadServerPhotos()
   appliedQcTemplateRequest = ''; qcSelectionGeneration++
   templateRequestController?.abort()
   documentRecheckRequestController?.abort()
@@ -775,11 +833,13 @@ watch(activeFactoryId, () => {
 
 watch(() => photoForm.customerName, () => {
   photoForm.templateId = ''
+  photoForm.correctsRecordId = ''; photoForm.note = ''
   resetPhotoSelection()
   resetBatchPhotoSelection()
 })
 
 watch(() => photoForm.templateId, () => {
+  photoForm.correctsRecordId = ''; photoForm.note = ''
   resetPhotoSelection()
   resetBatchPhotoSelection()
 })
@@ -790,6 +850,7 @@ onBeforeUnmount(() => {
   templateRequestController?.abort()
   documentRecheckRequestController?.abort()
   customerOptionsRequestController?.abort()
+  qcRequestController?.abort()
   revokeTemplateUrls()
 
   for (const url of imageUrls) {
@@ -1272,48 +1333,126 @@ function sortPhotoRecords(nextRecords: CartonMarkPhotoRecord[]) {
 }
 
 function findTemplateForPhoto(photo: CartonMarkPhotoRecord) {
-  const matchedById = records.value.find((record) => record.id === photo.templateId)
-  if (matchedById) return matchedById
-
-  const matchedByPo = records.value.find((record) => {
-    const poMatches = !photo.po
-      || !record.po
-      || normalizeKey(record.po) === normalizeKey(photo.po)
-    return normalizeKey(record.customerName) === normalizeKey(photo.customerName)
-      && poMatches
-      && normalizeKey(record.item) === normalizeKey(photo.item)
-      && normalizeKey(record.contractNumber) === normalizeKey(photo.contractNumber)
-  })
-  if (matchedByPo) return matchedByPo
-
-  const selectedTemplate = selectedTemplateForPhoto.value
-  if (
-    selectedTemplate
-    && normalizeKey(selectedTemplate.customerName) === normalizeKey(photo.customerName)
-    && normalizeKey(selectedTemplate.po) === normalizeKey(photo.po)
-    && normalizeKey(selectedTemplate.item) === normalizeKey(photo.item)
-    && normalizeKey(selectedTemplate.contractNumber) === normalizeKey(photo.contractNumber)
-  ) {
-    return selectedTemplate
-  }
-
-  return null
+  return photo.server ? null : records.value.find(record => record.id === photo.templateId) ?? null
 }
 
 function showPhotoAutoCheck(photo: CartonMarkPhotoRecord) {
-  comparisonRecord.value = photo
+  const previous = comparisonRecord.value
+  if (previous?.server && previous.id !== photo.id) {
+    for (const url of [previous.frontImageUrl, previous.sideImageUrl]) if (url) revokeImageUrl(url)
+    previous.frontImageBlob = undefined; previous.sideImageBlob = undefined
+    previous.frontImageUrl = undefined; previous.sideImageUrl = undefined
+  }
+  if (frozenComparisonTemplate.value?.pdfUrl) {
+    URL.revokeObjectURL(frozenComparisonTemplate.value.pdfUrl)
+    pdfUrls.delete(frozenComparisonTemplate.value.pdfUrl)
+  }
+  comparisonRecord.value = photo; frozenComparisonTemplate.value = null; reviewNote.value = ''
+  const event = photo.server?.events.filter(e => e.kind === 'AUTO_CHECK').at(-1)
+  viewedAutoRevision.value = event?.revision ?? null
+  viewedAutoTime.value = event?.created_at ?? photo.autoCheckedAt ?? ''
   autoCheckResult.value = photo.autoCheckResult ?? null
   autoCheckErrorMessage.value = photo.autoCheckErrorMessage ?? ''
+  if (photo.server) { void loadQcOriginals(photo); return }
   const template = findTemplateForPhoto(photo)
-  if (template && !template.fileBlob) {
-    void ensureTemplatePdfBlob(template).catch((error) => {
-      if (!isPanelMounted || comparisonRecord.value?.id !== photo.id) return
-      photoErrorMessage.value = `打印 PDF 读取失败：${getApiErrorMessage(error)}`
-    })
+  if (template && !template.fileBlob) void ensureTemplatePdfBlob(template).catch(error => {
+    if (isPanelMounted && comparisonRecord.value?.id === photo.id) photoErrorMessage.value = `打印 PDF 读取失败：${getApiErrorMessage(error)}`
+  })
+}
+function qcRequestId() {
+  return createRandomUuid()
+}
+function mapQcRecord(value: CartonMarkQcRecord): CartonMarkPhotoRecord {
+  const auto = [...value.events].reverse().find(e => e.kind === 'AUTO_CHECK')
+  const review = [...value.events].reverse().find(e => e.kind === 'REVIEW' && e.status !== '待复核')
+  const front = value.photos.find(p => p.side === 'front'), side = value.photos.find(p => p.side === 'side')
+  return { server: value, id: value.id, templateId: value.template_id,
+    factoryId: value.factory_id as ProductionFactoryContextId, factoryName: activeFactory.value.shortName,
+    customerName: value.customer_name, po: value.po, item: value.item, contractNumber: value.contract_number,
+    fileName: front?.file_name ?? side?.file_name ?? '', fileSize: value.photos.reduce((sum, p) => sum + p.size_bytes, 0),
+    uploadedAt: value.created_at, sequence: 1, status: value.status,
+    frontFileName: front?.file_name, frontFileSize: front?.size_bytes, sideFileName: side?.file_name, sideFileSize: side?.size_bytes,
+    autoCheckResult: auto?.result ?? undefined, autoCheckErrorMessage: auto?.error, autoCheckedAt: auto?.created_at,
+    reviewedAt: review?.created_at, reviewedBy: review?.actor_name }
+}
+async function loadServerPhotos(append = false) {
+  const factory = activeFactoryId.value, generation = factoryGeneration, request = ++qcLoadGeneration
+  const contractNumber = qcContractFilter.value.trim(), item = qcItemFilter.value.trim()
+  const offset = append ? allPhotoRecords.value.filter(p => p.server).length : 0
+  loadingServerPhotos.value = true
+  try {
+    const page = await cartonMarkApi.listQcRecords(factory, offset, { contractNumber, item })
+    if (!isPanelMounted || !isCurrentFactoryTask(factory, generation) || request !== qcLoadGeneration
+      || contractNumber !== qcContractFilter.value.trim() || item !== qcItemFilter.value.trim()) return
+    const existing = append ? allPhotoRecords.value : allPhotoRecords.value.filter(p => !p.server)
+    const incoming = page.items.map(mapQcRecord), ids = new Set(incoming.map(p => p.id))
+    allPhotoRecords.value = sortPhotoRecords([...existing.filter(p => !ids.has(p.id)), ...incoming]); serverPhotoTotal.value = page.total
+  } catch (error) {
+    if (isCurrentFactoryTask(factory, generation) && request === qcLoadGeneration) photoErrorMessage.value = `QC 服务端留档读取失败：${getApiErrorMessage(error)}`
+  } finally {
+    if (isCurrentFactoryTask(factory, generation) && request === qcLoadGeneration) loadingServerPhotos.value = false
   }
+}
+async function loadQcOriginals(photo: CartonMarkPhotoRecord) {
+  const server = photo.server; if (!server) return
+  const factory = activeFactoryId.value, generation = factoryGeneration
+  qcRequestController?.abort(); const controller = new AbortController(); qcRequestController = controller
+  const downloads = await Promise.allSettled([cartonMarkApi.downloadQcTemplate(factory, photo.id, controller.signal),
+    ...server.photos.map(p => cartonMarkApi.downloadQcPhoto(factory, photo.id, p.id, controller.signal))])
+  if (!isPanelMounted || !isCurrentFactoryTask(factory, generation) || comparisonRecord.value?.id !== photo.id || controller.signal.aborted) return
+  let failed = false; const pdf = downloads[0]
+  if (pdf?.status === 'fulfilled') {
+    const url = URL.createObjectURL(pdf.value); pdfUrls.add(url)
+    frozenComparisonTemplate.value = { id: photo.templateId, factoryId: photo.factoryId, factoryName: photo.factoryName,
+      customerName: photo.customerName, po: photo.po, item: photo.item, contractNumber: photo.contractNumber,
+      fileName: String(server.template_snapshot.pdf_file_name ?? '历史打印稿.pdf'), fileSize: pdf.value.size,
+      uploadedAt: photo.uploadedAt, version: server.template_version, fileBlob: pdf.value, pdfUrl: url,
+      checkStatus: String(server.template_snapshot.check_status ?? ''), qcReady: true, createdByName: server.created_by_name,
+      manualReleased: !!server.template_snapshot.manual_released_at, manualReleaseReason: String(server.template_snapshot.manual_release_reason ?? ''),
+      manualReleaseSourceStatus: '', manualReleasedByName: String(server.template_snapshot.manual_released_by_name ?? ''), manualReleasedAt: String(server.template_snapshot.manual_released_at ?? '') }
+  } else failed = true
+  server.photos.forEach((p, index) => {
+    const downloaded = downloads[index + 1]; if (downloaded?.status !== 'fulfilled') { failed = true; return }
+    const previousUrl = p.side === 'front' ? photo.frontImageUrl : photo.sideImageUrl
+    if (previousUrl) revokeImageUrl(previousUrl)
+    const url = URL.createObjectURL(downloaded.value); imageUrls.add(url)
+    if (p.side === 'front') { photo.frontImageBlob = downloaded.value; photo.frontImageUrl = url }
+    else { photo.sideImageBlob = downloaded.value; photo.sideImageUrl = url }
+  })
+  if (failed) photoErrorMessage.value = '部分留档原件读取失败，请重新打开核验记录。'
+}
+async function actOnQcPhoto(photo: CartonMarkPhotoRecord, action: '核对通过' | '发现异常' | '重新自动核对' | '作废') {
+  if (!photo.server || !canReviewPhoto.value || photo.factoryId !== activeFactoryId.value || recheckingPhotoId.value) return
+  if (comparisonRecord.value?.id !== photo.id && action !== '重新自动核对') { showPhotoAutoCheck(photo); photoErrorMessage.value = '请在核验明细中填写复核说明，再确认操作。'; return }
+  const factory = activeFactoryId.value, generation = factoryGeneration
+  const note = comparisonRecord.value?.id === photo.id ? reviewNote.value.trim() : ''
+  photoErrorMessage.value = ''; photoSuccessMessage.value = ''
+  if ((action === '发现异常' || action === '作废') && note.length < 5) { photoErrorMessage.value = '请填写至少 5 字的异常或作废原因。'; return }
+  const previous = pendingActions.get(photo.id)
+  const payload = previous && previous.action === action && previous.note === note && previous.expected_revision === photo.server.revision
+    ? previous : { action, expected_revision: photo.server.revision, request_id: qcRequestId(), note }
+  pendingActions.set(photo.id, payload); recheckingPhotoId.value = photo.id
+  try {
+    const saved = await cartonMarkApi.qcAction(factory, photo.id, payload)
+    if (!isPanelMounted || !isCurrentFactoryTask(factory, generation)) return
+    pendingActions.delete(photo.id)
+    const updated = { ...mapQcRecord(saved), frontImageUrl: photo.frontImageUrl, frontImageBlob: photo.frontImageBlob, sideImageUrl: photo.sideImageUrl, sideImageBlob: photo.sideImageBlob }
+    allPhotoRecords.value = sortPhotoRecords(allPhotoRecords.value.map(p => p.id === photo.id ? updated : p))
+    showPhotoAutoCheck(updated); photoSuccessMessage.value = `${action}已保存到服务器，原照片和历次结果已保留。`
+  } catch (error) {
+    if (isCurrentFactoryTask(factory, generation)) photoErrorMessage.value = `未保存：${getApiErrorMessage(error)}。请保留当前页面重试；如记录已变化，请刷新。`
+  } finally { if (isCurrentFactoryTask(factory, generation)) recheckingPhotoId.value = '' }
+}
+async function startCorrection(photo: CartonMarkPhotoRecord) {
+  if (!photo.server || photo.status !== '发现异常' || !canUploadPhoto.value) return
+  const template = photoReadyRecords.value.find(t => t.customerName === photo.customerName && t.po === photo.po && t.item === photo.item && t.contractNumber === photo.contractNumber)
+  if (!template) { photoErrorMessage.value = '当前没有该合同货号的可用资料版本，请先确认资料。'; return }
+  await selectQcTemplate(template); resetBatchPhotoSelection(); photoForm.correctsRecordId = photo.id; photoForm.note = ''
+  photoFormPanel.value?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
 }
 
 function getPhotoAutoCheckSummary(photo: CartonMarkPhotoRecord) {
+  if (isImageQcRecord(photo)) return '图片资料 · 人工对照，不执行自动核对'
   if (photo.autoCheckResult) {
     const summary = photo.autoCheckResult.summary
     return `自动核对：${summary.overall_status} · 通过 ${summary.pass_count} / 异常 ${summary.mismatch_count} / 待复核 ${summary.review_count + summary.missing_count}`
@@ -1326,58 +1465,6 @@ function getPhotoAutoCheckSummary(photo: CartonMarkPhotoRecord) {
   return '尚未生成自动核对明细。'
 }
 
-async function runCartonMarkAutoCheck(
-  template: CartonMarkTemplateRecord,
-  frontPhoto: Blob,
-  sidePhoto: Blob,
-) {
-  const pdfTemplate = await ensureTemplatePdfBlob(template)
-  return cartonMarkApi.autoCheck({
-    customerName: template.customerName,
-    po: template.po,
-    item: template.item,
-    pdfTemplate,
-    frontPhoto,
-    sidePhoto,
-  })
-}
-
-async function runCartonMarkBatchAutoCheck(
-  template: CartonMarkTemplateRecord,
-  frontPhotos: Blob[],
-  sidePhotos: Blob[],
-) {
-  const pdfTemplate = await ensureTemplatePdfBlob(template)
-  return cartonMarkApi.batchAutoCheck({
-    customerName: template.customerName,
-    po: template.po,
-    item: template.item,
-    pdfTemplate,
-    frontPhotos,
-    sidePhotos,
-  })
-}
-
-async function replaceStoredPhotoRecord(nextPhoto: CartonMarkPhotoRecord) {
-  const nextPhotoRecords = sortPhotoRecords(allPhotoRecords.value.map((record) => {
-    return record.id === nextPhoto.id ? nextPhoto : record
-  }))
-
-  allPhotoRecords.value = nextPhotoRecords
-
-  try {
-    if (photoStorageMode.value === 'indexedDb') {
-      await savePhotoRecordSnapshotToDb(nextPhoto)
-    } else {
-      writePhotoRecordsToLocalStorage(nextPhotoRecords)
-    }
-  } catch {
-    photoStorageMode.value = 'localStorage'
-    writePhotoRecordsToLocalStorage(nextPhotoRecords)
-  }
-
-  return nextPhoto
-}
 
 function resetForm() {
   librarySelectionGeneration.pdf++
@@ -1649,7 +1736,7 @@ async function useLibraryAsset(asset: CartonMarkAsset) {
   }
 }
 
-defineExpose({ useLibraryAsset })
+defineExpose({ useLibraryAsset, refreshTemplates })
 
 function handleExcelFileDrop(event: DragEvent) {
   selectExcelContract(event.dataTransfer?.files[0])
@@ -1876,6 +1963,7 @@ async function recheckTemplateRecord(record: CartonMarkTemplateRecord) {
 }
 
 function openManualRelease(record: CartonMarkTemplateRecord) {
+  if (isManualReleasing.value) return
   manualReleaseError.value = ''
   if (!canReleaseTemplate.value) {
     const message = '当前账号无权人工放行箱唛模板，请联系纸箱部主管、经理或系统管理员。'
@@ -1887,6 +1975,7 @@ function openManualRelease(record: CartonMarkTemplateRecord) {
 
   manualReleaseRecord.value = record
   manualReleaseReason.value = ''
+  if (isManualReview(record)) void confirmManualRelease()
 }
 
 function closeManualRelease() {
@@ -1905,7 +1994,7 @@ async function confirmManualRelease() {
     manualReleaseError.value = '当前账号无权人工放行箱唛模板。'
     return
   }
-  if (reason.length < 5) {
+  if (!isManualReview(record) && reason.length < 5) {
     manualReleaseError.value = '请填写至少 5 个字符的放行理由。'
     return
   }
@@ -1946,6 +2035,11 @@ async function confirmManualRelease() {
   } catch (error) {
     if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration) && isPanelMounted) {
       manualReleaseError.value = getApiErrorMessage(error)
+      if (isManualReview(record)) {
+        if (isWarehouseWorkspace.value) errorMessage.value = manualReleaseError.value
+        else photoErrorMessage.value = manualReleaseError.value
+        manualReleaseRecord.value = null
+      }
     }
   } finally {
     if (isCurrentFactoryTask(requestedFactoryId, requestedGeneration) && isPanelMounted) {
@@ -2021,362 +2115,38 @@ async function deleteTemplateRecord(record: CartonMarkTemplateRecord) {
   deletingRecordId.value = ''
 }
 
-async function submitPhoto() {
-  photoErrorMessage.value = ''
-  photoSuccessMessage.value = ''
-  autoCheckErrorMessage.value = ''
-  autoCheckResult.value = null
-
-  if (!canUploadPhoto.value) {
-    photoErrorMessage.value = '当前账号无权上传实拍图片，请使用 QC 检验员账号操作。'
-    return
-  }
-
-  const template = selectedTemplateForPhoto.value
-
-  if (!template) {
-    photoErrorMessage.value = '请先选择要核对的箱唛模板。'
-    return
-  }
-
-  if (!selectedFrontPhotoFile.value || !selectedSidePhotoFile.value) {
-    photoErrorMessage.value = '请先选择正唛和侧唛两张图片。'
-    return
-  }
-
-  if (!canSubmitPhoto.value) {
-    photoErrorMessage.value = '请选择模板，并上传有效的正唛和侧唛图片。'
-    return
-  }
-
-  const requestedFactoryId = activeFactoryId.value
-  const requestedFactoryName = activeFactory.value.shortName
-  const requestedFactoryGeneration = factoryGeneration
-  if (template.factoryId !== requestedFactoryId) {
-    photoErrorMessage.value = '模板所属厂区与当前厂区不一致，请重新选择。'
-    return
-  }
-
-  isSavingPhoto.value = true
-
-  const frontFile = selectedFrontPhotoFile.value
-  const sideFile = selectedSidePhotoFile.value
-  const frontImageUrl = createImageUrl(frontFile)
-  const sideImageUrl = createImageUrl(sideFile)
-  const sequence = photoRecords.value.filter((record) => {
-    return normalizeKey(record.customerName) === normalizeKey(template.customerName)
-      && normalizeKey(record.po) === normalizeKey(template.po)
-      && normalizeKey(record.item) === normalizeKey(template.item)
-      && normalizeKey(record.contractNumber) === normalizeKey(template.contractNumber)
-  }).length + 1
-  const photoRecord: CartonMarkPhotoRecord = {
-    id: `CMP-${Date.now()}`,
-    templateId: template.id,
-    factoryId: requestedFactoryId,
-    factoryName: requestedFactoryName,
-    customerName: template.customerName,
-    po: template.po,
-    item: template.item,
-    contractNumber: template.contractNumber,
-    fileName: `${frontFile.name} / ${sideFile.name}`,
-    fileSize: frontFile.size + sideFile.size,
-    uploadedAt: new Date().toISOString(),
-    sequence,
-    status: '待复核',
-    imageUrl: frontImageUrl,
-    imageBlob: frontFile,
-    frontFileName: frontFile.name,
-    frontFileSize: frontFile.size,
-    frontImageUrl,
-    frontImageBlob: frontFile,
-    sideFileName: sideFile.name,
-    sideFileSize: sideFile.size,
-    sideImageUrl,
-    sideImageBlob: sideFile,
-  }
-
-  try {
-    const result = await runCartonMarkAutoCheck(template, frontFile, sideFile)
-    photoRecord.status = getPhotoStatusFromAutoCheck(result.summary.overall_status)
-    photoRecord.autoCheckResult = result
-    photoRecord.autoCheckErrorMessage = ''
-    photoRecord.autoCheckedAt = new Date().toISOString()
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      autoCheckResult.value = result
-    }
-  } catch (error) {
-    const message = `自动核对未完成：${getApiErrorMessage(error)}`
-    photoRecord.autoCheckErrorMessage = message
-    photoRecord.autoCheckedAt = new Date().toISOString()
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      autoCheckErrorMessage.value = message
-    }
-  }
-
-  try {
-    if (photoStorageMode.value === 'indexedDb') {
-      await savePhotoRecordToDb(photoRecord)
-    } else {
-      writePhotoRecordsToLocalStorage([photoRecord, ...allPhotoRecords.value])
-    }
-
-    allPhotoRecords.value = sortPhotoRecords([photoRecord, ...allPhotoRecords.value])
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      resetPhotoSelection(false)
-      showPhotoAutoCheck(photoRecord)
-      photoSuccessMessage.value = photoRecord.autoCheckResult
-        ? `${requestedFactoryName} · ${template.customerName} / ${template.po} / ${template.item} 已生成自动核对结果。`
-        : `${requestedFactoryName} · ${template.customerName} / ${template.po} / ${template.item} 实拍图片已保存，可稍后重新自动核对。`
-    }
-  } catch {
-    photoStorageMode.value = 'localStorage'
-    allPhotoRecords.value = sortPhotoRecords([photoRecord, ...allPhotoRecords.value])
-    writePhotoRecordsToLocalStorage(allPhotoRecords.value)
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      resetPhotoSelection(false)
-      showPhotoAutoCheck(photoRecord)
-      photoSuccessMessage.value = photoRecord.autoCheckResult
-        ? `${requestedFactoryName} · ${template.customerName} / ${template.po} / ${template.item} 已生成自动核对结果。`
-        : `${requestedFactoryName} · ${template.customerName} / ${template.po} / ${template.item} 实拍图片已保存，可稍后重新自动核对。`
-    }
-  } finally {
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      isSavingPhoto.value = false
-    }
-  }
-}
-
-function createBatchPhotoRecords(
-  template: CartonMarkTemplateRecord,
-  batchResult: CartonMarkBatchCheckResponse,
-  factoryId: ProductionFactoryContextId,
-  factoryName: string,
-  frontFiles: File[],
-  sideFiles: File[],
-) {
-  const uploadedAt = new Date().toISOString()
-  const existingCount = allPhotoRecords.value.filter((record) => {
-    return record.factoryId === factoryId
-      && normalizeKey(record.customerName) === normalizeKey(template.customerName)
-      && normalizeKey(record.po) === normalizeKey(template.po)
-      && normalizeKey(record.item) === normalizeKey(template.item)
-      && normalizeKey(record.contractNumber) === normalizeKey(template.contractNumber)
-  }).length
-
-  return batchResult.items.flatMap((batchItem, batchIndex): CartonMarkPhotoRecord[] => {
-    const isFront = batchItem.side === 'front'
-    const sourceFile = (isFront ? frontFiles : sideFiles)[batchItem.file_index]
-    if (!sourceFile) return []
-
-    const imageUrl = createImageUrl(sourceFile)
-    const record: CartonMarkPhotoRecord = {
-      id: `CMP-BATCH-${Date.now()}-${batchIndex}`,
-      templateId: template.id,
-      factoryId,
-      factoryName,
-      customerName: template.customerName,
-      po: template.po,
-      item: template.item,
-      contractNumber: template.contractNumber,
-      fileName: sourceFile.name,
-      fileSize: sourceFile.size,
-      uploadedAt,
-      sequence: existingCount + batchIndex + 1,
-      status: getPhotoStatusFromAutoCheck(batchItem.result.summary.overall_status),
-      autoCheckResult: batchItem.result,
-      autoCheckErrorMessage: '',
-      autoCheckedAt: uploadedAt,
-    }
-
-    if (isFront) {
-      record.imageUrl = imageUrl
-      record.imageBlob = sourceFile
-      record.frontFileName = sourceFile.name
-      record.frontFileSize = sourceFile.size
-      record.frontImageUrl = imageUrl
-      record.frontImageBlob = sourceFile
-    } else {
-      record.sideFileName = sourceFile.name
-      record.sideFileSize = sourceFile.size
-      record.sideImageUrl = imageUrl
-      record.sideImageBlob = sourceFile
-    }
-
-    return [record]
-  })
-}
-
 async function submitBatchPhoto() {
-  photoErrorMessage.value = ''
-  photoSuccessMessage.value = ''
-  autoCheckErrorMessage.value = ''
-
-  if (!canUploadPhoto.value) {
-    photoErrorMessage.value = '当前账号无权上传实拍图片，请使用 QC 检验员账号操作。'
-    return
-  }
-
+  photoErrorMessage.value = ''; photoSuccessMessage.value = ''
+  if (isSavingBatchPhoto.value || !canUploadPhoto.value || !canSubmitBatchPhoto.value) return
   const template = selectedTemplateForPhoto.value
-  if (!template) {
-    photoErrorMessage.value = '请先选择已通过纸箱部核对的箱唛模板。'
-    return
+  if (!template || template.factoryId !== activeFactoryId.value) { photoErrorMessage.value = '请先选择当前厂区已确认的资料版本。'; return }
+  const factory = activeFactoryId.value, generation = factoryGeneration
+  const frontPhotos = [...selectedFrontBatchFiles.value], sidePhotos = [...selectedSideBatchFiles.value]
+  const note = photoForm.note.trim(), correctsRecordId = photoForm.correctsRecordId || undefined
+  if (correctsRecordId && note.length < 5) { photoErrorMessage.value = '请填写至少 5 字的整改说明。'; return }
+  if (frontPhotos.length + sidePhotos.length > 20) { photoErrorMessage.value = '每次最多上传 20 张图片。'; return }
+  const sameFiles = (a: File[], b: File[]) => a.length === b.length && a.every((file, index) => file === b[index])
+  if (!pendingSubmission || pendingSubmission.factoryId !== factory || pendingSubmission.templateId !== template.id
+    || pendingSubmission.note !== note || pendingSubmission.correctsRecordId !== correctsRecordId
+    || !sameFiles(pendingSubmission.frontPhotos, frontPhotos) || !sameFiles(pendingSubmission.sidePhotos, sidePhotos)) {
+    pendingSubmission = { factoryId: factory, templateId: template.id, requestId: qcRequestId(), frontPhotos, sidePhotos, mode: 'batch', note, correctsRecordId }
   }
-
-  if (!canSubmitBatchPhoto.value) {
-    photoErrorMessage.value = '请至少选择一张正唛或侧唛图片。'
-    return
-  }
-
-  const requestedFactoryId = activeFactoryId.value
-  const requestedFactoryName = activeFactory.value.shortName
-  const requestedFactoryGeneration = factoryGeneration
-  if (template.factoryId !== requestedFactoryId) {
-    photoErrorMessage.value = '模板所属厂区与当前厂区不一致，请重新选择。'
-    return
-  }
-  const requestedFrontFiles = [...selectedFrontBatchFiles.value]
-  const requestedSideFiles = [...selectedSideBatchFiles.value]
-
-  isSavingBatchPhoto.value = true
+  const submission = pendingSubmission; isSavingBatchPhoto.value = true
   try {
-    const batchResult = await runCartonMarkBatchAutoCheck(
-      template,
-      requestedFrontFiles,
-      requestedSideFiles,
-    )
-    const batchRecords = createBatchPhotoRecords(
-      template,
-      batchResult,
-      requestedFactoryId,
-      requestedFactoryName,
-      requestedFrontFiles,
-      requestedSideFiles,
-    )
-    if (!batchRecords.length) {
-      throw new Error('批量图片与核对结果不一致，请重新选择图片后再试。')
-    }
-
-    const batchRecordIds = new Set(batchRecords.map((record) => record.id))
-    const mergeBatchRecords = () => sortPhotoRecords([
-      ...batchRecords,
-      ...allPhotoRecords.value.filter((record) => !batchRecordIds.has(record.id)),
-    ])
-    try {
-      if (photoStorageMode.value === 'indexedDb') {
-        await Promise.all(batchRecords.map((record) => savePhotoRecordToDb(record)))
-      } else {
-        writePhotoRecordsToLocalStorage(mergeBatchRecords())
-      }
-    } catch {
-      photoStorageMode.value = 'localStorage'
-      writePhotoRecordsToLocalStorage(mergeBatchRecords())
-    }
-
-    const nextPhotoRecords = mergeBatchRecords()
-    allPhotoRecords.value = nextPhotoRecords
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      const latestRecord = batchRecords.at(-1) as CartonMarkPhotoRecord
-      showPhotoAutoCheck(latestRecord)
-      resetBatchPhotoSelection()
-      const summary = batchResult.summary
-      const actionName = batchRecords.length === 1 ? '核对' : '批量核对'
-      photoSuccessMessage.value = `${actionName}完成 ${batchRecords.length} 张：通过 ${summary.pass_count} 项，异常 ${summary.mismatch_count} 项，待复核 ${summary.review_count + summary.missing_count} 项。`
-    }
+    const saved = await cartonMarkApi.createQcRecords(submission)
+    if (!isPanelMounted || !isCurrentFactoryTask(factory, generation)) return
+    const incoming = saved.map(mapQcRecord), ids = new Set(incoming.map(p => p.id))
+    allPhotoRecords.value = sortPhotoRecords([...incoming, ...allPhotoRecords.value.filter(p => !ids.has(p.id))]); pendingSubmission = null
+    resetBatchPhotoSelection(); photoForm.note = ''; photoForm.correctsRecordId = ''
+    if (incoming[0]) showPhotoAutoCheck(incoming[0])
+    photoSuccessMessage.value = `已保存 ${incoming.length} 条 QC 留档到服务器，照片和资料版本已绑定，请人工复核。`
+    void loadServerPhotos()
   } catch (error) {
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      photoErrorMessage.value = `核对未完成：${getApiErrorMessage(error)}`
-    }
-  } finally {
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      isSavingBatchPhoto.value = false
-    }
-  }
+    if (isCurrentFactoryTask(factory, generation)) photoErrorMessage.value = `服务端未确认保存：${getApiErrorMessage(error)}。照片选择已保留，请在当前页面重试。`
+  } finally { if (isCurrentFactoryTask(factory, generation)) isSavingBatchPhoto.value = false }
 }
 
-function getPhotoStatusFromAutoCheck(status: string) {
-  if (status === '核对通过' || status === '发现异常' || status === '需复核' || status === '未识别') {
-    return status
-  }
-
-  return '待复核'
-}
-
-async function rerunAutoCheckForPhoto(photo: CartonMarkPhotoRecord) {
-  photoErrorMessage.value = ''
-  photoSuccessMessage.value = ''
-
-  if (!canReviewPhoto.value) {
-    photoErrorMessage.value = '当前账号无权重新自动核对箱唛，请使用 QC 检验员账号操作。'
-    return
-  }
-
-  const requestedFactoryId = activeFactoryId.value
-  const requestedFactoryGeneration = factoryGeneration
-  if (photo.factoryId !== requestedFactoryId) {
-    photoErrorMessage.value = '实拍记录所属厂区与当前厂区不一致，请重新选择。'
-    return
-  }
-
-  const template = findTemplateForPhoto(photo)
-  if (!template) {
-    photoErrorMessage.value = '没有找到可用于自动核对的服务器箱唛模板。'
-    showPhotoAutoCheck(photo)
-    return
-  }
-
-  const frontPhoto = photo.frontImageBlob ?? photo.imageBlob
-  const sidePhoto = photo.sideImageBlob
-  if (!frontPhoto && !sidePhoto) {
-    photoErrorMessage.value = '当前浏览器没有保存图片原件，请重新上传实拍图片后再自动核对。'
-    showPhotoAutoCheck(photo)
-    return
-  }
-
-  recheckingPhotoId.value = photo.id
-
-  try {
-    const result = frontPhoto && sidePhoto
-      ? await runCartonMarkAutoCheck(template, frontPhoto, sidePhoto)
-      : (await runCartonMarkBatchAutoCheck(
-          template,
-          frontPhoto ? [frontPhoto] : [],
-          sidePhoto ? [sidePhoto] : [],
-        )).items[0]?.result
-    if (!result) {
-      throw new Error('没有生成可用的批量核对结果。')
-    }
-    const checkedPhoto: CartonMarkPhotoRecord = {
-      ...photo,
-      status: getPhotoStatusFromAutoCheck(result.summary.overall_status),
-      autoCheckResult: result,
-      autoCheckErrorMessage: '',
-      autoCheckedAt: new Date().toISOString(),
-    }
-
-    await replaceStoredPhotoRecord(checkedPhoto)
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      showPhotoAutoCheck(checkedPhoto)
-      photoSuccessMessage.value = `${photo.customerName} / ${photo.po} / ${photo.item} 已重新生成自动核对结果。`
-    }
-  } catch (error) {
-    const message = `自动核对未完成：${getApiErrorMessage(error)}`
-    const failedPhoto: CartonMarkPhotoRecord = {
-      ...photo,
-      autoCheckErrorMessage: message,
-      autoCheckedAt: new Date().toISOString(),
-    }
-
-    await replaceStoredPhotoRecord(failedPhoto)
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      showPhotoAutoCheck(failedPhoto)
-      photoErrorMessage.value = message
-    }
-  } finally {
-    if (isCurrentFactoryTask(requestedFactoryId, requestedFactoryGeneration)) {
-      recheckingPhotoId.value = ''
-    }
-  }
-}
+async function rerunAutoCheckForPhoto(photo: CartonMarkPhotoRecord) { await actOnQcPhoto(photo, '重新自动核对') }
 
 function getPhotoStatusClass(status: string) {
   if (status === '核对通过') {
@@ -2495,76 +2265,8 @@ function formatConfidence(confidence: number) {
   return `${Math.round(confidence * 100)}%`
 }
 
-async function deletePhotoRecord(photo: CartonMarkPhotoRecord) {
-  photoErrorMessage.value = ''
-  photoSuccessMessage.value = ''
-
-  if (isWarehouseWorkspace.value || !canReviewPhoto.value) {
-    photoErrorMessage.value = isWarehouseWorkspace.value
-      ? '纸箱部仓管端不能删除 QC 实拍记录，请到 QC 箱唛核验板块操作。'
-      : '当前账号无权删除 QC 实拍记录，请使用 QC 复核账号操作。'
-    return
-  }
-
-  const shouldDelete = typeof window === 'undefined'
-    || window.confirm(`确定删除 ${photo.customerName} / ${photo.po} / ${photo.item} 的这次箱唛实拍记录吗？删除后可重新上传正唛和侧唛。`)
-
-  if (!shouldDelete) return
-
-  deletingPhotoRecordId.value = photo.id
-  const nextPhotoRecords = sortPhotoRecords(allPhotoRecords.value.filter((record) => record.id !== photo.id))
-
-  try {
-    if (photoStorageMode.value === 'indexedDb') {
-      await deletePhotoRecordFromDb(photo.id)
-    } else {
-      writePhotoRecordsToLocalStorage(nextPhotoRecords)
-    }
-  } catch {
-    photoStorageMode.value = 'localStorage'
-    writePhotoRecordsToLocalStorage(nextPhotoRecords)
-  }
-
-  for (const url of [photo.imageUrl, photo.frontImageUrl, photo.sideImageUrl]) {
-    if (url) {
-      revokeImageUrl(url)
-    }
-  }
-
-  allPhotoRecords.value = nextPhotoRecords
-
-  if (comparisonRecord.value?.id === photo.id) {
-    comparisonRecord.value = null
-    autoCheckResult.value = null
-    autoCheckErrorMessage.value = ''
-  }
-
-  photoSuccessMessage.value = `${photo.customerName} / ${photo.po} / ${photo.item} 的实拍记录已删除，可以重新上传正唛和侧唛。`
-  deletingPhotoRecordId.value = ''
-}
-
-async function reviewPhoto(photo: CartonMarkPhotoRecord, status: '核对通过' | '发现异常') {
-  photoErrorMessage.value = ''
-  photoSuccessMessage.value = ''
-
-  if (!canReviewPhoto.value) {
-    photoErrorMessage.value = '当前账号无权核对箱唛，请使用 QC 检验员账号操作。'
-    return
-  }
-
-  const reviewedPhoto: CartonMarkPhotoRecord = {
-    ...photo,
-    status,
-    reviewedAt: new Date().toISOString(),
-    reviewedBy: currentUserName.value,
-  }
-  await replaceStoredPhotoRecord(reviewedPhoto)
-  if (comparisonRecord.value?.id === photo.id) {
-    showPhotoAutoCheck(reviewedPhoto)
-  }
-
-  photoSuccessMessage.value = `${photo.customerName} / ${photo.po} / ${photo.item} 已标记为${status}。`
-}
+async function deletePhotoRecord(photo: CartonMarkPhotoRecord) { await actOnQcPhoto(photo, '作废') }
+async function reviewPhoto(photo: CartonMarkPhotoRecord, status: '核对通过' | '发现异常') { await actOnQcPhoto(photo, status) }
 
 function readPhotoRecordsFromLocalStorage() {
   if (typeof window === 'undefined') return []
@@ -2583,21 +2285,6 @@ function readPhotoRecordsFromLocalStorage() {
   } catch {
     return []
   }
-}
-
-function writePhotoRecordsToLocalStorage(nextRecords: CartonMarkPhotoRecord[]) {
-  if (typeof window === 'undefined') return
-
-  const serializableRecords = nextRecords.map(({
-    imageUrl,
-    imageBlob,
-    frontImageUrl,
-    frontImageBlob,
-    sideImageUrl,
-    sideImageBlob,
-    ...record
-  }) => record)
-  window.localStorage.setItem(PHOTO_LOCAL_STORAGE_KEY, JSON.stringify(serializableRecords))
 }
 
 function openTemplateDb() {
@@ -2638,73 +2325,6 @@ async function readPhotoRecordsFromDb() {
   })
 }
 
-async function savePhotoRecordToDb(record: CartonMarkPhotoRecord) {
-  const db = await openTemplateDb()
-  const { imageUrl, frontImageUrl, sideImageUrl, ...storedRecord } = record
-
-  return new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(PHOTO_STORE_NAME, 'readwrite')
-    transaction.objectStore(PHOTO_STORE_NAME).put(storedRecord)
-
-    transaction.oncomplete = () => {
-      db.close()
-      resolve()
-    }
-    transaction.onerror = () => {
-      db.close()
-      reject(transaction.error)
-    }
-  })
-}
-
-async function deletePhotoRecordFromDb(recordId: string) {
-  const db = await openTemplateDb()
-
-  return new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(PHOTO_STORE_NAME, 'readwrite')
-    transaction.objectStore(PHOTO_STORE_NAME).delete(recordId)
-
-    transaction.oncomplete = () => {
-      db.close()
-      resolve()
-    }
-    transaction.onerror = () => {
-      db.close()
-      reject(transaction.error)
-    }
-  })
-}
-
-async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
-  const db = await openTemplateDb()
-  const { imageUrl, frontImageUrl, sideImageUrl, ...storedRecord } = record
-
-  return new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(PHOTO_STORE_NAME, 'readwrite')
-    const store = transaction.objectStore(PHOTO_STORE_NAME)
-    const request = store.get(record.id)
-
-    request.onsuccess = () => {
-      const existingRecord = request.result as StoredCartonMarkPhotoRecord | undefined
-      store.put({
-        ...existingRecord,
-        ...storedRecord,
-        imageBlob: storedRecord.imageBlob ?? existingRecord?.imageBlob,
-        frontImageBlob: storedRecord.frontImageBlob ?? existingRecord?.frontImageBlob,
-        sideImageBlob: storedRecord.sideImageBlob ?? existingRecord?.sideImageBlob,
-      })
-    }
-
-    transaction.oncomplete = () => {
-      db.close()
-      resolve()
-    }
-    transaction.onerror = () => {
-      db.close()
-      reject(transaction.error)
-    }
-  })
-}
 </script>
 
 <template>
@@ -2930,8 +2550,19 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
         </p>
         </form>
 
+        <section v-if="isWarehouseWorkspace && documentComparisonRecord && isManualReview(documentComparisonRecord)" class="order-3 rounded-lg border border-amber-200 bg-white p-6 xl:col-span-2">
+          <h2 class="text-xl font-semibold">单 PDF / 图片审核资料</h2>
+          <p class="mt-2 text-sm">{{ documentComparisonRecord.customerName }} · 合同 {{ documentComparisonRecord.contractNumber }} · ITEM {{ documentComparisonRecord.item }}</p>
+          <p class="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{{ isImageReference(documentComparisonRecord) ? '图片资料供 QC 人工对照和照片留档。' : 'PDF 审核通过后可用于 QC 文字核对。' }}<template v-if="documentComparisonRecord.documentCheckResult?.review_note"> 备注：{{ documentComparisonRecord.documentCheckResult.review_note }}</template></p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button v-for="source in documentComparisonRecord.documentCheckResult?.source_assets" :key="source.id" type="button" class="rounded-lg border px-3 py-2 text-sm" @click="openReviewOriginal(documentComparisonRecord, source.id)">查看原稿：{{ source.file_name }}</button>
+            <button type="button" class="rounded-lg border px-3 py-2 text-sm" @click="openTemplateDocument(documentComparisonRecord, 'print_pdf')">{{ isImageReference(documentComparisonRecord) ? '查看图片合并预览' : '查看 PDF' }}</button>
+            <button v-if="canReleaseTemplate && !documentComparisonRecord.qcReady" type="button" :disabled="isManualReleasing" class="rounded-lg bg-amber-700 px-3 py-2 text-sm text-white disabled:opacity-50" @click="openManualRelease(documentComparisonRecord)">审核通过</button>
+          </div>
+          <p v-if="documentComparisonRecord.manualReleased" class="mt-3 text-sm text-emerald-800">人工审核通过：{{ documentComparisonRecord.manualReleasedByName }} · {{ formatDate(documentComparisonRecord.manualReleasedAt) }}；依据：{{ documentComparisonRecord.manualReleaseReason }}</p>
+        </section>
         <section
-          v-if="isWarehouseWorkspace && documentComparisonRecord"
+          v-if="isWarehouseWorkspace && documentComparisonRecord && !isManualReview(documentComparisonRecord)"
           class="order-3 rounded-lg border border-slate-200 bg-white p-6 xl:col-span-2"
         >
           <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -3125,6 +2756,10 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
         </div>
 
         <div class="mt-6 space-y-4">
+            <div v-if="selectedTemplateForPhoto && isImageReference(selectedTemplateForPhoto)" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              图片资料暂仅支持人工对照。保存照片后请查看原图并复核。
+              <div class="mt-2 flex flex-wrap gap-2"><button v-for="source in selectedTemplateForPhoto.documentCheckResult?.source_assets" :key="source.id" type="button" class="rounded-lg border bg-white px-3 py-2 text-xs" @click="openReviewOriginal(selectedTemplateForPhoto, source.id)">查看原图：{{ source.file_name }}</button></div>
+            </div>
             <div class="grid gap-4 md:grid-cols-[minmax(0,0.38fr)_minmax(0,0.62fr)]">
               <label class="block">
                 <span class="text-sm font-medium text-slate-700">筛选客名</span>
@@ -3180,21 +2815,21 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
             </div>
 
             <div v-else-if="filteredTemplateOptions.length" class="rounded-lg border border-dashed border-blue-200 bg-blue-50/50 px-4 py-4 text-sm text-slate-600">
-              请选择一份已通过纸箱部 Excel–PDF 文字核对的打印 PDF，再上传现场箱唛照片。
+              请选择已核对或审核通过的资料，再上传现场箱唛照片。
             </div>
 
             <div v-else-if="records.length" class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-500">
-              当前客名没有已通过纸箱部 Excel–PDF 文字核对的打印 PDF，请先完成源文件核对。
+              当前客名没有可用资料，请先完成核对或审核。
             </div>
 
             <div v-else class="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-500">
-              当前厂区还没有可流转 QC 的打印 PDF，请联系纸箱部仓管先上传 Excel 与 PDF 并完成内容核对。
+              当前厂区还没有可流转 QC 的资料，请先上传并完成核对或审核。
             </div>
           </div>
 
           <p class="mt-5 rounded-lg border border-dashed border-blue-200 bg-blue-50/50 px-4 py-3 text-xs leading-5 text-slate-600">
-            正唛和侧唛均可一次选择多张；系统会按你选择的类别分别核对，每张图片独立输出结果，无需文件配对。
-            手机可直接拍照，优先使用后置摄像头；再次拍照会追加图片。拍后可旋转、裁剪，点击开始核对才上传。
+            正唛和侧唛均可一次选择多张，每张照片独立留档。PDF 资料会自动核对文字；图片资料请人工对照。
+            手机可直接拍照，优先使用后置摄像头；再次拍照会追加图片。拍后可旋转、裁剪，点击下方按钮才上传。
           </p>
 
           <div class="mt-4 grid gap-4 md:grid-cols-2">
@@ -3526,6 +3161,13 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
             </div>
           </div>
 
+          <div class="mt-4 space-y-2">
+            <p v-if="photoForm.correctsRecordId" class="text-sm font-semibold text-amber-700">整改原记录：{{ photoForm.correctsRecordId }} · 新照片另行留档</p>
+            <label class="block text-sm font-semibold text-slate-700" for="qc-upload-note">{{ photoForm.correctsRecordId ? '整改说明（至少 5 字）' : '现场说明（选填）' }}</label>
+            <textarea id="qc-upload-note" v-model="photoForm.note" :disabled="isSavingBatchPhoto" maxlength="1000" rows="2" class="w-full rounded-lg border border-slate-200 p-3 text-sm" />
+            <button v-if="photoForm.correctsRecordId" type="button" class="text-xs text-slate-500" @click="photoForm.correctsRecordId = ''; photoForm.note = ''">取消整改关联</button>
+            <p class="text-xs text-slate-500">保存到服务器后可跨设备查询。{{ selectedTemplateForPhoto && isImageReference(selectedTemplateForPhoto) ? '图片资料需人工对照。' : '自动核对结果需人工确认。' }}每次最多 20 张、合计 100 MB。</p>
+          </div>
           <p v-if="photoErrorMessage" role="alert" class="mt-4 rounded-lg border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
             {{ photoErrorMessage }}
           </p>
@@ -3555,11 +3197,17 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
             <div>
               <p class="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">QC Results</p>
               <h2 class="mt-2 text-xl font-semibold tracking-tight text-slate-950">核验结果</h2>
-              <p class="mt-1 text-sm text-slate-500">实拍上传记录、自动核对和证据对照集中显示在此区域。</p>
+              <p class="mt-1 text-sm text-slate-500">服务器保存照片原件、资料版本和复核历史；本机旧记录仅供查阅。</p>
             </div>
             <span class="w-fit rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">{{ photoRecords.length }} 条实拍</span>
           </div>
 
+          <div class="mt-4 flex flex-wrap items-center gap-2">
+            <input v-model="qcContractFilter" aria-label="查询 QC 合同号" maxlength="128" placeholder="合同号（完整）" class="min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-sm">
+            <input v-model="qcItemFilter" aria-label="查询 QC 货号" maxlength="128" placeholder="货号（完整）" class="min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-sm">
+            <button type="button" :disabled="loadingServerPhotos" class="rounded-lg border border-blue-200 px-3 py-2 text-sm text-blue-700" @click="loadServerPhotos()">{{ loadingServerPhotos ? '查询中' : '查询留档' }}</button>
+            <button type="button" class="text-xs text-slate-500" @click="qcContractFilter = ''; qcItemFilter = ''; loadServerPhotos()">查看全部</button>
+          </div>
           <div v-if="photoRecords.length" class="mt-5 space-y-3">
             <div class="flex items-center justify-between gap-3">
               <h3 class="text-sm font-semibold text-slate-950">实拍图片记录</h3>
@@ -3610,7 +3258,11 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 <p class="mt-1 truncate text-xs text-slate-500">
                   正唛：{{ photo.frontFileName ?? photo.fileName }} · 侧唛：{{ photo.sideFileName ?? '未上传' }}
                 </p>
-                <p class="mt-1 text-xs text-slate-500">第 {{ photo.sequence }} 次上传 · {{ formatDate(photo.uploadedAt) }}</p>
+                <p class="mt-1 text-xs font-semibold text-blue-700">{{ photo.server ? `服务器留档 · 资料 V${photo.server.template_version} · ${photo.server.created_by_name}` : '历史本机记录 · 未上传服务器' }}</p>
+                <p class="mt-1 text-xs text-slate-500">{{ formatDate(photo.uploadedAt) }} · {{ photo.id }}</p>
+                <p v-if="photo.server?.note" class="mt-1 text-xs text-slate-600">说明：{{ photo.server.note }}</p>
+                <p v-if="photo.server?.corrects_record_id" class="mt-1 text-xs text-amber-700">整改原记录：{{ photo.server.corrects_record_id }}</p>
+                <p v-for="correction in allPhotoRecords.filter(p => p.server?.corrects_record_id === photo.id)" :key="correction.id" class="mt-1 text-xs text-blue-700">整改记录：{{ correction.id }} · {{ correction.status }}</p>
                 <p v-if="photo.reviewedAt" class="mt-1 text-xs text-slate-500">
                   核对：{{ photo.reviewedBy }} · {{ formatDate(photo.reviewedAt) }}
                 </p>
@@ -3630,7 +3282,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     查看核验
                   </button>
                   <button
-                    v-if="canReviewPhoto"
+                    v-if="canReviewPhoto && photo.server && photo.status !== '已作废' && !isImageQcRecord(photo)"
                     type="button"
                     :disabled="recheckingPhotoId === photo.id"
                     class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
@@ -3644,7 +3296,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     {{ recheckingPhotoId === photo.id ? '重算中' : '重新自动核对' }}
                   </button>
                   <button
-                    v-if="canReviewPhoto"
+                    v-if="canReviewPhoto && photo.server && photo.status !== '已作废'"
                     type="button"
                     class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-green-200 bg-white px-3 text-xs font-semibold text-green-700 transition hover:bg-green-50"
                     @click="reviewPhoto(photo, '核对通过')"
@@ -3653,7 +3305,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     核对通过
                   </button>
                   <button
-                    v-if="canReviewPhoto"
+                    v-if="canReviewPhoto && photo.server && photo.status !== '已作废'"
                     type="button"
                     class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 text-xs font-semibold text-red-700 transition hover:bg-red-50"
                     @click="reviewPhoto(photo, '发现异常')"
@@ -3662,18 +3314,22 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                     标记异常
                   </button>
                   <button
+                    v-if="canReviewPhoto && photo.server && photo.status !== '已作废'"
                     type="button"
-                    :disabled="deletingPhotoRecordId === photo.id"
+                    :disabled="!!recheckingPhotoId"
                     class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
                     @click="deletePhotoRecord(photo)"
                   >
                     <Trash2 class="size-3.5" aria-hidden="true" />
-                    {{ deletingPhotoRecordId === photo.id ? '删除中' : '删除记录' }}
+                    作废留档
                   </button>
+                  <button v-if="canUploadPhoto && photo.server && photo.status === '发现异常'" type="button" class="rounded-lg border border-amber-200 bg-white px-3 py-1 text-xs font-semibold text-amber-700" @click="startCorrection(photo)">提交整改照片</button>
                 </div>
               </div>
             </article>
           </div>
+
+          <button v-if="allPhotoRecords.filter(p => p.server).length < serverPhotoTotal" type="button" :disabled="loadingServerPhotos" class="mt-4 rounded-lg border border-slate-200 px-4 py-2 text-sm" @click="loadServerPhotos(true)">{{ loadingServerPhotos ? '读取中' : '加载更多服务器记录' }}</button>
 
           <section
             v-if="comparisonRecord"
@@ -3682,12 +3338,13 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p class="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">AUTO CHECK</p>
-                <h3 class="mt-2 text-lg font-semibold tracking-tight text-slate-950">自动核对结果</h3>
+                <h3 class="mt-2 text-lg font-semibold tracking-tight text-slate-950">{{ isImageQcRecord(comparisonRecord) ? '图片资料人工核验' : '自动核对结果' }}</h3>
                 <p class="mt-1 text-xs text-slate-600">
                   {{ comparisonRecord.customerName }} · 合同：{{ comparisonRecord.contractNumber || '未填写' }} · ITEM：{{ comparisonRecord.item }}
+                  <span v-if="comparisonRecord.server"> · 留档资料 V{{ comparisonRecord.server.template_version }} · {{ comparisonRecord.status }}</span>
                 </p>
-                <p v-if="comparisonRecord.autoCheckedAt" class="mt-1 text-xs text-slate-500">
-                  自动核对：{{ formatDate(comparisonRecord.autoCheckedAt) }}
+                <p v-if="viewedAutoTime" class="mt-1 text-xs text-slate-500">
+                  {{ viewedAutoRevision ? `正在查看第 ${viewedAutoRevision} 次自动核对` : '自动核对' }}：{{ formatDate(viewedAutoTime) }}
                 </p>
               </div>
               <div class="flex flex-wrap items-center gap-2">
@@ -3709,6 +3366,30 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   {{ downloadingDocumentKey === `${comparisonTemplate.id}:print_pdf` ? '读取中' : (autoCheckMatchedPage ? `打开 PDF 第 ${autoCheckMatchedPage} 页` : '打开 PDF 模板') }}
                 </button>
               </div>
+            </div>
+
+            <div v-if="comparisonRecord.server" class="mt-4 space-y-3 rounded-lg border border-slate-200 p-4">
+              <h4 class="text-sm font-semibold text-slate-900">留档与复核历史</h4>
+              <div v-if="comparisonRecord.server.template_snapshot.review_method === 'manual_sources'" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+                <p>本次资料已经内部审核通过。{{ isImageQcRecord(comparisonRecord) ? '图片仅供人工对照。' : 'PDF 用于文字核对。' }}</p>
+                <p class="mt-1">审核人：{{ comparisonRecord.server.template_snapshot.manual_released_by_name }} · {{ comparisonRecord.server.template_snapshot.manual_released_at }}</p>
+                <div class="mt-2 flex flex-wrap gap-2"><button v-for="source in comparisonReviewSources" :key="source.id" type="button" class="rounded-lg border bg-white px-3 py-2 text-xs" @click="openQcReviewOriginal(comparisonRecord, source.id)">查看当时原稿：{{ source.file_name }}</button></div>
+              </div>
+              <div v-for="event in comparisonRecord.server.events" :key="event.revision" class="border-b border-slate-100 pb-2 text-xs text-slate-600">
+                <p>第 {{ event.revision }} 次 · {{ isImageQcRecord(comparisonRecord) && event.revision === 1 && event.kind === 'REVIEW' ? '照片留档' : event.kind === 'AUTO_CHECK' ? '自动核对' : event.kind === 'VOID' ? '作废' : '人工复核' }} · {{ event.status }} · {{ event.actor_name }} · {{ formatDate(event.created_at) }}</p>
+                <p v-if="event.note" class="mt-1">{{ event.note }}</p>
+                <p v-if="event.error" class="mt-1 text-amber-700">{{ event.error }}</p>
+                <button v-if="event.result" type="button" class="mt-1 text-blue-700" @click="autoCheckResult = event.result; autoCheckErrorMessage = event.error; viewedAutoRevision = event.revision; viewedAutoTime = event.created_at">查看第 {{ event.revision }} 次自动核对结果</button>
+              </div>
+              <template v-if="canReviewPhoto && comparisonRecord.status !== '已作废'">
+                <label for="qc-review-note" class="block text-sm font-semibold text-slate-700">复核说明（异常、作废至少 5 字）</label>
+                <textarea id="qc-review-note" v-model="reviewNote" maxlength="1000" rows="2" class="w-full rounded-lg border border-slate-200 p-3 text-sm" />
+                <div class="flex flex-wrap gap-2">
+                  <button type="button" :disabled="!!recheckingPhotoId" class="rounded-lg border border-green-200 px-3 py-2 text-sm text-green-700" @click="reviewPhoto(comparisonRecord, '核对通过')">确认核对通过</button>
+                  <button type="button" :disabled="!!recheckingPhotoId" class="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-700" @click="reviewPhoto(comparisonRecord, '发现异常')">确认发现异常</button>
+                  <button type="button" :disabled="!!recheckingPhotoId" class="rounded-lg border border-slate-200 px-3 py-2 text-sm" @click="deletePhotoRecord(comparisonRecord)">确认作废留档</button>
+                </div>
+              </template>
             </div>
 
             <div
@@ -3743,7 +3424,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               v-else-if="!autoCheckResult"
               class="mt-4 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-4 text-sm text-slate-500"
             >
-              自动核对结果尚未生成，请选择 PDF 模板并上传正唛、侧唛两张照片后开始自动核对。
+              {{ isImageQcRecord(comparisonRecord) ? '照片已留档。请打开当时原图，与现场照片人工对照后确认核对通过或标记异常。' : '自动核对结果尚未生成，请选择 PDF 模板并上传现场照片后开始自动核对。' }}
             </div>
 
             <div
@@ -3796,7 +3477,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                         {{ getLeftLabelFeedbackBadge(frontLeftLabelFeedback) }}
                       </span>
                       <button
-                        v-if="frontLeftLabelFeedback.total === 0"
+                        v-if="frontLeftLabelFeedback.total === 0 && comparisonRecord.server && canReviewPhoto && comparisonRecord.status !== '已作废'"
                         type="button"
                         :disabled="recheckingPhotoId === comparisonRecord.id"
                         class="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -3875,7 +3556,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                         {{ getLeftLabelFeedbackBadge(sideLeftLabelFeedback) }}
                       </span>
                       <button
-                        v-if="sideLeftLabelFeedback.total === 0"
+                        v-if="sideLeftLabelFeedback.total === 0 && comparisonRecord.server && canReviewPhoto && comparisonRecord.status !== '已作废'"
                         type="button"
                         :disabled="recheckingPhotoId === comparisonRecord.id"
                         class="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -4038,7 +3719,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
           <div>
             <h2 class="text-xl font-semibold tracking-tight text-slate-950">{{ isWarehouseWorkspace ? '客户箱唛集合' : '已上传箱唛资料库' }}</h2>
             <p class="mt-1 text-sm text-slate-500">
-              {{ isWarehouseWorkspace ? '按客户查看客人 Excel、打印 PDF、自动核对与人工放行记录。' : '只选用自动核对通过或已人工审核放行的打印 PDF，与 QC 现场照片核验' }}
+              {{ isWarehouseWorkspace ? '按客户查看客人 Excel、打印 PDF、自动核对与人工放行记录。' : '选用已确认资料：PDF 支持文字核对，图片资料供人工对照。' }}
             </p>
           </div>
           <input
@@ -4128,10 +3809,10 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   <template v-else>合同：{{ record.contractNumber || '未填写' }} · ITEM：{{ record.item }}</template>
                 </p>
                 <p v-if="isWarehouseWorkspace" class="mt-2 truncate text-sm text-slate-500">
-                  客人 Excel：{{ record.excelFileName || '旧资料未上传' }}<template v-if="record.excelFileSize"> · {{ formatFileSize(record.excelFileSize) }}</template>
+                  {{ isManualReview(record) ? `人工审核资料：${record.documentCheckResult?.source_assets?.map(source => source.file_name).join('、')}` : `客人 Excel：${record.excelFileName || '旧资料未上传'}` }}<template v-if="record.excelFileSize"> · {{ formatFileSize(record.excelFileSize) }}</template>
                 </p>
                 <p class="truncate text-sm text-slate-500" :class="isWarehouseWorkspace ? 'mt-1' : 'mt-2'">
-                  打印 PDF：{{ record.fileName }} · {{ formatFileSize(record.fileSize) }}
+                  {{ isImageReference(record) ? '图片合并预览' : isManualReview(record) ? 'QC 参考 PDF' : '打印 PDF' }}：{{ record.fileName }} · {{ formatFileSize(record.fileSize) }}
                 </p>
               </div>
 
@@ -4142,7 +3823,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   class="rounded-full border px-3 py-1 font-semibold"
                   :class="record.documentCheckResult ? getDocumentCheckStatusClass(record.documentCheckResult.summary.overall_status) : 'border-slate-200 bg-slate-100 text-slate-600'"
                 >
-                  {{ record.documentCheckResult?.summary.overall_status || '待补 Excel 核对' }}
+                  {{ isManualReview(record) ? record.manualReleased ? '人工审核通过' : '待人工审核' : record.documentCheckResult?.summary.overall_status || '待补 Excel 核对' }}
                 </span>
                 <span
                   v-if="record.manualReleased"
@@ -4153,14 +3834,15 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                 <button
                   v-if="canReleaseTemplate && !record.qcReady"
                   type="button"
+                  :disabled="isManualReleasing"
                   class="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 font-semibold text-amber-800 transition hover:bg-amber-100"
                   @click="openManualRelease(record)"
                 >
                   <CheckCircle2 class="size-4" aria-hidden="true" />
-                  人工审核放行
+                  {{ isManualReview(record) ? isManualReleasing && manualReleaseRecord?.id === record.id ? '审核中…' : '审核通过' : '人工审核放行' }}
                 </button>
                 <button
-                  v-if="isWarehouseWorkspace"
+                  v-if="isWarehouseWorkspace && record.excelFileName"
                   type="button"
                   :disabled="downloadingDocumentKey === `${record.id}:source_excel`"
                   class="inline-flex items-center gap-1 rounded-lg border border-teal-200 bg-white px-3 py-2 font-semibold text-teal-700 transition hover:bg-teal-50"
@@ -4176,7 +3858,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
                   @click="openTemplateDocument(record, 'print_pdf')"
                 >
                   <FileText class="size-4" aria-hidden="true" />
-                  {{ downloadingDocumentKey === `${record.id}:print_pdf` ? '读取中' : '打印 PDF' }}
+                  {{ downloadingDocumentKey === `${record.id}:print_pdf` ? '读取中' : isImageReference(record) ? '图片合并预览' : isManualReview(record) ? 'QC 参考 PDF' : '打印 PDF' }}
                 </button>
                 <button
                   v-if="isWarehouseWorkspace"
@@ -4211,7 +3893,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
               class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800"
             >
               <p class="font-semibold">人工放行：{{ record.manualReleasedByName }} · {{ formatDate(record.manualReleasedAt) }}</p>
-              <p class="mt-1">自动核对状态：{{ record.manualReleaseSourceStatus || record.checkStatus }}；理由：{{ record.manualReleaseReason }}</p>
+              <p v-if="!isManualReview(record)" class="mt-1">自动核对状态：{{ record.manualReleaseSourceStatus || record.checkStatus }}；理由：{{ record.manualReleaseReason }}</p>
             </div>
           </article>
         </div>
@@ -4224,7 +3906,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
       </section>
     </div>
     <div
-      v-if="manualReleaseRecord"
+      v-if="manualReleaseRecord && !isManualReview(manualReleaseRecord)"
       class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"
       role="presentation"
       @click.self="closeManualRelease"
@@ -4271,7 +3953,7 @@ async function savePhotoRecordSnapshotToDb(record: CartonMarkPhotoRecord) {
           />
         </label>
         <div class="mt-1 flex items-start justify-between gap-3 text-xs">
-          <p class="text-slate-500">审核人：{{ currentUserName }}；系统将记录理由、时间和原自动核对状态。</p>
+          <p class="text-slate-500">审核人：{{ currentUserName }}；系统记录理由和审核时间。</p>
           <span class="shrink-0 text-slate-400">{{ manualReleaseReason.length }}/500</span>
         </div>
         <p v-if="manualReleaseError" role="alert" class="mt-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
