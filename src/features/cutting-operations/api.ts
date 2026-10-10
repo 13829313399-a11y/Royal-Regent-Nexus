@@ -11,7 +11,7 @@ export interface BomData { name: string; item_no: string; style: string; color: 
 export type MasterData = MaterialData | ResourceData | BomData
 export interface MasterRecord { id: string; factory_id: string; kind: Kind; code: string; version: number; status: 'active' | 'inactive' | 'draft' | 'published'; data: MasterData; actor_id: string; created_at: string; reason: string; material_references?: Record<string, { code: string; name: string }> }
 export interface MasterPage { data: MasterRecord[]; total: number; page: number; page_size: number }
-export interface Access { enabled: boolean; schema_ready: boolean; orders_schema_ready?: boolean; permissions: string[] }
+export interface Access { enabled: boolean; schema_ready: boolean; orders_schema_ready?: boolean; reporting_schema_ready?: boolean; permissions: string[] }
 export interface Command { factory_id: typeof CUTTING_FACTORY; operation_id: string; expected_version: number; reason: string }
 export interface SaveCommand extends Command { kind: Kind; code: string; data: MasterData }
 export interface StateCommand extends Command { status: 'active' | 'inactive' | 'published' }

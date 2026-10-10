@@ -22,6 +22,8 @@ export const cuttingOperationsRoutes: RouteRecordRaw[] = [{
       path: workspace.path,
       component: workspace.path === 'master'
         ? () => import('./CuttingMasterPage.vue')
+        : workspace.path === 'reporting'
+        ? () => import('./CuttingReportingPage.vue')
         : workspace.path === 'planning' || workspace.path === 'materials'
         ? () => import('./CuttingOrdersPage.vue')
         : () => import('./CuttingWorkspacePage.vue'),

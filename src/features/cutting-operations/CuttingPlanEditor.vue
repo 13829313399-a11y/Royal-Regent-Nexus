@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button } from '@/components/ui/button'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { cuttingApi, errorMessage, type BomData, type MasterRecord, type ResourceData } from './api'
 import CuttingDailyPlanTools from './CuttingDailyPlanTools.vue'
@@ -69,18 +70,18 @@ function materialName(row: number) {
 <template>
   <section class="plan-editor">
     <p>订单目标 {{ data.target_sets }} 套；下列任务按完整配套套数拆分。先安排部分部件的裁片计划在后续填数阶段衔接。</p>
-    <div class="plan-tools"><label>执行方编码／名称 <input v-model="query" maxlength="80" /></label><button type="button" :disabled="busy" @click="search()">查本厂／外发资源</button>
-      <button type="button" :disabled="busy || page <= 1" @click="search(page-1)">资源上一页</button><button type="button" :disabled="busy || page*50 >= total" @click="search(page+1)">资源下一页</button>
+    <div class="plan-tools"><label>执行方编码／名称 <input v-model="query" maxlength="80" /></label><Button variant="outline" type="button" :disabled="busy" @click="search()">查本厂／外发资源</Button>
+      <Button variant="outline" type="button" :disabled="busy || page <= 1" @click="search(page-1)">资源上一页</Button><Button variant="outline" type="button" :disabled="busy || page*50 >= total" @click="search(page+1)">资源下一页</Button>
     </div>
     <p v-if="error" role="alert">{{ error }}</p>
-    <div class="plan-tools"><button v-for="r in resources" :key="r.id" type="button" @click="add(r)">增加任务：{{ r.code }} · {{ r.data.name }} V{{ r.version }}</button></div>
-    <div class="plan-tools"><button v-for="r in resources.filter(r => tasks.some(t => t.resource_id === r.id && t.resource_version !== r.version))" :key="r.id" type="button" @click="tasks.filter(t => t.resource_id === r.id).forEach(t => { t.resource_version = r.version })">采用 {{ r.data.name }} 最新资料／日历 V{{ r.version }}</button></div>
+    <div class="plan-tools"><Button variant="outline" v-for="r in resources" :key="r.id" type="button" @click="add(r)">增加任务：{{ r.code }} · {{ r.data.name }} V{{ r.version }}</Button></div>
+    <div class="plan-tools"><Button variant="outline" v-for="r in resources.filter(r => tasks.some(t => t.resource_id === r.id && t.resource_version !== r.version))" :key="r.id" type="button" @click="tasks.filter(t => t.resource_id === r.id).forEach(t => { t.resource_version = r.version })">采用 {{ r.data.name }} 最新资料／日历 V{{ r.version }}</Button></div>
     <p v-if="!tasks.length">先选择有效执行方，建立本厂或外发任务。</p>
     <label v-for="old in missingOriginalTasks" :key="old.task_id">取消原任务「{{ old.name }}」及前置要求的依据 <input v-model="removedTaskReasons[old.task_id]" required minlength="4" maxlength="500" /></label>
     <article v-for="(task, index) in tasks" :key="task.task_id" class="plan-task">
       <h4>执行任务 {{ index+1 }}</h4><label>任务名称 <input v-model="task.name" required maxlength="120" /></label>
       <p>执行方：{{ resourceFor(task)?.data.name ?? '请查询当前资料' }} · V{{ task.resource_version }}；更换执行方保留任务及前置要求，实际凭据须重新核对。</p>
-      <div class="plan-tools"><button v-for="r in resources" :key="r.id" type="button" :disabled="r.id === task.resource_id && r.version === task.resource_version" @click="replaceResource(task,r)">替换为：{{ r.data.name }} V{{ r.version }}</button></div>
+      <div class="plan-tools"><Button variant="outline" v-for="r in resources" :key="r.id" type="button" :disabled="r.id === task.resource_id && r.version === task.resource_version" @click="replaceResource(task,r)">替换为：{{ r.data.name }} V{{ r.version }}</Button></div>
       <label>任务目标套数 <input v-model.number="task.target_sets" type="number" min="1" max="1000000000" step="1" required /></label>
       <label>计划日期依据 <select v-model="task.date_basis"><option value="estimated">提前预排（采购预计交期）</option><option value="actual">实际核定（实际领料与就绪）</option></select></label>
       <label>供数准备工作日 <input v-model.number="task.preparation_workdays" type="number" min="0" max="365" step="1" required /></label>
@@ -106,10 +107,13 @@ function materialName(row: number) {
       </template>
       <h4>每日计划供数（完整套数）</h4>
       <CuttingDailyPlanTools :task="task" :calendar="calendarFor(task)" :sources="tasks" />
-      <div v-for="(day, i) in task.days" :key="i" class="plan-tools"><label>生产日期 <input v-model="day.day" type="date" required /></label><label>计划套数 <input v-model.number="day.sets" type="number" min="1" max="1000000000" step="1" required /></label><button type="button" @click="task.days.splice(i, 1)">移除此日</button></div>
-      <div class="plan-tools"><button type="button" @click="task.days.push({ day: '', sets: 1 })">增加日计划</button><button type="button" @click="remove(index)">移除任务</button></div>
+      <div v-for="(day, i) in task.days" :key="i" class="plan-tools"><label>生产日期 <input v-model="day.day" type="date" required /></label><label>计划套数 <input v-model.number="day.sets" type="number" min="1" max="1000000000" step="1" required /></label><Button variant="outline" type="button" @click="task.days.splice(i, 1)">移除此日</Button></div>
+      <div class="plan-tools"><Button variant="outline" type="button" @click="task.days.push({ day: '', sets: 1 })">增加日计划</Button><Button variant="outline" type="button" @click="remove(index)">移除任务</Button></div>
       <p>只有当前裁剪必需料参与最早供数推算，其他辅料仍在采购交期区跟进。日历、工作日及数量由服务端核对；保存后查看计算完成期。未排足显示“计划未排完”。</p>
     </article>
   </section>
 </template>
-<style scoped>.plan-task { border: 1px solid #cbd5e1; padding: 1rem; border-radius: 8px; margin-top: 1rem; display: grid; gap: .75rem; }.plan-tools { display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0; }.plan-editor input,.plan-editor textarea { border: 1px solid #cbd5e1; border-radius: 6px; padding: .4rem; max-width: 100%; }.plan-editor label { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }.plan-editor button { border: 1px solid #a7c7c4; border-radius: 6px; padding: .4rem .7rem; color: #0f766e; background: #f0fdfa; cursor: pointer; }.plan-editor [role=alert] { color: #b91c1c; }</style>
+<style scoped>
+.plan-task { border: 1px solid var(--border); padding: 16px; border-radius: var(--radius); margin-top: 16px; display: grid; gap: 16px; min-width: 0; }
+.plan-tools { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+</style>

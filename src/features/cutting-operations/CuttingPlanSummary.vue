@@ -7,7 +7,7 @@ defineProps<{ plan: ProductionPlan; title: string; stale?: boolean }>()
     <h3>{{ title }} · V{{ plan.version }}</h3>
     <p v-if="stale" role="alert">依据已变更，此计划待复核；请重新编制并发布，不作为当前执行依据。</p>
     <p>已分配 {{ plan.allocated_sets }} 套 · 未分配 {{ plan.unallocated_sets }} 套</p>
-    <div class="cutting-table-scroll"><table><thead><tr><th>任务</th><th>执行方</th><th>目标套数</th><th>已排／未排</th><th>预计最早供数</th><th>实际核定最早供数</th><th>日期依据</th><th>首次计划供数</th><th>计划完成期</th></tr></thead><tbody>
+    <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>任务</th><th>执行方</th><th>目标套数</th><th>已排／未排</th><th>预计最早供数</th><th>实际核定最早供数</th><th>日期依据</th><th>首次计划供数</th><th>计划完成期</th></tr></thead><tbody>
       <tr v-for="task in plan.tasks" :key="task.task_id"><td>{{ task.name }}</td><td>{{ task.resource.data.name }} · {{ 'execution' in task.resource.data && task.resource.data.execution === 'outsourced' ? '外发裁剪' : '本厂裁剪' }}</td><td>{{ task.target_sets }}</td><td>{{ task.planned_sets }} / {{ task.unplanned_sets }}</td><td>{{ task.estimated_supply_date ?? '预计条件待补齐' }}</td><td>{{ task.actual_supply_date ?? '实际条件待核定' }}</td><td>{{ task.date_basis === 'actual' ? (task.actual_review_pending ? '实际核定 · 条件待补齐' : '实际核定') : '提前预排 · 实际待核定' }}</td><td>{{ task.first_supply_date ?? '未编排' }}</td><td>{{ task.completion_date ?? '计划未排完' }}</td></tr>
     </tbody></table></div>
     <details v-for="task in plan.tasks" :key="task.task_id"><summary>{{ task.name }} · 日计划与依据</summary>
@@ -27,4 +27,4 @@ defineProps<{ plan: ProductionPlan; title: string; stale?: boolean }>()
     <ul v-if="plan.removed_task_reasons"><li v-for="(reason,id) in plan.removed_task_reasons" :key="id">取消原任务依据：{{ reason }}</li></ul>
   </section>
 </template>
-<style scoped>.plan-summary { border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: .5rem; }.plan-summary [role=alert] { color: #b91c1c; }</style>
+<style scoped>.plan-summary { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: .5rem; }.plan-summary [role=alert] { color: var(--destructive); }</style>

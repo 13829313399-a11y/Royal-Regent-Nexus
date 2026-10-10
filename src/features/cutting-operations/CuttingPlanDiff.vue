@@ -34,6 +34,6 @@ const changes = computed(() => {
 })
 </script>
 <template><section class="plan-diff"><h4>与当前发布计划 V{{ previous.version }} 的差异</h4><p>核对后保存／发布新版本，原计划与首次基准保留。</p>
-  <div v-if="changes.length" class="cutting-table-scroll"><table><thead><tr><th>任务</th><th>变更项</th><th>原内容</th><th>本次内容</th></tr></thead><tbody><tr v-for="(r,i) in changes" :key="i"><td>{{ r.task }}</td><td>{{ r.field }}</td><td>{{ r.before }}</td><td>{{ r.after }}</td></tr></tbody></table></div>
+  <div v-if="changes.length" class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>任务</th><th>变更项</th><th>原内容</th><th>本次内容</th></tr></thead><tbody><tr v-for="(r,i) in changes" :key="i"><td>{{ r.task }}</td><td>{{ r.field }}</td><td>{{ r.before }}</td><td>{{ r.after }}</td></tr></tbody></table></div>
   <p v-else>任务配置未发生变化；订单、BOM及采购依据版本仍须核对。</p>
 </section></template>

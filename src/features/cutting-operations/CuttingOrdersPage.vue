@@ -1,6 +1,11 @@
 <script setup lang="ts">
+import PageHeader from '@/components/common/PageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
+import { ChevronLeft, ChevronRight, ClipboardList, Search } from '@lucide/vue'
+import SectionPanel from '@/components/common/SectionPanel.vue'
+import StatusPill from '@/components/common/StatusPill.vue'
+import { Button } from '@/components/ui/button'
 import { cuttingApi, errorMessage, type Access, type BomData, type MasterRecord, type Command } from './api'
 import { ordersApi, type CuttingOrder, type OrderAction, type OrderCommand, type OrderRevision, type EtaBatch, type DemandInput } from './ordersApi'
 import { CUTTING_FACTORY, type CuttingWorkspace } from './navigation'
@@ -8,6 +13,7 @@ import CuttingWorkspacePage from './CuttingWorkspacePage.vue'
 import CuttingPlanEditor from './CuttingPlanEditor.vue'
 import CuttingPlanSummary from './CuttingPlanSummary.vue'
 import CuttingPlanDiff from './CuttingPlanDiff.vue'
+import CuttingProductionSummary from './CuttingProductionSummary.vue'
 import { taskInput, type PlanTaskInput } from './planning'
 
 defineProps<{ workspace: CuttingWorkspace }>()
@@ -200,24 +206,67 @@ function status(row: CuttingOrder) {
     <CuttingWorkspacePage :workspace="workspace" />
   </template>
   <section v-else class="cutting-page orders-page">
-    <header class="cutting-page-heading"><div><p class="cutting-eyebrow">华康 C / 裁床部</p><h1>{{ workspace.title }}</h1><p>{{ workspace.path === 'materials' ? '采购分批交期与需求跟进' : '订单、工程需求与生产预排' }}</p></div><span class="cutting-status">订单与交期</span></header>
-    <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；实际填数、领料和库存记账在后续阶段接入。</p>
+    <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '采购分批交期与需求跟进' : '订单、工程需求与生产预排'" eyebrow="华康 C / 裁床部"><template #actions><StatusPill label="订单与交期" /></template></PageHeader>
+    <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；每日填数单独登记，领料和库存记账在后续阶段接入。</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="needsLogin" role="alert">登录已失效，请在新标签页重新登录后重试。<a href="/login" target="_blank" rel="noopener">重新登录</a></p>
-    <button v-if="pending" :disabled="saving" @click="save">{{ saving ? '正在保存…' : '重试原操作' }}</button>
-    <button v-if="pending" :disabled="saving" @click="recover">核对保存结果／停止未执行操作</button>
+    <Button variant="outline" v-if="pending" :disabled="saving" @click="save">{{ saving ? '正在保存…' : '重试原操作' }}</Button>
+    <Button variant="outline" v-if="pending" :disabled="saving" @click="recover">核对保存结果／停止未执行操作</Button>
     <template v-if="!needsLogin">
-      <section class="cutting-panel">
-        <h2>{{ workspace.path === 'materials' ? '采购交期' : '订单总台账' }}</h2>
-        <form class="order-toolbar" @submit.prevent="load(1)"><label>订单号／货号 <input v-model="query" maxlength="80" /></label><label>办理状态 <select v-model="statusFilter" aria-label="办理状态筛选"><option value="">全部状态</option><option v-for="(label, value) in statusLabels" :key="value" :value="value">{{ label }}</option></select></label><label v-if="workspace.path === 'planning'">排期状态 <select v-model="planStatusFilter" aria-label="排期状态筛选"><option value="">全部排期</option><option v-for="(label,value) in planStatusLabels" :key="value" :value="value">{{ label }}</option></select></label><button :disabled="loading || saving || !!pending">查询／刷新</button></form>
-        <div class="cutting-table-scroll"><table><thead><tr><th>洋行名</th><th>订单号</th><th>货号</th><th>来源数量</th><th>来源版本</th><th>办理状态</th><th>操作</th></tr></thead><tbody>
-          <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td>{{ row.snapshot.quantity }}</td><td>V{{ row.source_version }}</td><td>{{ status(row) }}<p v-if="workspace.path === 'planning'">{{ row.planning_summary?.states?.map(s => planStatusLabels[s]).join(' · ') }}</p><p v-if="row.expected_date_passed">预计日期已过，实收待核实</p></td><td><button :disabled="saving || !!pending" @click="select(row)">查看</button></td></tr>
-          <tr v-if="!rows.length"><td colspan="7">{{ loading ? '读取中…' : '暂无已下发订单，请由华康C业务在订单中心选择裁床部下发。' }}</td></tr>
-        </tbody></table></div>
-        <div class="order-toolbar"><button :disabled="page <= 1 || loading" @click="load(page-1)">上一页</button><span>第 {{ page }} 页 · 共 {{ total }} 条</span><button :disabled="page*50 >= total || loading" @click="load(page+1)">下一页</button></div>
-      </section>
-      <section v-if="selected" class="cutting-panel">
-        <h2>{{ selected.snapshot.reference_no }} · {{ selected.snapshot.product_no }}</h2>
+      <SectionPanel class="order-ledger min-w-0" :title="workspace.path === 'materials' ? '采购交期' : '订单总台账'">
+        <form class="order-toolbar order-filters" @submit.prevent="load(1)">
+          <label class="order-filter-field">
+            <span>订单号／货号</span>
+            <input v-model="query" class="order-filter-control" maxlength="80" placeholder="输入订单号或货号" />
+          </label>
+          <label class="order-filter-field">
+            <span>办理状态</span>
+            <select v-model="statusFilter" class="order-filter-control" aria-label="办理状态筛选">
+              <option value="">全部状态</option>
+              <option v-for="(label, value) in statusLabels" :key="value" :value="value">{{ label }}</option>
+            </select>
+          </label>
+          <label v-if="workspace.path === 'planning'" class="order-filter-field">
+            <span>排期状态</span>
+            <select v-model="planStatusFilter" class="order-filter-control" aria-label="排期状态筛选">
+              <option value="">全部排期</option>
+              <option v-for="(label,value) in planStatusLabels" :key="value" :value="value">{{ label }}</option>
+            </select>
+          </label>
+          <Button type="submit" class="order-query-button" :disabled="loading || saving || !!pending">
+            <Search aria-hidden="true" />查询／刷新
+          </Button>
+        </form>
+        <div class="order-ledger-grid">
+          <div class="cutting-table-scroll" role="region" aria-label="订单总台账，可横向滚动" tabindex="0">
+            <table class="order-ledger-table" :aria-busy="loading">
+              <caption class="sr-only">{{ workspace.path === 'materials' ? '采购交期' : '订单总台账' }}</caption>
+              <thead><tr><th scope="col">洋行名</th><th scope="col">订单号</th><th scope="col">货号</th><th scope="col" class="order-number">来源数量</th><th scope="col">来源版本</th><th scope="col">办理状态</th><th scope="col" class="order-actions">操作</th></tr></thead>
+              <tbody>
+                <tr v-for="row in rows" :key="row.line_id">
+                  <td>{{ row.snapshot.customer_name }}</td><td class="tabular-nums">{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td>
+                  <td class="order-number tabular-nums">{{ row.snapshot.quantity }}</td><td class="tabular-nums">V{{ row.source_version }}</td>
+                  <td><StatusPill :label="status(row)" compact /><p v-if="workspace.path === 'planning'" class="order-cell-note">{{ row.planning_summary?.states?.map(s => planStatusLabels[s]).join(' · ') }}</p><p v-if="row.expected_date_passed" class="order-cell-note">预计日期已过，实收待核实</p></td>
+                  <td class="order-actions"><Button type="button" variant="outline" size="sm" :disabled="saving || !!pending" @click="select(row)">查看</Button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="!rows.length" class="order-ledger-empty" role="status">
+            <ClipboardList :size="28" aria-hidden="true" />
+            <p class="order-empty-title">{{ loading ? '正在读取订单…' : '暂无订单记录' }}</p>
+            <p>{{ loading ? '请稍候，正在获取订单台账。' : '暂无已下发订单，请由华康C业务在订单中心选择裁床部下发。' }}</p>
+          </div>
+        </div>
+        <nav class="order-pagination" aria-label="订单分页">
+          <p class="tabular-nums" aria-live="polite">第 {{ page }} 页 · 共 {{ total }} 条</p>
+          <div class="order-pagination-actions">
+            <Button type="button" variant="outline" size="sm" :disabled="page <= 1 || loading" @click="load(page-1)"><ChevronLeft aria-hidden="true" />上一页</Button>
+            <Button type="button" variant="outline" size="sm" :disabled="page*50 >= total || loading" @click="load(page+1)">下一页<ChevronRight aria-hidden="true" /></Button>
+          </div>
+        </nav>
+      </SectionPanel>
+      <SectionPanel v-if="selected" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`">
         <p>{{ status(selected) }} · 裁床记录 V{{ selected.current?.version ?? 0 }}</p>
         <p v-if="selected.snapshot.status === 'cancelled'" role="alert">来源订单已取消，仅可签收取消通知及核对旧采购需求。</p>
         <p v-if="selected.needs_receipt" class="cutting-notice">请先签收最新版本。重新签收会重置当前 BOM 和需求链；旧版保留历史，不会自动撤销采购单。</p>
@@ -232,20 +281,21 @@ function status(row: CuttingOrder) {
         <p v-if="data?.bom">已关联 {{ data.bom.code }} V{{ data.bom.version }} · 裁床目标 {{ data.target_sets }} 套 · 数量依据：{{ data.quantity_basis }}</p>
         <div class="order-toolbar" v-if="!action">
           <template v-if="workspace.path === 'planning' && writable && data?.bom && !data.purchase_reconciliation_required">
-            <button v-if="can('plan_write')" @click="edit('plan')">编制任务与日计划</button>
-            <button v-if="can('plan_publish') && data.planning?.draft" :disabled="selected.planning_summary?.draft_stale" @click="edit('plan-publish')">发布生产预排</button>
+            <Button variant="outline" v-if="can('plan_write')" @click="edit('plan')">编制任务与日计划</Button>
+            <Button variant="outline" v-if="can('plan_publish') && data.planning?.draft" :disabled="selected.planning_summary?.draft_stale" @click="edit('plan-publish')">发布生产预排</Button>
           </template>
-          <button v-if="selected.needs_receipt && can('order_receive')" @click="edit('receive')">签收订单版本</button>
-          <button v-if="writable && !data?.requisition && can('bom_write')" @click="edit('bom')">工程关联 BOM</button>
-          <button v-if="writable && data?.bom && !data.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" @click="edit('requisition')">工程提交物料需求</button>
-          <button v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('eta_write') && data.requisition.lines.some(r => r.purchase_mode !== 'no_purchase')" @click="edit('eta')">采购回复分批交期</button>
-          <button v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" @click="edit('withdraw')">工程申请撤回／修订</button>
-          <button v-if="!selected.needs_receipt && data?.purchase_reconciliation_required && can('requisition_reconcile')" @click="edit('reconcile')">采购核对旧需求</button>
+          <Button variant="outline" v-if="selected.needs_receipt && can('order_receive')" @click="edit('receive')">签收订单版本</Button>
+          <Button variant="outline" v-if="writable && !data?.requisition && can('bom_write')" @click="edit('bom')">工程关联 BOM</Button>
+          <Button variant="outline" v-if="writable && data?.bom && !data.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" @click="edit('requisition')">工程提交物料需求</Button>
+          <Button variant="outline" v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('eta_write') && data.requisition.lines.some(r => r.purchase_mode !== 'no_purchase')" @click="edit('eta')">采购回复分批交期</Button>
+          <Button variant="outline" v-if="writable && data?.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" @click="edit('withdraw')">工程申请撤回／修订</Button>
+          <Button variant="outline" v-if="!selected.needs_receipt && data?.purchase_reconciliation_required && can('requisition_reconcile')" @click="edit('reconcile')">采购核对旧需求</Button>
         </div>
         <div v-if="data?.requisition" class="cutting-table-scroll"><table><caption>需求版本 V{{ data.requisition.version }}；无交期批次表示尚待回复</caption><thead><tr><th>需求行／物料</th><th>阶段／部件</th><th>裁剪必需</th><th>理论净用量</th><th>工程需求量</th><th>已回复／待回复</th><th>预计交期批次</th></tr></thead><tbody>
           <tr v-for="r in data.requisition.lines" :key="r.row"><td>{{ r.row + 1 }} · {{ r.material.code }} {{ r.material.name }}</td><td>{{ r.stage }} / {{ r.part_codes.join('、') }}</td><td>{{ r.required_for_cutting ? '是' : '否' }}</td><td>{{ r.theoretical_quantity }} {{ r.unit }}</td><td>{{ r.quantity }} {{ r.unit }}<p v-if="r.purchase_mode === 'no_purchase'">本次不采购：{{ r.no_purchase_reason }}</p></td><td>{{ r.replied_quantity }} / {{ r.awaiting_reply_quantity }} {{ r.unit }}</td><td><p v-for="(b, i) in data.batches.filter(b => b.row === r.row)" :key="i">{{ b.expected_date }} / {{ b.quantity }} {{ r.unit }} / {{ b.supplier }} / {{ b.purchase_reference }}</p><span v-if="r.purchase_mode === 'no_purchase'">无需采购交期</span><span v-else-if="!data.batches.some(b => b.row === r.row)">待回复</span></td></tr>
         </tbody></table></div>
         <template v-if="workspace.path === 'planning' && data?.planning">
+          <CuttingProductionSummary v-if="access?.reporting_schema_ready && selected.current" :key="selected.current.version" :line-id="selected.line_id" />
           <CuttingPlanSummary v-if="data.planning.published" :plan="data.planning.published" title="当前发布计划" :stale="selected.planning_summary?.published_stale" />
           <CuttingPlanSummary v-if="data.planning.draft" :plan="data.planning.draft" title="待发布草稿" :stale="selected.planning_summary?.draft_stale" />
           <details v-if="data.planning.baseline"><summary>首次基准计划</summary><CuttingPlanSummary :plan="data.planning.baseline" title="首次基准" /></details>
@@ -257,12 +307,12 @@ function status(row: CuttingOrder) {
             <CuttingPlanDiff v-if="adjustingPlan && data?.planning?.published" :previous="data.planning.published" :tasks="action === 'plan' ? planTasks : data.planning.draft?.tasks ?? []" :removed-reasons="action === 'plan' ? removedTaskReasons : data.planning.draft?.removed_task_reasons" />
             <p v-if="action === 'plan-publish'">发布当前草稿后形成新计划版本，首次基准和历史调整仍保留。预排不代表物料已可用或允许实际开工。</p>
             <template v-if="action === 'bom'">
-              <div class="order-toolbar"><label>BOM 编码／货号／名称／款式／颜色 <input v-model="bomQuery" maxlength="80" /></label><button type="button" @click="searchBoms()">查找 BOM</button></div>
-              <ul><li v-for="b in bomRows" :key="b.id">{{ b.code }} · {{ b.data.name }} <button type="button" @click="loadVersions(b.id)">查看发布版本</button></li></ul>
-              <div v-if="bomTotal" class="order-toolbar"><button type="button" :disabled="bomPage <= 1" @click="searchBoms(bomPage-1)">BOM 上一页</button><button type="button" :disabled="bomPage*50 >= bomTotal" @click="searchBoms(bomPage+1)">BOM 下一页</button></div>
-              <ul><li v-for="b in versions" :key="b.version">{{ b.code }} V{{ b.version }} · {{ (b.data as BomData).item_no }} · {{ (b.data as BomData).style }} / {{ (b.data as BomData).color }} <button type="button" @click="chosenBom = b">选择此发布版</button></li></ul>
+              <div class="order-toolbar"><label>BOM 编码／货号／名称／款式／颜色 <input v-model="bomQuery" maxlength="80" /></label><Button variant="outline" type="button" @click="searchBoms()">查找 BOM</Button></div>
+              <ul><li v-for="b in bomRows" :key="b.id">{{ b.code }} · {{ b.data.name }} <Button variant="outline" type="button" @click="loadVersions(b.id)">查看发布版本</Button></li></ul>
+              <div v-if="bomTotal" class="order-toolbar"><Button variant="outline" type="button" :disabled="bomPage <= 1" @click="searchBoms(bomPage-1)">BOM 上一页</Button><Button variant="outline" type="button" :disabled="bomPage*50 >= bomTotal" @click="searchBoms(bomPage+1)">BOM 下一页</Button></div>
+              <ul><li v-for="b in versions" :key="b.version">{{ b.code }} V{{ b.version }} · {{ (b.data as BomData).item_no }} · {{ (b.data as BomData).style }} / {{ (b.data as BomData).color }} <Button variant="outline" type="button" @click="chosenBom = b">选择此发布版</Button></li></ul>
               <p v-if="versionId && !versions.length">此页没有发布版本。</p>
-              <div v-if="versionId" class="order-toolbar"><button type="button" :disabled="versionPage <= 1" @click="loadVersions(versionId, versionPage-1)">版本上一页</button><button type="button" :disabled="versionPage*50 >= versionTotal" @click="loadVersions(versionId, versionPage+1)">版本下一页</button></div>
+              <div v-if="versionId" class="order-toolbar"><Button variant="outline" type="button" :disabled="versionPage <= 1" @click="loadVersions(versionId, versionPage-1)">版本上一页</Button><Button variant="outline" type="button" :disabled="versionPage*50 >= versionTotal" @click="loadVersions(versionId, versionPage+1)">版本下一页</Button></div>
               <p>已选择：{{ chosenBom ? `${chosenBom.code} V${chosenBom.version}` : '尚未选择' }}。新发布版本不会自动替换本订单。</p>
               <label>裁床目标套数 <input v-model.number="targetSets" type="number" min="1" max="1000000000" step="1" required /></label>
               <label>数量口径／换算依据 <textarea v-model="quantityBasis" maxlength="500" required placeholder="确认订单数量是否为套；如换算，请填写依据" /></label>
@@ -281,8 +331,8 @@ function status(row: CuttingOrder) {
               <p>保存将形成新的完整交期版本；未覆盖数量仍待回复。删除批次只修订预计交期，不撤销采购单。</p>
               <div v-for="(b, i) in batches" :key="i" class="eta-row">
                 <label>需求行 <select v-model.number="b.row"><option v-for="r in data?.requisition?.lines.filter(r => r.purchase_mode !== 'no_purchase')" :key="r.row" :value="r.row">{{ r.row+1 }} · {{ r.material.code }} {{ r.material.name }} / {{ r.stage }} / {{ r.part_codes.join('、') }} / {{ r.unit }}</option></select></label>
-                <label>批次数量 <input v-model="b.quantity" inputmode="decimal" required /></label><label>预计到料 <input v-model="b.expected_date" type="date" required /></label><label>供应商 <input v-model="b.supplier" maxlength="120" required /></label><label>采购来源单号 <input v-model="b.purchase_reference" maxlength="120" required /></label><button type="button" @click="batches.splice(i, 1)">移除此批次</button>
-              </div><button type="button" @click="addBatch">增加交期批次</button>
+                <label>批次数量 <input v-model="b.quantity" inputmode="decimal" required /></label><label>预计到料 <input v-model="b.expected_date" type="date" required /></label><label>供应商 <input v-model="b.supplier" maxlength="120" required /></label><label>采购来源单号 <input v-model="b.purchase_reference" maxlength="120" required /></label><Button variant="outline" type="button" @click="batches.splice(i, 1)">移除此批次</Button>
+              </div><Button variant="outline" type="button" @click="addBatch">增加交期批次</Button>
             </template>
             <p v-if="action === 'withdraw'">申请后暂停原需求交期办理。无论是否填写过交期，都须由采购确认旧需求处置；核对完成后可修订数量、BOM 并重新提交。</p>
             <template v-if="action === 'reconcile'">
@@ -293,10 +343,10 @@ function status(row: CuttingOrder) {
             <label v-if="adjustingPlan">已发布计划调整原因 <textarea v-model="reason" maxlength="500" required /></label>
             <p v-if="adjustingPlan">本次调整将形成新版本，首次基准和原发布版本保留；发布时带入已保存的调整原因，可核对修改。</p>
             <label v-else-if="action !== 'plan' && action !== 'plan-publish'">本次操作依据 <textarea v-model="reason" maxlength="500" required /></label>
-            <button type="submit">确认保存</button><button type="button" @click="cancel">取消编辑</button>
+            <Button type="submit">确认保存</Button><Button variant="outline" type="button" @click="cancel">取消编辑</Button>
           </fieldset>
         </form>
-        <div class="order-toolbar"><button :disabled="!selected.current" @click="loadHistory()">查看历史版本</button><template v-if="historyTotal"><button :disabled="historyPage <= 1" @click="loadHistory(historyPage-1)">历史上一页</button><span>{{ historyPage }} / {{ Math.ceil(historyTotal/50) }}</span><button :disabled="historyPage*50 >= historyTotal" @click="loadHistory(historyPage+1)">历史下一页</button></template></div>
+        <div class="order-toolbar"><Button variant="outline" :disabled="!selected.current" @click="loadHistory()">查看历史版本</Button><template v-if="historyTotal"><Button variant="outline" :disabled="historyPage <= 1" @click="loadHistory(historyPage-1)">历史上一页</Button><span>{{ historyPage }} / {{ Math.ceil(historyTotal/50) }}</span><Button variant="outline" :disabled="historyPage*50 >= historyTotal" @click="loadHistory(historyPage+1)">历史下一页</Button></template></div>
         <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.actor_id }} · {{ r.reason }}</summary>
           <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 来源数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
           <p>BOM：{{ r.data.bom ? `${r.data.bom.code} V${r.data.bom.version}` : '未关联' }} · 目标 {{ r.data.target_sets ?? '待确认' }} 套 · {{ r.data.quantity_basis }} · {{ r.data.bom_match_basis }}</p>
@@ -307,20 +357,37 @@ function status(row: CuttingOrder) {
           <ul><li v-for="line in r.data.requisition?.lines" :key="line.row">{{ line.row+1 }} · {{ line.material.name }} / {{ line.stage }} · 需求 {{ line.quantity }} {{ line.unit }}<span v-if="line.purchase_mode === 'no_purchase'"> · 本次不采购：{{ line.no_purchase_reason }}</span></li></ul>
           <ul><li v-for="(batch, i) in r.data.batches" :key="i">需求行 {{ batch.row+1 }} · {{ batch.expected_date }} / {{ batch.quantity }} / {{ batch.supplier }} / {{ batch.purchase_reference }}</li></ul>
         </details>
-      </section>
+      </SectionPanel>
     </template>
   </section>
 </template>
 
 <style scoped>
-.order-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; margin: 1rem 0; }
-.orders-page input,.orders-page select,.orders-page textarea { border: 1px solid #cbd5e1; border-radius: 6px; padding: .45rem; background: white; color: #0f172a; max-width: 100%; }
-.orders-page button { border: 1px solid #a7c7c4; border-radius: 6px; padding: .4rem .7rem; color: #0f766e; background: #f0fdfa; cursor: pointer; }
-.orders-page button:disabled { opacity: .5; cursor: default; }
-.orders-page [role=alert] { color: #b91c1c; }
-.order-form { border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem; }
+.order-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: .75rem; margin: 1rem 0; }
+.order-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); align-items: end; gap: 16px; margin: 0 0 20px; }
+.order-filter-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 14px; line-height: 20px; font-weight: 500; }
+.order-filter-control { width: 100%; min-width: 0; height: 36px; border: 1px solid var(--input); border-radius: var(--radius); padding: 6px 10px; background: var(--card); color: var(--foreground); font-size: 14px; font-weight: 400; }
+.order-filter-control::placeholder { color: var(--muted-foreground); }
+.order-query-button { justify-self: start; }
+.order-ledger-grid { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); }
+.order-ledger-table { min-width: 760px; font-size: 14px; line-height: 20px; }
+.order-ledger-table th { padding: 12px 16px; font-size: 12px; font-weight: 600; }
+.order-ledger-table td { padding: 14px 16px; vertical-align: middle; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.order-ledger-table tbody tr:last-child td { border-bottom: 0; }
+.order-ledger-table tbody tr:hover { background: var(--muted); }
+.order-ledger-table .order-number, .order-ledger-table .order-actions { text-align: right; }
+.order-cell-note { margin-top: 6px; color: var(--muted-foreground); font-size: 12px; line-height: 18px; }
+.order-ledger-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 20px; text-align: center; color: var(--muted-foreground); font-size: 14px; line-height: 22px; }
+.order-empty-title { color: var(--foreground); font-weight: 600; }
+.order-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; color: var(--muted-foreground); font-size: 13px; }
+.order-pagination-actions { display: flex; align-items: center; gap: 8px; }
+@media (max-width: 639px) {
+  .order-filter-control { height: 44px; }
+  .order-ledger :deep([data-slot='button']) { min-height: 44px; }
+  .order-query-button { width: 100%; }
+}
+.order-form { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: 1rem; }
 .order-form fieldset { border: 0; display: grid; gap: 1rem; padding: 0; }
-.order-form label { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
-.eta-row { display: flex; flex-wrap: wrap; gap: .75rem; padding: .75rem; background: #f8fafc; }
+.eta-row { display: flex; flex-wrap: wrap; gap: .75rem; padding: .75rem; background: var(--muted); }
 pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 </style>
