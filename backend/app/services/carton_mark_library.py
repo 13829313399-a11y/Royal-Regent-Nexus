@@ -189,11 +189,11 @@ def _template_out(
 ) -> CartonMarkTemplateOut:
     excel = documents.get("source_excel")
     pdf = documents.get("print_pdf")
-    if excel is None or pdf is None:
-        raise RuntimeError(f"箱唛资料 {template.id} 的持久化文档不完整")
     check_result = CartonMarkDocumentCheckResponse.model_validate_json(
         template.check_result_json
     )
+    if pdf is None or (excel is None and check_result.review_method != "manual_sources"):
+        raise RuntimeError(f"箱唛资料 {template.id} 的持久化文档不完整")
     return CartonMarkTemplateOut(
         id=template.id,
         factory_id=template.factory_id,
@@ -204,8 +204,8 @@ def _template_out(
         version=template.version,
         check_status=template.check_status,
         check_result=check_result,
-        excel_file_name=excel.file_name,
-        excel_file_size=excel.size_bytes,
+        excel_file_name=excel.file_name if excel else "",
+        excel_file_size=excel.size_bytes if excel else 0,
         pdf_file_name=pdf.file_name,
         pdf_file_size=pdf.size_bytes,
         created_at=template.created_at,
@@ -267,19 +267,30 @@ def _persist_carton_mark_template(
     excel_bytes: bytes, pdf_file_name: str, pdf_bytes: bytes,
     check_result: CartonMarkDocumentCheckResponse,
     supplier_context: dict | None = None,
+    commit: bool = True,
 ) -> CartonMarkTemplateOut:
     """Persist a pair after the caller has validated its metadata and source boundary."""
     factory_id = require_carton_factory(factory_id)
     customer_name = _normalize_required(customer_name, "客户名称", 255)
     item = _normalize_required(item, "ITEM", 128)
     contract_number = _normalize_required(contract_number, "合同号", 128)
-    po = " ".join(po.strip().split()) or contract_number
+    manual = check_result.review_method == "manual_sources"
+    po = " ".join((po or "").strip().split())
+    if not manual and not po:
+        po = contract_number
     if len(po) > 128:
         raise HTTPException(status_code=422, detail="PO 过长")
 
-    excel_sha256 = hashlib.sha256(excel_bytes).hexdigest()
+    if manual and (excel_bytes or check_result.summary.overall_status != "需复核" or not check_result.source_assets):
+        raise HTTPException(422, "人工审核资料必须保留原文件并等待内部审核")
+    excel_sha256 = hashlib.sha256(excel_bytes).hexdigest() if excel_bytes else ""
     pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
     document_fingerprint = _document_fingerprint(excel_sha256, pdf_sha256)
+    if manual:
+        document_fingerprint = hashlib.sha256(json.dumps([
+            "manual_sources", customer_name, po, item, contract_number,
+            [(row["id"], row["sha256"]) for row in check_result.source_assets],
+        ], ensure_ascii=False).encode()).hexdigest()
     duplicate = db.scalar(
         select(CartonMarkTemplate.id).where(
             CartonMarkTemplate.factory_id == factory_id,
@@ -287,7 +298,7 @@ def _persist_carton_mark_template(
         )
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="这组 Excel 与打印 PDF 已经归档")
+        raise HTTPException(status_code=409, detail="这组箱唛资料已经提交，请在审核记录中查看")
 
     business_key = _business_key(
         customer_name=customer_name,
@@ -362,7 +373,7 @@ def _persist_carton_mark_template(
     try:
         db.add(template)
         db.flush()
-        db.add_all((excel_document, pdf_document))
+        db.add_all((excel_document, pdf_document) if excel_bytes else (pdf_document,))
         _audit(
             db,
             user,
@@ -374,10 +385,15 @@ def _persist_carton_mark_template(
                 "check_status": check_status,
                 "excel_sha256": excel_sha256,
                 "pdf_sha256": pdf_sha256,
+                "review_method": check_result.review_method,
+                "source_assets": check_result.source_assets,
                 **({"supplier_context": supplier_context} if supplier_context else {}),
             },
         )
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
@@ -387,7 +403,7 @@ def _persist_carton_mark_template(
     db.refresh(template)
     return _template_out(
         template,
-        {"source_excel": excel_document, "print_pdf": pdf_document},
+        {"source_excel": excel_document, "print_pdf": pdf_document} if excel_bytes else {"print_pdf": pdf_document},
     )
 
 
@@ -492,7 +508,8 @@ def manually_release_carton_mark_template(
     *,
     factory_id: str,
     template_id: str,
-    reason: str,
+    reason: str = "",
+    confirmed_checks: list[str] | None = None,
 ) -> CartonMarkTemplateOut:
     factory_id = require_carton_factory(factory_id)
     template = _active_template(db, factory_id, template_id)
@@ -501,9 +518,17 @@ def manually_release_carton_mark_template(
     if template.manual_released_at:
         raise HTTPException(status_code=409, detail="该模板已经人工放行，请勿重复操作")
 
-    normalized_reason = _normalize_required(reason, "人工放行理由", 500)
-    if len(normalized_reason) < 5:
-        raise HTTPException(status_code=422, detail="人工放行理由至少需要 5 个字符")
+    result = CartonMarkDocumentCheckResponse.model_validate_json(template.check_result_json)
+    if result.review_method == "manual_sources":
+        from app.services.carton_mark_manual_review import validate_release
+        validate_release(db, user, factory_id, template, result)
+        result.confirmed_checks = sorted(set(confirmed_checks or []))
+        template.check_result_json = result.model_dump_json()
+        normalized_reason = " ".join(reason.strip().split()) or "订单资料审核通过"
+    else:
+        normalized_reason = _normalize_required(reason, "人工放行理由", 500)
+        if len(normalized_reason) < 5:
+            raise HTTPException(status_code=422, detail="人工放行理由至少需要 5 个字符")
 
     timestamp = _now_text()
     template.manual_release_reason = normalized_reason
@@ -524,6 +549,7 @@ def manually_release_carton_mark_template(
             "reason": normalized_reason,
             "excel_sha256": template.excel_sha256,
             "pdf_sha256": template.pdf_sha256,
+            "confirmed_checks": result.confirmed_checks,
         },
     )
     db.commit()

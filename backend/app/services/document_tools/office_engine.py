@@ -57,6 +57,9 @@ def office_executable() -> str | None:
         candidates += [str(Path(base) / "LibreOffice/program/soffice.com")
                        for base in (os.getenv("ProgramFiles", "C:/Program Files"),
                                     os.getenv("ProgramFiles(x86)", "C:/Program Files (x86)"))]
+        from app.core.config import BACKEND_DIR, settings
+        if settings.app_env == "development":
+            candidates.append(str(BACKEND_DIR / "data/document-tools-office/runtime/program/soffice.com"))
     return next((p for p in candidates if p and Path(p).is_file()), None)
 
 

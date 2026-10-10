@@ -52,6 +52,48 @@ def test_claim_cannot_grant_iam_or_cross_factory_and_delegation_is_owner_only(mo
         assert next(row for row in transferred.json()["customers"] if row["id"] == entry["id"])["owner"]["id"] == ids["carton_warehouse"]
 
 
+def test_delegated_colleague_summary_and_order_write_change_without_relogin(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        entry = customer(client)
+        ensure_test_user("warehouse_keeper")
+        ensure_test_user("carton_warehouse")
+        from app.db import SessionLocal
+        from app.models.auth import AuthUser
+        with SessionLocal() as db:
+            ids = dict(db.execute(select(AuthUser.username, AuthUser.id)).all())
+        scope = assign(client, entry, [ids["warehouse_keeper"]])
+        entry = next(row for row in scope["customers"] if row["id"] == entry["id"])
+        manager_cookies = dict(client.cookies)
+        login_as(client, "carton_warehouse")
+        colleague_cookies = dict(client.cookies)
+        summary_url = BASE + "/customer-responsibilities"
+        summary = client.get(summary_url, params={**SCOPE, "summary": True}).json()
+        assert summary["own_customer_codes"] == []
+        assert summary["blocked_customer_codes"] == ["DICKIE"]
+        assert client.post(BASE + "/orders", json=_order_payload()).status_code == 403
+
+        client.cookies.clear(); client.cookies.update(manager_cookies)
+        scope = assign(client, entry, [ids["warehouse_keeper"], ids["carton_warehouse"]])
+        entry = next(row for row in scope["customers"] if row["id"] == entry["id"])
+        client.cookies.clear(); client.cookies.update(colleague_cookies)
+        summary = client.get(summary_url, params={**SCOPE, "summary": True}).json()
+        assert not summary["unrestricted"]
+        assert summary["own_customer_codes"] == ["DICKIE"]
+        assert summary["blocked_customer_codes"] == []
+        assert summary["users"] == summary["customers"] == []
+        response = client.post(BASE + "/orders", json=_order_payload())
+        assert response.status_code == 201, response.text
+
+        client.cookies.clear(); client.cookies.update(manager_cookies)
+        assign(client, entry, [ids["warehouse_keeper"]])
+        client.cookies.clear(); client.cookies.update(colleague_cookies)
+        summary = client.get(summary_url, params={**SCOPE, "summary": True}).json()
+        assert summary["own_customer_codes"] == []
+        assert summary["blocked_customer_codes"] == ["DICKIE"]
+        assert client.post(BASE + "/orders", json={**_order_payload(), "contract_no": "REVOKED"}).status_code == 403
+
+
 def test_others_orders_and_receipts_are_readable_but_writes_require_authorization(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin"); entry = customer(client)

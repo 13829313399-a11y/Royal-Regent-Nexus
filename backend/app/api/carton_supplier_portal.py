@@ -17,6 +17,9 @@ from app.schemas.carton_supplier_settlement import SupplierSettlementReview
 from app.schemas.carton_supplier_portal import SupplierMarkAssetOut, SupplierMarkCheckOut, SupplierMarkUploadOrderOut, SupplierMarkAssetUploadOut
 from app.services import carton_supplier_mark_check as mark_check
 from app.services import carton_supplier_mark_upload as mark_upload
+from app.services import carton_supplier_mark_pdf as mark_pdf
+from app.services import carton_supplier_mark_layout as mark_layout
+from app.schemas.carton_supplier_portal import SupplierMarkPdfRequest, SupplierMarkPdfOut, SupplierMarkLayoutOut, MarkLayoutConfig
 from app.services.carton_mark import (MAX_DOCUMENT_FILE_BYTES, build_carton_mark_document_check,
     CartonMarkDocumentError, CartonMarkDocumentConfigurationError)
 from app.services.carton_procurement import _lock_receipt_factory
@@ -132,9 +135,86 @@ def carton_mark_templates(factory_id: str, db: Session = Depends(get_db), user: 
     return service.supplier_mark_templates(db, user, factory_id)
 
 
+@router.post("/carton-mark/generate-pdf", response_model=SupplierMarkPdfOut, status_code=201)
+async def generate_carton_mark_pdf(payload: SupplierMarkPdfRequest, request: Request,
+        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    original = mark_pdf.source(db, user, payload)
+    db.rollback()
+    prepared = await run_in_threadpool(mark_pdf.prepare_pdf, original)
+    _lock_receipt_factory(db, payload.factory_id)
+    return mark_pdf.save_pdf(db, get_current_user(request, db), payload, original, prepared)
+
+
+@router.get("/carton-mark/layouts", response_model=list[SupplierMarkLayoutOut])
+def carton_mark_layouts(factory_id: str, order_id: str, issue_id: str,
+        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    scope = mark_layout.context(db, user, factory_id, order_id, issue_id)
+    return [mark_layout.output(row) for row in mark_layout.rows(db, scope)]
+
+
+@router.post("/carton-mark/layout-reference-preview")
+async def preview_layout_reference(factory_id: str = Form(...), order_id: str = Form(...), issue_id: str = Form(...),
+        reference_pdf: UploadFile = File(...), page: int = Form(0, ge=0, le=19),
+        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    mark_layout.context(db, user, factory_id, order_id, issue_id, write=True)
+    content = await reference_pdf.read(MAX_DOCUMENT_FILE_BYTES + 1)
+    db.rollback()
+    return await run_in_threadpool(mark_layout.reference_image, content, page)
+
+
+@router.get("/carton-mark/layouts/{identifier}/preview")
+async def preview_saved_layout(identifier: str, factory_id: str, order_id: str, issue_id: str,
+        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    scope = mark_layout.context(db, user, factory_id, order_id, issue_id)
+    row = next((row for row in mark_layout.rows(db, scope) if row.id == identifier), None)
+    if not row:
+        raise HTTPException(404, "未找到此客户排版模板")
+    frozen = mark_layout.frozen(row)
+    db.rollback()
+    return await run_in_threadpool(mark_layout.reference_image, frozen["reference_bytes"], frozen["config"]["reference_page"])
+
+
+@router.post("/carton-mark/layouts", response_model=SupplierMarkLayoutOut, status_code=201)
+async def save_layout(request: Request, factory_id: str = Form(..., max_length=64),
+        order_id: str = Form(..., max_length=96), issue_id: str = Form(..., max_length=96),
+        name: str = Form(..., min_length=1, max_length=128), config: str = Form(..., max_length=12000),
+        expected_version: int = Form(0, ge=0), base_template_id: str = Form("", max_length=96),
+        reference_pdf: UploadFile | None = File(None), db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    scope = mark_layout.context(db, user, factory_id, order_id, issue_id, write=True)
+    try:
+        parsed = MarkLayoutConfig.model_validate_json(config)
+    except ValueError as exc:
+        raise HTTPException(422, "客户版式设置无效，请检查字段位置和选取区域") from exc
+    if reference_pdf:
+        if not (reference_pdf.filename or "").lower().endswith(".pdf"):
+            raise HTTPException(422, "请上传客户历史 PDF")
+        reference = (reference_pdf.filename, await reference_pdf.read(MAX_DOCUMENT_FILE_BYTES + 1))
+    else:
+        current = mark_layout.current(db, user, factory_id, order_id, issue_id, base_template_id)
+        row = next(row for row in mark_layout.rows(db, scope) if row.id == current["id"])
+        reference = (row.reference_name, current["reference_bytes"])
+    db.rollback()
+    await run_in_threadpool(mark_layout.validate_reference, reference[1], parsed)
+    _lock_receipt_factory(db, factory_id)
+    fresh = get_current_user(request, db)
+    if mark_layout.context(db, fresh, factory_id, order_id, issue_id, write=True) != scope:
+        raise HTTPException(409, "采购订单客户或供应商已变更，请刷新后重新配置模板")
+    return mark_layout.save(db, fresh, scope, name, parsed, reference, expected_version)
+
+
 @router.get("/carton-mark/checks", response_model=list[SupplierMarkCheckOut])
 def carton_mark_checks(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return [record for record, _ in mark_check.visible_checks(db, user, factory_id)]
+
+
+from app.schemas.carton_mark import CartonMarkManualReviewRequest
+from app.services import carton_mark_manual_review as manual_review
+
+
+@router.post("/carton-mark/manual-reviews", response_model=SupplierMarkCheckOut, status_code=201)
+async def submit_manual_review(payload: CartonMarkManualReviewRequest, request: Request,
+                               db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return await manual_review.create_review(request, db, user, payload, supplier=True)
 
 
 @router.post("/carton-mark/checks", response_model=SupplierMarkCheckOut, status_code=201)

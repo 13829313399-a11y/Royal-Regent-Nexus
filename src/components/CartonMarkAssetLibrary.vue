@@ -9,16 +9,27 @@ import { useAuthStore } from '@/stores/auth'
 import { factoryContexts } from '@/data/enterpriseMock'
 
 const props = defineProps<{ factoryId: string; supplierFactories?: string[]; orderId?: string; readOnly?: boolean; supplier?: boolean; supplierCheckEnabled?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
-const emit = defineEmits<{ use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]]; supplierExcel: [asset: SupplierMarkAsset & { factory_id: string }]; supplierSources: [assets: (SupplierMarkAsset & { factory_id: string })[]] }>()
+const emit = defineEmits<{ use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]]; manualReview: [assets: CartonMarkAsset[]]; supplierReview: [assets: (SupplierMarkAsset & { factory_id: string })[]]; supplierExcel: [asset: SupplierMarkAsset & { factory_id: string }]; supplierGeneratePdf: [asset: SupplierMarkAsset & { factory_id: string }]; supplierSources: [assets: (SupplierMarkAsset & { factory_id: string })[]] }>()
 const auth = useAuthStore()
 const canRead = computed(() => props.supplier ? auth.can('carton_supplier:read') : ['pmc-warehouse', 'carton', 'qa', 'qc'].some(d => auth.can('carton_mark:read', props.factoryId, d)))
 const canWrite = computed(() => !props.supplier && !props.readOnly && ['pmc-warehouse', 'carton'].some(d => auth.can('carton_mark:template_upload', props.factoryId, d)))
 const entries = ref<CartonMarkAsset[]>([])
 const supplierSources = ref<(SupplierMarkAsset & { factory_id: string })[]>([])
-function chooseSupplierExcel(asset: CartonMarkAsset) {
+function chooseManualReview(asset: CartonMarkAsset) {
+  if (busy.value || asset.kind === 'excel') return
+  const files = asset.kind === 'image' && asset.photo_group_id ? entries.value.filter(row => row.factory_id === asset.factory_id && row.photo_group_id === asset.photo_group_id) : [asset]
+  if (props.supplier) {
+    if (!props.supplierCheckEnabled || !auth.can('carton_supplier:edit', asset.factory_id, '*')) return
+    emit('supplierReview', files.map(file => supplierSources.value.find(row => row.id === file.id && row.factory_id === file.factory_id)!).filter(Boolean))
+  } else if (canWrite.value && props.checkEnabled) emit('manualReview', files)
+}
+function chooseSupplierExcel(asset: CartonMarkAsset, generate = false) {
   if (!props.supplier || !props.supplierCheckEnabled || busy.value || !auth.can('carton_supplier:edit', asset.factory_id, '*')) return
   const source = supplierSources.value.find(row => row.id === asset.id && row.factory_id === asset.factory_id && row.kind === 'excel')
-  if (source) emit('supplierExcel', source)
+  if (source) {
+    if (generate) emit('supplierGeneratePdf', source)
+    else emit('supplierExcel', source)
+  }
 }
 const results = ref<CartonMarkAssetUploadResult[]>([])
 const pendingFiles = ref<File[]>([])
@@ -409,6 +420,8 @@ onBeforeUnmount(() => { generation++; controller.abort() })
             <button v-if="canWrite" type="button" :disabled="busy" class="rounded-lg px-2.5 py-1.5 text-slate-400" @click="archive(asset)">移出</button>
             <button v-if="canWrite && checkEnabled && asset.kind !== 'image'" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="emit('use', asset)">用于{{ asset.kind === 'pdf' ? 'PDF' : 'Excel' }}核对</button>
             <button v-if="supplier && supplierCheckEnabled && asset.kind === 'excel' && auth.can('carton_supplier:edit', asset.factory_id, '*')" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="chooseSupplierExcel(asset)">选择 Excel 并上传 PDF 核对</button>
+            <button v-if="supplier && supplierCheckEnabled && asset.kind === 'excel' && auth.can('carton_supplier:edit', asset.factory_id, '*')" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" :aria-label="`由 ${asset.file_name} 生成 PDF`" @click="chooseSupplierExcel(asset, true)">生成 PDF</button>
+            <button v-if="asset.kind !== 'excel' && (canWrite && checkEnabled || supplier && supplierCheckEnabled && auth.can('carton_supplier:edit', asset.factory_id, '*'))" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-amber-50 px-2.5 py-1.5 font-semibold text-amber-800" @click="chooseManualReview(asset)">{{ asset.photo_group_id ? '整组图片提交人工审核' : '提交人工审核' }}</button>
           </div>
         </li>
         </template>

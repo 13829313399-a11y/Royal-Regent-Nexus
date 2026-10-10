@@ -137,22 +137,24 @@ onBeforeUnmount(() => { generation++; controller.abort() })
       <p v-if="message" role="status" class="mt-4 rounded-lg bg-teal-50 p-3 text-sm text-teal-800">{{ message }}</p>
     </section>
     <section class="rounded-xl border bg-white p-4 sm:p-6" aria-label="供应商箱唛核对记录">
-      <div class="flex flex-wrap items-center justify-between gap-3"><h2 class="text-lg font-bold">PDF 核对记录</h2><button type="button" :disabled="loading || busy" class="rounded-lg border px-3 py-2 text-sm disabled:opacity-50" @click="loadHistory">刷新核对记录</button></div>
+      <div class="flex flex-wrap items-center justify-between gap-3"><h2 class="text-lg font-bold">核对 / 审核记录</h2><button type="button" :disabled="loading || busy" class="rounded-lg border px-3 py-2 text-sm disabled:opacity-50" @click="loadHistory">刷新核对记录</button></div>
       <p v-if="historyError" role="alert" class="mt-3 text-sm text-red-700">{{ historyError }}</p>
       <p v-if="loading" role="status" class="mt-4 text-sm text-slate-500">正在读取核对记录…</p>
-      <p v-else-if="!checks.length && !historyError" class="mt-4 text-sm text-slate-500">暂无供应商 PDF 核对记录。选择资料库的客人 Excel 后即可上传核对。</p>
+      <p v-else-if="!checks.length && !historyError" class="mt-4 text-sm text-slate-500">暂无核对或审核记录。可选择 Excel / PDF 核对，或在资料库选择单 PDF / 图片提交人工审核。</p>
       <article v-for="record in checks" :key="record.id" class="mt-4 rounded-lg border p-4">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div><h3 class="break-all font-semibold">{{ factoryName(record.factory_id) }} · {{ record.customer_name }} · {{ record.contract_number }}</h3><p class="mt-1 break-all text-xs text-slate-500">ITEM {{ record.item }} · 版本 {{ record.version }} · {{ record.created_at }} · {{ record.pdf_file_name }}</p></div>
-          <div class="text-sm font-semibold" :class="record.qc_ready ? 'text-teal-700' : 'text-amber-700'">{{ record.check_status }} · {{ record.manual_released ? '内部已放行' : record.qc_ready ? '可供 QC 核验' : '待修正 / 内部复核' }}</div>
+          <div class="text-sm font-semibold" :class="record.qc_ready ? 'text-teal-700' : 'text-amber-700'">{{ record.check_result.review_method === 'manual_sources' ? record.manual_released ? '人工审核通过' : '待人工审核' : record.check_status }} · {{ record.manual_released ? '内部已放行' : record.qc_ready ? '可供 QC 核验' : '待修正 / 内部复核' }}</div>
         </div>
+        <p v-if="record.check_result.review_method === 'manual_sources'" class="mt-3 text-sm text-amber-800">{{ record.manual_released ? '人工审核通过，可供 QC 使用' : '单 PDF / 图片已提交，等待内部人工审核' }}<template v-if="record.check_result.review_note">；备注：{{ record.check_result.review_note }}</template></p>
         <div class="mt-3 flex flex-wrap gap-2 text-sm">
           <button type="button" class="rounded border px-3 py-2" :aria-expanded="expandedId === record.id" @click="expandedId = expandedId === record.id ? '' : record.id">查看核对结果</button>
           <a :href="cartonSupplierPortalApi.previewMarkCheckUrl(record.id, record.factory_id)" target="_blank" rel="noopener" class="rounded border px-3 py-2">预览 PDF</a>
           <button type="button" :disabled="!!downloadable" class="rounded border px-3 py-2 disabled:opacity-50" @click="download(record, 'print_pdf')">下载 PDF</button>
-          <button type="button" :disabled="!!downloadable" class="rounded border px-3 py-2 disabled:opacity-50" @click="download(record, 'source_excel')">下载客人 Excel</button>
+          <button v-if="record.excel_file_name" type="button" :disabled="!!downloadable" class="rounded border px-3 py-2 disabled:opacity-50" @click="download(record, 'source_excel')">下载客人 Excel</button>
         </div>
-        <div v-if="expandedId === record.id" class="mt-4 space-y-3">
+        <div v-if="expandedId === record.id && record.check_result.review_method === 'manual_sources'" class="mt-4 space-y-2 text-sm"><p>此资料未执行 Excel / PDF 自动比对。</p><p v-for="source in record.check_result.source_assets" :key="source.id">原稿：{{ source.file_name }}</p></div>
+        <div v-if="expandedId === record.id && record.check_result.review_method !== 'manual_sources'" class="mt-4 space-y-3">
           <p class="text-sm">通过 {{ record.check_result.summary.pass_count }} · 文字差异 {{ record.check_result.summary.changed_count }} · 缺失 {{ record.check_result.summary.missing_count }} · 新增 {{ record.check_result.summary.unexpected_count }} · 需复核 {{ record.check_result.summary.review_count }}</p>
           <div v-for="(item, index) in record.check_result.extraction.filter(row => !row.ok || row.requires_review)" :key="index" class="rounded bg-amber-50 p-3 text-sm text-amber-800">{{ item.review_reason || item.message }}</div>
           <div class="overflow-x-auto"><table class="w-full min-w-[480px] text-left text-sm"><thead><tr class="bg-slate-50"><th class="p-2">结果</th><th class="p-2">Excel 原文</th><th class="p-2">PDF 原文</th><th class="p-2">说明</th></tr></thead><tbody><tr v-for="(item, index) in record.check_result.comparisons" :key="index" class="border-b align-top"><td class="p-2">{{ ({ pass: '通过', changed: '差异', missing: '缺失', unexpected: '新增', review: '复核' })[item.status] }}</td><td class="whitespace-pre-wrap break-all p-2">{{ item.expected }}<p class="text-xs text-slate-400">{{ item.expected_location }}</p></td><td class="whitespace-pre-wrap break-all p-2">{{ item.actual }}<p class="text-xs text-slate-400">{{ item.actual_location }}</p></td><td class="p-2">{{ item.note }}</td></tr></tbody></table></div>
