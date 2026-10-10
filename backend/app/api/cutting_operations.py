@@ -11,6 +11,7 @@ from app.models.cutting_ops import CuttingMaster, CuttingRevision, CuttingOrder,
 from app.services.auth import AuthContext, get_current_user
 from app.services import cutting_ops as c, cutting_schemas as s
 from app.services import cutting_orders as orders
+from app.services import cutting_planning as planning, cutting_planning_schemas as ps
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -55,7 +56,9 @@ def masters(db: Db, user: User, factory_id: str = '', kind: s.Kind = 'material',
     ready(db)
     query = select(CuttingMaster).where(CuttingMaster.factory_id == factory_id, CuttingMaster.kind == kind)
     if q.strip():
-        query = query.where(CuttingMaster.code.contains(q.strip(), autoescape=True))
+        matches = [CuttingRevision.data[field].as_string().contains(q.strip(), autoescape=True) for field in ('name', 'item_no', 'style', 'color')]
+        revisions = select(CuttingRevision.master_id).where(CuttingRevision.master_id == CuttingMaster.id, *[matches[0] | matches[1] | matches[2] | matches[3]]).exists()
+        query = query.where(CuttingMaster.code.contains(q.strip(), autoescape=True) | revisions)
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     rows = db.scalars(query.order_by(CuttingMaster.code).offset((page-1)*page_size).limit(page_size))
     return dict(data=[c.view(db, item) for item in rows], total=total, page=page, page_size=page_size)
@@ -99,10 +102,10 @@ def orders_ready(db):
 
 @router.get('/orders')
 def order_list(db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1), q: str = Query('', max_length=80),
-               status: s.WorkflowStatus | None = None):
+               status: s.WorkflowStatus | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None):
     c.authorize(user, factory_id)
     orders_ready(db)
-    return orders.list_orders(db, page, q, status)
+    return orders.list_orders(db, page, q, status, plan_status)
 
 
 @router.get('/orders/{line_id}/versions')
@@ -119,7 +122,13 @@ def order_versions(line_id: str, db: Db, user: User, factory_id: str = '', page:
 def order_command(db, user, line_id, body, action, handler):
     c.authorize(user, body.factory_id, action)
     orders_ready(db)
-    return c.command(db, user, body, action + ':' + line_id, lambda: handler(db, user, line_id, body))
+    result = c.command(db, user, body, action + ':' + line_id, lambda: handler(db, user, line_id, body))
+    if action in {'plan_write', 'plan_publish'}:
+        # A historical successful receipt must not hide current rule/resource invalidation.
+        # Keep the immutable receipt intact, but return the current order view after replay.
+        db.expire_all()
+        return orders.view(db, orders.latest(db, line_id))
+    return result
 
 
 @router.post('/orders/{line_id}/receive')
@@ -152,11 +161,22 @@ def reconcile_requisition(line_id: str, body: s.ReconcileRequisition, db: Db, us
     return order_command(db, user, line_id, body, 'requisition_reconcile', orders.reconcile)
 
 
+@router.post('/orders/{line_id}/plan')
+def save_plan(line_id: str, body: ps.SavePlan, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'plan_write', planning.save)
+
+
+@router.post('/orders/{line_id}/plan-publish')
+def publish_plan(line_id: str, body: ps.PublishPlan, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'plan_publish', planning.publish)
+
+
 @router.post('/orders/{line_id}/operations/recover')
 def recover_order_operation(line_id: str, body: s.RecoverOperation, db: Db, user: User):
     contracts = {
         'receive': (s.ReceiveOrder, 'order_receive'), 'bom': (s.BindBom, 'bom_write'),
         'requisition': (s.SubmitRequisition, 'requisition_submit'), 'eta': (s.ReplyEta, 'eta_write'),
+        'plan': (ps.SavePlan, 'plan_write'), 'plan-publish': (ps.PublishPlan, 'plan_publish'),
         'withdraw': (s.WithdrawRequisition, 'requisition_submit'), 'reconcile': (s.ReconcileRequisition, 'requisition_reconcile'),
     }
     model, permission = contracts[body.action]

@@ -4,11 +4,14 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 
 def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path):
     backend = Path(__file__).resolve().parents[1]
+    expected_head = ScriptDirectory(str(backend / 'alembic')).get_current_head()
+    assert expected_head is not None
     database = tmp_path / 'cutting-migration.db'
     env = dict(os.environ, DATABASE_URL='sqlite:///' + database.as_posix(), SEED_DEFAULT_ACCOUNTS='false', PYTHONUTF8='1', CUTTING_OPS_ENABLED='false')
     def upgrade(revision):
@@ -23,7 +26,7 @@ def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path):
     # Upgrade the published main schema through the P1c migration; repeated upgrade is a no-op.
     upgrade('head'); upgrade('head')
     with sqlite3.connect(database) as db:
-        assert db.execute('SELECT version_num FROM alembic_version').fetchall() == [('20261009_0152',)]
+        assert db.execute('SELECT version_num FROM alembic_version').fetchall() == [(expected_head,)]
         assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
         for name, ddl in old_tables:

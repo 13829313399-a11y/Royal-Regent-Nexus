@@ -3,7 +3,8 @@ import { CUTTING_FACTORY } from './navigation'
 
 export type Kind = 'material' | 'resource' | 'bom'
 export interface MaterialData { name: string; category: 'fabric' | 'accessory'; unit: string; specification: string; color: string; source_reference: string }
-export interface ResourceData { name: string; execution: 'internal' | 'outsourced'; process: 'cutting'; contact: string; source_reference: string }
+export interface WorkCalendarData { weekdays: number[]; exceptions: Array<{ day: string; working: boolean; reason: string }>; basis: string }
+export interface ResourceData { calendar?: WorkCalendarData | null; preparation_workdays?: number; name: string; execution: 'internal' | 'outsourced'; process: 'cutting'; contact: string; source_reference: string }
 export interface Part { code: string; name: string; pieces_per_set: number }
 export interface Requirement { material_id: string; material_version: number; part_codes: string[]; quantity_per_set: string; unit: string; required_for_cutting: boolean; stage: string; note: string }
 export interface BomData { name: string; item_no: string; style: string; color: string; source_reference: string; parts: Part[]; requirements: Requirement[] }

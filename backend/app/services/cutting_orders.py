@@ -41,7 +41,8 @@ def view(db, dispatch):
     overdue = any(b['expected_date'] < today for b in data.get('batches', []))
     pending_version = pending_purchase_version(db, order, data) if order else None
     pending = purchase_snapshot(db, order.line_id, pending_version) if pending_version else None
-    return dict(line_id=dispatch.line_id, dispatch_id=dispatch.id, source_version=dispatch.version,
+    from app.services.cutting_planning import summary
+    return dict(planning_summary=summary(db, data, needs_receipt), line_id=dispatch.line_id, dispatch_id=dispatch.id, source_version=dispatch.version,
         snapshot=dispatch.snapshot, received_at=dispatch.received_at,
         needs_receipt=needs_receipt, current=current, workflow_status=status,
         expected_date_passed=overdue, pending_purchase=pending)
@@ -90,7 +91,7 @@ def pending_purchase_version(db, order, data):
     return r.data['requisition']['version']
 
 
-def list_orders(db, page, q, status=None):
+def list_orders(db, page, q, status=None, plan_status=None):
     newest = select(OrderLedgerDispatch.line_id, func.max(OrderLedgerDispatch.version).label('version')).where(
         OrderLedgerDispatch.factory_id == c.FACTORY, OrderLedgerDispatch.recipient == 'cutting').group_by(
         OrderLedgerDispatch.line_id).subquery()
@@ -100,6 +101,15 @@ def list_orders(db, page, q, status=None):
     if q.strip():
         query = query.where(OrderLedgerLine.reference_no.contains(q.strip(), autoescape=True) |
                             OrderLedgerLine.product_no.contains(q.strip(), autoescape=True))
+    if plan_status:
+        matches, total = [], 0
+        for dispatch in db.scalars(query.order_by(OrderLedgerDispatch.created_at.desc(), OrderLedgerDispatch.id)).yield_per(50):
+            result = view(db, dispatch)
+            if status and result['workflow_status'] != status: continue
+            if plan_status not in result['planning_summary']['states']: continue
+            if (page-1)*50 <= total < page*50: matches.append(result)
+            total += 1
+        return dict(data=matches, total=total, page=page, page_size=50)
     if status:
         query = query.outerjoin(CuttingOrder, CuttingOrder.line_id == OrderLedgerDispatch.line_id).outerjoin(
             CuttingOrderRevision, (CuttingOrderRevision.line_id == CuttingOrder.line_id) &
@@ -167,6 +177,8 @@ def receive(db, user, line_id, body):
     data = dict(order=deepcopy(dispatch.snapshot), dispatch_id=dispatch.id, bom=None, requisition=None,
                 batches=[], purchase_reconciliation_required=bool(pending_version), pending_requisition_version=pending_version,
                 reconciliation_request={'kind': 'source_change', 'actor_id': user.id, 'reason': body.reason} if pending_version else None)
+    if previous and previous.get('planning'):
+        data['planning'] = deepcopy(previous['planning'])
     return append(db, user, order, data, body.reason)
 
 
