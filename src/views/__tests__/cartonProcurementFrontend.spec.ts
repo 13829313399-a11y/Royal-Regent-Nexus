@@ -1711,6 +1711,104 @@ it('shows supplier date differences in both the internal ledger and order detail
     expect(wrapper.text()).toContain('CT-260805-ABC123 采购单已生成并开始下载')
   })
 
+  it('refreshes a colleague grant before choosing a customer in an already-open order', async () => {
+    mockReceiptWorkspace([])
+    vi.spyOn(cartonMasterApi, 'get').mockResolvedValue(emptyMaster())
+    const scope = { can_manage: false, unrestricted: false, own_customer_codes: [], blocked_customer_codes: ['DICKIE'], users: [], customers: [] }
+    vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue(scope)
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises()
+      await findButton(wrapper, '新建纸箱订单').trigger('click'); await flushPromises()
+      // Another employee authorizes this already-open form; IAM is unchanged.
+      vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({ ...scope, own_customer_codes: ['DICKIE'], blocked_customer_codes: [] })
+      await wrapper.get('[aria-label="订单客户"]').trigger('focus'); await flushPromises()
+      await wrapper.get('[aria-label="订单客户"]').setValue('Dickie')
+      await wrapper.get('[aria-label="订单客户"]').trigger('focusout')
+      expect(wrapper.findComponent({ name: 'CartonCustomerPicker' }).props('modelValue')).toBe('DICKIE')
+      await wrapper.get('[aria-label="合同号"]').setValue('GRANTED-ORDER')
+      await wrapper.get('[aria-label="货号"]').setValue('ITEM-GRANTED')
+      await wrapper.get('[aria-label="产品名称"]').setValue('测试产品')
+      await wrapper.get('[aria-label="订单数量"]').setValue('100')
+      await wrapper.get('[aria-label="客户交期"]').setValue(businessDateOffset(8))
+      await wrapper.get('[aria-label="纸品类型 1"]').setValue('外箱')
+      await wrapper.get('[aria-label="纸质 1"]').setValue('K3K')
+      await wrapper.get('[aria-label="规格 1"]').setValue('30*20*15')
+      await wrapper.get('[data-testid="order-form-overlay"] form').trigger('submit'); await flushPromises()
+      expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ customer_code: 'DICKIE', contract_no: 'GRANTED-ORDER' }))
+    } finally { wrapper.unmount() }
+  })
+
+  it('refreshes responsibility inside an open draft and rejects revoked or unavailable grants', async () => {
+    mockReceiptWorkspace([])
+    vi.spyOn(cartonMasterApi, 'get').mockResolvedValue(emptyMaster())
+    const scope = { can_manage: false, unrestricted: false, own_customer_codes: ['DICKIE'], blocked_customer_codes: [], users: [], customers: [] }
+    vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue(scope)
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises()
+      await findButton(wrapper, '新建纸箱订单').trigger('click'); await flushPromises()
+      await wrapper.get('[aria-label="订单客户"]').setValue('Dickie')
+      await wrapper.get('[aria-label="订单客户"]').trigger('focusout')
+      await wrapper.get('[aria-label="合同号"]').setValue('KEEP-DRAFT')
+      vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({ ...scope, own_customer_codes: [], blocked_customer_codes: ['DICKIE'] })
+      await wrapper.get('[aria-label="刷新订单客户授权"]').trigger('click'); await flushPromises()
+      expect(wrapper.get<HTMLInputElement>('[aria-label="合同号"]').element.value).toBe('KEEP-DRAFT')
+      await wrapper.get('[data-testid="order-form-overlay"] form').trigger('submit'); await flushPromises()
+      expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+      expect(wrapper.get('[data-testid="order-save-feedback"]').text()).toContain('授权')
+      vi.mocked(cartonCustomerResponsibilitiesApi.get).mockRejectedValueOnce(new Error('授权服务暂不可用'))
+      await wrapper.get('[aria-label="刷新订单客户授权"]').trigger('click'); await flushPromises()
+      expect(wrapper.text()).toContain('客户责任范围读取失败：授权服务暂不可用')
+      await wrapper.get('[data-testid="order-form-overlay"] form').trigger('submit'); await flushPromises()
+      expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+
+  it('does not offer to recreate an existing customer excluded by responsibility', async () => {
+    mockReceiptWorkspace([])
+    vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
+    vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({ can_manage: false, unrestricted: false, own_customer_codes: [], blocked_customer_codes: ['DICKIE'], users: [], customers: [] })
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises()
+      await findButton(wrapper, '新建纸箱订单').trigger('click'); await flushPromises()
+      await wrapper.get('[aria-label="订单客户"]').setValue('Dickie')
+      expect(wrapper.get('[aria-label="客户候选"]').text()).toContain('已有此客户')
+      expect(wrapper.get('[aria-label="客户候选"]').text()).not.toContain('新增客户：')
+      expect(wrapper.find('[aria-label="选择客户 Dickie"]').exists()).toBe(false)
+    } finally { wrapper.unmount() }
+  })
+
+  it('blocks saving during a window-return authorization check and ignores its late result after a factory change', async () => {
+    mockReceiptWorkspace([])
+    vi.spyOn(cartonMasterApi, 'get').mockResolvedValue(emptyMaster())
+    const scope = { can_manage: false, unrestricted: false, own_customer_codes: ['DICKIE'], blocked_customer_codes: [], users: [], customers: [] }
+    vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue(scope)
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises()
+      await findButton(wrapper, '新建纸箱订单').trigger('click'); await flushPromises()
+      await wrapper.get('[aria-label="订单客户"]').setValue('Dickie')
+      await wrapper.get('[aria-label="订单客户"]').trigger('focusout')
+      let finish!: (value: typeof scope) => void
+      const pending = new Promise<typeof scope>(resolve => { finish = resolve })
+      vi.mocked(cartonCustomerResponsibilitiesApi.get).mockReturnValue(pending)
+      window.dispatchEvent(new Event('focus')); await flushPromises()
+      expect(wrapper.get('[data-testid="order-form-overlay"]').text()).toContain('正在核对客户授权')
+      await wrapper.get('[data-testid="order-form-overlay"] form').trigger('submit'); await flushPromises()
+      expect(wrapper.get('[data-testid="order-save-feedback"]').text()).toContain('正在核对客户授权')
+      expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+      vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({ ...scope, own_customer_codes: [], blocked_customer_codes: ['DICKIE'] })
+      routeState.query.factory = 'huadeng'; await flushPromises()
+      finish(scope); await flushPromises()
+      expect(wrapper.findComponent({ name: 'CartonCustomerPicker' }).props('customers')).toEqual([])
+      await wrapper.get('[aria-label="订单客户"]').setValue('Dickie')
+      expect(wrapper.find('[aria-label="选择客户 Dickie"]').exists()).toBe(false)
+      expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+
   it('allows an unclaimed customer to be copied and received without assignment', async () => {
     vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({ can_manage: true, unrestricted: false, own_customer_codes: [], blocked_customer_codes: [], users: [], customers: [] })
     const source = orderFixture('CT-UNASSIGNED', businessDateOffset(2), 'PENDING_SUPPLIER')

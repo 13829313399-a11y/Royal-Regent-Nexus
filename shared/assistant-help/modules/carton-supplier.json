@@ -13,7 +13,7 @@
     "anchor_id": "carton-supplier.overview",
     "field_keys": [],
     "summary": "采购订单、送货与仓库反馈在原页面查看。",
-    "content": "先核对当前供应商及可见厂区，再查看工作区、单据和操作日志。导入送货单时，逐行核对客户单号、客户料号、纸品类型、纸质、规格、发货量和送货单价；发货记录也可查看合同、货号和完整纸品资料。未填写的资料会明确显示。主动提交的发货单不等于仓库已收货；当前实收与验收历史应分别查看，已冲销记录不计入当前实收。纸箱模板下载沿用供应商范围。曜灵可以自由聊天，但不会提供内部价格、内部权限知识或其他供应商的数据。",
+    "content": "先核对当前供应商及可见厂区，再查看工作区、单据和操作日志。导入送货单时，逐行核对客户单号、客户料号、纸品类型、纸质、规格、发货量和送货单价；发货记录也可查看合同、货号和完整纸品资料。未填写的资料会明确显示。主动提交的发货单不等于仓库已收货；当前实收与验收历史应分别查看，已冲销记录不计入当前实收。纸箱模板下载沿用供应商范围。曜灵可以自由聊天，但不会提供内部价格、内部权限知识或其他供应商的数据。 箱唛资料库的“文档生成 PDF”按客户固定模板自动排版：选采购订单，新客户先上传历史 PDF，确认正侧唛版式、字体、固定地址、LOGO 和图章，保存为 V1；改版保存为新版本，后续同厂区同供应商同客户自动套用最新版。上传或选择 .xls/.xlsx 后，读取货号、品名、装箱数、GTIN 等内容重新排版；识别不适用时可固定 Excel 字段单元格。尺寸、毛重缺失显示待补，条码按 GTIN 重生成。支持正侧唛并排、仅正唛和分别一页。框线样式可选原版红框（带折边线）或普通黑框；红框包含外框、正侧唛分隔线、标题和底部分隔线、左侧折边线，并采用原稿的表格分栏。新模板默认红框，旧模板保留原样式，调整后保存新版。历史稿不会自动逐像素复刻。生成审阅稿保存后可预览、下载并带入 Excel/PDF 核对；生成不代表审核通过或可供 QC 使用，也不宣称实际箱面 1:1。请核实内容、素材和实打扫码。失败时已入库原稿可继续使用，请求中断后先刷新确认是否已保存。",
     "steps": [
       {
         "title": "查看当前工作区域",
@@ -28,9 +28,39 @@
         "path": "src/views/CartonSupplierView.vue",
         "symbol": "shipmentStatus",
         "sha256": "36b20886a688e2ca4d5ecf195d51b274ee3e687b962e863dabdaafda00e4adc7"
+      },
+      {
+        "path": "src/components/CartonSupplierMarkPdf.vue",
+        "symbol": "generate",
+        "sha256": "213370f84332bec2c9a081894d4cc21e39ffa46ed9d085c546f27dbdcea9bfd3"
+      },
+      {
+        "path": "src/views/CartonSupplierMarkTemplatesView.vue",
+        "symbol": "chooseGeneration",
+        "sha256": "59ea6e302b24c7b6280bdc13428929a65f4f24c13a1d9440693fc4fcb028d4b3"
+      },
+      {
+        "path": "backend/app/services/carton_supplier_mark_pdf.py",
+        "symbol": "save_pdf",
+        "sha256": "e36317f0ce04ddf1cbbac853c711f877980dc0745328ad5fada721f1cb248c50"
+      },
+      {
+        "path": "src/components/CartonSupplierMarkLayout.vue",
+        "symbol": "save",
+        "sha256": "e411c11da25f5165f83d80d386e30ba755f56bbfe233078d5cbc8dffa0877564"
+      },
+      {
+        "path": "backend/app/services/carton_supplier_mark_layout.py",
+        "symbol": "save",
+        "sha256": "9ff95bb4b2ad3464f8c66fb55929cc50147c0d667359219bc6eb5ec97ac32b91"
+      },
+      {
+        "path": "backend/app/services/carton_mark_layout_renderer.py",
+        "symbol": "render",
+        "sha256": "36ecbb3857bd17953900fc01ea81855308be718d933b1c7dcd582d2daa1c177d"
       }
     ],
-    "knowledge_version": "2026.10.09-v2",
+    "knowledge_version": "2026.10.10-v5",
     "verified_commit": "fb5e01008f6e5b04f68ad661c2828c71b79f2577",
     "status": "verified"
   }

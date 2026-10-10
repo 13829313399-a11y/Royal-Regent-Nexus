@@ -41,6 +41,17 @@ export interface SupplierMarkCheckRequest {
   expected_pdf_revision?: number
 }
 export interface SupplierMarkUploadResult { file_name: string; status: 'created' | 'duplicate' | 'failed'; message: string; asset: SupplierMarkAsset | null }
+export interface MarkLayoutRegion { x: number; y: number; width: number; height: number }
+export interface MarkLayoutConfig {
+  frame_style?: 'plain' | 'original_red'
+  mode: 'front_side' | 'front_only' | 'separate_pages'; paper: 'A4' | 'A3'; font: 'Helvetica' | 'Courier'; font_size: number
+  front_percent: number; front_copies: number; side_copies: number; barcode: 'Code128' | 'ITF14' | 'none'
+  side_address: string; instructions: string; reference_page: number; logo_region: MarkLayoutRegion | null; stamp_region: MarkLayoutRegion | null
+  field_cells: Partial<Record<'item' | 'vendor' | 'product' | 'content' | 'gtin' | 'vendor_item' | 'dimensions' | 'gross_weight', string>>
+}
+export interface SupplierMarkLayout { id: string; factory_id: string; customer_name: string; name: string; version: number; reference_name: string; created_at: string; config: MarkLayoutConfig }
+export interface MarkLayoutPreview { preview_data_url: string; page_width_mm: number; page_height_mm: number; page_count: number; suggested_side_address: string }
+export interface SupplierMarkPdfResult { asset: SupplierMarkAsset; page_count: number; warnings: string[]; layout_id: string; layout_name: string; layout_version: number }
 export type SupplierMarkUploadOrder = SupplierMarkAsset['orders'][number] & { document_no: string; order_date: string }
 const base = '/carton-supplier'
 export const cartonSupplierPortalApi = {
@@ -80,6 +91,29 @@ export const cartonSupplierPortalApi = {
     return (await http.post<SupplierMarkUploadResult[]>(base + '/carton-mark/assets/upload', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 300000 })).data
   },
   async markChecks(factory_id: string, signal?: AbortSignal) { return (await http.get<SupplierMarkCheck[]>(base + '/carton-mark/checks', { params: { factory_id }, signal })).data },
+  async markLayouts(factory_id: string, order: SupplierMarkAsset['orders'][number], signal?: AbortSignal) {
+    return (await http.get<SupplierMarkLayout[]>(base + '/carton-mark/layouts', { params: { factory_id, order_id: order.id, issue_id: order.issue_id }, signal })).data
+  },
+  async previewLayoutReference(factory_id: string, order: SupplierMarkAsset['orders'][number], file: File, page: number, signal?: AbortSignal) {
+    const body = new FormData()
+    body.append('factory_id', factory_id); body.append('order_id', order.id); body.append('issue_id', order.issue_id)
+    body.append('reference_pdf', file); body.append('page', String(page))
+    return (await http.post<MarkLayoutPreview>(base + '/carton-mark/layout-reference-preview', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 120000 })).data
+  },
+  async previewSavedLayout(factory_id: string, order: SupplierMarkAsset['orders'][number], layout: SupplierMarkLayout, signal?: AbortSignal) {
+    return (await http.get<MarkLayoutPreview>(`${base}/carton-mark/layouts/${encodeURIComponent(layout.id)}/preview`, { params: { factory_id, order_id: order.id, issue_id: order.issue_id }, signal })).data
+  },
+  async saveMarkLayout(factory_id: string, order: SupplierMarkAsset['orders'][number], name: string, config: MarkLayoutConfig, current: SupplierMarkLayout | null, file: File | null, signal?: AbortSignal) {
+    const body = new FormData()
+    body.append('factory_id', factory_id); body.append('order_id', order.id); body.append('issue_id', order.issue_id)
+    body.append('name', name); body.append('config', JSON.stringify(config)); body.append('expected_version', String(current?.version ?? 0))
+    if (current) body.append('base_template_id', current.id)
+    if (file) body.append('reference_pdf', file)
+    return (await http.post<SupplierMarkLayout>(base + '/carton-mark/layouts', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 120000 })).data
+  },
+  async generateMarkPdf(request: { factory_id: string; order_id: string; issue_id: string; excel_asset_id: string; expected_revision: number; layout_id: string }, signal?: AbortSignal) {
+    return (await http.post<SupplierMarkPdfResult>(base + '/carton-mark/generate-pdf', request, { signal, timeout: 360000 })).data
+  },
   async createMarkCheck(request: SupplierMarkCheckRequest) {
     const body = new FormData()
     for (const key of ['factory_id', 'order_id', 'issue_id', 'excel_asset_id', 'expected_revision'] as const) body.append(key, String(request[key]))

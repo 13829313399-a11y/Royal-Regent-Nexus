@@ -5,6 +5,7 @@ import { RouterLink, useRoute } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import CartonMarkCheckPanel from '@/components/modules/qa/CartonMarkCheckPanel.vue'
 import CartonMarkAssetLibrary from '@/components/CartonMarkAssetLibrary.vue'
+import CartonMarkManualReview, { type ManualReviewAsset } from '@/components/CartonMarkManualReview.vue'
 import type { CartonMarkAsset } from '@/api/cartonMark'
 import { getDepartmentRoute, getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
@@ -12,7 +13,10 @@ import { useAppStore } from '@/stores/app'
 const appStore = useAppStore()
 const checkPanel = ref<InstanceType<typeof CartonMarkCheckPanel> | null>(null)
 const route = useRoute()
-const workspaceTab = ref<'library' | 'check'>(route.query.panel === 'check' ? 'check' : 'library')
+const workspaceTab = ref<'library' | 'check' | 'review'>(route.query.panel === 'check' ? 'check' : 'library')
+const reviewSources = ref<ManualReviewAsset[]>([])
+function chooseReview(assets: ManualReviewAsset[]) { reviewSources.value = assets; workspaceTab.value = 'review' }
+async function reviewSaved() { reviewSources.value = []; workspaceTab.value = 'check'; await checkPanel.value?.refreshTemplates() }
 async function useAsset(asset: CartonMarkAsset) {
   if (asset.kind === 'image') return
   workspaceTab.value = 'check'
@@ -41,8 +45,9 @@ const returnDepartmentLabel = computed(() => {
   return isQcWorkspace.value ? 'QC 部' : 'QA 部'
 })
 const workspaceTitle = computed(() => isWarehouseWorkspace.value ? '箱唛资料模板' : '箱唛核验')
-const workspaceSubtitle = computed(() => isWarehouseWorkspace.value ? '批量存入资料仓库 · 按合同关联订单 · Excel / PDF 核对' : '打印 PDF 与现场箱唛照片核对')
+const workspaceSubtitle = computed(() => isWarehouseWorkspace.value ? '批量存入资料仓库 · 按合同关联订单 · Excel / PDF 核对' : 'PDF 文字核对 · 图片人工对照')
 const activeFactory = computed(() => appStore.activeProductionFactory)
+watch(() => activeFactory.value.id, () => { reviewSources.value = [] })
 const departmentRoute = computed(() => getFactoryScopedRoute(
   getDepartmentRoute(currentDepartmentId.value),
   activeFactory.value.id,
@@ -88,10 +93,12 @@ watch(currentDepartmentId, (departmentId) => {
     <section class="mx-auto max-w-[1720px] px-4 py-5 sm:px-5 sm:py-6">
       <div v-if="isWarehouseWorkspace" class="mb-4 flex gap-2" aria-label="箱唛工作区">
         <button type="button" :aria-pressed="workspaceTab === 'library'" class="rounded-lg px-4 py-2 font-semibold" :class="workspaceTab === 'library' ? 'bg-teal-700 text-white' : 'border bg-white text-slate-600'" @click="workspaceTab = 'library'">资料仓库</button>
-        <button type="button" :aria-pressed="workspaceTab === 'check'" class="rounded-lg px-4 py-2 font-semibold" :class="workspaceTab === 'check' ? 'bg-teal-700 text-white' : 'border bg-white text-slate-600'" @click="workspaceTab = 'check'">Excel / PDF 核对</button>
+        <button type="button" :aria-pressed="workspaceTab === 'check'" class="rounded-lg px-4 py-2 font-semibold" :class="workspaceTab === 'check' ? 'bg-teal-700 text-white' : 'border bg-white text-slate-600'" @click="workspaceTab = 'check'">核对 / 审核记录</button>
+        <button type="button" :aria-pressed="workspaceTab === 'review'" class="rounded-lg border bg-white px-4 py-2 font-semibold" @click="workspaceTab = 'review'">单 PDF / 图片审核</button>
       </div>
-      <p v-if="isWarehouseWorkspace" class="mb-4 rounded-lg border border-teal-100 bg-teal-50 px-4 py-3 text-sm text-teal-800">资料仓库选取原文件 → Excel / PDF 内容核对 → 核对通过或人工放行 → QC 现场拍照核验</p>
-      <CartonMarkAssetLibrary v-if="isWarehouseWorkspace" v-show="workspaceTab === 'library'" :factory-id="activeFactory.id" check-enabled @use="useAsset" @use-sources="useSources" />
+      <p v-if="isWarehouseWorkspace" class="mb-4 rounded-lg border border-teal-100 bg-teal-50 px-4 py-3 text-sm text-teal-800">资料仓库选取原文件 → Excel / PDF 内容核对，或单 PDF / 图片人工审核 → 确认可用版本 → QC 现场拍照核验</p>
+      <CartonMarkAssetLibrary v-if="isWarehouseWorkspace" v-show="workspaceTab === 'library'" :factory-id="activeFactory.id" check-enabled @use="useAsset" @use-sources="useSources" @manual-review="chooseReview" />
+      <CartonMarkManualReview v-if="isWarehouseWorkspace" v-show="workspaceTab === 'review'" :sources="reviewSources" @choose="workspaceTab = 'library'" @saved="reviewSaved" />
       <CartonMarkCheckPanel ref="checkPanel" v-show="!isWarehouseWorkspace || workspaceTab === 'check'" :workspace-mode="workspaceMode" />
     </section>
   </main>

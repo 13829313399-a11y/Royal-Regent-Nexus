@@ -26,6 +26,7 @@ from app.schemas.carton_mark import (
     CartonMarkDocumentCheckResponse,
     CartonMarkTemplateManualReleaseRequest,
     CartonMarkTemplateOut,
+    CartonMarkManualReviewRequest,
     CartonMarkAssetOut,
     CartonMarkAssetBindingRequest,
     CartonMarkAssetOrderOut,
@@ -69,6 +70,7 @@ from app.services.carton_mark_customers import (
 )
 from app.services import carton_mark_assets as assets
 from app.services import carton_mark_customer_matching as customer_matching
+from app.services import carton_mark_manual_review as manual_review
 
 router = APIRouter()
 
@@ -411,6 +413,24 @@ def remove_carton_mark_customer(
     return None
 
 
+@router.post("/api/carton-mark/manual-reviews", response_model=CartonMarkTemplateOut, status_code=201)
+async def submit_manual_review(payload: CartonMarkManualReviewRequest, request: Request,
+                               db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return await manual_review.create_review(request, db, user, payload)
+
+
+@router.get("/api/carton-mark/templates/{template_id}/sources/{asset_id}")
+def review_original(template_id: str, asset_id: str, factory_id: str,
+                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    manual_review.scope(user, factory_id, "carton_mark:read")
+    record = get_carton_mark_template(db, factory_id, template_id)
+    document = manual_review.original_source(db, factory_id, record.check_result.source_assets, asset_id)
+    return Response(document.content, media_type=document.content_type, headers={
+        "Content-Disposition": "inline; filename*=UTF-8''" + url_quote(document.file_name, safe=""),
+        "X-Content-SHA256": document.sha256, "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff"})
+
+
 @router.get("/api/carton-mark/templates", response_model=list[CartonMarkTemplateOut])
 def get_persisted_carton_mark_templates(
     factory_id: str,
@@ -493,10 +513,14 @@ async def recheck_persisted_carton_mark_template(
 def manually_release_persisted_carton_mark_template(
     template_id: str,
     payload: CartonMarkTemplateManualReleaseRequest,
+    request: Request,
     factory_id: str,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, factory_id)
+    current_user = get_current_user(request, db)
     factory_id = ensure_carton_mark_scope(
         db,
         current_user,
@@ -510,6 +534,7 @@ def manually_release_persisted_carton_mark_template(
         factory_id=factory_id,
         template_id=template_id,
         reason=payload.reason,
+        confirmed_checks=payload.confirmed_checks,
     )
 
 
