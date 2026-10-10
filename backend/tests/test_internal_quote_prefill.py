@@ -142,6 +142,23 @@ def test_removed_engineering_mold_removes_only_projected_row() -> None:
     assert refreshed["injection_lines"] == [{"item": "手工行"}]
 
 
+def test_deletion_only_sync_preserves_inputs_order_and_does_not_add_new_sources() -> None:
+    molding = prefill_molding_from_engineering(
+        {"molds": [{"mold_no": "M01", "item": "保留"}, {"mold_no": "M02", "item": "删除"}]},
+        {"injection_lines": []},
+    )
+    surviving, removed = molding["injection_lines"]
+    surviving.update({"material": "ABS", "grade": "750SW", "quantity": 7})
+    manual = {"item": "手工行", "engineering_sync_disabled": True}
+    molding["injection_lines"] = [manual, surviving, removed]
+    result = prefill_molding_from_engineering(
+        {"molds": [{"mold_no": "M01", "item": "保留", "quantity": 2}, {"mold_no": "M03", "item": "新增"}]},
+        molding, remove_missing_only=True,
+    )
+    assert result["injection_lines"] == [manual, surviving]
+    assert len(molding["injection_lines"]) == 3
+
+
 def test_generic_engineering_material_type_becomes_selectable_material_category() -> None:
     result = prefill_molding_from_engineering(
         {"molds": [{"mold_no": "M01", "chinese_name": "水桌主体", "material": "", "material_type": "pp"}]},
