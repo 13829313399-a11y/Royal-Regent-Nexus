@@ -56,7 +56,7 @@
       {
         "path": "src/features/warehouse-operations/navigation.ts",
         "symbol": "WAREHOUSE_FACTORY",
-        "sha256": "4f7efb62bd0d3b6eb7a1229d247f8767595ff45a133fc2032222f6c1c63f9f4b"
+        "sha256": "a886037cbdae00bd31df19166f852e0621ff44dc7fafbb21ff29c99c932953c8"
       }
     ],
     "knowledge_version": "2026.10.10-collaboration-r1",

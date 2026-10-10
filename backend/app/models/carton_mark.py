@@ -9,10 +9,36 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+
+class CartonMarkLayout(Base):
+    """Immutable customer layout versions in the supplier's factory boundary."""
+    __tablename__ = "carton_mark_layouts"
+    __table_args__ = (
+        ForeignKeyConstraint(["supplier_id", "factory_id"], ["carton_suppliers.id", "carton_suppliers.factory_id"], name="fk_mark_layout_supplier_factory"),
+        UniqueConstraint("factory_id", "supplier_id", "customer_key", "version", name="uq_mark_layout_customer_version"),
+        CheckConstraint("version >= 1 AND reference_size > 0", name="ck_mark_layout_version_size"),
+    )
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    supplier_id: Mapped[str] = mapped_column(String(96))
+    customer_key: Mapped[str] = mapped_column(String(300))
+    customer_name: Mapped[str] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(128))
+    version: Mapped[int] = mapped_column(Integer)
+    config_json: Mapped[str] = mapped_column(Text)
+    reference_name: Mapped[str] = mapped_column(String(255))
+    reference_sha256: Mapped[str] = mapped_column(String(64))
+    reference_size: Mapped[int] = mapped_column(Integer)
+    reference_content: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_by_name: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[str] = mapped_column(String(40))
 
 
 class CartonMarkAsset(Base):
@@ -193,3 +219,103 @@ class CartonMarkDocument(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     content: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[str] = mapped_column(String(40))
+
+
+class CartonMarkQcRecord(Base):
+    """Frozen identity of one site-photo check; later decisions are appended."""
+    __tablename__ = "carton_mark_qc_records"
+    __table_args__ = (
+        UniqueConstraint("id", "factory_id", name="uq_mark_qc_record_factory"),
+        UniqueConstraint("factory_id", "created_by", "request_id", "slot", name="uq_mark_qc_submission"),
+        ForeignKeyConstraint(["template_id", "factory_id"],
+                             ["carton_mark_templates.id", "carton_mark_templates.factory_id"],
+                             name="fk_mark_qc_template_factory"),
+        ForeignKeyConstraint(["corrects_record_id", "factory_id"],
+                             ["carton_mark_qc_records.id", "carton_mark_qc_records.factory_id"],
+                             name="fk_mark_qc_correction_factory"),
+        CheckConstraint("slot >= 0 AND template_version >= 1", name="ck_mark_qc_version_slot"),
+        Index("ix_mark_qc_factory_created", "factory_id", "created_at", "id"),
+    )
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    template_id: Mapped[str] = mapped_column(String(96))
+    template_version: Mapped[int] = mapped_column(Integer)
+    template_snapshot_json: Mapped[str] = mapped_column(Text)
+    customer_name: Mapped[str] = mapped_column(String(255))
+    po: Mapped[str] = mapped_column(String(128))
+    item: Mapped[str] = mapped_column(String(128))
+    contract_number: Mapped[str] = mapped_column(String(128))
+    pdf_sha256: Mapped[str] = mapped_column(String(64))
+    request_id: Mapped[str] = mapped_column(String(96))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    slot: Mapped[int] = mapped_column(Integer)
+    corrects_record_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    note: Mapped[str] = mapped_column(String(1000), default="")
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_by_name: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[str] = mapped_column(String(40))
+
+
+class CartonMarkQcPhoto(Base):
+    __tablename__ = "carton_mark_qc_photos"
+    __table_args__ = (
+        ForeignKeyConstraint(["record_id", "factory_id"],
+                             ["carton_mark_qc_records.id", "carton_mark_qc_records.factory_id"],
+                             name="fk_mark_qc_photo_factory"),
+        UniqueConstraint("record_id", "side", name="uq_mark_qc_photo_side"),
+        CheckConstraint("side IN ('front', 'side') AND size_bytes > 0", name="ck_mark_qc_photo"),
+    )
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(96), index=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    side: Mapped[str] = mapped_column(String(16))
+    file_name: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    content: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+
+
+class CartonMarkQcEvent(Base):
+    __tablename__ = "carton_mark_qc_events"
+    __table_args__ = (
+        ForeignKeyConstraint(["record_id", "factory_id"],
+                             ["carton_mark_qc_records.id", "carton_mark_qc_records.factory_id"],
+                             name="fk_mark_qc_event_factory"),
+        UniqueConstraint("record_id", "revision", name="uq_mark_qc_event_revision"),
+        UniqueConstraint("record_id", "actor_id", "request_id", name="uq_mark_qc_event_request"),
+        CheckConstraint("revision >= 1", name="ck_mark_qc_event_revision"),
+        CheckConstraint("kind IN ('AUTO_CHECK', 'REVIEW', 'VOID')", name="ck_mark_qc_event_kind"),
+        CheckConstraint("status IN ('待复核', '核对通过', '发现异常', '已作废')", name="ck_mark_qc_event_status"),
+    )
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(96), index=True)
+    factory_id: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(24))
+    status: Mapped[str] = mapped_column(String(16))
+    result_json: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(String(1000), default="")
+    note: Mapped[str] = mapped_column(String(1000), default="")
+    actor_id: Mapped[str] = mapped_column(String(64))
+    actor_name: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[str] = mapped_column(String(40))
+    request_id: Mapped[str] = mapped_column(String(96))
+    request_hash: Mapped[str] = mapped_column(String(64))
+
+
+def _qc_evidence_guards(table, connection, **_kwargs):
+    from sqlalchemy import text
+    if connection.dialect.name == "sqlite":
+        for action in ("update", "delete"):
+            connection.execute(text(f"CREATE TRIGGER {table.name}_no_{action} BEFORE {action.upper()} ON {table.name} "
+                                    "BEGIN SELECT RAISE(ABORT, 'QC evidence is append-only'); END"))
+    elif connection.dialect.name == "postgresql":
+        connection.execute(text("CREATE OR REPLACE FUNCTION carton_mark_qc_immutable() RETURNS trigger AS $$ "
+                                "BEGIN RAISE EXCEPTION 'QC evidence is append-only'; END; $$ LANGUAGE plpgsql"))
+        connection.execute(text(f"CREATE TRIGGER {table.name}_immutable BEFORE UPDATE OR DELETE ON {table.name} "
+                                "FOR EACH ROW EXECUTE FUNCTION carton_mark_qc_immutable()"))
+
+
+for _qc_model in (CartonMarkQcRecord, CartonMarkQcPhoto, CartonMarkQcEvent):
+    event.listen(_qc_model.__table__, "after_create", _qc_evidence_guards)

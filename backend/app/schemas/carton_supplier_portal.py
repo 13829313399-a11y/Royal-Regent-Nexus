@@ -191,3 +191,65 @@ class SupplierMarkAssetUploadOut(BaseModel):
     status: Literal["created", "duplicate", "failed"]
     message: str = ""
     asset: SupplierMarkAssetOut | None = None
+
+
+class SupplierMarkPdfRequest(Payload):
+    order_id: str = Field(min_length=1, max_length=96)
+    issue_id: str = Field(min_length=1, max_length=96)
+    excel_asset_id: str = Field(min_length=1, max_length=96)
+    expected_revision: int = Field(ge=1)
+    layout_id: str = Field(min_length=1, max_length=96)
+
+
+class MarkLayoutRegion(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    x: float = Field(ge=0, le=1000)
+    y: float = Field(ge=0, le=1000)
+    width: float = Field(gt=0, le=1000)
+    height: float = Field(gt=0, le=1000)
+
+
+class MarkLayoutConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
+    mode: Literal["front_side", "front_only", "separate_pages"] = "front_side"
+    frame_style: Literal["plain", "original_red"] = "plain"
+    paper: Literal["A4", "A3"] = "A4"
+    font: Literal["Helvetica", "Courier"] = "Helvetica"
+    font_size: float = Field(default=11, ge=7, le=16)
+    front_percent: int = Field(default=55, ge=40, le=60)
+    front_copies: int = Field(default=2, ge=1, le=4)
+    side_copies: int = Field(default=2, ge=1, le=4)
+    barcode: Literal["Code128", "ITF14", "none"] = "Code128"
+    side_address: str = Field(default="", max_length=500)
+    instructions: str = Field(default="", max_length=500)
+    reference_page: int = Field(default=0, ge=0, le=19)
+    logo_region: MarkLayoutRegion | None = None
+    stamp_region: MarkLayoutRegion | None = None
+    field_cells: dict[Literal["item", "vendor", "product", "content", "gtin", "vendor_item", "dimensions", "gross_weight"], str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def valid_cells(self):
+        import re
+        if any(not re.fullmatch(r"[A-Za-z]{1,3}[1-9][0-9]{0,4}", value) for value in self.field_cells.values() if value):
+            raise ValueError("字段位置填写 Excel 单元格，如 C15")
+        return self
+
+
+class SupplierMarkLayoutOut(BaseModel):
+    id: str
+    factory_id: str
+    customer_name: str
+    name: str
+    version: int
+    reference_name: str
+    created_at: str
+    config: MarkLayoutConfig
+
+
+class SupplierMarkPdfOut(BaseModel):
+    asset: SupplierMarkAssetOut
+    page_count: int
+    warnings: list[str] = Field(default_factory=list)
+    layout_id: str
+    layout_name: str
+    layout_version: int

@@ -6,6 +6,7 @@ export interface CustomerOrderLedgerHttpClient {
 }
 
 export interface CustomerOrderLedgerCapabilities {
+  cutting_dispatch_enabled?: boolean
   read: boolean
   write: boolean
   dispatch: boolean
@@ -92,7 +93,7 @@ export function createCustomerOrderLedgerApi(client: CustomerOrderLedgerHttpClie
     async restore(id: string, factoryId: string, payload: { expected_revision: number; reason: string; confirmed: true; notify_recipients: boolean }) {
       return (await client.post<CustomerOrderLedgerLine>(`${base}/lines/${encodeURIComponent(id)}/restore?${query({ factory_id: factoryId })}`, payload)).data
     },
-    async dispatch(id: string, factoryId: string, payload: { expected_revision: number; recipients: Array<'pmc' | 'warehouse' | 'injection'> }) {
+    async dispatch(id: string, factoryId: string, payload: { expected_revision: number; recipients: Array<'pmc' | 'warehouse' | 'injection' | 'cutting'> }) {
       return (await client.post<CustomerOrderLedgerLine>(`${base}/lines/${encodeURIComponent(id)}/dispatch?${query({ factory_id: factoryId })}`, payload)).data
     },
     async confirmShipment(id: string, factoryId: string, payload: { expected_revision: number; idempotency_key: string; quantity: string; ship_date: string; document_no: string; note: string }) {

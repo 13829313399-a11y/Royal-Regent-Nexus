@@ -231,9 +231,11 @@ def test_location_api_auth_file_flow_and_receipt_snapshot(monkeypatch):
         save(client,book([row(采购明细ID='L1',入库数量=0,交货明细='')]))
         assert client.post(root,json=master()).status_code == 200
         line=stored(client)['items'][0]
-        posted=receive(client,line,request(line,batches=[{'quantity':'10','location':'a01','dye_lot':'001'}]))
+        bins=client.get(root,params={'factory_id':'huakang-c','kind':'LOCATION'}).json()['items']
+        location_id=next(r['id'] for r in bins if r['code'] == 'A01')
+        posted=receive(client,line,request(line,batches=[{'quantity':'10','location':'a01','location_id':location_id,'dye_lot':'001'}]))
         assert posted.status_code == 200,posted.text
-        assert posted.json()['batches'][0]['location'] == 'A01'
+        assert posted.json()['batches'][0]['location'] == '布料仓／A01'
         locations=client.get(root,params={'factory_id':'huakang-c','kind':'LOCATION'}).json()['items']
         rename={'factory_id':'huakang-c','request_id':str(uuid4()),'warehouse':'布料仓','name':'布料新仓','expected_group_token':client.get(root,params={'factory_id':'huakang-c','kind':'LOCATION'}).json()['warehouse_tokens']['布料仓']}
         assert client.post(root+'/locations/rename-warehouse',json=rename).status_code == 200
@@ -242,8 +244,8 @@ def test_location_api_auth_file_flow_and_receipt_snapshot(monkeypatch):
         current=client.get(root,params={'factory_id':'huakang-c','kind':'LOCATION'}).json()['items'][0]
         assert client.post(root,json=master('LOCATION',current['code'],current['name'],id=current['id'],expected_revision=current['revision'],status='INACTIVE',data=current['data'])).status_code == 200
         line=stored(client)['items'][0]
-        assert receive(client,line,request(line,delivery_reference='DN2',batches=[{'quantity':'1','location':'A01','dye_lot':'002'}])).status_code == 422
-        assert receive(client,line,request(line,delivery_reference='DN3',batches=[{'quantity':'1','location':'a01','dye_lot':'002'}])).status_code == 422
+        assert receive(client,line,request(line,delivery_reference='DN2',batches=[{'quantity':'1','location':'A01','location_id':location_id,'dye_lot':'002'}])).status_code == 422
+        assert receive(client,line,request(line,delivery_reference='DN3',batches=[{'quantity':'1','location':'a01','location_id':location_id,'dye_lot':'002'}])).status_code == 422
         auth=importlib.import_module('app.services.auth')
         dbm=importlib.import_module('app.db')
         users=importlib.import_module('app.models.auth')

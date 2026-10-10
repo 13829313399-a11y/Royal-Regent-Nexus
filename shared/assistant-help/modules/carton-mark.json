@@ -13,8 +13,8 @@
     "factory_ids": [],
     "anchor_id": "carton-mark.overview",
     "field_keys": [],
-    "summary": "核对客户资料、印刷文件与实物照片，分别保留自动结果和人工放行依据。",
-    "content": "先确认厂区、客户与模板版本，再上传对应 Excel/PDF 或正唛、侧唛照片。单次自动核验需要非空 PDF、正唛照片和侧唛照片；批量照片核验至少包含一张正唛或侧唛照片。上传、绑定、核验是不同操作，文件上传成功不代表核验通过。\n核验结果反映本次资料比较，不证明所有实物合格。模板的 check_status 是自动核对状态；manual_released、放行理由、操作者和时间是单独的人工记录。自动“核对通过”的模板无需人工放行；已放行模板不能重复放行，理由至少 5 个字符。重新核验会撤销原人工放行记录，应重新查看结果。\n先核对资料版本与照片分组，再逐项处理差异；需人工放行时在原页面说明依据并确认。厂区/客户范围和上传、核验、放行权限由原接口校验；助手只能解释，不会修改模板、上传照片或代为放行。",
+    "summary": "Excel/PDF 内容核对，或单 PDF/图片人工审核；确认版本后流转 QC 并留档。",
+    "content": "先确认厂区、订单、客户、合同、PO、货号与资料版本。Excel＋PDF 使用原有内容核对；只有一个 PDF 或一组图片时，在资料库选择原文件进入审核。唯一共同关联订单自动选中；多订单时明确选择一个。无需填写资料来源或逐项勾选。订单归属由后台取得，供应商只能提交，不能自行审核通过。\n有放行权限的内部人员点击“审核通过”，系统自动记录审核人、时间和精确资料版本。内部选取原文件后可直接审核通过，创建与审批一并保存；供应商和普通上传人员提交后，由内部审核人在记录里直接通过。后台仍校验权限、订单状态及原件完整性。单 PDF/图片未执行 Excel/PDF 自动比对，不会把人工通过记成自动通过；内容修改需提交新版本。\nPDF 审核通过后可用于现有 QC 文字/OCR 核对。现场照片中的文字已有 OCR 识别能力，但不能据此保证图案、尺寸、条码图像或所有内容正确。图片资料暂用于 QC 人工对照，保留原图片和合并预览 PDF；该预览不用于自动比较，也不代表生产 1:1 尺寸。\nExcel/PDF 自动通过可供 QC 使用；发现差异或需复核时，仍沿用人工放行权限和至少 5 字的理由流程。重新执行 Excel/PDF 自动核对会撤销其旧放行；单 PDF/图片记录不能执行 Excel/PDF 重新核对。\nQC 选择可用版本，拍摄正唛或侧唛（至少一张），上传后照片、精确资料版本及审批快照保存至服务端。PDF 自动核对结果仍待人工复核；图片资料直接保存为待人工复核，不生成自动比较结果，也没有重新自动核对入口。历史留档可查看当时原稿和复核事件；人工接受、异常、整改和作废保留历史，不覆盖原照片。助手只能解释，不会上传或代为审核通过。",
     "steps": [
       {
         "title": "核对资料归属",
@@ -25,14 +25,14 @@
       },
       {
         "title": "检查核验结果",
-        "description": "对照 Excel、PDF 和实物照片查看差异；上传成功不代表通过。",
+        "description": "Excel/PDF 查看文字差异；单 PDF/图片查看订单和原稿，供应商提交仍需内部审批。",
         "anchor_id": "carton-mark.overview",
         "precondition": "已进入本模块且总览区域可见",
         "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
       },
       {
         "title": "处理复核",
-        "description": "回原页面处理差异或填写人工放行理由；重新核验后重新确认放行状态。",
+        "description": "有权限的内部人员直接点击审核通过；QC 使用 PDF 核对文字，图片资料人工对照并拍照留档。",
         "anchor_id": "carton-mark.overview",
         "precondition": "已进入本模块且总览区域可见",
         "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
@@ -42,15 +42,25 @@
       {
         "path": "backend/app/api/carton_mark.py",
         "symbol": "auto-check",
-        "sha256": "f91850a795d86200a4bf08985e8a3b84df23e80497f5ac6afd4aecafbaec32aa"
+        "sha256": "a566366ebfc5ae3a8dfa3af42341f6253bcaf7489ede36d05799fac3a7c43e51"
       },
       {
         "path": "backend/app/services/carton_mark_library.py",
         "symbol": "manually_release_carton_mark_template",
-        "sha256": "54ea912b68c3f1112e68fbaf05a5f16c9680a99de645b3dffa431c64ce52a8c4"
+        "sha256": "6d140dcf98ad954c0b15fc0f252849b88cd8b259dcd83b78774018d8454c58d0"
+      },
+      {
+        "path": "backend/app/services/carton_mark_manual_review.py",
+        "symbol": "validate_release",
+        "sha256": "878f81fbec98e425f49a0992ff890357f3ce601f7b2840deb0232239693f72c8"
+      },
+      {
+        "path": "backend/app/services/carton_mark_qc.py",
+        "symbol": "template_source",
+        "sha256": "27d54d23f33026cc646f187629f338127c9eab02b94623bb2c28fb2126c8ff79"
       }
     ],
-    "knowledge_version": "2026.10.08-v2",
+    "knowledge_version": "2026.10.10-v4",
     "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
     "status": "verified"
   }

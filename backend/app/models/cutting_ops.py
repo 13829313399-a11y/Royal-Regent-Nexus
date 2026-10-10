@@ -40,3 +40,47 @@ class CuttingCommand(Base):
     fingerprint: Mapped[str] = mapped_column(String(64))
     result: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[str] = mapped_column(String(40))
+
+
+class CuttingOrder(Base):
+    __tablename__ = 'cutting_ops_orders'
+    __table_args__ = (
+        ForeignKeyConstraint(['line_id'], ['order_ledger_lines.id']),
+        ForeignKeyConstraint(['dispatch_id'], ['order_ledger_dispatches.id']),
+        CheckConstraint("factory_id = 'huakang-c'"),
+    )
+    line_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(32))
+    dispatch_id: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+
+
+class CuttingOrderRevision(Base):
+    __tablename__ = 'cutting_ops_order_revisions'
+    __table_args__ = (ForeignKeyConstraint(['line_id'], ['cutting_ops_orders.line_id']),)
+    line_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    actor_id: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(40))
+    reason: Mapped[str] = mapped_column(String(500))
+
+
+class CuttingProductionEvent(Base):
+    """Append-only report revisions; drafts never replace posted production facts."""
+    __tablename__ = 'cutting_ops_production_events'
+    __table_args__ = (
+        ForeignKeyConstraint(['line_id'], ['cutting_ops_orders.line_id']),
+        UniqueConstraint('line_id', 'version'),
+        CheckConstraint("factory_id = 'huakang-c'"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    line_id: Mapped[str] = mapped_column(String(64), index=True)
+    factory_id: Mapped[str] = mapped_column(String(32))
+    version: Mapped[int] = mapped_column(Integer)
+    document_id: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(16))
+    data: Mapped[dict] = mapped_column(JSON)
+    actor_id: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(40))
+    reason: Mapped[str] = mapped_column(String(500))

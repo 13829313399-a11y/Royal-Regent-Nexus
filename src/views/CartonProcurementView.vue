@@ -417,19 +417,31 @@ const masterLoaded = ref(false), masterError = ref('')
 const chosenMaster = ref<MasterRecord | null>(null)
 const outboundWorkshop = ref(''), bulkWorkshops = ref<Record<string, string>>({})
 const workshops = computed(() => masterWorkspace.value.records.filter(r => r.kind === 'WORKSHOP' && r.status === 'ACTIVE'))
-const responsibilities = ref(emptyResponsibilities()), responsibilityError = ref('')
+const responsibilities = ref(emptyResponsibilities()), responsibilityError = ref(''), responsibilityLoading = ref(false)
 const customerViewScope = ref<'OWN' | 'ALL'>('OWN')
 let responsibilityGeneration = 0
 onBeforeUnmount(() => { responsibilityGeneration++ })
 async function refreshResponsibilities() {
   const generation = ++responsibilityGeneration, factory = selectedFactoryId.value
+  responsibilityLoading.value = true
   try {
     const result = await cartonCustomerResponsibilitiesApi.get(factory, undefined, true)
     if (generation === responsibilityGeneration && factory === selectedFactoryId.value) { responsibilities.value = result; responsibilityError.value = '' }
   } catch (cause) {
     if (generation === responsibilityGeneration && factory === selectedFactoryId.value) { responsibilities.value = emptyResponsibilities(); responsibilityError.value = getApiErrorMessage(cause) }
+  } finally {
+    if (generation === responsibilityGeneration) responsibilityLoading.value = false
   }
 }
+function refreshOpenOrderResponsibilities() {
+  if (showOrderModal.value && document.visibilityState !== 'hidden') void refreshResponsibilities()
+}
+window.addEventListener('focus', refreshOpenOrderResponsibilities)
+document.addEventListener('visibilitychange', refreshOpenOrderResponsibilities)
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', refreshOpenOrderResponsibilities)
+  document.removeEventListener('visibilitychange', refreshOpenOrderResponsibilities)
+})
 function responsibleForCustomer(code: string) { return responsibilities.value.unrestricted || responsibilities.value.own_customer_codes.includes(code)
   || (Array.isArray(responsibilities.value.blocked_customer_codes) && !responsibilities.value.blocked_customer_codes.includes(code)) }
 function responsibleForOrder(number: string) { const row = orderRecords.value.find(order => order.order_no === number); return !!row && responsibleForCustomer(row.customer_code) }
@@ -3090,6 +3102,10 @@ function replaceOrderState(order: CartonOrderResponse) {
 
 async function createLocalOrder() {
   orderFeedbackMessage.value = ''
+  if (responsibilityLoading.value || responsibilityError.value) {
+    setOrderFeedback(responsibilityLoading.value ? '正在核对客户授权，请稍候再保存。' : `客户责任范围读取失败：${responsibilityError.value}；请刷新客户授权后重试。`)
+    return
+  }
   const validMaterials = orderForm.materials.filter((material) =>
     material.packagingType.trim()
     && (orderForm.quantityBasis === 'EXPLICIT' ? Number(material.requiredQuantity) > 0 : material.paperQuality.trim() && material.specification.trim() && Number(material.unitsPerCarton) > 0),
@@ -3105,7 +3121,7 @@ async function createLocalOrder() {
     return
   }
   if (!responsibleForCustomer(selectedCustomer.customer_code)) {
-    setOrderFeedback('该客户未分配给你，请联系主管分配客户责任范围。')
+    setOrderFeedback('当前未获该客户的操作授权；若负责人已授权，请刷新客户授权后重试，否则请联系负责人或主管核对。')
     return
   }
   if (orderForm.materials.some(material => [material.netWeight, material.grossWeight].some(value => value != null && value !== '' && (!Number.isFinite(Number(value)) || Number(value) < 0))
@@ -5905,7 +5921,10 @@ async function openOrderSplit(number: string) {
 function closeOrderSplit() { dashboardActionGeneration++; dashboardActionBusy.value = false; splitOrder.value = null }
 watch(customerViewScope, () => { selectedOrderNos.value = []; orderPage.value = 1;
   void loadBackendData(selectedFactoryId.value, { supersede: true }) })
-watch([selectedFactoryId, () => authStore.currentUser?.id, () => authStore.authorizationVersion], () => { responsibilities.value = emptyResponsibilities(); void refreshResponsibilities() }, { immediate: true })
+watch([selectedFactoryId, () => authStore.currentUser?.id, () => authStore.authorizationVersion,
+  () => authStore.authzMode, () => authStore.currentUser?.identity?.effective_context_key,
+  () => authStore.currentUser?.identity?.employment_epoch,
+], () => { responsibilities.value = emptyResponsibilities(); void refreshResponsibilities() }, { immediate: true })
 watch(selectedFactoryId, () => { closeOrderSplit(); splitReceiptConfirmation.value = '' })
 watch(showReceiptDialog, () => { splitReceiptConfirmation.value = '' })
 const splitReceiptLines = computed(() => currentReceipt.value
@@ -7434,7 +7453,7 @@ watch([
           <section>
             <div class="mb-3 text-[11px] font-bold text-slate-900">合同主信息</div>
             <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <CartonCustomerPicker v-model="orderForm.customerCode" :customers="orderCustomers" :can-create="masterLoaded && masterWorkspace.can_manage" :disabled="editingOrderStructureLocked" @create="createOrderCustomer" />
+              <CartonCustomerPicker v-model="orderForm.customerCode" :customers="orderCustomers" :known-customers="customerRecords" :can-create="masterLoaded && masterWorkspace.can_manage && !responsibilityLoading && !responsibilityError" :disabled="editingOrderStructureLocked" @create="createOrderCustomer" @refresh="refreshResponsibilities" />
               <label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">纸箱供应商</span><input value="河源东康纸品有限公司（系统固定）" aria-label="纸箱供应商" disabled class="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-slate-500"></label>
               <label class="block space-y-1.5"><span class="text-[11px] font-bold text-slate-600">客户 PO（选填）</span><input v-model="orderForm.customerPo" aria-label="客户 PO" maxlength="128" :disabled="editingOrderStructureLocked" placeholder="同合同同货号时，用客户 PO 区分" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50"><CartonNumberRuleHint v-if="masterLoaded && orderForm.customerCode && orderForm.customerPo" :rule="orderMasterRules.customer_po_rule" :value="orderForm.customerPo" label="客户 PO" /><span v-else class="block text-[9px] text-slate-400">选填；格式规则可在基础资料按客户设置</span></label>
               <CartonMasterLookup :records="masterLoaded ? masterWorkspace.records : []" :customer="orderForm.customerCode" :query="orderForm.contractNo" field="contract" :disabled="editingOrderStructureLocked || !masterLoaded" @select="orderForm.contractNo = $event.code"><label class="space-y-1.5"><span class="text-[11px] font-bold text-slate-600">合同号 *</span><input v-model="orderForm.contractNo" aria-label="合同号" :disabled="editingOrderStructureLocked" placeholder="例如 SC700145365" class="h-10 w-full rounded-lg border border-slate-200 px-3 outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-500"></label><template #hint><CartonNumberRuleHint v-if="masterLoaded && orderForm.customerCode" :rule="masterDueRules(masterWorkspace.records, orderForm.customerCode).contract_rule" :value="orderForm.contractNo" label="合同号" /><span v-else class="mt-1.5 block text-[9px] text-slate-400">支持中英文、数字及 - _ . / # ( ) + &</span></template></CartonMasterLookup>
@@ -7463,8 +7482,12 @@ watch([
             </div>
           </section>
 
-          <p v-if="responsibilityError" role="alert" class="px-5 pb-3 text-xs text-red-700">客户责任范围读取失败：{{ responsibilityError }}；当前无法操作客户订单，请刷新重试。</p>
-          <p v-else-if="!orderCustomers.length" class="px-5 pb-3 text-xs text-amber-700">尚未分配可操作客户，请联系主管在基础资料中分配客户责任范围。</p>
+          <div class="flex flex-wrap items-center gap-2 px-5 pb-3 text-xs">
+            <p v-if="responsibilityLoading" role="status" class="text-slate-500">正在核对客户授权…</p>
+            <p v-else-if="responsibilityError" role="alert" class="text-red-700">客户责任范围读取失败：{{ responsibilityError }}；当前无法操作客户订单，请刷新重试。</p>
+            <p v-else-if="!orderCustomers.length" class="text-amber-700">当前没有可操作客户；若负责人已授权，请刷新客户授权后重试。</p>
+            <button type="button" aria-label="刷新订单客户授权" :disabled="responsibilityLoading" class="text-teal-700 underline underline-offset-2 disabled:text-slate-400" @click="refreshResponsibilities">刷新客户授权</button>
+          </div>
           <CartonMasterOrderAssist v-if="masterLoaded && orderForm.quantityBasis !== 'EXPLICIT'" :records="masterWorkspace.records" :customer="orderForm.customerCode" :item="orderForm.itemNo" :contract="orderForm.contractNo" :product="orderForm.productName" :disabled="editingOrderStructureLocked" :lines="orderForm.materials.map(l => ({ packaging_type: l.packagingType, paper_quality: l.paperQuality, specification: l.specification, dimension_unit: l.dimensionUnit, unit: l.unit, usage_quantity: l.unitsPerCarton, net_weight_kg: l.netWeight == null || l.netWeight === '' ? null : l.netWeight, gross_weight_kg: l.grossWeight == null || l.grossWeight === '' ? null : l.grossWeight }))" @select="applyMaster" />
           <p v-else-if="masterError" class="text-xs text-amber-700">基础资料暂未读到，可稍后刷新；{{ masterError }}</p>
           <section class="rounded-xl border border-slate-200">

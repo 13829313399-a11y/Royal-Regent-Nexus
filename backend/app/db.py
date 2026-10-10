@@ -330,14 +330,37 @@ def ensure_carton_mark_library_schema_ready() -> None:
                 missing.append("carton_mark_assets 图片格式约束")
             if "photo_group_id" not in {c["name"] for c in inspector.get_columns("carton_mark_assets")}:
                 missing.append("carton_mark_assets 照片分组字段")
-        if not missing:
-            return
-    raise RuntimeError(
-        "检测到箱唛资料库尚未完整迁移 "
-        f"{CARTON_MARK_LIBRARY_REVISION}；当前版本：{current_revision}；"
-        f"缺少结构：{', '.join(missing)}。"
-        "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
-    )
+        if missing:
+            raise RuntimeError(
+                "检测到箱唛资料库尚未完整迁移 "
+                f"{CARTON_MARK_LIBRARY_REVISION}；当前版本：{current_revision}；"
+                f"缺少结构：{', '.join(missing)}。"
+                "请先备份数据库并执行 Alembic upgrade head，再启动应用。"
+            )
+        qc_tables = ("carton_mark_qc_records", "carton_mark_qc_photos", "carton_mark_qc_events")
+        qc_missing = []
+        for name in qc_tables:
+            if name not in table_names:
+                qc_missing.append(name)
+            else:
+                columns = {c["name"] for c in inspector.get_columns(name)}
+                qc_missing.extend(name + "." + c.name for c in Base.metadata.tables[name].columns if c.name not in columns)
+        if not qc_missing and engine.dialect.name == "sqlite":
+            guards = set(connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='trigger'").scalars())
+            qc_missing.extend(name + "_no_" + action for name in qc_tables for action in ("update", "delete")
+                              if name + "_no_" + action not in guards)
+        elif not qc_missing and engine.dialect.name == "postgresql":
+            guards = set(connection.exec_driver_sql(
+                "SELECT t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid "
+                "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE NOT t.tgisinternal AND t.tgenabled='O' AND n.nspname=current_schema()"
+            ).scalars())
+            qc_missing.extend(name + "_immutable" for name in qc_tables if name + "_immutable" not in guards)
+        if qc_missing:
+            raise RuntimeError("QC 箱唛留档需要先备份并迁移至 20261010_0153：" + ", ".join(qc_missing))
+        layout_columns = {c["name"] for c in inspector.get_columns("carton_mark_layouts")} if "carton_mark_layouts" in table_names else set()
+        if any(c.name not in layout_columns for c in Base.metadata.tables["carton_mark_layouts"].columns):
+            raise RuntimeError("客户箱唛排版模板需要先备份并迁移至 20261010_0154")
 
 
 def ensure_qc_inspection_schema_ready() -> None:
@@ -927,6 +950,7 @@ def init_db() -> None:
                             and (not name.startswith(("collab_", "member_")) or not existing_tables)
                             # An existing business store upgrades this new domain explicitly.
                             and (not name.startswith("fabric_") or "auth_users" not in existing_tables)
+                            and (not name.startswith("warehouse_operations_") or "auth_users" not in existing_tables)
                             and not name.startswith(("uv_ops_", "nexus_assistant_"))
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.

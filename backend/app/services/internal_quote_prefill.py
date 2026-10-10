@@ -128,12 +128,16 @@ def _source_keys(molds: list[dict[str, Any]]) -> list[str]:
 def prefill_molding_from_engineering(
     engineering_payload: dict[str, Any],
     molding_payload: dict[str, Any],
+    *,
+    remove_missing_only: bool = False,
 ) -> dict[str, Any]:
     """Return a molding payload with engineering molds projected into injection rows.
 
     Engineering-owned values are refreshed whenever a quote is read. Molding-only
     values on an existing matching row are retained. Previously projected rows are
     removed when their engineering source mold no longer exists; manual rows remain.
+    Save/invalidation paths can remove missing sources without introducing new,
+    incomplete rows or changing the surviving department inputs.
     """
 
     source_rows = engineering_payload.get("molds", [])
@@ -170,6 +174,10 @@ def prefill_molding_from_engineering(
 
     for source, source_key in zip(molds, keys, strict=True):
         existing_index = find_existing(source, source_key)
+        if remove_missing_only:
+            if existing_index is not None:
+                used_existing.add(existing_index)
+            continue
         if existing_index is None:
             row: dict[str, Any] = {
                 "item": "",
@@ -275,6 +283,14 @@ def prefill_molding_from_engineering(
         row["engineering_source_key"] = source_key
         row["engineering_synced_fields"] = synced_fields
         projected.append(row)
+
+    if remove_missing_only:
+        result = deepcopy(molding_payload)
+        result["injection_lines"] = [
+            row for index, row in enumerate(existing)
+            if index in used_existing or not _text(row.get("engineering_source_key"))
+        ]
+        return result
 
     # Keep rows created by the molding department. Stale engineering-projected
     # rows are intentionally omitted because their source mold has been removed.

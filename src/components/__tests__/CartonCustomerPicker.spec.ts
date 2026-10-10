@@ -8,6 +8,26 @@ const customers = [
   { id: 'B', customer_code: 'OLD', customer_name: '旧客户', status: 'INACTIVE' },
 ] as CartonCustomerResponse[]
 describe('customer selection', () => {
+  it('recognizes restricted customers by name or code without offering duplicate creation', async () => {
+    const wrapper = mount(Picker, { props: { modelValue: '', customers: [], knownCustomers: customers, canCreate: true } })
+    for (const query of ['迪奇', ' ｄ ']) {
+      await wrapper.get('input').setValue(query)
+      expect(wrapper.text()).toContain('已有此客户')
+      expect(wrapper.text()).not.toContain('新增客户：')
+      expect(wrapper.findAll('button')).toHaveLength(0)
+    }
+    wrapper.unmount()
+  })
+  it('keeps an authorized customer selectable when another customer has the same name', async () => {
+    const other = { ...customers[0]!, id: 'OTHER', customer_code: 'OTHER' }
+    const wrapper = mount(Picker, { props: { modelValue: '', customers: [customers[0]!], knownCustomers: [other, ...customers], canCreate: true } })
+    await wrapper.get('input').setValue('迪奇')
+    expect(wrapper.text()).not.toContain('当前客户授权未包含它')
+    expect(wrapper.text()).not.toContain('新增客户：')
+    await wrapper.get('[aria-label="选择客户 迪奇"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual(['D'])
+    wrapper.unmount()
+  })
   it('binds a unique complete active name when leaving the field', async () => {
     const wrapper = mount(Picker, { props: { modelValue: '', customers, canCreate: false } })
     await wrapper.get('input').setValue('迪奇')

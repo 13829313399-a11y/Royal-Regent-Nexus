@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -7,9 +7,12 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
-from app.models.cutting_ops import CuttingMaster, CuttingRevision
+from app.models.cutting_ops import CuttingMaster, CuttingRevision, CuttingOrder, CuttingOrderRevision
 from app.services.auth import AuthContext, get_current_user
 from app.services import cutting_ops as c, cutting_schemas as s
+from app.services import cutting_orders as orders
+from app.services import cutting_planning as planning, cutting_planning_schemas as ps
+from app.services import cutting_reporting as reporting, cutting_reporting_schemas as rs
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -42,7 +45,9 @@ def access(db: Db, user: User, factory_id: str = ''):
     c.authorize(user, factory_id)
     enabled = settings.cutting_ops_enabled
     migrated = c.schema_ready(db.connection()) if enabled else False
-    return dict(enabled=enabled, schema_ready=migrated, permissions=[code.split(':')[1] for code in
+    return dict(enabled=enabled, schema_ready=migrated, orders_schema_ready=orders.schema_ready(db.connection()) if enabled else False,
+                reporting_schema_ready=reporting.schema_ready(db.connection()) if enabled else False,
+                permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
 
 
@@ -53,7 +58,9 @@ def masters(db: Db, user: User, factory_id: str = '', kind: s.Kind = 'material',
     ready(db)
     query = select(CuttingMaster).where(CuttingMaster.factory_id == factory_id, CuttingMaster.kind == kind)
     if q.strip():
-        query = query.where(CuttingMaster.code.contains(q.strip(), autoescape=True))
+        matches = [CuttingRevision.data[field].as_string().contains(q.strip(), autoescape=True) for field in ('name', 'item_no', 'style', 'color')]
+        revisions = select(CuttingRevision.master_id).where(CuttingRevision.master_id == CuttingMaster.id, *[matches[0] | matches[1] | matches[2] | matches[3]]).exists()
+        query = query.where(CuttingMaster.code.contains(q.strip(), autoescape=True) | revisions)
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     rows = db.scalars(query.order_by(CuttingMaster.code).offset((page-1)*page_size).limit(page_size))
     return dict(data=[c.view(db, item) for item in rows], total=total, page=page, page_size=page_size)
@@ -88,3 +95,146 @@ def change_state(entity_id: str, body: s.StateChange, db: Db, user: User):
     c.authorize(user, body.factory_id, 'bom_publish' if body.status == 'published' else 'master_write')
     ready(db)
     return c.command(db, user, body, 'state:' + entity_id, lambda: c.state(db, user, body, entity_id))
+
+
+def orders_ready(db):
+    ready(db)
+    c.require(orders.schema_ready(db.connection()), '裁床订单与交期需先完成显式数据库迁移', 503)
+
+
+@router.get('/orders')
+def order_list(db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1), q: str = Query('', max_length=80),
+               status: s.WorkflowStatus | None = None, plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return orders.list_orders(db, page, q, status, plan_status)
+
+
+@router.get('/orders/{line_id}/versions')
+def order_versions(line_id: str, db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1)):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    order = db.get(CuttingOrder, line_id)
+    c.require(order is not None and order.factory_id == c.FACTORY, '裁床订单不存在', 404)
+    numbers = db.scalars(select(CuttingOrderRevision.version).where(CuttingOrderRevision.line_id == line_id)
+        .order_by(CuttingOrderRevision.version.desc()).offset((page-1)*50).limit(50))
+    return dict(data=[orders.revision(db, order, v) for v in numbers], total=order.version, page=page, page_size=50)
+
+
+def order_command(db, user, line_id, body, action, handler):
+    c.authorize(user, body.factory_id, action)
+    orders_ready(db)
+    result = c.command(db, user, body, action + ':' + line_id, lambda: handler(db, user, line_id, body))
+    if action in {'plan_write', 'plan_publish'}:
+        # A historical successful receipt must not hide current rule/resource invalidation.
+        # Keep the immutable receipt intact, but return the current order view after replay.
+        db.expire_all()
+        return orders.view(db, orders.latest(db, line_id))
+    return result
+
+
+@router.post('/orders/{line_id}/receive')
+def receive_order(line_id: str, body: s.ReceiveOrder, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'order_receive', orders.receive)
+
+
+@router.post('/orders/{line_id}/bom')
+def bind_order_bom(line_id: str, body: s.BindBom, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'bom_write', orders.bind_bom)
+
+
+@router.post('/orders/{line_id}/requisition')
+def submit_requisition(line_id: str, body: s.SubmitRequisition, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'requisition_submit', orders.submit)
+
+
+@router.post('/orders/{line_id}/eta')
+def eta_reply(line_id: str, body: s.ReplyEta, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'eta_write', orders.reply_eta)
+
+
+@router.post('/orders/{line_id}/withdraw')
+def withdraw_requisition(line_id: str, body: s.WithdrawRequisition, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'requisition_submit', orders.withdraw)
+
+
+@router.post('/orders/{line_id}/reconcile')
+def reconcile_requisition(line_id: str, body: s.ReconcileRequisition, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'requisition_reconcile', orders.reconcile)
+
+
+@router.post('/orders/{line_id}/plan')
+def save_plan(line_id: str, body: ps.SavePlan, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'plan_write', planning.save)
+
+
+@router.post('/orders/{line_id}/plan-publish')
+def publish_plan(line_id: str, body: ps.PublishPlan, db: Db, user: User):
+    return order_command(db, user, line_id, body, 'plan_publish', planning.publish)
+
+
+@router.post('/orders/{line_id}/operations/recover')
+def recover_order_operation(line_id: str, body: s.RecoverOperation, db: Db, user: User):
+    contracts = {
+        'receive': (s.ReceiveOrder, 'order_receive'), 'bom': (s.BindBom, 'bom_write'),
+        'requisition': (s.SubmitRequisition, 'requisition_submit'), 'eta': (s.ReplyEta, 'eta_write'),
+        'plan': (ps.SavePlan, 'plan_write'), 'plan-publish': (ps.PublishPlan, 'plan_publish'),
+        'withdraw': (s.WithdrawRequisition, 'requisition_submit'), 'reconcile': (s.ReconcileRequisition, 'requisition_reconcile'),
+    }
+    model, permission = contracts[body.action]
+    identity = s.OperationIdentity.model_validate({key: body.command.get(key) for key in ('factory_id', 'operation_id')})
+    c.authorize(user, identity.factory_id)
+    c.require(c.schema_ready(db.connection()), '裁床操作记录需先完成迁移', 503)
+    try:
+        original = model.model_validate(body.command)
+    except ValidationError:
+        # Even a lost validation response can be resolved. Fence this operation id under
+        # the same lock; a delayed request cannot write after the editor is released.
+        return orders.recover_operation(db, user, identity, permission + ':' + line_id, invalid_payload=body.command)
+    # Read access plus ownership is enough to resolve/stop an own command after write revocation.
+    # No source-state check here: stale/cancelled orders must still be recoverable.
+    return orders.recover_operation(db, user, original, permission + ':' + line_id)
+
+
+@router.get('/orders/{line_id}/reports')
+def production_reports(line_id: str, db: Db, user: User, factory_id: str = '', as_of: ps.BusinessDate | None = None):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    c.require(reporting.schema_ready(db.connection()), '每日填数需先完成 0155 显式迁移', 503)
+    return reporting.view(db, line_id, as_of.isoformat() if as_of else None)
+
+
+def report_permission(db, line_id, body, action):
+    if action == 'review': return 'report_review'
+    if action in {'void', 'discard'}:
+        document=reporting.documents(reporting.events(db, line_id)).get(body.document_id)
+        c.require(document is not None, '原记录不存在', 404)
+        entry=(document['posted'] or document['draft'] or document['history'][0])['data']['entry']
+        kind=entry['kind']
+    else: kind=body.entry.kind
+    return 'handover_write' if kind=='handover' else 'acceptance_write' if kind in {'return','accept'} else 'report_write'
+
+
+@router.post('/orders/{line_id}/reports/{action}')
+def production_command(line_id: str, action: Literal['save', 'post', 'void', 'review', 'discard'], body: dict, db: Db, user: User):
+    c.authorize(user, body.get('factory_id', ''))
+    orders_ready(db)
+    c.require(reporting.schema_ready(db.connection()), '每日填数需先完成 0155 显式迁移', 503)
+    parsed=(rs.ReportCommand if action in {'save','post'} else rs.ReportDecision).model_validate(body)
+    c.authorize(user, parsed.factory_id, report_permission(db, line_id, parsed, action))
+    c.command(db, user, parsed, 'report-'+action+':'+line_id, lambda: reporting.apply(db, user, line_id, parsed, action))
+    db.expire_all()
+    return reporting.view(db, line_id)
+
+
+@router.post('/orders/{line_id}/report-operations/recover')
+def recover_production(line_id: str, body: rs.RecoverReport, db: Db, user: User):
+    identity=s.OperationIdentity.model_validate({key: body.command.get(key) for key in ('factory_id','operation_id')})
+    c.authorize(user, identity.factory_id)
+    c.require(c.schema_ready(db.connection()), '裁床操作记录需先完成迁移', 503)
+    action='report-'+body.action+':'+line_id
+    try:
+        parsed=(rs.ReportCommand if body.action in {'save','post'} else rs.ReportDecision).model_validate(body.command)
+    except ValidationError:
+        return orders.recover_operation(db, user, identity, action, invalid_payload=body.command)
+    return orders.recover_operation(db, user, parsed, action)

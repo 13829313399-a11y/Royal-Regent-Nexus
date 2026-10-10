@@ -22,6 +22,14 @@ beforeEach(() => {
 })
 
 describe('carton-mark source repository', () => {
+  it('opens PDF generation with the authorized Excel factory and revision', async () => {
+    const excel = { ...asset, kind: 'excel' as const, file_name: 'source.xlsx' }
+    supplierApi.markAssets.mockResolvedValue([excel])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true, readOnly: true, supplierCheckEnabled: true } }); await flushPromises()
+    await wrapper.get('[aria-label="由 source.xlsx 生成 PDF"]').trigger('click')
+    expect(wrapper.emitted('supplierGeneratePdf')?.[0]?.[0]).toMatchObject({ id: asset.id, factory_id: 'huaxing', revision: 1 })
+    wrapper.unmount()
+  })
   it('lets the warehouse explicitly remove soft-deleted targets from a shared original', async () => {
     const shared = { ...asset, contract_number: '', recognition_source: 'manual_orders', bound_order_ids: ['order-a', 'deleted'] }
     api.listAssets.mockResolvedValue([shared])

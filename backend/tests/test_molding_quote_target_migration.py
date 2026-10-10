@@ -57,7 +57,7 @@ def test_canonical_chain_has_one_head_and_upgrades_a_published_database(tmp_path
     from alembic.config import Config
     from alembic.script import ScriptDirectory
     backend = Path(__file__).resolve().parents[1]
-    assert ScriptDirectory.from_config(Config(str(backend / 'alembic.ini'))).get_heads() == ['20261009_0150']
+    assert ScriptDirectory.from_config(Config(str(backend / 'alembic.ini'))).get_heads() == ['20261009_0152']
     database = tmp_path / 'quote-target-chain.db'
     env = dict(os.environ, DATABASE_URL='sqlite:///' + database.as_posix(), SEED_DEFAULT_ACCOUNTS='false', PYTHONUTF8='1')
     def upgrade(revision):
@@ -72,7 +72,7 @@ def test_canonical_chain_has_one_head_and_upgrades_a_published_database(tmp_path
         rows = {name: db.execute('SELECT * FROM "' + name + '"').fetchall() for name in tables}
     upgrade('head'); upgrade('head')
     with sqlite3.connect(database) as db:
-        assert db.execute('SELECT version_num FROM alembic_version').fetchall() == [('20261009_0150',)]
+        assert db.execute('SELECT version_num FROM alembic_version').fetchall() == [('20261009_0152',)]
         assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
         for name in tables:

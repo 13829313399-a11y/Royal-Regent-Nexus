@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { Download, Plus, RefreshCw, Save, Upload, X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
@@ -33,6 +33,12 @@ const changes = ref<FillChange[]>([]), conflict = ref(false), conflictReview = r
 const grants = ref<FillGrant[]>([]), grantsDirty = ref(false), showGrants = ref(false)
 const grantType = ref<'user' | 'department'>('department'), grantPrincipal = ref(''), grantRange = ref(''), grantSheet = ref(0)
 const grantDepartments = ref<string[]>([]), departmentPicker = ref<HTMLDetailsElement>()
+const grantError = ref(''), grantNotice = ref('')
+const grantTarget = computed(() => task.value?.workbook.sheets.find(s => s.index === grantSheet.value))
+const grantExtent = computed(() => grantTarget.value ? `A1:${columnName(grantTarget.value.columns - 1)}${grantTarget.value.rows}` : '')
+watch([grantRange, grantSheet, grantType, grantPrincipal, grantDepartments, () => task.value?.id], () => {
+  grantError.value = ''; grantNotice.value = ''
+}, { deep: true, flush: 'sync' })
 const selectedPrincipals = computed(() => grantType.value === 'department' ? [...new Set(grantDepartments.value)] : grantPrincipal.value ? [grantPrincipal.value] : [])
 let alive = true, loadSequence = 0, poll: ReturnType<typeof setInterval> | undefined
 let participantGeneration = 0, refreshingParticipants = false
@@ -253,28 +259,40 @@ function resetGrantSelection() {
   grantPrincipal.value = ''; grantDepartments.value = []
   if (departmentPicker.value) departmentPicker.value.open = false
 }
+function closeDepartmentPicker(focus = false) {
+  if (!departmentPicker.value) return
+  departmentPicker.value.open = false
+  if (focus) departmentPicker.value.querySelector('summary')?.focus()
+}
+function closeDepartmentOutside(event: Event) {
+  if (event.target instanceof Node && !departmentPicker.value?.contains(event.target)) closeDepartmentPicker()
+}
 function addGrant() {
+  closeDepartmentPicker()
+  grantError.value = ''; grantNotice.value = ''
   const bounds = rangeBounds(grantRange.value.trim())
-  const target = task.value?.workbook.sheets.find(s => s.index === grantSheet.value)
-  if (!selectedPrincipals.value.length || selectedPrincipals.value.some(id => !principalOptions.value.some(p => p.id === id)) || !bounds || !target || bounds[2] >= target.rows || bounds[3] >= target.columns) {
-    error.value = '请选择填写对象，并输入原表内有效的范围，例如 C3:N30。'; return
-  }
+  const target = grantTarget.value
+  if (!selectedPrincipals.value.length || selectedPrincipals.value.some(id => !principalOptions.value.some(p => p.id === id))) { grantError.value = '请先选择要填写的部门或账号。'; return }
+  if (!bounds) { grantError.value = '请输入有效的填写范围，例如 A1:C3；列名和冒号请使用英文字符。'; return }
+  if (!target) { grantError.value = '请先选择工作表。'; return }
+  if (bounds[2] >= target.rows || bounds[3] >= target.columns) { grantError.value = `填写范围超出“${target.name}”的原表范围 ${grantExtent.value}（${target.rows} 行、${target.columns} 列），请调整后再添加。`; return }
   const additions: FillGrant[] = selectedPrincipals.value.map(id => ({ principal_type: grantType.value, principal_id: id, sheet: grantSheet.value, range: grantRange.value.trim().toUpperCase() }))
     .filter(grant => !grants.value.some(g => g.principal_type === grant.principal_type && g.principal_id === grant.principal_id && g.sheet === grant.sheet && g.range === grant.range))
-  if (grants.value.length + additions.length > 200) { error.value = '分配设置最多 200 条，请减少范围后再添加。本次选择尚未添加。'; return }
-  if (!additions.length) { error.value = '所选对象的填写范围已添加，无需重复添加。'; return }
+  if (grants.value.length + additions.length > 200) { grantError.value = '分配设置最多 200 条，请减少范围后再添加。本次选择尚未添加。'; return }
+  if (!additions.length) { grantError.value = '所选对象的填写范围已添加，无需重复添加。'; return }
   grants.value.push(...additions)
   grantsDirty.value = true; error.value = ''; grantRange.value = ''
-  if (departmentPicker.value) departmentPicker.value.open = false
+  grantNotice.value = '填写范围已添加到下方列表，请点击“保存分配设置”。'
 }
 async function saveGrants() {
   if (!task.value || busy.value) return
-  if (changes.value.length || editorTouched.value || trialEditing.value) { error.value = '请先保存填写内容，再保存分配设置。'; return }
+  grantError.value = ''; grantNotice.value = ''
+  if (changes.value.length || editorTouched.value || trialEditing.value) { grantError.value = '请先保存填写内容，再保存分配设置。'; return }
   busy.value = true; error.value = ''
   try {
     const result = await api.grants(props.factoryId, task.value, grants.value)
-    if (alive) { adopt(result); notice.value = '填写对象和范围已保存。' }
-  } catch (e) { if (alive) error.value = getApiErrorMessage(e) }
+    if (alive) { adopt(result); notice.value = '填写对象和范围已保存。'; grantNotice.value = notice.value }
+  } catch (e) { if (alive) grantError.value = getApiErrorMessage(e) }
   finally { if (alive) busy.value = false }
 }
 async function changeState(status: 'open' | 'closed') {
@@ -315,6 +333,8 @@ async function download() {
 onMounted(() => {
   void initialize()
   window.addEventListener('beforeunload', beforeUnload)
+  document.addEventListener('pointerdown', closeDepartmentOutside)
+  document.addEventListener('focusin', closeDepartmentOutside)
   poll = setInterval(() => {
     if (!busy.value && document.visibilityState === 'visible' && props.factoryId !== 'group') {
       void refreshList().catch(() => { /* Explicit refresh remains available after transient polling failure. */ })
@@ -322,7 +342,7 @@ onMounted(() => {
     }
   }, 15_000)
 })
-onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); removeFactoryGuard(); window.removeEventListener('beforeunload', beforeUnload) })
+onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); removeFactoryGuard(); window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('pointerdown', closeDepartmentOutside); document.removeEventListener('focusin', closeDepartmentOutside) })
 </script>
 
 <template>
@@ -375,18 +395,22 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
             <label>分配方式<select v-model="grantType" :disabled="busy" @change="resetGrantSelection"><option value="department">指定部门</option><option value="user">指定账号</option></select></label>
             <div v-if="grantType === 'department'" class="cs-department-field">
               <span>填写部门（可多选）</span>
-              <details ref="departmentPicker" class="cs-department-picker">
+              <details ref="departmentPicker" class="cs-department-picker" @keydown.esc.stop.prevent="closeDepartmentPicker(true)">
                 <summary><span>{{ grantDepartments.length ? grantDepartments.map(departmentName).join('、') : '请选择部门' }}</span><small v-if="grantDepartments.length">{{ grantDepartments.length }} 个</small></summary>
                 <fieldset :disabled="busy" class="cs-department-options" aria-label="填写部门（可多选）">
                   <label v-for="p in principalOptions" :key="p.id"><input v-model="grantDepartments" type="checkbox" :value="p.id" /><span>{{ p.label }}</span></label>
                   <p v-if="!principalOptions.length" class="cs-empty">当前厂区暂无可选部门。</p>
+                  <Button type="button" variant="outline" @click="closeDepartmentPicker(true)">完成选择</Button>
                 </fieldset>
               </details>
             </div>
             <label v-else>填写对象<select v-model="grantPrincipal" :disabled="busy"><option value="">请选择</option><option v-for="p in principalOptions" :key="p.id" :value="p.id">{{ p.label }}</option></select></label>
-            <label>填写范围<input v-model="grantRange" :disabled="busy" placeholder="例如 C3:N30" aria-label="填写范围" /></label>
+            <label>填写范围<input v-model="grantRange" :disabled="busy" placeholder="例如 C3:N30" aria-label="填写范围" aria-describedby="cs-grant-extent cs-grant-feedback" :aria-invalid="!!grantError" @keydown.enter.prevent="addGrant" /></label>
             <Button variant="outline" :disabled="busy" @click="addGrant"><Plus :size="14" />添加</Button>
           </div>
+          <p id="cs-grant-extent" v-if="grantTarget">当前工作表“{{ grantTarget.name }}”：{{ grantExtent }}（{{ grantTarget.rows }} 行、{{ grantTarget.columns }} 列）。请只分配需要填写的区域，避开表头。</p>
+          <p id="cs-grant-feedback" v-if="grantError" class="cs-error" role="alert">{{ grantError }}</p>
+          <p v-else-if="grantNotice" class="cs-message" role="status">{{ grantNotice }}</p>
           <div v-if="selectedPrincipals.length" class="cs-member-preview" aria-label="所选填写对象的账号">
             <p>当前厂区匹配账号（{{ selectedPeople.length }} 人）</p>
             <span v-for="person in selectedPeople" :key="person.id">{{ person.display_name }}</span>

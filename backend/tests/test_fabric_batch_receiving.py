@@ -11,7 +11,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from test_fabric_procurement import BASE, book, row, stored
 from test_fabric_procurement_tracking import save
-from test_molding_sample_api import make_client, login_as
+from test_molding_sample_api import login_as
+from warehouse_location_fixtures import make_client, seed_fabric_locations
 
 
 @pytest.fixture
@@ -28,6 +29,7 @@ def warehouse(tmp_path):
     dbm.Base.metadata.create_all(engine, tables=[model.__table__ for model in models])
     actor = SimpleNamespace(id="A", display_name="Warehouse")
     with Session(engine) as db:
+        seed_fabric_locations(db)
         parsed = parser.parse_workbook("source.xlsx", book([row(), row(订单号="PO2", 物料编码="M2", 基本单位="个", 入库数量="#VALUE!", 交货明细="")]))
         token = source.preview(db, parsed, actor.id)["preview_token"]
         source.apply(db, parsed, actor, "source.xlsx", str(uuid4()), token, confirmed=True, acknowledge_excluded=True)
@@ -39,7 +41,7 @@ def warehouse(tmp_path):
 def body(lines):
     return {"factory_id": "huakang-c", "request_id": str(uuid4()), "receipt_date": "2026-09-16", "delivery_reference": "DN-BATCH",
             "confirmed": True, "items": [{"source_line_id": line["id"], "expected_source_revision": line["revision"], "expected_receipt_count": 0,
-            "material_category": "FABRIC" if index == 0 else "ACCESSORY", "batches": [{"quantity": "10.125", "location": "A01",
+            "material_category": "FABRIC" if index == 0 else "ACCESSORY", "batches": [{"quantity": "10.125", "location": "A01", "location_id": "fabric-A01",
             "dye_lot": "0001" if index == 0 else "", "roll_no": "0002" if index == 0 else ""}]} for index, line in enumerate(lines)]}
 
 
