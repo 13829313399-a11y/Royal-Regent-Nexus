@@ -14,7 +14,7 @@ vi.mock('@/api/fabricReceiving', () => ({ fabricReceivingApi: api, materialCateg
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: sourceApi }))
 const source = (id: string, unit = '码', category: 'FABRIC' | 'ACCESSORY' = 'FABRIC'): PurchaseDetail => ({ id, revision: 2, receipt_count: 0, can_receive: true,
   material_category: category, warehouse_received_quantity: '0', warehouse_outstanding_quantity: id === 'L1' ? '5' : null,
-  facts: { order_no: `PO-${id}`, material_code: id, material_name: `物料${id}`, supplier: '供应商', unit, source_category: 'PURCHASE', production_no: 'P1', style_no: 'ST1' }, evidence: [] } as PurchaseDetail)
+  facts: { order_no: `PO-${id}`, material_code: id, material_name: `物料${id}`, supplier: '供应商', unit, source_category: 'PURCHASE', production_no: 'P1', style_no: 'ST1' }, available_locations: ['A01','A02'].map(code => ({ id: code, code, name: code, warehouse: '一仓', label: `一仓／${code}` })), evidence: [] } as PurchaseDetail)
 let wrapper: VueWrapper | undefined
 const body = () => new DOMWrapper(document.body)
 const button = (label: string) => body().findAll('button').find(item => item.text().startsWith(label))!
@@ -31,7 +31,7 @@ async function fill() {
   await body().get('[aria-label="批量送货依据编号"]').setValue('DN-ALL')
   for (const index of [1, 2]) {
     await body().get(`[aria-label="物料${index}明细1实收数量"]`).setValue('0.125')
-    await body().get(`[aria-label="物料${index}明细1仓位"]`).setValue(`A0${index}`)
+    await body().get(`[aria-label="物料${index}明细1仓位"]`).setValue(`一仓／A0${index}`)
   }
   await body().get('[aria-label="物料1明细1缸号"]').setValue('0001')
 }
@@ -111,12 +111,12 @@ describe('carton-style fabric selection and batch receiving', () => {
     await body().get('[aria-label="物料1明细1缸号"]').setValue('0001')
     await body().get('[aria-label="物料2明细1仓位"]').setValue('')
     expect(button('保存全部并入库').attributes('disabled')).toBeDefined()
-    await body().get('[aria-label="物料2明细1仓位"]').setValue('A02')
+    await body().get('[aria-label="物料2明细1仓位"]').setValue('一仓／A02')
     api.receiveBatch.mockResolvedValue({ request_id: 'R', receipts: [{ id: 'R1' }, { id: 'R2' }] })
     await body().get('form').trigger('submit'); await flushPromises()
     expect(api.receiveBatch).toHaveBeenCalledWith(expect.objectContaining({ delivery_reference: 'DN-ALL', confirmed: true, items: [
-      expect.objectContaining({ source_line_id: 'L1', material_category: 'FABRIC', batches: [{ quantity: '0.125', location: 'A01', dye_lot: '0001', roll_no: '' }] }),
-      expect.objectContaining({ source_line_id: 'L2', material_category: 'ACCESSORY', batches: [{ quantity: '0.125', location: 'A02', dye_lot: '', roll_no: '' }] }),
+      expect.objectContaining({ source_line_id: 'L1', material_category: 'FABRIC', batches: [{ quantity: '0.125', location_id: 'A01', location: '一仓／A01', dye_lot: '0001', roll_no: '' }] }),
+      expect.objectContaining({ source_line_id: 'L2', material_category: 'ACCESSORY', batches: [{ quantity: '0.125', location_id: 'A02', location: '一仓／A02', dye_lot: '', roll_no: '' }] }),
     ] }))
     expect(wrapper!.emitted('saved')).toHaveLength(1)
   })

@@ -395,7 +395,7 @@ def line_detail(db, line_id):
     resolutions = list(db.scalars(select(FabricChaseResolution).where(FabricChaseResolution.factory_id == FACTORY, FabricChaseResolution.source_line_id == line_id).order_by(FabricChaseResolution.revision.desc()))) if ready(db) else []
     return {"id": line.id, "active": line.status != "WITHDRAWN", "facts": json.loads(line.payload_json), "revision": line.revision, **line_tracking(line, tracking_context(db)),
             **material_info(json.loads(line.payload_json), records(db)),
-            "available_locations": [{"code": r.code, "name": r.name, "warehouse": json.loads(r.data_json).get("warehouse", "")} for r in records(db) if r.kind == "LOCATION" and r.status == "ACTIVE"],
+            "available_locations": [{"id": r.id, "label": f"{json.loads(r.data_json).get('warehouse', '')}／{r.code}", "code": r.code, "name": r.name, "warehouse": json.loads(r.data_json).get("warehouse", "")} for r in records(db) if r.kind == "LOCATION" and r.status == "ACTIVE"],
             "chase_resolution_history": [{"id": r.id, "revision": r.revision, "starting_quantity": r.starting_quantity, "evidence": r.evidence, "cutoff": json.loads(r.cutoff_json), "actor_name": r.actor_name, "occurred_at": r.occurred_at} for r in resolutions],
             "evidence": [{"id": evidence.id, "withdrawal": json.loads(batch.result_json).get("withdrawal"), "source_name": batch.source_name, "sheet": evidence.sheet, "row_number": evidence.row_number,
                           "actor_name": batch.actor_name, "occurred_at": batch.occurred_at,

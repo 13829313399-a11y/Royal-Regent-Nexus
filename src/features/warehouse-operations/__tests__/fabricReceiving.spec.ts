@@ -16,7 +16,7 @@ const source: PurchaseDetail = { id: 'L1', revision: 2, receipt_count: 0, prior_
     status: 'PENDING', source_line_id: '', production_no: 'P1', plan_no: '', old_material_code: '', contract_no: '', unit_price: '0',
     order_date: null, order_date_raw: '', delivery_detail: '', delivery_note_no: '', delivery_note_date: null, delivery_note_date_raw: '',
     reported_receipt_date: null, reported_receipt_date_raw: '', supplier_reply: '', supplier_reply_date: null, second_reply: '', second_reply_date: null,
-    note: '', warehouse_note: '' }, evidence: [] }
+    note: '', warehouse_note: '' }, available_locations: ['A01','A02'].map(code => ({ id: code, code, name: code, warehouse: '一仓', label: `一仓／${code}` })), evidence: [] }
 let wrapper: VueWrapper | undefined
 const body = () => new DOMWrapper(document.body)
 const button = (label: string) => body().findAll('button').find(item => item.text() === label)!
@@ -31,7 +31,7 @@ async function fill() {
   await body().get('[aria-label="送货依据编号"]').setValue('DN-001')
   await body().get('[aria-label="入库物料分类"]').setValue('FABRIC')
   await body().get('[aria-label="第1项实收数量"]').setValue('0.1')
-  await body().get('[aria-label="第1项仓位"]').setValue('A01')
+  await body().get('[aria-label="第1项仓位"]').setValue('一仓／A01')
   await body().get('[aria-label="第1项缸号"]').setValue('0001')
 }
 describe('fabric actual receiving', () => {
@@ -53,7 +53,7 @@ describe('fabric actual receiving', () => {
     await open()
     await body().get('[aria-label="送货依据编号"]').setValue('DN-001')
     await body().get('[aria-label="第1项实收数量"]').setValue('29')
-    await body().get('[aria-label="第1项仓位"]').setValue('A01')
+    await body().get('[aria-label="第1项仓位"]').setValue('一仓／A01')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
     await body().get('[aria-label="入库物料分类"]').setValue('FABRIC')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
@@ -90,7 +90,7 @@ describe('fabric actual receiving', () => {
     expect(button('保存并入库').attributes('disabled')).toBeUndefined()
     api.receive.mockResolvedValue({ id: 'R1' })
     await button('保存并入库').trigger('click'); await flushPromises()
-    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ material_category: category, batches: [{ quantity: '0.1', location: 'A01', dye_lot: '', roll_no: '' }] }))
+    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ material_category: category, batches: [{ quantity: '0.1', location_id: 'A01', location: '一仓／A01', dye_lot: '', roll_no: '' }] }))
   })
   it('only requires an explanation for exact overage and clears stale explanations for normal partial receipts', async () => {
     await open(); await fill()
@@ -114,7 +114,7 @@ describe('fabric actual receiving', () => {
     await body().get('[aria-label="第1项卷号"]').setValue('0003')
     api.receive.mockResolvedValue({ id: 'R1' })
     await button('保存并入库').trigger('click'); await flushPromises()
-    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ receipt_date: '2026-09-29', delivery_note_date: '2026-09-28', batches: [{ quantity: '0.1', location: 'A01', dye_lot: '0002', roll_no: '0003' }] }))
+    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ receipt_date: '2026-09-29', delivery_note_date: '2026-09-28', batches: [{ quantity: '0.1', location_id: 'A01', location: '一仓／A01', dye_lot: '0002', roll_no: '0003' }] }))
   })
   it('does not turn unknown source quantities into zero', async () => {
     await open({ ...source, prior_received_quantity: null, receipt_quantity_review_required: true, can_receive: true }); await fill()
@@ -145,14 +145,14 @@ describe('fabric actual receiving', () => {
     await fill()
     await button('＋ 增加明细').trigger('click')
     await body().get('[aria-label="第2项实收数量"]').setValue('0.2')
-    await body().get('[aria-label="第2项仓位"]').setValue('A02')
+    await body().get('[aria-label="第2项仓位"]').setValue('一仓／A02')
     await body().get('[aria-label="第2项缸号"]').setValue('0002')
     await body().get('[aria-label="第1项卷号"]').setValue('00001')
     expect(body().text()).toContain('本次实收合计：0.3 码')
     api.receive.mockResolvedValue({ id: 'R1', quantity: '0.3', unit: '码', stock_posted: true })
     await button('保存并入库').trigger('click'); await flushPromises()
     expect(api.receive).toHaveBeenCalledWith('L1', expect.objectContaining({ expected_source_revision: 2, expected_receipt_count: 0, confirmed: true,
-      batches: [{ quantity: '0.1', location: 'A01', dye_lot: '0001', roll_no: '00001' }, { quantity: '0.2', location: 'A02', dye_lot: '0002', roll_no: '' }] }))
+      batches: [{ quantity: '0.1', location_id: 'A01', location: '一仓／A01', dye_lot: '0001', roll_no: '00001' }, { quantity: '0.2', location_id: 'A02', location: '一仓／A02', dye_lot: '0002', roll_no: '' }] }))
     expect(wrapper!.emitted('saved')?.[0]?.[0]).toEqual(expect.objectContaining({ id: 'R1' }))
   })
   it('freezes the exact payload and reuses its request after an unknown save outcome', async () => {
@@ -202,7 +202,7 @@ describe('fabric actual receiving', () => {
     expect(wrapper!.findAll('button').some(item => item.text() === '登记入库')).toBe(false)
   })
   it('loads posted receipt/stock views and clears protected records on a denied query', async () => {
-    api.stock.mockResolvedValue({ total: 1, items: [{ id: 'B1', receipt_id: 'R1', movement_id: 'M1', facts: source.facts, quantity: '0.3', unit: '码', material_category: 'FABRIC', location: 'A01', dye_lot: '', roll_no: '', receipt_date: '2026-09-16', accounting_month: '2026-09', delivery_reference: 'DN1' }] })
+    api.stock.mockResolvedValue({ total: 1, items: [{ id: 'B1', receipt_id: 'R1', movement_id: 'M1', facts: source.facts, quantity: '0.3', unit: '码', material_category: 'FABRIC', location_id: 'A01', location: '一仓／A01', dye_lot: '', roll_no: '', receipt_date: '2026-09-16', accounting_month: '2026-09', delivery_reference: 'DN1' }] })
     wrapper = mount(Records, { props: { mode: 'stock' }, global: { plugins: [await router()] } }); await flushPromises()
     expect(wrapper!.text()).toContain('0.3 码')
     expect(wrapper!.text()).toContain('不含历史库存期初')

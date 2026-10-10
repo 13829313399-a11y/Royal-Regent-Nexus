@@ -55,6 +55,7 @@ SQLITE_LEGACY_COLUMNS = {
         ("avatar_version", "avatar_version VARCHAR(64) NOT NULL DEFAULT ''"),
     ],
     "molding_sample_items": [
+        ("quote_target_daily_qty", "quote_target_daily_qty INTEGER"),
         ("production_machine", "production_machine VARCHAR(128) NOT NULL DEFAULT ''"),
         ("mold_dimensions", "mold_dimensions VARCHAR(128) NOT NULL DEFAULT ''"),
         (
@@ -901,6 +902,7 @@ def init_db() -> None:
                             if not name.startswith("cutting_ops_")
                             # An existing business store upgrades this new domain explicitly.
                             and (not name.startswith("fabric_") or "auth_users" not in existing_tables)
+                            and (not name.startswith("warehouse_operations_") or "auth_users" not in existing_tables)
                             and not name.startswith(("uv_ops_", "nexus_assistant_"))
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.
