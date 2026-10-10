@@ -377,6 +377,21 @@ function normalizedDraft(payload: Record<string, unknown>) {
   return normalizeInternalQuoteDraft(props.section.code, payload, props.quote.referenceSnapshot)
 }
 
+function applyMoldingSourceDeletions(baseline: Record<string, unknown>, incoming: Record<string, unknown>) {
+  if (props.section.code !== 'molding') return false
+  const rows = (payload: Record<string, unknown>) => payload.injection_lines as Array<Record<string, unknown>>
+  const incomingKeys = new Set(rows(incoming).map(row => row.engineering_source_key).filter(Boolean))
+  const removedKeys = new Set(rows(baseline)
+    .map(row => row.engineering_source_key).filter(key => key && !incomingKeys.has(key)))
+  const retainedRows = rows(baseline).filter(row => !removedKeys.has(row.engineering_source_key))
+  if (!removedKeys.size || JSON.stringify({ ...baseline, injection_lines: retainedRows }) !== JSON.stringify(incoming)) return false
+  const draftRows = rows(draftPayload.value)
+  for (let index = draftRows.length - 1; index >= 0; index--) {
+    if (removedKeys.has(draftRows[index]!.engineering_source_key)) draftRows.splice(index, 1)
+  }
+  return true
+}
+
 let draftContext = ''
 watch([
   () => props.quote.id, () => props.section.code, () => props.section.revision,
@@ -386,6 +401,17 @@ watch([
   const contextChanged = context !== draftContext
   const incoming = normalizedDraft(props.section.payload)
   const incomingText = JSON.stringify(incoming)
+  // Engineering owns linked row deletion. Rebase a deletion-only refresh while
+  // retaining local edits and row identities elsewhere. Other remote changes
+  // still follow the optimistic-lock conflict path below.
+  if (!contextChanged && props.section.code === 'molding' && baselinePayload.value
+    && props.section.revision >= draftRevision.value) {
+    const baseline = JSON.parse(baselinePayload.value) as Record<string, unknown>
+    if (applyMoldingSourceDeletions(baseline, incoming)) {
+      baselinePayload.value = incomingText
+      draftRevision.value = props.section.revision
+    }
+  }
   const currentText = JSON.stringify(draftPayload.value)
   // A quote refresh may replace section objects without changing their data.
   // Never overwrite a local edit (or recreate its focused input) in that case.
@@ -435,6 +461,7 @@ function errorText(error: unknown) { return error instanceof Error ? error.messa
 
 function acceptSavedPayload(payload: Record<string, unknown>, submitted: Record<string, unknown>, revision: number) {
   const saved = normalizedDraft(payload)
+  applyMoldingSourceDeletions(normalizedDraft(submitted), saved)
   const submittedText = JSON.stringify(normalizedDraft(submitted))
   const currentText = JSON.stringify(draftPayload.value)
   const savedText = JSON.stringify(saved)

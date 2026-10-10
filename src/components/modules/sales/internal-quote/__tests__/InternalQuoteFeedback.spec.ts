@@ -84,6 +84,57 @@ describe('internal quote feedback regressions', () => {
     wrapper.unmount()
   })
 
+  it('removes deleted engineering rows while retaining other unsaved molding edits', async () => {
+    const surviving = { item: '主壳', engineering_source_key: 'mold-no:M01#1', engineering_synced_fields: ['item'] }
+    const removed = { item: '3. Payment（付款）', engineering_source_key: 'source-row:22#1', engineering_synced_fields: ['item'] }
+    const manual = { item: '手工行' }
+    const { wrapper, section } = setup('molding', { injection_lines: [surviving, removed, manual] })
+    const first = wrapper.findAll('.moldingInjectionTable tbody tr')[0]!
+    const quantity = first.findAll('input[type="number"]').at(-1)!
+    await quantity.setValue('3')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    const before = wrapper.vm.getWholeQuoteDraft().payload.injection_lines as Record<string, unknown>[]
+    await wrapper.setProps({ section: { ...section, revision: 6, payload: { injection_lines: [surviving, manual] } } })
+    const after = wrapper.vm.getWholeQuoteDraft()
+    expect(after.payload.injection_lines).toEqual([before[0], before[2]])
+    expect(wrapper.findAll('.moldingInjectionTable tbody tr')).toHaveLength(2)
+    expect(wrapper.findAll('.moldingInjectionTable tbody tr')[0]!.findAll('input[type="number"]').at(-1)!.element).toBe(quantity.element)
+    expect(after.revision).toBe(6)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(wrapper.text()).not.toContain('本页未保存输入已保留')
+    wrapper.unmount()
+  })
+
+  it('accepts a cleaned whole-product save without restoring deleted molding rows', async () => {
+    const removed = { item: '4. Validity', engineering_source_key: 'source-row:23#1' }
+    const { wrapper } = setup('molding', { injection_lines: [removed, { item: '手工行' }] })
+    const submitted = wrapper.vm.getWholeQuoteDraft().payload
+    wrapper.vm.acceptSavedPayload({ injection_lines: [{ item: '手工行' }] }, submitted, 6)
+    await flushPromises()
+    expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toMatchObject([{ item: '手工行' }])
+    expect(wrapper.findAll('.moldingInjectionTable tbody tr')).toHaveLength(1)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps edits made during a molding save while applying source deletions in its receipt', async () => {
+    const { wrapper, save } = setup('molding', { injection_lines: [
+      { item: '3. Payment', engineering_source_key: 'source-row:22#1' }, { item: '手工行' },
+    ] })
+    const submitted = wrapper.vm.getWholeQuoteDraft().payload
+    let resolve!: (result: ApiInternalQuoteSection) => void
+    save.mockReturnValueOnce(new Promise<ApiInternalQuoteSection>(done => { resolve = done }))
+    const pending = wrapper.vm.saveWholeQuoteDraft(false)
+    await wrapper.findAll('.moldingInjectionTable tbody tr')[1]!.get('textarea').setValue('保存期间修改')
+    resolve({ revision: 6, payload: { ...submitted, injection_lines: [{ item: '手工行' }] } } as unknown as ApiInternalQuoteSection)
+    await pending
+    await flushPromises()
+    expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toMatchObject([{ item: '保存期间修改' }])
+    expect(wrapper.findAll('.moldingInjectionTable tbody tr')).toHaveLength(1)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('edits the selected electronic quote without changing the other quote', async () => {
     const { wrapper } = setup('electronic', {
       quote_groups: [
