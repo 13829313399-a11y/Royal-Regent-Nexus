@@ -8,6 +8,7 @@ class ReceiptBatchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     quantity: str = Field(min_length=1, max_length=32)
     location: str = Field(min_length=1, max_length=128)
+    location_id: str = Field(default='', max_length=64)
     dye_lot: str = Field(default="", max_length=128)
     roll_no: str = Field(default="", max_length=128)
 

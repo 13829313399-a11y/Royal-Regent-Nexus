@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from test_customer_order_ledger import engine, db, client, user, ship_body
 from app.api import customer_order_ledger as api
 from app.models.customer_order_ledger import OrderLedgerLine as Line, OrderLedgerSource as Source, OrderLedgerVersion as Version, OrderLedgerShipment as Shipment, OrderLedgerDispatch as Dispatch
-from app.schemas.customer_order_ledger import HistorySelection, HistoryOpeningIn, ReasonIn, DispatchIn
+from app.schemas.customer_order_ledger import HistorySelection, HistoryOpeningIn, ReasonIn, RestoreIn, DispatchIn
 from app.services import customer_order_history as history, customer_order_ledger as ledger
 from app.services.auth import get_current_user
 
@@ -48,6 +48,19 @@ def confirm(db, p=None, **kwargs):
     args = dict(parsed=p, content=workbook(), selections=selections(p), fingerprint=p['fingerprint'], cutoff_date=date(2025, 12, 31), reason='期初逐单核对', actor='业务员')
     args.update(kwargs)
     return api.transaction(db, lambda: history.confirm(db, **args))
+
+
+def test_restore_historical_cancellation_preserves_opening_and_original_fields(db):
+    result = confirm(db)
+    line = db.get(Line, result["items"][1]["id"])
+    original = deepcopy(line.data)
+    assert line.status == "cancelled" and line.shipped_quantity == 10
+    api.transaction(db, lambda: ledger.restore(db, line,
+        RestoreIn(expected_revision=line.revision, reason="原排期误取消恢复", confirmed=True), "业务员"))
+    assert line.status == "active" and line.version == 2
+    assert line.data == original
+    assert ledger.line_out(db, line)["remaining_quantity"] == "40"
+    assert db.scalar(select(func.count()).select_from(Shipment)) == 0
 
 
 def test_parser_preserves_identifiers_custom_fields_and_section(db):

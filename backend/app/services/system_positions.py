@@ -10,9 +10,11 @@ from app.services.iam_scope import (
     ScopeMode,
 )
 from app.services.permission_codes import (
+    WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     APPLICATION_PERMISSION_CODES,
     FABRIC_WAREHOUSE_PERMISSION_CODES,
     SPRAY_OPS_PERMISSION_CODES,
+    CUTTING_OPS_PERMISSION_CODES,
     UV_OPS_PERMISSION_CODES,
     BUSINESS_PERMISSION_CODES,
     CARTON_PROCUREMENT_PERMISSION_CODES,
@@ -199,8 +201,10 @@ _GENERAL_MANAGER_PERMISSION_CODE_LIST = (
 GENERAL_MANAGER_PERMISSION_CODES = frozenset(_GENERAL_MANAGER_PERMISSION_CODE_LIST)
 GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
     (
+        *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
         *UV_OPS_PERMISSION_CODES,
         *SPRAY_OPS_PERMISSION_CODES,
+        *CUTTING_OPS_PERMISSION_CODES,
         "customer_price:settings_read",
         "customer_price:settings_manage",
         *THREE_D_PRINTING_PERMISSION_CODES,
@@ -365,6 +369,8 @@ MOLDING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 WAREHOUSE_PERMISSION_CODES = (
+    'fabric_operations:read', 'fabric_operations:operate',
+    'semi_operations:read', 'semi_operations:operate',
     *FABRIC_WAREHOUSE_PERMISSION_CODES,
     "carton_mark:read",
     "carton_mark:template_upload",

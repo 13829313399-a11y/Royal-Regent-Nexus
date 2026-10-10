@@ -92,6 +92,7 @@ export interface MoldingSampleItem {
   pigment_no: string
   quantity: string
   shoot_qty: number
+  quote_target_daily_qty?: number | null
   gross_weight_g: number | null
   required_material_kg: number | null
   mold_return_time: string

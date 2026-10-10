@@ -5,6 +5,7 @@ import { CUTTING_BASE, CUTTING_WORKSPACES } from '../navigation'
 import { cuttingOperationsRoutes } from '../routes'
 
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span>当前账号</span>' } }))
+vi.mock('../api', () => ({ cuttingApi: { access: async () => ({ enabled: false, schema_ready: false, permissions: [] }) }, errorMessage: () => '服务不可用' }))
 let wrapper: VueWrapper | undefined
 afterEach(() => { wrapper?.unmount(); wrapper = undefined })
 
@@ -29,9 +30,16 @@ describe('cutting workspace entry', () => {
     for (const workspace of CUTTING_WORKSPACES) {
       await wrapper!.get(`nav a[href="${CUTTING_BASE}/${workspace.path}?factory=huakang-c"]`).trigger('click')
       await flushPromises()
-      expect(wrapper!.get('h1').text()).toBe(workspace.title)
-      expect(wrapper!.text()).toContain('尚不能录入、保存或结算业务数据')
-      expect(wrapper!.text()).toContain(workspace.empty)
+      await vi.waitFor(async () => {
+        await flushPromises()
+        expect(wrapper!.get('h1').text()).toBe(workspace.title)
+      })
+      if (workspace.path === 'master') {
+        expect(wrapper!.text()).toContain('基础资料尚未启用')
+      } else {
+        expect(wrapper!.text()).toContain('尚不能录入、保存或结算业务数据')
+        expect(wrapper!.text()).toContain(workspace.empty)
+      }
       expect(router.currentRoute.value.query.factory).toBe('huakang-c')
     }
     await wrapper!.get('a.cutting-back').trigger('click')

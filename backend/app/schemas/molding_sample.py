@@ -82,6 +82,7 @@ class MoldingSampleItemIn(BaseModel):
     pigment_no: str = ""
     quantity: str = ""
     shoot_qty: int = 0
+    quote_target_daily_qty: int | None = Field(default=None, gt=0, le=2147483647)
     gross_weight_g: float | None = None
     required_material_kg: float | None = None
     mold_return_time: str = ""

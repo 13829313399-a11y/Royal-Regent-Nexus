@@ -8,6 +8,7 @@ import MemberDirectoryEntry from '@/components/directory/MemberDirectoryEntry.vu
 import NotificationCenter from '@/components/notifications/NotificationCenter.vue'
 import RouteLoadingBar from '@/components/layout/RouteLoadingBar.vue'
 import { useAppStore } from '@/stores/app'
+import { canChangeFactory } from '@/lib/factoryChangeGuard'
 
 const route = useRoute()
 const router = useRouter()
@@ -63,6 +64,7 @@ const getTopBarFactoryLabel = (factory: (typeof factoryContexts)[number]) => (
 )
 
 function selectFactory(factoryId: FactoryContextId) {
+  if (factoryId === appStore.activeFactoryId || !canChangeFactory()) return
   appStore.setActiveFactory(factoryId)
 
   if (!route.path.startsWith('/modules') && route.query.factory === undefined) {

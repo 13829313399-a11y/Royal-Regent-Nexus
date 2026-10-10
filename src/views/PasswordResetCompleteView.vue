@@ -26,7 +26,7 @@ const showConfirmPassword = ref(false)
 const isLoading = ref(true)
 const isSubmitting = ref(false)
 const errorMessage = ref('')
-let redirectTimer: ReturnType<typeof window.setTimeout> | undefined
+let redirectTimer: number | undefined
 
 const chinesePasswordPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 const chinesePasswordGlobalPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g

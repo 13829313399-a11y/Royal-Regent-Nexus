@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 class RevisionIn(BaseModel):
@@ -20,6 +20,11 @@ class ReasonIn(RevisionIn):
         return value.strip()
 
 
+class RestoreIn(ReasonIn):
+    confirmed: StrictBool
+    notify_recipients: StrictBool = False
+
+
 class AmendIn(ReasonIn):
     quantity: str = Field(max_length=32)
     requested_ship_date: str = Field(max_length=10)
@@ -32,7 +37,7 @@ class AmendIn(ReasonIn):
 
 
 class DispatchIn(RevisionIn):
-    recipients: list[Literal["pmc", "warehouse", "injection"]] = Field(min_length=1, max_length=3)
+    recipients: list[Literal["pmc", "warehouse", "injection", "cutting"]] = Field(min_length=1, max_length=4)
 
 
 class ShipmentIn(RevisionIn):

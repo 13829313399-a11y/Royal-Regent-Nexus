@@ -11,6 +11,10 @@ UV_OPS_PERMISSION_CODES = tuple("uv_ops:" + action for action in (
     "import", "export", "audit_read",
 ))
 
+CUTTING_OPS_PERMISSION_CODES = tuple("cutting_ops:" + action for action in (
+    "read", "master_write", "bom_write", "bom_publish", "order_receive", "requisition_submit", "eta_write", "requisition_reconcile",
+))
+
 SPRAY_OPS_PERMISSION_CODES = tuple("spray_ops:" + action for action in (
     "read", "plan", "report", "quality", "stock_write", "procure", "master_write",
     "cost_read", "cost_write", "payroll_read", "payroll_write", "settle", "import", "export",
@@ -101,6 +105,13 @@ FABRIC_WAREHOUSE_PERMISSION_CODES = (
     "fabric_warehouse:receive",
 )
 
+# Separate grants: ordinary receiving never grants quality release or reversal.
+WAREHOUSE_OPERATIONS_PERMISSION_CODES = tuple(
+    f"{family}:{action}"
+    for family in ("fabric_operations", "semi_operations")
+    for action in ("read", "operate", "quality", "correct")
+) + ("semi_operations:master",)
+
 THREE_D_PRINTING_PERMISSION_CODES = (
     "three_d_printing:read",
     "three_d_printing:operate",
@@ -177,6 +188,8 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 )
 
 BUSINESS_PERMISSION_CODES = (
+    *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
+    *CUTTING_OPS_PERMISSION_CODES,
     *FABRIC_WAREHOUSE_PERMISSION_CODES,
     *UV_OPS_PERMISSION_CODES,
     *SPRAY_OPS_PERMISSION_CODES,

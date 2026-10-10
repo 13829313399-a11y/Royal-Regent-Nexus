@@ -119,6 +119,7 @@ for customer_code in HUAKANG_C_CUSTOMER_MAPPINGS:
 CUSTOMER_FACTORY_OPTIONS.pop("spin-master", None)
 CUSTOMER_FACTORY_OPTIONS["jp"] = ("huakang-c",)
 CUSTOMER_FACTORY_OPTIONS["disney"] = ("huaxing", "huakang-d")
+CUSTOMER_FACTORY_OPTIONS["seasons"] = ("huaxing", "huakang-d")
 CUSTOMER_FACTORY_OPTIONS["ubtech"] = ("huakang-d",)
 CUSTOMER_NAMES = {
     "ubtech": "优必选",
@@ -185,7 +186,7 @@ def _get_mapped_customer_spec(customer_code: str, factory_id: str):
     if customer_code == 'ubtech' and factory_id == 'huakang-d':
         from app.services.customer_order_ubtech import SPEC
         return SPEC
-    if customer_code == "disney" and factory_id == "huakang-d":
+    if customer_code in {"disney", "seasons"} and factory_id == "huakang-d":
         return get_huaxing_customer_mapping(customer_code)
     if factory_id == "huakang-a":
         try:

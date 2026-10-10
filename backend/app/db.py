@@ -55,6 +55,7 @@ SQLITE_LEGACY_COLUMNS = {
         ("avatar_version", "avatar_version VARCHAR(64) NOT NULL DEFAULT ''"),
     ],
     "molding_sample_items": [
+        ("quote_target_daily_qty", "quote_target_daily_qty INTEGER"),
         ("production_machine", "production_machine VARCHAR(128) NOT NULL DEFAULT ''"),
         ("mold_dimensions", "mold_dimensions VARCHAR(128) NOT NULL DEFAULT ''"),
         (
@@ -779,6 +780,27 @@ def ensure_carton_feedback_schema_ready() -> None:
         raise RuntimeError("纸箱反馈结构未就绪，请先备份数据库并执行 Alembic upgrade head 再启动应用。")
 
 
+def ensure_collaborative_sheets_schema_ready() -> None:
+    """Never create a new collaboration schema implicitly in an existing DB."""
+    from app.models import collaborative_sheets  # noqa: F401
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if not names:
+            return
+        missing = []
+        for name, table in Base.metadata.tables.items():
+            if not name.startswith("collaborative_sheet"):
+                continue
+            if name not in names:
+                missing.append(name)
+            else:
+                columns = {column["name"] for column in inspector.get_columns(name)}
+                missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
+        if missing:
+            raise RuntimeError("协同填表需要迁移至 20261009_0121；请先备份并迁移。缺少：" + ", ".join(missing))
+
+
 def init_db() -> None:
     from app.models import (
         assistant,  # noqa: F401
@@ -786,6 +808,7 @@ def init_db() -> None:
         uv_operations,  # noqa: F401
         spray_ops,  # noqa: F401
         document_tools,  # noqa: F401
+        collaborative_sheets,  # noqa: F401
         auth,  # noqa: F401
         carton_mark,  # noqa: F401
         carton_feedback,  # noqa: F401
@@ -824,6 +847,7 @@ def init_db() -> None:
     if not getattr(SessionLocal, "work_center_hooks_installed", False):
         install_projection_hooks(SessionLocal)
         SessionLocal.work_center_hooks_installed = True
+    ensure_collaborative_sheets_schema_ready()
     ensure_module_feedback_schema_ready()
     ensure_work_center_schema_ready()
     ensure_identity_schema_ready()
@@ -874,8 +898,11 @@ def init_db() -> None:
             if missing:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
+                            # Cutting master data is created only by explicit migration.
+                            if not name.startswith("cutting_ops_")
                             # An existing business store upgrades this new domain explicitly.
-                            if (not name.startswith("fabric_") or "auth_users" not in existing_tables)
+                            and (not name.startswith("fabric_") or "auth_users" not in existing_tables)
+                            and (not name.startswith("warehouse_operations_") or "auth_users" not in existing_tables)
                             and not name.startswith(("uv_ops_", "nexus_assistant_"))
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.

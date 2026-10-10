@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import runpy
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, inspect, text
 
 if context.is_offline_mode():
     os.environ["ALEMBIC_OFFLINE_METADATA_ONLY"] = "1"
@@ -18,11 +19,13 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings
 from app.db import Base
 from app.models import (
+    cutting_ops,  # noqa: F401
     assistant,  # noqa: F401
     work_center,  # noqa: F401
     uv_operations,  # noqa: F401
     spray_ops,  # noqa: F401
     document_tools,  # noqa: F401
+    collaborative_sheets,  # noqa: F401
     auth,  # noqa: F401
     carton_mark,  # noqa: F401
     carton_feedback,  # noqa: F401
@@ -30,6 +33,7 @@ from app.models import (
     fabric_procurement,  # noqa: F401
     fabric_receiving,  # noqa: F401
     fabric_master,  # noqa: F401
+    warehouse_operations,  # noqa: F401
     carton_stocktake,  # noqa: F401
     carton_positions,
     carton_master,  # noqa: F401
@@ -92,6 +96,17 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        inspector = inspect(connection)
+        if inspector.has_table('alembic_version') and inspector.has_table('warehouse_operations_documents'):
+            revisions = set(connection.scalars(text('SELECT version_num FROM alembic_version')))
+            if revisions & {'20261009_0150', '20261009_0151'}:
+                if len(revisions) != 1:
+                    raise RuntimeError('ambiguous warehouse revision collision; inspect history before upgrading')
+                preflight = runpy.run_path(str(Path(__file__).parent / 'versions/20261009_0152_warehouse_operations.py'))['preflight_legacy']
+                preflight(connection, before_cutting='20261009_0150' in revisions)
+        # Reflection opens an implicit read transaction. Release it before
+        # Alembic takes ownership of the actual migration transaction.
+        connection.rollback()
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

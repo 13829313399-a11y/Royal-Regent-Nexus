@@ -11,11 +11,13 @@ from fastapi.exceptions import RequestValidationError
 from app.api.auth import router as auth_router
 from app.api.assistant import router as assistant_router
 from app.api.document_tools import router as document_tools_router
+from app.api.collaborative_sheets import router as collaborative_sheets_router
 from app.api.pdf_rename import router as pdf_rename_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_feedback import router as carton_feedback_router
 from app.api.carton_procurement import router as carton_procurement_router
 from app.api.fabric_procurement import router as fabric_procurement_router
+from app.api.warehouse_operations import router as warehouse_operations_router
 from app.api.fabric_master import router as fabric_master_router
 from app.api.carton_supplier_settlement import router as carton_supplier_settlement_router
 from app.api.carton_supplier_portal import router as carton_supplier_portal_router
@@ -43,6 +45,7 @@ from app.api.work_center import router as work_center_router
 from app.api.three_d_connector import router as three_d_connector_router
 from app.api.three_d_printing import router as three_d_printing_router
 from app.api.spray_operations import router as spray_operations_router
+from app.api.cutting_operations import router as cutting_operations_router
 from app.api.uv_operations import router as uv_operations_router
 from app.api.uv_agent import router as uv_agent_router
 from app.core.config import settings
@@ -197,11 +200,13 @@ async def record_request_timing(request: Request, call_next):
 app.include_router(auth_router)
 app.include_router(assistant_router)
 app.include_router(document_tools_router)
+app.include_router(collaborative_sheets_router)
 app.include_router(pdf_rename_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_feedback_router)
 app.include_router(carton_procurement_router)
 app.include_router(fabric_procurement_router)
+app.include_router(warehouse_operations_router)
 app.include_router(fabric_master_router)
 app.include_router(carton_supplier_settlement_router)
 app.include_router(carton_supplier_portal_router)
@@ -226,6 +231,7 @@ from app.api.three_d_operations import router as three_d_operations_router
 app.include_router(three_d_operations_router)
 app.include_router(three_d_printing_router)
 app.include_router(spray_operations_router)
+app.include_router(cutting_operations_router)
 app.include_router(uv_operations_router)
 app.include_router(uv_agent_router)
 app.include_router(three_d_connector_router)

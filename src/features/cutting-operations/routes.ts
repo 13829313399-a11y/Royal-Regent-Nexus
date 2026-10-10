@@ -9,7 +9,7 @@ export function guardCuttingFactory(to: RouteLocationNormalized) {
   }
 }
 
-// Authenticated informational shell only: no business reads or mutations yet.
+// Authenticated shell; master-data reads and mutations are authorized by the API.
 const meta = { fullPage: true, requiresAuth: true, title: '华康 C · 裁床部' }
 export const cuttingOperationsRoutes: RouteRecordRaw[] = [{
   path: CUTTING_BASE,
@@ -20,7 +20,11 @@ export const cuttingOperationsRoutes: RouteRecordRaw[] = [{
     { path: '', redirect: to => ({ path: `${CUTTING_BASE}/planning`, query: to.query }) },
     ...CUTTING_WORKSPACES.map(workspace => ({
       path: workspace.path,
-      component: () => import('./CuttingWorkspacePage.vue'),
+      component: workspace.path === 'master'
+        ? () => import('./CuttingMasterPage.vue')
+        : workspace.path === 'planning' || workspace.path === 'materials'
+        ? () => import('./CuttingOrdersPage.vue')
+        : () => import('./CuttingWorkspacePage.vue'),
       props: { workspace },
       meta: { ...meta, title: `裁床 · ${workspace.title}` },
     })),

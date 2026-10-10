@@ -286,6 +286,14 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
+    if permission_code.startswith("cutting_ops:"):
+        action = permission_code.partition(":")[2]
+        departments = ("engineering",) if action in {"bom_write", "bom_publish", "requisition_submit"} else ("production",)
+        if action in {"eta_write", "requisition_reconcile"}:
+            departments = ("pmc-warehouse",)
+        if action == "read":
+            departments = ("production", "engineering", "pmc-warehouse")
+        return ScopePolicy(departments, guidance="仅华康C裁床；BOM与需求提交归工程，签收及其他基础资料归生产，采购交期归PMC/仓库；须单独授权")
     if permission_code == "module_feedback:submit":
         return ScopePolicy(guidance="已确认员工默认仅可在所属厂区提交及查看本人反馈；可单独禁止，允许授权不能扩大到其他厂区")
     if permission_code == "module_feedback:manage":

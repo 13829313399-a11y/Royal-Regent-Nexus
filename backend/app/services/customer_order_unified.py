@@ -523,7 +523,7 @@ def _validate_po_batch(po_files: list[tuple[str, bytes]]) -> None:
 def _factory_allowed(customer_code: str, factory_id: str) -> bool:
     if customer_code == 'ubtech':
         return factory_id == 'huakang-d'
-    if customer_code == 'disney':
+    if customer_code in {'disney', 'seasons'}:
         return factory_id in {'huaxing', 'huakang-d'}
     if customer_code == 'spin-master' or (customer_code == 'jp' and factory_id == 'huakang-d'):
         return False
