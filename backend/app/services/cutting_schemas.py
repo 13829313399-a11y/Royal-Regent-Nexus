@@ -22,10 +22,30 @@ class Material(Strict):
     source_reference: Text
 
 
+class CalendarException(Strict):
+    day: Annotated[date, Field(ge=date(2000, 1, 1), le=date(2100, 12, 31))]
+    working: Annotated[bool, Field(strict=True)]
+    reason: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+
+
+class WorkCalendar(Strict):
+    weekdays: Annotated[list[Annotated[int, Field(strict=True, ge=1, le=7)]], Field(min_length=1, max_length=7)]
+    exceptions: Annotated[list[CalendarException], Field(max_length=730)] = []
+    basis: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+
+    @model_validator(mode='after')
+    def unique_days(self):
+        if len(set(self.weekdays)) != len(self.weekdays) or len({e.day for e in self.exceptions}) != len(self.exceptions):
+            raise ValueError('工作周及日历例外日期不可重复')
+        return self
+
+
 class Resource(Strict):
     name: Text
     execution: Literal['internal', 'outsourced']
     process: Literal['cutting'] = 'cutting'
+    calendar: WorkCalendar | None = None
+    preparation_workdays: Annotated[int, Field(strict=True, ge=0, le=365)] = 3
     contact: Annotated[str, Field(max_length=120)] = ''
     source_reference: Text
 
@@ -147,7 +167,7 @@ class ReconcileRequisition(WithdrawRequisition):
         return self
 
 
-OrderAction = Literal['receive', 'bom', 'requisition', 'eta', 'withdraw', 'reconcile']
+OrderAction = Literal['receive', 'bom', 'requisition', 'eta', 'withdraw', 'reconcile', 'plan', 'plan-publish']
 WorkflowStatus = Literal['awaiting_receipt', 'cancelled_receipt', 'cancelled', 'reconciliation',
                          'awaiting_bom', 'awaiting_submission', 'awaiting_reply', 'partial_reply', 'complete_reply', 'no_purchase']
 

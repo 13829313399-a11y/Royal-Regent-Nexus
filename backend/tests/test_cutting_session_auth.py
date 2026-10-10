@@ -16,7 +16,7 @@ def session_flow(flow, monkeypatch):
     flow.app.include_router(auth_api.router)
     flow.app.dependency_overrides.pop(get_current_user)
     monkeypatch.setattr(auth_api.settings, 'session_cookie_secure', False)
-    actions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile']
+    actions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile', 'plan_write', 'plan_publish']
     with Session(flow.engine) as db:
         # Required IAM invariant row, seeded by the real migration in deployed databases.
         db.add(AuthIamState(key='identity_mutation_lock', value_json='{}'))
@@ -83,3 +83,11 @@ def test_real_session_observes_revocation_deny_logout_and_suspension(session_flo
     with Session(session_flow.engine) as db:
         db.get(AuthUser, 'procurement').status = 'suspended'; db.commit()
     assert session_flow.get(BASE+'/orders?factory_id=huakang-c').status_code == 401
+
+
+@pytest.mark.parametrize('name,expected', [('production',409),('engineering',403),('procurement',403),('reader',403),('foreign',403)])
+def test_real_session_plan_publish_scope(session_flow,name,expected):
+    login(session_flow,name)
+    response=session_flow.post(BASE+'/orders/line-1/plan-publish',json=command(expected_version=3,draft_version=3))
+    # Production passes authorization, but cannot publish a nonexistent draft.
+    assert response.status_code==expected,response.text

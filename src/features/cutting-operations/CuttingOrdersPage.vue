@@ -5,11 +5,17 @@ import { cuttingApi, errorMessage, type Access, type BomData, type MasterRecord,
 import { ordersApi, type CuttingOrder, type OrderAction, type OrderCommand, type OrderRevision, type EtaBatch, type DemandInput } from './ordersApi'
 import { CUTTING_FACTORY, type CuttingWorkspace } from './navigation'
 import CuttingWorkspacePage from './CuttingWorkspacePage.vue'
+import CuttingPlanEditor from './CuttingPlanEditor.vue'
+import CuttingPlanSummary from './CuttingPlanSummary.vue'
+import CuttingPlanDiff from './CuttingPlanDiff.vue'
+import { taskInput, type PlanTaskInput } from './planning'
 
 defineProps<{ workspace: CuttingWorkspace }>()
 const access = ref<Access | null>(null), loading = ref(true), saving = ref(false), needsLogin = ref(false)
 const error = ref(''), notice = ref(''), query = ref(''), page = ref(1), total = ref(0)
 const statusFilter = ref('')
+const planStatusFilter = ref('')
+const planStatusLabels: Record<string,string> = { unplanned:'未排',partial:'部分排期',published:'已发布',pending_actual:'待实际核定',review:'待复核' }
 const rows = ref<CuttingOrder[]>([]), selected = ref<CuttingOrder | null>(null)
 const action = ref<OrderAction | null>(null), reason = ref(''), targetSets = ref(1), quantityBasis = ref('')
 const bomMatchBasis = ref('')
@@ -19,15 +25,18 @@ const demands = ref<DemandInput[]>([]), batches = ref<EtaBatch[]>([])
 const disposition = ref<'not_ordered' | 'cancelled_or_reallocated'>('not_ordered'), evidence = ref(''), allHandled = ref(false)
 const history = ref<OrderRevision[]>([]), historyPage = ref(1), historyTotal = ref(0)
 const pending = ref<{ id: string; action: OrderAction; body: OrderCommand } | null>(null), uncertain = ref(false)
+const planTasks = ref<PlanTaskInput[]>([])
+const removedTaskReasons = ref<Record<string,string>>({})
 const baseline = ref('')
-const snapshot = () => JSON.stringify([reason.value, targetSets.value, quantityBasis.value, bomMatchBasis.value, chosenBom.value, demands.value, batches.value, disposition.value, evidence.value, allHandled.value])
+const snapshot = () => JSON.stringify([reason.value, targetSets.value, quantityBasis.value, bomMatchBasis.value, chosenBom.value, demands.value, batches.value, disposition.value, evidence.value, allHandled.value, planTasks.value,removedTaskReasons.value])
 const dirty = computed(() => !!action.value && snapshot() !== baseline.value)
 const available = computed(() => access.value?.enabled && access.value?.orders_schema_ready)
 const data = computed(() => selected.value?.current?.data)
+const adjustingPlan = computed(() => (action.value === 'plan' || action.value === 'plan-publish') && !!data.value?.planning?.published)
 const requirements = computed(() => (data.value?.bom?.data as BomData | undefined)?.requirements ?? [])
 const writable = computed(() => selected.value && !selected.value.needs_receipt && selected.value.snapshot.status === 'active')
 const can = (permission: string) => access.value?.permissions.includes(permission) ?? false
-const labels: Record<OrderAction, string> = { receive: '签收订单版本', bom: '工程关联 BOM', requisition: '工程提交物料需求', eta: '采购回复分批交期', withdraw: '工程申请撤回／修订', reconcile: '采购核对旧需求' }
+const labels: Record<OrderAction, string> = { receive: '签收订单版本', bom: '工程关联 BOM', requisition: '工程提交物料需求', eta: '采购回复分批交期', withdraw: '工程申请撤回／修订', reconcile: '采购核对旧需求', plan: '编制任务与日计划', 'plan-publish': '发布生产预排' }
 const statusLabels: Record<string, string> = { awaiting_receipt: '待签收新版本', cancelled_receipt: '取消待签收', cancelled: '已取消', reconciliation: '旧需求待采购核对', awaiting_bom: '待关联 BOM', awaiting_submission: '待工程提交需求', awaiting_reply: '待采购回复', partial_reply: '采购部分回复', complete_reply: '采购全部回复', no_purchase: '本次无需采购' }
 let alive = true, generation = 0, searchGeneration = 0, historyGeneration = 0
 function discard() {
@@ -50,7 +59,7 @@ async function load(nextPage = page.value) {
     if (!alive || request !== generation) return
     access.value = rights
     if (!available.value) return
-    const result = await ordersApi.list(nextPage, query.value, statusFilter.value)
+    const result = await ordersApi.list(nextPage, query.value, statusFilter.value, planStatusFilter.value)
     if (!alive || request !== generation) return
     rows.value = result.data; total.value = result.total; page.value = nextPage
   } catch (e) { if (alive && request === generation) { error.value = errorMessage(e); access.value = null } }
@@ -64,11 +73,22 @@ function select(row: CuttingOrder) {
 function edit(next: OrderAction) {
   if (!discard()) return
   searchGeneration++; action.value = next; reason.value = ''; chosenBom.value = null; bomQuery.value = ''; bomRows.value = []; versions.value = []
+  removedTaskReasons.value = {}
+  if (next === 'plan-publish' && data.value?.planning?.published) reason.value = data.value.planning.draft?.adjustment_reason ?? ''
   targetSets.value = data.value?.target_sets ?? 1; quantityBasis.value = data.value?.quantity_basis ?? ''
   bomMatchBasis.value = data.value?.bom_match_basis ?? ''
   demands.value = requirements.value.map((_, row) => ({ row, quantity: '', purchase_mode: 'purchase', no_purchase_reason: '' }))
   disposition.value = 'not_ordered'; evidence.value = ''; allHandled.value = false
   batches.value = structuredClone(data.value?.batches ? JSON.parse(JSON.stringify(data.value.batches)) : [])
+  planTasks.value = (data.value?.planning?.draft ?? data.value?.planning?.published)?.tasks.map(taskInput) ?? []
+  if (next === 'plan' && (data.value?.planning?.draft ? selected.value?.planning_summary?.draft_stale : selected.value?.planning_summary?.published_stale)) {
+    // Revalidate estimates against the latest BOM; never carry an old row-index mapping into a new BOM silently.
+    for (const task of planTasks.value) {
+      task.materials = requirements.value.flatMap((r, row) => r.required_for_cutting ? [{ row, expected_date: null }] : [])
+      task.date_basis = 'estimated'; task.actual_prerequisite_date = null; task.actual_prerequisite_reference = ''; task.actual_issue_date = null; task.actual_issue_reference = ''; task.readiness_basis = ''; task.prerequisite_date = null; task.prerequisite_basis = ''
+    }
+    notice.value = '旧计划依据已变更：保留任务和日计划，预计物料、实际领料及前置条件须重新核对填写。'
+  }
   baseline.value = snapshot()
 }
 function cancel() { if (discard()) { action.value = null; searchGeneration++ } }
@@ -102,6 +122,8 @@ async function loadHistory(nextPage = 1) {
 }
 function makeCommand(): OrderCommand | null {
   const common: Command = { factory_id: CUTTING_FACTORY, operation_id: crypto.randomUUID(), expected_version: selected.value?.current?.version ?? 0, reason: reason.value }
+  if (action.value === 'plan') return { ...common, tasks: JSON.parse(JSON.stringify(planTasks.value)), removed_task_reasons: {...removedTaskReasons.value} }
+  if (action.value === 'plan-publish' && data.value?.planning?.draft) return { ...common, draft_version: data.value.planning.draft.version }
   if (action.value === 'receive') return { ...common, dispatch_id: selected.value!.dispatch_id }
   if (action.value === 'bom' && chosenBom.value) return { ...common, bom_id: chosenBom.value.id, bom_version: chosenBom.value.version, target_sets: Number(targetSets.value), quantity_basis: quantityBasis.value, bom_match_basis: bomMatchBasis.value }
   if (action.value === 'requisition') return { ...common, lines: JSON.parse(JSON.stringify(demands.value)) }
@@ -124,7 +146,7 @@ async function save() {
     selected.value = result; rows.value = rows.value.map(r => r.line_id === result.line_id ? result : r)
     pending.value = null; uncertain.value = false; needsLogin.value = false; action.value = null
     history.value = []; historyGeneration++; notice.value = '已保存，版本及操作依据已留存。'
-    if (statusFilter.value) {
+    if (statusFilter.value || planStatusFilter.value) {
       saving.value = false
       await load()
     }
@@ -178,8 +200,8 @@ function status(row: CuttingOrder) {
     <CuttingWorkspacePage :workspace="workspace" />
   </template>
   <section v-else class="cutting-page orders-page">
-    <header class="cutting-page-heading"><div><p class="cutting-eyebrow">华康 C / 裁床部</p><h1>{{ workspace.title }}</h1><p>{{ workspace.path === 'materials' ? '采购分批交期与需求跟进' : '业务接单与工程物料需求' }}</p></div><span class="cutting-status">订单与交期</span></header>
-    <p class="cutting-notice">采购预计交期不代表实收或库存可用；每日排期、三工作日供数及库存记账尚未开放。</p>
+    <header class="cutting-page-heading"><div><p class="cutting-eyebrow">华康 C / 裁床部</p><h1>{{ workspace.title }}</h1><p>{{ workspace.path === 'materials' ? '采购分批交期与需求跟进' : '订单、工程需求与生产预排' }}</p></div><span class="cutting-status">订单与交期</span></header>
+    <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；实际填数、领料和库存记账在后续阶段接入。</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="needsLogin" role="alert">登录已失效，请在新标签页重新登录后重试。<a href="/login" target="_blank" rel="noopener">重新登录</a></p>
     <button v-if="pending" :disabled="saving" @click="save">{{ saving ? '正在保存…' : '重试原操作' }}</button>
@@ -187,9 +209,9 @@ function status(row: CuttingOrder) {
     <template v-if="!needsLogin">
       <section class="cutting-panel">
         <h2>{{ workspace.path === 'materials' ? '采购交期' : '订单总台账' }}</h2>
-        <form class="order-toolbar" @submit.prevent="load(1)"><label>订单号／货号 <input v-model="query" maxlength="80" /></label><label>办理状态 <select v-model="statusFilter" aria-label="办理状态筛选"><option value="">全部状态</option><option v-for="(label, value) in statusLabels" :key="value" :value="value">{{ label }}</option></select></label><button :disabled="loading || saving || !!pending">查询／刷新</button></form>
+        <form class="order-toolbar" @submit.prevent="load(1)"><label>订单号／货号 <input v-model="query" maxlength="80" /></label><label>办理状态 <select v-model="statusFilter" aria-label="办理状态筛选"><option value="">全部状态</option><option v-for="(label, value) in statusLabels" :key="value" :value="value">{{ label }}</option></select></label><label v-if="workspace.path === 'planning'">排期状态 <select v-model="planStatusFilter" aria-label="排期状态筛选"><option value="">全部排期</option><option v-for="(label,value) in planStatusLabels" :key="value" :value="value">{{ label }}</option></select></label><button :disabled="loading || saving || !!pending">查询／刷新</button></form>
         <div class="cutting-table-scroll"><table><thead><tr><th>洋行名</th><th>订单号</th><th>货号</th><th>来源数量</th><th>来源版本</th><th>办理状态</th><th>操作</th></tr></thead><tbody>
-          <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td>{{ row.snapshot.quantity }}</td><td>V{{ row.source_version }}</td><td>{{ status(row) }}<p v-if="row.expected_date_passed">预计日期已过，实收待核实</p></td><td><button :disabled="saving || !!pending" @click="select(row)">查看</button></td></tr>
+          <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td>{{ row.snapshot.quantity }}</td><td>V{{ row.source_version }}</td><td>{{ status(row) }}<p v-if="workspace.path === 'planning'">{{ row.planning_summary?.states?.map(s => planStatusLabels[s]).join(' · ') }}</p><p v-if="row.expected_date_passed">预计日期已过，实收待核实</p></td><td><button :disabled="saving || !!pending" @click="select(row)">查看</button></td></tr>
           <tr v-if="!rows.length"><td colspan="7">{{ loading ? '读取中…' : '暂无已下发订单，请由华康C业务在订单中心选择裁床部下发。' }}</td></tr>
         </tbody></table></div>
         <div class="order-toolbar"><button :disabled="page <= 1 || loading" @click="load(page-1)">上一页</button><span>第 {{ page }} 页 · 共 {{ total }} 条</span><button :disabled="page*50 >= total || loading" @click="load(page+1)">下一页</button></div>
@@ -209,6 +231,10 @@ function status(row: CuttingOrder) {
         </details>
         <p v-if="data?.bom">已关联 {{ data.bom.code }} V{{ data.bom.version }} · 裁床目标 {{ data.target_sets }} 套 · 数量依据：{{ data.quantity_basis }}</p>
         <div class="order-toolbar" v-if="!action">
+          <template v-if="workspace.path === 'planning' && writable && data?.bom && !data.purchase_reconciliation_required">
+            <button v-if="can('plan_write')" @click="edit('plan')">编制任务与日计划</button>
+            <button v-if="can('plan_publish') && data.planning?.draft" :disabled="selected.planning_summary?.draft_stale" @click="edit('plan-publish')">发布生产预排</button>
+          </template>
           <button v-if="selected.needs_receipt && can('order_receive')" @click="edit('receive')">签收订单版本</button>
           <button v-if="writable && !data?.requisition && can('bom_write')" @click="edit('bom')">工程关联 BOM</button>
           <button v-if="writable && data?.bom && !data.requisition && !data.purchase_reconciliation_required && can('requisition_submit')" @click="edit('requisition')">工程提交物料需求</button>
@@ -219,11 +245,19 @@ function status(row: CuttingOrder) {
         <div v-if="data?.requisition" class="cutting-table-scroll"><table><caption>需求版本 V{{ data.requisition.version }}；无交期批次表示尚待回复</caption><thead><tr><th>需求行／物料</th><th>阶段／部件</th><th>裁剪必需</th><th>理论净用量</th><th>工程需求量</th><th>已回复／待回复</th><th>预计交期批次</th></tr></thead><tbody>
           <tr v-for="r in data.requisition.lines" :key="r.row"><td>{{ r.row + 1 }} · {{ r.material.code }} {{ r.material.name }}</td><td>{{ r.stage }} / {{ r.part_codes.join('、') }}</td><td>{{ r.required_for_cutting ? '是' : '否' }}</td><td>{{ r.theoretical_quantity }} {{ r.unit }}</td><td>{{ r.quantity }} {{ r.unit }}<p v-if="r.purchase_mode === 'no_purchase'">本次不采购：{{ r.no_purchase_reason }}</p></td><td>{{ r.replied_quantity }} / {{ r.awaiting_reply_quantity }} {{ r.unit }}</td><td><p v-for="(b, i) in data.batches.filter(b => b.row === r.row)" :key="i">{{ b.expected_date }} / {{ b.quantity }} {{ r.unit }} / {{ b.supplier }} / {{ b.purchase_reference }}</p><span v-if="r.purchase_mode === 'no_purchase'">无需采购交期</span><span v-else-if="!data.batches.some(b => b.row === r.row)">待回复</span></td></tr>
         </tbody></table></div>
+        <template v-if="workspace.path === 'planning' && data?.planning">
+          <CuttingPlanSummary v-if="data.planning.published" :plan="data.planning.published" title="当前发布计划" :stale="selected.planning_summary?.published_stale" />
+          <CuttingPlanSummary v-if="data.planning.draft" :plan="data.planning.draft" title="待发布草稿" :stale="selected.planning_summary?.draft_stale" />
+          <details v-if="data.planning.baseline"><summary>首次基准计划</summary><CuttingPlanSummary :plan="data.planning.baseline" title="首次基准" /></details>
+        </template>
         <form v-if="action" class="order-form" @submit.prevent="save">
           <h3>{{ labels[action] }}</h3>
           <fieldset :disabled="saving || !!pending">
+            <CuttingPlanEditor v-if="action === 'plan' && data" v-model="planTasks" v-model:removed-task-reasons="removedTaskReasons" :data="data" />
+            <CuttingPlanDiff v-if="adjustingPlan && data?.planning?.published" :previous="data.planning.published" :tasks="action === 'plan' ? planTasks : data.planning.draft?.tasks ?? []" :removed-reasons="action === 'plan' ? removedTaskReasons : data.planning.draft?.removed_task_reasons" />
+            <p v-if="action === 'plan-publish'">发布当前草稿后形成新计划版本，首次基准和历史调整仍保留。预排不代表物料已可用或允许实际开工。</p>
             <template v-if="action === 'bom'">
-              <div class="order-toolbar"><label>BOM 编码 <input v-model="bomQuery" maxlength="80" /></label><button type="button" @click="searchBoms()">查找 BOM</button></div>
+              <div class="order-toolbar"><label>BOM 编码／货号／名称／款式／颜色 <input v-model="bomQuery" maxlength="80" /></label><button type="button" @click="searchBoms()">查找 BOM</button></div>
               <ul><li v-for="b in bomRows" :key="b.id">{{ b.code }} · {{ b.data.name }} <button type="button" @click="loadVersions(b.id)">查看发布版本</button></li></ul>
               <div v-if="bomTotal" class="order-toolbar"><button type="button" :disabled="bomPage <= 1" @click="searchBoms(bomPage-1)">BOM 上一页</button><button type="button" :disabled="bomPage*50 >= bomTotal" @click="searchBoms(bomPage+1)">BOM 下一页</button></div>
               <ul><li v-for="b in versions" :key="b.version">{{ b.code }} V{{ b.version }} · {{ (b.data as BomData).item_no }} · {{ (b.data as BomData).style }} / {{ (b.data as BomData).color }} <button type="button" @click="chosenBom = b">选择此发布版</button></li></ul>
@@ -256,7 +290,9 @@ function status(row: CuttingOrder) {
               <label>处置依据 <textarea v-model="evidence" minlength="4" maxlength="500" required placeholder="注明核对人、原采购单号、取消／转用凭据及数量；不得遗留未处理承诺量" /></label>
               <label><input v-model="allHandled" type="checkbox" required />确认整张旧需求均已核对处置，没有未处理采购承诺；此处不会自动操作外部采购单。</label>
             </template>
-            <label>本次操作依据 <textarea v-model="reason" maxlength="500" required /></label>
+            <label v-if="adjustingPlan">已发布计划调整原因 <textarea v-model="reason" maxlength="500" required /></label>
+            <p v-if="adjustingPlan">本次调整将形成新版本，首次基准和原发布版本保留；发布时带入已保存的调整原因，可核对修改。</p>
+            <label v-else-if="action !== 'plan' && action !== 'plan-publish'">本次操作依据 <textarea v-model="reason" maxlength="500" required /></label>
             <button type="submit">确认保存</button><button type="button" @click="cancel">取消编辑</button>
           </fieldset>
         </form>
@@ -264,6 +300,8 @@ function status(row: CuttingOrder) {
         <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.actor_id }} · {{ r.reason }}</summary>
           <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 来源数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
           <p>BOM：{{ r.data.bom ? `${r.data.bom.code} V${r.data.bom.version}` : '未关联' }} · 目标 {{ r.data.target_sets ?? '待确认' }} 套 · {{ r.data.quantity_basis }} · {{ r.data.bom_match_basis }}</p>
+          <CuttingPlanSummary v-if="r.data.planning?.published" :plan="r.data.planning.published" title="该版本发布计划" />
+          <CuttingPlanSummary v-if="r.data.planning?.draft" :plan="r.data.planning.draft" title="该版本计划草稿" />
           <p v-if="r.data.purchase_reconciliation_required">旧采购需求待核对</p>
           <p v-if="r.data.reconciliation_request">申请依据：{{ r.data.reconciliation_request.reason }}</p><p v-if="r.data.reconciliation">需求 V{{ r.data.reconciliation.requisition_version }} 采购核对依据：{{ r.data.reconciliation.evidence }}</p>
           <ul><li v-for="line in r.data.requisition?.lines" :key="line.row">{{ line.row+1 }} · {{ line.material.name }} / {{ line.stage }} · 需求 {{ line.quantity }} {{ line.unit }}<span v-if="line.purchase_mode === 'no_purchase'"> · 本次不采购：{{ line.no_purchase_reason }}</span></li></ul>
