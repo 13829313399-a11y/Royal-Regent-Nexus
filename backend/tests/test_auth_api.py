@@ -127,6 +127,8 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_price:settings_read",
                         "customer_order:audit_read",
                         "customer_order:read",
+                        "fabric_operations:read",
+                        "fabric_warehouse:read",
                         "injection_scheduling:read",
                         "internal_quote:baseline_read",
                         "internal_quote:read",
@@ -140,6 +142,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "molding_sample:read",
                         "qc_inspection:audit_read",
                         "qc_inspection:read",
+                        "semi_operations:read",
                         "system:audit_read",
                         "system:permission_catalog_read",
                     }
