@@ -40,6 +40,7 @@ export interface EngineeringMaterialRow extends QuotePricingMetadata {
   disney_included: number
 }
 export interface EngineeringMoldPartRow {
+  id?: string
   name: string
   color: string
   process: string
@@ -1342,18 +1343,24 @@ export function previewEngineeringMoldPartSplit(value: unknown, existing: Engine
 
 function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPartRow[] {
   const savedParts = rows(row.parts)
-  const sourceParts: Record<string, unknown>[] = savedParts.length
-    ? savedParts
-    : splitEngineeringMoldPartNames(row.item ?? row.name ?? row.chinese_name).map((name) => ({ name }))
-  return sourceParts.map((part) => ({
-    name: textValue(part.name ?? part.item),
-    color: textValue(part.color),
-    process: textValue(part.process),
-    process_unit_price_hkd: numberValue(part.process_unit_price_hkd),
-    unit_net_weight_g: numberValue(part.unit_net_weight_g ?? part.net_weight_g),
-    output_count: numberValue(part.output_count, 1),
-    quantity: numberValue(part.quantity, 1),
-  }))
+  // Opening or saving the ordinary form must never confirm an implicit split.
+  const sourceParts = savedParts
+  const occurrences = new Map<string, number>()
+  return sourceParts.map((part) => {
+    const name = textValue(part.name ?? part.item).trim()
+    const occurrence = (occurrences.get(name) ?? 0) + 1
+    occurrences.set(name, occurrence)
+    return {
+      id: textValue(part.id).trim() || `legacy-name:${JSON.stringify([name, occurrence])}`,
+      name: textValue(part.name ?? part.item),
+      color: textValue(part.color),
+      process: textValue(part.process),
+      process_unit_price_hkd: numberValue(part.process_unit_price_hkd),
+      unit_net_weight_g: numberValue(part.unit_net_weight_g ?? part.net_weight_g),
+      output_count: numberValue(part.output_count, 1),
+      quantity: numberValue(part.quantity, 1),
+    }
+  })
 }
 
 function electronicRows(value: unknown): ElectronicComponentRow[] {
