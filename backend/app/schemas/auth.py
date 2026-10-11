@@ -1,6 +1,7 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+import re
 
 
 class LoginRequest(BaseModel):
@@ -9,21 +10,35 @@ class LoginRequest(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    username: str
-    display_name: str
-    password: str
-    confirm_password: str
-    phone: str = ""
-    email: str = ""
-    factory_id: str = ""
-    org_unit_id: str = ""
-    department: str
-    position: str
+    username: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=6, max_length=256)
+    confirm_password: str = Field(min_length=6, max_length=256)
+    phone: str = Field(default="", max_length=64)
+    email: str = Field(default="", max_length=128)
+    factory_id: str = Field(default="", max_length=64)
+    org_unit_id: str = Field(default="", max_length=64)
+    department: str = Field(min_length=1, max_length=64)
+    position: str = Field(min_length=1, max_length=128)
+
+    @field_validator("username", "display_name", "phone", "email", "factory_id", "org_unit_id", "department", "position", mode="before")
+    @classmethod
+    def trim_public_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value):
+        if value and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+            raise ValueError("请输入有效邮箱")
+        return value
 
 
 class RegisterResponse(BaseModel):
     status: str
     message: str
+    request_id: str | None = None
+    submitted_at: str | None = None
 
 
 class PasswordResetRequest(BaseModel):
@@ -51,6 +66,8 @@ class PasswordResetClaimResponse(BaseModel):
     ]
     request_id: str = ""
     can_complete: bool = False
+    can_request_reopen: bool = False
+    expires_in_seconds: int = 0
     expires_at: str = ""
     message: str
 

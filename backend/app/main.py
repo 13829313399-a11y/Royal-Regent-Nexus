@@ -162,7 +162,50 @@ async def handle_request_validation_error(
     request: Request,
     exc: RequestValidationError,
 ):
+    if request.url.path.startswith("/api/auth/"):
+        from fastapi.responses import JSONResponse
+        allowed = {"username", "display_name", "phone", "email", "factory_id", "org_unit_id",
+                   "department", "position", "password", "confirm_password", "new_password",
+                   "current_password", "contact", "note"}
+        fields = []
+        for error in exc.errors():
+            field = str(error.get("loc", [""])[-1])
+            if field not in allowed:
+                continue
+            # Never serialize Pydantic input/ctx: they can contain raw secrets.
+            kind = error.get("type", "")
+            limits = error.get("ctx", {})
+            message = "填写内容不符合要求"
+            if kind == "missing": message = "请填写此项"
+            elif kind == "string_too_long": message = f"不能超过 {limits.get('max_length')} 个字符"
+            elif kind == "string_too_short": message = f"至少需要 {limits.get('min_length')} 个字符"
+            elif field == "email": message = "请输入有效邮箱"
+            fields.append({"field": field, "message": message})
+        return JSONResponse(status_code=422, content={
+            "detail": "提交信息未通过校验，请检查填写内容", "code": "AUTH_VALIDATION_ERROR",
+            "field_errors": fields, "trace_id": getattr(request.state, "request_id", ""),
+        })
     return await request_validation_exception_handler(request, exc)
+
+
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+@app.exception_handler(StarletteHTTPException)
+async def handle_auth_http_error(request: Request, exc: StarletteHTTPException):
+    from fastapi.exception_handlers import http_exception_handler
+    from fastapi.responses import JSONResponse
+    if not request.url.path.startswith("/api/auth/"):
+        return await http_exception_handler(request, exc)
+    details = exc.detail if isinstance(exc.detail, dict) else {}
+    message = details.get("message", exc.detail if isinstance(exc.detail, str) else "认证请求未完成")
+    result = {"detail": message, "code": details.get("code", "AUTH_REQUEST_FAILED"),
+              "field_errors": details.get("field_errors", []),
+              "trace_id": getattr(request.state, "request_id", "")}
+    retry = (exc.headers or {}).get("Retry-After")
+    if retry is not None:
+        result["retry_after_seconds"] = int(retry)
+    return JSONResponse(status_code=exc.status_code, content=result, headers=exc.headers)
 
 
 @app.middleware("http")
@@ -191,7 +234,7 @@ async def record_request_timing(request: Request, call_next):
     duration_ms = (perf_counter() - started_at) * 1000
     response.headers["X-Request-ID"] = request_id
     response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
-    if request.url.path.startswith("/api/assistant/"):
+    if request.url.path.startswith(("/api/assistant/", "/api/auth/")):
         response.headers["Cache-Control"] = "private, no-store"
     if request.url.path != "/health":
         route = request.scope.get("route")

@@ -152,6 +152,7 @@ export interface PasswordResetMatchedUser {
 }
 
 export interface PasswordResetRequestDetail {
+  can_reopen?: boolean
   id: string
   user_id?: string | null
   username: string

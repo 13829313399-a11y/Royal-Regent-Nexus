@@ -1,0 +1,368 @@
+.rr-auth{--ng-ink:#152f30;--ng-muted:#667b78;--ng-green:#116b55;--ng-green-deep:#074637;--ng-surface:#f7faf6;--ng-line:#dce6df;--ng-soft:#eef4ed;--ng-error:#a13c37;--ng-spring:cubic-bezier(.16,1,.3,1)}
+/* A 320px window with a classic scrollbar has less than 320px of usable width. */
+body:has(.rr-auth.ng-shell){min-width:0}
+.rr-auth *{box-sizing:border-box}
+.rr-auth{margin:0;background:var(--ng-surface);font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif;color:var(--ng-ink)}
+.rr-auth button,.rr-auth input,.rr-auth select,.rr-auth textarea{font:inherit}
+.rr-auth button{cursor:pointer}
+.rr-auth button:disabled{cursor:wait}
+.rr-auth button,.rr-auth input,.rr-auth select,.rr-auth textarea{-webkit-tap-highlight-color:transparent}
+.rr-auth button:focus-visible,.rr-auth a:focus-visible,.rr-auth select:focus-visible,.rr-auth input:focus-visible,.rr-auth textarea:focus-visible,.rr-auth [tabindex]:focus-visible{outline:3px solid #2e987c;outline-offset:4px}
+.rr-auth .ng-icon{display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.rr-auth .ng-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.rr-auth [hidden]{display:none!important}
+.rr-auth.ng-shell{display:grid;grid-template-columns:57% 43%;min-height:100svh}
+.rr-auth .ng-brand{position:relative;isolation:isolate;overflow:hidden;display:flex;flex-direction:column;min-height:900px;color:#f0f8ed;background:radial-gradient(ellipse at 66% 47%,#105344 0%,transparent 52%),radial-gradient(ellipse at 10% 12%,#13494a 0%,transparent 65%),linear-gradient(137deg,#08262d 2%,#083831 60%,#09242d 100%)}
+.rr-auth .ng-brand:before{content:"";position:absolute;z-index:-1;inset:0;opacity:.38;background-image:linear-gradient(115deg,transparent 55%,#abc1a517 55.1%,transparent 55.2%),linear-gradient(25deg,transparent 72%,#acd4ab0d 72.1%,transparent 72.2%);pointer-events:none}
+.rr-auth .ng-brand:after{content:"";position:absolute;z-index:-1;inset:0;background:radial-gradient(ellipse at 53% 66%,#44b0870b 15%,transparent 50%),linear-gradient(90deg,transparent 60%,#1115272e);pointer-events:none}
+.rr-auth .ng-brand-header{position:relative;z-index:2;display:flex;align-items:center;gap:16px;padding:50px 64px 0}
+.rr-auth .ng-brand-name{min-width:0}
+.rr-auth .ng-logo{display:grid;place-items:center;width:64px;height:64px;flex:none;border-radius:8px;background:#f7faf6}
+/* Use the homepage asset's original fit, geometry and animation; inline SVG keeps pause support. */
+.rr-auth .ng-logo>svg{display:block;width:100%;height:100%;object-fit:contain}
+.rr-auth .ng-brand-word{font-family:Arial,sans-serif;font-size:20px;letter-spacing:-.5px;font-weight:550}
+.rr-auth .ng-brand-sub{margin-top:7px;font-size:11px;color:#a5bdb4;letter-spacing:2.1px}
+.rr-auth .ng-heading{position:relative;z-index:1;padding:68px 64px 0}
+.rr-auth .ng-heading h2{margin:0;font-size:clamp(34px,3.38vw,54px);font-weight:500;line-height:1.45;letter-spacing:1.2px}
+.rr-auth .ng-heading h2 span{display:block;color:#c9e9ce}
+.rr-auth .ng-heading p{margin:21px 0 0;font-size:13px;color:#a8c4b8;line-height:1.95;letter-spacing:.5px}
+.rr-auth .ng-heading .ng-rule{display:block;width:40px;height:2px;margin-top:26px;background:linear-gradient(90deg,#d7c5a2,#e5d5b200);border:0}
+.rr-auth .ng-art{position:relative;flex:1;margin:-11px 0 -7px;min-height:394px;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.rr-auth .ng-art svg{position:absolute;inset:0;margin:auto;width:100%;height:100%;max-width:800px;max-height:530px;display:block;overflow:visible}
+.rr-auth .ng-art .ng-crystal{transform-origin:390px 295px;animation:ng-arrive 1.15s var(--ng-spring) both}
+.rr-auth .ng-art .ng-ray{stroke-dasharray:10 90;stroke-dashoffset:12;stroke-linecap:round;animation:ng-track-pass 7s linear infinite;opacity:0}
+.rr-auth .ng-art .ng-dot{animation:ng-arrive 1s var(--ng-spring) both}
+.rr-auth .ng-float-layer{transform-box:view-box;animation:ng-float 9.6s cubic-bezier(.37,0,.63,1) infinite;--ng-drift-x:0px;--ng-rest-y:0px;--ng-lift-y:-8px}
+.rr-auth .ng-lower-layer{animation-duration:10.8s;animation-delay:-.8s;--ng-lift-y:-8px}
+.rr-auth .ng-upper-layer{animation-duration:9.6s;animation-delay:-1.6s;--ng-drift-x:1.5px;--ng-rest-y:-4px;--ng-lift-y:-19px}
+.rr-auth .ng-portal-layer{animation-duration:8.4s;animation-delay:-2.4s;--ng-drift-x:-1.5px;--ng-rest-y:-9px;--ng-lift-y:-31px}
+.rr-auth .ng-floor-light{transform-origin:395px 345px;animation:ng-floor-breathe 8.4s ease-in-out -2.4s infinite}
+.rr-auth .ng-floor-shadow{transform-origin:395px 370px;animation:ng-shadow-breathe 8.4s ease-in-out -2.4s infinite}
+.rr-auth .ng-orbit-spin{transform-origin:0 0;animation:ng-orbit-turn 36s linear infinite}
+.rr-auth .ng-base-rim{stroke-dasharray:18 82;opacity:.55;animation:ng-trace 12s linear infinite}
+.rr-auth .ng-glass-sheen{animation:ng-sheen-pass 9s linear infinite;opacity:0}
+.rr-auth .ng-upper-layer .ng-glass-sheen{animation-delay:-3s}
+.rr-auth .ng-portal-layer .ng-glass-sheen{animation-delay:-6s}
+.rr-auth .ng-core-glow{animation:ng-core-breathe 8.4s ease-in-out -2.4s infinite;opacity:.55}
+.rr-auth .ng-node-halo{fill:none;stroke:#a7e6c2;stroke-width:.8;transform-box:fill-box;transform-origin:center;opacity:0;animation:ng-node-ripple 5.6s var(--ng-node-phase) ease-out infinite}
+.rr-auth .ng-node-signal{fill:#9feacc;opacity:.16;transform-box:fill-box;transform-origin:center;animation:ng-node-breathe 5.6s var(--ng-node-phase) ease-in-out infinite}
+.rr-auth .ng-org-label{fill:#bbd2c5;font-size:11px;letter-spacing:.6px;font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif}
+.rr-auth .ng-org-node{fill:#9de5c5;stroke:#d4fff0;stroke-width:1.5}
+.rr-auth .ng-brand-footer{padding:0 64px 36px;display:flex;justify-content:space-between;align-items:center;gap:15px;color:#8aada1;font-size:10px;line-height:1.7;letter-spacing:.4px}
+.rr-auth .ng-brand-footer span:last-child{color:#a6bbaf}
+.rr-auth .ng-brand-footer .ng-caption{display:flex;align-items:center;gap:7px}
+.rr-auth .ng-brand-footer .ng-caption:before{content:"";width:4px;height:4px;border-radius:50%;background:#87b797}
+.rr-auth .ng-panel{display:flex;flex-direction:column;align-items:center;position:relative;padding:51px clamp(28px,5.3vw,80px) 26px;background:radial-gradient(ellipse at 5% 94%,#e4eee522,transparent 55%),#f7faf6;min-width:0}
+.rr-auth .ng-panel:before{content:"";position:absolute;inset:0 auto 0 0;width:1px;background:linear-gradient(#d7e1d7,#fff,#d7e1d7)}
+.rr-auth .ng-panel-nav{display:flex;gap:0;position:relative;align-self:flex-end;padding:4px;isolation:isolate;border:1px solid #dde5db;border-radius:12px;background:#eaf0e8;flex:none}
+.rr-auth .ng-panel-nav:before{content:"";position:absolute;z-index:-1;width:calc(50% - 4px);inset:4px auto 4px 4px;border:1px solid #d8e1d3;border-radius:8px;background:#fff;box-shadow:0 2px 6px #3449290b;transition:transform 300ms var(--ng-spring)}
+.rr-auth .ng-panel-nav[data-page=register]:before{transform:translateX(100%)}
+.rr-auth .ng-tab{display:flex;align-items:center;justify-content:center;gap:7px;border:0;background:none;color:#718073;padding:9px 14px;min-height:38px;min-width:116px;font-size:12px;font-weight:550;white-space:nowrap;border-radius:8px}
+.rr-auth .ng-tab .ng-icon{width:15px;height:15px}
+.rr-auth .ng-tab[aria-selected=true]{color:#155642}
+.rr-auth .ng-form-region{width:100%;max-width:432px;margin:auto 0;padding:50px 0 68px;min-width:0}
+.rr-auth .ng-page-enter{animation:ng-content-in 420ms var(--ng-spring)}
+.rr-auth .ng-form-header{margin-bottom:34px}
+.rr-auth .ng-form-header h1{font-size:31px;line-height:1.3;letter-spacing:-.5px;font-weight:600;margin:0;color:#143c31;outline:none}
+.rr-auth .ng-form-header p{margin:14px 0 0;color:#637360;font-size:13.5px;line-height:1.9}
+.rr-auth .ng-field{margin-bottom:22px;min-width:0}
+.rr-auth .ng-field-label{display:flex;gap:8px;align-items:center;margin-bottom:10px;font-size:13px;font-weight:550;color:#365749}
+.rr-auth .ng-optional{font-size:10px;font-weight:400;color:#637360}
+.rr-auth .ng-control{display:flex;align-items:center;position:relative;gap:11px;min-height:56px;border:1px solid #d6e1d5;border-radius:12px;background:linear-gradient(135deg,#fff,#fcfdfb);padding:0 15px;box-shadow:0 2px 4px #22452603,inset 0 1px 0 #fff;transition:border-color 180ms,box-shadow 220ms,background 180ms}
+.rr-auth .ng-control>.ng-icon{color:#7d9786;width:19px;height:19px;transition:color 180ms}
+.rr-auth .ng-control:focus-within{border-color:#559981;box-shadow:0 0 0 4px #45967410;background:#fff}
+.rr-auth .ng-control:focus-within>.ng-icon{color:#13684c}
+.rr-auth .ng-control input,.rr-auth .ng-control select,.rr-auth .ng-control textarea{border:0;outline:none;display:block;width:100%;min-width:0;flex:1;min-height:54px;color:#214735;padding:0;background:transparent;font-size:14px;line-height:1.6;box-shadow:none}
+.rr-auth .ng-control input::placeholder,.rr-auth .ng-control textarea::placeholder{color:#637360;opacity:1;font-size:12px}
+.rr-auth .ng-control input:focus-visible,.rr-auth .ng-control select:focus-visible,.rr-auth .ng-control textarea:focus-visible{outline:none}
+.rr-auth .ng-control select{appearance:none;padding-right:22px;cursor:pointer}
+.rr-auth .ng-control select:invalid{color:#637360}
+.rr-auth .ng-control select option{color:#214735;background:#fff}
+.rr-auth .ng-control .ng-select-caret{position:absolute;right:14px;pointer-events:none;width:15px;height:15px}
+.rr-auth .ng-control textarea{resize:vertical;min-height:85px;padding:13px 0}
+.rr-auth .ng-input-end{display:grid;place-items:center;flex:none;width:36px;height:42px;border:0;background:none;border-radius:7px;margin-right:-6px;color:#7a9382;transition:background 170ms,color 170ms}
+.rr-auth .ng-input-end:hover{background:#eef5ed;color:#226347}
+.rr-auth .ng-input-end .ng-icon{width:18px;height:18px}
+.rr-auth .ng-field-hint{margin:8px 0 0;color:#637360;font-size:11.5px;line-height:1.75}
+.rr-auth .ng-field-error{margin:8px 0 0;color:var(--ng-error);font-size:11px;line-height:1.7}
+.rr-auth .ng-field:has([aria-invalid=true]) .ng-control{border-color:#c97972;box-shadow:0 0 0 3px #aa554007}
+.rr-auth .ng-caps{color:#967442;font-size:10px;margin:8px 0 0;display:flex;align-items:center;gap:5px}
+.rr-auth .ng-caps .ng-icon{width:13px;height:13px}
+.rr-auth .ng-form-options{display:flex;align-items:center;justify-content:space-between;gap:15px;margin:2px 0 26px;font-size:12px}
+.rr-auth .ng-check{display:flex;align-items:center;gap:8px;color:#617868;cursor:pointer;position:relative;min-height:30px}
+.rr-auth .ng-check input{width:15px;height:15px;accent-color:#17664e;cursor:pointer;margin:0}
+.rr-auth .ng-text-link{border:0;padding:4px 0;border-radius:3px;background:transparent;color:#377054;font-size:11.5px;font-weight:550;text-decoration:none;min-height:28px;transition:color 160ms}
+.rr-auth .ng-text-link:hover{color:#125337;text-decoration:underline;text-underline-offset:4px}
+.rr-auth .ng-primary{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;position:relative;overflow:hidden;isolation:isolate;min-height:55px;padding:14px 24px;border:1px solid #0c5640;border-radius:12px;background:linear-gradient(107deg,#0d6046 0%,#1c7859 70%,#318365 100%);box-shadow:0 6px 15px #16573c19,inset 0 1px 0 #b5e9c63b;color:#f6fff4;font-size:14px;font-weight:600;letter-spacing:.5px;transition:box-shadow 250ms,transform 230ms var(--ng-spring),filter 230ms}
+.rr-auth .ng-primary:after{content:"";position:absolute;z-index:-1;top:0;bottom:0;left:-40%;width:30%;transform:skewX(-20deg);background:linear-gradient(90deg,transparent,#e7ffd21b,transparent);transition:left 700ms var(--ng-spring)}
+.rr-auth .ng-primary:hover:not(:disabled){box-shadow:0 9px 24px #19563e2b;transform:translateY(-2px);filter:brightness(1.06)}
+.rr-auth .ng-primary:hover:after{left:115%}
+.rr-auth .ng-primary:active:not(:disabled){transform:translateY(0) scale(.994);box-shadow:0 3px 8px #19563e18}
+.rr-auth .ng-primary .ng-icon{width:17px;height:17px}
+.rr-auth .ng-primary .ng-arrow{position:absolute;right:20px;transition:transform 230ms var(--ng-spring)}
+.rr-auth .ng-primary:hover .ng-arrow{transform:translateX(3px)}
+.rr-auth .ng-primary:disabled{opacity:.72;transform:none}
+.rr-auth .ng-secondary{border:1px solid #d2e0d1;border-radius:11px;background:transparent;min-height:50px;color:#53765c;padding:12px 19px;font-size:12px;font-weight:550;display:flex;align-items:center;justify-content:center;gap:8px;transition:background 180ms}
+.rr-auth .ng-secondary:hover{background:#edf4ea}
+.rr-auth .ng-secondary .ng-icon{width:15px;height:15px}
+.rr-auth .ng-login-note{margin:16px 0 0;font-size:11.5px;line-height:1.85;text-align:center;color:#637360}
+.rr-auth .ng-login-signup{margin:34px 0 0;text-align:center;font-size:12px;color:#637360}
+.rr-auth .ng-login-signup .ng-text-link{margin-left:4px}
+.rr-auth .ng-panel-footer{flex:none;display:flex;align-items:center;justify-content:center;gap:8px;color:#637360;font-size:10px;letter-spacing:.3px;line-height:1.65;padding:0 0 5px}
+.rr-auth .ng-panel-footer .ng-icon{width:13px;height:13px}
+.rr-auth .ng-alert{border:1px solid #e7cbc0;background:#fcf1e8;padding:12px 14px;display:flex;gap:9px;color:#a15c40;border-radius:10px;margin:0 0 21px;font-size:11px;line-height:1.85}
+.rr-auth .ng-alert .ng-icon{width:17px;height:17px;margin-top:1px}
+.rr-auth .ng-alert[data-tone=error]{border-color:#edcdc6;background:#fcf0eb;color:#9c433a}
+.rr-auth .ng-alert[data-tone=success]{border-color:#c6e3d2;background:#edf7ee;color:#337152}
+.rr-auth .ng-claim{padding:14px 0;border-top:1px solid #d9e5d7;border-bottom:1px solid #d9e5d7;margin-bottom:24px;display:flex;gap:12px;font-size:11px;line-height:1.7;color:#68836c}
+.rr-auth .ng-claim>.ng-icon{color:#528464;margin-top:2px;width:18px;height:18px}
+.rr-auth .ng-claim strong{font-size:12px;color:#43674c}
+.rr-auth .ng-claim p{margin:4px 0 3px}
+.rr-auth .ng-claim .ng-text-link{padding:0;min-height:24px}
+.rr-auth .ng-stepper{display:flex;align-items:flex-start;gap:0;list-style:none;margin:28px 0 29px;padding:0}
+.rr-auth .ng-stepper li{display:flex;position:relative;align-items:center;flex:1;gap:8px;font-size:10.5px;color:#637360}
+.rr-auth .ng-stepper li:after{content:"";height:1px;flex:1;margin:0 14px 0 7px;background:#d9e4d4}
+.rr-auth .ng-stepper li:last-child{flex:none}
+.rr-auth .ng-stepper li:last-child:after{display:none}
+.rr-auth .ng-step-index{display:grid;place-items:center;width:23px;height:23px;flex:none;border-radius:50%;background:#e8f0e5;border:1px solid #d9e4d2;font-size:10px;font-family:Arial,sans-serif}
+.rr-auth .ng-stepper li[aria-current=step]{color:#2d6849}
+.rr-auth .ng-stepper li[aria-current=step] .ng-step-index{background:#2b7252;color:#f7fff2;border-color:#2b7252;box-shadow:0 0 0 4px #2b725209}
+.rr-auth .ng-stepper .ng-step-done{color:#528367}
+.rr-auth .ng-stepper .ng-step-done .ng-step-index{color:#447e59;background:#e4eedf}
+.rr-auth .ng-stepper .ng-icon{width:12px;height:12px}
+.rr-auth .ng-register-header{margin-bottom:22px}
+.rr-auth .ng-register-header h1{font-size:29px}
+.rr-auth .ng-step-title{font-size:13px;color:#3b6147;margin:0 0 22px;font-weight:550}
+.rr-auth .ng-step-title span{font-family:Arial,sans-serif;font-size:10px;color:#8caa92;letter-spacing:1.6px;margin-right:8px}
+.rr-auth .ng-fields-pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.rr-auth .ng-fields-pair .ng-field{margin-bottom:20px}
+.rr-auth .ng-fields-pair .ng-control{gap:9px;padding:0 12px}
+.rr-auth .ng-fields-pair .ng-control>.ng-icon{width:16px;height:16px}
+.rr-auth .ng-form-actions{display:flex;gap:12px;margin-top:29px}
+.rr-auth .ng-form-actions .ng-primary{flex:1}
+.rr-auth .ng-form-actions .ng-secondary{flex:none;min-width:92px}
+.rr-auth .ng-form-note{margin:23px 0 0;border-top:1px solid #e1e9dd;padding-top:17px;color:#637360;font-size:11.5px;line-height:1.95}
+.rr-auth .ng-summary{border-left:2px solid #82ac8d;background:linear-gradient(90deg,#e9f1e622,transparent);margin:22px 0 25px;padding:1px 0 1px 15px;font-size:11px;line-height:1.8}
+.rr-auth .ng-summary-top{display:flex;align-items:center;justify-content:space-between;gap:15px}
+.rr-auth .ng-summary h3{margin:0;color:#516d52;font-size:11px;font-weight:550}
+.rr-auth .ng-summary dl{margin:8px 0 0;display:grid;grid-template-columns:48px 1fr;row-gap:5px}
+.rr-auth .ng-summary dt{color:#637360}
+.rr-auth .ng-summary dd{margin:0;color:#5b7558;overflow-wrap:anywhere}
+.rr-auth .ng-summary .ng-text-link{font-size:10px;min-height:23px}
+.rr-auth .ng-success-icon{display:grid;place-items:center;width:73px;height:73px;border:1px solid #c5dcc2;border-radius:23px;color:#488456;background:linear-gradient(135deg,#f5f9ef,#e1f0dc);box-shadow:inset 0 1px 0 #fff,0 8px 24px #30613407;margin-bottom:26px}
+.rr-auth .ng-success-icon .ng-icon{width:29px;height:29px;stroke-width:1.5}
+.rr-auth .ng-receipt h1:focus,.rr-auth .ng-dialog-head h2:focus{outline:none}
+.rr-auth .ng-receipt h1{font-size:29px;margin:0;line-height:1.4;font-weight:550;color:#254f32}
+.rr-auth .ng-receipt>.ng-receipt-copy{color:#637360;font-size:12px;line-height:1.95;margin:17px 0 30px}
+.rr-auth .ng-receipt-status{display:inline-flex;align-items:center;gap:6px;color:#886f3b;background:#f4efdf;border:1px solid #e7debf;border-radius:6px;padding:4px 8px;font-size:10px;margin:0 0 22px}
+.rr-auth .ng-receipt-status:before{content:"";width:4px;height:4px;border-radius:50%;background:#b79752}
+.rr-auth .ng-receipt .ng-summary{margin-bottom:27px}
+.rr-auth .ng-progress-story{list-style:none;margin:0 0 28px;padding:0;display:grid;gap:22px}
+.rr-auth .ng-progress-story li{position:relative;display:flex;align-items:flex-start;gap:12px;font-size:11px;color:#779073}
+.rr-auth .ng-progress-story li:before{content:"";width:7px;height:7px;margin:6px 3px;box-shadow:0 0 0 4px #dfeada;background:#9db892;border-radius:50%;flex:none}
+.rr-auth .ng-progress-story li:after{content:"";position:absolute;top:20px;bottom:-22px;left:6px;width:1px;background:#dce7d5}
+.rr-auth .ng-progress-story li:last-child:after{display:none}
+.rr-auth .ng-progress-story li:first-child:before{background:#478350;box-shadow:0 0 0 4px #dcebd7}
+.rr-auth .ng-progress-story strong{color:#5b7a50;display:block;font-size:12px;font-weight:550}
+.rr-auth .ng-progress-story span{display:block;margin-top:4px;line-height:1.8}
+.rr-auth .ng-receipt>.ng-primary{margin-top:28px}
+.rr-auth .ng-receipt-note{font-size:10px;color:#637360;line-height:1.8;margin-top:16px;text-align:center}
+.rr-auth .ng-dialog{border:1px solid #cbdcc9;border-radius:22px;width:min(500px,calc(100% - 32px));max-height:calc(100svh - 48px);padding:0;background:#f8fbf6;color:var(--ng-ink);box-shadow:0 30px 100px #041e2960;overflow:visible}
+.rr-auth .ng-dialog::backdrop{background:#071f285c;backdrop-filter:blur(6px)}
+.rr-auth .ng-dialog-inner{padding:33px 34px 30px;max-height:calc(100svh - 50px);overflow-y:auto;border-radius:22px;scrollbar-width:thin}
+.rr-auth .ng-dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:22px}
+.rr-auth .ng-dialog-head h2{font-size:23px;font-weight:550;margin:0;color:#2e563b}
+.rr-auth .ng-dialog-head p{margin:12px 0 0;line-height:1.85;color:#637360;font-size:11.5px}
+.rr-auth .ng-dialog-close{border:1px solid #dbe5d4;background:#edf4e9;display:grid;place-items:center;border-radius:50%;width:31px;height:31px;flex:none;color:#6f8664;margin-top:-1px}
+.rr-auth .ng-dialog-close .ng-icon{width:14px;height:14px}
+.rr-auth .ng-dialog .ng-field{margin-bottom:17px}
+.rr-auth .ng-dialog .ng-control{min-height:48px}
+.rr-auth .ng-dialog .ng-control input{min-height:46px}
+.rr-auth .ng-dialog-note{margin:20px 0 0;color:#637360;font-size:10px;line-height:1.85}
+.rr-auth .ng-dialog-status-symbol{width:60px;height:60px;margin:4px 0 21px;background:#eaf1e4;border:1px solid #dce7d2;border-radius:19px;display:grid;place-items:center;color:#6d915c}
+.rr-auth .ng-dialog-status-symbol .ng-icon{width:25px;height:25px}
+.rr-auth .ng-state-lines{border-top:1px solid #e0e9d8;border-bottom:1px solid #e0e9d8;margin:22px 0;padding:17px 0;display:grid;gap:12px;color:#6d8563;font-size:11px}
+.rr-auth .ng-state-lines strong{color:#56764b;font-weight:550}
+.rr-auth .ng-state-lines>div{display:flex;justify-content:space-between;gap:20px}
+.rr-auth .ng-state-lines span{text-align:right}
+.rr-auth .ng-spinner{width:16px;height:16px;border:1.5px solid #ffffff52;border-top-color:white;border-radius:50%;animation:ng-spin .75s linear infinite}
+.rr-auth .ng-notification{margin-top:21px;font-size:12px;line-height:1.8;color:#528058;padding:11px 14px;border:1px solid #cde0c6;border-radius:10px;background:#eaf5e5}
+@keyframes ng-spin{to{transform:rotate(360deg)}
+}
+@keyframes ng-content-in{from{opacity:0;transform:translateY(9px)}
+to{opacity:1;transform:translateY(0)}
+}
+@keyframes ng-arrive{from{opacity:0;transform:translateY(12px)}
+to{opacity:1;transform:translateY(0)}
+}
+@keyframes ng-trace{to{stroke-dashoffset:-100}}
+/* Open tracks fade at both ends instead of a bright dash jumping back to the start. */
+@keyframes ng-track-pass{0%{stroke-dashoffset:12;opacity:0}12%{opacity:.7}72%{opacity:.7}92%,100%{stroke-dashoffset:-100;opacity:0}}
+@keyframes ng-float{0%,100%{transform:translateY(var(--ng-rest-y))}50%{transform:translate(var(--ng-drift-x),var(--ng-lift-y))}}
+@keyframes ng-floor-breathe{0%,100%{transform:scale(.95);opacity:.65}50%{transform:scale(1.09);opacity:1}}
+@keyframes ng-shadow-breathe{0%,100%{transform:scale(1);opacity:.3}50%{transform:scale(.86);opacity:.18}}
+@keyframes ng-orbit-turn{to{transform:rotate(360deg)}}
+@keyframes ng-sheen-pass{0%{transform:translateX(0);opacity:0}18%{opacity:.6}65%{opacity:.6}90%,100%{transform:translateX(620px);opacity:0}}
+@keyframes ng-core-breathe{0%,100%{opacity:.4}50%{opacity:.9}}
+@keyframes ng-node-ripple{0%{transform:scale(.75);opacity:0}22%{opacity:.55}86%,100%{transform:scale(2.5);opacity:0}}
+@keyframes ng-node-breathe{0%,100%{transform:scale(.8);opacity:.14}50%{transform:scale(1.4);opacity:.4}}
+.rr-auth.ng-reduced *,.rr-auth.ng-reduced *:before,.rr-auth.ng-reduced *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+.rr-auth.ng-reduced .hd-mark{transform:none!important;opacity:1!important}
+.rr-auth.ng-reduced .hd-wordmark,.rr-auth.ng-reduced .hd-sheen,.rr-auth.ng-reduced .hd-word-sheen{visibility:hidden!important}
+.rr-auth.ng-reduced .ng-ray{stroke-dasharray:none;opacity:.16}
+.rr-auth.ng-reduced .ng-spinner{border-top-color:white;opacity:.65}
+.rr-auth.ng-reduced .ng-glass-sheen,.rr-auth.ng-reduced .ng-node-pulse,.rr-auth.ng-reduced .ng-base-rim{display:none}
+/* Preserve the animation timeline on pause/tab hiding; returning must not replay the entrance. */
+.rr-auth.ng-paused .ng-brand *,.rr-auth.ng-paused .ng-brand *:before,.rr-auth.ng-paused .ng-brand *:after{animation-play-state:paused!important}
+@media(prefers-reduced-motion:reduce){.rr-auth *,.rr-auth *:before,.rr-auth *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+.rr-auth .ng-ray{stroke-dasharray:none;opacity:.16}
+.rr-auth .ng-glass-sheen,.rr-auth .ng-node-pulse,.rr-auth .ng-base-rim{display:none}
+}
+@media(min-width:1600px){.rr-auth .ng-heading{padding-top:95px}
+.rr-auth .ng-brand-header,.rr-auth .ng-heading{padding-left:76px}
+.rr-auth .ng-brand-footer{padding-left:76px}
+.rr-auth .ng-panel{padding-left:92px;padding-right:92px}
+}
+@media(min-width:1000px) and (max-height:850px){.rr-auth .ng-brand{min-height:680px}
+.rr-auth .ng-brand-header{padding-top:32px}
+.rr-auth .ng-heading{padding-top:46px}
+.rr-auth .ng-heading h2{font-size:40px}
+.rr-auth .ng-heading p{margin-top:14px;font-size:12px}
+.rr-auth .ng-heading .ng-rule{margin-top:20px}
+.rr-auth .ng-art{min-height:285px;margin-top:-22px}
+.rr-auth .ng-art svg{max-height:380px}
+.rr-auth .ng-brand-footer{padding-bottom:25px}
+.rr-auth .ng-panel{padding-top:31px}
+.rr-auth .ng-form-region{padding-top:36px;padding-bottom:32px}
+.rr-auth .ng-form-header{margin-bottom:26px}
+.rr-auth .ng-form-header h1{font-size:28px}
+.rr-auth .ng-login-signup{margin-top:23px}
+.rr-auth .ng-field{margin-bottom:19px}
+.rr-auth .ng-panel-footer{padding-top:16px}
+}
+@media(max-width:1199px) and (min-width:900px){.rr-auth .ng-brand-header{padding-left:42px;padding-right:42px}
+.rr-auth .ng-heading{padding-left:42px;padding-right:42px}
+.rr-auth .ng-brand-footer{padding-left:42px;padding-right:42px}
+.rr-auth .ng-brand-word{font-size:18px}
+.rr-auth .ng-brand-sub{font-size:10px;letter-spacing:1px}
+.rr-auth .ng-panel{padding-left:35px;padding-right:35px}
+.rr-auth .ng-tab{min-width:108px}
+}
+@media(max-width:899px){.rr-auth.ng-shell{grid-template-columns:1fr;min-height:0}
+.rr-auth .ng-brand{min-height:253px;height:253px;display:block;overflow:hidden}
+.rr-auth .ng-brand-header{padding:24px 28px 0;gap:12px}
+.rr-auth .ng-logo{width:48px;height:48px}
+.rr-auth .ng-brand-word{font-size:16px;letter-spacing:-.3px}
+.rr-auth .ng-brand-sub{font-size:9px;letter-spacing:1.1px;margin-top:5px}
+.rr-auth .ng-heading{padding:20px 28px 0}
+.rr-auth .ng-heading h2{font-size:29px;line-height:1.42;letter-spacing:.5px}
+.rr-auth .ng-heading h2 span{display:block}
+.rr-auth .ng-heading p,.rr-auth .ng-heading .ng-rule{display:none}
+.rr-auth .ng-art{position:absolute;width:365px;min-height:0;height:275px;right:-142px;top:60px;margin:0;opacity:.74}
+.rr-auth .ng-art svg{width:390px;max-width:none;flex:none}
+.rr-auth .ng-art .ng-node-group,.rr-auth .ng-art .ng-orbit{display:none}
+.rr-auth .ng-art .ng-orbit-travel,.rr-auth .ng-art .ng-track-group,.rr-auth .ng-art .ng-base-rim{display:none}
+.rr-auth .ng-brand-footer{padding:0;position:absolute;left:29px;bottom:14px;font-size:8px;color:#8eab9a}
+.rr-auth .ng-brand-footer span:last-child{display:none}
+.rr-auth .ng-panel{padding:27px 28px 29px;min-height:calc(100svh - 253px)}
+.rr-auth .ng-panel-nav{align-self:center;border-radius:11px}
+.rr-auth .ng-tab{min-width:134px;padding:9px 15px;font-size:11.5px}
+.rr-auth .ng-panel-nav:before{border-radius:7px}
+.rr-auth .ng-form-region{margin:0;max-width:460px;padding:37px 0 38px}
+.rr-auth .ng-form-header h1{font-size:29px}
+.rr-auth .ng-form-header{margin-bottom:28px}
+.rr-auth .ng-form-header p{font-size:12.5px;margin-top:10px}
+.rr-auth .ng-field{margin-bottom:20px}
+.rr-auth .ng-control{min-height:54px}
+.rr-auth .ng-control input,.rr-auth .ng-control select{min-height:52px;font-size:16px}
+.rr-auth .ng-control input::placeholder{font-size:12px}
+.rr-auth .ng-control select{font-size:13px}
+.rr-auth .ng-form-options{margin-bottom:23px}
+.rr-auth .ng-primary{min-height:54px}
+.rr-auth .ng-login-signup{margin-top:26px}
+.rr-auth .ng-login-note{font-size:11px}
+.rr-auth .ng-panel-footer{font-size:9px}
+.rr-auth .ng-stepper{margin:23px 0 24px}
+.rr-auth .ng-stepper li{font-size:10px;gap:6px}
+.rr-auth .ng-stepper li:after{margin-right:9px;margin-left:7px}
+.rr-auth .ng-step-index{width:21px;height:21px}
+.rr-auth .ng-register-header{margin-bottom:24px}
+.rr-auth .ng-register-header h1{font-size:28px}
+.rr-auth .ng-step-title{margin-bottom:21px}
+.rr-auth .ng-fields-pair{grid-template-columns:1fr;gap:0}
+.rr-auth .ng-dialog-inner{padding:28px 25px 25px}
+.rr-auth .ng-dialog .ng-control input{font-size:16px}
+.rr-auth .ng-dialog-head h2{font-size:22px}
+.rr-auth .ng-dialog{max-height:calc(100svh - 28px)}
+.rr-auth .ng-dialog-inner{max-height:calc(100svh - 30px)}
+}
+@media(max-width:380px){.rr-auth .ng-panel{padding-left:23px;padding-right:23px}
+.rr-auth .ng-heading,.rr-auth .ng-brand-header{padding-left:23px}
+.rr-auth .ng-brand-header{padding-right:23px;gap:10px}
+.rr-auth .ng-brand-word{font-size:15px}
+.rr-auth .ng-brand-sub{letter-spacing:.4px}
+.rr-auth .ng-heading h2{font-size:27px}
+.rr-auth .ng-art{right:-158px}
+.rr-auth .ng-tab{min-width:127px}
+.rr-auth .ng-stepper li{font-size:9px}
+.rr-auth .ng-stepper li:after{margin-right:7px;margin-left:6px}
+}
+
+
+/* Production controls; every rule stays inside the authentication namespace. */
+.rr-auth {font-family:"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif;color-scheme:light;--ng-muted:#637360}
+.rr-auth.ng-shell {min-height:100svh}
+.rr-auth .ng-brand {min-height:100svh}
+.rr-auth .ng-heading h2 {font-weight:500}
+.rr-auth .ng-form-header h1,.rr-auth .ng-receipt h1 {font-size:31px;font-weight:600;line-height:1.45;color:#143c31;margin:0}
+.rr-auth .ng-form-header p {font-size:13.5px}
+.rr-auth .ng-field>label {font-size:13px;font-weight:600}
+.rr-auth .ng-field-error,.rr-auth .auth-hint {font-size:12px;line-height:1.6;margin:7px 0 0}
+.rr-auth .ng-field-error {color:#a13c37}
+.rr-auth .ng-field[data-invalid=true] .ng-control {border-color:#a13c37}
+.rr-auth .ng-alert {font-size:13px;overflow-wrap:anywhere}
+.rr-auth .auth-hint {color:#637360}
+.rr-auth .auth-required {color:#627962}
+.rr-auth .ng-control input,.rr-auth .ng-control select {width:100%;min-width:0;font-family:inherit}
+.rr-auth .ng-control:focus-within {outline:3px solid #2e987c33;outline-offset:2px}
+.rr-auth .ng-eye {width:44px;min-height:44px;flex:none;display:grid;place-items:center}
+.rr-auth .ng-tab {text-decoration:none;display:flex;align-items:center;justify-content:center;min-height:44px}
+.rr-auth .ng-tab[aria-current=page] {color:#074637;background:#fff;box-shadow:0 0 0 1px #d6e1d5;border-radius:8px}
+.rr-auth .ng-panel-nav:before {display:none}
+.rr-auth .auth-nav-row {display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%}
+.rr-auth .auth-motion {font-size:11px;min-height:44px;display:flex;align-items:center;gap:5px;color:#637360;flex:none}
+.rr-auth .auth-motion:disabled {opacity:.65}
+.rr-auth .ng-stepper button {display:flex;align-items:center;gap:7px;min-height:44px;background:none;border:0;color:inherit;font:inherit;padding:0}
+.rr-auth .ng-stepper li {min-width:0}
+.rr-auth .ng-text-link {min-height:44px}
+.rr-auth .auth-restart {display:block;margin:12px auto 0}
+.rr-auth .auth-recent {display:flex;gap:12px;justify-content:space-between;align-items:center;border-bottom:1px solid #dce6df;padding:0 0 12px;margin-bottom:20px;font-size:12px}
+.rr-auth .auth-recent>button:first-child {text-align:left;min-width:0;overflow-wrap:anywhere}
+.rr-auth .auth-recent small {display:block;color:#637360;margin-top:5px}
+.rr-auth .auth-preview {border:1px solid #ccdcca;border-radius:14px;background:linear-gradient(135deg,#e9f1e6,#f7faf6);padding:20px;margin:22px 0}
+.rr-auth .auth-preview small {font-size:11px;color:#637360}
+.rr-auth .auth-preview strong {display:block;font-size:21px;margin:13px 0 7px;color:#143c31;overflow-wrap:anywhere}
+.rr-auth .auth-preview p {font-size:12px;line-height:1.8;color:#53745d;overflow-wrap:anywhere}
+.rr-auth .ng-summary {font-size:12px}
+.rr-auth .ng-summary dl {grid-template-columns:62px minmax(0,1fr)}
+.rr-auth .ng-summary dd {min-width:0}
+.rr-auth .ng-primary:hover:not(:disabled) {transform:translateY(-1px)}
+.rr-auth .ng-primary:active:not(:disabled) {transform:scale(.985)}
+.rr-auth.ng-reduced .hd-mark {transform:none!important;opacity:1!important}
+.rr-auth.ng-reduced .hd-wordmark,.rr-auth.ng-reduced .hd-sheen,.rr-auth.ng-reduced .hd-word-sheen {visibility:hidden!important}
+.rr-auth .auth-skip {position:fixed;top:8px;left:8px;z-index:100;transform:translateY(-150%);padding:10px;background:white;color:#074637;border-radius:8px}
+.rr-auth .auth-skip:focus {transform:none}
+.rr-auth :focus-visible {outline:3px solid #2e987c;outline-offset:3px}
+.rr-auth h1:focus,.rr-auth [data-auth-step-title]:focus {outline:none}
+.rr-auth.ng-overlay {position:fixed;inset:0;z-index:200;background:#071f2877}
+.rr-auth.ng-dialog {position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:201;margin:0;max-height:calc(100dvh - 32px)}
+.rr-auth .ng-dialog-inner {max-height:calc(100dvh - 36px)}
+.rr-auth .ng-dialog-close {width:44px;height:44px}
+.rr-auth .ng-dialog-head h2 {font-size:23px}
+.rr-auth .ng-dialog-head p {font-size:13px}
+.rr-auth .ng-dialog-note {font-size:12px}
+.rr-auth .ng-field>label {display:block;margin-bottom:9px}
+.rr-auth .ng-checkbox {display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer}
+.rr-auth .auth-status {padding:18px 0;line-height:1.9;font-size:14px}
+@media(max-width:899px){.rr-auth .ng-brand{min-height:253px}.rr-auth .ng-panel{padding-bottom:calc(29px + env(safe-area-inset-bottom))}.rr-auth .ng-control input,.rr-auth .ng-control select{font-size:16px}.rr-auth .ng-form-header h1{font-size:29px}.rr-auth .ng-tab{min-width:0;flex:1}.rr-auth .ng-panel-nav{flex:1}.rr-auth .auth-motion{font-size:10px}.rr-auth .ng-form-region{width:100%}}
+@media(max-width:380px){.rr-auth .ng-tab{padding:9px 10px;font-size:11px}.rr-auth .ng-stepper li:after{margin:0 5px}.rr-auth .ng-stepper button{gap:4px}.rr-auth .ng-heading h2{font-size:28px}.rr-auth .ng-stepper li{font-size:10px}}

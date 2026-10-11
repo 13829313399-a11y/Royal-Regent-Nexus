@@ -40,19 +40,20 @@ from app.services.auth import (
 router = APIRouter(prefix="/api/auth")
 
 
+def session_cookie(response: Response, token: str | None = None) -> None:
+    options = dict(path="/", httponly=True, samesite="lax", secure=settings.effective_session_cookie_secure)
+    if token is None:
+        response.delete_cookie(SESSION_COOKIE_NAME, **options)
+    else:
+        from app.services.auth import SESSION_HOURS
+        response.set_cookie(SESSION_COOKIE_NAME, token, max_age=SESSION_HOURS * 60 * 60, **options)
+
+
 @router.post("/login", response_model=AuthMeResponse)
 def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     user = authenticate_user(db, payload.username, payload.password, request=request)
     token = create_session(db, user, request=request)
-    response.set_cookie(
-        SESSION_COOKIE_NAME,
-        token,
-        httponly=True,
-        secure=settings.effective_session_cookie_secure,
-        samesite="lax",
-        max_age=12 * 60 * 60,
-        path="/",
-    )
+    session_cookie(response, token)
     return to_auth_response(build_auth_context(db, user))
 
 
@@ -139,15 +140,7 @@ def change_password(
     current_user: AuthContext = Depends(get_current_user),
 ):
     auth_response, token = change_current_password(db, current_user, payload, request=request)
-    response.set_cookie(
-        SESSION_COOKIE_NAME,
-        token,
-        httponly=True,
-        secure=settings.effective_session_cookie_secure,
-        samesite="lax",
-        max_age=12 * 60 * 60,
-        path="/",
-    )
+    session_cookie(response, token)
     return auth_response
 
 
@@ -198,11 +191,5 @@ def delete_avatar(
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     revoke_session(db, request.cookies.get(SESSION_COOKIE_NAME), request=request)
-    response.delete_cookie(
-        SESSION_COOKIE_NAME,
-        path="/",
-        secure=settings.effective_session_cookie_secure,
-        httponly=True,
-        samesite="lax",
-    )
+    session_cookie(response)
     return None

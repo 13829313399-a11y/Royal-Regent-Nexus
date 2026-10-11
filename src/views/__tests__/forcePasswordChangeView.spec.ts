@@ -12,13 +12,11 @@ describe('forced password change workflow source contract', () => {
       '当前密码',
       '新密码',
       '确认新密码',
-      '密码不能包含中文',
       '新密码不能与当前密码相同',
       'authStore.changePassword',
       'resolvePostLoginRedirect',
-      'showCurrentPassword',
-      'showNewPassword',
-      'showConfirmPassword',
+      'AuthPasswordField',
+      'newPasswordErrors',
     ]) {
       expect(viewSource).toContain(expected)
     }
