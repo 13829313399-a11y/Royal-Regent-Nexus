@@ -2,29 +2,27 @@
 import { buzzBeeTemplateProfiles } from '@/lib/customerPriceConverters/buzzbeeTemplate'
 import { Copy, Eye, Plus, Trash2 } from '@lucide/vue'
 import { computed, ref, watchEffect } from 'vue'
+import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
+import { newMoldSplitPart, prepareMoldSplit, validateMoldSplit, type EngineeringMoldSplitChange } from '@/lib/internalQuoteMoldSplit'
 import { canonicalizeMoldingReferences, moldingMaterialReferences as getMoldingMaterials, moldingMachineReferences as getMoldingMachines, moldingMaterialOptions, selectedMoldingMaterial, selectedMoldingMachine, normalizedReferenceToken, type MoldingMaterialSelection, type MoldingMaterialReference } from '@/lib/internalQuoteMoldingReferences'
 import { internalQuoteAttachmentPreviewUrl } from '@/api/internalQuote'
 import InternalQuotePricingFields from './InternalQuotePricingFields.vue'
 import InternalQuoteDickieSales from './InternalQuoteDickieSales.vue'
 import InternalQuoteDickieMolds from './InternalQuoteDickieMolds.vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingRowSplit, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldPartRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingRowSplit, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
 import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
-import { calculateJustPlayMainCartonDimensions, justPlayCartonState, normalizeJustPlayCartonInputs, calculateJustPlayCartonsPerPallet, normalizeJustPlayPackagingInputs, justPlayPackagingInputsValid, previewEngineeringMoldPartSplit, type JustPlayPackagingInputs, type JustPlayCartonInputs } from '@/lib/internalQuoteSectionPayload'
+import { calculateJustPlayMainCartonDimensions, justPlayCartonState, normalizeJustPlayCartonInputs, calculateJustPlayCartonsPerPallet, normalizeJustPlayPackagingInputs, justPlayPackagingInputsValid, type JustPlayPackagingInputs, type JustPlayCartonInputs } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 import type { QuotePricingMetadata, SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
 import { calculateCustomerSuppliedFeeHkd, type CustomerSuppliedMaterialRow } from '@/lib/internalQuoteSectionPayload'
 
 const props = defineProps<{ code: InternalQuoteSectionCode; quoteId?: string; factoryId?: string; attachments?: InternalQuoteAttachmentRecord[]; disabled?: boolean; customer?: string; rmbHkdRate?: number; referenceSnapshot?: Record<string, unknown>; calculation?: Record<string, unknown>; pricingMode?: 'standard' | 'component'; pricingComponents?: SalesPricingComponent[]; activePricingComponentId?: string; mainMarkup?: number }>()
 const model = defineModel<Record<string, unknown>>({ required: true })
-const moldRowKeys = new WeakMap<object, number>()
-let nextMoldRowKey = 0
-function moldRowKey(row: object) {
-  if (!moldRowKeys.has(row)) moldRowKeys.set(row, ++nextMoldRowKey)
-  return moldRowKeys.get(row)!
-}
 const emit = defineEmits<{
   'block-progress': [blocks: InternalQuoteFormBlock[]]
   'preview-attachment': [attachment: InternalQuoteAttachmentRecord]
+  'mold-parts-split': [changes: EngineeringMoldSplitChange[], done: (error?: string) => void]
+  'mold-split-open': [open: boolean]
 }>()
 
 const sales = computed(() => model.value as unknown as SalesPayload)
@@ -359,25 +357,38 @@ function removeEngineeringMaterial(row: EngineeringMaterialRow) {
   const index = engineering.value.materials.indexOf(row)
   if (index >= 0) engineering.value.materials.splice(index, 1)
 }
-function engineeringMoldPartRow(name = ''): EngineeringMoldPartRow {
-  return { name, color: '', process: '', process_unit_price_hkd: 0, unit_net_weight_g: 0, output_count: 1, quantity: 1 }
+const moldSplitGroups = ref<Array<EngineeringMoldSplitChange & { source: EngineeringMoldRow }>>([])
+const moldSplitError = ref('')
+const moldSplitSaving = ref(false)
+function splitEngineeringMoldParts(rows: EngineeringMoldRow[]) {
+  if (props.disabled) return
+  moldSplitError.value = ''
+  moldSplitGroups.value = rows.map(row => ({ index: engineering.value.molds.indexOf(row),
+    original: JSON.stringify(row), source: JSON.parse(JSON.stringify(row)), parts: prepareMoldSplit(row) }))
+  emit('mold-split-open', moldSplitGroups.value.length > 0)
 }
-function splitEngineeringMoldParts(row: EngineeringMoldRow) {
-  if (!props.disabled) moldSplitTarget.value = row
+function closeMoldSplit() {
+  if (moldSplitSaving.value) return
+  moldSplitGroups.value = []
+  moldSplitError.value = ''
+  emit('mold-split-open', false)
 }
-const moldSplitTarget = ref<EngineeringMoldRow>()
-const moldSplitPreview = computed(() => {
-  const row = moldSplitTarget.value
-  if (props.code !== 'engineering' || !row || !engineering.value.molds.includes(row)) return undefined
-  return previewEngineeringMoldPartSplit(row.item || row.chinese_name, row.parts)
-})
 function confirmMoldPartSplit() {
-  if (props.disabled || !moldSplitTarget.value || !moldSplitPreview.value?.nameCount) return
-  moldSplitTarget.value.parts = moldSplitPreview.value.rows.map(({ part }) => part)
-  moldSplitTarget.value = undefined
-}
-function addEngineeringMoldPart(row: EngineeringMoldRow) {
-  row.parts.push(engineeringMoldPartRow())
+  if (props.disabled || moldSplitSaving.value || !moldSplitGroups.value.length) return
+  for (const group of moldSplitGroups.value) {
+    const invalid = validateMoldSplit(group.parts)
+    if (invalid) { moldSplitError.value = `${group.source.item || group.source.mold_no || '模具'}：${invalid}`; return }
+    if (JSON.stringify(engineering.value.molds[group.index]) !== group.original) {
+      moldSplitError.value = '原模具内容已变化，请取消后重新打开拆分。'; return
+    }
+  }
+  moldSplitSaving.value = true
+  moldSplitError.value = ''
+  emit('mold-parts-split', moldSplitGroups.value.map(({ index, original, parts }) => ({ index, original, parts })), error => {
+    moldSplitSaving.value = false
+    if (error) moldSplitError.value = error
+    else closeMoldSplit()
+  })
 }
 function addEngineeringMold() {
   engineering.value.molds.push(assignCurrentPricingComponent({
@@ -739,29 +750,23 @@ function addBuzzBeeColorBoxTier() {
         <div class="payload-table-scroll"><table class="extraWide disneyPurchasedParts"><thead><tr><th>#</th><th>内部零件</th><th>内部类别</th><th>Disney Description</th><th>客户模板归属</th><th>Unit Cost USD</th><th>Included</th></tr></thead><tbody><tr v-for="(row,index) in engineering.materials" :key="index"><td>{{ index + 1 }}</td><td><span class="fixed-field">{{ row.item || '未填写' }}</span></td><td><span class="fixed-field">{{ row.category === 'hardware' ? '五金' : row.auxiliary_category }}</span></td><td><input v-model="row.disney_description" :disabled="disabled" aria-label="迪士尼采购件英文说明"></td><td><select v-model="row.disney_section" :disabled="disabled" aria-label="迪士尼采购件模板归属"><option value="product">Product Part</option><option value="package">Package Part</option></select></td><td><input v-model.number="row.disney_unit_price_usd" :disabled="disabled" type="number" min="0" step="0.001" aria-label="迪士尼采购件单价 USD"></td><td><input v-model.number="row.disney_included" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="迪士尼采购件 Included"></td></tr><tr v-if="!engineering.materials.length"><td colspan="7" class="empty">请先在五金或辅助材料/外购件部分新增内部成本行</td></tr></tbody></table></div>
       </section>
       <section :id="blockDomId('molds')" class="payload-block engineering-molds" data-form-block>
-        <header><div><strong>模具部分</strong><span>字段按原内部报价模具表统一；模具价格为整套总价，模价 HKD 按本报价冻结汇率自动换算。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('mold')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('mold')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addEngineeringMold"><Plus />新增模具</button></div></header>
+        <header><div><strong>模具部分</strong><span>字段按原内部报价模具表统一；模具价格为整套总价，模价 HKD 按本报价冻结汇率自动换算。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('mold')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('mold')"><Eye />预览附件</button><button type="button" :disabled="disabled || !visibleEngineeringMolds.length" @click="splitEngineeringMoldParts(visibleEngineeringMolds)">全部拆分</button><button type="button" :disabled="disabled" @click="addEngineeringMold"><Plus />新增模具</button></div></header>
         <div class="payload-table-scroll">
           <table class="extraWide engineeringMolds">
-            <thead><tr><th>#</th><th>模具名称</th><th>中文名称</th><th>模号</th><th>模胚类型</th><th>模胚材质</th><th>模具结构</th><th>工艺</th><th>材质</th><th>料型</th><th>颜色</th><th>出模数</th><th>套数</th><th>净重 (g)</th><th>周期 (秒)</th><th>模具尺寸</th><th>模具规格</th><th>图片</th><th>模具价格 RMB</th><th>模价 HKD（自动）</th><th>备注</th><th /></tr></thead>
+            <thead><tr><th>#</th><th>模具名称</th><th>中文名称</th><th>模号</th><th>模胚材质</th><th>料型</th><th>颜色</th><th>出模数</th><th>套数</th><th>净重 (g)</th><th>模具尺寸</th><th>图片</th><th>模具价格 RMB</th><th>模价 HKD（自动）</th><th>备注</th><th /></tr></thead>
             <tbody>
               <tr v-for="(row,index) in visibleEngineeringMolds" :key="index">
                 <td>{{ index + 1 }}</td>
                 <td><textarea v-model="row.item" :disabled="disabled" rows="2" aria-label="模具名称" /></td>
                 <td><textarea v-model="row.chinese_name" :disabled="disabled" rows="2" aria-label="模具中文名称" /></td>
                 <td><input v-model="row.mold_no" :disabled="disabled" aria-label="模号"></td>
-                <td><textarea v-model="row.mold_base_type" :disabled="disabled" rows="2" aria-label="模胚类型" /></td>
                 <td><input v-model="row.mold_base_material" :disabled="disabled" aria-label="模胚材质"></td>
-                <td><input v-model="row.structure" :disabled="disabled" aria-label="模具结构"></td>
-                <td><input v-model="row.process" :disabled="disabled" aria-label="模具工艺"></td>
-                <td><input v-model="row.material" :disabled="disabled" aria-label="模具材质"></td>
                 <td><input v-model="row.material_type" :disabled="disabled" aria-label="料型"></td>
                 <td><input v-model="row.color" :disabled="disabled" aria-label="模具颜色"></td>
                 <td><input v-model="row.cavity" :disabled="disabled" aria-label="出模数"></td>
                 <td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1" aria-label="模具套数"></td>
                 <td><input v-model.number="row.net_weight_g" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="模具净重"></td>
-                <td><input v-model.number="row.cycle_time_seconds" :disabled="disabled" type="number" min="0" step="0.01" aria-label="模具周期"></td>
                 <td><input v-model="row.mold_size" :disabled="disabled" aria-label="模具尺寸"></td>
-                <td><input v-model="row.mold_specification" :disabled="disabled" aria-label="模具规格"></td>
                 <td class="mold-image-cell">
                   <div v-if="moldImageAttachments(row).length" class="mold-image-list">
                     <a v-for="attachment in moldImageAttachments(row)" :key="attachment.id" :href="attachmentPreviewUrl(attachment.id)" target="_blank" rel="noopener" :title="`查看 ${attachment.fileName}`">
@@ -774,50 +779,43 @@ function addBuzzBeeColorBoxTier() {
                 <td><input v-model.number="row.cost_rmb" :disabled="disabled" type="number" min="0" step="0.01" aria-label="模具价格 RMB"></td>
                 <td class="calculated-cell">{{ calculated(calculateEngineeringMoldPriceHkd(row, props.rmbHkdRate)) }}</td>
                 <td><textarea v-model="row.remark" :disabled="disabled" rows="2" aria-label="模具备注" /></td>
-                <td><button type="button" class="icon" :disabled="disabled" @click="removeItem(engineering.molds,row)"><Trash2 /></button></td>
+                <td class="mold-row-actions"><button type="button" class="mold-split-button" :disabled="disabled" :aria-label="`拆分第 ${index + 1} 行模具`" @click="splitEngineeringMoldParts([row])">拆分</button><button type="button" class="icon" :disabled="disabled" @click="removeItem(engineering.molds,row)"><Trash2 /></button></td>
               </tr>
-              <tr v-if="!visibleEngineeringMolds.length"><td colspan="22" class="empty">暂无模具明细，可新增或从模具报价单预览导入</td></tr>
+              <tr v-if="!visibleEngineeringMolds.length"><td colspan="16" class="empty">暂无模具明细，可新增或从模具报价单预览导入</td></tr>
             </tbody>
-            <tfoot v-if="visibleEngineeringMolds.length"><tr><td colspan="18">模具报价小计（RMB→HKD {{ Number(props.rmbHkdRate || 0).toFixed(2) }}）</td><td>RMB {{ calculated(moldQuoteTotalRmb) }}</td><td>HKD {{ calculated(moldQuoteTotalHkd) }}</td><td colspan="2" /></tr></tfoot>
+            <tfoot v-if="visibleEngineeringMolds.length"><tr><td colspan="12">模具报价小计（RMB→HKD {{ Number(props.rmbHkdRate || 0).toFixed(2) }}）</td><td>RMB {{ calculated(moldQuoteTotalRmb) }}</td><td>HKD {{ calculated(moldQuoteTotalHkd) }}</td><td colspan="2" /></tr></tfoot>
           </table>
         </div>
-        <div v-if="visibleEngineeringMolds.length" class="engineering-mold-parts">
-          <article v-for="(row,index) in visibleEngineeringMolds" :key="moldRowKey(row)" class="nested-card engineering-mold-part-card">
-            <div class="nested-head">
-              <div><strong>{{ row.mold_no || `模具 ${index + 1}` }} 配件子行</strong><span>{{ row.item || row.chinese_name || '请先填写模具名称' }}</span></div>
-              <div class="nested-actions">
-                <button type="button" :disabled="disabled" @click="splitEngineeringMoldParts(row)">按名称拆分</button>
-                <button type="button" :disabled="disabled" @click="addEngineeringMoldPart(row)"><Plus />新增子配件</button>
+        <DialogRoot :open="moldSplitGroups.length > 0" @update:open="open => { if (!open) closeMoldSplit() }">
+          <DialogPortal>
+            <DialogOverlay class="mold-split-overlay" />
+            <DialogContent class="mold-split-dialog" @escape-key-down="event => { if (moldSplitSaving) event.preventDefault() }" @interact-outside.prevent>
+              <header class="mold-split-dialog-head">
+                <DialogTitle>{{ moldSplitGroups.length > 1 ? '全部模具拆分' : '模具拆分' }}</DialogTitle>
+                <DialogDescription>填写各配件净重、出模数和套数。确认后保存工程部当前草稿并同步啤机部；取消不修改原数据。</DialogDescription>
+              </header>
+              <div class="mold-split-dialog-body">
+                <article v-for="group in moldSplitGroups" :key="group.index" class="nested-card engineering-mold-part-card">
+                  <div class="nested-head"><div><strong>{{ group.source.mold_no || `模具 ${group.index + 1}` }} · {{ group.source.item || group.source.chinese_name || '未命名模具' }}</strong><span>新增配件的出模数、套数默认继承原模具，可分别修改。</span></div><button type="button" :disabled="disabled || moldSplitSaving" @click="group.parts.push(newMoldSplitPart(group.source))"><Plus />新增子配件</button></div>
+                  <div class="payload-table-scroll"><table class="engineeringMoldParts">
+                    <thead><tr><th>#</th><th>配件名称</th><th>颜色</th><th>净重 (g)</th><th>出模数</th><th>套数</th><th /></tr></thead>
+                    <tbody><tr v-for="(part,partIndex) in group.parts" :key="part.id || partIndex">
+                      <td>{{ partIndex + 1 }}</td>
+                      <td><input v-model="part.name" :disabled="disabled || moldSplitSaving" aria-label="模具子配件名称"></td>
+                      <td><input v-model="part.color" :disabled="disabled || moldSplitSaving" placeholder="可留空" aria-label="模具子配件颜色"></td>
+                      <td><input v-model.number="part.unit_net_weight_g" :disabled="disabled || moldSplitSaving" type="number" min="0.0001" step="0.0001" aria-label="模具子配件净重"></td>
+                      <td><input v-model.number="part.output_count" :disabled="disabled || moldSplitSaving" type="number" min="1" step="1" aria-label="模具子配件出模数"></td>
+                      <td><input v-model.number="part.quantity" :disabled="disabled || moldSplitSaving" type="number" min="1" step="1" aria-label="模具子配件套数"></td>
+                      <td><button type="button" class="icon" :disabled="disabled || moldSplitSaving" :aria-label="`删除配件 ${part.name || partIndex + 1}`" @click="remove(group.parts,partIndex)"><Trash2 /></button></td>
+                    </tr><tr v-if="!group.parts.length"><td colspan="7" class="empty">请新增至少一个配件</td></tr></tbody>
+                  </table></div>
+                </article>
               </div>
-            </div>
-            <div class="mold-part-rule">“左右”“前后”展开为两个配件；“前/后”“前／后”补全共同名称。普通斜杠按名称分行。重新拆分先预览，保留匹配行数据和未匹配的手工行。</div>
-            <section v-if="moldSplitTarget === row && moldSplitPreview && !disabled" class="mold-split-preview" role="dialog" aria-label="配件拆分预览">
-              <strong>配件拆分预览 · 确认前不修改原行</strong>
-              <p>匹配行保留已有数据；新增行需要补填颜色、重量、出模数和用量。</p>
-              <p v-if="moldSplitPreview.retainedCount" class="split-warning">有 {{ moldSplitPreview.retainedCount }} 条原行无法匹配，将保留在末尾，不会自动删除；确认后请核对是否需要手工调整。</p>
-              <p v-if="!moldSplitPreview.nameCount">请先填写模具名称。</p>
-              <ol><li v-for="(entry,previewIndex) in moldSplitPreview.rows" :key="previewIndex"><span>{{ entry.part.name || '未命名' }}</span><b>{{ entry.status === 'matched' ? '保留数据' : entry.status === 'retained' ? '原行未匹配 · 保留' : '新增 · 待填写' }}</b></li></ol>
-              <div class="nested-actions"><button type="button" @click="moldSplitTarget = undefined">取消拆分</button><button type="button" :disabled="disabled || !moldSplitPreview.nameCount" @click="confirmMoldPartSplit">确认拆分并保留数据</button></div>
-            </section>
-            <div class="payload-table-scroll">
-              <table class="engineeringMoldParts">
-                <thead><tr><th>#</th><th>配件名称</th><th>颜色</th><th>原胶件单净重 (g)</th><th>出模数</th><th>用量</th><th /></tr></thead>
-                <tbody>
-                  <tr v-for="(part,partIndex) in row.parts" :key="moldRowKey(part)">
-                    <td>{{ partIndex + 1 }}</td>
-                    <td><input v-model="part.name" :disabled="disabled" aria-label="模具子配件名称"></td>
-                    <td><input v-model="part.color" :disabled="disabled" :placeholder="row.color || '可留空'" aria-label="模具子配件颜色"></td>
-                    <td><input v-model.number="part.unit_net_weight_g" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="模具子配件单个净重"></td>
-                    <td><input v-model.number="part.output_count" :disabled="disabled" type="number" min="0" step="1" aria-label="模具子配件出模数"></td>
-                    <td><input v-model.number="part.quantity" :disabled="disabled" type="number" min="0" step="1" aria-label="模具子配件用量"></td>
-                    <td><button type="button" class="icon" :disabled="disabled" @click="remove(row.parts,partIndex)"><Trash2 /></button></td>
-                  </tr>
-                  <tr v-if="!row.parts.length"><td colspan="7" class="empty">尚未生成子配件；可按名称拆分或手动新增</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </article>
-        </div>
+              <p v-if="moldSplitError" class="mold-split-error" role="alert">{{ moldSplitError }}</p>
+              <footer class="mold-split-dialog-actions"><button type="button" :disabled="moldSplitSaving" @click="closeMoldSplit">取消拆分</button><button type="button" class="confirm" :disabled="disabled || moldSplitSaving" @click="confirmMoldPartSplit">{{ moldSplitSaving ? '保存并同步中…' : '确认拆分' }}</button></footer>
+            </DialogContent>
+          </DialogPortal>
+        </DialogRoot>
       </section>
       <InternalQuoteDickieMolds v-if="isDickie" :molds="engineering.molds" :disabled="disabled" />
       <section v-if="isDisney" class="payload-block disney-mold-fields">
@@ -969,7 +967,7 @@ function addBuzzBeeColorBoxTier() {
         </header>
         <div class="payload-table-scroll">
           <table class="moldingInjectionTable">
-            <thead><tr><th>#</th><th>模具名称</th><th>材质</th><th>料型</th><th>啤净重 (g)</th><th>料价 HKD/g（快照）</th><th>原料单价 HKD（自动）</th><th>啤价 HKD/啤（自动）</th><th>出模数</th><th>套数</th><th>机型 A码</th><th>目标数</th><th>周期 (秒)</th><th>成品金额 HKD（自动）</th><th>成品用量</th><th>备注</th><th /></tr></thead>
+            <thead><tr><th>#</th><th>模具名称</th><th>材质</th><th>料型</th><th>啤净重 (g)</th><th>料价 HKD/g（快照）</th><th>原料单价 HKD（自动）</th><th>啤价 HKD/啤（自动）</th><th>出模数</th><th>套数</th><th>机型 A码</th><th>目标数</th><th>成品金额 HKD（自动）</th><th>成品用量</th><th>备注</th><th /></tr></thead>
             <tbody>
               <tr v-for="(row,index) in visibleInjectionRows" :key="index">
                 <td class="row-number">{{ index + 1 }}</td>
@@ -984,7 +982,6 @@ function addBuzzBeeColorBoxTier() {
                 <td><input v-model.number="row.sets" :disabled="disabled || injectionFieldLocked(row, 'sets')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'sets') }" type="number" min="0" step="1"></td>
                 <td><select :value="selectedMachineReference(row)?.range ?? row.machine_code" :disabled="disabled" aria-label="注塑机型 A码" @change="selectMachine(row, ($event.target as HTMLSelectElement).value)"><option value="">请选择机型</option><option v-if="row.machine_code && !selectedMachineReference(row)" :value="row.machine_code">未匹配：{{ row.machine_code }}</option><option v-for="item in moldingMachineReferences" :key="item.range" :value="item.range">{{ item.range }} · {{ item.machine }} · HKD {{ fixedDecimal(item.shiftPriceHkd, 3) }}/班</option></select></td>
                 <td><input v-model.number="row.target_output" :disabled="disabled || injectionFieldLocked(row, 'target_output')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'target_output') }" type="number" min="0" step="1"></td>
-                <td><input v-model.number="row.cycle_time_seconds" :disabled="disabled || injectionFieldLocked(row, 'cycle_time_seconds')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'cycle_time_seconds') }" type="number" min="0" step="0.01"></td>
                 <td class="snapshot-cell amount">{{ injectionPreviewText(row, 'lineAmountHkd') }}</td>
                 <td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1"></td>
                 <td><input v-model="row.remark" :disabled="disabled"></td>
@@ -995,7 +992,7 @@ function addBuzzBeeColorBoxTier() {
                   </div>
                 </td>
               </tr>
-              <tr v-if="!visibleInjectionRows.length"><td colspan="17" class="empty">当前配件暂无注塑明细，可手工新增或通过“上传附件”自动识别啤机报价单</td></tr>
+              <tr v-if="!visibleInjectionRows.length"><td colspan="16" class="empty">当前配件暂无注塑明细，可手工新增或通过“上传附件”自动识别啤机报价单</td></tr>
             </tbody>
           </table>
         </div>
@@ -1542,7 +1539,7 @@ function addBuzzBeeColorBoxTier() {
 .section-payload-form{display:grid;gap:12px;padding:12px;background:#f8fafc}.payload-standard-notice{display:flex;align-items:center;gap:10px;border:1px solid #99f6e4;border-radius:10px;background:#f0fdfa;padding:10px 12px}.payload-standard-notice strong{flex:0 0 auto;color:#0f766e;font-size:13px}.payload-standard-notice span{color:#475569;font-size:12px}.quote-pricing-assignment{display:grid;gap:9px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:11px 12px}.quote-pricing-assignment header>div{display:grid;gap:3px}.quote-pricing-assignment header strong{color:#0c4a6e;font-size:13px}.quote-pricing-assignment header span{color:#475569;font-size:11px;line-height:1.45}.quote-pricing-assignment-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:7px}.quote-pricing-assignment-grid article{display:grid;grid-template-columns:minmax(0,1fr) 118px;align-items:center;gap:8px;border:1px solid #dbeafe;border-radius:8px;background:#fff;padding:8px}.quote-pricing-assignment-grid article>strong{overflow:hidden;color:#334155;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.payload-block{overflow:hidden;border:1px solid #dbe5ea;border-radius:11px;background:#fff}.payload-block>header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;padding:11px 12px;background:#f8fafc}.payload-block>header>div{display:grid}.payload-block header strong{color:#334155;font-size:13px}.payload-block header span{margin-top:2px;color:#64748b;font-size:11px}.payload-block button,.subhead button{display:inline-flex;min-height:32px;align-items:center;gap:5px;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:0 10px;color:#0f766e;font-size:12px;font-weight:800}.payload-block button svg,.subhead button svg{width:14px;height:14px}.payload-block button:disabled{cursor:not-allowed;opacity:.4}.payload-table-scroll{overflow:auto}.payload-table-scroll table{width:100%;min-width:620px;border-collapse:collapse}.payload-table-scroll table.wide{min-width:1050px}.payload-table-scroll table.extraWide{min-width:1850px}.payload-table-scroll table.caixingToolPlan{min-width:2700px}.payload-table-scroll table.painting{min-width:2850px}.payload-table-scroll th{background:#eef2f6;padding:8px;color:#64748b;font-size:11px;text-align:left;white-space:nowrap}.payload-table-scroll td{border-top:1px solid #eef2f6;padding:6px}.payload-table-scroll input,.payload-table-scroll select,.payload-table-scroll textarea,.inline-fields input,.inline-fields select{width:100%;min-width:70px;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:0 8px;color:#334155;font-size:13px}.payload-table-scroll input,.payload-table-scroll select,.inline-fields input,.inline-fields select{height:34px}.payload-table-scroll textarea{min-height:52px;padding-block:7px;resize:vertical}.payload-table-scroll input:focus,.payload-table-scroll select:focus,.payload-table-scroll textarea:focus,.inline-fields input:focus,.inline-fields select:focus{border-color:#14b8a6;outline:2px solid rgb(20 184 166/.12)}.payload-table-scroll input:disabled,.payload-table-scroll select:disabled,.payload-table-scroll textarea:disabled,.inline-fields input:disabled,.inline-fields select:disabled{background:#f8fafc;color:#64748b}.payload-table-scroll .icon,.nested-head .icon{display:grid;width:30px;min-height:30px;place-items:center;border-color:transparent;background:transparent;padding:0;color:#94a3b8}.payload-table-scroll .icon:hover:not(:disabled),.nested-head .icon:hover:not(:disabled){background:#fef2f2;color:#dc2626}.empty{padding:22px!important;color:#94a3b8;text-align:center;font-size:12px}.inline-fields{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:10px;padding:12px}.inline-fields.four{grid-template-columns:repeat(4,minmax(130px,1fr))}.inline-fields.five{grid-template-columns:repeat(5,minmax(110px,1fr));padding:0}.inline-fields label{display:grid;gap:5px}.inline-fields label span{color:#64748b;font-size:11px;font-weight:700}.nested-card{margin:10px;border:1px solid #e2e8f0;border-radius:9px;background:#fff}.nested-head,.subhead{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px}.nested-head{border-bottom:1px solid #eef2f6;background:#f8fafc}.nested-head strong{color:#475569;font-size:12px}.subhead{border-top:1px solid #eef2f6}.subhead span{color:#475569;font-size:11px;font-weight:800}.subhead button{min-height:28px;border-color:#dbe5ea;background:#fff;color:#475569;font-size:11px}.disabled{--form-disabled:1}
 .payload-table-scroll table.packagingMaterials{min-width:1750px}.payload-table-scroll tfoot td{border-top:1px solid #99f6e4;background:#f0fdfa;color:#475569;font-size:12px;font-weight:800}.packaging-base{padding-bottom:4px}.dimension-grid{display:grid;grid-template-columns:1fr;gap:10px;padding:4px 12px 10px}.dimension-card{overflow:hidden;border:1px solid #e2e8f0;border-radius:9px;background:#f8fafc}.dimension-card>strong{display:block;padding:9px 12px 0;color:#475569;font-size:12px}.dimension-card-title{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px 0}.dimension-card-title>strong{color:#475569;font-size:12px}.dimension-unit-control{display:flex!important;grid-template-columns:none!important;align-items:center;gap:7px}.dimension-unit-control span{white-space:nowrap}.dimension-unit-control select{height:30px;min-width:78px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:0 8px;color:#334155;font-size:12px}.dimension-unit-control select:focus{border-color:#14b8a6;outline:2px solid rgb(20 184 166/.12)}.dimension-unit-control select:disabled{background:#f1f5f9;color:#64748b}.nested-head-actions{display:flex;align-items:center;gap:8px}.dimension-card .inline-fields{padding-top:8px}.carton-card .inline-fields{padding:10px}.calculation-strip{display:flex;flex-wrap:wrap;gap:10px;margin:0 10px 10px;border:1px solid #fde68a;border-radius:8px;background:#fffbeb;padding:10px;color:#475569;font-size:12px}.calculation-strip span{display:inline-flex;gap:5px}.calculation-strip b{color:#0f766e;font-weight:800}.calculated-cell{background:#ecfdf5!important;color:#0f766e!important;font-variant-numeric:tabular-nums;font-weight:900!important}.packaging-empty{margin:0 12px 12px;border:1px dashed #cbd5e1;border-radius:9px}
 .sales-testing-fee-total{padding:14px 14px 8px}.sales-testing-fee-total label,.sales-testing-fee-breakdown label{display:grid;gap:6px}.sales-testing-fee-total label{max-width:430px}.sales-testing-fee-total span,.sales-testing-fee-breakdown span{color:#64748b;font-size:11px;font-weight:800}.sales-testing-fee-total input,.sales-testing-fee-breakdown input{height:38px;width:100%;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 10px;color:#334155;font-size:13px}.sales-testing-fee-total input:focus,.sales-testing-fee-breakdown input:focus{border-color:#14b8a6;outline:2px solid rgb(20 184 166/.12)}.sales-testing-fee-total input:disabled,.sales-testing-fee-breakdown input:disabled{background:#f8fafc;color:#64748b}.sales-testing-fee-breakdown{display:grid;grid-template-columns:minmax(180px,430px) minmax(180px,430px);gap:12px;padding:8px 14px 14px}.sales-testing-fee-result output{display:flex;height:38px;align-items:center;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:0 10px;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:900}.sales-testing-fee-formula{display:flex;gap:10px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 14px;color:#64748b;font-size:11px;line-height:1.5}.sales-testing-fee-formula strong{color:#0f766e}@media(max-width:720px){.sales-testing-fee-breakdown{grid-template-columns:1fr}}
-.payload-table-scroll table.engineeringHardware{min-width:1650px}.payload-table-scroll table.engineeringAuxiliary{min-width:1850px}.fixed-field{display:flex;height:34px;align-items:center;border:1px solid #dbe5ea;border-radius:7px;background:#f8fafc;padding:0 8px;color:#0f766e;font-size:13px;font-weight:800}.fixed-field.numeric{justify-content:flex-end;font-variant-numeric:tabular-nums}.payload-table-scroll table.engineeringMolds{min-width:2650px}.mold-image-cell{min-width:126px}.mold-image-list{display:flex;max-width:150px;flex-wrap:wrap;gap:4px}.mold-image-list a{display:block;overflow:hidden;width:46px;height:46px;border:1px solid #99f6e4;border-radius:7px;background:#f0fdfa}.mold-image-list img{display:block;width:100%;height:100%;object-fit:contain}.mold-image-cell small{display:block;margin-top:4px;color:#0f766e;font-size:10px;white-space:nowrap}.engineering-mold-parts{display:grid;gap:10px;border-top:1px solid #ccfbf1;background:#f8fafc;padding:12px}.engineering-mold-part-card{overflow:hidden;background:#fff}.engineering-mold-part-card .nested-head>div:first-child{display:grid;gap:2px}.engineering-mold-part-card .nested-head span{color:#64748b;font-size:10px}.mold-part-rule{border-top:1px solid #eef2f6;border-bottom:1px solid #eef2f6;background:#f0fdfa;padding:8px 12px;color:#0f766e;font-size:10px;line-height:1.5}.payload-table-scroll table.engineeringMoldParts{min-width:1050px}.engineeringMoldParts th:nth-child(2),.engineeringMoldParts td:nth-child(2){min-width:220px}.engineeringMoldParts th:nth-child(3),.engineeringMoldParts td:nth-child(3),.engineeringMoldParts th:nth-child(4),.engineeringMoldParts td:nth-child(4){min-width:150px}.calculation-header-actions{display:flex!important;align-items:center;justify-content:flex-end;gap:8px}.payload-table-scroll table.productionMoldCosts{min-width:760px}.payload-table-scroll table.moldAllocationSummary{min-width:920px}.moldAllocationSummary th:nth-child(2),.moldAllocationSummary td:nth-child(2){min-width:430px}.inline-fields.seven.mold-allocation-inputs{grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;border-top:1px solid #eef2f6;background:#f8fafc;padding:8px 10px}.mold-allocation-inputs label{min-width:0;gap:3px}.mold-allocation-inputs label span{overflow:hidden;font-size:10px;text-overflow:ellipsis;white-space:nowrap}.mold-allocation-inputs input{height:30px;min-width:0;padding:0 6px;font-size:12px}
+.payload-table-scroll table.engineeringHardware{min-width:1650px}.payload-table-scroll table.engineeringAuxiliary{min-width:1850px}.fixed-field{display:flex;height:34px;align-items:center;border:1px solid #dbe5ea;border-radius:7px;background:#f8fafc;padding:0 8px;color:#0f766e;font-size:13px;font-weight:800}.fixed-field.numeric{justify-content:flex-end;font-variant-numeric:tabular-nums}.payload-table-scroll table.engineeringMolds{min-width:1850px}.mold-image-cell{min-width:126px}.mold-image-list{display:flex;max-width:150px;flex-wrap:wrap;gap:4px}.mold-image-list a{display:block;overflow:hidden;width:46px;height:46px;border:1px solid #99f6e4;border-radius:7px;background:#f0fdfa}.mold-image-list img{display:block;width:100%;height:100%;object-fit:contain}.mold-image-cell small{display:block;margin-top:4px;color:#0f766e;font-size:10px;white-space:nowrap}.engineering-mold-parts{display:grid;gap:10px;border-top:1px solid #ccfbf1;background:#f8fafc;padding:12px}.engineering-mold-part-card{overflow:hidden;background:#fff}.engineering-mold-part-card .nested-head>div:first-child{display:grid;gap:2px}.engineering-mold-part-card .nested-head span{color:#64748b;font-size:10px}.mold-part-rule{border-top:1px solid #eef2f6;border-bottom:1px solid #eef2f6;background:#f0fdfa;padding:8px 12px;color:#0f766e;font-size:10px;line-height:1.5}.payload-table-scroll table.engineeringMoldParts{min-width:1050px}.engineeringMoldParts th:nth-child(2),.engineeringMoldParts td:nth-child(2){min-width:220px}.engineeringMoldParts th:nth-child(3),.engineeringMoldParts td:nth-child(3),.engineeringMoldParts th:nth-child(4),.engineeringMoldParts td:nth-child(4){min-width:150px}.calculation-header-actions{display:flex!important;align-items:center;justify-content:flex-end;gap:8px}.payload-table-scroll table.productionMoldCosts{min-width:760px}.payload-table-scroll table.moldAllocationSummary{min-width:920px}.moldAllocationSummary th:nth-child(2),.moldAllocationSummary td:nth-child(2){min-width:430px}.inline-fields.seven.mold-allocation-inputs{grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;border-top:1px solid #eef2f6;background:#f8fafc;padding:8px 10px}.mold-allocation-inputs label{min-width:0;gap:3px}.mold-allocation-inputs label span{overflow:hidden;font-size:10px;text-overflow:ellipsis;white-space:nowrap}.mold-allocation-inputs input{height:30px;min-width:0;padding:0 6px;font-size:12px}
 .electronic-card{overflow:hidden}.nested-actions{display:flex;align-items:center;gap:6px}.nested-actions button:not(.icon){display:inline-flex;min-height:28px;align-items:center;gap:4px;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:0 9px;color:#0f766e;font-size:11px;font-weight:800}.payload-table-scroll table.electronicTable{min-width:1500px}.electronicTable th:first-child,.electronicTable td:first-child{width:80px;white-space:nowrap}.electronicTable th:nth-child(2),.electronicTable td:nth-child(2){min-width:170px}.electronicTable th:nth-child(3),.electronicTable td:nth-child(3){min-width:210px}.electronicTable th:nth-child(9),.electronicTable td:nth-child(9){min-width:190px}.electronic-child-row{background:#f8fafc}.payload-table-scroll table.electronicQuickTable{min-width:940px}.electronicQuickTable th:first-child,.electronicQuickTable td:first-child{width:52px}.electronicQuickTable th:nth-child(2),.electronicQuickTable td:nth-child(2){min-width:190px}.electronicQuickTable th:nth-child(6),.electronicQuickTable td:nth-child(6){min-width:220px}.payload-table-scroll table.electronicSummaryTable{min-width:1050px;table-layout:fixed}.electronicSummaryTable th,.electronicSummaryTable td{width:14.2857%;padding-right:8px;padding-left:8px;text-align:center;vertical-align:middle}.electronicSummaryTable td{color:#475569;font-variant-numeric:tabular-nums;font-weight:700}.electronicSummaryTable .quote-total{background:#ecfdf5;color:#0f766e;font-size:14px;font-weight:900}.electronic-formula-note{display:grid;grid-template-columns:auto 1fr;gap:10px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 12px;color:#64748b;font-size:11px;line-height:1.5}.electronic-formula-note strong{color:#0f766e}
 .molding-header-actions{display:flex;align-items:center;gap:8px}.molding-header-actions label{display:flex;align-items:center;gap:6px;color:#64748b;font-size:11px;font-weight:800}.molding-header-actions label span{margin:0}.molding-header-actions input{width:76px;height:32px;border:1px solid #dbe5ea;border-radius:7px;padding:0 8px;color:#334155}.payload-table-scroll table.moldingInjectionTable{min-width:2450px}.payload-table-scroll table.moldingBlowTable{min-width:2450px}.moldingInjectionTable th:nth-child(2),.moldingInjectionTable td:nth-child(2){min-width:190px}.moldingInjectionTable th:nth-child(16),.moldingInjectionTable td:nth-child(16),.moldingBlowTable th:nth-child(17),.moldingBlowTable td:nth-child(17){min-width:170px}.injection-row-actions{display:flex;align-items:center;justify-content:center;gap:4px}.injection-row-actions .icon{flex:0 0 auto}.row-number{color:#64748b;text-align:center;font-weight:800}.snapshot-cell{min-width:116px;background:#ecfdf5;color:#0f766e;font-size:11px;font-variant-numeric:tabular-nums;font-weight:900;white-space:nowrap}.snapshot-cell.amount{background:#dcfce7;color:#047857}.molding-summary-grid{display:grid;grid-template-columns:minmax(260px,1fr) repeat(4,minmax(170px,auto));gap:10px;border-top:1px solid #99f6e4;background:#f0fdfa;padding:10px 12px;color:#64748b;font-size:11px}.molding-summary-grid b{color:#0f766e;text-align:right}.molding-formula-note{display:grid;grid-template-columns:auto 1fr;gap:10px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 12px;color:#64748b;font-size:11px;line-height:1.5}.molding-formula-note strong{color:#0f766e}
 .painting th:nth-child(2),.painting td:nth-child(2){min-width:180px}.painting th:nth-child(3),.painting td:nth-child(3),.painting th:nth-child(4),.painting td:nth-child(4){min-width:135px}.painting th:nth-last-child(2),.painting td:nth-last-child(2){min-width:180px}.painting-operation-total{background:#ecfdf5;color:#0f766e;font-weight:900;text-align:center;white-space:nowrap}.painting-summary-card{display:grid;grid-template-columns:minmax(220px,1fr) auto minmax(130px,auto) auto minmax(200px,auto);align-items:center;gap:14px;border-top:1px solid #99f6e4;background:#f0fdfa;padding:11px 12px;color:#64748b;font-size:11px}.painting-summary-card strong{color:#334155;font-size:12px}.painting-summary-card b{color:#0f766e;text-align:right}.painting-formula-note{display:grid;grid-template-columns:auto 1fr;gap:10px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:10px 12px;color:#64748b;font-size:11px;line-height:1.5}.painting-formula-note strong{color:#0f766e}
@@ -1560,10 +1557,12 @@ function addBuzzBeeColorBoxTier() {
 .sales-testing-fee-breakdowns{display:grid;padding:4px 14px 14px}.sales-testing-fee-breakdown{grid-template-columns:minmax(180px,430px) minmax(180px,430px) 38px;padding:10px 0}.sales-testing-fee-breakdown+.sales-testing-fee-breakdown{border-top:1px solid #eef2f6}.sales-testing-fee-remove{align-self:end;width:38px;height:38px}.sales-testing-fee-remove:disabled{cursor:not-allowed;opacity:.4}@media(max-width:720px){.sales-testing-fee-breakdown{grid-template-columns:1fr 1fr 38px}}@media(max-width:520px){.sales-testing-fee-breakdown{grid-template-columns:1fr 38px}.sales-testing-fee-result{grid-column:1}.sales-testing-fee-remove{grid-column:2;grid-row:1/3}}
 .engineering-sync-badge{display:inline-flex!important;align-items:center;border:1px solid rgb(204 251 241/.7);border-radius:999px;background:rgb(255 255 255/.14);padding:4px 8px;color:#fff!important;font-size:10px!important;font-weight:800;white-space:nowrap}.payload-table-scroll input.engineering-prefilled:disabled,.payload-table-scroll textarea.engineering-prefilled:disabled{border-color:#99f6e4;background:#ecfdf5;color:#0f766e;font-weight:800;opacity:1;-webkit-text-fill-color:#0f766e}
 .payload-table-scroll table.disneyPurchasedParts{min-width:1250px}.payload-table-scroll table.disneyMoldFields{min-width:1450px}.payload-table-scroll table.disneyInjectionFields{min-width:1050px}.payload-table-scroll table.disneyPackagingFields{min-width:980px}.disney-carton-fields{border-top:1px solid #eef2f6;background:#f8fafc}
-.mold-split-preview{display:grid;gap:8px;margin:12px;border:1px solid #5eead4;border-radius:9px;background:#f0fdfa;padding:12px;font-size:12px;color:#134e4a}
-.mold-split-preview p{margin:0;line-height:1.6}.mold-split-preview .split-warning{color:#92400e}
-.mold-split-preview ol{margin:0;padding-left:24px}.mold-split-preview li{padding:4px}.mold-split-preview li b{margin-left:16px;font-size:11px}
-.mold-split-preview .nested-actions{display:flex;gap:8px}.mold-split-preview button{border:1px solid #5eead4;border-radius:6px;background:#fff;padding:7px 12px}
-.mold-split-preview button:disabled{opacity:.5;cursor:not-allowed}
+.mold-row-actions{white-space:nowrap}.mold-split-button{margin-right:8px;border:1px solid #99f6e4;border-radius:6px;padding:6px 10px;color:#0f766e;background:#f0fdfa;font-weight:700}
+.mold-split-overlay{position:fixed;inset:0;z-index:120;background:rgb(15 23 42/.48)}
+.mold-split-dialog{position:fixed;z-index:121;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;width:min(1120px,94vw);max-height:90dvh;overflow:hidden;border:1px solid #cbd5e1;border-radius:14px;background:#fff;box-shadow:0 24px 80px #0f172a40;color:#334155}
+.mold-split-dialog-head{padding:18px 22px;border-bottom:1px solid #e2e8f0;background:#f0fdfa}.mold-split-dialog-head h2{margin:0;font-size:20px;color:#115e59}.mold-split-dialog-head p{margin:8px 0 0;font-size:13px;line-height:1.7}
+.mold-split-dialog-body{overflow:auto;min-height:0;padding:16px;display:flex;flex-direction:column;gap:16px}.mold-split-dialog-body>article{flex:none}.mold-split-dialog-head,.mold-split-dialog-actions,.mold-split-error{flex:none}.mold-split-dialog .nested-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px}.mold-split-dialog .nested-head>div{display:grid;gap:4px}.mold-split-dialog .nested-head span{color:#64748b;font-size:12px}
+.mold-split-dialog table{border-collapse:collapse;width:100%;min-width:850px;font-size:13px}.mold-split-dialog th,.mold-split-dialog td{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left}.mold-split-dialog th{background:#f1f5f9}.mold-split-dialog input{box-sizing:border-box;width:100%;min-width:70px;border:1px solid #cbd5e1;border-radius:6px;padding:9px;color:#334155;background:#fff}.mold-split-dialog td:nth-child(2){min-width:190px}.mold-split-dialog button{display:inline-flex;align-items:center;gap:5px;border:1px solid #cbd5e1;border-radius:7px;padding:8px 12px;background:#fff;color:#0f766e;font-weight:700}.mold-split-dialog svg{width:16px;height:16px}.mold-split-dialog button:disabled{opacity:.5;cursor:not-allowed}
+.mold-split-dialog-actions{display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;border-top:1px solid #e2e8f0}.mold-split-dialog-actions .confirm{background:#0f766e;color:#fff;border-color:#0f766e}.mold-split-error{margin:0;padding:10px 20px;color:#b91c1c;background:#fef2f2;font-size:13px}
 .payload-table-scroll table.customerSuppliedMaterials{min-width:760px;width:100%}.customerSuppliedMaterials th:first-child,.customerSuppliedMaterials td:first-child{width:48px}.customerSuppliedMaterials th:nth-child(2),.customerSuppliedMaterials td:nth-child(2){width:38%}.customerSuppliedMaterials th:last-child,.customerSuppliedMaterials td:last-child{width:56px}.customerSuppliedMaterials output{color:#0f766e;font-weight:800;font-variant-numeric:tabular-nums}
 </style>

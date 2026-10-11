@@ -729,7 +729,7 @@ describe('internal quote section payload normalization', () => {
       item: '主体模', mold_no: 'M-01', mold_base_type: 'CI 3040', structure: '两板模', material: 'S50C', color: '红', cavity: '2',
       chinese_name: '', mold_base_material: '', process: '', material_type: '', mold_specification: '',
       quantity: 2, net_weight_g: 120, cycle_time_seconds: 35, mold_size: '300×400', image_reference: 'M-01.png', cost_rmb: 5000,
-      remark: '客户确认', machine_code: '20A', target_output: 5000, parts: [{ name: '主体模', output_count: 1, quantity: 1 }], source_row: 8,
+      remark: '客户确认', machine_code: '20A', target_output: 5000, parts: [], source_row: 8,
     })
     expect(engineering.production_mold_costs).toEqual([{ item: '模具费用', cost_rmb: 1550 }])
     expect(calculateEngineeringMoldPriceHkd(engineering.molds[0], .85)).toBeCloseTo(5882.3529)
@@ -794,6 +794,7 @@ describe('internal quote section payload normalization', () => {
       }],
     }) as unknown as EngineeringPayload
     expect(engineering.molds[0].parts).toEqual([{
+      id: 'legacy-name:["手工命名",1]',
       name: '手工命名',
       color: '橙色',
       process: '',

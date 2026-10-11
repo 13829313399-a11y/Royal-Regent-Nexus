@@ -24,7 +24,7 @@ function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>)
   vi.spyOn(store, 'previewSectionCost').mockResolvedValue(undefined)
   const wrapper = mount(InternalQuoteSectionEditor, {
     props: { quote, section, canEdit: true, canReview: false, canRemove: false, wholeQuoteReview: true },
-    global: { plugins: [pinia], stubs: { InternalQuoteAttachmentPreview: true } }, attachTo: document.body,
+    global: { plugins: [pinia], stubs: { InternalQuoteAttachmentPreview: true, teleport: true, DialogPortal: { template: "<div><slot /></div>" } } }, attachTo: document.body,
   })
   return { wrapper, save, section, store }
 }
@@ -182,22 +182,22 @@ describe('internal quote feedback regressions', () => {
 
   it('retains a real name edit after an equivalent same-revision refresh', async () => {
     const { wrapper, section } = setup('engineering', { molds: [{ item: '粉色蝴蝶结前/后', parts: [{ name: '粉色蝴蝶结前' }, { name: '后' }] }] })
-    const inputs = wrapper.findAll('input[aria-label="模具子配件名称"]')
-    await inputs[1]!.setValue('粉色蝴蝶结后')
+    const inputs = wrapper.findAll('textarea[aria-label="模具名称"]')
+    await inputs[0]!.setValue('粉色蝴蝶结后')
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
     await wrapper.setProps({ section: { ...section, payload: structuredClone(section.payload) } })
-    expect((wrapper.findAll('input[aria-label="模具子配件名称"]')[1]!.element as HTMLInputElement).value).toBe('粉色蝴蝶结后')
+    expect((wrapper.findAll('textarea[aria-label="模具名称"]')[0]!.element as HTMLInputElement).value).toBe('粉色蝴蝶结后')
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
     wrapper.unmount()
   })
 
-  it('preserves the second name input DOM identity when the preceding child is removed', async () => {
+  it('preserves child input identity when a preceding staged child is removed', async () => {
     const { wrapper } = setup('engineering', { molds: [{ item: '前/后', parts: [{ name: '前' }, { name: '后' }] }] })
-    const second = wrapper.findAll('input[aria-label="模具子配件名称"]')[1]!.element as HTMLInputElement
-    second.focus()
+    await wrapper.get('[aria-label="拆分第 1 行模具"]').trigger('click')
+    await flushPromises()
+    const second = wrapper.findAll('input[aria-label="模具子配件名称"]')[1]!.element
     await wrapper.findAll('.engineeringMoldParts tbody tr')[0]!.get('button').trigger('click')
     expect(wrapper.get('input[aria-label="模具子配件名称"]').element).toBe(second)
-    expect(document.activeElement).toBe(second)
     wrapper.unmount()
   })
 
@@ -205,7 +205,7 @@ describe('internal quote feedback regressions', () => {
     const { wrapper } = setup('engineering', { molds: [{ parts: [{ name: '后' }] }] })
     const store = useInternalQuoteDeskStore()
     const preview = vi.spyOn(store, 'previewImport')
-    await wrapper.get('input[aria-label="模具子配件名称"]').setValue('手工修改')
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('手工修改')
     const input = wrapper.get('input[type="file"]')
     Object.defineProperty(input.element, 'files', { value: [new File(['xlsx'], '报价.xlsx')] })
     await input.trigger('change')
@@ -218,23 +218,23 @@ describe('internal quote feedback regressions', () => {
 
   it('keeps unsaved edits and the exit warning after a failed save', async () => {
     const { wrapper, save } = setup('engineering', { molds: [{ parts: [{ name: '后' }] }] })
-    await wrapper.get('input[aria-label="模具子配件名称"]').setValue('手工改名')
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('手工改名')
     save.mockRejectedValue(new Error('版本冲突'))
     await expect(wrapper.vm.saveWholeQuoteDraft()).rejects.toThrow('版本冲突')
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
-    expect((wrapper.get('input[aria-label="模具子配件名称"]').element as HTMLInputElement).value).toBe('手工改名')
+    expect((wrapper.get('textarea[aria-label="模具名称"]').element as HTMLInputElement).value).toBe('手工改名')
     wrapper.unmount()
   })
 
   it('acknowledges a no-op save and still warns for subsequent edits', async () => {
     const { wrapper } = setup('engineering', { molds: [{ parts: [{ name: '后' }] }] })
-    await wrapper.get('input[aria-label="模具子配件名称"]').setValue('手工改名')
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('手工改名')
     await wrapper.vm.saveWholeQuoteDraft(false)
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
     const savedExit = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(savedExit)
     expect(savedExit.defaultPrevented).toBe(false)
-    await wrapper.get('input[aria-label="模具子配件名称"]').setValue('再次修改')
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('再次修改')
     const dirtyExit = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(dirtyExit)
     expect(dirtyExit.defaultPrevented).toBe(true)
@@ -243,7 +243,7 @@ describe('internal quote feedback regressions', () => {
 
   it('acknowledges a whole-product result even when no section prop changes', async () => {
     const { wrapper } = setup('engineering', { molds: [{ parts: [{ name: '后' }] }] })
-    await wrapper.get('input[aria-label="模具子配件名称"]').setValue('后件')
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('后件')
     const draft = wrapper.vm.getWholeQuoteDraft()
     wrapper.vm.acceptSavedPayload(draft.payload, draft.payload, 5)
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
@@ -253,54 +253,117 @@ describe('internal quote feedback regressions', () => {
 
   it('does not acknowledge a later edit as saved while waiting for the response', async () => {
     const { wrapper, save } = setup('engineering', { molds: [{ parts: [{ name: '后' }] }] })
-    await wrapper.get('input[aria-label="模具子配件名称"]').setValue('第一次修改')
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('第一次修改')
     const submitted = wrapper.vm.getWholeQuoteDraft().payload
     let resolve!: (result: ApiInternalQuoteSection) => void
     save.mockReturnValueOnce(new Promise<ApiInternalQuoteSection>((done) => { resolve = done }))
     const pending = wrapper.vm.saveWholeQuoteDraft(false)
-    await wrapper.get('input[aria-label="模具子配件名称"]').setValue('请求期间的新修改')
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('请求期间的新修改')
     resolve({ revision: 6, payload: submitted } as ApiInternalQuoteSection)
     await pending
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
-    expect((wrapper.get('input[aria-label="模具子配件名称"]').element as HTMLInputElement).value).toBe('请求期间的新修改')
+    expect((wrapper.get('textarea[aria-label="模具名称"]').element as HTMLInputElement).value).toBe('请求期间的新修改')
     wrapper.unmount()
   })
 
   it('preserves both a conflicting local draft and its old revision for optimistic locking', async () => {
     const { wrapper, section } = setup('engineering', { molds: [{ parts: [{ name: '后' }] }] })
-    await wrapper.get('input[aria-label="模具子配件名称"]').setValue('本地修改')
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('本地修改')
     await wrapper.setProps({ section: { ...section, revision: 6, payload: { molds: [{ parts: [{ name: '他人修改' }] }] } } })
     expect(wrapper.vm.getWholeQuoteDraft().revision).toBe(5)
-    expect((wrapper.get('input[aria-label="模具子配件名称"]').element as HTMLInputElement).value).toBe('本地修改')
+    expect((wrapper.get('textarea[aria-label="模具名称"]').element as HTMLInputElement).value).toBe('本地修改')
     expect(wrapper.text()).toContain('本页未保存输入已保留')
     wrapper.unmount()
   })
 
-  it('previews resplitting, preserves prices and unmatched manual rows, and supports cancellation', async () => {
-    const { wrapper } = setup('engineering', { molds: [{ item: '粉色蝴蝶结前/后', parts: [
-      { name: '粉色蝴蝶结前', process_unit_price_hkd: 2, unit_net_weight_g: 10 },
-      { name: '后', process_unit_price_hkd: 3, unit_net_weight_g: 15 },
-      { name: '手工附件', process_unit_price_hkd: 4 },
-    ] }] })
-    const split = wrapper.findAll('button').find((button) => button.text() === '按名称拆分')!
-    await split.trigger('click')
-    const panel = wrapper.get('[aria-label="配件拆分预览"]')
-    expect(panel.text()).toContain('原行无法匹配')
+  it('stages one mold with inherited counts, cancels without saving, then confirms only that mold', async () => {
+    const { wrapper, save } = setup('engineering', { molds: [
+      { item: '遥控器上壳/下壳', cavity: '4', quantity: 2, cycle_time_seconds: 30, material: 'legacy' },
+      { item: '车轮', cavity: '8', quantity: 3 },
+    ] })
+    expect(wrapper.find('.engineeringMoldParts').exists()).toBe(false)
+    const headers = wrapper.get('.engineeringMolds thead').findAll('th').map(cell => cell.text())
+    for (const removed of ['模胚类型', '模具结构', '工艺', '材质', '周期 (秒)', '模具规格']) expect(headers).not.toContain(removed)
+    const original = wrapper.vm.getWholeQuoteDraft().payload
+    await wrapper.get('[aria-label="拆分第 1 行模具"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.engineering-mold-part-card')).toHaveLength(1)
+    expect(wrapper.findAll('[aria-label="模具子配件出模数"]').map(input => (input.element as HTMLInputElement).value)).toEqual(['4', '4'])
+    expect(wrapper.findAll('[aria-label="模具子配件套数"]').map(input => (input.element as HTMLInputElement).value)).toEqual(['2', '2'])
+    expect(() => wrapper.vm.getWholeQuoteDraft()).toThrow('请先确认或取消')
+    await wrapper.findAll('button').find(button => button.text() === '取消拆分')!.trigger('click')
+    expect(save).not.toHaveBeenCalled()
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toEqual(original)
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
-    await panel.findAll('button').find((button) => button.text() === '取消拆分')!.trigger('click')
-    expect(wrapper.find('[aria-label="配件拆分预览"]').exists()).toBe(false)
-    await split.trigger('click')
-    await wrapper.get('[aria-label="配件拆分预览"]').findAll('button').find((button) => button.text() === '确认拆分并保留数据')!.trigger('click')
-    const names = wrapper.findAll('input[aria-label="模具子配件名称"]').map((input) => (input.element as HTMLInputElement).value)
-    expect(names).toEqual(['粉色蝴蝶结前', '粉色蝴蝶结后', '手工附件'])
-    expect(wrapper.find('input[aria-label="模具子配件加工内容"]').exists()).toBe(false)
-    expect(wrapper.find('input[aria-label="模具子配件加工总单价 HKD"]').exists()).toBe(false)
-    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ molds: [{ parts: [
-      { process_unit_price_hkd: 2 },
-      { process_unit_price_hkd: 3 },
-      { process_unit_price_hkd: 4 },
-    ] }] })
+    await wrapper.get('[aria-label="拆分第 1 行模具"]').trigger('click')
+    await flushPromises()
+    for (const input of wrapper.findAll('[aria-label="模具子配件净重"]')) await input.setValue('12')
+    await wrapper.findAll('[aria-label="模具子配件套数"]')[0]!.setValue('5')
+    await wrapper.findAll('button').find(button => button.text() === '确认拆分')!.trigger('click')
+    await flushPromises()
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save.mock.calls[0]![3]).toMatchObject({ molds: [
+      { cycle_time_seconds: 30, material: 'legacy', parts: [{ output_count: 4, quantity: 5, unit_net_weight_g: 12 }, { quantity: 2 }] },
+      { parts: [] },
+    ] })
+    expect(wrapper.find('.mold-split-dialog').exists()).toBe(false)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    await wrapper.get('[aria-label="拆分第 1 行模具"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.findAll('[aria-label="模具子配件套数"]')[0]!.element as HTMLInputElement).value).toBe('5')
+    wrapper.unmount()
+  })
+
+  it('validates every mold before a batch save and keeps staged input after failure', async () => {
+    const { wrapper, save } = setup('engineering', { molds: [
+      { item: '上/下', cavity: '4', quantity: 2 }, { item: '车轮', cavity: '8', quantity: 3 },
+    ] })
+    const original = wrapper.vm.getWholeQuoteDraft().payload
+    await wrapper.findAll('button').find(button => button.text() === '全部拆分')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.engineering-mold-part-card')).toHaveLength(2)
+    const confirm = () => wrapper.findAll('button').find(button => button.text() === '确认拆分')!.trigger('click')
+    await confirm()
+    expect(save).not.toHaveBeenCalled()
+    expect(wrapper.get('.mold-split-error').text()).toContain('净重')
+    for (const input of wrapper.findAll('[aria-label="模具子配件净重"]')) await input.setValue('10')
+    save.mockRejectedValueOnce(new Error('版本冲突'))
+    await confirm()
+    await flushPromises()
+    expect(wrapper.get('.mold-split-error').text()).toContain('版本冲突')
+    expect((wrapper.findAll('[aria-label="模具子配件净重"]')[0]!.element as HTMLInputElement).value).toBe('10')
+    await wrapper.findAll('button').find(button => button.text() === '取消拆分')!.trigger('click')
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toEqual(original)
+    await wrapper.findAll('button').find(button => button.text() === '全部拆分')!.trigger('click')
+    await flushPromises()
+    for (const input of wrapper.findAll('[aria-label="模具子配件净重"]')) await input.setValue('10')
+    await confirm()
+    await flushPromises()
+    expect(save.mock.calls[1]![3]).toMatchObject({ molds: [
+      { parts: [{ output_count: 4, quantity: 2 }, { output_count: 4, quantity: 2 }] },
+      { parts: [{ output_count: 8, quantity: 3 }] },
+    ] })
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('clears a staged split when the editor switches to another quote', async () => {
+    const { wrapper } = setup('engineering', { molds: [{ item: '上/下', cavity: '4', quantity: 2 }] })
+    await wrapper.get('[aria-label="拆分第 1 行模具"]').trigger('click')
+    await flushPromises()
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    await wrapper.setProps({ quote: { ...wrapper.props('quote'), id: 'another-quote' } })
+    await flushPromises()
+    expect(wrapper.find('.mold-split-dialog').exists()).toBe(false)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ molds: [{ parts: [] }] })
+    wrapper.unmount()
+  })
+
+  it('hides the injection cycle column while retaining its saved value', () => {
+    const { wrapper } = setup('molding', { injection_lines: [{ item: '壳', cycle_time_seconds: 28 }] })
+    expect(wrapper.get('.moldingInjectionTable thead').text()).not.toContain('周期')
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ injection_lines: [{ cycle_time_seconds: 28 }] })
     wrapper.unmount()
   })
 })
