@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import secrets
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.time import serialize_process_local_timestamp
+from app.services.auth_problem import auth_problem
 from app.db import get_db
 from app.models.auth import (
     AuthAuditLog,
@@ -840,8 +842,19 @@ def recent_bad_credential_count(db: Session, username: str, request: Request | N
 
 
 def ensure_login_not_temporarily_locked(db: Session, username: str, request: Request | None = None) -> None:
-    if recent_bad_credential_count(db, username, request) < LOGIN_FAILURE_LIMIT:
+    now = datetime.now()
+    cutoff = (now - timedelta(minutes=LOGIN_FAILURE_WINDOW_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+    # The LIMIT-th most recent failure must leave the window before retrying.
+    blocked_until = db.scalar(select(AuthAuditLog.created_at).where(
+        AuthAuditLog.username == username,
+        AuthAuditLog.ip_address == request_ip_address(request),
+        AuthAuditLog.action == "login_denied",
+        AuthAuditLog.detail == BAD_CREDENTIALS_MESSAGE,
+        AuthAuditLog.created_at >= cutoff,
+    ).order_by(AuthAuditLog.created_at.desc()).offset(LOGIN_FAILURE_LIMIT - 1).limit(1))
+    if not blocked_until:
         return
+    retry_seconds = max(1, math.ceil((parse_time(blocked_until) + timedelta(minutes=LOGIN_FAILURE_WINDOW_MINUTES) - now).total_seconds()))
 
     add_auth_audit(
         db,
@@ -851,7 +864,7 @@ def ensure_login_not_temporarily_locked(db: Session, username: str, request: Req
         request=request,
     )
     db.commit()
-    raise HTTPException(status_code=429, detail=LOGIN_LOCKED_MESSAGE)
+    auth_problem(429, "AUTH_LOGIN_THROTTLED", LOGIN_LOCKED_MESSAGE, headers={"Retry-After": str(retry_seconds)})
 
 
 def permission_catalog_values(code: str, sort_order: int) -> dict[str, str | int]:
@@ -2012,7 +2025,7 @@ def authenticate_user(db: Session, username: str, password: str, request: Reques
     if not user or not password_matches:
         add_auth_audit(db, "login_denied", username=normalized_username, detail=BAD_CREDENTIALS_MESSAGE, request=request)
         db.commit()
-        raise HTTPException(status_code=401, detail=BAD_CREDENTIALS_MESSAGE)
+        auth_problem(401, "AUTH_INVALID_CREDENTIALS", BAD_CREDENTIALS_MESSAGE)
 
     if user.status != "active":
         status_message = {
@@ -2040,7 +2053,7 @@ def authenticate_user(db: Session, username: str, password: str, request: Reques
             request=request,
         )
         db.commit()
-        raise HTTPException(status_code=401, detail=status_message)
+        auth_problem(401, "ACCOUNT_UNAVAILABLE", status_message)
 
     if user.force_password_change:
         reset_request = latest_issued_password_reset_request(db, user.id)
@@ -2086,9 +2099,14 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
     factory_id = payload.factory_id.strip()
     department = payload.department.strip()
     if department not in ALLOWED_DEPARTMENTS:
-        raise HTTPException(status_code=400, detail="请选择有效部门")
+        auth_problem(400, "AUTH_ORGANIZATION_CHANGED", "请选择有效部门", field="department")
     from app.services.identity_registration import registration_org
-    org = registration_org(db, factory_id, payload.org_unit_id.strip(), department)
+    try:
+        org = registration_org(db, factory_id, payload.org_unit_id.strip(), department)
+    except HTTPException as error:
+        if isinstance(error.detail, dict) and error.detail.get("code") in {"INVALID_ORG", "IDENTITY_WRITES_DISABLED"}:
+            auth_problem(error.status_code, "AUTH_ORGANIZATION_CHANGED", error.detail["message"], field="org_unit_id")
+        raise
     factory_id = org.legacy_factory_id
     position = payload.position.strip()
 
@@ -2097,13 +2115,13 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
     if not display_name:
         raise HTTPException(status_code=400, detail="请输入姓名")
     if payload.password != payload.confirm_password:
-        raise HTTPException(status_code=400, detail="两次输入的密码不一致")
+        auth_problem(400, "AUTH_VALIDATION_ERROR", "两次输入的密码不一致", field="confirm_password")
     if len(payload.password) < 6:
         raise HTTPException(status_code=400, detail="密码至少需要 6 位")
     validate_password_characters(payload.password)
     validate_password_characters(payload.confirm_password)
     if not phone and not email:
-        raise HTTPException(status_code=400, detail="手机或邮箱至少填写一项")
+        auth_problem(400, "AUTH_VALIDATION_ERROR", "手机或邮箱至少填写一项", field="phone")
     if factory_id not in ALLOWED_FACTORY_IDS and org.kind != "functional_unit":
         raise HTTPException(status_code=400, detail="请选择有效厂区")
     if not position:
@@ -2113,7 +2131,7 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
 
     existing_user = db.scalar(select(AuthUser).where(AuthUser.username == username))
     if existing_user is not None and existing_user.status != "rejected":
-        raise HTTPException(status_code=409, detail="账号或工号已存在")
+        auth_problem(409, "AUTH_REGISTRATION_CONFLICT", "账号或工号已存在，请核对现有账号或申请", field="username")
 
     now = now_text()
     user_id = existing_user.id if existing_user is not None else f"user-{secrets.token_hex(8)}"
@@ -2205,7 +2223,8 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
     )
     db.commit()
 
-    return RegisterResponse(status="pending", message="账号申请已提交，请等待管理员审批")
+    return RegisterResponse(status="pending", message="账号申请已提交，请等待管理员审批",
+                            request_id=registration_request_id, submitted_at=serialize_process_local_timestamp(now))
 
 
 def submit_password_reset_request(
@@ -2226,10 +2245,10 @@ def submit_password_reset_request(
         raise HTTPException(status_code=400, detail="请填写联系电话或邮箱")
 
     now = now_text()
-    matched_user = db.scalar(
-        select(AuthUser).where(func.lower(AuthUser.username) == username.casefold())
-    )
-    normalized_username = matched_user.username if matched_user else username.casefold()
+    matched_user = db.scalar(select(AuthUser).where(AuthUser.username == username))
+    # Exact matching is the login contract. No SQL lower/Python casefold guess
+    # may silently attach a recovery request to another historical account.
+    normalized_username = matched_user.username if matched_user else username
     request_ip = request_ip_address(request)
     cutoff = (datetime.now() - timedelta(minutes=PASSWORD_RESET_RATE_WINDOW_MINUTES)).strftime(
         "%Y-%m-%d %H:%M:%S"
@@ -2360,10 +2379,18 @@ def password_reset_claim_to_response(
     status = reset_request.status
     if reset_request.claim_token_hash is None and status in {"pending", "approved", "expired"}:
         status = "legacy_invalid"
+    expiry = parse_time(reset_request.expires_at)
+    seconds = max(0, math.ceil((expiry - datetime.now()).total_seconds())) if expiry else 0
+    can_complete = status == "approved" and seconds > 0
+    reopenable = password_reset_can_reopen(reset_request)
+    if status == "expired" and not reopenable:
+        messages["expired"] = "该申请已失效，不能继续设置密码或重新开放；如需找回，请提交新申请"
     return PasswordResetClaimResponse(
         status=status,
         request_id=reset_request.id,
-        can_complete=status == "approved",
+        can_complete=can_complete,
+        can_request_reopen=reopenable,
+        expires_in_seconds=seconds if can_complete else 0,
         expires_at=(
             serialize_process_local_timestamp(reset_request.expires_at)
             if status == "approved"
@@ -2420,6 +2447,9 @@ def get_password_reset_claim(
 ) -> PasswordResetClaimResponse:
     if not raw_claim_token:
         return password_reset_claim_none_response()
+    # Reads can expire a claim; serialize them with reopen/completion writers.
+    from app.services.identity_policy import lock_mutation
+    lock_mutation(db)
     reset_request = load_password_reset_claim(db, raw_claim_token)
     if reset_request is None:
         add_auth_audit(
@@ -2437,6 +2467,34 @@ def get_password_reset_claim(
         expire_password_reset_claim(db, reset_request, request=request)
         db.commit()
     return password_reset_claim_to_response(reset_request)
+
+
+def password_reset_can_reopen(reset_request: AuthPasswordResetRequest) -> bool:
+    expiry = parse_time(reset_request.expires_at)
+    return bool(reset_request.claim_token_hash and reset_request.status in {"approved", "expired"}
+                and expiry is not None and expiry <= datetime.now())
+
+
+def invalidate_password_reset_claims(db: Session, user_id: str, now: str, *, exclude_id: str = "", request=None) -> int:
+    """Caller holds the IAM mutation lock; keep history and claim hashes intact."""
+    records = db.scalars(select(AuthPasswordResetRequest).where(
+        AuthPasswordResetRequest.user_id == user_id,
+        AuthPasswordResetRequest.id != exclude_id,
+        AuthPasswordResetRequest.status.in_({"pending", "approved", "expired"}),
+    )).all()
+    invalidated = 0
+    for item in records:
+        if item.status == "expired" and not item.expires_at:
+            continue
+        item.status = "expired"
+        item.expires_at = ""
+        item.updated_at = now
+        mark_password_reset_notification_handled(db, item, now)
+        invalidated += 1
+    if invalidated:
+        add_auth_audit(db, "password_reset_claims_invalidated", user_id=user_id,
+                       detail=f"成功改密废止旧恢复申请 {invalidated} 个", request=request)
+    return invalidated
 
 
 def complete_password_reset_claim(
@@ -2463,7 +2521,7 @@ def complete_password_reset_claim(
         db.commit()
         raise HTTPException(status_code=409, detail="该重置申请已完成或已失效")
     if reset_request.status != "approved":
-        raise HTTPException(status_code=409, detail="该重置申请尚未批准、已完成或已失效")
+        auth_problem(409, "AUTH_RESET_INVALIDATED", "该重置申请尚未批准、已完成或已失效")
     expires_at = parse_time(reset_request.expires_at)
     if expires_at is None or expires_at <= datetime.now():
         expire_password_reset_claim(db, reset_request, request=request)
@@ -2530,18 +2588,7 @@ def complete_password_reset_claim(
     reset_request.updated_at = now
     mark_password_reset_notification_handled(db, reset_request, now)
 
-    other_requests = db.scalars(
-        select(AuthPasswordResetRequest).where(
-            AuthPasswordResetRequest.user_id == user.id,
-            AuthPasswordResetRequest.id != reset_request.id,
-            AuthPasswordResetRequest.status.in_({"pending", "approved"}),
-        )
-    ).all()
-    for other_request in other_requests:
-        other_request.status = "expired"
-        other_request.expires_at = ""
-        other_request.updated_at = now
-        mark_password_reset_notification_handled(db, other_request, now)
+    invalidated = invalidate_password_reset_claims(db, user.id, now, exclude_id=reset_request.id, request=request)
 
     add_auth_audit(
         db,
@@ -2550,7 +2597,7 @@ def complete_password_reset_claim(
         user_id=user.id,
         detail=(
             f"原设备密码重置申请 {reset_request.id} 已完成；"
-            f"撤销会话 {len(active_sessions)} 个，失效其他申请 {len(other_requests)} 个"
+            f"撤销会话 {len(active_sessions)} 个，失效其他申请 {invalidated} 个"
         ),
         request=request,
     )
@@ -2597,6 +2644,8 @@ def change_current_password(
 ) -> tuple[AuthMeResponse, str]:
     from app.services.identity_policy import lock_mutation
     lock_mutation(db)
+    if request is not None:
+        current_user = get_current_user(request, db)
     validate_password_characters(payload.current_password)
     validate_password_characters(payload.new_password)
     validate_password_characters(payload.confirm_password)
@@ -2604,7 +2653,7 @@ def change_current_password(
         raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
     if len(payload.new_password) < MIN_ACCOUNT_PASSWORD_LENGTH:
         raise HTTPException(status_code=400, detail=f"密码至少需要 {MIN_ACCOUNT_PASSWORD_LENGTH} 位")
-    if secrets.compare_digest(payload.current_password, payload.new_password):
+    if secrets.compare_digest(payload.current_password.encode('utf-8'), payload.new_password.encode('utf-8')):
         raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
 
     user = db.get(AuthUser, current_user.id)
@@ -2646,6 +2695,8 @@ def change_current_password(
         reset_request.expires_at = ""
         reset_request.updated_at = now
         mark_password_reset_notification_handled(db, reset_request, now)
+
+    invalidate_password_reset_claims(db, user.id, now, request=request)
 
     for session in db.scalars(
         select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.status == "active")

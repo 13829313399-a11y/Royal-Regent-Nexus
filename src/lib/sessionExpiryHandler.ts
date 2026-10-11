@@ -11,6 +11,7 @@ function isSessionProbeRequest(error: { config?: { url?: unknown } }) {
 
   const requestPath = requestUrl.split('?')[0]
   return requestPath === '/auth/me' || requestPath.endsWith('/auth/me')
+    || /\/auth\/(login|register|password-reset-requests|password-reset-claim)(\/|$)/.test(requestPath)
 }
 
 export function installUnauthorizedSessionHandler(router: Router, pinia: Pinia) {

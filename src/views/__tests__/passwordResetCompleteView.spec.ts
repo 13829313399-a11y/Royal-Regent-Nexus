@@ -1,3 +1,4 @@
+import { createPinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PasswordResetCompleteView from '../PasswordResetCompleteView.vue'
@@ -9,11 +10,11 @@ const authMocks = vi.hoisted(() => ({
 const routerReplaceMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/auth', () => ({ authApi: authMocks }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ replace: routerReplaceMock }) }))
+vi.mock('vue-router', () => ({ RouterLink: { template: '<a><slot /></a>' } }))
 
 function mountView() {
   return mount(PasswordResetCompleteView, {
-    global: { stubs: { AuthAmbientGrid: true } },
+    global: { plugins: [createPinia()] },
   })
 }
 
@@ -49,9 +50,9 @@ describe('PasswordResetCompleteView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('申请等待管理员审核')
+    expect(wrapper.text()).toContain('申请正在等待管理员审核')
     expect(wrapper.find('form').exists()).toBe(false)
-    expect(wrapper.text()).toContain('刷新状态')
+    expect(wrapper.text()).toContain('刷新申请状态')
     wrapper.unmount()
   })
 
@@ -63,7 +64,7 @@ describe('PasswordResetCompleteView', () => {
     await inputs[1].setValue('DifferentPass789!')
     await wrapper.get('form').trigger('submit')
 
-    expect(wrapper.text()).toContain('两次输入的新密码不一致')
+    expect(wrapper.text()).toContain('两次输入的密码不一致')
     expect(authMocks.completePasswordResetClaim).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -83,8 +84,9 @@ describe('PasswordResetCompleteView', () => {
     })
     expect(wrapper.text()).toContain('密码已成功重置')
     expect(wrapper.text()).not.toContain('当前密码')
-    await vi.advanceTimersByTimeAsync(1200)
-    expect(routerReplaceMock).toHaveBeenCalledWith({ name: 'login' })
+    expect(wrapper.findAll('input')).toHaveLength(0)
+    expect(wrapper.text()).toContain('返回登录')
+    expect(routerReplaceMock).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -99,7 +101,6 @@ describe('PasswordResetCompleteView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('未找到原设备申请')
     expect(wrapper.text()).toContain('重新提交密码重置申请')
     expect(wrapper.find('form').exists()).toBe(false)
     wrapper.unmount()

@@ -1,4 +1,9 @@
 import axios, { type AxiosError, type AxiosInstance } from 'axios'
+import { getAuthenticationGeneration } from './authenticationGeneration'
+
+declare module 'axios' {
+  interface AxiosRequestConfig { authenticationGeneration?: number }
+}
 
 export interface ApiErrorPayload {
   message?: string
@@ -8,7 +13,7 @@ export interface ApiErrorPayload {
 }
 
 export interface AccessFailure {
-  config?: { url?: unknown }
+  config?: { url?: unknown; authenticationGeneration?: number }
   response?: {
     status?: number
     data?: unknown
@@ -35,9 +40,10 @@ export function setForbiddenHandler(handler: ForbiddenHandler | null) {
  * Axios interceptor, but a 401/403 must still have exactly one application
  * session-expiry path.
  */
-export function dispatchAccessFailure(status: number, url: string, data?: unknown) {
+export function dispatchAccessFailure(status: number, url: string, data?: unknown, generation = getAuthenticationGeneration()) {
+  if (generation !== getAuthenticationGeneration()) return
   const failure: AccessFailure = {
-    config: { url },
+    config: { url, authenticationGeneration: generation },
     response: { status, data },
   }
   if (status === 401) {
@@ -58,6 +64,7 @@ export const http: AxiosInstance = axios.create({
 })
 
 http.interceptors.request.use((config) => {
+  config.authenticationGeneration = getAuthenticationGeneration()
   if (/^\/internal-quotes(?:\/|$)/.test(config.url ?? '') && config.timeout === 15000) {
     config.timeout = 120_000
   }
@@ -74,6 +81,8 @@ http.interceptors.response.use(
     return response
   },
   (error: AxiosError<ApiErrorPayload>) => {
+    if (error.config?.authenticationGeneration !== undefined
+      && error.config.authenticationGeneration !== getAuthenticationGeneration()) return Promise.reject(error)
     if (error.response?.status === 401) {
       unauthorizedHandler?.(error)
     }

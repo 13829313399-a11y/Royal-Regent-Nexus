@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { http, dispatchAccessFailure } from '@/lib/http'
+import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
 import type { ThreeDDashboard } from '@/types/threeDPrinting'
 
 type Snapshot = Pick<ThreeDDashboard, 'printers' | 'network_health'> & { run_version: string }
@@ -27,6 +28,7 @@ export function useThreeDLive(onSnapshot: (value: Snapshot) => void) {
     connected.value = false
     const url = `${http.defaults.baseURL ?? '/api'}/three-d-printing/live/events?factory_id=huakang-a`
     const stream = new EventSource(url, { withCredentials: true })
+    const generation = getAuthenticationGeneration()
     source = stream
     let hasSnapshot = false
     const current = () => running && source === stream
@@ -51,7 +53,7 @@ export function useThreeDLive(onSnapshot: (value: Snapshot) => void) {
     stream.addEventListener('access_revoked', (message: MessageEvent) => {
       if (!current()) return
       stop()
-      try { dispatchAccessFailure(JSON.parse(message.data).status, url) } catch { /* closed */ }
+      try { dispatchAccessFailure(JSON.parse(message.data).status, url, undefined, generation) } catch { /* closed */ }
     })
     stream.onerror = () => { if (current()) connected.value = false } // Native reconnect retains Last-Event-ID.
   }

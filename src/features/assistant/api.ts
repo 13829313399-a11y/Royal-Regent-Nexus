@@ -1,4 +1,5 @@
 import { dispatchAccessFailure } from '@/lib/http'
+import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
 import type { Capabilities, Conversation, HelpArticle, MessagePage, PageContext, SendPayload, Snapshot } from './types'
 
 export function assistantUrl(path: string, base = import.meta.env.VITE_API_BASE_URL || '/api') {
@@ -9,11 +10,12 @@ export class AssistantApiError extends Error {
 }
 export async function request(path: string, init: RequestInit = {}) {
   const url = assistantUrl(path)
+  const generation = getAuthenticationGeneration()
   const response = await fetch(url, { ...init, credentials: 'include', cache: 'no-store',
     headers: { ...(init.body && !(init.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}), ...init.headers } })
   if (!response.ok) {
     const data = await response.json().catch(() => ({}))
-    dispatchAccessFailure(response.status, url, data)
+    dispatchAccessFailure(response.status, url, data, generation)
     const detail = data.detail || data
     throw new AssistantApiError(typeof detail === 'string' ? detail : detail.message || '请求未完成，请稍后重试。', response.status, detail.code || 'request_failed', detail.retryable)
   }

@@ -122,6 +122,7 @@ class PasswordResetMatchedUserOut(BaseModel):
 
 
 class PasswordResetRequestOut(BaseModel):
+    can_reopen: bool = False
     id: str
     user_id: str | None = None
     username: str

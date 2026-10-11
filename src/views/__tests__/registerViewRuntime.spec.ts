@@ -13,7 +13,9 @@ vi.mock('@/api/auth', () => ({
 }))
 
 vi.mock('vue-router', () => ({
+  useRoute: () => ({ query: {} }),
   useRouter: () => ({
+    push: routerReplaceMock,
     replace: routerReplaceMock,
   }),
 }))
@@ -31,14 +33,19 @@ describe('RegisterView position flow', () => {
 
     await wrapper.get('input[autocomplete="username"]').setValue(' tech-001 ')
     await wrapper.get('input[autocomplete="name"]').setValue(' 张三 ')
-    const passwordInputs = wrapper.findAll('input[type="password"]')
-    await passwordInputs[0]!.setValue('Strong123')
-    await passwordInputs[1]!.setValue('Strong123')
     await wrapper.get('input[autocomplete="tel"]').setValue(' 13800000000 ')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('select').element.value).toBe('')
     await wrapper.get('select').setValue('huaxing')
     await wrapper.findAll('select')[1]!.setValue('engineering')
     await wrapper.get('input[autocomplete="organization-title"]').setValue(' 工程部技术员 ')
 
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const passwordInputs = wrapper.findAll('input[type="password"]')
+    await passwordInputs[0]!.setValue('Strong123')
+    await passwordInputs[1]!.setValue('Strong123')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
@@ -54,6 +61,8 @@ describe('RegisterView position flow', () => {
       department: 'engineering',
       position: '工程部技术员',
     })
-    expect(wrapper.text()).toContain('账号申请已提交，请等待管理员审批')
+    expect(wrapper.text()).toContain('申请已收到')
+    expect(wrapper.find('form').exists()).toBe(false)
+    wrapper.unmount()
   })
 })

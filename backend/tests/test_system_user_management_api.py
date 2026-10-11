@@ -192,10 +192,11 @@ def test_registration_approval_notification_and_login_flow(monkeypatch):
         register_response = client.post("/api/auth/register", json=payload)
 
         assert register_response.status_code == 200
-        assert register_response.json() == {
-            "status": "pending",
-            "message": "账号申请已提交，请等待管理员审批",
-        }
+        receipt = register_response.json()
+        assert receipt["status"] == "pending"
+        assert receipt["message"] == "账号申请已提交，请等待管理员审批"
+        assert receipt["request_id"]
+        assert receipt["submitted_at"]
 
         pending_login_response = client.post(
             "/api/auth/login",

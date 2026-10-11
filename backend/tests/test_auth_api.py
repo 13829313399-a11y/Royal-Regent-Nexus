@@ -1811,8 +1811,9 @@ def test_registration_rejects_position_longer_than_storage_limit(monkeypatch):
             },
         )
 
-        assert response.status_code == 400
-        assert response.json()["detail"] == "职位不能超过 128 个字符"
+        assert response.status_code == 422
+        assert response.json()["code"] == "AUTH_VALIDATION_ERROR"
+        assert response.json()["field_errors"][0]["field"] == "position"
 
 
 def test_register_flushes_new_user_before_registration_request(monkeypatch):

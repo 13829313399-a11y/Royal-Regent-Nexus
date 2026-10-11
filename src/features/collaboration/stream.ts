@@ -1,11 +1,13 @@
 import { http, dispatchAccessFailure } from '@/lib/http'
+import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
 import type { SyncBatch } from '@/api/collaboration'
 
 export async function consumeStream(cursor: string, signal: AbortSignal, apply: (batch: SyncBatch) => Promise<void>) {
+  const generation = getAuthenticationGeneration()
   const url = `${String(http.defaults.baseURL ?? '/api').replace(/\/$/, '')}/collaboration/events?cursor=${encodeURIComponent(cursor)}`
   const response = await fetch(url, { credentials: 'include', signal, headers: { Accept: 'text/event-stream' } })
   if (!response.ok) {
-    dispatchAccessFailure(response.status, url)
+    dispatchAccessFailure(response.status, url, undefined, generation)
     const error = await response.json().catch(() => null)
     if (error?.detail?.code === 'RESET_REQUIRED') throw new Error('stream:reset')
     throw new Error(`stream:${response.status}`)
@@ -28,7 +30,7 @@ export async function consumeStream(cursor: string, signal: AbortSignal, apply: 
         const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2)
         const lines = frame.split('\n'), kind = lines.find(line => line.startsWith('event:'))?.slice(6).trim()
         const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n')
-        if (kind === 'session_ended') { dispatchAccessFailure(401, url); throw new Error('stream:401') }
+        if (kind === 'session_ended') { dispatchAccessFailure(401, url, undefined, generation); throw new Error('stream:401') }
         if (kind === 'reset_required') throw new Error('stream:reset')
         if (kind === 'sync' && data) await apply(JSON.parse(data) as SyncBatch)
       }
