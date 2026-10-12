@@ -35,7 +35,47 @@ export interface WarehouseOperationsWorkspace {
   locations?: WarehouseLocation[]
   permissions: Record<'read' | 'operate' | 'quality' | 'correct', boolean> & { master?: boolean }
 }
+export type FabricMonthlyView = 'monthly' | 'reconciliation' | 'recipients'
+export interface FabricMonthlyQuery { month: string; direction: '' | 'IN' | 'OUT'; channel: '' | 'MANUAL' | 'SCAN'; party_key: string }
+export interface FabricMonthlyQuantities {
+  received: string; receipt_reversed: string; net_received: string; issued: string; issue_reversed: string
+  returned: string; net_issued: string; net_outbound: string; stock_change: string
+  manual_received: string; scan_received: string; manual_outbound: string; scan_outbound: string
+}
+export interface FabricMonthlyDetail {
+  id: string; date: string; direction: 'IN' | 'OUT'; kind: 'RECEIPT' | 'ISSUE' | 'RETURN'; correction: boolean
+  original_id: string; channel: 'MANUAL' | 'SCAN'; channel_label: string; origin: string; source_no: string; source_line: string
+  document_id: string; party_key: string; party_name: string; recorded_party: string; supplier_id: string; identity_basis: string
+  item_code: string; item_name: string; unit: string; quantity: string; actor_name: string
+  unit_price: string; price_unit: string; currency: string; price_note: string
+  amount?: string
+}
+export interface FabricMonthlyReport extends FabricMonthlyQuery {
+  parties: { key: string; name: string; direction: 'IN' | 'OUT' }[]
+  summary: (FabricMonthlyQuantities & { direction: 'IN' | 'OUT'; party_key: string; party_name: string; item_code: string; item_name: string; unit: string; document_count: number })[]
+  totals: (FabricMonthlyQuantities & { unit: string })[]; details: FabricMonthlyDetail[]
+  version: string; cutting_interface: 'PENDING'; basis: string; live: boolean; closed: boolean; amounts_calculated: boolean
+}
+export interface FabricOrderSummaryQuery { date_from: string; date_to: string; search: string; supplier: string }
+export interface FabricOrderQuantities { opening: string; inbound: string; outbound: string; adjustment: string; balance: string }
+export interface FabricOrderIdentity {
+  key: string; source_line_id: string; order_no: string; production_no: string; style_no: string; supplier: string
+  item_code: string; item_name: string; unit: string; linked: boolean
+}
+export interface FabricOrderRow extends FabricOrderIdentity, FabricOrderQuantities { document_count: number }
+export interface FabricOrderDetail extends FabricOrderIdentity {
+  id: string; date: string; mode: 'INBOUND' | 'OUTBOUND' | 'ADJUSTMENT'; label: string; quantity: string; stock_change: string
+  moved_quantity: string; source_no: string; original_id: string; recipient: string; location: string; channel: 'MANUAL' | 'SCAN'
+  actor_name: string; reason: string; sequence: number
+}
+export interface FabricOrderReport extends FabricOrderSummaryQuery {
+  rows: FabricOrderRow[]; details: FabricOrderDetail[]; totals: (FabricOrderQuantities & { unit: string })[]
+  suppliers: string[]; basis: string; version: string
+}
 export const warehouseOperationsApi = {
+  async orderSummary(query: FabricOrderSummaryQuery) { return (await http.get<FabricOrderReport>('/warehouse-operations/fabric/order-summary', { params: { factory_id: 'huakang-c', ...query } })).data },
+  async monthly(query: FabricMonthlyQuery) { return (await http.get<FabricMonthlyReport>('/warehouse-operations/fabric/monthly', { params: { factory_id: 'huakang-c', ...query } })).data },
+  async exportMonthly(query: FabricMonthlyQuery, version: string) { return (await http.get<Blob>('/warehouse-operations/fabric/monthly/export', { params: { factory_id: 'huakang-c', ...query, version }, responseType: 'blob' })).data },
   async saveLocation(input: { factory_id: 'huakang-c'; request_id: string; id: string; expected_revision: number; warehouse: string; code: string; status: 'ACTIVE' | 'INACTIVE' }) { return (await http.post<WarehouseLocation>('/warehouse-operations/semi/locations', input)).data },
   async bulkIssue(warehouse: WarehouseDomain, input: WarehouseBulkIssue) { return (await http.post(`/warehouse-operations/${warehouse}/issues/bulk`, input)).data },
   async workspace(warehouse: WarehouseDomain) {

@@ -9,6 +9,7 @@ import {
   ClipboardCheck,
   FileSpreadsheet,
   FileStack,
+  FileText,
   GitBranch,
   LayoutDashboard,
   Network,
@@ -758,6 +759,14 @@ export const departmentModuleRegistry: Record<ModuleDepartmentId, DepartmentModu
         summary: '采购来源、布料辅料收发、批次与缸号库存，沿用纸箱工作区操作方式',
         status: '采购与入库可用', statusTone: 'teal', stats: '七个工作区 · 追货与实收入库',
         icon: Boxes, route: '/modules/pmc-warehouse/fabric-warehouse',
+        detailPage: false, factoryIds: ['huakang-c'], statusMetrics: [], todos: [], children: [],
+      },
+      {
+        id: 'material-handover', title: '制单与扫码交接', owner: '华康C · 布料仓',
+        summary: '供应商上传并打印交接单，仓库扫码分批收发，实际数量统一进入仓库月结对账',
+        status: '制单与扫码收发', statusTone: 'teal', stats: '固定供应商入口 · 单据留档 · 分批收发',
+        icon: FileText, route: '/modules/pmc-warehouse/material-handover',
+        permissions: ['fabric_operations:read'], permissionDepartment: 'pmc-warehouse', strictAccess: true,
         detailPage: false, factoryIds: ['huakang-c'], statusMetrics: [], todos: [], children: [],
       },
       {

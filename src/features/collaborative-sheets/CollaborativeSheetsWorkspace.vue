@@ -31,12 +31,26 @@ const activeSheet = ref(0), selected = ref<FillCell>(), editorText = ref('')
 const editorKind = ref<'auto' | 'text' | 'number' | 'boolean'>('auto'), editorTouched = ref(false)
 const changes = ref<FillChange[]>([]), conflict = ref(false), conflictReview = ref<string[]>([])
 const grants = ref<FillGrant[]>([]), grantsDirty = ref(false), showGrants = ref(false)
-const grantType = ref<'user' | 'department'>('department'), grantPrincipal = ref(''), grantRange = ref(''), grantSheet = ref(0)
+const grantType = ref<'user' | 'department'>('department'), grantPrincipal = ref(''), grantSheet = ref(0)
+const startColumn = ref<number | ''>(''), startRow = ref<number | ''>(''), endColumn = ref<number | ''>(''), endRow = ref<number | ''>('')
 const grantDepartments = ref<string[]>([]), departmentPicker = ref<HTMLDetailsElement>()
 const grantError = ref(''), grantNotice = ref('')
 const grantTarget = computed(() => task.value?.workbook.sheets.find(s => s.index === grantSheet.value))
 const grantExtent = computed(() => grantTarget.value ? `A1:${columnName(grantTarget.value.columns - 1)}${grantTarget.value.rows}` : '')
-watch([grantRange, grantSheet, grantType, grantPrincipal, grantDepartments, () => task.value?.id], () => {
+const grantColumns = computed(() => Array.from({ length: grantTarget.value?.columns ?? 0 }, (_, i) => ({ value: i + 1, label: columnName(i) })))
+const grantRows = computed(() => Array.from({ length: grantTarget.value?.rows ?? 0 }, (_, i) => i + 1))
+const endColumns = computed(() => grantColumns.value.filter(c => startColumn.value !== '' && c.value >= startColumn.value))
+const endRows = computed(() => grantRows.value.filter(r => startRow.value !== '' && r >= startRow.value))
+const grantRange = computed(() => {
+  if (startColumn.value === '' || startRow.value === '' || endColumn.value === '' || endRow.value === '') return ''
+  const start = `${columnName(startColumn.value - 1)}${startRow.value}`, end = `${columnName(endColumn.value - 1)}${endRow.value}`
+  return start === end ? start : `${start}:${end}`
+})
+function resetGrantRange() { startColumn.value = ''; startRow.value = ''; endColumn.value = ''; endRow.value = '' }
+watch([grantSheet, () => task.value?.id, () => grantTarget.value?.rows, () => grantTarget.value?.columns], resetGrantRange, { flush: 'sync' })
+watch(startColumn, value => { if (value === '' || (endColumn.value !== '' && endColumn.value < value)) endColumn.value = '' }, { flush: 'sync' })
+watch(startRow, value => { if (value === '' || (endRow.value !== '' && endRow.value < value)) endRow.value = '' }, { flush: 'sync' })
+watch([startColumn, startRow, endColumn, endRow, grantSheet, grantType, grantPrincipal, grantDepartments, () => task.value?.id], () => {
   grantError.value = ''; grantNotice.value = ''
 }, { deep: true, flush: 'sync' })
 const selectedPrincipals = computed(() => grantType.value === 'department' ? [...new Set(grantDepartments.value)] : grantPrincipal.value ? [grantPrincipal.value] : [])
@@ -111,6 +125,7 @@ function adopt(detail: FillTaskDetail, reset = true) {
   participantGeneration++
   participants.value = detail.participants ?? []; remoteRevision.value = detail.revision; rosterError.value = ''
   task.value = detail
+  if (!detail.workbook.sheets.some(s => s.index === grantSheet.value)) grantSheet.value = detail.workbook.sheets[0]?.index ?? 0
   if (!detail.workbook.sheets.some(s => s.index === activeSheet.value)) activeSheet.value = detail.workbook.sheets[0]?.index ?? 0
   grants.value = detail.grants.map(g => ({ ...g }))
   grantsDirty.value = false
@@ -273,7 +288,7 @@ function addGrant() {
   const bounds = rangeBounds(grantRange.value.trim())
   const target = grantTarget.value
   if (!selectedPrincipals.value.length || selectedPrincipals.value.some(id => !principalOptions.value.some(p => p.id === id))) { grantError.value = '请先选择要填写的部门或账号。'; return }
-  if (!bounds) { grantError.value = '请输入有效的填写范围，例如 A1:C3；列名和冒号请使用英文字符。'; return }
+  if (!bounds) { grantError.value = '请完整选择起始位置和结束位置的列、行。'; return }
   if (!target) { grantError.value = '请先选择工作表。'; return }
   if (bounds[2] >= target.rows || bounds[3] >= target.columns) { grantError.value = `填写范围超出“${target.name}”的原表范围 ${grantExtent.value}（${target.rows} 行、${target.columns} 列），请调整后再添加。`; return }
   const additions: FillGrant[] = selectedPrincipals.value.map(id => ({ principal_type: grantType.value, principal_id: id, sheet: grantSheet.value, range: grantRange.value.trim().toUpperCase() }))
@@ -281,7 +296,7 @@ function addGrant() {
   if (grants.value.length + additions.length > 200) { grantError.value = '分配设置最多 200 条，请减少范围后再添加。本次选择尚未添加。'; return }
   if (!additions.length) { grantError.value = '所选对象的填写范围已添加，无需重复添加。'; return }
   grants.value.push(...additions)
-  grantsDirty.value = true; error.value = ''; grantRange.value = ''
+  grantsDirty.value = true; error.value = ''; resetGrantRange()
   grantNotice.value = '填写范围已添加到下方列表，请点击“保存分配设置”。'
 }
 async function saveGrants() {
@@ -405,9 +420,25 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
               </details>
             </div>
             <label v-else>填写对象<select v-model="grantPrincipal" :disabled="busy"><option value="">请选择</option><option v-for="p in principalOptions" :key="p.id" :value="p.id">{{ p.label }}</option></select></label>
-            <label>填写范围<input v-model="grantRange" :disabled="busy" placeholder="例如 C3:N30" aria-label="填写范围" aria-describedby="cs-grant-extent cs-grant-feedback" :aria-invalid="!!grantError" @keydown.enter.prevent="addGrant" /></label>
+            <fieldset class="cs-range-picker" :disabled="busy || !grantTarget" aria-describedby="cs-grant-extent cs-grant-feedback">
+              <legend>填写范围</legend>
+              <div class="cs-range-endpoints">
+                <fieldset class="cs-range-endpoint">
+                  <legend>起始位置（左上角）</legend>
+                  <div><label>列<select v-model="startColumn" aria-label="起始列"><option value="">请选择列</option><option v-for="c in grantColumns" :key="c.value" :value="c.value">{{ c.label }} 列</option></select></label>
+                    <label>行<select v-model="startRow" aria-label="起始行"><option value="">请选择行</option><option v-for="r in grantRows" :key="r" :value="r">第 {{ r }} 行</option></select></label></div>
+                </fieldset>
+                <span class="cs-range-to" aria-hidden="true">至</span>
+                <fieldset class="cs-range-endpoint">
+                  <legend>结束位置（右下角）</legend>
+                  <div><label>列<select v-model="endColumn" aria-label="结束列" :disabled="startColumn === ''"><option value="">请选择列</option><option v-for="c in endColumns" :key="c.value" :value="c.value">{{ c.label }} 列</option></select></label>
+                    <label>行<select v-model="endRow" aria-label="结束行" :disabled="startRow === ''"><option value="">请选择行</option><option v-for="r in endRows" :key="r" :value="r">第 {{ r }} 行</option></select></label></div>
+                </fieldset>
+              </div>
+            </fieldset>
             <Button variant="outline" :disabled="busy" @click="addGrant"><Plus :size="14" />添加</Button>
           </div>
+          <p class="cs-range-preview" aria-live="polite">{{ grantRange ? `已选范围：${grantRange}（${Number(endRow) - Number(startRow) + 1} 行 × ${Number(endColumn) - Number(startColumn) + 1} 列）` : '请分别选择左侧起始位置和右侧结束位置，无需输入冒号。' }}</p>
           <p id="cs-grant-extent" v-if="grantTarget">当前工作表“{{ grantTarget.name }}”：{{ grantExtent }}（{{ grantTarget.rows }} 行、{{ grantTarget.columns }} 列）。请只分配需要填写的区域，避开表头。</p>
           <p id="cs-grant-feedback" v-if="grantError" class="cs-error" role="alert">{{ grantError }}</p>
           <p v-else-if="grantNotice" class="cs-message" role="status">{{ grantNotice }}</p>

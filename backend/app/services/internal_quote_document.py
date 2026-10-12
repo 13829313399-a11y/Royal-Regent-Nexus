@@ -2,6 +2,7 @@
 from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import aliased
+from app.services.transaction_lock import lock_transaction
 
 from app.models.internal_quote import (
     InternalQuote, InternalQuoteAlternative, InternalQuoteFamily,
@@ -28,6 +29,38 @@ def document_products(db, quote):
 
 def document_id(db, quote):
     return document_products(db, quote)[0].id
+
+
+def lock_documents(db, quotes):
+    """Acquire before physical quote/family locks, including multi-target writes."""
+    identities = sorted({f"{q.factory_id}:{document_id(db, q)}" for q in quotes})
+    for identity in identities:
+        lock_transaction(db, "internal-quote-document", identity)
+
+
+def document_versions(db, quote):
+    ids = {row.id for row in document_products(db, quote)}
+    ids.update(db.scalars(select(InternalQuoteAlternative.quote_id).where(
+        InternalQuoteAlternative.family_id.in_(ids))))
+    return list(db.scalars(select(InternalQuote).where(
+        InternalQuote.id.in_(ids), InternalQuote.factory_id == quote.factory_id).order_by(InternalQuote.id)))
+
+
+def document_archive(db, quote):
+    # Legacy whole-batch archives did not touch separately stored alternatives.
+    owner = next((row for row in document_products(db, quote) if row.status == "archived"), None)
+    if owner is None and quote.status == "archived":
+        owner = quote
+    return {"quote_id": owner.id, "revision": owner.header_revision,
+            "reason": owner.archive_reason} if owner else None
+
+
+def ensure_not_archived(db, quote):
+    if document_archive(db, quote):
+        raise HTTPException(409, "整单报价已归档，请先在报价首页或方案面板恢复整单，再继续操作")
+    entry = db.get(InternalQuoteAlternative, quote.id)
+    if entry and entry.archived:
+        raise HTTPException(409, "方案版本已归档，请先恢复此版本后操作")
 
 
 def document_counts(db, quote):

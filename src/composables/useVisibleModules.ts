@@ -18,6 +18,7 @@ return computed(() => {
       if (module.id === 'uv-printing' && appStore.activeFactoryId !== 'huakang-a') return false
       if (module.id === 'spray-production' && !isSprayFactory(appStore.activeFactoryId)) return false
       if (module.id === 'cutting' && !isCuttingFactory(appStore.activeFactoryId)) return false
+      if (module.id === 'material-handover' && appStore.activeFactoryId !== 'huakang-c') return false
       if (WAREHOUSES.some(warehouse => warehouse.id === module.id) && !isWarehouseFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
       if (toValue(department) === 'pmc-warehouse' && module.id === 'carton-procurement'

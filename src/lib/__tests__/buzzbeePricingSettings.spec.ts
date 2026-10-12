@@ -39,12 +39,12 @@ describe('BuzzBee maintained pricing and original templates', () => {
     expect(sales.customer_quote_fields.buzzbee).toMatchObject({ template_profile: 'laser', notes: '客户功能说明', color_box_tiers: [{ quote_price_hkd: 10, moq: '3000' }] })
     expect(normalizeInternalQuotePayload('molding', { injection_lines: [{ material: 'C-ABS', buzzbee_material: 'C-ABS镜片' }] }).injection_lines[0]).toMatchObject({ material: 'C-ABS', buzzbee_material: 'C-ABS镜片' })
   })
-  it('uses whole-set weights, internal molding labor, grouped electronics and the agreed fee sequence', () => {
+  it('uses whole-set weights, internal molding labor, the electronic department total and the agreed fee sequence', () => {
     const p = settings(); p.rates.injection_multiplier = 1.2
     const result = convertBuzzBeeP4InternalQuote(artifact(), 'approved.xlsx', p)
     const d = result.sheets[0]!.quoteData
-    expect(d.injectionRows[0]).toMatchObject({ weight: 100, pricePerKg: 16.7, amount: 1.67, beer: 7.2 })
-    expect(d.purchaseRows.find(r => r.desc === '声光组件整组')).toMatchObject({ qty: 1, amount: 12.6 })
+    expect(d.injectionRows[0]).toMatchObject({ weight: 300, pricePerKg: 16.7, amount: 5.01, beer: 7.2 })
+    expect(d.purchaseRows.filter(r => r.category === '电子')).toEqual([expect.objectContaining({ desc: '电子', qty: 1, amount: 12.6 })])
     expect(d.purchaseRows.map(r => r.desc)).not.toContain('IC')
     expect(d.purchaseRows.find(r => r.desc === '子弹吸塑')?.amount).toBe(3.15)
     expect(d.purchaseRows.find(r => r.desc === '纸箱')?.amount).toBe(2.06)
@@ -59,9 +59,26 @@ describe('BuzzBee maintained pricing and original templates', () => {
     expect(d.colorBox).toMatchObject({ price1: 8, fsc1: 2.06 })
     expect(buildBuzzBeeCustomerQuoteFileName(result)).toBe('R2 RR ITEM 测试产品（2026-09-02）.xlsx')
     const other = settings(); other.rates.detail_multiplier = 1; other.materials.find(m => m.material === 'ABS')!.price = 20
-    expect(convertBuzzBeeP4InternalQuote(artifact(), 'other.xlsx', other).sheets[0]!.quoteData.injectionAmount).toBe(2)
-    expect(d.injectionAmount).toBe(1.67)
+    expect(convertBuzzBeeP4InternalQuote(artifact(), 'other.xlsx', other).sheets[0]!.quoteData.injectionAmount).toBe(6)
+    expect(d.injectionAmount).toBe(5.01)
     expect(d.purchaseRows.find(r => r.desc === '螺丝')?.amount).toBe(2.1)
+  })
+  it.each([undefined, 0, 0.5, 1, 2])('uses finished-product quantity %s independently of sets per shot', (quantity) => {
+    const a = artifact()
+    const row = (a.sections.molding.payload.injection_lines as Array<Record<string, unknown>>)[0]!
+    row.quantity = quantity
+    row.sets = 7
+    const expectedQuantity = quantity ?? 1
+    const result = convertBuzzBeeP4InternalQuote(a, 'quantity.xlsx', settings())
+    expect(result.sheets[0]!.quoteData.injectionRows[0]).toMatchObject({
+      weight: 100 * expectedQuantity,
+      amount: 1.67 * expectedQuantity,
+      beer: 2 * expectedQuantity,
+    })
+    const output = createBuzzBeeTemplateWorkbook(result, new Uint8Array(readFileSync('public/templates/buzzbee-standard-template.bin')))
+    const sheet = document(output)
+    expect(Number(cell(sheet, 'C7').getElementsByTagName('v')[0]!.textContent)).toBe(100 * expectedQuantity)
+    expect(cell(sheet, 'E7').getElementsByTagName('f')[0]!.textContent).toBe('C7*D7/1000')
   })
   it('requires explicitly maintained material names and never infers special lens prices from product names', () => {
     const a = artifact(); a.productName = '警察眼镜'

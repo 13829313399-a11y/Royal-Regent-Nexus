@@ -50,12 +50,12 @@
       {
         "path": "src/composables/useVisibleModules.ts",
         "symbol": "detailPage",
-        "sha256": "98e07e5ba04024e4da204cb7db6ec2ae9c69737617c932169859f73ccceee502"
+        "sha256": "2581182fd554f284143d97daf303be3a864e1d464c42e168f01739415a7062b2"
       },
       {
         "path": "src/features/warehouse-operations/navigation.ts",
         "symbol": "WAREHOUSE_FACTORY",
-        "sha256": "a886037cbdae00bd31df19166f852e0621ff44dc7fafbb21ff29c99c932953c8"
+        "sha256": "e82f341455706829d0f11a7b3b3a76859de5ca0b03ebe9a3917bdceaf02355a5"
       }
     ],
     "knowledge_version": "2026.10.12-v2",

@@ -32,7 +32,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v33"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v36"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -740,7 +740,7 @@ def _pricing_entry_category(entry: dict[str, Any]) -> str:
     if section_code == "hair":
         return "车发"
     if section_code == "sewing":
-        return "车衣"
+        return "车发" if category == "hair" else "车衣"
     if section_code == "assembly":
         is_packaging_labor = category == "packaging" or bool(
             re.search(r"包装|pack", label, re.IGNORECASE)
@@ -767,7 +767,7 @@ def _pricing_entry_tax_tag(entry: dict[str, Any]) -> str:
         return "¥3%"
     if category == "吸塑":
         return "¥6%"
-    if category in {"啤工", "喷油工", "装配工", "包装人工", "车衣"}:
+    if category in {"料价", "啤工", "喷油工", "装配工", "包装人工", "车衣", "车发"}:
         return ""
     return "¥13%"
 
@@ -799,6 +799,30 @@ def _pricing_entry_summary_category(entry: dict[str, Any]) -> str:
     }:
         return "其他外购"
     return category
+
+
+def _ordinary_department_summary_entries(entries: list[dict[str, Any]], *, keep_pricing_segments: bool = True) -> list[dict[str, Any]]:
+    """Collapse supplier quotes, keeping independent pricing segments intact."""
+    result: list[dict[str, Any]] = []
+    grouped: dict[tuple, dict[str, Any]] = {}
+    for entry in entries:
+        section = entry.get("section")
+        if section not in {"electronic", "sewing"}:
+            result.append(entry)
+            continue
+        label = "电子" if section == "electronic" else _plain_text(entry.get("label")) or "车衣"
+        markup = _float_value(entry.get("markup_override")) if keep_pricing_segments else None
+        key = (section, label, entry.get("category"), entry.get("pricing_component_id"), markup)
+        if section == "electronic":
+            key = (section, label, entry.get("pricing_component_id"), markup)
+        if key not in grouped:
+            # Do not carry a single material's unit price or quantity into a
+            # supplier/product total. Saved pricing amounts include overhead.
+            grouped[key] = {"section": section, "kind": "department_summary", "label": label,
+                            "category": entry.get("category", ""), "amount_hkd": 0.0}
+            result.append(grouped[key])
+        grouped[key]["amount_hkd"] += _float_value(entry.get("amount_hkd"))
+    return result
 
 
 def _assembly_group_detail_rows(
@@ -1734,13 +1758,9 @@ def _build_summary_sheet(
     t2 = _rr2_values(rr2_cost_summary, "t2")
     t3 = _rr2_values(rr2_cost_summary, "t3")
     t4 = _rr2_tax_rows(rr2_cost_summary)
-    sewing_clothes_tax = t4.get("sewcloth13", {})
-    sewing_clothes_rate_percent = sewing_clothes_tax.get("rate_percent")
-    sewing_clothes_rate = (
-        ""
-        if sewing_clothes_rate_percent in (None, "")
-        else _percent_fraction(sewing_clothes_rate_percent)
-    )
+    # Retain the template columns, but never revive historical sewing tax rates.
+    for key, label in (("sewhair13", "车发类（不计税）"), ("sewcloth13", "车衣类（不计税）")):
+        t4[key] = {**t4.get(key, {}), "label": label, "rate_percent": None, "deduction_hkd": None}
     markup_tiers = _shipping_markup_tiers(shipping)
     active_tier = next((row for row in markup_tiers if row.get("is_active")), markup_tiers[-1])
     testing_fee_total_usd, testing_fee_tiers = _testing_fee_values(
@@ -1836,11 +1856,8 @@ def _build_summary_sheet(
             (
                 ("含税1%", _tax_rate(reference_snapshot, "tax_1_percent", 0.0099)),
                 ("搪胶类3%", _tax_rate(reference_snapshot, "slush", 0.03)),
-                ("车发类5%", _tax_rate(reference_snapshot, "sewing_hair", 0.05)),
-                (
-                    _safe_text(sewing_clothes_tax.get("label")) or "车衣类",
-                    sewing_clothes_rate,
-                ),
+                ("车发类（不计税）", ""),
+                ("车衣类（不计税）", ""),
             ),
         ),
         (
@@ -2038,7 +2055,7 @@ def _build_summary_sheet(
 
     def ordinary_purchase_category(line):
         category = _pricing_entry_summary_category(line)
-        if category in {"五金", "电子"} and re.search(r"马达|motor", f"{line.get('label', '')} {line.get('specification', '')}", re.IGNORECASE):
+        if category == "五金" and re.search(r"马达|motor", f"{line.get('label', '')} {line.get('specification', '')}", re.IGNORECASE):
             return "马达"
         return category
 
@@ -2087,26 +2104,29 @@ def _build_summary_sheet(
     )
     sewing_hair = t1.get("sewing_hair", 0.0)
     sewing_cloth = t1.get("sewing_cloth", 0.0)
-    sewing_cloth_material = min(
-        max(_float_value(sewing_clothes_tax.get("amount_hkd")), 0.0),
-        max(sewing_cloth, 0.0),
-    )
-    sewing_cloth_labor = max(sewing_cloth - sewing_cloth_material, 0.0)
-    sewing_cloth_material_tax_tag = (
-        "¥13%" if sewing_clothes_rate_percent not in (None, "") else ""
-    )
+    sewing_section = by_code.get("sewing")
+    if sewing_section is not None:
+        sewing_own_hair = (
+            _float_value(_section_calculation(sewing_section).get("totals", {}).get("hair_hkd"))
+            if sewing_section.calculation_status == "valid" and sewing_section.is_required
+            else 0.0
+        )
+    else:
+        # Summary-only callers have no department breakdown; remove the
+        # standalone hair source before reconciling sewing's own subtotal.
+        sewing_own_hair = sewing_hair - _float_value(cost_context.get("hair_hkd"))
     sewing_adjustment = (
         _float_value(cost_context.get("sewing_hkd"))
-        - sewing_hair
+        - sewing_own_hair
         - sewing_cloth
     )
     color_box_amount = max(_float_value(t2.get("color_box")), 0.0)
 
     if mold_lines:
-        add_formula_detail("¥13%", "料价", "料价", f"=K{mold_total_row}")
+        add_formula_detail("", "料价", "料价", f"=K{mold_total_row}")
         add_formula_detail("", "啤工", "啤工", f"=J{mold_total_row}")
     else:
-        add_detail("¥13%", "料价", "料价", molding_material)
+        add_detail("", "料价", "料价", molding_material)
         add_detail("", "啤工", "啤工", molding_labor)
     add_detail("", "啤工", "注塑未分类成本", molding_adjustment)
     assembly_total = (
@@ -2132,12 +2152,28 @@ def _build_summary_sheet(
     # hair as generic purchases both hides their business meaning and breaks
     # the summary formulas.
     add_purchase_details("¥13%", "五金", t1.get("hardware"))
-    add_purchase_details("¥13%", "电子", t1.get("electronic"))
-    add_purchase_details("¥13%", "马达", t1.get("motor"))
+    electronic_motor = sum(_float_value(line.get("amount_hkd"))
+                           for line in _purchase_source_lines(by_code.get("electronic"))
+                           if re.search(r"马达|motor", f"{line.get('label', '')} {line.get('specification', '')}", re.IGNORECASE))
+    electronic_total = cost_context.get("electronic_hkd", _float_value(t1.get("electronic")) + electronic_motor)
+    add_detail("¥13%", "电子", "电子", electronic_total)
+    add_purchase_details("¥13%", "马达", max(0.0, _float_value(t1.get("motor")) - electronic_motor))
     add_purchase_details("¥6%", "吸塑", t1.get("suction"))
-    add_detail("¥13%", "车发", "车发", sewing_hair)
-    add_detail(sewing_cloth_material_tax_tag, "车衣", "车衣物料", sewing_cloth_material)
-    add_detail("", "车衣", "车衣人工", sewing_cloth_labor)
+    legacy_hair_entries = [entry for entry in purchase_entries
+                           if entry.get("section") == "sewing" and entry.get("category") == "hair"]
+    if legacy_hair_entries:
+        # The allocated legacy-hair details carry sewing's rounding budget;
+        # standalone hair remains untouched in the combined category amount.
+        sewing_hair += sum(_float_value(entry.get("amount_hkd")) for entry in legacy_hair_entries) - sewing_own_hair
+    add_detail("", "车发", "车发", sewing_hair)
+    sewing_entries = _ordinary_department_summary_entries([
+        entry for entry in purchase_entries if entry.get("section") == "sewing" and entry.get("category") != "hair"
+    ], keep_pricing_segments=False)
+    if sewing_entries:
+        for entry in sewing_entries:
+            add_detail("", "车衣", _plain_text(entry.get("label")), entry.get("amount_hkd"))
+    else:
+        add_detail("", "车衣", "车衣", sewing_cloth)
     add_detail("", "车衣", "车缝未分类成本", sewing_adjustment)
     add_purchase_details("¥13%", "电池", t2.get("battery"))
     add_purchase_details("¥13%", "利宝/说明书", t2.get("libao"))
@@ -2670,7 +2706,7 @@ def _build_summary_sheet(
                 return []
             group_name = _safe_text(group.get("name"))
             group_markup = _float_value(group.get("markup"))
-            return [
+            return _ordinary_department_summary_entries([
                 entry
                 for entry in pricing_entries
                 if _safe_text(entry.get("label")) == group_name
@@ -2679,7 +2715,7 @@ def _build_summary_sheet(
                     _float_value(entry.get("markup_override")) - group_markup
                 )
                 < 0.0000001
-            ]
+            ])
 
         group_layouts: list[dict[str, object]] = []
         next_group_row = pricing_start_row
@@ -2779,6 +2815,11 @@ def _build_summary_sheet(
                     else:
                         remaining = _float_value(source_value) - amount_numeric
                         source_cell.value = 0.0 if abs(remaining) < 0.0000001 else remaining
+                    if entry.get("kind") == "department_summary" and source_cell.value == 0.0:
+                        # The same worksheet row contains packaging fields on
+                        # the right. Clear only the empty left-side detail.
+                        for column in (1, 2, 3):
+                            sheet.cell(source_row, column).value = ""
                 amount_formula = carton_entry_formula or _pricing_entry_amount(entry)
                 if not (
                     isinstance(amount_formula, str) and amount_formula.startswith("=")
@@ -3236,7 +3277,7 @@ def _build_summary_sheet(
             rate_percent = t4.get(key, {}).get("rate_percent")
             value = (
                 ""
-                if key == "carton" or (key == "sewcloth13" and rate_percent in (None, ""))
+                if key in {"carton", "sewhair13", "sewcloth13"}
                 else _percent_fraction(rate_percent)
             )
             number_format = "0.00%"
@@ -3275,7 +3316,6 @@ def _build_summary_sheet(
     tax_amount_references = {
         "tax1": f"H{second_value_row}",
         "slush3": f"G{first_value_row}",
-        "sewhair13": f"H{first_value_row}",
         "suction6": f"M{first_value_row}",
         "freight9": f"K{second_value_row}",
         "tax13b": f"D{tax_amount_row}",
@@ -3283,15 +3323,10 @@ def _build_summary_sheet(
         "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
     }
     for column, key in enumerate(tax_keys, start=6):
-        rate_percent = t4.get(key, {}).get("rate_percent")
-        if key == "carton" or (key == "sewcloth13" and rate_percent in (None, "")):
+        if key in {"carton", "sewhair13", "sewcloth13"}:
             sheet.cell(deduction_row, column).value = ""
         else:
-            amount_reference = (
-                format(_float_value(t4.get(key, {}).get("amount_hkd")), ".10g")
-                if key == "sewcloth13"
-                else tax_amount_references[key]
-            )
+            amount_reference = tax_amount_references[key]
             sheet.cell(deduction_row, column).value = (
                 f"={amount_reference}*{get_column_letter(column)}{tax_amount_row}"
             )
@@ -3879,7 +3914,7 @@ def _replace_with_component_summary_sheet(
         detail_row = detail_title_row + 1
         if component_molds:
             detail_values: list[tuple[str, str, str, object]] = [
-                ("¥13%", "料价", "料价", f"=K{mold_total_row}"),
+                ("", "料价", "料价", f"=K{mold_total_row}"),
                 ("", "啤工", "啤工", f"=J{mold_total_row}"),
             ]
         else:
@@ -4630,7 +4665,6 @@ def _replace_with_component_summary_sheet(
         tax_amount_references = {
             "tax1": f"H{second_value_row}",
             "slush3": f"G{first_value_row}",
-            "sewhair13": f"H{first_value_row}",
             "suction6": f"M{first_value_row}",
             "freight9": f"K{second_value_row}",
             "tax13b": f"D{tax_amount_row}",
@@ -4638,17 +4672,10 @@ def _replace_with_component_summary_sheet(
             "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
         }
         for column, key in enumerate(tax_keys, start=6):
-            rate_percent = t4.get(key, {}).get("rate_percent")
-            if key == "carton" or (
-                key == "sewcloth13" and rate_percent in (None, "")
-            ):
+            if key in {"carton", "sewhair13", "sewcloth13"}:
                 target.cell(deduction_row, column).value = ""
                 continue
-            amount_reference = (
-                format(_float_value(t4.get(key, {}).get("amount_hkd")), ".10g")
-                if key == "sewcloth13"
-                else tax_amount_references[key]
-            )
+            amount_reference = tax_amount_references[key]
             target.cell(deduction_row, column).value = (
                 f"={amount_reference}*{get_column_letter(column)}{tax_amount_row}"
             )

@@ -31,6 +31,82 @@ async function fillRequest(body: DOMWrapper<Element>) {
   await body.get('[aria-label="本次数量"]').setValue('0.3')
 }
 describe('warehouse actual operations', () => {
+  it('shows only completed corrections in fabric exceptions and combines original business, actor, date and ordering filters', async () => {
+    const correction = { id: 'C1', kind: 'CORRECTION', sequence: 3, business_date: '2026-10-10', actor_name: '仓管甲', occurred_at: '',
+      data: { quantity: '1', unit: '码', item_name: '白色布', source_no: 'COR-1', reversed_kind: 'ISSUE', original_id: 'I1', reason: '数量录错', allocations: [] },
+    } as WarehouseDocument
+    const documents: WarehouseDocument[] = [correction, { ...correction, id: 'C2', sequence: 4, business_date: '2026-10-11', actor_name: '仓管乙', data: { ...correction.data, source_no: 'COR-2', reversed_kind: 'TRANSFER' } },
+      { ...correction, id: 'C3', sequence: 5, business_date: '2026-10-12', data: { ...correction.data, source_no: 'COR-3' } },
+      { ...correction, id: 'R1', kind: 'RETURN', data: { ...correction.data, source_no: '正常退料' } }]
+    await open('exceptions', 'differences', { ...empty(), documents })
+    expect(wrapper!.findAll('tbody tr')).toHaveLength(3)
+    expect(wrapper!.get('tbody').text()).not.toContain('正常退料')
+    expect(wrapper!.get('tbody').text()).toContain('数量录错')
+    await wrapper!.get('[aria-label="更正原业务"]').setValue('ISSUE')
+    await wrapper!.get('[aria-label="更正经办人"]').setValue('仓管甲')
+    await wrapper!.get('[aria-label="收发记录排序"]').setValue('DATE_ASC')
+    expect(wrapper!.get('tbody tr').text()).toContain('COR-1')
+    await wrapper!.get('[aria-label="收发开始日期"]').setValue('2026-10-12')
+    expect(wrapper!.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper!.get('tbody').text()).toContain('COR-3')
+    expect(api.post).not.toHaveBeenCalled()
+  })
+  it('filters and sorts actual movement records before pagination, retaining reversed originals for review', async () => {
+    const documents = Array.from({ length: 52 }, (_, index) => ({ id: `IS-${index}`, kind: 'ISSUE', sequence: index,
+      business_date: '2026-10-10', actor_name: '仓管', occurred_at: '', reversed: index === 0,
+      data: { quantity: '1', unit: '码', item_name: `材料-${index}`, source_no: `IS-${index}`, allocations: [] },
+    } as WarehouseDocument))
+    const receipt = { ...documents[0]!, id: 'ORIGINAL', kind: 'RECEIPT', read_only: true, reversed: false, business_date: '2026-10-01', data: { ...documents[0]!.data, source_no: '旧实收来源' } } as WarehouseDocument
+    await open('inventory', 'movements', { ...empty(), documents, original_receipts: [receipt] })
+    expect(wrapper!.findAll('tbody tr')).toHaveLength(50)
+    await wrapper!.get('[aria-label="收发单据状态"]').setValue('REVERSED')
+    expect(wrapper!.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper!.get('tbody').text()).toContain('IS-0')
+    await wrapper!.get('[aria-label="收发单据状态"]').setValue('ACTIVE')
+    await wrapper!.get('[aria-label="收发业务类型"]').setValue('RECEIPT')
+    expect(wrapper!.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper!.get('tbody').text()).toContain('旧实收来源')
+    await wrapper!.get('[aria-label="收发业务类型"]').setValue('')
+    await wrapper!.get('[aria-label="收发记录排序"]').setValue('DATE_ASC')
+    expect(wrapper!.get('tbody tr').text()).toContain('旧实收来源')
+    await wrapper!.get('[aria-label="收发开始日期"]').setValue('2026-10-10')
+    expect(wrapper!.get('tbody tr').text()).toContain('IS-1')
+    expect(api.post).not.toHaveBeenCalled()
+  })
+  it('distinguishes unfinished, fully issued and reversed requests without changing their progress', async () => {
+    const request = { id: 'PARTIAL', kind: 'REQUEST', sequence: 1, business_date: '2026-10-10', actor_name: '仓管', occurred_at: '', issued_quantity: '0.1',
+      data: { quantity: '0.3', unit: '码', source_no: '部分领料', allocations: [] } } as WarehouseDocument
+    await open('inventory', 'pending-issues', { ...empty(), documents: [request, { ...request, id: 'DONE', issued_quantity: '0.3', data: { ...request.data, source_no: '全部领料' } }, { ...request, id: 'VOID', reversed: true, data: { ...request.data, source_no: '作废申请' } }] })
+    for (const [state, label] of [['PENDING', '部分领料'], ['COMPLETE', '全部领料'], ['REVERSED', '作废申请']]) {
+      await wrapper!.get('[aria-label="收发单据状态"]').setValue(state)
+      expect(wrapper!.findAll('tbody tr')).toHaveLength(1)
+      expect(wrapper!.get('tbody').text()).toContain(label)
+    }
+    expect(api.post).not.toHaveBeenCalled()
+  })
+  it('opens an issue row reversal with the locked original, reason and whole confirmation', async () => {
+    const input = { quantity: '2.2', unit: '码', item_name: '紫色布', counterparty: '车间二', source_no: 'ISS-1', allocations: [] } as unknown as WarehouseDocumentInput
+    const row = { id: 'ISS-1', kind: 'ISSUE', sequence: 3, business_date: '2026-09-01', actor_name: '仓管', data: input, occurred_at: '' } as WarehouseDocument
+    const body = await open('inventory', 'issues', { ...empty(), documents: [row], permissions: { ...empty().permissions, correct: true } })
+    await wrapper!.findAll('tbody button').find(button => button.text() === '冲销')!.trigger('click')
+    expect(body.get('[aria-label="关联原单"]').attributes('disabled')).toBeDefined()
+    expect(body.get<HTMLSelectElement>('[aria-label="关联原单"]').element.value).toBe(row.id)
+    expect(body.text()).toContain('2.2 码')
+    await body.get('[aria-label="业务依据"]').setValue('数量录错')
+    await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
+    expect(api.post).not.toHaveBeenCalled()
+    await body.get('[aria-label="确认整单冲销"]').setValue(true)
+    api.post.mockResolvedValueOnce({ id: 'REV' })
+    await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
+    expect(api.post.mock.calls[0]![1]).toMatchObject({ kind: 'CORRECTION', original_id: row.id, confirmed: true, reason: '数量录错' })
+    expect(wrapper!.text()).toContain('库存与关联进度已恢复')
+  })
+  it('explains overview intake and request actions without posting stock', async () => {
+    await open('overview', 'pending')
+    expect(wrapper!.text()).toContain('登记实收')
+    expect(wrapper!.text()).toContain('只建立申请')
+    expect(api.post).not.toHaveBeenCalled()
+  })
   it.each<WarehouseDomain>(['fabric', 'semi'])('issues %s stock directly without a warehouse quality step', async warehouse => {
     api.post.mockResolvedValue({ id: 'quality' })
     const data = { ...empty(), permissions: { read: true, operate: true, quality: true, correct: true } }
@@ -66,7 +142,7 @@ describe('warehouse actual operations', () => {
     expect(body.get(view === 'transfers' ? '[aria-label="实际批次"]' : '[aria-label="关联原单"]').attributes('required')).toBeDefined()
   })
   it('allows omitted request purpose but retains source identity', async () => {
-    const body = await open(); await fillRequest(body)
+    const body = await open('overview', 'pending'); await fillRequest(body)
     await body.get('[aria-label="用途工序"]').setValue('')
     expect(body.get('[aria-label="用途工序"]').attributes('required')).toBeUndefined()
     expect((body.get('form').element as HTMLFormElement).checkValidity()).toBe(true)
@@ -90,7 +166,7 @@ describe('warehouse actual operations', () => {
     expect(api.post.mock.calls[0]![1]).toMatchObject({ kind: 'TRANSFER', batch_id: 'B2', location_id: 'B03', location: '一仓／B03', quantity: '2', reason: '' })
   })
   it('retains a required explanation for stock reversal', async () => {
-    const body = await open('exceptions', 'differences', { ...empty(), permissions: { read: true, operate: true, quality: true, correct: true } })
+    const body = await open('exceptions', 'differences', { ...empty(), permissions: { read: true, operate: true, quality: true, correct: true } }, 'semi')
     await wrapper!.findAll('button').find(button => button.text() === '冲销录错单据')!.trigger('click')
     expect(body.get('[aria-label="业务依据"]').attributes('required')).toBeDefined()
     expect(body.text()).toContain('冲销原因（必填）')
@@ -98,7 +174,7 @@ describe('warehouse actual operations', () => {
   })
   it('keeps original identifiers and submits an actual source-bound request', async () => {
     api.post.mockResolvedValue({ id: 'new' })
-    const body = await open()
+    const body = await open('overview', 'pending')
     await fillRequest(body)
     await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
     const input = api.post.mock.calls[0]![1] as WarehouseDocumentInput
@@ -108,7 +184,7 @@ describe('warehouse actual operations', () => {
   })
   it('freezes unknown outcomes and retries the exact same id and body', async () => {
     api.post.mockRejectedValueOnce(new Error('network disconnected')).mockResolvedValueOnce({ id: 'new' })
-    const body = await open(); await fillRequest(body)
+    const body = await open('overview', 'pending'); await fillRequest(body)
     await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
     const first = JSON.parse(JSON.stringify(api.post.mock.calls[0]![1]))
     expect(body.get('fieldset').attributes('disabled')).toBeDefined()

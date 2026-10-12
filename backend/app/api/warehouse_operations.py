@@ -1,5 +1,6 @@
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.auth import AuthContext, can, get_current_user
@@ -16,6 +17,42 @@ def capabilities(actor, warehouse, factory_id):
     family = 'fabric_operations' if warehouse == 'fabric' else 'semi_operations'
     return {action: can(actor, f'{family}:{action}', factory_id, 'pmc-warehouse')
             for action in ('read', 'operate', 'quality', 'correct', 'master')}
+
+
+def quantity_monthly(db, actor, factory_id, month, direction, channel, party_key):
+    if not capabilities(actor, 'fabric', factory_id)['read']:
+        raise HTTPException(403, '无布料仓月度数量查询权限')
+    from app.services.fabric_quantity_monthly import report
+    return report(db, month, direction, channel, party_key)
+
+
+@router.get('/fabric/monthly')
+def monthly(factory_id: str, month: str, direction: str = '', channel: str = '', party_key: str = '',
+            db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(quantity_monthly(db, actor, factory_id, month, direction, channel, party_key),
+                        headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/fabric/monthly/export')
+def export_monthly(factory_id: str, month: str, direction: str = '', channel: str = '', party_key: str = '',
+                   version: str = '', db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    from app.services.fabric_quantity_monthly import export_xlsx
+    result = quantity_monthly(db, actor, factory_id, month, direction, channel, party_key)
+    if version and version != result['version']:
+        raise HTTPException(409, '收发记录已变化，请刷新月度汇总后再导出')
+    return Response(export_xlsx(result), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Cache-Control': 'no-store', 'Content-Disposition': f'attachment; filename="fabric-{month}-quantities.xlsx"'})
+
+
+@router.get('/fabric/order-summary')
+def order_summary(factory_id: str, date_from: str = '', date_to: str = '', search: str = '', supplier: str = '',
+                  db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    if not capabilities(actor, 'fabric', factory_id)['read'] or not can(actor, 'fabric_warehouse:read', factory_id, 'pmc-warehouse'):
+        raise HTTPException(403, '无布料仓订单收发查询权限')
+    from fastapi.responses import JSONResponse
+    from app.services.fabric_order_summary import report
+    return JSONResponse(report(db, date_from, date_to, search, supplier), headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/{warehouse}')

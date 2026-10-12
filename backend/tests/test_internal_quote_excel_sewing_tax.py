@@ -29,7 +29,7 @@ def _summary_sheet(
         "t4": [
             {
                 "key": "sewcloth13",
-                "label": "车缝物料退税",
+                "label": "车衣类（不计税）",
                 "amount_hkd": material_amount_hkd,
                 "rate_percent": rate_percent,
                 "deduction_hkd": None,
@@ -45,7 +45,7 @@ def _summary_sheet(
         },
     }
     # Keep the frozen snapshot at the historical 11.5% so the tests prove that
-    # export follows the factory-aware rr2 row instead of falling back to it.
+    # export never revives historical sewing tax rates.
     reference_snapshot = {
         "fx": {"rmb_hkd": "0.85", "hkd_usd": "7.8"},
         "tax_rates": {"sewing_clothes": "0.115"},
@@ -191,52 +191,44 @@ def test_direct_cost_rows_keep_additional_tax_and_effective_indonesia_freight_se
 def test_non_rebate_factory_leaves_sewing_clothes_tax_rate_and_deduction_empty():
     workbook, sheet = _summary_sheet(rate_percent=None, material_amount_hkd="3.2500")
     try:
-        top_label = _find_cell(sheet, "车缝物料退税")
+        top_label = _find_cell(sheet, "车衣类（不计税）")
         assert sheet.cell(top_label.row + 1, top_label.column).value == ""
 
         tax_label = next(
             cell
             for cell in sheet[_find_cell(sheet, "人民币外购件成本").row]
-            if cell.value == "车缝物料退税"
+            if cell.value == "车衣类（不计税）"
         )
         tax_rate_row = tax_label.row + 1
         deduction_row = tax_label.row + 3
         assert sheet.cell(tax_rate_row, tax_label.column).value == ""
         assert sheet.cell(deduction_row, tax_label.column).value == ""
 
-        material_detail = _find_cell(sheet, "车衣物料")
-        labor_detail = _find_cell(sheet, "车衣人工")
-        assert sheet.cell(material_detail.row, 1).value in (None, "")
-        assert sheet.cell(material_detail.row, 4).value == 3.25
-        assert sheet.cell(labor_detail.row, 1).value in (None, "")
-        assert sheet.cell(labor_detail.row, 4).value == 9.25
+        cloth_detail = _find_cell(sheet, "车衣")
+        assert sheet.cell(cloth_detail.row, 1).value in (None, "")
+        assert sheet.cell(cloth_detail.row, 4).value == 12.5
     finally:
         workbook.close()
 
 
-def test_rebate_factory_uses_rr2_material_amount_instead_of_total_sewing_cost():
+def test_historical_sewing_tax_rates_are_ignored_without_changing_cost():
     workbook, sheet = _summary_sheet(rate_percent="11.5000", material_amount_hkd="3.2500")
     try:
-        top_label = _find_cell(sheet, "车缝物料退税")
-        assert sheet.cell(top_label.row + 1, top_label.column).value == 0.115
+        top_label = _find_cell(sheet, "车衣类（不计税）")
+        assert sheet.cell(top_label.row + 1, top_label.column).value == ""
 
         tax_label = next(
             cell
             for cell in sheet[_find_cell(sheet, "人民币外购件成本").row]
-            if cell.value == "车缝物料退税"
+            if cell.value == "车衣类（不计税）"
         )
         tax_rate_row = tax_label.row + 1
         deduction_row = tax_label.row + 3
-        assert sheet.cell(tax_rate_row, tax_label.column).value == 0.115
-        assert sheet.cell(deduction_row, tax_label.column).value == (
-            f"=3.25*{tax_label.column_letter}{tax_rate_row}"
-        )
+        assert sheet.cell(tax_rate_row, tax_label.column).value == ""
+        assert sheet.cell(deduction_row, tax_label.column).value == ""
 
-        material_detail = _find_cell(sheet, "车衣物料")
-        labor_detail = _find_cell(sheet, "车衣人工")
-        assert sheet.cell(material_detail.row, 1).value == "¥13%"
-        assert sheet.cell(material_detail.row, 4).value == 3.25
-        assert sheet.cell(labor_detail.row, 1).value in (None, "")
-        assert sheet.cell(labor_detail.row, 4).value == 9.25
+        cloth_detail = _find_cell(sheet, "车衣")
+        assert sheet.cell(cloth_detail.row, 1).value in (None, "")
+        assert sheet.cell(cloth_detail.row, 4).value == 12.5
     finally:
         workbook.close()

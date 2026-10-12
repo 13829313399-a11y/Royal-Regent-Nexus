@@ -58,10 +58,9 @@ def test_cancelled_removal_preserves_all_references_and_batch_is_atomic(monkeypa
             {"order_no": "missing", "expected_revision": 1}]}
         assert client.post(BASE + "/orders/bulk-delete", json=body).status_code == 404
         assert current_orders(client)[0] == current
-        login_as(client, "warehouse_keeper")
-        assert client.post(f"{BASE}/orders/{current['order_no']}/delete", json=delete_body(current)).status_code == 403
-        login_as(client, "admin")
+        warehouse_actor = login_as(client, "warehouse_keeper")
         assert client.post(f"{BASE}/orders/{current['order_no']}/delete", json=delete_body(current)).status_code == 204
+        login_as(client, "admin")
         assert not current_orders(client)
         assert client.post(f"{BASE}/orders/{current['order_no']}/delete", json=delete_body(current)).status_code == 404
         assert client.post(f"{BASE}/orders/{current['order_no']}/submit-supplier", json=delete_body(current)).status_code == 404
@@ -70,6 +69,12 @@ def test_cancelled_removal_preserves_all_references_and_batch_is_atomic(monkeypa
         with SessionLocal() as db:
             retained = db.get(CartonOrder, current["id"])
             assert retained.status == "CANCELLED" and retained.deleted_at and retained.revision == current["revision"] + 1
+            assert retained.updated_by == warehouse_actor["id"]
+            deletion = db.scalar(select(CartonAuditEvent).where(
+                CartonAuditEvent.entity_id == current["id"],
+                CartonAuditEvent.event_type == "ORDER_DELETED"))
+            assert deletion.actor_user_id == warehouse_actor["id"]
+            assert json.loads(deletion.detail_json)["history_retained"] is True
             assert db.get(CartonException, "owned-task").status == "CLOSED"
             for table, rows in before.items():
                 assert db.execute(text(f'SELECT * FROM "{table}"')).all() == rows

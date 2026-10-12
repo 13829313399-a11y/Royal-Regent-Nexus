@@ -14,7 +14,7 @@ from app.services import fabric_procurement_tracking as tracking
 from app.services import fabric_receiving as receiving
 from app.services.fabric_procurement_parser import MAX_FILE_BYTES, parse_workbook, parse_source_feed
 from app.schemas.fabric_procurement import SourcePreviewRequest, SourceApplyRequest, ReviewChangesRequest, WithdrawImportRequest
-from app.schemas.fabric_receiving import ReceiveSourceRequest, ReceiveSourcesRequest
+from app.schemas.fabric_receiving import ReceiveSourceRequest, ReceiveSourcesRequest, ReverseReceiptRequest
 from app.schemas.fabric_master import ResolveChaseRequest
 
 router = APIRouter(prefix="/api/fabric-warehouse/procurement", tags=["fabric-warehouse"])
@@ -103,9 +103,41 @@ def receive_sources(payload: ReceiveSourcesRequest, db: Session = Depends(get_db
 
 @router.get("/receipts")
 def receipt_history(factory_id: str, search: str = Query("", max_length=128), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                    supplier: str = Query("", max_length=256), category: Literal["", "FABRIC", "ACCESSORY", "THREAD"] = "",
+                    receipt_from: date | None = None, receipt_to: date | None = None, state: Literal["", "ACTIVE", "REVERSED"] = "",
+                    sort: Literal["RECEIPT_DESC", "RECEIPT_ASC", "RECORDED_DESC", "SUPPLIER"] = "RECEIPT_DESC",
                     db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     authorize(db, actor, factory_id, "read")
-    return receiving.list_receipts(db, search, offset, limit)
+    if receipt_from and receipt_to and receipt_from > receipt_to:
+        raise HTTPException(422, "收货开始日期不能晚于结束日期")
+    return {**receiving.list_receipts(db, search, offset, limit, supplier=supplier, category=category,
+        receipt_from=receipt_from.isoformat() if receipt_from else "", receipt_to=receipt_to.isoformat() if receipt_to else "", state=state, sort=sort),
+        'can_reverse': all(can(actor, permission, factory_id, 'pmc-warehouse')
+        for permission in ('fabric_operations:read', 'fabric_operations:correct'))}
+
+
+def authorize_receipt_reversal(db, actor, factory_id):
+    authorize(db, actor, factory_id, 'read')
+    if not all(can(actor, permission, factory_id, 'pmc-warehouse') for permission in ('fabric_operations:read', 'fabric_operations:correct')):
+        raise HTTPException(403, '冲销入库需要当前布料仓更正权限')
+
+
+@router.get('/receipts/{receipt_id}/reversal-preview')
+def reversal_preview(receipt_id: str, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    authorize_receipt_reversal(db, actor, factory_id)
+    from app.services.fabric_receipt_corrections import preview
+    return preview(db, receipt_id)
+
+
+@router.post('/receipts/{receipt_id}/reverse')
+def reverse_receipt(receipt_id: str, payload: ReverseReceiptRequest, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    authorize_receipt_reversal(db, actor, payload.factory_id)
+    from app.schemas.warehouse_operations import WarehouseDocumentRequest
+    from app.services.warehouse_operations import post
+    request = WarehouseDocumentRequest(factory_id=payload.factory_id, request_id=payload.request_id,
+        expected_revision=payload.expected_revision, kind='CORRECTION', business_date=payload.business_date,
+        original_id='FR-' + receipt_id, reason=payload.reason, confirmed=payload.confirmed)
+    return post(db, actor, 'fabric', request)
 
 
 @router.get("/stock")

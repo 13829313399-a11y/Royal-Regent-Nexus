@@ -7,7 +7,7 @@ import type { PurchasePreview } from '@/api/fabricProcurement'
 const api = vi.hoisted(() => ({ preview: vi.fn(), apply: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn(), withdrawalPreview: vi.fn(), withdraw: vi.fn(), reviewChanges: vi.fn() }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: api }))
 let wrapper: VueWrapper | undefined
-afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = '' })
+afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks() })
 beforeEach(() => { vi.clearAllMocks(); api.imports.mockResolvedValue([]); api.lines.mockResolvedValue({ total: 0, items: [] }) })
 const counts = { total: 2, new: 1, updated: 0, unchanged: 0, blocked: 1, warnings: 0, pending: 1, returned: 1 }
 const preview = { preview_token: 'a'.repeat(64), revision: 0, counts, sheets: ['未回物料', '已回料'], ignored_sheets: [], filtered_total: 2, offset: 0, limit: 100, items: [] } as PurchasePreview
@@ -27,6 +27,28 @@ function button(text: string) { return wrapper!.findAll('button').find(b => b.te
 function dialogButton(text: string) { return [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === text)! }
 
 describe('real fabric procurement workspace', () => {
+  it('opens dashboard chase filters and rejects unknown tracking filters', async () => {
+    await open('pending')
+    await wrapper!.setProps({ tracking: 'OVERDUE', orderNo: 'PO-12' }); await flushPromises()
+    expect(api.lines).toHaveBeenLastCalledWith('PENDING', '', 0, 'OVERDUE', expect.objectContaining({ order_no: 'PO-12' }))
+    await wrapper!.setProps({ tracking: 'unknown', orderNo: undefined }); await flushPromises()
+    expect(api.lines).toHaveBeenLastCalledWith('PENDING', '', 0, 'OUTSTANDING', expect.objectContaining({ order_no: '' }))
+  })
+  it('refreshes pending receipts when returning from another tab and removes its focus listener on leave', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    api.lines.mockResolvedValueOnce({ total: 1, items: [{ id: 'L1', revision: 1,
+      facts: { order_no: 'PO1', status: 'PENDING', ordered_quantity: '100', unit: '码' },
+      starting_chase_quantity: '100', warehouse_received_quantity: '80', warehouse_outstanding_quantity: '20' }] })
+    await open('pending')
+    expect(wrapper!.findAll('.fabric-pending-table tbody tr')).toHaveLength(1)
+    window.dispatchEvent(new Event('focus')); await flushPromises()
+    expect(api.lines).toHaveBeenCalledTimes(2)
+    expect(wrapper!.findAll('.fabric-pending-table tbody tr')).toHaveLength(0)
+    wrapper!.unmount(); wrapper = undefined
+    window.dispatchEvent(new Event('focus')); await flushPromises()
+    expect(api.lines).toHaveBeenCalledTimes(2)
+    expect(api.apply).not.toHaveBeenCalled()
+  })
   it('shows ordered and prior quantities alongside chase remaining without treating history as system stock', async () => {
     api.lines.mockResolvedValue({ total: 1, items: [{ id: 'L1', revision: 1,
       facts: { order_no: 'CGDD014333', status: 'PENDING', ordered_quantity: '65', unit: '码' },

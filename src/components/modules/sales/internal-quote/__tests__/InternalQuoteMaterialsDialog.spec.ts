@@ -1,9 +1,13 @@
-import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { enableAutoUnmount, mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { acquireBodyScrollLock } from '@/lib/bodyScrollLock'
 import InternalQuoteMaterialsDialog from '@/components/modules/sales/internal-quote/InternalQuoteMaterialsDialog.vue'
 
-function mountDialog() {
+enableAutoUnmount(afterEach)
+
+function mountDialog(attachTo?: HTMLElement) {
   return mount(InternalQuoteMaterialsDialog, {
+    attachTo,
     props: {
       open: true,
       productName: '测试产品',
@@ -19,6 +23,39 @@ function mountDialog() {
 }
 
 describe('InternalQuoteMaterialsDialog', () => {
+  it('releases background scrolling on close and unmount without releasing another modal lock', async () => {
+    const originalOverflow = document.body.style.overflow
+    const wrapper = mountDialog()
+    expect(document.body.style.overflow).toBe('hidden')
+    await wrapper.setProps({ open: false })
+    expect(document.body.style.overflow).toBe(originalOverflow)
+    const releaseOtherModal = acquireBodyScrollLock()
+    try {
+      await wrapper.setProps({ open: true })
+      wrapper.unmount()
+      expect(document.body.style.overflow).toBe('hidden')
+    } finally {
+      releaseOtherModal()
+    }
+    expect(document.body.style.overflow).toBe(originalOverflow)
+  })
+
+  it('brings a new row into view and focuses its material field without saving', async () => {
+    const scrollIntoView = vi.fn()
+    const originalScroll = HTMLElement.prototype.scrollIntoView
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+    const wrapper = mountDialog(document.body)
+    try {
+      await wrapper.get('[data-testid="add-quote-material"]').trigger('click')
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="quote-material-name-2"]').element)
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', inline: 'nearest' })
+      expect(wrapper.emitted('save')).toBeUndefined()
+    } finally {
+      wrapper.unmount()
+      HTMLElement.prototype.scrollIntoView = originalScroll
+    }
+  })
+
   it('immediately saves an edited row without closing the dialog', async () => {
     const wrapper = mountDialog()
 

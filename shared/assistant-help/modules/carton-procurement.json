@@ -50,12 +50,12 @@
       {
         "path": "backend/app/api/carton_procurement.py",
         "symbol": "receipt-preview",
-        "sha256": "62ce59d915361aecdd31e4890bbf761a3f54c18629f67911bfd930dffeadbb9b"
+        "sha256": "e165bd74177214c2d5202ede9304095a1848420450443fac80fdffca02d9fe37"
       },
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "24d8bfa6cecaab45176cdab1b26d3a5b0ecde8812a116a85a538c3b896977dec"
+        "sha256": "b75ba4de50a78cff6366621e372e1158458d8d009da9fb67810c650c871da74b"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",

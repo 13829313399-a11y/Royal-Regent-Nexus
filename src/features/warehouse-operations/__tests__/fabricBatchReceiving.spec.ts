@@ -36,6 +36,22 @@ async function fill() {
   await body().get('[aria-label="物料1明细1缸号"]').setValue('0001')
 }
 describe('carton-style fabric selection and batch receiving', () => {
+  it('calculates each item and groups batch amounts by currency without mixing inventory units', async () => {
+    await openDialog(); await fill()
+    await body().get('[aria-label="第1项入库单价"]').setValue('0.04')
+    await body().get('[aria-label="第1项入库币种"]').setValue('CNY')
+    await body().get('[aria-label="第2项入库单价"]').setValue('10')
+    await body().get('[aria-label="第2项入库币种"]').setValue('HKD')
+    expect(body().text()).toContain('本批已填写金额合计：0.01 CNY')
+    expect(body().text()).toContain('本批已填写金额合计：1.25 HKD')
+    await body().get('[aria-label="第2项入库币种"]').setValue('CNY')
+    expect(body().text()).toContain('本批已填写金额合计：1.26 CNY')
+    api.receiveBatch.mockResolvedValue({ request_id: 'batch', receipts: [] })
+    await button('保存全部并入库').trigger('click'); await flushPromises()
+    expect(api.receiveBatch.mock.calls[0]![0].items).toEqual([
+      expect.objectContaining({ unit_price: '0.04', price_unit: '码', currency: 'CNY' }),
+      expect.objectContaining({ unit_price: '10', price_unit: '个', currency: 'CNY' })])
+  })
   it('uses the header keyword across all purchase text, without lower duplicate search fields', async () => {
     const search = ref(''), submitted = ref(0)
     wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router()], provide: { [purchaseSearchKey as symbol]: { search, submitted } } } })

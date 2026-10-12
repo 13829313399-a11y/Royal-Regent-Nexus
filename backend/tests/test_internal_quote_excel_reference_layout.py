@@ -192,11 +192,9 @@ def test_reference_summary_uses_category_sumifs_and_keeps_sewing_categories_dist
     workbook, sheet = _summary_sheet()
     try:
         hair = _find_cell(sheet, "车发")
-        cloth_material = _find_cell(sheet, "车衣物料")
-        cloth_labor = _find_cell(sheet, "车衣人工")
+        cloth = _find_cell(sheet, "车衣")
         assert sheet.cell(hair.row, 2).value == "车发"
-        assert sheet.cell(cloth_material.row, 2).value == "车衣"
-        assert sheet.cell(cloth_labor.row, 2).value == "车衣"
+        assert sheet.cell(cloth.row, 2).value == "车衣"
 
         summary_header = _find_cell(sheet, "旺季价")
         assert not any(sheet.cell(row, 2).value == "运输方案" for row in range(1, sheet.max_row + 1))

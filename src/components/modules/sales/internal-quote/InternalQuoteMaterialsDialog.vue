@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Check, CircleDollarSign, Pencil, Plus, Save, Trash2, Undo2, X } from '@lucide/vue'
-import { ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
+import { acquireBodyScrollLock } from '@/lib/bodyScrollLock'
 
 interface MaterialRow {
   material: string
@@ -25,6 +26,11 @@ const rows = ref<MaterialRow[]>([])
 const errorMessage = ref('')
 const editingIndex = ref<number | null>(null)
 const editBackup = ref<MaterialRow | null>(null)
+const dialogBody = ref<HTMLElement | null>(null)
+
+watch(() => props.open, (open, _previous, onCleanup) => {
+  if (open) onCleanup(acquireBodyScrollLock())
+}, { immediate: true })
 
 function snapshotRows(snapshot: Record<string, unknown>) {
   const source = snapshot.material_prices
@@ -47,13 +53,17 @@ watch(() => [props.open, props.snapshot] as const, ([open]) => {
   editBackup.value = null
 }, { immediate: true })
 
-function addRow() {
+async function addRow() {
   if (rows.value.length >= 200) return
   if (editingIndex.value !== null && !finishEditing()) return
   rows.value.push({ material: '', grade: '', price_hkd_lb: '' })
   editingIndex.value = rows.value.length - 1
   editBackup.value = null
   errorMessage.value = ''
+  await nextTick()
+  const input = dialogBody.value?.querySelector<HTMLInputElement>('tr.editing input')
+  input?.scrollIntoView?.({ block: 'center', inline: 'nearest' })
+  input?.focus({ preventScroll: true })
 }
 
 function normalizeRow(row: MaterialRow): MaterialRow {
@@ -152,7 +162,7 @@ function finishEditingAndSave() {
           <div class="quote-material-title"><span><CircleDollarSign /></span><div><h2>本报价专用料价</h2><p>{{ productName }} · 只影响当前款，不修改厂区基础料价</p></div></div>
           <button type="button" aria-label="关闭本报价专用料价" @click="emit('close')"><X /></button>
         </header>
-        <div class="quote-material-body">
+        <div ref="dialogBody" class="quote-material-body">
           <div class="quote-material-notice">保存后服务器会建立新的报价快照，并重新计算所有依赖这些料价的部门内容。</div>
           <div class="quote-material-toolbar">
             <div><strong>料价清单（{{ rows.length }}/200）</strong><span>编辑或新增后点“完成并保存”会立即写入；批量删除后点底部“保存并重算”。</span></div>
@@ -191,5 +201,5 @@ function finishEditingAndSave() {
 </template>
 
 <style scoped>
-.quote-material-backdrop{position:fixed;inset:0;z-index:110;display:grid;place-items:center;padding:24px;background:rgb(15 23 42/.58);backdrop-filter:blur(4px)}.quote-material-dialog{display:grid;width:min(920px,100%);max-height:calc(100vh - 48px);overflow:hidden;border:1px solid #cbd5e1;border-radius:17px;background:#fff;box-shadow:0 28px 80px rgb(15 23 42/.3)}header,footer{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#f8fafc;padding:15px 18px}header{border-bottom:1px solid #e2e8f0}footer{justify-content:flex-end;border-top:1px solid #e2e8f0}.quote-material-title{display:flex;align-items:center;gap:11px}.quote-material-title>span{display:grid;width:38px;height:38px;place-items:center;border-radius:10px;background:#ccfbf1;color:#0f766e}.quote-material-title svg{width:20px}.quote-material-title h2{margin:0;color:#0f172a;font-size:18px}.quote-material-title p{margin:3px 0 0;color:#64748b;font-size:11px}header>button{display:grid;width:34px;height:34px;place-items:center;border:0;border-radius:8px;background:#fff;color:#64748b}header>button svg{width:17px}.quote-material-body{display:grid;min-height:0;gap:10px;overflow:auto;padding:16px 18px}.quote-material-notice{border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:9px 11px;color:#0f766e;font-size:11px}.quote-material-toolbar{position:sticky;top:0;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #dbe5ea;border-radius:10px;background:#fff;padding:9px 10px;box-shadow:0 4px 14px rgb(15 23 42/.06)}.quote-material-toolbar>div{display:grid;gap:2px}.quote-material-toolbar strong{color:#0f172a;font-size:12px}.quote-material-toolbar span{color:#64748b;font-size:10px}.quote-material-table-wrap{overflow:auto;border:1px solid #e2e8f0;border-radius:10px}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #e2e8f0;padding:7px;text-align:left}th{position:sticky;top:0;z-index:1;background:#f8fafc;color:#64748b;font-size:10px}td{color:#475569;font-size:11px}tr.editing td{background:#f0fdfa}th:first-child,td:first-child{width:42px;text-align:center}th:last-child,td:last-child{width:178px}.cell-value{display:block;min-height:31px;padding:7px 8px;color:#0f172a;font-size:12px}.cell-value.price{font-variant-numeric:tabular-nums}input{width:100%;border:1px solid #99f6e4;border-radius:7px;background:#fff;padding:7px 8px;color:#0f172a;font-size:12px;outline:none}input:focus{border-color:#0f766e;box-shadow:0 0 0 2px rgb(13 148 136/.12)}.row-actions{display:flex;align-items:center;gap:5px}.edit,.delete,.done,.cancel-edit{display:inline-flex;min-height:29px;align-items:center;gap:4px;border-radius:7px;background:#fff;padding:0 8px;font-size:10px;font-weight:800}.edit{border:1px solid #99f6e4;color:#0f766e}.delete{border:1px solid #fecaca;color:#dc2626}.done{border:1px solid #0f766e;background:#0f766e;color:#fff}.cancel-edit{border:1px solid #cbd5e1;color:#64748b}.row-actions svg{width:12px}.empty{padding:28px 14px;color:#94a3b8;text-align:center}.add{display:inline-flex;width:max-content;align-items:center;gap:5px;border:1px solid #0f766e;border-radius:8px;background:#0f766e;padding:7px 10px;color:#fff;font-size:11px;font-weight:900}.add svg,footer svg{width:14px}.error{margin:0;border-radius:8px;background:#fef2f2;padding:8px 10px;color:#b91c1c;font-size:11px}.secondary,.primary{display:inline-flex;min-height:36px;align-items:center;gap:6px;border-radius:8px;padding:0 13px;font-size:12px;font-weight:900}.secondary{border:1px solid #cbd5e1;background:#fff;color:#475569}.primary{border:1px solid #0f766e;background:#0f766e;color:#fff}button:disabled{cursor:not-allowed;opacity:.5}
+.quote-material-backdrop{position:fixed;inset:0;z-index:110;display:grid;place-items:center;padding:24px;background:rgb(15 23 42/.58);backdrop-filter:blur(4px)}.quote-material-dialog{display:grid;grid-template-rows:auto minmax(0,1fr) auto;width:min(920px,100%);max-height:calc(100vh - 48px);max-height:calc(100dvh - 48px);overflow:hidden;border:1px solid #cbd5e1;border-radius:17px;background:#fff;box-shadow:0 28px 80px rgb(15 23 42/.3)}header,footer{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#f8fafc;padding:15px 18px}header{border-bottom:1px solid #e2e8f0}footer{justify-content:flex-end;border-top:1px solid #e2e8f0}.quote-material-title{display:flex;align-items:center;gap:11px}.quote-material-title>span{display:grid;width:38px;height:38px;place-items:center;border-radius:10px;background:#ccfbf1;color:#0f766e}.quote-material-title svg{width:20px}.quote-material-title h2{margin:0;color:#0f172a;font-size:18px}.quote-material-title p{margin:3px 0 0;color:#64748b;font-size:11px}header>button{display:grid;width:34px;height:34px;place-items:center;border:0;border-radius:8px;background:#fff;color:#64748b}header>button svg{width:17px}.quote-material-body{display:flex;flex-direction:column;min-height:0;gap:10px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:16px 18px}.quote-material-body>*{flex-shrink:0}.quote-material-notice{border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:9px 11px;color:#0f766e;font-size:11px}.quote-material-toolbar{position:sticky;top:0;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #dbe5ea;border-radius:10px;background:#fff;padding:9px 10px;box-shadow:0 4px 14px rgb(15 23 42/.06)}.quote-material-toolbar>div{display:grid;gap:2px}.quote-material-toolbar strong{color:#0f172a;font-size:12px}.quote-material-toolbar span{color:#64748b;font-size:10px}.quote-material-table-wrap{overflow:auto;border:1px solid #e2e8f0;border-radius:10px}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #e2e8f0;padding:7px;text-align:left}th{position:sticky;top:0;z-index:1;background:#f8fafc;color:#64748b;font-size:10px}td{color:#475569;font-size:11px}tr.editing td{background:#f0fdfa}th:first-child,td:first-child{width:42px;text-align:center}th:last-child,td:last-child{width:178px}.cell-value{display:block;min-height:31px;padding:7px 8px;color:#0f172a;font-size:12px}.cell-value.price{font-variant-numeric:tabular-nums}input{width:100%;border:1px solid #99f6e4;border-radius:7px;background:#fff;padding:7px 8px;color:#0f172a;font-size:12px;outline:none}input:focus{border-color:#0f766e;box-shadow:0 0 0 2px rgb(13 148 136/.12)}.row-actions{display:flex;align-items:center;gap:5px}.edit,.delete,.done,.cancel-edit{display:inline-flex;min-height:29px;align-items:center;gap:4px;border-radius:7px;background:#fff;padding:0 8px;font-size:10px;font-weight:800}.edit{border:1px solid #99f6e4;color:#0f766e}.delete{border:1px solid #fecaca;color:#dc2626}.done{border:1px solid #0f766e;background:#0f766e;color:#fff}.cancel-edit{border:1px solid #cbd5e1;color:#64748b}.row-actions svg{width:12px}.empty{padding:28px 14px;color:#94a3b8;text-align:center}.add{display:inline-flex;width:max-content;align-items:center;gap:5px;border:1px solid #0f766e;border-radius:8px;background:#0f766e;padding:7px 10px;color:#fff;font-size:11px;font-weight:900}.add svg,footer svg{width:14px}.error{margin:0;border-radius:8px;background:#fef2f2;padding:8px 10px;color:#b91c1c;font-size:11px}.secondary,.primary{display:inline-flex;min-height:36px;align-items:center;gap:6px;border-radius:8px;padding:0 13px;font-size:12px;font-weight:900}.secondary{border:1px solid #cbd5e1;background:#fff;color:#475569}.primary{border:1px solid #0f766e;background:#0f766e;color:#fff}button:disabled{cursor:not-allowed;opacity:.5}
 </style>
