@@ -862,7 +862,7 @@ def test_rr2_cost_summary_keeps_direct_misc_costs_once_when_percentage_misc_is_z
     ) == Decimal("1.5000")
 
 
-def test_rr2_cost_summary_prefers_standalone_hair_and_falls_back_to_legacy_sewing_hair():
+def test_rr2_cost_summary_counts_legacy_and_standalone_hair_sources_once():
     legacy_sections = summary_sections(freight_enabled=False)
     legacy_sections.append(
         SimpleNamespace(
@@ -894,7 +894,7 @@ def test_rr2_cost_summary_prefers_standalone_hair_and_falls_back_to_legacy_sewin
         {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1")},
         SNAPSHOT,
     )
-    assert rows_by_key(standalone["t1"])["sewing_hair"]["value"] == "2.3500"
+    assert rows_by_key(standalone["t1"])["sewing_hair"]["value"] == "6.3500"
 
 
 def test_rr2_shipping_price_uses_48_52_markup_settlement_and_mold_share_when_enabled():

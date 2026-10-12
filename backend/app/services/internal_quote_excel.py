@@ -32,7 +32,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v35"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v36"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -2104,9 +2104,20 @@ def _build_summary_sheet(
     )
     sewing_hair = t1.get("sewing_hair", 0.0)
     sewing_cloth = t1.get("sewing_cloth", 0.0)
+    sewing_section = by_code.get("sewing")
+    if sewing_section is not None:
+        sewing_own_hair = (
+            _float_value(_section_calculation(sewing_section).get("totals", {}).get("hair_hkd"))
+            if sewing_section.calculation_status == "valid" and sewing_section.is_required
+            else 0.0
+        )
+    else:
+        # Summary-only callers have no department breakdown; remove the
+        # standalone hair source before reconciling sewing's own subtotal.
+        sewing_own_hair = sewing_hair - _float_value(cost_context.get("hair_hkd"))
     sewing_adjustment = (
         _float_value(cost_context.get("sewing_hkd"))
-        - sewing_hair
+        - sewing_own_hair
         - sewing_cloth
     )
     color_box_amount = max(_float_value(t2.get("color_box")), 0.0)
@@ -2148,6 +2159,12 @@ def _build_summary_sheet(
     add_detail("¥13%", "电子", "电子", electronic_total)
     add_purchase_details("¥13%", "马达", max(0.0, _float_value(t1.get("motor")) - electronic_motor))
     add_purchase_details("¥6%", "吸塑", t1.get("suction"))
+    legacy_hair_entries = [entry for entry in purchase_entries
+                           if entry.get("section") == "sewing" and entry.get("category") == "hair"]
+    if legacy_hair_entries:
+        # The allocated legacy-hair details carry sewing's rounding budget;
+        # standalone hair remains untouched in the combined category amount.
+        sewing_hair += sum(_float_value(entry.get("amount_hkd")) for entry in legacy_hair_entries) - sewing_own_hair
     add_detail("", "车发", "车发", sewing_hair)
     sewing_entries = _ordinary_department_summary_entries([
         entry for entry in purchase_entries if entry.get("section") == "sewing" and entry.get("category") != "hair"
