@@ -24,6 +24,7 @@ const internalQuoteApiMock = vi.hoisted(() => ({
   deleteCustomer: vi.fn(),
   deleteQuote: vi.fn(),
   archiveQuote: vi.fn(),
+  restoreQuote: vi.fn(),
   create: vi.fn(),
   clone: vi.fn(),
   getPricingBaseline: vi.fn(),
@@ -401,13 +402,31 @@ describe('InternalQuoteHome factory permission boundary', () => {
     await flushPromises()
 
     await wrapper.get('button[aria-label="归档报价并保留审计记录"]').trigger('click')
-    expect(wrapper.text()).toContain('确认归档内部报价')
+    expect(wrapper.text()).toContain('归档整单报价')
     const confirmButton = wrapper.findAll('.quote-archive-dialog footer button')
       .find((button) => button.text().includes('确认归档'))!
     await confirmButton.trigger('click')
 
-    expect(wrapper.text()).toContain('请填写归档原因')
+    expect(wrapper.text()).toContain('请填写归档或恢复原因')
     expect(internalQuoteApiMock.archiveQuote).not.toHaveBeenCalled()
+  })
+
+  it('offers whole-quote restoration on archived homepage rows', async () => {
+    internalQuoteApiMock.list.mockResolvedValue([{ ...apiQuote('huaxing', 'RESTORE-ME'), status: 'archived' }])
+    const pinia = createPinia(); setActivePinia(pinia)
+    useAuthStore().applySession(salesSession('huaxing', false, false, true))
+    useAppStore().setActiveFactory('huaxing')
+    const restore = vi.spyOn(useInternalQuoteDeskStore(), 'restoreQuote').mockResolvedValue(undefined)
+    const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+    await flushPromises()
+    await wrapper.get('button[aria-label="恢复整单报价"]').trigger('click')
+    const dialog = wrapper.get('.quote-archive-dialog')
+    await dialog.get('textarea').setValue('客户继续报价')
+    await dialog.findAll('button').find(b => b.text() === '确认恢复整单')!.trigger('click')
+    await flushPromises()
+    expect(restore).toHaveBeenCalledWith('RESTORE-ME', 1, '客户继续报价')
+    expect(internalQuoteApiMock.archiveQuote).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('selects multiple quotes for comparison and clears the selection on factory switch', async () => {

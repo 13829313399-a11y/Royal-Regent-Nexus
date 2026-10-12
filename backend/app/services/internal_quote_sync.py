@@ -18,6 +18,7 @@ from app.services.internal_quote_alternatives import _family, _identity, copy_al
 from app.services.internal_quote_calculator import content_hash, canonical_json
 from app.services.internal_quote_release import _changes
 from app.services.transaction_lock import lock_transaction
+from app.services.internal_quote_document import lock_documents, ensure_not_archived
 
 # A category is replaced as a unit; the preview includes removals. Packaging is never selected implicitly.
 BLOCKS = {
@@ -163,6 +164,7 @@ def _locked_plan(db, quote_id, payload, user):
         quote = _get_quote(db, identity)
         ensure_quote_read(db, user, quote.factory_id)
         identities.append(f'{quote.factory_id}:{quote.batch_id or quote.id}')
+    lock_documents(db, [_get_quote(db, identity) for identity in [quote_id, *ids]])
     for identity in sorted(set(identities)):
         lock_transaction(db, 'internal-quote', identity)
     source = _get_quote(db, quote_id)
@@ -172,6 +174,7 @@ def _locked_plan(db, quote_id, payload, user):
         raise HTTPException(409, '请先复制一个独立方案')
     _check_revision(family.revision, payload.family_revision, '方案列表')
     _check_revision(source.header_revision, payload.revision, '来源报价')
+    ensure_not_archived(db, source)
     if source.module_version != 'v4' or source.status == 'archived' or db.get(InternalQuoteAlternative, source.id).archived:
         raise HTTPException(409, '来源须为未归档的新流程报价')
     codes = [code for code in SECTION_CODE_ORDER if any(BLOCKS[block][0] == code for block in payload.blocks)]
@@ -188,6 +191,7 @@ def _locked_plan(db, quote_id, payload, user):
         entry = db.get(InternalQuoteAlternative, target.id)
         if not entry or entry.family_id != family.id or target.factory_id != source.factory_id or target.customer != source.customer:
             raise HTTPException(400, '只能同步同一产品、客户及厂区内的方案')
+        ensure_not_archived(db, target)
         if entry.archived or target.status == 'archived' or target.module_version != 'v4':
             raise HTTPException(409, '目标须为未归档的新流程方案')
         _check_revision(target.header_revision, selection.revision, '目标报价')

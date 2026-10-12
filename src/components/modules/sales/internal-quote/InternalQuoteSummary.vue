@@ -45,6 +45,7 @@ const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
 const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
 const batchProducts = computed(() => quoteStore.batchProductsByQuoteId[quoteId.value] ?? [])
+const archived = computed(() => Boolean(quote.value.documentArchive || quote.value.versionArchived || quote.value.status === 'archived'))
 const isDirectOutput = computed(() => quote.value.moduleVersion === 'v4')
 const isWholeQuoteReview = computed(() => ['v3', 'v4'].includes(quote.value.moduleVersion))
 const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
@@ -59,20 +60,21 @@ const allSectionsReady = computed(() => missingSections.value.length === 0)
 const isReleased = computed(() => ['released', 'exported'].includes(quote.value.status))
 const canExport = computed(() => authStore.can('internal_quote:export', quote.value.factoryId, 'sales-business'))
 const canOpenExport = computed(() => isReleased.value && canExport.value)
-const canFinalSubmit = computed(() => authStore.can('internal_quote:final_submit', quote.value.factoryId, 'sales-business'))
-const canFinalApprove = computed(() => authStore.can('internal_quote:final_approve', quote.value.factoryId, 'sales-business'))
+const canFinalSubmit = computed(() => !archived.value && authStore.can('internal_quote:final_submit', quote.value.factoryId, 'sales-business'))
+const canFinalApprove = computed(() => !archived.value && authStore.can('internal_quote:final_approve', quote.value.factoryId, 'sales-business'))
 const salesSection = computed(() => quote.value.sections.find((section) => section.code === 'sales'))
 const costSummary = computed(() => quote.value.rr2CostSummary)
 const visibleT1Summary = computed(() => costSummary.value.t1.filter((item) => item.display !== false))
 const isIndonesiaQuote = computed(() => quote.value.regionCode === 'indonesia')
 const canEditIndonesiaFreight = computed(() => Boolean(
-  isIndonesiaQuote.value
+  !archived.value && isIndonesiaQuote.value
   && salesSection.value?.isRequired
   && ['draft', 'rejected'].includes(salesSection.value.status)
   && !['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)
   && canEditAllInternalQuoteSections(authStore, quote.value.factoryId),
 ))
 const indonesiaFreightReadOnlyReason = computed(() => {
+  if (archived.value) return '报价已归档，请先在协作页恢复后修改印尼运费。'
   if (!salesSection.value?.isRequired) return '业务部分段未参与本报价，无法修改印尼运费。'
   if (['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)) return '整单已锁定，印尼运费仅供查看。'
   if (!['draft', 'rejected'].includes(salesSection.value.status)) return '业务部分段已锁定，请先退回或合法重开后修改。'
@@ -96,6 +98,7 @@ const canResponsibleRelease = computed(() => (
   && responsibleFollowupId.value === authStore.currentUser?.id
 ))
 const finalPanelTitle = computed(() => {
+  if (archived.value) return '报价已归档，暂停业务操作'
   if (isDirectOutput.value) return isReleased.value ? '此方案版本已输出并保留' : '资料完整后可直接输出当前方案'
   if (!isWholeQuoteReview.value) return allSectionsReady.value
     ? (quote.value.status === 'final_pending' ? '等待负责跟客确认放行' : canOpenExport.value ? '已放行，可查看受控导出' : isReleased.value && !canExport.value ? (isForeignQuote.value ? '已放行，跨厂仅供查看' : '已放行，当前账号无受控导出权限') : '整单已准备就绪')
@@ -107,7 +110,7 @@ const finalPanelTitle = computed(() => {
   if (allSectionsReady.value) return '部门资料已就绪，请返回连续协作页提交整单'
   return '等待全部参与部门保存有效内容'
 })
-const finalPanelDescription = computed(() => isDirectOutput.value
+const finalPanelDescription = computed(() => archived.value ? '请返回整单协作，在包装方案与版本中恢复整单或此版本；数据与历史文件保留。' : isDirectOutput.value
   ? '无需人工审核。输出时保留完整版本并交接客价转换台；后续修改请从当前版复制新版本，其他方案独立保留。'
   : isWholeQuoteReview.value
   ? '整份报价只提交一次，并且只能由创建时指定的整单审核人统一通过或退回；审核通过后才开放受控输出。'
@@ -207,6 +210,7 @@ const statusMeta: Record<InternalQuoteSectionStatus, { label: string; tone: stri
 }
 
 async function runFinalAction() {
+  if (archived.value) { void router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.value.id}/collaboration`)); return }
   message.value = ''
   errorMessage.value = ''
   try {
@@ -277,6 +281,7 @@ async function compareSelectedVersion() {
 }
 
 function finalActionLabel() {
+  if (archived.value) return '返回协作页查看归档状态'
   if (isDirectOutput.value) return isReleased.value ? '进入输出记录' : '返回方案填写与输出'
   if (isWholeQuoteReview.value) {
     if (canOpenExport.value) return '进入受控输出'
@@ -425,7 +430,7 @@ watch([quoteId, () => costSummary.value.indonesiaFreightHkd], ([, amount]) => {
 
     <section class="quote-final-grid">
       <article class="quote-export-history"><header><FileClock aria-hidden="true" /><span><strong>受控导出记录</strong><small>{{ isDirectOutput ? '每个方案版本独立保留输出文件' : '重开后旧文件保留但标记已取代' }}</small></span></header><div v-if="quote.exports.length"><p v-for="record in quote.exports" :key="record.id"><FileSpreadsheet aria-hidden="true" /><span><strong>{{ record.fileName }}</strong><small>{{ record.exportedBy }} · {{ record.exportedAt }}</small></span><em :class="record.status">{{ record.status === 'current' ? '当前版本' : '已取代' }}</em></p></div><div v-else class="empty">{{ isDirectOutput ? '保存完整资料后可直接生成 XLSX。' : '最终放行后才可生成受控 XLSX。' }}</div></article>
-      <article class="quote-final-release" :class="{ ready: allSectionsReady }"><Rocket aria-hidden="true" /><div><span>{{ isDirectOutput ? '方案直接输出' : isWholeQuoteReview ? '整单审核与受控输出' : '业务跟客最终放行' }}</span><h2>{{ finalPanelTitle }}</h2><p>{{ finalPanelDescription }}</p><div v-if="quote.finalReleaseStatus === 'rejected'" class="final-rejected">{{ isWholeQuoteReview ? '上一轮整单审核已退回，报价头及全部部门内容已解锁。' : '上一轮最终放行已退回，可修正后由负责跟客重新放行。' }}</div></div><div class="final-buttons"><button v-if="!isWholeQuoteReview && quote.status === 'final_pending' && canFinalApprove" type="button" class="reject" @click="toggleFinalReject">退回历史待审放行</button><button type="button" :disabled="isWholeQuoteReview ? (isReleased && !canExport) : (!allSectionsReady || (['fully_approved','final_pending'].includes(quote.status) && !canResponsibleRelease) || (isReleased && !canExport))" @click="runFinalAction"><Download v-if="canOpenExport" aria-hidden="true" /><Rocket v-else aria-hidden="true" />{{ finalActionLabel() }}</button></div></article>
+      <article class="quote-final-release" :class="{ ready: allSectionsReady }"><Rocket aria-hidden="true" /><div><span>{{ isDirectOutput ? '方案直接输出' : isWholeQuoteReview ? '整单审核与受控输出' : '业务跟客最终放行' }}</span><h2>{{ finalPanelTitle }}</h2><p>{{ finalPanelDescription }}</p><div v-if="quote.finalReleaseStatus === 'rejected'" class="final-rejected">{{ isWholeQuoteReview ? '上一轮整单审核已退回，报价头及全部部门内容已解锁。' : '上一轮最终放行已退回，可修正后由负责跟客重新放行。' }}</div></div><div class="final-buttons"><button v-if="!isWholeQuoteReview && quote.status === 'final_pending' && canFinalApprove" type="button" class="reject" @click="toggleFinalReject">退回历史待审放行</button><button type="button" :disabled="!archived && (isWholeQuoteReview ? (isReleased && !canExport) : (!allSectionsReady || (['fully_approved','final_pending'].includes(quote.status) && !canResponsibleRelease) || (isReleased && !canExport)))" @click="runFinalAction"><Download v-if="canOpenExport" aria-hidden="true" /><Rocket v-else aria-hidden="true" />{{ finalActionLabel() }}</button></div></article>
     </section>
     <section v-if="!isWholeQuoteReview && finalRejectOpen && canFinalApprove" class="quote-final-reason"><div><strong>退回最终放行</strong><span>原因将写入不可变最终审核记录并通知提交人。</span></div><textarea v-model="finalReason" rows="2" placeholder="必须填写退回原因" /><button type="button" @click="finalRejectOpen = false">取消</button><button type="button" class="primary" :disabled="!finalReason.trim() || quoteStore.submitting || !canFinalApprove" @click="rejectFinal">{{ quoteStore.submitting ? '退回中…' : '确认退回' }}</button><p v-if="finalRejectError" class="quote-final-inline-error" role="alert">{{ finalRejectError }}</p></section>
   </div>

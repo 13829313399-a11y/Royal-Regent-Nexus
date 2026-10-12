@@ -11,7 +11,7 @@ from app.models.internal_quote import InternalQuotePricingBaseline
 from app.models.molding_sample import MoldingSampleMaterialPrice
 
 
-FORMULA_VERSION = "rr2-2026-v7"
+FORMULA_VERSION = "rr2-2026-v8"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -301,7 +301,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣|丝印", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0; legacy defaults RMB", "unit_price_hkd": "decimal>=0", "unit_price_source_currency": "RMB|HKD; HKD bypasses division by FX", "exchange_rate": "optional row RMB/HKD rate; defaults frozen rate", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices and conservatively classifies them as non-material; detail mode cost HKD = usage * HKD unit price, or usage * RMB unit price / row exchange rate and price HKD = cost HKD * markup; old rows without a row rate use the frozen RMB/HKD rate"},
     "hair": {"lines": [{"name": "text", "craft": "text", "weight_g": "decimal>0; record only", "unit_price_hkd": "decimal>0", "unit": "text", "remark": "text"}], "formula": "line amount HKD = unit price HKD; weight, craft and unit are quotation evidence only"},
     "assembly": {
-        "groups": [{"name": "text", "category": "assembly|packaging", "production_qty": "decimal>0", "teams": "decimal>0", "total_persons": "decimal>0 when processes is empty", "processes": [{"name": "text", "persons": "decimal>=0", "remark": "text"}]}],
+        "groups": [{"name": "text", "category": "assembly|packaging", "production_qty": "decimal>0", "teams": "decimal>0", "total_persons": "integer>0 when processes is empty", "processes": [{"name": "text", "persons": "integer>=0", "remark": "text"}]}],
         "labor_base_hkd": "default 260; adjustable",
         "standard_work_hours": "default 11; adjustable reference value",
         "formula": "labor HKD/PCS = labor base HKD/person * total persons * teams / production quantity",
@@ -1713,7 +1713,10 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
         for process_index, process in enumerate(processes):
             if not isinstance(process, dict):
                 raise CalculationInputError(f"装配第 {group_index + 1} 组工序 {process_index + 1} 格式无效")
-            persons = decimal_value(process.get("persons"), "装配人数")
+            people_label = f"装配第 {group_index + 1} 组工序 {process_index + 1} 人数"
+            persons = decimal_value(process.get("persons"), people_label)
+            if persons != persons.to_integral_value():
+                raise CalculationInputError(f"{people_label}必须为非负整数")
             total_persons += persons
             teams = group_teams if uses_group_inputs else positive_value(process.get("teams"), "装配小组数", str(group_teams))
             production_qty = group_production_qty if uses_group_inputs else positive_value(process.get("production_qty"), "装配生产量", str(group_production_qty))
@@ -1737,9 +1740,9 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
                 group.get("total_persons"),
                 f"装配第 {group_index + 1} 组总人数",
             )
-            if total_persons < ZERO:
+            if total_persons != total_persons.to_integral_value():
                 raise CalculationInputError(
-                    f"装配第 {group_index + 1} 组总人数不能小于 0"
+                    f"装配第 {group_index + 1} 组总人数必须为非负整数"
                 )
             if total_persons > ZERO:
                 group_total = labor_base * total_persons * group_teams / group_production_qty

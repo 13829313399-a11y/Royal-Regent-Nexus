@@ -17,6 +17,7 @@ from app.services.internal_quote_calculator import canonical_json
 from app.services.internal_quote_document import document_products, product_root
 from app.services.internal_quote_excel import _copy_attachment_worksheet, _unique_sheet_title
 from app.services.transaction_lock import lock_transaction
+from app.services.internal_quote_document import lock_documents, ensure_not_archived
 
 
 def _formula(value, names):
@@ -87,6 +88,7 @@ def export_series(db, quote_id, payload, user, request=None):
         for quote in [source, *quotes]:
             ensure_quote_read(db, user, quote.factory_id)
             _ensure_export_permission(db, quote, user)
+        lock_documents(db, [source, *quotes])
         roots = [product_root(db, quote) for quote in [source, *quotes]]
         for identity in sorted({f"{q.factory_id}:{q.batch_id or q.id}" for q in [source, *quotes, *roots]}):
             lock_transaction(db, "internal-quote", identity)
@@ -104,6 +106,7 @@ def export_series(db, quote_id, payload, user, request=None):
         by_root = dict(zip(selected, quotes))
         ordered = [by_root[row.id] for row in members]
         for quote in ordered:
+            ensure_not_archived(db, quote)
             if quote.module_version != "v4" and not (
                 quote.status in {"fully_approved", "exported"}
                 and quote.final_release_status == "approved" and quote.final_release_revision > 0

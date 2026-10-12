@@ -8,6 +8,8 @@ import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { internalQuoteApi, type ApiInternalQuoteAlternativeFamily } from '@/api/internalQuote'
 import InternalQuoteAlternatives from '../InternalQuoteAlternatives.vue'
 import InternalQuoteCollaboration from '../InternalQuoteCollaboration.vue'
+import InternalQuoteExportSummary from '../InternalQuoteExportSummary.vue'
+import InternalQuoteSummary from '../InternalQuoteSummary.vue'
 
 const routeState = reactive({ params: { quoteId: 'q1' }, query: {} })
 vi.mock('vue-router', () => ({ useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
@@ -31,6 +33,82 @@ function setup() {
 beforeEach(() => { routeState.params.quoteId = 'q1'; vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} }) })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('independent quotation alternatives', () => {
+  it.each(['document', 'version'])('blocks new output from the summary/export pages for a %s archive', async scope => {
+    const { pinia, quote, store } = setup()
+    store.quotes = [{ ...quote, status: 'exported', versionArchived: scope === 'version',
+      documentArchive: scope === 'document' ? { quote_id: 'q1', revision: 8, reason: '暂停' } : null }]
+    vi.spyOn(store, 'loadVersionCandidates').mockResolvedValue([])
+    const output = shallowMount(InternalQuoteExportSummary, { global: { plugins: [pinia], stubs: { RouterLink: true } } })
+    await flushPromises()
+    expect(output.text()).toContain('报价已归档')
+    expect(output.findAll('button').find(b => b.text() === '生成内部报价 XLSX')!.attributes('disabled')).toBeDefined()
+    output.unmount()
+    const summary = shallowMount(InternalQuoteSummary, { global: { plugins: [pinia], stubs: { RouterLink: true } } })
+    await flushPromises()
+    expect(summary.text()).toContain('报价已归档，暂停业务操作')
+    expect(summary.findAll('button').some(b => b.text() === '返回协作页查看归档状态')).toBe(true)
+    summary.unmount()
+  })
+  it('ignores an old family response arriving after whole-document restoration', async () => {
+    const { pinia, quote } = setup()
+    const context = { quote_id: 'q1', revision: 8, reason: '暂停' }
+    let finishOld!: (value: ApiInternalQuoteAlternativeFamily) => void
+    vi.mocked(internalQuoteApi.listAlternatives).mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+    vi.spyOn(internalQuoteApi, 'restoreQuote').mockResolvedValue({} as never)
+    const wrapper = mount(InternalQuoteAlternatives, { props: { quote: { ...quote, status: 'archived', documentArchive: context } }, global: { plugins: [pinia] } })
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '恢复整单报价')!.trigger('click')
+    await wrapper.get('input[aria-label="恢复整单原因"]').setValue('继续')
+    await wrapper.get('form[aria-label="恢复整单报价"]').trigger('submit'); await flushPromises()
+    await wrapper.setProps({ quote: { ...quote, documentArchive: null } }); await flushPromises()
+    finishOld({ ...family(), document_archive: context }); await flushPromises()
+    expect(wrapper.text()).not.toContain('整单报价已归档')
+    expect(wrapper.emitted('archiveState')?.at(-1)).toEqual([false])
+    expect(wrapper.findAll('button').some(b => b.text() === '归档此版')).toBe(true)
+    wrapper.unmount()
+  })
+  it('shows whole-document archive immediately and never offers per-version archive', async () => {
+    const { pinia, quote } = setup()
+    const context = { quote_id: 'q1', revision: 8, reason: '项目暂停' }
+    quote.status = 'archived'
+    const archived = { ...family(), document_archive: context }
+    vi.mocked(internalQuoteApi.listAlternatives).mockResolvedValue(archived)
+    const wrapper = mount(InternalQuoteAlternatives, { props: { quote, hasUnsavedChanges: () => true }, global: { plugins: [pinia] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('整单报价已归档')
+    expect(wrapper.findAll('button').some(b => ['归档此版', '恢复显示', '复制新版本', '客户采用此版'].includes(b.text()))).toBe(false)
+    const restore = vi.spyOn(internalQuoteApi, 'restoreQuote').mockResolvedValue({} as never)
+    await wrapper.findAll('button').find(b => b.text() === '恢复整单报价')!.trigger('click')
+    const form = wrapper.get('form[aria-label="恢复整单报价"]')
+    await form.trigger('submit'); await flushPromises()
+    expect(restore).not.toHaveBeenCalled()
+    await form.get('input').setValue('客户继续项目')
+    vi.mocked(internalQuoteApi.listAlternatives).mockResolvedValue(family())
+    await form.trigger('submit'); await flushPromises()
+    expect(restore).toHaveBeenCalledWith('q1', 8, '客户继续项目')
+    expect(wrapper.emitted('changed')).toHaveLength(1)
+    wrapper.unmount()
+  })
+  it('requires document archive permission even when the user may manage versions', async () => {
+    const { pinia, quote, auth } = setup()
+    vi.mocked(auth.can).mockImplementation(permission => permission !== 'internal_quote:archive')
+    quote.status = 'archived'
+    const wrapper = mount(InternalQuoteAlternatives, { props: { quote }, global: { plugins: [pinia] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('业务主管恢复整单')
+    expect(wrapper.findAll('button').some(b => ['恢复整单报价', '归档此版', '恢复显示'].includes(b.text()))).toBe(false)
+    wrapper.unmount()
+  })
+  it('locks an archived quote before the alternatives request completes', async () => {
+    const { pinia, quote, store } = setup()
+    store.quotes = [{ ...quote, status: 'archived' }]
+    const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true } } })
+    await flushPromises()
+    expect(wrapper.get('#quote-page-actions').text()).toContain('恢复整单报价')
+    expect(wrapper.findAll('button').find(b => b.text() === '保存')!.attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').some(b => b.text() === '修改报价资料')).toBe(false)
+    wrapper.unmount()
+  })
   it('does not discard a new draft after leaving and returning while an old reload is pending', async () => {
     const { pinia, store, quote } = setup()
     store.quotes.push({ ...quote, id: 'q2' })

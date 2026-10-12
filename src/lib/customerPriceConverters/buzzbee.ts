@@ -902,11 +902,12 @@ export function convertBuzzBeeP4InternalQuote(
     const targetOutput = p4Number(row.target_output)
     if (!sets) throw new Error(`BuzzBee 直转缺少第 ${index + 1} 行每啤套数`)
     const calculation = injectionBreakdown[index] as Record<string, unknown>
-    const quantity = p4Number(row.quantity) || 1
+    const quantity = row.quantity == null || row.quantity === '' ? 1 : p4Number(row.quantity)
     return {
       name: String(row.item ?? `注塑件${index + 1}`),
       materialZh,
-      weightG: p4Number(row.net_weight_g),
+      // P4 stores per-piece weight; the customer sheet expects whole-product weight.
+      weightG: p4Number(row.net_weight_g) * quantity,
       machineTons: machineCode,
       setsPerShot: sets,
       targetYield: targetOutput,

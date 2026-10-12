@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.internal_quote import (
     InternalQuote,
+    InternalQuoteAuditLog,
     InternalQuoteArtifactHandoff,
     InternalQuoteExportFile,
     InternalQuoteFinalReview,
@@ -50,6 +51,7 @@ from app.services.internal_quote import (
     _rr2_cost_summary,
     _mark_quote_notifications_handled,
     ensure_quote_formula_current,
+    ensure_molding_projection_current,
     ensure_quote_business_reviewer,
     ensure_quote_permission,
     ensure_quote_read,
@@ -239,6 +241,32 @@ def _whole_review_manifest(
     return manifest
 
 
+def _submitted_manifest_matches(db, quote, live, submitted):
+    if live.get("manifest_sha256") == submitted.get("manifest_sha256"):
+        return True
+    # Archive/restore are metadata-only revisions. Keep the original immutable
+    # submission and require a complete audited chain before normalizing them.
+    start = submitted.get("header_revision")
+    if not isinstance(start, int) or start >= quote.header_revision:
+        return False
+    events = list(db.scalars(select(InternalQuoteAuditLog).where(
+        InternalQuoteAuditLog.quote_id == quote.id,
+        InternalQuoteAuditLog.action.in_(["archive", "restore"]),
+        InternalQuoteAuditLog.old_revision >= start,
+        InternalQuoteAuditLog.new_revision <= quote.header_revision,
+    ).order_by(InternalQuoteAuditLog.old_revision)))
+    revision = start
+    for event in events:
+        if event.old_revision != revision or event.new_revision != revision + 1:
+            return False
+        revision = event.new_revision
+    if revision != quote.header_revision or not events or events[-1].action != "restore":
+        return False
+    normalized = {key: value for key, value in live.items() if key != "manifest_sha256"}
+    normalized["header_revision"] = start
+    return content_hash(normalized) == submitted.get("manifest_sha256")
+
+
 def _review_out(record: InternalQuoteFinalReview) -> InternalQuoteFinalReviewOut:
     return InternalQuoteFinalReviewOut(
         id=record.id,
@@ -292,6 +320,7 @@ def _submit_whole_quote_review(
             incomplete_products.append(item.product_name)
             continue
         sections = _quote_sections(db, item.id)
+        ensure_molding_projection_current(db, item, sections)
         required = _validate_whole_review_submission(sections)
         prepared.append((item, sections, required))
     if incomplete_products:
@@ -421,9 +450,11 @@ def _review_whole_quote(
                 detail=f"产品“{item.product_name}”不在整单审核中，不能处理整批",
             )
         sections = _quote_sections(db, item.id)
+        if payload.decision == "approve":
+            ensure_molding_projection_current(db, item, sections)
         live_manifest = _whole_review_manifest(item, sections)
         submitted_manifest = _json_object(item.final_submission_manifest_json)
-        if live_manifest.get("manifest_sha256") != submitted_manifest.get("manifest_sha256"):
+        if not _submitted_manifest_matches(db, item, live_manifest, submitted_manifest):
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -663,6 +694,7 @@ def submit_final_release(
 
     sections = _quote_sections(db, quote.id)
     _ensure_responsible_followup(quote, sections, user)
+    ensure_molding_projection_current(db, quote, sections)
     quote.header_revision += 1
     manifest = _release_manifest(quote, sections)
     timestamp = now_text()
@@ -757,9 +789,11 @@ def review_final_release(
     _check_revision(quote.header_revision, payload.revision, "报价头")
     if quote.status != "final_reviewing" or quote.final_release_status != "pending":
         raise HTTPException(status_code=409, detail="当前报价不在最终放行审核中")
+    if payload.decision == "approve":
+        ensure_molding_projection_current(db, quote, sections)
     live_manifest = _release_manifest(quote, sections)
     submitted_manifest = _json_object(quote.final_submission_manifest_json)
-    if live_manifest.get("manifest_sha256") != submitted_manifest.get("manifest_sha256"):
+    if not _submitted_manifest_matches(db, quote, live_manifest, submitted_manifest):
         raise HTTPException(
             status_code=409,
             detail={
