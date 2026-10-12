@@ -149,7 +149,7 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['物料名称', '裁片部位', '工艺', '裁片数', '供应商', '布料 MOQ/Y', '低于 MOQ/每色费用 RMB', '用量/码', '单价 RMB', '汇率', '成本 HKD（自动）', '码点', '价钱 HKD（自动）', '含电绣', '<option value="丝印">丝印</option>']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
     for (const text of ['产品编号', '胶件名称', '材料', '料重 (g)', '日产量 24H', '用量 (PC)', '单价 HKD', '总价 HKD（自动）']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
     for (const text of ['图片 / 附件引用', '名称', '位置', '夹模', '移印', '散枪', '边模', '油色', '浸油', '抹油', '擦PP水', '报价 HKD', '备注', '二、喷油/移印/UV成本汇总']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
-    for (const text of ['啤机报价单', '注塑部分', '模具名称', '料价 HKD/g（快照）', '原料单价 HKD（自动）', '啤价 HKD/啤（自动）', '出模数', '机型 A码', '目标数', '周期 (秒)', '重量汇总（含损耗）', '料价汇总 HKD', '啤工汇总 HKD', '吹气部分', '日产量 / 22H', '产品料价 HKD（自动）', '吹工 HKD', '披锋 HKD', '利润倍率', '出数', '模价 RMB']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
+    for (const text of ['啤机报价单', '注塑部分', '模具名称', '料价 HKD/g（快照）', '原料单价 HKD（自动）', '啤价 HKD/啤（自动）', '出模数', '机型 A码', '目标数', '套数', '重量汇总（含损耗）', '料价汇总 HKD', '啤工汇总 HKD', '吹气部分', '日产量 / 22H', '产品料价 HKD（自动）', '吹工 HKD', '披锋 HKD', '利润倍率', '出数', '模价 RMB']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
     expect(sectionFormSource).not.toContain('<th>#</th><th>模具名称</th><th>模号</th><th>材质</th>')
     expect(sectionFormSource).not.toContain('<th>含损耗重量 (g，自动)</th>')
     expect(sectionFormSource).not.toContain('<th>机台</th><th>啤价')
@@ -186,7 +186,13 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionEditorSource).not.toContain('v-for="option in importOptions"')
     expect(sectionEditorSource).not.toContain('buttonLabel')
     expect(sectionEditorSource).toContain(':calculation="section.calculation"')
-    for (const text of ['模具部分', '模胚类型', '模具结构', '出模数', '净重 (g)', '周期 (秒)', '模具价格 RMB', '模价 HKD（自动）', '生产模具费用与分摊部分', '客户补贴模费 USD', '手板费总额 USD', '测试费总额 USD', 'RMB→USD 汇率', '每件分摊合计']) expect(sectionFormSource).toContain(text)
+    for (const text of ['模具部分', '全部拆分', '出模数', '套数', '净重 (g)', '模具价格 RMB', '模价 HKD（自动）', '生产模具费用与分摊部分', '客户补贴模费 USD', '手板费总额 USD', '测试费总额 USD', 'RMB→USD 汇率', '每件分摊合计']) expect(sectionFormSource).toContain(text)
+    const moldTable = sectionFormSource.split('<table class="extraWide engineeringMolds">')[1]?.split('</table>')[0] ?? ''
+    expect(moldTable).toContain('<th>出模数</th><th>套数</th>')
+    for (const field of ['模胚类型', '模具结构', '工艺', '材质', '周期 (秒)', '模具规格']) expect(moldTable).not.toContain(`<th>${field}</th>`)
+    const injectionTable = sectionFormSource.split('<table class="moldingInjectionTable">')[1]?.split('</table>')[0] ?? ''
+    expect(injectionTable).toContain('<th>出模数</th><th>套数</th>')
+    expect(injectionTable).not.toContain('<th>周期 (秒)</th>')
     expect(sectionFormSource).toContain('class="inline-fields seven mold-allocation-inputs"')
     expect(sectionFormSource).toContain('grid-template-columns:repeat(7,minmax(0,1fr))')
     for (const text of ['engineering.mold_allocation_enabled', '计算分摊', '暂不分摊', '暂时取消生产模具费用与分摊', '服务端分摊结果归零']) expect(sectionFormSource).toContain(text)
