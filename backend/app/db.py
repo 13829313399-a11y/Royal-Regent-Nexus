@@ -839,6 +839,7 @@ def init_db() -> None:
         fabric_procurement,  # noqa: F401
         fabric_receiving,  # noqa: F401
         fabric_master,  # noqa: F401
+        material_handover,  # noqa: F401
         carton_stocktake,  # noqa: F401
         carton_positions,
         carton_master,  # noqa: F401
@@ -926,6 +927,7 @@ def init_db() -> None:
                             # An existing business store upgrades this new domain explicitly.
                             and (not name.startswith("fabric_") or "auth_users" not in existing_tables)
                             and (not name.startswith("warehouse_operations_") or "auth_users" not in existing_tables)
+                            and (not name.startswith("material_handover_") or "auth_users" not in existing_tables)
                             and not name.startswith(("uv_ops_", "nexus_assistant_"))
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.

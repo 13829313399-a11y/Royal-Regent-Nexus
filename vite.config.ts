@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
       // Worker artifacts are data, not frontend sources. HTML previews must
       // never trigger a full-page reload that discards the current selection.
       watch: {
-        ignored: ['**/backend/data/**', '**/outputs/**', '**/backend/.pytest-tmp*/**', '**/dist/**'],
+        ignored: ['**/backend/data/**', '**/outputs/**', '**/.tmp/**', '**/backend/.pytest-tmp*/**', '**/dist/**'],
       },
       proxy: {
         '/api': {

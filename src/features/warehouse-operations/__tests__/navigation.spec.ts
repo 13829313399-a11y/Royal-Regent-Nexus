@@ -5,12 +5,13 @@ import { warehouseOperationsRoutes } from '../routes'
 import { WAREHOUSES, WAREHOUSE_HOME, warehousePath } from '../navigation'
 
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span>当前账号</span>' } }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'warehouse' }, authorizationVersion: 1 }) }))
 const api = vi.hoisted(() => ({ lines: vi.fn().mockResolvedValue({ total: 0, items: [] }), imports: vi.fn().mockResolvedValue([]), apply: vi.fn() }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: api }))
 const receivingApi = vi.hoisted(() => ({ receipts: vi.fn().mockResolvedValue({ total: 0, items: [] }), stock: vi.fn().mockResolvedValue({ total: 0, items: [] }) }))
 vi.mock('@/api/fabricMaster', () => ({ fabricMasterApi: { list: vi.fn().mockResolvedValue({ items: [], total: 0, can_manage: true }), candidates: vi.fn().mockResolvedValue([]) } }))
 vi.mock('@/api/fabricReceiving', () => ({ fabricReceivingApi: receivingApi, materialCategoryLabels: { FABRIC: '布料', ACCESSORY: '辅料', THREAD: '线' } }))
-vi.mock('@/api/warehouseOperations', () => ({ warehouseOperationsApi: { workspace: vi.fn().mockResolvedValue({ revision: 0, stock: [], documents: [], permissions: { read: true, operate: true, quality: false, correct: false } }), post: vi.fn() } }))
+vi.mock('@/api/warehouseOperations', () => ({ warehouseOperationsApi: { monthly: vi.fn().mockResolvedValue({ parties: [], summary: [], totals: [], details: [], basis: '按业务月份核对', version: 'test' }), workspace: vi.fn().mockResolvedValue({ revision: 0, stock: [], documents: [], permissions: { read: true, operate: true, quality: false, correct: false } }), post: vi.fn() } }))
 let wrapper: VueWrapper | undefined
 beforeEach(() => { vi.spyOn(window, 'scrollTo').mockImplementation(() => {}) })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks() })
@@ -165,7 +166,11 @@ describe('warehouse framework navigation', () => {
           continue
         }
         if (wrapper!.find('.fabric-source-placeholder').exists()) {
-          expect(wrapper!.text()).toContain('待接入')
+          if (view.id === 'delivery-scan') {
+            expect(wrapper!.text()).toContain('独立模块已启用')
+            expect(wrapper!.get('.fabric-source-placeholder a').attributes('href')).toBe('/modules/pmc-warehouse/material-handover?factory=huakang-c&tab=scan')
+            expect(wrapper!.text()).toContain('请勿在采购收料页重复登记同一批实物')
+          } else expect(wrapper!.text()).toContain('待接入')
           continue
         }
         if (wrapper!.find('.semi-locations').exists()) {
@@ -173,6 +178,13 @@ describe('warehouse framework navigation', () => {
           expect(wrapper!.get('.semi-locations .warehouse-empty').text()).toContain('建档不会增加库存')
           // Operating permission alone must not permit master-data changes.
           expect(wrapper!.findAll('.semi-locations button').find(button => button.text() === '新增仓库 / 仓位')!.attributes('disabled')).toBeDefined()
+          continue
+        }
+        if (wrapper!.find('.fabric-monthly').exists()) {
+          expect(wrapper!.get('.fabric-monthly h2').text()).toBe(view.title)
+          expect(wrapper!.text()).toContain('手动与扫码共用实际库存流水')
+          expect(wrapper!.text()).toContain('裁床接口领料 · 待接入')
+          expect(wrapper!.find('.warehouse-empty').exists()).toBe(false)
           continue
         }
         expect(wrapper!.get('.warehouse-table-heading h2, .stock-heading h2').text()).toBe(view.title)

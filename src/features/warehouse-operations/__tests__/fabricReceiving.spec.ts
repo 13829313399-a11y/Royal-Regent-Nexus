@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import Dialog from '../FabricReceiptDialog.vue'
 import Records from '../FabricReceivingRecords.vue'
 import Workspace from '../FabricProcurementWorkspace.vue'
-import { receiptQuantity, receiptTotal } from '../receiptQuantities'
+import { receiptQuantity, receiptTotal, receiptAmount, receiptAmountTotals } from '../receiptQuantities'
 import type { PurchaseDetail } from '@/api/fabricProcurement'
 
 const api = vi.hoisted(() => ({ receive: vi.fn(), receipts: vi.fn(), stock: vi.fn() }))
@@ -35,6 +35,30 @@ async function fill() {
   await body().get('[aria-label="第1项缸号"]').setValue('0001')
 }
 describe('fabric actual receiving', () => {
+  it('calculates amounts exactly with whole-receipt rounding, without floating-point or missing-price zeroes', () => {
+    expect(receiptAmount('0.125', '0.04')).toBe('0.01')
+    expect(receiptAmount('0.1', '0.2')).toBe('0.02')
+    expect(receiptAmount('50', '0')).toBe('0.00')
+    expect(receiptAmount('50', '')).toBeUndefined()
+    expect(receiptAmount('50', '-1')).toBeUndefined()
+    expect(receiptAmount('999999999999.999999', '999999999999.999999')).toBe('999999999999999998000000.00')
+    expect(receiptAmountTotals([{ amount: '0.01', currency: 'CNY' }, { amount: '1.25', currency: 'CNY' }, { amount: '2.00', currency: 'HKD' }, { amount: undefined, currency: 'CNY' }])).toEqual([{ currency: 'CNY', amount: '1.26' }, { currency: 'HKD', amount: '2.00' }])
+  })
+  it('adds optional price and currency, previews amount and submits frozen receipt evidence', async () => {
+    await open(); await fill()
+    await body().get('[aria-label="入库单价"]').setValue('0.05')
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    await body().get('[aria-label="入库币种"]').setValue('CNY')
+    expect(body().get('.receipt-price-amount').text()).toContain('0.01 CNY')
+    await body().get('[aria-label="入库单价"]').setValue('-1')
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    await body().get('[aria-label="入库单价"]').setValue('0')
+    expect(body().get('.receipt-price-amount').text()).toContain('0.00 CNY')
+    api.receive.mockResolvedValue({ id: 'R-PRICE' })
+    await button('保存并入库').trigger('click'); await flushPromises()
+    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ unit_price: '0', price_unit: '码', currency: 'CNY' }))
+    expect(api.receive.mock.calls[0]![1]).not.toHaveProperty('amount')
+  })
   it('defaults dates to Shanghai today, keeps category manual and closes untouched defaults', async () => {
     await open()
     expect(body().get<HTMLInputElement>('[aria-label="实际收货日期"]').element.value).toBe('2026-10-06')
