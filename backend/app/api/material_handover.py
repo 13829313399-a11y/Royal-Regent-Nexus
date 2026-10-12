@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
-from app.models.material_handover import HandoverIssuer, HandoverDocument, HandoverSource
+from app.models.material_handover import HandoverIssuer, HandoverDocument, HandoverSource, HandoverSupplierBinding
 from app.schemas.material_handover import IssuerInput, IssuerRevoke, IssuerRenew, IssuerBind, DocumentSave, DocumentAction, ScanInput, PostingInput
 from app.services import material_handover as service
 from app.services import material_handover_files as files
@@ -94,17 +94,43 @@ async def external_original_print(identifier: str, expected_revision: int = Quer
     return response_file(content, identifier+'-原单加码.pdf', 'application/pdf')
 
 
-def list_documents(db, access, limit, offset, status):
-    query = select(HandoverDocument).where(HandoverDocument.factory_id == service.FACTORY)
+def list_documents(db, access, limit, offset, status, search='', kind='ALL', supplier_id=''):
+    # Read metadata only; never load original files or extraction evidence for list filtering.
+    query = select(HandoverDocument.id, HandoverDocument.status, HandoverDocument.revision,
+        HandoverDocument.created_at, HandoverDocument.confirmed_at, HandoverDocument.data_json,
+        HandoverSupplierBinding.supplier_id.label('bound_supplier_id')).outerjoin(HandoverSupplierBinding,
+        (HandoverSupplierBinding.issuer_id == HandoverDocument.issuer_id) &
+        (HandoverSupplierBinding.factory_id == HandoverDocument.factory_id)
+    ).where(HandoverDocument.factory_id == service.FACTORY)
     if access.issuer_id:
         query = query.where(HandoverDocument.issuer_id.in_(service.issuer_scope(db,access)))
     if status != 'ALL':
         query = query.where(HandoverDocument.status == status)
-    rows = db.scalars(query.order_by(HandoverDocument.updated_at.desc(), HandoverDocument.id).limit(limit).offset(offset))
-    # Lists contain metadata, not original bytes or raw OCR text.
-    return {'items': [{'id': r.id, 'status': r.status, 'revision': r.revision, 'created_at': r.created_at,
-        'confirmed_at': r.confirmed_at, 'data': {k: v for k, v in json.loads(r.data_json).items() if k != 'lines'},
-        'line_count': len(json.loads(r.data_json)['lines'])} for r in rows], 'limit': limit, 'offset': offset}
+    rows = db.execute(query.order_by(HandoverDocument.updated_at.desc(), HandoverDocument.id))
+    needle = search.strip().casefold()
+    items, total = [], 0
+    for row in rows:
+        body = json.loads(row.data_json)
+        if kind != 'ALL' and body.get('kind') != kind:
+            continue
+        if supplier_id and (body.get('kind') != 'DELIVERY' or
+                (row.bound_supplier_id or body.get('supplier_id', '')) != supplier_id):
+            continue
+        if needle:
+            values = [body.get(field, '') for field in
+                ('source_no', 'counterparty', 'contract_no', 'production_no', 'product_no')]
+            values.extend(line.get(field, '') for line in body.get('lines', [])
+                for field in ('item_code', 'item_name', 'contract_no', 'production_no', 'product_no'))
+            if not any(needle in str(value or '').casefold() for value in values):
+                continue
+        # Filtering and access checks precede pagination, including searches beyond the first 50 rows.
+        if offset <= total < offset + limit:
+            items.append({'id': row.id, 'status': row.status, 'revision': row.revision,
+                'created_at': row.created_at, 'confirmed_at': row.confirmed_at,
+                'data': {key: value for key, value in body.items() if key != 'lines'},
+                'line_count': len(body.get('lines', []))})
+        total += 1
+    return {'items': items, 'total': total, 'limit': limit, 'offset': offset}
 
 
 @router.get('/workspace')
@@ -114,8 +140,18 @@ def workspace(factory_id: str, db: Session = Depends(get_db), actor: AuthContext
     return {'factory_id': service.FACTORY, 'inventory': service.inventory.workspace(db, 'fabric'),
         'can_operate': service.can(actor, 'fabric_operations:operate', service.FACTORY, 'pmc-warehouse'),
         'can_manage': service.can(actor, 'fabric_warehouse:import', service.FACTORY, 'pmc-warehouse'),
+        'can_read_purchase': service.can(actor, 'fabric_warehouse:read', service.FACTORY, 'pmc-warehouse'),
         'materials': [record_data(r) for r in records(db) if r.kind == 'MATERIAL' and r.status == 'ACTIVE'],
         'suppliers': [record_data(r) for r in records(db) if r.kind == 'SUPPLIER']}
+
+
+@router.get('/pending-deliveries')
+def pending_deliveries(factory_id: str, limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0),
+                       db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    staff_access(db, actor, factory_id)
+    from fastapi.responses import JSONResponse
+    from app.services.material_handover_dashboard import pending_deliveries as report
+    return JSONResponse(report(db, limit, offset), headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/issuers')
@@ -167,8 +203,10 @@ def monthly_export(factory_id: str, month: str = Query(...,max_length=7), suppli
 
 @router.get('/documents')
 def documents(factory_id: str, limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0),
-              status: Literal['ALL', 'DRAFT', 'CONFIRMED', 'VOID'] = 'ALL', db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
-    return list_documents(db, staff_access(db, actor, factory_id), limit, offset, status)
+              status: Literal['ALL', 'DRAFT', 'CONFIRMED', 'VOID'] = 'ALL', search: str = Query('', max_length=200),
+              kind: Literal['ALL', 'DELIVERY', 'ISSUE'] = 'ALL', supplier_id: str = Query('', max_length=64),
+              db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    return list_documents(db, staff_access(db, actor, factory_id), limit, offset, status, search, kind, supplier_id)
 
 
 async def uploaded(file):
@@ -209,6 +247,13 @@ def detail(identifier: str, factory_id: str, db: Session = Depends(get_db), acto
 @router.get('/documents/{identifier}/source')
 def source(identifier: str, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     return source_response(db, staff_access(db, actor, factory_id), identifier)
+
+
+@router.get('/documents/{identifier}/purchase-sources')
+def purchase_sources(identifier: str, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    from app.services.material_handover_procurement import source_choices
+    row = service.document(db, staff_access(db, actor, factory_id), identifier)
+    return source_choices(db, actor, row)
 
 
 @router.get('/documents/{identifier}/qr')
@@ -260,8 +305,10 @@ def external_monthly_export(month: str = Query(...,max_length=7), x_handover_key
 
 @router.get('/external/documents')
 def external_documents(limit: int = Query(50, ge=1, le=50), offset: int = Query(0, ge=0),
+                       status: Literal['ALL', 'DRAFT', 'CONFIRMED', 'VOID'] = 'ALL', search: str = Query('', max_length=200),
+                       kind: Literal['ALL', 'DELIVERY', 'ISSUE'] = 'ALL',
                        x_handover_key: str = Header(default=''), db: Session = Depends(get_db)):
-    return list_documents(db, service.external(db, x_handover_key), limit, offset, 'ALL')
+    return list_documents(db, service.external(db, x_handover_key), limit, offset, status, search, kind)
 
 
 @router.post('/external/documents/upload')

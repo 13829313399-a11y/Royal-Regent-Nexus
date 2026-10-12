@@ -302,9 +302,10 @@ def test_concurrent_receiving_posts_once_and_rejects_stale_count(tmp_path, same_
     actor = SimpleNamespace(id="actor", display_name="Warehouse")
     with Session(engine) as db:
         seed_fabric_locations(db)
-        parsed = parser.parse_workbook("source.xlsx", book([row()]))
+        source_bytes = book([row()])
+        parsed = parser.parse_workbook("source.xlsx", source_bytes)
         token = source.preview(db, parsed, actor.id)["preview_token"]
-        source.apply(db, parser.parse_workbook("source.xlsx", book([row()])), actor, "source.xlsx", str(uuid4()), token, confirmed=True, acknowledge_excluded=True)
+        source.apply(db, parser.parse_workbook("source.xlsx", source_bytes), actor, "source.xlsx", str(uuid4()), token, confirmed=True, acknowledge_excluded=True)
         line = source.list_lines(db, "ALL")["items"][0]
     bodies = [request(line), request(line)]
     if same_request: bodies[1] = bodies[0]

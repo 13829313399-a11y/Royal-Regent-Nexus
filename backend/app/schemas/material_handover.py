@@ -93,6 +93,10 @@ class PostingLine(Strict):
     location_id: str = Field(default='', max_length=64)
     lot: str = Field(default='', max_length=128)
     roll_no: str = Field(default='', max_length=128)
+    purchase_source_id: str = Field(default='', max_length=64)
+    expected_source_revision: int | None = Field(default=None, ge=1)
+    expected_receipt_count: int | None = Field(default=None, ge=0)
+    difference_reason: str = Field(default='', max_length=1000)
 
 
 class PostingInput(Strict):

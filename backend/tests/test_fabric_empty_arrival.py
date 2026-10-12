@@ -13,7 +13,8 @@ from sqlalchemy import select
 from test_fabric_procurement import BASE, book, row, upload, commit, stored
 from test_fabric_procurement_tracking import save
 from test_fabric_receiving import request, receive
-from test_molding_sample_api import make_client, login_as
+from test_molding_sample_api import login_as
+from warehouse_location_fixtures import make_client
 
 
 def formula_book(*, cached=None, reverse=False, formula=None, detail="", returned=False):

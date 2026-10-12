@@ -23,9 +23,14 @@ export interface HandoverDocument {
   movements: { operation_id: string; line_id: string; quantity: string; business_date: string; reversed: boolean }[]
 }
 export interface HandoverSummary { id: string; status: HandoverDocument['status']; revision: number; data: Omit<HandoverData, 'lines'>; line_count: number; created_at: string }
+export interface HandoverListFilters { search: string; status: 'ALL' | HandoverDocument['status']; kind: 'ALL' | HandoverData['kind']; supplier_id: string }
+export interface PendingDelivery extends HandoverSummary { pending_line_count: number; processing_status: 'PENDING' | 'PARTIAL'; first_item_name: string }
+export interface PendingDeliveries { total: number; items: PendingDelivery[]; limit: number; offset: number; stock_totals: { unit: string; quantity: string }[] }
 export interface HandoverIssuer { id: string; name: string; kind: 'SUPPLIER' | 'REQUESTOR'; active: number; revision: number; expires_at: string; created_at: string; token?: string; supplier_id?: string; supplier_code?: string; replayed?: boolean }
-export interface HandoverWorkspace { factory_id: string; inventory: WarehouseOperationsWorkspace; can_operate: boolean; can_manage: boolean; materials: { id: string; code: string; name: string }[]; suppliers?: MasterRecord[] }
-export interface HandoverPosting { factory_id: 'huakang-c'; request_id: string; expected_revision: number; expected_inventory_revision: number; code_version: number; business_date: string; lines: { line_id: string; quantity: string; batch_id: string; location_id: string; lot: string; roll_no: string }[] }
+export interface HandoverWorkspace { factory_id: string; inventory: WarehouseOperationsWorkspace; can_operate: boolean; can_manage: boolean; can_read_purchase?: boolean; materials: { id: string; code: string; name: string }[]; suppliers?: MasterRecord[] }
+export interface HandoverPurchaseSource { id: string; revision: number; receipt_count: number; remaining: string | null; received: string; order_no: string; production_no: string; plan_no: string; contract_no: string; supplier: string; item_code: string; item_name: string; unit: string; can_receive: boolean; suggested: boolean }
+export interface HandoverPurchaseSources { document_revision: number; lines: Record<string, HandoverPurchaseSource[]> }
+export interface HandoverPosting { factory_id: 'huakang-c'; request_id: string; expected_revision: number; expected_inventory_revision: number; code_version: number; business_date: string; lines: { line_id: string; quantity: string; batch_id: string; location_id: string; lot: string; roll_no: string; purchase_source_id?: string; expected_source_revision?: number; expected_receipt_count?: number; difference_reason?: string }[] }
 export interface HandoverSave { request_id: string; expected_revision: number; data: HandoverData }
 export interface HandoverAction { request_id: string; expected_revision: number; acknowledge_warnings: boolean; reason: string; data?: HandoverData }
 export interface HandoverMonthlyRow { document_id: string; line_id: string; source_no: string; document_date: string; supplier_id: string; supplier_name: string; item_code: string; item_name: string; unit: string; declared: string; prior_received: string; month_received: string; month_reversed: string; month_net_received: string; cumulative_received: string; outstanding: string; unit_price: string; price_unit: string; currency: string; price_note: string; notes: string[] }
@@ -41,8 +46,10 @@ export function handoverApi(key = '') {
   return {
     async context() { return (await client.get<HandoverIssuer>(base + '/context')).data },
     async workspace() { return (await http.get<HandoverWorkspace>('/material-handover/workspace', config)).data },
-    async list(offset = 0) { return (await client.get<{ items: HandoverSummary[]; limit: number; offset: number }>(base + '/documents', { ...config, params: { ...(external ? {} : { factory_id: HANDOVER_FACTORY }), limit: 50, offset } })).data },
+    async pendingDeliveries(offset = 0, limit = 50) { return (await http.get<PendingDeliveries>('/material-handover/pending-deliveries', { params: { factory_id: HANDOVER_FACTORY, offset, limit } })).data },
+    async list(offset = 0, filters?: HandoverListFilters) { return (await client.get<{ items: HandoverSummary[]; total: number; limit: number; offset: number }>(base + '/documents', { ...config, params: { search: filters?.search, status: filters?.status, kind: filters?.kind, ...(external ? {} : { factory_id: HANDOVER_FACTORY, supplier_id: filters?.supplier_id }), limit: 50, offset } })).data },
     async detail(id: string) { return (await client.get<HandoverDocument>(base + '/documents/' + encodeURIComponent(id), config)).data },
+    async purchaseSources(id: string) { return (await http.get<HandoverPurchaseSources>('/material-handover/documents/' + encodeURIComponent(id) + '/purchase-sources', config)).data },
     async upload(file: File, requestId: string) {
       const body = new FormData(); body.append('file', file); body.append('request_id', requestId)
       if (!external) body.append('factory_id', HANDOVER_FACTORY)

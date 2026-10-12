@@ -16,12 +16,14 @@ const button = (text: string) => body().findAll('button').find(item => item.text
 async function router() { const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] }); await router.push('/'); await router.isReady(); return router }
 beforeEach(() => { vi.clearAllMocks(); api.list.mockResolvedValue({ items: [], total: 0, can_manage: true }); api.candidates.mockResolvedValue([{ key: 'C1', kind: 'MATERIAL', code: '001', name: '白色布', revision: 0, status: 'DRAFT', data: { unit: '码' }, source_count: 2, variants: [], conflict: false }]) })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks() })
-async function openMaster() { wrapper = mount(Master, { props: { view: 'items' }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises() }
+async function openMaster(view = 'items') { wrapper = mount(Master, { props: { view }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises() }
 describe('fabric master data and chase confirmation', () => {
   it('opens an imported candidate without guessing category or saving until explicitly completed', async () => {
-    await openMaster(); await button('查看导入候选').trigger('click'); await flushPromises()
+    await openMaster()
+    expect(api.candidates).toHaveBeenCalledWith('MATERIAL')
+    expect(body().text()).toContain('采购物料自动归集')
     expect(api.save).not.toHaveBeenCalled()
-    await button('补齐资料').trigger('click'); await flushPromises()
+    await button('核对并建档').trigger('click'); await flushPromises()
     expect(body().get<HTMLInputElement>('[aria-label="资料编码"]').element.value).toBe('001')
     expect(body().get<HTMLSelectElement>('[aria-label="物料分类"]').element.value).toBe('')
     await body().get('[aria-label="资料启用状态"]').setValue('ACTIVE')
@@ -29,6 +31,45 @@ describe('fabric master data and chase confirmation', () => {
     await body().get('[aria-label="物料分类"]').setValue('FABRIC')
     api.save.mockResolvedValue({}); await body().get('form.fabric-master-form').trigger('submit'); await flushPromises()
     expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ kind: 'MATERIAL', code: '001', status: 'ACTIVE', data: expect.objectContaining({ category: 'FABRIC', unit: '码' }) }))
+  })
+  it('reports a candidate read failure as unknown and allows a refresh without saving', async () => {
+    api.candidates.mockRejectedValueOnce(new Error('连接失败'))
+    await openMaster()
+    expect(body().get('[role="alert"]').text()).toContain('自动归集读取失败')
+    expect(body().text()).not.toContain('暂无未建档的导入候选')
+    expect(body().get('.fabric-material-views').text()).toContain('—')
+    await button('刷新归集').trigger('click'); await flushPromises()
+    expect(body().find('[role="alert"]').exists()).toBe(false)
+    expect(body().text()).toContain('白色布')
+    expect(api.save).not.toHaveBeenCalled()
+  })
+  it('does not show an empty candidate queue when the master read failed', async () => {
+    api.list.mockRejectedValueOnce(new Error('连接失败'))
+    await openMaster()
+    expect(body().find('[role="alert"]').exists()).toBe(true)
+    expect(body().get('.fabric-material-views').text()).toContain('—')
+    expect(body().text()).not.toContain('暂无未建档的导入候选')
+    expect(api.candidates).not.toHaveBeenCalled()
+  })
+  it('resets candidate pagination when searching for a material', async () => {
+    api.candidates.mockResolvedValue(Array.from({ length: 25 }, (_, index) => ({ key: String(index), code: `M-${index}`, name: `材料${index}`, data: { unit: '码' }, source_count: 1, variants: [] })))
+    await openMaster()
+    await button('下一页候选').trigger('click')
+    expect(body().text()).toContain('M-24')
+    await body().get('[aria-label="基础资料关键字"]').setValue('M-24')
+    expect(body().findAll('.fabric-candidate-grid article')).toHaveLength(1)
+    expect(body().get('.fabric-candidate-grid').text()).toContain('M-24')
+    expect(api.save).not.toHaveBeenCalled()
+  })
+  it('discards late material candidates after moving to supplier data', async () => {
+    let resolve!: (value: unknown[]) => void
+    api.candidates.mockReturnValueOnce(new Promise(done => { resolve = done }))
+    await openMaster()
+    await wrapper!.setProps({ view: 'partners' }); await flushPromises()
+    resolve([{ key: 'old', code: 'OLD', name: '迟到物料', data: {}, variants: [] }]); await flushPromises()
+    expect(body().text()).not.toContain('迟到物料')
+    expect(body().text()).toContain('供应商资料')
+    expect(api.save).not.toHaveBeenCalled()
   })
   it('freezes master payload after unknown network result and keeps the same UUID on retry', async () => {
     await openMaster(); await button('新增资料').trigger('click'); await flushPromises()
@@ -43,8 +84,9 @@ describe('fabric master data and chase confirmation', () => {
   it('hides master creation from read-only accounts and protects unsaved edits', async () => {
     api.list.mockResolvedValueOnce({ items: [], total: 0, can_manage: false }); await openMaster()
     expect(body().findAll('button').some(item => item.text() === '新增资料')).toBe(false)
-    wrapper!.unmount(); await openMaster(); await button('新增资料').trigger('click'); await flushPromises()
-    await body().get('[aria-label="资料编码"]').setValue('001')
+    wrapper!.unmount(); await openMaster('partners'); await button('新增资料').trigger('click'); await flushPromises()
+    expect(body().get('[role=dialog]').text()).toContain('每家供应商一个固定编号')
+    await body().get('[aria-label="供应商编号"]').setValue('GYS001')
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     await button('关闭').trigger('click'); expect(confirm).toHaveBeenCalled(); expect(body().find('[role=dialog]').exists()).toBe(true)
   })
