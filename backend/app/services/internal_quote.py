@@ -11,9 +11,10 @@ from uuid import uuid4
 from fastapi import HTTPException, Request
 from sqlalchemy import and_, delete, func, or_, select, true
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.services.transaction_lock import lock_transaction
+from app.services.internal_quote_document import document_archive, document_versions, lock_documents, ensure_not_archived
 
 from app.models.auth import AuthUser, AuthUserRole, EmployeeProfile, SystemNotification
 from app.models.internal_quote import (
@@ -133,7 +134,6 @@ FINAL_SUBMIT_NOTIFICATION_EVENTS = {
 }
 FINAL_REVIEW_NOTIFICATION_EVENTS = {"final_release_submitted", "whole_quote_submitted"}
 ARTIFACT_NOTIFICATION_EVENTS = {"customer_price_artifact_available"}
-SEWING_TAX_REFUND_FACTORY_IDS = frozenset({"huakang-c", "huakang-d"})
 ACTIONABLE_INTERNAL_QUOTE_NOTIFICATION_EVENTS = (
     SECTION_EDIT_NOTIFICATION_EVENTS
     | SECTION_REVIEW_NOTIFICATION_EVENTS
@@ -263,23 +263,24 @@ def quote_write(operation):
         )).first()
         if identity is None:
             raise HTTPException(404, "内部报价不存在或已被删除")
+        lock_documents(db, [db.get(InternalQuote, quote_id)])
         lock_transaction(db, "internal-quote", f"{identity.factory_id}:{identity.batch_id or quote_id}")
         quote = db.get(InternalQuote, quote_id)
-        if operation.__name__ == "archive_quote" and db.scalar(select(InternalQuote.id).where(
-            InternalQuote.batch_id == (quote.batch_id or quote.id), InternalQuote.module_version == "v4",
-            InternalQuote.final_release_status == "issued",
-        )):
-            raise HTTPException(409, "批次含已输出版本，请在方案面板逐版归档，保留历史文件")
+        if document_archive(db, quote) and operation.__name__ not in {
+            "restore_quote", "clone_quote", "create_controlled_export",
+            "create_engineering_workbook_export", "delete_quote",
+        }:
+            raise HTTPException(409, "整单报价已归档，请先在报价首页或方案面板恢复整单，再继续操作")
         alternative = db.get(InternalQuoteAlternative, quote_id)
         if alternative and alternative.archived and operation.__name__ not in {
             "copy_alternative", "clone_quote", "archive_alternative", "create_controlled_export",
-            "create_engineering_workbook_export", "select_alternative", "delete_quote",
+            "create_engineering_workbook_export", "select_alternative", "delete_quote", "archive_quote", "restore_quote",
         }:
             raise HTTPException(409, "方案版本已归档，请先恢复后操作")
         if quote.module_version == "v4" and quote.final_release_status == "issued" and operation.__name__ not in {
             "copy_alternative", "clone_quote", "issue_alternative", "create_controlled_export",
             "select_alternative", "archive_alternative", "report_alternative",
-            "create_engineering_workbook_export", "delete_quote",
+            "create_engineering_workbook_export", "delete_quote", "restore_quote",
         }:
             raise HTTPException(409, "已输出版本已冻结，请复制新版本后修改")
         try:
@@ -325,8 +326,11 @@ def _final_release_owner(
 
 
 def _ensure_active(quote: InternalQuote) -> None:
-    if quote.status == "archived":
-        raise HTTPException(status_code=409, detail="已归档报价不可继续修改")
+    db = object_session(quote)
+    if db is not None:
+        ensure_not_archived(db, quote)
+    elif quote.status == "archived":
+        raise HTTPException(409, "整单报价已归档，请先恢复整单后操作")
 
 
 def _ensure_section_participates(section: InternalQuoteSection) -> None:
@@ -353,21 +357,26 @@ def _section_out(
     section: InternalQuoteSection,
     *,
     payload_override: dict[str, object] | None = None,
+    projection_pending: bool = False,
 ) -> InternalQuoteSectionOut:
+    calculation = _json_object(section.calculation_json)
+    if projection_pending:
+        calculation = {"status": "stale", "line_breakdown": [], "totals": {},
+                       "warnings": [_molding_projection_warning()]}
     return InternalQuoteSectionOut(
         id=section.id,
         department=section.department,
         department_name=section.department_name,
         status=section.status,
         payload=payload_override if payload_override is not None else _json_object(section.payload_json),
-        calculation=_json_object(section.calculation_json),
-        calculation_status=section.calculation_status,
-        calculation_hash=section.calculation_hash,
+        calculation=calculation,
+        calculation_status="stale" if projection_pending else section.calculation_status,
+        calculation_hash="" if projection_pending else section.calculation_hash,
         calculation_formula_version=section.calculation_formula_version,
         calculation_reference_snapshot_id=section.calculation_reference_snapshot_id,
         calculated_at=section.calculated_at,
         dependency_hash=section.dependency_hash,
-        dependency_status=section.dependency_status,
+        dependency_status="stale" if projection_pending else section.dependency_status,
         revision=section.revision,
         is_required=section.is_required,
         filled_by=section.filled_by,
@@ -406,15 +415,18 @@ def quote_to_out(
             engineering is not None
             and molding is not None
             and engineering.is_required
+            and engineering.status != "not_applicable"
             and molding.is_required
-            and not (quote.module_version == "v4" and quote.final_release_status == "issued")
+            and _can_project_molding_read(db, quote, molding)
         ):
-            payload_overrides["molding"] = prefill_molding_from_engineering(
+            payload_overrides["molding"] = _project_molding_parts(
                 _json_object(engineering.payload_json),
                 _json_object(molding.payload_json),
             )
         sections = [
-            _section_out(by_code[code], payload_override=payload_overrides.get(code))
+            _section_out(by_code[code], payload_override=payload_overrides.get(code),
+                         projection_pending=code == "molding" and code in payload_overrides
+                         and molding_projection_pending(db, quote, rows))
             for code in SECTION_NAMES
             if code in by_code
         ]
@@ -458,6 +470,8 @@ def quote_to_out(
         header_revision=quote.header_revision,
         cloned_from_quote_id=quote.cloned_from_quote_id,
         history_sources=_json_list(history.detail) if history else [],
+        version_archived=bool((alternative := db.get(InternalQuoteAlternative, quote.id)) and alternative.archived),
+        document_archive=document_archive(db, quote),
         archived_by=quote.archived_by,
         archived_at=quote.archived_at,
         archive_reason=quote.archive_reason,
@@ -1671,18 +1685,12 @@ def _rr2_cost_summary(
     profit = base_price - total_cost
 
     tax_13_cost = (
-        domestic_material + t1_values["hardware"] + t1_values["motor"]
+        t1_values["hardware"] + t1_values["motor"]
         + t2_values["color_box"] + t2_values["battery"] + t2_values["libao"]
         + t2_values["other_buy"] - customer_supplied_hkd + t3_values["paint_material"] + t1_values["glue_bag"]
     )
     tax_rates = snapshot.get("tax_rates", {})
     tax_rates = tax_rates if isinstance(tax_rates, dict) else {}
-    sewing_tax_refund_enabled = str(factory_id or "").strip().lower() in SEWING_TAX_REFUND_FACTORY_IDS
-    sewing_clothes_rate = (
-        _summary_decimal(tax_rates.get("sewing_clothes"), "0.115") * 100
-        if sewing_tax_refund_enabled
-        else None
-    )
     tax_specs = (
         ("tax13", "含税13%类成本", tax_13_cost, None),
         ("labor13", "人工类13%", injection_labor + t3_values["painting_labor"] + t3_values["assembly_labor"], None),
@@ -1691,12 +1699,12 @@ def _rr2_cost_summary(
         ("carton", "纸箱类", t2_values["carton"], None),
         ("tax1", "含税1%", t2_values["plating"], _summary_decimal(tax_rates.get("tax_1_percent"), "0.0099") * 100),
         ("slush3", "搪胶类3%", t1_values["slush"], _summary_decimal(tax_rates.get("slush"), "0.03") * 100),
-        ("sewhair13", "车发类13%", t1_values["sewing_hair"], _summary_decimal(tax_rates.get("sewing_hair"), "0.115") * 100),
+        ("sewhair13", "车发类（不计税）", t1_values["sewing_hair"], None),
         (
             "sewcloth13",
-            "车衣物料退税（仅华康C/D）",
+            "车衣类（不计税）",
             sewing_clothes_material,
-            sewing_clothes_rate,
+            None,
         ),
         ("suction6", "吸塑类6%", t1_values["suction"], _summary_decimal(tax_rates.get("blister"), "0.06") * 100),
         ("freight9", "运费类9%", t2_values["freight"], _summary_decimal(tax_rates.get("freight_tax_9"), "0.0826") * 100),
@@ -1941,6 +1949,43 @@ def _downstream_dependency_hashes(
     }
 
 
+def _empty_molding_payload(payload: dict[str, object]) -> bool:
+    fields = {"injection_lines", "blow_lines", "caixing_tool_plan_rows"}
+    return (set(payload) <= fields | {"injection_loss_rate_percent"}
+            and all(payload.get(field) in (None, []) for field in fields))
+
+
+def _apply_uncalculated_state(
+    db: Session, quote: InternalQuote, section: InternalQuoteSection,
+    *, error: CalculationInputError | None = None,
+) -> None:
+    """Retain incomplete drafts without carrying forward a previous valid cost."""
+    dependencies = _calculation_dependencies(db, quote, section.department)
+    calculation = {
+        "section_code": section.department,
+        "formula_version": FORMULA_VERSION,
+        "input_hash": content_hash(_json_object(section.payload_json)),
+        "reference_snapshot_id": quote.reference_snapshot_id,
+        "line_breakdown": [],
+        "pricing_breakdown": [],
+        "currency_totals": {"HKD": "0.0000", "RMB": "0.0000", "USD": "0.0000"},
+        "totals": {},
+        "warnings": [{"code": "invalid_input", "message": str(error), "severity": "blocking"}] if error else [],
+        "dependencies": dependencies,
+        "dependency_hash": content_hash(dependencies),
+        "status": "blocked" if error else "pending",
+    }
+    calculation["calculation_hash"] = content_hash(calculation)
+    section.calculation_json = canonical_json(calculation)
+    section.calculation_status = calculation["status"]
+    section.calculation_hash = calculation["calculation_hash"]
+    section.calculation_formula_version = FORMULA_VERSION
+    section.calculation_reference_snapshot_id = quote.reference_snapshot_id
+    section.calculated_at = now_text() if error else ""
+    section.dependency_hash = calculation["dependency_hash"]
+    section.dependency_status = "current"
+
+
 def _calculate_and_apply(
     db: Session,
     quote: InternalQuote,
@@ -1985,19 +2030,59 @@ def _calculate_and_apply(
 def _remove_missing_molding_sources(
     db: Session, quote: InternalQuote, payload: dict[str, object], *, synchronize_parts: bool = False,
 ) -> dict[str, object]:
-    if not isinstance(payload.get("injection_lines"), list):
-        return payload
     engineering = _get_section(db, quote.id, "engineering")
     if not engineering.is_required or engineering.status == "not_applicable":
         return payload
     engineering_payload = _json_object(engineering.payload_json)
-    has_parts = any(isinstance(mold, dict) and isinstance(mold.get("parts"), list)
-                    for mold in engineering_payload.get("molds", [])) or any(
-                        isinstance(row, dict) and "/part:" in str(row.get("engineering_source_key") or "")
-                        for row in payload.get("injection_lines", []))
+    return _project_molding_parts(engineering_payload, payload, synchronize_parts=synchronize_parts)
+
+
+def _project_molding_parts(engineering_payload, payload, *, synchronize_parts=True):
+    if not synchronize_parts and not isinstance(payload.get("injection_lines"), list):
+        return payload
     return prefill_molding_from_engineering(
-        engineering_payload, payload, remove_missing_only=not (synchronize_parts and has_parts),
+        engineering_payload, payload, remove_missing_only=not synchronize_parts,
     )
+
+
+def _can_project_molding_read(db, quote, molding):
+    alternative = db.get(InternalQuoteAlternative, quote.id)
+    return (molding.status in MUTABLE_SECTION_STATUSES
+            and quote.final_release_status not in {"pending", "approved", "issued"}
+            and not document_archive(db, quote)
+            and not (alternative and alternative.archived))
+
+
+def _molding_projection_warning():
+    return {"code": "engineering_parts_unsaved", "severity": "blocking",
+            "message": "工程配件已变化，啤机明细须保存或按当前公式重算后才能提交或输出；原保存金额尚未按当前配件核价。"}
+
+
+def molding_projection_pending(db, quote, sections=None):
+    # Already released versions retain their original costing and export snapshot.
+    if quote.final_release_status in {"approved", "issued"}:
+        return False
+    if sections is None:
+        sections = list(db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)))
+    by_code = {row.department: row for row in sections}
+    engineering, molding = by_code.get("engineering"), by_code.get("molding")
+    if not engineering or not molding or not engineering.is_required or not molding.is_required:
+        return False
+    if engineering.status == "not_applicable" or molding.status == "not_applicable":
+        return False
+    saved = _json_object(molding.payload_json)
+    projected = _project_molding_parts(_json_object(engineering.payload_json), saved)
+    calculation = _json_object(molding.calculation_json)
+    return (canonical_json(projected) != canonical_json(saved)
+            or (molding.calculation_status == "valid" and (
+                calculation.get("input_hash") != content_hash(saved)
+                or molding.dependency_hash != content_hash(_calculation_dependencies(db, quote, "molding"))
+            )))
+
+
+def ensure_molding_projection_current(db, quote, sections=None):
+    if molding_projection_pending(db, quote, sections):
+        raise HTTPException(409, _molding_projection_warning()["message"])
 
 
 def _invalidate_engineering_dependents(
@@ -3766,6 +3851,14 @@ def preview_quote_costs(
             raise HTTPException(status_code=409, detail=f"{section.department_name}当前状态不可试算")
         payload_overrides[section_code] = draft.payload
 
+    if "molding" in payload_overrides:
+        engineering = by_code.get("engineering")
+        if engineering and engineering.is_required and engineering.status != "not_applicable":
+            payload_overrides["molding"] = _project_molding_parts(
+                payload_overrides.get("engineering", _json_object(engineering.payload_json)),
+                payload_overrides["molding"],
+            )
+
     reference = _find_reference_set(db, quote)
     if reference is None:
         raise HTTPException(status_code=409, detail="报价缺少冻结参考快照，暂时无法实时试算")
@@ -3779,6 +3872,7 @@ def preview_quote_costs(
         draft = draft_by_code.get(section_code)
         if draft is None:
             continue
+        section_payload = payload_overrides[section_code]
         current_context = _cost_context(
             db,
             quote,
@@ -3786,7 +3880,7 @@ def preview_quote_costs(
             payload_overrides=payload_overrides,
         )
         factory_price_hkd = current_context["factory_price_hkd"]
-        _validate_customer_supplied_scope(quote, section_code, draft.payload)
+        _validate_customer_supplied_scope(quote, section_code, section_payload)
         if section_code == "sales":
             factory_price_hkd -= current_context["customer_supplied_hkd"]
         if section_code == "sales" and draft.payload.get("cartons"):
@@ -3796,7 +3890,7 @@ def preview_quote_costs(
         try:
             calculation = calculate_section(
                 section_code,
-                draft.payload,
+                section_payload,
                 snapshot,
                 reference.id,
                 context={
@@ -3925,12 +4019,14 @@ def _save_section_in_transaction(
     current_payload_json = canonical_json(_json_object(section.payload_json))
     payload_unchanged = next_payload_json == current_payload_json
     if payload_unchanged and (
-        not next_payload
+        (not next_payload and (section.department != "molding" or section.calculation_status == "pending"))
         or (
             section.calculation_status == "valid"
             and section.dependency_status == "current"
             and section.calculation_formula_version == FORMULA_VERSION
             and section.calculation_reference_snapshot_id == quote.reference_snapshot_id
+            and _json_object(section.calculation_json).get("input_hash") == content_hash(next_payload)
+            and section.dependency_hash == content_hash(_calculation_dependencies(db, quote, section.department))
         )
     ):
         return section
@@ -3952,9 +4048,12 @@ def _save_section_in_transaction(
     section.review_comment = ""
     section.updated_at = now_text()
     try:
-        _calculate_and_apply(db, quote, section, user)
+        if section.department == "molding" and _empty_molding_payload(next_payload):
+            _apply_uncalculated_state(db, quote, section)
+        else:
+            _calculate_and_apply(db, quote, section, user)
     except CalculationInputError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        _apply_uncalculated_state(db, quote, section, error=error)
     _add_revision(db, quote, section, user, reason=reason)
     _invalidate_downstream_dependencies(
         db,
@@ -4091,6 +4190,8 @@ def submit_section(
         raise HTTPException(status_code=409, detail="当前状态不可提交审核")
     if not _json_object(section.payload_json):
         raise HTTPException(status_code=400, detail="请先填写并保存本分段内容")
+    if section_code == "molding":
+        ensure_molding_projection_current(db, quote)
     try:
         calculation = _calculate_and_apply(db, quote, section, user)
     except CalculationInputError as error:
@@ -4295,6 +4396,8 @@ def review_section(
         raise HTTPException(status_code=403, detail="提交人不能审核自己的分段")
 
     if section.status == "pending_review" and payload.decision == "approve":
+        if section_code == "molding":
+            ensure_molding_projection_current(db, quote)
         try:
             calculation = _calculate_and_apply(db, quote, section, user)
         except CalculationInputError as error:
@@ -4538,12 +4641,21 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
     sections = db.scalars(
         select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)
     ).all()
+    molding = next((section for section in sections if section.department == "molding"), None)
+    projection_pending = bool(molding and _can_project_molding_read(db, quote, molding)
+                              and molding_projection_pending(db, quote, sections))
     participating_sections = [section for section in sections if section.is_required]
+    if projection_pending:
+        participating_sections = [copy.copy(section) for section in participating_sections]
+        for section in participating_sections:
+            if section.department == "molding":
+                section.calculation_status = section.dependency_status = "stale"
+                section.calculation_json = canonical_json({"status": "stale", "warnings": [_molding_projection_warning()]})
     reference = _ensure_reference_set_for_read(db, quote, user)
     counts: dict[str, int] = {}
     for section in participating_sections:
         counts[section.status] = counts.get(section.status, 0) + 1
-    cost_context = _cost_context(db, quote)
+    cost_context = _cost_context(db, quote, calculation_overrides={"molding": {"status": "stale"}} if projection_pending else None)
     rr2_cost_summary = _rr2_cost_summary(
         participating_sections,
         cost_context,
@@ -4679,7 +4791,16 @@ def _replace_quote_reference_set(
             continue
         section.calculation_reference_snapshot_id = reference.id
         section.calculation_formula_version = FORMULA_VERSION
-        if section.status == "not_applicable" or not _json_object(section.payload_json):
+        if section.department == "molding" and section.status != "not_applicable":
+            section.payload_json = canonical_json(_remove_missing_molding_sources(
+                db, quote, _json_object(section.payload_json), synchronize_parts=True,
+            ))
+        section_payload = _json_object(section.payload_json)
+        if section.status == "not_applicable" or not section_payload or (
+            section.department == "molding" and _empty_molding_payload(section_payload)
+        ):
+            if section.status != "not_applicable":
+                _apply_uncalculated_state(db, quote, section)
             section.calculation_status = "pending" if section.status != "not_applicable" else "not_applicable"
             section.dependency_status = "current"
             continue
@@ -4695,28 +4816,7 @@ def _replace_quote_reference_set(
         try:
             _calculate_and_apply(db, quote, section, user)
         except CalculationInputError as error:
-            failure = {
-                "section_code": section.department,
-                "formula_version": FORMULA_VERSION,
-                "input_hash": content_hash(_json_object(section.payload_json)),
-                "reference_snapshot_id": reference.id,
-                "line_breakdown": [],
-                "currency_totals": {"HKD": "0.0000", "RMB": "0.0000", "USD": "0.0000"},
-                "totals": {},
-                "warnings": [
-                    {"code": "invalid_input", "message": str(error), "severity": "blocking"}
-                ],
-                "dependencies": {},
-                "dependency_hash": content_hash({}),
-                "status": "blocked",
-            }
-            failure["calculation_hash"] = content_hash(failure)
-            section.calculation_json = canonical_json(failure)
-            section.calculation_status = "blocked"
-            section.calculation_hash = str(failure["calculation_hash"])
-            section.calculated_at = now_text()
-            section.dependency_hash = str(failure["dependency_hash"])
-            section.dependency_status = "current"
+            _apply_uncalculated_state(db, quote, section, error=error)
         if section.status in {"approved", "pending_review", "na_pending"}:
             section.status = "rejected"
             section.review_comment = f"{change_description}，请重新核价并提交"
@@ -4997,12 +5097,18 @@ def archive_quote(
         ("sales-business",),
     )
     selected_quote = quote
-    batch_quotes = get_quote_batch_rows(db, quote)
-    for item in batch_quotes:
-        _ensure_active(item)
+    batch_quotes = document_versions(db, quote)
+    if any(item.module_version == "v4" and item.final_release_status == "issued" for item in batch_quotes):
+        raise HTTPException(409, "报价含已输出版本，请在方案面板逐版归档，保留历史文件")
+    if not payload.reason.strip():
+        raise HTTPException(400, "请填写归档原因")
     _check_revision(quote.header_revision, payload.revision, "报价头")
+    archive_group = uuid4().hex
     timestamp = now_text()
     for item in batch_quotes:
+        if item.status == "archived":
+            continue
+        previous_status = item.status
         old_revision = item.header_revision
         item.status = "archived"
         item.header_revision += 1
@@ -5020,7 +5126,8 @@ def archive_quote(
             new_revision=item.header_revision,
             reason=payload.reason,
             detail=json.dumps(
-                {"batch_id": item.batch_id or item.id, "batch_size": len(batch_quotes)},
+                {"batch_id": item.batch_id or item.id, "batch_size": len(batch_quotes),
+                 "previous_status": previous_status, "archive_group": archive_group},
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -5034,6 +5141,74 @@ def archive_quote(
     db.commit()
     db.refresh(selected_quote)
     return quote_to_out(db, selected_quote)
+
+
+@quote_write
+def restore_quote(db: Session, quote_id: str, payload: InternalQuoteArchiveRequest,
+                  user: AuthContext, request: Request | None = None) -> InternalQuoteOut:
+    quote = _get_quote(db, quote_id)
+    ensure_quote_permission(db, user, "internal_quote:archive", quote.factory_id, ("sales-business",))
+    _check_revision(quote.header_revision, payload.revision, "报价头")
+    if not payload.reason.strip():
+        raise HTTPException(400, "请填写恢复整单的原因")
+    if quote.status != "archived":
+        raise HTTPException(409, "此报价未整单归档，请重新读取归档状态")
+
+    def archive_record(item):
+        return db.scalar(select(InternalQuoteAuditLog).where(
+            InternalQuoteAuditLog.quote_id == item.id, InternalQuoteAuditLog.action == "archive",
+        ).order_by(InternalQuoteAuditLog.new_revision.desc(), InternalQuoteAuditLog.created_at.desc()))
+
+    source_record = archive_record(quote)
+    group = _json_object(source_record.detail).get("archive_group") if source_record else None
+    rows = document_versions(db, quote) if group else get_quote_batch_rows(db, quote)
+    archived_identity = (quote.archived_at, quote.archived_by)
+    restored = []
+    for item in rows:
+        if item.status != "archived":
+            continue
+        record = archive_record(item)
+        detail = _json_object(record.detail) if record else {}
+        if group and detail.get("archive_group") != group:
+            continue
+        if not group and (item.archived_at, item.archived_by) != archived_identity:
+            continue
+        previous = detail.get("previous_status")
+        if not previous:
+            # Old archives have no status snapshot. Recover only from retained
+            # workflow evidence; never turn approved/pending/issued into drafts.
+            if item.final_release_status == "issued":
+                previous = "exported"
+            elif item.final_release_status == "pending":
+                previous = "final_reviewing"
+            elif item.final_release_status == "approved":
+                exports = db.scalars(select(InternalQuoteExportFile).where(
+                    InternalQuoteExportFile.quote_id == item.id,
+                    InternalQuoteExportFile.release_stage == "p4_final_approved",
+                ))
+                previous = "exported" if any(_json_object(row.export_manifest_json).get(
+                    "final_release_revision") == item.final_release_revision for row in exports) else "fully_approved"
+            elif item.module_version in {"v2", "v3", "v4"}:
+                item.status = "drafting"
+                _derive_quote_status(db, item)
+                previous = item.status
+                if item.module_version == "v3" and item.final_release_status in {"rejected", "invalidated"}:
+                    previous = "rejected"
+            else:
+                raise HTTPException(409, "历史报价缺少可验证的流程状态，无法安全恢复，请联系管理员核对")
+        old_revision = item.header_revision
+        item.status = previous
+        item.header_revision += 1
+        item.archived_by = item.archived_at = item.archive_reason = ""
+        item.updated_at = now_text()
+        _add_audit(db, item, user, "restore", department="sales", old_revision=old_revision,
+                   new_revision=item.header_revision, reason=payload.reason,
+                   detail=json.dumps({"restored_status": previous, "archive_group": group}, ensure_ascii=False), request=request)
+        restored.append(item.id)
+    if not restored:
+        raise HTTPException(409, "未找到可恢复的归档记录，请重新读取")
+    db.commit()
+    return quote_to_out(db, quote)
 
 
 @quote_write

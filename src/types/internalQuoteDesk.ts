@@ -266,6 +266,8 @@ export interface InternalQuote {
   currentFormulaVersion: string
   moduleVersion: string
   headerRevision: number
+  versionArchived?: boolean
+  documentArchive?: { quote_id: string; revision: number; reason: string } | null
   finalReleaseStatus: string
   factoryPriceHkd: number
   summaryComponents: Record<string, number>

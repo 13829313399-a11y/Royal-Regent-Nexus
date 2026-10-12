@@ -294,8 +294,8 @@ const rr2T3Fields = [
 ] as const
 const rr2T4Fields = [
   ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', null],
-  ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类13%', 11.5],
-  ['sewcloth13', '车衣物料退税（仅华康C/D）', null], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
+  ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类（不计税）', null],
+  ['sewcloth13', '车衣类（不计税）', null], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
   ['tax13b', '含税13%类', 11.5],
 ] as const
 
@@ -498,6 +498,8 @@ function toQuote(
     currentFormulaVersion: extras.summary?.current_formula_version || source.formula_version,
     moduleVersion: source.module_version,
     headerRevision: source.header_revision,
+    versionArchived: source.version_archived,
+    documentArchive: source.document_archive,
     finalReleaseStatus: source.final_release_status,
     factoryPriceHkd: numberValue(extras.summary?.factory_price_hkd),
     summaryComponents: Object.fromEntries(Object.entries(extras.summary?.components_hkd ?? {}).map(([key, value]) => [key, numberValue(value)])),
@@ -1502,6 +1504,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     archiveQuote(quoteId: string, revision: number, reason: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.archiveQuote(quoteId, revision, reason))
     },
+    restoreQuote(quoteId: string, revision: number, reason: string) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.restoreQuote(quoteId, revision, reason))
+    },
     syncReferenceSnapshot(quoteId: string, revision: number, reason: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.syncReferenceSnapshot(quoteId, revision, reason))
     },
@@ -1521,11 +1526,11 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         material_prices: materialPrices,
       }))
     },
-    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File) {
+    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File, draft?: { revision: number; payload: Record<string, unknown> }) {
       this.fileBusy = true
       this.errorMessage = ''
       try {
-        return await internalQuoteApi.previewImport(quoteId, importType, file)
+        return await internalQuoteApi.previewImport(quoteId, importType, file, draft)
       } catch (error) {
         const wrapped = mutationError(error)
         this.errorMessage = wrapped.message

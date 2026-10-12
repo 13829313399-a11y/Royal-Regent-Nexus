@@ -41,7 +41,8 @@ const seriesExportOpen = ref(false)
 const totalHkd = computed(() => quote.value.factoryPriceHkd)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
 const isDirectOutput = computed(() => quote.value.moduleVersion === 'v4')
-const eligible = computed(() => isDirectOutput.value ? quote.value.status !== 'archived' : ['released', 'exported'].includes(quote.value.status))
+const archived = computed(() => Boolean(quote.value.documentArchive || quote.value.versionArchived || quote.value.status === 'archived'))
+const eligible = computed(() => !archived.value && (isDirectOutput.value || ['released', 'exported'].includes(quote.value.status)))
 const canExport = computed(() => authStore.can('internal_quote:export', quote.value.factoryId, 'sales-business'))
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignQuote = computed(() => isForeignFactory(authStore, quote.value.factoryId))
@@ -51,6 +52,7 @@ const getQuoteRoute = (path: string) => getFactoryScopedRoute(
   isFactoryContextId(quote.value.factoryId) ? quote.value.factoryId : 'huaxing',
 )
 const exportStatusLabel = computed(() => {
+  if (archived.value) return '报价已归档，请返回协作页恢复后输出；历史文件仍可下载'
   if (isDirectOutput.value) return canExport.value ? quote.value.status === 'exported' ? '已输出并冻结，可下载' : '可直接输出，保存后由系统检查' : '当前账号没有输出权限'
   if (!eligible.value) return '尚未最终放行'
   if (canExport.value) return '已最终放行，可导出'
@@ -76,6 +78,7 @@ async function confirmExport() {
   message.value = ''
   errorMessage.value = ''
   try {
+    if (archived.value) throw new Error('报价已归档，请返回协作页恢复后再生成文件。')
     if (!canExport.value) throw new Error(isForeignQuote.value ? '跨厂报价仅供查看，不能生成受控文件。' : '当前账号没有受控导出权限。')
     if (!confirmChecked.value) throw new Error(isDirectOutput.value ? '请确认当前资料已核对，输出后此版将冻结保留。' : '请先确认导出 revision 与最终放行版本一致。')
     const created = isDirectOutput.value && quote.value.status !== 'exported'
@@ -95,6 +98,7 @@ async function confirmEngineeringExport() {
   message.value = ''
   errorMessage.value = ''
   try {
+    if (archived.value) throw new Error('报价已归档，请返回协作页恢复后再生成文件。')
     if (!canExport.value) throw new Error(isForeignQuote.value ? '跨厂报价仅供查看，不能生成工程资料。' : '当前账号没有工程资料导出权限。')
     if (!confirmChecked.value) throw new Error(isDirectOutput.value ? '请确认当前资料已核对，输出后此版将冻结保留。' : '请先确认导出 revision 与最终放行版本一致。')
     const fileName = `${quote.value.quoteNo}_${quote.value.versionLabel}_工程资料.xlsx`
@@ -181,7 +185,7 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
         <section class="quote-export-checklist"><h2><FileCheck2 aria-hidden="true" />导出前检查</h2><p><CheckCircle2 aria-hidden="true" />{{ isDirectOutput ? '参与部门内容均已保存且计算有效' : '所有参与分段均已审批或获批不适用' }}</p><p><CheckCircle2 aria-hidden="true" />{{ isDirectOutput ? '直接输出，无需人工审核' : '业务最终放行完成' }}</p><p><CheckCircle2 aria-hidden="true" />参考快照与公式版本已锁定</p><p><CheckCircle2 aria-hidden="true" />无阻断级计算警告</p></section>
         <label class="quote-confirm-check"><input v-model="confirmChecked" type="checkbox"><span>{{ isDirectOutput ? '确认当前资料已核对；首次输出将冻结保留此版，后续修改需复制新版' : '确认当前分段 revision 集合与最终放行时一致' }}</span></label>
         <div class="quote-export-actions">
-          <button v-if="batchProducts.length > 1 && quote.status !== 'archived' && canExport" type="button" class="quote-export-button" :disabled="quoteStore.submitting" @click="seriesExportOpen = true"><Download />系列报价一起输出</button>
+          <button v-if="batchProducts.length > 1 && !archived && quote.status !== 'archived' && canExport" type="button" class="quote-export-button" :disabled="quoteStore.submitting" @click="seriesExportOpen = true"><Download />系列报价一起输出</button>
           <button type="button" class="quote-export-button" :disabled="!eligible || !canExport || quoteStore.submitting || quoteStore.fileBusy" @click="confirmExport"><Download aria-hidden="true" />生成内部报价 XLSX</button>
           <button type="button" class="quote-export-button engineering" :disabled="(isDirectOutput && quote.status !== 'exported') || !eligible || !canExport || quoteStore.submitting || quoteStore.fileBusy" @click="confirmEngineeringExport"><Download aria-hidden="true" />生成工程资料 XLSX</button>
         </div>

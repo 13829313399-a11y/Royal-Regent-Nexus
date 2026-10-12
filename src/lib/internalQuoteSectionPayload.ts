@@ -95,7 +95,7 @@ export interface EngineeringMoldRow extends QuotePricingMetadata {
   caixing_mold_cost_hkd: number
   caixing_customer_mold_cost_hkd: number
 }
-export interface EngineeringProductionMoldCostRow { item: string; cost_rmb: number }
+export interface EngineeringProductionMoldCostRow { item: string; cost_rmb: number; import_batch_id?: string; mold_import_default_rmb?: string }
 export interface SalesDimensions { length: number; width: number; height: number }
 export type SalesPackagingCategory = 'blister' | 'color_box_inner_card' | 'leaflet_manual' | 'other_purchase'
 export interface SalesPackagingMaterialRow extends QuotePricingMetadata {
@@ -1552,7 +1552,11 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     const hasProductionMoldCosts = Array.isArray(source.production_mold_costs)
     const legacyMoldTotalRmb = normalizedMolds.reduce((total, row) => total + row.cost_rmb, 0)
     const productionMoldCosts: EngineeringProductionMoldCostRow[] = hasProductionMoldCosts
-      ? rows(source.production_mold_costs).map((row) => ({ item: textValue(row.item ?? row.name), cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb) }))
+      ? rows(source.production_mold_costs).map((row) => ({
+          ...importBatchMetadata(row),
+          ...(row.mold_import_default_rmb != null ? { mold_import_default_rmb: textValue(row.mold_import_default_rmb) } : {}),
+          item: textValue(row.item ?? row.name), cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb),
+        }))
       : [
           { item: '模具费用', cost_rmb: legacyMoldTotalRmb },
           { item: '超声模费用', cost_rmb: 0 },

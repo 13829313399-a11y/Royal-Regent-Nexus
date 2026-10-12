@@ -2,7 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
-import type { ApiInternalQuoteSection } from '@/api/internalQuote'
+import type { ApiInternalQuoteSection, ApiInternalQuoteImportPreview } from '@/api/internalQuote'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 import InternalQuoteSectionEditor from '../InternalQuoteSectionEditor.vue'
 
@@ -31,7 +31,62 @@ function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>)
 
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = '' })
 
+const moldPreview = {
+  batch_id: 'mold-preview', target_revision: 5, import_type: 'mold', source_file_name: '模具报价.xlsx',
+  sheet_name: '01', header_row: 11, row_count: 1, warnings: [],
+  diff_summary: { existing_rows: 0, imported_rows: 1, replace_result_rows: 1 },
+} as unknown as ApiInternalQuoteImportPreview
+
+async function chooseMoldFile(wrapper: ReturnType<typeof setup>['wrapper']) {
+  const input = wrapper.get('input[type="file"]')
+  Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['xlsx'], '模具报价.xlsx')] })
+  await input.trigger('change')
+  await flushPromises()
+}
+
 describe('internal quote feedback regressions', () => {
+  it.each(['engineering', 'molding', 'sales'] as const)('keeps an untouched %s form clean before import', async code => {
+    const { wrapper } = setup(code, {})
+    await flushPromises()
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(wrapper.find('.dirty').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('previews and confirms a mold import with unsaved hardware without a separate save', async () => {
+    const { wrapper, save, store } = setup('engineering', {})
+    await wrapper.findAll('button').find(button => button.text() === '新增五金')!.trigger('click')
+    await wrapper.get('[aria-label="五金零件名称"]').setValue('螺丝')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(wrapper.text()).toContain('此状态包含五金、辅助材料及模具的修改')
+    const preview = vi.spyOn(store, 'previewImport').mockResolvedValue(moldPreview)
+    const draft = wrapper.vm.getWholeQuoteDraft().payload
+    const confirm = vi.spyOn(store, 'confirmImport').mockResolvedValue({ section: { revision: 6, payload: {
+      ...draft, molds: [{ item: '新模具', cost_rmb: 49500 }],
+      production_mold_costs: [{ item: '模具费用', cost_rmb: '49500', import_batch_id: 'mold-preview', mold_import_default_rmb: '49500' }],
+    } } })
+    await chooseMoldFile(wrapper)
+    expect(preview.mock.calls[0]?.[3]).toEqual({ revision: 5, payload: draft })
+    expect(save).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="save-department-draft"]').exists()).toBe(false)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(wrapper.get('.quote-import-preview').text()).toContain('将模具总价填入“模具费用”')
+    await wrapper.findAll('button').find(button => button.text() === '确认导入')!.trigger('click')
+    await flushPromises()
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ materials: [{ item: '螺丝' }], molds: [{ item: '新模具' }] })
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(save).not.toHaveBeenCalled()
+    const feeInput = wrapper.get('[aria-label="生产模具费用 RMB"]')
+    expect((feeInput.element as HTMLInputElement).value).toBe('49500')
+    await feeInput.setValue('50000')
+    expect(wrapper.vm.getWholeQuoteDraft().payload.production_mold_costs).toEqual([
+      { item: '模具费用', cost_rmb: 50000, import_batch_id: 'mold-preview', mold_import_default_rmb: '49500' },
+    ])
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    wrapper.unmount()
+  })
+
   it.each([false, true])('saves Dickie additions on returned legacy quotes over HTTP (whole review: %s)', async wholeQuoteReview => {
     const cryptoSource = globalThis.crypto
     vi.stubGlobal('crypto', { getRandomValues: cryptoSource.getRandomValues.bind(cryptoSource) })
@@ -58,6 +113,39 @@ describe('internal quote feedback regressions', () => {
       wrapper.unmount()
       vi.unstubAllGlobals()
     }
+  })
+
+  it.each(['cancel', 'failure'] as const)('keeps the unsaved form when import ends with %s', async outcome => {
+    const { wrapper, save, store } = setup('engineering', { molds: [{ item: '原模具' }] })
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('未保存模具')
+    const before = wrapper.vm.getWholeQuoteDraft().payload
+    vi.spyOn(store, 'previewImport').mockResolvedValue(moldPreview)
+    const confirm = vi.spyOn(store, 'confirmImport').mockRejectedValue(new Error('导入失败，保留输入'))
+    await chooseMoldFile(wrapper)
+    if (outcome === 'cancel') await wrapper.get('[aria-label="关闭导入预览"]').trigger('click')
+    else await wrapper.findAll('button').find(button => button.text() === '确认导入')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toEqual(before)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(save).not.toHaveBeenCalled()
+    expect(confirm).toHaveBeenCalledTimes(outcome === 'cancel' ? 0 : 1)
+    wrapper.unmount()
+  })
+
+  it('retains edits made while confirming an import and still accepts the imported molds', async () => {
+    const { wrapper, store } = setup('engineering', { materials: [{ item: '螺丝', category: 'hardware', quantity: 2, unit_price_rmb: 1 }] })
+    vi.spyOn(store, 'previewImport').mockResolvedValue(moldPreview)
+    let complete!: (result: unknown) => void
+    vi.spyOn(store, 'confirmImport').mockImplementation(() => new Promise(resolve => { complete = resolve }))
+    await chooseMoldFile(wrapper)
+    const submitted = wrapper.vm.getWholeQuoteDraft().payload
+    await wrapper.findAll('button').find(button => button.text() === '确认导入')!.trigger('click')
+    await wrapper.get('[aria-label="五金零件名称"]').setValue('请求期间修改')
+    complete({ section: { revision: 6, payload: { ...submitted, molds: [{ item: '新模具' }] } } })
+    await flushPromises()
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ materials: [{ item: '请求期间修改' }], molds: [{ item: '新模具' }] })
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    wrapper.unmount()
   })
 
   it('adds an electronic quote on HTTP browsers without crypto.randomUUID', async () => {
@@ -201,17 +289,19 @@ describe('internal quote feedback regressions', () => {
     wrapper.unmount()
   })
 
-  it('blocks a structured import before uploading when there are unsaved edits', async () => {
+  it('requires a fresh preview only when the form changed after preview', async () => {
     const { wrapper } = setup('engineering', { molds: [{ parts: [{ name: '后' }] }] })
     const store = useInternalQuoteDeskStore()
-    const preview = vi.spyOn(store, 'previewImport')
+    const preview = vi.spyOn(store, 'previewImport').mockResolvedValue(moldPreview)
+    const confirm = vi.spyOn(store, 'confirmImport')
     await wrapper.get('textarea[aria-label="模具名称"]').setValue('手工修改')
-    const input = wrapper.get('input[type="file"]')
-    Object.defineProperty(input.element, 'files', { value: [new File(['xlsx'], '报价.xlsx')] })
-    await input.trigger('change')
+    await chooseMoldFile(wrapper)
+    expect(preview).toHaveBeenCalled()
+    await wrapper.get('textarea[aria-label="模具名称"]').setValue('预览后再修改')
+    await wrapper.findAll('button').find(button => button.text() === '确认导入')!.trigger('click')
     await flushPromises()
-    expect(preview).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('请先保存草稿，再重新选择报价单导入')
+    expect(confirm).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('重新选择报价单预览后再确认')
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
     wrapper.unmount()
   })

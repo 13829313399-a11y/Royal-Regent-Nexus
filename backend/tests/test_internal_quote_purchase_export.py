@@ -113,9 +113,9 @@ def test_detached_electronic_purchase_moves_allocated_overhead_without_negative_
     _build_summary_sheet(workbook, SimpleNamespace(product_name='电子倍率验证', quote_no='DETACHED', customer='普通客', region_code='mainland', remark=''),
                          sections, snapshot, summary, context, [])
     sheet = workbook['报价明细']
-    rows = [row for row in range(1, sheet.max_row + 1) if sheet.cell(row, 3).value == 'IC（2pcs）']
-    assert len(rows) == 2
-    assert arithmetic_value(sheet, f'D{rows[0]}') == 0
-    assert sheet.cell(rows[1], 4).value.startswith('=0.52/$L$4*2*')
-    assert arithmetic_value(sheet, f'D{rows[1]}') + arithmetic_value(sheet, f'D{_find_row(sheet, 3, "LED（3pcs）")}') == pytest.approx(float(total), abs=.0005)
+    rows = [row for row in range(1, sheet.max_row + 1) if sheet.cell(row, 2).value == '电子']
+    assert len(rows) == 2  # Main and explicitly detached multiplier portions.
+    amounts = [arithmetic_value(sheet, f'D{row}') for row in rows]
+    assert all(amount >= 0 for amount in amounts)
+    assert sum(amounts) == pytest.approx(float(total), abs=.0005)
     workbook.close()
