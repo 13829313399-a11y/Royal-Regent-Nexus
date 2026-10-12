@@ -10,25 +10,23 @@ const label = computed(() => ({
   offline: '离线',
 })[props.state])
 
-const classes = computed(() => ({
-  online: 'bg-teal-50 text-teal-700 ring-teal-200',
-  away: 'bg-amber-50 text-amber-700 ring-amber-200',
-  offline: 'bg-slate-100 text-slate-600 ring-slate-200',
-})[props.state])
-
-const dotClasses = computed(() => ({
-  online: 'bg-teal-500',
-  away: 'bg-amber-500',
-  offline: 'bg-slate-400',
-})[props.state])
 </script>
 
 <template>
   <span
-    class="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-xs font-semibold ring-1 ring-inset"
-    :class="classes"
+    class="directory-presence"
+    :data-presence="state"
   >
-    <span class="size-1.5 rounded-full" :class="dotClasses" aria-hidden="true" />
+    <span class="directory-presence-dot" aria-hidden="true" />
     {{ label }}
   </span>
 </template>
+
+<style scoped>
+.directory-presence { display:inline-flex; flex-shrink:0; align-items:center; gap:7px; padding:4px 9px; border:1px solid #dce3e8; border-radius:999px; background:#f1f5f9; color:#526172; font-size:12px; font-weight:650; line-height:1.5; white-space:nowrap; }
+.directory-presence-dot { width:8px; height:8px; flex:none; border-radius:50%; background:#94a3b8; }
+.directory-presence[data-presence=online] { color:#166534; background:#ecfdf3; border-color:#bbebcd; }
+.directory-presence[data-presence=online] .directory-presence-dot { background:#16a34a; box-shadow:0 0 0 3px #16a34a14; }
+.directory-presence[data-presence=away] { color:#8a560c; background:#fff8e9; border-color:#f4dfb5; }
+.directory-presence[data-presence=away] .directory-presence-dot { background:#d99218; }
+</style>

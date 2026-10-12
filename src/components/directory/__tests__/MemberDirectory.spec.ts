@@ -96,6 +96,8 @@ describe('member directory experience', () => {
     })
     await flushPromises()
     expect(apiMocks.getMembers).toHaveBeenCalledTimes(1)
+    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ presence: 'online' }), expect.any(AbortSignal))
+    expect(document.body.querySelector('[data-presence="online"].directory-presence')?.textContent).toContain('在线')
 
     const search = document.body.querySelector<HTMLInputElement>('input[type="search"]')!
     search.value = '测试'
@@ -108,10 +110,10 @@ describe('member directory experience', () => {
     await flushPromises()
     expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ q: '测试' }), expect.any(AbortSignal))
 
-    const presence = document.body.querySelector<HTMLSelectElement>('select[aria-label="连接状态"]')!
-    presence.value = 'online'; presence.dispatchEvent(new Event('change', { bubbles: true }))
+    const presence = document.body.querySelector<HTMLButtonElement>('button[aria-label="全部成员"]')!
+    presence.click()
     await flushPromises()
-    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ presence: 'online', org_unit_id: 'huakang-a' }), expect.any(AbortSignal))
+    expect(apiMocks.getMembers).toHaveBeenLastCalledWith(expect.objectContaining({ presence: 'all', org_unit_id: 'huakang-a' }), expect.any(AbortSignal))
     const scope = document.body.querySelector<HTMLSelectElement>('select[aria-label="成员范围"]')!
     scope.value = 'all'; scope.dispatchEvent(new Event('change', { bubbles: true }))
     await flushPromises()
