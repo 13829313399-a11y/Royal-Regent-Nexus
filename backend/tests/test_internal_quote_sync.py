@@ -50,6 +50,7 @@ def test_sync_preview_preserves_packaging_and_rejects_stale_atomic_batch(monkeyp
         source = fill(client, create(client, 'SYNC'))
         first = fork(client, source)
         second = fork(client, source, name='吸塑包装')
+        first = current(client, first)  # The new sibling changes the shared version count.
         source = change_screw(client, source, .8)
         body = request_for(client, source, [first, second])
         plan = preview(client, source, body)
@@ -99,7 +100,8 @@ def test_issued_target_is_copied_and_original_export_unchanged(monkeypatch):
         assert saved['status'] == 'drafting'
         assert section(saved, 'engineering')['payload']['materials'][0]['unit_price_rmb'] == .9
         assert section(saved, 'sales')['payload'] == section(target, 'sales')['payload']
-        assert current(client, target) == target
+        expected_target = {**target, 'document_version_count': target['document_version_count'] + 1}
+        assert current(client, target) == expected_target
         assert client.get(url).content == original
 
 
@@ -111,6 +113,7 @@ def test_sync_rollback_and_permission_checks(monkeypatch):
         source = fill(client, create(client, 'SYNC-ATOMIC'))
         first = fork(client, source)
         second = fork(client, source, name='吸塑')
+        first = current(client, first)
         source = change_screw(client, source, 1)
         body = request_for(client, source, [first, second], True)
         body['preview_token'] = preview(client, source, body)['preview_token']

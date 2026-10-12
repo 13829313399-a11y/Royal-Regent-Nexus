@@ -40,6 +40,7 @@ export interface EngineeringMaterialRow extends QuotePricingMetadata {
   disney_included: number
 }
 export interface EngineeringMoldPartRow {
+  id?: string
   name: string
   color: string
   process: string
@@ -963,10 +964,6 @@ export function calculateEngineeringMaterialUnitHkd(row: DualCurrencyUnitPrice, 
   return calculatePackagingMaterialUnitHkd(row, rmbHkdRate)
 }
 
-export function calculateEngineeringMaterialEffectiveUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
-  return calculatePackagingMaterialEffectiveUnitRmb(row, rmbHkdRate)
-}
-
 export function calculateEngineeringMaterialEffectiveUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
   return calculatePackagingMaterialEffectiveUnitHkd(row, rmbHkdRate)
 }
@@ -1306,54 +1303,25 @@ export function splitEngineeringMoldPartNames(value: unknown): string[] {
   return expanded
 }
 
-export function previewEngineeringMoldPartSplit(value: unknown, existing: EngineeringMoldPartRow[]) {
-  const names = splitEngineeringMoldPartNames(value)
-  const matches = new Map<number, number>()
-  const used = new Set<number>()
-  // Reserve exact matches before attempting to repair legacy bare directions.
-  names.forEach((name, index) => {
-    const found = existing.findIndex((part, oldIndex) => !used.has(oldIndex) && part.name.trim() === name)
-    if (found >= 0) { matches.set(index, found); used.add(found) }
-  })
-  const directionMatches = (short: string, full: string) => (
-    /^[前后左右]$/.test(short) && (full.startsWith(short) || new RegExp(`${short}(?:[（(][^（）()]*[）)])?$`).test(full))
-  )
-  names.forEach((name, index) => {
-    if (matches.has(index)) return
-    const candidates = existing.flatMap((part, oldIndex) => !used.has(oldIndex) && directionMatches(part.name.trim(), name) ? [oldIndex] : [])
-    if (candidates.length !== 1) return
-    const oldIndex = candidates[0]!
-    const short = existing[oldIndex]!.name.trim()
-    if (names.filter((candidate, candidateIndex) => !matches.has(candidateIndex) && directionMatches(short, candidate)).length !== 1) return
-    matches.set(index, oldIndex)
-    used.add(oldIndex)
-  })
-  const proposed = names.map((name, index) => {
-    const oldIndex = matches.get(index)
-    const old = oldIndex === undefined ? undefined : existing[oldIndex]
-    const part: EngineeringMoldPartRow = old
-      ? (old.name === name ? old : { ...old, name })
-      : { name, color: '', process: '', process_unit_price_hkd: 0, unit_net_weight_g: 0, output_count: 1, quantity: 1 }
-    return { part, status: old ? 'matched' as const : 'added' as const }
-  })
-  const retained = existing.flatMap((part, index) => used.has(index) ? [] : [{ part, status: 'retained' as const }])
-  return { rows: [...proposed, ...retained], nameCount: names.length, retainedCount: retained.length }
-}
-
 function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPartRow[] {
-  const savedParts = rows(row.parts)
-  const sourceParts: Record<string, unknown>[] = savedParts.length
-    ? savedParts
-    : splitEngineeringMoldPartNames(row.item ?? row.name ?? row.chinese_name).map((name) => ({ name }))
-  return sourceParts.map((part) => ({
-    name: textValue(part.name ?? part.item),
-    color: textValue(part.color),
-    process: textValue(part.process),
-    process_unit_price_hkd: numberValue(part.process_unit_price_hkd),
-    unit_net_weight_g: numberValue(part.unit_net_weight_g ?? part.net_weight_g),
-    output_count: numberValue(part.output_count, 1),
-    quantity: numberValue(part.quantity, 1),
-  }))
+  // Opening or saving the ordinary form must never confirm an implicit split.
+  const sourceParts = rows(row.parts)
+  const occurrences = new Map<string, number>()
+  return sourceParts.map((part) => {
+    const name = textValue(part.name ?? part.item).trim()
+    const occurrence = (occurrences.get(name) ?? 0) + 1
+    occurrences.set(name, occurrence)
+    return {
+      id: textValue(part.id).trim() || `legacy-name:${JSON.stringify([name, occurrence])}`,
+      name: textValue(part.name ?? part.item),
+      color: textValue(part.color),
+      process: textValue(part.process),
+      process_unit_price_hkd: numberValue(part.process_unit_price_hkd),
+      unit_net_weight_g: numberValue(part.unit_net_weight_g ?? part.net_weight_g),
+      output_count: numberValue(part.output_count, 1),
+      quantity: numberValue(part.quantity, 1),
+    }
+  })
 }
 
 function electronicRows(value: unknown): ElectronicComponentRow[] {
@@ -1498,11 +1466,6 @@ export function calculateSewingBasePriceRmb(row: SewingMaterialRow, rmbHkdRate?:
   return Math.max(Number(row.usage) || 0, 0) * Math.max(Number(row.unit_price_rmb) || 0, 0)
 }
 
-export function calculateSewingRowTotalRmb(row: SewingMaterialRow, rmbHkdRate?: unknown) {
-  const markup = Math.max(Number(row.markup) || 0, 0) || 1
-  return calculateSewingBasePriceRmb(row, rmbHkdRate) * markup
-}
-
 export function calculateSewingExchangeRate(row: SewingMaterialRow, rmbHkdRate: unknown) {
   return positivePreviewNumber(row.exchange_rate) || positivePreviewNumber(rmbHkdRate)
 }
@@ -1524,11 +1487,6 @@ export function sewingGroupHasLaborLine(group: SewingGroup) {
   return group.materials.some((row) => `${row.item}${row.part}`.includes('人工'))
 }
 
-export function calculateSewingGroupTotalRmb(group: SewingGroup, rmbHkdRate?: unknown) {
-  const materialTotal = group.materials.reduce((total, row) => total + calculateSewingRowTotalRmb(row, rmbHkdRate), 0)
-  return materialTotal + (sewingGroupHasLaborLine(group) ? 0 : Math.max(Number(group.labor_rmb) || 0, 0))
-}
-
 export function calculateSewingGroupTotalHkd(group: SewingGroup, rmbHkdRate: unknown) {
   const materialTotal = group.materials.reduce(
     (total, row) => total + calculateSewingRowTotalHkd(row, rmbHkdRate),
@@ -1539,10 +1497,6 @@ export function calculateSewingGroupTotalHkd(group: SewingGroup, rmbHkdRate: unk
     ? Math.max(Number(group.labor_rmb) || 0, 0) / rate
     : 0
   return materialTotal + legacyLaborHkd
-}
-
-export function calculateSewingTotalRmb(payload: SewingPayload, rmbHkdRate?: unknown) {
-  return payload.groups.reduce((total, group) => total + calculateSewingGroupTotalRmb(group, rmbHkdRate), 0)
 }
 
 export function calculateSewingQuickTotalHkd(payload: SewingPayload) {

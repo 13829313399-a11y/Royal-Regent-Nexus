@@ -1,4 +1,5 @@
 import { mount, flushPromises, shallowMount } from '@vue/test-utils'
+import { reactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuthStore } from '@/stores/auth'
@@ -8,7 +9,8 @@ import { internalQuoteApi, type ApiInternalQuoteAlternativeFamily } from '@/api/
 import InternalQuoteAlternatives from '../InternalQuoteAlternatives.vue'
 import InternalQuoteCollaboration from '../InternalQuoteCollaboration.vue'
 
-vi.mock('vue-router', () => ({ useRoute: () => ({ params: { quoteId: 'q1' }, query: {} }), useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
+const routeState = reactive({ params: { quoteId: 'q1' }, query: {} })
+vi.mock('vue-router', () => ({ useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
 function family(): ApiInternalQuoteAlternativeFamily {
   return { family_id: 'family', revision: 3, selected_quote_id: '', items: ['q1', 'q2'].map((id, index) => ({
     quote_id: id, scenario_id: id, scenario_name: index ? '开窗盒' : '普通彩盒', version_number: 1, version_label: 'V1', source_quote_id: '', change_note: '', status: index ? 'exported' : 'drafting', issued_at: '', reported_at: '', created_at: '', quote_no: 'IQ', product_name: '巴士', customer: 'Dickie', quantity: 5000, archived: false,
@@ -26,9 +28,105 @@ function setup() {
   vi.spyOn(internalQuoteApi, 'get').mockResolvedValue({ sections: [] } as never)
   return { pinia, store, quote, auth }
 }
-beforeEach(() => { vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} }) })
+beforeEach(() => { routeState.params.quoteId = 'q1'; vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} }) })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('independent quotation alternatives', () => {
+  it('does not discard a new draft after leaving and returning while an old reload is pending', async () => {
+    const { pinia, store, quote } = setup()
+    store.quotes.push({ ...quote, id: 'q2' })
+    let mounted = 0
+    const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true, InternalQuoteSectionEditor: { template: '<div />', mounted() { mounted++ }, methods: { hasUnsavedChanges: () => true } } } } })
+    await flushPromises()
+    let resolveBatch!: () => void
+    vi.mocked(store.loadBatchProducts).mockImplementationOnce(() => new Promise<void>(resolve => { resolveBatch = resolve }))
+    store.conflictMessage = '版本冲突'; await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '放弃本地表单并重新读取')!.trigger('click'); await flushPromises()
+    routeState.params.quoteId = 'q2'; await flushPromises()
+    routeState.params.quoteId = 'q1'; await flushPromises()
+    const afterReturn = mounted
+    resolveBatch(); await flushPromises()
+    expect(mounted).toBe(afterReturn)
+    wrapper.unmount()
+  })
+  it('disables archived editing and output, then unlocks on restoration without rebuilding editors', async () => {
+    const { pinia } = setup()
+    let mounted = 0
+    const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true, InternalQuoteSectionEditor: { template: '<div />', mounted() { mounted++ }, methods: { hasUnsavedChanges: () => true } } } } })
+    await flushPromises()
+    const original = mounted
+    wrapper.findComponent(InternalQuoteAlternatives).vm.$emit('archiveState', true); await flushPromises()
+    expect(wrapper.findAll('button').find(b => b.text() === '直接输出并保留此版')!.attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').some(b => b.text() === '修改报价资料' || b.text() === '本报价专用料价')).toBe(false)
+    expect(wrapper.get('#quote-page-actions').text()).toContain('填写说明并确认恢复')
+    wrapper.findComponent(InternalQuoteAlternatives).vm.$emit('archiveState', false); await flushPromises()
+    expect(wrapper.findAll('button').find(b => b.text() === '直接输出并保留此版')!.attributes('disabled')).toBeUndefined()
+    expect(mounted).toBe(original)
+    wrapper.unmount()
+  })
+  it('restores the visible current archived version with its own reason while preserving local drafts', async () => {
+    const { pinia, quote } = setup()
+    const archived = family(); archived.items[0]!.archived = true
+    vi.spyOn(internalQuoteApi, 'listAlternatives').mockResolvedValue(archived)
+    const restore = vi.spyOn(internalQuoteApi, 'archiveAlternative').mockResolvedValue(family())
+    const wrapper = mount(InternalQuoteAlternatives, { props: { quote, hasUnsavedChanges: () => true }, global: { plugins: [pinia] } })
+    await flushPromises()
+    expect(wrapper.emitted('archiveState')).toEqual([[true]])
+    await wrapper.findAll('button').find(b => b.text() === '恢复显示')!.trigger('click')
+    const form = wrapper.get('form[aria-label="归档或恢复版本"]')
+    await form.trigger('submit'); await flushPromises()
+    expect(restore).not.toHaveBeenCalled()
+    expect(form.get('[role="alert"]').text()).toContain('填写')
+    await form.get('input').setValue('继续报价')
+    await form.trigger('submit'); await flushPromises()
+    expect(restore).toHaveBeenCalledWith('q1', { family_revision: 3, archived: false, reason: '继续报价' })
+    expect(wrapper.emitted('archiveState')).toEqual([[true], [false]])
+    expect(wrapper.emitted('changed')).toBeUndefined()
+    expect(wrapper.text()).toContain('本地未保存内容仍保留')
+    wrapper.unmount()
+  })
+  it('does not archive an unsaved current draft or send a request on cancellation', async () => {
+    const { pinia, quote } = setup()
+    const archive = vi.spyOn(internalQuoteApi, 'archiveAlternative')
+    const wrapper = mount(InternalQuoteAlternatives, { props: { quote, hasUnsavedChanges: () => true }, global: { plugins: [pinia] } })
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '归档此版')!.trigger('click')
+    const form = wrapper.get('form[aria-label="归档或恢复版本"]')
+    await form.get('input').setValue('暂不采用')
+    await form.trigger('submit'); await flushPromises()
+    expect(archive).not.toHaveBeenCalled()
+    expect(form.get('[role="alert"]').text()).toContain('先保存')
+    await form.findAll('button').find(b => b.text() === '取消')!.trigger('click')
+    expect(wrapper.find('form').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('shows direct output failures beside the clicked footer controls', async () => {
+    const { pinia, store } = setup()
+    vi.spyOn(store, 'directIssue').mockRejectedValue(new Error('啤机部须完成填写、保存及有效计算'))
+    const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true, InternalQuoteSectionEditor: { template: '<div />', methods: { hasUnsavedChanges: () => false } } } } })
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '直接输出并保留此版')!.trigger('click'); await flushPromises()
+    expect(wrapper.get('#quote-page-actions [role="alert"]').text()).toContain('啤机部')
+    expect(wrapper.text()).not.toContain('放弃本地表单并重新读取')
+    wrapper.unmount()
+  })
+  it('discards local editors only after an explicit successful reload', async () => {
+    const { pinia, store, quote } = setup()
+    let mounted = 0
+    const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true, InternalQuoteSectionEditor: { template: '<div />', mounted() { mounted++ }, methods: { hasUnsavedChanges: () => true } } } } })
+    await flushPromises()
+    const original = mounted
+    store.conflictMessage = '版本冲突'
+    await flushPromises()
+    vi.mocked(store.loadQuote).mockResolvedValueOnce(undefined)
+    await wrapper.findAll('button').find(b => b.text() === '放弃本地表单并重新读取')!.trigger('click'); await flushPromises()
+    expect(mounted).toBe(original)
+    expect(store.conflictMessage).toBe('版本冲突')
+    vi.mocked(store.loadQuote).mockResolvedValueOnce(quote)
+    await wrapper.findAll('button').find(b => b.text() === '放弃本地表单并重新读取')!.trigger('click'); await flushPromises()
+    expect(mounted).toBeGreaterThan(original)
+    expect(store.conflictMessage).toBe('')
+    wrapper.unmount()
+  })
   it('deletes an unused active draft only after confirmation and returns to its product', async () => {
     const { pinia, quote } = setup()
     const rows = family()
