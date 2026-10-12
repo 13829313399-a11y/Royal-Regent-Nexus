@@ -1,0 +1,2201 @@
+{
+  "fixture_version": 1,
+  "synthetic": true,
+  "not_live_evidence": true,
+  "description": "应用层合成SSE事件。events是权威有序流，ignored_deliveries是单独的负例输入，不是合法后端流。",
+  "cases": [
+    {
+      "id": "source-first-empty-later",
+      "synthetic": true,
+      "run_id": "fx-run-source-first-empty-later",
+      "request": {
+        "protocol_version": 2,
+        "client_request_id": "3e44460434c786019ae48b776bd84473",
+        "text": "合成问题：请查询公开资料。",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "on",
+        "page_context": null,
+        "context_selection": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-source-first-empty-later",
+          "seq": 1,
+          "message_id": "fx-message-source-first-empty-later",
+          "protocol_version": 2
+        },
+        {
+          "event": "response.phase",
+          "run_id": "fx-run-source-first-empty-later",
+          "seq": 2,
+          "phase": "tool_running"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-source-first-empty-later",
+          "seq": 3,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-source-first-empty-later",
+            "revision": 1,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-source-first-empty-later:web:search-1:1",
+                "run_id": "fx-run-source-first-empty-later",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-source-first-empty-later-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "running",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": null
+              }
+            ]
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-source-first-empty-later",
+          "seq": 4,
+          "channel": "answer",
+          "text": "合成资料说明可从来源核验[ref_1]。",
+          "part_id": "answer-1"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-source-first-empty-later",
+          "seq": 5,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-source-first-empty-later",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-source-first-empty-later:web:search-1:1",
+                "run_id": "fx-run-source-first-empty-later",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-source-first-empty-later-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-source-first-empty-later:binding:answer-1:[ref_1]",
+                "part_id": "answer-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-source-first-empty-later:web:search-1:1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "run.completed",
+          "run_id": "fx-run-source-first-empty-later",
+          "seq": 6,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 120,
+            "completion_tokens": 12,
+            "total_tokens": 132
+          },
+          "outcome": "answered",
+          "evidence_revision": 2
+        }
+      ],
+      "expected": {
+        "terminal_state": "completed",
+        "outcome": "answered",
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "合成资料说明可从来源核验[ref_1]。",
+            "part_id": "answer-1"
+          },
+          {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-source-first-empty-later",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-source-first-empty-later:web:search-1:1",
+                "run_id": "fx-run-source-first-empty-later",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-source-first-empty-later-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-source-first-empty-later:binding:answer-1:[ref_1]",
+                "part_id": "answer-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-source-first-empty-later:web:search-1:1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        ],
+        "source_ids": [
+          "fx-run-source-first-empty-later:web:search-1:1"
+        ],
+        "ui": {
+          "source_count": 1,
+          "new_search_confirmed": true
+        }
+      },
+      "provider_case_id": "native-source-first",
+      "checkpoints": [
+        {
+          "after_seq": 3,
+          "evidence_revision": 1,
+          "source_ids": [
+            "fx-run-source-first-empty-later:web:search-1:1"
+          ]
+        }
+      ],
+      "description": "上游后续search_results=[]不清掉本地已收到来源。",
+      "acceptance": [
+        "A07",
+        "B09",
+        "B10"
+      ]
+    },
+    {
+      "id": "late-source-split-marker",
+      "synthetic": true,
+      "run_id": "fx-run-late-source-split-marker",
+      "request": {
+        "protocol_version": 2,
+        "client_request_id": "b9e910ddbc1c6be53fd5fe4eb13b66bd",
+        "text": "合成问题：请查询公开资料。",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "on",
+        "page_context": null,
+        "context_selection": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-late-source-split-marker",
+          "seq": 1,
+          "message_id": "fx-message-late-source-split-marker",
+          "protocol_version": 2
+        },
+        {
+          "event": "response.phase",
+          "run_id": "fx-run-late-source-split-marker",
+          "seq": 2,
+          "phase": "tool_running"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-late-source-split-marker",
+          "seq": 3,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-late-source-split-marker",
+            "revision": 1,
+            "search": {
+              "requested_mode": "on",
+              "execution": "pending",
+              "evidence_level": "none",
+              "search_count": null,
+              "reason_code": null
+            },
+            "sources": [],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "running",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": null
+              }
+            ]
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-late-source-split-marker",
+          "seq": 4,
+          "channel": "answer",
+          "text": "合成资料说明[ref_",
+          "part_id": "answer-1"
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-late-source-split-marker",
+          "seq": 5,
+          "channel": "answer",
+          "text": "1]。\n\n`[ref_1]` 保持代码。\n\n```text\n[ref_1]\n```\n",
+          "part_id": "answer-1"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-late-source-split-marker",
+          "seq": 6,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-late-source-split-marker",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "pending",
+              "evidence_level": "none",
+              "search_count": null,
+              "reason_code": null
+            },
+            "sources": [],
+            "citations": [
+              {
+                "binding_id": "fx-run-late-source-split-marker:binding:answer-1:[ref_1]",
+                "part_id": "answer-1",
+                "marker": "[ref_1]",
+                "source_ids": [],
+                "resolution": "pending"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "running",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": null
+              }
+            ]
+          }
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-late-source-split-marker",
+          "seq": 7,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-late-source-split-marker",
+            "revision": 3,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-late-source-split-marker:web:search-1:1",
+                "run_id": "fx-run-late-source-split-marker",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-late-source-split-marker-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-late-source-split-marker:binding:answer-1:[ref_1]",
+                "part_id": "answer-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-late-source-split-marker:web:search-1:1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "run.completed",
+          "run_id": "fx-run-late-source-split-marker",
+          "seq": 8,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 80,
+            "completion_tokens": 30,
+            "total_tokens": 110
+          },
+          "outcome": "answered",
+          "evidence_revision": 3
+        }
+      ],
+      "expected": {
+        "terminal_state": "completed",
+        "outcome": "answered",
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "合成资料说明[ref_1]。\n\n`[ref_1]` 保持代码。\n\n```text\n[ref_1]\n```\n",
+            "part_id": "answer-1"
+          },
+          {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-late-source-split-marker",
+            "revision": 3,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-late-source-split-marker:web:search-1:1",
+                "run_id": "fx-run-late-source-split-marker",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-late-source-split-marker-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-late-source-split-marker:binding:answer-1:[ref_1]",
+                "part_id": "answer-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-late-source-split-marker:web:search-1:1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        ],
+        "source_ids": [
+          "fx-run-late-source-split-marker:web:search-1:1"
+        ],
+        "ui": {
+          "resolved_inline_link_count": 1,
+          "code_marker_count": 2
+        }
+      },
+      "provider_case_id": "native-late-source",
+      "checkpoints": [
+        {
+          "after_seq": 6,
+          "evidence_revision": 2,
+          "source_ids": [],
+          "binding_resolution": "pending"
+        }
+      ],
+      "description": "跨chunk marker仅在Markdown普通文本中绑定；两个代码中的marker保持原文。",
+      "acceptance": [
+        "B01",
+        "B02",
+        "B04"
+      ]
+    },
+    {
+      "id": "http200-without-evidence",
+      "synthetic": true,
+      "run_id": "fx-run-http200-without-evidence",
+      "request": {
+        "protocol_version": 2,
+        "client_request_id": "f101c812bb30116813f8650bf08f547b",
+        "text": "合成问题：请查询公开资料。",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "on",
+        "page_context": null,
+        "context_selection": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-http200-without-evidence",
+          "seq": 1,
+          "message_id": "fx-message-http200-without-evidence",
+          "protocol_version": 2
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-http200-without-evidence",
+          "seq": 2,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-http200-without-evidence",
+            "revision": 1,
+            "search": {
+              "requested_mode": "on",
+              "execution": "pending",
+              "evidence_level": "none",
+              "search_count": null,
+              "reason_code": null
+            },
+            "sources": [],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "running",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": null
+              }
+            ]
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-http200-without-evidence",
+          "seq": 3,
+          "channel": "answer",
+          "text": "本次未取得可核验的联网来源。你可以重新检索，或让我按一般知识继续。",
+          "part_id": "answer-1"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-http200-without-evidence",
+          "seq": 4,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-http200-without-evidence",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "unconfirmed",
+              "evidence_level": "none",
+              "search_count": null,
+              "reason_code": "search_evidence_missing"
+            },
+            "sources": [],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "run.completed",
+          "run_id": "fx-run-http200-without-evidence",
+          "seq": 5,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 900,
+            "completion_tokens": 35,
+            "total_tokens": 935
+          },
+          "outcome": "no_sources",
+          "evidence_revision": 2
+        }
+      ],
+      "expected": {
+        "terminal_state": "completed",
+        "outcome": "no_sources",
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "本次未取得可核验的联网来源。你可以重新检索，或让我按一般知识继续。",
+            "part_id": "answer-1"
+          },
+          {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-http200-without-evidence",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "unconfirmed",
+              "evidence_level": "none",
+              "search_count": null,
+              "reason_code": "search_evidence_missing"
+            },
+            "sources": [],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        ],
+        "source_ids": [],
+        "ui": {
+          "source_count": 0,
+          "new_search_confirmed": false,
+          "show_search_success": false
+        }
+      },
+      "provider_case_id": "native-http200-no-evidence",
+      "description": "HTTP200和较大token用量不能当作已搜索。",
+      "acceptance": [
+        "A05"
+      ]
+    },
+    {
+      "id": "confirmed-zero-sources",
+      "synthetic": true,
+      "run_id": "fx-run-confirmed-zero-sources",
+      "request": {
+        "protocol_version": 2,
+        "client_request_id": "adaa2fc62b454dd253960a28141509f4",
+        "text": "合成问题：请查询公开资料。",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "on",
+        "page_context": null,
+        "context_selection": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-confirmed-zero-sources",
+          "seq": 1,
+          "message_id": "fx-message-confirmed-zero-sources",
+          "protocol_version": 2
+        },
+        {
+          "event": "response.phase",
+          "run_id": "fx-run-confirmed-zero-sources",
+          "seq": 2,
+          "phase": "tool_running"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-confirmed-zero-sources",
+          "seq": 3,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-confirmed-zero-sources",
+            "revision": 1,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "none",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "running",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": null
+              }
+            ]
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-confirmed-zero-sources",
+          "seq": 4,
+          "channel": "answer",
+          "text": "已完成检索，暂未找到合适的来源。可以改关键词后再试。",
+          "part_id": "answer-1"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-confirmed-zero-sources",
+          "seq": 5,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-confirmed-zero-sources",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "none",
+              "search_count": 1,
+              "reason_code": "search_no_results"
+            },
+            "sources": [],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "run.completed",
+          "run_id": "fx-run-confirmed-zero-sources",
+          "seq": 6,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 50,
+            "completion_tokens": 18,
+            "total_tokens": 68
+          },
+          "outcome": "no_sources",
+          "evidence_revision": 2
+        }
+      ],
+      "expected": {
+        "terminal_state": "completed",
+        "outcome": "no_sources",
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "已完成检索，暂未找到合适的来源。可以改关键词后再试。",
+            "part_id": "answer-1"
+          },
+          {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-confirmed-zero-sources",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "none",
+              "search_count": 1,
+              "reason_code": "search_no_results"
+            },
+            "sources": [],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        ],
+        "source_ids": [],
+        "ui": {
+          "source_count": 0,
+          "new_search_confirmed": true,
+          "show_search_success": false
+        }
+      },
+      "provider_case_id": "native-count-zero-results",
+      "description": "提供方返回search次数1，但结果为空；必须与未确认搜索区分。",
+      "acceptance": [
+        "A06"
+      ]
+    },
+    {
+      "id": "cancel-retains-sources",
+      "synthetic": true,
+      "run_id": "fx-run-cancel-retains-sources",
+      "request": {
+        "protocol_version": 2,
+        "client_request_id": "6301d63b4018abb20127f413cf793f4a",
+        "text": "合成问题：请查询公开资料。",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "on",
+        "page_context": null,
+        "context_selection": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-cancel-retains-sources",
+          "seq": 1,
+          "message_id": "fx-message-cancel-retains-sources",
+          "protocol_version": 2
+        },
+        {
+          "event": "response.phase",
+          "run_id": "fx-run-cancel-retains-sources",
+          "seq": 2,
+          "phase": "tool_running"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-cancel-retains-sources",
+          "seq": 3,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-cancel-retains-sources",
+            "revision": 1,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-cancel-retains-sources:web:search-1:1",
+                "run_id": "fx-run-cancel-retains-sources",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-cancel-retains-sources-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "running",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": null
+              }
+            ]
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-cancel-retains-sources",
+          "seq": 4,
+          "channel": "answer",
+          "text": "已取得一份合成来源，正在整理",
+          "part_id": "answer-1"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-cancel-retains-sources",
+          "seq": 5,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-cancel-retains-sources",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-cancel-retains-sources:web:search-1:1",
+                "run_id": "fx-run-cancel-retains-sources",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-cancel-retains-sources-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "cancelled",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "run.cancelled",
+          "run_id": "fx-run-cancel-retains-sources",
+          "seq": 6,
+          "code": "cancelled",
+          "message": "已停止，已有内容与来源保留。",
+          "retryable": false
+        }
+      ],
+      "expected": {
+        "terminal_state": "cancelled",
+        "outcome": null,
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "已取得一份合成来源，正在整理",
+            "part_id": "answer-1"
+          },
+          {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-cancel-retains-sources",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-cancel-retains-sources:web:search-1:1",
+                "run_id": "fx-run-cancel-retains-sources",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-cancel-retains-sources-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "cancelled",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        ],
+        "source_ids": [
+          "fx-run-cancel-retains-sources:web:search-1:1"
+        ],
+        "ui": {
+          "source_count": 1,
+          "show_completed": false
+        }
+      },
+      "ignored_deliveries": [
+        {
+          "reason": "after_terminal",
+          "event": {
+            "event": "response.delta",
+            "run_id": "fx-run-cancel-retains-sources",
+            "seq": 7,
+            "channel": "answer",
+            "part_id": "answer-1",
+            "text": "不应出现的晚到文本"
+          }
+        },
+        {
+          "reason": "after_terminal",
+          "event": {
+            "event": "run.completed",
+            "run_id": "fx-run-cancel-retains-sources",
+            "seq": 8,
+            "finish_reason": "stop",
+            "usage": {
+              "prompt_tokens": 100,
+              "completion_tokens": 20,
+              "total_tokens": 120
+            },
+            "outcome": "answered"
+          }
+        }
+      ],
+      "description": "终态后即使seq更大也不翻转为完成、不追加晚到文本。",
+      "acceptance": [
+        "B09",
+        "B11",
+        "C04"
+      ]
+    },
+    {
+      "id": "two-steps-ref1",
+      "synthetic": true,
+      "run_id": "fx-run-two-steps-ref1",
+      "request": {
+        "protocol_version": 2,
+        "client_request_id": "6b26491ea927e4dd795b7083430157f8",
+        "text": "合成问题：请查询公开资料。",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "on",
+        "page_context": null,
+        "context_selection": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-two-steps-ref1",
+          "seq": 1,
+          "message_id": "fx-message-two-steps-ref1",
+          "protocol_version": 2
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-two-steps-ref1",
+          "seq": 2,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-two-steps-ref1",
+            "revision": 1,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": 1,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-two-steps-ref1:web:search-1:1",
+                "run_id": "fx-run-two-steps-ref1",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-two-steps-ref1-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-two-steps-ref1",
+          "seq": 3,
+          "channel": "answer",
+          "text": "第一步取得的资料[ref_1]。",
+          "part_id": "answer-step-1"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-two-steps-ref1",
+          "seq": 4,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-two-steps-ref1",
+            "revision": 2,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": null,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-two-steps-ref1:web:search-1:1",
+                "run_id": "fx-run-two-steps-ref1",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-two-steps-ref1-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              },
+              {
+                "source_id": "fx-run-two-steps-ref1:web:search-2:1",
+                "run_id": "fx-run-two-steps-ref1",
+                "title": "合成同站资料 A 第二次返回",
+                "kind": "web",
+                "step_id": "search-2",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-two-steps-ref1-search-2",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:02Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-two-steps-ref1:binding:answer-step-1:[ref_1]",
+                "part_id": "answer-step-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-two-steps-ref1:web:search-1:1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              },
+              {
+                "step_id": "search-2",
+                "kind": "search",
+                "status": "running",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": null
+              }
+            ]
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-two-steps-ref1",
+          "seq": 5,
+          "channel": "answer",
+          "text": "第二步对照结果[ref_1]。",
+          "part_id": "answer-step-2"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-two-steps-ref1",
+          "seq": 6,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-two-steps-ref1",
+            "revision": 3,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": null,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-two-steps-ref1:web:search-1:1",
+                "run_id": "fx-run-two-steps-ref1",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-two-steps-ref1-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              },
+              {
+                "source_id": "fx-run-two-steps-ref1:web:search-2:1",
+                "run_id": "fx-run-two-steps-ref1",
+                "title": "合成同站资料 A 第二次返回",
+                "kind": "web",
+                "step_id": "search-2",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-two-steps-ref1-search-2",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:02Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-two-steps-ref1:binding:answer-step-1:[ref_1]",
+                "part_id": "answer-step-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-two-steps-ref1:web:search-1:1"
+                ],
+                "resolution": "resolved"
+              },
+              {
+                "binding_id": "fx-run-two-steps-ref1:binding:answer-step-2:[ref_1]",
+                "part_id": "answer-step-2",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-two-steps-ref1:web:search-2:1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              },
+              {
+                "step_id": "search-2",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "run.completed",
+          "run_id": "fx-run-two-steps-ref1",
+          "seq": 7,
+          "finish_reason": "stop",
+          "usage": null,
+          "outcome": "answered",
+          "usage_summary": {
+            "schema_version": 2,
+            "complete": false,
+            "tokens": null,
+            "search_count": null,
+            "steps": [
+              {
+                "step_id": "search-1",
+                "provider_request_id": "fx-provider-fx-run-two-steps-ref1-search-1",
+                "tokens": {
+                  "prompt_tokens": 100,
+                  "completion_tokens": 20,
+                  "total_tokens": 120
+                },
+                "search_count": 1
+              },
+              {
+                "step_id": "search-2",
+                "provider_request_id": "fx-provider-fx-run-two-steps-ref1-search-2",
+                "tokens": null,
+                "search_count": null
+              }
+            ]
+          },
+          "evidence_revision": 3
+        }
+      ],
+      "expected": {
+        "terminal_state": "completed",
+        "outcome": "answered",
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "第一步取得的资料[ref_1]。",
+            "part_id": "answer-step-1"
+          },
+          {
+            "type": "text",
+            "text": "第二步对照结果[ref_1]。",
+            "part_id": "answer-step-2"
+          },
+          {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-two-steps-ref1",
+            "revision": 3,
+            "search": {
+              "requested_mode": "on",
+              "execution": "confirmed",
+              "evidence_level": "results_returned",
+              "search_count": null,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-two-steps-ref1:web:search-1:1",
+                "run_id": "fx-run-two-steps-ref1",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "search-1",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-two-steps-ref1-search-1",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              },
+              {
+                "source_id": "fx-run-two-steps-ref1:web:search-2:1",
+                "run_id": "fx-run-two-steps-ref1",
+                "title": "合成同站资料 A 第二次返回",
+                "kind": "web",
+                "step_id": "search-2",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-two-steps-ref1-search-2",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-12T08:00:02Z",
+                "published_at": null,
+                "evidence_level": "search_result"
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-two-steps-ref1:binding:answer-step-1:[ref_1]",
+                "part_id": "answer-step-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-two-steps-ref1:web:search-1:1"
+                ],
+                "resolution": "resolved"
+              },
+              {
+                "binding_id": "fx-run-two-steps-ref1:binding:answer-step-2:[ref_1]",
+                "part_id": "answer-step-2",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-two-steps-ref1:web:search-2:1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "search-1",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              },
+              {
+                "step_id": "search-2",
+                "kind": "search",
+                "status": "completed",
+                "label": "合成公开检索",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        ],
+        "source_ids": [
+          "fx-run-two-steps-ref1:web:search-1:1",
+          "fx-run-two-steps-ref1:web:search-2:1"
+        ],
+        "ui": {
+          "source_count": 2,
+          "display_url_group_count": 1,
+          "resolved_inline_link_count": 2
+        }
+      },
+      "description": "同URL可合并视觉卡；两step/ref1各自绑定本part，不丢别名；未知第二步用量不记0。",
+      "acceptance": [
+        "B03",
+        "B08"
+      ]
+    },
+    {
+      "id": "reuse-old-source",
+      "synthetic": true,
+      "run_id": "fx-run-reuse-old-source",
+      "request": {
+        "protocol_version": 2,
+        "client_request_id": "b74b33ba1b1076535ce7ba79c260b2bf",
+        "text": "合成追问：比较上轮的资料，不必重新搜索。",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "auto",
+        "page_context": null,
+        "context_selection": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-reuse-old-source",
+          "seq": 1,
+          "message_id": "fx-message-reuse-old-source",
+          "protocol_version": 2
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-reuse-old-source",
+          "seq": 2,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-reuse-old-source",
+            "revision": 1,
+            "search": {
+              "requested_mode": "auto",
+              "execution": "skipped",
+              "evidence_level": "results_returned",
+              "search_count": 0,
+              "reason_code": "history_sources_reused"
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-reuse-old-source:web:history-reuse:1",
+                "run_id": "fx-run-reuse-old-source",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "history-reuse",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-original-search-original",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-11T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result",
+                "origin": {
+                  "run_id": "fx-run-original",
+                  "source_id": "fx-run-original:web:search-original:1"
+                }
+              }
+            ],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "synthesize-1",
+                "kind": "synthesize",
+                "status": "running",
+                "label": "合成资料整理",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": null
+              }
+            ]
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-reuse-old-source",
+          "seq": 3,
+          "channel": "answer",
+          "text": "沿用上轮检索资料进行比较[ref_1]。原检索时间未变。",
+          "part_id": "answer-1"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-reuse-old-source",
+          "seq": 4,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-reuse-old-source",
+            "revision": 2,
+            "search": {
+              "requested_mode": "auto",
+              "execution": "skipped",
+              "evidence_level": "results_returned",
+              "search_count": 0,
+              "reason_code": "history_sources_reused"
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-reuse-old-source:web:history-reuse:1",
+                "run_id": "fx-run-reuse-old-source",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "history-reuse",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-original-search-original",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-11T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result",
+                "origin": {
+                  "run_id": "fx-run-original",
+                  "source_id": "fx-run-original:web:search-original:1"
+                }
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-reuse-old-source:binding:answer-1:[ref_1]",
+                "part_id": "answer-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-reuse-old-source:web:history-reuse:1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "synthesize-1",
+                "kind": "synthesize",
+                "status": "completed",
+                "label": "合成资料整理",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "run.completed",
+          "run_id": "fx-run-reuse-old-source",
+          "seq": 5,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 180,
+            "completion_tokens": 28,
+            "total_tokens": 208
+          },
+          "outcome": "answered",
+          "evidence_revision": 2
+        }
+      ],
+      "expected": {
+        "terminal_state": "completed",
+        "outcome": "answered",
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "沿用上轮检索资料进行比较[ref_1]。原检索时间未变。",
+            "part_id": "answer-1"
+          },
+          {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-reuse-old-source",
+            "revision": 2,
+            "search": {
+              "requested_mode": "auto",
+              "execution": "skipped",
+              "evidence_level": "results_returned",
+              "search_count": 0,
+              "reason_code": "history_sources_reused"
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-reuse-old-source:web:history-reuse:1",
+                "run_id": "fx-run-reuse-old-source",
+                "title": "合成公开资料 A（非真实网页）",
+                "kind": "web",
+                "step_id": "history-reuse",
+                "provider": "dashscope_multimodal",
+                "provider_ref": "1",
+                "provider_request_id": "fx-provider-fx-run-original-search-original",
+                "url": "https://sources.example.test/material/a",
+                "site_name": "Synthetic Sources",
+                "retrieved_at": "2026-10-11T08:00:00Z",
+                "published_at": null,
+                "evidence_level": "search_result",
+                "origin": {
+                  "run_id": "fx-run-original",
+                  "source_id": "fx-run-original:web:search-original:1"
+                }
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-reuse-old-source:binding:answer-1:[ref_1]",
+                "part_id": "answer-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-reuse-old-source:web:history-reuse:1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "synthesize-1",
+                "kind": "synthesize",
+                "status": "completed",
+                "label": "合成资料整理",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        ],
+        "source_ids": [
+          "fx-run-reuse-old-source:web:history-reuse:1"
+        ],
+        "ui": {
+          "source_count": 1,
+          "new_search_confirmed": false,
+          "search_adapter_calls": 0,
+          "label": "沿用上轮资料"
+        }
+      },
+      "seed_sources": [
+        {
+          "source_id": "fx-run-original:web:search-original:1",
+          "run_id": "fx-run-original",
+          "title": "合成公开资料 A（非真实网页）",
+          "kind": "web",
+          "step_id": "search-original",
+          "provider": "dashscope_multimodal",
+          "provider_ref": "1",
+          "provider_request_id": "fx-provider-fx-run-original-search-original",
+          "url": "https://sources.example.test/material/a",
+          "site_name": "Synthetic Sources",
+          "retrieved_at": "2026-10-11T08:00:00Z",
+          "published_at": null,
+          "evidence_level": "search_result"
+        }
+      ],
+      "description": "新run重新登记source_id+origin，保留原时间/请求ID，不重搜。",
+      "acceptance": [
+        "B13"
+      ]
+    },
+    {
+      "id": "off-normal-chat",
+      "synthetic": true,
+      "run_id": "fx-run-off-normal-chat",
+      "request": {
+        "protocol_version": 2,
+        "client_request_id": "f97834521a556958cb2876072130732b",
+        "text": "不要联网，请润色这段关于最新排期的通知。",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null,
+        "context_selection": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-off-normal-chat",
+          "seq": 1,
+          "message_id": "fx-message-off-normal-chat",
+          "protocol_version": 2
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-off-normal-chat",
+          "seq": 2,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-off-normal-chat",
+            "revision": 1,
+            "search": {
+              "requested_mode": "off",
+              "execution": "not_requested",
+              "evidence_level": "none",
+              "search_count": 0,
+              "reason_code": null
+            },
+            "sources": [],
+            "citations": [],
+            "activities": []
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-off-normal-chat",
+          "seq": 3,
+          "channel": "answer",
+          "text": "下面是润色后的合成通知：请查收本次排期安排。",
+          "part_id": "answer-1"
+        },
+        {
+          "event": "run.completed",
+          "run_id": "fx-run-off-normal-chat",
+          "seq": 4,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 35,
+            "completion_tokens": 17,
+            "total_tokens": 52
+          },
+          "outcome": "answered",
+          "evidence_revision": 1
+        }
+      ],
+      "expected": {
+        "terminal_state": "completed",
+        "outcome": "answered",
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "下面是润色后的合成通知：请查收本次排期安排。",
+            "part_id": "answer-1"
+          },
+          {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-off-normal-chat",
+            "revision": 1,
+            "search": {
+              "requested_mode": "off",
+              "execution": "not_requested",
+              "evidence_level": "none",
+              "search_count": 0,
+              "reason_code": null
+            },
+            "sources": [],
+            "citations": [],
+            "activities": []
+          }
+        ],
+        "source_ids": [],
+        "ui": {
+          "search_adapter_calls": 0,
+          "source_count": 0
+        }
+      },
+      "description": "关闭联网时不因“最新”等词调用搜索。",
+      "acceptance": [
+        "A02"
+      ]
+    },
+    {
+      "id": "legacy-v1-off",
+      "synthetic": true,
+      "run_id": "fx-run-legacy-v1-off",
+      "request": {
+        "client_request_id": "5c7ab69fc9432a3e90989dc02d1ebea3",
+        "text": "合成普通问题。",
+        "attachment_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-legacy-v1-off",
+          "seq": 1,
+          "message_id": "fx-message-legacy-v1-off"
+        },
+        {
+          "event": "response.phase",
+          "run_id": "fx-run-legacy-v1-off",
+          "seq": 2,
+          "phase": "answering"
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-legacy-v1-off",
+          "seq": 3,
+          "channel": "answer",
+          "text": "合成普通回答。"
+        },
+        {
+          "event": "run.completed",
+          "run_id": "fx-run-legacy-v1-off",
+          "seq": 4,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 8,
+            "total_tokens": 28
+          }
+        }
+      ],
+      "expected": {
+        "terminal_state": "completed",
+        "outcome": null,
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "合成普通回答。"
+          }
+        ],
+        "source_ids": [],
+        "ui": {
+          "search_adapter_calls": 0
+        }
+      },
+      "description": "旧v1流无evidence和part_id仍可读取。",
+      "acceptance": [
+        "A01"
+      ]
+    },
+    {
+      "id": "business-action-restoration",
+      "synthetic": true,
+      "run_id": "fx-run-business-action-restoration",
+      "request": {
+        "protocol_version": 2,
+        "client_request_id": "d0c932375a515e65afec45d6a8ed9751",
+        "text": "合成问题：我在华兴今天有哪些待办？",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "my_work",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": {
+          "module_id": "work-center",
+          "route_name": "notification-center",
+          "factory_id": "huaxing",
+          "help_id": null
+        },
+        "context_selection": null
+      },
+      "events": [
+        {
+          "event": "run.started",
+          "run_id": "fx-run-business-action-restoration",
+          "seq": 1,
+          "message_id": "fx-message-business-action-restoration",
+          "protocol_version": 2
+        },
+        {
+          "event": "response.phase",
+          "run_id": "fx-run-business-action-restoration",
+          "seq": 2,
+          "phase": "tool_running"
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-business-action-restoration",
+          "seq": 3,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-business-action-restoration",
+            "revision": 1,
+            "search": {
+              "requested_mode": "off",
+              "execution": "not_requested",
+              "evidence_level": "none",
+              "search_count": 0,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-business-action-restoration:business:work-1",
+                "run_id": "fx-run-business-action-restoration",
+                "title": "华兴合成待办快照",
+                "kind": "business",
+                "tool_name": "get_my_work",
+                "resources": [
+                  {
+                    "module_id": "work-center",
+                    "resource_type": "work_item",
+                    "resource_id": "fx-work-hx-001"
+                  }
+                ],
+                "scope": {
+                  "factory_id": "huaxing",
+                  "scope_label": "当前用户在华兴的已接入事项",
+                  "authorization": "current_user"
+                },
+                "as_of": "2026-10-12T08:00:00Z",
+                "data_mode": "synthetic",
+                "unknown_fields": []
+              }
+            ],
+            "citations": [],
+            "activities": [
+              {
+                "step_id": "work-1",
+                "kind": "query_business",
+                "status": "completed",
+                "label": "合成业务只读查询",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "response.delta",
+          "run_id": "fx-run-business-action-restoration",
+          "seq": 4,
+          "channel": "answer",
+          "text": "合成示例：华兴范围有2条待办，原工作台可以核对[ref_1]。",
+          "part_id": "answer-1"
+        },
+        {
+          "event": "ui.actions",
+          "run_id": "fx-run-business-action-restoration",
+          "seq": 5,
+          "items": [
+            {
+              "type": "open_record",
+              "label": "打开华兴事项工作台",
+              "route_name": "notification-center",
+              "params": {},
+              "query": {
+                "factory": "huaxing"
+              },
+              "resource": {
+                "module_id": "work-center",
+                "resource_type": "work_item",
+                "resource_id": "fx-work-hx-001"
+              }
+            }
+          ]
+        },
+        {
+          "event": "evidence.updated",
+          "run_id": "fx-run-business-action-restoration",
+          "seq": 6,
+          "evidence": {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-business-action-restoration",
+            "revision": 2,
+            "search": {
+              "requested_mode": "off",
+              "execution": "not_requested",
+              "evidence_level": "none",
+              "search_count": 0,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-business-action-restoration:business:work-1",
+                "run_id": "fx-run-business-action-restoration",
+                "title": "华兴合成待办快照",
+                "kind": "business",
+                "tool_name": "get_my_work",
+                "resources": [
+                  {
+                    "module_id": "work-center",
+                    "resource_type": "work_item",
+                    "resource_id": "fx-work-hx-001"
+                  }
+                ],
+                "scope": {
+                  "factory_id": "huaxing",
+                  "scope_label": "当前用户在华兴的已接入事项",
+                  "authorization": "current_user"
+                },
+                "as_of": "2026-10-12T08:00:00Z",
+                "data_mode": "synthetic",
+                "unknown_fields": []
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-business-action-restoration:binding:answer-1:[ref_1]",
+                "part_id": "answer-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-business-action-restoration:business:work-1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "work-1",
+                "kind": "query_business",
+                "status": "completed",
+                "label": "合成业务只读查询",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          }
+        },
+        {
+          "event": "run.completed",
+          "run_id": "fx-run-business-action-restoration",
+          "seq": 7,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 150,
+            "completion_tokens": 30,
+            "total_tokens": 180
+          },
+          "outcome": "answered",
+          "evidence_revision": 2
+        }
+      ],
+      "expected": {
+        "terminal_state": "completed",
+        "outcome": "answered",
+        "content_parts": [
+          {
+            "type": "text",
+            "text": "合成示例：华兴范围有2条待办，原工作台可以核对[ref_1]。",
+            "part_id": "answer-1"
+          },
+          {
+            "type": "evidence",
+            "schema_version": 2,
+            "run_id": "fx-run-business-action-restoration",
+            "revision": 2,
+            "search": {
+              "requested_mode": "off",
+              "execution": "not_requested",
+              "evidence_level": "none",
+              "search_count": 0,
+              "reason_code": null
+            },
+            "sources": [
+              {
+                "source_id": "fx-run-business-action-restoration:business:work-1",
+                "run_id": "fx-run-business-action-restoration",
+                "title": "华兴合成待办快照",
+                "kind": "business",
+                "tool_name": "get_my_work",
+                "resources": [
+                  {
+                    "module_id": "work-center",
+                    "resource_type": "work_item",
+                    "resource_id": "fx-work-hx-001"
+                  }
+                ],
+                "scope": {
+                  "factory_id": "huaxing",
+                  "scope_label": "当前用户在华兴的已接入事项",
+                  "authorization": "current_user"
+                },
+                "as_of": "2026-10-12T08:00:00Z",
+                "data_mode": "synthetic",
+                "unknown_fields": []
+              }
+            ],
+            "citations": [
+              {
+                "binding_id": "fx-run-business-action-restoration:binding:answer-1:[ref_1]",
+                "part_id": "answer-1",
+                "marker": "[ref_1]",
+                "source_ids": [
+                  "fx-run-business-action-restoration:business:work-1"
+                ],
+                "resolution": "resolved"
+              }
+            ],
+            "activities": [
+              {
+                "step_id": "work-1",
+                "kind": "query_business",
+                "status": "completed",
+                "label": "合成业务只读查询",
+                "started_at": "2026-10-12T08:00:00Z",
+                "finished_at": "2026-10-12T08:00:03Z"
+              }
+            ]
+          },
+          {
+            "type": "actions",
+            "schema_version": 2,
+            "revision": 1,
+            "items": [
+              {
+                "type": "open_record",
+                "label": "打开华兴事项工作台",
+                "route_name": "notification-center",
+                "params": {},
+                "query": {
+                  "factory": "huaxing"
+                },
+                "resource": {
+                  "module_id": "work-center",
+                  "resource_type": "work_item",
+                  "resource_id": "fx-work-hx-001"
+                }
+              }
+            ]
+          }
+        ],
+        "source_ids": [
+          "fx-run-business-action-restoration:business:work-1"
+        ],
+        "ui": {
+          "action_count": 1
+        }
+      },
+      "navigation_test": {
+        "active_factory_at_click": "huakang-a",
+        "expected_query": {
+          "factory": "huaxing"
+        },
+        "must_reauthorize": true,
+        "opens_exact_record": false
+      },
+      "description": "P1动作随消息保存；即使当前厂区后来不同，也按源卡scope导航并重新授权。",
+      "acceptance": [
+        "E01",
+        "E10",
+        "B10"
+      ]
+    }
+  ]
+}

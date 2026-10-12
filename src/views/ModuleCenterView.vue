@@ -103,15 +103,15 @@ watch(currentDepartmentId, (departmentId) => {
 
 <template>
   <div ref="containerRef" class="rrn-home-container">
-  <div class="rrn-portal rrn-home app-page space-y-6" data-portal-ui="jade-v3" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-home-density="density" :data-department="currentDepartmentId" :style="portalRootStyle">
+  <div data-yl-help="portal.overview" class="rrn-portal rrn-home app-page space-y-6" data-portal-ui="jade-v3" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-home-density="density" :data-department="currentDepartmentId" :style="portalRootStyle">
     <PortalHero eyebrow="Department Workspace" :title="title" :description="departmentEntry.heroSubtitle" :motif="departmentPresentation.motif" pending-note="新增系统模块暂未接入">
       <template #artwork><HomePrismArtwork :identity="currentDepartmentId" /></template>
       <template #actions><HomeAppearanceControl /><Button type="button" size="lg" disabled><Plus class="size-4" aria-hidden="true" />新增系统模块</Button></template>
     </PortalHero>
-    <DepartmentTabs home-experience />
+    <DepartmentTabs data-yl-help="portal.departments" home-experience />
     <div class="home-department-layout">
       <SectionPanel class="portal-section home-module-section" :title="departmentEntry.panelTitle" :subtitle="departmentEntry.panelSubtitle">
-        <div class="home-search-toolbar">
+        <div class="home-search-toolbar" data-yl-help="portal.search">
           <div class="home-search-field">
             <label for="home-module-search">搜索本部门入口</label>
             <div class="home-search-input"><Search :size="18" aria-hidden="true" />
@@ -122,7 +122,7 @@ watch(currentDepartmentId, (departmentId) => {
           <div class="home-segmented" role="group" aria-label="显示密度"><button type="button" :aria-pressed="density === 'comfortable'" @click="density = 'comfortable'">舒适</button><button type="button" :aria-pressed="density === 'compact'" @click="density = 'compact'">紧凑</button></div>
           <p class="home-search-count" role="status" aria-live="polite">{{ query ? `找到 ${filteredModules.length} 个入口` : `${visibleModules.length} 个可见模块 · 当前厂区目录` }}</p>
         </div>
-        <TransitionGroup name="home-filter" tag="div" class="portal-module-grid" :data-module-count="filteredModules.length" :css="effectiveMotion !== 'off'">
+        <TransitionGroup name="home-filter" tag="div" class="portal-module-grid" data-yl-help="portal.modules" :data-module-count="filteredModules.length" :css="effectiveMotion !== 'off'">
           <div v-for="(module, index) in filteredModules" :key="`${scope}:${module.id}`" class="home-grid-item">
             <div class="home-card-reveal" :data-reveal="revealing && !query" :style="{ '--home-index': index }">
               <ModuleCard :module="module" :index="index" :active="featuredModule?.id === module.id" :pinned="pinnedId === module.id" :previewable="canPreviewModule(module)" :search-query="query" @preview="openPreview(module.id, $event)" @peek="!narrow && preview(module.id)" @cancel-peek="cancelPreview" @focus-preview="!narrow && preview(module.id, true)" />

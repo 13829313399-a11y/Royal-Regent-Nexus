@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { X } from '@lucide/vue'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import type { DirectoryMember } from '@/api/directory'
 import { useDialogFocus } from '@/composables/useDialogFocus'
@@ -18,6 +18,7 @@ const emit = defineEmits<{
 const dialogRoot = ref<HTMLElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
 const isOpen = computed(() => Boolean(props.member))
+const titleId = `directory-avatar-${useId()}`
 let releaseScrollLock: BodyScrollLockRelease | null = null
 
 useDialogFocus(
@@ -27,6 +28,7 @@ useDialogFocus(
     onEscape: () => emit('close'),
     openAnnouncement: () => props.member ? `已打开${props.member.display_name}的头像预览` : '',
     initialFocus: () => closeButton.value,
+    inertBackground: true,
   },
 )
 
@@ -36,7 +38,7 @@ watch(isOpen, (open) => {
     releaseScrollLock?.()
     releaseScrollLock = null
   }
-})
+}, { immediate: true })
 
 onBeforeUnmount(() => {
   releaseScrollLock?.()
@@ -48,7 +50,8 @@ onBeforeUnmount(() => {
     <Transition name="nav-backdrop">
       <div
         v-if="member"
-        class="fixed inset-0 z-[90] grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm"
+        class="rr-connect directory-avatar-backdrop"
+        data-connect-overlay
         role="presentation"
         @click.self="emit('close')"
       >
@@ -56,14 +59,14 @@ onBeforeUnmount(() => {
           ref="dialogRoot"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="directory-avatar-title"
+          :aria-labelledby="titleId"
           tabindex="-1"
-          class="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl outline-none"
+          class="directory-avatar-dialog"
         >
           <header class="flex items-start justify-between gap-4">
             <div>
               <p class="text-[11px] font-bold tracking-[0.16em] text-teal-700">成员头像</p>
-              <h2 id="directory-avatar-title" class="mt-1 text-lg font-semibold text-slate-950">
+              <h2 :id="titleId" class="mt-1 text-lg font-semibold text-slate-950">
                 {{ member.display_name }}
               </h2>
             </div>
@@ -71,26 +74,44 @@ onBeforeUnmount(() => {
               ref="closeButton"
               type="button"
               aria-label="关闭头像预览"
-              class="rounded-lg p-2 text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
+              class="connect-icon-button directory-avatar-close"
               @click="emit('close')"
             >
               <X class="size-5" aria-hidden="true" />
             </button>
           </header>
-          <div class="mt-5 flex justify-center rounded-2xl bg-slate-50 p-6">
+          <div class="directory-avatar-stage">
             <UserAvatar
               :src="member.avatar_url"
               :name="member.display_name"
               size="xl"
+              shape="rounded"
               loading="eager"
-              class="!h-64 !w-64 max-h-[min(64vw,320px)] max-w-[min(64vw,320px)] !text-6xl ring-1 ring-slate-200"
+              class="directory-avatar-large"
             />
           </div>
           <p class="mt-4 text-center text-sm text-slate-600">
-            {{ member.position }} · {{ directoryFactoryLabel(member.primary_factory_id) }} · {{ directoryDepartmentLabel(member.primary_department) }}
+            {{ member.position }} · {{ member.org_name || directoryFactoryLabel(member.primary_factory_id) }} · {{ directoryDepartmentLabel(member.primary_department) }}
           </p>
         </section>
       </div>
     </Transition>
   </Teleport>
 </template>
+
+<style scoped>
+.directory-avatar-backdrop { position:fixed; inset:0; z-index:90; display:grid; place-items:center; padding:20px; overflow-y:auto; background:#092c2c99; backdrop-filter:blur(7px); }
+.directory-avatar-dialog { width:min(100%,416px); max-height:calc(100dvh - 40px); overflow-y:auto; border:1px solid #d7e5df; border-radius:24px; padding:24px; background:#fff; box-shadow:0 24px 80px #092c2c40; outline:none; }
+.directory-avatar-dialog header { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.directory-avatar-dialog h2 { overflow-wrap:anywhere; }
+.directory-avatar-close { flex:none; }
+.directory-avatar-stage { display:flex; justify-content:center; margin:20px 0 16px; padding:12px; border:1px solid #e1ebe6; border-radius:20px; background:#f1f7f3; }
+.directory-avatar-large {
+  width: min(320px, calc(100vw - 116px), max(120px, calc(100dvh - 260px)));
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  font-size: 80px;
+}
+.directory-avatar-large :deep(img) { object-fit:contain; }
+</style>

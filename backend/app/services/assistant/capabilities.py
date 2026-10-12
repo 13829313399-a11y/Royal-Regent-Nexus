@@ -72,6 +72,7 @@ def configuration_status():
 
 
 def capabilities():
+    from .search_capabilities import capability
     config = configuration_status()
     p = None
     try:
@@ -83,7 +84,8 @@ def capabilities():
     return dict(enabled=settings.assistant_enabled, configuration_status=config,
         schema_status="ready" if ready else "schema_pending", connection_status="verified" if verified else "unverified",
         verified_at=p.verified_at if verified else None, provider=settings.assistant_provider, model=settings.assistant_model or None,
-        help_status="ready", profiles=[dict(id="default", label="默认模型", thinking=p.thinking if verified else "unknown",
+        help_status="ready", search=capability(), materials=dict(available=inspect(database.engine).has_table(models.AssistantFile.__tablename__) if ready else False,
+            max_file_bytes=settings.assistant_max_file_bytes, extensions=["txt", "md", "csv", "pdf"]), profiles=[dict(id="default", label="默认模型", thinking=p.thinking if verified else "unknown",
             vision=bool(verified and p.vision and "vision" in p.verified_combinations), web_search=False,
             function_calling=bool(verified and p.function_calling and "tools" in p.verified_combinations))])
 
@@ -103,7 +105,8 @@ def require_enabled(*, schema=True, chat=False):
 def validate_options(payload):
     caps = capabilities()["profiles"][0]
     if payload.web_search != "off":
-        raise AssistantError("search_unavailable", "当前模型连接尚未验证联网来源协议。")
+        from .search_capabilities import validate
+        validate(payload)
     if payload.attachment_ids and not caps["vision"]:
         raise AssistantError("vision_unavailable", "当前模型尚未验证图片理解。")
     thinking = caps["thinking"]
