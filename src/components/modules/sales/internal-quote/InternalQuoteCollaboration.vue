@@ -35,6 +35,9 @@ const authStore = useAuthStore()
 const appStore = useAppStore()
 const message = ref('')
 const errorMessage = ref('')
+const currentAlternativeArchived = ref(false)
+const editorResetKey = ref(0)
+let quoteContextGeneration = 0
 const syncPanelOpen = ref(false)
 const syncReason = ref('')
 const participationPanelOpen = ref(false)
@@ -100,7 +103,7 @@ const batchReady = computed(() => batchProducts.value.length > 0
   && batchProducts.value.every((product) => product.status === 'fully_approved'))
 const isDirectOutput = computed(() => quote.value.moduleVersion === 'v4')
 const isContinuousQuote = computed(() => ['v3', 'v4'].includes(quote.value.moduleVersion))
-const canDirectOutput = computed(() => isDirectOutput.value && authStore.can('internal_quote:export', quote.value.factoryId, 'sales-business'))
+const canDirectOutput = computed(() => !currentAlternativeArchived.value && isDirectOutput.value && authStore.can('internal_quote:export', quote.value.factoryId, 'sales-business'))
 const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   ? appStore.activeProductionFactory.id
   : appStore.activeFactory.id)
@@ -137,6 +140,7 @@ const completedCount = computed(() => isContinuousQuote.value
   : approvedCount.value)
 const progressPercent = computed(() => participatingSections.value.length ? completedCount.value / participatingSections.value.length * 100 : 0)
 const collaborationStatusLabel = computed(() => {
+  if (currentAlternativeArchived.value) return '此方案版本已归档'
   if (isDirectOutput.value) return quote.value.status === 'exported' ? '已输出并冻结' : quote.value.status === 'archived' ? '已归档' : '方案填写中'
   if (!isContinuousQuote.value) return quote.value.status === 'rejected' ? '存在退回' : '协作进行中'
   return {
@@ -162,6 +166,7 @@ const wholeReviewDescription = computed(() => {
   return '各部门按原有权限填写并保存内容；全部完成后只提交一次整单审核。'
 })
 function canEditSection(code: InternalQuoteSectionCode) {
+  if (currentAlternativeArchived.value) return false
   const definition = internalQuoteSectionDefinitions.find((item) => item.code === code)
   return canEditAllInternalQuoteSections(authStore, quote.value.factoryId)
     || (definition?.departments ?? []).some((department) => authStore.can(`internal_quote:${code}_edit`, quote.value.factoryId, department))
@@ -177,12 +182,13 @@ const canSubmitWholeReview = computed(() => quote.value.moduleVersion === 'v3'
   && authStore.can('internal_quote:final_submit', quote.value.factoryId, 'sales-business'))
 const canWithdrawWhole = computed(() => canWithdrawInternalQuote(authStore, quote.value))
 const canReviewWhole = computed(() => canReviewWholeInternalQuote(authStore, quote.value))
-const canSyncReference = computed(() => !(isDirectOutput.value && ['exported', 'archived'].includes(quote.value.status)) && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
+const canSyncReference = computed(() => !currentAlternativeArchived.value && !(isDirectOutput.value && ['exported', 'archived'].includes(quote.value.status)) && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
 const formulaStale = computed(() => Boolean(
   quote.value.currentFormulaVersion
   && quote.value.formulaVersion !== quote.value.currentFormulaVersion,
 ))
 const canEditSidebarPricing = computed(() => (
+  !currentAlternativeArchived.value &&
   !['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)
   && ([
     ['internal_quote:sales_edit', 'sales-business'],
@@ -227,8 +233,9 @@ const markupBlockedReason = computed(() => {
   if (isContinuousQuote.value) return '整单已经提交或审核通过；整单退回并全部解锁后才能修改码数与杂项。'
   return '业务部已提交或审核完成；请先重开业务部分段，再保存新的码数与杂项。'
 })
-const canManageParticipation = computed(() => quote.value.status !== 'archived' && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:create', quote.value.factoryId, department)))
+const canManageParticipation = computed(() => !currentAlternativeArchived.value && quote.value.status !== 'archived' && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:create', quote.value.factoryId, department)))
 const canEditHeader = computed(() => (
+  !currentAlternativeArchived.value &&
   !['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)
   && (isDirectOutput.value || isContinuousQuote.value && quote.value.status === 'rejected'
     || participatingSections.value.every((section) => section.status === 'draft' && section.revision === 1))
@@ -338,12 +345,30 @@ function startRightPanelResize(event: PointerEvent) {
 async function loadQuote() {
   message.value = ''
   errorMessage.value = ''
-  quoteStore.conflictMessage = ''
-  await Promise.all([
+  const requestedId = quoteId.value
+  const generation = quoteContextGeneration
+  const [loaded] = await Promise.all([
     quoteStore.loadQuote(quoteId.value),
     quoteStore.loadBatchProducts(quoteId.value),
   ])
+  if (loaded && requestedId === quoteId.value && generation === quoteContextGeneration) quoteStore.conflictMessage = ''
+  return loaded
 }
+
+async function discardAndReload() {
+  const requestedId = quoteId.value
+  const generation = quoteContextGeneration
+  const loaded = await loadQuote()
+  if (loaded && requestedId === quoteId.value && generation === quoteContextGeneration) editorResetKey.value += 1
+}
+
+function updateArchiveState(archived: boolean) {
+  if (currentAlternativeArchived.value !== archived) {
+    message.value = ''; errorMessage.value = ''; quoteStore.errorMessage = ''; quoteStore.conflictMessage = ''
+  }
+  currentAlternativeArchived.value = archived
+}
+watch(quoteId, () => { quoteContextGeneration += 1; currentAlternativeArchived.value = false }, { flush: 'sync' })
 
 async function switchProduct(product: InternalQuoteBatchProduct) {
   if (product.quoteId === quoteId.value) return
@@ -689,6 +714,7 @@ function hasUnsavedDepartmentChanges() {
 async function saveWholeProductDraft() {
   message.value = ''
   errorMessage.value = ''
+  if (currentAlternativeArchived.value) { errorMessage.value = '此版本已归档，请在“包装方案与版本”中恢复后再保存。'; return }
   const savableSections = participatingSections.value.filter((section) => sectionEditors.value[section.code]?.canSaveWholeQuoteDraft())
   if (!savableSections.length) {
     errorMessage.value = `“${quote.value.productName}”当前没有可保存的部门内容。`
@@ -728,6 +754,7 @@ async function openAlternative(id: string) {
 
 async function directOutput() {
   errorMessage.value = ''; message.value = ''
+  if (currentAlternativeArchived.value) { errorMessage.value = '此版本已归档，请在“包装方案与版本”中恢复后再输出。'; return }
   if (!canDirectOutput.value) { errorMessage.value = '当前账号没有输出权限。'; return }
   if (hasUnsavedDepartmentChanges()) { errorMessage.value = '当前页面还有未保存的内容，请先保存当前款，再直接输出。'; return }
   try {
@@ -934,7 +961,7 @@ onBeforeUnmount(() => {
 
     <InternalQuotePackagingCopy v-if="packagingCopyOpen" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="packagingCopyOpen = false" @copied="packagingCopied" />
     <InternalQuoteSeriesExport v-if="seriesExportOpen" :key="quote.id" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="seriesExportOpen = false" @completed="seriesExported" />
-    <InternalQuoteAlternatives v-if="loadedQuote" :quote="quote" :has-unsaved-changes="hasUnsavedDepartmentChanges" @open="openAlternative" @changed="loadQuote" />
+    <InternalQuoteAlternatives v-if="loadedQuote" :quote="quote" :has-unsaved-changes="hasUnsavedDepartmentChanges" @open="openAlternative" @changed="loadQuote" @archive-state="updateArchiveState" />
 
     <section v-if="isContinuousQuote" class="quote-whole-review-panel" :class="quote.status">
       <div class="quote-whole-review-icon"><ShieldCheck v-if="['released', 'exported'].includes(quote.status)" /><AlertTriangle v-else-if="quote.status === 'rejected'" /><LockKeyhole v-else-if="quote.status === 'final_pending'" /><Send v-else /></div>
@@ -962,7 +989,7 @@ onBeforeUnmount(() => {
     </section>
 
     <p v-if="message" class="quote-page-message success">{{ message }}</p><p v-if="errorMessage" class="quote-page-message error">{{ errorMessage }}</p><p v-if="quoteStore.refreshWarning && quoteStore.refreshWarningQuoteId === quote.id" class="quote-page-message error" role="status">{{ quoteStore.refreshWarning }} <button type="button" :disabled="quoteStore.detailLoading || quoteStore.submitting" @click="quoteStore.refreshAfterMutation(quote.id)">重新读取</button></p><p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
-    <p v-if="quoteStore.conflictMessage" class="quote-page-message conflict"><span>{{ quoteStore.conflictMessage }}</span><button type="button" @click="loadQuote">放弃本地表单并重新读取</button></p>
+    <p v-if="quoteStore.conflictMessage && !isContinuousQuote" class="quote-page-message conflict"><span>{{ quoteStore.conflictMessage }}</span><button type="button" @click="discardAndReload">放弃本地表单并重新读取</button></p>
 
     <div class="quote-collaboration-grid" :class="{ 'whole-review-layout': isContinuousQuote }">
       <aside class="quote-edge-panel quote-edge-panel-left" aria-label="鼠标移入展开页面导航">
@@ -979,15 +1006,21 @@ onBeforeUnmount(() => {
         <InternalQuoteComponentScopePicker v-if="isComponentPricing" v-model="activePricingComponentId" :product-name="quote.productName" :components="pricingComponents" />
         <InternalQuoteComponentImage v-if="isComponentPricing && activePricingComponentId" :key="`${quote.id}:${activePricingComponentId}`" :quote-id="quote.id" :component-id="activePricingComponentId" :component-name="pricingComponents.find(c => c.id === activePricingComponentId)?.name ?? '分项'" :revision="quote.headerRevision" :editable="canManageParticipation && ['drafting', 'rejected'].includes(quote.status)" @changed="quoteStore.loadQuote(quote.id)" />
         <article v-for="section in participatingSections" :id="`quote-section-${section.code}`" :key="section.code" :ref="(node) => setSectionNode(section.code, node)" class="quote-continuous-section" :data-section-code="section.code">
-          <InternalQuoteSectionEditor :ref="(instance) => setSectionEditorRef(section.code, instance)" :quote="quote" :section="section" :can-edit="canEditSection(section.code)" :can-review="false" :can-remove="canRemoveSection(section.code)" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :differs-from-baseline="baselineDifferentSections.includes(section.code)" :difference-details="currentBatchProduct?.differentSectionDetails[section.code] ?? []" whole-quote-review @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
+          <InternalQuoteSectionEditor :key="`${quote.id}:${section.code}:${editorResetKey}`" :ref="(instance) => setSectionEditorRef(section.code, instance)" :quote="quote" :section="section" :can-edit="canEditSection(section.code)" :can-review="false" :can-remove="canRemoveSection(section.code)" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :differs-from-baseline="baselineDifferentSections.includes(section.code)" :difference-details="currentBatchProduct?.differentSectionDetails[section.code] ?? []" whole-quote-review @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
         </article>
         <footer id="quote-page-actions" class="quote-whole-product-actions" aria-label="整单操作">
+          <div class="quote-action-feedback" aria-live="polite">
+            <p v-if="currentAlternativeArchived" class="quote-page-message conflict">此版本已归档，数据和历史记录保留。请先到 <a href="#quote-alternatives">包装方案与版本</a> 点击“恢复显示”，填写说明并确认恢复，再保存或输出。</p>
+            <p v-if="message" class="quote-page-message success" role="status">{{ message }}</p>
+            <p v-if="errorMessage || quoteStore.errorMessage" class="quote-page-message error" role="alert">{{ errorMessage || quoteStore.errorMessage }}</p>
+            <p v-if="quoteStore.conflictMessage" class="quote-page-message conflict"><span>本地输入已保留。核对后可继续编辑，或放弃本地修改重新读取。</span><button type="button" :disabled="quoteStore.detailLoading || quoteStore.submitting" @click="discardAndReload">放弃本地表单并重新读取</button></p>
+          </div>
           <div class="quote-whole-product-actions-copy"><strong>整单操作</strong><span>{{ isDirectOutput ? '保存当前款后可直接输出；包装或结构调整时，在上方复制新方案或新版本。' : '在这里查看汇总、保存当前款、切换款号、复制基准款，以及提交或审核整单。' }}</span><small>当前款：{{ quote.productName }} · 最后更新 {{ quote.updatedAt }}</small></div>
           <div class="quote-whole-product-actions-controls">
-            <button type="button" class="quote-whole-product-save" title="保存当前款全部现有内容" :disabled="wholeProductSaving || quoteStore.submitting" @click="saveWholeProductDraft"><Save />{{ wholeProductSaving ? '保存中…' : '保存' }}</button>
+            <button type="button" class="quote-whole-product-save" title="保存当前款全部现有内容" :disabled="currentAlternativeArchived || wholeProductSaving || quoteStore.submitting" @click="saveWholeProductDraft"><Save />{{ wholeProductSaving ? '保存中…' : '保存' }}</button>
             <div class="quote-whole-review-actions quote-whole-product-workflow">
               <RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)"><BarChart3 />查看汇总与输出</RouterLink>
-              <button v-if="isDirectOutput && !['exported', 'archived'].includes(quote.status)" type="button" class="primary" title="输出后保留本版，修改请复制新版本" :disabled="!canDirectOutput || wholeProductSaving || quoteStore.submitting" @click="directOutput">直接输出并保留此版</button>
+              <button v-if="isDirectOutput && !['exported', 'archived'].includes(quote.status)" type="button" class="primary" title="输出后保留本版，修改请复制新版本" :disabled="currentAlternativeArchived || !canDirectOutput || wholeProductSaving || quoteStore.submitting" @click="directOutput">直接输出并保留此版</button>
               <button v-if="isMultiProduct && quote.status !== 'archived' && authStore.can('internal_quote:export', quote.factoryId, 'sales-business')" type="button" class="primary" :disabled="wholeProductSaving || quoteStore.submitting" @click="openSeriesExport">系列报价一起输出</button>
               <button v-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status)" type="button" class="primary" :title="!canSubmitWholeReview ? '当前账号没有整单提交权限' : !batchReady ? '全部产品完成后可提交审核' : '提交审核'" :disabled="!canSubmitWholeReview || !batchReady || quoteStore.submitting" @click="submitWholeReview"><Send />{{ quoteStore.submitting ? '提交中…' : '提交审核' }}</button>
               <span v-if="!isDirectOutput && !['final_pending', 'released', 'exported', 'archived'].includes(quote.status) && !canSubmitWholeReview">当前账号无提交权限</span>
@@ -1001,7 +1034,7 @@ onBeforeUnmount(() => {
           <section v-if="wholeWithdrawOpen && canWithdrawWhole" class="quote-whole-reject-panel quote-whole-product-reject" aria-label="建单人退回修改"><div><strong>审核前退回修改</strong><span>确认后撤回整批报价的待审核状态，保留已填内容并解锁。修改完成后需重新提交审核，原因将记录在操作历史中。</span></div><textarea v-model="wholeWithdrawReason" rows="2" maxlength="2000" aria-label="退回修改原因" placeholder="请填写退回修改原因" /><button type="button" :disabled="quoteStore.submitting" @click="toggleWholeWithdraw">取消</button><button type="button" class="primary" :disabled="!wholeWithdrawReason.trim() || quoteStore.submitting" @click="withdrawWholeReview">确认退回修改</button></section>
         </footer>
       </div>
-      <InternalQuoteSectionEditor v-else :ref="(instance) => setSectionEditorRef(activeSection.code, instance)" :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :differs-from-baseline="baselineDifferentSections.includes(activeSection.code)" :difference-details="currentBatchProduct?.differentSectionDetails[activeSection.code] ?? []" @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
+      <InternalQuoteSectionEditor v-else :key="`${quote.id}:${activeSection.code}:${editorResetKey}`" :ref="(instance) => setSectionEditorRef(activeSection.code, instance)" :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :differs-from-baseline="baselineDifferentSections.includes(activeSection.code)" :difference-details="currentBatchProduct?.differentSectionDetails[activeSection.code] ?? []" @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
       <aside class="quote-edge-panel quote-edge-panel-right" :class="{ open: rightPanelPinned, resizing: rightPanelResizing }" :style="{ width: `${rightPanelWidth}px` }" aria-label="鼠标移入展开报价与资料侧栏">
         <button type="button" class="quote-edge-handle" :aria-label="rightPanelPinned ? '收起报价与资料侧栏' : '展开报价与资料侧栏'" title="移入可临时展开；点击可固定或收起" @click="rightPanelPinned = !rightPanelPinned"><ChevronRight /><span>报价与资料</span></button>
         <button type="button" class="quote-edge-resizer" aria-label="拖动调整侧栏宽度" title="左右拖动调整侧栏宽度" @pointerdown="startRightPanelResize" />
@@ -1049,6 +1082,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.quote-action-feedback { width: 100%; flex-basis: 100%; }
+.quote-action-feedback:empty { display: none; }
+@media (max-width: 1280px) { .quote-action-feedback { flex-basis: auto; } }
 .quote-history-evidence{border:1px solid #99f6e4;background:#f0fdfa;border-radius:10px;padding:12px 16px;color:#0f766e;font-size:12px}.quote-history-evidence summary{cursor:pointer;font-weight:700}.quote-history-evidence p{margin:8px 0 0;overflow-wrap:anywhere}
 .quote-collaboration-page{display:grid;gap:13px;padding-bottom:28px}.quote-breadcrumb{display:flex;align-items:center;gap:7px;color:#94a3b8;font-size:11px}.quote-breadcrumb a{display:inline-flex;align-items:center;gap:5px;color:#475569;font-weight:800}.quote-breadcrumb a:hover{color:#0f766e}.quote-breadcrumb svg{width:13px;height:13px}.quote-breadcrumb strong{color:#0f766e}.quote-collaboration-head{display:flex;align-items:center;justify-content:space-between;gap:20px;border:1px solid #dbe5ea;border-radius:14px;background:#fff;padding:18px;box-shadow:0 12px 28px rgb(15 23 42/.05)}.quote-head-product{display:flex;min-width:0;align-items:center;gap:16px}.quote-head-image{position:relative;display:grid;width:132px;height:98px;flex:0 0 132px;place-items:center;overflow:hidden;border:1px solid #cbd5e1;border-radius:12px;background:#f8fafc;box-shadow:0 7px 18px rgb(15 23 42/.08)}.quote-head-image-preview{position:absolute;inset:0;display:block;width:100%;height:100%;overflow:hidden;border:0;background:transparent;padding:0;cursor:zoom-in}.quote-head-image-preview img{width:100%;height:100%;object-fit:cover;transition:transform .18s ease}.quote-head-image-preview>span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:4px;background:rgb(15 23 42/.48);color:#fff;font-size:9px;font-weight:900;opacity:0;transition:opacity .18s ease}.quote-head-image-preview>span svg{width:13px}.quote-head-image-preview:hover img,.quote-head-image-preview:focus-visible img{transform:scale(1.04)}.quote-head-image-preview:hover>span,.quote-head-image-preview:focus-visible>span{opacity:1}.quote-head-image>span{display:grid;place-items:center;gap:5px;color:#94a3b8}.quote-head-image>span svg{width:24px}.quote-head-image>span b{font-size:10px}.quote-head-image label{position:absolute;right:6px;bottom:6px;z-index:2;display:grid;width:28px;height:28px;place-items:center;border:1px solid rgb(255 255 255/.82);border-radius:8px;background:rgb(15 118 110/.92);padding:0;color:#fff;box-shadow:0 4px 12px rgb(15 23 42/.2);cursor:pointer}.quote-head-image label:hover{background:#0f766e}.quote-head-image label svg{width:13px}.quote-head-image label input{position:absolute;width:1px;height:1px;opacity:0}.quote-head-image label .spinning{animation:quote-product-image-spin .8s linear infinite}.quote-head-main{min-width:0}.quote-title-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.quote-title-row h1{margin:0;color:#0f172a;font-size:24px;font-weight:950;letter-spacing:-.035em}.quote-title-row>span,.quote-title-row>b{border-radius:999px;background:#fef3c7;padding:5px 8px;color:#b45309;font-size:11px;font-weight:900}.quote-title-row>b{background:#ccfbf1;color:#0f766e}.quote-head-main>p{margin:6px 0 0;color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.quote-head-meta{display:flex;flex-wrap:wrap;gap:11px;margin-top:12px}.quote-head-meta span{display:flex;align-items:center;gap:5px;color:#475569;font-size:11px}.quote-head-meta svg{width:14px;color:#0d9488}.quote-head-progress{display:grid;width:min(330px,35%);gap:8px}.quote-head-progress>div:first-child{display:flex;align-items:end;justify-content:space-between}.quote-head-progress span{color:#64748b;font-size:11px}.quote-head-progress strong{color:#0f766e;font-size:18px}.quote-progress-bar{height:7px;overflow:hidden;border-radius:99px;background:#e2e8f0}.quote-progress-bar span{display:block;height:100%;border-radius:99px;background:#0d9488}.quote-head-progress a,.quote-head-progress button{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:8px;color:#0f766e;font-size:11px;font-weight:900}.quote-head-progress a:hover,.quote-head-progress button:hover{background:#ccfbf1}.quote-head-progress a svg,.quote-head-progress button svg{width:14px}.quote-head-progress button:disabled{opacity:.45}.quote-readonly-banner{display:flex;align-items:center;gap:7px;margin:0;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:9px 11px;color:#0f766e;font-size:11px}.quote-readonly-banner svg{width:15px;flex:0 0 auto}
 .quote-product-preview-backdrop{position:fixed;inset:0;z-index:180;display:grid;place-items:center;background:rgb(15 23 42/.76);padding:24px;backdrop-filter:blur(5px)}.quote-product-preview-dialog{display:grid;width:min(920px,92vw);max-height:90vh;overflow:hidden;border:1px solid rgb(255 255 255/.25);border-radius:16px;background:#fff;box-shadow:0 28px 80px rgb(0 0 0/.38)}.quote-product-preview-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;padding:12px 15px}.quote-product-preview-dialog header>div{display:grid}.quote-product-preview-dialog header strong{color:#0f172a;font-size:14px}.quote-product-preview-dialog header span{margin-top:2px;color:#64748b;font-size:10px}.quote-product-preview-dialog header button{display:grid;width:32px;height:32px;place-items:center;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569}.quote-product-preview-dialog header button svg{width:16px}.quote-product-preview-dialog>img{display:block;width:100%;max-height:calc(90vh - 58px);background:#f8fafc;object-fit:contain}

@@ -578,7 +578,7 @@ function mutationMessage(error: unknown) {
     return '网络中断或请求超时，服务端处理结果尚未确认。本页输入已保留，请先重新读取报价核对，再决定是否重试。'
   }
   const message = getApiErrorMessage(error)
-  if (responseStatus(error) !== 409) return message
+  if (responseStatus(error) !== 409 || responseCurrentRevision(error) === undefined) return message
   const current = responseCurrentRevision(error)
   return `${message}${current ? `（服务端当前 revision ${current}）` : ''}。当前表单内容未覆盖他人修改，请重新读取后再提交。`
 }
@@ -1189,7 +1189,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         return result
       } catch (error) {
         const message = mutationMessage(error)
-        if (responseStatus(error) === 409) this.conflictMessage = message
+        if (responseStatus(error) === 409 && responseCurrentRevision(error) !== undefined) this.conflictMessage = message
         this.errorMessage = message
         throw new Error(message)
       } finally {
@@ -1468,7 +1468,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         return { quote: refreshed ?? this.getQuoteById(quoteId), sections: savedSections }
       } catch (error) {
         const message = mutationMessage(error)
-        if (responseStatus(error) === 409) this.conflictMessage = message
+        if (responseStatus(error) === 409 && responseCurrentRevision(error) !== undefined) this.conflictMessage = message
         this.errorMessage = message
         throw new Error(message)
       } finally {
