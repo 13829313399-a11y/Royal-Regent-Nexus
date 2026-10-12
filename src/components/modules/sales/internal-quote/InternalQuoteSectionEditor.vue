@@ -381,21 +381,6 @@ function normalizedDraft(payload: Record<string, unknown>) {
   return normalizeInternalQuoteDraft(props.section.code, payload, props.quote.referenceSnapshot)
 }
 
-function applyMoldingSourceDeletions(baseline: Record<string, unknown>, incoming: Record<string, unknown>) {
-  if (props.section.code !== 'molding') return false
-  const rows = (payload: Record<string, unknown>) => payload.injection_lines as Array<Record<string, unknown>>
-  const incomingKeys = new Set(rows(incoming).map(row => row.engineering_source_key).filter(Boolean))
-  const removedKeys = new Set(rows(baseline)
-    .map(row => row.engineering_source_key).filter(key => key && !incomingKeys.has(key)))
-  const retainedRows = rows(baseline).filter(row => !removedKeys.has(row.engineering_source_key))
-  if (!removedKeys.size || JSON.stringify({ ...baseline, injection_lines: retainedRows }) !== JSON.stringify(incoming)) return false
-  const draftRows = rows(draftPayload.value)
-  for (let index = draftRows.length - 1; index >= 0; index--) {
-    if (removedKeys.has(draftRows[index]!.engineering_source_key)) draftRows.splice(index, 1)
-  }
-  return true
-}
-
 let draftContext = ''
 watch([
   () => props.quote.id, () => props.section.code, () => props.section.revision,
@@ -406,7 +391,7 @@ watch([
   if (contextChanged) moldSplitPending.value = false
   const incoming = normalizedDraft(props.section.payload)
   const incomingText = JSON.stringify(incoming)
-  // Engineering owns linked row deletion. Rebase a deletion-only refresh while
+  // Engineering owns linked rows. Rebase its changes while
   // retaining local edits and row identities elsewhere. Other remote changes
   // still follow the optimistic-lock conflict path below.
   if (!contextChanged && props.section.code === 'molding' && baselinePayload.value
@@ -415,9 +400,6 @@ watch([
     const rebased = rebaseEngineeringMolding(baseline, incoming, draftPayload.value)
     if (rebased) {
       if (JSON.stringify(rebased) !== JSON.stringify(draftPayload.value)) draftPayload.value = rebased
-      baselinePayload.value = incomingText
-      draftRevision.value = props.section.revision
-    } else if (applyMoldingSourceDeletions(baseline, incoming)) {
       baselinePayload.value = incomingText
       draftRevision.value = props.section.revision
     }
@@ -474,7 +456,6 @@ function acceptSavedPayload(payload: Record<string, unknown>, submitted: Record<
   const rebased = props.section.code === 'molding'
     ? rebaseEngineeringMolding(normalizedDraft(submitted), saved, draftPayload.value) : undefined
   if (rebased) draftPayload.value = rebased
-  else applyMoldingSourceDeletions(normalizedDraft(submitted), saved)
   const submittedText = JSON.stringify(normalizedDraft(submitted))
   const currentText = JSON.stringify(draftPayload.value)
   const savedText = JSON.stringify(saved)

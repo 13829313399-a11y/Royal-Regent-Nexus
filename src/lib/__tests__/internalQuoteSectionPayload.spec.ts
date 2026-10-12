@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
 import type { MoldingPayload } from '@/lib/internalQuoteSectionPayload'
 import { calculateJustPlayCartonsPerPallet, justPlayPackagingInputsValid, normalizeJustPlayPackagingInputs } from '@/lib/internalQuoteSectionPayload'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSectionSummary, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type ElectronicQuoteGroup, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSectionSummary, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type ElectronicQuoteGroup, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   const defaultPallet = { pallet_length_mm: 1000, pallet_width_mm: 1150, pallet_height_mm: 1300 }
@@ -595,11 +595,10 @@ describe('internal quote section payload normalization', () => {
     }) as unknown as SewingPayload
 
     expect(calculateSewingBasePriceRmb(payload.groups[0].materials[0])).toBeCloseTo(3)
-    expect(calculateSewingRowTotalRmb(payload.groups[0].materials[0])).toBeCloseTo(3.3)
-    expect(calculateSewingGroupTotalRmb(payload.groups[0])).toBeCloseTo(15.3)
+    expect(calculateSewingRowTotalHkd(payload.groups[0].materials[0], .85)).toBeCloseTo(3.3 / .85)
+    expect(calculateSewingGroupTotalHkd(payload.groups[0], .85)).toBeCloseTo(15.3 / .85)
     expect(sewingGroupHasLaborLine(payload.groups[1])).toBe(true)
-    expect(calculateSewingGroupTotalRmb(payload.groups[1])).toBeCloseTo(5)
-    expect(calculateSewingTotalRmb(payload)).toBeCloseTo(20.3)
+    expect(calculateSewingGroupTotalHkd(payload.groups[1], .85)).toBeCloseTo(5 / .85)
     expect(calculateSewingTotalHkd(payload, .85)).toBeCloseTo(23.88235294)
   })
 
@@ -613,7 +612,6 @@ describe('internal quote section payload normalization', () => {
     expect(restored.groups[0].materials[0].unit_price_hkd).toBe(0.235294117647059)
     expect(calculateSewingBasePriceHkd(restored.groups[0].materials[0], .85)).toBeCloseTo(.235294117647059, 12)
     expect(calculateSewingTotalHkd(restored, .85)).toBeCloseTo(2.258823529411765, 12)
-    expect(calculateSewingTotalRmb(restored, .85)).toBeCloseTo(1.92, 12)
     restored.groups[0].materials[0].unit_price_rmb = 99
     expect(calculateSewingRowTotalHkd(restored.groups[0].materials[0], .8)).toBeCloseTo(.258823529411765, 12)
     expect(calculateSewingBasePriceHkd(restored.groups[0].materials[0], undefined)).toBeCloseTo(.235294117647059, 12)
