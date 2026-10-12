@@ -45,6 +45,16 @@ def export_monthly(factory_id: str, month: str, direction: str = '', channel: st
         headers={'Cache-Control': 'no-store', 'Content-Disposition': f'attachment; filename="fabric-{month}-quantities.xlsx"'})
 
 
+@router.get('/fabric/order-summary')
+def order_summary(factory_id: str, date_from: str = '', date_to: str = '', search: str = '', supplier: str = '',
+                  db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    if not capabilities(actor, 'fabric', factory_id)['read'] or not can(actor, 'fabric_warehouse:read', factory_id, 'pmc-warehouse'):
+        raise HTTPException(403, '无布料仓订单收发查询权限')
+    from fastapi.responses import JSONResponse
+    from app.services.fabric_order_summary import report
+    return JSONResponse(report(db, date_from, date_to, search, supplier), headers={'Cache-Control': 'no-store'})
+
+
 @router.get('/{warehouse}')
 def workspace(warehouse: Warehouse, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     permissions = capabilities(actor, warehouse, factory_id)

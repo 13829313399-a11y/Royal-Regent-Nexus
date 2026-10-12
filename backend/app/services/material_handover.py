@@ -130,8 +130,9 @@ def document(db, access, identifier, *, lock=False):
     return row
 
 
-def progress(db, identifier):
-    _, entries = inventory.projection(db, 'fabric')
+def progress(db, identifier, *, entries=None):
+    if entries is None:
+        _, entries = inventory.projection(db, 'fabric')
     amounts, movements = {}, []
     for entry in entries.values():
         data = entry['data']
@@ -176,6 +177,9 @@ def output(db, row, *, with_progress=True):
 
 def request_signature(kind, identifier, payload):
     body=payload.model_dump(mode='json')
+    for line in body.get('lines', []):
+        for key in ('purchase_source_id', 'expected_source_revision', 'expected_receipt_count', 'difference_reason'):
+            if line.get(key) in ('', None): line.pop(key, None)
     if body.get('data') is None:body.pop('data',None)
     if isinstance(body.get('data'),dict):
         data=body['data']
@@ -351,6 +355,14 @@ def post(db, actor, identifier, payload):
     actual_revision = max((e['sequence'] for e in entries.values()), default=0)
     if actual_revision != payload.expected_inventory_revision:
         raise HTTPException(409, '库存已变化，请刷新后核对')
+    selected_line_ids = {selection.line_id for selection in payload.lines}
+    for entry in entries.values():
+        if entry['kind'] != 'CORRECTION':
+            continue
+        original = entries.get(entry['data'].get('original_id'), {}).get('data', {})
+        if original.get('handover_document_id') == identifier and original.get('handover_line_id') in selected_line_ids \
+                and payload.business_date.isoformat() < entry['business_date']:
+            raise HTTPException(409, '重新收发日期不能早于该明细的冲销日期，请核对实际日期')
     for selection in payload.lines:
         line = source_lines.get(selection.line_id)
         if line is None:
@@ -359,6 +371,8 @@ def post(db, actor, identifier, payload):
         selected_totals[line.id] = selected_totals.get(line.id, inventory.decimal('0')) + amount
         if remaining.get(line.id, inventory.decimal('0')) + selected_totals[line.id] > inventory.decimal(line.quantity):
             raise HTTPException(409, '本次累计数量超过本单未完成数量')
+    from app.services.material_handover_procurement import prepare_links
+    purchase_links = prepare_links(db, actor, row, data, payload.lines)
     result_movements = []
     for index, selection in enumerate(payload.lines):
         line = source_lines[selection.line_id]
@@ -382,7 +396,7 @@ def post(db, actor, identifier, payload):
                 'handover_line_snapshot': line.model_dump(mode='json'),
                 'handover_supplier_id': supplier_identity(db,row,data.model_dump(mode='json')),
                 'handover_contract_no': line.contract_no or data.contract_no, 'handover_product_no': line.product_no or data.product_no,
-                'handover_request_id': str(payload.request_id)}))
+                'handover_request_id': str(payload.request_id), **purchase_links[index]}))
     row.revision += 1; row.updated_at = business_now().isoformat(); db.flush()
     result = output(db, row)
     event(db, access, row, 'POST', payload.request_id, signature, {'operation_ids': [m['id'] for m in result_movements],

@@ -56,7 +56,24 @@ export interface FabricMonthlyReport extends FabricMonthlyQuery {
   totals: (FabricMonthlyQuantities & { unit: string })[]; details: FabricMonthlyDetail[]
   version: string; cutting_interface: 'PENDING'; basis: string; live: boolean; closed: boolean; amounts_calculated: boolean
 }
+export interface FabricOrderSummaryQuery { date_from: string; date_to: string; search: string; supplier: string }
+export interface FabricOrderQuantities { opening: string; inbound: string; outbound: string; adjustment: string; balance: string }
+export interface FabricOrderIdentity {
+  key: string; source_line_id: string; order_no: string; production_no: string; style_no: string; supplier: string
+  item_code: string; item_name: string; unit: string; linked: boolean
+}
+export interface FabricOrderRow extends FabricOrderIdentity, FabricOrderQuantities { document_count: number }
+export interface FabricOrderDetail extends FabricOrderIdentity {
+  id: string; date: string; mode: 'INBOUND' | 'OUTBOUND' | 'ADJUSTMENT'; label: string; quantity: string; stock_change: string
+  moved_quantity: string; source_no: string; original_id: string; recipient: string; location: string; channel: 'MANUAL' | 'SCAN'
+  actor_name: string; reason: string; sequence: number
+}
+export interface FabricOrderReport extends FabricOrderSummaryQuery {
+  rows: FabricOrderRow[]; details: FabricOrderDetail[]; totals: (FabricOrderQuantities & { unit: string })[]
+  suppliers: string[]; basis: string; version: string
+}
 export const warehouseOperationsApi = {
+  async orderSummary(query: FabricOrderSummaryQuery) { return (await http.get<FabricOrderReport>('/warehouse-operations/fabric/order-summary', { params: { factory_id: 'huakang-c', ...query } })).data },
   async monthly(query: FabricMonthlyQuery) { return (await http.get<FabricMonthlyReport>('/warehouse-operations/fabric/monthly', { params: { factory_id: 'huakang-c', ...query } })).data },
   async exportMonthly(query: FabricMonthlyQuery, version: string) { return (await http.get<Blob>('/warehouse-operations/fabric/monthly/export', { params: { factory_id: 'huakang-c', ...query, version }, responseType: 'blob' })).data },
   async saveLocation(input: { factory_id: 'huakang-c'; request_id: string; id: string; expected_revision: number; warehouse: string; code: string; status: 'ACTIVE' | 'INACTIVE' }) { return (await http.post<WarehouseLocation>('/warehouse-operations/semi/locations', input)).data },

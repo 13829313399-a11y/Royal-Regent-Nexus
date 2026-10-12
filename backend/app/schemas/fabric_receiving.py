@@ -43,6 +43,16 @@ class ReceiveSourceRequest(ReceiptPriceInput):
     confirmed: bool = False
 
 
+class ReverseReceiptRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    factory_id: Literal['huakang-c']
+    request_id: UUID
+    expected_revision: int = Field(ge=0)
+    business_date: date
+    reason: str = Field(min_length=1, max_length=1000)
+    confirmed: bool = False
+
+
 class ReceiveSourceItem(ReceiptPriceInput):
     model_config = ConfigDict(extra="forbid")
     source_line_id: str = Field(min_length=1, max_length=128)

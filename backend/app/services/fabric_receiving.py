@@ -62,15 +62,32 @@ def receipt_context(db):
     known_column = FabricReceipt.baseline_known if "baseline_known" in {c["name"] for c in inspector.get_columns("fabric_receipts")} else literal(True).label("baseline_known")
     # Existing 0135 receipts remain readable until the explicit additive upgrade.
     receipt_rows = db.execute(select(FabricReceipt.id, FabricReceipt.source_line_id, FabricReceipt.prior_received_quantity,
-        FabricReceipt.source_json, FabricReceipt.payload_json, FabricReceipt.quantity, known_column).where(FabricReceipt.factory_id == source.FACTORY).order_by(FabricReceipt.occurred_at, FabricReceipt.id))
-    for receipt in receipt_rows:
-        item = totals.setdefault(receipt.source_line_id, {"receipt_count": 0, "warehouse_received_quantity": Decimal(0)})
+        FabricReceipt.source_json, FabricReceipt.payload_json, FabricReceipt.quantity, FabricReceipt.occurred_at, known_column).where(FabricReceipt.factory_id == source.FACTORY))
+    frozen_receipts = [dict(id=receipt.id, source_line_id=receipt.source_line_id,
+        prior_received_quantity=receipt.prior_received_quantity, baseline_known=receipt.baseline_known,
+        facts=json.loads(receipt.source_json), chase_reference=json.loads(receipt.payload_json).get('chase_reference'),
+        quantity=Decimal(receipt.quantity), occurred_at=receipt.occurred_at) for receipt in receipt_rows]
+    from app.services.fabric_receipt_corrections import reversal_rows
+    reversed_originals = reversal_rows(db)
+    for receipt in frozen_receipts:
+        if receipt['id'] in reversed_originals:
+            receipt['quantity'] = Decimal(0)
+    from app.services.material_handover_procurement import linked_operations
+    # Linked handover operations already own the physical stock. Only project their
+    # effective quantities here; do not create a second FabricReceipt or movement.
+    frozen_receipts.extend(dict(id=receipt.id, source_line_id=link['source_line_id'],
+        prior_received_quantity=link['prior_received_quantity'], baseline_known=link['baseline_known'],
+        facts=link['source_facts'], chase_reference=link.get('chase_reference'),
+        quantity=Decimal(0) if reversed_receipt else Decimal(body['quantity']), occurred_at=receipt.occurred_at)
+        for receipt, body, link, reversed_receipt in linked_operations(db))
+    for receipt in sorted(frozen_receipts, key=lambda receipt: (receipt['occurred_at'], receipt['id'])):
+        item = totals.setdefault(receipt['source_line_id'], {"receipt_count": 0, "warehouse_received_quantity": Decimal(0)})
         if not item["receipt_count"]:
-            item.update(prior_received_quantity=Decimal(receipt.prior_received_quantity) if receipt.baseline_known else None, source_facts=json.loads(receipt.source_json),
-                chase_reference=json.loads(receipt.payload_json).get("chase_reference"), reference_review_required=False)
-            item["first_receipt_id"] = receipt.id
+            item.update(prior_received_quantity=Decimal(receipt['prior_received_quantity']) if receipt['baseline_known'] else None,
+                source_facts=receipt['facts'], chase_reference=receipt['chase_reference'], reference_review_required=False)
+            item["first_receipt_id"] = receipt['id']
         item["receipt_count"] += 1
-        item["warehouse_received_quantity"] += Decimal(receipt.quantity)
+        item["warehouse_received_quantity"] += receipt['quantity']
     from app.services.fabric_master import ready
     if ready(db):
         for resolution in db.scalars(select(FabricChaseResolution).where(FabricChaseResolution.factory_id == source.FACTORY).order_by(FabricChaseResolution.revision)):
@@ -119,13 +136,17 @@ def quantity(value, label, allow_zero=False):
     return result
 
 
-def receipt_data(db, receipt):
+def receipt_data(db, receipt, *, reversals=None):
     rows = db.execute(select(FabricStockBatch, FabricInventoryMovement).join(FabricInventoryMovement,
         FabricInventoryMovement.batch_id == FabricStockBatch.id).where(FabricStockBatch.factory_id == source.FACTORY,
         FabricStockBatch.receipt_id == receipt.id).order_by(FabricStockBatch.id))
+    from app.services.fabric_receipt_corrections import reversal_rows
+    reversal = (reversal_rows(db) if reversals is None else reversals).get(receipt.id)
     return {"id": receipt.id, "source_line_id": receipt.source_line_id, "source_revision": receipt.source_revision,
         "facts": json.loads(receipt.source_json), **json.loads(receipt.payload_json), "quantity": receipt.quantity,
         "unit": receipt.unit, "actor_name": receipt.actor_name, "occurred_at": receipt.occurred_at, "stock_posted": True,
+        'reversed': reversal is not None, 'reversal': {'id': reversal.id, 'date': reversal.business_date,
+            'reason': json.loads(reversal.payload_json)['reason'], 'actor_name': reversal.actor_name} if reversal else None,
         "batches": [{"id": batch.id, "location": batch.location, "dye_lot": batch.dye_lot, "roll_no": batch.roll_no,
                      "quality_status": batch.quality_status, "quantity": movement.quantity} for batch, movement in rows]}
 
@@ -178,10 +199,16 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
     if not payload.delivery_reference.strip():
         raise HTTPException(422, "请填写送货单号或手工收料依据编号")
     reference = payload.delivery_reference.strip()
-    duplicate = db.scalar(select(FabricReceipt.id).where(FabricReceipt.factory_id == source.FACTORY,
-        FabricReceipt.source_line_id == line_id, FabricReceipt.delivery_reference == reference))
-    if duplicate:
+    from app.services.material_handover_procurement import guard_manual_delivery
+    guard_manual_delivery(db, reference, facts['material_code'], facts['unit'], facts['supplier'], source_id=line_id)
+    from app.services.fabric_receipt_corrections import same_reference_receipts, reversal_rows
+    same_notes = same_reference_receipts(db, reference, line_id)
+    reversed_originals = reversal_rows(db)
+    if any(receipt.id not in reversed_originals for receipt in same_notes):
         raise HTTPException(409, "该来源的这张送货依据已入库，请查看入库记录；同单分仓位在一次收料中填写")
+    storage_reference = ('reposted:' + str(payload.request_id)) if same_notes else reference
+    if same_notes and payload.receipt_date.isoformat() < max(reversed_originals[receipt.id].business_date for receipt in same_notes):
+        raise HTTPException(422, '更正重收日期不能早于原单冲销日期，请保留原期间记录')
     from app.services.fabric_master import receipt_references
     master_references = receipt_references(db, facts, payload)
     location_records = {row["id"]: row for row in master_references["locations"]}
@@ -213,11 +240,13 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
         frozen_body.update(_batch_metadata)
     frozen_body.update(delivery_reference=reference, prior_received_quantity=decimal_text(prior), accounting_month=month,
         starting_chase_quantity=progress["starting_chase_quantity"], chase_resolution=progress["chase_resolution"], master_references=master_references)
+    if same_notes:
+        frozen_body['replaces_receipt_ids'] = [receipt.id for receipt in same_notes]
     frozen_body.update(pricing)
     if context and context.get("chase_reference"):
         frozen_body["chase_reference"] = context["chase_reference"]
     receipt = FabricReceipt(id=uuid4().hex, factory_id=source.FACTORY, source_line_id=line_id, source_revision=line.revision,
-        request_id=str(payload.request_id), request_hash=request_hash, delivery_reference=reference,
+        request_id=str(payload.request_id), request_hash=request_hash, delivery_reference=storage_reference,
         receipt_date=payload.receipt_date.isoformat(), accounting_month=month, quantity=decimal_text(total),
         unit=facts["unit"], prior_received_quantity=decimal_text(prior) if prior is not None else "0", baseline_known=prior is not None,
         source_json=dump(facts), payload_json=dump(frozen_body),
@@ -294,12 +323,38 @@ def receive_many(db, actor, payload):
         raise
 
 
-def list_receipts(db, search="", offset=0, limit=50):
+def list_receipts(db, search="", offset=0, limit=50, *, supplier="", category="", receipt_from="", receipt_to="", state="", sort="RECEIPT_DESC"):
     ensure_schema(db)
     needle = search.strip().casefold()
     records = db.scalars(select(FabricReceipt).where(FabricReceipt.factory_id == source.FACTORY).order_by(FabricReceipt.receipt_date.desc(), FabricReceipt.occurred_at.desc(), FabricReceipt.id))
-    items = [record for record in records if not needle or needle in (record.source_json + record.delivery_reference + record.id).casefold()]
-    return {"total": len(items), "offset": offset, "limit": limit, "items": [receipt_data(db, record) for record in items[offset:offset+limit]]}
+    from app.services.fabric_receipt_corrections import display_reference, reversal_rows
+    reversals = reversal_rows(db)
+    items, suppliers = [], set()
+    for record in records:
+        facts, payload = json.loads(record.source_json), json.loads(record.payload_json)
+        name = facts.get("supplier") or ""
+        if name:
+            suppliers.add(name)
+        if supplier and name != supplier:
+            continue
+        if category and payload.get("material_category") != category:
+            continue
+        if receipt_from and record.receipt_date < receipt_from or receipt_to and record.receipt_date > receipt_to:
+            continue
+        if state == "ACTIVE" and record.id in reversals or state == "REVERSED" and record.id not in reversals:
+            continue
+        if needle and needle not in (record.source_json + display_reference(record) + record.id + record.actor_name).casefold():
+            continue
+        items.append((record, name))
+    # Stable secondary order keeps equal dates/suppliers consistent between pages.
+    if sort == "RECEIPT_ASC":
+        items.sort(key=lambda item: item[0].receipt_date)
+    elif sort == "RECORDED_DESC":
+        items.sort(key=lambda item: item[0].occurred_at, reverse=True)
+    elif sort == "SUPPLIER":
+        items.sort(key=lambda item: item[1].casefold())
+    return {"total": len(items), "offset": offset, "limit": limit, "options": {"suppliers": sorted(suppliers, key=str.casefold)},
+        "items": [receipt_data(db, record, reversals=reversals) for record, _ in items[offset:offset+limit]]}
 
 
 def list_stock(db, search="", offset=0, limit=50):
@@ -314,7 +369,7 @@ def list_stock(db, search="", offset=0, limit=50):
             "source_line_id": receipt.source_line_id, "facts": facts, "quantity": movement.quantity, "unit": receipt.unit,
             "location": batch.location, "dye_lot": batch.dye_lot, "roll_no": batch.roll_no, "material_category": batch.material_category,
             "quality_status": batch.quality_status, "receipt_date": receipt.receipt_date, "accounting_month": receipt.accounting_month,
-            "delivery_reference": receipt.delivery_reference, "actor_name": receipt.actor_name, "occurred_at": receipt.occurred_at}
+            "delivery_reference": json.loads(receipt.payload_json).get('delivery_reference', receipt.delivery_reference), "actor_name": receipt.actor_name, "occurred_at": receipt.occurred_at}
         if not needle or needle in dump(item).casefold():
             items.append(item)
     # Deliberately no total across different materials/units and no inferred opening balance.
@@ -322,6 +377,8 @@ def list_stock(db, search="", offset=0, limit=50):
 
 
 def guard_source_withdrawal(db, line_ids):
+    from app.services.material_handover_procurement import guard_withdrawal
+    guard_withdrawal(db, line_ids)
     if "fabric_receipts" in inspect(db.get_bind()).get_table_names() and line_ids and db.scalar(select(FabricReceipt.id).where(FabricReceipt.factory_id == source.FACTORY,
         FabricReceipt.source_line_id.in_(line_ids)).limit(1)):
         raise HTTPException(409, "本次导入涉及已登记入库的来源，不能撤销；请保留来源和入库证据后另行更正")
