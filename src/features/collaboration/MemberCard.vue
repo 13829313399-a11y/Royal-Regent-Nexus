@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { MessageCircle, Star, ArrowUpRight, Sparkles } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import PresenceBadge from '@/components/directory/PresenceBadge.vue'
+import AvatarPreviewDialog from '@/components/directory/AvatarPreviewDialog.vue'
 import type { DirectoryMember } from '@/api/directory'
 import { directoryDepartmentLabel, directoryFactoryLabel } from '@/lib/directoryLabels'
 import { collaborationApi } from '@/api/collaboration'
 import { useAuthStore } from '@/stores/auth'
 import { useMessagingStore } from '@/stores/messaging'
 import { getApiErrorMessage } from '@/lib/http'
+import { businessPreempted } from './panelCoordinator'
 const props = defineProps<{ member: DirectoryMember; detailed?: boolean; compact?: boolean }>()
 const emit = defineEmits<{ select: [member: DirectoryMember]; chat: [member: DirectoryMember]; appreciate: [member: DirectoryMember]; contact: [] }>()
 const auth = useAuthStore(), messaging = useMessagingStore(), error = ref(''), busy = ref(false)
+const avatarOpen = ref(false)
+watch([() => props.member.id, () => messaging.identityKey, businessPreempted], () => { avatarOpen.value = false })
 async function toggleContact() {
   if (busy.value) return
   const who = messaging.identityKey
@@ -26,7 +30,7 @@ async function toggleContact() {
   <article class="connect-member" :class="{ 'connect-member--detail': detailed, 'connect-member--compact': compact }" :data-theme="member.self_profile?.theme || 'celadon'" :data-presence="member.presence_state" data-connect-member>
     <div class="connect-cover" aria-hidden="true"><span class="connect-orbit" /><span class="connect-cover-caption">NEXUS · CONNECT</span><Sparkles :size="18" /></div>
     <div class="connect-member-body">
-      <div class="connect-member-heading"><button type="button" class="connect-avatar-button" :aria-label="`查看${member.display_name}的名片`" @click="emit('select', member)"><UserAvatar :src="member.avatar_url" :name="member.display_name" size="lg" /><span v-if="member.presence_state === 'online'" class="connect-avatar-online" aria-hidden="true" /></button><PresenceBadge :state="member.presence_state" /></div>
+      <div class="connect-member-heading"><button type="button" class="connect-avatar-button" :aria-label="`预览${member.display_name}的头像`" aria-haspopup="dialog" title="点击查看大头像" @click="avatarOpen = true"><UserAvatar :src="member.avatar_url" :name="member.display_name" size="lg" /><span v-if="member.presence_state === 'online'" class="connect-avatar-online" aria-hidden="true" /></button><PresenceBadge :state="member.presence_state" /></div>
       <button class="connect-name-button" type="button" @click="emit('select', member)"><h3>{{ member.display_name }}</h3><ArrowUpRight :size="16" /></button>
       <p class="connect-position">{{ member.position }}</p>
       <p class="connect-org">{{ member.org_name || directoryFactoryLabel(member.primary_factory_id) }} · {{ directoryDepartmentLabel(member.primary_department) }}</p>
@@ -40,4 +44,5 @@ async function toggleContact() {
       </div><p v-if="error" class="connect-error" role="alert">{{ error }}</p>
     </div>
   </article>
+  <AvatarPreviewDialog v-if="avatarOpen" :member="member" @close="avatarOpen = false" />
 </template>

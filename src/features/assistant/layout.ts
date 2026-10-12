@@ -1,5 +1,5 @@
 export interface PanelPosition { x: number; y: number }
-export const defaultPanelHeight = 640
+export const defaultPanelHeight = 720
 export const panelMargin = 20
 export const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
