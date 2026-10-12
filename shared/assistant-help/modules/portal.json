@@ -46,12 +46,12 @@
       {
         "path": "src/views/ModuleCenterView.vue",
         "symbol": "visibleModules",
-        "sha256": "b769cb818c79c0f202c30672dcbfdbc28a577c98bb66c2745a7d004d6e8a4241"
+        "sha256": "892a9f14f078c498626244f535b2a57f9e0458330489f31f3cd9b6b9623659ae"
       },
       {
-        "path": "src/views/ModuleCenterView.vue",
+        "path": "src/composables/useVisibleModules.ts",
         "symbol": "detailPage",
-        "sha256": "b769cb818c79c0f202c30672dcbfdbc28a577c98bb66c2745a7d004d6e8a4241"
+        "sha256": "2581182fd554f284143d97daf303be3a864e1d464c42e168f01739415a7062b2"
       },
       {
         "path": "src/features/warehouse-operations/navigation.ts",
@@ -59,8 +59,8 @@
         "sha256": "52f8afa559b5e7e94a31a4ef5de4f8ef64db53a30f273da15080a0dac36ff048"
       }
     ],
-    "knowledge_version": "2026.10.09-v1",
-    "verified_commit": "working-tree@68b855b61ece37dae93c3573f2aade3805bb2255",
+    "knowledge_version": "2026.10.10-collaboration-r1",
+    "verified_commit": "working-tree:collaboration-r1",
     "status": "verified"
   }
 ]

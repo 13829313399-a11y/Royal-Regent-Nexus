@@ -117,7 +117,14 @@ def state(db, user, body, entity_id):
 
 
 def command_fingerprint(body, action):
-    return payload_fingerprint(body.model_dump(mode='json'), action)
+    payload = body.model_dump(mode='json')
+    # Keep original empty-removal plan commands recoverable across this extension.
+    if action.startswith('plan_write:') and not payload.get('removed_task_reasons'):
+        payload.pop('removed_task_reasons', None)
+    if action.startswith('plan_write:'):
+        for task in payload.get('tasks', []):
+            if not task.get('resource_change_basis'): task.pop('resource_change_basis', None)
+    return payload_fingerprint(payload, action)
 
 
 def payload_fingerprint(payload, action):

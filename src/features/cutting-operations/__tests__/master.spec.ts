@@ -30,6 +30,25 @@ async function materialForm() {
 }
 
 describe('cutting master data', () => {
+  it('ignores old history success and failure after a newer request or close', async () => {
+    vi.mocked(cuttingApi.list).mockResolvedValue({data:[record],total:1,page:1,page_size:50})
+    await open()
+    let oldResolve!: (value: import('../api').MasterPage)=>void
+    let latestResolve!: (value: import('../api').MasterPage)=>void
+    vi.mocked(cuttingApi.versions).mockImplementationOnce(()=>new Promise(r=>{oldResolve=r})).mockImplementationOnce(()=>new Promise(r=>{latestResolve=r}))
+    await button('版本记录').trigger('click');await button('版本记录').trigger('click')
+    oldResolve({data:[record],total:1,page:1,page_size:50});await flushPromises()
+    expect(wrapper.text()).toContain('正在读取版本')
+    const latest={...record,version:2,reason:'新的历史依据'}
+    latestResolve({data:[latest],total:2,page:1,page_size:50});await flushPromises()
+    expect(wrapper.text()).toContain('新的历史依据')
+    let reject!: (error: unknown)=>void
+    vi.mocked(cuttingApi.versions).mockImplementationOnce(()=>new Promise((_,r)=>{reject=r}))
+    await button('版本记录').trigger('click');await button('关闭记录').trigger('click')
+    reject({response:{data:{detail:'迟到的失败'}}});await flushPromises()
+    expect(wrapper.text()).not.toContain('迟到的失败')
+    expect(wrapper.text()).not.toContain('正在读取版本')
+  })
   it('does not expose writes or fake empty data when disabled', async () => {
     vi.mocked(cuttingApi.access).mockResolvedValue({ enabled: false, schema_ready: false, permissions: ['master_write'] })
     await open()

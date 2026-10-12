@@ -5,7 +5,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.models.internal_quote import InternalQuote, InternalQuoteAlternative, InternalQuoteAttachment
+from app.models.internal_quote import InternalQuoteAlternative, InternalQuoteAttachment
 from app.schemas.internal_quote_alternatives import AlternativeCopyRequest
 from app.services.auth import ensure_permission_in_scope, now_text
 from app.services.internal_quote import (

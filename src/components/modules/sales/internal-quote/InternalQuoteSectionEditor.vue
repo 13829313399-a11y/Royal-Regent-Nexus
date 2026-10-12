@@ -5,6 +5,9 @@ import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/api/internalQuote'
 import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
+import { rebaseEngineeringMolding } from '@/lib/internalQuoteMoldingSync'
+import { validateMoldSplit, type EngineeringMoldSplitChange } from '@/lib/internalQuoteMoldSplit'
+import type { EngineeringMoldRow } from '@/lib/internalQuoteSectionPayload'
 import InternalQuoteImportAssignment from './InternalQuoteImportAssignment.vue'
 import InternalQuoteMappedAssignment from './InternalQuoteMappedAssignment.vue'
 import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
@@ -59,6 +62,7 @@ const actionReason = ref('')
 const reasonAction = ref<'reject' | 'na' | 'reopen'>()
 const localMessage = ref('')
 const localError = ref('')
+const moldSplitPending = ref(false)
 const salesPricingPayload = computed(() => {
   const salesSection = props.quote.sections.find((section) => section.code === 'sales')
   return salesSection?.payload && typeof salesSection.payload === 'object' ? salesSection.payload : {}
@@ -377,21 +381,6 @@ function normalizedDraft(payload: Record<string, unknown>) {
   return normalizeInternalQuoteDraft(props.section.code, payload, props.quote.referenceSnapshot)
 }
 
-function applyMoldingSourceDeletions(baseline: Record<string, unknown>, incoming: Record<string, unknown>) {
-  if (props.section.code !== 'molding') return false
-  const rows = (payload: Record<string, unknown>) => payload.injection_lines as Array<Record<string, unknown>>
-  const incomingKeys = new Set(rows(incoming).map(row => row.engineering_source_key).filter(Boolean))
-  const removedKeys = new Set(rows(baseline)
-    .map(row => row.engineering_source_key).filter(key => key && !incomingKeys.has(key)))
-  const retainedRows = rows(baseline).filter(row => !removedKeys.has(row.engineering_source_key))
-  if (!removedKeys.size || JSON.stringify({ ...baseline, injection_lines: retainedRows }) !== JSON.stringify(incoming)) return false
-  const draftRows = rows(draftPayload.value)
-  for (let index = draftRows.length - 1; index >= 0; index--) {
-    if (removedKeys.has(draftRows[index]!.engineering_source_key)) draftRows.splice(index, 1)
-  }
-  return true
-}
-
 let draftContext = ''
 watch([
   () => props.quote.id, () => props.section.code, () => props.section.revision,
@@ -399,15 +388,18 @@ watch([
 ], () => {
   const context = `${props.quote.id}:${props.section.code}`
   const contextChanged = context !== draftContext
+  if (contextChanged) moldSplitPending.value = false
   const incoming = normalizedDraft(props.section.payload)
   const incomingText = JSON.stringify(incoming)
-  // Engineering owns linked row deletion. Rebase a deletion-only refresh while
+  // Engineering owns linked rows. Rebase its changes while
   // retaining local edits and row identities elsewhere. Other remote changes
   // still follow the optimistic-lock conflict path below.
   if (!contextChanged && props.section.code === 'molding' && baselinePayload.value
     && props.section.revision >= draftRevision.value) {
     const baseline = JSON.parse(baselinePayload.value) as Record<string, unknown>
-    if (applyMoldingSourceDeletions(baseline, incoming)) {
+    const rebased = rebaseEngineeringMolding(baseline, incoming, draftPayload.value)
+    if (rebased) {
+      if (JSON.stringify(rebased) !== JSON.stringify(draftPayload.value)) draftPayload.value = rebased
       baselinePayload.value = incomingText
       draftRevision.value = props.section.revision
     }
@@ -461,7 +453,9 @@ function errorText(error: unknown) { return error instanceof Error ? error.messa
 
 function acceptSavedPayload(payload: Record<string, unknown>, submitted: Record<string, unknown>, revision: number) {
   const saved = normalizedDraft(payload)
-  applyMoldingSourceDeletions(normalizedDraft(submitted), saved)
+  const rebased = props.section.code === 'molding'
+    ? rebaseEngineeringMolding(normalizedDraft(submitted), saved, draftPayload.value) : undefined
+  if (rebased) draftPayload.value = rebased
   const submittedText = JSON.stringify(normalizedDraft(submitted))
   const currentText = JSON.stringify(draftPayload.value)
   const savedText = JSON.stringify(saved)
@@ -476,6 +470,7 @@ function acceptSavedPayload(payload: Record<string, unknown>, submitted: Record<
 
 async function saveDraft(showMessage = true, reason = '', refreshQuote = true) {
   resetFeedback()
+  if (moldSplitPending.value) { localError.value = '请先确认或取消配件拆分。'; return undefined }
   try {
     const requestedRevision = draftRevision.value
     const quoteId = props.quote.id
@@ -491,6 +486,42 @@ async function saveDraft(showMessage = true, reason = '', refreshQuote = true) {
   } catch (error) {
     localError.value = errorText(error)
     return undefined
+  }
+}
+
+async function saveMoldPartSplit(changes: EngineeringMoldSplitChange[], done: (error?: string) => void) {
+  if (props.section.code !== 'engineering' || !editable.value) { done('当前工程部不可编辑，请稍后重试。'); return }
+  resetFeedback()
+  const quoteId = props.quote.id
+  try {
+    const original = cloneInternalQuotePayload('engineering', draftPayload.value)
+    const submitted = cloneInternalQuotePayload('engineering', original)
+    const molds = submitted.molds as EngineeringMoldRow[]
+    if (!changes.length) throw new Error('请选择需要拆分的模具。')
+    for (const change of changes) {
+      if (JSON.stringify(molds[change.index]) !== change.original) throw new Error('模具数据已变化，请取消后重新打开拆分。')
+      const error = validateMoldSplit(change.parts)
+      if (error) throw new Error(error)
+      molds[change.index]!.parts = JSON.parse(JSON.stringify(change.parts))
+    }
+    const saved = await quoteStore.saveSection(quoteId, 'engineering', draftRevision.value, submitted, '确认工程配件拆分并同步啤机部') as ApiInternalQuoteSection
+    if (props.quote.id !== quoteId || props.section.code !== 'engineering') { done(); return }
+    // Commit staged children only after a successful save; preserve edits made in flight.
+    if (JSON.stringify(draftPayload.value) === JSON.stringify(original)) draftPayload.value = submitted
+    else {
+      const current = draftPayload.value.molds as EngineeringMoldRow[]
+      const before = original.molds as EngineeringMoldRow[]
+      for (const { index } of changes) {
+        if (JSON.stringify(current[index]) === JSON.stringify(before[index])) current[index]!.parts = molds[index]!.parts
+      }
+    }
+    acceptSavedPayload(saved.payload, submitted, saved.revision)
+    localMessage.value = '配件拆分已保存；参与报价的啤机部已同步配件，请核对料型、机台及未完成的数据。'
+    done()
+  } catch (error) {
+    const message = `配件拆分尚未同步，当前输入已保留。${errorText(error)}`
+    if (props.quote.id === quoteId) localError.value = message
+    done(message)
   }
 }
 
@@ -532,7 +563,7 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
 }
 
 function hasUnsavedChanges() {
-  return isDirty.value
+  return isDirty.value || moldSplitPending.value
 }
 
 function canSaveWholeQuoteDraft() {
@@ -540,6 +571,7 @@ function canSaveWholeQuoteDraft() {
 }
 
 function getWholeQuoteDraft() {
+  if (moldSplitPending.value) throw new Error('请先确认或取消配件拆分。')
   if (!editable.value) throw new Error(`${props.section.label}当前不可编辑，无法统一保存。`)
   return {
     sectionCode: props.section.code,
@@ -577,6 +609,7 @@ function answerUnsavedPrompt(choice: UnsavedNavigationChoice) {
 }
 
 async function confirmUnsavedNavigation() {
+  if (moldSplitPending.value) { localError.value = '请先确认或取消配件拆分。'; return false }
   if (!isDirty.value) return true
   const choice = await askHowToHandleUnsavedChanges()
   if (choice === 'cancel') return false
@@ -593,7 +626,7 @@ async function confirmUnsavedNavigation() {
 }
 
 function handleBeforeUnload(event: BeforeUnloadEvent) {
-  if (!isDirty.value) return
+  if (!hasUnsavedChanges()) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -606,7 +639,7 @@ async function submitSection() {
   resetFeedback()
   try {
     let revision = draftRevision.value
-    if (isDirty.value) {
+    if (hasUnsavedChanges()) {
       const saved = await saveDraft(false)
       if (!saved) return
       revision = saved.revision
@@ -683,7 +716,7 @@ async function handleUploadFile(event: Event) {
   if (!file || !editable.value) return
   resetFeedback()
   try {
-    if (isImportWorkbook(file) && importOptions.value.length && isDirty.value) {
+    if (isImportWorkbook(file) && importOptions.value.length && hasUnsavedChanges()) {
       localError.value = '当前有未保存修改，请先保存草稿，再重新选择报价单导入。'
       return
     }
@@ -720,7 +753,7 @@ async function downloadImportTemplate(option?: ImportOption) {
 }
 
 async function confirmImport() {
-  if (isDirty.value) {
+  if (hasUnsavedChanges()) {
     importPreview.value = undefined
     localError.value = '预览后有未保存修改，请先保存草稿，再重新选择报价单导入。'
     return
@@ -765,7 +798,7 @@ function requestDeleteImportAttachment(attachment: InternalQuoteAttachmentRecord
     localError.value = '本分段当前不可编辑，无法删除附件。'
     return
   }
-  if (isDirty.value) {
+  if (hasUnsavedChanges()) {
     localError.value = '当前有未保存修改，请先保存草稿或放弃修改，再删除附件。'
     return
   }
@@ -775,7 +808,7 @@ function requestDeleteImportAttachment(attachment: InternalQuoteAttachmentRecord
 async function confirmDeleteImportAttachment() {
   const attachment = deleteAttachmentTarget.value
   if (!attachment || !editable.value || quoteStore.submitting) return
-  if (isDirty.value) {
+  if (hasUnsavedChanges()) {
     localError.value = '当前有未保存修改，请先保存草稿，再删除附件。'
     deleteAttachmentTarget.value = undefined
     return
@@ -857,7 +890,7 @@ function confirmRemoveParticipation() {
       <div class="electronic-quote-total"><strong>电子部全部报价预览</strong><span>RMB {{ detailAmount(electronicSectionSummary.quoteRmb) }}</span><span>HKD {{ detailAmount(electronicSectionSummary.quoteHkd) }}</span><em>{{ electronicGroupOptions.length }} 份报价金额合计；正式金额以保存后的服务端计算为准。</em></div>
     </section>
     <div v-if="section.code === 'electronic' && !showElectronicForm" class="electronic-empty-state"><FileSpreadsheet /><strong>暂无电子报价</strong><span>可新增空白电子报价，或上传报价单后选择“新增独立电子报价”。</span></div>
-    <InternalQuoteSectionForm v-if="showElectronicForm" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" />
+    <InternalQuoteSectionForm v-if="showElectronicForm" :key="`${quote.id}:${section.code}`" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable || quoteStore.submitting" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" @mold-parts-split="saveMoldPartSplit" @mold-split-open="moldSplitPending = $event" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"

@@ -1900,9 +1900,12 @@ def _calculation_dependencies(
             "machine_code",
             "target_output",
             "cycle_time_seconds",
+            "pricing_component_id",
         )
         projected_molds = [
-            {key: row.get(key) for key in molding_dependency_fields}
+            {**{key: row.get(key) for key in molding_dependency_fields},
+             "parts": [{key: part.get(key) for key in ("id", "name", "color", "unit_net_weight_g", "output_count", "quantity")}
+                       for part in row.get("parts", []) if isinstance(part, dict)] if isinstance(row.get("parts"), list) else []}
             for row in molds
             if isinstance(row, dict)
         ]
@@ -1980,15 +1983,20 @@ def _calculate_and_apply(
 
 
 def _remove_missing_molding_sources(
-    db: Session, quote: InternalQuote, payload: dict[str, object],
+    db: Session, quote: InternalQuote, payload: dict[str, object], *, synchronize_parts: bool = False,
 ) -> dict[str, object]:
     if not isinstance(payload.get("injection_lines"), list):
         return payload
     engineering = _get_section(db, quote.id, "engineering")
     if not engineering.is_required or engineering.status == "not_applicable":
         return payload
+    engineering_payload = _json_object(engineering.payload_json)
+    has_parts = any(isinstance(mold, dict) and isinstance(mold.get("parts"), list)
+                    for mold in engineering_payload.get("molds", [])) or any(
+                        isinstance(row, dict) and "/part:" in str(row.get("engineering_source_key") or "")
+                        for row in payload.get("injection_lines", []))
     return prefill_molding_from_engineering(
-        _json_object(engineering.payload_json), payload, remove_missing_only=True,
+        engineering_payload, payload, remove_missing_only=not (synchronize_parts and has_parts),
     )
 
 
@@ -3910,7 +3918,7 @@ def _save_section_in_transaction(
     request: Request | None,
 ) -> InternalQuoteSection:
     if section.department == "molding":
-        next_payload = _remove_missing_molding_sources(db, quote, next_payload)
+        next_payload = _remove_missing_molding_sources(db, quote, next_payload, synchronize_parts=True)
     if section.department == "electronic" and "quote_groups" in _json_object(section.payload_json) and "quote_groups" not in next_payload:
         raise HTTPException(status_code=409, detail="电子部包含多份独立报价，请刷新页面后逐份编辑，不能用旧版单份数据覆盖")
     next_payload_json = canonical_json(next_payload)

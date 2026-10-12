@@ -199,6 +199,16 @@ describe('internal quote desk real API state', () => {
     apiMock.updateReferenceFx.mockResolvedValue(quote({ header_revision: 3, reference_snapshot_id: 'REF-2' }))
   })
 
+  it('keeps archived and incomplete business errors separate from revision conflicts', async () => {
+    const store = useInternalQuoteDeskStore()
+    for (const detail of ['方案版本已归档，请先恢复后操作', '以下部门须完成填写、保存及有效计算：啤机部']) {
+      await expect(store.executeMutation('quote-1', async () => { throw { isAxiosError: true, response: { status: 409, data: { detail } } } })).rejects.toThrow(detail)
+      expect(store.errorMessage).toBe(detail)
+      expect(store.conflictMessage).toBe('')
+    }
+    await expect(store.executeMutation('quote-1', async () => { throw { isAxiosError: true, response: { status: 409, data: { detail: { message: '已被其他人更新', current_revision: 5 } } } } })).rejects.toThrow('重新读取')
+    expect(store.conflictMessage).toContain('revision 5')
+  })
   it('refreshes the quote and activity history after creator withdrawal', async () => {
     const store = useInternalQuoteDeskStore()
     apiMock.withdrawFinal.mockResolvedValue({ quote: quote({ status: 'rejected', header_revision: 3 }) })

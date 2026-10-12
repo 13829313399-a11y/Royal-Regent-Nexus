@@ -123,3 +123,6 @@ outputs/opening-inventory-template-20260909/
 # IAM V2 implementation and acceptance handoff
 !docs/iam-v2-20260926/*.md
 !/docs/assistant/*.md
+
+# Collaboration R1 implementation and acceptance handoff
+!/docs/collaboration-r1.md

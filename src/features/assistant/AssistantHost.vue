@@ -9,9 +9,11 @@ import AssistantCore from './AssistantCore.vue'
 import { activeStates, stateLabels, type PanelMode, type RunState } from './types'
 import { defaultPanelHeight, type PanelPosition } from './layout'
 import './assistant.css'
+import { registerSurface, requestSurface, releaseSurface } from '@/features/collaboration/panelCoordinator'
 const Panel = defineAsyncComponent(() => import('./AssistantPanel.vue'))
 const auth = useAuthStore(), app = useAppStore(), assistant = useAssistantStore(), route = useRoute()
 const mode = ref<PanelMode>('edge'), opened = ref(false), side = ref<'left' | 'right'>('right'), position = ref(.7), width = ref(432)
+const unregisterSurface = registerSurface('assistant', () => changeMode('edge', false))
 const panelPosition = ref<PanelPosition | null>(null), height = ref(defaultPanelHeight)
 const focusOnOpen = ref(true)
 const launcher = ref<HTMLButtonElement>(), businessModal = ref(false)
@@ -43,12 +45,14 @@ function preferences() {
 }
 function clearHoverTimers() { clearTimeout(revealTimer); clearTimeout(hideTimer) }
 function changeMode(next: PanelMode, returnFocus = true) {
+  if (next !== 'edge' && !requestSurface('assistant')) return
+  if (next === 'edge') releaseSurface('assistant')
   clearHoverTimers(); mode.value = next
   if (next !== 'edge') opened.value = true
   else { overPanel = false; panelFocused = false; if (returnFocus) launcher.value?.focus() }
 }
 function open(hover = false) {
-  if (businessModal.value || !shown.value) return
+  if (businessModal.value || !shown.value || !requestSurface('assistant', hover ? 'hover' : 'explicit')) return
   focusOnOpen.value = !hover
   panelPosition.value = { x: side.value === 'left' ? 20 : innerWidth - width.value - 20, y: innerHeight * position.value - height.value / 2 }
   changeMode('side'); void check()
@@ -121,11 +125,11 @@ onMounted(() => {
   document.addEventListener('visibilitychange', visible); window.addEventListener('keydown', shortcut)
   observer = new MutationObserver(() => {
     businessModal.value = [...document.querySelectorAll<HTMLElement>('[aria-modal="true"], dialog[open]')].some(el => !el.closest('.yl-assistant') && !!el.getClientRects().length)
-    if (businessModal.value && mode.value !== 'edge') changeMode('edge')
+    if (businessModal.value && mode.value !== 'edge') changeMode('edge', false)
   })
   observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-modal','open','data-state'] })
 })
-onUnmounted(() => { clearHoverTimers(); document.removeEventListener('visibilitychange', visible); window.removeEventListener('keydown', shortcut); observer?.disconnect(); assistant.bindIdentity('') })
+onUnmounted(() => { unregisterSurface(); clearHoverTimers(); document.removeEventListener('visibilitychange', visible); window.removeEventListener('keydown', shortcut); observer?.disconnect(); assistant.bindIdentity('') })
 </script>
 <template>
   <Teleport to="body">

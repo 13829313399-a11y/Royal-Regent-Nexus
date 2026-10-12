@@ -36,6 +36,9 @@ describe('cutting workspace entry', () => {
       })
       if (workspace.path === 'master') {
         expect(wrapper!.text()).toContain('基础资料尚未启用')
+      } else if (workspace.path === 'reporting') {
+        expect(wrapper!.text()).toContain('每日填数尚未启用')
+        expect(wrapper!.find('form').exists()).toBe(false)
       } else {
         expect(wrapper!.text()).toContain('尚不能录入、保存或结算业务数据')
         expect(wrapper!.text()).toContain(workspace.empty)
