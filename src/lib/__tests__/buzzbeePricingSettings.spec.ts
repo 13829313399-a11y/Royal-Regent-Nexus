@@ -39,12 +39,12 @@ describe('BuzzBee maintained pricing and original templates', () => {
     expect(sales.customer_quote_fields.buzzbee).toMatchObject({ template_profile: 'laser', notes: '客户功能说明', color_box_tiers: [{ quote_price_hkd: 10, moq: '3000' }] })
     expect(normalizeInternalQuotePayload('molding', { injection_lines: [{ material: 'C-ABS', buzzbee_material: 'C-ABS镜片' }] }).injection_lines[0]).toMatchObject({ material: 'C-ABS', buzzbee_material: 'C-ABS镜片' })
   })
-  it('uses whole-set weights, internal molding labor, grouped electronics and the agreed fee sequence', () => {
+  it('uses whole-set weights, internal molding labor, the electronic department total and the agreed fee sequence', () => {
     const p = settings(); p.rates.injection_multiplier = 1.2
     const result = convertBuzzBeeP4InternalQuote(artifact(), 'approved.xlsx', p)
     const d = result.sheets[0]!.quoteData
     expect(d.injectionRows[0]).toMatchObject({ weight: 300, pricePerKg: 16.7, amount: 5.01, beer: 7.2 })
-    expect(d.purchaseRows.find(r => r.desc === '声光组件整组')).toMatchObject({ qty: 1, amount: 12.6 })
+    expect(d.purchaseRows.filter(r => r.category === '电子')).toEqual([expect.objectContaining({ desc: '电子', qty: 1, amount: 12.6 })])
     expect(d.purchaseRows.map(r => r.desc)).not.toContain('IC')
     expect(d.purchaseRows.find(r => r.desc === '子弹吸塑')?.amount).toBe(3.15)
     expect(d.purchaseRows.find(r => r.desc === '纸箱')?.amount).toBe(2.06)
