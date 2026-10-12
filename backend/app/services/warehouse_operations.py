@@ -383,6 +383,10 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
         if old:
             if old.request_hash != signature:
                 raise HTTPException(409, '请求编号已用于其他内容或操作者，请核对原单')
+            old_metadata = json.loads(old.payload_json)
+            if old_metadata.get('handover_document_id') or (_metadata or {}).get('handover_document_id'):
+                if not _metadata or any(old_metadata.get(k) != v for k, v in _metadata.items()):
+                    raise HTTPException(409, '该请求属于制单扫码收发，请使用原交接单请求核对')
             if _metadata is None and json.loads(old.payload_json).get('bulk_request_id'):
                 raise HTTPException(409, '该请求属于批量出库，请使用原批量请求核对')
             result = entry_data(old)

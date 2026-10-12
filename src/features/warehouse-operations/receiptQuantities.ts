@@ -16,3 +16,19 @@ export function receiptTotal(values: string[]): string | undefined {
   const total = amounts.reduce<bigint>((sum, value) => sum + value!, 0n)
   return total < 1_000_000_000_000n * scale ? quantityText(total) : undefined
 }
+// Round the complete receipt once to cents, matching Decimal HALF_UP.
+export function receiptAmount(quantity: string, price: string): string | undefined {
+  const count = receiptQuantity(quantity), rate = receiptQuantity(price)
+  if (count === undefined || count <= 0n || rate === undefined) return undefined
+  const cents = (count * rate + 5_000_000_000n) / 10_000_000_000n
+  return `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`
+}
+export function receiptAmountTotals(rows: { amount?: string; currency: string }[]): { currency: string; amount: string }[] {
+  const groups = new Map<string, bigint>()
+  for (const row of rows) {
+    if (!row.currency || row.amount === undefined) continue
+    const [whole, cents] = row.amount.split('.')
+    groups.set(row.currency, (groups.get(row.currency) ?? 0n) + BigInt(whole! + cents!))
+  }
+  return [...groups].map(([currency, cents]) => ({ currency, amount: `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}` }))
+}

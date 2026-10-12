@@ -5,7 +5,7 @@ import { ConnectorWorker } from '../src/worker.mjs';
 import { ConnectorClient } from '../src/client.mjs';
 import { mergeReport, initialStatus } from '../src/bambu/status.mjs';
 
-function fixture() {
+function fixture({ controlVerified = true } = {}) {
   let now = 0, granted = false, failDispatch = false;
   const messages = [], adapters = [];
   const iso = milliseconds => new Date(milliseconds).toISOString();
@@ -16,7 +16,8 @@ function fixture() {
       if (granted) return { acquired: false };
       granted = true;
       return { acquired: true, leased_until: iso(now + 30000), server_time: iso(now), port: 8883,
-        leader_lease_id: 'leader-1', printer_id: 'printer-1', machine_no: 1, generation: 0, connection_revision: 1 };
+        leader_lease_id: 'leader-1', printer_id: 'printer-1', machine_no: 1, generation: 0, connection_revision: 1,
+        control_verified: controlVerified };
     }
     if (path === '/commands/claim') return { server_time: iso(now), commands: [{ command_id: 'command-1',
       command_lease_id: 'command-lease', action: 'pause', leased_until: iso(now + 8000) }] };
@@ -80,4 +81,72 @@ test('a new device job cannot inherit the prior job completion state', () => {
   const finished = mergeReport(initialStatus(), { subtask_id: 'old', gcode_state: 'FINISH', mc_percent: 100 }, 'now');
   const next = mergeReport(finished, { subtask_id: 'new', subtask_name: 'same-file' }, 'later');
   assert.equal(next.state, 'UNKNOWN'); assert.equal(next.progress_percent, 0);
+});
+
+test('observation-only grants upload telemetry and renew without polling hardware commands', async () => {
+  const f = fixture({ controlVerified: false }); await f.prepare();
+  const originalPost = f.worker.client.post;
+  f.worker.client.post = async (path, payload) => {
+    const result = await originalPost(path, payload);
+    return path === '/leases/renew' ? { ...result, connection_revision: 1 } : result;
+  };
+  try {
+    f.advance(1000); await f.worker.tick();
+    f.advance(8000); await f.worker.tick();
+    assert.equal(f.messages.filter(([path]) => path === '/commands/claim').length, 0);
+    assert.equal(f.messages.filter(([path]) => path === '/events').length, 1);
+    assert.equal(f.messages.filter(([path]) => path === '/leases/renew').length, 1);
+    assert.equal(f.adapters[0].closed, undefined);
+  } finally { await f.worker.stop() }
+});
+
+test('shared API outage closes leases immediately then backs off and recovers with sanitized diagnostics', async () => {
+  const f = fixture(); await f.prepare();
+  const logs = []; f.worker.log = entry => logs.push(entry);
+  const originalPost = f.worker.client.post;
+  let fail = true, calls = 0;
+  f.worker.client.post = async (path, payload) => {
+    if (path === '/heartbeat') {
+      calls++;
+      if (fail) throw new Error('private-token http://private-host upstream secret body');
+    }
+    return originalPost(path, payload);
+  };
+  try {
+    f.advance(10000); await f.worker.tick();
+    assert.equal(f.adapters[0].closed, true);
+    f.advance(500); await f.worker.tick(); assert.equal(calls, 1);
+    f.advance(500); await f.worker.tick(); assert.equal(calls, 2);
+    f.advance(1000); await f.worker.tick(); assert.equal(calls, 2);
+    fail = false;
+    f.advance(1000); await f.worker.tick(); assert.equal(calls, 3);
+    assert.equal(f.worker.apiFailures, 0);
+    assert.ok(logs.some(entry => entry.code === 'connector_api_recovered'));
+    assert.deepEqual(logs.filter(entry => entry.retry_ms).map(entry => entry.retry_ms), [1000, 2000]);
+    assert.doesNotMatch(JSON.stringify(logs), /private-token|private-host|secret body/);
+  } finally { await f.worker.stop() }
+});
+
+test('device diagnostics distinguish transport failure and recovery while rate limiting unchanged failures', async () => {
+  const f = fixture(); await f.prepare();
+  const logs = []; f.worker.log = entry => logs.push(entry);
+  const slot = f.worker.slots.get('printer-1');
+  const emit = async event => {
+    f.adapters[0].emit('state', { connection_session_id: 'session-1', event_id: 'test-event',
+      sequence: 2, progress_percent: 0, remaining_minutes: 0, ...event });
+    await slot.queue;
+  };
+  try {
+    await emit({ connected: false, state: 'STALE', reason: 'tcp_connect_timeout' });
+    await emit({ connected: false, state: 'STALE', reason: 'tcp_connect_timeout' });
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].reason, 'tcp_connect_timeout');
+    await emit({ connected: true, state: 'RUNNING', reason: 'device_report', current_file: 'private-product-name' });
+    await emit({ connected: true, state: 'RUNNING', reason: 'device_report' });
+    assert.equal(logs.length, 2);
+    assert.equal(logs[1].code, 'printer_telemetry_recovered');
+    await emit({ connected: false, state: 'STALE', reason: 'private-access-code' });
+    assert.equal(logs[2].reason, 'device_state');
+    assert.doesNotMatch(JSON.stringify(logs), /private-product-name|private-access-code/);
+  } finally { await f.worker.stop() }
 });

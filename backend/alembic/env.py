@@ -34,6 +34,7 @@ from app.models import (
     fabric_procurement,  # noqa: F401
     fabric_receiving,  # noqa: F401
     fabric_master,  # noqa: F401
+    material_handover,  # noqa: F401
     warehouse_operations,  # noqa: F401
     carton_stocktake,  # noqa: F401
     carton_positions,

@@ -218,10 +218,10 @@ def _ensure_order_adjustment_permission(db: Session, user: AuthContext, factory_
 
 
 def _ensure_order_deletion_permission(db: Session, user: AuthContext, factory_id: str) -> None:
-    # Deletion requires the supervisor adjustment entitlement itself. The warehouse
-    # order_write + inventory_write fallback used by append/reduce does not apply.
-    for permission in ("order_write", "order_adjust"):
-        _ensure_permission(db, user, f"carton_procurement:{permission}", factory_id)
+    # Warehouse deletion uses existing scoped operating permissions without granting
+    # supervisor privileges or bypassing the service's customer responsibility check.
+    _ensure_permission(db, user, "carton_procurement:order_write", factory_id)
+    _ensure_order_adjustment_permission(db, user, factory_id)
 
 
 @router.get("/orders/{order_no}/splits")

@@ -30,6 +30,8 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/modules/pmc-warehouse/material-handover', name: 'material-handover', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), meta: { title: '制单与扫码交接', fullPage: true, requiresAuth: true, permissions: ['fabric_operations:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
+  { path: '/material-handover/prepare', name: 'material-handover-external', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), props: { external: true }, meta: { title: '物料单据制单', fullPage: true, requiresAuth: false } },
   { path: '/messages', name: 'messages', component: () => import('@/views/MessagesView.vue'), meta: { title: '私信', requiresAuth: true } },
   { path: '/me', name: 'my-space', component: () => import('@/views/MySpaceView.vue'), meta: { title: '我的空间', requiresAuth: true } },
   { path: '/notifications', name: 'notification-center', component: () => import('@/views/NotificationCenterView.vue'), meta: { title: '事项工作台', requiresAuth: true } },

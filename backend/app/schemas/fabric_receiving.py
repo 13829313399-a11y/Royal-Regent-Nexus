@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ReceiptBatchInput(BaseModel):
@@ -13,7 +13,19 @@ class ReceiptBatchInput(BaseModel):
     roll_no: str = Field(default="", max_length=128)
 
 
-class ReceiveSourceRequest(BaseModel):
+class ReceiptPriceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    unit_price: str = Field(default='', max_length=32)
+    price_unit: str = Field(default='', max_length=32)
+    currency: Literal['', 'CNY', 'HKD', 'USD', 'EUR'] = ''
+
+    @field_validator('unit_price', 'price_unit')
+    @classmethod
+    def strip_price_fields(cls, value):
+        return value.strip()
+
+
+class ReceiveSourceRequest(ReceiptPriceInput):
     model_config = ConfigDict(extra="forbid")
     factory_id: Literal["huakang-c"]
     request_id: UUID
@@ -31,7 +43,7 @@ class ReceiveSourceRequest(BaseModel):
     confirmed: bool = False
 
 
-class ReceiveSourceItem(BaseModel):
+class ReceiveSourceItem(ReceiptPriceInput):
     model_config = ConfigDict(extra="forbid")
     source_line_id: str = Field(min_length=1, max_length=128)
     expected_source_revision: int = Field(ge=1)
