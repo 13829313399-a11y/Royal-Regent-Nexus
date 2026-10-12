@@ -833,14 +833,15 @@ const canIssuePurchaseOrders = computed(() =>
   authStore.can('carton_procurement:order_write', selectedFactoryId.value, 'carton')
   || authStore.can('carton_procurement:order_write', selectedFactoryId.value, 'pmc-warehouse'),
 )
-const canDeleteOrders = computed(() => canIssuePurchaseOrders.value && (
-  authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'carton')
-  || authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'pmc-warehouse')
-))
 const canWriteCartonInventory = computed(() =>
   authStore.can('carton_procurement:inventory_write', selectedFactoryId.value, 'carton')
   || authStore.can('carton_procurement:inventory_write', selectedFactoryId.value, 'pmc-warehouse'),
 )
+const canDeleteOrders = computed(() => canIssuePurchaseOrders.value && (
+  canWriteCartonInventory.value
+  || authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'carton')
+  || authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, 'pmc-warehouse')
+))
 const canReviewSupplierDeliveries = computed(() =>
   ['carton_procurement:read', 'carton_procurement:receipt_write', 'carton_procurement:inventory_write'].every((permission) =>
     authStore.can(permission, selectedFactoryId.value, 'carton')
@@ -1040,7 +1041,7 @@ const selectedOrdersCanCancel = computed(() =>
 )
 const selectedOrdersCanDelete = computed(() => apiConnected.value && canDeleteOrders.value
   && selectedOrders.value.length > 0 && selectedOrders.value.length <= 100
-  && selectedOrders.value.every(order => order.can_delete === true))
+  && selectedOrders.value.every(order => responsibleForCustomer(order.customer_code) && order.can_delete === true))
 const canUndoScheduleImport = computed(() => authStore.can('carton_procurement:import', selectedFactoryId.value, 'pmc-warehouse')
   || authStore.can('carton_procurement:import', selectedFactoryId.value, 'carton'))
 
@@ -2302,8 +2303,9 @@ function canDeleteOrder(orderNo: string) {
 }
 
 function orderDeleteHint(orderNo: string) {
+  if (!responsibleForOrder(orderNo)) return '未获授权操作该客户，不能删除此订单'
   return orderRecords.value.find(order => order.order_no === orderNo)?.deletion_block_reason
-    || '主管级别可删除未收料且无供应商执行记录的订单（含已取消订单），删除前需确认原因'
+    || '主管或仓管可在客户授权范围内删除符合条件的订单，删除前需确认原因'
 }
 
 function openDeleteOrder(orderNo: string) {
@@ -2317,6 +2319,10 @@ function openDeleteOrder(orderNo: string) {
 async function deleteOrder() {
   const orders = deleteOrderTarget.value ? [deleteOrderTarget.value] : deleteOrderTargets.value
   if (!orders.length || !canDeleteOrders.value || deletingOrders.value || deleteOrderReason.value.trim().length < 4) return
+  if (!orders.every(order => canDeleteOrder(order.order_no))) {
+    reportActionFailure('所选订单的客户授权或可删除状态已变化，请刷新后重试。')
+    return
+  }
   const factoryId = selectedFactoryId.value
   deletingOrders.value = true
   try {
@@ -6406,9 +6412,9 @@ watch([
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || issuingSelectedPurchaseOrders || !canIssuePurchaseOrders" title="首次与非首次采购单均可多选生成；包含追加或减单时会先确认" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300" @click="issueSelectedPurchaseOrders"><Send class="size-3.5" />{{ issuingSelectedPurchaseOrders ? '生成中…' : `生成供应商采购单（${selectedOrderNos.length}）` }}</button>
           <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || exportingSelectedOrders" :title="!apiConnected ? '后端未连接，当前演示订单不能导出' : '累计对账表不代表向供应商新增下单'" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="exportSelectedPurchaseOrders"><Download class="size-3.5" />{{ exportingSelectedOrders ? '合并生成中…' : '导出累计对账表' }}</button>
           <button type="button" :disabled="!selectedOrdersCanCancel || cancellingOrder" title="仅尚未确认锁定的待下单订单可批量取消" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="openBulkCancelOrders"><X class="size-3.5" />批量取消</button>
-          <button v-if="canDeleteOrders" type="button" :disabled="!selectedOrdersCanDelete || deletingOrders" title="主管可删除所有已取消订单；其他订单须无收料、库存、供应商执行及拆单记录。请先勾选，最多 100 张，全部校验通过后一次删除" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="deleteOrderTarget = null; deleteOrderTargets = [...selectedOrders]; deleteOrderReason = '订单录入有误'"><Trash2 class="size-3.5" />批量删除订单</button>
-          <p v-if="canDeleteOrders && orderStatusFilter === 'CANCELLED'" aria-label="已取消订单删除说明" class="basis-full text-[11px] text-slate-600">所有已取消订单都可删除：勾选后点击“批量删除订单”，或在该订单的“更多”中删除；已有收料、库存、供应商及拆单历史保留。</p>
-          <p v-if="canDeleteOrders && selectedOrders.length && !selectedOrdersCanDelete" class="basis-full text-[11px] text-red-700">未取消且已有收料、库存或供应商执行记录的订单不可删除（含待确认、作废或已冲销）；拆单历史也会阻止删除。每次最多 100 张，全部校验通过后一次删除。</p>
+          <button v-if="canDeleteOrders" type="button" :disabled="!selectedOrdersCanDelete || deletingOrders" title="主管或仓管可删除客户授权范围内的已取消订单；其他订单须无收料、库存、供应商执行及拆单记录。请先勾选，最多 100 张，全部校验通过后一次删除" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="deleteOrderTarget = null; deleteOrderTargets = [...selectedOrders]; deleteOrderReason = '订单录入有误'"><Trash2 class="size-3.5" />批量删除订单</button>
+          <p v-if="canDeleteOrders && orderStatusFilter === 'CANCELLED'" aria-label="已取消订单删除说明" class="basis-full text-[11px] text-slate-600">客户授权范围内的已取消订单都可删除：勾选后点击“批量删除订单”，或在该订单的“更多”中删除；已有收料、库存、供应商及拆单历史保留。</p>
+          <p v-if="canDeleteOrders && selectedOrders.length && !selectedOrdersCanDelete" class="basis-full text-[11px] text-red-700">只能删除客户授权范围内的订单。未取消且已有收料、库存或供应商执行记录的订单不可删除（含待确认、作废或已冲销）；拆单历史也会阻止删除。每次最多 100 张，全部校验通过后一次删除。</p>
           <CartonSelectionSummary :rows="selectedOrders.map(row => ({ id: row.order_no, label: `${row.customer_name} · ${row.contract_no} · ${row.item_no}${row.customer_po ? ' · PO ' + row.customer_po : ''}` }))" :visible-ids="orderedVisibleOrders.map(row => row.id)" unit="张" @clear="selectedOrderNos = []" @remove="selectedOrderNos = selectedOrderNos.filter(id => id !== $event)" />
           <p
             v-if="selectedOrderNos.length && (!apiConnected || combinedPurchaseOrderMessage)"
@@ -7131,7 +7137,7 @@ watch([
       <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/40" />
       <DialogContent class="fixed left-1/2 top-1/2 z-[71] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white p-6 shadow-xl" @interact-outside.prevent @escape-key-down="event => { if (deletingOrders) event.preventDefault() }">
         <DialogTitle class="text-lg font-bold">{{ deleteOrderTarget ? `删除订单 ${deleteOrderTarget.order_no}` : `批量删除 ${deleteOrderTargets.length} 张订单` }}</DialogTitle>
-        <DialogDescription class="mt-2 text-sm text-slate-600">主管可删除所有已取消订单，删除后从台账移除，原收料、库存、供应商及拆单历史保留。未取消订单须无收料、库存、供应商执行及拆单记录。全部校验通过后一次生效，操作日志保留原始明细。</DialogDescription>
+        <DialogDescription class="mt-2 text-sm text-slate-600">主管或仓管可删除客户授权范围内的已取消订单，删除后从台账移除，原收料、库存、供应商及拆单历史保留。未取消订单须无收料、库存、供应商执行及拆单记录。全部校验通过后一次生效，操作日志保留原始明细。</DialogDescription>
         <p v-if="deleteOrderTargets.length" class="mt-2 max-h-28 overflow-auto text-xs text-slate-600">{{ deleteOrderTargets.map(order => order.order_no).join('、') }}</p>
         <form class="mt-4 space-y-4" @submit.prevent="deleteOrder">
           <label class="block text-sm">删除原因 *<textarea v-model="deleteOrderReason" aria-label="订单删除原因" required minlength="4" maxlength="500" class="mt-2 w-full rounded-lg border p-3" /></label>

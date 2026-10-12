@@ -12,6 +12,7 @@ import FabricReceivingRecords from './FabricReceivingRecords.vue'
 import FabricMasterWorkspace from './FabricMasterWorkspace.vue'
 import SemiLocationWorkspace from './SemiLocationWorkspace.vue'
 import FabricSourcePlaceholder from './FabricSourcePlaceholder.vue'
+import FabricMonthlyWorkspace from './FabricMonthlyWorkspace.vue'
 import WarehouseOperationsWorkspace from './WarehouseOperationsWorkspace.vue'
 import { operationsView } from './operations'
 import WarehouseDocumentPreview from '@/features/warehouse-foundation/WarehouseDocumentPreview.vue'
@@ -45,6 +46,7 @@ const liveOperations = computed(() => operationsView(semi.value ? 'semi' : 'fabr
 const inventoryPage = computed(() => props.section.path === 'inventory')
 const fabricReceipts = computed(() => !semi.value && props.section.path === 'receipts')
 const masterMode = computed(() => !semi.value && props.section.path === 'master')
+const monthlyView = computed(() => !semi.value && props.section.path === 'closing' && ['monthly', 'reconciliation', 'recipients'].includes(currentView.value.id) ? currentView.value.id as 'monthly' | 'reconciliation' | 'recipients' : undefined)
 const semiLocations = computed(() => semi.value && props.section.path === 'master' && currentView.value.id === 'locations')
 const sourcePlaceholder = computed(() => !semi.value && props.section.path === 'receipts' ? currentView.value.id === 'delivery-scan' ? 'scan' : currentView.value.id === 'procurement-interface' ? 'interface' : undefined : undefined)
 const previewKind = ref<WarehousePreviewKind>()
@@ -116,9 +118,9 @@ const dateLabel = computed(() => {
     <h1 v-if="fabricReceipts || masterMode || inventoryPage" class="sr-only">{{ section.title }}</h1>
     <header v-else class="warehouse-heading">
       <div><p class="warehouse-eyebrow">华康 C / {{ warehouse.title }}</p><h1>{{ section.title }}</h1><p>{{ section.description }}</p></div>
-      <StatusPill :label="masterMode || semiLocations ? '基础资料已启用' : sourcePlaceholder ? '入口预留 · 待接入' : liveOperations ? '收发与交接' : procurementMode || receivingMode ? '采购来源与实际入库已接入' : '待建设'" :tone="liveOperations || procurementMode || receivingMode || masterMode || semiLocations ? 'teal' : 'amber'" />
+      <StatusPill :label="monthlyView ? '数量对账已接入' : masterMode || semiLocations ? '基础资料已启用' : sourcePlaceholder ? '入口预留 · 待接入' : liveOperations ? '收发与交接' : procurementMode || receivingMode ? '采购来源与实际入库已接入' : '待建设'" :tone="monthlyView || liveOperations || procurementMode || receivingMode || masterMode || semiLocations ? 'teal' : 'amber'" />
     </header>
-    <div v-if="!fabricReceipts && !masterMode && !semiLocations && !liveOperations" class="warehouse-notice" role="note"><Info :size="18" aria-hidden="true" /><p>{{ semi ? '加工任务、实收、加工发回和包装交接可在对应栏目登记。当前栏目尚待建设。' : '采购实收、出库、退料和调仓分别留痕。历史期初、盘点、计价和月结尚待建设。' }}</p></div>
+    <div v-if="!fabricReceipts && !masterMode && !semiLocations && !liveOperations && !monthlyView" class="warehouse-notice" role="note"><Info :size="18" aria-hidden="true" /><p>{{ semi ? '加工任务、实收、加工发回和包装交接可在对应栏目登记。当前栏目尚待建设。' : '采购实收、出库、退料和调仓分别留痕。数量汇总已开放；历史期初、盘点、计价和正式月结确认尚待建设。' }}</p></div>
 
     <details v-if="previewActions.length && !fabricReceipts && !inventoryPage" class="fabric-receiving-help"><summary><FileText :size="17" />查看单据字段样式</summary><div class="fabric-receiving-help-content"><p>样式预览只用于查看字段；实际登记请使用下方业务操作。</p><Button v-for="action in previewActions" :key="action.kind" variant="outline" size="sm" @click="previewKind = action.kind">{{ action.label }}</Button></div></details>
 
@@ -145,7 +147,7 @@ const dateLabel = computed(() => {
         <div class="fabric-receiving-help-content">
           <strong>按本次实物登记入库</strong>
           <p>正常采购与补数统一追货。导入订单和采购历史不增加库存；保存本次实收后增加对应批次库存。</p>
-          <p>实收入库后在库存台账查看数量并办理出库、退料和调仓。质检由 QC 模块负责；历史期初和月结尚未开放。</p>
+          <p>实收入库后在库存台账办理出库、退料和调仓，在月结对账统一汇总数量。质检由 QC 负责；历史期初和正式月结确认尚未开放。</p>
           <div class="fabric-receiving-preview"><span>单据样式预览 · 不保存业务</span><Button v-for="action in previewActions" :key="action.kind" variant="outline" size="sm" @click="previewKind = action.kind">{{ action.label }}</Button></div>
         </div>
       </details>
@@ -157,6 +159,7 @@ const dateLabel = computed(() => {
       <FabricReceivingRecords v-else-if="receivingMode" :mode="receivingMode" />
       <SemiLocationWorkspace v-else-if="semiLocations" /><FabricMasterWorkspace v-else-if="masterMode" :view="currentView.id" />
       <FabricSourcePlaceholder v-else-if="sourcePlaceholder" :mode="sourcePlaceholder" />
+      <FabricMonthlyWorkspace v-else-if="monthlyView" :view="monthlyView" />
       <template v-else>
       <div class="warehouse-table-heading"><div><h2>{{ currentView.title }}</h2><p>{{ currentView.description }}</p></div></div>
       <div v-if="section.path !== 'overview'" class="warehouse-list-toolbar">

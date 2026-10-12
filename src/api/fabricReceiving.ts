@@ -2,14 +2,16 @@ import { http } from '@/lib/http'
 import type { PurchaseFacts } from './fabricProcurement'
 
 export type MaterialCategory = 'FABRIC' | 'ACCESSORY' | 'THREAD'
+export interface ReceiptPriceInput { unit_price?: string; price_unit?: string; currency?: '' | 'CNY' | 'HKD' | 'USD' | 'EUR' }
 export interface ReceiptBatchInput { location_id?: string; quantity: string; location: string; dye_lot: string; roll_no: string }
-export interface ReceiveRequest {
+export interface ReceiveRequest extends ReceiptPriceInput {
   factory_id: 'huakang-c'; request_id: string; expected_source_revision: number; expected_receipt_count: number
   receipt_date: string; delivery_reference: string; delivery_note_date: string | null
   material_category: MaterialCategory; difference_reason: string; note: string
   batches: ReceiptBatchInput[]; confirmed: boolean
 }
 export interface FabricReceipt {
+  unit_price?: string; price_unit?: string; currency?: string; amount?: string; price_basis?: string
   id: string; source_line_id: string; source_revision: number; facts: PurchaseFacts; quantity: string; unit: string
   prior_received_quantity: string | null; receipt_date: string; accounting_month: string; delivery_reference: string
   material_category: MaterialCategory; difference_reason: string; note: string; actor_name: string; occurred_at: string; stock_posted: true
@@ -18,7 +20,7 @@ export interface FabricReceipt {
 export interface ReceiveSourcesRequest {
   factory_id: 'huakang-c'; request_id: string; receipt_date: string; delivery_reference: string
   delivery_note_date: string | null; note: string; confirmed: boolean
-  items: (Pick<ReceiveRequest, 'expected_source_revision' | 'expected_receipt_count' | 'material_category' | 'difference_reason' | 'batches'> & { source_line_id: string })[]
+  items: (Pick<ReceiveRequest, 'expected_source_revision' | 'expected_receipt_count' | 'material_category' | 'difference_reason' | 'batches'> & ReceiptPriceInput & { source_line_id: string })[]
 }
 export interface ReceiveSourcesResult { request_id: string; receipts: FabricReceipt[] }
 export interface FabricStockBatch {

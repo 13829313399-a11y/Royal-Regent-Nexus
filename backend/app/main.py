@@ -15,6 +15,7 @@ from app.api.collaborative_sheets import router as collaborative_sheets_router
 from app.api.pdf_rename import router as pdf_rename_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_mark_qc import router as carton_mark_qc_router
+from app.api.material_handover import router as material_handover_router
 from app.api.carton_feedback import router as carton_feedback_router
 from app.api.carton_procurement import router as carton_procurement_router
 from app.api.fabric_procurement import router as fabric_procurement_router
@@ -236,6 +237,9 @@ async def record_request_timing(request: Request, call_next):
     response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
     if request.url.path.startswith(("/api/assistant/", "/api/auth/")):
         response.headers["Cache-Control"] = "private, no-store"
+    if request.url.path.startswith("/api/material-handover/"):
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
     if request.url.path != "/health":
         route = request.scope.get("route")
         route_path = getattr(route, "path", request.url.path)
@@ -257,6 +261,7 @@ app.include_router(collaborative_sheets_router)
 app.include_router(pdf_rename_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_mark_qc_router)
+app.include_router(material_handover_router)
 app.include_router(carton_feedback_router)
 app.include_router(carton_procurement_router)
 app.include_router(fabric_procurement_router)

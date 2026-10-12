@@ -12,6 +12,7 @@ from app.models.fabric_receiving import FabricReceipt, FabricStockBatch, FabricI
 from app.models.fabric_master import FabricChaseResolution
 from app.services import fabric_procurement as source
 from app.services.fabric_procurement_parser import number, decimal_text, digest, dump
+from app.services.fabric_receipt_pricing import omit_empty_prices, evidence as price_evidence
 
 MODELS = (FabricReceipt, FabricStockBatch, FabricInventoryMovement)
 
@@ -131,7 +132,7 @@ def receipt_data(db, receipt):
 
 def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _commit=True):
     ensure_schema(db)
-    body = payload.model_dump(mode="json")
+    body = omit_empty_prices(payload.model_dump(mode="json"))
     for item in body.get("items", [body]):
         for part in item.get("batches", []):
             if not part.get("location_id"):
@@ -202,6 +203,7 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
         batches.append({"quantity": decimal_text(amount), "location": key[2], "dye_lot": key[0], "roll_no": key[1], "location_record": location_records[batch.location_id]})
     total = sum((Decimal(batch["quantity"]) for batch in batches), Decimal(0))
     quantity(decimal_text(total), "本次实收总数")
+    pricing = price_evidence(total, facts['unit'], body)
     remaining = valid_reference(progress["warehouse_outstanding_quantity"])
     if remaining is not None and total > remaining and not payload.difference_reason.strip():
         raise HTTPException(422, "本次实收超过待收数量，请填写超收说明")
@@ -211,6 +213,7 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
         frozen_body.update(_batch_metadata)
     frozen_body.update(delivery_reference=reference, prior_received_quantity=decimal_text(prior), accounting_month=month,
         starting_chase_quantity=progress["starting_chase_quantity"], chase_resolution=progress["chase_resolution"], master_references=master_references)
+    frozen_body.update(pricing)
     if context and context.get("chase_reference"):
         frozen_body["chase_reference"] = context["chase_reference"]
     receipt = FabricReceipt(id=uuid4().hex, factory_id=source.FACTORY, source_line_id=line_id, source_revision=line.revision,
@@ -251,7 +254,7 @@ def receive_many(db, actor, payload):
     if sum(len(item.batches) for item in payload.items) > 500:
         raise HTTPException(422, "一次最多登记 500 项实物明细，请分批收料")
     batch_id = str(payload.request_id)
-    batch_body = payload.model_dump(mode="json")
+    batch_body = omit_empty_prices(payload.model_dump(mode="json"))
     for item in batch_body["items"]:
         for part in item["batches"]:
             if not part.get("location_id"):
