@@ -982,24 +982,43 @@ function p4DisneyPlastics(artifact: P4InternalQuoteArtifact, metadata: DisneyMet
   }
 
   const moldQueues = new Map<string, Record<string, unknown>[]>()
+  const moldsBySource = new Map<string, Record<string, unknown>>()
+  const occurrences = new Map<string, number>()
   p4Rows(artifact.sections.engineering.payload.molds).forEach((mold, index) => {
     const moldNo = p4Text(mold.disney_mold_no)
     if (!moldNo) throw new Error(`迪士尼直转被阻断：工程模具第 ${index + 1} 行缺少模号`)
     const queue = moldQueues.get(moldNo) ?? []
     queue.push(mold)
     moldQueues.set(moldNo, queue)
+    // Keep the same parent identity as internal_quote_prefill._source_keys.
+    const token = (value: unknown) => p4Text(value).toUpperCase().replace(/\s/g, '')
+    const sourceRow = p4Text(mold.source_row)
+    const name = token(mold.item || mold.chinese_name)
+    const base = token(mold.mold_no) ? `mold-no:${token(mold.mold_no)}`
+      : !['', '0', '0.0000'].includes(sourceRow) ? `source-row:${sourceRow}`
+      : name ? `name:${name}` : `index:${index + 1}`
+    const occurrence = (occurrences.get(base) ?? 0) + 1
+    occurrences.set(base, occurrence)
+    moldsBySource.set(`${base}#${occurrence}`, mold)
   })
 
   const hkdPerUsd = p4HkdPerUsd(artifact, pricing)
+  const chargedMolds = new Set<Record<string, unknown>>()
   let paidToolIndex = 0
   return injectionRows.map((row, index): DisneyPlasticRow => {
     const moldNo = p4Text(row.disney_mold_no)
     if (!moldNo) throw new Error(`迪士尼直转被阻断：注塑第 ${index + 1} 行缺少模号`)
-    const mold = moldQueues.get(moldNo)?.shift()
+    const parentSource = p4Text(row.engineering_source_key).split('/part:')[0]
+    const candidates = moldQueues.get(moldNo) ?? []
+    // Linked children reuse their parent; unlinked legacy rows keep ordered matching.
+    const mold = parentSource ? moldsBySource.get(parentSource)
+      : candidates.length === 1 ? candidates[0] : candidates.find(candidate => !chargedMolds.has(candidate))
     if (!mold) throw new Error(`迪士尼直转被阻断：注塑第 ${index + 1} 行模号 ${moldNo} 未匹配工程模具行`)
+    if (p4Text(mold.disney_mold_no) !== moldNo) throw new Error(`迪士尼直转被阻断：注塑第 ${index + 1} 行来源模具与迪士尼模号不一致`)
     const cavities = p4Positive(mold.disney_cavities, `工程模具 ${moldNo} 穴数必须大于 0`)
     const up = p4Positive(mold.disney_parts_per_shot, `工程模具 ${moldNo} 每啤件数必须大于 0`)
-    const toolCostUsd = Math.max(0, p4Number(mold.disney_tool_cost_usd))
+    const toolCostUsd = chargedMolds.has(mold) ? 0 : Math.max(0, p4Number(mold.disney_tool_cost_usd))
+    chargedMolds.add(mold)
     const resinCostUsdKg = p4Positive(row.disney_resin_cost_usd_kg, `注塑第 ${index + 1} 行缺少 Resin USD/kg`)
     const cycleTimeSeconds = p4Positive(row.disney_cycle_time_seconds, `注塑第 ${index + 1} 行缺少 Cycle Time`)
     const laborRateUsdHr = p4Positive(row.disney_labor_rate_usd_hr, `注塑第 ${index + 1} 行缺少 Labor USD/hr`)

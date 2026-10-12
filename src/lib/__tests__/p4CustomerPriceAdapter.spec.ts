@@ -13,7 +13,7 @@ import {
 import {
   createBuzzBeeCustomerQuoteWorkbook,
 } from '@/lib/customerPriceConverters/buzzbee'
-import { createDisneyCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/disney'
+import { convertDisneyP4InternalQuote, createDisneyCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/disney'
 import { createDickyCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/dicky'
 import { strFromU8, unzipSync } from 'fflate'
 import {
@@ -298,6 +298,46 @@ describe('P4 customer price adapter', () => {
       .map((value) => String(value ?? ''))
       .join('\n')
     expect(customerWorkbookText).not.toMatch(/测试费用|吊柜费|报价（MOQ|杂项|HK 40 柜/)
+  })
+
+  it.each(['mold-no:M1#1', 'source-row:12#1', 'name:车面模#1', 'index:1#1', ''])('reuses a split Disney mold %s and charges tooling once', (source) => {
+    const artifact = parseP4InternalQuoteArtifact(p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, true, '迪士尼'))
+    const mold = (artifact.sections.engineering.payload.molds as Record<string, unknown>[])[0]!
+    if (source.startsWith('mold-no:')) mold.mold_no = ' m 1 '
+    if (source.startsWith('source-row:')) mold.source_row = 12
+    if (source.startsWith('index:')) mold.item = ''
+    const original = (artifact.sections.molding.payload.injection_lines as Record<string, unknown>[])[0]!
+    artifact.sections.molding.payload.injection_lines = [1, 2].map(id => ({
+      ...original, item: `配件${id}`, net_weight_g: id * 10,
+      engineering_source_key: source ? `${source}/part:${id}` : '',
+    }))
+    const calculation = (artifact.sections.molding.calculation.line_breakdown as Record<string, unknown>[])[0]!
+    artifact.sections.molding.calculation.line_breakdown = [calculation, calculation]
+    const result = convertDisneyP4InternalQuote(artifact, 'split.xlsx')
+    const rows = result.sheets[0]!.quoteData.plastics
+    expect(rows.map(row => row.toolCostUsd)).toEqual([8900, 0])
+    expect(rows.map(row => row.toolNo)).toEqual(['1000142435-01', ''])
+    expect(rows.map(row => row.shotWeightG)).toEqual([10, 20])
+    const output = parseXlsxWorkbook(asArrayBuffer(createDisneyCustomerQuoteWorkbook(result, readFileSync('public/templates/disney-customer-quote-template.bin'))))
+    expect(output.sheets[0]!.rows[18]![2]).toBe(8900)
+    expect(Number(output.sheets[0]!.rows[19]![2] || 0)).toBe(0)
+  })
+
+  it('matches duplicate Disney mold numbers by parent identity and rejects stale links', () => {
+    const artifact = parseP4InternalQuoteArtifact(p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, true, '迪士尼'))
+    const mold = (artifact.sections.engineering.payload.molds as Record<string, unknown>[])[0]!
+    artifact.sections.engineering.payload.molds = [{ ...mold, mold_no: '1' }, { ...mold, mold_no: '1', disney_tool_cost_usd: 4000 }]
+    const row = (artifact.sections.molding.payload.injection_lines as Record<string, unknown>[])[0]!
+    const rows = [2, 1, 2].map((parent, index) => ({ ...row, engineering_source_key: `mold-no:1#${parent}/part:${index}` }))
+    artifact.sections.molding.payload.injection_lines = rows
+    const calc = (artifact.sections.molding.calculation.line_breakdown as Record<string, unknown>[])[0]!
+    artifact.sections.molding.calculation.line_breakdown = [calc, calc, calc]
+    expect(convertDisneyP4InternalQuote(artifact, 'duplicate.xlsx').sheets[0]!.quoteData.plastics.map(r => r.toolCostUsd)).toEqual([4000, 8900, 0])
+    rows[0]!.engineering_source_key = 'mold-no:1#3/part:0'
+    expect(() => convertDisneyP4InternalQuote(artifact, 'stale.xlsx')).toThrow('未匹配工程模具行')
+    rows[0]!.engineering_source_key = 'mold-no:1#1/part:0'
+    rows[0]!.disney_mold_no = 'other'
+    expect(() => convertDisneyP4InternalQuote(artifact, 'wrong.xlsx')).toThrow('来源模具与迪士尼模号不一致')
   })
 
   it('drives the Dickie customer template from complete P4-only fields', () => {

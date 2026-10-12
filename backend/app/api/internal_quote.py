@@ -1,3 +1,4 @@
+import json
 from urllib.parse import quote as url_quote
 from typing import Literal
 
@@ -67,6 +68,7 @@ from app.services.internal_quote_alternatives import (
 from app.services.internal_quote import (
     add_quote_participation,
     archive_quote,
+    restore_quote,
     clone_quote,
     copy_batch_baseline_to_product,
     create_quote,
@@ -541,6 +543,14 @@ def post_internal_quote_archive(
     return archive_quote(db, quote_id, payload, current_user, request)
 
 
+@router.post("/{quote_id}/restore", response_model=InternalQuoteOut)
+def post_internal_quote_restore(
+    quote_id: str, payload: InternalQuoteArchiveRequest, request: Request,
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    return restore_quote(db, quote_id, payload, current_user, request)
+
+
 @router.put("/{quote_id}/sections/save-all", response_model=InternalQuoteWholeProductSaveOut)
 def put_internal_quote_sections_save_all(
     quote_id: str,
@@ -763,9 +773,19 @@ async def post_internal_quote_import_preview(
     import_type: str,
     request: Request,
     file: UploadFile = File(...),
+    draft_payload: str | None = Form(default=None, max_length=2_000_000),
+    draft_revision: int | None = Form(default=None, ge=1),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    draft = None
+    if draft_payload is not None:
+        try:
+            draft = json.loads(draft_payload)
+        except (ValueError, RecursionError) as error:
+            raise HTTPException(400, "当前表单格式无效，请重新选择文件") from error
+        if not isinstance(draft, dict) or draft_revision is None:
+            raise HTTPException(400, "导入预览需要完整的表单与版本号")
     content = await file.read()
     return await run_in_threadpool(
         create_import_preview,
@@ -776,6 +796,8 @@ async def post_internal_quote_import_preview(
         content,
         current_user,
         request,
+        draft_payload=draft,
+        draft_revision=draft_revision,
     )
 
 

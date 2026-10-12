@@ -767,6 +767,22 @@ describe('internal quote section payload normalization', () => {
     expect(legacy).toMatchObject({ mold_allocation_enabled: true, mold_fx_rmb_usd: 7.75, amortization_qty: 20000, prototype_amortization_qty: 50000, testing_amortization_qty: 2000 })
   })
 
+  it('retains imported mold fee ownership and a manual override through normalization', () => {
+    const payload = normalizeInternalQuotePayload('engineering', {
+      molds: [{ cost_rmb: 49500, quantity: 2 }],
+      production_mold_costs: [
+        { item: '协商模费', cost_rmb: 50000, import_batch_id: 'mold-batch', mold_import_default_rmb: '49500.0000' },
+        { item: '超声模费用', cost_rmb: 1000 },
+      ],
+    }) as unknown as EngineeringPayload
+    expect(payload.production_mold_costs).toEqual([
+      { item: '协商模费', cost_rmb: 50000, import_batch_id: 'mold-batch', mold_import_default_rmb: '49500.0000' },
+      { item: '超声模费用', cost_rmb: 1000 },
+    ])
+    expect(normalizeInternalQuotePayload('engineering', payload as unknown as Record<string, unknown>)).toEqual(payload)
+    expect(calculateEngineeringMoldAllocation(payload).productionTotalRmb).toBe(51000)
+  })
+
   it('splits engineering mold child parts from left-right and slash names while preserving saved child data', () => {
     expect(splitEngineeringMoldPartNames('左右前枪身（橙色）')).toEqual([
       '左前枪身（橙色）',

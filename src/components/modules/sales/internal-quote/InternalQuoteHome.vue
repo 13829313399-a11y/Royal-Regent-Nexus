@@ -440,7 +440,6 @@ function deleteButtonTitle(quote: InternalQuote) {
 
 function canArchiveQuote(quote: InternalQuote) {
   return quote.factoryId === activeFactoryId.value
-    && quote.status !== 'archived'
     && !isForeignFactory(authStore, quote.factoryId)
     && authStore.can('internal_quote:archive', quote.factoryId, 'sales-business')
 }
@@ -470,7 +469,7 @@ async function confirmArchiveQuote() {
   const reason = archiveReason.value.trim()
   if (!quote || !canArchiveQuote(quote)) return
   if (!reason) {
-    archiveDialogError.value = '请填写归档原因。'
+    archiveDialogError.value = '请填写归档或恢复原因。'
     return
   }
   const requestedFactoryId = quote.factoryId
@@ -478,7 +477,8 @@ async function confirmArchiveQuote() {
   archiveDialogError.value = ''
   archivingQuoteId.value = quote.id
   try {
-    await quoteStore.archiveQuote(quote.id, quote.headerRevision, reason)
+    if (quote.status === 'archived') await quoteStore.restoreQuote(quote.id, quote.headerRevision, reason)
+    else await quoteStore.archiveQuote(quote.id, quote.headerRevision, reason)
     if (!quoteStore.isFactoryContextCurrent(requestedFactoryId, requestedGeneration)) return
     comparisonQuotes.value = comparisonQuotes.value.filter((item) => item.id !== quote.id)
     if (comparisonQuotes.value.length < 2) comparisonDialogOpen.value = false
@@ -848,10 +848,10 @@ onBeforeUnmount(() => {
                     type="button"
                     class="archive"
                     :disabled="archivingQuoteId === quote.id"
-                    title="归档报价并保留审计记录"
-                    aria-label="归档报价并保留审计记录"
+                    :title="quote.status === 'archived' ? '恢复整单报价' : '归档报价并保留审计记录'"
+                    :aria-label="quote.status === 'archived' ? '恢复整单报价' : '归档报价并保留审计记录'"
                     @click.stop="openArchiveDialog(quote)"
-                  ><Archive aria-hidden="true" /></button>
+                  ><span v-if="quote.status === 'archived'">恢复整单</span><Archive v-else aria-hidden="true" /></button>
                   <button type="button" class="primary" title="进入报价" aria-label="进入报价" @click="openQuote(quote)"><ArrowRight aria-hidden="true" /></button>
                 </div>
               </td>
@@ -895,14 +895,14 @@ onBeforeUnmount(() => {
       <section class="quote-delete-dialog quote-archive-dialog" role="dialog" aria-modal="true" aria-labelledby="quote-archive-title">
         <div class="quote-delete-icon"><Archive aria-hidden="true" /></div>
         <div>
-          <h2 id="quote-archive-title">确认归档内部报价？</h2>
-          <p>即将归档 <strong>{{ archiveTarget.quoteNo }}</strong> · {{ archiveTarget.productName }}（{{ archiveTarget.versionLabel }}）。报价、附件、放行和导出记录都会保留，可继续审计，但不能再参与业务操作。</p>
-          <label class="quote-archive-reason">归档原因<textarea v-model="archiveReason" rows="3" maxlength="500" placeholder="请说明取消或归档原因" /></label>
+          <h2 id="quote-archive-title">{{ archiveTarget.status === 'archived' ? '恢复整单报价？' : '归档整单报价？' }}</h2>
+          <p>即将{{ archiveTarget.status === 'archived' ? '恢复' : '归档' }} <strong>{{ archiveTarget.quoteNo }}</strong> · {{ archiveTarget.productName }}（{{ archiveTarget.versionLabel }}）。操作覆盖整单全部产品及方案版本。数据和历史记录保留；恢复后回到原流程状态，单独归档的版本仍保持归档。</p>
+          <label class="quote-archive-reason">操作原因<textarea v-model="archiveReason" rows="3" maxlength="500" placeholder="请说明归档或恢复原因" /></label>
           <p v-if="archiveDialogError" class="quote-delete-error" role="alert">{{ archiveDialogError }}</p>
           <footer>
             <button type="button" :disabled="Boolean(archivingQuoteId)" @click="closeArchiveDialog">取消</button>
             <button type="button" class="archive" :disabled="Boolean(archivingQuoteId)" @click="confirmArchiveQuote">
-              {{ archivingQuoteId ? '正在归档…' : '确认归档' }}
+              {{ archivingQuoteId ? '处理中…' : archiveTarget.status === 'archived' ? '确认恢复整单' : '确认归档' }}
             </button>
           </footer>
         </div>

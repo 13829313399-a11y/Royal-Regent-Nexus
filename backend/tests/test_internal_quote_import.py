@@ -84,6 +84,33 @@ def test_downloadable_sewing_template_is_the_exchange_rate_reference_workbook():
         assert detail["I3"].value == "=F3*G3/H3"
         assert detail["K3"].value == "=I3*J3"
         assert detail["K28"].value == "=SUM(K3:K27)"
+        summary = workbook["总表260707"]
+        assert summary["B10"].value == "='明细260707'!A2"
+        assert summary["C10"].value == "='明细260707'!K28"
+        for row in range(11, 16):
+            assert summary[f"B{row}"].value is None
+            assert summary[f"C{row}"].value is None
+        for row in range(10, 16):
+            assert summary[f"D{row}"].value == f'=IF(C{row}="","",C{row}*1.1)'
+        assert summary["C16"].value == "=SUM(C10:C15)"
+        assert summary["D16"].value == "=SUM(D10:D15)"
+    finally:
+        workbook.close()
+
+
+def test_downloadable_sewing_summary_cached_totals_reconcile_to_detail():
+    content, _ = build_internal_quote_import_template("sewing")
+    workbook = load_workbook(BytesIO(content), data_only=True, read_only=True)
+    try:
+        summary = workbook["总表260707"]
+        detail = workbook["明细260707"]
+        detail_total = sum(detail[f"K{row}"].value or 0 for row in range(3, 28))
+        assert detail_total > 0
+        assert summary["B10"].value == detail["A2"].value
+        assert summary["C10"].value == pytest.approx(detail_total)
+        assert summary["C16"].value == pytest.approx(detail_total)
+        assert summary["D16"].value == pytest.approx(detail_total * 1.1)
+        assert all(summary[f"D{row}"].value in (None, "") for row in range(11, 16))
     finally:
         workbook.close()
 

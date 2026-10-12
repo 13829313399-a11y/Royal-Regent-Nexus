@@ -145,6 +145,10 @@ def prefill_molding_from_engineering(
     existing_rows = molding_payload.get("injection_lines", [])
     molds = [row for row in source_rows if isinstance(row, dict)] if isinstance(source_rows, list) else []
     existing = [deepcopy(row) for row in existing_rows if isinstance(row, dict)] if isinstance(existing_rows, list) else []
+    if not molds and not existing:
+        # Opening/recalculating a new quote must not manufacture an empty input
+        # field that makes an untouched department look edited or invalid.
+        return deepcopy(molding_payload)
     keys = _source_keys(molds)
     # Child identities are scoped to the source mold, not the display position.
     # A reorder must not move one child's department inputs onto its sibling.
