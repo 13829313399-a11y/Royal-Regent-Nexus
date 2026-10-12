@@ -77,6 +77,12 @@ def initial_stock(db, warehouse):
             'source_no': receipt.delivery_reference, 'source_document': receipt.id, 'production_no': facts.get('production_no', ''),
             'received_on': receipt.receipt_date, 'counterparty': facts.get('supplier', ''), 'original_batch_id': batch.id,
             'actor_name': receipt.actor_name, 'occurred_at': receipt.occurred_at}
+        stock[batch.id]['procurement_receipt'] = {'source_line_id': receipt.source_line_id, 'source_facts': facts}
+        stock[batch.id]['receipt_origin'] = dict(id=receipt.id, source_line_id=receipt.source_line_id,
+            receipt_date=receipt.receipt_date, quantity=receipt.quantity,
+            delivery_reference=evidence.get('delivery_reference', receipt.delivery_reference),
+            pricing={key: evidence[key] for key in ('unit_price', 'price_unit', 'currency', 'amount', 'price_basis') if key in evidence})
+        stock[batch.id]['source_no'] = evidence.get('delivery_reference', receipt.delivery_reference)
     return stock
 
 
@@ -105,6 +111,8 @@ def new_batch(stock, entry, data, quantity_value, base=None, quality='PENDING_IN
         for key in ('source_no', 'source_document', 'received_on'):
             row[key] = base[key]
     row.setdefault('original_batch_id', entry['id'])
+    if not base and data.get('procurement_receipt'):
+        row['procurement_receipt'] = copy.deepcopy(data['procurement_receipt'])
     stock[entry['id']] = row
 
 
@@ -150,6 +158,10 @@ def validate_current_master(db, warehouse, body, stock):
 def apply_entry(stock, entries, entry, warehouse):
     """Validate and apply a document to an isolated projection, before writing any row."""
     data, kind, identifier = entry['data'], entry['kind'], entry['id']
+    if warehouse == 'fabric' and kind == 'CORRECTION' and data.get('original_id', '').startswith('FR-'):
+        from app.services.fabric_receipt_corrections import apply_original_reversal
+        apply_original_reversal(stock, entries, entry)
+        return
     if kind == 'MASTER_LOCATION':
         entries[identifier] = entry
         return
@@ -340,6 +352,8 @@ def workspace(db, warehouse):
     rows = list(entries.values())
     original_receipts = []
     if warehouse == 'fabric':
+        from app.services.fabric_receipt_corrections import reversal_rows
+        reversed_originals = reversal_rows(db)
         from app.schemas.warehouse_operations import WarehouseDocumentRequest
         for batch in initial_stock(db, warehouse).values():
             body = WarehouseDocumentRequest(factory_id=FACTORY, request_id='00000000-0000-0000-0000-000000000000', expected_revision=0,
@@ -349,7 +363,8 @@ def workspace(db, warehouse):
             # A read projection must not manufacture new request identities.
             body['request_id'] = ''
             original_receipts.append({'id': batch['id'], 'kind': 'RECEIPT', 'sequence': 0, 'business_date': batch['received_on'],
-                'data': body, 'actor_name': batch['actor_name'], 'occurred_at': batch['occurred_at'], 'read_only': True})
+                'data': body, 'actor_name': batch['actor_name'], 'occurred_at': batch['occurred_at'], 'read_only': True,
+                'reversed': batch['receipt_origin']['id'] in reversed_originals})
     catalog = locations.catalog(db, warehouse)
     by_id = {r['id']: r for r in catalog}
     for batch in stock.values():
@@ -374,6 +389,10 @@ def request_body(payload):
 
 def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=None):
     ensure_schema(db)
+    if warehouse == 'fabric' and payload.kind == 'CORRECTION' and payload.original_id.startswith('FR-'):
+        from app.services.auth import can
+        if not can(actor, 'fabric_warehouse:read', FACTORY, 'pmc-warehouse'):
+            raise HTTPException(403, '冲销原采购实收需要采购来源查询权限')
     body = request_body(payload)
     signature = digest([warehouse, actor.id, body])
     try:
@@ -407,10 +426,17 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
                  'data': body, 'actor_name': actor.display_name, 'occurred_at': now}
         if _metadata:
             body.update(_metadata)
+        if warehouse == 'fabric' and payload.kind == 'RECEIPT' and not (_metadata or {}).get('handover_document_id'):
+            from app.services.material_handover_procurement import guard_manual_delivery
+            guard_manual_delivery(db, body['source_no'], body['item_code'], body['unit'], body['counterparty'],
+                operation=body, entries=entries)
         validate_current_master(db, warehouse, body, stock)
         apply_entry(stock, entries, entry, warehouse)
-        # Source-linked fabric receipts are created by the existing receiving API;
-        # this manual path never invents purchase progress or imported opening stock.
+        if warehouse == 'fabric' and payload.kind == 'CORRECTION':
+            from app.services.material_handover_procurement import advance_corrected_source
+            advance_corrected_source(db, body, entries)
+        # A linked handover keeps its frozen purchase receipt evidence on this same
+        # stock operation; ordinary manual entries never invent purchase progress.
         row = WarehouseOperation(id=identifier, factory_id=FACTORY, warehouse=warehouse, sequence=revision + 1,
             request_id=str(payload.request_id), request_hash=signature, kind=payload.kind, business_date=body['business_date'],
             payload_json=dump(body), actor_id=actor.id, actor_name=actor.display_name, occurred_at=now)

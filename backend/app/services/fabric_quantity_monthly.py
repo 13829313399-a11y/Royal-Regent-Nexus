@@ -83,7 +83,7 @@ def report(db, month, direction='', channel='', party_key=''):
         pricing = json.loads(receipt.payload_json)
         event(receipt.id, receipt.receipt_date, dict(counterparty=facts.get('supplier', ''),
             item_code=facts.get('material_code', ''), item_name=facts.get('material_name', ''),
-            quantity=receipt.quantity, unit=receipt.unit, source_no=receipt.delivery_reference,
+            quantity=receipt.quantity, unit=receipt.unit, source_no=pricing.get('delivery_reference', receipt.delivery_reference),
             source_line=receipt.source_line_id, source_system='PROCUREMENT_RECEIVING',
             unit_price=pricing.get('unit_price', facts.get('unit_price') or ''), price_unit=pricing.get('price_unit', ''),
             currency=pricing.get('currency', ''), amount=pricing.get('amount', ''),
@@ -100,6 +100,10 @@ def report(db, month, direction='', channel='', party_key=''):
             event(entry['id'], entry['business_date'], body, kind,
                   original_id=body.get('original_id', ''), actor=entry['actor_name'])
         elif kind == 'CORRECTION':
+            if body.get('procurement_original_receipt_id'):
+                event(entry['id'], entry['business_date'], body, 'RECEIPT', -1,
+                    original_id=body['procurement_original_receipt_id'], actor=entry['actor_name'])
+                continue
             original = projected.get(body['original_id'])
             if original and original['kind'] in ('RECEIPT', 'ISSUE'):
                 event(entry['id'], entry['business_date'], original['data'], original['kind'], -1,

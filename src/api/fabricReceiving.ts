@@ -11,12 +11,15 @@ export interface ReceiveRequest extends ReceiptPriceInput {
   batches: ReceiptBatchInput[]; confirmed: boolean
 }
 export interface FabricReceipt {
+  reversed?: boolean; reversal?: { id: string; date: string; reason: string; actor_name: string } | null
   unit_price?: string; price_unit?: string; currency?: string; amount?: string; price_basis?: string
   id: string; source_line_id: string; source_revision: number; facts: PurchaseFacts; quantity: string; unit: string
   prior_received_quantity: string | null; receipt_date: string; accounting_month: string; delivery_reference: string
   material_category: MaterialCategory; difference_reason: string; note: string; actor_name: string; occurred_at: string; stock_posted: true
   batches: (ReceiptBatchInput & { id: string; quality_status: 'PENDING_INSPECTION' })[]
 }
+export interface FabricReceiptReversalPreview { receipt_id: string; expected_revision: number; quantity: string; unit: string; delivery_reference: string; can_reverse: boolean; blocked_reason: string }
+export interface FabricReceiptReversalRequest { factory_id: 'huakang-c'; request_id: string; expected_revision: number; business_date: string; reason: string; confirmed: boolean }
 export interface ReceiveSourcesRequest {
   factory_id: 'huakang-c'; request_id: string; receipt_date: string; delivery_reference: string
   delivery_note_date: string | null; note: string; confirmed: boolean
@@ -29,6 +32,10 @@ export interface FabricStockBatch {
   quality_status: 'PENDING_INSPECTION'; receipt_date: string; accounting_month: string; delivery_reference: string
   actor_name: string; occurred_at: string
 }
+export interface ReceiptFilters {
+  supplier?: string; category?: '' | MaterialCategory; receipt_from?: string; receipt_to?: string
+  state?: '' | 'ACTIVE' | 'REVERSED'; sort?: 'RECEIPT_DESC' | 'RECEIPT_ASC' | 'RECORDED_DESC' | 'SUPPLIER'
+}
 export const materialCategoryLabels: Record<MaterialCategory, string> = { FABRIC: '布料', ACCESSORY: '辅料', THREAD: '线' }
 export const fabricReceivingApi = {
   async receiveBatch(payload: ReceiveSourcesRequest) {
@@ -37,9 +44,13 @@ export const fabricReceivingApi = {
   async receive(id: string, payload: ReceiveRequest) {
     return (await http.post<FabricReceipt>(`/fabric-warehouse/procurement/lines/${encodeURIComponent(id)}/receive`, payload)).data
   },
-  async receipts(search = '', offset = 0) {
-    return (await http.get<{ total: number; items: FabricReceipt[] }>('/fabric-warehouse/procurement/receipts', { params: { factory_id: 'huakang-c', search, offset } })).data
+  async receipts(search = '', offset = 0, filters: ReceiptFilters = {}) {
+    return (await http.get<{ total: number; items: FabricReceipt[]; can_reverse?: boolean; options?: { suppliers: string[] } }>('/fabric-warehouse/procurement/receipts', {
+      params: { factory_id: 'huakang-c', search, offset, ...filters, receipt_from: filters.receipt_from || undefined, receipt_to: filters.receipt_to || undefined },
+    })).data
   },
+  async reversalPreview(id: string) { return (await http.get<FabricReceiptReversalPreview>(`/fabric-warehouse/procurement/receipts/${encodeURIComponent(id)}/reversal-preview`, { params: { factory_id: 'huakang-c' } })).data },
+  async reverse(id: string, input: FabricReceiptReversalRequest) { return (await http.post(`/fabric-warehouse/procurement/receipts/${encodeURIComponent(id)}/reverse`, input)).data },
   async stock(search = '', offset = 0) {
     return (await http.get<{ total: number; items: FabricStockBatch[] }>('/fabric-warehouse/procurement/stock', { params: { factory_id: 'huakang-c', search, offset } })).data
   },

@@ -15,7 +15,7 @@ export function sumQuantities(values: string[]): string {
 export function operationsView(domain: WarehouseDomain, section: string, view: string): { stock: boolean; kinds: WarehouseOperationKind[]; actions: WarehouseOperationKind[] } | undefined {
   if (section === 'overview') return { stock: false, kinds: [], actions: domain === 'fabric' ? ['RECEIPT', 'REQUEST'] : ['TASK', 'RECEIPT'] }
   if (section === 'activity') return { stock: false, kinds: [], actions: [] }
-  if (section === 'exceptions' && view !== 'missing') return { stock: view === 'holds', kinds: view === 'holds' ? [] : ['CORRECTION', 'RETURN'], actions: ['CORRECTION'] }
+  if (section === 'exceptions' && view !== 'missing') return { stock: view === 'holds', kinds: view === 'holds' ? [] : domain === 'fabric' ? ['CORRECTION'] : ['CORRECTION', 'RETURN'], actions: domain === 'fabric' ? [] : ['CORRECTION'] }
   if (domain === 'semi' && section === 'orders' && view === 'tasks') return { stock: false, kinds: ['TASK'], actions: ['TASK'] }
   if (domain === 'semi' && section === 'receipts' && view !== 'import-review') return {
     stock: false, kinds: view === 'pending' ? ['TASK'] : view === 'processing-returns' ? ['PROCESS_RETURN'] : ['RECEIPT', 'PROCESS_RETURN', 'RETURN'],
@@ -24,7 +24,7 @@ export function operationsView(domain: WarehouseDomain, section: string, view: s
   if (section !== 'inventory') return undefined
   const map: Record<string, { stock: boolean; kinds: WarehouseOperationKind[]; actions: WarehouseOperationKind[] }> = {
     stock: { stock: true, kinds: [], actions: ['ISSUE', 'TRANSFER'] },
-    'pending-issues': { stock: false, kinds: ['REQUEST'], actions: ['REQUEST', 'ISSUE'] },
+    'pending-issues': { stock: false, kinds: ['REQUEST'], actions: domain === 'fabric' ? [] : ['REQUEST', 'ISSUE'] },
     issues: { stock: false, kinds: ['ISSUE'], actions: ['ISSUE'] },
     returns: { stock: false, kinds: ['RETURN'], actions: ['RETURN'] },
     transfers: { stock: false, kinds: ['TRANSFER'], actions: ['TRANSFER'] },

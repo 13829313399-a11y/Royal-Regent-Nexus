@@ -235,6 +235,6 @@ describe('fabric actual receiving', () => {
     expect(wrapper!.findAll('tbody tr')).toHaveLength(0)
     expect(wrapper!.text()).toContain('无权限')
     await wrapper!.setProps({ mode: 'receipts' }); await flushPromises()
-    expect(api.receipts).toHaveBeenCalledWith('', 0)
+    expect(api.receipts).toHaveBeenCalledWith('', 0, expect.objectContaining({ sort: 'RECEIPT_DESC' }))
   })
 })
