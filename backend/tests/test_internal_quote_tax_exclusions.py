@@ -24,8 +24,8 @@ def test_material_clothes_and_hair_never_increase_tax_deduction(factory, standal
                     'injection_domestic_material_hkd': str(5 + extra),
                     'injection_labor_hkd': '3', 'total_hkd': str(8 + extra)}),
             section('sewing', {}, {'clothes_material_hkd': str(2 + extra),
-                    'clothes_hkd': str(4 + extra), 'hair_hkd': str(6 + extra),
-                    'total_hkd': str(10 + extra * 2)}),
+                    'clothes_hkd': str(4 + extra), 'hair_hkd': '0' if standalone_hair else str(6 + extra),
+                    'total_hkd': str(4 + extra) if standalone_hair else str(10 + extra * 2)}),
         ]
         if standalone_hair:
             sections.append(section('hair', {}, {'total_hkd': str(6 + extra)}))

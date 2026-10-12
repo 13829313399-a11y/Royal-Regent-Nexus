@@ -11,7 +11,7 @@ from app.models.internal_quote import InternalQuotePricingBaseline
 from app.models.molding_sample import MoldingSampleMaterialPrice
 
 
-FORMULA_VERSION = "rr2-2026-v8"
+FORMULA_VERSION = "rr2-2026-v9"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 

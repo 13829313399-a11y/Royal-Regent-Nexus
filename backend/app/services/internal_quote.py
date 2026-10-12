@@ -1107,7 +1107,6 @@ def _rr2_cost_summary(
         "其他外购": Decimal("0"),
     }
     hardware_motor = Decimal("0")
-    hardware_blister = Decimal("0")
     for index, line in enumerate(engineering_lines):
         source = engineering_materials[index] if index < len(engineering_materials) and isinstance(engineering_materials[index], dict) else {}
         amount = _summary_decimal(line.get("amount_hkd"))
@@ -1117,8 +1116,6 @@ def _rr2_cost_summary(
         if category == "hardware":
             if text_matches(name, r"马达|motor"):
                 hardware_motor += amount
-            if text_matches(name, r"吸塑|blister"):
-                hardware_blister += amount
         elif auxiliary_category in categorized:
             categorized[auxiliary_category] += amount
 
@@ -1135,14 +1132,11 @@ def _rr2_cost_summary(
     categorized["其他外购"] += customer_supplied_hkd
 
     electronic_motor = Decimal("0")
-    electronic_blister = Decimal("0")
     for line in lines("electronic", "electronic_component"):
         name = f"{line.get('item', '')} {line.get('specification', '')}"
         amount = _summary_decimal(line.get("amount_hkd", line.get("line_hkd")))
         if text_matches(name, r"马达|motor"):
             electronic_motor += amount
-        if text_matches(name, r"吸塑|blister"):
-            electronic_blister += amount
 
     molding_totals = totals("molding")
     has_authoritative_material_split = (
@@ -1215,11 +1209,11 @@ def _rr2_cost_summary(
                 sewing_clothes_material += _summary_decimal(line.get("amount_hkd"))
             else:
                 sewing_clothes_material += _summary_decimal(line.get("amount_rmb")) / fx_rmb_hkd
-    hair_section = by_code.get("hair")
+    # Both sources already participate in the authoritative factory cost.
+    # Legacy sewing hair and standalone hair must each be included once.
     hair_total = (
         _summary_decimal(totals("hair").get("total_hkd"))
-        if hair_section is not None and hair_section.is_required
-        else _summary_decimal(sewing_totals.get("hair_hkd"))
+        + _summary_decimal(sewing_totals.get("hair_hkd"))
     )
     assembly_totals = totals("assembly")
     hardware_total = _summary_decimal(totals("engineering").get("hardware_hkd"))
@@ -1476,6 +1470,27 @@ def _rr2_cost_summary(
             "markup_override": None,
         })
 
+    # Balance sewing's four-place detail amounts after all allocations and
+    # before multiplier/component grouping. Rounding every row independently
+    # can otherwise change the exported doll total across many material rows.
+    sewing_by_category: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for entry in pricing_entries:
+        if entry.get("section") == "sewing":
+            sewing_by_category[str(entry.get("category") or "clothes")].append(entry)
+    sewing_category_running = sewing_category_rounded = Decimal("0")
+    for category, entries in sewing_by_category.items():
+        category_amount = sum((_summary_decimal(entry["amount_hkd"]) for entry in entries), Decimal("0"))
+        sewing_category_running += category_amount
+        rounded = _summary_decimal(decimal_text(sewing_category_running))
+        category_budget = rounded - sewing_category_rounded
+        sewing_category_rounded = rounded
+        running = previous = Decimal("0")
+        for entry in entries:
+            running += _summary_decimal(entry["amount_hkd"])
+            allocated = _summary_decimal(decimal_text(running * category_budget / category_amount)) if category_amount else Decimal("0")
+            entry["amount_hkd"] = allocated - previous
+            previous = allocated
+
     raw_component_rows = sales_payload.get("pricing_components", [])
     raw_component_rows = raw_component_rows if isinstance(raw_component_rows, list) else []
     component_definitions: list[dict[str, object]] = []
@@ -1643,7 +1658,9 @@ def _rr2_cost_summary(
         "hardware": max(hardware_total - hardware_motor, Decimal("0")),
         "electronic": max(electronic_total - electronic_motor, Decimal("0")),
         "motor": hardware_motor + electronic_motor,
-        "suction": categorized["吸塑"] + hardware_blister + electronic_blister,
+        # Classification comes from the entered category, not a name match
+        # that would count a hardware/electronic purchase a second time.
+        "suction": categorized["吸塑"],
         "glue_bag": categorized["胶袋"],
     }
     t2_values = {
