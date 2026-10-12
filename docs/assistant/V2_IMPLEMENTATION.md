@@ -38,9 +38,9 @@ T01–T11 的 P0/P1 源码已实现。旧 v1 的 canonical hash、幂等准入�
 
 ## 持久化与启用
 
-`20261012_0158_assistant_v2_materials.py` 接续 `0157`，只新增四张 `nexus_assistant_*` 文件/成果/版本/收藏表。非空 downgrade 拒绝删除私有资料；启动 `create_all` 不替代显式 Alembic 迁移。
+`20261012_0159_assistant_v2_materials.py` 接续已发布的合流迁移 `0158`，只新增四张 `nexus_assistant_*` 文件/成果/版本/收藏表。非空 downgrade 拒绝删除私有资料；启动 `create_all` 不替代显式 Alembic 迁移。
 
-当前实际本地数据库仍为 `20261010_0156`；恢复副本已通过升级到 0158，但真实库和生产未执行本次迁移。未迁移时普通聊天/帮助继续可用，文件/成果显示 schema pending。按 RUNBOOK 停写、备份、核验恢复副本后再迁移实际目标库。
+当前实际本地数据库仍为 `20261010_0156`；同步 main 后的独立恢复副本已经过已发布的 0158 升级至 0159，375 张原有表记录数一致、完整性与外键检查通过。真实库和生产未执行本次迁移。未迁移时普通聊天/帮助继续可用，文件/成果显示 schema pending。按 RUNBOOK 停写、备份、核验恢复副本后再迁移实际目标库。
 
 原生搜索使用 `ASSISTANT_SEARCH_ENDPOINT`、`ASSISTANT_SEARCH_REGION`、`ASSISTANT_SEARCH_CAPABILITIES_FILE` 独立配置，不能复用旧聊天 profile 的验证时间。当前账号 text+auto/off 的原生组合已独立探针验证；thinking:on 与 image+search 未启用。实际 `.env` 未覆盖，独立档案尚未接入原本地服务。
 

@@ -136,7 +136,7 @@ def test_native_capability_profiles_and_option_matrix(tmp_path, monkeypatch):
 
 
 def migrate(dbm):
-    spec = importlib.util.spec_from_file_location("assistant_v2_migration", Path(__file__).parents[1] / "alembic/versions/20261012_0158_assistant_v2_materials.py")
+    spec = importlib.util.spec_from_file_location("assistant_v2_migration", Path(__file__).parents[1] / "alembic/versions/20261012_0159_assistant_v2_materials.py")
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     with dbm.engine.begin() as conn:
         with Operations.context(MigrationContext.configure(conn)):
@@ -332,7 +332,7 @@ def test_v2_downgrade_refuses_private_rows(env):
     migrate(dbm)
     sid=session(client)
     client.patch(f"/api/assistant/sessions/{sid}/favorite",json={"favorite":True})
-    spec=importlib.util.spec_from_file_location("v2_migration",Path(__file__).parents[1]/"alembic/versions/20261012_0158_assistant_v2_materials.py")
+    spec=importlib.util.spec_from_file_location("v2_migration",Path(__file__).parents[1]/"alembic/versions/20261012_0159_assistant_v2_materials.py")
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     with dbm.engine.begin() as conn:
         with Operations.context(MigrationContext.configure(conn)):
