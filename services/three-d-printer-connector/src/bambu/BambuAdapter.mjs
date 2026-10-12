@@ -77,7 +77,7 @@ export class BambuAdapter extends EventEmitter {
     this.sequence = 0;
     this.state = initialStatus();
     this.ready = false;
-    this.phase = 'tls';
+    this.phase = 'tcp';
     this.pingOutstanding = false;
     this.protocolSafe = true;
     this.decoder = new Decoder();
@@ -85,7 +85,11 @@ export class BambuAdapter extends EventEmitter {
     const socket = this.transport({ host: this.config.host, port: 8883, minVersion: 'TLSv1.2', rejectUnauthorized: false });
     this.socket = socket;
     const current = () => this.socket === socket && !this.stopped;
-    this.connectTimer = setTimeout(() => { if (current()) this.disconnect('handshake_timeout'); }, this.connectTimeoutMs);
+    this.connectTimer = setTimeout(() => {
+      if (current()) this.disconnect(this.phase === 'tcp' ? 'tcp_connect_timeout'
+        : this.phase === 'tls' ? 'tls_handshake_timeout' : 'mqtt_handshake_timeout');
+    }, this.connectTimeoutMs);
+    socket.on('connect', () => { if (current()) this.phase = 'tls'; });
     socket.on('secureConnect', () => {
       if (!current()) return;
       try {
@@ -143,19 +147,20 @@ export class BambuAdapter extends EventEmitter {
       if (frame.header !== 0x90 || !frame.body.equals(Buffer.from([0, 1, 0]))) return this.disconnect('mqtt_subscription_rejected');
       this.phase = 'ready';
       this.ready = true;
+      this.readyAt = this.clock();
       clearTimeout(this.connectTimer);
       this.requestFullStatus();
       this.pingTimer = setInterval(() => {
         if (!this.ownsLease()) return this.stop('lease_lost');
+        // PINGRESP only proves the MQTT transport is alive. A silent subscription
+        // must recover even when no first status ever arrived; never refresh evidence.
+        const lastStatusAt = this.state.observed_at ? Date.parse(this.state.observed_at) : this.readyAt;
+        if (this.clock() - lastStatusAt > this.freshMs || this.clock() < lastStatusAt)
+          return this.disconnect('status_timeout');
         if (this.pingOutstanding) return this.disconnect('mqtt_ping_timeout');
         this.pingOutstanding = true;
         this.socket?.write(packet(0xc0));
         this.requestFullStatus();
-        if (this.snapshot().state === 'STALE' && this.state.state !== 'STALE') {
-          this.state = { ...this.state, state: 'STALE', connected: false };
-          this.emitState('status_timeout');
-          this.finishCommand('unknown', 'status_timeout');
-        }
       }, this.heartbeatMs);
       this.emit('ready', { printer_id: this.config.printerId, connection_session_id: this.session });
       return;
