@@ -39,6 +39,7 @@ FIELDS = {
 TITLES = dict(item="货号", product="品名", article="客户货号", quantity="每箱数量", carton_total="总箱数",
     gtin="条码号码", dimensions="长宽高", gross_weight="每箱毛重", net_weight="每箱净重",
     brand="品牌", cbm="每箱体积", invoice="发票号", customer_po="客户 PO", country="产地")
+FORMULA_ERRORS = ("#N/A", "#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!", "#SPILL!", "#CALC!")
 
 
 def identify(text):
@@ -86,7 +87,8 @@ def extract_zuru(filename, content):
                         if identify(nearby)[0]:
                             break
                         value += (" " if value else "") + nearby
-                if key in {"quantity", "carton_total", "dimensions", "gross_weight", "net_weight", "cbm"} and not re.search(r"\d", value):
+                if (key in {"quantity", "carton_total", "dimensions", "gross_weight", "net_weight", "cbm"}
+                        and not re.search(r"\d", value) and not value.startswith(FORMULA_ERRORS)):
                     value = ""
                 if value:
                     found[key].append(value.strip())
@@ -100,7 +102,7 @@ def extract_zuru(filename, content):
             # pair of empty-lookup ITEM/description results marks such a block.
             if fields.get("item") == "#N/A" and fields.get("product") == "#N/A":
                 continue
-            if any(value.startswith(("#N/A", "#REF!", "#VALUE!", "#DIV/0!", "#NAME?")) for value in fields.values()):
+            if any(value.startswith(FORMULA_ERRORS) for value in fields.values()):
                 raise HTTPException(422, f"{sheet} 第{start}行箱唛有公式错误，请核实并保存原稿")
             if is_zumiez:
                 profile = "zumiez"

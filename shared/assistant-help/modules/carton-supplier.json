@@ -47,7 +47,7 @@
       {
         "path": "src/components/CartonSupplierMarkLayout.vue",
         "symbol": "save",
-        "sha256": "5869d832aa7b2f7b437ebcd8cf3388770b9e38811923aaf99d348baf554610b2"
+        "sha256": "05e03fa7e975ca88d55ddb541bb3d6db024d4da1f32937614a0520eba6ad52d6"
       },
       {
         "path": "backend/app/services/carton_supplier_mark_layout.py",
@@ -62,7 +62,7 @@
       {
         "path": "backend/app/services/carton_mark_zuru.py",
         "symbol": "render_zuru",
-        "sha256": "06b5d0e93898fbb8df42bf05bfcccd747f1fbd50a9062105686b8a2ecde9ac93"
+        "sha256": "f20b66bab5ad75558ba6aae13d11dc23d0ae5e013d276f424bc507cfbb33aad9"
       }
     ],
     "knowledge_version": "2026.10.13-v6",

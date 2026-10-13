@@ -63,6 +63,25 @@ def test_known_item_formula_error_blocks_generation():
     assert "公式错误" in error.value.detail
 
 
+@pytest.mark.parametrize("label,formula_error", [
+    ("Qty/Ctn:", "#N/A"), ("Carton number:", "#VALUE!"),
+    ("Carton Size(cm):", "#REF!"), ("Carton Gross Weight:", "#NAME?"),
+    ("Carton Net Weight:", "#NUM!"), ("Carton CBM:", "#NULL!"),
+])
+def test_numeric_formula_errors_cannot_be_replaced_by_order_or_supplements(label, formula_error):
+    book = Workbook(); sheet = book.active
+    for row, values in enumerate((("Item No:", "00123"), ("Product Description:", "VALID PRODUCT"),
+            ("Brand:", "ZURU"), ("PI No.", "11"), (label, formula_error)), 1):
+        for col, value in enumerate(values, 1): sheet.cell(row, col, value)
+    stream = io.BytesIO(); book.save(stream); book.close()
+    source = original(excel_bytes=stream.getvalue(), order_fields=dict(quantity="12", carton_total="42",
+        dimensions="10 x 20 x 30 CM", gross_weight="9 KGS", net_weight="8 KGS"),
+        supplements=dict(quantity="12", carton_total="42", dimensions="10 x 20 x 30 CM",
+            gross_weight="9 KGS", net_weight="8 KGS"))
+    with pytest.raises(HTTPException) as error: prepare_records(source)
+    assert error.value.status_code == 422 and "公式错误" in error.value.detail
+
+
 def test_ftc_profile_preserves_department_and_customer_article_without_a_generic_table():
     from app.services.carton_supplier_mark_pdf import prepare_pdf
     book=Workbook();sheet=book.active

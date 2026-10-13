@@ -27,6 +27,8 @@ async function importSettings(event: Event) {
     if (!active || token !== revision) return
     const allowed = ['series', 'mode', 'frame_style', 'paper', 'font', 'font_size', 'front_percent', 'front_copies', 'side_copies', 'barcode', 'side_address', 'instructions', 'reference_page', ...artworkKeys, 'field_cells']
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !allowed.includes(key)) || !['front_side', 'front_only', 'separate_pages'].includes(value.mode)) throw new Error('模板设置格式无效；不能包含订单、厂区或客户身份字段。')
+    if ('field_cells' in value && (!value.field_cells || typeof value.field_cells !== 'object' || Array.isArray(value.field_cells) ||
+      Object.entries(value.field_cells).some(([key, cell]) => !fields.some(field => field.key === key) || typeof cell !== 'string' || (cell.trim() !== '' && !/^[A-Za-z]{1,3}[1-9][0-9]{0,4}$/.test(cell.trim()))))) throw new Error('字段位置设置无效，请填写支持的字段和 Excel 单元格，如 C15。')
     for (const key of artworkKeys) {
       const region = value[key]
       if (region == null) continue
