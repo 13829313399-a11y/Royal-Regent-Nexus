@@ -286,6 +286,10 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
+    if permission_code.startswith('indonesia_material:'):
+        action = permission_code.partition(':')[2]
+        departments = ('sales-business', 'pmc-warehouse') if action in {'read', 'receipt_confirm'} else ('sales-business',)
+        return ScopePolicy(departments, guidance='送印尼物料按河源厂区授权；业务维护与确认出货，船务数量确认需单独授权，不自动授予跨厂操作')
     if permission_code.startswith("cutting_ops:"):
         action = permission_code.partition(":")[2]
         departments = ("engineering",) if action in {"bom_write", "bom_publish", "requisition_submit"} else ("production",)

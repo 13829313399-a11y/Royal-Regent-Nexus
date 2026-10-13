@@ -33,6 +33,10 @@ return computed(() => {
     .map((module) => {
     const scopedModule = getFactoryScopedModule(module, factory.id)
 
+    if (module.id === 'indonesia-material-shipment') {
+      return { ...scopedModule, route: getFactoryScopedRoute(module.route!, appStore.activeFactoryId) }
+    }
+
     if (module.id === 'cutting' || WAREHOUSES.some(warehouse => warehouse.id === module.id)) {
       return { ...scopedModule, stats: module.stats }
     }

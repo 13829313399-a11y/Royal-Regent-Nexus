@@ -119,6 +119,7 @@ DEPARTMENT_NAMES = {
     "warehouse": "仓库（历史部门代码）",
 }
 MODULE_NAMES = {
+    "indonesia_material": "送印尼物料",
     "cutting_ops": "裁床基础资料（华康 C）",
     "module_feedback": "模块反馈（开发处理）",
     "uv_ops": "UV 打印管理（华康 A）",

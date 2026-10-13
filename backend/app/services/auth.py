@@ -642,6 +642,10 @@ POSITION_DEPARTMENT_ALIAS_GROUPS = (
 )
 POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
     {
+        'indonesia_material:read',
+        'indonesia_material:write',
+        'indonesia_material:receipt_confirm',
+        'indonesia_material:export',
         *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
         *CUTTING_OPS_PERMISSION_CODES,
         *UV_OPS_PERMISSION_CODES,

@@ -15,6 +15,19 @@ export const pageAccessPolicy: Readonly<PageAccessPolicy> = Object.freeze({
 
 type RoutePermissionMeta = Record<string, unknown>
 
+export function hasRoutePermissions(
+  meta: RoutePermissionMeta,
+  permissions: string[],
+  canAny: (permissions: string[], factory?: string, department?: string) => boolean,
+) {
+  const factory = typeof meta.permissionFactoryId === 'string' ? meta.permissionFactoryId : undefined
+  if (Array.isArray(meta.permissionDepartments)) {
+    return meta.permissionDepartments.some(department =>
+      typeof department === 'string' && department.length > 0 && canAny(permissions, factory, department))
+  }
+  return canAny(permissions, factory, typeof meta.permissionDepartment === 'string' ? meta.permissionDepartment : undefined)
+}
+
 export function shouldEnforcePagePermissions(
   meta: RoutePermissionMeta,
   policy: Readonly<PageAccessPolicy> = pageAccessPolicy,
