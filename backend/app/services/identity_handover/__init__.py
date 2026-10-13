@@ -76,7 +76,8 @@ def reassign(db, actor_id, item_id, payload):
         fail("HANDOVER_ITEM_CHANGED", "报价状态或责任人已变化，请重新评估")
     if quote.header_revision != payload.expected_resource_revision or quote.header_revision != item.expected_resource_revision:
         fail("HANDOVER_ITEM_CHANGED", "业务单据已变化，请重新评估")
-    name = validate_quote_business_owner(db, payload.successor_user_id, quote.factory_id, quote.created_by)
+    name = validate_quote_business_owner(db, payload.successor_user_id, quote.factory_id, quote.created_by,
+                                         module_version=quote.module_version)
     before = quote.header_revision
     quote.business_owner_id = payload.successor_user_id
     quote.business_owner_name = name
@@ -95,7 +96,7 @@ def candidates(db, actor, item):
     from app.models.auth import AuthUser
     from app.models.internal_quote import InternalQuote
     from app.services.auth import build_auth_context, can
-    from app.services.internal_quote import _can_review_quote
+    from app.services.internal_quote import _can_own_quote
     ensure_reader(db, actor, item.previous_user_id)
     if not can(actor, "internal_quote:header_edit", item.factory_id, "sales-business"):
         fail("OUTSIDE_MANAGEABLE_SCOPE", "没有此范围的业务操作权", 403)
@@ -103,7 +104,7 @@ def candidates(db, actor, item):
     if not quote:
         return []
     return [{"id": u.id, "display_name": u.display_name} for u in db.scalars(select(AuthUser).where(AuthUser.status == "active"))
-            if u.id != quote.business_owner_id and _can_review_quote(build_auth_context(db, u), quote.factory_id, quote.created_by)]
+            if u.id != quote.business_owner_id and _can_own_quote(build_auth_context(db, u), quote.factory_id, quote.created_by, quote.module_version)]
 
 
 def reconcile(db, request):
@@ -111,7 +112,7 @@ def reconcile(db, request):
     from app.models.auth import AuthUser
     from app.models.internal_quote import InternalQuote
     from app.services.auth import build_auth_context
-    from app.services.internal_quote import _can_review_quote
+    from app.services.internal_quote import _can_own_quote
     persist_items(db, request)
     for item in db.scalars(select(IamHandoverItem).where(IamHandoverItem.change_request_id == request.id)):
         quote = db.get(InternalQuote, item.resource_id)
@@ -119,7 +120,7 @@ def reconcile(db, request):
             item.status = "no_longer_required"
             continue
         holder = db.get(AuthUser, quote.business_owner_id)
-        valid = bool(holder and holder.status == "active" and _can_review_quote(build_auth_context(db, holder), quote.factory_id, quote.created_by))
+        valid = bool(holder and holder.status == "active" and _can_own_quote(build_auth_context(db, holder), quote.factory_id, quote.created_by, quote.module_version))
         if item.status == "completed" and valid:
             continue
         if quote.business_owner_id not in {item.previous_user_id, item.successor_user_id}:

@@ -54,7 +54,9 @@ function submit() {
     return
   }
   if (!props.businessOwners.some((owner) => owner.id === form.businessOwnerId)) {
-    localError.value = '请选择当前厂区具备审核权限的业务部人员。'
+    localError.value = props.quote.moduleVersion === 'v4'
+      ? '请选择当前厂区具备报价编辑权限的业务部人员。'
+      : '请选择当前厂区具备审核权限的业务部人员。'
     return
   }
   if (!Number.isInteger(Number(form.quantity)) || Number(form.quantity) <= 0) {

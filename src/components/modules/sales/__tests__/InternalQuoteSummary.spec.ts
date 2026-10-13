@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     loadBatchProducts: vi.fn(async () => []),
     loadVersionCandidates: vi.fn(async () => []),
     saveSection: vi.fn(async () => ({})),
+    refreshAfterMutation: vi.fn(async () => undefined),
     submitFinal: vi.fn(),
     reviewFinal: vi.fn(),
     compareVersion: vi.fn(),
@@ -173,77 +174,37 @@ function mountSummary() {
   return mount(InternalQuoteSummary, {
     global: {
       stubs: {
+        InternalQuoteOutputTable: { name: 'InternalQuoteOutputTable', props: ['quoteId', 'collaborationRoute'], emits: ['saved', 'dirty'], template: '<div data-testid=output-table />' },
         RouterLink: { props: ['to'], template: '<a><slot /></a>' },
       },
     },
   })
 }
 
-describe('InternalQuoteSummary Indonesia freight', () => {
+describe('InternalQuoteSummary output table entry', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.authStore.editable = true
-    mocks.quoteStore.submitting = false
-    mocks.quoteStore.errorMessage = ''
-    mocks.quoteStore.conflictMessage = ''
-    mocks.quoteStore.batchProductsByQuoteId = {}
-    mocks.quoteStore.versionCandidates = {}
-  })
-
-  it.each(['mainland', ''] as const)('hides Indonesia freight for a %s quote', (regionCode) => {
-    mocks.quoteStore.currentQuote = quoteFixture(regionCode)
-    mocks.quoteStore.placeholderQuote = mocks.quoteStore.currentQuote
-    const wrapper = mountSummary()
-
-    expect(wrapper.find('[data-testid="indonesia-freight-panel"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('杂项金额 = 货价 × 杂项率；附加税独立计入；仅印尼价另计印尼运费')
-    expect(wrapper.findAll('.interactive-donut-legend dt').some((item) => item.text().includes('印尼运费'))).toBe(false)
-  })
-
-  it('shows one molding material price column without changing the surrounding t1 order', () => {
-    mocks.quoteStore.currentQuote = quoteFixture('mainland')
-    mocks.quoteStore.placeholderQuote = mocks.quoteStore.currentQuote
-    const wrapper = mountSummary()
-    const firstTable = wrapper.get('.business-summary-block .business-summary-table')
-    const headers = firstTable.findAll('thead th').map((cell) => cell.text())
-    const values = firstTable.findAll('tbody td').map((cell) => cell.text())
-
-    expect(headers.slice(0, 3)).toEqual(['货价', '料价', '吹气'])
-    expect(headers).not.toContain('进口料')
-    expect(headers).not.toContain('国内料')
-    expect(values.slice(0, 3)).toEqual(['16.0000', '3.7500', '0.5000'])
-  })
-
-  it('saves an editable Indonesia freight amount through the sales-section revision chain', async () => {
     mocks.quoteStore.currentQuote = quoteFixture('indonesia')
     mocks.quoteStore.placeholderQuote = mocks.quoteStore.currentQuote
-    const wrapper = mountSummary()
-
-    expect(wrapper.get<HTMLInputElement>('[data-testid="indonesia-freight-input"]').element.value).toBe('1.2500')
-    expect(wrapper.get('[data-testid="save-indonesia-freight"]').attributes('disabled')).toBeDefined()
-
-    await wrapper.get('[data-testid="indonesia-freight-input"]').setValue('3.25')
-    await wrapper.get('[data-testid="save-indonesia-freight"]').trigger('click')
-    await flushPromises()
-
-    expect(mocks.quoteStore.saveSection).toHaveBeenCalledTimes(1)
-    const [quoteId, sectionCode, revision, payload, reason] = mocks.quoteStore.saveSection.mock.calls[0]
-    expect([quoteId, sectionCode, revision, reason]).toEqual(['quote-1', 'sales', 7, '在汇总页修改印尼价运费'])
-    expect(payload).toMatchObject({
-      paper_price_factor: 3.2,
-      indonesia_freight_hkd: 3.25,
-      packaging_materials: [{ item: '彩盒', quantity: 2, unit_price_rmb: 1 }],
-    })
-    expect(wrapper.text()).toContain('服务端已生成业务部新 revision 并重新计算整单')
   })
 
-  it('keeps the Indonesia freight read-only and explains why when the quote is locked', () => {
-    mocks.quoteStore.currentQuote = quoteFixture('indonesia', 'approved')
-    mocks.quoteStore.placeholderQuote = mocks.quoteStore.currentQuote
+  it('replaces redundant distributions and tax panels with the current quotation output table', async () => {
     const wrapper = mountSummary()
+    await flushPromises()
+    const table = wrapper.findComponent({ name: 'InternalQuoteOutputTable' })
+    expect(wrapper.find('[data-testid="output-table"]').exists()).toBe(true)
+    expect(table.props('quoteId')).toBe('quote-1')
+    expect(table.props('collaborationRoute')).toContain('/quote-1/collaboration')
+    expect(wrapper.find('.quote-cost-overview').exists()).toBe(false)
+    expect(wrapper.find('.quote-tax-summary-panel').exists()).toBe(false)
+    expect(wrapper.find('.quote-logistics-panel').exists()).toBe(false)
+  })
 
-    expect(wrapper.find('[data-testid="indonesia-freight-input"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="indonesia-freight-readonly"]').text()).toBe('1.2500')
-    expect(wrapper.text()).toContain('整单已锁定，印尼运费仅供查看。')
+  it('refreshes the original quotation and readiness after table saves', async () => {
+    const wrapper = mountSummary()
+    wrapper.findComponent({ name: 'InternalQuoteOutputTable' }).vm.$emit('saved')
+    await flushPromises()
+    expect(mocks.quoteStore.refreshAfterMutation).toHaveBeenCalledWith('quote-1')
   })
 })
