@@ -80,7 +80,7 @@ def worker_path(key, owner=PROCESS):
 def launch_parser(key, extension, output):
     return subprocess.Popen([sys.executable, str(Path(__file__).with_name("document_worker.py")), str(path_for(key)),
         str(output), extension, str(settings.assistant_max_document_pages), str(settings.assistant_max_document_characters),
-        str(settings.assistant_file_parse_timeout_seconds)],
+        str(settings.assistant_file_parse_timeout_seconds), str(settings.assistant_file_parse_memory_mb)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
 
