@@ -313,7 +313,7 @@ def apply(db, parsed, actor, filename, request_id, token, *, confirmed, acknowle
     return result
 
 
-def list_lines(db, status="PENDING", search="", offset=0, limit=50, view=None, filters=None, sort="UPDATED"):
+def list_lines(db, status="PENDING", search="", offset=0, limit=50, view=None, filters=None, sort="UPDATED", group_by=""):
     ensure_schema(db)
     where = [FabricProcurementLine.factory_id == FACTORY, FabricProcurementLine.status != "WITHDRAWN"]
     if status != "ALL" and not view:
@@ -362,6 +362,9 @@ def list_lines(db, status="PENDING", search="", offset=0, limit=50, view=None, f
                 return False
         return True
     items = [item for item in items if matches(item)]
+    from app.services.fabric_procurement_groups import group_key, material_groups
+    if filters.get("group_key"):
+        items = [item for item in items if group_key(item) == filters["group_key"]]
     summary = {key: sum(item["tracking"][key] for item in items) for key in ("outstanding", "not_arrived", "partial", "arrival_review", "changed", "overdue", "due_today", "awaiting_date", "quantity_review")}
     if view:
         items = [item for item in items if item["tracking"][view.lower()]]
@@ -380,6 +383,10 @@ def list_lines(db, status="PENDING", search="", offset=0, limit=50, view=None, f
         unknown = [item for item in items if item["warehouse_outstanding_quantity"] is None]
         known.sort(key=lambda item: number(item["warehouse_outstanding_quantity"]), reverse=sort == "QUANTITY_DESC")
         items = known + unknown
+    if group_by == "MATERIAL":
+        groups = material_groups(items, sort)
+        return {"total": len(groups), "line_total": len(items), "offset": offset, "limit": limit,
+                "summary": summary, "options": options, "groups": groups[offset:offset + limit]}
     return {"total": len(items), "offset": offset, "limit": limit, "summary": summary, "options": options, "items": items[offset:offset + limit]}
 
 

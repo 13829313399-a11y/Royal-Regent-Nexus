@@ -10,7 +10,8 @@ import CartonSelectionSummary from '@/components/CartonSelectionSummary.vue'
 import { purchaseSearchKey } from './purchaseSearch'
 import FabricChaseDialog from './FabricChaseDialog.vue'
 import FabricPurchaseFilters from './FabricPurchaseFilters.vue'
-import type { PurchaseFilters } from '@/api/fabricProcurement'
+import FabricPurchaseGroups from './FabricPurchaseGroups.vue'
+import type { PurchaseFilters, PurchaseMaterialGroup } from '@/api/fabricProcurement'
 import type { FabricReceipt, ReceiveSourcesResult } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
 import { getApiErrorMessage } from '@/lib/http'
@@ -33,6 +34,9 @@ const withdrawal = ref<WithdrawalPreview>(), withdrawOpen = ref(false), withdraw
 const notice = ref('')
 const canReceive = ref(false), receiptSource = ref<PurchaseDetail>()
 const selected = ref<PurchaseLine[]>([]), batchSources = ref<PurchaseDetail[]>()
+const layout = ref<'materials' | 'lines'>('materials'), groups = ref<PurchaseMaterialGroup[]>([]), lineTotal = ref(0)
+const activeGroup = ref<PurchaseMaterialGroup>(), groupOffset = ref(0)
+const grouped = computed(() => props.mode === 'pending' && layout.value === 'materials' && !activeGroup.value)
 const selectedRows = computed(() => selected.value.map(line => ({ id: line.id, label: `${line.facts.order_no} · ${line.facts.material_code} · ${line.facts.material_name}` })))
 const visibleIds = computed(() => lines.value.map(line => line.id))
 function eligible(line: PurchaseLine) { return !line.receipt_reconciliation_required && !line.receipt_identity_review_required && !line.receipt_quantity_conflict && line.master_material?.status !== 'INACTIVE' }
@@ -80,13 +84,21 @@ function chooseFile(event: Event) {
 watch(scope, clearImport)
 async function load() {
   const ticket = ++sequence
-  busy.value = true; error.value = ''; lines.value = []; total.value = undefined; history.value = []; detail.value = undefined; detailOpen.value = false; summary.value = undefined; canReceive.value = false
+  busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined; lineTotal.value = 0; history.value = []; detail.value = undefined; detailOpen.value = false; summary.value = undefined; canReceive.value = false
   try {
     if (props.mode === 'import') {
       const records = await api.imports(historyOffset.value)
       if (ticket === sequence) history.value = records
+    } else if (grouped.value) {
+      const data = await api.groups(search.value.trim(), offset.value, pendingView.value, filters.value)
+      if (ticket === sequence) {
+        groups.value = data.groups; total.value = data.total; lineTotal.value = data.line_total
+        summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive
+        if (!canReceive.value) selected.value = []
+      }
     } else {
-      const data = await api.lines(status.value, search.value.trim(), offset.value, props.mode === 'pending' ? pendingView.value : undefined, filters.value)
+      const queryFilters = activeGroup.value ? { ...filters.value, group_key: activeGroup.value.key } : filters.value
+      const data = await api.lines(status.value, search.value.trim(), offset.value, props.mode === 'pending' ? pendingView.value : undefined, queryFilters)
       if (ticket === sequence) {
         lines.value = data.items; total.value = data.total; summary.value = data.summary; options.value = data.options; canReceive.value = !!data.can_receive
         if (!canReceive.value) selected.value = []
@@ -96,9 +108,15 @@ async function load() {
   } catch (e) { if (ticket === sequence) error.value = getApiErrorMessage(e) }
   finally { if (ticket === sequence) busy.value = false }
 }
-watch(() => [props.mode, props.tracking, props.orderNo], () => { clearImport(); file.value = undefined; search.value = ''; filters.value = { ...defaultFilters(), order_no: props.mode === 'pending' ? (props.orderNo ?? '').slice(0, 128) : '' }; chaseSource.value = undefined; offset.value = 0; pendingView.value = props.mode === 'pending' && trackingViews.has(props.tracking as PurchaseView) ? props.tracking as PurchaseView : 'OUTSTANDING'; withdrawOpen.value = false; withdrawal.value = undefined; receiptSource.value = undefined; batchSources.value = undefined; selected.value = []; notice.value = ''; void load() }, { immediate: true })
+watch(() => [props.mode, props.tracking, props.orderNo], () => { clearImport(); activeGroup.value = undefined; groupOffset.value = 0; file.value = undefined; search.value = ''; filters.value = { ...defaultFilters(), order_no: props.mode === 'pending' ? (props.orderNo ?? '').slice(0, 128) : '' }; chaseSource.value = undefined; offset.value = 0; pendingView.value = props.mode === 'pending' && trackingViews.has(props.tracking as PurchaseView) ? props.tracking as PurchaseView : 'OUTSTANDING'; withdrawOpen.value = false; withdrawal.value = undefined; receiptSource.value = undefined; batchSources.value = undefined; selected.value = []; notice.value = ''; void load() }, { immediate: true })
 let searchTimer: ReturnType<typeof setTimeout> | undefined
-watch(search, () => { clearTimeout(searchTimer); if (props.mode !== 'import') searchTimer = setTimeout(query, 350) })
+watch(search, () => {
+  clearTimeout(searchTimer)
+  if (props.mode === 'import') return
+  sequence++; busy.value = true; error.value = ''; lines.value = []; groups.value = []; total.value = undefined
+  lineTotal.value = 0; summary.value = undefined; canReceive.value = false
+  searchTimer = setTimeout(query, 350)
+}, { flush: 'sync' })
 if (headerSearch) watch(headerSearch.submitted, query)
 function refreshPendingWhenIdle() {
   if (props.mode === 'pending' && !busy.value && !detailOpen.value && !receiptSource.value && !batchSources.value && !chaseSource.value && document.visibilityState === 'visible') void load()
@@ -224,8 +242,11 @@ async function reviewChanges() {
   finally { if (ticket === sequence) busy.value = false }
 }
 function selectPendingView(view: PurchaseView) { pendingView.value = view; query() }
-function query() { clearTimeout(searchTimer); offset.value = 0; void load() }
-function clearFilters() { filters.value = defaultFilters(); search.value = ''; pendingView.value = 'OUTSTANDING'; query() }
+function query() { clearTimeout(searchTimer); offset.value = 0; groupOffset.value = 0; void load() }
+function clearFilters() { filters.value = defaultFilters(); search.value = ''; activeGroup.value = undefined; pendingView.value = 'OUTSTANDING'; query() }
+function changeLayout(value: 'materials' | 'lines') { layout.value = value; activeGroup.value = undefined; query() }
+function openGroup(group: PurchaseMaterialGroup) { clearTimeout(searchTimer); groupOffset.value = offset.value; activeGroup.value = group; offset.value = 0; void load() }
+function backToGroups() { activeGroup.value = undefined; offset.value = groupOffset.value; void load() }
 function startChase() { if (detail.value) { chaseSource.value = detail.value; detailOpen.value = false } }
 async function chaseSaved() { chaseSource.value = undefined; notice.value = '起始待收量已确认，已扣除本系统实收；库存未改变。'; await load() }
 function page(delta: number) { offset.value += delta * 50; void load() }
@@ -236,7 +257,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
 
 <template>
   <div class="fabric-procurement">
-    <div class="warehouse-table-heading"><h2><Truck v-if="mode === 'pending'" :size="20" aria-hidden="true" />{{ mode === 'import' ? '采购订单文档导入' : mode === 'pending' ? '采购待收料' : mode === 'returned' ? '采购表已回料记录' : '已导入采购订单' }}</h2><p>{{ mode === 'pending' ? '勾选本次到货物料，填写实收数量、仓位；布料同时填写缸号，可分批入库。' : mode === 'returned' ? '仅查看已导入且采购表标为“已回料”的资料，用于查旧单、核对原表；不代表仓库实际入库或当前库存。' : '保留采购原表依据；导入订单和采购历史不增加库存。' }}</p></div>
+    <div class="warehouse-table-heading"><h2><Truck v-if="mode === 'pending'" :size="20" aria-hidden="true" />{{ mode === 'import' ? '采购订单文档导入' : mode === 'pending' ? '采购待收料' : mode === 'returned' ? '采购表已回料记录' : '已导入采购订单' }}</h2><p>{{ mode === 'pending' ? '先按供应商和物料查看待收及复期，进入采购明细后按原单登记实收。' : mode === 'returned' ? '仅查看已导入且采购表标为“已回料”的资料，用于查旧单、核对原表；不代表仓库实际入库或当前库存。' : '保留采购原表依据；导入订单和采购历史不增加库存。' }}</p></div>
     <p v-if="error" class="fabric-error" role="alert">{{ error }}</p>
     <p v-if="notice" class="fabric-success" role="status">{{ notice }}</p>
     <p v-if="busy" class="fabric-message" role="status">{{ mode === 'import' ? '正在读取或保存采购资料…' : '正在查询采购资料…' }}</p>
@@ -290,17 +311,24 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
         <p v-else-if="pendingView === 'CHANGED'" class="fabric-follow-up-context">来源详情可看前后变化；标记已读不代表完成收料。</p>
       </section>
       <FabricPurchaseFilters v-model="filters" v-model:view="pendingView" v-model:search="search" :busy="busy" :header-search="!!headerSearch" :pending="mode === 'pending'" :options="options" @query="query" @clear="clearFilters"><RouterLink :to="importTarget" class="fabric-import-link">{{ mode === 'pending' ? '订单导入' : '返回订单导入' }}</RouterLink></FabricPurchaseFilters>
+      <div v-if="mode === 'pending'" class="fabric-purchase-layout">
+        <div v-if="activeGroup" class="fabric-group-breadcrumb"><Button variant="outline" size="sm" :disabled="busy" @click="backToGroups">返回物料汇总</Button><span><strong>{{ activeGroup.material_name }}</strong><small>{{ activeGroup.supplier }} · {{ activeGroup.material_code }} · {{ activeGroup.unit }}</small></span></div>
+        <div v-else class="fabric-layout-buttons" role="group" aria-label="待收料显示方式"><Button variant="ghost" size="sm" :aria-pressed="layout === 'materials'" :disabled="busy" @click="changeLayout('materials')">按物料汇总</Button><Button variant="ghost" size="sm" :aria-pressed="layout === 'lines'" :disabled="busy" @click="changeLayout('lines')">按采购明细</Button></div>
+        <p>{{ grouped ? '按当前筛选汇总；同供应商、编码、名称和单位归为一组。进入明细后按原单收料。' : activeGroup ? '当前仅显示本组符合筛选的原单；实收数量仍逐单填写。' : '每条采购来源分别显示，可勾选多单登记本次实收。' }}</p>
+      </div>
       <div v-if="mode === 'pending' || canReceive || selected.length" class="fabric-selection-toolbar">
-        <CartonSelectionSummary v-if="canReceive || selected.length" :rows="selectedRows" :visible-ids="visibleIds" unit="项" @clear="selected = []" @remove="removeSelected" />
+        <CartonSelectionSummary v-if="(!grouped && canReceive) || selected.length" :rows="selectedRows" :visible-ids="visibleIds" unit="项" @clear="selected = []" @remove="removeSelected" />
+        <span v-else-if="grouped" class="fabric-group-total">{{ total === undefined ? '正在读取…' : `${total} 个物料组 · ${lineTotal} 条采购明细` }}<small>上方提醒按采购明细条数统计</small></span>
         <div class="fabric-receiving-actions">
           <template v-if="mode === 'pending'">
             <Button as-child variant="outline" size="sm"><RouterLink to="/modules/pmc-warehouse/material-handover?factory=huakang-c&tab=documents">送货单入库</RouterLink></Button>
             <Button as-child variant="outline" size="sm"><RouterLink to="/modules/pmc-warehouse/material-handover?factory=huakang-c&tab=scan">扫码入库</RouterLink></Button>
           </template>
-          <Button v-if="canReceive || selected.length" :disabled="busy || !canReceive || !selected.length" @click="startBatchReceive">登记所选订单入库<span v-if="selected.length">（{{ selected.length }}）</span></Button>
+          <Button v-if="(!grouped && canReceive) || selected.length" :disabled="busy || !canReceive || !selected.length" @click="startBatchReceive">登记所选订单入库<span v-if="selected.length">（{{ selected.length }}）</span></Button>
         </div>
       </div>
-      <div class="warehouse-table-scroll" role="region" aria-label="采购来源列表" tabindex="0"><table class="fabric-pending-table"><thead><tr><th class="fabric-select-cell"><input v-if="canReceive" type="checkbox" aria-label="全选当前页可入库物料" :checked="allSelected" :indeterminate="!allSelected && selectable.some(line => selected.some(item => item.id === line.id))" :disabled="busy || !selectable.length" @change="selectPage(($event.target as HTMLInputElement).checked)" /></th><th>采购单 / 状态</th><th>供应商 / 复期</th><th>生产单 / 款号</th><th>物料</th><th>起始待收</th><th>本系统已入库</th><th>剩余待收</th><th>单位</th><th>办理</th></tr></thead><tbody>
+      <FabricPurchaseGroups v-if="grouped" :groups="groups" :busy="busy" @open="openGroup" />
+      <div v-else class="warehouse-table-scroll" role="region" aria-label="采购来源列表" tabindex="0"><table class="fabric-pending-table"><thead><tr><th class="fabric-select-cell"><input v-if="canReceive" type="checkbox" aria-label="全选当前页可入库物料" :checked="allSelected" :indeterminate="!allSelected && selectable.some(line => selected.some(item => item.id === line.id))" :disabled="busy || !selectable.length" @change="selectPage(($event.target as HTMLInputElement).checked)" /></th><th>采购单 / 状态</th><th>供应商 / 复期</th><th>生产单 / 款号</th><th>物料</th><th>起始待收</th><th>本系统已入库</th><th>剩余待收</th><th>单位</th><th>办理</th></tr></thead><tbody>
         <tr v-for="line in lines" :key="line.id" :class="{ 'fabric-selected': selected.some(item => item.id === line.id) }">
           <td class="fabric-select-cell"><input v-if="canReceive && eligible(line)" type="checkbox" :aria-label="`选择 ${line.facts.order_no} · ${line.facts.material_code}`" :checked="selected.some(item => item.id === line.id)" :disabled="busy" @change="selectLine(line, ($event.target as HTMLInputElement).checked)" /></td><td>{{ line.facts.order_no }}<small>{{ line.facts.source_category === 'SUPPLEMENT' ? '补数追货' : '正常采购' }}</small><small>{{ line.tracking?.arrival_review ? '采购报到货 · 仓库待核对' : line.warehouse_outstanding_quantity === '0' || line.warehouse_outstanding_quantity === '0.0' ? '已收齐' : line.receipt_count ? '已部分收料' : '待收料' }}</small><strong v-if="line.unreviewed_changes" class="fabric-change-badge">{{ line.unreviewed_changes }} 次变更未读</strong></td>
           <td>{{ line.facts.supplier }}<small>{{ line.promise_date || line.promise_text || '待供应商复期' }}</small><strong v-if="line.tracking?.overdue" class="fabric-overdue">复期已过 {{ line.overdue_days }} 天</strong><strong v-else-if="line.tracking?.due_today" class="fabric-due-today">今天到期</strong><small v-else-if="line.warehouse_outstanding_quantity == null && line.promise_elapsed_days && line.promise_elapsed_days > 0" class="fabric-due-today">复期已过 {{ line.promise_elapsed_days }} 天 · 数量待核对</small></td><td>{{ line.facts.production_no }}<small>{{ line.facts.plan_no || line.facts.style_no }}</small></td><td>{{ line.facts.material_code }}<small>{{ line.facts.material_name }}</small><small v-if="line.material_category">{{ line.material_category === 'FABRIC' ? '布料' : line.material_category === 'ACCESSORY' ? '辅料' : '线' }}</small></td>
@@ -308,7 +336,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
         </tr>
       </tbody></table></div>
       <p v-if="total === 0 && !busy" class="fabric-message" role="status">{{ search ? '没有匹配的采购明细，请调整查询条件。' : mode === 'pending' ? '当前跟进范围没有记录，可切换范围查看或导入最新跟踪表。' : '尚未导入该范围的采购明细。' }}</p>
-      <footer v-if="total !== undefined" class="warehouse-list-footer"><span>共 {{ total }} 条 · {{ total ? offset + 1 : 0 }}–{{ Math.min(offset + 50, total) }}</span><div><Button variant="outline" size="sm" :disabled="busy || offset === 0" @click="page(-1)">上一页</Button><Button variant="outline" size="sm" :disabled="busy || offset + 50 >= total" @click="page(1)">下一页</Button></div></footer>
+      <footer v-if="total !== undefined" class="warehouse-list-footer"><span>共 {{ total }} {{ grouped ? '组' : '条' }} · {{ total ? offset + 1 : 0 }}–{{ Math.min(offset + 50, total) }}</span><div><Button variant="outline" size="sm" :disabled="busy || offset === 0" @click="page(-1)">上一页</Button><Button variant="outline" size="sm" :disabled="busy || offset + 50 >= total" @click="page(1)">下一页</Button></div></footer>
     </template>
     <DialogRoot v-model:open="confirmOpen"><DialogPortal><DialogOverlay class="warehouse-guide-overlay" /><DialogContent class="warehouse-guide fabric-confirm"><DialogTitle>确认保存采购来源</DialogTitle><DialogDescription>保存所选工作表全部可用明细，包括核对表的其他分页。待核对行本次跳过，采购已回料只作历史参考，库存不会增加。</DialogDescription><p v-if="preview">新增 {{ preview.counts.new }} 条，更新 {{ preview.counts.updated }} 条，相同 {{ preview.counts.unchanged }} 条，跳过待核对 {{ preview.counts.blocked }} 条。</p><label><input v-model="acknowledged" type="checkbox" :disabled="busy" />已核对数量、单位、来源和更新差异，确认仅保存可用明细</label><p v-if="error" class="fabric-error" role="alert">{{ error }}</p><div class="fabric-dialog-actions"><DialogClose as-child><Button variant="outline" :disabled="busy">返回核对</Button></DialogClose><Button :disabled="busy || !acknowledged" @click="saveImport">{{ busy ? '正在保存…' : '保存采购来源' }}</Button></div></DialogContent></DialogPortal></DialogRoot>
     <DialogRoot v-model:open="withdrawOpen"><DialogPortal><DialogOverlay class="warehouse-guide-overlay" /><DialogContent class="warehouse-guide fabric-confirm">
@@ -325,3 +353,11 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
   <FabricBatchReceiptDialog v-if="batchSources" :sources="batchSources" @close="batchSources = undefined" @saved="batchSaved" @stale="receiptStale" />
   <FabricReceiptDialog v-if="receiptSource" :source="receiptSource" @close="receiptSource = undefined" @saved="receiptSaved" @stale="receiptStale" />
 </template>
+
+<style scoped>
+.fabric-purchase-layout{padding:12px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--border)}
+.fabric-purchase-layout p{font-size:12px;color:var(--muted-foreground);margin:0}
+.fabric-layout-buttons{display:flex;gap:6px}.fabric-layout-buttons button[aria-pressed='true']{color:#0f766e;background:#f0fdfa;border:1px solid #99f6e4}
+.fabric-group-breadcrumb{display:flex;align-items:center;gap:16px}.fabric-group-breadcrumb small,.fabric-group-total small{display:block;color:var(--muted-foreground);font-size:12px;margin-top:3px}
+@media(max-width:760px){.fabric-purchase-layout{padding:12px 16px}.fabric-group-breadcrumb{align-items:flex-start}}
+</style>

@@ -124,3 +124,35 @@ def test_internal_report_requires_scoped_read_and_never_accepts_supplier_token(c
     client.cookies.clear()
     assert client.get(MONTHLY, headers=headers, params=dict(factory_id=FACTORY, month='2026-07')).status_code == 401
     assert client.get(MONTHLY + '/export', headers=headers, params=dict(factory_id=FACTORY, month='2026-07')).status_code == 401
+
+
+def test_search_unit_and_date_filters_aggregate_and_export_the_same_signed_evidence(client):
+    original = post(client, payload(client, 'RECEIPT', quantity='0.100001', source_no='DN-0007', counterparty='供方甲'))
+    post(client, payload(client, 'CORRECTION', original_id=original['id'], business_date='2026-07-20'))
+    post(client, payload(client, 'RECEIPT', quantity='2', source_no='DN-0007', counterparty='供方甲',
+                         item_code='PCS-1', unit='Pcs', material_category='ACCESSORY'))
+    post(client, payload(client, 'RECEIPT', quantity='100', source_no='DN-OTHER', counterparty='供方乙'))
+    before = workspace(client)
+    filters = dict(search=' dn-0007 ', unit='码', date_order='DESC')
+    result = report(client, **filters)
+    assert len(result['summary']) == 1 and len(result['details']) == 2
+    assert result['summary'][0]['document_count'] == 1
+    assert Decimal(result['totals'][0]['net_received']) == 0
+    assert Decimal(result['totals'][0]['received']) == Decimal('0.100001')
+    assert result['details'][0]['correction'] and result['details'][0]['quantity'] == '-0.100001'
+    assert result['units'] == ['Pcs', '码']
+    assert len(result['parties']) == 2  # narrowing must not lose the option to switch party
+    assert len(report(client, search=original['id'])['details']) == 2
+    assert len(report(client, search='供方甲', unit='Pcs')['details']) == 1
+    assert report(client, search='not-present')['totals'] == []
+    assert report(client, search='dn-0007', unit='码', date_order='ASC')['details'][0]['id'] == original['id']
+    exported = client.get(MONTHLY + '/export', params=dict(factory_id=FACTORY, month='2026-07', version=result['version'], **filters))
+    assert exported.status_code == 200, exported.text
+    sheets = load_workbook(BytesIO(exported.content), data_only=False)
+    assert sheets['收发原单明细'].max_row == 4
+    assert sheets['收发数量汇总'].max_row == 3
+    assert workspace(client) == before
+    mismatch = client.get(MONTHLY + '/export', params=dict(factory_id=FACTORY, month='2026-07', version=result['version'], search='DN-OTHER'))
+    assert mismatch.status_code == 409
+    for query in ({'date_order': 'INVALID'}, {'search': 'x' * 129}, {'unit': 'x' * 33}):
+        assert client.get(MONTHLY, params=dict(factory_id=FACTORY, month='2026-07', **query)).status_code == 422

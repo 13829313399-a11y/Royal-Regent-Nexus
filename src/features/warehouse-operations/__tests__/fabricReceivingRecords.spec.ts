@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { ref } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAuthStore } from '@/stores/auth'
 import { CalendarDate } from '@internationalized/date'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import { purchaseSearchKey } from '../purchaseSearch'
@@ -20,9 +22,10 @@ const record: FabricReceipt = {
 let wrapper: VueWrapper | undefined
 const headerSearch = { search: ref(''), submitted: ref(0) }
 async function open(withHeader = false) {
+  const pinia = createPinia(); setActivePinia(pinia)
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
   await router.push('/'); await router.isReady()
-  wrapper = mount(Records, { props: { mode: 'receipts' }, global: { plugins: [router], provide: withHeader ? { [purchaseSearchKey as symbol]: headerSearch } : {} }, attachTo: document.body })
+  wrapper = mount(Records, { props: { mode: 'receipts' }, global: { plugins: [router, pinia], provide: withHeader ? { [purchaseSearchKey as symbol]: headerSearch } : {} }, attachTo: document.body })
   await flushPromises()
   return new DOMWrapper(document.body)
 }
@@ -30,6 +33,37 @@ beforeEach(() => { vi.resetAllMocks(); headerSearch.search.value = ''; headerSea
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('fabric receipt history', () => {
+  it('filters unified sources and routes operation corrections to the exact original without using procurement reversal', async () => {
+    const delivery: FabricReceipt = { ...record, id: 'OP-1', history_key: 'OPERATION:OP-1', operation_id: 'OP-1', receipt_origin: 'HANDOVER', handover_document_id: 'NOTE-1', source_version: '2' }
+    api.receipts.mockResolvedValue({ total: 2, items: [record, delivery], can_reverse: true, operations_included: true })
+    const body = await open()
+    const rows = wrapper!.findAll('.receipt-records-table tbody tr')
+    expect(rows).toHaveLength(2)
+    expect(rows[1]!.text()).toContain('送货单 / 扫码入库')
+    expect(rows[1]!.find('button.receipt-records-reverse-button').exists()).toBe(false)
+    expect(rows[1]!.get('a.receipt-records-reverse-button').attributes('href')).toContain('view=movements&record=OP-1')
+    await rows[1]!.get('.receipt-records-detail-button').trigger('click'); await flushPromises()
+    expect(body.get('[role="dialog"]').findAll('a').some(link => link.attributes('href')?.includes('document=NOTE-1'))).toBe(true)
+    await body.get('[aria-label="关闭入库详情"]').trigger('click'); await flushPromises()
+    await wrapper!.get('[aria-label="入库登记来源筛选"]').setValue('HANDOVER'); await flushPromises()
+    expect(api.receipts).toHaveBeenLastCalledWith('', 0, expect.objectContaining({ channel: 'HANDOVER' }))
+    expect(api.reverse).not.toHaveBeenCalled()
+  })
+  it('clears privileged details and ignores old responses when authorization changes', async () => {
+    const body = await open()
+    await wrapper!.find('.receipt-records-detail-button').trigger('click'); await flushPromises()
+    let resolve!: (value: unknown) => void
+    api.receipts.mockReturnValueOnce(new Promise(done => { resolve = done }))
+    await wrapper!.get('[aria-label="刷新入库记录"]').trigger('click'); await flushPromises()
+    api.receipts.mockResolvedValue({ total: 0, items: [], operations_included: false, can_reverse: false })
+    useAuthStore().authorizationVersion++
+    await flushPromises()
+    resolve({ total: 1, items: [record], operations_included: true, can_reverse: true }); await flushPromises()
+    expect(body.find('[role="dialog"]').exists()).toBe(false)
+    expect(wrapper!.text()).not.toContain('白色平纹布')
+    expect(wrapper!.text()).toContain('当前权限仅展示采购订单入库')
+    expect(wrapper!.get('option[value="HANDOVER"]').attributes('disabled')).toBeDefined()
+  })
   it('requires whole receipt confirmation and freezes an uncertain correction for exact retry', async () => {
     api.receipts.mockResolvedValue({ total: 1, items: [record], can_reverse: true })
     api.reversalPreview.mockResolvedValue({ can_reverse: true, expected_revision: 7 })
@@ -126,11 +160,11 @@ describe('fabric receipt history', () => {
     await wrapper!.get('[aria-label="入库记录排序"]').setValue('RECEIPT_ASC'); await flushPromises()
     api.receipts.mockResolvedValueOnce({ total: 0, items: [], options: { suppliers: ['测试纺织厂', '另一家供应商'] } })
     await wrapper!.get('[aria-label="入库单据状态筛选"]').setValue('REVERSED'); await flushPromises()
-    expect(api.receipts).toHaveBeenLastCalledWith('', 0, { supplier: '测试纺织厂', category: 'FABRIC', receipt_from: '2026-10-01', receipt_to: '2026-10-07', state: 'REVERSED', sort: 'RECEIPT_ASC' })
+    expect(api.receipts).toHaveBeenLastCalledWith('', 0, { channel: '', supplier: '测试纺织厂', category: 'FABRIC', receipt_from: '2026-10-01', receipt_to: '2026-10-07', state: 'REVERSED', sort: 'RECEIPT_ASC' })
     expect(wrapper!.text()).toContain('没有找到匹配的入库记录')
     expect(wrapper!.get('[aria-label="入库供应商筛选"]').text()).toContain('另一家供应商')
     await wrapper!.findAll('button').find(button => button.text() === '查看全部记录')!.trigger('click'); await flushPromises()
-    expect(api.receipts).toHaveBeenLastCalledWith('', 0, { supplier: '', category: '', state: '', receipt_from: '', receipt_to: '', sort: 'RECEIPT_DESC' })
+    expect(api.receipts).toHaveBeenLastCalledWith('', 0, { channel: '', supplier: '', category: '', state: '', receipt_from: '', receipt_to: '', sort: 'RECEIPT_DESC' })
     expect(wrapper!.getComponent(DateRangeFilter).props('modelValue')).toEqual({ start: undefined, end: undefined })
   })
   it('ignores an old query while new header input is waiting to search', async () => {

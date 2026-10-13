@@ -107,6 +107,8 @@ def new_batch(stock, entry, data, quantity_value, base=None, quality='PENDING_IN
     row.update(location_id=data.get('location_id', ''), location_snapshot=data.get('location_snapshot', {}),
         inbound_quantity='0' if entry['kind'] == 'TRANSFER' else text(quantity_value), outbound_quantity='0',
         transfer_quantity=text(quantity_value) if entry['kind'] == 'TRANSFER' else '0')
+    if base:
+        row.update(opening_quantity='0', adjustment_quantity='0')
     if base and entry['kind'] == 'TRANSFER':
         for key in ('source_no', 'source_document', 'received_on'):
             row[key] = base[key]
@@ -158,6 +160,10 @@ def validate_current_master(db, warehouse, body, stock):
 def apply_entry(stock, entries, entry, warehouse):
     """Validate and apply a document to an isolated projection, before writing any row."""
     data, kind, identifier = entry['data'], entry['kind'], entry['id']
+    if warehouse == 'fabric' and (kind in {'OPENING', 'STOCKTAKE', 'OPENING_IMPORT'} or kind.startswith('STOCKTAKE_')):
+        from app.services.fabric_inventory_setup import apply_inventory_entry
+        apply_inventory_entry(stock, entries, entry)
+        return
     if warehouse == 'fabric' and kind == 'CORRECTION' and data.get('original_id', '').startswith('FR-'):
         from app.services.fabric_receipt_corrections import apply_original_reversal
         apply_original_reversal(stock, entries, entry)
@@ -308,7 +314,10 @@ def apply_entry(stock, entries, entry, warehouse):
         target = original_for(entries, data['original_id'], {'RECEIPT', 'ISSUE', 'TRANSFER', 'PROCESS_SEND', 'PACK_SEND'})
         if entry['business_date'] < target['business_date']:
             raise HTTPException(422, '更正日期不能早于原业务日期')
+        affected = {target['id'], target['data'].get('batch_id')}
         for later in entries.values():
+            if later['sequence'] > target['sequence'] and later['kind'] == 'STOCKTAKE' and later['data'].get('batch_id') in affected:
+                raise HTTPException(409, '该批次已确认盘点，不能直接冲销盘点前的原单；请核对后重新盘点')
             if later['sequence'] > target['sequence'] and any(later['data'].get(key) == target['id'] for key in ('batch_id', 'original_id', 'task_id')):
                 raise HTTPException(409, '原单已有后续质检、收发或交接，不能直接冲销')
         tq = decimal(target['data']['quantity'])
@@ -375,7 +384,7 @@ def workspace(db, warehouse):
         batch['location_label'] = place['label'] if place else batch['location']
         batch['available_quantity'] = '0' if not place or batch['quality_status'] in {'REJECTED', 'HOLD'} else batch['quantity']
     return {'revision': max((row['sequence'] for row in rows), default=0), 'stock': list(stock.values()),
-            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] != 'MASTER_LOCATION'], 'original_receipts': original_receipts}
+            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] not in {'MASTER_LOCATION', 'OPENING_IMPORT'} and not row['kind'].startswith('STOCKTAKE_')], 'original_receipts': original_receipts}
 
 
 def request_body(payload):

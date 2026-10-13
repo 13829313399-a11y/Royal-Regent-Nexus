@@ -6,7 +6,19 @@ export type PurchaseScope = 'PENDING' | 'RETURNED' | 'ALL' | 'TRACKING'
 export type PurchaseView = 'OUTSTANDING' | 'NOT_ARRIVED' | 'PARTIAL' | 'ARRIVAL_REVIEW' | 'CHANGED' | 'OVERDUE' | 'DUE_TODAY' | 'AWAITING_DATE' | 'QUANTITY_REVIEW'
 export type TrackingSummary = Record<'outstanding' | 'not_arrived' | 'partial' | 'arrival_review' | 'changed', number> & Partial<Record<'overdue' | 'due_today' | 'awaiting_date' | 'quantity_review', number>>
 export interface ChaseResolution { id: string; revision: number; starting_quantity: string; evidence: string; actor_name: string; occurred_at: string; cutoff: { first_receipt_id: string | null; receipt_count_at_confirmation: number; warehouse_received_at_confirmation: string; before_all_system_receipts: true } }
-export interface PurchaseFilters { supplier?: string; unit?: string; source_category?: string; category?: string; promise_from?: string; promise_to?: string; order_no?: string; production_no?: string; material_code?: string; style_no?: string; import_batch?: string; quantity_review?: string; sort?: string }
+export interface PurchaseFilters { supplier?: string; unit?: string; source_category?: string; category?: string; promise_from?: string; promise_to?: string; order_no?: string; production_no?: string; material_code?: string; style_no?: string; import_batch?: string; quantity_review?: string; sort?: string; group_key?: string }
+export interface PurchaseMaterialGroup {
+  key: string; supplier: string; material_code: string; material_name: string; unit: string
+  line_count: number; order_count: number; production_count: number; supplement_count: number
+  remaining_quantity: string | null; known_remaining_quantity: string; unknown_quantity_count: number
+  warehouse_received_quantity: string | null; known_received_quantity: string; unknown_received_count: number
+  earliest_promise: string | null; latest_promise: string | null
+  overdue_count: number; due_today_count: number; awaiting_date_count: number; changed_count: number
+}
+export interface PurchaseGroupResult {
+  total: number; line_total: number; groups: PurchaseMaterialGroup[]; summary: TrackingSummary
+  options?: { suppliers: string[]; units: string[]; imports?: { id: string; name: string }[] }; can_receive?: boolean
+}
 export type ImportAction = 'ALL' | 'NEW' | 'UPDATE' | 'UNCHANGED' | 'BLOCKED'
 export interface PurchaseFacts {
   source_category?: 'PURCHASE' | 'SUPPLEMENT'
@@ -68,6 +80,10 @@ function form(file: File, scope: PurchaseScope) {
 }
 const uploadOptions = { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120_000 }
 export const fabricProcurementApi = {
+  async groups(search = '', offset = 0, view: PurchaseView = 'OUTSTANDING', filters: PurchaseFilters = {}) {
+    const cleanFilters = Object.fromEntries(Object.entries(filters).filter(([, value]) => value))
+    return (await http.get<PurchaseGroupResult>('/fabric-warehouse/procurement/lines', { params: { factory_id: 'huakang-c', status: 'PENDING', search, offset, view, ...cleanFilters, group_by: 'MATERIAL' } })).data
+  },
   async preview(file: File, scope: PurchaseScope, offset = 0, action: ImportAction = 'ALL') {
     const body = form(file, scope); body.append('offset', String(offset)); body.append('action', action)
     return (await http.post<PurchasePreview>('/fabric-warehouse/procurement/imports/preview', body, uploadOptions)).data

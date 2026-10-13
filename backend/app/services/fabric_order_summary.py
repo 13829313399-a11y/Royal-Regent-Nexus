@@ -49,7 +49,11 @@ def collect(receipts, entries, stock):
             data=dict(source_no=payload.get('delivery_reference', receipt.delivery_reference))), batch, 'INBOUND', receipt.quantity, '采购实收入库')
     for entry in entries.values():
         body, kind = entry['data'], entry['kind']
-        if kind == 'RECEIPT':
+        if kind == 'OPENING':
+            add(entry, stock[entry['id']], 'ADJUSTMENT', body['quantity'], '期初库存建立')
+        elif kind == 'STOCKTAKE':
+            add(entry, entry['batch_snapshot'], 'ADJUSTMENT', body['quantity'], '库存盘点差异')
+        elif kind == 'RECEIPT':
             add(entry, stock[entry['id']], 'INBOUND', body['quantity'], '送货单入库' if body.get('handover_document_id') else '手动入库')
         elif kind == 'ISSUE':
             add(entry, entry['batch_snapshot'], 'OUTBOUND', body['quantity'], '扫码出库' if body.get('handover_document_id') else '手动出库')
@@ -121,7 +125,7 @@ def summarize(events, date_from='', date_to='', search='', supplier=''):
         rows=sorted(rows, key=lambda row: (row['order_no'], row['production_no'], row['item_code'], row['unit'], row['key'])),
         details=sorted(details, key=lambda row: (row['date'], row['sequence'], row['id']), reverse=True),
         totals=[dict(unit=unit, **{field: operations.text(value) for field, value in values.items()}) for unit, values in sorted(totals.items())],
-        basis='仅本系统已记收发；期初为开始日期前的记录结余，未接入现场历史期初、盘点和计价。调仓调整量为零，另列移动数量。')
+        basis='记录期初为开始日期前的全部已记结余；期间建立的期初库存及盘点差异列入调整，不增加采购实收。调仓调整量为零，另列移动数量。尚未计价。')
 
 
 def report(db, date_from='', date_to='', search='', supplier=''):
