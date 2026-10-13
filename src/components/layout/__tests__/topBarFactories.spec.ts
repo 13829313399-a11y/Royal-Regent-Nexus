@@ -32,6 +32,7 @@ describe('TopBar factory switcher', () => {
     setActivePinia(createPinia())
     routerReplaceMock.mockReset()
     routeState.path = '/modules/engineering'
+    routeState.name = 'modules-department'
     routeState.query = { layout: 'cards', factory: 'huaxing' }
   })
 
@@ -43,6 +44,25 @@ describe('TopBar factory switcher', () => {
     expect(productionFactoryContextIds).toEqual(physicalFactoryIds)
     expect(productionFactoryContextIds).toContain('huakang-c')
     expect(productionFactoryContextIds).toContain('huakang-d')
+  })
+
+  it('offers a compact factory selector inside the Indonesia material workspace', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    routeState.path = '/modules/sales-business/indonesia-material-shipment'
+    routeState.name = 'indonesia-material-shipment'
+    const store = useAppStore()
+    store.setActiveFactory('group')
+    const wrapper = shallowMount(TopBar, { global: { plugins: [pinia] } })
+    try {
+      const select = wrapper.get('select[aria-label="当前厂区"]')
+      expect(select.findAll('option')).toHaveLength(factoryContexts.length)
+      await select.setValue('huakang-c')
+      expect(store.activeFactoryId).toBe('huakang-c')
+      expect(routerReplaceMock).toHaveBeenCalledWith(expect.objectContaining({
+        path: routeState.path, query: expect.objectContaining({ factory: 'huakang-c' }),
+      }))
+    } finally { wrapper.unmount() }
   })
   it.each([true, false])('keeps dirty worksheet mounted when factory change is cancelled (query=%s)', async (hasQuery) => {
     const pinia = createPinia()

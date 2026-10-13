@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import type { AuthMeResponse } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
+import { hasRoutePermissions } from '@/config/pageAccessPolicy'
 
 function session(overrides: Partial<AuthMeResponse> = {}): AuthMeResponse {
   return {
@@ -29,6 +30,21 @@ function session(overrides: Partial<AuthMeResponse> = {}): AuthMeResponse {
 
 describe('authStore scoped permission decisions', () => {
   beforeEach(() => setActivePinia(createPinia()))
+
+  it('accepts shipping read grants through the two-department route without bypassing factory-wide denies', () => {
+    const store = useAuthStore()
+    const permissions = ['indonesia_material:read']
+    store.applySession(session({
+      authz_mode: 'enforce', permissions, department_scopes: ['pmc-warehouse'],
+      grants: [{ role_id: 'shipping', role_name: '船务', factory_id: 'huaxing', department: 'pmc-warehouse', permissions, data_scope: 'department' }],
+      effective_access: [{ permission_code: permissions[0]!, factory_id: 'huaxing', department: 'pmc-warehouse', effect: 'allow', allowed: true, source_type: 'role_binding', source_ids: ['shipping-binding'] }],
+    }))
+    const meta = { permissionFactoryId: 'huaxing', permissionDepartments: ['sales-business', 'pmc-warehouse'] }
+    expect(hasRoutePermissions(meta, permissions, store.canAny)).toBe(true)
+    expect(hasRoutePermissions({ ...meta, permissionFactoryId: 'huadeng' }, permissions, store.canAny)).toBe(false)
+    store.effectiveAccess.push({ permission_code: permissions[0]!, factory_id: 'huaxing', department: '*', effect: 'deny', allowed: false, source_type: 'user_override', source_ids: ['deny-factory'] })
+    expect(hasRoutePermissions(meta, permissions, store.canAny)).toBe(false)
+  })
 
   it.each(['manager', 'supervisor', 'keeper'] as const)(
     'keeps warehouse %s factory scope and the manager PMC inbox boundary', (position) => {
