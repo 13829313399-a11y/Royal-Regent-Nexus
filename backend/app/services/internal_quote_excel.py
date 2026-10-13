@@ -19,6 +19,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.utils.units import pixels_to_EMU
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.worksheet.worksheet import Worksheet
+from app.services.internal_quote_output_fields import SourceLabel, bind_source_label
 from PIL import Image as PillowImage, ImageOps
 
 from app.models.internal_quote import (
@@ -32,7 +33,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v32"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v33"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -245,6 +246,7 @@ def _template_cell(
     font_name: str = "宋体",
 ) -> None:
     cell = sheet.cell(row, column, value)
+    bind_source_label(sheet, cell, value)
     cell.font = Font(name=font_name, size=size, bold=bold, color=color)
     cell.alignment = Alignment(
         horizontal=horizontal,
@@ -592,6 +594,15 @@ def _apply_molding_row_formulas(
         sheet.cell(row_index, 11).value = f"={format(material_cost_hkd, '.10g')}"
     sheet.cell(row_index, 11).number_format = "0.000_ "
 
+    # These two columns feed the finished-product cost, whereas the reference
+    # prices and weight above remain per part. Match the calculator's quantity.
+    quantity = _float_value(line.get("quantity"), 1.0)
+    if quantity != 1:
+        for column in (10, 11):
+            cell = sheet.cell(row_index, column)
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.value = f"=({cell.value[1:]})*{format(quantity, '.10g')}"
+
 
 def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[str, Any]]:
     """Recover original supplier inputs without confusing derived currency prices.
@@ -613,13 +624,22 @@ def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[st
     quick = code == "electronic" and payload.get("quote_mode") == "quick"
     sources: list[dict[str, Any]] = []
 
-    def walk(rows):
-        for source in _list_of_dicts(rows):
-            if code == "electronic" and not quick:
-                walk(source.get("children"))
-            sources.append(source)
+    def walk(rows, path, is_quick=False):
+        for index, source in enumerate(rows or []):
+            if not isinstance(source, dict):
+                continue
+            source_path = [*path, index]
+            if code == "electronic" and not is_quick:
+                walk(source.get("children"), [*source_path, "children"], is_quick)
+            sources.append({**source, "_output_path": source_path})
 
-    walk(payload.get("quick_quotes" if quick else field))
+    if code == "electronic" and "quote_groups" in payload:
+        for index, group in enumerate(payload["quote_groups"]):
+            group_key = "quick_quotes" if group.get("quote_mode") == "quick" else "components"
+            walk(group.get(group_key), ["quote_groups", index, group_key], group_key == "quick_quotes")
+    else:
+        key = "quick_quotes" if quick else field
+        walk(payload.get(key), [key], quick)
     lines = _calculation_lines(section, kind)
     paired = len(sources) == len(lines) and all(
         _plain_text(source.get("item")) == _plain_text(line.get("item"))
@@ -630,6 +650,8 @@ def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[st
         entry = {**line, "section": code, "label": line.get("item", ""), "source_line_index": index,
                  "amount_hkd": line.get("amount_hkd", line.get("line_hkd", 0))}
         if paired:
+            entry["source_path"] = sources[index]["_output_path"]
+        if paired and "quote_groups" not in payload:
             source = sources[index]
             entry.update(specification=source.get("specification", source.get("spec", line.get("specification", ""))),
                          quantity=1 if quick else source.get("quantity", line.get("quantity")),
@@ -662,6 +684,7 @@ def _purchase_pricing_entries(entries, sections) -> list[dict[str, Any]]:
                       if line.get("section") == entry.get("section")
                       and line.get("kind") == entry.get("kind")
                       and (not entry.get("electronic_quote_id") or line.get("electronic_quote_id") == entry.get("electronic_quote_id"))
+                      and (not entry.get("pricing_component_id") or line.get("pricing_component_id") == entry.get("pricing_component_id"))
                       and (_plain_text(line.get("label")) or {"electronic": "电子", "engineering": "工程采购", "sales": "包装材料"}.get(line.get("section")))
                       == _plain_text(entry.get("label"))), None)
         if match is not None:
@@ -687,7 +710,10 @@ def _purchase_detail_label(entry: dict[str, Any], fallback: str = "") -> str:
     if quantity not in (None, ""):
         unit = _plain_text(entry.get("unit")) or "pcs"
         name += f"（{_compact_number_label(_float_value(quantity))}{unit}）"
-    return _safe_text(name)
+    result = _safe_text(name)
+    if entry.get("source_path") is not None and entry.get("section"):
+        return SourceLabel(result, entry["section"], entry["source_path"])
+    return result
 
 
 def _pricing_entry_amount(entry: dict[str, Any]) -> object:
@@ -2439,6 +2465,7 @@ def _build_summary_sheet(
     )
     sewing_adjustment = (
         _float_value(cost_context.get("sewing_hkd"))
+        + _float_value(cost_context.get("hair_hkd"))
         - sewing_hair
         - sewing_cloth
     )
@@ -3773,6 +3800,8 @@ def _justplay_electronic_source_parts(section: InternalQuoteSection | None) -> l
         specification = source.get("specification", line.get("specification", ""))
         result.append({
             "source_amount": _pricing_entry_amount(line),
+            "source_path": line.get("source_path"),
+            "section": "electronic",
             "category": _justplay_electronic_category(name, specification),
             "name": _plain_text(name),
             "specification": _plain_text(specification),
@@ -5039,6 +5068,7 @@ def _build_electronic_sheet(
     *,
     sheet_name: str = "电子明细",
     quote_name: str = "电子报价明细",
+    allow_incomplete: bool = False,
 ) -> None:
     payload = _json_object(section.payload_json) if section else {}
     if "quote_groups" in payload:
@@ -5046,10 +5076,10 @@ def _build_electronic_sheet(
         from app.services.internal_quote_electronic import electronic_quote_groups
         calculations = {item["id"]: item for item in _section_calculation(section).get("quote_groups", [])}
         for index, group in enumerate(electronic_quote_groups(payload), 1):
-            if group["id"] not in calculations:
+            if group["id"] not in calculations and not allow_incomplete:
                 raise ValueError("电子报价计算快照不完整，请重新保存并审核后导出")
-            individual = SimpleNamespace(payload_json=json.dumps(group, ensure_ascii=False), calculation_json=json.dumps(calculations[group["id"]], ensure_ascii=False))
-            _build_electronic_sheet(workbook, individual, reference_snapshot, sheet_name=f"电子明细{index}", quote_name=group["name"])
+            individual = SimpleNamespace(payload_json=json.dumps(group, ensure_ascii=False), calculation_json=json.dumps(calculations.get(group["id"], {}), ensure_ascii=False))
+            _build_electronic_sheet(workbook, individual, reference_snapshot, sheet_name=f"电子明细{index}", quote_name=group["name"], allow_incomplete=allow_incomplete)
         return
     sheet = workbook.create_sheet(sheet_name)
     _style_title(sheet, quote_name, 10)
@@ -5064,10 +5094,10 @@ def _build_electronic_sheet(
         quantity = _number(row.get("quantity"))
         unit_price_rmb = _number(row.get("unit_price_rmb"))
         unit_price_hkd = _number(row.get("unit_price_hkd"))
-        if not isinstance(unit_price_rmb, float) and isinstance(unit_price_hkd, float):
+        if "unit_price_rmb" not in row and isinstance(unit_price_hkd, float):
             unit_price_rmb = unit_price_hkd * fx
-        if not isinstance(unit_price_hkd, float) and isinstance(unit_price_rmb, float):
-            unit_price_hkd = unit_price_rmb / fx
+        if "unit_price_rmb" in row:
+            unit_price_hkd = unit_price_rmb / fx if isinstance(unit_price_rmb, float) else ""
         amount_hkd = quantity * unit_price_hkd if isinstance(quantity, float) and isinstance(unit_price_hkd, float) else ""
         _body_row(
             sheet,
@@ -5619,7 +5649,7 @@ def _append_spreadsheet_attachment_sheets(
     return appended_titles
 
 
-def build_internal_quote_workbook(
+def build_internal_quote_workbook_model(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
     manifest: dict[str, Any],
@@ -5627,7 +5657,9 @@ def build_internal_quote_workbook(
     rr2_cost_summary: dict[str, Any] | None = None,
     cost_context: dict[str, Any] | None = None,
     attachments: list[InternalQuoteAttachment] | None = None,
-) -> bytes:
+    *,
+    allow_incomplete: bool = False,
+) -> Workbook:
     workbook = Workbook()
     workbook.properties.creator = "Royal Regent Nexus"
     workbook.properties.title = f"{quote.quote_no} 内部报价"
@@ -5641,7 +5673,7 @@ def build_internal_quote_workbook(
         attachments or [],
     )
     by_code = {section.department: section for section in sections}
-    _build_electronic_sheet(workbook, by_code.get("electronic"), reference_snapshot or {})
+    _build_electronic_sheet(workbook, by_code.get("electronic"), reference_snapshot or {}, allow_incomplete=allow_incomplete)
     _build_sewing_sheet(workbook, by_code.get("sewing"), reference_snapshot or {})
     _build_hair_sheet(workbook, by_code.get("hair"))
     _build_assembly_sheet(workbook, by_code.get("assembly"))
@@ -5665,11 +5697,25 @@ def build_internal_quote_workbook(
     if "quote_groups" in electronic_payload:
         for index in range(1, len(electronic_payload["quote_groups"]) + 1):
             workbook[f"电子明细{index}"].sheet_state = "visible"
-    _append_spreadsheet_attachment_sheets(workbook, attachments or [])
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True
     workbook.calculation.calcMode = "auto"
+    return workbook
+
+
+def build_internal_quote_workbook(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+    manifest: dict[str, Any],
+    reference_snapshot: dict[str, Any] | None = None,
+    rr2_cost_summary: dict[str, Any] | None = None,
+    cost_context: dict[str, Any] | None = None,
+    attachments: list[InternalQuoteAttachment] | None = None,
+) -> bytes:
+    workbook = build_internal_quote_workbook_model(
+        quote, sections, manifest, reference_snapshot, rr2_cost_summary, cost_context, attachments,
+    )
     buffer = BytesIO()
     workbook.save(buffer)
     workbook.close()

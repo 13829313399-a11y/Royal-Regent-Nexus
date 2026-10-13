@@ -5,26 +5,22 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
-  CircleDollarSign,
   Download,
   FileClock,
   FileSpreadsheet,
   LockKeyhole,
   Rocket,
-  Save,
-  Ship,
 } from '@lucide/vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { ApiInternalQuoteVersionComparison } from '@/api/internalQuote'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
-import { canEditAllInternalQuoteSections, isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
-import { cloneInternalQuotePayload } from '@/lib/internalQuoteSectionPayload'
+import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
-import InternalQuoteInteractiveDonut from './InternalQuoteInteractiveDonut.vue'
+import InternalQuoteOutputTable from './InternalQuoteOutputTable.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,9 +34,7 @@ const finalReason = ref('')
 const finalRejectError = ref('')
 const versionBaseId = ref('')
 const comparison = ref<ApiInternalQuoteVersionComparison>()
-const indonesiaFreightDraft = ref<string | number>('0.0000')
-const indonesiaFreightMessage = ref('')
-const indonesiaFreightError = ref('')
+const tableDirty = ref(false)
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
 const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
@@ -62,33 +56,6 @@ const canOpenExport = computed(() => isReleased.value && canExport.value)
 const canFinalSubmit = computed(() => authStore.can('internal_quote:final_submit', quote.value.factoryId, 'sales-business'))
 const canFinalApprove = computed(() => authStore.can('internal_quote:final_approve', quote.value.factoryId, 'sales-business'))
 const salesSection = computed(() => quote.value.sections.find((section) => section.code === 'sales'))
-const costSummary = computed(() => quote.value.rr2CostSummary)
-const visibleT1Summary = computed(() => costSummary.value.t1.filter((item) => item.display !== false))
-const isIndonesiaQuote = computed(() => quote.value.regionCode === 'indonesia')
-const canEditIndonesiaFreight = computed(() => Boolean(
-  isIndonesiaQuote.value
-  && salesSection.value?.isRequired
-  && ['draft', 'rejected'].includes(salesSection.value.status)
-  && !['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)
-  && canEditAllInternalQuoteSections(authStore, quote.value.factoryId),
-))
-const indonesiaFreightReadOnlyReason = computed(() => {
-  if (!salesSection.value?.isRequired) return '业务部分段未参与本报价，无法修改印尼运费。'
-  if (['final_pending', 'released', 'exported', 'archived'].includes(quote.value.status)) return '整单已锁定，印尼运费仅供查看。'
-  if (!['draft', 'rejected'].includes(salesSection.value.status)) return '业务部分段已锁定，请先退回或合法重开后修改。'
-  if (!canEditAllInternalQuoteSections(authStore, quote.value.factoryId)) return '仅业务部或工程部有权限修改印尼运费。'
-  return '印尼运费当前仅供查看。'
-})
-const parsedIndonesiaFreight = computed(() => Number(indonesiaFreightDraft.value))
-const indonesiaFreightValidationError = computed(() => {
-  if (!String(indonesiaFreightDraft.value).trim() || !Number.isFinite(parsedIndonesiaFreight.value)) return '请输入有效的印尼运费。'
-  if (parsedIndonesiaFreight.value < 0) return '印尼运费不能小于 0。'
-  return ''
-})
-const indonesiaFreightChanged = computed(() => (
-  !indonesiaFreightValidationError.value
-  && Math.abs(parsedIndonesiaFreight.value - costSummary.value.indonesiaFreightHkd) > 0.0000001
-))
 const responsibleFollowupId = computed(() => salesSection.value?.submittedById || quote.value.createdById)
 const canResponsibleRelease = computed(() => (
   canFinalSubmit.value
@@ -120,82 +87,6 @@ const getQuoteRoute = (path: string) => getFactoryScopedRoute(
   isFactoryContextId(quote.value.factoryId) ? quote.value.factoryId : 'huaxing',
 )
 const versionCandidates = computed(() => quoteStore.versionCandidates[quote.value.id] ?? [])
-const componentLabels: Record<string, string> = {
-  molding_hkd: '啤机', painting_hkd: '喷油', electronic_hkd: '电子', hardware_hkd: '五金', auxiliary_hkd: '辅料',
-  packaging_material_hkd: '包装材料', assembly_hkd: '组装人工', packing_labor_hkd: '包装人工', indonesia_freight_hkd: '印尼运费',
-  slush_hkd: '搪胶', sewing_hkd: '车缝', hair_hkd: '车发', carton_hkd: '纸箱',
-}
-const costColors = ['#2563eb', '#dc2626', '#7c3aed', '#d97706', '#0891b2', '#65a30d', '#c2410c', '#db2777', '#0f766e', '#4f46e5', '#ea580c', '#475569']
-const departmentColors: Record<string, string> = {
-  engineering: '#2563eb', molding: '#f59e0b', assembly: '#8b5cf6', painting: '#ef4444',
-  electronic: '#06b6d4', slush: '#ec4899', sewing: '#22c55e', hair: '#f97316', sales: '#0f766e',
-}
-const componentColors: Record<string, string> = {
-  molding_hkd: '#2563eb', painting_hkd: '#ef4444', electronic_hkd: '#8b5cf6', hardware_hkd: '#f59e0b',
-  auxiliary_hkd: '#14b8a6', packaging_material_hkd: '#dc2626', assembly_hkd: '#7c3aed', packing_labor_hkd: '#0ea5e9',
-  indonesia_freight_hkd: '#06b6d4', slush_hkd: '#ec4899', sewing_hkd: '#16a34a', hair_hkd: '#f97316', carton_hkd: '#475569',
-}
-const componentEntries = computed(() => Object.entries(quote.value.summaryComponents)
-  .map(([key, amount], index) => ({
-    key,
-    label: componentLabels[key] ?? key,
-    amount,
-    color: componentColors[key] ?? costColors[index % costColors.length],
-    detail: '服务端成本明细',
-  }))
-  .filter((item) => item.amount !== 0 && (item.key !== 'indonesia_freight_hkd' || isIndonesiaQuote.value)))
-const departmentEntries = computed(() => quote.value.sections.map((section, index) => ({
-  key: section.code,
-  label: section.label,
-  amount: section.isRequired && section.calculationStatus === 'valid' ? section.totalHkd : 0,
-  color: departmentColors[section.code] ?? costColors[index % costColors.length],
-  isRequired: section.isRequired,
-  inactive: !section.isRequired || section.calculationStatus !== 'valid' || section.totalHkd === 0,
-  detail: !section.isRequired ? '未参与' : section.calculationStatus === 'valid' ? '有效计算' : '尚无有效计算',
-})))
-const departmentTotalHkd = computed(() => departmentEntries.value.reduce((sum, item) => sum + item.amount, 0))
-const componentTotalHkd = computed(() => componentEntries.value.reduce((sum, item) => sum + Math.max(item.amount, 0), 0))
-const shippingPricing = computed(() => costSummary.value.shippingPricing)
-
-function summaryValue(value: number, format?: string, blankWhenZero = false) {
-  if (blankWhenZero && value === 0) return ''
-  return format === 'percent' ? `${value.toFixed(1)}%` : value.toFixed(4)
-}
-
-async function saveIndonesiaFreight() {
-  indonesiaFreightMessage.value = ''
-  indonesiaFreightError.value = ''
-  const section = salesSection.value
-  if (!canEditIndonesiaFreight.value || !section) {
-    indonesiaFreightError.value = indonesiaFreightReadOnlyReason.value
-    return
-  }
-  if (indonesiaFreightValidationError.value) {
-    indonesiaFreightError.value = indonesiaFreightValidationError.value
-    return
-  }
-  const amount = Number(parsedIndonesiaFreight.value.toFixed(4))
-  const nextPayload = cloneInternalQuotePayload('sales', {
-    ...section.payload,
-    indonesia_freight_hkd: amount,
-  })
-  try {
-    await quoteStore.saveSection(
-      quote.value.id,
-      'sales',
-      section.revision,
-      nextPayload,
-      '在汇总页修改印尼价运费',
-    )
-    indonesiaFreightDraft.value = amount.toFixed(4)
-    indonesiaFreightMessage.value = '印尼运费已保存，服务端已生成业务部新 revision 并重新计算整单。'
-  } catch (error) {
-    indonesiaFreightError.value = error instanceof Error ? error.message : '印尼运费保存失败。'
-  }
-}
-
-const directLaborKeys = new Set(['injection_labor', 'painting_labor', 'paint_material', 'assembly_labor'])
-
 const statusMeta: Record<InternalQuoteSectionStatus, { label: string; tone: string }> = {
   sealed: { label: '已输出并冻结', tone: 'green' },
   draft: { label: '草稿', tone: 'slate' },
@@ -207,6 +98,7 @@ const statusMeta: Record<InternalQuoteSectionStatus, { label: string; tone: stri
 }
 
 async function runFinalAction() {
+  if (tableDirty.value) { errorMessage.value = '请先保存表格修改，再继续输出。'; return }
   message.value = ''
   errorMessage.value = ''
   try {
@@ -314,11 +206,7 @@ watch([quoteId, canFinalApprove], () => {
   finalReason.value = ''
   finalRejectError.value = ''
 })
-watch([quoteId, () => costSummary.value.indonesiaFreightHkd], ([, amount]) => {
-  indonesiaFreightDraft.value = Number(amount || 0).toFixed(4)
-  indonesiaFreightMessage.value = ''
-  indonesiaFreightError.value = ''
-}, { immediate: true })
+
 </script>
 
 <template>
@@ -331,7 +219,7 @@ watch([quoteId, () => costSummary.value.indonesiaFreightHkd], ([, amount]) => {
     </nav>
 
     <header class="quote-summary-head">
-      <div><span class="quote-eyebrow">内部成本汇总</span><h1>{{ isWholeQuoteReview ? '汇总与受控输出' : '汇总与最终放行' }}</h1><p>{{ quote.quoteNo }} · {{ quote.productName }} · {{ quote.customer }} · {{ quote.versionLabel }}</p></div>
+      <div><span class="quote-eyebrow">整单报价表</span><h1>{{ isWholeQuoteReview ? '汇总与输出' : '汇总与最终放行' }}</h1><p>{{ quote.quoteNo }} · {{ quote.productName }} · {{ quote.customer }} · {{ quote.versionLabel }}</p></div>
       <div class="quote-total-card"><span>整单工厂成本</span><strong>HKD {{ totalHkd.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong><small>RMB {{ (totalHkd * quote.fxRmbHkd).toFixed(2) }} · USD {{ (totalHkd / quote.fxHkdUsd).toFixed(2) }}</small></div>
     </header>
 
@@ -345,76 +233,9 @@ watch([quoteId, () => costSummary.value.indonesiaFreightHkd], ([, amount]) => {
     <p v-if="quoteStore.refreshWarning && quoteStore.refreshWarningQuoteId === quote.id" class="quote-page-message error" role="status">{{ quoteStore.refreshWarning }} <button type="button" :disabled="quoteStore.detailLoading || quoteStore.submitting" @click="quoteStore.refreshAfterMutation(quote.id)">重新读取</button></p><p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
     <p v-if="isReadOnly" class="quote-readonly-banner"><LockKeyhole aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；审核、最终放行及受控导出仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的审核、最终放行或受控导出权限。' }}</p>
 
-    <section class="quote-cost-overview">
-      <header><div><CircleDollarSign aria-hidden="true" /><span><strong>权威成本分布</strong><small>分部门金额与成本项目并列展示；正式数据均读取服务端计算快照</small></span></div><em>{{ quote.formulaVersion }}</em></header>
-      <div class="quote-cost-overview-body">
-        <article class="quote-distribution-card department-distribution-card">
-          <header><span><strong>部门金额分布</strong><small>悬停扇区或部门明细可联动高亮，点击可固定当前部门</small></span><em>HKD / PCS</em></header>
-          <InternalQuoteInteractiveDonut
-            class="quote-distribution-visual"
-            :entries="departmentEntries"
-            total-label="部门合计"
-            :display-total="departmentTotalHkd"
-            empty-label="尚无有效部门成本"
-          />
-        </article>
-        <article class="quote-distribution-card component-distribution-card">
-          <header><span><strong>成本项目分布</strong><small>悬停查看包装、纸箱、人工及加工项目的金额与占比</small></span><em>HKD / PCS</em></header>
-          <InternalQuoteInteractiveDonut
-            class="quote-distribution-visual"
-            :entries="componentEntries"
-            total-label="项目合计"
-            :display-total="componentTotalHkd"
-            empty-label="尚无有效成本项目"
-          />
-        </article>
-        <div class="cost-snapshot-note"><LockKeyhole aria-hidden="true" /><span><strong>冻结参考快照</strong><small>{{ quote.referenceSnapshotId }}</small></span></div>
-      </div>
-    </section>
-
-    <section v-if="shippingPricing.enabled" class="quote-logistics-panel">
-      <header><div><Ship aria-hidden="true" /><span><strong>出货价算价</strong><small>已启用：{{ [shippingPricing.freightEnabled ? '运费' : '', shippingPricing.liftingEnabled ? '吊柜费' : ''].filter(Boolean).join('、') }}</small></span></div><em>出货数量 {{ quote.quantity.toLocaleString('zh-CN') }} PCS</em></header>
-      <p class="shipping-formula">出货报价由冻结参考快照和当前整单设置统一计算；以下仅展示各阶段金额，当前出货底价为 <b>{{ shippingPricing.shippingFloorHkd.toFixed(4) }} HKD</b>。</p>
-      <div class="business-table-scroll shipping-price-scroll"><table class="business-summary-table shipping-price-table"><thead><tr><th>项</th><th v-for="row in shippingPricing.rows" :key="row.name">{{ row.name }}</th></tr></thead><tbody>
-        <tr><th>出货底价 HKD</th><td v-for="row in shippingPricing.rows" :key="`floor-${row.name}`">{{ row.shippingFloorHkd.toFixed(4) }}</td></tr>
-        <tr v-if="shippingPricing.freightEnabled"><th>运费（{{ shippingPricing.freightSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`freight-${row.name}`">{{ row.freightHkd.toFixed(4) }}</td></tr>
-        <tr v-if="shippingPricing.liftingEnabled"><th>吊柜费（{{ shippingPricing.liftSharePercent.toFixed(2) }}%）</th><td v-for="row in shippingPricing.rows" :key="`lift-${row.name}`">{{ row.liftHkd.toFixed(4) }}</td></tr>
-        <tr class="calculated"><th>含运 HKD</th><td v-for="row in shippingPricing.rows" :key="`ship-${row.name}`">{{ row.withFreightHkd.toFixed(4) }}</td></tr>
-        <tr><th>码点结果（{{ shippingPricing.markup.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`markup-${row.name}`">{{ row.afterMarkupHkd.toFixed(4) }}</td></tr>
-        <tr><th>找数结果（{{ shippingPricing.settlement.toFixed(4) }}）</th><td v-for="row in shippingPricing.rows" :key="`settlement-${row.name}`">{{ row.afterSettlementHkd.toFixed(4) }}</td></tr>
-        <tr class="calculated"><th>TOTAL（HKD）</th><td v-for="row in shippingPricing.rows" :key="`hkd-${row.name}`">{{ row.totalHkd.toFixed(4) }}</td></tr>
-        <tr><th>（USD）= HKD / {{ shippingPricing.hkdUsd.toFixed(2) }}</th><td v-for="row in shippingPricing.rows" :key="`usd-${row.name}`">{{ row.totalUsd.toFixed(4) }}</td></tr>
-        <tr><th>模具分摊（USD）</th><td v-for="row in shippingPricing.rows" :key="`mold-${row.name}`">{{ row.moldAmortizationUsd.toFixed(4) }}</td></tr>
-        <tr class="calculated"><th>TOTAL（USD）</th><td v-for="row in shippingPricing.rows" :key="`total-usd-${row.name}`">{{ row.totalWithMoldUsd.toFixed(4) }}</td></tr>
-      </tbody></table></div>
-    </section>
-
-    <section class="quote-tax-summary-panel">
-      <header><div><FileSpreadsheet aria-hidden="true" /><span><strong>减税明细 / 成本汇总</strong><small>字段顺序和计算口径与 rr2 汇总页一致；金额由服务端按分段快照生成</small></span></div><em>HKD / PCS</em></header>
-      <div v-if="isIndonesiaQuote" class="indonesia-freight-note" data-testid="indonesia-freight-panel">
-        <strong>印尼运费（HKD）</strong>
-        <template v-if="canEditIndonesiaFreight">
-          <input v-model="indonesiaFreightDraft" data-testid="indonesia-freight-input" aria-label="印尼运费 HKD" type="number" min="0" step="0.0001">
-          <button type="button" data-testid="save-indonesia-freight" :disabled="!indonesiaFreightChanged || Boolean(indonesiaFreightValidationError) || quoteStore.submitting" @click="saveIndonesiaFreight"><Save aria-hidden="true" />{{ quoteStore.submitting ? '保存中…' : '保存运费' }}</button>
-        </template>
-        <b v-else data-testid="indonesia-freight-readonly">{{ summaryValue(costSummary.indonesiaFreightHkd) }}</b>
-        <span>本项仅用于印尼价，作为直接成本单独计入，不属于杂项率金额。</span>
-        <small v-if="!canEditIndonesiaFreight">{{ indonesiaFreightReadOnlyReason }}</small>
-        <small v-if="indonesiaFreightValidationError && canEditIndonesiaFreight" class="error">{{ indonesiaFreightValidationError }}</small>
-        <small v-if="indonesiaFreightMessage" class="success">{{ indonesiaFreightMessage }}</small>
-        <small v-if="indonesiaFreightError" class="error">{{ indonesiaFreightError }}</small>
-      </div>
-
-      <article class="business-summary-block"><h3>一、出厂货价核</h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in visibleT1Summary" :key="item.key">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in visibleT1Summary" :key="item.key">{{ summaryValue(item.value, item.format, true) }}</td></tr></tbody></table></div></article>
-      <article class="business-summary-block"><h3>二、包装 / 外购 <small>杂项金额 = 货价 × 杂项率；附加税独立计入；仅印尼价另计印尼运费</small></h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t2" :key="item.key">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in costSummary.t2" :key="item.key">{{ summaryValue(item.value, item.format, true) }}</td></tr></tbody></table></div></article>
-      <article class="business-summary-block"><h3>三、人工 &amp; 成本汇总</h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t3" :key="item.key" :class="{ emphasized: item.key === 'no_labor_cost' }">{{ item.label }}</th></tr></thead><tbody><tr><td v-for="item in costSummary.t3" :key="item.key" :class="{ calculated: ['no_labor_cost','total_cost'].includes(item.key) }">{{ summaryValue(item.value, item.format, directLaborKeys.has(item.key)) }}</td></tr></tbody></table></div></article>
-      <article class="business-summary-block tax-detail-block"><h3>四、减税明细 <small>金额、税率、减税额及减税后成本均由系统统一计算</small></h3><div class="business-table-scroll"><table class="business-summary-table"><thead><tr><th v-for="item in costSummary.t4" :key="item.key">{{ item.label }}</th><th class="total">合计减税</th><th class="after-tax">减税后成本</th></tr></thead><tbody>
-        <tr><td v-for="item in costSummary.t4" :key="`amount-${item.key}`">{{ summaryValue(item.amountHkd, undefined, true) }}</td><td /><td /></tr>
-        <tr><td v-for="item in costSummary.t4" :key="`rate-${item.key}`">{{ item.ratePercent == null ? '' : `${item.ratePercent.toFixed(2)}%` }}</td><td /><td /></tr>
-        <tr class="calculated"><td v-for="item in costSummary.t4" :key="`deduction-${item.key}`">{{ item.deductionHkd == null ? '—' : item.deductionHkd.toFixed(4) }}</td><td class="total">{{ costSummary.totalDeductionHkd.toFixed(4) }}</td><td class="after-tax">{{ costSummary.afterDeductionCostHkd.toFixed(4) }}</td></tr>
-      </tbody></table></div></article>
-    </section>
-
+    <InternalQuoteOutputTable v-if="loadedQuote" :key="quote.id" :quote-id="quote.id"
+      :collaboration-route="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/collaboration`)"
+      @dirty="tableDirty = $event" @saved="quoteStore.refreshAfterMutation(quote.id)" />
     <section v-if="versionCandidates.length" class="quote-version-panel"><header><div><FileClock aria-hidden="true" /><span><strong>报价版本对比</strong><small>仅允许同报价或复制版本链，金额差异由服务端计算</small></span></div><div><select v-model="versionBaseId"><option value="">选择基准版本</option><option v-for="candidate in versionCandidates" :key="candidate.id" :value="candidate.id">{{ candidate.quote_no }} · {{ candidate.version_label }} · {{ candidate.updated_at }}</option></select><button type="button" :disabled="!versionBaseId" @click="compareSelectedVersion">开始对比</button></div></header><div v-if="comparison" class="quote-comparison"><article><span>基准成本</span><strong>HKD {{ Number(comparison.total_before_hkd).toFixed(4) }}</strong></article><article><span>当前成本</span><strong>HKD {{ Number(comparison.total_after_hkd).toFixed(4) }}</strong></article><article><span>金额差异</span><strong>HKD {{ Number(comparison.total_delta_hkd).toFixed(4) }}</strong></article><div><p v-for="section in comparison.sections" :key="section.section_code"><span>{{ section.section_name }} · r{{ section.before_revision }} → r{{ section.after_revision }}</span><b>{{ Number(section.delta_hkd).toFixed(4) }}</b></p></div></div></section>
 
     <section class="quote-release-status">

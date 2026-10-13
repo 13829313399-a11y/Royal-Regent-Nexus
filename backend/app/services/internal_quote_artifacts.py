@@ -1934,7 +1934,8 @@ def create_controlled_export(
         "final_reviewed_by": quote.final_reviewed_by if is_final_release else "",
         "final_reviewed_by_name": quote.final_reviewed_by_name if is_final_release else "",
         "final_reviewed_at": quote.final_reviewed_at if is_final_release else "",
-        "spreadsheet_attachments": [
+        "spreadsheet_attachments": [],
+        "source_spreadsheet_attachments": [
             {
                 "id": attachment.id,
                 "department": attachment.department,
