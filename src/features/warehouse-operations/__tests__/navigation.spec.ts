@@ -13,6 +13,7 @@ const receivingApi = vi.hoisted(() => ({ receipts: vi.fn().mockResolvedValue({ t
 vi.mock('@/api/fabricMaster', () => ({ fabricMasterApi: { list: vi.fn().mockResolvedValue({ items: [], total: 0, can_manage: true }), candidates: vi.fn().mockResolvedValue([]) } }))
 vi.mock('@/api/fabricReceiving', () => ({ fabricReceivingApi: receivingApi, materialCategoryLabels: { FABRIC: '布料', ACCESSORY: '辅料', THREAD: '线' } }))
 vi.mock('@/api/warehouseOperations', () => ({ warehouseOperationsApi: { orderSummary: vi.fn().mockResolvedValue({ rows: [], details: [], totals: [], suppliers: [], basis: '仅已记收发', version: 'test' }), monthly: vi.fn().mockResolvedValue({ parties: [], summary: [], totals: [], details: [], basis: '按业务月份核对', version: 'test' }), workspace: vi.fn().mockResolvedValue({ revision: 0, stock: [], documents: [], permissions: { read: true, operate: true, quality: false, correct: false } }), post: vi.fn() } }))
+vi.mock('@/api/fabricInventorySetup', () => ({ fabricInventorySetupApi: { workspace: vi.fn().mockResolvedValue({ openings: [], counts: [], permissions: { read: true, operate: true, correct: false } }) } }))
 let wrapper: VueWrapper | undefined
 beforeEach(() => { vi.spyOn(window, 'scrollTo').mockImplementation(() => {}) })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks() })
@@ -30,6 +31,20 @@ async function open(path: string) {
 }
 
 describe('warehouse framework navigation', () => {
+  it('puts fabric activity search in the shell, isolates other searches and leaves semi activity unchanged', async () => {
+    const router = await open(`${WAREHOUSE_HOME}/fabric-warehouse/activity?factory=huakang-c&view=all`)
+    expect(wrapper!.get('h1').classes()).toContain('sr-only')
+    expect(wrapper!.find('.warehouse-page-heading').exists()).toBe(false)
+    expect(wrapper!.find('.fabric-activity-log input[type=search]').exists()).toBe(false)
+    await wrapper!.get('[aria-label="查找布料仓操作日志"]').setValue('查找原单')
+    await router.push(`${WAREHOUSE_HOME}/fabric-warehouse/exceptions?factory=huakang-c`); await flushPromises()
+    expect(wrapper!.get<HTMLInputElement>('[aria-label="查找异常单据与物料"]').element.value).toBe('')
+    await router.push(`${WAREHOUSE_HOME}/fabric-warehouse/activity?factory=huakang-c`); await flushPromises()
+    expect(wrapper!.get<HTMLInputElement>('[aria-label="查找布料仓操作日志"]').element.value).toBe('查找原单')
+    await router.push(`${WAREHOUSE_HOME}/semi-finished-warehouse/activity?factory=huakang-c`); await flushPromises()
+    expect(wrapper!.find('.fabric-activity-log').exists()).toBe(false)
+    expect(wrapper!.find('[aria-label="查找仓库收发"]').exists()).toBe(true)
+  })
   it('falls back from the retired fabric missing-data view and keeps exception search separate from inventory', async () => {
     const router = await open(`${WAREHOUSE_HOME}/fabric-warehouse/exceptions?factory=huakang-c&view=missing`)
     expect(wrapper!.findAll('.warehouse-tabs button').map(button => button.text())).toEqual(['单据更正', '受限库存'])
@@ -173,13 +188,18 @@ describe('warehouse framework navigation', () => {
           expect(wrapper!.find('fieldset[disabled]').exists()).toBe(false)
           continue
         }
+        if (wrapper!.find('.fabric-activity-log').exists()) {
+          expect(wrapper!.get('.activity-heading h2').text()).toBe('操作日志')
+          expect(wrapper!.text()).toContain('暂无操作日志')
+          continue
+        }
         if (wrapper!.find('.warehouse-operations-live').exists()) {
           expect(wrapper!.text()).toMatch(/暂无|还没有实际入库记录/)
           expect(wrapper!.find('tbody').text()).toBe('')
           continue
         }
         if (wrapper!.find('.fabric-receiving-records').exists()) {
-          expect(wrapper!.text()).toContain('不含历史库存期初')
+          expect(wrapper!.text()).toContain('期初、退料、调仓和盘点不计入本页')
           expect(wrapper!.text()).toContain('还没有实际入库记录')
           continue
         }
@@ -199,6 +219,11 @@ describe('warehouse framework navigation', () => {
           expect(wrapper!.findAll('.semi-locations button').find(button => button.text() === '新增仓库 / 仓位')!.attributes('disabled')).toBeDefined()
           continue
         }
+        if (wrapper!.find('.inventory-setup').exists()) {
+          expect(wrapper!.get('.setup-heading h2').text()).toBe(view.title)
+          expect(wrapper!.text()).not.toContain('当前栏目尚待建设')
+          continue
+        }
         if (wrapper!.find('.fabric-order-summary').exists()) {
           expect(wrapper!.get('.fabric-order-summary h2').text()).toBe(view.title)
           expect(wrapper!.text()).toContain('当前条件下没有已登记记录')
@@ -207,9 +232,15 @@ describe('warehouse framework navigation', () => {
         }
         if (wrapper!.find('.fabric-monthly').exists()) {
           expect(wrapper!.get('.fabric-monthly h2').text()).toBe(view.title)
-          expect(wrapper!.text()).toContain('手动与扫码共用实际库存流水')
+          expect(wrapper!.text()).toContain('实时数量核对 · 未关账')
           expect(wrapper!.text()).toContain('裁床接口领料 · 待接入')
           expect(wrapper!.find('.warehouse-empty').exists()).toBe(false)
+          continue
+        }
+        if (wrapper!.find('.fabric-closing-pending').exists()) {
+          expect(wrapper!.text()).toContain('正式月结确认与历史版本尚未开放')
+          expect(wrapper!.find('.warehouse-list-toolbar').exists()).toBe(false)
+          expect(wrapper!.get('[aria-label="月结记录关键字筛选"]').attributes('disabled')).toBeDefined()
           continue
         }
         expect(wrapper!.get('.warehouse-table-heading h2, .stock-heading h2').text()).toBe(view.title)
@@ -286,9 +317,9 @@ describe('warehouse framework navigation', () => {
     const router = await open(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c`)
     await wrapper!.findAll('.warehouse-tabs button').find(button => button.text() === '收发记录')!.trigger('click')
     await flushPromises()
-    await wrapper!.findAll('.fabric-inventory-record-tabs button').find(button => button.text() === '出库记录')!.trigger('click')
+    await wrapper!.get('[aria-label="收发业务类型"]').setValue('ISSUE')
     await flushPromises()
-    expect(wrapper!.get('.warehouse-table-heading h2, .stock-heading h2').text()).toBe('出库记录')
+    expect(wrapper!.get('.warehouse-table-heading h2, .stock-heading h2').text()).toBe('收发记录')
     await wrapper!.get(`.warehouse-switch a[href="${WAREHOUSE_HOME}/semi-finished-warehouse/overview?factory=huakang-c"]`).trigger('click')
     await flushPromises()
     expect(wrapper!.get('.warehouse-brand').text()).toContain('半成品仓')
@@ -300,11 +331,14 @@ describe('warehouse framework navigation', () => {
     expect(wrapper!.findAll('th').map(th => th.text())).toContain('加工状态')
   })
 
-  it('groups inventory records while retaining deep links and one header search across views', async () => {
+  it('uses one record list while retaining deep links and one header search across views', async () => {
     const router = await open(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=transfers`)
-    expect(wrapper!.findAll('.warehouse-tabs button').map(button => button.text())).toEqual(['库存台账', '订单收发汇总', '收发记录', '领料申请'])
+    expect(wrapper!.findAll('.warehouse-tabs button').map(button => button.text())).toEqual(['库存台账', '订单收发汇总', '收发记录', '领料申请', '期初库存', '库存盘点'])
     expect(wrapper!.get('.warehouse-tabs button[aria-pressed=true]').text()).toBe('收发记录')
-    expect(wrapper!.get('.fabric-inventory-record-tabs button[aria-pressed=true]').text()).toBe('调仓记录')
+    expect(wrapper!.find('.fabric-inventory-record-tabs').exists()).toBe(false)
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="收发业务类型"]').element.value).toBe('TRANSFER')
+    expect(wrapper!.get('.warehouse-table-heading h2').text()).toBe('收发记录')
+    expect(wrapper!.findAll('[aria-label="选择业务分区"] option').map(option => option.text())).toEqual(['库存台账', '订单收发汇总', '收发记录', '领料申请', '期初库存', '库存盘点'])
     expect(wrapper!.find('[aria-label="查找仓库收发"]').exists()).toBe(false)
     await wrapper!.get('.fabric-header-search input').setValue('布料')
     await router.push(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=stock`); await flushPromises()
@@ -314,6 +348,19 @@ describe('warehouse framework navigation', () => {
     await router.push(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=order-summary`); await flushPromises()
     expect(wrapper!.find('[aria-label="订单收发关键字"]').exists()).toBe(false)
     expect(wrapper!.get<HTMLInputElement>('.fabric-header-search input').element.value).toBe('布料')
+  })
+
+  it.each([['issues', 'ISSUE'], ['transfers', 'TRANSFER'], ['returns', 'RETURN']])('opens legacy %s as a filter and allows clearing or sharing the selected type', async (oldView, kind) => {
+    const router = await open(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=${oldView}`)
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="收发业务类型"]').element.value).toBe(kind)
+    expect(wrapper!.get('.warehouse-tabs button[aria-pressed=true]').text()).toBe('收发记录')
+    await wrapper!.get('[aria-label="收发业务类型"]').setValue('RECEIPT'); await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({factory:'huakang-c',view:'movements',kind:'RECEIPT'})
+    await router.push(`${WAREHOUSE_HOME}/fabric-warehouse/inventory?factory=huakang-c&view=movements&kind=RETURN`); await flushPromises()
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="收发业务类型"]').element.value).toBe('RETURN')
+    await wrapper!.findAll('button').find(button => button.text() === '重置筛选')!.trigger('click'); await flushPromises()
+    expect(router.currentRoute.value.query.kind).toBeUndefined()
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="收发业务类型"]').element.value).toBe('')
   })
 
   it('restores a section view after navigating away and supports refresh, shared URLs and browser back', async () => {

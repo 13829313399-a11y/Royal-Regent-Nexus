@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
+import { createPinia } from 'pinia'
 import Dialog from '../FabricReceiptDialog.vue'
 import Records from '../FabricReceivingRecords.vue'
 import Workspace from '../FabricProcurementWorkspace.vue'
@@ -8,7 +9,7 @@ import { receiptQuantity, receiptTotal, receiptAmount, receiptAmountTotals } fro
 import type { PurchaseDetail } from '@/api/fabricProcurement'
 
 const api = vi.hoisted(() => ({ receive: vi.fn(), receipts: vi.fn(), stock: vi.fn() }))
-const sourceApi = vi.hoisted(() => ({ lines: vi.fn(), detail: vi.fn(), imports: vi.fn() }))
+const sourceApi = vi.hoisted(() => ({ groups: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn() }))
 vi.mock('@/api/fabricReceiving', () => ({ fabricReceivingApi: api, materialCategoryLabels: { FABRIC: '布料', ACCESSORY: '辅料', THREAD: '线' } }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: sourceApi }))
 const source: PurchaseDetail = { id: 'L1', revision: 2, receipt_count: 0, prior_received_quantity: '50', warehouse_received_quantity: '0', can_receive: true,
@@ -24,7 +25,7 @@ async function router() {
   const instance = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
   await instance.push('/'); await instance.isReady(); return instance
 }
-beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-05T18:00:00Z')); vi.clearAllMocks(); api.receipts.mockResolvedValue({ total: 0, items: [] }); api.stock.mockResolvedValue({ total: 0, items: [] }); sourceApi.lines.mockResolvedValue({ total: 1, items: [source], can_receive: true }); sourceApi.detail.mockResolvedValue(source) })
+beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-05T18:00:00Z')); vi.clearAllMocks(); sourceApi.groups.mockResolvedValue({ total: 0, line_total: 0, groups: [] }); api.receipts.mockResolvedValue({ total: 0, items: [] }); api.stock.mockResolvedValue({ total: 0, items: [] }); sourceApi.lines.mockResolvedValue({ total: 1, items: [source], can_receive: true }); sourceApi.detail.mockResolvedValue(source) })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 async function open(receiptSource = source) { wrapper = mount(Dialog, { props: { source: receiptSource }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises() }
 async function fill() {
@@ -215,6 +216,7 @@ describe('fabric actual receiving', () => {
   })
   it('opens receiving from a freshly read source, refreshes the list after posting, and respects read-only accounts', async () => {
     wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises()
+    await button('按采购明细').trigger('click'); await flushPromises()
     await button('登记入库').trigger('click'); await flushPromises()
     expect(sourceApi.detail).toHaveBeenCalledWith('L1')
     await fill(); api.receive.mockResolvedValue({ id: 'R1', quantity: '0.1', unit: '码' })
@@ -227,9 +229,9 @@ describe('fabric actual receiving', () => {
   })
   it('loads posted receipt/stock views and clears protected records on a denied query', async () => {
     api.stock.mockResolvedValue({ total: 1, items: [{ id: 'B1', receipt_id: 'R1', movement_id: 'M1', facts: source.facts, quantity: '0.3', unit: '码', material_category: 'FABRIC', location_id: 'A01', location: '一仓／A01', dye_lot: '', roll_no: '', receipt_date: '2026-09-16', accounting_month: '2026-09', delivery_reference: 'DN1' }] })
-    wrapper = mount(Records, { props: { mode: 'stock' }, global: { plugins: [await router()] } }); await flushPromises()
+    wrapper = mount(Records, { props: { mode: 'stock' }, global: { plugins: [await router(), createPinia()] } }); await flushPromises()
     expect(wrapper!.text()).toContain('0.3 码')
-    expect(wrapper!.text()).toContain('不含历史库存期初')
+    expect(wrapper!.text()).toContain('期初、退料、调仓和盘点不计入本页')
     api.stock.mockRejectedValue({ response: { status: 403, data: { detail: '无权限' } }, isAxiosError: true })
     await wrapper!.get('form').trigger('submit'); await flushPromises()
     expect(wrapper!.findAll('tbody tr')).toHaveLength(0)

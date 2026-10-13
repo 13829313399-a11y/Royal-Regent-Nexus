@@ -23,11 +23,14 @@ FIELDS = ('received', 'receipt_reversed', 'net_received', 'issued', 'issue_rever
 CHANNELS = {'MANUAL': '手动', 'SCAN': '扫码'}
 
 
-def report(db, month, direction='', channel='', party_key=''):
+def report(db, month, direction='', channel='', party_key='', search='', unit='', date_order='DESC'):
     operations.ensure_schema(db)
     start, end = bounds(month)
     if direction not in ('', 'IN', 'OUT') or channel not in ('', *CHANNELS):
         raise HTTPException(422, '收发方向或登记方式不正确')
+    search = search.strip()
+    if len(search) > 128 or len(unit) > 32 or date_order not in ('ASC', 'DESC'):
+        raise HTTPException(422, '关键字、单位或排序条件不正确')
     operations.procurement.lock_factory(db)
     _, projected = operations.projection(db, 'fabric')
     entries = list(projected.values())
@@ -112,8 +115,12 @@ def report(db, month, direction='', channel='', party_key=''):
 
     parties = {row['party_key']: dict(key=row['party_key'], name=row['party_name'], direction=row['direction'])
                for row in events if not direction or row['direction'] == direction}
+    available_units = sorted({row['unit'] for row in events if not direction or row['direction'] == direction})
+    search_fields = ('item_code', 'item_name', 'party_name', 'recorded_party', 'source_no', 'id', 'original_id')
     details = [row for row in events if (not direction or row['direction'] == direction)
-               and (not channel or row['channel'] == channel) and (not party_key or row['party_key'] == party_key)]
+               and (not channel or row['channel'] == channel) and (not party_key or row['party_key'] == party_key)
+               and (not unit or row['unit'] == unit)
+               and (not search or any(search.casefold() in row[field].casefold() for field in search_fields))]
     groups, units = {}, {}
 
     def add(total, row):
@@ -148,12 +155,13 @@ def report(db, month, direction='', channel='', party_key=''):
                 'document_count': len(group['document_ids'])} for group in groups.values()]
     totals = [{k: str(v) if isinstance(v, Decimal) else v for k, v in group.items()} for group in units.values()]
     result = dict(month=month, direction=direction, channel=channel, party_key=party_key,
+        search=search, unit=unit, date_order=date_order, units=available_units,
         parties=sorted(parties.values(), key=lambda r: (r['direction'], r['name'], r['key'])),
-        details=sorted(details, key=lambda r: (r['date'], r['id'])),
+        details=sorted(details, key=lambda r: (r['date'], r['id']), reverse=date_order == 'DESC'),
         summary=sorted(summary, key=lambda r: (r['direction'], r['party_name'], r['item_code'], r['unit'])),
         totals=sorted(totals, key=lambda r: r['unit']), cutting_interface='PENDING', live=True,
         closed=False, amounts_calculated=False,
-        basis='按实收、实发、车间退料及更正的业务日期；手动和扫码合并一次，按往来方、物料和单位分别核对')
+        basis='按实收、实发、车间退料及更正的业务日期；手动和扫码合并一次，按往来方、物料和单位分别核对；不含期初导入和盘点差异，不代表全部库存增减')
     result['version'] = digest(result)
     return result
 
@@ -176,7 +184,7 @@ def export_xlsx(result):
     ]
     labels = dict(received='实收', receipt_reversed='收料冲销', net_received='净实收', issued='实发',
         issue_reversed='发料冲销', returned='车间退料', net_issued='实发减冲销', net_outbound='净发料（扣车间退料）',
-        stock_change='本月库存增减', manual_received='手动净实收', scan_received='扫码净实收',
+        stock_change='本月收发净增减（不含期初、盘点）', manual_received='手动净实收', scan_received='扫码净实收',
         manual_outbound='手动净发料', scan_outbound='扫码净发料')
     for title, rows, columns in pages:
         if title == '收发数量汇总':

@@ -107,7 +107,7 @@ onBeforeUnmount(() => { generation++; clearInterval(timer); window.removeEventLi
       <ol><li v-for="(step, index) in steps" :key="step.title"><RouterLink :to="step.to"><span>0{{ index + 1 }}<ArrowUpRight :size="14" /></span><strong>{{ step.title }}</strong><small>{{ step.detail }}</small></RouterLink></li></ol>
       <div class="flow-note">导入采购资料、确认送货单和扫码定位均不增加库存；核实本次实物并确认入库后，才更新库存与已关联采购的待收进度。</div>
     </section>
-    <details class="dashboard-help"><summary>统计口径与使用说明</summary><p>待追货按采购明细计数，一张采购单可能包含多项物料；采购报到货待核对可在待收料页查看。供应商送货只统计已确认、尚未收完的单据。两类待办可能涉及同一批物料，不能相加作为订单总数。</p><p>库存结存是已登记业务的账面数量，不含尚未建立的历史期初。月度数量对账已开放，正式月结锁定和计价尚未开放。</p><slot /></details>
+    <details class="dashboard-help"><summary>统计口径与使用说明</summary><p>待追货按采购明细计数，一张采购单可能包含多项物料；采购报到货待核对可在待收料页查看。供应商送货只统计已确认、尚未收完的单据。两类待办可能涉及同一批物料，不能相加作为订单总数。</p><p>库存结存包含已登记收发、已导入期初和已确认盘点差异，不含尚未建账的历史实物。月度数量对账已开放，正式月结锁定和计价尚未开放。</p><slot /></details>
   </div>
 </template>
 

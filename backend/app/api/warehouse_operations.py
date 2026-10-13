@@ -1,5 +1,7 @@
 from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from datetime import date
+from uuid import UUID
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from app.db import get_db
@@ -7,6 +9,8 @@ from app.services.auth import AuthContext, can, get_current_user
 from app.schemas.warehouse_operations import WarehouseDocumentRequest, WarehouseLocationSave, WarehouseBulkIssue
 from app.services import warehouse_locations
 from app.services import warehouse_operations as service
+from app.schemas.fabric_inventory_setup import CountCreate, CountAction
+from app.services import fabric_inventory_setup as setup
 
 router = APIRouter(prefix='/api/warehouse-operations', tags=['warehouse-operations'])
 Warehouse = Literal['fabric', 'semi']
@@ -19,26 +23,77 @@ def capabilities(actor, warehouse, factory_id):
             for action in ('read', 'operate', 'quality', 'correct', 'master')}
 
 
-def quantity_monthly(db, actor, factory_id, month, direction, channel, party_key):
+def setup_access(actor, factory_id, action='read'):
+    permissions = capabilities(actor, 'fabric', factory_id)
+    if not permissions['read'] or not permissions[action]:
+        raise HTTPException(403, '无布料仓本项权限；期初和盘点入账需要库存更正权限')
+    return permissions
+
+
+@router.get('/fabric/inventory-setup')
+def inventory_setup(factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    permissions = setup_access(actor, factory_id)
+    from fastapi.responses import JSONResponse
+    return JSONResponse({**setup.workspace(db), 'permissions':permissions}, headers={'Cache-Control':'no-store'})
+
+
+@router.get('/fabric/inventory-setup/template')
+def opening_template(factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    setup_access(actor, factory_id)
+    service.ensure_schema(db)
+    return Response(setup.template(db), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition':'attachment; filename="fabric-opening-inventory.xlsx"','Cache-Control':'no-store'})
+
+
+@router.post('/fabric/inventory-setup/preview')
+def opening_preview(factory_id: str = Form(...), cutoff: date = Form(...), source_no: str = Form(..., max_length=128), file: UploadFile = File(...),
+                    db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    setup_access(actor, factory_id, 'correct')
+    return setup.opening_preview(db, actor, file.filename or '', file.file.read(setup.MAX_BYTES+1), cutoff, source_no)
+
+
+@router.post('/fabric/inventory-setup/import')
+def opening_import(factory_id: str = Form(...), cutoff: date = Form(...), source_no: str = Form(..., max_length=128), file: UploadFile = File(...),
+                   request_id: UUID = Form(...), token: str = Form(..., min_length=64, max_length=64), confirmed: bool = Form(False),
+                   db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    setup_access(actor, factory_id, 'correct')
+    return setup.apply_opening(db, actor, file.filename or '', file.file.read(setup.MAX_BYTES+1), cutoff, source_no, request_id, token, confirmed)
+
+
+@router.post('/fabric/inventory-setup/counts')
+def create_count(payload: CountCreate, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    setup_access(actor, payload.factory_id, 'operate')
+    return setup.create_count(db, actor, payload)
+
+
+@router.post('/fabric/inventory-setup/counts/{identifier}')
+def act_count(identifier: str, payload: CountAction, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    setup_access(actor, payload.factory_id, 'correct' if payload.action == 'POST' else 'operate')
+    return setup.act_count(db, actor, identifier, payload)
+
+
+def quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search='', unit='', date_order='DESC'):
     if not capabilities(actor, 'fabric', factory_id)['read']:
         raise HTTPException(403, '无布料仓月度数量查询权限')
     from app.services.fabric_quantity_monthly import report
-    return report(db, month, direction, channel, party_key)
+    return report(db, month, direction, channel, party_key, search, unit, date_order)
 
 
 @router.get('/fabric/monthly')
 def monthly(factory_id: str, month: str, direction: str = '', channel: str = '', party_key: str = '',
+            search: str = '', unit: str = '', date_order: str = 'DESC',
             db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     from fastapi.responses import JSONResponse
-    return JSONResponse(quantity_monthly(db, actor, factory_id, month, direction, channel, party_key),
+    return JSONResponse(quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order),
                         headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/fabric/monthly/export')
 def export_monthly(factory_id: str, month: str, direction: str = '', channel: str = '', party_key: str = '',
+                   search: str = '', unit: str = '', date_order: str = 'DESC',
                    version: str = '', db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     from app.services.fabric_quantity_monthly import export_xlsx
-    result = quantity_monthly(db, actor, factory_id, month, direction, channel, party_key)
+    result = quantity_monthly(db, actor, factory_id, month, direction, channel, party_key, search, unit, date_order)
     if version and version != result['version']:
         raise HTTPException(409, '收发记录已变化，请刷新月度汇总后再导出')
     return Response(export_xlsx(result), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
