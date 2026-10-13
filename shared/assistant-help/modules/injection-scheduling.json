@@ -20,22 +20,43 @@
     "content": "当前注塑模块仅支持华兴、华登、华康 A、华康 B。先明确厂区，再选择排产工作台、白夜班报工或基础资料。计划表、甘特和机台看板是不同阅读视角；保存、报工和自动排产仍按原权限执行。存在未保存编辑或任务忙碌时，先处理原页面提示再切换。集团六厂的组织范围不等于注塑已有六厂入口。",
     "steps": [
       {
-        "title": "查看当前工作区域",
-        "description": "排产、白夜班报工与基础资料分别维护。",
-        "anchor_id": "injection-scheduling.overview",
-        "precondition": "页面可见且目标已注册",
-        "completion": "已定位；任何业务写入仍需你在原页面确认"
+        "title": "确认受支持厂区",
+        "description": "只支持华兴、华登、华康A和华康B。",
+        "anchor_id": "injection.factory",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      },
+      {
+        "title": "区分工作区",
+        "description": "排产、白夜班报工和基础资料分别维护。",
+        "anchor_id": "injection.workspaces",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      },
+      {
+        "title": "选择排产阅读视角",
+        "description": "定位计划表视图；存在未保存编辑时先在原页面处理。",
+        "anchor_id": "injection.views",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      },
+      {
+        "title": "核对剩余啤数",
+        "description": "查看剩余啤数规则；不能当成库存缺口或实际延期。",
+        "anchor_id": "injection.remaining_shots",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
       }
     ],
     "source_refs": [
       {
         "path": "src/views/InjectionSchedulingView.vue",
         "symbol": "switchTab",
-        "sha256": "369ca230a5147a4b6278e9b63c465b575cd67c14b350a57ca9399d960d4e935a"
+        "sha256": "09bf7cc0747a6585e78d4542982831a39ecb24948af50481e363261e8a5bd862"
       }
     ],
-    "knowledge_version": "2026.09.29-v1",
-    "verified_commit": "19332e167e0b990fb0900c868ba0620204f9bd26",
+    "knowledge_version": "2026.10.12-v2",
+    "verified_commit": "working-tree:assistant-v2",
     "status": "verified"
   }
 ]

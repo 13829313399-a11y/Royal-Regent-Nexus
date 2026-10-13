@@ -1,0 +1,510 @@
+{
+  "fixture_version": 1,
+  "synthetic": true,
+  "not_live_evidence": true,
+  "description": "合成请求、跨升级canonical JSON/SHA256，以及新增顶层search能力档案。示例中的verified仅模拟状态，不是实际探针证据。",
+  "cases": [
+    {
+      "id": "v1-upgrade-replay",
+      "synthetic": true,
+      "version": 1,
+      "stored_run": {
+        "request_input": {
+          "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+          "text": "合成请求：保留升级前的内容。",
+          "attachment_ids": [],
+          "intent": "chat",
+          "profile_id": "default",
+          "thinking": "off",
+          "web_search": "off",
+          "page_context": null
+        },
+        "request_hash": "54632b13d808cc5c6f2efabdaecfb3a6a0e3c7c914d00a4ec2b19062f128d178",
+        "run_id": "fx-run-before-upgrade",
+        "state": "completed"
+      },
+      "incoming_raw": {
+        "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+        "text": "合成请求：保留升级前的内容。",
+        "attachment_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null
+      },
+      "parsed_with_defaults": {
+        "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+        "text": "合成请求：保留升级前的内容。",
+        "attachment_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null,
+        "protocol_version": 1,
+        "document_ids": [],
+        "context_selection": null
+      },
+      "expected": {
+        "canonical_json": "{\"attachment_ids\":[],\"client_request_id\":\"f15fbb733b02a6beb4c4bea0c23e17d1\",\"intent\":\"chat\",\"page_context\":null,\"profile_id\":\"default\",\"text\":\"合成请求：保留升级前的内容。\",\"thinking\":\"off\",\"web_search\":\"off\"}",
+        "sha256": "54632b13d808cc5c6f2efabdaecfb3a6a0e3c7c914d00a4ec2b19062f128d178",
+        "disposition": "reused",
+        "response": {
+          "reused": true,
+          "run_id": "fx-run-before-upgrade",
+          "state": "completed"
+        }
+      }
+    },
+    {
+      "id": "v1-conflicting-content",
+      "synthetic": true,
+      "version": 1,
+      "stored_run": {
+        "request_input": {
+          "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+          "text": "合成请求：保留升级前的内容。",
+          "attachment_ids": [],
+          "intent": "chat",
+          "profile_id": "default",
+          "thinking": "off",
+          "web_search": "off",
+          "page_context": null
+        },
+        "request_hash": "54632b13d808cc5c6f2efabdaecfb3a6a0e3c7c914d00a4ec2b19062f128d178",
+        "run_id": "fx-run-before-upgrade",
+        "state": "completed"
+      },
+      "incoming_raw": {
+        "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+        "text": "合成请求：同ID修改内容。",
+        "attachment_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null
+      },
+      "parsed_with_defaults": {
+        "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+        "text": "合成请求：同ID修改内容。",
+        "attachment_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null,
+        "protocol_version": 1,
+        "document_ids": [],
+        "context_selection": null
+      },
+      "expected": {
+        "canonical_json": "{\"attachment_ids\":[],\"client_request_id\":\"f15fbb733b02a6beb4c4bea0c23e17d1\",\"intent\":\"chat\",\"page_context\":null,\"profile_id\":\"default\",\"text\":\"合成请求：同ID修改内容。\",\"thinking\":\"off\",\"web_search\":\"off\"}",
+        "sha256": "4674bb38f9b71b44f1e3646168f4443cb468d9a1e7c1042ccdd8c9c014f3f50e",
+        "disposition": "idempotency_conflict",
+        "http_status": 409
+      }
+    },
+    {
+      "id": "v1-new-document-rejected",
+      "synthetic": true,
+      "version": 1,
+      "incoming_raw": {
+        "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+        "text": "合成请求：保留升级前的内容。",
+        "attachment_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null,
+        "protocol_version": 1,
+        "document_ids": [
+          "fx-private-file-1"
+        ],
+        "context_selection": null
+      },
+      "parsed_with_defaults": {
+        "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+        "text": "合成请求：保留升级前的内容。",
+        "attachment_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null,
+        "protocol_version": 1,
+        "document_ids": [
+          "fx-private-file-1"
+        ],
+        "context_selection": null
+      },
+      "expected": {
+        "disposition": "reject_before_admit",
+        "reason": "v1 cannot silently ignore v2 fields or intent"
+      }
+    },
+    {
+      "id": "v1-new-intent-rejected",
+      "synthetic": true,
+      "version": 1,
+      "incoming_raw": {
+        "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+        "text": "合成请求：保留升级前的内容。",
+        "attachment_ids": [],
+        "intent": "my_work",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null,
+        "protocol_version": 1,
+        "document_ids": [],
+        "context_selection": null
+      },
+      "parsed_with_defaults": {
+        "client_request_id": "f15fbb733b02a6beb4c4bea0c23e17d1",
+        "text": "合成请求：保留升级前的内容。",
+        "attachment_ids": [],
+        "intent": "my_work",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "off",
+        "page_context": null,
+        "protocol_version": 1,
+        "document_ids": [],
+        "context_selection": null
+      },
+      "expected": {
+        "disposition": "reject_before_admit",
+        "reason": "v1 cannot silently ignore v2 fields or intent"
+      }
+    },
+    {
+      "id": "v2-normalized-defaults",
+      "synthetic": true,
+      "version": 2,
+      "incoming_raw": {
+        "protocol_version": 2,
+        "client_request_id": "c2e02b80c644ad62aa50d8e9e0d5076e",
+        "text": "合成请求：查询公开说明。",
+        "attachment_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "on",
+        "page_context": null,
+        "context_selection": null
+      },
+      "parsed_with_defaults": {
+        "protocol_version": 2,
+        "client_request_id": "c2e02b80c644ad62aa50d8e9e0d5076e",
+        "text": "合成请求：查询公开说明。",
+        "attachment_ids": [],
+        "document_ids": [],
+        "intent": "chat",
+        "profile_id": "default",
+        "thinking": "off",
+        "web_search": "on",
+        "page_context": null,
+        "context_selection": null
+      },
+      "expected": {
+        "canonical_json": "{\"attachment_ids\":[],\"client_request_id\":\"c2e02b80c644ad62aa50d8e9e0d5076e\",\"context_selection\":null,\"document_ids\":[],\"intent\":\"chat\",\"page_context\":null,\"profile_id\":\"default\",\"protocol_version\":2,\"text\":\"合成请求：查询公开说明。\",\"thinking\":\"off\",\"web_search\":\"on\"}",
+        "sha256": "3d3b2541d79acd8480f70eacc4e2755726821a61f25755c8900b662526c1d7f9",
+        "disposition": "admit_new",
+        "native_search_requested": true
+      }
+    }
+  ],
+  "canonical_rule": {
+    "encoding": "UTF-8",
+    "sort_keys": true,
+    "separators": [
+      ",",
+      ":"
+    ],
+    "ensure_ascii": false,
+    "v1_fields": [
+      "client_request_id",
+      "text",
+      "attachment_ids",
+      "intent",
+      "profile_id",
+      "thinking",
+      "web_search",
+      "page_context"
+    ],
+    "v2_fields": [
+      "protocol_version",
+      "client_request_id",
+      "text",
+      "attachment_ids",
+      "intent",
+      "profile_id",
+      "thinking",
+      "web_search",
+      "page_context",
+      "document_ids",
+      "context_selection"
+    ]
+  },
+  "capability_cases": [
+    {
+      "id": "legacy-verified-search-unverified",
+      "synthetic": true,
+      "description": "旧聊天验证时间不能复用于联网组合。",
+      "response": {
+        "enabled": true,
+        "configuration_status": "configured",
+        "schema_status": "ready",
+        "connection_status": "verified",
+        "verified_at": "2026-10-11T08:00:00Z",
+        "provider": "qwen_openai_compatible",
+        "model": "qwen3.7-plus",
+        "help_status": "ready",
+        "profiles": [
+          {
+            "id": "default",
+            "label": "合成默认配置",
+            "thinking": "toggle",
+            "vision": true,
+            "web_search": false,
+            "function_calling": true
+          }
+        ],
+        "search": {
+          "configured": true,
+          "verification": "unverified",
+          "verified_at": null,
+          "supported_modes": [
+            "off"
+          ],
+          "supported_protocols": [
+            "dashscope_multimodal"
+          ],
+          "verified_combinations": [],
+          "source_return": false,
+          "inline_citations": false,
+          "page_fetch": false,
+          "last_result": null
+        }
+      }
+    },
+    {
+      "id": "native-text-verified",
+      "synthetic": true,
+      "description": "合成档案只验证text+auto/off；text_image和thinking:on仍未验。",
+      "response": {
+        "enabled": true,
+        "configuration_status": "configured",
+        "schema_status": "ready",
+        "connection_status": "verified",
+        "verified_at": "2026-10-11T08:00:00Z",
+        "provider": "qwen_openai_compatible",
+        "model": "qwen3.7-plus",
+        "help_status": "ready",
+        "profiles": [
+          {
+            "id": "default",
+            "label": "合成默认配置",
+            "thinking": "toggle",
+            "vision": true,
+            "web_search": false,
+            "function_calling": true
+          }
+        ],
+        "search": {
+          "configured": true,
+          "verification": "verified",
+          "verified_at": "2026-10-12T08:00:00Z",
+          "supported_modes": [
+            "off",
+            "auto",
+            "on"
+          ],
+          "supported_protocols": [
+            "dashscope_multimodal"
+          ],
+          "verified_combinations": [
+            {
+              "protocol": "dashscope_multimodal",
+              "model": "qwen3.7-plus",
+              "input": "text",
+              "thinking": "auto",
+              "strategy": "turbo",
+              "forced_search": true,
+              "source_return": true,
+              "inline_citations": true,
+              "verified_at": "2026-10-12T08:00:00Z"
+            },
+            {
+              "protocol": "dashscope_multimodal",
+              "model": "qwen3.7-plus",
+              "input": "text",
+              "thinking": "off",
+              "strategy": "turbo",
+              "forced_search": true,
+              "source_return": true,
+              "inline_citations": true,
+              "verified_at": "2026-10-12T08:00:00Z"
+            }
+          ],
+          "source_return": true,
+          "inline_citations": true,
+          "page_fetch": false,
+          "last_result": null
+        }
+      }
+    },
+    {
+      "id": "endpoint-changed-invalidates-search",
+      "synthetic": true,
+      "description": "endpoint/region/model变化后重置相应联网组合；不得冒用旧验证。",
+      "response": {
+        "enabled": true,
+        "configuration_status": "configured",
+        "schema_status": "ready",
+        "connection_status": "verified",
+        "verified_at": "2026-10-11T08:00:00Z",
+        "provider": "qwen_openai_compatible",
+        "model": "qwen3.7-plus",
+        "help_status": "ready",
+        "profiles": [
+          {
+            "id": "default",
+            "label": "合成默认配置",
+            "thinking": "toggle",
+            "vision": true,
+            "web_search": false,
+            "function_calling": true
+          }
+        ],
+        "search": {
+          "configured": true,
+          "verification": "unverified",
+          "verified_at": null,
+          "supported_modes": [
+            "off"
+          ],
+          "supported_protocols": [
+            "dashscope_multimodal"
+          ],
+          "verified_combinations": [],
+          "source_return": false,
+          "inline_citations": false,
+          "page_fetch": false,
+          "last_result": null
+        }
+      }
+    },
+    {
+      "id": "last-call-failed-retains-historical-verification",
+      "synthetic": true,
+      "description": "保留历史验证事实，但当前请求失败不显示成功。",
+      "response": {
+        "enabled": true,
+        "configuration_status": "configured",
+        "schema_status": "ready",
+        "connection_status": "verified",
+        "verified_at": "2026-10-11T08:00:00Z",
+        "provider": "qwen_openai_compatible",
+        "model": "qwen3.7-plus",
+        "help_status": "ready",
+        "profiles": [
+          {
+            "id": "default",
+            "label": "合成默认配置",
+            "thinking": "toggle",
+            "vision": true,
+            "web_search": false,
+            "function_calling": true
+          }
+        ],
+        "search": {
+          "configured": true,
+          "verification": "verified",
+          "verified_at": "2026-10-12T08:00:00Z",
+          "supported_modes": [
+            "off",
+            "auto",
+            "on"
+          ],
+          "supported_protocols": [
+            "dashscope_multimodal"
+          ],
+          "verified_combinations": [
+            {
+              "protocol": "dashscope_multimodal",
+              "model": "qwen3.7-plus",
+              "input": "text",
+              "thinking": "auto",
+              "strategy": "turbo",
+              "forced_search": true,
+              "source_return": true,
+              "inline_citations": true,
+              "verified_at": "2026-10-12T08:00:00Z"
+            },
+            {
+              "protocol": "dashscope_multimodal",
+              "model": "qwen3.7-plus",
+              "input": "text",
+              "thinking": "off",
+              "strategy": "turbo",
+              "forced_search": true,
+              "source_return": true,
+              "inline_citations": true,
+              "verified_at": "2026-10-12T08:00:00Z"
+            }
+          ],
+          "source_return": true,
+          "inline_citations": true,
+          "page_fetch": false,
+          "last_result": {
+            "at": "2026-10-12T08:00:03Z",
+            "status": "failed",
+            "code": "provider_timeout"
+          }
+        }
+      }
+    }
+  ],
+  "option_matrix": [
+    {
+      "capability_case_id": "legacy-verified-search-unverified",
+      "selection": {
+        "web_search": "on",
+        "input": "text",
+        "thinking": "off"
+      },
+      "expected_allowed": false
+    },
+    {
+      "capability_case_id": "native-text-verified",
+      "selection": {
+        "web_search": "on",
+        "input": "text",
+        "thinking": "auto"
+      },
+      "expected_allowed": true
+    },
+    {
+      "capability_case_id": "native-text-verified",
+      "selection": {
+        "web_search": "on",
+        "input": "text_image",
+        "thinking": "off"
+      },
+      "expected_allowed": false
+    },
+    {
+      "capability_case_id": "native-text-verified",
+      "selection": {
+        "web_search": "on",
+        "input": "text",
+        "thinking": "on"
+      },
+      "expected_allowed": false
+    }
+  ]
+}

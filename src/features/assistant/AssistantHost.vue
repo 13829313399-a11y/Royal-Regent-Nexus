@@ -12,7 +12,7 @@ import './assistant.css'
 import { registerSurface, requestSurface, releaseSurface } from '@/features/collaboration/panelCoordinator'
 const Panel = defineAsyncComponent(() => import('./AssistantPanel.vue'))
 const auth = useAuthStore(), app = useAppStore(), assistant = useAssistantStore(), route = useRoute()
-const mode = ref<PanelMode>('edge'), opened = ref(false), side = ref<'left' | 'right'>('right'), position = ref(.7), width = ref(432)
+const mode = ref<PanelMode>('edge'), opened = ref(false), side = ref<'left' | 'right'>('right'), position = ref(.7), width = ref(460)
 const unregisterSurface = registerSurface('assistant', () => changeMode('edge', false))
 const panelPosition = ref<PanelPosition | null>(null), height = ref(defaultPanelHeight)
 const focusOnOpen = ref(true)

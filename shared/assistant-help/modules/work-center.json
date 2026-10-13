@@ -15,11 +15,25 @@
     "content": "可处理责任是 task、can_act=true，且业务状态为 open 或 in_progress。标记已读不会完成审批、生产或收货。有效稍后提醒还需时间未到且关注版本一致；当前聚焦排除这些有效稍后项，所以 focus_total 与 actionable_total 可不同。筛选后的 filtered_total 与总览可能范围不同。health=partial 表示来源不完整，不能据此说没有待办。",
     "steps": [
       {
-        "title": "查看当前工作区域",
-        "description": "阅读状态与业务办理状态是两件事。",
-        "anchor_id": "work-center.overview",
-        "precondition": "页面可见且目标已注册",
-        "completion": "已定位；任何业务写入仍需你在原页面确认"
+        "title": "区分总览范围",
+        "description": "总览统计本人全部授权责任；不会随列表筛选缩小。",
+        "anchor_id": "work-center.summary",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      },
+      {
+        "title": "设置列表筛选",
+        "description": "选择厂区、模块和期限，当前筛选计数只对应这个列表。",
+        "anchor_id": "work-center.filters",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      },
+      {
+        "title": "查看并选择事项",
+        "description": "选择后可把记录标识带入曜灵，只读查询会重新校验；已读不会完成业务。",
+        "anchor_id": "work-center.list",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
       }
     ],
     "source_refs": [
@@ -27,10 +41,15 @@
         "path": "backend/app/services/work_center/service.py",
         "symbol": "flags",
         "sha256": "560c606c6d6cb04109f1415f1be445cf1a9bfe22a9a4f391d42de493dab92d09"
+      },
+      {
+        "path": "src/views/NotificationCenterView.vue",
+        "symbol": "nc-filters",
+        "sha256": "9f67fd7ceecd9c7e92d38f2de9a67ba6c3ede00995783a6bb4fbe417438b3029"
       }
     ],
-    "knowledge_version": "2026.09.29-v1",
-    "verified_commit": "19332e167e0b990fb0900c868ba0620204f9bd26",
+    "knowledge_version": "2026.10.12-v2",
+    "verified_commit": "working-tree:assistant-v2",
     "status": "verified"
   }
 ]
