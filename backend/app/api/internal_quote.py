@@ -141,7 +141,27 @@ from app.services.internal_quote_release import (
 )
 
 
+from app.services.internal_quote_output_layout import (
+    OutputLayoutEdits, get_output_layout, preview_output_layout, save_output_layout,
+)
+
+
 router = APIRouter(prefix="/api/internal-quotes", tags=["internal-quotes"])
+
+
+@router.get("/{quote_id}/output-layout")
+def get_internal_quote_output_layout(quote_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return get_output_layout(db, quote_id, current_user)
+
+
+@router.post("/{quote_id}/output-layout/preview")
+def post_internal_quote_output_layout_preview(quote_id: str, payload: OutputLayoutEdits, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return preview_output_layout(db, quote_id, payload, current_user)
+
+
+@router.put("/{quote_id}/output-layout", response_model=InternalQuoteWholeProductSaveOut)
+def put_internal_quote_output_layout(quote_id: str, payload: OutputLayoutEdits, request: Request, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return save_output_layout(db, quote_id, payload, current_user, request)
 
 
 @router.get("/{quote_id}/alternatives")
