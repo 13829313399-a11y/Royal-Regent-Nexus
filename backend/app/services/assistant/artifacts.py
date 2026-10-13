@@ -121,6 +121,53 @@ def csv_cell(value):
     return value
 
 
+def table_cells(line):
+    """Split GFM table rows without treating escaped pipes as delimiters."""
+    cells, current, trailing_delimiter = [], [], False
+    i = 0
+    line = line.strip()
+    while i < len(line):
+        char = line[i]
+        if char == "\\" and i + 1 < len(line) and line[i + 1] in ("\\", "|"):
+            current.append(line[i + 1]); trailing_delimiter = False; i += 2; continue
+        if char == "|":
+            cells.append("".join(current).strip()); current = []; trailing_delimiter = True
+        else:
+            current.append(char); trailing_delimiter = False
+        i += 1
+    cells.append("".join(current).strip())
+    if line.startswith("|"): cells.pop(0)
+    if trailing_delimiter: cells.pop()
+    return cells
+
+
+def table_rows(content):
+    """Export actual Markdown table blocks, excluding prose and fenced code."""
+    lines = content.splitlines()
+    rows, fence, i = [], None, 0
+    while i < len(lines):
+        line = lines[i].strip()
+        marker = re.match(r"^(`{3,}|~{3,})", line)
+        if marker:
+            value = marker[1]
+            if fence is None: fence = value
+            elif value[0] == fence[0] and len(value) >= len(fence): fence = None
+            i += 1; continue
+        if fence is not None or i + 1 >= len(lines) or "|" not in line:
+            i += 1; continue
+        header, separator = table_cells(line), table_cells(lines[i + 1])
+        if not header or len(header) != len(separator) or not all(re.fullmatch(r":?-+:?", cell) for cell in separator):
+            i += 1; continue
+        if rows: rows.append([])
+        rows.append(header); i += 2
+        while i < len(lines) and lines[i].strip() and "|" in lines[i] and not re.match(r"^\s*(`{3,}|~{3,})", lines[i]):
+            cells = table_cells(lines[i])
+            rows.append((cells + [""] * len(header))[:len(header)]); i += 1
+    if not rows:
+        raise AssistantError("format_unavailable", "未找到可导出的表格，请使用Markdown或纯文本。")
+    return rows
+
+
 def render(content, kind, title, refs, format):
     if format not in formats(kind):
         raise AssistantError("format_unavailable", "这类成果只支持Markdown和纯文本。")
@@ -135,9 +182,8 @@ def render(content, kind, title, refs, format):
                 if match:
                     writer.writerow(["是" if match[1].lower() == "x" else "否", csv_cell(match[2])])
         else:
-            for line in content.splitlines():
-                if "|" in line and not re.fullmatch(r"[\s|:\-]+", line):
-                    writer.writerow([csv_cell(c) for c in line.strip().strip("|").split("|")])
+            for row in table_rows(content):
+                writer.writerow([csv_cell(c) for c in row])
         writer.writerow([])
         writer.writerow(["来源"])
         for line in sources.splitlines():

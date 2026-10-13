@@ -4,12 +4,13 @@ import { Copy, Check, MapPin, Download, BookOpen, Bookmark, ListChecks } from '@
 import { useRouter } from 'vue-router'
 import { assistantApi } from './api'
 import AssistantAttachment from './AssistantAttachment.vue'
+import AssistantDocument from './AssistantDocument.vue'
 import type { EvidencePart, UIAction } from './v2'
 import { renderMarkdown } from './markdown'
 import { stateLabels, type Message } from './types'
 import { factoryContexts } from '@/data/enterpriseMock'
 const props = defineProps<{ message: Message }>()
-const emit = defineEmits<{ citation: [id: string]; sources: [evidence: EvidencePart]; saved: [id: string] }>()
+const emit = defineEmits<{ citation: [id: string]; sources: [evidence: EvidencePart]; saved: [id: string]; fileDeleted: [] }>()
 const router = useRouter()
 const copied = ref(false), copyError = ref('')
 const text = computed(() => props.message.content_parts.filter(p => p.type === 'text').map(p => p.text || '').join(''))
@@ -56,7 +57,7 @@ async function action(index: number) { try { const a=await assistantApi.action(p
     <div v-else class="yl-markdown" @click="codeClick" v-html="rendered" />
     <p v-if="!text && message.role === 'assistant'" class="yl-empty-answer">{{ ['cancelled','failed','interrupted'].includes(message.status) ? '尚未生成正文。' : '回答会显示在这里…' }}</p>
     <AssistantAttachment v-for="part in message.content_parts.filter(p => p.type === 'image_ref')" :key="String(part.attachment_id)" :id="String(part.attachment_id)"/>
-    <p v-for="part in message.content_parts.filter(p => p.type === 'document_ref')" :key="String(part.file_id)" class="yl-document-ref">已附私有文件 · {{ String(part.file_id).slice(0,8) }}</p>
+    <AssistantDocument v-for="part in message.content_parts.filter(p => p.type === 'document_ref')" :key="String(part.file_id)" :id="String(part.file_id)" @deleted="emit('fileDeleted')"/>
     <div v-if="message.role === 'assistant' && message.help_citations.length" class="yl-citations"><button v-for="citation in message.help_citations" :key="citation.id" @click="emit('citation', citation.id)"><MapPin :size="13" /> 查看说明 · {{ citation.version }}</button></div>
     <button v-if="text" class="yl-copy" @click="copy(text)" :aria-label="copied ? '已复制回答' : '复制回答'"><Check v-if="copied" :size="14" /><Copy v-else :size="14" />{{ copied ? '已复制' : '复制' }}</button>
     <div v-if="message.role==='assistant' && !message.id.startsWith('answer-') && text && !['connecting','answering','thinking','tool_running'].includes(message.status)" class="yl-answer-actions"><button @click="exportAnswer"><Download :size="14"/>导出 Markdown</button><button @click="save()"><Bookmark :size="14"/>保存成果</button><button @click="save(true)"><ListChecks :size="14"/>转检查清单</button></div>

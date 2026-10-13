@@ -261,6 +261,12 @@ async function removeDocument(id:string) {
   try { await assistantApi.removeDocument(id); if(generation===store.identityGeneration) target.documents=target.documents.filter(d=>d.id!==id) }
   catch(e) { if(generation===store.identityGeneration) localError.value=e instanceof Error ? e.message : '删除失败' }
 }
+async function historicalDocumentDeleted() {
+  selectedEvidence.value = null; sourcesOpen.value = false; artifactsOpen.value = false; artifactId.value = ''
+  // Discard cached derived answers before asking the server for their current visibility.
+  store.messagesBySession = {}
+  if (store.selectedId) await store.selectSession(store.selectedId)
+}
 async function removeImage(index: number) { const image = attachments.value[index]; if (!image) return; try { await assistantApi.removeAttachment(image.id); URL.revokeObjectURL(image.url); attachments.value.splice(index,1) } catch (e) { localError.value = e instanceof Error ? e.message : '移除未完成。' } }
 function paste(event: ClipboardEvent) { const files = [...(event.clipboardData?.files || [])]; if (files.length) { event.preventDefault(); void upload(files) } }
 function pointerDown(event: PointerEvent, kind: 'drag' | 'resize' | 'corner') {
@@ -364,7 +370,7 @@ onUnmounted(() => { pointerEnd(); helpGeneration++; clearTimeout(connectorTimer)
         <template v-if="tab === 'chat'">
           <button v-if="store.cursors[store.selectedId]" class="yl-load-more" @click="older">加载更早的消息</button>
           <p v-if="store.loading" class="yl-muted">正在读取对话…</p>
-          <AssistantMessage v-for="message in store.messages" :key="message.id" :message="message" @citation="citation" @sources="showSources" @saved="showArtifacts"/>
+          <AssistantMessage v-for="message in store.messages" :key="message.id" :message="message" @citation="citation" @sources="showSources" @saved="showArtifacts" @file-deleted="historicalDocumentDeleted"/>
           <div v-if="store.messages.length && !store.busy" class="yl-tail-actions"><button @click="reviseLast"><Pencil :size="14"/>修订末尾问题</button><button v-if="store.currentRun?.payload.text" @click="store.submit(store.currentRun.payload)"><RotateCcw :size="14"/>重新生成新回答</button></div>
           <p v-if="store.currentRun?.omittedTurns" class="yl-notice">本轮使用近期完整对话，{{ store.currentRun.omittedTurns }} 轮较早内容未发送给模型；完整记录仍可导出。</p>
           <div v-if="store.currentRun?.error" class="yl-run-notice" role="status"><strong>{{ stateLabels[store.currentRun.state] }}</strong><p>{{ store.currentRun.error }}</p><div><button @click="store.recover()">查询保存结果</button><button v-if="!store.busy && store.currentRun.payload.text && store.currentRun.retryable" @click="retry">重试生成</button></div></div>
