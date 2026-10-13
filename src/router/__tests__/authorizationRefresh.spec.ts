@@ -48,6 +48,21 @@ function routerFor(currentRoute = route()) {
 }
 
 describe('authorization snapshot route revalidation', () => {
+  it.each([true, false])('revalidates a multi-department gate after refreshed shipping read access is %s', async (allowed) => {
+    const authStore = {
+      isAuthenticated: true,
+      refreshSession: vi.fn(async () => true),
+      canAny: vi.fn((_permissions: string[], factory?: string, department?: string) => allowed && factory === 'huaxing' && department === 'pmc-warehouse'),
+    }
+    const router = routerFor(route({ meta: {
+      requiresAuth: true, strictPermissions: true, enforcePermissions: true,
+      permissions: ['indonesia_material:read'], permissionFactoryId: 'huaxing',
+      permissionDepartments: ['sales-business', 'pmc-warehouse'],
+    } }))
+    expect(await refreshAndRevalidateAuthorization(authStore, router)).toBe(allowed ? 'refreshed' : 'forbidden')
+    expect(authStore.canAny).toHaveBeenLastCalledWith(['indonesia_material:read'], 'huaxing', 'pmc-warehouse')
+    if (!allowed) expect(router.replace).toHaveBeenCalledWith({ name: 'forbidden' })
+  })
   it.each([
     '/system/users',
     '/system/users/user-1/access',

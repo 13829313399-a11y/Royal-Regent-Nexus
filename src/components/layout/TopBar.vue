@@ -152,7 +152,7 @@ watch(() => props.navigationOpen, (isOpen, wasOpen) => {
         </div>
       </div>
 
-      <label v-if="homeScope" class="home-factory-select"><span class="sr-only">当前厂区</span><select aria-label="当前厂区" :value="appStore.activeFactoryId" @change="selectFactory(($event.target as HTMLSelectElement).value as FactoryContextId)"><option v-for="factory in topBarFactoryContexts" :key="factory.id" :value="factory.id">{{ getTopBarFactoryLabel(factory) }}</option></select></label>
+      <label v-if="homeScope || route.name === 'indonesia-material-shipment'" class="home-factory-select"><span class="sr-only">当前厂区</span><select aria-label="当前厂区" :value="appStore.activeFactoryId" @change="selectFactory(($event.target as HTMLSelectElement).value as FactoryContextId)"><option v-for="factory in topBarFactoryContexts" :key="factory.id" :value="factory.id">{{ getTopBarFactoryLabel(factory) }}</option></select></label>
       <NotificationCenter />
       <MessageEntry />
       <AccountMenu />
