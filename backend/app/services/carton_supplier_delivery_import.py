@@ -13,7 +13,7 @@ from app.models.carton_supplier_portal import SupplierShipment
 from app.schemas.carton_supplier_portal import ShipmentCreate
 from app.services import carton_supplier_portal as portal
 from app.services import carton_supplier_receipt_link as receipt_link
-from app.services.carton_material_identity import material_conflicts
+from app.services.carton_material_identity import dimension_unit, material_conflicts
 from app.services.carton_procurement_imports import _dongkang_identity, _parse_delivery_spreadsheet
 
 MAX_IMPORT_ROWS = 500
@@ -35,6 +35,25 @@ def _same_text(left, right):
 
 def _request_id(digest, factory_id, note_no):
     return "SUP-IMPORT-" + hashlib.sha256(f"{digest}|{factory_id}|{note_no}".encode()).hexdigest()
+
+
+def _material_mismatch_reason(source, checked):
+    if not checked:
+        return "合同与货号存在订单，但没有需要发货的纸品，请核对订单数量"
+    fields = {"纸品类型": "packaging_type", "纸质": "paper_quality", "规格": "specification"}
+
+    def value(paper, label, *, order=False):
+        if label == "尺寸单位":
+            units = [dimension_unit(paper.get("dimension_unit")), dimension_unit(paper.get("specification"))]
+            return " / ".join(dict.fromkeys(unit for unit in units if unit)) or ("cm" if order else "未注明")
+        return str(paper.get(fields[label]) or "未填写")
+
+    details = []
+    for _, line, conflicts in checked[:3]:
+        details.append("、".join(f"{label}（送货单：{value(source, label)}；订单：{value(line, label, order=True)}）"
+                               for label in conflicts))
+    suffix = f"；另有 {len(checked) - 3} 条纸品也不匹配" if len(checked) > 3 else ""
+    return "纸品不一致：" + " / ".join(details) + suffix + "；请核对原单"
 
 
 def preview(db, user, filename, content):
@@ -96,9 +115,11 @@ def preview(db, user, filename, content):
             continue
         candidates = [(order, line) for order in orders for line in order["lines"]
             if Decimal(line["required_quantity"]) > 0]
-        candidates = [(order, line) for order, line in candidates if not material_conflicts(source_row, line)]
+        checked = [(order, line, material_conflicts(source_row, line, dongkang_delivery=True))
+                   for order, line in candidates]
+        candidates = [(order, line) for order, line, conflicts in checked if not conflicts]
         if len(candidates) != 1:
-            item["reason"] = "合同与货号存在订单，但纸品类型/规格/材质或尺寸单位不符，请核对原单" if not candidates else "匹配到多条纸品，请核对规格与材质"
+            item["reason"] = _material_mismatch_reason(source_row, checked) if not candidates else "匹配到多条纸品，请核对规格与材质"
             continue
         order, line = candidates[0]
         item.update(order_no=order["order_no"], child_no=line["child_no"],

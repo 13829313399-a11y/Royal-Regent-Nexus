@@ -9,6 +9,7 @@ from app.models.fabric_master import FabricMasterRecord, FabricMasterChange
 from app.models.fabric_procurement import FabricProcurementLine
 from app.services import fabric_procurement as source
 from app.services.fabric_procurement_parser import digest, dump
+from app.services.fabric_supplier_identity import receipt_supplier, supplier_aliases
 
 
 def ready(db):
@@ -36,18 +37,23 @@ def list_records(db, kind, search="", status="ALL", sort="CODE"):
     ensure_schema(db)
     needle = search.strip().casefold()
     all_records = records(db)
-    items = [record_data(row) for row in all_records if row.kind == kind and (status == "ALL" or row.status == status)
+    items = [record_data(row) for row in all_records if row.kind == kind and not is_deleted(row) and (status == "ALL" or row.status == status)
              and (not needle or needle in (row.code + row.name + row.data_json).casefold())]
     items.sort(key=lambda row: (row["name" if sort == "NAME" else "code"].casefold(), row["id"]))
     if sort == "UPDATED":
         items.sort(key=lambda row: row["updated_at"], reverse=True)
-    return {"items": items, "total": len(items), "warehouse_tokens": warehouse_tokens(all_records) if kind == "LOCATION" else {}}
+    return {"items": items, "total": len(items), "warehouse_tokens": warehouse_tokens(all_records) if kind == "LOCATION" else {},
+            "deleted_items": [record_data(row) for row in all_records if row.kind == "LOCATION" and is_deleted(row)] if kind == "LOCATION" else []}
+
+
+def is_deleted(row):
+    return row.kind == "LOCATION" and bool(json.loads(row.data_json).get('_deleted'))
 
 
 def warehouse_tokens(all_records):
     groups = defaultdict(list)
     for row in all_records:
-        if row.kind == "LOCATION":
+        if row.kind == "LOCATION" and not is_deleted(row):
             groups[json.loads(row.data_json).get("warehouse", "")].append([row.id, row.revision])
     return {name: digest([source.FACTORY, name, sorted(rows)]) for name, rows in groups.items()}
 
@@ -55,7 +61,7 @@ def warehouse_tokens(all_records):
 def candidates(db, kind):
     ensure_schema(db)
     known = {(row.kind, row.code) for row in records(db)}
-    known_suppliers = {row.name for row in records(db) if row.kind == "SUPPLIER"}
+    known_suppliers = supplier_aliases(db) if kind == "SUPPLIER" else {}
     groups = defaultdict(list)
     for line in db.scalars(select(FabricProcurementLine).where(FabricProcurementLine.factory_id == source.FACTORY, FabricProcurementLine.status != "WITHDRAWN")):
         facts = json.loads(line.payload_json)
@@ -90,6 +96,8 @@ def save(db, actor, payload):
     record = db.scalar(select(FabricMasterRecord).where(FabricMasterRecord.factory_id == source.FACTORY, FabricMasterRecord.id == payload.id)) if payload.id else None
     if payload.id and not record:
         raise HTTPException(404, "找不到该厂区的基础资料")
+    if record and is_deleted(record):
+        raise HTTPException(409, "仓位已删除，请在已删除仓位中恢复后再修改")
     if payload.expected_revision != (record.revision if record else 0) or (record and record.kind != payload.kind):
         raise HTTPException(409, "基础资料已变化，请刷新后修改")
     if record and record.code != payload.code:
@@ -101,9 +109,9 @@ def save(db, actor, payload):
     if payload.kind == "LOCATION" and any(row.kind == "LOCATION" and row.id != (payload.id or "")
             and row.code.casefold() == payload.code.casefold() for row in records(db)):
         raise HTTPException(409, "仓位编码已存在（不区分大小写），请修改现有仓位")
-    if payload.kind == "SUPPLIER" and db.scalar(select(FabricMasterRecord.id).where(FabricMasterRecord.factory_id == source.FACTORY,
-        FabricMasterRecord.kind == "SUPPLIER", FabricMasterRecord.name == payload.name, FabricMasterRecord.id != (payload.id or ""))):
-        raise HTTPException(409, "供应商名称已存在，请修改现有资料")
+    if payload.kind == "SUPPLIER" and (not record or record.name != payload.name):
+        if supplier_aliases(db).get(payload.name, set()) - {payload.id}:
+            raise HTTPException(409, "供应商名称已被现有资料或历史名称使用，请修改原供应商资料")
     fields = body["data"]
     if record and payload.kind == "LOCATION" and json.loads(record.data_json).get("warehouse") and fields.get("warehouse") != json.loads(record.data_json).get("warehouse"):
         raise HTTPException(422, "仓位不能直接改换所属仓库；实物移动请调仓，仓库改名请使用整仓更名")
@@ -112,7 +120,7 @@ def save(db, actor, payload):
             if existing.kind == "UNIT" and existing.id != (payload.id or "") and not json.loads(existing.data_json).get("ratio") and {payload.code, payload.name} & {existing.code, existing.name}:
                 raise HTTPException(409, "标准单位的编码或名称与现有单位重叠，请修改现有单位")
     allowed = {"MATERIAL": {"category", "unit", "old_code", "spec", "color", "composition", "note"},
-               "SUPPLIER": {"contact", "phone", "note"}, "LOCATION": {"warehouse", "note"},
+               "SUPPLIER": {"contact", "phone", "note"}, "LOCATION": {"warehouse", "category", "note"},
                "UNIT": {"unit", "material_code", "price_unit", "ratio", "evidence", "conditions", "effective_date", "note"}}[payload.kind]
     if any(value and key not in allowed for key, value in fields.items()):
         raise HTTPException(422, "包含不属于当前资料类型的字段")
@@ -169,9 +177,7 @@ def receipt_references(db, facts, payload):
         raise HTTPException(422, "该物料资料已停用，请负责人核对后再收料")
     if material["material_category"] and material["material_category"] != payload.material_category:
         raise HTTPException(422, "物料分类与已确认基础资料不同，请刷新并核对资料")
-    supplier = next((row for row in all_records if row.kind == "SUPPLIER" and row.name == facts["supplier"]), None)
-    if supplier and supplier.status == "INACTIVE":
-        raise HTTPException(422, "该供应商资料已停用，请负责人核对后再收料")
+    supplier = receipt_supplier(db, facts["supplier"])
     unit = next((row for row in all_records if row.kind == "UNIT" and not json.loads(row.data_json).get("ratio") and facts["unit"] in (row.code, row.name)), None)
     if unit and unit.status == "INACTIVE":
         raise HTTPException(422, "该单位资料已停用，请负责人核对后再收料")
@@ -179,7 +185,7 @@ def receipt_references(db, facts, payload):
     by_id = {row.id: row for row in all_records}
     bins = []
     for batch in payload.batches:
-        resolved = resolve(db, 'fabric', batch.location_id)
+        resolved = resolve(db, 'fabric', batch.location_id, material_category=payload.material_category)
         bins.append({**record_data(by_id[resolved['id']]), **resolved})
     return {"material": material["master_material"] if material["master_material_matches"] and material["material_category"] else None,
             "supplier": record_data(supplier) if supplier and supplier.status == "ACTIVE" else None,

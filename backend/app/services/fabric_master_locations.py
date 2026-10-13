@@ -4,7 +4,7 @@ from io import BytesIO
 from uuid import uuid4, uuid5
 from fastapi import HTTPException
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from app.core.time import business_now
 from app.models.fabric_master import FabricMasterRecord, FabricMasterChange
 from app.schemas.fabric_master import LocationPreviewRequest, LocationInput
@@ -43,13 +43,22 @@ def file_rows(content, filename):
     return [LocationInput(warehouse=entry["warehouse"], bins=code) for _, entry in entries for code in entry["bins"]]
 
 
-def locations(db):
-    return [row for row in master.records(db) if row.kind == "LOCATION"]
+def locations(db, include_deleted=False):
+    return [row for row in master.records(db) if row.kind == "LOCATION" and (include_deleted or not master.is_deleted(row))]
+
+
+def request_data(payload):
+    # Preserve signatures for legacy requests without a category.
+    body = payload.model_dump(mode="json")
+    for row in body.get("rows", []):
+        if not row.get("category"):
+            row.pop("category", None)
+    return body
 
 
 def preview(db, actor, payload):
     master.ensure_schema(db)
-    current = locations(db)
+    current = locations(db, include_deleted=True)
     by_code = {}
     warehouse_names = {json.loads(row.data_json).get("warehouse", "") for row in current}
     for row in current:
@@ -74,20 +83,25 @@ def preview(db, actor, payload):
                 if len(existing) > 1:
                     raise ValueError(f"仓位 {code} 有多个旧编码对应，请先核对")
                 prior = existing[0] if existing else None
+                if prior and master.is_deleted(prior):
+                    raise ValueError(f"仓位 {code} 已删除，请先从已删除仓位中恢复，不能重复建立编码")
                 if prior and json.loads(prior.data_json).get("warehouse") != warehouse:
                     raise ValueError(f"仓位 {code} 已属于其他仓库，不能通过导入移动")
+                category = json.loads(prior.data_json).get("category", "") if prior else row.category
+                if prior and row.category and category != row.category:
+                    raise ValueError(f"仓位 {code} 已有不同的原料分区，请先在仓位资料中核对修改")
                 items.append({"warehouse": warehouse, "code": code, "action": "UNCHANGED" if prior else "NEW",
-                              "status": prior.status if prior else "ACTIVE"})
+                              "status": prior.status if prior else "ACTIVE", "category": category})
         except ValueError as exc:
             errors.append(f"第 {index} 项：{exc}")
-    token = digest(["fabric-locations-v1", actor.id, payload.model_dump(mode="json"),
+    token = digest(["fabric-locations-v1", actor.id, request_data(payload),
                     sorted([master.record_data(row) for row in current], key=lambda row: row["id"])])
     return {"items": items, "errors": errors, "new": sum(row["action"] == "NEW" for row in items),
             "unchanged": sum(row["action"] == "UNCHANGED" for row in items), "preview_token": token, "stock_posted": False}
 
 
 def replay(db, actor, payload):
-    request_hash = digest([actor.id, payload.model_dump(mode="json")])
+    request_hash = digest([actor.id, request_data(payload)])
     previous = db.scalar(select(FabricMasterChange).where(FabricMasterChange.factory_id == source.FACTORY,
                                                          FabricMasterChange.request_id == str(payload.request_id)))
     if previous:
@@ -138,7 +152,7 @@ def apply(db, actor, payload):
         if item["action"] == "NEW":
             record = FabricMasterRecord(id=uuid4().hex, factory_id=source.FACTORY, kind="LOCATION", code=item["code"],
                 name=item["code"], status="ACTIVE", revision=0,
-                data_json=dump({"warehouse": item["warehouse"], "note": ""}))
+                data_json=dump({"warehouse": item["warehouse"], "category": item["category"], "note": ""}))
             changes.append((record, {}))
     result = {"new": plan["new"], "unchanged": plan["unchanged"], "stock_posted": False}
     return write_operation(db, actor, payload, request_hash, changes, result, state)
@@ -165,3 +179,92 @@ def rename(db, actor, payload):
         row.data_json = dump(data); changes.append((row, before))
     return write_operation(db, actor, payload, request_hash, changes,
                            {"warehouse": payload.name, "updated": len(group), "stock_posted": False}, state)
+
+
+def used_locations(db, selected):
+    """Include immutable and reversed history, not just today's net stock."""
+    from app.models.fabric_receiving import FabricReceipt, FabricStockBatch
+    from app.models.warehouse_operations import WarehouseOperation
+    identities = {row.id for row in selected}
+    aliases = {}
+
+    def remember(value):
+        identifier = value.get('id')
+        if identifier not in identities:
+            return
+        code = value.get('code', '')
+        warehouse = value.get('data', {}).get('warehouse', '')
+        for name in (code, *(warehouse + separator + code for separator in ('／', '/', ' / ', ' ／ ', ' '))):
+            if name:
+                aliases.setdefault(name.casefold(), set()).add(identifier)
+
+    for row in selected:
+        remember(master.record_data(row))
+    for change in db.scalars(select(FabricMasterChange).where(FabricMasterChange.factory_id == source.FACTORY)):
+        if change.record_id in identities:
+            remember(json.loads(change.before_json)); remember(json.loads(change.after_json))
+    used = set()
+
+    def scan(value, key=''):
+        if isinstance(value, dict):
+            for name, part in value.items():
+                scan(part, name)
+        elif isinstance(value, list):
+            for part in value:
+                scan(part, key)
+        elif isinstance(value, str):
+            if value in identities:
+                used.add(value)
+            if key in {'location', 'location_label'}:
+                used.update(aliases.get(value.strip().casefold(), set()))
+
+    tables = set(inspect(db.get_bind()).get_table_names())
+    if FabricStockBatch.__tablename__ in tables:
+        for location in db.scalars(select(FabricStockBatch.location).where(FabricStockBatch.factory_id == source.FACTORY)):
+            scan(location, 'location')
+    if FabricReceipt.__tablename__ in tables:
+        for payload in db.scalars(select(FabricReceipt.payload_json).where(FabricReceipt.factory_id == source.FACTORY)):
+            scan(json.loads(payload))
+    if WarehouseOperation.__tablename__ in tables:
+        for payload in db.scalars(select(WarehouseOperation.payload_json).where(WarehouseOperation.factory_id == source.FACTORY, WarehouseOperation.warehouse == 'fabric')):
+            scan(json.loads(payload))
+    return used
+
+
+def manage(db, actor, payload):
+    master.ensure_schema(db)
+    state = source.lock_factory(db)
+    request_hash, previous = replay(db, actor, payload)
+    if previous is not None:
+        return previous
+    if payload.action != 'CATEGORY' and payload.category:
+        raise HTTPException(422, '删除或恢复仓位时不能同时变更原料分区')
+    by_id = {row.id: row for row in locations(db, include_deleted=True)}
+    selected = []
+    for item in payload.selections:
+        row = by_id.get(item.id)
+        if not row or row.revision != item.expected_revision or master.is_deleted(row) != (payload.action == 'RESTORE'):
+            raise HTTPException(409, '所选仓位已变化，请刷新后重新选择')
+        selected.append(row)
+    if len({row.id for row in selected}) != len(selected):
+        raise HTTPException(422, '不能重复选择同一仓位')
+    if payload.action == 'DELETE':
+        used = used_locations(db, selected)
+        if used:
+            names = '、'.join(row.code for row in selected if row.id in used)
+            raise HTTPException(409, f'仓位 {names} 已有库存或业务记录，不能删除；请取消勾选这些仓位，需停止使用时可改为停用。')
+    changes = []
+    for row in selected:
+        before = master.record_data(row)
+        data = json.loads(row.data_json)
+        if payload.action == 'CATEGORY':
+            data['category'] = payload.category
+        elif payload.action == 'DELETE':
+            data['_deleted'] = {'previous_status': row.status, 'at': business_now().isoformat()}
+            row.status = 'INACTIVE'
+        else:
+            row.status = data.pop('_deleted')['previous_status']
+        row.data_json = dump(data)
+        changes.append((row, before))
+    return write_operation(db, actor, payload, request_hash, changes,
+                           {'action': payload.action, 'updated': len(selected), 'stock_posted': False}, state)

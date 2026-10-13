@@ -37,7 +37,7 @@ def test_shared_material_identity_rejects_explicit_conflicts(changes):
 def test_both_importers_keep_conflicts_visible_and_block_dispatch(monkeypatch):
     with make_client(monkeypatch) as client:
         setup_portal(client); order = accept_all(client); paper = order["lines"][0]
-        for changes in ({"packaging_type": "隔板"}, {"packaging_type": "普通箱"}, {"paper_quality": "H99"}, {"specification": "99*88*77 in"}):
+        for changes in ({"packaging_type": "隔板"}, {"packaging_type": "内箱"}, {"paper_quality": "H99"}, {"specification": "99*88*77 in"}):
             supplier_login(client)
             upload = delivery_file(order["contract_no"], order["item_no"], paper, **changes)
             preview = client.post(BASE + "/shipments/import-preview", files=upload)

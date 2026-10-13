@@ -199,6 +199,15 @@ class SupplierMarkPdfRequest(Payload):
     excel_asset_id: str = Field(min_length=1, max_length=96)
     expected_revision: int = Field(ge=1)
     layout_id: str = Field(min_length=1, max_length=96)
+    supplements: dict[Literal["quantity", "carton_total", "dimensions", "gross_weight", "net_weight"], str] = Field(default_factory=dict)
+    source_item: str = Field(default="", max_length=128)
+
+    @model_validator(mode="after")
+    def valid_supplements(self):
+        import re
+        if any(len(value) > 100 or not re.search(r"\d", value) for value in self.supplements.values()):
+            raise ValueError("本单补齐内容须包含数值，最多100字符")
+        return self
 
 
 class MarkLayoutRegion(BaseModel):
@@ -213,8 +222,9 @@ class MarkLayoutConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
     mode: Literal["front_side", "front_only", "separate_pages"] = "front_side"
     frame_style: Literal["plain", "original_red"] = "plain"
+    series: Literal["standard", "zuru"] = "standard"
     paper: Literal["A4", "A3"] = "A4"
-    font: Literal["Helvetica", "Courier"] = "Helvetica"
+    font: Literal["Helvetica", "Courier", "ArialNarrow", "ArialNarrowBold"] = "Helvetica"
     font_size: float = Field(default=11, ge=7, le=16)
     front_percent: int = Field(default=55, ge=40, le=60)
     front_copies: int = Field(default=2, ge=1, le=4)
@@ -225,6 +235,9 @@ class MarkLayoutConfig(BaseModel):
     reference_page: int = Field(default=0, ge=0, le=19)
     logo_region: MarkLayoutRegion | None = None
     stamp_region: MarkLayoutRegion | None = None
+    front_artwork_region: MarkLayoutRegion | None = None
+    side_artwork_region: MarkLayoutRegion | None = None
+    origin_artwork_region: MarkLayoutRegion | None = None
     field_cells: dict[Literal["item", "vendor", "product", "content", "gtin", "vendor_item", "dimensions", "gross_weight"], str] = Field(default_factory=dict)
 
     @model_validator(mode="after")

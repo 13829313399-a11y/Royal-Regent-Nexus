@@ -1,17 +1,44 @@
 <script setup lang="ts">
-import { ref, onBeforeUnmount } from 'vue'
+import { computed, ref, onBeforeUnmount } from 'vue'
 import { cartonSupplierPortalApi as api, type SupplierMarkUploadOrder, type SupplierMarkLayout, type MarkLayoutConfig, type MarkLayoutPreview, type MarkLayoutRegion } from '@/api/cartonSupplierPortal'
 import { getApiErrorMessage } from '@/lib/http'
 const props = defineProps<{ factory: string; order: SupplierMarkUploadOrder; current: SupplierMarkLayout | null }>()
 const emit = defineEmits<{ saved: [layout: SupplierMarkLayout]; close: [] }>()
 const name = ref(props.current?.name ?? props.order.customer_name + '箱唛')
-const config = ref<MarkLayoutConfig>(props.current ? { frame_style: 'plain', ...JSON.parse(JSON.stringify(props.current.config)) } : {
+const config = ref<MarkLayoutConfig>(props.current ? { frame_style: 'plain', series: 'standard', ...JSON.parse(JSON.stringify(props.current.config)) } : {
   mode: 'front_side', paper: 'A4', font: 'Helvetica', font_size: 11, front_percent: 55, front_copies: 2, side_copies: 2,
-  frame_style: 'original_red',
+  frame_style: 'original_red', series: 'standard',
   barcode: 'Code128', side_address: '', instructions: '', reference_page: 0, logo_region: null, stamp_region: null, field_cells: {},
 })
 const file = ref<File | null>(null), preview = ref<MarkLayoutPreview | null>(null), error = ref(''), busy = ref(false)
-const image = ref<HTMLImageElement | null>(null), selecting = ref<'logo_region' | 'stamp_region' | null>(null)
+type ArtworkKey = 'logo_region' | 'stamp_region' | 'front_artwork_region' | 'side_artwork_region' | 'origin_artwork_region'
+const image = ref<HTMLImageElement | null>(null), selecting = ref<ArtworkKey | null>(null)
+const artworkKeys: ArtworkKey[] = ['logo_region', 'stamp_region', 'front_artwork_region', 'side_artwork_region', 'origin_artwork_region']
+const artworkSelections = computed(() => artworkKeys.map(key => ({ key, region: config.value[key] })))
+function clearArtwork() { for (const key of artworkKeys) config.value[key] = null }
+function changeSeries() { if (config.value.series === 'zuru') { config.value.font = 'ArialNarrowBold'; config.value.barcode = 'none' } }
+async function importSettings(event: Event) {
+  const settings = (event.target as HTMLInputElement).files?.[0]
+  if (!settings || busy.value) return
+  const token = ++revision; busy.value = true; error.value = ''
+  try {
+    if (!/\.json$/i.test(settings.name) || settings.size > 100_000) throw new Error('请选择最多100 KB的模板设置 JSON。')
+    const value = JSON.parse(await settings.text())
+    if (!active || token !== revision) return
+    const allowed = ['series', 'mode', 'frame_style', 'paper', 'font', 'font_size', 'front_percent', 'front_copies', 'side_copies', 'barcode', 'side_address', 'instructions', 'reference_page', ...artworkKeys, 'field_cells']
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !allowed.includes(key)) || !['front_side', 'front_only', 'separate_pages'].includes(value.mode)) throw new Error('模板设置格式无效；不能包含订单、厂区或客户身份字段。')
+    for (const key of artworkKeys) {
+      const region = value[key]
+      if (region == null) continue
+      if (typeof region !== 'object' || Array.isArray(region) || Object.keys(region).some(part => !['x', 'y', 'width', 'height'].includes(part)) ||
+        !['x', 'y', 'width', 'height'].every(part => typeof region[part] === 'number' && Number.isFinite(region[part]) && region[part] <= 1000 && region[part] >= (part === 'x' || part === 'y' ? 0 : Number.MIN_VALUE))) throw new Error('素材选区格式无效，请使用数值坐标和宽高。')
+    }
+    if (!file.value && props.current && value.reference_page !== props.current.config.reference_page) throw new Error('请先选择本次客户历史 PDF，再导入不同素材页的设置。')
+    config.value = { ...config.value, ...value }
+    if (file.value) await loadPreview()
+  } catch (cause) { if (active && token <= revision) error.value = getApiErrorMessage(cause) }
+  finally { if (active) busy.value = false; (event.target as HTMLInputElement).value = '' }
+}
 const controller = new AbortController(); let active = true, revision = 0
 const start = ref<{ x: number; y: number } | null>(null), pending = ref<MarkLayoutRegion | null>(null)
 const fields: { key: keyof MarkLayoutConfig['field_cells']; title: string }[] = [
@@ -34,7 +61,7 @@ function pick(event: Event) {
   const chosen = (event.target as HTMLInputElement).files?.[0]
   if (!chosen) return
   if (!/\.pdf$/i.test(chosen.name) || !chosen.size || chosen.size > 20 * 1024 * 1024) { error.value = '请选择客户历史 PDF，最多 20 MB。'; return }
-  file.value = chosen; config.value.reference_page = 0; config.value.logo_region = null; config.value.stamp_region = null
+  file.value = chosen; config.value.reference_page = 0; clearArtwork()
   void loadPreview()
 }
 function point(event: PointerEvent) {
@@ -72,28 +99,31 @@ onBeforeUnmount(() => { active = false; revision++; controller.abort() })
 <template>
   <section class="mt-4 rounded-xl border border-teal-200 bg-teal-50/40 p-4" aria-label="客户排版模板">
     <div class="flex items-center justify-between gap-3"><h3 class="font-bold">{{ order.customer_name }} · {{ current ? '调整客户模板' : '建立客户模板' }}</h3><button type="button" :disabled="busy" class="rounded border px-3 py-1" @click="emit('close')">收起</button></div>
-    <p class="mt-2 text-sm text-slate-600">上传客户历史稿，确认版式、固定地址和素材，保存后同客户订单自动套用。正侧唛分别重排文字和条码；历史稿仅保留你选取的 LOGO、图章。</p>
+    <p class="mt-2 text-sm text-slate-600">上传客户历史稿，确认版式、固定地址和素材，保存后同客户订单自动套用。正文从本单 Excel 重新生成，历史稿只保留明确选取的固定素材。</p>
+    <label class="mt-3 block text-sm">导入模板设置（JSON）<input type="file" accept=".json" aria-label="导入客户模板设置" :disabled="busy" class="mt-1 block text-xs" @change="importSettings"><span class="text-xs text-slate-500">先选择对应历史 PDF，再导入已有设置；查看素材选区后确认保存。</span></label>
     <div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <label class="text-sm">模板名称<input v-model="name" maxlength="128" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"></label>
       <label class="text-sm">客户历史 PDF<input type="file" accept=".pdf" aria-label="客户历史 PDF" :disabled="busy" class="mt-1 block w-full text-xs" @change="pick"><span class="mt-1 block text-xs">{{ file?.name || current?.reference_name || '第一次须选择历史稿' }}</span></label>
       <label class="text-sm">排版模式<select v-model="config.mode" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"><option value="front_side">正侧唛并排</option><option value="front_only">仅正唛</option><option value="separate_pages">正侧唛分别一页</option></select></label>
       <label class="text-sm">纸张<select v-model="config.paper" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"><option>A4</option><option>A3</option></select></label>
       <label class="text-sm">框线样式<select v-model="config.frame_style" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"><option value="original_red">原版红框（带折边线）</option><option value="plain">普通黑框</option></select></label>
-      <label class="text-sm">字体<select v-model="config.font" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"><option value="Helvetica">Arial 风格</option><option value="Courier">等宽字体</option></select></label>
+      <label class="text-sm">字体<select v-model="config.font" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"><option value="Helvetica">Arial 风格</option><option value="Courier">等宽字体</option><option value="ArialNarrow">Arial Narrow 窄体</option><option value="ArialNarrowBold">Arial Narrow 窄体粗字</option></select></label>
       <label class="text-sm">字号<input v-model.number="config.font_size" type="number" min="7" max="16" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"></label>
-      <label class="text-sm">条码<select v-model="config.barcode" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"><option>Code128</option><option>ITF14</option><option value="none">无需条码</option></select></label>
+      <label v-if="config.series !== 'zuru'" class="text-sm">条码<select v-model="config.barcode" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"><option>Code128</option><option>ITF14</option><option value="none">无需条码</option></select></label>
       <label v-if="config.mode === 'front_side'" class="text-sm">正唛宽度占比 %<input v-model.number="config.front_percent" type="number" min="40" max="60" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"></label>
       <label class="text-sm">正唛面数<input v-model.number="config.front_copies" type="number" min="1" max="4" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"></label>
       <label v-if="config.mode !== 'front_only'" class="text-sm">侧唛面数<input v-model.number="config.side_copies" type="number" min="1" max="4" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"></label>
+      <label class="text-sm">版式系列<select v-model="config.series" aria-label="客户版式系列" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2" @change="changeSeries"><option value="standard">通用表格</option><option value="zuru">ZURU（FTC / Zumiez / ESAL）</option></select></label>
     </div>
+    <p v-if="config.series === 'zuru'" class="mt-2 text-xs text-slate-600">按 Excel 的箱唛块自动识别版式和货号。条码按原稿显示号码；ESAL 正唛、侧唛图案及阿拉伯产地文字需从确认稿分别选取，选区只包含固定内容。</p>
     <div class="mt-3 grid gap-3 sm:grid-cols-2"><label class="text-sm">客户固定侧唛地址<textarea v-model="config.side_address" rows="3" maxlength="500" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2" placeholder="从历史稿确认后保存"></textarea></label><label class="text-sm">固定制作说明<textarea v-model="config.instructions" rows="3" maxlength="500" :disabled="busy" class="mt-1 w-full rounded border bg-white p-2"></textarea></label></div>
-    <details class="mt-3 text-sm"><summary class="cursor-pointer">Excel 字段位置（自动识别不适用时设置）</summary><p class="my-2 text-xs text-slate-500">填写单元格，如 C15。留空按字段名称识别，每张可见工作表使用相同位置。</p><div class="grid grid-cols-2 gap-2 sm:grid-cols-4"><label v-for="field in fields" :key="field.key">{{ field.title }}<input v-model="config.field_cells[field.key]" :disabled="busy" placeholder="自动识别" class="mt-1 w-full rounded border bg-white p-2"></label></div></details>
+    <details v-if="config.series !== 'zuru'" class="mt-3 text-sm"><summary class="cursor-pointer">Excel 字段位置（自动识别不适用时设置）</summary><p class="my-2 text-xs text-slate-500">填写单元格，如 C15。留空按字段名称识别，每张可见工作表使用相同位置。</p><div class="grid grid-cols-2 gap-2 sm:grid-cols-4"><label v-for="field in fields" :key="field.key">{{ field.title }}<input v-model="config.field_cells[field.key]" :disabled="busy" placeholder="自动识别" class="mt-1 w-full rounded border bg-white p-2"></label></div></details>
     <div v-if="preview" class="mt-4">
-      <label v-if="file && preview.page_count > 1" class="mb-2 block text-sm">取素材页<select v-model.number="config.reference_page" :disabled="busy" class="ml-2 rounded border bg-white p-1" @change="config.logo_region = null; config.stamp_region = null; loadPreview()"><option v-for="page in preview.page_count" :key="page" :value="page - 1">第 {{ page }} 页</option></select></label>
-      <div class="mb-2 flex flex-wrap items-center gap-2 text-sm"><button type="button" :disabled="busy" class="rounded border bg-white px-3 py-1" @click="selecting = 'logo_region'">选取 LOGO</button><button type="button" :disabled="busy" class="rounded border bg-white px-3 py-1" @click="selecting = 'stamp_region'">选取图章</button><button type="button" :disabled="busy" class="rounded border bg-white px-3 py-1" @click="config.logo_region = null; config.stamp_region = null">清除选区</button><span>{{ selecting ? '在历史稿上拖出矩形，框住需要保留的素材。' : '蓝框 LOGO · 橙框图章；未选 LOGO 时尝试读取 Excel 内唯一 LOGO。' }}</span></div>
+      <label v-if="file && preview.page_count > 1" class="mb-2 block text-sm">取素材页<select v-model.number="config.reference_page" :disabled="busy" class="ml-2 rounded border bg-white p-1" @change="clearArtwork(); loadPreview()"><option v-for="page in preview.page_count" :key="page" :value="page - 1">第 {{ page }} 页</option></select></label>
+      <div class="mb-2 flex flex-wrap items-center gap-2 text-sm"><button type="button" :disabled="busy" class="rounded border bg-white px-3 py-1" @click="selecting = 'logo_region'">选取 LOGO</button><button type="button" :disabled="busy" class="rounded border bg-white px-3 py-1" @click="selecting = 'stamp_region'">选取图章</button><template v-if="config.series === 'zuru'"><button type="button" :disabled="busy" class="rounded border bg-white px-3 py-1" @click="selecting = 'front_artwork_region'">选取 ESAL 正唛素材</button><button type="button" :disabled="busy" class="rounded border bg-white px-3 py-1" @click="selecting = 'side_artwork_region'">选取侧唛图案</button><button type="button" :disabled="busy" class="rounded border bg-white px-3 py-1" @click="selecting = 'origin_artwork_region'">选取阿拉伯产地文字</button></template><button type="button" :disabled="busy" class="rounded border bg-white px-3 py-1" @click="clearArtwork">清除选区</button><span>{{ selecting ? '在历史稿上拖出矩形，框住需要保留的固定素材。' : '蓝框 LOGO · 橙框图章 · 绿框固定素材。' }}</span></div>
       <div class="relative mx-auto max-w-4xl border bg-white" :class="selecting ? 'cursor-crosshair' : ''" style="touch-action: none" @pointerdown.prevent="begin" @pointermove="move" @pointerup="finish" @pointercancel="start = null; pending = null">
         <img ref="image" :src="preview.preview_data_url" alt="客户历史 PDF，框选固定素材" class="block w-full select-none" draggable="false">
-        <svg class="pointer-events-none absolute inset-0 h-full w-full" :viewBox="`0 0 ${preview.page_width_mm} ${preview.page_height_mm}`"><rect v-if="config.logo_region" v-bind="config.logo_region" fill="#38bdf822" stroke="#0284c7" stroke-width="0.6"/><rect v-if="config.stamp_region" v-bind="config.stamp_region" fill="#fb923c22" stroke="#ea580c" stroke-width="0.6"/><rect v-if="pending" v-bind="pending" fill="#38bdf822" stroke="#0284c7" stroke-width="0.6"/></svg>
+        <svg class="pointer-events-none absolute inset-0 h-full w-full" :viewBox="`0 0 ${preview.page_width_mm} ${preview.page_height_mm}`"><template v-for="selection in artworkSelections" :key="selection.key"><rect v-if="selection.region" v-bind="selection.region" :fill="selection.key === 'logo_region' ? '#38bdf822' : selection.key === 'stamp_region' ? '#fb923c22' : '#22c55e22'" :stroke="selection.key === 'logo_region' ? '#0284c7' : selection.key === 'stamp_region' ? '#ea580c' : '#15803d'" stroke-width="0.6"/></template><rect v-if="pending" v-bind="pending" fill="#38bdf822" stroke="#0284c7" stroke-width="0.6"/></svg>
       </div>
       <p class="mt-2 text-xs text-slate-500">当前取历史稿第 {{ config.reference_page + 1 }} 页素材。此模板生成排版审阅稿，实际箱面尺寸需另行确认。</p>
     </div>
