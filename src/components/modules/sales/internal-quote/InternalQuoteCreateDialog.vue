@@ -178,7 +178,7 @@ function submit() {
     return
   }
   if (!props.businessOwners.some((item) => item.id === form.businessOwnerId)) {
-    errorMessage.value = '请选择当前厂区具备整单审核权限的业务部人员。'
+    errorMessage.value = '请选择当前厂区具备报价编辑权限的业务部人员。'
     return
   }
   if (!form.targetCustomerPrice.trim()) {
@@ -480,7 +480,7 @@ onBeforeUnmount(closeDocumentPreview)
               <label>
                 <span>业务负责人（仅业务部） <b>*</b></span>
                 <select v-model="form.businessOwnerId" :disabled="!businessOwners.length" @change="selectBusinessOwner">
-                  <option value="" disabled>{{ businessOwners.length ? '选择业务负责人' : '当前厂区暂无具备审核权限的业务部人员' }}</option>
+                  <option value="" disabled>{{ businessOwners.length ? '选择业务负责人' : '当前厂区暂无具备报价编辑权限的业务部人员' }}</option>
                   <option v-for="owner in businessOwners" :key="owner.id" :value="owner.id">{{ owner.displayName }}（{{ owner.username }}）</option>
                 </select>
                 <small class="quote-owner-hint">新报价无需人工审核；资料保存完整后可直接输出，并保留版本。</small>

@@ -1,13 +1,15 @@
 import importlib
+import pytest
 from uuid import uuid4
 from sqlalchemy import event, select
 from test_identity_changes import client, engineer, confirm, identity, draft, commit
 from test_iam_api import create_user
 
 
-def test_quote_handover_checks_revision_holder_and_successor(client):
+@pytest.mark.parametrize("module_version,successor_role", [("v2", "position_sales_supervisor"), ("v4", "position_sales_business")])
+def test_quote_handover_checks_revision_holder_and_successor(client, module_version, successor_role):
     source = create_user("source-sales", "position_sales_supervisor", "huakang-a", "sales-business")
-    successor = create_user("next-sales", "position_sales_supervisor", "huakang-a", "sales-business")
+    successor = create_user("next-sales", successor_role, "huakang-a", "sales-business")
     confirm(client, source)
     confirm(client, successor)
     dbm = importlib.import_module("app.db")
@@ -15,7 +17,7 @@ def test_quote_handover_checks_revision_holder_and_successor(client):
     auth_m = importlib.import_module("app.models.auth")
     with dbm.SessionLocal() as db:
         db.add(quote_m.InternalQuote(id="handover-quote", factory_id="huakang-a", workshop_code="assembly", workshop_name="测试车间",
-            quote_no="QA-HANDOVER", product_name="隔离样品", customer="隔离客户", qty=1, version_label="V1", status="drafting",
+            quote_no="QA-HANDOVER", product_name="隔离样品", customer="隔离客户", qty=1, version_label="V1", status="drafting", module_version=module_version,
             business_owner_id=source, business_owner_name="原审核人", created_by=source, created_by_name="历史创建人", created_at="2026-01-01", updated_at="2026-01-01"))
         db.commit()
     row = draft(client, source, "leave")
@@ -41,6 +43,9 @@ def test_quote_handover_checks_revision_holder_and_successor(client):
         assert (q.created_by, q.factory_id, q.created_by_name) == (source, "huakang-a", "历史创建人")
         assert q.business_owner_id == successor and q.header_revision == revision + 1
         assert len(list(db.scalars(select(quote_m.InternalQuoteAuditLog).where(quote_m.InternalQuoteAuditLog.action == "identity_handover")))) == 1
+    refreshed = client.post(f"/api/iam/identity-changes/{row['id']}/handover-refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["items"][0]["status"] == "completed"
     assert commit(client, draft(client, successor, "leave")).status_code == 200
     outbox = importlib.import_module("app.services.identity_outbox")
     with dbm.SessionLocal() as db:

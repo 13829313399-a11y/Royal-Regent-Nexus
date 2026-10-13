@@ -725,9 +725,9 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       })
       return response.data
     },
-    async listBusinessOwners(factoryId: string) {
+    async listBusinessOwners(factoryId: string, quoteId?: string) {
       const response = await client.get<ApiInternalQuoteBusinessOwner[]>('/internal-quotes/business-owners', {
-        params: { factory_id: factoryId },
+        params: { factory_id: factoryId, workflow_mode: 'direct_output', ...(quoteId ? { quote_id: quoteId } : {}) },
       })
       return response.data
     },
