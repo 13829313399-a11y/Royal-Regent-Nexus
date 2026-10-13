@@ -7,8 +7,8 @@ from sqlalchemy import select
 from app.core.config import settings
 from app import db as database
 from app.models.assistant import AssistantMessage
-from app.schemas.assistant import CreateSession, RenameSession, SendMessage, PageContext
-from app.services.assistant import service, runtime, capabilities, help_registry, storage
+from app.schemas.assistant import CreateSession, RenameSession, SendMessage, PageContext, ArtifactCreate, ArtifactVersion, FavoritePatch, ActionRequest
+from app.services.assistant import service, runtime, capabilities, help_registry, storage, files, artifacts, visibility
 from app.services.assistant.errors import AssistantError
 
 
@@ -48,7 +48,10 @@ router = APIRouter(prefix="/api/assistant", tags=["assistant"], route_class=Assi
 
 @router.get("/capabilities")
 def get_capabilities(user=Depends(viewer)):
-    return capabilities.capabilities()
+    value = capabilities.capabilities()
+    if value["schema_status"] == "ready":
+        value["search"]["last_result"] = service.last_search_result(user)
+    return value
 
 
 @router.get("/help/context")
@@ -71,9 +74,9 @@ def create(payload: CreateSession, user=Depends(viewer)):
 
 
 @router.get("/sessions")
-def sessions(cursor: str = "", limit: int = Query(30, ge=1, le=100), user=Depends(viewer)):
+def sessions(cursor: str = "", limit: int = Query(30, ge=1, le=100), q: str = Query("", max_length=160), favorites: bool = False, user=Depends(viewer)):
     capabilities.require_enabled()
-    return service.sessions(user, cursor, limit)
+    return service.sessions(user, cursor, limit, q, favorites)
 
 
 @router.patch("/sessions/{sid}")
@@ -141,6 +144,8 @@ def export(sid: str, user=Depends(viewer)):
                     chunks.append("![主动上传的图片](" + storage.data_url(db, user, sid, part["attachment_id"]) + ")\n")
                 elif part["type"] in ("tool_call", "tool_result"):
                     chunks.append("\n工具记录：\n\n~~~~json\n" + json_safe(part) + "\n~~~~\n")
+                elif part["type"] == "evidence":
+                    chunks.append("\n依据：\n" + artifacts.source_lines(part["sources"]) + "\n检索状态：" + json_safe(part["search"]))
             if safe["context_descriptor"]:
                 chunks.append("\n页面上下文：" + json_safe(safe["context_descriptor"]) + "\n")
             for c in safe["help_citations"]:
@@ -173,3 +178,102 @@ def remove_attachment(ident: str, user=Depends(viewer)):
     capabilities.require_enabled()
     storage.content(user, ident, remove=True)
     return Response(status_code=204)
+
+
+@router.post("/sessions/{sid}/files")
+async def upload_document(sid: str, file: UploadFile = File(), user=Depends(viewer)):
+    import asyncio
+    capabilities.require_enabled()
+    raw = await file.read(settings.assistant_max_file_bytes+1)
+    return await asyncio.to_thread(files.save, user, sid, raw, file.filename)
+
+
+@router.get("/files/{ident}")
+def get_document(ident: str, user=Depends(viewer)):
+    capabilities.require_enabled()
+    return files.metadata(user, ident)
+
+
+@router.get("/files/{ident}/content")
+def document_content(ident: str, extracted: bool = False, user=Depends(viewer)):
+    capabilities.require_enabled()
+    data, media = files.content(user, ident, extracted)
+    return Response(data, media_type=media, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.delete("/files/{ident}")
+def delete_document(ident: str, user=Depends(viewer)):
+    capabilities.require_enabled()
+    files.remove(user, ident)
+    return Response(status_code=204)
+
+
+@router.post("/sessions/{sid}/artifacts")
+def create_artifact(sid: str, payload: ArtifactCreate, user=Depends(viewer)):
+    capabilities.require_enabled()
+    return artifacts.create(user, sid, payload)
+
+
+@router.get("/artifacts")
+def artifact_list(q: str = Query("", max_length=160), cursor: str = "", limit: int = Query(30, ge=1, le=100), user=Depends(viewer)):
+    capabilities.require_enabled()
+    return artifacts.listing(user, q, cursor, limit)
+
+
+@router.get("/artifacts/{ident}")
+def get_artifact(ident: str, revision: int | None = Query(None, ge=1), user=Depends(viewer)):
+    capabilities.require_enabled()
+    return artifacts.get(user, ident, revision)
+
+
+@router.post("/artifacts/{ident}/versions")
+def artifact_version(ident: str, payload: ArtifactVersion, user=Depends(viewer)):
+    capabilities.require_enabled()
+    return artifacts.revise(user, ident, payload)
+
+
+@router.get("/artifacts/{ident}/export")
+def artifact_export(ident: str, format: str = "md", revision: int | None = Query(None, ge=1), user=Depends(viewer)):
+    capabilities.require_enabled()
+    value, media = artifacts.export(user, ident, format, revision)
+    return Response(value, media_type=media, headers={"Cache-Control": "private, no-store", "Content-Disposition": f'attachment; filename="yaoling-artifact.{format}"'})
+
+
+@router.patch("/sessions/{sid}/favorite")
+def favorite(sid: str, payload: FavoritePatch, user=Depends(viewer)):
+    capabilities.require_enabled()
+    return artifacts.favorite(user, sid, payload.favorite)
+
+
+@router.get("/runs/{rid}/export")
+def answer_export(rid: str, format: str = "md", user=Depends(viewer)):
+    capabilities.require_enabled()
+    snapshot = service.snapshot(user, rid=rid)
+    answer = next(m for m in snapshot["items"] if m["role"] == "assistant")
+    if answer.get("unavailable"):
+        raise AssistantError("source_unavailable", "来源已失效，无法导出。", 410)
+    value, media = artifacts.render("".join(p["text"] for p in answer["content_parts"] if p["type"] == "text"), "markdown", "曜灵回答", visibility.sources(answer["content_parts"]), format)
+    return Response(value, media_type=media, headers={"Cache-Control": "private, no-store", "Content-Disposition": f'attachment; filename="yaoling-answer.{format}"'})
+
+
+@router.post("/actions/resolve")
+def resolve_action(payload: ActionRequest, user=Depends(viewer)):
+    capabilities.require_enabled()
+    snapshot = service.snapshot(user, rid=payload.run_id)
+    message = next(m for m in snapshot["items"] if m["role"] == "assistant")
+    actions = next((p["items"] for p in message["content_parts"] if p["type"] == "actions"), [])
+    if payload.index >= len(actions):
+        raise AssistantError("source_unavailable", "操作已失效，请重新查询。", 410)
+    action = actions[payload.index]
+    if action["type"] == "highlight":
+        help_registry.get(user, action["help_id"])
+    elif action["type"] == "open_record":
+        from app.services.assistant.business import ROUTES, authorize
+        name = next((n for n, (_, route) in ROUTES.items() if route == action["route_name"]), None)
+        with database.SessionLocal() as db:
+            authorize(db, user, name, action["query"].get("factory", "authorized"))
+        if action["params"] or set(action["query"]) - {"factory", "entry"}:
+            raise AssistantError("action_invalid", "导航参数未注册。")
+    else:
+        raise AssistantError("action_invalid", "操作未注册。")
+    return action

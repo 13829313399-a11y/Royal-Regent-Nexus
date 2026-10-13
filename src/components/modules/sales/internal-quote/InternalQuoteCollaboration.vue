@@ -641,7 +641,7 @@ async function openHeaderDialog() {
   headerDialogError.value = ''
   try {
     const [owners, customers] = await Promise.all([
-      internalQuoteApi.listBusinessOwners(requestedFactoryId),
+      internalQuoteApi.listBusinessOwners(requestedFactoryId, requestedQuoteId),
       internalQuoteApi.listCustomers(requestedFactoryId),
     ])
     if (!headerDialogOpen.value || quote.value.id !== requestedQuoteId) return

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { vInjDialog } from "@/features/injection-scheduling/composables/injDialog";
 import { registerAssistantTarget } from '@/features/assistant/anchors';
+import { registerAssistantSelection } from '@/features/assistant/selection';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAppStore } from "@/stores/app";
@@ -195,6 +196,21 @@ const unregisterAssistantRemaining = registerAssistantTarget({
   },
 });
 onBeforeUnmount(unregisterAssistantRemaining);
+const unregisterAssistantSelection = registerAssistantSelection('injection-scheduling', () => ({
+  selection_id: store.selectedId || 'injection-filters',
+  resources: store.selectedId ? [{ module_id: 'injection-scheduling', resource_type: 'demand', resource_id: store.selectedId }] : [],
+  filters: { factory_id: store.factory || null, view: tab.value },
+}));
+onBeforeUnmount(unregisterAssistantSelection);
+onBeforeUnmount(registerAssistantTarget({
+  helpId: 'injection.views',
+  element: () => document.querySelector<HTMLElement>('[data-yl-help="injection.views"]'),
+  reveal: async () => {
+    if (store.dirty || store.busy) throw new Error('请先保存或取消计划表中的未保存修改。');
+    if (!store.factory) throw new Error('请先选择支持的厂区。');
+    switchTab('table');
+  },
+}));
 function openPlanClear() {
   if (store.dirty || store.busy || !canPlan.value) return;
   moreOpen.value = false;
@@ -491,6 +507,7 @@ const templateLabels1: Record<string, string> = {
       <select
         :value="store.factory || ''"
         aria-label="当前厂区"
+        data-yl-help="injection.factory"
         :disabled="store.busy || store.dirty"
         @change="changeFactory"
       >
@@ -502,6 +519,7 @@ const templateLabels1: Record<string, string> = {
       <InjSegmentedControl
         v-if="store.factory"
         class="inj-workspaces"
+        data-yl-help="injection.workspaces"
         :model-value="section"
         :options="sectionOptions"
         label="工作区"
@@ -570,6 +588,7 @@ const templateLabels1: Record<string, string> = {
       <div
         v-if="['timeline', 'table', 'machines'].includes(tab)"
         class="inj-global-toolbar"
+        data-yl-help="injection.views"
         :inert="store.dirty || store.busy"
       >
         <InjSegmentedControl

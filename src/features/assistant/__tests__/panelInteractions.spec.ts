@@ -31,6 +31,36 @@ async function pointerEvent(target: { element: Element }, type: string, options:
  target.element.dispatchEvent(new PointerEvent(type, { bubbles: true, ...options })); await nextTick()
 }
 describe('assistant panel boundaries',()=>{
+ it('keeps keyboard focus inside the panel while Send is replaced by Stop',async()=>{
+  const store=useAssistantStore();store.capabilities={...caps,configuration_status:'configured'}
+  const submit=vi.spyOn(store,'submit').mockResolvedValue()
+  const w=panel();await flushPromises();await w.get('[aria-label="给曜灵的问题"]').setValue('question')
+  ;(w.get('[aria-label="发送问题"]').element as HTMLElement).focus();await w.get('[aria-label="发送问题"]').trigger('click');await flushPromises()
+  expect(submit).toHaveBeenCalledOnce();expect(document.activeElement).toBe(w.get('[aria-label="给曜灵的问题"]').element)
+ })
+ it('polls queued documents to readiness and stops after completion or unmount',async()=>{
+  vi.useFakeTimers()
+  try {
+   const store=useAssistantStore();store.draftFor().documents=[{id:'doc',name:'test.txt',parse_status:'queued'}]
+   const api=vi.spyOn(assistantApi,'document').mockResolvedValueOnce({id:'doc',name:'test.txt',parse_status:'parsing'}).mockResolvedValueOnce({id:'doc',name:'test.txt',parse_status:'ready'})
+   const w=panel();await flushPromises();await vi.advanceTimersByTimeAsync(1000);await flushPromises()
+   expect(w.text()).toContain('解析中');await vi.advanceTimersByTimeAsync(1000);await flushPromises();expect(w.text()).toContain('可分析')
+   await vi.advanceTimersByTimeAsync(3000);expect(api).toHaveBeenCalledTimes(2)
+   store.draftFor().documents.push({id:'second',name:'second.txt',parse_status:'queued'});await nextTick();w.unmount();wrappers=[]
+   await vi.advanceTimersByTimeAsync(2000);expect(api).toHaveBeenCalledTimes(2)
+  } finally {vi.useRealTimers()}
+ })
+ it('ignores a pending document response after the viewer identity changes',async()=>{
+  vi.useFakeTimers()
+  try {
+   const store=useAssistantStore();store.bindIdentity('first');const old=store.draftFor();old.documents=[{id:'doc',name:'private.txt',parse_status:'queued'}]
+   let resolve!: (v: Awaited<ReturnType<typeof assistantApi.document>>) => void
+   vi.spyOn(assistantApi,'document').mockReturnValue(new Promise(r=>{resolve=r}))
+   const w=panel();await flushPromises();await vi.advanceTimersByTimeAsync(1000)
+   store.bindIdentity('second');await nextTick();resolve({id:'doc',name:'private.txt',parse_status:'ready'});await flushPromises()
+   expect(store.draftFor().documents).toEqual([]);expect(old.documents[0].parse_status).toBe('queued');expect(w.text()).not.toContain('private.txt')
+  } finally {vi.useRealTimers()}
+ })
  it('follows a background answer after reveal but preserves an older reading position',async()=>{
   const w=panel();await flushPromises()
   const scroller=w.get('.yl-scroll').element as HTMLElement
@@ -100,7 +130,7 @@ describe('assistant panel boundaries',()=>{
   await pointerEvent(corner,'pointerdown',{button:0,pointerId:1,clientX:1250,clientY:650})
   await pointerEvent(corner,'pointermove',{pointerId:1,clientX:1190,clientY:480})
   expect(w.emitted('width')?.at(-1)).toEqual([372])
-  expect(w.emitted('height')?.at(-1)).toEqual([470])
+  expect(w.emitted('height')?.at(-1)).toEqual([550])
   expect(w.emitted('position')?.at(-1)).toEqual([{x:828,y:20}])
  })
  it('keeps an edge resize anchored and clamps a drag within the visible viewport',async()=>{
@@ -114,7 +144,7 @@ describe('assistant panel boundaries',()=>{
   const header=w.get('.yl-header')
   await pointerEvent(header,'pointerdown',{button:0,pointerId:2,clientX:850,clientY:60})
   await pointerEvent(header,'pointermove',{pointerId:2,clientX:-2000,clientY:3000})
-  expect(w.emitted('position')?.at(-1)).toEqual([{x:20,y:240}])
+  expect(w.emitted('position')?.at(-1)).toEqual([{x:20,y:160}])
  })
  it('clamps stored geometry after viewport shrink and restores it when space returns',async()=>{
   const w=panel();await flushPromises();await w.setProps({position:{x:1000,y:700},width:600,height:820})
@@ -129,12 +159,13 @@ describe('assistant panel boundaries',()=>{
  })
  it('supports keyboard movement, resizing and resetting the layout',async()=>{
   const w=panel();await flushPromises();await w.setProps({position:{x:300,y:80},height:480})
+  await w.get('[aria-label="关于与连接状态"]').trigger('click')
   await w.get('[aria-label="移动曜灵浮窗"]').trigger('keydown',{key:'ArrowDown'})
   expect(w.emitted('position')?.at(-1)).toEqual([{x:300,y:100}])
   await w.get('[aria-label="调整曜灵大小"]').trigger('keydown',{key:'ArrowDown',shiftKey:true})
   expect(w.emitted('height')?.at(-1)).toEqual([530])
   await w.get('[aria-label="恢复浮窗位置和大小"]').trigger('click')
-  expect(w.emitted('position')?.at(-1)).toEqual([null]);expect(w.emitted('width')?.at(-1)).toEqual([432]);expect(w.emitted('height')?.at(-1)).toEqual([640])
+  expect(w.emitted('position')?.at(-1)).toEqual([null]);expect(w.emitted('width')?.at(-1)).toEqual([460]);expect(w.emitted('height')?.at(-1)).toEqual([720])
  })
  it('preserves floating geometry through focus mode and hides drag controls on small screens',async()=>{
   const w=panel();await flushPromises();await w.setProps({position:{x:300,y:80},height:480,mode:'focus'})
@@ -153,6 +184,23 @@ describe('assistant panel boundaries',()=>{
   expect(w.find('[aria-label="思考模式"]').exists()).toBe(false)
   await w.findAll('button').find(b=>b.text()==='讲解本页')!.trigger('click');await flushPromises()
   expect(w.text()).toContain('门户说明');expect(w.text()).toContain('没有读取业务数据')
+ })
+ it('keeps an overview walkthrough when its next anchor is also a standalone field article',async()=>{
+  const step=(title:string,anchor_id:string)=>({title,anchor_id,description:'合成步骤',precondition:'可见',completion:'已核对'})
+  const field={...article,id:'field',title:'字段说明',anchor_id:'test.field',steps:[step('字段独立引导','test.field')]}
+  const overview={...article,steps:[step('第一步','test.first'),step('第二步','test.field')]}
+  vi.spyOn(assistantApi,'help').mockResolvedValue({items:[field,overview],status:'ready'})
+  const targets=['test.first','test.field'].map(id=>{
+   const el=document.createElement('div');el.dataset.ylHelp=id;el.getClientRects=()=>({length:1}) as DOMRectList;el.scrollIntoView=vi.fn();document.body.append(el);return el
+  })
+  vi.stubGlobal('matchMedia',()=>({matches:true}))
+  try {
+   const w=panel();await flushPromises();await w.findAll('button').find(b=>b.text()==='讲解本页')!.trigger('click');await flushPromises()
+   await w.findAll('.yl-help-card').find(c=>c.text().includes('门户说明'))!.findAll('button').find(b=>b.text()==='带我看一遍')!.trigger('click');await flushPromises()
+   await w.get('.yl-guide').findAll('button').find(b=>b.text()==='下一步 / 跳过')!.trigger('click');await flushPromises()
+   expect(w.get('.yl-guide strong').text()).toBe('2 · 第二步')
+   expect(w.get('.yl-guide').text()).toContain('完成引导')
+  } finally {targets.forEach(el=>el.remove());vi.unstubAllGlobals()}
  })
  it('uses the shared scroll lock and restores the prior inert state on focus exit',async()=>{
   const release=acquireBodyScrollLock();const root=document.getElementById('app')!;root.inert=false

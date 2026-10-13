@@ -2299,7 +2299,10 @@ def create_quote(
         payload.factory_id,
         payload.initiator_department,
     )
-    owner_name = validate_quote_business_owner(db, payload.business_owner_id, payload.factory_id, user.id)
+    owner_name = validate_quote_business_owner(
+        db, payload.business_owner_id, payload.factory_id, user.id,
+        module_version="v4" if payload.workflow_mode == "direct_output" else "v2",
+    )
     history_sources = prepare_history_sources(db, payload, user)
     timestamp = now_text()
     products = payload.products
@@ -2776,14 +2779,23 @@ def _can_review_quote(user: AuthContext, factory_id: str, created_by: str) -> bo
     )
 
 
+def _can_own_quote(user: AuthContext, factory_id: str, created_by: str, module_version: str) -> bool:
+    if module_version == "v4":
+        return _is_sales_quote_reviewer(user, factory_id) and can(
+            user, "internal_quote:sales_edit", factory_id, "sales-business",
+        )
+    return _can_review_quote(user, factory_id, created_by)
+
+
 def validate_quote_business_owner(
-    db: Session, owner_id: str, factory_id: str, created_by: str,
+    db: Session, owner_id: str, factory_id: str, created_by: str, *, module_version: str = "v2",
 ) -> str:
     owner = db.get(AuthUser, owner_id)
-    if owner is None or owner.status != "active" or not _can_review_quote(
-        build_auth_context(db, owner), factory_id, created_by,
+    if owner is None or owner.status != "active" or not _can_own_quote(
+        build_auth_context(db, owner), factory_id, created_by, module_version,
     ):
-        raise HTTPException(status_code=400, detail="请选择在当前厂区具备审核权限的业务部人员")
+        permission_label = "报价编辑权限" if module_version == "v4" else "审核权限"
+        raise HTTPException(status_code=400, detail=f"请选择在当前厂区具备{permission_label}的业务部人员")
     return owner.display_name or owner.username
 
 
@@ -2823,8 +2835,18 @@ def list_business_owners(
     db: Session,
     user: AuthContext,
     factory_id: str,
+    *, workflow_mode: str = "section_review", quote_id: str | None = None,
 ) -> list[InternalQuoteBusinessOwnerOut]:
     ensure_quote_read(db, user, factory_id)
+    module_version = "v4" if workflow_mode == "direct_output" else "v2"
+    created_by = user.id
+    if quote_id:
+        quote = _get_quote(db, quote_id)
+        if quote.factory_id != factory_id:
+            raise HTTPException(status_code=400, detail="报价不属于当前厂区")
+        # Existing quotes use their persisted workflow and original creator,
+        # including the legacy self-review exception, not caller-supplied mode.
+        module_version, created_by = quote.module_version, quote.created_by
     users = db.scalars(
         select(AuthUser)
         .outerjoin(AuthUserRole, AuthUserRole.user_id == AuthUser.id)
@@ -2847,7 +2869,7 @@ def list_business_owners(
             display_name=item.display_name or item.username,
         )
         for item in users
-        if _can_review_quote(build_auth_context(db, item), factory_id, user.id)
+        if _can_own_quote(build_auth_context(db, item), factory_id, created_by, module_version)
     ]
 
 
@@ -3369,6 +3391,7 @@ def update_quote_header(
     if payload.business_owner_id is not None or payload.business_owner_name is not None:
         owner_name = validate_quote_business_owner(
             db, payload.business_owner_id or quote.business_owner_id, quote.factory_id, quote.created_by,
+            module_version=quote.module_version,
         )
     prospective_customer = payload.customer if payload.customer is not None else quote.customer
     if payload.customer is not None and payload.customer != quote.customer:
@@ -3714,7 +3737,14 @@ def clone_quote(
         source.factory_id,
         initiator_department,
     )
-    owner_name = validate_quote_business_owner(db, payload.business_owner_id, source.factory_id, user.id)
+    target_module_version = (
+        "v4" if payload.workflow_mode == "direct_output" else
+        WHOLE_QUOTE_REVIEW_MODULE_VERSION if payload.workflow_mode == "whole_quote_review" else
+        LEGACY_SECTION_REVIEW_MODULE_VERSION if payload.workflow_mode == "section_review" else source.module_version
+    )
+    owner_name = validate_quote_business_owner(
+        db, payload.business_owner_id, source.factory_id, user.id, module_version=target_module_version,
+    )
     source_sections = db.scalars(
         select(InternalQuoteSection).where(InternalQuoteSection.quote_id == source.id)
     ).all()
@@ -3749,14 +3779,7 @@ def clone_quote(
         ),
         target_date=payload.target_date,
         remark=source.remark if payload.remark is None else payload.remark,
-        module_version=(
-            "v4" if payload.workflow_mode == "direct_output" else
-            WHOLE_QUOTE_REVIEW_MODULE_VERSION
-            if payload.workflow_mode == "whole_quote_review"
-            else LEGACY_SECTION_REVIEW_MODULE_VERSION
-            if payload.workflow_mode == "section_review"
-            else source.module_version
-        ),
+        module_version=target_module_version,
         reference_snapshot_id="",
         formula_version=FORMULA_VERSION,
         header_revision=1,

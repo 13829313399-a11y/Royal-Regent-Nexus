@@ -1,0 +1,776 @@
+{
+  "fixture_version": 1,
+  "synthetic": true,
+  "not_live_evidence": true,
+  "description": "原生响应字段形状来自官方文档研究，自行构造的合成帧；不是上游录制，不证明当前账号组合已验证。不得把raw_sse发送到真实服务。",
+  "cases": [
+    {
+      "id": "native-source-first",
+      "synthetic": true,
+      "protocol": "dashscope_multimodal",
+      "endpoint": "https://synthetic-workspace.example.test/api/v1/services/aigc/multimodal-generation/generation",
+      "http_status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-DashScope-SSE": "enable"
+      },
+      "request_body": {
+        "model": "qwen3.7-plus",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "text": "合成公开查询：材料说明。"
+                }
+              ]
+            }
+          ]
+        },
+        "parameters": {
+          "enable_search": true,
+          "enable_thinking": false,
+          "incremental_output": true,
+          "result_format": "message",
+          "search_options": {
+            "search_strategy": "turbo",
+            "forced_search": true,
+            "enable_source": true,
+            "enable_citation": true,
+            "citation_format": "[ref_<number>]"
+          }
+        }
+      },
+      "frames": [
+        {
+          "request_id": "fx-native-001",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": null,
+                "message": {
+                  "role": "assistant",
+                  "content": []
+                }
+              }
+            ],
+            "search_info": {
+              "search_results": [
+                {
+                  "index": 1,
+                  "title": "合成公开资料 A（非真实网页）",
+                  "url": "https://sources.example.test/material/a",
+                  "site_name": "Synthetic Sources",
+                  "icon": ""
+                }
+              ]
+            }
+          },
+          "usage": {
+            "input_tokens": 40,
+            "output_tokens": 0,
+            "plugins": {
+              "search": {
+                "count": 1
+              }
+            }
+          }
+        },
+        {
+          "request_id": "fx-native-001",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": "null",
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "合成资料说明[ref_"
+                    }
+                  ]
+                }
+              }
+            ],
+            "search_info": {
+              "search_results": []
+            }
+          },
+          "usage": {
+            "input_tokens": 60,
+            "output_tokens": 5,
+            "plugins": {
+              "search": {
+                "count": 1
+              }
+            }
+          }
+        },
+        {
+          "request_id": "fx-native-001",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": "stop",
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "1]。"
+                    }
+                  ]
+                }
+              }
+            ],
+            "search_info": {
+              "search_results": []
+            }
+          },
+          "usage": {
+            "input_tokens": 120,
+            "output_tokens": 12,
+            "plugins": {
+              "search": {
+                "count": 1
+              }
+            }
+          }
+        }
+      ],
+      "raw_sse": "data: {\"request_id\":\"fx-native-001\",\"output\":{\"choices\":[{\"finish_reason\":null,\"message\":{\"role\":\"assistant\",\"content\":[]}}],\"search_info\":{\"search_results\":[{\"index\":1,\"title\":\"合成公开资料 A（非真实网页）\",\"url\":\"https://sources.example.test/material/a\",\"site_name\":\"Synthetic Sources\",\"icon\":\"\"}]}},\"usage\":{\"input_tokens\":40,\"output_tokens\":0,\"plugins\":{\"search\":{\"count\":1}}}}\n\ndata: {\"request_id\":\"fx-native-001\",\"output\":{\"choices\":[{\"finish_reason\":\"null\",\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"合成资料说明[ref_\"}]}}],\"search_info\":{\"search_results\":[]}},\"usage\":{\"input_tokens\":60,\"output_tokens\":5,\"plugins\":{\"search\":{\"count\":1}}}}\n\ndata: {\"request_id\":\"fx-native-001\",\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"1]。\"}]}}],\"search_info\":{\"search_results\":[]}},\"usage\":{\"input_tokens\":120,\"output_tokens\":12,\"plugins\":{\"search\":{\"count\":1}}}}\n\n",
+      "transport": {
+        "closed_after_last_frame": true,
+        "contains_done_sentinel": false
+      },
+      "expected": {
+        "completed": true,
+        "intermediate_terminal_flags": [
+          false,
+          false,
+          true
+        ],
+        "text": "合成资料说明[ref_1]。",
+        "retained_provider_refs": [
+          "1"
+        ],
+        "rejected_provider_refs": [],
+        "tokens": {
+          "prompt_tokens": 120,
+          "completion_tokens": 12,
+          "total_tokens": 132
+        },
+        "search_count": 1,
+        "search_execution": "confirmed",
+        "evidence_level": "results_returned",
+        "usage_is_cumulative": true,
+        "provider_error": null
+      },
+      "acceptance": [
+        "A07",
+        "A08",
+        "B07"
+      ]
+    },
+    {
+      "id": "native-late-source",
+      "synthetic": true,
+      "protocol": "dashscope_multimodal",
+      "endpoint": "https://synthetic-workspace.example.test/api/v1/services/aigc/multimodal-generation/generation",
+      "http_status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-DashScope-SSE": "enable"
+      },
+      "request_body": {
+        "model": "qwen3.7-plus",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "text": "合成公开查询：材料说明。"
+                }
+              ]
+            }
+          ]
+        },
+        "parameters": {
+          "enable_search": true,
+          "enable_thinking": false,
+          "incremental_output": true,
+          "result_format": "message",
+          "search_options": {
+            "search_strategy": "turbo",
+            "forced_search": true,
+            "enable_source": true,
+            "enable_citation": true,
+            "citation_format": "[ref_<number>]"
+          }
+        }
+      },
+      "frames": [
+        {
+          "request_id": "fx-native-002",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": null,
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "合成资料说明[ref_"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "usage": {}
+        },
+        {
+          "request_id": "fx-native-002",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": "null",
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "1]。"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "usage": {}
+        },
+        {
+          "request_id": "fx-native-002",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": "stop",
+                "message": {
+                  "role": "assistant",
+                  "content": []
+                }
+              }
+            ],
+            "search_info": {
+              "search_results": [
+                {
+                  "index": 1,
+                  "title": "合成公开资料 A（非真实网页）",
+                  "url": "https://sources.example.test/material/a",
+                  "site_name": "Synthetic Sources",
+                  "icon": ""
+                }
+              ]
+            }
+          },
+          "usage": {
+            "input_tokens": 80,
+            "output_tokens": 30,
+            "plugins": {
+              "search": {
+                "count": 1
+              }
+            }
+          }
+        }
+      ],
+      "raw_sse": "data: {\"request_id\":\"fx-native-002\",\"output\":{\"choices\":[{\"finish_reason\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"合成资料说明[ref_\"}]}}]},\"usage\":{}}\n\ndata: {\"request_id\":\"fx-native-002\",\"output\":{\"choices\":[{\"finish_reason\":\"null\",\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"1]。\"}]}}]},\"usage\":{}}\n\ndata: {\"request_id\":\"fx-native-002\",\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":[]}}],\"search_info\":{\"search_results\":[{\"index\":1,\"title\":\"合成公开资料 A（非真实网页）\",\"url\":\"https://sources.example.test/material/a\",\"site_name\":\"Synthetic Sources\",\"icon\":\"\"}]}},\"usage\":{\"input_tokens\":80,\"output_tokens\":30,\"plugins\":{\"search\":{\"count\":1}}}}\n\n",
+      "transport": {
+        "closed_after_last_frame": true,
+        "contains_done_sentinel": false
+      },
+      "expected": {
+        "completed": true,
+        "intermediate_terminal_flags": [
+          false,
+          false,
+          true
+        ],
+        "text": "合成资料说明[ref_1]。",
+        "retained_provider_refs": [
+          "1"
+        ],
+        "rejected_provider_refs": [],
+        "tokens": {
+          "prompt_tokens": 80,
+          "completion_tokens": 30,
+          "total_tokens": 110
+        },
+        "search_count": 1,
+        "search_execution": "confirmed",
+        "evidence_level": "results_returned",
+        "usage_is_cumulative": true,
+        "provider_error": null
+      },
+      "acceptance": [
+        "B01",
+        "B02"
+      ]
+    },
+    {
+      "id": "native-http200-no-evidence",
+      "synthetic": true,
+      "protocol": "dashscope_multimodal",
+      "endpoint": "https://synthetic-workspace.example.test/api/v1/services/aigc/multimodal-generation/generation",
+      "http_status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-DashScope-SSE": "enable"
+      },
+      "request_body": {
+        "model": "qwen3.7-plus",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "text": "合成公开查询：材料说明。"
+                }
+              ]
+            }
+          ]
+        },
+        "parameters": {
+          "enable_search": true,
+          "enable_thinking": false,
+          "incremental_output": true,
+          "result_format": "message",
+          "search_options": {
+            "search_strategy": "turbo",
+            "forced_search": true,
+            "enable_source": true,
+            "enable_citation": true,
+            "citation_format": "[ref_<number>]"
+          }
+        }
+      },
+      "frames": [
+        {
+          "request_id": "fx-native-003",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": "stop",
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "未取得可核验来源。"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 900,
+            "output_tokens": 35
+          }
+        }
+      ],
+      "raw_sse": "data: {\"request_id\":\"fx-native-003\",\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"未取得可核验来源。\"}]}}]},\"usage\":{\"input_tokens\":900,\"output_tokens\":35}}\n\n",
+      "transport": {
+        "closed_after_last_frame": true,
+        "contains_done_sentinel": false
+      },
+      "expected": {
+        "completed": true,
+        "intermediate_terminal_flags": [
+          true
+        ],
+        "text": "未取得可核验来源。",
+        "retained_provider_refs": [],
+        "rejected_provider_refs": [],
+        "tokens": {
+          "prompt_tokens": 900,
+          "completion_tokens": 35,
+          "total_tokens": 935
+        },
+        "search_count": null,
+        "search_execution": "unconfirmed",
+        "evidence_level": "none",
+        "usage_is_cumulative": true,
+        "provider_error": null
+      },
+      "acceptance": [
+        "A05"
+      ]
+    },
+    {
+      "id": "native-count-zero-results",
+      "synthetic": true,
+      "protocol": "dashscope_multimodal",
+      "endpoint": "https://synthetic-workspace.example.test/api/v1/services/aigc/multimodal-generation/generation",
+      "http_status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-DashScope-SSE": "enable"
+      },
+      "request_body": {
+        "model": "qwen3.7-plus",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "text": "合成公开查询：材料说明。"
+                }
+              ]
+            }
+          ]
+        },
+        "parameters": {
+          "enable_search": true,
+          "enable_thinking": false,
+          "incremental_output": true,
+          "result_format": "message",
+          "search_options": {
+            "search_strategy": "turbo",
+            "forced_search": true,
+            "enable_source": true,
+            "enable_citation": true,
+            "citation_format": "[ref_<number>]"
+          }
+        }
+      },
+      "frames": [
+        {
+          "request_id": "fx-native-004",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": "stop",
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "检索暂时没有结果。"
+                    }
+                  ]
+                }
+              }
+            ],
+            "search_info": {
+              "search_results": []
+            }
+          },
+          "usage": {
+            "input_tokens": 50,
+            "output_tokens": 18,
+            "plugins": {
+              "search": {
+                "count": 1
+              }
+            }
+          }
+        }
+      ],
+      "raw_sse": "data: {\"request_id\":\"fx-native-004\",\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"检索暂时没有结果。\"}]}}],\"search_info\":{\"search_results\":[]}},\"usage\":{\"input_tokens\":50,\"output_tokens\":18,\"plugins\":{\"search\":{\"count\":1}}}}\n\n",
+      "transport": {
+        "closed_after_last_frame": true,
+        "contains_done_sentinel": false
+      },
+      "expected": {
+        "completed": true,
+        "intermediate_terminal_flags": [
+          true
+        ],
+        "text": "检索暂时没有结果。",
+        "retained_provider_refs": [],
+        "rejected_provider_refs": [],
+        "tokens": {
+          "prompt_tokens": 50,
+          "completion_tokens": 18,
+          "total_tokens": 68
+        },
+        "search_count": 1,
+        "search_execution": "confirmed",
+        "evidence_level": "none",
+        "usage_is_cumulative": true,
+        "provider_error": null
+      },
+      "acceptance": [
+        "A06"
+      ]
+    },
+    {
+      "id": "native-abrupt-eof",
+      "synthetic": true,
+      "protocol": "dashscope_multimodal",
+      "endpoint": "https://synthetic-workspace.example.test/api/v1/services/aigc/multimodal-generation/generation",
+      "http_status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-DashScope-SSE": "enable"
+      },
+      "request_body": {
+        "model": "qwen3.7-plus",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "text": "合成公开查询：材料说明。"
+                }
+              ]
+            }
+          ]
+        },
+        "parameters": {
+          "enable_search": true,
+          "enable_thinking": false,
+          "incremental_output": true,
+          "result_format": "message",
+          "search_options": {
+            "search_strategy": "turbo",
+            "forced_search": true,
+            "enable_source": true,
+            "enable_citation": true,
+            "citation_format": "[ref_<number>]"
+          }
+        }
+      },
+      "frames": [
+        {
+          "request_id": "fx-native-005",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": null,
+                "message": {
+                  "role": "assistant",
+                  "content": []
+                }
+              }
+            ],
+            "search_info": {
+              "search_results": [
+                {
+                  "index": 1,
+                  "title": "合成公开资料 A（非真实网页）",
+                  "url": "https://sources.example.test/material/a",
+                  "site_name": "Synthetic Sources",
+                  "icon": ""
+                }
+              ]
+            }
+          },
+          "usage": {}
+        },
+        {
+          "request_id": "fx-native-005",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": "null",
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "只收到一部分合成正文"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "usage": {}
+        }
+      ],
+      "raw_sse": "data: {\"request_id\":\"fx-native-005\",\"output\":{\"choices\":[{\"finish_reason\":null,\"message\":{\"role\":\"assistant\",\"content\":[]}}],\"search_info\":{\"search_results\":[{\"index\":1,\"title\":\"合成公开资料 A（非真实网页）\",\"url\":\"https://sources.example.test/material/a\",\"site_name\":\"Synthetic Sources\",\"icon\":\"\"}]}},\"usage\":{}}\n\ndata: {\"request_id\":\"fx-native-005\",\"output\":{\"choices\":[{\"finish_reason\":\"null\",\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"只收到一部分合成正文\"}]}}]},\"usage\":{}}\n\n",
+      "transport": {
+        "closed_after_last_frame": true,
+        "contains_done_sentinel": false
+      },
+      "expected": {
+        "completed": false,
+        "intermediate_terminal_flags": [
+          false,
+          false
+        ],
+        "text": "只收到一部分合成正文",
+        "retained_provider_refs": [
+          "1"
+        ],
+        "rejected_provider_refs": [],
+        "tokens": null,
+        "search_count": null,
+        "search_execution": "confirmed",
+        "evidence_level": "results_returned",
+        "usage_is_cumulative": true,
+        "provider_error": "provider_incomplete"
+      },
+      "acceptance": [
+        "A08",
+        "C05"
+      ]
+    },
+    {
+      "id": "native-duplicate-and-unsafe-url",
+      "synthetic": true,
+      "protocol": "dashscope_multimodal",
+      "endpoint": "https://synthetic-workspace.example.test/api/v1/services/aigc/multimodal-generation/generation",
+      "http_status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-DashScope-SSE": "enable"
+      },
+      "request_body": {
+        "model": "qwen3.7-plus",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "text": "合成公开查询：材料说明。"
+                }
+              ]
+            }
+          ]
+        },
+        "parameters": {
+          "enable_search": true,
+          "enable_thinking": false,
+          "incremental_output": true,
+          "result_format": "message",
+          "search_options": {
+            "search_strategy": "turbo",
+            "forced_search": true,
+            "enable_source": true,
+            "enable_citation": true,
+            "citation_format": "[ref_<number>]"
+          }
+        }
+      },
+      "frames": [
+        {
+          "request_id": "fx-native-006",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": null,
+                "message": {
+                  "role": "assistant",
+                  "content": []
+                }
+              }
+            ],
+            "search_info": {
+              "search_results": [
+                {
+                  "index": 1,
+                  "title": "合成公开资料 A（非真实网页）",
+                  "url": "https://sources.example.test/material/a",
+                  "site_name": "Synthetic Sources",
+                  "icon": ""
+                },
+                {
+                  "index": 1,
+                  "title": "合成公开资料 A（非真实网页）",
+                  "url": "https://sources.example.test/material/a",
+                  "site_name": "Synthetic Sources",
+                  "icon": ""
+                },
+                {
+                  "index": 2,
+                  "title": "合成公开资料 A（非真实网页）",
+                  "url": "javascript:alert(1)",
+                  "site_name": "Synthetic Sources",
+                  "icon": ""
+                }
+              ]
+            }
+          },
+          "usage": {}
+        },
+        {
+          "request_id": "fx-native-006",
+          "output": {
+            "choices": [
+              {
+                "finish_reason": "stop",
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "可用来源[ref_1]；无效链接[ref_2]保留不可核验说明。"
+                    }
+                  ]
+                }
+              }
+            ],
+            "search_info": {
+              "search_results": []
+            }
+          },
+          "usage": {
+            "input_tokens": 95,
+            "output_tokens": 20,
+            "plugins": {
+              "search": {
+                "count": 1
+              }
+            }
+          }
+        }
+      ],
+      "raw_sse": "data: {\"request_id\":\"fx-native-006\",\"output\":{\"choices\":[{\"finish_reason\":null,\"message\":{\"role\":\"assistant\",\"content\":[]}}],\"search_info\":{\"search_results\":[{\"index\":1,\"title\":\"合成公开资料 A（非真实网页）\",\"url\":\"https://sources.example.test/material/a\",\"site_name\":\"Synthetic Sources\",\"icon\":\"\"},{\"index\":1,\"title\":\"合成公开资料 A（非真实网页）\",\"url\":\"https://sources.example.test/material/a\",\"site_name\":\"Synthetic Sources\",\"icon\":\"\"},{\"index\":2,\"title\":\"合成公开资料 A（非真实网页）\",\"url\":\"javascript:alert(1)\",\"site_name\":\"Synthetic Sources\",\"icon\":\"\"}]}},\"usage\":{}}\n\ndata: {\"request_id\":\"fx-native-006\",\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"可用来源[ref_1]；无效链接[ref_2]保留不可核验说明。\"}]}}],\"search_info\":{\"search_results\":[]}},\"usage\":{\"input_tokens\":95,\"output_tokens\":20,\"plugins\":{\"search\":{\"count\":1}}}}\n\n",
+      "transport": {
+        "closed_after_last_frame": true,
+        "contains_done_sentinel": false
+      },
+      "expected": {
+        "completed": true,
+        "intermediate_terminal_flags": [
+          false,
+          true
+        ],
+        "text": "可用来源[ref_1]；无效链接[ref_2]保留不可核验说明。",
+        "retained_provider_refs": [
+          "1"
+        ],
+        "rejected_provider_refs": [
+          "2"
+        ],
+        "tokens": {
+          "prompt_tokens": 95,
+          "completion_tokens": 20,
+          "total_tokens": 115
+        },
+        "search_count": 1,
+        "search_execution": "confirmed",
+        "evidence_level": "results_returned",
+        "usage_is_cumulative": true,
+        "provider_error": null,
+        "unresolved_markers": [
+          "[ref_2]"
+        ]
+      },
+      "acceptance": [
+        "B05",
+        "B03"
+      ]
+    }
+  ],
+  "official_shape_reference": "../09_OFFICIAL_SOURCES.md",
+  "chunking_suggestions": [
+    "whole_stream",
+    "every_utf8_byte",
+    "marker_boundary",
+    "between_sse_newlines"
+  ]
+}

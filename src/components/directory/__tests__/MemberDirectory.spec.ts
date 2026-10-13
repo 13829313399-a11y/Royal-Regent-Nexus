@@ -12,6 +12,7 @@ import type { DirectoryMember } from '@/api/directory'
 const apiMocks = vi.hoisted(() => ({
   getSummary: vi.fn(),
   getMembers: vi.fn(),
+  getMember: vi.fn(),
   sendHeartbeat: vi.fn(),
 }))
 
@@ -53,6 +54,7 @@ describe('member directory experience', () => {
       preview_members: [onlineMember],
     })
     apiMocks.getMembers.mockReset().mockResolvedValue(membersResponse())
+    apiMocks.getMember.mockReset().mockResolvedValue(onlineMember)
     document.body.innerHTML = ''
   })
 
@@ -142,6 +144,59 @@ describe('member directory experience', () => {
     await wrapper.setProps({ member: null })
     await nextTick()
     expect(document.activeElement).toBe(trigger)
+    wrapper.unmount()
+  })
+
+  it('previews a card avatar above the drawer, restores its focus, and keeps name navigation separate', async () => {
+    const previousOverflow = document.body.style.overflow
+    const wrapper = mount(MemberDirectoryDrawer, {
+      props: { open: true }, attachTo: document.body,
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+    await flushPromises()
+    const drawer = document.body.querySelector<HTMLElement>('.connect-backdrop')!
+    const drawerLayer = [...document.body.children].find(el => el.contains(drawer)) as HTMLElement
+    const avatar = drawer.querySelector<HTMLButtonElement>('[aria-label="预览测试成员的头像"]')!
+    avatar.focus(); avatar.click()
+    await flushPromises()
+    const preview = document.body.querySelector<HTMLElement>('.directory-avatar-dialog')!
+    expect(preview.closest('.rr-connect')).not.toBeNull()
+    expect(preview.querySelector('img')?.getAttribute('src')).toBe(onlineMember.avatar_url)
+    expect(apiMocks.getMember).not.toHaveBeenCalled()
+    expect(drawerLayer.inert).toBe(true)
+    const close = preview.querySelector<HTMLButtonElement>('[aria-label="关闭头像预览"]')!
+    expect(document.activeElement).toBe(close)
+    close.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+    expect(document.activeElement).toBe(close)
+    close.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    expect(document.body.querySelector('.directory-avatar-dialog')).toBeNull()
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(drawerLayer.inert).not.toBe(true)
+    expect(document.activeElement).toBe(avatar)
+    expect(document.body.style.overflow).toBe('hidden')
+
+    drawer.querySelector<HTMLButtonElement>('.connect-name-button')!.click()
+    await flushPromises()
+    expect(apiMocks.getMember).toHaveBeenCalledWith(onlineMember.id, expect.any(AbortSignal))
+    expect(document.body.textContent).toContain('返回成员列表')
+    document.body.querySelector<HTMLButtonElement>('[aria-label="预览测试成员的头像"]')!.click()
+    await flushPromises()
+    const image = document.body.querySelector<HTMLImageElement>('.directory-avatar-dialog img')!
+    image.dispatchEvent(new Event('error'))
+    await nextTick()
+    expect(document.body.querySelector('.directory-avatar-large')?.textContent).toContain('测')
+    document.body.querySelector<HTMLElement>('.directory-avatar-backdrop')!.click()
+    await flushPromises()
+    expect(document.body.querySelector('.directory-avatar-dialog')).toBeNull()
+    expect(document.body.textContent).toContain('返回成员列表')
+
+    document.body.querySelector<HTMLButtonElement>('[aria-label="预览测试成员的头像"]')!.click()
+    await flushPromises()
+    await wrapper.setProps({ open: false })
+    await flushPromises()
+    expect(document.body.querySelector('.directory-avatar-dialog')).toBeNull()
+    expect(document.body.style.overflow).toBe(previousOverflow)
     wrapper.unmount()
   })
 

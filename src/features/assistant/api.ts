@@ -1,6 +1,6 @@
 import { dispatchAccessFailure } from '@/lib/http'
 import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
-import type { Capabilities, Conversation, HelpArticle, MessagePage, PageContext, SendPayload, Snapshot } from './types'
+import type { Artifact, DocumentFile, Capabilities, Conversation, HelpArticle, MessagePage, PageContext, SendPayload, Snapshot } from './types'
 
 export function assistantUrl(path: string, base = import.meta.env.VITE_API_BASE_URL || '/api') {
   return `${base.replace(/\/$/, '')}/assistant${path}`
@@ -27,7 +27,7 @@ export const assistantApi = {
   help: (page: PageContext) => json<{ items: HelpArticle[]; status: string }>(`/help/context?${new URLSearchParams({ module_id: page.module_id, route_name: page.route_name, ...(page.factory_id ? { factory_id: page.factory_id } : {}) })}`),
   article: (id: string) => json<HelpArticle>(`/help/articles/${encodeURIComponent(id)}`),
   create: (client_request_id: string) => json<Conversation>('/sessions', { method: 'POST', body: JSON.stringify({ client_request_id }) }),
-  sessions: (cursor = '') => json<{ items: Conversation[]; next_cursor: string | null }>(`/sessions?cursor=${encodeURIComponent(cursor)}`),
+  sessions: (cursor = '', q = '', favorites = false) => json<{ items: Conversation[]; next_cursor: string | null }>(`/sessions?${new URLSearchParams({ cursor, q, favorites: String(favorites) })}`),
   messages: (id: string, cursor = 0) => json<MessagePage>(`/sessions/${id}/messages?cursor=${cursor}`),
   rename: (row: Conversation, title: string) => json<Conversation>(`/sessions/${row.id}`, { method: 'PATCH', body: JSON.stringify({ title, revision: row.revision }) }),
   remove: (id: string) => json<{ deletion_state: string }>(`/sessions/${id}`, { method: 'DELETE' }),
@@ -38,6 +38,19 @@ export const assistantApi = {
   export: async (id: string) => (await request(`/sessions/${id}/export`)).blob(),
   upload: async (id: string, file: File) => { const body = new FormData(); body.append('file', file); return json<{ id: string }>(`/sessions/${id}/attachments`, { method: 'POST', body }) },
   removeAttachment: (id: string) => request(`/attachments/${id}`, { method: 'DELETE' }),
+  attachment: async (id: string) => (await request(`/attachments/${id}/content`)).blob(),
+  uploadDocument: async (sid: string, file: File) => { const body = new FormData(); body.append('file', file); return json<DocumentFile>(`/sessions/${sid}/files`, { method: 'POST', body }) },
+  document: (id: string) => json<DocumentFile>(`/files/${id}`),
+  documentContent: (id: string) => json<{ text: string; locator: import('./v2').FileSource['locator'] }[]>(`/files/${id}/content?extracted=true`),
+  removeDocument: (id: string) => request(`/files/${id}`, { method: 'DELETE' }),
+  saveArtifact: (sid: string, value: { source_run_id: string; title: string; kind: string; content: string }) => json<Artifact>(`/sessions/${sid}/artifacts`, { method: 'POST', body: JSON.stringify(value) }),
+  artifacts: (cursor = '', q = '') => json<{ items: Artifact[]; next_cursor: string | null }>(`/artifacts?${new URLSearchParams({cursor, q})}`),
+  artifact: (id: string, revision?: number) => json<Artifact>(`/artifacts/${id}${revision ? `?revision=${revision}` : ''}`),
+  reviseArtifact: (id: string, base_revision: number, content: string) => json<Artifact>(`/artifacts/${id}/versions`, { method: 'POST', body: JSON.stringify({base_revision, content}) }),
+  exportArtifact: async (id: string, format: string, revision?: number) => (await request(`/artifacts/${id}/export?format=${encodeURIComponent(format)}${revision ? `&revision=${revision}` : ''}`)).blob(),
+  exportAnswer: async (id: string) => (await request(`/runs/${id}/export`)).blob(),
+  favorite: (sid: string, favorite: boolean) => json<{favorite: boolean}>(`/sessions/${sid}/favorite`, { method: 'PATCH', body: JSON.stringify({favorite}) }),
+  action: (run_id: string, index: number) => json<import('./v2').UIAction>('/actions/resolve', { method: 'POST', body: JSON.stringify({run_id, index}) }),
 }
 
 export function newRequestId() {
