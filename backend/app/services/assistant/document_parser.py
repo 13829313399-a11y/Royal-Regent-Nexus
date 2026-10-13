@@ -30,6 +30,8 @@ def extract(raw, extension, max_pages, max_characters):
                 add(page.extract_text() or "", dict(kind="page", page=i+1))
         except DocumentParseError:
             raise
+        except MemoryError:
+            raise
         except Exception:
             raise DocumentParseError("pdf_invalid", "PDF无法解析，请核对文件。") from None
         if not segments:

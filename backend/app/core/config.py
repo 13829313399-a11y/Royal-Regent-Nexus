@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     assistant_file_parse_concurrency: int = Field(default=2, ge=1, le=4)
     assistant_file_parse_queue_limit: int = Field(default=16, ge=1, le=64)
     assistant_file_parse_timeout_seconds: int = Field(default=60, ge=1, le=300)
+    assistant_file_parse_memory_mb: int = Field(default=512, ge=128, le=2048)
     assistant_connect_timeout_seconds: int = Field(default=10, ge=1, le=60)
     assistant_upstream_idle_timeout_seconds: int = Field(default=180, ge=1, le=600)
     assistant_run_timeout_seconds: int = Field(default=900, ge=1, le=3600)

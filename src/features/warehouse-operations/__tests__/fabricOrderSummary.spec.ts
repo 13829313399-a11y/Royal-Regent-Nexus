@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, DOMWrapper, type VueWrapper } from '@vue/test-utils'
 import { ref } from 'vue'
+import { parseDate } from '@internationalized/date'
+import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import Summary from '../FabricOrderSummary.vue'
 import { inventorySearchKey } from '../inventorySearch'
 import type { FabricOrderReport } from '@/api/warehouseOperations'
@@ -30,14 +32,16 @@ describe('fabric order receiving issuing and adjustments', () => {
     expect(wrapper.get('tbody').text()).toContain('IS-001')
     expect(wrapper.get('tbody').text()).toContain('车间一')
   })
-  it('applies date supplier and keyword filters only when querying', async () => {
+  it('applies a completed date range with supplier and keyword, and clears both date bounds together', async () => {
     await open()
     await wrapper.get('[aria-label="订单收发关键字"]').setValue(' PO-001 ')
-    await wrapper.get('[aria-label="订单收发开始日期"]').setValue('2026-10-01')
     await wrapper.get('[aria-label="订单收发供应商"]').setValue('纺织厂')
     expect(api.orderSummary).toHaveBeenCalledTimes(1)
-    await wrapper.get('form').trigger('submit'); await flushPromises()
-    expect(api.orderSummary).toHaveBeenLastCalledWith({ date_from: '2026-10-01', date_to: '', search: 'PO-001', supplier: '纺织厂' })
+    wrapper.getComponent(DateRangeFilter).vm.$emit('update:modelValue', { start: parseDate('2026-10-01'), end: parseDate('2026-10-13') }); await flushPromises()
+    expect(api.orderSummary).toHaveBeenCalledTimes(2)
+    expect(api.orderSummary).toHaveBeenLastCalledWith({ date_from: '2026-10-01', date_to: '2026-10-13', search: 'PO-001', supplier: '纺织厂' })
+    wrapper.getComponent(DateRangeFilter).vm.$emit('update:modelValue', { start: undefined, end: undefined }); await flushPromises()
+    expect(api.orderSummary).toHaveBeenLastCalledWith({ date_from: '', date_to: '', search: 'PO-001', supplier: '纺织厂' })
   })
   it('clears old balances on permission failure and ignores responses after unmount', async () => {
     await open()

@@ -214,6 +214,7 @@ def test_worker_exits_when_supervisor_pipe_closes(tmp_path):
     import shutil
     worker=tmp_path/'document_worker.py'
     shutil.copy2(Path(files.__file__).with_name('document_worker.py'),worker)
+    shutil.copy2(Path(files.__file__).with_name('document_limits.py'),tmp_path/'document_limits.py')
     (tmp_path/'document_parser.py').write_text('import time\nclass DocumentParseError(Exception): pass\ndef extract(*a):\n time.sleep(30)\n return []\n',encoding='utf-8')
     source=tmp_path/'source';source.write_bytes(b'synthetic')
     child=subprocess.Popen([sys.executable,str(worker),str(source),str(tmp_path/'output'),'.txt','1','1000','30'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0)

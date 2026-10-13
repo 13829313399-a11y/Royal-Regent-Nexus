@@ -4,11 +4,11 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import Workspace from '../FabricProcurementWorkspace.vue'
 import type { PurchasePreview } from '@/api/fabricProcurement'
 
-const api = vi.hoisted(() => ({ preview: vi.fn(), apply: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn(), withdrawalPreview: vi.fn(), withdraw: vi.fn(), reviewChanges: vi.fn() }))
+const api = vi.hoisted(() => ({ preview: vi.fn(), apply: vi.fn(), groups: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn(), withdrawalPreview: vi.fn(), withdraw: vi.fn(), reviewChanges: vi.fn() }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: api }))
 let wrapper: VueWrapper | undefined
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks() })
-beforeEach(() => { vi.clearAllMocks(); api.imports.mockResolvedValue([]); api.lines.mockResolvedValue({ total: 0, items: [] }) })
+beforeEach(() => { vi.clearAllMocks(); api.groups.mockResolvedValue({ total: 0, line_total: 0, groups: [] }); api.imports.mockResolvedValue([]); api.lines.mockResolvedValue({ total: 0, items: [] }) })
 const counts = { total: 2, new: 1, updated: 0, unchanged: 0, blocked: 1, warnings: 0, pending: 1, returned: 1 }
 const preview = { preview_token: 'a'.repeat(64), revision: 0, counts, sheets: ['未回物料', '已回料'], ignored_sheets: [], filtered_total: 2, offset: 0, limit: 100, items: [] } as PurchasePreview
 async function open(mode: 'import' | 'pending' | 'orders' | 'returned' = 'import') {
@@ -16,6 +16,7 @@ async function open(mode: 'import' | 'pending' | 'orders' | 'returned' = 'import
   await router.push('/'); await router.isReady()
   wrapper = mount(Workspace, { props: { mode }, attachTo: document.body, global: { plugins: [router] } })
   await flushPromises()
+  if (mode === 'pending') { await button('按采购明细').trigger('click'); await flushPromises() }
   return wrapper
 }
 async function file() {
@@ -105,7 +106,7 @@ describe('real fabric procurement workspace', () => {
     let resolve!: (v: PurchasePreview) => void
     api.preview.mockImplementation(() => new Promise(r => { resolve = r }))
     await open(); await file(); await button('读取并核对').trigger('click')
-    await wrapper!.setProps({ mode: 'pending' }); await flushPromises()
+    await wrapper!.setProps({ mode: 'pending' }); await flushPromises(); await button('按采购明细').trigger('click'); await flushPromises()
     resolve(preview); await flushPromises()
     expect(wrapper!.text()).not.toContain('确认导入可用明细')
     expect(api.lines).toHaveBeenLastCalledWith('PENDING', '', 0, 'OUTSTANDING', expect.any(Object))

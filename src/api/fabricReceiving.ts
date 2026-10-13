@@ -11,6 +11,8 @@ export interface ReceiveRequest extends ReceiptPriceInput {
   batches: ReceiptBatchInput[]; confirmed: boolean
 }
 export interface FabricReceipt {
+  history_key?: string; receipt_origin?: 'PROCUREMENT' | 'HANDOVER' | 'MANUAL'; operation_id?: string
+  handover_document_id?: string; source_version?: string
   reversed?: boolean; reversal?: { id: string; date: string; reason: string; actor_name: string } | null
   unit_price?: string; price_unit?: string; currency?: string; amount?: string; price_basis?: string
   id: string; source_line_id: string; source_revision: number; facts: PurchaseFacts; quantity: string; unit: string
@@ -33,6 +35,7 @@ export interface FabricStockBatch {
   actor_name: string; occurred_at: string
 }
 export interface ReceiptFilters {
+  channel?: '' | 'PROCUREMENT' | 'HANDOVER' | 'MANUAL'
   supplier?: string; category?: '' | MaterialCategory; receipt_from?: string; receipt_to?: string
   state?: '' | 'ACTIVE' | 'REVERSED'; sort?: 'RECEIPT_DESC' | 'RECEIPT_ASC' | 'RECORDED_DESC' | 'SUPPLIER'
 }
@@ -45,8 +48,8 @@ export const fabricReceivingApi = {
     return (await http.post<FabricReceipt>(`/fabric-warehouse/procurement/lines/${encodeURIComponent(id)}/receive`, payload)).data
   },
   async receipts(search = '', offset = 0, filters: ReceiptFilters = {}) {
-    return (await http.get<{ total: number; items: FabricReceipt[]; can_reverse?: boolean; options?: { suppliers: string[] } }>('/fabric-warehouse/procurement/receipts', {
-      params: { factory_id: 'huakang-c', search, offset, ...filters, receipt_from: filters.receipt_from || undefined, receipt_to: filters.receipt_to || undefined },
+    return (await http.get<{ total: number; items: FabricReceipt[]; can_reverse?: boolean; operations_included?: boolean; options?: { suppliers: string[] } }>('/fabric-warehouse/procurement/receipts', {
+      params: { factory_id: 'huakang-c', unified: true, search, offset, ...filters, receipt_from: filters.receipt_from || undefined, receipt_to: filters.receipt_to || undefined },
     })).data
   },
   async reversalPreview(id: string) { return (await http.get<FabricReceiptReversalPreview>(`/fabric-warehouse/procurement/receipts/${encodeURIComponent(id)}/reversal-preview`, { params: { factory_id: 'huakang-c' } })).data },

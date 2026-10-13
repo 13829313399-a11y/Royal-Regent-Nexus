@@ -1,0 +1,209 @@
+/* Shared visual hierarchy for fabric pages. Business layouts and semi storage stay local.
+   The shell + main scope wins over component-scoped legacy sizes, independent of load order. */
+.warehouse-shell.fabric-warehouse-presentation {
+  --fabric-page-title: 20px;
+  --fabric-page-gutter: 24px;
+  --fabric-page-heading-space: 20px;
+  --fabric-body-size: 13px;
+  --fabric-meta-size: 12px;
+}
+
+.fabric-warehouse-presentation #warehouse-main {
+  font-size: var(--fabric-body-size);
+  line-height: 1.6;
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
+  .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
+  .activity-heading, .setup-heading, .dashboard-heading
+) {
+  padding: var(--fabric-page-heading-space) var(--fabric-page-gutter);
+  gap: 16px;
+  align-items: center;
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
+  .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
+  .activity-heading, .setup-heading
+) {
+  border-bottom: 1px solid var(--border);
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
+  .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
+  .activity-heading, .setup-heading, .dashboard-heading, .fabric-source-placeholder
+) :is(h1, h2) {
+  margin: 0;
+  font-size: var(--fabric-page-title);
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: normal;
+  color: var(--foreground);
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
+  .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
+  .activity-heading, .setup-heading, .dashboard-heading
+) p {
+  margin: 6px 0 0;
+  font-size: var(--fabric-body-size);
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(button, input, select, textarea) {
+  font-family: inherit;
+}
+
+.fabric-warehouse-presentation #warehouse-main button {
+  font-size: var(--fabric-body-size);
+  line-height: 20px;
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
+  .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
+  .activity-heading, .setup-heading
+) button {
+  min-height: 36px;
+  height: auto;
+  padding: 7px 12px;
+  font-weight: 600;
+}
+
+/* Filters and subview tabs share the same left edge as their heading. */
+.fabric-warehouse-presentation #warehouse-main :is(
+  .fabric-master-filters, .fabric-purchase-filters, .receipt-records-toolbar,
+  .warehouse-operation-toolbar.fabric-inventory-toolbar, .stock-filters,
+  .stock-more-filters, .activity-filters, .monthly-filters, .setup-filters
+) {
+  padding: 14px var(--fabric-page-gutter);
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .fabric-master-filters, .fabric-purchase-filters, .receipt-records-toolbar,
+  .fabric-inventory-toolbar, .stock-filters, .stock-more-filters,
+  .activity-filters, .monthly-filters, .setup-filters, .order-filters
+) :is(input:not([type='checkbox']), select) {
+  min-height: 36px;
+  font-size: var(--fabric-body-size);
+  line-height: 20px;
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .fabric-master-card-heading, .warehouse-table-heading, .stock-heading
+) + :is(.fabric-master-filters, .fabric-inventory-toolbar) {
+  border-top: 0;
+}
+
+.fabric-warehouse-presentation #warehouse-main .order-filters {
+  padding: 14px var(--fabric-page-gutter);
+  border-bottom: 1px solid var(--border);
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .order-modes, .monthly-modes, .fabric-material-views
+) {
+  gap: 8px;
+  padding: 12px var(--fabric-page-gutter);
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .warehouse-tabs, .order-modes, .monthly-modes, .fabric-material-views
+) button {
+  min-height: 36px;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-weight: 400;
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .warehouse-tabs, .order-modes, .monthly-modes, .fabric-material-views
+) button[aria-pressed='true'] {
+  border-color: #99f6e4;
+  background: var(--accent);
+  color: #115e59;
+  font-weight: 600;
+}
+
+.fabric-warehouse-presentation #warehouse-main table {
+  font-size: var(--fabric-body-size);
+  line-height: 1.6;
+}
+
+.fabric-warehouse-presentation #warehouse-main table th {
+  font-size: var(--fabric-meta-size);
+  font-weight: 500;
+  color: var(--muted-foreground);
+  background: var(--muted);
+}
+
+.fabric-warehouse-presentation #warehouse-main table strong { font-weight: 600; }
+
+.fabric-warehouse-presentation #warehouse-main :is(
+  .fabric-material-intake, .fabric-master-candidates, .fabric-unit-guide,
+  .fabric-master-note, .exception-record-note, .stock-selection
+) {
+  padding-inline: var(--fabric-page-gutter);
+}
+
+.fabric-warehouse-presentation #warehouse-main .fabric-master-candidate-heading h3 {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fabric-warehouse-presentation #warehouse-main .fabric-master-candidate-heading > span {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.fabric-warehouse-presentation #warehouse-main .fabric-candidate-grid article {
+  font-size: var(--fabric-body-size);
+  background: var(--card);
+}
+
+.fabric-warehouse-presentation #warehouse-main .fabric-candidate-grid strong { font-weight: 600; }
+.fabric-warehouse-presentation #warehouse-main .fabric-candidate-grid small { font-size: var(--fabric-meta-size); }
+.fabric-warehouse-presentation #warehouse-main .fabric-warehouse-groups { padding: 16px var(--fabric-page-gutter); }
+.fabric-warehouse-presentation #warehouse-main .fabric-source-placeholder h2 { margin-top: 14px; }
+
+.fabric-warehouse-presentation #warehouse-main :is(.warehouse-empty, .fabric-master-empty, .activity-empty, .monthly-empty) {
+  padding: 44px var(--fabric-page-gutter) 48px;
+}
+
+.fabric-warehouse-presentation #warehouse-main :is(.warehouse-empty, .fabric-master-empty, .activity-empty) h3 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.fabric-warehouse-presentation #warehouse-main .fabric-closing-pending .warehouse-empty button { margin-top: 16px; }
+
+/* Dashboard section titles are deliberately one level below the page title. */
+.fabric-warehouse-presentation #warehouse-main .fabric-dashboard h2 { font-size: 16px; font-weight: 600; }
+.fabric-warehouse-presentation #warehouse-main .fabric-dashboard h3 { font-size: 14px; font-weight: 600; }
+.fabric-warehouse-presentation #warehouse-main :is(.todos-heading, .dashboard-flow > header) p { font-size: var(--fabric-meta-size); }
+
+@media (max-width: 760px) {
+  .warehouse-shell.fabric-warehouse-presentation {
+    --fabric-page-title: 18px;
+    --fabric-page-gutter: 16px;
+    --fabric-page-heading-space: 18px;
+  }
+
+  .fabric-warehouse-presentation #warehouse-main :is(
+    .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
+    .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
+    .activity-heading, .setup-heading, .dashboard-heading
+  ) { align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+
+  .fabric-warehouse-presentation #warehouse-main :is(.fabric-order-summary > header, .activity-heading) > div { min-width: 0; flex: 1 1 220px; }
+}
