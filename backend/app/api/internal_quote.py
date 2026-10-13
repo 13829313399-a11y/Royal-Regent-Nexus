@@ -16,6 +16,7 @@ from app.schemas.internal_quote import (
     InternalQuoteBatchCopyRequest,
     InternalQuoteBatchProductOut,
     InternalQuoteBusinessOwnerOut,
+    InternalQuoteWorkflowMode,
     InternalQuoteCloneRequest,
     InternalQuoteCostPreviewOut,
     InternalQuoteCostPreviewRequest,
@@ -261,10 +262,12 @@ def get_history_products(
 @router.get("/business-owners", response_model=list[InternalQuoteBusinessOwnerOut])
 def get_internal_quote_business_owners(
     factory_id: str = Query(min_length=1, max_length=64),
+    workflow_mode: InternalQuoteWorkflowMode = "section_review",
+    quote_id: str | None = Query(default=None, min_length=1, max_length=96),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return list_business_owners(db, current_user, factory_id)
+    return list_business_owners(db, current_user, factory_id, workflow_mode=workflow_mode, quote_id=quote_id)
 
 
 @router.get("/customers", response_model=list[InternalQuoteCustomerOut])

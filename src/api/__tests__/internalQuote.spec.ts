@@ -49,7 +49,11 @@ describe('internal quote API adapter', () => {
       params: { factory_id: 'huaxing', period: 'month' },
     })
     expect(http.get).toHaveBeenNthCalledWith(3, '/internal-quotes/business-owners', {
-      params: { factory_id: 'huaxing' },
+      params: { factory_id: 'huaxing', workflow_mode: 'direct_output' },
+    })
+    await api.listBusinessOwners('huaxing', 'legacy-quote')
+    expect(http.get).toHaveBeenLastCalledWith('/internal-quotes/business-owners', {
+      params: { factory_id: 'huaxing', workflow_mode: 'direct_output', quote_id: 'legacy-quote' },
     })
   })
 
