@@ -129,7 +129,7 @@ describe('AccountMenu', () => {
 
     await wrapper.get('button[aria-label="账号与头像设置"]').trigger('click')
 
-    expect(wrapper.text()).toContain('厂区')
+    expect(wrapper.text()).toContain('正式组织')
     expect(wrapper.text()).toContain('华兴')
     expect(wrapper.text()).toContain('部门')
     expect(wrapper.text()).toContain('工程部')
@@ -167,6 +167,23 @@ describe('AccountMenu', () => {
     expect(wrapper.text()).not.toContain('全部厂区')
     expect(wrapper.text()).not.toContain('全部部门')
     expect(wrapper.text()).not.toContain('集团啤办员')
+  })
+
+  it('uses current IAM department and position after a transfer despite stale profile fields', async () => {
+    const auth = seedUser()
+    auth.applySession({ ...auth.currentUser!, identity: {
+      identity_mode: 'v2', identity_version: 2, employment_epoch: 1, employment_status: 'active',
+      primary_assignment: { id: 'assignment', org_unit_id: 'group-management', org_name: '集团总务', factory_id: '', department_code: 'management', official_position_title: '总务协调员', assignment_type: 'primary', is_primary: true, valid_from: '', valid_until: null, state: 'active', revision: 1, source_request_id: null },
+      active_assignments_summary: [], assignments: [], primary_factory_id: '', primary_department: 'management', position: '总务协调员', server_now: '', next_transition_at: null, effective_context_key: 'new-assignment',
+    } })
+    const wrapper = mountAccountMenu()
+    await wrapper.get('button[aria-label="账号与头像设置"]').trigger('click')
+    expect(wrapper.text()).toContain('集团总务')
+    expect(wrapper.text()).toContain('综合管理')
+    expect(wrapper.text()).toContain('总务协调员')
+    expect(wrapper.text()).not.toContain('工程部技术员')
+    expect(wrapper.text()).not.toContain('华兴')
+    wrapper.unmount()
   })
 
   it('enlarges the menu avatar in an accessible preview and closes with Escape', async () => {
@@ -236,5 +253,25 @@ describe('AccountMenu', () => {
     expect(uploadAvatarMock).toHaveBeenCalledWith(file)
     expect(authStore.currentUser?.avatar_url).toBe('/api/auth/me/avatar?v=avatar-version-1')
     expect(wrapper.get('[role="dialog"]').text()).toContain('头像已保存')
+  })
+
+  it('ignores an avatar response belonging to the account that just signed out', async () => {
+    const auth = seedUser(), old = { ...auth.currentUser! }
+    let resolve!: (value: typeof old) => void
+    uploadAvatarMock.mockReturnValue(new Promise(r => resolve = r))
+    const wrapper = mountAccountMenu()
+    await wrapper.get('button[aria-label="账号与头像设置"]').trigger('click')
+    await wrapper.findAll('button').find(b => b.text().includes('个人资料与头像'))!.trigger('click')
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['x'], 'avatar.png', { type: 'image/png' })] })
+    await input.trigger('change')
+    await wrapper.findAll('button').find(b => b.text().includes('保存头像'))!.trigger('click')
+    auth.applySession({ ...old, id: 'next-user', username: 'next-user', display_name: '另一账号' })
+    await flushPromises()
+    resolve({ ...old, avatar_url: '/private-old-avatar' }); await flushPromises()
+    expect(auth.currentUser?.id).toBe('next-user')
+    expect(auth.currentUser?.avatar_url).not.toBe('/private-old-avatar')
+    expect(wrapper.find('[aria-labelledby="avatar-profile-title"]').exists()).toBe(false)
+    wrapper.unmount()
   })
 })

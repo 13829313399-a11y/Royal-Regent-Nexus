@@ -1,0 +1,113 @@
+[
+  {
+    "id": "portal.overview",
+    "module_id": "portal",
+    "title": "系统门户",
+    "kind": "overview",
+    "audience": "all",
+    "route_names": [
+      "modules-department"
+    ],
+    "factory_ids": [],
+    "anchor_id": "portal.overview",
+    "field_keys": [],
+    "summary": "按当前厂区和部门查找可见模块，再进入对应业务页。",
+    "content": "首页与模块中心是导航目录。先确认当前厂区、部门，再搜索模块名称、说明或标签；搜索与预览使用已经筛选的 visibleModules，不会从隐藏目录补出入口。目录为空时核对厂区和账号授权；卡片说明或预览不代表业务数据已加载。\n普通已登录用户可浏览允许只读访问的页面；设置严格权限的页面仍检查权限。按钮写入权限由页面和后端继续校验，能看到模块不等于能修改业务。\n模块还有适用厂区限制：当前 UV 工作区只属于华康 A；喷油和裁床按各自厂区能力过滤。纸箱采购目录检查当前厂区读取权限；供应商身份与内部采购身份进入各自工作区域。没有可用详情入口的占位卡片不代表功能已经开发完成。\n预览只帮助判断模块用途，进入页面后再核对标题、厂区和实际可用操作。曜灵可在有注册说明的页面讲解；未注册的字段只能明确说暂无精确说明，不能根据卡片文案编造计算或审批规则。\n布料仓和半成品仓入口目前按华康 C 厂区显示；是否已接通某项收发业务，应以进入后的页面状态为准。",
+    "steps": [
+      {
+        "title": "确认部门",
+        "description": "核对当前厂区，再选择部门目录。",
+        "anchor_id": "portal.departments",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      },
+      {
+        "title": "搜索当前可见模块",
+        "description": "输入名称、说明或标签；只搜索有权看到的入口。",
+        "anchor_id": "portal.search",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      },
+      {
+        "title": "预览并进入模块",
+        "description": "核对卡片用途与可用状态，再从原入口进入业务页。",
+        "anchor_id": "portal.modules",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/config/pageAccessPolicy.ts",
+        "symbol": "allowAuthenticatedReadOnlyAccess",
+        "sha256": "a0f7da167ac37f8fd2bb7b16620acee935763c1bee0937681b50bb9d493bf54f"
+      },
+      {
+        "path": "src/views/ModuleCenterView.vue",
+        "symbol": "visibleModules",
+        "sha256": "d1999407ebe372327497cc42e8e214a16102c08cfc06b3245d58c3e4f8eb08e8"
+      },
+      {
+        "path": "src/composables/useVisibleModules.ts",
+        "symbol": "detailPage",
+        "sha256": "2581182fd554f284143d97daf303be3a864e1d464c42e168f01739415a7062b2"
+      },
+      {
+        "path": "src/features/warehouse-operations/navigation.ts",
+        "symbol": "WAREHOUSE_FACTORY",
+        "sha256": "e82f341455706829d0f11a7b3b3a76859de5ca0b03ebe9a3917bdceaf02355a5"
+      }
+    ],
+    "knowledge_version": "2026.10.12-v2",
+    "verified_commit": "working-tree:assistant-v2",
+    "status": "verified"
+  },
+  {
+    "id": "portal.dashboard",
+    "module_id": "portal",
+    "title": "集团首页的数据边界",
+    "kind": "overview",
+    "audience": "all",
+    "route_names": [
+      "dashboard"
+    ],
+    "factory_ids": [],
+    "anchor_id": "portal.overview",
+    "field_keys": [],
+    "summary": "首页运营指标是静态示例；实际待办和业务数据须进入原模块核实。",
+    "content": "首页展示集团导航与运营示例，不是实时经营看板。指标、跨厂时间线和模块健康展示不能替代真实业务查询。厂区范围及页面操作仍受当前授权控制。",
+    "steps": [
+      {
+        "title": "核对首页身份与范围",
+        "description": "先核对首页标题和当前厂区。",
+        "anchor_id": "portal.dashboard.header",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      },
+      {
+        "title": "识别静态示例",
+        "description": "这些指标带有示例标记，不能作为本次实时工作结论。",
+        "anchor_id": "portal.dashboard.examples",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      },
+      {
+        "title": "核对厂区导航",
+        "description": "选择可用厂区，进入原业务模块核对真实数据。",
+        "anchor_id": "portal.dashboard.factories",
+        "precondition": "已进入对应页面；目标可见且当前没有未保存修改",
+        "completion": "已定位，请在原页面核对；不会自动保存、审批或提交业务"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/views/DashboardView.vue",
+        "symbol": "运营指标示例",
+        "sha256": "b121bd65b0aae98ebce01e61588599a2938ad1e4341d79f0040f294636dc8b91"
+      }
+    ],
+    "knowledge_version": "2026.10.12-v2",
+    "verified_commit": "working-tree:assistant-v2",
+    "status": "verified"
+  }
+]

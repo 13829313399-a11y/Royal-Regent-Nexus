@@ -40,6 +40,7 @@ export interface EngineeringMaterialRow extends QuotePricingMetadata {
   disney_included: number
 }
 export interface EngineeringMoldPartRow {
+  id?: string
   name: string
   color: string
   process: string
@@ -94,7 +95,7 @@ export interface EngineeringMoldRow extends QuotePricingMetadata {
   caixing_mold_cost_hkd: number
   caixing_customer_mold_cost_hkd: number
 }
-export interface EngineeringProductionMoldCostRow { item: string; cost_rmb: number }
+export interface EngineeringProductionMoldCostRow { item: string; cost_rmb: number; import_batch_id?: string; mold_import_default_rmb?: string }
 export interface SalesDimensions { length: number; width: number; height: number }
 export type SalesPackagingCategory = 'blister' | 'color_box_inner_card' | 'leaflet_manual' | 'other_purchase'
 export interface SalesPackagingMaterialRow extends QuotePricingMetadata {
@@ -310,6 +311,8 @@ export interface SewingMaterialRow {
   below_moq_fee_rmb?: number
   usage: number
   unit_price_rmb: number
+  unit_price_hkd?: number
+  unit_price_source_currency?: UnitPriceSourceCurrency
   exchange_rate?: number
   markup: number
   remark: string
@@ -499,6 +502,7 @@ export interface JustPlayPackagingInputs {
   pallet_length_mm?: number | ''
   pallet_width_mm?: number | ''
   pallet_height_mm?: number | ''
+  cartons_per_pallet_override?: number | ''
 }
 export interface JustPlayCartonInputs {
   dimension_source: 'color_box' | 'product'
@@ -847,6 +851,9 @@ export function normalizeJustPlayPackagingInputs(value: unknown): JustPlayPackag
     pallet_length_mm: input('pallet_length_mm', 1000),
     pallet_width_mm: input('pallet_width_mm', 1150),
     pallet_height_mm: input('pallet_height_mm', 1300),
+    ...(source.cartons_per_pallet_override == null ? {} : {
+      cartons_per_pallet_override: input('cartons_per_pallet_override', 0),
+    }),
   }
 }
 
@@ -857,6 +864,8 @@ export function justPlayPackagingInputsValid(value: unknown) {
     && positivePreviewNumber(inputs.pallet_length_mm) > 0
     && positivePreviewNumber(inputs.pallet_width_mm) > 0
     && positivePreviewNumber(inputs.pallet_height_mm) > 0
+    && (inputs.cartons_per_pallet_override === undefined
+      || (Number.isInteger(inputs.cartons_per_pallet_override) && Number(inputs.cartons_per_pallet_override) > 0))
 }
 
 export function normalizeJustPlayCartonInputs(value: unknown): JustPlayCartonInputs {
@@ -914,6 +923,8 @@ export function calculateJustPlayCartonsPerPallet(
   const height = positivePreviewNumber(carton.height_in)
   if (!length || !width || !height) return 0
   const inputs = normalizeJustPlayPackagingInputs(parameters)
+  if (!justPlayPackagingInputsValid(inputs)) return 0
+  if (inputs.cartons_per_pallet_override !== undefined) return Number(inputs.cartons_per_pallet_override)
   return Math.floor(positivePreviewNumber(inputs.pallet_width_mm) / (width * 25.4))
     * Math.floor(positivePreviewNumber(inputs.pallet_length_mm) / (length * 25.4))
     * Math.floor(positivePreviewNumber(inputs.pallet_height_mm) / (height * 25.4))
@@ -951,10 +962,6 @@ export function calculateEngineeringMaterialUnitRmb(row: DualCurrencyUnitPrice, 
 
 export function calculateEngineeringMaterialUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
   return calculatePackagingMaterialUnitHkd(row, rmbHkdRate)
-}
-
-export function calculateEngineeringMaterialEffectiveUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
-  return calculatePackagingMaterialEffectiveUnitRmb(row, rmbHkdRate)
 }
 
 export function calculateEngineeringMaterialEffectiveUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
@@ -1296,54 +1303,25 @@ export function splitEngineeringMoldPartNames(value: unknown): string[] {
   return expanded
 }
 
-export function previewEngineeringMoldPartSplit(value: unknown, existing: EngineeringMoldPartRow[]) {
-  const names = splitEngineeringMoldPartNames(value)
-  const matches = new Map<number, number>()
-  const used = new Set<number>()
-  // Reserve exact matches before attempting to repair legacy bare directions.
-  names.forEach((name, index) => {
-    const found = existing.findIndex((part, oldIndex) => !used.has(oldIndex) && part.name.trim() === name)
-    if (found >= 0) { matches.set(index, found); used.add(found) }
-  })
-  const directionMatches = (short: string, full: string) => (
-    /^[前后左右]$/.test(short) && (full.startsWith(short) || new RegExp(`${short}(?:[（(][^（）()]*[）)])?$`).test(full))
-  )
-  names.forEach((name, index) => {
-    if (matches.has(index)) return
-    const candidates = existing.flatMap((part, oldIndex) => !used.has(oldIndex) && directionMatches(part.name.trim(), name) ? [oldIndex] : [])
-    if (candidates.length !== 1) return
-    const oldIndex = candidates[0]!
-    const short = existing[oldIndex]!.name.trim()
-    if (names.filter((candidate, candidateIndex) => !matches.has(candidateIndex) && directionMatches(short, candidate)).length !== 1) return
-    matches.set(index, oldIndex)
-    used.add(oldIndex)
-  })
-  const proposed = names.map((name, index) => {
-    const oldIndex = matches.get(index)
-    const old = oldIndex === undefined ? undefined : existing[oldIndex]
-    const part: EngineeringMoldPartRow = old
-      ? (old.name === name ? old : { ...old, name })
-      : { name, color: '', process: '', process_unit_price_hkd: 0, unit_net_weight_g: 0, output_count: 1, quantity: 1 }
-    return { part, status: old ? 'matched' as const : 'added' as const }
-  })
-  const retained = existing.flatMap((part, index) => used.has(index) ? [] : [{ part, status: 'retained' as const }])
-  return { rows: [...proposed, ...retained], nameCount: names.length, retainedCount: retained.length }
-}
-
 function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPartRow[] {
-  const savedParts = rows(row.parts)
-  const sourceParts: Record<string, unknown>[] = savedParts.length
-    ? savedParts
-    : splitEngineeringMoldPartNames(row.item ?? row.name ?? row.chinese_name).map((name) => ({ name }))
-  return sourceParts.map((part) => ({
-    name: textValue(part.name ?? part.item),
-    color: textValue(part.color),
-    process: textValue(part.process),
-    process_unit_price_hkd: numberValue(part.process_unit_price_hkd),
-    unit_net_weight_g: numberValue(part.unit_net_weight_g ?? part.net_weight_g),
-    output_count: numberValue(part.output_count, 1),
-    quantity: numberValue(part.quantity, 1),
-  }))
+  // Opening or saving the ordinary form must never confirm an implicit split.
+  const sourceParts = rows(row.parts)
+  const occurrences = new Map<string, number>()
+  return sourceParts.map((part) => {
+    const name = textValue(part.name ?? part.item).trim()
+    const occurrence = (occurrences.get(name) ?? 0) + 1
+    occurrences.set(name, occurrence)
+    return {
+      id: textValue(part.id).trim() || `legacy-name:${JSON.stringify([name, occurrence])}`,
+      name: textValue(part.name ?? part.item),
+      color: textValue(part.color),
+      process: textValue(part.process),
+      process_unit_price_hkd: numberValue(part.process_unit_price_hkd),
+      unit_net_weight_g: numberValue(part.unit_net_weight_g ?? part.net_weight_g),
+      output_count: numberValue(part.output_count, 1),
+      quantity: numberValue(part.quantity, 1),
+    }
+  })
 }
 
 function electronicRows(value: unknown): ElectronicComponentRow[] {
@@ -1481,13 +1459,11 @@ export function calculateHairTotalHkd(payload: HairPayload) {
   return payload.lines.reduce((total, row) => total + calculateHairRowAmountHkd(row), 0)
 }
 
-export function calculateSewingBasePriceRmb(row: SewingMaterialRow) {
+export function calculateSewingBasePriceRmb(row: SewingMaterialRow, rmbHkdRate?: unknown) {
+  if (row.unit_price_source_currency === 'HKD') {
+    return positivePreviewNumber(row.usage) * positivePreviewNumber(row.unit_price_hkd) * calculateSewingExchangeRate(row, rmbHkdRate)
+  }
   return Math.max(Number(row.usage) || 0, 0) * Math.max(Number(row.unit_price_rmb) || 0, 0)
-}
-
-export function calculateSewingRowTotalRmb(row: SewingMaterialRow) {
-  const markup = Math.max(Number(row.markup) || 0, 0) || 1
-  return calculateSewingBasePriceRmb(row) * markup
 }
 
 export function calculateSewingExchangeRate(row: SewingMaterialRow, rmbHkdRate: unknown) {
@@ -1495,6 +1471,9 @@ export function calculateSewingExchangeRate(row: SewingMaterialRow, rmbHkdRate: 
 }
 
 export function calculateSewingBasePriceHkd(row: SewingMaterialRow, rmbHkdRate: unknown) {
+  if (row.unit_price_source_currency === 'HKD') {
+    return positivePreviewNumber(row.usage) * positivePreviewNumber(row.unit_price_hkd)
+  }
   const rate = calculateSewingExchangeRate(row, rmbHkdRate)
   return rate ? calculateSewingBasePriceRmb(row) / rate : 0
 }
@@ -1508,11 +1487,6 @@ export function sewingGroupHasLaborLine(group: SewingGroup) {
   return group.materials.some((row) => `${row.item}${row.part}`.includes('人工'))
 }
 
-export function calculateSewingGroupTotalRmb(group: SewingGroup) {
-  const materialTotal = group.materials.reduce((total, row) => total + calculateSewingRowTotalRmb(row), 0)
-  return materialTotal + (sewingGroupHasLaborLine(group) ? 0 : Math.max(Number(group.labor_rmb) || 0, 0))
-}
-
 export function calculateSewingGroupTotalHkd(group: SewingGroup, rmbHkdRate: unknown) {
   const materialTotal = group.materials.reduce(
     (total, row) => total + calculateSewingRowTotalHkd(row, rmbHkdRate),
@@ -1523,10 +1497,6 @@ export function calculateSewingGroupTotalHkd(group: SewingGroup, rmbHkdRate: unk
     ? Math.max(Number(group.labor_rmb) || 0, 0) / rate
     : 0
   return materialTotal + legacyLaborHkd
-}
-
-export function calculateSewingTotalRmb(payload: SewingPayload) {
-  return payload.groups.reduce((total, group) => total + calculateSewingGroupTotalRmb(group), 0)
 }
 
 export function calculateSewingQuickTotalHkd(payload: SewingPayload) {
@@ -1582,7 +1552,11 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     const hasProductionMoldCosts = Array.isArray(source.production_mold_costs)
     const legacyMoldTotalRmb = normalizedMolds.reduce((total, row) => total + row.cost_rmb, 0)
     const productionMoldCosts: EngineeringProductionMoldCostRow[] = hasProductionMoldCosts
-      ? rows(source.production_mold_costs).map((row) => ({ item: textValue(row.item ?? row.name), cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb) }))
+      ? rows(source.production_mold_costs).map((row) => ({
+          ...importBatchMetadata(row),
+          ...(row.mold_import_default_rmb != null ? { mold_import_default_rmb: textValue(row.mold_import_default_rmb) } : {}),
+          item: textValue(row.item ?? row.name), cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb),
+        }))
       : [
           { item: '模具费用', cost_rmb: legacyMoldTotalRmb },
           { item: '超声模费用', cost_rmb: 0 },
@@ -1738,6 +1712,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
           ...(Object.prototype.hasOwnProperty.call(row, 'below_moq_fee_rmb') ? { below_moq_fee_rmb: numberValue(row.below_moq_fee_rmb) } : {}),
           usage: numberValue(row.usage ?? row.qty),
           unit_price_rmb: numberValue(row.unit_price_rmb ?? row.mat_price ?? row.unit_price),
+          ...(row.unit_price_hkd != null ? { unit_price_hkd: numberValue(row.unit_price_hkd) } : {}),
+          ...(row.unit_price_source_currency != null || row.unit_price_hkd != null
+            ? { unit_price_source_currency: normalizeUnitPriceSourceCurrency(row) } : {}),
           ...(Object.prototype.hasOwnProperty.call(row, 'exchange_rate') ? { exchange_rate: numberValue(row.exchange_rate) } : {}),
           markup: numberValue(row.markup, 1),
           remark: textValue(row.remark ?? row.note),

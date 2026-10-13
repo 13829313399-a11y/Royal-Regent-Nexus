@@ -31,25 +31,35 @@ def request_contract(settings, image: bytes, task: str = "table", *, layout: boo
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.query or parsed.fragment:
         raise ToolError("QWEN_CONFIGURATION", "千问地址必须为控制台提供的 HTTPS API 地址")
     model = settings.document_tools_qwen_layout_model if layout else settings.document_tools_qwen_ocr_model
+    dedicated_ocr = model.lower().startswith(("qwen3.5-ocr", "qwen-vl-ocr"))
+    flash = model.lower().startswith("qwen3.8-flash")
     data_url = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
     if len(image) > 9 * 1024 * 1024:
         raise ToolError("OCR_REGION_TOO_LARGE", "识别区域过大，请缩小区域后重试")
     # The verified workspace endpoint caps qwen3.5-ocr at 16384 (2026-09-08),
     # below the general documentation's 32768 ceiling. Never request a limit
     # the actual service rejects, and still reject truncated responses.
-    tokens = 16384 if "3.5-ocr" in model else 4096
+    tokens = 16384 if "3.5-ocr" in model or flash else 4096
     protocol = settings.document_tools_qwen_protocol
     if protocol == "dashscope":
         endpoint = base if base.endswith("/generation") else base + ("" if base.endswith("/api/v1") else "/api/v1") + "/services/aigc/multimodal-generation/generation"
-        content = [{"image": data_url, "enable_rotate": False}, {"text": prompt}]
+        image_part = {"image": data_url}
+        if dedicated_ocr:
+            image_part["enable_rotate"] = False
+        content = [image_part, {"text": prompt}]
         parameters: dict[str, Any] = {"max_tokens": tokens}
-        if not layout:
+        if not layout and dedicated_ocr:
             parameters["ocr_options"] = {"task": "table_parsing" if task == "table" else "text_recognition"}
+        if flash:
+            # Flash uses prompted visual transcription, not the OCR-only API task.
+            parameters["enable_thinking"] = False
         payload = {"model": model, "input": {"messages": [{"role": "user", "content": content}]}, "parameters": parameters}
     elif protocol in {"openai", "openai-compatible", "openai_compatible"}:
         endpoint = base if base.endswith("/chat/completions") else base + "/chat/completions"
         payload = {"model": model, "max_tokens": tokens, "messages": [{"role": "user", "content": [
             {"type": "image_url", "image_url": {"url": data_url}}, {"type": "text", "text": prompt}]}]}
+        if flash:
+            payload["enable_thinking"] = False
     else:
         raise ToolError("QWEN_PROTOCOL", "请选择 DashScope 或 OpenAI 兼容 Chat 协议")
     return endpoint, payload

@@ -546,6 +546,7 @@ def test_export_renders_formula_driven_split_pricing_groups():
     ({"adhesive_extra_hkd": 0.062, "paper_pallet_extra_hkd": 0.049}, ("0.1", "0.0")),
     ({"adhesive_extra_hkd": 0.125, "paper_pallet_extra_hkd": 0.045}, ("0.1", "0.0")),
     ({"pallet_length_mm": 1000, "pallet_width_mm": 1200, "pallet_height_mm": 1500, "adhesive_extra_hkd": 0.15}, ("0.2", "0.0")),
+    ({"cartons_per_pallet_override": 20, "paper_pallet_extra_hkd": 0.1}, ("0.0", "0.1")),
 ])
 def test_export_renders_justplay_components_before_one_global_packaging_block(parameters, expected_extras):
     workbook = Workbook()
@@ -768,6 +769,8 @@ def test_export_renders_justplay_components_before_one_global_packaging_block(pa
         )
         # 12 x 10 x 8 inch carton => 4 x 3 x 6 = 72, ignoring historical manual counts.
         expected_capacity = 84 if parameters and parameters.get("pallet_height_mm") == 1500 else 72
+        if parameters and parameters.get("cartons_per_pallet_override") is not None:
+            expected_capacity = parameters["cartons_per_pallet_override"]
         assert sheet.cell(paper_pallet_row, 4).value == f"=19/{expected_capacity}/O{packing_qty_row}+{expected_extras[1]}"
         for detail_row in (adhesive_row, paper_pallet_row):
             assert sheet.cell(detail_row, 4).data_type == "f"

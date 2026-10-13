@@ -1037,7 +1037,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         ]
         assert [workbook["车缝明细"].cell(3, column).value for column in range(1, 13)] == [
             "物料名称", "裁片部位", "供应商", "布料MOQ/Y", "低于MOQ/每色费用 RMB",
-            "用量/码", "单价 RMB", "汇率", "成本 HKD", "码点", "价钱 HKD", "备注",
+            "用量/码", "单价", "汇率", "成本 HKD", "码点", "价钱 HKD", "备注",
         ]
         assert [workbook["车发明细"].cell(3, column).value for column in range(1, 9)] == [
             "#", "名称", "工艺", "重量(g)", "单价(HKD)", "单位", "备注", "金额(HKD)",

@@ -16,6 +16,16 @@ describe('carton history pagination', () => {
     expect(result[200]?.id).toBe('old-record')
     expect(get.mock.calls[1]?.[1].params).toMatchObject({ factory_id: 'huaxing', offset: 200 })
   })
+  it.each(['OWN', 'ALL'] as const)('keeps the chosen %s customer scope across every page', async scope => {
+    for (const method of ['listOrders', 'listReceipts'] as const) {
+      get.mockReset().mockResolvedValueOnce({ data: { items: Array.from({ length: 200 }, (_, id) => ({ id })), total: 201 } })
+        .mockResolvedValueOnce({ data: { items: [{ id: 200 }], total: 201 } })
+      if (method === 'listOrders') await cartonProcurementApi.listOrders('huaxing', { responsibilityScope: scope })
+      else await cartonProcurementApi.listReceipts('huaxing', scope)
+      expect(get.mock.calls).toHaveLength(2)
+      for (const call of get.mock.calls) expect(call[1].params).toMatchObject({ factory_id: 'huaxing', responsibility_scope: scope })
+    }
+  })
 })
 
 it('retries direct receipt posting with the same request identity after a lost response', async () => {

@@ -13,7 +13,7 @@ from app.schemas.carton_mark import (
     CartonMarkCustomerRecognitionOut,
 )
 from app.services.auth import add_auth_audit, now_text
-from app.services.carton_mark_assets import available_orders, identity
+from app.services.carton_mark_assets import available_orders, identity, matching_asset_orders
 from app.services.carton_mark_customers import (
     CARTON_MARK_CUSTOMER_MANAGE_PERMISSION,
     normalize_carton_mark_customer_name,
@@ -41,10 +41,10 @@ def recognize_customer(db, user, factory, payload):
             CartonMarkAsset.factory_id == factory, CartonMarkAsset.is_archived.is_(False)))
         if asset is None or asset.kind != kind:
             raise HTTPException(404, "箱唛源文件不存在或不属于当前厂区")
-        if asset.contract_number and identity(asset.contract_number) != contract:
+        if asset.recognition_source != "manual_orders" and asset.contract_number and identity(asset.contract_number) != contract:
             return CartonMarkCustomerRecognitionOut(status="CONFLICT", message="源文件关联的合同与填写的合同不同，请先确认资料。")
-        if asset.bound_order_id or asset.recognition_source == "manual_order":
-            matches = [o for o in matches if o.id == asset.bound_order_id]
+        if asset.bound_order_id or asset.recognition_source in {"manual_order", "manual_orders"}:
+            matches = matching_asset_orders(asset, matches)
     if identity(payload.item):
         matches = [o for o in matches if identity(o.item_no) == identity(payload.item)]
     if identity(payload.po):

@@ -2,6 +2,7 @@ from decimal import Decimal
 from io import BytesIO
 from types import SimpleNamespace
 
+import pytest
 import pillow_heif
 from openpyxl import Workbook
 from PIL import Image
@@ -13,6 +14,33 @@ from app.services.carton_procurement_imports import (
     _parse_delivery_spreadsheet,
     _match_rows,
 )
+
+
+@pytest.mark.parametrize("footer_extra, expected_rows", [
+    ({}, 1),
+    ({1: "华康（B）车间"}, 2),
+    ({2: "C-2"}, 2),
+    ({3: "I-2"}, 2),
+    ({6: "未填写材质"}, 2),
+    ({10: "金额无法识别"}, 2),
+])
+def test_strict_dongkang_delivery_skips_only_the_unambiguous_numeric_totals_footer(footer_extra, expected_rows):
+    book = Workbook()
+    sheet = book.active
+    sheet.append(["送货单号", "客户", "客户单号", "客户料号", "送货时间", "名称", "材质", "规格", "送货数量", "单价", "金额"])
+    sheet.append(["2026100074", "华康（B）车间", "C-1", "I-1", "2026/10/8", "普通箱", "A=B", "11X10.5X13inch", 36, 2.03, 73.08])
+    footer = [None, None, None, None, None, None, None, "总数量：", 36, "总金额:", 73.08]
+    for column, value in footer_extra.items():
+        footer[column] = value
+    sheet.append(footer)
+    buffer = BytesIO()
+    book.save(buffer)
+    book.close()
+    parsed = _parse_delivery_spreadsheet("delivery.xlsx", buffer.getvalue(), strict_rows=True)
+    assert len(parsed["rows"]) == expected_rows
+    assert parsed["rows"][0]["source_row"] == 2
+    assert parsed["rows"][0]["destination_factory_id"] == "huakang-b"
+    assert parsed["rows"][0]["delivered_quantity"] == 36
 
 
 def test_dongkang_delivery_sheet_maps_business_keys_and_requires_correct_factory_and_item():

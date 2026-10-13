@@ -193,6 +193,8 @@ def test_public_status_is_non_enumerating_for_absent_invalid_and_unknown_account
             "status": "none",
             "request_id": "",
             "can_complete": False,
+            "can_request_reopen": False,
+            "expires_in_seconds": 0,
             "expires_at": "",
             "message": "当前浏览器没有找到原申请凭证，请重新提交密码重置申请。",
         }

@@ -19,7 +19,7 @@ from sqlalchemy.pool import StaticPool
 from app.api import customer_order_ledger as api
 from app.db import get_db
 from app.models.customer_order_ledger import OrderLedgerLine as Line, OrderLedgerVersion as Version, OrderLedgerDispatch as Dispatch, OrderLedgerShipment as Shipment, OrderLedgerSource as Source
-from app.schemas.customer_order_ledger import AmendIn, DispatchIn, ReasonIn, ShipmentIn
+from app.schemas.customer_order_ledger import AmendIn, DispatchIn, ReasonIn, RestoreIn, ShipmentIn
 from app.services import customer_order_ledger as service
 from app.services.auth import AuthContext, AuthGrantContext, get_current_user
 
@@ -275,6 +275,177 @@ def client(db, monkeypatch):
     with TestClient(app) as client:
         client.test_app = app
         yield client
+
+
+def cancelled_order(db, payload=None):
+    line = ingest(db, payload)
+    service.cancel(db, line, ReasonIn(expected_revision=line.revision, reason="用户误点取消"), "业务员")
+    db.commit()
+    return line
+
+
+def restore_url(line, factory=None):
+    return f"/api/customer-order-ledger/lines/{line.id}/restore?factory_id={factory or line.factory_id}"
+
+
+def restore_body(line, **changes):
+    return dict(expected_revision=line.revision, reason="用户确认误取消恢复", confirmed=True, **changes)
+
+
+def test_restore_screenshot_order_preserves_identity_sources_and_cancelled_version(client, db):
+    payload = preview(factory="huakang-a", qty="5000", reference="7848-5")
+    payload.update(customer_code="greentoys", customer_name="Green Toys")
+    payload["rows"][0].update(product_no="HELB-1060", requested_ship_date="2026-11-10")
+    line = cancelled_order(db, payload)
+    original_data = deepcopy(line.data)
+    source_ids = service.detail(db, line)["sources"]
+    client.test_app.dependency_overrides[get_current_user] = lambda: user(["read", "write"], factory="huakang-a")
+    response = client.post(restore_url(line), json=restore_body(line))
+    assert response.status_code == 200, response.text
+    item = response.json()
+    assert (item["id"], item["reference_no"], item["product_no"]) == (line.id, "7848-5", "HELB-1060")
+    assert (item["status"], item["version"], item["revision"]) == ("active", 3, 3)
+    assert (item["quantity"], item["shipped_quantity"], item["remaining_quantity"]) == ("5000", "0", "5000")
+    assert item["dispatch_status"] == "unsent"
+    assert item["data"] == original_data
+    detail = service.detail(db, line)
+    assert detail["sources"] == source_ids
+    assert [v["data"]["status"] for v in detail["versions"]] == ["active", "cancelled", "active"]
+    assert detail["versions"][0]["reason"].startswith("恢复已取消订单：")
+    assert detail["versions"][0]["actor"]
+    assert db.scalar(select(func.count()).select_from(Line)) == 1
+    assert db.scalar(select(func.count()).select_from(Dispatch)) == 0
+    duplicate = client.post(restore_url(line), json=restore_body(line))
+    assert duplicate.status_code == 409
+    assert service.get_line(db, line.factory_id, line.id).revision == 3
+    assert db.scalar(select(func.count()).select_from(Version)) == 3
+
+
+def test_restore_retains_current_shipping_and_reversal_not_old_snapshot(client, db):
+    line = ingest(db)
+    service.ship(db, line, ship_body(line), "仓库")
+    db.commit()
+    service.cancel(db, line, ReasonIn(expected_revision=line.revision, reason="误取消订单"), "业务员")
+    db.commit()
+    shipment = db.scalar(select(Shipment).where(Shipment.line_id == line.id))
+    response = client.post(restore_url(line), json=restore_body(line))
+    assert response.status_code == 200
+    assert response.json()["remaining_quantity"] == "7000"
+    service.cancel(db, line, ReasonIn(expected_revision=line.revision, reason="再次误取消"), "业务员")
+    db.commit()
+    service.reverse_shipment(db, line, shipment, ReasonIn(expected_revision=line.revision, reason="原走货录错了"), "仓库")
+    db.commit()
+    response = client.post(restore_url(line), json=restore_body(line))
+    assert response.status_code == 200
+    assert response.json()["shipped_quantity"] == "0"
+    assert response.json()["remaining_quantity"] == "10000"
+    assert service.detail(db, line)["shipments"][0]["reversed"] is True
+
+
+@pytest.mark.parametrize("qty,shipped,remaining", [("100", "100", "0"), ("", "0", ""), ("0.3", "0.1", "0.2")])
+def test_restore_full_unknown_and_decimal_quantities(client, db, qty, shipped, remaining):
+    line = ingest(db, preview(qty=qty))
+    if shipped != "0":
+        service.ship(db, line, ship_body(line, qty=shipped), "仓库")
+        db.commit()
+    service.cancel(db, line, ReasonIn(expected_revision=line.revision, reason="误取消订单"), "业务员")
+    db.commit()
+    response = client.post(restore_url(line), json=restore_body(line))
+    assert response.status_code == 200
+    assert response.json()["remaining_quantity"] == remaining
+    assert response.json()["shipped_quantity"] == shipped
+
+
+@pytest.mark.parametrize("changes,code", [
+    ({"confirmed": False}, 400), ({"confirmed": "true"}, 422),
+    ({"reason": "   "}, 422), ({"reason": "短"}, 422), ({"reason": "a" * 501}, 422),
+    ({"expected_revision": 1}, 409),
+])
+def test_restore_invalid_or_stale_request_rolls_back(client, db, changes, code):
+    line = cancelled_order(db)
+    body = restore_body(line)
+    body.update(changes)
+    response = client.post(restore_url(line), json=body)
+    assert response.status_code == code
+    db.refresh(line)
+    assert (line.status, line.version, line.revision) == ("cancelled", 2, 2)
+    assert db.scalar(select(func.count()).select_from(Version)) == 2
+
+
+def test_restore_factory_read_only_and_sent_order_permission_guards(client, db):
+    line = cancelled_order(db)
+    body = restore_body(line)
+    client.test_app.dependency_overrides[get_current_user] = lambda: user(["read"])
+    assert client.post(restore_url(line), json=body).status_code == 403
+    client.test_app.dependency_overrides[get_current_user] = lambda: user(["read", "write"], factory="huadeng")
+    assert client.post(restore_url(line, "huadeng"), json=body).status_code == 404
+    assert client.post(restore_url(line, "huaxing"), json=body).status_code == 403
+    client.test_app.dependency_overrides[get_current_user] = lambda: user(["read", "write"])
+    assert client.post(restore_url(line), json=body).status_code == 200
+    service.dispatch(db, line, DispatchIn(expected_revision=line.revision, recipients=["pmc", "warehouse"]), "业务员")
+    db.commit()
+    service.cancel(db, line, ReasonIn(expected_revision=line.revision, reason="误取消订单"), "业务员")
+    db.commit()
+    before = deepcopy(service.detail(db, line)["dispatches"])
+    assert client.post(restore_url(line), json=restore_body(line)).status_code == 400
+    assert client.post(restore_url(line), json=restore_body(line, notify_recipients=True)).status_code == 403
+    db.refresh(line)
+    assert line.status == "cancelled"
+    assert service.detail(db, line)["dispatches"] == before
+    client.test_app.dependency_overrides[get_current_user] = lambda: user(["read", "write", "dispatch"])
+    restored = client.post(restore_url(line), json=restore_body(line, notify_recipients=True))
+    assert restored.status_code == 200
+    after = service.detail(db, line)["dispatches"]
+    snapshots = [row for row in after if row["version"] == line.version]
+    assert {row["recipient"] for row in snapshots} == {"pmc", "warehouse"}
+    assert all(row["snapshot"]["status"] == "active" and row["snapshot"]["remaining_quantity"] == "10000" for row in snapshots)
+    assert all("unit_price_hkd" not in row["snapshot"] for row in snapshots)
+    assert all(row["received_at"] == "" for row in snapshots)
+    assert all(row in after for row in before)
+
+
+def test_restore_dispatch_failure_rolls_back_version_and_status(client, db, monkeypatch):
+    line = cancelled_order(db)
+    def fail(*args, **kwargs):
+        raise HTTPException(503, "模拟发送失败")
+    monkeypatch.setattr(service, "publish", fail)
+    response = client.post(restore_url(line), json=restore_body(line))
+    assert response.status_code == 503
+    db.refresh(line)
+    assert (line.status, line.version, line.revision) == ("cancelled", 2, 2)
+    assert db.scalar(select(func.count()).select_from(Version)) == 2
+
+
+def test_restore_rechecks_recipients_after_lock_without_partial_commit(client, db, monkeypatch):
+    line = cancelled_order(db)
+    client.test_app.dependency_overrides[get_current_user] = lambda: user(["read", "write"])
+    original = service.lock_line
+    def locked_with_dispatch(db, line, expected):
+        original(db, line, expected)
+        service.publish(db, line, ["pmc"], "既有发送")
+        db.flush()
+    monkeypatch.setattr(service, "lock_line", locked_with_dispatch)
+    response = client.post(restore_url(line), json=restore_body(line, notify_recipients=True))
+    assert response.status_code == 403
+    db.refresh(line)
+    assert (line.status, line.version, line.revision) == ("cancelled", 2, 2)
+    assert db.scalar(select(func.count()).select_from(Version)) == 2
+
+
+def test_cancel_rechecks_dispatch_authority_after_lock(client, db, monkeypatch):
+    line = ingest(db)
+    client.test_app.dependency_overrides[get_current_user] = lambda: user(["read", "write"])
+    original = service.lock_line
+    def locked_with_dispatch(db, line, expected):
+        original(db, line, expected)
+        service.publish(db, line, ["pmc"], "并发发送人员")
+        db.flush()
+    monkeypatch.setattr(service, "lock_line", locked_with_dispatch)
+    response = client.post(f"/api/customer-order-ledger/lines/{line.id}/cancel?factory_id=huaxing",
+        json={"expected_revision": line.revision, "reason": "误取消订单"})
+    assert response.status_code == 403
+    db.refresh(line)
+    assert (line.status, line.revision) == ("active", 1)
 
 
 def test_api_permission_and_factory_isolation(client, db):

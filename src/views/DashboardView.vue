@@ -36,9 +36,9 @@ const sourceNote = '示例数据 · 筛选与导出暂未接入'
 </script>
 
 <template>
-  <div class="dashboard-page-container">
+  <div class="dashboard-page-container" data-yl-help="portal.overview">
     <div class="app-page dashboard-page rrn-home space-y-6" data-dashboard-ui="jade-v2" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-home-density="density">
-    <div class="dashboard-hero">
+    <div class="dashboard-hero" data-yl-help="portal.dashboard.header">
       <div class="dashboard-hero__art" aria-hidden="true" />
       <span class="dashboard-hero__breath" aria-hidden="true" />
       <HomePrismArtwork identity="dashboard" />
@@ -70,7 +70,7 @@ const sourceNote = '示例数据 · 筛选与导出暂未接入'
       </PageHeader>
     </div>
 
-    <section aria-label="运营指标示例"><div class="dashboard-metrics grid gap-4">
+    <section data-yl-help="portal.dashboard.examples" aria-label="运营指标示例"><div class="dashboard-metrics grid gap-4">
       <MetricCard
         v-for="(metric, index) in overviewMetrics"
         :key="metric.label"
@@ -79,7 +79,7 @@ const sourceNote = '示例数据 · 筛选与导出暂未接入'
       />
     </div><p class="home-source">运营指标示例 · 当前展示静态示例数据</p></section>
 
-    <div class="dashboard-primary-grid grid gap-6">
+    <div class="dashboard-primary-grid grid gap-6" data-yl-help="portal.dashboard.factories">
       <FactoryHeatmap :active-factory-id="appStore.activeFactoryId" />
       <CrossFactoryTimeline />
     </div>

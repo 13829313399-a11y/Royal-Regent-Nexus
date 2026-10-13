@@ -152,6 +152,13 @@ describe('password reset management runtime', () => {
       wrapper.findAll('button').some((button) => button.text().includes('批准并开放自助改密')),
     ).toBe(false)
   })
+  it.each([true, false])('uses the server reopen eligibility, not expired alone (%s)', async (canReopen) => {
+    const expired = { ...matchedRequest, status: 'expired', can_reopen: canReopen }
+    apiMocks.getPasswordResetRequest.mockResolvedValue(expired)
+    apiMocks.listPasswordResetRequests.mockResolvedValue([expired])
+    const wrapper = mountView(); await flushPromises()
+    expect(wrapper.findAll('button').some(button => button.text().includes('重新开放'))).toBe(canReopen)
+  })
   it('never substitutes another account for an unavailable explicit request link', async () => {
     apiMocks.getPasswordResetRequest.mockRejectedValue({ response: { status: 404 } })
     apiMocks.listPasswordResetRequests.mockResolvedValue([

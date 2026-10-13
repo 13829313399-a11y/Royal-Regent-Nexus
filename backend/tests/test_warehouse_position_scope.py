@@ -45,10 +45,20 @@ def test_persisted_warehouse_permissions_and_explicit_deny(monkeypatch):
                     "carton_procurement:customer_manage", "carton_procurement:order_adjust",
                     "internal_quote:engineering_edit", "customer_order:write",
                     "injection_scheduling:plan", "system:user_manage",
+                    "fabric_operations:quality", "fabric_operations:correct",
+                    "semi_operations:quality", "semi_operations:correct",
                 ):
                     assert not auth.can(context, permission, factory, "*")
 
         manager = contexts["manager"]
+        for permission in ("fabric_operations:read", "fabric_operations:operate", "semi_operations:read", "semi_operations:operate"):
+            assert auth.can(manager, permission, "huakang-c", "pmc-warehouse")
+            assert not auth.can(manager, permission, "huakang-c", "engineering")
+            denied_operation = replace(manager, overrides=(auth.AuthOverrideContext(
+                id="deny-warehouse-operation", permission_code=permission,
+                effect="deny", factory_id="huakang-c", department="pmc-warehouse",
+            ),))
+            assert not auth.can(denied_operation, permission, "huakang-c", "pmc-warehouse")
         for factory in FACTORIES:
             assert auth.can(manager, "molding_sample:notification_read", factory, "warehouse")
             assert not auth.can(manager, "molding_sample:notification_read", factory, "engineering")

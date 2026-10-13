@@ -3,6 +3,7 @@ import type { Pinia } from 'pinia'
 import type { Router } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { refreshAndRevalidateAuthorization } from '@/router'
+import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 
 /** Broadcast only an invalidation signal, never identity data or credentials. */
 export function installIdentitySync(router: Router, pinia: Pinia) {
@@ -11,6 +12,9 @@ export function installIdentitySync(router: Router, pinia: Pinia) {
   let running = false
   let nextAllowedRefresh = 0
   let snapshotReceivedAt = Date.now()
+  let disposed = false
+  let boundaryVersion = 0
+  let pendingBoundary = false
   const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('rr-identity-refresh') : null
   const eligible = () => auth.isAuthenticated && navigator.onLine && document.visibilityState === 'visible'
   const refresh = async () => {
@@ -27,16 +31,48 @@ export function installIdentitySync(router: Router, pinia: Pinia) {
     if (Number.isFinite(delay)) boundary = setTimeout(() => { void refresh() }, Math.min(2_147_000_000, Math.max(250, nextAllowedRefresh - Date.now() + 100, delay + 100)))
   }
   const changed = () => { channel?.postMessage('refresh'); void refresh() }
-  const visible = () => { if (eligible()) void refresh(); else clearTimeout(boundary) }
+  const confirmBoundary = async () => {
+    if (disposed || !pendingBoundary || !navigator.onLine || document.visibilityState !== 'visible') return
+    pendingBoundary = false
+    const version = boundaryVersion
+    try {
+      const restored = await auth.ensureSession()
+      if (disposed || version !== boundaryVersion) return
+      const route = router.currentRoute.value
+      if (restored) {
+        if (route.name === 'login') await router.replace(resolvePostLoginRedirect(router, route.query.redirect))
+        else await refreshAndRevalidateAuthorization(auth, router)
+      } else if (route.meta.requiresAuth !== false) {
+        await router.replace({ name: 'login', query: { redirect: route.fullPath } })
+      }
+    } catch {
+      // A failed route load must not leave a permanent blocking overlay.
+      // The newly confirmed identity (or cleared session) remains authoritative.
+    } finally {
+      if (!disposed && version === boundaryVersion) auth.isConfirmingSession = false
+    }
+  }
+  const sessionChanged = () => { channel?.postMessage('session-boundary-changed') }
+  const visible = () => { if (pendingBoundary) void confirmBoundary(); else if (eligible()) void refresh(); else clearTimeout(boundary) }
   const stop = watch(() => [auth.currentUser?.identity?.effective_context_key, auth.currentUser?.identity?.server_now, auth.isAuthenticated, auth.currentUser?.id], (values, previous) => {
     if (previous?.[0] && values[0] && values[3] === previous[3] && values[0] !== previous[0]) window.dispatchEvent(new Event('authorization-context-changed'))
     snapshotReceivedAt = Date.now()
     scheduleBoundary()
   }, { immediate: true })
   const interval = setInterval(() => { void refresh() }, 45_000)
-  if (channel) channel.onmessage = e => { if (e.data === 'refresh') void refresh() }
+  if (channel) channel.onmessage = e => {
+    if (e.data === 'refresh') void refresh()
+    if (e.data === 'session-boundary-changed') {
+      boundaryVersion += 1
+      auth.isConfirmingSession = true
+      auth.clearSession()
+      pendingBoundary = true
+      void confirmBoundary()
+    }
+  }
+  window.addEventListener('auth-session-boundary-changed', sessionChanged)
   window.addEventListener('iam-identity-changed', changed)
   window.addEventListener('online', visible)
   document.addEventListener('visibilitychange', visible)
-  return () => { clearTimeout(boundary); clearInterval(interval); channel?.close(); stop(); window.removeEventListener('iam-identity-changed', changed); window.removeEventListener('online', visible); document.removeEventListener('visibilitychange', visible) }
+  return () => { disposed = true; boundaryVersion += 1; clearTimeout(boundary); clearInterval(interval); channel?.close(); stop(); window.removeEventListener('auth-session-boundary-changed', sessionChanged); window.removeEventListener('iam-identity-changed', changed); window.removeEventListener('online', visible); document.removeEventListener('visibilitychange', visible) }
 }

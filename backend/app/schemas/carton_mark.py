@@ -19,6 +19,7 @@ class CartonMarkAssetOut(BaseModel):
     sha256: str
     contract_number: str
     bound_order_id: str | None
+    bound_order_ids: list[str] = Field(default_factory=list)
     recognition_source: str
     candidates: list[str]
     warning: str
@@ -30,6 +31,7 @@ class CartonMarkAssetOut(BaseModel):
 
 
 class CartonMarkAssetBindingRequest(BaseModel):
+    order_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
     contract_number: str = Field(default="", max_length=128)
     order_id: str | None = Field(default=None, max_length=96)
     revision: int = Field(ge=1)
@@ -47,11 +49,21 @@ class CartonMarkAssetReference(BaseModel):
     revision: int = Field(ge=1)
 
 
+class CartonMarkManualReviewRequest(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    order_id: str = Field(min_length=1, max_length=96)
+    issue_id: str = Field(default="", max_length=96)
+    assets: list[CartonMarkAssetReference] = Field(min_length=1, max_length=50)
+    note: str = Field(default="", max_length=500)
+    approve: bool = False
+
+
 class CartonMarkPhotoGroupMembers(BaseModel):
     assets: list[CartonMarkAssetReference] = Field(min_length=1, max_length=50)
 
 
 class CartonMarkPhotoGroupRequest(CartonMarkPhotoGroupMembers):
+    order_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
     contract_number: str = Field(default="", max_length=128)
     order_id: str | None = Field(default=None, max_length=96)
 
@@ -155,6 +167,11 @@ class CartonMarkDocumentCheckResponse(BaseModel):
     pdf_items: list[CartonMarkDocumentTextItem]
     comparisons: list[CartonMarkDocumentComparisonItem]
     extraction: list[CartonMarkExtractionStatus]
+    review_method: str = "excel_pdf"
+    review_note: str = ""
+    review_order_id: str = ""
+    source_assets: list[dict] = Field(default_factory=list)
+    confirmed_checks: list[str] = Field(default_factory=list)
 
 
 class CartonMarkCustomerOptionOut(BaseModel):
@@ -233,14 +250,13 @@ class CartonMarkCustomerOut(CartonMarkCustomerOptionOut):
 
 
 class CartonMarkTemplateManualReleaseRequest(BaseModel):
-    reason: str = Field(min_length=5, max_length=500)
+    reason: str = Field(default="", max_length=500)
+    confirmed_checks: list[str] = Field(default_factory=list, max_length=4)
 
     @field_validator("reason")
     @classmethod
     def normalize_reason(cls, value: str) -> str:
         normalized = " ".join(value.strip().split())
-        if len(normalized) < 5:
-            raise ValueError("人工放行理由至少需要 5 个字符")
         return normalized
 
 
@@ -255,7 +271,7 @@ class CartonMarkTemplateOut(BaseModel):
     check_status: str
     check_result: CartonMarkDocumentCheckResponse
     excel_file_name: str
-    excel_file_size: int = Field(gt=0)
+    excel_file_size: int = Field(ge=0)
     pdf_file_name: str
     pdf_file_size: int = Field(gt=0)
     created_at: str

@@ -16,6 +16,42 @@ function assemblyModel() {
 }
 
 describe('InternalQuoteSectionForm assembly total people', () => {
+  it.each(['组装', '包装'])('%s people controls step by one and reject negative/fractional edits', async label => {
+    const modelValue = assemblyModel()
+    const groupIndex = label === '组装' ? 0 : 1
+    const wrapper = mount(InternalQuoteSectionForm, { props: { code: 'assembly', modelValue } })
+    const manual = wrapper.get(`input[aria-label="${label}总人数"]`)
+    expect(manual.attributes()).toMatchObject({ min: '0', step: '1' })
+    await manual.setValue('-3')
+    expect(modelValue.groups[groupIndex].total_persons).toBe(0)
+    expect((manual.element as HTMLInputElement).value).toBe('0')
+    await manual.setValue('2.9')
+    expect(modelValue.groups[groupIndex].total_persons).toBe(2)
+    await manual.setValue('')
+    expect(modelValue.groups[groupIndex].total_persons).toBeNull()
+    const block = wrapper.get(label === '组装' ? '#internal-quote-assembly-assembly-work' : '#internal-quote-assembly-packaging-work')
+    await block.findAll('button').find(button => button.text().includes('新增工序'))!.trigger('click')
+    const people = wrapper.get(`input[aria-label="${label}工序人数"]`)
+    const input = people.element as HTMLInputElement
+    expect(people.attributes()).toMatchObject({ min: '0', step: '1' })
+    input.stepUp()
+    await people.trigger('input')
+    expect(modelValue.groups[groupIndex].processes[0].persons).toBe(2)
+    input.stepDown()
+    await people.trigger('input')
+    expect(modelValue.groups[groupIndex].processes[0].persons).toBe(1)
+    await people.setValue('-1')
+    expect(input.value).toBe('0')
+    expect(modelValue.groups[groupIndex].processes[0].persons).toBe(0)
+    input.stepDown()
+    await people.trigger('input')
+    expect(input.value).toBe('0')
+    await people.setValue('3.8')
+    expect(input.value).toBe('3')
+    expect(modelValue.groups[groupIndex].processes[0].persons).toBe(3)
+    wrapper.unmount()
+  })
+
   it('switches between a manual total and process-derived total, then restores an empty manual value', async () => {
     const modelValue = assemblyModel()
     const wrapper = mount(InternalQuoteSectionForm, {

@@ -113,6 +113,7 @@ class MoldingSampleItem(Base):
     pigment_no: Mapped[str] = mapped_column(String(128), default="")
     quantity: Mapped[str] = mapped_column(String(64), default="")
     shoot_qty: Mapped[int] = mapped_column(Integer, default=0)
+    quote_target_daily_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gross_weight_g: Mapped[float | None] = mapped_column(Float, nullable=True)
     required_material_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     mold_return_time: Mapped[str] = mapped_column(String(32), default="")

@@ -158,7 +158,7 @@ watch([factoryId, weekKey], () => {
 
 <template>
   <div class="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(13,148,136,0.10),transparent_34%),linear-gradient(180deg,#f8fbfc_0%,#eef5f7_100%)] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-    <main class="mx-auto w-full max-w-[1920px] space-y-6">
+    <main class="mx-auto w-full max-w-[1920px] space-y-6" data-yl-help="qc-inspection.overview">
       <PageHeader
         eyebrow="QC Inspection Operations"
         :title="`${factoryName} · QC 验货工作台`"

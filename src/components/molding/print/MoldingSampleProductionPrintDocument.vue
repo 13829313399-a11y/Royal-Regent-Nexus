@@ -156,6 +156,7 @@ function getDensityClass(record: MoldingSampleWorkflowRecord) {
               </td>
               <td>
                 <span>{{ formatBlank(item.quantity) }} 套 · {{ formatBlank(item.shoot_qty) }} 啤</span>
+                <span>报价目标：{{ formatBlank(item.quote_target_daily_qty) }} 啤/日</span>
                 <strong class="molding-print-cell-primary">{{ formatWeight(item.required_material_kg) }}</strong>
               </td>
               <td>{{ formatBlank(item.notes) }}</td>

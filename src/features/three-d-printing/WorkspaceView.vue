@@ -85,7 +85,7 @@ function releaseViewHeight() {
   <div translate="no" class="three-d-workspace legacy-workspace tdp-theme" :class="{ 'tdp-first-reveal': firstReveal }">
     <a class="tdp-skip-link" href="#tdp-main">跳到主要内容</a>
     <aside class="legacy-sidebar">
-      <div class="legacy-brand" :class="{ 'tdp-reveal-once': firstReveal }">
+      <div class="legacy-brand" data-yl-help="three-d-printing.overview" :class="{ 'tdp-reveal-once': firstReveal }">
         <span class="tdp-brand-icon" aria-hidden="true"><Printer :size="18" /></span>
         <span>3D打印管理<small>部门生产管理系统 · 华康A</small></span>
       </div>

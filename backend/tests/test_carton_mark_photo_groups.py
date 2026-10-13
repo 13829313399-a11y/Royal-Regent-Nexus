@@ -23,7 +23,7 @@ def photos(client):
     ])]
 
 
-def test_unnamed_group_bind_merge_ungroup_and_archive_restore(monkeypatch):
+def test_unnamed_group_bind_merge_ungroup_and_archive_preserves_originals(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         from app.db import SessionLocal
@@ -54,23 +54,37 @@ def test_unnamed_group_bind_merge_ungroup_and_archive_restore(monkeypatch):
         grouped = merged.json()
         assert len({photo["photo_group_id"] for photo in grouped}) == 1 and len(grouped) == 3
         group_id = grouped[0]["photo_group_id"]
-        # Moving out a single member leaves its original and binding, but never
-        # allows a later restore to silently re-enter a re-bound group.
+        # Archiving retains the original; uploading it again creates a separate
+        # unbound copy and never restores the old order or photo group.
         removed = grouped[0]
         assert client.delete(BASE + f"/{removed['id']}", params={**SCOPE, "revision": removed["revision"]}).status_code == 204
+        assert client.get(BASE + f"/{removed['id']}/document", params=SCOPE).status_code == 404
         color = {a["id"]: "red", b["id"]: "blue", c["id"]: "green"}[removed["id"]]
-        restored = upload(client, [(removed["file_name"], photo_bytes(color=color))])[0]["asset"]
-        assert restored["photo_group_id"] is None and restored["bound_order_id"] == "photo-target"
+        new_copy = upload(client, [(removed["file_name"], photo_bytes(color=color))])[0]["asset"]
+        assert new_copy["id"] != removed["id"]
+        assert new_copy["photo_group_id"] is None and new_copy["bound_order_id"] is None
+        assert new_copy["binding_status"] == "UNBOUND" and not new_copy["orders"]
+        from app.models.carton_mark import CartonMarkAsset
+        with SessionLocal() as db:
+            original = db.get(CartonMarkAsset, removed["id"])
+            assert original.is_archived and original.bound_order_id == "photo-target"
+            assert original.photo_group_id is None
+            assert bytes(original.content) == photo_bytes(color=color)
         remaining = [photo for photo in grouped if photo["id"] != removed["id"]]
         dissolved = client.post(BASE + f"/photo-groups/{group_id}/ungroup", params=SCOPE, json=body(remaining))
         assert dissolved.status_code == 200, dissolved.text
         assert all(photo["photo_group_id"] is None and photo["bound_order_id"] == "photo-target" for photo in dissolved.json())
-        assert client.get(BASE + f"/{a['id']}/document", params=SCOPE).content == photo_bytes(color="red")
+        colors = {a["id"]: "red", b["id"]: "blue", c["id"]: "green"}
+        for photo in remaining:
+            assert client.get(BASE + f"/{photo['id']}/document", params=SCOPE).content == photo_bytes(color=colors[photo["id"]])
         with SessionLocal() as db:
             db.delete(db.get(CartonOrder, "photo-target"))
             db.commit()
             seed_order(db, importlib.import_module("app.models.carton_procurement"), "later-order")
-        assert all(photo["binding_status"] == "NO_ORDER" and not photo["orders"] for photo in client.get(BASE, params=SCOPE).json())
+        visible = {photo["id"]: photo for photo in client.get(BASE, params=SCOPE).json()}
+        assert removed["id"] not in visible
+        assert all(visible[photo["id"]]["binding_status"] == "NO_ORDER" and not visible[photo["id"]]["orders"] for photo in remaining)
+        assert visible[new_copy["id"]]["binding_status"] == "UNBOUND" and not visible[new_copy["id"]]["orders"]
 
 
 def test_group_rejects_partial_stale_foreign_mixed_and_duplicate_requests_atomically(monkeypatch):

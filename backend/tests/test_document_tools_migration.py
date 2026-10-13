@@ -5,6 +5,9 @@ import sqlite3
 import subprocess
 import sys
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
 import pytest
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -27,7 +30,10 @@ def test_both_schema_branches_upgrade_without_losing_document_tables(tmp_path, s
         previous = dict(connection.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name LIKE 'document_tool_%'"))
     upgrade("head")
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("20260912_0111",)]
+        config = Config(str(BACKEND / "alembic.ini"))
+        config.set_main_option("script_location", str(BACKEND / "alembic"))
+        expected_head = ScriptDirectory.from_config(config).get_current_head()
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [(expected_head,)]
         assert "customer_po" in {row[1] for row in connection.execute("PRAGMA table_info(carton_orders)")}
         tables = dict(connection.execute("SELECT name, sql FROM sqlite_master WHERE type='table'"))
         assert {"document_tool_sources", "document_tool_jobs", "document_tool_artifacts", "document_tool_corrections", "carton_locations", "carton_position_entries", "carton_master_records", "carton_master_sources"} <= tables.keys()

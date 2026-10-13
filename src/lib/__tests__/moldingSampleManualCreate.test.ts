@@ -262,3 +262,15 @@ const externalHuakangCResult = buildManualMoldingSampleCreateRequest({
 })
 assert.deepEqual(externalHuakangCResult.errors, [])
 assert.equal(externalHuakangCResult.payload?.order.production_factory_id, null)
+
+// The quote is a daily capacity target, independent of the trial shot count.
+const quoteDraft = createManualMoldingSampleOrderDraft({ ...draft, items: draft.items.map((line) => ({ ...line })) })
+quoteDraft.items[0]!.quote_target_daily_qty = '3600'
+const withTarget = buildManualMoldingSampleCreateRequest(quoteDraft, 'huakang-a')
+assert.equal(withTarget.payload?.items[0]?.quote_target_daily_qty, 3600)
+assert.equal(withTarget.payload?.items[0]?.shoot_qty, 30)
+assert.equal(withTarget.payload?.items[1]?.quote_target_daily_qty, null)
+for (const invalid of ['0', '-1', '1.5', 'NaN', '3000啤', '2147483648']) {
+  quoteDraft.items[0]!.quote_target_daily_qty = invalid
+  assert.match(buildManualMoldingSampleCreateRequest(quoteDraft, 'huakang-a').errors.join(' '), /第 1 行报价目标/)
+}

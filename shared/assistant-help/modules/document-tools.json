@@ -1,0 +1,65 @@
+[
+  {
+    "id": "document-tools.overview",
+    "module_id": "document-tools",
+    "title": "文档工具",
+    "kind": "overview",
+    "audience": "all",
+    "route_names": [
+      "shared-tool-center"
+    ],
+    "factory_ids": [],
+    "anchor_id": "document-tools.overview",
+    "field_keys": [],
+    "summary": "源文件检查、处理任务、质量复核和结果下载是四个不同环节。",
+    "content": "上传返回源文件和检查任务。inspection_status 描述源文件检查；密码文件处于 awaiting_input 时补密码后重新排队，只有检查 succeeded 的源文件才能创建转换任务。execution_status 的 queued/running/succeeded/failed/cancelled/awaiting_input 描述任务执行；succeeded 表示任务完成，仍需查看 quality_status、问题清单与预览，不能等同内容完全准确。\n转换支持 Word/PDF/Excel 之间的指定方向、PDF 拆分，以及中英翻译等明确列出的操作；选项按操作校验，不能任意组合。原生内容、OCR、AI 候选与人工修正应区分；裁剪只改变可见区域，不是安全涂黑。金额、编号、日期、表格及扫描结果需要复核。\n失败或取消任务可显式重试，已成功任务可基于结果修订；结果文件属于各自任务和修订，下载时核对名称与版本。任务持续 queued 时检查工作进程和引擎状态，不要重复上传相同业务资料。\n在线翻译/识别使用文档工具自己的配置，曜灵已连接千问不代表文档工具也已启用。结果仅当前文件所有者可读取，助手不会因聊天自动上传文档或运行转换。独立图片翻译应用目前没有曜灵入口。",
+    "steps": [
+      {
+        "title": "确认源文件",
+        "description": "等待检查完成，遇密码请求在文档工具中补充，确认选中的文件。",
+        "anchor_id": "document-tools.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "设置转换并复核",
+        "description": "选择适用操作和选项，任务成功后查看质量问题及结果预览。",
+        "anchor_id": "document-tools.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      },
+      {
+        "title": "下载或修订",
+        "description": "核对输出版本后下载；失败显式重试，成功结果按需创建修订。",
+        "anchor_id": "document-tools.overview",
+        "precondition": "已进入本模块且总览区域可见",
+        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/api/document_tools.py",
+        "symbol": "source_detail",
+        "sha256": "fbbd92316b07588b00929f621c80406960ec3131687709fc38d416207ad572f5"
+      },
+      {
+        "path": "backend/app/services/document_tools/job_service.py",
+        "symbol": "execution_status",
+        "sha256": "ebfe4cbae101d5c138e39b1d6cb0e6f2958c73d1aa03021947da924a94bab733"
+      },
+      {
+        "path": "backend/app/schemas/document_tools.py",
+        "symbol": "Operation =",
+        "sha256": "1593f589b53dea0a1c79119d6e4b1b54dfdc0e29a02c312b028b4547a668ef93"
+      },
+      {
+        "path": "backend/app/services/document_tools/pdf_geometry.py",
+        "symbol": "crop",
+        "sha256": "b91ced2aba9acf96c80f6ac167f44e8533c5ba49aef90f1c69561800231787f7"
+      }
+    ],
+    "knowledge_version": "2026.10.08-v2",
+    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "status": "verified"
+  }
+]

@@ -110,8 +110,11 @@ def _stock_requests(plan):
 
 def create(db, number, payload: SplitCreate, user):
     from app.services import carton_procurement as core
+    from app.services.carton_customer_assignment import ensure_customer_operation
     factory = core.require_carton_factory(payload.factory_id)
     core._lock_receipt_factory(db, factory)
+    source = _get_order(db, factory, number)
+    ensure_customer_operation(db, user, factory, source.customer_code)
     request_key = "CAE-SPLIT-" + hashlib.sha256(json.dumps([factory, user.id, payload.request_id]).encode()).hexdigest()
     fingerprint = hashlib.sha256(json.dumps([number, payload.model_dump(mode="json", exclude={"request_id"})], sort_keys=True).encode()).hexdigest()
     previous = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.id == request_key))
@@ -255,6 +258,9 @@ def act(db, split_id, payload: SplitAction, user, *, cancel=False):
     if plan["status"] == "CANCELLED" or not cancel and plan["status"] != "PENDING_WAREHOUSE":
         raise HTTPException(409, "当前拆单状态不能执行该操作")
     if cancel:
+        from app.services.carton_customer_assignment import ensure_customer_operation
+        source = db.get(CartonOrder, plan["order_id"])
+        ensure_customer_operation(db, user, factory, source.customer_code)
         if plan["pairs"]:
             _reverse_pairs(db, plan, payload.reason, user)
     else:

@@ -5,6 +5,7 @@ import MemberDirectoryEntry from '@/components/directory/MemberDirectoryEntry.vu
 import TopBar from '@/components/layout/TopBar.vue'
 import { factoryContexts, productionFactoryContextIds } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
+import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard'
 
 const routeState = vi.hoisted(() => ({
   path: '/modules/engineering',
@@ -42,6 +43,21 @@ describe('TopBar factory switcher', () => {
     expect(productionFactoryContextIds).toEqual(physicalFactoryIds)
     expect(productionFactoryContextIds).toContain('huakang-c')
     expect(productionFactoryContextIds).toContain('huakang-d')
+  })
+  it.each([true, false])('keeps dirty worksheet mounted when factory change is cancelled (query=%s)', async (hasQuery) => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useAppStore()
+    store.setActiveFactory('huaxing')
+    routeState.path = '/tools'
+    routeState.query = hasQuery ? { tool: 'collaborative-sheets', factory: 'huaxing' } : { tool: 'collaborative-sheets' }
+    const unregister = registerFactoryChangeGuard(() => false)
+    const wrapper = shallowMount(TopBar, { global: { plugins: [pinia] } })
+    try {
+      await wrapper.get('button[aria-label="切换至华登"]').trigger('click')
+      expect(store.activeFactoryId).toBe('huaxing')
+      expect(routerReplaceMock).not.toHaveBeenCalled()
+    } finally { unregister(); wrapper.unmount() }
   })
 
   it('places the member directory in the global header with the current scope', () => {

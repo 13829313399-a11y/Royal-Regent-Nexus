@@ -543,6 +543,14 @@ def apply_telemetry_backfill(db, printer, event, actor, now):
         if not changed:
             continue
         record.data_quality_flags_json = encode(sorted(flags))
+        previous_cost = _load_json(record.calculated_cost_snapshot_json, {})
+        # The table and summaries read the frozen quote. Keep it aligned with
+        # the product facts just filled in, using only the originally captured
+        # rates; unknown historical material prices must remain unknown.
+        business.freeze_cost(
+            record, business.ensure_settings(db, FACTORY), None,
+            reason="补全打印记录的产品信息",
+        )
         record.updated_at = stamp(now)
         record.revision += 1
         touched.append(record.id)
@@ -555,6 +563,8 @@ def apply_telemetry_backfill(db, printer, event, actor, now):
                 "event_id": event.event_id,
                 "product_matched": bool(matched),
                 "material": record.material_name,
+                "cost_snapshot_before": previous_cost,
+                "cost_snapshot_after": _load_json(record.calculated_cost_snapshot_json, {}),
             },
             actor,
             now,

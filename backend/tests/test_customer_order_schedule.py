@@ -5,6 +5,7 @@ from test_customer_order_ledger import engine, db, client, preview, ingest, user
 from app.services import customer_order_ledger as ledger
 from app.schemas.customer_order_ledger import ReasonIn, AmendIn, DispatchIn
 from app.services.auth import get_current_user
+from test_customer_order_ledger import restore_body, restore_url
 
 
 def make_order(db, ref, qty='100', customer='buzzbee', due='2026-10-01', **fields):
@@ -50,6 +51,23 @@ def test_customer_sections_partial_delivery_totals_count_order_once(client, db):
     columns = {c['key'] for c in result['columns']}
     assert 'packaging' in columns and 'carton_mark' in columns
     assert not {'unit_price_hkd', 'amount_hkd', 'printing_requirement', 'import_controls'} & columns
+
+
+def test_restore_updates_schedule_and_ledger_sections_without_duplicate(client, db):
+    line = make_order(db, 'RESTORE', qty='5000')
+    ledger.ship(db, line, ship_body(line, qty='1000'), '仓库')
+    ledger.cancel(db, line, ReasonIn(expected_revision=line.revision, reason='用户误点取消'), '业务员')
+    db.commit()
+    assert schedule(client).json()['summary']['remaining_quantity'] == '0'
+    assert client.post(restore_url(line), json=restore_body(line)).status_code == 200
+    result = schedule(client).json()
+    assert result['summary'] == dict(order_count=1, ordered_quantity='5000', shipped_quantity='1000',
+        remaining_quantity='4000', unknown_quantity_count=0, cancelled_count=0)
+    assert result['sections']['cancelled']['total'] == 0
+    assert result['sections']['unshipped']['items'][0]['id'] == line.id
+    assert result['sections']['shipped']['items'][0]['id'] == line.id
+    assert client.get('/api/customer-order-ledger/lines?factory_id=huaxing&view=cancelled').json()['total'] == 0
+    assert client.get('/api/customer-order-ledger/lines?factory_id=huaxing&view=unshipped').json()['total'] == 1
 
 
 def test_schedule_pagination_dates_search_and_stable_columns(client, db):

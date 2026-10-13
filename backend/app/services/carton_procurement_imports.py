@@ -857,6 +857,17 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes, *, strict_rows: b
             contract_no = _text(_cell(row, mapping, "contract_no"))
             item_no = _text(_cell(row, mapping, "item_no"))
             amount = _number(_cell(row, mapping, "quantity"))
+            # Dongkang exports include a numeric totals footer. Strict preview
+            # must keep malformed detail rows, but this is not a delivery line.
+            if (dongkang_format and not any((delivery_note_no, contract_no, item_no))
+                    and _header_key(_cell(row, mapping, "specification")) == "总数量"
+                    and _header_key(_cell(row, mapping, "unit_price")) == "总金额"
+                    and amount is not None
+                    and all(not _text(_cell(row, mapping, field)) for field in
+                            ("destination", "delivery_date", "packaging_type", "paper_quality", "customer_po", "location"))
+                    and all(not _text(value) or _number(value) is not None for index, value in enumerate(row)
+                            if index not in {mapping.get("specification"), mapping.get("unit_price")})):
+                continue
             if not any((delivery_note_no, contract_no, item_no)) and not (strict_rows and any(_text(value) for value in row)):
                 continue
             if (amount is None or amount <= 0) and not strict_rows:

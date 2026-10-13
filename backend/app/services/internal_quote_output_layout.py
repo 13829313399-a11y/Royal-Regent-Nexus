@@ -1,6 +1,7 @@
 """Output-layout reads, non-persisting previews and atomic source-field edits."""
 import hashlib
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr
@@ -14,8 +15,11 @@ from app.services.internal_quote import (
     ALL_QUOTE_DEPARTMENTS, MUTABLE_SECTION_STATUSES, _cost_context, _find_reference_set,
     _get_quote, _json_object, _rr2_cost_summary, ensure_quote_permission,
     ensure_section_permission, preview_quote_costs, quote_write, save_whole_product_sections,
+    _can_project_molding_read, _project_molding_parts, _molding_projection_warning,
+    molding_projection_pending,
 )
 from app.services.internal_quote_calculator import canonical_json
+from app.services.internal_quote_document import document_archive
 from app.services.internal_quote_excel import build_internal_quote_workbook_model
 from app.services.internal_quote_output_fields import source_groups
 from app.services.internal_quote_workbook_view import serialize_workbook
@@ -41,11 +45,12 @@ def _load(db, quote_id, user):
     if reference is None:
         raise HTTPException(409, "报价缺少参考资料，请返回填写页重新读取")
     alternative = db.get(InternalQuoteAlternative, quote_id)
+    archive = document_archive(db, quote)
     locked = bool(quote.status in {"archived", "exported", "released", "final_pending", "final_reviewing", "fully_approved"}
                   or quote.final_release_status in {"issued", "approved", "pending"}
-                  or (alternative and alternative.archived))
+                  or archive or (alternative and alternative.archived))
     identity = [quote.id, quote.header_revision, quote.reference_snapshot_id, quote.status, quote.final_release_status,
-                bool(alternative and alternative.archived), reference.sha256,
+                bool(alternative and alternative.archived), archive, reference.sha256,
                 [(s.department, s.revision, s.status, s.is_required, s.payload_json, s.calculation_json,
                   s.calculation_status, s.dependency_status) for s in sorted(sections, key=lambda s: s.department)]]
     token = hashlib.sha256(canonical_json(identity).encode()).hexdigest()
@@ -63,10 +68,18 @@ def _load(db, quote_id, user):
     return quote, sections, reference, token, editable
 
 
+def _projection_pending(db, quote, sections):
+    molding = next((s for s in sections if s.department == "molding"), None)
+    return bool(molding and _can_project_molding_read(db, quote, molding)
+                and molding_projection_pending(db, quote, sections))
+
+
 def _prepare(db, quote_id, request, user):
     quote, sections, reference, token, editable = _load(db, quote_id, user)
     if token != request.base_token:
         raise HTTPException(409, "报价已发生变化，当前表格修改尚未保存。请重新读取并核对后再修改")
+    if _projection_pending(db, quote, sections):
+        raise HTTPException(409, _molding_projection_warning()["message"] + "请先返回填写页同步，再修改输出表格。")
     fields = {field["id"]: (group, field) for group in source_groups(sections, quote.region_code) for field in group["fields"]}
     by_code = {s.department: s for s in sections}
     payloads, seen = {}, set()
@@ -111,6 +124,11 @@ def _prepare(db, quote_id, request, user):
     sales = by_code.get("sales")
     if sales and sales.is_required and sales.filled_at and "sales" in editable:
         payloads.setdefault("sales", _json_object(sales.payload_json))
+    engineering = by_code.get("engineering")
+    if "molding" in payloads and engineering and engineering.is_required and engineering.status != "not_applicable":
+        payloads["molding"] = _project_molding_parts(
+            payloads.get("engineering", _json_object(engineering.payload_json)), payloads["molding"],
+        )
     drafts = [{"section_code": code, "revision": by_code[code].revision, "payload": payload}
               for code, payload in payloads.items()]
     preview = preview_quote_costs(db, quote_id, InternalQuoteCostPreviewRequest(drafts=drafts), user)
@@ -170,20 +188,27 @@ def _bind_aggregate_cells(workbook, groups):
 def _render(db, loaded, preview=None, drafts=()):
     quote, sections, reference, token, editable = loaded
     snapshot = _json_object(reference.snapshot_json)
-    context = _cost_context(db, quote)
+    projection_pending = _projection_pending(db, quote, sections)
+    # Detached copies: all display/preview changes must leave persisted rows intact.
+    sections = [SimpleNamespace(**{c.key: getattr(s, c.key) for c in s.__table__.columns}) for s in sections]
+    if projection_pending:
+        for section in sections:
+            if section.department == "molding":
+                section.calculation_status = section.dependency_status = "stale"
+                section.calculation_json = canonical_json({"status": "stale", "warnings": [_molding_projection_warning()]})
+        editable = set()
+    context = _cost_context(db, quote, calculation_overrides={"molding": {"status": "stale"}} if projection_pending else None)
     summary = _rr2_cost_summary([s for s in sections if s.is_required], context, snapshot, quote.qty, factory_id=quote.factory_id)
     if quote.module_version == "v4" and quote.final_release_status == "issued":
         summary = _json_object(quote.final_submission_manifest_json).get("rr2_cost_summary", summary)
     if preview is not None:
-        # Detached copies: preview must not dirty SQLAlchemy's identity map.
-        from types import SimpleNamespace
         overridden = {d["section_code"]: d["payload"] for d in drafts}
-        sections = [SimpleNamespace(**{c.key: getattr(s, c.key) for c in s.__table__.columns}) for s in sections]
         for section in sections:
             if section.department in overridden:
                 section.payload_json = canonical_json(overridden[section.department])
                 section.calculation_json = canonical_json(preview.calculations[section.department])
                 section.calculation_status = "valid"
+                section.dependency_status = "current"
         context = {**context, **preview.components_hkd, "factory_price_hkd": preview.preview_factory_price_hkd}
         summary = preview.rr2_cost_summary
     groups = source_groups(sections, quote.region_code)
@@ -206,6 +231,8 @@ def _render(db, loaded, preview=None, drafts=()):
             field.pop("path")
     warnings = [{"message": f"{s.department_name}资料尚未完成或需要重新计算，当前合计不完整。"}
                 for s in sections if s.is_required and (s.calculation_status != "valid" or s.dependency_status != "current")]
+    if projection_pending:
+        warnings.append(_molding_projection_warning())
     return {"quote_id": quote.id, "version_label": quote.version_label, "base_token": token,
             "sheets": sheets, "groups": groups, "formula_errors": errors,
             "factory_price_hkd": str(context["factory_price_hkd"]), "preview": preview is not None,

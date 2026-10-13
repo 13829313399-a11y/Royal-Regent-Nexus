@@ -29,15 +29,15 @@ describe('InternalQuoteSectionForm JustPlay component scope', () => {
     }))
     const wrapper = mount(InternalQuoteSectionForm, { props: { code: 'sales', modelValue: payload, pricingMode: 'component' } })
     const fields = ['托板长度 mm', '托板宽度 mm', '托板高度 mm']
-    expect(wrapper.get('[aria-label="每托板装箱数"]').text()).toBe('30')
+    expect((wrapper.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('30')
     expect(fields.map(label => wrapper.get<HTMLInputElement>(`[aria-label="${label}"]`).element.value)).toEqual(['1000', '1150', '1300'])
     for (const [i, value] of [1400, 1000, 800].entries()) await wrapper.get(`[aria-label="${fields[i]}"]`).setValue(String(value))
-    expect(wrapper.get('[aria-label="每托板装箱数"]').text()).toBe('27')
+    expect((wrapper.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('27')
     expect(wrapper.get('[aria-label="纸托板单件成本 HKD"]').text()).toBe('0.029')
     expect((payload as unknown as SalesPayload).cartons[0]).toMatchObject({ length_in: 18, width_in: 12, height_in: 10, size_unit: 'cm' })
     expect((payload as unknown as SalesPayload).justplay_packaging).toMatchObject({ pallet_length_mm: 1400, pallet_width_mm: 1000, pallet_height_mm: 800 })
     await wrapper.get('[aria-label="托板宽度 mm"]').setValue('')
-    expect(wrapper.get('[aria-label="每托板装箱数"]').text()).toBe('0')
+    expect((wrapper.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('0')
     expect(wrapper.get('.justplay-packaging [role="alert"]').text()).toContain('托板长、宽、高')
     await wrapper.get('[aria-label="托板宽度 mm"]').setValue('10')
     expect(wrapper.get('.justplay-packaging [role="alert"]').text()).toContain('所填写的托板空间')
@@ -80,12 +80,12 @@ describe('InternalQuoteSectionForm JustPlay component scope', () => {
     await wrapper.get(`[aria-label="彩盒宽度 ${unit}"]`).setValue(String(11.25 * factor))
     await wrapper.get(`[aria-label="彩盒高度 ${unit}"]`).setValue(String(9 * factor))
     expect(modelValue.cartons[0]).toMatchObject({ length_in: 18, width_in: 12, height_in: 10, qty_per_carton: 6 })
-    expect(wrapper.get('[aria-label="每托板装箱数"]').text()).toBe('30')
+    expect((wrapper.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('30')
     expect(wrapper.get('[aria-label="纸托板单件成本 HKD"]').text()).toBe('0.106')
     expect(modelValue.cartons[1]).toMatchObject({ length_in: 4, width_in: 3, height_in: 2 })
     await wrapper.get(`[aria-label="彩盒宽度 ${unit}"]`).setValue('')
     expect(modelValue.cartons[0]!.width_in).toBe(0)
-    expect(wrapper.get('[aria-label="每托板装箱数"]').text()).toBe('0')
+    expect((wrapper.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('0')
   })
 
   it('keeps ordinary-customer carton dimensions manually editable', async () => {
@@ -131,7 +131,7 @@ describe('InternalQuoteSectionForm JustPlay component scope', () => {
     await wrapper.get(`[aria-label="PDQ 宽度 ${unit}"]`).setValue(String(11.25 * factor))
     await wrapper.get(`[aria-label="PDQ 高度 ${unit}"]`).setValue(String(9 * factor))
     expect(modelValue.cartons[0]).toMatchObject({ length_in: 18, width_in: 12, height_in: 10, qty_per_carton: 24 })
-    expect(wrapper.get('[aria-label="每托板装箱数"]').text()).toBe('30')
+    expect((wrapper.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('30')
     expect((wrapper.get('[aria-label="长度方向个数"]').element as HTMLInputElement).disabled).toBe(true)
     const cloned = normalizeInternalQuotePayload('sales', JSON.parse(JSON.stringify(modelValue))) as unknown as SalesPayload
     expect(cloned.pdq_size_in).toEqual({ length: 17.25, width: 11.25, height: 9 })
@@ -179,7 +179,7 @@ describe('InternalQuoteSectionForm JustPlay component scope', () => {
     expect(special.text()).not.toContain('19÷')
     expect((special.get('[aria-label="胶纸附加金额 HKD/件"]').element as HTMLInputElement).value).toBe('0.0')
     expect((special.get('[aria-label="纸托板附加金额 HKD/件"]').element as HTMLInputElement).value).toBe('0.0')
-    expect(special.get('output[aria-label="每托板装箱数"]').text()).toBe('12')
+    expect((special.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('12')
     expect(special.get('[aria-label="胶纸单件成本 HKD"]').text()).toBe('0.088')
     expect(special.get('[aria-label="纸托板单件成本 HKD"]').text()).toBe('0.792')
     await special.get('[aria-label="胶纸附加金额 HKD/件"]').setValue('0.12')
@@ -207,18 +207,51 @@ describe('InternalQuoteSectionForm JustPlay component scope', () => {
     const colorBox = (modelValue as unknown as SalesPayload).color_box_size_in
     colorBox.height = 0
     await nextTick()
-    expect(special.get('[aria-label="每托板装箱数"]').text()).toBe('0')
+    expect((special.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('0')
     expect(special.get('[role="alert"]').text()).toContain('彩盒长、宽、高')
     Object.assign(colorBox, { length: 17.25, width: 11.25, height: 9 })
     mainCarton.qty_per_carton = 24
     await nextTick()
-    expect(special.get('[aria-label="每托板装箱数"]').text()).toBe('30')
+    expect((special.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('30')
     expect(special.get('[aria-label="纸托板单件成本 HKD"]').text()).toBe('0.026')
     expect(special.find('[role="alert"]').exists()).toBe(false)
     await wrapper.setProps({ disabled: true })
     expect(special.findAll('input').every((input) => (input.element as HTMLInputElement).disabled)).toBe(true)
     await wrapper.setProps({ pricingMode: 'standard' })
     expect(wrapper.find('.justplay-packaging').exists()).toBe(false)
+  })
+
+  it('preserves a manual pallet count across dimension changes and reload, and can restore automatic calculation', async () => {
+    const modelValue = reactive(normalizeInternalQuotePayload('sales', {
+      pricing_mode: 'component', pricing_components: pricingComponents,
+      color_box_size_in: { length: 17.25, width: 11.25, height: 9 },
+      cartons: [{ item: '主纸箱', qty_per_carton: 24 }],
+    })) as unknown as SalesPayload
+    const props = { code: 'sales' as const, modelValue: modelValue as unknown as Record<string, unknown>, pricingMode: 'component' as const }
+    const wrapper = mount(InternalQuoteSectionForm, { props })
+    const count = wrapper.get('[aria-label="每托板装箱数"]')
+    expect((count.element as HTMLInputElement).value).toBe('30')
+    await count.setValue('20')
+    expect(wrapper.get('[aria-label="纸托板单件成本 HKD"]').text()).toBe('0.040')
+    await wrapper.get('[aria-label="托板长度 mm"]').setValue('1400')
+    expect((count.element as HTMLInputElement).value).toBe('20')
+    const saved = normalizeInternalQuotePayload('sales', JSON.parse(JSON.stringify(modelValue)))
+    const reloaded = mount(InternalQuoteSectionForm, { props: { ...props, modelValue: saved } })
+    expect((reloaded.get('[aria-label="每托板装箱数"]').element as HTMLInputElement).value).toBe('20')
+    reloaded.unmount()
+    for (const value of ['', '0', '-1', '1.5']) {
+      await count.setValue(value)
+      expect(wrapper.get('.justplay-packaging [role="alert"]').text()).toContain('必须为正整数')
+    }
+    await wrapper.findAll('button').find(button => button.text() === '恢复自动计算')!.trigger('click')
+    expect((count.element as HTMLInputElement).value).toBe('45')
+    expect(modelValue.justplay_packaging).not.toHaveProperty('cartons_per_pallet_override')
+    expect(wrapper.get('[aria-label="纸托板单件成本 HKD"]').text()).toBe('0.018')
+    await count.setValue('20')
+    await wrapper.setProps({ disabled: true })
+    expect((count.element as HTMLInputElement).disabled).toBe(true)
+    expect(wrapper.findAll('button').find(button => button.text() === '恢复自动计算')!.attributes('disabled')).toBeDefined()
+    wrapper.unmount()
   })
 
   it('filters rows by the shared active component and gives new rows that component automatically', async () => {

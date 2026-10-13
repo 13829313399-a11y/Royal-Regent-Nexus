@@ -394,3 +394,22 @@ def test_locations_failure_rolls_back_rows_and_audit(monkeypatch):
         assert read(client)["locations"] == before
         with SessionLocal() as db:
             assert list(db.scalars(select(CartonAuditEvent.id).where(CartonAuditEvent.event_type == "INVENTORY_LOCATION_CREATED").order_by(CartonAuditEvent.id))) == before_audit
+
+
+def test_paper_weight_import_and_legacy_template_compatibility(monkeypatch):
+    with make_client(monkeypatch) as client:
+        prepare(client)
+        content = excel("configurations", [config(paper="外箱") + ["8.125", "9.25"], config(paper="内箱") + ["0.4", "0.5"]])
+        preview = upload(client, "configurations", content).json()
+        assert preview["errors"] == []
+        assert upload(client, "configurations", content, preview["preview_token"]).status_code == 200
+        papers = read(client)["records"][0]["data"]["lines"]
+        assert {paper["packaging_type"]: (paper["net_weight_kg"], paper["gross_weight_kg"]) for paper in papers} == {"外箱": ("8.125", "9.25"), "内箱": ("0.4", "0.5")}
+        invalid = upload(client, "configurations", excel("configurations", [config(code="BAD") + ["5", "4"]])).json()
+        assert invalid["errors"] and "毛重" in invalid["errors"][0]
+        old = load_workbook(BytesIO(excel("configurations", [config(code="LEGACY")])))
+        old["导入数据"].delete_cols(15, 2)
+        result = BytesIO(); old.save(result)
+        legacy = upload(client, "configurations", result.getvalue()).json()
+        assert legacy["errors"] == [] and legacy["added"] == 1
+        assert upload(client, "configurations", result.getvalue(), legacy["preview_token"]).status_code == 200

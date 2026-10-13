@@ -101,7 +101,7 @@ export function useWorkspace() {
   const productSearch = ref("");
   const dateFrom = ref("");
   const dateTo = ref("");
-  let refreshTimer: ReturnType<typeof window.setInterval> | undefined;
+  let refreshTimer: number | undefined;
   let liveRunVersion = "";
   let liveRefreshPending = false;
   let disposed = false;

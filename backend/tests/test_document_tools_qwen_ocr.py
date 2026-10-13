@@ -28,6 +28,23 @@ def test_openai_contract_has_no_dashscope_parameters():
 
 
 @pytest.mark.parametrize('protocol', ['dashscope', 'openai'])
+@pytest.mark.parametrize('task,layout', [('table', False), ('text', False), ('text', True)])
+def test_flash_visual_transcription_avoids_ocr_only_parameters(protocol, task, layout):
+    settings = config(protocol)
+    settings.document_tools_qwen_ocr_model = 'qwen3.8-flash'
+    settings.document_tools_qwen_layout_model = 'qwen3.8-flash'
+    _, body = request_contract(settings, b'png', task=task, layout=layout)
+    assert body['model'] == 'qwen3.8-flash'
+    parameters = body.get('parameters', body)
+    assert parameters['enable_thinking'] is False
+    assert parameters['max_tokens'] == 16384
+    assert 'ocr_options' not in parameters
+    messages = body.get('input', body)['messages']
+    assert 'enable_rotate' not in messages[0]['content'][0]
+    assert '不补全数字' in messages[0]['content'][-1]['text']
+
+
+@pytest.mark.parametrize('protocol', ['dashscope', 'openai'])
 def test_rename_prompt_is_opt_in_and_does_not_change_conversion_prompt(protocol):
     from app.services.document_tools.qwen_ocr import PROMPT
     _, custom = request_contract(config(protocol), b'png', task='text', layout=True, prompt='rename-only')

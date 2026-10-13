@@ -192,8 +192,8 @@ def _mark_identity(customer_name, po, item, contract_number):
         (customer_name, po, item, contract_number))
 
 
-def _supplier_mark_assets(db, user, factory):
-    """Share source files by contract using issued headers, with factory-wide ambiguity checks."""
+def _supplier_mark_orders(db, user, factory):
+    """Current issued identities; unissued orders still take part in ambiguity checks."""
     supplier = supplier_access(db, user, factory)
     projections, eligible = [], {}
     for order in mark_assets.available_orders(db, factory):
@@ -210,11 +210,17 @@ def _supplier_mark_assets(db, user, factory):
         if (issue and order.supplier_id == supplier.id
                 and header.get("supplier_id") == supplier.id
                 and order.status in OPEN_STATES | {"COMPLETED"}):
-            eligible[order.id] = dict(id=order.id,
+            eligible[order.id] = dict(id=order.id, issue_id=issue.id,
                 customer_name=str(header.get("customer_name") or ""),
                 contract_no=str(header.get("contract_no") or ""),
                 customer_po=str(header.get("customer_po") or ""),
                 item_no=str(header.get("item_no") or ""))
+    return supplier, projections, eligible
+
+
+def _supplier_mark_assets(db, user, factory):
+    """Share source files by contract using issued headers, with factory-wide ambiguity checks."""
+    _, projections, eligible = _supplier_mark_orders(db, user, factory)
     result = []
     for asset in db.scalars(select(CartonMarkAsset).where(
             CartonMarkAsset.factory_id == factory, CartonMarkAsset.is_archived.is_(False))
@@ -229,9 +235,9 @@ def _supplier_mark_assets(db, user, factory):
 
 
 def supplier_mark_assets(db, user, factory):
-    return [dict(id=asset.id, file_name=asset.file_name, kind=asset.kind,
+    return [dict(id=asset.id, revision=asset.revision, file_name=asset.file_name, kind=asset.kind,
         photo_group_id=asset.photo_group_id,
-        size_bytes=asset.size_bytes, contract_number=asset.contract_number,
+        size_bytes=asset.size_bytes, contract_number="、".join(sorted({order["contract_no"] for order in orders})),
         created_at=asset.created_at, orders=orders)
         for asset, orders in _supplier_mark_assets(db, user, factory)]
 
@@ -416,6 +422,26 @@ def order_out(db, order, *, internal=False):
     return result
 
 
+def ensure_shipment_customers(db, user, shipment):
+    from app.services.carton_customer_assignment import ensure_customer_operation
+    formal, unmatched = _shipment_sources(db, shipment)
+    codes = set(db.scalars(select(CartonOrder.customer_code).join(CartonOrderLine, CartonOrderLine.order_id == CartonOrder.id)
+        .where(CartonOrder.factory_id == shipment.factory_id, CartonOrderLine.id.in_([line.order_line_id for line in formal]))))
+    codes.update(json.loads(line.snapshot_json).get("customer_code", "") for line in unmatched)
+    for code in codes:
+        ensure_customer_operation(db, user, shipment.factory_id, code)
+
+
+def visible_shipment(db, user, shipment):
+    try:
+        ensure_shipment_customers(db, user, shipment)
+        return True
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        return False
+
+
 def pending_shipments(db, user, factory, *, limit=3):
     """The factory receiving queue is independent of personal work-center state."""
     factory = internal_permission(user, factory, "carton_procurement:read",
@@ -428,13 +454,17 @@ def pending_shipments(db, user, factory, *, limit=3):
                            CartonReceipt.factory_id == SupplierShipment.factory_id)).where(
         SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier_id,
         or_(SupplierShipment.status == "SENT", CartonReceipt.status == "REVERSED"))
+    visible_ids = [row.id for row in db.scalars(select(SupplierShipment).where(
+        SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier_id))
+        if visible_shipment(db, user, row)]
+    queue = queue.where(SupplierShipment.id.in_(visible_ids))
     rows = db.execute(queue.order_by(SupplierShipment.created_at.desc(), SupplierShipment.id.desc()).limit(limit)).all()
     return {"factory_id": factory, "total": rows[0].total if rows else 0, "items": [
         {"id": row.id, "delivery_note_no": row.delivery_note_no, "delivery_date": row.delivery_date,
          "requires_correction": row.receipt_status == "REVERSED"} for row in rows]}
 
 
-def workspace(db, user, factory, *, internal=False):
+def workspace(db, user, factory, *, internal=False, responsibility_scope="OWN"):
     if internal:
         internal_permission(user, factory, "carton_procurement:read")
         supplier_id = fixed_supplier(db, factory).id
@@ -443,11 +473,18 @@ def workspace(db, user, factory, *, internal=False):
     orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory, CartonOrder.supplier_id == supplier_id,
         CartonOrder.deleted_at.is_(None),
         CartonOrder.status.in_(VISIBLE_STATES | {"DRAFT", "CONFIRMED"} if internal else VISIBLE_STATES)).order_by(CartonOrder.due_date, CartonOrder.order_no)).all()
+    if internal and responsibility_scope == "OWN":
+        from app.services.carton_customer_assignment import customer_predicate
+        visible_order_ids = set(db.scalars(select(CartonOrder.id).where(CartonOrder.factory_id == factory,
+            customer_predicate(user, factory, CartonOrder.customer_code))))
+        orders = [order for order in orders if order.id in visible_order_ids]
     result = [order_out(db, row, internal=internal) for row in orders]
     shipments = db.scalars(select(SupplierShipment).where(SupplierShipment.factory_id == factory,
         SupplierShipment.supplier_id == supplier_id).order_by(SupplierShipment.created_at.desc())).all()
+    if internal and responsibility_scope == "OWN":
+        shipments = [row for row in shipments if visible_shipment(db, user, row)]
     return {"factory_id": factory, "supplier_name": db.get(CartonSupplier, supplier_id).supplier_name,
-        "orders": [row for row in result if row], "shipments": [shipment_out(db, row, internal=internal) for row in shipments]}
+        "orders": [row for row in result if row], "shipments": [dict(shipment_out(db, row, internal=internal), **({"can_operate": visible_shipment(db, user, row)} if internal else {})) for row in shipments]}
 
 
 def shipment_out(db, row, *, internal=False):
@@ -1093,6 +1130,7 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
     row = db.scalar(select(SupplierShipment).where(SupplierShipment.id == shipment_id, SupplierShipment.factory_id == payload.factory_id))
     if not row:
         raise HTTPException(404, "未找到此厂区的发货单")
+    ensure_shipment_customers(db, user, row)
     digest = fingerprint(payload)
     for event in db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == payload.factory_id,
         CartonAuditEvent.entity_type == "supplier_shipment", CartonAuditEvent.entity_id == row.id,
@@ -1158,8 +1196,8 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 continue
             if item.no_order_decision != "SAMPLE":
                 raise HTTPException(422, "无单纸品须明确选择确需入库的样板箱或送错货")
-            if not item.customer_code or len(item.sample_purpose.strip()) < 4 or len(item.requested_by.strip()) < 2:
-                raise HTTPException(422, "样板箱须选择客户，并填写用途和需求人")
+            if not item.customer_code or len(item.requested_by.strip()) < 2:
+                raise HTTPException(422, "样板箱须选择客户，并填写需求人")
             if effective <= 0:
                 raise HTTPException(422, "样板箱有效入库数量须大于 0；全部拒收请选择送错货")
             # A formal order entered after vendor import must be reconciled as a formal receipt.
@@ -1180,7 +1218,7 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 damaged_quantity=item.damaged_quantity, rejected_quantity=item.rejected_quantity,
                 unusable_quantity=item.unusable_quantity, unit_price=item.unit_price,
                 location_allocations=item.location_allocations,
-                feedback_note=f"无正式订单样板箱；用途：{item.sample_purpose}；需求人：{item.requested_by}；{item.difference_reason}"))
+                feedback_note=f"无正式订单样板箱；用途：{item.sample_purpose.strip() or '未填写'}；需求人：{item.requested_by}；{item.difference_reason}"))
             continue
         if item.no_order_decision or item.customer_code or item.sample_purpose or item.requested_by:
             raise HTTPException(422, "正式订单纸品不得选择无单处理")
@@ -1260,6 +1298,7 @@ def link_shipment_line(db, user, shipment_id, line_id, payload: ShipmentLineLink
     source = db.get(SupplierShipmentUnmatchedLine, line_id)
     if not shipment or not source or source.shipment_id != shipment.id or source.factory_id != payload.factory_id:
         raise HTTPException(404, "未找到本厂区的无单送货明细")
+    ensure_shipment_customers(db, user, shipment)
     event_id = f"CAE-SHIP-LINK-{source.id}"
     previous = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.id == event_id))
     if previous:
@@ -1272,6 +1311,9 @@ def link_shipment_line(db, user, shipment_id, line_id, payload: ShipmentLineLink
         raise HTTPException(409, "送货单状态或版本已变化，仅待验收或收料已冲销的无单行可关联")
     target = db.get(CartonOrderLine, payload.order_line_id)
     order = db.get(CartonOrder, target.order_id) if target else None
+    if order is not None:
+        from app.services.carton_customer_assignment import ensure_customer_operation
+        ensure_customer_operation(db, user, payload.factory_id, order.customer_code)
     if not target or target.factory_id != payload.factory_id or not order or order.factory_id != payload.factory_id or order.supplier_id != shipment.supplier_id:
         raise HTTPException(404, "目标纸品不属于此厂区与供应商")
     from app.services.carton_procurement import get_active_customer

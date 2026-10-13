@@ -57,6 +57,9 @@ def office_executable() -> str | None:
         candidates += [str(Path(base) / "LibreOffice/program/soffice.com")
                        for base in (os.getenv("ProgramFiles", "C:/Program Files"),
                                     os.getenv("ProgramFiles(x86)", "C:/Program Files (x86)"))]
+        from app.core.config import BACKEND_DIR, settings
+        if settings.app_env == "development":
+            candidates.append(str(BACKEND_DIR / "data/document-tools-office/runtime/program/soffice.com"))
     return next((p for p in candidates if p and Path(p).is_file()), None)
 
 
@@ -132,7 +135,7 @@ def _render_office_in_profile(path: Path, output: Path, options: dict, work_dir:
     work_dir.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     is_excel = path.suffix.lower() in (".xlsx", ".xls")
-    advanced = is_excel or bool(options.get("password"))
+    advanced = is_excel or bool(options.get("password")) or bool(options.get("secure_load"))
     base = [executable, "--headless", "--nologo", "--nodefault", "--nofirststartwizard",
             f"-env:UserInstallation={profile.resolve().as_uri()}"]
     metadata = {"renderer": "LibreOffice", "isolated_profile": True}

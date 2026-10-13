@@ -64,7 +64,7 @@ watch(() => route.fullPath, async () => {
     wide-layout
   >
     <template #icon><Calculator aria-hidden="true" /></template>
-    <div class="internal-quote-desk">
+    <div class="internal-quote-desk" data-yl-help="internal-quote.overview">
       <div class="quote-guide-entry">
         <span>建单 · 部门核价 · 汇总与输出</span>
         <button ref="usageGuideTrigger" type="button" aria-label="打开内部报价使用教程" @click="openUsageGuide"><BookOpen aria-hidden="true" />使用教程</button>
@@ -247,10 +247,6 @@ watch(() => route.fullPath, async () => {
   font-size: 22px !important;
 }
 
-.internal-quote-desk :deep(.quote-donut span) {
-  font-size: 16px !important;
-}
-
 .internal-quote-desk :deep(.quote-final-release h2) {
   font-size: 18px !important;
 }
@@ -261,7 +257,6 @@ watch(() => route.fullPath, async () => {
 }
 
 .internal-quote-desk :deep(.quote-kpi-grid article),
-.internal-quote-desk :deep(.quote-logistics-grid article),
 .internal-quote-desk :deep(.quote-release-grid article),
 .internal-quote-desk :deep(.quote-export-kpis article),
 .internal-quote-desk :deep(.quote-sheet-list > span),
@@ -271,7 +266,6 @@ watch(() => route.fullPath, async () => {
 }
 
 .internal-quote-desk :deep(.quote-kpi-grid article:hover),
-.internal-quote-desk :deep(.quote-logistics-grid article:hover),
 .internal-quote-desk :deep(.quote-release-grid article:hover),
 .internal-quote-desk :deep(.quote-export-kpis article:hover),
 .internal-quote-desk :deep(.quote-sheet-list > span:hover),
@@ -290,7 +284,6 @@ watch(() => route.fullPath, async () => {
   .internal-quote-desk :deep(button svg),
   .internal-quote-desk :deep(a svg),
   .internal-quote-desk :deep(.quote-kpi-grid article),
-  .internal-quote-desk :deep(.quote-logistics-grid article),
   .internal-quote-desk :deep(.quote-release-grid article),
   .internal-quote-desk :deep(.quote-export-kpis article),
   .internal-quote-desk :deep(.quote-sheet-list > span),

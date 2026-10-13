@@ -147,11 +147,12 @@ def test_old_electronic_source_battery_and_engineering_battery_are_added_only_on
     workbook.close()
 
 
-def test_ordinary_customer_expands_electronic_and_battery_purchase_details():
-    workbook, _, _, _ = _electronic_export_fixture(component_mode=False)
+def test_ordinary_customer_summarizes_electronics_and_retains_battery_purchases():
+    workbook, _, _, context = _electronic_export_fixture(component_mode=False)
     sheet = workbook["报价明细"]
     assert not any(" · 电子" in str(cell.value) for row in sheet for cell in row)
-    assert sheet.cell(_find_row(sheet, 3, "A1 IC（2pcs）"), 4).value.startswith("=0.85/$L$4*2")
+    assert sheet.cell(_find_row(sheet, 3, "电子"), 4).value == pytest.approx(float(context["electronic_hkd"]))
+    assert not any(sheet.cell(row, 3).value == "A1 IC（2pcs）" for row in range(1, sheet.max_row + 1))
     assert sheet.cell(_find_row(sheet, 3, "AG13电池×3（3pcs）"), 4).value == "=0.17/$L$4*3"
     workbook.close()
 

@@ -19,7 +19,7 @@ ENGINEERING_PAYLOAD = {
             "unit_price_rmb": "8.5",
         }
     ],
-    "molds": [{"item": "主模", "quantity": "1", "cost_rmb": "1000"}],
+    "molds": [{"item": "主模", "mold_no": "M1", "quantity": "2", "cost_rmb": "1000"}],
     "amortization_qty": "100",
     "customer_mold_subsidy_usd": "5",
 }
@@ -29,6 +29,7 @@ MOLDING_PAYLOAD = {
     "injection_lines": [
         {
             "item": "主壳",
+            "mold_no": "M1",
             "material": "ABS",
             "grade": "750SW",
             "net_weight_g": "454",
@@ -125,7 +126,7 @@ def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monke
             "/api/internal-quotes/calculation-contracts?factory_id=huaxing"
         )
         assert contract.status_code == 200
-        assert contract.json()["formula_version"] == "rr2-2026-v7"
+        assert contract.json()["formula_version"] == "rr2-2026-v9"
         assert set(contract.json()["sections"]) == {
             "sales",
             "engineering",
@@ -151,7 +152,7 @@ def test_p2_reference_snapshot_contract_and_manual_sync_are_factory_scoped(monke
         quote_id = created["id"]
         old_reference_id = created["reference_snapshot_id"]
         assert old_reference_id.startswith("IQREF-")
-        assert created["formula_version"] == "rr2-2026-v7"
+        assert created["formula_version"] == "rr2-2026-v9"
         assert all(
             section["calculation_status"] == "pending"
             and section["calculation_reference_snapshot_id"] == old_reference_id
@@ -377,7 +378,7 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         assert engineering.status_code == 200, engineering.text
         engineering_section = engineering.json()
         assert engineering_section["calculation_status"] == "valid"
-        assert engineering_section["calculation"]["formula_version"] == "rr2-2026-v7"
+        assert engineering_section["calculation"]["formula_version"] == "rr2-2026-v9"
         assert engineering_section["calculation"]["totals"]["hardware_hkd"] == "20.0000"
         assert engineering_section["calculation"]["totals"]["mold_amortization_usd"] == "1.2403"
 
@@ -456,7 +457,7 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
         assert summary.status_code == 200
         body = summary.json()
-        assert body["formula_version"] == "rr2-2026-v7"
+        assert body["formula_version"] == "rr2-2026-v9"
         assert body["components_hkd"]["hardware_hkd"] == "20.0000"
         assert body["calculation_phase"] == "blocked"
         assert any(
@@ -837,7 +838,7 @@ def test_multi_section_preview_and_whole_product_save_share_one_authoritative_to
         assert summary.json()["factory_price_hkd"] == preview_body["preview_factory_price_hkd"]
 
 
-def test_whole_product_save_rolls_back_every_section_when_one_calculation_fails(monkeypatch):
+def test_whole_product_save_keeps_every_section_unchanged_when_one_revision_conflicts(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_p2_whole_rollback", "sales_customer_owner", "sales-business")
         created = client.post(
@@ -853,14 +854,14 @@ def test_whole_product_save_rolls_back_every_section_when_one_calculation_fails(
                     {"section_code": "engineering", "revision": 1, "payload": ENGINEERING_PAYLOAD},
                     {
                         "section_code": "assembly",
-                        "revision": 1,
-                        "payload": {**ASSEMBLY_PAYLOAD, "labor_base_hkd": "不是数字"},
+                        "revision": 99,
+                        "payload": ASSEMBLY_PAYLOAD,
                     },
                 ],
-                "reason": "验证事务回滚",
+                "reason": "验证版本冲突不写入任何部门",
             },
         )
-        assert failed.status_code == 400, failed.text
+        assert failed.status_code == 409, failed.text
         detail = client.get(f"/api/internal-quotes/{quote_id}").json()
         by_code = {row["department"]: row for row in detail["sections"]}
         assert by_code["engineering"]["revision"] == 1
@@ -881,12 +882,16 @@ def test_whole_product_save_recalculates_unchanged_molding_after_engineering_dep
         )
         assert created.status_code == 201, created.text
         quote_id = created.json()["id"]
+        engineering = {**ENGINEERING_PAYLOAD, "molds": [
+            {**ENGINEERING_PAYLOAD["molds"][0], "mold_no": "M1"}]}
+        molding = {"injection_lines": [{**MOLDING_PAYLOAD["injection_lines"][0],
+                   "engineering_source_key": "mold-no:M1#1"}]}
         first = client.put(
             f"/api/internal-quotes/{quote_id}/sections/save-all",
             json={
                 "sections": [
-                    {"section_code": "engineering", "revision": 1, "payload": ENGINEERING_PAYLOAD},
-                    {"section_code": "molding", "revision": 1, "payload": MOLDING_PAYLOAD},
+                    {"section_code": "engineering", "revision": 1, "payload": engineering},
+                    {"section_code": "molding", "revision": 1, "payload": molding},
                 ],
                 "reason": "首次整款保存",
             },
@@ -896,8 +901,8 @@ def test_whole_product_save_recalculates_unchanged_molding_after_engineering_dep
         assert first_by_code["molding"]["calculation_status"] == "valid"
 
         changed_engineering = {
-            **ENGINEERING_PAYLOAD,
-            "molds": [{**ENGINEERING_PAYLOAD["molds"][0], "item": "主模改版"}],
+            **engineering,
+            "molds": [{**engineering["molds"][0], "item": "主模改版"}],
         }
         second = client.put(
             f"/api/internal-quotes/{quote_id}/sections/save-all",
@@ -911,7 +916,7 @@ def test_whole_product_save_recalculates_unchanged_molding_after_engineering_dep
                     {
                         "section_code": "molding",
                         "revision": first_by_code["molding"]["revision"],
-                        "payload": MOLDING_PAYLOAD,
+                        "payload": first_by_code["molding"]["payload"],
                     },
                 ],
                 "reason": "工程模具变更后整款保存",
@@ -922,6 +927,54 @@ def test_whole_product_save_recalculates_unchanged_molding_after_engineering_dep
         assert second_by_code["molding"]["calculation_status"] == "valid"
         assert second_by_code["molding"]["dependency_status"] == "current"
         assert second_by_code["molding"]["revision"] > first_by_code["molding"]["revision"]
+        assert second_by_code["molding"]["payload"]["injection_lines"][0]["item"] == "主模改版"
+        assert second_by_code["molding"]["payload"]["injection_lines"][0]["machine_code"] == "5A"
+
+
+def test_split_save_calculates_child_rows_and_child_change_invalidates_cost(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "iq_split_sync", "sales_customer_owner", "sales-business")
+        created = client.post('/api/internal-quotes', json=create_payload(
+            suffix='SPLIT-SYNC', participating_sections=['sales', 'engineering', 'molding', 'assembly']))
+        assert created.status_code == 201, created.text
+        quote_id = created.json()['id']
+        parent = {**MOLDING_PAYLOAD['injection_lines'][0], 'item': '上/下', 'mold_no': 'M1',
+                  'engineering_source_key': 'mold-no:M1#1', 'remark': '保留机台'}
+        engineering = {**ENGINEERING_PAYLOAD, 'molds': [{
+            'mold_no': 'M1', 'item': '上/下', 'quantity': 1, 'cost_rmb': 1000,
+            'parts': [{'id': 'top', 'name': '上壳', 'unit_net_weight_g': 10, 'output_count': 2, 'quantity': 3},
+                      {'id': 'bottom', 'name': '下壳', 'unit_net_weight_g': 20, 'output_count': 4, 'quantity': 1}]}]}
+        saved = client.put(f'/api/internal-quotes/{quote_id}/sections/save-all', json={'sections': [
+            {'section_code': 'engineering', 'revision': 1, 'payload': engineering},
+            {'section_code': 'molding', 'revision': 1, 'payload': {'injection_lines': [parent]}}]})
+        assert saved.status_code == 200, saved.text
+        sections = {r['department']: r for r in saved.json()['sections']}
+        molding = sections['molding']
+        assert molding['calculation_status'] == 'valid'
+        assert [r['item'] for r in molding['payload']['injection_lines']] == ['上壳', '下壳']
+        assert [r['remark'] for r in molding['payload']['injection_lines']] == ['保留机台', '保留机台']
+        breakdown = molding['calculation']['line_breakdown']
+        assert [r['net_weight_g'] for r in breakdown] == ['10.0000', '20.0000']
+        assert [r['cavity'] for r in molding['payload']['injection_lines']] == [2, 4]
+        assert [r['sets'] for r in breakdown] == ['3.0000', '1.0000']
+        assert [r['quantity'] for r in breakdown] == ['2.0000', '2.0000']
+        engineering['molds'][0]['parts'][0]['unit_net_weight_g'] = 15
+        changed = client.put(f'/api/internal-quotes/{quote_id}/sections/engineering', json={
+            'revision': sections['engineering']['revision'], 'payload': engineering})
+        assert changed.status_code == 200, changed.text
+        detail = client.get(f'/api/internal-quotes/{quote_id}').json()
+        refreshed = next(r for r in detail['sections'] if r['department'] == 'molding')
+        assert refreshed['dependency_status'] == 'stale'
+        assert refreshed['payload']['injection_lines'][0]['net_weight_g'] == 15
+        engineering['molds'][0]['parts'] = []
+        cleared = client.put(f'/api/internal-quotes/{quote_id}/sections/save-all', json={'sections': [
+            {'section_code': 'engineering', 'revision': changed.json()['revision'], 'payload': engineering},
+            {'section_code': 'molding', 'revision': refreshed['revision'], 'payload': refreshed['payload']} ]})
+        assert cleared.status_code == 200, cleared.text
+        persisted = next(r for r in cleared.json()['sections'] if r['department'] == 'molding')
+        displayed = next(r for r in cleared.json()['quote']['sections'] if r['department'] == 'molding')
+        assert persisted['payload'] == displayed['payload']
+        assert [r['item'] for r in persisted['payload']['injection_lines']] == ['上/下']
 
 
 def test_old_formula_is_reported_and_can_be_recalculated_without_changing_reference_values(monkeypatch):
@@ -944,7 +997,7 @@ def test_old_formula_is_reported_and_can_be_recalculated_without_changing_refere
 
         summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
         assert summary.status_code == 200, summary.text
-        assert summary.json()["current_formula_version"] == "rr2-2026-v7"
+        assert summary.json()["current_formula_version"] == "rr2-2026-v9"
         assert any(row["code"] == "formula_version_stale" for row in summary.json()["warnings"])
 
         recalculated = client.post(
@@ -953,7 +1006,7 @@ def test_old_formula_is_reported_and_can_be_recalculated_without_changing_refere
         )
         assert recalculated.status_code == 200, recalculated.text
         body = recalculated.json()
-        assert body["formula_version"] == "rr2-2026-v7"
+        assert body["formula_version"] == "rr2-2026-v9"
         assert body["reference_snapshot_id"] != old_reference_id
         fresh_summary = client.get(f"/api/internal-quotes/{quote_id}/summary").json()
         assert not any(row["code"] == "formula_version_stale" for row in fresh_summary["warnings"])

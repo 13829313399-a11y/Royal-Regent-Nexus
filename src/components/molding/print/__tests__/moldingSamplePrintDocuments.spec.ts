@@ -17,6 +17,7 @@ function createRecord(itemCount: number): MoldingSampleWorkflowRecord {
     id: `${record.order.id}-${String(index + 1).padStart(3, '0')}`,
     order_id: record.order.id,
     sort_order: index + 1,
+    quote_target_daily_qty: 3600,
     mold_id: `MOLD-${index + 1}`,
     mold_name: `打印模具${index + 1}`,
   }))
@@ -34,6 +35,7 @@ describe('shared molding-sample print documents', () => {
     })
 
     expect(wrapper.findAll('[data-testid="molding-sample-engineering-print-row"]')).toHaveLength(itemCount)
+    expect(wrapper.text()).toContain('报价目标：3600 啤/日')
     expect(wrapper.text()).toContain('预计料费(HKD)')
     expect(wrapper.text()).toContain('实际料费(HKD)')
     expect(wrapper.text()).not.toContain('签核栏')
@@ -48,6 +50,7 @@ describe('shared molding-sample print documents', () => {
     })
 
     expect(wrapper.findAll('[data-testid="molding-sample-production-print-row"]')).toHaveLength(itemCount)
+    expect(wrapper.text()).toContain('报价目标：3600 啤/日')
     expect(wrapper.text()).toContain('啤机部生产任务单')
     expect(wrapper.text()).toContain('注意事项 / 开单事由')
     expect(wrapper.text()).toContain('工程模具明细')

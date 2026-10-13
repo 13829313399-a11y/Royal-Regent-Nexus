@@ -139,6 +139,7 @@ def test_multiple_groups_currencies_atomic_failure_and_molding_dependency(monkey
         second_hkd = next(c for row in second_sheet['rows'] for c in row['cells'] if c['address'] == 'F4')
         assert float(second_hkd['text']) == pytest.approx(2 / .85, abs=.0001)
         ids = {f['id'] for g in layout['groups'] for f in g['fields']}
+        assert 'molding:injection_lines/0/item' not in ids
         assert 'engineering:materials/0/unit_price_hkd' in ids
         assert 'engineering:materials/0/unit_price_rmb' not in ids
         body = {'base_token': layout['base_token'], 'edits': [
@@ -164,6 +165,7 @@ def test_multiple_groups_currencies_atomic_failure_and_molding_dependency(monkey
         assert sections['molding']['calculation_status'] == 'valid'
         assert sections['molding']['dependency_status'] == 'current'
         assert client.get(root + '/output-layout').json()['factory_price_hkd'] == preview.json()['factory_price_hkd']
+        assert sections['molding']['payload']['injection_lines'][0]['item'] == '主模改名'
         current = client.get(root + '/output-layout').json()
         changed_hkd = next(c for row in current['sheets'][2]['rows'] for c in row['cells'] if c['address'] == 'F4')
         assert float(changed_hkd['text']) == pytest.approx(7 / .85, abs=.0001)
@@ -206,3 +208,48 @@ def test_visible_detail_subtotal_matches_server_with_repeated_parts_and_standalo
         amount = next(c for c in subtotal["cells"] if c["address"].startswith("D"))
         assert float(amount["text"].replace(",", "")) == pytest.approx(float(layout["factory_price_hkd"]), abs=.01)
         assert not any(c["text"] == "车缝未分类成本" for row in rows for c in row["cells"])
+
+
+def test_output_layout_respects_legacy_document_archive(monkeypatch):
+    import importlib
+    from test_internal_quote_alternatives import fork
+    with make_client(monkeypatch) as client:
+        login(client, "table-archive", "admin", "*", "*")
+        original = fill(client, create(client, "TABLE-ARCHIVE"))
+        variant = fork(client, original)
+        root = f"/api/internal-quotes/{variant['id']}"
+        before = client.get(root + "/output-layout").json()
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.internal_quote")
+        with db_module.SessionLocal() as db:
+            db.get(models.InternalQuote, original['id']).status = 'archived'
+            db.commit()
+        layout = client.get(root + "/output-layout").json()
+        assert layout['read_only'] and all(not g['editable'] for g in layout['groups'])
+        assert layout['base_token'] != before['base_token']
+        body = {'base_token': layout['base_token'], 'edits': [
+            {'field_id': 'engineering:materials/0/unit_price_rmb', 'value': 9}]}
+        assert client.post(root + '/output-layout/preview', json=body).status_code == 409
+        assert client.put(root + '/output-layout', json=body).status_code == 409
+
+
+def test_output_layout_omits_unsynchronized_molding_cost_and_never_persists_on_read(monkeypatch):
+    from test_internal_quote_projection_lifecycle import legacy_quote, stored_molding
+    with make_client(monkeypatch) as client:
+        login(client, "table-projection", "admin", "*", "*")
+        quote_id, _ = legacy_quote(client)
+        root = f"/api/internal-quotes/{quote_id}"
+        before = stored_molding(quote_id)
+        response = client.get(root + '/output-layout')
+        assert response.status_code == 200, response.text
+        layout = response.json()
+        assert layout['read_only']
+        assert any(w.get('code') == 'engineering_parts_unsaved' for w in layout['warnings'])
+        summary = client.get(root + '/summary').json()
+        assert float(layout['factory_price_hkd']) == float(summary['factory_price_hkd'])
+        assert stored_molding(quote_id) == before
+        body = {'base_token': layout['base_token'], 'edits': [
+            {'field_id': 'engineering:materials/0/unit_price_rmb', 'value': 9}]}
+        assert client.post(root + '/output-layout/preview', json=body).status_code == 409
+        assert client.put(root + '/output-layout', json=body).status_code == 409
+        assert stored_molding(quote_id) == before

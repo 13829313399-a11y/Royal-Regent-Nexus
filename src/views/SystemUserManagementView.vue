@@ -1344,7 +1344,7 @@ onBeforeUnmount(() => {
                       驳回
                     </button>
                     <button
-                      v-if="resetRequest.status === 'expired' && resetRequest.matched_user"
+                      v-if="resetRequest.can_reopen && resetRequest.matched_user"
                       type="button"
                       class="btn btn-primary"
                       :disabled="Boolean(actionKey)"

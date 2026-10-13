@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { useAppStore } from '@/stores/app'
+import { advanceAuthenticationGeneration, announceSessionBoundary, getAuthenticationGeneration } from '@/lib/authenticationGeneration'
 import {
   authApi,
   type AuthEffectiveAccess,
@@ -164,6 +165,7 @@ interface AuthState {
   isAuthenticated: boolean
   hasLoadedSession: boolean
   sessionVersion: number
+  isConfirmingSession: boolean
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -181,9 +183,11 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: false,
     hasLoadedSession: false,
     sessionVersion: 0,
+    isConfirmingSession: false,
   }),
   actions: {
     applySession(user: AuthMeResponse) {
+      if (this.currentUser?.id !== user.id) advanceAuthenticationGeneration()
       this.currentUser = user
       this.roles = user.roles ?? []
       this.permissions = user.permissions ?? []
@@ -203,6 +207,7 @@ export const useAuthStore = defineStore('auth', {
       })
     },
     clearSession() {
+      advanceAuthenticationGeneration()
       useAppStore().resetAuthenticatedFactoryContext()
       this.currentUser = null
       this.roles = []
@@ -219,15 +224,22 @@ export const useAuthStore = defineStore('auth', {
       this.sessionVersion += 1
     },
     async login(payload: LoginRequest) {
+      const generation = advanceAuthenticationGeneration()
       const user = await authApi.login(payload)
+      if (generation !== getAuthenticationGeneration()) throw new Error('登录状态已变化，请重试')
       // Even a new login by the same account starts a fresh factory selection.
       useAppStore().resetAuthenticatedFactoryContext()
       this.applySession(user)
+      announceSessionBoundary()
       return user
     },
     async changePassword(payload: ChangePasswordRequest) {
+      const generation = getAuthenticationGeneration()
       const user = await authApi.changePassword(payload)
+      if (generation !== getAuthenticationGeneration()) throw new Error('登录状态已变化，请重新确认')
+      advanceAuthenticationGeneration()
       this.applySession(user)
+      announceSessionBoundary()
       return user
     },
     async ensureSession() {
@@ -236,17 +248,18 @@ export const useAuthStore = defineStore('auth', {
       }
 
       const sessionVersionAtRequestStart = this.sessionVersion
+      const generationAtRequestStart = getAuthenticationGeneration()
 
       try {
         const user = await authApi.getMe()
-        if (this.sessionVersion !== sessionVersionAtRequestStart) {
+        if (this.sessionVersion !== sessionVersionAtRequestStart || generationAtRequestStart !== getAuthenticationGeneration()) {
           return this.isAuthenticated
         }
 
         this.applySession(user)
         return true
       } catch {
-        if (this.sessionVersion !== sessionVersionAtRequestStart) {
+        if (this.sessionVersion !== sessionVersionAtRequestStart || generationAtRequestStart !== getAuthenticationGeneration()) {
           return this.isAuthenticated
         }
 
@@ -260,16 +273,17 @@ export const useAuthStore = defineStore('auth', {
       }
 
       const sessionVersionAtRequestStart = this.sessionVersion
+      const generationAtRequestStart = getAuthenticationGeneration()
       try {
         const user = await authApi.getMe()
-        if (this.sessionVersion !== sessionVersionAtRequestStart) {
+        if (this.sessionVersion !== sessionVersionAtRequestStart || generationAtRequestStart !== getAuthenticationGeneration()) {
           return this.isAuthenticated
         }
 
         this.applySession(user)
         return true
       } catch (error) {
-        if (this.sessionVersion !== sessionVersionAtRequestStart) {
+        if (this.sessionVersion !== sessionVersionAtRequestStart || generationAtRequestStart !== getAuthenticationGeneration()) {
           return this.isAuthenticated
         }
         if (responseStatus(error) === 401) {
@@ -279,10 +293,12 @@ export const useAuthStore = defineStore('auth', {
       }
     },
     async logout() {
+      this.clearSession()
+      const generation = getAuthenticationGeneration()
       try {
         await authApi.logout()
       } finally {
-        this.clearSession()
+        if (generation === getAuthenticationGeneration()) announceSessionBoundary()
       }
     },
     hasPermission(permission: string) {

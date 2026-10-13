@@ -1,19 +1,36 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Download, Eye, FileSpreadsheet, FileText, FolderOpen, Image as ImageIcon, RefreshCw, UploadCloud } from '@lucide/vue'
-import { cartonSupplierPortalApi } from '@/api/cartonSupplierPortal'
+import { cartonSupplierPortalApi, type SupplierMarkAsset } from '@/api/cartonSupplierPortal'
 import { http } from '@/lib/http'
 import { cartonMarkApi, type CartonMarkAsset, type CartonMarkAssetUploadResult } from '@/api/cartonMark'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 import { factoryContexts } from '@/data/enterpriseMock'
 
-const props = defineProps<{ factoryId: string; supplierFactories?: string[]; orderId?: string; readOnly?: boolean; supplier?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
-const emit = defineEmits<{ use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]] }>()
+const props = defineProps<{ factoryId: string; supplierFactories?: string[]; orderId?: string; readOnly?: boolean; supplier?: boolean; supplierCheckEnabled?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
+const emit = defineEmits<{ use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]]; manualReview: [assets: CartonMarkAsset[]]; supplierReview: [assets: (SupplierMarkAsset & { factory_id: string })[]]; supplierExcel: [asset: SupplierMarkAsset & { factory_id: string }]; supplierGeneratePdf: [asset: SupplierMarkAsset & { factory_id: string }]; supplierSources: [assets: (SupplierMarkAsset & { factory_id: string })[]] }>()
 const auth = useAuthStore()
 const canRead = computed(() => props.supplier ? auth.can('carton_supplier:read') : ['pmc-warehouse', 'carton', 'qa', 'qc'].some(d => auth.can('carton_mark:read', props.factoryId, d)))
 const canWrite = computed(() => !props.supplier && !props.readOnly && ['pmc-warehouse', 'carton'].some(d => auth.can('carton_mark:template_upload', props.factoryId, d)))
 const entries = ref<CartonMarkAsset[]>([])
+const supplierSources = ref<(SupplierMarkAsset & { factory_id: string })[]>([])
+function chooseManualReview(asset: CartonMarkAsset) {
+  if (busy.value || asset.kind === 'excel') return
+  const files = asset.kind === 'image' && asset.photo_group_id ? entries.value.filter(row => row.factory_id === asset.factory_id && row.photo_group_id === asset.photo_group_id) : [asset]
+  if (props.supplier) {
+    if (!props.supplierCheckEnabled || !auth.can('carton_supplier:edit', asset.factory_id, '*')) return
+    emit('supplierReview', files.map(file => supplierSources.value.find(row => row.id === file.id && row.factory_id === file.factory_id)!).filter(Boolean))
+  } else if (canWrite.value && props.checkEnabled) emit('manualReview', files)
+}
+function chooseSupplierExcel(asset: CartonMarkAsset, generate = false) {
+  if (!props.supplier || !props.supplierCheckEnabled || busy.value || !auth.can('carton_supplier:edit', asset.factory_id, '*')) return
+  const source = supplierSources.value.find(row => row.id === asset.id && row.factory_id === asset.factory_id && row.kind === 'excel')
+  if (source) {
+    if (generate) emit('supplierGeneratePdf', source)
+    else emit('supplierExcel', source)
+  }
+}
 const results = ref<CartonMarkAssetUploadResult[]>([])
 const pendingFiles = ref<File[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -21,21 +38,39 @@ const sourcePanel = ref<HTMLElement | null>(null)
 const sourceGroup = ref(''), sourceExcelId = ref(''), sourcePdfId = ref('')
 function groupKey(asset: CartonMarkAsset) {
   const customer = [...new Set(asset.orders.map(order => order.customer_name))].sort().join('、')
-  return JSON.stringify(asset.photo_group_id ? [asset.factory_id, 'photos', asset.photo_group_id] : [asset.factory_id, asset.contract_number || asset.id, customer])
+  return JSON.stringify(asset.photo_group_id ? [asset.factory_id, 'photos', asset.photo_group_id] : [asset.factory_id, asset.orders.length ? contractsLabel(asset) : asset.contract_number || asset.id, customer])
 }
-const sourceCandidates = computed(() => entries.value.filter(asset => asset.kind !== 'image' && groupKey(asset) === sourceGroup.value))
+const sourceCandidates = computed(() => {
+  const anchor = entries.value.find(asset => groupKey(asset) === sourceGroup.value)
+  return entries.value.filter(asset => asset.kind !== 'image' && anchor && asset.factory_id === anchor.factory_id
+    && (groupKey(asset) === sourceGroup.value || asset.orders.some(order => anchor.orders.some(row => row.id === order.id))))
+})
 const sourceExcels = computed(() => sourceCandidates.value.filter(asset => asset.kind === 'excel'))
 const sourcePdfs = computed(() => sourceCandidates.value.filter(asset => asset.kind === 'pdf'))
 const selectedSources = computed(() => [sourceExcels.value.find(asset => asset.id === sourceExcelId.value), sourcePdfs.value.find(asset => asset.id === sourcePdfId.value)])
 function chooseSources(key: string) {
-  if (!canWrite.value || !props.checkEnabled || busy.value) return
+  const candidate = entries.value.find(asset => groupKey(asset) === key)
+  if (busy.value || !(canWrite.value && props.checkEnabled || props.supplier && props.supplierCheckEnabled && candidate && auth.can('carton_supplier:edit', candidate.factory_id, '*'))) return
   sourceGroup.value = key
   sourceExcelId.value = sourceExcels.value.length === 1 ? sourceExcels.value[0]!.id : ''
   sourcePdfId.value = sourcePdfs.value.length === 1 ? sourcePdfs.value[0]!.id : ''
   void nextTick(() => sourcePanel.value?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }))
 }
 function useSources() {
+  if (props.supplier) {
+    if (!props.supplierCheckEnabled || busy.value || selectedSources.value.some(asset => !asset)) return
+    const [excel, pdf] = selectedSources.value.map(asset => supplierSources.value.find(row => row.id === asset!.id && row.factory_id === asset!.factory_id))
+    if (!excel || !pdf || excel.factory_id !== pdf.factory_id || !auth.can('carton_supplier:edit', excel.factory_id, '*')) return
+    const orders = excel.orders.filter(order => pdf.orders.some(row => row.id === order.id && row.issue_id === order.issue_id))
+    if (!orders.length) { error.value = 'Excel 与 PDF 没有共同的采购订单，请选择同一订单的文件。'; return }
+    emit('supplierSources', [{ ...excel, orders }, pdf]); sourceGroup.value = ''; return
+  }
   if (!canWrite.value || !props.checkEnabled || busy.value || selectedSources.value.some(asset => !asset || asset.factory_id !== props.factoryId)) return
+  const [excel, pdf] = selectedSources.value
+  if (excel!.orders.length && pdf!.orders.length && !excel!.orders.some(order => pdf!.orders.some(row => row.id === order.id))) {
+    error.value = 'Excel 与 PDF 没有共同的关联订单，请选择同一订单的文件。'
+    return
+  }
   emit('useSources', selectedSources.value as CartonMarkAsset[])
   sourceGroup.value = ''
 }
@@ -67,6 +102,11 @@ const gallery = ref<CartonMarkAsset[]>([])
 let bindingSequence = 0
 const contract = ref('')
 const boundOrderId = ref('')
+const multipleContracts = ref(false)
+const boundOrderIds = ref<string[]>([])
+const invalidBoundOrderIds = computed(() => boundOrderIds.value.filter(id => !allOrders.value.some(order => order.id === id)))
+const multiOrderOptions = computed(() => allOrders.value.filter(order => !orderQuery.value.trim() || [order.contract_no, order.customer_name, order.order_no, order.item_no].some(value => value.toLowerCase().includes(orderQuery.value.trim().toLowerCase()))))
+function contractsLabel(asset: CartonMarkAsset) { return [...new Set(asset.orders.map(order => order.contract_no))].join('、') || asset.contract_number || '未识别' }
 let controller = new AbortController()
 let generation = 0
 let listSequence = 0
@@ -84,7 +124,7 @@ const groups = computed(() => {
   for (const asset of visible.value) {
     const customer = [...new Set(asset.orders.map(order => order.customer_name))].sort().join('、')
     const key = groupKey(asset)
-    const group = grouped.get(key) ?? { key, factory: asset.factory_id, contract: asset.contract_number, customer, latest: '', photoGroupId: asset.photo_group_id ?? null, assets: [] }
+    const group = grouped.get(key) ?? { key, factory: asset.factory_id, contract: contractsLabel(asset), customer, latest: '', photoGroupId: asset.photo_group_id ?? null, assets: [] }
     group.assets.push(asset); if (asset.created_at > group.latest) group.latest = asset.created_at
     grouped.set(key, group)
   }
@@ -106,9 +146,10 @@ async function refresh() {
         try { return { scope, assets: await cartonSupplierPortalApi.markAssets(scope, controller.signal) } }
         catch (cause) { throw new Error(`${factoryDisplayName(scope)}：${getApiErrorMessage(cause)}`) }
       }))
+      if (current === generation && sequence === listSequence) supplierSources.value = batches.flatMap(({ scope, assets }) => assets.map(asset => ({ ...asset, factory_id: scope })))
       records = batches.flatMap(({ scope, assets }) => assets.map(asset => ({
         ...asset, factory_id: scope, sha256: '', bound_order_id: null, recognition_source: '', candidates: [], warning: '',
-        revision: 0, created_by_name: '', binding_status: 'BOUND' as const, orders: asset.orders.map(order => ({ ...order, order_no: '' })),
+        created_by_name: '', binding_status: 'BOUND' as const, orders: asset.orders.map(order => ({ ...order, order_no: '' })),
       })))
       records.sort((a, b) => b.created_at.localeCompare(a.created_at) || a.factory_id.localeCompare(b.factory_id) || b.id.localeCompare(a.id))
     } else records = await cartonMarkApi.listAssets(factory, props.orderId, controller.signal)
@@ -120,7 +161,7 @@ async function refresh() {
     }
   } catch (cause) {
     if (current === generation && sequence === listSequence) {
-      if (props.supplier) entries.value = []
+      if (props.supplier) { entries.value = []; supplierSources.value = [] }
       gallery.value = []
       error.value = getApiErrorMessage(cause)
     }
@@ -155,7 +196,7 @@ async function upload() {
     pendingFiles.value = files.filter((_, index) => outcomes[index]?.status === 'failed')
     await refresh()
   } catch (cause) {
-    if (current === generation) error.value = `上传未完成：${getApiErrorMessage(cause)}。可重试，重复文件会跳过。`
+    if (current === generation) error.value = `上传未完成：${getApiErrorMessage(cause)}。请先刷新核实结果；再次上传会保存为独立资料。`
   } finally {
     if (current === generation) busy.value = false
   }
@@ -175,6 +216,9 @@ async function edit(asset: CartonMarkAsset, photos: CartonMarkAsset[] = [], grou
   const targets = members.length ? members : [asset]
   contract.value = targets.every(photo => photo.contract_number === asset.contract_number) ? asset.contract_number : ''
   boundOrderId.value = targets.every(photo => photo.bound_order_id === asset.bound_order_id) ? asset.bound_order_id || '' : ''
+  multipleContracts.value = targets.some(photo => photo.recognition_source === 'manual_orders')
+  boundOrderIds.value = multipleContracts.value ? [...new Set(targets.flatMap(photo =>
+    photo.bound_order_ids?.length ? photo.bound_order_ids : photo.orders.map(order => order.id)))] : []
   orderQuery.value = ''
   error.value = ''
   void nextTick(() => bindingPanel.value?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }))
@@ -216,10 +260,15 @@ async function saveBinding() {
   if (!binding.value || busy.value || !canWrite.value) return
   const current = generation
   const selected = binding.value
+  if (multipleContracts.value && !boundOrderIds.value.length) { error.value = '请勾选至少一张关联订单。'; return }
+  if (multipleContracts.value && boundOrderIds.value.length > 100) { error.value = '一次最多关联 100 张订单，请减少选择。'; return }
+  const orderIds = multipleContracts.value ? [...boundOrderIds.value] : undefined
+  const contractNumber = multipleContracts.value ? '' : contract.value.trim()
+  const orderId = multipleContracts.value ? '' : boundOrderId.value
   busy.value = true
   try {
-    if (bindingPhotos.value.length) await cartonMarkApi.savePhotoGroup(props.factoryId, bindingPhotos.value, contract.value.trim(), boundOrderId.value, bindingGroupId.value, controller.signal)
-    else await cartonMarkApi.bindAsset(props.factoryId, selected, contract.value.trim(), boundOrderId.value, controller.signal)
+    if (bindingPhotos.value.length) await cartonMarkApi.savePhotoGroup(props.factoryId, bindingPhotos.value, contractNumber, orderId, bindingGroupId.value, controller.signal, orderIds)
+    else await cartonMarkApi.bindAsset(props.factoryId, selected, contractNumber, orderId, controller.signal, orderIds)
     if (current !== generation) return
     closeBinding(); selectedPhotos.value = []
     await refresh()
@@ -274,6 +323,7 @@ watch(() => [props.factoryId, props.supplierFactories?.join('\0'), props.orderId
   controller.abort()
   controller = new AbortController()
   entries.value = []
+  supplierSources.value = []
   results.value = []
   pendingFiles.value = []
   closeBinding(); selectedPhotos.value = []; allOrders.value = []; gallery.value = []
@@ -294,7 +344,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="flex items-center gap-2 text-base font-bold text-slate-900"><FolderOpen class="size-5 text-teal-700" />{{ uploadOnly ? '批量上传箱唛资料' : '箱唛资料库' }}</h2>
-        <p class="mt-1 text-xs leading-5 text-slate-500">{{ supplier ? '仓库按合同号共享给已下单订单的原文件，可随时查看和下载。' : orderId ? '此订单关联的箱唛原文件，可直接查看和下载。' : 'PDF、Excel、图片可分别上传，按合同号自动关联本厂订单并共享给对应供应商；未识别的文件先保存，之后再关联。' }}</p>
+        <p class="mt-1 text-xs leading-5 text-slate-500">{{ supplier ? '本供应商采购订单的箱唛原文件，可查看、下载，并选择 Excel / PDF 一起核对。' : orderId ? '此订单关联的箱唛原文件，可直接查看和下载。' : '同名文件或相同内容可重复上传，每次独立保存，不覆盖原资料。PDF、Excel、图片可分别上传，按合同号自动关联本厂订单并共享给对应供应商；未识别的文件先保存，之后再关联。' }}</p>
         <p v-if="!supplier && !orderId" class="text-xs leading-5 text-slate-500">图片支持 JPG、PNG、WebP。无需改照片名：上传后可搜索订单手动关联，或勾选多张照片组成组、整组关联。同合同命名可自动识别，如 4500000123_正唛.jpg。</p>
       </div>
       <button v-if="!uploadOnly" type="button" :disabled="busy || loading" class="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-xs disabled:opacity-50" @click="refresh"><RefreshCw class="size-3.5" />刷新</button>
@@ -310,7 +360,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
     </div>
     <p v-if="error" role="alert" class="mt-3 rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ error }}</p>
     <div v-if="results.length" class="mt-3 space-y-1 rounded-lg bg-slate-50 p-3 text-xs" role="status">
-      <p v-for="(result, index) in results" :key="index" :class="result.status === 'failed' ? 'text-red-700' : 'text-teal-800'" class="break-all">{{ result.file_name }}：{{ ({ created: '已入库', duplicate: '已存在，跳过重复', restored: '已恢复', failed: '未入库' })[result.status] }}{{ result.message ? ` — ${result.message}` : '' }}</p>
+      <p v-for="(result, index) in results" :key="index" :class="result.status === 'failed' ? 'text-red-700' : 'text-teal-800'" class="break-all">{{ result.file_name }}：{{ ({ created: '已入库', duplicate: '已存在，保留原关联', restored: '已恢复', failed: '未入库' })[result.status] }}{{ result.message ? ` — ${result.message}` : '' }}</p>
     </div>
     <template v-if="!uploadOnly">
       <div v-if="!orderId" class="mt-4 flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3">
@@ -341,7 +391,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
           <span v-if="supplier && supplierFactories">{{ factoryDisplayName(group.factory) }} ·</span>
           <span v-if="group.photoGroupId" class="rounded bg-blue-100 px-2 py-1 text-blue-700">照片组</span>
           <span>合同 {{ group.contract || '未识别' }}</span><span>{{ group.customer }}</span><span class="ml-auto">{{ group.assets.length }} 份原文件<span v-if="group.photoGroupId && photoMembers(group.photoGroupId, group.factory).length !== group.assets.length"> / 整组 {{ photoMembers(group.photoGroupId, group.factory).length }} 张</span></span>
-          <button v-if="canWrite && checkEnabled && group.assets.some(asset => asset.kind !== 'image')" type="button" :disabled="busy" class="rounded border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`选择合同 ${group.contract || '未识别'} 的 Excel / PDF 核对文件`" @click="chooseSources(group.key)">选择 Excel / PDF 核对</button>
+          <button v-if="(canWrite && checkEnabled || supplier && supplierCheckEnabled && auth.can('carton_supplier:edit', group.factory, '*')) && group.assets.some(asset => asset.kind !== 'image')" type="button" :disabled="busy" class="rounded border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`选择合同 ${group.contract || '未识别'} 的 Excel / PDF 核对文件`" @click="chooseSources(group.key)">选择 Excel / PDF 核对</button>
           <button v-if="group.photoGroupId" type="button" class="rounded border bg-white px-2 py-1.5" @click="gallery = photoMembers(group.photoGroupId, group.factory)">查看照片组</button>
           <button v-if="canWrite && group.photoGroupId" type="button" :disabled="busy" class="rounded border bg-white px-2 py-1.5" @click="edit(group.assets[0]!)">整组关联</button>
           <button v-if="canWrite && group.photoGroupId" type="button" :disabled="busy" class="rounded border bg-white px-2 py-1.5" @click="ungroup(group.photoGroupId)">解除分组</button>
@@ -349,16 +399,16 @@ onBeforeUnmount(() => { generation++; controller.abort() })
         <li v-for="asset in group.assets" :key="`${asset.factory_id}:${asset.id}`" class="mark-library-columns grid items-start gap-4 px-4 py-4 lg:min-h-24 lg:gap-6">
           <div class="col-span-2 min-w-0 lg:col-span-1">
             <label v-if="canWrite && asset.kind === 'image'" class="mb-2 flex items-center gap-2 text-xs text-slate-500"><input type="checkbox" :aria-label="`选择照片 ${asset.file_name}`" :checked="selectedPhotos.includes(asset.id)" :disabled="busy" @change="togglePhoto(asset, ($event.target as HTMLInputElement).checked)">{{ asset.photo_group_id ? '选择整组' : '选择照片' }}</label>
-            <p class="break-all text-sm font-bold leading-5 text-slate-900">合同号：{{ asset.contract_number || '未识别' }}</p>
+            <p class="break-all text-sm font-bold leading-5 text-slate-900">合同号：{{ contractsLabel(asset) }}</p>
             <p v-if="supplier && supplierFactories" class="mt-1 text-xs font-semibold leading-5 text-teal-700">{{ factoryDisplayName(asset.factory_id) }}</p>
-            <p v-for="order in asset.orders" :key="order.id" class="mt-1 break-all text-xs leading-5 text-slate-500">{{ order.customer_name }} · {{ order.item_no }}<span v-if="!supplier && order.order_no"> · {{ order.order_no }}</span></p>
+            <p v-for="order in asset.orders" :key="order.id" class="mt-1 break-all text-xs leading-5 text-slate-500">{{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }}<span v-if="!supplier && order.order_no"> · {{ order.order_no }}</span></p>
           </div>
           <div class="col-span-2 flex min-w-0 items-start gap-2 lg:col-span-1">
             <span class="flex size-8 shrink-0 items-center justify-center rounded-lg" :class="asset.kind === 'pdf' ? 'bg-red-50 text-red-600' : asset.kind === 'image' ? 'bg-blue-50 text-blue-600' : 'bg-teal-50 text-teal-700'"><FileText v-if="asset.kind === 'pdf'" class="size-4" /><ImageIcon v-else-if="asset.kind === 'image'" class="size-4" /><FileSpreadsheet v-else class="size-4" /></span>
-            <div class="min-w-0"><p class="text-sm font-semibold leading-5 text-slate-800 [overflow-wrap:anywhere]">{{ asset.file_name }}</p><p class="mt-1 text-xs leading-5 text-slate-400">{{ asset.kind === 'pdf' ? 'PDF' : asset.kind === 'image' ? '图片' : 'Excel' }} · {{ (asset.size_bytes / 1024).toFixed(0) }} KB</p></div>
+            <div class="min-w-0"><p class="text-sm font-semibold leading-5 text-slate-800 [overflow-wrap:anywhere]">{{ asset.file_name }}</p><p class="mt-1 text-xs leading-5 text-slate-400">{{ asset.kind === 'pdf' ? 'PDF' : asset.kind === 'image' ? '图片' : 'Excel' }} · {{ (asset.size_bytes / 1024).toFixed(0) }} KB · {{ asset.created_at.slice(0, 19).replace('T', ' ') }} · {{ asset.id.slice(-6) }}</p></div>
           </div>
           <div class="min-w-0 text-xs">
-            <span class="inline-flex rounded-full px-2 py-1 leading-4" :class="asset.binding_status === 'BOUND' ? 'bg-teal-50 text-teal-700' : 'bg-amber-50 text-amber-700'">{{ supplier ? '仓库已共享' : statuses[asset.binding_status] }}</span>
+            <span class="inline-flex rounded-full px-2 py-1 leading-4" :class="asset.binding_status === 'BOUND' ? 'bg-teal-50 text-teal-700' : 'bg-amber-50 text-amber-700'">{{ supplier ? '已关联采购订单' : statuses[asset.binding_status] }}</span>
             <p class="mt-1 leading-5 text-slate-400">{{ asset.created_at.slice(0, 10) }}</p>
             <p v-if="asset.warning || asset.binding_status === 'AMBIGUOUS'" class="mt-1 text-amber-700">{{ asset.binding_status === 'AMBIGUOUS' ? '同一合同号对应不同客户，请确认具体订单。' : asset.warning }}</p>
           </div>
@@ -369,17 +419,20 @@ onBeforeUnmount(() => { generation++; controller.abort() })
             <button v-if="canWrite" type="button" :disabled="busy" class="rounded-lg border px-2.5 py-1.5" @click="edit(asset)">关联设置</button>
             <button v-if="canWrite" type="button" :disabled="busy" class="rounded-lg px-2.5 py-1.5 text-slate-400" @click="archive(asset)">移出</button>
             <button v-if="canWrite && checkEnabled && asset.kind !== 'image'" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="emit('use', asset)">用于{{ asset.kind === 'pdf' ? 'PDF' : 'Excel' }}核对</button>
+            <button v-if="supplier && supplierCheckEnabled && asset.kind === 'excel' && auth.can('carton_supplier:edit', asset.factory_id, '*')" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="chooseSupplierExcel(asset)">选择 Excel 并上传 PDF 核对</button>
+            <button v-if="supplier && supplierCheckEnabled && asset.kind === 'excel' && auth.can('carton_supplier:edit', asset.factory_id, '*')" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" :aria-label="`由 ${asset.file_name} 生成 PDF`" @click="chooseSupplierExcel(asset, true)">生成 PDF</button>
+            <button v-if="asset.kind !== 'excel' && (canWrite && checkEnabled || supplier && supplierCheckEnabled && auth.can('carton_supplier:edit', asset.factory_id, '*'))" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-amber-50 px-2.5 py-1.5 font-semibold text-amber-800" @click="chooseManualReview(asset)">{{ asset.photo_group_id ? '整组图片提交人工审核' : '提交人工审核' }}</button>
           </div>
         </li>
         </template>
       </ul>
       </div>
-      <div v-if="sourceGroup && canWrite && checkEnabled" ref="sourcePanel" role="dialog" aria-label="选择仓库核对文件" class="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
+      <div v-if="sourceGroup && (canWrite && checkEnabled || supplier && supplierCheckEnabled)" ref="sourcePanel" role="dialog" aria-label="选择仓库核对文件" class="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
         <p class="font-semibold">从同一合同的原文件选择 Excel 与打印 PDF</p>
         <p class="mt-1 text-xs text-slate-600">包含列表筛选隐藏的同合同文件；多个版本请明确选择。带入后仍需提交内容核对，通过或人工放行后才可供 QC 使用。</p>
         <div class="mt-3 grid gap-3 sm:grid-cols-2">
-          <label class="text-xs">客人 Excel<select v-model="sourceExcelId" aria-label="仓库核对 Excel" class="mt-1 h-10 w-full rounded border bg-white px-2"><option value="">请选择 Excel</option><option v-for="asset in sourceExcels" :key="asset.id" :value="asset.id">{{ asset.file_name }} · {{ asset.created_at.slice(0, 10) }}</option></select></label>
-          <label class="text-xs">打印 PDF<select v-model="sourcePdfId" aria-label="仓库核对 PDF" class="mt-1 h-10 w-full rounded border bg-white px-2"><option value="">请选择 PDF</option><option v-for="asset in sourcePdfs" :key="asset.id" :value="asset.id">{{ asset.file_name }} · {{ asset.created_at.slice(0, 10) }}</option></select></label>
+          <label class="text-xs">客人 Excel<select v-model="sourceExcelId" aria-label="仓库核对 Excel" class="mt-1 h-10 w-full rounded border bg-white px-2"><option value="">请选择 Excel</option><option v-for="asset in sourceExcels" :key="asset.id" :value="asset.id">{{ asset.file_name }} · {{ asset.created_at.slice(0, 19).replace('T', ' ') }} · {{ asset.id.slice(-6) }}</option></select></label>
+          <label class="text-xs">打印 PDF<select v-model="sourcePdfId" aria-label="仓库核对 PDF" class="mt-1 h-10 w-full rounded border bg-white px-2"><option value="">请选择 PDF</option><option v-for="asset in sourcePdfs" :key="asset.id" :value="asset.id">{{ asset.file_name }} · {{ asset.created_at.slice(0, 19).replace('T', ' ') }} · {{ asset.id.slice(-6) }}</option></select></label>
         </div>
         <p v-if="!sourceExcels.length || !sourcePdfs.length" class="mt-2 text-xs text-amber-800">此合同缺少 {{ !sourceExcels.length ? 'Excel' : 'PDF' }}，请先上传，或用单个文件的核对入口补选另一份文件。</p>
         <div class="mt-3 flex flex-wrap gap-2"><button type="button" :disabled="busy || selectedSources.some(asset => !asset)" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" @click="useSources">带入 Excel / PDF 核对</button><button type="button" class="rounded-lg border bg-white px-4 py-2 text-sm" @click="sourceGroup = ''">取消</button></div>
@@ -387,9 +440,16 @@ onBeforeUnmount(() => { generation++; controller.abort() })
       <div v-if="binding" ref="bindingPanel" role="dialog" aria-label="关联箱唛资料" class="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
         <p class="break-all font-semibold">{{ bindingPhotos.length ? `${bindingGroupId ? '整组关联' : '组成照片组'}：${bindingPhotos.length} 张照片` : `关联设置：${binding.file_name}` }}</p>
         <p v-if="bindingPhotos.length" class="mt-2 break-all text-xs text-slate-600">{{ bindingPhotos.map(photo => photo.file_name).join('、') }}。保存后整组使用下面同一合同和关联范围，留空则整组待关联。</p>
-        <label class="mt-3 block text-xs">合同号（可留空，保留为待关联）<input v-model="contract" maxlength="128" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm" @input="boundOrderId = ''"></label>
+        <label v-if="!multipleContracts" class="mt-3 block text-xs">合同号（可留空，保留为待关联）<input v-model="contract" maxlength="128" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm" @input="boundOrderId = ''"></label>
+        <label class="mt-3 flex items-center gap-2 text-sm font-semibold"><input v-model="multipleContracts" type="checkbox" aria-label="关联多个合同">关联多个合同</label>
+        <p v-if="multipleContracts" class="mt-2 text-xs text-slate-500">勾选同一客户的多张合同订单，原文件只保存一份。供应商只看到其获授权订单的关联；后续新增订单需要另行勾选。</p>
         <label class="mt-3 block text-xs">搜索本厂订单<input v-model="orderQuery" aria-label="搜索可关联订单" placeholder="合同号 / 客户 / 货号 / 订单号" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm"></label>
-        <label class="mt-3 block text-xs">关联范围<select v-model="boundOrderId" aria-label="选择关联订单" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm" @change="chooseOrder"><option value="">同一合同的订单共用</option><option v-for="order in orderOptions" :key="order.id" :value="order.id">{{ order.contract_no }} · {{ order.customer_name }} · {{ order.order_no }} · {{ order.item_no }}</option></select></label>
+        <div v-if="multipleContracts" class="mt-3 max-h-64 space-y-2 overflow-y-auto rounded-lg border bg-white p-3" aria-label="多合同订单列表">
+          <label v-for="order in multiOrderOptions" :key="order.id" class="flex items-start gap-2 text-xs"><input v-model="boundOrderIds" type="checkbox" :value="order.id" :aria-label="`关联订单 ${order.order_no}`">{{ order.customer_name }} · {{ order.contract_no }} · {{ order.item_no }} · {{ order.order_no }}</label>
+        </div>
+        <p v-if="multipleContracts" class="mt-2 text-xs">已选 {{ boundOrderIds.length }} 张订单（最多 100 张）</p>
+        <p v-if="multipleContracts && !ordersLoading && !error && invalidBoundOrderIds.length" role="alert" class="mt-2 text-xs text-amber-700">{{ invalidBoundOrderIds.length }} 个原关联订单已取消或删除，请移除后保存。<button type="button" class="ml-2 underline" @click="boundOrderIds = boundOrderIds.filter(id => !invalidBoundOrderIds.includes(id))">移除失效关联</button></p>
+        <label v-if="!multipleContracts" class="mt-3 block text-xs">关联范围<select v-model="boundOrderId" aria-label="选择关联订单" class="mt-1 block w-full rounded-lg border bg-white px-3 py-2 text-sm" @change="chooseOrder"><option value="">同一合同的订单共用</option><option v-for="order in orderOptions" :key="order.id" :value="order.id">{{ order.contract_no }} · {{ order.customer_name }} · {{ order.order_no }} · {{ order.item_no }}</option></select></label>
         <p v-if="ordersLoading" class="mt-2 text-xs text-slate-500">正在读取本厂订单…</p>
         <p v-else-if="!orderOptions.length" class="mt-2 text-xs text-slate-500">暂无匹配订单，可搜索其他合同或手工填写合同号，后续订单可共用。</p>
         <p v-if="binding.candidates.length > 1" class="mt-2 text-xs text-amber-700">候选合同号：{{ binding.candidates.join('、') }}</p>

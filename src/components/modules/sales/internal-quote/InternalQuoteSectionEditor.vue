@@ -5,6 +5,9 @@ import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/api/internalQuote'
 import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
+import { rebaseEngineeringMolding } from '@/lib/internalQuoteMoldingSync'
+import { validateMoldSplit, type EngineeringMoldSplitChange } from '@/lib/internalQuoteMoldSplit'
+import type { EngineeringMoldRow } from '@/lib/internalQuoteSectionPayload'
 import InternalQuoteImportAssignment from './InternalQuoteImportAssignment.vue'
 import InternalQuoteMappedAssignment from './InternalQuoteMappedAssignment.vue'
 import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
@@ -20,6 +23,7 @@ const props = withDefaults(defineProps<{
   quote: InternalQuote
   section: InternalQuoteSection
   canEdit: boolean
+  archived?: boolean
   canReview: boolean
   canRemove: boolean
   wholeQuoteReview?: boolean
@@ -59,6 +63,7 @@ const actionReason = ref('')
 const reasonAction = ref<'reject' | 'na' | 'reopen'>()
 const localMessage = ref('')
 const localError = ref('')
+const moldSplitPending = ref(false)
 const salesPricingPayload = computed(() => {
   const salesSection = props.quote.sections.find((section) => section.code === 'sales')
   return salesSection?.payload && typeof salesSection.payload === 'object' ? salesSection.payload : {}
@@ -302,6 +307,7 @@ const reviewable = computed(() => (
 const canWithdraw = computed(() => !props.wholeQuoteReview && props.canEdit && isOwnPendingSubmission.value && !quoteStore.submitting)
 const canReopen = computed(() => !props.wholeQuoteReview && props.canEdit && ['approved', 'not_applicable'].includes(props.section.status) && !quoteStore.submitting)
 const lockMessage = computed(() => {
+  if (props.archived || props.quote.status === 'archived' || props.quote.documentArchive) return '报价已归档，内容保持只读。请在包装方案与版本中恢复整单或此版本后继续操作。'
   if (props.wholeQuoteReview) {
     if (mutable.value) return '当前账号没有本部门编辑权限，内容保持只读。'
     if (props.section.status === 'pending_review') return '整份报价已经提交并统一锁定，等待指定整单审核人处理。'
@@ -384,8 +390,22 @@ watch([
 ], () => {
   const context = `${props.quote.id}:${props.section.code}`
   const contextChanged = context !== draftContext
+  if (contextChanged) moldSplitPending.value = false
   const incoming = normalizedDraft(props.section.payload)
   const incomingText = JSON.stringify(incoming)
+  // Engineering owns linked rows. Rebase its changes while
+  // retaining local edits and row identities elsewhere. Other remote changes
+  // still follow the optimistic-lock conflict path below.
+  if (!contextChanged && props.section.code === 'molding' && baselinePayload.value
+    && props.section.revision >= draftRevision.value) {
+    const baseline = JSON.parse(baselinePayload.value) as Record<string, unknown>
+    const rebased = rebaseEngineeringMolding(baseline, incoming, draftPayload.value)
+    if (rebased) {
+      if (JSON.stringify(rebased) !== JSON.stringify(draftPayload.value)) draftPayload.value = rebased
+      baselinePayload.value = incomingText
+      draftRevision.value = props.section.revision
+    }
+  }
   const currentText = JSON.stringify(draftPayload.value)
   // A quote refresh may replace section objects without changing their data.
   // Never overwrite a local edit (or recreate its focused input) in that case.
@@ -435,6 +455,9 @@ function errorText(error: unknown) { return error instanceof Error ? error.messa
 
 function acceptSavedPayload(payload: Record<string, unknown>, submitted: Record<string, unknown>, revision: number) {
   const saved = normalizedDraft(payload)
+  const rebased = props.section.code === 'molding'
+    ? rebaseEngineeringMolding(normalizedDraft(submitted), saved, draftPayload.value) : undefined
+  if (rebased) draftPayload.value = rebased
   const submittedText = JSON.stringify(normalizedDraft(submitted))
   const currentText = JSON.stringify(draftPayload.value)
   const savedText = JSON.stringify(saved)
@@ -449,6 +472,7 @@ function acceptSavedPayload(payload: Record<string, unknown>, submitted: Record<
 
 async function saveDraft(showMessage = true, reason = '', refreshQuote = true) {
   resetFeedback()
+  if (moldSplitPending.value) { localError.value = '请先确认或取消配件拆分。'; return undefined }
   try {
     const requestedRevision = draftRevision.value
     const quoteId = props.quote.id
@@ -464,6 +488,42 @@ async function saveDraft(showMessage = true, reason = '', refreshQuote = true) {
   } catch (error) {
     localError.value = errorText(error)
     return undefined
+  }
+}
+
+async function saveMoldPartSplit(changes: EngineeringMoldSplitChange[], done: (error?: string) => void) {
+  if (props.section.code !== 'engineering' || !editable.value) { done('当前工程部不可编辑，请稍后重试。'); return }
+  resetFeedback()
+  const quoteId = props.quote.id
+  try {
+    const original = cloneInternalQuotePayload('engineering', draftPayload.value)
+    const submitted = cloneInternalQuotePayload('engineering', original)
+    const molds = submitted.molds as EngineeringMoldRow[]
+    if (!changes.length) throw new Error('请选择需要拆分的模具。')
+    for (const change of changes) {
+      if (JSON.stringify(molds[change.index]) !== change.original) throw new Error('模具数据已变化，请取消后重新打开拆分。')
+      const error = validateMoldSplit(change.parts)
+      if (error) throw new Error(error)
+      molds[change.index]!.parts = JSON.parse(JSON.stringify(change.parts))
+    }
+    const saved = await quoteStore.saveSection(quoteId, 'engineering', draftRevision.value, submitted, '确认工程配件拆分并同步啤机部') as ApiInternalQuoteSection
+    if (props.quote.id !== quoteId || props.section.code !== 'engineering') { done(); return }
+    // Commit staged children only after a successful save; preserve edits made in flight.
+    if (JSON.stringify(draftPayload.value) === JSON.stringify(original)) draftPayload.value = submitted
+    else {
+      const current = draftPayload.value.molds as EngineeringMoldRow[]
+      const before = original.molds as EngineeringMoldRow[]
+      for (const { index } of changes) {
+        if (JSON.stringify(current[index]) === JSON.stringify(before[index])) current[index]!.parts = molds[index]!.parts
+      }
+    }
+    acceptSavedPayload(saved.payload, submitted, saved.revision)
+    localMessage.value = '配件拆分已保存；参与报价的啤机部已同步配件，请核对料型、机台及未完成的数据。'
+    done()
+  } catch (error) {
+    const message = `配件拆分尚未同步，当前输入已保留。${errorText(error)}`
+    if (props.quote.id === quoteId) localError.value = message
+    done(message)
   }
 }
 
@@ -505,7 +565,7 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
 }
 
 function hasUnsavedChanges() {
-  return isDirty.value
+  return isDirty.value || moldSplitPending.value
 }
 
 function canSaveWholeQuoteDraft() {
@@ -513,6 +573,7 @@ function canSaveWholeQuoteDraft() {
 }
 
 function getWholeQuoteDraft() {
+  if (moldSplitPending.value) throw new Error('请先确认或取消配件拆分。')
   if (!editable.value) throw new Error(`${props.section.label}当前不可编辑，无法统一保存。`)
   return {
     sectionCode: props.section.code,
@@ -550,6 +611,7 @@ function answerUnsavedPrompt(choice: UnsavedNavigationChoice) {
 }
 
 async function confirmUnsavedNavigation() {
+  if (moldSplitPending.value) { localError.value = '请先确认或取消配件拆分。'; return false }
   if (!isDirty.value) return true
   const choice = await askHowToHandleUnsavedChanges()
   if (choice === 'cancel') return false
@@ -566,7 +628,7 @@ async function confirmUnsavedNavigation() {
 }
 
 function handleBeforeUnload(event: BeforeUnloadEvent) {
-  if (!isDirty.value) return
+  if (!hasUnsavedChanges()) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -579,7 +641,7 @@ async function submitSection() {
   resetFeedback()
   try {
     let revision = draftRevision.value
-    if (isDirty.value) {
+    if (hasUnsavedChanges()) {
       const saved = await saveDraft(false)
       if (!saved) return
       revision = saved.revision
@@ -631,11 +693,13 @@ async function withdrawSection() {
   } catch (error) { localError.value = errorText(error) }
 }
 
-async function detectImportPreview(file: File) {
+let importDraft: { revision: number; payload: Record<string, unknown> } | undefined
+
+async function detectImportPreview(file: File, draft: { revision: number; payload: Record<string, unknown> }) {
   if (!editable.value || !isImportWorkbook(file)) return undefined
   for (const option of importOptions.value) {
     try {
-      return await quoteStore.previewImport(props.quote.id, option.type, file)
+      return await quoteStore.previewImport(props.quote.id, option.type, file, draft)
     } catch (error) {
       // Each server parser is authoritative for its own template. A parse miss is
       // expected while auto-detecting. Permission, size, conflict, timeout and
@@ -656,12 +720,19 @@ async function handleUploadFile(event: Event) {
   if (!file || !editable.value) return
   resetFeedback()
   try {
-    if (isImportWorkbook(file) && importOptions.value.length && isDirty.value) {
-      localError.value = '当前有未保存修改，请先保存草稿，再重新选择报价单导入。'
+    if (moldSplitPending.value) {
+      localError.value = '请先确认或取消正在编辑的配件拆分，再导入报价单。'
       return
     }
-    const detected = await detectImportPreview(file)
+    importPreview.value = undefined
+    importDraft = undefined
+    const quoteId = props.quote.id
+    const sectionCode = props.section.code
+    const draft = { revision: draftRevision.value, payload: cloneInternalQuotePayload(sectionCode, draftPayload.value) }
+    const detected = await detectImportPreview(file, draft)
+    if (props.quote.id !== quoteId || props.section.code !== sectionCode) return
     if (detected) {
+      importDraft = draft
       importPreview.value = detected
       localMessage.value = `${file.name} 已自动识别为${importOption(detected.import_type)?.label ?? '报价单'}；请核对预览后确认写入。`
       return
@@ -693,9 +764,10 @@ async function downloadImportTemplate(option?: ImportOption) {
 }
 
 async function confirmImport() {
-  if (isDirty.value) {
+  if (!importDraft || moldSplitPending.value || draftRevision.value !== importDraft.revision
+    || JSON.stringify(cloneInternalQuotePayload(props.section.code, draftPayload.value)) !== JSON.stringify(importDraft.payload)) {
     importPreview.value = undefined
-    localError.value = '预览后有未保存修改，请先保存草稿，再重新选择报价单导入。'
+    localError.value = '预览后表单内容已变化，当前输入已保留，请重新选择报价单预览后再确认。'
     return
   }
   if (!importPreview.value || !editable.value) {
@@ -706,14 +778,29 @@ async function confirmImport() {
   resetFeedback()
   try {
     if (!assignmentComplete.value) { localError.value = '请为每条映射明细选择应用分项，或选择不采用。'; return }
+    const quoteId = props.quote.id
+    const sectionCode = props.section.code
+    const submitted = importDraft.payload
     const target = props.section.code === 'electronic' ? electronicImportTarget.value : undefined
-    await quoteStore.confirmImport(
+    const result = await quoteStore.confirmImport(
       props.quote.id,
       importPreview.value.batch_id,
       importPreview.value.target_revision,
       importPreview.value.assignment_rows?.length ? importAssignments.value : undefined,
       target,
-    )
+    ) as { section: ApiInternalQuoteSection }
+    if (props.quote.id !== quoteId || props.section.code !== sectionCode) return
+    const saved = normalizedDraft(result.section.payload)
+    const current = cloneInternalQuotePayload(sectionCode, draftPayload.value)
+    // Accept imported fields, retaining any edits made while the request ran.
+    for (const key of new Set([...Object.keys(submitted), ...Object.keys(current)])) {
+      if (JSON.stringify(current[key]) === JSON.stringify(submitted[key])) continue
+      if (key in current) saved[key] = current[key]
+      else delete saved[key]
+    }
+    draftPayload.value = saved
+    acceptSavedPayload(result.section.payload, submitted, result.section.revision)
+    localError.value = ''
     localMessage.value = props.section.code === 'electronic' && target === 'new'
       ? '电子报价已作为独立报价导入；每份报价金额都会合计到电子部总价。'
       : '报价单已导入并按模板负责区域更新，分段已重新计算。'
@@ -738,7 +825,7 @@ function requestDeleteImportAttachment(attachment: InternalQuoteAttachmentRecord
     localError.value = '本分段当前不可编辑，无法删除附件。'
     return
   }
-  if (isDirty.value) {
+  if (hasUnsavedChanges()) {
     localError.value = '当前有未保存修改，请先保存草稿或放弃修改，再删除附件。'
     return
   }
@@ -748,7 +835,7 @@ function requestDeleteImportAttachment(attachment: InternalQuoteAttachmentRecord
 async function confirmDeleteImportAttachment() {
   const attachment = deleteAttachmentTarget.value
   if (!attachment || !editable.value || quoteStore.submitting) return
-  if (isDirty.value) {
+  if (hasUnsavedChanges()) {
     localError.value = '当前有未保存修改，请先保存草稿，再删除附件。'
     deleteAttachmentTarget.value = undefined
     return
@@ -782,7 +869,7 @@ function confirmRemoveParticipation() {
 <template>
   <section class="quote-section-editor" :class="{ 'baseline-different': differsFromBaseline }">
     <header class="quote-editor-head">
-      <div><div class="quote-editor-title-row"><h2>{{ section.label }}核价明细</h2><span v-if="differsFromBaseline" class="baseline-difference"><AlertCircle />与基准款不同</span><span class="quote-editor-status" :class="`tone-${activeStatusMeta.tone}`"><i />{{ activeStatusMeta.label }}</span><span class="quote-revision">revision {{ section.revision }}</span><span v-if="isDirty" class="dirty">有未保存修改</span></div></div>
+      <div><div class="quote-editor-title-row"><h2>{{ section.label }}核价明细</h2><span v-if="differsFromBaseline" class="baseline-difference"><AlertCircle />与基准款不同</span><span class="quote-editor-status" :class="`tone-${activeStatusMeta.tone}`"><i />{{ wholeQuoteReview && section.filledAt && section.calculationStatus === 'blocked' ? '草稿已保存，待补全' : activeStatusMeta.label }}</span><span class="quote-revision">revision {{ section.revision }}</span><span v-if="isDirty" class="dirty">本部门有未保存修改</span></div><p v-if="isDirty && section.code === 'engineering'">此状态包含五金、辅助材料及模具的修改；可直接选择报价单预览，无需先保存。</p></div>
       <div class="quote-editor-tools">
         <button v-if="section.code !== 'sales'" class="primary-upload" type="button" title="Excel 自动识别导入内容；其他文件按普通附件保存" :disabled="!editable || quoteStore.fileBusy || quoteStore.submitting" @click="uploadInput?.click()"><Paperclip />上传附件</button>
         <div v-if="importOptions.length" class="template-download-control">
@@ -820,7 +907,7 @@ function confirmRemoveParticipation() {
       <label v-if="section.code === 'electronic'" class="electronic-import-target"><span>导入方式</span><select v-model="electronicImportTarget" :disabled="quoteStore.submitting"><option value="new">新增独立电子报价（全部金额会合计）</option><option v-for="target in electronicImportTargets" :key="target.id" :value="target.id">替换“{{ target.name }}”</option></select><small>新增会保留现有各份报价；替换只更新所选报价。若同一源文件已导入，请选择该报价替换。</small></label>
       <div v-if="importPreview.warnings.length" class="preview-warnings"><p v-for="warning in importPreview.warnings" :key="warning"><AlertCircle />{{ warning }}</p></div>
       <InternalQuoteImportAssignment v-if="importPreview.assignment_rows?.length" :key="importPreview.batch_id" v-model="importAssignments" :rows="importPreview.assignment_rows" :components="importPreview.assignment_components ?? []" :disabled="quoteStore.submitting" />
-      <footer><strong class="replace-only-note">{{ section.code === 'electronic' ? '确认后仅更新目标报价；各份电子报价金额均计入电子部总价' : '确认后按模板负责的数据区域更新；重复导入不会累计金额' }}</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable || !assignmentComplete" @click="confirmImport">确认导入</button></footer>
+      <footer><strong class="replace-only-note">{{ section.code === 'electronic' ? '确认后仅更新目标报价；各份电子报价金额均计入电子部总价' : importPreview.import_type === 'mold' ? '确认后替换模具明细，并将模具总价填入“模具费用”，导入后可手动修改；其他费用和已填内容保留，取消不修改表单' : '确认后替换本模板对应区域，其他已填写内容一并保留；取消不修改表单' }}</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable || !assignmentComplete" @click="confirmImport">确认导入</button></footer>
     </section>
 
     <InternalQuoteMappedAssignment v-if="pricingMode === 'component' && ['engineering', 'painting'].includes(section.code)" v-model="draftPayload" :code="section.code" :components="pricingComponents" :disabled="!editable" />
@@ -830,7 +917,7 @@ function confirmRemoveParticipation() {
       <div class="electronic-quote-total"><strong>电子部全部报价预览</strong><span>RMB {{ detailAmount(electronicSectionSummary.quoteRmb) }}</span><span>HKD {{ detailAmount(electronicSectionSummary.quoteHkd) }}</span><em>{{ electronicGroupOptions.length }} 份报价金额合计；正式金额以保存后的服务端计算为准。</em></div>
     </section>
     <div v-if="section.code === 'electronic' && !showElectronicForm" class="electronic-empty-state"><FileSpreadsheet /><strong>暂无电子报价</strong><span>可新增空白电子报价，或上传报价单后选择“新增独立电子报价”。</span></div>
-    <InternalQuoteSectionForm v-if="showElectronicForm" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" />
+    <InternalQuoteSectionForm v-if="showElectronicForm" :key="`${quote.id}:${section.code}`" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable || quoteStore.submitting" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" @mold-parts-split="saveMoldPartSplit" @mold-split-open="moldSplitPending = $event" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"
@@ -839,7 +926,6 @@ function confirmRemoveParticipation() {
       @download="downloadAttachment($event.id, $event.fileName)"
     />
 
-    <section class="calculation-snapshot"><header><strong>服务端权威计算快照</strong><span>保存后由服务端重算；前端不生成正式金额</span></header><div class="snapshot-table-scroll"><table><thead><tr><th>项目</th><th>类型</th><th>金额 HKD</th></tr></thead><tbody><tr v-for="line in section.lines" :key="line.id"><td>{{ line.item }}</td><td>{{ line.specification }}</td><td class="calculated-amount-cell">{{ detailAmount(line.amountHkd) }}</td></tr><tr v-if="!section.lines.length"><td colspan="3" class="empty">保存有效明细后显示服务端计算结果</td></tr></tbody><tfoot><tr><td colspan="2">{{ section.label }}权威小计</td><td class="calculated-amount-cell">HKD {{ detailAmount(section.totalHkd) }}</td></tr></tfoot></table></div></section>
 
     <section class="quote-attachments"><header><strong>本部门资料 / 分段附件</strong><span>仅显示分配给当前部门的资料；导入源文件可连同其生成的报价数据一起删除</span></header><div><span v-for="attachment in section.attachments" :key="attachment.id" class="attachment-pill"><button type="button" class="attachment-download" :title="`${attachment.uploadedBy} · ${attachment.uploadedAt} · ${attachment.sha256}`" @click="downloadAttachment(attachment.id, attachment.fileName)"><Paperclip />{{ attachment.fileName }}<Download /></button><button type="button" class="attachment-preview" :title="`在右侧预览 ${attachment.fileName}`" :aria-label="`预览 ${attachment.fileName}`" @click="emit('preview-file', section.code, attachment)"><Eye />预览</button><button type="button" class="attachment-delete" :disabled="!editable || quoteStore.submitting" :title="`删除 ${attachment.fileName}${attachment.isImportSource ? ' 及其导入数据' : ''}`" :aria-label="`删除 ${attachment.fileName}${attachment.isImportSource ? ' 及其导入数据' : ''}`" @click="requestDeleteImportAttachment(attachment)"><Trash2 /></button></span><em v-if="!section.attachments.length">暂无分配给本部门的资料</em></div></section>
 
@@ -905,7 +991,7 @@ function confirmRemoveParticipation() {
 .quote-import-preview{margin:12px;border:1px solid #bfdbfe;border-radius:10px;background:#eff6ff}.quote-import-preview>header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px}.quote-import-preview>header>div{display:flex;gap:8px}.quote-import-preview>header svg{width:18px;color:#2563eb}.quote-import-preview>header span{display:grid}.quote-import-preview>header strong{color:#1e3a8a;font-size:12px}.quote-import-preview>header small{margin-top:2px;color:#64748b;font-size:11px}.quote-import-preview>header button{border:0;background:transparent;color:#64748b}.preview-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;border-top:1px solid #dbeafe;padding:10px 12px;background:#fff}.preview-metrics span{border-radius:7px;background:#eff6ff;padding:8px;color:#1d4ed8;font-size:11px;text-align:center}.preview-warnings{display:grid;gap:5px;border-top:1px solid #fed7aa;background:#fff7ed;padding:9px 12px}.quote-import-preview>footer{display:flex;align-items:center;gap:10px;border-top:1px solid #dbeafe;padding:9px 12px}.quote-import-preview>footer span{flex:1}.quote-import-preview>footer button{height:31px;border-radius:7px;padding:0 10px;font-size:12px;font-weight:900}.quote-import-preview .replace-only-note{color:#1d4ed8;font-size:12px}.quote-import-preview .secondary{border:1px solid #cbd5e1;background:#fff;color:#475569}.quote-import-preview .primary{border:1px solid #2563eb;background:#2563eb;color:#fff}
 .electronic-import-target{display:grid;gap:5px;border-top:1px solid #dbeafe;background:#f8fbff;padding:10px 12px}.electronic-import-target>span{color:#1e3a8a;font-size:12px;font-weight:900}.electronic-import-target select{max-width:420px;border:1px solid #93c5fd;border-radius:7px;background:#fff;padding:7px 9px;color:#1e3a8a;font-size:12px}.electronic-import-target small{color:#64748b;font-size:11px;line-height:1.5}.electronic-quote-groups{margin:12px;border:1px solid #99f6e4;border-radius:10px;background:#f0fdfa}.electronic-quote-groups>header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px}.electronic-quote-groups>header>div{display:grid;gap:3px}.electronic-quote-groups strong{color:#115e59;font-size:13px}.electronic-quote-groups header span,.electronic-quote-groups em{color:#64748b;font-size:11px;font-style:normal}.electronic-quote-groups button{display:inline-flex;align-items:center;justify-content:center;gap:5px;height:31px;border-radius:7px;padding:0 10px;font-size:12px;font-weight:900}.electronic-quote-groups button.secondary{border:1px solid #5eead4;background:#fff;color:#0f766e}.electronic-quote-groups button svg{width:13px}.electronic-quote-group-controls{display:flex;flex-wrap:wrap;align-items:end;gap:8px;border-top:1px solid #ccfbf1;background:#fff;padding:9px 12px}.electronic-quote-group-controls label{display:grid;gap:4px;min-width:170px;color:#475569;font-size:11px;font-weight:800}.electronic-quote-group-controls input,.electronic-quote-group-controls select{height:32px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:0 8px;color:#334155;font-size:12px}.electronic-quote-group-controls .remove-electronic-group{border:1px solid #fecaca;background:#fff;color:#b91c1c}.electronic-quote-total{display:flex;flex-wrap:wrap;align-items:center;gap:10px;border-top:1px solid #ccfbf1;padding:9px 12px}.electronic-quote-total span{border-radius:999px;background:#fff;padding:4px 8px;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;font-weight:900}.electronic-quote-total em{margin-left:auto}
 .electronic-empty-state{display:flex;align-items:center;gap:8px;margin:12px;border:1px dashed #5eead4;border-radius:10px;background:#f0fdfa;padding:15px 13px;color:#0f766e}.electronic-empty-state svg{width:18px}.electronic-empty-state strong{font-size:13px}.electronic-empty-state span{color:#64748b;font-size:11px}
-.calculation-snapshot{border-top:1px solid #dbe5ea}.calculation-snapshot>header,.quote-attachments header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;padding:11px 13px;background:#f8fafc}.calculation-snapshot header strong,.quote-attachments strong{color:#334155;font-size:12px}.calculation-snapshot header span,.quote-attachments header span{color:#64748b;font-size:11px}.snapshot-table-scroll{overflow:auto}.calculation-snapshot table{width:100%;min-width:520px;border-collapse:collapse}.calculation-snapshot th{background:#eef2f6;padding:8px;color:#64748b;font-size:11px;text-align:left}.calculation-snapshot td{border-top:1px solid #eef2f6;padding:8px;color:#475569;font-size:12px}.calculation-snapshot td:last-child,.calculation-snapshot tfoot td{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:900}.calculation-snapshot .calculated-amount-cell{background:#ecfdf5;color:#0f766e;font-variant-numeric:tabular-nums;font-weight:900}.calculation-snapshot tfoot td{color:#0f766e;text-align:right}.empty{padding:22px!important;color:#94a3b8!important;text-align:center}.quote-attachments{border-top:1px solid #e2e8f0}.quote-attachments>div{display:flex;flex-wrap:wrap;gap:7px;padding:11px 13px}.attachment-pill{display:inline-flex;overflow:hidden;border:1px solid #dbe5ea;border-radius:999px;background:#fff}.quote-attachments>div .attachment-pill button{display:inline-flex;align-items:center;gap:5px;border:0;background:#fff;padding:6px 9px;color:#475569;font-size:11px}.quote-attachments>div .attachment-pill button:hover:not(:disabled){background:#f0fdfa;color:#0f766e}.quote-attachments>div .attachment-pill .attachment-preview{border-left:1px solid #ccfbf1;color:#0f766e}.quote-attachments>div .attachment-pill .attachment-delete{border-left:1px solid #fecaca;border-radius:0;color:#dc2626}.quote-attachments>div .attachment-pill .attachment-delete:hover:not(:disabled){background:#fef2f2;color:#b91c1c}.quote-attachments>div .attachment-pill button:disabled{cursor:not-allowed;opacity:.4}.quote-attachments svg{width:12px}.quote-attachments em{color:#94a3b8;font-size:11px;font-style:normal}.quote-local-message,.quote-local-error{display:flex;align-items:center;gap:6px;margin:0;border-top:1px solid;padding:10px 13px;font-size:11px}.quote-local-message{border-color:#a7f3d0;background:#ecfdf5;color:#047857}.quote-local-error{border-color:#fecaca;background:#fef2f2;color:#b91c1c}.quote-local-message svg,.quote-local-error svg{width:14px}
+.quote-attachments header{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;padding:11px 13px;background:#f8fafc}.quote-attachments strong{color:#334155;font-size:12px}.quote-attachments header span{color:#64748b;font-size:11px}.quote-attachments{border-top:1px solid #e2e8f0}.quote-attachments>div{display:flex;flex-wrap:wrap;gap:7px;padding:11px 13px}.attachment-pill{display:inline-flex;overflow:hidden;border:1px solid #dbe5ea;border-radius:999px;background:#fff}.quote-attachments>div .attachment-pill button{display:inline-flex;align-items:center;gap:5px;border:0;background:#fff;padding:6px 9px;color:#475569;font-size:11px}.quote-attachments>div .attachment-pill button:hover:not(:disabled){background:#f0fdfa;color:#0f766e}.quote-attachments>div .attachment-pill .attachment-preview{border-left:1px solid #ccfbf1;color:#0f766e}.quote-attachments>div .attachment-pill .attachment-delete{border-left:1px solid #fecaca;border-radius:0;color:#dc2626}.quote-attachments>div .attachment-pill .attachment-delete:hover:not(:disabled){background:#fef2f2;color:#b91c1c}.quote-attachments>div .attachment-pill button:disabled{cursor:not-allowed;opacity:.4}.quote-attachments svg{width:12px}.quote-attachments em{color:#94a3b8;font-size:11px;font-style:normal}.quote-local-message,.quote-local-error{display:flex;align-items:center;gap:6px;margin:0;border-top:1px solid;padding:10px 13px;font-size:11px}.quote-local-message{border-color:#a7f3d0;background:#ecfdf5;color:#047857}.quote-local-error{border-color:#fecaca;background:#fef2f2;color:#b91c1c}.quote-local-message svg,.quote-local-error svg{width:14px}
 .quote-reason-panel{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,2fr) auto auto;align-items:center;gap:8px;border-top:1px solid #fed7aa;background:#fff7ed;padding:10px 13px}.quote-reason-panel>div{display:grid}.quote-reason-panel strong{color:#9a3412;font-size:12px}.quote-reason-panel span{margin-top:2px;color:#c2410c;font-size:11px}.quote-reason-panel textarea{min-width:0;border:1px solid #fdba74;border-radius:7px;padding:7px 9px;font-size:13px;resize:none}.quote-reason-panel button{height:32px;border-radius:7px;padding:0 10px;font-size:12px;font-weight:900}.quote-reason-panel button.secondary{border:1px solid #fdba74;background:#fff;color:#9a3412}.quote-reason-panel button.primary{border:1px solid #c2410c;background:#c2410c;color:#fff}.quote-editor-actions{position:sticky;bottom:0;z-index:4;display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #cbd5e1;background:rgb(248 250 252/.96);padding:11px 13px;backdrop-filter:blur(8px)}.quote-editor-actions>div:first-child{display:grid}.quote-editor-actions>div:first-child span{color:#64748b;font-size:11px}.quote-editor-actions>div:first-child b{margin-top:3px;color:#94a3b8;font-size:10px;font-weight:500}.quote-editor-actions>div:last-child{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}.quote-editor-actions button{display:inline-flex;height:34px;align-items:center;gap:5px;border-radius:8px;padding:0 10px;font-size:12px;font-weight:900}.quote-editor-actions button svg{width:13px}.quote-editor-actions button.secondary{border:1px solid #cbd5e1;background:#fff;color:#475569}.quote-editor-actions button.primary{border:1px solid #0f766e;background:#0f766e;color:#fff}.quote-editor-actions button.withdraw{border:1px solid #f59e0b;background:#fffbeb;color:#b45309}.quote-editor-actions button.danger{border:1px solid #fecaca;background:#fff;color:#dc2626}.quote-editor-actions button.remove-section{border:1px solid #fca5a5;background:#fff1f2;color:#be123c}.quote-editor-actions button.remove-section:hover:not(:disabled){border-color:#fb7185;background:#ffe4e6}.quote-editor-actions button:disabled{opacity:.45}
 .unsaved-draft-backdrop{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;background:rgb(15 23 42/.46);padding:20px;backdrop-filter:blur(4px)}.unsaved-draft-dialog{width:min(480px,100%);overflow:hidden;border:1px solid #cbd5e1;border-radius:16px;background:#fff;box-shadow:0 28px 70px rgb(15 23 42/.3)}.unsaved-draft-dialog>header{display:flex;align-items:flex-start;gap:12px;padding:20px 20px 14px}.unsaved-draft-dialog>header>span{display:grid;width:40px;height:40px;flex:0 0 auto;place-items:center;border-radius:11px;background:#ccfbf1;color:#0f766e}.unsaved-draft-dialog>header svg{width:20px;height:20px}.unsaved-draft-dialog h3{margin:0;color:#0f172a;font-size:18px;font-weight:950}.unsaved-draft-dialog p{margin:5px 0 0;color:#64748b;font-size:13px;line-height:1.6}.unsaved-draft-note{display:flex;align-items:flex-start;gap:7px;margin:0 20px 18px;border:1px solid #bae6fd;border-radius:9px;background:#f0f9ff;padding:9px 10px;color:#0369a1;font-size:11px;line-height:1.55}.unsaved-draft-note svg{width:14px;height:14px;flex:0 0 auto;margin-top:1px}.unsaved-draft-dialog>footer{display:flex;justify-content:flex-end;gap:8px;border-top:1px solid #e2e8f0;background:#f8fafc;padding:13px 20px}.unsaved-draft-dialog button{display:inline-flex;height:36px;align-items:center;justify-content:center;gap:5px;border-radius:8px;padding:0 12px;font-size:12px;font-weight:900}.unsaved-draft-dialog button:disabled{cursor:wait;opacity:.5}.unsaved-draft-dialog button.discard{margin-right:auto;border:1px solid #fecaca;background:#fff;color:#dc2626}.unsaved-draft-dialog button.cancel{border:1px solid #cbd5e1;background:#fff;color:#475569}.unsaved-draft-dialog button.save{border:1px solid #0f766e;background:#0f766e;color:#fff}.unsaved-draft-dialog button.save svg{width:14px;height:14px}.unsaved-draft-dialog button:not(:disabled):hover{transform:translateY(-1px);filter:brightness(.98)}.remove-department-dialog>header>span{background:#ffe4e6;color:#be123c}.remove-department-dialog .remove-note{border-color:#fecdd3;background:#fff1f2;color:#9f1239}.unsaved-draft-dialog button.remove-confirm{border:1px solid #be123c;background:#be123c;color:#fff}.unsaved-draft-dialog button.remove-confirm svg{width:14px;height:14px}
 @media(max-width:800px){.quote-editor-head,.quote-editor-actions{align-items:stretch;flex-direction:column}.quote-editor-tools,.quote-editor-actions>div:last-child{justify-content:flex-start}.quote-editor-actions{position:static}.quote-reason-panel{grid-template-columns:1fr}.quote-dependency-strip em{margin-left:0}.preview-metrics{grid-template-columns:1fr 1fr}}

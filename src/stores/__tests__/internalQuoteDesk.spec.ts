@@ -199,6 +199,16 @@ describe('internal quote desk real API state', () => {
     apiMock.updateReferenceFx.mockResolvedValue(quote({ header_revision: 3, reference_snapshot_id: 'REF-2' }))
   })
 
+  it('keeps archived and incomplete business errors separate from revision conflicts', async () => {
+    const store = useInternalQuoteDeskStore()
+    for (const detail of ['方案版本已归档，请先恢复后操作', '以下部门须完成填写、保存及有效计算：啤机部']) {
+      await expect(store.executeMutation('quote-1', async () => { throw { isAxiosError: true, response: { status: 409, data: { detail } } } })).rejects.toThrow(detail)
+      expect(store.errorMessage).toBe(detail)
+      expect(store.conflictMessage).toBe('')
+    }
+    await expect(store.executeMutation('quote-1', async () => { throw { isAxiosError: true, response: { status: 409, data: { detail: { message: '已被其他人更新', current_revision: 5 } } } } })).rejects.toThrow('重新读取')
+    expect(store.conflictMessage).toContain('revision 5')
+  })
   it('refreshes the quote and activity history after creator withdrawal', async () => {
     const store = useInternalQuoteDeskStore()
     apiMock.withdrawFinal.mockResolvedValue({ quote: quote({ status: 'rejected', header_revision: 3 }) })
@@ -284,8 +294,8 @@ describe('internal quote desk real API state', () => {
     expect(loaded?.rr2CostSummary.t1.filter((item) => item.display !== false).map((item) => item.label)).toEqual(['货价', '料价', '吹气', '搪胶', '车发', '车衣', '五金', '电子', '马达', '吸塑', '胶袋'])
     expect(loaded?.rr2CostSummary.t2.map((item) => item.label)).toEqual(['彩盒/内咭', '未减税前码数', '减税后码数', '电池', '利宝', '电镀', '其他外购', '纸箱', '运费', '吊柜费', '杂项'])
     expect(loaded?.rr2CostSummary.t3.map((item) => item.label)).toEqual(['啤工', '喷油工', '油漆', '装配工', '不含人工成本', '人工比例', '毛利', '毛利率', '利润', '利润率', '总成本'])
-    expect(loaded?.rr2CostSummary.t4.map((item) => item.label)).toEqual(['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类13%', '车衣物料退税（仅华康C/D）', '吸塑类6%', '运费类9%', '含税13%类'])
-    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, null, .99, 3, 11.5, null, 6, 8.26, 11.5])
+    expect(loaded?.rr2CostSummary.t4.map((item) => item.label)).toEqual(['含税13%类成本', '人工类13%', '纸箱类', '含税1%', '搪胶类3%', '车发类（不计税）', '车衣类（不计税）', '吸塑类6%', '运费类9%', '含税13%类'])
+    expect(loaded?.rr2CostSummary.t4.map((item) => item.ratePercent)).toEqual([null, null, null, .99, 3, null, null, 6, 8.26, 11.5])
   })
 
   it('merges legacy imported and domestic molding material values into one visible material price', async () => {
@@ -358,14 +368,14 @@ describe('internal quote desk real API state', () => {
 
     expect(sewingTax).toEqual({
       key: 'sewcloth13',
-      label: '车衣物料退税（仅华康C/D）',
+      label: '车衣类（不计税）',
       amountHkd: 10,
       ratePercent: null,
       deductionHkd: null,
     })
   })
 
-  it('preserves an authoritative Huakang C/D sewing material rebate', async () => {
+  it('keeps sewing tax disabled for Huakang C/D as returned by the server', async () => {
     apiMock.getSummary.mockResolvedValueOnce({
       factory_price_hkd: '88.8000',
       rr2_cost_summary: {
@@ -376,15 +386,15 @@ describe('internal quote desk real API state', () => {
         t3: [],
         t4: [{
           key: 'sewcloth13',
-          label: '车衣物料退税（仅华康C/D）',
+          label: '车衣类（不计税）',
           amount_hkd: '15.0000',
-          rate_percent: '11.5000',
-          deduction_hkd: '1.7250',
+          rate_percent: null,
+          deduction_hkd: null,
         }],
         totals: {
           rmb_purchase_cost_hkd: '18.0000',
-          total_deduction_hkd: '1.7250',
-          after_deduction_cost_hkd: '16.2750',
+          total_deduction_hkd: '0.0000',
+          after_deduction_cost_hkd: '18.0000',
         },
         shipping_pricing: { enabled: false },
       },
@@ -396,10 +406,10 @@ describe('internal quote desk real API state', () => {
 
     expect(sewingTax).toEqual({
       key: 'sewcloth13',
-      label: '车衣物料退税（仅华康C/D）',
+      label: '车衣类（不计税）',
       amountHkd: 15,
-      ratePercent: 11.5,
-      deductionHkd: 1.725,
+      ratePercent: null,
+      deductionHkd: null,
     })
   })
 

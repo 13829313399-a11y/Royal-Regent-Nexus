@@ -11,9 +11,10 @@ import {
   type P4SectionCode,
 } from '@/lib/customerPriceConverters/p4Artifact'
 import {
+  convertBuzzBeeP4InternalQuote,
   createBuzzBeeCustomerQuoteWorkbook,
 } from '@/lib/customerPriceConverters/buzzbee'
-import { createDisneyCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/disney'
+import { convertDisneyP4InternalQuote, createDisneyCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/disney'
 import { createDickyCustomerQuoteWorkbook } from '@/lib/customerPriceConverters/dicky'
 import { strFromU8, unzipSync } from 'fflate'
 import {
@@ -165,6 +166,88 @@ function p4Workbook(
 }
 
 describe('P4 customer price adapter', () => {
+  it.each([
+    { legacy: 1, standalone: 2.7642, sewingRequired: true, hairRequired: true, expected: 3.7642 },
+    { legacy: 1, standalone: 0, sewingRequired: true, hairRequired: true, expected: 1 },
+    { legacy: 1, standalone: 2.7642, sewingRequired: true, hairRequired: false, expected: 1 },
+    { legacy: 1, standalone: 2.7642, sewingRequired: false, hairRequired: true, expected: 2.7642 },
+    { legacy: 0, standalone: 2.7642, sewingRequired: true, hairRequired: true, expected: 2.7642 },
+  ])('counts each participating hair source once: $legacy + $standalone ($sewingRequired/$hairRequired)', (testCase) => {
+    const artifact = parseP4InternalQuoteArtifact(p4Workbook())
+    artifact.sections.sewing.isRequired = testCase.sewingRequired
+    artifact.sections.sewing.calculation = { totals: { clothes_hkd: 5.9271, hair_hkd: testCase.legacy } }
+    artifact.sections.hair.isRequired = testCase.hairRequired
+    artifact.sections.hair.calculation = { totals: { total_hkd: testCase.standalone } }
+    const result = convertBuzzBeeP4InternalQuote(artifact, 'hair.xlsx')
+    const rows = result.sheets[0].quoteData.purchaseRows
+    expect(rows.filter((row) => row.category === '车发')).toEqual([
+      expect.objectContaining({ internalAmount: testCase.expected, qty: 1, amount: Math.round(testCase.expected * 1.05 * 1000) / 1000 }),
+    ])
+    expect(rows.filter((row) => row.category === '车衣')).toHaveLength(testCase.sewingRequired ? 1 : 0)
+    expect(rows.every((row) => row.internalAmount >= 0 && !row.desc.includes('车缝未分类成本'))).toBe(true)
+    const sheet = parseXlsxWorkbook(asArrayBuffer(createBuzzBeeCustomerQuoteWorkbook(result))).sheets[0]
+    const exported = sheet.rows.filter((row) => row[0] === '车发材料及人工')
+    expect(exported).toHaveLength(1)
+    expect(exported[0][3]).toBe(Math.round(testCase.expected * 1.05 * 1000) / 1000)
+  })
+
+  it('combines electronics including overhead once and exports each doll with its own material and labor total', () => {
+    const artifact = parseP4InternalQuoteArtifact(p4Workbook())
+    artifact.sections.electronic.calculation = {
+      totals: { total_hkd: '5.2648' },
+      quote_groups: [
+        { name: '主板', totals: { total_hkd: '4.1340' } },
+        { name: '灯板', totals: { total_hkd: '1.1308' } },
+      ],
+      line_breakdown: [{ kind: 'electronic_component', item: '马达', amount_hkd: '.5000' }],
+    }
+    artifact.sections.sewing.calculation = {
+      totals: { clothes_hkd: '8.9271', hair_hkd: '1.0000' },
+      line_breakdown: [
+        { kind: 'sewing_material', category: 'clothes', group: '公仔A', item: '布料', amount_hkd: '5.0000' },
+        { kind: 'sewing_material', category: 'clothes', group: '公仔A', item: '人工', amount_hkd: '.9271' },
+        { kind: 'sewing_material', category: 'clothes', group: '公仔B', amount_hkd: '2.0000' },
+        { kind: 'sewing_material', category: 'hair', group: '公仔A', amount_hkd: '1.0000' },
+      ],
+      pricing_breakdown: [{ kind: 'sewing_labor', category: 'clothes', group: '公仔B', amount_hkd: '1.0000' }],
+    }
+    const result = convertBuzzBeeP4InternalQuote(artifact, 'dolls.xlsx')
+    const rows = result.sheets[0].quoteData.purchaseRows
+    expect(rows.filter((row) => row.category === '电子')).toEqual([
+      expect.objectContaining({ desc: '电子', internalAmount: 5.2648, amount: 5.528, qty: 1 }),
+    ])
+    expect(rows.some((row) => row.desc === '马达')).toBe(false)
+    expect(rows.filter((row) => row.category === '车衣')).toEqual([
+      expect.objectContaining({ desc: '公仔A', internalAmount: 5.9271, amount: 6.223, qty: 1 }),
+      expect.objectContaining({ desc: '公仔B', internalAmount: 3, amount: 3.15, qty: 1 }),
+    ])
+    const exported = parseXlsxWorkbook(asArrayBuffer(createBuzzBeeCustomerQuoteWorkbook(result))).sheets[0]
+    for (const [description, price] of [['电子', 5.528], ['公仔A', 6.223], ['公仔B', 3.15]] as const) {
+      const matches = exported.rows.filter((row) => row[0] === description)
+      expect(matches).toHaveLength(1)
+      expect(matches[0][3]).toBe(price)
+    }
+  })
+
+  it('keeps quick doll quotes separate and balances rounded material rows to the saved clothes total', () => {
+    const artifact = parseP4InternalQuoteArtifact(p4Workbook())
+    artifact.sections.sewing.calculation = {
+      totals: { clothes_hkd: '0.3333' },
+      line_breakdown: ['公仔A', '公仔B', '公仔C'].map((item) => ({ kind: 'sewing_quick', item, category: 'clothes', amount_hkd: '.1111' })),
+    }
+    const quickRows = convertBuzzBeeP4InternalQuote(artifact, 'quick.xlsx').sheets[0].quoteData.purchaseRows.filter((row) => row.category === '车衣')
+    expect(quickRows.map((row) => row.desc)).toEqual(['公仔A', '公仔B', '公仔C'])
+    expect(quickRows.reduce((sum, row) => sum + row.internalAmount, 0)).toBeCloseTo(.3333, 8)
+    artifact.sections.sewing.calculation = {
+      totals: { clothes_hkd: '.3333' },
+      line_breakdown: Array.from({ length: 10 }, (_, index) => ({ kind: 'sewing_material', group: index < 5 ? '公仔A' : '公仔B', category: 'clothes', amount_hkd: '.0333' })),
+    }
+    const detailRows = convertBuzzBeeP4InternalQuote(artifact, 'rounding.xlsx').sheets[0].quoteData.purchaseRows.filter((row) => row.category === '车衣')
+    expect(detailRows).toHaveLength(2)
+    expect(detailRows.reduce((sum, row) => sum + row.internalAmount, 0)).toBeCloseTo(.3333, 8)
+    expect(detailRows.every((row) => row.internalAmount > 0)).toBe(true)
+  })
+
   it('validates P4 v2 structured data and drives the BuzzBee converter', () => {
     const source = p4Workbook()
     const artifact = parseP4InternalQuoteArtifact(source)
@@ -298,6 +381,46 @@ describe('P4 customer price adapter', () => {
       .map((value) => String(value ?? ''))
       .join('\n')
     expect(customerWorkbookText).not.toMatch(/测试费用|吊柜费|报价（MOQ|杂项|HK 40 柜/)
+  })
+
+  it.each(['mold-no:M1#1', 'source-row:12#1', 'name:车面模#1', 'index:1#1', ''])('reuses a split Disney mold %s and charges tooling once', (source) => {
+    const artifact = parseP4InternalQuoteArtifact(p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, true, '迪士尼'))
+    const mold = (artifact.sections.engineering.payload.molds as Record<string, unknown>[])[0]!
+    if (source.startsWith('mold-no:')) mold.mold_no = ' m 1 '
+    if (source.startsWith('source-row:')) mold.source_row = 12
+    if (source.startsWith('index:')) mold.item = ''
+    const original = (artifact.sections.molding.payload.injection_lines as Record<string, unknown>[])[0]!
+    artifact.sections.molding.payload.injection_lines = [1, 2].map(id => ({
+      ...original, item: `配件${id}`, net_weight_g: id * 10,
+      engineering_source_key: source ? `${source}/part:${id}` : '',
+    }))
+    const calculation = (artifact.sections.molding.calculation.line_breakdown as Record<string, unknown>[])[0]!
+    artifact.sections.molding.calculation.line_breakdown = [calculation, calculation]
+    const result = convertDisneyP4InternalQuote(artifact, 'split.xlsx')
+    const rows = result.sheets[0]!.quoteData.plastics
+    expect(rows.map(row => row.toolCostUsd)).toEqual([8900, 0])
+    expect(rows.map(row => row.toolNo)).toEqual(['1000142435-01', ''])
+    expect(rows.map(row => row.shotWeightG)).toEqual([10, 20])
+    const output = parseXlsxWorkbook(asArrayBuffer(createDisneyCustomerQuoteWorkbook(result, readFileSync('public/templates/disney-customer-quote-template.bin'))))
+    expect(output.sheets[0]!.rows[18]![2]).toBe(8900)
+    expect(Number(output.sheets[0]!.rows[19]![2] || 0)).toBe(0)
+  })
+
+  it('matches duplicate Disney mold numbers by parent identity and rejects stale links', () => {
+    const artifact = parseP4InternalQuoteArtifact(p4Workbook(P4_ARTIFACT_TEMPLATE_VERSION, true, '迪士尼'))
+    const mold = (artifact.sections.engineering.payload.molds as Record<string, unknown>[])[0]!
+    artifact.sections.engineering.payload.molds = [{ ...mold, mold_no: '1' }, { ...mold, mold_no: '1', disney_tool_cost_usd: 4000 }]
+    const row = (artifact.sections.molding.payload.injection_lines as Record<string, unknown>[])[0]!
+    const rows = [2, 1, 2].map((parent, index) => ({ ...row, engineering_source_key: `mold-no:1#${parent}/part:${index}` }))
+    artifact.sections.molding.payload.injection_lines = rows
+    const calc = (artifact.sections.molding.calculation.line_breakdown as Record<string, unknown>[])[0]!
+    artifact.sections.molding.calculation.line_breakdown = [calc, calc, calc]
+    expect(convertDisneyP4InternalQuote(artifact, 'duplicate.xlsx').sheets[0]!.quoteData.plastics.map(r => r.toolCostUsd)).toEqual([4000, 8900, 0])
+    rows[0]!.engineering_source_key = 'mold-no:1#3/part:0'
+    expect(() => convertDisneyP4InternalQuote(artifact, 'stale.xlsx')).toThrow('未匹配工程模具行')
+    rows[0]!.engineering_source_key = 'mold-no:1#1/part:0'
+    rows[0]!.disney_mold_no = 'other'
+    expect(() => convertDisneyP4InternalQuote(artifact, 'wrong.xlsx')).toThrow('来源模具与迪士尼模号不一致')
   })
 
   it('drives the Dickie customer template from complete P4-only fields', () => {

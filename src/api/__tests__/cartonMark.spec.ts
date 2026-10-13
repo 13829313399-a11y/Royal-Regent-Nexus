@@ -42,6 +42,23 @@ const persistedTemplate: CartonMarkTemplateRecordResponse = {
 }
 
 describe('carton-mark persisted template API', () => {
+  it('submits QC originals as multipart with factory, template, stable request and correction identity', async () => {
+    const post = vi.fn().mockResolvedValue({ data: [] })
+    const api = createCartonMarkApi({ post } as unknown as Parameters<typeof createCartonMarkApi>[0])
+    const front = new File(['front'], 'front.png', { type: 'image/png' })
+    await api.createQcRecords({ factoryId: 'huaxing', templateId: 'T1', requestId: 'retry-same',
+      mode: 'batch', note: '重新印刷已完成', correctsRecordId: 'QC-old', frontPhotos: [front], sidePhotos: [] })
+    const [url, body, config] = post.mock.calls[0]!
+    expect(url).toBe('/carton-mark/qc-records')
+    expect(body).toBeInstanceOf(FormData)
+    expect(body.get('factory_id')).toBe('huaxing')
+    expect(body.get('template_id')).toBe('T1')
+    expect(body.get('request_id')).toBe('retry-same')
+    expect(body.get('corrects_record_id')).toBe('QC-old')
+    expect(body.get('front_photos')).toBe(front)
+    expect(body.has('result')).toBe(false)
+    expect(config.headers['Content-Type']).toBe('multipart/form-data')
+  })
   it('loads and maintains the independent factory carton-mark customer library', async () => {
     const customers = [
       {

@@ -242,7 +242,7 @@ describe('customer order center static frontend', () => {
     })
 
     const customerButtons = wrapper.findAll('[data-testid^="customer-choice-"]')
-    expect(customerButtons).toHaveLength(6)
+    expect(customerButtons).toHaveLength(7)
     expect(customerButtons.map((button) => button.text())).toEqual(
       expect.arrayContaining([
         expect.stringContaining('INDEX'),
@@ -251,6 +251,7 @@ describe('customer order center static frontend', () => {
         expect.stringContaining('STROTTMAN'),
         expect.stringContaining('迪士尼'),
         expect.stringContaining('优必选'),
+        expect.stringContaining('施信'),
       ]),
     )
     expect(wrapper.text()).not.toContain('BuzzBee')
@@ -291,13 +292,16 @@ describe('customer order center static frontend', () => {
     expect(wrapper.findAll('[data-testid^="customer-choice-"]')).toHaveLength(0)
   })
 
-  it.each(['mismatched-response', 'factory-switch'])('rejects Disney preview crossing factory scope: %s', async (scenario) => {
+  it.each([
+    ['disney', 'mismatched-response'], ['disney', 'factory-switch'],
+    ['seasons', 'mismatched-response'], ['seasons', 'factory-switch'],
+  ])('rejects %s preview crossing factory scope: %s', async (customerCode, scenario) => {
     let resolvePreview!: (value: unknown) => void
     customerOrderApiMock.previewMappedBatch.mockReturnValueOnce(new Promise((resolve) => { resolvePreview = resolve }))
     const wrapper = mount(CustomerOrderCenterWorkspace, {
       props: { activeSection: 'import', factoryId: 'huakang-d', factoryName: '华康D' },
     })
-    await wrapper.get('[data-testid="customer-choice-disney"]').trigger('click')
+    await wrapper.get(`[data-testid="customer-choice-${customerCode}"]`).trigger('click')
     const inputs = wrapper.findAll('input[type="file"]')
     for (const [index, file] of [new File(['po'], 'Disney.pdf'), new File(['xlsx'], 'D.xlsx')].entries()) {
       Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
@@ -316,9 +320,13 @@ describe('customer order center static frontend', () => {
     wrapper.unmount()
   })
 
-  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech']])('keeps mapped preview/export isolated while the persisted schedule remains an empty real ledger', async (factoryId, customerCode) => {
-    const targetTemplate = customerCode === 'ubtech' ? 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_UBTECH_V1' : factoryId === 'huakang-d'
-      ? 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_DISNEY_V1' : 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
+  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech'], ['huakang-d', 'seasons'], ['huaxing', 'seasons']])('keeps mapped preview/export isolated while the persisted schedule remains an empty real ledger', async (factoryId, customerCode) => {
+    const targetTemplate = customerCode === 'seasons'
+      ? (factoryId === 'huakang-d' ? 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3' : 'HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1')
+      : customerCode === 'ubtech'
+        ? 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_UBTECH_V1'
+        : factoryId === 'huakang-d'
+          ? 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_DISNEY_V1' : 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
     const preview = {
       customer_code: customerCode, factory_id: factoryId, preview_fingerprint: `${factoryId}-fingerprint`,
       po_file_count: 1, po_file_names: ['Disney.pdf'], po_file_name: 'Disney.pdf',
@@ -352,7 +360,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.findAll(`[data-testid="customer-choice-${customerCode}"]`)).toHaveLength(1)
     await wrapper.get(`[data-testid="customer-choice-${customerCode}"]`).trigger('click')
     const inputs = wrapper.findAll('input[type="file"]')
-    expect(inputs[0]!.attributes('accept')).toBe('.pdf')
+    expect(inputs[0]!.attributes('accept')).toBe(customerCode === 'seasons' ? '.pdf,.xls,.xlsx,.xlsm' : '.pdf')
     const po = new File(['po'], 'Disney.pdf')
     const schedule = new File(['schedule'], 'schedule.xlsx')
     for (const [index, file] of [po, schedule].entries()) {

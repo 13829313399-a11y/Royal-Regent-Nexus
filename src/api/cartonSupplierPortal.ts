@@ -3,13 +3,14 @@ import { postCartonInventoryRequest } from './cartonInventoryRequest'
 import type { LocationAllocation } from './cartonPositions'
 import type { SplitRecord } from './cartonOrderSplits'
 import type { CartonSupplierAcceptanceResponse } from './cartonProcurement'
+import type { CartonMarkDocumentContentCheckResponse } from './cartonMark'
 export interface PortalAttachment { id: string; filename: string; version: number; size: number; sha256: string; created_at: string }
 export interface PortalPaper { id: string; line_no: number; child_no: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit: string; unit: string; required_quantity: string; received_quantity: string; in_transit_quantity: string; remaining_to_ship: string; accepted: boolean; shipping_blocked_reason?: string; commitment_revision: number; promised_date: string; unit_price?: string; currency?: string }
 export interface PortalOrder { split_records?: SplitRecord[]; id: string; order_no: string; customer_code?: string; revision?: number; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; status: string; issue_id: string; document_no: string; order_date: string; planned_date: string; awaiting_issue: boolean; lines: PortalPaper[]; attachments: PortalAttachment[] }
 export interface ShipmentLine { id: string; order_line_id: string | null; source_type?: 'FORMAL_ORDER' | 'AD_HOC_REVIEW'; order_no: string; contract_no: string; customer_po: string; item_no: string; customer_name: string; child_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; unit_price?: string; delivery_unit_price?: string | null; currency?: string }
 export interface ReceiveLine { shipment_line_id: string; received_quantity: number; damaged_quantity: number; rejected_quantity: number; unusable_quantity: number; unit_price: number; paper_quality: string; specification: string; location_allocations: LocationAllocation[]; difference_reason: string; no_order_decision?: '' | 'SAMPLE' | 'WRONG_DELIVERY'; customer_code?: string; sample_purpose?: string; requested_by?: string; unit?: string }
 export interface SampleReceipt { receipt_line_id: string; customer_code: string; customer_name: string; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; linked_order_line_id: string }
-export interface PortalShipment { requires_receipt_link?: boolean; linked_existing_receipt?: boolean; id: string; delivery_note_no: string; delivery_date: string; status: string; revision: number; created_at: string; confirmed_at: string; source_filename?: string; source_sha256?: string; receipt_id?: string; receipt_status?: string; requires_correction?: boolean; acceptance_history?: { confirmed_at: string; acceptance_date: string | null; status: string; lines: PortalShipment['acceptance_lines'] }[]; sample_receipts?: SampleReceipt[]; acceptance_date: string | null; lines: ShipmentLine[]; acceptance_lines: Pick<ReceiveLine, 'shipment_line_id' | 'received_quantity' | 'damaged_quantity' | 'rejected_quantity' | 'unusable_quantity' | 'difference_reason' | 'no_order_decision'>[] }
+export interface PortalShipment { can_operate?: boolean; requires_receipt_link?: boolean; linked_existing_receipt?: boolean; id: string; delivery_note_no: string; delivery_date: string; status: string; revision: number; created_at: string; confirmed_at: string; source_filename?: string; source_sha256?: string; receipt_id?: string; receipt_status?: string; requires_correction?: boolean; acceptance_history?: { confirmed_at: string; acceptance_date: string | null; status: string; lines: PortalShipment['acceptance_lines'] }[]; sample_receipts?: SampleReceipt[]; acceptance_date: string | null; lines: ShipmentLine[]; acceptance_lines: Pick<ReceiveLine, 'shipment_line_id' | 'received_quantity' | 'damaged_quantity' | 'rejected_quantity' | 'unusable_quantity' | 'difference_reason' | 'no_order_decision'>[] }
 export interface PortalWorkspace { factory_id: string; supplier_name: string; orders: PortalOrder[]; shipments: PortalShipment[] }
 export interface PendingSupplierShipment { id: string; delivery_note_no: string; delivery_date: string; requires_correction: boolean }
 export interface PendingSupplierShipments { factory_id: string; total: number; items: PendingSupplierShipment[] }
@@ -25,13 +26,37 @@ export interface SupplierDocument { supplier_acceptance?: Omit<CartonSupplierAcc
 export interface SupplierActivity { id: string; created_at: string; action: string; reference_no: string; actor_name: string; factory_id: string }
 export interface SupplierMarkAsset {
   photo_group_id?: string | null
+  revision: number
   id: string; file_name: string; kind: 'pdf' | 'excel' | 'image'; size_bytes: number; contract_number: string; created_at: string
-  orders: { id: string; customer_name: string; contract_no: string; customer_po: string; item_no: string }[]
+  orders: { id: string; issue_id: string; customer_name: string; contract_no: string; customer_po: string; item_no: string }[]
 }
+export interface SupplierMarkCheck extends SupplierMarkTemplate {
+  factory_id: string; order_id: string; issue_id: string; excel_asset_id: string; qc_ready: boolean
+  check_result: CartonMarkDocumentContentCheckResponse
+}
+export interface SupplierMarkCheckRequest {
+  factory_id: string; order_id: string; issue_id: string; excel_asset_id: string; expected_revision: number
+  print_pdf?: File
+  pdf_asset_id?: string
+  expected_pdf_revision?: number
+}
+export interface SupplierMarkUploadResult { file_name: string; status: 'created' | 'duplicate' | 'failed'; message: string; asset: SupplierMarkAsset | null }
+export interface MarkLayoutRegion { x: number; y: number; width: number; height: number }
+export interface MarkLayoutConfig {
+  frame_style?: 'plain' | 'original_red'
+  mode: 'front_side' | 'front_only' | 'separate_pages'; paper: 'A4' | 'A3'; font: 'Helvetica' | 'Courier'; font_size: number
+  front_percent: number; front_copies: number; side_copies: number; barcode: 'Code128' | 'ITF14' | 'none'
+  side_address: string; instructions: string; reference_page: number; logo_region: MarkLayoutRegion | null; stamp_region: MarkLayoutRegion | null
+  field_cells: Partial<Record<'item' | 'vendor' | 'product' | 'content' | 'gtin' | 'vendor_item' | 'dimensions' | 'gross_weight', string>>
+}
+export interface SupplierMarkLayout { id: string; factory_id: string; customer_name: string; name: string; version: number; reference_name: string; created_at: string; config: MarkLayoutConfig }
+export interface MarkLayoutPreview { preview_data_url: string; page_width_mm: number; page_height_mm: number; page_count: number; suggested_side_address: string }
+export interface SupplierMarkPdfResult { asset: SupplierMarkAsset; page_count: number; warnings: string[]; layout_id: string; layout_name: string; layout_version: number }
+export type SupplierMarkUploadOrder = SupplierMarkAsset['orders'][number] & { document_no: string; order_date: string }
 const base = '/carton-supplier'
 export const cartonSupplierPortalApi = {
   async memberships() { return (await http.get<{ factory_id: string; supplier_name: string }[]>(base + '/memberships')).data },
-  async workspace(factory_id: string, internal = false) { return (await http.get<PortalWorkspace>(base + (internal ? '/internal' : '') + '/workspace', { params: { factory_id } })).data },
+  async workspace(factory_id: string, internal = false, responsibilityScope: 'OWN' | 'ALL' = 'OWN') { return (await http.get<PortalWorkspace>(base + (internal ? '/internal' : '') + '/workspace', { params: { factory_id, ...(internal ? { responsibility_scope: responsibilityScope } : {}) } })).data },
   async pendingShipments(factory_id: string, limit = 3) { return (await http.get<PendingSupplierShipments>(base + '/internal/shipments/pending', { params: { factory_id, limit } })).data },
   async documents(factory_id: string) { return (await http.get<SupplierDocument[]>(base + '/documents', { params: { factory_id } })).data },
   async activity(factory_id: string) { return (await http.get<SupplierActivity[]>(base + '/activity', { params: { factory_id } })).data },
@@ -58,6 +83,46 @@ export const cartonSupplierPortalApi = {
   },
   async markTemplates(factory_id: string) { return (await http.get<SupplierMarkTemplate[]>(base + '/carton-mark/templates', { params: { factory_id } })).data },
   async markAssets(factory_id: string, signal?: AbortSignal) { return (await http.get<SupplierMarkAsset[]>(base + '/carton-mark/assets', { params: { factory_id }, signal })).data },
+  async markUploadOrders(factory_id: string, signal?: AbortSignal) { return (await http.get<SupplierMarkUploadOrder[]>(base + '/carton-mark/upload-orders', { params: { factory_id }, signal })).data },
+  async uploadMarkAssets(factory_id: string, files: File[], order?: SupplierMarkAsset['orders'][number], signal?: AbortSignal) {
+    const body = new FormData(); body.append('factory_id', factory_id)
+    if (order) { body.append('order_id', order.id); body.append('issue_id', order.issue_id) }
+    for (const file of files) body.append('files', file)
+    return (await http.post<SupplierMarkUploadResult[]>(base + '/carton-mark/assets/upload', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 300000 })).data
+  },
+  async markChecks(factory_id: string, signal?: AbortSignal) { return (await http.get<SupplierMarkCheck[]>(base + '/carton-mark/checks', { params: { factory_id }, signal })).data },
+  async markLayouts(factory_id: string, order: SupplierMarkAsset['orders'][number], signal?: AbortSignal) {
+    return (await http.get<SupplierMarkLayout[]>(base + '/carton-mark/layouts', { params: { factory_id, order_id: order.id, issue_id: order.issue_id }, signal })).data
+  },
+  async previewLayoutReference(factory_id: string, order: SupplierMarkAsset['orders'][number], file: File, page: number, signal?: AbortSignal) {
+    const body = new FormData()
+    body.append('factory_id', factory_id); body.append('order_id', order.id); body.append('issue_id', order.issue_id)
+    body.append('reference_pdf', file); body.append('page', String(page))
+    return (await http.post<MarkLayoutPreview>(base + '/carton-mark/layout-reference-preview', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 120000 })).data
+  },
+  async previewSavedLayout(factory_id: string, order: SupplierMarkAsset['orders'][number], layout: SupplierMarkLayout, signal?: AbortSignal) {
+    return (await http.get<MarkLayoutPreview>(`${base}/carton-mark/layouts/${encodeURIComponent(layout.id)}/preview`, { params: { factory_id, order_id: order.id, issue_id: order.issue_id }, signal })).data
+  },
+  async saveMarkLayout(factory_id: string, order: SupplierMarkAsset['orders'][number], name: string, config: MarkLayoutConfig, current: SupplierMarkLayout | null, file: File | null, signal?: AbortSignal) {
+    const body = new FormData()
+    body.append('factory_id', factory_id); body.append('order_id', order.id); body.append('issue_id', order.issue_id)
+    body.append('name', name); body.append('config', JSON.stringify(config)); body.append('expected_version', String(current?.version ?? 0))
+    if (current) body.append('base_template_id', current.id)
+    if (file) body.append('reference_pdf', file)
+    return (await http.post<SupplierMarkLayout>(base + '/carton-mark/layouts', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 120000 })).data
+  },
+  async generateMarkPdf(request: { factory_id: string; order_id: string; issue_id: string; excel_asset_id: string; expected_revision: number; layout_id: string }, signal?: AbortSignal) {
+    return (await http.post<SupplierMarkPdfResult>(base + '/carton-mark/generate-pdf', request, { signal, timeout: 360000 })).data
+  },
+  async createMarkCheck(request: SupplierMarkCheckRequest) {
+    const body = new FormData()
+    for (const key of ['factory_id', 'order_id', 'issue_id', 'excel_asset_id', 'expected_revision'] as const) body.append(key, String(request[key]))
+    if (request.print_pdf) body.append('print_pdf', request.print_pdf)
+    if (request.pdf_asset_id) { body.append('pdf_asset_id', request.pdf_asset_id); body.append('expected_pdf_revision', String(request.expected_pdf_revision)) }
+    return (await http.post<SupplierMarkCheck>(base + '/carton-mark/checks', body, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 })).data
+  },
+  previewMarkCheckUrl(id: string, factory_id: string) { return http.getUri({ url: `${base}/carton-mark/checks/${encodeURIComponent(id)}/documents/print_pdf`, params: { factory_id, preview: true } }) },
+  async downloadMarkCheck(id: string, kind: 'source_excel' | 'print_pdf', factory_id: string, signal?: AbortSignal) { return (await http.get<Blob>(`${base}/carton-mark/checks/${encodeURIComponent(id)}/documents/${kind}`, { params: { factory_id }, responseType: 'blob', signal })).data },
   previewMarkAssetUrl(id: string, factory_id: string) { return http.getUri({ url: `${base}/carton-mark/assets/${encodeURIComponent(id)}/document`, params: { factory_id, preview: true } }) },
   async downloadMarkAsset(id: string, factory_id: string, signal?: AbortSignal) { return (await http.get<Blob>(`${base}/carton-mark/assets/${encodeURIComponent(id)}/document`, { params: { factory_id }, responseType: 'blob', signal })).data },
   previewMarkPdfUrl(template_id: string, factory_id: string) { return http.getUri({ url: `${base}/carton-mark/templates/${encodeURIComponent(template_id)}/documents/print_pdf`, params: { factory_id, preview: true } }) },
@@ -69,12 +134,12 @@ export const cartonSupplierPortalApi = {
   ship(payload: { factory_id: string; delivery_note_no: string; delivery_date: string; lines: { order_line_id: string; issue_id: string; quantity: number }[] }) { return postCartonInventoryRequest<PortalShipment>(base + '/shipments', payload) },
   async previewDeliveryImport(file: File) {
     const form = new FormData(); form.append('file', file)
-    return (await http.post<DeliveryImportPreview>(base + '/shipments/import-preview', form, { timeout: 120000 })).data
+    return (await http.post<DeliveryImportPreview>(base + '/shipments/import-preview', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 })).data
   },
   async confirmDeliveryImport(file: File, preview: DeliveryImportPreview, selections: { factory_id: string; delivery_note_no: string; registration_mode?: DeliveryRegistrationMode }[]) {
     const form = new FormData(); form.append('file', file); form.append('sha256', preview.sha256)
     form.append('selections', JSON.stringify(selections))
-    return (await http.post<{ shipments: PortalShipment[] }>(base + '/shipments/import-confirm', form, { timeout: 120000 })).data
+    return (await http.post<{ shipments: PortalShipment[] }>(base + '/shipments/import-confirm', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 })).data
   },
   async receiptOptions(factory_id: string, id: string) {
     return (await http.get<ShipmentReceiptOption[]>(`${base}/internal/shipments/${encodeURIComponent(id)}/receipt-options`, { params: { factory_id } })).data

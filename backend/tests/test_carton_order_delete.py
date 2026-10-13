@@ -1,7 +1,7 @@
 import pytest
 
 from test_molding_sample_api import make_client, login_as
-from test_carton_procurement_api import _create_order, _freeze_carton_time
+from test_carton_procurement_api import _create_order, _freeze_carton_time, _order_payload
 from test_carton_receipt_correction_api import receipt, reverse
 from test_carton_history_delete_and_exception_bulk import historical
 
@@ -69,6 +69,7 @@ def test_ordinary_order_with_receipt_evidence_cannot_be_deleted(monkeypatch, mod
             assert response.status_code == 200, response.text
             assert response.json()["status"] == "CANCELLED"
         current = next(row for row in current_orders(client) if row["id"] == order["id"])
+        login_as(client, "warehouse_keeper")
         if mode == "returned":
             before_receipts = client.get(f"{BASE}/receipts", params={"factory_id": "huaxing"}).json()
             before_movements = client.get(f"{BASE}/inventory/movements", params={"factory_id": "huaxing"}).json()
@@ -139,20 +140,99 @@ def test_supplier_acceptance_blocks_order_deletion(monkeypatch):
 
 
 @pytest.mark.parametrize("operation", ["delete", "bulk-delete", "delete-history", "bulk-delete-history"])
-def test_warehouse_operator_cannot_bypass_supervisor_gate(monkeypatch, operation):
+@pytest.mark.parametrize("username", ["warehouse_keeper", "carton_warehouse"])
+def test_warehouse_operator_can_delete_eligible_orders(monkeypatch, operation, username):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         _freeze_carton_time(monkeypatch)
         order = historical(client) if "history" in operation else _create_order(client)
-        login_as(client, "warehouse_keeper")
+        actor = login_as(client, username)
+        assert "carton_procurement:order_adjust" not in actor["permissions"]
         if operation.startswith("bulk"):
             path = f"{BASE}/orders/{operation}"
             body = {"factory_id": "huaxing", "reason": "订单重复录入需删除", "items": [
                 {"order_no": order["order_no"], "expected_revision": order["revision"]}]}
         else:
             path, body = f"{BASE}/orders/{order['order_no']}/{operation}", delete_body(order)
-        assert client.post(path, json=body).status_code == 403
+        response = client.post(path, json=body)
+        assert response.status_code == 204, response.text
         login_as(client, "admin")
+        assert not current_orders(client)
+        events = client.get(f"{BASE}/audit-events", params={"factory_id": "huaxing"}).json()["items"]
+        event = next(row for row in events if row["event_type"] == ("HISTORY_ORDER_DELETED" if "history" in operation else "ORDER_DELETED"))
+        assert event["actor_user_id"] == actor["id"]
+        assert event["detail"]["reason"] == body["reason"]
+
+
+def test_warehouse_deletion_keeps_customer_responsibility_and_batch_atomicity(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        _freeze_carton_time(monkeypatch)
+        blocked = _create_order(client)
+        login_as(client, "admin")
+        response = client.post(f"{BASE}/customers", json={
+            "factory_id": "huaxing", "customer_code": "UNCLAIMED", "customer_name": "Unclaimed"})
+        assert response.status_code == 201, response.text
+        payload = _order_payload()
+        payload.update(customer_code="UNCLAIMED", customer_name="Unclaimed", contract_no="UNCLAIMED-ORDER")
+        response = client.post(f"{BASE}/orders", json=payload)
+        assert response.status_code == 201, response.text
+        allowed = response.json()
+        actor = login_as(client, "warehouse_keeper")
+        from app.db import SessionLocal
+        from app.models.carton_customer_assignment import CartonCustomerAssignment
+        from sqlalchemy import delete
+        with SessionLocal() as db:
+            db.execute(delete(CartonCustomerAssignment).where(CartonCustomerAssignment.user_id == actor["id"]))
+            db.commit()
+        response = client.post(f"{BASE}/orders/{blocked['order_no']}/delete", json=delete_body(blocked))
+        assert response.status_code == 403, response.text
+        response = client.post(f"{BASE}/orders/bulk-delete", json={
+            "factory_id": "huaxing", "reason": "仓管删除客户范围核对", "items": [
+                {"order_no": row["order_no"], "expected_revision": row["revision"]} for row in (allowed, blocked)]})
+        assert response.status_code == 403, response.text
+        login_as(client, "admin")
+        assert len(current_orders(client)) == 2
+        events = client.get(f"{BASE}/audit-events", params={"factory_id": "huaxing"}).json()["items"]
+        assert not any(row["event_type"] == "ORDER_DELETED" for row in events)
+        login_as(client, "warehouse_keeper")
+        response = client.post(f"{BASE}/orders/{allowed['order_no']}/delete", json=delete_body(allowed))
+        assert response.status_code == 204, response.text
+
+
+def test_warehouse_deletion_rejects_incomplete_foreign_department_and_denied_grants(monkeypatch):
+    monkeypatch.setenv("AUTHZ_MODE", "enforce")
+    with make_client(monkeypatch) as client:
+        login_as(client, "admin")
+        order = _create_order(client)
+        from app.services.auth import AuthContext, AuthGrantContext, AuthOverrideContext, get_current_user
+
+        def grant(permission, factory="huaxing", department="pmc-warehouse"):
+            return AuthGrantContext("warehouse", "仓管", factory, department, frozenset({f"carton_procurement:{permission}"}))
+
+        for case in ("order_only", "inventory_only", "foreign_inventory", "other_department", "deny_inventory", "deny_order"):
+            grants = [grant("order_write")]
+            if case == "inventory_only":
+                grants = [grant("inventory_write")]
+            elif case != "order_only":
+                grants.append(grant("inventory_write", "huadeng" if case == "foreign_inventory" else "huaxing",
+                                    "qc" if case == "other_department" else "pmc-warehouse"))
+            overrides = ()
+            if case.startswith("deny_"):
+                permission = "inventory_write" if case == "deny_inventory" else "order_write"
+                overrides = (AuthOverrideContext("deny-delete", f"carton_procurement:{permission}", "deny", "huaxing", "pmc-warehouse"),)
+            actor = AuthContext("warehouse", "warehouse", "仓管", (), (),
+                                frozenset(p for g in grants for p in g.permissions), ("huaxing",), ("pmc-warehouse",),
+                                grants=tuple(grants), overrides=overrides)
+            client.app.dependency_overrides[get_current_user] = lambda: actor
+            for operation in ("delete", "bulk-delete", "delete-history", "bulk-delete-history"):
+                bulk = operation.startswith("bulk")
+                path = f"{BASE}/orders/{operation}" if bulk else f"{BASE}/orders/{order['order_no']}/{operation}"
+                body = {"factory_id": "huaxing", "reason": "权限边界删除核对", "items": [
+                    {"order_no": order["order_no"], "expected_revision": order["revision"]}]} if bulk else delete_body(order)
+                response = client.post(path, json=body)
+                assert response.status_code == 403, (case, operation, response.text)
+        client.app.dependency_overrides.clear()
         assert len(current_orders(client)) == 1
 
 
@@ -183,6 +263,7 @@ def test_bulk_delete_rejects_whole_selection_if_one_order_received(monkeypatch):
         login_as(client, "admin")
         receipt(client, second, post=True)
         rows = current_orders(client)
+        login_as(client, "warehouse_keeper")
         response = client.post(f"{BASE}/orders/bulk-delete", json={
             "factory_id": "huaxing", "reason": "订单重复录入需删除", "items": [
                 {"order_no": row["order_no"], "expected_revision": row["revision"]} for row in rows]})

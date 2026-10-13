@@ -2,10 +2,25 @@ import { describe, expect, it } from 'vitest'
 import { isReactive, reactive } from 'vue'
 import type { MoldingPayload } from '@/lib/internalQuoteSectionPayload'
 import { calculateJustPlayCartonsPerPallet, justPlayPackagingInputsValid, normalizeJustPlayPackagingInputs } from '@/lib/internalQuoteSectionPayload'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSectionSummary, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingGroupTotalRmb, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingRowTotalRmb, calculateSewingTotalHkd, calculateSewingTotalRmb, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type ElectronicQuoteGroup, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSectionSummary, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type ElectronicQuoteGroup, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
   const defaultPallet = { pallet_length_mm: 1000, pallet_width_mm: 1150, pallet_height_mm: 1300 }
+  it('retains explicit manual pallet counts in saved payloads and uses them for preview costs', () => {
+    const carton = { length_in: 18, width_in: 12, height_in: 10, qty_per_carton: 24 }
+    const inputs = normalizeJustPlayPackagingInputs({ cartons_per_pallet_override: 20 })
+    const payload = normalizeInternalQuotePayload('sales', { pricing_mode: 'component', justplay_packaging: inputs })
+    expect(cloneInternalQuotePayload('sales', payload).justplay_packaging).toEqual(inputs)
+    expect(calculateJustPlayCartonsPerPallet(carton, inputs)).toBe(20)
+    expect(calculateJustPlayPaperPalletCostHkd(carton, inputs)).toBeCloseTo(19 / 20 / 24)
+    expect(calculateJustPlayCartonsPerPallet(carton, { ...inputs, pallet_height_mm: 1 })).toBe(20)
+    for (const value of ['', 0, -1, 1.5, NaN, Infinity]) {
+      const invalid = normalizeJustPlayPackagingInputs({ cartons_per_pallet_override: value })
+      expect(justPlayPackagingInputsValid(invalid)).toBe(false)
+      expect(calculateJustPlayPaperPalletCostHkd(carton, invalid)).toBe(0)
+    }
+    expect(calculateJustPlayCartonsPerPallet(carton, normalizeJustPlayPackagingInputs({ cartons_per_pallet_override: null }))).toBe(30)
+  })
   it('defaults unfilled JustPlay packaging parameters to zero and preserves saved inputs', () => {
     const legacy = normalizeInternalQuotePayload('sales', { pricing_mode: 'component' })
     expect(legacy.justplay_packaging).toEqual({ adhesive_extra_hkd: 0, paper_pallet_extra_hkd: 0, ...defaultPallet })
@@ -123,7 +138,7 @@ describe('internal quote section payload normalization', () => {
         { item: '主纸箱', length_in: 10, width_in: 5, height_in: 4, qty_per_carton: 10, flat_cards: [] },
         { item: '内纸箱 1', length_in: 8, width_in: 4, height_in: 3, qty_per_carton: 2, flat_cards: [] },
       ],
-    }) as SalesPayload
+    }) as unknown as SalesPayload
     expect(legacyMultipleCartons).not.toHaveProperty('inner_paper_price_factor')
     expect(legacyMultipleCartons.inner_paper_price_factor ?? legacyMultipleCartons.paper_price_factor).toBe(2.8)
     expect(normalizeInternalQuotePayload('sales', {
@@ -272,7 +287,7 @@ describe('internal quote section payload normalization', () => {
     expect(hk40.totalCartons).toBe(Math.round(1980 / calculateCartonCuft({ length_in: 14, width_in: 9.25, height_in: 23.875 })))
     expect(hk40.perPieceHkd).toBeCloseTo(8000 / hk40.totalCartons / 2)
     const baselineOptions = calculateSalesFreightOptions(
-      normalizeInternalQuotePayload('sales', {}).freight_calc,
+      (normalizeInternalQuotePayload('sales', {}) as unknown as SalesPayload).freight_calc,
       { length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2 },
       salesFreightReferenceRoutesFromSnapshot({
         routes: [{ route_key: 'sz40', route_name: '深圳 40 柜', capacity_key: 'cap_40', freight_hkd: '6500', lifting_hkd: '1100' }],
@@ -288,9 +303,9 @@ describe('internal quote section payload normalization', () => {
     expect(baselineOptions[0].freightPerPieceHkd).toBeCloseTo(6500 / baselineOptions[0].totalCartons / 2)
     expect(baselineOptions[0].liftingPerPieceHkd).toBeCloseTo(1100 / baselineOptions[0].totalCartons / 2)
     expect(baselineOptions[0].perPieceHkd).toBeCloseTo(7600 / baselineOptions[0].totalCartons / 2)
-    const customCapacityFreight = normalizeInternalQuotePayload('sales', {
+    const customCapacityFreight = (normalizeInternalQuotePayload('sales', {
       freight_calc: { '8 吨车容量': 1200 },
-    }).freight_calc
+    }) as unknown as SalesPayload).freight_calc
     const customCapacityOptions = calculateSalesFreightOptions(
       customCapacityFreight,
       { length_in: 12, width_in: 12, height_in: 12, qty_per_carton: 10 },
@@ -459,7 +474,7 @@ describe('internal quote section payload normalization', () => {
         { name: '成品组装', category: 'assembly', production_qty: 100, teams: 2, processes: [{ name: '锁螺丝', persons: 3 }, { name: '装配', persons: 2 }] },
         { name: '包装', category: 'packaging', production_qty: 200, teams: 1, processes: [{ name: '装箱', persons: 4 }] },
       ],
-    }) as AssemblyPayload
+    }) as unknown as AssemblyPayload
 
     expect(calculateAssemblyGroupPeople(payload.groups[0])).toBe(5)
     expect(calculateAssemblyGroupLaborHkd(payload.groups[0], payload.labor_base_hkd)).toBe(26)
@@ -471,7 +486,7 @@ describe('internal quote section payload normalization', () => {
     const manual = normalizeInternalQuotePayload('assembly', {
       labor_base_hkd: 260,
       groups: [{ name: '成品组装', category: 'assembly', production_qty: 100, teams: 1, total_persons: '6', processes: [] }],
-    }) as AssemblyPayload
+    }) as unknown as AssemblyPayload
 
     expect(manual.groups[0].total_persons).toBe(6)
     expect(calculateAssemblyGroupPeople(manual.groups[0])).toBe(6)
@@ -479,7 +494,7 @@ describe('internal quote section payload normalization', () => {
 
     const withProcesses = normalizeInternalQuotePayload('assembly', {
       groups: [{ name: '成品组装', category: 'assembly', total_persons: 99, processes: [{ name: '装配', persons: 3 }] }],
-    }) as AssemblyPayload
+    }) as unknown as AssemblyPayload
     expect(withProcesses.groups[0].total_persons).toBeNull()
     expect(calculateAssemblyGroupPeople(withProcesses.groups[0])).toBe(3)
   })
@@ -495,7 +510,7 @@ describe('internal quote section payload normalization', () => {
         teams: '1',
         processes: [{ name: '装配', persons: '42', production_qty: '0', teams: '9' }],
       }],
-    }) as AssemblyPayload
+    }) as unknown as AssemblyPayload
 
     expect(payload.groups[0]).toMatchObject({
       production_qty: 3000,
@@ -559,7 +574,7 @@ describe('internal quote section payload normalization', () => {
         { name: '公仔头发', craft: '植发', weight_g: 18.5, unit_price_hkd: 2.35, unit: 'PCS' },
         { name: '尾巴毛', craft: '车发', weight_g: 3, unit_price_hkd: .65, unit: 'PCS' },
       ],
-    }) as HairPayload
+    }) as unknown as HairPayload
 
     expect(calculateHairRowAmountHkd(payload.lines[0])).toBeCloseTo(2.35)
     expect(calculateHairTotalHkd(payload)).toBeCloseTo(3)
@@ -580,12 +595,26 @@ describe('internal quote section payload normalization', () => {
     }) as unknown as SewingPayload
 
     expect(calculateSewingBasePriceRmb(payload.groups[0].materials[0])).toBeCloseTo(3)
-    expect(calculateSewingRowTotalRmb(payload.groups[0].materials[0])).toBeCloseTo(3.3)
-    expect(calculateSewingGroupTotalRmb(payload.groups[0])).toBeCloseTo(15.3)
+    expect(calculateSewingRowTotalHkd(payload.groups[0].materials[0], .85)).toBeCloseTo(3.3 / .85)
+    expect(calculateSewingGroupTotalHkd(payload.groups[0], .85)).toBeCloseTo(15.3 / .85)
     expect(sewingGroupHasLaborLine(payload.groups[1])).toBe(true)
-    expect(calculateSewingGroupTotalRmb(payload.groups[1])).toBeCloseTo(5)
-    expect(calculateSewingTotalRmb(payload)).toBeCloseTo(20.3)
+    expect(calculateSewingGroupTotalHkd(payload.groups[1], .85)).toBeCloseTo(5 / .85)
     expect(calculateSewingTotalHkd(payload, .85)).toBeCloseTo(23.88235294)
+  })
+
+  it('retains imported HKD prices through normalization and calculates mixed currency rows once', () => {
+    const payload = normalizeInternalQuotePayload('sewing', { groups: [{ materials: [
+      { item: '布标', usage: 1, unit_price_hkd: '0.235294117647059', unit_price_source_currency: 'HKD', markup: 1.1 },
+      { item: '车缝人工', usage: 1, unit_price_rmb: 1.7, markup: 1 },
+    ] }] }) as unknown as SewingPayload
+    const restored = normalizeInternalQuotePayload('sewing', JSON.parse(JSON.stringify(payload))) as unknown as SewingPayload
+    expect(restored.groups[0].materials[0].unit_price_source_currency).toBe('HKD')
+    expect(restored.groups[0].materials[0].unit_price_hkd).toBe(0.235294117647059)
+    expect(calculateSewingBasePriceHkd(restored.groups[0].materials[0], .85)).toBeCloseTo(.235294117647059, 12)
+    expect(calculateSewingTotalHkd(restored, .85)).toBeCloseTo(2.258823529411765, 12)
+    restored.groups[0].materials[0].unit_price_rmb = 99
+    expect(calculateSewingRowTotalHkd(restored.groups[0].materials[0], .8)).toBeCloseTo(.258823529411765, 12)
+    expect(calculateSewingBasePriceHkd(restored.groups[0].materials[0], undefined)).toBeCloseTo(.235294117647059, 12)
   })
 
   it('uses each sewing row exchange rate for HKD cost and price while old rows fall back to the frozen rate', () => {
@@ -698,7 +727,7 @@ describe('internal quote section payload normalization', () => {
       item: '主体模', mold_no: 'M-01', mold_base_type: 'CI 3040', structure: '两板模', material: 'S50C', color: '红', cavity: '2',
       chinese_name: '', mold_base_material: '', process: '', material_type: '', mold_specification: '',
       quantity: 2, net_weight_g: 120, cycle_time_seconds: 35, mold_size: '300×400', image_reference: 'M-01.png', cost_rmb: 5000,
-      remark: '客户确认', machine_code: '20A', target_output: 5000, parts: [{ name: '主体模', output_count: 1, quantity: 1 }], source_row: 8,
+      remark: '客户确认', machine_code: '20A', target_output: 5000, parts: [], source_row: 8,
     })
     expect(engineering.production_mold_costs).toEqual([{ item: '模具费用', cost_rmb: 1550 }])
     expect(calculateEngineeringMoldPriceHkd(engineering.molds[0], .85)).toBeCloseTo(5882.3529)
@@ -738,6 +767,22 @@ describe('internal quote section payload normalization', () => {
     expect(legacy).toMatchObject({ mold_allocation_enabled: true, mold_fx_rmb_usd: 7.75, amortization_qty: 20000, prototype_amortization_qty: 50000, testing_amortization_qty: 2000 })
   })
 
+  it('retains imported mold fee ownership and a manual override through normalization', () => {
+    const payload = normalizeInternalQuotePayload('engineering', {
+      molds: [{ cost_rmb: 49500, quantity: 2 }],
+      production_mold_costs: [
+        { item: '协商模费', cost_rmb: 50000, import_batch_id: 'mold-batch', mold_import_default_rmb: '49500.0000' },
+        { item: '超声模费用', cost_rmb: 1000 },
+      ],
+    }) as unknown as EngineeringPayload
+    expect(payload.production_mold_costs).toEqual([
+      { item: '协商模费', cost_rmb: 50000, import_batch_id: 'mold-batch', mold_import_default_rmb: '49500.0000' },
+      { item: '超声模费用', cost_rmb: 1000 },
+    ])
+    expect(normalizeInternalQuotePayload('engineering', payload as unknown as Record<string, unknown>)).toEqual(payload)
+    expect(calculateEngineeringMoldAllocation(payload).productionTotalRmb).toBe(51000)
+  })
+
   it('splits engineering mold child parts from left-right and slash names while preserving saved child data', () => {
     expect(splitEngineeringMoldPartNames('左右前枪身（橙色）')).toEqual([
       '左前枪身（橙色）',
@@ -763,6 +808,7 @@ describe('internal quote section payload normalization', () => {
       }],
     }) as unknown as EngineeringPayload
     expect(engineering.molds[0].parts).toEqual([{
+      id: 'legacy-name:["手工命名",1]',
       name: '手工命名',
       color: '橙色',
       process: '',
@@ -868,7 +914,7 @@ describe('internal quote section payload normalization', () => {
     })
     expect((normalizeInternalQuotePayload('sales', {
       customer_quote_fields: { three_sixty: { carton_length_in: 24.75 } },
-    }) as SalesPayload).customer_quote_fields.three_sixty).not.toHaveProperty('carton_length_in')
+    }) as unknown as SalesPayload).customer_quote_fields.three_sixty).not.toHaveProperty('carton_length_in')
   })
 
   it('preserves ordinary detail overrides and JustPlay component metadata without adding them to glue-row multipliers', () => {
@@ -881,7 +927,7 @@ describe('internal quote section payload normalization', () => {
     })).toMatchObject({ injection_lines: [{ item: '镜框', pricing_component_id: 'component-02' }] })
     expect((normalizeInternalQuotePayload('molding', {
       injection_lines: [{ item: '镜框', pricing_component_id: 'component-02', markup_override: '1.35' }],
-    }) as MoldingPayload).injection_lines[0]).not.toHaveProperty('markup_override')
+    }) as unknown as MoldingPayload).injection_lines[0]).not.toHaveProperty('markup_override')
 
     expect(normalizeInternalQuotePayload('sales', {
       pricing_mode: 'component',

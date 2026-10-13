@@ -156,8 +156,8 @@ export function useNotificationCenter() {
   const readOverrides = new Set<string>()
   let loadSequence = 0
   let disposed = false
-  let refreshTimer: ReturnType<typeof window.setTimeout> | undefined
-  let toastTimer: ReturnType<typeof window.setTimeout> | undefined
+  let refreshTimer: number | undefined
+  let toastTimer: number | undefined
   let toastExpiresAt = 0
   let toastRemainingMs = NOTIFICATION_TOAST_TIMEOUT_MS
   let currentPollInterval = NOTIFICATION_REFRESH_INTERVAL_MS

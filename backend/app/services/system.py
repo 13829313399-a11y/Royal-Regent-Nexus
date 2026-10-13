@@ -52,6 +52,9 @@ from app.services.auth import (
     can,
     has_permission_in_scope,
     mark_password_reset_notification_handled,
+    password_reset_can_reopen,
+    get_current_user,
+    parse_time,
     now_text,
     time_window_is_active,
 )
@@ -954,17 +957,22 @@ def ensure_password_reset_request_access(
 
 
 def expire_stale_password_reset_requests(db: Session) -> None:
+    from app.services.identity_policy import lock_mutation
+    lock_mutation(db)
     now = now_text()
     stale_requests = db.scalars(
         select(AuthPasswordResetRequest).where(
             AuthPasswordResetRequest.status == "approved",
-            AuthPasswordResetRequest.expires_at != "",
-            AuthPasswordResetRequest.expires_at <= now,
         )
     ).all()
     if not stale_requests:
         return
     for reset_request in stale_requests:
+        expiry = parse_time(reset_request.expires_at)
+        if expiry is not None and expiry > datetime.now():
+            continue
+        if expiry is None:
+            reset_request.expires_at = ""
         reset_request.status = "expired"
         reset_request.updated_at = now
         mark_password_reset_notification_handled(db, reset_request, now)
@@ -1047,6 +1055,8 @@ def open_password_reset_claim_window(
 ) -> PasswordResetApproveOut:
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
+    if request is not None:
+        current_user = get_current_user(request, db)
     current_user = fresh_actor(db, current_user.id)
     reset_request = load_password_reset_request_for_update(db, current_user, request_id)
     if not reset_request.claim_token_hash:
@@ -1059,11 +1069,7 @@ def open_password_reset_claim_window(
 
     now_datetime = datetime.now()
     current_expires_at = reset_request.expires_at.strip()
-    reopenable = reset_request.status == "expired" or (
-        reset_request.status == "approved"
-        and current_expires_at
-        and current_expires_at <= now_datetime.strftime("%Y-%m-%d %H:%M:%S")
-    )
+    reopenable = password_reset_can_reopen(reset_request)
     expected_status = reset_request.status
     if (action == "approve" and reset_request.status != "pending") or (
         action == "reopen" and not reopenable
@@ -1073,7 +1079,7 @@ def open_password_reset_claim_window(
             detail=(
                 "仅待审核申请可以批准"
                 if action == "approve"
-                else "仅已过期的申请可以重新开放改密时限"
+                else "该申请已失效；仅未被后续改密取代的超时申请可以重新开放"
             ),
         )
     review_comment = payload.review_comment.strip()
@@ -1707,6 +1713,7 @@ def password_reset_request_to_out(
         factory_id=reset_request.factory_id,
         department=reset_request.department,
         status=output_status,
+        can_reopen=password_reset_can_reopen(reset_request) and bool(user and user.status == "active"),
         reviewer_user_id=reset_request.reviewer_user_id,
         review_comment=reset_request.review_comment,
         notification_id=reset_request.notification_id,

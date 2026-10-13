@@ -52,8 +52,8 @@ describe('supplier management route scope', () => {
     }
     api.getMe.mockResolvedValue(user); useAuthStore().applySession(user)
     await router.replace('/carton-supplier-management?factory=huaxing')
-    expect(router.currentRoute.value.name).toBe('carton-supplier-management')
-    expect(router.currentRoute.value.meta.permissionDepartment).toBeUndefined()
+    expect(router.currentRoute.value.name).toBe('carton-procurement')
+    expect(router.currentRoute.value.query).toMatchObject({ factory: 'huaxing', tab: 'receipts', receipt_page: 'supplier' })
     expect(router.currentRoute.value.meta.strictPermissions).toBe(true)
     expect(useAuthStore().can('carton_procurement:read', 'huaxing', department)).toBe(true)
     expect(useAuthStore().can('carton_procurement:read', 'huadeng', department)).toBe(false)

@@ -1,0 +1,49 @@
+[
+  {
+    "id": "injection.remaining_shots",
+    "module_id": "injection-scheduling",
+    "title": "欠数怎么算",
+    "kind": "field",
+    "audience": "internal",
+    "route_names": [
+      "injection-scheduling"
+    ],
+    "factory_ids": [
+      "huaxing",
+      "huadeng",
+      "huakang-a",
+      "huakang-b"
+    ],
+    "anchor_id": "injection.remaining_shots",
+    "field_keys": [
+      "remaining_shots",
+      "allocation_mode"
+    ],
+    "summary": "尚需完成的啤数，顺序啤数和同啤产物有不同口径。",
+    "content": "SEQUENTIAL_SHOTS：已啤=期初+已上报；有符号欠数=计划+补数调整−期初−已上报。显示欠数最低为零，超产仍单独记录。计划缺失时欠数未知，不是零。\nCO_OUTPUT_UNITS：欠良品件=max(0,需求良品−累计良品)，欠啤数=向上取整(欠良品件÷有效每啤出件)。有效出件缺失或不大于零时不能给有效啤数。同啤产物组按实际产品归集，再取所需啤数最大值，不机械相加。\n每小时目标=日目标÷基准小时（默认24）；纯生产小时=欠啤÷每小时目标，不能当最终交期。料重kg=欠啤×每啤净重g÷1000×(1+附加系数)，默认附加0.01；加工金额=欠啤×单价。缺参数保留未知。\n原比例、原 AT 查找值是未解释的辅助原值；原周序号差明确不是检修周期。当前助手没有读你的订单，具体数字需你主动提供。",
+    "steps": [
+      {
+        "title": "打开计划表",
+        "description": "定位计划表的欠数字段；有未保存编辑时，请先处理原页面提示。",
+        "anchor_id": "injection.remaining_shots",
+        "precondition": "已选择支持的厂区，且无未保存修改或忙碌任务",
+        "completion": "欠数列可见；不会修改计划或报工"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/services/injection_scheduling/calculations.py",
+        "symbol": "quantities",
+        "sha256": "f72706a7b992e2f3a1b704fa18479d93a4c980e35a7ba81075c0f07ddfe786c5"
+      },
+      {
+        "path": "backend/app/services/injection_scheduling/field_registry.py",
+        "symbol": "FIELDS",
+        "sha256": "f466a1c3fd614bafcf19e590ac76c994ee0e23fbbd322ae23138a943689727bd"
+      }
+    ],
+    "knowledge_version": "2026.09.29-v1",
+    "verified_commit": "19332e167e0b990fb0900c868ba0620204f9bd26",
+    "status": "verified"
+  }
+]

@@ -7,6 +7,41 @@ BASE = "/api/carton-supplier/carton-mark/assets"
 SCOPE = {"factory_id": "huaxing"}
 
 
+def test_multi_contract_source_hides_unowned_links_and_revokes_document_access(monkeypatch):
+    from test_molding_sample_api import login_as
+    from test_carton_supplier_portal import supplier_login
+    from test_carton_procurement_api import _order_payload
+    with make_client(monkeypatch) as client:
+        order = setup_portal(client)
+        login_as(client, "admin")
+        other = client.post("/api/carton-procurement/orders", json={**_order_payload(), "contract_no": "PRIVATE-CONTRACT"})
+        assert other.status_code == 201, other.text
+        from app.db import SessionLocal
+        from app.models.carton_mark import CartonMarkAsset
+        with SessionLocal() as db:
+            content = add_asset(db, "shared-original", "")
+            db.commit()
+        binding_url = "/api/carton-mark/assets/shared-original/binding"
+        bound = client.put(binding_url, params=SCOPE, json={"order_ids": [order["id"], other.json()["id"]], "revision": 1})
+        assert bound.status_code == 200, bound.text
+        supplier_login(client)
+        result = client.get(BASE, params=SCOPE)
+        assert result.status_code == 200, result.text
+        assert result.json()[0]["contract_number"] == order["contract_no"]
+        assert [row["id"] for row in result.json()[0]["orders"]] == [order["id"]]
+        assert "PRIVATE-CONTRACT" not in result.text and other.json()["id"] not in result.text
+        assert "bound_order_ids" not in result.text
+        assert client.get(BASE + "/shared-original/document", params=SCOPE).content == content
+        login_as(client, "admin")
+        narrowed = client.put(binding_url, params=SCOPE, json={"order_ids": [other.json()["id"]], "revision": 2})
+        assert narrowed.status_code == 200, narrowed.text
+        supplier_login(client)
+        assert client.get(BASE, params=SCOPE).json() == []
+        assert client.get(BASE + "/shared-original/document", params=SCOPE).status_code == 404
+        with SessionLocal() as db:
+            assert db.get(CartonMarkAsset, "shared-original").content == content
+
+
 def add_asset(db, key, contract, *, factory="huaxing", order_id=None, kind="pdf"):
     from app.models.carton_mark import CartonMarkAsset
     content = b"%PDF-1.4 " + key.encode() if kind == "pdf" else key.encode()

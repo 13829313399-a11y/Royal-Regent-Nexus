@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import axios from "axios";
 import {
   X,
   RefreshCw,
@@ -103,31 +104,55 @@ const commandText = (status: string) =>
   })[status] || "结果待确认";
 let timer: ReturnType<typeof setInterval> | undefined;
 let disposed = false;
+let activeRequest: AbortController | undefined;
 async function refresh() {
-  if (loading.value) return;
+  if (loading.value || !props.open || disposed) return;
+  const request = new AbortController();
+  activeRequest = request;
   loading.value = true;
   try {
     const response = await http.get(
       `/three-d-printing/printers/${props.id}/timeline`,
-      { params: { factory_id: "huakang-a" } },
+      { params: { factory_id: "huakang-a" }, signal: request.signal },
     );
-    if (!disposed) {
+    if (!disposed && activeRequest === request && !request.signal.aborted) {
       data.value = response.data;
       error.value = "";
     }
   } catch (e) {
-    if (!disposed) error.value = getApiErrorMessage(e);
+    if (!disposed && activeRequest === request && !request.signal.aborted) {
+      const timedOut = axios.isAxiosError(e) && (
+        ["ECONNABORTED", "ETIMEDOUT"].includes(e.code || "") ||
+        [408, 504].includes(e.response?.status || 0)
+      );
+      error.value = timedOut ? "详情请求超时，请稍后刷新" : getApiErrorMessage(e);
+    }
   } finally {
-    loading.value = false;
+    if (activeRequest === request) {
+      activeRequest = undefined;
+      loading.value = false;
+    }
   }
 }
-onMounted(() => {
+function startRefreshing() {
+  clearInterval(timer);
   void refresh();
   timer = setInterval(() => void refresh(), 15000);
+}
+function stopRefreshing() {
+  clearInterval(timer);
+  activeRequest?.abort();
+  activeRequest = undefined;
+  loading.value = false;
+}
+onMounted(() => { if (props.open) startRefreshing(); });
+watch(() => props.open, open => {
+  if (open) startRefreshing();
+  else stopRefreshing();
 });
 onBeforeUnmount(() => {
   disposed = true;
-  clearInterval(timer);
+  stopRefreshing();
 });
 </script>
 <template>
@@ -174,7 +199,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <p v-if="error" role="alert" class="error-message">
-          详情加载失败：{{ error }}，可点击刷新重试。
+          详情加载失败：{{ error }}。
         </p>
         <section class="status-panel" :class="`status-panel--${stateTone}`">
           <span class="eyebrow">当前状态</span>

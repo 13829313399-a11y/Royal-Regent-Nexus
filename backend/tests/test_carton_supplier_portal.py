@@ -115,7 +115,8 @@ def _dongkang_delivery_file(order, *, missing_item=False, destination="华兴", 
     return output.getvalue()
 
 
-def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatch):
+@pytest.mark.parametrize("sample_purpose", [None, "", "打板", "客户打板确认"])
+def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatch, sample_purpose):
     from openpyxl import Workbook
     with make_client(monkeypatch) as client:
         setup_portal(client)
@@ -156,7 +157,9 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
                 "difference_reason": ""}
             if line["item_no"] == "SAMPLE-BOX":
                 data.update(no_order_decision="SAMPLE", customer_code="DICKIE",
-                    sample_purpose="客户打板确认", requested_by="纸箱部")
+                    requested_by="纸箱部")
+                if sample_purpose is not None:
+                    data["sample_purpose"] = sample_purpose
             if line["item_no"] == "WRONG-BOX":
                 data.update(no_order_decision="WRONG_DELIVERY", rejected_quantity=quantity,
                     location_allocations=[], difference_reason="供应商送错纸品")
@@ -167,6 +170,11 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
             next(item["id"] for item in shipment["lines"] if item["item_no"] == "SAMPLE-BOX") else line for line in lines])
         denied = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=unsafe)
         assert denied.status_code == 422, denied.text
+        for required_field in ("customer_code", "requested_by"):
+            incomplete = dict(payload, lines=[dict(line, **{required_field: ""})
+                if line.get("no_order_decision") == "SAMPLE" else line for line in lines])
+            denied = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=incomplete)
+            assert denied.status_code == 422, denied.text
         posted = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=payload)
         assert posted.status_code == 200, posted.text
         assert posted.json()["status"] == "RECEIVED"
@@ -178,7 +186,9 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
             receipt_lines = db.scalars(select(CartonReceiptLine).where(CartonReceiptLine.receipt_id == posted.json()["receipt_id"])).all()
             assert {line.source_type for line in receipt_lines} == {"FORMAL_ORDER", "AD_HOC"}
             assert len(receipt_lines) == 2
-            assert any(line.source_type == "AD_HOC" and line.order_line_id is None and "客户打板确认" in line.feedback_note for line in receipt_lines)
+            sample_line = next(line for line in receipt_lines if line.source_type == "AD_HOC")
+            assert sample_line.order_line_id is None
+            assert f"用途：{sample_purpose or '未填写'}；需求人：纸箱部" in sample_line.feedback_note
             movements = db.scalars(select(CartonInventoryMovement).where(CartonInventoryMovement.source_id == posted.json()["receipt_id"])).all()
             assert len(movements) == 2
             receipt = db.get(CartonReceipt, posted.json()["receipt_id"])

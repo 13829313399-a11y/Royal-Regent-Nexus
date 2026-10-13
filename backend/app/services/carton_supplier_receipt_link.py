@@ -149,6 +149,7 @@ def associate(db, user, shipment_id, payload):
     shipment = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == payload.factory_id, SupplierShipment.id == shipment_id))
     if shipment is None:
         raise HTTPException(404, "未找到此厂区的发货单")
+    portal.ensure_shipment_customers(db, user, shipment)
     digest = hashlib.sha256((shipment_id + "|" + portal.fingerprint(payload)).encode()).hexdigest()
     event_id = "CAE-RECEIPT-LINK-" + hashlib.sha256(f"{payload.factory_id}|{user.id}|{payload.request_id}".encode()).hexdigest()
     previous = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.id == event_id,

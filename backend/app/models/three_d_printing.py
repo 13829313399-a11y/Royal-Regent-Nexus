@@ -596,6 +596,7 @@ class ThreeDPrintingPrinterStateEvent(Base):
         ForeignKeyConstraint(["printer_id", "factory_id"], ["three_d_printing_printers.id", "three_d_printing_printers.factory_id"], name="fk_3d_event_printer", ondelete="RESTRICT"),
         ForeignKeyConstraint(["connector_instance_id", "factory_id"], ["three_d_printing_connector_instances.id", "three_d_printing_connector_instances.factory_id"], name="fk_3d_event_connector", ondelete="RESTRICT"),
         Index("ix_3d_event_printer_observed", "factory_id", "printer_id", "observed_at"),
+        Index("ix_3d_event_printer_received", "factory_id", "printer_id", "received_at"),
         Index("ix_3d_event_analytics", "factory_id", "machine_no", "observed_at",
               postgresql_include=["state", "error_code", "temperatures_json"]),
         CheckConstraint("sequence >= 0", name="ck_3d_event_sequence"),

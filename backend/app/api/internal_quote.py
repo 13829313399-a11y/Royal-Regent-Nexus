@@ -1,3 +1,4 @@
+import json
 from urllib.parse import quote as url_quote
 from typing import Literal
 
@@ -15,6 +16,7 @@ from app.schemas.internal_quote import (
     InternalQuoteBatchCopyRequest,
     InternalQuoteBatchProductOut,
     InternalQuoteBusinessOwnerOut,
+    InternalQuoteWorkflowMode,
     InternalQuoteCloneRequest,
     InternalQuoteCostPreviewOut,
     InternalQuoteCostPreviewRequest,
@@ -59,12 +61,15 @@ from app.services.auth import AuthContext, get_current_user
 from app.schemas.internal_quote_alternatives import AlternativeCopyRequest, AlternativeSelectionRequest, AlternativeArchiveRequest, AlternativeSyncRequest
 from app.services.internal_quote_packaging_copy import PackagingCopyRequest, preview_packaging_copy, apply_packaging_copy
 from app.services.internal_quote_sync import sync_options, preview_sync, apply_sync
+from app.schemas.internal_quote_alternatives import SeriesExportRequest
+from app.services.internal_quote_series_export import export_series
 from app.services.internal_quote_alternatives import (
     list_alternatives, copy_alternative, select_alternative, archive_alternative, report_alternative, issue_alternative,
 )
 from app.services.internal_quote import (
     add_quote_participation,
     archive_quote,
+    restore_quote,
     clone_quote,
     copy_batch_baseline_to_product,
     create_quote,
@@ -209,6 +214,15 @@ def post_alternative_reported(quote_id: str, payload: InternalQuoteRevisionReque
 def post_direct_issue(quote_id: str, payload: InternalQuoteRevisionRequest, request: Request,
                       db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     return issue_alternative(db, quote_id, payload, current_user, request)
+
+
+@router.post("/{quote_id}/series-export")
+def post_series_export(quote_id: str, payload: SeriesExportRequest, request: Request,
+                       db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    content, file_name, sha256 = export_series(db, quote_id, payload, current_user, request)
+    return Response(content=content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
+                             "X-Content-SHA256": sha256})
 customer_price_artifact_router = APIRouter(
     prefix="/api/customer-price/internal-quote-artifacts",
     tags=["customer-price-internal-quote-artifacts"],
@@ -268,10 +282,12 @@ def get_history_products(
 @router.get("/business-owners", response_model=list[InternalQuoteBusinessOwnerOut])
 def get_internal_quote_business_owners(
     factory_id: str = Query(min_length=1, max_length=64),
+    workflow_mode: InternalQuoteWorkflowMode = "section_review",
+    quote_id: str | None = Query(default=None, min_length=1, max_length=96),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return list_business_owners(db, current_user, factory_id)
+    return list_business_owners(db, current_user, factory_id, workflow_mode=workflow_mode, quote_id=quote_id)
 
 
 @router.get("/customers", response_model=list[InternalQuoteCustomerOut])
@@ -550,6 +566,14 @@ def post_internal_quote_archive(
     return archive_quote(db, quote_id, payload, current_user, request)
 
 
+@router.post("/{quote_id}/restore", response_model=InternalQuoteOut)
+def post_internal_quote_restore(
+    quote_id: str, payload: InternalQuoteArchiveRequest, request: Request,
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    return restore_quote(db, quote_id, payload, current_user, request)
+
+
 @router.put("/{quote_id}/sections/save-all", response_model=InternalQuoteWholeProductSaveOut)
 def put_internal_quote_sections_save_all(
     quote_id: str,
@@ -772,9 +796,19 @@ async def post_internal_quote_import_preview(
     import_type: str,
     request: Request,
     file: UploadFile = File(...),
+    draft_payload: str | None = Form(default=None, max_length=2_000_000),
+    draft_revision: int | None = Form(default=None, ge=1),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    draft = None
+    if draft_payload is not None:
+        try:
+            draft = json.loads(draft_payload)
+        except (ValueError, RecursionError) as error:
+            raise HTTPException(400, "当前表单格式无效，请重新选择文件") from error
+        if not isinstance(draft, dict) or draft_revision is None:
+            raise HTTPException(400, "导入预览需要完整的表单与版本号")
     content = await file.read()
     return await run_in_threadpool(
         create_import_preview,
@@ -785,6 +819,8 @@ async def post_internal_quote_import_preview(
         content,
         current_user,
         request,
+        draft_payload=draft,
+        draft_revision=draft_revision,
     )
 
 
@@ -869,6 +905,7 @@ async def post_internal_quote_product_image(
     quote_id: str,
     request: Request,
     file: UploadFile = File(...),
+    revision: int | None = Form(default=None, ge=1),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -881,6 +918,7 @@ async def post_internal_quote_product_image(
         content,
         current_user,
         request,
+        revision=revision,
     )
 
 

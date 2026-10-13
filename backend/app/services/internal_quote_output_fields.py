@@ -130,5 +130,9 @@ def source_groups(sections, region_code=""):
                     add(row, child, category="装配工序")
         elif code == "molding":
             for row, path in rows("injection_lines"):
+                # Linked names are owned by Engineering and would be overwritten
+                # by its projection on save. Edit the Engineering source instead.
+                if row.get("engineering_source_key") and row.get("engineering_sync_disabled") is not True:
+                    continue
                 add(row, path, category="注塑")
     return groups

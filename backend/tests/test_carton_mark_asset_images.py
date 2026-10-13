@@ -85,7 +85,7 @@ def test_batch_photos_preserve_originals_dedup_preview_and_optional_order_bindin
         assert client.get(url, params={"factory_id": "huaxing"}).headers["content-disposition"].startswith("attachment;")
         assert client.get(url, params={"factory_id": "huakang-a"}).status_code == 404
         repeat = upload(client, [("4500222793_正唛.jpg", jpg)])[0]
-        assert repeat["status"] == "duplicate" and repeat["asset"]["id"] == image["id"]
+        assert repeat["status"] == "created" and repeat["asset"]["id"] != image["id"]
         unbound = result[2]["asset"]
         bound = client.put(f"/api/carton-mark/assets/{unbound['id']}/binding", params={"factory_id": "huaxing"},
                           json={"contract_number": "4500222793", "revision": 1})

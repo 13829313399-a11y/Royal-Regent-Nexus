@@ -38,6 +38,7 @@ export interface ManualMoldingSampleLineDraft {
   pigment_no: string
   quantity: string
   shoot_qty: string
+  quote_target_daily_qty: string
   required_material_kg: string
   required_date: string
   notes: string
@@ -96,6 +97,7 @@ const manualLineKeys = [
   'pigment_no',
   'quantity',
   'shoot_qty',
+  'quote_target_daily_qty',
   'required_material_kg',
   'required_date',
   'notes',
@@ -129,6 +131,7 @@ export function createManualMoldingSampleLineDraft(
     pigment_no: input.pigment_no ?? '',
     quantity: input.quantity ?? '',
     shoot_qty: input.shoot_qty ?? '',
+    quote_target_daily_qty: input.quote_target_daily_qty ?? '',
     required_material_kg: input.required_material_kg ?? '',
     required_date: input.required_date ?? '',
     notes: input.notes ?? '',
@@ -317,6 +320,11 @@ export function buildManualMoldingSampleCreateRequest(
     if (parseShootQty(line.shoot_qty) <= 0) {
       errors.push(`请填写第 ${sourceIndex} 行啤数，且必须大于 0`)
     }
+    const quoteTarget = Number(trimText(line.quote_target_daily_qty))
+    if (trimText(line.quote_target_daily_qty)
+      && (!Number.isInteger(quoteTarget) || quoteTarget <= 0 || quoteTarget > 2147483647)) {
+      errors.push(`第 ${sourceIndex} 行报价目标须为 1–2147483647 的整数（啤/日），未报价可留空`)
+    }
     if (trimText(line.required_material_kg) && parseOptionalNumber(line.required_material_kg) === null) {
       errors.push(`第 ${sourceIndex} 行所需用量必须为数字`)
     }
@@ -381,6 +389,7 @@ export function buildManualMoldingSampleCreateRequest(
           pigment_no: trimText(line.pigment_no),
           quantity: trimText(line.quantity),
           shoot_qty: parseShootQty(line.shoot_qty),
+          quote_target_daily_qty: trimText(line.quote_target_daily_qty) ? Number(line.quote_target_daily_qty) : null,
           gross_weight_g: null,
           required_material_kg: parseOptionalNumber(line.required_material_kg),
           mold_return_time: trimText(line.mold_return_time),

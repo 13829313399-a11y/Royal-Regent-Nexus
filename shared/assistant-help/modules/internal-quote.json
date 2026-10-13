@@ -1,0 +1,39 @@
+[
+  {
+    "id": "internal-quote.overview",
+    "module_id": "internal-quote",
+    "title": "先确认报价版本，再看流程",
+    "kind": "overview",
+    "audience": "internal",
+    "route_names": [
+      "internal-quote-desk-home",
+      "internal-quote-collaboration",
+      "internal-quote-summary",
+      "internal-quote-export-summary"
+    ],
+    "factory_ids": [],
+    "anchor_id": "internal-quote.overview",
+    "field_keys": [],
+    "summary": "不同 module_version 的审核流程不同。",
+    "content": "当前代码明确区分 v4、整单审核和分段审核。v4 提示无需审核，资料完整且核价通过后可直接输出；已输出版本应复制新版修改。整单审核版本不接受分段提交、分段审核或分段重开。不要根据“汇总与放行”路由名推断所有版本流程。未填完的尺寸或料价可保存为待补草稿，不能作为可输出的有效报价。工程部的未保存状态包含五金、辅助材料和模具，未导入模具不代表整个工程部没有修改。无需先保存即可上传报价单预览；确认导入只替换模板对应区域，并保存其他已填内容，取消不修改表单。模具导入还会把模具总价默认填入生产模具费用中的“模具费用”，可以手动修改；普通保存保留手改值，明确重新导入时按新总价更新，其他费用不变。预览后若又修改表单，应重新选择文件预览。当前助手没有读取你的报价单，无法确认它的版本、金额或审批进度；请在原单据核对。 整单归档会暂停全部产品和方案版本的编辑、输出；有归档权限的业务主管可从首页或方案面板填写原因后恢复整单。单独归档此版只影响该版本；恢复整单不会自动恢复单独归档的版本。恢复保持原审批、输出状态，已输出版本不能直接修改。 工程模具或配件变化后，啤机部须保存或按当前公式重算再输出；待同步时旧啤机金额不作为新配件金额展示。待审核、归档及已输出版本保留已保存明细，历史已输出文件保持不变。 料价、车衣和车发不计算税点，成本仍计入报价；旧公式报价须按当前公式重算后重新输出。 车衣和车发分别计入一次；旧车缝内车发与独立车发按各自实际成本汇总，不从车衣扣除独立车发。吸塑按填写的业务分类计价，不因五金或电子名称含“吸塑”而重复增加成本。 新建的直接输出报价，业务负责人须为当前厂区具备报价编辑权限的启用业务账号，普通业务人员也可选择；选择负责人不会授予审核权限。历史整单审核和分段审核报价仍要求负责人具备对应审核资格，修改负责人时按原报价流程筛选。",
+    "steps": [
+      {
+        "title": "查看当前工作区域",
+        "description": "不同 module_version 的审核流程不同。",
+        "anchor_id": "internal-quote.overview",
+        "precondition": "页面可见且目标已注册",
+        "completion": "已定位；任何业务写入仍需你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/services/internal_quote.py",
+        "symbol": "_ensure_section_review_workflow",
+        "sha256": "2d3aee66bb4ca3e3a26c0aa0f7a3b696514e7c3ad589a184bb934019048c50f8"
+      }
+    ],
+    "knowledge_version": "2026.10.12-v2",
+    "verified_commit": "working-tree:d24c8e4ada9447efede8cdbc01278474fd72cc36",
+    "status": "verified"
+  }
+]

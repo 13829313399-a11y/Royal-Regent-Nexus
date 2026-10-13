@@ -127,6 +127,8 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "customer_price:settings_read",
                         "customer_order:audit_read",
                         "customer_order:read",
+                        "fabric_operations:read",
+                        "fabric_warehouse:read",
                         "injection_scheduling:read",
                         "internal_quote:baseline_read",
                         "internal_quote:read",
@@ -140,6 +142,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "molding_sample:read",
                         "qc_inspection:audit_read",
                         "qc_inspection:read",
+                        "semi_operations:read",
                         "system:audit_read",
                         "system:permission_catalog_read",
                     }
@@ -1811,8 +1814,9 @@ def test_registration_rejects_position_longer_than_storage_limit(monkeypatch):
             },
         )
 
-        assert response.status_code == 400
-        assert response.json()["detail"] == "职位不能超过 128 个字符"
+        assert response.status_code == 422
+        assert response.json()["code"] == "AUTH_VALIDATION_ERROR"
+        assert response.json()["field_errors"][0]["field"] == "position"
 
 
 def test_register_flushes_new_user_before_registration_request(monkeypatch):
@@ -1844,7 +1848,10 @@ def test_register_flushes_new_user_before_registration_request(monkeypatch):
         )
 
         assert register_response.status_code == 200
-        assert flush_new_sets[0] == {"AuthUser"}
+        user_flush = next(i for i, pending in enumerate(flush_new_sets) if "AuthUser" in pending)
+        request_flush = next(i for i, pending in enumerate(flush_new_sets) if "AuthRegistrationRequest" in pending)
+        assert flush_new_sets[user_flush] == {"AuthUser"}
+        assert user_flush < request_flush
 
 
 def test_password_reset_request_creates_admin_system_notification(monkeypatch):

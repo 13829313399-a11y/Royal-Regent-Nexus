@@ -63,6 +63,8 @@ class CartonSupplier(Base):
 class CartonOrder(Base):
     __tablename__ = "carton_orders"
     __table_args__ = (
+        CheckConstraint("net_weight_kg IS NULL OR net_weight_kg >= 0", name="ck_carton_net_weight"),
+        CheckConstraint("gross_weight_kg IS NULL OR (gross_weight_kg >= 0 AND (net_weight_kg IS NULL OR gross_weight_kg >= net_weight_kg))", name="ck_carton_gross_weight"),
         UniqueConstraint("factory_id", "order_no", name="uq_carton_order_factory_no"),
         UniqueConstraint("id", "factory_id", name="uq_carton_order_id_factory"),
         CheckConstraint("(quantity_basis = 'CALCULATED' AND product_order_quantity IS NOT NULL AND product_order_quantity > 0) OR (quantity_basis = 'EXPLICIT' AND (product_order_quantity IS NULL OR product_order_quantity > 0))", name="ck_carton_order_product_quantity"),
@@ -87,6 +89,8 @@ class CartonOrder(Base):
     contract_no: Mapped[str] = mapped_column(String(128), index=True)
     item_no: Mapped[str] = mapped_column(String(128), index=True)
     product_name: Mapped[str] = mapped_column(String(255), default="")
+    net_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    gross_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     quantity_basis: Mapped[str] = mapped_column(String(16), default="CALCULATED", server_default="CALCULATED")
     product_order_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     order_date: Mapped[str] = mapped_column(String(10), index=True)
@@ -111,6 +115,8 @@ class CartonOrder(Base):
 class CartonOrderLine(Base):
     __tablename__ = "carton_order_lines"
     __table_args__ = (
+        CheckConstraint("net_weight_kg IS NULL OR net_weight_kg >= 0", name="ck_carton_line_net_weight"),
+        CheckConstraint("gross_weight_kg IS NULL OR (gross_weight_kg >= 0 AND (net_weight_kg IS NULL OR gross_weight_kg >= net_weight_kg))", name="ck_carton_line_gross_weight"),
         UniqueConstraint("id", "factory_id", name="uq_carton_order_line_id_factory"),
         UniqueConstraint("order_id", "line_no", name="uq_carton_order_line_order_no"),
         ForeignKeyConstraint(
@@ -147,6 +153,8 @@ class CartonOrderLine(Base):
     dimension_unit: Mapped[str] = mapped_column(String(16), default="")
     # 兼容历史数据库列名；自迁移 20260818_0079 起保存“每箱个数”。
     usage_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    net_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    gross_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     required_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4))
     unit: Mapped[str] = mapped_column(String(32))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=Decimal(0))

@@ -294,8 +294,8 @@ const rr2T3Fields = [
 ] as const
 const rr2T4Fields = [
   ['tax13', '含税13%类成本', null], ['labor13', '人工类13%', null], ['carton', '纸箱类', null],
-  ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类13%', 11.5],
-  ['sewcloth13', '车衣物料退税（仅华康C/D）', null], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
+  ['tax1', '含税1%', .99], ['slush3', '搪胶类3%', 3], ['sewhair13', '车发类（不计税）', null],
+  ['sewcloth13', '车衣类（不计税）', null], ['suction6', '吸塑类6%', 6], ['freight9', '运费类9%', 8.26],
   ['tax13b', '含税13%类', 11.5],
 ] as const
 
@@ -498,6 +498,8 @@ function toQuote(
     currentFormulaVersion: extras.summary?.current_formula_version || source.formula_version,
     moduleVersion: source.module_version,
     headerRevision: source.header_revision,
+    versionArchived: source.version_archived,
+    documentArchive: source.document_archive,
     finalReleaseStatus: source.final_release_status,
     factoryPriceHkd: numberValue(extras.summary?.factory_price_hkd),
     summaryComponents: Object.fromEntries(Object.entries(extras.summary?.components_hkd ?? {}).map(([key, value]) => [key, numberValue(value)])),
@@ -578,7 +580,7 @@ function mutationMessage(error: unknown) {
     return '网络中断或请求超时，服务端处理结果尚未确认。本页输入已保留，请先重新读取报价核对，再决定是否重试。'
   }
   const message = getApiErrorMessage(error)
-  if (responseStatus(error) !== 409) return message
+  if (responseStatus(error) !== 409 || responseCurrentRevision(error) === undefined) return message
   const current = responseCurrentRevision(error)
   return `${message}${current ? `（服务端当前 revision ${current}）` : ''}。当前表单内容未覆盖他人修改，请重新读取后再提交。`
 }
@@ -1189,7 +1191,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         return result
       } catch (error) {
         const message = mutationMessage(error)
-        if (responseStatus(error) === 409) this.conflictMessage = message
+        if (responseStatus(error) === 409 && responseCurrentRevision(error) !== undefined) this.conflictMessage = message
         this.errorMessage = message
         throw new Error(message)
       } finally {
@@ -1323,10 +1325,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       )
       return this.loadBatchProducts(targetQuoteId)
     },
-    async uploadProductImage(quoteId: string, file: File) {
+    async uploadProductImage(quoteId: string, file: File, revision?: number) {
       this.fileBusy = true
       try {
-        const result = await internalQuoteApi.uploadProductImage(quoteId, file)
+        const result = await internalQuoteApi.uploadProductImage(quoteId, file, revision ?? this.getQuoteById(quoteId)?.headerRevision)
         await this.refreshAfterMutation(quoteId)
         return result
       } catch (error) {
@@ -1468,7 +1470,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         return { quote: refreshed ?? this.getQuoteById(quoteId), sections: savedSections }
       } catch (error) {
         const message = mutationMessage(error)
-        if (responseStatus(error) === 409) this.conflictMessage = message
+        if (responseStatus(error) === 409 && responseCurrentRevision(error) !== undefined) this.conflictMessage = message
         this.errorMessage = message
         throw new Error(message)
       } finally {
@@ -1502,6 +1504,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     archiveQuote(quoteId: string, revision: number, reason: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.archiveQuote(quoteId, revision, reason))
     },
+    restoreQuote(quoteId: string, revision: number, reason: string) {
+      return this.executeMutation(quoteId, () => internalQuoteApi.restoreQuote(quoteId, revision, reason))
+    },
     syncReferenceSnapshot(quoteId: string, revision: number, reason: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.syncReferenceSnapshot(quoteId, revision, reason))
     },
@@ -1521,11 +1526,11 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         material_prices: materialPrices,
       }))
     },
-    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File) {
+    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File, draft?: { revision: number; payload: Record<string, unknown> }) {
       this.fileBusy = true
       this.errorMessage = ''
       try {
-        return await internalQuoteApi.previewImport(quoteId, importType, file)
+        return await internalQuoteApi.previewImport(quoteId, importType, file, draft)
       } catch (error) {
         const wrapped = mutationError(error)
         this.errorMessage = wrapped.message
@@ -1593,6 +1598,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     directIssue(quoteId: string, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.directIssue(quoteId, revision))
+    },
+    async exportSeries(quoteId: string, products: Array<{ quote_id: string; revision: number }>, fileName: string) {
+      const blob = await this.executeMutation(quoteId, () => internalQuoteApi.exportSeries(quoteId, products))
+      triggerDownload(blob as Blob, fileName)
     },
     createExport(quoteId: string) {
       return this.executeMutation(quoteId, () => internalQuoteApi.createExport(quoteId))

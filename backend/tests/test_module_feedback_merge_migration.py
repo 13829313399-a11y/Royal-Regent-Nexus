@@ -17,11 +17,12 @@ from test_module_feedback import create_payload, png, user
 
 
 BACKEND = Path(__file__).resolve().parents[1]
-HEAD = "20261005_0136"
 MERGE = "20261005_0131"
+ASSISTANT_MERGE = "20261008_0140"
+RELEASE_MERGE = "20261008_0147"
 
 
-@pytest.mark.parametrize("start", ["20260929_0130", "20261005_0120"])
+@pytest.mark.parametrize("start", ["20260929_0130", "20261005_0120", "20260929_0131", "20261006_0139", "20261008_0140", "20261008_0146"])
 def test_both_branches_upgrade_to_single_head_preserving_existing_rows(tmp_path, start):
     database = tmp_path / (start + ".db")
     env = dict(os.environ, DATABASE_URL="sqlite:///" + database.as_posix(), SEED_ADMIN_PASSWORD="",
@@ -34,7 +35,12 @@ def test_both_branches_upgrade_to_single_head_preserving_existing_rows(tmp_path,
         assert result.returncode == 0, result.stderr
 
     script = ScriptDirectory.from_config(Config(str(BACKEND / "alembic.ini")))
-    assert script.get_heads() == [HEAD]
+    heads = script.get_heads()
+    assert len(heads) == 1
+    head = heads[0]
+    assert ASSISTANT_MERGE in {revision.revision for revision in script.walk_revisions()}
+    assert set(script.get_revision(ASSISTANT_MERGE).down_revision) == {"20260929_0131", "20261006_0139"}
+    assert set(script.get_revision(RELEASE_MERGE).down_revision) == {ASSISTANT_MERGE, "20261008_0146"}
     assert set(script.get_revision(MERGE).down_revision) == {"20260929_0130", "20261005_0120"}
     assert script.get_revision("20261005_0120").down_revision == "20260924_0119"
     upgrade(start)
@@ -45,6 +51,12 @@ def test_both_branches_upgrade_to_single_head_preserving_existing_rows(tmp_path,
                 values[name] = 0 if "INT" in kind else ""
         connection.execute('INSERT INTO auth_users (' + ','.join('"' + name + '"' for name in values) + ') VALUES (' +
             ','.join('?' for _ in values) + ')', tuple(values.values()))
+        if start in {"20260929_0131", ASSISTANT_MERGE}:
+            connection.execute("""INSERT INTO nexus_assistant_sessions
+                (id, owner_user_id, employment_epoch, create_request_id, title, revision,
+                 deletion_state, created_at, updated_at, budget_tokens, budget_unknown)
+                VALUES ('preserve-session', 'preserve-account', 1, 'preserve-request',
+                        'Existing private conversation', 1, 'active', 1, 1, 0, 0)""")
     if start == "20261005_0120":
         engine = create_engine("sqlite:///" + database.as_posix())
         with Session(engine) as db:
@@ -59,7 +71,7 @@ def test_both_branches_upgrade_to_single_head_preserving_existing_rows(tmp_path,
     upgrade("head")
     upgrade("head")
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [(HEAD,)]
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [(head,)]
         for table, (columns, rows) in before.items():
             quoted = ','.join('"' + name + '"' for name in columns)
             after = connection.execute('SELECT ' + quoted + ' FROM "' + table + '"').fetchall()

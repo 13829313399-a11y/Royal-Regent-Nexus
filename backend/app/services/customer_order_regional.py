@@ -8,7 +8,7 @@ from openpyxl.utils.datetime import to_excel
 
 CUSTOMERS = {
     'huadeng': {'casdon', 'jakks', 'simba', 'spin', 'goliath'},
-    'huakang-d': {'index', 'jazwares', 'maxx', 'strottman', 'ubtech'},
+    'huakang-d': {'index', 'jazwares', 'maxx', 'strottman', 'ubtech', 'seasons'},
 }
 TARGET_TEMPLATE = 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3'
 CASDON_HEADERS = {

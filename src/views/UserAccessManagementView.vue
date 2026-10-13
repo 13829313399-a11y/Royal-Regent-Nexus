@@ -871,7 +871,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="iamx-access-page">
+  <section class="iamx-access-page" data-yl-help="identity-management.overview">
     <IamNavigation
       title="调整权限职位"
       subtitle="实际职位用于人员资料；权限职位由管理员主动选择，并固定继承代码定义的权限和范围。"

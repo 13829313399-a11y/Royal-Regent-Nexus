@@ -1,0 +1,607 @@
+{
+  "fixture_version": 1,
+  "synthetic": true,
+  "not_live_evidence": true,
+  "description": "三个拟新增窄工具DTO的合成业务样例，非现有API原始响应。语义依据实际源代码，数值/业务对象全部人工合成。消费者应把实际授权服务结果适配至本窄DTO或等价结构。",
+  "cases": [
+    {
+      "id": "work-scope-not-all-authorized-summary",
+      "synthetic": true,
+      "tool_name": "get_my_work",
+      "input": {
+        "factory_id": "huaxing",
+        "view": "todo"
+      },
+      "actor_fixture": {
+        "id": "fx-internal-user",
+        "audience": "internal",
+        "employment_epoch": 1,
+        "authorized_factory_ids": [
+          "huaxing",
+          "huakang-a",
+          "huadeng"
+        ]
+      },
+      "seed_authorized_rows": [
+        {
+          "id": "fx-work-hx-001",
+          "factory_id": "huaxing",
+          "state": "open",
+          "actionable": true,
+          "unread": false,
+          "info": false
+        },
+        {
+          "id": "fx-work-hx-002",
+          "factory_id": "huaxing",
+          "state": "in_progress",
+          "actionable": true,
+          "unread": true,
+          "info": false
+        },
+        {
+          "id": "fx-work-ha-001",
+          "factory_id": "huakang-a",
+          "state": "open",
+          "actionable": true,
+          "unread": true,
+          "info": false
+        },
+        {
+          "id": "fx-work-hd-info",
+          "factory_id": "huadeng",
+          "state": "open",
+          "actionable": false,
+          "unread": true,
+          "info": true
+        }
+      ],
+      "response_dto": {
+        "scope": {
+          "factory_id": "huaxing",
+          "scope_label": "华兴范围的我的待办",
+          "authorization": "current_user"
+        },
+        "as_of": "2026-10-12T08:00:00Z",
+        "data_mode": "synthetic",
+        "authorized_summary": {
+          "scope": {
+            "factory_id": null,
+            "scope_label": "全部当前授权厂区",
+            "authorization": "current_user"
+          },
+          "todo": 3,
+          "info_unread": 1
+        },
+        "filtered_total": 2,
+        "items": [
+          {
+            "id": "fx-work-hx-001",
+            "factory_id": "huaxing",
+            "state": "open",
+            "actionable": true,
+            "unread": false,
+            "info": false
+          },
+          {
+            "id": "fx-work-hx-002",
+            "factory_id": "huaxing",
+            "state": "in_progress",
+            "actionable": true,
+            "unread": true,
+            "info": false
+          }
+        ],
+        "next_cursor": null,
+        "coverage": {
+          "covered_labels": [
+            "啤办",
+            "内部报价",
+            "账号申请",
+            "供应商交付",
+            "身份事项"
+          ],
+          "not_integrated_labels": [
+            "3D",
+            "UV",
+            "喷油",
+            "订单中心",
+            "文件工具"
+          ]
+        },
+        "completeness": "complete_for_integrated_sources",
+        "unknown_fields": [],
+        "sources": [
+          {
+            "kind": "business",
+            "source_id": "fx-business-work:business:1",
+            "run_id": "fx-business-work",
+            "title": "合成业务快照",
+            "tool_name": "get_my_work",
+            "resources": [
+              {
+                "module_id": "work-center",
+                "resource_type": "work_item",
+                "resource_id": "fx-work-hx-001"
+              },
+              {
+                "module_id": "work-center",
+                "resource_type": "work_item",
+                "resource_id": "fx-work-hx-002"
+              }
+            ],
+            "scope": {
+              "factory_id": "huaxing",
+              "scope_label": "仅当前用户在指定厂区的授权范围",
+              "authorization": "current_user"
+            },
+            "as_of": "2026-10-12T08:00:00Z",
+            "data_mode": "synthetic",
+            "unknown_fields": []
+          }
+        ],
+        "actions": [
+          {
+            "type": "open_record",
+            "label": "打开华兴事项工作台",
+            "route_name": "notification-center",
+            "params": {},
+            "query": {
+              "factory": "huaxing"
+            },
+            "resource": {
+              "module_id": "work-center",
+              "resource_type": "work_item",
+              "resource_id": "fx-work-hx-001"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "filtered_total": 2,
+        "authorized_todo": 3,
+        "unread_does_not_define_todo": true,
+        "forbidden_operations": [
+          "patch_state",
+          "batch",
+          "approve"
+        ],
+        "all_business_modules_covered": false
+      },
+      "access_cases": [
+        {
+          "actor": "pure_supplier",
+          "allowed": false
+        },
+        {
+          "actor": "same_user_after_scope_revoked",
+          "allowed": false
+        }
+      ],
+      "acceptance": [
+        "E01",
+        "E02",
+        "E03",
+        "E10",
+        "E11"
+      ]
+    },
+    {
+      "id": "injection-waiting-vs-held-and-unknown",
+      "synthetic": true,
+      "tool_name": "get_injection_overview",
+      "input": {
+        "factory_id": "huaxing",
+        "question_kind": "waiting_material"
+      },
+      "actor_fixture": {
+        "id": "fx-internal-user",
+        "audience": "internal",
+        "employment_epoch": 1,
+        "permissions": [
+          "injection_scheduling:read"
+        ],
+        "authorized_factory_ids": [
+          "huaxing"
+        ]
+      },
+      "seed_rows": [
+        {
+          "id": "fx-demand-wait-1",
+          "factory_id": "huaxing",
+          "dispatch_state": "WAIT_MATERIAL",
+          "remaining_material_kg": 12.5,
+          "delivery_slack_hours": -2,
+          "forecast_unknown": false
+        },
+        {
+          "id": "fx-demand-wait-2",
+          "factory_id": "huaxing",
+          "dispatch_state": "WAIT_MATERIAL",
+          "remaining_material_kg": null,
+          "delivery_slack_hours": null,
+          "forecast_unknown": true
+        },
+        {
+          "id": "fx-demand-paused",
+          "factory_id": "huaxing",
+          "dispatch_state": "PAUSED",
+          "remaining_material_kg": 4.5,
+          "delivery_slack_hours": null,
+          "forecast_unknown": true
+        },
+        {
+          "id": "fx-demand-completed",
+          "factory_id": "huaxing",
+          "dispatch_state": "COMPLETED",
+          "remaining_material_kg": 0,
+          "delivery_slack_hours": 0,
+          "forecast_unknown": false
+        },
+        {
+          "id": "fx-demand-ready",
+          "factory_id": "huaxing",
+          "dispatch_state": "READY",
+          "remaining_material_kg": 2,
+          "delivery_slack_hours": 3,
+          "forecast_unknown": false
+        }
+      ],
+      "generated_filter": {
+        "field": "dispatch_state",
+        "op": "eq",
+        "value": "WAIT_MATERIAL"
+      },
+      "response_dto": {
+        "scope": {
+          "factory_id": "huaxing",
+          "scope_label": "华兴待料需求",
+          "authorization": "current_user"
+        },
+        "as_of": "2026-10-12T08:00:00Z",
+        "data_mode": "synthetic",
+        "summary": {
+          "waiting_material_count": 2,
+          "estimated_remaining_production_material_kg_known_total": 12.5,
+          "remaining_material_unknown_count": 1,
+          "warehouse_shortage_kg": null,
+          "forecast_delivery_risk_count": 1,
+          "forecast_unknown_count": 1
+        },
+        "items": [
+          {
+            "id": "fx-demand-wait-1",
+            "factory_id": "huaxing",
+            "dispatch_state": "WAIT_MATERIAL",
+            "remaining_material_kg": 12.5,
+            "delivery_slack_hours": -2,
+            "forecast_unknown": false
+          },
+          {
+            "id": "fx-demand-wait-2",
+            "factory_id": "huaxing",
+            "dispatch_state": "WAIT_MATERIAL",
+            "remaining_material_kg": null,
+            "delivery_slack_hours": null,
+            "forecast_unknown": true
+          }
+        ],
+        "next_cursor": null,
+        "unknown_fields": [
+          "items[1].remaining_material_kg",
+          "items[1].delivery_slack_hours",
+          "warehouse_shortage_kg"
+        ],
+        "sources": [
+          {
+            "kind": "business",
+            "source_id": "fx-business-injection:business:1",
+            "run_id": "fx-business-injection",
+            "title": "合成业务快照",
+            "tool_name": "get_injection_overview",
+            "resources": [
+              {
+                "module_id": "injection-scheduling",
+                "resource_type": "demand",
+                "resource_id": "fx-demand-wait-1"
+              },
+              {
+                "module_id": "injection-scheduling",
+                "resource_type": "demand",
+                "resource_id": "fx-demand-wait-2"
+              }
+            ],
+            "scope": {
+              "factory_id": "huaxing",
+              "scope_label": "华兴待料需求",
+              "authorization": "current_user"
+            },
+            "as_of": "2026-10-12T08:00:00Z",
+            "data_mode": "synthetic",
+            "unknown_fields": [
+              "items[1].remaining_material_kg",
+              "items[1].delivery_slack_hours",
+              "warehouse_shortage_kg"
+            ]
+          },
+          {
+            "kind": "business",
+            "source_id": "fx-business-injection:business:reference-summary",
+            "run_id": "fx-business-injection",
+            "title": "合成华兴全部调度状态汇总",
+            "tool_name": "get_injection_overview",
+            "resources": [
+              {
+                "module_id": "injection-scheduling",
+                "resource_type": "demand",
+                "resource_id": "fx-demand-wait-1"
+              },
+              {
+                "module_id": "injection-scheduling",
+                "resource_type": "demand",
+                "resource_id": "fx-demand-wait-2"
+              },
+              {
+                "module_id": "injection-scheduling",
+                "resource_type": "demand",
+                "resource_id": "fx-demand-paused"
+              },
+              {
+                "module_id": "injection-scheduling",
+                "resource_type": "demand",
+                "resource_id": "fx-demand-completed"
+              },
+              {
+                "module_id": "injection-scheduling",
+                "resource_type": "demand",
+                "resource_id": "fx-demand-ready"
+              }
+            ],
+            "scope": {
+              "factory_id": "huaxing",
+              "scope_label": "华兴全部调度状态需求（当前用户授权）",
+              "authorization": "current_user"
+            },
+            "as_of": "2026-10-12T08:00:00Z",
+            "data_mode": "synthetic",
+            "unknown_fields": []
+          }
+        ],
+        "actions": [
+          {
+            "type": "open_record",
+            "label": "打开华兴注塑排期",
+            "route_name": "injection-scheduling",
+            "params": {},
+            "query": {
+              "factory": "huaxing"
+            },
+            "resource": {
+              "module_id": "injection-scheduling",
+              "resource_type": "demand",
+              "resource_id": "fx-demand-wait-1"
+            }
+          }
+        ],
+        "reference_summary": {
+          "scope": {
+            "factory_id": "huaxing",
+            "scope_label": "华兴全部调度状态需求（当前用户授权）",
+            "authorization": "current_user"
+          },
+          "held_count_all_dispatch_states": 4,
+          "held_definition": "dispatch_state != READY"
+        },
+        "completeness": "complete_for_requested_scope"
+      },
+      "expected": {
+        "held_count": 4,
+        "waiting_count": 2,
+        "known_material_total": 12.5,
+        "unknown_count": 1,
+        "warehouse_shortage_known": false,
+        "actual_overdue_confirmed": false,
+        "opens_exact_record": false,
+        "forbidden_operations": [
+          "auto_schedule",
+          "move_plan",
+          "report_shots",
+          "clear_plan"
+        ],
+        "held_ids": [
+          "fx-demand-wait-1",
+          "fx-demand-wait-2",
+          "fx-demand-paused",
+          "fx-demand-completed"
+        ],
+        "reference_summary_has_separate_scope": true
+      },
+      "access_cases": [
+        {
+          "factory_id": "huakang-c",
+          "allowed": false
+        },
+        {
+          "actor": "same_user_after_scope_revoked",
+          "allowed": false
+        }
+      ],
+      "acceptance": [
+        "E04",
+        "E05",
+        "E06",
+        "E07",
+        "E10"
+      ]
+    },
+    {
+      "id": "printer-freshness-not-physical-diagnosis",
+      "synthetic": true,
+      "tool_name": "get_printer_status",
+      "input": {
+        "factory_id": "huakang-a"
+      },
+      "actor_fixture": {
+        "id": "fx-internal-user",
+        "audience": "internal",
+        "employment_epoch": 1,
+        "permissions": [
+          "three_d_printing:read"
+        ],
+        "authorized_factory_ids": [
+          "huakang-a"
+        ]
+      },
+      "response_dto": {
+        "scope": {
+          "factory_id": "huakang-a",
+          "scope_label": "华康A授权设备",
+          "authorization": "current_user"
+        },
+        "as_of": "2026-10-12T08:00:00Z",
+        "data_mode": "synthetic",
+        "items": [
+          {
+            "id": "fx-printer-1",
+            "status": "printing",
+            "last_seen_at": "2026-10-12T07:59:50Z",
+            "status_stale": false,
+            "stale_reason": null,
+            "reported_error": null
+          },
+          {
+            "id": "fx-printer-2",
+            "status": "paused",
+            "last_seen_at": "2026-10-12T07:58:30Z",
+            "status_stale": true,
+            "stale_reason": "too_old",
+            "reported_error": "SYNTHETIC_PAUSED_MESSAGE"
+          },
+          {
+            "id": "fx-printer-3",
+            "status": "unknown",
+            "last_seen_at": "2026-10-12T08:00:06Z",
+            "status_stale": true,
+            "stale_reason": "future_clock",
+            "reported_error": null
+          },
+          {
+            "id": "fx-printer-4",
+            "status": "unknown",
+            "last_seen_at": null,
+            "status_stale": true,
+            "stale_reason": "missing",
+            "reported_error": null
+          }
+        ],
+        "summary": {
+          "returned_count": 4,
+          "stale_count": 3
+        },
+        "next_cursor": null,
+        "unknown_fields": [
+          "items[1].current_physical_state",
+          "items[2].current_physical_state",
+          "items[3].current_physical_state"
+        ],
+        "sources": [
+          {
+            "kind": "business",
+            "source_id": "fx-business-printers:business:1",
+            "run_id": "fx-business-printers",
+            "title": "合成业务快照",
+            "tool_name": "get_printer_status",
+            "resources": [
+              {
+                "module_id": "three-d-printing",
+                "resource_type": "printer",
+                "resource_id": "fx-printer-1"
+              },
+              {
+                "module_id": "three-d-printing",
+                "resource_type": "printer",
+                "resource_id": "fx-printer-2"
+              },
+              {
+                "module_id": "three-d-printing",
+                "resource_type": "printer",
+                "resource_id": "fx-printer-3"
+              },
+              {
+                "module_id": "three-d-printing",
+                "resource_type": "printer",
+                "resource_id": "fx-printer-4"
+              }
+            ],
+            "scope": {
+              "factory_id": "huakang-a",
+              "scope_label": "仅当前用户在指定厂区的授权范围",
+              "authorization": "current_user"
+            },
+            "as_of": "2026-10-12T08:00:00Z",
+            "data_mode": "synthetic",
+            "unknown_fields": [
+              "current_physical_state_for_stale_devices"
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "type": "open_record",
+            "label": "打开华康A的3D打印工作区",
+            "route_name": "three-d-printing-management",
+            "params": {},
+            "query": {},
+            "resource": {
+              "module_id": "three-d-printing",
+              "resource_type": "printer",
+              "resource_id": "fx-printer-1"
+            }
+          }
+        ],
+        "completeness": "complete_for_requested_scope"
+      },
+      "expected": {
+        "stale_ids": [
+          "fx-printer-2",
+          "fx-printer-3",
+          "fx-printer-4"
+        ],
+        "physical_fault_confirmed": false,
+        "must_not_call_dashboard_snapshot": true,
+        "must_not_ensure_settings": true,
+        "forbidden_operations": [
+          "post_printer_command",
+          "start_print",
+          "pause_print",
+          "resume_print",
+          "edge_claim",
+          "edge_ack",
+          "inventory_write"
+        ]
+      },
+      "access_cases": [
+        {
+          "factory_id": "huaxing",
+          "allowed": false
+        },
+        {
+          "actor": "same_user_after_scope_revoked",
+          "allowed": false
+        }
+      ],
+      "acceptance": [
+        "E07",
+        "E08",
+        "E09",
+        "E10",
+        "E11"
+      ],
+      "freshness_fixture_policy": {
+        "max_age_seconds": 30,
+        "future_tolerance_seconds": 5,
+        "coverage": "仅覆盖样例的时间戳条件；生产实现还需复用现有network_health诊断语义"
+      }
+    }
+  ]
+}
