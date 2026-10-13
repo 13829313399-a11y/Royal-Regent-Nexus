@@ -14,7 +14,7 @@ export interface WarehouseDocumentInput {
   allocations: { production_no: string; quantity: string }[]
   reversed_kind?: WarehouseOperationKind
 }
-export interface WarehouseLocation { id: string; warehouse: string; code: string; label: string; status: string; revision: number }
+export interface WarehouseLocation { category?: string; id: string; warehouse: string; code: string; label: string; status: string; revision: number }
 export interface WarehouseBulkIssue { factory_id: 'huakang-c'; request_id: string; expected_revision: number; business_date: string; counterparty: string; reason: string; items: { batch_id: string; quantity: string; counterparty: string }[] }
 export interface WarehouseBatch {
   location_id?: string; location_verified?: boolean; location_status?: string; location_label?: string; warehouse_name?: string

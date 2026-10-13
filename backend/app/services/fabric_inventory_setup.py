@@ -206,6 +206,8 @@ def opening_preview(db, actor, filename, content, cutoff, source_no):
         row.update(location_id=place['id'] if place else '', location=place['label'] if place else '', location_snapshot=place or {})
         if not place:
             row['errors'].append('仓库或仓位不存在/已停用，请先维护基础资料')
+        elif place.get('category') and place['category'] != row['material_category']:
+            row['errors'].append('仓位与物料分类不匹配，请选择对应原料分区')
         try:
             row['quantity'] = ops.text(quantity(row['quantity'], '期初数量'))
         except HTTPException as exc:

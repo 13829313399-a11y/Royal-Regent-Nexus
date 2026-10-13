@@ -121,6 +121,9 @@ def excel_logo(filename, content, selected_sheets):
 
 def render(original):
     config = MarkLayoutConfig.model_validate(original["layout"]["config"])
+    if config.series == "zuru":
+        from app.services.carton_mark_zuru import render_zuru
+        return render_zuru(original, config)
     reference = original["layout"]["reference_bytes"]
     validate_reference(reference, config)
     records = extract_fields(original["excel_file_name"], original["excel_bytes"], config.field_cells)
@@ -153,6 +156,12 @@ def render(original):
             pdfmetrics.registerFont(TTFont(cjk_font, str(cjk_path)))
     else:
         pdfmetrics.registerFont(UnicodeCIDFont(cjk_font))
+    if config.font.startswith("ArialNarrow"):
+        path = Path("C:/Windows/Fonts/ARIALNB.TTF" if config.font.endswith("Bold") else "C:/Windows/Fonts/ARIALN.TTF")
+        if not path.exists():
+            raise HTTPException(422, "服务器未安装客户选定的 Arial Narrow 字体，请安装字体或调整客户模板")
+        if config.font not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(config.font, str(path)))
     size = A3 if config.paper == "A3" else A4
     if config.mode == "front_side":
         size = landscape(size)

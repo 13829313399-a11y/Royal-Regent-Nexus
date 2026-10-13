@@ -4,7 +4,6 @@ This is a read of immutable stock evidence, never a second stock posting or a
 supplier portal ownership decision. Quantities use their own business dates.
 """
 import json
-from collections import defaultdict
 from decimal import Decimal
 from io import BytesIO
 
@@ -16,6 +15,7 @@ from app.models.fabric_receiving import FabricReceipt
 from app.services import warehouse_operations as operations
 from app.services.material_handover_monthly import bounds
 from app.services.fabric_procurement_parser import digest
+from app.services.fabric_supplier_identity import supplier_aliases
 
 FIELDS = ('received', 'receipt_reversed', 'net_received', 'issued', 'issue_reversed',
           'returned', 'net_issued', 'net_outbound', 'stock_change',
@@ -36,7 +36,7 @@ def report(db, month, direction='', channel='', party_key='', search='', unit=''
     entries = list(projected.values())
     # Only unambiguous, exact recorded names join internal supplier groups.
     # This does not bind old documents or grant an external token ownership.
-    aliases = defaultdict(set)
+    aliases = supplier_aliases(db)
     names = {}
     for master in db.scalars(select(FabricMasterRecord).where(
             FabricMasterRecord.factory_id == operations.FACTORY, FabricMasterRecord.kind == 'SUPPLIER')):

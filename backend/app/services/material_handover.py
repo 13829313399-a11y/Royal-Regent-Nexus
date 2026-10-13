@@ -110,10 +110,17 @@ def supplier_identity(db,row,body):
     return identity.supplier_id if identity else body.get('supplier_id','')
 
 
-def validate_party(db,access,data):
-    if access.issuer_id:
-        issuer=db.get(HandoverIssuer,access.issuer_id)
-        if data.kind!=('DELIVERY' if issuer.kind=='SUPPLIER' else 'ISSUE') or data.counterparty!=access.name or data.supplier_id!=access.supplier_id:
+def validate_party(db,access,data,document_issuer_id=None):
+    issuer_id = document_issuer_id or access.issuer_id
+    if issuer_id:
+        issuer = db.get(HandoverIssuer, issuer_id)
+        binding = db.get(HandoverSupplierBinding, issuer_id)
+        supplier_id = binding.supplier_id if binding else ''
+        name = issuer.name
+        if supplier_id:
+            from app.services.material_handover_suppliers import supplier
+            name = supplier(db, supplier_id).name
+        if data.kind!=('DELIVERY' if issuer.kind=='SUPPLIER' else 'ISSUE') or data.counterparty!=name or data.supplier_id!=supplier_id:
             raise HTTPException(403,'专用链接不能变更制单方或收发用途')
     elif data.kind=='DELIVERY' and data.supplier_id:
         from app.services.material_handover_suppliers import supplier
@@ -259,12 +266,39 @@ def save_document(db, access, identifier, payload):
     data = payload.data
     if len({line.id for line in data.lines}) != len(data.lines):
         raise HTTPException(422, '明细行编号不能重复')
-    validate_party(db,access,data)
+    validate_party(db,access,data,row.issuer_id)
     before = json.loads(row.data_json)
     row.data_json = data.model_dump_json(); row.revision += 1; row.updated_at = business_now().isoformat()
     db.flush(); result = output(db, row)
     event(db, access, row, 'SAVE', payload.request_id, signature, {'before': before, 'after': data.model_dump(mode='json')}, result)
     db.commit(); return result
+
+
+def confirmation_issues(data):
+    """Drafts may be incomplete; enumerate what a confirmed code still needs."""
+    issues = []
+    for value, label in ((data.source_no, '原单号'), (data.document_date, '单据日期'), (data.counterparty, '制单方')):
+        if not value:
+            issues.append('缺少' + label)
+    if data.kind == 'DELIVERY' and not data.supplier_id:
+        issues.append('供应商尚未关联，请仓库选择供应商基础资料')
+    if not data.lines:
+        issues.append('尚无物料明细，请添加明细或交仓库按原件补录')
+    for index, line in enumerate(data.lines, 1):
+        missing = ['缺少' + label for value, label in ((line.item_code, '物料编码'), (line.item_name, '物料名称'), (line.unit, '单位')) if not value]
+        for value, label, allow_zero in ((line.quantity, '数量', False), (line.unit_price, '参考单价', True)):
+            if allow_zero and not value:
+                continue
+            if not value:
+                missing.append('缺少' + label)
+                continue
+            try:
+                quantity(value, label, allow_zero=allow_zero)
+            except HTTPException as error:
+                missing.append(error.detail)
+        if missing:
+            issues.append(f'第 {index} 行' + (f'（{line.item_name}）' if line.item_name else '') + '：' + '；'.join(missing))
+    return issues
 
 
 def confirm(db, access, identifier, payload):
@@ -278,18 +312,17 @@ def confirm(db, access, identifier, payload):
         raise HTTPException(409, '单据已确认或作废，请刷新')
     data = payload.data or HandoverData.model_validate_json(row.data_json)
     if not payload.data and access.issuer_id:data.supplier_id=access.supplier_id;data.counterparty=access.name
-    validate_party(db,access,data)
+    validate_party(db,access,data,row.issuer_id)
     if len({line.id for line in data.lines})!=len(data.lines):raise HTTPException(422,'明细行编号不能重复')
+    issues = confirmation_issues(data)
+    if issues:
+        raise HTTPException(422, '确认打印前请补全：' + '；'.join(issues) + '。也可先保存，交仓库补全。')
     if data.kind=='DELIVERY':
         from app.services.material_handover_suppliers import supplier
         supplier(db,data.supplier_id)
-    if not data.source_no or not data.document_date or not data.counterparty or not data.lines:
-        raise HTTPException(422, '请补齐原单号、日期、制单方和物料明细')
     if json.loads(row.extraction_json).get('warnings') and not payload.acknowledge_warnings:
         raise HTTPException(422, '请核对识别提示和原件，确认明细后再生成二维码')
     for line in data.lines:
-        if not line.item_code or not line.item_name or not line.unit:
-            raise HTTPException(422, f'请补齐 {line.source_line or line.id} 的物料编码、名称和单位')
         line.quantity = inventory.text(quantity(line.quantity, '单据数量'))
         if line.unit_price:line.unit_price=inventory.text(quantity(line.unit_price,'参考单价',allow_zero=True))
     for old in db.scalars(select(HandoverDocument).where(HandoverDocument.factory_id == FACTORY,

@@ -127,11 +127,18 @@ def describe_item(data, batch):
         data[key] = batch.get(key, '')
 
 
-def validate_current_master(db, warehouse, body, stock):
+def validate_current_master(db, warehouse, body, stock, entries):
     """Current master checks run only on new postings, never reinterpret history."""
     kind = body['kind']
     if kind in {'RECEIPT', 'RETURN', 'TRANSFER', 'PROCESS_RETURN', 'LOCATION_BIND'}:
         target = locations.resolve(db, warehouse, body.get('location_id', ''))
+        if warehouse == 'fabric' and kind != 'LOCATION_BIND':
+            identity = body
+            if kind == 'TRANSFER':
+                identity = batch_for(stock, body['batch_id'])
+            elif kind == 'RETURN':
+                identity = original_for(entries, body['original_id'], {'ISSUE', 'PACK_SEND'})['batch_snapshot']
+            locations.validate_category(target, identity.get('material_category', ''))
         body['location_id'], body['location'], body['location_snapshot'] = target['id'], target['label'], target
     if kind in OUTBOUND | {'TRANSFER', 'LOCATION_BIND'}:
         batch = batch_for(stock, body['batch_id'])
@@ -146,8 +153,16 @@ def validate_current_master(db, warehouse, body, stock):
             locations.resolve(db, warehouse, batch.get('location_id', ''), inbound=False)
     if warehouse != 'fabric' or kind in {'QUALITY', 'CORRECTION', 'LOCATION_BIND'}:
         return
-    from app.services.fabric_master import records
+    from app.services.fabric_master import records, material_info
     current = records(db)
+    if kind == 'RECEIPT':
+        material = material_info({'material_code': body.get('item_code', ''),
+                                  'material_name': body.get('item_name', ''), 'unit': body.get('unit', '')}, current)
+        if material['material_category'] and material['material_category'] != body.get('material_category'):
+            raise HTTPException(422, '物料分类与已确认基础资料不同，请刷新并核对资料')
+    if kind == 'RECEIPT' and not body.get('handover_supplier_id'):
+        from app.services.fabric_supplier_identity import receipt_supplier
+        receipt_supplier(db, body.get('counterparty', ''))
     identity = stock.get(body.get('batch_id')) or body
     if body['kind'] not in {'RETURN', 'TRANSFER'}:
         for record in current:
@@ -439,7 +454,7 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
             from app.services.material_handover_procurement import guard_manual_delivery
             guard_manual_delivery(db, body['source_no'], body['item_code'], body['unit'], body['counterparty'],
                 operation=body, entries=entries)
-        validate_current_master(db, warehouse, body, stock)
+        validate_current_master(db, warehouse, body, stock, entries)
         apply_entry(stock, entries, entry, warehouse)
         if warehouse == 'fabric' and payload.kind == 'CORRECTION':
             from app.services.material_handover_procurement import advance_corrected_source

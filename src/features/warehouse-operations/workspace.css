@@ -437,7 +437,7 @@
 .fabric-warehouse-group header p { margin-top: 3px; color: #64748b; font-size: 11px; }
 .fabric-location-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .fabric-location-chip { display: flex; align-items: stretch; border: 1px solid #e2e8f0; border-radius: 8px; background: white; }
-.fabric-location-chip > button:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 9px 12px; font-size: 12px; text-align: left; }
+.fabric-location-chip > button:first-of-type { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 9px 12px; font-size: 12px; text-align: left; }
 .fabric-location-chip > button:disabled { cursor: default; }
 .fabric-location-chip:hover { border-color: #99f6e4; }
 .fabric-location-chip small, .fabric-location-history { color: #64748b; font-size: 10px; }
