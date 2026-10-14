@@ -421,7 +421,7 @@ def quote_to_out(
         ):
             payload_overrides["molding"] = _project_molding_parts(
                 _json_object(engineering.payload_json),
-                _json_object(molding.payload_json),
+                _json_object(molding.payload_json), factory_id=quote.factory_id,
             )
         sections = [
             _section_out(by_code[code], payload_override=payload_overrides.get(code),
@@ -896,6 +896,11 @@ def _validate_customer_supplied_scope(quote, section_code, payload):
 
 
 def _normalize_mutable_section_payload(db, quote, department, payload):
+    if quote.factory_id != "huadeng" and any(
+        isinstance(row, dict) and (row.get("molding_profile") == "huadeng_parts_v1" or row.get("cost_scope") == "huadeng_part")
+        for field in ("molds", "injection_lines") for row in payload.get(field, []) or []
+    ):
+        raise HTTPException(status_code=400, detail="华登胶件工模规则仅适用于华登厂区")
     if department == "engineering":
         try:
             for index, mold in enumerate(payload.get("molds", []) or []):
@@ -904,6 +909,8 @@ def _normalize_mutable_section_payload(db, quote, department, payload):
                 for field, label in (("quantity", "套数"), ("cost_rmb", "价格"), ("net_weight_g", "净重"), ("target_output", "目标数"), ("cycle_time_seconds", "周期")):
                     decimal_value(mold.get(field), f"模具第 {index + 1} 行{label}")
                 parts = mold.get("parts", []) or []
+                if mold.get("molding_profile") == "huadeng_parts_v1" and not parts:
+                    raise CalculationInputError(f"模具第 {index + 1} 行至少需要一个华登胶件")
                 if not isinstance(parts, list):
                     raise CalculationInputError(f"模具第 {index + 1} 行子件格式无效")
                 for part_index, part in enumerate(parts):
@@ -911,6 +918,8 @@ def _normalize_mutable_section_payload(db, quote, department, payload):
                         raise CalculationInputError(f"模具第 {index + 1} 行第 {part_index + 1} 子件格式无效")
                     for field, label in (("unit_net_weight_g", "净重"), ("output_count", "出模数"), ("quantity", "用量"), ("process_unit_price_hkd", "工艺单价")):
                         decimal_value(part.get(field), f"模具第 {index + 1} 行第 {part_index + 1} 子件{label}")
+                    if mold.get("molding_profile") == "huadeng_parts_v1":
+                        decimal_value(str(part.get("target_output") or "").strip(), f"模具第 {index + 1} 行第 {part_index + 1} 子件产能")
         except CalculationInputError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         existing = _get_section(db, quote.id, "engineering")
@@ -1067,9 +1076,9 @@ def ensure_current_molding_pricing(db: Session, quote: InternalQuote, sections: 
     payload = _json_object(molding.payload_json)
     engineering = by_code.get("engineering")
     if engineering is not None and engineering.is_required:
-        payload = prefill_molding_from_engineering(_json_object(engineering.payload_json), payload)
+        payload = prefill_molding_from_engineering(_json_object(engineering.payload_json), payload, factory_id=quote.factory_id)
     try:
-        current = calculate_section("molding", payload, _json_object(reference.snapshot_json), reference.id)
+        current = calculate_section("molding", payload, _json_object(reference.snapshot_json), reference.id, context={"factory_id": quote.factory_id})
     except CalculationInputError as error:
         raise HTTPException(409, {"message": "啤机部输入存在阻断警告，请修正后保存再提交或输出", "section_code": "molding", "validation_errors": [{"field": "", "message": str(error)}]}) from error
     if current.get("status") != "valid":
@@ -2053,6 +2062,19 @@ def _calculation_dependencies(
             for row in molds
             if isinstance(row, dict)
         ]
+        # Huadeng's explicit profile projects these child fields into pricing
+        # and lineage. Keep legacy descriptive children outside this contract.
+        if quote.factory_id == "huadeng":
+            for source, projected in zip((row for row in molds if isinstance(row, dict)), projected_molds):
+                if source.get("molding_profile") == "huadeng_parts_v1":
+                    projected["molding_profile"] = source["molding_profile"]
+                    for part, projected_part in zip(
+                        (part for part in (source.get("parts") or []) if isinstance(part, dict)), projected["parts"]
+                    ):
+                        projected_part.update({key: part.get(key) for key in (
+                            "material", "material_type", "machine_code", "target_output", "remark",
+                            "source_row", "image_attachment_ids",
+                        )})
         return {
             # Only Engineering fields that are actually projected into Molding
             # participate in this fingerprint.  Workflow revisions and unrelated
@@ -2171,14 +2193,14 @@ def _remove_missing_molding_sources(
     if not engineering.is_required or engineering.status == "not_applicable":
         return payload
     engineering_payload = _json_object(engineering.payload_json)
-    return _project_molding_parts(engineering_payload, payload, synchronize_parts=synchronize_parts)
+    return _project_molding_parts(engineering_payload, payload, synchronize_parts=synchronize_parts, factory_id=quote.factory_id)
 
 
-def _project_molding_parts(engineering_payload, payload, *, synchronize_parts=True):
+def _project_molding_parts(engineering_payload, payload, *, synchronize_parts=True, factory_id=""):
     if not synchronize_parts and not isinstance(payload.get("injection_lines"), list):
         return payload
     return prefill_molding_from_engineering(
-        engineering_payload, payload, remove_missing_only=not synchronize_parts,
+        engineering_payload, payload, remove_missing_only=not synchronize_parts, factory_id=factory_id,
     )
 
 
@@ -2208,7 +2230,7 @@ def molding_projection_pending(db, quote, sections=None):
     if engineering.status == "not_applicable" or molding.status == "not_applicable":
         return False
     saved = _json_object(molding.payload_json)
-    projected = _project_molding_parts(_json_object(engineering.payload_json), saved)
+    projected = _project_molding_parts(_json_object(engineering.payload_json), saved, factory_id=quote.factory_id)
     calculation = _json_object(molding.calculation_json)
     return (canonical_json(projected) != canonical_json(saved)
             or (molding.calculation_status == "valid" and (
@@ -2537,7 +2559,7 @@ def create_quote(
                         continue
                     if code == "molding":
                         section.payload_json = canonical_json(prefill_molding_from_engineering(
-                            _json_object(by_code["engineering"].payload_json), _json_object(section.payload_json)))
+                            _json_object(by_code["engineering"].payload_json), _json_object(section.payload_json), factory_id=quote.factory_id))
                     section.revision += 1
                     _calculate_and_apply(db, quote, section, user)
                     section.filled_by, section.filled_at = user.display_name, timestamp
@@ -4039,7 +4061,7 @@ def preview_quote_costs(
         if engineering and engineering.is_required and engineering.status != "not_applicable":
             payload_overrides["molding"] = _project_molding_parts(
                 payload_overrides.get("engineering", _json_object(engineering.payload_json)),
-                payload_overrides["molding"],
+                payload_overrides["molding"], factory_id=quote.factory_id,
             )
 
     reference = _find_reference_set(db, quote)
@@ -4050,7 +4072,7 @@ def preview_quote_costs(
     calculation_overrides: dict[str, dict[str, object]] = {}
     if "molding" in payload_overrides and by_code.get("engineering") and by_code["engineering"].is_required:
         payload_overrides["molding"] = prefill_molding_from_engineering(
-            payload_overrides.get("engineering", _json_object(by_code["engineering"].payload_json)), payload_overrides["molding"])
+            payload_overrides.get("engineering", _json_object(by_code["engineering"].payload_json)), payload_overrides["molding"], factory_id=quote.factory_id)
         draft_by_code["molding"].payload = payload_overrides["molding"]
     elif "engineering" in payload_overrides and by_code.get("molding"):
         if by_code["molding"].dependency_hash != content_hash(_calculation_dependencies(db, quote, "molding", payload_overrides=payload_overrides)):
@@ -4222,7 +4244,7 @@ def _save_section_in_transaction(
     if section.department == "molding":
         engineering = _get_section(db, quote.id, "engineering")
         if engineering.is_required:
-            next_payload = prefill_molding_from_engineering(_json_object(engineering.payload_json), next_payload)
+            next_payload = prefill_molding_from_engineering(_json_object(engineering.payload_json), next_payload, factory_id=quote.factory_id)
     if section.department == "electronic" and "quote_groups" in _json_object(section.payload_json) and "quote_groups" not in next_payload:
         raise HTTPException(status_code=409, detail="电子部包含多份独立报价，请刷新页面后逐份编辑，不能用旧版单份数据覆盖")
     next_payload_json = canonical_json(next_payload)
@@ -4354,7 +4376,7 @@ def save_whole_product_sections(
             drafts["engineering"].payload = normalize_engineering_mold_identities(drafts["engineering"].payload, _json_object(by_code["engineering"].payload_json))
         if "molding" in drafts and by_code.get("engineering") and by_code["engineering"].is_required:
             engineering_payload = drafts["engineering"].payload if "engineering" in drafts else _json_object(by_code["engineering"].payload_json)
-            drafts["molding"].payload = prefill_molding_from_engineering(engineering_payload, drafts["molding"].payload)
+            drafts["molding"].payload = prefill_molding_from_engineering(engineering_payload, drafts["molding"].payload, factory_id=quote.factory_id)
         for section_code in SECTION_CODE_ORDER:
             draft = drafts.get(section_code)
             if draft is None:

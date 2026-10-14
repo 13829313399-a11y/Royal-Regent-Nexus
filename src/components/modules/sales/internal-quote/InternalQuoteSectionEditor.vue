@@ -464,6 +464,7 @@ watch(() => props.engineeringPayload, (engineering) => {
   const linked = linkEngineeringMolding(
     cloneInternalQuotePayload('engineering', engineering) as unknown as EngineeringPayload,
     cloneInternalQuotePayload('molding', draftPayload.value) as unknown as MoldingPayload,
+    props.quote.factoryId,
   )
   const next = normalizedDraft(linked as unknown as Record<string, unknown>)
   if (JSON.stringify(next) !== JSON.stringify(draftPayload.value)) draftPayload.value = next

@@ -45,6 +45,28 @@ function blowMoldingModel(overrides: Record<string, unknown> = {}) {
 }
 
 describe('InternalQuoteSectionForm engineering mold prefill', () => {
+  it('merges only contiguous Huadeng labor jobs and copying creates independent labor', async () => {
+    const modelValue = moldingModel()
+    modelValue.injection_lines = [0, 1, 2, 3].map(index => ({
+      ...moldingModel({ material: 'ABS', grade: '750SW', net_weight_g: 2, machine_code: '18A', sets: 2, target_output: 100 }).injection_lines[0]!,
+      line_id: `part-${index}`, engineering_mold_id: 'm', engineering_part_id: `p${index}`,
+      engineering_source_key: `mold-id:m/part-id:p${index}`, cost_scope: 'huadeng_part',
+      engineering_labor_mode: index === 2 ? 'transfer' : 'shared',
+    }))
+    const wrapper = mount(InternalQuoteSectionForm, { props: { code: 'molding', factoryId: 'huadeng', modelValue, referenceSnapshot } })
+    const cells = wrapper.findAll('[data-labor-job]')
+    expect(cells).toHaveLength(3)
+    expect(cells[0]!.attributes('rowspan')).toBe('2')
+    expect(cells[1]!.attributes('rowspan')).toBe('1')
+    expect(cells[1]!.text()).toContain('转水口')
+    expect(cells[2]!.text()).toContain('同模共享')
+    expect(wrapper.text()).toContain('啤工汇总 HKD 18.900')
+    await wrapper.get('button[aria-label="复制第 1 行注塑明细"]').trigger('click')
+    expect(modelValue.injection_lines).toHaveLength(5)
+    expect(modelValue.injection_lines[1]).toMatchObject({ engineering_source_key: '', engineering_mold_id: '', engineering_part_id: '', cost_scope: 'whole_mold', engineering_sync_disabled: true })
+    expect(wrapper.text()).toContain('啤工汇总 HKD 28.350')
+  })
+
   it('locks engineering identity fields but leaves material and machine selection editable', () => {
     const wrapper = mount(InternalQuoteSectionForm, {
       props: {

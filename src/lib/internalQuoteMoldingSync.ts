@@ -21,9 +21,10 @@ export function rebaseEngineeringMolding(
     const values = new Set<string>()
     if (row.line_id) values.add(`line:${text(row.line_id)}`)
     if (row.engineering_source_key) values.add(`source:${text(row.engineering_source_key)}`)
-    if (row.engineering_mold_id) values.add(`mold:${text(row.engineering_mold_id)}`)
+    if (row.engineering_mold_id && !row.engineering_part_id) values.add(`mold:${text(row.engineering_mold_id)}`)
+    if (row.engineering_mold_id && row.engineering_part_id) values.add(`part:${text(row.engineering_mold_id)}:${text(row.engineering_part_id)}`)
     for (const mold of engineering?.molds ?? []) {
-      if (mold.mold_id && (row.engineering_mold_id === mold.mold_id
+      if (!row.engineering_part_id && mold.mold_id && (row.engineering_mold_id === mold.mold_id
         || row.engineering_source_key === `mold-id:${mold.mold_id}`)) {
         if (mold.legacy_source_key) values.add(`source:${mold.legacy_source_key}`)
       }
@@ -44,6 +45,7 @@ export function rebaseEngineeringMolding(
     if (candidates.length > 1) return
     const current = candidates[0]
     const owned = new Set(['line_id', 'engineering_mold_id', 'engineering_source_key', 'engineering_synced_fields',
+      'engineering_part_id', 'engineering_labor_mode', 'labor_job_id', 'engineering_remark', 'engineering_source_row', 'engineering_machine_hint', 'image_attachment_ids',
       'engineering_parts', 'engineering_source_missing', 'engineering_linkage_conflict', 'cost_scope',
       ...fields(old ?? {}), ...fields(row)])
     if (old) {

@@ -330,10 +330,15 @@ def test_mold_import_excludes_numbered_merged_footer_clauses_and_cleans_synced_r
     old_molding['injection_lines'][0]['remark'] = '保留已填资料'
     old_molding['injection_lines'].append({'item': '手工追加行'})
     refreshed = prefill_molding_from_engineering(parsed.payload_fragment, old_molding)
-    assert len(refreshed['injection_lines']) == 4
+    assert len(refreshed['injection_lines']) == 7
     assert refreshed['injection_lines'][0]['remark'] == '保留已填资料'
     assert refreshed['injection_lines'][-1]['item'] == '手工追加行'
-    assert not any(row['item'] in terms for row in refreshed['injection_lines'])
+    assert refreshed['injection_lines'][:3] == old_molding['injection_lines'][:3]
+    removed = [row for row in refreshed['injection_lines'] if row['item'] in terms]
+    assert len(removed) == 3
+    assert all(row.get('engineering_source_missing') is True for row in removed)
+    assert all({key: value for key, value in row.items() if key != 'engineering_source_missing'} == old
+               for row, old in zip(removed, old_molding['injection_lines'][3:6], strict=True))
 
 
 def test_mold_footer_filter_preserves_real_partial_zero_price_and_continuation_rows():
