@@ -1,6 +1,7 @@
 import type { WarehouseDocument, WarehouseDomain, WarehouseOperationKind, WarehouseQuality } from '@/api/warehouseOperations'
 
 export const operationLabels: Record<WarehouseOperationKind, string> = {
+  CUTTING_REQUEST_REUSE: '确认领料申请续用', REQUEST_CLOSE: '关闭申请余量', CUTTING_RECEIPT: '裁床物料签收', CUTTING_RECEIPT_VOID: '撤销裁床签收',
   RECEIPT: '登记实收', REQUEST: '登记领料申请', ISSUE: '登记出库', RETURN: '登记退料', TRANSFER: '登记调仓',
   LOCATION_BIND: '核实仓位', QUALITY: '登记质检结论', CORRECTION: '冲销录错单据', TASK: '登记加工任务', PROCESS_SEND: '登记加工发出',
   PROCESS_RETURN: '登记加工回货', PACK_SEND: '登记包装发出', PACK_RECEIVE: '代录包装接收回执',
@@ -35,11 +36,12 @@ export function operationsView(domain: WarehouseDomain, section: string, view: s
   return map[view]
 }
 export function referenceKinds(kind: WarehouseOperationKind): WarehouseOperationKind[] {
+  if (kind === 'REQUEST_CLOSE') return ['REQUEST']
   if (kind === 'ISSUE') return ['REQUEST']
   if (kind === 'RETURN') return ['ISSUE', 'PACK_SEND']
   if (kind === 'PROCESS_RETURN') return ['PROCESS_SEND']
   if (kind === 'PACK_RECEIVE') return ['PACK_SEND']
-  if (kind === 'CORRECTION') return ['RECEIPT', 'ISSUE', 'TRANSFER', 'PROCESS_SEND', 'PACK_SEND']
+  if (kind === 'CORRECTION') return ['RECEIPT', 'ISSUE', 'RETURN', 'TRANSFER', 'PROCESS_SEND', 'PACK_SEND']
   return []
 }
 // Display-only exact decimal subtraction. Posting quantities are validated by the server.
@@ -54,7 +56,13 @@ export function remaining(total: string, used = '0'): string {
 }
 export function documentProgress(row: WarehouseDocument): string {
   if (row.reversed) return '已冲销，原单保留'
-  if (row.kind === 'CORRECTION') return `冲销${row.data.reversed_kind === 'RECEIPT' ? '入库，扣回' : row.data.reversed_kind === 'TRANSFER' ? '移库，退回原仓位' : '发出，恢复库存'} ${row.data.quantity} ${row.data.unit}`
+  if (row.kind === 'CORRECTION') {
+    const direction = row.data.reversed_kind === 'RETURN' ? '退料入库，扣回库存'
+      : row.data.reversed_kind === 'RECEIPT' ? '入库，扣回库存'
+      : row.data.reversed_kind === 'TRANSFER' ? '移库，退回原仓位' : '发出，恢复库存'
+    return `冲销${direction} ${row.data.quantity} ${row.data.unit}`
+  }
+  if (row.kind === 'REQUEST' && row.closed) return `已关闭未发余量；已发 ${row.issued_quantity ?? '0'} ${row.data.unit} · ${row.close_reason ?? ''}`
   if (row.kind === 'REQUEST') return `申请 ${row.data.quantity} · 已发 ${row.issued_quantity ?? '0'} · 待发 ${remaining(row.data.quantity, row.issued_quantity)} ${row.data.unit}`
   if (row.kind === 'TASK') return `计划产出 ${row.data.quantity} · 已回 ${row.received_quantity ?? '0'} ${row.data.unit}`
   if (row.kind === 'PROCESS_SEND') return `待核销 ${remaining(row.data.quantity, row.consumed_quantity)} ${row.batch_snapshot?.unit ?? ''} · 已回 ${row.returned_quantity ?? '0'}（产出单位见任务）`

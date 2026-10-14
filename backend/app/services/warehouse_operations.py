@@ -150,7 +150,9 @@ def validate_current_master(db, warehouse, body, stock):
 def apply_entry(stock, entries, entry, warehouse):
     """Validate and apply a document to an isolated projection, before writing any row."""
     data, kind, identifier = entry['data'], entry['kind'], entry['id']
-    if kind == 'MASTER_LOCATION':
+    from app.services.cutting_materials import projection_event
+    if projection_event(stock, entries, entry): return
+    if kind in {'MASTER_LOCATION', 'COMMAND_ABANDONED'}:
         entries[identifier] = entry
         return
     if kind == 'LOCATION_BIND':
@@ -220,6 +222,8 @@ def apply_entry(stock, entries, entry, warehouse):
         if kind == 'ISSUE':
             request = original_for(entries, data['original_id'], {'REQUEST'}) if data['original_id'] else None
             if request:
+                if request.get('closed'):
+                    raise HTTPException(409, '申请未发余量已关闭，不能继续出库')
                 if entry['business_date'] < request['business_date']:
                     raise HTTPException(422, '发料日期不能早于申请日期')
                 if not same_item(batch, request['data']) or data['counterparty'] != request['data']['counterparty']:
@@ -293,10 +297,12 @@ def apply_entry(stock, entries, entry, warehouse):
             data['consumed_unit'] = original['batch_snapshot']['unit']
     elif kind == 'CORRECTION':
         required(data, 'reason')
-        target = original_for(entries, data['original_id'], {'RECEIPT', 'ISSUE', 'TRANSFER', 'PROCESS_SEND', 'PACK_SEND'})
+        target = original_for(entries, data['original_id'], {'RECEIPT', 'ISSUE', 'RETURN', 'TRANSFER', 'PROCESS_SEND', 'PACK_SEND'})
         if entry['business_date'] < target['business_date']:
             raise HTTPException(422, '更正日期不能早于原业务日期')
         for later in entries.values():
+            if later['kind'] in {'CUTTING_RECEIPT', 'RETURN'} and later.get('reversed'):
+                continue
             if later['sequence'] > target['sequence'] and any(later['data'].get(key) == target['id'] for key in ('batch_id', 'original_id', 'task_id')):
                 raise HTTPException(409, '原单已有后续质检、收发或交接，不能直接冲销')
         tq = decimal(target['data']['quantity'])
@@ -304,13 +310,16 @@ def apply_entry(stock, entries, entry, warehouse):
         data['quantity'] = text(tq)
         data['reversed_kind'] = target['kind']
         data['counterparty'] = target['data']['counterparty']
-        if target['kind'] in {'RECEIPT', 'TRANSFER'}:
+        if target['kind'] in {'RECEIPT', 'TRANSFER', 'RETURN'}:
             if decimal(batch_for(stock, target['id'])['quantity']) != tq:
                 raise HTTPException(409, '原批次数量已变化，不能直接冲销')
             stock[target['id']]['quantity'] = '0'
             flow = 'transfer_quantity' if target['kind'] == 'TRANSFER' else 'inbound_quantity'
             stock[target['id']][flow] = '0'
-        if target['kind'] != 'RECEIPT':
+        if target['kind'] == 'RETURN':
+            issue = entries[target['data']['original_id']]
+            issue['returned_quantity'] = text(decimal(issue['returned_quantity']) - tq)
+        if target['kind'] not in {'RECEIPT', 'RETURN'}:
             batch = batch_for(stock, target['data']['batch_id'])
             if entry['business_date'] < batch.get('last_business_date', batch['received_on']):
                 raise HTTPException(409, '更正日期早于该批次最近一次操作')
@@ -360,7 +369,7 @@ def workspace(db, warehouse):
         batch['location_label'] = place['label'] if place else batch['location']
         batch['available_quantity'] = '0' if not place or batch['quality_status'] in {'REJECTED', 'HOLD'} else batch['quantity']
     return {'revision': max((row['sequence'] for row in rows), default=0), 'stock': list(stock.values()),
-            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] != 'MASTER_LOCATION'], 'original_receipts': original_receipts}
+            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] not in {'MASTER_LOCATION', 'COMMAND_ABANDONED'}], 'original_receipts': original_receipts}
 
 
 def request_body(payload):
@@ -372,17 +381,33 @@ def request_body(payload):
     return body
 
 
+def validate_correction_date(body, entries):
+    # New writes only: older accepted backdated corrections must remain replayable.
+    if body['kind'] != 'CORRECTION':
+        return
+    dependencies = {e['id'] for e in entries.values() if e['kind'] in {'CUTTING_RECEIPT', 'RETURN'}
+        and e.get('reversed') and e['data'].get('original_id') == body['original_id']}
+    if any(e['kind'] in {'CUTTING_RECEIPT_VOID', 'CORRECTION'} and e['data'].get('original_id') in dependencies
+           and e['business_date'] > body['business_date'] for e in entries.values()):
+        raise HTTPException(409, '更正日期不能早于相关撤签或退料冲销日期')
+
+
 def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=None):
     ensure_schema(db)
     body = request_body(payload)
     signature = digest([warehouse, actor.id, body])
     try:
+        if _state is None:
+            from app.services.cutting_materials import before_warehouse_lock
+            before_warehouse_lock(db, warehouse, payload)
         state = _state if _state is not None else procurement.lock_factory(db)
         old = db.scalar(select(WarehouseOperation).where(WarehouseOperation.factory_id == FACTORY,
             WarehouseOperation.warehouse == warehouse, WarehouseOperation.request_id == str(payload.request_id)))
         if old:
             if old.request_hash != signature:
                 raise HTTPException(409, '请求编号已用于其他内容或操作者，请核对原单')
+            if old.kind == 'COMMAND_ABANDONED':
+                raise HTTPException(409, '原操作已停止，不能再次执行；请核对后使用新请求')
             if _metadata is None and json.loads(old.payload_json).get('bulk_request_id'):
                 raise HTTPException(409, '该请求属于批量出库，请使用原批量请求核对')
             result = entry_data(old)
@@ -403,8 +428,14 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
                  'data': body, 'actor_name': actor.display_name, 'occurred_at': now}
         if _metadata:
             body.update(_metadata)
+        from app.services.cutting_materials import guard_post
+        guard_post(db, warehouse, body, _metadata, stock, entries)
+        validate_correction_date(body, entries)
         validate_current_master(db, warehouse, body, stock)
         apply_entry(stock, entries, entry, warehouse)
+        if warehouse == 'fabric':
+            from app.services.cutting_usage import guard_warehouse_change
+            guard_warehouse_change(db, entries, entry)
         # Source-linked fabric receipts are created by the existing receiving API;
         # this manual path never invents purchase progress or imported opening stock.
         row = WarehouseOperation(id=identifier, factory_id=FACTORY, warehouse=warehouse, sequence=revision + 1,
@@ -416,6 +447,38 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
         if _commit:
             db.commit()
         return entry_data(row)
+    except Exception:
+        db.rollback()
+        raise
+
+
+def recover(db, actor, warehouse, payload):
+    """Serialize with posting; either return its receipt or permanently fence its ID."""
+    ensure_schema(db)
+    body = request_body(payload)
+    signature = digest([warehouse, actor.id, body])
+    try:
+        from app.services.cutting_materials import before_warehouse_lock, INTERNAL_KINDS, SOURCE
+        if payload.kind in INTERNAL_KINDS or payload.source_system == SOURCE:
+            raise HTTPException(422, '裁床专用操作请从裁床界面核对')
+        before_warehouse_lock(db, warehouse, payload)
+        state = procurement.lock_factory(db)
+        old = db.scalar(select(WarehouseOperation).where(WarehouseOperation.factory_id == FACTORY,
+            WarehouseOperation.warehouse == warehouse, WarehouseOperation.request_id == str(payload.request_id)))
+        if old:
+            if old.request_hash != signature or json.loads(old.payload_json).get('bulk_request_id'):
+                raise HTTPException(409, '请求编号已用于其他内容或操作者，请核对原单')
+            result = {'state': 'abandoned' if old.kind == 'COMMAND_ABANDONED' else 'committed'}
+            db.rollback()
+            return result
+        revision = max((r.sequence for r in documents(db, warehouse)), default=0)
+        db.add(WarehouseOperation(id='WF-'+uuid4().hex[:20], factory_id=FACTORY, warehouse=warehouse,
+            sequence=revision+1, request_id=str(payload.request_id), request_hash=signature,
+            kind='COMMAND_ABANDONED', business_date=business_now().date().isoformat(), payload_json=dump(body),
+            actor_id=actor.id, actor_name=actor.display_name, occurred_at=business_now().isoformat()))
+        state.revision += 1
+        db.commit()
+        return {'state': 'abandoned'}
     except Exception:
         db.rollback()
         raise

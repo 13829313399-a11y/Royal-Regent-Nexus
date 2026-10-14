@@ -14,7 +14,7 @@ const currentTab = computed(() => props.workspace.tabs[selectedTab.value] ?? pro
 
 <template>
   <section class="cutting-page">
-    <PageHeader :title="workspace.title" :description="workspace.description" eyebrow="华康 C / 裁床部"><template #actions><StatusPill label="建设中 · 业务待接入" /></template></PageHeader>
+    <PageHeader :title="workspace.title" :description="workspace.description"><template #actions><StatusPill label="建设中 · 业务待接入" /></template></PageHeader>
     <div class="cutting-notice" role="note"><Info :size="18" aria-hidden="true" /><p>当前开放工作区导航与业务说明，尚不能录入、保存或结算业务数据。</p></div>
     <SectionPanel class="cutting-content-panel" :title="currentTab" subtitle="业务数据待接入" :aria-label="workspace.title">
       <div class="cutting-section-nav" aria-label="业务视图">

@@ -16,13 +16,14 @@ export interface OrderData {
   reconciliation?: { requisition_version: number; disposition: string; evidence: string; actor_id: string; created_at: string }
 }
 export interface OrderRevision { version: number; data: OrderData; actor_id: string; created_at: string; reason: string }
-export interface CuttingOrder { planning_summary?: { states?: string[]; published_stale: boolean; draft_stale: boolean; published_version: number | null; draft_version: number | null }; line_id: string; dispatch_id: string; source_version: number; snapshot: OrderData['order']; received_at: string; needs_receipt: boolean; current: OrderRevision | null; workflow_status?: string; expected_date_passed?: boolean; pending_purchase?: Pick<OrderData, 'requisition' | 'bom' | 'order' | 'batches'> | null }
+export interface CuttingOrder { planning_summary?: { receipt_review_required?: boolean; states?: string[]; published_stale: boolean; draft_stale: boolean; published_version: number | null; draft_version: number | null }; line_id: string; dispatch_id: string; source_version: number; snapshot: OrderData['order']; received_at: string; needs_receipt: boolean; current: OrderRevision | null; workflow_status?: string; expected_date_passed?: boolean; pending_purchase?: Pick<OrderData, 'requisition' | 'bom' | 'order' | 'batches'> | null }
 export interface Page<T> { data: T[]; total: number; page: number; page_size: number }
 export type OrderAction = 'receive' | 'bom' | 'requisition' | 'eta' | 'withdraw' | 'reconcile' | 'plan' | 'plan-publish'
 export type OrderCommand = Command & ({ tasks: PlanTaskInput[]; removed_task_reasons?: Record<string,string> } | { draft_version: number } | { dispatch_id: string } | { bom_id: string; bom_version: number; target_sets: number; quantity_basis: string; bom_match_basis: string } | { lines: DemandInput[] } | { requisition_version: number; batches: EtaBatch[] } | { requisition_version: number } | { requisition_version: number; disposition: 'not_ordered' | 'cancelled_or_reallocated'; evidence: string; all_handled: boolean })
 const base = '/cutting-operations/orders'
 const params = { factory_id: CUTTING_FACTORY }
 export const ordersApi = {
+  async read(id: string): Promise<CuttingOrder> { return (await http.get(`${base}/${encodeURIComponent(id)}`, { params })).data },
   async list(page = 1, q = '', status = '', planStatus = ''): Promise<Page<CuttingOrder>> { return (await http.get(base, { params: { ...params, page, q, ...(status ? { status } : {}), ...(planStatus ? { plan_status: planStatus } : {}) } })).data },
   async history(id: string, page = 1): Promise<Page<OrderRevision>> { return (await http.get(`${base}/${encodeURIComponent(id)}/versions`, { params: { ...params, page } })).data },
   async command(id: string, action: OrderAction, body: OrderCommand): Promise<CuttingOrder> { return (await http.post(`${base}/${encodeURIComponent(id)}/${action}`, body)).data },

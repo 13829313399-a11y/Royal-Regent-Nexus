@@ -17,6 +17,7 @@ const changes = computed(() => {
     if (!prior) { rows.push({task:next.name,field:'新增任务',before:'无',after:`${next.target_sets}套`}); continue }
     old.delete(next.task_id)
     for (const [key,label] of fields) if (display(prior,key)!==display(next,key)) rows.push({task:next.name,field:label,before:display(prior,key),after:display(next,key)})
+    if(JSON.stringify(prior.material_receipt_ids??[])!==JSON.stringify(next.material_receipt_ids??[]))rows.push({task:next.name,field:'关联裁床签收单',before:prior.material_receipt_ids?.join('、')||'未关联',after:next.material_receipt_ids?.join('、')||'未关联'})
     if (prior.resource_id!==next.resource_id || prior.resource_version!==next.resource_version) rows.push({task:next.name,field:'执行方／资料版本',before:`${prior.resource.data.name} V${prior.resource_version}`,after:`${(next as Partial<PlanTask>).resource?.data.name ?? '已更换，请核对任务选择'} V${next.resource_version}`})
     const dates = new Set([...prior.days,...next.days].map(d => d.day))
     for (const day of [...dates].sort()) {

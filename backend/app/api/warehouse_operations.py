@@ -43,6 +43,16 @@ def bulk_issue(warehouse: Warehouse, payload: WarehouseBulkIssue, db: Session = 
     return service.bulk_issue(db, actor, warehouse, payload)
 
 
+@router.post('/{warehouse}/documents/recover')
+def recover(warehouse: Warehouse, payload: WarehouseDocumentRequest, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    permissions = capabilities(actor, warehouse, payload.factory_id)
+    # Recovery cannot post stock. Read access plus the original actor/content hash
+    # lets a user resolve their uncertain command after write permission is revoked.
+    if not permissions['read']:
+        raise HTTPException(403, '无当前仓库查询权限')
+    return service.recover(db, actor, warehouse, payload)
+
+
 @router.post('/semi/locations')
 def save_location(payload: WarehouseLocationSave, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     permissions = capabilities(actor, 'semi', payload.factory_id)

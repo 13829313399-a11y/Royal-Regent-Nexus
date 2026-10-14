@@ -15,6 +15,7 @@ defineProps<{ plan: ProductionPlan; title: string; stale?: boolean }>()
       <p>供数起算日期：{{ task.readiness_date ?? '待补齐' }} · {{ task.calendar_source === 'resource' ? '执行方日历' : '默认工作周（周一至周六）' }} · 实际领料：{{ task.actual_issue_date ?? '未登记' }} · 凭据：{{ task.actual_issue_reference || '未登记' }}</p><p v-if="task.expected_issue_date">历史预计领料：{{ task.expected_issue_date }}（不得作为实际领料日）</p><p v-if="task.calendar">工作周：{{ task.calendar.weekdays.map(d => ['周一','周二','周三','周四','周五','周六','周日'][d-1]).join('、') }} · {{ task.calendar.basis }}</p>
       <p v-if="task.date_basis === 'actual'">前置工序实际就绪：{{ task.actual_prerequisite_date ?? '无日期' }} · {{ task.actual_prerequisite_reference }}</p>
       <p>执行资源版本：V{{ task.resource_version }}</p>
+      <ul v-if="task.material_receipts?.length"><li v-for="receipt in task.material_receipts" :key="receipt.id">关联签收 {{receipt.id}} · {{receipt.date}} · {{receipt.quantity}} 原单位；出库 {{receipt.issue_id}}；核定时该出库已退 {{receipt.returned_quantity}}</li></ul>
       <ul><li v-for="m in task.materials" :key="m.row">当前BOM物料行 {{ m.row+1 }} 预计就绪：{{ m.expected_date ?? '未填写' }}</li></ul>
       <ul v-if="task.calendar?.exceptions.length"><li v-for="e in task.calendar.exceptions" :key="e.day">日历例外 {{ e.day }}：{{ e.working ? '工作／加班' : '休息' }} · {{ e.reason }}</li></ul>
       <p v-if="task.prerequisite_change_reason">取消前置要求依据：{{ task.prerequisite_change_reason }}</p>
