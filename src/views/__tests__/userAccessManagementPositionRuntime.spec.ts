@@ -420,6 +420,18 @@ describe('UserAccessManagementView system position change', () => {
     expect(wrapper.find('[data-testid="system-position-action-panel"]').exists()).toBe(false)
   })
 
+  it('reads access-only detail without requesting the independent permission catalog', async () => {
+    canMock.mockImplementation((permission: string) => permission === 'system:access_manage')
+    const wrapper = mountView()
+    await flushPromises()
+    expect(getUserAccessMock).toHaveBeenCalledWith('user-1')
+    expect(listSystemPositionsMock).not.toHaveBeenCalled()
+    expect(listPermissionsMock).not.toHaveBeenCalled()
+    expect(getRoleAccessMock).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('权限目录不在当前管理范围内')
+    expect(wrapper.find('[data-testid="identity-summary"]').exists()).toBe(true)
+  })
+
   it('previews and commits one selected position while showing historical cleanup', async () => {
     const wrapper = mountView()
     await flushPromises()

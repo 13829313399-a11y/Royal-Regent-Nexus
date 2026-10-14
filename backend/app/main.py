@@ -29,6 +29,7 @@ from app.api.directory import router as directory_router
 from app.api.collaboration import router as collaboration_router
 from app.api.iam import router as iam_router
 from app.api.identity import router as identity_router
+from app.api.position_reviews import router as position_reviews_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
 from app.api.injection_scheduling import router as injection_scheduling_router
 from app.api.module_feedback import router as module_feedback_router
@@ -284,6 +285,9 @@ app.include_router(indonesia_invoice_router)
 app.include_router(injection_scheduling_router)
 app.include_router(iam_router)
 app.include_router(identity_router)
+app.include_router(position_reviews_router)
+from app.api.iam_workspace import router as iam_workspace_router
+app.include_router(iam_workspace_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
 app.include_router(raw_material_router)

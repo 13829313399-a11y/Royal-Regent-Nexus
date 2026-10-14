@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api")
 def registration_catalog(db: Session = Depends(get_db)):
     from app.core.config import settings
     result = catalog(db)
-    return {"organizations": [{"id": o["id"], "name": o["name"], "factory_id": o["factory_id"],
+    return {"organizations": [{"id": o["id"], "name": o["name"], "factory_id": o["factory_id"], "kind": o["kind"], "status": o["status"],
                                 "departments": o["departments"]} for o in result["organizations"]
                               if o["status"] == "active" and (o["kind"] == "factory" or
                                  (o["kind"] == "functional_unit" and settings.iam_identity_writes_enabled))]}

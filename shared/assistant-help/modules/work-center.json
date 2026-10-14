@@ -12,7 +12,7 @@
     "anchor_id": "work-center.overview",
     "field_keys": [],
     "summary": "阅读状态与业务办理状态是两件事。",
-    "content": "可处理责任是 task、can_act=true，且业务状态为 open 或 in_progress。标记已读不会完成审批、生产或收货。有效稍后提醒还需时间未到且关注版本一致；当前聚焦排除这些有效稍后项，所以 focus_total 与 actionable_total 可不同。筛选后的 filtered_total 与总览可能范围不同。health=partial 表示来源不完整，不能据此说没有待办。",
+    "content": "可处理责任是 task、can_act=true，且业务状态为 open 或 in_progress。标记已读不会完成审批、生产或收货。有效稍后提醒还需时间未到且关注版本一致；当前聚焦排除这些有效稍后项，所以 focus_total 与 actionable_total 可不同。筛选后的 filtered_total 与总览可能范围不同。health=partial 表示来源不完整，不能据此说没有待办。\n岗位更新的管理员待办只在完整管理范围内显示，点击后在人员与权限工作台核对；员工结果知会指向“我的岗位与权限”。已读、归档和稍后提醒不批准岗位或改变权限。通知暂未投递不会回滚已经确认的身份与权限；业务办理回执和源请求是结果依据。\n整合权限界面启用时，账号和岗位待办跳转到“人员与权限”的按类型办理面板；仅查看不创建新的调整单。旧书签由兼容路由保留原目标。",
     "steps": [
       {
         "title": "区分总览范围",
@@ -40,16 +40,26 @@
       {
         "path": "backend/app/services/work_center/service.py",
         "symbol": "flags",
-        "sha256": "560c606c6d6cb04109f1415f1be445cf1a9bfe22a9a4f391d42de493dab92d09"
+        "sha256": "63bb68b45696ef5ec08ba8de4d8160bd0c53ac1272f845923beaa7365a8aa8b8"
       },
       {
         "path": "src/views/NotificationCenterView.vue",
         "symbol": "nc-filters",
         "sha256": "9f67fd7ceecd9c7e92d38f2de9a67ba6c3ede00995783a6bb4fbe417438b3029"
+      },
+      {
+        "path": "backend/app/services/work_center/registry.py",
+        "symbol": "def position_queries",
+        "sha256": "083e1cd9d6a7497b299533e988387d97876ed2ed5c391bbae4305b965a4b25ea"
+      },
+      {
+        "path": "src/features/work-center/routes.ts",
+        "symbol": "entryRoute",
+        "sha256": "1fd3fdb46bd4399366c7fe026db01c5ac513f2a68d8a2d56e32b43e82ead726a"
       }
     ],
-    "knowledge_version": "2026.10.12-v2",
-    "verified_commit": "working-tree:assistant-v2",
+    "knowledge_version": "2026.10.14-iam-consolidation",
+    "verified_commit": "working-tree:iam-consolidation",
     "status": "verified"
   }
 ]

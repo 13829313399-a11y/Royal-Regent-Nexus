@@ -76,6 +76,12 @@ def enroll_approved_registration(db, user, profile, registration, actor):
 
 
 def approve_functional_registration(db, actor, registration, payload):
+    result = approve_functional_registration_tx(db, actor, registration, payload)
+    db.commit()
+    return result
+
+
+def approve_functional_registration_tx(db, actor, registration, payload):
     from app.models.auth import AuthUser, AuthUserAuthorizationRevision
     from app.services.auth import now_text
     from app.services.system import mark_registration_notifications_handled, registration_request_to_out
@@ -128,5 +134,5 @@ def approve_functional_registration(db, actor, registration, payload):
     revision = db.get(AuthUserAuthorizationRevision, user.id)
     revision.revision += 1
     mark_registration_notifications_handled(db, registration.id, now)
-    db.commit()
+    db.flush()
     return registration_request_to_out(registration)

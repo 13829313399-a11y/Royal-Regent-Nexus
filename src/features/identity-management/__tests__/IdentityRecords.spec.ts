@@ -2,6 +2,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import IdentityRecords from '../IdentityRecords.vue'
 import type { ChangeRecord } from '@/api/identity'
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'admin' }, authorizationVersion: 1, can: () => true }) }))
 
 const api = vi.hoisted(() => ({
   changes: vi.fn(),

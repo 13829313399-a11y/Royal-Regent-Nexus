@@ -1,0 +1,52 @@
+FILE: frontend-final.log
+> royal-regent-nexus@0.0.0 test:unit
+> vitest run src/features/identity-management/__tests__ src/router/__tests__/iamCompatibility.spec.ts src/router/__tests__/iamConsolidation.spec.ts src/features/work-center/__tests__/presentation.spec.ts src/views/__tests__/userAccessManagementPositionRuntime.spec.ts src/views/__tests__/userAccessManagementView.spec.ts
+
+
+ RUN  v4.1.9 D:/RR/royal-regent-nexus
+
+
+ Test Files  14 passed (14)
+      Tests  121 passed (121)
+   Start at  12:17:14
+   Duration  11.91s (transform 9.53s, setup 0ms, import 53.33s, tests 5.70s, environment 68.43s)
+
+FILE: typecheck-test-final.log
+> royal-regent-nexus@0.0.0 typecheck:test
+> vue-tsc --noEmit -p tsconfig.test.json
+
+FILE: backend-final.log
+..........                                                               [100%]
+10 passed in 223.41s (0:03:43)
+
+FILE: backend-tests.log
+...............ss.....ss......                                           [100%]
+26 passed, 4 skipped in 622.16s (0:10:22)
+
+FILE: full-build-final.log
+> royal-regent-nexus@0.0.0 build
+> node scripts/check-assistant-help.mjs && vue-tsc -b && vite build && npm run build:image-translation
+
+{
+  "articles": 17,
+  "partial": [],
+  "issues": []
+}
+vite v8.1.0 building client environment for production...
+
+transforming...✓ 2139 modules transformed.
+[bundle inventory omitted]
+> tsc --noEmit -p tsconfig.json
+
+vite v6.4.3 building for production...
+transforming...
+✓ 4574 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                      0.84 kB │ gzip:  0.50 kB
+dist/assets/index-hMdta6Pv.css      16.89 kB │ gzip:  4.00 kB
+dist/assets/ServerApp-Cufh6Cko.js   88.67 kB │ gzip: 23.61 kB
+dist/assets/index-BbSBinuA.js      147.52 kB │ gzip: 47.97 kB
+✓ built in 7.05s
+Web release boundaries verified: private models and Node-only runtime adapters excluded; shell assets present.
+图片翻译已构建到 dist/image-translation；模型由管理员安装在服务器私有目录。

@@ -18,8 +18,8 @@ import { useAuthStore } from '@/stores/auth'
 import { collaborationApi, type Capabilities } from '@/api/collaboration'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
-import { identityUiEnabled } from '@/components/iam/workspace/iam-navigation'
-import { legacyIamAccountTarget } from './iamCompatibility'
+import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
+import { legacyIamAccountTarget, consolidatedIamTarget } from './iamCompatibility'
 const qcInspectionFullPageMeta = {
   fullPage: true,
   requiresAuth: true,
@@ -30,6 +30,7 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/account/position', name: 'account-position', component: () => import('@/features/identity-management/MyPositionPanel.vue'), meta: { title: '我的岗位与权限', requiresAuth: true } },
   { path: '/modules/pmc-warehouse/material-handover', name: 'material-handover', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), meta: { title: '制单与扫码交接', fullPage: true, requiresAuth: true, permissions: ['fabric_operations:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
   { path: '/material-handover/prepare', name: 'material-handover-external', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), props: { external: true }, meta: { title: '物料单据制单', fullPage: true, requiresAuth: false } },
   { path: '/messages', name: 'messages', component: () => import('@/views/MessagesView.vue'), meta: { title: '私信', requiresAuth: true } },
@@ -458,15 +459,24 @@ const routes: RouteRecordRaw[] = [
     path: '/system/users',
     name: 'system-users',
     component: identityUiEnabled
-      ? () => import('@/features/identity-management/PeopleCenter.vue')
+      ? positionWorkbenchEnabled ? consolidatedIamEnabled ? () => import('@/features/identity-management/PositionWorkbench.vue') : () => import('@/features/identity-management/LegacyPositionWorkbench.vue') : () => import('@/features/identity-management/PeopleCenter.vue')
       : () => import('@/views/SystemUserManagementView.vue'),
     meta: {
       title: '账号与权限管理',
       fullPage: true,
       requiresAuth: true,
-      permissions: ['system:user_manage'],
+      permissions: consolidatedIamEnabled ? ['system:user_manage', 'system:access_manage'] : ['system:user_manage'],
       enforcePermissions: true,
     },
+  },
+  {
+    path: '/system/users/position-reviews', name: 'position-workbench-compatible',
+    component: () => import('@/features/identity-management/LegacyPositionWorkbench.vue'),
+    meta: { title: '岗位待办与权限', fullPage: true, requiresAuth: true, permissions: ['system:user_manage'], enforcePermissions: true },
+  },
+  {
+    path: '/system/users/advanced', name: 'system-people-advanced', component: () => import('@/features/identity-management/PeopleCenter.vue'),
+    meta: { title: '任职与工作交接', fullPage: true, requiresAuth: true, permissions: ['system:user_manage'], enforcePermissions: true },
   },
   {
     path: '/system/users/registration',
@@ -512,8 +522,8 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/system/iam/audit',
     ...(identityUiEnabled ? {
-      component: () => import('@/features/identity-management/IdentityRecords.vue'),
-      meta: { title: '授权与人员记录', fullPage: true, requiresAuth: true, permissions: ['system:audit_read'], enforcePermissions: true },
+      component: consolidatedIamEnabled ? () => import('@/features/identity-management/workspace/WorkspaceRecords.vue') : () => import('@/features/identity-management/IdentityRecords.vue'),
+      meta: { title: consolidatedIamEnabled ? '操作记录' : '授权与人员记录', fullPage: true, requiresAuth: true, permissions: consolidatedIamEnabled ? ['system:user_manage', 'system:access_manage', 'system:audit_read'] : ['system:audit_read'], enforcePermissions: true },
     } : { redirect: '/system/users' }),
   },
     ],
@@ -676,8 +686,10 @@ const finishRouteLoading = () => {
 }
 
 router.beforeEach(async (to, from) => {
+  const consolidatedTarget = consolidatedIamTarget(to, consolidatedIamEnabled)
+  if (consolidatedTarget) return consolidatedTarget
   if (to.path === '/system/users') {
-    const legacyTarget = legacyIamAccountTarget(to, identityUiEnabled)
+    const legacyTarget = legacyIamAccountTarget(to, identityUiEnabled, positionWorkbenchEnabled)
     if (legacyTarget) return legacyTarget
   }
   if (to.path.startsWith(UV_BASE) && to.query.factory !== UV_FACTORY) {

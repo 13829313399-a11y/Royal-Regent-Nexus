@@ -55,7 +55,7 @@
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "b75ba4de50a78cff6366621e372e1158458d8d009da9fb67810c650c871da74b"
+        "sha256": "11f6ac418d58ca8fa310a5b10a23f07e3740503e2eaa94d4d52c7647197071da"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
@@ -63,8 +63,8 @@
         "sha256": "809fbc5079be135c02ca77a9510e3395ded16f95ee23e2b63afb20261e6051c9"
       }
     ],
-    "knowledge_version": "2026.10.10-collaboration-r1",
-    "verified_commit": "working-tree:collaboration-r1",
+    "knowledge_version": "2026.10.13-position-workbench",
+    "verified_commit": "working-tree:position-workbench",
     "status": "verified"
   }
 ]
