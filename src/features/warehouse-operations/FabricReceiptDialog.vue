@@ -19,7 +19,7 @@ const receiptDate = ref(today), deliveryReference = ref(''), deliveryDate = ref(
 const initialCategory = props.source.material_category ?? ''
 const category = ref<MaterialCategory | ''>(initialCategory)
 const reason = ref(''), note = ref(''), busy = ref(false), error = ref('')
-const unitPrice = ref(''), currency = ref<NonNullable<ReceiptPriceInput['currency']>>('')
+const unitPrice = ref(''), currency = ref<NonNullable<ReceiptPriceInput['currency']>>('CNY')
 const rows = ref([{ key: 1, quantity: '', location: '', location_id: '', dye_lot: '', roll_no: '' }])
 let nextKey = 2, alive = true, saved = false
 const requestId = warehouseRequestId()
@@ -42,7 +42,7 @@ const overage = computed(() => {
   return extra > 0n ? quantityText(extra) : undefined
 })
 const valid = computed(() => props.source.can_receive && total.value && (!unitPrice.value.trim() || (currency.value && receiptAmount(total.value, unitPrice.value) !== undefined)) && rows.value.every(row => row.location_id && (category.value !== 'FABRIC' || row.dye_lot.trim())) && (!overage.value || reason.value.trim()) && category.value && deliveryReference.value.trim() && receiptDate.value && receiptDate.value <= today)
-const dirty = computed(() => unitPrice.value || currency.value || rows.value.some(row => row.quantity || row.location_id || row.location || row.dye_lot || row.roll_no) || deliveryReference.value || deliveryDate.value !== today || receiptDate.value !== today || category.value !== initialCategory || reason.value || note.value)
+const dirty = computed(() => unitPrice.value || currency.value !== 'CNY' || rows.value.some(row => row.quantity || row.location_id || row.location || row.dye_lot || row.roll_no) || deliveryReference.value || deliveryDate.value !== today || receiptDate.value !== today || category.value !== initialCategory || reason.value || note.value)
 function allowLeave() {
   if (busy.value) return false
   return saved || !dirty.value || window.confirm(submitted.value ? '保存结果尚未确认，系统可能已入库。离开后请先查入库记录，避免重复登记。确定离开？' : '本次收料尚未保存，离开会清空填写内容。确定离开？')

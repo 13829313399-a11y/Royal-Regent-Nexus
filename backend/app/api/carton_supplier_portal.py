@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.models.carton_mark import CartonMarkAsset
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
-from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, ShipmentReceiptLink, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
+from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, CancellationAcknowledge, ShipmentStatusChange, ShipmentReceiptLink, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.services import carton_supplier_portal as service
 from app.services import carton_supplier_delivery_import as delivery_import
 from app.services import carton_supplier_receipt_link as receipt_link
@@ -281,6 +281,12 @@ def carton_mark_document(template_id: str, kind: str, factory_id: str, preview: 
         "Content-Length": str(document.size_bytes), "X-Content-SHA256": document.sha256,
         "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
 
+@router.post("/orders/{order_id}/cancellation-ack")
+def acknowledge_cancellation(order_id: str, payload: CancellationAcknowledge, db: Session = Depends(get_db),
+                             user: AuthContext = Depends(get_current_user)):
+    return service.acknowledge_cancellation(db, user, order_id, payload)
+
+
 @router.put("/papers/{line_id}/commitment")
 def accept(line_id: str, payload: CommitmentSave, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.accept_line(db, user, line_id, payload)
@@ -296,16 +302,21 @@ def ship(payload: ShipmentCreate, db: Session = Depends(get_db), user: AuthConte
 
 
 @router.post("/shipments/import-preview")
-async def preview_shipment_import(file: UploadFile = File(...), db: Session = Depends(get_db),
+async def preview_shipment_import(file: UploadFile = File(...), row_selections: str = Form("[]"), db: Session = Depends(get_db),
                                   user: AuthContext = Depends(get_current_user)):
-    return delivery_import.preview(db, user, file.filename or "", await file.read(service.MAX_FILE + 1))
+    try:
+        choices = json.loads(row_selections)
+    except (ValueError, TypeError):
+        raise HTTPException(422, "送货明细订单选择格式无效") from None
+    return delivery_import.preview(db, user, file.filename or "", await file.read(service.MAX_FILE + 1), choices)
 
 
 @router.post("/shipments/import-confirm")
 async def confirm_shipment_import(file: UploadFile = File(...), sha256: str = Form(...),
-                                  selections: str = Form(...), db: Session = Depends(get_db),
+                                  selections: str = Form(...), row_selections: str = Form("[]"), db: Session = Depends(get_db),
                                   user: AuthContext = Depends(get_current_user)):
     try:
+        choices = json.loads(row_selections)
         raw = json.loads(selections)
         if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
             raise ValueError()
@@ -315,7 +326,7 @@ async def confirm_shipment_import(file: UploadFile = File(...), sha256: str = Fo
             raise ValueError()
     except (ValueError, TypeError, KeyError):
         raise HTTPException(422, "所选送货单格式无效") from None
-    return delivery_import.confirm(db, user, file.filename or "", await file.read(service.MAX_FILE + 1), sha256, keys)
+    return delivery_import.confirm(db, user, file.filename or "", await file.read(service.MAX_FILE + 1), sha256, keys, choices)
 
 @router.get("/attachments/{attachment_id}")
 def download(attachment_id: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
@@ -334,6 +345,18 @@ def internal_pending_shipments(factory_id: str, limit: int = Query(default=3, ge
 @router.post("/internal/shipments/{shipment_id}/receive")
 def receive(shipment_id: str, payload: ShipmentReceive, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return service.receive_shipment(db, user, shipment_id, payload)
+
+
+@router.post("/internal/shipments/{shipment_id}/defer")
+def defer_shipment(shipment_id: str, payload: ShipmentStatusChange, db: Session = Depends(get_db),
+                   user: AuthContext = Depends(get_current_user)):
+    return service.change_non_arrival(db, user, shipment_id, payload)
+
+
+@router.post("/internal/shipments/{shipment_id}/reopen")
+def reopen_shipment(shipment_id: str, payload: ShipmentStatusChange, db: Session = Depends(get_db),
+                    user: AuthContext = Depends(get_current_user)):
+    return service.change_non_arrival(db, user, shipment_id, payload, reopen=True)
 
 
 @router.get("/internal/shipments/{shipment_id}/receipt-options")

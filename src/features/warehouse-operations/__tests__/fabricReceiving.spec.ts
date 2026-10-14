@@ -47,7 +47,11 @@ describe('fabric actual receiving', () => {
   })
   it('adds optional price and currency, previews amount and submits frozen receipt evidence', async () => {
     await open(); await fill()
+    expect(body().get<HTMLSelectElement>('[aria-label="入库币种"]').element.value).toBe('CNY')
     await body().get('[aria-label="入库单价"]').setValue('0.05')
+    expect(button('保存并入库').attributes('disabled')).toBeUndefined()
+    expect(body().get('.receipt-price-amount').text()).toContain('0.01 CNY')
+    await body().get('[aria-label="入库币种"]').setValue('')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
     await body().get('[aria-label="入库币种"]').setValue('CNY')
     expect(body().get('.receipt-price-amount').text()).toContain('0.01 CNY')
@@ -62,6 +66,7 @@ describe('fabric actual receiving', () => {
   })
   it('defaults dates to Shanghai today, keeps category manual and closes untouched defaults', async () => {
     await open()
+    expect(body().get<HTMLSelectElement>('[aria-label="入库币种"]').element.value).toBe('CNY')
     expect(body().get<HTMLInputElement>('[aria-label="实际收货日期"]').element.value).toBe('2026-10-06')
     expect(body().get<HTMLInputElement>('[aria-label="送货单日期"]').element.value).toBe('2026-10-06')
     expect(body().get<HTMLSelectElement>('[aria-label="入库物料分类"]').element.value).toBe('')
@@ -96,6 +101,9 @@ describe('fabric actual receiving', () => {
     const payload = api.receive.mock.calls[0]![1]
     expect(payload).not.toHaveProperty('accounting_month')
     expect(payload).not.toHaveProperty('prior_received_quantity')
+    expect(payload).not.toHaveProperty('unit_price')
+    expect(payload).not.toHaveProperty('price_unit')
+    expect(payload).not.toHaveProperty('currency')
     expect(payload).toEqual(expect.objectContaining({ confirmed: true, delivery_note_date: '2026-10-06' }))
   })
   it('shows the remaining quantity after recorded receipts without repeating historical questions', async () => {

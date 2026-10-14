@@ -17,6 +17,37 @@ it('starts blank, opens only on explicit selection or typing, and never auto-sel
   expect(wrapper.emitted('update:modelValue')!.at(-1)).toEqual(['A33'])
 })
 
+it('pastes Excel dimensions without manual separators and replaces only the selected input', async () => {
+  const wrapper = mount(Picker, { props: { label: '规格 1', dimensionPaste: true, modelValue: '旧规格 cm', options: [], 'onUpdate:modelValue': (value: string): void => { void wrapper.setProps({ modelValue: value }) } } })
+  const input = wrapper.get<HTMLInputElement>('input')
+  input.element.setSelectionRange(0, 3)
+  await input.trigger('paste', { clipboardData: { getData: () => '30\t20\t15\r\n' } })
+  expect(input.element.value).toBe('30*20*15 cm')
+  expect(wrapper.emitted('update:modelValue')).toEqual([['30*20*15 cm']])
+  expect(input.element.selectionStart).toBe(8)
+  wrapper.unmount()
+})
+
+it.each([
+  { dimensionPaste: false, disabled: false, value: '30\t20\t15' },
+  { dimensionPaste: true, disabled: true, value: '30\t20\t15' },
+  { dimensionPaste: true, disabled: false, value: '30*20*15' },
+  { dimensionPaste: true, disabled: false, value: '30×20×15' },
+  { dimensionPaste: true, disabled: false, value: '长30 宽20 高15' },
+])('retains native paste for non-dimension fields, locked inputs and existing text: $value', async props => {
+  const wrapper = mount(Picker, { props: { label: '纸质 1', modelValue: '', options: [], dimensionPaste: props.dimensionPaste, disabled: props.disabled } })
+  await wrapper.get('input').trigger('paste', { clipboardData: { getData: () => props.value } })
+  expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+  wrapper.unmount()
+})
+
+it('preserves ordinary typed specification text', async () => {
+  const wrapper = mount(Picker, { props: { label: '规格 1', dimensionPaste: true, modelValue: '', options: [] } })
+  await wrapper.get('input').setValue('30 20 15 cm')
+  expect(wrapper.emitted('update:modelValue')).toEqual([['30 20 15 cm']])
+  wrapper.unmount()
+})
+
 it('shows configuration assistance only after matching item/product input', async () => {
   const row = { id: 'A', kind: 'CONFIG', status: 'ACTIVE', code: 'BOX-001', sources: [], data: { product_name: '消防车', lines: [] } } as unknown as MasterRecord
   const wrapper = mount(Assist, { props: { records: [row], customer: '', item: '', contract: '', product: '', lines: [] } })

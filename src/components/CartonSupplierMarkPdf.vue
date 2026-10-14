@@ -161,7 +161,7 @@ onBeforeUnmount(() => { generation++; controller.abort(); clearPreview() })
     <div v-if="result" class="mt-5 space-y-3">
       <p role="status" class="rounded-lg bg-teal-50 p-3 text-sm text-teal-900">{{ result.asset.file_name }} · {{ result.page_count }} 页 · {{ result.layout_name }} V{{ result.layout_version }} · 已保存到资料库，待核对 / 审核。</p>
       <ul v-if="result.warnings.length" class="list-inside list-disc rounded-lg bg-amber-50 p-3 text-sm text-amber-900"><li v-for="warning in result.warnings" :key="warning">{{ warning }}</li></ul>
-      <p class="text-xs text-slate-500">请查看完整内容和素材。{{ layout?.config?.series === 'zuru' ? 'ZURU 系列按确认稿显示条码号码，请核实号码；' : '打印后扫码验证条码；' }}此处生成客户模板排版审阅稿，生产 1:1 尺寸需另行确认。</p>
+      <p class="text-xs text-slate-500">请查看完整内容和素材。{{ layout?.config?.series === 'zuru' ? 'ZURU 按客户版式显示条码号码或重生成条码；Hy-Vee 请打印后扫码验证；' : '打印后扫码验证条码；' }}此处生成客户模板排版审阅稿，生产 1:1 尺寸需另行确认。</p>
       <div class="flex flex-wrap gap-3"><button type="button" :disabled="!previewUrl" class="rounded-lg border px-4 py-2 disabled:opacity-50" @click="download">下载 PDF</button><button v-if="!previewUrl" type="button" class="rounded-lg border px-4 py-2" @click="showPreview">重新打开预览</button><button type="button" :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-white" @click="goCheck">用 Excel / PDF 核对</button></div>
       <iframe v-if="previewUrl" :src="previewUrl" title="生成的箱唛 PDF 预览" class="h-[65vh] min-h-96 w-full rounded-lg border"></iframe>
     </div>

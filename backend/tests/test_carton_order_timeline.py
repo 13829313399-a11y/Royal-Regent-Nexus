@@ -63,6 +63,18 @@ def test_creation_and_modification_use_captured_snapshots(db):
     assert rows[1].description == "合同：OLD → NEW；计划交期：2026-09-10 → 2026-09-12"
 
 
+def test_date_only_adjustment_shows_original_dates_without_quantity_changes(db):
+    order_line(db, "l")
+    seed(db, audit("dates", "ORDER_DATES_CHANGED", "order-l", {
+        "before": {"customer_due_date": "2026-09-13", "due_date": "2026-09-10", "revision": 2},
+        "customer_due_date": "2026-09-15", "due_date": "2026-09-12", "reason": "客户更改交期"}))
+    event = order_timeline(db, "huaxing").events[0]
+    assert event.event_label == "调整订单交期"
+    assert event.description == "客户交期：2026-09-13 → 2026-09-15；计划交期：2026-09-10 → 2026-09-12"
+    assert event.quantity_change is None and event.quantity_before is None and event.quantity_after is None
+    assert event.reason == "客户更改交期"
+
+
 def test_exact_order_all_lines_search_and_factory_customer_isolation(db):
     order_line(db, "box", order_id="first")
     order_line(db, "sheet", order_id="first", line_no=2, packaging="滑板纸", unit="张")

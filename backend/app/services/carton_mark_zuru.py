@@ -2,6 +2,7 @@
 import io
 import re
 from collections import defaultdict
+from decimal import Decimal
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -64,10 +65,101 @@ def source_cells(filename, content):
     return sheets
 
 
+def extract_archibrand(sheet, cells):
+    """Pair explicitly labelled faces; never merge unrelated repeated SKUs."""
+    starts = sorted(row for (row, _), text in cells.items() if text.strip().upper() == "FRONT MARK:")
+    records = []
+    for index, start in enumerate(starts):
+        end = starts[index+1] if index+1 < len(starts) else max(row for row, _ in cells)+1
+        block = {(r,c):t for (r,c),t in cells.items() if start <= r < end}
+        if not any(t.strip().upper() == "SIDE MARK:" for t in block.values()):
+            raise HTTPException(422, f"{sheet} 第{start}行缺少明确的正侧唛配对")
+        found = defaultdict(list)
+        for (row,col), content in block.items():
+            if content.strip().upper().startswith("ARCHIBRAND,"):
+                found["recipient"].append(content.strip())
+            if content.strip().upper() == "MADE IN CHINA":
+                found["country"].append("CHINA")
+            for key, pattern in (("item",r"ITEM NO\.?"),("product",r"ITEM DESCRIPTION"),
+                    ("quantity",r"CTN QTY"),("carton_total",r"CTN NUMBER")):
+                match = re.fullmatch(r"\s*"+pattern+r"\s*:\s*(.*?)\s*",content,re.I)
+                if not match:
+                    continue
+                value = match[1].strip().strip("/").strip()
+                for other_col, nearby in sorted((c,t) for (r,c),t in block.items() if r==row and col<c<=col+10):
+                    if identify(nearby)[0]:
+                        break
+                    value += (" " if value else "")+nearby
+                if value:
+                    found[key].append(value.strip())
+        fields = {}
+        for key, candidates in found.items():
+            values = list(dict.fromkeys(candidates))
+            if len(values)!=1:
+                raise HTTPException(422,f"{sheet} 第{start}行的{TITLES.get(key,key)}正侧唛内容冲突，请核实原稿")
+            fields[key]=values[0]
+        if any(value.startswith(FORMULA_ERRORS) for value in fields.values()):
+            raise HTTPException(422,f"{sheet} 第{start}行箱唛有公式错误，请核实并保存原稿")
+        if not fields.get("item") or not fields.get("product") or not fields.get("recipient"):
+            raise HTTPException(422,f"{sheet} 第{start}行缺少货号、品名或收货方")
+        records.append(dict(sheet=sheet,row=start,profile="archibrand",fields=fields))
+    return records
+
+
+def extract_anko(sheet, cells):
+    main = {r:t for (r,c),t in cells.items() if c==1}
+    side = {r:t for (r,c),t in cells.items() if c==2}
+    if not any("OUTER CARTON MAIN MARK" in t.upper() for t in main.values()) or not any("OUTER CARTON SIDE MARK" in t.upper() for t in side.values()):
+        raise HTTPException(422,"ANKO 原稿缺少正侧唛列标题，请核实版式")
+    patterns = dict(item=r"ITEM#\s*(.+)", department=r"Dept No\.\s*(.+)",
+        customer_po=r"Order No\.\s*(.+)", keycode=r"\*Keycode\s+(.+)", product=r"Description\s+(.+)",
+        issue_pack=r"Qty Issue Pack\s+(.+)", quantity=r"Qty Shipper Pack\s+(.+)",
+        carton_total=r"Carton No\.\s*(?:of\s+)?(.+)")
+    fields = {}
+    for key,pattern in patterns.items():
+        candidates = [m[1].strip() for t in main.values() if (m:=re.fullmatch(pattern,t.strip(),re.I))]
+        if len(candidates)!=1:
+            raise HTTPException(422,f"ANKO 原稿的{TITLES.get(key,key)}缺少或不唯一，请核实")
+        fields[key]=candidates[0]
+    countries=[t.strip() for t in main.values() if re.fullmatch(r"NZ|AU",t.strip(),re.I)]
+    if len(countries)!=1:
+        raise HTTPException(422,"ANKO 原稿目的地缺少或不唯一，请核实")
+    fields["destination"]=countries[0]
+    for key,pattern in (("gross_weight",r"GRS\.WT\s+(.+)"),("dimensions",r"D:\s*(.+)")):
+        candidates=[m[1].strip() for t in side.values() if (m:=re.fullmatch(pattern,t.strip(),re.I))]
+        if len(candidates)!=1:
+            raise HTTPException(422,f"ANKO 侧唛的{TITLES[key]}缺少或不唯一，请核实")
+        fields[key]=candidates[0]
+    if not any(t.strip().casefold()=="made in china" for t in side.values()):
+        raise HTTPException(422,"ANKO 侧唛缺少明确产地，请核实")
+    fields["country"]="CHINA"
+    if any(value.startswith(FORMULA_ERRORS) for value in fields.values()):
+        raise HTTPException(422,"ANKO 原稿有公式错误，请核实并保存")
+    # These originals include conditional handling logos, whose artwork was
+    # not supplied. Do not silently issue a seemingly complete heavier case.
+    number=r"\d+(?:\.\d+)?"
+    dims=re.fullmatch(r"("+number+r")\s*[x×]\s*("+number+r")\s*[x×]\s*("+number+r")\s*CMS?",fields["dimensions"],re.I)
+    weight=re.fullmatch(r"("+number+r")\s*KGS?",fields["gross_weight"],re.I)
+    if not dims or not weight or any(Decimal(v)<=0 for v in dims.groups()) or Decimal(weight[1])<0:
+        raise HTTPException(422,"ANKO 尺寸或毛重单位无法确认，请核实原稿")
+    volume=Decimal(1)
+    for number in dims.groups():volume*=Decimal(number)/100
+    if volume>Decimal("0.13") or Decimal(weight[1])>Decimal("9.5"):
+        raise HTTPException(422,"ANKO 此箱体积或毛重涉及客户搬运标识，请补齐已确认图案并配置版式后生成")
+    return [dict(sheet=sheet,row=2,profile="anko",fields=fields)]
+
+
 def extract_zuru(filename, content):
     sheets = source_cells(filename, content)
+    from app.services.carton_mark_hyvee import extract_hyvee
+    hyvee=extract_hyvee(sheets)
+    if hyvee is not None:return hyvee
     records = []
     for sheet, cells in sheets.items():
+        if any(t.strip().upper().startswith("ARCHIBRAND,") for t in cells.values()):
+            records.extend(extract_archibrand(sheet,cells));continue
+        if any(t.strip().upper()=="ANKO" for t in cells.values()):
+            records.extend(extract_anko(sheet,cells));continue
         # Shipping-mark blocks have colon labels; raw data tables have column
         # headings and are not enrolled as additional printing records.
         starts = sorted(row for (row, _), text in cells.items() if identify(text)[0] == "item" and ":" in text)
@@ -121,7 +213,7 @@ def extract_zuru(filename, content):
                 raise HTTPException(422, f"{sheet} 第{start}行缺少货号或品名")
             records.append(dict(sheet=sheet, row=start, profile=profile, fields=fields))
     if not 1 <= len(records) <= 50:
-        raise HTTPException(422, "未识别支持的 ZURU/FTC、Zumiez 或 ESAL 箱唛块，请核实客户资料版式")
+        raise HTTPException(422, "未识别支持的 ZURU 箱唛块（FTC、Zumiez、ESAL、ARCHIBRAND、ANKO、Hy-Vee），请核实客户资料版式")
     return records
 
 
@@ -148,6 +240,11 @@ def prepare_records(original):
     if len(records) > len(chosen):
         warnings.append(f"仅生成所选订单 ITEM，已跳过 {len(records) - 1} 个其他货号箱唛块")
     fields = chosen[0]["fields"]
+    if chosen[0]["profile"]=="hyvee":
+        if fields["factory_po"].casefold()!=original["contract_no"].strip().casefold():
+            raise HTTPException(422,"Hy-Vee 所选货号的 Factory PO 与关联订单合同不一致，请核实")
+        warnings.append("Hy-Vee 使用外箱数据表重新排版；示例区及内嵌旧条码图片不作数据来源，请审核")
+        warnings.append("Hy-Vee 外箱 ITF-14、单品 UPC-A 已按数据表重新生成并校验号码，请用实际打印件扫码验证")
     for key, value in original.get("supplements", {}).items():
         if fields.get(key) and fields[key] != value.strip():
             raise HTTPException(422, f"Excel 已填写{TITLES.get(key,key)}，本单补齐不能覆盖原稿；请先核实资料版本")
@@ -160,10 +257,14 @@ def prepare_records(original):
             warnings.append(f"{TITLES.get(key,key)}从关联采购单的外箱明细补齐，请核实")
     required = dict(ftc=("article", "quantity", "carton_total", "dimensions", "gross_weight", "gtin"),
         zumiez=("article", "quantity", "carton_total", "customer_po", "country"),
+        archibrand=("quantity", "carton_total", "country"), anko=("quantity", "carton_total", "dimensions", "gross_weight"),
+        hyvee=("quantity","gtin","customer_po","country"),
         esal=("quantity", "brand", "dimensions", "net_weight", "gross_weight", "gtin", "cbm", "invoice"))
     missing = [key for key in required[chosen[0]["profile"]] if not fields.get(key)]
     if missing:
         warnings.append("原稿缺少" + "、".join(TITLES[key] for key in missing) + "，审阅稿显示待补")
+    if chosen[0]["profile"]=="anko":
+        warnings.append("ANKO 正唛保留 SSCC LABEL 4×4inch 预留示意；生产需离箱边至少2cm，待实际印刷尺寸校验")
     return chosen[0], warnings
 
 
@@ -265,6 +366,41 @@ def render_zuru(original, config):
                 "CTN QTY:       / "+value("carton_total","CTNS"),"COUNTRY OF ORIGIN: "+value("country")]
             for index, line in enumerate(lines):
                 text(line,left,top-(69+7*index)*mm,usable,6.5*mm,config.font_size)
+        elif profile == "archibrand":
+            y=top-69*mm
+            text(fields["recipient"],left,y,usable,7*mm,config.font_size);y-=8*mm
+            text("ITEM NO.: "+fields["item"],left,y,usable,7*mm,config.font_size);y-=8*mm
+            text("ITEM DESCRIPTION: "+fields["product"],left,y,usable,24*mm,config.font_size);y-=25*mm
+            text("CTN QTY: "+value("quantity"),left,y,usable,7*mm,config.font_size);y-=8*mm
+            text("CTN NUMBER:       / "+value("carton_total"),left,y,usable,7*mm,config.font_size);y-=8*mm
+            if not side:
+                text("MADE IN "+value("country"),left,y,usable,7*mm,config.font_size)
+        elif profile == "anko":
+            if side:
+                for index,line in enumerate(("Made in China","GRS.WT  "+value("gross_weight"),"D:  "+value("dimensions"))):
+                    text(line,left,top-(80+8*index)*mm,usable,7.5*mm,config.font_size)
+            else:
+                # The review page is deliberately not a production-scale
+                # drawing: name the real required size without claiming it.
+                box_w=min(26*mm,w*.2);box_x=x+w-8*mm-box_w;box_top=top-52*mm
+                canvas.saveState();canvas.setStrokeColorRGB(.94,.23,.14)
+                canvas.rect(box_x,box_top-box_w,box_w,box_w);canvas.restoreState()
+                text("SSCC LABEL\n4 x 4 inch",box_x+1*mm,box_top-5*mm,box_w-2*mm,16*mm,8,True)
+                text("预留示意；离箱边≥2cm",box_x-7*mm,box_top-box_w-2*mm,box_w+7*mm,9*mm,7)
+                left=x+w*.12;usable=x+w-5*mm-left;y=top-55*mm
+                for line in ("ANKO",fields["destination"],"Dept No. "+fields["department"],
+                        "Order No. "+fields["customer_po"],"*Keycode "+fields["keycode"]):
+                    text(line,left,y,usable*.65,6.5*mm,config.font_size);y-=7*mm
+                text("Description "+value("product"),left,y,usable,14*mm,config.font_size);y-=15*mm
+                for line in ("Qty Issue Pack "+fields["issue_pack"],"Qty Shipper Pack "+value("quantity"),
+                        "Carton No.       of "+value("carton_total")):
+                    text(line,left,y,usable,7*mm,config.font_size);y-=8*mm
+        elif profile == "hyvee":
+            if side:
+                text("MADE IN "+fields["country"],left,top-115*mm,usable,8*mm,config.font_size)
+            else:
+                from app.services.carton_mark_hyvee import draw_hyvee
+                draw_hyvee(canvas,fields,x,top,w,h,text,config.font_size)
         elif not side:
             picture("front_artwork",x+8*mm,top-52*mm,w-16*mm,h-74*mm)
         else:
