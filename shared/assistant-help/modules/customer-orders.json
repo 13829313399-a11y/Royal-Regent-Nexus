@@ -94,7 +94,7 @@
       }
     ],
     "knowledge_version": "2026.10.14-dickie-products",
-    "verified_commit": "f7c459e02045d51741c33a94718c07c7d867663c + reviewed working tree (cutting P2b first slice); 33c35fcea88d16d728df73b673ea998d473b60f8 (Dickie product-registration source and local tests)",
+    "verified_commit": "f7c459e02045d51741c33a94718c07c7d867663c + reviewed working tree (cutting P2b first slice); fd98a94266695c75f6b37df2748253d7f31f808a (Dickie product-registration source, local tests and independent review fix)",
     "status": "verified"
   }
 ]
