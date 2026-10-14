@@ -7,7 +7,7 @@ import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import InternalQuoteCollaboration from '../InternalQuoteCollaboration.vue'
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: { quoteId: 'quote-1' }, query: {} }),
+  onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn(), useRoute: () => ({ params: { quoteId: 'quote-1' }, query: {} }),
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
 }))
 

@@ -145,7 +145,13 @@ export interface ApiInternalQuoteReferenceSet {
   superseded_at: string
 }
 
-export interface ApiInternalQuoteSummary {
+export interface ApiInternalQuotePricingCompleteness {
+  pricing_complete?: boolean
+  incomplete_sections?: Array<{ section_code: string; section_name: string; reason: string }>
+  authoritative_factory_quote_hkd?: string | null
+}
+
+export interface ApiInternalQuoteSummary extends ApiInternalQuotePricingCompleteness {
   quote_id: string
   status: string
   formula_version: string
@@ -231,6 +237,7 @@ export interface ApiInternalQuoteExport {
 }
 
 export interface ApiInternalQuoteImportPreview {
+  embedded_images?: Array<{ source_row: number; file_name: string; content_type: string; data_base64: string }>
   assignment_rows?: Array<{ key: string; label: string; source_row: string | number; mold_no: string }>
   assignment_components?: Array<{ id: string; name: string }>
   batch_id: string
@@ -385,7 +392,7 @@ export interface ApiInternalQuoteCustomer {
   updated_at: string
 }
 
-export interface ApiInternalQuoteSectionPreview {
+export interface ApiInternalQuoteSectionPreview extends ApiInternalQuotePricingCompleteness {
   quote_id: string
   section_code: InternalQuoteSectionCode
   section_revision: number
@@ -402,7 +409,7 @@ export interface ApiInternalQuoteSectionPreview {
   generated_at: string
 }
 
-export interface ApiInternalQuoteCostPreview {
+export interface ApiInternalQuoteCostPreview extends ApiInternalQuotePricingCompleteness {
   quote_id: string
   calculations: Partial<Record<InternalQuoteSectionCode, Record<string, unknown>>>
   warnings: Array<Record<string, unknown>>

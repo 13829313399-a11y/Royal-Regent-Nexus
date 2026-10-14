@@ -16,7 +16,7 @@ from app.services.internal_quote import (
     quote_write, _get_quote, ensure_quote_read, ensure_quote_permission, _initiator_department,
     _check_revision, _json_object, _find_reference_set, _create_reference_set, _create_sections,
     _calculate_and_apply, _add_revision, _add_audit, _without_import_batch_ids,
-    quote_to_out, SECTION_CODE_ORDER, ensure_quote_formula_current,
+    quote_to_out, SECTION_CODE_ORDER, ensure_quote_formula_current, ensure_current_molding_pricing,
     _cost_context, _rr2_cost_summary,
     ensure_molding_projection_current,
 )
@@ -258,6 +258,7 @@ def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True)
     if not required or problems:
         raise HTTPException(409, "以下部门须完成填写、保存及有效计算：" + "、".join(problems))
     ensure_quote_formula_current(quote, sections)
+    ensure_current_molding_pricing(db, quote, sections)
     cost_context = _cost_context(db, quote)
     reference = _find_reference_set(db, quote)
     if reference is None:

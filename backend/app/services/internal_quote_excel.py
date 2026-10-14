@@ -1176,6 +1176,11 @@ def _engineering_mold_groups(
         for injection_index, injection in enumerate(injections):
             if injection_index in used_injections:
                 continue
+            if mold.get("mold_id") and injection.get("engineering_mold_id"):
+                if mold["mold_id"] == injection["engineering_mold_id"]:
+                    matched.append((injection_index, injection))
+                    used_injections.add(injection_index)
+                continue
             injection_mold_no = _match_key(injection.get("mold_no"))
             injection_item = _match_key(injection.get("item") or injection.get("name"))
             if (
@@ -4938,6 +4943,32 @@ def _build_sewing_sheet(
     _finish_sheet(sheet, (34, 18, 18, 15, 24, 14, 14, 12, 15, 12, 15, 36, 12, 14, 18))
 
 
+def _build_painting_image_sheet(workbook, section, attachments) -> None:
+    if section is None or not section.is_required:
+        return
+    rows = _list_of_dicts(_json_object(section.payload_json).get("rows", []))
+    if not any(row.get("image_attachment_ids") for row in rows):
+        return
+    images = {item.id: item for item in attachments or []
+              if item.quote_id == section.quote_id and item.department == "painting" and item.content_type.startswith("image/")}
+    sheet = workbook.create_sheet("喷油图片明细")
+    _style_title(sheet, "喷油部位与图片", 4)
+    _header_row(sheet, 3, ("名称", "位置", "图片", "备注"))
+    output_row = 4
+    for row in rows:
+        attachment_ids = row.get("image_attachment_ids", []) or [None]
+        for attachment_id in attachment_ids:
+            _body_row(sheet, output_row, (_safe_text(row.get("name")), _safe_text(row.get("position")), "", _safe_text(row.get("remark"))), amount_columns=set())
+            if attachment_id in images:
+                image = OpenpyxlImage(BytesIO(images[attachment_id].content))
+                ratio = min(150 / image.width, 95 / image.height, 1)
+                image.width, image.height = image.width * ratio, image.height * ratio
+                sheet.add_image(image, f"C{output_row}")
+                sheet.row_dimensions[output_row].height = 76
+            output_row += 1
+    _finish_sheet(sheet, (28, 26, 24, 40))
+
+
 def _build_hair_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
     sheet = workbook.create_sheet("车发明细")
     _style_title(sheet, "车发报价明细", 8)
@@ -5373,6 +5404,7 @@ def build_internal_quote_workbook_model(
         attachments or [],
     )
     by_code = {section.department: section for section in sections}
+    _build_painting_image_sheet(workbook, by_code.get("painting"), attachments)
     _build_electronic_sheet(workbook, by_code.get("electronic"), reference_snapshot or {}, allow_incomplete=allow_incomplete)
     _build_sewing_sheet(workbook, by_code.get("sewing"), reference_snapshot or {})
     _build_hair_sheet(workbook, by_code.get("hair"))

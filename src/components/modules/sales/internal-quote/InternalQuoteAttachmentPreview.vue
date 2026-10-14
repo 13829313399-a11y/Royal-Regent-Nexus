@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { AlertCircle, Download, FileSpreadsheet, X } from '@lucide/vue'
-import { computed, ref, watch } from 'vue'
+import { AlertCircle, Download, FileSpreadsheet, Image as ImageIcon, X } from '@lucide/vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { internalQuoteApi } from '@/api/internalQuote'
 import { parseXlsxWorkbook, type XlsxCellValue } from '@/lib/customerPriceConverters/xlsxLite'
 import type { InternalQuoteAttachmentRecord } from '@/types/internalQuoteDesk'
@@ -28,7 +28,19 @@ const loading = ref(false)
 const errorMessage = ref('')
 const sheets = ref<PreviewSheet[]>([])
 const activeSheetIndex = ref(0)
+const imageUrl = ref('')
+const isImageAttachment = computed(() => props.attachment?.contentType.toLowerCase().startsWith('image/'))
 let loadVersion = 0
+
+function clearImageUrl() {
+  if (imageUrl.value) URL.revokeObjectURL(imageUrl.value)
+  imageUrl.value = ''
+}
+
+onBeforeUnmount(() => {
+  loadVersion += 1
+  clearImageUrl()
+})
 
 function cellHasValue(value: XlsxCellValue) {
   return value !== null && value !== undefined && String(value).trim() !== ''
@@ -63,8 +75,9 @@ function errorText(error: unknown) {
   return '附件预览加载失败，请下载原文件查看。'
 }
 
-watch(() => props.attachment?.id, async (attachmentId) => {
+watch(() => [props.quoteId, props.attachment?.id] as const, async ([, attachmentId]) => {
   const version = ++loadVersion
+  clearImageUrl()
   sheets.value = []
   activeSheetIndex.value = 0
   errorMessage.value = ''
@@ -72,6 +85,11 @@ watch(() => props.attachment?.id, async (attachmentId) => {
   loading.value = true
   try {
     const blob = await internalQuoteApi.previewAttachment(props.quoteId, attachmentId)
+    if (version !== loadVersion) return
+    if (isImageAttachment.value) {
+      imageUrl.value = URL.createObjectURL(blob)
+      return
+    }
     const workbook = parseXlsxWorkbook(await blob.arrayBuffer())
     if (version !== loadVersion) return
     sheets.value = workbook.sheets.map((sheet) => prepareSheet(sheet.name, sheet.rows))
@@ -112,10 +130,10 @@ function displayCell(value: XlsxCellValue) {
 <template>
   <Teleport to="body">
     <div v-if="attachment" class="workbook-preview-backdrop" @click.self="emit('close')">
-      <section class="workbook-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="workbook-preview-title">
+      <section class="workbook-preview-dialog" :class="{ 'image-preview-dialog': isImageAttachment }" role="dialog" aria-modal="true" aria-labelledby="workbook-preview-title">
         <header>
           <div class="workbook-preview-heading">
-            <span class="workbook-preview-icon"><FileSpreadsheet /></span>
+            <span class="workbook-preview-icon"><ImageIcon v-if="isImageAttachment" /><FileSpreadsheet v-else /></span>
             <div>
               <h3 id="workbook-preview-title">预览附件</h3>
               <p>{{ attachment.fileName }} · {{ Math.max(1, Math.ceil(attachment.sizeBytes / 1024)) }} KB</p>
@@ -124,8 +142,9 @@ function displayCell(value: XlsxCellValue) {
           <button type="button" class="workbook-preview-close" aria-label="关闭附件预览" @click="emit('close')"><X /></button>
         </header>
 
-        <div v-if="loading" class="workbook-preview-state"><FileSpreadsheet /><strong>正在读取 Excel 工作表…</strong><span>原文件保持不变，预览仅用于核对导入来源。</span></div>
+        <div v-if="loading" class="workbook-preview-state"><ImageIcon v-if="isImageAttachment" /><FileSpreadsheet v-else /><strong>{{ isImageAttachment ? '正在读取图片…' : '正在读取 Excel 工作表…' }}</strong><span>原文件保持不变，预览仅用于核对导入来源。</span></div>
         <div v-else-if="errorMessage" class="workbook-preview-state error"><AlertCircle /><strong>无法显示附件</strong><span>{{ errorMessage }}</span></div>
+        <div v-else-if="imageUrl" class="attachment-image-preview"><img :src="imageUrl" :alt="attachment.fileName" @error="errorMessage = '图片无法显示，请下载原文件核对。'"></div>
         <template v-else-if="activeSheet">
           <nav class="workbook-sheet-tabs" aria-label="Excel 工作表">
             <button v-for="(sheet,index) in sheets" :key="`${sheet.name}-${index}`" type="button" :class="{ active: activeSheetIndex === index }" @click="activeSheetIndex = index">{{ sheet.name }}</button>
@@ -162,6 +181,7 @@ function displayCell(value: XlsxCellValue) {
 <style scoped>
 .workbook-preview-backdrop{position:fixed;inset:0;z-index:1100;display:grid;place-items:center;background:rgb(15 23 42/.52);padding:20px;backdrop-filter:blur(4px)}
 .workbook-preview-dialog{display:grid;width:min(1180px,100%);max-height:min(820px,calc(100vh - 40px));overflow:hidden;border:1px solid #cbd5e1;border-radius:16px;background:#fff;box-shadow:0 30px 80px rgb(15 23 42/.34);grid-template-rows:auto auto auto minmax(0,1fr) auto}
+.image-preview-dialog{grid-template-rows:auto minmax(0,1fr) auto}.attachment-image-preview{display:grid;min-height:220px;overflow:auto;place-items:center;background:#f1f5f9;padding:16px}.attachment-image-preview img{display:block;max-width:100%;max-height:min(600px,calc(100vh - 200px));object-fit:contain}
 .workbook-preview-dialog>header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid #e2e8f0;padding:16px 18px;background:#f8fafc}.workbook-preview-heading{display:flex;align-items:center;gap:11px}.workbook-preview-icon{display:grid;width:40px;height:40px;place-items:center;border-radius:10px;background:#ccfbf1;color:#0f766e}.workbook-preview-icon svg{width:21px}.workbook-preview-heading h3{margin:0;color:#0f172a;font-size:18px;font-weight:950}.workbook-preview-heading p{margin:4px 0 0;color:#64748b;font-size:12px}.workbook-preview-close{display:grid;width:34px;height:34px;place-items:center;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#64748b}.workbook-preview-close svg{width:16px}
 .workbook-sheet-tabs{display:flex;overflow-x:auto;gap:5px;border-bottom:1px solid #e2e8f0;background:#fff;padding:8px 12px}.workbook-sheet-tabs button{height:31px;flex:0 0 auto;border:1px solid #cbd5e1;border-radius:7px;background:#fff;padding:0 10px;color:#475569;font-size:11px;font-weight:800}.workbook-sheet-tabs button.active{border-color:#0f766e;background:#0f766e;color:#fff}.workbook-preview-meta{display:flex;flex-wrap:wrap;align-items:center;gap:9px;border-bottom:1px solid #e2e8f0;background:#f0fdfa;padding:8px 12px;color:#0f766e;font-size:11px}.workbook-preview-meta strong{color:#b45309}
 .workbook-preview-table-wrap{overflow:auto;background:#fff}.workbook-preview-table-wrap table{border-collapse:separate;border-spacing:0;min-width:100%;font-size:11px}.workbook-preview-table-wrap th,.workbook-preview-table-wrap td{height:27px;max-width:260px;border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;padding:4px 7px;overflow:hidden;color:#334155;text-overflow:ellipsis;white-space:nowrap}.workbook-preview-table-wrap thead th{position:sticky;z-index:2;top:0;min-width:90px;background:#e2e8f0;color:#475569;text-align:center}.workbook-preview-table-wrap tbody th{position:sticky;z-index:1;left:0;width:44px;min-width:44px;background:#f1f5f9;color:#64748b;text-align:right}.workbook-preview-table-wrap .row-number-corner{left:0;z-index:3;width:44px;min-width:44px}

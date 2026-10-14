@@ -58,6 +58,7 @@ from app.services.internal_quote import (
     _section_out,
     ensure_quote_formula_current,
     ensure_molding_projection_current,
+    ensure_current_molding_pricing,
     ensure_quote_permission,
     ensure_quote_read,
     ensure_section_permission,
@@ -215,6 +216,7 @@ def _preview_payload(batch: InternalQuoteImportBatch) -> dict[str, Any]:
         "header_row": int(preview.get("header_row", 0) or 0),
         "row_count": int(preview.get("row_count", 0) or 0),
         "payload_fragment": preview.get("payload_fragment", {}),
+        "embedded_images": preview.get("embedded_images", []),
         "diff_summary": preview.get("diff_summary", {}),
         "warnings": preview.get("warnings", []),
         "assignment_rows": preview.get("assignment_rows", []),
@@ -734,7 +736,7 @@ def _materialize_imported_mold_images(
     user: AuthContext,
 ) -> list[str]:
     image_records = preview.get("embedded_images", [])
-    mold_rows = fragment.get("molds", [])
+    mold_rows = fragment.get("molds" if section.department == "engineering" else "rows", [])
     if not isinstance(image_records, list) or not isinstance(mold_rows, list):
         return []
 
@@ -916,7 +918,7 @@ def confirm_import_batch(
         user,
     )
     embedded_image_attachment_ids: list[str] = []
-    if batch.import_type == "mold":
+    if batch.import_type in {"mold", "painting"}:
         embedded_image_attachment_ids = _materialize_imported_mold_images(
             db,
             quote,
@@ -935,6 +937,8 @@ def confirm_import_batch(
         section.department,
     )
     old_revision = section.revision
+    from app.services.internal_quote import _normalize_mutable_section_payload
+    merged_payload = _normalize_mutable_section_payload(db, quote, section.department, merged_payload)
     section.payload_json = canonical_json(merged_payload)
     if quote.module_version == "v4":
         quote.header_revision += 1
@@ -1913,6 +1917,7 @@ def create_controlled_export(
     ensure_molding_projection_current(db, quote, sections)
     ensure_quote_formula_current(quote, sections)
     _ensure_export_sections_ready(sections)
+    ensure_current_molding_pricing(db, quote, sections)
     attachments = db.scalars(
         select(InternalQuoteAttachment)
         .where(InternalQuoteAttachment.quote_id == quote.id)

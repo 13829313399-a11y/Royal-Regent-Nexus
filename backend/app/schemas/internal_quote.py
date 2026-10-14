@@ -527,6 +527,9 @@ class InternalQuoteSectionPreviewRequest(BaseModel):
 
 
 class InternalQuoteSectionPreviewOut(BaseModel):
+    pricing_complete: bool = False
+    incomplete_sections: list[dict[str, str]] = Field(default_factory=list)
+    authoritative_factory_quote_hkd: str | None = None
     quote_id: str
     section_code: InternalQuoteSectionCode
     section_revision: int
@@ -564,6 +567,9 @@ class InternalQuoteCostPreviewRequest(BaseModel):
 
 
 class InternalQuoteCostPreviewOut(BaseModel):
+    pricing_complete: bool = False
+    incomplete_sections: list[dict[str, str]] = Field(default_factory=list)
+    authoritative_factory_quote_hkd: str | None = None
     quote_id: str
     calculations: dict[str, dict[str, Any]]
     warnings: list[dict[str, Any]]
@@ -891,6 +897,7 @@ class InternalQuoteImportConfirmRequest(BaseModel):
 
 
 class InternalQuoteImportPreviewOut(BaseModel):
+    embedded_images: list[dict[str, Any]] = Field(default_factory=list)
     assignment_rows: list[dict[str, Any]] = Field(default_factory=list)
     assignment_components: list[dict[str, Any]] = Field(default_factory=list)
     batch_id: str

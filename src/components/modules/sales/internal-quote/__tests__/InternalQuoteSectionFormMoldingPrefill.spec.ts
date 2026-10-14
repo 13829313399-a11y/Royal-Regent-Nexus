@@ -66,7 +66,7 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     expect(selects[0].attributes('disabled')).toBeUndefined()
     expect(selects[1].attributes('disabled')).toBeUndefined()
     expect(selects[1].text()).toContain('7032 E3')
-    expect(selects[1].text()).toContain('5090T')
+    expect(selects[1].text()).not.toContain('5090T')
     expect(selects[2].attributes('disabled')).toBeUndefined()
     expect(deleteButton.attributes('disabled')).toBeDefined()
   })
@@ -112,7 +112,7 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     expect(modelValue.injection_lines[0].machine_code).toBe('18A')
   })
 
-  it('offers fuzzy PP grades and recalculates as soon as a concrete grade is selected', async () => {
+  it('offers the explicit PP alias grades and recalculates as soon as a concrete grade is selected', async () => {
     const modelValue = moldingModel({ material: 'PP', grade: '', net_weight_g: 135, machine_code: '18', sets: 1, target_output: 2800 })
     const wrapper = mount(InternalQuoteSectionForm, {
       props: {
@@ -126,7 +126,7 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     const gradeSelect = wrapper.findAll('.moldingInjectionTable select')[1]
     expect(gradeSelect.text()).toContain('JM350/K8009')
     expect(gradeSelect.text()).toContain('7032 E3')
-    expect(gradeSelect.text()).toContain('5090T')
+    expect(gradeSelect.text()).not.toContain('5090T')
 
     await gradeSelect.setValue(JSON.stringify(['1#PP', '7032 E3']))
 
@@ -135,7 +135,7 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
     expect(wrapper.findAll('.moldingInjectionTable .snapshot-cell').map((cell) => cell.text())).toEqual(['0.015', '2.083', '0.675', '2.758'])
   })
 
-  it('copies an engineering-projected row and unlocks both rows for mold splitting', async () => {
+  it('copies an independent row while retaining the original link until explicit detach', async () => {
     const modelValue = moldingModel()
     const wrapper = mount(InternalQuoteSectionForm, {
       props: {
@@ -153,9 +153,9 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
       item: '挂钩',
       mold_no: 'M12',
       engineering_source_key: 'mold-no:M12#1',
-      engineering_synced_fields: [],
-      engineering_sync_disabled: true,
+      engineering_synced_fields: ['item', 'mold_no', 'material'],
     })
+    expect(modelValue.injection_lines[0].engineering_sync_disabled).not.toBe(true)
     expect(modelValue.injection_lines[1]).toMatchObject({
       item: '挂钩',
       mold_no: 'M12',
@@ -166,8 +166,13 @@ describe('InternalQuoteSectionForm engineering mold prefill', () => {
 
     const rows = wrapper.findAll('.moldingInjectionTable tbody tr')
     expect(rows).toHaveLength(2)
-    expect(rows[0].find('textarea').attributes('disabled')).toBeUndefined()
+    expect(rows[0].find('textarea').attributes('disabled')).toBeDefined()
     expect(rows[1].find('textarea').attributes('disabled')).toBeUndefined()
+    await rows[0].findAll('button').find((button) => button.text() === '解除联动')!.trigger('click')
+    expect(modelValue.injection_lines[0]).toMatchObject({
+      engineering_source_key: 'mold-no:M12#1', engineering_sync_disabled: true,
+      engineering_synced_fields: [], engineering_parts: [], engineering_source_missing: false,
+    })
     await rows[0].find('textarea').setValue('挂钩左件')
     await rows[1].find('textarea').setValue('挂钩右件')
 
@@ -220,7 +225,7 @@ describe('InternalQuoteSectionForm blow material live preview', () => {
     expect(modelValue.blow_lines[0].grade).toBe('')
     expect(gradeSelect.text()).toContain('JM350/K8009')
     expect(gradeSelect.text()).toContain('7032 E3')
-    expect(gradeSelect.text()).toContain('5090T')
+    expect(gradeSelect.text()).not.toContain('5090T')
     expect(wrapper.findAll('.moldingBlowTable .snapshot-cell')[0].text()).toBe('请选择具体料型')
 
     await gradeSelect.setValue(JSON.stringify(['1#PP', '7032 E3']))
