@@ -22,6 +22,7 @@ const emit = defineEmits<{
   dirty: [value: boolean]
   busy: [value: boolean]
   draft: [description: string]
+  pending: [record: { id: string; revision: number; state: string } | null]
 }>()
 const step = ref(1)
 const stepHeading = ref<HTMLElement>()
@@ -106,7 +107,7 @@ void iamApi
   .catch((e) => {
     if (alive) error.value = getApiErrorMessage(e)
   })
-watch(busy, (value) => emit('busy', value), { flush: 'sync' })
+watch([busy, uncertain], () => emit('busy', busy.value || uncertain.value), { flush: 'sync' })
 watch(
   [
     kind,
@@ -203,7 +204,7 @@ function payload(): ChangePayload {
   return value
 }
 async function makePreview() {
-  if (busy.value || uncertain.value) return
+  if (busy.value || uncertain.value || !props.catalog.writes_enabled) return
   const version = revision
   const submitted = payload()
   busy.value = true
@@ -231,6 +232,7 @@ async function makePreview() {
   }
 }
 function finish(row: ChangeRecord) {
+  emit('pending', null)
   emit('dirty', false)
   uncertain.value = false
   emit('saved', row)
@@ -246,15 +248,17 @@ async function verifyResult() {
     record.value = result
     if (['applied', 'scheduled', 'pending_approval'].includes(result.state)) finish(result)
     else if (result.state === 'draft') {
-      uncertain.value = false
       if (result.revision !== previousRevision) {
+        uncertain.value = false
+        emit('pending', null)
         impact.value = undefined
         checked.value = false
         step.value = 2
         error.value = '草稿版本已变化，请重新核对并预览。'
-      } else error.value = '服务器仍为草稿。可使用同一办理凭据再次确认，或返回重新预览。'
+      } else error.value = '尚未观察到原请求变化。请稍后核查，勿重新发起办理。'
     } else {
       uncertain.value = false
+      emit('pending', null)
       impact.value = undefined
       error.value = `当前状态：${result.state}，请到变更办理查看。`
     }
@@ -266,6 +270,7 @@ async function verifyResult() {
 }
 async function submit() {
   if (
+    !props.catalog.writes_enabled ||
     busy.value ||
     uncertain.value ||
     !record.value ||
@@ -278,16 +283,18 @@ async function submit() {
   busy.value = true
   error.value = ''
   try {
+    emit('pending', { id: record.value.id, revision: record.value.revision, state: record.value.state })
     const row = await identityApi.commit(record.value, impact.value, submitKey.value)
     if (alive) finish(row)
   } catch (e) {
     if (!alive) return
     const status = (e as { response?: { status?: number } }).response?.status
-    uncertain.value = !status || status >= 500
+    uncertain.value = !status || status === 408 || status >= 500
     error.value = uncertain.value
       ? '提交结果待核查。请先查询服务器结果，避免重复办理。'
       : getApiErrorMessage(e)
     if (!uncertain.value) {
+      emit('pending', null)
       impact.value = undefined
       checked.value = false
       step.value = 2
@@ -304,6 +311,7 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <div class="iamx-wizard">
+    <p v-if="!catalog.writes_enabled" class="iamx-notice" role="status">当前仅可查看，任职办理尚未启用。</p>
     <nav class="iamx-stepper" aria-label="办理步骤">
       <button
         v-for="(label, index) in ['选择事项', '填写资料', '核对影响']"

@@ -22,11 +22,19 @@ import {
   handoverStatusPresentation,
 } from '@/components/iam/workspace/iam-status'
 import IdentityShell from './IdentityShell.vue'
+import { useAuthStore } from '@/stores/auth'
+import { iamWorkspaceApi } from '@/api/iamWorkspace'
 import AccessImpact from './AccessImpact.vue'
 import AuditTimeline from './AuditTimeline.vue'
+const props = defineProps<{ embedded?: boolean; requestId?: string; mode?: 'changes' | 'audit' }>()
+const emit = defineEmits<{ locked: [boolean]; dirty: [boolean]; back: [] }>()
+const auth = useAuthStore()
+const viewer = computed(() => `${auth.currentUser?.id}:${auth.authorizationVersion}:${auth.currentUser?.identity?.employment_epoch}:${auth.currentUser?.identity?.effective_context_key}`)
+const account = computed(() => `${auth.currentUser?.id}:${auth.currentUser?.identity?.employment_epoch}`)
+let pendingRead: { id: string; revision: number; state: string; owner: string } | undefined
 const appliedState = ref('')
 const route = useRoute()
-const audit = computed(() => route.path.endsWith('/audit'))
+const audit = computed(() => props.mode ? props.mode === 'audit' : route.path.endsWith('/audit'))
 const rows = ref<ChangeRecord[]>([])
 const selected = ref<ChangeRecord>()
 const preview = ref<ChangePreview>()
@@ -55,16 +63,16 @@ const dirty = computed(() =>
 )
 const acting = computed(() => busy.value || Object.values(itemBusy.value).some(Boolean))
 async function permitLeave() {
-  if (acting.value) {
+  if (acting.value || uncertain.value) {
     detailError.value = '办理请求正在处理中，请等待结果后离开。'
     return false
   }
   return (await leaveGuard.value?.permitLeave()) ?? true
 }
-onBeforeRouteLeave(permitLeave)
-onBeforeRouteUpdate(permitLeave)
+onBeforeRouteLeave(() => props.embedded ? true : permitLeave())
+onBeforeRouteUpdate(() => props.embedded ? true : permitLeave())
 async function backToQueue() {
-  if (await permitLeave()) clearSelection()
+  if (await permitLeave()) { if (props.embedded) emit('back'); else clearSelection() }
 }
 let selectionGeneration = 0
 let listGeneration = 0
@@ -88,11 +96,22 @@ function clearSelection() {
   uncertain.value = false
   itemBusy.value = {}
 }
+function handleDetailError(e: unknown) {
+  const status = (e as { response?: { status?: number } }).response?.status
+  if (status === 401 || status === 403) {
+    const pending = pendingRead
+    const wasUncertain = uncertain.value
+    clearSelection(); rows.value = []; total.value = 0
+    pendingRead = pending; uncertain.value = wasUncertain
+  }
+  detailError.value = getApiErrorMessage(e)
+}
 function changePage(delta: number) {
   page.value += delta
   void load()
 }
 async function load(reset = false) {
+  if (props.embedded) return
   if (reset) {
     if (!(await permitLeave())) {
       state.value = appliedState.value
@@ -148,13 +167,7 @@ async function loadHandover(row: ChangeRecord, generation: number) {
       candidates.value = Object.fromEntries(people)
   } catch (e) {
     if (generation === selectionGeneration && reading === handoverGeneration) {
-      detailError.value = getApiErrorMessage(e)
-      if ((e as { response?: { status?: number } }).response?.status === 403) {
-        items.value = []
-        coverage.value = []
-        candidates.value = {}
-        successors.value = {}
-      }
+      handleDetailError(e)
     }
   } finally {
     if (generation === selectionGeneration && reading === handoverGeneration)
@@ -183,14 +196,15 @@ async function previewSelected() {
       tab.value = 'impact'
     }
   } catch (e) {
-    if (generation === selectionGeneration) detailError.value = getApiErrorMessage(e)
+    if (generation === selectionGeneration) handleDetailError(e)
   } finally {
     if (generation === selectionGeneration) busy.value = false
   }
 }
 async function mutate(operation: (row: ChangeRecord) => Promise<ChangeRecord>, committing = false) {
   const row = selected.value
-  if (!row || busy.value) return
+  if (!row || busy.value || uncertain.value) return
+  pendingRead = { id: row.id, revision: row.revision, state: row.state, owner: account.value }
   const generation = selectionGeneration
   busy.value = true
   detailError.value = ''
@@ -205,12 +219,14 @@ async function mutate(operation: (row: ChangeRecord) => Promise<ChangeRecord>, c
     reason.value = ''
     successors.value = {}
     uncertain.value = false
+    pendingRead = undefined
     await load()
     if (generation === selectionGeneration) await loadHandover(result, generation)
   } catch (e) {
     if (generation === selectionGeneration) {
       const code = (e as { response?: { status?: number } }).response?.status
-      uncertain.value = committing && (!code || code >= 500)
+      uncertain.value = !code || code === 408 || code >= 500
+      if (code === 401 || code === 403) handleDetailError(e)
       detailError.value = uncertain.value
         ? '提交结果待核查，请先查询服务器结果。'
         : getApiErrorMessage(e)
@@ -241,15 +257,16 @@ function decide(action: 'cancel' | 'reject') {
   return mutate((row) => identityApi.decide(row, action, reason.value))
 }
 async function verifyResult() {
-  const row = selected.value
+  const row = pendingRead || selected.value
   if (!row || busy.value) return
   const generation = selectionGeneration
   busy.value = true
   try {
-    const result = await identityApi.change(row.id)
+    const result = await (props.embedded ? iamWorkspaceApi.change(row.id) : identityApi.change(row.id))
     if (generation !== selectionGeneration) return
     selected.value = result
-    uncertain.value = false
+    uncertain.value = result.state === row.state && result.revision === row.revision
+    if (!uncertain.value) pendingRead = undefined
     detailError.value = ''
     if (
       result.state !== row.state ||
@@ -259,10 +276,10 @@ async function verifyResult() {
       preview.value = undefined
       confirmed.value = false
     }
-    notice.value = `服务器当前状态：${changeStatusPresentation(result.state).label}。`
+    notice.value = `服务器当前状态：${changeStatusPresentation(result.state).label}。${uncertain.value ? '尚未观察到变更，请稍后核查，勿重复提交。' : ''}`
     await load()
   } catch (e) {
-    if (generation === selectionGeneration) detailError.value = getApiErrorMessage(e)
+    if (generation === selectionGeneration) handleDetailError(e)
   } finally {
     if (generation === selectionGeneration) busy.value = false
   }
@@ -281,7 +298,7 @@ async function refreshHandover() {
       if (generation === selectionGeneration) selected.value = latest
     }
   } catch (e) {
-    if (generation === selectionGeneration) detailError.value = getApiErrorMessage(e)
+    if (generation === selectionGeneration) handleDetailError(e)
   } finally {
     if (generation === selectionGeneration) busy.value = false
   }
@@ -301,30 +318,53 @@ async function reassign(item: HandoverItem) {
       notice.value = '接管结果已刷新。'
     }
   } catch (e) {
-    if (generation === selectionGeneration) detailError.value = getApiErrorMessage(e)
+    if (generation === selectionGeneration) handleDetailError(e)
   } finally {
     if (generation === selectionGeneration) itemBusy.value[item.id] = false
   }
 }
-watch(
-  () => route.fullPath,
-  () => {
-    clearSelection()
-    page.value = 1
-    if (!audit.value) void load()
-  },
-  { immediate: true },
-)
+async function openRequest() {
+  clearSelection()
+  rows.value = []; total.value = 0
+  if (!auth.can('system:user_manage')) return
+  if (!props.requestId) { if (!audit.value) await load(); return }
+  const current = selectionGeneration
+  detailLoading.value = true
+  try {
+    const record = await iamWorkspaceApi.change(props.requestId)
+    if (current !== selectionGeneration) return
+    selected.value = record
+    await loadHandover(record, current)
+  } catch (e) { if (current === selectionGeneration) detailError.value = getApiErrorMessage(e) }
+  finally { if (current === selectionGeneration) detailLoading.value = false }
+}
+watch([() => route.fullPath, () => props.requestId], () => {
+  ++listGeneration
+  page.value = 1
+  void openRequest()
+}, { immediate: true })
+watch(viewer, () => {
+  ++listGeneration
+  const pending = (busy.value || uncertain.value) && pendingRead?.owner === account.value ? pendingRead : undefined
+  clearSelection(); rows.value = []; total.value = 0
+  pendingRead = pending
+  if (pending) { uncertain.value = true; detailError.value = '访问权限已更新。原请求仍待核查，请勿重复提交。' }
+  else void openRequest()
+}, { flush: 'sync' })
+watch([acting, uncertain], () => emit('locked', acting.value || uncertain.value), { flush: 'sync' })
+watch(dirty, value => emit('dirty', value), { flush: 'sync' })
 onBeforeUnmount(() => {
   ++selectionGeneration
   ++listGeneration
 })
 </script>
 <template>
-  <IdentityShell
+  <component :is="embedded ? 'div' : IdentityShell" :class="{ 'iw-advanced-record': embedded }"
     ><AuditTimeline v-if="audit" />
     <section v-else class="iamx-surface">
-      <header class="iamx-section-head">
+      <p v-if="embedded && detailError" role="alert" class="iamx-error">{{ detailError }}</p>
+      <Button v-if="uncertain && !selected" :disabled="busy" @click="verifyResult">核查提交结果</Button>
+      <header v-if="!embedded" class="iamx-section-head">
         <div>
           <h2>
             变更办理 <span class="iamx-count">{{ total }} 条</span>
@@ -333,7 +373,7 @@ onBeforeUnmount(() => {
         </div>
         <Button variant="outline" :disabled="loading" @click="load()">刷新</Button>
       </header>
-      <div class="iamx-toolbar">
+      <div v-if="!embedded" class="iamx-toolbar">
         <label
           >办理状态
           <select v-model="state" :disabled="busy" @change="load(true)">
@@ -359,8 +399,8 @@ onBeforeUnmount(() => {
         {{ error }} <Button variant="outline" @click="load()">重试</Button>
       </p>
       <p v-if="loading" role="status" class="iamx-notice">正在读取办理队列…</p>
-      <div class="iamx-queue-layout" :class="{ 'has-selection': selected }">
-        <aside class="iamx-queue" aria-label="变更单列表">
+      <div class="iamx-queue-layout" :class="{ 'has-selection': selected, 'iw-embedded-queue': embedded }">
+        <aside v-if="!embedded" class="iamx-queue" aria-label="变更单列表">
           <button
             v-for="row in rows"
             :key="row.id"
@@ -551,6 +591,7 @@ onBeforeUnmount(() => {
       ref="leaveGuard"
       :dirty="dirty"
       :busy="acting"
+      @discarded="reason = ''; confirmed = false; successors = {}"
       description="撤回原因、接管人选择或确认勾选尚未提交。"
-  /></IdentityShell>
+  /></component>
 </template>

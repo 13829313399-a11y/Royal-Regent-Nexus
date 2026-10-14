@@ -517,14 +517,24 @@ def approve_registration_with_system_position(
     payload: RegistrationApproveRequest,
     request: Request | None = None,
 ) -> RegistrationRequestOut:
+    result = approve_registration_with_system_position_tx(db, current_user, request_id, payload, request=request)
+    db.commit()
+    return result
+
+
+def approve_registration_with_system_position_tx(
+    db: Session, current_user: AuthContext, request_id: str,
+    payload: RegistrationApproveRequest, request: Request | None = None,
+) -> RegistrationRequestOut:
+    """Flush-only registration adapter; caller owns the complete transaction."""
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
     current_user = fresh_actor(db, current_user.id)
     if payload.profile and payload.profile.org_unit_id:
-        from app.services.identity_registration import registration_org, approve_functional_registration
+        from app.services.identity_registration import registration_org, approve_functional_registration_tx
         approved_org = registration_org(db, payload.profile.factory_id, payload.profile.org_unit_id, payload.profile.department)
         if approved_org.kind == "functional_unit":
-            return approve_functional_registration(db, current_user, load_registration_request(db, request_id), payload)
+            return approve_functional_registration_tx(db, current_user, load_registration_request(db, request_id), payload)
     ensure_user_manage(db, current_user)
     registration_request = load_registration_request(db, request_id)
     ensure_user_manage(
@@ -795,7 +805,7 @@ def approve_registration_with_system_position(
         ),
         request=request,
     )
-    db.commit()
+    db.flush()
     return registration_request_to_out(registration_request)
 
 
@@ -805,6 +815,15 @@ def reject_registration_request(
     request_id: str,
     payload: RegistrationRejectRequest,
     request: Request | None = None,
+) -> RegistrationRequestOut:
+    result = reject_registration_request_tx(db, current_user, request_id, payload, request=request)
+    db.commit()
+    return result
+
+
+def reject_registration_request_tx(
+    db: Session, current_user: AuthContext, request_id: str,
+    payload: RegistrationRejectRequest, request: Request | None = None,
 ) -> RegistrationRequestOut:
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
@@ -843,7 +862,7 @@ def reject_registration_request(
         detail=registration_request.review_comment,
         request=request,
     )
-    db.commit()
+    db.flush()
     return registration_request_to_out(registration_request)
 
 
@@ -1053,6 +1072,8 @@ def open_password_reset_claim_window(
     action: str,
     request: Request | None = None,
 ) -> PasswordResetApproveOut:
+    if settings.authz_mode != "enforce" or not settings.authz_writes_enabled:
+        raise HTTPException(status_code=403, detail="当前仅可查看，密码找回办理尚未启用")
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
     if request is not None:
@@ -1182,6 +1203,8 @@ def reject_password_reset_request(
     payload: PasswordResetReviewRequest,
     request: Request | None = None,
 ) -> PasswordResetRequestOut:
+    if settings.authz_mode != "enforce" or not settings.authz_writes_enabled:
+        raise HTTPException(status_code=403, detail="当前仅可查看，密码找回办理尚未启用")
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
     current_user = fresh_actor(db, current_user.id)

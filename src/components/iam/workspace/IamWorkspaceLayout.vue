@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { provide, watch } from 'vue'
+import { computed, provide, watch } from 'vue'
 import { setIdentityViewer } from './identity-ui-context'
-import { RouterView } from 'vue-router'
+import { RouterView, useRoute } from 'vue-router'
 import { ArrowLeft, ShieldCheck } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
 import IamWorkspaceNavigation from './IamWorkspaceNavigation.vue'
-import { iamPageGroup } from './iam-navigation'
+import { iamPageGroup, identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from './iam-navigation'
+import '@/features/identity-management/workspace/workspace.css'
 import './iam-studio.css'
 import './iam-motion.css'
 const auth = useAuthStore()
+const activeRoute = useRoute()
+const positionWorkspace = computed(() => activeRoute.name === 'position-workbench-compatible' || activeRoute.name === 'system-users' && identityUiEnabled && positionWorkbenchEnabled)
 provide('iam-workspace', true)
 watch(
   () => auth.currentUser?.id,
@@ -17,14 +20,15 @@ watch(
 )
 </script>
 <template>
-  <div class="rrn-iam-studio iamx-workspace notranslate" translate="no">
+  <div class="rrn-iam-studio iamx-workspace notranslate" :class="{ 'iw-shell': consolidatedIamEnabled }" translate="no">
     <a class="iamx-skip" href="#iamx-main">跳到主要内容</a>
     <header class="iamx-workspace-header">
       <div class="iamx-brand-row">
         <div class="iamx-brand">
           <RouterLink to="/" class="iamx-back"><ArrowLeft :size="17" />返回工作台</RouterLink
           ><span class="iamx-brand-rule" />
-          <h1><ShieldCheck :size="25" />权限与组织</h1>
+          <span v-if="positionWorkspace" class="flex items-center gap-2 font-semibold"><ShieldCheck :size="22" />组织协作 · 权限管理</span>
+          <h1 v-else><ShieldCheck :size="25" />权限与组织</h1>
         </div>
         <div class="iamx-session">
           <span class="iamx-avatar">{{
@@ -36,7 +40,7 @@ watch(
           >
         </div>
       </div>
-      <IamWorkspaceNavigation />
+      <IamWorkspaceNavigation v-if="consolidatedIamEnabled || !positionWorkspace" />
     </header>
     <main id="iamx-main" class="iamx-main" tabindex="-1" data-iam-focus-fallback>
       <RouterView v-slot="{ Component, route }"

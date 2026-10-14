@@ -14,6 +14,11 @@ def canonical_id(source, notification):
         if notification.type == "identity_changed": return f"identity:{notification.id}:identity_changed:1"
         try: payload = json.loads(notification.payload_json or "{}")
         except (ValueError, TypeError): return None
+        if notification.type.startswith("position_review_") and payload.get("position_review_id"):
+            if payload.get("purpose") == "review":
+                return f"position_reviews:{payload['position_review_id']}:position_review:1"
+            if payload.get("purpose") == "self" and isinstance(payload.get("revision"), int):
+                return f"position_reviews:{payload['position_review_id']}:position_result:{payload['revision']}"
         if notification.type == "user_registration" and payload.get("registration_request_id"):
             return f"account_requests:{payload['registration_request_id']}:registration:1"
         if notification.type == "password_reset" and payload.get("password_reset_request_id"):

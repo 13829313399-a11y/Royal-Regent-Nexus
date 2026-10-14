@@ -79,6 +79,39 @@
   accent-color: var(--iamx-accent);
   flex-shrink: 0;
 }
+/* Keep the icon in a separate grid cell so shared input padding cannot overlap it. */
+.rrn-iam-studio .iamx-search-control {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 12px;
+  border: 1px solid var(--input);
+  border-radius: 10px;
+  background: var(--iamx-surface);
+}
+.rrn-iam-studio .iamx-search-control > svg {
+  position: static;
+  width: 16px;
+  height: 16px;
+  transform: none;
+  pointer-events: none;
+}
+.rrn-iam-studio .iamx-search-control > input:not([type='checkbox']):not([type='radio']) {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 8px 10px 8px 0;
+  background: transparent;
+  outline: none;
+  box-shadow: none;
+}
+.rrn-iam-studio .iamx-search-control:focus-within {
+  border-color: var(--ring);
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
 .iamx-workspace-header {
   padding: 18px max(24px, calc((100vw - 1680px) / 2)) 0;
   background: var(--iamx-surface);

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   CheckCircle2,
   CircleOff,
@@ -19,6 +20,8 @@ import {
 import IamDialogSurface from '@/components/iam/workspace/IamDialogSurface.vue'
 import IamDisclosure from '@/components/iam/workspace/IamDisclosure.vue'
 import IamNavigation from '@/components/iam/IamNavigation.vue'
+import PermissionPackageSummary from '@/components/iam/workspace/PermissionPackageSummary.vue'
+import { consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
 import {
   permissionAccessKindLabel,
   permissionDisplayLabel,
@@ -33,6 +36,9 @@ type PermissionViewMode = 'all' | 'configured'
 type DisplayPermission = PermissionCatalogItem & { catalog_missing?: boolean }
 
 const authStore = useAuthStore()
+const route = useRoute()
+const viewer = computed(() => `${authStore.currentUser?.id}:${authStore.authorizationVersion}:${authStore.currentUser?.identity?.employment_epoch}:${authStore.currentUser?.identity?.effective_context_key}`)
+let listSequence = 0
 const roles = ref<RoleSummary[]>([])
 const permissions = ref<PermissionCatalogItem[]>([])
 const selectedRoleId = ref('')
@@ -282,6 +288,7 @@ async function handleMobileRoleSelect(event: Event) {
 }
 
 async function loadData() {
+  const sequence = ++listSequence
   if (!canReadPermissionCatalog.value) {
     roles.value = []
     permissions.value = []
@@ -299,20 +306,33 @@ async function loadData() {
       iamApi.listSystemPositions(),
       iamApi.listPermissions('all'),
     ])
+    if (sequence !== listSequence) return
     roles.value = roleItems
     permissions.value = permissionItems
-    if (roleItems.length) await loadRoleAccess(roleItems[0].id)
+    const requested = typeof route.query.role === 'string' ? route.query.role : ''
+    if (requested && !roleItems.some(r => r.id === requested)) errorMessage.value = '指定方案不存在或不可查看，请从列表重新选择。'
+    else if (roleItems.length) await loadRoleAccess(requested || roleItems[0].id)
   } catch (error) {
+    if (sequence !== listSequence) return
+    roles.value = []; permissions.value = []; roleAccess.value = null
     errorMessage.value = getApiErrorMessage(error)
   } finally {
-    isLoading.value = false
+    if (sequence === listSequence) isLoading.value = false
   }
 }
 
 onMounted(() => {
   void loadData()
 })
+watch(viewer, () => {
+  ++listSequence; ++roleAccessRequestSequence
+  roles.value = []; permissions.value = []; roleAccess.value = null; selectedRoleId.value = ''
+  roleSearchQuery.value = ''; permissionSearchQuery.value = ''; showDefinitionDetails.value = false
+  void loadData()
+}, { flush: 'sync' })
+watch(() => route.query.role, () => { if (consolidatedIamEnabled) void loadData() })
 onBeforeUnmount(() => {
+  ++listSequence
   ++roleAccessRequestSequence
 })
 </script>
@@ -320,6 +340,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="iamx-role-page">
     <IamNavigation
+      v-if="!consolidatedIamEnabled"
       data-testid="role-templates-sticky-navigation"
       compact
       appearance="portal"
@@ -358,15 +379,15 @@ onBeforeUnmount(() => {
           </div>
           <label class="mt-2 grid gap-1.5 text-xs font-semibold text-slate-600">
             搜索职位
-            <span class="relative block">
+            <span class="iamx-search-control">
               <Search
-                class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                class="size-4 text-slate-400"
                 aria-hidden="true"
               />
               <input
                 v-model="roleSearchQuery"
                 type="search"
-                class="h-9 w-full rounded-[10px] border border-slate-200 pl-9 pr-3 text-[13px] font-normal outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                class="h-9 text-[13px] font-normal"
                 placeholder="部门、职位或代码"
               />
             </span>
@@ -495,9 +516,7 @@ onBeforeUnmount(() => {
               <div class="flex flex-wrap items-start justify-between gap-3">
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-2">
-                    <h2 class="text-xl font-bold tracking-tight text-slate-950">
-                      {{ roleAccess.name }}
-                    </h2>
+                    <h2 class="text-xl font-bold tracking-tight text-slate-950"><PermissionPackageSummary :name="roleAccess.name" :department="roleAccess.position_department_name" :count="configuredPermissionCount" :scope="roleDataScopeSummary" /></h2>
                     <span
                       class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-800"
                     >
@@ -569,16 +588,16 @@ onBeforeUnmount(() => {
               class="iam-toolbar shrink-0 rounded-[14px] border border-slate-200 bg-white/95 p-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] backdrop-blur"
             >
               <div class="grid gap-2.5 lg:grid-cols-[minmax(260px,1fr)_190px_auto] lg:items-center">
-                <label class="relative block">
+                <label class="iamx-search-control">
                   <span class="sr-only">搜索权限</span>
                   <Search
-                    class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"
+                    class="size-4 text-slate-400"
                     aria-hidden="true"
                   />
                   <input
                     v-model="permissionSearchQuery"
                     type="search"
-                    class="h-10 w-full rounded-[10px] border border-slate-200 bg-white pl-9 pr-3 text-[13px] outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    class="h-10 text-[13px]"
                     placeholder="搜索权限名称、模块或代码"
                   />
                 </label>
