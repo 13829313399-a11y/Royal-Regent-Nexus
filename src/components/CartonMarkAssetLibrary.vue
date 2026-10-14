@@ -8,8 +8,8 @@ import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 import { factoryContexts } from '@/data/enterpriseMock'
 
-const props = defineProps<{ factoryId: string; supplierFactories?: string[]; orderId?: string; readOnly?: boolean; supplier?: boolean; supplierCheckEnabled?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
-const emit = defineEmits<{ use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]]; manualReview: [assets: CartonMarkAsset[]]; supplierReview: [assets: (SupplierMarkAsset & { factory_id: string })[]]; supplierExcel: [asset: SupplierMarkAsset & { factory_id: string }]; supplierGeneratePdf: [asset: SupplierMarkAsset & { factory_id: string }]; supplierSources: [assets: (SupplierMarkAsset & { factory_id: string })[]] }>()
+const props = defineProps<{ factoryId: string; search?: string; supplierFactories?: string[]; orderId?: string; readOnly?: boolean; supplier?: boolean; supplierCheckEnabled?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
+const emit = defineEmits<{ 'update:search': [value: string]; use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]]; manualReview: [assets: CartonMarkAsset[]]; supplierReview: [assets: (SupplierMarkAsset & { factory_id: string })[]]; supplierExcel: [asset: SupplierMarkAsset & { factory_id: string }]; supplierGeneratePdf: [asset: SupplierMarkAsset & { factory_id: string }]; supplierSources: [assets: (SupplierMarkAsset & { factory_id: string })[]] }>()
 const auth = useAuthStore()
 const canRead = computed(() => props.supplier ? auth.can('carton_supplier:read') : ['pmc-warehouse', 'carton', 'qa', 'qc'].some(d => auth.can('carton_mark:read', props.factoryId, d)))
 const canWrite = computed(() => !props.supplier && !props.readOnly && ['pmc-warehouse', 'carton'].some(d => auth.can('carton_mark:template_upload', props.factoryId, d)))
@@ -74,12 +74,17 @@ function useSources() {
   emit('useSources', selectedSources.value as CartonMarkAsset[])
   sourceGroup.value = ''
 }
-const query = ref('')
+const localQuery = ref('')
+const query = computed({
+  get: () => props.search ?? localQuery.value,
+  set: (value: string) => { if (props.search === undefined) localQuery.value = value; else emit('update:search', value) },
+})
 const onlyUnbound = ref(false)
 const kindFilter = ref('ALL')
 const bindingFilter = ref('ALL'), customerFilter = ref(''), sort = ref('LATEST')
 const customers = computed(() => [...new Set(entries.value.flatMap(asset => asset.orders.map(order => order.customer_name)))].sort((a, b) => a.localeCompare(b, 'zh-CN')))
-function clearFilters() { query.value = ''; kindFilter.value = 'ALL'; onlyUnbound.value = false; bindingFilter.value = 'ALL'; customerFilter.value = '' }
+function resetFilters() { kindFilter.value = 'ALL'; onlyUnbound.value = false; bindingFilter.value = 'ALL'; customerFilter.value = '' }
+function clearFilters() { query.value = ''; resetFilters() }
 const busy = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -117,7 +122,7 @@ const visible = computed(() => entries.value.filter(asset => {
   return (kindFilter.value === 'ALL' || asset.kind === kindFilter.value) && (!onlyUnbound.value || asset.binding_status !== 'BOUND')
     && (bindingFilter.value === 'ALL' || asset.binding_status === bindingFilter.value)
     && (!customerFilter.value || asset.orders.some(order => order.customer_name === customerFilter.value)) && (!key ||
-    [asset.file_name, asset.contract_number, ...asset.orders.flatMap(o => [o.order_no, o.customer_name, o.item_no])].some(v => v.toLowerCase().includes(key)))
+    [asset.file_name, asset.contract_number, ...asset.orders.flatMap(o => [o.contract_no, o.order_no, o.customer_name, o.item_no])].some(v => v.toLowerCase().includes(key)))
 }))
 const groups = computed(() => {
   const grouped = new Map<string, { key: string; factory: string; contract: string; customer: string; latest: string; photoGroupId: string | null; assets: CartonMarkAsset[] }>()
@@ -318,7 +323,8 @@ function previewUrl(asset: CartonMarkAsset) {
 }
 function chooseFiles() { if (canWrite.value && !busy.value) fileInput.value?.click() }
 defineExpose({ chooseFiles, refresh })
-watch(() => [props.factoryId, props.supplierFactories?.join('\0'), props.orderId, props.supplier, canRead.value, canWrite.value, auth.currentUser?.id, auth.authorizationVersion], () => {
+watch([() => props.factoryId, () => props.supplierFactories?.join('\0'), () => props.orderId,
+  () => props.supplier, canRead, canWrite, () => auth.currentUser?.id, () => auth.authorizationVersion], () => {
   generation++
   controller.abort()
   controller = new AbortController()
@@ -333,7 +339,7 @@ watch(() => [props.factoryId, props.supplierFactories?.join('\0'), props.orderId
   error.value = ''
   busy.value = false
   loading.value = false
-  clearFilters(); sort.value = 'LATEST'
+  localQuery.value = ''; resetFilters(); sort.value = 'LATEST'
   if (canRead.value) void refresh()
 }, { immediate: true })
 onBeforeUnmount(() => { generation++; controller.abort() })
@@ -364,7 +370,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
     </div>
     <template v-if="!uploadOnly">
       <div v-if="!orderId" class="mt-4 flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3">
-        <input v-model="query" aria-label="搜索箱唛资料" placeholder="搜索合同号、客户、货号或文件名…" class="h-10 min-w-0 basis-full flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm sm:basis-auto">
+        <input v-if="search === undefined" v-model="query" aria-label="搜索箱唛资料" placeholder="搜索合同号、客户、货号或文件名…" class="h-10 min-w-0 basis-full flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm sm:basis-auto">
         <select v-model="kindFilter" aria-label="箱唛文件类型" class="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm"><option value="ALL">全部格式</option><option value="pdf">PDF</option><option value="excel">Excel</option><option value="image">图片</option></select>
         <label v-if="!supplier" class="flex items-center gap-2 text-xs text-slate-600"><input v-model="onlyUnbound" type="checkbox">只看待关联</label>
         <select v-model="customerFilter" aria-label="箱唛客户筛选" class="h-10 rounded-lg border bg-white px-3 text-sm"><option value="">全部客户</option><option v-for="customer in customers" :key="customer">{{ customer }}</option></select>

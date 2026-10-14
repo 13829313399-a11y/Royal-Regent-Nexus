@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { CartonCustomerResponse } from '@/api/cartonProcurement'
-const props = defineProps<{ modelValue: string; customers: CartonCustomerResponse[]; knownCustomers?: CartonCustomerResponse[]; canCreate: boolean; disabled?: boolean }>()
-const emit = defineEmits<{ 'update:modelValue': [string]; create: [string]; refresh: [] }>()
-const query = ref(''), open = ref(false), composing = ref(false), root = ref<HTMLElement>()
+const props = defineProps<{ modelValue: string; searchText?: string; customers: CartonCustomerResponse[]; knownCustomers?: CartonCustomerResponse[]; canCreate: boolean; disabled?: boolean }>()
+const emit = defineEmits<{ 'update:modelValue': [string]; 'update:searchText': [string]; create: [string]; refresh: [] }>()
+const query = ref(props.searchText ?? ''), open = ref(false), composing = ref(false), root = ref<HTMLElement>()
+watch(() => props.searchText, value => { if (value !== undefined && value !== query.value) query.value = value })
+watch(query, value => emit('update:searchText', value), { flush: 'sync' })
 const normalize = (value: string) => value.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, '')
 watch(() => [props.modelValue, props.customers] as const, () => {
   const row = props.customers.find(c => c.customer_code === props.modelValue)

@@ -66,6 +66,7 @@ from app.schemas.carton_procurement import (
     CartonOrderBulkSubmitRequest,
     CartonOrderCancelRequest,
     CartonOrderCreate,
+    CartonOrderDatesRequest,
     CartonOrderLineOut,
     CartonOrderHistoryLineOut,
     CartonOrderHistorySuggestionOut,
@@ -84,7 +85,7 @@ from app.schemas.carton_procurement import (
     derive_carton_plan_due_date,
 )
 from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine, SupplierCommitment, SupplierAttachment
-from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext
+from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext, can
 from app.services.carton_customer_assignment import ensure_customer_operation, ensure_receipt_operation, customer_predicate, unrestricted as unrestricted_customer
 from app.schemas.carton_procurement import CartonLocationAllocation
 from app.services import carton_positions as positions
@@ -680,6 +681,57 @@ def get_order_by_no(db: Session, factory_id: str, order_no: str) -> CartonOrder:
     return order
 
 
+def create_order_response(db: Session, payload: CartonOrderCreate, user: AuthContext) -> CartonOrderOut:
+    """Keep a durable response for a single browser submission, including blank PO orders."""
+    if payload.request_id is None:
+        return order_out(db, create_order(db, payload, user))
+    factory_id = require_carton_factory(payload.factory_id)
+    _lock_receipt_factory(db, factory_id)
+    ensure_customer_operation(db, user, factory_id, payload.customer_code.strip().upper())
+    scope = json.dumps([factory_id, user.id, payload.request_id], separators=(",", ":"))
+    event_id = f"CAE-OCR-{hashlib.sha256(scope.encode()).hexdigest()}"
+
+    def canonical(value):
+        if isinstance(value, Decimal):
+            return str(value.normalize())
+        if isinstance(value, dict):
+            return {key: canonical(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [canonical(item) for item in value]
+        return value
+
+    body = canonical(payload.model_dump(exclude={"request_id"}))
+    body["customer_code"] = payload.customer_code.strip().upper()
+    fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"),
+                                            ensure_ascii=False).encode()).hexdigest()
+    previous = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.id == event_id))
+    if previous is not None:
+        evidence = json.loads(previous.detail_json).get("request", {})
+        if evidence.get("fingerprint") != fingerprint:
+            raise HTTPException(409, "本次提交标识已用于不同的订单内容，请核对原订单结果")
+        order = db.get(CartonOrder, previous.entity_id)
+        if order is None or order.factory_id != factory_id or order.deleted_at is not None:
+            raise HTTPException(409, "本次提交的原订单已删除，请核对历史记录后重新新建")
+        ensure_customer_operation(db, user, factory_id, order.customer_code)
+        result = CartonOrderOut.model_validate(evidence["result"])
+        db.commit()
+        return result
+    try:
+        order = create_order(db, payload, user, commit=False)
+        result = order_out(db, order)
+        event = db.scalar(select(CartonAuditEvent).where(
+            CartonAuditEvent.entity_id == order.id, CartonAuditEvent.event_type == "ORDER_CREATED"))
+        event.id = event_id
+        detail = json.loads(event.detail_json)
+        detail["request"] = {"fingerprint": fingerprint, "result": result.model_dump(mode="json")}
+        event.detail_json = json.dumps(detail, ensure_ascii=False, sort_keys=True)
+        db.commit()
+        return result
+    except Exception:
+        db.rollback()
+        raise
+
+
 def _order_lines(db: Session, order_id: str) -> list[CartonOrderLine]:
     return list(
         db.scalars(
@@ -698,6 +750,7 @@ def _purchase_order_issue_out(issue: CartonPurchaseOrderIssue) -> CartonPurchase
     return CartonPurchaseOrderIssueOut(
         purchase_order_batch=purchase_batch_out(issue),
         is_replenishment=bool(_purchase_order_snapshot(issue).get("replenishment")),
+        is_cancellation=bool(_purchase_order_snapshot(issue).get("cancellation")),
         id=issue.id,
         factory_id=issue.factory_id,
         order_no=issue.order_no,
@@ -740,6 +793,7 @@ def _purchase_order_pending_change(
     latest_issue: CartonPurchaseOrderIssue | None,
 ) -> tuple[str, Decimal, int, dict[str, object]]:
     previous = _purchase_order_snapshot(latest_issue)
+    cancelled = order.status == "CANCELLED"
     before_product_quantity = quantity(Decimal(str(previous.get("after_product_quantity") or 0)))
     before_due_date = str(previous.get("after_due_date", ""))
     previous_lines = {
@@ -747,14 +801,15 @@ def _purchase_order_pending_change(
         for item in previous.get("lines", [])
         if isinstance(item, dict)
     }
-    product_delta = quantity(order.product_order_quantity - before_product_quantity) if order.product_order_quantity is not None else Decimal(0)
+    effective_product_quantity = Decimal(0) if cancelled and order.product_order_quantity is not None else order.product_order_quantity
+    product_delta = quantity(effective_product_quantity - before_product_quantity) if effective_product_quantity is not None else Decimal(0)
     line_snapshots: list[dict[str, object]] = []
     for line in lines:
         previous_line = previous_lines.get(line.id, {})
         before_required = quantity(
             Decimal(str(previous_line.get("after_required_quantity", 0)))
         )
-        after_required = quantity(line.required_quantity)
+        after_required = Decimal(0) if cancelled else quantity(line.required_quantity)
         line_snapshots.append(
             {
                 "id": line.id,
@@ -781,19 +836,23 @@ def _purchase_order_pending_change(
         Decimal(str(item["required_quantity_delta"])) != 0 for item in line_snapshots
     )
     due_date_changed = bool(before_due_date and before_due_date != order.due_date)
+    customer_date_changed = bool(latest_issue and previous.get("order", {}).get("customer_due_date") != order.customer_due_date)
     paper_delta = sum((Decimal(item["required_quantity_delta"]) for item in line_snapshots), Decimal(0))
-    if latest_issue is None:
+    if cancelled:
+        pending_type = "REDUCE" if latest_issue and not previous.get("cancellation") else "NONE"
+    elif latest_issue is None:
         pending_type = "INITIAL"
     elif product_delta > 0 or (order.quantity_basis == "EXPLICIT" and paper_delta > 0):
         pending_type = "APPEND"
     elif product_delta < 0 or (order.quantity_basis == "EXPLICIT" and paper_delta < 0):
         pending_type = "REDUCE"
-    elif changed_line_count or due_date_changed:
+    elif changed_line_count or due_date_changed or customer_date_changed:
         pending_type = "ADJUSTMENT"
     else:
         pending_type = "NONE"
 
     snapshot: dict[str, object] = {
+        "cancellation": cancelled,
         "order": {
             "id": order.id,
             "factory_id": order.factory_id,
@@ -806,8 +865,8 @@ def _purchase_order_pending_change(
             "customer_po": order.customer_po,
             "item_no": order.item_no,
             "product_name": order.product_name,
-            "net_weight_kg": order.net_weight_kg,
-            "gross_weight_kg": order.gross_weight_kg,
+            "net_weight_kg": str(order.net_weight_kg) if order.net_weight_kg is not None else None,
+            "gross_weight_kg": str(order.gross_weight_kg) if order.gross_weight_kg is not None else None,
             "order_date": order.order_date,
             "customer_due_date": order.customer_due_date,
             "safety_lead_days": order.safety_lead_days,
@@ -817,7 +876,7 @@ def _purchase_order_pending_change(
             "revision": order.revision,
         },
         "before_product_quantity": str(before_product_quantity) if order.quantity_basis == "CALCULATED" or previous.get("after_product_quantity") is not None else None,
-        "after_product_quantity": str(quantity(order.product_order_quantity)) if order.product_order_quantity is not None else None,
+        "after_product_quantity": str(quantity(effective_product_quantity)) if effective_product_quantity is not None else None,
         "quantity_basis": order.quantity_basis,
         "product_quantity_delta": str(product_delta) if order.quantity_basis == "CALCULATED" else None,
         "before_due_date": before_due_date,
@@ -866,12 +925,14 @@ def purchase_order_context(
     order: CartonOrder,
 ) -> CartonPurchaseOrderContextOut:
     issues = _purchase_order_issues(db, order.id)
-    latest_issue = issues[0] if issues else None
+    ordinary_issues = [issue for issue in issues if not _purchase_order_snapshot(issue).get("replenishment")]
+    latest_issue = ordinary_issues[0] if ordinary_issues else None
     lines = _order_lines(db, order.id)
     pending_type, product_delta, changed_line_count, _ = _purchase_order_pending_change(
         order, lines, latest_issue
     )
-    eligible_status = order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}
+    eligible_status = order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"} or (
+        order.status == "CANCELLED" and latest_issue is not None)
     visible_issues = [issue for issue in issues if issue.document_type != "LEGACY_BASELINE"]
     return CartonPurchaseOrderContextOut(
         factory_id=order.factory_id,
@@ -904,12 +965,14 @@ def create_purchase_order_issue(
     ensure_customer_operation(db, user, order.factory_id, order.customer_code)
     if order.revision != expected_revision:
         raise HTTPException(status_code=409, detail="订单已被其他人更新，请刷新后重试")
-    if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"}:
+    issues = _purchase_order_issues(db, order.id)
+    ordinary_issues = [issue for issue in issues if not _purchase_order_snapshot(issue).get("replenishment")]
+    latest_issue = ordinary_issues[0] if ordinary_issues else None
+    if order.status not in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"} and not (
+        order.status == "CANCELLED" and latest_issue is not None):
         raise HTTPException(status_code=409, detail="只有已确认并锁定的订单可以生成供应商采购单")
 
     _require_order_complete(db, order)
-    issues = _purchase_order_issues(db, order.id)
-    latest_issue = issues[0] if issues else None
     pending_type, product_delta, _, snapshot = _purchase_order_pending_change(
         order, _order_lines(db, order.id), latest_issue
     )
@@ -919,7 +982,7 @@ def create_purchase_order_issue(
             return latest_issue
         raise HTTPException(status_code=409, detail="当前订单没有尚未生成采购单的数量或交期变化")
 
-    next_issue_sequence = (latest_issue.issue_sequence if latest_issue else 0) + 1
+    next_issue_sequence = max((issue.issue_sequence for issue in issues), default=0) + 1
     type_sequence = 1 + sum(issue.document_type == pending_type and not _purchase_order_snapshot(issue).get("replenishment") for issue in issues)
     if pending_type == "INITIAL":
         document_no = f"{order.order_no}-P00"
@@ -964,6 +1027,7 @@ def create_purchase_order_issue(
             "order_no": order.order_no,
             "document_no": document_no,
             "document_type": pending_type,
+            "cancellation": order.status == "CANCELLED",
             "source_order_revision": order.revision,
             "before_product_quantity": before_quantity,
             "after_product_quantity": after_quantity,
@@ -1243,6 +1307,58 @@ def _order_line_signature(line: CartonOrderLine | object) -> tuple[str, ...]:
         str(line.net_weight_kg.normalize()) if line.net_weight_kg is not None else "",
         str(line.gross_weight_kg.normalize()) if line.gross_weight_kg is not None else "",
     )
+
+
+def update_order_dates(
+    db: Session, order_no: str, payload: CartonOrderDatesRequest, user: AuthContext,
+) -> CartonOrder:
+    factory_id = require_carton_factory(payload.factory_id)
+
+    def permitted(permission: str) -> bool:
+        return any(can(user, f"carton_procurement:{permission}", factory_id, department)
+                   for department in CARTON_DEPARTMENTS)
+
+    if not permitted("order_write"):
+        raise HTTPException(403, "调整交期需要当前厂区的订单维护权限")
+    _lock_receipt_factory(db, factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    if order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"} and not (
+        permitted("order_adjust") or permitted("inventory_write")
+    ):
+        raise HTTPException(403, "已锁定订单调整交期需要订单调整权限或库存操作权限")
+    ensure_customer_operation(db, user, factory_id, order.customer_code)
+    if order.revision != payload.expected_revision:
+        raise HTTPException(409, "订单已被其他人更新，请刷新后重试")
+    if order.status not in {"CONFIRMED", "PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}:
+        raise HTTPException(409, "仅待下单、已确认锁定或部分到货的订单可以调整交期")
+    target_customer_date = payload.customer_due_date or order.customer_due_date
+    target_due_date = payload.due_date or order.due_date
+    if order.quantity_basis == "CALCULATED" and target_customer_date is not None:
+        if payload.customer_due_date is None and payload.due_date and payload.due_date != order.due_date:
+            raise HTTPException(422, "已有客户交期的订单必须通过客户交期自动计算计划交期")
+        try:
+            target_due_date = derive_carton_plan_due_date(order.order_date, target_customer_date, order.safety_lead_days)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    if target_due_date < order.order_date or (target_customer_date and target_customer_date < order.order_date):
+        raise HTTPException(422, "交期不能早于下单日期")
+    if (target_customer_date, target_due_date) == (order.customer_due_date, order.due_date):
+        raise HTTPException(422, "交期没有发生变化")
+    before = {"customer_due_date": order.customer_due_date, "due_date": order.due_date, "revision": order.revision}
+    order.customer_due_date = target_customer_date
+    order.due_date = target_due_date
+    order.revision += 1
+    order.updated_by = user.id
+    order.updated_by_name = user.display_name
+    order.updated_at = now_text()
+    _audit(db, user, factory_id, "ORDER_DATES_CHANGED", "carton_order", order.id, {
+        "order_no": order.order_no, "reason": payload.reason, "before": before,
+        "customer_due_date": order.customer_due_date, "due_date": order.due_date,
+        "safety_lead_days": order.safety_lead_days, "revision": order.revision,
+    })
+    db.commit()
+    db.refresh(order)
+    return order
 
 
 def update_order(
@@ -1915,6 +2031,8 @@ def reduce_order(
             "revision": order.revision,
         },
     )
+    if full_return:
+        _issue_order_cancellation(db, order, user)
     db.commit()
     db.refresh(order)
     return order
@@ -1927,6 +2045,12 @@ def return_order(
     user: AuthContext,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
+    # A return posts inventory outbounds. Canonical policy (including explicit
+    # denies) must protect this write even in legacy authorization rollout mode.
+    for permission in ("order_write", "inventory_write"):
+        if not any(can(user, f"carton_procurement:{permission}", factory_id, department)
+                   for department in CARTON_DEPARTMENTS):
+            raise HTTPException(403, "整单退货需要本厂订单与库存操作权限")
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
     ensure_customer_operation(db, user, factory_id, order.customer_code)
@@ -2044,6 +2168,7 @@ def return_order(
             "revision": order.revision,
         },
     )
+    _issue_order_cancellation(db, order, user)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -2051,6 +2176,13 @@ def return_order(
         raise HTTPException(status_code=409, detail="退单库存流水冲突，请刷新后重试") from exc
     db.refresh(order)
     return order
+
+
+def _issue_order_cancellation(db: Session, order: CartonOrder, user: AuthContext) -> None:
+    ordinary = [issue for issue in _purchase_order_issues(db, order.id)
+                if not _purchase_order_snapshot(issue).get("replenishment")]
+    if ordinary and not _purchase_order_snapshot(ordinary[0]).get("cancellation"):
+        create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
 
 
 def bulk_cancel_orders(
@@ -4731,7 +4863,7 @@ def list_audit_events(
             detail = json.loads(row.detail_json or "{}")
         except (TypeError, json.JSONDecodeError):
             detail = {"message": "历史操作详情无法解析"}
-        if row.id.startswith("CAE-REQ-") and isinstance(detail, dict):
+        if row.id.startswith(("CAE-REQ-", "CAE-OCR-")) and isinstance(detail, dict):
             detail.pop("request", None)  # Transport retry evidence is not a business log field.
         items.append(
             CartonAuditEventOut(

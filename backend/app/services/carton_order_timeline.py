@@ -19,7 +19,7 @@ from app.services.carton_inventory_report import _inventory_identity, _validate_
 
 ORDER_LABELS = {
     "ORDER_CREATED": "落单", "HISTORY_ORDER_IMPORTED": "历史订单导入",
-    "ORDER_UPDATED": "修改订单", "ORDER_SUBMITTED_SUPPLIER": "确认订单并锁定",
+    "ORDER_UPDATED": "修改订单", "ORDER_DATES_CHANGED": "调整订单交期", "ORDER_SUBMITTED_SUPPLIER": "确认订单并锁定",
     "ORDER_REPLENISHED": "补单出库", "ORDER_APPENDED": "追加订单", "ORDER_REDUCED": "减少订单",
     "ORDER_CANCELLED": "取消订单", "ORDER_RETURNED": "退单",
 }
@@ -144,6 +144,12 @@ def order_timeline(db: Session, factory_id: str, *, customer_code: str = "", dat
                     event.description = "；".join(changes) or "纸品需求调整，详见原始操作记录。"
                 else:
                     before, after = _number(detail.get("before_quantity")), _number(detail.get("after_quantity"))
+            elif audit.event_type == "ORDER_DATES_CHANGED":
+                old = detail.get("before") or {}
+                event.description = "；".join(
+                    f"{label}：{old.get(field) or '未填写'} → {detail.get(field) or '未填写'}"
+                    for field, label in (("customer_due_date", "客户交期"), ("due_date", "计划交期"))
+                    if old.get(field) != detail.get(field))
             elif audit.event_type == "ORDER_UPDATED":
                 old, new = detail.get("before") or {}, detail.get("after") or {}
                 before = _number(old.get("product_order_quantity"))

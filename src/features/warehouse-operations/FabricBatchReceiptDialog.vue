@@ -17,7 +17,7 @@ const emit = defineEmits<{ close: []; saved: [result: ReceiveSourcesResult]; sta
 const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 const receiptDate = ref(today), deliveryReference = ref(''), deliveryDate = ref(today), note = ref('')
 const newRow = (key: number) => ({ key, quantity: '', location: '', location_id: '', dye_lot: '', roll_no: '' })
-const entries = ref(props.sources.map(source => ({ source, category: (source.material_category ?? '') as MaterialCategory | '', unitPrice: '', currency: '' as NonNullable<ReceiptPriceInput['currency']>, reason: '', rows: [newRow(1)] })))
+const entries = ref(props.sources.map(source => ({ source, category: (source.material_category ?? '') as MaterialCategory | '', unitPrice: '', currency: 'CNY' as NonNullable<ReceiptPriceInput['currency']>, reason: '', rows: [newRow(1)] })))
 const busy = ref(false), error = ref(''), submitted = ref<ReceiveSourcesRequest>()
 let nextKey = 2, alive = true, saved = false
 const requestId = warehouseRequestId()
@@ -39,7 +39,7 @@ const valid = computed(() => entries.value.length > 0 && entries.value.length <=
     entry.rows.every(row => row.location_id && (entry.category !== 'FABRIC' || row.dye_lot.trim())) &&
     (!progress.value[index]?.overage || entry.reason.trim())))
 const dirty = computed(() => deliveryReference.value || receiptDate.value !== today || deliveryDate.value !== today || note.value ||
-  entries.value.some(entry => entry.unitPrice || entry.currency || entry.category !== (entry.source.material_category ?? '') || entry.reason || entry.rows.some(row => row.quantity || row.location_id || row.location || row.dye_lot || row.roll_no)))
+  entries.value.some(entry => entry.unitPrice || entry.currency !== 'CNY' || entry.category !== (entry.source.material_category ?? '') || entry.reason || entry.rows.some(row => row.quantity || row.location_id || row.location || row.dye_lot || row.roll_no)))
 function allowLeave() {
   if (busy.value) return false
   return saved || !dirty.value || window.confirm(submitted.value ? '保存结果尚未确认，系统可能已入库。离开后请先查入库记录，避免重复登记。确定离开？' : '本次批量收料尚未保存，离开会清空填写内容。确定离开？')

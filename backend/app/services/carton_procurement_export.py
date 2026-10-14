@@ -33,11 +33,19 @@ def _known_number(value):
     return float(value) if value is not None else "待完善"
 
 
+def _issue_document_label(issue, snapshot):
+    if snapshot.get("cancellation"):
+        return "取消采购通知"
+    if snapshot.get("replenishment"):
+        return "补单采购单"
+    return PURCHASE_ORDER_TYPE_LABELS.get(issue.document_type, "采购变更单")
+
+
 def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> bytes:
     snapshot = json.loads(issue.snapshot_json)
     order = snapshot["order"]
     lines = snapshot["lines"]
-    document_label = "补单采购单" if snapshot.get("replenishment") else PURCHASE_ORDER_TYPE_LABELS.get(issue.document_type, "采购变更单")
+    document_label = _issue_document_label(issue, snapshot)
 
     workbook = Workbook()
     workbook.properties.creator = "Royal Regent Nexus"
@@ -144,7 +152,7 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
             delta,
             after_required,
             line["unit"],
-            snapshot["replenishment"]["responsibility_label"] if snapshot.get("replenishment") else ("现有余量覆盖，无需新增" if issue.document_type == "APPEND" and delta == 0 else ""),
+            "停止后续生产和送货" if snapshot.get("cancellation") else snapshot["replenishment"]["responsibility_label"] if snapshot.get("replenishment") else ("现有余量覆盖，无需新增" if issue.document_type == "APPEND" and delta == 0 else ""),
         ]
         for column, value in enumerate(values, start=1):
             cell = sheet.cell(row=row, column=column, value=value)
@@ -164,7 +172,9 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
 
     notice_row = first_line_row + len(lines) + 1
     sheet.merge_cells(start_row=notice_row, start_column=1, end_row=notice_row, end_column=10)
-    if snapshot.get("replenishment"):
+    if snapshot.get("cancellation"):
+        notice = "原订单已取消，请停止后续生产和送货，并确认收到取消通知；历史收货、退货和对账记录保留。"
+    elif snapshot.get("replenishment"):
         notice = "供应商仅按“本次补单”补货；原订单需求不变。责任：" + snapshot["replenishment"]["responsibility_label"]
         if snapshot["replenishment"].get("settlement_policy"):
             notice += "；供应商责任免费补货，不新增月结应付" if snapshot["replenishment"]["settlement_policy"] == "SUPPLIER_FREE" else "；我方责任，按实际验收入库数量及单价计入月结一次"
@@ -259,10 +269,12 @@ def build_purchase_order_issue_batch_workbook(
         cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     current_row = 6
+    has_cancellation = False
     for issue_index, issue in enumerate(issues, start=1):
         snapshot = json.loads(issue.snapshot_json)
+        has_cancellation = has_cancellation or bool(snapshot.get("cancellation"))
         order = snapshot["order"]
-        document_label = "补单采购单" if snapshot.get("replenishment") else PURCHASE_ORDER_TYPE_LABELS.get(issue.document_type, "采购变更单")
+        document_label = _issue_document_label(issue, snapshot)
         for line in snapshot["lines"]:
             values = [
                 issue_index,
@@ -301,7 +313,8 @@ def build_purchase_order_issue_batch_workbook(
     sheet.cell(
         row=notice_row,
         column=1,
-        value="严禁把“变更后累计”再次作为新增下单数量；首次、追加、减单均以采购单号和“本次箱数变化”列为执行依据。",
+        value="严禁把“变更后累计”再次作为新增下单数量；首次、追加、减单均以采购单号和“本次箱数变化”列为执行依据。" + (
+            "取消采购通知请停止后续生产和送货，并确认收到通知。" if has_cancellation else ""),
     )
     sheet.cell(row=notice_row, column=1).font = Font(name="Microsoft YaHei", size=10, bold=True, color=teal_dark)
     sheet.cell(row=notice_row, column=1).fill = PatternFill("solid", fgColor=teal_light)

@@ -13,7 +13,7 @@
     "anchor_id": "carton-supplier.overview",
     "field_keys": [],
     "summary": "采购订单、送货与仓库反馈在原页面查看。",
-    "content": "先核对当前供应商及可见厂区，再查看工作区、单据和操作日志。导入送货单时，逐行核对客户单号、客户料号、纸品类型、纸质、规格、发货量和送货单价；发货记录也可查看合同、货号和完整纸品资料。未填写的资料会明确显示。主动提交的发货单不等于仓库已收货；当前实收与验收历史应分别查看，已冲销记录不计入当前实收。纸箱模板下载沿用供应商范围。曜灵可以自由聊天，但不会提供内部价格、内部权限知识或其他供应商的数据。 箱唛资料库的“文档生成 PDF”按客户固定模板自动排版：选采购订单，新客户先上传历史 PDF，确认正侧唛版式、字体、固定地址、LOGO 和图章，保存为 V1；改版保存为新版本，后续同厂区同供应商同客户自动套用最新版。上传或选择 .xls/.xlsx 后，读取货号、品名、装箱数、GTIN 等内容重新排版；识别不适用时可固定 Excel 字段单元格。尺寸、毛重缺失显示待补，条码按 GTIN 重生成。支持正侧唛并排、仅正唛和分别一页。框线样式可选原版红框（带折边线）或普通黑框；红框包含外框、正侧唛分隔线、标题和底部分隔线、左侧折边线，并采用原稿的表格分栏。新模板默认红框，旧模板保留原样式，调整后保存新版。可先选择对应历史 PDF，再导入模板设置 JSON、核实选区并保存新版；设置不携带订单或客户身份。ZURU 系列支持 FTC、Zumiez、ESAL 三种版式，按所选订单货号读取当前 Excel 箱唛块；内部货号不同可明确指定 Excel 完整 SKU，不会自动截掉后缀。ESAL 固定图案和阿拉伯产地文字需分别从已确认稿选取，正文重新生成，条码字段按原稿打印号码。原稿缺少数量、箱数、尺寸或重量时，先用本单明确补齐的值，或读取采购单中唯一外箱明细；单位不明和多个外箱不猜测，仍缺少则显示待补。补齐不会覆盖 Excel 已有值，也不写入客户固定模板。Arial Narrow 窄体及粗字体需服务器已安装。历史稿不会自动逐像素复刻。生成审阅稿保存后可预览、下载并带入 Excel/PDF 核对；生成不代表审核通过或可供 QC 使用，也不宣称实际箱面 1:1。请核实内容、素材和实打扫码。失败时已入库原稿可继续使用，请求中断后先刷新确认是否已保存。",
+    "content": "先核对当前供应商及可见厂区，再查看工作区、单据和操作日志。导入送货单时，逐行核对客户单号、客户料号、纸品类型、纸质、规格、发货量和送货单价；发货记录也可查看合同、货号和完整纸品资料。未填写的资料会明确显示。主动提交的发货单不等于仓库已收货；当前实收与验收历史应分别查看，已冲销记录不计入当前实收。纸箱模板下载沿用供应商范围。曜灵可以自由聊天，但不会提供内部价格、内部权限知识或其他供应商的数据。 箱唛资料库的“文档生成 PDF”按客户固定模板自动排版：选采购订单，新客户先上传历史 PDF，确认正侧唛版式、字体、固定地址、LOGO 和图章，保存为 V1；改版保存为新版本，后续同厂区同供应商同客户自动套用最新版。上传或选择 .xls/.xlsx 后，读取货号、品名、装箱数、GTIN 等内容重新排版；识别不适用时可固定 Excel 字段单元格。尺寸、毛重缺失显示待补，条码按 GTIN 重生成。支持正侧唛并排、仅正唛和分别一页。框线样式可选原版红框（带折边线）或普通黑框；红框包含外框、正侧唛分隔线、标题和底部分隔线、左侧折边线，并采用原稿的表格分栏。新模板默认红框，旧模板保留原样式，调整后保存新版。可先选择对应历史 PDF，再导入模板设置 JSON、核实选区并保存新版；设置不携带订单或客户身份。ZURU 系列支持 FTC、Zumiez、ESAL、ARCHIBRAND、ANKO、Hy-Vee 六种版式，按所选订单货号读取当前 Excel 箱唛块；内部货号不同可明确指定 Excel 完整 SKU，不会自动截掉后缀。ESAL 固定图案和阿拉伯产地文字需分别从已确认稿选取，正文重新生成，条码字段按原稿打印号码。原稿缺少数量、箱数、尺寸或重量时，先用本单明确补齐的值，或读取采购单中唯一外箱明细；单位不明和多个外箱不猜测，仍缺少则显示待补。补齐不会覆盖 Excel 已有值，也不写入客户固定模板。Arial Narrow 窄体及粗字体需服务器已安装。ARCHIBRAND 正侧唛按同货号配对并排版长品名；ANKO 保留 SSCC 4×4inch 预留示意和离箱边至少2cm说明，实际印刷区域仍需确认。ANKO 超过0.13CBM或9.5kg时须补齐已确认搬运图案，当前规则会明确拦截。Hy-Vee 读取完整外箱数据表并保留完整 SKU，旧示例和条码图片不作数据来源；外箱 ITF-14、单品 UPC-A 按表内号码校验并重生成，内外盒数量须一致或明确 N/A。正侧唛并排选 A3，或用 A4 分别两页；条码区域太窄会拦截。所选行 Factory PO 必须与关联订单合同一致。历史稿不会自动逐像素复刻。生成审阅稿保存后可预览、下载并带入 Excel/PDF 核对；生成不代表审核通过或可供 QC 使用，也不宣称实际箱面 1:1。请核实内容、素材和实打扫码。失败时已入库原稿可继续使用，请求中断后先刷新确认是否已保存。\n取消通知在页面顶部显示，需要针对当前版本确认收到，并停止按旧单继续生产发货；页面会定期或回焦刷新。已接单的活动订单可更新承诺交期，内部计划交期保留原值。送货原文件匹配多张同合同货号订单时，按客户PO、交期和未送量选择对应订单，再重新校验并确认。提交时会校验预览订单版本，变化后需要重新预览；同一原文件不能改选订单后重复登记。仓库的暂未到货反馈仍保留待收；最终未收到并退回与误操作更正有独立历史。\n订单、发货与仓库反馈、采购单与送货单、操作日志使用页面顶部搜索；各页保留自己的关键词，清空筛选同步清空，月结仍使用本页搜索。无单送货实际是正单时由仓管补建完整正式需求并关联本次原送货，供应商上传原单不会自动创建订单或入库。",
     "steps": [
       {
         "title": "查看当前工作区域",
@@ -27,12 +27,12 @@
       {
         "path": "src/views/CartonSupplierView.vue",
         "symbol": "shipmentStatus",
-        "sha256": "36b20886a688e2ca4d5ecf195d51b274ee3e687b962e863dabdaafda00e4adc7"
+        "sha256": "f0ec4fb9bd213014067d46eda4c32fcd0577c2616552b979f6c9dae0a3af917f"
       },
       {
         "path": "src/components/CartonSupplierMarkPdf.vue",
         "symbol": "generate",
-        "sha256": "c87870f74c033807be42c2a30fa4b71db1180b9ff4c30fcb9bf99603d9f5947d"
+        "sha256": "f0288358fbb70837f1297ed35e0dba58abccdbfdf2d081da194b706975da3f7b"
       },
       {
         "path": "src/views/CartonSupplierMarkTemplatesView.vue",
@@ -47,7 +47,7 @@
       {
         "path": "src/components/CartonSupplierMarkLayout.vue",
         "symbol": "save",
-        "sha256": "05e03fa7e975ca88d55ddb541bb3d6db024d4da1f32937614a0520eba6ad52d6"
+        "sha256": "e0368556b97c5d5d47af31f71da6b2005c03b99cadbf405503db4ce47c292878"
       },
       {
         "path": "backend/app/services/carton_supplier_mark_layout.py",
@@ -62,11 +62,26 @@
       {
         "path": "backend/app/services/carton_mark_zuru.py",
         "symbol": "render_zuru",
-        "sha256": "f20b66bab5ad75558ba6aae13d11dc23d0ae5e013d276f424bc507cfbb33aad9"
+        "sha256": "0f04ced257b59f464a2cd6c94ce894866d8f10c7c5ec2466dca626811a96271b"
+      },
+      {
+        "path": "backend/app/services/carton_mark_hyvee.py",
+        "symbol": "extract_hyvee",
+        "sha256": "10a8a054a08956a700a3d542ccd1870ebdf5a725d085597e38e31f8a0ad1c662"
+      },
+      {
+        "path": "backend/app/services/carton_supplier_delivery_import.py",
+        "symbol": "DeliveryRowSelection",
+        "sha256": "c2c2616e4836632cbad39c8dea429ae3a7933df71fcb2cfe83764a00d9dd170f"
+      },
+      {
+        "path": "backend/app/services/carton_supplier_portal.py",
+        "symbol": "change_non_arrival",
+        "sha256": "4637cbee8c8d274cdc16fe9d66e3ec70871aa4f8b5a5a97741e8aff6959f4cf9"
       }
     ],
-    "knowledge_version": "2026.10.13-v6",
-    "verified_commit": "fb5e01008f6e5b04f68ad661c2828c71b79f2577",
+    "knowledge_version": "2026.10.14-carton-supplement-r1",
+    "verified_commit": "working-tree:carton-supplement-r1",
     "status": "verified"
   }
 ]

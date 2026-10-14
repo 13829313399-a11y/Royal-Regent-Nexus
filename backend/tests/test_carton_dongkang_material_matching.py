@@ -37,7 +37,8 @@ def test_supplier_preview_alias_and_specific_conflicts(monkeypatch, case):
     line = MATERIAL | {"id": "paper-1", "child_no": "P1", "required_quantity": "389",
         "remaining_to_ship": "389", "accepted": True, "shipping_blocked_reason": "", "unit": "个"}
     order = {"order_no": "ORDER-1", "contract_no": "4500223378-2", "item_no": "77903",
-             "issue_id": "ISSUE-1", "status": "PENDING_SUPPLIER", "awaiting_issue": False, "lines": [line]}
+             "issue_id": "ISSUE-1", "revision": 1, "customer_po": "PO-1", "document_no": "ISSUE-1",
+             "planned_date": "2026-10-15", "status": "PENDING_SUPPLIER", "awaiting_issue": False, "lines": [line]}
     expected_conflict = ""
     if case == "wrong_type": line["packaging_type"] = "内箱"; expected_conflict = "纸品类型"
     if case == "quality": line["paper_quality"] = "H99"; expected_conflict = "纸质"
@@ -68,7 +69,11 @@ def test_supplier_preview_alias_and_specific_conflicts(monkeypatch, case):
         assert "送货单：" in row["reason"] and "订单：" in row["reason"]
         if case == "wrong_type": assert "普通箱" in row["reason"] and "内箱" in row["reason"]
         else: assert "普通箱" not in row["reason"]
-    elif case == "ambiguous": assert "多条" in row["reason"]
+    elif case == "ambiguous":
+        assert "多张订单" in row["reason"] and "明确选择" in row["reason"]
+        assert row["status"] == "BLOCKED" and not row["order_line_id"]
+        assert len(row["candidates"]) == 2
+        assert {candidate["order_line_id"] for candidate in row["candidates"]} == {"paper-1", "paper-2"}
     elif case == "unaccepted": assert "接单" in row["reason"]
     elif case == "over_quantity": assert "超过剩余" in row["reason"]
     elif case == "no_demand": assert "没有需要发货的纸品" in row["reason"]

@@ -29,6 +29,37 @@ afterEach(() => vi.useRealTimers())
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-01T04:00:00Z')); vi.resetAllMocks(); mocks.can.mockReturnValue(true); vi.mocked(api.workspace).mockResolvedValue(workspace()) })
 
 describe('供应商月结对账', () => {
+  it('shares header search while saving and confirming the complete version, and retains standalone search', async () => {
+    const ws = workspace(), doc = document()
+    doc.sources.push({ ...doc.sources[0]!, source_key: 'RECEIPT:R2', document_no: 'DELIVERY-2', item_no: 'OTHER-ITEM' })
+    doc.statement.lines.push({ ...doc.statement.lines[0]!, id: 'L2', source_key: 'RECEIPT:R2', document_no: 'DELIVERY-2' })
+    ws.documents = [doc]
+    vi.mocked(api.workspace).mockResolvedValue(ws)
+    vi.mocked(api.save).mockResolvedValue(doc)
+    vi.mocked(api.confirm).mockResolvedValue({ ...doc, status: 'CONFIRMED' })
+    const w = mount(Component, { props: { factoryId: 'huaxing', search: 'DELIVERY-1' } }); await flushPromises()
+    expect(w.find('[aria-label="月结明细关键字"]').exists()).toBe(false)
+    expect(w.get('table').text()).toContain('DELIVERY-1')
+    expect(w.get('table').text()).not.toContain('DELIVERY-2')
+    expect(w.emitted('update:search')).toBeUndefined()
+    await button(w, '保存并核对差异').trigger('submit'); await flushPromises()
+    expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ lines: expect.arrayContaining([
+      expect.objectContaining({ id: 'L1' }), expect.objectContaining({ id: 'L2' }),
+    ]) }))
+    expect(vi.mocked(api.save).mock.calls[0]![0].lines).toHaveLength(2)
+    await button(w, '确认对账完成').trigger('click'); await flushPromises()
+    expect(api.confirm).toHaveBeenCalledWith('D1', 'huaxing', 1)
+    await button(w, '清除筛选').trigger('click')
+    expect(w.emitted('update:search')).toEqual([['']])
+    await w.setProps({ factoryId: 'huadeng', search: 'OTHER-ITEM' }); await flushPromises()
+    expect(w.emitted('update:search')).toEqual([['']])
+    expect(w.get('table').text()).toContain('DELIVERY-2')
+    expect(w.get('table').text()).not.toContain('DELIVERY-1')
+    w.unmount()
+    const standalone = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    expect(standalone.find('[aria-label="月结明细关键字"]').exists()).toBe(true)
+    standalone.unmount()
+  })
   it('shows one bilateral workflow with normal data read-only and opens adjustment only on the selected line', async () => {
     vi.mocked(api.workspace).mockResolvedValue(collaborativeWorkspace())
     const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()

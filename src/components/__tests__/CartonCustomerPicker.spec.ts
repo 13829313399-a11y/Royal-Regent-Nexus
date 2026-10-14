@@ -8,6 +8,27 @@ const customers = [
   { id: 'B', customer_code: 'OLD', customer_name: '旧客户', status: 'INACTIVE' },
 ] as CartonCustomerResponse[]
 describe('customer selection', () => {
+  it('restores unfinished search text independently of the selected customer identity', async () => {
+    const wrapper = mount(Picker, { props: { modelValue: '', searchText: '客户资料待核对', customers, canCreate: false } })
+    expect(wrapper.get<HTMLInputElement>('input').element.value).toBe('客户资料待核对')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await wrapper.get('input').trigger('focusout')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([''])
+    await wrapper.get('input').setValue('继续核对')
+    expect(wrapper.emitted('update:searchText')?.at(-1)).toEqual(['继续核对'])
+    await wrapper.setProps({ searchText: '' })
+    expect(wrapper.get<HTMLInputElement>('input').element.value).toBe('')
+    wrapper.unmount()
+  })
+  it('does not bind a restored restricted customer name without current customer access', async () => {
+    const wrapper = mount(Picker, { props: { modelValue: '', searchText: '迪奇', customers: [], knownCustomers: customers, canCreate: true } })
+    await wrapper.get('input').trigger('focusout')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([''])
+    await wrapper.get('input').trigger('focus')
+    expect(wrapper.text()).toContain('已有此客户')
+    expect(wrapper.text()).not.toContain('新增客户：')
+    wrapper.unmount()
+  })
   it('recognizes restricted customers by name or code without offering duplicate creation', async () => {
     const wrapper = mount(Picker, { props: { modelValue: '', customers: [], knownCustomers: customers, canCreate: true } })
     for (const query of ['迪奇', ' ｄ ']) {

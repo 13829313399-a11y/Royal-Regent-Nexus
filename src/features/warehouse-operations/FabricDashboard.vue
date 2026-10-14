@@ -65,7 +65,7 @@ onBeforeUnmount(() => { generation++; clearInterval(timer); window.removeEventLi
 <template>
   <div class="fabric-dashboard" :aria-busy="loading">
     <header class="dashboard-heading">
-      <div class="dashboard-title"><span class="title-icon"><ClipboardList :size="19" /></span><div><h1>工作看板</h1><p>采购追货与送货入库集中办理<span v-if="updatedAt"> · {{ updatedAt }} 更新</span></p></div></div>
+      <div class="dashboard-title"><span class="title-icon"><ClipboardList :size="19" /></span><div><h1>工作看板</h1><p>采购追货、送货入库与领料申请集中查看<span v-if="updatedAt"> · {{ updatedAt }} 更新</span></p></div></div>
       <div class="heading-actions"><RouterLink :to="scanLink" class="dashboard-primary"><ScanLine :size="16" />扫码入库</RouterLink><button type="button" class="dashboard-secondary" :disabled="loading" @click="load()"><RefreshCw :size="15" :class="{ spinning: loading }" />刷新</button></div>
     </header>
 
@@ -91,6 +91,13 @@ onBeforeUnmount(() => { generation++; clearInterval(timer); window.removeEventLi
             <p v-if="!deliveries.items.length" class="todo-empty">当前没有待入库的供应商送货单。</p>
             <ul v-else class="todo-list"><li v-for="row in deliveries.items" :key="row.id"><div class="todo-copy"><strong>送货单 {{ row.data.source_no }}</strong><p>{{ row.data.counterparty }} · {{ row.data.document_date || '日期未提供' }}</p><p>{{ row.processing_status === 'PARTIAL' ? '部分已入库' : '待核实入库' }} · {{ row.pending_line_count }} 项待收 · {{ row.first_item_name }}</p></div><RouterLink class="todo-action filled" :to="deliveryLink(row.id)">核实入库</RouterLink></li></ul>
           </template>
+        </article>
+        <article class="todo-panel request-panel" aria-labelledby="fabric-request-heading">
+          <div class="request-copy">
+            <header><h3 id="fabric-request-heading"><ClipboardList :size="16" />领料申请</h3><span class="request-status">裁床接口待接入</span></header>
+            <p class="panel-note">查看已登记的领料需求与发料进度，按申请核对并办理出库。</p>
+          </div>
+          <RouterLink class="todo-action" :to="warehouseLink('inventory', 'pending-issues')">查看领料申请<ArrowUpRight :size="14" /></RouterLink>
         </article>
       </div>
     </section>
@@ -135,6 +142,12 @@ onBeforeUnmount(() => { generation++; clearInterval(timer); window.removeEventLi
 .todo-panel{border:1px solid;border-radius:10px;padding:14px;min-width:0}
 .chase-panel{background:#fffef9;border-color:#f3dfa9}
 .delivery-panel{background:#f8fdfc;border-color:#bee6df}
+.request-panel{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#f8fafc;border-color:#dbe4eb}
+.request-copy{min-width:0}
+.todo-panel.request-panel header{justify-content:flex-start;flex-wrap:wrap;gap:8px}
+.request-status{padding:3px 8px;border-radius:5px;background:#eef2f6;color:#64748b;font-size:11px}
+.request-panel .panel-note{padding-top:6px;line-height:1.6}
+.request-panel .todo-action{display:inline-flex;align-items:center;gap:5px}
 .todo-panel header,.dashboard-flow header{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .todo-panel h3,.todo-panel header a,.dashboard-flow header a{display:flex;align-items:center;gap:5px}
 .todo-panel header a,.dashboard-flow header a{font-size:11px;font-weight:650;color:#087f73;text-decoration:none;white-space:nowrap}

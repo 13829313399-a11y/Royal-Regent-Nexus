@@ -1,5 +1,5 @@
 from typing import Literal
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from fastapi.encoders import jsonable_encoder
 from io import BytesIO
@@ -64,6 +64,7 @@ from app.schemas.carton_procurement import (
     CartonOrderBulkSubmitRequest,
     CartonOrderCancelRequest,
     CartonOrderCreate,
+    CartonOrderDatesRequest,
     CartonOrderHistorySuggestionListOut,
     CartonOrderListOut,
     CartonOrderOut,
@@ -102,7 +103,7 @@ from app.services.carton_procurement import (
     set_schedule_order_marks,
     create_inventory_movement,
     create_inventory_movements_bulk,
-    create_order,
+    create_order_response,
     create_purchase_order_issue,
     create_purchase_order_issues_batch,
     create_receipt,
@@ -137,6 +138,7 @@ from app.services.carton_procurement import (
     search_order_history_items,
     submit_order_to_supplier,
     update_order,
+    update_order_dates,
     update_closing_status,
     unlock_closing,
     update_customer,
@@ -330,7 +332,7 @@ def get_dashboard_workspace(
     factory_id: str,
     customer: str = Query("", max_length=128), search: str = Query("", max_length=128),
     status: Literal["OPEN", "ALL"] = "OPEN",
-    kind: Literal["ALL", "MISSING_ORDER", "NEW_ORDER", "QUANTITY_INCREASE", "QUANTITY_DECREASE", "QUANTITY_REVIEW", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_ORDER"] = "ALL",
+    kind: Literal["ALL", "ACTIONABLE", "TIMING", "REDUCTION", "MISSING_ORDER", "NEW_ORDER", "QUANTITY_INCREASE", "QUANTITY_DECREASE", "QUANTITY_REVIEW", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_ORDER"] = "ALL",
     offset: int = Query(0, ge=0), limit: int = Query(8, ge=1, le=50),
     db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
 ):
@@ -454,7 +456,7 @@ def post_order(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
-    return order_out(db, create_order(db, payload, current_user))
+    return create_order_response(db, payload, current_user)
 
 
 @router.patch("/orders/{order_no}", response_model=CartonOrderOut)
@@ -477,6 +479,22 @@ def post_order_submit_supplier(
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
     return order_out(db, submit_order_to_supplier(db, order_no, payload, current_user))
+
+
+@router.post("/orders/{order_no}/dates", response_model=CartonOrderOut)
+def post_order_dates(
+    order_no: str,
+    payload: CartonOrderDatesRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, require_carton_factory(payload.factory_id))
+    order = get_order_by_no(db, require_carton_factory(payload.factory_id), order_no)
+    if order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}:
+        _ensure_order_adjustment_permission(db, current_user, payload.factory_id)
+    return order_out(db, update_order_dates(db, order_no, payload, current_user))
 
 
 @router.post("/orders/{order_no}/append", response_model=CartonOrderOut)
@@ -581,7 +599,8 @@ def post_order_return(
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    for permission in ("order_write", "inventory_write"):
+        _ensure_permission(db, current_user, f"carton_procurement:{permission}", payload.factory_id)
     return order_out(db, return_order(db, order_no, payload, current_user))
 
 
@@ -1187,6 +1206,29 @@ def get_inventory_movements(
         offset=offset,
         items=items,
     )
+
+
+@router.get("/inventory/movement-history")
+def get_inventory_movement_history(
+    factory_id: str,
+    customer_code: str = Query(default="", max_length=64),
+    customer_name: str = Query(default="", max_length=255),
+    search: str = Query(default="", max_length=128),
+    movement_type: Literal["", "INBOUND", "OUTBOUND", "ADJUSTMENT", "REVERSAL"] = "",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.carton_procurement import _lock_receipt_factory
+    from app.services.carton_inventory_history import inventory_movement_history
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    _lock_receipt_factory(db, factory_id)
+    return inventory_movement_history(db, factory_id, customer_code=customer_code.strip(),
+        customer_name=customer_name.strip(), search=search.strip(), movement_type=movement_type, date_from=date_from, date_to=date_to,
+        limit=limit, offset=offset)
 
 
 @router.post(

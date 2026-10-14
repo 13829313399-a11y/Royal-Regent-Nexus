@@ -114,6 +114,135 @@ def test_5000_rows_keep_counts_and_paging_without_cubic_matching():
 
 
 @pytest.fixture
+def classified_alerts():
+    rows = [row(i) for i in range(11)]
+    rows[1].update(schedule_change="NEW", customer_due_date="2026-12-20")
+    rows[2]["schedule_change"] = "NEW"
+    for index in (3, 10):
+        rows[index]["quantity"] = 160
+    for index in (4, 8):
+        rows[index]["quantity"] = 40
+    for index in (5, 6):
+        rows[index]["schedule_section"] = "CANCELLED"
+    for index in (9, 10):
+        rows[index].update(customer_code="OTHER", customer_name="OTHER", schedule_customer_code="OTHER", schedule_customer_name="OTHER")
+    orders = [order(rows[i], id=f"O{i}", status="PENDING_SUPPLIER", customer_code=rows[i]["customer_code"], customer_name=rows[i]["customer_name"])
+              for i in (3, 4, 5, 6, 7, 8, 10)]
+    exceptions = [exception(rows[i], f"E{i}", category="SCHEDULE_CANCELLED" if i == 5 else "SCHEDULE_CANCELLED_AFTER_ORDER" if i == 6 else "QUANTITY_MISMATCH")
+                  for i in (3, 4, 5, 6, 7, 8, 10)]
+    for e in exceptions:
+        e.update(customer_code=rows[int(e["id"][1:])]["customer_code"], customer_name=rows[int(e["id"][1:])]["customer_name"])
+    next(e for e in exceptions if e["id"] == "E4")["status"] = "IN_PROGRESS"
+    next(e for e in exceptions if e["id"] == "E8")["status"] = "RESOLVED"
+    ctx = Context("huakang-b", orders, [dict(factory_id="huakang-b", customer_code=name, customer_name=name, status="ACTIVE")
+                                     for name in ("TEST", "OTHER")], {}, {}, date(2026, 10, 2))
+    return build_alerts(ctx, [batch(rows)], exceptions)
+
+
+def test_alert_categories_cover_urgent_timing_and_all_reduction_kinds(classified_alerts):
+    full = alert_page(classified_alerts, limit=20)
+    assert full["category_summary"] == full["summary"] == dict(total=9, missing=3, increase=2, decrease=3)
+    assert full["total"] == 10  # The future waiting row remains available, without urgent attention.
+    timing = alert_page(classified_alerts, kind="TIMING", limit=20)
+    assert {a["contractNo"] for a in timing["items"]} == {"SC0", "SC2", "SC9"}
+    assert {a["kind"] for a in timing["items"]} == {"MISSING_ORDER", "NEW_ORDER"}
+    assert timing["total"] == timing["summary"]["missing"] == 3
+    reduction = alert_page(classified_alerts, kind="REDUCTION", limit=20)
+    assert {a["kind"] for a in reduction["items"]} == {"QUANTITY_DECREASE", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_ORDER"}
+    assert reduction["total"] == reduction["summary"]["decrease"] == 3
+    assert reduction["summary"]["total"] == 3
+    assert timing["category_summary"] == reduction["category_summary"] == full["category_summary"]
+
+
+@pytest.mark.parametrize("status", ["OPEN", "ALL"])
+def test_actionable_alert_kind_agrees_with_total_card_and_excludes_waiting_history(classified_alerts, status):
+    page = alert_page(classified_alerts, kind="ACTIONABLE", status=status, limit=20)
+    assert page["total"] == page["summary"]["total"] == page["category_summary"]["total"] == 9
+    assert {a["contractNo"] for a in page["items"]} == {"SC0", "SC2", "SC3", "SC4", "SC5", "SC6", "SC7", "SC9", "SC10"}
+    assert {a["status"] for a in page["items"]} == {"OPEN", "IN_PROGRESS"}
+    assert all(not a["reminder"] or a["reminder"]["attention"] for a in page["items"])
+    filtered = alert_page(classified_alerts, kind="ACTIONABLE", status=status, customer="TEST", search="SC4")
+    assert filtered["total"] == filtered["category_summary"]["total"] == 1
+    assert filtered["items"][0]["status"] == "IN_PROGRESS"
+    legacy = alert_page(classified_alerts, kind="ALL", status=status, limit=20)
+    assert legacy["total"] == (10 if status == "OPEN" else 11)
+    assert any(a["contractNo"] == "SC1" and a["reminder"]["state"] == "WAIT" for a in legacy["items"])
+    assert any(a["status"] == "RESOLVED" for a in legacy["items"]) == (status == "ALL")
+
+
+def test_alert_category_counts_share_customer_keyword_and_status_scope(classified_alerts):
+    expected = dict(total=7, missing=2, increase=1, decrease=3)
+    page = alert_page(classified_alerts, customer="TEST", kind="QUANTITY_INCREASE", limit=20)
+    assert page["category_summary"] == expected
+    assert page["summary"] == dict(total=1, missing=0, increase=1, decrease=0)
+    assert [a["contractNo"] for a in page["items"]] == ["SC3"]
+    keyword = alert_page(classified_alerts, customer="TEST", search=" sc4 ", kind="REDUCTION")
+    assert keyword["category_summary"] == keyword["summary"] == dict(total=1, missing=0, increase=0, decrease=1)
+    assert keyword["items"][0]["status"] == "IN_PROGRESS"
+    other = alert_page(classified_alerts, search="other", kind="TIMING")
+    assert other["category_summary"] == dict(total=2, missing=1, increase=1, decrease=0)
+    assert [a["contractNo"] for a in other["items"]] == ["SC9"]
+    all_statuses = alert_page(classified_alerts, customer="TEST", status="ALL", kind="REDUCTION", limit=20)
+    assert all_statuses["total"] == 4 and all_statuses["category_summary"] == expected
+    assert all_statuses["summary"] == dict(total=3, missing=0, increase=0, decrease=3)
+    assert not any(a["status"] == "RESOLVED" for a in all_statuses["reminders"])
+    resolved_search = alert_page(classified_alerts, status="ALL", search="SC8", kind="REDUCTION")
+    assert resolved_search["total"] == 1
+    assert resolved_search["summary"] == resolved_search["category_summary"] == dict(total=0, missing=0, increase=0, decrease=0)
+
+
+@pytest.mark.parametrize("kind, contracts", [
+    ("MISSING_ORDER", {"SC0", "SC9"}),
+    ("NEW_ORDER", {"SC1", "SC2"}),
+    ("QUANTITY_INCREASE", {"SC3", "SC10"}),
+    ("QUANTITY_DECREASE", {"SC4"}),
+    ("QUANTITY_REVIEW", {"SC7"}),
+    ("SCHEDULE_CANCELLED", {"SC5"}),
+    ("CANCELLED_AFTER_ORDER", {"SC6"}),
+])
+def test_individual_alert_kinds_keep_existing_meaning(classified_alerts, kind, contracts):
+    page = alert_page(classified_alerts, kind=kind, limit=20)
+    assert {a["contractNo"] for a in page["items"]} == contracts
+    assert page["total"] == len(contracts)
+    assert page["category_summary"] == dict(total=9, missing=3, increase=2, decrease=3)
+    if kind == "NEW_ORDER":
+        assert page["summary"] == dict(total=1, missing=1, increase=0, decrease=0)
+
+
+def test_alert_categories_filter_before_paging_and_keep_full_counts(classified_alerts):
+    full = alert_page(classified_alerts, customer="TEST", kind="REDUCTION", limit=20)
+    second = alert_page(classified_alerts, customer="TEST", kind="REDUCTION", offset=1, limit=1)
+    assert second["items"] == full["items"][1:2]
+    assert second["total"] == full["total"] == 3
+    assert second["summary"] == full["summary"]
+    assert second["category_summary"] == full["category_summary"]
+    assert second["reminders"] == full["reminders"]
+    assert (second["offset"], second["limit"]) == (1, 1)
+    empty = alert_page(classified_alerts, customer="UNKNOWN", kind="TIMING")
+    assert empty["items"] == empty["reminders"] == [] and empty["total"] == 0
+    assert empty["summary"] == empty["category_summary"] == dict(total=0, missing=0, increase=0, decrease=0)
+
+
+def test_workspace_categories_reuse_one_factory_alert_snapshot(classified_alerts, monkeypatch):
+    from app.services import carton_dashboard
+    seen = []
+    ctx = context()
+
+    def read_alerts(db, factory):
+        seen.append(factory)
+        return ctx, [], [], classified_alerts
+
+    monkeypatch.setattr(carton_dashboard, "read_alerts", read_alerts)
+    monkeypatch.setattr(carton_dashboard, "weekly_attention", lambda *args: 0)
+    monkeypatch.setattr("app.services.carton_positions.position_balances", lambda *args: [])
+    result = carton_dashboard.workspace(None, "huakang-b", customer="TEST", kind="TIMING", limit=1)
+    assert seen == ["huakang-b"]
+    assert result["total"] == 2 and len(result["items"]) == 1
+    assert result["summary"] == dict(total=2, missing=2, increase=0, decrease=0)
+    assert result["category_summary"] == dict(total=7, missing=2, increase=1, decrease=3)
+
+
+@pytest.fixture
 def db():
     import app.models
     from app.db import Base
@@ -158,6 +287,11 @@ def test_dashboard_routes_require_factory_permission(monkeypatch):
             assert client.get(f'/api/carton-procurement/dashboard/{endpoint}', params={'factory_id': 'huakang-b', 'alert_id': 'SYNTHETIC'}).status_code == 403
         response = client.get('/api/carton-procurement/dashboard/workspace', params={'factory_id': 'huaxing'})
         assert response.status_code == 200, response.text
+        for kind in ('TIMING', 'REDUCTION', 'ACTIONABLE'):
+            response = client.get('/api/carton-procurement/dashboard/workspace', params={'factory_id': 'huaxing', 'kind': kind})
+            assert response.status_code == 200, response.text
+            assert set(response.json()['category_summary']) == {'total', 'missing', 'increase', 'decrease'}
+            assert client.get('/api/carton-procurement/dashboard/workspace', params={'factory_id': 'huakang-b', 'kind': kind}).status_code == 403
         assert client.get('/api/carton-procurement/dashboard/workspace', params={'factory_id': 'group'}).status_code in (400, 403, 422)
         assert client.get('/api/carton-procurement/dashboard/workspace', params={'factory_id': 'huaxing', 'limit': 5000}).status_code == 422
 
