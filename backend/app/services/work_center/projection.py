@@ -84,6 +84,12 @@ def closure(db, entry):
     from app.models.internal_quote import InternalQuote
     from app.models.carton_supplier_portal import SupplierShipment
     stage = entry.evidence.get("stage", "")
+    if entry.module == "position_reviews":
+        from app.models.position_review import PositionReview
+        source = db.get(PositionReview, entry.entity_id)
+        if source and source.status == "applied": return "resolved", "岗位与权限已由管理员确认"
+        if source and source.status == "returned": return "resolved", "已退回本人补充资料"
+        if source and source.status in ("withdrawn", "invalidated"): return "cancelled", "岗位更新已撤回或失效"
     if entry.module == "account_requests":
         model = AuthRegistrationRequest if stage == "registration" else AuthPasswordResetRequest
         source = db.get(model, entry.entity_id)
@@ -123,6 +129,7 @@ def install_projection_hooks(session_factory):
     from app.models.internal_quote import InternalQuote, InternalQuoteSection, InternalQuoteAlternative
     from app.models.auth import AuthRegistrationRequest, AuthPasswordResetRequest, SystemNotification
     from app.models.carton_supplier_portal import SupplierShipment
+    from app.models.position_review import PositionReview
 
     @event.listens_for(session_factory, "before_flush")
     def collect(db, *_):
@@ -139,6 +146,7 @@ def install_projection_hooks(session_factory):
             elif isinstance(obj, InternalQuoteAlternative): module, source_id = "internal_quote", obj.quote_id
             elif isinstance(obj, (AuthRegistrationRequest, AuthPasswordResetRequest)): module, source_id = "account_requests", obj.id
             elif isinstance(obj, SupplierShipment): module, source_id = "carton_supplier", obj.id
+            elif isinstance(obj, PositionReview): module, source_id = "position_reviews", obj.id
             elif isinstance(obj, SystemNotification) and obj.type == "identity_changed": module, source_id = "identity", obj.id
             elif isinstance(obj, SystemNotification) and obj.type == "internal_quote":
                 try: module, source_id = "internal_quote", json.loads(obj.payload_json or "{}").get("quote_id")

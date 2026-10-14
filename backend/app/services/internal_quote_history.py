@@ -303,7 +303,7 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
     if not product.history_source and not any(product.component_sources or []):
         return initial_payloads, [], set()
     whole = sources[product.history_source.quote_id] if product.history_source else None
-    payloads = _clean(whole.payloads) if whole else {}
+    payloads = _clean(whole.payloads) if whole else {code: _object(value) for code, value in initial_payloads.items()}
     evidence = []
     attachment_jobs = []
     required = set()

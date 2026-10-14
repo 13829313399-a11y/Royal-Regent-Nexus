@@ -222,7 +222,8 @@ def dto(row, user, clock):
     relation = "assignee" if active and assigned else "candidate" if active else "recipient" if row["kind"] == "info" else "watcher"
     stage = row["stage"]
     route = {"molding": "molding_production" if stage.startswith("production") else "molding_engineering",
-             "internal_quote": "quote", "account_requests": "account_requests", "carton_supplier": "shipment", "identity": "identity"}[row["module"]]
+             "internal_quote": "quote", "account_requests": "account_requests", "carton_supplier": "shipment", "identity": "identity",
+             "position_reviews": "my_position" if stage == "position_result" else "position_workbench"}[row["module"]]
     snoozed = row["snoozed_until"] if row["snoozed_attention_version"] == row["attention"] else None
     read_state = "read" if row["read_version"] >= row["version"] else "legacy_unknown" if row["attention"] == 0 else "unread"
     factory_labels = {**FACTORY_LABELS, "*": "全集团", "group": "集团", "group-management": "集团职能部门"}

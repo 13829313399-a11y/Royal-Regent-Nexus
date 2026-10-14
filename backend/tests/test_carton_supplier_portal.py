@@ -381,7 +381,8 @@ def test_supplier_delivery_import_blocks_unmatched_paper_and_other_factory(monke
             form = {"sha256": preview.json()["sha256"], "selections": json.dumps([
                 {"factory_id": group["factory_id"], "delivery_note_no": group["delivery_note_no"]}])}
             rejected = client.post(BASE + "/shipments/import-confirm", data=form, files=upload)
-            assert rejected.status_code == 409, rejected.text
+            assert rejected.status_code == (409 if group["factory_id"] == "huaxing" else 403), rejected.text
+            assert client.get(BASE + "/workspace", params={"factory_id": "huaxing"}).json()["shipments"] == []
         from openpyxl import load_workbook
         workbook = load_workbook(BytesIO(_dongkang_delivery_file(order)))
         workbook.active.cell(row=501, column=1, value="TRUNCATED-NOTE")

@@ -29,6 +29,7 @@ from app.models import (
     document_tools,  # noqa: F401
     collaborative_sheets,  # noqa: F401
     auth,  # noqa: F401
+    position_review,  # noqa: F401
     carton_mark,  # noqa: F401
     carton_feedback,  # noqa: F401
     carton_procurement,  # noqa: F401

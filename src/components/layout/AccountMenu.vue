@@ -401,6 +401,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="space-y-1 p-2">
+          <RouterLink to="/account/position" class="flex min-h-11 items-center gap-2 rounded-lg px-2.5 text-sm font-semibold text-teal-800" @click="isMenuOpen = false"><BriefcaseBusiness class="size-4" />我的岗位与权限</RouterLink>
           <RouterLink v-if="messaging.ready" to="/me" class="flex h-10 items-center gap-2 rounded-lg bg-teal-50 px-2.5 text-sm font-semibold text-teal-800" @click="isMenuOpen = false"><UserRound class="size-4" />我的空间</RouterLink>
           <RouterLink v-if="messaging.ready" to="/messages" class="flex h-10 items-center gap-2 rounded-lg px-2.5 text-sm text-slate-700" @click="isMenuOpen = false">私信 <span v-if="messaging.unread">{{ messaging.unread }} 未读</span></RouterLink>
           <button
@@ -516,6 +517,8 @@ onBeforeUnmount(() => {
               <p class="mt-1 truncate text-[12px] text-slate-500">角色：{{ roleLabel }}</p>
             </div>
           </div>
+
+          <RouterLink v-if="!isAvatarBusy" to="/account/position" class="flex min-h-11 items-center justify-between rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm font-semibold text-teal-800 focus-visible:outline-2 focus-visible:outline-teal-700" @click="closeProfileDialog">我的岗位与权限<span aria-hidden="true">→</span></RouterLink>
 
           <div class="rounded-xl border border-dashed border-teal-200 bg-teal-50/45 p-3.5">
             <input

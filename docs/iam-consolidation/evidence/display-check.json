@@ -1,0 +1,28 @@
+{
+  "source": "Actual Chrome settings page zoom=200%, disposable Playwright profile; reduced-motion through emulateMedia",
+  "url": "http://127.0.0.1:5190/system/users?view=todo&task=position:consolidation-review-000",
+  "cssVisualViewport": {
+    "width": 640,
+    "height": 360,
+    "scale": 1,
+    "zoom": 2
+  },
+  "documentScrollWidth": 640,
+  "actionButton": {
+    "x": 42,
+    "y": 174.65625,
+    "width": 160,
+    "height": 44
+  },
+  "reducedMotion": true,
+  "animatedWorkspaceElements": 0,
+  "advancedDrawer": {
+    "tabRemainsInside": true,
+    "escapeRestoresFocusTo": "任职、冻结与离职"
+  },
+  "longText": {
+    "displayNameLength": 90,
+    "viewportWidth": 1440,
+    "documentScrollWidth": 1440
+  }
+}

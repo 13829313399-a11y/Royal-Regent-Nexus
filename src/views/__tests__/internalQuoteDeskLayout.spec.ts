@@ -145,7 +145,7 @@ describe('internal quote desk frontend layout', () => {
       expect(sectionFormSource).toContain('function calculated(value: number) { return fixedDecimal(value, 3) }')
       expect(sectionFormSource).toMatch(/function measured\([^)]*\)\s*\{[^}]*\.toFixed\(4\)/)
       expect(sectionEditorSource).not.toContain('服务端权威计算快照')
-    for (const text of ['物料名称', '裁片部位', '工艺', '裁片数', '供应商', '布料 MOQ/Y', '低于 MOQ/每色费用 RMB', '用量/码', '单价 RMB', '汇率', '成本 HKD（自动）', '码点', '价钱 HKD（自动）', '含电绣', '<option value="丝印">丝印</option>']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
+    for (const text of ['物料名称', '裁片部位', '工艺', '裁片数', '供应商', '布料 MOQ/Y', '低于 MOQ/每色费用 RMB', '用量/码', '单价 RMB', '汇率', '成本 HKD（自动）', '码点', '额外倍率', '价钱 HKD', '待补用量、单价；已按原价计入', '含电绣', '<option value="丝印">丝印</option>']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
     for (const text of ['产品编号', '胶件名称', '材料', '料重 (g)', '日产量 24H', '用量 (PC)', '单价 HKD', '总价 HKD（自动）']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
     for (const text of ['图片 / 附件引用', '名称', '位置', '夹模', '移印', '散枪', '边模', '油色', '浸油', '抹油', '擦PP水', '报价 HKD', '备注', '二、喷油/移印/UV成本汇总']) expect(`${sectionFormSource}\n${payloadSource}`).toContain(text)
     for (const text of ['啤机报价单', '注塑部分', '模具名称', '料价 HKD/g（快照）', '原料单价 HKD（自动）', '啤价 HKD/啤（自动）', '出模数', '机型 A码', '目标数', '套数', '重量汇总（含损耗）', '料价汇总 HKD', '啤工汇总 HKD', '吹气部分', '日产量 / 22H', '产品料价 HKD（自动）', '吹工 HKD', '披锋 HKD', '利润倍率', '出数', '模价 RMB']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)

@@ -61,12 +61,13 @@ def test_import_respects_unit_currency_and_rate_template(unit_header, rate_colum
     assert calculate(payload)["totals"]["total_hkd"] == expected
 
 
-def test_missing_unit_uses_total_currency_and_does_not_apply_markup_twice():
+def test_missing_unit_retains_original_total_without_inventing_a_unit_price():
     payload = parse_rows(
         ["物料名称", "部位", "用量", "单价(HKD)", "码点", "价钱(HKD)"],
         [["人工", "", 2, None, 1.1, 4.4]],
     )
-    assert payload["groups"][0]["materials"][0]["unit_price_hkd"] == "2.0000"
+    assert payload["groups"][0]["materials"][0]["unit_price_hkd"] is None
+    assert payload["groups"][0]["materials"][0]["quoted_price_hkd"] == "4.4000"
     assert calculate(payload)["totals"]["total_hkd"] == "4.4000"
 
 

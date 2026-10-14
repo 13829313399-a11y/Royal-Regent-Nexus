@@ -1,0 +1,150 @@
+{
+  "description": "Saved screenshot pixel dimensions; DOM geometry and zoom measurements are recorded separately.",
+  "screenshots": [
+    {
+      "file": "access-only.jpg",
+      "width_px": 1536,
+      "height_px": 674
+    },
+    {
+      "file": "advanced-drawer-1440.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "conflict-409.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "empty-search.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "forbidden-403.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "keyboard-success.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "large-diff-1398.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "legacy-explanation-360.jpg",
+      "width_px": 345,
+      "height_px": 767
+    },
+    {
+      "file": "loading-detail.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "long-text.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "mobile-detail-360.jpg",
+      "width_px": 360,
+      "height_px": 800
+    },
+    {
+      "file": "mobile-detail-390.jpg",
+      "width_px": 390,
+      "height_px": 843
+    },
+    {
+      "file": "mobile-list-360.jpg",
+      "width_px": 360,
+      "height_px": 800
+    },
+    {
+      "file": "mobile-list-390.jpg",
+      "width_px": 390,
+      "height_px": 843
+    },
+    {
+      "file": "old-registration-link.jpg",
+      "width_px": 1521,
+      "height_px": 667
+    },
+    {
+      "file": "password-reset-mobile.jpg",
+      "width_px": 360,
+      "height_px": 800
+    },
+    {
+      "file": "people-readonly-1440.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "records-1440.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "registration-record.jpg",
+      "width_px": 1521,
+      "height_px": 667
+    },
+    {
+      "file": "roles-search-1440.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "roles-search-final.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "rollback-flag-off.jpg",
+      "width_px": 1521,
+      "height_px": 667
+    },
+    {
+      "file": "uncertain-408.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "workbench-1280.jpg",
+      "width_px": 1280,
+      "height_px": 800
+    },
+    {
+      "file": "workbench-1366.jpg",
+      "width_px": 1366,
+      "height_px": 768
+    },
+    {
+      "file": "workbench-1440.jpg",
+      "width_px": 1440,
+      "height_px": 900
+    },
+    {
+      "file": "workbench-1920.jpg",
+      "width_px": 1920,
+      "height_px": 1080
+    },
+    {
+      "file": "zoom-200-action.png",
+      "width_px": 1280,
+      "height_px": 720
+    },
+    {
+      "file": "zoom-200.png",
+      "width_px": 640,
+      "height_px": 597
+    }
+  ]
+}

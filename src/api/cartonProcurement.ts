@@ -122,6 +122,7 @@ export interface CartonOrderResponse {
 export type CartonPurchaseOrderDocumentType = 'LEGACY_BASELINE' | 'INITIAL' | 'APPEND' | 'REDUCE' | 'ADJUSTMENT'
 
 export interface CartonPurchaseOrderIssueResponse {
+  is_cancellation?: boolean
   purchase_order_batch?: CartonPurchaseOrderBatchResponse | null
   is_replenishment?: boolean
   id: string
@@ -153,6 +154,7 @@ export interface CartonPurchaseOrderContextResponse {
 }
 
 export interface CartonOrderCreateRequest {
+  request_id?: string
   net_weight_kg?: number | null
   gross_weight_kg?: number | null
   schedule_source?: { batch_id: string; source_sheet: string; source_row: number }
@@ -190,7 +192,7 @@ export interface CartonOrderCreateRequest {
   }>
 }
 
-export type CartonOrderUpdateRequest = Omit<CartonOrderCreateRequest, 'status' | 'schedule_source'> & {
+export type CartonOrderUpdateRequest = Omit<CartonOrderCreateRequest, 'status' | 'schedule_source' | 'request_id'> & {
   reason: string
 }
 
@@ -799,6 +801,15 @@ export const cartonProcurementApi = {
         customer_due_date: customerDueDate || null,
         due_date: dueDate || null,
       },
+    )
+    return response.data
+  },
+  async adjustOrderDates(factoryId: string, order: CartonOrderResponse, reason: string, customerDueDate?: string, dueDate?: string) {
+    const response = await http.post<CartonOrderResponse>(
+      `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/dates`,
+      { factory_id: factoryId, expected_revision: order.revision, reason,
+        ...(customerDueDate ? { customer_due_date: customerDueDate } : {}),
+        ...(dueDate ? { due_date: dueDate } : {}) },
     )
     return response.data
   },

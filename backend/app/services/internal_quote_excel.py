@@ -20,6 +20,7 @@ from openpyxl.utils.units import pixels_to_EMU
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.worksheet.worksheet import Worksheet
 from app.services.internal_quote_output_fields import SourceLabel, bind_source_label
+from app.services.internal_quote_sewing import uses_sewing_quoted_price
 from PIL import Image as PillowImage, ImageOps
 
 from app.models.internal_quote import (
@@ -33,7 +34,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v37"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v38"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -4830,7 +4831,7 @@ def _build_sewing_sheet(
     reference_snapshot: dict[str, Any],
 ) -> None:
     sheet = workbook.create_sheet("车缝明细")
-    _style_title(sheet, "车缝报价明细", 13)
+    _style_title(sheet, "车缝报价明细", 15)
     _header_row(
         sheet,
         3,
@@ -4848,6 +4849,8 @@ def _build_sewing_sheet(
             "价钱 HKD",
             "备注",
             "单价币种",
+            "额外倍率",
+            "暂用原价 HKD",
         ),
     )
     row_index = 4
@@ -4860,7 +4863,7 @@ def _build_sewing_sheet(
             continue
         group_name = _safe_text(group.get("name")) or "车缝产品组"
         group_category = "车发" if str(group.get("category")) == "hair" else "车衣"
-        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=13)
+        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=15)
         group_cell = sheet.cell(row_index, 1)
         group_cell.value = f"{group_name} · {group_category}"
         group_cell.fill = PatternFill("solid", fgColor="F8CBAD")
@@ -4886,6 +4889,8 @@ def _build_sewing_sheet(
             if not isinstance(exchange_rate, float) or exchange_rate <= 0:
                 exchange_rate = fx
             markup = _number(row.get("markup")) or 1
+            extra_multiplier = _number(row.get("extra_multiplier")) or 1
+            using_quoted_price = uses_sewing_quoted_price(row)
             extra_evidence = []
             if row.get("craft"):
                 extra_evidence.append(f"工艺：{_safe_text(row.get('craft'))}")
@@ -4894,6 +4899,8 @@ def _build_sewing_sheet(
             if row.get("source_row") not in (None, ""):
                 extra_evidence.append(f"来源行：{_safe_text(row.get('source_row'))}")
             remark = _safe_text(row.get("remark") or row.get("note") or "")
+            if using_quoted_price:
+                extra_evidence.append("待补用量、单价，暂用原价；补齐后按公式重算")
             if extra_evidence:
                 remark = "；".join([remark, *extra_evidence] if remark else extra_evidence)
             _body_row(
@@ -4913,12 +4920,16 @@ def _build_sewing_sheet(
                     "",
                     remark,
                     source_currency,
+                    extra_multiplier,
+                    _number(row.get("quoted_price_hkd")) if using_quoted_price else "",
                 ),
                 amount_columns={4, 5, 6, 7, 8, 9, 10, 11},
             )
             sheet.cell(row_index, 9).value = f'=IF(M{row_index}="HKD",F{row_index}*G{row_index},F{row_index}*G{row_index}/H{row_index})'
             sheet.cell(row_index, 9).number_format = "#,##0.0000"
-            sheet.cell(row_index, 11).value = f"=I{row_index}*J{row_index}"
+            sheet.cell(row_index, 11).value = (
+                f'=IF(AND(O{row_index}<>"",OR(F{row_index}="",G{row_index}="")),O{row_index},I{row_index}*J{row_index}*N{row_index})'
+            )
             sheet.cell(row_index, 11).number_format = "#,##0.0000"
             row_index += 1
     if row_index > 4:
@@ -4929,7 +4940,7 @@ def _build_sewing_sheet(
         sheet.cell(row_index, 11).fill = PatternFill("solid", fgColor="FFF200")
         sheet.cell(row_index, 10).font = Font(name="宋体", size=10, bold=True)
         sheet.cell(row_index, 11).font = Font(name="宋体", size=10, bold=True)
-    _finish_sheet(sheet, (34, 18, 18, 15, 24, 14, 14, 12, 15, 12, 15, 36, 12))
+    _finish_sheet(sheet, (34, 18, 18, 15, 24, 14, 14, 12, 15, 12, 15, 36, 12, 14, 18))
 
 
 def _build_painting_image_sheet(workbook, section, attachments) -> None:

@@ -93,7 +93,7 @@ describe('internal quote section payload normalization', () => {
     })
     expect(fresh).toMatchObject({
       paper_price_factor: 2.75,
-      testing_fee_enabled: true,
+      testing_fee_enabled: false,
       testing_fee_total_usd: 0,
       testing_fee_moqs: [0],
       packaging_materials: [],
@@ -109,7 +109,7 @@ describe('internal quote section payload normalization', () => {
         qty_per_carton: 1,
         flat_cards: [],
       }],
-      freight_calc: { enabled: true, freight_enabled: true, lifting_enabled: true, cap_10t: 1166, cap_5t: 750, cap_40: 1980, cap_20: 883 },
+      freight_calc: { enabled: false, freight_enabled: false, lifting_enabled: false, cap_10t: 1166, cap_5t: 750, cap_40: 1980, cap_20: 883 },
     })
     expect(fresh.freight_calc).not.toHaveProperty('hk40')
     expect(fresh.freight_calc).not.toHaveProperty('yt5t')
@@ -275,7 +275,7 @@ describe('internal quote section payload normalization', () => {
     expect(calculateJustPlayAdhesivePackagingCostHkd({ length_in: 23.75, width_in: 10.75, qty_per_carton: 2 })).toBeCloseTo(0.0875233)
     expect(calculateJustPlayPaperPalletCostHkd({ length_in: 23.75, width_in: 10.75, height_in: 15.5, qty_per_carton: 2 })).toBeCloseTo(.7916666667)
 
-    const freightOptions = calculateSalesFreightOptions(defaultSalesFreightCalculation, {
+    const freightOptions = calculateSalesFreightOptions({ ...defaultSalesFreightCalculation, enabled: true, freight_enabled: true, lifting_enabled: true }, {
       length_in: 14,
       width_in: 9.25,
       height_in: 23.875,
@@ -287,7 +287,7 @@ describe('internal quote section payload normalization', () => {
     expect(hk40.totalCartons).toBe(Math.round(1980 / calculateCartonCuft({ length_in: 14, width_in: 9.25, height_in: 23.875 })))
     expect(hk40.perPieceHkd).toBeCloseTo(8000 / hk40.totalCartons / 2)
     const baselineOptions = calculateSalesFreightOptions(
-      (normalizeInternalQuotePayload('sales', {}) as unknown as SalesPayload).freight_calc,
+      (normalizeInternalQuotePayload('sales', { freight_calc: { enabled: true } }) as unknown as SalesPayload).freight_calc,
       { length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2 },
       salesFreightReferenceRoutesFromSnapshot({
         routes: [{ route_key: 'sz40', route_name: '深圳 40 柜', capacity_key: 'cap_40', freight_hkd: '6500', lifting_hkd: '1100' }],
@@ -318,7 +318,7 @@ describe('internal quote section payload normalization', () => {
     expect(customCapacityOptions[0]).toMatchObject({ capacityKey: '8 吨车容量', capacityCuft: 1200, totalCartons: 1200 })
     expect(customCapacityOptions[0].perPieceHkd).toBeCloseTo(6800 / 1200 / 10)
     const freightOnlyOptions = calculateSalesFreightOptions(
-      { ...defaultSalesFreightCalculation, freight_enabled: true, lifting_enabled: false },
+      { ...defaultSalesFreightCalculation, enabled: true, freight_enabled: true, lifting_enabled: false },
       { length_in: 14, width_in: 9.25, height_in: 23.875, qty_per_carton: 2 },
       salesFreightReferenceRoutesFromSnapshot({
         routes: [{ route_key: 'sz40', route_name: '深圳 40 柜', capacity_key: 'cap_40', freight_hkd: '6500', lifting_hkd: '1100' }],

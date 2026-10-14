@@ -148,7 +148,8 @@ describe('internal quote form block progress', () => {
   })
 
   it('tracks the optional business testing fee once either USD total or MOQ is entered', () => {
-    expect(statuses('sales', {})['testing-fee']).toBe('optional')
+    expect(statuses('sales', {})['testing-fee']).toBe('complete')
+    expect(statuses('sales', { testing_fee_enabled: true })['testing-fee']).toBe('optional')
     expect(statuses('sales', { testing_fee_total_usd: 1250 })['testing-fee']).toBe('partial')
     expect(statuses('sales', { testing_fee_total_usd: 1250, testing_fee_moqs: [5000, 0] })['testing-fee']).toBe('partial')
     expect(statuses('sales', { testing_fee_total_usd: 1250, testing_fee_moqs: [5000, 10000] })['testing-fee']).toBe('complete')

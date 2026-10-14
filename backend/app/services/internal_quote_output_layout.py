@@ -231,6 +231,9 @@ def _render(db, loaded, preview=None, drafts=()):
             field.pop("path")
     warnings = [{"message": f"{s.department_name}资料尚未完成或需要重新计算，当前合计不完整。"}
                 for s in sections if s.is_required and (s.calculation_status != "valid" or s.dependency_status != "current")]
+    warnings.extend(warning for section in sections if section.is_required and section.department == "sewing"
+                    for warning in _json_object(section.calculation_json).get("warnings", [])
+                    if warning.get("code") == "sewing_quoted_price_pending")
     if projection_pending:
         warnings.append(_molding_projection_warning())
     return {"quote_id": quote.id, "version_label": quote.version_label, "base_token": token,

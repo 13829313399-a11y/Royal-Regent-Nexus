@@ -12,7 +12,7 @@
     "anchor_id": "carton-procurement.overview",
     "field_keys": [],
     "summary": "从采购、供应商送货到仓库确认入库，分别核对数量、状态和结算期间。",
-    "content": "先选择当前厂区、客户和采购单。产品订单数量换算纸箱需求时，以产品数量除以每箱个数并向上取整；每箱个数必须大于零。采购数量、送货数量、实收数量分别记录，不能把采购完成当成收货入库。\n采购单提交供应商后为 PENDING_SUPPLIER；部分收货为 PARTIALLY_RECEIVED，全部收齐为 COMPLETED，取消为 CANCELLED。已完成订单仍可能经有权限的追加操作调整，所以应同时查看明细数量和变更记录。\n收料预览只供核对。收料单 PENDING_CONFIRMATION 才可确认；确认后为 POSTED，冲回为 REVERSED。确认时核对明细、订单/分批关联、单价和验收日期；有效收货数量大于零的明细需要正单价，供应商责任补货按其专门规则处理。结算期间必须开放。版本冲突应刷新核对，不能重复盲点提交。已 POSTED 的重复确认直接返回原单。\n订单调整、收料和库存处理有独立权限，取消采购、减少数量、删除草稿与冲回收料也不是同一动作。供应商管理旧入口现进入采购页“收货/供应商”区域。助手不创建采购单、不确认库存，不据页面说明推断实际欠货或应付款。\n订单和收货操作还需满足本厂客户责任范围：未被认领或分配的客户沿用岗位权限；已由其他人负责的客户，需要负责人或主管授权。具备本厂读取及订单或入库岗位权限的人员可认领未认领的有效客户；负责人可授权同事，转交或解除认领需要主管统筹权限。收货、库存及 QC 本身的岗位权限仍分别检查，不通过切换入口绕过。",
+    "content": "先选择当前厂区、客户和采购单。产品订单数量换算纸箱需求时，以产品数量除以每箱个数并向上取整；每箱个数必须大于零。采购数量、送货数量、实收数量分别记录，不能把采购完成当成收货入库。\n采购单提交供应商后为 PENDING_SUPPLIER；部分收货为 PARTIALLY_RECEIVED，全部收齐为 COMPLETED，取消为 CANCELLED。已完成订单仍可能经有权限的追加操作调整，所以应同时查看明细数量和变更记录。\n收料预览只供核对。收料单 PENDING_CONFIRMATION 才可确认；确认后为 POSTED，冲回为 REVERSED。确认时核对明细、订单/分批关联、单价和验收日期；有效收货数量大于零的明细需要正单价，供应商责任补货按其专门规则处理。结算期间必须开放。版本冲突应刷新核对，不能重复盲点提交。已 POSTED 的重复确认直接返回原单。\n订单调整、收料和库存处理有独立权限，取消采购、减少数量、删除草稿与冲回收料也不是同一动作。供应商管理旧入口现进入采购页“收货/供应商”区域。助手不创建采购单、不确认库存，不据页面说明推断实际欠货或应付款。\n订单和收货操作还需满足本厂客户责任范围：未被认领或分配的客户沿用岗位权限；已由其他人负责的客户，需要负责人或主管授权。具备本厂读取及订单或入库岗位权限的人员可认领未认领的有效客户；负责人可授权同事，转交或解除认领需要主管统筹权限。收货、库存及 QC 本身的岗位权限仍分别检查，不通过切换入口绕过。\n新建订单草稿保存本次提交编号。超时后先核对台账并沿原草稿重试；已保存请求改内容会提示核对原单，主动新建另一单须从新表单开始。已锁定或部分到货订单可在更多操作中调整交期，沿用原提前天数，随后生成交期变更采购单供供应商重新确认。已收料订单的整单退货另需库存操作权限和原因；已下单订单整单减至零或退货会生成取消通知单，供应商须确认收到。库存流水按完整历史筛选分页，日期显示北京时间；读取失败时先重试，不能把失败当作没有记录。供应商送货暂未到达时选暂未到货继续待收，只有明确终结才确认整单未收到并退回；误确认未到可在历史中填写原因更正为待收，仍受订单剩余量和月结限制。\n箱唛资料库、基础资料、月结对账和操作日志统一使用页面顶部搜索；切换页面保留各页自己的关键词，清空筛选会同步清空该页搜索。工作看板的业务排期提醒卡片在标题下显示四项小标签及数量，点击小标签查看下单时限、追加或减单退单对应明细。“查看全部”重新打开第一页真正需处理的明细，返回工作看板可继续查看摘要；没有独立业务提醒页签或四张大统计卡。小标签数字按当前客户和搜索范围内的完整待处理记录统计。远期和历史提醒可选择全部类型及全部状态；明细仍按后端完整数据每页八条查询。下单防漏核对默认看“当前需处理”：按最迟下单日筛出已到期或三天内到期的单，同时保留已建单待确认、取消变更和差异待核。远期查看“后续待安排”，已下单、已送货和旧退单查看“已下单 / 历史”，查全表选择“全部排期”。这些视图不修改原订单状态，翻页按钮位于明细表下方，每页五十行。核对差异是导入时的快照，正式订单更正后可能仍需重新导入排期核对。\n无单送货实际属于正单时，由有订单维护及收料权限的仓管使用“按此补建正式订单”，填写完整纸品总需求，可增加本次未送纸品；本次送货量不作为整单需求或产品数量。保存后复核锁定，再选择正式纸品关联原送货，最后核实实收、缺陷和仓位。保存成功后的失败沿已创建订单继续办理；超送不自动扩大订单。原已入库的后补凭证使用送货单右侧“关联已入库记录”，不能再次入库。",
     "steps": [
       {
         "title": "定位采购单",
@@ -40,31 +40,56 @@
       {
         "path": "backend/app/services/carton_procurement.py",
         "symbol": "required_carton_quantity",
-        "sha256": "7885e492651b66079cf6eb35f1b4f430bc8ee67a5cf3e6a50a9322aa31ca85f0"
+        "sha256": "e36e771a5b33e401ef4b4e55ca904c79ba2aa3717941d0584dbe185d0ad1183e"
       },
       {
         "path": "backend/app/services/carton_procurement.py",
         "symbol": "confirm_receipt",
-        "sha256": "7885e492651b66079cf6eb35f1b4f430bc8ee67a5cf3e6a50a9322aa31ca85f0"
+        "sha256": "e36e771a5b33e401ef4b4e55ca904c79ba2aa3717941d0584dbe185d0ad1183e"
       },
       {
         "path": "backend/app/api/carton_procurement.py",
         "symbol": "receipt-preview",
-        "sha256": "e165bd74177214c2d5202ede9304095a1848420450443fac80fdffca02d9fe37"
+        "sha256": "f80f71d17970905b336232bdc59144e649e81063698a9d04c45fd84c1d917609"
       },
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "884421a12f1c808c206124e2e71edcedbf109b35e6fa8b5ff3aae3e13b6e7729"
+        "sha256": "c0b25f8f22c407bac2468c47b587727ffb75432ea3076895146a214f2fc6044c"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
         "symbol": "ensure_customer_operation",
         "sha256": "809fbc5079be135c02ca77a9510e3395ded16f95ee23e2b63afb20261e6051c9"
+      },
+      {
+        "path": "backend/app/services/carton_inventory_history.py",
+        "symbol": "inventory_movement_history",
+        "sha256": "7b119894828a01e8251e40047edee89686ae8142b5e234947336cc370c54f38b"
+      },
+      {
+        "path": "src/features/carton-procurement/scheduleWorkViews.ts",
+        "symbol": "scheduleWorkItem",
+        "sha256": "83f63f484cf926ba9685d4413f755cc4cc09ff7260312b7b40c374baadfac208"
+      },
+      {
+        "path": "src/views/CartonProcurementView.vue",
+        "symbol": "activeHeaderSearch",
+        "sha256": "8ad884eb5dca712dd818220e562d2bbf7d830ec974de19bb317c95ae13c5c2fa"
+      },
+      {
+        "path": "src/components/CartonSupplierReceiving.vue",
+        "symbol": "resumeOrderSource",
+        "sha256": "5007fbd2d86c8abb012ae1361d15de540586bc918bc488bd6b3ea59d08a0e219"
+      },
+      {
+        "path": "backend/app/services/carton_supplier_portal.py",
+        "symbol": "link_shipment_line",
+        "sha256": "4637cbee8c8d274cdc16fe9d66e3ec70871aa4f8b5a5a97741e8aff6959f4cf9"
       }
     ],
-    "knowledge_version": "2026.10.10-collaboration-r1",
-    "verified_commit": "working-tree:collaboration-r1",
+    "knowledge_version": "2026.10.14-carton-supplement-r1",
+    "verified_commit": "working-tree:carton-supplement-r1",
     "status": "verified"
   }
 ]

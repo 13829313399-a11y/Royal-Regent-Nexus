@@ -10,9 +10,10 @@ from sqlalchemy.orm import Session
 from app.models.internal_quote import InternalQuotePricingBaseline
 from app.models.molding_sample import MoldingSampleMaterialPrice
 from app.services.internal_quote_prefill import material_family, _match_token
+from app.services.internal_quote_sewing import is_sewing_labor, uses_sewing_quoted_price
 
 
-FORMULA_VERSION = "rr2-2026-v9"
+FORMULA_VERSION = "rr2-2026-v10"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -299,7 +300,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
     },
     "painting": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quote": {"spray_labor_hkd": "decimal>=0", "paint_hkd": "decimal>=0", "paint_tax_rate_percent": "fixed 13"}, "rows": [{"image_reference": "text", "name": "text", "position": "text", "operations": "夹模/移印/UV/散枪/边模/油色/浸油/抹油/擦PP水 quantity and unit_price_hkd", "cost_allocation": "split for explicit oil/labor; direct reserved for legacy quick rows", "paint_cost_hkd": "optional decimal>=0; blank pair requires completion", "labor_cost_hkd": "optional decimal>=0; missing one equals total minus other", "remark": "text"}], "disney_decorations": [{"application_type": "text", "rate_per_op_usd": "decimal>0", "operations": "decimal>0"}]},
     "slush": {"lines": [{"product_code": "text", "item": "glue part name", "material": "record only", "weight_g": "record only decimal>=0", "daily_output_24h": "record only decimal>=0", "quantity": "decimal>=0", "unit_price_hkd": "decimal>=0", "remark": "text"}], "formula": "line total HKD = quantity * unit price HKD; total RMB = total HKD * frozen RMB/HKD rate"},
-    "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣|丝印", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0; legacy defaults RMB", "unit_price_hkd": "decimal>=0", "unit_price_source_currency": "RMB|HKD; HKD bypasses division by FX", "exchange_rate": "optional row RMB/HKD rate; defaults frozen rate", "markup": "blank/zero defaults 1", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices and conservatively classifies them as non-material; detail mode cost HKD = usage * HKD unit price, or usage * RMB unit price / row exchange rate and price HKD = cost HKD * markup; old rows without a row rate use the frozen RMB/HKD rate"},
+    "sewing": {"quote_mode": "detail|quick; legacy defaults detail", "quick_quotes": [{"doll_name": "text", "unit_price_hkd": "decimal>0"}], "groups": [{"name": "text", "category": "clothes|hair", "materials": [{"item": "fabric name", "part": "text", "craft": "blank|电绣|丝印", "pieces": "record only decimal>=0", "usage": "decimal>=0", "unit_price_rmb": "decimal>=0; legacy defaults RMB", "unit_price_hkd": "decimal>=0", "unit_price_source_currency": "RMB|HKD; HKD bypasses division by FX", "exchange_rate": "optional row RMB/HKD rate; defaults frozen rate", "markup": "blank/zero defaults 1", "extra_multiplier": "positive per-row multiplier; defaults 1", "quoted_price_hkd": "optional source final price used while usage or original unit price is missing; informational warning", "remark": "text"}], "labor_rmb": "legacy compatible; added only when no labor detail line"}], "formula": "quick mode totals doll HKD prices and conservatively classifies them as non-material; detail mode cost HKD = usage * HKD unit price, or usage * RMB unit price / row exchange rate and price HKD = cost HKD * markup * extra_multiplier; incomplete source-priced rows retain quoted_price_hkd until both inputs exist; old rows without a row rate use the frozen RMB/HKD rate"},
     "hair": {"lines": [{"name": "text", "craft": "text", "weight_g": "decimal>0; record only", "unit_price_hkd": "decimal>0", "unit": "text", "remark": "text"}], "formula": "line amount HKD = unit price HKD; weight, craft and unit are quotation evidence only"},
     "assembly": {
         "groups": [{"name": "text", "category": "assembly|packaging", "production_qty": "decimal>0", "teams": "decimal>0", "total_persons": "integer>0 when processes is empty", "processes": [{"name": "text", "persons": "integer>=0", "remark": "text"}]}],
@@ -1612,7 +1613,7 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
                 raise CalculationInputError(f"车缝第 {group_index + 1} 组第 {row_index + 1} 行格式无效")
             item = str(row.get("item", ""))
             part = str(row.get("part", ""))
-            is_labor_line = "人工" in f"{item}{part}"
+            is_labor_line = is_sewing_labor(item, part)
             contains_labor_line = contains_labor_line or is_labor_line
             pieces = decimal_value(row.get("pieces"), "车缝裁片数")
             usage = decimal_value(row.get("usage"), "车缝用量")
@@ -1621,10 +1622,21 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
             markup = decimal_value(row.get("markup"), "车缝码点", "1")
             if markup <= ZERO:
                 markup = Decimal("1")
+            extra_multiplier = positive_value(row.get("extra_multiplier"), "车缝额外倍率", "1")
             cost_rmb = usage * unit_price
             cost_hkd = usage * unit_price_hkd
-            line_total_rmb = cost_rmb * markup
-            line_total_hkd = cost_hkd * markup
+            line_total_rmb = cost_rmb * markup * extra_multiplier
+            line_total_hkd = cost_hkd * markup * extra_multiplier
+            quoted_price = decimal_value(row.get("quoted_price_hkd"), "车缝暂用原价")
+            using_quoted_price = uses_sewing_quoted_price(row)
+            if using_quoted_price:
+                line_total_hkd = quoted_price
+                line_total_rmb = quoted_price * exchange_rate
+                result["warnings"].append(_warning(
+                    "sewing_quoted_price_pending",
+                    f"{item} 待补用量、单价；暂按原价 HKD {decimal_text(quoted_price)} 计入，补齐后按公式重算",
+                    "warning",
+                ))
             group_total_rmb += line_total_rmb
             group_total_hkd += line_total_hkd
             if is_labor_line:
@@ -1651,10 +1663,15 @@ def _sewing(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str,
                 "price_rmb": decimal_text(cost_rmb),
                 "cost_hkd": decimal_text(cost_hkd),
                 "markup": decimal_text(markup),
+                "extra_multiplier": decimal_text(extra_multiplier),
+                "using_quoted_price": using_quoted_price,
                 "cost_kind": "labor" if is_labor_line else "material",
                 "remark": str(row.get("remark") or row.get("note") or ""),
                 "source_row": row.get("source_row", ""),
-                "formula": "usage * unit_price_hkd * markup" if source_currency == "HKD" else "usage * unit_price_rmb / exchange_rate * markup",
+                "formula": "quoted_price_hkd (pending inputs)" if using_quoted_price else (
+                    ("usage * unit_price_hkd * markup" if source_currency == "HKD" else "usage * unit_price_rmb / exchange_rate * markup")
+                    + (" * extra_multiplier" if extra_multiplier != Decimal("1") else "")
+                ),
                 "amount_rmb": decimal_text(line_total_rmb),
                 "amount_hkd": decimal_text(line_total_hkd),
             })
@@ -2562,8 +2579,12 @@ def calculate_section(
         "hair": ("lines",),
         "assembly": ("groups",),
     }
+    calculator_context = context or {}
     fields = meaningful_fields.get(section_code)
-    if payload and fields and not any(payload.get(field) for field in fields):
+    # The factory comes from the persisted quote, never from editable section
+    # fields. Huakang D quotations may have no engineering cost lines.
+    allow_empty_engineering = section_code == "engineering" and calculator_context.get("factory_id") == "huakang-d"
+    if payload and fields and not any(payload.get(field) for field in fields) and not allow_empty_engineering:
         result["warnings"].append(
             _warning("no_calculation_lines", "当前分段没有符合字段契约的可计算明细")
         )
@@ -2575,7 +2596,6 @@ def calculate_section(
         result["warnings"].append(
             _warning("sales_carton_missing", "业务分段尚未填写纸箱与每箱数量")
         )
-    calculator_context = context or {}
     if section_code == "engineering":
         _engineering(payload, snapshot, result)
     elif section_code == "electronic":

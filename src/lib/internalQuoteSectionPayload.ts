@@ -320,12 +320,14 @@ export interface SewingMaterialRow {
   supplier?: string
   fabric_moq_y?: number
   below_moq_fee_rmb?: number
-  usage: number
-  unit_price_rmb: number
-  unit_price_hkd?: number
+  usage: number | null
+  unit_price_rmb: number | null
+  unit_price_hkd?: number | null
   unit_price_source_currency?: UnitPriceSourceCurrency
   exchange_rate?: number
   markup: number
+  extra_multiplier?: number
+  quoted_price_hkd?: number
   remark: string
   source_row?: number
 }
@@ -400,9 +402,9 @@ export const defaultSalesFreightCosts: Record<LegacySalesFreightRouteKey, number
   yt5t: 11000,
 }
 export const defaultSalesFreightCalculation: SalesFreightCalculation = {
-  enabled: true,
-  freight_enabled: true,
-  lifting_enabled: true,
+  enabled: false,
+  freight_enabled: false,
+  lifting_enabled: false,
   cap_10t: 1166,
   cap_5t: 750,
   cap_40: 1980,
@@ -1525,12 +1527,20 @@ export function calculateSewingBasePriceHkd(row: SewingMaterialRow, rmbHkdRate: 
 }
 
 export function calculateSewingRowTotalHkd(row: SewingMaterialRow, rmbHkdRate: unknown) {
+  if (sewingUsesQuotedPrice(row)) return positivePreviewNumber(row.quoted_price_hkd)
   const markup = Math.max(Number(row.markup) || 0, 0) || 1
-  return calculateSewingBasePriceHkd(row, rmbHkdRate) * markup
+  return calculateSewingBasePriceHkd(row, rmbHkdRate) * markup * (Number(row.extra_multiplier) || 1)
+}
+
+export function sewingUsesQuotedPrice(row: SewingMaterialRow) {
+  const missing = (value: unknown) => value == null || value === ''
+  const unit = row.unit_price_source_currency === 'HKD' ? row.unit_price_hkd : row.unit_price_rmb
+  return !missing(row.quoted_price_hkd) && (missing(row.usage) || missing(unit))
 }
 
 export function sewingGroupHasLaborLine(group: SewingGroup) {
-  return group.materials.some((row) => `${row.item}${row.part}`.includes('人工'))
+  return group.materials.some((row) => `${row.item}${row.part}`.includes('人工')
+    || [row.item.trim(), row.part.trim()].some(value => ['裁床', '车缝', '手工'].includes(value)))
 }
 
 export function calculateSewingGroupTotalHkd(group: SewingGroup, rmbHkdRate: unknown) {
@@ -1634,7 +1644,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         }
       }),
       molds: normalizedMolds,
-      mold_allocation_enabled: booleanValue(source.mold_allocation_enabled, true),
+      mold_allocation_enabled: booleanValue(source.mold_allocation_enabled, Object.keys(source).length > 0),
       production_mold_costs: productionMoldCosts,
       mold_fx_rmb_usd: numberValue(source.mold_fx_rmb_usd, 7.75),
       amortization_qty: numberValue(source.amortization_qty, 20000),
@@ -1766,13 +1776,15 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
           ...(Object.prototype.hasOwnProperty.call(row, 'supplier') ? { supplier: textValue(row.supplier) } : {}),
           ...(Object.prototype.hasOwnProperty.call(row, 'fabric_moq_y') ? { fabric_moq_y: numberValue(row.fabric_moq_y) } : {}),
           ...(Object.prototype.hasOwnProperty.call(row, 'below_moq_fee_rmb') ? { below_moq_fee_rmb: numberValue(row.below_moq_fee_rmb) } : {}),
-          usage: numberValue(row.usage ?? row.qty),
-          unit_price_rmb: numberValue(row.unit_price_rmb ?? row.mat_price ?? row.unit_price),
-          ...(row.unit_price_hkd != null ? { unit_price_hkd: numberValue(row.unit_price_hkd) } : {}),
+          usage: row.quoted_price_hkd != null && (row.usage == null || row.usage === '') ? null : numberValue(row.usage ?? row.qty),
+          unit_price_rmb: row.quoted_price_hkd != null && (row.unit_price_rmb == null || row.unit_price_rmb === '') ? null : numberValue(row.unit_price_rmb ?? row.mat_price ?? row.unit_price),
+          ...(Object.prototype.hasOwnProperty.call(row, 'unit_price_hkd') ? { unit_price_hkd: row.quoted_price_hkd != null && (row.unit_price_hkd == null || row.unit_price_hkd === '') ? null : numberValue(row.unit_price_hkd) } : {}),
           ...(row.unit_price_source_currency != null || row.unit_price_hkd != null
             ? { unit_price_source_currency: normalizeUnitPriceSourceCurrency(row) } : {}),
           ...(Object.prototype.hasOwnProperty.call(row, 'exchange_rate') ? { exchange_rate: numberValue(row.exchange_rate) } : {}),
           markup: numberValue(row.markup, 1),
+          ...(row.extra_multiplier != null ? { extra_multiplier: row.extra_multiplier === '' ? 1 : numberValue(row.extra_multiplier, 1) } : {}),
+          ...(row.quoted_price_hkd != null ? { quoted_price_hkd: numberValue(row.quoted_price_hkd) } : {}),
           remark: textValue(row.remark ?? row.note),
           ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
         })),
@@ -1829,7 +1841,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     && source.flat_card_price_factor !== ''
     && source.flat_card_price_factor != null
   const freightSource = objectValue(source.freight_calc)
-  const legacyFreightEnabled = booleanValue(freightSource.enabled, true)
+  // Only a blank form uses new defaults. Saved legacy payloads retain the
+  // historical interpretation of missing switches until explicitly changed.
+  const legacyFreightEnabled = booleanValue(freightSource.enabled, Object.keys(source).length > 0)
   const normalizedFreightEnabled = legacyFreightEnabled && booleanValue(freightSource.freight_enabled, true)
   const normalizedLiftingEnabled = legacyFreightEnabled && booleanValue(freightSource.lifting_enabled, true)
   const standardFreightKeys = new Set<string>([
@@ -1866,7 +1880,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     paper_price_factor: paperPriceFactor,
     ...(hasInnerPaperPriceFactor ? { inner_paper_price_factor: numberValue(source.inner_paper_price_factor, paperPriceFactor) } : {}),
     ...(hasFlatCardPriceFactor ? { flat_card_price_factor: numberValue(source.flat_card_price_factor, paperPriceFactor) } : {}),
-    testing_fee_enabled: booleanValue(source.testing_fee_enabled, true),
+    testing_fee_enabled: booleanValue(source.testing_fee_enabled, Object.keys(source).length > 0),
     testing_fee_total_usd: numberValue(source.testing_fee_total_usd),
     testing_fee_moqs: testingFeeMoqValues(source.testing_fee_moqs, source.testing_fee_moq),
     packaging_materials: packagingMaterialRows(source.packaging_materials),

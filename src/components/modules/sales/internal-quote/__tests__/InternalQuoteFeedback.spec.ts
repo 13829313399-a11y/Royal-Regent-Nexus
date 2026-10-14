@@ -77,6 +77,8 @@ describe('internal quote feedback regressions', () => {
     expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ materials: [{ item: '螺丝' }], molds: [{ item: '新模具' }] })
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
     expect(save).not.toHaveBeenCalled()
+    expect((wrapper.get('[aria-label="启用生产模具费用分摊"]').element as HTMLInputElement).checked).toBe(false)
+    await wrapper.get('[aria-label="启用生产模具费用分摊"]').setValue(true)
     const feeInput = wrapper.get('[aria-label="生产模具费用 RMB"]')
     expect((feeInput.element as HTMLInputElement).value).toBe('49500')
     await feeInput.setValue('50000')

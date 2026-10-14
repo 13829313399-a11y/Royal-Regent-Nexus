@@ -724,7 +724,7 @@ async function confirmReasonAction() {
 }
 
 function isImportWorkbook(file: File) {
-  return /\.(xlsx|xlsm)$/i.test(file.name) || (props.section.code === 'hair' && /\.xls$/i.test(file.name))
+  return /\.(xlsx|xlsm)$/i.test(file.name) || (['hair', 'sewing'].includes(props.section.code) && /\.xls$/i.test(file.name))
 }
 
 async function withdrawSection() {

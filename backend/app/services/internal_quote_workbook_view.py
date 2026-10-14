@@ -130,6 +130,13 @@ class WorkbookValues:
             left, right = self.evaluate(node[2], sheet), self.evaluate(node[3], sheet)
             if op == "&":
                 return str(left or "") + str(right or "")
+            if op in {"=", "<>"} and (isinstance(left, str) or isinstance(right, str)):
+                # Currency labels and blank-input checks are emitted by our
+                # sewing workbook. An explicit numeric zero is not blank.
+                left = "" if left is None else left
+                right = "" if right is None else right
+                equal = left.casefold() == right.casefold() if isinstance(left, str) and isinstance(right, str) else left == right
+                return equal if op == "=" else not equal
             left, right = self.number(left), self.number(right)
             if op == "+": return left + right
             if op == "-": return left - right
@@ -153,6 +160,8 @@ class WorkbookValues:
             return self.evaluate(nodes[1] if self.evaluate(nodes[0], sheet) else nodes[2], sheet)
         args = [self.evaluate(arg, sheet) for arg in nodes]
         flattened = [v for arg in args for v in (arg if isinstance(arg, list) else [arg])]
+        if name == "AND": return all(bool(v) for v in flattened)
+        if name == "OR": return any(bool(v) for v in flattened)
         numbers = [self.number(v) for v in flattened if isinstance(v, (int, float))]
         if name == "SUM": return sum(numbers)
         if name == "MAX": return max(numbers, default=0)

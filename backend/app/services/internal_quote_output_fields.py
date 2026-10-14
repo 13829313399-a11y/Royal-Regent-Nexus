@@ -122,7 +122,7 @@ def source_groups(sections, region_code=""):
                 for group, path in rows("groups"):
                     add(group, path, category="车缝产品组")
                     for row, child in rows("materials", group, path):
-                        add(row, child, ["unit_price_rmb"], "车缝物料")
+                        add(row, child, [currency_price(row)], "车缝物料")
         elif code == "assembly":
             for group, path in rows("groups"):
                 add(group, path, category="装配产品组")
