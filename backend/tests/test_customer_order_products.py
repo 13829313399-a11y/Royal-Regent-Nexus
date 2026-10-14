@@ -146,6 +146,45 @@ def test_saved_rule_matches_next_batch_and_disabled_rule_stops_matching(store, p
     assert unified.create_unified_customer_preview(**args(), product_registry=products.snapshot(store))['summary']['blocked'] == 1
 
 
+@pytest.mark.parametrize('persistent,has_history', [(False, False), (True, False), (False, True)])
+def test_registered_new_product_keeps_classification_after_contract_correction(store, po, monkeypatch, persistent, has_history):
+    original = dickie.parse_dickie_pdf_orders('PO.pdf', b'%PDF-test')[0]
+    original.reference_no = original.master_contract = original.po_no = ''
+    monkeypatch.setattr(dickie, 'parse_dickie_pdf_orders', lambda *a, **k: [original])
+    target = '恐龙蛋口水车Iteam表'
+    wb = template('dickie')
+    if has_history:
+        wb['ITEM表']['H4'] = '000123'  # Stock-only historical classification, not an order.
+    if persistent:
+        save(store, item_sheet_name=target)
+    controls = dict(product_registry=products.snapshot(store), product_choices=[] if persistent else [choice(item_sheet_name=target)])
+    a = args(wb)
+    initial = unified.create_unified_customer_preview(**a, **controls)
+    decorate_manual_resolution_policy(initial)
+    row = initial['rows'][0]
+    assert any(i['code'] == 'missing_contract_no' for i in row['issues'])
+    confirmed = {i['skip_key'] for i in row['issues'] if i['code'] == 'missing_contract_no'}
+    output, _, parsed = unified.export_unified_customer_schedule(**a, **controls, skipped_issue_keys=confirmed,
+        manual_overrides=[dict(row_id=row['id'], field='contract_no', value='SC-NEW', reason='业务核对合同号')])
+    assert parsed['rows'][0]['item_sheet_name'] == target
+    assert parsed['product_registration']['applied'][0]['rule']['item_sheet_name'] == target
+    result = openpyxl.load_workbook(BytesIO(output))
+    assert result[target]['D4'].value == 'SC-NEW' and result[target]['H4'].value == '000123'
+    assert result['ITEM表']['D4'].value is None
+    assert result['ITEM表']['H4'].value == ('000123' if has_history else None)
+
+
+def test_registered_classification_does_not_bypass_changed_duplicate_identity(store, po):
+    from app.services import customer_order_huaxing_unified as mapping
+    preview = unified.create_unified_customer_preview(**args(), product_registry=products.snapshot(store), product_choices=[choice()])
+    row = preview['rows'][0]
+    original = {row['id']: tuple(unified._text(row.get(k)) for k in ('product_no', 'reference_no', 'contract_no', 'po_no'))}
+    row['reference_no'] = 'EXISTING'
+    history = [unified.UnifiedHistoryRow(row=4, product_no='000123', reference_no='EXISTING', source_sheet='ITEM表')]
+    with pytest.raises(unified.CustomerOrderUnifiedError, match='重复或数量冲突'):
+        mapping.validate_edited_identities(preview, original, history, ['ITEM表', mapping.DICKIE_EXTRA])
+
+
 def test_updated_defaults_can_replace_history_fallback_not_explicit_PO_fields(store, po, monkeypatch):
     original = dickie.parse_dickie_pdf_orders('PO.pdf', b'%PDF-test')[0]
     original.packing = ''; original.product_name_en = ''

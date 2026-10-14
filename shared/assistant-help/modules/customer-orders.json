@@ -86,6 +86,11 @@
         "path": "backend/app/api/customer_order_products.py",
         "symbol": "def guard",
         "sha256": "058a6e2523c8736a2cbed83a85472cd65f629e8e1d024896039e93df7b8b9646"
+      },
+      {
+        "path": "backend/app/services/customer_order_huaxing_unified.py",
+        "symbol": "def validate_edited_identities",
+        "sha256": "adb8e427894b9f2998deb03a1f49d90ca0ec76817835082ef1b010d75b4b1002"
       }
     ],
     "knowledge_version": "2026.10.14-dickie-products",

@@ -240,7 +240,15 @@ def validate_edited_identities(preview, original, history, available_sheets, ove
                     row['lineage'][field] = '人工更正货号后重新核对最新排期唯一历史值'
         matches = [h for h in history if unified._key(h.product_no) == unified._key(row.get('product_no'))]
         lanes = {h.source_sheet for h in matches}
-        if len(available_sheets) == 1:
+        # Registration was already validated against this workbook. Correcting
+        # an order identity must not discard a new product's explicit category;
+        # duplicate checks below still run, and a changed SKU cannot reuse it.
+        registered_lane = (preview.get('factory_id') == 'huaxing' and
+            preview.get('customer_code') == 'dickie' and row.get('_product_registration_key') and
+            current[0] == original[row['id']][0] and row.get('item_sheet_name') in available_sheets)
+        if registered_lane:
+            pass
+        elif len(available_sheets) == 1:
             row['item_sheet_name'] = available_sheets[0]
         elif len(lanes) == 1:
             row['item_sheet_name'] = next(iter(lanes))
