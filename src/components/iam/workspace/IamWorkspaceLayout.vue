@@ -4,6 +4,7 @@ import { setIdentityViewer } from './identity-ui-context'
 import { RouterView, useRoute } from 'vue-router'
 import { ArrowLeft, ShieldCheck } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
+import AccountMenu from '@/components/layout/AccountMenu.vue'
 import IamWorkspaceNavigation from './IamWorkspaceNavigation.vue'
 import { iamPageGroup, identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from './iam-navigation'
 import '@/features/identity-management/workspace/workspace.css'
@@ -31,13 +32,7 @@ watch(
           <h1 v-else><ShieldCheck :size="25" />权限与组织</h1>
         </div>
         <div class="iamx-session">
-          <span class="iamx-avatar">{{
-            (auth.currentUser?.display_name || auth.currentUser?.username || '我').slice(-2)
-          }}</span
-          ><span
-            >{{ auth.currentUser?.display_name || auth.currentUser?.username || '已登录账号'
-            }}<small>Royal Regent Nexus</small></span
-          >
+          <AccountMenu />
         </div>
       </div>
       <IamWorkspaceNavigation v-if="consolidatedIamEnabled || !positionWorkspace" />
@@ -50,3 +45,7 @@ watch(
     </main>
   </div>
 </template>
+
+<style scoped>
+.iamx-session { display: flex; }
+</style>

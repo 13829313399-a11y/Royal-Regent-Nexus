@@ -6,6 +6,8 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'adm
 
 const api = vi.hoisted(() => ({
   changes: vi.fn(),
+  person: vi.fn(),
+  catalog: vi.fn(),
   handovers: vi.fn(),
   handoverCandidates: vi.fn(),
   refreshHandover: vi.fn(),
@@ -78,6 +80,8 @@ beforeEach(() => {
   api.handoverCandidates.mockResolvedValue({ items: [] })
   api.refreshHandover.mockResolvedValue({})
   api.change.mockResolvedValue(first)
+  api.person.mockResolvedValue({ id: first.target_user_id, display_name: '测试人员', assignments: [], role_bindings: [], overrides: [] })
+  api.catalog.mockResolvedValue({ organizations: [] })
 })
 
 it('keeps the current request when editing is continued after attempting to switch', async () => {

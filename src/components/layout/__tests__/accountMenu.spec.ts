@@ -10,6 +10,7 @@ const uploadAvatarMock = vi.hoisted(() => vi.fn())
 const deleteAvatarMock = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({
+  RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
   useRouter: () => ({
     replace: routerReplace,
   }),
