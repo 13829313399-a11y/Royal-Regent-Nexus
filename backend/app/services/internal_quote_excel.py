@@ -34,8 +34,8 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v38"
-ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v39"
+ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v2"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
     / "data"
@@ -579,6 +579,8 @@ def _apply_molding_row_formulas(
         )
     elif molding_cost_hkd > 0:
         sheet.cell(row_index, 10).value = f"={format(molding_cost_hkd, '.10g')}"
+    if line.get("labor_job_id") and line.get("labor_job_owner") is False:
+        sheet.cell(row_index, 10).value = "=0"
     sheet.cell(row_index, 10).number_format = "0.0000_ "
 
     if sheet.cell(row_index, 6).value not in (None, ""):
@@ -1073,6 +1075,7 @@ def _engineering_mold_parts(mold: dict[str, Any]) -> list[dict[str, Any]]:
     if saved_parts:
         return [
             {
+                **part,
                 "name": _plain_text(part.get("name") or part.get("item")),
                 "color": _plain_text(part.get("color")),
                 "process": _plain_text(part.get("process")),
@@ -1082,8 +1085,8 @@ def _engineering_mold_parts(mold: dict[str, Any]) -> list[dict[str, Any]]:
                 "unit_net_weight_g": _positive_number(
                     part.get("unit_net_weight_g", part.get("net_weight_g"))
                 ),
-                "output_count": _positive_number(part.get("output_count"), 1.0),
-                "quantity": _positive_number(part.get("quantity"), 1.0),
+                "output_count": _positive_number(part.get("output_count"), 0.0 if mold.get("molding_profile") == "huadeng_parts_v1" else 1.0),
+                "quantity": _positive_number(part.get("quantity"), 0.0 if mold.get("molding_profile") == "huadeng_parts_v1" else 1.0),
             }
             for part in saved_parts
         ]
@@ -1156,6 +1159,21 @@ def _merge_and_style(
     sheet.merge_cells(cell_range)
     top_left = cells[0][0]
     top_left.value = value
+
+
+def _merge_molding_labor_jobs(sheet, lines: list[dict[str, Any]], start_row: int) -> None:
+    """Merge contiguous runs only: a transfer row must never be swallowed."""
+    index = 0
+    while index < len(lines):
+        job = lines[index].get("labor_job_id")
+        end = index + 1
+        while job and end < len(lines) and lines[end].get("labor_job_id") == job:
+            end += 1
+        if job and end - index > 1:
+            for column in (10, 12):
+                sheet.merge_cells(start_row=start_row + index, end_row=start_row + end - 1,
+                                  start_column=column, end_column=column)
+        index = end
 
 
 def _engineering_mold_groups(
@@ -1282,7 +1300,14 @@ def _matching_injection_for_part(
     part: dict[str, Any],
     injections: list[dict[str, Any]],
     part_index: int,
+    *, strict: bool = False,
 ) -> dict[str, Any]:
+    if part.get("part_id"):
+        for injection in injections:
+            if injection.get("engineering_part_id") == part["part_id"]:
+                return injection
+    if strict:
+        return {}
     part_key = _match_key(part.get("name"))
     if part_key:
         for injection in injections:
@@ -1465,6 +1490,7 @@ def _populate_engineering_mold_template(
         parts = _list_of_dicts(group.get("parts")) or [{}]
         group_start = row_index
         group_length = len(parts)
+        huadeng_part = getattr(quote, "factory_id", "") == "huadeng" and mold.get("molding_profile") == "huadeng_parts_v1"
         for part_index, part in enumerate(parts):
             if group_length == 1:
                 template = single_row_template
@@ -1476,10 +1502,26 @@ def _populate_engineering_mold_template(
                 template = last_row_template
             else:
                 template = middle_row_template
+            if huadeng_part:
+                # The sample continuation rows contain MergedCell styles. Their
+                # newly visible cells need real body typography, while each
+                # positional template still owns its border and row height.
+                styles, height = template
+                styles = [copy(style) for style in styles]
+                for column in (3, 4, 5, 8, 12, 13, 14, 15, 16, 17):
+                    styles[column - 1].fontId = single_row_template[0][column - 1].fontId
+                    styles[column - 1].alignmentId = single_row_template[0][column - 1].alignmentId
+                    styles[column - 1].numFmtId = single_row_template[0][column - 1].numFmtId
+                template = (styles, height)
             _apply_template_row(sheet, row_index, template)
             applied_templates[row_index] = template
 
-            injection = _matching_injection_for_part(part, injections, part_index)
+            injection = _matching_injection_for_part(part, injections, part_index, strict=huadeng_part)
+            if huadeng_part and not injection:
+                injection = {"material": part.get("material", ""), "grade": part.get("material_type", ""),
+                             "net_weight_g": part.get("unit_net_weight_g"), "sets": part.get("quantity"),
+                             "cavity": part.get("output_count"), "machine_code": part.get("machine_code") or mold.get("machine_code"),
+                             "target_output": part.get("target_output") or mold.get("target_output")}
             process_price = _positive_number(part.get("process_unit_price_hkd"))
             part_weight = _positive_number(part.get("unit_net_weight_g"))
             shot_weight = _positive_number(
@@ -1495,6 +1537,9 @@ def _populate_engineering_mold_template(
                 part.get("quantity"),
                 _positive_number(injection.get("quantity"), 1.0),
             )
+            if huadeng_part:
+                output_count = _float_value(part.get("output_count"))
+                quantity = _float_value(part.get("quantity"))
             values = (
                 _plain_text(mold.get("mold_no") or group.get("fallback_mold_no")),
                 _plain_text(part.get("name")),
@@ -1511,12 +1556,12 @@ def _populate_engineering_mold_template(
                 part_weight or "",
                 output_count,
                 quantity,
-                _mold_material_label(mold, injection),
-                _positive_number(
+                _mold_material_label(part if huadeng_part else mold, injection),
+                _float_value(part.get("quantity")) if huadeng_part else _positive_number(
                     injection.get("sets"),
                     _positive_number(mold.get("quantity"), 1.0),
                 ),
-                _plain_text(injection.get("cavity") or mold.get("cavity")),
+                _plain_text(part.get("output_count")) if huadeng_part else _plain_text(injection.get("cavity") or mold.get("cavity")),
                 _plain_text(
                     injection.get("machine_name")
                     or injection.get("machine_code")
@@ -1530,7 +1575,7 @@ def _populate_engineering_mold_template(
                 "",
                 "",
                 "",
-                _plain_text(mold.get("remark") or injection.get("remark")),
+                _plain_text(part.get("remark")) if huadeng_part else _plain_text(mold.get("remark") or injection.get("remark")),
             )
             for column, value in enumerate(values, start=1):
                 sheet.cell(row_index, column).value = (
@@ -1540,7 +1585,7 @@ def _populate_engineering_mold_template(
 
         group_end = row_index - 1
         if group_end > group_start:
-            for column in (1, 3, 4, 5, 8, 12, 13, 14, 15, 16, 17):
+            for column in ((1,) if huadeng_part else (1, 3, 4, 5, 8, 12, 13, 14, 15, 16, 17)):
                 sheet.merge_cells(
                     start_row=group_start,
                     start_column=column,
@@ -1571,18 +1616,22 @@ def _populate_engineering_purchase_template(
         _section_payload(sales_section),
         _section_payload(electronic_section),
     )
-    overflow_template = _capture_template_row(sheet, 27, 10)
+    # Sample materials in the template carry row-specific fonts and heights.
+    # Use the first detail row for every output row, including inserted rows.
+    body_template = _capture_template_row(sheet, 6, 10)
     capacity = 22
     required_rows = max(1, len(rows))
     if required_rows > capacity:
         sheet.insert_rows(28, required_rows - capacity)
-        for row in range(28, 6 + required_rows):
-            _apply_template_row(sheet, row, overflow_template)
         capacity = required_rows
 
     for row in range(6, 6 + capacity):
+        _apply_template_row(sheet, row, body_template)
         for column in range(1, 11):
             sheet.cell(row, column).value = None
+
+    # Keep the two trailing blank template rows inside the expanded print area.
+    sheet.print_area = f"A1:J{capacity + 7}"
 
     sheet["A1"] = _engineering_company_name(quote)
     sheet["A3"] = f"客户:    {_plain_text(getattr(quote, 'customer', ''))}"
@@ -2039,6 +2088,7 @@ def _build_summary_sheet(
             sheet.cell(row_index, 12).value = f"=J{row_index}*1.15"
             sheet.cell(row_index, 12).number_format = "0.0000_ "
         sheet.row_dimensions[row_index].height = 15
+    _merge_molding_labor_jobs(sheet, mold_lines, mold_start_row)
     mold_total_row = mold_end_row + 1
     for column in range(1, 13):
         _template_cell(sheet, mold_total_row, column, "", color=TEMPLATE_RED, wrap_text=False)
@@ -3914,6 +3964,7 @@ def _replace_with_component_summary_sheet(
                 target.cell(row_index, 12).number_format = "0.0000_ "
             target.row_dimensions[row_index].height = 15
 
+        _merge_molding_labor_jobs(target, component_molds, mold_start_row)
         mold_total_row = mold_end_row + 1
         for column in range(1, 13):
             _template_cell(target, mold_total_row, column, "", color=TEMPLATE_RED, wrap_text=False)

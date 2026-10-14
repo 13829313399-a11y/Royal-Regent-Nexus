@@ -79,6 +79,7 @@ from app.services.internal_quote_components import (
 
 
 from app.services.internal_quote_import import IMPORT_TYPE_DEPARTMENTS, parse_internal_quote_workbook
+from app.services.internal_quote_prefill import reuse_huadeng_import_identities
 
 
 MAX_IMPORT_SIZE = 15 * 1024 * 1024
@@ -273,11 +274,14 @@ def create_import_preview(
             rmb_hkd=Decimal(str(fx_value)),
             fallback_qty=Decimal(str(max(quote.qty, 1))),
             fallback_product_name=quote.product_name,
+            factory_id=quote.factory_id,
         )
     except (ValueError, ArithmeticError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     existing_payload = draft_payload if draft_payload is not None else _json_object(section.payload_json)
+    if import_type == "mold":
+        parsed.payload_fragment = reuse_huadeng_import_identities(parsed.payload_fragment, existing_payload, factory_id=quote.factory_id)
     if import_type == "electronic":
         from app.services.internal_quote_electronic import electronic_detail_payload
         existing_payload = electronic_detail_payload(existing_payload)
@@ -782,7 +786,9 @@ def _materialize_imported_mold_images(
         attachments_by_row.setdefault(source_row, []).append(attachment.id)
         materialized_attachment_ids.append(attachment.id)
 
-    for row in mold_rows:
+    image_rows = [item for row in mold_rows if isinstance(row, dict)
+                  for item in [row, *(row.get("parts", []) or [])]]
+    for row in image_rows:
         if not isinstance(row, dict):
             continue
         try:

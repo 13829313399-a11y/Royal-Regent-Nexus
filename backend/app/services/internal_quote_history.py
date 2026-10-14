@@ -348,6 +348,7 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
             if field.endswith(("_rmb", "_hkd")):
                 electronic.pop(field)
         mold_links = []
+        part_links = {}
         for index, ref in enumerate(product.component_sources or []):
             if ref is None:
                 continue
@@ -393,10 +394,13 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
                             # Component reuse can select the same source mold
                             # into several targets. Rebind its local identities,
                             # then resolve linked Molding using the source key.
+                            old_mold_id = rebound["mold_id"]
                             rebound["mold_id"] = f"mold-{uuid4().hex}"
                             for part in rebound.get("parts", []) or []:
                                 if isinstance(part, dict) and part.get("part_id"):
+                                    old_part_id = part["part_id"]
                                     part["part_id"] = f"part-{uuid4().hex}"
+                                    part_links[(source.quote.id, target_component, f"mold-id:{old_mold_id}/part-id:{old_part_id}")] = (rebound["mold_id"], part["part_id"])
                         if code == "molding" and rebound.get("line_id"):
                             rebound["line_id"] = f"injection-{uuid4().hex}"
                         rebound["pricing_component_id"] = target_component
@@ -431,6 +435,14 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
         for row in payloads["molding"]["injection_lines"]:
             link = row.pop("_history_link", None)
             if link:
+                part_link = part_links.get(tuple(link))
+                if part_link:
+                    new_mold_id, new_part_id = part_link
+                    row["engineering_source_key"] = f"mold-id:{new_mold_id}/part-id:{new_part_id}"
+                    row["engineering_mold_id"] = new_mold_id
+                    row["engineering_part_id"] = new_part_id
+                    row.pop("labor_job_id", None)  # Rebuilt from the copied Engineering source.
+                    continue
                 key = link_map.get(tuple(link))
                 if key:
                     row["engineering_source_key"] = key
@@ -441,6 +453,8 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
                     row.pop("engineering_synced_fields", None)
                     row.pop("engineering_mold_id", None)
                     row.pop("engineering_parts", None)
+                    row.pop("engineering_part_id", None)
+                    row.pop("labor_job_id", None)
         sales = payloads.setdefault("sales", {})
         sales.update(_object(initial_payloads["sales"]))
         if whole and "justplay_packaging" in whole.payloads.get("sales", {}):

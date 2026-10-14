@@ -40,6 +40,14 @@ export interface EngineeringMaterialRow extends QuotePricingMetadata {
   disney_included: number
 }
 export interface EngineeringMoldPartRow {
+  material?: string
+  material_type?: string
+  machine_code?: string
+  target_output?: number | string
+  remark?: string
+  source_row?: number
+  image_reference?: string
+  image_attachment_ids?: string[]
   id?: string
   part_id?: string
   name: string
@@ -51,6 +59,7 @@ export interface EngineeringMoldPartRow {
   quantity: number
 }
 export interface EngineeringMoldRow extends QuotePricingMetadata {
+  molding_profile?: 'huadeng_parts_v1'
   mold_id?: string
   legacy_source_key?: string
   dickie_export?: DickieMoldSupplement
@@ -202,7 +211,14 @@ export interface InjectionRow extends Omit<QuotePricingMetadata, 'markup_overrid
   engineering_parts?: EngineeringMoldPartRow[]
   engineering_source_missing?: boolean
   engineering_linkage_conflict?: boolean
-  cost_scope?: 'whole_mold'
+  cost_scope?: 'whole_mold' | 'huadeng_part'
+  engineering_part_id?: string
+  engineering_labor_mode?: 'shared' | 'transfer'
+  labor_job_id?: string
+  engineering_remark?: string
+  engineering_machine_hint?: string
+  engineering_source_row?: number
+  image_attachment_ids?: string[]
   buzzbee_material?: string
   engineering_source_key?: string
   engineering_synced_fields?: string[]
@@ -1359,6 +1375,14 @@ function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPart
     const occurrence = (occurrences.get(name) ?? 0) + 1
     occurrences.set(name, occurrence)
     return {
+      ...(row.molding_profile === 'huadeng_parts_v1' || 'material_type' in part ? {
+        material: textValue(part.material), material_type: textValue(part.material_type),
+        machine_code: textValue(part.machine_code),
+        target_output: Number.isFinite(Number(part.target_output ?? 0)) ? Number(part.target_output ?? 0) : textValue(part.target_output),
+        remark: textValue(part.remark), source_row: numberValue(part.source_row),
+        image_reference: textValue(part.image_reference),
+        image_attachment_ids: Array.isArray(part.image_attachment_ids) ? part.image_attachment_ids.map(textValue).filter(Boolean) : [],
+      } : {}),
       ...(part.part_id || part.id ? { part_id: textValue(part.part_id || part.id).trim() } : {}),
       id: textValue(part.id).trim() || `legacy-name:${JSON.stringify([name, occurrence])}`,
       name: textValue(part.name ?? part.item),
@@ -1592,6 +1616,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   if (code === 'engineering') {
     const hasLegacyCartons = Object.prototype.hasOwnProperty.call(source, 'cartons')
     const normalizedMolds: EngineeringMoldRow[] = rows(source.molds).map((row) => ({
+      ...(row.molding_profile === 'huadeng_parts_v1' ? { molding_profile: 'huadeng_parts_v1' as const } : {}),
       ...(row.mold_id ? { mold_id: textValue(row.mold_id) } : {}),
       ...(row.legacy_source_key ? { legacy_source_key: textValue(row.legacy_source_key) } : {}),
       ...pricingMetadata(row),
@@ -1670,7 +1695,13 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         ...(row.line_id ? { line_id: textValue(row.line_id) } : {}),
         ...(row.engineering_mold_id ? { engineering_mold_id: textValue(row.engineering_mold_id) } : {}),
         ...(Array.isArray(row.engineering_parts) ? { engineering_parts: engineeringMoldParts({ parts: row.engineering_parts }) } : {}),
-        ...(row.cost_scope === 'whole_mold' ? { cost_scope: 'whole_mold' as const } : {}),
+        ...(row.cost_scope === 'huadeng_part' ? {
+          cost_scope: 'huadeng_part' as const, engineering_part_id: textValue(row.engineering_part_id),
+          engineering_labor_mode: row.engineering_labor_mode === 'transfer' ? 'transfer' as const : 'shared' as const,
+          labor_job_id: textValue(row.labor_job_id), engineering_remark: textValue(row.engineering_remark),
+          engineering_source_row: numberValue(row.engineering_source_row), engineering_machine_hint: textValue(row.engineering_machine_hint),
+          image_attachment_ids: Array.isArray(row.image_attachment_ids) ? row.image_attachment_ids.map(textValue).filter(Boolean) : [],
+        } : row.cost_scope === 'whole_mold' ? { cost_scope: 'whole_mold' as const } : {}),
         ...(row.engineering_source_missing === true ? { engineering_source_missing: true } : {}),
         ...(row.engineering_linkage_conflict === true ? { engineering_linkage_conflict: true } : {}),
         buzzbee_material: textValue(row.buzzbee_material),
