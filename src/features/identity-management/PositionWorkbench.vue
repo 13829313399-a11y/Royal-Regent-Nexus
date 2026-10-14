@@ -129,7 +129,7 @@ onBeforeUnmount(() => { ++generation; window.removeEventListener('beforeunload',
       <PersonContext v-if="personId && !routeError" :person-id="personId" :panel="panel" :catalog="catalog" @panel="router.replace({ query: { ...route.query, panel: $event } })" @task="started" @back="back" @saved="load" @locked="locked = $event" />
       <PositionReviewPane v-else-if="selected && ['position','registration'].includes(taskKind) && !routeError" :item-key="selected" :catalog="catalog" compact @saved="dirty = false; load()" @next="next" @back="back" @locked="locked = $event" @dirty="dirty = $event" />
       <PasswordResetPanel v-else-if="taskKind === 'password-reset' && !routeError" :request-id="selected.slice(selected.indexOf(':') + 1)" @saved="load" @back="back" @locked="locked = $event" />
-      <IdentityRecords v-else-if="taskKind === 'identity-change' && !routeError" embedded :request-id="selected.slice(selected.indexOf(':') + 1)" mode="changes" @locked="locked = $event" @dirty="dirty = $event" @back="back" />
+      <IdentityRecords v-else-if="taskKind === 'identity-change' && !routeError" embedded :request-id="selected.slice(selected.indexOf(':') + 1)" :catalog="catalog" mode="changes" @locked="locked = $event" @dirty="dirty = $event" @back="back" />
       <div v-else class="pw-empty iw-welcome"><ShieldCheck :size="36" /><h2>选择人员，核对岗位与权限</h2><p>查看人员只读；需要调整时明确发起办理。</p></div>
     </div>
     <IamLeaveGuard ref="leave" :dirty="dirty" :busy="locked" />

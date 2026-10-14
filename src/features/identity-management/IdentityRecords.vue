@@ -9,6 +9,7 @@ import {
   type ChangePreview,
   type HandoverItem,
   type HandoverSummary,
+  type OrganizationCatalog,
 } from '@/api/identity'
 import { getApiErrorMessage } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
@@ -16,7 +17,6 @@ import { formatBusinessDateTime } from '@/lib/dateTime'
 import { Button } from '@/components/ui/button'
 import IamLeaveGuard from '@/components/iam/workspace/IamLeaveGuard.vue'
 import IamStatusBadge from '@/components/iam/workspace/IamStatusBadge.vue'
-import IamDisclosure from '@/components/iam/workspace/IamDisclosure.vue'
 import {
   changeStatusPresentation,
   handoverStatusPresentation,
@@ -26,7 +26,8 @@ import { useAuthStore } from '@/stores/auth'
 import { iamWorkspaceApi } from '@/api/iamWorkspace'
 import AccessImpact from './AccessImpact.vue'
 import AuditTimeline from './AuditTimeline.vue'
-const props = defineProps<{ embedded?: boolean; requestId?: string; mode?: 'changes' | 'audit' }>()
+import IdentityChangeContent from './IdentityChangeContent.vue'
+const props = defineProps<{ embedded?: boolean; requestId?: string; mode?: 'changes' | 'audit'; catalog?: OrganizationCatalog }>()
 const emit = defineEmits<{ locked: [boolean]; dirty: [boolean]; back: [] }>()
 const auth = useAuthStore()
 const viewer = computed(() => `${auth.currentUser?.id}:${auth.authorizationVersion}:${auth.currentUser?.identity?.employment_epoch}:${auth.currentUser?.identity?.effective_context_key}`)
@@ -464,19 +465,7 @@ onBeforeUnmount(() => {
               ><TabsTrigger value="handover">工作交接</TabsTrigger></TabsList
             >
             <TabsContent value="content"
-              ><div class="iamx-assignment">
-                <h3>办理说明</h3>
-                <p>{{ selected.reason || '未填写原因' }}</p>
-                <p>申请人：{{ selected.requester_user_id }}</p>
-                <p v-if="selected.payload.new_assignment">
-                  {{ selected.payload.new_assignment.org_unit_id }} ·
-                  {{ selected.payload.new_assignment.department_code }} ·
-                  {{ selected.payload.new_assignment.official_position_title }}
-                </p>
-                <IamDisclosure title="查看原始办理内容">
-                  <pre class="iamx-evidence">{{ JSON.stringify(selected.payload, null, 2) }}</pre>
-                </IamDisclosure>
-              </div>
+              ><IdentityChangeContent :record="selected" :catalog="catalog" />
               <div
                 v-if="['draft', 'pending_approval', 'scheduled'].includes(selected.state)"
                 class="iamx-form"
