@@ -2028,6 +2028,7 @@ def _calculate_and_apply(
         snapshot,
         reference.id,
         context={
+            "factory_id": quote.factory_id,
             "factory_price_hkd": decimal_text(factory_price_hkd),
             "mold_amortization_usd": decimal_text(cost_context["mold_amortization_usd"]),
             "dependencies": dependencies,
@@ -2264,26 +2265,36 @@ def _create_sections(
 
 
 def _initial_section_payloads(payload: InternalQuoteCreateRequest, product_index: int = 0) -> dict[str, str]:
-    component_names = payload.products[product_index].pricing_components
+    product = payload.products[product_index]
+    # Fresh products opt into these optional costs explicitly. Whole-product
+    # history reuse keeps its source settings, including legacy missing flags.
+    initial = {} if product.history_source else {
+        "engineering": json.dumps({"mold_allocation_enabled": False}),
+        "sales": json.dumps({
+            "testing_fee_enabled": False,
+            "freight_calc": {"enabled": False, "freight_enabled": False, "lifting_enabled": False},
+        }),
+    }
+    component_names = product.pricing_components
     if not component_names:
-        return {}
+        return initial
     components = [
         {"id": f"component-{index:02d}", "name": name}
         for index, name in enumerate(component_names, start=1)
     ]
-    return {
-        "sales": json.dumps(
-            {
-                "pricing_mode": "component", "pricing_components": components,
-                "justplay_packaging": {
-                    "adhesive_extra_hkd": 0, "paper_pallet_extra_hkd": 0,
-                    "pallet_length_mm": 1000, "pallet_width_mm": 1150, "pallet_height_mm": 1300,
-                },
+    initial["sales"] = json.dumps(
+        {
+            **_json_object(initial.get("sales", "{}")),
+            "pricing_mode": "component", "pricing_components": components,
+            "justplay_packaging": {
+                "adhesive_extra_hkd": 0, "paper_pallet_extra_hkd": 0,
+                "pallet_length_mm": 1000, "pallet_width_mm": 1150, "pallet_height_mm": 1300,
             },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    }
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return initial
 
 
 def create_quote(
@@ -3438,6 +3449,7 @@ def update_quote_header(
                 or not section.is_required
                 or section.status == "not_applicable"
                 or not _json_object(section.payload_json)
+                or (section.status == "draft" and section.revision == 1 and not section.filled_at)
             ):
                 continue
             old_section_revision = section.revision
@@ -3934,6 +3946,7 @@ def preview_quote_costs(
                 snapshot,
                 reference.id,
                 context={
+                    "factory_id": quote.factory_id,
                     "factory_price_hkd": decimal_text(factory_price_hkd),
                     "mold_amortization_usd": decimal_text(current_context["mold_amortization_usd"]),
                     "dependencies": _calculation_dependencies(
@@ -4051,6 +4064,10 @@ def _save_section_in_transaction(
     user: AuthContext,
     request: Request | None,
 ) -> InternalQuoteSection:
+    if quote.factory_id == "huakang-d" and section.department == "engineering" and not next_payload:
+        # Keep an explicit saved payload so readiness/copy checks can distinguish
+        # confirmed zero engineering cost from a section that was never saved.
+        next_payload = {"mold_allocation_enabled": False}
     if section.department == "molding":
         next_payload = _remove_missing_molding_sources(db, quote, next_payload, synchronize_parts=True)
     if section.department == "electronic" and "quote_groups" in _json_object(section.payload_json) and "quote_groups" not in next_payload:
@@ -4836,9 +4853,12 @@ def _replace_quote_reference_set(
                 db, quote, _json_object(section.payload_json), synchronize_parts=True,
             ))
         section_payload = _json_object(section.payload_json)
+        # Creation seeds switches/component metadata before the department has
+        # been filled. Recalculation must not turn those defaults into work.
+        initial_unfilled = section.status == "draft" and section.revision == 1 and not section.filled_at
         if section.status == "not_applicable" or not section_payload or (
             section.department == "molding" and _empty_molding_payload(section_payload)
-        ):
+        ) or initial_unfilled:
             if section.status != "not_applicable":
                 _apply_uncalculated_state(db, quote, section)
             section.calculation_status = "pending" if section.status != "not_applicable" else "not_applicable"

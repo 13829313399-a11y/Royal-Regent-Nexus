@@ -173,6 +173,7 @@ describe('InternalQuoteSectionForm dimension units', () => {
       },
     })
 
+    await wrapper.get('input[aria-label="启用测试费计算"]').setValue(true)
     expect(wrapper.get('[aria-label="业务部测试费单价 USD 1"]').text()).toBe('0.0000')
     await wrapper.get('button[aria-label="新增业务部测试费 MOQ"]').trigger('click')
     await wrapper.get('input[aria-label="业务部测试费用 USD"]').setValue('1250')

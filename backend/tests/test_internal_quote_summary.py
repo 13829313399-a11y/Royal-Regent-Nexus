@@ -117,6 +117,8 @@ def test_justplay_components_are_created_only_for_huakang_b_and_seed_sales_paylo
     payload = create_request()
     seeded = json.loads(_initial_section_payloads(payload)["sales"])
     assert seeded == {
+        "testing_fee_enabled": False,
+        "freight_calc": {"enabled": False, "freight_enabled": False, "lifting_enabled": False},
         "pricing_mode": "component",
         "justplay_packaging": {"adhesive_extra_hkd": 0, "paper_pallet_extra_hkd": 0,
                               "pallet_length_mm": 1000, "pallet_width_mm": 1150, "pallet_height_mm": 1300},
@@ -139,6 +141,9 @@ def test_justplay_product_components_override_legacy_and_omitted_products_copy_f
     assert [product.pricing_components for product in request.products] == expected
     for index, names in enumerate(expected):
         seeded = json.loads(_initial_section_payloads(request, index)["sales"])
+        assert seeded["testing_fee_enabled"] is False
+        assert seeded["freight_calc"] == {"enabled": False, "freight_enabled": False, "lifting_enabled": False}
+        assert json.loads(_initial_section_payloads(request, index)["engineering"])["mold_allocation_enabled"] is False
         assert [item["name"] for item in seeded["pricing_components"]] == names
         assert [item["id"] for item in seeded["pricing_components"]] == [f"component-{i:02d}" for i in range(1, len(names) + 1)]
     request.products[2].pricing_components[1] = "C镜子"

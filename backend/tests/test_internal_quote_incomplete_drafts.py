@@ -126,6 +126,12 @@ def test_empty_molding_remains_pending_after_reference_recalculation(monkeypatch
         assert molding["calculation"]["warnings"] == []
         assert molding["calculation"]["reference_snapshot_id"] == current["reference_snapshot_id"]
         assert current["reference_snapshot_id"] != before["reference_snapshot_id"]
+        # Default switches are persisted at creation, but do not mean that an
+        # Engineering/Sales form has been filled or is ready for calculation.
+        for code in ("engineering", "sales"):
+            assert sections[code]["revision"] == 1
+            assert not sections[code]["filled_at"]
+            assert sections[code]["calculation_status"] == "pending"
         summary = client.get(f"/api/internal-quotes/{quote_id}/summary")
         assert summary.status_code == 200, summary.text
         assert not any(w["code"] in {"engineering_parts_unsaved", "calculation_blocked"} for w in summary.json()["warnings"])
