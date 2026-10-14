@@ -5,7 +5,7 @@ from app.db import get_db
 from app.services.auth import AuthContext, can, get_current_user
 from app.api.fabric_procurement import authorize
 from app.services import fabric_master as service
-from app.schemas.fabric_master import MasterKind, SaveMasterRequest, LocationPreviewRequest, LocationApplyRequest, WarehouseRenameRequest
+from app.schemas.fabric_master import MasterKind, SaveMasterRequest, LocationPreviewRequest, LocationApplyRequest, WarehouseRenameRequest, LocationManageRequest
 from app.services import fabric_master_locations as locations
 
 router = APIRouter(prefix="/api/fabric-warehouse/master", tags=["fabric-warehouse"])
@@ -67,3 +67,9 @@ def warehouse_rename(payload: WarehouseRenameRequest, db: Session = Depends(get_
 def history(record_id: str, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     authorize(db, actor, factory_id, "read")
     return service.history(db, record_id)
+
+
+@router.post("/locations/manage")
+def location_manage(payload: LocationManageRequest, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    authorize(db, actor, payload.factory_id, "import")
+    return locations.manage(db, actor, payload)

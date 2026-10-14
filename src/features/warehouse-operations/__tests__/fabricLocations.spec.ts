@@ -1,10 +1,14 @@
+import { reactive } from 'vue'
+import { pendingFabricLocationManage } from '../pendingFabricRequests'
+const session = reactive({ currentUser: { id: 'keeper' }, authorizationVersion: 0 })
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => session }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import Locations from '../FabricLocationSettings.vue'
 import Master from '../FabricMasterWorkspace.vue'
 import type { MasterRecord } from '@/api/fabricMaster'
-const api = vi.hoisted(() => ({ list: vi.fn(), candidates: vi.fn(), save: vi.fn(), history: vi.fn(), previewLocations: vi.fn(), applyLocations: vi.fn(), renameWarehouse: vi.fn(), previewLocationFile: vi.fn(), locationTemplate: vi.fn() }))
+const api = vi.hoisted(() => ({ list: vi.fn(), candidates: vi.fn(), save: vi.fn(), history: vi.fn(), previewLocations: vi.fn(), applyLocations: vi.fn(), renameWarehouse: vi.fn(), manageLocations: vi.fn(), previewLocationFile: vi.fn(), locationTemplate: vi.fn() }))
 vi.mock('@/api/fabricMaster', () => ({ fabricMasterApi: api }))
 let wrapper: VueWrapper | undefined
 const body = () => new DOMWrapper(document.body)
@@ -12,9 +16,86 @@ const click = async (name: string) => { await body().findAll('button').find(row 
 const records: MasterRecord[] = ['A01','A02','B01'].map((code,index) => ({ id: code, code, name: code, kind: 'LOCATION', status: index === 1 ? 'INACTIVE' : 'ACTIVE', revision: index + 1, updated_at: '2026-10-07', data: { warehouse: index === 2 ? '辅料仓' : '布料仓' } }))
 async function router() { const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] }); await router.push('/'); await router.isReady(); return router }
 async function open() { wrapper = mount(Locations,{ props: { records, warehouseTokens:{'布料仓':'GROUP'}, canManage:true, busy:false, search:'', status:'ALL' }, attachTo:document.body, global:{ plugins:[await router()] } }); await flushPromises() }
-beforeEach(() => { vi.clearAllMocks(); api.list.mockResolvedValue({ items: [], can_manage:true }); api.candidates.mockResolvedValue([]); api.previewLocations.mockResolvedValue({ items:[{warehouse:'布料仓',code:'A03',action:'NEW',status:'ACTIVE'}], errors:[],new:1,unchanged:0,preview_token:'TOKEN',stock_posted:false }) })
+beforeEach(() => { pendingFabricLocationManage.clear(); session.currentUser = { id: 'keeper' }; vi.clearAllMocks(); api.list.mockResolvedValue({ items: [], can_manage:true }); api.candidates.mockResolvedValue([]); api.previewLocations.mockResolvedValue({ items:[{warehouse:'布料仓',code:'A03',action:'NEW',status:'ACTIVE'}], errors:[],new:1,unchanged:0,preview_token:'TOKEN',stock_posted:false }) })
 afterEach(() => { wrapper?.unmount(); wrapper=undefined; document.body.innerHTML=''; vi.restoreAllMocks() })
 describe('carton-style fabric master setup', () => {
+  it('assigns a zone to explicitly selected existing positions without creating presets', async () => {
+    await open(); await click('设置分料区')
+    expect(body().text()).not.toContain('24 个')
+    expect(body().findAll('button').find(row => row.text() === '保存分料区')!.attributes('disabled')).toBeDefined()
+    await body().get('[aria-label="分料区"]').setValue('THREAD')
+    await body().get('[aria-label="选择 布料仓 A01"]').setValue(true)
+    api.manageLocations.mockResolvedValue({ updated: 1 })
+    await click('保存分料区')
+    expect(api.manageLocations).toHaveBeenCalledWith(expect.objectContaining({ action: 'CATEGORY', category: 'THREAD', selections: [{ id: 'A01', expected_revision: 1 }] }))
+    expect(api.previewLocations).not.toHaveBeenCalled()
+    expect(api.applyLocations).not.toHaveBeenCalled()
+    expect(wrapper!.emitted('refresh')).toHaveLength(1)
+  })
+  it('confirms the complete warehouse before deleting and retries unknown outcomes unchanged', async () => {
+    await open(); await wrapper!.setProps({ search: 'A01', status: 'ACTIVE' })
+    await wrapper!.get('[aria-label="删除仓库 布料仓"]').trigger('click'); await flushPromises()
+    expect(body().get('[aria-label="选择 布料仓 A02"]').exists()).toBe(true)
+    expect(api.manageLocations).not.toHaveBeenCalled()
+    api.manageLocations.mockRejectedValueOnce({ isAxiosError: true, message: 'network' }).mockResolvedValueOnce({ updated: 2 })
+    await click('确认删除')
+    const request = JSON.parse(JSON.stringify(api.manageLocations.mock.calls[0]![0]))
+    expect(request.selections).toEqual([{ id: 'A01', expected_revision: 1 }, { id: 'A02', expected_revision: 2 }])
+    expect(request.action).toBe('DELETE')
+    expect(body().get('.location-manage-form fieldset').attributes('disabled')).toBeDefined()
+    await click('重试原提交')
+    expect(api.manageLocations.mock.calls[1]![0]).toEqual(request)
+    expect(wrapper!.emitted('refresh')).toHaveLength(1)
+  })
+  it('restores selected deleted records even when the active status filter is on', async () => {
+    await open(); await wrapper!.setProps({ status: 'ACTIVE', deletedRecords: [{ ...records[0]!, id: 'deleted', status: 'INACTIVE', revision: 4 }] })
+    await click('已删除（1）')
+    await wrapper!.get('[aria-label="勾选仓位 布料仓 A01"]').setValue(true)
+    await click('恢复所选')
+    api.manageLocations.mockResolvedValue({ updated: 1 })
+    await click('确认恢复')
+    expect(api.manageLocations).toHaveBeenCalledWith(expect.objectContaining({ action: 'RESTORE', selections: [{ id: 'deleted', expected_revision: 4 }] }))
+  })
+  it('drops a management dialog on lost authorization and ignores its late reply', async () => {
+    let resolve!: (value: unknown) => void
+    api.manageLocations.mockReturnValueOnce(new Promise(done => { resolve = done }))
+    await open(); await wrapper!.get('[aria-label="勾选仓位 布料仓 A01"]').setValue(true)
+    await click('删除所选'); await click('确认删除')
+    await wrapper!.setProps({ canManage: false }); await flushPromises()
+    expect(body().find('[role=dialog]').exists()).toBe(false)
+    resolve({ updated: 1 }); await flushPromises()
+    expect(wrapper!.emitted('refresh')).toBeUndefined()
+    expect(wrapper!.findAll('button').some(row => row.text() === '删除所选')).toBe(false)
+  })
+  it('keeps unknown commands through authorization refresh and remount, isolated by submitting account', async () => {
+    await open(); await wrapper!.get('[aria-label="勾选仓位 布料仓 A01"]').setValue(true)
+    await click('删除所选')
+    api.manageLocations.mockRejectedValueOnce({ response: { status: 401 } })
+    await click('确认删除')
+    const original = JSON.parse(JSON.stringify(api.manageLocations.mock.calls[0]![0]))
+    await wrapper!.setProps({ canManage: false }); await flushPromises()
+    expect(pendingFabricLocationManage.get('keeper')?.body).toEqual(original)
+    wrapper!.unmount(); wrapper = undefined; document.body.innerHTML = ''
+    session.currentUser = { id: 'another' }; await open()
+    expect(body().text()).not.toContain('核对原仓位操作')
+    wrapper!.unmount(); wrapper = undefined; document.body.innerHTML = ''
+    session.currentUser = { id: 'keeper' }; await open()
+    expect(wrapper!.findAll('button').find(row => row.text() === '设置分料区')!.attributes('disabled')).toBeDefined()
+    await click('核对原仓位操作')
+    api.manageLocations.mockResolvedValueOnce({ updated: 1 })
+    await click('重试原提交')
+    expect(api.manageLocations.mock.calls[1]![0]).toEqual(original)
+    expect(pendingFabricLocationManage.has('keeper')).toBe(false)
+  })
+  it('invalidates a preview when the raw-material category changes', async () => {
+    await open(); await wrapper!.get('[aria-label="添加 布料仓 仓位"]').trigger('click'); await flushPromises()
+    await body().get('[aria-label="仓位或范围"]').setValue('布料1架')
+    await body().get('[aria-label="新仓位适用原料"]').setValue('FABRIC')
+    await body().get('form').trigger('submit'); await flushPromises()
+    expect(api.previewLocations).toHaveBeenCalledWith([{warehouse:'布料仓',bins:'布料1架',category:'FABRIC'}])
+    await body().get('[aria-label="新仓位适用原料"]').setValue('THREAD')
+    expect(body().findAll('button').some(row => row.text() === '确认保存')).toBe(false)
+  })
   it('groups clickable bins by warehouse and retains full rename revisions when filtered', async () => {
     await open()
     expect(wrapper!.findAll('.fabric-warehouse-group')).toHaveLength(2)

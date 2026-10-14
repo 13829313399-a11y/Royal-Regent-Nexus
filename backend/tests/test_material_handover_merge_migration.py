@@ -21,7 +21,9 @@ def test_merge_upgrades_either_parent_and_preserves_existing_rows(tmp_path, monk
     with warnings.catch_warnings():
         warnings.simplefilter('error', UserWarning)
         script = ScriptDirectory.from_config(config)
-        assert script.get_heads() == ['20261012_0159']
+        heads = script.get_heads()
+        assert len(heads) == 1
+        canonical_head = heads[0]
     assert script.get_revision('20261012_0158').down_revision == ('20261012_0156', '20261012_0157')
     assert script.get_revision('20261012_0159').down_revision == '20261012_0158'
 
@@ -46,7 +48,7 @@ def test_merge_upgrades_either_parent_and_preserves_existing_rows(tmp_path, monk
     command.upgrade(config, 'head')
 
     with engine.connect() as connection:
-        assert connection.exec_driver_sql('SELECT version_num FROM alembic_version').all() == [('20261012_0159',)]
+        assert connection.exec_driver_sql('SELECT version_num FROM alembic_version').all() == [(canonical_head,)]
         assert connection.exec_driver_sql('SELECT * FROM auth_users').all() == [('original-user',)]
         assert connection.exec_driver_sql('SELECT * FROM nexus_assistant_sessions').all() == [('original-session',)]
         assert connection.exec_driver_sql('SELECT * FROM nexus_assistant_runs').all() == [('original-run',)]

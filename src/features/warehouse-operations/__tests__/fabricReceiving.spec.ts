@@ -27,7 +27,7 @@ async function router() {
 }
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-05T18:00:00Z')); vi.clearAllMocks(); sourceApi.groups.mockResolvedValue({ total: 0, line_total: 0, groups: [] }); api.receipts.mockResolvedValue({ total: 0, items: [] }); api.stock.mockResolvedValue({ total: 0, items: [] }); sourceApi.lines.mockResolvedValue({ total: 1, items: [source], can_receive: true }); sourceApi.detail.mockResolvedValue(source) })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
-async function open(receiptSource = source) { wrapper = mount(Dialog, { props: { source: receiptSource }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises() }
+async function open(receiptSource = source) { wrapper = mount(Dialog, { props: { source: receiptSource }, attachTo: document.body, global: { plugins: [await router(), createPinia()] } }); await flushPromises() }
 async function fill() {
   await body().get('[aria-label="送货依据编号"]').setValue('DN-001')
   await body().get('[aria-label="入库物料分类"]').setValue('FABRIC')
@@ -83,6 +83,7 @@ describe('fabric actual receiving', () => {
     await body().get('[aria-label="入库物料分类"]').setValue('FABRIC')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
     expect(body().get('[aria-label="第1项缸号"]').attributes('required')).toBeDefined()
+    await body().get('[aria-label="第1项仓位"]').setValue('一仓／A01')
     await body().get('[aria-label="第1项缸号"]').setValue('0001')
     expect(button('保存并入库').attributes('disabled')).toBeUndefined()
     await body().get('[aria-label="第1项仓位"]').setValue('  ')
@@ -215,7 +216,7 @@ describe('fabric actual receiving', () => {
     expect(wrapper!.emitted('stale')?.[0]?.[0]).toContain('来源已变化')
   })
   it('opens receiving from a freshly read source, refreshes the list after posting, and respects read-only accounts', async () => {
-    wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises()
+    wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router(), createPinia()] } }); await flushPromises()
     await button('按采购明细').trigger('click'); await flushPromises()
     await button('登记入库').trigger('click'); await flushPromises()
     expect(sourceApi.detail).toHaveBeenCalledWith('L1')

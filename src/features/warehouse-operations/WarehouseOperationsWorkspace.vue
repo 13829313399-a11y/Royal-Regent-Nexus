@@ -7,6 +7,7 @@ import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRoute
 import { isAxiosError } from 'axios'
 import { FocusScope } from 'reka-ui'
 import WarehouseStockLedger from './WarehouseStockLedger.vue'
+import { matchesLocationCategory } from './fabricLocationZones'
 import WarehouseLocationPicker from './WarehouseLocationPicker.vue'
 import WarehouseBulkIssueDialog from './WarehouseBulkIssueDialog.vue'
 import { Button } from '@/components/ui/button'
@@ -98,6 +99,15 @@ const needsBatch = computed(() => !!draft.value && ['ISSUE', 'TRANSFER', 'QUALIT
 const needsItem = computed(() => !!draft.value && ['RECEIPT', 'REQUEST', 'TASK'].includes(draft.value.kind))
 const needsLocation = computed(() => !!draft.value && ['RECEIPT', 'RETURN', 'TRANSFER', 'PROCESS_RETURN', 'LOCATION_BIND'].includes(draft.value.kind))
 const selectedBatch = computed(() => data.value?.stock.find(row => row.id === draft.value?.batch_id))
+const locationCategory = computed(() => {
+  if (props.warehouse !== 'fabric' || draft.value?.kind === 'LOCATION_BIND') return undefined
+  if (draft.value?.kind === 'RETURN') {
+    const original = data.value?.documents.find(row => row.id === draft.value?.original_id)
+    return original?.batch_snapshot?.material_category ?? original?.data.material_category ?? ''
+  }
+  if (draft.value?.kind === 'TRANSFER') return selectedBatch.value?.material_category ?? ''
+  return draft.value?.material_category ?? ''
+})
 const originalOptions = computed(() => (data.value?.documents ?? []).filter(row => !row.reversed && referenceKinds(draft.value?.kind ?? 'RECEIPT').includes(row.kind)))
 const tasks = computed(() => (data.value?.documents ?? []).filter(row => row.kind === 'TASK' && !row.reversed))
 const selectableBatches = computed(() => (data.value?.stock ?? []).filter(row => Number(row.quantity) > 0 && (draft.value?.kind === 'LOCATION_BIND' ? !row.location_verified : row.location_verified) && (['TRANSFER', 'LOCATION_BIND'].includes(draft.value?.kind ?? '') || !['HOLD', 'REJECTED'].includes(row.quality_status))))
@@ -158,12 +168,16 @@ watch(() => [props.warehouse, props.section, props.view], () => {
 watch([search, from, to, recordKind, recordState, recordSort, recordActor], () => { offset.value = 0 })
 async function submit() {
   if (!draft.value || saving.value || !permitted(draft.value.kind)) return
-  if (draft.value.kind === 'CORRECTION' && (!draft.value.confirmed || !draft.value.reason.trim())) { formError.value = '请填写原因并确认整单冲销'; return }
-  if (needsLocation.value && !activeLocations.value.some(row => row.id === draft.value?.location_id)) { formError.value = '请选择基础资料中已启用的仓位'; return }
-  if (draft.value.location_id) draft.value.location = activeLocations.value.find(row => row.id === draft.value?.location_id)?.label ?? ''
+  if (!frozen.value) {
+    if (draft.value.kind === 'CORRECTION' && (!draft.value.confirmed || !draft.value.reason.trim())) { formError.value = '请填写原因并确认整单冲销'; return }
+    if (needsLocation.value && !activeLocations.value.some(row => row.id === draft.value?.location_id && matchesLocationCategory(row, locationCategory.value))) { formError.value = '请选择基础资料中已启用的仓位'; return }
+    if (draft.value.location_id) draft.value.location = activeLocations.value.find(row => row.id === draft.value?.location_id)?.label ?? ''
+  }
   const input = frozen.value ?? JSON.parse(JSON.stringify(draft.value)) as WarehouseDocumentInput
-  if (input.kind !== 'ISSUE') input.allocations = []
-  if (input.kind === 'PROCESS_SEND') input.counterparty = tasks.value.find(row => row.id === input.task_id)?.data.counterparty ?? ''
+  if (!frozen.value) {
+    if (input.kind !== 'ISSUE') input.allocations = []
+    if (input.kind === 'PROCESS_SEND') input.counterparty = tasks.value.find(row => row.id === input.task_id)?.data.counterparty ?? ''
+  }
   saving.value = true; formError.value = ''
   try {
     await api.post(props.warehouse, input)
@@ -231,7 +245,7 @@ function rowTitle(row: WarehouseDocument) { return row.data.item_name || row.bat
             <label v-if="draft.kind === 'ISSUE'">领用部门 / 领用方<input v-model.trim="draft.counterparty" required maxlength="255" aria-label="领用方" :readonly="!!draft.original_id" placeholder="例如裁床、车间或外发厂" /></label>
             <label v-if="draft.kind === 'ISSUE'">领用用途（选填）<input v-model.trim="draft.purpose" maxlength="255" aria-label="领用用途" /></label>
             <label v-if="draft.kind === 'PACK_SEND'">包装接收部门<input v-model.trim="draft.counterparty" required maxlength="255" aria-label="包装接收部门" /></label>
-            <template v-if="needsLocation"><label>{{ draft.kind === 'LOCATION_BIND' ? '实际所在仓位' : draft.kind === 'TRANSFER' ? '调入仓位' : draft.kind === 'RETURN' ? '退回仓位' : '入库仓位' }}<WarehouseLocationPicker v-model="draft.location_id" :locations="activeLocations" /></label><label v-if="draft.kind === 'RECEIPT' || draft.kind === 'PROCESS_RETURN'">缸号 / 批号{{ warehouse === 'fabric' && draft.material_category === 'FABRIC' ? '' : '（选填）' }}<input v-model.trim="draft.lot" :required="warehouse === 'fabric' && draft.material_category === 'FABRIC'" maxlength="128" aria-label="缸号批号" /></label><label v-if="warehouse === 'fabric' && draft.kind === 'RECEIPT'">卷号（选填）<input v-model.trim="draft.roll_no" maxlength="128" aria-label="卷号" /></label></template>
+            <template v-if="needsLocation"><label>{{ draft.kind === 'LOCATION_BIND' ? '实际所在仓位' : draft.kind === 'TRANSFER' ? '调入仓位' : draft.kind === 'RETURN' ? '退回仓位' : '入库仓位' }}<WarehouseLocationPicker :category="locationCategory" :disabled="saving || !!frozen" v-model="draft.location_id" :locations="activeLocations" /></label><label v-if="draft.kind === 'RECEIPT' || draft.kind === 'PROCESS_RETURN'">缸号 / 批号{{ warehouse === 'fabric' && draft.material_category === 'FABRIC' ? '' : '（选填）' }}<input v-model.trim="draft.lot" :required="warehouse === 'fabric' && draft.material_category === 'FABRIC'" maxlength="128" aria-label="缸号批号" /></label><label v-if="warehouse === 'fabric' && draft.kind === 'RECEIPT'">卷号（选填）<input v-model.trim="draft.roll_no" maxlength="128" aria-label="卷号" /></label></template>
             <label v-if="draft.kind === 'PACK_RECEIVE'">实际接收人<input v-model.trim="draft.responsible_person" required maxlength="128" aria-label="实际接收人" /></label>
             <label class="full">{{ draft.kind === 'LOCATION_BIND' ? '仓位核对依据（必填）' : draft.kind === 'CORRECTION' ? '冲销原因（必填）' : '业务依据 / 差异原因 / 备注（选填）' }}<textarea v-model.trim="draft.reason" :required="['CORRECTION', 'LOCATION_BIND'].includes(draft.kind)" maxlength="1000" rows="3" aria-label="业务依据" :placeholder="draft.kind === 'LOCATION_BIND' ? '请填写实物位置的核对依据' : draft.kind === 'CORRECTION' ? '请说明录错或冲销的原因' : '有需要补充的情况再填写'" /></label>
             <label v-if="draft.kind === 'LOCATION_BIND'" class="full"><span><input v-model="draft.confirmed" type="checkbox" required aria-label="已核实实物仓位" /> 已核实实物在所选仓位，本次只补齐仓位身份</span></label>

@@ -1,3 +1,5 @@
+import { pendingFabricImports, pendingFabricMasterSaves } from '../pendingFabricRequests'
+import { reactive } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -10,14 +12,82 @@ const api = vi.hoisted(() => ({ list: vi.fn(), candidates: vi.fn(), save: vi.fn(
 const procurement = vi.hoisted(() => ({ resolveChase: vi.fn() }))
 vi.mock('@/api/fabricMaster', () => ({ fabricMasterApi: api }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: procurement }))
+const session = reactive({ currentUser: { id: 'keeper' }, authorizationVersion: 0 })
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => session }))
 let wrapper: VueWrapper | undefined
 const body = () => new DOMWrapper(document.body)
 const button = (text: string) => body().findAll('button').find(item => item.text() === text)!
 async function router() { const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] }); await router.push('/'); await router.isReady(); return router }
-beforeEach(() => { vi.clearAllMocks(); api.list.mockResolvedValue({ items: [], total: 0, can_manage: true }); api.candidates.mockResolvedValue([{ key: 'C1', kind: 'MATERIAL', code: '001', name: '白色布', revision: 0, status: 'DRAFT', data: { unit: '码' }, source_count: 2, variants: [], conflict: false }]) })
+beforeEach(() => { pendingFabricImports.clear(); pendingFabricMasterSaves.clear(); session.currentUser = { id: 'keeper' }; session.authorizationVersion = 0; vi.clearAllMocks(); api.list.mockResolvedValue({ items: [], total: 0, can_manage: true }); api.candidates.mockResolvedValue([{ key: 'C1', kind: 'MATERIAL', code: '001', name: '白色布', revision: 0, status: 'DRAFT', data: { unit: '码' }, source_count: 2, variants: [], conflict: false }]) })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks() })
 async function openMaster(view = 'items') { wrapper = mount(Master, { props: { view }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises() }
 describe('fabric master data and chase confirmation', () => {
+  it('keeps the zone dialog during routine session refresh but closes it on changed authority', async () => {
+    api.list.mockResolvedValue({ items: [{ id: 'A01', code: 'A01', name: 'A01', kind: 'LOCATION', status: 'ACTIVE', revision: 1, updated_at: '', data: { warehouse: '布料仓' } }], can_manage: true })
+    await openMaster('locations'); await button('设置分料区').trigger('click'); await flushPromises()
+    await body().get('[aria-label="分料区"]').setValue('THREAD')
+    await body().get('[aria-label="选择 布料仓 A01"]').setValue(true)
+    api.list.mockClear()
+    session.currentUser = { id: 'keeper' }; await flushPromises()
+    expect(api.list).not.toHaveBeenCalled()
+    expect(body().get('[aria-label="分料区"]').element).toHaveProperty('value', 'THREAD')
+    expect(body().get('[aria-label="选择 布料仓 A01"]').element).toHaveProperty('checked', true)
+    session.authorizationVersion++; await flushPromises()
+    expect(body().find('[role=dialog]').exists()).toBe(false)
+  })
+  it('permits login recovery and reloads master data after the original in-flight write completes', async () => {
+    const navigation = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/master', component: Master, props: { view: 'partners' } },
+      { path: '/login', name: 'login', component: { template: '<div>login page</div>' } },
+    ] })
+    await navigation.push('/master'); await navigation.isReady()
+    wrapper = mount({ template: '<router-view />' }, { attachTo: document.body, global: { plugins: [navigation] } })
+    await flushPromises(); await button('新增资料').trigger('click')
+    await body().get('[aria-label="供应商编号"]').setValue('SUP1')
+    await body().get('[aria-label="资料名称"]').setValue('保存的供应商')
+    let finish!: (value: unknown) => void
+    api.save.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await body().get('form.fabric-master-form').trigger('submit')
+    await navigation.push('/login'); await flushPromises()
+    expect(navigation.currentRoute.value.name).toBe('login')
+    await navigation.push('/master'); await flushPromises()
+    api.list.mockClear()
+    const saved = { id: 'SUP1', code: 'SUP1', name: '保存的供应商', kind: 'SUPPLIER', status: 'ACTIVE', data: {} }
+    api.list.mockResolvedValueOnce({ items: [saved], can_manage: true })
+    finish(saved); await flushPromises()
+    expect(api.list).toHaveBeenCalledOnce()
+    expect(body().text()).toContain('保存的供应商')
+  })
+  it('clears supplier data and rejects late reads when authorization changes', async () => {
+    let finish!: (value: unknown) => void
+    api.list.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await openMaster('partners')
+    api.list.mockResolvedValue({ items: [], can_manage: false })
+    session.authorizationVersion++; await flushPromises()
+    finish({ items: [{ id: 'S1', kind: 'SUPPLIER', code: 'PRIVATE', name: '旧账号供应商', status: 'ACTIVE', data: {} }], can_manage: true })
+    await flushPromises()
+    expect(body().text()).not.toContain('旧账号供应商')
+    expect(button('新增资料')).toBeUndefined()
+  })
+  it('retains the original unknown save without exposing it to another account', async () => {
+    await openMaster('partners')
+    await button('新增资料').trigger('click')
+    await body().get('[aria-label="供应商编号"]').setValue('SUP1')
+    await body().get('[aria-label="资料名称"]').setValue('原账号供应商')
+    api.save.mockRejectedValueOnce(new Error('连接中断'))
+    await body().get('form.fabric-master-form').trigger('submit'); await flushPromises()
+    const original = api.save.mock.calls[0]![0]
+    await button('关闭').trigger('click'); await flushPromises()
+    expect(body().find('[role=dialog]').exists()).toBe(false)
+    expect(button('核对原保存结果')).toBeDefined()
+    session.currentUser = { id: 'other' }; await flushPromises()
+    expect(body().find('[role=dialog]').exists()).toBe(false)
+    expect(button('核对原保存结果')).toBeUndefined()
+    session.currentUser = { id: 'keeper' }; await flushPromises()
+    api.save.mockResolvedValueOnce({})
+    await button('核对原保存结果').trigger('click'); await flushPromises()
+    expect(api.save.mock.calls[1]![0]).toEqual(original)
+  })
   it('opens an imported candidate without guessing category or saving until explicitly completed', async () => {
     await openMaster()
     expect(api.candidates).toHaveBeenCalledWith('MATERIAL')

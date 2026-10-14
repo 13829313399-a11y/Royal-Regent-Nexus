@@ -1,3 +1,4 @@
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'keeper' }, authorizationVersion: 0 }) }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'

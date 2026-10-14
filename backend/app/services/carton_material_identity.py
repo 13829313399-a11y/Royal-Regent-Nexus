@@ -25,14 +25,17 @@ def dimension_unit(value):
     return "inch" if unit in {"inches", "inch", "in", "英寸"} else "mm" if unit in {"mm", "毫米"} else "cm"
 
 
-def material_conflicts(source, target):
-    """Missing/generic identifiers may be completed; explicit conflicts never match."""
+def material_conflicts(source, target, *, dongkang_delivery=False):
+    """Only Dongkang delivery evidence has the approved 普通箱 -> 外箱 alias."""
     conflicts = []
     for key, label in (("packaging_type", "纸品类型"), ("paper_quality", "纸质")):
         value = str(source.get(key) or "").strip()
         missing = {"", "待复核"}
         if key == "packaging_type" and source.get("packaging_type_explicit") is False:
             value = ""  # Parser defaults are not evidence that the vendor specified a type.
+        if (key == "packaging_type" and dongkang_delivery and value == "普通箱"
+                and str(target.get(key) or "").strip() == "外箱"):
+            continue  # Compare the approved alias without rewriting either source snapshot.
         if value not in missing and text_identity(value) != text_identity(target.get(key)):
             conflicts.append(label)
     source_spec = str(source.get("specification") or "").strip()

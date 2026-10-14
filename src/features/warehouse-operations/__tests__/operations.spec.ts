@@ -135,7 +135,7 @@ describe('warehouse actual operations', () => {
   })
   it.each(['issues', 'movements'])('returns stock from an eligible original issue in %s with locked identity and actual returned quantity', async view => {
     const issue = { id: 'ISS-1', kind: 'ISSUE', sequence: 3, business_date: '2026-09-01', actor_name: '仓管', occurred_at: '', returned_quantity: '0.2',
-      data: { quantity: '2.2', unit: '码', item_code: '00012', item_name: '紫色布', counterparty: '车间二', source_no: 'OUT-1', allocations: [] },
+      data: { material_category: 'FABRIC', quantity: '2.2', unit: '码', item_code: '00012', item_name: '紫色布', counterparty: '车间二', source_no: 'OUT-1', allocations: [] },
     } as WarehouseDocument
     const documents = [issue, { ...issue, id: 'DONE', returned_quantity: '2.2' }, { ...issue, id: 'VOID', reversed: true }, { ...issue, id: 'READONLY', read_only: true }]
     const body = await open('inventory', view, { ...empty(), documents })
@@ -255,6 +255,26 @@ describe('warehouse actual operations', () => {
     const first = JSON.parse(JSON.stringify(api.post.mock.calls[0]![1]))
     expect(body.get('fieldset').attributes('disabled')).toBeDefined()
     expect(body.text()).toContain('用原内容重试')
+    await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
+    expect(api.post.mock.calls[1]![1]).toEqual(first)
+  })
+  it('retries frozen receiving content even after the current location category changes', async () => {
+    api.post.mockRejectedValueOnce(new Error('network disconnected')).mockResolvedValueOnce({ id: 'receipt' })
+    const state = empty()
+    const body = await open('overview', 'pending', state)
+    await wrapper!.findAll('button').find(button => button.text() === '登记实收')!.trigger('click')
+    await body.get('[aria-label="来源单号"]').setValue('DN-ZONE')
+    await body.get('[aria-label="物料产品编码"]').setValue('M1')
+    await body.get('[aria-label="名称规格"]').setValue('布料')
+    await body.get('[aria-label="原单位"]').setValue('码')
+    await body.get('[aria-label="往来单位"]').setValue('供应商')
+    await body.get('[aria-label="本次数量"]').setValue('1')
+    await body.get('[aria-label="目标仓位"]').setValue('一仓／A01')
+    await body.get('[aria-label="缸号批号"]').setValue('LOT')
+    await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
+    const first = JSON.parse(JSON.stringify(api.post.mock.calls[0]![1]))
+    state.locations![0]!.category = 'THREAD'
+    await wrapper!.findAll('button').find(button => button.text() === '刷新')!.trigger('click'); await flushPromises()
     await body.get('form[role="dialog"]').trigger('submit'); await flushPromises()
     expect(api.post.mock.calls[1]![1]).toEqual(first)
   })

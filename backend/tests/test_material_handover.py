@@ -86,6 +86,34 @@ def receipt(line='L1', amount='15', location='fabric-A01'):
     return dict(line_id=line, quantity=amount, location_id=location, lot='LOT-1')
 
 
+def test_scan_receiving_checks_zone_and_confirmed_material_category(client):
+    from test_fabric_location_zones import zone
+    fabric = zone(client, '布料1架', 'FABRIC')
+    thread = zone(client, '配线1区', 'THREAD')
+    _, headers = issuer(client)
+    doc = confirmed(client, headers)
+    route = BASE + '/documents/' + doc['id'] + '/post'
+    failed = client.post(route, json=posting(doc, 0, [receipt(location=thread['id'])]))
+    assert failed.status_code == 422, failed.text
+    assert workspace(client)['stock'] == []
+    created = client.post('/api/fabric-warehouse/master', json=dict(factory_id=FACTORY, request_id=str(uuid4()),
+        kind='MATERIAL', code='01-01-00001', name='测试布料', status='ACTIVE', data={'category':'THREAD','unit':'码'}))
+    assert created.status_code == 200, created.text
+    failed = client.post(route, json=posting(doc, 0, [receipt(location=fabric['id'])]))
+    assert failed.status_code == 422 and '分类' in failed.text
+    assert workspace(client)['stock'] == []
+    master = created.json()
+    corrected = client.post('/api/fabric-warehouse/master', json=dict(factory_id=FACTORY, request_id=str(uuid4()),
+        id=master['id'], expected_revision=master['revision'], kind='MATERIAL', code=master['code'], name=master['name'],
+        status='ACTIVE', data={'category':'FABRIC','unit':'码'}))
+    assert corrected.status_code == 200, corrected.text
+    body = posting(doc, 0, [receipt(location=fabric['id'])])
+    result = client.post(route, json=body)
+    assert result.status_code == 200, result.text
+    assert client.post(route, json=body).json() == result.json()
+    assert workspace(client)['stock'][0]['location_id'] == fabric['id']
+
+
 def test_partial_receipts_replay_overflow_and_immutable_evidence(client):
     _, headers = issuer(client)
     doc = confirmed(client, headers)
@@ -164,6 +192,51 @@ def test_public_link_isolation_revocation_duplicate_and_void(client):
     assert client.get(BASE + '/external/documents/' + doc['id'] + '/qr', headers=headers).status_code == 409
     assert client.post(BASE + '/issuers/' + person['id'] + '/revoke', json={'factory_id': FACTORY, 'expected_revision': 1}).status_code == 200
     assert client.get(BASE + '/external/documents/' + doc['id'], headers=headers).status_code == 401
+
+
+def test_incomplete_supplier_draft_can_be_completed_by_warehouse_without_posting(client):
+    _, headers = issuer(client)
+    doc = upload(client, headers)
+    body = copy.deepcopy(doc['data'])
+    body.update(source_no='', document_date=None)
+    body['lines'][0].update(item_code='', quantity='', unit='')
+    saved = client.put(BASE + '/external/documents/' + doc['id'], headers=headers,
+        json=dict(request_id=str(uuid4()), expected_revision=doc['revision'], data=body))
+    assert saved.status_code == 200, saved.text
+    draft = saved.json()
+    assert draft['status'] == 'DRAFT' and not draft['code']
+    denied = client.post(BASE + '/external/documents/' + doc['id'] + '/confirm', headers=headers,
+        json=dict(request_id=str(uuid4()), expected_revision=draft['revision'], acknowledge_warnings=True))
+    assert denied.status_code == 422, denied.text
+    for message in ('缺少原单号', '缺少单据日期', '第 1 行', '缺少物料编码', '缺少数量', '缺少单位', '交仓库补全'):
+        assert message in denied.json()['detail']
+    assert client.get(BASE + '/external/documents/' + doc['id'] + '/qr', headers=headers).status_code == 409
+    internal = client.get(BASE + '/documents/' + doc['id'], params={'factory_id': FACTORY})
+    assert internal.status_code == 200, internal.text
+    assert internal.json()['revision'] == draft['revision']
+    assert internal.json()['data'] == body
+    other, _ = issuer(client, name='另一家供应商')
+    for changed_party in (dict(kind='DELIVERY', supplier_id=other['supplier_id'], counterparty='另一家供应商'),
+                          dict(kind='ISSUE', supplier_id='', counterparty='车间')):
+        wrong = copy.deepcopy(doc['data']); wrong.update(changed_party)
+        for action in ('save', 'confirm'):
+            request = dict(request_id=str(uuid4()), expected_revision=draft['revision'], data=wrong)
+            if action == 'save':
+                rejected = client.put(BASE + '/documents/' + doc['id'], params={'factory_id': FACTORY}, json=request)
+            else:
+                request['acknowledge_warnings'] = True
+                rejected = client.post(BASE + '/documents/' + doc['id'] + '/actions/confirm', params={'factory_id': FACTORY}, json=request)
+            assert rejected.status_code == 403, rejected.text
+            assert '不能变更制单方或收发用途' in rejected.json()['detail']
+    complete = copy.deepcopy(body)
+    complete.update(source_no='WAREHOUSE-COMPLETED', document_date='2026-07-18')
+    complete['lines'][0].update(item_code='01-01-00001', quantity='40', unit='码')
+    result = client.post(BASE + '/documents/' + doc['id'] + '/actions/confirm', params={'factory_id': FACTORY},
+        json=dict(request_id=str(uuid4()), expected_revision=draft['revision'], acknowledge_warnings=True, data=complete))
+    assert result.status_code == 200, result.text
+    assert result.json()['status'] == 'CONFIRMED' and result.json()['code']
+    assert result.json()['source_sha256'] == doc['source_sha256']
+    assert workspace(client)['stock'] == []
 
 
 def test_confirmation_requires_review_and_fresh_revision(client):

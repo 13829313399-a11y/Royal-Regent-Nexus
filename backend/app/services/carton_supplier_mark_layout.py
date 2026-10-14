@@ -97,7 +97,8 @@ def validate_reference(content, config):
                 rendered.close()
         if not 10 <= width <= 1000 or not 10 <= height <= 1000:
             raise ValueError("dimensions")
-        for region in (config.logo_region, config.stamp_region):
+        for region in (config.logo_region, config.stamp_region, config.front_artwork_region,
+                config.side_artwork_region, config.origin_artwork_region):
             if region and (region.x + region.width > width + .01 or region.y + region.height > height + .01):
                 raise ValueError("region")
         return width, height, len(reader.pages), page.extract_text() or ""

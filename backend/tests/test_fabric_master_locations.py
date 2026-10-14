@@ -42,10 +42,155 @@ def add(db, actor, service, warehouse='布料仓', bins='A01-A03'):
     return request, result
 
 
+def test_categorized_positions_conflicts_and_legacy_request_signatures(setup):
+    db, actor, service = setup
+    rows = [{'warehouse': '原料仓', 'bins': '布料1架、布料12架、布料1区', 'category': 'FABRIC'},
+            {'warehouse': '原料仓', 'bins': '辅料1架、辅料1区', 'category': 'ACCESSORY'},
+            {'warehouse': '原料仓', 'bins': '配线1区、配线5区', 'category': 'THREAD'}]
+    preview = service.preview(db, actor, body(rows))
+    assert not preview['errors'] and preview['new'] == 7
+    request = apply_body(rows, preview['preview_token'])
+    result = service.apply(db, actor, request)
+    assert service.apply(db, actor, request) == result
+    from app.services.warehouse_locations import catalog, resolve
+    places = {row['code']: row for row in catalog(db, 'fabric')}
+    assert places['配线5区']['category'] == 'THREAD'
+    assert resolve(db, 'fabric', places['布料12架']['id'], material_category='FABRIC')['category'] == 'FABRIC'
+    with pytest.raises(HTTPException):
+        resolve(db, 'fabric', places['布料12架']['id'], material_category='THREAD')
+    conflict = service.preview(db, actor, body([{'warehouse': '原料仓', 'bins': '布料1架、布料2架', 'category': 'THREAD'}]))
+    assert conflict['errors']
+    with pytest.raises(HTTPException):
+        service.apply(db, actor, apply_body([{'warehouse': '原料仓', 'bins': '布料1架、布料2架', 'category': 'THREAD'}], conflict['preview_token']))
+    db.rollback()
+    assert len(service.locations(db)) == 7
+    legacy, result = add(db, actor, service)
+    from app.models.fabric_master import FabricMasterChange
+    from app.services.fabric_procurement_parser import digest
+    old_body = legacy.model_dump(mode='json')
+    for row in old_body['rows']:
+        row.pop('category')
+    change = db.query(FabricMasterChange).filter_by(request_id=str(legacy.request_id)).one()
+    assert change.request_hash == digest([actor.id, old_body])
+    assert service.apply(db, actor, legacy) == result
+    # Uncategorized legacy entries remain usable for all raw-material categories.
+    general = next(row for row in catalog(db, 'fabric') if row['code'] == 'A01')
+    assert resolve(db, 'fabric', general['id'], material_category='THREAD')
+
+
 def rename_body(group, new_name='新布料仓'):
     from app.schemas.fabric_master import WarehouseRenameRequest
     return WarehouseRenameRequest(factory_id='huakang-c', request_id=uuid4(), warehouse='布料仓', name=new_name,
                                   expected_group_token=importlib.import_module('app.services.fabric_master').warehouse_tokens(group)['布料仓'])
+
+
+def manage_body(rows, action='DELETE', category=''):
+    from app.schemas.fabric_master import LocationManageRequest
+    return LocationManageRequest(factory_id='huakang-c', request_id=uuid4(), action=action, category=category,
+        selections=[{'id': row.id, 'expected_revision': row.revision} for row in rows])
+
+
+def test_batch_category_updates_only_selected_existing_positions_and_checks_all_revisions(setup):
+    db, actor, service = setup
+    add(db, actor, service)
+    rows = service.locations(db)
+    stale = manage_body(rows, 'CATEGORY', 'THREAD')
+    result = service.manage(db, actor, manage_body(rows[:1], 'CATEGORY', 'FABRIC'))
+    assert result == {'action': 'CATEGORY', 'updated': 1, 'stock_posted': False}
+    with pytest.raises(HTTPException) as error:
+        service.manage(db, actor, stale)
+    assert error.value.status_code == 409
+    db.rollback()
+    assert len(service.locations(db)) == 3
+    assert [json.loads(row.data_json)['category'] for row in service.locations(db)] == ['FABRIC', '', '']
+    for table in ('fabric_receipts', 'fabric_stock_batches', 'fabric_inventory_movements'):
+        assert db.scalar(text(f'SELECT count(*) FROM {table}')) == 0
+
+
+def test_delete_restore_reserves_identity_preserves_status_and_replays_without_redeleting(setup):
+    from app.schemas.fabric_master import SaveMasterRequest
+    from app.services.warehouse_locations import catalog, resolve
+    db, actor, service = setup
+    add(db, actor, service)
+    rows = service.locations(db)
+    rows[1].status = 'INACTIVE'; db.commit()
+    request = manage_body(rows)
+    result = service.manage(db, actor, request)
+    assert result['updated'] == 3
+    assert not service.locations(db) and not catalog(db, 'fabric')
+    listed = service.master.list_records(db, 'LOCATION')
+    assert not listed['items'] and not listed['warehouse_tokens'] and len(listed['deleted_items']) == 3
+    assert len(service.master.history(db, rows[0].id)['items']) == 2
+    assert service.preview(db, actor, body([{'warehouse': '新仓', 'bins': 'a01'}]))['errors']
+    with pytest.raises(HTTPException):
+        resolve(db, 'fabric', rows[0].id)
+    with pytest.raises(HTTPException) as error:
+        service.master.save(db, actor, SaveMasterRequest(factory_id='huakang-c', request_id=uuid4(), kind='LOCATION',
+            id=rows[0].id, expected_revision=rows[0].revision, code=rows[0].code, name=rows[0].name,
+            status='ACTIVE', data={'warehouse': '布料仓'}))
+    assert error.value.status_code == 409
+    db.rollback()
+    assert service.manage(db, actor, manage_body(service.locations(db, include_deleted=True), 'RESTORE'))['updated'] == 3
+    assert [row.status for row in service.locations(db)] == ['ACTIVE', 'INACTIVE', 'ACTIVE']
+    assert service.manage(db, actor, request) == result
+    assert len(service.locations(db)) == 3
+    with pytest.raises(HTTPException) as error:
+        service.manage(db, SimpleNamespace(id='other', display_name='另一个人'), request)
+    assert error.value.status_code == 409
+    db.rollback()
+    with pytest.raises(HTTPException):
+        service.manage(db, actor, request.model_copy(update={'action': 'RESTORE'}))
+
+
+@pytest.mark.parametrize('reference', ['stable-id', 'historical-label', 'legacy-code', 'semi-only'])
+def test_delete_rejects_referenced_history_after_warehouse_rename_and_never_partially_deletes(setup, reference):
+    from app.models.warehouse_operations import WarehouseOperation
+    db, actor, service = setup
+    WarehouseOperation.__table__.create(db.get_bind())
+    add(db, actor, service)
+    rows = service.locations(db)
+    facts = {'stable-id': {'destination': {'location_id': rows[0].id}},
+             'historical-label': {'location': '布料仓／A01'},
+             'legacy-code': {'location': 'a01'},
+             'semi-only': {'location': 'A01'}}[reference]
+    db.add(WarehouseOperation(id=uuid4().hex, factory_id='huakang-c', warehouse='semi' if reference == 'semi-only' else 'fabric',
+        sequence=1, request_id=uuid4().hex, request_hash='hash', kind='OPENING', business_date='2026-10-13',
+        payload_json=json.dumps(facts), actor_id=actor.id, actor_name=actor.display_name, occurred_at='2026-10-13T12:00:00+08:00'))
+    db.commit()
+    service.rename(db, actor, rename_body(service.locations(db)))
+    request = manage_body(service.locations(db))
+    if reference == 'semi-only':
+        assert service.manage(db, actor, request)['updated'] == 3
+        return
+    with pytest.raises(HTTPException) as error:
+        service.manage(db, actor, request)
+    assert error.value.status_code == 409 and 'A01' in error.value.detail
+    db.rollback()
+    assert len(service.locations(db)) == 3
+    assert all(row.revision == 2 for row in service.locations(db))
+
+
+def test_management_write_failure_rolls_back_all_tombstones_and_audit(setup, monkeypatch):
+    db, actor, service = setup
+    add(db, actor, service)
+    request = manage_body(service.locations(db))
+    original_flush = db.flush
+    writes = 0
+    def fail_second(*args, **kwargs):
+        nonlocal writes
+        if db.dirty:
+            writes += 1
+            if writes == 2:
+                raise RuntimeError('simulated management failure')
+        return original_flush(*args, **kwargs)
+    monkeypatch.setattr(db, 'flush', fail_second)
+    with pytest.raises(RuntimeError):
+        service.manage(db, actor, request)
+    db.rollback()
+    monkeypatch.setattr(db, 'flush', original_flush)
+    assert len(service.locations(db)) == 3
+    assert all(row.revision == 1 for row in service.locations(db))
+    assert db.scalar(text('SELECT count(*) FROM fabric_master_changes')) == 3
 
 
 def test_batch_ranges_global_identity_replay_and_unchanged_status(setup):
@@ -241,6 +386,15 @@ def test_location_api_auth_file_flow_and_receipt_snapshot(monkeypatch):
         assert client.post(root+'/locations/rename-warehouse',json=rename).status_code == 200
         historical=client.get(BASE+'/receipts',params={'factory_id':'huakang-c'}).json()['items'][0]
         assert historical['master_references']['locations'][0]['data']['warehouse'] == '布料仓'
+        latest=client.get(root,params={'factory_id':'huakang-c','kind':'LOCATION'}).json()['items']
+        manage={'factory_id':'huakang-c','request_id':str(uuid4()),'action':'DELETE','selections':[{'id':r['id'],'expected_revision':r['revision']} for r in latest]}
+        blocked=client.post(root+'/locations/manage',json=manage)
+        assert blocked.status_code == 409 and 'A01' in blocked.text
+        assert len(client.get(root,params={'factory_id':'huakang-c','kind':'LOCATION'}).json()['items']) == 5
+        unused=next(r for r in latest if r['code'] == 'C01')
+        delete_one={**manage,'request_id':str(uuid4()),'selections':[{'id':unused['id'],'expected_revision':unused['revision']}]}
+        assert client.post(root+'/locations/manage',json=delete_one).json()['updated'] == 1
+        assert len(client.get(root,params={'factory_id':'huakang-c','kind':'LOCATION'}).json()['deleted_items']) == 1
         current=client.get(root,params={'factory_id':'huakang-c','kind':'LOCATION'}).json()['items'][0]
         assert client.post(root,json=master('LOCATION',current['code'],current['name'],id=current['id'],expected_revision=current['revision'],status='INACTIVE',data=current['data'])).status_code == 200
         line=stored(client)['items'][0]
@@ -256,5 +410,7 @@ def test_location_api_auth_file_flow_and_receipt_snapshot(monkeypatch):
         assert client.post(root+'/locations/preview',json=body).status_code == 403
         assert client.post(root+'/locations/apply',json=submitted).status_code == 403
         assert client.post(root+'/locations/rename-warehouse',json=rename).status_code == 403
+        assert client.post(root+'/locations/manage',json=delete_one).status_code == 403
+        assert client.post(root+'/locations/manage',json={**delete_one,'factory_id':'huakang-d'}).status_code == 422
         assert client.post(root+'/locations/file-preview',data={'factory_id':'huakang-c'},files={'file':('locations.xlsx',b'bad')}).status_code == 403
         assert client.post(root+'/locations/preview',json={**body,'factory_id':'huakang-d'}).status_code == 422
