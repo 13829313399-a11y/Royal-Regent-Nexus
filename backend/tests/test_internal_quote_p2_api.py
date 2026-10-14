@@ -847,6 +847,19 @@ def test_whole_product_save_keeps_every_section_unchanged_when_one_revision_conf
         )
         assert created.status_code == 201, created.text
         quote_id = created.json()["id"]
+        before = client.get(f"/api/internal-quotes/{quote_id}").json()["sections"]
+        db_module = importlib.import_module("app.db")
+        section_model = importlib.import_module("app.models.internal_quote").InternalQuoteSection
+
+        def persisted_sections():
+            with db_module.SessionLocal() as db:
+                return [dict(row) for row in db.execute(
+                    section_model.__table__.select()
+                    .where(section_model.quote_id == quote_id)
+                    .order_by(section_model.department)
+                ).mappings()]
+
+        persisted_before = persisted_sections()
         failed = client.put(
             f"/api/internal-quotes/{quote_id}/sections/save-all",
             json={
@@ -862,12 +875,9 @@ def test_whole_product_save_keeps_every_section_unchanged_when_one_revision_conf
             },
         )
         assert failed.status_code == 409, failed.text
+        assert persisted_sections() == persisted_before
         detail = client.get(f"/api/internal-quotes/{quote_id}").json()
-        by_code = {row["department"]: row for row in detail["sections"]}
-        assert by_code["engineering"]["revision"] == 1
-        assert by_code["engineering"]["payload"] == {}
-        assert by_code["assembly"]["revision"] == 1
-        assert by_code["assembly"]["payload"] == {}
+        assert detail["sections"] == before
 
 
 def test_whole_product_save_recalculates_unchanged_molding_after_engineering_dependency_changes(monkeypatch):
