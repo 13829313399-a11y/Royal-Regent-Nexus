@@ -11,10 +11,11 @@ from app.services.fabric_procurement_parser import digest, dump
 
 def catalog(db, warehouse):
     if warehouse == 'fabric':
-        from app.services.fabric_master import records
+        from app.services.fabric_master import records, is_deleted
         return [dict(id=r.id, warehouse=json.loads(r.data_json).get('warehouse', ''), code=r.code,
-                     label=f"{json.loads(r.data_json).get('warehouse', '')}／{r.code}", status=r.status, revision=r.revision)
-                for r in records(db) if r.kind == 'LOCATION']
+                     label=f"{json.loads(r.data_json).get('warehouse', '')}／{r.code}", status=r.status, revision=r.revision,
+                     category=json.loads(r.data_json).get('category', ''))
+                for r in records(db) if r.kind == 'LOCATION' and not is_deleted(r)]
     current = {}
     for row in db.scalars(select(WarehouseOperation).where(WarehouseOperation.factory_id == procurement.FACTORY,
             WarehouseOperation.warehouse == warehouse, WarehouseOperation.kind == 'MASTER_LOCATION').order_by(WarehouseOperation.sequence)):
@@ -23,12 +24,19 @@ def catalog(db, warehouse):
     return list(current.values())
 
 
-def resolve(db, warehouse, identifier, *, inbound=True):
+def validate_category(location, material_category):
+    if location.get('category') and location['category'] != material_category:
+        raise HTTPException(422, '所选仓位不属于该原料分区，请重新选择对应架位或区域')
+
+
+def resolve(db, warehouse, identifier, *, inbound=True, material_category=None):
     location = next((r for r in catalog(db, warehouse) if r['id'] == identifier), None)
     if not location:
         raise HTTPException(422, '请先在本仓基础资料建立仓库和仓位，再选择有效仓位；不能填写未建档仓位')
     if inbound and location['status'] != 'ACTIVE':
         raise HTTPException(422, '目标仓位未启用，不能入库或调入')
+    if inbound and warehouse == 'fabric' and material_category is not None:
+        validate_category(location, material_category)
     return location
 
 

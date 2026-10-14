@@ -1,7 +1,7 @@
 import { http } from '@/lib/http'
 
 export type WarehouseDomain = 'fabric' | 'semi'
-export type WarehouseOperationKind = 'RECEIPT' | 'REQUEST' | 'ISSUE' | 'RETURN' | 'TRANSFER' | 'QUALITY' | 'CORRECTION' | 'TASK' | 'PROCESS_SEND' | 'PROCESS_RETURN' | 'PACK_SEND' | 'PACK_RECEIVE' | 'LOCATION_BIND'
+export type WarehouseOperationKind = 'RECEIPT' | 'REQUEST' | 'ISSUE' | 'RETURN' | 'TRANSFER' | 'QUALITY' | 'CORRECTION' | 'TASK' | 'PROCESS_SEND' | 'PROCESS_RETURN' | 'PACK_SEND' | 'PACK_RECEIVE' | 'LOCATION_BIND' | 'OPENING' | 'STOCKTAKE'
 export type WarehouseQuality = 'PENDING_INSPECTION' | 'QUALIFIED' | 'REJECTED' | 'HOLD'
 export interface WarehouseDocumentInput {
   factory_id: 'huakang-c'; request_id: string; expected_revision: number; kind: WarehouseOperationKind; business_date: string
@@ -14,11 +14,11 @@ export interface WarehouseDocumentInput {
   allocations: { production_no: string; quantity: string }[]
   reversed_kind?: WarehouseOperationKind
 }
-export interface WarehouseLocation { id: string; warehouse: string; code: string; label: string; status: string; revision: number }
+export interface WarehouseLocation { category?: string; id: string; warehouse: string; code: string; label: string; status: string; revision: number }
 export interface WarehouseBulkIssue { factory_id: 'huakang-c'; request_id: string; expected_revision: number; business_date: string; counterparty: string; reason: string; items: { batch_id: string; quantity: string; counterparty: string }[] }
 export interface WarehouseBatch {
   location_id?: string; location_verified?: boolean; location_status?: string; location_label?: string; warehouse_name?: string
-  inbound_quantity?: string; outbound_quantity?: string; transfer_quantity?: string
+  inbound_quantity?: string; outbound_quantity?: string; transfer_quantity?: string; opening_quantity?: string; adjustment_quantity?: string
   id: string; item_code: string; item_name: string; unit: string; process_state: string; material_category: string
   location: string; lot: string; roll_no: string; quantity: string; available_quantity: string; quality_status: WarehouseQuality
   source_no: string; source_document: string; received_on: string; counterparty: string; production_no: string
@@ -36,7 +36,7 @@ export interface WarehouseOperationsWorkspace {
   permissions: Record<'read' | 'operate' | 'quality' | 'correct', boolean> & { master?: boolean }
 }
 export type FabricMonthlyView = 'monthly' | 'reconciliation' | 'recipients'
-export interface FabricMonthlyQuery { month: string; direction: '' | 'IN' | 'OUT'; channel: '' | 'MANUAL' | 'SCAN'; party_key: string }
+export interface FabricMonthlyQuery { month: string; direction: '' | 'IN' | 'OUT'; channel: '' | 'MANUAL' | 'SCAN'; party_key: string; search?: string; unit?: string; date_order?: 'ASC' | 'DESC' }
 export interface FabricMonthlyQuantities {
   received: string; receipt_reversed: string; net_received: string; issued: string; issue_reversed: string
   returned: string; net_issued: string; net_outbound: string; stock_change: string
@@ -51,6 +51,7 @@ export interface FabricMonthlyDetail {
   amount?: string
 }
 export interface FabricMonthlyReport extends FabricMonthlyQuery {
+  units?: string[]
   parties: { key: string; name: string; direction: 'IN' | 'OUT' }[]
   summary: (FabricMonthlyQuantities & { direction: 'IN' | 'OUT'; party_key: string; party_name: string; item_code: string; item_name: string; unit: string; document_count: number })[]
   totals: (FabricMonthlyQuantities & { unit: string })[]; details: FabricMonthlyDetail[]

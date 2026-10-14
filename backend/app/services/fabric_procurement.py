@@ -313,7 +313,7 @@ def apply(db, parsed, actor, filename, request_id, token, *, confirmed, acknowle
     return result
 
 
-def list_lines(db, status="PENDING", search="", offset=0, limit=50, view=None, filters=None, sort="UPDATED"):
+def list_lines(db, status="PENDING", search="", offset=0, limit=50, view=None, filters=None, sort="UPDATED", group_by=""):
     ensure_schema(db)
     where = [FabricProcurementLine.factory_id == FACTORY, FabricProcurementLine.status != "WITHDRAWN"]
     if status != "ALL" and not view:
@@ -362,6 +362,9 @@ def list_lines(db, status="PENDING", search="", offset=0, limit=50, view=None, f
                 return False
         return True
     items = [item for item in items if matches(item)]
+    from app.services.fabric_procurement_groups import group_key, material_groups
+    if filters.get("group_key"):
+        items = [item for item in items if group_key(item) == filters["group_key"]]
     summary = {key: sum(item["tracking"][key] for item in items) for key in ("outstanding", "not_arrived", "partial", "arrival_review", "changed", "overdue", "due_today", "awaiting_date", "quantity_review")}
     if view:
         items = [item for item in items if item["tracking"][view.lower()]]
@@ -380,6 +383,10 @@ def list_lines(db, status="PENDING", search="", offset=0, limit=50, view=None, f
         unknown = [item for item in items if item["warehouse_outstanding_quantity"] is None]
         known.sort(key=lambda item: number(item["warehouse_outstanding_quantity"]), reverse=sort == "QUANTITY_DESC")
         items = known + unknown
+    if group_by == "MATERIAL":
+        groups = material_groups(items, sort)
+        return {"total": len(groups), "line_total": len(items), "offset": offset, "limit": limit,
+                "summary": summary, "options": options, "groups": groups[offset:offset + limit]}
     return {"total": len(items), "offset": offset, "limit": limit, "summary": summary, "options": options, "items": items[offset:offset + limit]}
 
 
@@ -395,7 +402,7 @@ def line_detail(db, line_id):
     resolutions = list(db.scalars(select(FabricChaseResolution).where(FabricChaseResolution.factory_id == FACTORY, FabricChaseResolution.source_line_id == line_id).order_by(FabricChaseResolution.revision.desc()))) if ready(db) else []
     return {"id": line.id, "active": line.status != "WITHDRAWN", "facts": json.loads(line.payload_json), "revision": line.revision, **line_tracking(line, tracking_context(db)),
             **material_info(json.loads(line.payload_json), records(db)),
-            "available_locations": [{"id": r.id, "label": f"{json.loads(r.data_json).get('warehouse', '')}／{r.code}", "code": r.code, "name": r.name, "warehouse": json.loads(r.data_json).get("warehouse", "")} for r in records(db) if r.kind == "LOCATION" and r.status == "ACTIVE"],
+            "available_locations": [{"id": r.id, "label": f"{json.loads(r.data_json).get('warehouse', '')}／{r.code}", "code": r.code, "name": r.name, "warehouse": json.loads(r.data_json).get("warehouse", ""), "category": json.loads(r.data_json).get("category", "")} for r in records(db) if r.kind == "LOCATION" and r.status == "ACTIVE"],
             "chase_resolution_history": [{"id": r.id, "revision": r.revision, "starting_quantity": r.starting_quantity, "evidence": r.evidence, "cutoff": json.loads(r.cutoff_json), "actor_name": r.actor_name, "occurred_at": r.occurred_at} for r in resolutions],
             "evidence": [{"id": evidence.id, "withdrawal": json.loads(batch.result_json).get("withdrawal"), "source_name": batch.source_name, "sheet": evidence.sheet, "row_number": evidence.row_number,
                           "actor_name": batch.actor_name, "occurred_at": batch.occurred_at,

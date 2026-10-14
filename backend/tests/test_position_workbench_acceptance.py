@@ -80,7 +80,7 @@ def test_position_downgrade_refuses_history_and_write_gate_preserves_rows(client
     assert rejected.status_code == 403
     dbm = importlib.import_module('app.db')
     reviews = importlib.import_module('app.models.position_review')
-    path = Path(dbm.__file__).parents[1] / 'alembic/versions/20261013_0160_position_reviews.py'
+    path = Path(dbm.__file__).parents[1] / 'alembic/versions/20261014_0161_position_reviews.py'
     spec = importlib.util.spec_from_file_location('position_migration_qa', path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)

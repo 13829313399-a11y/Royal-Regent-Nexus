@@ -19,7 +19,7 @@ def schema_available(db):
 
 def require_schema(db):
     if not schema_available(db):
-        fail("POSITION_SCHEMA_REQUIRED", "岗位工作台需要先完成 20261013_0160 结构迁移", 503)
+        fail("POSITION_SCHEMA_REQUIRED", "岗位工作台需要先完成 20261014_0161 结构迁移", 503)
 
 
 def writes_enabled():

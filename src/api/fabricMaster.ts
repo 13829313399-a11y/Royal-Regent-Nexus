@@ -11,12 +11,14 @@ export interface MasterFields {
 export interface MasterRecord { id: string; kind: MasterKind; code: string; name: string; status: MasterStatus; revision: number; data: MasterFields; updated_at: string }
 export interface MasterCandidate extends Omit<MasterRecord, 'id' | 'updated_at'> { key: string; variants: { name: string; unit: string }[]; conflict: boolean; source_line_ids: string[]; source_count: number }
 export interface SaveMasterRequest { factory_id: 'huakang-c'; request_id: string; id: string | null; expected_revision: number; kind: MasterKind; code: string; name: string; status: MasterStatus; data: MasterFields }
-export interface LocationInput { warehouse: string; bins: string }
-export interface LocationPreview { items: { warehouse: string; code: string; action: 'NEW' | 'UNCHANGED'; status: MasterStatus }[]; errors: string[]; new: number; unchanged: number; preview_token: string; stock_posted: false; rows?: LocationInput[] }
+export interface LocationInput { warehouse: string; bins: string; category?: MaterialCategory | '' }
+export interface LocationPreview { items: { warehouse: string; code: string; category?: MaterialCategory | ''; action: 'NEW' | 'UNCHANGED'; status: MasterStatus }[]; errors: string[]; new: number; unchanged: number; preview_token: string; stock_posted: false; rows?: LocationInput[] }
 export interface LocationApply { factory_id: 'huakang-c'; request_id: string; rows: LocationInput[]; preview_token: string }
 export interface WarehouseRename { factory_id: 'huakang-c'; request_id: string; warehouse: string; name: string; expected_group_token: string }
+export interface LocationManage { factory_id: 'huakang-c'; request_id: string; action: 'CATEGORY' | 'DELETE' | 'RESTORE'; selections: { id: string; expected_revision: number }[]; category: MaterialCategory | '' }
 export const fabricMasterApi = {
-  async list(kind: MasterKind, search = '', status = 'ALL', sort = 'CODE') { return (await http.get<{ items: MasterRecord[]; total: number; can_manage: boolean; warehouse_tokens: Record<string, string> }>('/fabric-warehouse/master', { params: { factory_id: 'huakang-c', kind, search, status, sort } })).data },
+  async list(kind: MasterKind, search = '', status = 'ALL', sort = 'CODE') { return (await http.get<{ items: MasterRecord[]; deleted_items?: MasterRecord[]; total: number; can_manage: boolean; warehouse_tokens: Record<string, string> }>('/fabric-warehouse/master', { params: { factory_id: 'huakang-c', kind, search, status, sort } })).data },
+  async manageLocations(body: LocationManage) { return (await http.post<{ action: LocationManage['action']; updated: number; stock_posted: false }>('/fabric-warehouse/master/locations/manage', body)).data },
   async candidates(kind: MasterKind) { return (await http.get<{ items: MasterCandidate[] }>('/fabric-warehouse/master/candidates', { params: { factory_id: 'huakang-c', kind } })).data.items },
   async save(payload: SaveMasterRequest) { return (await http.post<MasterRecord>('/fabric-warehouse/master', payload)).data },
   async history(id: string) { return (await http.get<{ items: { before: Partial<MasterRecord>; after: MasterRecord; actor_name: string; occurred_at: string }[] }>(`/fabric-warehouse/master/${encodeURIComponent(id)}/history`, { params: { factory_id: 'huakang-c' } })).data.items },

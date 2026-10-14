@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import DashboardView from '@/views/DashboardView.vue'
 import {
+  hasRoutePermissions,
   shouldEnforcePagePermissions,
   shouldRedirectForbiddenPageToHome,
 } from '@/config/pageAccessPolicy'
@@ -275,6 +276,19 @@ const routes: RouteRecordRaw[] = [
       fullPage: true,
       requiresAuth: true,
       permissions: ['customer_order:read'],
+      enforcePermissions: true,
+    },
+  },
+  {
+    path: '/modules/sales-business/indonesia-material-shipment',
+    name: 'indonesia-material-shipment',
+    component: () => import('@/views/IndonesiaMaterialsView.vue'),
+    meta: {
+      title: '送印尼物料',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['indonesia_material:read'],
+      permissionDepartments: ['sales-business', 'pmc-warehouse'],
       enforcePermissions: true,
     },
   },
@@ -645,15 +659,7 @@ export async function refreshAndRevalidateAuthorization(
     currentRoute.name !== 'forbidden'
     && shouldEnforcePagePermissions(currentRoute.meta)
     && permissions.length
-    && !authStore.canAny(
-      permissions,
-      typeof currentRoute.meta.permissionFactoryId === 'string'
-        ? currentRoute.meta.permissionFactoryId
-        : undefined,
-      typeof currentRoute.meta.permissionDepartment === 'string'
-        ? currentRoute.meta.permissionDepartment
-        : undefined,
-    )
+    && !hasRoutePermissions(currentRoute.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department))
   ) {
     await activeRouter.replace({ name: 'forbidden' })
     return 'forbidden'
@@ -789,15 +795,7 @@ router.beforeEach(async (to, from) => {
   if (
     shouldEnforcePagePermissions(to.meta)
     && permissions.length
-    && !authStore.canAny(
-      permissions,
-      typeof to.meta.permissionFactoryId === 'string'
-        ? to.meta.permissionFactoryId
-        : undefined,
-      typeof to.meta.permissionDepartment === 'string'
-        ? to.meta.permissionDepartment
-        : undefined,
-    )
+    && !hasRoutePermissions(to.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department))
   ) {
     return {
       name: 'forbidden',

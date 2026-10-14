@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sewingUsesQuotedPrice } from '@/lib/internalQuoteSectionPayload'
 import { buzzBeeTemplateProfiles } from '@/lib/customerPriceConverters/buzzbeeTemplate'
 import { Copy, Eye, Plus, Trash2 } from '@lucide/vue'
 import { computed, ref, watchEffect } from 'vue'
@@ -1131,14 +1132,14 @@ function addBuzzBeeColorBoxTier() {
         </div>
       </section>
       <section v-else :id="blockDomId('sewing')" class="payload-block" data-form-block>
-        <header><div><strong>车缝部分</strong><span>港币单价直接计算；人民币单价按行汇率换算。价钱 HKD = 用量 × 港币单价 × 码点。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('sewing')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('sewing')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addSewingGroup"><Plus />新增产品组</button></div></header>
+        <header><div><strong>车缝部分</strong><span>价钱 = 用量 × 港币单价 × 码点 × 额外倍率；人民币按行汇率换算。额外倍率逐行可改，留空为 1。待补行暂用原价，补齐用量、单价后重算。</span></div><div class="block-header-actions"><button v-if="importSourceAttachment('sewing')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('sewing')"><Eye />预览附件</button><button type="button" :disabled="disabled" @click="addSewingGroup"><Plus />新增产品组</button></div></header>
         <article v-for="(group,index) in visibleSewingGroups" :key="index" class="nested-card sewing-card">
           <div class="nested-head"><strong>产品组 {{ index + 1 }}</strong><button type="button" class="icon" :disabled="disabled" @click="removeItem(sewing.groups,group)"><Trash2 /></button></div>
           <div class="inline-fields sewing-group-fields"><label><span>产品</span><input v-model="group.name" :disabled="disabled" placeholder="例如：6寸小蜥蜴 / 盾牌" aria-label="车缝产品名称"></label><label><span>类型</span><select v-model="group.category" :disabled="disabled" aria-label="车缝产品类型"><option value="clothes">车衣</option><option v-if="group.category === 'hair'" value="hair">车发（历史数据，请改用车发部）</option></select></label></div>
           <div class="subhead"><span>车缝物料明细</span><button type="button" :disabled="disabled" @click="addSewingMaterial(group)"><Plus />增加行</button></div>
           <div class="payload-table-scroll">
             <table class="sewingTable">
-              <thead><tr><th>#</th><th>物料名称</th><th>裁片部位</th><th>工艺</th><th>裁片数</th><th>供应商</th><th>布料 MOQ/Y</th><th>低于 MOQ/每色费用 RMB</th><th>用量/码</th><th>单价（原币种）</th><th>汇率</th><th>成本 HKD（自动）</th><th>码点</th><th>价钱 HKD（自动）</th><th>备注</th><th /></tr></thead>
+              <thead><tr><th>#</th><th>物料名称</th><th>裁片部位</th><th>工艺</th><th>裁片数</th><th>供应商</th><th>布料 MOQ/Y</th><th>低于 MOQ/每色费用 RMB</th><th>用量/码</th><th>单价（原币种）</th><th>汇率</th><th>成本 HKD（自动）</th><th>码点</th><th>额外倍率</th><th>价钱 HKD</th><th>备注</th><th /></tr></thead>
               <tbody>
                 <tr v-for="(row,rowIndex) in group.materials" :key="rowIndex">
                   <td class="row-number">{{ rowIndex + 1 }}</td>
@@ -1154,13 +1155,14 @@ function addBuzzBeeColorBoxTier() {
                   <td><input v-model.number="row.exchange_rate" :disabled="disabled" type="number" min="0.0001" step="0.0001" :placeholder="String(props.rmbHkdRate || '')" aria-label="车缝汇率 RMB 转 HKD"></td>
                   <td class="calculated-cell">{{ calculated(calculateSewingBasePriceHkd(row, props.rmbHkdRate)) }}</td>
                   <td><input v-model.number="row.markup" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="车缝码点"></td>
-                  <td class="calculated-cell">{{ calculated(calculateSewingRowTotalHkd(row, props.rmbHkdRate)) }}</td>
+                  <td><input v-model.number="row.extra_multiplier" :disabled="disabled" type="number" min="0.0001" step="0.01" placeholder="1" aria-label="车缝额外倍率"></td>
+                  <td class="calculated-cell">{{ calculated(calculateSewingRowTotalHkd(row, props.rmbHkdRate)) }}<small v-if="sewingUsesQuotedPrice(row)" class="legacy-labor">待补用量、单价；已按原价计入</small></td>
                   <td><input v-model="row.remark" :disabled="disabled" aria-label="车缝备注"></td>
                   <td><button type="button" class="icon" :disabled="disabled" @click="remove(group.materials,rowIndex)"><Trash2 /></button></td>
                 </tr>
-                <tr v-if="!group.materials.length"><td colspan="16" class="empty">暂无车缝明细，可增加行或从车缝报价单预览导入</td></tr>
+                <tr v-if="!group.materials.length"><td colspan="17" class="empty">暂无车缝明细，可增加行或从车缝报价单预览导入</td></tr>
               </tbody>
-              <tfoot v-if="group.materials.length"><tr><td colspan="13">本组小计</td><td>HKD {{ calculated(calculateSewingGroupTotalHkd(group, props.rmbHkdRate)) }}</td><td colspan="2" /></tr></tfoot>
+              <tfoot v-if="group.materials.length"><tr><td colspan="14">本组小计</td><td>HKD {{ calculated(calculateSewingGroupTotalHkd(group, props.rmbHkdRate)) }}</td><td colspan="2" /></tr></tfoot>
             </table>
           </div>
           <div class="sewing-group-status"><span>本组小计：<b>{{ calculated(calculateSewingGroupTotalHkd(group, props.rmbHkdRate)) }}</b> HKD</span><span v-if="sewingEmbroideryCount(group)" class="embroidery-badge">含电绣 {{ sewingEmbroideryCount(group) }} 行</span><span v-if="group.labor_rmb > 0 && !sewingGroupHasLaborLine(group)" class="legacy-labor">已计入历史组人工 RMB {{ calculated(group.labor_rmb) }}</span></div>

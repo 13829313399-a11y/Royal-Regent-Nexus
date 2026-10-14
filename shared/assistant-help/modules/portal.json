@@ -40,7 +40,7 @@
       {
         "path": "src/config/pageAccessPolicy.ts",
         "symbol": "allowAuthenticatedReadOnlyAccess",
-        "sha256": "a0f7da167ac37f8fd2bb7b16620acee935763c1bee0937681b50bb9d493bf54f"
+        "sha256": "24cd58e566310728e3fc328e409352041265d9a91fa04d291090c513e9a31ec1"
       },
       {
         "path": "src/views/ModuleCenterView.vue",
@@ -50,12 +50,12 @@
       {
         "path": "src/composables/useVisibleModules.ts",
         "symbol": "detailPage",
-        "sha256": "2581182fd554f284143d97daf303be3a864e1d464c42e168f01739415a7062b2"
+        "sha256": "6eef57edafd3a13f9831737537a9296167d3019794b70a2af3c2d66fe291be7e"
       },
       {
         "path": "src/features/warehouse-operations/navigation.ts",
         "symbol": "WAREHOUSE_FACTORY",
-        "sha256": "e82f341455706829d0f11a7b3b3a76859de5ca0b03ebe9a3917bdceaf02355a5"
+        "sha256": "5bf1691420c51f4912de47c28733995fc3d73d82ca241277fff98bdc9bda62f3"
       }
     ],
     "knowledge_version": "2026.10.12-v2",

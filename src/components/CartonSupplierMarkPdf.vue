@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { cartonSupplierPortalApi, type SupplierMarkAsset, type SupplierMarkPdfResult, type SupplierMarkUploadOrder, type SupplierMarkLayout } from '@/api/cartonSupplierPortal'
+import { cartonSupplierPortalApi, type SupplierMarkAsset, type SupplierMarkPdfResult, type SupplierMarkUploadOrder, type SupplierMarkLayout, type MarkPdfSupplements } from '@/api/cartonSupplierPortal'
 import CartonSupplierMarkLayout from './CartonSupplierMarkLayout.vue'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
@@ -14,6 +14,13 @@ const factory = ref(''), orderId = ref(''), file = ref<File | null>(null), store
 const orders = ref<SupplierMarkUploadOrder[]>([]), result = ref<SupplierMarkPdfResult | null>(null)
 const busy = ref(false), loading = ref(false), error = ref(''), previewUrl = ref('')
 const layout = ref<SupplierMarkLayout | null>(null), layoutLoading = ref(false), editingLayout = ref(false)
+const supplements = ref<MarkPdfSupplements>({})
+const sourceItem = ref('')
+const supplementFields = [
+  { key: 'quantity', title: '每箱数量', placeholder: '如 12 PCS' }, { key: 'carton_total', title: '总箱数', placeholder: '如 42' },
+  { key: 'dimensions', title: '长宽高（cm）', placeholder: '如 56.5 x 31.4 x 63.5 CM' },
+  { key: 'net_weight', title: '每箱净重（kg）', placeholder: '如 5.04 KGS' }, { key: 'gross_weight', title: '每箱毛重（kg）', placeholder: '如 5.93 KGS' },
+] as const
 const input = ref<HTMLInputElement | null>(null)
 const canWrite = computed(() => auth.can('carton_supplier:read', '*', '*') && auth.can('carton_supplier:edit', factory.value || '*', '*'))
 const choices = computed(() => stored.value ? orders.value.filter(order => stored.value!.orders.some(link => link.id === order.id && link.issue_id === order.issue_id)) : orders.value)
@@ -27,6 +34,8 @@ async function reset() {
   controller.abort(); controller = new AbortController(); clearPreview()
   busy.value = false; loading.value = false; error.value = ''; result.value = null; orders.value = []; orderId.value = ''; file.value = null
   layoutGeneration++; layout.value = null; layoutLoading.value = false; editingLayout.value = false
+  supplements.value = {}
+  sourceItem.value = ''
   stored.value = props.source && props.source.factory_id === factory.value && props.factoryIds.includes(factory.value) ? props.source : null
   if (!factory.value || !props.factoryIds.includes(factory.value) || !canWrite.value) { stored.value = null; return }
   loading.value = true
@@ -45,6 +54,8 @@ function chooseFiles(files: File[]) {
     error.value = '请选择一个 .xls / .xlsx 文件，最多 20 MB。'; return
   }
   file.value = files[0]!; stored.value = null; result.value = null; error.value = ''; clearPreview()
+  supplements.value = {}
+  sourceItem.value = ''
   if (orders.value.length === 1) orderId.value = orders.value[0]!.id
   if (input.value) input.value.value = ''
 }
@@ -61,8 +72,11 @@ async function generate() {
       stored.value = { ...outcome.asset, factory_id: target }; file.value = null; emit('saved')
     }
     const original = stored.value!
+    const filled = Object.fromEntries(Object.entries(supplements.value).filter(([, value]) => value?.trim()).map(([key, value]) => [key, value!.trim()]))
     const converted = await cartonSupplierPortalApi.generateMarkPdf({ factory_id: target, order_id: order.id,
-      issue_id: order.issue_id, excel_asset_id: original.id, expected_revision: original.revision, layout_id: layout.value.id }, controller.signal)
+      issue_id: order.issue_id, excel_asset_id: original.id, expected_revision: original.revision, layout_id: layout.value.id,
+      ...(Object.keys(filled).length ? { supplements: filled } : {}),
+      ...(sourceItem.value.trim() ? { source_item: sourceItem.value.trim() } : {}) }, controller.signal)
     if (token !== generation) return
     result.value = converted; emit('saved')
     await showPreview()
@@ -97,6 +111,8 @@ watch([factory, canWrite], () => void reset())
 async function loadLayout() {
   const token = ++layoutGeneration, context = generation, order = selected.value
   layout.value = null; editingLayout.value = false; layoutLoading.value = false; result.value = null; clearPreview()
+  supplements.value = {}
+  sourceItem.value = ''
   if (!order || !canWrite.value) return
   layoutLoading.value = true
   try {
@@ -106,7 +122,9 @@ async function loadLayout() {
   } catch (cause) { if (token === layoutGeneration && context === generation) error.value = getApiErrorMessage(cause) }
   finally { if (token === layoutGeneration && context === generation) layoutLoading.value = false }
 }
-function layoutSaved(saved: SupplierMarkLayout) { layout.value = saved; editingLayout.value = false; result.value = null; clearPreview() }
+function layoutSaved(saved: SupplierMarkLayout) { layout.value = saved; supplements.value = {}; sourceItem.value = ''; editingLayout.value = false; result.value = null; clearPreview() }
+watch(supplements, () => { result.value = null; clearPreview() }, { deep: true })
+watch(sourceItem, () => { result.value = null; clearPreview() })
 watch(() => selected.value ? `${selected.value.id}:${selected.value.issue_id}` : '', () => void loadLayout())
 onBeforeUnmount(() => { generation++; controller.abort(); clearPreview() })
 </script>
@@ -126,6 +144,12 @@ onBeforeUnmount(() => { generation++; controller.abort(); clearPreview() })
       <button type="button" :disabled="busy || layoutLoading || !canWrite" class="rounded border px-3 py-1 disabled:opacity-50" @click="editingLayout = !editingLayout">{{ layout ? '调整客户模板' : '建立客户模板' }}</button>
     </div>
     <CartonSupplierMarkLayout v-if="editingLayout && selected && canWrite" :key="`${factory}:${selected.id}:${layout?.id || 'new'}`" :factory="factory" :order="selected" :current="layout" @saved="layoutSaved" @close="editingLayout = false"/>
+    <details v-if="layout?.config?.series === 'zuru'" class="mt-3 rounded-lg border p-3 text-sm">
+      <summary class="cursor-pointer font-semibold">本单缺少的内容（需要时补齐）</summary>
+      <p class="mt-2 text-xs text-slate-500">先读取 Excel；缺失时取采购单中唯一外箱明细。仍缺少时可按本单确认资料填写，补齐内容不会覆盖原稿已有值，也不会成为客户模板的固定内容。</p>
+      <div class="mt-3 grid gap-3 sm:grid-cols-2"><label v-for="field in supplementFields" :key="field.key">{{ field.title }}<input v-model="supplements[field.key]" :disabled="busy" :placeholder="field.placeholder" maxlength="100" class="mt-1 w-full rounded border p-2"></label></div>
+      <label class="mt-3 block">Excel 箱唛货号（与订单不同才填写）<input v-model="sourceItem" :disabled="busy" placeholder="如 77794UQ1；留空按订单货号匹配" maxlength="128" class="mt-1 w-full rounded border p-2"></label>
+    </details>
     <div class="mt-4 rounded-lg border-2 border-dashed border-teal-200 p-4" @dragover.prevent @drop.prevent="chooseFiles(Array.from($event.dataTransfer?.files ?? []))">
       <input ref="input" type="file" accept=".xls,.xlsx" class="sr-only" aria-label="选择生成 PDF 的 Excel" :disabled="busy || !canWrite" @change="chooseFiles(Array.from(($event.target as HTMLInputElement).files ?? []))">
       <div class="flex flex-wrap gap-3"><button type="button" :disabled="busy || !canWrite" class="rounded-lg border px-4 py-2 disabled:opacity-50" @click="input?.click()">上传 Excel</button><button type="button" :disabled="busy" class="rounded-lg border px-4 py-2" @click="emit('choose')">从资料库选择 Excel</button><button type="button" :disabled="busy || loading || layoutLoading || editingLayout || !layout || !canWrite || !selected || (!file && !stored)" class="rounded-lg bg-teal-700 px-4 py-2 font-semibold text-white disabled:opacity-50" @click="generate">{{ busy ? '正在生成 PDF…' : '生成 PDF' }}</button></div>
@@ -137,7 +161,7 @@ onBeforeUnmount(() => { generation++; controller.abort(); clearPreview() })
     <div v-if="result" class="mt-5 space-y-3">
       <p role="status" class="rounded-lg bg-teal-50 p-3 text-sm text-teal-900">{{ result.asset.file_name }} · {{ result.page_count }} 页 · {{ result.layout_name }} V{{ result.layout_version }} · 已保存到资料库，待核对 / 审核。</p>
       <ul v-if="result.warnings.length" class="list-inside list-disc rounded-lg bg-amber-50 p-3 text-sm text-amber-900"><li v-for="warning in result.warnings" :key="warning">{{ warning }}</li></ul>
-      <p class="text-xs text-slate-500">请查看完整内容和素材，打印后扫码验证条码。此处生成客户模板排版审阅稿，生产 1:1 尺寸需另行确认。</p>
+      <p class="text-xs text-slate-500">请查看完整内容和素材。{{ layout?.config?.series === 'zuru' ? 'ZURU 系列按确认稿显示条码号码，请核实号码；' : '打印后扫码验证条码；' }}此处生成客户模板排版审阅稿，生产 1:1 尺寸需另行确认。</p>
       <div class="flex flex-wrap gap-3"><button type="button" :disabled="!previewUrl" class="rounded-lg border px-4 py-2 disabled:opacity-50" @click="download">下载 PDF</button><button v-if="!previewUrl" type="button" class="rounded-lg border px-4 py-2" @click="showPreview">重新打开预览</button><button type="button" :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-white" @click="goCheck">用 Excel / PDF 核对</button></div>
       <iframe v-if="previewUrl" :src="previewUrl" title="生成的箱唛 PDF 预览" class="h-[65vh] min-h-96 w-full rounded-lg border"></iframe>
     </div>

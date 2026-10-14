@@ -8,6 +8,7 @@ from app.models.auth import (AuthPermission, AuthRegistrationRequest, AuthRole, 
 from app.models.identity import EmployeeAssignment, IamOrgUnit, IamRoleVersion, IamOutbox
 from app.models.position_review import PositionReview
 from app.services.auth import can
+from app.services.iam_management_scopes import complete_scopes
 from app.services.identity_changes import digest
 from app.services.identity_policy import additional_source_scopes, ensure_reader, fail
 from app.services.identity_resolver import identity_columns, instant, resolve_identity_at, stamp, utc_now
@@ -60,7 +61,7 @@ def ensure_item_scope(db, actor, row):
     scopes += list(additional_source_scopes(db, [row.user_id]).get(row.user_id, set()))
     declared = declaration(row)
     scopes.append((declared["org_unit_id"], declared["department_code"]))
-    if any(not allowed_scope(actor, org, dept) for org, dept in scopes):
+    if any(not allowed_scope(actor, org, dept) for org, dept in complete_scopes(scopes)):
         fail("OUTSIDE_MANAGEABLE_SCOPE", "来源和申报岗位超出当前完整管理范围", 403)
 
 
@@ -96,7 +97,7 @@ def visible_user_ids(db, actor):
         scopes[a.user_id].add((o.legacy_factory_id or o.id, a.department_code))
     for uid, extra in additional_source_scopes(db).items():
         scopes[uid].update(extra)
-    return [uid for uid, required in scopes.items() if all(allowed_scope(actor, f, d) for f, d in required)]
+    return [uid for uid, required in scopes.items() if all(allowed_scope(actor, f, d) for f, d in complete_scopes(required))]
 
 
 def item_out(db, row, user=None):
@@ -135,7 +136,7 @@ def queue(db, actor, *, page=1, page_size=30, q="", status="pending", kind="", o
     for rid, uid, org, factory, dept, state in db.execute(select(AuthRegistrationRequest.id, AuthRegistrationRequest.user_id,
             AuthRegistrationRequest.org_unit_id, AuthRegistrationRequest.factory_id, AuthRegistrationRequest.department, AuthRegistrationRequest.status)):
         if ((uid in visible or (state == "pending" and uid in provisional)) and allowed_scope(actor, org or factory, dept) and (not org_unit_id or (org or factory) == org_unit_id)
-                and all(allowed_scope(actor, f, d) for f, d in extra.get(uid, set()))):
+                and all(allowed_scope(actor, f, d) for f, d in complete_scopes(extra.get(uid, set())))):
             registration_ids.append(rid)
     pos = select(literal("position").label("kind"), PositionReview.id.label("id"), PositionReview.user_id.label("user_id"),
         PositionReview.created_at.label("created_at"), PositionReview.status.label("status")).where(PositionReview.id.in_(position_ids))

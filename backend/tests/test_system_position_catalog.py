@@ -111,6 +111,7 @@ def test_fixed_system_position_definition_contract():
         (
             "customer_price:settings_read",
             "customer_price:settings_manage",
+            *permission_codes.INDONESIA_MATERIAL_PERMISSION_CODES,
             *permission_codes.THREE_D_PRINTING_PERMISSION_CODES,
             *permission_codes.QC_INSPECTION_PERMISSION_CODES,
             *permission_codes.SPRAY_OPS_PERMISSION_CODES,

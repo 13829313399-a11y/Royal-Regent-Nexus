@@ -55,6 +55,7 @@ class LocationInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     warehouse: str = Field(min_length=1, max_length=128)
     bins: str = Field(min_length=1, max_length=16000)
+    category: Literal["", "FABRIC", "ACCESSORY", "THREAD"] = ""
 
 
 class LocationPreviewRequest(BaseModel):
@@ -75,3 +76,18 @@ class WarehouseRenameRequest(BaseModel):
     warehouse: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=128)
     expected_group_token: str = Field(min_length=64, max_length=64)
+
+
+class LocationSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+
+
+class LocationManageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    factory_id: Literal["huakang-c"]
+    request_id: UUID
+    action: Literal["CATEGORY", "DELETE", "RESTORE"]
+    selections: list[LocationSelection] = Field(min_length=1, max_length=1000)
+    category: Literal["", "FABRIC", "ACCESSORY", "THREAD"] = ""

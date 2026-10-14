@@ -6,35 +6,14 @@ from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import inspect, select
 
-from app.models.fabric_master import FabricMasterRecord, FabricMasterChange
 from app.models.fabric_procurement import FabricProcurementLine
 from app.models.fabric_receiving import FabricReceipt
-from app.models.material_handover import HandoverDocument, HandoverSupplierBinding
+from app.models.material_handover import HandoverDocument
 from app.models.warehouse_operations import WarehouseOperation
 from app.services.auth import can
+from app.services.fabric_supplier_identity import supplier_aliases
 
 FACTORY = 'huakang-c'
-
-
-def supplier_aliases(db):
-    aliases = defaultdict(set)
-    suppliers = list(db.scalars(select(FabricMasterRecord).where(
-        FabricMasterRecord.factory_id == FACTORY, FabricMasterRecord.kind == 'SUPPLIER')))
-    ids = {row.id for row in suppliers}
-    for row in suppliers:
-        aliases[row.name].add(row.id)
-    for row in db.scalars(select(FabricMasterChange).where(FabricMasterChange.factory_id == FACTORY)):
-        if row.record_id in ids:
-            for value in (row.before_json, row.after_json):
-                name = json.loads(value).get('name')
-                if name:
-                    aliases[name].add(row.record_id)
-    if HandoverSupplierBinding.__tablename__ in inspect(db.get_bind()).get_table_names():
-        for row in db.scalars(select(HandoverSupplierBinding).where(HandoverSupplierBinding.factory_id == FACTORY)):
-            name = json.loads(row.supplier_snapshot_json).get('name')
-            if name:
-                aliases[name].add(row.supplier_id)
-    return aliases
 
 
 def purchase_rows(db, supplier_id, line, aliases):

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import WarehouseLocationPicker from '../warehouse-operations/WarehouseLocationPicker.vue'
 import MaterialHandoverMonthly from './MaterialHandoverMonthly.vue'
+import { handoverReviewIssues } from './handoverReview'
 const HandoverOriginalPrint = defineAsyncComponent(() => import('./HandoverOriginalPrint.vue').then(module => module.default))
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, RouterLink } from 'vue-router'
 import axios from 'axios'
@@ -21,7 +23,11 @@ const filters = ref(emptyFilters()), appliedFilters = ref(emptyFilters()), total
 const hasFilters = computed(() => Object.entries(appliedFilters.value).some(([key, value]) => value !== emptyFilters()[key as keyof HandoverListFilters]))
 const pendingDeliveriesOnly = computed(() => !props.external && route.query.deliveries === 'pending')
 const selected = ref<HandoverDocument | null>(null), draft = ref<HandoverData | null>(null)
-const error = ref(''), notice = ref(''), busy = ref(false), loading = ref(false), acknowledge = ref(false)
+const error = ref(''), notice = ref(''), busy = ref(false), loading = ref(false)
+const showOptional = ref(false)
+const reviewIssues = computed(() => draft.value ? handoverReviewIssues(draft.value) : [])
+const invalidFields = computed(() => new Set(reviewIssues.value.flatMap(issue => issue.fields)))
+const compactSupplierForm = computed(() => props.external && !showOptional.value)
 const sourceUrl = ref(''), qrUrl = ref(''), scanCode = ref(''), fileInput = ref<HTMLInputElement | null>(null)
 const scanInput = ref<HTMLInputElement | null>(null)
 const printBlob = shallowRef<Blob>(), printUrl = ref(''), printCorner = ref<'left'|'right'>('right')
@@ -93,7 +99,7 @@ async function initialize() {
 watch(() => [props.external, key.value, route.query.factory, route.query.document, route.query.deliveries, route.query.tab, auth.currentUser?.id, auth.authorizationVersion], initialize, { immediate: true })
 function accept(row: HandoverDocument) {
   purchaseSequence++; purchaseSources.value = null; purchaseLoading.value = false; purchaseReady.value = false; purchaseError.value = ''
-  selected.value = row; draft.value = clone(row.data); acknowledge.value = false
+  selected.value = row; draft.value = clone(row.data); showOptional.value = false
   posting.value = Object.fromEntries(row.data.lines.map(line => [line.id, { selected: false, quantity: row.progress[line.id]?.remaining || line.quantity, batch_id: '', location_id: '', lot: line.lot, roll_no: line.roll_no, purchase_source_id: '', difference_reason: '' }]))
 }
 async function loadPurchaseSources() {
@@ -163,7 +169,7 @@ async function mutate(value: Pending) {
     else if (frozen.kind === 'post') result = await client.post(frozen.id, frozen.body as HandoverPosting)
     else result = await client.action(frozen.id, frozen.kind, frozen.body as HandoverAction)
     if (epoch !== generation) return
-    pending.value = null; accept(result); notice.value = frozen.kind === 'post' ? (frozen.body as HandoverPosting).lines.some(line => line.purchase_source_id) ? '本次实收已保存，库存、单据剩余数量和采购待收进度已同步更新。' : '本次实际收发已保存，库存和剩余数量已更新。' : '单据已保存。'
+    pending.value = null; accept(result); notice.value = frozen.kind === 'post' ? (frozen.body as HandoverPosting).lines.some(line => line.purchase_source_id) ? '本次实收已保存，库存、单据剩余数量和采购待收进度已同步更新。' : '本次实际收发已保存，库存和剩余数量已更新。' : frozen.kind === 'save' && props.external ? '已保存为待核对单据。仓库可在单据管理中查看原件并补全；补齐并确认后才能打印交接二维码。' : '单据已保存。'
     if (frozen.print_after) { try { await printConfirmed() } catch (e) { if (epoch === generation) error.value = `单据已确认保存；原单加码准备失败，可重试：${getApiErrorMessage(e)}` } }
     // Refresh failures must never change a completed write into a failed write.
     try { await reloadList(); if (!props.external) { const inventory = await client.workspace(); if (epoch === generation) { workspace.value = inventory; await loadPurchaseSources() } } }
@@ -171,8 +177,9 @@ async function mutate(value: Pending) {
   } catch (e) { if (epoch === generation) { if (!unsure(e)) pending.value = null; showError(e) } }
   finally { if (epoch === generation) busy.value = false }
 }
-function save() { if (selected.value && draft.value) void mutate({ kind: 'save', id: selected.value.id, body: { request_id: uuid(), expected_revision: selected.value.revision, data: clone(draft.value) } }) }
-function confirm() { if (!selected.value || !draft.value) return; void mutate({ kind: 'confirm', id: selected.value.id, print_after: true, body: { request_id: uuid(), expected_revision: selected.value.revision, acknowledge_warnings: acknowledge.value, reason: '', data: clone(draft.value) } }) }
+function draftSnapshot() { const data = clone(draft.value!); data.document_date = data.document_date || null; return data }
+function save() { if (selected.value && draft.value) void mutate({ kind: 'save', id: selected.value.id, body: { request_id: uuid(), expected_revision: selected.value.revision, data: draftSnapshot() } }) }
+function confirm() { if (!selected.value || !draft.value || locked.value || reviewIssues.value.length) return; void mutate({ kind: 'confirm', id: selected.value.id, print_after: true, body: { request_id: uuid(), expected_revision: selected.value.revision, acknowledge_warnings: true, reason: '', data: draftSnapshot() } }) }
 const voidReason = ref(''), showVoid = ref(false)
 function voidDocument() { if (!selected.value) return; void mutate({ kind: 'void', id: selected.value.id, body: { request_id: uuid(), expected_revision: selected.value.revision, acknowledge_warnings: false, reason: voidReason.value } }); showVoid.value = false }
 async function scan() {
@@ -301,11 +308,22 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
             <iframe v-if="sourceUrl && selected.file_name.toLowerCase().endsWith('.pdf')" :src="sourceUrl" title="单据原件" class="source-preview" />
             <img v-else-if="sourceUrl && /\.(png|jpe?g|webp)$/i.test(selected.file_name)" :src="sourceUrl" alt="单据原件" class="source-preview" />
             <a v-else-if="sourceUrl" :href="sourceUrl" :download="selected.file_name">下载原始文档核对</a>
-            <details v-if="selected.warnings.length" class="review-warning" open><summary>请核对 {{ selected.warnings.length }} 项识别提示</summary><ul><li v-for="text in selected.warnings" :key="text">{{ text }}</li></ul></details>
-            <fieldset class="fields" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><label>单据用途<select v-model="draft.kind" :disabled="external"><option value="DELIVERY">送货单</option><option value="ISSUE">领料申请 / 发料依据</option></select></label><label>原单号<input v-model="draft.source_no" maxlength="128" aria-label="原单号" /></label><label>单据日期<input v-model="draft.document_date" type="date" aria-label="单据日期" /></label><label v-if="!external && draft.kind==='DELIVERY'">供应商基础资料<select v-model="draft.supplier_id" @change="chooseSupplier" aria-label="制单供应商"><option value="">请选择已启用供应商</option><option v-for="party in activeSuppliers" :key="party.id" :value="party.id">{{ party.code }} · {{ party.name }}</option></select></label><label>供应商 / 领用方<input v-model="draft.counterparty" :readonly="external || draft.kind==='DELIVERY'" maxlength="255" aria-label="制单方" /></label><label>合同号<input v-model="draft.contract_no" maxlength="128" /></label><label>放产 / 生产单号<input v-model="draft.production_no" maxlength="128" /></label><label>货号<input v-model="draft.product_no" maxlength="128" /></label><label>说明<input v-model="draft.note" maxlength="1000" /></label></fieldset>
-            <div class="line-heading"><h3>统一物料明细</h3><button v-if="selected.status === 'DRAFT'" :disabled="!canEdit || locked || draft.lines.length >= 200" @click="addLine">添加明细</button></div>
-            <div class="table-scroll"><table class="lines"><thead><tr><th>物料编码 / 名称</th><th>规格 / 颜色</th><th>单据数量 / 单位</th><th>类别</th><th>单价依据（选填）</th><th>缸号 / 卷号</th><th>关联 / 说明</th><th>进度 / 操作</th></tr></thead><tbody><tr v-for="(line, index) in draft.lines" :key="line.id"><td><small>{{ line.source_line || `补录第 ${index + 1} 行` }}</small><input v-model="line.item_code" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行物料编码`" placeholder="物料编码" /><input v-model="line.item_name" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行物料名称`" placeholder="物料名称" /></td><td><input v-model="line.specification" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="规格" /><input v-model="line.color" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="颜色" /></td><td><input v-model="line.quantity" inputmode="decimal" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行单据数量`" /><input v-model="line.unit" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行单位`" placeholder="单位" /></td><td><select v-model="line.material_category" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><option value="FABRIC">布料</option><option value="ACCESSORY">辅料</option><option value="THREAD">线</option></select></td><td><input v-model="line.unit_price" inputmode="decimal" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行参考单价`" placeholder="单价，空白为未记录" /><input v-model="line.price_unit" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="计价单位" /><select v-model="line.currency" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><option value="">币种未注明</option><option value="CNY">CNY 人民币</option><option value="HKD">HKD 港币</option><option value="USD">USD 美元</option><option value="EUR">EUR 欧元</option></select><input v-model="line.price_note" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="报价 / 含税口径等原单依据" /></td><td><input v-model="line.lot" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="缸号" /><input v-model="line.roll_no" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="卷号" /><small v-if="line.roll_quantities">逐卷：{{ line.roll_quantities }}</small></td><td><input v-model="line.production_no" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="放产 / 生产单号" /><input v-model="line.note" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="说明" /></td><td><template v-if="selected.status === 'CONFIRMED'"><p>已{{ selected.data.kind === 'DELIVERY' ? '收' : '发' }} {{ selected.progress[line.id]?.processed }} {{ line.unit }}</p><small>未完成 {{ selected.progress[line.id]?.remaining }} {{ line.unit }}</small></template><button v-else-if="selected.status === 'DRAFT'" :disabled="!canEdit || locked" @click="draft.lines.splice(index, 1)">移除此行</button></td></tr></tbody></table></div>
-            <footer v-if="selected.status === 'DRAFT'" class="actions"><label>原单二维码位置<select v-model="printCorner" :disabled="locked" aria-label="原单二维码位置"><option value="right">右上角</option><option value="left">左上角</option></select></label><label v-if="selected.warnings.length" class="check-label"><input v-model="acknowledge" type="checkbox" :disabled="locked" />已对照原件核对上述提示、数量和单位</label><button :disabled="!canEdit || locked || !dirty" @click="save">保存核对内容</button><button class="primary" :disabled="!canEdit || locked || !draft.lines.length || (selected.warnings.length > 0 && !acknowledge)" @click="confirm">确认并打印原单</button></footer>
+            <section v-if="selected.status === 'DRAFT'" class="draft-review" aria-label="确认前待补信息">
+              <strong>{{ reviewIssues.length ? `确认打印前，还需补全 ${reviewIssues.length} 处信息` : '资料已齐全，可核对后确认打印' }}</strong>
+              <ul v-if="reviewIssues.length"><li v-for="issue in reviewIssues" :key="issue.label">{{ issue.label }}</li></ul>
+              <p>{{ external ? '不清楚的信息可留空，点击下方“保存，交仓库补全”。仓库可查看原件并继续补录。' : '可先保存待核对单据，补齐后再确认。保存和确认单据均不会直接入库。' }}</p>
+            </section>
+            <details v-if="selected.warnings.length" class="review-warning recognition-notes"><summary>原单识别提示 · {{ selected.warnings.length }} 项</summary><p>识别提示供对照原件参考，不影响保存。确认打印前请核对数量和单位。</p><ul><li v-for="text in selected.warnings" :key="text">{{ text }}</li></ul></details>
+            <fieldset class="fields document-fields" :class="{ compact: compactSupplierForm }" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><label>单据用途<select v-model="draft.kind" :disabled="external || Boolean(selected.issuer_id)"><option value="DELIVERY">送货单</option><option value="ISSUE">领料申请 / 发料依据</option></select></label><label>原单号<input v-model="draft.source_no" maxlength="128" aria-label="原单号" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('原单号')" /></label><label>单据日期<input v-model="draft.document_date" type="date" aria-label="单据日期" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('单据日期')" /></label><label v-if="!external && !selected.issuer_id && draft.kind==='DELIVERY'">供应商基础资料<select v-model="draft.supplier_id" @change="chooseSupplier" aria-label="制单供应商" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('制单供应商')"><option value="">请选择已启用供应商</option><option v-for="party in activeSuppliers" :key="party.id" :value="party.id">{{ party.code }} · {{ party.name }}</option></select></label><label>供应商 / 领用方<input v-model="draft.counterparty" :readonly="external || Boolean(selected.issuer_id) || draft.kind==='DELIVERY'" maxlength="255" aria-label="制单方" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('制单方')" /></label><label class="optional-field">合同号<input v-model="draft.contract_no" maxlength="128" /></label><label class="optional-field">放产 / 生产单号<input v-model="draft.production_no" maxlength="128" /></label><label class="optional-field">货号<input v-model="draft.product_no" maxlength="128" /></label><label class="optional-field">说明<input v-model="draft.note" maxlength="1000" /></label></fieldset>
+            <div class="line-heading"><h3 id="handover-lines-title">物料明细</h3><div class="actions"><button v-if="external" :aria-expanded="showOptional" @click="showOptional = !showOptional">{{ showOptional ? '收起选填信息' : '展开选填信息' }}</button><button v-if="selected.status === 'DRAFT'" :disabled="!canEdit || locked || draft.lines.length >= 200" @click="addLine">添加明细</button></div></div>
+            <p v-if="external && selected.status === 'DRAFT'" class="line-help">按原单核对名称、数量和单位。物料编码不清楚可留空，由仓库补全；规格、缸号和价格等可展开选填。</p>
+            <div class="table-scroll lines-scroll" role="region" aria-labelledby="handover-lines-title" tabindex="0"><table class="lines" :class="{ compact: compactSupplierForm }"><thead><tr><th>物料编码 / 名称</th><th>规格 / 颜色</th><th>单据数量 / 单位</th><th>类别</th><th>单价依据（选填）</th><th>缸号 / 卷号</th><th>关联 / 说明</th><th>进度 / 操作</th></tr></thead><tbody><tr v-for="(line, index) in draft.lines" :key="line.id"><td><input v-model="line.item_code" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行物料编码`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料编码`)" placeholder="物料编码" /><input v-model="line.item_name" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行物料名称`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料名称`)" placeholder="物料名称" /><small class="line-source">{{ line.source_line || `补录第 ${index + 1} 行` }}</small></td><td><input v-model="line.specification" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="规格" /><input v-model="line.color" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="颜色" /></td><td><input v-model="line.quantity" inputmode="decimal" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行单据数量`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单据数量`)" /><input v-model="line.unit" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行单位`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单位`)" placeholder="单位" /></td><td><select v-model="line.material_category" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><option value="FABRIC">布料</option><option value="ACCESSORY">辅料</option><option value="THREAD">线</option></select></td><td><input v-model="line.unit_price" inputmode="decimal" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行参考单价`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行参考单价`)" placeholder="单价，空白为未记录" /><input v-model="line.price_unit" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="计价单位" /><select v-model="line.currency" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><option value="">币种未注明</option><option value="CNY">CNY 人民币</option><option value="HKD">HKD 港币</option><option value="USD">USD 美元</option><option value="EUR">EUR 欧元</option></select><input v-model="line.price_note" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="报价 / 含税口径等原单依据" /></td><td><input v-model="line.lot" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="缸号" /><input v-model="line.roll_no" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="卷号" /><small v-if="line.roll_quantities">逐卷：{{ line.roll_quantities }}</small></td><td><input v-model="line.production_no" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="放产 / 生产单号" /><input v-model="line.note" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="说明" /></td><td><template v-if="selected.status === 'CONFIRMED'"><p>已{{ selected.data.kind === 'DELIVERY' ? '收' : '发' }} {{ selected.progress[line.id]?.processed }} {{ line.unit }}</p><small>未完成 {{ selected.progress[line.id]?.remaining }} {{ line.unit }}</small></template><button v-else-if="selected.status === 'DRAFT'" :disabled="!canEdit || locked" @click="draft.lines.splice(index, 1)">移除此行</button></td></tr></tbody></table></div>
+            <footer v-if="selected.status === 'DRAFT'" class="actions document-confirmation">
+              <button :class="{ primary: external && reviewIssues.length > 0 }" :disabled="!canEdit || locked || (!external && !dirty)" @click="save">{{ external ? '保存，交仓库补全' : '保存核对内容' }}</button>
+              <label>原单二维码位置<select v-model="printCorner" :disabled="locked" aria-label="原单二维码位置"><option value="right">右上角</option><option value="left">左上角</option></select></label>
+              <button class="primary" :disabled="!canEdit || locked || reviewIssues.length > 0" aria-describedby="confirmation-help" @click="confirm">确认并打印原单</button>
+              <p id="confirmation-help" class="confirmation-help">{{ reviewIssues.length ? '上方已列出待补项。可先保存，补齐后再确认打印。' : '点击“确认并打印原单”表示已对照原件核对明细、数量和单位；确认后明细将锁定。' }}</p>
+            </footer>
             <section v-if="selected.status === 'CONFIRMED'" class="code-card"><div><h3>交接二维码</h3><p>原单纸面保留供应商信息与物料表，二维码放在新增顶部空白区域，不盖住原内容。可重复打印、分批使用；每次扫码仍需核对本次实物。</p><code>{{ selected.code }}</code><div class="actions"><button @click="preview('qr')">显示二维码</button><label>原单二维码位置<select v-model="printCorner" :disabled="locked" aria-label="原单二维码位置"><option value="right">右上角</option><option value="left">左上角</option></select></label><button :disabled="locked" @click="printConfirmed">原单加码打印</button><button :disabled="locked" @click="print">打印统一明细（备用）</button><a v-if="qrUrl" :href="qrUrl" :download="selected.id + '.svg'">下载二维码</a></div></div><img v-if="qrUrl" :src="qrUrl" alt="交接二维码" class="qr-image" /></section>
             <section v-if="selected.status === 'CONFIRMED' && !external && workspace?.can_operate" class="posting-card">
               <div class="line-heading"><h3>本次实际{{ selected.data.kind === 'DELIVERY' ? '收料入库' : '发料出库' }}</h3><label>实际日期<input v-model="businessDate" type="date" :disabled="locked" /></label></div>
@@ -330,7 +348,7 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
                     </label>
                     <p v-else-if="purchaseReady && workspace.can_read_purchase !== false" class="review-warning">未匹配到本物料、单位和供应商的采购来源。本次可记录实际库存，采购欠货暂不能同步扣减，请先核对是否缺少采购资料。</p>
                     <label v-if="purchaseOverage(line)">超收说明<input v-model="posting[line.id]!.difference_reason" :aria-label="`${line.id}超收说明`" maxlength="1000" /></label>
-                    <label>入库仓位<select v-model="posting[line.id]!.location_id"><option value="">请选择</option><option v-for="place in workspace.inventory.locations?.filter(p => p.status === 'ACTIVE')" :key="place.id" :value="place.id">{{ place.label }}</option></select></label>
+                    <label>入库仓位<WarehouseLocationPicker v-model="posting[line.id]!.location_id" :locations="workspace.inventory.locations ?? []" :category="line.material_category" :disabled="locked" :label="`${line.item_code}入库仓位`" /></label>
                     <label>本次缸号<input v-model="posting[line.id]!.lot" /></label><label>卷号<input v-model="posting[line.id]!.roll_no" /></label>
                   </template>
                   <label v-else>实际出库批次<select v-model="posting[line.id]!.batch_id"><option value="">请选择批次与仓位</option><option v-for="batch in batches(line)" :key="batch.id" :value="batch.id">{{ batch.location }} · {{ batch.lot || '无缸号' }} / {{ batch.roll_no || '无卷号' }} · 可发 {{ batch.available_quantity }} {{ batch.unit }}</option></select></label>
@@ -415,7 +433,42 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
 .scan-card input{font-size:16px;padding:12px;background:white}
 .scan-card button{padding:13px 20px}
 .scan-card p{font-size:12px;margin-top:10px;color:#64748b}
+@media screen {
+  .document-list{padding:20px}
+  .detail-heading{align-items:flex-start}
+  .detail-heading>div{min-width:0;overflow-wrap:anywhere}
+  .detail-heading>button{flex-shrink:0}
+  .document-fields{grid-template-columns:repeat(4,minmax(0,1fr));align-items:start}
+  .document-fields label{min-width:0;gap:6px;font-size:13px}
+  .document-fields input,.document-fields select{width:100%;height:38px;box-sizing:border-box;font-size:14px}
+  .lines-scroll{margin-top:12px;border:1px solid #e2e8f0;border-radius:8px}
+  .lines-scroll:focus-visible{outline:2px solid #99d5ce;outline-offset:2px}
+  .lines{table-layout:fixed;min-width:1160px}
+  .lines th,.lines td{padding:12px;vertical-align:top}
+  .lines th:nth-child(1){width:20%}
+  .lines th:nth-child(2),.lines th:nth-child(6){width:12%}
+  .lines th:nth-child(3),.lines th:nth-child(8){width:10%}
+  .lines th:nth-child(4){width:8%}
+  .lines th:nth-child(5),.lines th:nth-child(7){width:14%}
+  .lines input,.lines select{display:block;width:100%;height:38px;box-sizing:border-box;margin:0;font-size:13px}
+  .lines td:nth-child(3) input{width:100%}
+  .lines td>*+*{margin-top:8px}
+  .lines .line-source{font-size:11px;color:#94a3b8;overflow-wrap:anywhere}
+  .lines button,.detail-heading>button,.line-heading>button,.document-confirmation button{min-height:38px;font-size:13px}
+  .document-confirmation{align-items:flex-end;gap:12px}
+  .draft-review{margin:16px 0;padding:14px 16px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;font-size:13px}
+  .draft-review strong{color:#334155}.draft-review ul{margin:8px 0;max-height:180px;overflow:auto;padding-left:20px;color:#9a3412}
+  .draft-review p,.recognition-notes p,.line-help,.confirmation-help{font-size:13px;line-height:1.6;color:#64748b}
+  .recognition-notes{background:#f8fafc;color:#64748b}.recognition-notes summary{cursor:pointer}
+  .document-detail [aria-invalid="true"]{border-color:#f59e0b;background:#fffbeb}
+  .document-fields.compact .optional-field,.lines.compact :is(th,td):nth-child(2),.lines.compact :is(th,td):nth-child(5),.lines.compact :is(th,td):nth-child(6),.lines.compact :is(th,td):nth-child(7){display:none}
+  .lines.compact{min-width:600px}.lines.compact th:nth-child(1){width:35%}.lines.compact th:nth-child(3){width:25%}.lines.compact th:nth-child(4){width:20%}.lines.compact th:nth-child(8){width:20%}
+  .confirmation-help{flex-basis:100%;margin:0}
+}
 @media(max-width:1100px){.handover-layout{grid-template-columns:290px minmax(0,1fr)}.document-filters .document-search{flex-basis:100%}.document-filters select{max-width:220px}}
+@media screen and (max-width:1100px){.document-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media screen and (max-width:720px){.document-list{padding:15px}.document-confirmation .check-label{flex-basis:100%}}
+@media screen and (max-width:480px){.document-fields{grid-template-columns:1fr}.detail-heading{flex-wrap:wrap;gap:12px}}
 @media(max-width:720px){.handover{padding:12px}.handover-header{flex-wrap:wrap;gap:12px}.handover-header h1{font-size:21px}.scope-badge{margin-left:0;max-width:100%}.handover-back{padding:8px 10px}.handover-layout{grid-template-columns:1fr}.document-filters{gap:12px}.document-filters label{flex:1}.document-filters select{flex:1;max-width:100%;width:100px}.document-list{max-height:430px}.empty-steps{grid-template-columns:1fr;gap:8px}.empty-steps span{display:flex;align-items:center;gap:12px;padding:12px}.empty-steps b{margin:0}.scan-heading{align-items:start;flex-direction:column}.document-detail{min-height:320px}}
 @media print{.document-tools,.scope-badge{display:none!important}.handover{padding:0;background:white}.handover-layout{display:block}.document-detail{min-height:0}}
 </style>

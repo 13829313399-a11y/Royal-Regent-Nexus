@@ -1,8 +1,19 @@
 # 增量迁移与回滚
 
-新增 Alembic `20261013_0160`，父版本 `20261012_0159`。只创建 `position_reviews`、`position_review_events` 及相关索引、外键；不扫描生成在职历史申请，不改变任何原有任职、角色、权限或账号状态。同一 user/epoch 的 pending/returned 使用部分唯一索引。
+正式岗位迁移为 Alembic `20261014_0161`，接在远程 main 已发布的 Indonesia `20261013_0160` 后。只创建 `position_reviews`、`position_review_events` 及相关索引、外键；不扫描生成在职历史申请，不改变任何原有任职、角色、权限或账号状态。同一 user/epoch 的 pending/returned 使用部分唯一索引。
 
-已有数据库启动不会用 `create_all` 绕过新迁移。缺表时岗位接口返回明确的需迁移错误；实施前须针对实际 DATABASE_URL 检查 revision，并在停写、备份和副本演练后显式迁移。日常本地业务 SQLite 已按用户后续授权完成备份、副本演练及 0160 迁移；backend/.env 与 .env.development.local 已持久化启用岗位工作台。生产 PostgreSQL 与 Compose 未修改。
+已有数据库启动不会用 `create_all` 绕过新迁移。缺表时岗位接口返回明确的需迁移错误；实施前须针对实际 DATABASE_URL 检查 revision，并在停写、备份和副本演练后显式迁移。日常本地业务 SQLite 先前已按用户授权完成旧岗位 0160 迁移；backend/.env 与 .env.development.local 已持久化启用岗位工作台。下方 10 月 13 日记录是当时证据，不能把旧编号视为已应用后来发布的 Indonesia 迁移。
+
+合并最新 main 时发现未发布岗位 0160 与已发布 Indonesia 0160 编号碰撞。旧岗位脚本按原字节保留在 `backend/alembic/legacy/`，不改已发布迁移。新 0161 仅在旧 SQLite 表、索引、CHECK、外键和触发器精确匹配且完整性正常时接纳；若缺 Indonesia 三表则运行原已发布脚本补齐，使用 savepoint 保护，不执行 stamp。部分结构、漂移或外键损坏拒绝升级。正常数据库按 0159 → Indonesia 0160 → 岗位 0161 顺序执行。
+
+本次 Git 集成未迁移真实日常库，也未重启服务。后续启用合并版本前，必须重新停写、备份、恢复副本复验，再运行真实 `upgrade head`。生产 PostgreSQL 与 Compose 未修改。
+
+## main 合并后的迁移复验
+
+- 新迁移测试 17 项与既有材料交接合并迁移 2 项全部通过。
+- 使用 `iam-consolidation-local-20261014-133946/before.db` 的独立恢复副本执行真实 Alembic `upgrade head`，旧岗位 0160 正确升级至 0161。
+- 387 张既有数据表、24,248 行逐表摘要不变，原 schema 对象全部保留，仅新增 Indonesia 三表；integrity=ok，外键错误 0。
+- 本次 PostgreSQL 仅验证正常路径的 DDL 编译，未重新执行真实 PostgreSQL 升级或并发测试。
 
 ## 隔离验证
 

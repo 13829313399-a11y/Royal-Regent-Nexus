@@ -9,6 +9,7 @@
 | 通知与事项工作台 | `### Notification Work Center` | `src/stores/workCenter.ts`、`backend/app/api/work_center.py` | `docs/work-center/IMPLEMENTATION.md`；当前源责任与个人阅读分离 |
 | 排产 | `### Injection-Scheduling Center` | `backend/app/services` | `backend/tests` |
 | 订单与导入 | `### Customer Order Center` | `backend/app/api` | `backend/tests` |
+| 送印尼物料 | `### Indonesia Material Shipment` | `src/features/indonesia-materials`、`backend/app/api/indonesia_materials.py` | `docs/business/indonesia-materials-implementation.md`；已接入现有 5173 本地业务部入口；本地库已迁移 0160，线上未发布 |
 | UV 打印重建模块 | `### Huakang A UV Printing Management` | `src/features/uv-operations/contracts.ts`、`backend/app/api/uv_operations.py` | `docs/uv-operations/ACCEPTANCE.md`；仅华康A生产部，默认关闭，现场未验收 |
 | 喷油重建模块 | `### Spray Production Management` | `src/features/spray-production/contracts.ts`、`backend/app/api/spray_operations.py` | `docs/spray-production/ACCEPTANCE.md`；默认关闭，生产未启用 |
 

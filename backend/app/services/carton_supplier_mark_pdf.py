@@ -3,12 +3,15 @@ import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
+from decimal import Decimal, InvalidOperation
+import re
 
 from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.models.carton_mark import CartonMarkAsset
+from app.models.carton_procurement import CartonOrder
 from app.services import carton_mark_assets as assets
 from app.services import carton_supplier_portal as portal
 from app.services.carton_mark import MAX_DOCUMENT_FILE_BYTES
@@ -16,6 +19,39 @@ from app.services.carton_mark_library import _now_text
 from app.services.carton_supplier_mark_check import check_source
 from app.services import carton_supplier_mark_layout as layouts
 from app.services.carton_mark_layout_renderer import render
+
+
+def issued_outer_fields(db, order_id):
+    order = db.get(CartonOrder, order_id)
+    snapshot = portal._purchase_order_snapshot(portal.latest_issue(db, order))
+    lines = [line for line in snapshot.get("lines", []) if str(line.get("packaging_type", "")).strip().casefold()
+        in {"外箱", "纸箱", "outer carton", "carton"}]
+    if len(lines) != 1:
+        return {}
+    line, result = lines[0], {}
+    for source_key, target in (("usage_quantity", "quantity"), ("after_required_quantity", "carton_total"),
+            ("gross_weight_kg", "gross_weight"), ("net_weight_kg", "net_weight")):
+        try:
+            raw = Decimal(str(line.get(source_key)))
+            if raw.is_finite() and (raw >= 0 if "weight" in target else raw > 0 and raw == raw.to_integral_value()):
+                result[target] = format(raw.normalize(), "f") + (" KGS" if "weight" in target else "")
+        except (InvalidOperation, ValueError):
+            pass
+    spec = str(line.get("specification") or "")
+    unit = str(line.get("dimension_unit") or "").casefold()
+    suffix = re.search(r"(cm|in|inch|厘米|英寸)\s*$", spec, re.I)
+    if suffix:
+        declared = "cm" if suffix[1].casefold() in {"cm", "厘米"} else "in"
+        if unit and unit not in ({"cm", "厘米"} if declared == "cm" else {"in", "inch", "英寸"}):
+            return result
+        unit = declared
+        spec = spec[:suffix.start()]
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)\s*", spec, re.I)
+    if match and unit in {"cm", "厘米", "in", "inch", "英寸"}:
+        values = [Decimal(value) * (Decimal("2.54") if unit in {"in", "inch", "英寸"} else 1) for value in match.groups()]
+        if all(value > 0 for value in values):
+            result["dimensions"] = " x ".join(format(value.normalize(), "f") for value in values) + " CM"
+    return result
 
 
 def source(db, user, payload):
@@ -31,6 +67,12 @@ def source(db, user, payload):
     if Path(original["excel_file_name"]).suffix.lower() not in {".xls", ".xlsx"}:
         raise HTTPException(422, "目前支持 .xls / .xlsx，请将其他 Excel 格式另存为 .xlsx")
     original["layout"] = layouts.current(db, user, payload.factory_id, payload.order_id, payload.issue_id, payload.layout_id)
+    if original["layout"]["config"].get("series") == "zuru":
+        original["order_fields"] = issued_outer_fields(db, payload.order_id)
+        original["supplements"] = dict(payload.supplements)
+        original["source_item"] = payload.source_item
+    elif payload.supplements or payload.source_item:
+        raise HTTPException(422, "本单补齐目前仅用于 ZURU 版式系列")
     return original
 
 
@@ -63,6 +105,8 @@ def save_pdf(db, user, payload, original, prepared):
             source_asset_id=original["excel_asset_id"], source_revision=original["asset_revision"],
             source_sha256=original["excel_sha256"], page_count=pages,
             layout_id=payload.layout_id, layout_version=original["layout"]["version"],
+            supplements=original.get("supplements", {}), order_fields=original.get("order_fields", {}),
+            source_item=original.get("source_item", ""),
             layout_reference_sha256=original["layout"]["reference_sha256"],
             layout_config_sha256=hashlib.sha256(json.dumps(original["layout"]["config"], sort_keys=True).encode()).hexdigest()),
         supplier_context=dict(supplier_id=original["supplier_id"], order_id=payload.order_id,

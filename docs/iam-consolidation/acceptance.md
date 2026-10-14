@@ -1,6 +1,6 @@
 # 权限模块整合验收
 
-日期：2026-10-14。来源：`rrn_iam_consolidation_20261014.zip`；32 个清单文件校验完成。基线见 [baseline.md](baseline.md)。代码留在原工作目录的工作树中，未提交、推送或发布。
+日期：2026-10-14。来源：`rrn_iam_consolidation_20261014.zip`；32 个清单文件校验完成。基线见 [baseline.md](baseline.md)。代码、文档与合成验收证据按用户后续授权进行 Git 交付；生产发布仍为独立步骤。
 
 ## 交付行为
 
@@ -35,6 +35,14 @@
 前端命令：`npm run test:unit -- src/features/identity-management/__tests__ src/router/__tests__/iamCompatibility.spec.ts src/router/__tests__/iamConsolidation.spec.ts src/features/work-center/__tests__/presentation.spec.ts src/views/__tests__/userAccessManagementPositionRuntime.spec.ts src/views/__tests__/userAccessManagementView.spec.ts`。
 
 后端回归：`SEED_DEFAULT_ACCOUNTS=true`，执行 `backend/tests/test_position_reviews.py`、`test_position_workbench_acceptance.py`、`test_position_workbench_boundaries.py`、`test_position_workbench_closure.py` 和 `test_iam_workspace.py`。每个测试由夹具创建新数据库。新增聚合测试已自行固定种子策略，不再继承日常 `.env` 的禁用默认账号设置。中途测试夹具初始化失败和浏览器发现的问题已修正，以上数字为修复后结果。日志摘要见 [verification.txt](evidence/verification.txt)。
+
+## 合并最新 main 后的复验
+
+- 前端 14 文件 / 121 项、测试类型检查、完整构建通过；修复后的助手知识源码指纹校验 17 篇、0 问题。
+- 岗位领域及目录回归累计 27 项通过，4 项真实 PostgreSQL 并发用例因本轮未配置实例跳过。首次运行的旧迁移路径与新增 Indonesia 排除项断言失败已修正；对应降级用例和完整目录的 8 项重跑全部通过。
+- 聚合工作区 10 项通过；新增通配来源的具体禁止项回归 5 项通过，覆盖两个管理权限、厂区/部门通配、集团总务和待注册人员，并验证拒绝后业务记录不变。
+- 迁移专项与材料交接迁移回归共 19 项通过。真实备份的恢复副本升级后，387 张原表、24,248 行及原 schema 对象不变，完整性正常、外键错误 0。
+- 独立复核覆盖 main 合并交点、迁移与权限边界，未发现剩余明确阻断；本次没有迁移真实日常数据库或发布生产。
 
 ## 交付包验收矩阵
 

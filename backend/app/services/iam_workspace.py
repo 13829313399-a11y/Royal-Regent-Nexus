@@ -18,21 +18,13 @@ from app.models.position_review import PositionReview
 from app.services.auth import can, parse_time
 from app.services.identity_policy import fail, is_group_manager, additional_source_scopes, ensure_change_authority
 from app.services.identity_resolver import identity_columns, instant, stamp, utc_now
-from app.services.identity_catalog import FACTORIES, DEPARTMENTS
+from app.services.identity_catalog import FACTORIES
+from app.services.iam_management_scopes import complete_scopes
 from app.services.identity_sources import role_definition
 from app.services import position_workbench_read as positions, position_reviews, system
 
 KINDS = ("position", "registration", "password-reset", "identity-change")
 log = logging.getLogger(__name__)
-
-
-def complete_scopes(scopes):
-    """Retain wildcard authority requirements and evaluate concrete deny tuples."""
-    result = set(scopes)
-    for factory, department in scopes:
-        result.update((f, d) for f in (FACTORIES if factory == "*" else [factory])
-                      for d in (DEPARTMENTS if department == "*" else [department]))
-    return result
 
 
 def local_stamp(value):
@@ -121,7 +113,7 @@ class Projection:
             declared = positions.declaration(row)
             org, dept = declared["org_unit_id"], declared["department_code"]
             provisional_visible = registration and row.status == "pending" and row.user_id in provisional and all(
-                positions.allowed_scope(self.actor, f, d) for f, d in extras.get(row.user_id, set()))
+                positions.allowed_scope(self.actor, f, d) for f, d in complete_scopes(extras.get(row.user_id, set())))
             if not (provisional_visible or self.allowed(row.user_id, codes)) or not positions.allowed_scope(self.actor, org, dept):
                 continue
             u, profile, *_ = self.people[row.user_id]

@@ -66,13 +66,14 @@ def lines(factory_id: str, status: Literal["PENDING", "RETURNED", "ALL"] = "PEND
           promise_from: date | None = None, promise_to: date | None = None,
           order_no: str = Query("", max_length=128), production_no: str = Query("", max_length=128), material_code: str = Query("", max_length=128), style_no: str = Query("", max_length=128),
           import_batch: str = Query("", max_length=64), quantity_review: Literal["", "REVIEW", "KNOWN"] = "",
+          group_by: Literal["", "MATERIAL"] = "", group_key: str = Query("", max_length=64),
           sort: Literal["UPDATED", "OVERDUE", "PROMISE", "ORDER", "SUPPLIER", "QUANTITY_ASC", "QUANTITY_DESC"] = "UPDATED",
           db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     authorize(db, actor, factory_id, "read")
     filters = {"supplier": supplier, "unit": unit, "source_category": source_category, "category": category,
         "promise_from": promise_from.isoformat() if promise_from else None, "promise_to": promise_to.isoformat() if promise_to else None,
-        "order_no": order_no, "production_no": production_no, "material_code": material_code, "style_no": style_no, "import_batch": import_batch, "quantity_review": quantity_review}
-    return {**service.list_lines(db, status, search, offset, limit, view, filters, sort), "can_receive": receiving.schema_ready(db) and can(actor, "fabric_warehouse:receive", factory_id, "pmc-warehouse")}
+        "order_no": order_no, "production_no": production_no, "material_code": material_code, "style_no": style_no, "import_batch": import_batch, "quantity_review": quantity_review, "group_key": group_key}
+    return {**service.list_lines(db, status, search, offset, limit, view, filters, sort, group_by), "can_receive": receiving.schema_ready(db) and can(actor, "fabric_warehouse:receive", factory_id, "pmc-warehouse")}
 
 
 @router.get("/lines/{line_id}")
@@ -106,11 +107,16 @@ def receipt_history(factory_id: str, search: str = Query("", max_length=128), of
                     supplier: str = Query("", max_length=256), category: Literal["", "FABRIC", "ACCESSORY", "THREAD"] = "",
                     receipt_from: date | None = None, receipt_to: date | None = None, state: Literal["", "ACTIVE", "REVERSED"] = "",
                     sort: Literal["RECEIPT_DESC", "RECEIPT_ASC", "RECORDED_DESC", "SUPPLIER"] = "RECEIPT_DESC",
+                    unified: bool = False, channel: Literal['', 'PROCUREMENT', 'HANDOVER', 'MANUAL'] = '',
                     db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     authorize(db, actor, factory_id, "read")
     if receipt_from and receipt_to and receipt_from > receipt_to:
         raise HTTPException(422, "收货开始日期不能晚于结束日期")
-    return {**receiving.list_receipts(db, search, offset, limit, supplier=supplier, category=category,
+    reader, extra = receiving.list_receipts, {}
+    if unified:
+        from app.services.fabric_receipt_history import list_receipts
+        reader, extra = list_receipts, dict(include_operations=can(actor, 'fabric_operations:read', factory_id, 'pmc-warehouse'), channel=channel)
+    return {**reader(db, search, offset, limit, **extra, supplier=supplier, category=category,
         receipt_from=receipt_from.isoformat() if receipt_from else "", receipt_to=receipt_to.isoformat() if receipt_to else "", state=state, sort=sort),
         'can_reverse': all(can(actor, permission, factory_id, 'pmc-warehouse')
         for permission in ('fabric_operations:read', 'fabric_operations:correct'))}

@@ -39,7 +39,7 @@ def prepared_sheets(filename, content, sheets):
 
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
-DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v9-complete"
+DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v10-dongkang-carton-alias"
 SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-so-identity-v4-complete"
 INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v3-complete"
 PACKAGING_TYPES = (
@@ -1094,7 +1094,7 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                 row["source_material"]["packaging_type"] = ""
             checked = [(line, order, material_conflicts(row, {
                 key: getattr(line, key) for key in ("packaging_type", "paper_quality", "specification", "dimension_unit")
-            })) for line, order in candidates]
+            }, dongkang_delivery=row.get("template") == "dongkang-delivery")) for line, order in candidates]
             candidates = [(line, order) for line, order, conflicts in checked if not conflicts]
             if not candidates:
                 row.update(match_status="REVIEW_REQUIRED", suggestion="送货文件与订单的纸品类型、纸质、规格或尺寸单位冲突，请对照原单人工核实",
