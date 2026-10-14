@@ -8,6 +8,7 @@ import sqlite3
 from io import BytesIO
 
 from openpyxl import load_workbook
+import pytest
 
 from test_molding_sample_api import make_client, login_as
 from test_carton_procurement_api import _ensure_dickie_customer, _order_payload, _submit_order, _freeze_carton_time
@@ -140,6 +141,72 @@ def test_date_authorization_reads_state_only_after_factory_lock(monkeypatch):
         client.app.dependency_overrides.clear()
         current = client.get(BASE + "/orders", params={"factory_id": "huaxing"}).json()["items"][0]
         assert current["due_date"] == row["due_date"]
+
+
+@pytest.mark.parametrize("authorization_mode", ["legacy", "shadow", "enforce"])
+def test_date_changes_enforce_scoped_canonical_permissions_and_denies_in_every_mode(monkeypatch, authorization_mode):
+    monkeypatch.setenv("AUTHZ_MODE", authorization_mode)
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _ensure_dickie_customer(client)
+        _freeze_carton_time(monkeypatch)
+        confirmed = create(client)
+        locked = _submit_order(client, create(client))
+        from app.services.auth import AuthContext, AuthGrantContext, AuthOverrideContext, get_current_user
+
+        def grant(permission, factory="huaxing", department="pmc-warehouse"):
+            return AuthGrantContext("test-role", "Test role", factory, department,
+                                    frozenset({f"carton_procurement:{permission}"}))
+
+        def use_actor(grants, overrides=()):
+            actor = AuthContext("user-warehouse-keeper", "scoped", "Scoped", (), (),
+                frozenset(p for g in grants for p in g.permissions), ("huaxing",),
+                ("pmc-warehouse",), grants=tuple(grants), overrides=tuple(overrides))
+            client.app.dependency_overrides[get_current_user] = lambda: actor
+
+        denied_cases = [
+            (confirmed, [grant("order_write")], "order_write"),
+            (confirmed, [grant("order_write", "huadeng")], None),
+            (confirmed, [grant("order_write", department="qc")], None),
+            (locked, [grant("order_write")], None),
+            (locked, [grant("order_write"), grant("inventory_write", "huadeng")], None),
+            (locked, [grant("order_write"), grant("inventory_write", department="qc")], None),
+            (locked, [grant("order_write"), grant("inventory_write")], "inventory_write"),
+            (locked, [grant("order_write"), grant("inventory_write")], "order_write"),
+            (locked, [grant("order_write"), grant("order_adjust")], "order_adjust"),
+        ]
+        for row, grants, denied_permission in denied_cases:
+            overrides = [AuthOverrideContext("deny", f"carton_procurement:{denied_permission}",
+                         "deny", "huaxing", "pmc-warehouse")] if denied_permission else []
+            use_actor(grants, overrides)
+            response = client.post(f"{BASE}/orders/{row['order_no']}/dates", json={
+                "factory_id": "huaxing", "expected_revision": row["revision"],
+                "due_date": "2026-08-22", "reason": "核验交期调整权限边界"})
+            assert response.status_code == 403, (authorization_mode, denied_permission, response.text)
+        client.app.dependency_overrides.clear()
+        current = {row["id"]: row for row in client.get(BASE + "/orders", params={"factory_id": "huaxing"}).json()["items"]}
+        for row in (confirmed, locked):
+            assert (current[row["id"]]["due_date"], current[row["id"]]["revision"]) == (row["due_date"], row["revision"])
+        audit = client.get(BASE + "/audit-events", params={"factory_id": "huaxing", "event_type": "ORDER_DATES_CHANGED"})
+        assert audit.status_code == 200 and audit.json()["total"] == 0
+
+        use_actor([grant("order_write")])
+        response = client.post(f"{BASE}/orders/{confirmed['order_no']}/dates", json={
+            "factory_id": "huaxing", "expected_revision": confirmed["revision"],
+            "due_date": "2026-08-22", "reason": "待下单订单正常调整"})
+        assert response.status_code == 200, response.text
+        for grants, overrides, target in (
+            ([grant("order_write"), grant("inventory_write")], [], "2026-08-23"),
+            ([grant("order_write"), grant("order_adjust")],
+             [AuthOverrideContext("deny", "carton_procurement:inventory_write", "deny", "huaxing", "pmc-warehouse")], "2026-08-24"),
+        ):
+            use_actor(grants, overrides)
+            response = client.post(f"{BASE}/orders/{locked['order_no']}/dates", json={
+                "factory_id": "huaxing", "expected_revision": locked["revision"],
+                "due_date": target, "reason": "已锁定订单授权调整"})
+            assert response.status_code == 200, response.text
+            locked = response.json()
+        client.app.dependency_overrides.clear()
 
 
 def test_date_only_change_preserves_quantity_lead_and_explicit_dates_and_rejects_stale_or_terminal(monkeypatch):

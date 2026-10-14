@@ -69,14 +69,8 @@ def _row_selections(raw):
         raise HTTPException(422, "送货明细订单选择格式无效或重复") from None
 
 
-def preview(db, user, filename, content, row_selections=None):
-    digest = _source(filename, content)
-    factories = {supplier.factory_id for supplier in portal.supplier_factories(db, user)
-        if portal.supplier_permission(user, "carton_supplier:edit", supplier.factory_id)}
-    if not factories:
-        raise HTTPException(403, "没有可导入送货单的厂区权限")
-    selections = _row_selections([] if row_selections is None else row_selections)
-    chosen = {(item["source_sheet"], item["source_row"]): item for item in selections}
+def _parse_source_rows(filename, content, selections):
+    """Decode and validate the file before taking any factory business lock."""
     parsed = _parse_delivery_spreadsheet(filename, content, strict_rows=True)
     rows = parsed["rows"]
     if len(rows) > MAX_IMPORT_ROWS or parsed["warnings"]:
@@ -84,8 +78,22 @@ def preview(db, user, filename, content, row_selections=None):
     if any(row.get("template") != "dongkang-delivery" for row in rows):
         raise HTTPException(422, "送货单表头不是东康系统格式，请上传原系统导出的送货明细表")
     coordinates = {(row["source_sheet"], row["source_row"]) for row in rows}
-    if any(key not in coordinates for key in chosen):
+    if any((item["source_sheet"], item["source_row"]) not in coordinates for item in selections):
         raise HTTPException(422, "所选明细不在当前送货文件中")
+    return tuple(dict(row) for row in rows)
+
+
+def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=None):
+    digest = _source(filename, content)
+    factories = {supplier.factory_id for supplier in portal.supplier_factories(db, user)
+        if portal.supplier_permission(user, "carton_supplier:edit", supplier.factory_id)}
+    if not factories:
+        raise HTTPException(403, "没有可导入送货单的厂区权限")
+    selections = _row_selections([] if row_selections is None else row_selections)
+    chosen = {(item["source_sheet"], item["source_row"]): item for item in selections}
+    # Confirmation supplies private, already validated server-generated rows.
+    # Candidate identities and demand are still read freshly under its locks.
+    rows = _parse_source_rows(filename, content, selections) if _parsed_rows is None else _parsed_rows
     workspaces = {factory: portal.workspace(db, user, factory) for factory in factories}
     groups = {}
     for source_row in rows:
@@ -218,13 +226,15 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
     row_selections = _row_selections([] if row_selections is None else row_selections)
     for factory in sorted({key[0] for key in keys}):
         portal.supplier_access(db, user, factory, "carton_supplier:edit")
-        portal._lock_receipt_factory(db, factory)
-    result = preview(db, user, filename, content, row_selections)
-    groups = {(group["factory_id"], group["delivery_note_no"]): group for group in result["groups"]}
-    if any(key not in groups for key in keys):
-        raise HTTPException(422, "所选送货单不在上传文件中")
+    rows = _parse_source_rows(filename, content, row_selections)
     sent = []
     try:
+        for factory in sorted({key[0] for key in keys}):
+            portal._lock_receipt_factory(db, factory)
+        result = preview(db, user, filename, content, row_selections, _parsed_rows=rows)
+        groups = {(group["factory_id"], group["delivery_note_no"]): group for group in result["groups"]}
+        if any(key not in groups for key in keys):
+            raise HTTPException(422, "所选送货单不在上传文件中")
         for factory, note_no, mode in sorted(selections):
             group = groups[(factory, note_no)]
             request_id = _request_id(expected_sha256, factory, note_no)

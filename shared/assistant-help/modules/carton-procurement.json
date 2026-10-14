@@ -40,12 +40,12 @@
       {
         "path": "backend/app/services/carton_procurement.py",
         "symbol": "required_carton_quantity",
-        "sha256": "1cd03d4b70041cde586873fe12abe7bc61a8c7f1dafecabf18c94a56ae3ec174"
+        "sha256": "e36e771a5b33e401ef4b4e55ca904c79ba2aa3717941d0584dbe185d0ad1183e"
       },
       {
         "path": "backend/app/services/carton_procurement.py",
         "symbol": "confirm_receipt",
-        "sha256": "1cd03d4b70041cde586873fe12abe7bc61a8c7f1dafecabf18c94a56ae3ec174"
+        "sha256": "e36e771a5b33e401ef4b4e55ca904c79ba2aa3717941d0584dbe185d0ad1183e"
       },
       {
         "path": "backend/app/api/carton_procurement.py",

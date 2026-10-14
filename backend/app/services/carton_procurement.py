@@ -1313,8 +1313,19 @@ def update_order_dates(
     db: Session, order_no: str, payload: CartonOrderDatesRequest, user: AuthContext,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
+
+    def permitted(permission: str) -> bool:
+        return any(can(user, f"carton_procurement:{permission}", factory_id, department)
+                   for department in CARTON_DEPARTMENTS)
+
+    if not permitted("order_write"):
+        raise HTTPException(403, "调整交期需要当前厂区的订单维护权限")
     _lock_receipt_factory(db, factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    if order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"} and not (
+        permitted("order_adjust") or permitted("inventory_write")
+    ):
+        raise HTTPException(403, "已锁定订单调整交期需要订单调整权限或库存操作权限")
     ensure_customer_operation(db, user, factory_id, order.customer_code)
     if order.revision != payload.expected_revision:
         raise HTTPException(409, "订单已被其他人更新，请刷新后重试")

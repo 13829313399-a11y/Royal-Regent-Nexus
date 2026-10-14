@@ -72,7 +72,7 @@
       {
         "path": "backend/app/services/carton_supplier_delivery_import.py",
         "symbol": "DeliveryRowSelection",
-        "sha256": "6cea1201102f3cc78db8467d353a5309b8a551f059495f5ea3c16534bd98eb25"
+        "sha256": "c2c2616e4836632cbad39c8dea429ae3a7933df71fcb2cfe83764a00d9dd170f"
       },
       {
         "path": "backend/app/services/carton_supplier_portal.py",
