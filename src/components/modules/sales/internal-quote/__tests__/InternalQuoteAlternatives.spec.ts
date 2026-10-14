@@ -12,7 +12,7 @@ import InternalQuoteExportSummary from '../InternalQuoteExportSummary.vue'
 import InternalQuoteSummary from '../InternalQuoteSummary.vue'
 
 const routeState = reactive({ params: { quoteId: 'q1' }, query: {} })
-vi.mock('vue-router', () => ({ useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
+vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn(), useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
 function family(): ApiInternalQuoteAlternativeFamily {
   return { family_id: 'family', revision: 3, selected_quote_id: '', items: ['q1', 'q2'].map((id, index) => ({
     quote_id: id, scenario_id: id, scenario_name: index ? '开窗盒' : '普通彩盒', version_number: 1, version_label: 'V1', source_quote_id: '', change_note: '', status: index ? 'exported' : 'drafting', issued_at: '', reported_at: '', created_at: '', quote_no: 'IQ', product_name: '巴士', customer: 'Dickie', quantity: 5000, archived: false,

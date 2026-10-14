@@ -1065,7 +1065,7 @@ def _parse_painting(
     if not output:
         raise ValueError("已识别喷油表头，但没有解析到喷油工序明细")
     warnings.append("油漆、人工分别汇总；人工=总报价-油漆的公式由工序明细重算，空白拆分待填写，不重复加计工序总价" if split_columns else "源表总报价和合计仅用于核对，不直接导入；保存后按含 UV 的九类工序数量 × 单价由服务端重算")
-    warnings.append("嵌入喷油图片不自动写入报价；图片单元格文本会保存为附件引用，原报价单可另存为分段附件")
+    warnings.append("图片列的嵌入图片按来源行保留；确认导入后保存为本部门图片附件")
     return {"rows": output}, len(output), warnings
 
 
@@ -1625,7 +1625,7 @@ def parse_internal_quote_workbook(
             rows[header_index + 1] = []
     embedded_images: list[EmbeddedWorkbookImage] = []
     embedded_images_by_row: dict[int, list[EmbeddedWorkbookImage]] = {}
-    if import_type == "mold":
+    if import_type in {"mold", "painting"}:
         image_column = column_index(
             rows[header_index],
             ("图片", "图  片", "IMAGE", "PICTURES"),
@@ -1656,8 +1656,8 @@ def parse_internal_quote_workbook(
         **({"formula_rows": formula_rows} if import_type == "painting" else {}),
         **({"fallback_product_name": fallback_product_name} if import_type == "hair" else {}),
     )
-    if import_type == "mold":
-        parsed_rows = fragment.get("molds", [])
+    if import_type in {"mold", "painting"}:
+        parsed_rows = fragment.get("molds" if import_type == "mold" else "rows", [])
         used_source_rows = {
             int(row.get("source_row", 0) or 0)
             for row in parsed_rows

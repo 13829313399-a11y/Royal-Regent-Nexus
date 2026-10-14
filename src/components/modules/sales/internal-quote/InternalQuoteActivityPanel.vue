@@ -3,7 +3,7 @@ import { Activity, Calculator, Clock3, Eye, LoaderCircle, MessageSquare, Pencil,
 import { computed, ref, watch } from 'vue'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { createDefaultSalesMarkupTiers, salesMarkupTierForQuantity, salesPackagingPricingGroupId, salesPackagingPricingGroupName, salesSettlementDivisorForMiscRatio, type SalesMarkupTier } from '@/lib/internalQuoteSectionPayload'
-import type { InternalQuote } from '@/types/internalQuoteDesk'
+import type { InternalQuote, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
 
 const props = defineProps<{
   quote: InternalQuote
@@ -19,6 +19,7 @@ const emit = defineEmits<{
   updateFx: [payload: { rmbHkd: string; hkdUsd: string }]
   updateMarkup: [payload: { markupTiers: Array<{ moq: string; markup: string; includeInOutput: boolean }>; selectedMoq: string; miscRatio: string; componentMarkups?: Array<{ id: string; markup: string }> }]
   previewMarkup: [value: number]
+  pricingDraft: [value: InternalQuoteSidebarPricingDraft | undefined]
 }>()
 const quoteStore = useInternalQuoteDeskStore()
 const activeTab = ref<'summary' | 'activity' | 'views'>('summary')
@@ -76,6 +77,10 @@ const quoteMarkupTiers = ref(savedMarkupTiers.value.map((tier) => ({
   includeInOutput: tier.include_in_output !== false,
 })))
 const quoteMiscPercent = ref((savedMiscRatio.value * 100).toFixed(2))
+const pricingBaseline = ref({
+  revision: props.quote.sections?.find((section) => section.code === 'sales')?.revision ?? 0,
+  payload: JSON.parse(JSON.stringify(salesPricingPayload.value)) as Record<string, unknown>,
+})
 const reportSettlementDivisor = computed(() => {
   const ratio = Number(quoteMiscPercent.value) / 100
   return Number.isFinite(ratio) && ratio >= 0 && ratio < 1
@@ -87,8 +92,24 @@ const livePreview = computed(() => (
 ))
 const previewReady = computed(() => {
   const calculations = Object.values(livePreview.value?.calculations ?? {})
-  return calculations.length > 0 && calculations.every((calculation) => calculation?.status === 'valid')
+  return livePreview.value?.pricing_complete !== false && calculations.length > 0 && calculations.every((calculation) => calculation?.status === 'valid')
 })
+const incompleteSections = computed(() => {
+  const reported = livePreview.value?.incomplete_sections ?? props.quote.incompleteSections?.map((section) => ({
+    section_code: section.sectionCode, section_name: section.sectionName, reason: section.reason,
+  }))
+  if (reported?.length) return reported
+  return (props.quote.sections ?? []).flatMap((section) => {
+    if (!section.isRequired || section.status === 'not_applicable') return []
+    const preview = livePreview.value?.calculations?.[section.code]
+    const valid = preview ? preview.status === 'valid' : section.calculationStatus === 'valid' && section.dependencyStatus === 'current' && Boolean(section.filledAt)
+    return valid ? [] : [{ section_code: section.code, section_name: section.label, reason: section.dependencyStatus === 'stale' ? '工程资料已更新，需重新核价' : '资料待保存或核价待完善' }]
+  })
+})
+const pricingComplete = computed(() => (
+  (livePreview.value ? livePreview.value.pricing_complete !== false && previewReady.value : props.quote.pricingComplete !== false)
+  && !incompleteSections.value.length && !pricingValidationMessage.value
+))
 const pricingSummary = computed(() => (
   previewReady.value && quoteStore.livePreviewQuoteId === props.quote.id && quoteStore.liveCostPreviewSummary
     ? quoteStore.liveCostPreviewSummary
@@ -121,6 +142,15 @@ const savedActiveMarkupTierIndex = computed(() => {
   return Math.max(savedMarkupTiers.value.findIndex((tier) => tier.moq === automatic.moq), 0)
 })
 const selectedMarkupTierIndex = ref(savedActiveMarkupTierIndex.value)
+function markupInputFingerprint() {
+  return JSON.stringify({
+    tiers: quoteMarkupTiers.value.map((tier) => ({ moq: Number(tier.moq), markup: Number(tier.markup), output: tier.includeInOutput })),
+    selected: selectedMarkupTierIndex.value,
+    components: componentMarkupRows.value.map((row) => ({ id: row.id, markup: Number(row.markup) })),
+  })
+}
+const acceptedMarkupFingerprint = ref(markupInputFingerprint())
+const acceptedMiscPercent = ref(Number(quoteMiscPercent.value))
 const activeMarkupTier = computed(() => (
   editableMarkupTiers.value[selectedMarkupTierIndex.value]
   ?? salesMarkupTierForQuantity(editableMarkupTiers.value, quoteQuantity.value)
@@ -159,16 +189,7 @@ const markupValidationMessage = computed(() => {
   return ''
 })
 const markupDirty = computed(() => (
-  !markupValidationMessage.value && (
-    isComponentPricing.value
-      ? componentMarkupRows.value.some((row, index) => Number(row.markup) !== Number(savedComponentMarkups.value[index]?.markup.toFixed(2)))
-      : selectedMarkupTierIndex.value !== savedActiveMarkupTierIndex.value
-        || quoteMarkupTiers.value.some((tier, index) => (
-          Number(tier.moq) !== savedMarkupTiers.value[index]?.moq
-          || Number(tier.markup) !== Number(savedMarkupTiers.value[index]?.markup_x.toFixed(2))
-          || tier.includeInOutput !== (savedMarkupTiers.value[index]?.include_in_output !== false)
-        ))
-  )
+  !markupValidationMessage.value && markupInputFingerprint() !== acceptedMarkupFingerprint.value
 ))
 const miscValidationMessage = computed(() => {
   const value = String(quoteMiscPercent.value).trim()
@@ -179,18 +200,20 @@ const miscValidationMessage = computed(() => {
   return ''
 })
 const miscDirty = computed(() => (
-  !miscValidationMessage.value && Number(quoteMiscPercent.value) !== Number((savedMiscRatio.value * 100).toFixed(2))
+  !miscValidationMessage.value && Number(quoteMiscPercent.value) !== acceptedMiscPercent.value
 ))
 const pricingValidationMessage = computed(() => markupValidationMessage.value || miscValidationMessage.value)
 const pricingDirty = computed(() => markupDirty.value || miscDirty.value)
 const quoteHkd = computed(() => {
+  const authoritative = previewReady.value ? livePreview.value?.authoritative_factory_quote_hkd : props.quote.authoritativeFactoryQuoteHkd
+  if (!pricingDirty.value && !pricingValidationMessage.value && authoritative != null && Number.isFinite(Number(authoritative))) return Number(authoritative)
   const miscRatio = Number(quoteMiscPercent.value) / 100
   const settlement = Number.isFinite(miscRatio) && miscRatio >= 0 && miscRatio < 1
     ? salesSettlementDivisorForMiscRatio(miscRatio)
     : Math.max(1 - savedMiscRatio.value, .0001)
   const groups = pricingSummary.value?.shippingPricing.pricingGroups ?? []
   const custodyFee = pricingSummary.value?.shippingPricing.customerSuppliedHkd ?? 0
-  if (!groups.length) return Math.max(0, costHkd.value - custodyFee) * normalizedMarkup.value + custodyFee
+  if (!groups.length) return Math.max(0, costHkd.value - custodyFee) * normalizedMarkup.value / settlement + custodyFee
   const componentMarkupById = new Map(componentMarkupRows.value.map((row) => [row.id, Number(row.markup)]))
   const componentQuote = groups.reduce((total, group, index) => {
     const groupMarkup = isComponentPricing.value
@@ -198,7 +221,7 @@ const quoteHkd = computed(() => {
       : index === 0 ? normalizedMarkup.value : group.markup
     return total + group.pricingBaseHkd * groupMarkup / settlement
   }, 0)
-  if (!isComponentPricing.value) return componentQuote
+  if (!isComponentPricing.value) return componentQuote + custodyFee
   const globalPricing = pricingSummary.value?.shippingPricing.globalPricing
   const packagingMarkup = componentMarkupById.get(salesPackagingPricingGroupId) ?? normalizedMarkup.value
   return componentQuote + (globalPricing?.pricingBaseHkd ?? 0) * packagingMarkup / settlement
@@ -209,6 +232,9 @@ const quoteUsd = computed(() => props.quote.fxHkdUsd ? quoteHkd.value / props.qu
 const previewDeltaHkd = computed(() => Number(livePreview.value?.delta_hkd ?? 0) || 0)
 const previewStatus = computed(() => {
   if (previewBusy.value) return '正在实时试算'
+  if (!pricingComplete.value) return '核价未完成'
+  if (pricingValidationMessage.value) return '报价设置待完善'
+  if (pricingDirty.value) return '报价设置试算 · 未保存'
   if (previewReady.value) return '实时试算 · 未保存'
   if (livePreview.value && !previewReady.value) return '字段待完善'
   return '最近保存金额'
@@ -233,6 +259,7 @@ function parseTargetPrice(value: string): TargetPrice | null {
   return { currency, amount }
 }
 const targetComparison = computed(() => {
+  if (!pricingComplete.value) return null
   const target = parseTargetPrice(props.quote.targetCustomerPrice)
   if (!target) return null
   const previewAmount = target.currency === 'HKD' ? quoteHkd.value : target.currency === 'RMB' ? quoteRmb.value : quoteUsd.value
@@ -356,17 +383,75 @@ function saveMarkup() {
   })
 }
 
-watch(() => props.quote.referenceSnapshotId, () => resetFxEditor())
-watch(normalizedMarkup, (value) => emit('previewMarkup', value), { immediate: true })
-watch(() => [props.quote.id, JSON.stringify(savedMarkupTiers.value), JSON.stringify(savedComponentMarkups.value), savedActiveMarkupTierIndex.value, savedMiscRatio.value] as const, () => {
-  quoteMarkupTiers.value = savedMarkupTiers.value.map((tier) => ({
-    moq: String(tier.moq),
-    markup: tier.markup_x.toFixed(2),
-    includeInOutput: tier.include_in_output !== false,
-  }))
+function hasUnsavedChanges() {
+  return pricingDirty.value || Boolean(pricingValidationMessage.value) || fxDirty.value
+}
+
+function pricingDraftSnapshot(): InternalQuoteSidebarPricingDraft {
+  return {
+    markupTiers: quoteMarkupTiers.value.map((tier) => ({ moq: Number(tier.moq), markup_x: Number(tier.markup), include_in_output: tier.includeInOutput })),
+    selectedMoq: Number(quoteMarkupTiers.value[selectedMarkupTierIndex.value]?.moq),
+    activeMarkup: normalizedMarkup.value,
+    miscRatio: Number(quoteMiscPercent.value) / 100,
+    ...(isComponentPricing.value ? { componentMarkups: componentMarkupRows.value.map((row) => ({ id: row.id, markup: Number(row.markup) })) } : {}),
+  }
+}
+
+function getPricingDraft(): InternalQuoteSidebarPricingDraft | undefined {
+  if (fxDirty.value) throw new Error('汇率有未保存修改，请先保存汇率后再保存整单。')
+  if (!pricingDirty.value && !pricingValidationMessage.value) return undefined
+  if (!props.canEditMarkup || props.markupBlockedReason) throw new Error(props.markupBlockedReason || '当前不能保存报价设置。')
+  if (pricingValidationMessage.value) throw new Error(pricingValidationMessage.value)
+  return pricingDraftSnapshot()
+}
+
+function resetPricingEditor() {
+  quoteMarkupTiers.value = savedMarkupTiers.value.map((tier) => ({ moq: String(tier.moq), markup: tier.markup_x.toFixed(2), includeInOutput: tier.include_in_output !== false }))
   selectedMarkupTierIndex.value = savedActiveMarkupTierIndex.value
   quoteMiscPercent.value = (savedMiscRatio.value * 100).toFixed(2)
   componentMarkupRows.value = savedComponentMarkups.value.map((row) => ({ ...row, markup: row.markup.toFixed(2) }))
+  acceptedMarkupFingerprint.value = markupInputFingerprint()
+  acceptedMiscPercent.value = Number(quoteMiscPercent.value)
+  refreshPricingBaseline()
+}
+
+function refreshPricingBaseline() {
+  pricingBaseline.value = {
+    revision: props.quote.sections?.find((section) => section.code === 'sales')?.revision ?? 0,
+    payload: JSON.parse(JSON.stringify(salesPricingPayload.value)) as Record<string, unknown>,
+  }
+}
+
+function acceptSavedPricing(submitted: InternalQuoteSidebarPricingDraft) {
+  if (JSON.stringify(pricingDraftSnapshot()) === JSON.stringify(submitted)) {
+    resetPricingEditor()
+  } else {
+    // Keep edits made during the request, but acknowledge our own successful save.
+    acceptedMarkupFingerprint.value = JSON.stringify({
+      tiers: submitted.markupTiers.map((tier) => ({ moq: tier.moq, markup: tier.markup_x, output: tier.include_in_output !== false })),
+      selected: submitted.markupTiers.findIndex((tier) => tier.moq === submitted.selectedMoq),
+      components: (submitted.componentMarkups ?? []).map((row) => ({ id: row.id, markup: row.markup })),
+    })
+    acceptedMiscPercent.value = submitted.miscRatio * 100
+    refreshPricingBaseline()
+  }
+}
+
+function getPricingBaseline() {
+  return JSON.parse(JSON.stringify(pricingBaseline.value)) as typeof pricingBaseline.value
+}
+
+defineExpose({ hasUnsavedChanges, getPricingDraft, getPricingBaseline, acceptSavedPricing })
+
+watch(() => JSON.stringify([quoteMarkupTiers.value, selectedMarkupTierIndex.value, quoteMiscPercent.value, componentMarkupRows.value, pricingDirty.value, pricingValidationMessage.value]), () => {
+  emit('pricingDraft', pricingDirty.value && !pricingValidationMessage.value ? pricingDraftSnapshot() : undefined)
+})
+
+watch(() => props.quote.referenceSnapshotId, () => resetFxEditor())
+watch(normalizedMarkup, (value) => emit('previewMarkup', value), { immediate: true })
+watch(() => [props.quote.id, JSON.stringify(savedMarkupTiers.value), JSON.stringify(savedComponentMarkups.value), savedActiveMarkupTierIndex.value, savedMiscRatio.value, props.quote.sections?.find((section) => section.code === 'sales')?.revision, JSON.stringify(salesPricingPayload.value)] as const, (incoming, previous) => {
+  if (incoming[0] === previous[0] && (pricingDirty.value || pricingValidationMessage.value)) return
+  resetPricingEditor()
 })
 
 function addComment() {
@@ -395,8 +480,13 @@ function addComment() {
           </em>
         </div>
         <span class="quote-live-main-label">预览报价（根据实时成本与本单设置计算）</span>
-        <strong data-testid="live-quote-hkd">HKD {{ quoteHkd.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong>
-        <div class="quote-live-conversions"><span>RMB {{ quoteRmb.toFixed(2) }}</span><span>USD {{ quoteUsd.toFixed(2) }}</span></div>
+        <strong v-if="pricingComplete" data-testid="live-quote-hkd">HKD {{ quoteHkd.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong>
+        <strong v-else data-testid="incomplete-quote-price">报价待核完整</strong>
+        <div v-if="pricingComplete" class="quote-live-conversions"><span>RMB {{ quoteRmb.toFixed(2) }}</span><span>USD {{ quoteUsd.toFixed(2) }}</span></div>
+        <div v-if="!pricingComplete" class="quote-live-preview-warning" role="status">
+          <p>当前金额仅包含已核算部分，不能作为完整出厂价或用于输出。</p>
+          <p v-for="section in incompleteSections" :key="section.section_code">{{ section.section_name }}：{{ section.reason }}</p>
+        </div>
         <div v-if="!isComponentPricing" class="quote-markup-tier-control">
           <header><span>分段码数</span><small>本单数量 {{ quoteQuantity.toLocaleString('zh-CN') }} PCS（仅参考）</small></header>
           <div
@@ -480,7 +570,7 @@ function addComment() {
         <p v-else-if="markupBlockedReason" class="quote-markup-feedback blocked">{{ markupBlockedReason }}</p>
         <p v-else-if="markupError" class="quote-markup-feedback error">{{ markupError }}</p>
         <p v-else-if="markupMessage" class="quote-markup-feedback success">{{ markupMessage }}</p>
-        <div class="quote-live-cost-base"><span>{{ previewReady ? '实时整单成本' : '最近保存成本' }}</span><strong data-testid="live-cost-hkd">HKD {{ costHkd.toFixed(2) }}</strong></div>
+        <div class="quote-live-cost-base"><span>{{ !pricingComplete ? '已核算部分成本' : previewReady ? '实时整单成本' : '最近保存成本' }}</span><strong data-testid="live-cost-hkd">HKD {{ costHkd.toFixed(2) }}</strong></div>
         <div v-if="targetComparison" class="quote-live-comparison">
           <div class="quote-live-price-cell preview"><span>预览价</span><strong>{{ targetComparison.currency }} {{ targetComparison.previewAmount.toFixed(2) }}</strong></div>
           <div class="quote-live-price-cell target"><span>目标价</span><strong>{{ targetComparison.currency }} {{ targetComparison.targetAmount.toFixed(2) }}</strong></div>

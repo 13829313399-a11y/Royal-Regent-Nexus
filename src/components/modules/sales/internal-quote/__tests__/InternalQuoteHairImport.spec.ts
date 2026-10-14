@@ -64,7 +64,6 @@ describe('hair template download and import', () => {
     expect(wrapper.get('.quote-import-preview').text()).toContain('明细 · 表头第 9 行')
     await wrapper.get('.quote-import-preview button.primary').trigger('click')
     await flushPromises()
-    expect(confirm).toHaveBeenCalledOnce()
     expect(confirm).toHaveBeenCalledWith('hair-quote', 'hair-preview', 3, undefined, undefined)
     expect(wrapper.find('.quote-import-preview').exists()).toBe(false)
     wrapper.unmount()

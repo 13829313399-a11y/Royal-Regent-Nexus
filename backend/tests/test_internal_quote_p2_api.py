@@ -19,7 +19,7 @@ ENGINEERING_PAYLOAD = {
             "unit_price_rmb": "8.5",
         }
     ],
-    "molds": [{"item": "主模", "mold_no": "M1", "quantity": "2", "cost_rmb": "1000"}],
+    "molds": [{"item": "主模", "mold_no": "M1", "quantity": "1", "cost_rmb": "1000"}],
     "amortization_qty": "100",
     "customer_mold_subsidy_usd": "5",
 }
@@ -393,7 +393,9 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
         assert molding_section["calculation_status"] == "valid"
         assert molding_section["dependency_status"] == "current"
         assert molding_section["calculation"]["dependencies"]["engineering_molds_hash"]
-        assert molding_section["calculation"]["totals"]["total_hkd"] == "26.9100"
+        # Linked Engineering owns the mold's one set per shot, so labor is
+        # recalculated from that submitted value instead of the old manual 2.
+        assert molding_section["calculation"]["totals"]["total_hkd"] == "36.3100"
 
         logout(client)
         login(client, "iq_p2_engineer_update", "engineer", "engineering")
@@ -430,6 +432,7 @@ def test_p2_section_calculation_dependency_invalidation_and_blocked_submit(monke
                     "injection_lines": [
                         {
                             "material": "UNKNOWN",
+                            "mold_no": "M1",
                             "grade": "NONE",
                             "net_weight_g": "10",
                             "machine_code": "999A",
@@ -931,7 +934,7 @@ def test_whole_product_save_recalculates_unchanged_molding_after_engineering_dep
         assert second_by_code["molding"]["payload"]["injection_lines"][0]["machine_code"] == "5A"
 
 
-def test_split_save_calculates_child_rows_and_child_change_invalidates_cost(monkeypatch):
+def test_split_save_prices_whole_mold_once_and_child_change_invalidates_dependency(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "iq_split_sync", "sales_customer_owner", "sales-business")
         created = client.post('/api/internal-quotes', json=create_payload(
@@ -951,13 +954,14 @@ def test_split_save_calculates_child_rows_and_child_change_invalidates_cost(monk
         sections = {r['department']: r for r in saved.json()['sections']}
         molding = sections['molding']
         assert molding['calculation_status'] == 'valid'
-        assert [r['item'] for r in molding['payload']['injection_lines']] == ['上壳', '下壳']
-        assert [r['remark'] for r in molding['payload']['injection_lines']] == ['保留机台', '保留机台']
+        assert [r['item'] for r in molding['payload']['injection_lines']] == ['上/下']
+        assert [r['remark'] for r in molding['payload']['injection_lines']] == ['保留机台']
+        assert [part['part_id'] for part in molding['payload']['injection_lines'][0]['engineering_parts']] == ['top', 'bottom']
         breakdown = molding['calculation']['line_breakdown']
-        assert [r['net_weight_g'] for r in breakdown] == ['10.0000', '20.0000']
-        assert [r['cavity'] for r in molding['payload']['injection_lines']] == [2, 4]
-        assert [r['sets'] for r in breakdown] == ['3.0000', '1.0000']
-        assert [r['quantity'] for r in breakdown] == ['2.0000', '2.0000']
+        assert [r['net_weight_g'] for r in breakdown] == ['454.0000']
+        assert [r['sets'] for r in breakdown] == ['1.0000']
+        assert [r['quantity'] for r in breakdown] == ['2.0000']
+        cost_before = molding['calculation']['totals']['total_hkd']
         engineering['molds'][0]['parts'][0]['unit_net_weight_g'] = 15
         changed = client.put(f'/api/internal-quotes/{quote_id}/sections/engineering', json={
             'revision': sections['engineering']['revision'], 'payload': engineering})
@@ -965,7 +969,8 @@ def test_split_save_calculates_child_rows_and_child_change_invalidates_cost(monk
         detail = client.get(f'/api/internal-quotes/{quote_id}').json()
         refreshed = next(r for r in detail['sections'] if r['department'] == 'molding')
         assert refreshed['dependency_status'] == 'stale'
-        assert refreshed['payload']['injection_lines'][0]['net_weight_g'] == 15
+        assert refreshed['payload']['injection_lines'][0]['net_weight_g'] == parent['net_weight_g']
+        assert refreshed['payload']['injection_lines'][0]['engineering_parts'][0]['unit_net_weight_g'] == 15
         engineering['molds'][0]['parts'] = []
         cleared = client.put(f'/api/internal-quotes/{quote_id}/sections/save-all', json={'sections': [
             {'section_code': 'engineering', 'revision': changed.json()['revision'], 'payload': engineering},
@@ -975,6 +980,7 @@ def test_split_save_calculates_child_rows_and_child_change_invalidates_cost(monk
         displayed = next(r for r in cleared.json()['quote']['sections'] if r['department'] == 'molding')
         assert persisted['payload'] == displayed['payload']
         assert [r['item'] for r in persisted['payload']['injection_lines']] == ['上/下']
+        assert persisted['calculation']['totals']['total_hkd'] == cost_before
 
 
 def test_old_formula_is_reported_and_can_be_recalculated_without_changing_reference_values(monkeypatch):

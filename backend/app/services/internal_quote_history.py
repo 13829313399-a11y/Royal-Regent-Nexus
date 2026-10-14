@@ -389,6 +389,16 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
                             source_index = next((i for i, mold in enumerate(source_molds) if mold == row), None)
                             mold_links.append((len(payloads[code][field]), source.quote.id, target_component, old_keys.get(source_index, "")))
                         rebound = _rebind(_clean(row), target_component)
+                        if code == "engineering" and field == "molds" and rebound.get("mold_id"):
+                            # Component reuse can select the same source mold
+                            # into several targets. Rebind its local identities,
+                            # then resolve linked Molding using the source key.
+                            rebound["mold_id"] = f"mold-{uuid4().hex}"
+                            for part in rebound.get("parts", []) or []:
+                                if isinstance(part, dict) and part.get("part_id"):
+                                    part["part_id"] = f"part-{uuid4().hex}"
+                        if code == "molding" and rebound.get("line_id"):
+                            rebound["line_id"] = f"injection-{uuid4().hex}"
                         rebound["pricing_component_id"] = target_component
                         if code == "molding" and rebound.get("engineering_source_key"):
                             rebound["_history_link"] = [source.quote.id, target_component, rebound["engineering_source_key"]]
@@ -424,9 +434,13 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
                 key = link_map.get(tuple(link))
                 if key:
                     row["engineering_source_key"] = key
+                    if key.startswith("mold-id:"):
+                        row["engineering_mold_id"] = key.removeprefix("mold-id:")
                 else:
                     row.pop("engineering_source_key", None)
                     row.pop("engineering_synced_fields", None)
+                    row.pop("engineering_mold_id", None)
+                    row.pop("engineering_parts", None)
         sales = payloads.setdefault("sales", {})
         sales.update(_object(initial_payloads["sales"]))
         if whole and "justplay_packaging" in whole.payloads.get("sales", {}):

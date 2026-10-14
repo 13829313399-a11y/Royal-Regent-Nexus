@@ -52,6 +52,7 @@ from app.services.internal_quote import (
     _mark_quote_notifications_handled,
     ensure_quote_formula_current,
     ensure_molding_projection_current,
+    ensure_current_molding_pricing,
     ensure_quote_business_reviewer,
     ensure_quote_permission,
     ensure_quote_read,
@@ -322,6 +323,7 @@ def _submit_whole_quote_review(
         sections = _quote_sections(db, item.id)
         ensure_molding_projection_current(db, item, sections)
         required = _validate_whole_review_submission(sections)
+        ensure_current_molding_pricing(db, item, sections)
         prepared.append((item, sections, required))
     if incomplete_products:
         raise HTTPException(
@@ -451,7 +453,7 @@ def _review_whole_quote(
             )
         sections = _quote_sections(db, item.id)
         if payload.decision == "approve":
-            ensure_molding_projection_current(db, item, sections)
+            ensure_current_molding_pricing(db, item, sections)
         live_manifest = _whole_review_manifest(item, sections)
         submitted_manifest = _json_object(item.final_submission_manifest_json)
         if not _submitted_manifest_matches(db, item, live_manifest, submitted_manifest):
@@ -694,7 +696,7 @@ def submit_final_release(
 
     sections = _quote_sections(db, quote.id)
     _ensure_responsible_followup(quote, sections, user)
-    ensure_molding_projection_current(db, quote, sections)
+    ensure_current_molding_pricing(db, quote, sections)
     quote.header_revision += 1
     manifest = _release_manifest(quote, sections)
     timestamp = now_text()
@@ -790,7 +792,7 @@ def review_final_release(
     if quote.status != "final_reviewing" or quote.final_release_status != "pending":
         raise HTTPException(status_code=409, detail="当前报价不在最终放行审核中")
     if payload.decision == "approve":
-        ensure_molding_projection_current(db, quote, sections)
+        ensure_current_molding_pricing(db, quote, sections)
     live_manifest = _release_manifest(quote, sections)
     submitted_manifest = _json_object(quote.final_submission_manifest_json)
     if not _submitted_manifest_matches(db, quote, live_manifest, submitted_manifest):

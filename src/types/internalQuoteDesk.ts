@@ -222,6 +222,14 @@ export interface InternalQuoteRr2CostSummary {
   }
 }
 
+export interface InternalQuoteSidebarPricingDraft {
+  markupTiers: Array<{ moq: number; markup_x: number; include_in_output: boolean }>
+  selectedMoq: number
+  activeMarkup: number
+  miscRatio: number
+  componentMarkups?: Array<{ id: string; markup: number }>
+}
+
 export interface InternalQuote {
   documentProductCount?: number
   documentVersionCount?: number
@@ -270,6 +278,9 @@ export interface InternalQuote {
   documentArchive?: { quote_id: string; revision: number; reason: string } | null
   finalReleaseStatus: string
   factoryPriceHkd: number
+  pricingComplete?: boolean
+  incompleteSections?: Array<{ sectionCode: string; sectionName: string; reason: string }>
+  authoritativeFactoryQuoteHkd?: number | null
   summaryComponents: Record<string, number>
   summaryWarnings: string[]
   shippingScenarios: InternalQuoteShippingScenario[]
