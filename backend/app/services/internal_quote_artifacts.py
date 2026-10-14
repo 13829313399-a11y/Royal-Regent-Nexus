@@ -167,11 +167,11 @@ def _validate_file_size(content: bytes, limit: int, label: str) -> None:
 
 def _validate_import_file(file_name: str, content: bytes, *, import_type: str) -> None:
     extension = Path(file_name).suffix.lower()
-    is_hair_xls = import_type == "hair" and extension == ".xls"
-    if extension not in IMPORT_EXTENSIONS and not is_hair_xls:
+    is_legacy_xls = import_type in {"hair", "sewing"} and extension == ".xls"
+    if extension not in IMPORT_EXTENSIONS and not is_legacy_xls:
         raise HTTPException(status_code=400, detail="导入仅支持 .xlsx/.xlsm；旧 .xls 请先另存为 xlsx")
     _validate_file_size(content, MAX_IMPORT_SIZE, "Excel 文件")
-    signature = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" if is_hair_xls else b"PK"
+    signature = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" if is_legacy_xls else b"PK"
     if not content.startswith(signature):
         raise HTTPException(status_code=400, detail="Excel 文件头无效")
 

@@ -8,14 +8,14 @@ import InternalQuoteSectionEditor from '../InternalQuoteSectionEditor.vue'
 
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
 
-function setup(canEdit = true, status: InternalQuoteSection['status'] = 'draft') {
+function setup(canEdit = true, status: InternalQuoteSection['status'] = 'draft', code: 'hair' | 'sewing' = 'hair') {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useInternalQuoteDeskStore()
   const quote = { ...store.placeholderQuote, id: 'hair-quote', factoryId: 'huaxing' }
   const section: InternalQuoteSection = {
-    ...quote.sections.find((item) => item.code === 'hair')!,
-    code: 'hair', label: '车发部', status, revision: 3,
+    ...quote.sections.find((item) => item.code === code)!,
+    code, label: code === 'hair' ? '车发部' : '车缝部', status, revision: 3,
     payload: {}, dependencies: [], warnings: [], attachments: [], lines: [],
   }
   const preview: ApiInternalQuoteImportPreview = {
@@ -41,6 +41,19 @@ function setup(canEdit = true, status: InternalQuoteSection['status'] = 'draft')
 afterEach(() => vi.restoreAllMocks())
 
 describe('hair template download and import', () => {
+  it('routes legacy sewing XLS through structured preview instead of attachment upload', async () => {
+    const { wrapper, previewImport, confirm, upload } = setup(true, 'draft', 'sewing')
+    const file = new File(['workbook'], '车缝报价.xls')
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    await flushPromises()
+    expect(previewImport).toHaveBeenCalledWith('hair-quote', 'sewing', file, expect.objectContaining({ revision: 3 }))
+    expect(upload).not.toHaveBeenCalled()
+    expect(confirm).not.toHaveBeenCalled()
+    expect(wrapper.find('.quote-import-preview').exists()).toBe(true)
+    wrapper.unmount()
+  })
   it('downloads the original XLS and explains which sheet to fill', async () => {
     const { wrapper, download } = setup()
     await wrapper.get('button.template-download').trigger('click')
