@@ -56,6 +56,7 @@ class CustomerOrderImportSummaryOut(BaseModel):
 
 
 class CustomerOrderImportPreviewOut(BaseModel):
+    product_registration: dict | None = None
     preview_schema_version: str
     customer_code: str
     factory_id: str

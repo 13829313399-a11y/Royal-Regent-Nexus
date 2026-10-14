@@ -37,6 +37,8 @@ import type { CustomerOrderLedgerLine } from '@/api/customerOrderLedger'
 import type { FeedbackContext } from '@/api/moduleFeedback'
 import CustomerOrderLedger from './CustomerOrderLedger.vue'
 import CustomerOrderSchedule from './CustomerOrderSchedule.vue'
+import DickieProductRegistration from './DickieProductRegistration.vue'
+import type { OrderProductChoice } from '@/types/customerOrderProduct'
 import { getApiErrorMessage } from '@/lib/http'
 import type {
   CustomerOrderImportPreview,
@@ -542,6 +544,7 @@ const draggingUpload = ref<'po' | 'schedule' | null>(null)
 const selectedScheduleFile = ref('尚未选择河源业务统一排期')
 const receivedDate = ref(formatLocalDate(new Date()))
 const previewBatch = ref<CustomerOrderImportPreview | null>(null)
+const productChoices = ref<OrderProductChoice[]>([])
 const parseFailureMessage = ref('')
 const exportFailureMessage = ref('')
 const parsingFiles = ref(false)
@@ -1125,6 +1128,7 @@ function getCustomerScheduleLabel(row: OrderRow) {
 }
 
 function clearPreviewState() {
+  productChoices.value = []
   parseRequestSequence += 1
   exportRequestSequence += 1
   saveRequestSequence += 1
@@ -1332,6 +1336,7 @@ async function parseSelectedFiles() {
   const requestedScheduleFile = scheduleFile.value
   const requestedReceivedDate = receivedDate.value
   const requestedFactoryId = props.factoryId
+  const requestedProductChoices = [...productChoices.value]
   parsingFiles.value = true
   parseFailureMessage.value = ''
   exportFailureMessage.value = ''
@@ -1351,6 +1356,7 @@ async function parseSelectedFiles() {
           requestedScheduleFile,
           requestedReceivedDate,
           requestedFactoryId,
+          requestedProductChoices,
         )
       : customerCode === 'caixing'
         ? await customerOrderApi.previewCaixingBatch(
@@ -1391,6 +1397,21 @@ async function parseSelectedFiles() {
   } finally {
     if (requestId === parseRequestSequence) parsingFiles.value = false
   }
+}
+
+async function applyProductChoices(values: OrderProductChoice[]) {
+  if (props.factoryId !== 'huaxing' || previewBatch.value?.customer_code !== 'dickie' || parsingFiles.value || exportingSchedule.value || savingOrder.value) return
+  clearPreviewState()
+  productChoices.value = values
+  await parseSelectedFiles()
+}
+async function refreshProductRules(product: string) {
+  if (props.factoryId !== 'huaxing' || previewBatch.value?.customer_code !== 'dickie' || parsingFiles.value || exportingSchedule.value || savingOrder.value) return
+  const normalize = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  const preserved = productChoices.value.filter(choice => normalize(choice.product_no) !== normalize(product))
+  clearPreviewState()
+  productChoices.value = preserved
+  await parseSelectedFiles()
 }
 
 function isIssueSkipped(issue: CustomerOrderIssue) {
@@ -1508,6 +1529,7 @@ async function confirmAndGenerateSchedule() {
           requestedPreview.preview_fingerprint,
           requestedConfirmationReason,
           requestedManualOverrides,
+          [...productChoices.value],
         )
       : customerCode === 'caixing'
         ? await customerOrderApi.exportCaixingBatch(
@@ -1668,6 +1690,7 @@ async function confirmAndSaveOrder() {
   payload.append('confirmed', 'true')
   payload.append('skipped_issue_keys', JSON.stringify(resolvedIssueKeys.value))
   payload.append('manual_overrides', JSON.stringify(manualOverrides.value))
+  if (requestedPreview.customer_code === 'dickie' && productChoices.value.length) payload.append('product_choices', JSON.stringify(productChoices.value))
   payload.append('preview_fingerprint', requestedPreview.preview_fingerprint)
   payload.append('confirmation_reason', confirmationReason.value.trim())
   payload.append('source_kind', sourceKind.value)
@@ -2165,6 +2188,12 @@ onBeforeUnmount(() => {
           <li :class="{ active: !scheduleGenerated, done: scheduleGenerated }"><b>{{ scheduleGenerated ? '✓' : '4' }}</b><span>预览与确认</span></li>
           <li :class="{ active: scheduleGenerated }"><b>5</b><span>输出客户排期</span></li>
         </ol>
+
+        <DickieProductRegistration
+          v-if="factoryId === 'huaxing' && previewBatch?.customer_code === 'dickie' && previewBatch.product_registration"
+          :preview="previewBatch" :busy="parsingFiles || exportingSchedule || savingOrder"
+          @apply="applyProductChoices" @refresh="refreshProductRules"
+        />
 
         <article
           v-if="previewBatch && !scheduleGenerated"

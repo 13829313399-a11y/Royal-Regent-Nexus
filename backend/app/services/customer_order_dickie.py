@@ -874,7 +874,9 @@ def _preview_row(
     file_name: str,
     row_index: int,
 ) -> dict[str, Any]:
-    product_no = _clean_identifier(parsed.product_no)
+    # Product codes are identifiers, not quantities. Preserve leading zeroes
+    # so a newly registered textual SKU still matches the source PO exactly.
+    product_no = _clean_text(parsed.product_no)
     formatted_product_no = format_dickie_product_no(product_no)
     quantity = parsed.quantity
     packing_units = _packing_units(parsed.packing)

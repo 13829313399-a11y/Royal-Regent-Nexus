@@ -872,6 +872,7 @@ def init_db() -> None:
         carton_supplier_portal,  # noqa: F401
         customer_order,  # noqa: F401
         customer_order_ledger,  # noqa: F401
+        customer_order_products,  # noqa: F401
         internal_quote,  # noqa: F401
         module_feedback,  # noqa: F401
         customer_price_settings,  # noqa: F401
@@ -947,8 +948,8 @@ def init_db() -> None:
             if missing:
                 raise RuntimeError("报价方案与版本需要迁移至 20260924_0119；请先备份并迁移。缺少：" + ", ".join(sorted(missing)))
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
-                            # Cutting master data is created only by explicit migration.
-                            if not name.startswith("cutting_ops_")
+                            # Cutting and order-product rules require explicit migration.
+                            if not name.startswith(("cutting_ops_", "customer_order_product_"))
                             and not name.startswith("indonesia_material_")
                             and (not name.startswith(("collab_", "member_")) or not existing_tables)
                             # An existing business store upgrades this new domain explicitly.

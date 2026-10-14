@@ -105,6 +105,11 @@ def decorate_manual_resolution_policy(preview: dict[str, Any]) -> dict[str, Any]
             issue.setdefault("edit_field", "")
             issue.setdefault("edit_label", "")
             issue.setdefault("edit_input_type", "text")
+            if row.get('_huaxing_customer') == 'dickie' and issue.get('code') in {'unmapped_item_sheet', 'product_rule_conflict'}:
+                issue['can_skip'] = False
+                issue['can_edit'] = False
+                issue['skip_label'] = '请在新货号建档区明确分类后重新预览，不能直接确认跳过'
+                continue
             if (
                 issue.get("severity") != "blocked"
                 or str(issue.get("code") or "") in DUPLICATE_CONFIRMATION_CODES

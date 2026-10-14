@@ -4,7 +4,7 @@ import json
 from urllib.parse import quote as url_quote
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.services.customer_order_jobs import run_order_job, order_job_request
@@ -86,6 +86,7 @@ MAX_CONFIRMATION_REASON_LENGTH = 500
 MIN_CONFIRMATION_REASON_LENGTH = 4
 MAX_MANUAL_OVERRIDES = MAX_BATCH_PO_FILES * 200
 MAX_MANUAL_OVERRIDE_VALUE_LENGTH = 500
+refresh_product_user = get_current_user
 PREVIEW_FINGERPRINT_VERSION = "customer-order-preview-fingerprint-v1"
 TEST_DUPLICATE_ISSUE_CODES = frozenset({
     "duplicate_reference",
@@ -254,6 +255,10 @@ def _export_unified_single_schedule(
 def _create_special_batch_preview(*, customer_code: str, **kwargs):
     if is_unified_schedule(kwargs["schedule_content"]):
         return create_unified_customer_preview(customer_code=customer_code, **kwargs)
+    if kwargs.get('product_choices'):
+        raise CustomerOrderWorkbookError('新货号补录仅支持最新河源统一排期，请选择正确的排期模板')
+    kwargs.pop('product_registry', None)
+    kwargs.pop('product_choices', None)
     legacy = {
         "buzzbee": create_buzzbee_batch_preview,
         "dickie": create_dickie_batch_preview,
@@ -265,6 +270,10 @@ def _create_special_batch_preview(*, customer_code: str, **kwargs):
 def _export_special_batch_schedule(*, customer_code: str, **kwargs):
     if is_unified_schedule(kwargs["schedule_content"]):
         return export_unified_customer_schedule(customer_code=customer_code, **kwargs)
+    if kwargs.get('product_choices'):
+        raise CustomerOrderWorkbookError('新货号补录仅支持最新河源统一排期，请选择正确的排期模板')
+    kwargs.pop('product_registry', None)
+    kwargs.pop('product_choices', None)
     legacy = {
         "buzzbee": export_buzzbee_batch_schedule,
         "dickie": export_dickie_batch_schedule,
@@ -455,6 +464,9 @@ def _preview_fingerprint(preview: dict, received_date: str) -> str:
         "target_template": preview.get("target_template", ""),
         "output_file_name": preview.get("output_file_name", ""),
     }
+    if (preview.get('factory_id'), preview.get('customer_code')) == ('huaxing', 'dickie') and preview.get('product_registration') is not None:
+        registration = preview['product_registration']
+        identity['product_registration'] = {k: registration.get(k) for k in ('available', 'revision', 'sha256', 'choices')}
     encoded = json.dumps(
         identity,
         ensure_ascii=False,
@@ -602,6 +614,14 @@ def _record_export_audit(
         confirmation_reason=confirmation_reason,
         created_at=now_text(),
     )
+    registration = preview.get('product_registration')
+    if registration and registration.get('available'):
+        if (preview.get('factory_id'), preview.get('customer_code')) != ('huaxing', 'dickie'):
+            raise HTTPException(400, '产品规则导出证据不能跨厂区或客户使用')
+        from app.services import customer_order_products as products
+        from app.models.customer_order_products import OrderProductExportEvidence
+        products.ensure_current(db, registration)
+        db.add(OrderProductExportEvidence(audit_id=audit.id, factory_id='huaxing', customer_code='dickie', data=registration))
     db.add(audit)
     db.commit()
     return audit
@@ -989,10 +1009,12 @@ async def export_buzzbee_customer_schedule_batch(
     response_model=CustomerOrderImportPreviewOut,
 )
 async def preview_dickie_customer_order_batch(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     po_files: list[UploadFile] = File(...),
     schedule_file: UploadFile = File(...),
+    product_choices: str = Form("[]"),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1009,17 +1031,25 @@ async def preview_dickie_customer_order_batch(
     schedule_content = await schedule_file.read()
     if not schedule_content:
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
+    from app.services import customer_order_products as products
+    registry, choices = products.snapshot(db), products.choices(product_choices)
     try:
         preview = await run_order_job(
             _create_special_batch_preview,
             db=db,
             customer_code="dickie",
+            product_registry=registry,
+            product_choices=choices,
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
         )
+        if registry['available']:
+            current_user = refresh_product_user(request, db)
+            _ensure_customer_order_permission(db, current_user, 'customer_order:read', normalized_factory_id)
+            products.ensure_current(db, preview.get('product_registration'))
         return _finalize_preview(
             preview,
             received_date=received_date,
@@ -1032,6 +1062,7 @@ async def preview_dickie_customer_order_batch(
 
 @router.post("/dickie/export-batch")
 async def export_dickie_customer_schedule_batch(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     confirmed: bool = Form(...),
@@ -1041,6 +1072,7 @@ async def export_dickie_customer_schedule_batch(
     confirmation_reason: str = Form(""),
     po_files: list[UploadFile] = File(...),
     schedule_file: UploadFile = File(...),
+    product_choices: str = Form("[]"),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1071,11 +1103,18 @@ async def export_dickie_customer_schedule_batch(
     schedule_content = await schedule_file.read()
     if not schedule_content:
         raise HTTPException(status_code=400, detail="客户排期文件不能为空")
+    from app.services import customer_order_products as products
+    # Shared defaults must not be read by an export-only principal.
+    if products.ready(db):
+        _ensure_customer_order_permission(db, current_user, 'customer_order:read', normalized_factory_id)
+    registry, choices = products.snapshot(db), products.choices(product_choices)
     try:
         output, file_name, preview = await run_order_job(
             _export_special_batch_schedule,
             db=db,
             customer_code="dickie",
+            product_registry=registry,
+            product_choices=choices,
             factory_id=normalized_factory_id,
             received_date=received_date,
             po_files=uploaded_po_files,
@@ -1086,6 +1125,10 @@ async def export_dickie_customer_schedule_batch(
         )
     except CustomerOrderWorkbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if registry['available']:
+        current_user = refresh_product_user(request, db)
+        _ensure_customer_order_permission(db, current_user, 'customer_order:read', normalized_factory_id)
+        _ensure_customer_order_permission(db, current_user, 'customer_order:export', normalized_factory_id)
     actual_issue_keys, audit = _complete_export_control(
         db,
         current_user,

@@ -3,7 +3,7 @@ from datetime import date
 from pydantic import TypeAdapter, ValidationError
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, Request
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -192,6 +192,7 @@ def source_download(source_id: str, factory_id: str, db: Session = Depends(get_d
 
 @router.post("/imports/{customer_code}")
 async def import_orders(customer_code: str, factory_id: str = Form(...), received_date: str = Form(...),
+    request: Request = None, product_choices: str = Form("[]"),
     confirmed: bool = Form(...), skipped_issue_keys: str = Form("[]"), manual_overrides: str = Form("[]"),
     preview_fingerprint: str = Form(...), confirmation_reason: str = Form(""),
     source_kind: Literal["formal", "supplementary"] = Form("formal"),
@@ -222,6 +223,11 @@ async def import_orders(customer_code: str, factory_id: str = Form(...), receive
         raise HTTPException(400, "客户排期为空或超过 35MB 限制")
     kwargs = dict(customer_code=customer_code, factory_id=factory_id, received_date=received_date,
         po_files=files, schedule_file_name=schedule_file.filename or "", schedule_content=schedule_content)
+    from app.services import customer_order_products as products
+    if (factory_id, customer_code) == ('huaxing', 'dickie'):
+        kwargs.update(product_registry=products.snapshot(db), product_choices=products.choices(product_choices))
+    elif product_choices.strip() != '[]':
+        raise HTTPException(400, '产品建档只支持华兴 Dickie')
     try:
         create_preview = mapping._create_special_batch_preview if special else mapping._create_mapped_customer_preview
         preview = await run_order_job(create_preview, db=db, **kwargs)
@@ -236,11 +242,20 @@ async def import_orders(customer_code: str, factory_id: str = Form(...), receive
             mapping.HuadengCustomerOrderError, mapping.HuakangACustomerOrderError, mapping.HuakangCCustomerOrderError) as exc:
         raise HTTPException(400, str(exc)) from exc
     resolved["customer_name"] = mapping.CUSTOMER_NAMES.get(customer_code, customer_code)
+    registration = resolved.get('product_registration')
+    if registration and registration.get('available'):
+        current_user = mapping.refresh_product_user(request, db)
+        authorize(db, current_user, factory_id, 'read')
+        authorize(db, current_user, factory_id, 'write')
+        if reconcile_line and db.scalar(select(Dispatch.id).where(Dispatch.line_id == reconcile_line.id).limit(1)):
+            authorize(db, current_user, factory_id, 'dispatch')
+        products.ensure_current(db, registration)
     return transaction(db, lambda: ledger.import_preview(db, preview=resolved,
         files=[(name, content, source_kind) for name, content in files] + [(schedule_file.filename or "schedule.xlsx", schedule_content, "schedule")],
         source_kind=source_kind, actor=ledger.actor_name(current_user), reason=reconciliation_reason.strip() if reconcile_line else reason,
         reconcile_line=reconcile_line, expected_revision=expected_revision,
-        controls={"preview_fingerprint": preview_fingerprint, "confirmed_issue_keys": sorted(actual_keys), "manual_overrides": overrides, "reason": reason}))
+        controls={"preview_fingerprint": preview_fingerprint, "confirmed_issue_keys": sorted(actual_keys), "manual_overrides": overrides, "reason": reason,
+                  **({'product_registration': registration} if registration else {})}))
 
 
 def mutate(db, user, factory, line_id, action, body, permission):

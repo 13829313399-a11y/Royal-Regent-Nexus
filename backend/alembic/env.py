@@ -45,6 +45,7 @@ from app.models import (
     carton_supplier_portal,  # noqa: F401
     customer_order,  # noqa: F401
     customer_order_ledger,  # noqa: F401
+    customer_order_products,  # noqa: F401
     internal_quote,  # noqa: F401
     module_feedback,  # noqa: F401
     customer_price_settings,  # noqa: F401

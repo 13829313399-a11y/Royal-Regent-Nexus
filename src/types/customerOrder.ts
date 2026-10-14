@@ -53,6 +53,7 @@ export interface CustomerOrderPreviewRow {
 }
 
 export interface CustomerOrderImportPreview {
+  product_registration?: import('./customerOrderProduct').OrderProductRegistration | null
   preview_schema_version: string
   customer_code: string
   factory_id: string

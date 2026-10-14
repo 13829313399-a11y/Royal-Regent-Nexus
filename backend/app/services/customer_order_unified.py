@@ -619,6 +619,11 @@ def _parse_special_rows(
                     row_index=len(rows) + 1,
                 )
                 row["received_date"] = received_date
+                row['_dickie_po_fields'] = {
+                    'product_name_en': bool(parsed.product_name_en),
+                    'product_name_zh': bool(re.search(r'[\u3400-\u9fff]', parsed.product_name_en or '')),
+                    'units_per_carton': bool(parsed.packing),
+                }
                 rows.append(row)
         return rows, ["Dickie 扫描 PDF 的 OCR 字段仍需在预览中人工核对。"], service.INPUT_TEMPLATE
 
@@ -1178,6 +1183,8 @@ def create_unified_customer_preview(
     po_files: list[tuple[str, bytes]],
     schedule_file_name: str,
     schedule_content: bytes,
+    product_registry: dict | None = None,
+    product_choices: list[dict] | None = None,
 ) -> dict[str, Any]:
     _validate_po_batch(po_files)
     ensure_unified_schedule(schedule_file_name, schedule_content, factory_id=factory_id, customer_code=customer_code)
@@ -1279,7 +1286,7 @@ def create_unified_customer_preview(
         ]
         if customer_code == 'edu':
             warnings[2] = 'EDU 按客户完整合同/PO＋产品查重，EDUHX 仅为内部编号；不同客户订单独立续编号，源排期不会被覆盖。'
-    return {
+    preview = {
         "preview_schema_version": PREVIEW_SCHEMA_VERSION,
         "customer_code": customer_code,
         "factory_id": factory_id,
@@ -1302,6 +1309,12 @@ def create_unified_customer_preview(
         "rows": detail_rows,
         "warnings": warnings,
     }
+    if (factory_id, customer_code) == ('huaxing', 'dickie'):
+        from app.services import customer_order_products
+        return customer_order_products.apply(preview, product_registry, product_choices or [], history, huaxing_sheets)
+    if product_choices or product_registry:
+        raise CustomerOrderUnifiedError('产品建档只支持华兴 Dickie，不能跨客户或厂区使用')
+    return preview
 
 
 def _copy_template_row(worksheet, source_row: int, target_row: int) -> None:
@@ -1528,6 +1541,8 @@ def export_unified_customer_schedule(
     schedule_content: bytes,
     skipped_issue_keys: set[str] | None = None,
     manual_overrides: list[dict[str, str]] | None = None,
+    product_registry: dict | None = None,
+    product_choices: list[dict] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     preview = create_unified_customer_preview(
         customer_code=customer_code,
@@ -1536,10 +1551,17 @@ def export_unified_customer_schedule(
         po_files=po_files,
         schedule_file_name=schedule_file_name,
         schedule_content=schedule_content,
+        product_registry=product_registry,
+        product_choices=product_choices,
     )
     decorate_manual_resolution_policy(preview)
     original_identities = {row['id']: tuple(_text(row.get(k)) for k in ('product_no', 'reference_no', 'contract_no', 'po_no')) for row in preview['rows']}
     apply_overrides_to_preview(preview, manual_overrides or [])
+    for row in preview['rows']:
+        if row.get('_product_registration_key'):
+            from app.services.customer_order_products import key
+            if key(row.get('product_no')) != row['_product_registration_key']:
+                raise CustomerOrderUnifiedError('修改货号后不能沿用之前的产品分类，请重新核对原单与货号规则')
     for row in preview['rows']:
         _recalculate_preview_row(row)
     if huaxing.enabled(factory_id, customer_code) and manual_overrides:
@@ -1552,6 +1574,9 @@ def export_unified_customer_schedule(
     for row in preview["rows"]:
         _recalculate_preview_row(row)
     requested = set(skipped_issue_keys or set())
+    if (factory_id, customer_code) == ('huaxing', 'dickie'):
+        if any(i.get('code') in {'unmapped_item_sheet', 'product_rule_conflict'} for row in preview['rows'] for i in row['issues']):
+            raise CustomerOrderUnifiedError('请在新货号建档区明确分类后重新预览，分类缺失或冲突不能直接跳过')
     _validate_resolutions(preview, requested)
 
     workbook = _load_workbook(schedule_content)

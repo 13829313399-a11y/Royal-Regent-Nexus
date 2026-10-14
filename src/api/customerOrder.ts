@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { http } from '@/lib/http'
+import type { OrderProductChoice } from '@/types/customerOrderProduct'
 import type {
   CustomerOrderImportPreview,
   CustomerOrderManualOverride,
@@ -217,10 +218,13 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       scheduleFile: File,
       receivedDate: string,
       factoryId = 'huaxing',
+      productChoices: OrderProductChoice[] = [],
     ) {
+      const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
+      if (productChoices.length) payload.append('product_choices', JSON.stringify(productChoices))
       const response = await client.post<CustomerOrderImportPreview>(
         '/customer-orders/dickie/preview-batch',
-        buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId),
+        payload,
         { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180_000 },
       )
       return response.data
@@ -235,8 +239,10 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       previewFingerprint = '',
       confirmationReason = '',
       manualOverrides: CustomerOrderManualOverride[] = [],
+      productChoices: OrderProductChoice[] = [],
     ) {
       const payload = buildBatchFormData(poFiles, scheduleFile, receivedDate, factoryId)
+      if (productChoices.length) payload.append('product_choices', JSON.stringify(productChoices))
       appendExportControls(payload, skippedIssueKeys, previewFingerprint, confirmationReason, manualOverrides)
       const response = await postCustomerOrderBlob(
         client, '/customer-orders/dickie/export-batch', payload, 240_000,
