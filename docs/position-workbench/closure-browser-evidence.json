@@ -1,0 +1,119 @@
+{
+  "date": "2026-10-13",
+  "environment": "Isolated localhost Vite 5186, API 8016, synthetic browser.db; no production/default business database",
+  "browser_paths": {
+    "primary": "Codex in-app Browser via cua_repl",
+    "display_checks": "User-authorized standalone Playwright CLI with an isolated Chrome profile; only 200% zoom/reduced-motion checks"
+  },
+  "actual_zoom": {
+    "method": "Chrome settings Appearance > Page zoom > 200%",
+    "css_visual_viewport_zoom": 2,
+    "device_pixel_ratio": 2,
+    "visual_viewport_scale": 1,
+    "physical_viewport": [
+      1280,
+      720
+    ],
+    "css_viewport": [
+      640,
+      360
+    ],
+    "document_scroll_width": 640,
+    "admin_button": {
+      "top": 302,
+      "bottom": 346,
+      "height": 44,
+      "enabled": true,
+      "center_unobscured": true
+    },
+    "employee_button_after_fix": {
+      "top": 153.8046875,
+      "bottom": 197.8046875,
+      "height": 44,
+      "scroll_margin_bottom": 108,
+      "top_and_bottom_unobscured": true
+    }
+  },
+  "additional_employee_focus_at_200_percent": [
+    {
+      "css_viewport": [
+        360,
+        800
+      ],
+      "scroll_width": 360,
+      "button_top": 308,
+      "button_bottom": 352,
+      "both_edges_visible": true
+    },
+    {
+      "css_viewport": [
+        390,
+        844
+      ],
+      "scroll_width": 390,
+      "button_top": 390.5,
+      "button_bottom": 434.5,
+      "both_edges_visible": true
+    },
+    {
+      "css_viewport": [
+        768,
+        1024
+      ],
+      "scroll_width": 768,
+      "button_top": 465.8046875,
+      "button_bottom": 509.8046875,
+      "both_edges_visible": true
+    }
+  ],
+  "reduced_motion": {
+    "match_media": true,
+    "entry_self_root_animation": "none",
+    "catalog_cards": 32,
+    "catalog_moving_elements": 0,
+    "success_moving_elements": 0,
+    "success_focus": "岗位与权限已确认"
+  },
+  "keyboard": {
+    "employee": "Tab -> edit -> empty Enter remains invalid input -> type -> Enter -> focused status -> admin confirmation -> refreshed formal position",
+    "administrator": "Shift+Tab queue selection -> Enter -> Tab search -> arrow keys for native decision/package radio -> Tab submit -> Enter -> focused success -> next -> return textarea autofocus -> submit return",
+    "focus_outline": "2.4px administrator / 3px employee; focused controls tested unobscured"
+  },
+  "compatibility": {
+    "person": "confirmed keeping existing permissions",
+    "registration": "approved qa-compat through old review page",
+    "access": "independent supplier read saved; authorization revision 5 -> 6",
+    "password_reset": "synthetic request rejected via old deep link",
+    "unauthorized_employee": "protected page, no access details or submit operations"
+  },
+  "console": "Final reload 2026-10-13T07:43:51.274Z: admin and employee had zero new error/warn logs. Earlier 07:03:58 employee-tab HMR websocket/dynamic import startup errors resolved after reload; fresh standalone anonymous /api/auth/me 401 occurred only before login.",
+  "screenshots": [
+    "zoom-200-admin.png",
+    "zoom-200-employee.png",
+    "reduced-motion-success.png",
+    "keyboard-employee-submit.png",
+    "keyboard-admin-success.png",
+    "keyboard-return-success.png",
+    "legacy-password-rejected.png",
+    "legacy-registration-success.png",
+    "legacy-person-success.png",
+    "legacy-access-saved.png"
+  ],
+  "capture_note": "Playwright screenshot clipping with native Chrome zoom was observed. Final zoom PNGs use Chromium Page.captureScreenshot through the authorized Playwright session, with DOM geometry measured separately.",
+  "not_claimed": [
+    "physical phone keyboard/IME",
+    "screen reader certification",
+    "production deployment",
+    "production performance"
+  ],
+  "final_health": {
+    "frontend_http": 200,
+    "backend_health_http": 200,
+    "preview_ports": [
+      5186,
+      8016
+    ],
+    "postgres_test_port_55440": "stopped",
+    "standalone_playwright": "closed"
+  }
+}

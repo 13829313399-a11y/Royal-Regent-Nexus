@@ -82,17 +82,18 @@ def test_hair_requires_detail_sheet_and_product_hkd_price_header():
             parse_internal_quote_workbook(hair_workbook([], header=header), "hair")
 
 
-def test_legacy_xls_support_is_limited_to_hair_and_checks_file_signature():
+def test_legacy_xls_support_is_limited_to_hair_and_sewing_and_checks_file_signature():
     source, file_name = build_internal_quote_import_template("hair")
     _validate_import_file(file_name, source, import_type="hair")
-    for department in ("mold", "sewing"):
+    _validate_import_file(file_name, source, import_type="sewing")
+    for department in ("mold", "painting"):
         with pytest.raises(HTTPException) as error:
             _validate_import_file(file_name, source, import_type=department)
         assert error.value.status_code == 400
     with pytest.raises(HTTPException) as error:
         _validate_import_file(file_name, b"PKfake", import_type="hair")
     assert error.value.status_code == 400
-    with pytest.raises(ValueError, match="无法读取车发部 XLS"):
+    with pytest.raises(ValueError, match="无法读取 XLS"):
         parse_internal_quote_workbook(source[:8] + b"broken", "hair")
 
 

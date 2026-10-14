@@ -32,6 +32,13 @@ function snapshot(): WorkSnapshot {
 beforeEach(() => setActivePinia(createPinia()))
 
 describe('readable account request previews', () => {
+  it('keeps legacy registration usable with the new entry disabled and position reviews reachable after rollback', () => {
+    expect(entryRoute(entry, false)).toEqual({ name: 'system-registration', query: { tab: 'pending', request_id: 'registration-opaque-id' } })
+    expect(entryRoute(entry, true)).toEqual({ name: 'position-workbench-compatible', query: { tab: 'pending', item: 'registration:registration-opaque-id' } })
+    const position = structuredClone(entry)
+    position.actions[0]!.target!.route_key = 'position_workbench'
+    expect(entryRoute(position, false)).toEqual({ name: 'position-workbench-compatible', query: { tab: 'pending', item: 'position:registration-opaque-id' } })
+  })
   it('shows applicant, summary and submission time without exposing internal IDs in the row', async () => {
     const wrapper = mount(WorkEntryRow, { props: { entry } })
     expect(wrapper.text()).toContain('张三（zhangsan）')

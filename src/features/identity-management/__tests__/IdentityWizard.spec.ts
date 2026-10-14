@@ -1,6 +1,9 @@
 import { flushPromises, mount, enableAutoUnmount } from '@vue/test-utils'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import IdentityWizard from '../IdentityWizard.vue'
+import PersonContext from '../workspace/PersonContext.vue'
+import { defineComponent } from 'vue'
+import { createMemoryHistory, createRouter, RouterView, useRoute, useRouter } from 'vue-router'
 import type {
   ChangePreview,
   ChangeRecord,
@@ -12,9 +15,11 @@ const api = vi.hoisted(() => ({
   preview: vi.fn(),
   commit: vi.fn(),
   change: vi.fn(),
+  person: vi.fn(),
 }))
 vi.mock('@/api/identity', async (original) => ({ ...(await original<object>()), identityApi: api }))
 vi.mock('@/api/iam', () => ({ iamApi: { listRoles: async () => [] } }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'admin' }, authorizationVersion: 1, can: () => true }) }))
 enableAutoUnmount(afterEach)
 const person = {
   id: 'p',
@@ -198,4 +203,42 @@ it('starts with rehire for a departed person even without clicking the only choi
   await wrapper.get('form').trigger('submit')
   await flushPromises()
   expect(api.draft.mock.calls[0]?.[0].request_type).toBe('rehire')
+})
+
+it('keeps the real advanced drawer and RouterView locked through an uncertain result', async () => {
+  api.person.mockResolvedValue(person)
+  api.commit.mockRejectedValue({ response: { status: 408 } })
+  api.change.mockResolvedValue(row)
+  const host = defineComponent({
+    components: { PersonContext },
+    setup() { return { route: useRoute(), router: useRouter(), catalog } },
+    template: '<PersonContext person-id="p" :panel="route.query.panel || \'profile\'" :catalog="catalog" @panel="router.replace({query:{panel:$event}})" />',
+  })
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/', component: host }, { path: '/other', component: { template: '<div>other</div>' } },
+  ] })
+  await router.push('/?panel=advanced'); await router.isReady()
+  const wrapper = mount(RouterView, { attachTo: document.body, global: { plugins: [router], stubs: { AccessExplanation: true, DelegationEditor: true, AccessImpact: true } } })
+  await flushPromises()
+  const wizard = wrapper.getComponent(IdentityWizard)
+  await preview(wizard as ReturnType<typeof mountView>)
+  await wizard.get('input[type="checkbox"]').setValue(true)
+  await button(wizard as ReturnType<typeof mountView>, '确认办理').trigger('click'); await flushPromises()
+  expect(wizard.text()).toContain('提交结果待核查')
+  const unload = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(unload); expect(unload.defaultPrevented).toBe(true)
+  const close = document.querySelector<HTMLButtonElement>('button[aria-label="关闭任职、预约与账号状态"]')!
+  close.click(); await flushPromises()
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+  document.querySelector('[role="dialog"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await flushPromises()
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+  await router.push('/other'); expect(router.currentRoute.value.path).toBe('/')
+  await button(wizard as ReturnType<typeof mountView>, '核查提交结果').trigger('click'); await flushPromises()
+  await router.push('/other'); expect(router.currentRoute.value.path).toBe('/')
+  api.change.mockResolvedValue({ ...row, state: 'applied' })
+  await button(wizard as ReturnType<typeof mountView>, '核查提交结果').trigger('click'); await flushPromises()
+  await router.push('/other'); expect(router.currentRoute.value.path).toBe('/other')
+  expect(api.commit).toHaveBeenCalledTimes(1)
+  wrapper.unmount()
 })

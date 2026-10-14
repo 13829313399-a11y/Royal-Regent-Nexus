@@ -11,6 +11,8 @@ from typing import Any, Callable
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
+from app.services.internal_quote_sewing import sewing_formula_multiplier, sewing_workbook_formulas
+
 
 IMPORT_TYPE_DEPARTMENTS = {
     "mold": "engineering",
@@ -146,7 +148,7 @@ def _xls_workbook_rows(content: bytes) -> list[tuple[str, list[list[object]]]]:
         finally:
             workbook.release_resources()
     except Exception as error:
-        raise ValueError("无法读取车发部 XLS 报价单，请确认文件有效且未加密") from error
+        raise ValueError("无法读取 XLS 报价单，请确认文件有效且未加密") from error
     if not sheets:
         raise ValueError("工作簿为空")
     return sheets
@@ -1123,6 +1125,8 @@ def _parse_slush(
 def _parse_sewing(
     rows: list[list[object]],
     header_index: int,
+    rmb_hkd: Decimal = Decimal("0.85"),
+    sewing_formulas: dict | None = None,
     **_: object,
 ) -> tuple[dict[str, Any], int, list[str]]:
     groups: list[dict[str, Any]] = []
@@ -1142,7 +1146,9 @@ def _parse_sewing(
         if row_has(row, "物料名称|布料名称", "裁片部位|部位", "用量|用量/码", "价钱|总价钱"):
             total_price_column = preferred_column_index(row, ("总价钱(RMB)", "总价钱"))
             if total_price_column is None:
-                total_price_column = preferred_column_index(row, ("价钱(RMB)", "价钱", "成本"))
+                total_price_column = preferred_column_index(row, ("价钱(RMB)", "价钱"))
+            if total_price_column is None:
+                total_price_column = preferred_column_index(row, ("成本",))
             columns = {
                 "material": preferred_column_index(row, ("布料名称", "物料名称")),
                 "part": preferred_column_index(row, ("裁片部位", "部位")),
@@ -1159,6 +1165,9 @@ def _parse_sewing(
                 "exchange_rate": preferred_column_index(row, ("汇率", "RMB/HKD汇率", "RMB→HKD汇率")),
                 "currency": preferred_column_index(row, ("单价币种", "币种")),
                 "markup": column_index(row, ("码点",)),
+                "cost": preferred_column_index(row, ("成本",)),
+                "extra_multiplier": preferred_column_index(row, ("额外倍率",)),
+                "quoted_price": preferred_column_index(row, ("暂用原价 HKD",)),
                 "price": total_price_column,
                 "note": column_index(row, ("备注",)),
             }
@@ -1209,12 +1218,13 @@ def _parse_sewing(
         if row_currency not in {"RMB", "HKD"}:
             raise ValueError(f"第 {source_index} 行单价币种必须是 RMB 或 HKD")
         price = number(value_at(row, columns["price"]))
+        quoted_price = number(value_at(row, columns["quoted_price"]))
         part = text(value_at(row, columns["part"]))
         if any("合计" in value for value in nonempty):
             next_detail_row_is_product_title = True
             last_material = ""
             continue
-        if next_detail_row_is_product_title and raw_material and usage is None and unit is None and price is None and not part:
+        if next_detail_row_is_product_title and raw_material and usage is None and unit is None and price is None and quoted_price is None and not part:
             product_name = re.sub(r"^产品\s*[:：]\s*", "", raw_material).strip()
             current = {
                 "name": product_name,
@@ -1226,7 +1236,7 @@ def _parse_sewing(
             next_detail_row_is_product_title = False
             last_material = ""
             continue
-        if raw_material and usage is None and unit is None and price is None and not part:
+        if raw_material and usage is None and unit is None and price is None and quoted_price is None and not part:
             if not current["materials"]:
                 current["name"] = raw_material
                 current["category"] = "hair" if "发" in raw_material else "clothes"
@@ -1249,7 +1259,26 @@ def _parse_sewing(
         markup_value = max(number(value_at(row, columns["markup"]), Decimal("1")) or Decimal("1"), Decimal("0"))
         if markup_value <= 0:
             markup_value = Decimal("1")
-        if unit is None:
+        extra_multiplier = number(value_at(row, columns["extra_multiplier"]))
+        if text(value_at(row, columns["extra_multiplier"])) and extra_multiplier is None:
+            raise ValueError(f"第 {source_index} 行额外倍率必须是大于 0 的数字")
+        if extra_multiplier is None:
+            extra_multiplier = sewing_formula_multiplier(
+                (sewing_formulas or {}).get((source_index, columns["price"])),
+                source_index, columns["cost"], columns["markup"],
+            )
+            if extra_multiplier is not None:
+                warnings.append(f"第 {source_index} 行 {material}：已识别额外倍率 {extra_multiplier}，可在明细逐行修改")
+        if extra_multiplier is not None and (not extra_multiplier.is_finite() or extra_multiplier <= 0):
+            raise ValueError(f"第 {source_index} 行额外倍率必须是大于 0 的数字")
+        if quoted_price is None and not price_is_cost and price is not None and (usage is None or unit is None):
+            quoted_price = price if price_currency == "HKD" else price / (exchange_rate if exchange_rate and exchange_rate > 0 else rmb_hkd)
+        preserve_quote = quoted_price is not None and (usage is None or unit is None)
+        if quoted_price is not None and (not quoted_price.is_finite() or quoted_price < 0):
+            raise ValueError(f"第 {source_index} 行原价必须是非负数字")
+        if preserve_quote:
+            warnings.append(f"第 {source_index} 行 {material}：待补用量、单价，暂按原价 HKD {precise_decimal_text(quoted_price)} 计入；补齐后按公式重算")
+        elif unit is None:
             # If only a derived price exists, retain that price's currency when
             # no usable conversion rate is supplied instead of mislabelling it.
             conversion = Decimal("1")
@@ -1264,6 +1293,13 @@ def _parse_sewing(
                 else Decimal("0")
             )
             warnings.append(f"第 {source_index} 行 {material} 未识别物料价，已按源表总价反算或按 0 预览")
+        if not preserve_quote and price is not None and unit is not None and not price_is_cost:
+            rate = exchange_rate if exchange_rate and exchange_rate > 0 else rmb_hkd
+            expected = usage_value * unit * markup_value * (extra_multiplier or Decimal("1"))
+            if row_currency != price_currency:
+                expected = expected / rate if row_currency == "RMB" else expected * rate
+            if abs(expected - price) > Decimal("0.0001"):
+                warnings.append(f"第 {source_index} 行 {material}：源表价钱 {price} 与按输入重算 {precise_decimal_text(expected)} 不一致，请核对额外倍率或原公式后确认")
         craft_text = text(value_at(row, columns["craft"]))
         current["materials"].append(
             {
@@ -1284,14 +1320,16 @@ def _parse_sewing(
                     )}
                     if columns["below_moq_fee_rmb"] is not None else {}
                 ),
-                "usage": precise_decimal_text(usage_value),
-                f"unit_price_{row_currency.lower()}": precise_decimal_text(max(unit, Decimal("0"))),
+                "usage": None if preserve_quote and usage is None else precise_decimal_text(usage_value),
+                f"unit_price_{row_currency.lower()}": None if preserve_quote and unit is None else precise_decimal_text(max(unit, Decimal("0"))),
                 "unit_price_source_currency": row_currency,
                 **(
                     {"exchange_rate": precise_decimal_text(max(exchange_rate or Decimal("0"), Decimal("0")))}
                     if columns["exchange_rate"] is not None and exchange_rate is not None and exchange_rate > 0 else {}
                 ),
                 "markup": precise_decimal_text(markup_value),
+                **({"extra_multiplier": precise_decimal_text(extra_multiplier)} if extra_multiplier is not None else {}),
+                **({"quoted_price_hkd": precise_decimal_text(quoted_price)} if preserve_quote else {}),
                 "remark": text(value_at(row, columns["note"])),
                 "source_row": source_index,
             }
@@ -1301,7 +1339,7 @@ def _parse_sewing(
     if not groups:
         raise ValueError("已识别车缝表头，但没有解析到车缝产品分组")
     warnings.append(
-        "源表成本、总价钱和合计仅用于核对；保存后按用量/码 × 单价 HKD × 码点，或用量/码 × 单价 RMB ÷ 行汇率 × 码点由服务端重算 HKD，裁片数不参与金额"
+        "源表成本、总价钱和合计仅用于核对（待补行暂用原价除外）；保存后按用量/码 × 单价 HKD × 码点 × 额外倍率，或用量/码 × 单价 RMB ÷ 行汇率 × 码点 × 额外倍率由服务端重算 HKD，裁片数不参与金额"
     )
     return {"groups": groups}, total_rows, warnings
 
@@ -1573,7 +1611,7 @@ def parse_internal_quote_workbook(
 ) -> ParsedInternalQuoteImport:
     if import_type not in IMPORT_TYPE_DEPARTMENTS:
         raise ValueError("不支持的内部报价导入类型")
-    sheets = workbook_rows(content, allow_xls=import_type == "hair")
+    sheets = workbook_rows(content, allow_xls=import_type in {"hair", "sewing"})
     sheet_name, rows, header_index = find_header(sheets, import_type)
     rows = [list(row) for row in rows]
     if header_index + 1 < len(rows):
@@ -1654,6 +1692,7 @@ def parse_internal_quote_workbook(
         sheet_name=sheet_name,
         embedded_images_by_row=embedded_images_by_row,
         **({"formula_rows": formula_rows} if import_type == "painting" else {}),
+        **({"sewing_formulas": sewing_workbook_formulas(content, sheet_name, len(rows), MAX_WORKBOOK_COLUMNS)} if import_type == "sewing" else {}),
         **({"fallback_product_name": fallback_product_name} if import_type == "hair" else {}),
     )
     if import_type == "mold":

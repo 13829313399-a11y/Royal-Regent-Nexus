@@ -67,7 +67,7 @@
       {
         "path": "backend/app/services/carton_mark_hyvee.py",
         "symbol": "extract_hyvee",
-        "sha256": "929dca712cbbecf2fd51a38cfcc7b179b294f8ed2d424f7ed054bf7f347cc006"
+        "sha256": "10a8a054a08956a700a3d542ccd1870ebdf5a725d085597e38e31f8a0ad1c662"
       },
       {
         "path": "backend/app/services/carton_supplier_delivery_import.py",

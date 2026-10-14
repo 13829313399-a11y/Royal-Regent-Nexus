@@ -14,6 +14,8 @@ def reconcile_due(db):
     from app.services.identity_handover import reconcile
     from app.services.identity_resolver import resolve_identity_at
     lock_mutation(db)
+    from app.services.position_reviews import invalidate_obsolete_tx
+    invalidate_obsolete_tx(db)
     now = stamp()
     rows = list(db.scalars(select(AuthAccessRequest).where(AuthAccessRequest.request_type.like("identity:%"),
         AuthAccessRequest.lifecycle_state == "scheduled", AuthAccessRequest.effective_at <= now)))
@@ -65,20 +67,30 @@ def drain(db, limit=50):
     for row in rows:
         row.attempts += 1
         try:
+            routing_error = None
             with db.begin_nested():
                 payload = json.loads(row.payload_json)
-                notification_id = "iam:" + row.id
-                if db.get(SystemNotification, notification_id) is None:
-                    db.add(SystemNotification(id=notification_id, target_user_id=payload["user_id"],
-                        type="identity_changed", title="任职与授权已更新", message="请刷新当前页面查看正式任职及可用操作。",
-                        payload_json=json.dumps({"change_id": payload["change_id"]}), created_at=now))
-                    db.flush()
+                from app.services.position_review_notifications import KINDS, deliver
+                if row.kind in KINDS:
+                    routing_error = deliver(db, row, payload)
+                elif row.kind == "identity_changed":
+                    notification_id = "iam:" + row.id
+                    if db.get(SystemNotification, notification_id) is None:
+                        db.add(SystemNotification(id=notification_id, target_user_id=payload["user_id"],
+                            type="identity_changed", title="任职与授权已更新", message="请刷新当前页面查看正式任职及可用操作。",
+                            payload_json=json.dumps({"change_id": payload["change_id"]}), created_at=now))
+                        db.flush()
+                else:
+                    raise ValueError("UNKNOWN_OUTBOX_KIND")
+            if routing_error:
+                # Preserve closure of stale recipients, but retry routing later.
+                raise ValueError(routing_error)
             row.status = "delivered"
             row.last_error = ""
             delivered += 1
-        except Exception:
+        except Exception as exc:
             row.status = "retry"
-            row.last_error = "NOTIFICATION_DELIVERY_FAILED"
+            row.last_error = str(exc) if isinstance(exc, ValueError) and str(exc) in {"UNKNOWN_OUTBOX_KIND", "POSITION_NO_RECIPIENT", "POSITION_REVIEW_MISSING"} else "NOTIFICATION_DELIVERY_FAILED"
             row.next_attempt_at = stamp(utc_now() + timedelta(seconds=min(3600, 30 * 2 ** min(row.attempts, 6))))
     db.commit()
     return {"processed": len(rows), "delivered": delivered, "retry": len(rows) - delivered}

@@ -857,6 +857,7 @@ def init_db() -> None:
         document_tools,  # noqa: F401
         collaborative_sheets,  # noqa: F401
         auth,  # noqa: F401
+        position_review,  # noqa: F401
         carton_mark,  # noqa: F401
         carton_feedback,  # noqa: F401
         carton_procurement,  # noqa: F401
@@ -955,6 +956,7 @@ def init_db() -> None:
                             and (not name.startswith("fabric_") or "auth_users" not in existing_tables)
                             and (not name.startswith("warehouse_operations_") or "auth_users" not in existing_tables)
                             and (not name.startswith("material_handover_") or "auth_users" not in existing_tables)
+                            and (not name.startswith("position_review") or "auth_users" not in existing_tables)
                             and not name.startswith(("uv_ops_", "nexus_assistant_"))
                             # Existing telemetry stores upgrade explicitly via
                             # 0130; startup must not create unversioned cache tables.
