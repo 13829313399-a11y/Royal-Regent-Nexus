@@ -8,6 +8,9 @@ export function entryRoute(entry: WorkEntry, positionUi = positionWorkbenchEnabl
   if (!target) return null
   const id = target.params.id ?? ''
   if (!id || id.length > 128 || /[\\/?#\u0000-\u001f]/.test(id)) return null
+  if (target.route_key === 'identity_approval') return consolidated
+    ? { name: 'system-users', query: { view: 'todo', task: `identity-change:${id}` } }
+    : { path: '/system/iam/requests', query: { change: id } }
   if (consolidated && ['account_requests', 'position_workbench'].includes(target.route_key)) {
     const kind = target.route_key === 'position_workbench' ? 'position' : target.query.stage?.startsWith('password_reset') ? 'password-reset' : 'registration'
     return { name: 'system-users', query: { view: 'todo', task: `${kind}:${id}` } }

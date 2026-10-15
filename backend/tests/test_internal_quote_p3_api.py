@@ -1054,7 +1054,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert engineering_download.content.startswith(b"PK")
         assert (
             engineering_download.headers["x-engineering-template-version"]
-            == "internal-quote-engineering-template-v1"
+            == "internal-quote-engineering-template-v2"
         )
         engineering_workbook = load_workbook(
             BytesIO(engineering_download.content),

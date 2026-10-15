@@ -43,6 +43,7 @@ def is_group_manager(actor):
 
 def ensure_reader(db, actor, target_id=None):
     from app.services.auth import can
+    from app.services.iam_management_scopes import complete_scopes
     scopes = readable_scopes(db, actor)
     if not scopes:
         fail("OUTSIDE_MANAGEABLE_SCOPE", "无权限查看人员管理", 403)
@@ -52,9 +53,10 @@ def ensure_reader(db, actor, target_id=None):
         required = [(a["factory_id"] or a["org_unit_id"], a["department_code"]) for a in identity["assignments"]
                     if a["state"] in {"current", "scheduled"} and a["employment_epoch"] == identity["employment_epoch"]]
         if not required:
-            required = [(identity["primary_factory_id"], identity["primary_department"])]
+            required = [(identity.get("primary_org_unit_id") or identity["primary_factory_id"], identity["primary_department"])]
         required.extend(additional_source_scopes(db, [target_id]).get(target_id, set()))
-        if any(not can(actor, "system:user_manage", f or "*", d or "*") for f, d in required):
+        if any(not can(actor, "system:user_manage", f, d) for f, d in complete_scopes(
+                (f or "*", d or "*") for f, d in required)):
             fail("OUTSIDE_MANAGEABLE_SCOPE", "完整人员资料超出管理范围", 403)
 
 
@@ -124,6 +126,11 @@ def readable_scopes(db, actor):
 
 def ensure_change_authority(db, actor, subject_id, scopes, roles):
     from app.services.auth import can
+    from app.services.iam_management_scopes import complete_scopes
+    required = complete_scopes((factory or org, department) for org, factory, department in scopes)
+    if any(not all(can(actor, code, factory, department) for code in ("system:user_manage", "system:access_manage"))
+           for factory, department in required):
+        fail("OUTSIDE_MANAGEABLE_SCOPE", "请提交覆盖全部任职与业务范围的管理员办理", 403)
     for org, factory, department in scopes:
         if not all(can(actor, code, factory or org, department) for code in ("system:user_manage", "system:access_manage")):
             fail("OUTSIDE_MANAGEABLE_SCOPE", "请提交覆盖来源与目标组织的管理员办理", 403)

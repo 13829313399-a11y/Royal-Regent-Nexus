@@ -117,7 +117,7 @@ def prepare(db, row, actor):
     if payload.source_assignment_id and (source is None or source.user_id != user.id or source.lifecycle_state != "approved"
                                         or source.employment_epoch != profile.employment_epoch):
         fail("SOURCE_CHANGED", "来源任职不存在或已结束")
-    if source and payload.request_type in {"primary_assignment_transfer", "end_assignment"}:
+    if source and payload.request_type in {"primary_assignment_transfer", "end_assignment", "upgrade_packages"}:
         if not (instant(source.valid_from) <= effective and (not source.valid_until or effective < instant(source.valid_until))):
             fail("SOURCE_CHANGED", "来源任职在生效时点无效")
         if payload.request_type == "primary_assignment_transfer" and not source.is_primary:
@@ -130,6 +130,10 @@ def prepare(db, row, actor):
     dependencies["delegations"] = sorted((d.id, d.revision, d.status, d.role_ids_json, d.factory_ids_json)
         for d in db.scalars(select(IamDelegation).where(IamDelegation.user_id == actor.id)))
     scopes = []
+    scopes.extend((a["org_unit_id"], a["factory_id"], a["department_code"]) for a in identity["assignments"]
+                  if a["state"] in {"current", "scheduled"} and a["employment_epoch"] == profile.employment_epoch)
+    from app.services.identity_policy import additional_source_scopes
+    scopes.extend((f, f, d) for f, d in additional_source_scopes(db, [user.id]).get(user.id, set()))
     if source:
         old_org = db.get(IamOrgUnit, source.org_unit_id)
         scopes.append((source.org_unit_id, old_org.legacy_factory_id, source.department_code))
@@ -168,6 +172,7 @@ def prepare(db, row, actor):
                 if not business_org or business_org.status != "active":
                     fail("INVALID_SCOPE", "业务厂区已停用，请重新选择", 422)
                 dependencies.setdefault("business_organizations", []).append([factory, business_org.revision, business_org.status])
+                scopes.append((business_org.id, factory, binding.department))
                 _ensure_scope_applicable(role_scope_policy(definition["role_code"]), factory, binding.department, subject=definition["role_name"])
             version = snapshot_role(db, binding.role_id, actor.id)
             if binding.role_version_id and version.id != binding.role_version_id:
@@ -176,14 +181,20 @@ def prepare(db, row, actor):
                           "factories": factories, "department": binding.department})
         dependencies["roles"] = [(r["role_id"], r["hash"]) for r in roles]
     if payload.request_type == "upgrade_packages":
-        for meta in db.scalars(select(AuthRoleBindingMetadata).where(AuthRoleBindingMetadata.assignment_id == source.id)):
+        for meta in db.scalars(select(AuthRoleBindingMetadata).where(AuthRoleBindingMetadata.assignment_id == source.id,
+                                                                    AuthRoleBindingMetadata.state == "active")):
+            if meta.valid_until and instant(meta.valid_until) <= effective:
+                continue
             binding = db.get(AuthUserRole, meta.user_role_id)
             version = snapshot_role(db, binding.role_id, actor.id)
             dependencies.setdefault("upgrades", []).append([binding.id, version.id, version.definition_hash])
             definition = role_definition(db, binding.role_id)
             if definition["role_code"] == "admin" or any(p.startswith("system:") for p in definition["permissions"]):
                 fail("ADMINISTRATION_SEPARATE", "升级不能把系统管理权附加到普通任职，请独立办理", 422)
-            roles.append({**definition, "factories": json.loads(meta.scope_ceiling_json) if meta.scope_ceiling_json else list(FACTORIES)})
+            factories = json.loads(meta.scope_ceiling_json) if meta.scope_ceiling_json is not None else (
+                ["*"] if definition["scope_mode"] == "cross_factory_operate" else [binding.factory_id])
+            scopes.extend((factory, factory, binding.department) for factory in factories)
+            roles.append({**definition, "factories": factories})
     overrides = list(db.scalars(select(AuthUserPermissionOverride).where(AuthUserPermissionOverride.user_id == user.id,
                                                                        AuthUserPermissionOverride.status == "active")))
     decisions = {d.override_id: d.decision for d in payload.exception_decisions}
@@ -291,6 +302,8 @@ def apply_plan(db, row, actor, plan):
             if pending.id != row.id:
                 pending.lifecycle_state = "cancelled"
                 pending.revision += 1
+                from app.services.identity_review_notifications import close
+                close(db, pending.id)
         profile.employment_epoch += 1
         from app.services.position_reviews import invalidate_obsolete_tx
         db.flush()
@@ -492,12 +505,16 @@ def commit_change_tx(db, actor_id, change_id, payload, idempotency_key, *, appro
     if plan["requires_approval"]:
         row.lifecycle_state = "pending_approval"
         row.submitted_at = stamp()
+        db.add(IamOutbox(id=f"identity-review-{row.id}", aggregate_id=row.id, kind="identity_change_submitted",
+                        payload_json=encoded({"change_id": row.id}), created_at=stamp()))
     else:
         before = resolve_identity_at(db, row.target_user_id)
         result = apply_plan(db, row, actor, plan)
         ensure_admin_survives(db)
         row.lifecycle_state = "scheduled" if plan["scheduled"] else "applied"
         row.status = "approved"
+        from app.services.identity_review_notifications import close
+        close(db, row.id)
         row.decision_by_user_id = actor_id
         row.decided_at = stamp()
         row.effective_at = plan["effective"]
@@ -563,6 +580,8 @@ def cancel_or_reject(db, actor_id, change_id, payload, *, reject=False):
     elif row.lifecycle_state not in {"draft", "pending_approval"}:
         fail("CHANGE_ALREADY_EFFECTIVE", "已生效变更须通过新变更办理")
     row.lifecycle_state = "rejected" if reject else "cancelled"
+    from app.services.identity_review_notifications import close
+    close(db, row.id)
     row.status = "rejected"
     row.decision_comment = payload.reason
     row.revision += 1

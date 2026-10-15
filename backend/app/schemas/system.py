@@ -37,6 +37,7 @@ class UserStatusUpdateRequest(BaseModel):
 class PasswordResetReviewRequest(BaseModel):
     review_comment: str = Field(min_length=1, max_length=1000)
     identity_verified: bool = False
+    expected_issue_count: int | None = Field(default=None, ge=0)
 
 
 class SystemNotificationUpdateRequest(BaseModel):

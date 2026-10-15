@@ -1,7 +1,7 @@
 import { http } from '@/lib/http'
 
 export type WarehouseDomain = 'fabric' | 'semi'
-export type WarehouseOperationKind = 'RECEIPT' | 'REQUEST' | 'ISSUE' | 'RETURN' | 'TRANSFER' | 'QUALITY' | 'CORRECTION' | 'TASK' | 'PROCESS_SEND' | 'PROCESS_RETURN' | 'PACK_SEND' | 'PACK_RECEIVE' | 'LOCATION_BIND' | 'OPENING' | 'STOCKTAKE'
+export type WarehouseOperationKind = 'RECEIPT' | 'REQUEST' | 'ISSUE' | 'RETURN' | 'TRANSFER' | 'QUALITY' | 'CORRECTION' | 'TASK' | 'PROCESS_SEND' | 'PROCESS_RETURN' | 'PACK_SEND' | 'PACK_RECEIVE' | 'LOCATION_BIND' | 'REQUEST_CLOSE' | 'CUTTING_RECEIPT' | 'CUTTING_RECEIPT_VOID' | 'CUTTING_REQUEST_REUSE' | 'OPENING' | 'STOCKTAKE'
 export type WarehouseQuality = 'PENDING_INSPECTION' | 'QUALIFIED' | 'REJECTED' | 'HOLD'
 export interface WarehouseDocumentInput {
   factory_id: 'huakang-c'; request_id: string; expected_revision: number; kind: WarehouseOperationKind; business_date: string
@@ -12,6 +12,7 @@ export interface WarehouseDocumentInput {
   production_no: string; purpose: string; due_date: string | null; batch_id: string; original_id: string; task_id: string
   quality_status: WarehouseQuality; responsible_person: string; reason: string
   allocations: { production_no: string; quantity: string }[]
+  cutting_request?: { line_id: string; order_no: string; task_name: string; resource_name: string; bom_version: number; plan_version: number; mapping_basis: string; warehouse_material: {code:string; name:string; revision:number; spec:string; color:string; unit:string; category:string}; cutting_material: {code: string; name: string; specification: string; color: string} }
   reversed_kind?: WarehouseOperationKind
 }
 export interface WarehouseLocation { category?: string; id: string; warehouse: string; code: string; label: string; status: string; revision: number }
@@ -27,6 +28,7 @@ export interface WarehouseDocument {
   id: string; kind: WarehouseOperationKind; sequence: number; business_date: string; data: WarehouseDocumentInput
   actor_name: string; occurred_at: string; reversed?: boolean; batch_snapshot?: WarehouseBatch
   read_only?: boolean
+  closed?: boolean; close_reason?: string; cutting_received_quantity?: string
   issued_quantity?: string; returned_quantity?: string; received_quantity?: string; consumed_quantity?: string
 }
 export interface WarehouseOperationsWorkspace {
@@ -74,6 +76,7 @@ export interface FabricOrderReport extends FabricOrderSummaryQuery {
   suppliers: string[]; basis: string; version: string
 }
 export const warehouseOperationsApi = {
+  async recover(warehouse: WarehouseDomain, input: WarehouseDocumentInput): Promise<{state:'committed'|'abandoned'}> { return (await http.post(`/warehouse-operations/${warehouse}/documents/recover`, input)).data },
   async orderSummary(query: FabricOrderSummaryQuery) { return (await http.get<FabricOrderReport>('/warehouse-operations/fabric/order-summary', { params: { factory_id: 'huakang-c', ...query } })).data },
   async monthly(query: FabricMonthlyQuery) { return (await http.get<FabricMonthlyReport>('/warehouse-operations/fabric/monthly', { params: { factory_id: 'huakang-c', ...query } })).data },
   async exportMonthly(query: FabricMonthlyQuery, version: string) { return (await http.get<Blob>('/warehouse-operations/fabric/monthly/export', { params: { factory_id: 'huakang-c', ...query, version }, responseType: 'blob' })).data },

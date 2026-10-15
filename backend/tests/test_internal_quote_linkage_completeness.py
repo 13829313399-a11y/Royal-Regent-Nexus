@@ -177,7 +177,7 @@ def test_ambiguous_legacy_association_blocks_instead_of_generating_prices(ambigu
               SimpleNamespace(department="molding", is_required=True, status="draft", payload_json=json.dumps({"injection_lines": rows}), calculation_json=json.dumps({"totals": {"total_hkd": "1"}}))]
     before = [section.payload_json for section in stored]
     with pytest.raises(HTTPException) as error:
-        service.ensure_current_molding_pricing(None, SimpleNamespace(module_version="v4", final_release_status=""), stored)
+        service.ensure_current_molding_pricing(None, SimpleNamespace(module_version="v4", final_release_status="", factory_id="huaxing"), stored)
     assert error.value.status_code == 409
     assert error.value.detail["validation_errors"][0]["field"] == "engineering_source_key"
     assert [section.payload_json for section in stored] == before

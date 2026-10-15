@@ -7,7 +7,7 @@ import Workspace from '../WarehouseOperationsWorkspace.vue'
 import { documentProgress, remaining, sumQuantities } from '../operations'
 import type { WarehouseDocument, WarehouseDocumentInput, WarehouseDomain, WarehouseOperationsWorkspace } from '@/api/warehouseOperations'
 
-const api = vi.hoisted(() => ({ workspace: vi.fn(), post: vi.fn(), bulkIssue: vi.fn() }))
+const api = vi.hoisted(() => ({ workspace: vi.fn(), post: vi.fn(), recover: vi.fn(), bulkIssue: vi.fn() }))
 vi.mock('@/api/warehouseOperations', () => ({ warehouseOperationsApi: api }))
 let wrapper: VueWrapper | undefined
 const empty = (): WarehouseOperationsWorkspace => ({ revision: 3, locations: ['A01', 'A02', 'B03'].map(code => ({ id: code, warehouse: '一仓', code, label: `一仓／${code}`, status: 'ACTIVE', revision: 1 })), stock: [], documents: [], permissions: { read: true, operate: true, quality: false, correct: false } })
@@ -33,6 +33,26 @@ async function fillRequest(body: DOMWrapper<Element>) {
   await body.get('[aria-label="本次数量"]').setValue('0.3')
 }
 describe('warehouse actual operations', () => {
+  it('shows frozen cutting identities and closes only the unissued remainder', async () => {
+    const data=empty()
+    const input={quantity:'6.5',unit:'米',source_no:'CUT-1',item_code:'FAB1',item_name:'蓝布',counterparty:'本厂',allocations:[],
+      cutting_request:{line_id:'line',order_no:'O1',task_name:'裁剪任务',resource_name:'本厂',bom_version:2,plan_version:8,mapping_basis:'规格颜色原单位一致',
+        cutting_material:{code:'M1',name:'蓝布',specification:'规格A',color:'蓝'},warehouse_material:{code:'FAB1',name:'蓝布',revision:3,spec:'规格A',color:'蓝',unit:'米',category:'FABRIC'}}} as WarehouseDocumentInput
+    data.documents=[{id:'REQ',kind:'REQUEST',sequence:1,business_date:'2026-10-01',actor_name:'文员',occurred_at:'',data:input,issued_quantity:'2'}]
+    const body=await open('inventory','pending-issues',data)
+    expect(wrapper!.text()).toContain('裁床订单 O1')
+    expect(wrapper!.text()).toContain('规格颜色原单位一致')
+    await wrapper!.findAll('button').find(b=>b.text()==='关闭未发余量')!.trigger('click')
+    expect(body.find('[aria-label="本次数量"]').exists()).toBe(false)
+    expect(body.get('[aria-label="业务依据"]').attributes('required')).toBeDefined()
+    await body.get('[aria-label="业务依据"]').setValue('计划改版，关闭尚未发出的余量')
+    api.post.mockResolvedValue({id:'CLOSE'})
+    await body.get('form').trigger('submit');await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('fabric',expect.objectContaining({kind:'REQUEST_CLOSE',original_id:'REQ',quantity:''}))
+    data.documents[0]!.closed=true
+    await wrapper!.findAll('button').find(b=>b.text()==='刷新')!.trigger('click');await flushPromises()
+    expect(wrapper!.findAll('button').some(b=>b.text()==='办理出库')).toBe(false)
+  })
   it.each([true, false])('opens an exact receipt link read-only and gates correction permission (%s)', async correct => {
     const receipt = { id: 'OP-1', kind: 'RECEIPT', sequence: 1, business_date: '2026-10-10', actor_name: '仓管', occurred_at: '',
       data: { quantity: '10', unit: '码', item_name: '白布', source_no: 'DN-1', allocations: [] } } as WarehouseDocument
@@ -303,6 +323,13 @@ describe('warehouse actual operations', () => {
     expect(sumQuantities(['9007199254740992', '1.000001'])).toBe('9007199254740993.000001')
     expect(documentProgress({ kind: 'REQUEST', data: { quantity: '0.3', unit: '码' }, issued_quantity: '0.1' } as WarehouseDocument)).toContain('待发 0.2 码')
   })
+  it('describes return reversals as removing returned stock instead of restoring issued stock', () => {
+    const correction = (kind: string) => documentProgress({kind:'CORRECTION',data:{reversed_kind:kind,quantity:'1.25',unit:'米'}} as WarehouseDocument)
+    expect(correction('RETURN')).toBe('冲销退料入库，扣回库存 1.25 米')
+    expect(correction('RECEIPT')).toContain('入库，扣回库存')
+    expect(correction('ISSUE')).toContain('发出，恢复库存')
+    expect(correction('TRANSFER')).toContain('移库，退回原仓位')
+  })
   it('keeps legacy quantities visible but requires explicit location reconciliation', async () => {
     const data = empty(); data.permissions.correct = true
     data.stock = [{ id: 'OLD', item_code: '001', item_name: '旧布料', unit: '码', process_state: '', material_category: 'FABRIC',
@@ -372,5 +399,29 @@ describe('warehouse actual operations', () => {
     await body.get('[aria-label="本次出库数量 B1"]').setValue('2')
     await body.get('form').trigger('submit'); await flushPromises()
     expect(api.bulkIssue.mock.calls[1]![1]).toMatchObject({ expected_revision: 8, items: [{ batch_id: 'B1', quantity: '2' }] })
+  })
+})
+
+
+describe('warehouse uncertain outcome recovery',()=>{
+  it.each([401,403,409])('retains the original request after uncertain retry %s',async status=>{
+    api.post.mockRejectedValueOnce(new Error('timeout')).mockRejectedValueOnce({isAxiosError:true,response:{status}}).mockResolvedValueOnce({id:'ok'})
+    const body=await open('overview','');await fillRequest(body)
+    await body.get('form').trigger('submit');await flushPromises()
+    const original=structuredClone(api.post.mock.calls[0]![1])
+    await body.get('form').trigger('submit');await flushPromises()
+    expect(body.get('fieldset').attributes('disabled')).toBeDefined()
+    await body.get('form').trigger('submit');await flushPromises()
+    expect(api.post.mock.calls[2]![1]).toEqual(original)
+  })
+  it.each(['committed','abandoned'])('resolves uncertain %s results through the server',async state=>{
+    api.post.mockRejectedValueOnce(new Error('timeout'));api.recover.mockResolvedValue({state})
+    const body=await open('overview','');await fillRequest(body)
+    await body.get('form').trigger('submit');await flushPromises()
+    const original=structuredClone(api.post.mock.calls[0]![1])
+    await body.findAll('button').find(b=>b.text()==='核对保存结果／停止未执行操作')!.trigger('click');await flushPromises()
+    expect(api.recover).toHaveBeenCalledWith('fabric',original)
+    if(state==='committed')expect(body.find('form').exists()).toBe(false)
+    else{expect(body.get('[aria-label="本次数量"]').element).toHaveProperty('value','0.3');expect(body.get('fieldset').attributes('disabled')).toBeUndefined()}
   })
 })

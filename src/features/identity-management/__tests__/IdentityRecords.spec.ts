@@ -161,3 +161,19 @@ it.each([
     expect(api.commit).toHaveBeenCalledTimes(1)
   },
 )
+
+it('retries a lost commit with the same request revision, preview and command key', async () => {
+  api.preview.mockResolvedValue({ preview_token: 'original-preview', expires_at: new Date(Date.now() + 60000).toISOString(),
+    request_revision: 1, requires_approval: false })
+  api.commit.mockRejectedValueOnce(new Error('Network Error')).mockResolvedValue({ ...first, state: 'applied', revision: 2 })
+  const wrapper = mountView()
+  await selectFirst(wrapper)
+  await tab(wrapper, '权限影响')
+  await button(wrapper, '重新核对并预览').trigger('click'); await flushPromises()
+  await wrapper.get('input[type="checkbox"]').setValue(true)
+  await button(wrapper, '确认办理').trigger('click'); await flushPromises()
+  await button(wrapper, '使用原办理内容重试').trigger('click'); await flushPromises()
+  expect(api.commit).toHaveBeenCalledTimes(2)
+  expect(api.commit.mock.calls[1]).toEqual(api.commit.mock.calls[0])
+  expect(wrapper.text()).not.toContain('使用原办理内容重试')
+})

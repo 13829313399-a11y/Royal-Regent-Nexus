@@ -586,7 +586,9 @@ def test_empty_removal_extension_keeps_original_plan_receipt_fingerprint():
     from app.services.cutting_ops import command_fingerprint, payload_fingerprint
     body=SavePlan.model_validate(command(tasks=[task(dict(id='r',version=1))]))
     old=body.model_dump(mode='json');old.pop('removed_task_reasons')
-    for t in old['tasks']: t.pop('resource_change_basis')
+    for t in old['tasks']:
+        t.pop('resource_change_basis')
+        t.pop('material_receipt_ids')
     assert command_fingerprint(body,'plan_write:line-1')==payload_fingerprint(old,'plan_write:line-1')
 
 

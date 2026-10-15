@@ -84,9 +84,9 @@ describe('internal quote desk frontend layout', () => {
 
   it('implements the confirmed creation, collaboration, browsing, release and export surfaces', () => {
     for (const text of ['新建内部报价', '复制报价', '业务部', '工程部', '搜索报价号']) expect(homeSource).toContain(text)
-    for (const text of ['报价经营概览', '总报价数', '进行中报价数', '已完成报价数', '已取消报价数', '本周统计', '本月统计', '本年统计', '报价状态占比', '各客户报价数量', '客户报价速度对比', '建单至最终放行的平均时长', '横向点图']) expect(homeSource).toContain(text)
+    for (const text of ['报价经营概览', '总报价数', '进行中报价数', '已完成报价数', '已取消报价数', '本周统计', '本月统计', '本年统计', '报价状态占比', '各客户报价数量', '客户首次出价用时', '首次建单至首次正式输出', '用时中位数', 'InternalQuotePendingOutput']) expect(homeSource).toContain(text)
     expect(homeSource).not.toContain('进行中报价进度')
-    expect(homeSource).toContain('<th>部门完成进度</th>')
+    expect(homeSource).toContain('<th>核价就绪情况')
     expect(homeSource).toContain('InternalQuoteStatusDonut')
     expect(homeSource).not.toContain('statusDonutStyle')
     expect(statusDonutSource).toContain('viewBox="0 0 160 160"')

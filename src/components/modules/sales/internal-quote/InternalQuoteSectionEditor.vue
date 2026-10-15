@@ -459,11 +459,15 @@ watch(draftPayload, () => {
     emit('block-progress', props.section.code, getInternalQuoteFormBlocks('electronic', draftPayload.value))
   }
 }, { deep: true })
-watch(() => props.engineeringPayload, (engineering) => {
+function resumeEngineeringPrefill() {
+  draftPayload.value = normalizedDraft({ ...draftPayload.value, engineering_prefill_paused: false })
+}
+watch([() => props.engineeringPayload, () => draftPayload.value.engineering_prefill_paused], ([engineering]) => {
   if (props.section.code !== 'molding' || !editable.value || !engineering) return
   const linked = linkEngineeringMolding(
     cloneInternalQuotePayload('engineering', engineering) as unknown as EngineeringPayload,
     cloneInternalQuotePayload('molding', draftPayload.value) as unknown as MoldingPayload,
+    props.quote.factoryId,
   )
   const next = normalizedDraft(linked as unknown as Record<string, unknown>)
   if (JSON.stringify(next) !== JSON.stringify(draftPayload.value)) draftPayload.value = next
@@ -977,6 +981,7 @@ function confirmRemoveParticipation() {
       <div class="electronic-quote-total"><strong>电子部全部报价预览</strong><span>RMB {{ detailAmount(electronicSectionSummary.quoteRmb) }}</span><span>HKD {{ detailAmount(electronicSectionSummary.quoteHkd) }}</span><em>{{ electronicGroupOptions.length }} 份报价金额合计；正式金额以保存后的服务端计算为准。</em></div>
     </section>
     <div v-if="section.code === 'electronic' && !showElectronicForm" class="electronic-empty-state"><FileSpreadsheet /><strong>暂无电子报价</strong><span>可新增空白电子报价，或上传报价单后选择“新增独立电子报价”。</span></div>
+    <div v-if="section.code === 'molding' && draftPayload.engineering_prefill_paused === true" class="section-note" role="status"><p>复制时未选择啤机部，当前保留为空待填写。可手工填写，或从本方案工程资料生成胶件。</p><button type="button" :disabled="!editable || quoteStore.submitting || !engineeringPayload" @click="resumeEngineeringPrefill">从工程生成胶件</button></div>
     <InternalQuoteSectionForm v-if="showElectronicForm" :key="`${quote.id}:${section.code}`" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :can-edit-material-prices="canEditMaterialPrices" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable || quoteStore.submitting" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" @upload-painting-image="uploadPaintingRowImage" @request-material-prices="emit('request-material-prices')" @mold-parts-split="saveMoldPartSplit" @mold-split-open="moldSplitPending = $event" />
 
     <InternalQuoteAttachmentPreview

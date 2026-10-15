@@ -13,6 +13,7 @@ from app.services import cutting_ops as c, cutting_schemas as s
 from app.services import cutting_orders as orders
 from app.services import cutting_planning as planning, cutting_planning_schemas as ps
 from app.services import cutting_reporting as reporting, cutting_reporting_schemas as rs
+from app.services import cutting_usage as usage, cutting_usage_schemas as us
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -47,6 +48,7 @@ def access(db: Db, user: User, factory_id: str = ''):
     migrated = c.schema_ready(db.connection()) if enabled else False
     return dict(enabled=enabled, schema_ready=migrated, orders_schema_ready=orders.schema_ready(db.connection()) if enabled else False,
                 reporting_schema_ready=reporting.schema_ready(db.connection()) if enabled else False,
+                usage_schema_ready=usage.schema_ready(db.connection()) if enabled else False,
                 permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
 
@@ -119,6 +121,15 @@ def order_versions(line_id: str, db: Db, user: User, factory_id: str = '', page:
     numbers = db.scalars(select(CuttingOrderRevision.version).where(CuttingOrderRevision.line_id == line_id)
         .order_by(CuttingOrderRevision.version.desc()).offset((page-1)*50).limit(50))
     return dict(data=[orders.revision(db, order, v) for v in numbers], total=order.version, page=page, page_size=50)
+
+
+@router.get('/orders/{line_id}')
+def read_order(line_id: str, db: Db, user: User, factory_id: str = ''):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    dispatch = orders.latest(db, line_id)
+    c.require(dispatch is not None, '华康C裁床来源订单不存在', 404)
+    return orders.view(db, dispatch)
 
 
 def order_command(db, user, line_id, body, action, handler):
@@ -238,3 +249,92 @@ def recover_production(line_id: str, body: rs.RecoverReport, db: Db, user: User)
     except ValidationError:
         return orders.recover_operation(db, user, identity, action, invalid_payload=body.command)
     return orders.recover_operation(db, user, parsed, action)
+
+
+@router.get('/warehouse-materials')
+def warehouse_materials(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80), page: int = Query(1, ge=1)):
+    from app.services import cutting_materials as materials
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return materials.catalog(db, q, page)
+
+
+@router.get('/orders/{line_id}/materials')
+def order_materials(line_id: str, db: Db, user: User, factory_id: str = ''):
+    from app.services import cutting_materials as materials
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return materials.read(db, line_id)
+
+
+@router.post('/orders/{line_id}/materials/{action}')
+def material_command(line_id: str, action: Literal['request', 'receive', 'void', 'close', 'reuse'], body: dict, db: Db, user: User):
+    from app.services import cutting_materials as materials, cutting_material_schemas as ms
+    c.authorize(user, body.get('factory_id', ''), 'material_request' if action in {'request', 'close', 'reuse'} else 'material_receive')
+    orders_ready(db)
+    parsed = (ms.MaterialRequest if action == 'request' else ms.MaterialReceipt if action == 'receive' else ms.MaterialReuse if action == 'reuse' else ms.MaterialDecision).model_validate(body)
+    return c.command(db, user, parsed, 'material-'+action+':'+line_id, lambda: materials.execute(db, user, line_id, parsed, action))
+
+
+@router.post('/orders/{line_id}/material-operations/recover')
+def recover_material_operation(line_id: str, body: dict, db: Db, user: User):
+    from app.services import cutting_material_schemas as ms
+    parsed = ms.RecoverMaterial.model_validate(body)
+    identity = s.OperationIdentity.model_validate({key: parsed.command.get(key) for key in ('factory_id', 'operation_id')})
+    c.authorize(user, identity.factory_id)
+    c.require(c.schema_ready(db.connection()), '裁床操作记录需先完成迁移', 503)
+    action = 'material-'+parsed.action+':'+line_id
+    model = ms.MaterialRequest if parsed.action == 'request' else ms.MaterialReceipt if parsed.action == 'receive' else ms.MaterialReuse if parsed.action == 'reuse' else ms.MaterialDecision
+    try:
+        original = model.model_validate(parsed.command)
+    except ValidationError:
+        return orders.recover_operation(db, user, identity, action, invalid_payload=parsed.command)
+    return orders.recover_operation(db, user, original, action)
+
+
+@router.get('/orders/{line_id}/usage')
+def material_usage(line_id: str, db: Db, user: User, factory_id: str = '', with_costs: bool = False):
+    c.authorize(user, factory_id, 'cost_read' if with_costs else 'read')
+    orders_ready(db)
+    return usage.read(db, line_id, show_costs=with_costs)
+
+
+@router.get('/orders/{line_id}/closing-preview')
+def closing_preview(line_id: str, db: Db, user: User, month: str = Query(..., min_length=7, max_length=7),
+                    factory_id: str = '', with_costs: bool = False):
+    from app.services import cutting_closing
+    c.authorize(user, factory_id, 'cost_read' if with_costs else 'read')
+    orders_ready(db)
+    return cutting_closing.read(db, line_id, month, show_costs=with_costs)
+
+
+@router.get('/orders/{line_id}/usage-balance')
+def usage_balance(line_id: str, db: Db, user: User, day: ps.BusinessDate, issue_id: str, factory_id: str = '', document_id: str = ''):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return usage.balance_preview(db, line_id, issue_id, day, document_id=document_id)
+
+
+@router.post('/orders/{line_id}/usage/{action}')
+def usage_command(line_id: str, action: Literal['post', 'void', 'review', 'price', 'correct', 'allocate'], body: dict, db: Db, user: User):
+    c.authorize(user, body.get('factory_id', ''), 'allocation_confirm' if action == 'allocate' else 'cost_write' if action == 'price' else 'usage_review' if action == 'review' else 'usage_write')
+    if action in {'price', 'allocate'}:
+        c.authorize(user, body.get('factory_id', ''), 'cost_read')
+    orders_ready(db)
+    model = us.CostAllocation if action == 'allocate' else us.UsageCorrection if action == 'correct' else us.UsageCommand if action == 'post' else us.BatchCost if action == 'price' else us.UsageDecision
+    parsed = model.model_validate(body)
+    return c.command(db, user, parsed, 'usage-'+action+':'+line_id, lambda: usage.execute(db, user, line_id, parsed, action))
+
+
+@router.post('/orders/{line_id}/usage-operations/recover')
+def recover_usage(line_id: str, body: us.RecoverUsage, db: Db, user: User):
+    identity = s.OperationIdentity.model_validate({key: body.command.get(key) for key in ('factory_id', 'operation_id')})
+    c.authorize(user, identity.factory_id)
+    c.require(c.schema_ready(db.connection()), '裁床操作记录需先完成迁移', 503)
+    action = 'usage-'+body.action+':'+line_id
+    model = us.CostAllocation if body.action == 'allocate' else us.UsageCorrection if body.action == 'correct' else us.UsageCommand if body.action == 'post' else us.BatchCost if body.action == 'price' else us.UsageDecision
+    try:
+        original = model.model_validate(body.command)
+    except ValidationError:
+        return orders.recover_operation(db, user, identity, action, invalid_payload=body.command)
+    return orders.recover_operation(db, user, original, action)

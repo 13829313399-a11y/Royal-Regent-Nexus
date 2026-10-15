@@ -22,8 +22,10 @@ def require(condition, message, status=409):
 
 def allowed(user, action):
     departments = ('engineering',) if action in {'bom_write', 'bom_publish', 'requisition_submit'} else ('production',)
-    if action in {'eta_write', 'requisition_reconcile'}:
+    if action in {'eta_write', 'requisition_reconcile', 'cost_write'}:
         departments = ('pmc-warehouse',)
+    if action == 'cost_read':
+        departments = ('production', 'pmc-warehouse')
     if action == 'read':
         departments = ('production', 'engineering', 'pmc-warehouse')
     return any(authorization_decision(user, 'cutting_ops:' + action, FACTORY, department)[0] for department in departments)
@@ -124,6 +126,7 @@ def command_fingerprint(body, action):
     if action.startswith('plan_write:'):
         for task in payload.get('tasks', []):
             if not task.get('resource_change_basis'): task.pop('resource_change_basis', None)
+            if not task.get('material_receipt_ids'): task.pop('material_receipt_ids', None)
     return payload_fingerprint(payload, action)
 
 

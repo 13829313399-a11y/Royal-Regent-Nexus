@@ -287,6 +287,13 @@ export function useNotificationCenter() {
         ? getFactoryScopedRoute(targetRoute, notification.target_factory_id)
         : targetRoute
     }
+    if (notification.type === 'identity_change_submitted' || notification.type === 'identity_changed') {
+      const id = typeof notification.payload.change_id === 'string' ? notification.payload.change_id : ''
+      if (notification.type === 'identity_changed') return '/account/position'
+      return consolidatedIamEnabled
+        ? `/system/users?view=todo&task=${encodeURIComponent(`identity-change:${id}`)}`
+        : `/system/iam/requests?change=${encodeURIComponent(id)}`
+    }
     if (consolidatedIamEnabled && ['password_reset', 'user_registration'].includes(notification.type)) {
       const kind = notification.type === 'password_reset' ? 'password-reset' : 'registration'
       const candidate = notification.type === 'password_reset' ? notification.payload.password_reset_request_id : notification.payload.registration_request_id
@@ -350,6 +357,7 @@ export function useNotificationCenter() {
     const internalQuoteEvent = typeof notification.payload.event === 'string' ? notification.payload.event : ''
     const isSupplierShipment = notification.type === 'carton_supplier_shipment'
     const isPending = notification.status !== 'handled'
+      && notification.type !== 'identity_changed'
       && (notification.type !== 'internal_quote' || ACTIONABLE_INTERNAL_QUOTE_EVENTS.has(internalQuoteEvent))
       && (!notification.type.startsWith('position_review_') || (notification.payload.purpose === 'review' && ['position_review_submitted', 'position_review_updated'].includes(notification.type)))
     return {

@@ -2054,6 +2054,18 @@ def test_internal_quote_dashboard_reports_period_status_customer_progress_and_sp
             )
             assert len(required_sections) == 3
             required_sections[0].status = "approved"
+            required_sections[0].filled_at = current_stamp
+            required_sections[0].payload_json = '{"saved": true}'
+            required_sections[0].calculation_status = "valid"
+            required_sections[0].dependency_status = "current"
+            required_sections[0].calculation_formula_version = quote_service.FORMULA_VERSION
+            required_sections[0].calculation_reference_snapshot_id = active_a.reference_snapshot_id
+            for quote in (done_a, done_b):
+                db.add(quote_models.InternalQuoteExportFile(
+                    id=f"dashboard-export-{quote.id}", quote_id=quote.id, factory_id="huaxing",
+                    content=b"original", sha256=quote.id, release_stage="p4_final_approved",
+                    exported_at=quote.final_reviewed_at,
+                ))
             db.commit()
 
         for period in ("week", "month", "year"):
@@ -2080,6 +2092,7 @@ def test_internal_quote_dashboard_reports_period_status_customer_progress_and_sp
                     "customer": "客户A",
                     "status": "drafting",
                     "approved_sections": 1,
+                    "ready_sections": 1,
                     "required_sections": 3,
                     "percentage": 33.3,
                     "updated_at": current_stamp,
@@ -2087,6 +2100,12 @@ def test_internal_quote_dashboard_reports_period_status_customer_progress_and_sp
             ]
             assert [item["customer"] for item in data["customer_speed"]] == ["客户A", "客户B"]
             assert data["customer_speed"][0]["average_hours"] < data["customer_speed"][1]["average_hours"]
+            assert data["customer_speed"][0]["median_hours"] == data["customer_speed"][0]["average_hours"]
+            assert data["pending_first_output"]["count"] == 2  # includes prior-year approved but never output
+            assert data["first_output_missing_time_count"] == 0
+            detail = client.get(f"/api/internal-quotes/{active_a.id}").json()
+            assert detail["readiness"]["ready_sections"] == 1
+            assert detail["readiness"]["required_sections"] == 3
 
 
 def test_sales_supervisor_can_archive_and_archived_quote_is_locked(monkeypatch):

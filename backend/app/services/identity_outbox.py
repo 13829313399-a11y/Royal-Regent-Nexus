@@ -73,6 +73,9 @@ def drain(db, limit=50):
                 from app.services.position_review_notifications import KINDS, deliver
                 if row.kind in KINDS:
                     routing_error = deliver(db, row, payload)
+                elif row.kind == "identity_change_submitted":
+                    from app.services.identity_review_notifications import deliver as deliver_review
+                    routing_error = deliver_review(db, row, payload)
                 elif row.kind == "identity_changed":
                     notification_id = "iam:" + row.id
                     if db.get(SystemNotification, notification_id) is None:
@@ -90,7 +93,7 @@ def drain(db, limit=50):
             delivered += 1
         except Exception as exc:
             row.status = "retry"
-            row.last_error = str(exc) if isinstance(exc, ValueError) and str(exc) in {"UNKNOWN_OUTBOX_KIND", "POSITION_NO_RECIPIENT", "POSITION_REVIEW_MISSING"} else "NOTIFICATION_DELIVERY_FAILED"
+            row.last_error = str(exc) if isinstance(exc, ValueError) and str(exc) in {"UNKNOWN_OUTBOX_KIND", "POSITION_NO_RECIPIENT", "POSITION_REVIEW_MISSING", "IDENTITY_NO_RECIPIENT"} else "NOTIFICATION_DELIVERY_FAILED"
             row.next_attempt_at = stamp(utc_now() + timedelta(seconds=min(3600, 30 * 2 ** min(row.attempts, 6))))
     db.commit()
     return {"processed": len(rows), "delivered": delivered, "retry": len(rows) - delivered}

@@ -817,6 +817,7 @@ describe('internal quote section payload normalization', () => {
       output_count: 2,
       quantity: 1,
     }])
+    expect(normalizeInternalQuotePayload('engineering', engineering as unknown as Record<string, unknown>)).toEqual(engineering)
   })
 
   it('preserves the Disney P4-only field contract in its owning sections', () => {

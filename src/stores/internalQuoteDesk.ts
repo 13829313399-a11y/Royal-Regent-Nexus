@@ -458,6 +458,7 @@ function toQuote(
     id: source.id,
     documentQuoteId: source.document_quote_id,
     documentProductCount: source.document_product_count,
+    readiness: source.readiness,
     documentVersionCount: source.document_version_count,
     productRootId: source.product_root_id,
     deleteBlockReason: source.delete_block_reason,
@@ -1601,6 +1602,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     directIssue(quoteId: string, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.directIssue(quoteId, revision))
+    },
+    async exportAlternatives(quoteId: string, versions: Array<{ quote_id: string; revision: number }>, fileName: string) {
+      const blob = await this.executeMutation(quoteId, () => internalQuoteApi.exportAlternatives(quoteId, versions))
+      triggerDownload(blob as Blob, fileName)
     },
     async exportSeries(quoteId: string, products: Array<{ quote_id: string; revision: number }>, fileName: string) {
       const blob = await this.executeMutation(quoteId, () => internalQuoteApi.exportSeries(quoteId, products))

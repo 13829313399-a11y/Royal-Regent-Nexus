@@ -160,7 +160,7 @@ def apply(db, user, line_id, body, action):
         payload=deepcopy((old['draft'] if action=='discard' else old['posted'])['data'])
     else:
         entry=body.entry.model_dump(mode='json')
-        c.require(entry['day'] <= planning.business_today().isoformat(), '实际生产日期不能晚于今天（上海时间）', 422)
+        c.require(entry['day'] <= planning.business_today().isoformat(), '实际生产日期不能晚于今天（北京时间）', 422)
         if old:
             previous=(old['posted'] or old['draft'] or old['history'][0])['data']
             for key in ('task_id', 'mode', 'kind', 'plan_version'):

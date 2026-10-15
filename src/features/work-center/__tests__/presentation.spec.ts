@@ -29,6 +29,14 @@ function snapshot(): WorkSnapshot {
     health: { status: 'partial', as_of: '2026-09-29T02:00:00Z', unavailable_sources: [], coverage: [], issues: [{ module: 'internal_quote', reason: 'source_missing', count: 2 }] },
   }
 }
+
+it('opens advanced approval in the current workspace and legacy fallback', () => {
+  const value = structuredClone(entry)
+  value.actions[0]!.target!.route_key = 'identity_approval'
+  value.actions[0]!.target!.params.id = 'change-one'
+  expect(entryRoute(value, true, true)).toEqual({ name: 'system-users', query: { view: 'todo', task: 'identity-change:change-one' } })
+  expect(entryRoute(value, false, false)).toEqual({ path: '/system/iam/requests', query: { change: 'change-one' } })
+})
 beforeEach(() => setActivePinia(createPinia()))
 
 describe('readable account request previews', () => {

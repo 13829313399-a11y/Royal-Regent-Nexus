@@ -40,8 +40,12 @@ def summary(db, data, needs_receipt=False):
                 break
     published = planning.get('published')
     draft = planning.get('draft')
-    result = dict(published_stale=bool(published and (needs_receipt or references_invalid or stale(published, data) or resource_changed(db, published))),
-                draft_stale=bool(draft and (needs_receipt or references_invalid or stale(draft, data) or resource_changed(db, draft))),
+    from app.services.cutting_materials import receipts_changed
+    published_receipts_changed = receipts_changed(db, data, published)
+    draft_receipts_changed = receipts_changed(db, data, draft)
+    result = dict(published_stale=bool(published and (needs_receipt or references_invalid or stale(published, data) or resource_changed(db, published) or published_receipts_changed)),
+                draft_stale=bool(draft and (needs_receipt or references_invalid or stale(draft, data) or resource_changed(db, draft) or draft_receipts_changed)),
+                receipt_review_required=published_receipts_changed or draft_receipts_changed,
                 published_version=published['version'] if published else None,
                 draft_version=draft['version'] if draft else None)
     current = draft or published
@@ -184,8 +188,8 @@ def validate_tasks(db, data, tasks):
         executor_changed = any(t and t['resource_id'] != task.resource_id for t in (old, prior))
         c.require(not executor_changed or not (task.actual_issue_date or task.actual_prerequisite_date) or len(task.resource_change_basis) >= 4,
                   '更换执行方后的实际凭据须填写复核依据（至少4字）', 422)
-        c.require(task.actual_prerequisite_date is None or task.actual_prerequisite_date <= business_today(), '前置工序实际就绪日期不能晚于今天（上海时间）', 422)
-        c.require(task.actual_issue_date is None or task.actual_issue_date <= business_today(), '实际领料日期不能晚于今天（上海时间）', 422)
+        c.require(task.actual_prerequisite_date is None or task.actual_prerequisite_date <= business_today(), '前置工序实际就绪日期不能晚于今天（北京时间）', 422)
+        c.require(task.actual_issue_date is None or task.actual_issue_date <= business_today(), '实际领料日期不能晚于今天（北京时间）', 422)
         resource = c.master(db, task.resource_id)
         c.require(resource.kind == 'resource', '执行方必须来自本厂／外发裁剪资源', 422)
         ref = c.view(db, resource)
@@ -207,6 +211,8 @@ def validate_tasks(db, data, tasks):
         if task.days:
             c.require(task.readiness_basis, '请填写该批次物料日期及数量支持依据；不采购不等于可用库存', 422)
         record = task.model_dump(mode='json')
+        from app.services.cutting_materials import receipt_evidence
+        record['material_receipts'] = receipt_evidence(db, data, record)
         record['resource'] = ref
         record.update(evaluate_dates(task, ref, mandatory))
         record['planned_sets'] = sum(d.sets for d in task.days)
@@ -247,7 +253,9 @@ def publish(db, user, line_id, body):
     # Revalidate resources at publication; never rewrite historical resource/calendar evidence.
     inputs = [{k: v for k, v in task.items() if k in PlanTask.model_fields} for task in draft['tasks']]
     checked = SavePlan.model_validate(dict(body.model_dump(exclude={'draft_version'}), tasks=inputs))
-    validate_tasks(db, data, checked.tasks)
+    validated = validate_tasks(db, data, checked.tasks)
+    c.require(all(t.get('material_receipts', []) == old.get('material_receipts', []) for t, old in zip(validated, draft['tasks'])),
+              '签收或退仓依据已变化，请重新核对并保存计划草稿')
     c.require(any(t['days'] for t in draft['tasks']), '至少编制一个任务的日计划后再发布', 422)
     publication = deepcopy(draft)
     publication.update(version=order.version+1, actor_id=user.id, created_at=datetime.now(UTC).isoformat(),
