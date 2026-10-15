@@ -9,6 +9,7 @@ import { cuttingApi, errorMessage, type Access } from './api'
 import { ordersApi, type CuttingOrder } from './ordersApi'
 import { reportingApi, reportLabels, reportPermission, type ProductionInput, type ProductionView, type ReportAction, type ReportCommand, type ReportDocument, type ReportTask, type ReportKind } from './reportingApi'
 import { CUTTING_FACTORY } from './navigation'
+import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
 
 const access=ref<Access|null>(null), rows=ref<CuttingOrder[]>([]), selected=ref<CuttingOrder|null>(null), result=ref<ProductionView|null>(null)
 const loading=ref(false), saving=ref(false), error=ref(''), notice=ref(''), needsLogin=ref(false)
@@ -123,12 +124,13 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
     <template v-if="available&&!needsLogin">
       <p class="cutting-notice">采购交期和预排不代表实际完成。每个任务固定一种报数方式；外发报称完成经实际收回、验收合格后才计入完成数。“实际交数”按已交接套数统计。</p>
       <SectionPanel title="已签收订单" class="cutting-content-panel"><form class="cutting-master-toolbar" @submit.prevent="load()"><label>订单／货号<input v-model="query" maxlength="80" /></label><Button :disabled="saving||!!pending||loading">查询订单</Button></form>
-      <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><caption class="sr-only">已签收订单（{{ total }} 条来源订单）</caption><thead><tr><th>客户</th><th>生产／订单号</th><th>货号</th><th>状态</th><th>操作</th></tr></thead><tbody>
-        <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td><StatusPill :label="row.needs_receipt?'来源待重签收':row.snapshot.status==='cancelled'?'已取消':'已签收'" compact /></td><td><Button variant="outline" :disabled="saving||!!pending" @click="select(row)">查看填数</Button></td></tr>
+      <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><caption class="sr-only">已签收订单（{{ total }} 条来源订单）</caption><thead><tr><th>客户</th><th>生产／订单号</th><th>货号</th><th>货名</th><th>款式分类</th><th>状态</th><th>操作</th></tr></thead><tbody>
+        <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td class="cutting-order-product-name">{{ orderProductName(row.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td><td><StatusPill :label="row.needs_receipt?'来源待重签收':row.snapshot.status==='cancelled'?'已取消':'已签收'" compact /></td><td><Button variant="outline" :disabled="saving||!!pending" @click="select(row)">查看填数</Button></td></tr>
       </tbody></table></div><p v-if="!rows.length&&!loading" class="cutting-no-records">当前页暂无已签收订单，请先在排期页接单。</p>
       <nav class="cutting-pagination" aria-label="生产填数订单分页"><span>第 {{ page }} 页 · 共 {{ total }} 条</span><div class="cutting-master-actions"><Button variant="outline" :disabled="page<=1||loading" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="page*50>=total||loading" @click="load(page+1)">下一页</Button></div></nav>
       </SectionPanel>
       <SectionPanel v-if="selected&&result&&summary" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`"><div class="report-detail">
+        <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
         <form class="cutting-master-toolbar" @submit.prevent="select(selected!)"><label>统计截至日期<input v-model="asOf" type="date" :max="today()" /></label><Button variant="outline" :disabled="saving||!!pending">刷新统计</Button></form>
         <dl class="report-totals"><div><dt>订单总套数（工程核定）</dt><dd>{{ summary.order_sets ?? '待核定' }}</dd></div><div><dt>合格完成套数</dt><dd>{{ summary.completed }}</dd></div><div><dt>实际交数／已交接</dt><dd>{{ summary.actual_delivery }}</dd></div><div><dt>未完成套数</dt><dd>{{ summary.remaining ?? '待核定' }}</dd></div><div><dt>累计计划差额（交接−计划）</dt><dd>{{ summary.plan_difference }}</dd></div><div><dt>当日完成／交接</dt><dd>{{ summary.day_completed }} / {{ summary.day_handed }}</dd></div></dl>
         <p>截至 {{ result.as_of }}；未完成＝订单总套数−合格完成，允许保留超产后的负数。待交接 {{ summary.completed_unhanded }} 套。</p>
