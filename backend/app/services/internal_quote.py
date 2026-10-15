@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
 from functools import wraps
+from types import SimpleNamespace
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session
 
 from app.services.transaction_lock import lock_transaction
+from app.services.internal_quote_metrics import first_output_metrics
 from app.services.internal_quote_document import document_archive, document_versions, lock_documents, ensure_not_archived
 
 from app.models.auth import AuthUser, AuthUserRole, EmployeeProfile, SystemNotification
@@ -436,6 +438,7 @@ def quote_to_out(
     ).order_by(InternalQuoteAuditLog.created_at.desc()).limit(1)) if include_sections else None
     product_count, version_count = document_counts(db, quote)
     return InternalQuoteOut(
+        readiness=quote_readiness(db, quote, rows) if include_sections else None,
         document_product_count=product_count,
         document_version_count=version_count,
         id=quote.id,
@@ -1060,6 +1063,41 @@ def _authoritative_factory_quote(summary, incomplete):
     if incomplete:
         return None
     return next((str(row["value"]) for row in summary.get("t1", []) if row.get("key") == "base_price"), None)
+
+
+def quote_readiness(db, quote, sections):
+    """Display readiness without saving, recalculating or invalidating history."""
+    participating = [s for s in sections if s.is_required and s.status != "not_applicable"]
+    frozen = quote.status == "exported" or quote.final_release_status == "issued"
+    if not frozen and quote.status == "archived":
+        frozen = db.scalar(select(InternalQuoteExportFile.id).where(
+            InternalQuoteExportFile.quote_id == quote.id,
+            InternalQuoteExportFile.release_stage.in_({"p4_direct_issued", "p4_final_approved"}),
+        ).limit(1)) is not None
+    if frozen:
+        return dict(ready_sections=len(participating), required_sections=len(participating), state="issued", blockers=[])
+    # Avoid copying SQLAlchemy's shared instrumentation state into a read model.
+    fields = ("department", "department_name", "is_required", "status", "payload_json", "filled_at",
+              "calculation_status", "dependency_status", "calculation_formula_version", "calculation_reference_snapshot_id")
+    projected = [SimpleNamespace(**{key: getattr(s, key) for key in fields}) for s in participating]
+    molding = next((s for s in projected if s.department == "molding"), None)
+    if molding and _can_project_molding_read(db, quote, molding) and molding_projection_pending(db, quote, sections):
+        molding.calculation_status = molding.dependency_status = "stale"
+    incomplete = _pricing_completeness(quote, projected)
+    by_code = {s.department: s for s in projected}
+    blockers = []
+    for item in incomplete:
+        section = by_code[item["section_code"]]
+        if not section.filled_at:
+            state = "empty"
+        elif section.calculation_status == "stale" or section.dependency_status != "current" or "更新" in item["reason"]:
+            state = "stale"
+        else:
+            state = "incomplete"
+        blockers.append({**item, "state": state})
+    ready = len(participating) - len(blockers)
+    state = "ready" if participating and not blockers else "incomplete" if any(b["state"] != "empty" for b in blockers) else "empty"
+    return dict(ready_sections=ready, required_sections=len(participating), state=state, blockers=blockers)
 
 
 def ensure_current_molding_pricing(db: Session, quote: InternalQuote, sections: list[InternalQuoteSection]) -> None:
@@ -2786,12 +2824,9 @@ def get_quote_dashboard(
     *,
     period: str = "month",
 ) -> InternalQuoteDashboardOut:
-    """Return factory-scoped dashboard statistics from the full quote set.
+    """Creation cohorts retain their scope; first output uses formal output time.
 
-    The selected period is the current calendar week, month or year and is
-    based on quote creation time. Completion speed is measured only for quotes
-    that reached final release/export: creation -> final review, with updated
-    time retained as a compatibility fallback for historical completed rows.
+    Pending first output covers all active logical products, regardless of age.
     """
 
     ensure_quote_read(db, user, factory_id)
@@ -2855,9 +2890,10 @@ def get_quote_dashboard(
     progress_items: list[dict[str, object]] = []
     for quote in in_progress:
         required_sections = [section for section in sections_by_quote.get(quote.id, []) if section.is_required]
+        readiness = quote_readiness(db, quote, sections_by_quote.get(quote.id, []))
         approved_sections = sum(section.status in COMPLETED_SECTION_STATUSES for section in required_sections)
-        required_count = len(required_sections)
-        percentage = round(approved_sections / required_count * 100, 1) if required_count else 0.0
+        required_count = readiness["required_sections"]
+        percentage = round(readiness["ready_sections"] / required_count * 100, 1) if required_count else 0.0
         progress_items.append(
             {
                 "quote_id": quote.id,
@@ -2866,6 +2902,7 @@ def get_quote_dashboard(
                 "customer": quote.customer or "未填写客户",
                 "status": quote.status,
                 "approved_sections": approved_sections,
+                "ready_sections": readiness["ready_sections"],
                 "required_sections": required_count,
                 "percentage": percentage,
                 "updated_at": quote.updated_at,
@@ -2874,29 +2911,7 @@ def get_quote_dashboard(
     progress_items.sort(key=lambda item: str(item["updated_at"]), reverse=True)
     progress_items.sort(key=lambda item: float(item["percentage"]))
 
-    speed_samples: dict[str, list[float]] = defaultdict(list)
-    for quote in completed:
-        created_at = _internal_quote_timestamp(quote.created_at)
-        completed_at = _internal_quote_timestamp(quote.final_reviewed_at or quote.updated_at)
-        if created_at is None or completed_at is None or completed_at < created_at:
-            continue
-        customer = (quote.customer or "未填写客户").strip() or "未填写客户"
-        speed_samples[customer].append((completed_at - created_at).total_seconds() / 3600)
-
-    customer_speed = []
-    for customer, samples in speed_samples.items():
-        average_hours = sum(samples) / len(samples)
-        customer_speed.append(
-            {
-                "customer": customer,
-                "completed_count": len(samples),
-                "average_hours": round(average_hours, 2),
-                "average_days": round(average_hours / 24, 2),
-                "fastest_hours": round(min(samples), 2),
-                "slowest_hours": round(max(samples), 2),
-            }
-        )
-    customer_speed.sort(key=lambda item: (float(item["average_hours"]), str(item["customer"]).casefold()))
+    output_metrics = first_output_metrics(db, factory_id, period_start, period_end, _internal_quote_timestamp)
 
     return InternalQuoteDashboardOut(
         factory_id=factory_id,
@@ -2913,7 +2928,7 @@ def get_quote_dashboard(
         status_distribution=status_distribution,
         customer_quote_counts=customer_quote_counts,
         progress_items=progress_items,
-        customer_speed=customer_speed,
+        **output_metrics,
     )
 
 

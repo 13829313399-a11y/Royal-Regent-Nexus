@@ -272,6 +272,7 @@ class InternalQuoteDashboardProgressOut(BaseModel):
     required_sections: int
     percentage: float
     updated_at: str
+    ready_sections: int = 0
 
 
 class InternalQuoteDashboardSpeedOut(BaseModel):
@@ -281,6 +282,23 @@ class InternalQuoteDashboardSpeedOut(BaseModel):
     average_days: float
     fastest_hours: float
     slowest_hours: float
+    median_hours: float
+
+
+class InternalQuotePendingOutputItem(BaseModel):
+    quote_id: str
+    quote_no: str
+    product_name: str
+    customer: str
+    created_at: str
+    waiting_hours: float | None
+
+
+class InternalQuotePendingOutputOut(BaseModel):
+    count: int = 0
+    over_three_days: int = 0
+    oldest_hours: float | None = None
+    items: list[InternalQuotePendingOutputItem] = Field(default_factory=list)
 
 
 class InternalQuoteDashboardOut(BaseModel):
@@ -294,6 +312,8 @@ class InternalQuoteDashboardOut(BaseModel):
     customer_quote_counts: list[InternalQuoteDashboardCustomerCountOut]
     progress_items: list[InternalQuoteDashboardProgressOut]
     customer_speed: list[InternalQuoteDashboardSpeedOut]
+    pending_first_output: InternalQuotePendingOutputOut = Field(default_factory=InternalQuotePendingOutputOut)
+    first_output_missing_time_count: int = 0
 
 
 class InternalQuoteMaterialBaselineRow(BaseModel):
@@ -733,7 +753,22 @@ class InternalQuoteSectionOut(BaseModel):
     updated_at: str
 
 
+class InternalQuoteReadinessBlocker(BaseModel):
+    section_code: str
+    section_name: str
+    state: str
+    reason: str
+
+
+class InternalQuoteReadinessOut(BaseModel):
+    ready_sections: int
+    required_sections: int
+    state: str
+    blockers: list[InternalQuoteReadinessBlocker]
+
+
 class InternalQuoteOut(BaseModel):
+    readiness: InternalQuoteReadinessOut | None = None
     document_product_count: int = 1
     document_version_count: int = 1
     document_quote_id: str = ""

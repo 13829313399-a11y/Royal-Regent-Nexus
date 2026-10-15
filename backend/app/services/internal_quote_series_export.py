@@ -34,11 +34,11 @@ def _formula(value, names):
     return "=" + "".join(token.value for token in tokens)
 
 
-def combine_series_workbooks(products):
+def combine_series_workbooks(products, *, summary_builder=None):
     """Retain frozen formula dependencies privately; expose one sheet per product."""
     target = Workbook()
     target.remove(target.active)
-    used = set()
+    used = {"方案汇总"} if summary_builder else set()
     visible = []
     sources = []
     try:
@@ -63,7 +63,10 @@ def combine_series_workbooks(products):
                 copied.sheet_state = "visible" if offset == 0 else "veryHidden"
                 if offset == 0:
                     visible.append(copied)
-        target._sheets = visible + [sheet for sheet in target.worksheets if sheet not in visible]
+            if summary_builder:
+                summary_builder(target, source, names, index)
+        leading = [target["方案汇总"]] if summary_builder else []
+        target._sheets = leading + visible + [sheet for sheet in target.worksheets if sheet not in visible + leading]
         target.active = 0
         target.calculation.fullCalcOnLoad = True
         target.calculation.forceFullCalc = True
