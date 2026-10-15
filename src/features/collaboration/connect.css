@@ -110,6 +110,12 @@
 .connect-directory-drawer { width:min(560px,100vw); height:100dvh; display:flex; flex-direction:column; background:#f4f8f3; box-shadow:-12px 0 70px #00190f30; outline:0; }
 .rr-connect .connect-hero--small { border-radius:0; flex:none; padding:25px 25px 24px; align-items:flex-start; }
 .connect-directory-filters { padding:18px 22px 12px; border-bottom:1px solid #e0e9dd; }
+.rr-connect .connect-directory-filters .connect-search { min-height:48px; gap:11px; padding:0 15px; border:1px solid #d2dfd9; border-radius:14px; background:#fff; color:#738b81; font-weight:400; box-shadow:0 2px 6px #183e3804; transition:border-color .18s,box-shadow .18s; }
+.rr-connect .connect-directory-filters .connect-search:hover { border-color:#a9c1b5; }
+.rr-connect .connect-directory-filters .connect-search:focus-within { border-color:#32856c; box-shadow:0 0 0 3px #12645112; color:#126451; }
+.connect-directory-filters .connect-search>svg { flex:none; width:19px; height:19px; stroke-width:1.75; }
+.rr-connect .connect-directory-filters .connect-search input { flex:1; min-width:0; width:0; height:46px; padding:0; border:0; border-radius:0; outline:none; box-shadow:none; background:transparent; color:#183e38; font-size:14px; font-weight:400; line-height:1.5; letter-spacing:.01em; }
+.rr-connect .connect-directory-filters .connect-search input::placeholder { color:#7b8f86; opacity:1; font-weight:400; }
 .connect-presence-filters { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin:14px 0; }
 .connect-presence-filters button { display:flex; flex-direction:column; align-items:flex-start; gap:5px; min-width:0; padding:10px 12px; border:1px solid #dce6e2; border-radius:13px; background:#fff; color:#536d66; text-align:left; }
 .connect-presence-label { display:flex; align-items:center; gap:7px; font-size:12px; white-space:nowrap; }
