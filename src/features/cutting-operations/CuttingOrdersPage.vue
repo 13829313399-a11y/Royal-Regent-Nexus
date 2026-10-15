@@ -17,6 +17,7 @@ import CuttingMaterialRequests from './CuttingMaterialRequests.vue'
 import CuttingMaterialUsage from './CuttingMaterialUsage.vue'
 import CuttingProductionSummary from './CuttingProductionSummary.vue'
 import { taskInput, type PlanTaskInput } from './planning'
+import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
 
 defineProps<{ workspace: CuttingWorkspace }>()
 const materialEditor = ref<InstanceType<typeof CuttingMaterialRequests>>()
@@ -248,11 +249,12 @@ function status(row: CuttingOrder) {
           <div class="cutting-table-scroll" role="region" aria-label="订单总台账，可横向滚动" tabindex="0">
             <table class="order-ledger-table" :aria-busy="loading">
               <caption class="sr-only">{{ workspace.path === 'materials' ? '采购交期' : '订单总台账' }}</caption>
-              <thead><tr><th scope="col">洋行名</th><th scope="col">订单号</th><th scope="col">货号</th><th scope="col" class="order-number">来源数量</th><th scope="col">来源版本</th><th scope="col">办理状态</th><th scope="col" class="order-actions">操作</th></tr></thead>
+              <thead><tr><th scope="col">客户</th><th scope="col">订单号</th><th scope="col">货号</th><th scope="col">货名</th><th scope="col">款式分类</th><th scope="col" class="order-number">订单数量</th><th scope="col">办理状态</th><th scope="col" class="order-actions">操作</th></tr></thead>
               <tbody>
                 <tr v-for="row in rows" :key="row.line_id">
                   <td>{{ row.snapshot.customer_name }}</td><td class="tabular-nums">{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td>
-                  <td class="order-number tabular-nums">{{ row.snapshot.quantity }}</td><td class="tabular-nums">V{{ row.source_version }}</td>
+                  <td class="cutting-order-product-name">{{ orderProductName(row.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td>
+                  <td class="order-number tabular-nums">{{ row.snapshot.quantity }}</td>
                   <td><StatusPill :label="status(row)" compact /><p v-if="workspace.path === 'planning'" class="order-cell-note">{{ row.planning_summary?.states?.map(s => planStatusLabels[s]).join(' · ') }}</p><p v-if="row.expected_date_passed" class="order-cell-note">预计日期已过，实收待核实</p></td>
                   <td class="order-actions"><Button type="button" variant="outline" size="sm" :disabled="saving || !!pending" @click="select(row)">查看</Button></td>
                 </tr>
@@ -276,6 +278,7 @@ function status(row: CuttingOrder) {
       <CuttingMaterialRequests v-if="selected && selected.current" ref="materialEditor" :key="selected.line_id" :order="selected" :permissions="access?.permissions ?? []" :blocked="saving || !!pending || !!action || usageEditing" @editing="materialEditing=$event" @refreshed="r => { if(selected?.line_id===r.line_id){selected=r;rows=rows.map(old=>old.line_id===r.line_id?r:old)} }" />
       <CuttingMaterialUsage v-if="workspace.path==='materials'&&selected?.current&&access?.usage_schema_ready" ref="usageEditor" :key="`usage-${selected.line_id}`" :line-id="selected.line_id" :permissions="access.permissions" :blocked="saving||!!pending||!!action||materialEditing" @editing="usageEditing=$event" />
       <SectionPanel v-if="selected" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`">
+        <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
         <p>{{ status(selected) }} · 裁床记录 V{{ selected.current?.version ?? 0 }}</p>
         <p v-if="selected.snapshot.status === 'cancelled'" role="alert">来源订单已取消，仅可签收取消通知及核对旧采购需求。</p>
         <p v-if="selected.needs_receipt" class="cutting-notice">请先签收最新版本。重新签收会重置当前 BOM 和需求链；旧版保留历史，不会自动撤销采购单。</p>
@@ -357,7 +360,8 @@ function status(row: CuttingOrder) {
         </form>
         <div class="order-toolbar"><Button variant="outline" :disabled="!selected.current" @click="loadHistory()">查看历史版本</Button><template v-if="historyTotal"><Button variant="outline" :disabled="historyPage <= 1" @click="loadHistory(historyPage-1)">历史上一页</Button><span>{{ historyPage }} / {{ Math.ceil(historyTotal/50) }}</span><Button variant="outline" :disabled="historyPage*50 >= historyTotal" @click="loadHistory(historyPage+1)">历史下一页</Button></template></div>
         <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.actor_id }} · {{ r.reason }}</summary>
-          <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 来源数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
+          <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 订单数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
+          <p>货名：{{ orderProductName(r.data.order) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
           <p>BOM：{{ r.data.bom ? `${r.data.bom.code} V${r.data.bom.version}` : '未关联' }} · 目标 {{ r.data.target_sets ?? '待确认' }} 套 · {{ r.data.quantity_basis }} · {{ r.data.bom_match_basis }}</p>
           <CuttingPlanSummary v-if="r.data.planning?.published" :plan="r.data.planning.published" title="该版本发布计划" />
           <CuttingPlanSummary v-if="r.data.planning?.draft" :plan="r.data.planning.draft" title="该版本计划草稿" />
@@ -379,7 +383,7 @@ function status(row: CuttingOrder) {
 .order-filter-control::placeholder { color: var(--muted-foreground); }
 .order-query-button { justify-self: start; }
 .order-ledger-grid { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); }
-.order-ledger-table { min-width: 680px; font-size: 14px; line-height: 20px; }
+.order-ledger-table { min-width: 900px; font-size: 14px; line-height: 20px; }
 .order-ledger-table tbody tr:last-child td { border-bottom: 0; }
 .order-ledger-table tbody tr:hover { background: var(--muted); }
 .order-cell-note { margin-top: 6px; color: var(--muted-foreground); font-size: 12px; line-height: 18px; }

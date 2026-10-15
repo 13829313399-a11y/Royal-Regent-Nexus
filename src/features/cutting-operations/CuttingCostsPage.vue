@@ -9,6 +9,7 @@ import { cuttingApi, errorMessage, type Access } from './api'
 import { ordersApi, type CuttingOrder } from './ordersApi'
 import CuttingMaterialUsage from './CuttingMaterialUsage.vue'
 import type { CuttingWorkspace } from './navigation'
+import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
 defineProps<{workspace:CuttingWorkspace}>()
 const access=ref<Access>(),rows=ref<CuttingOrder[]>([]),selected=ref<CuttingOrder>(),query=ref(''),page=ref(1),total=ref(0),loading=ref(false),error=ref('')
 const editor=ref<InstanceType<typeof CuttingMaterialUsage>>()
@@ -37,10 +38,11 @@ onMounted(()=>void load())
     <template v-else-if="access?.enabled&&access.usage_schema_ready">
       <SectionPanel title="选择费用核对订单" class="cutting-content-panel">
         <form class="order-toolbar" @submit.prevent="load(1)"><label>订单号／货号<input v-model="query" maxlength="80" /></label><Button type="submit" variant="outline" :disabled="loading">查询／刷新</Button></form>
-        <div class="cutting-table-scroll" role="region" aria-label="费用订单，可横向滚动" tabindex="0"><table><thead><tr><th>洋行名</th><th>生产／订单号</th><th>货号</th><th>操作</th></tr></thead><tbody><tr v-for="order in rows" :key="order.line_id"><td>{{order.snapshot.customer_name}}</td><td>{{order.snapshot.reference_no}}</td><td>{{order.snapshot.product_no}}</td><td><Button size="sm" variant="outline" :disabled="loading" @click="select(order)">查看耗用与费用</Button></td></tr></tbody></table></div>
+        <div class="cutting-table-scroll" role="region" aria-label="费用订单，可横向滚动" tabindex="0"><table><thead><tr><th>客户</th><th>生产／订单号</th><th>货号</th><th>货名</th><th>款式分类</th><th>操作</th></tr></thead><tbody><tr v-for="order in rows" :key="order.line_id"><td>{{order.snapshot.customer_name}}</td><td>{{order.snapshot.reference_no}}</td><td>{{order.snapshot.product_no}}</td><td class="cutting-order-product-name">{{ orderProductName(order.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td><td><Button size="sm" variant="outline" :disabled="loading" @click="select(order)">查看耗用与费用</Button></td></tr></tbody></table></div>
         <p v-if="!rows.length&&!loading" class="cutting-no-records">暂无已下发裁床订单。</p>
         <nav class="order-pagination" aria-label="费用订单分页"><span>第 {{page}} 页 · 共 {{total}} 条</span><Button variant="outline" :disabled="loading||page<=1" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="loading||page*50>=total" @click="load(page+1)">下一页</Button></nav>
       </SectionPanel>
+      <p v-if="selected">货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
       <CuttingMaterialUsage v-if="selected?.current" ref="editor" :key="selected.line_id" :line-id="selected.line_id" :permissions="access.permissions" with-costs />
       <p v-else-if="selected" class="cutting-notice">请先签收订单并完成工程及领料依据。</p>
     </template>
