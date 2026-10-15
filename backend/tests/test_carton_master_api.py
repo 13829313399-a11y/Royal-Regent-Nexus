@@ -477,3 +477,17 @@ def test_shared_item_packaging_names_and_customer_preservation(monkeypatch):
         legacy = next(r for r in read(client)["records"] if r["id"] == "LEGACY-DUP")
         stopped = client.patch(BASE + "/master-data/LEGACY-DUP", json=payload(legacy, status="INACTIVE"))
         assert stopped.status_code == 200, stopped.text
+
+
+def test_standard_paper_types_cannot_be_hidden_but_custom_options_remain_editable(monkeypatch):
+    with make_client(monkeypatch) as client:
+        prepare(client)
+        from app.schemas.carton_master import STANDARD_PAPER_TYPES
+        response = client.post(BASE + "/master-data", json={
+            "factory_id": "huaxing", "kind": "RULE", "code": "", "reason": "维护自定义纸品类型",
+            "data": {"paper_types": ["特殊插卡"], "hidden_paper_types": [*STANDARD_PAPER_TYPES, "平 卡", "旧箱"]},
+        })
+        assert response.status_code == 201, response.text
+        data = response.json()["data"]
+        assert data["paper_types"] == ["特殊插卡"]
+        assert data["hidden_paper_types"] == ["旧箱"]

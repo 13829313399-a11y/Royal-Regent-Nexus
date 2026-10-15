@@ -1,5 +1,7 @@
 from urllib.parse import quote as url_quote
 
+from pydantic import TypeAdapter, ValidationError
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -33,6 +35,8 @@ from app.schemas.carton_mark import (
     CartonMarkPhotoGroupRequest,
     CartonMarkPhotoGroupMembers,
     CartonMarkAssetUploadResult,
+    CartonMarkAssetClassification,
+    CartonMarkAssetUploadOptions,
     CartonMarkCustomerRecognitionRequest,
     CartonMarkCustomerRecognitionOut,
     CartonMarkCustomerInitializationCandidate,
@@ -69,6 +73,7 @@ from app.services.carton_mark_customers import (
     update_carton_mark_customer,
 )
 from app.services import carton_mark_assets as assets
+from app.services import carton_mark_asset_workflow as asset_workflow
 from app.services import carton_mark_customer_matching as customer_matching
 from app.services import carton_mark_manual_review as manual_review
 
@@ -90,29 +95,51 @@ def get_assets(factory_id: str, order_id: str | None = None,
 
 @router.post("/api/carton-mark/assets/batch", response_model=list[CartonMarkAssetUploadResult])
 async def upload_assets(factory_id: str = Form(...), files: list[UploadFile] = File(...),
+                        options_json: str = Form(default=''),
                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     factory = _asset_scope(db, user, factory_id, True)
     if not 1 <= len(files) <= 50:
         raise HTTPException(422, "每批请选择 1–50 个文件")
+    try:
+        options = TypeAdapter(list[CartonMarkAssetUploadOptions]).validate_json(options_json) if options_json else [CartonMarkAssetUploadOptions() for _ in files]
+    except ValidationError as exc:
+        raise HTTPException(422, '资料分类或版本参数不正确') from exc
+    if len(options) != len(files):
+        raise HTTPException(422, '请为每个文件选择资料分类')
     if sum(file.size or 0 for file in files) > 100 * 1024 * 1024:
         raise HTTPException(413, "每批文件合计不能超过 100 MB")
     known = sorted({o.contract_no for o in assets.available_orders(db, factory) if o.contract_no})
     results = []
     total = 0
-    for file in files:
+    for index, file in enumerate(files):
         try:
             content = await _read_document_upload(file, "箱唛文件")
             total += len(content)
             if total > 100 * 1024 * 1024:
                 raise HTTPException(413, "每批文件合计不能超过 100 MB")
             recognition = await run_in_threadpool(assets.recognize_asset, file.filename or "", content, known)
-            asset, result = assets.save_asset(db, user, factory, content, recognition)
+            _asset_scope(db, user, factory_id, True)
+            asset, result = assets.save_asset(db, user, factory, content, recognition, options[index])
             results.append(CartonMarkAssetUploadResult(file_name=file.filename or "", status=result, asset=asset))
         except (HTTPException, CartonMarkDocumentError, CartonMarkDocumentConfigurationError) as exc:
             db.rollback()
             message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
             results.append(CartonMarkAssetUploadResult(file_name=file.filename or "", status="failed", message=message))
     return results
+
+
+@router.put('/api/carton-mark/assets/{asset_id}/classification', response_model=CartonMarkAssetOut)
+def classify_asset(asset_id: str, factory_id: str, payload: CartonMarkAssetClassification,
+                   db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id, True)
+    return asset_workflow.classify(db, user, factory, asset_id, payload)
+
+
+@router.get('/api/carton-mark/assets/{asset_id}/classification-history')
+def asset_classification_history(asset_id: str, factory_id: str,
+                                 db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _asset_scope(db, user, factory_id)
+    return asset_workflow.history(db, factory, asset_id)
 
 
 @router.get("/api/carton-mark/assets/binding-orders", response_model=list[CartonMarkAssetOrderOut])

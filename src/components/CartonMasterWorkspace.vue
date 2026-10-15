@@ -2,15 +2,20 @@
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Database, X } from '@lucide/vue'
 import CartonMasterSettings from './CartonMasterSettings.vue'
+import CartonDisplayPreferences from './CartonDisplayPreferences.vue'
+import { standardPaperTypes, paperStandard } from '@/features/carton-procurement/paperCatalog'
 import CartonCustomerResponsibilities from './CartonCustomerResponsibilities.vue'
 import { cartonMasterApi, masterPaperOptions, defaultMasterData, defaultNumberRule, effectiveItemRule, emptyMaster, automaticNumberRule, historicalNumberSamples, type MasterRecord, type MasterData, type MasterImportKind, type MasterImportResult } from '@/api/cartonMaster'
 import { recognizeNumberTemplates, parseNumberTemplate, describeNumberTemplate } from '@/lib/cartonNumberPatterns'
 import { cartonPositionsApi, type CartonLocation } from '@/api/cartonPositions'
 import type { CartonCustomerResponse } from '@/api/cartonProcurement'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
+import CartonDimensionInput from './CartonDimensionInput.vue'
+import CartonPaperPicker from './CartonPaperPicker.vue'
+import type { DimensionPreferenceScope, DimensionUnit } from '@/features/carton-procurement/dimensionPreference'
 import { applyCartonDimensionPaste } from '@/lib/cartonDimensionPaste'
-const props = defineProps<{ factoryId: string; customers: CartonCustomerResponse[]; initialTab?: string; search?: string }>()
-const emit = defineEmits<{ changed: []; customers: [row?: CartonCustomerResponse]; use: [MasterRecord]; 'update:search': [value: string] }>()
+const props = defineProps<{ factoryId: string; customers: CartonCustomerResponse[]; initialTab?: string; search?: string; dimensionUnit?: DimensionUnit; dimensionPreferenceError?: string; preferenceScope?: DimensionPreferenceScope | null }>()
+const emit = defineEmits<{ changed: []; customers: [row?: CartonCustomerResponse]; use: [MasterRecord]; 'update:search': [value: string]; 'update:dimensionUnit': [value: string] }>()
 const workspace = ref(emptyMaster()), busy = ref(false), error = ref(''), loading = ref(false)
 const tab = ref('SETTINGS'), localSearch = ref(''), customer = ref(''), editing = ref(false), editingId = ref('')
 const search = computed({
@@ -105,7 +110,7 @@ const paperOnly = ref(false)
 const paperFields = { paper_types: 'packaging_type', paper_qualities: 'paper_quality', specifications: 'specification' } as const
 const paperBaseline: Record<keyof typeof paperFields, string[]> = { paper_types: [], paper_qualities: [], specifications: [] }
 const paperOptionText = reactive({ paper_types: '', paper_qualities: '', specifications: '' })
-const paperOptionLabels = { paper_types: '纸品类型', paper_qualities: '纸质', specifications: '规格' }
+const paperOptionLabels = { paper_types: '自定义纸品类型', paper_qualities: '纸质', specifications: '规格' }
 const form = reactive({ kind: 'CONFIG' as MasterRecord['kind'], code: '', customer_code: '', status: 'ACTIVE' as MasterRecord['status'], preferred: false, expected_revision: 0, reason: '', data: defaultMasterData() })
 const warehouseForm = reactive({ name: '', bin: '', reason: '', revisions: {} as Record<string, number> })
 const locationForm = reactive({ warehouse: '', bin_code: '', status: 'ACTIVE', expected_revision: 1, reason: '' })
@@ -196,7 +201,7 @@ function editPaperOptions() {
   form.data = { ...defaultMasterData(), ...JSON.parse(JSON.stringify(existing?.data || {})) }
   form.reason = '维护纸品选项'
   for (const key of Object.keys(paperFields) as (keyof typeof paperFields)[]) {
-    paperBaseline[key] = masterPaperOptions(workspace.value.records, paperFields[key], workspace.value.paper_history)
+    paperBaseline[key] = masterPaperOptions(workspace.value.records, paperFields[key], workspace.value.paper_history).filter(value => key !== 'paper_types' || !paperStandard(value))
     paperOptionText[key] = paperBaseline[key].join('\n')
   }
 }
@@ -232,7 +237,7 @@ function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = 
   originalStatus.value = row?.status || 'ACTIVE'
   originalHardCheck.value = row?.data.contract_rule?.mode === 'BLOCK' || row?.data.item_rule?.mode === 'BLOCK' || row?.data.customer_po_rule?.mode === 'BLOCK'
   Object.assign(form, { kind: row?.kind || kind, code: row?.code || '', customer_code: row?.customer_code ?? code, status: row?.status || 'ACTIVE', preferred: row?.preferred || false, expected_revision: row?.revision || 0, reason: '', data: { ...defaultMasterData(), ...JSON.parse(JSON.stringify(row?.data || {})), contract_rule: { ...defaultNumberRule(), ...row?.data.contract_rule }, customer_po_rule: { ...defaultNumberRule(), ...row?.data.customer_po_rule }, item_rule: effectiveItemRule(row?.data.item_rule) } })
-  if (form.kind === 'CONFIG') for (const line of form.data.lines) line.dimension_unit = line.dimension_unit?.trim() || 'cm'
+  if (form.kind === 'CONFIG') for (const line of form.data.lines) line.dimension_unit = line.dimension_unit?.trim() || (row ? '' : props.dimensionUnit || 'cm')
   for (const key of ['paper_types', 'paper_qualities', 'specifications'] as const) paperOptionText[key] = (form.data[key] || []).join('\n')
   itemText.value = (form.data.item_nos || []).join('\n'); warehouseText.value = (form.data.warehouses || []).join('\n')
   if (!['CONTRACT', 'RULE'].includes(form.kind)) form.customer_code = ''
@@ -246,7 +251,7 @@ function edit(row?: MasterRecord, kind: MasterRecord['kind'] = 'CONFIG', code = 
   form.reason = suggestedReason.value
   editing.value = true
 }
-function addPaper() { form.data.lines.push({ packaging_type: '', paper_quality: '', specification: '', dimension_unit: 'cm', unit: '个', usage_quantity: '' }) }
+function addPaper() { form.data.lines.push({ packaging_type: '', paper_quality: '', specification: '', dimension_unit: props.dimensionUnit || 'cm', unit: '个', usage_quantity: '' }) }
 async function save() {
   if (busy.value) return
   busy.value = true; error.value = ''; const factory = props.factoryId
@@ -273,10 +278,10 @@ async function save() {
     form.data.customer_days = form.data.customer_days === null || String(form.data.customer_days) === '' ? null : Number(form.data.customer_days)
     }
     if (paperOnly.value) for (const key of Object.keys(paperFields) as (keyof typeof paperFields)[]) {
-      const values = [...new Set(paperOptionText[key].split('\n').map(value => value.trim()).filter(Boolean))]
+      const values = [...new Set(paperOptionText[key].split('\n').map(value => value.trim()).filter(value => value && (key !== 'paper_types' || !paperStandard(value))))]
       form.data[key] = values
       const hiddenKey = `hidden_${key}` as const
-      form.data[hiddenKey] = [...new Set([...(form.data[hiddenKey] || []), ...paperBaseline[key]])].filter(value => !values.includes(value))
+      form.data[hiddenKey] = [...new Set([...(form.data[hiddenKey] || []), ...paperBaseline[key]])].filter(value => !values.includes(value) && (key !== 'paper_types' || !paperStandard(value)))
     }
     if (!paperOnly.value) {
     form.data.item_nos = itemText.value.split(/[\n,，]/).map(s => s.trim()).filter(Boolean)
@@ -365,6 +370,7 @@ async function saveWarehouse() {
       <div class="flex items-center justify-between gap-3"><div><h2 class="flex items-center gap-2 text-lg font-bold"><Database class="size-5 text-teal-700" />基础资料</h2><p class="mt-1 text-xs text-slate-500">历史正式订单自动加入；落单可直接带出，不同配置保留并提醒。修改仅影响后续引用。</p></div><button type="button" :disabled="loading" class="rounded-lg border px-3 py-2 text-xs" @click="load">刷新资料</button></div>
       <p class="mt-3 text-xs text-teal-700">{{ workspace.can_manage ? '可维护本厂基础资料：客户、规则、货号包装、车间及仓位；修改会留痕。' : workspace.warehouses.length ? `可维护仓库：${workspace.warehouses.join('、')}；其他基础资料可查询和引用。` : '可查询和引用资料；修改由主管或授权负责人处理。' }}</p>
     </article>
+    <CartonDisplayPreferences :scope="preferenceScope" :dimension-unit="dimensionUnit" :dimension-preference-error="dimensionPreferenceError" @update:dimension-unit="emit('update:dimensionUnit', $event)" />
     <div class="flex gap-1 rounded-xl border border-slate-200 bg-white p-2" role="tablist" aria-label="基础资料页面">
       <button v-for="item in [{ id: 'SETTINGS', label: '基础设置' }, { id: 'CONFIG', label: '货号与包装' }]" :key="item.id" type="button" role="tab" :aria-selected="tab === item.id" class="rounded-lg px-5 py-2 text-sm font-bold" :class="tab === item.id ? 'bg-teal-700 text-white' : 'text-slate-600 hover:bg-slate-50'" @click="tab = item.id">{{ item.label }}</button>
     </div>
@@ -431,13 +437,14 @@ async function saveWarehouse() {
             <p class="text-xs text-slate-500">每箱净重为货物不含纸箱、配卡等包装的重量；每箱毛重为含这些包装的整箱总重量。两项单位均为 kg，按对应纸品的装箱方式分别维护，毛重不得小于净重。</p>
             <p class="text-xs text-teal-700">包装方式：{{ form.data.packing_name || '保存后自动识别' }} · 首次为标准装，后续不同配置请核对。</p>
             <div class="flex items-center gap-3"><label class="flex-1">产品名称<input v-model="form.data.product_name" maxlength="255" aria-label="基础资料产品名称" class="mt-1 h-9 w-full rounded-lg border px-2"></label><label><input v-model="form.preferred" type="checkbox"> 设为推荐配置</label><button type="button" class="rounded-lg border px-3 py-2" @click="addPaper">添加纸品</button></div>
-            <div class="overflow-x-auto"><table class="w-full min-w-[1080px] text-left"><thead class="bg-slate-50"><tr><th class="p-2">纸品类型</th><th class="p-2">纸质</th><th class="p-2">规格</th><th class="p-2">尺寸单位</th><th class="p-2">计量单位</th><th class="p-2">每箱装产品数</th><th class="p-2">每箱净重 kg</th><th class="p-2">每箱毛重 kg</th><th></th></tr></thead><tbody><tr v-for="(line, i) in form.data.lines" :key="i"><td class="p-1"><input v-model="line.packaging_type" required aria-label="资料纸品类型" class="h-9 w-full rounded border px-2"></td><td class="p-1"><input v-model="line.paper_quality" aria-label="资料纸质" class="h-9 w-full rounded border px-2"></td><td class="p-1"><input v-model="line.specification" aria-label="资料规格" placeholder="可粘贴长 宽 高" title="可直接粘贴 Excel 长宽高单元格或用空格分隔的尺寸，无需手动加星号；尺寸单位另行核对。" @paste="applyCartonDimensionPaste($event, value => line.specification = value)" class="h-9 w-full rounded border px-2"></td><td class="p-1"><select v-model="line.dimension_unit" aria-label="资料尺寸单位" class="h-9 rounded border"><option value="">未记录</option><option>mm</option><option>cm</option><option>inch</option></select></td><td class="p-1"><input v-model="line.unit" required aria-label="资料计量单位" class="h-9 w-16 rounded border px-2"></td><td class="p-1"><input v-model="line.usage_quantity" type="number" min="0.00000001" step="any" required aria-label="资料装箱数" class="h-9 w-24 rounded border px-2"></td><td class="p-1"><input v-model="line.net_weight_kg" type="number" min="0" step="0.0001" :aria-label="`资料纸品每箱净重 ${i + 1}`" class="h-9 w-24 rounded border px-2"></td><td class="p-1"><input v-model="line.gross_weight_kg" type="number" min="0" step="0.0001" :aria-label="`资料纸品每箱毛重 ${i + 1}`" class="h-9 w-24 rounded border px-2"></td><td><button type="button" class="text-red-600" @click="form.data.lines.splice(i, 1)">移除</button></td></tr></tbody></table></div>
+            <div class="overflow-x-auto"><table class="w-full min-w-[1080px] text-left"><thead class="bg-slate-50"><tr><th class="p-2">纸品类型</th><th class="p-2">纸质</th><th class="p-2">规格</th><th class="p-2">尺寸单位</th><th class="p-2">计量单位</th><th class="p-2">每箱装产品数</th><th class="p-2">每箱净重 kg</th><th class="p-2">每箱毛重 kg</th><th></th></tr></thead><tbody><tr v-for="(line, i) in form.data.lines" :key="i"><td class="p-1"><CartonPaperPicker v-model="line.packaging_type" :options="masterPaperOptions(workspace.records, 'packaging_type', workspace.paper_history)" label="资料纸品类型" /></td><td class="p-1"><CartonPaperPicker v-model="line.paper_quality" :options="masterPaperOptions(workspace.records, 'paper_quality', workspace.paper_history)" label="资料纸质" /></td><td class="p-1"><input v-model="line.specification" aria-label="资料规格" placeholder="可粘贴长 宽 高" title="可直接粘贴 Excel 长宽高单元格或用空格分隔的尺寸，无需手动加星号；尺寸单位另行核对。" @paste="applyCartonDimensionPaste($event, value => line.specification = value)" class="h-9 w-full rounded border px-2"></td><td class="p-1"><CartonDimensionInput v-model="line.dimension_unit" :specification="line.specification" label="资料尺寸单位" /></td><td class="p-1"><input v-model="line.unit" required aria-label="资料计量单位" class="h-9 w-16 rounded border px-2"></td><td class="p-1"><input v-model="line.usage_quantity" type="number" min="0.00000001" step="any" required aria-label="资料装箱数" class="h-9 w-24 rounded border px-2"></td><td class="p-1"><input v-model="line.net_weight_kg" type="number" min="0" step="0.0001" :aria-label="`资料纸品每箱净重 ${i + 1}`" class="h-9 w-24 rounded border px-2"></td><td class="p-1"><input v-model="line.gross_weight_kg" type="number" min="0" step="0.0001" :aria-label="`资料纸品每箱毛重 ${i + 1}`" class="h-9 w-24 rounded border px-2"></td><td><button type="button" class="text-red-600" @click="form.data.lines.splice(i, 1)">移除</button></td></tr></tbody></table></div>
           </template>
           <label v-if="form.kind === 'CONTRACT'" class="block">关联货号（每行一个）<textarea v-model="itemText" aria-label="合同关联货号" rows="4" class="mt-1 w-full rounded-lg border p-2" /></label>
           <label v-if="form.kind === 'ACCESS'" class="block">允许维护的仓库（每行一个，与仓库名称一致）<textarea v-model="warehouseText" aria-label="允许维护仓库" rows="4" class="mt-1 w-full rounded-lg border p-2" /><span class="text-slate-500">人员还须具备本厂库存业务权限；授权不会允许修改其他基础资料。</span></label>
           <template v-if="form.kind === 'RULE'">
             <section v-if="paperOnly" class="rounded-lg border border-teal-100 bg-teal-50/30 p-3" aria-label="维护纸品选项">
-              <b>纸品选项</b><p class="mt-1 text-slate-500">每行一项，直接添加、修改或移除。保存订单后自动积累；移除的旧值不再推荐，旧订单和包装配置保持原样。</p>
+              <b>纸品选项</b><p class="mt-1 text-slate-500">6 种标准纸品类型固定保留，不可修改或删除。下方可新增、修改或移除自定义选项，每行一项；历史订单和包装配置保持原样。</p>
+              <div class="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3" aria-label="固定标准纸品类型"><b>标准纸品类型 · 固定</b><div class="mt-2 flex flex-wrap gap-2"><span v-for="paper in standardPaperTypes" :key="paper.code" class="rounded border bg-white px-2 py-1">{{ paper.code }} {{ paper.name }}</span></div></div>
               <div class="mt-3 grid gap-3 sm:grid-cols-3"><label v-for="(label, key) in paperOptionLabels" :key="key">{{ label }}<textarea v-model="paperOptionText[key]" :aria-label="`基础${label}选项`" rows="10" class="mt-1 w-full rounded-lg border bg-white p-2" placeholder="每行一项" /></label></div>
             </section>
 

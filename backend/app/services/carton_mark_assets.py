@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import object_session
 
 from app.models.carton_mark import CartonMarkAsset, CartonMarkAssetOrderBinding
 from app.models.carton_procurement import CartonAuditEvent, CartonOrder
@@ -131,7 +132,12 @@ def matching_asset_orders(asset, orders):
     return matches
 
 
-def asset_out(asset, orders):
+def asset_out(asset, orders, workflow=None):
+    from app.services import carton_mark_asset_workflow as lifecycle
+    from app.schemas.carton_mark import CartonMarkAssetWorkflow
+    if workflow is None:
+        session = object_session(asset)
+        workflow = lifecycle.current(session, asset) if session else CartonMarkAssetWorkflow()
     matches = matching_asset_orders(asset, orders)
     explicit = asset.recognition_source in {"manual_order", "manual_orders"} or bool(asset.bound_order_id)
     ambiguous = not explicit and len({identity(o.customer_code) for o in matches}) > 1
@@ -142,7 +148,7 @@ def asset_out(asset, orders):
         bound_order_ids=[link.order_id for link in asset.order_bindings] if asset.recognition_source == "manual_orders" else ([asset.bound_order_id] if asset.bound_order_id else []),
         recognition_source=asset.recognition_source, candidates=json.loads(asset.candidates_json),
         warning=asset.warning, binding_status=status, revision=asset.revision,
-        created_by_name=asset.created_by_name, created_at=asset.created_at,
+        created_by_name=asset.created_by_name, created_at=asset.created_at, workflow=workflow,
         orders=[CartonMarkAssetOrderOut(id=o.id, order_no=o.order_no, contract_no=o.contract_no,
             customer_name=o.customer_name, item_no=o.item_no) for o in matches])
 
@@ -156,12 +162,15 @@ def active_asset(db, factory, asset_id):
 
 
 def list_assets(db, factory, order_id=None):
+    from app.services import carton_mark_asset_workflow as lifecycle
+    from app.schemas.carton_mark import CartonMarkAssetWorkflow
     orders = available_orders(db, factory)
     if order_id and not any(o.id == order_id for o in orders):
         raise HTTPException(404, "未找到本厂订单")
-    assets = db.scalars(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory,
-        CartonMarkAsset.is_archived.is_(False)).order_by(CartonMarkAsset.created_at.desc(), CartonMarkAsset.id))
-    result = [asset_out(asset, orders) for asset in assets]
+    assets = list(db.scalars(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory,
+        CartonMarkAsset.is_archived.is_(False)).order_by(CartonMarkAsset.created_at.desc(), CartonMarkAsset.id)))
+    workflows = lifecycle.states(db, factory, [asset.id for asset in assets])
+    result = [asset_out(asset, orders, workflows.get(asset.id, CartonMarkAssetWorkflow())) for asset in assets]
     if order_id:
         result = [asset for asset in result if asset.binding_status == "BOUND" and any(o.id == order_id for o in asset.orders)]
     return result
@@ -174,7 +183,11 @@ def audit(db, user, asset, event, detail):
         actor_name=user.display_name, created_at=_now_text()))
 
 
-def save_asset(db, user, factory, content, recognition):
+def save_asset(db, user, factory, content, recognition, options=None):
+    from app.services import carton_mark_asset_workflow as lifecycle
+    from app.schemas.carton_mark import CartonMarkAssetUploadOptions
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, factory)
     sha = hashlib.sha256(content).hexdigest()
     timestamp = _now_text()
     asset = CartonMarkAsset(id=f"CMA-{uuid4().hex}", factory_id=factory,
@@ -186,6 +199,7 @@ def save_asset(db, user, factory, content, recognition):
         warning=recognition["warning"], created_by=user.id, created_by_name=user.display_name,
         created_at=timestamp, updated_at=timestamp, revision=1, is_archived=False)
     db.add(asset)
+    lifecycle.initialize(db, user, asset, options or CartonMarkAssetUploadOptions())
     audit(db, user, asset, "CARTON_MARK_ASSET_CREATED", {"sha256": sha, "contract_number": asset.contract_number})
     db.commit()
     return asset_out(asset, available_orders(db, factory)), "created"

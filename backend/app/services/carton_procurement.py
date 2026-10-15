@@ -443,10 +443,18 @@ def _require_receipt_material(line):
         raise HTTPException(422, f"{line.contract_no} / {line.packaging_type}：入库前请补齐纸质、规格和单位")
 
 
-def _require_order_complete(db, order):
+def _require_order_complete(db, order, *, require_dimensions=True):
     lines = _order_lines(db, order.id)
     if not lines or any(not line.paper_quality.strip() or not line.specification.strip() or not line.unit.strip() for line in lines):
         raise HTTPException(422, "订单纸质、规格或单位尚未完善，请先修改订单")
+    if require_dimensions:
+        from app.services.carton_material_identity import dimension_unit
+        for index, line in enumerate(lines, 1):
+            declared, embedded = dimension_unit(line.dimension_unit), dimension_unit(line.specification)
+            if not (declared or embedded):
+                raise HTTPException(422, f"第 {index} 条纸品未明确尺寸单位，请标注厘米（cm）、英寸（inch）或毫米（mm）后再下单")
+            if declared and embedded and declared != embedded:
+                raise HTTPException(422, f"第 {index} 条纸品原规格与尺寸单位冲突，请先核对")
     if not any(line.required_quantity > 0 for line in lines):
         raise HTTPException(422, "订单没有可执行的纸品需求")
     if order.quantity_basis == "CALCULATED" and (order.product_order_quantity is None or any(line.usage_quantity is None for line in lines)):
@@ -972,7 +980,12 @@ def create_purchase_order_issue(
         order.status == "CANCELLED" and latest_issue is not None):
         raise HTTPException(status_code=409, detail="只有已确认并锁定的订单可以生成供应商采购单")
 
-    _require_order_complete(db, order)
+    from app.services.carton_material_correction import guard_issue
+    guard_issue(db, order)
+
+    # Issued historical snapshots keep their original unit evidence. New order
+    # confirmation validates units before entering this existing issue workflow.
+    _require_order_complete(db, order, require_dimensions=False)
     pending_type, product_delta, _, snapshot = _purchase_order_pending_change(
         order, _order_lines(db, order.id), latest_issue
     )
@@ -1356,6 +1369,10 @@ def update_order_dates(
         "customer_due_date": order.customer_due_date, "due_date": order.due_date,
         "safety_lead_days": order.safety_lead_days, "revision": order.revision,
     })
+    if payload.issue_to_supplier and order.status != "CONFIRMED":
+        ordinary = [issue for issue in _purchase_order_issues(db, order.id) if not _purchase_order_snapshot(issue).get("replenishment")]
+        if ordinary and _purchase_order_pending_change(order, _order_lines(db, order.id), ordinary[0])[0] != "NONE":
+            create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
     db.commit()
     db.refresh(order)
     return order
@@ -1892,6 +1909,10 @@ def append_order(
             resolved_at="",
         )
     )
+    if payload.issue_to_supplier and order.status != "CONFIRMED":
+        ordinary = [issue for issue in _purchase_order_issues(db, order.id) if not _purchase_order_snapshot(issue).get("replenishment")]
+        if ordinary and _purchase_order_pending_change(order, _order_lines(db, order.id), ordinary[0])[0] != "NONE":
+            create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
     db.commit()
     db.refresh(order)
     return order
@@ -2033,6 +2054,10 @@ def reduce_order(
     )
     if full_return:
         _issue_order_cancellation(db, order, user)
+    if payload.issue_to_supplier and order.status != "CONFIRMED":
+        ordinary = [issue for issue in _purchase_order_issues(db, order.id) if not _purchase_order_snapshot(issue).get("replenishment")]
+        if ordinary and _purchase_order_pending_change(order, _order_lines(db, order.id), ordinary[0])[0] != "NONE":
+            create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
     db.commit()
     db.refresh(order)
     return order
@@ -2384,7 +2409,11 @@ def order_out(db: Session, order: CartonOrder, *, usage=None, projection=None) -
         CartonPurchaseOrderIssue.order_id == order.id,
         CartonPurchaseOrderIssue.document_type == "INITIAL",
     ).limit(1))) if order.status not in {"DRAFT", "CONFIRMED"} else None
+    from app.services.carton_material_correction import records as material_records
+    corrections = material_records(db, order.factory_id, order.id)
+    approved_materials = {row['order_line_id']: row['id'] for row in corrections if row['status'] == 'APPROVED'}
     return CartonOrderOut(
+        material_corrections=corrections,
         purchase_order_batch=purchase_batch_out(initial_issue) if initial_issue else None,
         supplier_acceptance=acceptance_summary(db, order, lines, projection=projection),
         split_records=projection["plans"] if projection is not None else plans(db, order.factory_id, order.id),
@@ -2424,6 +2453,7 @@ def order_out(db: Session, order: CartonOrder, *, usage=None, projection=None) -
                                     if protected_product_quantity is not None else None),
         lines=[
             CartonOrderLineOut(
+                material_correction_id=approved_materials.get(line.id, ""),
                 id=line.id,
                 line_no=line.line_no,
                 packaging_type=line.packaging_type,
@@ -2770,7 +2800,7 @@ def _ensure_delivery_import_evidence(db, factory_id, batch_id):
             raise HTTPException(409, "历史送货预览未经过完整物料校验，请重新导入原文件后复核")
 
 
-def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext, *, commit: bool = True, supplier_shipment_id: str | None = None, corrects_receipt_id: str | None = None) -> CartonReceipt:
+def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext, *, commit: bool = True, supplier_shipment_id: str | None = None, corrects_receipt_id: str | None = None, shipment_batch_key: str | None = None) -> CartonReceipt:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
@@ -2781,6 +2811,8 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         ensure_open(db, factory_id, supplier.id, payload.acceptance_date[:7])
     formal_inputs = [line for line in payload.lines if line.source_type == "FORMAL_ORDER"]
     line_ids = [line.order_line_id for line in formal_inputs if line.order_line_id]
+    from app.services.carton_material_correction import guard_lines
+    guard_lines(db, factory_id, line_ids)
     registered_shipment = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == factory_id,
         SupplierShipment.supplier_id == supplier.id, SupplierShipment.delivery_note_no == payload.delivery_note_no))
     if registered_shipment and (registered_shipment.id != supplier_shipment_id or registered_shipment.status != "SENT"):
@@ -2788,6 +2820,11 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
     if supplier_shipment_id and (not registered_shipment or registered_shipment.id != supplier_shipment_id):
         raise HTTPException(409, "供应商发货关联与送货单不一致")
     receipt_note_no = payload.delivery_note_no
+    if shipment_batch_key:
+        import hashlib
+        if not registered_shipment or registered_shipment.id != supplier_shipment_id:
+            raise HTTPException(409, "分次入库必须关联原供应商送货单")
+        receipt_note_no = f"{payload.delivery_note_no[:96]}#B-{hashlib.sha256(shipment_batch_key.encode()).hexdigest()[:16]}"
     if corrects_receipt_id:
         previous = db.get(CartonReceipt, corrects_receipt_id)
         if not registered_shipment or registered_shipment.receipt_id != corrects_receipt_id or not previous or previous.factory_id != factory_id or previous.supplier_id != supplier.id or previous.status != "REVERSED":
@@ -2832,8 +2869,12 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
             status_code=409,
             detail=f"订单 {', '.join(sorted(ineligible_orders))} 必须先确认并锁定，且保持待收料状态，才能登记收料",
         )
+    from app.services.carton_material_correction import latest_approved
     for input_line in formal_inputs:
         line = by_id[input_line.order_line_id]
+        correction = latest_approved(db, factory_id, line.id)
+        if correction and input_line.material_correction_id != correction['id']:
+            raise HTTPException(409, '纸品资料已经双方确认更正，请关闭旧收料草稿，刷新订单后重新核实入库')
         if not line.paper_quality.strip() or not line.specification.strip():
             order = orders[line.order_id]
             if not any(issue.document_type == "LEGACY_BASELINE" for issue in _purchase_order_issues(db, order.id)):
@@ -2903,6 +2944,7 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
             order = orders[order_line.order_id]
             from app.services.carton_replenishment_receipts import select_link
             replacement_link = select_link(db, factory_id, order_line, effective, input_line.replenishment_issue_id)
+            from app.services.carton_material_correction import receipt_specification
             snapshot = {
                 "order_line_id": order_line.id,
                 "customer_code": order.customer_code,
@@ -2911,7 +2953,7 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
                 "item_no": order.item_no,
                 "packaging_type": order_line.packaging_type,
                 "paper_quality": order_line.paper_quality,
-                "specification": order_line.specification,
+                "specification": receipt_specification(db, order_line),
                 "unit": order_line.unit,
                 "unit_price": (
                     input_line.unit_price
@@ -2972,6 +3014,10 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
                 feedback_note=input_line.feedback_note,
             )
         )
+        if snapshot["unit_price"] == 0 and (not replacement_link or replacement_link.get("responsibility") != "SUPPLIER"):
+            from app.services.carton_receipt_pricing import EVENT as ZERO_PRICE_EVENT
+            _audit(db, user, factory_id, ZERO_PRICE_EVENT, "carton_receipt_line", receipt_line_id,
+                   {"receipt_id": receipt_id, "zero_price_kind": input_line.zero_price_kind or "PENDING"})
         if replacement_link:
             from app.services.carton_replenishment_receipts import EVENT
             _audit(db, user, factory_id, EVENT, "carton_receipt_line", receipt_line_id,
@@ -3017,6 +3063,8 @@ def _receipt_lines(db: Session, receipt_id: str) -> list[CartonReceiptLine]:
 def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
     from app.services.carton_replenishment_receipts import receipt_links, public_link
     links = receipt_links(db, receipt.factory_id)
+    from app.services.carton_receipt_pricing import declarations
+    zero_prices = declarations(db, receipt.factory_id, receipt.id)
     return CartonReceiptOut(
         id=receipt.id,
         factory_id=receipt.factory_id,
@@ -3037,7 +3085,7 @@ def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
         created_at=receipt.created_at,
         updated_at=receipt.updated_at,
         confirmed_at=receipt.confirmed_at,
-        lines=[CartonReceiptLineOut.model_validate(line).model_copy(update={**public_link(links.get(line.id)), "location_allocations": [CartonLocationAllocation.model_validate(a) for a in json.loads(line.location_allocations_json or "[]")]}) for line in _receipt_lines(db, receipt.id)],
+        lines=[CartonReceiptLineOut.model_validate(line).model_copy(update={**public_link(links.get(line.id)), "zero_price_kind": zero_prices.get(line.id, "PENDING" if line.unit_price == 0 else None), "location_allocations": [CartonLocationAllocation.model_validate(a) for a in json.loads(line.location_allocations_json or "[]")]}) for line in _receipt_lines(db, receipt.id)],
     )
 
 
@@ -3165,15 +3213,10 @@ def confirm_receipt(
     from app.services.carton_replenishment_receipts import receipt_links, select_link, EVENT
     replacement_links = receipt_links(db, factory_id)
     # Validate the whole receipt before posting any line, including legacy drafts.
-    missing_prices = [line for line in lines if line.effective_quantity > 0 and (
-        line.unit_price is None or line.unit_price <= 0
-    ) and replacement_links.get(line.id, {}).get("responsibility") != "SUPPLIER"]
-    if missing_prices:
-        labels = "、".join(
-            f"{line.contract_no} / {line.item_no} · {line.packaging_type}"
-            for line in missing_prices
-        )
-        raise HTTPException(status_code=422, detail=f"入库必须填写大于 0 的单价：{labels}。请补齐后再确认入库。")
+    if any(line.effective_quantity > 0 and (line.unit_price is None or not line.unit_price.is_finite() or line.unit_price < 0) for line in lines):
+        raise HTTPException(422, "入库单价须为有效的非负数，暂未定价请填 0")
+    from app.services.carton_receipt_pricing import declarations
+    zero_prices = declarations(db, factory_id, receipt.id)
     timestamp = now_text()
     formal_lines = [line for line in lines if line.source_type == "FORMAL_ORDER"]
     order_line_ids = [line.order_line_id for line in formal_lines if line.order_line_id]
@@ -3211,6 +3254,8 @@ def confirm_receipt(
             status_code=409,
             detail=f"订单 {', '.join(sorted(ineligible_orders))} 当前未处于已确认锁定的待收料状态，不能确认入库",
         )
+    from app.services.carton_material_correction import guard_lines
+    guard_lines(db, factory_id, order_lines.keys())
     for order_line in order_lines.values():
         _require_receipt_material(order_line)
     _ensure_receipt_capacity(db, order_lines, {})
@@ -3261,9 +3306,9 @@ def confirm_receipt(
                 occurred_at=timestamp,
             )
         positions.post(db, movement, allocations=json.loads(line.location_allocations_json or "[]"), legacy_location=line.location)
-        if line.unit_price == 0 and replacement_links.get(line.id, {}).get("responsibility") == "SUPPLIER":
+        if line.unit_price == 0 and (zero_prices.get(line.id) == "FREE" or replacement_links.get(line.id, {}).get("responsibility") == "SUPPLIER"):
             _audit(db, user, factory_id, "INVENTORY_PRICE_CONFIRMED", "carton_inventory_movement", movement.id,
-                   {"unit_price": "0", "reason": "供应商责任免费换补，原出库库存成本为零", "zero_price_confirmed": True})
+                   {"unit_price": "0", "reason": "免费赠送，确认零应付" if zero_prices.get(line.id) == "FREE" else "供应商责任免费换补，原出库库存成本为零", "zero_price_confirmed": True})
     receipt.status = "POSTED"
     receipt.revision += 1
     receipt.confirmed_by = user.id

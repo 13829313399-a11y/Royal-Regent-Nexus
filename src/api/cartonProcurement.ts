@@ -1,3 +1,4 @@
+import type { MaterialCorrection } from './cartonMaterialCorrection'
 import { http } from '@/lib/http'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
 import type { SplitRecord } from './cartonOrderSplits'
@@ -34,6 +35,7 @@ export interface CartonCustomerSaveRequest {
 
 export interface CartonReplenishmentOption { replenishment_issue_id: string; document_no: string; responsibility: 'OWN' | 'SUPPLIER'; remaining_quantity: string }
 export interface CartonOrderLineResponse {
+  material_correction_id?: string
   net_weight_kg?: string | null
   gross_weight_kg?: string | null
   replenishment_review_required?: boolean
@@ -79,6 +81,7 @@ export interface CartonPurchaseOrderBatchResponse {
 export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records'>
 
 export interface CartonOrderResponse {
+  material_corrections?: MaterialCorrection[]
   net_weight_kg?: string | null
   gross_weight_kg?: string | null
   purchase_order_batch?: CartonPurchaseOrderBatchResponse | null
@@ -560,6 +563,7 @@ export interface CartonReceiptResponse {
     unusable_quantity: string
     effective_quantity: string
     unit: string
+    zero_price_kind?: 'FREE' | 'PENDING' | null
     unit_price: string
     currency: string
     location: string
@@ -794,7 +798,7 @@ export const cartonProcurementApi = {
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/append`,
       {
         factory_id: factoryId,
-        expected_revision: order.revision,
+        expected_revision: order.revision, issue_to_supplier: order.status !== 'CONFIRMED',
         additional_quantity: additionalQuantity,
         ...(lineQuantities ? { line_quantities: lineQuantities } : {}),
         reason,
@@ -807,7 +811,7 @@ export const cartonProcurementApi = {
   async adjustOrderDates(factoryId: string, order: CartonOrderResponse, reason: string, customerDueDate?: string, dueDate?: string) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/dates`,
-      { factory_id: factoryId, expected_revision: order.revision, reason,
+      { factory_id: factoryId, expected_revision: order.revision, issue_to_supplier: order.status !== 'CONFIRMED', reason,
         ...(customerDueDate ? { customer_due_date: customerDueDate } : {}),
         ...(dueDate ? { due_date: dueDate } : {}) },
     )
@@ -824,7 +828,7 @@ export const cartonProcurementApi = {
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/reduce`,
       {
         factory_id: factoryId,
-        expected_revision: order.revision,
+        expected_revision: order.revision, issue_to_supplier: order.status !== 'CONFIRMED',
         reduction_quantity: reductionQuantity,
         ...(lineQuantities ? { line_quantities: lineQuantities } : {}),
         reason,
@@ -996,6 +1000,7 @@ export const cartonProcurementApi = {
     reason: string
     items: Array<{
       workshop_id?: string
+      material_correction_id?: string
       order_line_id: string | null
       reference_movement_id: string | null
       quantity: number
@@ -1124,6 +1129,7 @@ export const cartonProcurementApi = {
     lines: Array<{
       source_type: 'FORMAL_ORDER' | 'AD_HOC'
       replenishment_issue_id?: string | null
+      material_correction_id?: string
       order_line_id: string | null
       customer_code: string
       contract_no: string
@@ -1138,6 +1144,7 @@ export const cartonProcurementApi = {
       damaged_quantity: number
       rejected_quantity: number
       unusable_quantity: number
+      zero_price_kind?: 'FREE' | 'PENDING'
       unit_price?: number
       location: string
       location_allocations?: Array<{ location_id: string; quantity: string | number; label?: string }>

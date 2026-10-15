@@ -1,4 +1,35 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
+
+
+AssetUsageStatus = Literal['UNCLASSIFIED', 'DRAFT', 'PENDING', 'READY', 'HISTORY']
+
+
+class CartonMarkAssetWorkflow(BaseModel):
+    status: AssetUsageStatus = 'UNCLASSIFIED'
+    note: str = ''
+    version: int = 1
+    previous_asset_id: str = ''
+    superseded_by_asset_id: str = ''
+    updated_by_name: str = ''
+    updated_at: str = ''
+    confirmed_by_name: str = ''
+    confirmed_at: str = ''
+    confirmation_note: str = ''
+
+
+class CartonMarkAssetClassification(BaseModel):
+    status: Literal['DRAFT', 'PENDING', 'READY', 'HISTORY']
+    note: str = Field(default='', max_length=500)
+    revision: int = Field(ge=1)
+
+
+class CartonMarkAssetUploadOptions(BaseModel):
+    status: Literal['DRAFT', 'PENDING', 'READY'] = 'DRAFT'
+    note: str = Field(default='', max_length=500)
+    previous_asset_id: str = Field(default='', max_length=96)
+    previous_revision: int | None = Field(default=None, ge=1)
 
 
 class CartonMarkAssetOrderOut(BaseModel):
@@ -28,6 +59,7 @@ class CartonMarkAssetOut(BaseModel):
     revision: int
     created_by_name: str
     created_at: str
+    workflow: CartonMarkAssetWorkflow = Field(default_factory=CartonMarkAssetWorkflow)
 
 
 class CartonMarkAssetBindingRequest(BaseModel):

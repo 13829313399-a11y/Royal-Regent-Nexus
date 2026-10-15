@@ -261,6 +261,25 @@ export interface CartonMarkTemplateCreateRequest {
 
 export type CartonMarkTemplateDocumentKind = 'source_excel' | 'print_pdf'
 
+export type CartonMarkUsageStatus = 'UNCLASSIFIED' | 'DRAFT' | 'PENDING' | 'READY' | 'HISTORY'
+export interface CartonMarkAssetWorkflow {
+  status: CartonMarkUsageStatus
+  note: string
+  version: number
+  previous_asset_id: string
+  superseded_by_asset_id: string
+  updated_by_name: string
+  updated_at: string
+  confirmed_by_name: string
+  confirmed_at: string
+  confirmation_note: string
+}
+export interface CartonMarkUploadOptions {
+  status: 'DRAFT' | 'PENDING' | 'READY'
+  note: string
+  previous_asset_id?: string
+  previous_revision?: number
+}
 export interface CartonMarkAsset {
   id: string
   factory_id: string
@@ -280,6 +299,7 @@ export interface CartonMarkAsset {
   revision: number
   created_by_name: string
   created_at: string
+  workflow?: CartonMarkAssetWorkflow
 }
 
 export interface CartonMarkAssetUploadResult {
@@ -306,15 +326,26 @@ export function createCartonMarkApi(client = http) {
       })
       return response.data
     },
-    async uploadAssets(factoryId: string, files: File[], signal?: AbortSignal) {
+    async uploadAssets(factoryId: string, files: File[], signal?: AbortSignal, options?: CartonMarkUploadOptions[]) {
       const formData = new FormData()
       formData.set('factory_id', factoryId)
       files.forEach(file => formData.append('files', file))
+      if (options) formData.set('options_json', JSON.stringify(options))
       const response = await client.post<CartonMarkAssetUploadResult[]>('/carton-mark/assets/batch', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: CARTON_MARK_AUTO_CHECK_TIMEOUT_MS, signal,
       })
       return response.data
+    },
+    async classifyAsset(factoryId: string, asset: CartonMarkAsset, status: Exclude<CartonMarkUsageStatus, 'UNCLASSIFIED'>, note: string, signal?: AbortSignal) {
+      return (await client.put<CartonMarkAsset>(`/carton-mark/assets/${asset.id}/classification`, {
+        status, note, revision: asset.revision,
+      }, { params: { factory_id: factoryId }, signal })).data
+    },
+    async assetClassificationHistory(factoryId: string, assetId: string, signal?: AbortSignal) {
+      return (await client.get<{ revision: number; workflow: CartonMarkAssetWorkflow }[]>(`/carton-mark/assets/${assetId}/classification-history`, {
+        params: { factory_id: factoryId }, signal,
+      })).data
     },
     async bindAsset(factoryId: string, asset: CartonMarkAsset, contractNumber: string, orderId?: string, signal?: AbortSignal, orderIds?: string[]) {
       const response = await client.put<CartonMarkAsset>(`/carton-mark/assets/${asset.id}/binding`, {

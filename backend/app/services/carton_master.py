@@ -66,7 +66,7 @@ def packing_name(data, baseline):
         return "标准装"
     def outer(config):
         lines = config.get("lines", [])
-        boxes = [line for line in lines if line["packaging_type"] == "外箱"]
+        boxes = [line for line in lines if line["packaging_type"] in {"外箱", "普通箱", "半翼箱"}]
         return boxes[0] if len(boxes) == 1 else None
     first, current = outer(baseline), outer(data)
     composition = lambda config: sorted((l["packaging_type"], l["unit"]) for l in config.get("lines", []))

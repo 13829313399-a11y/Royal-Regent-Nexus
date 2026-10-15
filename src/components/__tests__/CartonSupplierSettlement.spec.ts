@@ -1,10 +1,12 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { defineComponent } from 'vue'
+import { useMoneyPreference } from '@/features/carton-procurement/moneyPreference'
 import Component from '../CartonSupplierSettlement.vue'
 import { supplierSettlementApi as api, type SupplierWorkspace, type SettlementDocument } from '@/api/cartonSupplierSettlement'
 
 const mocks = vi.hoisted(() => ({ can: vi.fn(() => true), leave: vi.fn(), update: vi.fn() }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ can: mocks.can }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ can: mocks.can, currentUser: { id: 'settlement-user', identity: { employment_epoch: 1 } } }) }))
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: mocks.leave, onBeforeRouteUpdate: mocks.update }))
 vi.mock('@/lib/http', () => ({ http: {}, getApiErrorMessage: (e: Error) => e.message }))
 vi.mock('@/api/cartonSupplierSettlement', () => ({ supplierSettlementApi: { workspace: vi.fn(), save: vi.fn(), confirm: vi.fn(), reopen: vi.fn(), acceptance: vi.fn() } }))
@@ -25,10 +27,41 @@ function collaborativeWorkspace(): SupplierWorkspace {
   ws.collaboration = { sources: [source], source_fingerprint: 'c'.repeat(64), unsettled_shipments: [], lines: document().statement.lines }
   return ws
 }
-afterEach(() => vi.useRealTimers())
+afterEach(() => { vi.useRealTimers(); window.localStorage.clear() })
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-01T04:00:00Z')); vi.resetAllMocks(); mocks.can.mockReturnValue(true); vi.mocked(api.workspace).mockResolvedValue(workspace()) })
 
 describe('供应商月结对账', () => {
+  it('changes HKD reference display without dirtying the statement or changing the RMB save payload', async () => {
+    const ws = workspace(), doc = document()
+    ws.documents = [doc]
+    vi.mocked(api.workspace).mockResolvedValue(ws); vi.mocked(api.save).mockResolvedValue(doc)
+    let money!: ReturnType<typeof useMoneyPreference>
+    const preferences = mount(defineComponent({ setup() { money = useMoneyPreference({ userId: 'settlement-user', employmentEpoch: 1 }); return () => null } }))
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    try {
+      expect(w.text()).not.toContain('港币参考 HK$')
+      money.setPreference('HKD', '1.1'); await flushPromises()
+      expect(w.get('[aria-label="月结港币参考汇率"]').text()).toContain('1 CNY = 1.1 HKD')
+      expect(w.text()).toContain('港币参考 HK$22.00')
+      expect(w.text()).toContain('港币参考 HK$2.200000')
+      expect(button(w, '放弃未保存内容')).toBeUndefined()
+      expect(w.get<HTMLInputElement>('[aria-label="账单单价 L1"]').element.value).toBe('2')
+      expect(w.get<HTMLInputElement>('[aria-label="账单金额 L1"]').element.value).toBe('20.00')
+      money.setPreference('HKD', '1.2'); await flushPromises()
+      expect(w.text()).toContain('港币参考 HK$24.00')
+      expect(button(w, '放弃未保存内容')).toBeUndefined()
+      await button(w, '保存并核对差异').trigger('submit'); await flushPromises()
+      expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ currency: 'CNY', lines: expect.arrayContaining([
+        expect.objectContaining({ id: 'L1', quantity: '10', unit_price: '2', amount: '20.00' }),
+      ]) }))
+      expect(api.workspace).toHaveBeenCalledWith('huaxing', expect.any(String), 'CNY')
+      money.setPreference('CNY', '1.2'); await flushPromises()
+      expect(w.text()).not.toContain('港币参考 HK$')
+      await w.get('[aria-label="供应商对账币种"]').setValue('JPY')
+      await button(w, '查询 / 刷新').trigger('click'); await flushPromises()
+      expect(api.workspace).toHaveBeenLastCalledWith('huaxing', expect.any(String), 'JPY')
+    } finally { w.unmount(); preferences.unmount() }
+  })
   it('shares header search while saving and confirming the complete version, and retains standalone search', async () => {
     const ws = workspace(), doc = document()
     doc.sources.push({ ...doc.sources[0]!, source_key: 'RECEIPT:R2', document_no: 'DELIVERY-2', item_no: 'OTHER-ITEM' })

@@ -1,3 +1,5 @@
+from app.schemas.carton_order_groups import OrderGroupCreate
+from app.schemas.carton_contract_merge import ContractMerge
 from typing import Literal
 from datetime import date, datetime
 from decimal import Decimal
@@ -8,7 +10,7 @@ from types import SimpleNamespace
 from contextlib import contextmanager
 from urllib.parse import quote as url_quote
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -447,6 +449,26 @@ def get_order_history_item_suggestions(
         total=len(items),
         items=items,
     )
+
+
+@router.post("/order-groups/convert", response_model=list[CartonOrderOut], status_code=201)
+def convert_order_group(payload: OrderGroupCreate, request: Request, db: Session = Depends(get_db),
+                        current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_order_groups import create
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return create(db, payload, current_user,
+        refresh_user=lambda: get_current_user(request=request, db=db),
+        authorize=lambda user: _ensure_permission(db, user, "carton_procurement:order_write", payload.factory_id))
+
+
+@router.post("/orders/merge-contract", response_model=list[CartonOrderOut])
+def merge_order_contract(payload: ContractMerge, request: Request, db: Session = Depends(get_db),
+                         current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_contract_merge import merge
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return merge(db, payload, current_user,
+        refresh_user=lambda: get_current_user(request=request, db=db),
+        authorize=lambda user: _ensure_permission(db, user, "carton_procurement:order_write", payload.factory_id))
 
 
 @router.post("/orders", response_model=CartonOrderOut, status_code=201)
@@ -1619,3 +1641,19 @@ def rename_carton_warehouse(payload: WarehouseRename, db: Session = Depends(get_
 def delete_carton_warehouse(payload: WarehouseDelete, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
     return master_service.delete_warehouse(db, current_user, payload)
+
+
+from app.schemas.carton_material_correction import MaterialCorrectionCreate, MaterialCorrectionAction
+from app.services import carton_material_correction as material_corrections
+
+@router.get("/orders/{order_no}/material-corrections")
+def material_correction_context(order_no: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return material_corrections.context(db, current_user, factory_id, order_no)
+
+@router.post("/orders/{order_no}/material-corrections", status_code=201)
+def request_material_correction(order_no: str, payload: MaterialCorrectionCreate, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return material_corrections.create(db, current_user, order_no, payload)
+
+@router.post("/material-corrections/{identifier}/actions")
+def withdraw_material_correction(identifier: str, payload: MaterialCorrectionAction, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return material_corrections.act(db, current_user, identifier, payload)
