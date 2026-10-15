@@ -30,7 +30,7 @@ onMounted(()=>void load())
 </script>
 <template>
   <section class="cutting-page cutting-master">
-    <PageHeader :title="workspace.title" description="按真实签收与实际耗用核对本厂、外发余料，追溯原批次成本与待计价事项。"><template #actions><StatusPill label="耗用与批次成本 · P3b 首批" /></template></PageHeader>
+    <PageHeader :title="workspace.title" description="按真实耗用核对本厂、外发材料费用，确认完工及在制归属，追溯原批次成本。"><template #actions><StatusPill label="在制归集与成本核算 · P3b 第三批" /></template></PageHeader>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p><p v-if="loading" role="status">正在读取费用工作区…</p>
     <p v-if="access&&!access.enabled" class="cutting-notice">实际材料费用尚未启用，当前不能录入或计价。</p>
     <p v-else-if="access&&!access.usage_schema_ready" class="cutting-notice">P3b 需先完成 0156 显式迁移，当前未接通，不以零费用代替未知。</p>

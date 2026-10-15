@@ -307,12 +307,12 @@ def usage_balance(line_id: str, db: Db, user: User, day: ps.BusinessDate, issue_
 
 
 @router.post('/orders/{line_id}/usage/{action}')
-def usage_command(line_id: str, action: Literal['post', 'void', 'review', 'price', 'correct'], body: dict, db: Db, user: User):
-    c.authorize(user, body.get('factory_id', ''), 'cost_write' if action == 'price' else 'usage_review' if action == 'review' else 'usage_write')
-    if action == 'price':
+def usage_command(line_id: str, action: Literal['post', 'void', 'review', 'price', 'correct', 'allocate'], body: dict, db: Db, user: User):
+    c.authorize(user, body.get('factory_id', ''), 'allocation_confirm' if action == 'allocate' else 'cost_write' if action == 'price' else 'usage_review' if action == 'review' else 'usage_write')
+    if action in {'price', 'allocate'}:
         c.authorize(user, body.get('factory_id', ''), 'cost_read')
     orders_ready(db)
-    model = us.UsageCorrection if action == 'correct' else us.UsageCommand if action == 'post' else us.BatchCost if action == 'price' else us.UsageDecision
+    model = us.CostAllocation if action == 'allocate' else us.UsageCorrection if action == 'correct' else us.UsageCommand if action == 'post' else us.BatchCost if action == 'price' else us.UsageDecision
     parsed = model.model_validate(body)
     return c.command(db, user, parsed, 'usage-'+action+':'+line_id, lambda: usage.execute(db, user, line_id, parsed, action))
 
@@ -323,7 +323,7 @@ def recover_usage(line_id: str, body: us.RecoverUsage, db: Db, user: User):
     c.authorize(user, identity.factory_id)
     c.require(c.schema_ready(db.connection()), '裁床操作记录需先完成迁移', 503)
     action = 'usage-'+body.action+':'+line_id
-    model = us.UsageCorrection if body.action == 'correct' else us.UsageCommand if body.action == 'post' else us.BatchCost if body.action == 'price' else us.UsageDecision
+    model = us.CostAllocation if body.action == 'allocate' else us.UsageCorrection if body.action == 'correct' else us.UsageCommand if body.action == 'post' else us.BatchCost if body.action == 'price' else us.UsageDecision
     try:
         original = model.model_validate(body.command)
     except ValidationError:

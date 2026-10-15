@@ -41,7 +41,7 @@ def events(db):
 def documents(history):
     result = {}
     for event in history:
-        if event['action'] == 'price':
+        if event['action'] in {'price', 'allocate'}:
             continue
         document = result.setdefault(event['document_id'], dict(posted=None, review=None, voided=False, history=[]))
         document['history'].append(event)
@@ -198,6 +198,51 @@ def amount(quantity, price):
         return format((wh.decimal(quantity) * wh.decimal(price)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), '.2f')
 
 
+def cost_summary(rows):
+    """Group existing rounded issue costs, retaining physical and currency boundaries."""
+    tasks, materials = {}, {}
+    task_fields = ('dispatch_id', 'bom_id', 'bom_version', 'task_id', 'resource_id', 'resource_version')
+    quantity_fields = ('received_quantity', 'returned_quantity', 'consumed_quantity', 'loss_quantity', 'remaining_quantity')
+    with localcontext() as precision:
+        precision.prec = 60
+        for row in rows:
+            if row['reversed']:
+                continue
+            context = row['context']
+            identity = tuple(context.get(field) for field in task_fields)
+            if identity not in tasks:
+                tasks[identity] = dict(key=f'task-{len(tasks)}', context={
+                    field: context.get(field) for field in (*task_fields, 'task_name', 'resource_name', 'execution')},
+                    issue_count=0, pending_pricing=0, costs={})
+            material = context['warehouse_material']
+            identity = (material['id'], material['revision'], context['unit'])
+            if identity not in materials:
+                materials[identity] = dict(key=f'material-{len(materials)}', material=material,
+                    item_code=context['item_code'], item_name=context['item_name'], unit=context['unit'],
+                    **{field: '0' for field in quantity_fields}, pending_quantity='0',
+                    issue_count=0, pending_pricing=0, costs={})
+            task = tasks[tuple(context.get(field) for field in task_fields)]
+            grouped_material = materials[identity]
+            for field in quantity_fields:
+                grouped_material[field] = wh.text(wh.decimal(grouped_material[field]) + wh.decimal(row[field]))
+            used = wh.decimal(row['consumed_quantity']) + wh.decimal(row['loss_quantity'])
+            for group in (task, grouped_material):
+                group['issue_count'] += 1
+                if used <= 0:
+                    continue
+                if not row['price']:
+                    group['pending_pricing'] += 1
+                    continue
+                currency = row['price']['data']['entry']['currency']
+                costs = group['costs'].setdefault(currency, dict(normal='0.00', loss='0.00', total='0.00'))
+                costs['normal'] = format(wh.decimal(costs['normal']) + wh.decimal(row['normal_cost']), '.2f')
+                costs['loss'] = format(wh.decimal(costs['loss']) + wh.decimal(row['loss_cost']), '.2f')
+                costs['total'] = format(wh.decimal(costs['normal']) + wh.decimal(costs['loss']), '.2f')
+            if used > 0 and not row['price']:
+                grouped_material['pending_quantity'] = wh.text(wh.decimal(grouped_material['pending_quantity']) + used)
+    return dict(tasks=list(tasks.values()), materials=list(materials.values()))
+
+
 def read(db, line_id, *, show_costs=False):
     ensure_schema(db)
     c.require(orders.latest(db, line_id) is not None, '裁床来源订单不存在', 404)
@@ -252,11 +297,17 @@ def read(db, line_id, *, show_costs=False):
                     currency = row['price']['data']['entry']['currency']
                     currencies[currency] = wh.text(wh.decimal(currencies.get(currency, '0')) + wh.decimal(row['normal_cost']) + wh.decimal(row['loss_cost']))
         result.update(amounts=currencies, pending_pricing=sum(1 for r in rows if not r['price'] and wh.decimal(r['consumed_quantity']) + wh.decimal(r['loss_quantity']) > 0),
-                      price_history=[e for e in history if e['action'] == 'price' and e['data']['context']['root_batch_id'] in root_ids])
+                      price_history=[e for e in history if e['action'] == 'price' and e['data']['context']['root_batch_id'] in root_ids],
+                      cost_summary=cost_summary(rows))
+        from app.services import cutting_cost_allocation as allocation
+        result['cost_allocation'] = allocation.view(db, line_id, rows, history)
     return result
 
 
 def execute(db, actor, line_id, body, action):
+    if action == 'allocate':
+        from app.services import cutting_cost_allocation as allocation
+        return allocation.confirm(db, actor, line_id, body)
     ensure_schema(db)
     c.require(orders.latest(db, line_id) is not None, '裁床订单不存在', 404)
     wh.ensure_schema(db)

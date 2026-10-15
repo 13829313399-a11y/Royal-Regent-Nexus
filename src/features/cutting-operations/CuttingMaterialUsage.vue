@@ -6,11 +6,14 @@ import { Button } from '@/components/ui/button'
 import { errorMessage } from './api'
 import { usageApi, type UsageAction, type UsageCommand, type UsageLedger, type UsageIssue, type UsageBalance } from './usageApi'
 import { subtractQuantities } from './quantityMath'
+import CuttingCostSummary from './CuttingCostSummary.vue'
+import CuttingCostAllocation from './CuttingCostAllocation.vue'
 const props=defineProps<{lineId:string;permissions:string[];withCosts?:boolean;blocked?:boolean}>()
 const emit=defineEmits<{editing:[value:boolean]}>()
 const ledger=ref<UsageLedger>(),draft=ref<UsageCommand>(),mode=ref<UsageAction>(),pending=ref<{id:string;action:UsageAction;body:UsageCommand}>()
 const loading=ref(false),saving=ref(false),error=ref(''),notice=ref(''),needsLogin=ref(false),uncertain=ref(false),baseline=ref('')
 const readAllowed=ref(false)
+const allocationChecked=ref(false)
 let alive=true,generation=0,balanceGeneration=0
 const balance=ref<UsageBalance>(),balanceLoading=ref(false),balanceError=ref('')
 const isUsage=computed(()=>mode.value==='post'||mode.value==='correct')
@@ -42,6 +45,17 @@ async function loadBalance(){
 }
 watch(()=>[draft.value?.issue_id,draft.value?.day,draft.value?.document_id,mode.value],()=>void loadBalance())
 const selectedIssue=computed(()=>ledger.value?.issues.find(i=>i.issue_id===draft.value?.issue_id))
+const allocationGroup=computed(()=>ledger.value?.cost_allocation?.groups.find(g=>g.rows.some(r=>r.issue_id===draft.value?.issue_id)))
+function beginAllocation(id:string){
+  if(!props.withCosts||!can('allocation_confirm')||props.blocked||loading.value||saving.value||pending.value||!ledger.value||!discard())return
+  const group=ledger.value.cost_allocation?.groups.find(g=>g.key===id)
+  if(!group||group.status==='blocked')return
+  mode.value='allocate';allocationChecked.value=false
+  draft.value={factory_id:'huakang-c',operation_id:crypto.randomUUID(),expected_version:ledger.value.revision,reason:'',day:today(),issue_id:id,
+    basis_token:group.basis_token,allocations:group.rows.map(r=>({issue_id:r.issue_id,completed_quantity:r.completed_quantity??''})),
+    materials_complete:false,public_material_pending:true}
+  baseline.value=JSON.stringify(draft.value);error.value='';notice.value=''
+}
 function begin(action:UsageAction,id:string){
   if(props.blocked||loading.value||saving.value||pending.value||!ledger.value||!discard())return
   if(!can(action==='price'?'cost_write':action==='review'?'usage_review':'usage_write'))return
@@ -51,25 +65,31 @@ function begin(action:UsageAction,id:string){
     ...(original?{...original.entry,document_id:original.id}:action==='post'?{issue_id:id,consumed_quantity:'',loss_quantity:'0',counted_remaining:''}:action==='price'?{issue_id:id,unit_cost:'',currency:'',price_reference:''}:{document_id:id})}
   baseline.value=JSON.stringify(draft.value);error.value='';notice.value=''
 }
-async function refreshDraft(){if(!draft.value||saving.value||pending.value||props.blocked||loading.value)return;const original=draft.value;if(await load()&&alive&&draft.value===original){original.expected_version=ledger.value!.revision;original.operation_id=crypto.randomUUID();notice.value='填写已保留，请按最新签收、退仓、耗用及成本重新核对盘余和凭据。'}}
+async function refreshDraft(){if(!draft.value||saving.value||pending.value||props.blocked||loading.value)return;const original=draft.value;if(await load()&&alive&&draft.value===original){original.expected_version=ledger.value!.revision;original.operation_id=crypto.randomUUID();
+  if(mode.value==='allocate'){
+    allocationChecked.value=false;original.materials_complete=false;original.public_material_pending=true;original.day=today()
+    const group=allocationGroup.value
+    if(group){original.basis_token=group.basis_token;original.allocations=group.rows.map(r=>({issue_id:r.issue_id,completed_quantity:original.allocations?.find(a=>a.issue_id===r.issue_id)?.completed_quantity??''}))}
+  }
+  notice.value='填写已保留，请按最新签收、退仓、耗用及成本重新核对盘余和凭据。归集确认须重新勾选核对当前实绩及全部实发。'}}
 async function save(){
   if(saving.value||loading.value||props.blocked)return
-  if(!pending.value){if(!draft.value||!mode.value||isUsage.value&&(!balance.value||balanceLoading.value||balanceError.value))return;pending.value={id:props.lineId,action:mode.value,body:JSON.parse(JSON.stringify(draft.value))};uncertain.value=false}
+  if(!pending.value){if(!draft.value||!mode.value||isUsage.value&&(!balance.value||balanceLoading.value||balanceError.value)||mode.value==='allocate'&&(!allocationChecked.value||!allocationGroup.value||allocationGroup.value.status==='blocked'))return;pending.value={id:props.lineId,action:mode.value,body:JSON.parse(JSON.stringify(draft.value))};uncertain.value=false}
   saving.value=true;error.value=''
   try{await usageApi.post(pending.value.id,pending.value.action,pending.value.body);if(!alive)return;pending.value=undefined;draft.value=undefined;mode.value=undefined;notice.value='已保存，原始记录与操作依据保留。耗用不再次扣减布料仓库存。';await load()}
   catch(e){if(!alive)return;fail(e);const status=(e as {response?:{status?:number}}).response?.status;if(!status||status>=500||status===408)uncertain.value=true;if(!uncertain.value&&status&&status>=400&&status<500&&status!==401&&status!==408)pending.value=undefined}
   finally{saving.value=false}
 }
 async function recover(){if(!pending.value||saving.value)return;saving.value=true;try{const result=await usageApi.recover(pending.value.id,pending.value.action,pending.value.body);if(!alive)return;pending.value=undefined;needsLogin.value=false;if(result.state==='committed'){draft.value=undefined;mode.value=undefined;notice.value='原操作已成功，已刷新结果。'}else{if(draft.value)draft.value.operation_id=crypto.randomUUID();notice.value='已核实原操作未执行并停止，填写保留。'}await load()}catch(e){if(alive)fail(e)}finally{saving.value=false}}
-const labels:Record<UsageAction,string>={post:'登记实际耗用与盘余',price:'确认原批次实际成本',correct:'更正原耗用单',void:'撤销录错耗用单',review:'主管抽查耗用单'}
+const labels:Record<UsageAction,string>={post:'登记实际耗用与盘余',price:'确认原批次实际成本',correct:'更正原耗用单',void:'撤销录错耗用单',review:'主管抽查耗用单',allocate:'主管确认完工耗用归属'}
 const eventLabels:Record<string,string>={post:'提交生效',void:'撤销原单',review:'主管抽查',price:'确认批次成本'}
 function hasBalance(issue:UsageIssue){return !issue.reversed&&Number(issue.remaining_quantity)>0}
 </script>
 <template>
   <SectionPanel :title="withCosts?'实际耗用与原批次材料费用':'耗用、损耗与现场／在外余料'" class="cutting-content-panel">
-    <p class="cutting-notice">P3b 首批：按原实发、实际签收登记本次耗用与损耗，盘余仅作同批物料的核对，不重复入库。文员提交即生效，主管抽查；退仓仍由布料仓办理。</p>
+    <p class="cutting-notice">P3b：按原实发、实际签收登记本次耗用与损耗，盘余仅作同批物料的核对，不重复入库。文员提交即生效，主管抽查；退仓仍由布料仓办理。</p>
     <p class="cutting-notice">盘余按耗用登记时点核对；同日后续签收及退仓另行计入当前余料，不改写原盘余。补录按所选业务日期核对；更正保留原日期及盘余截止流水。</p>
-    <p v-if="withCosts" class="cutting-notice">按原批次已确认实际成本计价，缺价显示待计价。采购岗位单独授权确认单价、币种和凭据；税费、运费不自动分摊。当前计价随已确认批次版本计算，登记快照与历史价格保留；在制分摊、单套成本及锁月待后续实施。</p>
+    <p v-if="withCosts" class="cutting-notice">按原批次已确认实际成本计价，缺价显示待计价。采购岗位单独授权确认单价、币种和凭据；税费、运费不自动分摊。主管另行确认完工耗用归属，余下正常耗用列在制，损耗单列；当前计价随已确认批次版本计算，登记快照与历史保留，锁月待后续实施。</p>
     <p v-if="error" role="alert">{{error}}</p><p v-if="notice" role="status">{{notice}}</p><p v-if="loading" role="status">正在读取耗用与成本…</p>
     <p v-if="needsLogin" role="alert">登录已失效，填写保留。<a href="/login" target="_blank" rel="noopener">重新登录</a><Button v-if="!pending" variant="outline" :disabled="saving||loading" @click="load">登录后继续读取</Button></p>
     <p v-else-if="!readAllowed&&!loading" role="status">尚未取得当前读取授权或数据，填写暂存并隐藏。<Button v-if="!pending" variant="outline" :disabled="saving||loading" @click="load">重新读取耗用与成本</Button></p>
@@ -80,7 +100,17 @@ function hasBalance(issue:UsageIssue){return !issue.reversed&&Number(issue.remai
         <h3>{{labels[mode]}}</h3><Button type="button" variant="outline" :disabled="saving||loading||!!pending||blocked" @click="refreshDraft">保留填写并刷新耗用版本</Button>
         <fieldset :disabled="saving||loading||!!pending||blocked" class="usage-fields">
           <p v-if="selectedIssue">{{selectedIssue.context.task_name}} · {{selectedIssue.context.item_name}} · 缸号 {{selectedIssue.context.lot}} / 卷号 {{selectedIssue.context.roll_no}} · 原单位 {{selectedIssue.context.unit}}；账面余料 {{selectedIssue.remaining_quantity}}</p>
-          <label>业务日期<input v-model="draft.day" type="date" :max="today()" :readonly="mode==='correct'" required /></label>
+          <label>{{mode==='allocate'?'确认日期':'业务日期'}}<input v-model="draft.day" type="date" :max="today()" :readonly="mode==='correct'||mode==='allocate'" required /></label>
+          <template v-if="mode==='allocate'">
+            <p>按当前累计实绩确认，不能倒签历史月结。合格完成 {{allocationGroup?.completed_sets??'待核对'}} 套；耗用或实绩变更后须重新确认。</p>
+            <label v-for="row in draft.allocations" :key="row.issue_id">完工归属量 · {{ledger?.issues.find(i=>i.issue_id===row.issue_id)?.context.item_name}}（{{ledger?.issues.find(i=>i.issue_id===row.issue_id)?.context.unit}}）· 原实发 {{row.issue_id}}
+              <input v-model.trim="row.completed_quantity" inputmode="decimal" required />
+              <span>正常耗用 {{ledger?.issues.find(i=>i.issue_id===row.issue_id)?.consumed_quantity}}；剩余在制 {{subtractQuantities(ledger?.issues.find(i=>i.issue_id===row.issue_id)?.consumed_quantity??'',row.completed_quantity)??'待填写'}}（原单位）</span>
+            </label>
+            <label><input v-model="draft.materials_complete" type="checkbox" />已核对本任务全部物料耗用已登记完整</label>
+            <label><input v-model="draft.public_material_pending" type="checkbox" />仍有公共耗料待分配核对</label>
+            <label><input v-model="allocationChecked" type="checkbox" required />已按当前合格完成套数和全部实发清单逐笔核对</label>
+          </template>
           <template v-if="isUsage">
             <p v-if="mode==='correct'">更正原单 {{draft.document_id}}；保存将原子撤销原单并生成关联替代单，失败则原单保持生效。</p>
             <p v-if="balanceLoading" role="status">正在核对所选日期余额…</p><p v-if="balanceError" role="alert">{{balanceError}}</p>
@@ -107,7 +137,9 @@ function hasBalance(issue:UsageIssue){return !issue.reversed&&Number(issue.remai
       </form>
       <template v-if="ledger">
         <p v-if="!ledger.issues.length" class="cutting-no-records">暂无裁床关联实发，请先办理真实领料与签收。</p>
-        <p v-if="withCosts">{{ledger.pending_pricing??0}} 个已有耗用的实发批次待计价；各币种分别列示：<span v-for="(value,currency) in ledger.amounts" :key="currency"> {{currency}} {{value}}；</span></p>
+        <p v-if="withCosts">待计价实发笔数：{{ledger.pending_pricing??0}}；仅统计已有耗用的实发记录，各币种分别列示：<span v-for="(value,currency) in ledger.amounts" :key="currency"> {{currency}} {{value}}；</span></p>
+        <CuttingCostSummary v-if="withCosts&&ledger.cost_summary" :summary="ledger.cost_summary" />
+        <CuttingCostAllocation v-if="withCosts&&ledger.cost_allocation" :value="ledger.cost_allocation" :can-confirm="can('allocation_confirm')" :disabled="saving||loading||!!pending||!!draft||!!blocked" @confirm="beginAllocation" />
         <div v-if="ledger.issues.length" class="cutting-table-scroll" role="region" aria-label="实际耗用与余料明细" tabindex="0"><table><thead><tr><th>任务／执行方</th><th>原实发／物料批次</th><th>签收／退仓</th><th>正常耗用／损耗</th><th>账面余料</th><th v-if="withCosts">原批次成本与币种</th><th v-if="withCosts">正常／损耗费用</th><th>操作</th></tr></thead><tbody><tr v-for="issue in ledger.issues" :key="issue.issue_id"><td>{{issue.context.task_name}}<br />{{issue.context.resource_name}}（{{issue.context.execution==='internal'?'本厂':'外发'}}）</td><td>{{issue.issue_id}}<br />原批次 {{issue.context.root_batch_id}}<br />{{issue.context.item_name}} · {{issue.context.lot}} / {{issue.context.roll_no}}（{{issue.context.unit}}）<span v-if="issue.reversed">已冲销</span></td><td>{{issue.received_quantity}} / {{issue.returned_quantity}}</td><td>{{issue.consumed_quantity}} / {{issue.loss_quantity}}</td><td>{{issue.remaining_quantity}}</td><td v-if="withCosts">{{issue.price?`${issue.price.data.entry.unit_cost} ${issue.price.data.entry.currency} · V${issue.price.version}`:'待计价'}}</td><td v-if="withCosts">{{issue.normal_cost??'待计价'}} / {{issue.loss_cost??'待计价'}}</td><td><div class="cutting-master-actions"><Button v-if="can('usage_write')&&hasBalance(issue)" size="sm" variant="outline" :disabled="saving||loading||!!pending||blocked" @click="begin('post',issue.issue_id)">登记耗用</Button><Button v-if="withCosts&&can('cost_write')&&!issue.reversed" size="sm" variant="outline" :disabled="saving||loading||!!pending||blocked" @click="begin('price',issue.issue_id)">确认批次成本</Button></div></td></tr></tbody></table></div>
         <article v-for="document in ledger.documents" :key="document.id" class="cutting-master-line">
           <h3>{{document.entry.day}} · {{document.context.task_name}} · {{document.context.item_name}}</h3><p>{{document.id}} · {{document.voided?'已撤销':document.reviewed?'已生效／已抽查':'已生效／待抽查'}} · 正常耗用 {{document.entry.consumed_quantity}} / 损耗 {{document.entry.loss_quantity}} / 当时盘余 {{document.entry.counted_remaining}} {{document.context.unit}}</p><p>{{document.actor}} · {{document.created_at}} · {{document.reason}}</p><p v-if="document.replaces_document_id">替代原单：{{document.replaces_document_id}}</p><p v-if="document.replaced_by_document_id">关联替代单：{{document.replaced_by_document_id}}</p><p>盘余截止仓库流水：{{document.warehouse_cutoff??'历史登记时点'}}</p>

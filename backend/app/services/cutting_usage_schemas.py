@@ -38,6 +38,26 @@ class BatchCost(Command):
     price_reference: Annotated[str, Field(min_length=4, max_length=500)]
 
 
+class AllocationRow(Strict):
+    issue_id: Text
+    completed_quantity: Nonnegative
+
+
+class CostAllocation(Command):
+    issue_id: Text
+    day: BusinessDate
+    basis_token: Text
+    allocations: Annotated[list[AllocationRow], Field(min_length=1, max_length=2000)]
+    materials_complete: Annotated[bool, Field(strict=True)]
+    public_material_pending: Annotated[bool, Field(strict=True)]
+
+    @model_validator(mode='after')
+    def unique_issues(self):
+        if len({r.issue_id for r in self.allocations}) != len(self.allocations):
+            raise ValueError('同一归集确认不能重复填写原实发')
+        return self
+
+
 class RecoverUsage(Strict):
-    action: Literal['post', 'void', 'review', 'price', 'correct']
+    action: Literal['post', 'void', 'review', 'price', 'correct', 'allocate']
     command: dict
