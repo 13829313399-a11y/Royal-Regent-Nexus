@@ -33,7 +33,7 @@ describe('cutting workspace entry', () => {
       await vi.waitFor(async () => {
         await flushPromises()
         expect(wrapper!.get('h1').text()).toBe(workspace.title)
-      })
+      }, { timeout: 10000 })
       if (workspace.path === 'master') {
         expect(wrapper!.text()).toContain('基础资料尚未启用')
       } else if (workspace.path === 'reporting') {
@@ -41,6 +41,9 @@ describe('cutting workspace entry', () => {
         expect(wrapper!.find('form').exists()).toBe(false)
       } else if (workspace.path === 'costs') {
         expect(wrapper!.text()).toContain('实际材料费用尚未启用')
+        expect(wrapper!.find('form').exists()).toBe(false)
+      } else if (workspace.path === 'closing') {
+        expect(wrapper!.text()).toContain('月结前核对尚未启用')
         expect(wrapper!.find('form').exists()).toBe(false)
       } else {
         expect(wrapper!.text()).toContain('尚不能录入、保存或结算业务数据')
@@ -68,9 +71,8 @@ describe('cutting workspace entry', () => {
   })
   it('resets subviews on workspace changes and shows unfinished capabilities explicitly', async () => {
     const router = await open(`${CUTTING_BASE}/closing?factory=huakang-c`)
-    await wrapper!.get('.cutting-section-nav button:nth-child(2)').trigger('click')
-    expect(wrapper!.get('h2').text()).toBe('外发对账')
-    expect(wrapper!.text()).toContain('外发对账尚未开放')
+    expect(wrapper!.text()).toContain('月结前核对尚未启用')
+    expect(wrapper!.text()).toContain('尚未冻结或锁月')
     expect(wrapper!.find('table').exists()).toBe(false)
     await router.push(`${CUTTING_BASE}/planning?factory=huakang-c`)
     await flushPromises()

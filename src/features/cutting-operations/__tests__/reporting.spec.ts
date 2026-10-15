@@ -32,6 +32,15 @@ beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(fa
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 
 describe('cutting production facts and save protection',()=>{
+  it('keeps an unsaved report when query navigation to a monthly target is rejected',async()=>{
+    await open();await form()
+    await router.push(path+'&line_id=another-order&month=2026-09&focus_kind=task&focus_id=other')
+    await flushPromises()
+    expect(window.confirm).toHaveBeenCalled()
+    expect(router.currentRoute.value.query.line_id).toBeUndefined()
+    expect((field('本次套数').element as HTMLInputElement).value).toBe('10')
+    expect(reportingApi.read).toHaveBeenCalledTimes(1)
+  })
   it('posts complete sets immediately without a supervisor approval action',async()=>{
     await open();await form();vi.mocked(reportingApi.command).mockResolvedValue(clone(view))
     await wrapper.get('form.report-form').trigger('submit');await flushPromises()

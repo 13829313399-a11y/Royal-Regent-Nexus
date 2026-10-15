@@ -299,6 +299,15 @@ def material_usage(line_id: str, db: Db, user: User, factory_id: str = '', with_
     return usage.read(db, line_id, show_costs=with_costs)
 
 
+@router.get('/orders/{line_id}/closing-preview')
+def closing_preview(line_id: str, db: Db, user: User, month: str = Query(..., min_length=7, max_length=7),
+                    factory_id: str = '', with_costs: bool = False):
+    from app.services import cutting_closing
+    c.authorize(user, factory_id, 'cost_read' if with_costs else 'read')
+    orders_ready(db)
+    return cutting_closing.read(db, line_id, month, show_costs=with_costs)
+
+
 @router.get('/orders/{line_id}/usage-balance')
 def usage_balance(line_id: str, db: Db, user: User, day: ps.BusinessDate, issue_id: str, factory_id: str = '', document_id: str = ''):
     c.authorize(user, factory_id)

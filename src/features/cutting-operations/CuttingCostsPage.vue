@@ -10,26 +10,32 @@ import { ordersApi, type CuttingOrder } from './ordersApi'
 import CuttingMaterialUsage from './CuttingMaterialUsage.vue'
 import type { CuttingWorkspace } from './navigation'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
+import { useCuttingLocation } from './location'
+import CuttingLocationNotice from './CuttingLocationNotice.vue'
 defineProps<{workspace:CuttingWorkspace}>()
 const access=ref<Access>(),rows=ref<CuttingOrder[]>([]),selected=ref<CuttingOrder>(),query=ref(''),page=ref(1),total=ref(0),loading=ref(false),error=ref('')
 const editor=ref<InstanceType<typeof CuttingMaterialUsage>>()
 let alive=true,generation=0
 function discard(){return editor.value?.discard()??true}
 onBeforeRouteLeave(discard)
+const location=useCuttingLocation(discard,()=>{void load(1,true,true)})
 onBeforeUnmount(()=>{alive=false;generation++})
-async function load(nextPage=page.value){
-  if(!discard())return
+async function load(nextPage=page.value,navigation=false,followLocation=false){
+  if(!navigation&&!discard())return
   const ticket=++generation;selected.value=undefined;rows.value=[];loading.value=true;error.value=''
   try{const rights=await cuttingApi.access();if(!alive||ticket!==generation)return;access.value=rights
     if(!rights.enabled||!rights.usage_schema_ready||!rights.permissions.includes('cost_read')){rows.value=[];return}
+    const target=followLocation?location.value:undefined
+    if(target){const order=await ordersApi.read(target.lineId);if(alive&&ticket===generation){rows.value=[order];total.value=1;page.value=1;selected.value=order}return}
     const result=await ordersApi.list(nextPage,query.value);if(alive&&ticket===generation){rows.value=result.data;page.value=result.page;total.value=result.total}
   }catch(e){if(alive&&ticket===generation){rows.value=[];error.value=errorMessage(e)}}finally{if(alive&&ticket===generation)loading.value=false}
 }
 function select(order:CuttingOrder){if(!loading.value&&discard())selected.value=order}
-onMounted(()=>void load())
+onMounted(()=>void load(1,false,true))
 </script>
 <template>
   <section class="cutting-page cutting-master">
+    <CuttingLocationNotice :location="location" :selected-id="selected?.line_id" />
     <PageHeader :title="workspace.title" description="按真实耗用核对本厂、外发材料费用，确认完工及在制归属，追溯原批次成本。"><template #actions><StatusPill label="在制归集与成本核算 · P3b 第三批" /></template></PageHeader>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p><p v-if="loading" role="status">正在读取费用工作区…</p>
     <p v-if="access&&!access.enabled" class="cutting-notice">实际材料费用尚未启用，当前不能录入或计价。</p>

@@ -188,8 +188,8 @@ def validate_tasks(db, data, tasks):
         executor_changed = any(t and t['resource_id'] != task.resource_id for t in (old, prior))
         c.require(not executor_changed or not (task.actual_issue_date or task.actual_prerequisite_date) or len(task.resource_change_basis) >= 4,
                   '更换执行方后的实际凭据须填写复核依据（至少4字）', 422)
-        c.require(task.actual_prerequisite_date is None or task.actual_prerequisite_date <= business_today(), '前置工序实际就绪日期不能晚于今天（上海时间）', 422)
-        c.require(task.actual_issue_date is None or task.actual_issue_date <= business_today(), '实际领料日期不能晚于今天（上海时间）', 422)
+        c.require(task.actual_prerequisite_date is None or task.actual_prerequisite_date <= business_today(), '前置工序实际就绪日期不能晚于今天（北京时间）', 422)
+        c.require(task.actual_issue_date is None or task.actual_issue_date <= business_today(), '实际领料日期不能晚于今天（北京时间）', 422)
         resource = c.master(db, task.resource_id)
         c.require(resource.kind == 'resource', '执行方必须来自本厂／外发裁剪资源', 422)
         ref = c.view(db, resource)

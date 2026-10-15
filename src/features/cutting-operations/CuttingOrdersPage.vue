@@ -18,6 +18,8 @@ import CuttingMaterialUsage from './CuttingMaterialUsage.vue'
 import CuttingProductionSummary from './CuttingProductionSummary.vue'
 import { taskInput, type PlanTaskInput } from './planning'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
+import { useCuttingLocation } from './location'
+import CuttingLocationNotice from './CuttingLocationNotice.vue'
 
 defineProps<{ workspace: CuttingWorkspace }>()
 const materialEditor = ref<InstanceType<typeof CuttingMaterialRequests>>()
@@ -58,13 +60,14 @@ function discard() {
   return !dirty.value || window.confirm('有尚未保存的内容，离开将放弃这些内容。确定继续？')
 }
 onBeforeRouteLeave(discard)
+const location = useCuttingLocation(discard, () => { void load(1, true, true) })
 function beforeUnload(e: BeforeUnloadEvent) { if (dirty.value || pending.value || saving.value) { e.preventDefault(); e.returnValue = '' } }
-onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load() })
+onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load(1, false, true) })
 onBeforeUnmount(() => { alive = false; generation++; searchGeneration++; historyGeneration++; window.removeEventListener('beforeunload', beforeUnload) })
 watch(bomQuery, () => { searchGeneration++; bomRows.value = []; versions.value = []; versionId.value = '' }, { flush: 'sync' })
 
-async function load(nextPage = page.value) {
-  if (!discard()) return
+async function load(nextPage = page.value, navigation = false, followLocation = false) {
+  if (!navigation && !discard()) return
   const request = ++generation
   selected.value = null; action.value = null; history.value = []; rows.value = []; historyGeneration++; searchGeneration++
   loading.value = true; error.value = ''
@@ -73,6 +76,13 @@ async function load(nextPage = page.value) {
     if (!alive || request !== generation) return
     access.value = rights
     if (!available.value) return
+    const target = followLocation ? location.value : undefined
+    if (target) {
+      const order = await ordersApi.read(target.lineId)
+      if (!alive || request !== generation) return
+      rows.value = [order]; total.value = 1; page.value = 1; selected.value = order
+      return
+    }
     const result = await ordersApi.list(nextPage, query.value, statusFilter.value, planStatusFilter.value)
     if (!alive || request !== generation) return
     rows.value = result.data; total.value = result.total; page.value = nextPage
@@ -214,6 +224,7 @@ function status(row: CuttingOrder) {
     <CuttingWorkspacePage :workspace="workspace" />
   </template>
   <section v-else class="cutting-page orders-page">
+    <CuttingLocationNotice :location="location" :selected-id="selected?.line_id" />
     <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '采购分批交期与需求跟进' : '订单、工程需求与生产预排'"><template #actions><StatusPill label="订单与交期" /></template></PageHeader>
     <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；领料申请与实发签收已对接布料仓。P3b 首批支持按原实发登记耗用、损耗和盘余核对，材料费用按已确认批次成本计算，缺价显示待计价。</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
