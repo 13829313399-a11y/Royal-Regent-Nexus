@@ -189,7 +189,7 @@ const markupValidationMessage = computed(() => {
   return ''
 })
 const markupDirty = computed(() => (
-  !markupValidationMessage.value && markupInputFingerprint() !== acceptedMarkupFingerprint.value
+  markupInputFingerprint() !== acceptedMarkupFingerprint.value
 ))
 const miscValidationMessage = computed(() => {
   const value = String(quoteMiscPercent.value).trim()
@@ -200,7 +200,7 @@ const miscValidationMessage = computed(() => {
   return ''
 })
 const miscDirty = computed(() => (
-  !miscValidationMessage.value && Number(quoteMiscPercent.value) !== acceptedMiscPercent.value
+  !String(quoteMiscPercent.value).trim() || Number(quoteMiscPercent.value) !== acceptedMiscPercent.value
 ))
 const pricingValidationMessage = computed(() => markupValidationMessage.value || miscValidationMessage.value)
 const pricingDirty = computed(() => markupDirty.value || miscDirty.value)
@@ -384,7 +384,7 @@ function saveMarkup() {
 }
 
 function hasUnsavedChanges() {
-  return pricingDirty.value || Boolean(pricingValidationMessage.value) || fxDirty.value
+  return pricingDirty.value || fxDirty.value
 }
 
 function pricingDraftSnapshot(): InternalQuoteSidebarPricingDraft {
@@ -399,7 +399,7 @@ function pricingDraftSnapshot(): InternalQuoteSidebarPricingDraft {
 
 function getPricingDraft(): InternalQuoteSidebarPricingDraft | undefined {
   if (fxDirty.value) throw new Error('汇率有未保存修改，请先保存汇率后再保存整单。')
-  if (!pricingDirty.value && !pricingValidationMessage.value) return undefined
+  if (!pricingDirty.value) return undefined
   if (!props.canEditMarkup || props.markupBlockedReason) throw new Error(props.markupBlockedReason || '当前不能保存报价设置。')
   if (pricingValidationMessage.value) throw new Error(pricingValidationMessage.value)
   return pricingDraftSnapshot()
@@ -450,7 +450,7 @@ watch(() => JSON.stringify([quoteMarkupTiers.value, selectedMarkupTierIndex.valu
 watch(() => props.quote.referenceSnapshotId, () => resetFxEditor())
 watch(normalizedMarkup, (value) => emit('previewMarkup', value), { immediate: true })
 watch(() => [props.quote.id, JSON.stringify(savedMarkupTiers.value), JSON.stringify(savedComponentMarkups.value), savedActiveMarkupTierIndex.value, savedMiscRatio.value, props.quote.sections?.find((section) => section.code === 'sales')?.revision, JSON.stringify(salesPricingPayload.value)] as const, (incoming, previous) => {
-  if (incoming[0] === previous[0] && (pricingDirty.value || pricingValidationMessage.value)) return
+  if (incoming[0] === previous[0] && pricingDirty.value) return
   resetPricingEditor()
 })
 

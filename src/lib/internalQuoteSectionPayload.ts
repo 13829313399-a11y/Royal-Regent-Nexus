@@ -1374,6 +1374,10 @@ function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPart
     const name = textValue(part.name ?? part.item).trim()
     const occurrence = (occurrences.get(name) ?? 0) + 1
     occurrences.set(name, occurrence)
+    // A generated display key is not a persisted part identity. Promoting it
+    // on the next normalization makes an untouched historical form dirty.
+    const existingId = textValue(part.id).trim()
+    const partId = textValue(part.part_id).trim() || (existingId.startsWith('legacy-name:') ? '' : existingId)
     return {
       ...(row.molding_profile === 'huadeng_parts_v1' || 'material_type' in part ? {
         material: textValue(part.material), material_type: textValue(part.material_type),
@@ -1383,8 +1387,8 @@ function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPart
         image_reference: textValue(part.image_reference),
         image_attachment_ids: Array.isArray(part.image_attachment_ids) ? part.image_attachment_ids.map(textValue).filter(Boolean) : [],
       } : {}),
-      ...(part.part_id || part.id ? { part_id: textValue(part.part_id || part.id).trim() } : {}),
-      id: textValue(part.id).trim() || `legacy-name:${JSON.stringify([name, occurrence])}`,
+      ...(partId ? { part_id: partId } : {}),
+      id: existingId || `legacy-name:${JSON.stringify([name, occurrence])}`,
       name: textValue(part.name ?? part.item),
       color: textValue(part.color),
       process: textValue(part.process),

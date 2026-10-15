@@ -1,12 +1,38 @@
 import { describe, expect, it } from 'vitest'
 import { linkEngineeringMolding, normalizeEngineeringMoldIdentities } from '../internalQuoteMoldLinkage'
-import { moldingMaterialOptions, selectedMoldingMaterial } from '../internalQuoteMoldingReferences'
+import { canonicalizeMoldingReferences, moldingMaterialOptions, selectedMoldingMaterial } from '../internalQuoteMoldingReferences'
 import { normalizeInternalQuotePayload, type EngineeringPayload, type MoldingPayload } from '../internalQuoteSectionPayload'
 
 const engineering = (molds: unknown[]) => normalizeInternalQuotePayload('engineering', { molds }) as unknown as EngineeringPayload
 const molding = (injection_lines: unknown[] = []) => normalizeInternalQuotePayload('molding', { injection_lines }) as unknown as MoldingPayload
 
 describe('stable whole mold linkage', () => {
+  it('selects the sole frozen grade and requires a new choice after engineering changes to a multi-grade resin', () => {
+    const snapshot = { material_prices: { 'ABS|750SW': '6.5', '1#PP|A': '6', '1#PP|B': '7', '透明ABS|TR558/920': '10.07' } }
+    const source = engineering([{ mold_id: 'm1', item: '公仔头', material_type: 'ABS' }])
+    let draft = linkEngineeringMolding(source, molding())
+    canonicalizeMoldingReferences(draft, snapshot)
+    expect(draft.injection_lines[0]).toMatchObject({ material: 'ABS', grade: '750SW' })
+    source.molds[0]!.material_type = 'PP'
+    draft = linkEngineeringMolding(source, draft)
+    canonicalizeMoldingReferences(draft, snapshot)
+    expect(draft.injection_lines[0]).toMatchObject({ material: 'PP', grade: '' })
+    Object.assign(draft.injection_lines[0]!, { material: '1#PP', grade: 'B' })
+    draft = linkEngineeringMolding(source, draft)
+    canonicalizeMoldingReferences(draft, snapshot)
+    expect(draft.injection_lines[0]).toMatchObject({ material: '1#PP', grade: 'B' })
+    source.molds[0]!.material_type = '透明ABS'
+    draft = linkEngineeringMolding(source, draft)
+    canonicalizeMoldingReferences(draft, snapshot)
+    expect(draft.injection_lines[0]).toMatchObject({ material: '透明ABS', grade: 'TR558/920' })
+  })
+
+  it('retains explicit unknown grades and does not guess a missing resin family', () => {
+    const draft = molding([{ material: 'ABS', grade: 'unknown' }, { material: '', grade: '' }, { material: 'PP', grade: '' }])
+    canonicalizeMoldingReferences(draft, { material_prices: { 'ABS|750SW': '6.5', '1#PP|A': '6' } })
+    expect(draft.injection_lines).toMatchObject([{ material: 'ABS', grade: 'unknown' }, { material: '', grade: '' }, { material: '1#PP', grade: 'A' }])
+  })
+
   it('retains the group cost once and carries real children after rename/reorder', () => {
     const source = normalizeEngineeringMoldIdentities(engineering([{ mold_id: 'm1', item: '外壳', mold_no: 'A', net_weight_g: 100, parts: [{ part_id: 'p1', name: '左', unit_net_weight_g: 40 }, { part_id: 'p2', name: '右', unit_net_weight_g: 60 }] }]))
     const first = linkEngineeringMolding(source, molding())

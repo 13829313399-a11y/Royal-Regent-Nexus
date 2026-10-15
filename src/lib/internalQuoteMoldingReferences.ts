@@ -74,7 +74,11 @@ export function canonicalizeMoldingReferences(payload: MoldingPayload, snapshot?
   const materials = moldingMaterialReferences(snapshot)
   const machines = moldingMachineReferences(snapshot)
   for (const row of [...payload.injection_lines, ...payload.blow_lines]) {
-    const material = selectedMoldingMaterial(row, materials)
+    // Fill an omitted grade only when this resin family has one frozen choice.
+    // An explicitly entered, unknown grade still requires resolution.
+    const candidates = normalizedReferenceToken(row.material) && !normalizedReferenceToken(row.grade)
+      ? moldingMaterialOptions(row, materials) : []
+    const material = selectedMoldingMaterial(row, materials) ?? (candidates.length === 1 ? candidates[0] : undefined)
     if (material) {
       if (row.material !== material.material) row.material = material.material
       if (row.grade !== material.grade) row.grade = material.grade

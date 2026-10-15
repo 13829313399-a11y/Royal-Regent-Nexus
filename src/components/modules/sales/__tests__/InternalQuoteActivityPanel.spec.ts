@@ -178,6 +178,24 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(() => wrapper.vm.getPricingDraft()).toThrow('码数')
   })
 
+  it('does not treat an untouched historical two-tier quotation as unsaved, but still protects actual invalid edits', async () => {
+    const historical = savedPricingQuote()
+    historical.rr2CostSummary!.shippingPricing.markupTiers = historical.rr2CostSummary!.shippingPricing.markupTiers!.slice(1)
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: historical, canEditMarkup: true } })
+    expect(wrapper.text()).toContain('分段码数必须保留 3 档')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(wrapper.vm.getPricingDraft()).toBeUndefined()
+    await wrapper.get('[data-testid="live-quote-markup-0"]').setValue('1.33')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(() => wrapper.vm.getPricingDraft()).toThrow('3 档')
+    await wrapper.get('[data-testid="live-quote-markup-0"]').setValue('1.20')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    await wrapper.setProps({ quote: savedPricingQuote(1.3, 2) })
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-2"]').element.value).toBe('1.30')
+    expect(wrapper.vm.getPricingDraft()).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('refreshes clean inputs and the conflict baseline when saved pricing changes', async () => {
     const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: savedPricingQuote(), canEditMarkup: true } })
     await wrapper.setProps({ quote: savedPricingQuote(1.3, 2, '服务端新包装') })
