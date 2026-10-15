@@ -64,6 +64,14 @@ describe('customer order center static frontend', () => {
     expect(routerSource.slice(orderRouteIndex, genericRouteIndex)).toContain('requiresAuth: true')
   })
 
+  it('exposes JP enquiry intake only in Huakang B without replacing the existing workspace', () => {
+    expect(viewSource).toContain("activeFactory.value.id === 'huakang-b'")
+    expect(viewSource).toContain("id: 'jp-intake' as const, label: 'JP问单录入'")
+    expect(viewSource).toContain("activeSection === 'jp-intake' && activeFactory.id === 'huakang-b'")
+    expect(viewSource).toContain("if (activeSection.value === 'jp-intake') activeSection.value = 'ledger'")
+    expect(viewSource).toContain('<CustomerOrderCenterWorkspace')
+  })
+
   it('separates customer-schedule output from the system factory schedule data view', () => {
     expect(enterpriseSource).toContain("title: '客户订单中心'")
     expect(enterpriseSource).toContain('按月份形成可供生产部门调用的厂区总排期')

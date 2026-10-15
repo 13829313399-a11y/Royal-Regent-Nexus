@@ -1,6 +1,22 @@
 from pathlib import Path
+import re
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_huakang_b_jp_file_routes_have_scoped_budget_without_relaxing_other_reads():
+    config = (REPOSITORY_ROOT / "nginx.prod.conf").read_text(encoding="utf-8")
+    pattern = r"^/api/huakang-b-jp/(?:references/(?:schedule|price|confirmed)(?:/clear)?|preview|export)$"
+    start = config.index("location ~ " + pattern)
+    block = config[start:config.index("\n  }", start)]
+    assert "client_max_body_size 55m;" in block
+    assert "proxy_read_timeout 270s;" in block
+    assert "proxy_read_timeout 30s;" in config[config.index("location /api/"):]
+    assert start < config.index("location /api/")
+    for suffix in ("preview", "export", "references/schedule", "references/confirmed/clear"):
+        assert re.match(pattern, "/api/huakang-b-jp/" + suffix)
+    for path in ("/api/customer-order-ledger/exports", "/api/huakang-b-jp/exports", "/api/huakang-b-jp/references"):
+        assert not re.match(pattern, path)
 
 
 def test_customer_order_proxy_accepts_real_batches_and_long_running_excel_work():
