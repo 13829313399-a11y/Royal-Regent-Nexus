@@ -16,13 +16,13 @@ from app.services import customer_order_ledger as ledger
 from app.services.auth import get_current_user
 
 
-def seasons_po():
-    text = '''Customer Name: SEASONS USA
+def seasons_po(packing='Packing: Outer: 12 PCS', quantity=120):
+    text = f'''Customer Name: SEASONS USA
 Order Date: 2026/10/01
 MPO1609793
-W85340 OC: ZE618957 SHIPDATE: 2026/11/10 120 2.50 0 300.00
+W85340 OC: ZE618957 SHIPDATE: 2026/11/10 {quantity} 2.50 0 {quantity * 2.50:.2f}
 TEST PUMPKIN
-Packing: Outer: 12 PCS'''
+{packing}'''
     writer = PdfWriter()
     page = writer.add_blank_page(width=600, height=800)
     font = DictionaryObject({NameObject('/Type'): NameObject('/Font'),
@@ -81,6 +81,34 @@ def test_seasons_preview_export_use_only_current_factory_workbook(factory):
             assert wb[name]['E4'].value == 'MPO1609793'
             assert "'ITEM表'!K5" in wb[name]['J4'].value
     assert openpyxl.load_workbook(BytesIO(args['schedule_content']))['ITEM表']['E5'].value is None
+
+
+@pytest.mark.parametrize('factory', ['huaxing', 'huakang-d'])
+def test_seasons_truncated_outer_piece_unit_is_used_in_preview_and_three_sheet_export(factory):
+    args = arguments(factory)
+    args['po_files'] = seasons_po('12 PCS PER INNER\nPacking: Inner: 12PCS Outer Type: CARTON Outer: 288P', 576)
+    preview = service.create_unified_customer_preview(**args)
+    row = preview['rows'][0]
+    assert row['units_per_carton'] == '288' and row['carton_count'] == '2'
+    keys = {i['skip_key'] for i in row['issues'] if i.get('skip_key')}
+    output, _, exported = service.export_unified_customer_schedule(**args, skipped_issue_keys=keys)
+    assert exported['rows'][0]['units_per_carton'] == '288'
+    wb = openpyxl.load_workbook(BytesIO(output))
+    assert wb['ITEM表']['L5'].value == 288 and wb['ITEM表']['M5'].value == '=K5/L5'
+    assert wb['ITEM表']['K5'].value / wb['ITEM表']['L5'].value == 2
+    assert wb['ITEM表']['L4'].value == 12  # The historical row is not rewritten.
+    for name in ['接单表', '正单评审表']:
+        assert any(cell.value == 'ZE618957' for row in wb[name] for cell in row)
+        if factory == 'huakang-d':
+            assert any('ITEM表' in str(cell.value) and 'L5' in str(cell.value) for row in wb[name] for cell in row)
+
+
+@pytest.mark.parametrize('factory', ['huaxing', 'huakang-d'])
+def test_seasons_outer_conflict_cannot_fall_back_to_schedule_pack(factory):
+    args = arguments(factory)
+    args['po_files'] = seasons_po('Outer: 288P\nOuter: 240PCS', 576)
+    with pytest.raises(ValueError, match='外箱装箱数.*冲突'):
+        service.create_unified_customer_preview(**args)
 
 
 @pytest.mark.parametrize('factory', ['huakang-a', 'huakang-b', 'huakang-c', 'huadeng'])
