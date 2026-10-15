@@ -1706,8 +1706,9 @@ def _store_preview(
     summary: dict[str, Any],
 ) -> tuple[str, str]:
     raw_token = secrets.token_urlsafe(32)
-    now = datetime.now()
-    expires_at = (now + timedelta(minutes=PREVIEW_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now().astimezone()
+    expires = now + timedelta(minutes=PREVIEW_TTL_MINUTES)
+    expires_at = expires.strftime("%Y-%m-%d %H:%M:%S")
     db.add(
         AuthAuthorizationPreview(
             id=f"preview-{uuid4().hex}",
@@ -1723,7 +1724,9 @@ def _store_preview(
             created_at=now.strftime("%Y-%m-%d %H:%M:%S"),
         )
     )
-    return raw_token, expires_at
+    # Keep the existing server-local storage contract, but give browsers an
+    # unambiguous instant even when their timezone differs from the server's.
+    return raw_token, expires.isoformat(timespec="seconds")
 
 
 def _load_preview(
