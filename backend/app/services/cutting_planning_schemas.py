@@ -31,6 +31,7 @@ class PlanTask(Strict):
     readiness_basis: Annotated[str, Field(max_length=500)] = ''
     actual_issue_date: BusinessDate | None = None
     actual_issue_reference: Annotated[str, Field(max_length=500)] = ''
+    material_receipt_ids: Annotated[list[Text], Field(max_length=300)] = Field(default_factory=list)
     prerequisite_required: Annotated[bool, Field(strict=True)] = False
     prerequisite_change_reason: Annotated[str, Field(max_length=500)] = ''
     prerequisite_date: BusinessDate | None = None
@@ -41,6 +42,10 @@ class PlanTask(Strict):
 
     @model_validator(mode='after')
     def unique_rows(self):
+        if len(set(self.material_receipt_ids)) != len(self.material_receipt_ids):
+            raise ValueError('关联签收单不可重复')
+        if self.material_receipt_ids and not self.actual_issue_date:
+            raise ValueError('选择签收单后须核对实际领料日期')
         if len({r.row for r in self.materials}) != len(self.materials):
             raise ValueError('同一任务的物料行不可重复')
         if len({d.day for d in self.days}) != len(self.days):

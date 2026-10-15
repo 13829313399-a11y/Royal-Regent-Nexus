@@ -458,6 +458,7 @@ function toQuote(
     id: source.id,
     documentQuoteId: source.document_quote_id,
     documentProductCount: source.document_product_count,
+    readiness: source.readiness,
     documentVersionCount: source.document_version_count,
     productRootId: source.product_root_id,
     deleteBlockReason: source.delete_block_reason,
@@ -502,6 +503,9 @@ function toQuote(
     documentArchive: source.document_archive,
     finalReleaseStatus: source.final_release_status,
     factoryPriceHkd: numberValue(extras.summary?.factory_price_hkd),
+    pricingComplete: extras.summary?.pricing_complete,
+    incompleteSections: extras.summary?.incomplete_sections?.map((section) => ({ sectionCode: section.section_code, sectionName: section.section_name, reason: section.reason })),
+    authoritativeFactoryQuoteHkd: extras.summary?.authoritative_factory_quote_hkd == null ? null : numberValue(extras.summary.authoritative_factory_quote_hkd),
     summaryComponents: Object.fromEntries(Object.entries(extras.summary?.components_hkd ?? {}).map(([key, value]) => [key, numberValue(value)])),
     summaryWarnings: summaryWarnings(extras.summary),
     shippingScenarios: shippingScenarios(source),
@@ -1181,9 +1185,9 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.conflictMessage = ''
       try {
         const result = await operation()
-        const receipt = result as { section?: ApiInternalQuoteSection; department?: string; sections?: ApiInternalQuoteSection[] } | undefined
+        const receipt = result as { section?: ApiInternalQuoteSection; department?: string; payload?: Record<string, unknown>; revision?: number; sections?: ApiInternalQuoteSection[] } | undefined
         if (receipt?.section) this.applySavedSections(quoteId, [receipt.section])
-        else if (receipt?.department) this.applySavedSections(quoteId, [result as ApiInternalQuoteSection])
+        else if (receipt?.department && receipt.payload && typeof receipt.revision === 'number') this.applySavedSections(quoteId, [result as ApiInternalQuoteSection])
         else if (receipt?.sections) this.applySavedSections(quoteId, receipt.sections)
         if (refreshQuote) {
           await this.refreshAfterMutation(quoteId)
@@ -1598,6 +1602,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     directIssue(quoteId: string, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.directIssue(quoteId, revision))
+    },
+    async exportAlternatives(quoteId: string, versions: Array<{ quote_id: string; revision: number }>, fileName: string) {
+      const blob = await this.executeMutation(quoteId, () => internalQuoteApi.exportAlternatives(quoteId, versions))
+      triggerDownload(blob as Blob, fileName)
     },
     async exportSeries(quoteId: string, products: Array<{ quote_id: string; revision: number }>, fileName: string) {
       const blob = await this.executeMutation(quoteId, () => internalQuoteApi.exportSeries(quoteId, products))

@@ -16,7 +16,7 @@ from app.services.internal_quote import (
     quote_write, _get_quote, ensure_quote_read, ensure_quote_permission, _initiator_department,
     _check_revision, _json_object, _find_reference_set, _create_reference_set, _create_sections,
     _calculate_and_apply, _add_revision, _add_audit, _without_import_batch_ids,
-    quote_to_out, SECTION_CODE_ORDER, ensure_quote_formula_current,
+    quote_to_out, SECTION_CODE_ORDER, ensure_quote_formula_current, ensure_current_molding_pricing,
     _cost_context, _rr2_cost_summary,
     ensure_molding_projection_current,
 )
@@ -96,6 +96,13 @@ def copy_alternative(db, quote_id, payload, user, request=None, *, commit=True):
     _check_revision(source.header_revision, payload.revision, "来源报价")
     if not payload.change_note.strip() or (payload.kind == "scenario" and not payload.name.strip()):
         raise HTTPException(400, "请填写方案名称和修改说明")
+    sections = list(db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == source.id)))
+    participating = {row.department for row in sections if row.is_required}
+    selected = participating if payload.copy_departments is None else set(payload.copy_departments)
+    if not selected or not selected <= participating:
+        raise HTTPException(400, "请选择来源报价实际参与的部门")
+    source_payloads = {row.department: _without_import_batch_ids(_json_object(row.payload_json))
+                       for row in sections if row.department in selected}
     family = _write_family(db, source, payload.family_revision)
     source_entry = db.get(InternalQuoteAlternative, source.id)
     entries = list(db.scalars(select(InternalQuoteAlternative).where(InternalQuoteAlternative.family_id == family.id)))
@@ -134,6 +141,15 @@ def copy_alternative(db, quote_id, payload, user, request=None, *, commit=True):
         raise HTTPException(409, "来源报价缺少料价及汇率快照，请先补全来源资料")
     _create_reference_set(db, target, user, source_type="alternative_copy", snapshot=_json_object(reference.snapshot_json))
     attachments = list(db.scalars(select(InternalQuoteAttachment).where(InternalQuoteAttachment.quote_id == source.id)))
+    def string_values(value):
+        if isinstance(value, dict):
+            return {text for child in value.values() for text in string_values(child)}
+        if isinstance(value, list):
+            return {text for child in value for text in string_values(child)}
+        return {value} if isinstance(value, str) else set()
+    referenced = string_values(source_payloads)
+    attachments = [row for row in attachments if selected == participating or row.department in selected or row.id in referenced
+                   or row.department == "product-image" or row.department.startswith("component-image:")]
     id_map = {row.id: f"IQATT-{uuid4().hex}" for row in attachments}
     for row in attachments:
         db.add(InternalQuoteAttachment(id=id_map[row.id], quote_id=target.id, factory_id=target.factory_id,
@@ -146,13 +162,21 @@ def copy_alternative(db, quote_id, payload, user, request=None, *, commit=True):
         if isinstance(value, list):
             return [remap(child) for child in value]
         return id_map.get(value, value) if isinstance(value, str) else value
-    sections = list(db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == source.id)))
-    payloads = {row.department: canonical_json(remap(_without_import_batch_ids(_json_object(row.payload_json)))) for row in sections}
-    _create_sections(db, target, user, {row.department for row in sections if row.is_required}, payloads)
+    payloads = {code: canonical_json(remap(value)) for code, value in source_payloads.items()}
+    if "sales" not in selected:
+        sales = next((row for row in sections if row.department == "sales"), None)
+        source_sales = _json_object(sales.payload_json) if sales else {}
+        if source_sales.get("pricing_mode") == "component":
+            # Component identities belong to the product; no packaging, prices or fees are copied.
+            payloads["sales"] = canonical_json({"pricing_mode": "component", "pricing_components": [{key: part[key] for key in ("id", "name") if key in part} for part in source_sales.get("pricing_components", []) if isinstance(part, dict)]})
+    if "molding" in participating and "molding" not in selected:
+        payloads["molding"] = canonical_json({"engineering_prefill_paused": True})
+    _create_sections(db, target, user, participating, payloads)
     by_code = {row.department: row for row in db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == target.id))}
     for code in SECTION_CODE_ORDER:
         section = by_code[code]
-        if section.is_required and _json_object(section.payload_json):
+        source_section = next((row for row in sections if row.department == code), None)
+        if code in selected and section.is_required and source_section.filled_at and _json_object(section.payload_json):
             section.revision += 1
             section.filled_by, section.filled_at = user.display_name, now_text()
             _calculate_and_apply(db, target, section, user)
@@ -163,7 +187,8 @@ def copy_alternative(db, quote_id, payload, user, request=None, *, commit=True):
     family.revision += 1
     _add_audit(db, target, user, "alternative_copy", detail=canonical_json({
         "source_quote_id": source.id, "family_id": family.id, "kind": payload.kind,
-        "scenario_name": name, "change_note": payload.change_note}), request=request)
+        "scenario_name": name, "change_note": payload.change_note,
+        "copy_departments": [code for code in SECTION_CODE_ORDER if code in selected]}), request=request)
     if commit:
         db.commit()
     else:
@@ -258,6 +283,7 @@ def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True)
     if not required or problems:
         raise HTTPException(409, "以下部门须完成填写、保存及有效计算：" + "、".join(problems))
     ensure_quote_formula_current(quote, sections)
+    ensure_current_molding_pricing(db, quote, sections)
     cost_context = _cost_context(db, quote)
     reference = _find_reference_set(db, quote)
     if reference is None:

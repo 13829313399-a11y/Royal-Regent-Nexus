@@ -8,6 +8,10 @@ export type MoldingMachineReference = { range: string; machine: string; shiftPri
 export function normalizedReferenceToken(value: unknown) {
   return String(value ?? '').normalize('NFKC').trim().replace(/\s+/g, '').toUpperCase()
 }
+export function moldingMaterialFamily(value: unknown) {
+  const token = normalizedReferenceToken(value)
+  return token === '1#PP' ? 'PP' : token
+}
 export function moldingMaterialReferences(snapshot?: Record<string, unknown>): MoldingMaterialReference[] {
   const source = snapshot?.material_prices
   if (!source || typeof source !== 'object' || Array.isArray(source)) return []
@@ -34,28 +38,19 @@ export function moldingMachineReferences(snapshot?: Record<string, unknown>): Mo
 export function moldingMaterialOptions(row: MoldingMaterialSelection, references: MoldingMaterialReference[]) {
   const hint = normalizedReferenceToken(row.material) || normalizedReferenceToken(row.grade)
   if (!hint) return references
-  const direct = references.filter((item) => normalizedReferenceToken(item.material) === hint)
-  if (direct.length) return direct
-  const fuzzy = references.filter((item) => {
-    const candidate = `${normalizedReferenceToken(item.material)}${normalizedReferenceToken(item.grade)}`
-    return candidate.includes(hint) || hint.includes(normalizedReferenceToken(item.material))
-  })
-  return fuzzy.length ? fuzzy : references
+  return references.filter((item) => moldingMaterialFamily(item.material) === moldingMaterialFamily(hint))
 }
 export function selectedMoldingMaterial(row: MoldingMaterialSelection, references: MoldingMaterialReference[]) {
   const material = normalizedReferenceToken(row.material)
   const grade = normalizedReferenceToken(row.grade)
-  const exact = references.find((item) => normalizedReferenceToken(item.material) === material && normalizedReferenceToken(item.grade) === grade)
-  if (exact) return exact
+  if (!material || !grade) return undefined
+  const exact = references.filter((item) => normalizedReferenceToken(item.material) === material && normalizedReferenceToken(item.grade) === grade)
+  if (exact.length) return exact.length === 1 ? exact[0] : undefined
   if (grade) {
-    const match = references.find((item) => {
-      const candidate = normalizedReferenceToken(item.material)
-      return normalizedReferenceToken(item.grade) === grade && (!material || candidate.includes(material) || material.includes(candidate))
-    })
-    if (match) return match
+    const matches = references.filter((item) => normalizedReferenceToken(item.grade) === grade && moldingMaterialFamily(item.material) === moldingMaterialFamily(material))
+    if (matches.length === 1) return matches[0]
   }
-  const candidates = moldingMaterialOptions(row, references).filter((item) => !material || normalizedReferenceToken(item.material) === material)
-  return candidates.length === 1 ? candidates[0] : undefined
+  return undefined
 }
 function machineCodeValue(value: unknown) {
   const match = normalizedReferenceToken(value).match(/^(\d+(?:\.\d+)?)A?$/)
@@ -79,7 +74,11 @@ export function canonicalizeMoldingReferences(payload: MoldingPayload, snapshot?
   const materials = moldingMaterialReferences(snapshot)
   const machines = moldingMachineReferences(snapshot)
   for (const row of [...payload.injection_lines, ...payload.blow_lines]) {
-    const material = selectedMoldingMaterial(row, materials)
+    // Fill an omitted grade only when this resin family has one frozen choice.
+    // An explicitly entered, unknown grade still requires resolution.
+    const candidates = normalizedReferenceToken(row.material) && !normalizedReferenceToken(row.grade)
+      ? moldingMaterialOptions(row, materials) : []
+    const material = selectedMoldingMaterial(row, materials) ?? (candidates.length === 1 ? candidates[0] : undefined)
     if (material) {
       if (row.material !== material.material) row.material = material.material
       if (row.grade !== material.grade) row.grade = material.grade

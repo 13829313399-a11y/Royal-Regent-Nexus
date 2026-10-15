@@ -252,3 +252,123 @@ def test_import_and_attachment_writes_invalidate_stale_issue_and_copy(monkeypatc
             params={"revision": confirmed.json()["section"]["revision"]})
         assert removed.status_code == 204, removed.text
         verify_stale(quote)
+
+
+def test_selective_copy_preserves_unselected_departments_pending_and_issued_history(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "selective-owner", "admin", "*", "*")
+        source = fill(client, create(client, "SELECTIVE"))
+        picture = BytesIO()
+        Image.new("RGB", (4, 4), "blue").save(picture, format="PNG")
+        for code in ("engineering", "sales"):
+            response = client.post(f"/api/internal-quotes/{source['id']}/attachments", data={"department": code}, files={"file": (f"{code}.png", picture.getvalue(), "image/png")})
+            assert response.status_code == 201, response.text
+        source = client.get(f"/api/internal-quotes/{source['id']}").json()
+        issued = client.post(f"/api/internal-quotes/{source['id']}/direct-issue", json={"revision": source["header_revision"]})
+        assert issued.status_code == 200, issued.text
+        record = issued.json()
+        frozen = client.get(f"/api/internal-quotes/{source['id']}").json()
+        raw = client.get(f"/api/internal-quotes/{source['id']}/exports/{record['id']}/download").content
+        for selected in (["engineering"], ["engineering", "assembly"]):
+            family = client.get(f"/api/internal-quotes/{source['id']}/alternatives").json()
+            response = client.post(f"/api/internal-quotes/{source['id']}/alternatives", json={"revision": frozen["header_revision"], "family_revision": family["revision"], "kind": "scenario", "name": "/".join(selected), "change_note": "选择部门", "copy_departments": selected})
+            assert response.status_code == 200, response.text
+            target = response.json()
+            assert [r["department"] for r in target["sections"] if r["is_required"]] == [r["department"] for r in frozen["sections"] if r["is_required"]]
+            for section in target["sections"]:
+                if section["department"] in selected:
+                    assert section["payload"] == next(r for r in frozen["sections"] if r["department"] == section["department"])["payload"]
+                    assert section["filled_at"] and section["calculation_status"] == "valid"
+                elif section["is_required"]:
+                    assert section["payload"] == {}
+                    assert not section["filled_at"] and section["calculation_status"] == "pending"
+            docs = client.get(f"/api/internal-quotes/{target['id']}/attachments").json()
+            assert [doc["department"] for doc in docs] == ["engineering"]
+            blocked = client.post(f"/api/internal-quotes/{target['id']}/direct-issue", json={"revision": target["header_revision"]})
+            assert blocked.status_code == 409
+        preserved = client.get(f"/api/internal-quotes/{source['id']}").json()
+        assert preserved["sections"] == frozen["sections"]
+        assert client.get(f"/api/internal-quotes/{source['id']}/exports/{record['id']}/download").content == raw
+
+
+def test_selective_copy_rejects_invalid_department_sets_without_creating_versions(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "selective-invalid", "admin", "*", "*")
+        source = create(client, "SELECTIVE-INVALID")
+        for selected, status in (([], 422), (["engineering", "engineering"], 422), (["unknown"], 422), (["painting"], 400)):
+            response = client.post(f"/api/internal-quotes/{source['id']}/alternatives", json={"revision": source["header_revision"], "family_revision": 0, "kind": "scenario", "name": "不应创建", "change_note": "无效选择", "copy_departments": selected})
+            assert response.status_code == status, response.text
+            assert client.get(f"/api/internal-quotes/{source['id']}/alternatives").json()["revision"] == 0
+
+
+def test_engineering_only_copy_does_not_auto_fill_molding(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "selective-engineering", "admin", "*", "*")
+        payload = create_payload(suffix="SELECTIVE-MOLD", participating_sections=["engineering", "molding", "assembly", "sales"])
+        payload["workflow_mode"] = "direct_output"
+        response = client.post("/api/internal-quotes", json=payload)
+        assert response.status_code == 201, response.text
+        source = response.json()
+        engineering = next(s for s in source["sections"] if s["department"] == "engineering")
+        saved = client.put(f"/api/internal-quotes/{source['id']}/sections/engineering", json={"revision": engineering["revision"], "payload": {"materials": [], "molds": [{"mold_id": "m1", "item": "外壳", "net_weight_g": 50, "quantity": 1, "cavity": "2"}]}, "reason": "工程模具"})
+        assert saved.status_code == 200, saved.text
+        source = client.get(f"/api/internal-quotes/{source['id']}").json()
+        response = client.post(f"/api/internal-quotes/{source['id']}/alternatives", json={"revision": source["header_revision"], "family_revision": 0, "kind": "scenario", "name": "仅工程", "change_note": "啤机待填写", "copy_departments": ["engineering"]})
+        assert response.status_code == 200, response.text
+        target = response.json()
+        for _ in range(2):
+            target = client.get(f"/api/internal-quotes/{target['id']}").json()
+            molding = next(s for s in target["sections"] if s["department"] == "molding")
+            assert molding["payload"] == {"engineering_prefill_paused": True}
+            assert not molding["filled_at"] and molding["calculation_status"] == "pending"
+
+
+def test_molding_only_copy_retains_rows_and_requires_missing_engineering_resolution(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "selective-molding", "admin", "*", "*")
+        created = client.post("/api/internal-quotes", json={**create_payload(suffix="ONLY-MOLD", participating_sections=["engineering", "molding", "assembly", "sales"]), "workflow_mode": "direct_output"})
+        assert created.status_code == 201, created.text
+        source = created.json()
+        for code, payload in (("engineering", {"molds": [{"mold_id": "m1", "item": "外壳", "net_weight_g": 50, "quantity": 1, "cavity": "2"}]}), ("molding", {"injection_lines": [{"line_id": "injection:m1", "engineering_mold_id": "m1", "engineering_source_key": "mold-id:m1", "engineering_synced_fields": ["item"], "item": "外壳", "material": "ABS", "grade": "750SW", "net_weight_g": 50, "sets": 1, "quantity": 1, "target_output": 2000, "machine_code": "18A"}]})):
+            current = client.get(f"/api/internal-quotes/{source['id']}").json()
+            section = next(row for row in current["sections"] if row["department"] == code)
+            saved = client.put(f"/api/internal-quotes/{source['id']}/sections/{code}", json={"revision": section["revision"], "payload": payload, "reason": "填写来源"})
+            assert saved.status_code == 200, saved.text
+        source = client.get(f"/api/internal-quotes/{source['id']}").json()
+        copied = client.post(f"/api/internal-quotes/{source['id']}/alternatives", json={"revision": source["header_revision"], "family_revision": 0, "kind": "scenario", "name": "仅啤机", "change_note": "工程重新填写", "copy_departments": ["molding"]})
+        assert copied.status_code == 200, copied.text
+        target = copied.json()
+        molding = next(s for s in target["sections"] if s["department"] == "molding")
+        line = molding["payload"]["injection_lines"][0]
+        assert line["engineering_mold_id"] == "m1" and line["engineering_source_missing"] is True
+        assert not line.get("engineering_sync_disabled")
+        assert molding["dependency_status"] == "stale"
+        assert next(s for s in target["sections"] if s["department"] == "engineering")["payload"] == {}
+
+
+def test_selective_copy_keeps_product_components_and_referenced_images_without_sales_costs(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "selective-components", "admin", "*", "*")
+        source = create(client, "COMPONENT-COPY")
+        base = f"/api/internal-quotes/{source['id']}"
+        picture = BytesIO()
+        Image.new("RGB", (4, 4), "green").save(picture, format="PNG")
+        image = client.post(base + "/attachments", data={"department": "sales"}, files={"file": ("referenced.png", picture.getvalue(), "image/png")})
+        assert image.status_code == 201, image.text
+        for code, payload in (("sales", {"pricing_mode": "component", "pricing_components": [{"id": "body", "name": "主件", "markup_x": 1.8}], "packaging_materials": [{"item": "彩盒", "quantity": 1, "unit_price_rmb": 5}]}), ("engineering", {"materials": [{"item": "螺丝", "category": "hardware", "quantity": 1, "unit_price_rmb": 1, "pricing_component_id": "body"}], "molds": [{"mold_id": "m1", "item": "外壳", "image_attachment_ids": [image.json()["id"]]}]})):
+            quote = client.get(base).json()
+            section = next(row for row in quote["sections"] if row["department"] == code)
+            saved = client.put(base + f"/sections/{code}", json={"revision": section["revision"], "payload": payload, "reason": "测试组件与图片"})
+            assert saved.status_code == 200, saved.text
+        source = client.get(base).json()
+        response = client.post(base + "/alternatives", json={"revision": source["header_revision"], "family_revision": 0, "kind": "scenario", "name": "组件工程", "change_note": "仅复制工程", "copy_departments": ["engineering"]})
+        assert response.status_code == 200, response.text
+        target = response.json()
+        sales = next(row for row in target["sections"] if row["department"] == "sales")
+        assert sales["payload"] == {"pricing_mode": "component", "pricing_components": [{"id": "body", "name": "主件"}]}
+        assert not sales["filled_at"] and sales["calculation_status"] == "pending"
+        engineering = next(row for row in target["sections"] if row["department"] == "engineering")
+        images = engineering["payload"]["molds"][0]["image_attachment_ids"]
+        assert len(images) == 1 and images[0] != image.json()["id"]
+        attachments = client.get(f"/api/internal-quotes/{target['id']}/attachments").json()
+        assert images == [row["id"] for row in attachments]

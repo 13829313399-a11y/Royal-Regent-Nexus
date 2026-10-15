@@ -13,10 +13,18 @@ import CuttingWorkspacePage from './CuttingWorkspacePage.vue'
 import CuttingPlanEditor from './CuttingPlanEditor.vue'
 import CuttingPlanSummary from './CuttingPlanSummary.vue'
 import CuttingPlanDiff from './CuttingPlanDiff.vue'
+import CuttingMaterialRequests from './CuttingMaterialRequests.vue'
+import CuttingMaterialUsage from './CuttingMaterialUsage.vue'
 import CuttingProductionSummary from './CuttingProductionSummary.vue'
 import { taskInput, type PlanTaskInput } from './planning'
+import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
+import { useCuttingLocation } from './location'
+import CuttingLocationNotice from './CuttingLocationNotice.vue'
 
 defineProps<{ workspace: CuttingWorkspace }>()
+const materialEditor = ref<InstanceType<typeof CuttingMaterialRequests>>()
+const usageEditor = ref<InstanceType<typeof CuttingMaterialUsage>>()
+const materialEditing=ref(false),usageEditing=ref(false)
 const access = ref<Access | null>(null), loading = ref(true), saving = ref(false), needsLogin = ref(false)
 const error = ref(''), notice = ref(''), query = ref(''), page = ref(1), total = ref(0)
 const statusFilter = ref('')
@@ -46,17 +54,20 @@ const labels: Record<OrderAction, string> = { receive: '签收订单版本', bom
 const statusLabels: Record<string, string> = { awaiting_receipt: '待签收新版本', cancelled_receipt: '取消待签收', cancelled: '已取消', reconciliation: '旧需求待采购核对', awaiting_bom: '待关联 BOM', awaiting_submission: '待工程提交需求', awaiting_reply: '待采购回复', partial_reply: '采购部分回复', complete_reply: '采购全部回复', no_purchase: '本次无需采购' }
 let alive = true, generation = 0, searchGeneration = 0, historyGeneration = 0
 function discard() {
+  if (usageEditor.value && !usageEditor.value.discard()) return false
+  if (materialEditor.value && !materialEditor.value.discard()) return false
   if (saving.value || pending.value) { error.value = '保存结果尚未确认，请先重试原操作。'; return false }
   return !dirty.value || window.confirm('有尚未保存的内容，离开将放弃这些内容。确定继续？')
 }
 onBeforeRouteLeave(discard)
+const location = useCuttingLocation(discard, () => { void load(1, true, true) })
 function beforeUnload(e: BeforeUnloadEvent) { if (dirty.value || pending.value || saving.value) { e.preventDefault(); e.returnValue = '' } }
-onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load() })
+onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load(1, false, true) })
 onBeforeUnmount(() => { alive = false; generation++; searchGeneration++; historyGeneration++; window.removeEventListener('beforeunload', beforeUnload) })
 watch(bomQuery, () => { searchGeneration++; bomRows.value = []; versions.value = []; versionId.value = '' }, { flush: 'sync' })
 
-async function load(nextPage = page.value) {
-  if (!discard()) return
+async function load(nextPage = page.value, navigation = false, followLocation = false) {
+  if (!navigation && !discard()) return
   const request = ++generation
   selected.value = null; action.value = null; history.value = []; rows.value = []; historyGeneration++; searchGeneration++
   loading.value = true; error.value = ''
@@ -65,6 +76,13 @@ async function load(nextPage = page.value) {
     if (!alive || request !== generation) return
     access.value = rights
     if (!available.value) return
+    const target = followLocation ? location.value : undefined
+    if (target) {
+      const order = await ordersApi.read(target.lineId)
+      if (!alive || request !== generation) return
+      rows.value = [order]; total.value = 1; page.value = 1; selected.value = order
+      return
+    }
     const result = await ordersApi.list(nextPage, query.value, statusFilter.value, planStatusFilter.value)
     if (!alive || request !== generation) return
     rows.value = result.data; total.value = result.total; page.value = nextPage
@@ -91,7 +109,7 @@ function edit(next: OrderAction) {
     // Revalidate estimates against the latest BOM; never carry an old row-index mapping into a new BOM silently.
     for (const task of planTasks.value) {
       task.materials = requirements.value.flatMap((r, row) => r.required_for_cutting ? [{ row, expected_date: null }] : [])
-      task.date_basis = 'estimated'; task.actual_prerequisite_date = null; task.actual_prerequisite_reference = ''; task.actual_issue_date = null; task.actual_issue_reference = ''; task.readiness_basis = ''; task.prerequisite_date = null; task.prerequisite_basis = ''
+      task.date_basis = 'estimated'; task.actual_prerequisite_date = null; task.actual_prerequisite_reference = ''; task.actual_issue_date = null; task.actual_issue_reference = ''; task.material_receipt_ids = []; task.readiness_basis = ''; task.prerequisite_date = null; task.prerequisite_basis = ''
     }
     notice.value = '旧计划依据已变更：保留任务和日计划，预计物料、实际领料及前置条件须重新核对填写。'
   }
@@ -206,8 +224,9 @@ function status(row: CuttingOrder) {
     <CuttingWorkspacePage :workspace="workspace" />
   </template>
   <section v-else class="cutting-page orders-page">
-    <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '采购分批交期与需求跟进' : '订单、工程需求与生产预排'" eyebrow="华康 C / 裁床部"><template #actions><StatusPill label="订单与交期" /></template></PageHeader>
-    <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；每日填数单独登记，领料和库存记账在后续阶段接入。</p>
+    <CuttingLocationNotice :location="location" :selected-id="selected?.line_id" />
+    <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '采购分批交期与需求跟进' : '订单、工程需求与生产预排'"><template #actions><StatusPill label="订单与交期" /></template></PageHeader>
+    <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；领料申请与实发签收已对接布料仓。P3b 首批支持按原实发登记耗用、损耗和盘余核对，材料费用按已确认批次成本计算，缺价显示待计价。</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="needsLogin" role="alert">登录已失效，请在新标签页重新登录后重试。<a href="/login" target="_blank" rel="noopener">重新登录</a></p>
     <Button variant="outline" v-if="pending" :disabled="saving" @click="save">{{ saving ? '正在保存…' : '重试原操作' }}</Button>
@@ -241,11 +260,12 @@ function status(row: CuttingOrder) {
           <div class="cutting-table-scroll" role="region" aria-label="订单总台账，可横向滚动" tabindex="0">
             <table class="order-ledger-table" :aria-busy="loading">
               <caption class="sr-only">{{ workspace.path === 'materials' ? '采购交期' : '订单总台账' }}</caption>
-              <thead><tr><th scope="col">洋行名</th><th scope="col">订单号</th><th scope="col">货号</th><th scope="col" class="order-number">来源数量</th><th scope="col">来源版本</th><th scope="col">办理状态</th><th scope="col" class="order-actions">操作</th></tr></thead>
+              <thead><tr><th scope="col">客户</th><th scope="col">订单号</th><th scope="col">货号</th><th scope="col">货名</th><th scope="col">款式分类</th><th scope="col" class="order-number">订单数量</th><th scope="col">办理状态</th><th scope="col" class="order-actions">操作</th></tr></thead>
               <tbody>
                 <tr v-for="row in rows" :key="row.line_id">
                   <td>{{ row.snapshot.customer_name }}</td><td class="tabular-nums">{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td>
-                  <td class="order-number tabular-nums">{{ row.snapshot.quantity }}</td><td class="tabular-nums">V{{ row.source_version }}</td>
+                  <td class="cutting-order-product-name">{{ orderProductName(row.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td>
+                  <td class="order-number tabular-nums">{{ row.snapshot.quantity }}</td>
                   <td><StatusPill :label="status(row)" compact /><p v-if="workspace.path === 'planning'" class="order-cell-note">{{ row.planning_summary?.states?.map(s => planStatusLabels[s]).join(' · ') }}</p><p v-if="row.expected_date_passed" class="order-cell-note">预计日期已过，实收待核实</p></td>
                   <td class="order-actions"><Button type="button" variant="outline" size="sm" :disabled="saving || !!pending" @click="select(row)">查看</Button></td>
                 </tr>
@@ -266,7 +286,10 @@ function status(row: CuttingOrder) {
           </div>
         </nav>
       </SectionPanel>
+      <CuttingMaterialRequests v-if="selected && selected.current" ref="materialEditor" :key="selected.line_id" :order="selected" :permissions="access?.permissions ?? []" :blocked="saving || !!pending || !!action || usageEditing" @editing="materialEditing=$event" @refreshed="r => { if(selected?.line_id===r.line_id){selected=r;rows=rows.map(old=>old.line_id===r.line_id?r:old)} }" />
+      <CuttingMaterialUsage v-if="workspace.path==='materials'&&selected?.current&&access?.usage_schema_ready" ref="usageEditor" :key="`usage-${selected.line_id}`" :line-id="selected.line_id" :permissions="access.permissions" :blocked="saving||!!pending||!!action||materialEditing" @editing="usageEditing=$event" />
       <SectionPanel v-if="selected" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`">
+        <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
         <p>{{ status(selected) }} · 裁床记录 V{{ selected.current?.version ?? 0 }}</p>
         <p v-if="selected.snapshot.status === 'cancelled'" role="alert">来源订单已取消，仅可签收取消通知及核对旧采购需求。</p>
         <p v-if="selected.needs_receipt" class="cutting-notice">请先签收最新版本。重新签收会重置当前 BOM 和需求链；旧版保留历史，不会自动撤销采购单。</p>
@@ -303,7 +326,7 @@ function status(row: CuttingOrder) {
         <form v-if="action" class="order-form" @submit.prevent="save">
           <h3>{{ labels[action] }}</h3>
           <fieldset :disabled="saving || !!pending">
-            <CuttingPlanEditor v-if="action === 'plan' && data" v-model="planTasks" v-model:removed-task-reasons="removedTaskReasons" :data="data" />
+            <CuttingPlanEditor v-if="action === 'plan' && data" v-model="planTasks" v-model:removed-task-reasons="removedTaskReasons" :data="data" :line-id="selected.line_id" />
             <CuttingPlanDiff v-if="adjustingPlan && data?.planning?.published" :previous="data.planning.published" :tasks="action === 'plan' ? planTasks : data.planning.draft?.tasks ?? []" :removed-reasons="action === 'plan' ? removedTaskReasons : data.planning.draft?.removed_task_reasons" />
             <p v-if="action === 'plan-publish'">发布当前草稿后形成新计划版本，首次基准和历史调整仍保留。预排不代表物料已可用或允许实际开工。</p>
             <template v-if="action === 'bom'">
@@ -348,7 +371,8 @@ function status(row: CuttingOrder) {
         </form>
         <div class="order-toolbar"><Button variant="outline" :disabled="!selected.current" @click="loadHistory()">查看历史版本</Button><template v-if="historyTotal"><Button variant="outline" :disabled="historyPage <= 1" @click="loadHistory(historyPage-1)">历史上一页</Button><span>{{ historyPage }} / {{ Math.ceil(historyTotal/50) }}</span><Button variant="outline" :disabled="historyPage*50 >= historyTotal" @click="loadHistory(historyPage+1)">历史下一页</Button></template></div>
         <details v-for="r in history" :key="r.version"><summary>V{{ r.version }} · {{ r.created_at }} · {{ r.actor_id }} · {{ r.reason }}</summary>
-          <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 来源数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
+          <p>订单：{{ r.data.order.reference_no }} / {{ r.data.order.product_no }} · 订单数量 {{ r.data.order.quantity }} · {{ r.data.order.status === 'cancelled' ? '已取消' : '有效' }}</p>
+          <p>货名：{{ orderProductName(r.data.order) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
           <p>BOM：{{ r.data.bom ? `${r.data.bom.code} V${r.data.bom.version}` : '未关联' }} · 目标 {{ r.data.target_sets ?? '待确认' }} 套 · {{ r.data.quantity_basis }} · {{ r.data.bom_match_basis }}</p>
           <CuttingPlanSummary v-if="r.data.planning?.published" :plan="r.data.planning.published" title="该版本发布计划" />
           <CuttingPlanSummary v-if="r.data.planning?.draft" :plan="r.data.planning.draft" title="该版本计划草稿" />
@@ -370,12 +394,9 @@ function status(row: CuttingOrder) {
 .order-filter-control::placeholder { color: var(--muted-foreground); }
 .order-query-button { justify-self: start; }
 .order-ledger-grid { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); }
-.order-ledger-table { min-width: 760px; font-size: 14px; line-height: 20px; }
-.order-ledger-table th { padding: 12px 16px; font-size: 12px; font-weight: 600; }
-.order-ledger-table td { padding: 14px 16px; vertical-align: middle; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.order-ledger-table { min-width: 900px; font-size: 14px; line-height: 20px; }
 .order-ledger-table tbody tr:last-child td { border-bottom: 0; }
 .order-ledger-table tbody tr:hover { background: var(--muted); }
-.order-ledger-table .order-number, .order-ledger-table .order-actions { text-align: right; }
 .order-cell-note { margin-top: 6px; color: var(--muted-foreground); font-size: 12px; line-height: 18px; }
 .order-ledger-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 20px; text-align: center; color: var(--muted-foreground); font-size: 14px; line-height: 22px; }
 .order-empty-title { color: var(--foreground); font-weight: 600; }

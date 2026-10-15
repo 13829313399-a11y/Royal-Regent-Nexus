@@ -299,7 +299,8 @@
 .fabric-intake-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
 .fabric-intake-table th { padding: 11px 10px; font-size: 12px; font-weight: 600; text-align: left; background: var(--muted); color: var(--muted-foreground); }
 .fabric-intake-table th span { color: var(--destructive); }
-.fabric-intake-table td { padding: 12px 10px; border-top: 1px solid var(--border); }
+.fabric-intake-table td { padding: 12px 10px; border-top: 1px solid var(--border); vertical-align: top; }
+.fabric-receipt-dialog .fabric-intake-table td input { box-sizing: border-box; height: 38px; min-height: 38px; padding: 8px 10px; font-size: 13px; line-height: 20px; }
 .fabric-intake-table .fabric-intake-index { width: 48px; text-align: center; font-size: 12px; color: var(--muted-foreground); }
 .fabric-intake-table .fabric-intake-remove { width: 66px; padding-left: 0; padding-right: 6px; text-align: right; }
 .fabric-intake-remove button { font-size: 12px; color: var(--muted-foreground); }

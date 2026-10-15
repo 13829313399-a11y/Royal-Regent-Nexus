@@ -198,6 +198,7 @@ class CartonScheduleOrderSource(BaseModel):
 
 
 class CartonOrderCreate(CartonPackingWeights):
+    request_id: str | None = Field(default=None, min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
     schedule_source: CartonScheduleOrderSource | None = None
     customer_po: str = Field(default="", max_length=128)
 
@@ -361,6 +362,26 @@ class CartonOrderSubmitRequest(BaseModel):
     @classmethod
     def strip_factory_id(cls, value: str) -> str:
         return _strip(value)
+
+
+class CartonOrderDatesRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=4, max_length=500)
+    customer_due_date: str | None = None
+    due_date: str | None = None
+
+    @field_validator("customer_due_date", "due_date")
+    @classmethod
+    def validate_optional_date(cls, value: str | None) -> str | None:
+        return _validate_iso_date(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def require_date(self):
+        if self.customer_due_date is None and self.due_date is None:
+            raise ValueError("请填写客户交期或计划交期")
+        return self
 
 
 class CartonOrderLineTarget(BaseModel):
@@ -652,6 +673,7 @@ class CartonPurchaseOrderIssueCreate(BaseModel):
 class CartonPurchaseOrderIssueOut(BaseModel):
     purchase_order_batch: CartonPurchaseOrderBatchOut | None = None
     is_replenishment: bool = False
+    is_cancellation: bool = False
     id: str
     factory_id: str
     order_no: str

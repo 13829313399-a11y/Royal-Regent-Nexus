@@ -7,6 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from io import BytesIO
 from typing import Any, Callable
+from uuid import uuid4
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -362,6 +363,7 @@ def _parse_mold(
     *,
     fallback_qty: Decimal,
     sheet_name: str = "",
+    factory_id: str = "",
     embedded_images_by_row: dict[int, list[EmbeddedWorkbookImage]] | None = None,
     **_: object,
 ) -> tuple[dict[str, Any], int, list[str]]:
@@ -636,6 +638,40 @@ def _parse_mold(
         warnings.append("F 列未识别到可提取的嵌入图片；如源表图片为链接，请改为嵌入图片后重试")
     else:
         warnings.append("嵌入模具图片不自动写入报价，请在对应工程分段上传图片附件")
+    if factory_id == "huadeng" and is_zhanxing_mold_layout:
+        # Explicit new imports opt in. Existing Huadeng payloads remain whole-mold.
+        grouped: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        previous_row = 0
+        for detail in molds:
+            source_row = detail["source_row"]
+            raw_no = text(value_at(rows[source_row - 1], columns["mold_no"]))
+            if current is None or (raw_no and raw_no != current["mold_no"]) or source_row != previous_row + 1:
+                if not raw_no:
+                    raise ValueError(f"第 {source_row} 行胶件缺少所属模号，请补齐后导入")
+                current = {**detail, "mold_id": f"mold-{uuid4().hex}",
+                           "molding_profile": "huadeng_parts_v1", "parts": []}
+                grouped.append(current)
+            elif Decimal(detail["cost_rmb"]) > 0:
+                if Decimal(current["cost_rmb"]) not in (Decimal("0"), Decimal(detail["cost_rmb"])):
+                    raise ValueError(f"第 {source_row} 行同一模具出现不同模价，请核对整模价格")
+                current["cost_rmb"] = detail["cost_rmb"]
+            part = {
+                "part_id": f"part-{uuid4().hex}", "name": detail["item"],
+                "color": detail["color"], "material": detail["material"],
+                "material_type": detail["material_type"],
+                "unit_net_weight_g": detail["net_weight_g"],
+                "output_count": detail["cavity"],
+                "quantity": decimal_text(number(value_at(rows[source_row - 1], columns["sets"]), Decimal("0"))),
+                "machine_code": detail["machine_code"], "target_output": detail["target_output"],
+                "remark": detail["remark"], "source_row": source_row,
+                "image_reference": detail["image_reference"], "image_attachment_ids": [],
+                "process": "", "process_unit_price_hkd": "0",
+            }
+            current["parts"].append(part)
+            previous_row = source_row
+        molds = grouped
+        warnings.append("华登工模：按模号归组，胶件逐行保留；空白机型及产能继承所属模具，材料不自动补齐")
     return {"molds": molds, "amortization_qty": decimal_text(amortization_qty)}, len(molds), warnings
 
 
@@ -1067,7 +1103,7 @@ def _parse_painting(
     if not output:
         raise ValueError("已识别喷油表头，但没有解析到喷油工序明细")
     warnings.append("油漆、人工分别汇总；人工=总报价-油漆的公式由工序明细重算，空白拆分待填写，不重复加计工序总价" if split_columns else "源表总报价和合计仅用于核对，不直接导入；保存后按含 UV 的九类工序数量 × 单价由服务端重算")
-    warnings.append("嵌入喷油图片不自动写入报价；图片单元格文本会保存为附件引用，原报价单可另存为分段附件")
+    warnings.append("图片列的嵌入图片按来源行保留；确认导入后保存为本部门图片附件")
     return {"rows": output}, len(output), warnings
 
 
@@ -1608,6 +1644,7 @@ def parse_internal_quote_workbook(
     rmb_hkd: Decimal = Decimal("0.85"),
     fallback_qty: Decimal = Decimal("1"),
     fallback_product_name: str = "",
+    factory_id: str = "",
 ) -> ParsedInternalQuoteImport:
     if import_type not in IMPORT_TYPE_DEPARTMENTS:
         raise ValueError("不支持的内部报价导入类型")
@@ -1663,7 +1700,7 @@ def parse_internal_quote_workbook(
             rows[header_index + 1] = []
     embedded_images: list[EmbeddedWorkbookImage] = []
     embedded_images_by_row: dict[int, list[EmbeddedWorkbookImage]] = {}
-    if import_type == "mold":
+    if import_type in {"mold", "painting"}:
         image_column = column_index(
             rows[header_index],
             ("图片", "图  片", "IMAGE", "PICTURES"),
@@ -1690,13 +1727,15 @@ def parse_internal_quote_workbook(
         rmb_hkd=rmb_hkd,
         fallback_qty=fallback_qty,
         sheet_name=sheet_name,
+        factory_id=factory_id,
         embedded_images_by_row=embedded_images_by_row,
         **({"formula_rows": formula_rows} if import_type == "painting" else {}),
         **({"sewing_formulas": sewing_workbook_formulas(content, sheet_name, len(rows), MAX_WORKBOOK_COLUMNS)} if import_type == "sewing" else {}),
         **({"fallback_product_name": fallback_product_name} if import_type == "hair" else {}),
     )
-    if import_type == "mold":
-        parsed_rows = fragment.get("molds", [])
+    if import_type in {"mold", "painting"}:
+        parsed_rows = fragment.get("molds" if import_type == "mold" else "rows", [])
+        parsed_rows = [item for row in parsed_rows if isinstance(row, dict) for item in [row, *(row.get("parts", []) or [])]]
         used_source_rows = {
             int(row.get("source_row", 0) or 0)
             for row in parsed_rows

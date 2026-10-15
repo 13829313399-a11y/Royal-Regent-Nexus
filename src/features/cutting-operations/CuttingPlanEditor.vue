@@ -5,7 +5,30 @@ import { cuttingApi, errorMessage, type BomData, type MasterRecord, type Resourc
 import CuttingDailyPlanTools from './CuttingDailyPlanTools.vue'
 import type { OrderData } from './ordersApi'
 import type { PlanTaskInput } from './planning'
-const props = defineProps<{ data: OrderData }>()
+import { materialApi, type MaterialLedger } from './materialsApi'
+import { remaining } from '@/features/warehouse-operations/operations'
+const props = defineProps<{ data: OrderData; lineId?: string }>()
+const receiptLedger = ref<MaterialLedger>(), receiptError = ref(''), receiptsLoading = ref(false)
+let receiptGeneration = 0
+async function loadReceipts() {
+  if(!props.lineId)return
+  const ticket=++receiptGeneration;receiptsLoading.value=true;receiptError.value=''
+  try {const ledger=await materialApi.read(props.lineId);if(alive&&ticket===receiptGeneration)receiptLedger.value=ledger}
+  catch(e){if(alive&&ticket===receiptGeneration){receiptLedger.value=undefined;receiptError.value=errorMessage(e)}}
+  finally{if(alive&&ticket===receiptGeneration)receiptsLoading.value=false}
+}
+watch(()=>props.lineId,()=>{receiptLedger.value=undefined;receiptGeneration++;void loadReceipts()},{immediate:true})
+function receiptOptions(task:PlanTaskInput) {
+  return (receiptLedger.value?.requests??[]).filter(r=>r.context.dispatch_id===props.data.dispatch_id&&r.context.bom_id===props.data.bom?.id&&r.context.bom_version===props.data.bom?.version&&r.context.task_id===task.task_id&&r.context.resource_id===task.resource_id)
+    .flatMap(r=>r.receipts.filter(receipt=>!receipt.reversed&&r.issues.some(i=>i.id===receipt.original_id&&!i.reversed&&Number(remaining(i.received_quantity,i.returned_quantity))>0)).map(receipt=>({...receipt,item_name:r.item_name,unit:r.unit})))
+}
+function toggleReceipt(task:PlanTaskInput,id:string,selected:boolean) {
+  const ids=new Set(task.material_receipt_ids??[]);if(selected)ids.add(id);else ids.delete(id)
+  task.material_receipt_ids=[...ids]
+  const chosen=receiptOptions(task).filter(r=>ids.has(r.id))
+  task.actual_issue_date=chosen.map(r=>r.date).sort().at(-1)??null
+  task.actual_issue_reference=chosen.length?`关联 ${chosen.length} 张裁床有效签收单，详见签收关联明细`:''
+}
 const tasks = defineModel<PlanTaskInput[]>({ required: true })
 const removedTaskReasons = defineModel<Record<string, string>>('removedTaskReasons', { default: () => ({}) })
 const resourceCache = ref<Record<string, MasterRecord>>({})
@@ -15,7 +38,7 @@ const missingOriginalTasks = computed(() => {
 })
 const query = ref(''), resources = ref<MasterRecord[]>([]), page = ref(1), total = ref(0), error = ref(''), busy = ref(false)
 let alive = true, generation = 0
-onBeforeUnmount(() => { alive = false; generation++ })
+onBeforeUnmount(() => { alive = false; generation++;receiptGeneration++ })
 watch(query, () => { generation++; resources.value = []; busy.value = false; error.value = '' }, { flush: 'sync' })
 async function search(next = 1) {
   const request = ++generation; busy.value = true; error.value = ''
@@ -49,6 +72,7 @@ function replaceResource(task: PlanTaskInput, resource: MasterRecord) {
   // Keep task identity, prerequisite requirements, targets and original daily draft.
   // Actual evidence for the previous executor must be checked again.
   task.date_basis = 'estimated'; task.actual_issue_date = null; task.actual_issue_reference = ''
+  task.material_receipt_ids = []
   task.resource_change_basis = ''
   task.actual_prerequisite_date = null; task.actual_prerequisite_reference = ''
 }
@@ -74,6 +98,8 @@ function materialName(row: number) {
       <Button variant="outline" type="button" :disabled="busy || page <= 1" @click="search(page-1)">资源上一页</Button><Button variant="outline" type="button" :disabled="busy || page*50 >= total" @click="search(page+1)">资源下一页</Button>
     </div>
     <p v-if="error" role="alert">{{ error }}</p>
+    <p v-if="receiptError" role="alert">签收凭据读取失败：{{receiptError}}</p>
+    <Button v-if="lineId" type="button" variant="outline" :disabled="receiptsLoading" @click="loadReceipts">{{receiptsLoading?'正在读取签收凭据…':'刷新有效签收凭据'}}</Button>
     <div class="plan-tools"><Button variant="outline" v-for="r in resources" :key="r.id" type="button" @click="add(r)">增加任务：{{ r.code }} · {{ r.data.name }} V{{ r.version }}</Button></div>
     <div class="plan-tools"><Button variant="outline" v-for="r in resources.filter(r => tasks.some(t => t.resource_id === r.id && t.resource_version !== r.version))" :key="r.id" type="button" @click="tasks.filter(t => t.resource_id === r.id).forEach(t => { t.resource_version = r.version })">采用 {{ r.data.name }} 最新资料／日历 V{{ r.version }}</Button></div>
     <p v-if="!tasks.length">先选择有效执行方，建立本厂或外发任务。</p>
@@ -90,10 +116,16 @@ function materialName(row: number) {
       <p>采购回复交期后即可预排，无需实际领料。带入当前最晚回复日期，可按该任务批次核定；部分到料支持数量须写明依据。</p>
       <ul><li v-for="b in data.batches" :key="`${b.row}-${b.purchase_reference}-${b.expected_date}`">采购需求行 {{ b.row+1 }}：{{ b.expected_date }} · {{ b.quantity }} · {{ b.purchase_reference }}</li></ul>
       <label v-for="material in task.materials" :key="material.row">{{ material.row+1 }} · {{ materialName(material.row) }} <input :value="material.expected_date ?? ''" type="date" @input="material.expected_date = ($event.target as HTMLInputElement).value || null" /></label>
-      <label>实际领料日期 <input :value="task.actual_issue_date ?? ''" type="date" @input="task.actual_issue_date = ($event.target as HTMLInputElement).value || null" /></label>
+      <fieldset v-if="lineId"><legend>关联本任务有效签收单</legend>
+        <p>勾选后带入所选签收的最晚日期；仍须主管核对本批必需物料、支持数量及前置条件，部分签收不自动代表齐料。</p>
+        <label v-for="receipt in receiptOptions(task)" :key="receipt.id"><input type="checkbox" :checked="task.material_receipt_ids?.includes(receipt.id)" @change="toggleReceipt(task,receipt.id,($event.target as HTMLInputElement).checked)" />{{receipt.date}} · {{receipt.item_name}} · {{receipt.quantity}} {{receipt.unit}} · {{receipt.id}}</label>
+        <p v-if="!receiptOptions(task).length&&!receiptsLoading">暂无匹配当前订单、BOM及执行方的有效签收单；可保留有依据的人工核定。</p>
+        <p v-for="id in task.material_receipt_ids?.filter(id=>!receiptOptions(task).some(r=>r.id===id))" :key="id" role="alert">原关联 {{id}} 已失效或待刷新，请核对后移除并重新选择。<Button type="button" variant="outline" @click="toggleReceipt(task,id,false)">移除此失效关联</Button></p>
+      </fieldset>
+      <label>实际领料日期 <input :value="task.actual_issue_date ?? ''" :readonly="!!task.material_receipt_ids?.length" type="date" @input="task.actual_issue_date = ($event.target as HTMLInputElement).value || null" /></label>
       <label>领料单号／实际领料凭据 <input v-model="task.actual_issue_reference" maxlength="500" :required="!!task.actual_issue_date" /></label>
       <label v-if="executorChanged(task)">更换执行方后的实际凭据复核依据 <input v-model="task.resource_change_basis" maxlength="500" :required="!!(task.actual_issue_date || task.actual_prerequisite_date)" placeholder="填写该执行方的领料／前置凭据核对依据" /></label>
-      <p>领料日期须据实登记且不得晚于今天；布料仓接口尚未接通，此处保留人工核对依据，不重复生成出库或库存。</p>
+      <p>领料日期须据实登记且不得晚于今天。布料仓实发、裁床签收已接通；关联签收撤销或相关退仓变化后计划须复核，原计划及首次基准保留。</p>
       <p>提前预排使用必需料及前置工序预计日期；实际核定使用实际领料及前置工序实际就绪日期。两者均按资源日历及任务准备周期计算，未配置默认周一至周六工作、周日休息。</p>
       <label>批次物料日期／数量支持依据 <textarea v-model="task.readiness_basis" maxlength="500" placeholder="说明该批目标套数所需物料的预计来源和数量；此处不预留或扣减库存" /></label>
       <label><input v-model="task.prerequisite_required" type="checkbox" />本任务需要贴合／捆条等前置工序</label>

@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { sewingUsesQuotedPrice } from '@/lib/internalQuoteSectionPayload'
 import { buzzBeeTemplateProfiles } from '@/lib/customerPriceConverters/buzzbeeTemplate'
-import { Copy, Eye, Plus, Trash2 } from '@lucide/vue'
+import { CircleDollarSign, Copy, Eye, Plus, Trash2 } from '@lucide/vue'
 import { computed, ref, watchEffect } from 'vue'
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
+import { previewEngineeringMoldPartSplit } from '@/lib/internalQuoteSectionPayload'
 import { newMoldSplitPart, prepareMoldSplit, validateMoldSplit, type EngineeringMoldSplitChange } from '@/lib/internalQuoteMoldSplit'
 import { canonicalizeMoldingReferences, moldingMaterialReferences as getMoldingMaterials, moldingMachineReferences as getMoldingMachines, moldingMaterialOptions, selectedMoldingMaterial, selectedMoldingMachine, normalizedReferenceToken, type MoldingMaterialSelection, type MoldingMaterialReference } from '@/lib/internalQuoteMoldingReferences'
 import { internalQuoteAttachmentPreviewUrl } from '@/api/internalQuote'
+import { createRandomUuid } from '@/lib/randomUuid'
+import { huadengLaborJob, injectionLaborOwner } from '@/lib/internalQuoteMoldLinkage'
 import InternalQuotePricingFields from './InternalQuotePricingFields.vue'
 import InternalQuoteDickieSales from './InternalQuoteDickieSales.vue'
 import InternalQuoteDickieMolds from './InternalQuoteDickieMolds.vue'
@@ -17,14 +20,54 @@ import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/
 import type { QuotePricingMetadata, SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
 import { calculateCustomerSuppliedFeeHkd, type CustomerSuppliedMaterialRow } from '@/lib/internalQuoteSectionPayload'
 
-const props = defineProps<{ code: InternalQuoteSectionCode; quoteId?: string; factoryId?: string; attachments?: InternalQuoteAttachmentRecord[]; disabled?: boolean; customer?: string; rmbHkdRate?: number; referenceSnapshot?: Record<string, unknown>; calculation?: Record<string, unknown>; pricingMode?: 'standard' | 'component'; pricingComponents?: SalesPricingComponent[]; activePricingComponentId?: string; mainMarkup?: number }>()
+const props = defineProps<{ code: InternalQuoteSectionCode; quoteId?: string; factoryId?: string; attachments?: InternalQuoteAttachmentRecord[]; disabled?: boolean; customer?: string; rmbHkdRate?: number; referenceSnapshot?: Record<string, unknown>; calculation?: Record<string, unknown>; canEditMaterialPrices?: boolean; pricingMode?: 'standard' | 'component'; pricingComponents?: SalesPricingComponent[]; activePricingComponentId?: string; mainMarkup?: number }>()
 const model = defineModel<Record<string, unknown>>({ required: true })
 const emit = defineEmits<{
   'block-progress': [blocks: InternalQuoteFormBlock[]]
   'preview-attachment': [attachment: InternalQuoteAttachmentRecord]
   'mold-parts-split': [changes: EngineeringMoldSplitChange[], done: (error?: string) => void]
   'mold-split-open': [open: boolean]
+  'upload-painting-image': [rowId: string, file: File]
+  'request-material-prices': []
 }>()
+const formRoot = ref<HTMLElement>()
+const moldingValidationErrors = computed(() => {
+  const errors = props.calculation?.validation_errors
+  if (!Array.isArray(errors)) return []
+  return errors.flatMap((error) => error && typeof error === 'object' ? [{
+    rowIndex: Number(error.row_index), moldNo: String(error.mold_no ?? ''), field: String(error.field ?? ''), message: String(error.message ?? ''),
+  }] : [])
+})
+function focusInjectionError(error: { rowIndex: number; field: string }) {
+  const row = formRoot.value?.querySelector<HTMLElement>(`[data-injection-index="${error.rowIndex}"]`)
+  row?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  Array.from(row?.querySelectorAll<HTMLElement>('[data-injection-field]') ?? []).find((input) => input.dataset.injectionField === error.field)?.focus()
+}
+function paintingImageAttachments(row: PaintingPayload['rows'][number]) {
+  const ids = new Set(row.image_attachment_ids ?? [])
+  return (props.attachments ?? []).filter((attachment) => attachment.contentType.startsWith('image/') && ids.has(attachment.id))
+}
+function uploadPaintingImage(row: PaintingPayload['rows'][number], event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || props.disabled) return
+  row.row_id ||= `painting-${createRandomUuid()}`
+  emit('upload-painting-image', row.row_id, file)
+}
+function selectPaintingImage(row: PaintingPayload['rows'][number], event: Event) {
+  const id = (event.target as HTMLSelectElement).value
+  if (!id || props.disabled) return
+  row.image_attachment_ids = [...new Set([...(row.image_attachment_ids ?? []), id])]
+  const attachment = (props.attachments ?? []).find((item) => item.id === id)
+  if (attachment) row.image_reference = attachment.fileName
+  const select = event.target as HTMLSelectElement
+  select.value = ''
+}
+function removePaintingImage(row: PaintingPayload['rows'][number], id: string) {
+  row.image_attachment_ids = (row.image_attachment_ids ?? []).filter((value) => value !== id)
+  if (!row.image_attachment_ids.length) row.image_reference = ''
+}
 
 const sales = computed(() => model.value as unknown as SalesPayload)
 const customerSuppliedRows = computed(() => (sales.value.customer_supplied_materials ?? []).filter(belongsToCurrentPricingComponent))
@@ -142,7 +185,8 @@ const pricingItems = computed<PricingItem[]>(() => {
     ...sales.value.cartons.map((row, index) => ({ label: row.item.trim() || `纸箱 ${index + 1}`, meta: row, allowMarkupOverride: true })),
   ]
 })
-function moldImageAttachments(row: EngineeringMoldRow) {
+function isHuadengMold(row: EngineeringMoldRow) { return props.factoryId === 'huadeng' && row.molding_profile === 'huadeng_parts_v1' }
+function moldImageAttachments(row: { image_attachment_ids?: string[]; image_reference?: string }) {
   const ids = new Set(row.image_attachment_ids ?? [])
   const references = new Set(String(row.image_reference || '').split(/[；;]/).map((item) => item.trim()).filter(Boolean))
   return (props.attachments ?? []).filter((attachment) => attachment.contentType.startsWith('image/') && (ids.has(attachment.id) || (!ids.size && references.has(attachment.fileName))))
@@ -243,7 +287,7 @@ function selectedMaterialReference(row: MoldingMaterialSelection) {
   return selectedMoldingMaterial(row, moldingMaterialReferences.value)
 }
 function selectMaterial(row: MoldingMaterialSelection) {
-  const candidates = moldingMaterialReferences.value.filter((item) => normalizedReferenceToken(item.material) === normalizedReferenceToken(row.material))
+  const candidates = row.material ? materialOptions(row) : []
   if (!candidates.some((item) => normalizedReferenceToken(item.grade) === normalizedReferenceToken(row.grade))) row.grade = candidates.length === 1 ? candidates[0].grade : ''
 }
 function materialReferenceValue(item: MoldingMaterialReference) {
@@ -262,6 +306,13 @@ function selectMachine(row: InjectionRow, range: string) {
   const selected = moldingMachineReferences.value.find((item) => item.range === range)
   row.machine_code = range
   if (selected) row.machine_name = selected.machine
+  const job = huadengLaborJob(row, props.factoryId)
+  if (job) for (const sibling of molding.value.injection_lines) {
+    if (huadengLaborJob(sibling, props.factoryId) === job) {
+      sibling.machine_code = range
+      if (selected) sibling.machine_name = selected.machine
+    }
+  }
 }
 watchEffect(() => {
   if (props.code === 'molding' && !props.disabled) canonicalizeMoldingReferences(molding.value, props.referenceSnapshot)
@@ -276,7 +327,7 @@ function injectionPreview(row: InjectionRow) {
   const quantity = Math.max(0, finiteNumber(row.quantity, 1))
   const lossWeightG = netWeight * (1 + lossRate / 100)
   const materialCostHkd = material ? lossWeightG * material.priceHkdLb / 454 : undefined
-  const moldingCostHkd = machine && sets > 0 && targetOutput > 0 ? machine.shiftPriceHkd / sets / targetOutput : undefined
+  const moldingCostHkd = machine && sets > 0 && targetOutput > 0 ? (injectionLaborOwner(row, molding.value.injection_lines, props.factoryId) ? machine.shiftPriceHkd / sets / targetOutput : 0) : undefined
   const unitAmountHkd = materialCostHkd !== undefined && moldingCostHkd !== undefined ? materialCostHkd + moldingCostHkd : undefined
   return {
     lossWeightG,
@@ -286,6 +337,16 @@ function injectionPreview(row: InjectionRow) {
     unitAmountHkd,
     lineAmountHkd: unitAmountHkd === undefined ? undefined : unitAmountHkd * quantity,
   }
+}
+function injectionLaborSpan(row: InjectionRow, index: number) {
+  const job = huadengLaborJob(row, props.factoryId)
+  if (!job || row.engineering_source_missing) return 1
+  const visible = visibleInjectionRows.value
+  const same = (other: InjectionRow | undefined) => other && !other.engineering_source_missing && huadengLaborJob(other, props.factoryId) === job
+  if (same(visible[index - 1])) return 0
+  let span = 1
+  while (same(visible[index + span])) span++
+  return span
 }
 function injectionPreviewText(row: InjectionRow, key: 'materialPriceHkdG' | 'materialCostHkd' | 'moldingCostHkd' | 'unitAmountHkd' | 'lineAmountHkd') {
   const value = injectionPreview(row)[key]
@@ -358,7 +419,8 @@ function removeEngineeringMaterial(row: EngineeringMaterialRow) {
   const index = engineering.value.materials.indexOf(row)
   if (index >= 0) engineering.value.materials.splice(index, 1)
 }
-const moldSplitGroups = ref<Array<EngineeringMoldSplitChange & { source: EngineeringMoldRow }>>([])
+type MoldSplitGroup = EngineeringMoldSplitChange & { source: EngineeringMoldRow; preview?: { nameCount: number; retainedCount: number } }
+const moldSplitGroups = ref<MoldSplitGroup[]>([])
 const moldSplitError = ref('')
 const moldSplitSaving = ref(false)
 function splitEngineeringMoldParts(rows: EngineeringMoldRow[]) {
@@ -390,6 +452,11 @@ function confirmMoldPartSplit() {
     if (error) moldSplitError.value = error
     else closeMoldSplit()
   })
+}
+function regenerateMoldSplit(group: MoldSplitGroup) {
+  const preview = previewEngineeringMoldPartSplit(group.source.item || group.source.chinese_name, group.parts)
+  group.parts = preview.rows.map(({ part, status }) => status === 'added' ? newMoldSplitPart(group.source, part.name) : { ...part })
+  group.preview = { nameCount: preview.nameCount, retainedCount: preview.retainedCount }
 }
 function addEngineeringMold() {
   engineering.value.molds.push(assignCurrentPricingComponent({
@@ -634,21 +701,33 @@ function copyInjection(source: InjectionRow) {
   const index = molding.value.injection_lines.indexOf(source)
   if (index < 0) return
   if (!source) return
-  source.engineering_sync_disabled = true
-  source.engineering_synced_fields = []
+  source.line_id ||= `injection-${createRandomUuid()}`
   molding.value.injection_lines.splice(index + 1, 0, {
     ...source,
+    line_id: `injection-${createRandomUuid()}`,
     engineering_source_key: '',
+    engineering_mold_id: '',
+    engineering_part_id: '', labor_job_id: '', cost_scope: 'whole_mold',
+    engineering_parts: [],
+    engineering_source_missing: false,
+    engineering_linkage_conflict: false,
     engineering_synced_fields: [],
     engineering_sync_disabled: true,
   })
+}
+function detachInjection(row: InjectionRow) {
+  // Retain source identity to suppress a replacement row for this same mold.
+  row.engineering_synced_fields = []
+  row.engineering_parts = []
+  row.engineering_source_missing = false
+  row.engineering_sync_disabled = true
 }
 function addCaixingToolPlanRow() { molding.value.caixing_tool_plan_rows.push({ ref_no: '', process_type: 'IN', tool_no: '', tooling_cost_hkd: 0, description: '', sku_no: '', cavities: 1, up: 1, net_weight_g: 0, material_code: 0, material: '', color: '', material_cost_hkd: 0, material_price_hkd_lb: null, machine_size: '', cycle_time_seconds: 0, process_cost_hkd: 0, machine_daily_hkd: null }) }
 function addBlow() { molding.value.blow_lines.push(assignCurrentPricingComponent({ item: '', daily_capacity: '', material: '', grade: '', estimated_weight_g: 0, labor_hkd: 0, burr_hkd: 0, profit_multiplier: 1.05, quantity: 1, output_count: '', mold_price_rmb: 0, remark: '' })) }
 function addPainting() {
   painting.value.rows.push(assignCurrentPricingComponent({
     cost_allocation: 'split', paint_cost_hkd: null, labor_cost_hkd: null,
-    image_reference: '', name: '', position: '', remark: '',
+    row_id: `painting-${createRandomUuid()}`, image_attachment_ids: [], image_reference: '', name: '', position: '', remark: '',
     operations: Object.fromEntries(operationCodes.map((code) => [code, { quantity: 0, unit_price_hkd: 0 }])) as PaintingPayload['rows'][number]['operations'],
   }))
 }
@@ -704,7 +783,7 @@ function addBuzzBeeColorBoxTier() {
 </script>
 
 <template>
-  <div class="section-payload-form" :class="{ disabled }">
+  <div ref="formRoot" class="section-payload-form" :class="{ disabled }">
     <section class="payload-standard-notice">
       <strong>统一填入格式：Huaxing Demo</strong>
       <span>所有客户共用同一套内部核价字段；当前客户的报客模板专属字段只用于最终转换，不参与内部成本计算。</span>
@@ -764,17 +843,17 @@ function addBuzzBeeColorBoxTier() {
           <table class="extraWide engineeringMolds">
             <thead><tr><th>#</th><th>模具名称</th><th>中文名称</th><th>模号</th><th>模胚材质</th><th>料型</th><th>颜色</th><th>出模数</th><th>套数</th><th>净重 (g)</th><th>模具尺寸</th><th>图片</th><th>模具价格 RMB</th><th>模价 HKD（自动）</th><th>备注</th><th /></tr></thead>
             <tbody>
-              <tr v-for="(row,index) in visibleEngineeringMolds" :key="index">
+              <template v-for="(row,index) in visibleEngineeringMolds" :key="row.mold_id || index"><tr>
                 <td>{{ index + 1 }}</td>
                 <td><textarea v-model="row.item" :disabled="disabled" rows="2" aria-label="模具名称" /></td>
                 <td><textarea v-model="row.chinese_name" :disabled="disabled" rows="2" aria-label="模具中文名称" /></td>
                 <td><input v-model="row.mold_no" :disabled="disabled" aria-label="模号"></td>
                 <td><input v-model="row.mold_base_material" :disabled="disabled" aria-label="模胚材质"></td>
-                <td><input v-model="row.material_type" :disabled="disabled" aria-label="料型"></td>
-                <td><input v-model="row.color" :disabled="disabled" aria-label="模具颜色"></td>
-                <td><input v-model="row.cavity" :disabled="disabled" aria-label="出模数"></td>
-                <td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1" aria-label="模具套数"></td>
-                <td><input v-model.number="row.net_weight_g" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="模具净重"></td>
+                <td><span v-if="isHuadengMold(row)">按下方胶件</span><input v-else v-model="row.material_type" :disabled="disabled" aria-label="料型"></td>
+                <td><span v-if="isHuadengMold(row)">按下方胶件</span><input v-else v-model="row.color" :disabled="disabled" aria-label="模具颜色"></td>
+                <td><span v-if="isHuadengMold(row)">按下方胶件</span><input v-else v-model="row.cavity" :disabled="disabled" aria-label="出模数"></td>
+                <td><span v-if="isHuadengMold(row)">按下方胶件</span><input v-else v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1" aria-label="模具套数"></td>
+                <td><output v-if="isHuadengMold(row)" aria-label="胶件净重合计">{{ calculated(row.parts.reduce((sum, part) => sum + finiteNumber(part.unit_net_weight_g), 0)) }}</output><input v-else v-model.number="row.net_weight_g" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="模具净重"></td>
                 <td><input v-model="row.mold_size" :disabled="disabled" aria-label="模具尺寸"></td>
                 <td class="mold-image-cell">
                   <div v-if="moldImageAttachments(row).length" class="mold-image-list">
@@ -790,6 +869,8 @@ function addBuzzBeeColorBoxTier() {
                 <td><textarea v-model="row.remark" :disabled="disabled" rows="2" aria-label="模具备注" /></td>
                 <td class="mold-row-actions"><button type="button" class="mold-split-button" :disabled="disabled" :aria-label="`拆分第 ${index + 1} 行模具`" @click="splitEngineeringMoldParts([row])">拆分</button><button type="button" class="icon" :disabled="disabled" @click="removeItem(engineering.molds,row)"><Trash2 /></button></td>
               </tr>
+              <tr v-if="isHuadengMold(row)" class="huadeng-engineering-parts"><td colspan="16"><table><thead><tr><th>胶件</th><th>原料</th><th>净重 g</th><th>出模数</th><th>套数</th><th>源备注</th><th>图片</th></tr></thead><tbody><tr v-for="part in row.parts" :key="part.part_id"><td>{{ part.name }}</td><td>{{ part.material_type || part.material || '待填' }}</td><td>{{ part.unit_net_weight_g }}</td><td>{{ part.output_count }}</td><td>{{ part.quantity }}</td><td>{{ part.remark }}</td><td><div class="mold-image-list"><a v-for="attachment in moldImageAttachments(part)" :key="attachment.id" :href="attachmentPreviewUrl(attachment.id)" target="_blank" rel="noopener"><img :src="attachmentPreviewUrl(attachment.id)" :alt="part.name"></a></div></td></tr></tbody></table></td></tr>
+              </template>
               <tr v-if="!visibleEngineeringMolds.length"><td colspan="16" class="empty">暂无模具明细，可新增或从模具报价单预览导入</td></tr>
             </tbody>
             <tfoot v-if="visibleEngineeringMolds.length"><tr><td colspan="12">模具报价小计（RMB→HKD {{ Number(props.rmbHkdRate || 0).toFixed(2) }}）</td><td>RMB {{ calculated(moldQuoteTotalRmb) }}</td><td>HKD {{ calculated(moldQuoteTotalHkd) }}</td><td colspan="2" /></tr></tfoot>
@@ -801,20 +882,27 @@ function addBuzzBeeColorBoxTier() {
             <DialogContent class="mold-split-dialog" @escape-key-down="event => { if (moldSplitSaving) event.preventDefault() }" @interact-outside.prevent>
               <header class="mold-split-dialog-head">
                 <DialogTitle>{{ moldSplitGroups.length > 1 ? '全部模具拆分' : '模具拆分' }}</DialogTitle>
-                <DialogDescription>填写各配件净重、出模数和套数。确认后保存工程部当前草稿并同步啤机部；取消不修改原数据。</DialogDescription>
+                <DialogDescription>{{ moldSplitGroups.some(group => group.source.molding_profile === 'huadeng_parts_v1') ? '华登胶件逐行按净重计算材料，普通胶件共享一次啤工；源备注含转水口的胶件各计一次独立啤工。' : '子配件用于胶件明细展示，整模重量、料价及啤工只计一次；未确定的子件净重可留为 0。' }}确认后保存工程部当前草稿并同步啤机部；取消不修改原数据。</DialogDescription>
               </header>
               <div class="mold-split-dialog-body">
                 <article v-for="group in moldSplitGroups" :key="group.index" class="nested-card engineering-mold-part-card">
-                  <div class="nested-head"><div><strong>{{ group.source.mold_no || `模具 ${group.index + 1}` }} · {{ group.source.item || group.source.chinese_name || '未命名模具' }}</strong><span>新增配件的出模数、套数默认继承原模具，可分别修改。</span></div><button type="button" :disabled="disabled || moldSplitSaving" @click="group.parts.push(newMoldSplitPart(group.source))"><Plus />新增子配件</button></div>
-                  <div class="payload-table-scroll"><table class="engineeringMoldParts">
-                    <thead><tr><th>#</th><th>配件名称</th><th>颜色</th><th>净重 (g)</th><th>出模数</th><th>套数</th><th /></tr></thead>
-                    <tbody><tr v-for="(part,partIndex) in group.parts" :key="part.id || partIndex">
+                  <div class="nested-head"><div><strong>{{ group.source.mold_no || `模具 ${group.index + 1}` }} · {{ group.source.item || group.source.chinese_name || '未命名模具' }}</strong><span>新增配件的出模数、套数默认继承原模具，可分别修改；重新拆分保留已有行的输入。</span></div><button type="button" :disabled="disabled || moldSplitSaving" @click="regenerateMoldSplit(group)">按当前名称重新拆分</button><button type="button" :disabled="disabled || moldSplitSaving" @click="group.parts.push(newMoldSplitPart(group.source))"><Plus />新增子配件</button></div>
+                  <p v-if="group.preview" class="mold-split-hint">名称拆出 {{ group.preview.nameCount }} 项；保留 {{ group.preview.retainedCount }} 项原有手工胶件。请核对子件名称和未确定的净重。</p><div class="payload-table-scroll"><table class="engineeringMoldParts">
+                    <thead><tr><th>#</th><th>配件名称</th><th>颜色</th><th>净重 (g)</th><th>出模数</th><th>套数</th><template v-if="props.factoryId === 'huadeng' && group.source.molding_profile === 'huadeng_parts_v1'"><th>原料</th><th>机型（空白继承模具）</th><th>产能（空白或 0 继承模具）</th><th>源行备注</th><th>图片</th></template><th /></tr></thead>
+                    <tbody><tr v-for="(part,partIndex) in group.parts" :key="part.part_id || part.id || partIndex">
                       <td>{{ partIndex + 1 }}</td>
                       <td><input v-model="part.name" :disabled="disabled || moldSplitSaving" aria-label="模具子配件名称"></td>
                       <td><input v-model="part.color" :disabled="disabled || moldSplitSaving" placeholder="可留空" aria-label="模具子配件颜色"></td>
-                      <td><input v-model.number="part.unit_net_weight_g" :disabled="disabled || moldSplitSaving" type="number" min="0.0001" step="0.0001" aria-label="模具子配件净重"></td>
-                      <td><input v-model.number="part.output_count" :disabled="disabled || moldSplitSaving" type="number" min="1" step="1" aria-label="模具子配件出模数"></td>
-                      <td><input v-model.number="part.quantity" :disabled="disabled || moldSplitSaving" type="number" min="1" step="1" aria-label="模具子配件套数"></td>
+                      <td><input v-model.number="part.unit_net_weight_g" :disabled="disabled || moldSplitSaving" type="number" min="0" step="0.0001" aria-label="模具子配件净重"></td>
+                      <td><input v-model.number="part.output_count" :disabled="disabled || moldSplitSaving" type="number" min="0" step="1" aria-label="模具子配件出模数"></td>
+                      <td><input v-model.number="part.quantity" :disabled="disabled || moldSplitSaving" type="number" min="0" step="1" aria-label="模具子配件套数"></td>
+                      <template v-if="props.factoryId === 'huadeng' && group.source.molding_profile === 'huadeng_parts_v1'">
+                        <td><input v-model="part.material_type" :disabled="disabled || moldSplitSaving" aria-label="胶件原料"></td>
+                        <td><input v-model="part.machine_code" :disabled="disabled || moldSplitSaving" :placeholder="group.source.machine_code || '待填'" aria-label="胶件机型"></td>
+                        <td><input v-model.number="part.target_output" :disabled="disabled || moldSplitSaving" type="number" min="0" aria-label="胶件产能"></td>
+                        <td><input v-model="part.remark" :disabled="disabled || moldSplitSaving" aria-label="胶件源行备注"></td>
+                        <td><div class="mold-image-list"><a v-for="attachment in moldImageAttachments(part)" :key="attachment.id" :href="attachmentPreviewUrl(attachment.id)" target="_blank" rel="noopener"><img :src="attachmentPreviewUrl(attachment.id)" :alt="part.name"></a></div></td>
+                      </template>
                       <td><button type="button" class="icon" :disabled="disabled || moldSplitSaving" :aria-label="`删除配件 ${part.name || partIndex + 1}`" @click="remove(group.parts,partIndex)"><Trash2 /></button></td>
                     </tr><tr v-if="!group.parts.length"><td colspan="7" class="empty">请新增至少一个配件</td></tr></tbody>
                   </table></div>
@@ -966,41 +1054,55 @@ function addBuzzBeeColorBoxTier() {
     <template v-else-if="props.code === 'molding'">
       <section :id="blockDomId('injection')" class="payload-block molding-injection" data-form-block>
         <header>
-          <div><strong>注塑部分</strong><span>工程部模具自动生成；同一模具对应多个部件时可复制该行，原行与副本随后均可完整编辑</span></div>
+          <div><strong>注塑部分</strong><span>工程模具及胶件联动；同模费用只计一次。新增独立加工可复制，原行继续跟随工程资料。</span></div>
           <div class="molding-header-actions">
             <button v-if="importSourceAttachment('molding')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('molding')"><Eye />预览附件</button>
             <span v-if="engineeringSyncedInjectionCount" class="engineering-sync-badge">已同步 {{ engineeringSyncedInjectionCount }} 项模具</span>
+            <button v-if="canEditMaterialPrices" type="button" @click="emit('request-material-prices')"><CircleDollarSign />本报价专用料价</button>
             <label><span>料损耗 %</span><input v-model.number="injectionLossRate" :disabled="disabled" type="number" min="0" step="0.1" aria-label="注塑料损耗百分比"></label>
             <button type="button" :disabled="disabled" @click="addInjection"><Plus />新增注塑</button>
           </div>
         </header>
         <div class="payload-table-scroll">
+          <div v-if="moldingValidationErrors.length" class="molding-validation" role="status"><strong>草稿已保留，以下资料待核价：</strong><button v-for="(error,errorIndex) in moldingValidationErrors" :key="errorIndex" type="button" @click="focusInjectionError(error)">{{ error.moldNo ? `${error.moldNo} · ` : '' }}{{ error.message }} · 定位</button></div>
           <table class="moldingInjectionTable">
             <thead><tr><th>#</th><th>模具名称</th><th>材质</th><th>料型</th><th>啤净重 (g)</th><th>料价 HKD/g（快照）</th><th>原料单价 HKD（自动）</th><th>啤价 HKD/啤（自动）</th><th>出模数</th><th>套数</th><th>机型 A码</th><th>目标数</th><th>成品金额 HKD（自动）</th><th>成品用量</th><th>备注</th><th /></tr></thead>
             <tbody>
-              <tr v-for="(row,index) in visibleInjectionRows" :key="index">
+              <template v-for="(row,index) in visibleInjectionRows" :key="row.line_id || row.engineering_source_key || index">
+              <tr :data-injection-index="molding.injection_lines.indexOf(row)">
                 <td class="row-number">{{ index + 1 }}</td>
                 <td><textarea v-model="row.item" :disabled="disabled || injectionFieldLocked(row, 'item')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'item') }" rows="2"></textarea></td>
-                <td><select v-model="row.material" :disabled="disabled" aria-label="材料类别" @change="selectMaterial(row)"><option value="">请选择材质</option><option v-if="row.material && !moldingMaterialNames.includes(row.material)" :value="row.material">{{ row.material }}</option><option v-for="material in moldingMaterialNames" :key="material" :value="material">{{ material }}</option></select></td>
-                <td><select :value="selectedMaterialReference(row) ? materialReferenceValue(selectedMaterialReference(row)!) : ''" :disabled="disabled || !row.material" aria-label="具体材料料型" @change="selectMaterialGrade(row, ($event.target as HTMLSelectElement).value)"><option value="">{{ row.material ? '请选择具体料型' : '先选择材质' }}</option><option v-for="item in materialOptions(row)" :key="`${item.material}-${item.grade}`" :value="materialReferenceValue(item)">{{ item.grade }} · HKD {{ fixedDecimal(item.priceHkdLb, 3) }}/lb</option></select></td>
-                <td><input v-model.number="row.net_weight_g" :disabled="disabled || injectionFieldLocked(row, 'net_weight_g')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'net_weight_g') }" type="number" min="0" step="0.001"></td>
+                <td><select data-injection-field="material" v-model="row.material" :disabled="disabled" aria-label="材料类别" @change="selectMaterial(row)"><option value="">请选择材质</option><option v-if="row.material && !moldingMaterialNames.includes(row.material)" :value="row.material">{{ row.material }}</option><option v-for="material in moldingMaterialNames" :key="material" :value="material">{{ material }}</option></select></td>
+                <td><select :value="selectedMaterialReference(row) ? materialReferenceValue(selectedMaterialReference(row)!) : ''" :disabled="disabled || !row.material" data-injection-field="grade" aria-label="具体材料料型" @change="selectMaterialGrade(row, ($event.target as HTMLSelectElement).value)"><option value="">{{ row.material ? '请选择具体料型' : '先选择材质' }}</option><option v-for="item in materialOptions(row)" :key="`${item.material}-${item.grade}`" :value="materialReferenceValue(item)">{{ item.grade }} · HKD {{ fixedDecimal(item.priceHkdLb, 3) }}/lb</option></select><small v-if="!selectedMaterialReference(row)">材质／料型未匹配，待补料价</small></td>
+                <td><input data-injection-field="net_weight_g" v-model.number="row.net_weight_g" :disabled="disabled || injectionFieldLocked(row, 'net_weight_g')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'net_weight_g') }" type="number" min="0" step="0.001"></td>
                 <td class="snapshot-cell">{{ injectionPreviewText(row, 'materialPriceHkdG') }}</td>
                 <td class="snapshot-cell">{{ injectionPreviewText(row, 'materialCostHkd') }}</td>
-                <td class="snapshot-cell">{{ injectionPreviewText(row, 'moldingCostHkd') }}</td>
+                <td v-if="injectionLaborSpan(row,index)" :rowspan="injectionLaborSpan(row,index)" class="snapshot-cell" data-labor-job><span>{{ injectionLaborOwner(row, molding.injection_lines, props.factoryId) ? injectionPreviewText(row, 'moldingCostHkd') : '同模共享' }}</span><small v-if="huadengLaborJob(row, props.factoryId)">{{ row.engineering_labor_mode === 'transfer' ? '转水口 · 独立啤工' : '同模共享一次啤工' }}</small></td>
                 <td><input v-model="row.cavity" :disabled="disabled || injectionFieldLocked(row, 'cavity')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'cavity') }"></td>
-                <td><input v-model.number="row.sets" :disabled="disabled || injectionFieldLocked(row, 'sets')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'sets') }" type="number" min="0" step="1"></td>
-                <td><select :value="selectedMachineReference(row)?.range ?? row.machine_code" :disabled="disabled" aria-label="注塑机型 A码" @change="selectMachine(row, ($event.target as HTMLSelectElement).value)"><option value="">请选择机型</option><option v-if="row.machine_code && !selectedMachineReference(row)" :value="row.machine_code">未匹配：{{ row.machine_code }}</option><option v-for="item in moldingMachineReferences" :key="item.range" :value="item.range">{{ item.range }} · {{ item.machine }} · HKD {{ fixedDecimal(item.shiftPriceHkd, 3) }}/班</option></select></td>
-                <td><input v-model.number="row.target_output" :disabled="disabled || injectionFieldLocked(row, 'target_output')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'target_output') }" type="number" min="0" step="1"></td>
+                <td><input data-injection-field="sets" v-model.number="row.sets" :disabled="disabled || injectionFieldLocked(row, 'sets')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'sets') }" type="number" min="0" step="1"></td>
+                <td><select :value="selectedMachineReference(row)?.range ?? row.machine_code" :disabled="disabled" data-injection-field="machine_code" aria-label="注塑机型 A码" @change="selectMachine(row, ($event.target as HTMLSelectElement).value)"><option value="">请选择机型</option><option v-if="row.machine_code && !selectedMachineReference(row)" :value="row.machine_code">未匹配：{{ row.machine_code }}</option><option v-for="item in moldingMachineReferences" :key="item.range" :value="item.range">{{ item.range }} · {{ item.machine }} · HKD {{ fixedDecimal(item.shiftPriceHkd, 3) }}/班</option></select></td>
+                <td><input data-injection-field="target_output" v-model.number="row.target_output" :disabled="disabled || injectionFieldLocked(row, 'target_output')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'target_output') }" type="number" min="0" step="1"></td>
                 <td class="snapshot-cell amount">{{ injectionPreviewText(row, 'lineAmountHkd') }}</td>
-                <td><input v-model.number="row.quantity" :disabled="disabled" type="number" min="0" step="1"></td>
-                <td><input v-model="row.remark" :disabled="disabled"></td>
+                <td><input v-model.number="row.quantity" :disabled="disabled || injectionFieldLocked(row, 'quantity')" type="number" min="0" step="1"></td>
+                <td><small v-if="row.engineering_remark">源备注：{{ row.engineering_remark }}</small><input v-model="row.remark" :disabled="disabled"></td>
                 <td>
                   <div class="injection-row-actions">
-                    <button type="button" class="icon" :disabled="disabled" :aria-label="`复制第 ${index + 1} 行注塑明细`" title="复制该行并解除两行的工程同步锁" @click="copyInjection(row)"><Copy /></button>
-                    <button type="button" class="icon" :disabled="disabled || Boolean(row.engineering_source_key && !row.engineering_sync_disabled)" :title="row.engineering_source_key && !row.engineering_sync_disabled ? '此行由工程部模具自动生成；请在工程部删除对应模具，或替换导入修正后的模具表' : '删除注塑行'" :aria-label="`删除第 ${index + 1} 行注塑明细`" @click="removeItem(molding.injection_lines,row)"><Trash2 /></button>
+                    <button v-if="row.engineering_source_key && !row.engineering_sync_disabled" type="button" :disabled="disabled" title="将此行改为独立加工行，后续工程修改不再覆盖此行" @click="detachInjection(row)">解除联动</button>
+                    <button type="button" class="icon" :disabled="disabled" :aria-label="`复制第 ${index + 1} 行注塑明细`" title="复制为独立加工行；原行继续跟随工程模具" @click="copyInjection(row)"><Copy /></button>
+                    <button type="button" class="icon" :disabled="disabled || Boolean(row.engineering_source_key && !row.engineering_sync_disabled)" :title="row.engineering_source_key && !row.engineering_sync_disabled ? '此行由工程部模具自动生成；复制后可分别编辑和删除' : '删除注塑行'" :aria-label="`删除第 ${index + 1} 行注塑明细`" @click="removeItem(molding.injection_lines,row)"><Trash2 /></button>
                   </div>
                 </td>
               </tr>
+              <tr v-if="row.engineering_parts?.length || row.engineering_source_missing" class="injection-parts-row">
+                <td colspan="16">
+                  <p v-if="row.engineering_source_missing">工程源模具已移除，已保留本行输入。请核对后删除，或解除联动作为独立加工行。</p>
+                  <div v-if="row.engineering_parts?.length" class="injection-parts-detail">
+                    <strong>{{ row.mold_no || row.item }} · 胶件明细</strong><span>同模胶件联动展示；上方整模重量、料价及啤工只计一次，子件不重复计价。</span>
+                    <table><thead><tr><th>胶件名称</th><th>颜色</th><th>单件净重 g</th><th>出模数</th><th>成品用量</th></tr></thead><tbody><tr v-for="(part,partIndex) in row.engineering_parts" :key="part.part_id || partIndex"><td>{{ part.name }}</td><td>{{ part.color || '待填' }}</td><td>{{ part.unit_net_weight_g > 0 ? part.unit_net_weight_g : '待填' }}</td><td>{{ part.output_count }}</td><td>{{ part.quantity }}</td></tr></tbody></table>
+                  </div>
+                </td>
+              </tr>
+              </template>
               <tr v-if="!visibleInjectionRows.length"><td colspan="16" class="empty">当前配件暂无注塑明细，可手工新增或通过“上传附件”自动识别啤机报价单</td></tr>
             </tbody>
           </table>
@@ -1023,7 +1125,7 @@ function addBuzzBeeColorBoxTier() {
                 <td class="row-number">{{ index + 1 }}</td>
                 <td><input v-model="row.item" :disabled="disabled"></td>
                 <td><input v-model="row.daily_capacity" :disabled="disabled"></td>
-                <td><input v-model="row.material" :disabled="disabled" placeholder="例如 ABS" aria-label="吹气用料" @input="row.grade = ''"></td>
+                <td><input v-model="row.material" :disabled="disabled" placeholder="例如 ABS" aria-label="吹气用料" @input="row.grade = ''; selectMaterial(row)"></td>
                 <td><select :value="selectedMaterialReference(row) ? materialReferenceValue(selectedMaterialReference(row)!) : ''" :disabled="disabled || !row.material" aria-label="吹气具体材料料型" @change="selectMaterialGrade(row, ($event.target as HTMLSelectElement).value)"><option value="">{{ row.material ? '请选择具体料型' : '先填写用料' }}</option><option v-for="item in materialOptions(row)" :key="`${item.material}-${item.grade}`" :value="materialReferenceValue(item)">{{ item.grade }} · HKD {{ fixedDecimal(item.priceHkdLb, 3) }}/lb</option></select></td>
                 <td><input v-model.number="row.estimated_weight_g" :disabled="disabled" type="number" min="0" step="0.001"></td>
                 <td class="snapshot-cell">{{ blowPreviewText(row, 'materialPriceHkdLb') }}</td>
@@ -1068,7 +1170,12 @@ function addBuzzBeeColorBoxTier() {
             <tbody>
               <tr v-for="(row,index) in visiblePaintingRows" :key="index">
                 <td class="row-number">{{ index + 1 }}</td>
-                <td><input v-model="row.image_reference" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行图片引用`" placeholder="附件名称 / 图片引用"></td>
+                <td class="painting-image-cell">
+                  <div class="painting-row-images"><div v-for="attachment in paintingImageAttachments(row)" :key="attachment.id"><button type="button" :aria-label="`预览喷油图片 ${attachment.fileName}`" @click="emit('preview-attachment', attachment)"><img :src="attachmentPreviewUrl(attachment.id)" :alt="attachment.fileName"></button><button type="button" :disabled="disabled" :aria-label="`移除喷油图片 ${attachment.fileName}`" @click="removePaintingImage(row, attachment.id)">移除</button></div></div>
+                  <label class="painting-image-upload">添加图片<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行添加图片`" @change="uploadPaintingImage(row, $event)"></label>
+                  <select v-if="attachments?.some((item) => item.contentType.startsWith('image/'))" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行选择已有图片`" value="" @change="selectPaintingImage(row, $event)"><option value="">选择已有图片</option><option v-for="attachment in attachments?.filter((item) => item.contentType.startsWith('image/'))" :key="attachment.id" :value="attachment.id">{{ attachment.fileName }}</option></select>
+                  <input v-model="row.image_reference" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行图片引用`" placeholder="图片说明 / 原附件引用">
+                </td>
                 <td><input v-model="row.name" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行名称`"></td>
                 <td><input v-model="row.position" :disabled="disabled" :aria-label="`喷油第 ${index + 1} 行位置`"></td>
                 <template v-for="code in operationCodes" :key="code"><td><input v-model.number="row.operations[code].quantity" :disabled="disabled" type="number" min="0" step="1" :aria-label="`${paintingOperationLabels[code]}数量`"></td><td><input v-model.number="row.operations[code].unit_price_hkd" :disabled="disabled" type="number" min="0" step="0.001" :aria-label="`${paintingOperationLabels[code]}单价 HKD`"></td></template>
@@ -1544,6 +1651,7 @@ function addBuzzBeeColorBoxTier() {
 </template>
 
 <style scoped>
+.injection-parts-detail{display:grid;gap:8px;padding:10px;background:#f0fdfa}.injection-parts-detail>span{color:#475569;font-size:12px}.injection-parts-detail table{min-width:620px;width:100%}.injection-parts-detail table td{background:#fff}.molding-validation{display:grid;gap:6px;padding:10px;background:#fffbeb;color:#92400e}.molding-validation button{text-align:left;border:1px solid #fcd34d;border-radius:6px;padding:6px;background:#fff;color:#92400e}.painting-image-cell{min-width:170px}.painting-row-images{display:flex;flex-wrap:wrap;gap:6px}.painting-row-images>div{display:grid;gap:3px}.painting-row-images img{height:52px;width:64px;object-fit:contain}.painting-row-images button{border:1px solid #99f6e4;border-radius:5px;background:#fff;color:#0f766e}.painting-image-upload{display:block;margin:6px 0;color:#0f766e;font-size:12px}.painting-image-upload input{display:block;max-width:190px;height:auto!important;font-size:11px}
 .justplay-carton-note{margin:10px;color:#0f766e;font-size:12px}.carton-card input[readonly]{background:#f0fdfa;color:#0f766e}
 .justplay-packaging-items{display:grid;gap:12px;padding:12px}.justplay-packaging-items article{border:1px solid #dbe5ea;border-radius:9px;background:#f8fafc;padding:12px}.justplay-packaging-items article>strong{color:#334155;font-size:13px}.justplay-packaging-items .inline-fields{padding:10px 0 0}.justplay-packaging-warning{margin:0 12px 12px;color:#b45309;font-size:12px}
 .section-payload-form{display:grid;gap:12px;padding:12px;background:#f8fafc}.payload-standard-notice{display:flex;align-items:center;gap:10px;border:1px solid #99f6e4;border-radius:10px;background:#f0fdfa;padding:10px 12px}.payload-standard-notice strong{flex:0 0 auto;color:#0f766e;font-size:13px}.payload-standard-notice span{color:#475569;font-size:12px}.quote-pricing-assignment{border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;padding:11px 12px}.quote-pricing-assignment>summary{cursor:pointer;color:#0c4a6e}.quote-pricing-assignment>summary:focus-visible{outline:2px solid #14b8a6;outline-offset:4px;border-radius:3px}.quote-pricing-assignment>summary strong{font-size:13px}.quote-pricing-assignment>summary span{margin-left:10px;color:#475569;font-size:11px}.quote-pricing-assignment>p{margin:9px 0;color:#475569;font-size:11px;line-height:1.45}.quote-pricing-assignment-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:7px}.quote-pricing-assignment-grid article{display:grid;grid-template-columns:minmax(0,1fr) 118px;align-items:center;gap:8px;border:1px solid #dbeafe;border-radius:8px;background:#fff;padding:8px}.quote-pricing-assignment-grid article>strong{overflow:hidden;color:#334155;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.payload-block{overflow:hidden;border:1px solid #dbe5ea;border-radius:11px;background:#fff}.payload-block>header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e2e8f0;padding:11px 12px;background:#f8fafc}.payload-block>header>div{display:grid}.payload-block header strong{color:#334155;font-size:13px}.payload-block header span{margin-top:2px;color:#64748b;font-size:11px}.payload-block button,.subhead button{display:inline-flex;min-height:32px;align-items:center;gap:5px;border:1px solid #99f6e4;border-radius:8px;background:#f0fdfa;padding:0 10px;color:#0f766e;font-size:12px;font-weight:800}.payload-block button svg,.subhead button svg{width:14px;height:14px}.payload-block button:disabled{cursor:not-allowed;opacity:.4}.payload-table-scroll{overflow:auto}.payload-table-scroll table{width:100%;min-width:620px;border-collapse:collapse}.payload-table-scroll table.wide{min-width:1050px}.payload-table-scroll table.extraWide{min-width:1850px}.payload-table-scroll table.caixingToolPlan{min-width:2700px}.payload-table-scroll table.painting{min-width:2850px}.payload-table-scroll th{background:#eef2f6;padding:8px;color:#64748b;font-size:11px;text-align:left;white-space:nowrap}.payload-table-scroll td{border-top:1px solid #eef2f6;padding:6px}.payload-table-scroll input,.payload-table-scroll select,.payload-table-scroll textarea,.inline-fields input,.inline-fields select{width:100%;min-width:70px;border:1px solid #dbe5ea;border-radius:7px;background:#fff;padding:0 8px;color:#334155;font-size:13px}.payload-table-scroll input,.payload-table-scroll select,.inline-fields input,.inline-fields select{height:34px}.payload-table-scroll textarea{min-height:52px;padding-block:7px;resize:vertical}.payload-table-scroll input:focus,.payload-table-scroll select:focus,.payload-table-scroll textarea:focus,.inline-fields input:focus,.inline-fields select:focus{border-color:#14b8a6;outline:2px solid rgb(20 184 166/.12)}.payload-table-scroll input:disabled,.payload-table-scroll select:disabled,.payload-table-scroll textarea:disabled,.inline-fields input:disabled,.inline-fields select:disabled{background:#f8fafc;color:#64748b}.payload-table-scroll .icon,.nested-head .icon{display:grid;width:30px;min-height:30px;place-items:center;border-color:transparent;background:transparent;padding:0;color:#94a3b8}.payload-table-scroll .icon:hover:not(:disabled),.nested-head .icon:hover:not(:disabled){background:#fef2f2;color:#dc2626}.empty{padding:22px!important;color:#94a3b8;text-align:center;font-size:12px}.inline-fields{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:10px;padding:12px}.inline-fields.four{grid-template-columns:repeat(4,minmax(130px,1fr))}.inline-fields.five{grid-template-columns:repeat(5,minmax(110px,1fr));padding:0}.inline-fields label{display:grid;gap:5px}.inline-fields label span{color:#64748b;font-size:11px;font-weight:700}.nested-card{margin:10px;border:1px solid #e2e8f0;border-radius:9px;background:#fff}.nested-head,.subhead{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px}.nested-head{border-bottom:1px solid #eef2f6;background:#f8fafc}.nested-head strong{color:#475569;font-size:12px}.subhead{border-top:1px solid #eef2f6}.subhead span{color:#475569;font-size:11px;font-weight:800}.subhead button{min-height:28px;border-color:#dbe5ea;background:#fff;color:#475569;font-size:11px}.disabled{--form-disabled:1}

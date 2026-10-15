@@ -9,6 +9,7 @@ const ACTION_LABELS: Record<string, string> = {
   edit_draft: '编辑草稿',
   delete_draft: '删除草稿',
   supervisor_review: '主管审核',
+  allocation_confirm: '确认裁床完工耗用归属',
   manager_review: '经理终审',
   dispatch: '分派生产任务',
   raw_material_write: '维护原料资料',

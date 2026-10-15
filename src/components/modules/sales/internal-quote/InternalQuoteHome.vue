@@ -29,6 +29,8 @@ import InternalQuoteBaselineDialog from './InternalQuoteBaselineDialog.vue'
 import InternalQuoteComparisonDialog from './InternalQuoteComparisonDialog.vue'
 import InternalQuoteCustomerDialog from './InternalQuoteCustomerDialog.vue'
 import InternalQuoteStatusDonut from './InternalQuoteStatusDonut.vue'
+import InternalQuoteReadiness from './InternalQuoteReadiness.vue'
+import InternalQuotePendingOutput from './InternalQuotePendingOutput.vue'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -143,6 +145,8 @@ const dashboard = computed(() => quoteStore.dashboard ?? {
   customer_quote_counts: [],
   progress_items: [],
   customer_speed: [],
+  first_output_missing_time_count: 0,
+  pending_first_output: { count: 0, over_three_days: 0, oldest_hours: null, items: [] },
 })
 
 const statusColors = { in_progress: '#2563eb', completed: '#14b8a6', canceled: '#f87171' } as const
@@ -152,7 +156,7 @@ const statusRows = computed(() => dashboard.value.status_distribution.map((item)
 })))
 const customerCountMax = computed(() => Math.max(1, ...dashboard.value.customer_quote_counts.map((item) => item.count)))
 const speedRange = computed(() => {
-  const values = dashboard.value.customer_speed.map((item) => item.average_hours)
+  const values = dashboard.value.customer_speed.map((item) => item.median_hours)
   return { min: values.length ? Math.min(...values) : 0, max: values.length ? Math.max(...values) : 0 }
 })
 const dashboardRange = computed(() => {
@@ -185,7 +189,7 @@ const statusMeta: Record<InternalQuoteStatus, { label: string; tone: string }> =
   archived: { label: '已归档', tone: 'slate' },
 }
 function quoteStatusLabel(quote: InternalQuote) {
-  if (quote.moduleVersion === 'v4') return quote.status === 'exported' ? '已输出并冻结' : quote.status === 'archived' ? '已归档' : '填写中 / 可直接输出'
+  if (quote.moduleVersion === 'v4') return quote.status === 'exported' ? '已输出并冻结' : quote.status === 'archived' ? '已归档' : quote.readiness?.state === 'ready' ? '可输出' : quote.readiness?.state === 'incomplete' ? '待补齐 / 待重算' : '填写中'
   if (quote.moduleVersion !== 'v3') return statusMeta[quote.status].label
   return {
     drafting: '整单填写中',
@@ -214,9 +218,9 @@ const pageEnd = computed(() => Math.min(
 
 const kpis = computed(() => [
   { label: '总报价数', value: dashboard.value.totals.total, detail: `${dashboard.value.period_label}创建`, icon: ClipboardList, tone: 'blue' },
-  { label: '进行中报价数', value: dashboard.value.totals.in_progress, detail: '含草稿、审核与退回补充', icon: Clock3, tone: 'amber' },
-  { label: '已完成报价数', value: dashboard.value.totals.completed, detail: '最终放行或已导出', icon: CheckCircle2, tone: 'teal' },
-  { label: '已取消报价数', value: dashboard.value.totals.canceled, detail: '已归档的取消报价', icon: XCircle, tone: 'red' },
+  { label: '进行中报价数', value: dashboard.value.totals.in_progress, detail: '填写、补齐或核价中（含历史流程）', icon: Clock3, tone: 'amber' },
+  { label: '已完成报价数', value: dashboard.value.totals.completed, detail: '已输出或历史流程已完成', icon: CheckCircle2, tone: 'teal' },
+  { label: '已取消报价数', value: dashboard.value.totals.canceled, detail: '已归档报价（不代表全部取消）', icon: XCircle, tone: 'red' },
 ])
 
 function openCreate() {
@@ -363,9 +367,6 @@ function closeQuoteComparison() {
   comparisonDialogOpen.value = false
 }
 
-function approvedCount(quote: InternalQuote) {
-  return quote.sections.filter((section) => section.isRequired && ['approved', 'not_applicable'].includes(section.status)).length
-}
 
 async function openPricingBaseline() {
   const requestedFactoryId = activeFactoryId.value
@@ -594,9 +595,6 @@ async function deleteCustomer(customer: ApiInternalQuoteCustomer) {
   if (removed && customerFilter.value === customer.name) customerFilter.value = 'all'
 }
 
-function requiredCount(quote: InternalQuote) {
-  return quote.sections.filter((section) => section.isRequired).length
-}
 
 function clearFilters() {
   query.value = ''
@@ -756,20 +754,22 @@ onBeforeUnmount(() => {
 
       <article class="quote-chart-card quote-speed-chart">
         <header>
-          <div><TimerReset aria-hidden="true" /><span><strong>客户报价速度对比</strong><small>建单至最终放行的平均时长</small></span></div>
+          <div><TimerReset aria-hidden="true" /><span><strong>客户首次出价用时</strong><small>首次建单至首次正式输出 · 用时中位数</small></span></div>
           <em>越靠左越快</em>
         </header>
         <div v-if="dashboard.customer_speed.length" class="quote-speed-plot">
           <div class="quote-speed-scale"><span>快</span><i /><span>慢</span></div>
           <div v-for="item in dashboard.customer_speed" :key="item.customer" class="quote-speed-row">
-            <div class="quote-speed-meta"><strong :title="item.customer">{{ item.customer }}</strong><span>{{ durationLabel(item.average_hours) }} · {{ item.completed_count }} 份样本</span></div>
-            <div class="quote-speed-track"><i :style="{ left: speedDotPosition(item.average_hours) }"><span>{{ durationLabel(item.average_hours) }}</span></i></div>
+            <div class="quote-speed-meta"><strong :title="item.customer">{{ item.customer }}</strong><span>中位数 {{ durationLabel(item.median_hours) }} · {{ item.completed_count }} 个产品样本</span><span>平均 {{ durationLabel(item.average_hours) }}</span></div>
+            <div class="quote-speed-track"><i :style="{ left: speedDotPosition(item.median_hours) }"><span>{{ durationLabel(item.median_hours) }}</span></i></div>
           </div>
         </div>
-        <div v-else class="quote-chart-empty">{{ dashboard.period_label }}暂无已完成报价，暂不能比较速度</div>
-        <p class="quote-speed-note">采用横向点图，避免把“耗时更长”误读成表现更好；样本数同时展示。</p>
+        <div v-else class="quote-chart-empty">{{ dashboard.period_label }}暂无可统计的首次正式输出</div>
+        <p class="quote-speed-note">按{{ dashboard.period_label }}首次输出的产品统计；同一产品的包装方案、修订和重复下载不重复计数。自然时长，非实际工时。</p>
+        <p v-if="dashboard.first_output_missing_time_count" class="quote-speed-note">历史输出时间缺失或无效：{{ dashboard.first_output_missing_time_count }} 个产品，未计入用时统计。</p>
       </article>
 
+      <InternalQuotePendingOutput :pending="dashboard.pending_first_output" @open="router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${$event}/collaboration`))" />
     </section>
 
     <section class="quote-list-panel">
@@ -810,7 +810,7 @@ onBeforeUnmount(() => {
 
       <div class="quote-table-scroll">
         <table class="quote-table">
-          <thead><tr><th class="quote-select-column"><span class="sr-only">选择对比</span></th><th>报价号</th><th>产品 / 客户</th><th>发起</th><th>版本</th><th>状态</th><th>部门完成进度</th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
+          <thead><tr><th class="quote-select-column"><span class="sr-only">选择对比</span></th><th>报价号</th><th>产品 / 客户</th><th>发起</th><th>版本</th><th>状态</th><th>核价就绪情况<small>当前列示产品版本</small></th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
           <tbody>
             <template v-if="!quoteStore.listLoading">
             <tr v-for="quote in quoteStore.quotes" :key="quote.id" :class="{ 'comparison-selected': isQuoteSelectedForComparison(quote) }" @dblclick="openQuote(quote)">
@@ -821,7 +821,7 @@ onBeforeUnmount(() => {
               <td><span class="quote-version">{{ quote.versionLabel }}</span><span v-if="(quote.documentVersionCount ?? 1) > 1">{{ quote.documentProductCount }} 款 · {{ quote.documentVersionCount }} 个方案版本</span></td>
               <td><span class="quote-status" :class="`tone-${statusMeta[quote.status].tone}`"><i />{{ quoteStatusLabel(quote) }}</span></td>
               <td>
-                <div class="quote-progress-cell"><div><span :style="{ width: `${requiredCount(quote) ? approvedCount(quote) / requiredCount(quote) * 100 : 0}%` }" /></div><strong>{{ approvedCount(quote) }}/{{ requiredCount(quote) }}</strong></div>
+                <InternalQuoteReadiness :readiness="quote.readiness" />
               </td>
               <td><span class="quote-date">{{ quote.updatedAt }}</span></td>
               <td>

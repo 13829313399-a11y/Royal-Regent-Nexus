@@ -5,8 +5,7 @@ export function isCuttingFactory(factory: unknown): factory is typeof CUTTING_FA
   return factory === CUTTING_FACTORY
 }
 
-// Master data uses its own P1b page and canonical backend permissions.
-// Remaining workspaces still contain navigation and business explanations only.
+// Each implemented workspace uses the canonical backend permission boundary.
 export const CUTTING_WORKSPACES = [
   {
     path: 'planning', short: '排期', title: '生产排期', icon: 'CalendarRange',
@@ -40,8 +39,8 @@ export const CUTTING_WORKSPACES = [
     description: '同时核对内部生产、库存和材料费用，以及外发裁剪加工费。',
     tabs: ['内部月结', '外发对账', '结算与应付', '付款核销'],
     columns: ['结算月份', '核对范围', '加工厂 / 执行方', '生产核对', '库存核对', '材料费用', '加工费', '币种', '应付 / 未付', '状态'],
-    empty: '月结与结算尚未开放',
-    next: '生产、收发耗料与外发验收链完成，并确认计价及复核规则后，开放月结。',
+    empty: '暂无月度核对记录',
+    next: 'P4a 按自然月读取最新有效事实，未锁月补录及更正按业务日期重算；正式月结与结算继续分批实施。',
     rules: ['内部月结与外发结算分别保存状态，支持跨月订单。', '外发仅含裁剪；加工费与我方材料费用分别归集。', '验收、结算、付款是不同事实；锁月后调整需保留依据。'],
   },
   {

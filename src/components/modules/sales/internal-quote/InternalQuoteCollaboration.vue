@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import BusinessShareButton from '@/features/collaboration/BusinessShareButton.vue'
-import { AlertTriangle, ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleDollarSign, CircleUserRound, FileImage, FileText, Layers3, LockKeyhole, Maximize2, Pencil, RefreshCw, Save, Send, ShieldCheck, UserPlus, XCircle } from '@lucide/vue'
+import { AlertTriangle, ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleUserRound, FileImage, FileText, Layers3, LockKeyhole, Maximize2, Pencil, RefreshCw, Save, Send, ShieldCheck, UserPlus, XCircle } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import InternalQuoteAlternatives from './InternalQuoteAlternatives.vue'
 import InternalQuoteActivityPanel from './InternalQuoteActivityPanel.vue'
 import InternalQuoteComponentScopePicker from './InternalQuoteComponentScopePicker.vue'
@@ -10,6 +10,7 @@ import InternalQuoteComponentImage from './InternalQuoteComponentImage.vue'
 import InternalQuoteDepartmentFilesPanel from './InternalQuoteDepartmentFilesPanel.vue'
 import InternalQuoteHeaderDialog from './InternalQuoteHeaderDialog.vue'
 import InternalQuoteMaterialsDialog from './InternalQuoteMaterialsDialog.vue'
+import InternalQuoteLeaveDialog from './InternalQuoteLeaveDialog.vue'
 import InternalQuoteProductActions from './InternalQuoteProductActions.vue'
 import InternalQuotePackagingCopy from './InternalQuotePackagingCopy.vue'
 import InternalQuoteProductImageUpload from './InternalQuoteProductImageUpload.vue'
@@ -26,7 +27,7 @@ import { internalQuoteApi, internalQuoteAttachmentPreviewUrl, type InternalQuote
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
-import type { InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
+import type { InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
 
 const route = useRoute()
 const router = useRouter()
@@ -48,6 +49,11 @@ const initialParticipation = ref<InternalQuoteSectionCode[]>([])
 const participationRemovalConfirmOpen = ref(false)
 const activeContinuousSectionCode = ref<InternalQuoteSectionCode>('sales')
 const sectionEditors = ref<Partial<Record<InternalQuoteSectionCode, InstanceType<typeof InternalQuoteSectionEditor> | null>>>({})
+const pricingPanel = ref<InstanceType<typeof InternalQuoteActivityPanel> | null>(null)
+const engineeringDraft = ref<{ quoteId: string; payload: Record<string, unknown> }>()
+const currentEngineeringPayload = computed(() => engineeringDraft.value?.quoteId === quote.value.id
+  ? engineeringDraft.value.payload
+  : quote.value.sections.find((section) => section.code === 'engineering')?.payload)
 const sectionNodes = ref<Partial<Record<InternalQuoteSectionCode, HTMLElement>>>({})
 const sectionBlockProgress = ref<Partial<Record<InternalQuoteSectionCode, InternalQuoteFormBlock[]>>>({})
 const wholeRejectOpen = ref(false)
@@ -272,6 +278,15 @@ function updateSectionBlockProgress(code: InternalQuoteSectionCode, blocks: Inte
     && block.criteria === blocks[index]?.criteria
   ))) return
   sectionBlockProgress.value = { ...sectionBlockProgress.value, [code]: blocks }
+}
+
+function updateDepartmentDraft(code: InternalQuoteSectionCode, payload: Record<string, unknown>) {
+  if (code === 'engineering') engineeringDraft.value = { quoteId: quote.value.id, payload }
+}
+async function updateSidebarPricingPreview(pricing?: InternalQuoteSidebarPricingDraft) {
+  const requestedQuoteId = quote.value.id
+  await nextTick()
+  if (quote.value.id === requestedQuoteId) sectionEditors.value.sales?.setSidebarPricingDraft?.(pricing)
 }
 
 function setSectionNode(code: InternalQuoteSectionCode, node: unknown) {
@@ -543,6 +558,10 @@ async function updateQuoteMarkup(payload: { markupTiers: Array<{ moq: string; ma
         ? 'JustPlay 配件与业务部包装倍率及杂项系数已保存为业务部新 revision。'
         : `MOQ ${selectedMoq.toLocaleString('zh-CN')} 档已设为本单采用；分段码数与杂项系数已保存为业务部新 revision。`
     }
+    pricingPanel.value?.acceptSavedPricing?.({
+      markupTiers: markupTiers.map((tier) => ({ ...tier, include_in_output: tier.include_in_output !== false })),
+      selectedMoq, activeMarkup, miscRatio, ...(componentMarkups.length ? { componentMarkups } : {}),
+    })
     message.value = markupMessage.value
   } catch (error) {
     markupError.value = error instanceof Error ? error.message : '保存分段码数与杂项失败。'
@@ -712,8 +731,36 @@ async function saveReferenceMaterials(
 }
 
 function hasUnsavedDepartmentChanges() {
-  return Object.values(sectionEditors.value).some((editor) => editor?.hasUnsavedChanges())
+  return Boolean(pricingPanel.value?.hasUnsavedChanges?.()) || Object.values(sectionEditors.value).some((editor) => editor?.hasUnsavedChanges())
 }
+const leavePricingOpen = ref(false)
+let pendingPricingNavigation: Promise<boolean> | undefined
+let resolvePricingNavigation: ((leave: boolean) => void) | undefined
+function answerPricingNavigation(leave: boolean) {
+  const resolve = resolvePricingNavigation
+  resolvePricingNavigation = undefined
+  pendingPricingNavigation = undefined
+  leavePricingOpen.value = false
+  resolve?.(leave)
+}
+function guardSidebarChanges() {
+  if (!pricingPanel.value?.hasUnsavedChanges?.()) return true
+  if (!pendingPricingNavigation) {
+    leavePricingOpen.value = true
+    pendingPricingNavigation = new Promise<boolean>((resolve) => { resolvePricingNavigation = resolve })
+  }
+  return pendingPricingNavigation
+}
+onBeforeUnmount(() => answerPricingNavigation(false))
+onBeforeRouteLeave(guardSidebarChanges)
+onBeforeRouteUpdate((to) => String(to.params.quoteId ?? '') === quoteId.value || guardSidebarChanges())
+function guardSidebarUnload(event: BeforeUnloadEvent) {
+  if (!pricingPanel.value?.hasUnsavedChanges?.()) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+onMounted(() => window.addEventListener('beforeunload', guardSidebarUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', guardSidebarUnload))
 
 async function saveWholeProductDraft() {
   message.value = ''
@@ -725,11 +772,24 @@ async function saveWholeProductDraft() {
     return
   }
   let drafts: ReturnType<InstanceType<typeof InternalQuoteSectionEditor>['getWholeQuoteDraft']>[]
+  let pricingDraft: InternalQuoteSidebarPricingDraft | undefined
   try {
+    pricingDraft = pricingPanel.value?.getPricingDraft?.()
+    if (pricingDraft && !savableSections.some((section) => section.code === 'sales')) {
+      throw new Error('业务部分段当前不可保存，请先保存或恢复侧栏报价设置。')
+    }
     drafts = savableSections.map((section) => {
       const editor = sectionEditors.value[section.code]
       if (!editor) throw new Error(`${section.label}编辑器尚未就绪。`)
-      return editor.getWholeQuoteDraft()
+      const draft = editor.getWholeQuoteDraft(section.code === 'sales' ? pricingDraft : undefined)
+      if (section.code === 'sales' && pricingDraft) {
+        const baseline = pricingPanel.value?.getPricingBaseline?.()
+        if (baseline?.revision) {
+          draft.revision = baseline.revision
+          draft.baselinePayload = cloneInternalQuotePayload('sales', baseline.payload)
+        }
+      }
+      return draft
     })
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '无法读取当前页面草稿，请重新打开报价后再试。'
@@ -742,8 +802,9 @@ async function saveWholeProductDraft() {
     if (quote.value.id !== savedQuoteId) return
     for (const draft of drafts) {
       const saved = result.sections.find((section) => section.department === draft.sectionCode)
-      if (saved) sectionEditors.value[draft.sectionCode]?.acceptSavedPayload(saved.payload, draft.payload, saved.revision)
+      if (saved) sectionEditors.value[draft.sectionCode]?.acceptSavedPayload(saved.payload, draft.payload, saved.revision, draft.localPayload)
     }
+    if (pricingDraft) pricingPanel.value?.acceptSavedPricing?.(pricingDraft)
     message.value = `“${quote.value.productName}”当前全部现有内容已保存：${savableSections.map((section) => section.label).join('、')}。`
   } catch (error) {
     errorMessage.value = `${error instanceof Error ? error.message : '统一保存当前款失败'} 页面输入已保留，请按提示处理后再试。`
@@ -954,7 +1015,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ collaborationStatusLabel }}</span><b v-if="isMultiProduct">第 {{ currentBatchProduct?.position ?? quote.batchPosition }}/{{ batchProducts.length }} 款</b><em v-if="baselineDifferenceLabel" class="quote-baseline-comparison" :class="{ same: !currentBatchProduct?.differsFromBaseline }">{{ baselineDifferenceLabel }}</em></div><p>{{ quote.batchQuoteNo || quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />{{ isDirectOutput ? '业务负责人' : isContinuousQuote ? '整批审核人' : '全部分段审核' }} · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
       </div>
-      <div class="quote-head-progress"><div><span>{{ isContinuousQuote ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditMaterials" type="button" @click="openMaterialsDialog"><CircleDollarSign />本报价专用料价</button><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isContinuousQuote || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
+      <div class="quote-head-progress"><div><span>{{ isContinuousQuote ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isContinuousQuote || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
     <details v-if="quote.historySources?.length" class="quote-history-evidence">
@@ -1011,7 +1072,7 @@ onBeforeUnmount(() => {
         <InternalQuoteComponentScopePicker v-if="isComponentPricing" v-model="activePricingComponentId" :product-name="quote.productName" :components="pricingComponents" />
         <InternalQuoteComponentImage v-if="isComponentPricing && activePricingComponentId" :key="`${quote.id}:${activePricingComponentId}`" :quote-id="quote.id" :component-id="activePricingComponentId" :component-name="pricingComponents.find(c => c.id === activePricingComponentId)?.name ?? '分项'" :revision="quote.headerRevision" :editable="canManageParticipation && ['drafting', 'rejected'].includes(quote.status)" @changed="quoteStore.loadQuote(quote.id)" />
         <article v-for="section in participatingSections" :id="`quote-section-${section.code}`" :key="section.code" :ref="(node) => setSectionNode(section.code, node)" class="quote-continuous-section" :data-section-code="section.code">
-          <InternalQuoteSectionEditor :key="`${quote.id}:${section.code}:${editorResetKey}`" :ref="(instance) => setSectionEditorRef(section.code, instance)" :quote="quote" :section="section" :archived="currentAlternativeArchived" :can-edit="canEditSection(section.code)" :can-review="false" :can-remove="canRemoveSection(section.code)" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :differs-from-baseline="baselineDifferentSections.includes(section.code)" :difference-details="currentBatchProduct?.differentSectionDetails[section.code] ?? []" whole-quote-review @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
+          <InternalQuoteSectionEditor :key="`${quote.id}:${section.code}:${editorResetKey}`" :archived="currentAlternativeArchived" :ref="(instance) => setSectionEditorRef(section.code, instance)" :quote="quote" :section="section" :can-edit="canEditSection(section.code)" :can-review="false" :can-remove="canRemoveSection(section.code)" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :engineering-payload="currentEngineeringPayload" :can-edit-material-prices="canEditMaterials" :differs-from-baseline="baselineDifferentSections.includes(section.code)" :difference-details="currentBatchProduct?.differentSectionDetails[section.code] ?? []" whole-quote-review @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @draft-change="updateDepartmentDraft" @request-material-prices="openMaterialsDialog" @preview-file="openDepartmentFile" />
         </article>
         <footer id="quote-page-actions" class="quote-whole-product-actions" aria-label="整单操作">
           <div class="quote-action-feedback" aria-live="polite">
@@ -1039,9 +1100,9 @@ onBeforeUnmount(() => {
           <section v-if="wholeWithdrawOpen && canWithdrawWhole" class="quote-whole-reject-panel quote-whole-product-reject" aria-label="建单人退回修改"><div><strong>审核前退回修改</strong><span>确认后撤回整批报价的待审核状态，保留已填内容并解锁。修改完成后需重新提交审核，原因将记录在操作历史中。</span></div><textarea v-model="wholeWithdrawReason" rows="2" maxlength="2000" aria-label="退回修改原因" placeholder="请填写退回修改原因" /><button type="button" :disabled="quoteStore.submitting" @click="toggleWholeWithdraw">取消</button><button type="button" class="primary" :disabled="!wholeWithdrawReason.trim() || quoteStore.submitting" @click="withdrawWholeReview">确认退回修改</button></section>
         </footer>
       </div>
-      <InternalQuoteSectionEditor v-else :key="`${quote.id}:${activeSection.code}:${editorResetKey}`" :ref="(instance) => setSectionEditorRef(activeSection.code, instance)" :quote="quote" :section="activeSection" :archived="currentAlternativeArchived" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :differs-from-baseline="baselineDifferentSections.includes(activeSection.code)" :difference-details="currentBatchProduct?.differentSectionDetails[activeSection.code] ?? []" @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @preview-file="openDepartmentFile" />
-      <aside class="quote-edge-panel quote-edge-panel-right" :class="{ open: rightPanelPinned, resizing: rightPanelResizing }" :style="{ width: `${rightPanelWidth}px` }" aria-label="鼠标移入展开报价与资料侧栏" @mouseenter="rightPanelPinned = true" @mouseleave="rightPanelPinned = false" @focusin="rightPanelPinned = true" @focusout="!($event.currentTarget as HTMLElement).contains($event.relatedTarget as Node | null) && (rightPanelPinned = false)">
-        <button type="button" class="quote-edge-handle" aria-label="展开报价与资料侧栏" :aria-expanded="rightPanelPinned || rightPanelResizing" title="移入或点击展开，鼠标移出后自动收起" @click="rightPanelPinned = true"><ChevronRight /><span>报价与资料</span></button>
+      <InternalQuoteSectionEditor v-else :key="`${quote.id}:${activeSection.code}:${editorResetKey}`" :archived="currentAlternativeArchived" :ref="(instance) => setSectionEditorRef(activeSection.code, instance)" :quote="quote" :section="activeSection" :can-edit="canEditActive" :can-review="canReviewActive" :can-remove="canRemoveActive" :active-pricing-component-id="activePricingComponentId" :main-markup-preview="previewMainMarkup" :engineering-payload="currentEngineeringPayload" :can-edit-material-prices="canEditMaterials" :differs-from-baseline="baselineDifferentSections.includes(activeSection.code)" :difference-details="currentBatchProduct?.differentSectionDetails[activeSection.code] ?? []" @remove="removeParticipation" @block-progress="updateSectionBlockProgress" @draft-change="updateDepartmentDraft" @request-material-prices="openMaterialsDialog" @preview-file="openDepartmentFile" />
+      <aside class="quote-edge-panel quote-edge-panel-right" :class="{ open: rightPanelPinned, resizing: rightPanelResizing }" :style="{ width: `${rightPanelWidth}px` }" aria-label="鼠标移入展开报价与资料侧栏">
+        <button type="button" class="quote-edge-handle" :aria-label="rightPanelPinned ? '收起报价与资料侧栏' : '展开报价与资料侧栏'" title="移入可临时展开；点击可固定或收起" @click="rightPanelPinned = !rightPanelPinned"><ChevronRight /><span>报价与资料</span></button>
         <button type="button" class="quote-edge-resizer" aria-label="拖动调整侧栏宽度" title="左右拖动调整侧栏宽度" @pointerdown="startRightPanelResize" />
         <div class="quote-edge-panel-body">
           <nav class="quote-side-mode-tabs" aria-label="报价侧栏功能">
@@ -1050,8 +1111,8 @@ onBeforeUnmount(() => {
             <button v-if="rightPanelPinned" type="button" class="collapse" aria-label="收起报价与资料侧栏" @click="rightPanelPinned = false"><XCircle /></button>
           </nav>
           <div class="quote-side-mode-content" :class="{ 'quote-side-files-content': rightPanelTab === 'files' }">
-            <InternalQuoteActivityPanel v-if="rightPanelTab === 'quote'" :quote="quote" read-only :can-edit-fx="canEditFx" :can-edit-markup="canEditMarkup" :markup-blocked-reason="markupBlockedReason" :markup-message="markupMessage" :markup-error="markupError" :busy="quoteStore.submitting" @preview-markup="previewMainMarkup = $event" @update-fx="updateReferenceFx" @update-markup="updateQuoteMarkup" />
-            <InternalQuoteDepartmentFilesPanel v-else :quote-id="quote.id" :section-label="activeSection.label" :attachments="activeSection.attachments" :requested-attachment-id="requestedFileAttachmentId" @select="requestedFileAttachmentId = $event" @download="downloadDepartmentFile" />
+            <InternalQuoteActivityPanel ref="pricingPanel" v-show="rightPanelTab === 'quote'" :quote="quote" read-only :can-edit-fx="canEditFx" :can-edit-markup="canEditMarkup" :markup-blocked-reason="markupBlockedReason" :markup-message="markupMessage" :markup-error="markupError" :busy="quoteStore.submitting" @preview-markup="previewMainMarkup = $event" @pricing-draft="updateSidebarPricingPreview" @update-fx="updateReferenceFx" @update-markup="updateQuoteMarkup" />
+            <InternalQuoteDepartmentFilesPanel v-if="rightPanelTab === 'files'" :quote-id="quote.id" :section-label="activeSection.label" :attachments="activeSection.attachments" :requested-attachment-id="requestedFileAttachmentId" @select="requestedFileAttachmentId = $event" @download="downloadDepartmentFile" />
           </div>
         </div>
       </aside>
@@ -1074,6 +1135,7 @@ onBeforeUnmount(() => {
       @close="closeHeaderDialog"
       @confirm="saveHeader"
     />
+    <InternalQuoteLeaveDialog :open="leavePricingOpen" @cancel="answerPricingNavigation(false)" @discard="answerPricingNavigation(true)" />
     <InternalQuoteMaterialsDialog
       :open="materialsDialogOpen"
       :product-name="quote.productName"

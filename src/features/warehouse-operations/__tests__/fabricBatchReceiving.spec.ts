@@ -39,8 +39,9 @@ async function fill() {
 describe('carton-style fabric selection and batch receiving', () => {
   it('calculates each item and groups batch amounts by currency without mixing inventory units', async () => {
     await openDialog(); await fill()
+    expect(body().get<HTMLSelectElement>('[aria-label="第1项入库币种"]').element.value).toBe('CNY')
+    expect(body().get<HTMLSelectElement>('[aria-label="第2项入库币种"]').element.value).toBe('CNY')
     await body().get('[aria-label="第1项入库单价"]').setValue('0.04')
-    await body().get('[aria-label="第1项入库币种"]').setValue('CNY')
     await body().get('[aria-label="第2项入库单价"]').setValue('10')
     await body().get('[aria-label="第2项入库币种"]').setValue('HKD')
     expect(body().text()).toContain('本批已填写金额合计：0.01 CNY')
@@ -52,6 +53,21 @@ describe('carton-style fabric selection and batch receiving', () => {
     expect(api.receiveBatch.mock.calls[0]![0].items).toEqual([
       expect.objectContaining({ unit_price: '0.04', price_unit: '码', currency: 'CNY' }),
       expect.objectContaining({ unit_price: '10', price_unit: '个', currency: 'CNY' })])
+  })
+  it('closes untouched CNY defaults without a discard prompt and still submits no price for unpriced items', async () => {
+    await openDialog()
+    const confirm = vi.spyOn(window, 'confirm')
+    await button('关闭').trigger('click')
+    expect(confirm).not.toHaveBeenCalled()
+    expect(wrapper!.emitted('close')).toHaveLength(1)
+    await fill()
+    api.receiveBatch.mockResolvedValue({ request_id: 'batch', receipts: [] })
+    await button('保存全部并入库').trigger('click'); await flushPromises()
+    for (const item of api.receiveBatch.mock.calls[0]![0].items) {
+      expect(item).not.toHaveProperty('unit_price')
+      expect(item).not.toHaveProperty('price_unit')
+      expect(item).not.toHaveProperty('currency')
+    }
   })
   it('uses the header keyword across all purchase text, without lower duplicate search fields', async () => {
     const search = ref(''), submitted = ref(0)

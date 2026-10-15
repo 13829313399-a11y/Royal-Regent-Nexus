@@ -22,6 +22,16 @@ function quote(): InternalQuote {
   } as InternalQuote
 }
 
+function savedPricingQuote(markup = 1.2, revision = 1, packagingRemark = '原包装'): InternalQuote {
+  return {
+    ...quote(),
+    rr2CostSummary: { shippingPricing: { markup, miscRatio: .02,
+      markupTiers: [3000, 5000, 10000].map(moq => ({ moq, markup, isActive: moq === 10000, includeInOutput: true })),
+    } } as never,
+    sections: [{ code: 'sales', revision, payload: { remark: packagingRemark, shipping: { markup_x: markup, misc_ratio: .02 } } }] as never,
+  }
+}
+
 describe('InternalQuoteActivityPanel reference FX editor', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
@@ -76,7 +86,7 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
 
     const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: liveQuote, canEditMarkup: true } })
 
-    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 140.40')
+    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 143.27')
     expect(wrapper.get('[data-testid="live-cost-hkd"]').text()).toBe('HKD 117.00')
     expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-moq-0"]').element.value).toBe('3000')
     expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-moq-1"]').element.value).toBe('5000')
@@ -86,25 +96,25 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
     expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-misc"]').element.value).toBe('2.00')
     expect(wrapper.get('[data-testid="live-quote-settlement"]').text()).toBe('0.9800')
     expect(wrapper.text()).toContain('实时试算 · 未保存')
-    expect(wrapper.text()).toContain('RMB 119.34')
-    expect(wrapper.text()).toContain('USD 18.00')
-    expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('目标余量 USD 2.00')
+    expect(wrapper.text()).toContain('RMB 121.78')
+    expect(wrapper.text()).toContain('USD 18.37')
+    expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('目标余量 USD 1.63')
     expect(wrapper.text()).toContain('已保存成本 HKD 100.00 · 成本变化 +17.00')
 
     await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.33')
     expect(wrapper.emitted('previewMarkup')?.at(-1)).toEqual([1.33])
-    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 155.61')
-    expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('目标余量 USD 0.05')
+    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 158.79')
+    expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('已超目标 USD 0.36')
     expect(wrapper.get('.quote-live-cost').classes()).toContain('proximity-4')
 
     await wrapper.get('[data-testid="live-quote-markup-moq-2"]').setValue('12000')
-    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 155.61')
+    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 158.79')
     expect(wrapper.findAll('.quote-markup-tier-row')[2]!.classes()).toContain('active')
     await wrapper.get('[data-testid="select-quote-markup-tier-1"]').trigger('click')
-    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 140.40')
+    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 143.27')
     expect(wrapper.findAll('.quote-markup-tier-row')[1]!.classes()).toContain('active')
     await wrapper.get('[data-testid="live-quote-markup-1"]').setValue('1.50')
-    expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('已超目标 USD 2.50')
+    expect(wrapper.get('[data-testid="target-price-gap"]').text()).toContain('已超目标 USD 2.96')
     expect(wrapper.get('.quote-live-cost').classes()).toContain('over')
     expect(wrapper.text()).toContain('跟客可主动选择本单采用的 MOQ 档')
   })
@@ -135,6 +145,126 @@ describe('InternalQuoteActivityPanel reference FX editor', () => {
         miscRatio: '0.0350',
       },
     ]])
+  })
+
+  it('does not present the Hape subtotal without molding as a complete quotation', () => {
+    const incomplete = {
+      ...quote(), factoryPriceHkd: 18.032, pricingComplete: false,
+      incompleteSections: [{ sectionCode: 'molding', sectionName: '啤机部', reason: '工程资料已更新，需重新核价' }],
+    }
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: incomplete } })
+    expect(wrapper.find('[data-testid="live-quote-hkd"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('报价待核完整')
+    expect(wrapper.text()).toContain('啤机部：工程资料已更新，需重新核价')
+    expect(wrapper.text()).toContain('已核算部分成本')
+    expect(wrapper.get('[data-testid="live-cost-hkd"]').text()).toBe('HKD 18.03')
+  })
+
+  it('uses the authoritative complete factory quotation including molding', () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: {
+      quote: { ...quote(), factoryPriceHkd: 45.28, pricingComplete: true, authoritativeFactoryQuoteHkd: 51.7486 },
+    } })
+    expect(wrapper.get('[data-testid="live-quote-hkd"]').text()).toBe('HKD 51.75')
+  })
+
+  it('exposes sidebar changes to the whole-product save and rejects invalid inputs', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: quote(), canEditMarkup: true } })
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.12')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(wrapper.text()).toContain('报价设置试算 · 未保存')
+    expect(wrapper.vm.getPricingDraft()).toMatchObject({ activeMarkup: 1.12, selectedMoq: 10000, miscRatio: .02 })
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(() => wrapper.vm.getPricingDraft()).toThrow('码数')
+  })
+
+  it('does not treat an untouched historical two-tier quotation as unsaved, but still protects actual invalid edits', async () => {
+    const historical = savedPricingQuote()
+    historical.rr2CostSummary!.shippingPricing.markupTiers = historical.rr2CostSummary!.shippingPricing.markupTiers!.slice(1)
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: historical, canEditMarkup: true } })
+    expect(wrapper.text()).toContain('分段码数必须保留 3 档')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(wrapper.vm.getPricingDraft()).toBeUndefined()
+    await wrapper.get('[data-testid="live-quote-markup-0"]').setValue('1.33')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(() => wrapper.vm.getPricingDraft()).toThrow('3 档')
+    await wrapper.get('[data-testid="live-quote-markup-0"]').setValue('1.20')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    await wrapper.setProps({ quote: savedPricingQuote(1.3, 2) })
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-2"]').element.value).toBe('1.30')
+    expect(wrapper.vm.getPricingDraft()).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('refreshes clean inputs and the conflict baseline when saved pricing changes', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: savedPricingQuote(), canEditMarkup: true } })
+    await wrapper.setProps({ quote: savedPricingQuote(1.3, 2, '服务端新包装') })
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-2"]').element.value).toBe('1.30')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(wrapper.vm.getPricingDraft()).toBeUndefined()
+    expect(wrapper.vm.getPricingBaseline()).toMatchObject({ revision: 2, payload: { remark: '服务端新包装' } })
+  })
+
+  it('refreshes the clean baseline after a non-pricing Sales save before a new pricing edit', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: savedPricingQuote(), canEditMarkup: true } })
+    await wrapper.setProps({ quote: savedPricingQuote(1.2, 2, '本人已保存包装') })
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.12')
+    expect(wrapper.vm.getPricingDraft()).toMatchObject({ activeMarkup: 1.12 })
+    expect(wrapper.vm.getPricingBaseline()).toMatchObject({ revision: 2, payload: { remark: '本人已保存包装' } })
+  })
+
+  it('preserves actual local pricing and its original baseline on concurrent Sales refresh', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: savedPricingQuote(), canEditMarkup: true } })
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.15')
+    await wrapper.setProps({ quote: savedPricingQuote(1.3, 2, '别人已保存包装') })
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-2"]').element.value).toBe('1.15')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(wrapper.vm.getPricingBaseline()).toMatchObject({ revision: 1, payload: { remark: '原包装' } })
+  })
+
+  it('acknowledges its own save while retaining newer pricing typed during the request', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: savedPricingQuote(), canEditMarkup: true } })
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.15')
+    const submitted = wrapper.vm.getPricingDraft()!
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.17')
+    const saved = savedPricingQuote(1.2, 2)
+    saved.rr2CostSummary!.shippingPricing.markup = 1.15
+    saved.rr2CostSummary!.shippingPricing.markupTiers[2]!.markup = 1.15
+    await wrapper.setProps({ quote: saved })
+    wrapper.vm.acceptSavedPricing(submitted)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="live-quote-markup-2"]').element.value).toBe('1.17')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+    expect(wrapper.vm.getPricingBaseline().revision).toBe(2)
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.15')
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+  })
+
+  it('clears the emitted trial after an unchanged submitted pricing draft is acknowledged', async () => {
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: savedPricingQuote(), canEditMarkup: true } })
+    await wrapper.get('[data-testid="live-quote-markup-2"]').setValue('1.15')
+    const submitted = wrapper.vm.getPricingDraft()!
+    const saved = savedPricingQuote(1.2, 2)
+    saved.rr2CostSummary!.shippingPricing.markup = 1.15
+    saved.rr2CostSummary!.shippingPricing.markupTiers[2]!.markup = 1.15
+    await wrapper.setProps({ quote: saved })
+    wrapper.vm.acceptSavedPricing(submitted)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(wrapper.emitted('pricingDraft')?.at(-1)).toEqual([undefined])
+  })
+
+  it('hides a partial live preview even when its edited department alone is valid', () => {
+    const store = useInternalQuoteDeskStore()
+    store.livePreviewQuoteId = 'quote-fx-1'
+    store.liveCostPreview = {
+      quote_id: 'quote-fx-1', calculations: { sales: { status: 'valid' } }, pricing_complete: false,
+      incomplete_sections: [{ section_code: 'molding', section_name: '啤机部', reason: '材料料型未匹配' }],
+      saved_factory_price_hkd: '18.032', preview_factory_price_hkd: '18.032',
+    } as never
+    const wrapper = mount(InternalQuoteActivityPanel, { props: { quote: quote() } })
+    expect(wrapper.find('[data-testid="live-quote-hkd"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('啤机部：材料料型未匹配')
   })
 
   it('validates markup precision, explains locked sales states, and hides persistence from viewers', async () => {

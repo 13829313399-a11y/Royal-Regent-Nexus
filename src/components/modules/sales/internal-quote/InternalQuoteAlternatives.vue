@@ -5,7 +5,8 @@ import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import InternalQuoteComparison from './InternalQuoteComparison.vue'
 import InternalQuoteAlternativeSync from './InternalQuoteAlternativeSync.vue'
-import type { InternalQuote } from '@/types/internalQuoteDesk'
+import InternalQuoteAlternativeExport from './InternalQuoteAlternativeExport.vue'
+import type { InternalQuote, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 const props = defineProps<{ quote: InternalQuote; hasUnsavedChanges?: () => boolean }>()
 const emit = defineEmits<{ open: [quoteId: string]; changed: []; archiveState: [archived: boolean] }>()
@@ -14,9 +15,24 @@ const family = ref<ApiInternalQuoteAlternativeFamily>()
 const error = ref('')
 const message = ref('')
 const busy = ref(false)
+const exportOpen = ref(false)
+const canExport = computed(() => !documentArchive.value && auth.can('internal_quote:export', props.quote.factoryId, 'sales-business'))
+function openExport() {
+  error.value = ''
+  try { ensureSaved(); exportOpen.value = true } catch (cause) { error.value = (cause as Error).message }
+}
+async function exported() {
+  exportOpen.value = false
+  message.value = '多方案报价已输出：汇总表对比包装、MOQ 与出厂价，详细成本分别保留。'
+  emit('changed')
+  await load()
+}
 const showArchived = ref(false)
 const kind = ref<'scenario' | 'version'>('scenario')
 const copyOpen = ref(false)
+const copyDepartments = ref<InternalQuoteSectionCode[]>([])
+const departmentOptions = computed(() => props.quote.sections.filter(section => section.isRequired))
+function selectAllDepartments() { copyDepartments.value = departmentOptions.value.map(section => section.code) }
 const deleteId = ref('')
 const name = ref('')
 const note = ref('')
@@ -42,7 +58,7 @@ const canClone = computed(() => !documentArchive.value && ['sales-business', 'en
 const canManage = computed(() => !documentArchive.value && auth.can('internal_quote:sales_edit', props.quote.factoryId, 'sales-business'))
 const current = computed(() => family.value?.items.find(item => item.quote_id === props.quote.id))
 watch([current, documentArchive], ([item, whole]) => { if (item || whole) emit('archiveState', Boolean(whole || item?.archived)) })
-watch(() => props.quote.id, () => { quoteGeneration += 1; restoreOpen.value = false; restoreReason.value = ''; restoreError.value = ''; archiveTarget.value = undefined; archiveReason.value = ''; archiveError.value = '' }, { flush: 'sync' })
+watch(() => props.quote.id, () => { quoteGeneration += 1; copyOpen.value = false; copyDepartments.value = []; restoreOpen.value = false; restoreReason.value = ''; restoreError.value = ''; archiveTarget.value = undefined; archiveReason.value = ''; archiveError.value = '' }, { flush: 'sync' })
 const groups = computed(() => {
   const rows = (family.value?.items ?? []).filter(item => showArchived.value || !item.archived || item.quote_id === props.quote.id)
   const ids = [...new Set(rows.map(item => item.scenario_id))]
@@ -90,17 +106,20 @@ async function run(action: () => Promise<void>) {
 function startCopy(nextKind: 'scenario' | 'version') {
   error.value = ''
   try { ensureSaved() } catch (cause) { error.value = (cause as Error).message; return }
-  kind.value = nextKind; copyOpen.value = true; name.value = ''; note.value = ''
+  kind.value = nextKind; copyOpen.value = true; name.value = ''; note.value = ''; selectAllDepartments()
 }
 async function copy() {
   await run(async () => {
     ensureSaved()
     if (!family.value || !canClone.value) return
     if (kind.value === 'scenario' && !name.value.trim()) throw new Error('请填写方案名称，例如开窗盒包装。')
-    const created = await internalQuoteApi.createAlternative(props.quote.id, {
+    if (!copyDepartments.value.length) throw new Error('请至少选择一个要复制的部门。')
+    const sourceId = props.quote.id, generation = quoteGeneration
+    const created = await internalQuoteApi.createAlternative(sourceId, {
       revision: props.quote.headerRevision, family_revision: family.value.revision, kind: kind.value,
-      name: kind.value === 'scenario' ? name.value.trim() : current.value?.scenario_name ?? '', change_note: note.value.trim(),
+      name: kind.value === 'scenario' ? name.value.trim() : current.value?.scenario_name ?? '', change_note: note.value.trim(), copy_departments: [...copyDepartments.value],
     })
+    if (props.quote.id !== sourceId || quoteGeneration !== generation) return
     copyOpen.value = false
     emit('open', created.id)
   })
@@ -212,9 +231,11 @@ async function compare() {
       <form v-if="restoreOpen" aria-label="恢复整单报价" @submit.prevent="restoreDocument"><label>恢复原因<input v-model="restoreReason" maxlength="1000" aria-label="恢复整单原因"></label><div class="actions"><button type="submit" :disabled="busy">确认恢复整单</button><button type="button" :disabled="busy" @click="restoreOpen = false">取消</button></div></form>
       <p v-if="restoreError" role="alert" class="error">{{ restoreError }}</p>
     </div>
-    <form v-if="copyOpen" class="copy-form" @submit.prevent="copy"><strong>{{ kind === 'scenario' ? '在本报价单中复制新方案' : '从当前版本复制后续版本' }}</strong><label v-if="kind === 'scenario'">方案名称<input v-model="name" maxlength="120" placeholder="例如：开窗盒包装" required></label><label>修改说明<input v-model="note" maxlength="1000" placeholder="例如：客户要求调整包装尺寸"></label><p>复制当前产品的完整资料、图片、模具及参考价格；新方案或版本仍归入本报价单，可继续切换其他产品。</p><div class="actions"><button type="submit" :disabled="busy">确认复制</button><button type="button" :disabled="busy" @click="copyOpen = false">取消</button></div></form>
+    <form v-if="copyOpen" class="copy-form" @submit.prevent="copy"><strong>{{ kind === 'scenario' ? '在本报价单中复制新方案' : '从当前版本复制后续版本' }}</strong><label v-if="kind === 'scenario'">方案名称<input v-model="name" maxlength="120" placeholder="例如：开窗盒包装" required></label><label>修改说明<input v-model="note" maxlength="1000" placeholder="例如：客户要求调整包装尺寸"></label><fieldset class="department-selection" :disabled="busy"><legend>选择要复制内容的部门</legend><div class="actions"><button type="button" @click="selectAllDepartments">全选</button><button type="button" @click="copyDepartments = []">清空选择</button><span>已选 {{ copyDepartments.length }} / {{ departmentOptions.length }}</span></div><div class="department-options"><label v-for="section in departmentOptions" :key="section.code"><input v-model="copyDepartments" type="checkbox" :value="section.code">{{ section.label }}</label></div></fieldset><p>默认全选。仅复制勾选部门的内容与相关附件；未选部门保留为空、待填写。产品基本资料、产品图片和参考价格继续保留，历史报价及已输出版本保持原样。</p><p v-if="copyDepartments.includes('molding') && !copyDepartments.includes('engineering')">只复制啤机部时，原工程关联需在新方案中核对，补齐后再核价。</p><p v-if="!copyDepartments.length" role="status">请至少选择一个要复制的部门。</p><div class="actions"><button type="submit" :disabled="busy || !copyDepartments.length">确认复制</button><button type="button" :disabled="busy" @click="copyOpen = false">取消</button></div></form>
     <div v-if="family" class="cards"><article v-for="group in groups" :key="group.id"><h3>{{ group.name }}</h3><div v-for="(item, index) in group.versions" :key="item.quote_id" class="version" :class="{ current: item.quote_id === quote.id, chosen: family.selected_quote_id === item.quote_id }"><details :open="index === 0 || item.quote_id === quote.id || family.selected_quote_id === item.quote_id"><summary><b>{{ item.version_label }}</b><span>{{ documentArchive ? '整单已归档' : item.archived || item.status === 'archived' ? '已归档' : isIssued(item.status) ? '已输出' : '草稿 / 历史流程' }}</span><em v-if="family.selected_quote_id === item.quote_id">客户采用</em><small v-if="item.quote_id === quote.id">当前打开</small></summary><p>{{ item.change_note || '无修改说明' }}</p><p>{{ item.reported_at ? `已报客：${item.reported_at}` : '尚未标记实际报客' }}</p><div class="actions"><button :disabled="busy || item.quote_id === quote.id" @click="open(item.quote_id)">打开</button><button v-if="canManage && isIssued(item.status) && !item.archived && family.selected_quote_id !== item.quote_id" :disabled="busy" @click="select(item.quote_id)">客户采用此版</button><button v-if="canManage && item.status !== 'archived' && family.selected_quote_id !== item.quote_id" :disabled="busy" @click="startArchive(item.quote_id, !item.archived)">{{ item.archived ? '恢复显示' : '归档此版' }}</button><button v-if="item.can_delete && item.quote_id !== family.family_id" :disabled="busy" @click="deleteId = item.quote_id">删除未使用草稿</button></div><form v-if="archiveTarget?.id === item.quote_id" class="copy-form" aria-label="归档或恢复版本" @submit.prevent="archive"><strong>{{ archiveTarget.archived ? '归档此版本' : '恢复此版本' }}</strong><p>{{ archiveTarget.archived ? '归档后隐藏此版本并暂停编辑、输出，数据和历史记录保留，可随时恢复。' : '恢复后重新显示此版本；草稿可继续编辑，已输出版本仍保留原样。' }}</p><label>本次操作说明<input :ref="node => { archiveInput = node as HTMLInputElement }" v-model="archiveReason" maxlength="1000" aria-label="归档或恢复说明" placeholder="例如：暂不采用此方案 / 需要继续修改"></label><p v-if="archiveError" role="alert" class="error">{{ archiveError }}</p><div class="actions"><button type="submit" :disabled="busy">{{ archiveTarget.archived ? '确认归档' : '确认恢复' }}</button><button type="button" :disabled="busy" @click="archiveTarget = undefined">取消</button></div></form><div v-if="deleteId === item.quote_id" class="draft-delete" role="alert"><p>确认删除此草稿及其资料？删除后无法恢复。</p><button :disabled="busy" @click="removeDraft(item.quote_id)">确认删除草稿</button><button :disabled="busy" @click="deleteId = ''">取消</button></div><p v-else-if="item.delete_block_reason" class="delete-reason">{{ item.delete_block_reason }}</p></details></div></article></div>
     <div v-if="family" class="management"><label><input v-model="showArchived" type="checkbox">显示已归档版本</label><template v-if="canManage"><label class="reason">客户采用 / 改选说明<input v-model="selectionReason" maxlength="1000" placeholder="例如：客户确认采用开窗盒 V2"></label><button v-if="family.selected_quote_id" :disabled="busy" @click="select('')">清除采用标记</button><button v-if="current && isIssued(current.status) && !current.reported_at && !current.archived" :disabled="busy" @click="reported">标记当前版已报客</button></template></div>
+    <div v-if="canExport && family && family.items.filter(item => !item.archived).length > 1" class="actions"><button type="button" :disabled="busy" @click="openExport">多方案合并输出</button><span>勾选方案版本，汇总对比包装、MOQ 和出厂价。</span></div>
+    <InternalQuoteAlternativeExport v-if="exportOpen" :key="quote.id" :quote="quote" :has-unsaved-changes="hasUnsavedChanges" @close="exportOpen = false" @completed="exported" />
     <InternalQuoteAlternativeSync v-if="family && !documentArchive && family.items.length > 1" :quote="quote" :family="family" :has-unsaved-changes="hasUnsavedChanges" @changed="refreshAfterSync" @open="open" />
     <div v-if="family && family.items.length > 1" class="compare"><h3>任选两版对比</h3><div class="actions"><select v-model="baseId" aria-label="比较基准版本"><option value="">选择基准版本</option><option v-for="item in family.items" :key="item.quote_id" :value="item.quote_id">{{ label(item.quote_id) }}</option></select><select v-model="targetId" aria-label="比较目标版本"><option v-for="item in family.items" :key="item.quote_id" :value="item.quote_id">{{ label(item.quote_id) }}</option></select><button :disabled="busy || !baseId || baseId === targetId" @click="compare">比较两版</button></div><InternalQuoteComparison v-if="comparison && comparedBase && comparedTarget" :comparison="comparison" :base="comparedBase" :target="comparedTarget" :base-label="label(baseId)" :target-label="label(targetId)" /></div>
   </section>
@@ -222,4 +243,5 @@ async function compare() {
 
 <style scoped>
 .alternatives{border:1px solid #99f6e4;border-radius:14px;background:#fff;padding:18px;display:grid;gap:14px;color:#334155}.alternatives header{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}.alternatives h2{margin:0;font-size:17px;color:#134e4a}.alternatives h3{font-size:14px;margin:0 0 10px}.alternatives p{font-size:12px;line-height:1.6;margin:6px 0}.actions,.management{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.alternatives button,.alternatives input:not([type=checkbox]),.alternatives select{border:1px solid #cbd5e1;border-radius:7px;background:white;padding:8px 10px;font-size:12px;color:#334155}.alternatives button{border-color:#99d5cc;color:#0f766e}.alternatives button:disabled{opacity:.45;cursor:not-allowed}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.cards article{border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#f8fafc}.version{padding:8px;margin-top:7px;background:white;border:1px solid #e2e8f0;border-radius:8px}.version.current{border-color:#14b8a6}.version.chosen{background:#ecfdf5}.version summary{cursor:pointer;font-size:12px}.version summary>*{margin-right:7px}.version em{color:#047857;font-style:normal}.copy-form{display:grid;gap:10px;background:#f0fdfa;padding:14px;border-radius:9px}.copy-form label,.reason{display:grid;gap:5px;font-size:12px}.reason{flex:1;min-width:240px}.management{font-size:12px}.error{color:#b91c1c;background:#fef2f2;padding:10px}.success{color:#047857;background:#ecfdf5;padding:10px}.compare{border-top:1px solid #e2e8f0;padding-top:14px}
+.department-selection{border:1px solid #99d5cc;border-radius:8px;padding:12px}.department-selection legend{font-size:13px;font-weight:600}.department-options{display:flex;flex-wrap:wrap;gap:12px 20px;margin-top:12px}.department-options label{display:flex;align-items:center;gap:6px}
 </style>

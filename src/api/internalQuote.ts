@@ -1,5 +1,5 @@
 import { http } from '@/lib/http'
-import type { InternalQuoteHistoryEvidence, InternalQuoteHistorySelection, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
+import type { InternalQuoteHistoryEvidence, InternalQuoteHistorySelection, InternalQuoteSectionCode, InternalQuoteReadiness } from '@/types/internalQuoteDesk'
 
 export interface InternalQuoteHttpClient {
   get<T = unknown>(url: string, config?: unknown): Promise<{ data: T; headers?: Record<string, unknown> }>
@@ -37,6 +37,7 @@ export interface ApiInternalQuoteSection {
 }
 
 export interface ApiInternalQuote {
+  readiness?: InternalQuoteReadiness | null
   document_product_count?: number
   document_version_count?: number
   document_quote_id?: string
@@ -145,7 +146,13 @@ export interface ApiInternalQuoteReferenceSet {
   superseded_at: string
 }
 
-export interface ApiInternalQuoteSummary {
+export interface ApiInternalQuotePricingCompleteness {
+  pricing_complete?: boolean
+  incomplete_sections?: Array<{ section_code: string; section_name: string; reason: string }>
+  authoritative_factory_quote_hkd?: string | null
+}
+
+export interface ApiInternalQuoteSummary extends ApiInternalQuotePricingCompleteness {
   quote_id: string
   status: string
   formula_version: string
@@ -231,6 +238,7 @@ export interface ApiInternalQuoteExport {
 }
 
 export interface ApiInternalQuoteImportPreview {
+  embedded_images?: Array<{ source_row: number; file_name: string; content_type: string; data_base64: string }>
   assignment_rows?: Array<{ key: string; label: string; source_row: string | number; mold_no: string }>
   assignment_components?: Array<{ id: string; name: string }>
   batch_id: string
@@ -385,7 +393,7 @@ export interface ApiInternalQuoteCustomer {
   updated_at: string
 }
 
-export interface ApiInternalQuoteSectionPreview {
+export interface ApiInternalQuoteSectionPreview extends ApiInternalQuotePricingCompleteness {
   quote_id: string
   section_code: InternalQuoteSectionCode
   section_revision: number
@@ -402,7 +410,7 @@ export interface ApiInternalQuoteSectionPreview {
   generated_at: string
 }
 
-export interface ApiInternalQuoteCostPreview {
+export interface ApiInternalQuoteCostPreview extends ApiInternalQuotePricingCompleteness {
   quote_id: string
   calculations: Partial<Record<InternalQuoteSectionCode, Record<string, unknown>>>
   warnings: Array<Record<string, unknown>>
@@ -464,7 +472,22 @@ export interface ApiInternalQuoteDashboard {
     average_days: number
     fastest_hours: number
     slowest_hours: number
+    median_hours: number
   }>
+  first_output_missing_time_count: number
+  pending_first_output: {
+    count: number
+    over_three_days: number
+    oldest_hours: number | null
+    items: Array<{
+      quote_id: string
+      quote_no: string
+      product_name: string
+      customer: string
+      created_at: string
+      waiting_hours: number | null
+    }>
+  }
 }
 
 export interface ApiInternalQuoteMaterialBaselineRow {
@@ -989,6 +1012,19 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       const response = await client.post<ApiInternalQuoteExport>(`/internal-quotes/${quoteId}/direct-issue`, { revision })
       return response.data
     },
+    async exportAlternatives(quoteId: string, versions: Array<{ quote_id: string; revision: number }>) {
+      try {
+        return (await client.post<Blob>(`/internal-quotes/${quoteId}/alternatives-export`, { versions }, { responseType: 'blob' })).data
+      } catch (cause) {
+        const data = (cause as { response?: { data?: unknown } })?.response?.data
+        if (data instanceof Blob) {
+          let detail: unknown
+          try { detail = JSON.parse(await data.text()).detail } catch { /* Preserve the transport error. */ }
+          if (typeof detail === 'string') throw new Error(detail)
+        }
+        throw cause
+      }
+    },
     async exportSeries(quoteId: string, products: Array<{ quote_id: string; revision: number }>) {
       try {
         const response = await client.post<Blob>(`/internal-quotes/${quoteId}/series-export`, { products }, { responseType: 'blob' })
@@ -1007,7 +1043,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async listAlternatives(quoteId: string) {
       return (await client.get<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/alternatives`)).data
     },
-    async createAlternative(quoteId: string, payload: { revision: number; family_revision: number; kind: 'scenario' | 'version'; name: string; change_note: string }) {
+    async createAlternative(quoteId: string, payload: { revision: number; family_revision: number; kind: 'scenario' | 'version'; name: string; change_note: string; copy_departments?: InternalQuoteSectionCode[] }) {
       return (await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/alternatives`, payload)).data
     },
     async selectAlternative(quoteId: string, payload: { family_revision: number; selected_quote_id: string; reason: string }) {

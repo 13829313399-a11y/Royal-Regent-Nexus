@@ -26,9 +26,11 @@
 .cutting-table-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 20px; }
 .cutting-table-heading h2 { font-size: 15px; font-weight: 600; }
 .cutting-table-heading span { color: var(--muted-foreground); font-size: 12px; }
-.cutting-table-scroll { max-width: 100%; overflow-x: auto; }
+.cutting-table-scroll { max-width: 100%; overflow-x: auto; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted-foreground) 35%, transparent) transparent; }
 .cutting-table-scroll table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.5; }
-.cutting-table-scroll th { padding: 12px 16px; text-align: left; white-space: nowrap; background: var(--muted); color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
+.cutting-table-scroll th { padding: 14px 20px; text-align: center; white-space: nowrap; background: var(--muted); color: var(--muted-foreground); font-size: 13px; line-height: 20px; font-weight: 600; }
+.cutting-table-scroll :is(th, td):first-child { padding-left: 24px; }
+.cutting-table-scroll :is(th, td):last-child { padding-right: 24px; }
 .cutting-no-records { padding: 14px 16px; color: var(--muted-foreground); border-bottom: 1px solid var(--border); }
 .cutting-empty { text-align: center; padding: 42px 24px 48px; }
 .cutting-empty-icon { display: inline-flex; justify-content: center; align-items: center; width: 60px; height: 60px; border-radius: 16px; background: var(--accent); color: var(--primary); margin-bottom: 16px; }
@@ -94,7 +96,9 @@
 .cutting-page a:not([data-slot='button']) { color: var(--primary); }
 .cutting-table-scroll { border: 1px solid var(--border); border-radius: var(--radius); }
 .cutting-table-scroll table { min-width: 640px; }
-.cutting-table-scroll td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.cutting-table-scroll td { padding: 16px 20px; text-align: center; border-bottom: 1px solid var(--border); vertical-align: middle; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.cutting-table-scroll td.cutting-order-product-name { min-width: 180px; max-width: 320px; white-space: normal; }
+.cutting-table-scroll td .cutting-master-actions { justify-content: center; align-items: center; }
 .cutting-table-scroll tbody tr:last-child td { border-bottom: 0; }
 .cutting-table-scroll tbody tr:hover { background: color-mix(in srgb, var(--muted) 45%, transparent); }
 .cutting-no-records { padding: 32px 16px; text-align: center; }
@@ -105,6 +109,10 @@
 .eta-row > label { flex: 1 1 180px; }
 .report-totals { font-variant-numeric: tabular-nums; }
 @media (max-width: 639px) {
+  .cutting-table-scroll th { padding: 12px 16px; }
+  .cutting-table-scroll td { padding: 14px 16px; }
+  .cutting-table-scroll :is(th, td):first-child { padding-left: 16px; }
+  .cutting-table-scroll :is(th, td):last-child { padding-right: 16px; }
   .cutting-page [data-slot='button'], .cutting-page :where(input:not([type='checkbox']):not([type='radio']), select) { min-height: 44px; }
   .cutting-master-toolbar > form, .cutting-master-toolbar label, .plan-tools > label, .calendar-exception > label { width: 100%; }
   .cutting-master-form dl { grid-template-columns: minmax(0, 1fr); }
@@ -113,3 +121,5 @@
 .cutting-master-toolbar [data-slot="button"], .order-toolbar [data-slot="button"], .plan-tools [data-slot="button"], .calendar-exception [data-slot="button"] { align-self: end; }
 
 .cutting-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; color: var(--muted-foreground); font-size: 13px; font-variant-numeric: tabular-nums; }
+/* Monthly reconciliation targets remain read-only until the user chooses an operation. */
+.cutting-page [data-cutting-focused="true"] { outline: 2px solid var(--primary); outline-offset: -2px; background: var(--accent); scroll-margin-block: 100px; }

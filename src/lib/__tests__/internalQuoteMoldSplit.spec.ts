@@ -23,8 +23,11 @@ describe('staged mold splitting', () => {
     expect(newMoldSplitPart(source)).toMatchObject({ output_count: 4, quantity: 2 })
   })
 
-  it('requires complete positive weights and integer production counts', () => {
+  it('allows incomplete descriptive children and rejects negative or fractional inputs', () => {
     const part = newMoldSplitPart(mold({ cavity: '4', quantity: 2 }), '上壳')
+    expect(validateMoldSplit([part])).toBe('')
+    expect(part.part_id).toBe(part.id)
+    part.unit_net_weight_g = -0.1
     expect(validateMoldSplit([part])).toContain('净重')
     part.unit_net_weight_g = 0.5
     expect(validateMoldSplit([part])).toBe('')
@@ -32,6 +35,8 @@ describe('staged mold splitting', () => {
     expect(validateMoldSplit([part])).toContain('出模数')
     part.output_count = 4
     part.quantity = 0
+    expect(validateMoldSplit([part])).toBe('')
+    part.quantity = -1
     expect(validateMoldSplit([part])).toContain('套数')
     expect(validateMoldSplit([])).toContain('至少')
   })

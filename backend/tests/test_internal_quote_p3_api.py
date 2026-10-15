@@ -111,7 +111,9 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
         }
         assert preview["source_sha256"] == hashlib.sha256(source).hexdigest()
         assert preview["payload_fragment"]["molds"][0]["image_reference"] == "模具图片-U2-1.png"
-        assert "embedded_images" not in preview
+        assert len(preview["embedded_images"]) == 1
+        assert preview["embedded_images"][0]["source_row"] == 2
+        assert preview["embedded_images"][0]["content_type"] == "image/png"
 
         detail_before = client.get(f"/api/internal-quotes/{quote_id}").json()
         engineering_before = next(
@@ -1052,7 +1054,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert engineering_download.content.startswith(b"PK")
         assert (
             engineering_download.headers["x-engineering-template-version"]
-            == "internal-quote-engineering-template-v1"
+            == "internal-quote-engineering-template-v2"
         )
         engineering_workbook = load_workbook(
             BytesIO(engineering_download.content),

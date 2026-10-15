@@ -7,10 +7,15 @@ import { supplierSettlementApi as api, type StatementLine, type SettlementDocume
 import CartonSettlementFilters from '@/components/CartonSettlementFilters.vue'
 import { matchesSettlementLine, settlementStage, type SettlementLineFilter } from '@/features/carton-procurement/queryFilters'
 
-const props = defineProps<{ factoryId: string }>()
+const props = defineProps<{ factoryId: string; search?: string }>()
+const emit = defineEmits<{ 'update:search': [value: string] }>()
 const auth = useAuthStore()
 const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
-const period = ref(today().slice(0, 7)), currency = ref('CNY'), query = ref('')
+const period = ref(today().slice(0, 7)), currency = ref('CNY'), localQuery = ref('')
+const query = computed({
+  get: () => props.search ?? localQuery.value,
+  set: (value: string) => { if (props.search === undefined) localQuery.value = value; else emit('update:search', value) },
+})
 const lineFilter = ref<SettlementLineFilter>('ALL'), documentFilter = ref('ALL')
 const filteredDocuments = computed(() => workspace.value?.documents.filter(doc => documentFilter.value === 'ALL' || settlementStage(doc) === documentFilter.value || doc.id === document.value?.id) ?? [])
 const workspace = ref<SupplierWorkspace | null>(null), document = ref<SettlementDocument | null>(null)
@@ -169,7 +174,7 @@ onBeforeRouteLeave(leave)
 onBeforeRouteUpdate((to, from) => to.fullPath === from.fullPath || leave())
 const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty.value) { event.preventDefault(); event.returnValue = '' } }
 window.addEventListener('beforeunload', beforeUnload)
-watch(() => props.factoryId, () => { dirty.value = false; query.value = ''; lineFilter.value = 'ALL'; documentFilter.value = 'ALL'; void load() }, { immediate: true })
+watch(() => props.factoryId, () => { dirty.value = false; localQuery.value = ''; lineFilter.value = 'ALL'; documentFilter.value = 'ALL'; void load() }, { immediate: true })
 onBeforeUnmount(() => { generation++; window.removeEventListener('beforeunload', beforeUnload) })
 </script>
 
@@ -219,7 +224,7 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('beforeunload',
         <p v-for="row in unsettled" :key="row.line_id || row.shipment_id" class="mt-2">{{ row.document_no }} · {{ row.item_no }} {{ row.specification }} · 送货 {{ row.delivery_date }} · {{ row.quantity }} {{ row.unit }} · 原价 {{ display(row.original_unit_price) }} · {{ row.reason }}<span v-if="row.difference_reason"> · {{ row.difference_reason }}</span></p>
       </details>
       <article class="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <CartonSettlementFilters v-model:query="query" v-model:lines="lineFilter" v-model:stage="documentFilter" :dirty="dirty" :shown="shown.length" :total="invoice.lines.length" />
+        <CartonSettlementFilters v-model:query="query" v-model:lines="lineFilter" v-model:stage="documentFilter" :hide-search="search !== undefined" :dirty="dirty" :shown="shown.length" :total="invoice.lines.length" />
         <div class="flex flex-wrap items-center gap-3 border-b bg-slate-50 p-4 text-xs">
           <select :value="document?.id || ''" :disabled="dirty || busy" aria-label="供应商对账版本" class="h-9 max-w-full rounded-lg border bg-white px-2" @change="selectDocument(($event.target as HTMLSelectElement).value)"><option v-if="!document" value="">新草稿</option><option v-for="doc in filteredDocuments" :key="doc.id" :value="doc.id">版本 {{ doc.version }} · {{ doc.status === 'CONFIRMED' ? '已确认' : doc.status === 'SUPERSEDED' ? '历史版本' : '草稿' }} · {{ doc.statement.statement_no || '未填账单号' }}</option></select>
           <span :class="cleanConfirmed ? 'text-teal-700' : 'text-amber-700'">{{ document?.stale ? '来源已变化，需要重新核对' : cleanConfirmed ? '对账完成（不代表付款）' : document?.status === 'SUPERSEDED' ? '历史版本 · 只读' : dirty ? '修改尚未保存，差异待重算' : document ? `待核对 · ${problemCount} 项差异或缺项` : '已生成拟结算明细，请核对后保存' }}</span>

@@ -52,6 +52,8 @@ def test_preview_save_copy_and_output_without_engineering_lines(monkeypatch, fac
         assert preview.status_code == 200, preview.text
         expected = "valid" if factory == "huakang-d" else "blocked"
         assert preview.json()["calculations"]["engineering"]["status"] == expected
+        assert preview.json()["pricing_complete"] is (factory == "huakang-d")
+        assert (preview.json()["authoritative_factory_quote_hkd"] is not None) is (factory == "huakang-d")
         saved = client.put(root + "/sections/save-all", json={"sections": drafts})
         assert saved.status_code == 200, saved.text
         quote = client.get(root).json()

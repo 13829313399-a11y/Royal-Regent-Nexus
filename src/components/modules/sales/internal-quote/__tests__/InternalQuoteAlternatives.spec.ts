@@ -1,5 +1,6 @@
 import { mount, flushPromises, shallowMount } from '@vue/test-utils'
 import { reactive } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuthStore } from '@/stores/auth'
@@ -8,11 +9,12 @@ import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { internalQuoteApi, type ApiInternalQuoteAlternativeFamily } from '@/api/internalQuote'
 import InternalQuoteAlternatives from '../InternalQuoteAlternatives.vue'
 import InternalQuoteCollaboration from '../InternalQuoteCollaboration.vue'
+import InternalQuoteLeaveDialog from '../InternalQuoteLeaveDialog.vue'
 import InternalQuoteExportSummary from '../InternalQuoteExportSummary.vue'
 import InternalQuoteSummary from '../InternalQuoteSummary.vue'
 
 const routeState = reactive({ params: { quoteId: 'q1' }, query: {} })
-vi.mock('vue-router', () => ({ useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
+vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn(), useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
 function family(): ApiInternalQuoteAlternativeFamily {
   return { family_id: 'family', revision: 3, selected_quote_id: '', items: ['q1', 'q2'].map((id, index) => ({
     quote_id: id, scenario_id: id, scenario_name: index ? '开窗盒' : '普通彩盒', version_number: 1, version_label: 'V1', source_quote_id: '', change_note: '', status: index ? 'exported' : 'drafting', issued_at: '', reported_at: '', created_at: '', quote_no: 'IQ', product_name: '巴士', customer: 'Dickie', quantity: 5000, archived: false,
@@ -33,6 +35,47 @@ function setup() {
 beforeEach(() => { routeState.params.quoteId = 'q1'; vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} }) })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('independent quotation alternatives', () => {
+  it('confirms discard without a premature dialog-close cancellation', async () => {
+    const wrapper = mount(InternalQuoteLeaveDialog, { props: { open: true }, global: { stubs: { AlertDialogPortal: { template: '<div><slot /></div>' } } } })
+    await flushPromises()
+    await wrapper.get('button.discard').trigger('click')
+    expect(wrapper.emitted('discard')).toHaveLength(1)
+    expect(wrapper.emitted('cancel')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('lets clean quotes leave and offers cancel or discard for actual sidebar edits without saving or clearing them early', async () => {
+    const { pinia, store } = setup()
+    let dirty = false
+    const save = vi.spyOn(store, 'saveWholeProductSections')
+    const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: {
+      RouterLink: true,
+      InternalQuoteActivityPanel: { template: '<div />', methods: { hasUnsavedChanges: () => dirty } },
+    } } })
+    await flushPromises()
+    const leave = vi.mocked(onBeforeRouteLeave).mock.calls.at(-1)![0] as () => boolean | Promise<boolean>
+    const update = vi.mocked(onBeforeRouteUpdate).mock.calls.at(-1)![0] as (to: { params: { quoteId: string } }) => boolean | Promise<boolean>
+    expect(leave()).toBe(true)
+    dirty = true
+    const pending = leave()
+    expect(leave()).toBe(pending)
+    await flushPromises()
+    expect(wrapper.getComponent(InternalQuoteLeaveDialog).props('open')).toBe(true)
+    wrapper.getComponent(InternalQuoteLeaveDialog).vm.$emit('cancel')
+    expect(await pending).toBe(false)
+    expect(dirty).toBe(true)
+    expect(update({ params: { quoteId: 'q1' } })).toBe(true)
+    const switching = update({ params: { quoteId: 'q2' } })
+    await flushPromises()
+    wrapper.getComponent(InternalQuoteLeaveDialog).vm.$emit('discard')
+    expect(await switching).toBe(true)
+    expect(dirty).toBe(true) // A later department guard may still cancel navigation.
+    expect(save).not.toHaveBeenCalled()
+    const abandoned = leave()
+    wrapper.unmount()
+    expect(await abandoned).toBe(false)
+  })
+
   it.each(['document', 'version'])('blocks new output from the summary/export pages for a %s archive', async scope => {
     const { pinia, quote, store } = setup()
     store.quotes = [{ ...quote, status: 'exported', versionArchived: scope === 'version',
@@ -233,7 +276,7 @@ describe('independent quotation alternatives', () => {
     await wrapper.get('input[placeholder="例如：开窗盒包装"]').setValue('吸塑包装')
     await wrapper.get('input[placeholder="例如：客户要求调整包装尺寸"]').setValue('客户比较包装')
     await wrapper.get('form').trigger('submit'); await flushPromises()
-    expect(create).toHaveBeenCalledWith('q1', { revision: 8, family_revision: 3, kind: 'scenario', name: '吸塑包装', change_note: '客户比较包装' })
+    expect(create).toHaveBeenCalledWith('q1', { revision: 8, family_revision: 3, kind: 'scenario', name: '吸塑包装', change_note: '客户比较包装', copy_departments: quote.sections.filter(section => section.isRequired).map(section => section.code) })
     expect(wrapper.emitted('open')).toEqual([['q3']]); wrapper.unmount()
   })
   it('blocks copying and navigating while source has unsaved changes', async () => {
@@ -295,5 +338,51 @@ describe('independent quotation alternatives', () => {
     const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: { RouterLink: true, InternalQuoteSectionEditor: { template: '<div />', methods: { hasUnsavedChanges: () => true } } } } }); await flushPromises()
     await wrapper.findAll('button').find(b => b.text() === '直接输出并保留此版')!.trigger('click'); await flushPromises()
     expect(issue).not.toHaveBeenCalled(); expect(wrapper.text()).toContain('先保存当前款'); wrapper.unmount()
+  })
+})
+
+
+describe('copy selected departments', () => {
+  it('defaults to all, submits one or two departments and resets selection on reopening', async () => {
+    const { pinia, quote } = setup()
+    quote.sections = quote.sections.map(section => ({ ...section, isRequired: ['engineering', 'assembly', 'sales'].includes(section.code) }))
+    const create = vi.spyOn(internalQuoteApi, 'createAlternative').mockResolvedValue({ id: 'copied' } as never)
+    const wrapper = shallowMount(InternalQuoteAlternatives, { props: { quote }, global: { plugins: [pinia] } })
+    await flushPromises()
+    const button = (text: string) => wrapper.findAll('button').find(b => b.text() === text)!
+    await button('复制为新方案').trigger('click')
+    expect(wrapper.findAll('.department-options input:checked')).toHaveLength(3)
+    await button('清空选择').trigger('click')
+    expect(button('确认复制').attributes('disabled')).toBeDefined()
+    await wrapper.get('input[value="engineering"]').setValue(true)
+    await wrapper.get('input[placeholder="例如：开窗盒包装"]').setValue('工程方案')
+    await wrapper.get('input[placeholder="例如：客户要求调整包装尺寸"]').setValue('仅复用工程')
+    await wrapper.get('form.copy-form').trigger('submit')
+    await flushPromises()
+    expect(create).toHaveBeenLastCalledWith('q1', expect.objectContaining({ copy_departments: ['engineering'] }))
+    expect(wrapper.emitted('open')).toEqual([['copied']])
+    await button('复制新版本').trigger('click')
+    expect(wrapper.findAll('.department-options input:checked')).toHaveLength(3)
+    await wrapper.get('input[value="sales"]').setValue(false)
+    await wrapper.get('form.copy-form').trigger('submit')
+    await flushPromises()
+    expect(create).toHaveBeenLastCalledWith('q1', expect.objectContaining({ kind: 'version', copy_departments: ['engineering', 'assembly'] }))
+    wrapper.unmount()
+  })
+  it('closes the selection on quote changes and ignores an obsolete copy response', async () => {
+    const { pinia, quote } = setup()
+    let resolve!: (value: never) => void
+    vi.spyOn(internalQuoteApi, 'createAlternative').mockImplementation(() => new Promise(done => { resolve = done }))
+    const wrapper = shallowMount(InternalQuoteAlternatives, { props: { quote }, global: { plugins: [pinia] } })
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '复制新版本')!.trigger('click')
+    await wrapper.get('form.copy-form').trigger('submit')
+    await flushPromises()
+    await wrapper.setProps({ quote: { ...quote, id: 'q2' } })
+    resolve({ id: 'copied' } as never)
+    await flushPromises()
+    expect(wrapper.find('form.copy-form').exists()).toBe(false)
+    expect(wrapper.emitted('open')).toBeUndefined()
+    wrapper.unmount()
   })
 })

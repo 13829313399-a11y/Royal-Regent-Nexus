@@ -8,7 +8,7 @@ import InternalQuoteSectionEditor from '../InternalQuoteSectionEditor.vue'
 
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
 
-function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>) {
+function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>, canEdit = true) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useInternalQuoteDeskStore()
@@ -23,7 +23,7 @@ function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>)
   ))
   vi.spyOn(store, 'previewSectionCost').mockResolvedValue(undefined)
   const wrapper = mount(InternalQuoteSectionEditor, {
-    props: { quote, section, canEdit: true, canReview: false, canRemove: false, wholeQuoteReview: true },
+    props: { quote, section, canEdit, canReview: false, canRemove: false, wholeQuoteReview: true },
     global: { plugins: [pinia], stubs: { InternalQuoteAttachmentPreview: true, teleport: true, DialogPortal: { template: "<div><slot /></div>" } } }, attachTo: document.body,
   })
   return { wrapper, save, section, store }
@@ -45,6 +45,16 @@ async function chooseMoldFile(wrapper: ReturnType<typeof setup>['wrapper']) {
 }
 
 describe('internal quote feedback regressions', () => {
+  it.each([true, false])('keeps historical mold parts without persistent IDs clean (editable: %s)', async canEdit => {
+    const { wrapper, save } = setup('engineering', { molds: [{
+      item: '车壳', parts: [{ name: '上壳' }, { name: '下壳' }],
+    }] }, canEdit)
+    await flushPromises()
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(save).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it.each(['engineering', 'molding', 'sales'] as const)('keeps an untouched %s form clean before import', async code => {
     const { wrapper } = setup(code, {})
     await flushPromises()
@@ -77,6 +87,8 @@ describe('internal quote feedback regressions', () => {
     expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ materials: [{ item: '螺丝' }], molds: [{ item: '新模具' }] })
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
     expect(save).not.toHaveBeenCalled()
+    expect((wrapper.get('[aria-label="启用生产模具费用分摊"]').element as HTMLInputElement).checked).toBe(false)
+    await wrapper.get('[aria-label="启用生产模具费用分摊"]').setValue(true)
     const feeInput = wrapper.get('[aria-label="生产模具费用 RMB"]')
     expect((feeInput.element as HTMLInputElement).value).toBe('49500')
     await feeInput.setValue('50000')
@@ -87,6 +99,77 @@ describe('internal quote feedback regressions', () => {
     wrapper.unmount()
   })
 
+  it('retains the legacy association when editable Engineering receives its first stable ID', async () => {
+    const engineering = setup('engineering', { molds: [{ mold_no: 'M1', item: '原外壳', parts: [] }] })
+    const molding = setup('molding', { injection_lines: [{
+      engineering_source_key: 'mold-no:M1#1', engineering_synced_fields: ['item'],
+      item: '原外壳', mold_no: 'M1', material: 'ABS', grade: '750SW', net_weight_g: 100,
+      sets: 1, target_output: 2000, machine_code: '18A', quantity: 1,
+    }] })
+    try {
+      const detach = molding.wrapper.findAll('button').find(button => button.text() === '解除联动')!
+      await detach.trigger('click')
+      await molding.wrapper.get('.moldingInjectionTable textarea').setValue('独立补录壳')
+      await engineering.wrapper.get('textarea[aria-label="模具名称"]').setValue('改名外壳')
+      const source = engineering.wrapper.vm.getWholeQuoteDraft().payload
+      expect(source).toMatchObject({ molds: [{ legacy_source_key: 'mold-no:M1#1' }] })
+      await molding.wrapper.setProps({ engineeringPayload: source })
+      expect(molding.wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ injection_lines: [{
+        item: '独立补录壳', net_weight_g: 100, engineering_sync_disabled: true,
+      }] })
+      expect((molding.wrapper.vm.getWholeQuoteDraft().payload.injection_lines as unknown[])).toHaveLength(1)
+    } finally {
+      engineering.wrapper.unmount()
+      molding.wrapper.unmount()
+    }
+  })
+
+  it('projects renamed children and added molds into the molding draft without multiplying mold weight', async () => {
+    const { wrapper } = setup('molding', { injection_lines: [{
+      item: '外壳上/外壳下', mold_no: 'M01', material: 'ABS', grade: '750SW', net_weight_g: 485,
+      sets: 1, target_output: 2000, machine_code: '18A', quantity: 2, remark: '啤机补录',
+    }] })
+    await wrapper.setProps({ engineeringPayload: { molds: [{
+      mold_id: 'mold-one', mold_no: 'M01', item: '外壳上/外壳下', material_type: 'ABS', net_weight_g: 485,
+      parts: [{ part_id: 'part-top', name: '外壳上', unit_net_weight_g: 200 }, { part_id: 'part-bottom', name: '外壳下', unit_net_weight_g: 285 }],
+    }, { mold_id: 'mold-two', mold_no: 'M02', item: '新胶件', material_type: 'ABS', parts: [{ part_id: 'part-new', name: '新胶件' }] }] } })
+    const lines = wrapper.vm.getWholeQuoteDraft().payload.injection_lines as Array<Record<string, unknown>>
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatchObject({ net_weight_g: 485, quantity: 2, target_output: 2000, remark: '啤机补录', cost_scope: 'whole_mold', engineering_parts: [{ name: '外壳上' }, { name: '外壳下' }] })
+    expect(wrapper.text()).toContain('上方整模重量、料价及啤工只计一次')
+    expect(wrapper.text()).toContain('新胶件')
+    wrapper.unmount()
+  })
+
+  it('uploads a painting image into its row draft and preserves it across attachment refresh', async () => {
+    const { wrapper, section, store } = setup('painting', { rows: [{ name: '透明盖', operations: {}, image_reference: '' }] })
+    const upload = vi.spyOn(store, 'uploadAttachment').mockResolvedValue({ id: 'image-1', file_name: '透明盖.png' } as never)
+    const input = wrapper.get('input[aria-label="喷油第 1 行添加图片"]')
+    const file = new File(['image-bytes'], '透明盖.png', { type: 'image/png' })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change'); await flushPromises()
+    expect(upload).toHaveBeenCalledWith('feedback-quote', 'painting', file)
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ rows: [{ name: '透明盖', image_attachment_ids: ['image-1'] }] })
+    await wrapper.setProps({ section: { ...section, attachments: [{ id: 'image-1', fileName: '透明盖.png', contentType: 'image/png' } as never] } })
+    expect(wrapper.find('.painting-row-images img').attributes('alt')).toBe('透明盖.png')
+    await wrapper.get('[aria-label="移除喷油图片 透明盖.png"]').trigger('click')
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ rows: [{ image_attachment_ids: [] }] })
+    wrapper.unmount()
+  })
+
+  it('merges sidebar pricing into the same sales save snapshot without dropping department inputs', () => {
+    const { wrapper } = setup('sales', { shipping: { markup_x: 1.20, misc_ratio: .02 }, remark: '保留业务资料' })
+    const draft = wrapper.vm.getWholeQuoteDraft({
+      markupTiers: [3000, 5000, 10000].map(moq => ({ moq, markup_x: moq === 10000 ? 1.12 : 1.20, include_in_output: true })),
+      selectedMoq: 10000, activeMarkup: 1.12, miscRatio: .03,
+    })
+    expect(draft.payload).toMatchObject({ shipping: { markup_x: 1.12, selected_markup_moq: 10000, misc_ratio: .03, divisor: .97 } })
+    expect(draft.localPayload).toMatchObject({ shipping: { markup_x: 1.20, misc_ratio: .02 } })
+    wrapper.vm.acceptSavedPayload(draft.payload, draft.payload, 6, draft.localPayload)
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ shipping: { markup_x: 1.12, misc_ratio: .03 } })
+    wrapper.unmount()
+  })
   it.each([false, true])('saves Dickie additions on returned legacy quotes over HTTP (whole review: %s)', async wholeQuoteReview => {
     const cryptoSource = globalThis.crypto
     vi.stubGlobal('crypto', { getRandomValues: cryptoSource.getRandomValues.bind(cryptoSource) })
@@ -163,18 +246,18 @@ describe('internal quote feedback regressions', () => {
     }
   })
 
-  it('does not report automatic molding reference canonicalization as unsaved user input', async () => {
-    const { wrapper } = setup('molding', { injection_lines: [{ item: '壳', material: 'ABS', grade: '750SW', machine_code: '18' }] })
+  it.each(['750SW', ''])('keeps reference normalization clean and includes the sole grade in the save payload (grade: %s)', async grade => {
+    const { wrapper } = setup('molding', { injection_lines: [{ item: '壳', material: 'ABS', grade, machine_code: '18' }] })
     await flushPromises()
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
     expect(wrapper.find('.dirty').exists()).toBe(false)
-    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ injection_lines: [{ machine_code: '18A', machine_name: '180T' }] })
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ injection_lines: [{ material: 'ABS', grade: '750SW', machine_code: '18A', machine_name: '180T' }] })
     wrapper.unmount()
   })
 
-  it('removes deleted engineering rows while retaining other unsaved molding edits', async () => {
+  it('marks deleted engineering sources while retaining all unsaved molding inputs', async () => {
     const surviving = { item: '主壳', engineering_source_key: 'mold-no:M01#1', engineering_synced_fields: ['item'] }
-    const removed = { item: '3. Payment（付款）', engineering_source_key: 'source-row:22#1', engineering_synced_fields: ['item'] }
+    const removed = { item: '已移除模具', engineering_source_key: 'source-row:22#1', engineering_synced_fields: ['item'] }
     const manual = { item: '手工行' }
     const { wrapper, section } = setup('molding', { injection_lines: [surviving, removed, manual] })
     const first = wrapper.findAll('.moldingInjectionTable tbody tr')[0]!
@@ -182,10 +265,11 @@ describe('internal quote feedback regressions', () => {
     await quantity.setValue('3')
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
     const before = wrapper.vm.getWholeQuoteDraft().payload.injection_lines as Record<string, unknown>[]
-    await wrapper.setProps({ section: { ...section, revision: 6, payload: { injection_lines: [surviving, manual] } } })
+    await wrapper.setProps({ section: { ...section, revision: 6, payload: { injection_lines: [surviving, { ...removed, engineering_source_missing: true }, manual] } } })
     const after = wrapper.vm.getWholeQuoteDraft()
-    expect(after.payload.injection_lines).toEqual([before[0], before[2]])
-    expect(wrapper.findAll('.moldingInjectionTable tbody tr')).toHaveLength(2)
+    expect(after.payload.injection_lines).toEqual([before[0], { ...before[1], engineering_source_missing: true }, before[2]])
+    expect(wrapper.findAll('.moldingInjectionTable tbody tr[data-injection-index]')).toHaveLength(3)
+    expect(wrapper.text()).toContain('工程源模具已移除')
     expect(wrapper.findAll('.moldingInjectionTable tbody tr')[0]!.findAll('input[type="number"]').at(-1)!.element).toBe(quantity.element)
     expect(after.revision).toBe(6)
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
@@ -193,32 +277,32 @@ describe('internal quote feedback regressions', () => {
     wrapper.unmount()
   })
 
-  it('accepts a cleaned whole-product save without restoring deleted molding rows', async () => {
-    const removed = { item: '4. Validity', engineering_source_key: 'source-row:23#1' }
+  it('acknowledges a saved missing-source warning without clearing retained inputs', async () => {
+    const removed = { item: '待核对模具', engineering_source_key: 'source-row:23#1' }
     const { wrapper } = setup('molding', { injection_lines: [removed, { item: '手工行' }] })
     const submitted = wrapper.vm.getWholeQuoteDraft().payload
-    wrapper.vm.acceptSavedPayload({ injection_lines: [{ item: '手工行' }] }, submitted, 6)
+    wrapper.vm.acceptSavedPayload({ injection_lines: [{ ...removed, engineering_source_missing: true }, { item: '手工行' }] }, submitted, 6)
     await flushPromises()
-    expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toMatchObject([{ item: '手工行' }])
-    expect(wrapper.findAll('.moldingInjectionTable tbody tr')).toHaveLength(1)
+    expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toMatchObject([{ ...removed, engineering_source_missing: true }, { item: '手工行' }])
+    expect(wrapper.findAll('.moldingInjectionTable tbody tr[data-injection-index]')).toHaveLength(2)
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
     wrapper.unmount()
   })
 
-  it('keeps edits made during a molding save while applying source deletions in its receipt', async () => {
+  it('keeps edits made during a molding save while applying missing-source warnings in its receipt', async () => {
     const { wrapper, save } = setup('molding', { injection_lines: [
-      { item: '3. Payment', engineering_source_key: 'source-row:22#1' }, { item: '手工行' },
+      { item: '待核对模具', engineering_source_key: 'source-row:22#1' }, { item: '手工行' },
     ] })
     const submitted = wrapper.vm.getWholeQuoteDraft().payload
     let resolve!: (result: ApiInternalQuoteSection) => void
     save.mockReturnValueOnce(new Promise<ApiInternalQuoteSection>(done => { resolve = done }))
     const pending = wrapper.vm.saveWholeQuoteDraft(false)
     await wrapper.findAll('.moldingInjectionTable tbody tr')[1]!.get('textarea').setValue('保存期间修改')
-    resolve({ revision: 6, payload: { ...submitted, injection_lines: [{ item: '手工行' }] } } as unknown as ApiInternalQuoteSection)
+    resolve({ revision: 6, payload: { ...submitted, injection_lines: [{ item: '待核对模具', engineering_source_key: 'source-row:22#1', engineering_source_missing: true }, { item: '手工行' }] } } as unknown as ApiInternalQuoteSection)
     await pending
     await flushPromises()
-    expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toMatchObject([{ item: '保存期间修改' }])
-    expect(wrapper.findAll('.moldingInjectionTable tbody tr')).toHaveLength(1)
+    expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toMatchObject([{ item: '待核对模具', engineering_source_missing: true }, { item: '保存期间修改' }])
+    expect(wrapper.findAll('.moldingInjectionTable tbody tr[data-injection-index]')).toHaveLength(2)
     expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
     wrapper.unmount()
   })
@@ -413,9 +497,11 @@ describe('internal quote feedback regressions', () => {
     await flushPromises()
     expect(wrapper.findAll('.engineering-mold-part-card')).toHaveLength(2)
     const confirm = () => wrapper.findAll('button').find(button => button.text() === '确认拆分')!.trigger('click')
+    await wrapper.findAll('[aria-label="模具子配件名称"]')[0]!.setValue('')
     await confirm()
     expect(save).not.toHaveBeenCalled()
-    expect(wrapper.get('.mold-split-error').text()).toContain('净重')
+    expect(wrapper.get('.mold-split-error').text()).toContain('名称')
+    await wrapper.findAll('[aria-label="模具子配件名称"]')[0]!.setValue('上')
     for (const input of wrapper.findAll('[aria-label="模具子配件净重"]')) await input.setValue('10')
     save.mockRejectedValueOnce(new Error('版本冲突'))
     await confirm()
@@ -433,6 +519,36 @@ describe('internal quote feedback regressions', () => {
       { parts: [{ output_count: 4, quantity: 2 }, { output_count: 4, quantity: 2 }] },
       { parts: [{ output_count: 8, quantity: 3 }] },
     ] })
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('re-splits the current slash name without discarding matched IDs or manual child input', async () => {
+    const { wrapper, save } = setup('engineering', { molds: [{
+      item: '上壳/下壳', cavity: '4', quantity: 2, net_weight_g: 100,
+      parts: [{ id: 'top', name: '上壳', unit_net_weight_g: 40, output_count: 4, quantity: 2 },
+        { id: 'manual', name: '手工胶件', unit_net_weight_g: 7, output_count: 3, quantity: 1 }],
+    }] })
+    const original = wrapper.vm.getWholeQuoteDraft().payload
+    await wrapper.get('[aria-label="拆分第 1 行模具"]').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '按当前名称重新拆分')!.trigger('click')
+    expect(wrapper.findAll('[aria-label="模具子配件名称"]').map(input => (input.element as HTMLInputElement).value)).toEqual(['上壳', '下壳', '手工胶件'])
+    expect(wrapper.findAll('[aria-label="模具子配件净重"]').map(input => (input.element as HTMLInputElement).value)).toEqual(['40', '0', '7'])
+    expect(wrapper.text()).toContain('保留 1 项原有手工胶件')
+    expect(save).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(button => button.text() === '取消拆分')!.trigger('click')
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toEqual(original)
+    await wrapper.get('[aria-label="拆分第 1 行模具"]').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '按当前名称重新拆分')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '确认拆分')!.trigger('click')
+    await flushPromises()
+    expect(save.mock.calls[0]![3]).toMatchObject({ molds: [{ net_weight_g: 100, parts: [
+      { id: 'top', part_id: 'top', name: '上壳', unit_net_weight_g: 40 },
+      { name: '下壳', unit_net_weight_g: 0, output_count: 4, quantity: 2 },
+      { id: 'manual', part_id: 'manual', name: '手工胶件', unit_net_weight_g: 7 },
+    ] }] })
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
     wrapper.unmount()
   })
@@ -456,4 +572,19 @@ describe('internal quote feedback regressions', () => {
     expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ injection_lines: [{ cycle_time_seconds: 28 }] })
     wrapper.unmount()
   })
+})
+
+
+it('leaves unselected molding clean and empty until the user explicitly generates engineering rows', async () => {
+  const { wrapper, save } = setup('molding', { engineering_prefill_paused: true })
+  await wrapper.setProps({ engineeringPayload: { molds: [{ mold_id: 'm1', item: '外壳', net_weight_g: 50 }] } })
+  await flushPromises()
+  expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+  expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toEqual([])
+  await wrapper.findAll('button').find(button => button.text() === '从工程生成胶件')!.trigger('click')
+  await flushPromises()
+  expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toMatchObject([{ item: '外壳', engineering_mold_id: 'm1' }])
+  expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+  expect(save).not.toHaveBeenCalled()
+  wrapper.unmount()
 })
