@@ -3,9 +3,9 @@ import { http } from '@/lib/http'
 export interface SupplierSource {
   source_key: string; kind: 'RECEIPT' | 'RETURN'; document_no: string; acceptance_date: string | null;
   date_basis: string; customer_name: string; contract_no: string; item_no: string; packaging_type: string;
-  paper_quality: string; specification: string; unit: string; quantity: string; unit_price: string | null;
+  paper_quality: string; specification: string; dimension_unit?: string; unit: string; quantity: string; unit_price: string | null;
   amount: string | null; currency: string; issues: string[];
-  supplier_delivery?: { shipment_id: string; line_id: string; document_no: string; delivery_date: string;
+  supplier_delivery?: { original_quantity?: string; shipment_id: string; line_id: string; document_no: string; delivery_date: string;
     quantity: string; unit_price: string | null; amount: string | null; currency: string;
     received_quantity: string; damaged_quantity: string; rejected_quantity: string; unusable_quantity: string;
     original_unit_price?: string | null; price_warning?: string;

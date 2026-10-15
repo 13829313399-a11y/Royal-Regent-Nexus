@@ -47,6 +47,37 @@ beforeEach(() => {
 })
 
 describe('supplier-origin ordinary order entry', () => {
+  it('continues the original delivery using only its remaining quantity and preserves the chosen remainder action', async () => {
+    const data = fixture()
+    data.shipments = [{ ...data.shipments[0]!, receipt_id: 'FIRST', receipt_status: 'POSTED', partially_received: true,
+      lines: [sourceLine('SOURCE', { source_type: 'FORMAL_ORDER', order_line_id: 'PAPER', quantity: '100',
+        received_quantity: '60', remaining_quantity: '40', receivable_quantity: '40' })],
+      acceptance_history: [{ receipt_id: 'FIRST', status: 'POSTED', acceptance_date: '2026-09-30', confirmed_at: '', lines: [] }] }]
+    api.workspace.mockResolvedValue(data)
+    api.receive.mockResolvedValue({ ...data.shipments[0]!, status: 'RECEIVED' })
+    const wrapper = mount(Component, options); await flushPromises()
+    expect(wrapper.text()).toContain('累计实收 60 · 待收 40')
+    expect(button(wrapper, '关联已入库记录')).toBeUndefined()
+    await button(wrapper, '继续收余货').trigger('click'); await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[aria-label="SOURCE 实收"]').element.value).toBe('40')
+    expect(wrapper.get('[aria-label="SOURCE 实收"]').attributes('max')).toBe('40')
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="未收余货处理"]').element.value).toBe('WAIT')
+    await wrapper.get('[aria-label="未收余货处理"]').setValue('CLOSE')
+    await wrapper.get('[aria-label="SOURCE 实收"]').setValue(30)
+    expect(wrapper.get('[aria-label="SOURCE 差异原因"]').attributes('required')).toBeDefined()
+    await wrapper.get('[aria-label="未收余货处理"]').setValue('WAIT')
+    expect(wrapper.get('[aria-label="SOURCE 差异原因"]').attributes('required')).toBeUndefined()
+    await wrapper.get('[aria-label="SOURCE 实收"]').setValue(40)
+    wrapper.findComponent({ name: 'CartonReceiptAllocations' }).vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 40 }])
+    await wrapper.get('[aria-label="发货验收日期"]').setValue('2026-10-01')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.receive).toHaveBeenCalledWith('SHIPMENT', expect.objectContaining({ remaining_action: 'WAIT', acceptance_date: '2026-10-01',
+      lines: [expect.objectContaining({ received_quantity: 40 })] }))
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    await wrapper.findAll('button').find(row => row.text() === '冲销本次入库')!.trigger('click')
+    expect(wrapper.emitted('reverse')?.[0]).toEqual(['FIRST'])
+    wrapper.unmount()
+  })
   it('groups only this note and contract/item/PO without creating orders or inferring product quantities', async () => {
     const wrapper = mount(Component, options); await flushPromises()
     expect(wrapper.text()).toContain('已有 1 张兼容正式订单')
@@ -263,4 +294,23 @@ describe('supplier-origin material and draft guards', () => {
     expect(isSupplierOrderSource({ ...source, papers: [sourceLine('SOURCE', { order_line_id: 'PAPER' })] })).toBe(false)
     expect(isSupplierOrderSource({ ...source, papers: [sourceLine('SOURCE', { quantity: 'NaN' })] })).toBe(false)
   })
+})
+
+it.each(['FREE', 'PENDING'] as const)('preserves default actual quantity and submits explicit zero-price %s', async kind => {
+  const data = fixture(); data.shipments = [data.shipments[0]!]; data.shipments[0]!.lines = [sourceLine('SOURCE', { contract_no: 'GIFT-ONLY', item_no: 'GIFT-ONLY' })]
+  api.workspace.mockResolvedValue(data)
+  api.receive.mockResolvedValue({ ...data.shipments[0]!, receipt_id: 'RECEIPT' })
+  const wrapper = mount(Component, options); await flushPromises()
+  await button(wrapper, '核实实际收到').trigger('click'); await flushPromises()
+  const dialog = wrapper.get('[role="dialog"]')
+  expect(dialog.get('[aria-label="SOURCE 实收"]').element).toHaveProperty('value', '836')
+  await dialog.get('[aria-label="SOURCE 无单处理结论"]').setValue(kind === 'FREE' ? 'GIFT' : 'SAMPLE')
+  await dialog.get('[aria-label="SOURCE 样板箱客户"]').setValue('CUSTOMER')
+  if (kind === 'PENDING') await dialog.get('[aria-label="SOURCE 样板箱需求人"]').setValue('纸箱部')
+  else expect(dialog.get('[aria-label="SOURCE 样板箱需求人"]').attributes('required')).toBeUndefined()
+  await dialog.get('[aria-label="SOURCE 入库单价"]').setValue(0)
+  wrapper.findComponent({ name: 'CartonReceiptAllocations' }).vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 836 }])
+  await dialog.trigger('submit'); await flushPromises()
+  expect(api.receive).toHaveBeenCalledWith('SHIPMENT', expect.objectContaining({ lines: [expect.objectContaining({ received_quantity: 836, unit_price: 0, zero_price_kind: kind })] }))
+  wrapper.unmount()
 })

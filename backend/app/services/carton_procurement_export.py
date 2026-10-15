@@ -180,6 +180,8 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
             notice += "；供应商责任免费补货，不新增月结应付" if snapshot["replenishment"]["settlement_policy"] == "SUPPLIER_FREE" else "；我方责任，按实际验收入库数量及单价计入月结一次"
         if snapshot["replenishment"].get("reason"):
             notice += "；" + snapshot["replenishment"]["reason"]
+    elif snapshot.get("material_correction"):
+        notice = "纸品资料更正：已由双方确认，数量不变、不新增采购；请按本版资料执行后续送货。更正原因：" + snapshot["material_correction"]["reason"]
     elif issue.document_type == "INITIAL":
         notice = "供应商请按“本次变化”列执行首次采购；“变更后累计”用于核对。"
     elif issue.document_type == "REDUCE":

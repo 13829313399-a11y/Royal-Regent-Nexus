@@ -260,7 +260,7 @@ describe('delivery drafts across authorization refreshes', () => {
     api.receive.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     const wrapper = mount(CartonSupplierReceiving, options); await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '核实实际收到')!.trigger('click'); await flushPromises()
-    await wrapper.findAll('button').find(button => button.text() === '整单未到')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '本次未到')!.trigger('click')
     await wrapper.get('[role="dialog"]').trigger('submit')
     refreshSameSession(); await flushPromises()
     await wrapper.get('[role="dialog"]').trigger('submit')
@@ -978,7 +978,7 @@ describe('supplier collaboration entry', () => {
       ['PENDING_ACCEPTANCE', 'ORDER-PENDING', '待接单'],
       ['WAITING_SHIPMENT', 'ORDER-WAITING', '待送货'],
       ['ACCEPTED', 'ORDER-ACCEPTED', '已确认接单'],
-      ['RECEIPT_PENDING', 'ORDER-TRANSIT', '送货待确定'],
+      ['RECEIPT_PENDING', 'ORDER-TRANSIT', '待仓库验收'],
       ['COMPLETED', 'ORDER-COMPLETE', '已完成'],
       ['CANCELLED', 'ORDER-CANCEL', '已取消'],
       ['PENDING_ISSUE', 'ORDER-UNISSUED', '变更待生成'],
@@ -1233,7 +1233,7 @@ describe('internal supplier collaboration', () => {
     const wrapper = mount(CartonSupplierReceiving, { ...options, props: { factoryId: 'huaxing' } }); await flushPromises()
     const submitZero = async () => {
       await wrapper.findAll('button').find(button => button.text() === '核实实际收到')!.trigger('click')
-      await wrapper.findAll('button').find(button => button.text() === '整单未到')!.trigger('click')
+      await wrapper.findAll('button').find(button => button.text() === '本次未到')!.trigger('click')
       await wrapper.get('form').trigger('submit'); await flushPromises()
     }
     await submitZero()
@@ -1284,7 +1284,7 @@ describe('internal supplier collaboration', () => {
     api.workspace.mockResolvedValue(data)
     const wrapper = mount(CartonSupplierReceiving, options); await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '更正原单验收')!.trigger('click')
-    await wrapper.findAll('button').find(button => button.text() === '整单未到')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '本次未到')!.trigger('click')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(api.receive).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('请填写至少四字更正原因')
@@ -1408,8 +1408,9 @@ describe('internal supplier collaboration', () => {
     const wrapper = mount(CartonSupplierReceiving, options); await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '核实实际收到')!.trigger('click')
     expect(wrapper.get<HTMLInputElement>('input[aria-label="SL-0 实收"]').element.value).toBe('10')
-    await wrapper.findAll('button').find(button => button.text() === '整单未到')!.trigger('click')
-    expect(wrapper.get('[role="dialog"]').text()).toContain('确认整单未收到并退回')
+    await wrapper.findAll('button').find(button => button.text() === '本次未到')!.trigger('click')
+    await wrapper.get('[aria-label="未收余货处理"]').setValue('CLOSE')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('确认未收余货不再送')
     api.workspace.mockRejectedValueOnce(new Error('台账刷新失败'))
     await wrapper.get('[role="dialog"]').trigger('submit'); await flushPromises()
     expect(api.receive).toHaveBeenCalledWith('SHIP-A', expect.objectContaining({ expected_revision: 1, lines: [expect.objectContaining({ shipment_line_id: 'SL-0', received_quantity: 0, difference_reason: '货物尚未实际送到' }), expect.objectContaining({ shipment_line_id: 'SL-1', received_quantity: 0 })] }))

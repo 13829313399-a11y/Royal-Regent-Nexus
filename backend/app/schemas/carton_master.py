@@ -1,7 +1,14 @@
 from decimal import Decimal
+import unicodedata
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.carton_weights import CartonPackingWeights
+
+
+STANDARD_PAPER_TYPES = ("普通箱", "半翼箱", "平卡", "刀卡", "压线卡", "啤卡")
+
+def is_standard_paper_type(value):
+    return "".join(unicodedata.normalize("NFKC", value).split()) in STANDARD_PAPER_TYPES
 
 
 class PaperConfiguration(CartonPackingWeights):
@@ -48,6 +55,7 @@ class ItemNumberRule(NumberRule):
 
 
 class MasterData(CartonPackingWeights):
+    default_dimension_unit: Literal["cm", "inch"] = "cm"
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     product_name: str = Field(default="", max_length=255)
     packing_name: str = Field(default="", max_length=80)
@@ -77,6 +85,8 @@ class MasterData(CartonPackingWeights):
             if any(not value.strip() or len(value.strip()) > limit for value in values):
                 raise ValueError(f"纸品选项不能为空且不能超过 {limit} 字")
             setattr(self, key, list(dict.fromkeys(value.strip() for value in values)))
+        # Fixed catalog types remain visible even when an older client tries to hide them.
+        self.hidden_paper_types = [value for value in self.hidden_paper_types if not is_standard_paper_type(value)]
         return self
 
 

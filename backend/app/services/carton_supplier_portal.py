@@ -105,6 +105,8 @@ def fingerprint(payload):
         data.pop("registration_mode")
     if data.get("new_delivery_confirmation") is False:
         data.pop("new_delivery_confirmation")
+    if data.get("remaining_action") == "CLOSE":
+        data.pop("remaining_action")  # Preserve pre-batch receipt request fingerprints.
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -222,12 +224,13 @@ def _supplier_mark_orders(db, user, factory):
 
 def _supplier_mark_assets(db, user, factory):
     """Share source files by contract using issued headers, with factory-wide ambiguity checks."""
+    from app.schemas.carton_mark import CartonMarkAssetWorkflow
     _, projections, eligible = _supplier_mark_orders(db, user, factory)
     result = []
     for asset in db.scalars(select(CartonMarkAsset).where(
             CartonMarkAsset.factory_id == factory, CartonMarkAsset.is_archived.is_(False))
             .order_by(CartonMarkAsset.created_at.desc(), CartonMarkAsset.id.desc())):
-        projected = mark_assets.asset_out(asset, projections)
+        projected = mark_assets.asset_out(asset, projections, CartonMarkAssetWorkflow())
         if projected.binding_status != "BOUND":
             continue
         orders = [eligible[o.id] for o in projected.orders if o.id in eligible]
@@ -237,11 +240,16 @@ def _supplier_mark_assets(db, user, factory):
 
 
 def supplier_mark_assets(db, user, factory):
+    from app.services import carton_mark_asset_workflow as lifecycle
+    from app.schemas.carton_mark import CartonMarkAssetWorkflow
+    visible = _supplier_mark_assets(db, user, factory)
+    workflows = lifecycle.states(db, factory, [asset.id for asset, _ in visible])
     return [dict(id=asset.id, revision=asset.revision, file_name=asset.file_name, kind=asset.kind,
         photo_group_id=asset.photo_group_id,
         size_bytes=asset.size_bytes, contract_number="、".join(sorted({order["contract_no"] for order in orders})),
-        created_at=asset.created_at, orders=orders)
-        for asset, orders in _supplier_mark_assets(db, user, factory)]
+        created_at=asset.created_at, orders=orders,
+        workflow=workflows.get(asset.id, CartonMarkAssetWorkflow()).model_dump())
+        for asset, orders in visible]
 
 
 def supplier_mark_asset_document(db, user, factory, asset_id):
@@ -335,14 +343,6 @@ def executable(db, order, issue_id):
     return issue
 
 
-def _accepted_reservation(shipment, paper):
-    original_id = json.loads(paper.snapshot_json).get("original_unmatched_line_id")
-    accepted = next((item for item in json.loads(shipment.acceptance_json or "{}").get("lines", [])
-        if item["shipment_line_id"] in {paper.id, original_id}), {})
-    return max(Decimal(0), Decimal(str(accepted.get("received_quantity") or 0))
-        - sum(Decimal(str(accepted.get(key) or 0)) for key in ("damaged_quantity", "rejected_quantity", "unusable_quantity")))
-
-
 def outstanding(db, line_ids):
     if not line_ids:
         return {}
@@ -352,13 +352,15 @@ def outstanding(db, line_ids):
         .where(or_(SupplierShipment.status == "SENT", and_(SupplierShipment.status == "RECEIVED", CartonReceipt.status == "REVERSED")),
             SupplierShipmentLine.order_line_id.in_(line_ids))).all()
     result = {}
+    from app.services import carton_shipment_receiving as receiving
+    projections = {}
     for paper, shipment, receipt_status in rows:
         if receipt_link.link_only(shipment):
             continue  # A document for already posted goods is not another in-transit quantity.
-        reserved = paper.quantity
-        if receipt_status == "REVERSED":
-            # Reserve the invalidated effective acceptance, not previously rejected/short quantities.
-            reserved = _accepted_reservation(shipment, paper)
+        if shipment.id not in projections:
+            formal, unmatched = _shipment_sources(db, shipment)
+            projections[shipment.id] = receiving.progress(db, shipment, formal + unmatched)[2]
+        reserved = projections[shipment.id][paper.id]["reserved_quantity"]
         result[paper.order_line_id] = result.get(paper.order_line_id, Decimal(0)) + reserved
     return result
 
@@ -400,6 +402,9 @@ def order_out(db, order, *, internal=False):
         issue_id=issue.id if issue else "", document_no=issue.document_no if issue else "尚未生成",
         order_date=header.get("order_date") or order.order_date,
         planned_date=snapshot.get("after_due_date", ""), awaiting_issue=changed, lines=[])
+    from app.services.carton_material_correction import records, blocked_lines
+    result["material_corrections"] = records(db, order.factory_id, order.id)
+    material_holds = blocked_lines(db, order.factory_id, ids)
     result["cancellation_notice"] = cancellation_notice(db, order, issue)
     if internal:
         from app.services.carton_order_split import plans
@@ -414,7 +419,7 @@ def order_out(db, order, *, internal=False):
         line.update(child_no=f"{order.order_no}/{item['line_no']:02d}", required_quantity=str(required),
             received_quantity=str(fulfilled.get(line_id, 0)), in_transit_quantity=str(shipped.get(line_id, 0)),
             remaining_to_ship=str(max(Decimal(0), required - fulfilled.get(line_id, 0) - pending.get(line_id, 0) - shipped.get(line_id, 0))),
-            shipping_blocked_reason="此纸品有补单待核对，请联系内部仓库按原补单流程处理" if line_id in blocked else "",
+            shipping_blocked_reason="纸品资料更正待双方确认，暂停发货和正式入库" if line_id in material_holds else "此纸品有补单待核对，请联系内部仓库按原补单流程处理" if line_id in blocked else "",
             accepted=accepted, commitment_revision=commitment.revision if commitment else 0,
             promised_date=commitment.promised_date if commitment else "")
         if internal:
@@ -538,6 +543,13 @@ def shipment_out(db, row, *, internal=False):
     result["source_filename"] = ""
     result["source_sha256"] = ""
     formal, unmatched = _shipment_sources(db, row)
+    from app.services import carton_shipment_receiving as receiving
+    batches, correction_batch, progress = receiving.progress(db, row, formal + unmatched)
+    correction = correction_batch is not None
+    result["requires_correction"] = correction
+    if correction:
+        result["status"] = "RECEIPT_REVERSED"
+        receipt = correction_batch["receipt"]
     for line in formal:
         snapshot = json.loads(line.snapshot_json)
         source_file = snapshot.get("source_file") or {}
@@ -545,6 +557,13 @@ def shipment_out(db, row, *, internal=False):
         result["source_sha256"] = result["source_sha256"] or source_file.get("sha256", "")
         item = {key: snapshot.get(key, "") for key in ("order_no", "contract_no", "customer_po", "item_no", "customer_name", "child_no", "packaging_type", "paper_quality", "specification", "unit")}
         item.update(id=line.id, order_line_id=line.order_line_id, quantity=str(line.quantity), source_type="FORMAL_ORDER")
+        from app.services.carton_material_correction import latest_approved, receipt_specification, blocked_lines
+        item["material_correction_pending"] = bool(blocked_lines(db, row.factory_id, [line.order_line_id]))
+        if (row.status == 'SENT' or correction) and latest_approved(db, row.factory_id, line.order_line_id):
+            current_paper = db.get(CartonOrderLine, line.order_line_id)
+            item.update(packaging_type=current_paper.packaging_type, paper_quality=current_paper.paper_quality,
+                specification=receipt_specification(db, current_paper), dimension_unit=current_paper.dimension_unit,
+                material_correction_note='已按双方确认的资料更正；原送货资料保留')
         if internal:
             item.update(unit_price=snapshot.get("unit_price", "0"),
                 delivery_unit_price=snapshot.get("delivery_unit_price"), currency=snapshot.get("currency", "CNY"))
@@ -567,11 +586,24 @@ def shipment_out(db, row, *, internal=False):
             item.update(unit_price=str(snapshot.get("unit_price") or "0"), currency="CNY")
         result["lines"].append(item)
     accepted = json.loads(row.acceptance_json or "{}")
+    for item in result["lines"]:
+        item.update({key: str(value) for key, value in progress[item["id"]].items() if key != "reserved_quantity"})
+    result["partially_received"] = row.status == "SENT" and any(item["received_quantity"] > 0 for item in progress.values())
     result["requires_receipt_link"] = receipt_link.link_only(row)
     result["linked_existing_receipt"] = bool(accepted.get("linked_existing_receipt"))
     result["acceptance_date"] = accepted.get("acceptance_date")
     # Supplier sees actual quantities/discrepancies, never internal cost or warehouse IDs.
     result["acceptance_lines"] = [{key: item.get(key) for key in ("shipment_line_id", "received_quantity", "damaged_quantity", "rejected_quantity", "unusable_quantity", "difference_reason", "no_order_decision")} for item in accepted.get("lines", [])]
+    if batches:
+        result["acceptance_lines"] = []
+        for paper in formal + unmatched:
+            entries = [receiving.entry(batch, paper) for batch in batches if not batch["receipt"] or batch["receipt"].status == "POSTED"]
+            if not entries:
+                continue
+            result["acceptance_lines"].append({"shipment_line_id": paper.id,
+                **{key: str(progress[paper.id][key]) for key in receiving.QUANTITIES},
+                "difference_reason": "；".join(dict.fromkeys(item.get("difference_reason", "") for item in entries if item.get("difference_reason"))),
+                "no_order_decision": next((item.get("no_order_decision") for item in reversed(entries) if item.get("no_order_decision")), "")})
     last_status_event = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == row.factory_id,
         CartonAuditEvent.entity_type == "supplier_shipment", CartonAuditEvent.entity_id == row.id,
         CartonAuditEvent.event_type.in_({"SUPPLIER_SHIPMENT_DEFERRED", "SUPPLIER_SHIPMENT_NON_ARRIVAL_REOPENED"}))
@@ -587,19 +619,19 @@ def shipment_out(db, row, *, internal=False):
         detail = json.loads(event.detail_json)
         prior = db.get(CartonReceipt, detail.get("receipt_id")) if detail.get("receipt_id") else None
         acceptance = detail.get("acceptance") or {}
-        result["acceptance_history"].append({"confirmed_at": event.created_at,
+        result["acceptance_history"].append({**({"receipt_id": prior.id} if internal and prior else {}), "confirmed_at": event.created_at,
             "acceptance_date": acceptance.get("acceptance_date"), "status": prior.status if prior else ("NOT_RECEIVED" if event.event_type == "SUPPLIER_SHIPMENT_NOT_RECEIVED" else "RECEIVED"),
             "lines": [{key: item.get(key) for key in ("shipment_line_id", "received_quantity", "damaged_quantity", "rejected_quantity", "unusable_quantity", "difference_reason", "no_order_decision")}
                 for item in acceptance.get("lines", [])]})
-    if correction:
+    if correction and not any(batch["receipt"] and batch["receipt"].status == "POSTED" for batch in batches):
         result["acceptance_date"] = None
         result["acceptance_lines"] = []  # Old acceptance is history, not current received quantity.
     if internal:
-        result["receipt_id"] = row.receipt_id
+        result["receipt_id"] = receipt.id if receipt else row.receipt_id
         result["receipt_status"] = receipt.status if receipt else None
         receipt_lines = db.scalars(select(CartonReceiptLine).where(
-            CartonReceiptLine.receipt_id == row.receipt_id,
-            CartonReceiptLine.source_type == "AD_HOC").order_by(CartonReceiptLine.line_no)).all() if row.receipt_id else []
+            CartonReceiptLine.receipt_id.in_([batch["receipt_id"] for batch in batches if batch["receipt"] and batch["receipt"].status == "POSTED"]),
+            CartonReceiptLine.source_type == "AD_HOC").order_by(CartonReceiptLine.line_no)).all()
         result["sample_receipts"] = []
         for receipt_line in receipt_lines:
             link = db.scalar(select(CartonAuditEvent).where(
@@ -1110,6 +1142,8 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
             CartonOrder.supplier_id == supplier.id, CartonOrder.status.in_(VISIBLE_STATES))).all())
     if authorized_ids != set(ids):
         raise HTTPException(404, "未找到可访问的纸品子单")
+    from app.services.carton_material_correction import guard_lines
+    guard_lines(db, payload.factory_id, ids)
     fulfilled = fulfilled_by_line(db, ids); reserved = outstanding(db, ids); pending = _pending_received_by_line(db, ids)
     blocked = blocked_replacement_lines(db, payload.factory_id, ids)
     snapshots = []
@@ -1195,15 +1229,18 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
     digest = fingerprint(payload)
     for event in db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == payload.factory_id,
         CartonAuditEvent.entity_type == "supplier_shipment", CartonAuditEvent.entity_id == row.id,
-        CartonAuditEvent.event_type.in_({"SUPPLIER_SHIPMENT_RECEIVED", "SUPPLIER_SHIPMENT_NOT_RECEIVED"}))).all():
+        CartonAuditEvent.event_type.in_({"SUPPLIER_SHIPMENT_RECEIVED", "SUPPLIER_SHIPMENT_NOT_RECEIVED", "SUPPLIER_SHIPMENT_DEFERRED"}))).all():
         saved = json.loads(event.detail_json)
         if event.actor_user_id == user.id and saved.get("acceptance", {}).get("request_id") == payload.request_id:
             saved_fingerprint = saved.get("request_fingerprint") or fingerprint(ShipmentReceive.model_validate(saved["acceptance"]))
             if saved_fingerprint != digest:
                 raise HTTPException(409, "此收料提交标识已用于其他内容，请核对原记录")
             return shipment_out(db, row, internal=True)
-    previous_receipt = db.get(CartonReceipt, row.receipt_id) if row.receipt_id else None
-    correction = bool(previous_receipt and previous_receipt.status == "REVERSED")
+    from app.services import carton_shipment_receiving as receiving
+    formal, unmatched = _shipment_sources(db, row)
+    history, correction_batch, progress = receiving.progress(db, row, formal + unmatched)
+    previous_receipt = correction_batch["receipt"] if correction_batch else None
+    correction = previous_receipt is not None
     if receipt_link.link_only(row):
         raise HTTPException(409, "此单是后补凭证，请关联已入库记录，不能再次收料入库")
     if correction and len(payload.correction_reason.strip()) < 4:
@@ -1214,7 +1251,7 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
         raise HTTPException(409, "此发货单已确认收料，不可重复入库")
     if row.revision != payload.expected_revision:
         raise HTTPException(409, "发货单版本已变更，请刷新")
-    if (not correction and not payload.new_delivery_confirmation and any(item.received_quantity > 0 for item in payload.lines)
+    if (not correction and not history and not payload.new_delivery_confirmation and any(item.received_quantity > 0 for item in payload.lines)
         and receipt_link.matching_receipts(db, payload.factory_id, row.supplier_id,
             receipt_link.shipment_papers(db, row), note_no=row.delivery_note_no, include_linked=True)):
         raise HTTPException(409, "存在相同纸品和数量的已入库记录：后补送货单请关联原记录；确为新一批到货须明确核对后确认")
@@ -1228,64 +1265,75 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
             CartonOrder.factory_id == payload.factory_id, CartonOrder.status != "CANCELLED")).all()} if any(
                 isinstance(line, SupplierShipmentUnmatchedLine) for line in source) else set()
     reject_all = all(item.received_quantity == 0 for item in payload.lines)
+    if not reject_all or payload.remaining_action == "CLOSE" or correction:
+        from app.services.carton_supplier_settlement import date_check, ensure_open
+        date_check(payload.acceptance_date.isoformat())
+        ensure_open(db, payload.factory_id, row.supplier_id, payload.acceptance_date.isoformat()[:7])
     formal_ids = [line.order_line_id for line in formal]
     fulfilled = fulfilled_by_line(db, formal_ids)
     pending = _pending_received_by_line(db, formal_ids)
     reserved = outstanding(db, formal_ids)
     own_reservations = {}
     for shipped in formal:
-        own_reservations[shipped.order_line_id] = _accepted_reservation(row, shipped) if correction else shipped.quantity
+        own_reservations[shipped.order_line_id] = progress[shipped.id]["reserved_quantity"]
     receipt_lines = []
     for shipped in source:
         item = supplied[shipped.id]
-        if item.received_quantity > shipped.quantity:
-            raise HTTPException(422, "实收不能超过本次发货数量")
+        available_quantity = progress[shipped.id]["receivable_quantity"]
+        if item.received_quantity > available_quantity:
+            raise HTTPException(422, "实收不能超过本送货单剩余待收数量")
         effective = item.received_quantity - item.damaged_quantity - item.rejected_quantity - item.unusable_quantity
         if effective < 0:
             raise HTTPException(422, "不可用数量不能超过实收")
+        if available_quantity == 0:
+            continue  # Already handled papers remain visible but cannot post again.
         if isinstance(shipped, SupplierShipmentUnmatchedLine):
             snapshot = json.loads(shipped.snapshot_json)
             if item.received_quantity == 0:
                 if item.no_order_decision:
                     raise HTTPException(422, "未到货的无单纸品不能标记为样板箱或送错货")
-                if len(item.difference_reason.strip()) < 4:
+                if payload.remaining_action == "CLOSE" and len(item.difference_reason.strip()) < 4:
                     raise HTTPException(422, "无单纸品未到货须填写至少四字原因")
                 continue
             if item.no_order_decision == "WRONG_DELIVERY":
                 if effective != 0 or len(item.difference_reason.strip()) < 4:
                     raise HTTPException(422, "送错货必须全部拒收并填写至少四字原因")
                 continue
-            if item.no_order_decision != "SAMPLE":
-                raise HTTPException(422, "无单纸品须明确选择确需入库的样板箱或送错货")
-            if not item.customer_code or len(item.requested_by.strip()) < 2:
-                raise HTTPException(422, "样板箱须选择客户，并填写需求人")
+            if item.no_order_decision not in {"SAMPLE", "GIFT"}:
+                raise HTTPException(422, "无单纸品须明确选择样板箱、免费赠送或送错货")
+            if not item.customer_code or (item.no_order_decision == "SAMPLE" and len(item.requested_by.strip()) < 2):
+                raise HTTPException(422, "样板箱及赠品须选择客户；样板箱还需填写需求人")
             if effective <= 0:
-                raise HTTPException(422, "样板箱有效入库数量须大于 0；全部拒收请选择送错货")
+                raise HTTPException(422, "样板箱或赠品有效入库数量须大于 0；全部拒收请选择送错货")
             # A formal order entered after vendor import must be reconciled as a formal receipt.
             if snapshot.get("contract_no") and (
                 _dongkang_identity(snapshot["contract_no"]), _dongkang_identity(snapshot["item_no"])) in active_order_keys:
-                raise HTTPException(409, "此无单纸品已存在相同合同和货号的正式订单，请先核对，不得按样板箱入库")
-            if item.unit_price == 0:
-                raise HTTPException(422, "样板箱入库须填写大于 0 的单价；免费样板请先核实价格及结算方式")
+                raise HTTPException(409, "此无单纸品已存在相同合同和货号的正式订单，请先核对，不得按样板箱或赠品绕过正式订单入库")
+            if item.no_order_decision == "GIFT" and item.unit_price != 0:
+                raise HTTPException(422, "免费赠送的单价必须为 0")
             if not item.location_allocations:
-                raise HTTPException(422, "样板箱有效入库须分配实际仓位")
+                raise HTTPException(422, "样板箱或赠品有效入库须分配实际仓位")
             positions.validate_allocations(db, payload.factory_id,
                 [allocation.model_dump(mode="json") for allocation in item.location_allocations], effective)
             receipt_lines.append(CartonReceiptLineCreate(source_type="AD_HOC", customer_code=item.customer_code,
                 contract_no=snapshot.get("contract_no") or row.delivery_note_no, item_no=snapshot["item_no"],
                 packaging_type=snapshot["packaging_type"], paper_quality=snapshot["paper_quality"],
                 specification=snapshot["specification"], unit=item.unit or snapshot["unit"], currency="CNY",
-                delivered_quantity=shipped.quantity, received_quantity=item.received_quantity,
+                delivered_quantity=item.received_quantity if payload.remaining_action == "WAIT" else available_quantity, received_quantity=item.received_quantity,
                 damaged_quantity=item.damaged_quantity, rejected_quantity=item.rejected_quantity,
                 unusable_quantity=item.unusable_quantity, unit_price=item.unit_price,
+                zero_price_kind="FREE" if item.no_order_decision == "GIFT" else item.zero_price_kind,
                 location_allocations=item.location_allocations,
-                feedback_note=f"无正式订单样板箱；用途：{item.sample_purpose.strip() or '未填写'}；需求人：{item.requested_by}；{item.difference_reason}"))
+                feedback_note=f"{'免费赠送' if item.no_order_decision == 'GIFT' else '无正式订单样板箱'}；用途：{item.sample_purpose.strip() or '未填写'}；需求人：{item.requested_by}；{item.difference_reason}"))
             continue
         if item.no_order_decision or item.customer_code or item.sample_purpose or item.requested_by:
             raise HTTPException(422, "正式订单纸品不得选择无单处理")
+        from app.services.carton_material_correction import guard_lines
+        if effective > 0:
+            guard_lines(db, payload.factory_id, [shipped.order_line_id])
         line = db.get(CartonOrderLine, shipped.order_line_id)
         order = supplier_order(db, line.order_id, payload.factory_id, row.supplier_id)
-        if order.status not in OPEN_STATES and not reject_all:
+        if order.status not in OPEN_STATES and item.received_quantity > 0:
             raise HTTPException(409, "关联订单当前不允许收料")
         available = line.required_quantity - fulfilled.get(line.id, 0) - pending.get(line.id, 0) - (reserved.get(line.id, 0) - own_reservations.get(line.id, 0))
         if effective > available:
@@ -1295,17 +1343,28 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 raise HTTPException(422, "有效入库数量大于 0 时必须选择实际入库仓位并分配数量")
             positions.validate_allocations(db, payload.factory_id,
                 [allocation.model_dump(mode="json") for allocation in item.location_allocations], effective)
-        if effective != shipped.quantity and len(item.difference_reason.strip()) < 4:
+        if (effective != item.received_quantity or (payload.remaining_action == "CLOSE" and effective != available_quantity)) and len(item.difference_reason.strip()) < 4:
             raise HTTPException(422, "短收、破损或拒收必须填写至少四字的差异原因")
         if item.received_quantity == 0:
             continue  # Non-arrival remains shipment evidence, never a fabricated receipt line.
-        receipt_lines.append(CartonReceiptLineCreate(order_line_id=line.id, delivered_quantity=shipped.quantity,
+        from app.services.carton_material_correction import latest_approved
+        material_correction = latest_approved(db, payload.factory_id, line.id)
+        receipt_lines.append(CartonReceiptLineCreate(material_correction_id=material_correction['id'] if material_correction else '',
+            order_line_id=line.id, delivered_quantity=item.received_quantity if payload.remaining_action == "WAIT" else available_quantity,
             received_quantity=item.received_quantity, damaged_quantity=item.damaged_quantity, rejected_quantity=item.rejected_quantity,
-            unusable_quantity=item.unusable_quantity, unit_price=item.unit_price, paper_quality=item.paper_quality,
+            unusable_quantity=item.unusable_quantity, unit_price=item.unit_price, zero_price_kind=item.zero_price_kind, paper_quality=item.paper_quality,
             specification=item.specification, location_allocations=item.location_allocations, feedback_note=item.difference_reason))
     try:
+        if reject_all and payload.remaining_action == "WAIT" and not correction:
+            row.revision += 1
+            _audit(db, user, payload.factory_id, "SUPPLIER_SHIPMENT_DEFERRED", "supplier_shipment", row.id,
+                {"acceptance": payload.model_dump(mode="json"), "request_fingerprint": digest,
+                 "reason": "本次暂无实到，余货继续待收", "revision": row.revision})
+            db.commit()
+            return shipment_out(db, row, internal=True)
         if correction:
             row.status = "SENT"  # Also recovers reversed notes recorded before the reversal hook existed.
+            row.receipt_id = previous_receipt.id
             db.flush()
         receipt = None
         if receipt_lines:
@@ -1314,17 +1373,30 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 note=f"供应商发货单 {row.id}，逐纸品核实实际收到，差异保留待收需求" +
                     (f"；更正原收料 {previous_receipt.receipt_no}：{payload.correction_reason}" if correction else ""),
                 lines=receipt_lines), user, commit=False, supplier_shipment_id=row.id,
-                corrects_receipt_id=previous_receipt.id if correction else None)
+                corrects_receipt_id=previous_receipt.id if correction else None,
+                shipment_batch_key=payload.request_id if history and not correction else None)
             confirm_receipt(db, receipt.id, CartonReceiptConfirmRequest(factory_id=payload.factory_id, expected_revision=receipt.revision, split_confirmation=payload.split_confirmation), user, commit=False)
         # The core lock helper expires ORM state, so update the shipment only after core posting.
-        row.status = "NOT_RECEIVED" if reject_all else "RECEIVED"; row.revision += 1; row.receipt_id = receipt.id if receipt else None
+        row.revision += 1
         row.confirmed_by = user.id; row.confirmed_at = now_text()
         row.confirmation_request_id = payload.request_id; row.confirmation_fingerprint = digest
         row.acceptance_json = json.dumps(payload.model_dump(mode="json"), ensure_ascii=False)
         _audit(db, user, payload.factory_id, "SUPPLIER_SHIPMENT_NOT_RECEIVED" if reject_all else "SUPPLIER_SHIPMENT_RECEIVED", "supplier_shipment", row.id,
             {"receipt_id": receipt.id if receipt else None, "acceptance": payload.model_dump(mode="json"),
+             "delivery_quantities": {paper.id: str(supplied[paper.id].received_quantity if payload.remaining_action == "WAIT"
+                 else progress[paper.id]["receivable_quantity"]) for paper in source},
              "request_fingerprint": digest, "supersedes_receipt_id": previous_receipt.id if correction else None})
-        shipment_notifications.handle_notification(db, row)
+        db.flush()
+        batches, next_correction, updated = receiving.progress(db, row, source)
+        has_pending = next_correction or any(item["remaining_quantity"] > 0 for item in updated.values())
+        row.status = "SENT" if has_pending else ("RECEIVED" if any(item["received_quantity"] > 0 for item in updated.values()) else "NOT_RECEIVED")
+        row.receipt_id = next_correction["receipt_id"] if next_correction else next((batch["receipt_id"] for batch in reversed(batches) if batch.get("receipt_id")), None)
+        if has_pending:
+            notice = shipment_notifications.create_notification(db, row)
+            notice.status = "unread"; notice.handled_at = ""; notice.read_at = ""
+            notice.message = "已登记本次实收，余货继续待收；请沿原送货单办理下一次入库。"
+        else:
+            shipment_notifications.handle_notification(db, row)
         db.commit()
         return shipment_out(db, row, internal=True)
     except Exception:
@@ -1356,7 +1428,7 @@ def change_non_arrival(db, user, shipment_id, payload: ShipmentStatusChange, *, 
             return shipment_out(db, row, internal=True)
     if row.revision != payload.expected_revision:
         raise HTTPException(409, "发货单版本已变更，请刷新")
-    if receipt_link.link_only(row) or row.receipt_id:
+    if receipt_link.link_only(row) or (row.receipt_id and reopen):
         raise HTTPException(409, "已关联收料的单据请沿原收料更正流程办理")
     if row.status != ("NOT_RECEIVED" if reopen else "SENT"):
         raise HTTPException(409, "当前送货单状态不允许此操作")
@@ -1398,11 +1470,12 @@ def change_non_arrival(db, user, shipment_id, payload: ShipmentStatusChange, *, 
 
 def reopen_reversed_shipment(db, receipt, user, reason):
     """Reopen the original vendor evidence atomically with the receipt reversal."""
-    shipment = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == receipt.factory_id,
-        SupplierShipment.supplier_id == receipt.supplier_id, SupplierShipment.receipt_id == receipt.id))
+    from app.services import carton_shipment_receiving as receiving
+    shipment = receiving.owner(db, receipt.factory_id, receipt.id)
     if not shipment:
         return
     shipment.status = "SENT"
+    shipment.receipt_id = receipt.id
     shipment.revision += 1
     _audit(db, user, receipt.factory_id, "SUPPLIER_SHIPMENT_RECEIPT_REVERSED", "supplier_shipment", shipment.id,
         {"receipt_id": receipt.id, "delivery_note_no": shipment.delivery_note_no, "reason": reason,
@@ -1432,7 +1505,9 @@ def link_shipment_line(db, user, shipment_id, line_id, payload: ShipmentLineLink
         raise HTTPException(409, "此无单明细已经关联，不可重复或更换目标")
     prior_receipt = db.get(CartonReceipt, shipment.receipt_id) if shipment.receipt_id else None
     correction = bool(prior_receipt and prior_receipt.status == "REVERSED")
-    if (shipment.status != "SENT" and not correction) or shipment.revision != payload.expected_revision or (shipment.receipt_id and not correction):
+    from app.services import carton_shipment_receiving as receiving
+    _, _, receipt_progress = receiving.progress(db, shipment, [source])
+    if (shipment.status != "SENT" and not correction) or shipment.revision != payload.expected_revision or receipt_progress[source.id]["received_quantity"] > 0:
         raise HTTPException(409, "送货单状态或版本已变化，仅待验收或收料已冲销的无单行可关联")
     target = db.get(CartonOrderLine, payload.order_line_id)
     order = db.get(CartonOrder, target.order_id) if target else None
@@ -1492,11 +1567,8 @@ def link_sample_receipt(db, user, receipt_line_id: str, payload: SampleReceiptLi
     receipt = db.get(CartonReceipt, sample.receipt_id)
     if not receipt or receipt.status != "POSTED" or sample.effective_quantity <= 0:
         raise HTTPException(409, "仅可关联仍有效且已入库的无单收料")
-    shipment = db.scalar(select(SupplierShipment).where(
-        SupplierShipment.factory_id == payload.factory_id,
-        SupplierShipment.supplier_id == receipt.supplier_id,
-        SupplierShipment.receipt_id == receipt.id,
-        SupplierShipment.status == "RECEIVED"))
+    from app.services.carton_shipment_receiving import owner
+    shipment = owner(db, payload.factory_id, receipt.id)
     if not shipment:
         raise HTTPException(409, "此收料不属于供应商导入的送货单")
     if db.scalar(select(CartonAuditEvent.id).where(CartonAuditEvent.id == _sample_link_id(sample.id))):

@@ -110,12 +110,12 @@ def test_missing_vendor_price_never_copies_factory_price(monkeypatch):
         assert review(client, doc).status_code == 409
 
 
-def test_cross_month_unsettled_and_manual_history_fallback(monkeypatch):
+def test_cross_month_evidence_uses_period_cutoff_and_durable_batch_ownership(monkeypatch):
     with make_client(monkeypatch) as client:
         received(client, monkeypatch, acceptance_date="2026-10-02")
         september = workspace(client)
         assert september["sources"] == []
-        assert september["collaboration"]["unsettled_shipments"][0]["reason"] == "按验收日期计入 2026-10"
+        assert september["collaboration"]["unsettled_shipments"][0]["reason"] == "截至本期末待验收，后续入库计入实际验收月份"
         october = workspace(client, "2026-10")
         assert october["collaboration"]["sources"][0]["supplier_delivery"]["delivery_date"] == "2026-09-24"
         doc = save(client, october)
@@ -129,8 +129,9 @@ def test_cross_month_unsettled_and_manual_history_fallback(monkeypatch):
             shipment.receipt_id = None
             db.commit()
         fallback = workspace(client, "2026-10")
-        assert all(line["quantity"] is None for line in fallback["collaboration"]["lines"])
-        assert all(row["supplier_delivery"] is None for row in fallback["collaboration"]["sources"])
+        # A mutable latest-receipt pointer cannot erase immutable batch ownership.
+        assert all(Decimal(line["quantity"]) == 10 for line in fallback["collaboration"]["lines"])
+        assert all(row["supplier_delivery"] is not None for row in fallback["collaboration"]["sources"])
 
 
 def test_supplier_scope_read_only_permission_and_review_invalidation(monkeypatch):

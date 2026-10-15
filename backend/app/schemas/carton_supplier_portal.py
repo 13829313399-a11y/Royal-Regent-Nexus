@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 from typing import Literal
-from app.schemas.carton_mark import CartonMarkDocumentCheckResponse
+from app.schemas.carton_mark import CartonMarkAssetWorkflow, CartonMarkDocumentCheckResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.carton_procurement import CartonLocationAllocation
 
@@ -102,6 +102,7 @@ class ShipmentCreate(Payload):
         return self
 
 class ReceiveLine(BaseModel):
+    zero_price_kind: Literal["FREE", "PENDING"] | None = None
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     shipment_line_id: str = Field(min_length=1, max_length=96)
     received_quantity: Decimal = Field(ge=0, max_digits=18, decimal_places=4)
@@ -113,13 +114,21 @@ class ReceiveLine(BaseModel):
     specification: str = Field(default="", max_length=255)
     location_allocations: list[CartonLocationAllocation] = Field(default_factory=list, max_length=100)
     difference_reason: str = Field(default="", max_length=1000)
-    no_order_decision: Literal["", "SAMPLE", "WRONG_DELIVERY"] = ""
+    no_order_decision: Literal["", "SAMPLE", "GIFT", "WRONG_DELIVERY"] = ""
     customer_code: str = Field(default="", max_length=64)
     sample_purpose: str = Field(default="", max_length=255)
     requested_by: str = Field(default="", max_length=128)
     unit: str = Field(default="", max_length=32)
 
+    @model_validator(mode="after")
+    def validate_zero_price(self):
+        if self.zero_price_kind and self.unit_price != 0:
+            raise ValueError("免费赠送或暂未定价须明确填写零单价")
+        return self
+
 class ShipmentReceive(Payload):
+    # Old clients explicitly completed a delivery. The current UI defaults WAIT.
+    remaining_action: Literal["WAIT", "CLOSE"] = "CLOSE"
     new_delivery_confirmation: bool = False
     correction_reason: str = Field(default="", max_length=1000)
     split_confirmation: str = Field(default="", max_length=64)
@@ -190,6 +199,7 @@ class SupplierMarkAssetOut(BaseModel):
     contract_number: str
     created_at: str
     orders: list[SupplierMarkAssetOrderOut]
+    workflow: CartonMarkAssetWorkflow = Field(default_factory=CartonMarkAssetWorkflow)
 
 
 class SupplierMarkUploadOrderOut(SupplierMarkAssetOrderOut):

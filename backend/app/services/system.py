@@ -1298,6 +1298,11 @@ def update_system_notification(
     status = payload.status.strip()
     if status not in {"read", "handled"}:
         raise HTTPException(400, "通知状态只能设置为 read 或 handled")
+    if status == "handled" and notification.type == shipment_notifications.NOTIFICATION_TYPE:
+        from app.services.carton_shipment_receiving import batches
+        shipment = db.get(SupplierShipment, str(parse_payload(notification.payload_json).get("shipment_id") or ""))
+        if shipment and (shipment.status == "SENT" or any(batch["receipt"] and batch["receipt"].status == "REVERSED" for batch in batches(db, shipment))):
+            raise HTTPException(409, "送货单仍有待收或待更正，请从原送货单办理")
     if status == "handled" and notification.status != "handled":
         raise HTTPException(409, "通知不再提供通用完成操作，请在对应业务中处理")
     personal_read(db, current_user, "system", notification.id)

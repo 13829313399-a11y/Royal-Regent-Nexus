@@ -31,6 +31,7 @@ def vendor_values(raw_price, quantity, currency):
 def build(db, factory, supplier, period, currency, rows, base_fingerprint):
     from app.services.carton_supplier_portal import _shipment_sources
     from app.services.carton_supplier_settlement import dump, _posting_date
+    from app.services import carton_shipment_receiving as receiving
 
     shipments = list(db.scalars(select(SupplierShipment).where(
         SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier
@@ -42,6 +43,56 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
         CartonReceiptLine.factory_id == factory, CartonReceiptLine.receipt_id.in_(receipt_ids)))} if receipt_ids else {}
     by_receipt, evidence, unsettled = {}, [], []
     for shipment in shipments:
+        formal, unmatched = _shipment_sources(db, shipment)
+        papers = formal + unmatched
+        history = receiving.batches(db, shipment, period=period)
+        all_history = receiving.batches(db, shipment)
+        if not all_history or any("delivery_quantities" in batch for batch in all_history):
+            # One immutable vendor allocation per acceptance batch. Later-month
+            # batches cannot change a previously confirmed month's fingerprint.
+            for batch in history:
+                accepted = batch["acceptance"]
+                receipt = batch["receipt"]
+                day = receipt.acceptance_date if receipt else accepted.get("acceptance_date")
+                if not (shipment.delivery_date[:7] == period or (day or "")[:7] == period):
+                    continue
+                vendor_lines = []
+                for paper in papers:
+                    quantity = receiving.allocated(batch, paper)
+                    if quantity <= 0:
+                        continue
+                    snapshot = json.loads(paper.snapshot_json)
+                    raw = snapshot.get("delivery_unit_price") if hasattr(paper, "order_line_id") else snapshot.get("unit_price")
+                    price, amount, warning = vendor_values(raw, quantity, currency)
+                    vendor_lines.append({"id": paper.id, "order_line_id": getattr(paper, "order_line_id", None),
+                        "quantity": str(quantity), "original_quantity": str(paper.quantity), "unit_price": price, "amount": amount,
+                        "original_unit_price": str(raw) if raw is not None else None,
+                        "price_warning": warning, "currency": "CNY", "snapshot": snapshot})
+                item = {"shipment_id": shipment.id, "revision": batch["event_id"], "receipt_id": batch.get("receipt_id"),
+                    "document_no": shipment.delivery_note_no, "delivery_date": shipment.delivery_date,
+                    "acceptance_date": day, "status": "RECEIVED" if receipt else "NOT_RECEIVED",
+                    "lines": vendor_lines, "acceptance": accepted}
+                evidence.append(item)
+                if batch.get("receipt_id"):
+                    by_receipt.setdefault(batch["receipt_id"], []).append(item)
+            if shipment.delivery_date[:7] == period:
+                pending = []
+                for paper in papers:
+                    quantity = paper.quantity - sum(receiving.allocated(batch, paper) for batch in history)
+                    if quantity <= 0:
+                        continue
+                    snapshot = json.loads(paper.snapshot_json)
+                    raw = snapshot.get("delivery_unit_price") if hasattr(paper, "order_line_id") else snapshot.get("unit_price")
+                    price, amount, warning = vendor_values(raw, quantity, currency)
+                    pending.append({"id": paper.id, "order_line_id": getattr(paper, "order_line_id", None),
+                        "quantity": str(quantity), "unit_price": price, "amount": amount,
+                        "original_unit_price": str(raw) if raw is not None else None,
+                        "price_warning": warning, "currency": "CNY", "snapshot": snapshot})
+                if pending:
+                    evidence.append({"shipment_id": shipment.id, "revision": "PENDING", "receipt_id": None,
+                        "document_no": shipment.delivery_note_no, "delivery_date": shipment.delivery_date,
+                        "acceptance_date": None, "status": "SENT", "as_of_period": True, "lines": pending, "acceptance": {}})
+            continue
         receipt = receipts.get(shipment.receipt_id)
         accepted = json.loads(shipment.acceptance_json or "{}")
         acceptance_date = ((receipt.acceptance_date or accepted.get("acceptance_date")
@@ -92,8 +143,9 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
                 price = line["unit_price"]
                 accepted_line = next((entry for entry in shipment["acceptance"].get("lines", [])
                     if entry["shipment_line_id"] in {line["id"], line["snapshot"].get("original_unmatched_line_id")}), {})
-                matched.add((shipment["shipment_id"], line["id"]))
+                matched.add((shipment["shipment_id"], shipment["revision"], line["id"]))
                 vendor = {"shipment_id": shipment["shipment_id"], "line_id": line["id"],
+                    **({"original_quantity": line["original_quantity"]} if "original_quantity" in line else {}),
                     "document_no": shipment["document_no"], "delivery_date": shipment["delivery_date"],
                     "quantity": line["quantity"], "unit_price": price, "currency": "CNY",
                     "amount": line["amount"], "original_unit_price": line["original_unit_price"], "price_warning": line["price_warning"],
@@ -113,11 +165,13 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
     for shipment in evidence:
         receipt = receipts.get(shipment["receipt_id"])
         for line in shipment["lines"]:
-            if (shipment["shipment_id"], line["id"]) in matched:
+            if (shipment["shipment_id"], shipment["revision"], line["id"]) in matched:
                 continue
             accepted_line = next((entry for entry in shipment["acceptance"].get("lines", [])
                 if entry["shipment_line_id"] in {line["id"], line["snapshot"].get("original_unmatched_line_id")}), {})
             reason = "待仓库验收" if shipment["status"] == "SENT" else "未收到或未形成有效入库"
+            if shipment.get("as_of_period"):
+                reason = "截至本期末待验收，后续入库计入实际验收月份"
             if shipment["acceptance"].get("registration_mode") == "EXISTING_RECEIPT" and not shipment["receipt_id"]:
                 reason = "后补凭证待关联原入库，不新增应结"
             if receipt and receipt.status == "REVERSED":

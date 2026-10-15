@@ -18,6 +18,7 @@ from app.services.carton_inventory_report import _inventory_identity, _validate_
 
 
 ORDER_LABELS = {
+    "ORDER_CONTRACT_MERGED": "合单归入新合同",
     "ORDER_CREATED": "落单", "HISTORY_ORDER_IMPORTED": "历史订单导入",
     "ORDER_UPDATED": "修改订单", "ORDER_DATES_CHANGED": "调整订单交期", "ORDER_SUBMITTED_SUPPLIER": "确认订单并锁定",
     "ORDER_REPLENISHED": "补单出库", "ORDER_APPENDED": "追加订单", "ORDER_REDUCED": "减少订单",

@@ -4,7 +4,7 @@ import { reactive } from 'vue'
 import CartonMarkAssetLibrary from '../CartonMarkAssetLibrary.vue'
 import type { CartonMarkAsset, CartonMarkAssetUploadResult } from '@/api/cartonMark'
 
-const api = vi.hoisted(() => ({ listAssets: vi.fn(), uploadAssets: vi.fn(), bindAsset: vi.fn(), downloadAsset: vi.fn(), archiveAsset: vi.fn(), bindingOrders: vi.fn(), savePhotoGroup: vi.fn(), ungroupPhotos: vi.fn() }))
+const api = vi.hoisted(() => ({ listAssets: vi.fn(), uploadAssets: vi.fn(), bindAsset: vi.fn(), downloadAsset: vi.fn(), archiveAsset: vi.fn(), bindingOrders: vi.fn(), savePhotoGroup: vi.fn(), ungroupPhotos: vi.fn(), classifyAsset: vi.fn(), assetClassificationHistory: vi.fn() }))
 const supplierApi = vi.hoisted(() => ({ markAssets: vi.fn(), previewMarkAssetUrl: vi.fn(), downloadMarkAsset: vi.fn() }))
 vi.mock('@/api/cartonMark', () => ({ cartonMarkApi: api }))
 vi.mock('@/api/cartonSupplierPortal', () => ({ cartonSupplierPortalApi: supplierApi }))
@@ -23,9 +23,67 @@ beforeEach(() => {
   authState.authorizationVersion = 1
   api.listAssets.mockResolvedValue([asset])
   api.bindingOrders.mockResolvedValue(asset.orders)
+  api.assetClassificationHistory.mockResolvedValue([])
 })
 
 describe('carton-mark source repository', () => {
+  it('uploads per-file classifications and keeps failed file choices for retry', async () => {
+    const files = [new File(['a'], '已确认.pdf'), new File(['b'], '制作中.pdf')]
+    api.uploadAssets.mockResolvedValue([{ file_name: files[0]!.name, status: 'created', asset }, { file_name: files[1]!.name, status: 'failed', message: '文件损坏' }])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', uploadOnly: true } }); await flushPromises()
+    const input = wrapper.get('input[type=file]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: files }); await input.trigger('change')
+    await wrapper.get('[aria-label="已确认.pdf 上传分类 1"]').setValue('READY')
+    await wrapper.get('[aria-label="已确认.pdf 资料备注 1"]').setValue('客户邮件确认')
+    await wrapper.findAll('button').find(button => button.text().startsWith('上传入库'))!.trigger('click'); await flushPromises()
+    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', files, expect.any(AbortSignal), [
+      { status: 'READY', note: '客户邮件确认' }, { status: 'DRAFT', note: '' },
+    ])
+    expect(wrapper.find('[aria-label="已确认.pdf 上传分类 1"]').exists()).toBe(false)
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="制作中.pdf 上传分类 1"]').element.value).toBe('DRAFT')
+    wrapper.unmount()
+  })
+
+  it('filters file states separately from order binding and saves a versioned confirmation', async () => {
+    const workflow = { status: 'PENDING' as const, note: '', version: 2, previous_asset_id: 'old', superseded_by_asset_id: '', updated_by_name: '', updated_at: '', confirmed_by_name: '', confirmed_at: '', confirmation_note: '' }
+    const pending = { ...asset, workflow }
+    const old = { ...asset, id: 'old', file_name: '旧稿.pdf', workflow: { ...workflow, status: 'HISTORY' as const, version: 1 } }
+    api.listAssets.mockResolvedValue([pending, old])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', checkEnabled: true } }); await flushPromises()
+    expect(wrapper.find('[data-asset-id="old"]').exists()).toBe(false)
+    await wrapper.get('[aria-label="箱唛资料分类"]').findAll('button').find(b => b.text().startsWith('历史版本'))!.trigger('click')
+    expect(wrapper.find('[data-asset-id="old"]').exists()).toBe(true)
+    expect(wrapper.get('[data-asset-id="old"]').text()).not.toContain('用于PDF核对')
+    expect(wrapper.get('[data-asset-id="old"]').text()).not.toContain('提交人工审核')
+    expect(wrapper.text()).not.toContain('选择 Excel / PDF 核对')
+    expect(wrapper.find(`[data-asset-id="${asset.id}"]`).exists()).toBe(false)
+    await wrapper.get('[aria-label="箱唛资料分类"]').findAll('button').find(b => b.text().startsWith('待确认'))!.trigger('click')
+    await wrapper.get(`[aria-label="修改 ${asset.file_name} 状态"]`).trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="箱唛资料状态"]').setValue('READY')
+    await wrapper.get('[aria-label="箱唛资料状态备注"]').setValue('客户邮件同意 V2')
+    api.classifyAsset.mockResolvedValue({ ...pending, revision: 2, workflow: { ...workflow, status: 'READY' } })
+    await wrapper.get('[aria-label="修改箱唛资料状态"] form').trigger('submit'); await flushPromises()
+    expect(api.classifyAsset).toHaveBeenCalledWith('huaxing', pending, 'READY', '客户邮件同意 V2', expect.any(AbortSignal))
+    expect(wrapper.find('[aria-label="修改箱唛资料状态"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('uploads a linked revision as pending and clears its draft on scope changes', async () => {
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await wrapper.get(`[aria-label="上传 ${asset.file_name} 修改稿"]`).trigger('click')
+    const file = new File(['pdf'], '修改.pdf')
+    const input = wrapper.get('input[type=file]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] }); await input.trigger('change')
+    expect(wrapper.get('[aria-label="修改.pdf 上传分类 1"]').text()).not.toContain('已确认可用')
+    api.uploadAssets.mockResolvedValue([{ file_name: file.name, status: 'failed', message: '版本变化' }])
+    await wrapper.findAll('button').find(button => button.text().startsWith('上传入库'))!.trigger('click'); await flushPromises()
+    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', [file], expect.any(AbortSignal), [{ status: 'PENDING', note: '', previous_asset_id: asset.id, previous_revision: 1 }])
+    await wrapper.setProps({ factoryId: 'huakang-a' }); await flushPromises()
+    expect(wrapper.text()).not.toContain('上传修改稿：')
+    expect(wrapper.find('[aria-label="修改.pdf 上传分类 1"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('uses the workspace search without clearing it on mount or a scope change, and keeps standalone search', async () => {
     const other = { ...asset, id: 'other', file_name: '另一份箱唛.pdf', contract_number: 'OTHER', orders: [] }
     api.listAssets.mockResolvedValue([asset, other])
@@ -258,7 +316,7 @@ describe('carton-mark source repository', () => {
     api.uploadAssets.mockResolvedValue([{ file_name: file.name, status: 'created', message: '', asset: photo }])
     await wrapper.findAll('button').find(b => b.text().includes('上传入库'))!.trigger('click')
     await flushPromises()
-    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', [file], expect.any(AbortSignal))
+    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', [file], expect.any(AbortSignal), [{ status: 'DRAFT', note: '' }])
     expect(wrapper.text()).toContain('已入库')
     wrapper.unmount()
   })
@@ -362,7 +420,7 @@ describe('carton-mark source repository', () => {
       { file_name: files[1]!.name, status: 'failed', message: 'PDF 损坏', asset: null }])
     await wrapper.findAll('button').find(b => b.text().includes('上传入库'))!.trigger('click')
     await flushPromises()
-    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', files, expect.any(AbortSignal))
+    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', files, expect.any(AbortSignal), files.map(() => ({ status: 'DRAFT', note: '' })))
     expect(wrapper.text()).toContain('PDF 损坏')
     expect(wrapper.text()).toContain('上传入库（1）')
     await wrapper.findAll('button').find(b => b.text() === '用于PDF核对')!.trigger('click')

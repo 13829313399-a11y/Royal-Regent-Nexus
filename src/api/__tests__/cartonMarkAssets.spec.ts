@@ -4,6 +4,15 @@ import { createCartonMarkApi, type CartonMarkAsset } from '@/api/cartonMark'
 import { http } from '@/lib/http'
 
 describe('carton-mark repository API', () => {
+  it('sends file classification and original revision with upload and status changes', async () => {
+    const client = { post: vi.fn().mockResolvedValue({ data: [] }), put: vi.fn().mockResolvedValue({ data: {} }) }
+    const api = createCartonMarkApi(client as never)
+    const options = [{ status: 'PENDING' as const, note: '修改稿', previous_asset_id: 'original', previous_revision: 4 }]
+    await api.uploadAssets('huaxing', [new File(['pdf'], '新版.pdf')], undefined, options)
+    expect(JSON.parse((client.post.mock.calls[0]![1] as FormData).get('options_json') as string)).toEqual(options)
+    await api.classifyAsset('huaxing', { id: 'new', revision: 1 } as CartonMarkAsset, 'READY', '已确认')
+    expect(client.put).toHaveBeenCalledWith('/carton-mark/assets/new/classification', { status: 'READY', note: '已确认', revision: 1 }, { params: { factory_id: 'huaxing' }, signal: undefined })
+  })
   it('sends complete member revisions for group creation, binding and dissolving', async () => {
     const client = { get: vi.fn().mockResolvedValue({ data: [] }), post: vi.fn().mockResolvedValue({ data: [] }), put: vi.fn().mockResolvedValue({ data: [] }) }
     const api = createCartonMarkApi(client as never)

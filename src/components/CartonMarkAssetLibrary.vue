@@ -33,6 +33,51 @@ function chooseSupplierExcel(asset: CartonMarkAsset, generate = false) {
 }
 const results = ref<CartonMarkAssetUploadResult[]>([])
 const pendingFiles = ref<File[]>([])
+const pendingOptions = ref<import('@/api/cartonMark').CartonMarkUploadOptions[]>([])
+const replacement = ref<CartonMarkAsset | null>(null)
+const usageLabels = { UNCLASSIFIED: '待分类', DRAFT: '待打版', PENDING: '待确认', READY: '已确认可用', HISTORY: '历史版本' }
+const usageFilter = ref('ALL')
+const usageOf = (asset: CartonMarkAsset) => asset.workflow?.status || 'UNCLASSIFIED'
+const statusEditing = ref<CartonMarkAsset | null>(null)
+const statusValue = ref<Exclude<import('@/api/cartonMark').CartonMarkUsageStatus, 'UNCLASSIFIED'>>('DRAFT')
+const statusNote = ref('')
+const statusHistory = ref<{ revision: number; workflow: import('@/api/cartonMark').CartonMarkAssetWorkflow }[]>([])
+const statusHistoryLoading = ref(false)
+const statusError = ref('')
+let statusSequence = 0
+async function editStatus(asset: CartonMarkAsset) {
+  if (!canWrite.value || busy.value) return
+  const current = generation, sequence = ++statusSequence
+  statusEditing.value = asset
+  statusValue.value = usageOf(asset) === 'UNCLASSIFIED' ? 'DRAFT' : asset.workflow!.status as typeof statusValue.value
+  statusNote.value = asset.workflow?.note || ''
+  statusHistory.value = []; statusError.value = ''; statusHistoryLoading.value = true
+  try {
+    const history = await cartonMarkApi.assetClassificationHistory(props.factoryId, asset.id, controller.signal)
+    if (current === generation && sequence === statusSequence) statusHistory.value = history
+  } catch (cause) {
+    if (current === generation && sequence === statusSequence) statusError.value = getApiErrorMessage(cause)
+  } finally {
+    if (current === generation && sequence === statusSequence) statusHistoryLoading.value = false
+  }
+}
+function closeStatus() { statusSequence++; statusEditing.value = null; statusHistory.value = []; statusError.value = '' }
+async function saveStatus() {
+  if (!canWrite.value || busy.value || !statusEditing.value) return
+  const current = generation
+  busy.value = true; statusError.value = ''
+  try {
+    await cartonMarkApi.classifyAsset(props.factoryId, statusEditing.value, statusValue.value, statusNote.value, controller.signal)
+    if (current === generation) { closeStatus(); await refresh() }
+  } catch (cause) {
+    if (current === generation) statusError.value = getApiErrorMessage(cause)
+  } finally { if (current === generation) busy.value = false }
+}
+function uploadRevision(asset: CartonMarkAsset) {
+  if (!canWrite.value || busy.value) return
+  replacement.value = asset; pendingFiles.value = []; pendingOptions.value = []; results.value = []
+  fileInput.value?.click()
+}
 const fileInput = ref<HTMLInputElement | null>(null)
 const sourcePanel = ref<HTMLElement | null>(null)
 const sourceGroup = ref(''), sourceExcelId = ref(''), sourcePdfId = ref('')
@@ -42,7 +87,7 @@ function groupKey(asset: CartonMarkAsset) {
 }
 const sourceCandidates = computed(() => {
   const anchor = entries.value.find(asset => groupKey(asset) === sourceGroup.value)
-  return entries.value.filter(asset => asset.kind !== 'image' && anchor && asset.factory_id === anchor.factory_id
+  return entries.value.filter(asset => asset.kind !== 'image' && usageOf(asset) !== 'HISTORY' && anchor && asset.factory_id === anchor.factory_id
     && (groupKey(asset) === sourceGroup.value || asset.orders.some(order => anchor.orders.some(row => row.id === order.id))))
 })
 const sourceExcels = computed(() => sourceCandidates.value.filter(asset => asset.kind === 'excel'))
@@ -83,7 +128,7 @@ const onlyUnbound = ref(false)
 const kindFilter = ref('ALL')
 const bindingFilter = ref('ALL'), customerFilter = ref(''), sort = ref('LATEST')
 const customers = computed(() => [...new Set(entries.value.flatMap(asset => asset.orders.map(order => order.customer_name)))].sort((a, b) => a.localeCompare(b, 'zh-CN')))
-function resetFilters() { kindFilter.value = 'ALL'; onlyUnbound.value = false; bindingFilter.value = 'ALL'; customerFilter.value = '' }
+function resetFilters() { kindFilter.value = 'ALL'; onlyUnbound.value = false; bindingFilter.value = 'ALL'; customerFilter.value = ''; usageFilter.value = 'ALL' }
 function clearFilters() { query.value = ''; resetFilters() }
 const busy = ref(false)
 const loading = ref(false)
@@ -120,6 +165,7 @@ function factoryDisplayName(id: string) { return factoryContexts.find(factory =>
 const visible = computed(() => entries.value.filter(asset => {
   const key = query.value.trim().toLowerCase()
   return (kindFilter.value === 'ALL' || asset.kind === kindFilter.value) && (!onlyUnbound.value || asset.binding_status !== 'BOUND')
+    && (usageFilter.value === 'ALL' ? usageOf(asset) !== 'HISTORY' : usageOf(asset) === usageFilter.value)
     && (bindingFilter.value === 'ALL' || asset.binding_status === bindingFilter.value)
     && (!customerFilter.value || asset.orders.some(order => order.customer_name === customerFilter.value)) && (!key ||
     [asset.file_name, asset.contract_number, ...asset.orders.flatMap(o => [o.contract_no, o.order_no, o.customer_name, o.item_no])].some(v => v.toLowerCase().includes(key)))
@@ -134,7 +180,7 @@ const groups = computed(() => {
     grouped.set(key, group)
   }
   return [...grouped.values()].sort((a, b) => (sort.value === 'CONTRACT' ? a.contract.localeCompare(b.contract, 'zh-CN', { numeric: true }) : sort.value === 'CUSTOMER' ? a.customer.localeCompare(b.customer, 'zh-CN') : b.latest.localeCompare(a.latest)) || a.key.localeCompare(b.key))
-    .map(group => ({ ...group, assets: group.assets.sort((a, b) => a.kind.localeCompare(b.kind) || b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id)) }))
+    .map(group => ({ ...group, assets: group.assets.sort((a, b) => Number(usageOf(b) === 'READY') - Number(usageOf(a) === 'READY') || a.kind.localeCompare(b.kind) || b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id)) }))
 })
 
 async function refresh() {
@@ -177,7 +223,10 @@ async function refresh() {
 
 function selectFiles(files: File[]) {
   if (!canWrite.value || busy.value) return
+  if (replacement.value && files.length > 1) { error.value = '每次请选择一个修改稿文件。'; return }
   pendingFiles.value = files
+  pendingOptions.value = files.map(() => ({ status: replacement.value ? 'PENDING' : 'DRAFT', note: '',
+    ...(replacement.value ? { previous_asset_id: replacement.value.id, previous_revision: replacement.value.revision } : {}) }))
   results.value = []
   error.value = ''
   if (fileInput.value) fileInput.value.value = ''
@@ -188,6 +237,7 @@ async function upload() {
   const current = generation
   const factory = props.factoryId
   const files = [...pendingFiles.value]
+  const options = pendingOptions.value.map(option => ({ ...option }))
   if (files.length > 50 || files.reduce((sum, file) => sum + file.size, 0) > 100 * 1024 * 1024 || files.some(file => file.size > 20 * 1024 * 1024)) {
     error.value = '每批最多 50 个文件、合计 100 MB，单个文件最多 20 MB。'
     return
@@ -195,10 +245,12 @@ async function upload() {
   busy.value = true
   error.value = ''
   try {
-    const outcomes = await cartonMarkApi.uploadAssets(factory, files, controller.signal)
+    const outcomes = await cartonMarkApi.uploadAssets(factory, files, controller.signal, options)
     if (current !== generation) return
     results.value = outcomes
     pendingFiles.value = files.filter((_, index) => outcomes[index]?.status === 'failed')
+    pendingOptions.value = options.filter((_, index) => outcomes[index]?.status === 'failed')
+    if (!pendingFiles.value.length) replacement.value = null
     await refresh()
   } catch (cause) {
     if (current === generation) error.value = `上传未完成：${getApiErrorMessage(cause)}。请先刷新核实结果；再次上传会保存为独立资料。`
@@ -332,6 +384,7 @@ watch([() => props.factoryId, () => props.supplierFactories?.join('\0'), () => p
   supplierSources.value = []
   results.value = []
   pendingFiles.value = []
+  pendingOptions.value = []; replacement.value = null; closeStatus()
   closeBinding(); selectedPhotos.value = []; allOrders.value = []; gallery.value = []
   sourceGroup.value = ''; sourceExcelId.value = ''; sourcePdfId.value = ''
   contract.value = ''
@@ -356,19 +409,31 @@ onBeforeUnmount(() => { generation++; controller.abort() })
       <button v-if="!uploadOnly" type="button" :disabled="busy || loading" class="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-xs disabled:opacity-50" @click="refresh"><RefreshCw class="size-3.5" />刷新</button>
     </div>
     <div v-if="canWrite" class="mt-4 rounded-lg border-2 border-dashed border-teal-200 bg-teal-50/50 p-4" @dragover.prevent @drop.prevent="selectFiles(Array.from($event.dataTransfer?.files ?? []))">
+      <div v-if="replacement" class="mb-3 flex flex-wrap items-center gap-2 rounded-lg bg-white p-3 text-xs text-teal-800"><span>上传修改稿：{{ replacement.file_name }} · 新版本保留原关联，确认后原稿移入历史。</span><button type="button" :disabled="busy" class="ml-auto underline" @click="replacement = null; pendingFiles = []; pendingOptions = []">取消修改稿</button></div>
       <input ref="fileInput" type="file" multiple accept=".pdf,.xls,.xlsx,.xlsm,.jpg,.jpeg,.png,.webp" class="hidden" aria-label="批量选择箱唛原文件" @change="selectFiles(Array.from(($event.target as HTMLInputElement).files ?? []))">
       <div class="flex flex-wrap items-center gap-3">
         <button type="button" :disabled="busy" class="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 font-semibold disabled:opacity-50" @click="chooseFiles"><UploadCloud class="size-4" />选择多个文件</button>
         <span class="text-xs text-slate-500">或拖入文件 · 单个 20 MB · 每批最多 50 个 / 100 MB</span>
         <button type="button" :disabled="busy || !pendingFiles.length" class="rounded-lg bg-teal-700 px-4 py-2 font-semibold text-white disabled:opacity-50" @click="upload">{{ busy ? '处理中…' : `上传入库${pendingFiles.length ? `（${pendingFiles.length}）` : ''}` }}</button>
       </div>
-      <p v-if="pendingFiles.length" class="mt-2 break-all text-xs text-slate-600">{{ pendingFiles.map(f => f.name).join('、') }}</p>
+      <div v-if="pendingFiles.length" class="mt-3 max-h-72 space-y-3 overflow-y-auto">
+        <div v-for="(file, index) in pendingFiles" :key="index" class="grid gap-2 rounded-lg border border-teal-100 bg-white p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <p class="break-all text-xs font-semibold text-slate-700">{{ file.name }}</p>
+          <select v-model="pendingOptions[index]!.status" :disabled="busy" :aria-label="`${file.name} 上传分类 ${index + 1}`" class="h-9 rounded-lg border px-2 text-xs"><option value="DRAFT">待打版</option><option value="PENDING">待确认</option><option v-if="!replacement" value="READY">已确认可用</option></select>
+          <input v-model="pendingOptions[index]!.note" :disabled="busy" maxlength="500" :aria-label="`${file.name} 资料备注 ${index + 1}`" :placeholder="pendingOptions[index]!.status === 'READY' ? '确认依据（选填），如客户邮件、签样或历史确认稿' : '资料备注（选填）'" class="h-9 rounded-lg border px-3 text-xs sm:col-span-2">
+        </div>
+      </div>
+      <p class="mt-2 text-xs text-slate-500">每份文件可单独选择分类，上传后仍可修改；已确认的历史稿可直接登记为“已确认可用”。</p>
     </div>
     <p v-if="error" role="alert" class="mt-3 rounded-lg bg-red-50 p-3 text-xs text-red-700">{{ error }}</p>
     <div v-if="results.length" class="mt-3 space-y-1 rounded-lg bg-slate-50 p-3 text-xs" role="status">
       <p v-for="(result, index) in results" :key="index" :class="result.status === 'failed' ? 'text-red-700' : 'text-teal-800'" class="break-all">{{ result.file_name }}：{{ ({ created: '已入库', duplicate: '已存在，保留原关联', restored: '已恢复', failed: '未入库' })[result.status] }}{{ result.message ? ` — ${result.message}` : '' }}</p>
     </div>
     <template v-if="!uploadOnly">
+      <nav aria-label="箱唛资料分类" class="mt-4 flex flex-wrap gap-2">
+        <button type="button" :aria-current="usageFilter === 'ALL' ? 'page' : undefined" class="rounded-lg border px-3 py-2 text-xs font-semibold" :class="usageFilter === 'ALL' ? 'border-teal-600 bg-teal-700 text-white' : 'bg-white text-slate-600'" @click="usageFilter = 'ALL'">全部</button>
+        <button v-for="state in (['DRAFT', 'PENDING', 'READY', 'UNCLASSIFIED', 'HISTORY'] as const)" :key="state" type="button" :aria-current="usageFilter === state ? 'page' : undefined" class="rounded-lg border px-3 py-2 text-xs font-semibold" :class="usageFilter === state ? 'border-teal-600 bg-teal-700 text-white' : 'bg-white text-slate-600'" @click="usageFilter = state">{{ usageLabels[state] }} <span class="ml-1 tabular-nums">{{ entries.filter(asset => usageOf(asset) === state).length }}</span></button>
+      </nav>
       <div v-if="!orderId" class="mt-4 flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3">
         <input v-if="search === undefined" v-model="query" aria-label="搜索箱唛资料" placeholder="搜索合同号、客户、货号或文件名…" class="h-10 min-w-0 basis-full flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm sm:basis-auto">
         <select v-model="kindFilter" aria-label="箱唛文件类型" class="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm"><option value="ALL">全部格式</option><option value="pdf">PDF</option><option value="excel">Excel</option><option value="image">图片</option></select>
@@ -397,12 +462,12 @@ onBeforeUnmount(() => { generation++; controller.abort() })
           <span v-if="supplier && supplierFactories">{{ factoryDisplayName(group.factory) }} ·</span>
           <span v-if="group.photoGroupId" class="rounded bg-blue-100 px-2 py-1 text-blue-700">照片组</span>
           <span>合同 {{ group.contract || '未识别' }}</span><span>{{ group.customer }}</span><span class="ml-auto">{{ group.assets.length }} 份原文件<span v-if="group.photoGroupId && photoMembers(group.photoGroupId, group.factory).length !== group.assets.length"> / 整组 {{ photoMembers(group.photoGroupId, group.factory).length }} 张</span></span>
-          <button v-if="(canWrite && checkEnabled || supplier && supplierCheckEnabled && auth.can('carton_supplier:edit', group.factory, '*')) && group.assets.some(asset => asset.kind !== 'image')" type="button" :disabled="busy" class="rounded border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`选择合同 ${group.contract || '未识别'} 的 Excel / PDF 核对文件`" @click="chooseSources(group.key)">选择 Excel / PDF 核对</button>
+          <button v-if="(canWrite && checkEnabled || supplier && supplierCheckEnabled && auth.can('carton_supplier:edit', group.factory, '*')) && group.assets.some(asset => asset.kind !== 'image' && usageOf(asset) !== 'HISTORY')" type="button" :disabled="busy" class="rounded border border-teal-200 bg-white px-3 py-1.5 text-teal-700" :aria-label="`选择合同 ${group.contract || '未识别'} 的 Excel / PDF 核对文件`" @click="chooseSources(group.key)">选择 Excel / PDF 核对</button>
           <button v-if="group.photoGroupId" type="button" class="rounded border bg-white px-2 py-1.5" @click="gallery = photoMembers(group.photoGroupId, group.factory)">查看照片组</button>
           <button v-if="canWrite && group.photoGroupId" type="button" :disabled="busy" class="rounded border bg-white px-2 py-1.5" @click="edit(group.assets[0]!)">整组关联</button>
           <button v-if="canWrite && group.photoGroupId" type="button" :disabled="busy" class="rounded border bg-white px-2 py-1.5" @click="ungroup(group.photoGroupId)">解除分组</button>
         </li>
-        <li v-for="asset in group.assets" :key="`${asset.factory_id}:${asset.id}`" class="mark-library-columns grid items-start gap-4 px-4 py-4 lg:min-h-24 lg:gap-6">
+        <li v-for="asset in group.assets" :key="`${asset.factory_id}:${asset.id}`" :data-asset-id="asset.id" class="mark-library-columns grid items-start gap-4 px-4 py-4 lg:min-h-24 lg:gap-6">
           <div class="col-span-2 min-w-0 lg:col-span-1">
             <label v-if="canWrite && asset.kind === 'image'" class="mb-2 flex items-center gap-2 text-xs text-slate-500"><input type="checkbox" :aria-label="`选择照片 ${asset.file_name}`" :checked="selectedPhotos.includes(asset.id)" :disabled="busy" @change="togglePhoto(asset, ($event.target as HTMLInputElement).checked)">{{ asset.photo_group_id ? '选择整组' : '选择照片' }}</label>
             <p class="break-all text-sm font-bold leading-5 text-slate-900">合同号：{{ contractsLabel(asset) }}</p>
@@ -414,6 +479,10 @@ onBeforeUnmount(() => { generation++; controller.abort() })
             <div class="min-w-0"><p class="text-sm font-semibold leading-5 text-slate-800 [overflow-wrap:anywhere]">{{ asset.file_name }}</p><p class="mt-1 text-xs leading-5 text-slate-400">{{ asset.kind === 'pdf' ? 'PDF' : asset.kind === 'image' ? '图片' : 'Excel' }} · {{ (asset.size_bytes / 1024).toFixed(0) }} KB · {{ asset.created_at.slice(0, 19).replace('T', ' ') }} · {{ asset.id.slice(-6) }}</p></div>
           </div>
           <div class="min-w-0 text-xs">
+            <span class="mb-2 inline-flex rounded-full px-2 py-1 font-semibold" :class="usageOf(asset) === 'READY' ? 'bg-emerald-100 text-emerald-800' : usageOf(asset) === 'PENDING' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'">{{ usageLabels[usageOf(asset)] }} · V{{ asset.workflow?.version || 1 }}</span>
+            <p v-if="usageOf(asset) === 'PENDING'" class="mb-2 text-amber-700">待确认，暂不可生产使用</p>
+            <p v-if="asset.workflow?.note" class="mb-2 whitespace-pre-wrap break-words leading-5 text-slate-600">{{ asset.workflow.note }}</p>
+            <p v-if="asset.workflow?.confirmed_at" class="mb-2 leading-5 text-slate-500">确认记录：{{ asset.workflow.confirmed_by_name }} · {{ asset.workflow.confirmed_at.slice(0, 10) }}</p>
             <span class="inline-flex rounded-full px-2 py-1 leading-4" :class="asset.binding_status === 'BOUND' ? 'bg-teal-50 text-teal-700' : 'bg-amber-50 text-amber-700'">{{ supplier ? '已关联采购订单' : statuses[asset.binding_status] }}</span>
             <p class="mt-1 leading-5 text-slate-400">{{ asset.created_at.slice(0, 10) }}</p>
             <p v-if="asset.warning || asset.binding_status === 'AMBIGUOUS'" class="mt-1 text-amber-700">{{ asset.binding_status === 'AMBIGUOUS' ? '同一合同号对应不同客户，请确认具体订单。' : asset.warning }}</p>
@@ -423,11 +492,13 @@ onBeforeUnmount(() => { generation++; controller.abort() })
             <span v-else aria-hidden="true" class="h-8"></span>
             <button type="button" :aria-label="`下载 ${asset.file_name}`" class="inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3" @click="download(asset)"><Download class="size-3.5" />下载</button>
             <button v-if="canWrite" type="button" :disabled="busy" class="rounded-lg border px-2.5 py-1.5" @click="edit(asset)">关联设置</button>
+            <button v-if="canWrite" type="button" :disabled="busy" :aria-label="`修改 ${asset.file_name} 状态`" class="rounded-lg border px-2.5 py-1.5 text-teal-700" @click="editStatus(asset)">修改状态</button>
+            <button v-if="canWrite && usageOf(asset) !== 'HISTORY' && !asset.photo_group_id" type="button" :disabled="busy" :aria-label="`上传 ${asset.file_name} 修改稿`" class="rounded-lg border px-2.5 py-1.5" @click="uploadRevision(asset)">上传修改稿</button>
             <button v-if="canWrite" type="button" :disabled="busy" class="rounded-lg px-2.5 py-1.5 text-slate-400" @click="archive(asset)">移出</button>
-            <button v-if="canWrite && checkEnabled && asset.kind !== 'image'" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="emit('use', asset)">用于{{ asset.kind === 'pdf' ? 'PDF' : 'Excel' }}核对</button>
-            <button v-if="supplier && supplierCheckEnabled && asset.kind === 'excel' && auth.can('carton_supplier:edit', asset.factory_id, '*')" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="chooseSupplierExcel(asset)">选择 Excel 并上传 PDF 核对</button>
-            <button v-if="supplier && supplierCheckEnabled && asset.kind === 'excel' && auth.can('carton_supplier:edit', asset.factory_id, '*')" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" :aria-label="`由 ${asset.file_name} 生成 PDF`" @click="chooseSupplierExcel(asset, true)">生成 PDF</button>
-            <button v-if="asset.kind !== 'excel' && (canWrite && checkEnabled || supplier && supplierCheckEnabled && auth.can('carton_supplier:edit', asset.factory_id, '*'))" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-amber-50 px-2.5 py-1.5 font-semibold text-amber-800" @click="chooseManualReview(asset)">{{ asset.photo_group_id ? '整组图片提交人工审核' : '提交人工审核' }}</button>
+            <button v-if="usageOf(asset) !== 'HISTORY' && canWrite && checkEnabled && asset.kind !== 'image'" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="emit('use', asset)">用于{{ asset.kind === 'pdf' ? 'PDF' : 'Excel' }}核对</button>
+            <button v-if="usageOf(asset) !== 'HISTORY' && supplier && supplierCheckEnabled && asset.kind === 'excel' && auth.can('carton_supplier:edit', asset.factory_id, '*')" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" @click="chooseSupplierExcel(asset)">选择 Excel 并上传 PDF 核对</button>
+            <button v-if="usageOf(asset) !== 'HISTORY' && supplier && supplierCheckEnabled && asset.kind === 'excel' && auth.can('carton_supplier:edit', asset.factory_id, '*')" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-teal-50 px-2.5 py-1.5 font-semibold text-teal-700" :aria-label="`由 ${asset.file_name} 生成 PDF`" @click="chooseSupplierExcel(asset, true)">生成 PDF</button>
+            <button v-if="usageOf(asset) !== 'HISTORY' && asset.kind !== 'excel' && (canWrite && checkEnabled || supplier && supplierCheckEnabled && auth.can('carton_supplier:edit', asset.factory_id, '*'))" type="button" :disabled="busy" class="col-span-2 rounded-lg bg-amber-50 px-2.5 py-1.5 font-semibold text-amber-800" @click="chooseManualReview(asset)">{{ asset.photo_group_id ? '整组图片提交人工审核' : '提交人工审核' }}</button>
           </div>
         </li>
         </template>
@@ -462,6 +533,20 @@ onBeforeUnmount(() => { generation++; controller.abort() })
         <div class="mt-3 flex gap-2"><button type="button" :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-white disabled:opacity-50" @click="saveBinding">{{ bindingPhotos.length ? '保存照片组' : '保存关联' }}</button><button type="button" :disabled="busy" class="rounded-lg border bg-white px-4 py-2" @click="closeBinding">取消</button></div>
       </div>
     </template>
+    <div v-if="statusEditing" role="dialog" aria-label="修改箱唛资料状态" aria-modal="true" class="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 p-4" @click.self="!busy && closeStatus()">
+      <form class="max-h-[85vh] w-full max-w-xl space-y-4 overflow-y-auto rounded-xl bg-white p-5" @submit.prevent="saveStatus">
+        <div class="flex items-center justify-between gap-3"><h3 class="font-bold">修改资料状态</h3><button type="button" :disabled="busy" aria-label="关闭资料状态" @click="closeStatus">关闭</button></div>
+        <p class="break-all text-sm text-slate-600">{{ statusEditing.file_name }} · V{{ statusEditing.workflow?.version || 1 }}</p>
+        <label class="block text-sm font-semibold">资料状态<select v-model="statusValue" :disabled="busy || !!statusEditing.workflow?.superseded_by_asset_id" aria-label="箱唛资料状态" class="mt-2 h-10 w-full rounded-lg border px-3"><option value="DRAFT">待打版</option><option value="PENDING">待确认</option><option value="READY">已确认可用</option><option value="HISTORY">历史版本 / 作废</option></select></label>
+        <label class="block text-sm font-semibold">{{ statusValue === 'READY' ? '确认依据（选填）' : '备注（选填）' }}<textarea v-model="statusNote" :disabled="busy" aria-label="箱唛资料状态备注" maxlength="500" rows="3" class="mt-2 w-full rounded-lg border p-3 text-sm" placeholder="例如客户邮件、签样、历史确认稿，或待修改内容"></textarea></label>
+        <p v-if="statusValue === 'READY' && statusEditing.workflow?.previous_asset_id" class="text-xs text-amber-700">确认此修改稿后，原稿会移入历史版本。</p>
+        <p v-if="statusEditing.workflow?.superseded_by_asset_id" class="text-xs text-slate-500">此稿已被新版本替代，可查看记录或补充备注。</p>
+        <p class="text-xs text-slate-500">系统记录操作人、时间和具体版本；资料分类不替代内容核对及 QC 审核。</p>
+        <p v-if="statusError" role="alert" class="text-sm text-red-700">{{ statusError }}</p>
+        <button type="submit" :disabled="busy" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{{ busy ? '正在保存…' : '保存状态' }}</button>
+        <details class="border-t pt-3 text-xs"><summary class="cursor-pointer font-semibold">修改记录</summary><p v-if="statusHistoryLoading" class="mt-2">正在读取记录…</p><p v-else-if="!statusHistory.length" class="mt-2 text-slate-500">暂无分类记录</p><div v-for="entry in statusHistory" :key="entry.revision" class="mt-2 border-t pt-2 leading-5"><b>{{ usageLabels[entry.workflow.status] }}</b> · {{ entry.workflow.updated_by_name }} · {{ entry.workflow.updated_at }}<p class="whitespace-pre-wrap break-words">{{ entry.workflow.note }}</p></div></details>
+      </form>
+    </div>
     <div v-if="gallery.length" role="dialog" aria-label="箱唛照片组预览" aria-modal="true" class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 p-4 sm:p-8" @click.self="gallery = []">
       <section class="mx-auto max-w-5xl rounded-xl bg-white p-4 sm:p-6">
         <div class="flex items-center justify-between gap-3"><h3 class="font-bold">箱唛照片组 · {{ gallery.length }} 张</h3><button type="button" class="rounded-lg border px-3 py-2 text-sm" @click="gallery = []">关闭预览</button></div>
