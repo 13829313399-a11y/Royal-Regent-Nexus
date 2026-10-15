@@ -145,3 +145,15 @@ describe('stable whole mold linkage', () => {
     expect(mixed.injection_lines.every((row) => row.engineering_linkage_conflict)).toBe(true)
   })
 })
+
+
+it('keeps an unselected molding department empty until engineering prefill is explicitly resumed', () => {
+  const source = engineering([{ mold_id: 'm1', item: '外壳', net_weight_g: 100 }])
+  const blank = normalizeInternalQuotePayload('molding', { engineering_prefill_paused: true }) as unknown as MoldingPayload
+  expect(linkEngineeringMolding(source, blank).injection_lines).toEqual([])
+  const reloaded = normalizeInternalQuotePayload('molding', JSON.parse(JSON.stringify(blank))) as unknown as MoldingPayload
+  expect(linkEngineeringMolding(source, reloaded).injection_lines).toEqual([])
+  reloaded.engineering_prefill_paused = false
+  expect(linkEngineeringMolding(source, reloaded).injection_lines).toHaveLength(1)
+  expect(blank.injection_lines).toEqual([])
+})

@@ -270,6 +270,8 @@ def prefill_molding_from_engineering(
     visible for explicit resolution; manual rows remain independent.
     """
 
+    if molding_payload.get("engineering_prefill_paused") is True:
+        return deepcopy(molding_payload)
     source_rows = engineering_payload.get("molds", [])
     existing_rows = molding_payload.get("injection_lines", [])
     molds = [row for row in source_rows if isinstance(row, dict)] if isinstance(source_rows, list) else []

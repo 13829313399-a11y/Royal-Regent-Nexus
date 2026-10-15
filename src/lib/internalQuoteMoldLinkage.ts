@@ -47,6 +47,7 @@ export function normalizeEngineeringMoldIdentities(payload: EngineeringPayload):
 
 /** Projects explicit children as descriptive detail; cost stays once on the whole mold. */
 export function linkEngineeringMolding(engineering: EngineeringPayload, molding: MoldingPayload, factoryId = ''): MoldingPayload {
+  if (molding.engineering_prefill_paused === true) return clone(molding)
   const molds: PartSource[] = engineering.molds.flatMap(mold => {
     if (factoryId !== 'huadeng' || mold.molding_profile !== 'huadeng_parts_v1') return [mold]
     return mold.parts.map(part => ({ ...mold, parts: [], legacy_source_key: '', part_source_id: part.part_id,

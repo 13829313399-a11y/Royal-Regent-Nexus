@@ -365,3 +365,12 @@ def test_changed_engineering_a_code_replaces_incompatible_saved_selection() -> N
 
     assert refreshed["injection_lines"][0]["machine_code"] == "20A"
     assert refreshed["injection_lines"][0]["machine_name"] == ""
+
+
+def test_explicitly_unselected_molding_is_not_prefilled_until_resumed():
+    engineering = {"molds": [{"mold_id": "m1", "item": "外壳", "net_weight_g": 50}]}
+    blank = {"engineering_prefill_paused": True}
+    assert prefill_molding_from_engineering(engineering, blank) == blank
+    resumed = prefill_molding_from_engineering(engineering, {"engineering_prefill_paused": False})
+    assert len(resumed["injection_lines"]) == 1
+    assert blank == {"engineering_prefill_paused": True}

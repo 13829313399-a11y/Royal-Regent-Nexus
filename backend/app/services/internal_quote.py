@@ -2147,7 +2147,7 @@ def _downstream_dependency_hashes(
 
 def _empty_molding_payload(payload: dict[str, object]) -> bool:
     fields = {"injection_lines", "blow_lines", "caixing_tool_plan_rows"}
-    return (set(payload) <= fields | {"injection_loss_rate_percent"}
+    return (set(payload) <= fields | {"injection_loss_rate_percent", "engineering_prefill_paused"}
             and all(payload.get(field) in (None, []) for field in fields))
 
 
