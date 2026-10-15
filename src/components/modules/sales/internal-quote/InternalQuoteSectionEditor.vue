@@ -2,7 +2,7 @@
 import { AlertCircle, CheckCircle2, Download, Eye, FileSpreadsheet, Info, LockKeyhole, Paperclip, RefreshCw, Save, Send, Trash2, Undo2, XCircle, Zap } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
-import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection } from '@/api/internalQuote'
+import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection, ApiInternalQuoteAttachment } from '@/api/internalQuote'
 import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
 import { rebaseEngineeringMolding } from '@/lib/internalQuoteMoldingSync'
@@ -15,8 +15,10 @@ import { calculateElectronicSectionSummary, cloneInternalQuotePayload, electroni
 import { useAuthStore } from '@/stores/auth'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { normalizeInternalQuoteDraft } from '@/lib/internalQuoteMoldingReferences'
+import { linkEngineeringMolding, normalizeEngineeringMoldIdentities } from '@/lib/internalQuoteMoldLinkage'
+import type { EngineeringPayload, MoldingPayload } from '@/lib/internalQuoteSectionPayload'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
-import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus } from '@/types/internalQuoteDesk'
+import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSectionStatus, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
 import type { SalesPricingComponent } from '@/lib/internalQuoteSectionPayload'
 
 const props = withDefaults(defineProps<{
@@ -31,6 +33,8 @@ const props = withDefaults(defineProps<{
   mainMarkupPreview?: number
   differsFromBaseline?: boolean
   differenceDetails?: string[]
+  engineeringPayload?: Record<string, unknown>
+  canEditMaterialPrices?: boolean
 }>(), {
   wholeQuoteReview: false,
   activePricingComponentId: '',
@@ -41,6 +45,8 @@ const emit = defineEmits<{
   remove: [sectionCode: InternalQuoteSectionCode]
   'block-progress': [sectionCode: InternalQuoteSectionCode, blocks: InternalQuoteFormBlock[]]
   'preview-file': [sectionCode: InternalQuoteSectionCode, attachment: InternalQuoteAttachmentRecord]
+  'draft-change': [sectionCode: InternalQuoteSectionCode, payload: Record<string, unknown>]
+  'request-material-prices': []
 }>()
 
 const quoteStore = useInternalQuoteDeskStore()
@@ -48,6 +54,7 @@ const authStore = useAuthStore()
 const draftPayload = ref<Record<string, unknown>>({})
 const baselinePayload = ref('')
 const draftRevision = ref(props.section.revision)
+const sidebarPricingDraft = ref<InternalQuoteSidebarPricingDraft>()
 const importPreview = ref<ApiInternalQuoteImportPreview>()
 const importAssignments = ref<Record<string, string>>({})
 const electronicImportTarget = ref<string>()
@@ -321,7 +328,7 @@ const lockMessage = computed(() => {
       ? '当前账号没有本分段编辑权限，页面保持只读。'
       : `当前分段为“${activeStatusMeta.value.label}”，需退回或合法重开后才能编辑。`
 })
-const isDirty = computed(() => JSON.stringify(draftPayload.value) !== baselinePayload.value)
+const isDirty = computed(() => JSON.stringify(normalizedDraft(draftPayload.value)) !== baselinePayload.value)
 function detailAmount(value: number) {
   const factor = 1000
   const rounded = Math.sign(value) * Math.round((Math.abs(value) + Number.EPSILON) * factor) / factor
@@ -365,7 +372,7 @@ function cancelLivePreviewTimer() {
 
 function scheduleLivePreview() {
   cancelLivePreviewTimer()
-  if (!editable.value || !isDirty.value) {
+  if (!editable.value || (!isDirty.value && !sidebarPricingDraft.value)) {
     quoteStore.clearLiveCostPreview(props.quote.id, props.section.code)
     return
   }
@@ -374,7 +381,7 @@ function scheduleLivePreview() {
       props.quote.id,
       props.section.code,
       draftRevision.value,
-      cloneInternalQuotePayload(props.section.code, draftPayload.value),
+      cloneInternalQuotePayload(props.section.code, props.section.code === 'sales' && sidebarPricingDraft.value ? salesPayloadWithPricing(draftPayload.value, sidebarPricingDraft.value) : draftPayload.value),
     )
   }, 450)
 }
@@ -390,7 +397,7 @@ watch([
 ], () => {
   const context = `${props.quote.id}:${props.section.code}`
   const contextChanged = context !== draftContext
-  if (contextChanged) moldSplitPending.value = false
+  if (contextChanged) { moldSplitPending.value = false; sidebarPricingDraft.value = undefined }
   const incoming = normalizedDraft(props.section.payload)
   const incomingText = JSON.stringify(incoming)
   // Engineering owns linked rows. Rebase its changes while
@@ -399,14 +406,14 @@ watch([
   if (!contextChanged && props.section.code === 'molding' && baselinePayload.value
     && props.section.revision >= draftRevision.value) {
     const baseline = JSON.parse(baselinePayload.value) as Record<string, unknown>
-    const rebased = rebaseEngineeringMolding(baseline, incoming, draftPayload.value)
+    const rebased = rebaseEngineeringMolding(baseline, incoming, draftPayload.value, props.engineeringPayload)
     if (rebased) {
       if (JSON.stringify(rebased) !== JSON.stringify(draftPayload.value)) draftPayload.value = rebased
       baselinePayload.value = incomingText
       draftRevision.value = props.section.revision
     }
   }
-  const currentText = JSON.stringify(draftPayload.value)
+  const currentText = JSON.stringify(normalizedDraft(draftPayload.value))
   // A quote refresh may replace section objects without changing their data.
   // Never overwrite a local edit (or recreate its focused input) in that case.
   if (!contextChanged && isDirty.value && incomingText !== currentText) {
@@ -435,11 +442,33 @@ watch([
   templateMenuOpen.value = false
 }, { immediate: true })
 watch(draftPayload, () => {
+  if (props.section.code === 'engineering' && editable.value && isDirty.value) {
+    const normalized = normalizeEngineeringMoldIdentities(cloneInternalQuotePayload('engineering', draftPayload.value) as unknown as EngineeringPayload)
+    if (JSON.stringify(normalized) !== JSON.stringify(draftPayload.value)) {
+      const current = draftPayload.value as unknown as EngineeringPayload
+      current.molds.forEach((mold, index) => {
+        mold.mold_id = normalized.molds[index]?.mold_id
+        mold.legacy_source_key = normalized.molds[index]?.legacy_source_key
+        mold.parts.forEach((part, partIndex) => { part.part_id = normalized.molds[index]?.parts[partIndex]?.part_id })
+      })
+    }
+  }
+  emit('draft-change', props.section.code, cloneInternalQuotePayload(props.section.code, draftPayload.value))
   scheduleLivePreview()
   if (props.section.code === 'electronic') {
     emit('block-progress', props.section.code, getInternalQuoteFormBlocks('electronic', draftPayload.value))
   }
 }, { deep: true })
+watch(() => props.engineeringPayload, (engineering) => {
+  if (props.section.code !== 'molding' || !editable.value || !engineering) return
+  const linked = linkEngineeringMolding(
+    cloneInternalQuotePayload('engineering', engineering) as unknown as EngineeringPayload,
+    cloneInternalQuotePayload('molding', draftPayload.value) as unknown as MoldingPayload,
+    props.quote.factoryId,
+  )
+  const next = normalizedDraft(linked as unknown as Record<string, unknown>)
+  if (JSON.stringify(next) !== JSON.stringify(draftPayload.value)) draftPayload.value = next
+}, { deep: true, immediate: true })
 watch([editable, isDirty], scheduleLivePreview)
 onBeforeUnmount(() => {
   cancelLivePreviewTimer()
@@ -453,13 +482,13 @@ onBeforeUnmount(() => {
 function resetFeedback() { localMessage.value = ''; localError.value = '' }
 function errorText(error: unknown) { return error instanceof Error ? error.message : '操作失败。' }
 
-function acceptSavedPayload(payload: Record<string, unknown>, submitted: Record<string, unknown>, revision: number) {
+function acceptSavedPayload(payload: Record<string, unknown>, submitted: Record<string, unknown>, revision: number, localSubmitted = submitted) {
   const saved = normalizedDraft(payload)
   const rebased = props.section.code === 'molding'
-    ? rebaseEngineeringMolding(normalizedDraft(submitted), saved, draftPayload.value) : undefined
+    ? rebaseEngineeringMolding(normalizedDraft(submitted), saved, draftPayload.value, props.engineeringPayload) : undefined
   if (rebased) draftPayload.value = rebased
-  const submittedText = JSON.stringify(normalizedDraft(submitted))
-  const currentText = JSON.stringify(draftPayload.value)
+  const submittedText = JSON.stringify(normalizedDraft(localSubmitted))
+  const currentText = JSON.stringify(normalizedDraft(draftPayload.value))
   const savedText = JSON.stringify(saved)
   // Acknowledge only the submitted snapshot. Edits made while awaiting the
   // response must remain dirty, including when the server returns no new revision.
@@ -527,15 +556,14 @@ async function saveMoldPartSplit(changes: EngineeringMoldSplitChange[], done: (e
   }
 }
 
-async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: number, activeMarkup: number, miscRatio: number, componentMarkups?: Array<{ id: string; markup: number }>) {
-  if (props.section.code !== 'sales') throw new Error('当前不是业务部分段，无法合并保存码数与杂项。')
-  if (!editable.value) throw new Error('业务部分段当前不可编辑，请先重开后再保存码数与杂项。')
-  const shipping = draftPayload.value.shipping && typeof draftPayload.value.shipping === 'object' && !Array.isArray(draftPayload.value.shipping)
-    ? draftPayload.value.shipping as Record<string, unknown>
+function salesPayloadWithPricing(source: Record<string, unknown>, pricing: InternalQuoteSidebarPricingDraft) {
+  const { markupTiers, selectedMoq, activeMarkup, miscRatio, componentMarkups } = pricing
+  const shipping = source.shipping && typeof source.shipping === 'object' && !Array.isArray(source.shipping)
+    ? source.shipping as Record<string, unknown>
     : {}
   const componentMarkupById = new Map((componentMarkups ?? []).map((row) => [row.id, row.markup]))
   const packagingMarkup = componentMarkupById.get(salesPackagingPricingGroupId) ?? activeMarkup
-  const sourcePricingComponents = Array.isArray(draftPayload.value.pricing_components) ? draftPayload.value.pricing_components : []
+  const sourcePricingComponents = Array.isArray(source.pricing_components) ? source.pricing_components : []
   const nextPricingComponents = sourcePricingComponents.flatMap((value, index) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return []
     const row = value as Record<string, unknown>
@@ -545,8 +573,8 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
     if (!id || !name) return []
     return [{ id, name, ...(componentMarkup != null && (index === 0 || Math.abs(componentMarkup - activeMarkup) > .000001) ? { markup_x: Number(componentMarkup.toFixed(2)) } : {}) }]
   })
-  draftPayload.value = normalizeInternalQuotePayload('sales', {
-    ...draftPayload.value,
+  return normalizeInternalQuotePayload('sales', {
+    ...source,
     ...(componentMarkups?.length ? { pricing_mode: 'component', pricing_components: nextPricingComponents } : {}),
     shipping: {
       ...shipping,
@@ -558,6 +586,15 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
       divisor: salesSettlementDivisorForMiscRatio(miscRatio),
     },
   })
+}
+
+async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: number, activeMarkup: number, miscRatio: number, componentMarkups?: Array<{ id: string; markup: number }>) {
+  if (props.section.code !== 'sales') throw new Error('当前不是业务部分段，无法合并保存码数与杂项。')
+  if (!editable.value) throw new Error('业务部分段当前不可编辑，请先重开后再保存码数与杂项。')
+  draftPayload.value = salesPayloadWithPricing(draftPayload.value, {
+    markupTiers: markupTiers.map((tier) => ({ ...tier, include_in_output: tier.include_in_output !== false })),
+    selectedMoq, activeMarkup, miscRatio, componentMarkups,
+  })
   const result = await saveDraft(false, componentMarkups?.length ? '在协作侧栏保存 JustPlay 配件与业务部包装倍率及杂项系数' : '在协作侧栏保存分段 MOQ 码数与杂项系数')
   if (!result) throw new Error(localError.value || '保存码数与杂项失败。')
   localMessage.value = `业务部当前草稿、分段 MOQ 码数与杂项系数已保存，服务端已生成 revision ${result.revision} 并重新计算。`
@@ -567,18 +604,24 @@ async function saveSalesMarkup(markupTiers: SalesMarkupTier[], selectedMoq: numb
 function hasUnsavedChanges() {
   return isDirty.value || moldSplitPending.value
 }
+function setSidebarPricingDraft(pricing?: InternalQuoteSidebarPricingDraft) {
+  if (props.section.code !== 'sales') return
+  sidebarPricingDraft.value = pricing
+  scheduleLivePreview()
+}
 
 function canSaveWholeQuoteDraft() {
   return editable.value
 }
 
-function getWholeQuoteDraft() {
+function getWholeQuoteDraft(pricing?: InternalQuoteSidebarPricingDraft) {
   if (moldSplitPending.value) throw new Error('请先确认或取消配件拆分。')
   if (!editable.value) throw new Error(`${props.section.label}当前不可编辑，无法统一保存。`)
   return {
     sectionCode: props.section.code,
     revision: draftRevision.value,
-    payload: cloneInternalQuotePayload(props.section.code, draftPayload.value),
+    payload: cloneInternalQuotePayload(props.section.code, props.section.code === 'sales' && pricing ? salesPayloadWithPricing(draftPayload.value, pricing) : draftPayload.value),
+    localPayload: cloneInternalQuotePayload(props.section.code, draftPayload.value),
     baselinePayload: JSON.parse(baselinePayload.value) as Record<string, unknown>,
   }
 }
@@ -590,7 +633,7 @@ async function saveWholeQuoteDraft(refreshQuote = true) {
   return result
 }
 
-defineExpose({ saveSalesMarkup, saveWholeQuoteDraft, hasUnsavedChanges, canSaveWholeQuoteDraft, getWholeQuoteDraft, acceptSavedPayload })
+defineExpose({ saveSalesMarkup, saveWholeQuoteDraft, hasUnsavedChanges, canSaveWholeQuoteDraft, getWholeQuoteDraft, acceptSavedPayload, setSidebarPricingDraft })
 
 function askHowToHandleUnsavedChanges() {
   if (pendingUnsavedPrompt) return pendingUnsavedPrompt
@@ -741,6 +784,23 @@ async function handleUploadFile(event: Event) {
     localMessage.value = isImportWorkbook(file) && importOptions.value.length
       ? `${file.name} 未识别为本部门结构化报价单，已作为普通附件保存。`
       : `附件 ${file.name} 已校验并留存。`
+  } catch (error) { localError.value = errorText(error) }
+}
+
+async function uploadPaintingRowImage(rowId: string, file: File) {
+  if (!editable.value || props.section.code !== 'painting') return
+  const requestedQuoteId = props.quote.id
+  resetFeedback()
+  try {
+    const attachment = await quoteStore.uploadAttachment(requestedQuoteId, 'painting', file) as ApiInternalQuoteAttachment
+    if (props.quote.id !== requestedQuoteId || props.section.code !== 'painting') return
+    const rows = Array.isArray(draftPayload.value.rows) ? draftPayload.value.rows as Array<Record<string, unknown>> : []
+    const row = rows.find((item) => item.row_id === rowId)
+    if (!row) { localMessage.value = '图片已保留在本部门附件中，原明细已变更，可在图片栏重新选择。'; return }
+    const ids = Array.isArray(row.image_attachment_ids) ? row.image_attachment_ids.map(String) : []
+    row.image_attachment_ids = [...new Set([...ids, attachment.id])]
+    row.image_reference = attachment.file_name
+    localMessage.value = '图片已添加到当前明细，请保存当前款以保留图片关联。'
   } catch (error) { localError.value = errorText(error) }
 }
 
@@ -906,6 +966,7 @@ function confirmRemoveParticipation() {
       <div class="preview-metrics"><span>{{ section.code === 'electronic' ? electronicImportExistingLabel : `当前 ${Number(importPreview.diff_summary.existing_rows ?? 0)} 行` }}</span><span>本次识别 {{ Number(importPreview.diff_summary.imported_rows ?? 0) }} 行</span><span>{{ section.code === 'electronic' ? `导入后该报价 ${electronicImportResultRows} 行` : `导入后 ${Number(importPreview.diff_summary.replace_result_rows ?? 0)} 行` }}</span></div>
       <label v-if="section.code === 'electronic'" class="electronic-import-target"><span>导入方式</span><select v-model="electronicImportTarget" :disabled="quoteStore.submitting"><option value="new">新增独立电子报价（全部金额会合计）</option><option v-for="target in electronicImportTargets" :key="target.id" :value="target.id">替换“{{ target.name }}”</option></select><small>新增会保留现有各份报价；替换只更新所选报价。若同一源文件已导入，请选择该报价替换。</small></label>
       <div v-if="importPreview.warnings.length" class="preview-warnings"><p v-for="warning in importPreview.warnings" :key="warning"><AlertCircle />{{ warning }}</p></div>
+      <div v-if="importPreview.embedded_images?.length" class="import-image-preview" aria-label="导入图片预览"><strong>识别 {{ importPreview.embedded_images.length }} 张图片 · 按原表行关联</strong><figure v-for="(image,imageIndex) in importPreview.embedded_images" :key="`${image.source_row}-${imageIndex}`"><img v-if="['image/png','image/jpeg','image/webp'].includes(image.content_type)" :src="`data:${image.content_type};base64,${image.data_base64}`" :alt="image.file_name"><figcaption>原表第 {{ image.source_row }} 行 · {{ image.file_name }}</figcaption></figure></div>
       <InternalQuoteImportAssignment v-if="importPreview.assignment_rows?.length" :key="importPreview.batch_id" v-model="importAssignments" :rows="importPreview.assignment_rows" :components="importPreview.assignment_components ?? []" :disabled="quoteStore.submitting" />
       <footer><strong class="replace-only-note">{{ section.code === 'electronic' ? '确认后仅更新目标报价；各份电子报价金额均计入电子部总价' : importPreview.import_type === 'mold' ? '确认后替换模具明细，并将模具总价填入“模具费用”，导入后可手动修改；其他费用和已填内容保留，取消不修改表单' : '确认后替换本模板对应区域，其他已填写内容一并保留；取消不修改表单' }}</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable || !assignmentComplete" @click="confirmImport">确认导入</button></footer>
     </section>
@@ -917,7 +978,7 @@ function confirmRemoveParticipation() {
       <div class="electronic-quote-total"><strong>电子部全部报价预览</strong><span>RMB {{ detailAmount(electronicSectionSummary.quoteRmb) }}</span><span>HKD {{ detailAmount(electronicSectionSummary.quoteHkd) }}</span><em>{{ electronicGroupOptions.length }} 份报价金额合计；正式金额以保存后的服务端计算为准。</em></div>
     </section>
     <div v-if="section.code === 'electronic' && !showElectronicForm" class="electronic-empty-state"><FileSpreadsheet /><strong>暂无电子报价</strong><span>可新增空白电子报价，或上传报价单后选择“新增独立电子报价”。</span></div>
-    <InternalQuoteSectionForm v-if="showElectronicForm" :key="`${quote.id}:${section.code}`" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable || quoteStore.submitting" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" @mold-parts-split="saveMoldPartSplit" @mold-split-open="moldSplitPending = $event" />
+    <InternalQuoteSectionForm v-if="showElectronicForm" :key="`${quote.id}:${section.code}`" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :can-edit-material-prices="canEditMaterialPrices" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable || quoteStore.submitting" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" @upload-painting-image="uploadPaintingRowImage" @request-material-prices="emit('request-material-prices')" @mold-parts-split="saveMoldPartSplit" @mold-split-open="moldSplitPending = $event" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"
@@ -985,6 +1046,7 @@ function confirmRemoveParticipation() {
 </template>
 
 <style scoped>
+.import-image-preview{display:flex;flex-wrap:wrap;gap:10px;padding:12px;background:#fff}.import-image-preview>strong{width:100%;font-size:12px;color:#1e3a8a}.import-image-preview figure{margin:0;max-width:150px}.import-image-preview img{height:72px;width:100px;object-fit:contain;border:1px solid #bfdbfe;border-radius:6px}.import-image-preview figcaption{font-size:11px;color:#475569;overflow-wrap:anywhere}
 .quote-section-editor{position:relative;min-width:0;overflow:clip;border:1px solid #dbe5ea;border-radius:13px;background:#fff;box-shadow:0 12px 28px rgb(15 23 42/.05)}.quote-editor-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:16px;border-bottom:1px solid #e2e8f0}.quote-editor-title-row{display:flex;flex-wrap:wrap;align-items:center;gap:7px}.quote-editor-title-row h2{margin:0;color:#0f172a;font-size:17px;font-weight:900}.quote-editor-head p{margin:6px 0 0;color:#64748b;font-size:12px;line-height:1.55}.quote-editor-status,.quote-revision,.dirty{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:4px 7px;font-size:11px;font-weight:900}.quote-editor-status{background:color-mix(in srgb,var(--tone) 10%,white);color:var(--tone)}.quote-editor-status i{width:5px;height:5px;border-radius:99px;background:currentColor}.quote-revision{background:#f1f5f9;color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.dirty{background:#fff7ed;color:#c2410c}.tone-slate{--tone:#64748b}.tone-amber{--tone:#d97706}.tone-green{--tone:#059669}.tone-red{--tone:#dc2626}.quote-editor-tools{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}.quote-editor-tools button{display:inline-flex;height:34px;align-items:center;gap:5px;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 10px;color:#475569;font-size:12px;font-weight:800}.quote-editor-tools button.primary-upload{border-color:#0f766e;background:#0f766e;color:#fff;box-shadow:0 5px 14px rgb(15 118 110/.2)}.quote-editor-tools button.primary-upload:hover:not(:disabled){border-color:#115e59;background:#115e59;transform:translateY(-1px)}.quote-editor-tools button.quick-entry{border-color:#f59e0b;background:#fffbeb;color:#b45309}.quote-editor-tools button.quick-entry.active{border-color:#0d9488;background:#ccfbf1;color:#0f766e}.quote-editor-tools button.quick-entry:hover:not(:disabled){transform:translateY(-1px)}.quote-editor-tools button:disabled{cursor:not-allowed;opacity:.4}.quote-editor-tools svg{width:14px;height:14px}.quote-lock-banner,.quote-dependency-strip{display:flex;align-items:center;gap:7px;border-bottom:1px solid #e2e8f0;padding:10px 13px;font-size:11px}.quote-lock-banner{background:#fffbeb;color:#92400e}.quote-lock-banner svg{width:14px}.quote-dependency-strip{flex-wrap:wrap;background:#f8fafc;color:#64748b}.quote-dependency-strip>span{display:inline-flex;align-items:center;gap:5px;color:#0f766e;font-weight:900}.quote-dependency-strip svg{width:13px}.quote-dependency-strip b{border:1px solid #dbe5ea;border-radius:999px;background:#fff;padding:3px 6px;color:#475569;font-size:11px}.quote-dependency-strip em{margin-left:auto;color:#94a3b8;font-size:11px;font-style:normal}.quote-warning-list{display:grid;gap:5px;padding:10px 13px;background:#fef2f2}.quote-warning-list p,.preview-warnings p{display:flex;align-items:flex-start;gap:5px;margin:0;color:#b91c1c;font-size:11px}.quote-warning-list svg,.preview-warnings svg{width:13px;flex:0 0 auto}
 .quote-section-editor.baseline-different{border-color:#fdba74;box-shadow:0 12px 28px rgb(194 65 12/.1)}.baseline-difference{display:inline-flex;align-items:center;gap:4px;border-radius:999px;background:#ffedd5;padding:4px 7px;color:#c2410c;font-size:10px;font-weight:950}.baseline-difference svg{width:12px;height:12px}.baseline-difference-details{position:absolute;z-index:18;top:52px;left:16px;display:grid;width:min(440px,calc(100% - 32px));max-height:280px;overflow:auto;border:1px solid #fdba74;border-radius:10px;background:#fff7ed;padding:10px 12px;box-shadow:0 14px 32px rgb(124 45 18/.2);opacity:0;visibility:hidden;transform:translateY(-5px);transition:opacity .16s ease,transform .16s ease,visibility .16s}.quote-section-editor.baseline-different:hover>.baseline-difference-details,.quote-section-editor.baseline-different:focus-within>.baseline-difference-details{opacity:1;visibility:visible;transform:translateY(0)}.baseline-difference-details strong{color:#9a3412;font-size:11px}.baseline-difference-details>span{margin-top:2px;color:#c2410c;font-size:9px}.baseline-difference-details ul{display:grid;gap:4px;margin:8px 0 0;padding-left:18px;color:#7c2d12;font-size:10px}.baseline-difference-details em{margin-top:7px;color:#c2410c;font-size:9px;font-style:normal;font-weight:800}
 .template-download-control{position:relative}.quote-editor-tools button.template-download{border-color:#5eead4;background:#f0fdfa;color:#0f766e}.quote-editor-tools button.template-download:hover:not(:disabled){border-color:#14b8a6;background:#ccfbf1;transform:translateY(-1px)}.template-download-menu{position:absolute;z-index:12;top:calc(100% + 6px);right:0;display:grid;min-width:190px;gap:4px;border:1px solid #dbe5ea;border-radius:10px;background:#fff;padding:6px;box-shadow:0 14px 32px rgb(15 23 42/.16)}.quote-editor-tools .template-download-menu button{width:100%;justify-content:flex-start;border-color:transparent;background:#fff;white-space:nowrap}.quote-editor-tools .template-download-menu button:hover{border-color:#99f6e4;background:#f0fdfa;color:#0f766e}

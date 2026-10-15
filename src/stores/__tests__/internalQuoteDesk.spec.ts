@@ -1,8 +1,10 @@
 import { createPinia, setActivePinia } from 'pinia'
+import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiInternalQuote, ApiInternalQuoteSection } from '@/api/internalQuote'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
+import InternalQuoteActivityPanel from '@/components/modules/sales/internal-quote/InternalQuoteActivityPanel.vue'
 
 const apiMock = vi.hoisted(() => ({
   list: vi.fn(),
@@ -722,7 +724,7 @@ describe('internal quote desk real API state', () => {
       machine_prices: [{ range: '18A', machine: '180T', shift_price_hkd: '1890' }],
     } })
     await store.loadQuote('quote-1')
-    const storedLine = { item: '前壳', material: 'abs', grade: '', machine_code: '18', machine_name: '', net_weight_g: 15 }
+    const storedLine = { item: '前壳', material: 'abs', grade: '750sw', machine_code: '18', machine_name: '', net_weight_g: 15 }
     const baselineLine = { ...storedLine, material: 'ABS', grade: '750SW', machine_code: '18A', machine_name: '180T' }
     const payload = { injection_lines: [{ ...baselineLine, net_weight_g: 20 }] }
     const latest = quote({ sections: sectionCodes.map((code, index) => code === 'molding'
@@ -771,6 +773,36 @@ describe('internal quote desk real API state', () => {
         { sectionCode: 'sales', revision: 4, payload: salesPayload },
       ],
     )
+  })
+
+  it.each([false, true])('uses the sidebar Sales baseline for whole-save after saved packaging changes (concurrent: %s)', async (concurrent) => {
+    const store = useInternalQuoteDeskStore()
+    const loaded = await store.loadQuote('quote-1')
+    const panel = mount(InternalQuoteActivityPanel, { props: { quote: loaded!, canEditMarkup: true } })
+    try {
+      if (concurrent) await panel.get('[data-testid="live-quote-markup-0"]').setValue('1.12')
+      const latestSales = { ...section('sales', 0), revision: 5, payload: { packaging_materials: [{ item: '已保存彩盒', category: 'color_box_inner_card', quantity: 1, unit_price_rmb: 2 }] } }
+      const latest = quote({ sections: [latestSales] })
+      apiMock.get.mockResolvedValue(latest)
+      await panel.setProps({ quote: (await store.loadQuote('quote-1'))! })
+      if (!concurrent) await panel.get('[data-testid="live-quote-markup-0"]').setValue('1.12')
+      const baseline = panel.vm.getPricingBaseline()
+      const payload = { ...latestSales.payload, shipping: { markup_x: 1.12, misc_ratio: .02 } }
+      const saved = { ...latestSales, revision: 6, payload }
+      apiMock.saveWholeProduct.mockResolvedValue({ quote: latest, sections: [saved] })
+      apiMock.get.mockResolvedValueOnce(latest)
+      if (!concurrent) apiMock.get.mockResolvedValueOnce(quote({ sections: [saved] }))
+      const request = store.saveWholeProductSections('quote-1', [{ sectionCode: 'sales', revision: baseline.revision, baselinePayload: baseline.payload, payload }])
+      if (concurrent) {
+        await expect(request).rejects.toThrow('业务部内容已被其他用户修改')
+        expect(apiMock.saveWholeProduct).not.toHaveBeenCalled()
+      } else {
+        await request
+        expect(apiMock.saveWholeProduct).toHaveBeenCalledWith('quote-1', [{ sectionCode: 'sales', revision: 5, payload }])
+      }
+    } finally {
+      panel.unmount()
+    }
   })
 
   it('does not overwrite a concurrent downstream edit while refreshing an engineering dependency', async () => {

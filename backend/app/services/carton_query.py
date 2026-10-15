@@ -40,7 +40,7 @@ AUDIT_LABELS = {
     "CLOSING_GENERATED": "月结草稿生成", "CLOSING_PENDING": "月结提交核对", "CLOSING_CONFIRMED": "月结确认", "CLOSING_LOCKED": "最终锁账", "CLOSING_UNLOCKED": "主管解锁月结",
     "CARTON_MARK_TEMPLATE_CREATED": "唛头模板创建", "CARTON_MARK_TEMPLATE_RECHECKED": "唛头模板复核",
     "ORDER_CREATED": "订单创建确认", "ORDER_SUBMITTED_SUPPLIER": "确认订单并锁定",
-    "PURCHASE_ORDER_ISSUED": "供应商采购单生成", "ORDER_UPDATED": "订单修改",
+    "PURCHASE_ORDER_ISSUED": "供应商采购单生成", "ORDER_UPDATED": "订单修改", "ORDER_DATES_CHANGED": "订单交期调整",
     "ORDER_APPENDED": "追加订单", "ORDER_REDUCED": "订单减单 / 退单", "ORDER_CANCELLED": "订单取消",
     "ORDER_REPLENISHED": "补单并出库", "RECEIPT_CONFIRMED": "收料确认入库", "RECEIPT_REVERSED": "收料作废 / 冲销",
     "CARTON_MARK_ASSET_CREATED": "箱唛原文件上传", "CARTON_MARK_ASSET_BOUND": "箱唛关联订单",

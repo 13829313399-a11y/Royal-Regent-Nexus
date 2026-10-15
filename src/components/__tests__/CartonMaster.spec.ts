@@ -18,6 +18,48 @@ const record = (id: string, customer = '360', count = '120'): MasterRecord => ({
   ] },
 })
 
+it('filters packaging from the header query, clears it explicitly and preserves the new factory query', async () => {
+  const a = { ...record('A'), code: 'ITEM-A' }, b = { ...record('B'), code: 'ITEM-B', data: { ...defaultMasterData(), product_name: '积木车' } }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), records: [a, b] })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG', search: '消防车' } })
+  await flushPromises()
+  expect(wrapper.find('[aria-label="基础资料搜索"]').exists()).toBe(false)
+  expect(wrapper.get('table').text()).toContain('ITEM-A')
+  expect(wrapper.get('table').text()).not.toContain('ITEM-B')
+  expect(wrapper.emitted('update:search')).toBeUndefined()
+  await wrapper.findAll('button').find(button => button.text() === '清空筛选')!.trigger('click')
+  expect(wrapper.emitted('update:search')).toEqual([['']])
+  await wrapper.setProps({ search: '' })
+  expect(wrapper.get('table').text()).toContain('ITEM-B')
+  await wrapper.setProps({ factoryId: 'huadeng', search: '积木车' }); await flushPromises()
+  expect(wrapper.get('table').text()).not.toContain('ITEM-A')
+  expect(wrapper.get('table').text()).toContain('ITEM-B')
+  expect(wrapper.emitted('update:search')).toEqual([['']])
+  wrapper.unmount(); get.mockRestore()
+})
+
+it('shares the header query with customer contracts, workshops and locations without filtering saved settings', async () => {
+  const contract = { ...record('CT'), kind: 'CONTRACT', code: 'SC-HIT', data: { ...defaultMasterData(), item_nos: ['HIT-ITEM'] } } as MasterRecord
+  const workshop = { ...record('WS'), kind: 'WORKSHOP', code: '喷涂车间' } as MasterRecord
+  const locations = [{ id: 'P1', warehouse: 'A仓', bin_code: '01', status: 'ACTIVE' }, { id: 'P2', warehouse: 'B仓', bin_code: '02', status: 'ACTIVE' }] as any
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), records: [contract, workshop], locations, can_manage: true })
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [{ id: 'C', customer_code: '360', customer_name: '360', status: 'ACTIVE' } as any], search: 'HIT-ITEM' } })
+  await flushPromises()
+  expect(wrapper.find('[aria-label="查找客户与合同"]').exists()).toBe(false)
+  expect(wrapper.find('[aria-label="查找仓库仓位"]').exists()).toBe(false)
+  expect(wrapper.get('[aria-label="客户与规则"]').text()).toContain('SC-HIT')
+  await wrapper.setProps({ search: '喷涂' })
+  expect(wrapper.get('[aria-label="车间与仓位"]').text()).toContain('喷涂车间')
+  await wrapper.setProps({ search: 'B仓' })
+  expect(wrapper.find('[aria-label="修改仓位 A仓 01"]').exists()).toBe(false)
+  expect(wrapper.find('[aria-label="修改仓位 B仓 02"]').exists()).toBe(true)
+  expect(wrapper.get('[aria-label="本厂通用交期"]').text()).toContain('采购安全提前量')
+  await wrapper.findAll('button').find(button => button.text() === '清空筛选')!.trigger('click')
+  expect(wrapper.emitted('update:search')).toEqual([['']])
+  expect(get).toHaveBeenCalledTimes(1)
+  wrapper.unmount(); get.mockRestore()
+})
+
 it('sends master import files as multipart and includes the confirmed preview token', async () => {
   vi.mocked(http.post).mockResolvedValue({ data: { added: 1 } })
   const file = new File(['xlsx'], '资料.xlsx')
@@ -182,6 +224,27 @@ it('hides both template and import actions without master permission', async () 
 })
 
 describe('纸箱基础资料', () => {
+  it('saves pasted Excel dimensions as a specification while preserving the recorded unit and historical source', async () => {
+    const config = record('CFG')
+    config.data.lines![0]!.dimension_unit = 'inch'
+    const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [config] })
+    const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(config)
+    const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } })
+    try {
+      await flushPromises()
+      await wrapper.get('[aria-label="修改基础资料 00123"]').trigger('click')
+      const input = wrapper.get<HTMLInputElement>('[aria-label="资料规格"]')
+      input.element.select()
+      await input.trigger('paste', { clipboardData: { getData: () => '30.5\t20\t15\r\n' } })
+      expect(input.element.value).toBe('30.5*20*15')
+      expect(config.data.lines![0]!.specification).toBe('30*20*15')
+      await wrapper.get('form').trigger('submit'); await flushPromises()
+      expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ data: expect.objectContaining({ lines: expect.arrayContaining([
+        expect.objectContaining({ specification: '30.5*20*15', dimension_unit: 'inch' }),
+      ]) }) }), 'CFG')
+    } finally { wrapper.unmount(); get.mockRestore(); save.mockRestore() }
+  })
+
   it.each(['', 'cm', 'mm', 'inch'])('defaults an unrecorded dimension unit to cm while retaining %s and loaded snapshots', async unit => {
     const config = record('CFG')
     config.data.lines![0]!.dimension_unit = unit

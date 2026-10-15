@@ -40,7 +40,16 @@ export interface EngineeringMaterialRow extends QuotePricingMetadata {
   disney_included: number
 }
 export interface EngineeringMoldPartRow {
+  material?: string
+  material_type?: string
+  machine_code?: string
+  target_output?: number | string
+  remark?: string
+  source_row?: number
+  image_reference?: string
+  image_attachment_ids?: string[]
   id?: string
+  part_id?: string
   name: string
   color: string
   process: string
@@ -50,6 +59,9 @@ export interface EngineeringMoldPartRow {
   quantity: number
 }
 export interface EngineeringMoldRow extends QuotePricingMetadata {
+  molding_profile?: 'huadeng_parts_v1'
+  mold_id?: string
+  legacy_source_key?: string
   dickie_export?: DickieMoldSupplement
   item: string
   mold_no: string
@@ -194,6 +206,19 @@ export interface ElectronicSummary {
 }
 
 export interface InjectionRow extends Omit<QuotePricingMetadata, 'markup_override'> {
+  line_id?: string
+  engineering_mold_id?: string
+  engineering_parts?: EngineeringMoldPartRow[]
+  engineering_source_missing?: boolean
+  engineering_linkage_conflict?: boolean
+  cost_scope?: 'whole_mold' | 'huadeng_part'
+  engineering_part_id?: string
+  engineering_labor_mode?: 'shared' | 'transfer'
+  labor_job_id?: string
+  engineering_remark?: string
+  engineering_machine_hint?: string
+  engineering_source_row?: number
+  image_attachment_ids?: string[]
   buzzbee_material?: string
   engineering_source_key?: string
   engineering_synced_fields?: string[]
@@ -259,6 +284,8 @@ export type PaintingOperationCode = 'clamp' | 'pad_print' | 'uv' | 'spray' | 'ed
 export interface PaintingOperationValue { quantity: number; unit_price_hkd: number }
 export type PaintingOperations = Record<PaintingOperationCode, PaintingOperationValue>
 export interface PaintingRow extends QuotePricingMetadata {
+  row_id?: string
+  image_attachment_ids?: string[]
   cost_allocation?: 'direct' | 'split'
   paint_cost_hkd?: number | null
   labor_cost_hkd?: number | null
@@ -1305,6 +1332,40 @@ export function splitEngineeringMoldPartNames(value: unknown): string[] {
   return expanded
 }
 
+export function previewEngineeringMoldPartSplit(value: unknown, existing: EngineeringMoldPartRow[]) {
+  const names = splitEngineeringMoldPartNames(value)
+  const matches = new Map<number, number>()
+  const used = new Set<number>()
+  // Reserve exact matches before attempting to repair legacy bare directions.
+  names.forEach((name, index) => {
+    const found = existing.findIndex((part, oldIndex) => !used.has(oldIndex) && part.name.trim() === name)
+    if (found >= 0) { matches.set(index, found); used.add(found) }
+  })
+  const directionMatches = (short: string, full: string) => (
+    /^[前后左右]$/.test(short) && (full.startsWith(short) || new RegExp(`${short}(?:[（(][^（）()]*[）)])?$`).test(full))
+  )
+  names.forEach((name, index) => {
+    if (matches.has(index)) return
+    const candidates = existing.flatMap((part, oldIndex) => !used.has(oldIndex) && directionMatches(part.name.trim(), name) ? [oldIndex] : [])
+    if (candidates.length !== 1) return
+    const oldIndex = candidates[0]!
+    const short = existing[oldIndex]!.name.trim()
+    if (names.filter((candidate, candidateIndex) => !matches.has(candidateIndex) && directionMatches(short, candidate)).length !== 1) return
+    matches.set(index, oldIndex)
+    used.add(oldIndex)
+  })
+  const proposed = names.map((name, index) => {
+    const oldIndex = matches.get(index)
+    const old = oldIndex === undefined ? undefined : existing[oldIndex]
+    const part: EngineeringMoldPartRow = old
+      ? (old.name === name ? old : { ...old, name })
+      : { name, color: '', process: '', process_unit_price_hkd: 0, unit_net_weight_g: 0, output_count: 1, quantity: 1 }
+    return { part, status: old ? 'matched' as const : 'added' as const }
+  })
+  const retained = existing.flatMap((part, index) => used.has(index) ? [] : [{ part, status: 'retained' as const }])
+  return { rows: [...proposed, ...retained], nameCount: names.length, retainedCount: retained.length }
+}
+
 function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPartRow[] {
   // Opening or saving the ordinary form must never confirm an implicit split.
   const sourceParts = rows(row.parts)
@@ -1314,6 +1375,15 @@ function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPart
     const occurrence = (occurrences.get(name) ?? 0) + 1
     occurrences.set(name, occurrence)
     return {
+      ...(row.molding_profile === 'huadeng_parts_v1' || 'material_type' in part ? {
+        material: textValue(part.material), material_type: textValue(part.material_type),
+        machine_code: textValue(part.machine_code),
+        target_output: Number.isFinite(Number(part.target_output ?? 0)) ? Number(part.target_output ?? 0) : textValue(part.target_output),
+        remark: textValue(part.remark), source_row: numberValue(part.source_row),
+        image_reference: textValue(part.image_reference),
+        image_attachment_ids: Array.isArray(part.image_attachment_ids) ? part.image_attachment_ids.map(textValue).filter(Boolean) : [],
+      } : {}),
+      ...(part.part_id || part.id ? { part_id: textValue(part.part_id || part.id).trim() } : {}),
       id: textValue(part.id).trim() || `legacy-name:${JSON.stringify([name, occurrence])}`,
       name: textValue(part.name ?? part.item),
       color: textValue(part.color),
@@ -1546,6 +1616,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   if (code === 'engineering') {
     const hasLegacyCartons = Object.prototype.hasOwnProperty.call(source, 'cartons')
     const normalizedMolds: EngineeringMoldRow[] = rows(source.molds).map((row) => ({
+      ...(row.molding_profile === 'huadeng_parts_v1' ? { molding_profile: 'huadeng_parts_v1' as const } : {}),
+      ...(row.mold_id ? { mold_id: textValue(row.mold_id) } : {}),
+      ...(row.legacy_source_key ? { legacy_source_key: textValue(row.legacy_source_key) } : {}),
       ...pricingMetadata(row),
       ...importBatchMetadata(row),
       item: textValue(row.item ?? row.name), mold_no: textValue(row.mold_no), chinese_name: textValue(row.chinese_name), mold_base_type: textValue(row.mold_base_type ?? row.mold_type),
@@ -1619,6 +1692,18 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     return {
       injection_loss_rate_percent: injectionLossRate,
       injection_lines: rows(source.injection_lines).map((row) => ({
+        ...(row.line_id ? { line_id: textValue(row.line_id) } : {}),
+        ...(row.engineering_mold_id ? { engineering_mold_id: textValue(row.engineering_mold_id) } : {}),
+        ...(Array.isArray(row.engineering_parts) ? { engineering_parts: engineeringMoldParts({ parts: row.engineering_parts }) } : {}),
+        ...(row.cost_scope === 'huadeng_part' ? {
+          cost_scope: 'huadeng_part' as const, engineering_part_id: textValue(row.engineering_part_id),
+          engineering_labor_mode: row.engineering_labor_mode === 'transfer' ? 'transfer' as const : 'shared' as const,
+          labor_job_id: textValue(row.labor_job_id), engineering_remark: textValue(row.engineering_remark),
+          engineering_source_row: numberValue(row.engineering_source_row), engineering_machine_hint: textValue(row.engineering_machine_hint),
+          image_attachment_ids: Array.isArray(row.image_attachment_ids) ? row.image_attachment_ids.map(textValue).filter(Boolean) : [],
+        } : row.cost_scope === 'whole_mold' ? { cost_scope: 'whole_mold' as const } : {}),
+        ...(row.engineering_source_missing === true ? { engineering_source_missing: true } : {}),
+        ...(row.engineering_linkage_conflict === true ? { engineering_linkage_conflict: true } : {}),
         buzzbee_material: textValue(row.buzzbee_material),
         ...importBatchMetadata(row),
         ...pricingMetadata(row, false),
@@ -1659,6 +1744,8 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       ...importBatchMetadata(row),
       ...pricingMetadata(row),
       image_reference: textValue(row.image_reference ?? row.image),
+      ...(row.row_id ? { row_id: textValue(row.row_id) } : {}),
+      image_attachment_ids: Array.isArray(row.image_attachment_ids) ? row.image_attachment_ids.map(textValue).filter(Boolean) : [],
       name: textValue(row.name ?? row.item),
       position: textValue(row.position),
       operations: paintingOperations(row.operations),

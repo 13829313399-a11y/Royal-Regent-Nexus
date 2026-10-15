@@ -7,6 +7,7 @@ export interface CartonDashboardWorkspace {
   factory_id: string; business_date: string; generated_at: string
   items: BusinessOrderAlert[]; total: number; offset: number; limit: number
   summary: { total: number; missing: number; increase: number; decrease: number }
+  category_summary?: { total: number; missing: number; increase: number; decrease: number }
   reminders: BusinessOrderAlert[]
   pending_order_count: number; open_exception_count: number; weekly_attention_count: number
   inventory_by_unit: { unit: string; quantity: string }[]

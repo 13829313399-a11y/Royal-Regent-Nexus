@@ -5,8 +5,9 @@ import type { CartonCustomerResponse } from '@/api/cartonProcurement'
 import type { CartonLocation } from '@/api/cartonPositions'
 import { describeNumberTemplate } from '@/lib/cartonNumberPatterns'
 
-const props = defineProps<{ workspace: MasterWorkspace; customers: CartonCustomerResponse[]; busy?: boolean }>()
+const props = defineProps<{ workspace: MasterWorkspace; customers: CartonCustomerResponse[]; busy?: boolean; search?: string }>()
 const emit = defineEmits<{
+  'update:search': [value: string];
   paper: [];
   paperTemplate: []; paperImport: [];
   locationTemplate: []; locationImport: [];
@@ -14,7 +15,15 @@ const emit = defineEmits<{
   remove: [row: MasterRecord]; restore: [row: MasterRecord]
   location: [row?: CartonLocation, warehouse?: string]; warehouse: [name?: string]; customer: [row?: CartonCustomerResponse]; source: [row: MasterRecord]
 }>()
-const query = ref(''), placeQuery = ref(''), contractStatus = ref('ACTIVE')
+const localQuery = ref(''), localPlaceQuery = ref(''), contractStatus = ref('ACTIVE')
+const query = computed({
+  get: () => props.search ?? localQuery.value,
+  set: (value: string) => { if (props.search === undefined) localQuery.value = value; else emit('update:search', value) },
+})
+const placeQuery = computed({
+  get: () => props.search ?? localPlaceQuery.value,
+  set: (value: string) => { if (props.search === undefined) localPlaceQuery.value = value; else emit('update:search', value) },
+})
 const matches = (values: unknown[], term: string) => values.join(' ').toLowerCase().includes(term.trim().toLowerCase())
 const rules = (code: string) => masterDueRules(props.workspace.records, code)
 const savedRule = (code: string) => props.workspace.records.find(r => r.kind === 'RULE' && r.customer_code === code)
@@ -25,7 +34,7 @@ const contractsInStatus = (code: string) => contracts(code).filter(r => contract
 const matchingContracts = (code: string) => contractsInStatus(code).filter(r => matches([r.code, ...(r.data.item_nos || [])], query.value))
 const contractsShown = (code: string) => query.value.trim() && matchingContracts(code).length ? matchingContracts(code) : contractsInStatus(code)
 const customersShown = computed(() => props.customers.filter(c => matches([c.customer_name, c.customer_code, c.contact_name, c.contact_phone, ...contractsInStatus(c.customer_code).flatMap(r => [r.code, ...(r.data.item_nos || [])])], query.value)))
-const workshops = computed(() => props.workspace.records.filter(r => r.kind === 'WORKSHOP'))
+const workshops = computed(() => props.workspace.records.filter(r => r.kind === 'WORKSHOP' && matches([r.code, r.data.note], props.search ?? '')))
 const warehouseGroups = computed(() => [...new Set(props.workspace.locations.map(p => p.warehouse))].map(warehouse => ({
   warehouse, places: props.workspace.locations.filter(p => p.warehouse === warehouse && matches([p.warehouse, p.bin_code], placeQuery.value)),
 })).filter(g => g.places.length))
@@ -39,12 +48,12 @@ const modeText = (rule: NumberRule) => rule.mode === 'OFF' ? '' : rule.mode === 
 <template>
   <div class="space-y-4" aria-label="基础设置">
     <article class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-teal-200 bg-teal-50/40 p-4" aria-label="本厂通用交期">
-      <div><h3 class="font-bold text-slate-900">本厂通用交期</h3><p class="mt-1 text-xs text-slate-500">客户未单独设置时沿用；旧单与追加保留原提前量，未下单排期按当前周期判断时限。</p><p class="mt-2 text-xs leading-5 text-slate-500">安全提前量：纸品计划到货比客户交期提前几天。生产送货周期：从下单到到仓，默认 7 天，用于倒推最迟下单日。交期建议供落单时选择采纳。</p></div>
+      <div><h3 class="font-bold text-slate-900">本厂通用交期</h3><p class="mt-1 text-xs text-slate-500">客户单独设置优先，空白沿用本厂；均按自然日计算，包含周末和节假日。</p><p class="mt-2 text-xs leading-5 text-slate-500">采购安全提前量：纸品计划到仓比客户交期提前几天，预留收料、备货缓冲，默认 3 天。生产送货周期：供应商从下单到到仓需要几天，默认 7 天，用于倒推最迟下单日。客户交期建议需落单时人工采纳。</p><p class="mt-2 text-xs leading-5 text-teal-800">例如：客户 9 月 20 日要货，提前量 3 天，则纸品需 9 月 17 日到仓；生产送货周期 7 天，则排期最迟 9 月 10 日下单。</p><p class="mt-2 text-xs leading-5 text-slate-500">新订单计划交期最早取下单日，紧急单提示缓冲不足。修改提前量仅影响后续新单，旧单及追加保留原提前量；未下单排期按当前生产送货周期判断时限。</p></div>
       <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs"><span>采购安全提前量 <b class="ml-1 text-base text-teal-800">{{ factoryDates.lead_days }}</b> 天</span><span>生产送货周期 <b class="ml-1 text-base text-teal-800">{{ factoryDates.production_days }}</b> 天</span><span>客户交期建议 <b class="ml-1">{{ factoryDates.customer_days == null ? '不提供' : `下单后 ${factoryDates.customer_days} 天` }}</b></span><span v-if="factoryRule?.status === 'INACTIVE'" class="text-amber-700">独立设置已停用，采用系统默认</span><button v-if="workspace.can_manage" type="button" class="rounded-lg border border-teal-200 bg-white px-3 py-2 text-teal-700" @click="emit('rule', '')">设置通用交期</button></div>
     </article>
 
     <article class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-label="客户与规则">
-      <div class="flex flex-wrap items-center justify-between gap-3 border-b p-4"><div><h3 class="font-bold">客户与规则</h3><p class="mt-1 text-xs text-slate-500">客户资料、编号格式、交期与关联合同集中维护。停用保留历史。</p></div><div class="flex gap-2"><input v-model="query" aria-label="查找客户与合同" placeholder="客户 / 合同 / 货号" class="h-9 w-52 max-w-full rounded-lg border px-3 text-xs"><select v-model="contractStatus" aria-label="关联合同状态" class="h-9 rounded-lg border px-3 text-xs"><option value="ACTIVE">合同状态：启用</option><option value="INACTIVE">合同状态：停用</option><option value="ALL">合同状态：全部</option></select><button v-if="query || contractStatus !== 'ACTIVE'" type="button" class="text-xs text-teal-700" @click="query = ''; contractStatus = 'ACTIVE'">清空筛选</button><button v-if="workspace.can_manage" type="button" class="whitespace-nowrap rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white" @click="emit('customer')">新增客户</button></div></div>
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b p-4"><div><h3 class="font-bold">客户与规则</h3><p class="mt-1 text-xs text-slate-500">客户资料、编号格式、交期与关联合同集中维护。停用保留历史。</p></div><div class="flex gap-2"><input v-if="search === undefined" v-model="query" aria-label="查找客户与合同" placeholder="客户 / 合同 / 货号" class="h-9 w-52 max-w-full rounded-lg border px-3 text-xs"><select v-model="contractStatus" aria-label="关联合同状态" class="h-9 rounded-lg border px-3 text-xs"><option value="ACTIVE">合同状态：启用</option><option value="INACTIVE">合同状态：停用</option><option value="ALL">合同状态：全部</option></select><button v-if="query || contractStatus !== 'ACTIVE'" type="button" class="text-xs text-teal-700" @click="query = ''; contractStatus = 'ACTIVE'">清空筛选</button><button v-if="workspace.can_manage" type="button" class="whitespace-nowrap rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white" @click="emit('customer')">新增客户</button></div></div>
       <div class="overflow-x-auto"><table class="w-full min-w-[960px] text-left text-xs">
         <thead class="bg-slate-50 text-slate-500"><tr><th class="p-3">客户 / 联系人</th><th class="p-3">合同号格式</th><th class="p-3">货号格式</th><th class="p-3">客户 PO 格式（选填）</th><th class="p-3">当前交期规则</th><th class="p-3">状态</th><th class="p-3 text-right">操作</th></tr></thead>
         <tbody v-for="c in customersShown" :key="c.id" class="border-b border-slate-100 last:border-0">
@@ -68,8 +77,8 @@ const modeText = (rule: NumberRule) => rule.mode === 'OFF' ? '' : rule.mode === 
     <article class="rounded-xl border border-slate-200 bg-white shadow-sm" aria-label="车间与仓位">
       <div class="border-b p-4"><h3 class="font-bold">车间与仓位</h3><p class="mt-1 text-xs text-slate-500">车间用于领用去向；仓位用于存放库存，按所属仓库分别维护。</p></div>
       <div class="space-y-4 p-4 text-xs">
-        <div><div class="mb-2 flex items-center justify-between"><b>车间</b><button v-if="workspace.can_manage" type="button" class="rounded-lg border border-teal-200 px-3 py-1.5 text-teal-700" @click="emit('create', 'WORKSHOP')">新增车间</button></div><div class="flex flex-wrap gap-2"><button v-for="r in workshops" :key="r.id" type="button" :disabled="!workspace.can_manage" :aria-label="`修改车间 ${r.code}`" class="rounded-lg border px-3 py-2 disabled:cursor-default" :class="r.status === 'ACTIVE' ? 'border-teal-100 bg-teal-50/50 text-teal-800' : 'border-slate-200 bg-slate-50 text-slate-400'" @click="emit('edit', r)">{{ r.code }}<span class="ml-2 text-[10px]">{{ r.status === 'INACTIVE' ? '已停用' : workspace.can_manage ? '修改' : '' }}</span></button><span v-if="!workshops.length" class="py-2 text-slate-400">尚未设置车间</span></div></div>
-        <div class="border-t pt-4"><div class="mb-3 flex flex-wrap items-center justify-between gap-2"><b>仓库与仓位</b><div class="flex flex-wrap gap-2"><input v-model="placeQuery" aria-label="查找仓库仓位" placeholder="查找仓库 / 仓位" class="h-8 w-44 rounded-lg border px-2"><template v-if="workspace.can_manage"><button type="button" class="whitespace-nowrap rounded-lg border px-3 py-1.5" @click="emit('locationTemplate')">下载仓位模板</button><button type="button" class="whitespace-nowrap rounded-lg border px-3 py-1.5" @click="emit('locationImport')">导入仓库仓位</button><button type="button" class="whitespace-nowrap rounded-lg border border-teal-200 px-3 py-1.5 text-teal-700" @click="emit('warehouse')">添加仓库</button></template></div></div>
+        <div><div class="mb-2 flex items-center justify-between"><b>车间</b><button v-if="workspace.can_manage" type="button" class="rounded-lg border border-teal-200 px-3 py-1.5 text-teal-700" @click="emit('create', 'WORKSHOP')">新增车间</button></div><div class="flex flex-wrap gap-2"><button v-for="r in workshops" :key="r.id" type="button" :disabled="!workspace.can_manage" :aria-label="`修改车间 ${r.code}`" class="rounded-lg border px-3 py-2 disabled:cursor-default" :class="r.status === 'ACTIVE' ? 'border-teal-100 bg-teal-50/50 text-teal-800' : 'border-slate-200 bg-slate-50 text-slate-400'" @click="emit('edit', r)">{{ r.code }}<span class="ml-2 text-[10px]">{{ r.status === 'INACTIVE' ? '已停用' : workspace.can_manage ? '修改' : '' }}</span></button><span v-if="!workshops.length" class="py-2 text-slate-400">{{ search?.trim() ? '暂无匹配的车间' : '尚未设置车间' }}</span></div></div>
+        <div class="border-t pt-4"><div class="mb-3 flex flex-wrap items-center justify-between gap-2"><b>仓库与仓位</b><div class="flex flex-wrap gap-2"><input v-if="search === undefined" v-model="placeQuery" aria-label="查找仓库仓位" placeholder="查找仓库 / 仓位" class="h-8 w-44 rounded-lg border px-2"><template v-if="workspace.can_manage"><button type="button" class="whitespace-nowrap rounded-lg border px-3 py-1.5" @click="emit('locationTemplate')">下载仓位模板</button><button type="button" class="whitespace-nowrap rounded-lg border px-3 py-1.5" @click="emit('locationImport')">导入仓库仓位</button><button type="button" class="whitespace-nowrap rounded-lg border border-teal-200 px-3 py-1.5 text-teal-700" @click="emit('warehouse')">添加仓库</button></template></div></div>
           <div v-for="g in warehouseGroups" :key="g.warehouse" class="mb-3 flex flex-wrap items-start gap-3">
             <b class="w-24 shrink-0 break-words py-2">{{ g.warehouse }}</b>
             <div class="flex min-w-0 flex-1 flex-wrap gap-2">

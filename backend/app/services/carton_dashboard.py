@@ -278,15 +278,34 @@ def text_matches(values, search):
     return search.strip().lower() in value
 
 
+REDUCTION_KINDS = ("QUANTITY_DECREASE", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_ORDER")
+
+
+def alert_summary(actionable):
+    return dict(total=len(actionable), missing=sum(bool(a["reminder"] and a["reminder"]["attention"]) for a in actionable),
+                increase=sum(a["kind"] == "QUANTITY_INCREASE" for a in actionable),
+                decrease=sum(a["kind"] in REDUCTION_KINDS for a in actionable))
+
+
+def alert_kind_matches(alert, kind):
+    if kind == "ACTIONABLE":
+        return alert["status"] in ("OPEN", "IN_PROGRESS") and (not alert["reminder"] or bool(alert["reminder"]["attention"]))
+    if kind == "TIMING":
+        return bool(alert["reminder"] and alert["reminder"]["attention"])
+    if kind == "REDUCTION":
+        return alert["kind"] in REDUCTION_KINDS
+    return kind == "ALL" or alert["kind"] == kind
+
+
 def alert_page(alerts, *, customer="", search="", status="OPEN", kind="ALL", offset=0, limit=8):
-    items = [a for a in alerts if (not customer or a["customerName"] == customer)
-        and (status == "ALL" or a["status"] in ("OPEN", "IN_PROGRESS")) and (kind == "ALL" or a["kind"] == kind)
+    scoped = [a for a in alerts if (not customer or a["customerName"] == customer)
+        and (status == "ALL" or a["status"] in ("OPEN", "IN_PROGRESS"))
         and text_matches([a[k] for k in ("alertNo", "customerName", "contractNo", "itemNo", "productName", "orderNo", "sourceFilename", "sourceOperatorName")], search)]
-    actionable = [a for a in items if a["status"] in ("OPEN", "IN_PROGRESS") and (not a["reminder"] or a["reminder"]["attention"])]
-    summary = dict(total=len(actionable), missing=sum(bool(a["reminder"] and a["reminder"]["attention"]) for a in actionable),
-                   increase=sum(a["kind"] == "QUANTITY_INCREASE" for a in actionable),
-                   decrease=sum(a["kind"] in ("QUANTITY_DECREASE", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_ORDER") for a in actionable))
-    return dict(items=items[offset:offset+limit], total=len(items), summary=summary, reminders=actionable[:3], offset=offset, limit=limit)
+    actionable = [a for a in scoped if a["status"] in ("OPEN", "IN_PROGRESS") and (not a["reminder"] or a["reminder"]["attention"])]
+    items = [a for a in scoped if alert_kind_matches(a, kind)]
+    selected_actionable = [a for a in actionable if alert_kind_matches(a, kind)]
+    return dict(items=items[offset:offset+limit], total=len(items), summary=alert_summary(selected_actionable),
+                category_summary=alert_summary(actionable), reminders=selected_actionable[:3], offset=offset, limit=limit)
 
 
 def alert_context(db, factory, identifier):

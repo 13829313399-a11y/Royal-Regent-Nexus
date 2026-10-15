@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.models.carton_procurement import CartonReceipt
 from app.models.carton_supplier_portal import SupplierShipment
-from app.schemas.carton_supplier_portal import ShipmentCreate
+from app.schemas.carton_supplier_portal import ShipmentCreate, DeliveryRowSelection
 from app.services import carton_supplier_portal as portal
 from app.services import carton_supplier_receipt_link as receipt_link
 from app.services.carton_material_identity import dimension_unit, material_conflicts
@@ -56,18 +56,44 @@ def _material_mismatch_reason(source, checked):
     return "纸品不一致：" + " / ".join(details) + suffix + "；请核对原单"
 
 
-def preview(db, user, filename, content):
-    digest = _source(filename, content)
-    factories = {supplier.factory_id for supplier in portal.supplier_factories(db, user)
-        if portal.supplier_permission(user, "carton_supplier:edit", supplier.factory_id)}
-    if not factories:
-        raise HTTPException(403, "没有可导入送货单的厂区权限")
+def _row_selections(raw):
+    from pydantic import ValidationError
+    try:
+        if not isinstance(raw, list) or len(raw) > MAX_IMPORT_ROWS:
+            raise ValueError()
+        values = [DeliveryRowSelection.model_validate(item).model_dump() for item in raw]
+        if len({(item["source_sheet"], item["source_row"]) for item in values}) != len(values):
+            raise ValueError()
+        return sorted(values, key=lambda item: (item["source_sheet"], item["source_row"]))
+    except (ValueError, TypeError, ValidationError):
+        raise HTTPException(422, "送货明细订单选择格式无效或重复") from None
+
+
+def _parse_source_rows(filename, content, selections):
+    """Decode and validate the file before taking any factory business lock."""
     parsed = _parse_delivery_spreadsheet(filename, content, strict_rows=True)
     rows = parsed["rows"]
     if len(rows) > MAX_IMPORT_ROWS or parsed["warnings"]:
         raise HTTPException(422, "送货单超过单次 500 行上限，请拆分原文件后重新导入")
     if any(row.get("template") != "dongkang-delivery" for row in rows):
         raise HTTPException(422, "送货单表头不是东康系统格式，请上传原系统导出的送货明细表")
+    coordinates = {(row["source_sheet"], row["source_row"]) for row in rows}
+    if any((item["source_sheet"], item["source_row"]) not in coordinates for item in selections):
+        raise HTTPException(422, "所选明细不在当前送货文件中")
+    return tuple(dict(row) for row in rows)
+
+
+def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=None):
+    digest = _source(filename, content)
+    factories = {supplier.factory_id for supplier in portal.supplier_factories(db, user)
+        if portal.supplier_permission(user, "carton_supplier:edit", supplier.factory_id)}
+    if not factories:
+        raise HTTPException(403, "没有可导入送货单的厂区权限")
+    selections = _row_selections([] if row_selections is None else row_selections)
+    chosen = {(item["source_sheet"], item["source_row"]): item for item in selections}
+    # Confirmation supplies private, already validated server-generated rows.
+    # Candidate identities and demand are still read freshly under its locks.
+    rows = _parse_source_rows(filename, content, selections) if _parsed_rows is None else _parsed_rows
     workspaces = {factory: portal.workspace(db, user, factory) for factory in factories}
     groups = {}
     for source_row in rows:
@@ -81,7 +107,7 @@ def preview(db, user, filename, content):
             "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "delivered_quantity")}
         item["unit"] = "个"
         item["unit_price"] = source_row.get("unit_price") or 0
-        item.update(order_no="", child_no="", order_line_id="", issue_id="", status="BLOCKED", reason="")
+        item.update(order_no="", child_no="", order_line_id="", issue_id="", order_revision=0, candidates=[], status="BLOCKED", reason="")
         group["rows"].append(item)
         if factory not in factories:
             item["reason"] = "送货厂区无法识别或不在当前账号服务范围"
@@ -109,7 +135,7 @@ def preview(db, user, filename, content):
         if not orders:
             if all(source_row.get(key) not in (None, "", "待复核")
                    for key in ("packaging_type", "paper_quality", "specification")):
-                item.update(status="AD_HOC_REVIEW", reason="未找到正式订单；仓库必须核实是否为确需入库的样板箱或送错货")
+                item.update(status="AD_HOC_REVIEW", reason="未找到正式订单；正单由仓库补建或关联，样板箱或送错货须另行核实")
             else:
                 item["reason"] = "未匹配订单且纸品类型、纸质或规格缺失，请核对原单"
             continue
@@ -118,12 +144,27 @@ def preview(db, user, filename, content):
         checked = [(order, line, material_conflicts(source_row, line, dongkang_delivery=True))
                    for order, line in candidates]
         candidates = [(order, line) for order, line, conflicts in checked if not conflicts]
-        if len(candidates) != 1:
-            item["reason"] = _material_mismatch_reason(source_row, checked) if not candidates else "匹配到多条纸品，请核对规格与材质"
+        item["candidates"] = [{"order_line_id": line["id"], "issue_id": order["issue_id"],
+            "order_revision": order["revision"], "order_no": order["order_no"], "customer_po": order["customer_po"],
+            "document_no": order["document_no"], "planned_date": order["planned_date"], "status": order["status"],
+            "required_quantity": line["required_quantity"], "remaining_to_ship": line["remaining_to_ship"],
+            "child_no": line["child_no"], "unit": line["unit"]} for order, line in candidates] if len(candidates) > 1 else []
+        selected = chosen.get((item["source_sheet"], item["source_row"]))
+        if selected:
+            candidates = [(order, line) for order, line in candidates if line["id"] == selected["order_line_id"]]
+            if len(candidates) != 1:
+                item["reason"] = "所选订单不在同厂区、同合同货号及纸品的有效候选中"
+                continue
+            order, line = candidates[0]
+            if order["issue_id"] != selected["issue_id"] or order["revision"] != selected["order_revision"]:
+                item["reason"] = "所选订单或采购版本已变更，请重新选择并核对"
+                continue
+        elif len(candidates) != 1:
+            item["reason"] = _material_mismatch_reason(source_row, checked) if not candidates else "匹配到多张订单，请明确选择对应订单纸品并重新校验"
             continue
         order, line = candidates[0]
         item.update(order_no=order["order_no"], child_no=line["child_no"],
-            order_line_id=line["id"], issue_id=order["issue_id"])
+            order_line_id=line["id"], issue_id=order["issue_id"], order_revision=order["revision"])
         item["receipt_link_eligible"] = bool(order["issue_id"] and order["status"] != "CANCELLED"
             and not order["awaiting_issue"] and not line["shipping_blocked_reason"])
         if order["status"] not in portal.OPEN_STATES or order["awaiting_issue"]:
@@ -137,6 +178,11 @@ def preview(db, user, filename, content):
         else:
             item.update(status="READY", reason="已匹配")
     for group in groups.values():
+        for item in group["rows"]:
+            selected = chosen.get((item["source_sheet"], item["source_row"]))
+            if selected and item["order_line_id"] != selected["order_line_id"]:
+                item.update(status="BLOCKED", reason="所选订单不属于当前可匹配明细")
+
         factory = group["factory_id"]
         note_no = group["delivery_note_no"]
         shipment_exists = False
@@ -170,19 +216,25 @@ def preview(db, user, filename, content):
     return {"filename": filename, "sha256": digest, "row_count": len(rows), "groups": list(groups.values())}
 
 
-def confirm(db, user, filename, content, expected_sha256, selections):
+def confirm(db, user, filename, content, expected_sha256, selections, row_selections=None):
     if _source(filename, content) != expected_sha256:
         raise HTTPException(409, "送货单文件与预览时不同，请重新预览")
     selections = [(item[0], item[1], item[2] if len(item) == 3 else "SHIPMENT") for item in selections]
     keys = [(factory, note) for factory, note, _ in selections]
     if not selections or len(selections) > 100 or len(keys) != len(set(keys)) or any(mode not in {"SHIPMENT", "EXISTING_RECEIPT"} for _, _, mode in selections):
         raise HTTPException(422, "请选择 1 至 100 张不重复的送货单")
-    result = preview(db, user, filename, content)
-    groups = {(group["factory_id"], group["delivery_note_no"]): group for group in result["groups"]}
-    if any(key not in groups for key in keys):
-        raise HTTPException(422, "所选送货单不在上传文件中")
+    row_selections = _row_selections([] if row_selections is None else row_selections)
+    for factory in sorted({key[0] for key in keys}):
+        portal.supplier_access(db, user, factory, "carton_supplier:edit")
+    rows = _parse_source_rows(filename, content, row_selections)
     sent = []
     try:
+        for factory in sorted({key[0] for key in keys}):
+            portal._lock_receipt_factory(db, factory)
+        result = preview(db, user, filename, content, row_selections, _parsed_rows=rows)
+        groups = {(group["factory_id"], group["delivery_note_no"]): group for group in result["groups"]}
+        if any(key not in groups for key in keys):
+            raise HTTPException(422, "所选送货单不在上传文件中")
         for factory, note_no, mode in sorted(selections):
             group = groups[(factory, note_no)]
             request_id = _request_id(expected_sha256, factory, note_no)
@@ -195,7 +247,12 @@ def confirm(db, user, filename, content, expected_sha256, selections):
                 import json
                 evidence = db.scalar(select(portal.CartonAuditEvent).where(portal.CartonAuditEvent.entity_id == existing.id,
                     portal.CartonAuditEvent.event_type == "SUPPLIER_SHIPMENT_CREATED", portal.CartonAuditEvent.factory_id == factory))
-                old_mode = json.loads(evidence.detail_json).get("registration_mode", "SHIPMENT") if evidence else "SHIPMENT"
+                saved = json.loads(evidence.detail_json) if evidence else {}
+                old_mode = saved.get("registration_mode", "SHIPMENT")
+                source_coordinates = {(item["source_sheet"], item["source_row"]) for item in group["rows"]}
+                selected_rows = [item for item in row_selections if (item["source_sheet"], item["source_row"]) in source_coordinates]
+                if saved.get("source_file", {}).get("row_selections", []) != selected_rows:
+                    raise HTTPException(409, "此原文件已按另一订单选择登记，请核对原送货单")
                 if old_mode != mode:
                     raise HTTPException(409, "此原文件已按另一种提交方式登记，不可改为再次发货")
                 sent.append(portal.shipment_out(db, existing))
@@ -216,6 +273,8 @@ def confirm(db, user, filename, content, expected_sha256, selections):
                     for row in group["rows"] if row["status"] == "AD_HOC_REVIEW"])
             sent.append(portal.create_shipment(db, user, payload, commit=False,
                 source={"filename": filename, "sha256": expected_sha256,
+                    "row_selections": [item for item in row_selections if (item["source_sheet"], item["source_row"]) in
+                        {(row["source_sheet"], row["source_row"]) for row in group["rows"]}],
                     "rows": [row["source_row"] for row in group["rows"]],
                     "delivery_materials": {row["order_line_id"]: {key: row.get(key) for key in (
                         "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "source_sheet", "source_row")}

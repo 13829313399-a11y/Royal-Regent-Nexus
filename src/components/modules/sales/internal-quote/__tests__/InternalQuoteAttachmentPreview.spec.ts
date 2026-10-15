@@ -20,7 +20,10 @@ const moldAttachment: InternalQuoteAttachmentRecord = {
   importType: 'mold',
 }
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
 
 describe('Internal quote imported Excel preview', () => {
   it('shows the preview action only for a matching imported source and emits that attachment', async () => {
@@ -63,5 +66,56 @@ describe('Internal quote imported Excel preview', () => {
 
     await wrapper.findAll('.workbook-sheet-tabs button')[1].trigger('click')
     expect(wrapper.text()).toContain('只读预览')
+  })
+
+  it('previews painting image bytes through the protected attachment API instead of parsing them as Excel', async () => {
+    const createObjectURL = vi.fn(() => 'blob:painting-image')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = createObjectURL
+      static revokeObjectURL = revokeObjectURL
+    })
+    const attachment = { ...moldAttachment, id: 'image-1', fileName: '喷油图片.png', contentType: 'image/png' }
+    const blob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
+    vi.spyOn(internalQuoteApi, 'previewAttachment').mockResolvedValue(blob)
+    const wrapper = mount(InternalQuoteAttachmentPreview, {
+      props: { quoteId: 'quote-1', attachment },
+      global: { stubs: { Teleport: true } },
+    })
+    await flushPromises()
+    expect(internalQuoteApi.previewAttachment).toHaveBeenCalledWith('quote-1', 'image-1')
+    expect(createObjectURL).toHaveBeenCalledWith(blob)
+    expect(wrapper.get('.attachment-image-preview img').attributes()).toMatchObject({ src: 'blob:painting-image', alt: '喷油图片.png' })
+    expect(wrapper.find('table').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('无法显示附件')
+    await wrapper.setProps({ attachment: undefined })
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:painting-image')
+    wrapper.unmount()
+  })
+
+  it('discards an image response arriving after another quote is opened', async () => {
+    const createObjectURL = vi.fn(() => 'blob:current-image')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = createObjectURL
+      static revokeObjectURL = revokeObjectURL
+    })
+    let resolveOld!: (blob: Blob) => void
+    const oldResponse = new Promise<Blob>((resolve) => { resolveOld = resolve })
+    const current = new Blob(['current-image'], { type: 'image/png' })
+    vi.spyOn(internalQuoteApi, 'previewAttachment').mockReturnValueOnce(oldResponse).mockResolvedValueOnce(current)
+    const wrapper = mount(InternalQuoteAttachmentPreview, {
+      props: { quoteId: 'quote-1', attachment: { ...moldAttachment, id: 'image-1', contentType: 'image/png' } },
+      global: { stubs: { Teleport: true } },
+    })
+    await wrapper.setProps({ quoteId: 'quote-2' })
+    await flushPromises()
+    resolveOld(new Blob(['old-image'], { type: 'image/png' }))
+    await flushPromises()
+    expect(internalQuoteApi.previewAttachment).toHaveBeenLastCalledWith('quote-2', 'image-1')
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(createObjectURL).toHaveBeenCalledWith(current)
+    wrapper.unmount()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:current-image')
   })
 })

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { http } from '@/lib/http'
-import { cartonSupplierPortalApi } from '../cartonSupplierPortal'
+import { cartonSupplierPortalApi, type DeliveryImportPreview } from '../cartonSupplierPortal'
 
 const originalAdapter = http.defaults.adapter
 afterEach(() => { http.defaults.adapter = originalAdapter })
@@ -36,5 +36,19 @@ describe('supplier delivery import transport', () => {
     await cartonSupplierPortalApi.confirmDeliveryImport(file, {
       filename: file.name, sha256: 'preview-hash', row_count: 1, groups: [],
     }, selections)
+  })
+})
+
+
+describe('reviewed supplier order identity', () => {
+  it('freezes all selected matched rows, including automatic matches, during confirmation', async () => {
+    const file = new File(['workbook'], '送货.xlsx')
+    const preview: DeliveryImportPreview = { filename: file.name, sha256: 'hash', row_count: 1, groups: [{ factory_id: 'huaxing', delivery_note_no: 'DN-A', destination: '华兴', delivery_date: '2026-09-24', ready: true, issues: [], rows: [{ source_sheet: '明细', source_row: 2, contract_no: 'C', item_no: 'I', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', delivered_quantity: 5, order_no: 'ORDER-A', child_no: 'ORDER-A/01', order_line_id: 'LINE-A', issue_id: 'ISSUE-A', order_revision: 4, status: 'READY', reason: '已匹配' }] }] }
+    http.defaults.adapter = async config => {
+      const form = config.data as FormData
+      expect(JSON.parse(String(form.get('row_selections')))).toEqual([{ source_sheet: '明细', source_row: 2, order_line_id: 'LINE-A', issue_id: 'ISSUE-A', order_revision: 4 }])
+      return { data: { shipments: [] }, status: 200, statusText: 'OK', headers: {}, config }
+    }
+    await cartonSupplierPortalApi.confirmDeliveryImport(file, preview, [{ factory_id: 'huaxing', delivery_note_no: 'DN-A' }])
   })
 })

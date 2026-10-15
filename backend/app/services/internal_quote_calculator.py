@@ -9,10 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.models.internal_quote import InternalQuotePricingBaseline
 from app.models.molding_sample import MoldingSampleMaterialPrice
+from app.services.internal_quote_prefill import material_family, _match_token
 from app.services.internal_quote_sewing import is_sewing_labor, uses_sewing_quoted_price
 
 
-FORMULA_VERSION = "rr2-2026-v10"
+FORMULA_VERSION = "rr2-2026-v11"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -535,12 +536,22 @@ def _warning(code: str, message: str, severity: str = "blocking") -> dict[str, s
 
 def _material_price(snapshot: dict[str, Any], material: str, grade: str) -> Decimal | None:
     prices = snapshot.get("material_prices", {})
-    key = f"{material.strip()}|{grade.strip()}"
-    if isinstance(prices, dict) and key in prices:
-        return decimal_value(prices[key], key)
+    if not material.strip() or not grade.strip():
+        return None
+    if isinstance(prices, dict):
+        exact = [(key, value) for key, value in prices.items() if "|" in key
+                 and _match_token(key.split("|", 1)[0]) == _match_token(material)
+                 and _match_token(key.split("|", 1)[1]) == _match_token(grade)]
+        matches = exact or [(key, value) for key, value in prices.items() if "|" in key
+                 and material_family(key.split("|", 1)[0]) == material_family(material)
+                 and _match_token(key.split("|", 1)[1]) == _match_token(grade)]
+        if len(matches) == 1:
+            return decimal_value(matches[0][1], matches[0][0])
+        if matches:
+            return None
     legacy = snapshot.get("legacy_material_prices", {})
     if isinstance(legacy, dict):
-        for candidate in (f"{material.strip()} {grade.strip()}".strip(), material.strip(), grade.strip()):
+        for candidate in (f"{material.strip()} {grade.strip()}".strip(),):
             if candidate and candidate in legacy:
                 return decimal_value(legacy[candidate], candidate)
     return None
@@ -666,6 +677,20 @@ def _engineering(payload: dict[str, Any], snapshot: dict[str, Any], result: dict
     for index, row in enumerate(payload.get("molds", []) or []):
         if not isinstance(row, dict):
             raise CalculationInputError(f"模具第 {index + 1} 行格式无效")
+        for field, label in (("net_weight_g", "净重"), ("target_output", "目标数"), ("cycle_time_seconds", "周期")):
+            decimal_value(row.get(field), f"模具第 {index + 1} 行{label}")
+        parts = row.get("parts", []) or []
+        if row.get("molding_profile") == "huadeng_parts_v1" and not parts:
+            raise CalculationInputError(f"模具第 {index + 1} 行至少需要一个华登胶件")
+        if not isinstance(parts, list):
+            raise CalculationInputError(f"模具第 {index + 1} 行子件格式无效")
+        for part_index, part in enumerate(parts):
+            if not isinstance(part, dict):
+                raise CalculationInputError(f"模具第 {index + 1} 行第 {part_index + 1} 子件格式无效")
+            for field, label in (("unit_net_weight_g", "净重"), ("output_count", "出模数"), ("quantity", "用量"), ("process_unit_price_hkd", "工艺单价")):
+                decimal_value(part.get(field), f"模具第 {index + 1} 行第 {part_index + 1} 子件{label}")
+            if row.get("molding_profile") == "huadeng_parts_v1":
+                decimal_value(str(part.get("target_output") or "").strip(), f"模具第 {index + 1} 行第 {part_index + 1} 子件产能")
         quantity = decimal_value(row.get("quantity"), f"模具第 {index + 1} 行套数", "1")
         cost_rmb = decimal_value(row.get("cost_rmb"), f"模具第 {index + 1} 行价格")
         cost_hkd = cost_rmb / fx
@@ -1070,16 +1095,61 @@ def _molding_material_origin(material: object) -> str:
     return "domestic" if re.match(r"^(POM|PVC|C[- ]?PVC)", value, flags=re.IGNORECASE) else "imported"
 
 
-def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
+def huadeng_labor_job(row: dict[str, Any], factory_id: str) -> str:
+    if factory_id != "huadeng" or row.get("cost_scope") != "huadeng_part" or row.get("engineering_sync_disabled"):
+        return ""
+    mold_id, part_id = row.get("engineering_mold_id"), row.get("engineering_part_id")
+    if not mold_id or not part_id:
+        return ""
+    suffix = part_id if row.get("engineering_labor_mode") == "transfer" else "shared"
+    return f"mold-id:{mold_id}/job:{suffix}"
+
+
+def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any], *, factory_id: str = "") -> None:
     injection_total = ZERO
     injection_material_total = ZERO
     injection_imported_material_total = ZERO
     injection_domestic_material_total = ZERO
     injection_labor_total = ZERO
     blow_total = ZERO
+    job_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in payload.get("injection_lines", []) or []:
+        if isinstance(row, dict) and (job := huadeng_labor_job(row, factory_id)):
+            job_rows.setdefault(job, []).append(row)
+    charged_jobs: set[str] = set()
     for index, row in enumerate(payload.get("injection_lines", []) or []):
         if not isinstance(row, dict):
             raise CalculationInputError(f"注塑第 {index + 1} 行格式无效")
+        # Validate all numeric inputs before reference matching. An unknown
+        # grade must not hide a negative or malformed numeric value.
+        for field, label in (("net_weight_g", "净重"), ("sets", "套数"), ("target_output", "目标数"), ("quantity", "成品用量"), ("loss_rate_percent", "损耗率"), ("cycle_time_seconds", "周期")):
+            decimal_value(row.get(field), f"注塑第 {index + 1} 行（{row.get('mold_no') or row.get('item') or '未命名'}）{label}")
+        errors = []
+        job = huadeng_labor_job(row, factory_id)
+        if job:
+            siblings = job_rows[job]
+            def signature(item):
+                code = str(item.get("machine_code", "")).strip()
+                # Imported A-codes and the selected frozen range identify the
+                # same machine; different machines with equal prices do not.
+                machine_identity = next((i for i, reference in enumerate(snapshot.get("machine_prices", []))
+                                         if _machine_price({"machine_prices": [reference]}, code) is not None), code)
+                return machine_identity, decimal_value(item.get("sets"), "套数"), decimal_value(item.get("target_output"), "目标数")
+            if any(signature(other) != signature(row) for other in siblings):
+                errors.append({"row_index": index, "field": "labor_job_id", "message": f"注塑第 {index + 1} 行共享啤工的机型、套数及产能须一致，请在工程胶件中核对"})
+        elif row.get("cost_scope") == "huadeng_part" and not row.get("engineering_sync_disabled"):
+            errors.append({"row_index": index, "field": "engineering_part_id", "message": f"注塑第 {index + 1} 行缺少华登胶件关联，请重新同步工程资料"})
+        for field, label in (("material", "材料"), ("grade", "牌号"), ("machine_code", "机型"),
+                             ("net_weight_g", "净重"), ("sets", "套数"), ("target_output", "目标数")):
+            missing = not str(row.get(field) or "").strip() if field in {"material", "grade", "machine_code"} else decimal_value(row.get(field), label) <= ZERO
+            if missing:
+                errors.append({"row_index": index, "mold_no": str(row.get("mold_no", "")), "field": field, "message": f"注塑第 {index + 1} 行{label}待填写"})
+        if row.get("engineering_source_missing"):
+            errors.append({"row_index": index, "mold_no": str(row.get("mold_no", "")), "field": "engineering_source_key", "message": f"注塑第 {index + 1} 行来源模具已移除，请确认保留为独立行或删除"})
+        if row.get("engineering_linkage_conflict"):
+            errors.append({"row_index": index, "mold_no": str(row.get("mold_no", "")), "field": "engineering_source_key", "message": f"注塑第 {index + 1} 行旧模具关联重复或不明确，请确认关联后再报价"})
+        result.setdefault("validation_errors", []).extend(errors)
+        result["warnings"].extend({**_warning("molding_input_missing", error["message"]), **error} for error in errors)
         material = str(row.get("material", "")).strip()
         grade = str(row.get("grade", "")).strip()
         material_price = _material_price(snapshot, material, grade)
@@ -1087,9 +1157,11 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         machine_price = _machine_price(snapshot, machine_code)
         if material_price is None:
             result["warnings"].append(_warning("material_price_missing", f"注塑第 {index + 1} 行未匹配材料价：{material} + {grade}"))
+            result["validation_errors"].append({"row_index": index, "mold_no": str(row.get("mold_no", "")), "field": "grade", "message": f"注塑第 {index + 1} 行材料/牌号未匹配冻结价表：{material} + {grade}"})
         if machine_price is None:
             result["warnings"].append(_warning("machine_price_missing", f"注塑第 {index + 1} 行未匹配机型价：{machine_code}"))
-        if material_price is None or machine_price is None:
+            result["validation_errors"].append({"row_index": index, "mold_no": str(row.get("mold_no", "")), "field": "machine_code", "message": f"注塑第 {index + 1} 行机型未匹配冻结价表：{machine_code}"})
+        if material_price is None or machine_price is None or errors:
             result["line_breakdown"].append({**_pricing_metadata(row, allow_markup_override=False), "kind": "injection", "item": str(row.get("item", "")), "amount_hkd": None})
             continue
         net_weight = decimal_value(row.get("net_weight_g"), "啤净重")
@@ -1102,7 +1174,10 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         target_output = positive_value(row.get("target_output"), "目标数")
         quantity = decimal_value(row.get("quantity"), "成品用量", "1")
         material_cost = net_weight * (1 + loss_rate / 100) * material_price / 454
-        molding_cost = machine_price / sets / target_output
+        job_owner = not job or job not in charged_jobs
+        molding_cost = machine_price / sets / target_output if job_owner else ZERO
+        if job:
+            charged_jobs.add(job)
         unit_total = material_cost + molding_cost
         line_total = unit_total * quantity
         material_amount = material_cost * quantity
@@ -1118,6 +1193,14 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
         result["line_breakdown"].append({
             **_pricing_metadata(row, allow_markup_override=False),
             "kind": "injection",
+            "line_id": row.get("line_id", ""),
+            "engineering_mold_id": row.get("engineering_mold_id", ""),
+            "cost_scope": row.get("cost_scope", "whole_mold"),
+            "engineering_part_id": row.get("engineering_part_id", ""),
+            "labor_job_id": job,
+            "labor_job_owner": job_owner,
+            "engineering_remark": row.get("engineering_remark", ""),
+            "engineering_parts": row.get("engineering_parts", []),
             "item": str(row.get("item", "")),
             "mold_no": str(row.get("mold_no", "")),
             "material": material,
@@ -1148,6 +1231,8 @@ def _molding(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str
     for index, row in enumerate(payload.get("blow_lines", []) or []):
         if not isinstance(row, dict):
             raise CalculationInputError(f"吹气第 {index + 1} 行格式无效")
+        for field in ("estimated_weight_g", "labor_hkd", "burr_hkd", "profit_multiplier", "quantity"):
+            decimal_value(row.get(field), f"吹气第 {index + 1} 行数值")
         material = str(row.get("material", "")).strip()
         grade = str(row.get("grade", "")).strip()
         material_price = _material_price(snapshot, material, grade)
@@ -2535,6 +2620,11 @@ def calculate_section(
         "assembly": ("groups",),
     }
     calculator_context = context or {}
+    if calculator_context.get("factory_id") != "huadeng" and any(
+        isinstance(row, dict) and (row.get("molding_profile") == "huadeng_parts_v1" or row.get("cost_scope") == "huadeng_part")
+        for field in ("molds", "injection_lines") for row in payload.get(field, []) or []
+    ):
+        raise CalculationInputError("华登胶件工模规则仅适用于华登厂区")
     fields = meaningful_fields.get(section_code)
     # The factory comes from the persisted quote, never from editable section
     # fields. Huakang D quotations may have no engineering cost lines.
@@ -2556,7 +2646,7 @@ def calculate_section(
     elif section_code == "electronic":
         _electronic(payload, snapshot, result)
     elif section_code == "molding":
-        _molding(payload, snapshot, result)
+        _molding(payload, snapshot, result, factory_id=str(calculator_context.get("factory_id", "")))
     elif section_code == "painting":
         _painting(payload, result)
     elif section_code == "slush":

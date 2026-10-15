@@ -129,6 +129,26 @@ class ShipmentReceive(Payload):
     lines: list[ReceiveLine] = Field(min_length=1, max_length=200)
 
 
+class CancellationAcknowledge(Payload):
+    issue_id: str = Field(min_length=1, max_length=96)
+    expected_order_revision: int = Field(ge=1)
+
+
+class ShipmentStatusChange(Payload):
+    request_id: str = Field(min_length=8, max_length=128)
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=4, max_length=1000)
+
+
+class DeliveryRowSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    source_sheet: str = Field(min_length=1, max_length=128)
+    source_row: int = Field(ge=1)
+    order_line_id: str = Field(min_length=1, max_length=96)
+    issue_id: str = Field(min_length=1, max_length=96)
+    order_revision: int = Field(ge=1)
+
+
 class ShipmentReceiptLink(Payload):
     request_id: str = Field(min_length=8, max_length=128)
     expected_revision: int = Field(ge=1)
