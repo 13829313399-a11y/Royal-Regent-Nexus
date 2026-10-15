@@ -4,6 +4,10 @@ This module intentionally has no database or authorization-service imports so
 the fixed system-position catalog can depend on it without creating a cycle.
 """
 
+INDONESIA_MATERIAL_PERMISSION_CODES = tuple('indonesia_material:' + action for action in (
+    'read', 'write', 'receipt_confirm', 'export',
+))
+
 UV_OPS_PERMISSION_CODES = tuple("uv_ops:" + action for action in (
     "read", "master_write", "plan_write", "production_write", "quality_write",
     "shift_write", "handover_write", "inventory_write", "cost_read", "cost_write",
@@ -188,6 +192,7 @@ SYSTEM_MANAGEMENT_PERMISSION_CODES = (
 )
 
 BUSINESS_PERMISSION_CODES = (
+    *INDONESIA_MATERIAL_PERMISSION_CODES,
     *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     *CUTTING_OPS_PERMISSION_CODES,
     *FABRIC_WAREHOUSE_PERMISSION_CODES,

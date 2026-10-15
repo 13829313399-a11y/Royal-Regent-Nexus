@@ -292,6 +292,9 @@ def apply_plan(db, row, actor, plan):
                 pending.lifecycle_state = "cancelled"
                 pending.revision += 1
         profile.employment_epoch += 1
+        from app.services.position_reviews import invalidate_obsolete_tx
+        db.flush()
+        invalidate_obsolete_tx(db, user.id, actor.id)
     if kind in {"unfreeze", "rehire"}:
         user.status = "active"
         profile.employment_status = "active"
@@ -447,6 +450,13 @@ def preview_change(db, actor_id, change_id):
 
 
 def commit_change(db, actor_id, change_id, payload, idempotency_key, *, approving=False):
+    result = commit_change_tx(db, actor_id, change_id, payload, idempotency_key, approving=approving)
+    db.commit()
+    return result
+
+
+def commit_change_tx(db, actor_id, change_id, payload, idempotency_key, *, approving=False):
+    """Flush-only core. The caller owns commit and rolls back on any exception."""
     from app.services.iam import _add_event, _load_preview
     from app.services.identity_handover import persist_items
     require_writes()
@@ -503,7 +513,7 @@ def commit_change(db, actor_id, change_id, payload, idempotency_key, *, approvin
     result = result_out(row)
     db.add(IamMutationReceipt(id=uuid4().hex, actor_id=actor_id, operation=operation, idempotency_key=idempotency_key,
                              payload_hash=body_hash, result_json=encoded(result), created_at=stamp()))
-    db.commit()
+    db.flush()
     return result
 
 

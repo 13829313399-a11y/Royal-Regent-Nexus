@@ -889,12 +889,14 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["template_version"] == "internal-quote-p3-v1"
         assert first["release_stage"] == "p3_section_approved"
         assert first["export_manifest"]["p4_final_release_required"] is True
-        assert first["export_manifest"]["workbook_layout_version"] == "internal-quote-unified-desk-v33"
+        from app.services.internal_quote_excel import WORKBOOK_LAYOUT_VERSION
+        assert first["export_manifest"]["workbook_layout_version"] == WORKBOOK_LAYOUT_VERSION
         assert first["export_manifest"]["export_file_name_version"] == "quote-product-date-v1"
         assert first["file_name"] == (
             f"{quote['quote_no']}_{quote['product_name']}_{first['exported_at'][:10]}.xlsx"
         )
-        assert first["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
+        assert first["export_manifest"]["spreadsheet_attachments"] == []
+        assert first["export_manifest"]["source_spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
 
         download = client.get(
             f"/api/internal-quotes/{quote_id}/exports/{first['id']}/download"
@@ -910,8 +912,6 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
             "车发明细",
             "装配明细",
             "审批与版本",
-            "工程核价依据-报价明细",
-            "工程核价依据-参数",
         ]
         quote_sheet = workbook["报价明细"]
         assert quote_sheet.sheet_state == "visible"
@@ -1023,10 +1023,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         )
         assert "排摸表" not in workbook.sheetnames
         assert "外购清单" not in workbook.sheetnames
-        assert workbook["工程核价依据-报价明细"].sheet_state == "visible"
-        assert workbook["工程核价依据-报价明细"]["A1"].value == "上传源表"
-        assert workbook["工程核价依据-报价明细"]["A1"].font.bold is True
-        assert workbook["工程核价依据-参数"]["A1"].value == "='工程核价依据-报价明细'!A1"
+        assert not any(name.startswith("工程核价依据-") for name in workbook.sheetnames)
         electronic_sheet = workbook["电子明细"]
         assert [electronic_sheet.cell(3, column).value for column in range(1, 11)] == [
             "父项", "零件名称", "规格", "用量", "单价RMB", "单价HKD", "金额HKD", "税点%", "备注", "来源",

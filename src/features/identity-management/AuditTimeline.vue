@@ -6,6 +6,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import { formatBusinessDateTime } from '@/lib/dateTime'
 import { Button } from '@/components/ui/button'
 import IamDisclosure from '@/components/iam/workspace/IamDisclosure.vue'
+const props = defineProps<{ targetUserId?: string }>()
 const events = ref<AuditEventOut[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -13,7 +14,7 @@ const loaded = ref(false)
 const applied = ref('')
 const filters = reactive<AuditFilters>({
   actor_user_id: '',
-  target_user_id: '',
+  target_user_id: props.targetUserId || '',
   module_code: '',
   factory_id: '',
   department: '',
@@ -51,7 +52,7 @@ async function load() {
   const request = ++generation
   loading.value = true
   error.value = ''
-  const query = { ...filters }
+  const query = { ...filters, ...(props.targetUserId ? { target_user_id: props.targetUserId } : {}) }
   try {
     if (query.from && query.to && query.from > query.to)
       throw new Error('开始时间不能晚于结束时间。')
@@ -88,7 +89,7 @@ onBeforeUnmount(() => {
     </header>
     <form class="iamx-audit-filters" @submit.prevent="load">
       <label>操作人 ID<input v-model="filters.actor_user_id" placeholder="留空不限" /></label
-      ><label>目标人员 ID<input v-model="filters.target_user_id" placeholder="留空不限" /></label
+      ><label>目标人员 ID<input v-model="filters.target_user_id" :disabled="!!targetUserId" placeholder="留空不限" /></label
       ><label>模块代码<input v-model="filters.module_code" placeholder="例如 system" /></label
       ><label>厂区 ID<input v-model="filters.factory_id" placeholder="留空不限" /></label
       ><label>部门代码<input v-model="filters.department" placeholder="留空不限" /></label

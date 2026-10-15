@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Users } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useAuthStore } from '@/stores/auth'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import MemberDirectoryDrawer from '@/components/directory/MemberDirectoryDrawer.vue'
 import type { DirectorySummary } from '@/api/directory'
@@ -20,13 +21,24 @@ const drawerOpen = ref(false)
 const failed = ref(false)
 let timer: ReturnType<typeof setTimeout> | null = null
 let inFlight = false
+let disposed = false, controller = new AbortController(), generation = 0
+const auth = useAuthStore()
+const eligible = computed(() => {
+  const user = auth.currentUser; if (!user || user.identity?.employment_status === 'left') return false
+  const formal = user.identity?.active_assignments_summary.some(a => a.org_unit_id !== 'group')
+  if (formal) return true
+  if (user.permissions.length && user.permissions.every(p => p.startsWith('carton_supplier:'))) return false
+  return user.identity?.identity_mode !== 'v2' || !!user.permissions.length
+})
+const owner = computed(() => `${auth.currentUser?.id ?? ''}:${auth.currentUser?.identity?.employment_epoch ?? 0}:${auth.currentUser?.identity?.effective_context_key ?? ''}`)
+watch(owner, () => { generation++; controller.abort(); controller = new AbortController(); inFlight = false; summary.value = null; drawerOpen.value = false; resume() })
 
 const onlineCount = computed(() => summary.value?.state_counts.online ?? null)
 const totalCount = computed(() => summary.value?.total_members ?? null)
 const compactCount = computed(() => onlineCount.value === null ? '·' : String(onlineCount.value))
 const summaryLabel = computed(() => {
   if (onlineCount.value === null || totalCount.value === null) return '查看组织成员'
-  return `${onlineCount.value}/${totalCount.value} 在线`
+  return `${onlineCount.value} 位在线`
 })
 const accessibleLabel = computed(() => {
   if (onlineCount.value === null || totalCount.value === null) return '打开组织成员目录'
@@ -34,7 +46,7 @@ const accessibleLabel = computed(() => {
 })
 
 function canPoll() {
-  return document.visibilityState === 'visible' && navigator.onLine !== false
+  return !disposed && eligible.value && document.visibilityState === 'visible' && navigator.onLine !== false
 }
 
 function clearTimer() {
@@ -52,14 +64,16 @@ function schedule() {
 async function loadSummary() {
   if (inFlight || !canPoll()) return
   inFlight = true
+  const version = generation
   try {
-    summary.value = await directoryApi.getSummary()
+    const result = await directoryApi.getSummary(controller.signal)
+    if (disposed || version !== generation) return
+    summary.value = result
     failed.value = false
   } catch {
-    failed.value = true
+    if (!disposed && version === generation) failed.value = true
   } finally {
-    inFlight = false
-    schedule()
+    if (!disposed && version === generation) { inFlight = false; schedule() }
   }
 }
 
@@ -82,6 +96,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true; generation++; controller.abort()
   clearTimer()
   document.removeEventListener('visibilitychange', handleVisibility)
   window.removeEventListener('focus', resume)
@@ -92,6 +107,7 @@ onBeforeUnmount(() => {
 
 <template>
   <button
+    v-if="eligible"
     type="button"
     class="group relative inline-flex size-10 items-center justify-center gap-2.5 rounded-xl border border-teal-200/90 bg-gradient-to-b from-teal-50 to-white text-left shadow-[0_5px_16px_-12px_rgba(13,148,136,0.9)] transition-[color,background-color,border-color,box-shadow,transform] duration-150 hover:-translate-y-px hover:border-teal-300 hover:bg-teal-50 hover:shadow-[0_8px_20px_-12px_rgba(13,148,136,0.95)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30 active:translate-y-0 lg:h-10 lg:w-auto lg:min-w-[112px] lg:justify-start lg:px-2.5 2xl:min-w-[142px] 2xl:px-3"
     :title="failed ? '成员在线数据暂不可用，点击仍可打开目录' : '打开组织成员目录'"
@@ -101,7 +117,7 @@ onBeforeUnmount(() => {
   >
     <span v-if="summary?.preview_members.length" class="hidden shrink-0 -space-x-2 2xl:flex" aria-hidden="true">
       <UserAvatar
-        v-for="member in summary.preview_members.slice(0, 2)"
+        v-for="member in summary.preview_members.filter(m => m.presence_state === 'online').slice(0, 3)"
         :key="member.id"
         :src="member.avatar_url"
         :name="member.display_name"

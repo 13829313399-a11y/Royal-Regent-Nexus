@@ -19,6 +19,8 @@ from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.utils.units import pixels_to_EMU
 from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.worksheet.worksheet import Worksheet
+from app.services.internal_quote_output_fields import SourceLabel, bind_source_label
+from app.services.internal_quote_sewing import uses_sewing_quoted_price
 from PIL import Image as PillowImage, ImageOps
 
 from app.models.internal_quote import (
@@ -32,7 +34,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v33"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v38"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v1"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -119,14 +121,6 @@ def _number(value: object) -> float | str:
 def _float_value(value: object, default: float = 0.0) -> float:
     parsed = _number(value)
     return parsed if isinstance(parsed, float) else default
-
-
-def _price_number(value: object) -> float | str:
-    parsed = _number(value)
-    if isinstance(parsed, float):
-        return parsed
-    match = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", str(value or ""))
-    return float(match.group(0).replace(",", "")) if match else ""
 
 
 def _dict_value(value: object) -> dict[str, Any]:
@@ -245,6 +239,7 @@ def _template_cell(
     font_name: str = "宋体",
 ) -> None:
     cell = sheet.cell(row, column, value)
+    bind_source_label(sheet, cell, value)
     cell.font = Font(name=font_name, size=size, bold=bold, color=color)
     cell.alignment = Alignment(
         horizontal=horizontal,
@@ -592,6 +587,15 @@ def _apply_molding_row_formulas(
         sheet.cell(row_index, 11).value = f"={format(material_cost_hkd, '.10g')}"
     sheet.cell(row_index, 11).number_format = "0.000_ "
 
+    # These two columns feed the finished-product cost, whereas the reference
+    # prices and weight above remain per part. Match the calculator's quantity.
+    quantity = _float_value(line.get("quantity"), 1.0)
+    if quantity != 1:
+        for column in (10, 11):
+            cell = sheet.cell(row_index, column)
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.value = f"=({cell.value[1:]})*{format(quantity, '.10g')}"
+
 
 def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[str, Any]]:
     """Recover original supplier inputs without confusing derived currency prices.
@@ -613,13 +617,22 @@ def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[st
     quick = code == "electronic" and payload.get("quote_mode") == "quick"
     sources: list[dict[str, Any]] = []
 
-    def walk(rows):
-        for source in _list_of_dicts(rows):
-            if code == "electronic" and not quick:
-                walk(source.get("children"))
-            sources.append(source)
+    def walk(rows, path, is_quick=False):
+        for index, source in enumerate(rows or []):
+            if not isinstance(source, dict):
+                continue
+            source_path = [*path, index]
+            if code == "electronic" and not is_quick:
+                walk(source.get("children"), [*source_path, "children"], is_quick)
+            sources.append({**source, "_output_path": source_path})
 
-    walk(payload.get("quick_quotes" if quick else field))
+    if code == "electronic" and "quote_groups" in payload:
+        for index, group in enumerate(payload["quote_groups"]):
+            group_key = "quick_quotes" if group.get("quote_mode") == "quick" else "components"
+            walk(group.get(group_key), ["quote_groups", index, group_key], group_key == "quick_quotes")
+    else:
+        key = "quick_quotes" if quick else field
+        walk(payload.get(key), [key], quick)
     lines = _calculation_lines(section, kind)
     paired = len(sources) == len(lines) and all(
         _plain_text(source.get("item")) == _plain_text(line.get("item"))
@@ -630,6 +643,8 @@ def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[st
         entry = {**line, "section": code, "label": line.get("item", ""), "source_line_index": index,
                  "amount_hkd": line.get("amount_hkd", line.get("line_hkd", 0))}
         if paired:
+            entry["source_path"] = sources[index]["_output_path"]
+        if paired and "quote_groups" not in payload:
             source = sources[index]
             entry.update(specification=source.get("specification", source.get("spec", line.get("specification", ""))),
                          quantity=1 if quick else source.get("quantity", line.get("quantity")),
@@ -662,6 +677,7 @@ def _purchase_pricing_entries(entries, sections) -> list[dict[str, Any]]:
                       if line.get("section") == entry.get("section")
                       and line.get("kind") == entry.get("kind")
                       and (not entry.get("electronic_quote_id") or line.get("electronic_quote_id") == entry.get("electronic_quote_id"))
+                      and (not entry.get("pricing_component_id") or line.get("pricing_component_id") == entry.get("pricing_component_id"))
                       and (_plain_text(line.get("label")) or {"electronic": "电子", "engineering": "工程采购", "sales": "包装材料"}.get(line.get("section")))
                       == _plain_text(entry.get("label"))), None)
         if match is not None:
@@ -687,7 +703,10 @@ def _purchase_detail_label(entry: dict[str, Any], fallback: str = "") -> str:
     if quantity not in (None, ""):
         unit = _plain_text(entry.get("unit")) or "pcs"
         name += f"（{_compact_number_label(_float_value(quantity))}{unit}）"
-    return _safe_text(name)
+    result = _safe_text(name)
+    if entry.get("source_path") is not None and entry.get("section"):
+        return SourceLabel(result, entry["section"], entry["source_path"])
+    return result
 
 
 def _pricing_entry_amount(entry: dict[str, Any]) -> object:
@@ -748,7 +767,7 @@ def _pricing_entry_category(entry: dict[str, Any]) -> str:
     if section_code == "hair":
         return "车发"
     if section_code == "sewing":
-        return "车衣"
+        return "车发" if category == "hair" else "车衣"
     if section_code == "assembly":
         is_packaging_labor = category == "packaging" or bool(
             re.search(r"包装|pack", label, re.IGNORECASE)
@@ -775,7 +794,7 @@ def _pricing_entry_tax_tag(entry: dict[str, Any]) -> str:
         return "¥3%"
     if category == "吸塑":
         return "¥6%"
-    if category in {"啤工", "喷油工", "装配工", "包装人工", "车衣"}:
+    if category in {"料价", "啤工", "喷油工", "装配工", "包装人工", "车衣", "车发"}:
         return ""
     return "¥13%"
 
@@ -807,6 +826,30 @@ def _pricing_entry_summary_category(entry: dict[str, Any]) -> str:
     }:
         return "其他外购"
     return category
+
+
+def _ordinary_department_summary_entries(entries: list[dict[str, Any]], *, keep_pricing_segments: bool = True) -> list[dict[str, Any]]:
+    """Collapse supplier quotes, keeping independent pricing segments intact."""
+    result: list[dict[str, Any]] = []
+    grouped: dict[tuple, dict[str, Any]] = {}
+    for entry in entries:
+        section = entry.get("section")
+        if section not in {"electronic", "sewing"}:
+            result.append(entry)
+            continue
+        label = "电子" if section == "electronic" else _plain_text(entry.get("label")) or "车衣"
+        markup = _float_value(entry.get("markup_override")) if keep_pricing_segments else None
+        key = (section, label, entry.get("category"), entry.get("pricing_component_id"), markup)
+        if section == "electronic":
+            key = (section, label, entry.get("pricing_component_id"), markup)
+        if key not in grouped:
+            # Do not carry a single material's unit price or quantity into a
+            # supplier/product total. Saved pricing amounts include overhead.
+            grouped[key] = {"section": section, "kind": "department_summary", "label": label,
+                            "category": entry.get("category", ""), "amount_hkd": 0.0}
+            result.append(grouped[key])
+        grouped[key]["amount_hkd"] += _float_value(entry.get("amount_hkd"))
+    return result
 
 
 def _assembly_group_detail_rows(
@@ -1247,204 +1290,6 @@ def _matching_injection_for_part(
     return injections[min(part_index, len(injections) - 1)]
 
 
-def _build_mold_schedule_sheet(
-    workbook: Workbook,
-    quote: InternalQuote,
-    engineering_section: InternalQuoteSection | None,
-    molding_section: InternalQuoteSection | None,
-) -> None:
-    sheet = workbook.create_sheet("排摸表")
-    engineering_payload = _section_payload(engineering_section)
-    molding_payload = _section_payload(molding_section)
-    groups = _engineering_mold_groups(engineering_payload, molding_payload)
-
-    _merge_and_style(
-        sheet,
-        "A1:T1",
-        _engineering_company_name(quote),
-        bold=True,
-        color=TEMPLATE_BLUE,
-        size=14,
-    )
-    _merge_and_style(sheet, "A2:T2", "排  模  表", bold=True, size=16)
-    _merge_and_style(
-        sheet, "A3:B3", f"客户：{_plain_text(getattr(quote, 'customer', ''))}"
-    )
-    _merge_and_style(
-        sheet, "C3:H3", f"产品编号：{_plain_text(getattr(quote, 'quote_no', ''))}"
-    )
-    _merge_and_style(
-        sheet,
-        "I3:L3",
-        f"产品名称：{_plain_text(getattr(quote, 'product_name', ''))}",
-    )
-    _merge_and_style(sheet, "M3:N3", "文件编号：", bold=True)
-    _merge_and_style(sheet, "O3:Q3", "")
-    _merge_and_style(
-        sheet, "R3:S3", f"版本：{_plain_text(getattr(quote, 'version_label', ''))}"
-    )
-    _template_cell(
-        sheet,
-        3,
-        20,
-        f"修订：{getattr(quote, 'header_revision', '')}",
-        bold=True,
-    )
-    _merge_and_style(
-        sheet,
-        "A4:T4",
-        "TO：PMC部；啤塑部；物料部；工程部；装配部；品质部",
-        horizontal="left",
-    )
-
-    headers = (
-        "工模编号",
-        "配件名称",
-        "颜色",
-        "色粉编号",
-        "PMS",
-        "加工内容",
-        "加工总单价",
-        "整啤净重(g)",
-        "原胶件单净重(g)",
-        "出模数",
-        "用量",
-        "用料名称",
-        "整啤套数",
-        "整啤模腔数",
-        "啤机机型",
-        "模具日产量",
-        "水口比例",
-        "配件图片",
-        "模具是否放啤",
-        "备注",
-    )
-    for column, header in enumerate(headers, start=1):
-        _template_cell(
-            sheet,
-            5,
-            column,
-            header,
-            bold=True,
-            fill=TEMPLATE_SKY,
-            size=9,
-        )
-    sheet.row_dimensions[5].height = 32
-
-    row_index = 6
-    for group in groups:
-        mold = _dict_value(group.get("mold"))
-        injections = _list_of_dicts(group.get("injections"))
-        parts = _list_of_dicts(group.get("parts")) or [{}]
-        group_start = row_index
-        for part_index, part in enumerate(parts):
-            injection = _matching_injection_for_part(part, injections, part_index)
-            process_price = _positive_number(part.get("process_unit_price_hkd"))
-            part_weight = _positive_number(part.get("unit_net_weight_g"))
-            shot_weight = _positive_number(
-                injection.get("net_weight_g")
-                if injection
-                else mold.get("net_weight_g")
-            )
-            output_count = _positive_number(
-                part.get("output_count"),
-                _positive_number(injection.get("output_count"), 1.0),
-            )
-            quantity = _positive_number(
-                part.get("quantity"),
-                _positive_number(injection.get("quantity"), 1.0),
-            )
-            values = (
-                _plain_text(mold.get("mold_no") or group.get("fallback_mold_no")),
-                _plain_text(part.get("name")),
-                _plain_text(
-                    part.get("color")
-                    or injection.get("color")
-                    or mold.get("color")
-                ),
-                "",
-                "",
-                _plain_text(part.get("process") or mold.get("process")),
-                process_price or "",
-                shot_weight or "",
-                part_weight or "",
-                output_count,
-                quantity,
-                _mold_material_label(mold, injection),
-                _positive_number(
-                    injection.get("sets"),
-                    _positive_number(mold.get("quantity"), 1.0),
-                ),
-                _plain_text(injection.get("cavity") or mold.get("cavity")),
-                _plain_text(
-                    injection.get("machine_name")
-                    or injection.get("machine_code")
-                    or mold.get("machine_code")
-                ),
-                _positive_number(
-                    injection.get("target_output"),
-                    _positive_number(mold.get("target_output")),
-                )
-                or "",
-                "",
-                "",
-                "",
-                _plain_text(mold.get("remark") or injection.get("remark")),
-            )
-            for column, value in enumerate(values, start=1):
-                _template_cell(
-                    sheet,
-                    row_index,
-                    column,
-                    _safe_text(value) if isinstance(value, str) else value,
-                    horizontal="left" if column in {2, 6, 12, 20} else "center",
-                    size=9,
-                    number_format=(
-                        "0.0000"
-                        if column in {7, 8, 9, 11}
-                        and isinstance(value, (int, float))
-                        else None
-                    ),
-                )
-            sheet.row_dimensions[row_index].height = 25
-            row_index += 1
-        group_end = row_index - 1
-        if group_end > group_start:
-            for column in (1, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20):
-                sheet.merge_cells(
-                    start_row=group_start,
-                    start_column=column,
-                    end_row=group_end,
-                    end_column=column,
-                )
-
-    if row_index == 6:
-        for column in range(1, 21):
-            _template_cell(sheet, row_index, column, "", size=9)
-        sheet.row_dimensions[row_index].height = 25
-        row_index += 1
-
-    widths = (10, 30, 13, 13, 11, 18, 13, 13, 15, 10, 10, 18, 11, 13, 13, 13, 12, 12, 13, 24)
-    for column, width in enumerate(widths, start=1):
-        sheet.column_dimensions[get_column_letter(column)].width = width
-    sheet.row_dimensions[1].height = 25
-    sheet.row_dimensions[2].height = 30
-    sheet.row_dimensions[3].height = 24
-    sheet.row_dimensions[4].height = 23
-    sheet.freeze_panes = "A6"
-    sheet.sheet_view.showGridLines = False
-    sheet.sheet_properties.pageSetUpPr.fitToPage = True
-    sheet.page_setup.orientation = "landscape"
-    sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
-    sheet.page_setup.fitToWidth = 1
-    sheet.page_setup.fitToHeight = 0
-    sheet.page_margins.left = 0.2
-    sheet.page_margins.right = 0.2
-    sheet.print_title_rows = "1:5"
-    sheet.print_area = f"A1:T{row_index - 1}"
-    _apply_outline_border(sheet, 1, row_index - 1, 1, 20, TEMPLATE_MEDIUM)
-
-
 def _format_dimension(value: object) -> str:
     parsed = _number(value)
     if not isinstance(parsed, float):
@@ -1544,128 +1389,6 @@ def _purchase_list_rows(
             )
         )
     return result
-
-
-def _build_purchase_list_sheet(
-    workbook: Workbook,
-    quote: InternalQuote,
-    engineering_section: InternalQuoteSection | None,
-    sales_section: InternalQuoteSection | None,
-    electronic_section: InternalQuoteSection | None,
-) -> None:
-    sheet = workbook.create_sheet("外购清单")
-    rows = _purchase_list_rows(
-        _section_payload(engineering_section),
-        _section_payload(sales_section),
-        _section_payload(electronic_section),
-    )
-
-    _merge_and_style(
-        sheet,
-        "A1:J1",
-        _engineering_company_name(quote),
-        bold=True,
-        color=TEMPLATE_BLUE,
-        size=14,
-    )
-    _merge_and_style(sheet, "A2:J2", "外 购 件 清 单", bold=True, size=16)
-    _merge_and_style(
-        sheet, "A3:B3", f"客户：{_plain_text(getattr(quote, 'customer', ''))}"
-    )
-    _merge_and_style(
-        sheet, "C3:E3", f"产品编号：{_plain_text(getattr(quote, 'quote_no', ''))}"
-    )
-    _merge_and_style(
-        sheet,
-        "F3:J3",
-        f"产品名称：{_plain_text(getattr(quote, 'product_name', ''))}",
-    )
-    _merge_and_style(
-        sheet,
-        "A4:D4",
-        "TO：PMC部；物料部；工程部；装配部；品质部",
-        horizontal="left",
-    )
-    _merge_and_style(sheet, "E4:F4", "文件编号：", bold=True)
-    _template_cell(sheet, 4, 7, "")
-    _template_cell(
-        sheet,
-        4,
-        8,
-        f"版本：{_plain_text(getattr(quote, 'version_label', ''))}",
-    )
-    _template_cell(
-        sheet,
-        4,
-        9,
-        f"修订：{getattr(quote, 'header_revision', '')}",
-    )
-    _template_cell(sheet, 4, 10, "")
-
-    headers = (
-        "序号",
-        "物料名称",
-        "物料规格",
-        "材料",
-        "颜色",
-        "用量",
-        "供应商",
-        "表面处理",
-        "用途",
-        "单个重量",
-    )
-    for column, header in enumerate(headers, start=1):
-        _template_cell(
-            sheet,
-            5,
-            column,
-            header,
-            bold=True,
-            fill=TEMPLATE_SKY,
-            size=10,
-        )
-    sheet.row_dimensions[5].height = 28
-
-    row_index = 6
-    source_rows = rows or [("", "", "", "", "", "", "", "", "")]
-    for sequence, source in enumerate(source_rows, start=1):
-        values = (sequence if rows else "", *source)
-        for column, value in enumerate(values, start=1):
-            _template_cell(
-                sheet,
-                row_index,
-                column,
-                _safe_text(value) if isinstance(value, str) else value,
-                horizontal="left" if column in {2, 3, 4, 7, 8, 9} else "center",
-                size=9,
-                number_format=(
-                    "0.0000"
-                    if column == 6 and isinstance(value, (int, float))
-                    else None
-                ),
-            )
-        sheet.row_dimensions[row_index].height = 25
-        row_index += 1
-
-    widths = (7, 25, 28, 15, 13, 11, 18, 16, 17, 13)
-    for column, width in enumerate(widths, start=1):
-        sheet.column_dimensions[get_column_letter(column)].width = width
-    sheet.row_dimensions[1].height = 25
-    sheet.row_dimensions[2].height = 30
-    sheet.row_dimensions[3].height = 24
-    sheet.row_dimensions[4].height = 23
-    sheet.freeze_panes = "A6"
-    sheet.sheet_view.showGridLines = False
-    sheet.sheet_properties.pageSetUpPr.fitToPage = True
-    sheet.page_setup.orientation = "landscape"
-    sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
-    sheet.page_setup.fitToWidth = 1
-    sheet.page_setup.fitToHeight = 0
-    sheet.page_margins.left = 0.25
-    sheet.page_margins.right = 0.25
-    sheet.print_title_rows = "1:5"
-    sheet.print_area = f"A1:J{row_index - 1}"
-    _apply_outline_border(sheet, 1, row_index - 1, 1, 10, TEMPLATE_MEDIUM)
 
 
 def _capture_template_row(sheet, row: int, end_column: int) -> tuple[list[Any], float | None]:
@@ -1972,20 +1695,6 @@ def _finish_sheet(sheet, widths: tuple[int, ...]) -> None:
     sheet.page_margins.right = 0.25
 
 
-def _line_amount(line: dict[str, Any]) -> float | str:
-    for key in (
-        "amount_hkd",
-        "line_hkd",
-        "per_piece_hkd",
-        "amount_hkd_pcs",
-        "deduction_hkd",
-        "total_usd",
-    ):
-        if key in line and line[key] is not None:
-            return _number(line[key])
-    return ""
-
-
 def _carton_detail_label(index: int, count: int) -> str:
     if count == 1:
         return "纸箱"
@@ -2076,13 +1785,9 @@ def _build_summary_sheet(
     t2 = _rr2_values(rr2_cost_summary, "t2")
     t3 = _rr2_values(rr2_cost_summary, "t3")
     t4 = _rr2_tax_rows(rr2_cost_summary)
-    sewing_clothes_tax = t4.get("sewcloth13", {})
-    sewing_clothes_rate_percent = sewing_clothes_tax.get("rate_percent")
-    sewing_clothes_rate = (
-        ""
-        if sewing_clothes_rate_percent in (None, "")
-        else _percent_fraction(sewing_clothes_rate_percent)
-    )
+    # Retain the template columns, but never revive historical sewing tax rates.
+    for key, label in (("sewhair13", "车发类（不计税）"), ("sewcloth13", "车衣类（不计税）")):
+        t4[key] = {**t4.get(key, {}), "label": label, "rate_percent": None, "deduction_hkd": None}
     markup_tiers = _shipping_markup_tiers(shipping)
     active_tier = next((row for row in markup_tiers if row.get("is_active")), markup_tiers[-1])
     testing_fee_total_usd, testing_fee_tiers = _testing_fee_values(
@@ -2178,11 +1883,8 @@ def _build_summary_sheet(
             (
                 ("含税1%", _tax_rate(reference_snapshot, "tax_1_percent", 0.0099)),
                 ("搪胶类3%", _tax_rate(reference_snapshot, "slush", 0.03)),
-                ("车发类5%", _tax_rate(reference_snapshot, "sewing_hair", 0.05)),
-                (
-                    _safe_text(sewing_clothes_tax.get("label")) or "车衣类",
-                    sewing_clothes_rate,
-                ),
+                ("车发类（不计税）", ""),
+                ("车衣类（不计税）", ""),
             ),
         ),
         (
@@ -2380,7 +2082,7 @@ def _build_summary_sheet(
 
     def ordinary_purchase_category(line):
         category = _pricing_entry_summary_category(line)
-        if category in {"五金", "电子"} and re.search(r"马达|motor", f"{line.get('label', '')} {line.get('specification', '')}", re.IGNORECASE):
+        if category == "五金" and re.search(r"马达|motor", f"{line.get('label', '')} {line.get('specification', '')}", re.IGNORECASE):
             return "马达"
         return category
 
@@ -2429,26 +2131,29 @@ def _build_summary_sheet(
     )
     sewing_hair = t1.get("sewing_hair", 0.0)
     sewing_cloth = t1.get("sewing_cloth", 0.0)
-    sewing_cloth_material = min(
-        max(_float_value(sewing_clothes_tax.get("amount_hkd")), 0.0),
-        max(sewing_cloth, 0.0),
-    )
-    sewing_cloth_labor = max(sewing_cloth - sewing_cloth_material, 0.0)
-    sewing_cloth_material_tax_tag = (
-        "¥13%" if sewing_clothes_rate_percent not in (None, "") else ""
-    )
+    sewing_section = by_code.get("sewing")
+    if sewing_section is not None:
+        sewing_own_hair = (
+            _float_value(_section_calculation(sewing_section).get("totals", {}).get("hair_hkd"))
+            if sewing_section.calculation_status == "valid" and sewing_section.is_required
+            else 0.0
+        )
+    else:
+        # Summary-only callers have no department breakdown; remove the
+        # standalone hair source before reconciling sewing's own subtotal.
+        sewing_own_hair = sewing_hair - _float_value(cost_context.get("hair_hkd"))
     sewing_adjustment = (
         _float_value(cost_context.get("sewing_hkd"))
-        - sewing_hair
+        - sewing_own_hair
         - sewing_cloth
     )
     color_box_amount = max(_float_value(t2.get("color_box")), 0.0)
 
     if mold_lines:
-        add_formula_detail("¥13%", "料价", "料价", f"=K{mold_total_row}")
+        add_formula_detail("", "料价", "料价", f"=K{mold_total_row}")
         add_formula_detail("", "啤工", "啤工", f"=J{mold_total_row}")
     else:
-        add_detail("¥13%", "料价", "料价", molding_material)
+        add_detail("", "料价", "料价", molding_material)
         add_detail("", "啤工", "啤工", molding_labor)
     add_detail("", "啤工", "注塑未分类成本", molding_adjustment)
     assembly_total = (
@@ -2474,12 +2179,28 @@ def _build_summary_sheet(
     # hair as generic purchases both hides their business meaning and breaks
     # the summary formulas.
     add_purchase_details("¥13%", "五金", t1.get("hardware"))
-    add_purchase_details("¥13%", "电子", t1.get("electronic"))
-    add_purchase_details("¥13%", "马达", t1.get("motor"))
+    electronic_motor = sum(_float_value(line.get("amount_hkd"))
+                           for line in _purchase_source_lines(by_code.get("electronic"))
+                           if re.search(r"马达|motor", f"{line.get('label', '')} {line.get('specification', '')}", re.IGNORECASE))
+    electronic_total = cost_context.get("electronic_hkd", _float_value(t1.get("electronic")) + electronic_motor)
+    add_detail("¥13%", "电子", "电子", electronic_total)
+    add_purchase_details("¥13%", "马达", max(0.0, _float_value(t1.get("motor")) - electronic_motor))
     add_purchase_details("¥6%", "吸塑", t1.get("suction"))
-    add_detail("¥13%", "车发", "车发", sewing_hair)
-    add_detail(sewing_cloth_material_tax_tag, "车衣", "车衣物料", sewing_cloth_material)
-    add_detail("", "车衣", "车衣人工", sewing_cloth_labor)
+    legacy_hair_entries = [entry for entry in purchase_entries
+                           if entry.get("section") == "sewing" and entry.get("category") == "hair"]
+    if legacy_hair_entries:
+        # The allocated legacy-hair details carry sewing's rounding budget;
+        # standalone hair remains untouched in the combined category amount.
+        sewing_hair += sum(_float_value(entry.get("amount_hkd")) for entry in legacy_hair_entries) - sewing_own_hair
+    add_detail("", "车发", "车发", sewing_hair)
+    sewing_entries = _ordinary_department_summary_entries([
+        entry for entry in purchase_entries if entry.get("section") == "sewing" and entry.get("category") != "hair"
+    ], keep_pricing_segments=False)
+    if sewing_entries:
+        for entry in sewing_entries:
+            add_detail("", "车衣", _plain_text(entry.get("label")), entry.get("amount_hkd"))
+    else:
+        add_detail("", "车衣", "车衣", sewing_cloth)
     add_detail("", "车衣", "车缝未分类成本", sewing_adjustment)
     add_purchase_details("¥13%", "电池", t2.get("battery"))
     add_purchase_details("¥13%", "利宝/说明书", t2.get("libao"))
@@ -3012,7 +2733,7 @@ def _build_summary_sheet(
                 return []
             group_name = _safe_text(group.get("name"))
             group_markup = _float_value(group.get("markup"))
-            return [
+            return _ordinary_department_summary_entries([
                 entry
                 for entry in pricing_entries
                 if _safe_text(entry.get("label")) == group_name
@@ -3021,7 +2742,7 @@ def _build_summary_sheet(
                     _float_value(entry.get("markup_override")) - group_markup
                 )
                 < 0.0000001
-            ]
+            ])
 
         group_layouts: list[dict[str, object]] = []
         next_group_row = pricing_start_row
@@ -3121,6 +2842,11 @@ def _build_summary_sheet(
                     else:
                         remaining = _float_value(source_value) - amount_numeric
                         source_cell.value = 0.0 if abs(remaining) < 0.0000001 else remaining
+                    if entry.get("kind") == "department_summary" and source_cell.value == 0.0:
+                        # The same worksheet row contains packaging fields on
+                        # the right. Clear only the empty left-side detail.
+                        for column in (1, 2, 3):
+                            sheet.cell(source_row, column).value = ""
                 amount_formula = carton_entry_formula or _pricing_entry_amount(entry)
                 if not (
                     isinstance(amount_formula, str) and amount_formula.startswith("=")
@@ -3578,7 +3304,7 @@ def _build_summary_sheet(
             rate_percent = t4.get(key, {}).get("rate_percent")
             value = (
                 ""
-                if key == "carton" or (key == "sewcloth13" and rate_percent in (None, ""))
+                if key in {"carton", "sewhair13", "sewcloth13"}
                 else _percent_fraction(rate_percent)
             )
             number_format = "0.00%"
@@ -3617,7 +3343,6 @@ def _build_summary_sheet(
     tax_amount_references = {
         "tax1": f"H{second_value_row}",
         "slush3": f"G{first_value_row}",
-        "sewhair13": f"H{first_value_row}",
         "suction6": f"M{first_value_row}",
         "freight9": f"K{second_value_row}",
         "tax13b": f"D{tax_amount_row}",
@@ -3625,15 +3350,10 @@ def _build_summary_sheet(
         "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
     }
     for column, key in enumerate(tax_keys, start=6):
-        rate_percent = t4.get(key, {}).get("rate_percent")
-        if key == "carton" or (key == "sewcloth13" and rate_percent in (None, "")):
+        if key in {"carton", "sewhair13", "sewcloth13"}:
             sheet.cell(deduction_row, column).value = ""
         else:
-            amount_reference = (
-                format(_float_value(t4.get(key, {}).get("amount_hkd")), ".10g")
-                if key == "sewcloth13"
-                else tax_amount_references[key]
-            )
+            amount_reference = tax_amount_references[key]
             sheet.cell(deduction_row, column).value = (
                 f"={amount_reference}*{get_column_letter(column)}{tax_amount_row}"
             )
@@ -3773,6 +3493,8 @@ def _justplay_electronic_source_parts(section: InternalQuoteSection | None) -> l
         specification = source.get("specification", line.get("specification", ""))
         result.append({
             "source_amount": _pricing_entry_amount(line),
+            "source_path": line.get("source_path"),
+            "section": "electronic",
             "category": _justplay_electronic_category(name, specification),
             "name": _plain_text(name),
             "specification": _plain_text(specification),
@@ -4221,7 +3943,7 @@ def _replace_with_component_summary_sheet(
         detail_row = detail_title_row + 1
         if component_molds:
             detail_values: list[tuple[str, str, str, object]] = [
-                ("¥13%", "料价", "料价", f"=K{mold_total_row}"),
+                ("", "料价", "料价", f"=K{mold_total_row}"),
                 ("", "啤工", "啤工", f"=J{mold_total_row}"),
             ]
         else:
@@ -4972,7 +4694,6 @@ def _replace_with_component_summary_sheet(
         tax_amount_references = {
             "tax1": f"H{second_value_row}",
             "slush3": f"G{first_value_row}",
-            "sewhair13": f"H{first_value_row}",
             "suction6": f"M{first_value_row}",
             "freight9": f"K{second_value_row}",
             "tax13b": f"D{tax_amount_row}",
@@ -4980,17 +4701,10 @@ def _replace_with_component_summary_sheet(
             "labor13": f"SUM(E{third_value_row}:F{third_value_row},H{third_value_row})",
         }
         for column, key in enumerate(tax_keys, start=6):
-            rate_percent = t4.get(key, {}).get("rate_percent")
-            if key == "carton" or (
-                key == "sewcloth13" and rate_percent in (None, "")
-            ):
+            if key in {"carton", "sewhair13", "sewcloth13"}:
                 target.cell(deduction_row, column).value = ""
                 continue
-            amount_reference = (
-                format(_float_value(t4.get(key, {}).get("amount_hkd")), ".10g")
-                if key == "sewcloth13"
-                else tax_amount_references[key]
-            )
+            amount_reference = tax_amount_references[key]
             target.cell(deduction_row, column).value = (
                 f"={amount_reference}*{get_column_letter(column)}{tax_amount_row}"
             )
@@ -5039,6 +4753,7 @@ def _build_electronic_sheet(
     *,
     sheet_name: str = "电子明细",
     quote_name: str = "电子报价明细",
+    allow_incomplete: bool = False,
 ) -> None:
     payload = _json_object(section.payload_json) if section else {}
     if "quote_groups" in payload:
@@ -5046,10 +4761,10 @@ def _build_electronic_sheet(
         from app.services.internal_quote_electronic import electronic_quote_groups
         calculations = {item["id"]: item for item in _section_calculation(section).get("quote_groups", [])}
         for index, group in enumerate(electronic_quote_groups(payload), 1):
-            if group["id"] not in calculations:
+            if group["id"] not in calculations and not allow_incomplete:
                 raise ValueError("电子报价计算快照不完整，请重新保存并审核后导出")
-            individual = SimpleNamespace(payload_json=json.dumps(group, ensure_ascii=False), calculation_json=json.dumps(calculations[group["id"]], ensure_ascii=False))
-            _build_electronic_sheet(workbook, individual, reference_snapshot, sheet_name=f"电子明细{index}", quote_name=group["name"])
+            individual = SimpleNamespace(payload_json=json.dumps(group, ensure_ascii=False), calculation_json=json.dumps(calculations.get(group["id"], {}), ensure_ascii=False))
+            _build_electronic_sheet(workbook, individual, reference_snapshot, sheet_name=f"电子明细{index}", quote_name=group["name"], allow_incomplete=allow_incomplete)
         return
     sheet = workbook.create_sheet(sheet_name)
     _style_title(sheet, quote_name, 10)
@@ -5064,10 +4779,10 @@ def _build_electronic_sheet(
         quantity = _number(row.get("quantity"))
         unit_price_rmb = _number(row.get("unit_price_rmb"))
         unit_price_hkd = _number(row.get("unit_price_hkd"))
-        if not isinstance(unit_price_rmb, float) and isinstance(unit_price_hkd, float):
+        if "unit_price_rmb" not in row and isinstance(unit_price_hkd, float):
             unit_price_rmb = unit_price_hkd * fx
-        if not isinstance(unit_price_hkd, float) and isinstance(unit_price_rmb, float):
-            unit_price_hkd = unit_price_rmb / fx
+        if "unit_price_rmb" in row:
+            unit_price_hkd = unit_price_rmb / fx if isinstance(unit_price_rmb, float) else ""
         amount_hkd = quantity * unit_price_hkd if isinstance(quantity, float) and isinstance(unit_price_hkd, float) else ""
         _body_row(
             sheet,
@@ -5111,7 +4826,7 @@ def _build_sewing_sheet(
     reference_snapshot: dict[str, Any],
 ) -> None:
     sheet = workbook.create_sheet("车缝明细")
-    _style_title(sheet, "车缝报价明细", 13)
+    _style_title(sheet, "车缝报价明细", 15)
     _header_row(
         sheet,
         3,
@@ -5129,6 +4844,8 @@ def _build_sewing_sheet(
             "价钱 HKD",
             "备注",
             "单价币种",
+            "额外倍率",
+            "暂用原价 HKD",
         ),
     )
     row_index = 4
@@ -5141,7 +4858,7 @@ def _build_sewing_sheet(
             continue
         group_name = _safe_text(group.get("name")) or "车缝产品组"
         group_category = "车发" if str(group.get("category")) == "hair" else "车衣"
-        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=13)
+        sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=15)
         group_cell = sheet.cell(row_index, 1)
         group_cell.value = f"{group_name} · {group_category}"
         group_cell.fill = PatternFill("solid", fgColor="F8CBAD")
@@ -5167,6 +4884,8 @@ def _build_sewing_sheet(
             if not isinstance(exchange_rate, float) or exchange_rate <= 0:
                 exchange_rate = fx
             markup = _number(row.get("markup")) or 1
+            extra_multiplier = _number(row.get("extra_multiplier")) or 1
+            using_quoted_price = uses_sewing_quoted_price(row)
             extra_evidence = []
             if row.get("craft"):
                 extra_evidence.append(f"工艺：{_safe_text(row.get('craft'))}")
@@ -5175,6 +4894,8 @@ def _build_sewing_sheet(
             if row.get("source_row") not in (None, ""):
                 extra_evidence.append(f"来源行：{_safe_text(row.get('source_row'))}")
             remark = _safe_text(row.get("remark") or row.get("note") or "")
+            if using_quoted_price:
+                extra_evidence.append("待补用量、单价，暂用原价；补齐后按公式重算")
             if extra_evidence:
                 remark = "；".join([remark, *extra_evidence] if remark else extra_evidence)
             _body_row(
@@ -5194,12 +4915,16 @@ def _build_sewing_sheet(
                     "",
                     remark,
                     source_currency,
+                    extra_multiplier,
+                    _number(row.get("quoted_price_hkd")) if using_quoted_price else "",
                 ),
                 amount_columns={4, 5, 6, 7, 8, 9, 10, 11},
             )
             sheet.cell(row_index, 9).value = f'=IF(M{row_index}="HKD",F{row_index}*G{row_index},F{row_index}*G{row_index}/H{row_index})'
             sheet.cell(row_index, 9).number_format = "#,##0.0000"
-            sheet.cell(row_index, 11).value = f"=I{row_index}*J{row_index}"
+            sheet.cell(row_index, 11).value = (
+                f'=IF(AND(O{row_index}<>"",OR(F{row_index}="",G{row_index}="")),O{row_index},I{row_index}*J{row_index}*N{row_index})'
+            )
             sheet.cell(row_index, 11).number_format = "#,##0.0000"
             row_index += 1
     if row_index > 4:
@@ -5210,7 +4935,7 @@ def _build_sewing_sheet(
         sheet.cell(row_index, 11).fill = PatternFill("solid", fgColor="FFF200")
         sheet.cell(row_index, 10).font = Font(name="宋体", size=10, bold=True)
         sheet.cell(row_index, 11).font = Font(name="宋体", size=10, bold=True)
-    _finish_sheet(sheet, (34, 18, 18, 15, 24, 14, 14, 12, 15, 12, 15, 36, 12))
+    _finish_sheet(sheet, (34, 18, 18, 15, 24, 14, 14, 12, 15, 12, 15, 36, 12, 14, 18))
 
 
 def _build_hair_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
@@ -5624,7 +5349,7 @@ def _append_spreadsheet_attachment_sheets(
     return appended_titles
 
 
-def build_internal_quote_workbook(
+def build_internal_quote_workbook_model(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
     manifest: dict[str, Any],
@@ -5632,7 +5357,9 @@ def build_internal_quote_workbook(
     rr2_cost_summary: dict[str, Any] | None = None,
     cost_context: dict[str, Any] | None = None,
     attachments: list[InternalQuoteAttachment] | None = None,
-) -> bytes:
+    *,
+    allow_incomplete: bool = False,
+) -> Workbook:
     workbook = Workbook()
     workbook.properties.creator = "Royal Regent Nexus"
     workbook.properties.title = f"{quote.quote_no} 内部报价"
@@ -5646,7 +5373,7 @@ def build_internal_quote_workbook(
         attachments or [],
     )
     by_code = {section.department: section for section in sections}
-    _build_electronic_sheet(workbook, by_code.get("electronic"), reference_snapshot or {})
+    _build_electronic_sheet(workbook, by_code.get("electronic"), reference_snapshot or {}, allow_incomplete=allow_incomplete)
     _build_sewing_sheet(workbook, by_code.get("sewing"), reference_snapshot or {})
     _build_hair_sheet(workbook, by_code.get("hair"))
     _build_assembly_sheet(workbook, by_code.get("assembly"))
@@ -5670,11 +5397,25 @@ def build_internal_quote_workbook(
     if "quote_groups" in electronic_payload:
         for index in range(1, len(electronic_payload["quote_groups"]) + 1):
             workbook[f"电子明细{index}"].sheet_state = "visible"
-    _append_spreadsheet_attachment_sheets(workbook, attachments or [])
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True
     workbook.calculation.calcMode = "auto"
+    return workbook
+
+
+def build_internal_quote_workbook(
+    quote: InternalQuote,
+    sections: list[InternalQuoteSection],
+    manifest: dict[str, Any],
+    reference_snapshot: dict[str, Any] | None = None,
+    rr2_cost_summary: dict[str, Any] | None = None,
+    cost_context: dict[str, Any] | None = None,
+    attachments: list[InternalQuoteAttachment] | None = None,
+) -> bytes:
+    workbook = build_internal_quote_workbook_model(
+        quote, sections, manifest, reference_snapshot, rr2_cost_summary, cost_context, attachments,
+    )
     buffer = BytesIO()
     workbook.save(buffer)
     workbook.close()

@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
+import { createPinia } from 'pinia'
 import Dialog from '../FabricReceiptDialog.vue'
 import Records from '../FabricReceivingRecords.vue'
 import Workspace from '../FabricProcurementWorkspace.vue'
-import { receiptQuantity, receiptTotal } from '../receiptQuantities'
+import { receiptQuantity, receiptTotal, receiptAmount, receiptAmountTotals } from '../receiptQuantities'
 import type { PurchaseDetail } from '@/api/fabricProcurement'
 
 const api = vi.hoisted(() => ({ receive: vi.fn(), receipts: vi.fn(), stock: vi.fn() }))
-const sourceApi = vi.hoisted(() => ({ lines: vi.fn(), detail: vi.fn(), imports: vi.fn() }))
+const sourceApi = vi.hoisted(() => ({ groups: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn() }))
 vi.mock('@/api/fabricReceiving', () => ({ fabricReceivingApi: api, materialCategoryLabels: { FABRIC: '布料', ACCESSORY: '辅料', THREAD: '线' } }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: sourceApi }))
 const source: PurchaseDetail = { id: 'L1', revision: 2, receipt_count: 0, prior_received_quantity: '50', warehouse_received_quantity: '0', can_receive: true,
@@ -24,9 +25,9 @@ async function router() {
   const instance = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
   await instance.push('/'); await instance.isReady(); return instance
 }
-beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-05T18:00:00Z')); vi.clearAllMocks(); api.receipts.mockResolvedValue({ total: 0, items: [] }); api.stock.mockResolvedValue({ total: 0, items: [] }); sourceApi.lines.mockResolvedValue({ total: 1, items: [source], can_receive: true }); sourceApi.detail.mockResolvedValue(source) })
+beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-05T18:00:00Z')); vi.clearAllMocks(); sourceApi.groups.mockResolvedValue({ total: 0, line_total: 0, groups: [] }); api.receipts.mockResolvedValue({ total: 0, items: [] }); api.stock.mockResolvedValue({ total: 0, items: [] }); sourceApi.lines.mockResolvedValue({ total: 1, items: [source], can_receive: true }); sourceApi.detail.mockResolvedValue(source) })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
-async function open(receiptSource = source) { wrapper = mount(Dialog, { props: { source: receiptSource }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises() }
+async function open(receiptSource = source) { wrapper = mount(Dialog, { props: { source: receiptSource }, attachTo: document.body, global: { plugins: [await router(), createPinia()] } }); await flushPromises() }
 async function fill() {
   await body().get('[aria-label="送货依据编号"]').setValue('DN-001')
   await body().get('[aria-label="入库物料分类"]').setValue('FABRIC')
@@ -35,6 +36,30 @@ async function fill() {
   await body().get('[aria-label="第1项缸号"]').setValue('0001')
 }
 describe('fabric actual receiving', () => {
+  it('calculates amounts exactly with whole-receipt rounding, without floating-point or missing-price zeroes', () => {
+    expect(receiptAmount('0.125', '0.04')).toBe('0.01')
+    expect(receiptAmount('0.1', '0.2')).toBe('0.02')
+    expect(receiptAmount('50', '0')).toBe('0.00')
+    expect(receiptAmount('50', '')).toBeUndefined()
+    expect(receiptAmount('50', '-1')).toBeUndefined()
+    expect(receiptAmount('999999999999.999999', '999999999999.999999')).toBe('999999999999999998000000.00')
+    expect(receiptAmountTotals([{ amount: '0.01', currency: 'CNY' }, { amount: '1.25', currency: 'CNY' }, { amount: '2.00', currency: 'HKD' }, { amount: undefined, currency: 'CNY' }])).toEqual([{ currency: 'CNY', amount: '1.26' }, { currency: 'HKD', amount: '2.00' }])
+  })
+  it('adds optional price and currency, previews amount and submits frozen receipt evidence', async () => {
+    await open(); await fill()
+    await body().get('[aria-label="入库单价"]').setValue('0.05')
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    await body().get('[aria-label="入库币种"]').setValue('CNY')
+    expect(body().get('.receipt-price-amount').text()).toContain('0.01 CNY')
+    await body().get('[aria-label="入库单价"]').setValue('-1')
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    await body().get('[aria-label="入库单价"]').setValue('0')
+    expect(body().get('.receipt-price-amount').text()).toContain('0.00 CNY')
+    api.receive.mockResolvedValue({ id: 'R-PRICE' })
+    await button('保存并入库').trigger('click'); await flushPromises()
+    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ unit_price: '0', price_unit: '码', currency: 'CNY' }))
+    expect(api.receive.mock.calls[0]![1]).not.toHaveProperty('amount')
+  })
   it('defaults dates to Shanghai today, keeps category manual and closes untouched defaults', async () => {
     await open()
     expect(body().get<HTMLInputElement>('[aria-label="实际收货日期"]').element.value).toBe('2026-10-06')
@@ -58,6 +83,7 @@ describe('fabric actual receiving', () => {
     await body().get('[aria-label="入库物料分类"]').setValue('FABRIC')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
     expect(body().get('[aria-label="第1项缸号"]').attributes('required')).toBeDefined()
+    await body().get('[aria-label="第1项仓位"]').setValue('一仓／A01')
     await body().get('[aria-label="第1项缸号"]').setValue('0001')
     expect(button('保存并入库').attributes('disabled')).toBeUndefined()
     await body().get('[aria-label="第1项仓位"]').setValue('  ')
@@ -190,7 +216,8 @@ describe('fabric actual receiving', () => {
     expect(wrapper!.emitted('stale')?.[0]?.[0]).toContain('来源已变化')
   })
   it('opens receiving from a freshly read source, refreshes the list after posting, and respects read-only accounts', async () => {
-    wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises()
+    wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router(), createPinia()] } }); await flushPromises()
+    await button('按采购明细').trigger('click'); await flushPromises()
     await button('登记入库').trigger('click'); await flushPromises()
     expect(sourceApi.detail).toHaveBeenCalledWith('L1')
     await fill(); api.receive.mockResolvedValue({ id: 'R1', quantity: '0.1', unit: '码' })
@@ -203,14 +230,14 @@ describe('fabric actual receiving', () => {
   })
   it('loads posted receipt/stock views and clears protected records on a denied query', async () => {
     api.stock.mockResolvedValue({ total: 1, items: [{ id: 'B1', receipt_id: 'R1', movement_id: 'M1', facts: source.facts, quantity: '0.3', unit: '码', material_category: 'FABRIC', location_id: 'A01', location: '一仓／A01', dye_lot: '', roll_no: '', receipt_date: '2026-09-16', accounting_month: '2026-09', delivery_reference: 'DN1' }] })
-    wrapper = mount(Records, { props: { mode: 'stock' }, global: { plugins: [await router()] } }); await flushPromises()
+    wrapper = mount(Records, { props: { mode: 'stock' }, global: { plugins: [await router(), createPinia()] } }); await flushPromises()
     expect(wrapper!.text()).toContain('0.3 码')
-    expect(wrapper!.text()).toContain('不含历史库存期初')
+    expect(wrapper!.text()).toContain('期初、退料、调仓和盘点不计入本页')
     api.stock.mockRejectedValue({ response: { status: 403, data: { detail: '无权限' } }, isAxiosError: true })
     await wrapper!.get('form').trigger('submit'); await flushPromises()
     expect(wrapper!.findAll('tbody tr')).toHaveLength(0)
     expect(wrapper!.text()).toContain('无权限')
     await wrapper!.setProps({ mode: 'receipts' }); await flushPromises()
-    expect(api.receipts).toHaveBeenCalledWith('', 0)
+    expect(api.receipts).toHaveBeenCalledWith('', 0, expect.objectContaining({ sort: 'RECEIPT_DESC' }))
   })
 })

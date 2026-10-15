@@ -787,7 +787,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     await wrapper.get('[aria-label="选择订单 NORMAL"]').setValue(false)
     if (selection === 'cancelled') {
       await wrapper.get('[aria-label="订单状态筛选"]').setValue('CANCELLED')
-      expect(wrapper.get('[aria-label="已取消订单删除说明"]').text()).toContain('所有已取消订单都可删除')
+      expect(wrapper.get('[aria-label="已取消订单删除说明"]').text()).toContain('客户授权范围内的已取消订单都可删除')
       expect(wrapper.get('[aria-label="已取消订单删除说明"]').text()).toContain('历史保留')
     }
     await wrapper.get('[aria-label="选择订单 H-B"]').setValue(true)
@@ -940,13 +940,66 @@ it('shows supplier date differences in both the internal ledger and order detail
     weekly.unmount()
   })
 
-  it('hides both deletion entries for an operator with order and inventory permissions but no supervisor adjustment permission', async () => {
-    mockReceiptWorkspace([{ ...orderFixture('ORD-OPERATOR', businessDateOffset(3)), can_delete: true }])
+  it.each(['single', 'bulk'])('allows warehouse %s deletion with confirmation and a reason without supervisor adjustment permission', async mode => {
+    const row = { ...orderFixture('ORD-OPERATOR', businessDateOffset(3)), can_delete: true }
+    mockReceiptWorkspace([row])
     authStoreMock.can.mockImplementation(((permission: string) => permission !== 'carton_procurement:order_adjust') as () => boolean)
     const wrapper = mountView('orders'); await flushPromises()
     await wrapper.get('[aria-label="更多 ORD-OPERATOR 订单操作"]').trigger('click')
-    expect(wrapper.find('[aria-label="删除订单 ORD-OPERATOR"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('批量删除订单')
+    expect(wrapper.get('[aria-label="删除订单 ORD-OPERATOR"]').attributes('disabled')).toBeUndefined()
+    if (mode === 'single') await wrapper.get('[aria-label="删除订单 ORD-OPERATOR"]').trigger('click')
+    else {
+      await wrapper.get('[aria-label="选择订单 ORD-OPERATOR"]').setValue(true)
+      await findButton(wrapper, '批量删除订单').trigger('click')
+    }
+    await flushPromises()
+    expect(cartonApiMock.deleteOrder).not.toHaveBeenCalled()
+    expect(cartonApiMock.bulkDeleteOrders).not.toHaveBeenCalled()
+    await wrapper.get('[aria-label="订单删除原因"]').setValue('仓管清理重复订单')
+    await wrapper.get('[aria-label="订单删除原因"]').element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    if (mode === 'single') expect(cartonApiMock.deleteOrder).toHaveBeenCalledWith('huaxing', row, '仓管清理重复订单')
+    else expect(cartonApiMock.bulkDeleteOrders).toHaveBeenCalledWith('huaxing', [row], '仓管清理重复订单')
+    wrapper.unmount()
+  })
+
+  it('blocks warehouse single and batch deletion outside customer responsibility', async () => {
+    const own = { ...orderFixture('ORD-OWN', businessDateOffset(3)), can_delete: true }
+    const other = { ...orderFixture('ORD-OTHER', businessDateOffset(3)), customer_code: 'OTHER', can_delete: true }
+    mockReceiptWorkspace([own, other])
+    authStoreMock.can.mockImplementation(((permission: string) => permission !== 'carton_procurement:order_adjust') as () => boolean)
+    vi.mocked(cartonCustomerResponsibilitiesApi.get).mockResolvedValue({
+      can_manage: false, unrestricted: false, own_customer_codes: ['DICKIE'], blocked_customer_codes: ['OTHER'], users: [], customers: [],
+    })
+    const wrapper = mountView('orders'); await flushPromises()
+    await wrapper.get('[aria-label="查看客户范围"]').setValue('ALL'); await flushPromises()
+    await wrapper.get('[aria-label="更多 ORD-OTHER 订单操作"]').trigger('click')
+    expect(wrapper.get('[aria-label="删除订单 ORD-OTHER"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[aria-label="删除订单 ORD-OTHER"]').attributes('title')).toContain('未获授权')
+    await wrapper.get('[aria-label="选择订单 ORD-OWN"]').setValue(true)
+    expect(findButton(wrapper, '批量删除订单').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[aria-label="选择订单 ORD-OTHER"]').setValue(true)
+    expect(findButton(wrapper, '批量删除订单').attributes('disabled')).toBeDefined()
+    expect(cartonApiMock.deleteOrder).not.toHaveBeenCalled()
+    expect(cartonApiMock.bulkDeleteOrders).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each(['order_only', 'inventory_only', 'foreign_inventory', 'other_department'])('hides deletion for an incomplete warehouse scope: %s', async scope => {
+    mockReceiptWorkspace([{ ...orderFixture('ORD-NO-DELETE', businessDateOffset(3)), can_delete: true }])
+    authStoreMock.can.mockImplementation(((permission: string, factory: string, department: string) => {
+      if (permission === 'carton_procurement:order_write') return scope !== 'inventory_only' && factory === 'huaxing' && department === 'pmc-warehouse'
+      if (permission === 'carton_procurement:inventory_write') return scope !== 'order_only'
+        && factory === (scope === 'foreign_inventory' ? 'huadeng' : 'huaxing')
+        && department === (scope === 'other_department' ? 'qc' : 'pmc-warehouse')
+      return false
+    }) as () => boolean)
+    const wrapper = mountView('orders'); await flushPromises()
+    expect(wrapper.findAll('button').some(button => button.text().includes('批量删除订单'))).toBe(false)
+    const moreActions = wrapper.find('[aria-label="更多 ORD-NO-DELETE 订单操作"]')
+    if (scope === 'inventory_only') expect(moreActions.exists()).toBe(false)
+    else await moreActions.trigger('click')
+    expect(wrapper.find('[aria-label="删除订单 ORD-NO-DELETE"]').exists()).toBe(false)
     wrapper.unmount()
   })
 

@@ -8,14 +8,14 @@ import InternalQuoteSectionEditor from '../InternalQuoteSectionEditor.vue'
 
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
 
-function setup(canEdit = true, status: InternalQuoteSection['status'] = 'draft') {
+function setup(canEdit = true, status: InternalQuoteSection['status'] = 'draft', code: 'hair' | 'sewing' = 'hair') {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useInternalQuoteDeskStore()
   const quote = { ...store.placeholderQuote, id: 'hair-quote', factoryId: 'huaxing' }
   const section: InternalQuoteSection = {
-    ...quote.sections.find((item) => item.code === 'hair')!,
-    code: 'hair', label: '车发部', status, revision: 3,
+    ...quote.sections.find((item) => item.code === code)!,
+    code, label: code === 'hair' ? '车发部' : '车缝部', status, revision: 3,
     payload: {}, dependencies: [], warnings: [], attachments: [], lines: [],
   }
   const preview: ApiInternalQuoteImportPreview = {
@@ -29,7 +29,7 @@ function setup(canEdit = true, status: InternalQuoteSection['status'] = 'draft')
   }
   const download = vi.spyOn(store, 'downloadImportTemplate').mockResolvedValue(undefined)
   const previewImport = vi.spyOn(store, 'previewImport').mockResolvedValue(preview)
-  const confirm = vi.spyOn(store, 'confirmImport').mockResolvedValue(undefined)
+  const confirm = vi.spyOn(store, 'confirmImport').mockResolvedValue({ section: { revision: 4, payload: preview.payload_fragment } })
   const upload = vi.spyOn(store, 'uploadAttachment').mockResolvedValue(undefined)
   const wrapper = shallowMount(InternalQuoteSectionEditor, {
     props: { quote, section, canEdit, canReview: false, canRemove: false, wholeQuoteReview: true },
@@ -41,6 +41,19 @@ function setup(canEdit = true, status: InternalQuoteSection['status'] = 'draft')
 afterEach(() => vi.restoreAllMocks())
 
 describe('hair template download and import', () => {
+  it('routes legacy sewing XLS through structured preview instead of attachment upload', async () => {
+    const { wrapper, previewImport, confirm, upload } = setup(true, 'draft', 'sewing')
+    const file = new File(['workbook'], '车缝报价.xls')
+    const input = wrapper.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    await flushPromises()
+    expect(previewImport).toHaveBeenCalledWith('hair-quote', 'sewing', file, expect.objectContaining({ revision: 3 }))
+    expect(upload).not.toHaveBeenCalled()
+    expect(confirm).not.toHaveBeenCalled()
+    expect(wrapper.find('.quote-import-preview').exists()).toBe(true)
+    wrapper.unmount()
+  })
   it('downloads the original XLS and explains which sheet to fill', async () => {
     const { wrapper, download } = setup()
     await wrapper.get('button.template-download').trigger('click')
@@ -58,7 +71,7 @@ describe('hair template download and import', () => {
     Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
     await input.trigger('change')
     await flushPromises()
-    expect(previewImport).toHaveBeenCalledWith('hair-quote', 'hair', file)
+    expect(previewImport).toHaveBeenCalledWith('hair-quote', 'hair', file, { revision: 3, payload: { lines: [] } })
     expect(upload).not.toHaveBeenCalled()
     expect(confirm).not.toHaveBeenCalled()
     expect(wrapper.get('.quote-import-preview').text()).toContain('明细 · 表头第 9 行')

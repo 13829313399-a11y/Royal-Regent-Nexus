@@ -84,6 +84,10 @@ def test_legacy_binding_keeps_quantity_and_original_document(monkeypatch):
         # Exact pre-upgrade retries return the historical receipt, before new validation.
         assert post(client, request)['id'] == 'legacy-receipt'
         location = place(client, 'fabric', 'A01')
+        # Binding verifies a historical physical position, rather than moving goods
+        # into today's category zone. It must remain possible after re-zoning.
+        location['data']['category'] = 'THREAD'
+        location = set_status(client, 'fabric', location, 'ACTIVE')
         assert workspace(client)['stock'][0]['location_verified'] is False
         post(client, payload(client, 'ISSUE', batch_id='legacy-receipt', quantity='1'), status=422)
         binding = payload(client, 'LOCATION_BIND', batch_id='legacy-receipt', location_id=location['id'], confirmed=True, reason='现场核对旧货架对应一仓 A01')

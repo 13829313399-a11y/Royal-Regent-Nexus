@@ -44,6 +44,7 @@ import { registrationDepartments } from '@/data/registrationDepartments'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 
+const props = defineProps<{ targetUserId?: string; embedded?: boolean }>()
 const route = useRoute()
 const authStore = useAuthStore()
 const activeSection = ref('exceptions')
@@ -101,6 +102,7 @@ let selectedPositionAccessRequestSequence = 0
 let previewRequestSequence = 0
 
 const canManageAccess = computed(() => authStore.can('system:access_manage'))
+const canReadCatalog = computed(() => authStore.can('system:permission_catalog_read'))
 const canManageSupplier = computed(
   () =>
     canManageAccess.value &&
@@ -134,7 +136,7 @@ const supplierCurrent = computed(
       ]),
     ) as Record<SupplierPermissionCode, boolean>,
 )
-const userId = computed(() => String(route.params.userId ?? ''))
+const userId = computed(() => props.targetUserId || String(route.params.userId ?? ''))
 const userFactory = computed(() => access.value?.profile?.primary_factory_id ?? '')
 const userDepartment = computed(() => access.value?.profile?.primary_department ?? '')
 const hasPrimaryOrganization = computed(() => Boolean(userFactory.value && userDepartment.value))
@@ -417,8 +419,8 @@ async function loadData() {
   try {
     const [userAccess, positions, catalog] = await Promise.all([
       iamApi.getUserAccess(userId.value),
-      iamApi.listSystemPositions(),
-      iamApi.listPermissions('all'),
+      canReadCatalog.value ? iamApi.listSystemPositions() : Promise.resolve([]),
+      canReadCatalog.value ? iamApi.listPermissions('all') : Promise.resolve([]),
     ])
     if (
       targetGeneration !== routeGeneration ||
@@ -823,7 +825,7 @@ watch(
   { deep: true, flush: 'sync' },
 )
 watch(
-  [userId, () => authStore.currentUser?.id || ''],
+  [userId, () => `${authStore.currentUser?.id || ''}:${authStore.authorizationVersion}:${authStore.currentUser?.identity?.employment_epoch || ''}:${authStore.currentUser?.identity?.effective_context_key || ''}`],
   () => {
     ++routeGeneration
     ++loadGeneration
@@ -873,12 +875,14 @@ onBeforeUnmount(() => {
 <template>
   <section class="iamx-access-page" data-yl-help="identity-management.overview">
     <IamNavigation
+      v-if="!embedded"
       title="调整权限职位"
       subtitle="实际职位用于人员资料；权限职位由管理员主动选择，并固定继承代码定义的权限和范围。"
     />
 
     <div class="grid min-w-0 gap-4">
       <RouterLink
+        v-if="!embedded"
         class="inline-flex w-fit items-center gap-2 text-sm font-bold text-slate-600 hover:text-emerald-800"
         :to="`/system/users?person=${userId}`"
       >
@@ -932,6 +936,7 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-else-if="canManageAccess && access">
+        <p v-if="!canReadCatalog" class="iamx-notice">仅显示已授权的个人权限资料；权限目录不在当前管理范围内。</p>
         <IamIdentitySummary :access="access" />
 
         <TabsRoot v-model="activeSection"

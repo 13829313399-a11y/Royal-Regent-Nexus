@@ -1,14 +1,18 @@
+import { pendingFabricImports, pendingFabricMasterSaves } from '../pendingFabricRequests'
+import { reactive } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import Workspace from '../FabricProcurementWorkspace.vue'
 import type { PurchasePreview } from '@/api/fabricProcurement'
 
-const api = vi.hoisted(() => ({ preview: vi.fn(), apply: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn(), withdrawalPreview: vi.fn(), withdraw: vi.fn(), reviewChanges: vi.fn() }))
+const api = vi.hoisted(() => ({ preview: vi.fn(), apply: vi.fn(), groups: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn(), withdrawalPreview: vi.fn(), withdraw: vi.fn(), reviewChanges: vi.fn() }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: api }))
+const session = reactive({ currentUser: { id: 'keeper' }, authorizationVersion: 0 })
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => session }))
 let wrapper: VueWrapper | undefined
-afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = '' })
-beforeEach(() => { vi.clearAllMocks(); api.imports.mockResolvedValue([]); api.lines.mockResolvedValue({ total: 0, items: [] }) })
+afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks() })
+beforeEach(() => { pendingFabricImports.clear(); pendingFabricMasterSaves.clear(); session.currentUser = { id: 'keeper' }; session.authorizationVersion = 0; vi.clearAllMocks(); api.groups.mockResolvedValue({ total: 0, line_total: 0, groups: [] }); api.imports.mockResolvedValue([]); api.lines.mockResolvedValue({ total: 0, items: [] }) })
 const counts = { total: 2, new: 1, updated: 0, unchanged: 0, blocked: 1, warnings: 0, pending: 1, returned: 1 }
 const preview = { preview_token: 'a'.repeat(64), revision: 0, counts, sheets: ['未回物料', '已回料'], ignored_sheets: [], filtered_total: 2, offset: 0, limit: 100, items: [] } as PurchasePreview
 async function open(mode: 'import' | 'pending' | 'orders' | 'returned' = 'import') {
@@ -16,6 +20,7 @@ async function open(mode: 'import' | 'pending' | 'orders' | 'returned' = 'import
   await router.push('/'); await router.isReady()
   wrapper = mount(Workspace, { props: { mode }, attachTo: document.body, global: { plugins: [router] } })
   await flushPromises()
+  if (mode === 'pending') { await button('按采购明细').trigger('click'); await flushPromises() }
   return wrapper
 }
 async function file() {
@@ -27,6 +32,119 @@ function button(text: string) { return wrapper!.findAll('button').find(b => b.te
 function dialogButton(text: string) { return [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === text)! }
 
 describe('real fabric procurement workspace', () => {
+  async function submitUnknownImport(mounted = false) {
+    if (!mounted) await open()
+    await file(); api.preview.mockResolvedValue(preview)
+    await button('读取并核对').trigger('click'); await flushPromises()
+    await button('确认导入可用明细（1）').trigger('click'); await flushPromises()
+    const checkbox = document.querySelector<HTMLInputElement>('input[type=checkbox]')!
+    checkbox.checked = true; checkbox.dispatchEvent(new Event('change', { bubbles: true })); await flushPromises()
+    api.apply.mockRejectedValueOnce(new Error('连接中断'))
+    dialogButton('保存采购来源').click(); await flushPromises()
+  }
+  it('protects business navigation but permits login recovery with the same request after remount', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/import', component: Workspace, props: { mode: 'import' } },
+      { path: '/other', component: { template: '<div>other page</div>' } },
+      { path: '/login', name: 'login', component: { template: '<div>login page</div>' } },
+    ] })
+    await router.push('/import'); await router.isReady()
+    wrapper = mount({ template: '<router-view />' }, { attachTo: document.body, global: { plugins: [router] } })
+    await flushPromises(); await submitUnknownImport(true)
+    const original = api.apply.mock.calls[0]!
+    dialogButton('返回核对').click(); await flushPromises()
+    await router.push('/other'); expect(router.currentRoute.value.path).toBe('/import')
+    await router.replace({ name: 'login' }); await flushPromises()
+    expect(router.currentRoute.value.name).toBe('login')
+    session.currentUser = { id: 'other' }
+    await router.push('/import'); await flushPromises()
+    expect(button('核对原导入结果')).toBeUndefined()
+    session.currentUser = { id: 'keeper' }; await flushPromises()
+    api.apply.mockResolvedValueOnce({ id: 'B1', counts, stock_posted: false })
+    await button('核对原导入结果').trigger('click'); await flushPromises()
+    expect(api.apply.mock.calls[1]).toEqual(original)
+    await router.push('/other'); expect(router.currentRoute.value.path).toBe('/other')
+  })
+  it('locks the original file and scope after an unknown result, even when the confirmation is closed', async () => {
+    await submitUnknownImport()
+    const original = api.apply.mock.calls[0]!
+    dialogButton('返回核对').click(); await flushPromises()
+    expect(button('读取并核对').attributes('disabled')).toBeDefined()
+    expect(wrapper!.get('input[type=file]').attributes('disabled')).toBeDefined()
+    expect(wrapper!.get('[aria-label="采购导入范围"]').attributes('disabled')).toBeDefined()
+    const unloading = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unloading); expect(unloading.defaultPrevented).toBe(true)
+    api.apply.mockResolvedValueOnce({ id: 'B1', counts, stock_posted: false })
+    await button('核对原导入结果').trigger('click'); await flushPromises()
+    expect(api.apply.mock.calls[1]).toEqual(original)
+    expect(api.preview).toHaveBeenCalledOnce()
+    expect(wrapper!.get('input[type=file]').attributes('disabled')).toBeUndefined()
+  })
+  it('reloads history when an in-flight import completes after login and remount', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/import', component: Workspace, props: { mode: 'import' } },
+      { path: '/login', name: 'login', component: { template: '<div>login page</div>' } },
+    ] })
+    await router.push('/import'); await router.isReady()
+    wrapper = mount({ template: '<router-view />' }, { attachTo: document.body, global: { plugins: [router] } })
+    await flushPromises(); await submitUnknownImport(true)
+    dialogButton('返回核对').click(); await flushPromises()
+    let finish!: (value: unknown) => void
+    api.apply.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await button('核对原导入结果').trigger('click')
+    await router.push('/login'); await flushPromises()
+    await router.push('/import'); await flushPromises()
+    api.imports.mockClear()
+    const saved = { id: 'B1', source_name: '已保存采购.xlsx', occurred_at: '2026-10-05T10:00:00+08:00', actor_name: '仓管', counts, scope: 'ALL', stock_posted: false }
+    api.imports.mockResolvedValueOnce([saved])
+    finish(saved); await flushPromises()
+    expect(api.imports).toHaveBeenCalledOnce()
+    expect(wrapper!.text()).toContain('已保存采购.xlsx')
+  })
+  it('keeps an unknown import bound to its submitting account across authorization changes', async () => {
+    await submitUnknownImport()
+    const original = api.apply.mock.calls[0]!
+    session.currentUser = { id: 'other' }; await flushPromises()
+    expect(wrapper!.text()).not.toContain('导入结果尚未确认')
+    expect(button('核对原导入结果')).toBeUndefined()
+    expect(document.querySelector('[role=dialog]')).toBeNull()
+    session.currentUser = { id: 'keeper' }; session.authorizationVersion++; await flushPromises()
+    api.apply.mockResolvedValueOnce({ id: 'B1', counts, stock_posted: false })
+    await button('核对原导入结果').trigger('click'); await flushPromises()
+    expect(api.apply.mock.calls[1]).toEqual(original)
+  })
+  it('discards a late preview after authorization changes', async () => {
+    await open(); await file()
+    let finish!: (value: PurchasePreview) => void
+    api.preview.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await button('读取并核对').trigger('click')
+    session.authorizationVersion++; await flushPromises()
+    finish(preview); await flushPromises()
+    expect(wrapper!.text()).not.toContain('确认导入可用明细')
+    expect(api.apply).not.toHaveBeenCalled()
+  })
+  it('opens dashboard chase filters and rejects unknown tracking filters', async () => {
+    await open('pending')
+    await wrapper!.setProps({ tracking: 'OVERDUE', orderNo: 'PO-12' }); await flushPromises()
+    expect(api.lines).toHaveBeenLastCalledWith('PENDING', '', 0, 'OVERDUE', expect.objectContaining({ order_no: 'PO-12' }))
+    await wrapper!.setProps({ tracking: 'unknown', orderNo: undefined }); await flushPromises()
+    expect(api.lines).toHaveBeenLastCalledWith('PENDING', '', 0, 'OUTSTANDING', expect.objectContaining({ order_no: '' }))
+  })
+  it('refreshes pending receipts when returning from another tab and removes its focus listener on leave', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    api.lines.mockResolvedValueOnce({ total: 1, items: [{ id: 'L1', revision: 1,
+      facts: { order_no: 'PO1', status: 'PENDING', ordered_quantity: '100', unit: '码' },
+      starting_chase_quantity: '100', warehouse_received_quantity: '80', warehouse_outstanding_quantity: '20' }] })
+    await open('pending')
+    expect(wrapper!.findAll('.fabric-pending-table tbody tr')).toHaveLength(1)
+    window.dispatchEvent(new Event('focus')); await flushPromises()
+    expect(api.lines).toHaveBeenCalledTimes(2)
+    expect(wrapper!.findAll('.fabric-pending-table tbody tr')).toHaveLength(0)
+    wrapper!.unmount(); wrapper = undefined
+    window.dispatchEvent(new Event('focus')); await flushPromises()
+    expect(api.lines).toHaveBeenCalledTimes(2)
+    expect(api.apply).not.toHaveBeenCalled()
+  })
   it('shows ordered and prior quantities alongside chase remaining without treating history as system stock', async () => {
     api.lines.mockResolvedValue({ total: 1, items: [{ id: 'L1', revision: 1,
       facts: { order_no: 'CGDD014333', status: 'PENDING', ordered_quantity: '65', unit: '码' },
@@ -83,7 +201,7 @@ describe('real fabric procurement workspace', () => {
     let resolve!: (v: PurchasePreview) => void
     api.preview.mockImplementation(() => new Promise(r => { resolve = r }))
     await open(); await file(); await button('读取并核对').trigger('click')
-    await wrapper!.setProps({ mode: 'pending' }); await flushPromises()
+    await wrapper!.setProps({ mode: 'pending' }); await flushPromises(); await button('按采购明细').trigger('click'); await flushPromises()
     resolve(preview); await flushPromises()
     expect(wrapper!.text()).not.toContain('确认导入可用明细')
     expect(api.lines).toHaveBeenLastCalledWith('PENDING', '', 0, 'OUTSTANDING', expect.any(Object))

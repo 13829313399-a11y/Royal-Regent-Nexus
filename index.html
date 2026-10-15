@@ -7,7 +7,9 @@
     <title>Royal Regent Nexus</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app"><div id="auth-boot" role="status" style="min-height:100svh;display:grid;place-content:center;gap:20px;text-align:center;background:#083831;color:#f7faf6;font:16px 'Microsoft YaHei',sans-serif"><img src="/brand/huadeng_group_dynamic_logo_topbar.svg" width="96" height="72" alt="华登集团" /><strong>Royal Regent Nexus</strong><span id="boot-message">正在准备工作空间</span><button id="boot-retry" type="button" style="display:none;padding:12px;border:1px solid #a8c4b8;border-radius:8px;background:transparent;color:inherit" onclick="location.reload()">重新连接</button></div></div>
+    <noscript>工作空间需要 JavaScript，请启用后刷新页面。</noscript>
+    <script>setTimeout(function(){if(document.getElementById('auth-boot')){document.getElementById('boot-message').textContent='连接耗时较长，请检查网络后重试';document.getElementById('boot-retry').style.display='block'}},12000)</script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

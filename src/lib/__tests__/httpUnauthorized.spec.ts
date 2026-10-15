@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const axiosMock = vi.hoisted(() => {
   const state: {
     onRejected?: (error: unknown) => Promise<never>
+    onRequest?: (config: Record<string, unknown>) => Record<string, unknown>
   } = {}
   const instance = {
     interceptors: {
-      request: { use: vi.fn() },
+      request: { use: vi.fn((handler) => { state.onRequest = handler }) },
       response: {
         use: vi.fn((_onFulfilled, onRejected) => {
           state.onRejected = onRejected
@@ -65,6 +66,18 @@ describe('http unauthorized handling', () => {
     await expect(axiosMock.state.onRejected?.(error)).rejects.toBe(error)
     expect(handler).toHaveBeenCalledOnce()
     expect(handler).toHaveBeenCalledWith(error)
+  })
+
+  it('does not dispatch an old account request after a new login boundary', async () => {
+    const { setUnauthorizedHandler } = await import('../http')
+    const { advanceAuthenticationGeneration } = await import('../authenticationGeneration')
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    const config = axiosMock.state.onRequest?.({ url: '/injection/orders' })
+    advanceAuthenticationGeneration()
+    const error = { config, response: { status: 401 } }
+    await expect(axiosMock.state.onRejected?.(error)).rejects.toBe(error)
+    expect(handler).not.toHaveBeenCalled()
   })
 
 })

@@ -52,6 +52,9 @@ from app.services.auth import (
     can,
     has_permission_in_scope,
     mark_password_reset_notification_handled,
+    password_reset_can_reopen,
+    get_current_user,
+    parse_time,
     now_text,
     time_window_is_active,
 )
@@ -514,14 +517,24 @@ def approve_registration_with_system_position(
     payload: RegistrationApproveRequest,
     request: Request | None = None,
 ) -> RegistrationRequestOut:
+    result = approve_registration_with_system_position_tx(db, current_user, request_id, payload, request=request)
+    db.commit()
+    return result
+
+
+def approve_registration_with_system_position_tx(
+    db: Session, current_user: AuthContext, request_id: str,
+    payload: RegistrationApproveRequest, request: Request | None = None,
+) -> RegistrationRequestOut:
+    """Flush-only registration adapter; caller owns the complete transaction."""
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
     current_user = fresh_actor(db, current_user.id)
     if payload.profile and payload.profile.org_unit_id:
-        from app.services.identity_registration import registration_org, approve_functional_registration
+        from app.services.identity_registration import registration_org, approve_functional_registration_tx
         approved_org = registration_org(db, payload.profile.factory_id, payload.profile.org_unit_id, payload.profile.department)
         if approved_org.kind == "functional_unit":
-            return approve_functional_registration(db, current_user, load_registration_request(db, request_id), payload)
+            return approve_functional_registration_tx(db, current_user, load_registration_request(db, request_id), payload)
     ensure_user_manage(db, current_user)
     registration_request = load_registration_request(db, request_id)
     ensure_user_manage(
@@ -792,7 +805,7 @@ def approve_registration_with_system_position(
         ),
         request=request,
     )
-    db.commit()
+    db.flush()
     return registration_request_to_out(registration_request)
 
 
@@ -802,6 +815,15 @@ def reject_registration_request(
     request_id: str,
     payload: RegistrationRejectRequest,
     request: Request | None = None,
+) -> RegistrationRequestOut:
+    result = reject_registration_request_tx(db, current_user, request_id, payload, request=request)
+    db.commit()
+    return result
+
+
+def reject_registration_request_tx(
+    db: Session, current_user: AuthContext, request_id: str,
+    payload: RegistrationRejectRequest, request: Request | None = None,
 ) -> RegistrationRequestOut:
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
@@ -840,7 +862,7 @@ def reject_registration_request(
         detail=registration_request.review_comment,
         request=request,
     )
-    db.commit()
+    db.flush()
     return registration_request_to_out(registration_request)
 
 
@@ -954,17 +976,22 @@ def ensure_password_reset_request_access(
 
 
 def expire_stale_password_reset_requests(db: Session) -> None:
+    from app.services.identity_policy import lock_mutation
+    lock_mutation(db)
     now = now_text()
     stale_requests = db.scalars(
         select(AuthPasswordResetRequest).where(
             AuthPasswordResetRequest.status == "approved",
-            AuthPasswordResetRequest.expires_at != "",
-            AuthPasswordResetRequest.expires_at <= now,
         )
     ).all()
     if not stale_requests:
         return
     for reset_request in stale_requests:
+        expiry = parse_time(reset_request.expires_at)
+        if expiry is not None and expiry > datetime.now():
+            continue
+        if expiry is None:
+            reset_request.expires_at = ""
         reset_request.status = "expired"
         reset_request.updated_at = now
         mark_password_reset_notification_handled(db, reset_request, now)
@@ -1045,8 +1072,12 @@ def open_password_reset_claim_window(
     action: str,
     request: Request | None = None,
 ) -> PasswordResetApproveOut:
+    if settings.authz_mode != "enforce" or not settings.authz_writes_enabled:
+        raise HTTPException(status_code=403, detail="当前仅可查看，密码找回办理尚未启用")
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
+    if request is not None:
+        current_user = get_current_user(request, db)
     current_user = fresh_actor(db, current_user.id)
     reset_request = load_password_reset_request_for_update(db, current_user, request_id)
     if not reset_request.claim_token_hash:
@@ -1059,11 +1090,7 @@ def open_password_reset_claim_window(
 
     now_datetime = datetime.now()
     current_expires_at = reset_request.expires_at.strip()
-    reopenable = reset_request.status == "expired" or (
-        reset_request.status == "approved"
-        and current_expires_at
-        and current_expires_at <= now_datetime.strftime("%Y-%m-%d %H:%M:%S")
-    )
+    reopenable = password_reset_can_reopen(reset_request)
     expected_status = reset_request.status
     if (action == "approve" and reset_request.status != "pending") or (
         action == "reopen" and not reopenable
@@ -1073,7 +1100,7 @@ def open_password_reset_claim_window(
             detail=(
                 "仅待审核申请可以批准"
                 if action == "approve"
-                else "仅已过期的申请可以重新开放改密时限"
+                else "该申请已失效；仅未被后续改密取代的超时申请可以重新开放"
             ),
         )
     review_comment = payload.review_comment.strip()
@@ -1176,6 +1203,8 @@ def reject_password_reset_request(
     payload: PasswordResetReviewRequest,
     request: Request | None = None,
 ) -> PasswordResetRequestOut:
+    if settings.authz_mode != "enforce" or not settings.authz_writes_enabled:
+        raise HTTPException(status_code=403, detail="当前仅可查看，密码找回办理尚未启用")
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
     current_user = fresh_actor(db, current_user.id)
@@ -1707,6 +1736,7 @@ def password_reset_request_to_out(
         factory_id=reset_request.factory_id,
         department=reset_request.department,
         status=output_status,
+        can_reopen=password_reset_can_reopen(reset_request) and bool(user and user.status == "active"),
         reviewer_user_id=reset_request.reviewer_user_id,
         review_comment=reset_request.review_comment,
         notification_id=reset_request.notification_id,

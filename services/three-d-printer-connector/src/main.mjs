@@ -9,7 +9,7 @@ export async function main(env = process.env) {
     client: new ConnectorClient({ baseUrl: env.THREE_D_API_URL,
       token: readToken(env.THREE_D_CONNECTOR_TOKEN_FILE), instanceId: randomUUID() }),
     secretStore: new FileSecretStore(env.THREE_D_SECRET_DIR),
-    log: entry => process.stdout.write(JSON.stringify(entry) + '\n'),
+    log: entry => process.stdout.write(JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n'),
   });
   let closing = false;
   const shutdown = async () => {

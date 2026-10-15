@@ -1,0 +1,78 @@
+[
+  {
+    "footer": {
+      "bottom": 887.2000274658203,
+      "height": 64.80000305175781,
+      "left": 525.3375244140625,
+      "right": 1415.2000122070312,
+      "top": 822.4000244140625,
+      "width": 889.8624877929688,
+      "x": 525.3375244140625,
+      "y": 822.4000244140625
+    },
+    "height": 900,
+    "listWidth": 499.7375183105469,
+    "path": "/system/users?view=todo&task=position:d255a0bc521a4bda904f76a5d3d8d0f3",
+    "rowHeight": 56,
+    "rowsFullyVisible": 10,
+    "scrollWidth": 1440,
+    "width": 1440
+  },
+  {
+    "footer": {
+      "bottom": 755.2000274658203,
+      "height": 64.80000305175781,
+      "left": 498.8374938964844,
+      "right": 1341.6000061035156,
+      "top": 690.4000244140625,
+      "width": 842.7625122070312,
+      "x": 498.8374938964844,
+      "y": 690.4000244140625
+    },
+    "height": 768,
+    "listWidth": 473.2375183105469,
+    "path": "/system/users?view=todo&task=position:d255a0bc521a4bda904f76a5d3d8d0f3",
+    "rowHeight": 56,
+    "rowsFullyVisible": 8,
+    "scrollWidth": 1366,
+    "width": 1366
+  },
+  {
+    "footer": {
+      "bottom": 787.2000274658203,
+      "height": 64.80000305175781,
+      "left": 467.7375183105469,
+      "right": 1255.2000427246094,
+      "top": 722.4000244140625,
+      "width": 787.4625244140625,
+      "x": 467.7375183105469,
+      "y": 722.4000244140625
+    },
+    "height": 800,
+    "listWidth": 442.1375122070313,
+    "path": "/system/users?view=todo&task=position:d255a0bc521a4bda904f76a5d3d8d0f3",
+    "rowHeight": 56,
+    "rowsFullyVisible": 8,
+    "scrollWidth": 1280,
+    "width": 1280
+  },
+  {
+    "footer": {
+      "bottom": 1067.2000274658203,
+      "height": 64.80000305175781,
+      "left": 698.1375122070312,
+      "right": 1895.2000122070312,
+      "top": 1002.4000244140624,
+      "width": 1197.0625,
+      "x": 698.1375122070312,
+      "y": 1002.4000244140624
+    },
+    "height": 1080,
+    "listWidth": 672.5375366210938,
+    "path": "/system/users?view=todo&task=position:d255a0bc521a4bda904f76a5d3d8d0f3",
+    "rowHeight": 56,
+    "rowsFullyVisible": 13,
+    "scrollWidth": 1920,
+    "width": 1920
+  }
+]

@@ -1,4 +1,5 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
 import { moldingSampleApi, type MoldingSampleNotificationResponse } from '@/api/moldingSample'
 import { systemApi, type SystemNotificationResponse } from '@/api/system'
 import { formatBusinessDateTime, parseBusinessTimestamp } from '@/lib/dateTime'
@@ -286,6 +287,12 @@ export function useNotificationCenter() {
         ? getFactoryScopedRoute(targetRoute, notification.target_factory_id)
         : targetRoute
     }
+    if (consolidatedIamEnabled && ['password_reset', 'user_registration'].includes(notification.type)) {
+      const kind = notification.type === 'password_reset' ? 'password-reset' : 'registration'
+      const candidate = notification.type === 'password_reset' ? notification.payload.password_reset_request_id : notification.payload.registration_request_id
+      return typeof candidate === 'string' && /^[\p{L}\p{N}_.-]{1,160}$/u.test(candidate)
+        ? `/system/users?view=todo&task=${encodeURIComponent(`${kind}:${candidate}`)}` : `/system/users?view=todo&kind=${kind}`
+    }
     if (notification.type === 'password_reset') {
       const resetRequestId = typeof notification.payload.password_reset_request_id === 'string'
         ? notification.payload.password_reset_request_id
@@ -293,6 +300,13 @@ export function useNotificationCenter() {
       return resetRequestId
         ? `/system/users?tab=password-reset&request_id=${encodeURIComponent(resetRequestId)}`
         : '/system/users?tab=password-reset'
+    }
+    if (notification.type.startsWith('position_review_')) {
+      const id = typeof notification.payload.position_review_id === 'string' ? notification.payload.position_review_id : ''
+      if (consolidatedIamEnabled && notification.payload.purpose !== 'self') return id
+        ? `/system/users?view=todo&task=${encodeURIComponent(`position:${id}`)}` : '/system/users?view=todo&kind=position'
+      return notification.payload.purpose === 'self' ? '/account/position'
+        : id ? `/system/users/position-reviews?tab=pending&item=${encodeURIComponent(`position:${id}`)}` : '/system/users/position-reviews'
     }
     const requestId = typeof notification.payload.registration_request_id === 'string'
       ? notification.payload.registration_request_id
@@ -337,6 +351,7 @@ export function useNotificationCenter() {
     const isSupplierShipment = notification.type === 'carton_supplier_shipment'
     const isPending = notification.status !== 'handled'
       && (notification.type !== 'internal_quote' || ACTIONABLE_INTERNAL_QUOTE_EVENTS.has(internalQuoteEvent))
+      && (!notification.type.startsWith('position_review_') || (notification.payload.purpose === 'review' && ['position_review_submitted', 'position_review_updated'].includes(notification.type)))
     return {
       key: `system:${notification.id}`,
       id: notification.id,

@@ -1443,7 +1443,10 @@ def test_purchase_order_export_contains_grouped_lines_and_formula(monkeypatch):
         assert sheet["E9"].value == "每箱个数"
         assert sheet["G9"].value == "纸箱数量"
         assert sheet["G10"].value == "=ROUNDUP(F10/E10,0)"
-        assert "无需供应商回签确认" in sheet[f"A{sheet.max_row}"].value
+        footer = sheet[f"A{sheet.max_row}"].value
+        assert "不代表供应商已接单" in footer
+        assert "确认接单及承诺交期" in footer
+        assert "无需供应商回签确认" not in footer
         workbook.close()
 
 
@@ -1962,6 +1965,8 @@ def test_manual_movement_reversal_and_locked_month(monkeypatch):
 
 def test_import_parses_matches_and_registers_exceptions_without_creating_business_data(monkeypatch):
     with make_client(monkeypatch) as client:
+        from app.services.carton_procurement_imports import DELIVERY_IMPORT_PARSER_VERSION
+
         login_as(client, "warehouse_keeper")
         _freeze_carton_time(monkeypatch)
         order = _create_order(client)
@@ -1983,8 +1988,8 @@ def test_import_parses_matches_and_registers_exceptions_without_creating_busines
         assert first.json()["parse_summary"]["row_count"] == 2
         assert first.json()["parse_summary"]["matched_count"] == 1
         assert first.json()["parse_summary"]["issue_count"] == 1
-        assert first.json()["parse_summary"]["parser_version"] == "delivery-note-local-v7-dongkang"
-        assert json.loads(first.json()["import_profile"])["parser_version"] == "delivery-note-local-v7-dongkang"
+        assert first.json()["parse_summary"]["parser_version"] == DELIVERY_IMPORT_PARSER_VERSION
+        assert json.loads(first.json()["import_profile"])["parser_version"] == DELIVERY_IMPORT_PARSER_VERSION
         matched = first.json()["parse_summary"]["rows"][0]
         assert matched["match_status"] == "MATCHED"
         assert matched["order_line_id"] == order["lines"][0]["id"]
@@ -2139,15 +2144,24 @@ def test_delivery_import_parser_version_reprocesses_an_older_file(monkeypatch):
 
 def test_delivery_heic_photo_uses_quality_and_specification_to_select_order_line(monkeypatch):
     with make_client(monkeypatch) as client:
-        import app.services.carton_procurement_imports as imports
+        from app.services import carton_file_jobs
 
         login_as(client, "warehouse_keeper")
         _freeze_carton_time(monkeypatch)
-        order = _create_order(client)
-        monkeypatch.setattr(
-            imports,
-            "_parse_delivery_image_table",
-            lambda _content: {
+        _ensure_dickie_customer(client)
+        payload = _order_payload()
+        payload["lines"].extend([
+            {**payload["lines"][0], "paper_quality": "A9A"},
+            {**payload["lines"][0], "specification": "32 × 11.125 × 11.25"},
+        ])
+        created = client.post("/api/carton-procurement/orders", json=payload)
+        assert created.status_code == 201, created.text
+        order = _submit_order(client, created.json())
+
+        def delivery_ocr_result(operation, import_type, filename, content):
+            assert operation == "parse"
+            assert (import_type, filename, content) == ("DELIVERY_NOTE", "DN26061301.heic", b"delivery-photo")
+            return {
                 "rows": [
                     {
                         "source_sheet": "OCR四列表格",
@@ -2157,7 +2171,7 @@ def test_delivery_heic_photo_uses_quality_and_specification_to_select_order_line
                         "order_reference": "SC700145365-203302044",
                         "contract_no": "SC700145365",
                         "item_no": "203302044",
-                        "packaging_type": "普通箱",
+                        "packaging_type": "外箱",
                         "paper_quality": "A33+B",
                         "specification": "31.5 × 11.125 × 11.25 in",
                         "delivered_quantity": 10,
@@ -2172,8 +2186,9 @@ def test_delivery_heic_photo_uses_quality_and_specification_to_select_order_line
                     "delivery_date": "2026-06-13",
                     "raw_text_excerpt": "DN26061301",
                 },
-            },
-        )
+            }
+
+        monkeypatch.setattr(carton_file_jobs, "run_file_job", delivery_ocr_result)
 
         response = client.post(
             "/api/carton-procurement/receipt-imports",
@@ -2192,9 +2207,12 @@ def test_delivery_heic_photo_uses_quality_and_specification_to_select_order_line
         assert row["packaging_type"] == "外箱"
         assert row["paper_quality"] == "A33+B"
         assert row["specification"] == "31.5 × 11.125 × 11.25"
-        assert "纸质" in row["match_basis"]
-        assert "规格" in row["match_basis"]
+        assert "物料身份核实" in row["match_basis"]
+        assert row["source_material"]["paper_quality"] == "A33+B"
+        assert row["source_material"]["specification"] == "31.5 × 11.125 × 11.25 in"
         assert summary["document"]["delivery_note_no"] == "DN26061301"
+        assert client.get("/api/carton-procurement/orders", params={"factory_id": "huaxing"}).json()["total"] == 1
+        assert client.get("/api/carton-procurement/inventory/movements", params={"factory_id": "huaxing"}).json()["total"] == 0
 
 
 def test_unmatched_delivery_import_can_be_deleted_with_derived_exceptions(monkeypatch):
@@ -2315,6 +2333,8 @@ def test_weekly_schedule_import_never_creates_formal_orders(monkeypatch):
 
 def test_inspection_schedule_import_calculates_delivery_reminders_without_writing_inventory(monkeypatch):
     with make_client(monkeypatch) as client:
+        from app.services.carton_procurement_imports import INSPECTION_IMPORT_PARSER_VERSION
+
         login_as(client, "warehouse_keeper")
         _freeze_carton_time(monkeypatch)
         _create_order(client)
@@ -2335,7 +2355,7 @@ def test_inspection_schedule_import_calculates_delivery_reminders_without_writin
         result = response.json()
         summary = result["parse_summary"]
         assert result["import_type"] == "INSPECTION_SCHEDULE"
-        assert json.loads(result["import_profile"]) == {"advance_days": 3, "matching_version": "customer-po-v1", "parser_version": "schedule-item-sections-v2"}
+        assert json.loads(result["import_profile"]) == {"advance_days": 3, "matching_version": "customer-po-v1", "parser_version": INSPECTION_IMPORT_PARSER_VERSION}
         assert summary["row_count"] == 2
         assert summary["matched_count"] == 1
         assert summary["reminder_count"] == 2

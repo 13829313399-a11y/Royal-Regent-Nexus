@@ -2,6 +2,7 @@ import type { WarehouseDocument, WarehouseDomain, WarehouseOperationKind, Wareho
 
 export const operationLabels: Record<WarehouseOperationKind, string> = {
   CUTTING_REQUEST_REUSE: '确认领料申请续用', REQUEST_CLOSE: '关闭申请余量', CUTTING_RECEIPT: '裁床物料签收', CUTTING_RECEIPT_VOID: '撤销裁床签收',
+  OPENING: '期初库存', STOCKTAKE: '盘点差异',
   RECEIPT: '登记实收', REQUEST: '登记领料申请', ISSUE: '登记出库', RETURN: '登记退料', TRANSFER: '登记调仓',
   LOCATION_BIND: '核实仓位', QUALITY: '登记质检结论', CORRECTION: '冲销录错单据', TASK: '登记加工任务', PROCESS_SEND: '登记加工发出',
   PROCESS_RETURN: '登记加工回货', PACK_SEND: '登记包装发出', PACK_RECEIVE: '代录包装接收回执',
@@ -16,7 +17,7 @@ export function sumQuantities(values: string[]): string {
 export function operationsView(domain: WarehouseDomain, section: string, view: string): { stock: boolean; kinds: WarehouseOperationKind[]; actions: WarehouseOperationKind[] } | undefined {
   if (section === 'overview') return { stock: false, kinds: [], actions: domain === 'fabric' ? ['RECEIPT', 'REQUEST'] : ['TASK', 'RECEIPT'] }
   if (section === 'activity') return { stock: false, kinds: [], actions: [] }
-  if (section === 'exceptions' && view !== 'missing') return { stock: view === 'holds', kinds: view === 'holds' ? [] : ['CORRECTION', 'RETURN'], actions: ['CORRECTION'] }
+  if (section === 'exceptions' && view !== 'missing') return { stock: view === 'holds', kinds: view === 'holds' ? [] : domain === 'fabric' ? ['CORRECTION'] : ['CORRECTION', 'RETURN'], actions: domain === 'fabric' ? [] : ['CORRECTION'] }
   if (domain === 'semi' && section === 'orders' && view === 'tasks') return { stock: false, kinds: ['TASK'], actions: ['TASK'] }
   if (domain === 'semi' && section === 'receipts' && view !== 'import-review') return {
     stock: false, kinds: view === 'pending' ? ['TASK'] : view === 'processing-returns' ? ['PROCESS_RETURN'] : ['RECEIPT', 'PROCESS_RETURN', 'RETURN'],
@@ -25,10 +26,10 @@ export function operationsView(domain: WarehouseDomain, section: string, view: s
   if (section !== 'inventory') return undefined
   const map: Record<string, { stock: boolean; kinds: WarehouseOperationKind[]; actions: WarehouseOperationKind[] }> = {
     stock: { stock: true, kinds: [], actions: ['ISSUE', 'TRANSFER'] },
-    'pending-issues': { stock: false, kinds: ['REQUEST'], actions: ['REQUEST', 'ISSUE'] },
-    issues: { stock: false, kinds: ['ISSUE'], actions: ['ISSUE'] },
-    returns: { stock: false, kinds: ['RETURN'], actions: ['RETURN'] },
-    transfers: { stock: false, kinds: ['TRANSFER'], actions: ['TRANSFER'] },
+    'pending-issues': { stock: false, kinds: ['REQUEST'], actions: domain === 'fabric' ? [] : ['REQUEST', 'ISSUE'] },
+    issues: { stock: false, kinds: ['ISSUE'], actions: domain === 'fabric' ? [] : ['ISSUE'] },
+    returns: { stock: false, kinds: ['RETURN'], actions: domain === 'fabric' ? [] : ['RETURN'] },
+    transfers: { stock: false, kinds: ['TRANSFER'], actions: domain === 'fabric' ? [] : ['TRANSFER'] },
     movements: { stock: false, kinds: [], actions: [] },
     processing: { stock: false, kinds: ['PROCESS_SEND'], actions: ['PROCESS_SEND', 'PROCESS_RETURN'] },
     packaging: { stock: false, kinds: ['PACK_SEND', 'PACK_RECEIVE'], actions: ['PACK_SEND', 'PACK_RECEIVE'] },

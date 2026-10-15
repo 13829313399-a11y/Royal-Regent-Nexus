@@ -115,6 +115,7 @@ def test_excel_unifies_molding_material_and_builds_tax_costs_from_detail_tax_tag
             and sheet.cell(row, 3).value == "料价"
         )
         assert sheet.cell(material_detail_row, 4).value == pytest.approx(expected_total)
+        assert sheet.cell(material_detail_row, 1).value in (None, "")
 
         tax_header = _find_cell(sheet, "人民币外购件成本")
         rmb_purchase_formula = sheet.cell(tax_header.row + 1, tax_header.column).value

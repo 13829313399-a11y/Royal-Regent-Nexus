@@ -69,6 +69,10 @@ const ACTION_LABELS: Record<string, string> = {
 }
 
 const PERMISSION_LABELS: Record<string, string> = {
+  'indonesia_material:read': '查看送印尼物料',
+  'indonesia_material:write': '维护合同、物料、分配及确认出货',
+  'indonesia_material:receipt_confirm': '船务确认河源回料数量',
+  'indonesia_material:export': '导出出货明细',
   'uv_ops:read':'查看 UV 工作区',
   'uv_ops:master_write':'维护 UV 基础资料',
   'uv_ops:plan_write':'维护 UV 需求与排程',

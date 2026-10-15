@@ -15,6 +15,7 @@ from app.services.internal_quote import (
     _add_audit, quote_to_out, MUTABLE_SECTION_STATUSES,
 )
 from app.services.transaction_lock import lock_transaction
+from app.services.internal_quote_document import lock_documents, ensure_not_archived
 from app.services.internal_quote_sync import _preserve_local
 
 
@@ -79,6 +80,7 @@ def _plan(db, quote_id, payload, user):
     quotes = [_get_quote(db, identity) for identity in ids]
     for quote in quotes:
         ensure_quote_read(db, user, quote.factory_id)
+    lock_documents(db, quotes)
     for identity in sorted({f"{q.factory_id}:{q.batch_id or q.id}" for q in quotes}):
         lock_transaction(db, "internal-quote", identity)
     roots = [product_root(db, quote) for quote in quotes]

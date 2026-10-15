@@ -31,6 +31,8 @@ export interface RegisterRequest {
 export interface RegisterResponse {
   status: string
   message: string
+  request_id?: string | null
+  submitted_at?: string | null
 }
 
 export interface PasswordResetRequest {
@@ -59,6 +61,8 @@ export interface PasswordResetClaimResponse {
   status: PasswordResetClaimStatus
   request_id: string
   can_complete: boolean
+  can_request_reopen?: boolean
+  expires_in_seconds?: number
   expires_at: string
   message: string
 }

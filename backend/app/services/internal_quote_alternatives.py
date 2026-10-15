@@ -10,7 +10,7 @@ from app.models.internal_quote import (
     InternalQuoteSection,
 )
 from app.services.auth import now_text, ensure_permission_in_scope, has_permission_in_scope
-from app.services.internal_quote_document import deletion_reason
+from app.services.internal_quote_document import deletion_reason, document_archive, ensure_not_archived
 from app.services.transaction_lock import lock_transaction
 from app.services.internal_quote import (
     quote_write, _get_quote, ensure_quote_read, ensure_quote_permission, _initiator_department,
@@ -18,6 +18,7 @@ from app.services.internal_quote import (
     _calculate_and_apply, _add_revision, _add_audit, _without_import_batch_ids,
     quote_to_out, SECTION_CODE_ORDER, ensure_quote_formula_current,
     _cost_context, _rr2_cost_summary,
+    ensure_molding_projection_current,
 )
 from app.services.internal_quote_calculator import FORMULA_VERSION, canonical_json, content_hash
 
@@ -69,6 +70,7 @@ def list_alternatives(db, quote_id, user):
         items.append({key: getattr(row, key) for key in (
             "quote_id", "scenario_id", "scenario_name", "version_number", "source_quote_id",
             "change_note", "issued_at", "reported_at", "archived") } | {
+            "archived": bool(row.archived or document_archive(db, item)),
             "version_label": item.version_label, "status": item.status, "created_at": item.created_at,
             "quote_no": item.quote_no, "product_name": item.product_name, "customer": item.customer,
             "quantity": item.qty,
@@ -76,7 +78,8 @@ def list_alternatives(db, quote_id, user):
             "can_delete": not deletion_reason(db, item) and (item.created_by == user.id or has_permission_in_scope(user, "internal_quote:archive", item.factory_id, "sales-business")),
         })
     return {"family_id": family.id if family else quote.id, "revision": family.revision if family else 0,
-            "selected_quote_id": family.selected_quote_id if family else "", "items": items}
+            "selected_quote_id": family.selected_quote_id if family else "", "items": items,
+            "document_archive": document_archive(db, quote)}
 
 
 def _manage(db, quote, user):
@@ -180,6 +183,7 @@ def select_alternative(db, quote_id, payload, user, request=None):
         if not target or target.family_id != family.id or target.archived:
             raise HTTPException(400, "请选择本产品未归档的方案版本")
         candidate = _get_quote(db, target.quote_id)
+        ensure_not_archived(db, candidate)
         if candidate.status != "exported":
             raise HTTPException(409, "只能标记已正式输出的版本为客户采用")
     before = family.selected_quote_id
@@ -246,6 +250,7 @@ def issue_alternative(db, quote_id, payload, user, request=None, *, commit=True)
     if entry.archived:
         raise HTTPException(409, "请先恢复已归档方案")
     sections = list(db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)))
+    ensure_molding_projection_current(db, quote, sections)
     required = [row for row in sections if row.is_required]
     problems = [row.department_name for row in required if not row.filled_at
         or not _json_object(row.payload_json) or row.calculation_status != "valid"

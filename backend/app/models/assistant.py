@@ -1,5 +1,5 @@
 """Private conversations; exclusively created by an explicit Alembic migration."""
-from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Index, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
 
@@ -79,3 +79,53 @@ class AssistantAttachment(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[float] = mapped_column(Float)
     expires_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class AssistantFile(Base):
+    __tablename__ = "nexus_assistant_files"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("nexus_assistant_sessions.id"), index=True)
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("auth_users.id"), index=True)
+    employment_epoch: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(240))
+    storage_key: Mapped[str] = mapped_column(String(96))
+    media_type: Mapped[str] = mapped_column(String(80))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    parse_status: Mapped[str] = mapped_column(String(16))
+    parse_owner: Mapped[str] = mapped_column(String(64))
+    parse_index: Mapped[list] = mapped_column(JSON, default=list)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[float] = mapped_column(Float)
+    updated_at: Mapped[float] = mapped_column(Float)
+
+
+class AssistantArtifact(Base):
+    __tablename__ = "nexus_assistant_artifacts"
+    __table_args__ = (Index("ix_naa_owner_page", "owner_user_id", "employment_epoch", "updated_at", "id"),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("auth_users.id"))
+    employment_epoch: Mapped[int] = mapped_column(Integer)
+    session_id: Mapped[str] = mapped_column(String(64))
+    source_run_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(24))
+    title: Mapped[str] = mapped_column(String(160))
+    current_revision: Mapped[int] = mapped_column(Integer)
+    source_refs: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[float] = mapped_column(Float)
+    updated_at: Mapped[float] = mapped_column(Float)
+
+
+class AssistantArtifactVersion(Base):
+    __tablename__ = "nexus_assistant_artifact_versions"
+    artifact_id: Mapped[str] = mapped_column(ForeignKey("nexus_assistant_artifacts.id", ondelete="CASCADE"), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[float] = mapped_column(Float)
+
+
+class AssistantFavorite(Base):
+    __tablename__ = "nexus_assistant_favorites"
+    session_id: Mapped[str] = mapped_column(ForeignKey("nexus_assistant_sessions.id", ondelete="CASCADE"), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("auth_users.id"), index=True)
+    employment_epoch: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[float] = mapped_column(Float)

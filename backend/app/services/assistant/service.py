@@ -58,7 +58,30 @@ def message_out(row, user=None):
     if user and row.help_citations:
         allowed = {a.id for a in help_registry.visible(user)}
         if any(c["id"] not in allowed for c in row.help_citations):
-            result.update(content_parts=[{"type": "text", "text": "这段系统说明不再适用于当前身份。"}], help_citations=[], context_descriptor=None)
+            result.update(content_parts=[{"type": "text", "text": "这段系统说明不再适用于当前身份。"}], help_citations=[], context_descriptor=None, unavailable=True)
+            return result
+    if user:
+        from . import visibility
+        from .files import owned as file_owned
+        refs = visibility.sources(row.content_parts)
+        with database.SessionLocal() as db:
+            if row.role == "user":
+                paired = db.scalar(select(Message).where(Message.run_id == row.run_id, Message.role == "assistant"))
+                refs += visibility.sources(paired.content_parts) if paired else []
+            available = visibility.allowed(user, refs, db)
+            try:
+                for part in row.content_parts:
+                    if part.get("type") == "document_ref":
+                        file_owned(db, user, part["file_id"], ready=True)
+                    elif part.get("type") == "image_ref":
+                        from .storage import validate_attachments
+                        validate_attachments(db, user, row.session_id, [part["attachment_id"]])
+            except AssistantError:
+                available = False
+        if not available:
+            result.update(content_parts=[{"type": "text", "text": "这段内容所依赖的资料已删除或授权已改变，当前不可查看。"}],
+                          help_citations=[], context_descriptor=None, unavailable=True)
+            return result
     return result
 
 
@@ -127,24 +150,37 @@ def create(user, key):
         return session_out(row)
 
 
-def sessions(user, cursor="", limit=30):
+def sessions(user, cursor="", limit=30, q="", favorites=False):
     expire_retention(user)
     cleanup_pending(user)
     with transaction() as db:
         settle_expired(db)
+    # Visibility checks can load help fingerprints and business resources. They
+    # must not hold SQLite's deployment-wide writer lock while traversing history.
+    with database.SessionLocal() as db:
         query = select(Conversation).where(Conversation.owner_user_id == user.id, Conversation.employment_epoch == epoch(user), Conversation.deletion_state != "deleted")
-        if cursor:
-            try:
-                at, ident = cursor.split(":", 1)
-                at = float(at)
-                if not ident or len(ident) > 64 or not 0 <= at < 1e12:
-                    raise ValueError()
-            except ValueError:
-                raise AssistantError("cursor_invalid", "历史分页位置无效，请重新打开历史。") from None
-            query = query.where(or_(Conversation.updated_at < at, and_(Conversation.updated_at == at, Conversation.id < ident)))
-        rows = list(db.scalars(query.order_by(Conversation.updated_at.desc(), Conversation.id.desc()).limit(limit + 1)))
-        last = rows[limit-1] if len(rows) > limit else None
-        return dict(items=[session_out(r) for r in rows[:limit]], next_cursor=f"{last.updated_at}:{last.id}" if last else None)
+        from sqlalchemy import inspect
+        from app.models.assistant import AssistantFavorite
+        has_favorites = inspect(db.bind).has_table(AssistantFavorite.__tablename__)
+        if favorites:
+            if not has_favorites:
+                return dict(items=[], next_cursor=None)
+            query = query.where(Conversation.id.in_(select(AssistantFavorite.session_id).where(AssistantFavorite.owner_user_id == user.id,
+                AssistantFavorite.employment_epoch == epoch(user))))
+        from .pagination import matching_page
+        def render(row):
+            values = [message_out(m, user) for m in db.scalars(select(Message).where(Message.session_id == row.id).order_by(Message.seq))]
+            hidden = any(v.get("unavailable") for v in values)
+            item = {**session_out(row), "title": "来源不可用的会话" if hidden else row.title,
+                    "favorite": bool(has_favorites and db.get(AssistantFavorite, row.id))}
+            text = "\n".join(p.get("text", "") for m in values if not m.get("unavailable") for p in m["content_parts"] if p["type"] == "text")
+            if q and q.casefold() not in (item["title"] + text).casefold():
+                return None
+            if q:
+                at = text.casefold().find(q.casefold())
+                item["snippet"] = text[max(0, at-30):at+120] if at >= 0 else ""
+            return item
+        return matching_page(db, Conversation, query, cursor, limit, render)
 
 
 def rename(user, sid, payload):
@@ -166,16 +202,16 @@ def messages(user, sid, cursor=0, limit=50):
         if cursor:
             query = query.where(Message.seq < cursor)
         rows = list(db.scalars(query.order_by(Message.seq.desc()).limit(limit + 1)))
-        return dict(session=session_out(row), items=[message_out(m, user) for m in reversed(rows[:limit])],
+        result = dict(session=session_out(row),
             next_cursor=rows[limit-1].seq if len(rows) > limit else None,
             active_run_id=db.scalar(select(Run.id).where(Run.session_id == sid, Run.state.in_(ACTIVE))))
+    return dict(**result, items=[message_out(m, user) for m in reversed(rows[:limit])])
 
 
 def admit(user, sid, payload):
-    capabilities.require_enabled(chat=True)
-    capabilities.validate_options(payload)
-    citations = help_registry.context(user, payload.page_context) if payload.page_context else []
-    frozen = payload.model_dump(mode="json")
+    from app.schemas.assistant import canonical_request
+    capabilities.require_enabled()
+    frozen = canonical_request(payload)
     digest = hashlib.sha256(json.dumps(frozen, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
     with transaction() as db:
         session = owned(db, user, sid)
@@ -185,6 +221,9 @@ def admit(user, sid, payload):
             if old.request_hash != digest:
                 raise AssistantError("idempotency_conflict", "相同请求编号不能用于不同内容。", 409)
             return dict(reused=True, run_id=old.id, state=old.state)
+        capabilities.require_enabled(chat=True)
+        capabilities.validate_options(payload)
+        citations = help_registry.context(user, payload.page_context) if payload.page_context else []
         active = select(Run).join(Conversation).where(Run.state.in_(ACTIVE))
         if db.scalar(select(Run.id).where(Run.session_id == sid, Run.state.in_(ACTIVE))):
             raise AssistantError("session_busy", "这个对话还在回答中，请等待或停止后继续。", 409, True)
@@ -194,6 +233,9 @@ def admit(user, sid, payload):
             raise AssistantError("concurrency_limit", "当前正在回答的请求较多，请稍后再试。", 429, True, 2)
         from .storage import validate_attachments
         validate_attachments(db, user, sid, payload.attachment_ids)
+        if payload.document_ids:
+            from .files import materials
+            materials(db, user, sid, payload.document_ids, "admission")
         reservation = reserve_budget(db)
         rid, mid, lease = uuid4().hex, uuid4().hex, uuid4().hex
         now = time.time()
@@ -204,6 +246,7 @@ def admit(user, sid, payload):
         db.add(run)
         db.flush()
         parts = [{"type": "text", "text": payload.text}] + [{"type": "image_ref", "attachment_id": a} for a in payload.attachment_ids]
+        parts += [{"type": "document_ref", "file_id": ident} for ident in payload.document_ids]
         ctx = payload.page_context.model_dump() if payload.page_context else None
         refs = [dict(id=a.id, version=a.knowledge_version) for a in citations]
         db.add(Message(id=uuid4().hex, session_id=sid, run_id=rid, seq=seq, role="user", content_parts=parts,
@@ -229,6 +272,27 @@ def control(rid, lease, *, parts=None, state=None, terminal=None, error=None, us
         elif not settings.assistant_enabled:
             terminal, error = "interrupted", "disabled"
         if parts is not None and session.deletion_state == "active":
+            if terminal:
+                # DB cancellation/kill-switch can win after the runtime's snapshot.
+                # Finalize the exact saved evidence inside this terminal transaction.
+                from copy import deepcopy
+                from .evidence import now_iso
+                parts = deepcopy(parts)
+                for part in parts:
+                    if part.get("type") != "evidence":
+                        continue
+                    changed = False
+                    for activity in part["activities"]:
+                        if activity["status"] == "running" or (stop and activity["status"] == "completed" and activity.get("finished_at") is None):
+                            activity.update(status="completed" if terminal == "completed" else "cancelled" if terminal == "cancelled" else "failed", finished_at=now_iso())
+                            changed = True
+                    for citation in part["citations"]:
+                        if citation["resolution"] == "pending":
+                            citation["resolution"] = "unresolved"; changed = True
+                    if part["search"]["execution"] == "pending":
+                        part["search"].update(execution="unconfirmed" if terminal == "completed" else "failed", reason_code=error or terminal)
+                        changed = True
+                    if changed: part["revision"] += 1
             msg = db.scalar(select(Message).where(Message.run_id == rid, Message.role == "assistant"))
             msg.content_parts = list(parts)
         if terminal:
@@ -260,8 +324,26 @@ def snapshot(user, rid=None, sid=None, request_id=None):
             raise AssistantError("not_found", "没有找到这个请求。", 404)
         owned(db, user, run.session_id)
         rows = db.scalars(select(Message).where(Message.run_id == run.id).order_by(Message.seq)).all()
-        return dict(run_id=run.id, session_id=run.session_id, state=run.state, usage=run.usage, error_code=run.error_code,
-            context_window=run.context_window, items=[message_out(r, user) for r in rows])
+        result = dict(run_id=run.id, session_id=run.session_id, state=run.state, usage=run.usage, error_code=run.error_code,
+            context_window=run.context_window)
+    return dict(**result, items=[message_out(r, user) for r in rows])
+
+
+def last_search_result(user):
+    with database.SessionLocal() as db:
+        runs = db.scalars(select(Run).join(Conversation).where(Conversation.owner_user_id == user.id,
+            Conversation.employment_epoch == epoch(user), Conversation.deletion_state == "active").order_by(Run.started_at.desc()).limit(30)).all()
+        for run in runs:
+            if run.request_input.get("web_search", "off") == "off":
+                continue
+            row = db.scalar(select(Message).where(Message.run_id == run.id, Message.role == "assistant"))
+            if not row:
+                continue
+            safe = message_out(row, user)
+            evidence = next((p for p in safe["content_parts"] if p.get("type") == "evidence"), None)
+            if evidence:
+                return dict(run_id=run.id, state=run.state, **evidence["search"], at=datetime.fromtimestamp(run.started_at, timezone.utc).isoformat())
+    return None
 
 
 def cancel(user, rid):
@@ -296,6 +378,12 @@ def cleanup(sid):
             return True
         if db.scalar(select(Run.id).where(Run.session_id == sid, Run.state.in_(ACTIVE))):
             return False
+        from sqlalchemy import inspect
+        from app.models.assistant import AssistantFile
+        if inspect(db.bind).has_table(AssistantFile.__tablename__):
+            from .files import erase
+            for document in db.scalars(select(AssistantFile).where(AssistantFile.session_id == sid)):
+                erase(db, document)
         for attachment in db.scalars(select(Attachment).where(Attachment.session_id == sid)):
             try:
                 path_for(attachment.storage_key).unlink(missing_ok=True)

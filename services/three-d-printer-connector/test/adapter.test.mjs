@@ -238,6 +238,35 @@ test('disconnect/reconnect changes session, requests full status and never fabri
   }
 });
 
+test('responsive MQTT pings cannot keep a connection with no initial telemetry alive forever', async t => {
+  const { adapter, server } = await setup(t, {}, { heartbeatMs: 10, freshMs: 35 });
+  const events = []; adapter.on('state', event => events.push(event));
+  adapter.start(); await until(() => adapter.ready);
+  const session = adapter.session;
+  await until(() => adapter.session !== session && adapter.ready);
+  assert.ok(events.some(event => event.reason === 'status_timeout'));
+  assert.ok(events.every(event => !event.connected && !event.observed_at));
+  assert.equal(server.commands.length, 0);
+});
+
+test('a silent subscribed printer reconnects and recovers without refreshing old evidence', async t => {
+  let now = Date.now();
+  const { adapter, server } = await setup(t, {}, { clock: () => now, heartbeatMs: 10, freshMs: 100 });
+  const events = []; adapter.on('state', event => events.push(event));
+  await running(adapter, server);
+  const session = adapter.session, observed = adapter.snapshot().observed_at;
+  now += 101;
+  await until(() => adapter.session !== session && adapter.ready);
+  const stale = events.find(event => event.reason === 'status_timeout');
+  assert.equal(stale?.state, 'STALE');
+  assert.equal(stale?.observed_at, observed);
+  assert.equal(events.some(event => event.state === 'FINISH'), false);
+  server.report({ gcode_state: 'RUNNING', subtask_id: 'job-1' });
+  await until(() => adapter.snapshot().state === 'RUNNING');
+  assert.equal(adapter.snapshot().device_job_key, events.find(event => event.state === 'RUNNING').device_job_key);
+  assert.equal(server.commands.length, 0);
+});
+
 test('11 independent simulated printers connect and recover without duplicate local sessions', async t => {
   const pairs = await Promise.all(Array.from({ length: 11 }, (_, n) => setup(t, {}, {}, config(n + 1))));
   await Promise.all(pairs.map(({ adapter, server }) => running(adapter, server)));

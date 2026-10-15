@@ -21,7 +21,7 @@ from app.services.internal_quote import ALL_QUOTE_DEPARTMENTS, SECTION_DEFINITIO
 
 COVERAGE = [
     {"module": key, "state": "active"} for key in
-    ("molding", "internal_quote", "account_requests", "carton_supplier", "identity")
+    ("molding", "internal_quote", "account_requests", "carton_supplier", "identity", "position_reviews")
 ] + [{"module": key, "state": "not_integrated"} for key in ("three_d", "uv", "spray", "customer_orders", "document_tools")]
 
 
@@ -247,6 +247,33 @@ def identity_queries(user):
                      visible=true() if user is None else n.target_user_id == user.id).where(n.type == "identity_changed")
 
 
+def position_queries(db, user):
+    from app.models.position_review import PositionReview as r
+    from app.models.auth import AuthUser, EmployeeProfile
+    from app.services.position_reviews import schema_available, writes_enabled
+    from app.services.position_workbench_read import visible_user_ids, allowed_scope
+    from app.models.identity import IamOrgDepartment
+    if not schema_available(db):
+        return
+    org, dept = PayloadValue(r.declared_snapshot_json, literal("org_unit_id")), PayloadValue(r.declared_snapshot_json, literal("department_code"))
+    visible = true()
+    if user is not None:
+        scopes = [(d.org_unit_id, d.department_code) for d in db.scalars(select(IamOrgDepartment)) if allowed_scope(user, d.org_unit_id, d.department_code)]
+        visible = and_(r.user_id.in_(visible_user_ids(db, user)), or_(false(), *[and_(org == f, dept == d) for f, d in scopes]))
+    active = and_(AuthUser.status == "active", r.employment_epoch == EmployeeProfile.employment_epoch,
+                  EmployeeProfile.employment_status != "left")
+    yield (projection(module="position_reviews", entity_id=r.id, stage="position_review", title="核对岗位与权限",
+        reference=AuthUser.display_name, summary="员工岗位资料已更新；确认前原权限保持不变。", opened=r.created_at,
+        factory=org, department=dept, version=r.revision, visible=visible, can_act=and_(active, literal(writes_enabled())))
+        .select_from(r).join(AuthUser, AuthUser.id == r.user_id).join(EmployeeProfile, EmployeeProfile.user_id == r.user_id).where(r.status == "pending"))
+    yield (projection(module="position_reviews", entity_id=r.id, stage="position_result", cycle=r.revision,
+        title=case((r.status == "returned", "岗位更新需要补充"), (r.status == "applied", "岗位与权限已确认"), else_="岗位更新状态已变化"),
+        reference="我的岗位与权限", summary=r.review_comment, opened=r.updated_at, assignee=r.user_id,
+        kind="info", lifecycle=None, can_act=False, version=r.revision,
+        visible=true() if user is None else and_(r.user_id == user.id, r.employment_epoch == user.identity["employment_epoch"]))
+        .where(r.status.in_(("returned", "applied", "withdrawn", "invalidated"))))
+
+
 def result_queries(user):
     n, q = SystemNotification, InternalQuote
     event = PayloadValue(n.payload_json, literal("event"))
@@ -284,6 +311,7 @@ def providers(db, user):
     return (("molding", lambda: molding_queries(user)), ("internal_quote", lambda: quote_queries(user)),
         ("carton_supplier", lambda: shipment_queries(user)), ("account_requests", lambda: account_queries(db, user)),
         ("identity", lambda: identity_queries(user)), ("business_results", lambda: result_queries(user)),
+        ("position_reviews", lambda: position_queries(db, user)),
         ("legacy_history", lambda: legacy_history_queries(user)), ("integrity", lambda: diagnostic_queries(user)))
 
 

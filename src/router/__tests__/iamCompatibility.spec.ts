@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { legacyIamAccountTarget } from '../iamCompatibility'
 it.each([
   { tab: 'users' },
@@ -19,4 +19,20 @@ it('keeps person links, unknown parameters and the disabled flag on the original
   for (const query of [{ person: 'p', tab: 'users' }, { tab: 'unknown' }, { q: 'name' }, {}])
     expect(legacyIamAccountTarget({ query, hash: '' }, true)).toBeUndefined()
   expect(legacyIamAccountTarget({ query: { tab: 'users' }, hash: '' }, false)).toBeUndefined()
+})
+it('keeps new workbench deep links and preserves old password and account tabs', () => {
+  for (const query of [{ tab: 'pending', item: 'position:p' }, { tab: 'history' }, { request_id: 'r' }])
+    expect(legacyIamAccountTarget({ query, hash: '' }, true, true)).toBeUndefined()
+  expect(legacyIamAccountTarget({ query: { tab: 'password-reset', request_id: 'r' }, hash: '' }, true, true)?.path).toBe('/system/users/registration')
+})
+it.each([['', false], ['false', false], ['true', true]])('requires explicit position UI activation: %s', async (value, enabled) => {
+  vi.resetModules()
+  vi.stubEnv('VITE_POSITION_WORKBENCH_ENABLED', value)
+  try {
+    const { positionWorkbenchEnabled } = await import('@/components/iam/workspace/iam-navigation')
+    expect(positionWorkbenchEnabled).toBe(enabled)
+  } finally {
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  }
 })

@@ -6,7 +6,9 @@ import { Button } from '@/components/ui/button'
 import { getApiErrorMessage } from '@/lib/http'
 import type { PurchaseDetail } from '@/api/fabricProcurement'
 import { fabricReceivingApi as api, materialCategoryLabels, type MaterialCategory, type ReceiveRequest, type FabricReceipt } from '@/api/fabricReceiving'
-import { quantityText, receiptQuantity, receiptTotal } from './receiptQuantities'
+import { quantityText, receiptQuantity, receiptTotal, receiptAmount } from './receiptQuantities'
+import FabricReceiptPriceFields from './FabricReceiptPriceFields.vue'
+import type { ReceiptPriceInput } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
 import WarehouseLocationPicker from './WarehouseLocationPicker.vue'
 
@@ -17,6 +19,7 @@ const receiptDate = ref(today), deliveryReference = ref(''), deliveryDate = ref(
 const initialCategory = props.source.material_category ?? ''
 const category = ref<MaterialCategory | ''>(initialCategory)
 const reason = ref(''), note = ref(''), busy = ref(false), error = ref('')
+const unitPrice = ref(''), currency = ref<NonNullable<ReceiptPriceInput['currency']>>('')
 const rows = ref([{ key: 1, quantity: '', location: '', location_id: '', dye_lot: '', roll_no: '' }])
 let nextKey = 2, alive = true, saved = false
 const requestId = warehouseRequestId()
@@ -38,8 +41,8 @@ const overage = computed(() => {
   const extra = current - pending
   return extra > 0n ? quantityText(extra) : undefined
 })
-const valid = computed(() => props.source.can_receive && total.value && rows.value.every(row => row.location_id && (category.value !== 'FABRIC' || row.dye_lot.trim())) && (!overage.value || reason.value.trim()) && category.value && deliveryReference.value.trim() && receiptDate.value && receiptDate.value <= today)
-const dirty = computed(() => rows.value.some(row => row.quantity || row.location_id || row.location || row.dye_lot || row.roll_no) || deliveryReference.value || deliveryDate.value !== today || receiptDate.value !== today || category.value !== initialCategory || reason.value || note.value)
+const valid = computed(() => props.source.can_receive && total.value && (!unitPrice.value.trim() || (currency.value && receiptAmount(total.value, unitPrice.value) !== undefined)) && rows.value.every(row => row.location_id && (category.value !== 'FABRIC' || row.dye_lot.trim())) && (!overage.value || reason.value.trim()) && category.value && deliveryReference.value.trim() && receiptDate.value && receiptDate.value <= today)
+const dirty = computed(() => unitPrice.value || currency.value || rows.value.some(row => row.quantity || row.location_id || row.location || row.dye_lot || row.roll_no) || deliveryReference.value || deliveryDate.value !== today || receiptDate.value !== today || category.value !== initialCategory || reason.value || note.value)
 function allowLeave() {
   if (busy.value) return false
   return saved || !dirty.value || window.confirm(submitted.value ? '保存结果尚未确认，系统可能已入库。离开后请先查入库记录，避免重复登记。确定离开？' : '本次收料尚未保存，离开会清空填写内容。确定离开？')
@@ -62,6 +65,7 @@ async function save() {
     factory_id: 'huakang-c', request_id: requestId, expected_source_revision: props.source.revision, expected_receipt_count: props.source.receipt_count ?? 0,
     receipt_date: receiptDate.value, delivery_reference: deliveryReference.value.trim(), delivery_note_date: deliveryDate.value || null,
     material_category: category.value as MaterialCategory, difference_reason: overage.value ? reason.value.trim() : '', note: note.value.trim(),
+    ...(unitPrice.value.trim() ? { unit_price: unitPrice.value.trim(), price_unit: props.source.facts.unit, currency: currency.value } : {}),
     batches: rows.value.map(row => ({ quantity: row.quantity, location_id: row.location_id, location: (props.source.available_locations ?? []).find(bin => bin.id === row.location_id)?.label ?? '', dye_lot: category.value === 'FABRIC' ? row.dye_lot : '', roll_no: category.value === 'FABRIC' ? row.roll_no : '' })), confirmed: true,
   }
   busy.value = true; error.value = ''
@@ -94,10 +98,11 @@ async function save() {
           </div>
           <section class="fabric-intake-details"><div class="fabric-intake-section-heading"><h3>收货明细</h3><Button variant="outline" size="sm" type="button" :disabled="rows.length >= 200" @click="rows.push({ key: nextKey++, quantity: '', location: '', location_id: '', dye_lot: '', roll_no: '' })">＋ 增加明细</Button></div>
             <div class="fabric-intake-table-wrap"><table class="fabric-intake-table"><thead><tr><th class="fabric-intake-index">序号</th><th>本次实收（{{ source.facts.unit }}）</th><th>仓位 <span>*</span></th><th v-if="category === 'FABRIC'">缸号 <span>*</span></th><th v-if="category === 'FABRIC'">卷号（选填）</th><th class="fabric-intake-remove"></th></tr></thead><tbody>
-              <tr v-for="(row, index) in rows" :key="row.key"><td class="fabric-intake-index">{{ index + 1 }}</td><td data-label="本次实收"><input v-model="row.quantity" :aria-label="`第${index + 1}项实收数量`" inputmode="decimal" placeholder="填写数量" maxlength="32" required /></td><td data-label="仓位"><WarehouseLocationPicker v-model="row.location_id" :locations="source.available_locations ?? []" :label="`第${index + 1}项仓位`" /></td><td v-if="category === 'FABRIC'" data-label="缸号"><input v-model="row.dye_lot" :aria-label="`第${index + 1}项缸号`" placeholder="染色批次号" maxlength="128" required /></td><td v-if="category === 'FABRIC'" data-label="卷号（选填）"><input v-model="row.roll_no" :aria-label="`第${index + 1}项卷号`" placeholder="单卷编号" maxlength="128" /></td><td class="fabric-intake-remove"><Button v-if="rows.length > 1" variant="ghost" size="sm" type="button" :aria-label="`删除第${index + 1}项`" @click="removeRow(row.key)">删除</Button></td></tr>
+              <tr v-for="(row, index) in rows" :key="row.key"><td class="fabric-intake-index">{{ index + 1 }}</td><td data-label="本次实收"><input v-model="row.quantity" :aria-label="`第${index + 1}项实收数量`" inputmode="decimal" placeholder="填写数量" maxlength="32" required /></td><td data-label="仓位"><WarehouseLocationPicker :category="category" :disabled="busy || !!submitted" v-model="row.location_id" :locations="source.available_locations ?? []" :label="`第${index + 1}项仓位`" /></td><td v-if="category === 'FABRIC'" data-label="缸号"><input v-model="row.dye_lot" :aria-label="`第${index + 1}项缸号`" placeholder="染色批次号" maxlength="128" required /></td><td v-if="category === 'FABRIC'" data-label="卷号（选填）"><input v-model="row.roll_no" :aria-label="`第${index + 1}项卷号`" placeholder="单卷编号" maxlength="128" /></td><td class="fabric-intake-remove"><Button v-if="rows.length > 1" variant="ghost" size="sm" type="button" :aria-label="`删除第${index + 1}项`" @click="removeRow(row.key)">删除</Button></td></tr>
             </tbody></table></div>
             <div class="fabric-intake-totals"><span>{{ rows.length }} 项明细<span v-if="category === 'FABRIC'"> · 缸号必填，卷号为单卷编号</span></span><strong>本次实收合计：{{ total ?? '—' }} {{ source.facts.unit }}</strong></div>
           </section>
+          <FabricReceiptPriceFields v-model:price="unitPrice" v-model:currency="currency" :quantity="total" :unit="source.facts.unit" :reference="source.facts.unit_price" />
           <label v-if="overage" class="fabric-receipt-overage">超出待收数量 {{ overage }} {{ source.facts.unit }} · 超收说明<textarea v-model="reason" aria-label="超收说明" placeholder="说明本次超收的原因" maxlength="1000" rows="2" required /></label>
           <details class="fabric-receipt-more"><summary>补充信息（选填）</summary><div class="fabric-intake-extra-fields"><label>送货单日期<input v-model="deliveryDate" type="date" aria-label="送货单日期" /></label><label>收料备注<textarea v-model="note" aria-label="收料备注" placeholder="其他需要记录的信息" maxlength="2000" rows="2" /></label></div></details>
         </fieldset>

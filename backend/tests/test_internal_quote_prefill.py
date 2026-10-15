@@ -1,6 +1,87 @@
 from app.services.internal_quote_prefill import prefill_molding_from_engineering
 
 
+def test_child_parts_project_without_whole_mold_weight_and_keep_department_inputs():
+    mold = {"mold_no": "M1", "item": "上壳/下壳", "material": "ABS", "net_weight_g": 100, "quantity": 2}
+    original = prefill_molding_from_engineering({"molds": [mold]}, {"injection_lines": []})
+    original["injection_lines"][0].update(grade="750SW", machine_code="18A", target_output=3000, remark="已选机台")
+    mold["parts"] = [
+        {"name": "上壳", "color": "红", "unit_net_weight_g": 12, "output_count": 4, "quantity": 2},
+        {"name": "下壳", "unit_net_weight_g": 0, "output_count": 2, "quantity": 1},
+    ]
+    engineering = {"molds": [mold]}
+    # Dependency invalidation must retain the old parent until projection can inherit it.
+    cleaned = prefill_molding_from_engineering(engineering, original, remove_missing_only=True)
+    result = prefill_molding_from_engineering(engineering, cleaned)
+    top, bottom = result["injection_lines"]
+    assert (top["item"], top["net_weight_g"], top["cavity"], top["sets"], top["quantity"]) == ("上壳", 12, 4, 2, "1")
+    assert (bottom["net_weight_g"], bottom["cavity"], bottom["sets"], bottom["quantity"]) == (0, 2, 1, "1")
+    for row in (top, bottom):
+        assert (row["grade"], row["machine_code"], row["remark"]) == ("750SW", "18A", "已选机台")
+    top["remark"], bottom["remark"] = "上件", "下件"
+    mold["parts"].reverse()
+    refreshed = prefill_molding_from_engineering(engineering, result)
+    assert [r["remark"] for r in refreshed["injection_lines"]] == ["下件", "上件"]
+    assert prefill_molding_from_engineering(engineering, refreshed) == refreshed
+    mold["parts"].pop()
+    refreshed["injection_lines"].append({"item": "手工件"})
+    remaining = prefill_molding_from_engineering(engineering, refreshed, remove_missing_only=True)
+    assert [r["item"] for r in remaining["injection_lines"]] == ["下壳", "手工件"]
+
+
+def test_same_named_children_in_distinct_molds_never_exchange_inputs():
+    engineering = {"molds": [{"mold_no": number, "parts": [{"name": "上壳"}, {"name": "下壳"}]} for number in ("1", "2")]}
+    first = prefill_molding_from_engineering(engineering, {})
+    for index, row in enumerate(first["injection_lines"]):
+        row["remark"] = index
+    engineering["molds"].reverse()
+    result = prefill_molding_from_engineering(engineering, first)
+    assert [r["remark"] for r in result["injection_lines"]] == [2, 3, 0, 1]
+
+
+def test_detached_parent_remains_explicitly_manual_after_engineering_split():
+    engineering = {"molds": [{"mold_no": "1", "item": "上/下"}]}
+    first = prefill_molding_from_engineering(engineering, {})
+    first["injection_lines"][0].update(engineering_sync_disabled=True, item="手工拆分")
+    engineering["molds"][0]["parts"] = [{"name": "上"}, {"name": "下"}]
+    result = prefill_molding_from_engineering(engineering, first)
+    assert [r["item"] for r in result["injection_lines"]] == ["手工拆分"]
+
+
+def test_child_rename_preserves_saved_molding_data_and_legacy_child_keys_upgrade():
+    part = {"name": "上壳"}
+    engineering = {"molds": [{"mold_no": "1", "parts": [part]}]}
+    first = prefill_molding_from_engineering(engineering, {})
+    first["injection_lines"][0].update(grade="750SW", machine_code="18A", remark="保留")
+    part["id"] = "stable-child-id"
+    upgraded = prefill_molding_from_engineering(engineering, first)
+    assert upgraded["injection_lines"][0]["remark"] == "保留"
+    part["name"] = "上壳改名"
+    cleaned = prefill_molding_from_engineering(engineering, upgraded, remove_missing_only=True)
+    result = prefill_molding_from_engineering(engineering, cleaned)
+    assert result["injection_lines"][0]["item"] == "上壳改名"
+    assert result["injection_lines"][0]["remark"] == "保留"
+
+
+def test_legacy_unlinked_parent_is_consumed_once_and_inherited_by_both_children():
+    engineering = {"molds": [{"mold_no": "1", "item": "上/下", "parts": [{"name": "上"}, {"name": "下"}]}]}
+    original = {"injection_lines": [{"mold_no": "1", "item": "上/下", "remark": "已填", "machine_code": "18A"}, {"item": "手工"}]}
+    result = prefill_molding_from_engineering(engineering, original)
+    assert [row["item"] for row in result["injection_lines"]] == ["上", "下", "手工"]
+    assert [row["remark"] for row in result["injection_lines"][:2]] == ["已填", "已填"]
+
+
+def test_legacy_child_can_be_renamed_on_first_save_without_losing_department_inputs():
+    engineering = {"molds": [{"mold_no": "1", "parts": [{"name": "上壳"}]}]}
+    original = prefill_molding_from_engineering(engineering, {})
+    original['injection_lines'][0]['remark'] = '旧备注'
+    engineering['molds'][0]['parts'] = [{'id': 'legacy-name:["上壳",1]', 'name': '改名上壳'}]
+    cleaned = prefill_molding_from_engineering(engineering, original, remove_missing_only=True)
+    result = prefill_molding_from_engineering(engineering, cleaned)
+    assert result['injection_lines'][0]['item'] == '改名上壳'
+    assert result['injection_lines'][0]['remark'] == '旧备注'
+
+
 def test_engineering_molds_prefill_molding_and_keep_department_fields() -> None:
     engineering = {
         "molds": [

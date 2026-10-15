@@ -135,7 +135,7 @@ def _render_office_in_profile(path: Path, output: Path, options: dict, work_dir:
     work_dir.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     is_excel = path.suffix.lower() in (".xlsx", ".xls")
-    advanced = is_excel or bool(options.get("password"))
+    advanced = is_excel or bool(options.get("password")) or bool(options.get("secure_load"))
     base = [executable, "--headless", "--nologo", "--nodefault", "--nofirststartwizard",
             f"-env:UserInstallation={profile.resolve().as_uri()}"]
     metadata = {"renderer": "LibreOffice", "isolated_profile": True}

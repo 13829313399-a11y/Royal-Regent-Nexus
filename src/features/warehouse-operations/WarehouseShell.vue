@@ -7,22 +7,38 @@ import { WAREHOUSES, WAREHOUSE_FACTORY, WAREHOUSE_HOME, isWarehouseFactory, ware
 import { guardWarehouseFactory } from './routes'
 import WarehouseGuide from './WarehouseGuide.vue'
 import './workspace.css'
+import './fabric-presentation.css'
 import { purchaseSearchKey } from './purchaseSearch'
+import { inventorySearchKey, exceptionSearchKey, activitySearchKey, monthlySearchKey } from './inventorySearch'
 
 const props = defineProps<{ warehouse: WarehouseWorkspace }>()
 const route = useRoute()
 const purchaseSearch = ref(''), searchSubmitted = ref(0)
 provide(purchaseSearchKey, { search: purchaseSearch, submitted: searchSubmitted })
+const inventorySearch = ref(''), inventorySearchSubmitted = ref(0)
+const showInventorySearch = computed(() => props.warehouse.id === 'fabric-warehouse' && route.path.endsWith('/inventory'))
+provide(inventorySearchKey, { search: inventorySearch, submitted: inventorySearchSubmitted, active: showInventorySearch })
+const exceptionSearch = ref(''), exceptionSearchSubmitted = ref(0)
+const showExceptionSearch = computed(() => props.warehouse.id === 'fabric-warehouse' && route.path.endsWith('/exceptions'))
+provide(exceptionSearchKey, { search: exceptionSearch, submitted: exceptionSearchSubmitted, active: showExceptionSearch })
+const activitySearch = ref(''), activitySearchSubmitted = ref(0)
+const showActivitySearch = computed(() => props.warehouse.id === 'fabric-warehouse' && route.path.endsWith('/activity'))
+provide(activitySearchKey, { search: activitySearch, submitted: activitySearchSubmitted, active: showActivitySearch })
+const monthlySearch = ref(''), monthlySearchSubmitted = ref(0)
+const showMonthlySearch = computed(() => props.warehouse.id === 'fabric-warehouse' && route.path.endsWith('/closing'))
+provide(monthlySearchKey, { search: monthlySearch, submitted: monthlySearchSubmitted, active: showMonthlySearch })
 const validFactory = computed(() => isWarehouseFactory(route.query.factory))
 const icons = { overview: LayoutDashboard, orders: ClipboardList, receipts: PackageCheck, inventory: Boxes, exceptions: AlertTriangle, closing: CalendarCheck2, master: Settings2, activity: History }
 const home = { path: WAREHOUSE_HOME, query: { factory: WAREHOUSE_FACTORY } }
 const sectionViews = reactive<Record<string, string>>({})
-const showPurchaseSearch = computed(() => {
-  if (props.warehouse.id !== 'fabric-warehouse' || !route.path.endsWith('/receipts')) return false
+const showClosingRecordsSearch = computed(() => props.warehouse.id === 'fabric-warehouse' && route.path.endsWith('/closing')
+  && (route.query.view === undefined ? sectionViews[route.path] : route.query.view) === 'records')
+const receiptSearchView = computed(() => {
+  if (props.warehouse.id !== 'fabric-warehouse' || !route.path.endsWith('/receipts')) return ''
   const requested = route.query.view === undefined ? sectionViews[route.path] : route.query.view
   const views = props.warehouse.sections.find(section => section.path === 'receipts')?.views ?? []
   const active = views.some(view => view.id === requested) ? requested : 'pending'
-  return active === 'pending' || (active === 'import-review' && ['all', 'returned'].includes(String(route.query.source)))
+  return active === 'history' ? 'history' : active === 'pending' || (active === 'import-review' && ['all', 'returned'].includes(String(route.query.source))) ? 'purchase' : ''
 })
 const guideOpen = ref(false)
 const showMasterSearch = computed(() => props.warehouse.id === 'fabric-warehouse' && route.path.endsWith('/master'))
@@ -40,8 +56,8 @@ onBeforeRouteUpdate(guardWarehouseFactory)
 </script>
 
 <template>
-  <WarehouseWorkbench v-if="validFactory" :class="{ 'fabric-receiving-workbench': warehouse.id === 'fabric-warehouse' && (route.path.endsWith('/receipts') || showMasterSearch) }" :title="warehouse.title" :description="warehouse.summary" factory-label="华康 C" :home="home" :active-path="route.path" :sections="sections" :workspaces="workspaces" @guide="guideOpen = true">
-    <template #search><form v-if="showPurchaseSearch || showMasterSearch" class="fabric-header-search" role="search" @submit.prevent="searchSubmitted++"><input v-model="purchaseSearch" type="search" maxlength="128" :aria-label="showMasterSearch ? '查找基础资料' : '查找采购明细'" :placeholder="showMasterSearch ? '编码 / 名称 / 规格 / 仓库 / 仓位' : '采购单 / 生产单 / 款号 / 物料 / 供应商'" /></form></template>
+  <WarehouseWorkbench v-if="validFactory" :class="{ 'fabric-warehouse-presentation': warehouse.id === 'fabric-warehouse', 'fabric-receiving-workbench': warehouse.id === 'fabric-warehouse' && (route.path.endsWith('/receipts') || showMasterSearch || showInventorySearch || showExceptionSearch || showActivitySearch || showMonthlySearch) }" :title="warehouse.title" :description="warehouse.summary" factory-label="华康 C" :home="home" :active-path="route.path" :sections="sections" :workspaces="workspaces" @guide="guideOpen = true">
+    <template #search><form v-if="showClosingRecordsSearch" class="fabric-header-search" role="search" @submit.prevent><input type="search" disabled aria-label="月结记录关键字筛选" placeholder="月结记录搜索 · 待接入" title="月结记录业务数据待接入，搜索暂未启用" /></form><form v-else-if="showMonthlySearch" class="fabric-header-search" role="search" @submit.prevent="monthlySearchSubmitted++"><input v-model="monthlySearch" type="search" maxlength="128" aria-label="查找月结对账记录" placeholder="物料 / 往来方 / 单据" /></form><form v-else-if="showActivitySearch" class="fabric-header-search" role="search" @submit.prevent="activitySearchSubmitted++"><input v-model="activitySearch" type="search" maxlength="128" aria-label="查找布料仓操作日志" placeholder="物料 / 单据 / 经办人 / 原因" /></form><form v-else-if="showExceptionSearch" class="fabric-header-search" role="search" @submit.prevent="exceptionSearchSubmitted++"><input v-model="exceptionSearch" type="search" maxlength="128" aria-label="查找异常单据与物料" placeholder="物料 / 单据 / 更正原因 / 仓位" /></form><form v-else-if="showInventorySearch" class="fabric-header-search" role="search" @submit.prevent="inventorySearchSubmitted++"><input v-model="inventorySearch" type="search" maxlength="128" aria-label="查找库存物料与单据" placeholder="物料 / 单据 / 来源单位 / 缸号" /></form><form v-else-if="receiptSearchView || showMasterSearch" class="fabric-header-search" role="search" @submit.prevent="searchSubmitted++"><input v-model="purchaseSearch" type="search" maxlength="128" :aria-label="showMasterSearch ? '查找基础资料' : receiptSearchView === 'history' ? '查找实际入库记录' : '查找采购明细'" :placeholder="showMasterSearch ? '编码 / 名称 / 规格 / 仓库 / 仓位' : receiptSearchView === 'history' ? '采购单 / 送货依据 / 物料 / 供应商' : '采购单 / 生产单 / 款号 / 物料 / 供应商'" /></form></template>
     <RouterView v-slot="{ Component }"><component :is="Component" :key="route.path" :remembered-view="sectionViews[route.path]" @view-change="rememberView" /></RouterView>
     <template #overlay><WarehouseGuide v-model:open="guideOpen" :warehouse="warehouse" /></template>
   </WarehouseWorkbench>

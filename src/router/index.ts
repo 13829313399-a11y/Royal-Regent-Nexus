@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import DashboardView from '@/views/DashboardView.vue'
 import {
+  hasRoutePermissions,
   shouldEnforcePagePermissions,
   shouldRedirectForbiddenPageToHome,
 } from '@/config/pageAccessPolicy'
@@ -15,10 +16,11 @@ import { installBrowserBackExitGuard } from '@/lib/browserBackExitGuard'
 import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { collaborationApi, type Capabilities } from '@/api/collaboration'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
-import { identityUiEnabled } from '@/components/iam/workspace/iam-navigation'
-import { legacyIamAccountTarget } from './iamCompatibility'
+import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
+import { legacyIamAccountTarget, consolidatedIamTarget } from './iamCompatibility'
 const qcInspectionFullPageMeta = {
   fullPage: true,
   requiresAuth: true,
@@ -29,6 +31,11 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/account/position', name: 'account-position', component: () => import('@/features/identity-management/MyPositionPanel.vue'), meta: { title: '我的岗位与权限', requiresAuth: true } },
+  { path: '/modules/pmc-warehouse/material-handover', name: 'material-handover', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), meta: { title: '制单与扫码交接', fullPage: true, requiresAuth: true, permissions: ['fabric_operations:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
+  { path: '/material-handover/prepare', name: 'material-handover-external', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), props: { external: true }, meta: { title: '物料单据制单', fullPage: true, requiresAuth: false } },
+  { path: '/messages', name: 'messages', component: () => import('@/views/MessagesView.vue'), meta: { title: '私信', requiresAuth: true } },
+  { path: '/me', name: 'my-space', component: () => import('@/views/MySpaceView.vue'), meta: { title: '我的空间', requiresAuth: true } },
   { path: '/notifications', name: 'notification-center', component: () => import('@/views/NotificationCenterView.vue'), meta: { title: '事项工作台', requiresAuth: true } },
   {
     path: '/carton-supplier', name: 'carton-supplier', component: () => import('@/views/CartonSupplierView.vue'),
@@ -273,6 +280,19 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    path: '/modules/sales-business/indonesia-material-shipment',
+    name: 'indonesia-material-shipment',
+    component: () => import('@/views/IndonesiaMaterialsView.vue'),
+    meta: {
+      title: '送印尼物料',
+      fullPage: true,
+      requiresAuth: true,
+      permissions: ['indonesia_material:read'],
+      permissionDepartments: ['sales-business', 'pmc-warehouse'],
+      enforcePermissions: true,
+    },
+  },
+  {
     path: '/modules/pmc-warehouse/carton-mark-check',
     name: 'carton-mark-template',
     component: () => import('@/views/CartonMarkTemplateView.vue'),
@@ -453,15 +473,24 @@ const routes: RouteRecordRaw[] = [
     path: '/system/users',
     name: 'system-users',
     component: identityUiEnabled
-      ? () => import('@/features/identity-management/PeopleCenter.vue')
+      ? positionWorkbenchEnabled ? consolidatedIamEnabled ? () => import('@/features/identity-management/PositionWorkbench.vue') : () => import('@/features/identity-management/LegacyPositionWorkbench.vue') : () => import('@/features/identity-management/PeopleCenter.vue')
       : () => import('@/views/SystemUserManagementView.vue'),
     meta: {
       title: '账号与权限管理',
       fullPage: true,
       requiresAuth: true,
-      permissions: ['system:user_manage'],
+      permissions: consolidatedIamEnabled ? ['system:user_manage', 'system:access_manage'] : ['system:user_manage'],
       enforcePermissions: true,
     },
+  },
+  {
+    path: '/system/users/position-reviews', name: 'position-workbench-compatible',
+    component: () => import('@/features/identity-management/LegacyPositionWorkbench.vue'),
+    meta: { title: '岗位待办与权限', fullPage: true, requiresAuth: true, permissions: ['system:user_manage'], enforcePermissions: true },
+  },
+  {
+    path: '/system/users/advanced', name: 'system-people-advanced', component: () => import('@/features/identity-management/PeopleCenter.vue'),
+    meta: { title: '任职与工作交接', fullPage: true, requiresAuth: true, permissions: ['system:user_manage'], enforcePermissions: true },
   },
   {
     path: '/system/users/registration',
@@ -507,8 +536,8 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/system/iam/audit',
     ...(identityUiEnabled ? {
-      component: () => import('@/features/identity-management/IdentityRecords.vue'),
-      meta: { title: '授权与人员记录', fullPage: true, requiresAuth: true, permissions: ['system:audit_read'], enforcePermissions: true },
+      component: consolidatedIamEnabled ? () => import('@/features/identity-management/workspace/WorkspaceRecords.vue') : () => import('@/features/identity-management/IdentityRecords.vue'),
+      meta: { title: consolidatedIamEnabled ? '操作记录' : '授权与人员记录', fullPage: true, requiresAuth: true, permissions: consolidatedIamEnabled ? ['system:user_manage', 'system:access_manage', 'system:audit_read'] : ['system:audit_read'], enforcePermissions: true },
     } : { redirect: '/system/users' }),
   },
     ],
@@ -630,15 +659,7 @@ export async function refreshAndRevalidateAuthorization(
     currentRoute.name !== 'forbidden'
     && shouldEnforcePagePermissions(currentRoute.meta)
     && permissions.length
-    && !authStore.canAny(
-      permissions,
-      typeof currentRoute.meta.permissionFactoryId === 'string'
-        ? currentRoute.meta.permissionFactoryId
-        : undefined,
-      typeof currentRoute.meta.permissionDepartment === 'string'
-        ? currentRoute.meta.permissionDepartment
-        : undefined,
-    )
+    && !hasRoutePermissions(currentRoute.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department))
   ) {
     await activeRouter.replace({ name: 'forbidden' })
     return 'forbidden'
@@ -671,8 +692,10 @@ const finishRouteLoading = () => {
 }
 
 router.beforeEach(async (to, from) => {
+  const consolidatedTarget = consolidatedIamTarget(to, consolidatedIamEnabled)
+  if (consolidatedTarget) return consolidatedTarget
   if (to.path === '/system/users') {
-    const legacyTarget = legacyIamAccountTarget(to, identityUiEnabled)
+    const legacyTarget = legacyIamAccountTarget(to, identityUiEnabled, positionWorkbenchEnabled)
     if (legacyTarget) return legacyTarget
   }
   if (to.path.startsWith(UV_BASE) && to.query.factory !== UV_FACTORY) {
@@ -745,6 +768,15 @@ router.beforeEach(async (to, from) => {
     return postLoginRedirectLocation(resolvePostLoginRedirect(router, to.query.redirect))
   }
 
+  if (to.name === 'messages' || to.name === 'my-space' || to.name === 'people-directory') {
+    if (to.name !== 'people-directory' && import.meta.env.VITE_COLLABORATION_ENABLED === 'false') return { name: 'forbidden', replace: true }
+    try {
+      const capability = await collaborationApi.get<Capabilities>('/capabilities')
+      if (navigationVersion !== latestNavigationVersion) return false
+      if (!capability.eligible || (!capability.enabled && to.name !== 'people-directory')) return { name: 'forbidden', replace: true }
+    } catch { return { name: 'forbidden', replace: true } }
+  }
+
   if (to.name === 'module-detail') {
     const department = String(to.params.department ?? '')
     const moduleId = String(to.params.module ?? '')
@@ -763,15 +795,7 @@ router.beforeEach(async (to, from) => {
   if (
     shouldEnforcePagePermissions(to.meta)
     && permissions.length
-    && !authStore.canAny(
-      permissions,
-      typeof to.meta.permissionFactoryId === 'string'
-        ? to.meta.permissionFactoryId
-        : undefined,
-      typeof to.meta.permissionDepartment === 'string'
-        ? to.meta.permissionDepartment
-        : undefined,
-    )
+    && !hasRoutePermissions(to.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department))
   ) {
     return {
       name: 'forbidden',

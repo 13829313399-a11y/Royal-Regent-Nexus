@@ -117,6 +117,8 @@ def test_justplay_components_are_created_only_for_huakang_b_and_seed_sales_paylo
     payload = create_request()
     seeded = json.loads(_initial_section_payloads(payload)["sales"])
     assert seeded == {
+        "testing_fee_enabled": False,
+        "freight_calc": {"enabled": False, "freight_enabled": False, "lifting_enabled": False},
         "pricing_mode": "component",
         "justplay_packaging": {"adhesive_extra_hkd": 0, "paper_pallet_extra_hkd": 0,
                               "pallet_length_mm": 1000, "pallet_width_mm": 1150, "pallet_height_mm": 1300},
@@ -139,6 +141,9 @@ def test_justplay_product_components_override_legacy_and_omitted_products_copy_f
     assert [product.pricing_components for product in request.products] == expected
     for index, names in enumerate(expected):
         seeded = json.loads(_initial_section_payloads(request, index)["sales"])
+        assert seeded["testing_fee_enabled"] is False
+        assert seeded["freight_calc"] == {"enabled": False, "freight_enabled": False, "lifting_enabled": False}
+        assert json.loads(_initial_section_payloads(request, index)["engineering"])["mold_allocation_enabled"] is False
         assert [item["name"] for item in seeded["pricing_components"]] == names
         assert [item["id"] for item in seeded["pricing_components"]] == [f"component-{i:02d}" for i in range(1, len(names) + 1)]
     request.products[2].pricing_components[1] = "C镜子"
@@ -536,11 +541,11 @@ def test_rr2_justplay_owns_automatic_fixed_packaging_without_manual_material_row
         ("huadeng", None, None),
         ("huakang-a", None, None),
         ("huakang-b", None, None),
-        ("huakang-c", "11.5000", "1.7250"),
-        ("huakang-d", "11.5000", "1.7250"),
+        ("huakang-c", None, None),
+        ("huakang-d", None, None),
     ],
 )
-def test_rr2_sewing_tax_refund_is_material_only_and_limited_to_huakang_c_d(
+def test_rr2_sewing_is_not_taxed_in_any_factory(
     factory_id: str,
     expected_rate: str | None,
     expected_deduction: str | None,
@@ -573,7 +578,7 @@ def test_rr2_sewing_tax_refund_is_material_only_and_limited_to_huakang_c_d(
     tax_row = rows_by_key(result["t4"])["sewcloth13"]
     assert tax_row == {
         "key": "sewcloth13",
-        "label": "车衣物料退税（仅华康C/D）",
+        "label": "车衣类（不计税）",
         "amount_hkd": "15.0000",
         "rate_percent": expected_rate,
         "deduction_hkd": expected_deduction,
@@ -615,7 +620,7 @@ def test_rr2_sewing_tax_refund_rebuilds_material_only_basis_from_legacy_lines():
 
     tax_row = rows_by_key(result["t4"])["sewcloth13"]
     assert tax_row["amount_hkd"] == "15.0000"
-    assert tax_row["deduction_hkd"] == "1.7250"
+    assert tax_row["deduction_hkd"] is None
 
 
 def test_rr2_sewing_quick_quote_never_assumes_an_unknown_total_is_refundable_material():
@@ -645,8 +650,8 @@ def test_rr2_sewing_quick_quote_never_assumes_an_unknown_total_is_refundable_mat
 
     tax_row = rows_by_key(result["t4"])["sewcloth13"]
     assert tax_row["amount_hkd"] == "0.0000"
-    assert tax_row["rate_percent"] == "11.5000"
-    assert tax_row["deduction_hkd"] == "0.0000"
+    assert tax_row["rate_percent"] is None
+    assert tax_row["deduction_hkd"] is None
 
 
 def test_rr2_cost_summary_keeps_exact_four_table_fields_and_reference_tax_columns():
@@ -738,7 +743,7 @@ def test_rr2_material_price_uses_authoritative_molding_totals_and_keeps_purchase
         assert result["molding_material_breakdown"]["total_hkd"] == "5.0000"
 
     # Reclassifying the same HKD 5 material does not change cost, but domestic
-    # resin remains in the RMB-purchase and 13%-tax bases used by exports.
+    # resin affects RMB purchases but never the 13%-tax base.
     assert (
         rows_by_key(imported_result["t3"])["total_cost"]["value"]
         == rows_by_key(domestic_result["t3"])["total_cost"]["value"]
@@ -750,11 +755,11 @@ def test_rr2_material_price_uses_authoritative_molding_totals_and_keeps_purchase
     assert (
         Decimal(rows_by_key(domestic_result["t4"])["tax13"]["amount_hkd"])
         - Decimal(rows_by_key(imported_result["t4"])["tax13"]["amount_hkd"])
-    ) == Decimal("5.0000")
+    ) == Decimal("0.0000")
 
     # The combined total is authoritative even if a future/legacy origin is
-    # not represented by either tax bucket.  Tax and RMB purchase still use
-    # only the explicit domestic split.
+    # not represented by either origin bucket. RMB purchases still use
+    # only the explicit domestic split; resin never contributes to tax.
     unclassified_result = build("3", "2", material_total="7")
     assert rows_by_key(unclassified_result["t1"])["material"]["value"] == "7.0000"
     assert unclassified_result["molding_material_breakdown"] == {
@@ -862,7 +867,7 @@ def test_rr2_cost_summary_keeps_direct_misc_costs_once_when_percentage_misc_is_z
     ) == Decimal("1.5000")
 
 
-def test_rr2_cost_summary_prefers_standalone_hair_and_falls_back_to_legacy_sewing_hair():
+def test_rr2_cost_summary_counts_legacy_and_standalone_hair_sources_once():
     legacy_sections = summary_sections(freight_enabled=False)
     legacy_sections.append(
         SimpleNamespace(
@@ -894,7 +899,7 @@ def test_rr2_cost_summary_prefers_standalone_hair_and_falls_back_to_legacy_sewin
         {"factory_price_hkd": Decimal("50"), "carton_hkd": Decimal("1")},
         SNAPSHOT,
     )
-    assert rows_by_key(standalone["t1"])["sewing_hair"]["value"] == "2.3500"
+    assert rows_by_key(standalone["t1"])["sewing_hair"]["value"] == "6.3500"
 
 
 def test_rr2_shipping_price_uses_48_52_markup_settlement_and_mold_share_when_enabled():

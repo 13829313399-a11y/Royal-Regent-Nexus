@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation
+import json
 from typing import Any
 
 
@@ -144,14 +145,67 @@ def prefill_molding_from_engineering(
     existing_rows = molding_payload.get("injection_lines", [])
     molds = [row for row in source_rows if isinstance(row, dict)] if isinstance(source_rows, list) else []
     existing = [deepcopy(row) for row in existing_rows if isinstance(row, dict)] if isinstance(existing_rows, list) else []
+    if not molds and not existing:
+        # Opening/recalculating a new quote must not manufacture an empty input
+        # field that makes an untouched department look edited or invalid.
+        return deepcopy(molding_payload)
     keys = _source_keys(molds)
+    # Child identities are scoped to the source mold, not the display position.
+    # A reorder must not move one child's department inputs onto its sibling.
+    sources: list[tuple[dict[str, Any], str, str]] = []
+    parent_templates: dict[str, int] = {}
+    legacy_child_keys: dict[str, str] = {}
+    for mold, parent_key in zip(molds, keys, strict=True):
+        candidates = [i for i, r in enumerate(existing) if r.get("engineering_source_key") == parent_key]
+        if not candidates:
+            candidates = [i for i, r in enumerate(existing) if not _text(r.get("engineering_source_key"))
+                          and r.get("engineering_sync_disabled") is not True
+                          and _match_token(r.get("item")) == _match_token(mold.get("item") or mold.get("chinese_name"))
+                          and _match_token(r.get("mold_no")) == _match_token(mold.get("mold_no"))]
+        if len(candidates) == 1:
+            parent_templates[parent_key] = candidates[0]
+        parts = mold.get("parts")
+        parts = [p for p in parts if isinstance(p, dict) and _text(p.get("name"))] if isinstance(parts, list) else []
+        detached = any(r.get("engineering_source_key") == parent_key and r.get("engineering_sync_disabled") is True for r in existing)
+        if not parts or detached:
+            sources.append((mold, parent_key, parent_key))
+            continue
+        occurrences: dict[str, int] = {}
+        for part in parts:
+            name = _text(part.get("name"))
+            occurrences[name] = occurrences.get(name, 0) + 1
+            child_key = f"{parent_key}/part:{json.dumps([name, occurrences[name]], ensure_ascii=False, separators=(',', ':'))}"
+            if _text(part.get("id")):
+                part_id = _text(part['id'])
+                legacy_key = (f"{parent_key}/part:{part_id.removeprefix('legacy-name:')}"
+                              if part_id.startswith('legacy-name:') else child_key)
+                child_key = f"{parent_key}/part:id:{_text(part['id'])}"
+                legacy_child_keys[child_key] = legacy_key
+            sources.append(({**mold, "item": name, "color": part.get("color", ""),
+                             "net_weight_g": part.get("unit_net_weight_g", 0),
+                             "cavity": part.get("output_count", 1), "quantity": part.get("quantity", 1)}, child_key, parent_key))
+    if remove_missing_only:
+        active_keys = set(keys) | {key for _, key, _ in sources} | set(legacy_child_keys.values())
+        result = deepcopy(molding_payload)
+        result["injection_lines"] = [row for row in existing
+                                     if not _text(row.get("engineering_source_key")) or row.get("engineering_source_key") in active_keys]
+        return result
     used_existing: set[int] = set()
     projected: list[dict[str, Any]] = []
 
-    def find_existing(source: dict[str, Any], source_key: str) -> int | None:
+    def find_existing(source: dict[str, Any], source_key: str, parent_key: str) -> int | None:
         for index, row in enumerate(existing):
-            if index not in used_existing and _text(row.get("engineering_source_key")) == source_key:
+            if index not in used_existing and _text(row.get("engineering_source_key")) in {source_key, legacy_child_keys.get(source_key, source_key)}:
                 return index
+        if source_key != parent_key:
+            # Never match a sibling by mold number alone.
+            for index, row in enumerate(existing):
+                if (index not in used_existing and not _text(row.get("engineering_source_key"))
+                    and row.get("engineering_sync_disabled") is not True
+                    and _match_token(row.get("mold_no")) == _match_token(source.get("mold_no"))
+                    and _match_token(row.get("item")) == _match_token(source.get("item"))):
+                    return index
+            return None
         source_mold_no = _match_token(source.get("mold_no"))
         if source_mold_no:
             for index, row in enumerate(existing):
@@ -172,12 +226,8 @@ def prefill_molding_from_engineering(
                     return index
         return None
 
-    for source, source_key in zip(molds, keys, strict=True):
-        existing_index = find_existing(source, source_key)
-        if remove_missing_only:
-            if existing_index is not None:
-                used_existing.add(existing_index)
-            continue
+    for source, source_key, parent_key in sources:
+        existing_index = find_existing(source, source_key, parent_key)
         if existing_index is None:
             row: dict[str, Any] = {
                 "item": "",
@@ -203,6 +253,12 @@ def prefill_molding_from_engineering(
         else:
             used_existing.add(existing_index)
             row = existing[existing_index]
+
+        if existing_index is None and source_key != parent_key:
+            parent_index = parent_templates.get(parent_key)
+            if parent_index is not None:
+                row = deepcopy(existing[parent_index])
+                used_existing.add(parent_index)
 
         if row.get("engineering_sync_disabled") is True:
             row["engineering_source_key"] = source_key
@@ -260,6 +316,16 @@ def prefill_molding_from_engineering(
         sync_positive("net_weight_g", source.get("net_weight_g"))
         sync_text("cavity", source.get("cavity"))
         sync_positive("sets", source.get("quantity"))
+        if source_key != parent_key:
+            # Child values are per piece. Do not inherit a whole-mold weight or
+            # quantity when the child is blank/zero and still needs completion.
+            for field, value in (("color", source.get("color", "")),
+                                 ("net_weight_g", source.get("net_weight_g", 0)),
+                                 ("sets", source.get("quantity", 1)),
+                                 ("cavity", source.get("cavity", 1))):
+                row[field] = value
+                if field not in synced_fields:
+                    synced_fields.append(field)
         source_machine_code = _canonical_machine_code(source.get("machine_code"))
         selected_machine_code = _text(row.get("machine_code"))
         if source_machine_code:
@@ -283,14 +349,6 @@ def prefill_molding_from_engineering(
         row["engineering_source_key"] = source_key
         row["engineering_synced_fields"] = synced_fields
         projected.append(row)
-
-    if remove_missing_only:
-        result = deepcopy(molding_payload)
-        result["injection_lines"] = [
-            row for index, row in enumerate(existing)
-            if index in used_existing or not _text(row.get("engineering_source_key"))
-        ]
-        return result
 
     # Keep rows created by the molding department. Stale engineering-projected
     # rows are intentionally omitted because their source mold has been removed.

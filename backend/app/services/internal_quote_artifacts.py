@@ -42,6 +42,7 @@ from app.services.internal_quote import (
     _add_audit,
     _add_revision,
     _calculate_and_apply,
+    _apply_uncalculated_state,
     _check_revision,
     _cost_context,
     _derive_quote_status,
@@ -56,6 +57,7 @@ from app.services.internal_quote import (
     _rr2_cost_summary,
     _section_out,
     ensure_quote_formula_current,
+    ensure_molding_projection_current,
     ensure_quote_permission,
     ensure_quote_read,
     ensure_section_permission,
@@ -165,11 +167,11 @@ def _validate_file_size(content: bytes, limit: int, label: str) -> None:
 
 def _validate_import_file(file_name: str, content: bytes, *, import_type: str) -> None:
     extension = Path(file_name).suffix.lower()
-    is_hair_xls = import_type == "hair" and extension == ".xls"
-    if extension not in IMPORT_EXTENSIONS and not is_hair_xls:
+    is_legacy_xls = import_type in {"hair", "sewing"} and extension == ".xls"
+    if extension not in IMPORT_EXTENSIONS and not is_legacy_xls:
         raise HTTPException(status_code=400, detail="导入仅支持 .xlsx/.xlsm；旧 .xls 请先另存为 xlsx")
     _validate_file_size(content, MAX_IMPORT_SIZE, "Excel 文件")
-    signature = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" if is_hair_xls else b"PK"
+    signature = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" if is_legacy_xls else b"PK"
     if not content.startswith(signature):
         raise HTTPException(status_code=400, detail="Excel 文件头无效")
 
@@ -240,6 +242,9 @@ def create_import_preview(
     content: bytes,
     user: AuthContext,
     request: Request | None = None,
+    *,
+    draft_payload: dict[str, Any] | None = None,
+    draft_revision: int | None = None,
 ) -> InternalQuoteImportPreviewOut:
     if import_type not in IMPORT_TYPE_DEPARTMENTS:
         raise HTTPException(status_code=404, detail="不支持的内部报价导入类型")
@@ -249,6 +254,10 @@ def create_import_preview(
     ensure_section_permission(db, user, quote.factory_id, target_department, "edit")
     section = _get_section(db, quote.id, target_department)
     _ensure_section_participates(section)
+    if draft_payload is not None:
+        if draft_revision is None:
+            raise HTTPException(400, "导入预览缺少表单版本号")
+        _check_revision(section.revision, draft_revision)
     clean_name = safe_file_name(file_name)
     _validate_import_file(clean_name, content, import_type=import_type)
 
@@ -266,7 +275,7 @@ def create_import_preview(
     except (ValueError, ArithmeticError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    existing_payload = _json_object(section.payload_json)
+    existing_payload = draft_payload if draft_payload is not None else _json_object(section.payload_json)
     if import_type == "electronic":
         from app.services.internal_quote_electronic import electronic_detail_payload
         existing_payload = electronic_detail_payload(existing_payload)
@@ -325,6 +334,10 @@ def create_import_preview(
             for image in parsed.embedded_images
         ],
     }
+    if draft_payload is not None:
+        # Bind the user's unsaved form to this preview. Confirmation replaces
+        # only the template-owned region, atomically retaining other inputs.
+        preview["draft_payload"] = draft_payload
     components = quote_components(db, quote)
     if components and import_type in {"mold", "painting"}:
         preview["assignment_rows"] = import_assignment_rows(import_type, parsed.payload_fragment)
@@ -404,6 +417,11 @@ def _add_decimal_values(left: object, right: object) -> str:
     return format(result, "f")
 
 
+def _imported_mold_total(rows: list[dict[str, Any]]) -> str:
+    # Each quote is the whole mold price; sets must not multiply it again.
+    return format(sum((Decimal(str(row.get("cost_rmb") or 0)) for row in rows), Decimal(0)), "f")
+
+
 def _merge_import_payload(
     import_type: str,
     current: dict[str, Any],
@@ -455,8 +473,23 @@ def _merge_import_payload(
     else:
         merged[list_field] = imported_rows if mode == "replace" else [*existing_rows, *imported_rows]
 
-    if import_type == "mold" and fragment.get("amortization_qty"):
-        if mode == "replace" or not merged.get("amortization_qty"):
+    if import_type == "mold":
+        costs = merged.get("production_mold_costs")
+        if not isinstance(costs, list):
+            costs = [{"item": name, "cost_rmb": "0"} for name in ("模具费用", "超声模费用", "喷油模具")]
+        mold_fee = next((row for row in costs if isinstance(row, dict) and "mold_import_default_rmb" in row), None)
+        if mold_fee is None:
+            mold_fee = next((row for row in costs if isinstance(row, dict) and row.get("item", row.get("name")) == "模具费用"), None)
+        if mold_fee is None:
+            mold_fee = {"item": "模具费用"}
+            costs.insert(0, mold_fee)
+        mold_fee["cost_rmb"] = _imported_mold_total(imported_rows)
+        mold_fee["mold_import_default_rmb"] = mold_fee["cost_rmb"]
+        mold_fee.pop(IMPORT_BATCH_FIELD, None)
+        if imported_rows and imported_rows[0].get(IMPORT_BATCH_FIELD):
+            mold_fee[IMPORT_BATCH_FIELD] = imported_rows[0][IMPORT_BATCH_FIELD]
+        merged["production_mold_costs"] = costs
+        if fragment.get("amortization_qty"):
             merged["amortization_qty"] = fragment["amortization_qty"]
     elif import_type == "electronic":
         rmb_hkd_fields = (
@@ -641,6 +674,19 @@ def _clear_import_generated_payload(
 
     for import_type, type_batches in batches_by_type.items():
         batch_ids = {batch.id for batch in type_batches}
+        if import_type == "mold":
+            for row in cleared.get("production_mold_costs", []) or []:
+                if not isinstance(row, dict) or row.get(IMPORT_BATCH_FIELD) not in batch_ids or "mold_import_default_rmb" not in row:
+                    continue
+                # Clear the generated default with its source, but preserve
+                # a fee the user has subsequently overridden.
+                try:
+                    if row.get("item", row.get("name")) == "模具费用" and Decimal(str(row.get("cost_rmb"))) == Decimal(str(row["mold_import_default_rmb"])):
+                        row["cost_rmb"] = "0"
+                except (ArithmeticError, ValueError):
+                    pass
+                row.pop(IMPORT_BATCH_FIELD, None)
+                row.pop("mold_import_default_rmb", None)
         for list_field in IMPORT_LIST_FIELDS.get(import_type, ()):
             retained, removed = _remove_import_rows(
                 cleared.get(list_field, []),
@@ -830,9 +876,15 @@ def confirm_import_batch(
     section = _get_section(db, quote.id, batch.target_department)
     _ensure_section_participates(section)
     _check_revision(section.revision, payload.revision)
+    _check_revision(section.revision, batch.target_revision)
     if section.status not in MUTABLE_SECTION_STATUSES:
         raise HTTPException(status_code=409, detail="目标分段当前状态不可导入，请先重新打开")
     preview = _json_object(batch.preview_json)
+    merge_base = preview.get("draft_payload", _json_object(section.payload_json))
+    if not isinstance(merge_base, dict):
+        raise HTTPException(400, "导入预览的表单数据无效，请重新选择文件")
+    if batch.import_type == "electronic" and "quote_groups" in _json_object(section.payload_json) and "quote_groups" not in merge_base:
+        raise HTTPException(409, "电子部包含多份独立报价，请重新读取后再导入")
     fragment = preview.get("payload_fragment", {})
     if not isinstance(fragment, dict):
         raise HTTPException(status_code=400, detail="导入预览批次结构无效")
@@ -848,13 +900,13 @@ def confirm_import_batch(
     if payload.electronic_quote_target is not None and batch.import_type != "electronic":
         raise HTTPException(status_code=400, detail="只有电子报价支持选择独立报价")
     if batch.import_type == "electronic":
-        merged_payload = _merge_electronic_quote(_json_object(section.payload_json), fragment, payload.electronic_quote_target, batch, preview.get("rmb_hkd_rate", "0.85"))
+        merged_payload = _merge_electronic_quote(merge_base, fragment, payload.electronic_quote_target, batch, preview.get("rmb_hkd_rate", "0.85"))
         if payload.electronic_quote_target is not None:
             imported_group = next(group for group in merged_payload["quote_groups"] if group.get("import_batch_id") == batch.id)
             preview["electronic_quote_id"] = imported_group["id"]
             effective_mode = "new_quote" if payload.electronic_quote_target == "new" else "replace_quote"
     else:
-        merged_payload = _merge_import_payload(batch.import_type, _json_object(section.payload_json), fragment, effective_mode, preview.get("rmb_hkd_rate", "0.85"))
+        merged_payload = _merge_import_payload(batch.import_type, merge_base, fragment, effective_mode, preview.get("rmb_hkd_rate", "0.85"))
     source_workbook_attachment_id = _materialize_imported_source_workbook(
         db,
         quote,
@@ -895,7 +947,7 @@ def confirm_import_batch(
     try:
         _calculate_and_apply(db, quote, section, user)
     except CalculationInputError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        _apply_uncalculated_state(db, quote, section, error=error)
     reason = f"import_confirm:{batch.import_type}:{effective_mode}:{batch.id}"
     _add_revision(db, quote, section, user, reason=reason)
     _invalidate_downstream_dependencies(
@@ -1327,7 +1379,7 @@ def delete_import_attachment(
     try:
         _calculate_and_apply(db, quote, section, user)
     except CalculationInputError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        _apply_uncalculated_state(db, quote, section, error=error)
 
     reason = f"import_attachment_delete:{','.join(batch.id for batch in batches)}"
     _add_revision(db, quote, section, user, reason=reason)
@@ -1845,7 +1897,6 @@ def create_controlled_export(
     *, commit: bool = True,
 ) -> InternalQuoteExportFileOut:
     quote = _get_quote(db, quote_id)
-    _ensure_active(quote)
     _ensure_export_permission(db, quote, user)
     direct = quote.module_version == "v4" and quote.final_release_status == "issued"
     if quote.module_version == "v4" and not direct:
@@ -1857,7 +1908,9 @@ def create_controlled_export(
         ).order_by(InternalQuoteExportFile.exported_at, InternalQuoteExportFile.id))
         if existing is not None:
             return _export_out(existing)
+    _ensure_active(quote)
     sections = _export_sections(db, quote)
+    ensure_molding_projection_current(db, quote, sections)
     ensure_quote_formula_current(quote, sections)
     _ensure_export_sections_ready(sections)
     attachments = db.scalars(
@@ -1944,7 +1997,8 @@ def create_controlled_export(
         "final_reviewed_by": quote.final_reviewed_by if is_final_release else "",
         "final_reviewed_by_name": quote.final_reviewed_by_name if is_final_release else "",
         "final_reviewed_at": quote.final_reviewed_at if is_final_release else "",
-        "spreadsheet_attachments": [
+        "spreadsheet_attachments": [],
+        "source_spreadsheet_attachments": [
             {
                 "id": attachment.id,
                 "department": attachment.department,
@@ -2087,6 +2141,7 @@ def create_engineering_workbook_export(
     _ensure_active(quote)
     _ensure_export_permission(db, quote, user)
     sections = _export_sections(db, quote)
+    ensure_molding_projection_current(db, quote, sections)
     _ensure_export_sections_ready(sections)
     content = build_internal_quote_engineering_workbook(quote, sections)
     download = EngineeringWorkbookDownload(

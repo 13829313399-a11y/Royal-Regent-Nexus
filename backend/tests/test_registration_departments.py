@@ -10,6 +10,9 @@ from test_system_user_management_api import login, logout, make_client, register
     "role_id", ["position_3d_operator", "position_3d_supervisor", "position_3d_manager"]
 )
 def test_three_d_registration_approval_preserves_profile_and_scope(monkeypatch, role_id):
+    # This legacy approval contract must not inherit the workstation's IAM V2 flags.
+    monkeypatch.setenv("IAM_IDENTITY_WRITES_ENABLED", "false")
+    monkeypatch.setenv("IAM_IDENTITY_SCHEDULING_ENABLED", "false")
     with make_client(monkeypatch) as client:
         payload = {
             **register_payload(f"applicant-{role_id}"),

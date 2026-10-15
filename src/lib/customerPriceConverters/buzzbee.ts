@@ -784,8 +784,39 @@ function p4MachineCodeValue(value: unknown) {
 }
 
 function p4Total(artifact: P4InternalQuoteArtifact, sectionCode: keyof P4InternalQuoteArtifact['sections'], key = 'total_hkd') {
+  if (!artifact.sections[sectionCode].isRequired) return 0
   const totals = p4Object(artifact.sections[sectionCode].calculation.totals)
   return p4Number(totals[key])
+}
+
+function p4ClothesRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[] {
+  const total = p4Total(artifact, 'sewing', 'clothes_hkd')
+  if (total <= 0) return []
+  const calculation = artifact.sections.sewing.calculation
+  const groups = new Map<string, number>()
+  // The saved material and labor breakdowns are disjoint. Quick quotes carry
+  // their doll name in item; detailed quotes carry it in group.
+  for (const row of [...p4Rows(calculation.line_breakdown), ...p4Rows(calculation.pricing_breakdown)]) {
+    if (row.category === 'hair' || !['sewing_material', 'sewing_labor', 'sewing_quick'].includes(String(row.kind))) continue
+    const amount = p4Number(row.amount_hkd)
+    if (amount <= 0) continue
+    const name = String((row.kind === 'sewing_quick' ? row.item : row.group) || '').trim() || '车衣材料及人工'
+    groups.set(name, (groups.get(name) ?? 0) + amount)
+  }
+  // Older artifacts can contain only a department total.
+  if (!groups.size) groups.set('车衣材料及人工', total)
+  const detailTotal = Array.from(groups.values()).reduce((sum, value) => sum + value, 0)
+  let running = 0
+  let allocated = 0
+  return Array.from(groups, ([description, amount], index) => {
+    running += amount
+    // Saved line amounts are individually rounded. Allocate their rounding
+    // difference cumulatively so doll prices conserve the authoritative total.
+    const next = index === groups.size - 1 ? total : round(running / detailTotal * total, 4)
+    const internalValue = round(next - allocated, 4)
+    allocated = next
+    return { taxTag: '', category: '车衣', description, quantity: 1, internalValue, customerValueHint: 0 }
+  }).filter((row) => row.internalValue > 0)
 }
 
 function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[] {
@@ -826,17 +857,8 @@ function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[]
     })
   })
 
-  const electronic = artifact.sections.electronic.calculation
-  const electronicGroups = p4Rows(electronic.quote_groups)
-  if (electronicGroups.length) {
-    electronicGroups.forEach((group) => {
-      const internalValue = p4Number(p4Object(group.totals).total_hkd)
-      if (internalValue > 0) costRows.push({ taxTag: '', category: '电子', description: String(group.name || '电子'), quantity: 1, internalValue, customerValueHint: 0 })
-    })
-  } else {
-    const internalValue = p4Total(artifact, 'electronic')
-    if (internalValue > 0) costRows.push({ taxTag: '', category: '电子', description: String(artifact.sections.electronic.payload.name || '电子'), quantity: 1, internalValue, customerValueHint: 0 })
-  }
+  const electronic = p4Total(artifact, 'electronic')
+  if (electronic > 0) costRows.push({ taxTag: '', category: '电子', description: '电子', quantity: 1, internalValue: electronic, customerValueHint: 0 })
 
   let paint = 0
   let spray = 0
@@ -852,11 +874,8 @@ function p4CostRows(artifact: P4InternalQuoteArtifact): BuzzBeeInternalCostRow[]
 
   const slush = p4Total(artifact, 'slush')
   if (slush > 0) costRows.push({ taxTag: '', category: '搪胶', description: '搪胶件', internalValue: slush, customerValueHint: 0 })
-  const clothes = p4Total(artifact, 'sewing', 'clothes_hkd')
-  const hair = artifact.sections.hair.isRequired
-    ? p4Total(artifact, 'hair')
-    : p4Total(artifact, 'sewing', 'hair_hkd')
-  if (clothes > 0) costRows.push({ taxTag: '', category: '车衣', description: '车衣材料及人工', internalValue: clothes, customerValueHint: 0 })
+  const hair = round(p4Total(artifact, 'hair') + p4Total(artifact, 'sewing', 'hair_hkd'), 4)
+  costRows.push(...p4ClothesRows(artifact))
   if (hair > 0) costRows.push({ taxTag: '', category: '车发', description: '车发材料及人工', internalValue: hair, customerValueHint: 0 })
   const assembly = p4Total(artifact, 'assembly', 'assembly_hkd')
   const packaging = p4Total(artifact, 'assembly', 'packaging_hkd')
@@ -902,11 +921,12 @@ export function convertBuzzBeeP4InternalQuote(
     const targetOutput = p4Number(row.target_output)
     if (!sets) throw new Error(`BuzzBee 直转缺少第 ${index + 1} 行每啤套数`)
     const calculation = injectionBreakdown[index] as Record<string, unknown>
-    const quantity = p4Number(row.quantity) || 1
+    const quantity = row.quantity == null || row.quantity === '' ? 1 : p4Number(row.quantity)
     return {
       name: String(row.item ?? `注塑件${index + 1}`),
       materialZh,
-      weightG: p4Number(row.net_weight_g),
+      // P4 stores per-piece weight; the customer sheet expects whole-product weight.
+      weightG: p4Number(row.net_weight_g) * quantity,
       machineTons: machineCode,
       setsPerShot: sets,
       targetYield: targetOutput,

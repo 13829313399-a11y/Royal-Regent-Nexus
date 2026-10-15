@@ -40,6 +40,7 @@ export interface EngineeringMaterialRow extends QuotePricingMetadata {
   disney_included: number
 }
 export interface EngineeringMoldPartRow {
+  id?: string
   name: string
   color: string
   process: string
@@ -94,7 +95,7 @@ export interface EngineeringMoldRow extends QuotePricingMetadata {
   caixing_mold_cost_hkd: number
   caixing_customer_mold_cost_hkd: number
 }
-export interface EngineeringProductionMoldCostRow { item: string; cost_rmb: number }
+export interface EngineeringProductionMoldCostRow { item: string; cost_rmb: number; import_batch_id?: string; mold_import_default_rmb?: string }
 export interface SalesDimensions { length: number; width: number; height: number }
 export type SalesPackagingCategory = 'blister' | 'color_box_inner_card' | 'leaflet_manual' | 'other_purchase'
 export interface SalesPackagingMaterialRow extends QuotePricingMetadata {
@@ -308,12 +309,14 @@ export interface SewingMaterialRow {
   supplier?: string
   fabric_moq_y?: number
   below_moq_fee_rmb?: number
-  usage: number
-  unit_price_rmb: number
-  unit_price_hkd?: number
+  usage: number | null
+  unit_price_rmb: number | null
+  unit_price_hkd?: number | null
   unit_price_source_currency?: UnitPriceSourceCurrency
   exchange_rate?: number
   markup: number
+  extra_multiplier?: number
+  quoted_price_hkd?: number
   remark: string
   source_row?: number
 }
@@ -388,9 +391,9 @@ export const defaultSalesFreightCosts: Record<LegacySalesFreightRouteKey, number
   yt5t: 11000,
 }
 export const defaultSalesFreightCalculation: SalesFreightCalculation = {
-  enabled: true,
-  freight_enabled: true,
-  lifting_enabled: true,
+  enabled: false,
+  freight_enabled: false,
+  lifting_enabled: false,
   cap_10t: 1166,
   cap_5t: 750,
   cap_40: 1980,
@@ -963,10 +966,6 @@ export function calculateEngineeringMaterialUnitHkd(row: DualCurrencyUnitPrice, 
   return calculatePackagingMaterialUnitHkd(row, rmbHkdRate)
 }
 
-export function calculateEngineeringMaterialEffectiveUnitRmb(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
-  return calculatePackagingMaterialEffectiveUnitRmb(row, rmbHkdRate)
-}
-
 export function calculateEngineeringMaterialEffectiveUnitHkd(row: DualCurrencyUnitPrice, rmbHkdRate: unknown) {
   return calculatePackagingMaterialEffectiveUnitHkd(row, rmbHkdRate)
 }
@@ -1306,54 +1305,25 @@ export function splitEngineeringMoldPartNames(value: unknown): string[] {
   return expanded
 }
 
-export function previewEngineeringMoldPartSplit(value: unknown, existing: EngineeringMoldPartRow[]) {
-  const names = splitEngineeringMoldPartNames(value)
-  const matches = new Map<number, number>()
-  const used = new Set<number>()
-  // Reserve exact matches before attempting to repair legacy bare directions.
-  names.forEach((name, index) => {
-    const found = existing.findIndex((part, oldIndex) => !used.has(oldIndex) && part.name.trim() === name)
-    if (found >= 0) { matches.set(index, found); used.add(found) }
-  })
-  const directionMatches = (short: string, full: string) => (
-    /^[前后左右]$/.test(short) && (full.startsWith(short) || new RegExp(`${short}(?:[（(][^（）()]*[）)])?$`).test(full))
-  )
-  names.forEach((name, index) => {
-    if (matches.has(index)) return
-    const candidates = existing.flatMap((part, oldIndex) => !used.has(oldIndex) && directionMatches(part.name.trim(), name) ? [oldIndex] : [])
-    if (candidates.length !== 1) return
-    const oldIndex = candidates[0]!
-    const short = existing[oldIndex]!.name.trim()
-    if (names.filter((candidate, candidateIndex) => !matches.has(candidateIndex) && directionMatches(short, candidate)).length !== 1) return
-    matches.set(index, oldIndex)
-    used.add(oldIndex)
-  })
-  const proposed = names.map((name, index) => {
-    const oldIndex = matches.get(index)
-    const old = oldIndex === undefined ? undefined : existing[oldIndex]
-    const part: EngineeringMoldPartRow = old
-      ? (old.name === name ? old : { ...old, name })
-      : { name, color: '', process: '', process_unit_price_hkd: 0, unit_net_weight_g: 0, output_count: 1, quantity: 1 }
-    return { part, status: old ? 'matched' as const : 'added' as const }
-  })
-  const retained = existing.flatMap((part, index) => used.has(index) ? [] : [{ part, status: 'retained' as const }])
-  return { rows: [...proposed, ...retained], nameCount: names.length, retainedCount: retained.length }
-}
-
 function engineeringMoldParts(row: Record<string, unknown>): EngineeringMoldPartRow[] {
-  const savedParts = rows(row.parts)
-  const sourceParts: Record<string, unknown>[] = savedParts.length
-    ? savedParts
-    : splitEngineeringMoldPartNames(row.item ?? row.name ?? row.chinese_name).map((name) => ({ name }))
-  return sourceParts.map((part) => ({
-    name: textValue(part.name ?? part.item),
-    color: textValue(part.color),
-    process: textValue(part.process),
-    process_unit_price_hkd: numberValue(part.process_unit_price_hkd),
-    unit_net_weight_g: numberValue(part.unit_net_weight_g ?? part.net_weight_g),
-    output_count: numberValue(part.output_count, 1),
-    quantity: numberValue(part.quantity, 1),
-  }))
+  // Opening or saving the ordinary form must never confirm an implicit split.
+  const sourceParts = rows(row.parts)
+  const occurrences = new Map<string, number>()
+  return sourceParts.map((part) => {
+    const name = textValue(part.name ?? part.item).trim()
+    const occurrence = (occurrences.get(name) ?? 0) + 1
+    occurrences.set(name, occurrence)
+    return {
+      id: textValue(part.id).trim() || `legacy-name:${JSON.stringify([name, occurrence])}`,
+      name: textValue(part.name ?? part.item),
+      color: textValue(part.color),
+      process: textValue(part.process),
+      process_unit_price_hkd: numberValue(part.process_unit_price_hkd),
+      unit_net_weight_g: numberValue(part.unit_net_weight_g ?? part.net_weight_g),
+      output_count: numberValue(part.output_count, 1),
+      quantity: numberValue(part.quantity, 1),
+    }
+  })
 }
 
 function electronicRows(value: unknown): ElectronicComponentRow[] {
@@ -1498,11 +1468,6 @@ export function calculateSewingBasePriceRmb(row: SewingMaterialRow, rmbHkdRate?:
   return Math.max(Number(row.usage) || 0, 0) * Math.max(Number(row.unit_price_rmb) || 0, 0)
 }
 
-export function calculateSewingRowTotalRmb(row: SewingMaterialRow, rmbHkdRate?: unknown) {
-  const markup = Math.max(Number(row.markup) || 0, 0) || 1
-  return calculateSewingBasePriceRmb(row, rmbHkdRate) * markup
-}
-
 export function calculateSewingExchangeRate(row: SewingMaterialRow, rmbHkdRate: unknown) {
   return positivePreviewNumber(row.exchange_rate) || positivePreviewNumber(rmbHkdRate)
 }
@@ -1516,17 +1481,20 @@ export function calculateSewingBasePriceHkd(row: SewingMaterialRow, rmbHkdRate: 
 }
 
 export function calculateSewingRowTotalHkd(row: SewingMaterialRow, rmbHkdRate: unknown) {
+  if (sewingUsesQuotedPrice(row)) return positivePreviewNumber(row.quoted_price_hkd)
   const markup = Math.max(Number(row.markup) || 0, 0) || 1
-  return calculateSewingBasePriceHkd(row, rmbHkdRate) * markup
+  return calculateSewingBasePriceHkd(row, rmbHkdRate) * markup * (Number(row.extra_multiplier) || 1)
+}
+
+export function sewingUsesQuotedPrice(row: SewingMaterialRow) {
+  const missing = (value: unknown) => value == null || value === ''
+  const unit = row.unit_price_source_currency === 'HKD' ? row.unit_price_hkd : row.unit_price_rmb
+  return !missing(row.quoted_price_hkd) && (missing(row.usage) || missing(unit))
 }
 
 export function sewingGroupHasLaborLine(group: SewingGroup) {
-  return group.materials.some((row) => `${row.item}${row.part}`.includes('人工'))
-}
-
-export function calculateSewingGroupTotalRmb(group: SewingGroup, rmbHkdRate?: unknown) {
-  const materialTotal = group.materials.reduce((total, row) => total + calculateSewingRowTotalRmb(row, rmbHkdRate), 0)
-  return materialTotal + (sewingGroupHasLaborLine(group) ? 0 : Math.max(Number(group.labor_rmb) || 0, 0))
+  return group.materials.some((row) => `${row.item}${row.part}`.includes('人工')
+    || [row.item.trim(), row.part.trim()].some(value => ['裁床', '车缝', '手工'].includes(value)))
 }
 
 export function calculateSewingGroupTotalHkd(group: SewingGroup, rmbHkdRate: unknown) {
@@ -1539,10 +1507,6 @@ export function calculateSewingGroupTotalHkd(group: SewingGroup, rmbHkdRate: unk
     ? Math.max(Number(group.labor_rmb) || 0, 0) / rate
     : 0
   return materialTotal + legacyLaborHkd
-}
-
-export function calculateSewingTotalRmb(payload: SewingPayload, rmbHkdRate?: unknown) {
-  return payload.groups.reduce((total, group) => total + calculateSewingGroupTotalRmb(group, rmbHkdRate), 0)
 }
 
 export function calculateSewingQuickTotalHkd(payload: SewingPayload) {
@@ -1598,7 +1562,11 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     const hasProductionMoldCosts = Array.isArray(source.production_mold_costs)
     const legacyMoldTotalRmb = normalizedMolds.reduce((total, row) => total + row.cost_rmb, 0)
     const productionMoldCosts: EngineeringProductionMoldCostRow[] = hasProductionMoldCosts
-      ? rows(source.production_mold_costs).map((row) => ({ item: textValue(row.item ?? row.name), cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb) }))
+      ? rows(source.production_mold_costs).map((row) => ({
+          ...importBatchMetadata(row),
+          ...(row.mold_import_default_rmb != null ? { mold_import_default_rmb: textValue(row.mold_import_default_rmb) } : {}),
+          item: textValue(row.item ?? row.name), cost_rmb: numberValue(row.cost_rmb ?? row.price_rmb),
+        }))
       : [
           { item: '模具费用', cost_rmb: legacyMoldTotalRmb },
           { item: '超声模费用', cost_rmb: 0 },
@@ -1628,7 +1596,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
         }
       }),
       molds: normalizedMolds,
-      mold_allocation_enabled: booleanValue(source.mold_allocation_enabled, true),
+      mold_allocation_enabled: booleanValue(source.mold_allocation_enabled, Object.keys(source).length > 0),
       production_mold_costs: productionMoldCosts,
       mold_fx_rmb_usd: numberValue(source.mold_fx_rmb_usd, 7.75),
       amortization_qty: numberValue(source.amortization_qty, 20000),
@@ -1752,13 +1720,15 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
           ...(Object.prototype.hasOwnProperty.call(row, 'supplier') ? { supplier: textValue(row.supplier) } : {}),
           ...(Object.prototype.hasOwnProperty.call(row, 'fabric_moq_y') ? { fabric_moq_y: numberValue(row.fabric_moq_y) } : {}),
           ...(Object.prototype.hasOwnProperty.call(row, 'below_moq_fee_rmb') ? { below_moq_fee_rmb: numberValue(row.below_moq_fee_rmb) } : {}),
-          usage: numberValue(row.usage ?? row.qty),
-          unit_price_rmb: numberValue(row.unit_price_rmb ?? row.mat_price ?? row.unit_price),
-          ...(row.unit_price_hkd != null ? { unit_price_hkd: numberValue(row.unit_price_hkd) } : {}),
+          usage: row.quoted_price_hkd != null && (row.usage == null || row.usage === '') ? null : numberValue(row.usage ?? row.qty),
+          unit_price_rmb: row.quoted_price_hkd != null && (row.unit_price_rmb == null || row.unit_price_rmb === '') ? null : numberValue(row.unit_price_rmb ?? row.mat_price ?? row.unit_price),
+          ...(Object.prototype.hasOwnProperty.call(row, 'unit_price_hkd') ? { unit_price_hkd: row.quoted_price_hkd != null && (row.unit_price_hkd == null || row.unit_price_hkd === '') ? null : numberValue(row.unit_price_hkd) } : {}),
           ...(row.unit_price_source_currency != null || row.unit_price_hkd != null
             ? { unit_price_source_currency: normalizeUnitPriceSourceCurrency(row) } : {}),
           ...(Object.prototype.hasOwnProperty.call(row, 'exchange_rate') ? { exchange_rate: numberValue(row.exchange_rate) } : {}),
           markup: numberValue(row.markup, 1),
+          ...(row.extra_multiplier != null ? { extra_multiplier: row.extra_multiplier === '' ? 1 : numberValue(row.extra_multiplier, 1) } : {}),
+          ...(row.quoted_price_hkd != null ? { quoted_price_hkd: numberValue(row.quoted_price_hkd) } : {}),
           remark: textValue(row.remark ?? row.note),
           ...(Object.prototype.hasOwnProperty.call(row, 'source_row') ? { source_row: numberValue(row.source_row) } : {}),
         })),
@@ -1815,7 +1785,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     && source.flat_card_price_factor !== ''
     && source.flat_card_price_factor != null
   const freightSource = objectValue(source.freight_calc)
-  const legacyFreightEnabled = booleanValue(freightSource.enabled, true)
+  // Only a blank form uses new defaults. Saved legacy payloads retain the
+  // historical interpretation of missing switches until explicitly changed.
+  const legacyFreightEnabled = booleanValue(freightSource.enabled, Object.keys(source).length > 0)
   const normalizedFreightEnabled = legacyFreightEnabled && booleanValue(freightSource.freight_enabled, true)
   const normalizedLiftingEnabled = legacyFreightEnabled && booleanValue(freightSource.lifting_enabled, true)
   const standardFreightKeys = new Set<string>([
@@ -1852,7 +1824,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
     paper_price_factor: paperPriceFactor,
     ...(hasInnerPaperPriceFactor ? { inner_paper_price_factor: numberValue(source.inner_paper_price_factor, paperPriceFactor) } : {}),
     ...(hasFlatCardPriceFactor ? { flat_card_price_factor: numberValue(source.flat_card_price_factor, paperPriceFactor) } : {}),
-    testing_fee_enabled: booleanValue(source.testing_fee_enabled, true),
+    testing_fee_enabled: booleanValue(source.testing_fee_enabled, Object.keys(source).length > 0),
     testing_fee_total_usd: numberValue(source.testing_fee_total_usd),
     testing_fee_moqs: testingFeeMoqValues(source.testing_fee_moqs, source.testing_fee_moq),
     packaging_materials: packagingMaterialRows(source.packaging_materials),

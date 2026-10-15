@@ -327,7 +327,7 @@ describe('module center factory scope', () => {
       const huakangCModules = moduleSnapshots(wrapper)
       const expectedHuakangCModules = departmentModuleRegistry[departmentId].modules
         .filter((module) => !module.factoryIds?.length || module.factoryIds.includes('huakang-c'))
-        .filter((module) => departmentId !== 'pmc-warehouse' || module.id !== 'carton-procurement')
+        .filter((module) => departmentId !== 'pmc-warehouse' || !['carton-procurement', 'material-handover'].includes(module.id))
       expect(huakangCModules).toHaveLength(expectedHuakangCModules.length)
       expect(huakangCModules.map(({ id, title, childLabels }) => ({ id, title, childLabels }))).toEqual(
         expectedHuakangCModules.map((module) => ({
@@ -350,7 +350,7 @@ describe('module center factory scope', () => {
       expect(wrapper.getComponent(PageHeader).props('title')).not.toContain('华兴')
       const huakangDModules = moduleSnapshots(wrapper)
       // Huakang C discovery workspaces are separate from the shared module structure.
-      expect(sharedStructure(huakangDModules)).toEqual(sharedStructure(huakangCModules.filter(module => !['cutting', 'fabric-warehouse', 'semi-finished-warehouse'].includes(module.id))))
+      expect(sharedStructure(huakangDModules)).toEqual(sharedStructure(huakangCModules.filter(module => !['cutting', 'fabric-warehouse', 'semi-finished-warehouse', 'material-handover'].includes(module.id))))
       expectNoForeignFactoryData(wrapper, huakangDModules, 'huakang-d', '华康D')
       if (departmentId === 'pmc-warehouse') {
         const rawMaterialModule = huakangDModules.find((module) => module.id === 'raw-material-management')

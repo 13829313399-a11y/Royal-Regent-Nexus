@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     authz_writes_enabled: bool = False
     iam_identity_writes_enabled: bool = False
     iam_identity_scheduling_enabled: bool = False
+    iam_position_workbench_enabled: bool = False
     three_d_asset_dir: str = str(BACKEND_DIR / "data" / "three-d-printing-assets")
     three_d_edge_agent_token: str = ""
     three_d_network_health_token: str = ""
@@ -46,11 +47,22 @@ class Settings(BaseSettings):
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
     assistant_enabled: bool = False
+    collaboration_enabled: bool = False
+    collaboration_storage_dir: str = str(BACKEND_DIR / "data" / "collaboration-assets")
     assistant_provider: Literal["qwen_openai_compatible"] = "qwen_openai_compatible"
     assistant_qwen_api_key: SecretStr = SecretStr("")
     assistant_qwen_base_url: str = ""
     assistant_model: str = ""
     assistant_model_capabilities_file: str = ""
+    assistant_search_endpoint: str = ""
+    assistant_search_region: str = "cn-beijing"
+    assistant_search_capabilities_file: str = ""
+    assistant_max_document_pages: int = Field(default=100, ge=1, le=500)
+    assistant_max_document_characters: int = Field(default=200000, ge=1000, le=1000000)
+    assistant_file_parse_concurrency: int = Field(default=2, ge=1, le=4)
+    assistant_file_parse_queue_limit: int = Field(default=16, ge=1, le=64)
+    assistant_file_parse_timeout_seconds: int = Field(default=60, ge=1, le=300)
+    assistant_file_parse_memory_mb: int = Field(default=512, ge=128, le=2048)
     assistant_connect_timeout_seconds: int = Field(default=10, ge=1, le=60)
     assistant_upstream_idle_timeout_seconds: int = Field(default=180, ge=1, le=600)
     assistant_run_timeout_seconds: int = Field(default=900, ge=1, le=3600)

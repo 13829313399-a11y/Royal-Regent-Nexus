@@ -15,6 +15,7 @@ from app.api.collaborative_sheets import router as collaborative_sheets_router
 from app.api.pdf_rename import router as pdf_rename_router
 from app.api.carton_mark import router as carton_mark_router
 from app.api.carton_mark_qc import router as carton_mark_qc_router
+from app.api.material_handover import router as material_handover_router
 from app.api.carton_feedback import router as carton_feedback_router
 from app.api.carton_procurement import router as carton_procurement_router
 from app.api.fabric_procurement import router as fabric_procurement_router
@@ -25,9 +26,12 @@ from app.api.carton_supplier_portal import router as carton_supplier_portal_rout
 from app.api.customer_order import router as customer_order_router
 from app.api.customer_order_ledger import router as customer_order_ledger_router
 from app.api.directory import router as directory_router
+from app.api.collaboration import router as collaboration_router
 from app.api.iam import router as iam_router
 from app.api.identity import router as identity_router
+from app.api.position_reviews import router as position_reviews_router
 from app.api.indonesia_invoice import router as indonesia_invoice_router
+from app.api.indonesia_materials import router as indonesia_materials_router
 from app.api.injection_scheduling import router as injection_scheduling_router
 from app.api.module_feedback import router as module_feedback_router
 from app.api.customer_price_settings import router as customer_price_settings_router
@@ -108,6 +112,8 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     init_db()
+    from app.services.assistant import files as assistant_files
+    await asyncio.to_thread(assistant_files.recover_jobs)
     from app.services.three_d_live import hub
     hub.start()
     sweep_task = asyncio.create_task(three_d_sweep_loop())
@@ -117,9 +123,18 @@ async def lifespan(app: FastAPI):
     uv_export_task = asyncio.create_task(uv_export_worker()) if settings.uv_ops_enabled else None
     from app.services.identity_outbox import worker as identity_worker
     identity_task = asyncio.create_task(identity_worker()) if settings.iam_identity_writes_enabled else None
+    from app.services.collaboration.maintenance import worker as collaboration_worker
+    collaboration_task = asyncio.create_task(collaboration_worker()) if settings.collaboration_enabled else None
     try:
         yield
     finally:
+        await asyncio.to_thread(assistant_files.shutdown)
+        if collaboration_task:
+            collaboration_task.cancel()
+            try:
+                await collaboration_task
+            except asyncio.CancelledError:
+                pass
         rollup_task.cancel()
         try:
             await rollup_task
@@ -153,7 +168,50 @@ async def handle_request_validation_error(
     request: Request,
     exc: RequestValidationError,
 ):
+    if request.url.path.startswith("/api/auth/"):
+        from fastapi.responses import JSONResponse
+        allowed = {"username", "display_name", "phone", "email", "factory_id", "org_unit_id",
+                   "department", "position", "password", "confirm_password", "new_password",
+                   "current_password", "contact", "note"}
+        fields = []
+        for error in exc.errors():
+            field = str(error.get("loc", [""])[-1])
+            if field not in allowed:
+                continue
+            # Never serialize Pydantic input/ctx: they can contain raw secrets.
+            kind = error.get("type", "")
+            limits = error.get("ctx", {})
+            message = "填写内容不符合要求"
+            if kind == "missing": message = "请填写此项"
+            elif kind == "string_too_long": message = f"不能超过 {limits.get('max_length')} 个字符"
+            elif kind == "string_too_short": message = f"至少需要 {limits.get('min_length')} 个字符"
+            elif field == "email": message = "请输入有效邮箱"
+            fields.append({"field": field, "message": message})
+        return JSONResponse(status_code=422, content={
+            "detail": "提交信息未通过校验，请检查填写内容", "code": "AUTH_VALIDATION_ERROR",
+            "field_errors": fields, "trace_id": getattr(request.state, "request_id", ""),
+        })
     return await request_validation_exception_handler(request, exc)
+
+
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+@app.exception_handler(StarletteHTTPException)
+async def handle_auth_http_error(request: Request, exc: StarletteHTTPException):
+    from fastapi.exception_handlers import http_exception_handler
+    from fastapi.responses import JSONResponse
+    if not request.url.path.startswith("/api/auth/"):
+        return await http_exception_handler(request, exc)
+    details = exc.detail if isinstance(exc.detail, dict) else {}
+    message = details.get("message", exc.detail if isinstance(exc.detail, str) else "认证请求未完成")
+    result = {"detail": message, "code": details.get("code", "AUTH_REQUEST_FAILED"),
+              "field_errors": details.get("field_errors", []),
+              "trace_id": getattr(request.state, "request_id", "")}
+    retry = (exc.headers or {}).get("Retry-After")
+    if retry is not None:
+        result["retry_after_seconds"] = int(retry)
+    return JSONResponse(status_code=exc.status_code, content=result, headers=exc.headers)
 
 
 @app.middleware("http")
@@ -182,8 +240,11 @@ async def record_request_timing(request: Request, call_next):
     duration_ms = (perf_counter() - started_at) * 1000
     response.headers["X-Request-ID"] = request_id
     response.headers["Server-Timing"] = f"app;dur={duration_ms:.2f}"
-    if request.url.path.startswith("/api/assistant/"):
+    if request.url.path.startswith(("/api/assistant/", "/api/auth/")):
         response.headers["Cache-Control"] = "private, no-store"
+    if request.url.path.startswith("/api/material-handover/"):
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
     if request.url.path != "/health":
         route = request.scope.get("route")
         route_path = getattr(route, "path", request.url.path)
@@ -205,6 +266,7 @@ app.include_router(collaborative_sheets_router)
 app.include_router(pdf_rename_router)
 app.include_router(carton_mark_router)
 app.include_router(carton_mark_qc_router)
+app.include_router(material_handover_router)
 app.include_router(carton_feedback_router)
 app.include_router(carton_procurement_router)
 app.include_router(fabric_procurement_router)
@@ -215,14 +277,19 @@ app.include_router(carton_supplier_portal_router)
 app.include_router(customer_order_router)
 app.include_router(customer_order_ledger_router)
 app.include_router(directory_router)
+app.include_router(collaboration_router)
 app.include_router(internal_quote_router)
 app.include_router(customer_price_artifact_router)
 app.include_router(module_feedback_router)
 app.include_router(customer_price_settings_router)
 app.include_router(indonesia_invoice_router)
+app.include_router(indonesia_materials_router)
 app.include_router(injection_scheduling_router)
 app.include_router(iam_router)
 app.include_router(identity_router)
+app.include_router(position_reviews_router)
+from app.api.iam_workspace import router as iam_workspace_router
+app.include_router(iam_workspace_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
 app.include_router(raw_material_router)

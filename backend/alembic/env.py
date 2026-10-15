@@ -19,6 +19,8 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.config import settings
 from app.db import Base
 from app.models import (
+    indonesia_materials,  # noqa: F401
+    collaboration,  # noqa: F401
     cutting_ops,  # noqa: F401
     assistant,  # noqa: F401
     work_center,  # noqa: F401
@@ -27,12 +29,14 @@ from app.models import (
     document_tools,  # noqa: F401
     collaborative_sheets,  # noqa: F401
     auth,  # noqa: F401
+    position_review,  # noqa: F401
     carton_mark,  # noqa: F401
     carton_feedback,  # noqa: F401
     carton_procurement,  # noqa: F401
     fabric_procurement,  # noqa: F401
     fabric_receiving,  # noqa: F401
     fabric_master,  # noqa: F401
+    material_handover,  # noqa: F401
     warehouse_operations,  # noqa: F401
     carton_stocktake,  # noqa: F401
     carton_positions,

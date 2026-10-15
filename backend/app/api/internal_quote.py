@@ -1,3 +1,4 @@
+import json
 from urllib.parse import quote as url_quote
 from typing import Literal
 
@@ -15,6 +16,7 @@ from app.schemas.internal_quote import (
     InternalQuoteBatchCopyRequest,
     InternalQuoteBatchProductOut,
     InternalQuoteBusinessOwnerOut,
+    InternalQuoteWorkflowMode,
     InternalQuoteCloneRequest,
     InternalQuoteCostPreviewOut,
     InternalQuoteCostPreviewRequest,
@@ -67,6 +69,7 @@ from app.services.internal_quote_alternatives import (
 from app.services.internal_quote import (
     add_quote_participation,
     archive_quote,
+    restore_quote,
     clone_quote,
     copy_batch_baseline_to_product,
     create_quote,
@@ -138,7 +141,27 @@ from app.services.internal_quote_release import (
 )
 
 
+from app.services.internal_quote_output_layout import (
+    OutputLayoutEdits, get_output_layout, preview_output_layout, save_output_layout,
+)
+
+
 router = APIRouter(prefix="/api/internal-quotes", tags=["internal-quotes"])
+
+
+@router.get("/{quote_id}/output-layout")
+def get_internal_quote_output_layout(quote_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return get_output_layout(db, quote_id, current_user)
+
+
+@router.post("/{quote_id}/output-layout/preview")
+def post_internal_quote_output_layout_preview(quote_id: str, payload: OutputLayoutEdits, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return preview_output_layout(db, quote_id, payload, current_user)
+
+
+@router.put("/{quote_id}/output-layout", response_model=InternalQuoteWholeProductSaveOut)
+def put_internal_quote_output_layout(quote_id: str, payload: OutputLayoutEdits, request: Request, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return save_output_layout(db, quote_id, payload, current_user, request)
 
 
 @router.get("/{quote_id}/alternatives")
@@ -259,10 +282,12 @@ def get_history_products(
 @router.get("/business-owners", response_model=list[InternalQuoteBusinessOwnerOut])
 def get_internal_quote_business_owners(
     factory_id: str = Query(min_length=1, max_length=64),
+    workflow_mode: InternalQuoteWorkflowMode = "section_review",
+    quote_id: str | None = Query(default=None, min_length=1, max_length=96),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    return list_business_owners(db, current_user, factory_id)
+    return list_business_owners(db, current_user, factory_id, workflow_mode=workflow_mode, quote_id=quote_id)
 
 
 @router.get("/customers", response_model=list[InternalQuoteCustomerOut])
@@ -541,6 +566,14 @@ def post_internal_quote_archive(
     return archive_quote(db, quote_id, payload, current_user, request)
 
 
+@router.post("/{quote_id}/restore", response_model=InternalQuoteOut)
+def post_internal_quote_restore(
+    quote_id: str, payload: InternalQuoteArchiveRequest, request: Request,
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
+):
+    return restore_quote(db, quote_id, payload, current_user, request)
+
+
 @router.put("/{quote_id}/sections/save-all", response_model=InternalQuoteWholeProductSaveOut)
 def put_internal_quote_sections_save_all(
     quote_id: str,
@@ -763,9 +796,19 @@ async def post_internal_quote_import_preview(
     import_type: str,
     request: Request,
     file: UploadFile = File(...),
+    draft_payload: str | None = Form(default=None, max_length=2_000_000),
+    draft_revision: int | None = Form(default=None, ge=1),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
+    draft = None
+    if draft_payload is not None:
+        try:
+            draft = json.loads(draft_payload)
+        except (ValueError, RecursionError) as error:
+            raise HTTPException(400, "当前表单格式无效，请重新选择文件") from error
+        if not isinstance(draft, dict) or draft_revision is None:
+            raise HTTPException(400, "导入预览需要完整的表单与版本号")
     content = await file.read()
     return await run_in_threadpool(
         create_import_preview,
@@ -776,6 +819,8 @@ async def post_internal_quote_import_preview(
         content,
         current_user,
         request,
+        draft_payload=draft,
+        draft_revision=draft_revision,
     )
 
 

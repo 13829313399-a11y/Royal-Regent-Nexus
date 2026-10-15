@@ -17,6 +17,7 @@ vi.mock('@/api/auth', () => ({
 }))
 
 vi.mock('vue-router', () => ({
+  RouterLink: { template: '<a><slot /></a>' },
   useRoute: () => ({ query: {} }),
   useRouter: () => ({ replace: vi.fn(), push: routerPushMock }),
 }))
@@ -50,7 +51,7 @@ describe('LoginView password reset request', () => {
       global: {
         plugins: [createPinia()],
         stubs: {
-          AuthAmbientGrid: true,
+          teleport: { template: '<div><slot /></div>' },
           RouterLink: { template: '<a><slot /></a>' },
         },
       },
@@ -59,6 +60,7 @@ describe('LoginView password reset request', () => {
     const passwordHelpButton = wrapper.findAll('button').find((button) => button.text().includes('忘记密码'))
     expect(passwordHelpButton).toBeDefined()
     await passwordHelpButton!.trigger('click')
+    await flushPromises()
     const dialog = wrapper.get('[role="dialog"]')
     await dialog.get('input[autocomplete="username"]').setValue('admin')
     await dialog.get('input[autocomplete="name"]').setValue('系统管理员')
@@ -67,10 +69,10 @@ describe('LoginView password reset request', () => {
     await flushPromises()
 
     const contactInput = dialog.get('input[autocomplete="email"]')
-    const feedback = dialog.get('#password-reset-feedback')
+    const feedback = dialog.get('[role="alert"]')
     expect(authMocks.requestPasswordReset).not.toHaveBeenCalled()
     expect(feedback.attributes('role')).toBe('alert')
-    expect(feedback.text()).toContain('请填写联系电话或邮箱，方便管理员核验')
+    expect(dialog.text()).toContain('请填写联系电话或邮箱')
     expect(contactInput.attributes('aria-invalid')).toBe('true')
     expect(document.activeElement).toBe(contactInput.element)
 
@@ -102,15 +104,47 @@ describe('LoginView password reset request', () => {
       attachTo: document.body,
       global: {
         plugins: [createPinia()],
-        stubs: { AuthAmbientGrid: true, RouterLink: { template: '<a><slot /></a>' } },
+        stubs: { teleport: { template: '<div><slot /></div>' }, RouterLink: { template: '<a><slot /></a>' } },
       },
     })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('密码重置申请已通过')
-    const completionButton = wrapper.findAll('button').find((button) => button.text().includes('立即设置新密码'))
+    expect(wrapper.text()).toContain('申请已通过')
+    await wrapper.findAll('button').find(button => button.text().includes('查看密码恢复申请'))!.trigger('click')
+    await flushPromises()
+    const completionButton = wrapper.findAll('button').find((button) => button.text().includes('进入设置密码'))
     await completionButton!.trigger('click')
     expect(routerPushMock).toHaveBeenCalledWith({ name: 'reset-password' })
+    wrapper.unmount()
+  })
+
+  it('keeps the new receipt when refreshing an old terminal claim fails', async () => {
+    authMocks.getPasswordResetClaim.mockResolvedValue({ status: 'expired', request_id: 'old-claim', can_complete: false, expires_at: '', message: '旧申请已失效' })
+    const wrapper = mount(LoginView, { attachTo: document.body, global: { plugins: [createPinia()], stubs: { teleport: { template: '<div><slot /></div>' } } } })
+    await flushPromises()
+    await wrapper.findAll('button').find(b => b.text().includes('忘记密码'))!.trigger('click')
+    await flushPromises()
+    const dialog = wrapper.get('[role="dialog"]')
+    await dialog.get('input[name="username"]').setValue('qa-account')
+    await dialog.get('input[name="display_name"]').setValue('测试员工')
+    await dialog.get('input[name="contact"]').setValue('qa@example.test')
+    authMocks.getPasswordResetClaim.mockRejectedValueOnce(new Error('offline after submission'))
+    await dialog.get('form').trigger('submit'); await flushPromises()
+    expect(dialog.find('form').exists()).toBe(false)
+    expect(dialog.text()).toContain('password-reset-1')
+    expect(dialog.text()).not.toContain('old-claim')
+    expect(dialog.text()).not.toContain('旧申请已失效')
+    expect(authMocks.requestPasswordReset).toHaveBeenCalledOnce()
+    authMocks.getPasswordResetClaim.mockResolvedValue({ status: 'expired', request_id: 'password-reset-1', can_complete: false, expires_at: '', message: '新申请已失效' })
+    await dialog.findAll('button').find(b => b.text() === '刷新申请状态')!.trigger('click'); await flushPromises()
+    expect(dialog.find('form').exists()).toBe(true)
+    authMocks.requestPasswordReset.mockRejectedValueOnce({ response: { status: 429, data: { detail: '请稍后再申请' } } })
+    await dialog.get('form').trigger('submit'); await flushPromises()
+    expect(dialog.get('[role="alert"]').attributes('data-tone')).toBe('error')
+    authMocks.getPasswordResetClaim.mockResolvedValue({ status: 'none', request_id: '', can_complete: false, expires_at: '', message: '凭证已清除' })
+    await dialog.findAll('button').find(b => b.text() === '刷新申请状态')!.trigger('click'); await flushPromises()
+    expect(dialog.find('form').exists()).toBe(true)
+    expect(dialog.text()).not.toContain('password-reset-1')
     wrapper.unmount()
   })
 })

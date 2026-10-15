@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
+import AuthExperienceShell from '@/components/auth/AuthExperienceShell.vue'
 import SidebarNav from '@/components/layout/SidebarNav.vue'
 import TopBar from '@/components/layout/TopBar.vue'
 import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScrollLock'
@@ -27,6 +28,7 @@ let releaseNavigationScrollLock: BodyScrollLockRelease | null = null
 let desktopMediaQuery: MediaQueryList | null = null
 
 const isFullPage = computed(() => Boolean(route.meta.fullPage))
+const isAuthExperience = computed(() => ['login', 'register', 'reset-password', 'change-password'].includes(String(route.name)))
 
 /**
  * 导航表面换肤只作用于白名单门户路由；其他模块路由即使已经加载过门户 CSS，
@@ -74,7 +76,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <RouterView v-if="isFullPage" />
+  <AuthExperienceShell v-if="isAuthExperience"><RouterView /></AuthExperienceShell>
+  <RouterView v-else-if="isFullPage" />
 
   <div v-else class="app-shell" :data-portal-shell="portalShellAttribute" :data-home-experience="homeScope ? 'prism-v4' : undefined" :data-home-motion="homeScope ? effectiveMotion : undefined" :data-home-density="homeScope ? density : undefined" :style="homeScope ? { '--home-topbar-height': `${topbarHeight}px` } : undefined">
     <a

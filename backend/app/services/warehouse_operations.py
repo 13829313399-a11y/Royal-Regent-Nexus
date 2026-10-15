@@ -77,6 +77,12 @@ def initial_stock(db, warehouse):
             'source_no': receipt.delivery_reference, 'source_document': receipt.id, 'production_no': facts.get('production_no', ''),
             'received_on': receipt.receipt_date, 'counterparty': facts.get('supplier', ''), 'original_batch_id': batch.id,
             'actor_name': receipt.actor_name, 'occurred_at': receipt.occurred_at}
+        stock[batch.id]['procurement_receipt'] = {'source_line_id': receipt.source_line_id, 'source_facts': facts}
+        stock[batch.id]['receipt_origin'] = dict(id=receipt.id, source_line_id=receipt.source_line_id,
+            receipt_date=receipt.receipt_date, quantity=receipt.quantity,
+            delivery_reference=evidence.get('delivery_reference', receipt.delivery_reference),
+            pricing={key: evidence[key] for key in ('unit_price', 'price_unit', 'currency', 'amount', 'price_basis') if key in evidence})
+        stock[batch.id]['source_no'] = evidence.get('delivery_reference', receipt.delivery_reference)
     return stock
 
 
@@ -101,10 +107,14 @@ def new_batch(stock, entry, data, quantity_value, base=None, quality='PENDING_IN
     row.update(location_id=data.get('location_id', ''), location_snapshot=data.get('location_snapshot', {}),
         inbound_quantity='0' if entry['kind'] == 'TRANSFER' else text(quantity_value), outbound_quantity='0',
         transfer_quantity=text(quantity_value) if entry['kind'] == 'TRANSFER' else '0')
+    if base:
+        row.update(opening_quantity='0', adjustment_quantity='0')
     if base and entry['kind'] == 'TRANSFER':
         for key in ('source_no', 'source_document', 'received_on'):
             row[key] = base[key]
     row.setdefault('original_batch_id', entry['id'])
+    if not base and data.get('procurement_receipt'):
+        row['procurement_receipt'] = copy.deepcopy(data['procurement_receipt'])
     stock[entry['id']] = row
 
 
@@ -117,11 +127,18 @@ def describe_item(data, batch):
         data[key] = batch.get(key, '')
 
 
-def validate_current_master(db, warehouse, body, stock):
+def validate_current_master(db, warehouse, body, stock, entries):
     """Current master checks run only on new postings, never reinterpret history."""
     kind = body['kind']
     if kind in {'RECEIPT', 'RETURN', 'TRANSFER', 'PROCESS_RETURN', 'LOCATION_BIND'}:
         target = locations.resolve(db, warehouse, body.get('location_id', ''))
+        if warehouse == 'fabric' and kind != 'LOCATION_BIND':
+            identity = body
+            if kind == 'TRANSFER':
+                identity = batch_for(stock, body['batch_id'])
+            elif kind == 'RETURN':
+                identity = original_for(entries, body['original_id'], {'ISSUE', 'PACK_SEND'})['batch_snapshot']
+            locations.validate_category(target, identity.get('material_category', ''))
         body['location_id'], body['location'], body['location_snapshot'] = target['id'], target['label'], target
     if kind in OUTBOUND | {'TRANSFER', 'LOCATION_BIND'}:
         batch = batch_for(stock, body['batch_id'])
@@ -136,8 +153,16 @@ def validate_current_master(db, warehouse, body, stock):
             locations.resolve(db, warehouse, batch.get('location_id', ''), inbound=False)
     if warehouse != 'fabric' or kind in {'QUALITY', 'CORRECTION', 'LOCATION_BIND'}:
         return
-    from app.services.fabric_master import records
+    from app.services.fabric_master import records, material_info
     current = records(db)
+    if kind == 'RECEIPT':
+        material = material_info({'material_code': body.get('item_code', ''),
+                                  'material_name': body.get('item_name', ''), 'unit': body.get('unit', '')}, current)
+        if material['material_category'] and material['material_category'] != body.get('material_category'):
+            raise HTTPException(422, '物料分类与已确认基础资料不同，请刷新并核对资料')
+    if kind == 'RECEIPT' and not body.get('handover_supplier_id'):
+        from app.services.fabric_supplier_identity import receipt_supplier
+        receipt_supplier(db, body.get('counterparty', ''))
     identity = stock.get(body.get('batch_id')) or body
     if body['kind'] not in {'RETURN', 'TRANSFER'}:
         for record in current:
@@ -152,6 +177,14 @@ def apply_entry(stock, entries, entry, warehouse):
     data, kind, identifier = entry['data'], entry['kind'], entry['id']
     from app.services.cutting_materials import projection_event
     if projection_event(stock, entries, entry): return
+    if warehouse == 'fabric' and (kind in {'OPENING', 'STOCKTAKE', 'OPENING_IMPORT'} or kind.startswith('STOCKTAKE_')):
+        from app.services.fabric_inventory_setup import apply_inventory_entry
+        apply_inventory_entry(stock, entries, entry)
+        return
+    if warehouse == 'fabric' and kind == 'CORRECTION' and data.get('original_id', '').startswith('FR-'):
+        from app.services.fabric_receipt_corrections import apply_original_reversal
+        apply_original_reversal(stock, entries, entry)
+        return
     if kind in {'MASTER_LOCATION', 'COMMAND_ABANDONED'}:
         entries[identifier] = entry
         return
@@ -300,9 +333,12 @@ def apply_entry(stock, entries, entry, warehouse):
         target = original_for(entries, data['original_id'], {'RECEIPT', 'ISSUE', 'RETURN', 'TRANSFER', 'PROCESS_SEND', 'PACK_SEND'})
         if entry['business_date'] < target['business_date']:
             raise HTTPException(422, '更正日期不能早于原业务日期')
+        affected = {target['id'], target['data'].get('batch_id')}
         for later in entries.values():
             if later['kind'] in {'CUTTING_RECEIPT', 'RETURN'} and later.get('reversed'):
                 continue
+            if later['sequence'] > target['sequence'] and later['kind'] == 'STOCKTAKE' and later['data'].get('batch_id') in affected:
+                raise HTTPException(409, '该批次已确认盘点，不能直接冲销盘点前的原单；请核对后重新盘点')
             if later['sequence'] > target['sequence'] and any(later['data'].get(key) == target['id'] for key in ('batch_id', 'original_id', 'task_id')):
                 raise HTTPException(409, '原单已有后续质检、收发或交接，不能直接冲销')
         tq = decimal(target['data']['quantity'])
@@ -349,6 +385,8 @@ def workspace(db, warehouse):
     rows = list(entries.values())
     original_receipts = []
     if warehouse == 'fabric':
+        from app.services.fabric_receipt_corrections import reversal_rows
+        reversed_originals = reversal_rows(db)
         from app.schemas.warehouse_operations import WarehouseDocumentRequest
         for batch in initial_stock(db, warehouse).values():
             body = WarehouseDocumentRequest(factory_id=FACTORY, request_id='00000000-0000-0000-0000-000000000000', expected_revision=0,
@@ -358,7 +396,8 @@ def workspace(db, warehouse):
             # A read projection must not manufacture new request identities.
             body['request_id'] = ''
             original_receipts.append({'id': batch['id'], 'kind': 'RECEIPT', 'sequence': 0, 'business_date': batch['received_on'],
-                'data': body, 'actor_name': batch['actor_name'], 'occurred_at': batch['occurred_at'], 'read_only': True})
+                'data': body, 'actor_name': batch['actor_name'], 'occurred_at': batch['occurred_at'], 'read_only': True,
+                'reversed': batch['receipt_origin']['id'] in reversed_originals})
     catalog = locations.catalog(db, warehouse)
     by_id = {r['id']: r for r in catalog}
     for batch in stock.values():
@@ -369,7 +408,7 @@ def workspace(db, warehouse):
         batch['location_label'] = place['label'] if place else batch['location']
         batch['available_quantity'] = '0' if not place or batch['quality_status'] in {'REJECTED', 'HOLD'} else batch['quantity']
     return {'revision': max((row['sequence'] for row in rows), default=0), 'stock': list(stock.values()),
-            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] not in {'MASTER_LOCATION', 'COMMAND_ABANDONED'}], 'original_receipts': original_receipts}
+            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] not in {'MASTER_LOCATION', 'OPENING_IMPORT', 'COMMAND_ABANDONED'} and not row['kind'].startswith('STOCKTAKE_')], 'original_receipts': original_receipts}
 
 
 def request_body(payload):
@@ -394,6 +433,10 @@ def validate_correction_date(body, entries):
 
 def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=None):
     ensure_schema(db)
+    if warehouse == 'fabric' and payload.kind == 'CORRECTION' and payload.original_id.startswith('FR-'):
+        from app.services.auth import can
+        if not can(actor, 'fabric_warehouse:read', FACTORY, 'pmc-warehouse'):
+            raise HTTPException(403, '冲销原采购实收需要采购来源查询权限')
     body = request_body(payload)
     signature = digest([warehouse, actor.id, body])
     try:
@@ -408,6 +451,10 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
                 raise HTTPException(409, '请求编号已用于其他内容或操作者，请核对原单')
             if old.kind == 'COMMAND_ABANDONED':
                 raise HTTPException(409, '原操作已停止，不能再次执行；请核对后使用新请求')
+            old_metadata = json.loads(old.payload_json)
+            if old_metadata.get('handover_document_id') or (_metadata or {}).get('handover_document_id'):
+                if not _metadata or any(old_metadata.get(k) != v for k, v in _metadata.items()):
+                    raise HTTPException(409, '该请求属于制单扫码收发，请使用原交接单请求核对')
             if _metadata is None and json.loads(old.payload_json).get('bulk_request_id'):
                 raise HTTPException(409, '该请求属于批量出库，请使用原批量请求核对')
             result = entry_data(old)
@@ -431,13 +478,20 @@ def post(db, actor, warehouse, payload, *, _state=None, _commit=True, _metadata=
         from app.services.cutting_materials import guard_post
         guard_post(db, warehouse, body, _metadata, stock, entries)
         validate_correction_date(body, entries)
-        validate_current_master(db, warehouse, body, stock)
+        if warehouse == 'fabric' and payload.kind == 'RECEIPT' and not (_metadata or {}).get('handover_document_id'):
+            from app.services.material_handover_procurement import guard_manual_delivery
+            guard_manual_delivery(db, body['source_no'], body['item_code'], body['unit'], body['counterparty'],
+                operation=body, entries=entries)
+        validate_current_master(db, warehouse, body, stock, entries)
         apply_entry(stock, entries, entry, warehouse)
+        if warehouse == 'fabric' and payload.kind == 'CORRECTION':
+            from app.services.material_handover_procurement import advance_corrected_source
+            advance_corrected_source(db, body, entries)
         if warehouse == 'fabric':
             from app.services.cutting_usage import guard_warehouse_change
             guard_warehouse_change(db, entries, entry)
-        # Source-linked fabric receipts are created by the existing receiving API;
-        # this manual path never invents purchase progress or imported opening stock.
+        # A linked handover keeps its frozen purchase receipt evidence on this same
+        # stock operation; ordinary manual entries never invent purchase progress.
         row = WarehouseOperation(id=identifier, factory_id=FACTORY, warehouse=warehouse, sequence=revision + 1,
             request_id=str(payload.request_id), request_hash=signature, kind=payload.kind, business_date=body['business_date'],
             payload_json=dump(body), actor_id=actor.id, actor_name=actor.display_name, occurred_at=now)

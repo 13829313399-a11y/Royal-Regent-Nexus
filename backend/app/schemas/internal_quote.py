@@ -762,6 +762,8 @@ class InternalQuoteOut(BaseModel):
     formula_version: str
     header_revision: int
     cloned_from_quote_id: str
+    version_archived: bool = False
+    document_archive: dict | None = None
     archived_by: str
     archived_at: str
     archive_reason: str
