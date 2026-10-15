@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import InternalQuoteComparison from './InternalQuoteComparison.vue'
 import InternalQuoteAlternativeSync from './InternalQuoteAlternativeSync.vue'
+import InternalQuoteAlternativeExport from './InternalQuoteAlternativeExport.vue'
 import type { InternalQuote } from '@/types/internalQuoteDesk'
 
 const props = defineProps<{ quote: InternalQuote; hasUnsavedChanges?: () => boolean }>()
@@ -14,6 +15,18 @@ const family = ref<ApiInternalQuoteAlternativeFamily>()
 const error = ref('')
 const message = ref('')
 const busy = ref(false)
+const exportOpen = ref(false)
+const canExport = computed(() => !documentArchive.value && auth.can('internal_quote:export', props.quote.factoryId, 'sales-business'))
+function openExport() {
+  error.value = ''
+  try { ensureSaved(); exportOpen.value = true } catch (cause) { error.value = (cause as Error).message }
+}
+async function exported() {
+  exportOpen.value = false
+  message.value = '多方案报价已输出：汇总表对比包装、MOQ 与出厂价，详细成本分别保留。'
+  emit('changed')
+  await load()
+}
 const showArchived = ref(false)
 const kind = ref<'scenario' | 'version'>('scenario')
 const copyOpen = ref(false)
@@ -215,6 +228,8 @@ async function compare() {
     <form v-if="copyOpen" class="copy-form" @submit.prevent="copy"><strong>{{ kind === 'scenario' ? '在本报价单中复制新方案' : '从当前版本复制后续版本' }}</strong><label v-if="kind === 'scenario'">方案名称<input v-model="name" maxlength="120" placeholder="例如：开窗盒包装" required></label><label>修改说明<input v-model="note" maxlength="1000" placeholder="例如：客户要求调整包装尺寸"></label><p>复制当前产品的完整资料、图片、模具及参考价格；新方案或版本仍归入本报价单，可继续切换其他产品。</p><div class="actions"><button type="submit" :disabled="busy">确认复制</button><button type="button" :disabled="busy" @click="copyOpen = false">取消</button></div></form>
     <div v-if="family" class="cards"><article v-for="group in groups" :key="group.id"><h3>{{ group.name }}</h3><div v-for="(item, index) in group.versions" :key="item.quote_id" class="version" :class="{ current: item.quote_id === quote.id, chosen: family.selected_quote_id === item.quote_id }"><details :open="index === 0 || item.quote_id === quote.id || family.selected_quote_id === item.quote_id"><summary><b>{{ item.version_label }}</b><span>{{ documentArchive ? '整单已归档' : item.archived || item.status === 'archived' ? '已归档' : isIssued(item.status) ? '已输出' : '草稿 / 历史流程' }}</span><em v-if="family.selected_quote_id === item.quote_id">客户采用</em><small v-if="item.quote_id === quote.id">当前打开</small></summary><p>{{ item.change_note || '无修改说明' }}</p><p>{{ item.reported_at ? `已报客：${item.reported_at}` : '尚未标记实际报客' }}</p><div class="actions"><button :disabled="busy || item.quote_id === quote.id" @click="open(item.quote_id)">打开</button><button v-if="canManage && isIssued(item.status) && !item.archived && family.selected_quote_id !== item.quote_id" :disabled="busy" @click="select(item.quote_id)">客户采用此版</button><button v-if="canManage && item.status !== 'archived' && family.selected_quote_id !== item.quote_id" :disabled="busy" @click="startArchive(item.quote_id, !item.archived)">{{ item.archived ? '恢复显示' : '归档此版' }}</button><button v-if="item.can_delete && item.quote_id !== family.family_id" :disabled="busy" @click="deleteId = item.quote_id">删除未使用草稿</button></div><form v-if="archiveTarget?.id === item.quote_id" class="copy-form" aria-label="归档或恢复版本" @submit.prevent="archive"><strong>{{ archiveTarget.archived ? '归档此版本' : '恢复此版本' }}</strong><p>{{ archiveTarget.archived ? '归档后隐藏此版本并暂停编辑、输出，数据和历史记录保留，可随时恢复。' : '恢复后重新显示此版本；草稿可继续编辑，已输出版本仍保留原样。' }}</p><label>本次操作说明<input :ref="node => { archiveInput = node as HTMLInputElement }" v-model="archiveReason" maxlength="1000" aria-label="归档或恢复说明" placeholder="例如：暂不采用此方案 / 需要继续修改"></label><p v-if="archiveError" role="alert" class="error">{{ archiveError }}</p><div class="actions"><button type="submit" :disabled="busy">{{ archiveTarget.archived ? '确认归档' : '确认恢复' }}</button><button type="button" :disabled="busy" @click="archiveTarget = undefined">取消</button></div></form><div v-if="deleteId === item.quote_id" class="draft-delete" role="alert"><p>确认删除此草稿及其资料？删除后无法恢复。</p><button :disabled="busy" @click="removeDraft(item.quote_id)">确认删除草稿</button><button :disabled="busy" @click="deleteId = ''">取消</button></div><p v-else-if="item.delete_block_reason" class="delete-reason">{{ item.delete_block_reason }}</p></details></div></article></div>
     <div v-if="family" class="management"><label><input v-model="showArchived" type="checkbox">显示已归档版本</label><template v-if="canManage"><label class="reason">客户采用 / 改选说明<input v-model="selectionReason" maxlength="1000" placeholder="例如：客户确认采用开窗盒 V2"></label><button v-if="family.selected_quote_id" :disabled="busy" @click="select('')">清除采用标记</button><button v-if="current && isIssued(current.status) && !current.reported_at && !current.archived" :disabled="busy" @click="reported">标记当前版已报客</button></template></div>
+    <div v-if="canExport && family && family.items.filter(item => !item.archived).length > 1" class="actions"><button type="button" :disabled="busy" @click="openExport">多方案合并输出</button><span>勾选方案版本，汇总对比包装、MOQ 和出厂价。</span></div>
+    <InternalQuoteAlternativeExport v-if="exportOpen" :key="quote.id" :quote="quote" :has-unsaved-changes="hasUnsavedChanges" @close="exportOpen = false" @completed="exported" />
     <InternalQuoteAlternativeSync v-if="family && !documentArchive && family.items.length > 1" :quote="quote" :family="family" :has-unsaved-changes="hasUnsavedChanges" @changed="refreshAfterSync" @open="open" />
     <div v-if="family && family.items.length > 1" class="compare"><h3>任选两版对比</h3><div class="actions"><select v-model="baseId" aria-label="比较基准版本"><option value="">选择基准版本</option><option v-for="item in family.items" :key="item.quote_id" :value="item.quote_id">{{ label(item.quote_id) }}</option></select><select v-model="targetId" aria-label="比较目标版本"><option v-for="item in family.items" :key="item.quote_id" :value="item.quote_id">{{ label(item.quote_id) }}</option></select><button :disabled="busy || !baseId || baseId === targetId" @click="compare">比较两版</button></div><InternalQuoteComparison v-if="comparison && comparedBase && comparedTarget" :comparison="comparison" :base="comparedBase" :target="comparedTarget" :base-label="label(baseId)" :target-label="label(targetId)" /></div>
   </section>

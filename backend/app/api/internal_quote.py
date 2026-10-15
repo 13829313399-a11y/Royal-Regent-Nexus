@@ -61,7 +61,8 @@ from app.services.auth import AuthContext, get_current_user
 from app.schemas.internal_quote_alternatives import AlternativeCopyRequest, AlternativeSelectionRequest, AlternativeArchiveRequest, AlternativeSyncRequest
 from app.services.internal_quote_packaging_copy import PackagingCopyRequest, preview_packaging_copy, apply_packaging_copy
 from app.services.internal_quote_sync import sync_options, preview_sync, apply_sync
-from app.schemas.internal_quote_alternatives import SeriesExportRequest
+from app.schemas.internal_quote_alternatives import SeriesExportRequest, AlternativeExportRequest
+from app.services.internal_quote_alternative_export import export_alternatives
 from app.services.internal_quote_series_export import export_series
 from app.services.internal_quote_alternatives import (
     list_alternatives, copy_alternative, select_alternative, archive_alternative, report_alternative, issue_alternative,
@@ -220,6 +221,15 @@ def post_direct_issue(quote_id: str, payload: InternalQuoteRevisionRequest, requ
 def post_series_export(quote_id: str, payload: SeriesExportRequest, request: Request,
                        db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     content, file_name, sha256 = export_series(db, quote_id, payload, current_user, request)
+    return Response(content=content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
+                             "X-Content-SHA256": sha256})
+
+
+@router.post("/{quote_id}/alternatives-export")
+def post_alternatives_export(quote_id: str, payload: AlternativeExportRequest, request: Request,
+                             db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    content, file_name, sha256 = export_alternatives(db, quote_id, payload, current_user, request)
     return Response(content=content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{url_quote(file_name)}",
                              "X-Content-SHA256": sha256})
