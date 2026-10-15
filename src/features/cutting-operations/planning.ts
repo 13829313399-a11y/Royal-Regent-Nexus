@@ -6,10 +6,12 @@ export interface PlanTaskInput {
   preparation_workdays?: number
   resource_change_basis?: string
   actual_prerequisite_date?: string | null; actual_prerequisite_reference?: string
+  material_receipt_ids?: string[]
   materials: Array<{ row: number; expected_date: string | null }>; readiness_basis: string
   actual_issue_date: string | null; actual_issue_reference: string; prerequisite_date: string | null; prerequisite_basis: string; days: Array<{ day: string; sets: number }>
 }
 export interface PlanTask extends PlanTaskInput {
+  material_receipts?: Array<{id:string;date:string;quantity:string;issue_id:string;request_id:string;returned_quantity:string}>
   estimated_supply_date?: string | null; actual_supply_date?: string | null; actual_review_pending?: boolean
   expected_issue_date?: string | null; // Historical estimate only; never promoted to actual issue evidence.
   resource: MasterRecord; planned_sets: number; unplanned_sets: number
@@ -30,6 +32,7 @@ export function taskInput(t: PlanTaskInput): PlanTaskInput {
     prerequisite_required: t.prerequisite_required ?? !!(t.prerequisite_date || t.actual_prerequisite_date), prerequisite_change_reason: t.prerequisite_change_reason ?? '',
     actual_prerequisite_date: t.actual_prerequisite_date ?? null, actual_prerequisite_reference: t.actual_prerequisite_reference ?? '', materials: t.materials.map(m => ({ ...m, expected_date: m.expected_date || null })),
     actual_issue_date: t.actual_issue_date ?? null, actual_issue_reference: t.actual_issue_reference ?? '',
+    material_receipt_ids: t.material_receipt_ids ?? [],
     readiness_basis: t.readiness_basis, prerequisite_date: t.prerequisite_date,
     prerequisite_basis: t.prerequisite_basis, days: t.days }))
 }

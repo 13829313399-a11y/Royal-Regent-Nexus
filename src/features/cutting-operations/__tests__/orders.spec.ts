@@ -4,6 +4,8 @@ import { createRouter, createMemoryHistory, RouterView, type Router } from 'vue-
 import { cuttingOperationsRoutes } from '../routes'
 import { cuttingApi, type MasterRecord } from '../api'
 import { ordersApi, type CuttingOrder } from '../ordersApi'
+import { materialApi } from '../materialsApi'
+vi.mock('../materialsApi',()=>({materialApi:{read:vi.fn(),catalog:vi.fn(),post:vi.fn(),recover:vi.fn()}}))
 
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span />' } }))
 vi.mock('../api', async original => ({ ...await original<typeof import('../api')>(), cuttingApi: { access: vi.fn(), list: vi.fn(), versions: vi.fn() } }))
@@ -34,7 +36,7 @@ async function receiptForm() {
   await button('签收订单版本').trigger('click')
   await wrapper.get('form.order-form textarea').setValue('核对来源订单签收')
 }
-beforeEach(() => { vi.resetAllMocks(); vi.spyOn(window, 'confirm').mockReturnValue(false) })
+beforeEach(() => { vi.resetAllMocks(); vi.mocked(materialApi.read).mockResolvedValue({revision:0,requests:[]}); vi.spyOn(window, 'confirm').mockReturnValue(false) })
 afterEach(() => { wrapper?.unmount(); vi.restoreAllMocks() })
 
 describe('cutting order workflow and save protection', () => {
@@ -275,7 +277,7 @@ describe('P2a preplan editor and protection', () => {
     vi.mocked(ordersApi.command).mockResolvedValue(bound())
     await wrapper.get('form.order-form').trigger('submit'); await flushPromises()
     expect(ordersApi.command).toHaveBeenCalledWith('line-1', 'plan', expect.objectContaining({ tasks: [expect.objectContaining({ resource_id: 'resource-1', resource_version: 1, target_sets: 50, actual_issue_date: '2026-10-12', actual_issue_reference: 'ISSUE-001', days: [] })] }))
-    expect(wrapper.text()).toContain('每日填数单独登记，领料和库存记账在后续阶段接入')
+    expect(wrapper.text()).toContain('领料申请与实发签收已对接布料仓')
   })
   it('protects task drafts on route exit and freezes the original payload after timeout', async () => {
     await planForm()
