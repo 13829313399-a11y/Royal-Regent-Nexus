@@ -1043,7 +1043,7 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async listAlternatives(quoteId: string) {
       return (await client.get<ApiInternalQuoteAlternativeFamily>(`/internal-quotes/${quoteId}/alternatives`)).data
     },
-    async createAlternative(quoteId: string, payload: { revision: number; family_revision: number; kind: 'scenario' | 'version'; name: string; change_note: string }) {
+    async createAlternative(quoteId: string, payload: { revision: number; family_revision: number; kind: 'scenario' | 'version'; name: string; change_note: string; copy_departments?: InternalQuoteSectionCode[] }) {
       return (await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/alternatives`, payload)).data
     },
     async selectAlternative(quoteId: string, payload: { family_revision: number; selected_quote_id: string; reason: string }) {
