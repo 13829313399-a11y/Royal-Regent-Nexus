@@ -188,7 +188,7 @@ function requirements(data: MasterRecord['data']) { return (data as BomData).req
 
 <template>
   <section class="cutting-page cutting-master">
-    <PageHeader title="基础资料" description="登记物料、执行方及工程生产 BOM；修订保留原版本。" eyebrow="华康 C / 裁床部"><template #actions><StatusPill label="基础资料 · P1b" /></template></PageHeader>
+    <PageHeader title="基础资料" description="登记物料、执行方及工程生产 BOM；修订保留原版本。"><template #actions><StatusPill label="基础资料 · P1b" /></template></PageHeader>
     <p class="cutting-notice">BOM 可分别指定当前裁剪必需料和后续辅料；资源支持工作日历和默认准备周期，订单关联与交期已接入。每日填数已独立接入，单位换算与实际库存仍待后续阶段。</p>
     <p v-if="error" role="alert" class="cutting-error">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <Button variant="outline" v-if="pending" type="button" :disabled="saving" @click="executePending">重试原操作</Button>

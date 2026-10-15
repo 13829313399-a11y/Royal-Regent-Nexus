@@ -114,7 +114,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
 
 <template>
   <section class="cutting-page cutting-master reporting-page">
-    <PageHeader title="每日生产填数" description="文员提交即生效，主管抽查；完整套数、散片、外发验收与交接分别追踪。" eyebrow="华康 C / 裁床部"><template #actions><StatusPill label="每日填数 · P2b" /></template></PageHeader>
+    <PageHeader title="每日生产填数" description="文员提交即生效，主管抽查；完整套数、散片、外发验收与交接分别追踪。"><template #actions><StatusPill label="每日填数 · P2b" /></template></PageHeader>
     <p v-if="error" role="alert" class="cutting-error">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="loading" role="status">正在读取生产记录…</p>
     <div v-if="needsLogin"><p>登录已失效，填报内容暂时隐藏。请在新标签页重新登录，再重试或核对原操作。</p><a href="/login" target="_blank" rel="noopener">重新登录</a></div>
