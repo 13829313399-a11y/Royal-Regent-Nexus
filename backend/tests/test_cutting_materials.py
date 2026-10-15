@@ -22,9 +22,9 @@ def actor(*cutting, warehouse=True, department='*'):
     return replace(u,permissions=codes,active_permission_codes=codes,grants=(AuthGrantContext(role_id='test',role_name='Test',factory_id='huakang-c',department=department,permissions=codes),))
 
 @pytest.fixture
-def bridge(planned):
+def bridge(planned, request):
     p,_=planned
-    r=resource(p)
+    r=resource(p, execution=getattr(request, 'param', 'internal'))
     assert save(p,[task(r)]).status_code==200
     assert publish(p).status_code==200
     p.app.include_router(warehouse_api.router)

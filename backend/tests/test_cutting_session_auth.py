@@ -16,7 +16,7 @@ def session_flow(flow, monkeypatch):
     flow.app.include_router(auth_api.router)
     flow.app.dependency_overrides.pop(get_current_user)
     monkeypatch.setattr(auth_api.settings, 'session_cookie_secure', False)
-    actions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile', 'plan_write', 'plan_publish', 'report_write', 'report_review', 'handover_write', 'acceptance_write']
+    actions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile', 'plan_write', 'plan_publish', 'report_write', 'report_review', 'handover_write', 'acceptance_write', 'cost_read', 'allocation_confirm']
     with Session(flow.engine) as db:
         # Required IAM invariant row, seeded by the real migration in deployed databases.
         db.add(AuthIamState(key='identity_mutation_lock', value_json='{}'))
@@ -102,3 +102,30 @@ def test_real_session_reporting_access_is_explicit_production(session_flow,name,
     else:
         assert response.status_code==200
         assert all((action in response.json()['permissions'])==expected for action in ('report_write','report_review','handover_write','acceptance_write'))
+
+
+@pytest.mark.parametrize('name,expected', [('production',True),('engineering',False),('procurement',False),('reader',False)])
+def test_real_session_allocation_permission_is_separate_and_production_scoped(session_flow, name, expected):
+    login(session_flow, name)
+    access = session_flow.get(BASE + '/access?factory_id=huakang-c')
+    assert access.status_code == 200
+    assert ('allocation_confirm' in access.json()['permissions']) == expected
+    if not expected:
+        assert session_flow.post(BASE + '/orders/line-1/usage/allocate', json={'factory_id':'huakang-c'}).status_code == 403
+
+
+def test_real_session_allocation_deny_and_revocation_are_immediate(session_flow):
+    p = session_flow
+    login(p, 'production')
+    with Session(p.engine) as db:
+        db.add(AuthUserPermissionOverride(id='deny-allocation', user_id='production', permission_id='cutting_ops:allocation_confirm',
+                                         effect='deny', factory_id='huakang-c', department='production'))
+        db.commit()
+    assert 'allocation_confirm' not in p.get(BASE + '/access?factory_id=huakang-c').json()['permissions']
+    assert p.post(BASE + '/orders/line-1/usage/allocate', json={'factory_id':'huakang-c'}).status_code == 403
+    with Session(p.engine) as db:
+        db.execute(delete(AuthUserPermissionOverride).where(AuthUserPermissionOverride.id=='deny-allocation'))
+        db.execute(delete(AuthRolePermission).where(AuthRolePermission.id=='production:allocation_confirm'))
+        db.commit()
+    assert 'allocation_confirm' not in p.get(BASE + '/access?factory_id=huakang-c').json()['permissions']
+    assert p.post(BASE + '/orders/line-1/usage/allocate', json={'factory_id':'huakang-c'}).status_code == 403

@@ -53,6 +53,7 @@ def test_use_counts_signed_balance_once_without_changing_warehouse_stock(custody
     result=read(p);row=result['issues'][0]
     assert row['consumed_quantity']=='2' and row['loss_quantity']=='0.5' and row['remaining_quantity']=='1.5'
     assert 'price' not in row and 'cost_at_post' not in result['documents'][0]
+    assert 'cost_summary' not in result
     assert warehouse_view(p)['stock']==before
     assert read(p,True)['pending_pricing']==1 and read(p,True)['issues'][0]['normal_cost'] is None
 
@@ -63,9 +64,11 @@ def test_batch_pricing_and_price_revision_are_append_only_and_currency_explicit(
     result=read(p,True);row=result['issues'][0]
     assert row['normal_cost']=='6.25' and row['loss_cost']=='1.56' and result['amounts']=={'HKD':'7.81'}
     assert result['pending_pricing']==0
+    assert result['cost_summary']['tasks'][0]['costs']['HKD']==dict(normal='6.25',loss='1.56',total='7.81')
     write(p,'price',issue_id=p.issue_id,unit_cost='4',currency='HKD',price_reference='同一原批次更正凭据B')
     result=read(p,True)
     assert len(result['price_history'])==2 and result['amounts']=={'HKD':'10.00'}
+    assert result['cost_summary']['materials'][0]['costs']['HKD']['total']=='10.00'
     assert result['documents'][0]['cost_at_post'] is None
 
 
@@ -76,6 +79,26 @@ def test_known_zero_price_requires_explicit_evidence(custody):
     consume(p)
     assert read(p,True)['issues'][0]['normal_cost']=='0.00'
     assert read(p,True)['documents'][0]['cost_at_post']['unit_cost']=='0'
+
+
+@pytest.mark.parametrize('reference', ['    ', '\t \n ', '  A  ', '  采购  '])
+@pytest.mark.parametrize('unit_cost', ['0', '3.125'])
+def test_batch_cost_reference_is_validated_after_trimming(custody, reference, unit_cost):
+    p=custody
+    before=read(p,True)
+    write(p,'price',422,issue_id=p.issue_id,unit_cost=unit_cost,currency='CNY',price_reference=reference)
+    after=read(p,True)
+    assert after['revision']==before['revision']
+    assert after['price_history']==[] and after['issues'][0]['price'] is None
+
+
+def test_batch_cost_history_retains_trimmed_meaningful_reference(custody):
+    p=custody
+    write(p,'price',issue_id=p.issue_id,unit_cost='0',currency='CNY',price_reference='  客户供料成本核定  ')
+    consume(p)
+    result=read(p,True)
+    assert result['price_history'][0]['data']['entry']['price_reference']=='客户供料成本核定'
+    assert result['documents'][0]['cost_at_post']['price_reference']=='客户供料成本核定'
 
 
 def test_use_rejects_unbalanced_or_unreceived_quantities_and_duplicate_day(custody):
