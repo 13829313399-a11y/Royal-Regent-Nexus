@@ -22,8 +22,14 @@ def make_client(monkeypatch, authz_mode: str = "enforce"):
     database_url = f"sqlite:///{TEST_TMP_DIR / f'system_auth_{uuid4().hex}.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
+    monkeypatch.setenv("SEED_DEFAULT_ACCOUNTS", "true")
     monkeypatch.setenv("AUTHZ_MODE", authz_mode)
-    monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "false")
+    monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "true" if authz_mode == "enforce" else "false")
+    # This suite verifies the legacy registration adapter. Never inherit the
+    # daily development database's V2 enrollment switches from backend/.env.
+    monkeypatch.setenv("IAM_IDENTITY_WRITES_ENABLED", "false")
+    monkeypatch.setenv("IAM_IDENTITY_SCHEDULING_ENABLED", "false")
+    monkeypatch.setenv("IAM_POSITION_WORKBENCH_ENABLED", "false")
 
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
@@ -672,9 +678,9 @@ def test_manager_position_recommendations_stay_inside_registration_department_sc
     ]
 
     with make_client(monkeypatch) as client:
-        for username, department, position, _ in cases:
+        for index, (username, department, position, _) in enumerate(cases):
             payload = register_payload(username)
-            payload.update({"department": department, "position": position})
+            payload.update({"department": department, "position": position, "phone": f"1380000000{index}"})
             response = client.post("/api/auth/register", json=payload)
             assert response.status_code == 200, response.text
 
@@ -807,7 +813,9 @@ def test_scoped_manager_cannot_bypass_iam_with_registration_approval(monkeypatch
         huaxing = register_payload("scope-huaxing")
         huadeng = register_payload("scope-huadeng")
         huadeng["factory_id"] = "huadeng"
+        huadeng["phone"] = "13900000000"
         high_risk = register_payload("scope-high-risk")
+        high_risk["phone"] = "13700000000"
         assert client.post("/api/auth/register", json=huaxing).status_code == 200
         assert client.post("/api/auth/register", json=huadeng).status_code == 200
         assert client.post("/api/auth/register", json=high_risk).status_code == 200
@@ -997,8 +1005,13 @@ def test_handled_system_notification_cannot_be_downgraded_to_read(monkeypatch):
             f"/api/system/notifications/{notification['id']}",
             json={"status": "handled"},
         )
-        assert handled_response.status_code == 200
-        handled_payload = handled_response.json()
+        # A notification cannot complete the underlying registration workflow.
+        assert handled_response.status_code == 409
+        pending = client.get("/api/system/registration-requests?status=pending").json()
+        assert len(pending) == 1
+        assert client.post(f"/api/system/registration-requests/{pending[0]['id']}/reject",
+            json={"review_comment": "核对后拒绝申请"}).status_code == 200
+        handled_payload = next(n for n in client.get("/api/system/notifications").json() if n["id"] == notification["id"])
         assert handled_payload["status"] == "handled"
         assert handled_payload["handled_at"]
 
@@ -1017,8 +1030,10 @@ def test_registration_notifications_are_isolated_by_factory_and_department(monke
         huaxing_production = register_payload("registration-hx-production")
         huaxing_production["department"] = "production"
         huaxing_production["position"] = "生产文员"
+        huaxing_production["phone"] = "13900000000"
         huadeng_engineering = register_payload("registration-hd-engineering")
         huadeng_engineering["factory_id"] = "huadeng"
+        huadeng_engineering["phone"] = "13700000000"
 
         assert client.post("/api/auth/register", json=huaxing_engineering).status_code == 200
         assert client.post("/api/auth/register", json=huaxing_production).status_code == 200
@@ -1061,7 +1076,7 @@ def test_registration_notifications_are_isolated_by_factory_and_department(monke
         ).status_code == 403
 
 
-def test_notification_department_scope_is_observational_in_shadow_and_enforced_only_in_enforce(
+def test_registration_notification_department_scope_is_enforced_in_all_modes(
     monkeypatch,
     caplog,
 ):
@@ -1083,12 +1098,7 @@ def test_notification_department_scope_is_observational_in_shadow_and_enforced_o
         login(client, "shadow-hx-engineering")
         with caplog.at_level("WARNING", logger="app.services.system"):
             visible_ids = {item["id"] for item in client.get("/api/system/notifications").json()}
-        assert notification["id"] in visible_ids
-        assert any(
-            "authz shadow mismatch" in record.message
-            and f"notification={notification['id']}" in record.message
-            for record in caplog.records
-        )
+        assert notification["id"] not in visible_ids
 
     with make_client(monkeypatch, authz_mode="legacy") as client:
         payload = register_payload("legacy-production-registration")
@@ -1107,7 +1117,7 @@ def test_notification_department_scope_is_observational_in_shadow_and_enforced_o
         create_scoped_permission_manager("legacy-hx-engineering", "huaxing", "engineering")
         login(client, "legacy-hx-engineering")
         visible_ids = {item["id"] for item in client.get("/api/system/notifications").json()}
-        assert notification["id"] in visible_ids
+        assert notification["id"] not in visible_ids
 
 
 def test_password_reset_notifications_follow_profile_scope_and_unmatched_are_superadmin_only(monkeypatch):

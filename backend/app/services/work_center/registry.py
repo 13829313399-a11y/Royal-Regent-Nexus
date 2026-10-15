@@ -10,7 +10,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.functions import FunctionElement
 
-from app.models.auth import AuthPasswordResetRequest, AuthRegistrationRequest, SystemNotification
+from app.models.auth import AuthAccessRequest, AuthPasswordResetRequest, AuthRegistrationRequest, SystemNotification
 from app.models.carton_procurement import CartonAuditEvent, CartonReceipt
 from app.models.carton_supplier_portal import SupplierShipment
 from app.models.internal_quote import InternalQuote, InternalQuoteAlternative, InternalQuoteAuditLog, InternalQuoteSection
@@ -196,11 +196,9 @@ def shipment_queries(user):
 
 
 def account_queries(db, user):
-    from app.services.system import is_superadmin
+    from app.services.position_workbench_read import visible_registration_ids
     r = AuthRegistrationRequest
-    scope = true() if user is None or is_superadmin(user) else or_(false(), *[
-        and_(r.factory_id == f, r.department == d) for f in ALLOWED_FACTORY_IDS for d in ALLOWED_DEPARTMENTS
-        if can(user, "system:user_manage", f, d)])
+    scope = true() if user is None else r.id.in_(visible_registration_ids(db, user))
     yield projection(module="account_requests", entity_id=r.id, stage="registration", factory=r.factory_id,
                      department=r.department, title="审核注册申请", reference=applicant_reference(r),
                      summary=literal("申请岗位：") + func.coalesce(func.nullif(func.trim(r.position), ""), "未填写") + "；请核对申请组织与任职资料。",
@@ -228,23 +226,45 @@ def applicant_reference(request):
 
 
 def reset_visibility(db, user, *, history=False):
-    from app.services.system import is_superadmin, target_users_scopes
-    if user is None or is_superadmin(user): return true()
+    from app.services.system import can_access_password_reset_request, target_users_scopes
+    if user is None: return true()
     p = AuthPasswordResetRequest
     targets = select(p.user_id)
     if not history: targets = targets.where(p.status.in_(("pending", "approved")))
     scopes = target_users_scopes(db, targets)
-    allowed = [uid for uid, required in scopes.items() if required and all(can(user, "system:user_manage", f, d) for f, d in required)]
-    return p.user_id.in_(allowed)
+    query = select(p)
+    if not history: query = query.where(p.status.in_(("pending", "approved")))
+    allowed = []
+    for row in db.scalars(query):
+        if can_access_password_reset_request(db, user, row, target_scopes=scopes.get(row.user_id, set())):
+            allowed.append(row.id)
+    return p.id.in_(allowed)
 
 
-def identity_queries(user):
+def identity_queries(db, user):
     n = SystemNotification
     yield projection(module="identity", entity_id=n.id, stage="identity_changed", factory="",
                      assignee=n.target_user_id, title="任职信息已更新", reference="本人任职",
                      summary="任职信息发生变化，请刷新账户上下文，提交业务前重新核对当前权限和厂区。",
                      opened=n.created_at, kind="info", lifecycle=None, can_act=False,
                      visible=true() if user is None else n.target_user_id == user.id).where(n.type == "identity_changed")
+    # Responsibility follows the request state, never the notification's read status.
+    r = AuthAccessRequest
+    visible, actionable = true(), true()
+    if user is not None:
+        from app.services.iam_workspace import Projection
+        from app.services.identity_resolver import utc_now
+        changes = Projection(db, user, utc_now()).changes() if "system:user_manage" in user.permissions else []
+        visible = and_(n.target_user_id == user.id, r.id.in_([c["source_id"] for c in changes]))
+        actionable = r.id.in_([c["source_id"] for c in changes if c["state"] == "actionable"])
+    pending = r.lifecycle_state == "pending_approval"
+    yield projection(module="identity", entity_id=n.id, stage="identity_approval", cycle=r.id,
+        assignee=n.target_user_id, title="审核职位与权限调整", reference="职位与权限调整",
+        summary="请核对目标职位、权限包和生效范围后办理。", opened=n.created_at,
+        visible=visible, can_act=and_(pending, actionable),
+        lifecycle=case((pending, "open"), (r.lifecycle_state.in_(("rejected", "cancelled")), "cancelled"), else_="resolved")
+        ).select_from(n).join(r, r.id == PayloadValue(n.payload_json, literal("change_id"))).where(
+            n.type == "identity_change_submitted", r.request_type.like("identity:%"))
 
 
 def position_queries(db, user):
@@ -310,7 +330,7 @@ def current_query(db, user):
 def providers(db, user):
     return (("molding", lambda: molding_queries(user)), ("internal_quote", lambda: quote_queries(user)),
         ("carton_supplier", lambda: shipment_queries(user)), ("account_requests", lambda: account_queries(db, user)),
-        ("identity", lambda: identity_queries(user)), ("business_results", lambda: result_queries(user)),
+        ("identity", lambda: identity_queries(db, user)), ("business_results", lambda: result_queries(user)),
         ("position_reviews", lambda: position_queries(db, user)),
         ("legacy_history", lambda: legacy_history_queries(user)), ("integrity", lambda: diagnostic_queries(user)))
 

@@ -33,6 +33,16 @@ beforeEach(() => {
   view()
 })
 async function ready() { await review.select('position:p'); await flushPromises(); await vi.advanceTimersByTimeAsync(301); await flushPromises() }
+it('keeps loaded registration contacts unchanged while an administrator edits the correction draft', async () => {
+  api.detail.mockResolvedValue({ ...detail('registrant'), kind: 'registration', item_key: 'registration:R', can_keep_permissions: false,
+    registration_details: { display_name: '申请姓名', phone: '13800000000', email: 'registered@example.com' } })
+  await review.select('registration:R'); await flushPromises()
+  review.draft.value!.registration_details_correction!.phone = '13900000000'
+  review.draft.value!.registration_details_correction!.email = 'corrected@example.com'
+  expect(review.detail.value!.registration_details).toEqual({ display_name: '申请姓名', phone: '13800000000', email: 'registered@example.com' })
+  expect(review.dirty.value).toBe(true)
+  expect(api.commit).not.toHaveBeenCalled()
+})
 it('automatically previews after debounce and synchronously invalidates risk on any draft edit', async () => {
   await ready(); expect(review.canCommit.value).toBe(true)
   review.risk.value = true; review.draft.value!.confirmed_profile.position = '经理'

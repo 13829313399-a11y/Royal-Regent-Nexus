@@ -12,6 +12,26 @@ from test_password_reset_workflow import (
 )
 
 
+def test_historical_long_password_can_complete_forced_change(monkeypatch):
+    with make_client(monkeypatch) as client:
+        uid = create_user("historical-long")
+        dbm = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.auth")
+        auth = importlib.import_module("app.services.auth")
+        old = "legacy" * 50
+        with dbm.SessionLocal() as db:
+            user = db.get(models.AuthUser, uid)
+            user.password_salt, user.password_hash = auth.make_password_hash(old)
+            user.force_password_change = 1
+            db.commit()
+        assert login(client, "historical-long", old).status_code == 200
+        response = client.post("/api/auth/change-password", json={"current_password": old,
+            "new_password": NEW_PASSWORD, "confirm_password": NEW_PASSWORD})
+        assert response.status_code == 200, response.text
+        assert login(client, "historical-long", NEW_PASSWORD).status_code == 200
+        assert login(client, "historical-long", old).status_code == 401
+
+
 @pytest.mark.parametrize("old_status", ["pending", "approved", "expired"])
 def test_real_password_change_invalidates_every_old_claim(monkeypatch, old_status):
     with make_client(monkeypatch) as original_browser:

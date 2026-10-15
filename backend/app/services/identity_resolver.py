@@ -2,7 +2,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 from hashlib import sha256
-from sqlalchemy import case, select
+from sqlalchemy import case, select, func
 from sqlalchemy.orm import Session
 from app.models.auth import EmployeeProfile
 from app.models.identity import EmployeeAssignment, IamOrgUnit, IamOrgDepartment
@@ -62,6 +62,7 @@ def resolve_identity_at(db: Session, user_id: str, at: datetime | None = None) -
             "primary_assignment": primary, "active_assignments_summary": active,
             "assignments": [assignment_dict(a, org, at) for a, org in rows],
             "primary_factory_id": (primary["factory_id"] if primary else "") if v2 else (profile.primary_factory_id if profile else ""),
+            "primary_org_unit_id": (primary["org_unit_id"] if primary else "") if v2 else ((profile.primary_org_unit_id or profile.primary_factory_id) if profile else ""),
             "primary_department": (primary["department_code"] if primary else "") if v2 else (profile.primary_department if profile else ""),
             "position": (primary["official_position_title"] if primary else "") if v2 else (profile.position if profile else ""),
             "server_now": stamp(at), "next_transition_at": stamp(boundaries[0]) if boundaries else None,
@@ -86,5 +87,5 @@ def identity_columns(at: datetime | None = None, *, include_org=False):
               (EmployeeAssignment.department_code, EmployeeProfile.primary_department),
               (EmployeeAssignment.official_position_title, EmployeeProfile.position)]
     if include_org:
-        fields.append((EmployeeAssignment.org_unit_id, EmployeeProfile.primary_factory_id))
+        fields.append((EmployeeAssignment.org_unit_id, func.coalesce(func.nullif(EmployeeProfile.primary_org_unit_id, ""), EmployeeProfile.primary_factory_id)))
     return tuple(case((EmployeeProfile.identity_mode == "v2", column(field)), else_=legacy) for field, legacy in fields)

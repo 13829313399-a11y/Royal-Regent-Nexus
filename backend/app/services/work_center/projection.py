@@ -147,7 +147,7 @@ def install_projection_hooks(session_factory):
             elif isinstance(obj, (AuthRegistrationRequest, AuthPasswordResetRequest)): module, source_id = "account_requests", obj.id
             elif isinstance(obj, SupplierShipment): module, source_id = "carton_supplier", obj.id
             elif isinstance(obj, PositionReview): module, source_id = "position_reviews", obj.id
-            elif isinstance(obj, SystemNotification) and obj.type == "identity_changed": module, source_id = "identity", obj.id
+            elif isinstance(obj, SystemNotification) and obj.type in {"identity_changed", "identity_change_submitted"}: module, source_id = "identity", obj.id
             elif isinstance(obj, SystemNotification) and obj.type == "internal_quote":
                 try: module, source_id = "internal_quote", json.loads(obj.payload_json or "{}").get("quote_id")
                 except (ValueError, TypeError): pass

@@ -11,6 +11,7 @@ const normalize = (url: string, enabled = true) => {
 }
 it.each([
   ['/system/users?person=P', '/system/users', {view:'people',person:'P',panel:'profile'}],
+  ['/system/users?person=P&panel=manage', '/system/users', {view:'people',person:'P',panel:'manage'}],
   ['/system/users?tab=people', '/system/users', {view:'people'}],
   ['/system/users?tab=users', '/system/users', {view:'people'}],
   ['/system/users/position-reviews?item=position:R', '/system/users', {view:'todo',task:'position:R'}],

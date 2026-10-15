@@ -34,6 +34,17 @@ def login(client):
     return response.json()["id"]
 
 
+def applicant(db, models, uid, factory="huakang-a"):
+    # A real pending person, not an application attached to the global admin.
+    db.add(models.AuthUser(id=uid, username=uid, display_name="测试申请人", status="pending",
+        password_salt="test-only", password_hash="test-only"))
+    db.flush()
+    db.add(models.EmployeeProfile(user_id=uid, primary_factory_id=factory, primary_department="engineering",
+        confirmation_status="pending"))
+    db.flush()
+    return uid
+
+
 def test_identity_is_info_and_personal_read_does_not_write_old_notification(monkeypatch):
     with make_client(monkeypatch) as client:
         user_id = login(client)
@@ -99,7 +110,8 @@ def test_personal_versions_epoch_permission_and_batch(monkeypatch):
         auth = importlib.import_module("app.models.auth")
         schema = importlib.import_module("app.schemas.work_center")
         with dbm.SessionLocal() as db:
-            db.add(auth.AuthRegistrationRequest(id="r", user_id=uid, username="pending", factory_id="huakang-a", department="engineering", submitted_at="2024-01-01 00:00:00"))
+            pending_uid = applicant(db, auth, "state-test-applicant")
+            db.add(auth.AuthRegistrationRequest(id="r", user_id=pending_uid, username="pending", factory_id="huakang-a", department="engineering", submitted_at="2024-01-01 00:00:00"))
             db.commit()
             a = actor(uid, permissions=("system:user_manage",))
             b = actor("user-peer", permissions=("system:user_manage",))
@@ -217,8 +229,9 @@ def test_reconcile_twice_snapshot_read_only_savepoint_events_cursor(monkeypatch)
         rec = importlib.import_module("app.services.work_center.reconciliation")
         with dbm.SessionLocal() as db:
             # Bulk SQL represents historical data written before hooks existed.
+            pending_uid = applicant(db, auth, "history-test-applicant")
             for i in range(7):
-                db.execute(auth.AuthRegistrationRequest.__table__.insert().values(id=f"historical-{i}", user_id=uid, username=f"u{i}",
+                db.execute(auth.AuthRegistrationRequest.__table__.insert().values(id=f"historical-{i}", user_id=pending_uid, username=f"u{i}",
                     factory_id="huakang-a", department="engineering", status="pending", submitted_at="2025-01-01 12:00:00"))
             db.commit()
             dry = rec.reconcile(db)
@@ -236,7 +249,7 @@ def test_reconcile_twice_snapshot_read_only_savepoint_events_cursor(monkeypatch)
             for _ in range(100): projection.materialize(db, repeated, legacy=True)
             db.commit()
             assert db.scalar(select(func.count()).select_from(wc.WorkCenterEvent)) == 7
-            db.add(auth.AuthRegistrationRequest(id="outer", user_id=uid, username="outer", factory_id="huakang-a", department="engineering"))
+            db.add(auth.AuthRegistrationRequest(id="outer", user_id=pending_uid, username="outer", factory_id="huakang-a", department="engineering"))
             db.flush()
             with db.begin_nested() as nested: nested.rollback()
             db.commit()
@@ -364,7 +377,8 @@ def test_account_preview_uses_applicant_details_and_search_preserves_scope(monke
         auth = importlib.import_module("app.models.auth")
         with dbm.SessionLocal() as db:
             for ident, factory, name in (("registration-visible", "huakang-a", "张三"), ("registration-hidden", "huakang-b", "李四")):
-                db.add(auth.AuthRegistrationRequest(id=ident, user_id=uid, username=f"account-{factory}", display_name=name,
+                pending_uid = applicant(db, auth, f"applicant-{factory}", factory)
+                db.add(auth.AuthRegistrationRequest(id=ident, user_id=pending_uid, username=f"account-{factory}", display_name=name,
                     factory_id=factory, department="engineering", position="工程技术员", phone="13800000000", email="staff@example.test",
                     submitted_at="2026-09-29 09:30:00"))
             db.commit()

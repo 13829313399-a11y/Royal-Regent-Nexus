@@ -3,12 +3,13 @@ import IamDisclosure from '@/components/iam/workspace/IamDisclosure.vue'
 import type { AccessTuple, ChangePreview } from '@/api/identity'
 import { formatBusinessDateTime } from '@/lib/dateTime'
 import { registrationDepartmentLabel } from '@/data/registrationDepartments'
+import { permissionName } from './positionLabels'
 defineProps<{ preview: ChangePreview }>()
 function grouped(tuples: AccessTuple[]) {
   const groups = new Map<string, { name: string; scopes: Map<string, Set<string>> }>()
   for (const tuple of tuples) {
     const entry = groups.get(tuple.permission_code) ?? {
-      name: tuple.permission_name || tuple.permission_code,
+      name: permissionName(tuple.permission_code, tuple.permission_name),
       scopes: new Map(),
     }
     const factory = tuple.factory_name || tuple.factory_id
