@@ -31,6 +31,7 @@ const matches = computed(() => packages.value.filter(p => `${departmentName(p.de
 const ordered = computed(() => [...matches.value].sort((a, b) => Number(b.department === draft.value?.confirmed_profile.department_code) - Number(a.department === draft.value?.confirmed_profile.department_code)))
 const orgName = (id: string) => organizations.value.find(o => o.id === id)?.name || id
 const departmentName = (id: string) => organizations.value.flatMap(o => o.departments).find(d => d.code === id)?.name || id
+const registrationValue = (value: string | null | undefined) => value == null ? '未记录' : value.trim() || '未填写'
 const currentRoles = computed(() => detail.value?.current_bindings.filter(b => b.assignment_id === detail.value?.primary_assignment_id).map(b => b.role_id) ?? [])
 const primaryLabel = computed(() => detail.value?.kind === 'registration' ? '通过并分配权限' : draft.value?.decision === 'keep_permissions' ? '确认岗位，保留原权限' : detail.value?.origin === 'admin' ? '保存权限调整' : '确认调整权限')
 function organizationChanged() {
@@ -55,7 +56,17 @@ defineExpose({ locked, state })
     <div v-if="result" class="pw-success" role="status"><span class="pw-success-icon"><Check :size="26" /></span><h2 ref="successTitle" tabindex="-1">{{ result.decision === 'return_position' ? '已退回补充' : result.decision === 'reject_registration' ? '已拒绝注册' : '岗位与权限已确认' }}</h2><p>{{ detail?.user.display_name }} · {{ formatBusinessDateTime(result.committed_at) }}</p><p>{{ result.notification_state === 'delivered' ? '办理结果已保存，结果通知已送达。' : result.notification_state === 'retrying' ? '办理结果已保存，结果通知正在重试。' : '办理结果已保存，结果通知已进入发送队列。' }}</p><Button @click="emit('next')">办理下一位<ArrowRight :size="16" /></Button></div>
     <template v-else-if="detail && draft">
       <header class="pw-person"><span class="pw-avatar" aria-hidden="true">{{ detail.user.display_name.slice(0, 1) }}</span><div><div class="pw-inline"><h2 ref="title" tabindex="-1">{{ detail.user.display_name }}</h2><span class="pw-badge">{{ positionStatus[detail.status] || detail.status }}</span></div><p>{{ detail.user.username }} · {{ orgName(detail.declaration.org_unit_id) }} · {{ departmentName(detail.declaration.department_code) }}</p></div><time class="pw-time"><Clock3 :size="14" />{{ formatBusinessDateTime(detail.created_at) }}</time></header>
-      <div class="pw-review-scroll"><div class="pw-comparison"><div><span>当前确认岗位</span><strong>{{ detail.current_official?.position || '尚未确认' }}</strong><small v-if="detail.current_official">{{ orgName(detail.current_official.org_unit_id) }} · {{ departmentName(detail.current_official.department_code) }}</small></div><ArrowRight :size="20" /><div><span>{{ detail.origin === 'admin' ? '管理员拟核对岗位' : '本次提交的岗位' }}</span><strong>{{ detail.declaration.position }}</strong><small>{{ orgName(detail.declaration.org_unit_id) }} · {{ departmentName(detail.declaration.department_code) }}</small></div></div>
+      <div class="pw-review-scroll">
+      <section v-if="detail.kind === 'registration'" class="pw-registration-info" aria-label="注册申请资料">
+        <header><h3>注册申请资料</h3><p>申请时间：{{ formatBusinessDateTime(detail.created_at) }}（北京时间）</p></header>
+        <dl>
+          <div><dt>注册账号</dt><dd>{{ registrationValue(detail.user.username) }}</dd></div>
+          <div><dt>申请姓名</dt><dd>{{ registrationValue(detail.registration_details?.display_name) }}</dd></div>
+          <div><dt>手机号码</dt><dd>{{ registrationValue(detail.registration_details?.phone) }}</dd></div>
+          <div><dt>邮箱</dt><dd>{{ registrationValue(detail.registration_details?.email) }}</dd></div>
+        </dl>
+      </section>
+      <div class="pw-comparison"><div><span>当前确认岗位</span><strong>{{ detail.current_official?.position || '尚未确认' }}</strong><small v-if="detail.current_official">{{ orgName(detail.current_official.org_unit_id) }} · {{ departmentName(detail.current_official.department_code) }}</small></div><ArrowRight :size="20" /><div><span>{{ detail.origin === 'admin' ? '管理员拟核对岗位' : '本次提交的岗位' }}</span><strong>{{ detail.declaration.position }}</strong><small>{{ orgName(detail.declaration.org_unit_id) }} · {{ departmentName(detail.declaration.department_code) }}</small></div></div>
       <p v-if="detail.declaration.note" class="pw-subtle">员工备注：{{ detail.declaration.note }}</p>
       <p v-for="message in detail.blocked_reasons" :key="message" class="pw-notice">{{ message }}</p>
       <LegacySourceReview v-if="detail.identity_mode === 'legacy' && detail.available_actions.includes('preview')" :user-id="detail.user.id" :official="detail.current_official" @locked="legacyLocked = $event" @saved="legacySaved" />

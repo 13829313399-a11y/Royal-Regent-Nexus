@@ -57,11 +57,8 @@ def password_detail(db, actor, request_id):
     row = db.get(AuthPasswordResetRequest, request_id)
     if row is None:
         fail("NOT_FOUND", "申请不存在", 404)
-    required = system.target_users_scopes(db, [row.user_id]).get(row.user_id, set()) if row.user_id else set()
-    if (not required and not system.is_superadmin(actor)) or any(not can(actor, "system:user_manage", f, d) for f, d in complete_scopes(required)):
+    if not system.can_access_password_reset_request(db, actor, row):
         fail("OUTSIDE_MANAGEABLE_SCOPE", "申请超出管理范围", 403)
-    if not can(actor, "system:user_manage", row.factory_id or "*", row.department or "*"):
-        fail("OUTSIDE_MANAGEABLE_SCOPE", "申请范围超出管理范围", 403)
     out = system.password_reset_request_to_out(db, row)
     raw, _, actions, _ = password_state(row, db.get(AuthUser, row.user_id) if row.user_id else None, utc_now())
     return {**out.model_dump(), "status": raw, "can_reopen": "reissue" in actions, "available_actions": actions}
@@ -134,9 +131,9 @@ class Projection:
     def password(self):
         output = []
         for row in self.db.scalars(select(AuthPasswordResetRequest)):
-            if not (self.allowed(row.user_id, ("system:user_manage",)) if row.user_id else system.is_superadmin(self.actor)):
+            if not system.can_access_password_reset_request(self.db, self.actor, row,
+                    target_scopes=self.scopes.get(row.user_id, set())):
                 continue
-            if not can(self.actor, "system:user_manage", row.factory_id or "*", row.department or "*"): continue
             person = self.people.get(row.user_id)
             raw, state, actions, blocked = password_state(row, person[0] if person else None, self.now)
             output.append(self.task("password-reset", row, row.user_id, row.factory_id, row.department, "密码找回", row.status, state, actions,
@@ -175,7 +172,7 @@ class Projection:
                     required.update((f or "*", binding.department or "*") for f in proposed)
                     authority_scopes.update((f, f, binding.department or "*") for f in proposed)
                 if upgrade:
-                    roles.append({"role_id": binding.role_id, "factories": json.loads(meta.scope_ceiling_json) if meta.scope_ceiling_json else list(FACTORIES)})
+                    roles.append({"role_id": binding.role_id, "factories": factories})
                 return True
             source_id = payload.get("source_assignment_id")
             if source_id:
@@ -184,7 +181,10 @@ class Projection:
                 required.add((orgs.get(assignment.org_unit_id, assignment.org_unit_id), assignment.department_code))
                 authority_scopes.add((assignment.org_unit_id, orgs.get(assignment.org_unit_id, assignment.org_unit_id), assignment.department_code))
                 if row.request_type == "identity:upgrade_packages":
-                    for meta in self.db.scalars(select(AuthRoleBindingMetadata).where(AuthRoleBindingMetadata.assignment_id == source_id)):
+                    effective = instant(row.effective_at) if row.effective_at else self.now
+                    for meta in self.db.scalars(select(AuthRoleBindingMetadata).where(
+                            AuthRoleBindingMetadata.assignment_id == source_id, AuthRoleBindingMetadata.state == "active")):
+                        if meta.valid_until and instant(meta.valid_until) <= effective: continue
                         if not include_binding(self.db.get(AuthUserRole, meta.user_role_id), meta, True): invalid_reference = True
             decisions = {v["binding_id"] for v in payload.get("binding_dispositions", [])}
             if row.request_type == "identity:confirm_identity" or decisions:

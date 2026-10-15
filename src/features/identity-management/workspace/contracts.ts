@@ -2,7 +2,7 @@ import type { Person } from '@/api/identity'
 export type TaskKind = 'position' | 'registration' | 'password-reset' | 'identity-change'
 export type TaskState = 'actionable' | 'blocked' | 'waiting_employee' | 'scheduled' | 'closed'
 export type TaskKey = `${TaskKind}:${string}`
-export type PersonPanel = 'profile' | 'exceptions' | 'account' | 'advanced'
+export type PersonPanel = 'profile' | 'exceptions' | 'account' | 'advanced' | 'manage'
 export interface WorkspaceTask {
   key: TaskKey; kind: TaskKind; source_id: string; source_revision: string
   subject: { user_id: string; display_name: string; username: string }

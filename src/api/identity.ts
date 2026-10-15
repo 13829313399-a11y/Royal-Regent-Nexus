@@ -17,6 +17,7 @@ export interface Assignment {
   source_request_id: string | null
 }
 export interface IdentityContext {
+  primary_org_unit_id?: string
   confirmation_status?: string
   identity_mode: 'legacy' | 'v2'
   identity_version: number
@@ -35,7 +36,11 @@ export interface IdentityContext {
 export interface PersonIdentity extends IdentityContext {
   id: string
   display_name: string
+  username?: string
+  phone?: string | null
+  email?: string | null
   status: string
+  last_login_at?: string | null
   authorization_version: number
   role_bindings: RoleBinding[]
   overrides: UserPermissionOverride[]
@@ -46,6 +51,7 @@ export interface Person {
   display_name: string
   username: string
   status: string
+  last_login_at?: string | null
   primary_factory_id: string
   primary_org_unit_id?: string
   primary_department: string

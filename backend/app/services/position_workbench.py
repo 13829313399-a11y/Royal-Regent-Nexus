@@ -227,6 +227,14 @@ def admin_adjustment(db, actor_id, payload):
     current = reviews.open_review(db, target)
     if current:
         ensure_item_scope(db, actor, current)
+        if current.status == "returned":
+            before = reviews.review_out(current)
+            current.status = "pending"
+            current.revision += 1
+            current.updated_at = current.last_submitted_at = stamp()
+            reviews.event_tx(db, current, actor.id, "admin_resumed", before, payload.reason)
+            reviews.notify_tx(db, current, "updated")
+        db.commit()
         return {"item_key": "position:" + current.id, "review": reviews.review_out(current), "reused": True}
     row = reviews.create_review_tx(db, actor, target, Declaration(**payload.proposed_profile.model_dump()), origin="admin", reason=payload.reason)
     ensure_item_scope(db, actor, row)

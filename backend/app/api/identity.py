@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 from app.db import get_db
+from app.core.time import serialize_process_local_timestamp
 from app.models.auth import AuthAccessRequest, AuthRoleBindingMetadata, AuthUser, AuthUserPermissionOverride, AuthUserRole, EmployeeProfile
 from app.models.identity import EmployeeAssignment, IamHandoverItem
 from app.schemas.identity import AccessExplain, BatchCommit, DelegationUpdate, DraftUpdate, HandoverReassign, IdentityChange, IdentityCommit, IdentityDecision
@@ -97,14 +98,16 @@ def people(q: str = "", org_unit_id: str = "", status: str = "", page: int = Que
     from app.services.auth import can
     candidates = query.with_only_columns(AuthUser.id).order_by(None)
     source_scopes = additional_source_scopes(db, candidates)
+    from app.services.iam_management_scopes import complete_scopes
     hidden = [uid for uid, required in source_scopes.items()
-              if any(not can(user, "system:user_manage", f, d) for f, d in required)]
+              if any(not can(user, "system:user_manage", f, d) for f, d in complete_scopes(required))]
     if hidden:
         query = query.where(AuthUser.id.not_in(hidden))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     rows = db.execute(query.order_by(AuthUser.display_name, AuthUser.id).offset((page - 1) * page_size).limit(page_size)).all()
     return {"total": total, "page": page, "page_size": page_size,
             "items": [{"id": u.id, "display_name": u.display_name, "username": u.username, "status": u.status,
+                       "last_login_at": serialize_process_local_timestamp(u.last_login_at),
                        "primary_org_unit_id": o or "", "primary_factory_id": f or "", "primary_department": d or "", "position": t or "",
                        "identity_mode": p.identity_mode if p else "legacy", "employment_status": p.employment_status if p else "unconfirmed",
                        "identity_version": p.identity_version if p else 0} for u, p, f, d, t, o in rows]}
@@ -121,6 +124,9 @@ def identity(user_id: str, db: Session = Depends(get_db), user: AuthContext = De
     result = resolve_identity_at(db, user_id)
     context = build_auth_context(db, target)
     return {**result, "id": user_id, "display_name": target.display_name, "status": target.status,
+            "username": target.username, "phone": context.profile.phone if context.profile else None,
+            "email": context.profile.email if context.profile else None,
+            "last_login_at": serialize_process_local_timestamp(target.last_login_at),
             "authorization_version": context.authorization_version, "role_bindings": [b.model_dump() for b in _role_bindings_out(db, user_id)],
             "overrides": [o.model_dump() for o in _overrides_out(db, user_id)], "handover": assess(db, user_id)}
 
@@ -145,7 +151,11 @@ def edit_change(change_id: str, payload: DraftUpdate, db: Session = Depends(get_
 def list_changes(state: str = "", target_user_id: str = "", page: int = Query(1, ge=1),
                  db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     ensure_reader(db, user)
+    from app.services.iam_workspace import Projection
+    from app.services.identity_resolver import utc_now
+    visible_ids = [item["source_id"] for item in Projection(db, user, utc_now()).changes()]
     query = select(AuthAccessRequest).where(AuthAccessRequest.request_type.like("identity:%"))
+    query = query.where(AuthAccessRequest.id.in_(visible_ids))
     if not is_group_manager(user):
         query = query.where(AuthAccessRequest.requester_user_id == user.id)
     if target_user_id:
@@ -165,6 +175,9 @@ def list_changes(state: str = "", target_user_id: str = "", page: int = Query(1,
 def read_change(change_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     row = changes.load_change(db, change_id)
     ensure_reader(db, user, row.target_user_id)
+    from app.services.identity_review_notifications import visible
+    if not visible(db, user, change_id):
+        fail("OUTSIDE_MANAGEABLE_SCOPE", "记录超出完整管理范围", 403)
     return changes.result_out(row)
 
 

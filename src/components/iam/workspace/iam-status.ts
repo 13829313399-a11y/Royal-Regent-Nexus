@@ -7,10 +7,11 @@ const present = (state: string, map: Record<string, StatusPresentation>): Status
 export const personStatusPresentation = (state: string) =>
   present(state, {
     active: { label: '在用', tone: 'success' },
-    suspended: { label: '已冻结', tone: 'warning' },
+    suspended: { label: '已停用', tone: 'warning' },
     pending: { label: '待审核', tone: 'warning' },
     left: { label: '已离职', tone: 'neutral' },
     retired: { label: '已停用', tone: 'neutral' },
+    rejected: { label: '已拒绝', tone: 'neutral' },
   })
 export const assignmentStatusPresentation = (state: string) =>
   present(state, {

@@ -125,8 +125,8 @@ def target_user_scopes(db: Session, user_id: str) -> set[tuple[str, str]]:
         identity = resolve_identity_at(db, user_id)
         scopes.update((a["factory_id"] or a["org_unit_id"], a["department_code"]) for a in identity["assignments"]
                       if a["state"] in {"current", "scheduled"} and a["employment_epoch"] == profile.employment_epoch)
-    elif profile and profile.primary_factory_id and profile.primary_department:
-        scopes.add((profile.primary_factory_id, profile.primary_department))
+    elif profile and (profile.primary_org_unit_id or profile.primary_factory_id) and profile.primary_department:
+        scopes.add((profile.primary_org_unit_id or profile.primary_factory_id, profile.primary_department))
     from app.services.identity_policy import additional_source_scopes
     scopes.update(additional_source_scopes(db, [user_id]).get(user_id, set()))
     return scopes
@@ -140,8 +140,8 @@ def target_users_scopes(db: Session, user_ids) -> dict[str, set[tuple[str, str]]
     profiles = {p.user_id: p for p in db.scalars(select(EmployeeProfile).where(EmployeeProfile.user_id.in_(user_ids)))}
     result = additional_source_scopes(db, user_ids)
     for p in profiles.values():
-        if p.identity_mode != "v2" and p.primary_factory_id and p.primary_department:
-            result.setdefault(p.user_id, set()).add((p.primary_factory_id, p.primary_department))
+        if p.identity_mode != "v2" and (p.primary_org_unit_id or p.primary_factory_id) and p.primary_department:
+            result.setdefault(p.user_id, set()).add((p.primary_org_unit_id or p.primary_factory_id, p.primary_department))
     at = utc_now()
     for a, org in db.execute(select(EmployeeAssignment, IamOrgUnit).join(IamOrgUnit).where(EmployeeAssignment.user_id.in_(user_ids))):
         profile = profiles.get(a.user_id)
@@ -153,12 +153,12 @@ def target_users_scopes(db: Session, user_ids) -> dict[str, set[tuple[str, str]]
 
 
 def can_manage_target_user(db: Session, current_user: AuthContext, user_id: str) -> bool:
+    from app.services.iam_management_scopes import complete_scopes
     scopes = target_user_scopes(db, user_id)
-    if not scopes:
-        return is_superadmin(current_user)
+    if not scopes and not is_superadmin(current_user): return False
     return all(
         can(current_user, "system:user_manage", factory_id, department)
-        for factory_id, department in scopes
+        for factory_id, department in complete_scopes(scopes or {("*", "*")})
     )
 
 
@@ -293,6 +293,21 @@ def list_system_positions(db: Session, current_user: AuthContext) -> list[RoleOu
     ]
 
 
+def ensure_registration_scope(db, actor, registration):
+    from app.services.position_workbench_read import ensure_item_scope
+    ensure_item_scope(db, actor, registration, permissions=("system:user_manage",))
+
+
+def can_access_registration(db, actor, registration):
+    try:
+        ensure_registration_scope(db, actor, registration)
+        return True
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        return False
+
+
 def list_registration_requests(
     db: Session,
     current_user: AuthContext,
@@ -306,8 +321,7 @@ def list_registration_requests(
     return [
         registration_request_to_out(item)
         for item in db.scalars(query).all()
-        if is_superadmin(current_user)
-        or can(current_user, "system:user_manage", item.factory_id, item.department)
+        if can_access_registration(db, current_user, item)
     ]
 
 
@@ -332,6 +346,7 @@ def approve_registration_request(
 
     ensure_user_manage(db, current_user)
     registration_request = load_registration_request(db, request_id)
+    ensure_registration_scope(db, current_user, registration_request)
     ensure_user_manage(
         db,
         current_user,
@@ -471,6 +486,7 @@ def approve_registration_request(
         profile = EmployeeProfile(user_id=user.id, created_at=now)
         db.add(profile)
     profile.primary_factory_id = registration_request.factory_id
+    profile.primary_org_unit_id = registration_request.org_unit_id or registration_request.factory_id
     profile.primary_department = registration_request.department
     registration_request.position = approved_position
     profile.position = approved_position
@@ -530,6 +546,7 @@ def approve_registration_with_system_position_tx(
     from app.services.identity_policy import lock_mutation, fresh_actor
     lock_mutation(db)
     current_user = fresh_actor(db, current_user.id)
+    ensure_registration_scope(db, current_user, load_registration_request(db, request_id))
     if payload.profile and payload.profile.org_unit_id:
         from app.services.identity_registration import registration_org, approve_functional_registration_tx
         approved_org = registration_org(db, payload.profile.factory_id, payload.profile.org_unit_id, payload.profile.department)
@@ -830,6 +847,7 @@ def reject_registration_request_tx(
     current_user = fresh_actor(db, current_user.id)
     ensure_user_manage(db, current_user)
     registration_request = load_registration_request(db, request_id)
+    ensure_registration_scope(db, current_user, registration_request)
     ensure_user_manage(
         db,
         current_user,
@@ -917,6 +935,10 @@ def update_user_status(
     profile = db.get(EmployeeProfile, user_id)
     if profile and profile.employment_status == "left":
         fail("REHIRE_REQUIRED", "离职人员须重新确认任职后复职")
+    if user.status not in {"active", "suspended"}:
+        fail("ACCOUNT_STATUS_NOT_CHANGEABLE", "只有在用或已停用账号可以切换状态；待审核账号请先完成注册审核")
+    if user.status == next_status:
+        return user_to_out(db, user)
     if next_status == "suspended":
         revoke_sessions(db, user_id)
     if profile:
@@ -956,12 +978,13 @@ def can_access_password_reset_request(
     db: Session,
     current_user: AuthContext,
     reset_request: AuthPasswordResetRequest,
+    *, target_scopes=None,
 ) -> bool:
-    if is_superadmin(current_user):
-        return True
-    if not reset_request.user_id:
-        return False
-    return can_manage_target_user(db, current_user, reset_request.user_id)
+    from app.services.iam_management_scopes import complete_scopes
+    scopes = (target_user_scopes(db, reset_request.user_id) if reset_request.user_id else set()) if target_scopes is None else set(target_scopes)
+    if not scopes and not is_superadmin(current_user): return False
+    scopes.add((reset_request.factory_id or "*", reset_request.department or "*"))
+    return all(can(current_user, "system:user_manage", f, d) for f, d in complete_scopes(scopes))
 
 
 def ensure_password_reset_request_access(
@@ -1080,6 +1103,8 @@ def open_password_reset_claim_window(
         current_user = get_current_user(request, db)
     current_user = fresh_actor(db, current_user.id)
     reset_request = load_password_reset_request_for_update(db, current_user, request_id)
+    if payload.expected_issue_count is not None and payload.expected_issue_count != reset_request.issue_count:
+        raise HTTPException(status_code=409, detail="找回窗口已变化，请核查原申请的最新结果")
     if not reset_request.claim_token_hash:
         raise HTTPException(
             status_code=409,
@@ -1209,6 +1234,8 @@ def reject_password_reset_request(
     lock_mutation(db)
     current_user = fresh_actor(db, current_user.id)
     reset_request = load_password_reset_request_for_update(db, current_user, request_id)
+    if payload.expected_issue_count is not None and payload.expected_issue_count != reset_request.issue_count:
+        raise HTTPException(status_code=409, detail="找回窗口已变化，请核查原申请的最新结果")
     if reset_request.status != "pending":
         raise HTTPException(status_code=409, detail="仅待审核申请可以驳回")
     review_comment = payload.review_comment.strip()
@@ -1478,6 +1505,13 @@ def can_access_notification(
     current_user: AuthContext,
     notification: SystemNotification,
 ) -> bool:
+    if notification.type == "user_registration":
+        source = db.get(AuthRegistrationRequest, str(parse_payload(notification.payload_json).get("registration_request_id") or ""))
+        return bool(source and can_access_registration(db, current_user, source))
+    if notification.type == "identity_change_submitted":
+        from app.services.identity_review_notifications import visible
+        return notification.target_user_id == current_user.id and visible(db, current_user,
+            str(parse_payload(notification.payload_json).get("change_id") or ""))
     if notification.type == "password_reset":
         source_id = str(parse_payload(notification.payload_json).get("password_reset_request_id") or "")
         source = db.get(AuthPasswordResetRequest, source_id)

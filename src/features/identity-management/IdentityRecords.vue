@@ -32,7 +32,7 @@ const emit = defineEmits<{ locked: [boolean]; dirty: [boolean]; back: [] }>()
 const auth = useAuthStore()
 const viewer = computed(() => `${auth.currentUser?.id}:${auth.authorizationVersion}:${auth.currentUser?.identity?.employment_epoch}:${auth.currentUser?.identity?.effective_context_key}`)
 const account = computed(() => `${auth.currentUser?.id}:${auth.currentUser?.identity?.employment_epoch}`)
-let pendingRead: { id: string; revision: number; state: string; owner: string } | undefined
+let pendingRead: { id: string; revision: number; state: string; owner: string; row: ChangeRecord; operation: (row: ChangeRecord) => Promise<ChangeRecord> } | undefined
 const appliedState = ref('')
 const route = useRoute()
 const audit = computed(() => props.mode ? props.mode === 'audit' : route.path.endsWith('/audit'))
@@ -202,10 +202,10 @@ async function previewSelected() {
     if (generation === selectionGeneration) busy.value = false
   }
 }
-async function mutate(operation: (row: ChangeRecord) => Promise<ChangeRecord>, committing = false) {
-  const row = selected.value
-  if (!row || busy.value || uncertain.value) return
-  pendingRead = { id: row.id, revision: row.revision, state: row.state, owner: account.value }
+async function mutate(operation: (row: ChangeRecord) => Promise<ChangeRecord>, retry = false) {
+  const row = retry ? pendingRead?.row : selected.value
+  if (!row || busy.value || (retry ? !uncertain.value || pendingRead?.owner !== account.value : uncertain.value)) return
+  if (!retry) pendingRead = { id: row.id, revision: row.revision, state: row.state, owner: account.value, row: JSON.parse(JSON.stringify(row)), operation }
   const generation = selectionGeneration
   busy.value = true
   detailError.value = ''
@@ -227,6 +227,7 @@ async function mutate(operation: (row: ChangeRecord) => Promise<ChangeRecord>, c
     if (generation === selectionGeneration) {
       const code = (e as { response?: { status?: number } }).response?.status
       uncertain.value = !code || code === 408 || code >= 500
+      if (!uncertain.value) pendingRead = undefined
       if (code === 401 || code === 403) handleDetailError(e)
       detailError.value = uncertain.value
         ? '提交结果待核查，请先查询服务器结果。'
@@ -245,9 +246,9 @@ function apply() {
     return
   }
   const impact = preview.value
+  const commandKey = key.value
   return mutate(
-    (row) => identityApi.commit(row, impact, key.value, row.state === 'pending_approval'),
-    true,
+    (row) => identityApi.commit(row, impact, commandKey, row.state === 'pending_approval'),
   )
 }
 function decide(action: 'cancel' | 'reject') {
@@ -255,7 +256,12 @@ function decide(action: 'cancel' | 'reject') {
     detailError.value = '请填写办理原因'
     return
   }
-  return mutate((row) => identityApi.decide(row, action, reason.value))
+  const comment = reason.value
+  return mutate((row) => identityApi.decide(row, action, comment))
+}
+async function retryMutation() {
+  if (!pendingRead || pendingRead.owner !== account.value || !auth.can('system:user_manage') || !auth.can('system:access_manage')) return
+  await mutate(pendingRead.operation, true)
 }
 async function verifyResult() {
   const row = pendingRead || selected.value
@@ -328,11 +334,12 @@ async function openRequest() {
   clearSelection()
   rows.value = []; total.value = 0
   if (!auth.can('system:user_manage')) return
-  if (!props.requestId) { if (!audit.value) await load(); return }
+  const requestId = props.requestId || (typeof route.query.change === 'string' ? route.query.change : '')
+  if (!requestId) { if (!audit.value) await load(); return }
   const current = selectionGeneration
   detailLoading.value = true
   try {
-    const record = await iamWorkspaceApi.change(props.requestId)
+    const record = await iamWorkspaceApi.change(requestId)
     if (current !== selectionGeneration) return
     selected.value = record
     await loadHandover(record, current)
@@ -364,7 +371,7 @@ onBeforeUnmount(() => {
     ><AuditTimeline v-if="audit" />
     <section v-else class="iamx-surface">
       <p v-if="embedded && detailError" role="alert" class="iamx-error">{{ detailError }}</p>
-      <Button v-if="uncertain && !selected" :disabled="busy" @click="verifyResult">核查提交结果</Button>
+      <Button v-if="uncertain" :disabled="busy" @click="retryMutation">使用原办理内容重试</Button><Button v-if="uncertain && !selected" :disabled="busy" @click="verifyResult">核查提交结果</Button>
       <header v-if="!embedded" class="iamx-section-head">
         <div>
           <h2>

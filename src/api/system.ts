@@ -52,6 +52,7 @@ export type PasswordResetStatus =
 export interface PasswordResetReviewRequest {
   review_comment: string
   identity_verified?: boolean
+  expected_issue_count?: number
 }
 
 export interface SystemNotificationUpdateRequest {

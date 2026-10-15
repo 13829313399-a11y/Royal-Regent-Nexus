@@ -75,7 +75,14 @@ onBeforeUnmount(() => { ++generation })
     <p v-if="!allowed" class="pw-error" role="alert">当前链接无效或没有此来源的查看权限，请选择获授权的记录来源。</p>
     <AuditTimeline v-else-if="source === 'audit'" :key="`${person}:${viewer}`" :target-user-id="person" />
     <template v-else>
-      <form class="iw-toolbar" @submit.prevent="filter()"><input v-model="q" aria-label="搜索记录中的姓名或账号" placeholder="搜索姓名或账号"><select v-model="state" aria-label="记录状态"><option value="">全部状态</option><option v-for="(label,key) in taskStateLabels" :key="key" :value="key">{{ label }}</option></select><label>从<input v-model="from" type="datetime-local"></label><label>至<input v-model="to" type="datetime-local"></label><Button variant="outline" type="submit" :disabled="loading || locked">查询</Button><span v-if="person">仅此人员的记录</span></form>
+      <form class="iw-toolbar iw-record-filters" @submit.prevent="filter()">
+        <input v-model="q" aria-label="搜索记录中的姓名或账号" placeholder="搜索姓名或账号">
+        <select v-model="state" aria-label="记录状态"><option value="">全部状态</option><option v-for="(label,key) in taskStateLabels" :key="key" :value="key">{{ label }}</option></select>
+        <label class="iw-record-from">开始时间<input v-model="from" type="datetime-local"></label>
+        <label class="iw-record-to">结束时间<input v-model="to" type="datetime-local"></label>
+        <Button variant="outline" type="submit" :disabled="loading || locked">查询</Button>
+        <span v-if="person" class="iw-record-person-note">仅此人员的记录</span>
+      </form>
       <p v-if="error" class="pw-error" role="alert">{{ error }}<Button variant="outline" @click="load">重试</Button></p><p v-if="partial" class="pw-notice">当前来源读取不完整，统计暂不可用。</p>
       <div class="iw-workspace" :class="{ 'has-detail': mobileDetail && selected }">
         <aside class="iw-list" aria-label="操作记录列表"><header><strong>{{ options.find(o => o.id === source)?.name }}</strong><small>{{ total === null ? '统计暂不可用' : `${total} 条` }}</small></header><div class="iw-list-scroll"><p v-if="loading" role="status" class="pw-empty">正在读取…</p><button v-for="row in rows" :key="row.key" class="iw-row" :aria-pressed="selected === row.key" :disabled="locked" @click="choose(row.key)"><span><strong>{{ row.subject.display_name }}</strong><small>{{ taskLabels[row.kind] }}</small></span><span><strong>{{ row.proposed_position }}</strong><small>{{ taskStatusText(row) }}</small></span><span>{{ formatBusinessDateTime(row.created_at) }}</span></button><p v-if="!loading && !rows.length && !error" class="pw-empty">当前筛选没有记录。</p></div><footer class="iw-pagination"><span>第 {{ page }} 页</span><Button variant="ghost" :disabled="loading || locked || page <= 1" @click="filter(page - 1)">上一页</Button><Button variant="ghost" :disabled="loading || locked || (total !== null ? page * 30 >= total : rows.length < 30)" @click="filter(page + 1)">下一页</Button></footer></aside>

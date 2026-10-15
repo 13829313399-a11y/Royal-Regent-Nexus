@@ -25,6 +25,15 @@ def registration_org(db, factory_id, org_unit_id, department):
 
 
 def enroll_approved_registration(db, user, profile, registration, actor):
+    from app.services.registration_contacts import ensure_registration_contacts_available
+    from app.services.system import ensure_registration_scope
+    from app.services.identity_policy import additional_source_scopes
+    ensure_registration_contacts_available(db, profile.phone, profile.email, exclude_user_id=user.id)
+    # All registration adapters meet here before committing. Check the resulting
+    # grants as well as the original request, including concrete wildcard denies.
+    # A failure rolls the entire approval back, including legacy registrations.
+    db.flush()
+    ensure_registration_scope(db, actor, registration)
     if not settings.iam_identity_writes_enabled:
         return
     require_writes()
@@ -40,7 +49,9 @@ def enroll_approved_registration(db, user, profile, registration, actor):
         definition = role_definition(db, b.role_id)
         factories = list(FACTORIES) if definition["scope_mode"] != "own_factory" else [b.factory_id]
         role_plans.append({**definition, "factories": factories})
-    ensure_change_authority(db, actor, user.id, [(org.id, org.legacy_factory_id, profile.primary_department)], role_plans)
+    scopes = [(org.id, org.legacy_factory_id, profile.primary_department)]
+    scopes.extend((f, f, d) for f, d in additional_source_scopes(db, [user.id]).get(user.id, set()))
+    ensure_change_authority(db, actor, user.id, scopes, role_plans)
     now = stamp()
     change = AuthAccessRequest(id=f"identity-{uuid4().hex}", requester_user_id=actor.id, target_user_id=user.id,
         request_type="identity:confirm_identity", lifecycle_state="applied", status="approved", reason="注册审核确认正式任职",
@@ -93,6 +104,8 @@ def approve_functional_registration_tx(db, actor, registration, payload):
     if registration.status != "pending" or payload.profile is None:
         fail("REGISTRATION_CHANGED", "注册申请已处理或缺少正式资料")
     spec = payload.profile
+    from app.services.registration_contacts import ensure_registration_contacts_available
+    ensure_registration_contacts_available(db, spec.phone, spec.email, exclude_user_id=registration.user_id)
     org = registration_org(db, spec.factory_id, spec.org_unit_id, spec.department)
     factories = sorted(set(spec.business_factory_ids))
     if not factories or any(f not in FACTORIES for f in factories):

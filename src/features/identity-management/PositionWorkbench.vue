@@ -7,6 +7,7 @@ import { positionReviewsApi } from '@/api/positionReviews'
 import { iamWorkspaceApi } from '@/api/iamWorkspace'
 import { Button } from '@/components/ui/button'
 import IamLeaveGuard from '@/components/iam/workspace/IamLeaveGuard.vue'
+import { personStatusPresentation } from '@/components/iam/workspace/iam-status'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 import { formatBusinessDateTime } from '@/lib/dateTime'
@@ -14,7 +15,7 @@ import PositionReviewPane from './PositionReviewPane.vue'
 import PersonContext from './workspace/PersonContext.vue'
 import PasswordResetPanel from './workspace/PasswordResetPanel.vue'
 import IdentityRecords from './IdentityRecords.vue'
-import { departmentName } from './positionLabels'
+import { departmentName, lastLoginLabel } from './positionLabels'
 import { taskLabels, taskStateLabels, taskStatusText, workspaceCapabilities, personOrg, type WorkspaceTask, type SourceCoverage, type PersonPanel } from './workspace/contracts'
 import './position-workbench.css'
 import './workspace/workspace.css'
@@ -26,7 +27,7 @@ const caps = computed(() => workspaceCapabilities(p => auth.can(p)))
 const view = computed(() => route.query.view === 'people' || route.query.person || route.query.tab === 'people' ? 'people' : 'todo')
 const selected = computed(() => typeof (route.query.task || route.query.item) === 'string' ? String(route.query.task || route.query.item) : '')
 const personId = computed(() => typeof route.query.person === 'string' ? route.query.person : '')
-const panel = computed(() => (['profile', 'exceptions', 'account', 'advanced'].includes(String(route.query.panel)) ? route.query.panel : 'profile') as PersonPanel)
+const panel = computed(() => (['profile', 'exceptions', 'account', 'advanced', 'manage'].includes(String(route.query.panel)) ? route.query.panel : 'profile') as PersonPanel)
 const page = computed(() => Math.max(1, Math.min(100000, Number(route.query.page) || 1)))
 const org = ref(String(route.query.org || '')), kind = ref(String(route.query.kind || '')), state = ref(String(route.query.state || 'open'))
 const rows = ref<HTMLElement>(), searchInput = ref<HTMLInputElement>(), mobileDetail = ref(!!selected.value || !!personId.value)
@@ -122,8 +123,19 @@ onBeforeUnmount(() => { ++generation; window.removeEventListener('beforeunload',
     <div v-if="coverage.some(c => c.state === 'unavailable' || c.state === 'disabled')" class="iw-coverage" role="status"><span v-for="source in coverage.filter(c => c.state === 'unavailable' || c.state === 'disabled')" :key="source.kind">{{ taskLabels[source.kind] }}：{{ source.message || (source.state === 'disabled' ? '尚未启用' : '暂不可读取') }}</span></div>
     <div class="iw-workspace" :class="{ 'has-detail': mobileDetail && (selected || personId), 'iw-no-list': view === 'people' && !caps.people }">
       <aside ref="rows" class="iw-list" aria-label="办理队列"><header><strong>{{ view === 'people' ? '人员目录' : '待办队列' }} <span v-if="total !== null">{{ total }}</span></strong><small>{{ view === 'people' ? '点击人员只读查看' : actionable === null ? '统计暂不可用' : `当前筛选可处理 ${actionable} 条` }}</small></header>
-        <div class="iw-table-head"><span>人员 / 组织</span><span>{{ view === 'people' ? '当前岗位' : '申报变化' }}</span><span>{{ view === 'people' ? '账号状态' : '类型 / 提交' }}</span></div>
-        <div class="iw-list-scroll"><p v-if="loading" class="pw-empty" role="status">正在读取…</p><template v-else-if="view === 'people'"><button v-for="person in people" :key="person.id" class="iw-row" :aria-pressed="personId === person.id" :disabled="locked" @click="selectPerson(person)"><span><strong :title="person.display_name">{{ person.display_name }}</strong><small>{{ orgName(personOrg(person)) }} · {{ departmentName(person.primary_department) }}</small></span><span><strong :title="person.position">{{ person.position || '岗位待确认' }}</strong><small>{{ person.username }}</small></span><span><small class="pw-badge">{{ person.status === 'active' ? '在用' : person.status === 'pending' ? '待开通' : person.status === 'suspended' ? '已冻结' : person.status }}</small></span></button></template><template v-else><button v-for="task in tasks" :key="task.key" class="iw-row" :aria-pressed="selected === task.key" :disabled="locked" @click="choose(task.key)"><span><strong :title="task.subject.display_name">{{ task.subject.display_name }}</strong><small>{{ orgName(task.org_unit_id) }} · {{ departmentName(task.department) }}</small></span><span><strong :title="task.proposed_position">{{ task.proposed_position || taskLabels[task.kind] }}</strong><small :title="task.blocked_reasons.join('；')">{{ task.blocked_reasons[0] || taskStatusText(task) }}</small></span><span><small class="pw-badge">{{ taskLabels[task.kind] }}</small><small>{{ formatBusinessDateTime(task.created_at) }}</small></span></button></template><div v-if="!loading && !error && !(view === 'people' ? people.length : tasks.length)" class="pw-empty"><UsersRound :size="28" /><h2>{{ view === 'people' && !caps.people ? '人员列表受保护' : partial ? '部分来源暂不可读取' : '当前筛选没有记录' }}</h2><p>调整筛选条件，或从已有链接打开获授权的详情。</p></div></div>
+        <div class="iw-table-head"><span>人员 / 组织</span><span>{{ view === 'people' ? '当前岗位' : '申报变化' }}</span><span>{{ view === 'people' ? '状态 / 最近登录' : '类型 / 提交' }}</span></div>
+        <div class="iw-list-scroll">
+          <p v-if="loading" class="pw-empty" role="status">正在读取…</p>
+          <template v-else-if="view === 'people'">
+            <button v-for="person in people" :key="person.id" class="iw-row iw-person-row" :aria-pressed="personId === person.id" :disabled="locked" @click="selectPerson(person)">
+              <span><strong :title="person.display_name">{{ person.display_name }}</strong><small>{{ orgName(personOrg(person)) }} · {{ departmentName(person.primary_department) }}</small></span>
+              <span><strong :title="person.position">{{ person.position || '岗位待确认' }}</strong><small>{{ person.username }}</small></span>
+              <span><small class="pw-badge">{{ personStatusPresentation(person.status).label }}</small><small class="iw-last-login" :title="`最近登录（北京时间）：${lastLoginLabel(person.last_login_at, true)}`">{{ lastLoginLabel(person.last_login_at) }}</small></span>
+            </button>
+          </template>
+          <template v-else><button v-for="task in tasks" :key="task.key" class="iw-row" :aria-pressed="selected === task.key" :disabled="locked" @click="choose(task.key)"><span><strong :title="task.subject.display_name">{{ task.subject.display_name }}</strong><small>{{ orgName(task.org_unit_id) }} · {{ departmentName(task.department) }}</small></span><span><strong :title="task.proposed_position">{{ task.proposed_position || taskLabels[task.kind] }}</strong><small :title="task.blocked_reasons.join('；')">{{ task.blocked_reasons[0] || taskStatusText(task) }}</small></span><span><small class="pw-badge">{{ taskLabels[task.kind] }}</small><small>{{ formatBusinessDateTime(task.created_at) }}</small></span></button></template>
+          <div v-if="!loading && !error && !(view === 'people' ? people.length : tasks.length)" class="pw-empty"><UsersRound :size="28" /><h2>{{ view === 'people' && !caps.people ? '人员列表受保护' : partial ? '部分来源暂不可读取' : '当前筛选没有记录' }}</h2><p>调整筛选条件，或从已有链接打开获授权的详情。</p></div>
+        </div>
         <footer class="iw-pagination"><span>{{ total === null ? '当前已读取 ' + tasks.length + ' 条' : total + ' 条' }} · 第 {{ page }} 页</span><div><Button variant="ghost" :disabled="page <= 1 || locked || loading" @click="filter(page - 1)">上一页</Button><Button variant="ghost" :disabled="locked || loading || (total !== null ? page * 30 >= total : tasks.length < 30)" @click="filter(page + 1)">下一页</Button></div></footer>
       </aside>
       <PersonContext v-if="personId && !routeError" :person-id="personId" :panel="panel" :catalog="catalog" @panel="router.replace({ query: { ...route.query, panel: $event } })" @task="started" @back="back" @saved="load" @locked="locked = $event" />

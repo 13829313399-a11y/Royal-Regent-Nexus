@@ -27,7 +27,7 @@ def make_client(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
     monkeypatch.setenv("AUTHZ_MODE", "enforce")
-    monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "false")
+    monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "true")
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
             del sys.modules[module_name]
@@ -529,3 +529,28 @@ def test_simultaneous_completion_only_changes_password_once(monkeypatch):
                 )
             ).all()
             assert len(completed_audits) == 1
+
+
+def test_review_write_gate_and_retry_cannot_reopen_a_newer_window(monkeypatch):
+    with make_client(monkeypatch) as browser:
+        create_user("guarded-reset")
+        rid = submit_reset(browser, "guarded-reset").json()["request_id"]
+        assert login(browser, "admin", ADMIN_TEST_PASSWORD).status_code == 200
+        settings = importlib.import_module("app.core.config").settings
+        settings.authz_writes_enabled = False
+        assert approve_reset(browser, rid).status_code == 403
+        settings.authz_writes_enabled = True
+        body = {"review_comment": "已核实", "identity_verified": True, "expected_issue_count": 0}
+        response = browser.post(f"/api/system/password-reset-requests/{rid}/approve", json=body)
+        assert response.status_code == 200, response.text
+        models = importlib.import_module("app.models.auth")
+        with importlib.import_module("app.db").SessionLocal() as db:
+            row = db.get(models.AuthPasswordResetRequest, rid)
+            row.status = "expired"
+            row.expires_at = "2000-01-01 00:00:00"
+            db.commit()
+        assert browser.post(f"/api/system/password-reset-requests/{rid}/reissue", json=body).status_code == 409
+        body["expected_issue_count"] = 1
+        response = browser.post(f"/api/system/password-reset-requests/{rid}/reissue", json=body)
+        assert response.status_code == 200, response.text
+        assert response.json()["request"]["issue_count"] == 2
