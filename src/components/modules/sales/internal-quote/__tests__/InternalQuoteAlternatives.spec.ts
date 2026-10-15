@@ -1,5 +1,6 @@
 import { mount, flushPromises, shallowMount } from '@vue/test-utils'
 import { reactive } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuthStore } from '@/stores/auth'
@@ -8,6 +9,7 @@ import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { internalQuoteApi, type ApiInternalQuoteAlternativeFamily } from '@/api/internalQuote'
 import InternalQuoteAlternatives from '../InternalQuoteAlternatives.vue'
 import InternalQuoteCollaboration from '../InternalQuoteCollaboration.vue'
+import InternalQuoteLeaveDialog from '../InternalQuoteLeaveDialog.vue'
 import InternalQuoteExportSummary from '../InternalQuoteExportSummary.vue'
 import InternalQuoteSummary from '../InternalQuoteSummary.vue'
 
@@ -33,6 +35,47 @@ function setup() {
 beforeEach(() => { routeState.params.quoteId = 'q1'; vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} }) })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('independent quotation alternatives', () => {
+  it('confirms discard without a premature dialog-close cancellation', async () => {
+    const wrapper = mount(InternalQuoteLeaveDialog, { props: { open: true }, global: { stubs: { AlertDialogPortal: { template: '<div><slot /></div>' } } } })
+    await flushPromises()
+    await wrapper.get('button.discard').trigger('click')
+    expect(wrapper.emitted('discard')).toHaveLength(1)
+    expect(wrapper.emitted('cancel')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('lets clean quotes leave and offers cancel or discard for actual sidebar edits without saving or clearing them early', async () => {
+    const { pinia, store } = setup()
+    let dirty = false
+    const save = vi.spyOn(store, 'saveWholeProductSections')
+    const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: {
+      RouterLink: true,
+      InternalQuoteActivityPanel: { template: '<div />', methods: { hasUnsavedChanges: () => dirty } },
+    } } })
+    await flushPromises()
+    const leave = vi.mocked(onBeforeRouteLeave).mock.calls.at(-1)![0] as () => boolean | Promise<boolean>
+    const update = vi.mocked(onBeforeRouteUpdate).mock.calls.at(-1)![0] as (to: { params: { quoteId: string } }) => boolean | Promise<boolean>
+    expect(leave()).toBe(true)
+    dirty = true
+    const pending = leave()
+    expect(leave()).toBe(pending)
+    await flushPromises()
+    expect(wrapper.getComponent(InternalQuoteLeaveDialog).props('open')).toBe(true)
+    wrapper.getComponent(InternalQuoteLeaveDialog).vm.$emit('cancel')
+    expect(await pending).toBe(false)
+    expect(dirty).toBe(true)
+    expect(update({ params: { quoteId: 'q1' } })).toBe(true)
+    const switching = update({ params: { quoteId: 'q2' } })
+    await flushPromises()
+    wrapper.getComponent(InternalQuoteLeaveDialog).vm.$emit('discard')
+    expect(await switching).toBe(true)
+    expect(dirty).toBe(true) // A later department guard may still cancel navigation.
+    expect(save).not.toHaveBeenCalled()
+    const abandoned = leave()
+    wrapper.unmount()
+    expect(await abandoned).toBe(false)
+  })
+
   it.each(['document', 'version'])('blocks new output from the summary/export pages for a %s archive', async scope => {
     const { pinia, quote, store } = setup()
     store.quotes = [{ ...quote, status: 'exported', versionArchived: scope === 'version',

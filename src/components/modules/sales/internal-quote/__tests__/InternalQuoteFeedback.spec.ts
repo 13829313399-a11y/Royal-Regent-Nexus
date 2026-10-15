@@ -8,7 +8,7 @@ import InternalQuoteSectionEditor from '../InternalQuoteSectionEditor.vue'
 
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
 
-function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>) {
+function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>, canEdit = true) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useInternalQuoteDeskStore()
@@ -23,7 +23,7 @@ function setup(code: InternalQuoteSectionCode, payload: Record<string, unknown>)
   ))
   vi.spyOn(store, 'previewSectionCost').mockResolvedValue(undefined)
   const wrapper = mount(InternalQuoteSectionEditor, {
-    props: { quote, section, canEdit: true, canReview: false, canRemove: false, wholeQuoteReview: true },
+    props: { quote, section, canEdit, canReview: false, canRemove: false, wholeQuoteReview: true },
     global: { plugins: [pinia], stubs: { InternalQuoteAttachmentPreview: true, teleport: true, DialogPortal: { template: "<div><slot /></div>" } } }, attachTo: document.body,
   })
   return { wrapper, save, section, store }
@@ -45,6 +45,16 @@ async function chooseMoldFile(wrapper: ReturnType<typeof setup>['wrapper']) {
 }
 
 describe('internal quote feedback regressions', () => {
+  it.each([true, false])('keeps historical mold parts without persistent IDs clean (editable: %s)', async canEdit => {
+    const { wrapper, save } = setup('engineering', { molds: [{
+      item: '车壳', parts: [{ name: '上壳' }, { name: '下壳' }],
+    }] }, canEdit)
+    await flushPromises()
+    expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+    expect(save).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it.each(['engineering', 'molding', 'sales'] as const)('keeps an untouched %s form clean before import', async code => {
     const { wrapper } = setup(code, {})
     await flushPromises()
@@ -236,12 +246,12 @@ describe('internal quote feedback regressions', () => {
     }
   })
 
-  it('does not report automatic molding reference canonicalization as unsaved user input', async () => {
-    const { wrapper } = setup('molding', { injection_lines: [{ item: '壳', material: 'ABS', grade: '750SW', machine_code: '18' }] })
+  it.each(['750SW', ''])('keeps reference normalization clean and includes the sole grade in the save payload (grade: %s)', async grade => {
+    const { wrapper } = setup('molding', { injection_lines: [{ item: '壳', material: 'ABS', grade, machine_code: '18' }] })
     await flushPromises()
     expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
     expect(wrapper.find('.dirty').exists()).toBe(false)
-    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ injection_lines: [{ machine_code: '18A', machine_name: '180T' }] })
+    expect(wrapper.vm.getWholeQuoteDraft().payload).toMatchObject({ injection_lines: [{ material: 'ABS', grade: '750SW', machine_code: '18A', machine_name: '180T' }] })
     wrapper.unmount()
   })
 

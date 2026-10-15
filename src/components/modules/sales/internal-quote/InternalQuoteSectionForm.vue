@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { sewingUsesQuotedPrice } from '@/lib/internalQuoteSectionPayload'
 import { buzzBeeTemplateProfiles } from '@/lib/customerPriceConverters/buzzbeeTemplate'
-import { Copy, Eye, Plus, Trash2 } from '@lucide/vue'
+import { CircleDollarSign, Copy, Eye, Plus, Trash2 } from '@lucide/vue'
 import { computed, ref, watchEffect } from 'vue'
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
 import { previewEngineeringMoldPartSplit } from '@/lib/internalQuoteSectionPayload'
@@ -287,7 +287,7 @@ function selectedMaterialReference(row: MoldingMaterialSelection) {
   return selectedMoldingMaterial(row, moldingMaterialReferences.value)
 }
 function selectMaterial(row: MoldingMaterialSelection) {
-  const candidates = moldingMaterialReferences.value.filter((item) => normalizedReferenceToken(item.material) === normalizedReferenceToken(row.material))
+  const candidates = row.material ? materialOptions(row) : []
   if (!candidates.some((item) => normalizedReferenceToken(item.grade) === normalizedReferenceToken(row.grade))) row.grade = candidates.length === 1 ? candidates[0].grade : ''
 }
 function materialReferenceValue(item: MoldingMaterialReference) {
@@ -1058,6 +1058,7 @@ function addBuzzBeeColorBoxTier() {
           <div class="molding-header-actions">
             <button v-if="importSourceAttachment('molding')" type="button" title="预览本部分最近导入的 Excel 原文件" @click="previewImportSource('molding')"><Eye />预览附件</button>
             <span v-if="engineeringSyncedInjectionCount" class="engineering-sync-badge">已同步 {{ engineeringSyncedInjectionCount }} 项模具</span>
+            <button v-if="canEditMaterialPrices" type="button" @click="emit('request-material-prices')"><CircleDollarSign />本报价专用料价</button>
             <label><span>料损耗 %</span><input v-model.number="injectionLossRate" :disabled="disabled" type="number" min="0" step="0.1" aria-label="注塑料损耗百分比"></label>
             <button type="button" :disabled="disabled" @click="addInjection"><Plus />新增注塑</button>
           </div>
@@ -1072,7 +1073,7 @@ function addBuzzBeeColorBoxTier() {
                 <td class="row-number">{{ index + 1 }}</td>
                 <td><textarea v-model="row.item" :disabled="disabled || injectionFieldLocked(row, 'item')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'item') }" rows="2"></textarea></td>
                 <td><select data-injection-field="material" v-model="row.material" :disabled="disabled" aria-label="材料类别" @change="selectMaterial(row)"><option value="">请选择材质</option><option v-if="row.material && !moldingMaterialNames.includes(row.material)" :value="row.material">{{ row.material }}</option><option v-for="material in moldingMaterialNames" :key="material" :value="material">{{ material }}</option></select></td>
-                <td><select :value="selectedMaterialReference(row) ? materialReferenceValue(selectedMaterialReference(row)!) : ''" :disabled="disabled || !row.material" data-injection-field="grade" aria-label="具体材料料型" @change="selectMaterialGrade(row, ($event.target as HTMLSelectElement).value)"><option value="">{{ row.material ? '请选择具体料型' : '先选择材质' }}</option><option v-for="item in materialOptions(row)" :key="`${item.material}-${item.grade}`" :value="materialReferenceValue(item)">{{ item.grade }} · HKD {{ fixedDecimal(item.priceHkdLb, 3) }}/lb</option></select><small v-if="!selectedMaterialReference(row)">材质／料型未匹配，待补料价</small><button v-if="!selectedMaterialReference(row) && canEditMaterialPrices" type="button" :disabled="disabled" @click="emit('request-material-prices')">本报价专用料价</button></td>
+                <td><select :value="selectedMaterialReference(row) ? materialReferenceValue(selectedMaterialReference(row)!) : ''" :disabled="disabled || !row.material" data-injection-field="grade" aria-label="具体材料料型" @change="selectMaterialGrade(row, ($event.target as HTMLSelectElement).value)"><option value="">{{ row.material ? '请选择具体料型' : '先选择材质' }}</option><option v-for="item in materialOptions(row)" :key="`${item.material}-${item.grade}`" :value="materialReferenceValue(item)">{{ item.grade }} · HKD {{ fixedDecimal(item.priceHkdLb, 3) }}/lb</option></select><small v-if="!selectedMaterialReference(row)">材质／料型未匹配，待补料价</small></td>
                 <td><input data-injection-field="net_weight_g" v-model.number="row.net_weight_g" :disabled="disabled || injectionFieldLocked(row, 'net_weight_g')" :class="{ 'engineering-prefilled': injectionFieldLocked(row, 'net_weight_g') }" type="number" min="0" step="0.001"></td>
                 <td class="snapshot-cell">{{ injectionPreviewText(row, 'materialPriceHkdG') }}</td>
                 <td class="snapshot-cell">{{ injectionPreviewText(row, 'materialCostHkd') }}</td>
