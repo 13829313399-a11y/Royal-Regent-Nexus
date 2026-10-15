@@ -296,10 +296,12 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
         if action in {"eta_write", "requisition_reconcile", "cost_write"}:
             departments = ("pmc-warehouse",)
         if action == "cost_read":
-            departments = ("production", "pmc-warehouse")
+            departments = ("production", "pmc-warehouse", "accounting")
+        if action in {"period_lock", "period_reopen"}:
+            departments = ("accounting",)
         if action == "read":
-            departments = ("production", "engineering", "pmc-warehouse")
-        return ScopePolicy(departments, guidance="仅华康C裁床；BOM与需求提交归工程，签收、计划、填数、抽查、收回验收、交接、领料申请与物料签收及基础资料归生产，采购交期归PMC/仓库；各操作须单独授权")
+            departments = ("production", "engineering", "pmc-warehouse", "accounting")
+        return ScopePolicy(departments, guidance="仅华康C裁床；BOM与需求提交归工程，生产操作及月结编制归生产，采购交期归PMC/仓库，月结复核锁月及反结归会计；各操作和成本查询须单独授权")
     if permission_code == "module_feedback:submit":
         return ScopePolicy(guidance="已确认员工默认仅可在所属厂区提交及查看本人反馈；可单独禁止，允许授权不能扩大到其他厂区")
     if permission_code == "module_feedback:manage":

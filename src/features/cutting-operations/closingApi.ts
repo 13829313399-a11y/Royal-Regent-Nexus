@@ -17,6 +17,7 @@ export interface MonthlyMaterial {
   price?:{version:number;actor:string;date:string;reason:string;data:{entry:{unit_cost:string;currency:string;price_reference:string}}}|null
 }
 export interface ClosingPreview {
+  order_snapshot?:{reference_no?:string;product_no?:string;customer_name?:string;product_name_zh?:string;product_name_en?:string}
   line_id:string;month:string;start:string;end:string;through:string;generated_at:string;state:'preview';partial:boolean
   basis:{order_version:number;plan_version:number|null;usage_revision:number;warehouse_revision:number}
   plan_stale?:boolean;production:MonthlyProduction[];materials:MonthlyMaterial[]
