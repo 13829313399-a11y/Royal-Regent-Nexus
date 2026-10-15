@@ -45,6 +45,29 @@ function blowMoldingModel(overrides: Record<string, unknown> = {}) {
 }
 
 describe('InternalQuoteSectionForm engineering mold prefill', () => {
+  it.each([false, true])('opens quote material prices for matched rows with independent price permission (molding disabled: %s)', async (disabled) => {
+    const wrapper = mount(InternalQuoteSectionForm, {
+      props: {
+        code: 'molding',
+        modelValue: moldingModel({ material: 'ABS', grade: '750SW' }),
+        referenceSnapshot,
+        disabled,
+        canEditMaterialPrices: true,
+      },
+    })
+
+    const button = wrapper.get('.molding-injection > header .molding-header-actions button')
+    expect(button.text()).toBe('本报价专用料价')
+    expect(button.attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('材质／料型未匹配')
+    await button.trigger('click')
+    expect(wrapper.emitted('request-material-prices')).toEqual([[]])
+
+    await wrapper.setProps({ canEditMaterialPrices: false })
+    expect(wrapper.findAll('button').some(item => item.text() === '本报价专用料价')).toBe(false)
+    wrapper.unmount()
+  })
+
   it('merges only contiguous Huadeng labor jobs and copying creates independent labor', async () => {
     const modelValue = moldingModel()
     modelValue.injection_lines = [0, 1, 2, 3].map(index => ({

@@ -340,9 +340,30 @@ def _product_name_from_block(block: str) -> str:
 
 
 def _packing_from_block(block: str) -> tuple[str, str]:
-    pack_qty = _match(r"Outer\s*(?:Type\s*:\s*\w+\s*)?(?:QTY\s*:|:)\s*([\d,]+)\s*PCS", block)
-    if not pack_qty:
-        pack_qty = _match(r"Outer\s*:\s*([\d,]+)\s*PCS", block)
+    # The supplied QF prints "Outer: 288P" and "12/288装": 12 is
+    # the inner pack, not the carton pack. Only use explicit outer evidence.
+    integer = r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)"
+    piece = r"(?:PCS?|P)\b"
+    patterns = (
+        rf"\bOuter\s*(?:Type\s*[:：]\s*\w+\s*)?(?:QTY\s*[:：]|[:：])\s*({integer})\s*{piece}",
+        rf"(?<![\d.,/])({integer})\s*{piece}\s+PER\s+(?:OUTER(?:\s+CARTON)?|MASTER\s+CARTON)\b",
+    )
+    # Generic appendices say e.g. "0/1装的号码才需要贴". They describe
+    # other products, not this line's pack. Product remarks precede Packing.
+    packing = re.search(r"\bPacking\s*(?:/ Cube)?\s*[:：]", block, re.I)
+    remarks_end = block.find('\n', packing.start()) if packing else -1
+    remarks = block[:remarks_end] if remarks_end >= 0 else block
+    composite = rf"(?<![\d.,/／]){integer}\s*[/／]\s*({integer})\s*[装裝](?!\s*(?:的\s*)?[号號][码碼])"
+    values = [value for pattern in patterns for value in re.findall(pattern, block, re.I)]
+    values.extend(re.findall(composite, remarks))
+    candidates = {
+        int(value.replace(',', ''))
+        for value in values
+        if int(value.replace(',', '')) > 0
+    }
+    if len(candidates) > 1:
+        raise ValueError("外箱装箱数存在冲突，请核对原单；不会使用内箱数或历史装箱数替代")
+    pack_qty = str(next(iter(candidates))) if candidates else ""
     packaging = _match(r"(Packing\s*(?:/ Cube)?\s*:[^\n]+)", block)
     if packaging and not re.search(
         r"(?:\d+\s*PCS|POLYBAG|CARTON|PDQ|DISPLAY|BOX|CARD|袋|箱|卡|彩贴)",
@@ -350,7 +371,7 @@ def _packing_from_block(block: str) -> tuple[str, str]:
         re.I,
     ):
         packaging = ""
-    return pack_qty.replace(",", ""), packaging
+    return pack_qty, packaging
 
 
 def _workbook_line_parts(row: str, is_qf: bool) -> dict[str, str] | None:

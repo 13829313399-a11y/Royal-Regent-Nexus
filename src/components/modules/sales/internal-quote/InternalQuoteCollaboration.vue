@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import BusinessShareButton from '@/features/collaboration/BusinessShareButton.vue'
-import { AlertTriangle, ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleDollarSign, CircleUserRound, FileImage, FileText, Layers3, LockKeyhole, Maximize2, Pencil, RefreshCw, Save, Send, ShieldCheck, UserPlus, XCircle } from '@lucide/vue'
+import { AlertTriangle, ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleUserRound, FileImage, FileText, Layers3, LockKeyhole, Maximize2, Pencil, RefreshCw, Save, Send, ShieldCheck, UserPlus, XCircle } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import InternalQuoteAlternatives from './InternalQuoteAlternatives.vue'
@@ -10,6 +10,7 @@ import InternalQuoteComponentImage from './InternalQuoteComponentImage.vue'
 import InternalQuoteDepartmentFilesPanel from './InternalQuoteDepartmentFilesPanel.vue'
 import InternalQuoteHeaderDialog from './InternalQuoteHeaderDialog.vue'
 import InternalQuoteMaterialsDialog from './InternalQuoteMaterialsDialog.vue'
+import InternalQuoteLeaveDialog from './InternalQuoteLeaveDialog.vue'
 import InternalQuoteProductActions from './InternalQuoteProductActions.vue'
 import InternalQuotePackagingCopy from './InternalQuotePackagingCopy.vue'
 import InternalQuoteProductImageUpload from './InternalQuoteProductImageUpload.vue'
@@ -732,11 +733,25 @@ async function saveReferenceMaterials(
 function hasUnsavedDepartmentChanges() {
   return Boolean(pricingPanel.value?.hasUnsavedChanges?.()) || Object.values(sectionEditors.value).some((editor) => editor?.hasUnsavedChanges())
 }
+const leavePricingOpen = ref(false)
+let pendingPricingNavigation: Promise<boolean> | undefined
+let resolvePricingNavigation: ((leave: boolean) => void) | undefined
+function answerPricingNavigation(leave: boolean) {
+  const resolve = resolvePricingNavigation
+  resolvePricingNavigation = undefined
+  pendingPricingNavigation = undefined
+  leavePricingOpen.value = false
+  resolve?.(leave)
+}
 function guardSidebarChanges() {
   if (!pricingPanel.value?.hasUnsavedChanges?.()) return true
-  errorMessage.value = '侧栏报价设置或汇率有未保存修改，请先保存当前款及汇率后再切换页面。'
-  return false
+  if (!pendingPricingNavigation) {
+    leavePricingOpen.value = true
+    pendingPricingNavigation = new Promise<boolean>((resolve) => { resolvePricingNavigation = resolve })
+  }
+  return pendingPricingNavigation
 }
+onBeforeUnmount(() => answerPricingNavigation(false))
 onBeforeRouteLeave(guardSidebarChanges)
 onBeforeRouteUpdate((to) => String(to.params.quoteId ?? '') === quoteId.value || guardSidebarChanges())
 function guardSidebarUnload(event: BeforeUnloadEvent) {
@@ -1000,7 +1015,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="quote-head-main"><div class="quote-title-row"><h1>{{ quote.productName }}</h1><span>{{ collaborationStatusLabel }}</span><b v-if="isMultiProduct">第 {{ currentBatchProduct?.position ?? quote.batchPosition }}/{{ batchProducts.length }} 款</b><em v-if="baselineDifferenceLabel" class="quote-baseline-comparison" :class="{ same: !currentBatchProduct?.differsFromBaseline }">{{ baselineDifferenceLabel }}</em></div><p>{{ quote.batchQuoteNo || quote.quoteNo }} · {{ quote.customer }} · {{ quote.versionLabel }}</p><div class="quote-head-meta"><span><Building2 />{{ quote.factoryName }} / {{ quote.workshopName }}</span><span><CircleUserRound />{{ quote.initiatorDepartment === 'engineering' ? '工程部' : '业务部' }}发起 · {{ quote.initiatorName }}</span><span><CircleUserRound />{{ isDirectOutput ? '业务负责人' : isContinuousQuote ? '整批审核人' : '全部分段审核' }} · {{ quote.businessOwner }}</span><span><CalendarDays />目标 {{ quote.targetDate }}</span></div></div>
       </div>
-      <div class="quote-head-progress"><div><span>{{ isContinuousQuote ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditMaterials" type="button" @click="openMaterialsDialog"><CircleDollarSign />本报价专用料价</button><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isContinuousQuote || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
+      <div class="quote-head-progress"><div><span>{{ isContinuousQuote ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isContinuousQuote || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
     <details v-if="quote.historySources?.length" class="quote-history-evidence">
@@ -1120,6 +1135,7 @@ onBeforeUnmount(() => {
       @close="closeHeaderDialog"
       @confirm="saveHeader"
     />
+    <InternalQuoteLeaveDialog :open="leavePricingOpen" @cancel="answerPricingNavigation(false)" @discard="answerPricingNavigation(true)" />
     <InternalQuoteMaterialsDialog
       :open="materialsDialogOpen"
       :product-name="quote.productName"
