@@ -278,7 +278,7 @@ export interface BlowRow extends Omit<QuotePricingMetadata, 'markup_override'> {
   mold_price_rmb: number
   remark: string
 }
-export interface MoldingPayload { injection_loss_rate_percent: number; injection_lines: InjectionRow[]; blow_lines: BlowRow[]; caixing_tool_plan_rows: CaixingToolPlanRow[] }
+export interface MoldingPayload { engineering_prefill_paused?: boolean; injection_loss_rate_percent: number; injection_lines: InjectionRow[]; blow_lines: BlowRow[]; caixing_tool_plan_rows: CaixingToolPlanRow[] }
 
 export type PaintingOperationCode = 'clamp' | 'pad_print' | 'uv' | 'spray' | 'edge' | 'paint' | 'dip' | 'wipe' | 'pp_water'
 export interface PaintingOperationValue { quantity: number; unit_price_hkd: number }
@@ -1694,6 +1694,7 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
   if (code === 'molding') {
     const injectionLossRate = numberValue(source.injection_loss_rate_percent, 3)
     return {
+      ...(source.engineering_prefill_paused === true ? { engineering_prefill_paused: true } : {}),
       injection_loss_rate_percent: injectionLossRate,
       injection_lines: rows(source.injection_lines).map((row) => ({
         ...(row.line_id ? { line_id: textValue(row.line_id) } : {}),

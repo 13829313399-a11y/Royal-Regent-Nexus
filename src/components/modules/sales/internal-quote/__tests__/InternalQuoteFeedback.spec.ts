@@ -573,3 +573,18 @@ describe('internal quote feedback regressions', () => {
     wrapper.unmount()
   })
 })
+
+
+it('leaves unselected molding clean and empty until the user explicitly generates engineering rows', async () => {
+  const { wrapper, save } = setup('molding', { engineering_prefill_paused: true })
+  await wrapper.setProps({ engineeringPayload: { molds: [{ mold_id: 'm1', item: '外壳', net_weight_g: 50 }] } })
+  await flushPromises()
+  expect(wrapper.vm.hasUnsavedChanges()).toBe(false)
+  expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toEqual([])
+  await wrapper.findAll('button').find(button => button.text() === '从工程生成胶件')!.trigger('click')
+  await flushPromises()
+  expect(wrapper.vm.getWholeQuoteDraft().payload.injection_lines).toMatchObject([{ item: '外壳', engineering_mold_id: 'm1' }])
+  expect(wrapper.vm.hasUnsavedChanges()).toBe(true)
+  expect(save).not.toHaveBeenCalled()
+  wrapper.unmount()
+})

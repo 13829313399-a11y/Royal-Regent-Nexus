@@ -230,7 +230,15 @@ export interface InternalQuoteSidebarPricingDraft {
   componentMarkups?: Array<{ id: string; markup: number }>
 }
 
+export interface InternalQuoteReadiness {
+  ready_sections: number
+  required_sections: number
+  state: 'empty' | 'incomplete' | 'ready' | 'issued'
+  blockers: Array<{ section_code: string; section_name: string; state: string; reason: string }>
+}
+
 export interface InternalQuote {
+  readiness?: InternalQuoteReadiness | null
   documentProductCount?: number
   documentVersionCount?: number
   documentQuoteId?: string
