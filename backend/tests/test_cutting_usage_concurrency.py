@@ -201,3 +201,32 @@ def test_report_correction_and_allocation_never_leave_old_unit_cost_current(acco
     group = read(p, True)['cost_allocation']['groups'][0]
     assert group['completed_sets'] == 8
     assert group['status'] in {'stale', 'unconfirmed'} and group['costs']['CNY']['unit_cost'] is None
+
+
+def test_monthly_preview_keeps_one_cost_version_during_price_write(accounting, monkeypatch):
+    p = accounting
+    write(p, 'price', issue_id=p.issue_id, unit_cost='2', currency='CNY', price_reference='月核对原成本依据')
+    body = command(expected_version=read(p)['revision'], day='2026-10-10', issue_id=p.issue_id,
+                   unit_cost='4', currency='CNY', price_reference='月核对新成本依据')
+    paused, started = Event(), Event()
+    original, first = usage.events, True
+    def interleave(db):
+        nonlocal first
+        if first:
+            first = False
+            paused.set()
+            assert started.wait(10)
+        return original(db)
+    monkeypatch.setattr(usage, 'events', interleave)
+    def writer():
+        started.set()
+        return p.post(URL + '/price', json=body)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reader = pool.submit(lambda: p.get(BASE + '/orders/line-1/closing-preview', params=dict(factory_id=c.FACTORY, month='2026-10', with_costs=True)))
+        assert paused.wait(10)
+        pending = pool.submit(writer)
+        before, posted = reader.result(timeout=30), pending.result(timeout=30)
+    assert before.status_code == posted.status_code == 200
+    assert before.json()['costs'] == {'CNY': {'normal': '4.00', 'loss': '1.00'}}
+    assert before.json()['materials'][0]['price']['data']['entry']['unit_cost'] == '2'
+    assert read(p, True)['amounts'] == {'CNY': '10.00'}

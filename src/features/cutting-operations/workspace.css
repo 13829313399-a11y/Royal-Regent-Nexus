@@ -121,3 +121,5 @@
 .cutting-master-toolbar [data-slot="button"], .order-toolbar [data-slot="button"], .plan-tools [data-slot="button"], .calendar-exception [data-slot="button"] { align-self: end; }
 
 .cutting-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; color: var(--muted-foreground); font-size: 13px; font-variant-numeric: tabular-nums; }
+/* Monthly reconciliation targets remain read-only until the user chooses an operation. */
+.cutting-page [data-cutting-focused="true"] { outline: 2px solid var(--primary); outline-offset: -2px; background: var(--accent); scroll-margin-block: 100px; }

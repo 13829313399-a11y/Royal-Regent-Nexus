@@ -129,3 +129,35 @@ def test_real_session_allocation_deny_and_revocation_are_immediate(session_flow)
         db.commit()
     assert 'allocation_confirm' not in p.get(BASE + '/access?factory_id=huakang-c').json()['permissions']
     assert p.post(BASE + '/orders/line-1/usage/allocate', json={'factory_id':'huakang-c'}).status_code == 403
+
+
+@pytest.mark.parametrize('name,costs,expected', [
+    ('production', True, 200), ('procurement', True, 200), ('engineering', True, 403),
+    ('engineering', False, 200), ('reader', False, 200), ('reader', True, 403), ('foreign', False, 403),
+])
+def test_real_session_monthly_preview_scope(session_flow, monkeypatch, name, costs, expected):
+    from app.services import cutting_closing
+    monkeypatch.setattr(cutting_closing, 'read', lambda db, line_id, month, show_costs=False: {'state': 'preview', 'costs_requested': show_costs})
+    login(session_flow, name)
+    response = session_flow.get(BASE + '/orders/line-1/closing-preview', params={'factory_id':'huakang-c','month':'2026-10','with_costs':costs})
+    assert response.status_code == expected
+
+
+def test_real_session_monthly_preview_cost_revocation(session_flow, monkeypatch):
+    from app.services import cutting_closing
+    monkeypatch.setattr(cutting_closing, 'read', lambda *args, **kwargs: {'state': 'preview'})
+    p = session_flow
+    login(p, 'production')
+    url = BASE + '/orders/line-1/closing-preview?factory_id=huakang-c&month=2026-10&with_costs=true'
+    assert p.get(url).status_code == 200
+    with Session(p.engine) as db:
+        db.add(AuthUserPermissionOverride(id='deny-monthly-cost', user_id='production', permission_id='cutting_ops:cost_read',
+                                         effect='deny', factory_id='huakang-c', department='production'))
+        db.commit()
+    assert p.get(url).status_code == 403
+    with Session(p.engine) as db:
+        db.execute(delete(AuthUserPermissionOverride).where(AuthUserPermissionOverride.id=='deny-monthly-cost'))
+        db.execute(delete(AuthRolePermission).where(AuthRolePermission.id=='production:cost_read'))
+        db.commit()
+    assert p.get(url).status_code == 403
+    assert p.get(url.replace('with_costs=true', 'with_costs=false')).status_code == 200
