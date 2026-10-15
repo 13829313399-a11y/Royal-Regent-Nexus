@@ -97,6 +97,7 @@
 .cutting-table-scroll { border: 1px solid var(--border); border-radius: var(--radius); }
 .cutting-table-scroll table { min-width: 640px; }
 .cutting-table-scroll td { padding: 16px 20px; text-align: center; border-bottom: 1px solid var(--border); vertical-align: middle; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.cutting-table-scroll td.cutting-order-product-name { min-width: 180px; max-width: 320px; white-space: normal; }
 .cutting-table-scroll td .cutting-master-actions { justify-content: center; align-items: center; }
 .cutting-table-scroll tbody tr:last-child td { border-bottom: 0; }
 .cutting-table-scroll tbody tr:hover { background: color-mix(in srgb, var(--muted) 45%, transparent); }
