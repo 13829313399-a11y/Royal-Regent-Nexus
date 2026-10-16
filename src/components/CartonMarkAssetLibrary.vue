@@ -8,7 +8,7 @@ import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 import { factoryContexts } from '@/data/enterpriseMock'
 
-const props = defineProps<{ factoryId: string; search?: string; supplierFactories?: string[]; orderId?: string; readOnly?: boolean; supplier?: boolean; supplierCheckEnabled?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
+const props = defineProps<{ factoryId: string; search?: string; supplierFactories?: string[]; orderId?: string; supplierIssueId?: string; readOnly?: boolean; supplier?: boolean; supplierCheckEnabled?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
 const emit = defineEmits<{ 'update:search': [value: string]; use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]]; manualReview: [assets: CartonMarkAsset[]]; supplierReview: [assets: (SupplierMarkAsset & { factory_id: string })[]]; supplierExcel: [asset: SupplierMarkAsset & { factory_id: string }]; supplierGeneratePdf: [asset: SupplierMarkAsset & { factory_id: string }]; supplierSources: [assets: (SupplierMarkAsset & { factory_id: string })[]] }>()
 const auth = useAuthStore()
 const canRead = computed(() => props.supplier ? auth.can('carton_supplier:read') : ['pmc-warehouse', 'carton', 'qa', 'qc'].some(d => auth.can('carton_mark:read', props.factoryId, d)))
@@ -194,7 +194,13 @@ async function refresh() {
     if (props.supplier) {
       const scopes = [...new Set(props.supplierFactories ?? (factory ? [factory] : []))]
       const batches = await Promise.all(scopes.map(async scope => {
-        try { return { scope, assets: await cartonSupplierPortalApi.markAssets(scope, controller.signal) } }
+        try {
+          const assets = await cartonSupplierPortalApi.markAssets(scope, controller.signal)
+          return { scope, assets: props.orderId ? assets.flatMap(asset => {
+            const orders = asset.orders.filter(order => order.id === props.orderId && order.issue_id === props.supplierIssueId)
+            return orders.length ? [{ ...asset, orders }] : []
+          }) : assets }
+        }
         catch (cause) { throw new Error(`${factoryDisplayName(scope)}：${getApiErrorMessage(cause)}`) }
       }))
       if (current === generation && sequence === listSequence) supplierSources.value = batches.flatMap(({ scope, assets }) => assets.map(asset => ({ ...asset, factory_id: scope })))
@@ -375,7 +381,7 @@ function previewUrl(asset: CartonMarkAsset) {
 }
 function chooseFiles() { if (canWrite.value && !busy.value) fileInput.value?.click() }
 defineExpose({ chooseFiles, refresh })
-watch([() => props.factoryId, () => props.supplierFactories?.join('\0'), () => props.orderId,
+watch([() => props.factoryId, () => props.supplierFactories?.join('\0'), () => props.orderId, () => props.supplierIssueId,
   () => props.supplier, canRead, canWrite, () => auth.currentUser?.id, () => auth.authorizationVersion], () => {
   generation++
   controller.abort()
@@ -403,7 +409,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="flex items-center gap-2 text-base font-bold text-slate-900"><FolderOpen class="size-5 text-teal-700" />{{ uploadOnly ? '批量上传箱唛资料' : '箱唛资料库' }}</h2>
-        <p class="mt-1 text-xs leading-5 text-slate-500">{{ supplier ? '本供应商采购订单的箱唛原文件，可查看、下载，并选择 Excel / PDF 一起核对。' : orderId ? '此订单关联的箱唛原文件，可直接查看和下载。' : '同名文件或相同内容可重复上传，每次独立保存，不覆盖原资料。PDF、Excel、图片可分别上传，按合同号自动关联本厂订单并共享给对应供应商；未识别的文件先保存，之后再关联。' }}</p>
+        <p class="mt-1 text-xs leading-5 text-slate-500">{{ orderId ? '此订单关联的箱唛原文件，可直接查看和下载。历史版本请切换分类查看。' : supplier ? '本供应商采购订单的箱唛原文件，可查看、下载，并选择 Excel / PDF 一起核对。' : '同名文件或相同内容可重复上传，每次独立保存，不覆盖原资料。PDF、Excel、图片可分别上传，按合同号自动关联本厂订单并共享给对应供应商；未识别的文件先保存，之后再关联。' }}</p>
         <p v-if="!supplier && !orderId" class="text-xs leading-5 text-slate-500">图片支持 JPG、PNG、WebP。无需改照片名：上传后可搜索订单手动关联，或勾选多张照片组成组、整组关联。同合同命名可自动识别，如 4500000123_正唛.jpg。</p>
       </div>
       <button v-if="!uploadOnly" type="button" :disabled="busy || loading" class="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-xs disabled:opacity-50" @click="refresh"><RefreshCw class="size-3.5" />刷新</button>
