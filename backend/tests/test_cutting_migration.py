@@ -54,7 +54,10 @@ def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path, starting
     from app.models.cutting_period import CuttingPeriodEvent
     from app.services.cutting_period_guards import schema_ready as periods_ready
     assert periods_ready(engine)
-    for table in (*TABLES, *ORDER_TABLES, PRODUCTION_TABLE, USAGE_TABLE, CuttingPeriodEvent.__table__):
+    from app.models.cutting_settlement import CuttingSettlementEvent
+    from app.services.cutting_settlement import schema_ready as settlements_ready
+    assert settlements_ready(engine)
+    for table in (*TABLES, *ORDER_TABLES, PRODUCTION_TABLE, USAGE_TABLE, CuttingPeriodEvent.__table__, CuttingSettlementEvent.__table__):
         actual = {column['name']: column for column in inspect(engine).get_columns(table.name)}
         assert set(actual) == {column.name for column in table.columns}
         for column in table.columns:

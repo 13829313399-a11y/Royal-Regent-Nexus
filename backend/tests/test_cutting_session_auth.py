@@ -16,7 +16,7 @@ def session_flow(flow, monkeypatch):
     flow.app.include_router(auth_api.router)
     flow.app.dependency_overrides.pop(get_current_user)
     monkeypatch.setattr(auth_api.settings, 'session_cookie_secure', False)
-    actions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile', 'plan_write', 'plan_publish', 'report_write', 'report_review', 'handover_write', 'acceptance_write', 'cost_read', 'allocation_confirm', 'period_prepare', 'period_lock', 'period_reopen']
+    actions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile', 'plan_write', 'plan_publish', 'report_write', 'report_review', 'handover_write', 'acceptance_write', 'cost_read', 'allocation_confirm', 'period_prepare', 'period_lock', 'period_reopen', 'settlement_read', 'settlement_price', 'settlement_prepare', 'settlement_confirm', 'settlement_reopen']
     with Session(flow.engine) as db:
         # Required IAM invariant row, seeded by the real migration in deployed databases.
         db.add(AuthIamState(key='identity_mutation_lock', value_json='{}'))
