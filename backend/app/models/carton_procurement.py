@@ -1,4 +1,5 @@
 from decimal import Decimal
+import json
 
 from sqlalchemy import (
     CheckConstraint,
@@ -153,6 +154,12 @@ class CartonOrderLine(Base):
     dimension_unit: Mapped[str] = mapped_column(String(16), default="")
     # 兼容历史数据库列名；自迁移 20260818_0079 起保存“每箱个数”。
     usage_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    quantity_rule_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    @property
+    def quantity_rule(self):
+        return json.loads(self.quantity_rule_json) if self.quantity_rule_json else None
+
     net_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     gross_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     required_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4))

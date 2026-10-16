@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.schemas.carton_weights import CartonPackingWeights
+from app.schemas.carton_quantity import PaperQuantityRule
 
 
 CartonOrderStatus = Literal[
@@ -159,6 +160,7 @@ class CartonCustomerListOut(BaseModel):
 
 
 class CartonOrderLineCreate(CartonPackingWeights):
+    quantity_rule: PaperQuantityRule | None = None
     packaging_type: str = Field(min_length=1, max_length=64)
     paper_quality: str = Field(default="", max_length=128)
     specification: str = Field(default="", max_length=255)
@@ -533,6 +535,7 @@ class CartonOrderLineOut(CartonPackingWeights):
     specification: str
     dimension_unit: str
     usage_quantity: Decimal | None
+    quantity_rule: PaperQuantityRule | None = None
     required_quantity: Decimal
     received_quantity: Decimal
     remaining_quantity: Decimal
@@ -546,12 +549,13 @@ class CartonOrderLineOut(CartonPackingWeights):
 
 
 class CartonOrderHistoryLineOut(CartonPackingWeights):
+    quantity_rule: PaperQuantityRule | None = None
     line_no: int
     packaging_type: str
     paper_quality: str
     specification: str
     dimension_unit: str
-    usage_quantity: Decimal
+    usage_quantity: Decimal | None
     unit: str
     unit_price: Decimal
     currency: str
@@ -1277,6 +1281,7 @@ class CartonImportBatchOut(BaseModel):
     created_at: str
     parse_summary: dict[str, object] = Field(default_factory=dict)
     duplicate: bool = False
+    detail_loaded: bool = True
 
 
 class CartonImportBatchListOut(BaseModel):
@@ -1376,6 +1381,7 @@ class CartonAuditEventOut(BaseModel):
     entity_type: str
     entity_id: str
     detail: dict[str, object]
+    detail_loaded: bool = True
     actor_user_id: str
     actor_name: str
     created_at: str

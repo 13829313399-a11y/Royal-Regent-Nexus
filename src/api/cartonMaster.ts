@@ -1,9 +1,10 @@
+import type { PaperQuantityRule } from '@/features/carton-procurement/paperQuantity'
 import { standardPaperTypes, paperQualities, paperStandard } from '@/features/carton-procurement/paperCatalog'
 import { http } from '@/lib/http'
 import type { CartonLocation } from './cartonPositions'
 import { matchesNumberTemplate } from '@/lib/cartonNumberPatterns'
 
-export interface MasterPaper { packaging_type: string; paper_quality: string; specification: string; dimension_unit: string; unit: string; usage_quantity: string | number; net_weight_kg?: string | number | null; gross_weight_kg?: string | number | null }
+export interface MasterPaper { packaging_type: string; paper_quality: string; specification: string; dimension_unit: string; unit: string; usage_quantity: string | number | null; quantity_rule?: PaperQuantityRule | null; net_weight_kg?: string | number | null; gross_weight_kg?: string | number | null }
 export interface NumberRule { mode: 'AUTO' | 'OFF' | 'WARN' | 'BLOCK'; prefix: string; min_length: number; max_length: number; characters: 'ANY' | 'DIGITS' | 'ALNUM_DASH'; templates?: string[]; frozen?: boolean; reset?: boolean; sample_text?: string; source?: 'NONE' | 'MANUAL' | 'HISTORY'; sample_count?: number; user_configured?: boolean }
 export type PaperHistory = Partial<Record<'packaging_type' | 'paper_quality' | 'specification', string[]>>
 export interface MasterData { default_dimension_unit?: 'cm' | 'inch'; net_weight_kg?: string | number | null; gross_weight_kg?: string | number | null; hidden_paper_types?: string[]; hidden_paper_qualities?: string[]; hidden_specifications?: string[]; paper_types?: string[]; paper_qualities?: string[]; specifications?: string[]; product_name: string; packing_name: string; lines: MasterPaper[]; item_nos: string[]; note: string; lead_days: number | null; production_days: number | null; customer_days: number | null; customer_days_disabled: boolean; customer_po_rule: NumberRule; contract_rule: NumberRule; item_rule: NumberRule; warehouses: string[] }

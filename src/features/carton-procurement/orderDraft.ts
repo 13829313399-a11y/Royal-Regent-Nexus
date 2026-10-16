@@ -1,3 +1,4 @@
+import type { PaperQuantityRule } from './paperQuantity'
 import type { CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { OrderSubmission } from './orderSubmission'
 import { isSupplierOrderSource, type SupplierOrderSource } from './supplierOrderSource'
@@ -14,6 +15,7 @@ export interface OrderDraftMaterial {
   paperQuality: string
   specification: string
   unitsPerCarton: number | ''
+  quantityRule?: PaperQuantityRule | null
   requiredQuantity?: number | ''
   netWeight?: number | ''
   grossWeight?: number | ''
@@ -60,6 +62,12 @@ const record = (value: unknown): value is Record<string, unknown> => value !== n
 const textValue = (value: unknown): value is string => typeof value === 'string' && value.length <= 20_000
 const numberValue = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
 const numberInput = (value: unknown) => value === '' || numberValue(value)
+function validQuantityRule(value: unknown) {
+  if (value == null) return true
+  return record(value) && ['PACKING', 'PER_CARTON'].includes(String(value.mode))
+    && (value.carton_line_no == null || numberValue(value.carton_line_no))
+    && ['per_carton_quantity', 'manual_quantity'].every(key => value[key] == null || numberValue(value[key]) || typeof value[key] === 'string' && String(value[key]).length < 60)
+}
 
 export function orderDraftKey(context: OrderDraftContext) {
   return `carton-order-draft:v1:${encodeURIComponent(context.userId)}:${context.employmentEpoch}:${encodeURIComponent(context.factoryId)}`
@@ -82,7 +90,7 @@ function validDraft(value: unknown, context: OrderDraftContext): value is OrderD
   if (!formStrings.every(key => textValue(form[key])) || !['CALCULATED', 'EXPLICIT'].includes(String(form.quantityBasis))
     || !numberInput(form.orderQuantity) || !Array.isArray(form.materials) || form.materials.length < 1 || form.materials.length > 100) return false
   if (!form.materials.every(line => record(line) && materialStrings.every(key => textValue(line[key]))
-    && numberInput(line.unitsPerCarton) && numberValue(line.unitPrice)
+    && numberInput(line.unitsPerCarton) && numberValue(line.unitPrice) && validQuantityRule(line.quantityRule)
     && optionalNumbers.every(key => line[key] === undefined || numberInput(line[key])))) return false
   if (value.master !== null && (!record(value.master) || !['id', 'code', 'factory_id'].every(key => textValue(value.master && (value.master as Record<string, unknown>)[key]))
     || value.master.factory_id !== context.factoryId || !numberValue(value.master.revision) || value.master.revision < 1)) return false

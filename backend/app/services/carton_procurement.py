@@ -9,6 +9,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
+from app.services.carton_quantity import requirements as paper_requirements, rule_data, rule_json, rule as paper_rule
 from difflib import SequenceMatcher
 from pathlib import Path
 from uuid import uuid4
@@ -16,7 +17,7 @@ from uuid import uuid4
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.services.transaction_lock import lock_transaction
 from app.core.time import business_now, business_today
@@ -428,14 +429,20 @@ def _new_number(prefix: str) -> str:
 
 def _input_required(payload, line, *, allow_zero=False):
     if payload.quantity_basis == "EXPLICIT":
+        if paper_rule(line) is not None:
+            raise HTTPException(422, "直接填写需求的订单不能同时指定自动计算规则")
         if line.required_quantity is None or line.required_quantity < 0 or (line.required_quantity == 0 and not allow_zero):
             raise HTTPException(422, "直接填写需求时，每行纸品需求数量必须大于 0")
         return quantity(line.required_quantity)
-    if payload.product_order_quantity is None or line.usage_quantity is None:
+    if payload.product_order_quantity is None:
         raise HTTPException(422, "按装箱数计算需求必须填写产品订单数量和每箱个数")
     if not line.paper_quality or not line.specification:
         raise HTTPException(422, "请补全纸质和规格")
-    return required_carton_quantity(payload.product_order_quantity, line.usage_quantity)
+    papers = getattr(payload, "lines", [line])
+    result = quantity(paper_requirements(payload.product_order_quantity, papers)[next(i for i, value in enumerate(papers) if value is line)])
+    if result == 0 and not allow_zero:
+        raise HTTPException(422, "新建订单的每行纸品需求数量必须大于 0")
+    return result
 
 
 def _require_receipt_material(line):
@@ -457,8 +464,25 @@ def _require_order_complete(db, order, *, require_dimensions=True):
                 raise HTTPException(422, f"第 {index} 条纸品原规格与尺寸单位冲突，请先核对")
     if not any(line.required_quantity > 0 for line in lines):
         raise HTTPException(422, "订单没有可执行的纸品需求")
-    if order.quantity_basis == "CALCULATED" and (order.product_order_quantity is None or any(line.usage_quantity is None for line in lines)):
+    if order.quantity_basis == "CALCULATED" and (order.product_order_quantity is None or any(line.usage_quantity is None and not (paper_rule(line) and paper_rule(line).mode == "PER_CARTON") for line in lines)):
         raise HTTPException(422, "按装箱数计算的订单缺少数量依据")
+
+
+def _set_manual_quantity(line, value):
+    data = rule_data(line) or {"mode": "PACKING"}
+    data["manual_quantity"] = str(value)
+    line.quantity_rule_json = json.dumps(data, sort_keys=True)
+
+
+def _apply_manual_targets(lines, targets, products):
+    # Mark changed totals first, then keep explicitly retained child quantities
+    # from drifting after a parent carton total was manually adjusted.
+    for line in lines:
+        if line.required_quantity != targets[line.id]:
+            _set_manual_quantity(line, targets[line.id])
+    for line, expected in zip(lines, paper_requirements(products, lines)):
+        if expected != targets[line.id]:
+            _set_manual_quantity(line, targets[line.id])
 
 
 def _explicit_targets(order, lines, targets, *, append):
@@ -508,7 +532,7 @@ def _merge_paper_weights(lines, sources, *, preserve_positions=False):
         defaults = {}
         if len(matches) == 1:
             source = matches[0]
-            for field in ("net_weight_kg", "gross_weight_kg"):
+            for field in ("net_weight_kg", "gross_weight_kg", "quantity_rule"):
                 if field not in line.model_fields_set:
                     defaults[field] = source.get(field) if isinstance(source, dict) else getattr(source, field)
         try:
@@ -620,6 +644,7 @@ def create_order(
                 specification=line.specification,
                 dimension_unit=line.dimension_unit,
                 usage_quantity=line.usage_quantity,
+                quantity_rule_json=rule_json(line),
                 net_weight_kg=line.net_weight_kg,
                 gross_weight_kg=line.gross_weight_kg,
                 required_quantity=required_quantity,
@@ -650,7 +675,7 @@ def create_order(
             "gross_weight_kg": order.gross_weight_kg,
             "product_order_quantity": order.product_order_quantity,
             "quantity_basis": order.quantity_basis,
-            "paper_demand": [{"packaging_type": line.packaging_type, "paper_quality": line.paper_quality, "specification": line.specification, "unit": line.unit, "net_weight_kg": str(line.net_weight_kg) if line.net_weight_kg is not None else None, "gross_weight_kg": str(line.gross_weight_kg) if line.gross_weight_kg is not None else None, "required_quantity": str(_input_required(payload, line)), "usage_quantity": str(line.usage_quantity) if line.usage_quantity is not None else None} for line in payload.lines],
+            "paper_demand": [{"packaging_type": line.packaging_type, "paper_quality": line.paper_quality, "specification": line.specification, "unit": line.unit, "net_weight_kg": str(line.net_weight_kg) if line.net_weight_kg is not None else None, "gross_weight_kg": str(line.gross_weight_kg) if line.gross_weight_kg is not None else None, "required_quantity": str(_input_required(payload, line)), "usage_quantity": str(line.usage_quantity) if line.usage_quantity is not None else None, "quantity_rule": rule_data(line)} for line in payload.lines],
             "status": "CONFIRMED",
             "product_name_source": product_name_source,
         },
@@ -827,6 +852,7 @@ def _purchase_order_pending_change(
                 "specification": line.specification,
                 "dimension_unit": line.dimension_unit,
                 "usage_quantity": str(line.usage_quantity) if line.usage_quantity is not None else None,
+                "quantity_rule": rule_data(line),
                 "net_weight_kg": str(line.net_weight_kg) if line.net_weight_kg is not None else None,
                 "gross_weight_kg": str(line.gross_weight_kg) if line.gross_weight_kg is not None else None,
                 "unit": line.unit,
@@ -850,9 +876,9 @@ def _purchase_order_pending_change(
         pending_type = "REDUCE" if latest_issue and not previous.get("cancellation") else "NONE"
     elif latest_issue is None:
         pending_type = "INITIAL"
-    elif product_delta > 0 or (order.quantity_basis == "EXPLICIT" and paper_delta > 0):
+    elif product_delta > 0 or paper_delta > 0:
         pending_type = "APPEND"
-    elif product_delta < 0 or (order.quantity_basis == "EXPLICIT" and paper_delta < 0):
+    elif product_delta < 0 or paper_delta < 0:
         pending_type = "REDUCE"
     elif changed_line_count or due_date_changed or customer_date_changed:
         pending_type = "ADJUSTMENT"
@@ -1317,6 +1343,7 @@ def _order_line_signature(line: CartonOrderLine | object) -> tuple[str, ...]:
         normalize_currency(str(line.currency)),
         str(line.price_source),
         str(line.note),
+        rule_json(line) or "",
         str(line.net_weight_kg.normalize()) if line.net_weight_kg is not None else "",
         str(line.gross_weight_kg.normalize()) if line.gross_weight_kg is not None else "",
     )
@@ -1441,6 +1468,7 @@ def update_order(
             normalize_currency(line.currency),
             line.price_source,
             line.note,
+            rule_json(line) or "",
             str(line.net_weight_kg.normalize()) if line.net_weight_kg is not None else "",
             str(line.gross_weight_kg.normalize()) if line.gross_weight_kg is not None else "",
         )
@@ -1549,6 +1577,7 @@ def update_order(
             line.specification = input_line.specification
             line.dimension_unit = input_line.dimension_unit
             line.usage_quantity = input_line.usage_quantity
+            line.quantity_rule_json = rule_json(input_line)
             line.net_weight_kg = input_line.net_weight_kg
             line.gross_weight_kg = input_line.gross_weight_kg
             line.required_quantity = required_quantity
@@ -1823,19 +1852,21 @@ def append_order(
     before_due_date = order.due_date
     lines = _order_lines(db, order.id)
     before_required = {line.id: quantity(line.required_quantity) for line in lines}
-    if order.quantity_basis == "EXPLICIT":
+    if order.quantity_basis == "EXPLICIT" or payload.line_quantities:
         if payload.additional_quantity is not None:
             raise HTTPException(422, "直接填写需求的订单请逐纸品追加，不能以产品数量换算")
         target = _explicit_targets(order, lines, payload.line_quantities, append=True)
         after_quantity = before_quantity
+        if order.quantity_basis == "CALCULATED":
+            _apply_manual_targets(lines, target, after_quantity)
         for line in lines:
             line.required_quantity = target[line.id]
     else:
         if payload.additional_quantity is None or payload.line_quantities:
             raise HTTPException(422, "按装箱数计算的订单必须填写产品追加数量")
         after_quantity = quantity(before_quantity + payload.additional_quantity)
-        for line in lines:
-            line.required_quantity = required_carton_quantity(after_quantity, line.usage_quantity)
+        for line, demand in zip(lines, paper_requirements(after_quantity, lines)):
+            line.required_quantity = quantity(demand)
     order.product_order_quantity = after_quantity
     if previous_status == "COMPLETED":
         received = fulfilled_by_line(db, [line.id for line in lines])
@@ -1935,7 +1966,7 @@ def reduce_order(
         raise HTTPException(status_code=409, detail="减单仅适用于已确认锁定或部分到货的订单")
 
     before_quantity = quantity(order.product_order_quantity) if order.product_order_quantity is not None else None
-    if order.quantity_basis == "EXPLICIT":
+    if order.quantity_basis == "EXPLICIT" or payload.line_quantities:
         if payload.reduction_quantity is not None:
             raise HTTPException(422, "直接填写需求的订单请逐纸品减单，不能以产品数量换算")
         reduction_quantity = None
@@ -1970,15 +2001,11 @@ def reduce_order(
     )
     before_required = {line.id: quantity(line.required_quantity) for line in lines}
     full_return = after_quantity == 0
-    after_required = _explicit_targets(order, lines, payload.line_quantities, append=False) if order.quantity_basis == "EXPLICIT" else {
-        line.id: (
-            Decimal("0")
-            if full_return
-            else required_carton_quantity(after_quantity, line.usage_quantity)
-        )
-        for line in lines
+    after_required = _explicit_targets(order, lines, payload.line_quantities, append=False) if order.quantity_basis == "EXPLICIT" or payload.line_quantities else {
+        line.id: quantity(demand) for line, demand in zip(lines,
+            [Decimal(0)] * len(lines) if full_return else paper_requirements(after_quantity, lines))
     }
-    if order.quantity_basis == "EXPLICIT":
+    if order.quantity_basis == "EXPLICIT" or payload.line_quantities:
         full_return = not any(after_required.values())
     protected_violations = [
         line
@@ -2002,6 +2029,8 @@ def reduce_order(
             ),
         )
     if not full_return:
+        if order.quantity_basis == "CALCULATED" and payload.line_quantities:
+            _apply_manual_targets(lines, after_required, after_quantity)
         for line in lines:
             line.required_quantity = after_required[line.id]
 
@@ -2354,6 +2383,27 @@ def _protected_product_quantity(
         received_cartons = protected_cartons[line.id]
         if received_cartons <= 0:
             continue
+        calculation = paper_rule(line)
+        if calculation and calculation.manual_quantity is not None:
+            # A deliberately fixed paper quantity is protected separately below;
+            # it must never be inverted into a fictitious product capacity.
+            continue
+        if calculation and calculation.mode == "PER_CARTON":
+            parent = lines[calculation.carton_line_no - 1]
+            parent_rule = paper_rule(parent)
+            if parent_rule and parent_rule.manual_quantity is not None:
+                continue
+            units_per_carton = quantity(parent.usage_quantity)
+            received_cartons = (received_cartons / calculation.per_carton_quantity).to_integral_value(rounding=ROUND_CEILING)
+            if completed_append_baseline is not None:
+                baseline_quantity, baseline_required = completed_append_baseline
+                baseline_cards = baseline_required.get(line.id, paper_requirements(baseline_quantity, lines)[line.line_no - 1])
+                original_cartons = (baseline_cards / calculation.per_carton_quantity).to_integral_value(rounding=ROUND_CEILING)
+                protected_candidates.append(quantity(baseline_quantity + (received_cartons - original_cartons) * units_per_carton)
+                    if received_cartons >= original_cartons else quantity(received_cartons * units_per_carton))
+            else:
+                protected_candidates.append(quantity(received_cartons * units_per_carton))
+            continue
         units_per_carton = quantity(line.usage_quantity)
         if completed_append_baseline is None:
             protected_candidates.append(quantity(received_cartons * units_per_carton))
@@ -2461,6 +2511,7 @@ def order_out(db: Session, order: CartonOrder, *, usage=None, projection=None) -
                 specification=line.specification,
                 dimension_unit=line.dimension_unit,
                 usage_quantity=line.usage_quantity,
+                quantity_rule=rule_data(line),
                 net_weight_kg=line.net_weight_kg,
                 gross_weight_kg=line.gross_weight_kg,
                 required_quantity=line.required_quantity,
@@ -2646,7 +2697,7 @@ def search_order_history_items(
     )
     grouped: dict[tuple[str, str], dict[str, object]] = {}
     for order in recent_orders:
-        if order.product_order_quantity is None or any(line.usage_quantity is None or line.required_quantity <= 0 or not line.paper_quality or not line.specification for line in _order_lines(db, order.id)):
+        if order.product_order_quantity is None or any((line.usage_quantity is None and not (paper_rule(line) and paper_rule(line).mode == "PER_CARTON")) or line.required_quantity <= 0 or not line.paper_quality or not line.specification for line in _order_lines(db, order.id)):
             continue
         key = (order.customer_code, order.item_no)
         if key not in grouped:
@@ -2714,6 +2765,7 @@ def search_order_history_items(
                         specification=line.specification,
                         dimension_unit=line.dimension_unit,
                         usage_quantity=line.usage_quantity,
+                        quantity_rule=rule_data(line, reusable=True),
                         net_weight_kg=line.net_weight_kg,
                         gross_weight_kg=line.gross_weight_kg,
                         unit=line.unit,
@@ -3098,8 +3150,25 @@ def list_receipts(
     limit: int = 50,
     offset: int = 0,
     user: AuthContext | None = None,
+    receipt_id: str = "",
+    status_filter: str = "",
+    date_field: str = "DELIVERY",
+    date_from: str = "",
+    date_to: str = "",
+    sort: str = "DESC",
 ) -> tuple[int, list[CartonReceipt]]:
     query = select(CartonReceipt).where(CartonReceipt.factory_id == factory_id)
+    if receipt_id:
+        query = query.where(CartonReceipt.id == receipt_id)
+    if status_filter:
+        query = query.where(CartonReceipt.status == status_filter)
+    from app.services.carton_query import date_bounds
+    date_bounds(date_from, date_to)  # Reject invalid/inverted date ranges consistently.
+    selected_date = CartonReceipt.acceptance_date if date_field == "ACCEPTANCE" else CartonReceipt.delivery_date
+    if date_from:
+        query = query.where(selected_date >= date_from)
+    if date_to:
+        query = query.where(selected_date <= date_to)
     if user is not None:
         hidden = select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory_id,
             ~customer_predicate(user, factory_id, CartonReceiptLine.customer_code)) if not unrestricted_customer(user, factory_id) else None
@@ -3109,23 +3178,26 @@ def list_receipts(
         line_query = select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory_id)
         if customer_code:
             line_query = line_query.where(CartonReceiptLine.customer_code == customer_code)
+            query = query.where(CartonReceipt.id.in_(line_query))
         if search:
-            pattern = f"%{search}%"
+            from app.services.carton_query import literal_pattern
+            pattern = literal_pattern(search)
             line_query = line_query.where(
                 or_(
-                    CartonReceiptLine.customer_name.ilike(pattern),
-                    CartonReceiptLine.contract_no.ilike(pattern),
-                    CartonReceiptLine.item_no.ilike(pattern),
-                    CartonReceiptLine.packaging_type.ilike(pattern),
+                    CartonReceiptLine.customer_name.ilike(pattern, escape="!"),
+                    CartonReceiptLine.contract_no.ilike(pattern, escape="!"),
+                    CartonReceiptLine.item_no.ilike(pattern, escape="!"),
+                    CartonReceiptLine.packaging_type.ilike(pattern, escape="!"),
+                    CartonReceiptLine.paper_quality.ilike(pattern, escape="!"),
+                    CartonReceiptLine.specification.ilike(pattern, escape="!"),
                 )
             )
         if search:
-            pattern = f"%{search}%"
             query = query.where(
                 or_(
                     CartonReceipt.id.in_(line_query),
-                    CartonReceipt.receipt_no.ilike(pattern),
-                    CartonReceipt.delivery_note_no.ilike(pattern),
+                    CartonReceipt.receipt_no.ilike(pattern, escape="!"),
+                    CartonReceipt.delivery_note_no.ilike(pattern, escape="!"),
                 )
             )
         else:
@@ -3133,7 +3205,7 @@ def list_receipts(
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = list(
         db.scalars(
-            query.order_by(CartonReceipt.delivery_date.desc(), CartonReceipt.created_at.desc())
+            query.order_by(selected_date.is_(None), selected_date.asc() if sort == "ASC" else selected_date.desc(), CartonReceipt.created_at.desc(), CartonReceipt.id.desc())
             .limit(limit)
             .offset(offset)
         ).all()
@@ -4016,11 +4088,15 @@ def _project_item_schedule_rows(batch_id: str, summary: dict[str, object]) -> No
         summary["matched_count"] = sum(row.get("match_status") == "MATCHED" for row in rows)
 
 
-def import_batch_out(batch: CartonImportBatch, *, duplicate: bool = False) -> CartonImportBatchOut:
+def import_batch_out(batch: CartonImportBatch, *, duplicate: bool = False, summary_only: bool = False) -> CartonImportBatchOut:
     try:
         parse_summary = json.loads(batch.parse_summary_json or "{}")
     except (TypeError, json.JSONDecodeError):
         parse_summary = {"message": "历史导入批次的解析摘要无法读取，请重新导入原文件"}
+    if summary_only:
+        keys = {"row_count", "matched_count", "issue_count", "reminder_count", "advance_days", "schedule_customer"}
+        parse_summary = {key: value for key, value in parse_summary.items() if key in keys} if isinstance(parse_summary, dict) else {}
+        return CartonImportBatchOut.model_validate(batch).model_copy(update={"parse_summary": parse_summary, "detail_loaded": False})
     if batch.import_type == "WEEKLY_SCHEDULE" and isinstance(parse_summary, dict):
         _project_item_schedule_rows(batch.id, parse_summary)
     if batch.import_type == "DELIVERY_NOTE" and parse_summary.get("parser_version") != DELIVERY_IMPORT_PARSER_VERSION:
@@ -4735,6 +4811,9 @@ def list_import_batches(
     import_type: str = "",
     limit: int = 50,
     offset: int = 0,
+    summary_only: bool = False,
+    search: str = "",
+    customer_code: str = "",
 ) -> tuple[int, list[CartonImportBatchOut]]:
     factory_id = require_carton_factory(factory_id)
     allowed_types = {"DELIVERY_NOTE", "WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}
@@ -4743,6 +4822,18 @@ def list_import_batches(
     query = select(CartonImportBatch).where(CartonImportBatch.factory_id == factory_id)
     if import_type:
         query = query.where(CartonImportBatch.import_type == import_type)
+    if customer_code:
+        from sqlalchemy import cast, JSON
+        customer = cast(CartonImportBatch.parse_summary_json, JSON)["schedule_customer"]["customer_code"].as_string()
+        # SQLite JSON casts coerce text to zero; type_coerce preserves JSON extraction on both engines.
+        from sqlalchemy import type_coerce
+        customer = type_coerce(CartonImportBatch.parse_summary_json, JSON)["schedule_customer"]["customer_code"].as_string() if db.bind.dialect.name == "sqlite" else customer
+        query = query.where(or_(customer.is_(None), customer == "") if customer_code == "__UNBOUND__" else customer == customer_code)
+    if search:
+        from app.services.carton_query import literal_pattern
+        pattern = literal_pattern(search)
+        query = query.where(or_(CartonImportBatch.original_filename.ilike(pattern, escape="!"),
+                               CartonImportBatch.created_at.ilike(pattern, escape="!")))
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     if import_type == "WEEKLY_SCHEDULE":
         query = query.outerjoin(CartonAuditEvent,
@@ -4758,7 +4849,7 @@ def list_import_batches(
             query.limit(limit).offset(offset)
         ).all()
     )
-    return int(total), [import_batch_out(row) for row in rows]
+    return int(total), [import_batch_out(row, summary_only=summary_only) for row in rows]
 
 
 def list_exceptions(
@@ -4872,6 +4963,7 @@ def list_audit_events(
     limit: int = 100,
     offset: int = 0,
     sort: str = "DESC",
+    summary_only: bool = False,
 ) -> tuple[int, list[CartonAuditEventOut]]:
     from app.services.carton_query import AUDIT_LABELS, date_bounds, literal_pattern
     first, after = date_bounds(date_from, date_to)
@@ -4897,6 +4989,8 @@ def list_audit_events(
             )
         )
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    if summary_only:
+        query = query.options(defer(CartonAuditEvent.detail_json, raiseload=True))
     rows = list(
         db.scalars(
             query.order_by(CartonAuditEvent.sequence.asc() if sort == "ASC" else CartonAuditEvent.sequence.desc()).limit(limit).offset(offset)
@@ -4905,7 +4999,7 @@ def list_audit_events(
     items: list[CartonAuditEventOut] = []
     for row in rows:
         try:
-            detail = json.loads(row.detail_json or "{}")
+            detail = {} if summary_only else json.loads(row.detail_json or "{}")
         except (TypeError, json.JSONDecodeError):
             detail = {"message": "历史操作详情无法解析"}
         if row.id.startswith(("CAE-REQ-", "CAE-OCR-")) and isinstance(detail, dict):
@@ -4919,12 +5013,29 @@ def list_audit_events(
                 entity_type=row.entity_type,
                 entity_id=row.entity_id,
                 detail=detail if isinstance(detail, dict) else {"value": detail},
+                detail_loaded=not summary_only,
                 actor_user_id=row.actor_user_id,
                 actor_name=row.actor_name,
                 created_at=row.created_at,
             )
         )
     return int(total), items
+
+
+def get_audit_event(db: Session, factory_id: str, event_id: str) -> CartonAuditEventOut:
+    row = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory_id, CartonAuditEvent.id == event_id))
+    if row is None:
+        raise HTTPException(404, "操作记录不存在")
+    try:
+        detail = json.loads(row.detail_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        detail = {"message": "历史操作详情无法解析"}
+    if row.id.startswith(("CAE-REQ-", "CAE-OCR-")) and isinstance(detail, dict):
+        detail.pop("request", None)
+    return CartonAuditEventOut(sequence=row.sequence, id=row.id, factory_id=row.factory_id,
+        event_type=row.event_type, entity_type=row.entity_type, entity_id=row.entity_id,
+        detail=detail if isinstance(detail, dict) else {"value": detail}, actor_user_id=row.actor_user_id,
+        actor_name=row.actor_name, created_at=row.created_at)
 
 
 def _period_bounds(period: str) -> tuple[str, str]:
