@@ -7,6 +7,7 @@ import { cuttingApi, errorMessage, type Access } from './api'
 import { CUTTING_FACTORY } from './navigation'
 import { periodApi, type PeriodAction, type PeriodBasis, type PeriodRecord, type PeriodSave, type PeriodDecision, type PeriodState, type PeriodIssue } from './periodApi'
 import CuttingPeriodReview from './CuttingPeriodReview.vue'
+import CuttingReportExport from './CuttingReportExport.vue'
 import { periodMatches, periodOrderLabel } from './periodDisplay'
 import { cuttingDestination } from './location'
 
@@ -131,6 +132,7 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
           <div class="cutting-master-actions"><Button type="submit" :disabled="busy||!!pending">保存月结草稿</Button><Button type="button" variant="outline" :disabled="busy||!!pending" @click="edit">保留数量，刷新依据</Button><Button type="button" variant="outline" :disabled="busy||!!pending" @click="discard">放弃填写</Button></div>
         </form>
         <template v-if="record?.data&&!draft">
+          <CuttingReportExport v-if="record.selected_state==='locked'&&record.event_id" :selection="{kind:'period',month,event_id:record.event_id}" :access="rights" :disabled="busy||!!pending" />
           <p>取数时间：{{record.data.snapshot.generated_at}} · {{record.selected_state==='locked'?'冻结快照':'编制快照，提交与锁月时重新核验依据'}}</p>
           <p v-if="record.data.local_admin_acceptance" class="cutting-notice">本版本使用本地管理员验收模式，不代表真实双岗位验收。</p>
           <p v-for="(item,index) in record.data.snapshot.blockers" :key="index" class="cutting-error">待处理：{{item.message}}</p>
