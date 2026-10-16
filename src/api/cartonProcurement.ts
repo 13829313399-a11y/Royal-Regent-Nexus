@@ -1,3 +1,4 @@
+import type { PaperQuantityRule } from '@/features/carton-procurement/paperQuantity'
 import type { MaterialCorrection } from './cartonMaterialCorrection'
 import { http } from '@/lib/http'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
@@ -47,6 +48,7 @@ export interface CartonOrderLineResponse {
   paper_quality: string
   specification: string
   dimension_unit: string
+  quantity_rule?: PaperQuantityRule | null
   usage_quantity: string | null
   required_quantity: string
   received_quantity: string
@@ -185,6 +187,7 @@ export interface CartonOrderCreateRequest {
     paper_quality: string
     specification: string
     dimension_unit: string
+    quantity_rule?: PaperQuantityRule | null
     usage_quantity: number | null
     required_quantity?: number
     unit: string
@@ -232,6 +235,7 @@ export interface CartonOrderHistorySuggestionResponse {
     paper_quality: string
     specification: string
     dimension_unit: string
+    quantity_rule?: PaperQuantityRule | null
     usage_quantity: string | null
     unit: string
     unit_price: string
@@ -368,6 +372,7 @@ export interface CartonInventoryFlowSummaryResponse {
 }
 
 export interface CartonAuditEventResponse {
+  detail_loaded?: boolean
   sequence: number
   id: string
   factory_id: string
@@ -423,6 +428,7 @@ export interface CartonClosingResponse {
 }
 
 export interface CartonImportBatchResponse {
+  detail_loaded?: boolean
   id: string
   factory_id: string
   import_type: 'DELIVERY_NOTE' | 'WEEKLY_SCHEDULE' | 'INSPECTION_SCHEDULE'
@@ -1098,8 +1104,25 @@ export const cartonProcurementApi = {
     })
     return response.data.items
   },
+  async listImportsPage(factoryId: string, importType: CartonImportBatchResponse['import_type'], offset = 0, search = '', customer = '全部客户') {
+    return (await http.get<{ items: CartonImportBatchResponse[]; total: number }>('/carton-procurement/imports', {
+      params: { factory_id: factoryId, import_type: importType, summary_only: true, limit: 8, offset, search, customer_code: customer === '全部客户' ? '' : customer },
+    })).data
+  },
+  async importDetail(factoryId: string, batchId: string) {
+    return (await http.get<CartonImportBatchResponse>(`/carton-procurement/imports/${encodeURIComponent(batchId)}`, { params: { factory_id: factoryId } })).data
+  },
+  async auditDetail(factoryId: string, eventId: string) {
+    return (await http.get<CartonAuditEventResponse>(`/carton-procurement/audit-events/${encodeURIComponent(eventId)}`, { params: { factory_id: factoryId } })).data
+  },
   async uploadInspectionSchedule(factoryId: string, file: File, advanceDays: number) {
     return importFile(factoryId, file, 'INSPECTION_SCHEDULE', '', advanceDays)
+  },
+  async receiptHistory(factoryId: string, filters: Record<string, string | number> = {}) {
+    return (await http.get<{ items: CartonReceiptSummary[]; total: number }>('/carton-procurement/receipt-history', { params: { factory_id: factoryId, ...filters } })).data
+  },
+  async receiptDetail(factoryId: string, receiptId: string, responsibilityScope: 'OWN' | 'ALL' = 'OWN') {
+    return (await http.get<CartonReceiptResponse>(`/carton-procurement/receipts/${encodeURIComponent(receiptId)}`, { params: { factory_id: factoryId, responsibility_scope: responsibilityScope } })).data
   },
   async listReceipts(factoryId: string, responsibilityScope: 'OWN' | 'ALL' = 'OWN') {
     const items: CartonReceiptResponse[] = []
@@ -1214,7 +1237,7 @@ export const cartonProcurementApi = {
     return response.data
   },
   async listAuditEventsPage(factoryId: string, filters: Record<string, string | number> = {}) {
-    return (await http.get<{ items: CartonAuditEventResponse[]; total: number; limit: number; offset: number; event_types: Record<string, string>; actors: { id: string; name: string }[] }>('/carton-procurement/audit-events', { params: { factory_id: factoryId, limit: 50, ...filters } })).data
+    return (await http.get<{ items: CartonAuditEventResponse[]; total: number; limit: number; offset: number; event_types: Record<string, string>; actors: { id: string; name: string }[] }>('/carton-procurement/audit-events', { params: { factory_id: factoryId, limit: 50, ...filters, summary_only: true } })).data
   },
   async listAuditEvents(factoryId: string, filters: {
     search?: string
@@ -1238,6 +1261,11 @@ export const cartonProcurementApi = {
   },
 }
 
+export interface CartonReceiptSummary {
+  id: string; receipt_no: string; delivery_note_no: string; delivery_date: string; acceptance_date: string | null
+  status: CartonReceiptResponse['status']; confirmed_at: string | null; operator: string; line_count: number; customers: string; contracts: string
+}
+
 export interface CartonHistoryOrderPreview {
   supplier_id?: string; supplier_name?: string;
   factory_id: string; original_filename: string; source_fingerprint: string;
@@ -1248,5 +1276,6 @@ export interface CartonHistoryOrderPreview {
     status: string; quantity_basis: string; duplicate: boolean; ready: boolean; warnings: string[];
     lines: Array<{ packaging_type: string; paper_quality: string; specification: string; dimension_unit: string;
       net_weight_kg?: string | null; gross_weight_kg?: string | null;
+      quantity_rule?: PaperQuantityRule | null;
       usage_quantity: string | null; required_quantity: string; unit: string; unit_price: string; currency: string; note: string }> }>
 }

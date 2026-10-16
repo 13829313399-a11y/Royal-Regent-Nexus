@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { paperDemands } from '@/features/carton-procurement/paperQuantity'
 import { computed, ref, watch } from 'vue'
 import { DialogRoot, DialogOverlay, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
 import { cartonOrderSplitsApi as api, type SplitContext, type SplitRecord, type SplitTargetInput } from '@/api/cartonOrderSplits'
@@ -19,12 +20,19 @@ function addTarget() {
     lines: (data.value?.lines ?? []).map(line => ({ order_line_id: line.order_line_id, pending_quantity: 0,
       stock: line.positions.map(position => ({ location_id: position.location_id!, expected_position_revision: position.position_revision!, quantity: 0 })) })) })
 }
+function splitDemands(target: SplitTargetInput) {
+  return paperDemands(target.product_quantity, props.order.lines.map((paper, index) => ({ ...paper,
+    quantity_rule: paper.quantity_rule?.manual_quantity != null ? { ...paper.quantity_rule,
+      manual_quantity: Number(target.lines[index]?.pending_quantity ?? 0) + (target.lines[index]?.stock.reduce((sum, part) => sum + Number(part.quantity), 0) ?? 0) } : paper.quantity_rule,
+  })))
+}
 function calculate(target: SplitTargetInput) {
   if (props.order.quantity_basis === 'EXPLICIT') return
+  const demands = splitDemands(target)
   target.lines.forEach((line, index) => {
-    const packing = Number(data.value?.lines[index]?.usage_quantity)
-    if (packing > 0 && Number(target.product_quantity) > 0) line.pending_quantity = Math.max(0,
-      Math.ceil(Number(target.product_quantity) / packing) - line.stock.reduce((sum, part) => sum + Number(part.quantity), 0))
+    if (props.order.lines[index]?.quantity_rule?.manual_quantity != null) return
+    if (!demands[index]?.error && Number(target.product_quantity) > 0) line.pending_quantity = Math.max(0,
+      (demands[index]?.actual ?? 0) - line.stock.reduce((sum, part) => sum + Number(part.quantity), 0))
   })
 }
 async function load(reset = false) {
@@ -100,7 +108,7 @@ async function act(plan: SplitRecord, action: 'confirm' | 'cancel') {
           <div class="grid items-end gap-3 sm:grid-cols-4"><label class="text-xs">拆分合同 *<input v-model="target.contract_no" required :aria-label="`拆分 ${index + 1} 合同`" class="mt-1 h-9 w-full rounded border bg-white px-2"></label><label class="text-xs">客户 PO<input v-model="target.customer_po" :aria-label="`拆分 ${index + 1} 客户 PO`" class="mt-1 h-9 w-full rounded border bg-white px-2"></label><label class="text-xs">产品数量{{ order.quantity_basis === 'EXPLICIT' ? '（可留空）' : ' *' }}<input v-model="target.product_quantity" :required="order.quantity_basis !== 'EXPLICIT'" type="number" min="0.000001" step="0.000001" :aria-label="`拆分 ${index + 1} 产品数量`" class="mt-1 h-9 w-full rounded border bg-white px-2" @input="calculate(target)"></label><button v-if="targets.length > 1" type="button" class="h-9 text-xs text-red-700" @click="targets.splice(index, 1)">移除此去向</button></div>
           <div v-for="(line, paperIndex) in target.lines" :key="line.order_line_id" class="grid gap-3 rounded border bg-white p-3 sm:grid-cols-[1.1fr_180px_1.5fr]">
             <div class="text-xs"><strong>{{ data.lines[paperIndex]?.packaging_type }} · {{ data.lines[paperIndex]?.paper_quality }}</strong><p class="mt-1">{{ data.lines[paperIndex]?.specification }}</p><p class="mt-1 text-teal-700">可分配待到 {{ data.lines[paperIndex]?.pending_available }} {{ data.lines[paperIndex]?.unit }}</p></div>
-            <label class="text-xs">分配待到数量<input v-model="line.pending_quantity" required type="number" min="0" step="0.0001" :aria-label="`拆分 ${index + 1} 纸品 ${paperIndex + 1} 待到数量`" class="mt-1 h-9 w-full rounded border px-2"><span class="mt-1 block text-slate-500">{{ data.lines[paperIndex]?.unit }}<template v-if="target.product_quantity && data.lines[paperIndex]?.usage_quantity"> · 本去向需 {{ Math.ceil(Number(target.product_quantity) / Number(data.lines[paperIndex]?.usage_quantity)) }}</template></span></label>
+            <label class="text-xs">分配待到数量<input v-model="line.pending_quantity" required type="number" min="0" step="0.0001" :aria-label="`拆分 ${index + 1} 纸品 ${paperIndex + 1} 待到数量`" class="mt-1 h-9 w-full rounded border px-2"><span class="mt-1 block text-slate-500">{{ data.lines[paperIndex]?.unit }}<template v-if="target.product_quantity && order.quantity_basis !== 'EXPLICIT'"> · 本去向需 {{ splitDemands(target)[paperIndex]?.actual ?? '待核对' }}</template></span></label>
             <div class="space-y-2 text-xs"><p class="font-semibold">拆分可用库存（待仓库确认）</p><label v-for="(part, positionIndex) in line.stock" :key="part.location_id" class="flex items-center justify-between gap-2"><span>{{ data.lines[paperIndex]?.positions[positionIndex]?.latest_location }} · 可用 {{ data.lines[paperIndex]?.positions[positionIndex]?.balance }}</span><input v-model="part.quantity" type="number" min="0" step="0.0001" :aria-label="`拆分 ${index + 1} 纸品 ${paperIndex + 1} 仓位 ${positionIndex + 1} 库存数量`" class="h-8 w-24 rounded border px-2" @input="calculate(target)"></label><p v-if="!line.stock.length" class="text-slate-400">暂无可用库存</p></div>
           </div>
         </fieldset>

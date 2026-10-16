@@ -44,6 +44,12 @@ describe('unfinished carton order storage', () => {
     writeOrderDraft(saved, context, pending)
     expect(readOrderDraft(saved, context)).toBeNull()
   })
+  it('keeps per-carton rules and manual quantities when reopening a local draft', () => {
+    const saved = storage(), pending = draft()
+    pending.form.materials[0]!.quantityRule = { mode: 'PACKING', manual_quantity: '310' }
+    writeOrderDraft(saved, context, pending)
+    expect(readOrderDraft(saved, context)?.form.materials[0]?.quantityRule).toEqual({ mode: 'PACKING', manual_quantity: '310' })
+  })
   it('restores incomplete fields, leading-zero identities, weights and source revision unchanged', () => {
     const saved = storage(), pending = draft()
     writeOrderDraft(saved, context, pending)
