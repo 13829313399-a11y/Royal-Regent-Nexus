@@ -3,6 +3,7 @@ import unicodedata
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.carton_weights import CartonPackingWeights
+from app.schemas.carton_quantity import PaperQuantityRule
 
 
 STANDARD_PAPER_TYPES = ("普通箱", "半翼箱", "平卡", "刀卡", "压线卡", "啤卡")
@@ -18,7 +19,17 @@ class PaperConfiguration(CartonPackingWeights):
     specification: str = Field(default="", max_length=255)
     dimension_unit: str = Field(default="", max_length=16)
     unit: str = Field(min_length=1, max_length=32)
-    usage_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=8)
+    usage_quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=8)
+    quantity_rule: PaperQuantityRule | None = None
+
+    @model_validator(mode="after")
+    def reusable_quantity_rule(self):
+        if not self.quantity_rule or self.quantity_rule.mode == "PACKING":
+            if self.usage_quantity is None:
+                raise ValueError("请填写每箱装产品数")
+        if self.quantity_rule and self.quantity_rule.manual_quantity is not None:
+            raise ValueError("本次手动数量不能保存为货号的标准配套用量")
+        return self
 
 
 class NumberRule(BaseModel):

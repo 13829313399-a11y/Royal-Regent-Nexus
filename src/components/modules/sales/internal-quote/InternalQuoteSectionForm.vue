@@ -210,6 +210,7 @@ const normalizedCustomer = computed(() => String(props.customer ?? '').trim().to
 const isBuzzBee = computed(() => normalizedCustomer.value === 'buzzbee')
 const isDisney = computed(() => ['disney', '迪士尼'].includes(normalizedCustomer.value))
 const isDickie = computed(() => props.factoryId === 'huaxing' && ['dickie', 'dicky'].includes(normalizedCustomer.value))
+const isYinhui = computed(() => props.factoryId === 'huaxing' && ['银辉', '銀輝', '银辉客', '銀輝客', 'yinhui', 'silverlit'].includes(normalizedCustomer.value))
 const isCaixing = computed(() => ['caixing', '彩星'].includes(normalizedCustomer.value))
 const isThreeSixty = computed(() => ['360', 'threesixty'].includes(normalizedCustomer.value))
 const referenceFreightRoutes = computed(() => salesFreightReferenceRoutesFromSnapshot(props.referenceSnapshot?.freight))
@@ -1634,6 +1635,10 @@ function addBuzzBeeColorBoxTier() {
         </div>
       </section>
       <section v-if="isCaixing" class="payload-block"><header><div><strong>彩星客户报价专属资料</strong><span>外箱资料自动读取上方“基础纸箱”；包装、外购和工序成本按各已审批分段自动归入客户模板，不重复填写。加价比例留空时使用客户基础信息。</span></div></header><div class="inline-fields five"><label><span>产品类型</span><select v-model="sales.customer_quote_fields.caixing.product_type" :disabled="disabled" aria-label="彩星产品类型"><option value="plastic">塑胶</option><option value="plush">毛绒</option></select></label><label><span>Item No.</span><input v-model="sales.customer_quote_fields.caixing.item_number" :disabled="disabled" aria-label="彩星 Item Number"></label><label><span>Item Description</span><input v-model="sales.customer_quote_fields.caixing.item_name" :disabled="disabled" aria-label="彩星 Item Description"></label><label><span>Quote Date</span><input v-model="sales.customer_quote_fields.caixing.quote_date" :disabled="disabled" type="date" aria-label="彩星 Quote Date"></label><label><span>本单普通项目加价比例</span><input v-model.number="sales.customer_quote_fields.caixing.markup_rate_override" :disabled="disabled" type="number" min="0" max="1" step="0.01" placeholder="留空用客户默认" aria-label="彩星本单加价比例"></label></div></section>
+      <section v-if="isYinhui" class="payload-block" data-testid="yinhui-domestic-price">
+        <header><div><strong>银辉内销报价</strong><span>填写独立核算并确认的内销最终单价，随内部报价交接到客价总表。20FT、40FT、40HQ 运费沿用本单所选运输路线。</span></div></header>
+        <div class="inline-fields"><label><span>内销最终单价 RMB（可留空）</span><input v-model.number="sales.customer_quote_fields.yinhui.domestic_price_rmb" :disabled="disabled" type="number" min="0" step="0.000001" aria-label="银辉内销最终单价 RMB" placeholder="未报价请留空"></label></div>
+      </section>
       <section v-if="isBuzzBee" class="payload-block">
         <header><div><strong>BuzzBee 报客信息</strong><span>每个方案分别新建报价；彩盒按整箱价录入，输出除装箱数并始终另报。FSC 价由客户维护费率计算。</span></div></header>
         <div class="payload-grid">

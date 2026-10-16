@@ -199,6 +199,11 @@ def apply(db, user, line_id, body, action):
             c.require(not (context['actual_review_pending'] or early) or entry['exception_reason'],
                 '实际领料尚未核定或早于核定供数日，请填写现场实绩核对说明；不代表开工批准', 422)
         payload=dict(entry=entry, context=context)
+    if action in {'save', 'post', 'void'}:
+        from app.services.cutting_period_guards import guard_days
+        from app.services.cutting_settlement import guard_report
+        guard_report(db, line_id, body.document_id, action)
+        guard_days(db, payload['entry']['day'], old['posted']['data']['entry']['day'] if old and old['posted'] else None)
     event=dict(id=body.operation_id, version=order.version+1, document_id=body.document_id, action=action, data=payload,
                actor_id=user.id, created_at=datetime.now(UTC).isoformat(), reason=body.reason)
     prospective=documents(history+[event])

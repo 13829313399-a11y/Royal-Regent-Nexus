@@ -10,12 +10,20 @@ import { closingApi, type ClosingPreview } from './closingApi'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
 import type { CuttingWorkspace } from './navigation'
 import CuttingClosingReport from './CuttingClosingReport.vue'
+import CuttingPeriodClosing from './CuttingPeriodClosing.vue'
+import CuttingSettlement from './CuttingSettlement.vue'
+import CuttingPayments from './CuttingPayments.vue'
+import CuttingCutover from './CuttingCutover.vue'
 import { useCuttingLocation } from './location'
 
 defineProps<{workspace:CuttingWorkspace}>()
 const currentMonth = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const month=ref(currentMonth),query=ref(''),page=ref(1),total=ref(0),rows=ref<CuttingOrder[]>([])
 const access=ref<Access>(),selected=ref<CuttingOrder>(),result=ref<ClosingPreview>(),loading=ref(false),error=ref('')
+const paymentPanel=ref<InstanceType<typeof CuttingPayments>>()
+async function openPayment(month:string,id:string,eventId?:string){await paymentPanel.value?.openPayment(month,id,eventId)}
+const settlementPanel=ref<InstanceType<typeof CuttingSettlement>>()
+async function openSettlement(month:string,id:string,eventId?:string){await settlementPanel.value?.openStatement(month,id,eventId)}
 let generation=0,alive=true
 const location=useCuttingLocation(()=>true,()=>{void load(1,true)})
 onBeforeUnmount(()=>{alive=false;generation++})
@@ -55,8 +63,12 @@ onMounted(()=>void load(1,true))
 
 <template>
   <section class="cutting-page cutting-master">
-    <PageHeader :title="workspace.title" description="按自然月核对生产、外发验收、领退料及实际耗用，追溯补录与更正。"><template #actions><StatusPill label="月结前核对 · P4a" /></template></PageHeader>
-    <p class="cutting-notice">本批提供实时核对预览，尚未冻结或锁月。外发加工费、应付及付款核销继续分批实施。</p>
+    <PageHeader :title="workspace.title" description="按自然月核对生产、外发验收、领退料及实际耗用，追溯补录与更正。"><template #actions><StatusPill label="内部月结／外发结算／付款核销／报表导出 · P4b–P4e" /></template></PageHeader>
+    <p class="cutting-notice">内部材料月结与外发加工费结算分别办理；下方订单预览提供实时核对，尚未冻结或锁月。付款登记与核销在下方独立办理，不操作银行。</p>
+    <CuttingCutover :access="access" :access-loading="loading" @payment="openPayment" @settlement="openSettlement" />
+    <CuttingPeriodClosing :access="access" :access-loading="loading" />
+    <CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" @payment="openPayment" />
+    <CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" @settlement="openSettlement" />
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p>
     <Button v-if="error" variant="outline" :disabled="loading" @click="load(1)">重新读取月结工作区</Button>
     <p v-if="loading" role="status">正在读取月度核对…</p>
@@ -65,7 +77,7 @@ onMounted(()=>void load(1,true))
     <template v-else-if="access&&ready(access)">
       <SectionPanel title="选择核对订单与月份" class="cutting-content-panel">
         <form class="order-toolbar" @submit.prevent="load(1)">
-          <label>核对月份<input v-model="month" type="month" min="2000-01" :max="currentMonth" required @change="clearPreview" /></label>
+          <label>核对月份<input v-model="month" aria-label="核对月份" type="month" min="2000-01" :max="currentMonth" required @change="clearPreview" /></label>
           <label>订单号／货号<input v-model="query" maxlength="80" /></label>
           <Button type="submit" variant="outline" :disabled="loading">查询订单</Button>
           <Button v-if="selected" type="button" variant="outline" :disabled="loading||!month" @click="preview()">刷新所选订单核对</Button>

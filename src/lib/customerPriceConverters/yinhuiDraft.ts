@@ -102,6 +102,7 @@ function reviewValues(result: YinhuiConversionResult) {
   return {
     ...Object.fromEntries(fields.map(key => [key, data[key]])),
     moq: data.moq, freightFclHkd: data.freightFclHkd, freightLclHkd: data.freightLclHkd,
+    freight20FtHkd: data.freight20FtHkd, freight40HqHkd: data.freight40HqHkd, freightLocalHkd: data.freightLocalHkd, domesticPriceRmb: data.domesticPriceRmb,
     names: Object.fromEntries(groups.map(key => [key, (data[key] || []).map(line => ({ description: line.description }))])),
     tools: data.tools.map(line => ({ moldNo: line.moldNo, partNo: line.partNo })),
   }
@@ -151,7 +152,7 @@ export function loadYinhuiDraft(content: string, pricing?: CustomerPricingSettin
     else data[key] = review[key] as string
   }
   if (typeof review.moq === 'number') setYinhuiDraftMoq(draft.result, review.moq)
-  for (const key of ['freightFclHkd', 'freightLclHkd'] as const) if (review[key] === null || (typeof review[key] === 'number' && Number.isFinite(review[key]))) data[key] = review[key] as number | null
+  for (const key of ['freightFclHkd', 'freightLclHkd', 'freight20FtHkd', 'freight40HqHkd', 'freightLocalHkd', 'domesticPriceRmb'] as const) if (review[key] === null || (typeof review[key] === 'number' && Number.isFinite(review[key]))) data[key] = review[key] as number | null
   for (const group of groups) {
     // Older drafts saved automatic English translations; use the reparsed BOM source instead.
     // New drafts explicitly preserve user-reviewed source-language descriptions.

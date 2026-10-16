@@ -7,7 +7,7 @@ import CartonSupplierReceiving from '@/components/CartonSupplierReceiving.vue'
 import CartonSupplierMarkTemplatesView from '../CartonSupplierMarkTemplatesView.vue'
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
-import type { PortalWorkspace } from '@/api/cartonSupplierPortal'
+import type { PortalWorkspace, SupplierMarkAsset } from '@/api/cartonSupplierPortal'
 const api = vi.hoisted(() => ({ acknowledgeCancellation: vi.fn(), changeNonArrival: vi.fn(), memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receiptOptions: vi.fn(), linkReceipt: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markAssets: vi.fn(), markUploadOrders: vi.fn(), uploadMarkAssets: vi.fn(), markChecks: vi.fn(), createMarkCheck: vi.fn(), downloadMarkCheck: vi.fn(), previewMarkCheckUrl: vi.fn(), downloadMarkAsset: vi.fn(), previewMarkAssetUrl: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), activityPage: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
 const router = vi.hoisted(() => ({ replace: vi.fn(), push: vi.fn() }))
 const routeState = vi.hoisted(() => ({ query: { factory: 'huaxing', shipment: undefined as string | undefined } }))
@@ -30,6 +30,97 @@ function fixture(): PortalWorkspace {
   return { factory_id: 'huaxing', supplier_name: '河源东康', orders: [{ id: 'ORDER-A', order_no: 'ORDER-A', customer_name: 'Dickie', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A', product_name: '产品', status: 'PENDING_SUPPLIER', issue_id: 'ISSUE-A', document_no: 'ORDER-A-P00', order_date: '2026-09-10', planned_date: '2026-09-25', awaiting_issue: false, attachments: [], lines: ['外箱', '平卡'].map((name, index) => ({ id: `LINE-${index}`, line_no: index+1, child_no: `ORDER-A/0${index+1}`, packaging_type: name, paper_quality: 'A33', specification: '10*20', dimension_unit: 'cm', unit: index ? '张' : '个', required_quantity: '100', received_quantity: '0', in_transit_quantity: '0', remaining_to_ship: '100', accepted: true, commitment_revision: 1, promised_date: '2026-09-25' })) }], shipments: [{ id: 'SHIP-A', delivery_note_no: 'DN-A', delivery_date: '2026-09-21', status: 'SENT', revision: 1, created_at: '', confirmed_at: '', acceptance_date: null, acceptance_lines: [], lines: [0,1].map(index => ({ id: `SL-${index}`, order_line_id: `LINE-${index}`, order_no: 'ORDER-A', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A', customer_name: 'Dickie', child_no: `ORDER-A/0${index+1}`, packaging_type: index ? '平卡' : '外箱', paper_quality: 'A33', specification: '10*20', unit: '个', quantity: '10', unit_price: '2', currency: 'CNY' })) }] }
 }
 const options = { global: { stubs: { AccountMenu: true, NotificationCenter: true, RouterLink: { template: '<a><slot /></a>' }, CartonReceiptAllocations: true } } }
+
+describe('supplier order carton-mark access', () => {
+  function mark(id: string, overrides: Partial<SupplierMarkAsset> = {}): SupplierMarkAsset {
+    return { id, revision: 1, file_name: `${id}.pdf`, kind: 'pdf', size_bytes: 400,
+      contract_number: 'SC-A', created_at: '2026-10-16',
+      orders: [{ id: 'ORDER-A', issue_id: 'ISSUE-A', customer_name: 'Dickie', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A' }], ...overrides }
+  }
+  const badge = (wrapper: ReturnType<typeof mount>, order = 'ORDER-A') => wrapper.get(`[aria-label="查看订单 ${order} 箱唛资料"]`)
+
+  it('opens the matching originals from the ledger and existing detail action without loading them on hover', async () => {
+    const pdf = mark('print'), excel = mark('source', { file_name: 'source.xlsx', kind: 'excel' })
+    const other = mark('other-order', { orders: [{ ...pdf.orders[0]!, id: 'ORDER-B' }] })
+    const obsolete = mark('old-issue', { orders: [{ ...pdf.orders[0]!, issue_id: 'OLD' }] })
+    api.markAssets.mockResolvedValue([pdf, excel, other, obsolete])
+    api.downloadMarkAsset.mockRejectedValueOnce(new Error('请稍后重试'))
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    expect(wrapper.get('thead').text()).toContain('箱唛资料')
+    expect(badge(wrapper).text()).toBe('已绑定 2 份')
+    expect(api.markAssets).toHaveBeenCalledTimes(1)
+    const detail = wrapper.get('[aria-label="查看订单 ORDER-A 明细"]')
+    await detail.trigger('mouseenter'); await flushPromises()
+    expect(wrapper.find('[data-testid="supplier-order-marks"]').exists()).toBe(false)
+    expect(api.markAssets).toHaveBeenCalledTimes(1)
+    await detail.trigger('mouseleave')
+    await badge(wrapper).trigger('click'); await flushPromises()
+    const files = wrapper.get('[data-testid="supplier-order-marks"]')
+    expect(files.text()).toContain('print.pdf')
+    expect(files.text()).toContain('source.xlsx')
+    expect(files.text()).not.toContain('other-order.pdf')
+    expect(files.text()).not.toContain('old-issue.pdf')
+    expect(files.get('[aria-label="预览 print.pdf"]').attributes('href')).toBe('/api/preview.pdf')
+    expect(files.find('[aria-label="预览 source.xlsx"]').exists()).toBe(false)
+    await files.get('[aria-label="下载 print.pdf"]').trigger('click'); await flushPromises()
+    expect(api.downloadMarkAsset).toHaveBeenCalledWith('print', 'huaxing', expect.any(AbortSignal))
+    expect(files.get('[role="alert"]').text()).toContain('请稍后重试')
+    await wrapper.get('[aria-label="关闭供应商订单明细"]').trigger('click')
+    await detail.trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="supplier-order-marks"]').text()).toContain('print.pdf')
+    expect(api.uploadMarkAssets).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('counts files per factory and current issue, keeping historical-only associations distinct from unbound', async () => {
+    api.memberships.mockResolvedValue([{ factory_id: 'huaxing' }, { factory_id: 'huakang-a' }])
+    api.workspace.mockImplementation(async factory => {
+      const data = fixture(); data.factory_id = factory
+      data.orders[0]!.id = factory === 'huaxing' ? 'ORDER-A' : 'ORDER-B'
+      data.orders[0]!.order_no = data.orders[0]!.id
+      return data
+    })
+    api.markAssets.mockImplementation(async factory => factory === 'huaxing'
+      ? [mark('history', { workflow: { status: 'HISTORY', version: 1 } as SupplierMarkAsset['workflow'] })]
+      : [mark('other-factory'), mark('old-version', { orders: [{ ...mark('x').orders[0]!, id: 'ORDER-B', issue_id: 'OLD' }] })])
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    expect(badge(wrapper).text()).toBe('仅历史资料 1 份')
+    expect(badge(wrapper, 'ORDER-B').text()).toBe('未绑定')
+    await badge(wrapper).trigger('click'); await flushPromises()
+    const files = wrapper.get('[data-testid="supplier-order-marks"]')
+    expect(files.find('[aria-label="下载 history.pdf"]').exists()).toBe(false)
+    await files.findAll('button').find(button => button.text().includes('历史版本'))!.trigger('click')
+    expect(files.find('[aria-label="下载 history.pdf"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps order rows usable while mark lookup is pending or fails, and recovers on refresh', async () => {
+    let reject!: (error: Error) => void
+    api.markAssets.mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail }))
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    expect(badge(wrapper).text()).toBe('查询中…')
+    reject(new Error('资料服务暂不可用')); await flushPromises()
+    expect(badge(wrapper).text()).toBe('资料查询失败')
+    expect(badge(wrapper).attributes('title')).toContain('资料服务暂不可用')
+    api.markAssets.mockResolvedValue([mark('recovered')])
+    await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click'); await flushPromises()
+    expect(badge(wrapper).text()).toBe('已绑定 1 份')
+    wrapper.unmount()
+  })
+
+  it('discards late mark metadata after logout', async () => {
+    let resolve!: (assets: SupplierMarkAsset[]) => void
+    api.markAssets.mockReturnValueOnce(new Promise(done => { resolve = done }))
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    const signal = api.markAssets.mock.calls[0]![1] as AbortSignal
+    authState.currentUser = null; authState.sessionVersion++; await flushPromises()
+    expect(signal.aborted).toBe(true)
+    resolve([mark('private-file')]); await flushPromises()
+    expect(wrapper.find('[aria-label="查看订单 ORDER-A 箱唛资料"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('已绑定')
+    wrapper.unmount()
+  })
+})
 
 describe('supplier workspace header search', () => {
   async function tab(wrapper: ReturnType<typeof mount>, label: string) {

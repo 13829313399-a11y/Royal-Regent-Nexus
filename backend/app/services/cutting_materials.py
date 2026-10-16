@@ -37,7 +37,7 @@ def linked(db, identifier):
     if not row or row.factory_id != c.FACTORY or row.warehouse != 'fabric': return None
     entry = wh.entry_data(row)
     if entry['kind'] == 'REQUEST' and entry['data'].get('cutting_request'): return entry
-    if entry['kind'] in {'ISSUE', 'CUTTING_RECEIPT'}:
+    if entry['kind'] in {'ISSUE', 'RETURN', 'CUTTING_RECEIPT', 'CUTTING_RECEIPT_VOID', 'CORRECTION'}:
         return linked(db, entry['data'].get('original_id'))
     return None
 
@@ -102,6 +102,8 @@ def guard_post(db, warehouse, body, metadata, stock, entries):
         c.require(request is not None and body['original_id'] == request['id'], '仅可关闭已对接裁床申请的未发余量', 422)
     if not request: return
     request = entries[request['id']]
+    from app.services.cutting_period_guards import guard_warehouse
+    guard_warehouse(db, entries, body, request)
     if body['kind'] == 'ISSUE':
         from app.core.config import settings
         c.require(settings.cutting_ops_enabled, '裁床业务尚未启用，不能继续发料', 503)

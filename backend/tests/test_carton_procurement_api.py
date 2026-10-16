@@ -1440,8 +1440,8 @@ def test_purchase_order_export_contains_grouped_lines_and_formula(monkeypatch):
         assert sheet["A9"].value == "序号"
         assert sheet["B10"].value == "外箱"
         assert sheet["B11"].value == "滑板纸"
-        assert sheet["E9"].value == "每箱个数"
-        assert sheet["G9"].value == "纸箱数量"
+        assert sheet["E9"].value == "装箱 / 配套用量"
+        assert sheet["G9"].value == "纸品数量"
         assert sheet["G10"].value == "=ROUNDUP(F10/E10,0)"
         footer = sheet[f"A{sheet.max_row}"].value
         assert "不代表供应商已接单" in footer

@@ -345,6 +345,12 @@ def execute(db, actor, line_id, body, action):
     event = dict(id=identifier, line_id=line_id, version=revision+1, document_id=document_id, action=action,
         data=data, actor_id=actor.id, actor=actor.display_name, date=datetime.now(UTC).isoformat(), reason=body.reason)
     pending = [event]
+    from app.services.cutting_period_guards import guard_days, guard_price
+    if action == 'price':
+        guard_price(db, data['context']['root_batch_id'])
+    elif action in {'post', 'correct', 'void'}:
+        original = documents(history).get(getattr(body, 'document_id', ''))
+        guard_days(db, body.day, original['posted']['data']['entry']['day'] if original and original['posted'] else None)
     if action == 'correct':
         old = documents(history).get(body.document_id)
         c.require(old and old['posted'] and old['posted']['line_id'] == line_id, '更正原耗用单不存在、已撤销或不属于当前订单')

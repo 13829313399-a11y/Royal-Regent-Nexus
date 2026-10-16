@@ -19,6 +19,7 @@ from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovem
 from app.schemas.carton_order_split import SplitCreate, SplitAction
 from app.services import carton_positions as positions
 from app.services.carton_inventory_valuation import cost_key, load_valuation
+from app.services.carton_quantity import requirements
 
 PREFIX = "CSL-"
 
@@ -152,6 +153,17 @@ def create(db, number, payload: SplitCreate, user):
         if order.quantity_basis == "CALCULATED" and target.product_quantity is None:
             raise HTTPException(422, "按装箱计算的订单须填写拆分产品数量")
         target_data = target.model_dump(mode="json")
+        demands = None
+        if order.quantity_basis == "CALCULATED":
+            if any(line.order_line_id not in available for line in target.lines):
+                raise HTTPException(404, "拆分纸品不属于原订单或当前厂区")
+            if {line.order_line_id for line in target.lines} != set(actual):
+                raise HTTPException(422, "按装箱计算的订单必须逐纸品分配完整拆分需求")
+            allocated = {line.order_line_id: line.pending_quantity + sum((part.quantity for part in line.stock), Decimal(0)) for line in target.lines}
+            papers = list(actual.values())
+            demands = dict(zip(actual, requirements(target.product_quantity, papers, manual_targets={
+                i + 1: allocated[paper.id] for i, paper in enumerate(papers)
+            })))
         for line_index, line in enumerate(target.lines):
             if line.order_line_id not in available:
                 raise HTTPException(404, "拆分纸品不属于原订单或当前厂区")
@@ -162,8 +174,8 @@ def create(db, number, payload: SplitCreate, user):
             total = line.pending_quantity + stock_quantity
             pending_totals[line.order_line_id] += line.pending_quantity
             quantities[line.order_line_id] += total
-            if order.quantity_basis == "CALCULATED" and total != core.required_carton_quantity(target.product_quantity, paper.usage_quantity):
-                raise HTTPException(422, f"{paper.packaging_type} 拆分纸品数量须等于按每箱个数取整后的需求")
+            if demands is not None and total != demands[paper.id]:
+                raise HTTPException(422, f"{paper.packaging_type} 拆分纸品数量须等于按原单计算规则得到的需求")
             amounts = [line.pending_quantity, *(part.quantity for part in line.stock)]
             if paper.unit in {"张", "个", "件", "只", "箱"} and any(amount != amount.to_integral_value() for amount in amounts):
                 raise HTTPException(422, "纸品拆分数量必须为整数")
@@ -197,10 +209,17 @@ def create(db, number, payload: SplitCreate, user):
         raise HTTPException(409, "拆分产品数量超过原订单剩余可分配数量")
     if order.quantity_basis == "CALCULATED":
         rest = order.product_order_quantity - allocated_products - products
+        used = {}
         for identifier, paper in actual.items():
             existing_papers = sum((Decimal(line["pending_quantity"]) + sum((Decimal(part["quantity"]) for part in line["stock"]), Decimal(0))
                                   for plan in current for target in plan["targets"] for line in target["lines"] if line["order_line_id"] == identifier), Decimal(0))
-            needed = existing_papers + quantities[identifier] + (core.required_carton_quantity(rest, paper.usage_quantity) if rest else 0)
+            used[identifier] = existing_papers + quantities[identifier]
+        papers = list(actual.values())
+        rest_demands = requirements(rest, papers, manual_targets={
+            i + 1: max(Decimal(0), paper.required_quantity - used[paper.id]) for i, paper in enumerate(papers)
+        }) if rest else [Decimal(0)] * len(papers)
+        for (identifier, paper), remaining in zip(actual.items(), rest_demands):
+            needed = used[identifier] + remaining
             if needed > paper.required_quantity:
                 raise HTTPException(409, f"拆分装箱取整后 {paper.packaging_type} 额外需要 {needed - paper.required_quantity} {paper.unit}，请另行补充采购；本次拆单未保存")
     plan = {"id": split_id, "order_id": order.id, "order_no": order.order_no, "factory_id": factory,

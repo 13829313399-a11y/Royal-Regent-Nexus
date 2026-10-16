@@ -6,9 +6,13 @@ import { CUTTING_WORKSPACES } from '../navigation'
 import { cuttingApi, type Access } from '../api'
 import { ordersApi, type CuttingOrder } from '../ordersApi'
 import { closingApi, type ClosingPreview } from '../closingApi'
+import { settlementApi, type FeeRecord } from '../settlementApi'
+import { paymentApi, type PaymentRecord } from '../paymentApi'
 vi.mock('../api',async original=>({...await original<typeof import('../api')>(),cuttingApi:{access:vi.fn()}}))
 vi.mock('../ordersApi',()=>({ordersApi:{list:vi.fn(),read:vi.fn()}}))
 vi.mock('../closingApi',()=>({closingApi:{read:vi.fn()}}))
+vi.mock('../settlementApi',()=>({settlementApi:{read:vi.fn()}}))
+vi.mock('../paymentApi',()=>({paymentApi:{read:vi.fn()}}))
 const rights:Access={enabled:true,schema_ready:true,orders_schema_ready:true,reporting_schema_ready:true,usage_schema_ready:true,permissions:['read','cost_read']}
 const order:CuttingOrder={line_id:'line',dispatch_id:'d',source_version:1,snapshot:{reference_no:'ORDER-1',product_no:'P1',customer_name:'合成客户'},received_at:'',needs_receipt:false,current:{version:1,actor_id:'a',created_at:'',reason:'',data:{order:{},dispatch_id:'d',bom:null,requisition:null,batches:[],purchase_reconciliation_required:false}}}
 const snapshot:ClosingPreview={line_id:'line',month:'2026-10',start:'2026-10-01',end:'2026-10-31',through:'2026-10-15',generated_at:'2026-10-15T12:00:00+08:00',state:'preview',partial:true,basis:{order_version:1,plan_version:2,usage_revision:3,warehouse_revision:4},production:[],materials:[],issues:[],production_documents:[],usage_documents:[],warehouse_documents:[],costs:{CNY:{normal:'16.25',loss:'2.00'}},pending_pricing:0,wip_status:'not_frozen',current_allocation_review:[]}
@@ -60,7 +64,7 @@ describe('P4a monthly reconciliation',()=>{
     await open();let resolve!:(v:ClosingPreview)=>void
     vi.mocked(closingApi.read).mockReturnValueOnce(new Promise(r=>resolve=r))
     await button('月度核对').trigger('click');await flushPromises()
-    await wrapper.get('input[type=month]').setValue('2026-09')
+    await wrapper.get('input[aria-label="核对月份"]').setValue('2026-09')
     resolve(snapshot);await flushPromises()
     expect(wrapper.text()).not.toContain('取数时间：')
     await button('刷新所选订单核对').trigger('click');await flushPromises()
@@ -93,4 +97,15 @@ describe('P4a monthly reconciliation',()=>{
     await button('月度核对').trigger('click');await flushPromises();await router.push('/away');resolve(snapshot);await flushPromises()
     expect(wrapper.text()).toBe('其他工作区')
   })
+})
+
+it('opens the actual payment panel from a settlement blocker in another month',async()=>{
+  vi.mocked(cuttingApi.access).mockResolvedValue({...rights,settlements_schema_ready:true,payments_schema_ready:true,permissions:['read','settlement_read','payment_read']})
+  const fee:FeeRecord={revision:1,document_id:'fee-1',state:'confirmed',selected_state:'confirmed',event_id:'fee-event',statements:[],history:[{id:'fee-event',action:'confirm',version:1,actor:'甲',actor_id:'a',date:'2026-10-16',reason:'核对'}],price_history:[],payment_dependencies:[{document_id:'payment-9',month:'2026-09',state:'confirmed',amount:'5.00',currency:'CNY',voucher_no:'PAY-09'}],data:{input:{factory_id:'huakang-c',operation_id:'o',expected_version:0,reason:'依据',document_id:'fee-1',month:'2026-10',basis_token:'b',selections:[],vendor_evidence:'已核对'},snapshot:{month:'2026-10',cutoff:'2026-10-16',resource_id:'v',resource_name:'外厂甲',currency:'CNY',rows:[],sets:1,total:'5.00',tax_basis:'inclusive',vendor_evidence:'已核对'},prepared_by:'a',submitted_by:'a',replaces_id:null}}
+  const payment:PaymentRecord={month:'2026-09',current_month:'2026-09',revision:1,rows:[],totals:[],documents:[],document_id:'payment-9',state:'open',selected_state:'open',event_id:null,data:null,history:[],replacements:[]}
+  vi.mocked(settlementApi.read).mockResolvedValue(fee);vi.mocked(paymentApi.read).mockResolvedValue(payment)
+  await open();await button('读取外发结算').trigger('click');await flushPromises()
+  await button('定位占用付款').trigger('click');await flushPromises()
+  expect(paymentApi.read).toHaveBeenCalledWith('2026-09','payment-9',undefined)
+  expect(wrapper.findAll('label').find(label=>label.text()==='付款月份')!.get('input').element.value).toBe('2026-09')
 })

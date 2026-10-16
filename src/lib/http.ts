@@ -96,9 +96,11 @@ http.interceptors.response.use(
 
 export function getApiErrorMessage(error: unknown) {
   if (axios.isAxiosError<ApiErrorPayload>(error)) {
+    const reading = ['get', 'head', 'options'].includes(error.config?.method?.toLowerCase() ?? '')
     const reason = extractApiErrorPayloadMessage(error.response?.data)
     if (reason) return reason
     if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      if (reading) return '读取超时，请稍后重试'
       return '请求超时，未能确认操作结果；请先刷新台账或历史记录核对，再决定是否重试'
     }
     if (!error.response && (error.code === 'ERR_NETWORK' || error.message === 'Network Error')) {
@@ -111,16 +113,16 @@ export function getApiErrorMessage(error: unknown) {
         401: '登录已失效，请重新登录后再操作',
         403: '当前账号没有此操作的权限，请核对厂区和权限',
         404: '所请求的记录或接口不存在，请刷新后重试',
-        408: '服务器等待请求超时，请先核对操作结果再重试',
+        408: reading ? '读取超时，请稍后重试' : '服务器等待请求超时，请先核对操作结果再重试',
         409: '记录状态已变化或存在重复数据，请刷新后核对',
         413: '上传文件过大，请缩小文件后重试',
         422: '提交的数据未通过校验，请检查必填项和数据格式',
         429: '操作过于频繁，请稍后重试',
-        502: '后台服务连接异常，请稍后刷新并核对操作结果',
+        502: reading ? '读取失败，后台服务连接异常，请稍后重试' : '后台服务连接异常，请稍后刷新并核对操作结果',
         503: '后台服务暂时不可用，请稍后重试',
-        504: '后台服务响应超时，请先核对操作结果再重试',
+        504: reading ? '读取超时，请稍后重试' : '后台服务响应超时，请先核对操作结果再重试',
       }
-      return `${reasons[status] ?? (status >= 500 ? '服务器处理异常，请稍后刷新并核对操作结果' : '请求未完成，请刷新后重试')}（HTTP ${status}）`
+      return `${reasons[status] ?? (status >= 500 ? (reading ? '读取失败，服务器处理异常，请稍后重试' : '服务器处理异常，请稍后刷新并核对操作结果') : '请求未完成，请刷新后重试')}（HTTP ${status}）`
     }
     return error.message || '请求未完成，服务器没有返回具体原因'
   }

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { pricingRate } from '@/lib/customerPriceConverters/pricingSettings'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { yinhuiExportIssues, yinhuiTotals, type YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
+import { yinhuiExportIssues, yinhuiTotals, yinhuiToolMaterialPrice, type YinhuiConversionResult } from '@/lib/customerPriceConverters/yinhui'
 import { setYinhuiDraftMoq } from '@/lib/customerPriceConverters/yinhuiDraft'
-import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG } from '@/lib/customerPriceConverters/yinhuiProfiles'
+import { YINHUI_PROFILES } from '@/lib/customerPriceConverters/yinhuiProfiles'
 import { translateQuoteDescriptions } from '@/api/quoteTranslation'
 import { getApiErrorMessage } from '@/lib/http'
 import { hasChineseQuoteText, pendingYinhuiDescriptions, translateYinhuiDescriptions } from '@/lib/customerPriceConverters/yinhuiTranslation'
@@ -55,11 +55,15 @@ const fields = [
   { key: 'stage', label: 'STAGE 阶段（按实际填）', type: 'text' },
   { key: 'freightLclHkd', label: 'FOB YT LCL 每件运费 HKD', type: 'number' },
   { key: 'freightFclHkd', label: 'FOB YT 40FT 每件运费 HKD', type: 'number' },
+  { key: 'freight20FtHkd', label: 'FOB YT 20FT 每件运费 HKD（可留空）', type: 'number' },
+  { key: 'freight40HqHkd', label: 'FOB YT 40HQ 每件运费 HKD（可留空）', type: 'number' },
+  { key: 'freightLocalHkd', label: '内销每件运费 HKD（可留空）', type: 'number' },
+  { key: 'domesticPriceRmb', label: '内销最终单价 RMB（可留空）', type: 'number' },
 ] as const
 function setField(key: typeof fields[number]['key'], event: Event) {
   const value = (event.target as HTMLInputElement).value
   if (key === 'moq') setYinhuiDraftMoq(props.result, value)
-  else if (key === 'freightLclHkd' || key === 'freightFclHkd') props.result.quoteData[key] = value === '' ? null : Number(value)
+  else if (key === 'freightLclHkd' || key === 'freightFclHkd' || key === 'freight20FtHkd' || key === 'freight40HqHkd' || key === 'freightLocalHkd' || key === 'domesticPriceRmb') props.result.quoteData[key] = value === '' ? null : Number(value)
   else props.result.quoteData[key] = value
 }
 const groups = computed(() => [
@@ -80,7 +84,7 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
   <fieldset class="mt-4 rounded-xl border border-amber-200 bg-amber-50/50 p-4" :disabled="disabled" data-testid="yinhui-review">
     <legend class="px-2 text-sm font-semibold text-slate-900">银辉临时映射 · 输出前核对</legend>
     <p class="mb-3 text-sm text-slate-600">沿用提供的六张客表及其字体、线条。当前明细汇入第一套 BOM；第二套保持空白。报关 / 文件费单列总表 H32，由出厂价公式计入一次，不计入包装材料。此处修改只影响本次报客文件。</p>
-    <p class="mb-3 text-xs text-slate-600">版式：{{ profile.label }} · 统一塑料 HKD/kg：{{ Object.entries(YINHUI_MATERIAL_PRICES_HKD_KG).map(([name, price]) => `${name} ${price}`).join(' / ') }}</p>
+    <p class="mb-3 text-xs text-slate-600">版式：{{ profile.label }} · 胶料按原报价单价及本单倍率换算为 HKD/kg；磅价 ÷ 454 × 1000 × 倍率 ÷ 结算除数，再应用冻结的客户胶料倍率。原价缺失时使用已维护的客户公斤价。</p>
     <div v-if="result.manualReviewReasons?.length" class="mb-4 rounded-lg border border-orange-300 bg-orange-100 p-3 text-sm text-orange-950" role="alert" data-testid="yinhui-manual-review">
       <p class="font-semibold">Tool Plan 未能可靠识别，已转为人工放行</p>
       <p class="mt-1">系统已保留主明细的料重、料型和啤工生成临时行。以下问题只作提醒，不阻止导入或确认；金额可能受影响，请核对后再放行。</p>
@@ -88,7 +92,7 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
     </div>
     <ul class="mb-4 list-disc space-y-1 pl-5 text-sm text-amber-900">
       <li v-for="warning in result.warnings" :key="warning">{{ warning }}</li>
-      <li>原模板的 LOCAL DELIVERY / FOB YT 20FT 未提供运费分母，原公式会显示 #DIV/0!；按要求保留公式，发送客户前请补齐或核对这两行。</li>
+      <li>20FT、40HQ 填写每件港币运费，系统加到出厂价。内销 RMB 填写单独核算的最终单价；未填写的路线留空，人民币单价不会再次加港币运费或换算为美元。</li>
     </ul>
     <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
       <label v-for="field in fields" :key="field.key" class="grid gap-1 text-xs font-medium text-slate-700">
@@ -122,6 +126,7 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
         <p class="mb-2 text-xs font-semibold">Tool Plan 零件名称</p>
         <label v-for="(line, index) in result.quoteData.tools" :key="index" class="mb-2 grid gap-1 text-xs">
           {{ index + 1 }} · {{ line.moldNo || '未填模号' }}
+          <span>胶料 {{ line.material }} · {{ yinhuiToolMaterialPrice(result.quoteData, line)?.toFixed(6) ?? '待补' }} HKD/kg · {{ line.sourceMaterialPriceHkdKg === undefined ? '客户维护价' : '原报价换算' }}</span>
           <input v-model="line.description" :aria-label="`Tool Plan 第 ${index + 1} 行英文描述`" class="rounded border border-slate-300 px-2 py-1" :class="hasChineseQuoteText(line.description) ? 'border-amber-500' : ''">
           <span class="grid gap-2 sm:grid-cols-2"><input v-model="line.moldNo" :aria-label="`Tool Plan 第 ${index + 1} 行模号`" placeholder="客户模号（无依据可留空）" class="rounded border border-slate-300 px-2 py-1"><input v-model="line.partNo" :aria-label="`Tool Plan 第 ${index + 1} 行零件号`" placeholder="零件号（无依据可留空）" class="rounded border border-slate-300 px-2 py-1"></span>
           <span v-if="line.originalDescription" class="text-slate-500">原文：{{ line.originalDescription }}</span>
@@ -136,6 +141,7 @@ const profile = computed(() => YINHUI_PROFILES[props.result.quoteData.templateId
       报客料价待补：{{ total.missingMaterialPrices.join('、') }}。对应 Tool Plan 单价留空，合计暂未包含这些料价；仍可确认后导出。文件名标注“待补料价”，客表 STAGE 标注 PRICE PENDING，请补齐后再发送客户。
     </p>
     <p class="mt-3 text-sm font-semibold text-slate-800">{{ result.quoteData.importIssues?.length ? '已识别成本小计（草稿待补正）' : total.missingMaterialPrices.length ? '已知成本小计（待补料价）' : 'EX-FACTORY' }} HKD {{ total.exFactory.toFixed(6) }} · USD {{ (total.exFactory / pricingRate(result.quoteData.pricing, 'hkd_usd', 7.8)).toFixed(6) }} · 模具费 HKD {{ total.tooling.toFixed(2) }}</p>
+    <p class="mt-2 text-sm text-slate-700" data-testid="yinhui-route-prices">20FT HKD {{ total.fcl20?.toFixed(6) ?? '未填写' }} · 40HQ HKD {{ total.fcl40Hq?.toFixed(6) ?? '未填写' }} · 内销 RMB {{ total.domesticRmb?.toFixed(6) ?? '未填写' }}</p>
     <div v-if="error" class="mt-2 text-sm text-red-700" role="alert" data-testid="yinhui-export-issues"><p>输出前还需处理 {{ errors.length }} 项：</p><ul class="mt-1 list-disc pl-5"><li v-for="item in errors" :key="item">{{ item }}</li></ul></div>
     <label class="mt-3 flex items-start gap-2 text-sm text-slate-800"><input v-model="confirmed" data-testid="yinhui-confirm" type="checkbox" :disabled="Boolean(error) || translating || disabled" class="mt-1"><span>已核对型号、MOQ、产品及物料名称、图片、料型、模具费及运费；确认按上述临时映射生成。<strong v-if="result.manualReviewReasons?.length">我已人工核对 Tool Plan 提醒及其金额影响，同意放行。</strong><strong v-if="total.missingMaterialPrices.length">我已知悉缺失料价将留空、当前合计不完整，同意先导出并补齐料价。</strong></span></label>
   </fieldset>
