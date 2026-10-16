@@ -220,6 +220,7 @@ SECTION_INPUT_CONTRACTS: dict[str, dict[str, Any]] = {
             "settlement": "legacy compatibility only; when misc_ratio is absent, misc_ratio = 1 - settlement",
         }],
         "customer_quote_fields": {
+            "yinhui": {"domestic_price_rmb": "optional decimal>=0; independently confirmed final domestic RMB price; never added to internal costs"},
             "buzzbee": {
                 "color_box_tiers": [
                     {"quote_price_hkd": "decimal>0", "fsc_price_hkd": "decimal>0", "moq": "text"},
@@ -2383,6 +2384,14 @@ def _sales_customer_supplied_materials(payload: dict[str, Any], result: dict[str
 
 def _sales(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any], context: dict[str, Any]) -> None:
     payload = {**payload, "cartons": resolve_sales_cartons(payload)}
+    customer_fields = payload.get("customer_quote_fields")
+    if isinstance(customer_fields, dict) and "yinhui" in customer_fields:
+        yinhui_fields = customer_fields["yinhui"]
+        if not isinstance(yinhui_fields, dict):
+            raise CalculationInputError("银辉报客资料格式无效")
+        domestic_price = yinhui_fields.get("domestic_price_rmb")
+        if domestic_price not in (None, ""):
+            decimal_value(domestic_price, "银辉内销最终单价 RMB")
     base_factory_price = decimal_value(context.get("factory_price_hkd"), "出厂价")
     shipping_source = payload.get("shipping", {})
     if shipping_source in (None, ""):

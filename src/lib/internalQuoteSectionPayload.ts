@@ -509,7 +509,7 @@ export interface ThreeSixtyCustomerQuoteFields {
   first_etd: string
   freight_route_key: string
 }
-export interface CustomerQuoteFields { buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[]; template_profile?: string; notes?: string }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields; three_sixty: ThreeSixtyCustomerQuoteFields }
+export interface CustomerQuoteFields { yinhui: { domestic_price_rmb: number | null }; buzzbee: { color_box_tiers: BuzzBeeColorBoxTier[]; template_profile?: string; notes?: string }; disney: DisneyCustomerQuoteFields; dickie: DickieCustomerQuoteFields; caixing: CaixingCustomerQuoteFields; three_sixty: ThreeSixtyCustomerQuoteFields }
 export interface SalesMarkupTier {
   moq: number
   markup_x: number
@@ -1980,6 +1980,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       scenarios: legacyScenarioRows.map((row) => ({ name: textValue(row.name), capacity_cuft: numberValue(row.capacity_cuft), freight_cost_hkd: numberValue(row.freight_cost_hkd), carton_cuft: numberValue(row.carton_cuft), qty_per_carton: numberValue(row.qty_per_carton), freight_share: numberValue(row.freight_share, .48), lift_share: numberValue(row.lift_share, .52), markup: numberValue(row.markup, 1.2), settlement: numberValue(row.settlement, .98) })),
     } : {}),
     customer_quote_fields: {
+      yinhui: {
+        domestic_price_rmb: (() => { const value = objectValue(objectValue(source.customer_quote_fields).yinhui).domestic_price_rmb; return value == null || value === '' ? null : numberValue(value) })(),
+      },
       buzzbee: {
         template_profile: textValue(objectValue(objectValue(source.customer_quote_fields).buzzbee).template_profile) || 'standard',
         notes: textValue(objectValue(objectValue(source.customer_quote_fields).buzzbee).notes),

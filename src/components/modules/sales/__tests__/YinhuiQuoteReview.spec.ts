@@ -11,6 +11,21 @@ function fixture(): YinhuiConversionResult {
   }}
 }
 describe('Silverlit export review', () => {
+  it('reviews independent RMB and optional routes and revokes confirmation after edits', async () => {
+    const result = fixture()
+    const wrapper = mount(YinhuiQuoteReview, { props: { result, confirmed: true } })
+    await wrapper.get('[data-testid="yinhui-domesticPriceRmb"]').setValue('55.615')
+    await wrapper.get('[data-testid="yinhui-freight20FtHkd"]').setValue('1.0362')
+    await wrapper.get('[data-testid="yinhui-freight40HqHkd"]').setValue('0')
+    expect(result.quoteData).toMatchObject({domesticPriceRmb:55.615,freight20FtHkd:1.0362,freight40HqHkd:0})
+    expect(wrapper.get('[data-testid="yinhui-route-prices"]').text()).toContain('内销 RMB 55.615000')
+    expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([false])
+    await wrapper.get('[data-testid="yinhui-freight20FtHkd"]').setValue('-1')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="yinhui-freight20FtHkd"]').setValue('')
+    expect(result.quoteData.freight20FtHkd).toBeNull()
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
+  })
   beforeEach(()=>{ vi.mocked(translateQuoteDescriptions).mockReset() })
   it('automatically translates newly imported Chinese and disables confirmation while running', async () => {
     const result=fixture();result.quoteData.productName='配重塊 4.0mm'
@@ -99,7 +114,7 @@ describe('Silverlit export review', () => {
     expect(wrapper.get('[data-testid="yinhui-missing-prices"]').text()).toContain('PA')
     expect(wrapper.text()).toContain('已知成本小计（待补料价）')
     expect(wrapper.text()).toContain('我已知悉缺失料价将留空')
-    expect(wrapper.text()).toContain('C-ABS 24')
+    expect(wrapper.text()).toContain('磅价 ÷ 454 × 1000')
     expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
     await wrapper.get('[data-testid="yinhui-confirm"]').setValue(true)
     expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([true])
