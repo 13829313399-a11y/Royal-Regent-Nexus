@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import PaymentComparison from './PaymentComparison.vue'
+import CuttingReportExport from './CuttingReportExport.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
 import { cuttingApi, errorMessage, type Access } from './api'
@@ -122,6 +123,7 @@ function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement'
     <Button v-if="pending" variant="outline" :disabled="busy" @click="recover">核对原付款操作结果</Button>
     <p v-if="!access?.payments_schema_ready">付款登记需先完成数据库迁移及单独岗位授权。</p><p v-else-if="!access.permissions.includes('payment_read')">付款查询仅限单独授权的会计岗位。</p>
     <template v-if="readable">
+      <CuttingReportExport v-if="record&&!draft" :selection="{kind:'payments',month}" :access="rights" :disabled="busy||!!pending" />
       <Button v-if="savedTarget" variant="outline" :disabled="busy||!!pending" @click="load(savedTarget.id,savedTarget.eventId,savedTarget.month)">打开已保存付款记录</Button>
       <div class="order-toolbar cutting-master-toolbar"><label>付款月份<input type="month" min="2000-01" :max="today.slice(0,7)" :value="month" :disabled="busy||!!pending||dirty" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending" @click="load()">读取付款登记</Button><Button v-if="can('payment_prepare')" :disabled="busy||!!pending||!!draft" @click="start('new')">新建付款登记</Button></div>
       <p v-if="draft&&!basis">敏感填写已清除或依据需要刷新。<Button :disabled="busy||!!pending||!can('payment_prepare')" @click="start('refresh')">恢复付款填写</Button></p>
