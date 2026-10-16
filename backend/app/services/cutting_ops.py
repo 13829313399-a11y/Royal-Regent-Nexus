@@ -25,9 +25,11 @@ def allowed(user, action):
     if action in {'eta_write', 'requisition_reconcile', 'cost_write'}:
         departments = ('pmc-warehouse',)
     if action == 'cost_read':
-        departments = ('production', 'pmc-warehouse')
+        departments = ('production', 'pmc-warehouse', 'accounting')
+    if action in {'period_lock', 'period_reopen'}:
+        departments = ('accounting',)
     if action == 'read':
-        departments = ('production', 'engineering', 'pmc-warehouse')
+        departments = ('production', 'engineering', 'pmc-warehouse', 'accounting')
     return any(authorization_decision(user, 'cutting_ops:' + action, FACTORY, department)[0] for department in departments)
 
 

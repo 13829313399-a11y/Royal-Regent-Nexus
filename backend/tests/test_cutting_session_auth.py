@@ -16,7 +16,7 @@ def session_flow(flow, monkeypatch):
     flow.app.include_router(auth_api.router)
     flow.app.dependency_overrides.pop(get_current_user)
     monkeypatch.setattr(auth_api.settings, 'session_cookie_secure', False)
-    actions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile', 'plan_write', 'plan_publish', 'report_write', 'report_review', 'handover_write', 'acceptance_write', 'cost_read', 'allocation_confirm']
+    actions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile', 'plan_write', 'plan_publish', 'report_write', 'report_review', 'handover_write', 'acceptance_write', 'cost_read', 'allocation_confirm', 'period_prepare', 'period_lock', 'period_reopen']
     with Session(flow.engine) as db:
         # Required IAM invariant row, seeded by the real migration in deployed databases.
         db.add(AuthIamState(key='identity_mutation_lock', value_json='{}'))
@@ -24,13 +24,13 @@ def session_flow(flow, monkeypatch):
             db.add(AuthPermission(id='cutting_ops:'+action, code='cutting_ops:'+action, name=action))
         for name, dept, factory in [('production', 'production', 'huakang-c'), ('engineering', 'engineering', 'huakang-c'),
                                     ('procurement', 'pmc-warehouse', 'huakang-c'), ('reader', 'production', 'huakang-c'),
-                                    ('foreign', 'production', 'huakang-d'), ('ungranted', 'production', 'huakang-c')]:
+                                    ('accounting', 'accounting', 'huakang-c'), ('foreign', 'production', 'huakang-d'), ('ungranted', 'production', 'huakang-c')]:
             db.add(AuthUser(id=name, username='cutting-test-'+name, display_name=name, password_salt='synthetic-salt', password_hash=hash_password('SyntheticPassword123!', 'synthetic-salt'), status='active'))
             db.add(AuthRole(id=name, code='cutting-test-'+name, name=name))
         db.flush()
         for name, dept, factory in [('production', 'production', 'huakang-c'), ('engineering', 'engineering', 'huakang-c'),
                                     ('procurement', 'pmc-warehouse', 'huakang-c'), ('reader', 'production', 'huakang-c'),
-                                    ('foreign', 'production', 'huakang-d'), ('ungranted', 'production', 'huakang-c')]:
+                                    ('accounting', 'accounting', 'huakang-c'), ('foreign', 'production', 'huakang-d'), ('ungranted', 'production', 'huakang-c')]:
             db.add(EmployeeProfile(user_id=name, primary_factory_id=factory, primary_department=dept, confirmation_status='confirmed'))
             db.add(AuthUserRole(id=name, user_id=name, role_id=name, factory_id=factory, department=dept))
             granted = ['read'] if name == 'reader' else [] if name == 'ungranted' else actions
@@ -45,6 +45,31 @@ def login(client, name):
     response = client.post('/api/auth/login', json={'username': 'cutting-test-'+name, 'password': 'SyntheticPassword123!'})
     assert response.status_code == 200, response.text
     assert 'HttpOnly' in response.headers['set-cookie']
+
+
+@pytest.mark.parametrize('name,action,expected', [('production','submit',200),('accounting','submit',403),
+    ('accounting','lock',200),('production','lock',403),('procurement','lock',403),('foreign','lock',403),
+    ('accounting','reopen',200),('reader','reopen',403)])
+def test_real_session_period_roles(session_flow, monkeypatch, name, action, expected):
+    from app.api import cutting_operations as api
+    monkeypatch.setattr(api.periods, 'execute', lambda *args: {'state':'verified'})
+    login(session_flow,name)
+    response=session_flow.post(BASE+'/periods/'+action,json=command(month='2026-09'))
+    assert response.status_code==expected,response.text
+
+
+def test_real_session_period_deny_and_cost_revoke(session_flow, monkeypatch):
+    from app.api import cutting_operations as api
+    monkeypatch.setattr(api.periods, 'execute', lambda *args: {'state':'verified'})
+    login(session_flow,'accounting')
+    with Session(session_flow.engine) as db:
+        db.add(AuthUserPermissionOverride(id='period-deny',user_id='accounting',permission_id='cutting_ops:period_lock',effect='deny',factory_id='huakang-c',department='accounting'))
+        db.commit()
+    assert session_flow.post(BASE+'/periods/lock',json=command(month='2026-09')).status_code==403
+    with Session(session_flow.engine) as db:
+        db.execute(delete(AuthRolePermission).where(AuthRolePermission.id=='accounting:cost_read'))
+        db.commit()
+    assert session_flow.post(BASE+'/periods/reopen',json=command(month='2026-09')).status_code==403
 
 
 @pytest.mark.parametrize('name,action,payload,expected', [

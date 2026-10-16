@@ -14,6 +14,7 @@ from app.services import cutting_orders as orders
 from app.services import cutting_planning as planning, cutting_planning_schemas as ps
 from app.services import cutting_reporting as reporting, cutting_reporting_schemas as rs
 from app.services import cutting_usage as usage, cutting_usage_schemas as us
+from app.services import cutting_periods as periods, cutting_period_guards as period_guards, cutting_period_schemas as pcs
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -49,6 +50,7 @@ def access(db: Db, user: User, factory_id: str = ''):
     return dict(enabled=enabled, schema_ready=migrated, orders_schema_ready=orders.schema_ready(db.connection()) if enabled else False,
                 reporting_schema_ready=reporting.schema_ready(db.connection()) if enabled else False,
                 usage_schema_ready=usage.schema_ready(db.connection()) if enabled else False,
+                periods_schema_ready=period_guards.schema_ready(db.connection()) if enabled else False,
                 permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
 
@@ -66,6 +68,42 @@ def masters(db: Db, user: User, factory_id: str = '', kind: s.Kind = 'material',
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     rows = db.scalars(query.order_by(CuttingMaster.code).offset((page-1)*page_size).limit(page_size))
     return dict(data=[c.view(db, item) for item in rows], total=total, page=page, page_size=page_size)
+
+
+@router.get('/periods/{month}')
+def period_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', event_id: str | None = None):
+    c.authorize(user, factory_id, 'cost_read')
+    orders_ready(db)
+    return periods.read(db, month, event_id)
+
+
+@router.get('/periods/{month}/basis')
+def period_basis(month: pcs.Month, db: Db, user: User, factory_id: str = ''):
+    c.authorize(user, factory_id, 'cost_read')
+    orders_ready(db)
+    return periods.prepare(db, month)
+
+
+@router.post('/periods/{action}')
+def period_write(action: Literal['save', 'submit', 'return', 'lock', 'reopen'], body: dict, db: Db, user: User):
+    permission = 'period_prepare' if action in {'save', 'submit'} else 'period_reopen' if action == 'reopen' else 'period_lock'
+    c.authorize(user, body.get('factory_id', ''), permission)
+    c.authorize(user, body.get('factory_id', ''), 'cost_read')
+    orders_ready(db)
+    parsed = (pcs.PeriodSave if action == 'save' else pcs.PeriodDecision).model_validate(body)
+    return c.command(db, user, parsed, 'period-'+action, lambda: periods.execute(db, user, parsed, action))
+
+
+@router.post('/period-operations/recover')
+def period_recover(body: pcs.RecoverPeriod, db: Db, user: User):
+    identity = s.OperationIdentity.model_validate({key: body.command.get(key) for key in ('factory_id', 'operation_id')})
+    c.authorize(user, identity.factory_id)
+    c.require(c.schema_ready(db.connection()), '裁床操作回执需先完成迁移', 503)
+    try:
+        parsed = (pcs.PeriodSave if body.action == 'save' else pcs.PeriodDecision).model_validate(body.command)
+    except ValidationError:
+        return orders.recover_operation(db, user, identity, 'period-'+body.action, invalid_payload=body.command)
+    return orders.recover_operation(db, user, parsed, 'period-'+body.action)
 
 
 @router.get('/masters/{entity_id}/versions')
