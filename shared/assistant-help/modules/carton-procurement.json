@@ -75,7 +75,7 @@
       {
         "path": "src/views/CartonProcurementView.vue",
         "symbol": "activeHeaderSearch",
-        "sha256": "0476da8e8deeba591c595e5153b810d4a16faad3040c44a0f943a41f6626cfa7"
+        "sha256": "cc7569f6423bd24cf7104fce3964bfff1b50efa38081ade3c2c6b21928448264"
       },
       {
         "path": "src/components/CartonSupplierReceiving.vue",
@@ -140,7 +140,7 @@
       {
         "path": "src/components/CartonMarkAssetLibrary.vue",
         "symbol": "editStatus",
-        "sha256": "4df9b6ebc69cd53422e3d240bf10ca4b4322c1e57e1364555fb9b20088f012e2"
+        "sha256": "f42bc9fce748774a4160cb0d55df5d47722f852ec5393d5df6b1266e9e21b9a9"
       },
       {
         "path": "backend/app/services/carton_mark_asset_workflow.py",
@@ -153,8 +153,8 @@
         "sha256": "18c0106e7528ed182436b46e74534eca9223d2382ac8feaa94e0cf4dbb677105"
       }
     ],
-    "knowledge_version": "2026.10.16-carton-loading-quantity",
-    "verified_commit": "working-tree:carton-loading-quantity",
+    "knowledge_version": "2026.10.16-carton-schedule-detail-paper-http",
+    "verified_commit": "working-tree:carton-schedule-detail-paper-http",
     "status": "verified"
   }
 ]

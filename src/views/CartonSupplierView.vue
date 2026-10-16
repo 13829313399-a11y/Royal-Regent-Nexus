@@ -5,12 +5,13 @@ import { supplierWorkCounts } from '@/features/carton-procurement/supplierWork'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import CartonFeedbackCenter from '@/components/CartonFeedbackCenter.vue'
 import CartonSupplierMonthlyReview from '@/components/CartonSupplierMonthlyReview.vue'
+import CartonMarkAssetLibrary from '@/components/CartonMarkAssetLibrary.vue'
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { ArrowLeft, BookOpen, ClipboardList, FileText, History, PackageCheck, Search, Truck, X } from '@lucide/vue'
 import type { CartonSupplierGuideDestination } from '@/features/carton-procurement/supplierUsageGuide'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
-import { cartonSupplierPortalApi as api, type PortalOrder, type PortalPaper, type PortalShipment, type SupplierDocument, type SupplierActivity, type DeliveryImportPreview, type DeliveryImportGroup, type DeliveryImportRow, type DeliveryRowSelection } from '@/api/cartonSupplierPortal'
+import { cartonSupplierPortalApi as api, type PortalOrder, type PortalPaper, type PortalShipment, type SupplierDocument, type SupplierActivity, type SupplierMarkAsset, type DeliveryImportPreview, type DeliveryImportGroup, type DeliveryImportRow, type DeliveryRowSelection } from '@/api/cartonSupplierPortal'
 import { factoryContexts } from '@/data/enterpriseMock'
 import { formatBusinessDate, parseBusinessTimestamp } from '@/lib/dateTime'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
@@ -31,6 +32,52 @@ const canEdit = computed(() => auth.can('carton_supplier:edit', '*', '*'))
 const memberships = ref<{ factory_id: string; supplier_name: string }[]>([])
 const factoryFilter = ref('')
 const workspace = ref<SupplierWorkspace | null>(null)
+type OrderMarkCount = { current: number; history: number }
+type FactoryMarkState = { loading: boolean; error: string; counts: Record<string, OrderMarkCount> }
+const orderMarks = ref<Record<string, FactoryMarkState>>({})
+let orderMarksController = new AbortController()
+const markOrderKey = (id: string, issueId: string) => JSON.stringify([id, issueId])
+function clearOrderMarks() {
+  orderMarksController.abort()
+  orderMarksController = new AbortController()
+  orderMarks.value = {}
+}
+function updateOrderMarks(factoryId: string, assets: SupplierMarkAsset[]) {
+  if (!memberships.value.some(member => member.factory_id === factoryId)) return
+  const counts: Record<string, OrderMarkCount> = {}
+  for (const asset of assets) {
+    const keys = new Set(asset.orders.map(order => markOrderKey(order.id, order.issue_id)))
+    for (const key of keys) {
+      const count = counts[key] ??= { current: 0, history: 0 }
+      count[asset.workflow?.status === 'HISTORY' ? 'history' : 'current']++
+    }
+  }
+  orderMarks.value[factoryId] = { loading: false, error: '', counts }
+}
+async function loadOrderMarks(scopes: string[], token: number) {
+  clearOrderMarks()
+  const signal = orderMarksController.signal
+  orderMarks.value = Object.fromEntries(scopes.map(scope => [scope, { loading: true, error: '', counts: {} }]))
+  await Promise.all(scopes.map(async scope => {
+    try {
+      const assets = await api.markAssets(scope, signal)
+      if (token === generation && !signal.aborted) updateOrderMarks(scope, assets)
+    } catch (reason) {
+      if (token === generation && !signal.aborted) orderMarks.value[scope] = { loading: false, error: getApiErrorMessage(reason), counts: {} }
+    }
+  }))
+}
+function orderMarkLabel(order: SupplierOrder) {
+  const state = orderMarks.value[order.factory_id]
+  if (!state || state.loading) return '查询中…'
+  if (state.error) return '资料查询失败'
+  const count = state.counts[markOrderKey(order.id, order.issue_id)]
+  return count?.current ? `已绑定 ${count.current} 份` : count?.history ? `仅历史资料 ${count.history} 份` : '未绑定'
+}
+function orderHasMarks(order: SupplierOrder) {
+  const state = orderMarks.value[order.factory_id]
+  return !state?.loading && !state?.error && Boolean(state?.counts[markOrderKey(order.id, order.issue_id)]?.current)
+}
 const workCounts = computed(() => supplierWorkCounts(orders.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value), (workspace.value?.shipments || []).filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value)))
 const materialCorrection = ref<MaterialCorrection | null>(null)
 const pendingMaterialCorrections = computed(() => workspace.value?.orders.flatMap(order => order.material_corrections || []).filter(row => ['PENDING', 'RETURNED'].includes(row.status)) || [])
@@ -158,6 +205,7 @@ const importContext = computed(() => JSON.stringify([
 ]))
 watch(importContext, () => {
   importGeneration++; ++generation; importOpen.value = false; importFile.value = null; importPreview.value = null
+  clearOrderMarks()
   materialCorrection.value = null; workspace.value = null; memberships.value = []; documents.value = []; activity.value = []; acceptOrderId.value = ''; selectedOrderIds.value = []; selectedDocumentKeys.value = []
   ++extraGeneration.documents; ++extraGeneration.activity; extraLoaded.documents = extraLoaded.activity = false; extraLoadingState.documents = extraLoadingState.activity = false
   closeDocumentDetail(); closeMergedDocuments(); bulkAcceptOpen.value = false; loading.value = false; discovering.value = false
@@ -168,7 +216,7 @@ watch(importContext, () => {
   activityTotal.value = 0
   if (activityTimer) clearTimeout(activityTimer)
 })
-onBeforeUnmount(() => { importGeneration++ })
+onBeforeUnmount(() => { importGeneration++; generation++; clearOrderMarks() })
 function importGroupReady(group: DeliveryImportGroup) { return importModes.value[importNoteKey(group)] === 'EXISTING_RECEIPT' ? Boolean(group.receipt_link_ready) : group.ready }
 const dates = reactive<Record<string, string>>({})
 const dateIssueIds: Record<string, string> = {}
@@ -643,6 +691,7 @@ async function load(quiet = false) {
   const token = ++generation
   const scopes = memberships.value.map(member => member.factory_id)
   if (!scopes.length) return
+  void loadOrderMarks(scopes, token)
   loading.value = true
   if (!quiet) error.value = ''
   try {
@@ -684,6 +733,7 @@ async function refresh() {
   discovering.value = true
   error.value = ''
   workspace.value = null
+  clearOrderMarks()
   documents.value = []
   activity.value = []
   selectedDocumentKeys.value = []
@@ -877,11 +927,11 @@ async function download(id: string, factoryId: string, filename: string) {
               <div class="flex flex-wrap gap-2"><button v-if="canApprove" type="button" :disabled="!selectedOrderIds.length || busy" class="h-9 rounded-lg border border-teal-300 bg-teal-50 px-3 font-semibold text-teal-800 disabled:opacity-40" @click="openBulkAccept">批量确认接单</button><button v-if="canEdit" type="button" :disabled="busy" class="h-9 rounded-lg bg-teal-700 px-3 font-semibold text-white hover:bg-teal-800 disabled:opacity-40" @click="openDeliveryImport">导入送货单</button></div>
             </div>
             <div class="overflow-x-auto">
-              <table class="w-full min-w-[1260px] text-left text-xs">
-                <thead class="bg-slate-50 text-[11px] font-bold text-slate-600"><tr><th class="w-12 px-4 py-3"><input type="checkbox" aria-label="全选当前筛选订单" :checked="allVisibleSelected" :indeterminate="someVisibleSelected && !allVisibleSelected" :disabled="!selectableVisibleOrders.length" class="size-4 accent-teal-700" @change="toggleVisibleOrders(($event.target as HTMLInputElement).checked)"></th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">客户</th><th class="px-3 py-3">合同号 / PO</th><th class="px-3 py-3">货号 / 产品</th><th class="px-3 py-3">下单日期</th><th class="px-3 py-3">计划交期</th><th class="px-3 py-3">交期提醒</th><th class="px-3 py-3">纸品明细</th><th class="px-3 py-3">送货进度</th><th class="px-3 py-3">订单状态</th><th class="sticky right-0 z-10 bg-slate-50 px-3 py-3 text-right">操作</th></tr></thead>
+              <table class="w-full min-w-[1480px] text-left text-xs">
+                <thead class="whitespace-nowrap bg-slate-50 text-[11px] font-bold text-slate-600"><tr><th class="w-12 px-4 py-3"><input type="checkbox" aria-label="全选当前筛选订单" :checked="allVisibleSelected" :indeterminate="someVisibleSelected && !allVisibleSelected" :disabled="!selectableVisibleOrders.length" class="size-4 accent-teal-700" @change="toggleVisibleOrders(($event.target as HTMLInputElement).checked)"></th><th class="px-3 py-3">送货厂区</th><th class="px-3 py-3">客户</th><th class="px-3 py-3">合同号 / PO</th><th class="px-3 py-3">货号 / 产品</th><th class="px-3 py-3">箱唛资料</th><th class="px-3 py-3">下单日期</th><th class="px-3 py-3">计划交期</th><th class="px-3 py-3">交期提醒</th><th class="px-3 py-3">纸品明细</th><th class="px-3 py-3">送货进度</th><th class="px-3 py-3">订单状态</th><th class="sticky right-0 z-10 bg-slate-50 px-3 py-3 text-right">操作</th></tr></thead>
                 <tbody class="divide-y divide-slate-100">
-                  <tr v-for="order in visibleOrders" :key="order.id" class="hover:bg-teal-50/40"><td class="px-4 py-3 align-top"><input v-model="selectedOrderIds" :value="order.id" type="checkbox" :aria-label="`选择订单 ${order.order_no}`" :disabled="!canSelectOrder(order)" class="size-4 accent-teal-700 disabled:cursor-not-allowed disabled:opacity-40"></td><td class="px-3 py-3 align-top font-semibold text-teal-800">{{ factoryDisplayName(order.factory_id) }}</td><td class="px-3 py-3 align-top"><b class="text-slate-900">{{ order.customer_name }}</b></td><td class="px-3 py-3 align-top"><b>{{ order.contract_no }}</b><p class="mt-1 text-slate-500">客户 PO {{ order.customer_po || '纸箱订单未填写' }}</p></td><td class="px-3 py-3 align-top"><b>{{ order.item_no }}</b><p class="mt-1 text-slate-500">{{ order.product_name }}</p></td><td class="px-3 py-3 align-top">{{ order.order_date || '历史未记录' }}</td><td class="px-3 py-3 align-top">{{ order.planned_date || '待确认' }}<p v-for="difference in orderPromiseDifferences(order)" :key="difference" class="mt-1 text-[11px] font-semibold text-amber-700">{{ difference }}</p></td><td class="px-3 py-3 align-top"><span :class="dueReminderClass(order)" class="whitespace-nowrap font-semibold">{{ dueReminder(order).label }}</span></td><td class="px-3 py-3 align-top">{{ order.lines.filter(line => Number(line.required_quantity) > 0).length }} 条有效<span class="ml-1 text-slate-500">· {{ order.lines.filter(line => Number(line.required_quantity) > 0 && line.accepted).length }} 条已接</span></td><td class="px-3 py-3 align-top"><div v-for="line in progressLines(order)" :key="line.id" class="mb-1 whitespace-nowrap"><b>{{ line.packaging_type }}</b> {{ line.received_quantity }} / {{ line.required_quantity }} {{ line.unit }}<span v-if="Number(line.in_transit_quantity) > 0" class="block text-amber-700">在途 {{ line.in_transit_quantity }} {{ line.unit }}</span></div><span v-if="!progressLines(order).length" class="text-slate-400">无有效需求</span></td><td class="px-3 py-3 align-top"><span :class="statusClass(order)" class="inline-flex whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-bold ring-1 ring-inset">{{ orderStatus(order) }}</span><p v-if="order.cancellation_notice" class="mt-1 text-[11px]" :class="order.cancellation_notice.acknowledged ? 'text-emerald-700' : 'text-red-700'">{{ order.cancellation_notice.acknowledged ? '取消通知已收到' : order.cancellation_notice.issued ? '待确认收到取消通知' : '取消变更待生成' }}</p></td><td class="sticky right-0 z-10 bg-white px-3 py-3 text-right align-top shadow-[-4px_0_8px_-6px_rgba(15,23,42,0.3)]"><div class="flex justify-end gap-1 whitespace-nowrap"><button v-if="canApprove && open(order) && order.lines.some(needsAcceptance)" type="button" :aria-label="`确认订单 ${order.order_no} 接单`" class="rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 font-semibold text-teal-800" @click="showAccept(order)">确认接单</button><button v-if="canApprove && order.cancellation_notice?.issued && !order.cancellation_notice.acknowledged" type="button" :disabled="busy" class="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 font-semibold text-red-700" @click="acknowledgeCancellation(order)">确认收到取消通知</button><details v-if="(canApprove && open(order) && !order.lines.some(needsAcceptance) && order.lines.some(line => Number(line.required_quantity) > 0)) || order.material_corrections?.length"><summary :aria-label="`${order.order_no} 更多操作`" class="cursor-pointer rounded-lg border px-2 py-1.5">更多</summary><div class="mt-1 flex flex-col gap-1"><button v-if="canApprove && open(order) && !order.lines.some(needsAcceptance)" type="button" :aria-label="`更新订单 ${order.order_no} 承诺交期`" class="rounded-lg border px-2 py-1.5 text-teal-800" @click="showAccept(order)">更新承诺交期</button><button v-if="order.material_corrections?.length" type="button" class="rounded-lg border border-amber-200 px-2 py-1.5 text-amber-800" @click="materialCorrection = order.material_corrections.at(-1) || null">更正记录</button></div></details><button type="button" :aria-label="`查看订单 ${order.order_no} 明细`" title="悬停预览整单明细，单击后保持显示" aria-haspopup="dialog" class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:border-teal-300 hover:text-teal-700" @mouseenter="showOrderDetail(order.id)" @mouseleave="closeOrderDetailPreview" @focus="showOrderDetail(order.id)" @blur="closeOrderDetailPreview" @click="showOrderDetail(order.id, true)">明细</button></div></td></tr>
-                  <tr v-if="!visibleOrders.length"><td colspan="12" class="px-4 py-10 text-center text-slate-500">{{ orders.length ? '没有符合当前筛选条件的订单' : '暂无已下单订单；请联系内部仓管确认订单已锁定。' }}</td></tr>
+                  <tr v-for="order in visibleOrders" :key="order.id" class="hover:bg-teal-50/40"><td class="px-4 py-3 align-top"><input v-model="selectedOrderIds" :value="order.id" type="checkbox" :aria-label="`选择订单 ${order.order_no}`" :disabled="!canSelectOrder(order)" class="size-4 accent-teal-700 disabled:cursor-not-allowed disabled:opacity-40"></td><td class="whitespace-nowrap px-3 py-3 align-top font-semibold text-teal-800">{{ factoryDisplayName(order.factory_id) }}</td><td class="px-3 py-3 align-top"><b class="text-slate-900">{{ order.customer_name }}</b></td><td class="px-3 py-3 align-top"><b>{{ order.contract_no }}</b><p class="mt-1 text-slate-500">客户 PO {{ order.customer_po || '纸箱订单未填写' }}</p></td><td class="px-3 py-3 align-top"><b>{{ order.item_no }}</b><p class="mt-1 text-slate-500">{{ order.product_name }}</p></td><td class="px-3 py-3 align-top"><button type="button" :aria-label="`查看订单 ${order.order_no} 箱唛资料`" :title="orderMarks[order.factory_id]?.error || '在订单明细中查看和下载箱唛资料'" class="whitespace-nowrap rounded-lg px-2 py-1 text-xs font-semibold" :class="orderMarks[order.factory_id]?.error ? 'bg-red-50 text-red-700' : orderHasMarks(order) ? 'bg-teal-50 text-teal-800 hover:bg-teal-100' : 'bg-slate-100 text-slate-600'" @click="showOrderDetail(order.id, true)">{{ orderMarkLabel(order) }}</button></td><td class="whitespace-nowrap px-3 py-3 align-top">{{ order.order_date || '历史未记录' }}</td><td class="whitespace-nowrap px-3 py-3 align-top">{{ order.planned_date || '待确认' }}<p v-for="difference in orderPromiseDifferences(order)" :key="difference" class="mt-1 text-[11px] font-semibold text-amber-700">{{ difference }}</p></td><td class="px-3 py-3 align-top"><span :class="dueReminderClass(order)" class="whitespace-nowrap font-semibold">{{ dueReminder(order).label }}</span></td><td class="px-3 py-3 align-top">{{ order.lines.filter(line => Number(line.required_quantity) > 0).length }} 条有效<span class="ml-1 text-slate-500">· {{ order.lines.filter(line => Number(line.required_quantity) > 0 && line.accepted).length }} 条已接</span></td><td class="px-3 py-3 align-top"><div v-for="line in progressLines(order)" :key="line.id" class="mb-1 whitespace-nowrap"><b>{{ line.packaging_type }}</b> {{ line.received_quantity }} / {{ line.required_quantity }} {{ line.unit }}<span v-if="Number(line.in_transit_quantity) > 0" class="block text-amber-700">在途 {{ line.in_transit_quantity }} {{ line.unit }}</span></div><span v-if="!progressLines(order).length" class="text-slate-400">无有效需求</span></td><td class="px-3 py-3 align-top"><span :class="statusClass(order)" class="inline-flex whitespace-nowrap rounded-full px-2 py-1 text-[11px] font-bold ring-1 ring-inset">{{ orderStatus(order) }}</span><p v-if="order.cancellation_notice" class="mt-1 text-[11px]" :class="order.cancellation_notice.acknowledged ? 'text-emerald-700' : 'text-red-700'">{{ order.cancellation_notice.acknowledged ? '取消通知已收到' : order.cancellation_notice.issued ? '待确认收到取消通知' : '取消变更待生成' }}</p></td><td class="sticky right-0 z-10 bg-white px-3 py-3 text-right align-top shadow-[-4px_0_8px_-6px_rgba(15,23,42,0.3)]"><div class="flex justify-end gap-1 whitespace-nowrap"><button v-if="canApprove && open(order) && order.lines.some(needsAcceptance)" type="button" :aria-label="`确认订单 ${order.order_no} 接单`" class="rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 font-semibold text-teal-800" @click="showAccept(order)">确认接单</button><button v-if="canApprove && order.cancellation_notice?.issued && !order.cancellation_notice.acknowledged" type="button" :disabled="busy" class="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 font-semibold text-red-700" @click="acknowledgeCancellation(order)">确认收到取消通知</button><details v-if="(canApprove && open(order) && !order.lines.some(needsAcceptance) && order.lines.some(line => Number(line.required_quantity) > 0)) || order.material_corrections?.length"><summary :aria-label="`${order.order_no} 更多操作`" class="cursor-pointer rounded-lg border px-2 py-1.5">更多</summary><div class="mt-1 flex flex-col gap-1"><button v-if="canApprove && open(order) && !order.lines.some(needsAcceptance)" type="button" :aria-label="`更新订单 ${order.order_no} 承诺交期`" class="rounded-lg border px-2 py-1.5 text-teal-800" @click="showAccept(order)">更新承诺交期</button><button v-if="order.material_corrections?.length" type="button" class="rounded-lg border border-amber-200 px-2 py-1.5 text-amber-800" @click="materialCorrection = order.material_corrections.at(-1) || null">更正记录</button></div></details><button type="button" :aria-label="`查看订单 ${order.order_no} 明细`" title="悬停预览整单明细，单击后保持显示" aria-haspopup="dialog" class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:border-teal-300 hover:text-teal-700" @mouseenter="showOrderDetail(order.id)" @mouseleave="closeOrderDetailPreview" @focus="showOrderDetail(order.id)" @blur="closeOrderDetailPreview" @click="showOrderDetail(order.id, true)">明细</button></div></td></tr>
+                  <tr v-if="!visibleOrders.length"><td colspan="13" class="px-4 py-10 text-center text-slate-500">{{ orders.length ? '没有符合当前筛选条件的订单' : '暂无已下单订单；请联系内部仓管确认订单已锁定。' }}</td></tr>
                 </tbody>
               </table>
             </div>
@@ -890,7 +940,7 @@ async function download(id: string, factoryId: string, filename: string) {
           <div v-if="detailOrder" data-testid="supplier-order-detail-overlay" class="fixed inset-0 z-[62] flex items-center justify-center p-4" :class="detailPinned ? 'pointer-events-auto bg-slate-950/45' : 'pointer-events-none bg-slate-950/25'" @click.self="closeOrderDetail">
             <div role="dialog" aria-labelledby="supplier-order-detail-title" :aria-modal="detailPinned ? 'true' : undefined" :inert="detailPinned ? undefined : true" class="flex max-h-[88vh] w-full max-w-[1400px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
               <div class="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
-                <div><h2 id="supplier-order-detail-title" class="text-lg font-bold text-slate-950">订单明细 · {{ factoryDisplayName(detailOrder.factory_id) }} · {{ detailOrder.customer_name }}</h2><p class="mt-1 text-xs text-teal-700">{{ detailPinned ? '已固定显示 · 查看纸品和交付资料' : '悬停预览 · 单击明细可固定查看' }}</p></div>
+                <div><h2 id="supplier-order-detail-title" class="text-lg font-bold text-slate-950">订单明细 · {{ factoryDisplayName(detailOrder.factory_id) }} · {{ detailOrder.customer_name }}</h2><p class="mt-1 text-xs text-teal-700">{{ detailPinned ? '已固定显示 · 查看纸品、交付和箱唛资料' : '悬停预览 · 单击明细可固定查看' }}</p></div>
                 <button type="button" aria-label="关闭供应商订单明细" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="closeOrderDetail"><X class="size-4" /></button>
               </div>
               <div class="min-h-0 overflow-auto">
@@ -899,6 +949,7 @@ async function download(id: string, factoryId: string, filename: string) {
                   <div class="flex flex-wrap items-center gap-2"><button v-for="file in detailOrder.attachments" :key="file.id" type="button" class="rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-xs font-semibold text-teal-700" @click="download(file.id, detailOrder.factory_id, file.filename)">{{ file.filename }} · v{{ file.version }}</button></div>
                 </div>
                 <div class="overflow-x-auto"><table class="w-full min-w-[900px] text-left text-xs"><thead class="bg-slate-50 text-[11px] font-bold text-slate-600"><tr><th class="px-3 py-3">纸品子单</th><th class="px-3 py-3">纸质 / 规格</th><th class="px-3 py-3">需求数量</th><th class="px-3 py-3">已入库</th><th class="px-3 py-3">在途 / 剩余未送</th><th class="px-3 py-3">接单 / 承诺交期</th></tr></thead><tbody class="divide-y divide-slate-100"><tr v-for="line in detailOrder.lines" :key="line.id"><td class="px-3 py-3"><b>{{ line.packaging_type }} · {{ line.child_no }}</b><p v-if="line.shipping_blocked_reason" class="mt-1 text-[11px] text-amber-700">{{ line.shipping_blocked_reason }}</p></td><td class="px-3 py-3">{{ line.paper_quality }} · {{ line.specification }} {{ line.dimension_unit }}</td><td class="px-3 py-3">{{ line.required_quantity }} {{ line.unit }}</td><td class="px-3 py-3">{{ line.received_quantity }} {{ line.unit }}</td><td class="px-3 py-3">{{ line.in_transit_quantity }} / {{ line.remaining_to_ship }} {{ line.unit }}</td><td class="px-3 py-3">{{ Number(line.required_quantity) <= 0 ? '无需接单' : line.accepted ? '已确认' : '待确认' }} · {{ Number(line.required_quantity) <= 0 ? '需求已归零' : line.promised_date || '未承诺' }}</td></tr></tbody></table></div>
+                <div v-if="detailPinned" class="border-t border-slate-100 p-4" data-testid="supplier-order-marks"><CartonMarkAssetLibrary :key="`${detailOrder.factory_id}:${detailOrder.id}:${detailOrder.issue_id}`" :factory-id="detailOrder.factory_id" :order-id="detailOrder.id" :supplier-issue-id="detailOrder.issue_id" supplier read-only /></div>
               </div>
               <div v-if="detailPinned" class="flex shrink-0 justify-end border-t border-slate-200 px-5 py-3"><button type="button" class="h-9 rounded-lg border border-slate-200 px-4 text-xs font-bold text-slate-600" @click="closeOrderDetail">关闭</button></div>
             </div>
