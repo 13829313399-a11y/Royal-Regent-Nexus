@@ -12,6 +12,8 @@ from app.models.auth import AuthUser
 from app.schemas.carton_master import MasterSave, effective_item_rule
 from app.services.auth import has_permission_in_scope, build_auth_context
 
+from app.services.carton_quantity import rule_data, rule as paper_rule, requirements as paper_requirements
+
 PERMISSION = "carton_procurement:master_manage"
 
 
@@ -57,8 +59,14 @@ def canonical_lines(lines):
         for field in ("net_weight_kg", "gross_weight_kg"):
             if get(field, None) is not None:
                 paper[field] = format(Decimal(str(get(field))).normalize(), "f")
+        calculation = rule_data(line, reusable=True)
+        if calculation:
+            paper["quantity_rule"] = calculation
+            if calculation["mode"] == "PER_CARTON":
+                paper["usage_quantity"] = None
         result.append(paper)
-    return sorted(result, key=encoded)
+    # Referenced positions belong to this complete configuration.
+    return result if any(p.get("quantity_rule") for p in result) else sorted(result, key=encoded)
 
 
 def packing_name(data, baseline):
@@ -66,7 +74,7 @@ def packing_name(data, baseline):
         return "标准装"
     def outer(config):
         lines = config.get("lines", [])
-        boxes = [line for line in lines if line["packaging_type"] == "外箱"]
+        boxes = [line for line in lines if line["packaging_type"] in {"外箱", "普通箱", "半翼箱"} and line.get("usage_quantity")]
         return boxes[0] if len(boxes) == 1 else None
     first, current = outer(baseline), outer(data)
     composition = lambda config: sorted((l["packaging_type"], l["unit"]) for l in config.get("lines", []))
@@ -190,7 +198,7 @@ def sync_history(db, factory):
     orders = [o for o in db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory))
               if o.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED", "COMPLETED"} or o.id in imported]
     lines = {}
-    for line in db.scalars(select(CartonOrderLine).where(CartonOrderLine.factory_id == factory)):
+    for line in db.scalars(select(CartonOrderLine).where(CartonOrderLine.factory_id == factory).order_by(CartonOrderLine.line_no)):
         lines.setdefault(line.order_id, []).append(line)
     added = 0
     for order in orders:
@@ -199,7 +207,7 @@ def sync_history(db, factory):
             ("CONFIG", order.item_no, config, digest([order.item_no, config])),
             ("CONTRACT", order.contract_no, {"item_nos": [order.item_no]}, digest([order.customer_code, order.contract_no])),
         ):
-            if kind == "CONFIG" and (not lines.get(order.id) or any(line.usage_quantity is None or line.required_quantity <= 0 or not line.paper_quality or not line.specification for line in lines[order.id])):
+            if kind == "CONFIG" and (not lines.get(order.id) or any((line.usage_quantity is None and not (paper_rule(line) and paper_rule(line).mode == "PER_CARTON")) or line.required_quantity <= 0 or not line.paper_quality or not line.specification for line in lines[order.id])):
                 continue
             key = (kind, identity)
             row = records.get(key)
@@ -267,6 +275,8 @@ def save_record(db, user, payload: MasterSave, identifier="", *, commit=True):
     if payload.kind == "ACCESS":
         raise HTTPException(422, "已取消单独仓库授权，请按仓管或主管岗位维护本厂资料")
     data = payload.data.model_dump(mode="json")
+    if payload.kind == "CONFIG":
+        paper_requirements(1, payload.data.lines)
     if payload.kind == "RULE" and payload.customer_code and data["item_rule"]["mode"] != "OFF":
         data["item_rule"]["user_configured"] = True
     if payload.kind == "CONTRACT" and not payload.customer_code:

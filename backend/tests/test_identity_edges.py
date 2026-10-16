@@ -1,11 +1,28 @@
 import importlib
 import pytest
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from sqlalchemy import select
 from test_identity_changes import client, engineer, identity, draft, preview, commit
 from test_identity_lifecycle_contract import modules, add_assignment
 from test_iam_api import create_user, login
+
+
+def test_preview_expiry_has_timezone_and_remains_committable(client):
+    user_id = engineer(client)
+    row = draft(client, user_id, 'profile_correction', official_position_title='带时区的预览')
+    plan = preview(client, row)
+    expires = datetime.fromisoformat(plan['expires_at'])
+    assert expires.tzinfo is not None
+    remaining = (expires - datetime.now(timezone.utc)).total_seconds()
+    assert 240 < remaining <= 300
+    dbm, authm, _, _, _ = modules()
+    with dbm.SessionLocal() as db:
+        stored = db.scalar(select(authm.AuthAuthorizationPreview).where(authm.AuthAuthorizationPreview.target_id == row['id']))
+        assert datetime.fromisoformat(stored.expires_at).tzinfo is None
+        assert stored.expires_at == expires.strftime('%Y-%m-%d %H:%M:%S')
+    assert commit(client, row, plan).status_code == 200
+    assert identity(client, user_id)['position'] == '带时区的预览'
 
 
 def test_delegation_is_a_ceiling_not_an_authority_and_revocation_invalidates_preview(client):

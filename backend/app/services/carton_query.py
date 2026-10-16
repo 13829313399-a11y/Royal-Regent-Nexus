@@ -20,6 +20,7 @@ def date_bounds(start="", end=""):
 
 
 AUDIT_LABELS = {
+    "ORDER_CONTRACT_MERGED": "订单归入新合同", "CONTRACT_MERGE_CREATED": "合单新建合同",
     "CUSTOMER_CREATED": "客户建档", "CUSTOMER_UPDATED": "客户资料维护", "CUSTOMER_DELETED": "客户删除",
     "MASTER_RULE_RECOVERED": "恢复交期规则", "MASTER_WAREHOUSE_DELETED": "删除未使用仓库",
     "MASTER_WAREHOUSE_RENAMED": "仓库更名", "MASTER_LOCATION_DELETED": "删除未使用仓位",

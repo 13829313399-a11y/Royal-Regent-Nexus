@@ -16,15 +16,16 @@ import { getApiErrorMessage } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 import Button from '@/components/ui/button/Button.vue'
 import AccessImpact from './AccessImpact.vue'
-const props = defineProps<{ person: PersonIdentity; catalog: OrganizationCatalog }>()
+import { departmentName } from './positionLabels'
+const props = defineProps<{ person: PersonIdentity; catalog: OrganizationCatalog; purpose?: 'position-permissions' }>()
 const emit = defineEmits<{
   saved: [row: ChangeRecord]
   dirty: [value: boolean]
   busy: [value: boolean]
   draft: [description: string]
-  pending: [record: { id: string; revision: number; state: string } | null]
+  pending: [record: { id: string; revision: number; state: string; command: { record: ChangeRecord; preview: ChangePreview; key: string } } | null]
 }>()
-const step = ref(1)
+const step = ref(props.purpose ? 2 : 1)
 const stepHeading = ref<HTMLElement>()
 const kind = ref<ChangeKind>(
   props.person.employment_status === 'left'
@@ -33,7 +34,7 @@ const kind = ref<ChangeKind>(
       ? 'confirm_identity'
       : 'primary_assignment_transfer',
 )
-const org = ref(props.person.primary_assignment?.org_unit_id || props.person.primary_factory_id)
+const org = ref(props.person.primary_assignment?.org_unit_id || props.person.primary_org_unit_id || props.person.primary_factory_id)
 const department = ref(props.person.primary_department)
 const title = ref(props.person.position)
 const name = ref(props.person.display_name)
@@ -48,6 +49,7 @@ const factories = ref<string[]>([])
 const scopeKind = ref('home')
 const roles = ref<RoleSummary[]>([])
 const selectedRoles = ref<NonNullable<ChangePayload['new_assignment']>['role_bindings']>([])
+const clearPackages = ref(false)
 const disposition = ref<Record<string, string>>({})
 const exceptionDecisions = ref<Record<string, string>>({})
 const busy = ref(false)
@@ -58,6 +60,7 @@ const checked = ref(false)
 const uncertain = ref(false)
 const savedNotice = ref('')
 const submitKey = ref(createRandomUuid())
+let pendingCommand: { record: ChangeRecord; preview: ChangePreview; key: string } | undefined
 const clock = ref(Date.now())
 let revision = 0
 let previewRevision = -1
@@ -75,7 +78,7 @@ const needsAssignment = computed(() =>
 )
 const confirmedLegacy = computed(() =>
   Boolean(
-    props.person.primary_factory_id &&
+    (props.person.primary_org_unit_id || props.person.primary_factory_id) &&
     props.person.primary_department &&
     props.person.confirmation_status === 'confirmed',
   ),
@@ -86,6 +89,10 @@ const roleDepartments = computed(() => [
   ).values(),
 ])
 const currentOrg = computed(() => props.catalog.organizations.find((o) => o.id === org.value))
+const orgName = (id: string) => props.catalog.organizations.find(o => o.id === id || o.factory_id === id)?.name || id
+const roleName = (role: RoleSummary) => role.is_system_position
+  ? `${role.position_department_name || departmentName(role.position_department)} · ${role.name}（内置职位）`
+  : `${role.name}（${role.source === 'database' ? '自定义' : '通用'}）`
 watch(org, () => {
   if (!currentOrg.value?.departments.some((d) => d.code === department.value)) department.value = ''
 })
@@ -205,6 +212,10 @@ function payload(): ChangePayload {
 }
 async function makePreview() {
   if (busy.value || uncertain.value || !props.catalog.writes_enabled) return
+  if (props.purpose && kind.value === 'primary_assignment_transfer' && !selectedRoles.value.length && !clearPackages.value) {
+    error.value = '请添加调整后需要保留的权限包；如需清空主职权限，请明确勾选确认。'
+    return
+  }
   const version = revision
   const submitted = payload()
   busy.value = true
@@ -268,23 +279,20 @@ async function verifyResult() {
     if (alive) busy.value = false
   }
 }
-async function submit() {
+async function submit(retry = false) {
   if (
     !props.catalog.writes_enabled ||
     busy.value ||
-    uncertain.value ||
-    !record.value ||
-    !impact.value ||
-    !checked.value ||
-    expired.value ||
-    previewRevision !== revision
+    (retry ? !uncertain.value || !pendingCommand : uncertain.value || !record.value || !impact.value || !checked.value || expired.value || previewRevision !== revision)
   )
     return
   busy.value = true
   error.value = ''
   try {
-    emit('pending', { id: record.value.id, revision: record.value.revision, state: record.value.state })
-    const row = await identityApi.commit(record.value, impact.value, submitKey.value)
+    if (!retry) pendingCommand = { record: JSON.parse(JSON.stringify(record.value)), preview: JSON.parse(JSON.stringify(impact.value)), key: submitKey.value }
+    const command = pendingCommand!
+    emit('pending', { id: command.record.id, revision: command.record.revision, state: command.record.state, command })
+    const row = await identityApi.commit(command.record, command.preview, command.key)
     if (alive) finish(row)
   } catch (e) {
     if (!alive) return
@@ -326,10 +334,11 @@ onBeforeUnmount(() => {
     </nav>
     <p v-if="error" role="alert" class="iamx-error">{{ error }}</p>
     <p v-if="savedNotice" role="status" class="iamx-notice">{{ savedNotice }}</p>
+    <p v-if="purpose" class="iamx-notice">管理员可直接调整此人的正式职位并组合多个内置或自定义权限包，无需员工先提交申请。原独立授权、明确禁止和历史记录会保留；系统管理权仍从个人例外入口单独办理。</p>
     <p v-if="uncertain" class="iamx-notice">
       页面关闭不会取消服务器办理。<Button variant="outline" :disabled="busy" @click="verifyResult"
         >核查提交结果</Button
-      >
+      ><Button variant="outline" :disabled="busy" @click="submit(true)">使用原办理内容重试</Button>
     </p>
     <Transition name="iamx-step" mode="out-in" @after-enter="stepHeading?.focus()"
       ><section :key="step">
@@ -430,11 +439,12 @@ onBeforeUnmount(() => {
             <fieldset v-if="needsAssignment && kind !== 'confirm_identity'">
               <legend>权限包与业务范围</legend>
               <p>正式部门和权限包作用部门分别确认。未选择权限包的任职不产生操作权限。</p>
+              <p v-if="purpose">这里填写调整后完整的主职权限包清单，支持添加多个权限包。保存前会列出新增与停止的实际权限。</p>
               <div class="iam-fields">
                 <label
                   >权限包<select v-model="roleId">
                     <option value="">请选择</option>
-                    <option v-for="r in roles" :key="r.id" :value="r.id">{{ r.name }}</option>
+                    <option v-for="r in roles" :key="r.id" :value="r.id">{{ roleName(r) }}</option>
                   </select></label
                 ><label
                   >权限作用部门<select v-model="roleDepartment">
@@ -460,17 +470,18 @@ onBeforeUnmount(() => {
               <Button type="button" variant="outline" @click="addRole">添加权限包</Button>
               <ul class="iam-package-list">
                 <li v-for="(r, i) in selectedRoles" :key="i">
-                  {{ roles.find((role) => role.id === r.role_id)?.name }} · {{ r.department }} ·
+                  {{ roles.find((role) => role.id === r.role_id)?.name }} · {{ departmentName(r.department) }} ·
                   {{
                     r.factory_scope.kind === 'home'
                       ? '本厂'
                       : r.factory_scope.kind === 'all_current'
                         ? '当前全部厂区'
-                        : r.factory_scope.factory_ids.join('、')
+                        : r.factory_scope.factory_ids.map(orgName).join('、')
                   }}
-                  <button type="button" @click="selectedRoles.splice(i, 1)">移除</button>
+                  <Button type="button" variant="outline" size="sm" @click="selectedRoles.splice(i, 1)">移除</Button>
                 </li>
               </ul>
+              <label v-if="purpose && kind === 'primary_assignment_transfer' && !selectedRoles.length"><input v-model="clearPackages" type="checkbox" />确认不配置主职权限包，停止原主职权限</label>
             </fieldset>
             <fieldset v-if="kind === 'confirm_identity'">
               <legend>逐项核实历史授权来源</legend>
@@ -478,7 +489,7 @@ onBeforeUnmount(() => {
               <label
                 v-for="b in person.role_bindings.filter((b) => b.state === 'active')"
                 :key="b.id"
-                >{{ b.role_name }} · {{ b.factory_id }} / {{ b.department
+                >{{ b.role_name }} · {{ orgName(b.factory_id) }} / {{ departmentName(b.department)
                 }}<select v-model="disposition[b.id]" required>
                   <option value="">请核实来源</option>
                   <option value="assignment">属于本次主职</option>
@@ -545,7 +556,7 @@ onBeforeUnmount(() => {
             <Button variant="outline" :disabled="busy || uncertain" @click="go(2)">返回修改</Button
             ><Button
               :disabled="busy || uncertain || !impact || !checked || expired"
-              @click="submit"
+              @click="submit()"
               >{{
                 busy ? '正在办理…' : impact?.requires_approval ? '提交审核' : '确认办理'
               }}</Button
@@ -556,3 +567,9 @@ onBeforeUnmount(() => {
     >
   </div>
 </template>
+
+<style scoped>
+.iam-package-list { display: grid; gap: 8px; margin-block: 12px; }
+.iam-package-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; overflow-wrap: anywhere; }
+.iam-package-list li button { flex-shrink: 0; }
+</style>

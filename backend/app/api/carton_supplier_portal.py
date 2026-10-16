@@ -394,3 +394,15 @@ def file_response(row):
     return Response(row.content, media_type=row.media_type, headers={
         "Content-Disposition": "attachment; filename*=UTF-8''" + quote(row.filename, safe=""),
         "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
+
+
+from app.schemas.carton_material_correction import MaterialCorrectionAction
+from app.services import carton_material_correction as material_corrections
+
+@router.get("/material-corrections")
+def supplier_material_corrections(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return material_corrections.supplier_records(db, user, factory_id)
+
+@router.post("/material-corrections/{identifier}/actions")
+def decide_material_correction(identifier: str, payload: MaterialCorrectionAction, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return material_corrections.act(db, user, identifier, payload, supplier=True)

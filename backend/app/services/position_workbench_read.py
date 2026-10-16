@@ -45,7 +45,7 @@ def provisional_registration_users(db):
         EmployeeProfile.identity_mode == "legacy", EmployeeProfile.confirmation_status == "pending", ~formal)))
 
 
-def ensure_item_scope(db, actor, row):
+def ensure_item_scope(db, actor, row, *, permissions=("system:user_manage", "system:access_manage")):
     ensure_reader(db, actor)
     # Historical registrations expose current identity as well as their original
     # declaration, so they require the same complete person scope as reviews.
@@ -61,7 +61,8 @@ def ensure_item_scope(db, actor, row):
     scopes += list(additional_source_scopes(db, [row.user_id]).get(row.user_id, set()))
     declared = declaration(row)
     scopes.append((declared["org_unit_id"], declared["department_code"]))
-    if any(not allowed_scope(actor, org, dept) for org, dept in complete_scopes(scopes)):
+    if any(not all(can(actor, code, org or "*", dept or "*") for code in permissions)
+           for org, dept in complete_scopes(scopes)):
         fail("OUTSIDE_MANAGEABLE_SCOPE", "来源和申报岗位超出当前完整管理范围", 403)
 
 
@@ -81,13 +82,11 @@ def load_item(db, actor, item_key, expected=None, *, pending=False):
     return row
 
 
-def visible_user_ids(db, actor):
+def visible_user_ids(db, actor, *, permissions=("system:user_manage", "system:access_manage")):
     """Bulk provenance filtering; no per-person context/matrix queries."""
     factory, department, title, org = identity_columns(include_org=True)
     rows = db.execute(select(AuthUser.id, factory, department, org).outerjoin(EmployeeProfile)).all()
     scopes = defaultdict(set)
-    for uid, f, d, o in rows:
-        scopes[uid].add((o or f or "*", d or "*"))
     assignments = db.execute(select(EmployeeAssignment, IamOrgUnit).join(IamOrgUnit)
         .join(EmployeeProfile, EmployeeProfile.user_id == EmployeeAssignment.user_id)
         .where(EmployeeAssignment.employment_epoch == EmployeeProfile.employment_epoch,
@@ -95,9 +94,28 @@ def visible_user_ids(db, actor):
                or_(EmployeeAssignment.valid_until.is_(None), EmployeeAssignment.valid_until > stamp())))
     for a, o in assignments:
         scopes[a.user_id].add((o.legacy_factory_id or o.id, a.department_code))
+    for uid, f, d, o in rows:
+        if o or f or not scopes[uid]:
+            scopes[uid].add((o or f or "*", d or "*"))
     for uid, extra in additional_source_scopes(db).items():
         scopes[uid].update(extra)
-    return [uid for uid, required in scopes.items() if all(allowed_scope(actor, f, d) for f, d in complete_scopes(required))]
+    return [uid for uid, required in scopes.items() if all(
+        can(actor, code, f, d) for f, d in complete_scopes(required) for code in permissions)]
+
+
+def visible_registration_ids(db, actor, *, permissions=("system:user_manage",)):
+    """Registration scope before counts/paging, including independent grants."""
+    visible = set(visible_user_ids(db, actor, permissions=permissions))
+    provisional = provisional_registration_users(db)
+    extra = additional_source_scopes(db)
+    result = []
+    for rid, uid, org, factory, dept, state in db.execute(select(AuthRegistrationRequest.id,
+            AuthRegistrationRequest.user_id, AuthRegistrationRequest.org_unit_id, AuthRegistrationRequest.factory_id,
+            AuthRegistrationRequest.department, AuthRegistrationRequest.status)):
+        if uid not in visible and not (state == "pending" and uid in provisional): continue
+        required = complete_scopes({(org or factory or "*", dept or "*"), *extra.get(uid, set())})
+        if all(can(actor, code, f, d) for f, d in required for code in permissions): result.append(rid)
+    return result
 
 
 def item_out(db, row, user=None):

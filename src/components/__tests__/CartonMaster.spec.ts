@@ -224,6 +224,19 @@ it('hides both template and import actions without master permission', async () 
 })
 
 describe('纸箱基础资料', () => {
+  it('allows a reader to choose a personal dimension habit without changing shared master data', async () => {
+    const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: false })
+    const save = vi.spyOn(cartonMasterApi, 'save')
+    const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], dimensionUnit: 'inch' } })
+    try {
+      await flushPromises()
+      expect(wrapper.get<HTMLSelectElement>('[aria-label="我的常用尺寸单位"]').element.value).toBe('inch')
+      await wrapper.get('[aria-label="我的常用尺寸单位"]').setValue('mm')
+      expect(wrapper.emitted('update:dimensionUnit')).toEqual([['mm']])
+      expect(save).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); get.mockRestore(); save.mockRestore() }
+  })
+
   it('saves pasted Excel dimensions as a specification while preserving the recorded unit and historical source', async () => {
     const config = record('CFG')
     config.data.lines![0]!.dimension_unit = 'inch'
@@ -245,20 +258,20 @@ describe('纸箱基础资料', () => {
     } finally { wrapper.unmount(); get.mockRestore(); save.mockRestore() }
   })
 
-  it.each(['', 'cm', 'mm', 'inch'])('defaults an unrecorded dimension unit to cm while retaining %s and loaded snapshots', async unit => {
+  it.each(['', 'cm', 'mm', 'inch'])('preserves recorded or unknown source unit %s independently of personal habits', async unit => {
     const config = record('CFG')
     config.data.lines![0]!.dimension_unit = unit
     const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true, records: [config] })
     const save = vi.spyOn(cartonMasterApi, 'save').mockResolvedValue(config)
-    const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } })
+    const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG', dimensionUnit: 'mm' } })
     await flushPromises()
     await wrapper.get('[aria-label="修改基础资料 00123"]').trigger('click')
-    expect(wrapper.get<HTMLSelectElement>('[aria-label="资料尺寸单位"]').element.value).toBe(unit || 'cm')
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="资料尺寸单位"]').element.value).toBe(unit)
     expect(config.data.lines![0]!.dimension_unit).toBe(unit)
     await wrapper.get('[aria-label="资料尺寸单位"]').element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await flushPromises()
     expect(save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ data: expect.objectContaining({ lines: expect.arrayContaining([
-      expect.objectContaining({ dimension_unit: unit || 'cm' }),
+      expect.objectContaining({ dimension_unit: unit }),
     ]) }) }), 'CFG')
     wrapper.unmount(); get.mockRestore(); save.mockRestore()
   })
@@ -604,10 +617,16 @@ it('matches partial normalized contract numbers and emits only the selected cont
     await flushPromises()
     await wrapper.findAll('button').find(b => b.text() === '添加 / 修改纸品选项')!.trigger('click')
     expect(wrapper.find('[aria-label="默认采购提前天数"]').exists()).toBe(false)
-    expect(wrapper.get<HTMLTextAreaElement>('[aria-label="基础纸质选项"]').element.value.split('\n')).toEqual(['B3B', 'A33'])
+    expect(wrapper.get<HTMLTextAreaElement>('[aria-label="基础纸质选项"]').element.value.split('\n')).toEqual(expect.arrayContaining(['B3B', 'A33']))
+    expect(wrapper.get('[aria-label="固定标准纸品类型"]').text()).toContain('BOX-01 普通箱')
+    expect(wrapper.get<HTMLTextAreaElement>('[aria-label="基础自定义纸品类型选项"]').element.value).not.toContain('普通箱')
+    await wrapper.get('[aria-label="基础自定义纸品类型选项"]').setValue('特殊插卡')
     await wrapper.get('[aria-label="基础纸质选项"]').setValue('B3B\nA35')
     await wrapper.get('form').trigger('submit'); await flushPromises()
-    expect(save).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ expected_revision: 1, data: expect.objectContaining({ lead_days: 8, contract_rule: rule.data.contract_rule, paper_qualities: ['B3B', 'A35'], hidden_paper_qualities: ['A33'] }) }), 'FACTORY')
+    expect(save).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ expected_revision: 1, data: expect.objectContaining({ lead_days: 8, contract_rule: rule.data.contract_rule, paper_qualities: ['B3B', 'A35'], hidden_paper_qualities: expect.arrayContaining(['A33']) }) }), 'FACTORY')
+    const savedOptions = save.mock.calls.at(-1)![1].data
+    expect(savedOptions.paper_types).toEqual(['特殊插卡'])
+    expect(savedOptions.hidden_paper_types).not.toContain('普通箱')
     expect(config.data.lines[0]!.paper_quality).toBe('A33')
     wrapper.unmount()
   })

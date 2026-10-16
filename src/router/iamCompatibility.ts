@@ -58,7 +58,7 @@ export function consolidatedIamTarget(
     if (personId) {
       query.person = personId
       const panel = access ? 'exceptions' : to.path.endsWith('/advanced') ? 'advanced' : single(input.panel) || 'profile'
-      if (!['profile', 'exceptions', 'account', 'advanced'].includes(panel)) return fail('invalid')
+      if (!['profile', 'exceptions', 'account', 'manage', 'advanced'].includes(panel)) return fail('invalid')
       query.panel = panel
     }
     if (targetTask) query.task = targetTask

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.services.carton_quantity import rule as paper_rule, field as paper_field
 
 import json
 from datetime import datetime
@@ -31,6 +32,13 @@ PURCHASE_ORDER_TYPE_LABELS = {
 
 def _known_number(value):
     return float(value) if value is not None else "待完善"
+
+
+def _quantity_basis(line):
+    calculation = paper_rule(line)
+    if calculation and calculation.mode == "PER_CARTON":
+        return f"第{calculation.carton_line_no}项 × {calculation.per_carton_quantity.normalize()}"
+    return _known_number(paper_field(line, "usage_quantity"))
 
 
 def _issue_document_label(issue, snapshot):
@@ -124,8 +132,8 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
         sheet[cell_ref].number_format = "+#,##0.######;-#,##0.######;0" if cell_ref == "F6" else "#,##0.######"
 
     headers = [
-        "序号", "纸品类型", "纸质", "规格", "每箱个数",
-        "原订单数量" if snapshot.get("replenishment") else "变更前箱数",
+        "序号", "纸品类型", "纸质", "规格", "装箱 / 配套用量",
+        "原订单数量" if snapshot.get("replenishment") else "变更前数量",
         "本次补单" if snapshot.get("replenishment") else "本次变化",
         "原订单数量不变" if snapshot.get("replenishment") else "变更后累计", "单位", "说明",
     ]
@@ -147,7 +155,7 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
             line["packaging_type"],
             line["paper_quality"],
             f"{line['specification']} {line.get('dimension_unit', '')}".strip(),
-            _known_number(line["usage_quantity"]),
+            _quantity_basis(line),
             before_required,
             delta,
             after_required,
@@ -180,6 +188,8 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
             notice += "；供应商责任免费补货，不新增月结应付" if snapshot["replenishment"]["settlement_policy"] == "SUPPLIER_FREE" else "；我方责任，按实际验收入库数量及单价计入月结一次"
         if snapshot["replenishment"].get("reason"):
             notice += "；" + snapshot["replenishment"]["reason"]
+    elif snapshot.get("material_correction"):
+        notice = "纸品资料更正：已由双方确认，数量不变、不新增采购；请按本版资料执行后续送货。更正原因：" + snapshot["material_correction"]["reason"]
     elif issue.document_type == "INITIAL":
         notice = "供应商请按“本次变化”列执行首次采购；“变更后累计”用于核对。"
     elif issue.document_type == "REDUCE":
@@ -259,7 +269,7 @@ def build_purchase_order_issue_batch_workbook(
 
     headers = [
         "序号", "采购单号", "单据类型", "原合同订单号", "客户", "合同号", "货号", "计划交期",
-        "纸品类型", "纸质", "规格", "每箱个数", "变更前箱数", "本次箱数变化", "变更后累计", "单位", "客户 PO",
+        "纸品类型", "纸质", "规格", "装箱 / 配套用量", "变更前数量", "本次数量变化", "变更后累计", "单位", "客户 PO",
     ]
     for column, header in enumerate(headers, start=1):
         cell = sheet.cell(row=5, column=column, value=header)
@@ -288,7 +298,7 @@ def build_purchase_order_issue_batch_workbook(
                 line["packaging_type"],
                 line["paper_quality"],
                 f"{line['specification']} {line.get('dimension_unit', '')}".strip(),
-                _known_number(line["usage_quantity"]),
+                _quantity_basis(line),
                 float(line["before_required_quantity"]),
                 float(line["required_quantity_delta"]),
                 float(line["after_required_quantity"]),
@@ -408,7 +418,7 @@ def build_purchase_order_workbook(
         "#,##0" if order.product_order_quantity is not None and order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
     )
 
-    headers = ["序号", "纸品类型", "纸质", "规格", "每箱个数", "产品订单数量", "纸箱数量", "单位"]
+    headers = ["序号", "纸品类型", "纸质", "规格", "装箱 / 配套用量", "产品订单数量", "纸品数量", "单位"]
     for column, header in enumerate(headers, start=1):
         cell = sheet.cell(row=9, column=column, value=header)
         cell.font = Font(name="Microsoft YaHei", size=9, bold=True, color=white)
@@ -425,7 +435,7 @@ def build_purchase_order_workbook(
             line.packaging_type,
             line.paper_quality,
             f"{line.specification} {line.dimension_unit}".strip(),
-            _known_number(line.usage_quantity),
+            _quantity_basis(line),
             _known_number(order.product_order_quantity),
             None,
             line.unit,
@@ -441,7 +451,7 @@ def build_purchase_order_workbook(
             cell.border = Border(left=thin, right=thin, bottom=thin)
             if index % 2 == 0:
                 cell.fill = PatternFill("solid", fgColor="F8FAFC")
-        sheet.cell(row=row, column=7, value=float(line.required_quantity) if getattr(order, "quantity_basis", "CALCULATED") == "EXPLICIT" else f"=ROUNDUP(F{row}/E{row},0)")
+        sheet.cell(row=row, column=7, value=float(line.required_quantity) if (getattr(order, "quantity_basis", "CALCULATED") == "EXPLICIT" or paper_rule(line)) else f"=ROUNDUP(F{row}/E{row},0)")
         sheet.cell(row=row, column=5).number_format = (
             "#,##0" if line.usage_quantity is not None and line.usage_quantity == line.usage_quantity.to_integral_value() else "#,##0.######"
         )
@@ -591,8 +601,8 @@ def build_combined_purchase_order_workbook(
         "纸品类型",
         "纸质",
         "规格",
-        "每箱个数",
-        "纸箱数量",
+        "装箱 / 配套用量",
+        "纸品数量",
         "单位",
         "客户 PO",
     ]
@@ -629,7 +639,7 @@ def build_combined_purchase_order_workbook(
                 line.packaging_type,
                 line.paper_quality,
                 f"{line.specification} {line.dimension_unit}".strip(),
-                _known_number(line.usage_quantity),
+                _quantity_basis(line),
                 None,
                 line.unit,
                 order.customer_po,
@@ -641,7 +651,7 @@ def build_combined_purchase_order_workbook(
                 cell.border = order_border if line_index == 1 else body_border
                 if order_index % 2 == 0:
                     cell.fill = stripe_fill
-            sheet.cell(row=current_row, column=14, value=float(line.required_quantity) if getattr(order, "quantity_basis", "CALCULATED") == "EXPLICIT" else f"=ROUNDUP(I{current_row}/M{current_row},0)")
+            sheet.cell(row=current_row, column=14, value=float(line.required_quantity) if (getattr(order, "quantity_basis", "CALCULATED") == "EXPLICIT" or paper_rule(line)) else f"=ROUNDUP(I{current_row}/M{current_row},0)")
             sheet.cell(row=current_row, column=9).number_format = (
                 "#,##0" if order.product_order_quantity is not None and order.product_order_quantity == order.product_order_quantity.to_integral_value() else "#,##0.######"
             )

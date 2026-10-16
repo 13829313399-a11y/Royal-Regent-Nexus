@@ -64,7 +64,7 @@ function leave(event: FocusEvent) {
       <button v-for="row in matches" :key="row.id" type="button" :aria-label="`选择客户 ${row.customer_name}`" class="block w-full rounded-md p-2 text-left text-xs hover:bg-teal-50 focus:bg-teal-50" @click="choose(row.customer_code)">{{ row.customer_name }}<span v-if="duplicateNames.has(normalize(row.customer_name))" class="ml-2 text-[10px] text-slate-500">{{ row.customer_code }}</span></button>
       <p v-if="!matches.length" class="p-2 text-xs text-slate-500">没有匹配的启用客户。</p>
       <p v-if="existing?.status === 'INACTIVE'" class="p-2 text-xs text-amber-700">同名客户已停用，请联系有权限的人员核对启用。</p>
-      <p v-else-if="restricted" class="p-2 text-xs text-amber-700">已有此客户，但当前客户授权未包含它；请刷新授权，或联系负责人、主管核对。</p>
+      <p v-else-if="restricted" class="p-2 text-xs text-amber-700">已有此客户，但当前客户授权未包含它；获授权后重新点选客户即可更新，或联系负责人、主管核对。</p>
       <button v-if="canCreate && query.trim() && !existing" type="button" class="mt-1 block w-full rounded-md border border-teal-200 p-2 text-left text-xs text-teal-700" @click="open = false; emit('create', query.trim())">新增客户：{{ query.trim() }}</button>
       <p v-else-if="!canCreate && !matches.length && !existing" class="p-2 text-xs text-slate-500">请联系有高级维护权限的人员新增客户。</p>
     </div>

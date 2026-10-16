@@ -5,6 +5,16 @@ import type { SettlementDocument, StatementLine, SupplierSource } from '@/api/ca
 
 const shipment = (id: string, date: string, acceptance: string | null, customer = '东康客户'): PortalShipment => ({ id, delivery_note_no: id, delivery_date: date, acceptance_date: acceptance, status: 'RECEIVED', revision: 1, created_at: date, confirmed_at: '', acceptance_lines: [], lines: [{ id: id + '-line', order_line_id: 'line', order_no: 'CT-1', contract_no: 'SC-1', customer_po: 'PO-1', item_no: 'ITEM-1', customer_name: customer, child_no: '', packaging_type: '外箱', paper_quality: 'A33', specification: '1*1', unit: '个', quantity: '10' }] })
 describe('carton read-only query projections', () => {
+  it('finds a multi-batch delivery in each actual acceptance month', () => {
+    const row = { ...shipment('split', '2026-09-29', '2026-10-01'), acceptance_history: [
+      { confirmed_at: '', acceptance_date: '2026-09-30', status: 'POSTED', lines: [] },
+      { confirmed_at: '', acceptance_date: '2026-10-01', status: 'POSTED', lines: [] },
+    ] }
+    for (const month of ['2026-09', '2026-10']) {
+      expect(filterShipments([row], { ...emptyShipmentFilters(), dateField: 'ACCEPTANCE', from: month + '-01', to: month + '-31' })).toEqual([row])
+    }
+    expect(filterShipments([row], { ...emptyShipmentFilters(), dateField: 'ACCEPTANCE', from: '2026-08-01', to: '2026-08-31' })).toEqual([])
+  })
   it('uses the selected date basis inclusively and puts unrecorded dates last in both directions', () => {
     const rows = [shipment('early', '2026-09-01', '2026-10-01'), shipment('late', '2026-10-02', '2026-10-02'), shipment('undated', '2026-10-03', null)]
     const query = { ...emptyShipmentFilters(), dateField: 'ACCEPTANCE' as const, from: '2026-10-01', to: '2026-10-01' }

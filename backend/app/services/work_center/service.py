@@ -83,8 +83,8 @@ def history_visibility(db, user, e):
     quote = exists(select(Q.id).where(Q.id == e.entity_id, scoped(user, Q.factory_id, "internal_quote:read", ALL_QUOTE_DEPARTMENTS, duty=False)))
     shipment = exists(select(S.id).where(S.id == e.entity_id, and_(*(scoped(user, S.factory_id, p, ("pmc-warehouse", "carton"), duty=False)
         for p in ("carton_procurement:read", "carton_procurement:receipt_write", "carton_procurement:inventory_write")))))
-    registration = exists(select(R.id).where(R.id == e.entity_id, literal(True) if is_superadmin(user) else or_(false(), *[
-        and_(R.factory_id == f, R.department == d) for f in ALLOWED_FACTORY_IDS for d in ALLOWED_DEPARTMENTS if can(user, "system:user_manage", f, d)])))
+    from app.services.position_workbench_read import visible_registration_ids
+    registration = exists(select(R.id).where(R.id == e.entity_id, R.id.in_(visible_registration_ids(db, user))))
     from app.services.work_center.registry import reset_visibility
     reset = exists(select(P.id).where(P.id == e.entity_id, reset_visibility(db, user, history=True)))
     return or_(and_(e.module == "molding", mold), and_(e.module == "internal_quote", quote),
@@ -222,7 +222,8 @@ def dto(row, user, clock):
     relation = "assignee" if active and assigned else "candidate" if active else "recipient" if row["kind"] == "info" else "watcher"
     stage = row["stage"]
     route = {"molding": "molding_production" if stage.startswith("production") else "molding_engineering",
-             "internal_quote": "quote", "account_requests": "account_requests", "carton_supplier": "shipment", "identity": "identity",
+             "internal_quote": "quote", "account_requests": "account_requests", "carton_supplier": "shipment",
+             "identity": "identity_approval" if stage == "identity_approval" else "identity",
              "position_reviews": "my_position" if stage == "position_result" else "position_workbench"}[row["module"]]
     snoozed = row["snoozed_until"] if row["snoozed_attention_version"] == row["attention"] else None
     read_state = "read" if row["read_version"] >= row["version"] else "legacy_unknown" if row["attention"] == 0 else "unread"
@@ -243,7 +244,7 @@ def dto(row, user, clock):
             "personal": {"read_state": read_state, "snoozed_until": stamp(snoozed), "archived_at": stamp(row["archived_at"]), "pinned": bool(row["pinned_at"]), "state_version": row["state_version"], "following": row["following"]},
             "actions": [{"key": "open", "label": "刷新账户信息" if route == "identity" else row["title"] if active else "查看源单据",
                          "mode": "refresh_identity" if route == "identity" else "navigate", "enabled": True, "disabled_reason": None,
-                         "target": {"route_key": route, "params": {"id": row["entity_id"]}, "query": {"factory": row["execution"] if route == "molding_production" else row["factory"], "stage": stage, "cycle": row["cycle"]}}}]}
+                         "target": {"route_key": route, "params": {"id": row["cycle"] if route == "identity_approval" else row["entity_id"]}, "query": {"factory": row["execution"] if route == "molding_production" else row["factory"], "stage": stage, "cycle": row["cycle"]}}}]}
 
 
 def present_entries(db, rows, user, clock):

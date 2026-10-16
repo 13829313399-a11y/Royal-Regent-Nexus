@@ -2137,6 +2137,10 @@ def register_user(db: Session, payload: RegisterRequest, request: Request | None
     if existing_user is not None and existing_user.status != "rejected":
         auth_problem(409, "AUTH_REGISTRATION_CONFLICT", "账号或工号已存在，请核对现有账号或申请", field="username")
 
+    from app.services.registration_contacts import ensure_registration_contacts_available
+    ensure_registration_contacts_available(db, phone, email,
+        exclude_user_id=existing_user.id if existing_user else None)
+
     now = now_text()
     user_id = existing_user.id if existing_user is not None else f"user-{secrets.token_hex(8)}"
     salt, password_hash = make_password_hash(payload.password)

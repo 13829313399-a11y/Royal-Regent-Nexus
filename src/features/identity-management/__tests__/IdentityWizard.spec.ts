@@ -16,9 +16,10 @@ const api = vi.hoisted(() => ({
   commit: vi.fn(),
   change: vi.fn(),
   person: vi.fn(),
+  listRoles: vi.fn(),
 }))
 vi.mock('@/api/identity', async (original) => ({ ...(await original<object>()), identityApi: api }))
-vi.mock('@/api/iam', () => ({ iamApi: { listRoles: async () => [] } }))
+vi.mock('@/api/iam', () => ({ iamApi: { listRoles: api.listRoles } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'admin' }, authorizationVersion: 1, can: () => true }) }))
 enableAutoUnmount(afterEach)
 const person = {
@@ -87,9 +88,23 @@ const button = (wrapper: ReturnType<typeof mountView>, text: string) =>
   wrapper.findAll('button').find((b) => b.text() === text)!
 beforeEach(() => {
   vi.resetAllMocks()
+  api.listRoles.mockResolvedValue([])
   api.draft.mockResolvedValue(row)
   api.preview.mockResolvedValue(impact())
   api.commit.mockResolvedValue({ ...row, state: 'applied' })
+})
+it('distinguishes identically named position packages by department', async () => {
+  api.listRoles.mockResolvedValue([
+    { id: 'engineering-manager', name: '经理', is_system_position: true, position_department_name: '工程部' },
+    { id: 'warehouse-manager', name: '经理', is_system_position: true, position_department_name: '仓库' },
+    { id: 'custom-manager', name: '经理', source: 'database' },
+  ])
+  const wrapper = mountView()
+  await toForm(wrapper)
+  expect(wrapper.text()).toContain('工程部 · 经理（内置职位）')
+  expect(wrapper.text()).toContain('仓库 · 经理（内置职位）')
+  expect(wrapper.text()).toContain('经理（自定义）')
+  expect(api.draft).not.toHaveBeenCalled()
 })
 async function toForm(wrapper: ReturnType<typeof mountView>) {
   await button(wrapper, '下一步：填写资料').trigger('click')
@@ -241,4 +256,33 @@ it('keeps the real advanced drawer and RouterView locked through an uncertain re
   await router.push('/other'); expect(router.currentRoute.value.path).toBe('/other')
   expect(api.commit).toHaveBeenCalledTimes(1)
   wrapper.unmount()
+})
+
+it('retries a lost advanced commit with the same draft, preview and idempotency key', async () => {
+  api.commit.mockRejectedValueOnce(new Error('Network Error'))
+  const wrapper = mountView(); await preview(wrapper)
+  await wrapper.get('input[type="checkbox"]').setValue(true)
+  await button(wrapper, '确认办理').trigger('click'); await flushPromises()
+  const command = api.commit.mock.calls[0]
+  await button(wrapper, '使用原办理内容重试').trigger('click'); await flushPromises()
+  expect(api.commit.mock.calls[1]).toEqual(command)
+  expect(wrapper.emitted('saved')?.[0]?.[0]).toMatchObject({ state: 'applied' })
+})
+it('opens direct administrator management without creating a task and requires explicit package removal', async () => {
+  const wrapper = mount(IdentityWizard, { props: { person, catalog, purpose: 'position-permissions' }, global: { stubs: { AccessImpact: true } } })
+  await flushPromises()
+  expect(wrapper.find('form').exists()).toBe(true)
+  expect(wrapper.text()).toContain('无需员工先提交申请')
+  expect(api.draft).not.toHaveBeenCalled()
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(api.draft).not.toHaveBeenCalled()
+  expect(wrapper.text()).toContain('请添加调整后需要保留的权限包')
+  await wrapper.get('input[type="checkbox"]').setValue(true)
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(api.draft.mock.calls[0]?.[0]).toMatchObject({ request_type: 'primary_assignment_transfer', new_assignment: { role_bindings: [] } })
+})
+it('initializes historical functional organization from its formal organization', async () => {
+  const wrapper = mountView({ ...person, identity_mode: 'legacy', primary_factory_id: '', primary_org_unit_id: 'group-management' })
+  await toForm(wrapper); await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(api.draft.mock.calls[0]?.[0].new_assignment.org_unit_id).toBe('group-management')
 })

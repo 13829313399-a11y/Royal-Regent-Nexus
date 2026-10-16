@@ -115,7 +115,7 @@ def _dongkang_delivery_file(order, *, missing_item=False, destination="华兴", 
     return output.getvalue()
 
 
-@pytest.mark.parametrize("sample_purpose", [None, "", "打板", "客户打板确认"])
+@pytest.mark.parametrize("sample_purpose", [None, "", "打板", "客户打板确认", "GIFT"])
 def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatch, sample_purpose):
     from openpyxl import Workbook
     with make_client(monkeypatch) as client:
@@ -156,8 +156,10 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
                 "specification": line["specification"], "location_allocations": [{"location_id": bin_id, "quantity": quantity}],
                 "difference_reason": ""}
             if line["item_no"] == "SAMPLE-BOX":
-                data.update(no_order_decision="SAMPLE", customer_code="DICKIE",
-                    requested_by="纸箱部")
+                data.update(no_order_decision="GIFT" if sample_purpose == "GIFT" else "SAMPLE", customer_code="DICKIE",
+                    requested_by="" if sample_purpose == "GIFT" else "纸箱部")
+                if sample_purpose == "GIFT":
+                    data["unit_price"] = "0"
                 if sample_purpose is not None:
                     data["sample_purpose"] = sample_purpose
             if line["item_no"] == "WRONG-BOX":
@@ -170,9 +172,9 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
             next(item["id"] for item in shipment["lines"] if item["item_no"] == "SAMPLE-BOX") else line for line in lines])
         denied = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=unsafe)
         assert denied.status_code == 422, denied.text
-        for required_field in ("customer_code", "requested_by"):
+        for required_field in (("customer_code",) if sample_purpose == "GIFT" else ("customer_code", "requested_by")):
             incomplete = dict(payload, lines=[dict(line, **{required_field: ""})
-                if line.get("no_order_decision") == "SAMPLE" else line for line in lines])
+                if line.get("no_order_decision") in {"SAMPLE", "GIFT"} else line for line in lines])
             denied = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=incomplete)
             assert denied.status_code == 422, denied.text
         posted = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=payload)
@@ -188,7 +190,9 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
             assert len(receipt_lines) == 2
             sample_line = next(line for line in receipt_lines if line.source_type == "AD_HOC")
             assert sample_line.order_line_id is None
-            assert f"用途：{sample_purpose or '未填写'}；需求人：纸箱部" in sample_line.feedback_note
+            assert f"用途：{sample_purpose or '未填写'}；需求人：" in sample_line.feedback_note
+            if sample_purpose == "GIFT":
+                assert "免费赠送" in sample_line.feedback_note and sample_line.unit_price == 0
             movements = db.scalars(select(CartonInventoryMovement).where(CartonInventoryMovement.source_id == posted.json()["receipt_id"])).all()
             assert len(movements) == 2
             receipt = db.get(CartonReceipt, posted.json()["receipt_id"])
@@ -673,12 +677,15 @@ def test_partial_receipt_atomicity_replay_and_remaining(monkeypatch):
         receive=receive_payload(client,shipment)
         excess=json.loads(json.dumps(receive));excess["lines"][0]["received_quantity"]=11
         assert client.post(BASE+f"/internal/shipments/{shipment['id']}/receive",json=excess).status_code == 422
-        invalid=json.loads(json.dumps(receive));invalid["lines"][-1]["unit_price"]=0
+        invalid=json.loads(json.dumps(receive));invalid["lines"][-1]["unit_price"]=-1
         denied=client.post(BASE+f"/internal/shipments/{shipment['id']}/receive",json=invalid)
         assert denied.status_code == 422,denied.text
         assert client.get("/api/carton-procurement/receipts",params={"factory_id":"huaxing"}).json()["total"] == 0
+        receive["lines"][-1]["unit_price"]=0  # An unspecified zero is pending price, not invalid or free.
         received=client.post(BASE+f"/internal/shipments/{shipment['id']}/receive",json=receive)
         assert received.status_code == 200,received.text
+        receipt=client.get("/api/carton-procurement/receipts",params={"factory_id":"huaxing"}).json()["items"][0]
+        assert receipt["lines"][-1]["zero_price_kind"] == "PENDING"
         replay=client.post(BASE+f"/internal/shipments/{shipment['id']}/receive",json=receive)
         assert replay.status_code == 200 and replay.json()["receipt_id"] == received.json()["receipt_id"]
         receive["request_id"]=str(uuid4())

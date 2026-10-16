@@ -1,3 +1,4 @@
+import { standardPaperTypes, paperQualities } from '@/features/carton-procurement/paperCatalog'
 import { mount } from '@vue/test-utils'
 import { expect, it } from 'vitest'
 import Picker from '../CartonPaperPicker.vue'
@@ -65,7 +66,7 @@ it('combines only active factory-wide options and historical configurations', ()
     { kind: 'CONFIG', status: 'ACTIVE', data: { lines: [{ packaging_type: '外箱' }] } },
     { kind: 'CONFIG', status: 'INACTIVE', data: { lines: [{ packaging_type: '停用纸品' }] } },
   ] as MasterRecord[]
-  expect(masterPaperOptions(records, 'packaging_type')).toEqual(['底卡', '外箱'])
+  expect(masterPaperOptions(records, 'packaging_type')).toEqual([...standardPaperTypes.map(row => row.name), '底卡', '外箱'])
 })
 
 it('includes saved pending values and keeps removed history out of suggestions', () => {
@@ -73,10 +74,10 @@ it('includes saved pending values and keeps removed history out of suggestions',
     { kind: 'RULE', customer_code: '', status: 'ACTIVE', data: { paper_qualities: ['A35'], hidden_paper_qualities: ['A33'] } },
     { kind: 'CONFIG', status: 'ACTIVE', data: { lines: [{ paper_quality: 'A33' }] } },
   ] as MasterRecord[]
-  expect(masterPaperOptions(records, 'paper_quality', { paper_quality: ['A33', 'B3B'] })).toEqual(['A35', 'B3B'])
+  expect(masterPaperOptions(records, 'paper_quality', { paper_quality: ['A33', 'B3B'] })).toEqual([...paperQualities.map(row => row.name), 'A35'])
 })
 
 it('keeps independently maintained paper options effective when the shared date rule is inactive', () => {
   const records = [{ kind: 'RULE', customer_code: '', status: 'INACTIVE', data: { paper_types: ['底卡'], hidden_paper_types: ['外箱'] } }] as MasterRecord[]
-  expect(masterPaperOptions(records, 'packaging_type', { packaging_type: ['外箱'] })).toEqual(['底卡'])
+  expect(masterPaperOptions(records, 'packaging_type', { packaging_type: ['外箱'] })).toEqual([...standardPaperTypes.map(row => row.name), '底卡'])
 })

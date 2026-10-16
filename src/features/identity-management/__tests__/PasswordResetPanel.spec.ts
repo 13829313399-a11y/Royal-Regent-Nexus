@@ -49,3 +49,22 @@ it('has no review buttons when server write capabilities are disabled', async ()
   expect(wrapper.text()).not.toContain('核验并开放找回窗口')
   expect(api.approvePasswordResetRequest).not.toHaveBeenCalled()
 })
+
+it('retries the original verified intent and issue counter after a lost request', async () => {
+  const { wrapper, router } = await setup(); await submit(wrapper)
+  expect(wrapper.get('textarea').attributes('maxlength')).toBe('1000')
+  const initial = api.approvePasswordResetRequest.mock.calls[0]
+  expect(initial?.[1]).toMatchObject({ expected_issue_count: 0, identity_verified: true })
+  api.approvePasswordResetRequest.mockResolvedValue({ request: { ...request, status: 'approved', issue_count: 1 } })
+  await button(wrapper, '使用原处理内容重试').trigger('click'); await flushPromises()
+  expect(api.approvePasswordResetRequest.mock.calls[1]).toEqual(initial)
+  expect(wrapper.text()).toContain('找回窗口已开放')
+  await router.push('/other'); expect(router.currentRoute.value.path).toBe('/other')
+})
+it('reads back a completed approval before retrying and never opens another window', async () => {
+  const { wrapper } = await setup(); await submit(wrapper)
+  api.passwordReset.mockResolvedValue({ ...request, status: 'approved', issue_count: 1, available_actions: [] })
+  await button(wrapper, '使用原处理内容重试').trigger('click'); await flushPromises()
+  expect(api.approvePasswordResetRequest).toHaveBeenCalledTimes(1)
+  expect(wrapper.text()).toContain('已读取最新处理结果')
+})

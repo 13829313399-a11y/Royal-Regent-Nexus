@@ -1,3 +1,5 @@
+from app.schemas.carton_order_groups import OrderGroupCreate
+from app.schemas.carton_contract_merge import ContractMerge
 from typing import Literal
 from datetime import date, datetime
 from decimal import Decimal
@@ -8,7 +10,7 @@ from types import SimpleNamespace
 from contextlib import contextmanager
 from urllib.parse import quote as url_quote
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -26,6 +28,7 @@ from app.services.carton_stocktake import create_stocktake, stocktake_detail, li
 from app.services.carton_procurement import audit_query_options
 from app.schemas.carton_procurement import (
     CartonAuditEventListOut,
+    CartonAuditEventOut,
     CartonClosingGenerateRequest,
     CartonClosingOut,
     CartonClosingStatusRequest,
@@ -449,6 +452,26 @@ def get_order_history_item_suggestions(
     )
 
 
+@router.post("/order-groups/convert", response_model=list[CartonOrderOut], status_code=201)
+def convert_order_group(payload: OrderGroupCreate, request: Request, db: Session = Depends(get_db),
+                        current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_order_groups import create
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return create(db, payload, current_user,
+        refresh_user=lambda: get_current_user(request=request, db=db),
+        authorize=lambda user: _ensure_permission(db, user, "carton_procurement:order_write", payload.factory_id))
+
+
+@router.post("/orders/merge-contract", response_model=list[CartonOrderOut])
+def merge_order_contract(payload: ContractMerge, request: Request, db: Session = Depends(get_db),
+                         current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_contract_merge import merge
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return merge(db, payload, current_user,
+        refresh_user=lambda: get_current_user(request=request, db=db),
+        authorize=lambda user: _ensure_permission(db, user, "carton_procurement:order_write", payload.factory_id))
+
+
 @router.post("/orders", response_model=CartonOrderOut, status_code=201)
 def post_order(
     payload: CartonOrderCreate,
@@ -865,6 +888,39 @@ def get_receipts(
     )
 
 
+@router.get("/receipt-history")
+def get_receipt_history(factory_id: str, responsibility_scope: Literal["OWN", "ALL"] = "OWN",
+    customer_code: str = Query(default="", max_length=64), search: str = Query(default="", max_length=128),
+    status_filter: Literal["", "PENDING_CONFIRMATION", "POSTED", "REVERSED"] = "",
+    date_field: Literal["ACCEPTANCE", "DELIVERY"] = "ACCEPTANCE", date_from: str = "", date_to: str = "",
+    sort: Literal["ASC", "DESC"] = "DESC", limit: int = Query(default=25, ge=1, le=100), offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_procurement import _receipt_lines
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    total, rows = list_receipts(db, factory_id, user=current_user if responsibility_scope == "OWN" else None,
+        customer_code=customer_code.strip(), search=search.strip(), status_filter=status_filter, date_field=date_field,
+        date_from=date_from, date_to=date_to, sort=sort, limit=limit, offset=offset)
+    items = []
+    for row in rows:
+        lines = _receipt_lines(db, row.id)
+        items.append(dict(id=row.id, receipt_no=row.receipt_no, delivery_note_no=row.delivery_note_no,
+            delivery_date=row.delivery_date, acceptance_date=row.acceptance_date, status=row.status,
+            confirmed_at=row.confirmed_at, operator=row.confirmed_by_name or row.created_by_name,
+            line_count=len(lines), customers="、".join(dict.fromkeys(line.customer_name for line in lines))[:160],
+            contracts="、".join(dict.fromkeys(line.contract_no for line in lines if line.contract_no))[:160]))
+    return dict(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/receipts/{receipt_id}", response_model=CartonReceiptOut)
+def get_receipt_detail(receipt_id: str, factory_id: str, responsibility_scope: Literal["OWN", "ALL"] = "OWN",
+    db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    _, rows = list_receipts(db, factory_id, receipt_id=receipt_id, user=current_user if responsibility_scope == "OWN" else None)
+    if not rows:
+        raise HTTPException(404, "收料单不存在或不在当前客户范围")
+    return receipt_out(db, rows[0])
+
+
 @router.post("/receipts", response_model=CartonReceiptOut, status_code=201)
 def post_receipt(
     payload: CartonReceiptCreate,
@@ -1073,6 +1129,9 @@ def remove_unmatched_receipt_import(
 def get_imports(
     factory_id: str,
     import_type: str = Query(default="", max_length=32),
+    summary_only: bool = False,
+    search: str = Query(default="", max_length=128),
+    customer_code: str = Query(default="", max_length=64),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -1083,6 +1142,9 @@ def get_imports(
         db,
         factory_id,
         import_type=import_type.strip(),
+        summary_only=summary_only,
+        search=search.strip(),
+        customer_code=customer_code.strip(),
         limit=limit,
         offset=offset,
     )
@@ -1426,6 +1488,7 @@ def get_audit_events(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     sort: Literal["ASC", "DESC"] = "DESC",
+    summary_only: bool = False,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1441,6 +1504,7 @@ def get_audit_events(
         limit=limit,
         offset=offset,
         sort=sort,
+        summary_only=summary_only,
     )
     return CartonAuditEventListOut(
         factory_id=factory_id,
@@ -1450,6 +1514,13 @@ def get_audit_events(
         items=items,
         **audit_query_options(db, factory_id),
     )
+
+
+@router.get("/audit-events/{event_id}", response_model=CartonAuditEventOut)
+def get_audit_detail(event_id: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_procurement import get_audit_event
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return get_audit_event(db, factory_id, event_id)
 
 
 @router.get("/closings", response_model=list[CartonClosingOut])
@@ -1619,3 +1690,19 @@ def rename_carton_warehouse(payload: WarehouseRename, db: Session = Depends(get_
 def delete_carton_warehouse(payload: WarehouseDelete, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     payload.factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
     return master_service.delete_warehouse(db, current_user, payload)
+
+
+from app.schemas.carton_material_correction import MaterialCorrectionCreate, MaterialCorrectionAction
+from app.services import carton_material_correction as material_corrections
+
+@router.get("/orders/{order_no}/material-corrections")
+def material_correction_context(order_no: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return material_corrections.context(db, current_user, factory_id, order_no)
+
+@router.post("/orders/{order_no}/material-corrections", status_code=201)
+def request_material_correction(order_no: str, payload: MaterialCorrectionCreate, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return material_corrections.create(db, current_user, order_no, payload)
+
+@router.post("/material-corrections/{identifier}/actions")
+def withdraw_material_correction(identifier: str, payload: MaterialCorrectionAction, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return material_corrections.act(db, current_user, identifier, payload)

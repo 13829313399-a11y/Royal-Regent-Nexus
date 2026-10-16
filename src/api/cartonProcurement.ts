@@ -1,3 +1,5 @@
+import type { PaperQuantityRule } from '@/features/carton-procurement/paperQuantity'
+import type { MaterialCorrection } from './cartonMaterialCorrection'
 import { http } from '@/lib/http'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
 import type { SplitRecord } from './cartonOrderSplits'
@@ -34,6 +36,7 @@ export interface CartonCustomerSaveRequest {
 
 export interface CartonReplenishmentOption { replenishment_issue_id: string; document_no: string; responsibility: 'OWN' | 'SUPPLIER'; remaining_quantity: string }
 export interface CartonOrderLineResponse {
+  material_correction_id?: string
   net_weight_kg?: string | null
   gross_weight_kg?: string | null
   replenishment_review_required?: boolean
@@ -45,6 +48,7 @@ export interface CartonOrderLineResponse {
   paper_quality: string
   specification: string
   dimension_unit: string
+  quantity_rule?: PaperQuantityRule | null
   usage_quantity: string | null
   required_quantity: string
   received_quantity: string
@@ -79,6 +83,7 @@ export interface CartonPurchaseOrderBatchResponse {
 export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records'>
 
 export interface CartonOrderResponse {
+  material_corrections?: MaterialCorrection[]
   net_weight_kg?: string | null
   gross_weight_kg?: string | null
   purchase_order_batch?: CartonPurchaseOrderBatchResponse | null
@@ -182,6 +187,7 @@ export interface CartonOrderCreateRequest {
     paper_quality: string
     specification: string
     dimension_unit: string
+    quantity_rule?: PaperQuantityRule | null
     usage_quantity: number | null
     required_quantity?: number
     unit: string
@@ -229,6 +235,7 @@ export interface CartonOrderHistorySuggestionResponse {
     paper_quality: string
     specification: string
     dimension_unit: string
+    quantity_rule?: PaperQuantityRule | null
     usage_quantity: string | null
     unit: string
     unit_price: string
@@ -365,6 +372,7 @@ export interface CartonInventoryFlowSummaryResponse {
 }
 
 export interface CartonAuditEventResponse {
+  detail_loaded?: boolean
   sequence: number
   id: string
   factory_id: string
@@ -420,6 +428,7 @@ export interface CartonClosingResponse {
 }
 
 export interface CartonImportBatchResponse {
+  detail_loaded?: boolean
   id: string
   factory_id: string
   import_type: 'DELIVERY_NOTE' | 'WEEKLY_SCHEDULE' | 'INSPECTION_SCHEDULE'
@@ -560,6 +569,7 @@ export interface CartonReceiptResponse {
     unusable_quantity: string
     effective_quantity: string
     unit: string
+    zero_price_kind?: 'FREE' | 'PENDING' | null
     unit_price: string
     currency: string
     location: string
@@ -794,7 +804,7 @@ export const cartonProcurementApi = {
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/append`,
       {
         factory_id: factoryId,
-        expected_revision: order.revision,
+        expected_revision: order.revision, issue_to_supplier: order.status !== 'CONFIRMED',
         additional_quantity: additionalQuantity,
         ...(lineQuantities ? { line_quantities: lineQuantities } : {}),
         reason,
@@ -807,7 +817,7 @@ export const cartonProcurementApi = {
   async adjustOrderDates(factoryId: string, order: CartonOrderResponse, reason: string, customerDueDate?: string, dueDate?: string) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/dates`,
-      { factory_id: factoryId, expected_revision: order.revision, reason,
+      { factory_id: factoryId, expected_revision: order.revision, issue_to_supplier: order.status !== 'CONFIRMED', reason,
         ...(customerDueDate ? { customer_due_date: customerDueDate } : {}),
         ...(dueDate ? { due_date: dueDate } : {}) },
     )
@@ -824,7 +834,7 @@ export const cartonProcurementApi = {
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/reduce`,
       {
         factory_id: factoryId,
-        expected_revision: order.revision,
+        expected_revision: order.revision, issue_to_supplier: order.status !== 'CONFIRMED',
         reduction_quantity: reductionQuantity,
         ...(lineQuantities ? { line_quantities: lineQuantities } : {}),
         reason,
@@ -996,6 +1006,7 @@ export const cartonProcurementApi = {
     reason: string
     items: Array<{
       workshop_id?: string
+      material_correction_id?: string
       order_line_id: string | null
       reference_movement_id: string | null
       quantity: number
@@ -1093,8 +1104,25 @@ export const cartonProcurementApi = {
     })
     return response.data.items
   },
+  async listImportsPage(factoryId: string, importType: CartonImportBatchResponse['import_type'], offset = 0, search = '', customer = '全部客户') {
+    return (await http.get<{ items: CartonImportBatchResponse[]; total: number }>('/carton-procurement/imports', {
+      params: { factory_id: factoryId, import_type: importType, summary_only: true, limit: 8, offset, search, customer_code: customer === '全部客户' ? '' : customer },
+    })).data
+  },
+  async importDetail(factoryId: string, batchId: string) {
+    return (await http.get<CartonImportBatchResponse>(`/carton-procurement/imports/${encodeURIComponent(batchId)}`, { params: { factory_id: factoryId } })).data
+  },
+  async auditDetail(factoryId: string, eventId: string) {
+    return (await http.get<CartonAuditEventResponse>(`/carton-procurement/audit-events/${encodeURIComponent(eventId)}`, { params: { factory_id: factoryId } })).data
+  },
   async uploadInspectionSchedule(factoryId: string, file: File, advanceDays: number) {
     return importFile(factoryId, file, 'INSPECTION_SCHEDULE', '', advanceDays)
+  },
+  async receiptHistory(factoryId: string, filters: Record<string, string | number> = {}) {
+    return (await http.get<{ items: CartonReceiptSummary[]; total: number }>('/carton-procurement/receipt-history', { params: { factory_id: factoryId, ...filters } })).data
+  },
+  async receiptDetail(factoryId: string, receiptId: string, responsibilityScope: 'OWN' | 'ALL' = 'OWN') {
+    return (await http.get<CartonReceiptResponse>(`/carton-procurement/receipts/${encodeURIComponent(receiptId)}`, { params: { factory_id: factoryId, responsibility_scope: responsibilityScope } })).data
   },
   async listReceipts(factoryId: string, responsibilityScope: 'OWN' | 'ALL' = 'OWN') {
     const items: CartonReceiptResponse[] = []
@@ -1124,6 +1152,7 @@ export const cartonProcurementApi = {
     lines: Array<{
       source_type: 'FORMAL_ORDER' | 'AD_HOC'
       replenishment_issue_id?: string | null
+      material_correction_id?: string
       order_line_id: string | null
       customer_code: string
       contract_no: string
@@ -1138,6 +1167,7 @@ export const cartonProcurementApi = {
       damaged_quantity: number
       rejected_quantity: number
       unusable_quantity: number
+      zero_price_kind?: 'FREE' | 'PENDING'
       unit_price?: number
       location: string
       location_allocations?: Array<{ location_id: string; quantity: string | number; label?: string }>
@@ -1207,7 +1237,7 @@ export const cartonProcurementApi = {
     return response.data
   },
   async listAuditEventsPage(factoryId: string, filters: Record<string, string | number> = {}) {
-    return (await http.get<{ items: CartonAuditEventResponse[]; total: number; limit: number; offset: number; event_types: Record<string, string>; actors: { id: string; name: string }[] }>('/carton-procurement/audit-events', { params: { factory_id: factoryId, limit: 50, ...filters } })).data
+    return (await http.get<{ items: CartonAuditEventResponse[]; total: number; limit: number; offset: number; event_types: Record<string, string>; actors: { id: string; name: string }[] }>('/carton-procurement/audit-events', { params: { factory_id: factoryId, limit: 50, ...filters, summary_only: true } })).data
   },
   async listAuditEvents(factoryId: string, filters: {
     search?: string
@@ -1231,6 +1261,11 @@ export const cartonProcurementApi = {
   },
 }
 
+export interface CartonReceiptSummary {
+  id: string; receipt_no: string; delivery_note_no: string; delivery_date: string; acceptance_date: string | null
+  status: CartonReceiptResponse['status']; confirmed_at: string | null; operator: string; line_count: number; customers: string; contracts: string
+}
+
 export interface CartonHistoryOrderPreview {
   supplier_id?: string; supplier_name?: string;
   factory_id: string; original_filename: string; source_fingerprint: string;
@@ -1241,5 +1276,6 @@ export interface CartonHistoryOrderPreview {
     status: string; quantity_basis: string; duplicate: boolean; ready: boolean; warnings: string[];
     lines: Array<{ packaging_type: string; paper_quality: string; specification: string; dimension_unit: string;
       net_weight_kg?: string | null; gross_weight_kg?: string | null;
+      quantity_rule?: PaperQuantityRule | null;
       usage_quantity: string | null; required_quantity: string; unit: string; unit_price: string; currency: string; note: string }> }>
 }

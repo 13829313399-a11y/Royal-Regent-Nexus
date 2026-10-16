@@ -77,6 +77,18 @@ describe('getApiErrorMessage', () => {
     } })).toBe('订单已完成，不能再次确认')
   })
 
+  it('distinguishes safe read failures from uncertain writes', () => {
+    for (const code of ['ECONNABORTED', 'ETIMEDOUT']) {
+      expect(getApiErrorMessage({ isAxiosError: true, code, config: { method: 'get' } })).toBe('读取超时，请稍后重试')
+      expect(getApiErrorMessage({ isAxiosError: true, code, config: { method: 'post' } })).toContain('未能确认操作结果')
+    }
+    for (const status of [408, 500, 502, 504]) {
+      const result = getApiErrorMessage({ isAxiosError: true, config: { method: 'GET' }, response: { status } })
+      expect(result).toContain('读取')
+      expect(result).not.toContain('核对操作结果')
+    }
+  })
+
   it('reads JSON reasons returned as a failed workbook download', async () => {
     vi.stubGlobal('Blob', NodeBlob)
     const body = new NodeBlob([JSON.stringify({ detail: { message: '采购单已撤销，不能导出' } })], { type: 'application/json' })

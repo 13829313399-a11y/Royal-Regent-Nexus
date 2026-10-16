@@ -59,7 +59,7 @@ export function usePositionReview(onSaved: (result: ReviewResult) => void) {
       scope.value = { kind: 'home', factory_ids: [] }
       draft.value = { expected_source_revision: data.source_revision, decision: data.can_keep_permissions ? 'keep_permissions' : 'apply_package',
         confirmed_profile: { org_unit_id: data.declaration.org_unit_id, department_code: data.declaration.department_code, position: data.declaration.position },
-        independent_allow_decisions: [], registration_details_correction: data.registration_details }
+        independent_allow_decisions: [], registration_details_correction: data.registration_details ? { ...data.registration_details } : null }
       state.value = 'editing'
       await loadPackages()
       if (disposed || current !== generation || viewer !== identity.value) return

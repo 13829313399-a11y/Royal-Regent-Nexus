@@ -19,7 +19,7 @@ def reconcile(db, *, apply=False, batch_size=200):
                          "molding_total": db.scalar(select(func.count()).select_from(MoldingSampleNotification)),
                          "orphaned_molding": db.scalar(select(func.count()).select_from(MoldingSampleNotification).outerjoin(MoldingSampleOrder, MoldingSampleOrder.id == MoldingSampleNotification.order_id).where(MoldingSampleOrder.id.is_(None))),
                          "invalid_system_payload": 0, "unsupported_system_type": 0}, "personal_states_changed": 0}
-    supported = {"user_registration", "password_reset", "internal_quote", "carton_supplier_shipment", "identity_changed"}
+    supported = {"user_registration", "password_reset", "internal_quote", "carton_supplier_shipment", "identity_changed", "identity_change_submitted"}
     for item in db.execute(select(SystemNotification.type, SystemNotification.payload_json).execution_options(yield_per=batch_size)):
         try: json.loads(item.payload_json or "{}")
         except (ValueError, TypeError): report["legacy"]["invalid_system_payload"] += 1
@@ -37,7 +37,7 @@ def reconcile(db, *, apply=False, batch_size=200):
     report["legacy"]["read_evidence_policy"] = "Original shared status/read_at remains in source tables; never copied into personal read history."
     for module, model in sources:
         query = select(model.id).order_by(model.id)
-        if module == "identity": query = query.where(model.type == "identity_changed")
+        if module == "identity": query = query.where(model.type.in_(("identity_changed", "identity_change_submitted")))
         report["sources"][model.__tablename__] = db.scalar(select(func.count()).select_from(query.subquery()))
         if not apply: continue
         last = None

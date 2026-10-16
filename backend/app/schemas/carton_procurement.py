@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.schemas.carton_weights import CartonPackingWeights
+from app.schemas.carton_quantity import PaperQuantityRule
 
 
 CartonOrderStatus = Literal[
@@ -159,6 +160,7 @@ class CartonCustomerListOut(BaseModel):
 
 
 class CartonOrderLineCreate(CartonPackingWeights):
+    quantity_rule: PaperQuantityRule | None = None
     packaging_type: str = Field(min_length=1, max_length=64)
     paper_quality: str = Field(default="", max_length=128)
     specification: str = Field(default="", max_length=255)
@@ -365,6 +367,7 @@ class CartonOrderSubmitRequest(BaseModel):
 
 
 class CartonOrderDatesRequest(BaseModel):
+    issue_to_supplier: bool = False
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
@@ -390,6 +393,7 @@ class CartonOrderLineTarget(BaseModel):
 
 
 class CartonOrderAppendRequest(BaseModel):
+    issue_to_supplier: bool = False
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
     additional_quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=6)
@@ -415,6 +419,7 @@ class CartonOrderAppendRequest(BaseModel):
 
 
 class CartonOrderReduceRequest(BaseModel):
+    issue_to_supplier: bool = False
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
     reduction_quantity: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=6)
@@ -517,6 +522,7 @@ class CartonOrderSelectionRequest(BaseModel):
 
 
 class CartonOrderLineOut(CartonPackingWeights):
+    material_correction_id: str = ""
     replenishment_review_required: bool = False
     replenishment_options: list[dict] = Field(default_factory=list)
     replenished_quantity: Decimal = Decimal(0)
@@ -529,6 +535,7 @@ class CartonOrderLineOut(CartonPackingWeights):
     specification: str
     dimension_unit: str
     usage_quantity: Decimal | None
+    quantity_rule: PaperQuantityRule | None = None
     required_quantity: Decimal
     received_quantity: Decimal
     remaining_quantity: Decimal
@@ -542,12 +549,13 @@ class CartonOrderLineOut(CartonPackingWeights):
 
 
 class CartonOrderHistoryLineOut(CartonPackingWeights):
+    quantity_rule: PaperQuantityRule | None = None
     line_no: int
     packaging_type: str
     paper_quality: str
     specification: str
     dimension_unit: str
-    usage_quantity: Decimal
+    usage_quantity: Decimal | None
     unit: str
     unit_price: Decimal
     currency: str
@@ -604,6 +612,7 @@ class CartonPurchaseOrderBatchOut(BaseModel):
 
 
 class CartonOrderOut(BaseModel):
+    material_corrections: list[dict] = Field(default_factory=list)
     net_weight_kg: Decimal | None = None
     gross_weight_kg: Decimal | None = None
     purchase_order_batch: CartonPurchaseOrderBatchOut | None = None
@@ -743,6 +752,8 @@ class CartonLocationAllocation(BaseModel):
 
 
 class CartonReceiptLineCreate(BaseModel):
+    zero_price_kind: Literal["FREE", "PENDING"] | None = None
+    material_correction_id: str = Field(default="", max_length=96)
     replenishment_issue_id: str | None = Field(default=None, min_length=1, max_length=96)
     location_allocations: list[CartonLocationAllocation] = Field(default_factory=list, max_length=100)
     source_type: CartonReceiptLineSourceType = "FORMAL_ORDER"
@@ -788,6 +799,8 @@ class CartonReceiptLineCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_effective_quantity(self):
+        if self.zero_price_kind and self.unit_price != 0:
+            raise ValueError("免费赠送或暂未定价须明确填写零单价")
         unusable = self.damaged_quantity + self.rejected_quantity + self.unusable_quantity
         if unusable > self.received_quantity:
             raise ValueError("破损、拒收和其他不可用数量之和不能大于实收数量")
@@ -856,6 +869,7 @@ class CartonReceiptCreate(BaseModel):
 
 
 class CartonReceiptLineOut(BaseModel):
+    zero_price_kind: Literal["FREE", "PENDING"] | None = None
     replenishment_issue_id: str | None = None
     document_no: str | None = None
     responsibility: str | None = None
@@ -1267,6 +1281,7 @@ class CartonImportBatchOut(BaseModel):
     created_at: str
     parse_summary: dict[str, object] = Field(default_factory=dict)
     duplicate: bool = False
+    detail_loaded: bool = True
 
 
 class CartonImportBatchListOut(BaseModel):
@@ -1366,6 +1381,7 @@ class CartonAuditEventOut(BaseModel):
     entity_type: str
     entity_id: str
     detail: dict[str, object]
+    detail_loaded: bool = True
     actor_user_id: str
     actor_name: str
     created_at: str

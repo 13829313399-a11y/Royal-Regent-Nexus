@@ -28,8 +28,8 @@ def matching_receipts(db, factory, supplier, papers, *, note_no="", reversed_ids
         return []
     replacement = receipt_links(db, factory)
     ambiguous = legacy_review_lines(db, factory, list(ids))
-    linked = set(db.scalars(select(SupplierShipment.receipt_id).where(
-        SupplierShipment.factory_id == factory, SupplierShipment.receipt_id.is_not(None))))
+    from app.services.carton_shipment_receiving import linked_receipt_ids
+    linked = linked_receipt_ids(db, factory)
     receipts = db.scalars(select(CartonReceipt).where(CartonReceipt.factory_id == factory,
         CartonReceipt.supplier_id == supplier, CartonReceipt.status.in_(["POSTED", "REVERSED"] if reversed_ids else ["POSTED"]),
         CartonReceipt.id.in_(select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory,
@@ -122,6 +122,7 @@ def shipment_papers(db, shipment):
 
 def options(db, user, factory, shipment_id):
     from app.services import carton_supplier_portal as portal
+    from app.services.carton_shipment_receiving import owner
     portal.internal_permission(user, factory, "carton_procurement:read", "carton_procurement:receipt_write", "carton_procurement:inventory_write")
     portal._lock_receipt_factory(db, factory)
     shipment = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == factory, SupplierShipment.id == shipment_id))
@@ -130,8 +131,7 @@ def options(db, user, factory, shipment_id):
     if shipment.status != "SENT" or shipment.receipt_id:
         return []
     return [{"id": receipt.id, "revision": receipt.revision, "receipt_no": receipt.receipt_no,
-        "already_linked": bool(db.scalar(select(SupplierShipment.id).where(SupplierShipment.factory_id == factory,
-            SupplierShipment.receipt_id == receipt.id).limit(1))),
+        "already_linked": owner(db, factory, receipt.id) is not None,
         "status": receipt.status,
         "delivery_note_no": receipt.delivery_note_no, "delivery_date": receipt.delivery_date,
         "acceptance_date": acceptance_day(receipt),

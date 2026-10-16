@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { standardPaperTypes, paperQualities } from '@/features/carton-procurement/paperCatalog'
 import { computed, ref } from 'vue'
 import { masterPaperOptions, masterDueRules, type MasterRecord, type MasterWorkspace, type NumberRule } from '@/api/cartonMaster'
 import type { CartonCustomerResponse } from '@/api/cartonProcurement'
@@ -70,7 +71,9 @@ const modeText = (rule: NumberRule) => rule.mode === 'OFF' ? '' : rule.mode === 
     </article>
 
     <article class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="纸品选项设置">
-      <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-bold">纸品选项</h3><p class="mt-1 text-xs text-slate-500">落单时可选或输入相似内容；保存订单后自动积累；可在此添加、修改选项。</p></div><div v-if="workspace.can_manage" class="flex flex-wrap gap-2"><button type="button" class="rounded-lg border px-3 py-2 text-xs" @click="emit('paperTemplate')">下载纸品选项模板</button><button type="button" class="rounded-lg border px-3 py-2 text-xs" @click="emit('paperImport')">导入纸品选项</button><button type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-xs text-teal-700" @click="emit('paper')">添加 / 修改纸品选项</button></div></div>
+      <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-bold">纸品选项</h3><p class="mt-1 text-xs text-slate-500">普通箱、半翼箱、平卡、刀卡、压线卡、啤卡为固定标准类型，不可修改或删除。可另外新增自定义类型；历史名称保留。</p></div><div v-if="workspace.can_manage" class="flex flex-wrap gap-2"><button type="button" class="rounded-lg border px-3 py-2 text-xs" @click="emit('paperTemplate')">下载纸品选项模板</button><button type="button" class="rounded-lg border px-3 py-2 text-xs" @click="emit('paperImport')">导入纸品选项</button><button type="button" class="rounded-lg border border-teal-200 px-3 py-2 text-xs text-teal-700" @click="emit('paper')">添加 / 修改纸品选项</button></div></div>
+      <p class="mt-2 text-xs text-slate-500">{{ standardPaperTypes.map(row => `${row.code} ${row.name}`).join(' · ') }}</p>
+      <details class="mt-3 text-xs"><summary class="cursor-pointer font-semibold">标准材质与坑别（{{ paperQualities.length }} 种）</summary><div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4"><span v-for="row in paperQualities" :key="row.name">{{ row.name }} · {{ row.flute }}</span></div></details>
       <div class="mt-3 grid gap-3 sm:grid-cols-3"><div v-for="field in (['packaging_type', 'paper_quality', 'specification'] as const)" :key="field" class="rounded-lg bg-slate-50 p-3 text-xs"><b>{{ { packaging_type: '纸品类型', paper_quality: '纸质', specification: '规格' }[field] }}</b><p class="mt-2 max-h-24 overflow-auto break-words leading-6 text-slate-600">{{ masterPaperOptions(workspace.records, field, workspace.paper_history).join('、') || '暂无选项，可添加或保存订单后自动积累。' }}</p></div></div>
     </article>
 
