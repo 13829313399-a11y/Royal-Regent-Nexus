@@ -10,6 +10,7 @@ import { closingApi, type ClosingPreview } from './closingApi'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
 import type { CuttingWorkspace } from './navigation'
 import CuttingClosingReport from './CuttingClosingReport.vue'
+import CuttingPeriodClosing from './CuttingPeriodClosing.vue'
 import { useCuttingLocation } from './location'
 
 defineProps<{workspace:CuttingWorkspace}>()
@@ -55,8 +56,9 @@ onMounted(()=>void load(1,true))
 
 <template>
   <section class="cutting-page cutting-master">
-    <PageHeader :title="workspace.title" description="按自然月核对生产、外发验收、领退料及实际耗用，追溯补录与更正。"><template #actions><StatusPill label="月结前核对 · P4a" /></template></PageHeader>
-    <p class="cutting-notice">本批提供实时核对预览，尚未冻结或锁月。外发加工费、应付及付款核销继续分批实施。</p>
+    <PageHeader :title="workspace.title" description="按自然月核对生产、外发验收、领退料及实际耗用，追溯补录与更正。"><template #actions><StatusPill label="内部月结与锁月 · P4b" /></template></PageHeader>
+    <p class="cutting-notice">下方订单预览提供实时核对，尚未冻结或锁月；正式冻结记录请在内部月结区查看。外发加工费、应付及付款核销继续分批实施。</p>
+    <CuttingPeriodClosing :access="access" :access-loading="loading" />
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p>
     <Button v-if="error" variant="outline" :disabled="loading" @click="load(1)">重新读取月结工作区</Button>
     <p v-if="loading" role="status">正在读取月度核对…</p>

@@ -11,7 +11,7 @@ const filters = { all: '全部关联历史', opening: '期初形成依据', peri
 const actions: Record<string, string> = { save: '保存草稿', post: '提交生效', void: '作废', review: '抽查', discard: '放弃草稿' }
 const warehouseLabels: Record<string, string> = { REQUEST: '领料申请', ISSUE: '仓库实发', CUTTING_RECEIPT: '裁床签收', CUTTING_RECEIPT_VOID: '撤销签收', RETURN: '余料退仓', CORRECTION: '仓库冲销', REQUEST_CLOSE: '申请关闭', CUTTING_REQUEST_REUSE: '计划续用' }
 function matches(scope?: TraceScope) { return filter.value === 'all' || !!(filter.value === 'opening' ? scope?.earlier_history : scope?.period_history) }
-function scopeLabel(scope?: TraceScope) { return scope?.opening ? '当前生效数量计入期初' : scope?.period ? '当前生效数量计入本期' : '当前数量不计入本期或期初；保留原单及更正依据' }
+function scopeLabel(scope?: TraceScope) { return scope?.opening ? '取数时生效数量计入期初' : scope?.period ? '取数时生效数量计入本期' : '取数时数量不计入本期或期初；保留原单及更正依据' }
 const production = computed(() => props.value.production_documents.filter(d => matches(d.scope)))
 const usage = computed(() => props.value.usage_documents.filter(d => matches(d.scope)))
 const warehouse = computed(() => props.value.warehouse_documents.filter(d => filter.value === 'all' || d.scope === filter.value))
@@ -19,7 +19,7 @@ const warehouse = computed(() => props.value.warehouse_documents.filter(d => fil
 <template>
   <div class="closing-trace">
     <nav aria-label="追溯期间"><Button v-for="(label,key) in filters" :key="key" variant="outline" :aria-pressed="filter===key" @click="filter=key">{{ label }}</Button></nav>
-    <p>期初依据包含月初前的生产、耗用、签收和退仓，以及关联原单的后续更正。已作废版本和草稿仅供追溯；数量按最新生效记录及业务日期计算，历史明细不再次相加。</p>
+    <p>期初依据包含月初前的生产、耗用、签收和退仓，以及取数时已有的关联更正。已作废版本和草稿仅供追溯；数量按取数时生效记录及业务日期计算，历史明细不再次相加。</p>
     <h3>生产记录及更正</h3>
     <details v-for="document in production" :key="document.document_id">
       <summary>{{ document.history[0]?.data.context.task_name }} · {{ document.history[0]?.data.context.resource_name }} · {{ document.document_id }}{{ document.draft?' · 有草稿':'' }}</summary>
