@@ -26,7 +26,9 @@ def allowed(user, action):
         departments = ('pmc-warehouse',)
     if action == 'cost_read':
         departments = ('production', 'pmc-warehouse', 'accounting')
-    if action in {'period_lock', 'period_reopen'}:
+    if action == 'settlement_read':
+        departments = ('production', 'accounting')
+    if action in {'period_lock', 'period_reopen', 'settlement_confirm', 'settlement_reopen'}:
         departments = ('accounting',)
     if action == 'read':
         departments = ('production', 'engineering', 'pmc-warehouse', 'accounting')
@@ -122,6 +124,9 @@ def state(db, user, body, entity_id):
 
 def command_fingerprint(body, action):
     payload = body.model_dump(mode='json')
+    # Old pending settlement saves did not include this optional acknowledgement.
+    if action == 'settlement-save' and not payload.get('vendor_confirmation_token'):
+        payload.pop('vendor_confirmation_token', None)
     # Keep original empty-removal plan commands recoverable across this extension.
     if action.startswith('plan_write:') and not payload.get('removed_task_reasons'):
         payload.pop('removed_task_reasons', None)
