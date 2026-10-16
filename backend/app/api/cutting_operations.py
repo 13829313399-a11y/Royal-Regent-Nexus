@@ -18,6 +18,7 @@ from app.services import cutting_periods as periods, cutting_period_guards as pe
 from app.services import cutting_settlement as settlement, cutting_settlement_schemas as ss
 from app.services import cutting_payments as payments, cutting_payment_schemas as pay
 from app.services import cutting_exports as exports
+from app.services import cutting_cutover as cutover
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -58,6 +59,14 @@ def access(db: Db, user: User, factory_id: str = ''):
                 payments_schema_ready=payments.schema_ready(db.connection()) if enabled else False,
                 permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
+
+
+@router.post('/cutover/preview')
+def cutover_preview(body: cutover.Selection, db: Db, user: User):
+    for permission in cutover.PERMISSIONS[body.scope]:
+        c.authorize(user, body.factory_id, permission)
+    orders_ready(db)
+    return JSONResponse(cutover.preview(db, body), headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/exports/preview')

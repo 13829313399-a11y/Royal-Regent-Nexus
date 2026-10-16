@@ -64,7 +64,7 @@ describe('P4a monthly reconciliation',()=>{
     await open();let resolve!:(v:ClosingPreview)=>void
     vi.mocked(closingApi.read).mockReturnValueOnce(new Promise(r=>resolve=r))
     await button('月度核对').trigger('click');await flushPromises()
-    await wrapper.get('input[type=month]').setValue('2026-09')
+    await wrapper.get('input[aria-label="核对月份"]').setValue('2026-09')
     resolve(snapshot);await flushPromises()
     expect(wrapper.text()).not.toContain('取数时间：')
     await button('刷新所选订单核对').trigger('click');await flushPromises()
