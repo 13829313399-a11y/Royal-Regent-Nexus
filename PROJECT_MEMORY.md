@@ -76,7 +76,7 @@ Use these entry points before relying on documentation or memory:
 - Deployment workflow: `deploy/update-from-github.sh`
 - Runtime composition: `docker-compose.prod.yml` and the production Dockerfiles
 - Current behavior contracts: tests adjacent to the relevant frontend or backend domain
-- Frontend design-system guidance: `DESIGN.md`; executable global tokens and shared shell styles remain in `src/style.css`, with shared component contracts under `src/components/ui/` and `src/components/common/` and explicitly scoped feature exceptions documented in the design guide.
+- Frontend design-system guidance: `DESIGN.md`; executable global tokens and shared shell styles remain in `src/style.css`, with shared component contracts under `src/components/ui/` and `src/components/common/` and explicitly scoped feature exceptions documented in the design guide. Frontend task routing and acceptance guidance live in `docs/frontend/WORKFLOWS.md`, with `docs/frontend/UI_BRIEF_TEMPLATE.md` for new modules and substantial redesigns. Project-local skills under `.agents/skills/enterprise-ui-art-director/` and `.agents/skills/visual-qa-loop/` support design decisions and browser verification respectively; they reuse this baseline and existing tools without imposing fixed correction rounds or a new plugin dependency.
 
 `src/data/enterpriseMock.ts` is a navigation/catalog and demonstration-data source. It is not authoritative business data and must not be treated as evidence that the corresponding backend, permissions or persistence layer exists.
 
