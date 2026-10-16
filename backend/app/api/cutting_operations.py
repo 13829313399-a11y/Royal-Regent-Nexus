@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from pydantic import ValidationError
 from sqlalchemy import select, func
@@ -17,6 +17,7 @@ from app.services import cutting_usage as usage, cutting_usage_schemas as us
 from app.services import cutting_periods as periods, cutting_period_guards as period_guards, cutting_period_schemas as pcs
 from app.services import cutting_settlement as settlement, cutting_settlement_schemas as ss
 from app.services import cutting_payments as payments, cutting_payment_schemas as pay
+from app.services import cutting_exports as exports
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -57,6 +58,38 @@ def access(db: Db, user: User, factory_id: str = ''):
                 payments_schema_ready=payments.schema_ready(db.connection()) if enabled else False,
                 permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
+
+
+@router.post('/exports/preview')
+def export_preview(body: exports.Selection, db: Db, user: User):
+    c.authorize(user, body.factory_id, exports.PERMISSIONS[body.kind])
+    orders_ready(db)
+    report = exports.capture(db, body)
+    return dict(token=periods.digest(report), title=exports.TITLES[body.kind], metadata=report['metadata'],
+                sheets=[dict(name=s['name'], rows=len(s['rows'])) for s in report['sheets']], delivery=report['delivery'])
+
+
+@router.post('/exports/download')
+def export_download(body: exports.Selection, request: Request, db: Db, user: User):
+    permission = exports.PERMISSIONS[body.kind]
+    c.authorize(user, body.factory_id, permission)
+    orders_ready(db)
+    report = exports.capture(db, body)
+    c.require(body.token and body.token == periods.digest(report), '报表依据或当前有效状态已变化，请重新预览导出')
+    report.update(token=body.token, captured_at=exports.business_now().isoformat())
+    db.rollback()  # XLSX generation holds no cutting/warehouse write lock.
+    content, extension = exports.package(report, user)
+    db.expire_all()
+    current = get_current_user(request, db)
+    c.require(current.id == user.id, '登录身份已变化，请重新导出', 403)
+    c.authorize(current, body.factory_id, permission)
+    orders_ready(db)
+    # Recheck after generation: do not download a newly reopened or changed live report unnoticed.
+    c.require(periods.digest(exports.capture(db, body)) == body.token, '生成期间报表依据发生变化，请重新预览导出')
+    filename = f'cutting-{body.kind}-{body.month}-{body.token[:12]}.{extension}'
+    return Response(content, media_type='application/zip' if extension == 'zip' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"', 'Cache-Control': 'no-store',
+                 'X-Content-Type-Options': 'nosniff', 'X-Cutting-Report-Token': body.token})
 
 
 @router.get('/masters')

@@ -62,7 +62,7 @@ onMounted(()=>void load(1,true))
 
 <template>
   <section class="cutting-page cutting-master">
-    <PageHeader :title="workspace.title" description="按自然月核对生产、外发验收、领退料及实际耗用，追溯补录与更正。"><template #actions><StatusPill label="内部月结／外发结算／付款核销 · P4b–P4d" /></template></PageHeader>
+    <PageHeader :title="workspace.title" description="按自然月核对生产、外发验收、领退料及实际耗用，追溯补录与更正。"><template #actions><StatusPill label="内部月结／外发结算／付款核销／报表导出 · P4b–P4e" /></template></PageHeader>
     <p class="cutting-notice">内部材料月结与外发加工费结算分别办理；下方订单预览提供实时核对，尚未冻结或锁月。付款登记与核销在下方独立办理，不操作银行。</p>
     <CuttingPeriodClosing :access="access" :access-loading="loading" />
     <CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" @payment="openPayment" />

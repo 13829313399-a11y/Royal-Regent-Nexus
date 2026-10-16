@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.api import auth as auth_api
 from app.models.auth import AuthUser, AuthRole, AuthPermission, AuthRolePermission, AuthUserRole, AuthUserPermissionOverride, EmployeeProfile, AuthIamState
 from app.services.auth import get_current_user, hash_password
+from app.services import cutting_exports
 from test_cutting_ops import client, command, BASE
 from test_cutting_orders import flow
 from test_cutting_planning import planned
@@ -37,12 +38,25 @@ def test_real_accounting_sessions_enforce_independence_and_revocation(paid_setup
     login('reviewer');ok(decision(p,did,'confirm'))
     assert read(p,did)['data']['prepared_by']=='registrar'
     assert read(p,did)['history'][-1]['actor']=='reviewer'
+    export_body=dict(factory_id='huakang-c',kind='payments',month='2026-10')
+    export_preview=ok(p.post(BASE+'/exports/preview',json=export_body))
+    exported=p.post(BASE+'/exports/download',json=export_body|{'token':export_preview['token']})
+    assert exported.status_code==200 and exported.content.startswith(b'PK')
     with Session(p.engine) as db:
         db.add(AuthUserPermissionOverride(id='deny-reverse',user_id='reviewer',permission_id='cutting_ops:payment_reverse',effect='deny',factory_id='huakang-c',department='accounting'));db.commit()
     assert decision(p,did,'reverse').status_code==403
     with Session(p.engine) as db:
         db.execute(delete(AuthUserPermissionOverride).where(AuthUserPermissionOverride.id=='deny-reverse'));db.commit()
     ok(decision(p,did,'reverse'))
+    export_preview=ok(p.post(BASE+'/exports/preview',json=export_body))
+    render=cutting_exports.render
+    def revoke_during_render(report,context):
+        content=render(report,context)
+        with Session(p.engine) as db:
+            db.execute(delete(AuthRolePermission).where(AuthRolePermission.id=='reviewer:payment_read'));db.commit()
+        return content
+    monkeypatch.setattr(cutting_exports,'render',revoke_during_render)
+    assert p.post(BASE+'/exports/download',json=export_body|{'token':export_preview['token']}).status_code==403
     with Session(p.engine) as db:
         db.execute(delete(AuthRolePermission).where(AuthRolePermission.id=='reviewer:payment_read'));db.commit()
     assert p.get(URL+'/2026-10',params={'factory_id':'huakang-c'}).status_code==403
