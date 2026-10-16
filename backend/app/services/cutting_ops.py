@@ -26,7 +26,11 @@ def allowed(user, action):
         departments = ('pmc-warehouse',)
     if action == 'cost_read':
         departments = ('production', 'pmc-warehouse', 'accounting')
-    if action in {'period_lock', 'period_reopen'}:
+    if action == 'settlement_read':
+        departments = ('production', 'accounting')
+    if action in {'period_lock', 'period_reopen', 'settlement_confirm', 'settlement_reopen'}:
+        departments = ('accounting',)
+    if action in {'payment_read', 'payment_prepare', 'payment_confirm', 'payment_reverse'}:
         departments = ('accounting',)
     if action == 'read':
         departments = ('production', 'engineering', 'pmc-warehouse', 'accounting')
@@ -122,6 +126,12 @@ def state(db, user, body, entity_id):
 
 def command_fingerprint(body, action):
     payload = body.model_dump(mode='json')
+    # Preserve receipts for pre-edit-base payment commands, including recovery.
+    if action == 'payment-save' and not payload.get('base_event_id'):
+        payload.pop('base_event_id', None)
+    # Old pending settlement saves did not include this optional acknowledgement.
+    if action == 'settlement-save' and not payload.get('vendor_confirmation_token'):
+        payload.pop('vendor_confirmation_token', None)
     # Keep original empty-removal plan commands recoverable across this extension.
     if action.startswith('plan_write:') and not payload.get('removed_task_reasons'):
         payload.pop('removed_task_reasons', None)

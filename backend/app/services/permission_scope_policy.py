@@ -297,7 +297,11 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
             departments = ("pmc-warehouse",)
         if action == "cost_read":
             departments = ("production", "pmc-warehouse", "accounting")
-        if action in {"period_lock", "period_reopen"}:
+        if action == "settlement_read":
+            departments = ("production", "accounting")
+        if action in {"period_lock", "period_reopen", "settlement_confirm", "settlement_reopen"}:
+            departments = ("accounting",)
+        if action in {"payment_read", "payment_prepare", "payment_confirm", "payment_reverse"}:
             departments = ("accounting",)
         if action == "read":
             departments = ("production", "engineering", "pmc-warehouse", "accounting")

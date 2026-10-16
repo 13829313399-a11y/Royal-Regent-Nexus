@@ -29,6 +29,8 @@ export interface YinhuiToolRow {
   cavity: number
   weightG: number
   material: Material
+  /** Source resin price converted to HKD/kg with this quote's markup/settlement. */
+  sourceMaterialPriceHkdKg?: number
   laborHkd: number
   toolingHkd: number
 }
@@ -47,6 +49,11 @@ export interface YinhuiQuoteData {
   tryMe: '' | 'YES' | 'NO'
   freightLclHkd: number | null
   freightFclHkd: number | null
+  freight20FtHkd?: number | null
+  freight40HqHkd?: number | null
+  freightLocalHkd?: number | null
+  /** Confirmed final domestic price, not HKD ex-factory plus freight. */
+  domesticPriceRmb?: number | null
   colorBoxCm: number[]
   cartonCm: number[]
   cartonPack: number
@@ -91,6 +98,16 @@ const records = (v: unknown) => Array.isArray(v) ? v.map(obj) : []
 const sum = (values: number[]) => values.reduce((a, b) => a + b, 0)
 const round = (v: number) => Math.round((v + Number.EPSILON) * 1e8) / 1e8
 const hasValue = (v: unknown) => v !== null && v !== undefined && v !== ''
+type FreightKey = 'freightLclHkd' | 'freightFclHkd' | 'freight20FtHkd' | 'freight40HqHkd' | 'freightLocalHkd'
+function freightKey(value: unknown): FreightKey | undefined {
+  const key = text(value).normalize('NFKC').toUpperCase().replace(/[\s_()-]/g, '')
+  if (/内销|內銷|LOCAL|DOMESTIC/.test(key)) return 'freightLocalHkd'
+  if (/香港|港柜|港散|港櫃|HK/.test(key)) return
+  if (/40HQ|40HC/.test(key)) return 'freight40HqHkd'
+  if (/20(?:FT|GP)|(?:YT|盐田|鹽田)20/.test(key)) return 'freight20FtHkd'
+  if (/40(?:FT|GP)|(?:YT|盐田|鹽田)40|盐田柜|鹽田柜|鹽田櫃/.test(key)) return 'freightFclHkd'
+  if (/LCL|盐田散|鹽田散/.test(key)) return 'freightLclHkd'
+}
 function numeric(v: unknown, label: string, allowBlank = false) {
   if (!hasValue(v) && allowBlank) return 0
   const result = Number(v)
@@ -123,7 +140,11 @@ export function yinhuiMaterialPrice(data: YinhuiQuoteData, resin: Material): num
   return price === null ? null : numeric(price, `客表 ${key} 港币公斤价`) * pricingRate(data.pricing, 'material_multiplier', 1)
 }
 export function yinhuiMissingMaterialPrices(data: YinhuiQuoteData) {
-  return [...new Set(data.tools.filter(row => yinhuiMaterialPrice(data, row.material) === null).map(row => material(row.material)))]
+  return [...new Set(data.tools.filter(row => yinhuiToolMaterialPrice(data, row) === null).map(row => material(row.material)))]
+}
+export function yinhuiToolMaterialPrice(data: YinhuiQuoteData, row: YinhuiToolRow): number | null {
+  if (row.sourceMaterialPriceHkdKg !== undefined) return numeric(row.sourceMaterialPriceHkdKg, '原报价换算胶料公斤价') * pricingRate(data.pricing, 'material_multiplier', 1)
+  return yinhuiMaterialPrice(data, row.material)
 }
 const simplified = (value: string) => value.replace(/[殼電門輪轂膠遙蓋紅機鈕彈夾軸輸齒轉動馬頭銀後側發線潤貼說螺絲裝飾單雙連鏈撥鎖釘壓員擺開關欄層]/g, (c) => {
   const from = '殼電門輪轂膠遙蓋紅機鈕彈夾軸輸齒轉動馬頭銀後側發線潤貼說螺絲裝飾單雙連鏈撥鎖釘壓員擺開關欄層'
@@ -131,6 +152,11 @@ const simplified = (value: string) => value.replace(/[殼電門輪轂膠遙蓋�
   return to[from.indexOf(c)] || c
 }).replace(/[\s（）()、，,]/g, '').toLowerCase()
 function quantityFromDescription(value: string) {
+  value = value.normalize('NFKC').trim()
+  // Explicit piece suffixes are quantities; dimensions such as 2x8mm are not.
+  const suffix = value.match(/[*×x]\s*(\d+(?:\.\d+)?)\s*(?:PCS?|个|件|只)\s*$/i)
+    || value.match(/[^\d.\s]\s*[*×]\s*(\d+(?:\.\d+)?)\s*$/)
+  if (suffix) return positive(suffix[1], `${value}用量`)
   // These parentheses identify the product model, not the number of PCBAs/fabric sets.
   if (/^(?:电子|電子|车缝|車縫)[（(]\d+[)）]$/.test(value.trim())) return 1
   if (/[（(]\s*\d{4,}\s*[)）]\s*$/.test(value.trim())) return 1
@@ -140,7 +166,7 @@ function quantityFromDescription(value: string) {
 function today() { return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date()) }
 function emptyData(): YinhuiQuoteData {
   return { model: '', productName: '', quoteDate: today(), packaging: 'Window Box', moq: 0, stage: '', adaptor: '', tryMe: '',
-    freightLclHkd: null, freightFclHkd: null, colorBoxCm: [], cartonCm: [], cartonPack: 0,
+    freightLclHkd: null, freightFclHkd: null, freight20FtHkd: null, freight40HqHkd: null, freightLocalHkd: null, domesticPriceRmb: null, colorBoxCm: [], cartonCm: [], cartonPack: 0,
     tools: [], plastic: [], mechanical: [], electronic: [], fabric: [], packagingRows: [], documentFees: [],
     carton: { description: '外箱', source: '', quantity: 1, amountHkd: 0, internalHkd: 0 },
     assemblyHkd: 0, sprayingHkd: 0, packagingLaborHkd: 0, battery: '', internalTotalHkd: 0 }
@@ -167,7 +193,7 @@ export function yinhuiTotals(data: YinhuiQuoteData) {
   const missingMaterialPrices = yinhuiMissingMaterialPrices(data)
   // With missing prices these are known-cost subtotals, not complete quotations.
   // The workbook leaves the corresponding unit-price inputs blank for completion.
-  const plastic = sum(data.tools.map((r) => r.weightG * (yinhuiMaterialPrice(data, r.material) ?? 0) / 1000)) + sum(data.plastic.map((r) => r.amountHkd))
+  const plastic = sum(data.tools.map((r) => r.weightG * (yinhuiToolMaterialPrice(data, r) ?? 0) / 1000)) + sum(data.plastic.map((r) => r.amountHkd))
   const mechanical = sum(data.mechanical.map((r) => r.amountHkd))
   const electronic = sum(data.electronic.map((r) => r.amountHkd))
   const fabric = sum((data.fabric || []).map((r) => r.amountHkd))
@@ -181,6 +207,9 @@ export function yinhuiTotals(data: YinhuiQuoteData) {
   return { plastic, mechanical, electronic, fabric, injection, labour, packaging, documentFees, bom, productSubtotal, exFactory, missingMaterialPrices,
     fcl: data.freightFclHkd === null ? null : exFactory + data.freightFclHkd,
     lcl: data.freightLclHkd === null ? null : exFactory + data.freightLclHkd,
+    fcl20: data.freight20FtHkd == null ? null : exFactory + data.freight20FtHkd,
+    fcl40Hq: data.freight40HqHkd == null ? null : exFactory + data.freight40HqHkd,
+    domesticRmb: data.domesticPriceRmb ?? null,
     tooling: sum(data.tools.map((r) => r.toolingHkd)) }
 }
 function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[], manualReviewReasons: string[] = [], pricing?: CustomerPricingSettings): YinhuiConversionResult {
@@ -203,6 +232,8 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
     data.importIssues.push({ source: name, message, cells: [] })
   }
   const total = yinhuiTotals(data)
+  if (data.tools.some(row => row.sourceMaterialPriceHkdKg === undefined)) warnings.push('部分胶料缺少原报价单价，暂按冻结的客户公斤价核对；不会将 PVC80 等牌号擅自合并为其他料型。')
+  if (data.freight20FtHkd == null || data.freight40HqHkd == null || data.domesticPriceRmb == null) warnings.push('20FT、40HQ 或内销 RMB 价格未齐，请在核对区填写已确认值；未填写的路线在客表留空。内销 RMB 必须取已确认的最终单价，不按港币出厂价直接换汇。')
   if (total.missingMaterialPrices.length) warnings.push(`缺少银辉报客料价：${total.missingMaterialPrices.join('、')}。对应单价将留空，当前合计暂未包含这些料价；确认后可导出，发送客户前请补齐。`)
   const sheetId = 'yinhui-summary'
   const summaryName = data.importIssues?.length ? '草稿 · 已识别成本小计（待补正）' : total.missingMaterialPrices.length ? 'SUM(總計) · 待补料价' : 'SUM(總計)'
@@ -251,7 +282,7 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   const filenameModel = sourceFileName.match(/(?:银辉|銀輝|silverlit)[ _-]*(\d+)/i)?.[1]
   if (filenameModel && filenameModel !== data.model) warnings.push(`型号冲突：文件名 ${filenameModel}，内部明细 ${data.model}。请核对并修改型号。`)
   if (data.templateId !== 'standard') warnings.push(`使用 ${profile.label} 原客表版式；包装、英文产品名称来自对应参考客表，请复核。`)
-  warnings.push('料价全型号统一：ABS 15.65、TPR 18.8、PP 12.6、POM 34.07、C-ABS 24（客户提供）；PVC 17.16、TPE 15.9（多表核对），单位 HKD/kg。不沿用个别客表错填料型或不同单价。')
+  warnings.push('胶料公斤价优先按原报价单价换算：港币/磅 ÷ 454 × 1000 × 本报价主倍率 ÷ 结算除数；原表为港币/克时直接乘 1000 后应用同一倍率。')
   if (/^明细\s*[(（]/.test(main.name)) warnings.push(`已选择“${main.name}”；密封盒属于另一包装方案，不参与本次计算。`)
   if (['81283', '89127'].includes(data.templateId)) warnings.push(`${data.templateId} 原客表部分料重公式含固定数值；对应内部料重改变时会阻止导出，需先核对模板公式。`)
   let activeBoxColumn: number | undefined
@@ -333,7 +364,8 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   }
   if (!blocks.length) attempt(`${main.name} · 倍率`, () => { throw new Error('银辉未找到有效倍率区间') })
   const mainFactor = blocks.find(block => block.start === costStart)?.factor
-  const injections: Array<{ row: number; description: string; material: Material; weight: number; labor: number; cavity: number }> = []
+  const injections: Array<{ row: number; description: string; material: Material; weight: number; labor: number; cavity: number; sourceMaterialPriceHkdKg?: number }> = []
+  const resinPriceHeader = text(rows[header]?.[5]).normalize('NFKC').replace(/\s/g, '')
   let rowIndex = header + 1
   let injectionEnd = rowIndex
   while (hasValue(originalRows[injectionEnd]?.[2]) && (hasValue(originalRows[injectionEnd]?.[3]) || hasValue(originalRows[injectionEnd]?.[4]) || hasValue(originalRows[injectionEnd]?.[9]))) injectionEnd++
@@ -347,8 +379,14 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     if (!hasValue(row[9]) && !hintedLabor) throw new Error('内部啤工为空时必须提供有效的报客啤工，不能按零成本处理')
     const originallyHinted = blocks[0]!.hinted && typeof original[11] === 'number' && (!hasValue(original[9]) || Number(original[11]) <= Number(original[9]) * 5)
     if ((hintedLabor || originallyHinted) && hasValue(row[9]) && Math.abs(numeric(row[11], '报客啤工校验值') - rawLabor * mainFactor) > .005) throw new Error(`银辉第 ${rowIndex + 1} 行报客啤工与内部啤工×倍率不一致，请核对，不能自动选一边`)
-    injections.push({ row: rowIndex + 1, description: text(row[2]), material: material(row[3]), weight: positive(row[4], `第${rowIndex + 1}行料重`), labor: !hasValue(row[9]) && hintedLabor ? numeric(row[11], '报客啤工') : rawLabor * mainFactor, cavity: numeric(row[7], '注塑出模套数', true) || 1 })
-    }, [[`D${rowIndex + 1}`, '料型'], [`E${rowIndex + 1}`, '总料重(g)'], [`H${rowIndex + 1}`, '每啤成品套数'], [`J${rowIndex + 1}`, '内部啤工'], [`L${rowIndex + 1}`, '报客啤工/原备注']])
+    let sourceMaterialPriceHkdKg: number | undefined
+    if ((hasValue(row[5]) || hasValue(original[5])) && /料[价價]|單價|单价|price/i.test(resinPriceHeader)) {
+      const unit = /(?:kg|公斤|千克)/i.test(resinPriceHeader) ? 1 : /(?:lb|磅|\(P\)|\/P\b)/i.test(resinPriceHeader) ? 1000 / 454 : /(?:\(G\)|\/G\b|克)/i.test(resinPriceHeader) ? 1000 : null
+      if (unit === null) throw new Error('胶料单价表头缺少明确单位，请标明 G、KG 或 /P')
+      sourceMaterialPriceHkdKg = numeric(row[5], '原胶料单价') * unit * mainFactor
+    }
+    injections.push({ row: rowIndex + 1, description: text(row[2]), material: material(row[3]), weight: positive(row[4], `第${rowIndex + 1}行料重`), sourceMaterialPriceHkdKg, labor: !hasValue(row[9]) && hintedLabor ? numeric(row[11], '报客啤工') : rawLabor * mainFactor, cavity: numeric(row[7], '注塑出模套数', true) || 1 })
+    }, [[`D${rowIndex + 1}`, '料型'], [`E${rowIndex + 1}`, '总料重(g)'], [`F${rowIndex + 1}`, '原胶料单价'], [`H${rowIndex + 1}`, '每啤成品套数'], [`J${rowIndex + 1}`, '内部啤工'], [`L${rowIndex + 1}`, '报客啤工/原备注']])
     rowIndex++
   }
   if (!injections.length) attempt(`${main.name} · 注塑明细`, () => { throw new Error('银辉没有可转换的注塑明细') })
@@ -454,7 +492,7 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
       if (matches.length !== 1) matches = segments.filter(segment => !used.has(segment) && Math.abs(sum(segment.rows.map(row => row.usage * row.weight)) - injection.weight) <= .03)
       if (matches.length !== 1) {
         manualReviewReasons.push(`注塑第 ${injection.row} 行“${injection.description}”无法与 Tool Plan 唯一匹配，已改用主明细的料重、料型、啤工和出模套数生成临时行；模号、零件号留空。`)
-        data.tools.push({ moldNo: '', partNo: '', description: injection.description, usage: 1, cavity: injection.cavity, weightG: injection.weight, material: injection.material, laborHkd: injection.labor, toolingHkd: 0 })
+        data.tools.push({ moldNo: '', partNo: '', description: injection.description, usage: 1, cavity: injection.cavity, weightG: injection.weight, material: injection.material, sourceMaterialPriceHkdKg: injection.sourceMaterialPriceHkdKg, laborHkd: injection.labor, toolingHkd: 0 })
         continue
       }
       const matched = matches[0]!; used.add(matched)
@@ -466,7 +504,7 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
         }
       }
       const writeMold = !moldWritten.has(matched.group); moldWritten.add(matched.group)
-      matched.rows.forEach((row, i) => data.tools.push({ moldNo: i === 0 && writeMold ? matched.group.mold : '', partNo: row.partNo, description: row.description, usage: row.usage, cavity: row.cavity, weightG: i === 0 ? injection.weight : 0, material: injection.material, laborHkd: i === 0 ? injection.labor : 0, toolingHkd: 0 }))
+      matched.rows.forEach((row, i) => data.tools.push({ moldNo: i === 0 && writeMold ? matched.group.mold : '', partNo: row.partNo, description: row.description, usage: row.usage, cavity: row.cavity, weightG: i === 0 ? injection.weight : 0, material: injection.material, sourceMaterialPriceHkdKg: injection.sourceMaterialPriceHkdKg, laborHkd: i === 0 ? injection.labor : 0, toolingHkd: 0 }))
     }
     if (used.size !== segments.length) manualReviewReasons.push(`Tool Plan 有 ${segments.length - used.size} 个模具或料型分段未与主明细匹配，未自动写入客表，请人工核对模具费和零件资料。`)
   } else {
@@ -475,7 +513,7 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
       const parts = injection.description.replace(/\s+/g, '').split(/[/;；](?=[\p{L}])/u).map(p => p.replace(/\/$/, '')).filter(Boolean)
       parts.forEach((part, i) => {
         const qty = part.match(/\*(\d+(?:\.\d+)?)$/)
-        data.tools.push({ moldNo: '', partNo: '', description: part.replace(/\*\d+(?:\.\d+)?$/, ''), usage: qty ? positive(qty[1], '零件用量') : 1, cavity: injection.cavity, weightG: i ? 0 : injection.weight, material: injection.material, laborHkd: i ? 0 : injection.labor, toolingHkd: 0 })
+        data.tools.push({ moldNo: '', partNo: '', description: part.replace(/\*\d+(?:\.\d+)?$/, ''), usage: qty ? positive(qty[1], '零件用量') : 1, cavity: injection.cavity, weightG: i ? 0 : injection.weight, material: injection.material, sourceMaterialPriceHkdKg: injection.sourceMaterialPriceHkdKg, laborHkd: i ? 0 : injection.labor, toolingHkd: 0 })
       })
     }
   }
@@ -511,9 +549,12 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   const freightRow = rows.find((r, i) => i >= costStart && i < end && text(r[1]) === '运费')
   const costHeader = rows[costStart - 1]!
   if (freightRow) {
-    for (const [key, pattern] of [['freightFclHkd', /盐田柜|鹽田柜/], ['freightLclHkd', /盐田散|鹽田散/]] as const) {
-      const col = costHeader.findIndex(v => pattern.test(text(v)))
-      if (col >= 0 && hasValue(freightRow[col])) attempt(`${main.name} · ${key === 'freightFclHkd' ? '40FT' : 'LCL'}运费`, () => {
+    for (const key of ['freightFclHkd', 'freightLclHkd', 'freight20FtHkd', 'freight40HqHkd', 'freightLocalHkd'] as const) {
+      const columns = costHeader.flatMap((v, i) => freightKey(v) === key ? [i] : [])
+      if (!columns.length) continue
+      const col = columns[0]!
+      if (hasValue(freightRow[col])) attempt(`${main.name} · ${text(costHeader[col])}运费`, () => {
+        if (columns.length !== 1) throw new Error('同类运输路线不唯一，请明确本次路线')
         if (mainFactor === undefined) throw new Error('运费缺少有效的主倍率')
         data[key] = numeric(numeric(freightRow[col], '盐田运费') * mainFactor - extraFee, '盐田运费扣除另列文件费后的金额')
       }, [[`${String.fromCharCode(65 + col)}${rows.indexOf(freightRow) + 1}`, '原运费']])
@@ -529,6 +570,22 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   if (explicit >= 0 && !hasValue(rows[explicit + 1]?.[3]) && typeof rows[explicit + 1]?.[4] === 'number' && typeof rows[explicit + 1]?.[5] === 'number') {
     attempt(`${main.name} · FCL/LCL运费`, () => { data.freightFclHkd = numeric(rows[explicit + 1]?.[4], 'FCL 运费'); data.freightLclHkd = numeric(rows[explicit + 1]?.[5], 'LCL 运费') }, [[`E${explicit + 2}`, 'FCL运费'], [`F${explicit + 2}`, 'LCL运费']])
   }
+  // Domestic RMB is an independently calculated final quote. Do not derive it
+  // by adding HKD freight or converting the customer ex-factory subtotal.
+  const domesticColumns = costHeader.flatMap((v, i) => /(?:内销|內銷).*RMB/i.test(text(v)) ? [i] : [])
+  const domesticValues: Array<{ row: number; col: number }> = []
+  if (finalIndex >= 0 && domesticColumns.length === 1 && hasValue(rows[finalIndex]?.[domesticColumns[0]!])) domesticValues.push({ row: finalIndex, col: domesticColumns[0]! })
+  else rows.forEach((row, i) => {
+    if (i <= (blocks.at(-1)?.end ?? end) + 2) return
+    row.forEach((v, col) => {
+      if (/(?:内销|內銷).*RMB/i.test(text(v)) && hasValue(rows[i - 1]?.[col])) domesticValues.push({ row: i - 1, col })
+    })
+  })
+  if (domesticValues.length) attempt(`${main.name} · 内销 RMB 最终单价`, () => {
+    if (domesticValues.length !== 1) throw new Error('内销 RMB 最终单价来源不唯一，请核对')
+    const source = domesticValues[0]!
+    data.domesticPriceRmb = numeric(rows[source.row]?.[source.col], '内销 RMB 最终单价')
+  }, domesticValues.map(v => [`${String.fromCharCode(65 + v.col)}${v.row + 1}`, '内销 RMB 最终单价']))
   attempt(`${main.name} · 内部出厂报价`, () => {
   data.internalTotalHkd = finalIndex >= 0 ? numeric(rows[finalIndex]?.[3], '内部出厂报价') : numeric(rows[management + 1]?.[3], '内部出厂报价')
   }, [[`D${finalIndex >= 0 ? finalIndex + 1 : management + 2}`, '内部出厂报价']])
@@ -594,6 +651,7 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   const data = emptyData()
   const warnings = ['银辉临时映射按单 BOM 输出；请核对 BOM 原文、产品及 Tool Plan 英文名称、型号和运费。']
   data.productName = artifact.productName
+  if (artifact.quoteDate) data.quoteDate = artifact.quoteDate
   data.model = artifact.productName.match(/#\s*([\w-]+)/)?.[1] || ''
   data.templateId = yinhuiProfileForModel(data.model)
   data.packaging = YINHUI_PROFILES[data.templateId].packaging
@@ -602,6 +660,8 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   const totals = (code: P4SectionCode) => obj(artifact.sections[code].calculation.totals)
   for (const code of ['slush', 'sewing', 'hair'] as const) if (numeric(totals(code).total_hkd, `${code}合计`, true) > 0) throw new Error(`银辉临时映射尚未覆盖${artifact.sections[code].name}，请先补充该类映射，不能漏项输出`)
   const sales = artifact.sections.sales.payload
+  const domesticPrice = obj(obj(sales.customer_quote_fields).yinhui).domestic_price_rmb
+  if (hasValue(domesticPrice)) data.domesticPriceRmb = numeric(domesticPrice, 'P4 内销 RMB 最终单价')
   for (const [key, label] of [['testing_fee_total_usd', '测试费'], ['additional_tax_hkd', '附加税'], ['indonesia_freight_hkd', '印尼运费']] as const) {
     if (numeric(totals('sales')[key], `P4 ${label}`, true) > 0) throw new Error(`银辉临时映射尚未配置${label}的摊分位置，不能漏项输出`)
   }
@@ -621,7 +681,7 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
     const weight = positive(line.net_weight_g, '注塑净重') * qty
     const amount = numeric(line.amount_hkd, '注塑合计'); internalQuotedTotal += quoted({}, amount)
     data.tools.push({ moldNo: text(line.mold_no), partNo: '', description: text(line.item), usage: qty, cavity: numeric(line.cavity, '出模数', true),
-      weightG: weight, material: material(line.material), laborHkd: quoted({}, numeric(line.molding_cost_hkd, '啤工') * qty), toolingHkd: 0 })
+      weightG: weight, material: material(line.material), sourceMaterialPriceHkdKg: hasValue(line.material_price_hkd_lb) ? quoted({}, numeric(line.material_price_hkd_lb, '注塑胶料磅价') / 454 * 1000) : undefined, laborHkd: quoted({}, numeric(line.molding_cost_hkd, '啤工') * qty), toolingHkd: 0 })
   }
   if (!data.tools.length) throw new Error('银辉 P4 缺少注塑明细')
   for (const line of lines('engineering')) {
@@ -671,9 +731,13 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   }
   if (!data.carton.source) throw new Error('银辉 P4 缺少主纸箱服务端计算')
   const routes = records(totals('sales').freight_options)
-  for (const kind of ['Lcl', 'Fcl'] as const) {
-    const matches = routes.filter((r) => /yt|盐田|鹽田/i.test(`${text(r.route_key)} ${text(r.item)}`) && (kind === 'Lcl' ? /lcl|散/i : /40/).test(`${text(r.route_key)} ${text(r.item)}`))
-    if (matches.length === 1) data[`freight${kind}Hkd`] = quoted({}, matches[0]!.per_piece_hkd ?? matches[0]!.freight_per_piece_hkd)
+  for (const key of ['freightLclHkd', 'freightFclHkd', 'freight20FtHkd', 'freight40HqHkd', 'freightLocalHkd'] as const) {
+    const matches = routes.filter((r) => {
+      const name = `${text(r.route_key)} ${text(r.item)}`
+      return (key === 'freightLocalHkd' || /yt|盐田|鹽田/i.test(name)) && freightKey(name) === key
+    })
+    if (matches.length === 1) data[key] = quoted({}, matches[0]!.per_piece_hkd ?? matches[0]!.freight_per_piece_hkd)
+    else if (matches.length > 1) warnings.push(`P4 ${key} 对应多条运输路线，请在核对区填写已确认的每件运费。`)
   }
   if (data.freightFclHkd === null || data.freightLclHkd === null) warnings.push('P4 未提供唯一盐田 LCL / 40FT 路线，请在核对区填写已确认的每件运费（HKD）。')
   if (numeric(totals('engineering').mold_total_rmb, '模具总计', true) > 0) throw new Error('银辉 P4 有新开模费用，但尚无已确认的逐模港币价映射，请使用含匹配模具报价页的银辉原表')
@@ -716,13 +780,16 @@ export function yinhuiExportIssues(data: YinhuiQuoteData): string[] {
   if (!data.packaging.trim()) issues.push('请填写银辉包装方式')
   check(() => { numeric(data.freightFclHkd, '40FT 每件运费') })
   check(() => { numeric(data.freightLclHkd, 'LCL 每件运费') })
+  for (const [key, label] of [['freight20FtHkd', '20FT 每件运费'], ['freight40HqHkd', '40HQ 每件运费'], ['freightLocalHkd', '内销每件运费 HKD'], ['domesticPriceRmb', '内销 RMB 最终单价']] as const) {
+    if (data[key] != null) check(() => { numeric(data[key], label) })
+  }
   for (const line of [...data.plastic, ...data.mechanical, ...data.electronic, ...(data.fabric || []), ...data.packagingRows, ...(data.documentFees || [])]) {
     check(() => { positive(line.quantity, 'BOM 用量'); numeric(line.amountHkd, 'BOM 金额') })
     if (!line.description.trim() || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!)$/i.test(line.description.trim())) issues.push(`请在核对区补全有效的 BOM 物料名称：${line.description || line.source}`)
   }
   for (const line of data.tools) {
     if (!line.description.trim() || /[\u3400-\u9fff]/.test(line.description) || /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|SPILL!|CALC!)$/i.test(line.description.trim())) issues.push(`请在核对区补全英文物料名称：${line.description || line.moldNo || 'Tool Plan'}`)
-    check(() => { material(line.material); numeric(line.weightG, '料重'); numeric(line.laborHkd, '啤工'); numeric(line.toolingHkd, '模具费'); numeric(line.usage, 'Tool Plan 用量'); numeric(line.cavity, 'Tool Plan 出模数') })
+    check(() => { material(line.material); yinhuiToolMaterialPrice(data, line); numeric(line.weightG, '料重'); numeric(line.laborHkd, '啤工'); numeric(line.toolingHkd, '模具费'); numeric(line.usage, 'Tool Plan 用量'); numeric(line.cavity, 'Tool Plan 出模数') })
   }
   if (/[\u3400-\u9fff]/.test(data.productName)) issues.push('请在核对区填写英文产品名称')
   return [...new Set(issues)]

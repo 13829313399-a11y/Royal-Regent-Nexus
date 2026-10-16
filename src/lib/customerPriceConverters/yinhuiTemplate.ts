@@ -1,7 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { createXlsxWorkbook, excelDateSerial, parseXlsxWorkbook } from './xlsxLite'
 import { pricingRate } from './pricingSettings'
-import { validateYinhuiExport, yinhuiTotals, yinhuiMaterialPrice, YINHUI_HKD_USD, type YinhuiConversionResult, type YinhuiCostRow } from './yinhui'
+import { validateYinhuiExport, yinhuiTotals, yinhuiToolMaterialPrice, YINHUI_HKD_USD, type YinhuiConversionResult, type YinhuiCostRow } from './yinhui'
 
 export interface YinhuiProductImage { bytes: Uint8Array; extension: 'png' | 'jpg' }
 export const YINHUI_SHEET_NAMES = ['SUM(總計)', '包裝價', 'BOM (1)', 'BOM (2)', 'TOOL PLAN (1)', 'TOOL PLAN (2)']
@@ -399,12 +399,59 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
   s('G12', 1); s('G19', 0); s('G26', 1)
   s('G32', total.documentFees ? 1 : null); s('H32', total.documentFees || null)
   // Customer correction: customs/documents fees belong at H32, outside packaging.
-  // This is the sole approved formula change; retain the existing discount term.
+  // Retain the existing discount term.
   const exFactoryCell = elements(summary.doc, 'c').find(cell => cell.getAttribute('r') === 'J32')
   const exFactoryFormula = exFactoryCell && elements(exFactoryCell, 'f')[0]
   if (!exFactoryFormula || exFactoryFormula.hasAttribute('t') || !['J30-J31', 'J30+H32', 'J30-J31+H32'].includes((exFactoryFormula.textContent || '').replace(/[$\s]/g, ''))) throw new Error('银辉出厂价公式不属于已确认格式，不能自动加入报关费')
   exFactoryFormula.textContent = 'J30-J31+H32'
   for (const [r, freight] of [[34, d.freightLclHkd!], [36, d.freightFclHkd!]]) { s(`G${r}`, 1); s(`H${r}`, freight!) }
+  // Row 37 is the spacer immediately below 40FT in all seven customer layouts.
+  // Reuse the neighboring route's exact cell styles without shifting the notes.
+  const routeRow = elements(summary.doc, 'row').find(row => row.getAttribute('r') === '36')!
+  const oldSpacer = elements(summary.doc, 'row').find(row => row.getAttribute('r') === '37')
+  if (oldSpacer && elements(oldSpacer, 'c').some(c => elements(c, 'f').length || elements(c, 'v').length || elements(c, 't').some(t => t.textContent))) throw new Error('银辉总表第 37 行不是空行，不能覆盖为 40HQ')
+  // writer keeps cell identities, so copy styles into its existing/created cells.
+  for (const cell of elements(routeRow, 'c')) {
+    const ref = cell.getAttribute('r')!.replace(/36$/, '37')
+    s(ref, ' ')
+    const target = elements(summary.doc, 'c').find(c => c.getAttribute('r') === ref)!
+    target.replaceChildren(); target.removeAttribute('t')
+    if (cell.hasAttribute('s')) target.setAttribute('s', cell.getAttribute('s')!)
+  }
+  const newRoute = elements(summary.doc, 'row').find(row => row.getAttribute('r') === '37')!
+  for (const attr of ['ht', 'customHeight']) if (routeRow.hasAttribute(attr)) newRoute.setAttribute(attr, routeRow.getAttribute(attr)!)
+  s('A37', 14); s('B37', 'FOB YT FCL 40HQ')
+  const setFormula = (ref: string, formula: string | null) => {
+    const cell = elements(summary.doc, 'c').find(c => c.getAttribute('r') === ref)!
+    elements(cell, 'f').forEach(f => f.remove())
+    if (formula) { const f = summary.doc.createElementNS(NS, 'f'); f.textContent = formula; cell.insertBefore(f, cell.firstChild) }
+  }
+  for (const [r, freight] of [[35, d.freight20FtHkd], [37, d.freight40HqHkd]] as const) {
+    s(`G${r}`, freight == null ? null : 1); s(`H${r}`, freight ?? null)
+    setFormula(`I${r}`, `IF(G${r}="","",H${r}/G${r})`)
+    setFormula(`J${r}`, `IF(G${r}="","",J$32+I${r})`)
+    setFormula(`K${r}`, `IF(G${r}="","",J${r}/$K$11)`)
+  }
+  s('B33', 'LOCAL DELIVERY (FAS) (to DG warehouse) (RMB)')
+  s('G33', d.freightLocalHkd == null ? null : 1); s('H33', d.freightLocalHkd ?? null)
+  const localFreightCell = elements(summary.doc, 'c').find(c => c.getAttribute('r') === 'H33')!
+  const freightStyle = elements(summary.doc, 'c').find(c => c.getAttribute('r') === 'H34')!.getAttribute('s')
+  if (freightStyle) localFreightCell.setAttribute('s', freightStyle)
+  setFormula('I33', 'IF(G33="","",H33/G33)')
+  setFormula('J33', null); setFormula('K33', null)
+  s('J33', d.domesticPriceRmb ?? null); s('K33', null)
+  // RMB has its own currency format; never display it under the HKD/USD format.
+  const styles = xml(strFromU8(zip['xl/styles.xml']!))
+  let numFmts = elements(styles, 'numFmts')[0]
+  if (!numFmts) { numFmts = styles.createElementNS(NS, 'numFmts'); styles.documentElement.insertBefore(numFmts, styles.documentElement.firstChild) }
+  const formatId = Math.max(163, ...elements(styles, 'numFmt').map(f => Number(f.getAttribute('numFmtId')))) + 1
+  const format = styles.createElementNS(NS, 'numFmt'); format.setAttribute('numFmtId', String(formatId)); format.setAttribute('formatCode', '"RMB "#,##0.000'); numFmts.append(format); numFmts.setAttribute('count', String(numFmts.children.length))
+  const domesticCell = elements(summary.doc, 'c').find(c => c.getAttribute('r') === 'J33')!
+  const cellXfs = elements(styles, 'cellXfs')[0]!
+  const xf = cellXfs.children[Number(domesticCell.getAttribute('s') || 0)]!.cloneNode(true) as Element
+  xf.setAttribute('numFmtId', String(formatId)); xf.setAttribute('applyNumberFormat', '1')
+  domesticCell.setAttribute('s', String(cellXfs.children.length)); cellXfs.append(xf); cellXfs.setAttribute('count', String(cellXfs.children.length))
+  zip['xl/styles.xml'] = serialize(styles)
   d.colorBoxCm.forEach((v, i) => s(`${['I', 'J', 'K'][i]}44`, v))
   d.cartonCm.forEach((v, i) => s(`${['I', 'J', 'K'][i]}46`, v)); s('H46', d.cartonPack)
   s('H49', total.tooling); s('H50', 0); s('H52', total.tooling)
@@ -473,10 +520,10 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
         if (item.weightG > 0 && divisor <= 0) throw new Error(`银辉 Tool Plan 第 ${r} 行原重量公式要求有效用量/出模数`)
         t(`E${r}`, item.usage); t(`F${r}`, item.cavity); t(`G${r}`, divisor ? item.weightG / divisor : 0)
         t(`I${r}`, item.material); t(`N${r}`, item.laborHkd)
-        if (w.has(`O${r}`) || item.weightG > 0) t(`O${r}`, yinhuiMaterialPrice(d, item.material))
+        if (w.has(`O${r}`) || item.weightG > 0) t(`O${r}`, yinhuiToolMaterialPrice(d, item))
         t(`R${r}`, item.toolingHkd)
       }
-      const plasticCost = item ? item.weightG * (yinhuiMaterialPrice(d, item.material) ?? 0) / 1000 : 0
+      const plasticCost = item ? item.weightG * (yinhuiToolMaterialPrice(d, item) ?? 0) / 1000 : 0
       t(`H${r}`, item?.weightG || 0); t(`P${r}`, plasticCost); t(`Q${r}`, plasticCost + (item?.laborHkd || 0))
     }
     for (const [col, value] of [['E', d.tools.reduce((a,r) => a + r.usage, 0)], ['H', d.tools.reduce((a,r) => a + r.weightG, 0)], ['N', total.injection], ['P', total.plastic - d.plastic.reduce((a,r) => a + r.amountHkd, 0)], ['R', total.tooling]] as const) t(`${col}${end}`, second ? 0 : value)
@@ -492,7 +539,7 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
     zip['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(zip['xl/worksheets/sheet1.xml']!).replace('</worksheet>', `<drawing xmlns:r="${REL}" r:id="product"/></worksheet>`))
     zip['[Content_Types].xml'] = strToU8(strFromU8(zip['[Content_Types].xml']!).replace('</Types>', `<Default Extension="${ext}" ContentType="image/${ext === 'jpg' ? 'jpeg' : 'png'}"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`))
   }
-  // Refresh caches after the explicit H32 fee formula correction; all other formulas stay intact.
+  // Refresh caches after the document fee and transport route updates.
   recalculateTemplate(zip)
   const output = zipSync(zip)
   const checked = parseXlsxWorkbook(output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer)
