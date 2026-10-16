@@ -140,7 +140,7 @@
       {
         "path": "src/components/CartonMarkAssetLibrary.vue",
         "symbol": "editStatus",
-        "sha256": "4df9b6ebc69cd53422e3d240bf10ca4b4322c1e57e1364555fb9b20088f012e2"
+        "sha256": "f42bc9fce748774a4160cb0d55df5d47722f852ec5393d5df6b1266e9e21b9a9"
       },
       {
         "path": "backend/app/services/carton_mark_asset_workflow.py",
