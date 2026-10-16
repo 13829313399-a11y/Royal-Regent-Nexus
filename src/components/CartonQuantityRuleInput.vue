@@ -13,11 +13,11 @@ function mode(event: Event) {
 function patch(values: Partial<PaperQuantityRule>) { emit('update:modelValue', { mode: 'PACKING', ...props.modelValue, ...values }) }
 </script>
 <template>
-  <fieldset :disabled="disabled" class="flex flex-wrap items-center gap-2 text-xs disabled:opacity-60">
-    <label>数量计算 <select :value="modelValue?.mode || 'PACKING'" :aria-label="`数量计算 ${index + 1}`" class="h-8 rounded border bg-white px-2" @change="mode"><option value="PACKING">产品数 ÷ 装箱数</option><option value="PER_CARTON">纸箱数 × 配套用量</option></select></label>
+  <fieldset :disabled="disabled" class="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-xs disabled:opacity-60">
+    <label class="flex min-w-0 max-w-full flex-wrap items-center gap-2"><span class="shrink-0 text-slate-500">数量计算</span><select :value="modelValue?.mode || 'PACKING'" :aria-label="`数量计算 ${index + 1}`" class="h-9 min-w-0 max-w-full rounded-lg border border-slate-200 bg-white px-2" @change="mode"><option value="PACKING">产品数 ÷ 装箱数</option><option value="PER_CARTON">纸箱数 × 配套用量</option></select></label>
     <template v-if="modelValue?.mode === 'PER_CARTON'">
-      <label>对应纸箱 <select :value="modelValue.carton_line_no ?? ''" :aria-label="`对应纸箱 ${index + 1}`" class="h-8 rounded border bg-white px-2" @change="patch({ carton_line_no: Number(($event.target as HTMLSelectElement).value) || null })"><option value="">请选择</option><option v-for="parent in parents" :key="parent.no" :value="parent.no">第 {{ parent.no }} 项 · {{ parent.line.packaging_type || '未命名' }}</option></select></label>
-      <label>每箱配 <input :value="modelValue.per_carton_quantity" :aria-label="`每箱配套用量 ${index + 1}`" type="number" min="0.0001" step="0.0001" class="h-8 w-20 rounded border px-2 text-right" @input="patch({ per_carton_quantity: ($event.target as HTMLInputElement).value })"> 张／个</label>
+      <label class="flex min-w-0 max-w-full flex-wrap items-center gap-2"><span class="shrink-0 text-slate-500">对应纸箱</span><select :value="modelValue.carton_line_no ?? ''" :aria-label="`对应纸箱 ${index + 1}`" class="h-9 min-w-0 max-w-full rounded-lg border border-slate-200 bg-white px-2" @change="patch({ carton_line_no: Number(($event.target as HTMLSelectElement).value) || null })"><option value="">请选择</option><option v-for="parent in parents" :key="parent.no" :value="parent.no">第 {{ parent.no }} 项 · {{ parent.line.packaging_type || '未命名' }}</option></select></label>
+      <label class="flex flex-wrap items-center gap-2"><span class="shrink-0 text-slate-500">每箱配</span><input :value="modelValue.per_carton_quantity" :aria-label="`每箱配套用量 ${index + 1}`" type="number" min="0.0001" step="0.0001" class="h-9 w-20 rounded-lg border border-slate-200 bg-white px-2 text-right" @input="patch({ per_carton_quantity: ($event.target as HTMLInputElement).value })"><span class="text-slate-500">张／个</span></label>
     </template>
   </fieldset>
 </template>

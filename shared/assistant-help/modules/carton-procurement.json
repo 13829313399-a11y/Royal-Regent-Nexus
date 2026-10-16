@@ -75,7 +75,7 @@
       {
         "path": "src/views/CartonProcurementView.vue",
         "symbol": "activeHeaderSearch",
-        "sha256": "ca38a0935bd284ce2936ff8d737b5d2194b8bef70bc07af8bfa3be7eea343de0"
+        "sha256": "0476da8e8deeba591c595e5153b810d4a16faad3040c44a0f943a41f6626cfa7"
       },
       {
         "path": "src/components/CartonSupplierReceiving.vue",
