@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from pydantic import ValidationError
 from sqlalchemy import select, func
@@ -16,6 +16,8 @@ from app.services import cutting_reporting as reporting, cutting_reporting_schem
 from app.services import cutting_usage as usage, cutting_usage_schemas as us
 from app.services import cutting_periods as periods, cutting_period_guards as period_guards, cutting_period_schemas as pcs
 from app.services import cutting_settlement as settlement, cutting_settlement_schemas as ss
+from app.services import cutting_payments as payments, cutting_payment_schemas as pay
+from app.services import cutting_exports as exports
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -53,8 +55,41 @@ def access(db: Db, user: User, factory_id: str = ''):
                 usage_schema_ready=usage.schema_ready(db.connection()) if enabled else False,
                 periods_schema_ready=period_guards.schema_ready(db.connection()) if enabled else False,
                 settlements_schema_ready=settlement.schema_ready(db.connection()) if enabled else False,
+                payments_schema_ready=payments.schema_ready(db.connection()) if enabled else False,
                 permissions=[code.split(':')[1] for code in
                 CUTTING_OPS_PERMISSION_CODES if c.allowed(user, code.split(':')[1])])
+
+
+@router.post('/exports/preview')
+def export_preview(body: exports.Selection, db: Db, user: User):
+    c.authorize(user, body.factory_id, exports.PERMISSIONS[body.kind])
+    orders_ready(db)
+    report = exports.capture(db, body)
+    return dict(token=periods.digest(report), title=exports.TITLES[body.kind], metadata=report['metadata'],
+                sheets=[dict(name=s['name'], rows=len(s['rows'])) for s in report['sheets']], delivery=report['delivery'])
+
+
+@router.post('/exports/download')
+def export_download(body: exports.Selection, request: Request, db: Db, user: User):
+    permission = exports.PERMISSIONS[body.kind]
+    c.authorize(user, body.factory_id, permission)
+    orders_ready(db)
+    report = exports.capture(db, body)
+    c.require(body.token and body.token == periods.digest(report), '报表依据或当前有效状态已变化，请重新预览导出')
+    report.update(token=body.token, captured_at=exports.business_now().isoformat())
+    db.rollback()  # XLSX generation holds no cutting/warehouse write lock.
+    content, extension = exports.package(report, user)
+    db.expire_all()
+    current = get_current_user(request, db)
+    c.require(current.id == user.id, '登录身份已变化，请重新导出', 403)
+    c.authorize(current, body.factory_id, permission)
+    orders_ready(db)
+    # Recheck after generation: do not download a newly reopened or changed live report unnoticed.
+    c.require(periods.digest(exports.capture(db, body)) == body.token, '生成期间报表依据发生变化，请重新预览导出')
+    filename = f'cutting-{body.kind}-{body.month}-{body.token[:12]}.{extension}'
+    return Response(content, media_type='application/zip' if extension == 'zip' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"', 'Cache-Control': 'no-store',
+                 'X-Content-Type-Options': 'nosniff', 'X-Cutting-Report-Token': body.token})
 
 
 @router.get('/masters')
@@ -76,7 +111,10 @@ def masters(db: Db, user: User, factory_id: str = '', kind: s.Kind = 'material',
 def settlement_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', document_id: str | None = None, event_id: str | None = None):
     c.authorize(user, factory_id, 'settlement_read')
     orders_ready(db)
-    return settlement.read(db, month, document_id, event_id)
+    result = settlement.read(db, month, document_id, event_id)
+    if document_id and c.allowed(user, 'payment_read'):
+        result['payment_dependencies'] = payments.blockers(db, document_id)
+    return result
 
 
 @router.get('/settlements/{month}/basis')
@@ -113,6 +151,49 @@ def settlement_recover(body: ss.Recover, db: Db, user: User):
     except ValidationError:
         return orders.recover_operation(db, user, identity, 'settlement-'+body.action, invalid_payload=body.command)
     return orders.recover_operation(db, user, parsed, 'settlement-'+body.action)
+
+
+@router.get('/payments/{month}')
+def payment_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', document_id: str | None = None, event_id: str | None = None):
+    c.authorize(user, factory_id, 'payment_read')
+    orders_ready(db)
+    return payments.read(db, month, document_id, event_id)
+
+
+@router.get('/payment-basis')
+def payment_basis(db: Db, user: User, factory_id: str = '', document_id: str | None = None):
+    c.authorize(user, factory_id, 'payment_read')
+    orders_ready(db)
+    return payments.basis(db, document_id)
+
+
+@router.post('/payment-preview')
+def payment_preview(body: pay.Save, db: Db, user: User):
+    c.authorize(user, body.factory_id, 'payment_read')
+    orders_ready(db)
+    return payments.preview(db, body)
+
+
+@router.post('/payments/{action}')
+def payment_write(action: pay.Action, body: dict, db: Db, user: User):
+    c.authorize(user, body.get('factory_id', ''), 'payment_read')
+    permission = 'payment_prepare' if action in {'save', 'submit'} else 'payment_reverse' if action == 'reverse' else 'payment_confirm'
+    c.authorize(user, body.get('factory_id', ''), permission)
+    orders_ready(db)
+    parsed = pay.parse(action, body)
+    return c.command(db, user, parsed, 'payment-'+action, lambda: payments.execute(db, user, parsed, action))
+
+
+@router.post('/payment-operations/recover')
+def payment_recover(body: pay.Recover, db: Db, user: User):
+    identity = s.OperationIdentity.model_validate({key: body.command.get(key) for key in ('factory_id', 'operation_id')})
+    c.authorize(user, identity.factory_id)
+    c.require(c.schema_ready(db.connection()), '付款操作回执需先完成迁移', 503)
+    try:
+        parsed = pay.parse(body.action, body.command)
+    except ValidationError:
+        return orders.recover_operation(db, user, identity, 'payment-'+body.action, invalid_payload=body.command)
+    return orders.recover_operation(db, user, parsed, 'payment-'+body.action)
 
 
 @router.get('/periods/{month}')

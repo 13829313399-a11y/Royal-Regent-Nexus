@@ -27,6 +27,24 @@ beforeEach(() => {
 })
 
 describe('carton-mark source repository', () => {
+  it('refreshes an order-specific supplier list when its issued version changes and discards the old response', async () => {
+    let finishOld!: (assets: unknown[]) => void
+    supplierApi.markAssets.mockReturnValueOnce(new Promise(resolve => { finishOld = resolve }))
+    const order = { ...asset.orders[0]!, issue_id: 'new-issue' }
+    supplierApi.markAssets.mockResolvedValueOnce([{ ...asset, file_name: 'current.pdf', orders: [order, { ...order, id: 'other-order', contract_no: 'OTHER-CONTRACT' }] }])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true, readOnly: true, orderId: 'order-a', supplierIssueId: 'old-issue' } })
+    await flushPromises()
+    const signal = supplierApi.markAssets.mock.calls[0]![1] as AbortSignal
+    await wrapper.setProps({ supplierIssueId: 'new-issue' }); await flushPromises()
+    expect(signal.aborted).toBe(true)
+    expect(wrapper.text()).toContain('current.pdf')
+    expect(wrapper.text()).not.toContain('OTHER-CONTRACT')
+    finishOld([{ ...asset, file_name: 'old.pdf', orders: [{ ...order, issue_id: 'old-issue' }] }]); await flushPromises()
+    expect(wrapper.text()).toContain('current.pdf')
+    expect(wrapper.text()).not.toContain('old.pdf')
+    wrapper.unmount()
+  })
+
   it('uploads per-file classifications and keeps failed file choices for retry', async () => {
     const files = [new File(['a'], '已确认.pdf'), new File(['b'], '制作中.pdf')]
     api.uploadAssets.mockResolvedValue([{ file_name: files[0]!.name, status: 'created', asset }, { file_name: files[1]!.name, status: 'failed', message: '文件损坏' }])

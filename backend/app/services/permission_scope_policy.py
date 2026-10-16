@@ -301,6 +301,8 @@ def permission_scope_policy(permission_code: str) -> ScopePolicy:
             departments = ("production", "accounting")
         if action in {"period_lock", "period_reopen", "settlement_confirm", "settlement_reopen"}:
             departments = ("accounting",)
+        if action in {"payment_read", "payment_prepare", "payment_confirm", "payment_reverse"}:
+            departments = ("accounting",)
         if action == "read":
             departments = ("production", "engineering", "pmc-warehouse", "accounting")
         return ScopePolicy(departments, guidance="仅华康C裁床；BOM与需求提交归工程，生产操作及月结编制归生产，采购交期归PMC/仓库，月结复核锁月及反结归会计；各操作和成本查询须单独授权")

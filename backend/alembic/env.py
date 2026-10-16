@@ -23,6 +23,7 @@ from app.models import (
     collaboration,  # noqa: F401
     cutting_ops,  # noqa: F401
     cutting_settlement,  # noqa: F401
+    cutting_payment,  # noqa: F401
     assistant,  # noqa: F401
     work_center,  # noqa: F401
     uv_operations,  # noqa: F401

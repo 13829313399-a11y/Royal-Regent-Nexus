@@ -25,6 +25,7 @@ import { dimensionUnitValue, useDimensionPreference, type DimensionUnit } from '
 import CartonMaterialCorrectionDialog from '@/components/CartonMaterialCorrectionDialog.vue'
 import CartonOrderMergeDialog from '@/components/CartonOrderMergeDialog.vue'
 import { orderSubmissionFor, type OrderSubmission } from '@/features/carton-procurement/orderSubmission'
+import { createRandomUuid } from '@/lib/randomUuid'
 import { isSupplierOrderSource, type SupplierOrderSource } from '@/features/carton-procurement/supplierOrderSource'
 import { useCartonMovementHistory } from '@/features/carton-procurement/useCartonMovementHistory'
 import { formatShanghaiMovementTime } from '@/lib/cartonMovementTime'
@@ -1287,8 +1288,12 @@ const allVisibleScheduleRowsSelected = computed(() => selectableVisibleScheduleR
   && selectableVisibleScheduleRows.value.every(row => selectedScheduleRowIds.value.includes(row.id)))
 const hiddenScheduleSelectionCount = computed(() => selectedScheduleRows.value.filter(row => !pagedWeeklyChecks.value.includes(row)).length)
 const activeScheduleSourceRows = computed(() => {
-  const batch = weeklyImportHistory.value.find(item => item.id === selectedWeeklyBatchId.value && item.status !== 'REJECTED')
-  return new Map((batch?.parse_summary.rows ?? []).map((source, index) => [`WK-${source.source_sheet ?? 'S'}-${source.source_row ?? index + 1}`, source]))
+  // History is paginated metadata; the selected detail owns the actionable rows.
+  const batch = activeWeeklyBatch.value?.id === selectedWeeklyBatchId.value
+    ? activeWeeklyBatch.value
+    : weeklyImportHistory.value.find(item => item.id === selectedWeeklyBatchId.value)
+  const rows = batch?.status !== 'REJECTED' ? batch?.parse_summary.rows ?? [] : []
+  return new Map(rows.map((source, index) => [`WK-${source.source_sheet ?? 'S'}-${source.source_row ?? index + 1}`, source]))
 })
 const scheduleOrderIndex = computed(() => {
   const index = new Map<string, CartonScheduleOrder[]>()
@@ -5602,7 +5607,7 @@ function restoreOrderQuantity(material: OrderFormMaterialLine) {
 
 function addOrderMaterialLine() {
   orderForm.materials.push({
-    id: `FORM-MAT-${crypto.randomUUID()}`,
+    id: `FORM-MAT-${createRandomUuid()}`,
     packagingType: '',
     paperQuality: '',
     specification: '',
