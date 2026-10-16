@@ -3087,6 +3087,29 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     wrapper.unmount()
   })
 
+  it('opens schedule placement from loaded details when history contains only summaries', async () => {
+    mockReceiptWorkspace([])
+    const source = pendingScheduleFixture('SC-SUMMARY-DETAIL', 5)
+    const batch = mockWeeklySchedule([source])
+    const summary = { ...batch, detail_loaded: false, parse_summary: { ...batch.parse_summary, rows: [] } }
+    cartonApiMock.listImportsPage.mockImplementation(async (_factory: string, kind: string) => ({
+      items: kind === 'WEEKLY_SCHEDULE' ? [summary] : [], total: kind === 'WEEKLY_SCHEDULE' ? 1 : 0,
+    }))
+    cartonApiMock.importDetail.mockResolvedValue(batch)
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    expect(cartonApiMock.importDetail).toHaveBeenCalledWith('huaxing', batch.id)
+    const action = wrapper.get('[aria-label="排期下单 SC-SUMMARY-DETAIL ITEM-SCHEDULE"]')
+    expect(action.attributes('disabled')).toBeUndefined()
+    await action.trigger('click'); await flushPromises()
+    const form = wrapper.get('[data-testid="order-form-overlay"] form')
+    expect(form.get<HTMLInputElement>('[aria-label="合同号"]').element.value).toBe(source.contract_no)
+    expect(form.get<HTMLInputElement>('[aria-label="客户 PO"]').element.value).toBe(source.source_reference)
+    expect(form.get<HTMLInputElement>('[aria-label="订单数量"]').element.value).toBe(String(source.quantity))
+    expect(form.text()).toContain('ITEM表 第 5 行')
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it.each(['正单', '加单'])('prefills a %s order from schedule information and reuses the saved draft instead of placing it twice', async (orderType) => {
     mockReceiptWorkspace([])
     const source = pendingScheduleFixture('SC-SCHEDULE-NEW', 4, { order_type: orderType })
@@ -6246,6 +6269,26 @@ it('brings each paper weight from master data into its own order row and clears 
     expect(form.get<HTMLInputElement>('[aria-label="纸品每箱净重 3"]').element.value).toBe('')
     expect(form.get<HTMLInputElement>('[aria-label="纸品每箱毛重 3"]').element.value).toBe('')
   } finally { wrapper.unmount(); get.mockRestore() }
+})
+
+it('adds paper rows without randomUUID on an HTTP origin and preserves entered details', async () => {
+  mockReceiptWorkspace([])
+  const wrapper = mountView('orders'); await flushPromises()
+  await findButton(wrapper, '新建纸箱订单').trigger('click'); await flushPromises()
+  const form = wrapper.get('[data-testid="order-form-overlay"] form')
+  await form.get('[aria-label="纸质 1"]').setValue('A33+B')
+  await form.get('[aria-label="规格 1"]').setValue('30*20*15')
+  vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+  try {
+    await findButton(wrapper, '新增纸品明细').trigger('click')
+    await form.get('[aria-label="纸质 2"]').setValue('B33')
+    await findButton(wrapper, '新增纸品明细').trigger('click')
+    expect(form.get<HTMLInputElement>('[aria-label="纸质 1"]').element.value).toBe('A33+B')
+    expect(form.get<HTMLInputElement>('[aria-label="规格 1"]').element.value).toBe('30*20*15')
+    expect(form.get<HTMLInputElement>('[aria-label="纸质 2"]').element.value).toBe('B33')
+    expect(form.get<HTMLInputElement>('[aria-label="纸质 3"]').element.value).toBe('')
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+  } finally { wrapper.unmount(); vi.unstubAllGlobals() }
 })
 
 it('adds paper through the common entry and preserves personal units without relabeling source dimensions', async () => {
