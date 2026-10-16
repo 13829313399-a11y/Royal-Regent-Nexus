@@ -7,6 +7,15 @@ import { draftSource } from './fixtures/yinhuiDraftSource'
 import { createXlsxWorkbook, parseXlsxWorkbook } from '../customerPriceConverters/xlsxLite'
 
 describe('Silverlit draft import', () => {
+  it('restores reviewed additional routes and RMB but never trusts saved resin prices', () => {
+    const draft = createYinhuiDraft(draftSource(false), '银辉81209.xlsx')
+    Object.assign(draft.result.quoteData, { freight20FtHkd: .8, freight40HqHkd: 0, freightLocalHkd: 1.2, domesticPriceRmb: 55.615 })
+    const saved = JSON.parse(saveYinhuiDraft(draft))
+    saved.review.tools[0].sourceMaterialPriceHkdKg = .001
+    const result = loadYinhuiDraft(JSON.stringify(saved)).result.quoteData
+    expect(result).toMatchObject({freight20FtHkd:.8,freight40HqHkd:0,freightLocalHkd:1.2,domesticPriceRmb:55.615})
+    expect(result.tools[0]!.sourceMaterialPriceHkdKg).not.toBe(.001)
+  })
   it('reopens older translated drafts with source Chinese and preserves new reviewed names', () => {
     const parsed = parseXlsxWorkbook(draftSource(false))
     parsed.sheets[0]!.rows[17]![2] = '螺丝 Φ2.0x6PB 黑色（2PCS）'
