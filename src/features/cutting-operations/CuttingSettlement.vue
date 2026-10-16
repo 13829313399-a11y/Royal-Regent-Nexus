@@ -10,6 +10,7 @@ import { orderProductName, unclassifiedStyle } from './orderDisplay'
 import { settlementApi, type FeeAction, type FeeBasis, type FeeBody, type FeeQuote, type FeeRecord, type FeeRow, type FeeSave, type FeeState, type FeeSnapshot } from './settlementApi'
 
 const props=defineProps<{access?:Access;accessLoading?:boolean}>()
+const emit=defineEmits<{payment:[month:string,id:string]}>()
 const currentMonth=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const month=ref(currentMonth),rights=ref<Access>(),record=ref<FeeRecord>(),basis=ref<FeeBasis>()
 const draft=ref<FeeSave>(),quote=ref<FeeQuote>(),quoteName=ref(''),reason=ref(''),error=ref(''),notice=ref(''),busy=ref(false)
@@ -40,6 +41,7 @@ function clearEvidence(){resetConfirmation();record.value=undefined;basis.value=
 watch([()=>props.access,()=>props.accessLoading],([value,loading])=>{
   generation++;rights.value=value
   if(!value&&loading)return
+  if(!value?.permissions.includes('payment_read')&&record.value)record.value.payment_dependencies=undefined
   if(!value?.enabled||!value.settlements_schema_ready||!value.permissions.includes('settlement_read'))clearEvidence()
 },{immediate:true})
 function canLeave(){if(pending.value||busy.value){notice.value='请先核对原外发结算操作结果。';return false}return !dirty.value||window.confirm('外发结算填写尚未保存，是否放弃并离开？')}
@@ -48,7 +50,7 @@ function beforeUnload(event:BeforeUnloadEvent){if(dirty.value||pending.value||bu
 window.addEventListener('beforeunload',beforeUnload)
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',beforeUnload)})
 function failed(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status?:number}}).response?.status;if(status===401||status===403){rights.value=undefined;clearEvidence()}return status}
-async function fresh(ticket:number){const value=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=value;if(!readable.value){clearEvidence();error.value='外发结算尚未启用或没有加工费查询权限。';return false}return true}
+async function fresh(ticket:number){const value=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=value;if(!value.permissions.includes('payment_read')&&record.value)record.value.payment_dependencies=undefined;if(!readable.value){clearEvidence();error.value='外发结算尚未启用或没有加工费查询权限。';return false}return true}
 async function load(documentId?:string,eventId?:string){
   if(busy.value||pending.value)return
   if(dirty.value&&!window.confirm('放弃未保存填写，读取所选外发结算记录？'))return
@@ -73,11 +75,12 @@ async function previewDraft(){
   try{if(!await fresh(ticket))return;const value=await settlementApi.preview(body);if(alive&&ticket===generation)preview.value=value}
   catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
-async function openStatement(targetMonth:string,id:string){
+async function openStatement(targetMonth:string,id:string,eventId?:string){
   if(!canLeave())return
   draft.value=undefined;quote.value=undefined;reason.value='';month.value=targetMonth
-  await load(id)
+  await load(id,eventId)
 }
+defineExpose({openStatement})
 function newDraft(){if(!basis.value||busy.value||pending.value||quote.value)return;record.value=undefined;draft.value={factory_id:CUTTING_FACTORY,operation_id:crypto.randomUUID(),expected_version:basis.value.revision,reason:'',document_id:crypto.randomUUID(),month:month.value,basis_token:basis.value.basis_token,selections:[],vendor_evidence:''}}
 function quantity(row:FeeRow){return draft.value?.selections.find(s=>s.line_id===row.line_id&&s.acceptance_id===row.acceptance_id)?.sets??0}
 function changeQuantity(row:FeeRow,event:Event){if(!draft.value)return;const value=Number((event.target as HTMLInputElement).value);draft.value.selections=draft.value.selections.filter(s=>!(s.line_id===row.line_id&&s.acceptance_id===row.acceptance_id));if(value!==0)draft.value.selections.push({line_id:row.line_id,acceptance_id:row.acceptance_id,sets:value})}
@@ -144,6 +147,10 @@ function changeMonth(event:Event){const input=event.target as HTMLInputElement;i
       <template v-if="record?.data&&!draft&&!quote">
         <p role="status">当前结算单状态：{{labels[record.state]}}。<span v-if="historical">正在查看历史版本，不计入当前有效应付。</span></p>
         <Button v-if="historical" variant="outline" :disabled="busy||!!pending" @click="load(record.document_id!)">返回当前结算版本</Button>
+        <div v-if="rights?.permissions.includes('payment_read')&&record.payment_dependencies?.length" class="cutting-notice">
+          <p>本结算单当前付款占用：待复核须先退回，已生效须整笔冲销登记，再办理反结。以下为当前占用，不是历史快照。</p>
+          <p v-for="item in record.payment_dependencies" :key="item.document_id">{{item.month}} · {{item.voucher_no}} · {{item.document_id}} · {{item.state==='submitted'?'待复核':'已生效'}} · 占用 {{item.amount}} {{item.currency}} <Button variant="outline" :disabled="busy||!!pending" @click="emit('payment',item.month,item.document_id)">定位占用付款</Button></p>
+        </div>
         <div v-if="record.dependencies?.length" class="cutting-notice"><p>以下后续占用须按列示顺序先处理，再退回或反结本单：</p><p v-for="item in record.dependencies" :key="item.document_id">{{item.month}} · {{item.document_id}} · {{labels[item.state]}} · 占用 {{item.sets}} 套 <Button variant="outline" :disabled="busy||!!pending" @click="openStatement(item.month,item.document_id)">定位后续结算单</Button></p></div>
         <p v-if="record.data.vendor_confirmation">外厂确认对应本版明细及金额 · 登记人：{{record.data.vendor_confirmation.actor}} · {{record.data.vendor_confirmation.date}}</p><p v-else class="cutting-notice">本版未登记明细及金额的外厂重新确认；历史已确认应付保持原快照，待复核单须退回重编。</p>
         <div v-if="comparison.length" class="cutting-table-scroll"><h4>与上一编制版本比较</h4><table><thead><tr><th>验收单</th><th>原套数 → 本次套数</th><th>原单价 → 本次单价</th><th>原金额 → 本次金额</th><th>金额差额</th></tr></thead><tbody><tr v-for="item in comparison" :key="item.key"><td>{{item.after?.acceptance_id??item.before?.acceptance_id}}</td><td>{{item.before?.sets??0}} → {{item.after?.sets??0}}</td><td>{{item.before?.price?.unit_price??'—'}} {{item.before?.price?.currency}} → {{item.after?.price?.unit_price??'—'}} {{item.after?.price?.currency}}</td><td>{{item.before?.amount??'0.00'}} {{record.previous_snapshot?.currency}} → {{item.after?.amount??'0.00'}} {{record.data.snapshot.currency}}</td><td>{{item.delta}}</td></tr></tbody></table></div>

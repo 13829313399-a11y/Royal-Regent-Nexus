@@ -12,7 +12,7 @@ from test_cutting_orders import flow, submitted
 @pytest.fixture
 def session_flow(flow, monkeypatch):
     submitted(flow)
-    AuthUser.metadata.create_all(flow.engine)
+    AuthUser.metadata.create_all(flow.engine, tables=[t for t in AuthUser.metadata.tables.values() if not t.name.startswith('cutting_ops_')])
     flow.app.include_router(auth_api.router)
     flow.app.dependency_overrides.pop(get_current_user)
     monkeypatch.setattr(auth_api.settings, 'session_cookie_secure', False)

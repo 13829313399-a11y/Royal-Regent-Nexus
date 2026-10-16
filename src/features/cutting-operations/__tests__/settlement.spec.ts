@@ -73,3 +73,14 @@ describe('subcontract reconciliation and frozen payables',()=>{
   })
 
 })
+
+it('shows payment blockers only to payment readers and emits cross-month payment target',async()=>{
+  const value=saved('confirmed');value.payment_dependencies=[{document_id:'payment-9',month:'2026-09',state:'submitted',amount:'2.50',currency:'CNY',voucher_no:'PAY-09'}]
+  vi.mocked(settlementApi.read).mockResolvedValue(value)
+  await open();await click('读取外发结算');expect(wrapper!.text()).not.toContain('PAY-09')
+  const rights={...access,permissions:[...access.permissions,'payment_read']};vi.mocked(cuttingApi.access).mockResolvedValue(rights);await wrapper!.setProps({access:rights})
+  await click('读取外发结算');expect(wrapper!.text()).toContain('PAY-09');await click('定位占用付款')
+  expect(wrapper!.findComponent(CuttingSettlement).emitted('payment')).toEqual([['2026-09','payment-9']])
+  await wrapper!.setProps({access});expect(wrapper!.text()).not.toContain('PAY-09')
+  await wrapper!.setProps({access:rights});expect(wrapper!.text()).not.toContain('PAY-09')
+})

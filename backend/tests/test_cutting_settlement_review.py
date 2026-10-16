@@ -70,7 +70,7 @@ def test_real_cookie_two_person_fee_flow(fees,monkeypatch):
     from app.services.auth import get_current_user, hash_password
     from test_cutting_session_auth import login
     p=fees
-    AuthUser.metadata.create_all(p.engine)
+    AuthUser.metadata.create_all(p.engine, tables=[t for t in AuthUser.metadata.tables.values() if not t.name.startswith('cutting_ops_')])
     p.app.include_router(auth_api.router)
     p.app.dependency_overrides.pop(get_current_user)
     monkeypatch.setattr(auth_api.settings,'session_cookie_secure',False)
