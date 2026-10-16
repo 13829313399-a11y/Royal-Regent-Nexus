@@ -1,8 +1,8 @@
 import type { CustomerPricingSettings } from '@/lib/customerPriceConverters/pricingSettings'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { strFromU8, unzipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
-import { buildYinhuiCustomerQuoteFileName, convertYinhuiInternalQuote, convertYinhuiP4InternalQuote, isYinhuiCustomer, validateYinhuiExport, yinhuiMaterialPrice, yinhuiTotals } from '@/lib/customerPriceConverters/yinhui'
+import { buildYinhuiCustomerQuoteFileName, convertYinhuiInternalQuote, convertYinhuiP4InternalQuote, isYinhuiCustomer, validateYinhuiExport, yinhuiMaterialPrice, yinhuiToolMaterialPrice, yinhuiTotals } from '@/lib/customerPriceConverters/yinhui'
 import { createYinhuiCustomerQuoteWorkbook, sanitizeYinhuiTemplate, YINHUI_SHEET_NAMES } from '@/lib/customerPriceConverters/yinhuiTemplate'
 import { createXlsxWorkbook, parseXlsxWorkbook, type XlsxCellInput } from '@/lib/customerPriceConverters/xlsxLite'
 import { P4_SECTION_CODES, type P4InternalQuoteArtifact } from '@/lib/customerPriceConverters/p4Artifact'
@@ -40,12 +40,24 @@ function formulaAndStyle(bytes: ArrayBuffer) {
   const zip = unzipSync(new Uint8Array(bytes))
   return YINHUI_SHEET_NAMES.map((_, i) => {
     const doc = new DOMParser().parseFromString(strFromU8(zip[`xl/worksheets/sheet${i + 1}.xml`]!), 'application/xml')
-    const formula = Array.from(doc.getElementsByTagName('c')).filter(c => c.getElementsByTagName('f').length && !(i === 0 && c.getAttribute('r') === 'J32')).map(c => [c.getAttribute('r'), new XMLSerializer().serializeToString(c.getElementsByTagName('f')[0]!)])
-    const style = Array.from(doc.getElementsByTagName('c')).map(c => [c.getAttribute('r'), c.getAttribute('s')])
+    const formula = Array.from(doc.getElementsByTagName('c')).filter(c => c.getElementsByTagName('f').length && !(i === 0 && /^(?:J32|[IJK](?:33|35|37))$/.test(c.getAttribute('r') || ''))).map(c => [c.getAttribute('r'), new XMLSerializer().serializeToString(c.getElementsByTagName('f')[0]!)])
+    const style = Array.from(doc.getElementsByTagName('c')).filter(c => !(i === 0 && /^(?:[HJ]33|[A-Z]+37)$/.test(c.getAttribute('r') || ''))).map(c => [c.getAttribute('r'), c.getAttribute('s')])
     const geometry = ['cols', 'mergeCells', 'pageMargins', 'pageSetup'].map(name => doc.getElementsByTagName(name)[0]?.outerHTML)
-    const heights = Array.from(doc.getElementsByTagName('row')).map(r => [r.getAttribute('r'), r.getAttribute('ht'), r.getAttribute('customHeight')])
+    const heights = Array.from(doc.getElementsByTagName('row')).filter(r => !(i === 0 && r.getAttribute('r') === '37')).map(r => [r.getAttribute('r'), r.getAttribute('ht'), r.getAttribute('customHeight')])
     return { formula, style, geometry, heights }
   })
+}
+function expectRmbStyleExtension(output: ArrayBuffer, original: ArrayBuffer) {
+  const read = (bytes: ArrayBuffer) => new DOMParser().parseFromString(strFromU8(unzipSync(new Uint8Array(bytes))['xl/styles.xml']!), 'application/xml')
+  const before = read(original); const after = read(output)
+  for (const tag of ['fonts', 'fills', 'borders', 'cellStyleXfs', 'cellStyles']) expect(after.getElementsByTagName(tag)[0]?.outerHTML).toEqual(before.getElementsByTagName(tag)[0]?.outerHTML)
+  for (const tag of ['numFmts', 'cellXfs']) {
+    const oldItems = Array.from(before.getElementsByTagName(tag)[0]?.children || [])
+    const newItems = Array.from(after.getElementsByTagName(tag)[0]?.children || [])
+    expect(newItems).toHaveLength(oldItems.length + 1)
+    expect(newItems.slice(0, -1).map(n => n.outerHTML)).toEqual(oldItems.map(n => n.outerHTML))
+  }
+  expect(Array.from(after.getElementsByTagName('numFmt')).at(-1)?.getAttribute('formatCode')).toBe('"RMB "#,##0.000')
 }
 function changedLegacy(change: (sheets: ReturnType<typeof parseXlsxWorkbook>['sheets']) => void) {
   const parsed = parseXlsxWorkbook(legacy())
@@ -63,6 +75,91 @@ function p4(): P4InternalQuoteArtifact {
 }
 
 describe('Silverlit temporary independent mapping', () => {
+  it.each(['ABS', 'PVC80', 'GPPS'])('converts source gram prices for %s without requiring a fixed resin mapping', resin => {
+    const source = changedLegacy(sheets => {
+      sheets[0]!.rows[10]![5] = '料价(G)'
+      sheets[0]!.rows[11]![3] = resin
+      sheets[0]!.rows[11]![5] = 7.2 / 454
+    })
+    const d = convertYinhuiInternalQuote(source, '银辉00012.xlsx').quoteData
+    expect(yinhuiToolMaterialPrice(d, d.tools[0]!)).toBeCloseTo(7.2 / 454 * 1000 * 1.1, 10)
+    expect(yinhuiTotals(d).plastic).toBeCloseTo(7.2 / 454 * 100 * 1.1, 10)
+    expect(yinhuiTotals(d).missingMaterialPrices).toEqual([])
+    expect(d.tools[0]!.material).toBe(resin)
+  })
+  it('uses P4 source pound prices with selected MOQ markup and settlement, once', () => {
+    const artifact = p4()
+    artifact.productName = '#88578 Mini Weenie'
+    artifact.sections.sales.payload.shipping = { markup_x: 9, selected_markup_moq: 5000, markup_tiers: [{ moq: 5000, markup_x: 1.15 }], misc_ratio: .04 }
+    const line = (artifact.sections.molding.calculation.line_breakdown as Record<string, unknown>[])[0]!
+    line.material_price_hkd_lb = 7.2
+    const result = convertYinhuiP4InternalQuote(artifact, '银辉88578.xlsx')
+    expect(yinhuiToolMaterialPrice(result.quoteData, result.quoteData.tools[0]!)).toBeCloseTo(7.2 / 454 * 1000 * 1.15 / .96, 10)
+    const first = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template)))
+    const second = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template)))
+    expect(first.sheets[4]!.rows[7]![14]).toBeCloseTo(18.9977973568, 8)
+    expect(second.sheets[0]!.rows[31]![9]).toBe(first.sheets[0]!.rows[31]![9])
+    line.material_price_hkd_lb = '#VALUE!'
+    expect(() => convertYinhuiP4InternalQuote(artifact, '银辉88578.xlsx')).toThrow(/胶料磅价/)
+  }, 15000)
+  it.each([['Screw φ2.0x8.0mm PB Fe White Zn Std *16pcs',16], ['Screw M2.6x8.0 PM MS blue Zn*2pcs',2], ['电池片 AAA 镀镍*2',2], ['Screw 2x8mm',1], ['电子(88578)',1], ['轴 φ2*8',1]])('extracts quantity from %s without changing its amount', (name, qty) => {
+    const source = changedLegacy(sheets => { sheets[0]!.rows[28]![2] = name })
+    const result = convertYinhuiInternalQuote(source, '银辉00012.xlsx')
+    expect(result.quoteData.mechanical[0]).toMatchObject({ quantity: qty, amountHkd: 1.1, description: name })
+  })
+  it('reads new legacy routes and the separately calculated RMB final quote', () => {
+    const source = changedLegacy(sheets => {
+      const rows = sheets[0]!.rows
+      rows[24]![6] = '盐田柜40GP'; rows[24]![7] = '盐田散LCL'; rows[24]![8] = '20FT'; rows[24]![9] = '40HQ'; rows[24]![10] = '内销（RMB）'
+      rows[35] = [null, '运费', null, null, null, null, .4, 1, .8, .2, 1]
+      rows[45]![10] = 55.615
+    })
+    const d = convertYinhuiInternalQuote(source, '银辉00012.xlsx').quoteData
+    expect(d.freight20FtHkd).toBeCloseTo(.8 * 1.1 - .1, 10)
+    expect(d.freight40HqHkd).toBeCloseTo(.2 * 1.1 - .1, 10)
+    expect(d.domesticPriceRmb).toBe(55.615)
+  })
+  it('keeps P4 40FT and 40HQ separate and carries the internal domestic price', () => {
+    const artifact = p4()
+    artifact.sections.sales.payload.customer_quote_fields = { yinhui: { domestic_price_rmb: 55.615 } }
+    artifact.sections.sales.calculation.totals = { freight_options: [
+      {route_key:'yt40',per_piece_hkd:1}, {route_key:'yt_lcl',per_piece_hkd:2},
+      {route_key:'yt20',per_piece_hkd:.8}, {route_key:'yt40hq',per_piece_hkd:.5},
+      {route_key:'hk40',per_piece_hkd:99},
+    ] }
+    const d = convertYinhuiP4InternalQuote(artifact, '银辉88578.xlsx').quoteData
+    expect(d).toMatchObject({freightFclHkd:1.1,freightLclHkd:2.2,freight40HqHkd:.55,domesticPriceRmb:55.615})
+    expect(d.freight20FtHkd).toBeCloseTo(.88)
+  })
+  it.each(Object.keys(YINHUI_PROFILES) as Array<keyof typeof YINHUI_PROFILES>)('exports 20FT, 40HQ and RMB independently in %s', profile => {
+    const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
+    Object.assign(result.quoteData, {templateId:profile,freight20FtHkd:1.0362,freight40HqHkd:.2235,freightLocalHkd:1.2186,domesticPriceRmb:55.615})
+    if (profile === '81283' || profile === '89127') {
+      const first = result.quoteData.tools[0]!
+      const weights = profile === '81283' ? {0:152.8,5:38.8,11:5.8} : {0:197,4:164,6:108}
+      result.quoteData.tools = Array.from({length:25}, (_, i) => ({...first, weightG: (weights as Record<number,number>)[i] || 0, laborHkd: i ? 0 : first.laborHkd}))
+    }
+    const variant = buffer(readFileSync(`public/templates/${YINHUI_PROFILES[profile].file}`))
+    const bytes = buffer(createYinhuiCustomerQuoteWorkbook(result, variant))
+    if (process.env.YINHUI_FEEDBACK_OUTPUT) writeFileSync(`${process.env.YINHUI_FEEDBACK_OUTPUT}/${profile}.xlsx`, new Uint8Array(bytes))
+    const read = parseXlsxWorkbook(bytes, {includeFormulas:true}); const summary = read.sheets[0]!
+    expect(summary.rows[32]![9]).toBe(55.615)
+    expect(summary.rows[32]![10]).toBe('')
+    expect(summary.cellFormulas?.J33).toBeUndefined()
+    expect(summary.rows[34]![9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory + 1.0362)
+    expect(summary.rows[36]![9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory + .2235)
+    expect(summary.rows[36]![1]).toBe('FOB YT FCL 40HQ')
+    expect(summary.rows[37]![3]).toBe(parseXlsxWorkbook(variant).sheets[0]!.rows[37]![3])
+    expectRmbStyleExtension(bytes, variant)
+    expect(formulaAndStyle(bytes)).toEqual(formulaAndStyle(variant))
+  }, 15000)
+  it('exports parsed quantities and divided unit costs with the same row total', () => {
+    const source = changedLegacy(sheets => { sheets[0]!.rows[28]![2] = 'Screw 2x8mm *16pcs' })
+    const result = convertYinhuiInternalQuote(source, '银辉00012.xlsx')
+    const read = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template)))
+    const row = read.sheets[2]!.rows.find(r => r[1] === 'Screw 2x8mm *16pcs')!
+    expect(row[7]).toBe(16); expect(row[8]).toBeCloseTo(1.1 / 16); expect(row[9]).toBeCloseTo(1.1)
+  })
   it('uses maintained material, labor and detail rates once for each conversion', () => {
     const definition = JSON.parse(readFileSync('shared/customerPriceDefaults.json', 'utf8')).yinhui
     const pricing: CustomerPricingSettings = { factory_id: 'huaxing', customer_id: 'yinhui', revision: 1, snapshot_id: 'y1', materials: definition.materials, rates: Object.fromEntries(Object.entries(definition.rates).map(([k,v]) => [k,(v as {value:number}).value])), texts: {}, updated_at: '', updated_by_name: '' }
@@ -102,7 +199,7 @@ describe('Silverlit temporary independent mapping', () => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
     const out = buffer(createYinhuiCustomerQuoteWorkbook(result, template))
     expect(formulaAndStyle(out)).toEqual(formulaAndStyle(template))
-    expect(unzipSync(new Uint8Array(out))['xl/styles.xml']).toEqual(unzipSync(new Uint8Array(template))['xl/styles.xml'])
+    expectRmbStyleExtension(out, template)
     const read = parseXlsxWorkbook(out)
     expect(read.sheets.map(s => s.name)).toEqual(YINHUI_SHEET_NAMES)
     expect(read.sheets[2]!.rows.flat()).toContain('螺丝M2(2PCS)')
@@ -117,7 +214,7 @@ describe('Silverlit temporary independent mapping', () => {
     expect(read.sheets[1]?.rows.flat().join(' ')).not.toContain('Documents / Customs Fee')
     expect(read.sheets[0]?.rows[33]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).lcl!,6)
     expect(read.sheets[3]?.rows[65]?.[10]).toBe(0)
-    expect(read.sheets[0]?.rows[32]?.[8]).toBe('#DIV/0!') // the unfilled original route, not a changed formula
+    expect(read.sheets[0]?.rows[32]?.[8]).toBe('') // missing optional routes stay blank
   }, 15_000)
   it('does not export source supplier sheets, sample product data, comments or external links', () => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
@@ -161,7 +258,7 @@ describe('Silverlit temporary independent mapping', () => {
     expect(parsed.sheets[0]?.rows[5]?.[2]).toBe('R0 / PRICE PENDING')
     expect(parsed.sheets[0]?.rows[31]?.[9]).toBeCloseTo(19.4, 6)
     expect(formulaAndStyle(output)).toEqual(formulaAndStyle(variant))
-    expect(unzipSync(new Uint8Array(output))['xl/styles.xml']).toEqual(unzipSync(new Uint8Array(variant))['xl/styles.xml'])
+    expectRmbStyleExtension(output, variant)
     expect(buildYinhuiCustomerQuoteFileName(result)).toContain('-待补料价.xlsx')
     result.quoteData.freightLclHkd = null
     expect(() => createYinhuiCustomerQuoteWorkbook(result, variant, {missingMaterialPricesConfirmed:true})).toThrow(/运费/)
@@ -437,7 +534,7 @@ describe('Silverlit temporary independent mapping', () => {
     const variant = buffer(readFileSync(`public/templates/${YINHUI_PROFILES[profile].file}`))
     const out = buffer(createYinhuiCustomerQuoteWorkbook(result, variant))
     expect(formulaAndStyle(out)).toEqual(formulaAndStyle(variant))
-    expect(unzipSync(new Uint8Array(out))['xl/styles.xml']).toEqual(unzipSync(new Uint8Array(variant))['xl/styles.xml'])
+    expectRmbStyleExtension(out, variant)
     expect(parseXlsxWorkbook(out).sheets[0]?.rows[31]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory, 6)
   })
   it('blocks changed weights when the 81283 reference formula contains a fixed weight constant', () => {

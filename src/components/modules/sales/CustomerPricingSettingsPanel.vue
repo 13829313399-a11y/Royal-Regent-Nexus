@@ -96,6 +96,7 @@ async function save() {
         <p class="text-xs text-slate-500">参数版本 {{ draft.revision }}<span v-if="draft.updated_at"> · {{ draft.updated_by_name }} · {{ draft.updated_at }}</span> · 倍率 1 表示不加乘；费率使用小数，如 0.1 表示 10%。</p>
         <fieldset :disabled="!canManage || saving" class="space-y-5 disabled:opacity-80">
           <div v-if="draft.materials.length || ['buzzbee', 'yinhui', 'three-sixty', 'dicky'].includes(customerId)">
+            <p v-if="customerId === 'yinhui'" class="mb-2 text-xs text-slate-600">银辉优先按原报价胶料单价及本单倍率换算；以下公斤价仅用于缺少原单价的旧资料。胶料倍率仍应用于本次转换，保存后须重新导入或恢复预览。</p>
             <div class="mb-2 flex items-center justify-between"><strong class="text-sm">报客料价</strong><button v-if="canManage" type="button" class="text-sm text-teal-700" @click="draft.materials.push({ material: '', price: 0, currency: customerId === 'three-sixty' ? 'USD' : 'HKD', unit: customerId === 'dicky' ? 'lb' : 'kg' })">新增料型</button></div>
             <div class="max-h-80 overflow-auto"><table class="w-full text-left text-sm"><thead class="sticky top-0 bg-slate-50"><tr><th class="p-2">料型／专用料价名称</th><th class="p-2">单价</th><th class="p-2">币种</th><th class="p-2">单位</th><th /></tr></thead><tbody>
               <tr v-for="(row, index) in draft.materials" :key="index" class="border-t border-slate-100">
