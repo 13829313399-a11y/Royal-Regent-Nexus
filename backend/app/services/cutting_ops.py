@@ -30,6 +30,8 @@ def allowed(user, action):
         departments = ('production', 'accounting')
     if action in {'period_lock', 'period_reopen', 'settlement_confirm', 'settlement_reopen'}:
         departments = ('accounting',)
+    if action in {'payment_read', 'payment_prepare', 'payment_confirm', 'payment_reverse'}:
+        departments = ('accounting',)
     if action == 'read':
         departments = ('production', 'engineering', 'pmc-warehouse', 'accounting')
     return any(authorization_decision(user, 'cutting_ops:' + action, FACTORY, department)[0] for department in departments)
@@ -124,6 +126,9 @@ def state(db, user, body, entity_id):
 
 def command_fingerprint(body, action):
     payload = body.model_dump(mode='json')
+    # Preserve receipts for pre-edit-base payment commands, including recovery.
+    if action == 'payment-save' and not payload.get('base_event_id'):
+        payload.pop('base_event_id', None)
     # Old pending settlement saves did not include this optional acknowledgement.
     if action == 'settlement-save' and not payload.get('vendor_confirmation_token'):
         payload.pop('vendor_confirmation_token', None)

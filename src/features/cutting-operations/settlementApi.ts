@@ -20,6 +20,7 @@ export type FeeBody=FeeSave|FeeQuote|FeeDecision
 export interface FeeBasis {month:string;cutoff:string;rows:FeeRow[];revision:number;basis_token:string}
 export interface FeeSnapshot {month:string;cutoff:string;resource_id:string;resource_name:string;currency:FeeCurrency;rows:Array<FeeRow&{sets:number;amount:string;prior_priced_sets:number}>;sets:number;total:string;tax_basis:'inclusive';vendor_evidence:string}
 export interface FeeRecord {
+  payment_dependencies?:Array<{document_id:string;month:string;state:'submitted'|'confirmed';amount:string;currency:FeeCurrency;voucher_no:string}>
   dependencies?:Array<{document_id:string;month:string;state:FeeState;sets:number;version:number}>
   totals?:Array<{state:FeeState;currency:FeeCurrency;sets:number;total:string}>
   previous_snapshot?:FeeSnapshot|null

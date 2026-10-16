@@ -274,6 +274,9 @@ def execute(db, user, body, action):
             data['replaces_id'] = current.id
             if action in {'return', 'reopen'}:
                 c.require(current.action == ('submit' if action == 'return' else 'confirm'), '仅待复核对账可退回，已确认结算须反结')
+                if action == 'reopen':
+                    from app.services.cutting_payments import guard_reopen
+                    guard_reopen(db, document_id)
                 # Later partial allocations depend on this rounded prefix. Do not
                 # silently change their frozen amounts when releasing this one.
                 blockers = dependencies(events, current)
