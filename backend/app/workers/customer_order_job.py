@@ -40,7 +40,10 @@ def compute(source):
         operation, args, kwargs = pickle.load(stream)
     if operation not in OPERATIONS:
         raise ValueError("Unsupported customer-order job")
-    if operation == "parse_workbook":
+    if operation.startswith("_jp_"):
+        from app.services.huakang_b_jp import intake
+        function = getattr(intake, operation)
+    elif operation == "parse_workbook":
         from app.services.customer_order_history import parse_workbook
         function = parse_workbook
     else:
