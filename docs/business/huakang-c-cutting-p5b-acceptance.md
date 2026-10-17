@@ -1,0 +1,123 @@
+# 华康 C 裁床部 P5b：全流程与正式岗位验收
+
+## 本批范围与完成标准
+
+本批按用户确认先完成**隔离验证与验收清单**，真实订单、原始凭据及员工账号后续指定。自动化通过只表示合成样本及列明场景通过，不表示 P5b 正式业务签字、P5c 或生产上线完成。
+
+新增 `backend/tests/test_cutting_p5b_acceptance.py`：临时 SQLite、V2 正式任职结构的独立合成账号、真实 Cookie 登录、真实 IAM 权限判断、真实业务 API 和 Excel 回读。账号包含任职、部门、任职周期及冻结权限包绑定，关闭 admin 验收例外，不替换登录依赖或业务处理函数。销售订单及其下发由已有服务生成合成前置样本，仓库物料目录及 IAM 账号为隔离夹具；**销售人员的订单录入／下发 UI 不在这条新增联动测试内**。测试局部执行裁床迁移，不代替完整目标环境迁移链验证。
+
+测试账号只存在于临时数据库；本批不修改真实账号、岗位授权、业务台账或现有服务开关。界面入口与业务操作继续沿用 P1～P5a；本批没有新增页面、数据库迁移或银行操作。
+
+## 岗位授权建议与验收边界
+
+以下为本批测试采用的最小权限组合及正式授权参考，不是已经生效的员工授权单。所有裁床权限带 `cutting_ops:` 前缀并要求 `read`；厂区限制为 `huakang-c`，部门须与表中一致。正式账号还需具备目标项目页面入口权限，验收时一并检查。
+
+| 岗位 | 部门 | 本批独立权限（省略公共 read） | 必须拒绝／职责边界 |
+| --- | --- | --- | --- |
+| 裁床文员 | production | order_receive、material_request、material_receive、report_write、return_write、handover_write、usage_write | 登记外发收回，不可验收、布料仓发料、改价、锁月、确认应付或付款；成本默认不可读 |
+| 裁床主管／验收负责人 | production | master_write、plan_write、plan_publish、report_review、acceptance_write、usage_review、cost_read、allocation_confirm、period_prepare、settlement_read、settlement_price、settlement_prepare | 负责外发验收，不代替文员登记收回；编制／提交不能替代会计确认；不能读取付款凭证 |
+| 工程 | engineering | bom_write、bom_publish、requisition_submit | 工程关联 BOM、核定套数并提交需求；不可回复采购交期或发布生产计划 |
+| 采购成本确认岗 | pmc-warehouse | eta_write、requisition_reconcile、cost_read、cost_write | 不因归属 PMC／仓库就自动获得发料或会计权限 |
+| 布料仓发料岗 | pmc-warehouse | 裁床 read；另授 fabric_operations:read、operate、correct（后两项同前缀） | 仓库实发不代替裁床签收；不授材料成本读／改价 |
+| 登记会计 | accounting | cost_read、settlement_read、payment_read、payment_prepare | 登记和提交付款，不能复核自己登记的付款 |
+| 复核会计 | accounting | cost_read、period_lock、period_reopen、settlement_read、settlement_confirm、settlement_reopen、payment_read、payment_confirm、payment_reverse | 复核／受控反结与冲销；没有付款编制权 |
+
+- 外发收回由文员使用 `return_write`，外发验收由主管使用 `acceptance_write`；两者保存、更正、作废和弃稿分别鉴权，历史单据也按自身业务类型处理。收回不计合格完成，验收仍受实收余额约束。原 `acceptance_write` 不再包含收回，不自动为旧角色或员工补授新权限；正式人员需通过任职权限包流程单独绑定。
+- 基础物料、资源维护的 `master_write` 当前属于生产部门；工程负责 BOM。正式组织若有专门资料维护岗，另行明确人员及授权，不给工程临时扩大部门范围。
+- `period_reopen`、`settlement_reopen`、`payment_reverse`、仓库 `correct` 均为独立更正权限；实际可授权另一个指定负责人，不要求普通复核人员全部具备。更正仍需原因和保留历史。
+- 方案要求登记会计与复核会计为不同员工。新增测试还模拟登记人误获 `payment_confirm`，服务端仍以同一操作者拦截自审，不能靠菜单隐藏实现双人复核。
+- 正式授权前同时检查既有角色、用户例外授权及显式拒绝；不得使用通配厂区／部门或管理员身份掩盖最小权限缺失。
+- V2 验收覆盖任职结束、绑定撤销、任职周期不符、部门停用及跨厂调岗后旧 Cookie 的即时拒绝；角色模板变化不静默改动已冻结授权，只有显式绑定新版本才改变权限。任职及权限包在联动测试中为夹具，真实任职确认／调岗管理操作另由 `test_identity_acceptance.py` 回归，不能声称已为员工完成正式授权。
+
+## 新增联动样本与预期对账
+
+统一合成业务时间固定在 2026 年 12 月，便于验证 10 月生产／锁月及 11 月付款；与运行当天、真实业务日期无关。
+
+| 环节 | 操作与数量／金额依据 | 应达到的结果 |
+| --- | --- | --- |
+| 接单与 BOM | 下发订单100件；工程确认2件／套，目标50套 | 订单数量与生产套数口径分开；工程发布并绑定 BOM |
+| 采购与排期 | 当前必需布料需求7米，后续非必需辅料8米；只回复布料10月12日到期 | 非必需料未回复不阻止预排；本厂25套＋外发25套，默认预计10月15日供数 |
+| 发料与签收 | 仓库入库20米；本厂实发4米，同日分签2.5米和1.5米；外发另实发并签收2米 | 仓库剩14米；签收不再次扣仓，文员无仓库访问权 |
+| 正常核定链路 | 主管将本厂两条及外发一条签收关联各自任务，按实际领料日核定并重新发布，保留首次基准 | 核定前无例外说明的日报被拒绝；核定后两种任务均可正常填数，不填例外原因 |
+| 本厂与外发 | 本厂完成10套、交接8套；外发自报20、收回18、验收合格15（不合格2）、交接14 | 合格完成25套、实际交数22套、未完成25套；自报和收回不直接当合格完成 |
+| 耗用与成本 | 正常耗用2米、损耗0.5米、现场余料1.5米；采购确认3.125 HKD／米 | 正常材料6.25 HKD、损耗1.56 HKD；未定价前为待计价，不补零 |
+| 在制与锁月 | 主管累计归属完工1.2米；月末另行确认并由会计锁定10月 | 完工3.75 HKD、在制0.8米／2.50 HKD；锁月后改原批次价被拒绝 |
+| 外发结算 | 主管确认2 CNY／套，15合格套中本次结10套并登记外厂确认依据 | 会计确认冻结应付20.00 CNY；主管不可自行确认 |
+| 跨月付款 | 登记会计录11月1日实付5 CNY，复核会计确认 | 已付5、未付15；待复核不计已付，有核销时不能反结结算 |
+| 异常与更正 | 相同付款保存请求重试及查询恢复；误授双人权限；整笔冲销并关联重登 | 不重复入账，自审被拒绝，旧确认版标记已冲销，重登后净已付仍为5 |
+| 导出及期初 | 回读内部冻结、结算冻结及11月付款 Excel；11月期初读取10月冻结在制 | 付款汇总精确为20／5／15；期初在制费用2.50 HKD；只读预览不建立期初流水 |
+| 反结与历史冻结 | 冲销付款、反结外发结算后单价改3 CNY并重结；内部反结后原批次价改4 HKD并重锁 | 新应付30 CNY，材料完工4.80／在制3.20／损耗2.00 HKD；旧版本标失效但原金额及各明细表保持不变 |
+
+本厂及外发均包含真实实发与签收；外发2米在本样本中未耗用，保留在外余料。退料和裁片核套由下列既有专项覆盖，不能将一条成功链路描述为穷尽所有组合。冻结 Excel 按列名核对数量、币种、金额、原实发、验收及结算事件来源，并比较旧版本全部材料／产量／追溯工作表。最小权限测试逐一比对7个岗位 API 权限集合，检查跨厂、成本／财务越权、运行中撤权及退出会话。
+
+## 关联回归与人工验收清单
+
+| 场景 | 自动化定位 | 正式验收所需资料／人员 | 正式状态 |
+| --- | --- | --- | --- |
+| 订单改版、BOM版本、非必需料、分批交期 | test_cutting_orders、test_cutting_p1c_completion、test_cutting_session_auth | 业务订单及工程 BOM、采购回复；业务／工程／采购签字 | 待指定 |
+| 本厂／外发计划、准备周期、实际签收核定、已发布变更原因 | test_cutting_planning、planningTools.spec、calendar.spec | 两种资源日历、实际签收及计划变更单；主管 | 待指定 |
+| 直接报套、裁片核套、外发收回／验收／交接、更正 | test_cutting_reporting、reporting.spec | 配套BOM、日报、验收及交接单；文员／验收人 | 待指定 |
+| 分批实发签收、退余料、历史余额、耗用与成本归集 | test_cutting_materials、test_cutting_usage、test_cutting_cost_allocation及cost_summary | 实发批次、签收单、退料单、盘余及成本凭据；仓库／采购／主管 | 待指定 |
+| 月末归集、连续重结、锁月更正拦截、冻结历史 | test_cutting_periods、test_cutting_period_concurrency、periods.spec、period-review.spec | 相邻两个月台账及月末归属；主管／会计 | 待指定 |
+| 外厂确认依据、部分结算、历史占用与恢复定位 | test_cutting_settlement及auth／review／limits／concurrency、settlement.spec | 外厂报价、对账确认及验收单；主管／会计 | 待指定 |
+| 双人付款、跨月更正、并发草稿、凭证防重、冲销关联 | test_cutting_payments及auth／concurrency、payments.spec | 已实付凭据及更正依据；两名不同会计 | 待指定 |
+| 导出冻结、历史失效、期间／来源、更正关联与权限复检 | test_cutting_exports、exports.spec、exportApi.spec | 冻结样本与导出文件逐项复核；会计 | 待指定 |
+| 期初多批核对、无关变更、输入保留、处理入口 | test_cutting_cutover、cutover.spec、location.spec | 原始历史资料、截止日及责任人 | 待指定 |
+| 竞争写入、重试、回滚与失效操作恢复 | 后端各 concurrency 专项及各阶段恢复测试 | 专用数据库与并发会话；技术／业务共同复核 | SQLite隔离回归；PostgreSQL留P5c |
+
+自动化不是人员签字。每个正式样本都应填写：样本编号、订单／任务／原实发／冻结版本ID、业务期间、预期与实际数量、单位／币种、金额、原始凭据位置、执行账号、复核账号、执行时间、异常及复测结果。敏感凭据存放在授权证据目录，不直接提交仓库。
+
+## 可重复执行的隔离验证
+
+在项目根目录使用统一运行器，按后端、前端、专项类型检查、完整构建顺序执行；任一步失败立即停止，退出码非0。每次建立新目录，保留源码指纹、日志、JUnit、跳过原因和合成冻结 Excel 的 SHA-256；执行中代码变化会将结果标记失效。证据保存在 `.tmp/cutting-p5b/<运行号>/`，正式移交前需复制至经授权的证据存储，临时目录不是长期备份。
+
+```powershell
+Set-Location D:\RR
+.\backend\.venv\Scripts\python.exe backend/scripts/verify_cutting_p5b.py --scope full
+# 岗位／联动／运行器、3 项 IAM、全部前端／类型／构建：改用 --scope focused
+# 仅岗位／联动／运行器及 3 项 IAM 核心回归：改用 --scope core
+# 检查 $LASTEXITCODE 和输出目录中的 report.json，不以跳过视为通过。
+```
+
+运行器强制隔离 SQLite 并清空外部 PostgreSQL 测试库地址，包含 `test_identity_acceptance.py`。PostgreSQL 用例跳过，结果记为 `passed_with_skips`，不能记为 PostgreSQL 验收通过。完整后端回归含临时数据库 Alembic 迁移验证。
+
+### 浏览器岗位验收与证据
+
+`backend/scripts/serve_cutting_p5b_fixture.py` 创建全新 SQLite 和合成账号，监听 `127.0.0.1:18000`；另启 Vite，绑定 `127.0.0.2:15173` 并设置 `VITE_API_PROXY_TARGET=http://127.0.0.1:18000`，从域名层隔离正常 `127.0.0.1` 的 Cookie。仅启动裁床、认证及仓库测试路由，非全应用启动验收；全局成员目录、消息等不在此服务范围。
+
+逐岗真实登录，核对文员申请刷新保稿、主管排期、工程 BOM、采购交期、仓库操作、登记会计与复核会计的入口和可用操作，并检查退出／失权后的受限页面。浏览器记录单独保存执行账号、URL、预期与实际结果、时间及截图，不能由 API 测试结果自动推断浏览器通过；不得把未操作的流程记为已操作。真实员工、全浏览器业务链和独立人工签字仍待正式验收。
+
+### 隔离验收执行记录
+
+- 岗位拆分前的 P5b 加固快照：统一 focused 运行器完成 19 项后端联动／运行器测试、3 项 IAM 定向回归、19 文件 229 项前端测试、裁床测试类型检查及完整构建，全部通过。另行完整 IAM 回归 14 项通过，仅有控制台记录，未并入前述 JUnit 计数。
+- 该快照归档于 `.tmp/cutting-p5b/20261017T012725Z-d7b1d9f5/p5b-evidence.zip`，附 SHA-256、源码指纹、日志、合成冻结 Excel 与浏览器记录。它早于收回／验收权限拆分，不作为拆分后的验收证据。
+- 浏览器覆盖七类合成岗位的入口／表单可见性、文员申请刷新保稿及撤权清空。仓库实际发料、会计付款复核全链路由 API 测试覆盖，尚未完成浏览器全流程。早期浏览器截图存在页面不匹配，已排除出归档；仅收录核对过的撤权截图，其余保留 DOM 记录。
+- 六区授权保护已调整：同权限刷新保稿，临时读取失败隐藏并保留输入，明确失权或会话切换清空旧表单，忽略过期响应。没有执行业务数据写入、员工授权或数据库迁移。
+- 首次全量后端尝试因 IAM 测试环境继承配置而中止，不计全量通过；一次前端并行回归因初始化／用例超时失败，降低运行器并发至 2 后全量通过，未放宽断言或超时。PostgreSQL、真实账号签字及 P5c 仍未验收。
+
+### 外发收回／验收权限拆分自查
+
+- 文员独立 `return_write`，主管独立 `acceptance_write`；权限目录随后端正常启动注册，不新增表结构、不批量赋权、不改历史事件。
+- 覆盖新建、草稿、更正、作废、弃稿、伪造业务类型、历史余额、原操作恢复及真实 V2 岗位正反向验证；页面按权限过滤业务类型并选择可操作的默认项。
+- 后端专项回归 119 项通过：`python -m pytest tests/test_cutting_reporting.py tests/test_cutting_session_auth.py tests/test_cutting_settlement.py tests/test_cutting_cost_allocation.py tests/test_cutting_p5b_acceptance.py -q -p no:cacheprovider`。使用项目 Python 和隔离临时 SQLite，JUnit 位于 `.tmp/return-permission-tests.xml`。
+- 独立审查未发现本次拆分的阻断问题；按审查建议补验原收回操作撤权后的本人恢复、他人／篡改请求拒绝、历史余额分权及助手帮助事实，共 4 项通过，JUnit 位于 `.tmp/return-permission-extra.xml`。与上项存在重叠，不合计为独立用例数。
+- `npm run test:unit -- src/features/cutting-operations/__tests__ --maxWorkers=2`：19 文件 235 项通过；最后同步职责文案后，`reporting.spec.ts` 19 项复验通过。
+- `node node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p tsconfig.cutting-tests.json` 通过。`npm run build` 完整通过（含 17 篇帮助来源校验、应用类型检查及图片翻译子项目）；仍有第三方 PURE 注释、大分块及插件耗时提示，不代表 P5c 性能验收完成。`git diff --check` 通过。
+- 已重启本地后端并只读确认两项权限均已注册，新收回权限未自动授予任何普通角色；前端 5173、后端 8000 均返回 200。真实员工账号仍由业务指定，不以 admin 代替岗位验收；本次未新做浏览器岗位全流程或 PostgreSQL 验收。
+- 修改文件：后端权限目录 `permission_codes.py`、路由 `api/cutting_operations.py`；前端 `reportingApi.ts`、`CuttingReportingPage.vue`；对应 reporting、session_auth、settlement、cost_allocation、P5b 后端测试及 reporting 前端测试。同步本方案岗位表、P2b 清单、总方案、项目记忆，以及助手帮助 `shared/assistant-help/modules/customer-orders.json` 的裁床职责与来源指纹。
+
+## 正式验收放行条件
+
+1. 指定真实订单、本厂及外发任务、分批物料、跨月凭据和两名独立会计；核对资料获得业务负责人确认。
+2. 在约定验收环境授权员工，逐项验证入口、可读范围、允许操作、禁止操作和撤权；记录实际账号，不以合成账号或 admin 替代。
+3. 按上表完成正常、异常、更正及恢复测试，数量／金额分单位、分币种一致；保存来源ID及冻结版本，未解决阻断问题不得通过。
+4. 业务、仓库、工程、采购、裁床与会计分别确认其负责部分；完成独立人工评审及正式验收签字后才能称 P5b 正式验收完成。
+5. P5c 的 PostgreSQL、长历史性能、六区多尺寸、原生 Excel／实体打印、备份恢复和上线回退仍须单独完成。本批不作生产发布决定。
+
+## 本批改动文件
+
+- `backend/tests/test_cutting_p5b_acceptance.py`：真实登录的合成全流程、最小岗位权限及更正／恢复联动验收。
+- `src/features/cutting-operations/__tests__/navigation.spec.ts`：月结停用时的只读表单请求拦截与业务表单隔离断言。
+- `src/features/cutting-operations/__tests__/payments.spec.ts`：付款测试控件的准确 DOM 类型。
+- `docs/business/huakang-c-cutting-module-plan.md`、本清单：当前阶段、对账样本、正式验收矩阵和执行证据。
+- `PROJECT_MEMORY.md`、`.gitignore`：更新长期验收边界，并允许本清单纳入版本管理。

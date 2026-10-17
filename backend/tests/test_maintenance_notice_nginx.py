@@ -78,7 +78,8 @@ def test_api_down_notice_and_all_business_routes_share_the_maintenance_gate(tmp_
         notice.publish(folder, "maintenance", notice_id=state["id"], now=NOW + timedelta(minutes=5))
         before = list(hits)
         for path in ["/modules/sales-business", "/api/foo", "/api/customer-orders/import",
-                     "/api/customer-order-ledger/imports/test", "/api/internal-quotes/test", "/api/tools/pdf-rename/preview"]:
+                     "/api/customer-order-ledger/imports/test", "/api/huakang-b-jp/preview",
+                     "/api/huakang-b-jp/references/confirmed/clear", "/api/internal-quotes/test", "/api/tools/pdf-rename/preview"]:
             code, body, _ = get(path, "POST" if path.startswith("/api/") else "GET")
             assert code == 503 and "系统正在维护" in body
         assert hits == before  # No business call reaches the API during cutover.
