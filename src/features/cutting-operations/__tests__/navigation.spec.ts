@@ -1,12 +1,19 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { CUTTING_BASE, CUTTING_WORKSPACES } from '../navigation'
 import { cuttingOperationsRoutes } from '../routes'
+import CuttingCutover from '../CuttingCutover.vue'
+import { cutoverApi } from '../cutoverApi'
+import CuttingWorkspaceShell from '../CuttingWorkspaceShell.vue'
+
+const accessMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span>当前账号</span>' } }))
-vi.mock('../api', () => ({ cuttingApi: { access: async () => ({ enabled: false, schema_ready: false, permissions: [] }) }, errorMessage: () => '服务不可用' }))
+vi.mock('../api', () => ({ cuttingApi: { access: accessMock }, errorMessage: () => '服务不可用' }))
+vi.mock('../cutoverApi', async importOriginal => ({ ...await importOriginal<typeof import('../cutoverApi')>(), cutoverApi: { preview: vi.fn() } }))
 let wrapper: VueWrapper | undefined
+beforeEach(() => { vi.clearAllMocks(); accessMock.mockReset().mockResolvedValue({ enabled: false, schema_ready: false, permissions: [] }) })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined })
 
 async function open(path: string) {
@@ -22,6 +29,64 @@ async function open(path: string) {
 }
 
 describe('cutting workspace entry', () => {
+  it('revalidates live authorization without losing drafts for unrelated changes or transient failures', async () => {
+    const rights = { enabled: true, schema_ready: true, permissions: ['read', 'material_request'] }
+    accessMock.mockResolvedValue(rights)
+    const router = createRouter({ history: createMemoryHistory(), routes: [{
+      path: CUTTING_BASE, component: CuttingWorkspaceShell,
+      children: [{ path: 'materials', component: { template: '<input aria-label="隔离申请草稿" />' } }],
+    }] })
+    await router.push(`${CUTTING_BASE}/materials?factory=huakang-c`)
+    wrapper = mount(RouterView, { attachTo: document.body, global: { plugins: [router] } })
+    await flushPromises()
+    const input = () => wrapper!.get<HTMLInputElement>('input')
+    await input().setValue('保留填写')
+    accessMock.mockResolvedValue({ ...rights, permissions: [...rights.permissions].reverse() })
+    window.dispatchEvent(new Event('authorization-context-changed'))
+    await flushPromises()
+    expect(input().element.value).toBe('保留填写')
+    accessMock.mockRejectedValue(new Error('offline'))
+    window.dispatchEvent(new Event('authorization-context-changed'))
+    await flushPromises()
+    expect(input().isVisible()).toBe(false)
+    expect(input().element.value).toBe('保留填写')
+    accessMock.mockResolvedValue(rights)
+    await wrapper!.get('[role="alert"] button').trigger('click')
+    await flushPromises()
+    expect(input().isVisible()).toBe(true)
+    expect(input().element.value).toBe('保留填写')
+    accessMock.mockResolvedValue({ ...rights, permissions: ['read'] })
+    window.dispatchEvent(new Event('authorization-context-changed'))
+    await flushPromises()
+    expect(input().element.value).toBe('')
+    await input().setValue('失权须清除')
+    accessMock.mockRejectedValue({ response: { status: 403 } })
+    window.dispatchEvent(new Event('cutting-authorization-recheck'))
+    await flushPromises()
+    expect(wrapper!.find('input').exists()).toBe(false)
+    expect(wrapper!.text()).toContain('旧表单已清除')
+  })
+  it('clears old session input immediately and ignores a late pre-boundary authorization response', async () => {
+    const rights = { enabled: true, schema_ready: true, permissions: ['read'] }
+    accessMock.mockResolvedValue(rights)
+    const router = createRouter({ history: createMemoryHistory(), routes: [{
+      path: CUTTING_BASE, component: CuttingWorkspaceShell,
+      children: [{ path: 'materials', component: { template: '<input aria-label="隔离申请草稿" />' } }],
+    }] })
+    await router.push(`${CUTTING_BASE}/materials?factory=huakang-c`)
+    wrapper = mount(RouterView, { attachTo: document.body, global: { plugins: [router] } })
+    await flushPromises()
+    await wrapper.get('input').setValue('旧账号内容')
+    let resolve!: (value: typeof rights) => void
+    accessMock.mockReturnValueOnce(new Promise(r => { resolve = r }))
+    window.dispatchEvent(new Event('authorization-context-changed'))
+    accessMock.mockRejectedValue({ response: { status: 401 } })
+    window.dispatchEvent(new Event('auth-session-boundary-changed'))
+    await flushPromises()
+    resolve(rights)
+    await flushPromises()
+    expect(wrapper.find('input').exists()).toBe(false)
+  })
   it('opens planning and navigates all six workspaces without dropping the factory', async () => {
     const router = await open(`${CUTTING_BASE}?factory=huakang-c`)
     expect(router.currentRoute.value.path).toBe(`${CUTTING_BASE}/planning`)
@@ -44,7 +109,14 @@ describe('cutting workspace entry', () => {
         expect(wrapper!.find('form').exists()).toBe(false)
       } else if (workspace.path === 'closing') {
         expect(wrapper!.text()).toContain('月结前核对尚未启用')
-        expect(wrapper!.find('form').exists()).toBe(false)
+        // P5a keeps a read-only preparation form; disabled access must still
+        // block requests, including a direct submit that bypasses the button.
+        const cutover = wrapper!.getComponent(CuttingCutover)
+        expect(cutover.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+        await cutover.get('form').trigger('submit')
+        await flushPromises()
+        expect(cutoverApi.preview).not.toHaveBeenCalled()
+        expect(wrapper!.findAll('form')).toHaveLength(cutover.findAll('form').length)
       } else {
         expect(wrapper!.text()).toContain('尚不能录入、保存或结算业务数据')
         expect(wrapper!.text()).toContain(workspace.empty)

@@ -396,7 +396,7 @@ def report_permission(db, line_id, body, action):
         entry=(document['posted'] or document['draft'] or document['history'][0])['data']['entry']
         kind=entry['kind']
     else: kind=body.entry.kind
-    return 'handover_write' if kind=='handover' else 'acceptance_write' if kind in {'return','accept'} else 'report_write'
+    return {'handover': 'handover_write', 'return': 'return_write', 'accept': 'acceptance_write'}.get(kind, 'report_write')
 
 
 @router.post('/orders/{line_id}/reports/{action}')
