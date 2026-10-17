@@ -23,7 +23,7 @@ describe('Univer trial adapter', () => {
     const task = example(), before = JSON.stringify(task)
     const data = trialWorkbook(task, task.workbook.sheets[0]!, [{ sheet: 0, address: 'B3', value: '00123' }])
     const sheet = data.sheets![TRIAL_SHEET_ID]!
-    expect(sheet.rowCount).toBe(3); expect(sheet.columnCount).toBe(4)
+    expect(sheet.rowCount).toBe(50); expect(sheet.columnCount).toBe(26)
     expect(sheet.rowData?.[0]?.h).toBe(40); expect(sheet.columnData?.[1]?.w).toBe(160)
     expect(sheet.mergeData).toContainEqual({ startRow: 0, startColumn: 0, endRow: 0, endColumn: 3 })
     expect(sheet.cellData?.[0]?.[0]?.s).toMatchObject({ bl: 1, fs: 14, bg: { rgb: '#ffee00' }, bd: { b: { cl: { rgb: '#123456' } } } })
@@ -49,6 +49,9 @@ describe('Univer trial adapter', () => {
     expect(() => stageFillChanges(task, [], [{ sheet: 0, address: 'B2', value: 1 }])).toThrow()
     task.editable_ranges = [{ sheet: 0, range: 'B2' }]; task.status = 'closed'
     expect(() => stageFillChanges(task, [], [{ sheet: 0, address: 'B2', value: 1 }])).toThrow()
+  })
+  it('rejects numbers above the server scalar bound before staging', () => {
+    expect(() => stageFillChanges(example(), [], [{ sheet: 0, address: 'B2', value: 1e101 }])).toThrow('1e100')
   })
   it.each(['=SUM(A1)', '  =1+1', 'x'.repeat(2001), '\u0000'])('rejects unsafe scalar input', value => {
     expect(() => stageFillChanges(example(), [], [{ sheet: 0, address: 'B2', value }])).toThrow()

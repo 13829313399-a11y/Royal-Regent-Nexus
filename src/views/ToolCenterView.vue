@@ -59,12 +59,9 @@ const isHuaxing = computed(() => appStore.activeFactoryId === 'huaxing'
 const renameActive = computed(() => isHuaxing.value && route.query.tool === 'pdf-batch-rename')
 const sheetsActive = computed(() => route.query.tool === 'collaborative-sheets')
 function selectSheets() {
-  const query = { ...route.query }
-  if (sheetsActive.value) delete query.tool
-  else query.tool = 'collaborative-sheets'
-  focused.value = false
-  void router.replace({ query })
+  void router.push({ path: '/collaborative-sheets', query: { factory: appStore.activeFactoryId } })
 }
+watch(sheetsActive, active => { if (active) void router.replace({ path: '/collaborative-sheets', query: { factory: appStore.activeFactoryId } }) }, { immediate: true })
 function selectRename(active: boolean) {
   const query = { ...route.query }
   if (active && isHuaxing.value) query.tool = 'pdf-batch-rename'

@@ -10,7 +10,7 @@ import { departments } from '@/data/enterpriseMock'
 import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard'
 import { canFill, clipboardRows, columnName, parseInput, rangeBounds } from './grid'
 import FillGrid from './FillGrid.vue'
-import { stageFillChanges } from './univerAdapter'
+import { useSheetSync } from './useSheetSync'
 import './workspace.css'
 
 const UniverFillGrid = defineAsyncComponent(() => import('./UniverFillGrid.vue'))
@@ -22,15 +22,49 @@ async function toggleTrial() {
   trialEditor.value = !trialEditor.value; trialEditing.value = false
 }
 
-const props = defineProps<{ factoryId: string }>()
+const props = defineProps<{ factoryId: string; accountId?: string }>()
 const tasks = ref<FillTask[]>([]), task = ref<FillTaskDetail>()
 const recipients = ref<FillRecipients>({ users: [], departments: [] })
 const busy = ref(false), loading = ref(false), error = ref(''), notice = ref('')
 const title = ref(''), file = ref<File>(), showUpload = ref(false), filter = ref('all')
 const activeSheet = ref(0), selected = ref<FillCell>(), editorText = ref('')
 const editorKind = ref<'auto' | 'text' | 'number' | 'boolean'>('auto'), editorTouched = ref(false)
-const changes = ref<FillChange[]>([]), conflict = ref(false), conflictReview = ref<string[]>([])
+const changes = ref<FillChange[]>([])
+const sync = useSheetSync(task, changes, () => props.factoryId, () => props.accountId ?? '')
+const showPeople = ref(false), showTasks = ref(true), showHistory = ref(false)
+const downloading = ref(false), downloadStatus = ref('')
+const historyRows = ref<FillTaskDetail['activity']>([]), historyActor = ref(''), historyAddress = ref('')
+const historyNext = ref<number | null>(null), historyLoading = ref(false), historyError = ref('')
+let historyGeneration = 0
+async function loadHistory(more = false) {
+  if (!task.value) return
+  const generation = ++historyGeneration, id = task.value.id
+  historyLoading.value = true; historyError.value = ''
+  try {
+    const result = await api.history(props.factoryId, id, { before: more ? historyNext.value ?? undefined : undefined, actor: historyActor.value || undefined, sheet: historyAddress.value ? activeSheet.value : undefined, address: historyAddress.value.trim().toUpperCase() || undefined })
+    if (!alive || generation !== historyGeneration || task.value?.id !== id) return
+    historyRows.value = more ? [...historyRows.value, ...result.items] : result.items; historyNext.value = result.next_before
+  } catch (e) { if (alive && generation === historyGeneration) historyError.value = getApiErrorMessage(e) }
+  finally { if (generation === historyGeneration) historyLoading.value = false }
+}
+function historyChanges(event: FillTaskDetail['activity'][number]) { return (event.detail.changes ?? []) as { sheet: number; address: string; before: SheetValue; after: SheetValue }[] }
+watch([historyActor, historyAddress, activeSheet], () => { if (showHistory.value) void loadHistory() })
+watch(showHistory, value => { if (value) void loadHistory() })
 const grants = ref<FillGrant[]>([]), grantsDirty = ref(false), showGrants = ref(false)
+const grantsRevision = ref(0)
+let grantsBaseline = ''
+const grantsConflict = ref(false)
+watch(() => task.value?.revision, revision => {
+  if (!task.value) return
+  const snapshot = JSON.stringify(task.value.grants)
+  if (!grantsDirty.value) { grants.value = task.value.grants.map(g => ({ ...g })); grantsBaseline = snapshot; grantsConflict.value = false }
+  if (snapshot === grantsBaseline) grantsRevision.value = revision ?? 0
+  else grantsConflict.value = true
+})
+function reloadGrants() {
+  if (!task.value || !window.confirm('分配设置已被其他页面更新。放弃本页未保存的分配设置并读取最新设置吗？填写内容不受影响。')) return
+  grants.value = task.value.grants.map(g => ({ ...g })); grantsBaseline = JSON.stringify(task.value.grants); grantsRevision.value = task.value.revision; grantsDirty.value = false; grantsConflict.value = false
+}
 const grantType = ref<'user' | 'department'>('department'), grantPrincipal = ref(''), grantSheet = ref(0)
 const startColumn = ref<number | ''>(''), startRow = ref<number | ''>(''), endColumn = ref<number | ''>(''), endRow = ref<number | ''>('')
 const grantDepartments = ref<string[]>([]), departmentPicker = ref<HTMLDetailsElement>()
@@ -61,7 +95,7 @@ const participantLabels = { not_started: '未填写', in_progress: '已保存 ·
 const completedCount = computed(() => participants.value.filter(p => p.status === 'completed').length)
 const selectedPeople = computed(() => recipients.value.users.filter(u => grantType.value === 'department' ? selectedPrincipals.value.includes(u.department) : u.id === grantPrincipal.value))
 const sheet = computed(() => task.value?.workbook.sheets.find(s => s.index === activeSheet.value))
-const dirty = computed(() => changes.value.length > 0 || editorTouched.value || trialEditing.value || grantsDirty.value)
+const dirty = computed(() => changes.value.length > 0 || editorTouched.value || trialEditing.value || grantsDirty.value || sync.saving.value)
 const visibleTasks = computed(() => tasks.value.filter(t => filter.value === 'all' || (filter.value === 'mine' ? t.is_owner : !t.is_owner)))
 const selectedEditable = computed(() => !!(task.value && sheet.value && selected.value && canFill(task.value, sheet.value, selected.value.row, selected.value.column)))
 const principalOptions = computed(() => grantType.value === 'department'
@@ -85,6 +119,7 @@ function time(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
 }
 function confirmLeave() {
+  if (sync.saving.value) { error.value = '正在确认保存结果，请稍候再离开。'; return false }
   return !dirty.value || window.confirm('有尚未保存的填写内容或分配设置，确定离开并放弃这些修改吗？')
 }
 defineExpose({ confirmLeave })
@@ -128,19 +163,22 @@ function adopt(detail: FillTaskDetail, reset = true) {
   if (!detail.workbook.sheets.some(s => s.index === grantSheet.value)) grantSheet.value = detail.workbook.sheets[0]?.index ?? 0
   if (!detail.workbook.sheets.some(s => s.index === activeSheet.value)) activeSheet.value = detail.workbook.sheets[0]?.index ?? 0
   grants.value = detail.grants.map(g => ({ ...g }))
+  grantsRevision.value = detail.revision
+  grantsBaseline = JSON.stringify(detail.grants); grantsConflict.value = false
   grantsDirty.value = false
-  if (reset) { changes.value = []; selected.value = undefined; editorTouched.value = false; conflictReview.value = [] }
+  if (reset) { changes.value = []; selected.value = undefined; editorTouched.value = false; historyRows.value = []; historyGeneration++ }
   const idx = tasks.value.findIndex(t => t.id === detail.id)
   if (idx >= 0) tasks.value.splice(idx, 1, detail)
   else tasks.value.unshift(detail)
+  sync.start()
 }
 async function openTask(item: FillTask) {
   if (busy.value || !confirmLeave()) return
   const request = ++loadSequence
-  busy.value = true; error.value = ''; notice.value = ''; conflict.value = false
+  busy.value = true; error.value = ''; notice.value = ''
   try {
     const result = await api.detail(props.factoryId, item.id)
-    if (alive && request === loadSequence) { activeSheet.value = 0; adopt(result); showGrants.value = result.status === 'draft'; showUpload.value = false }
+    if (alive && request === loadSequence) { activeSheet.value = 0; adopt(result); showGrants.value = result.status === 'draft'; showUpload.value = false; showTasks.value = false }
   } catch (e) { if (alive) error.value = getApiErrorMessage(e) }
   finally { if (alive && request === loadSequence) busy.value = false }
 }
@@ -173,7 +211,7 @@ function applyEditor(): boolean {
   try {
     const value = parseInput(editorText.value, editorKind.value)
     const key = { sheet: sheet.value.index, address: selected.value.address }
-    changes.value = stageFillChanges(task.value, changes.value, [{ ...key, value }])
+    changes.value = sync.stage( [{ ...key, value }])
     editorTouched.value = false
     return true
   } catch (e) { error.value = e instanceof Error ? e.message : '填写内容无效'; return false }
@@ -181,8 +219,8 @@ function applyEditor(): boolean {
 function stageTrialChanges(batch: FillChange[]): boolean {
   if (!task.value || busy.value) return false
   try {
-    changes.value = stageFillChanges(task.value, changes.value, batch)
-    error.value = ''; notice.value = '填写内容已暂存，请点击“保存填写”保存到服务器。'
+    changes.value = sync.stage( batch)
+    error.value = ''; notice.value = ''
     cancelEditor(); return true
   } catch (e) { error.value = e instanceof Error ? e.message : '填写内容无效'; return false }
 }
@@ -196,9 +234,22 @@ function selectCell(cell: FillCell) {
   editorTouched.value = false
   return true
 }
-function inlineInput(text: string) { editorText.value = text; editorTouched.value = true }
+function beginCell(cell: FillCell) { sync.begin({ sheet: activeSheet.value, address: cell.address }) }
+function beginSelected() { if (selected.value) beginCell(selected.value) }
+function inlineInput(text: string) { beginSelected(); editorText.value = text; editorTouched.value = true }
+watch(sync.updated, () => {
+  if (!selected.value || !sheet.value || editorTouched.value || trialEditing.value) return
+  const current = sheet.value.cells.find(c => c.address === selected.value!.address)
+  if (!current) return
+  selected.value = current
+  const pending = changes.value.find(c => c.sheet === activeSheet.value && c.address === current.address)
+  const value = pending ? pending.value : current.value
+  editorText.value = value === null ? '' : String(value)
+  editorKind.value = value === null ? 'auto' : typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'boolean' : 'text'
+})
 function cancelEditor() {
   if (!selected.value) return
+  sync.cancel({ sheet: activeSheet.value, address: selected.value.address })
   const pending = changes.value.find(c => c.sheet === activeSheet.value && c.address === selected.value!.address)
   const value = pending ? pending.value : selected.value.value
   editorText.value = value === null ? '' : String(value); editorTouched.value = false; error.value = ''
@@ -215,7 +266,7 @@ function pasteCells(anchor: FillCell, text: string, literal?: { value: SheetValu
       if (typeof value === 'string' && (value.length > 2000 || value.trimStart().startsWith('=') || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))) throw new Error(`${address} 内容过长、包含公式或不支持的字符，本次粘贴未写入。`)
       batch.push({ sheet: activeSheet.value, address, value })
     }))
-    changes.value = stageFillChanges(task.value, changes.value, batch); error.value = ''; notice.value = `已粘贴 ${batch.length} 格，点击“保存填写”保存到服务器。`
+    changes.value = sync.stage( batch); error.value = ''; notice.value = `已粘贴 ${batch.length} 格，将自动保存到服务器。`
     selected.value = anchor; cancelEditor(); return true
   } catch (e) { error.value = e instanceof Error ? e.message : '粘贴失败'; return false }
 }
@@ -225,50 +276,14 @@ async function selectSheet(index: number) {
 }
 async function save(): Promise<boolean> {
   if (!task.value || busy.value || !(await finishTrial()) || !applyEditor()) return false
-  if (!changes.value.length) return true
-  busy.value = true; error.value = ''; notice.value = ''
-  try {
-    const localGrants = grantsDirty.value ? grants.value.map(g => ({ ...g })) : undefined
-    const result = await api.save(props.factoryId, task.value, changes.value)
-    if (!alive) return false
-    adopt(result); conflict.value = false; notice.value = '填写内容已保存到服务器。'
-    if (localGrants) { grants.value = localGrants; grantsDirty.value = true; notice.value += '分配设置仍未保存。' }
-    return true
-  } catch (e) {
-    if (alive) {
-      error.value = getApiErrorMessage(e)
-      conflict.value = (e as { response?: { status?: number } }).response?.status === 409
-    }
-    return false
-  } finally { if (alive) busy.value = false }
+  const saved = await sync.flush()
+  if (saved) notice.value = '填写内容已保存到服务器。' + (grantsDirty.value ? '分配设置仍未保存。' : '')
+  return saved
 }
-async function reload(keepChanges = false) {
-  if (!task.value || busy.value || (!keepChanges && !confirmLeave())) return
-  if (keepChanges && (!(await finishTrial()) || !applyEditor())) return
-  busy.value = true; error.value = ''
-  try {
-    const result = await api.detail(props.factoryId, task.value.id)
-    if (!alive) return
-    const pending = changes.value
-    const pendingGrants = keepChanges && grantsDirty.value ? grants.value.map(g => ({ ...g })) : undefined
-    const comparison = pending.map(c => {
-      const previous = task.value?.workbook.sheets.find(s => s.index === c.sheet)?.cells.find(x => x.address === c.address)?.value ?? null
-      const current = result.workbook.sheets.find(s => s.index === c.sheet)?.cells.find(x => x.address === c.address)?.value ?? null
-      return previous !== current ? `${sheetName(c.sheet)} ${c.address}：服务器已改为“${current ?? '空白'}”，你的填写是“${c.value ?? '空白'}”。` : ''
-    }).filter(Boolean)
-    adopt(result)
-    if (keepChanges) {
-      changes.value = pending
-      conflictReview.value = comparison
-      notice.value = '已读取最新版本，并保留你的待保存内容。请核对后再点击保存。'
-      if (pendingGrants) {
-        grants.value = pendingGrants; grantsDirty.value = true
-        notice.value += '你的分配设置也已保留，请核对服务器上的分配后再保存设置。'
-      }
-    }
-    conflict.value = false
-  } catch (e) { if (alive) error.value = getApiErrorMessage(e) }
-  finally { if (alive) busy.value = false }
+async function reload() {
+  if (!task.value || busy.value) return
+  await sync.pull()
+  notice.value = '已核对服务器更新，你的未保存填写仍保留。'
 }
 function resetGrantSelection() {
   grantPrincipal.value = ''; grantDepartments.value = []
@@ -301,11 +316,12 @@ function addGrant() {
 }
 async function saveGrants() {
   if (!task.value || busy.value) return
+  if (grantsConflict.value) { grantError.value = '其他页面已调整分配，请读取最新分配设置后重新选择。'; return }
   grantError.value = ''; grantNotice.value = ''
   if (changes.value.length || editorTouched.value || trialEditing.value) { grantError.value = '请先保存填写内容，再保存分配设置。'; return }
   busy.value = true; error.value = ''
   try {
-    const result = await api.grants(props.factoryId, task.value, grants.value)
+    const result = await api.grants(props.factoryId, { ...task.value, revision: grantsRevision.value }, grants.value)
     if (alive) { adopt(result); notice.value = '填写对象和范围已保存。'; grantNotice.value = notice.value }
   } catch (e) { if (alive) grantError.value = getApiErrorMessage(e) }
   finally { if (alive) busy.value = false }
@@ -332,18 +348,23 @@ async function submit() {
   finally { if (alive) busy.value = false }
 }
 async function download() {
-  if (!task.value || busy.value) return
-  if (dirty.value) { error.value = '请先保存所有修改，再下载汇总版本。'; return }
-  busy.value = true; error.value = ''
+  if (!task.value || busy.value || downloading.value) return
+  if (grantsDirty.value) { error.value = '请先保存分配设置，再下载。'; return }
+  if (!(await save())) { error.value = '填写尚未保存，请先处理同步提示再下载。'; return }
+  const target = task.value
+  downloading.value = true; downloadStatus.value = '正在生成汇总…'; error.value = ''
   try {
-    const blob = await api.download(props.factoryId, task.value)
-    if (!alive) return
+    const blob = await api.download(props.factoryId, target, (loaded, total) => {
+      if (!alive) return
+      downloadStatus.value = total ? `正在下载 ${Math.round(loaded / total * 100)}%` : `正在下载 ${(loaded / 1024 / 1024).toFixed(1)} MB`
+    })
+    if (!alive || task.value?.id !== target.id) return
     const url = URL.createObjectURL(blob), anchor = document.createElement('a')
-    anchor.href = url; anchor.download = task.value.original_name.replace(/(\.[^.]+)$/, '-已填写$1')
-    anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 10_000)
-    notice.value = '已下载服务器保存的填写版本。原始上传文件仍然保留。'
-  } catch (e) { if (alive) error.value = getApiErrorMessage(e) }
-  finally { if (alive) busy.value = false }
+    anchor.href = url; anchor.download = target.original_name.replace(/(\.[^.]+)$/, '-已填写$1')
+    document.body.appendChild(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    downloadStatus.value = '文件已接收，已交给浏览器保存。'
+  } catch (e) { if (alive) { error.value = getApiErrorMessage(e); downloadStatus.value = '下载失败，可重试；已保存填写不受影响。' } }
+  finally { if (alive) downloading.value = false }
 }
 onMounted(() => {
   void initialize()
@@ -363,8 +384,9 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
 <template>
   <section class="cs-workspace" aria-label="协同填表">
     <div class="cs-heading">
-      <div><h2>协同填表</h2><p>上传原表，指定部门或账号填写，集中保存后下载。</p></div>
+      <div><h2>协同填表工作台</h2><p>原表格式 · 多人填写 · 自动保存</p></div>
       <div class="cs-actions">
+        <Button variant="outline" @click="showTasks = !showTasks">{{ showTasks ? '收起任务列表' : '展开任务列表' }}</Button>
         <Button variant="outline" :disabled="busy || loading || factoryId === 'group'" @click="initialize"><RefreshCw :size="16" />刷新任务</Button>
         <Button :disabled="busy || factoryId === 'group'" @click="showUpload = !showUpload"><Upload :size="16" />上传表格</Button>
       </div>
@@ -372,11 +394,12 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
     <p v-if="factoryId === 'group'" class="cs-message">请先在顶部选择你所属的厂区，再上传或填写表格。</p>
     <p v-if="error" class="cs-error" role="alert">{{ error }}</p>
     <p v-if="notice" class="cs-message" role="status">{{ notice }}</p>
-    <div v-if="conflict" class="cs-warning" role="alert">
-      <p>服务器上的表格已更新，你的填写内容仍保留在本页。</p>
-      <Button variant="outline" :disabled="busy" @click="reload(true)">读取最新版本（保留我的填写）</Button>
+    <p v-if="sync.message.value" class="cs-warning" role="status">{{ sync.message.value }}</p>
+    <div v-for="c in sync.conflicts.value" :key="`${c.sheet}:${c.address}`" class="cs-warning" role="alert">
+      <strong>{{ sheetName(c.sheet) }} {{ c.address }} · {{ c.actor_name }} 已修改</strong>
+      <p>服务器：{{ c.value ?? '空白' }}；我的填写：{{ changes.find(x => x.sheet === c.sheet && x.address === c.address)?.value ?? '空白' }}</p>
+      <div class="cs-actions"><Button variant="outline" @click="sync.resolve(c, false)">采用服务器内容</Button><Button @click="sync.resolve(c, true)">确认保留我的填写</Button></div>
     </div>
-    <div v-if="conflictReview.length" class="cs-warning"><strong>以下单元格需要核对后再保存</strong><p v-for="line in conflictReview" :key="line">{{ line }}</p></div>
     <SectionPanel v-if="showUpload" title="新建填报任务" subtitle="上传后先设置填写范围，再发布给指定人员。">
       <form class="cs-upload-form" @submit.prevent="create">
         <label>任务名称<input v-model="title" required maxlength="160" placeholder="例如：2026 年货款汇总" :disabled="busy" /></label>
@@ -384,8 +407,8 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
         <Button type="submit" :disabled="busy || !file || !title.trim()">{{ busy ? '正在处理…' : '上传并设置填写范围' }}</Button>
       </form>
     </SectionPanel>
-    <div v-if="factoryId !== 'group'" class="cs-layout">
-      <aside class="cs-task-list" aria-label="填报任务列表">
+    <div v-if="factoryId !== 'group'" class="cs-layout" :class="{ 'cs-focus': !showTasks }">
+      <aside v-show="showTasks" class="cs-task-list" aria-label="填报任务列表">
         <label>任务范围<select v-model="filter"><option value="all">全部可见任务</option><option value="mine">我上传的</option><option value="assigned">分配给我的</option></select></label>
         <p v-if="loading">正在加载…</p>
         <p v-else-if="!visibleTasks.length" class="cs-empty">暂无填报任务。上传表格后即可分配填写。</p>
@@ -399,10 +422,11 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
           <div class="cs-actions">
             <Button variant="outline" :disabled="busy" @click="reload()"><RefreshCw :size="15" />读取最新</Button>
             <Button v-if="task.is_owner" variant="outline" :disabled="busy || changes.length > 0 || editorTouched" @click="showGrants = !showGrants">分配填写</Button>
-            <Button v-if="task.is_owner" variant="outline" :disabled="busy" @click="download"><Download :size="15" />下载汇总</Button>
+            <Button v-if="task.is_owner" variant="outline" :disabled="busy || downloading" @click="download"><Download :size="15" />{{ downloading ? downloadStatus : '下载汇总' }}</Button>
           </div>
         </div>
         <div v-if="task.is_owner && showGrants" class="cs-assignment">
+          <div v-if="grantsConflict" class="cs-warning">分配设置已在其他页面更新。<Button variant="outline" @click="reloadGrants">读取最新分配设置</Button></div>
           <h4>填写对象与范围</h4>
           <p>参与人员可查看整张表，只能填写分配的区域。请避开表头；公式始终只读。</p>
           <div class="cs-grant-form">
@@ -452,18 +476,21 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
           <Button :disabled="busy || !grantsDirty || changes.length > 0 || editorTouched" @click="saveGrants">保存分配设置</Button>
         </div>
         <div class="cs-status-bar">
+          <span role="status">{{ trialEditing || editorTouched ? '当前单元格编辑中，确认此格后自动保存' : sync.status.value }}</span>
+          <span v-if="downloadStatus" role="status">{{ downloadStatus }}</span>
           <span v-if="busy">正在处理，请稍候…</span>
-          <span v-else-if="changes.length || editorTouched">有未保存的填写内容</span><span v-else>当前显示已读取的服务器版本</span>
+
           <div class="cs-actions">
             <template v-if="task.status === 'open'">
-              <Button :disabled="busy || (!changes.length && !editorTouched && !trialEditing)" @click="save"><Save :size="15" />保存填写</Button>
+              <Button :disabled="busy || sync.saving.value || (!changes.length && !editorTouched && !trialEditing)" @click="save"><Save :size="15" />保存填写</Button>
               <Button v-if="task.editable_ranges.length" variant="outline" :disabled="busy || grantsDirty" @click="submit">我已填完</Button>
             </template>
             <Button v-if="task.is_owner && task.status !== 'open'" :disabled="busy || dirty || !task.grants.length" @click="changeState('open')">{{ task.status === 'draft' ? '发布填报' : '重新开放填写' }}</Button>
             <Button v-if="task.is_owner && task.status === 'open'" variant="outline" :disabled="busy || dirty" @click="changeState('closed')">结束填报</Button>
           </div>
         </div>
-        <section class="cs-participants" aria-label="填写人员与进度">
+        <div class="cs-panel-switches"><Button variant="outline" @click="showPeople = !showPeople">填写进度 {{ completedCount }}/{{ participants.length }}</Button><Button variant="outline" @click="showHistory = !showHistory">修改记录</Button></div>
+        <section v-show="showPeople" class="cs-participants" aria-label="填写人员与进度">
           <div class="cs-heading"><h4>填写人员与进度 <small>{{ completedCount }} / {{ participants.length }} 人已完成</small></h4><Button variant="outline" :disabled="busy" @click="refreshParticipants">刷新人员状态</Button></div>
           <p>按已保存的分配列出当前厂区全部有效账号。已保存内容后，点击“我已填完”才会标为已完成。</p>
           <p v-if="grantsDirty" class="cs-roster-note">分配设置尚未保存，下面仍显示服务器上的名单。</p>
@@ -473,22 +500,22 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
             <div v-for="person in participants" :key="person.user_id" :class="['cs-person', `cs-person-${person.status}`]" :data-participant="person.user_id">
               <strong>{{ person.display_name }}</strong><span>{{ departmentName(person.department) }}</span>
               <b>{{ participantLabels[person.status] }}</b>
-              <small v-if="person.last_saved_at">最近保存 {{ time(person.last_saved_at) }}</small>
+              <small v-if="person.last_saved_at">最近保存 {{ time(person.last_saved_at) }} <button type="button" @click="historyActor = person.user_id; historyAddress = ''; showHistory = true">查看修改</button></small>
               <small v-else-if="person.submitted_at">确认时间 {{ time(person.submitted_at) }}</small>
             </div>
           </div>
           <p v-if="!participants.length" class="cs-empty">尚无有效填写账号，请先保存填写对象和范围。</p>
         </section>
-        <div v-if="task.workbook.warnings.length" class="cs-warning"><p v-for="warning in task.workbook.warnings" :key="warning">{{ warning }}</p></div>
         <div class="cs-actions"><Button variant="outline" :disabled="busy" :aria-pressed="trialEditor" @click="toggleTrial">{{ trialEditor ? '使用原版编辑器' : '使用新版编辑器' }}</Button><span>{{ trialEditor ? '新版编辑器' : '原版编辑器' }} · 切换时保留待保存内容</span></div>
         <div class="cs-sheet-tabs" role="tablist" aria-label="工作表"><button v-for="s in task.workbook.sheets" :key="s.index" type="button" role="tab" :aria-selected="s.index === activeSheet" :disabled="busy" @click="selectSheet(s.index)">{{ s.name }}</button></div>
         <div v-if="sheet" class="cs-cell-editor">
           <template v-if="selected">
             <strong>{{ selected.address }}</strong>
+            <Button variant="outline" @click="historyAddress = selected.address; historyActor = ''; showHistory = true">此格记录</Button>
             <template v-if="selectedEditable && !trialEditor">
-              <label class="cs-type-label">类型<select v-model="editorKind" :disabled="busy" @change="editorTouched = true"><option value="auto">自动识别</option><option value="text">文字</option><option value="number">数字</option><option value="boolean">是 / 否</option></select></label>
-              <select v-if="editorKind === 'boolean'" v-model="editorText" aria-label="填写内容" :disabled="busy" @change="editorTouched = true"><option value="">空白</option><option value="true">是</option><option value="false">否</option></select>
-              <textarea v-else v-model="editorText" aria-label="填写内容" rows="2" :disabled="busy" placeholder="输入内容；清空表示留空" @input="editorTouched = true" />
+              <label class="cs-type-label">类型<select v-model="editorKind" :disabled="busy" @change="beginSelected(); editorTouched = true"><option value="auto">自动识别</option><option value="text">文字</option><option value="number">数字</option><option value="boolean">是 / 否</option></select></label>
+              <select v-if="editorKind === 'boolean'" v-model="editorText" aria-label="填写内容" @focus="beginSelected" :disabled="busy" @change="beginSelected(); editorTouched = true"><option value="">空白</option><option value="true">是</option><option value="false">否</option></select>
+              <textarea v-else v-model="editorText" aria-label="填写内容" @focus="beginSelected" rows="2" :disabled="busy" placeholder="输入内容；清空表示留空" @input="beginSelected(); editorTouched = true" />
               <Button variant="outline" :disabled="busy || !editorTouched" @click="applyEditor">确认此格</Button>
             </template>
             <span v-else>{{ selectedEditable ? '可填写，请在下方表格中编辑。' : selected.formula ? '公式单元格，只读。' : task.status !== 'open' ? '填报尚未开放或已结束。' : '该单元格不在你的填写范围。' }}</span>
@@ -496,13 +523,22 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
           <span v-else>选中单元格直接打字，或双击修改。Enter / Tab 换格，Esc 取消，支持从 Excel 粘贴多格。</span>
           <small v-if="sheet">范围 A1:{{ columnName(sheet.columns - 1) }}{{ sheet.rows }}</small>
         </div>
-        <UniverFillGrid v-if="sheet && trialEditor" ref="trialGrid" :key="`${task.id}:${sheet.index}:${task.revision}`" :task="task" :sheet="sheet" :changes="changes" :selected="selected?.address ?? ''"
-          :disabled="busy" :select-cell="selectCell" :stage-changes="stageTrialChanges" @editing="trialEditing = $event" @error="error = $event" @save="save" />
+        <UniverFillGrid v-if="sheet && trialEditor" ref="trialGrid" :key="`${task.id}:${sheet.index}`" :task="task" :sheet="sheet" :changes="changes" :selected="selected?.address ?? ''"
+          :disabled="busy || sync.blocked.value" :select-cell="selectCell" :stage-changes="stageTrialChanges" :begin-cell="beginCell" :end-cell="cell => sync.cancel({ sheet: activeSheet, address: cell.address })" :remote-changes="sync.updated.value" @editing="trialEditing = $event" @error="error = $event" @save="save" />
         <FillGrid v-else-if="sheet" :key="`${task.id}:${sheet.index}`" :task="task" :sheet="sheet" :changes="changes" :selected="selected?.address ?? ''"
-          :text="editorText" :disabled="busy" :select-cell="selectCell" :commit-editor="applyEditor" :cancel-editor="cancelEditor" :paste-cells="pasteCells"
-          @input="inlineInput" @begin="editorKind = 'auto'" @text-mode="editorKind = 'text'" @save="save" />
-        <p class="cs-grid-help">{{ trialEditor ? '选中单元格后，上方会显示是否可填写。' : '浅绿色区域可填写，黄色表示尚未保存。' }}修改后点击“保存填写”或 Ctrl / ⌘ + S；公式和未授权区域只读。</p>
+          :text="editorText" :disabled="busy || sync.blocked.value" :select-cell="selectCell" :commit-editor="applyEditor" :cancel-editor="cancelEditor" :paste-cells="pasteCells"
+          @input="inlineInput" @begin="editorKind = 'auto'; beginSelected()" @text-mode="editorKind = 'text'" @save="save" />
+        <p class="cs-grid-help">{{ trialEditor ? '选中单元格后，上方会显示是否可填写。' : '浅绿色区域可填写，黄色表示尚未保存。' }}内容自动保存，也可按 Ctrl / ⌘ + S 立即保存；全表可查看，公式和未授权区域只读。</p>
+        <div v-if="showHistory" class="cs-history">
+          <div class="cs-actions"><h4>谁修改了哪些单元格</h4><Button variant="outline" @click="showHistory = false">关闭记录</Button><label>填写人<select v-model="historyActor"><option value="">全部填写人</option><option v-for="p in participants" :key="p.user_id" :value="p.user_id">{{ p.display_name }}</option></select></label><label>当前工作表单元格<input v-model="historyAddress" placeholder="例如 E2，留空查看全部" /></label><Button variant="outline" @click="loadHistory()">刷新记录</Button></div>
+          <p v-if="historyError" role="alert">{{ historyError }}</p>
+          <p v-if="historyLoading">正在读取修改记录…</p>
+          <p v-else-if="!historyRows.length">当前条件下暂无记录。</p>
+          <article v-for="a in historyRows" :key="a.id"><strong>{{ a.actor_name }} · {{ time(a.created_at) }}</strong><p v-for="c in historyChanges(a)" :key="`${c.sheet}:${c.address}`"><b>{{ sheetName(c.sheet) }} {{ c.address }}</b>：{{ c.before ?? '空白' }} → {{ c.after ?? '空白' }}</p></article>
+          <Button v-if="historyNext" variant="outline" :disabled="historyLoading" @click="loadHistory(true)">更早记录</Button>
+        </div>
         <div class="cs-evidence">
+          <details v-if="task.workbook.warnings.length"><summary>原表与下载说明</summary><p v-for="warning in task.workbook.warnings" :key="warning">{{ warning }}</p></details>
           <details><summary>最近操作</summary><p v-if="!task.activity?.length">暂无操作记录。</p><p v-for="a in task.activity ?? []" :key="a.id">{{ a.actor_name }} · {{ actionName(a.action) }} · {{ time(a.created_at) }}</p></details>
         </div>
       </div>
