@@ -1,4 +1,14 @@
-import type { FillSheet, FillTaskDetail, SheetValue } from '@/api/collaborativeSheets'
+import type { FillCell, FillSheet, FillTaskDetail, SheetValue } from '@/api/collaborativeSheets'
+
+const indexes = new WeakMap<FillSheet, { cells: FillCell[]; length: number; map: Map<string, FillCell> }>()
+export function findCell(sheet: FillSheet, address: string) {
+  let index = indexes.get(sheet)
+  if (!index || index.cells !== sheet.cells || index.length !== sheet.cells.length) {
+    index = { cells: sheet.cells, length: sheet.cells.length, map: new Map(sheet.cells.map(c => [c.address, c])) }
+    indexes.set(sheet, index)
+  }
+  return index.map.get(address)
+}
 
 export function columnName(index: number): string {
   let name = ''
@@ -22,7 +32,8 @@ export function rangeBounds(range: string): [number, number, number, number] | n
 }
 export function canFill(task: FillTaskDetail, sheet: FillSheet, row: number, column: number): boolean {
   if (task.status !== 'open') return false
-  if (sheet.cells.find(c => c.row === row && c.column === column)?.formula) return false
+  const cell = findCell(sheet, `${columnName(column)}${row + 1}`)
+  if (cell?.formula || cell?.image) return false
   if (row < 0 || column < 0 || row >= sheet.rows || column >= sheet.columns) return false
   if (sheet.merges.some(range => {
     const b = rangeBounds(range)

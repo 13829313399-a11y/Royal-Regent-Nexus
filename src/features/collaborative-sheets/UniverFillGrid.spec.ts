@@ -9,16 +9,18 @@ const engine = vi.hoisted(() => {
   return { handlers, dispose: vi.fn(), remove: vi.fn(), sync: vi.fn(), end: vi.fn(), create: vi.fn() }
 })
 vi.mock('@univerjs/presets', () => ({
-  LocaleType: { ZH_CN: 'zhCN' },
+  LocaleType: { ZH_CN: 'zhCN' }, mergeLocales: (...args: unknown[]) => Object.assign({}, ...args),
   createUniver: () => ({ univer: { dispose: engine.dispose }, univerAPI: {
     Event: new Proxy({}, { get: (_, key) => key }), createWorkbook: engine.create, syncExecuteCommand: engine.sync,
-    getActiveWorkbook: () => ({ getId: () => 'workbook', endEditingAsync: engine.end }),
+    getActiveWorkbook: () => ({ getId: () => 'workbook', endEditingAsync: engine.end, getActiveSheet: () => ({ setActiveRange: vi.fn(), getRange: vi.fn() }) }),
     addEvent: (name: string, callback: (event: any) => void) => {
       engine.handlers.set(name, callback)
       return { dispose: () => { engine.remove(name); engine.handlers.delete(name) } }
     },
   } }),
 }))
+vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: vi.fn() }))
+vi.mock('@univerjs/preset-sheets-drawing/locales/zh-CN', () => ({ default: {} }))
 vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: vi.fn() }))
 vi.mock('@univerjs/preset-sheets-core/locales/zh-CN', () => ({ default: {} }))
 

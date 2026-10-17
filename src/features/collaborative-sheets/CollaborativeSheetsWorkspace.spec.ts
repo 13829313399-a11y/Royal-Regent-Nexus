@@ -21,6 +21,7 @@ const example = (): FillTaskDetail => ({
     ],
   }] },
 })
+const saved = vi.fn()
 let wrapper: VueWrapper | undefined
 const button = (text: string) => wrapper!.findAll('button').find(b => b.text().includes(text))!
 async function chooseRange(start: string, end = start) {
@@ -43,11 +44,12 @@ async function render() {
   await flushPromises()
 }
 beforeEach(() => {
+  saved.mockReset()
   vi.spyOn(api, 'list').mockResolvedValue({ items: [example()] })
   vi.spyOn(api, 'recipients').mockResolvedValue({ users: [{ id: 'u2', display_name: '填写人', department: 'sales-business' }], departments: [{ id: 'sales-business', name: '营业部' }] })
   vi.spyOn(api, 'detail').mockResolvedValue(example())
   vi.spyOn(api, 'participants').mockResolvedValue({ id: 't1', revision: 1, status: 'open', participants: [] })
-  vi.spyOn(api, 'save').mockImplementation(async (_factory, task, changes) => {
+  saved.mockImplementation(async (_factory, task, changes) => {
     const result = example(); result.revision = task.revision + 1
     for (const c of changes) {
       const cell = result.workbook.sheets[c.sheet]!.cells.find(x => x.address === c.address)
@@ -55,6 +57,12 @@ beforeEach(() => {
     }
     return result
   })
+  vi.spyOn(api, 'sync').mockImplementation(async (factory, id, request) => {
+    const result = await saved(factory, { ...example(), id, revision: request.expected_revision }, request.changes.map(({ sheet, address, value }) => ({ sheet, address, value })))
+    return { id, revision: result.revision, applied_revision: result.revision, status: result.status, grants: result.grants, editable_ranges: result.editable_ranges, overrides: null,
+      events: [{ id: `save-${result.revision}`, actor_name: '填写人', action: 'cells_saved', revision: result.revision, created_at: '', detail: { changes: request.changes.map(c => ({ sheet: c.sheet, address: c.address, before: c.base_value, after: c.value })) } }] }
+  })
+  vi.spyOn(api, 'changes').mockResolvedValue({ ...example(), overrides: null, events: [] })
   vi.spyOn(api, 'grants').mockResolvedValue(example())
   vi.spyOn(api, 'state').mockResolvedValue({ ...example(), status: 'closed' })
   vi.spyOn(api, 'submit').mockResolvedValue(example())
@@ -63,6 +71,15 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.restoreAllMocks() })
 
 describe('协同填表', () => {
+  it('refreshes untouched upper-field text before a later type-only edit', async () => {
+    await render(); await wrapper!.get('[data-cell=B2]').trigger('click')
+    vi.mocked(api.changes).mockResolvedValue({ ...example(), revision: 2, overrides: { '0:B2': 30 }, events: [] })
+    await button('读取最新').trigger('click'); await flushPromises()
+    expect(wrapper!.get('textarea[aria-label="填写内容"]').element).toHaveProperty('value', '30')
+    await wrapper!.get('.cs-type-label select').setValue('text')
+    await button('保存填写').trigger('click'); await flushPromises()
+    expect(vi.mocked(api.sync).mock.calls[0]![2].changes[0]).toMatchObject({ value: '30', base_value: 30, base_revision: 2 })
+  })
   it('closes department choices with outside pointer/focus, Escape or Done while retaining selections', async () => {
     await render(); await button('分配填写').trigger('click')
     document.body.appendChild(wrapper!.element)
@@ -249,7 +266,7 @@ describe('协同填表', () => {
     expect(wrapper!.get('textarea[aria-label="编辑 B2"]').element).toHaveProperty('value', '77')
     expect(wrapper!.text()).toContain('表格已有新版本')
     await button('保存填写').trigger('click'); await flushPromises()
-    expect(api.save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ revision: 1 }), [{ sheet: 0, address: 'B2', value: 77 }])
+    expect(saved).toHaveBeenCalledWith('huaxing', expect.objectContaining({ revision: 1 }), [{ sheet: 0, address: 'B2', value: 77 }])
   })
   it('edits inside a cell and commits with Enter before moving down', async () => {
     await render()
@@ -259,7 +276,7 @@ describe('协同填表', () => {
     expect(wrapper!.get('[data-cell=B3]').classes()).toContain('cs-selected')
     expect(wrapper!.get('[data-cell=B2]').text()).toBe('0.125')
     await button('保存填写').trigger('click'); await flushPromises()
-    expect(api.save).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B2', value: 0.125 }])
+    expect(saved).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B2', value: 0.125 }])
   })
   it('supports type-to-replace, Escape, F2 and Tab while keeping formula cells locked', async () => {
     await render()
@@ -286,7 +303,7 @@ describe('协同填表', () => {
     expect(wrapper!.get('[data-cell=B3]').text()).toBe('00123')
     expect(wrapper!.get('[data-cell=C3]').text()).toBe('0.25')
     await button('保存填写').trigger('click'); await flushPromises()
-    expect(api.save).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B3', value: '00123' }, { sheet: 0, address: 'C3', value: 0.25 }])
+    expect(saved).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B3', value: '00123' }, { sheet: 0, address: 'C3', value: 0.25 }])
   })
   it('does not end Chinese IME composition on Enter and supports Ctrl+S afterward', async () => {
     await render()
@@ -297,7 +314,7 @@ describe('协同填表', () => {
     expect(wrapper!.find('.cs-inline-input').exists()).toBe(true)
     await editor.trigger('compositionend')
     await editor.trigger('keydown', { key: 's', ctrlKey: true }); await flushPromises()
-    expect(api.save).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B2', value: '业务核对' }])
+    expect(saved).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B2', value: '业务核对' }])
   })
   it('copies raw numbers and quotes multiline text so pasting stays within one cell', async () => {
     const detail = example()
@@ -317,8 +334,8 @@ describe('协同填表', () => {
     expect(copied).toBe('"第一行\n第二行\t备注"')
     await wrapper!.get('[data-cell=B3]').trigger('paste', { clipboardData })
     await button('保存填写').trigger('click'); await flushPromises()
-    expect(api.save).toHaveBeenCalledWith('huaxing', expect.anything(), expect.arrayContaining([{ sheet: 0, address: 'B3', value: '第一行\n第二行\t备注' }]))
-    expect(vi.mocked(api.save).mock.calls[0]![2]).toHaveLength(2)
+    expect(saved).toHaveBeenCalledWith('huaxing', expect.anything(), expect.arrayContaining([{ sheet: 0, address: 'B3', value: '第一行\n第二行\t备注' }]))
+    expect(vi.mocked(saved).mock.calls[0]![2]).toHaveLength(2)
   })
   it('starts Chinese type-to-replace with an empty cell editor', async () => {
     await render()
@@ -334,7 +351,7 @@ describe('协同填表', () => {
     await wrapper!.get('[data-cell=B2]').trigger('copy', { clipboardData })
     await wrapper!.get('[data-cell=B3]').trigger('paste', { clipboardData })
     await button('保存填写').trigger('click'); await flushPromises()
-    expect(api.save).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B3', value }])
+    expect(saved).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B3', value }])
   })
   it('inserts original quotes inside an active editor without TSV escaping', async () => {
     const detail = example(); detail.workbook.sheets[0]!.cells[1]!.value = 'a"b'
@@ -347,7 +364,7 @@ describe('协同填表', () => {
     await wrapper!.get('textarea[aria-label="编辑 B3"]').trigger('paste', { clipboardData })
     expect(wrapper!.get('textarea[aria-label="编辑 B3"]').element).toHaveProperty('value', 'a"b')
     await button('保存填写').trigger('click'); await flushPromises()
-    expect(api.save).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B3', value: 'a"b' }])
+    expect(saved).toHaveBeenCalledWith('huaxing', expect.anything(), [{ sheet: 0, address: 'B3', value: 'a"b' }])
   })
   it('renders original merges and locks formula cells even within an assigned range', async () => {
     await render()
@@ -363,33 +380,27 @@ describe('协同填表', () => {
     await wrapper!.get('[data-cell=B2]').trigger('click')
     await wrapper!.get('textarea').setValue('123.45')
     await button('保存填写').trigger('click'); await flushPromises()
-    expect(api.save).toHaveBeenCalledWith('huaxing', expect.objectContaining({ revision: 1 }), [{ sheet: 0, address: 'B2', value: 123.45 }])
+    expect(saved).toHaveBeenCalledWith('huaxing', expect.objectContaining({ revision: 1 }), [{ sheet: 0, address: 'B2', value: 123.45 }])
     expect(wrapper!.text()).toContain('填写内容已保存到服务器')
   })
-  it('keeps local values on a conflict, shows changed remote values, and requires another explicit save', async () => {
-    vi.mocked(api.save).mockRejectedValueOnce({ response: { status: 409, data: { detail: '表格已更新' } } })
+  it('keeps local values on a same-cell conflict until explicitly resolved', async () => {
+    vi.mocked(api.sync).mockRejectedValueOnce({ response: { status: 409, data: { detail: { code: 'cell_conflict', conflicts: [{ sheet: 0, address: 'B2', value: 30, actor_name: '同事', revision: 2 }] } } } })
     await render()
     await wrapper!.get('[data-cell=B2]').trigger('click')
     await wrapper!.get('textarea').setValue('45')
     await button('保存填写').trigger('click'); await flushPromises()
-    expect(wrapper!.text()).toContain('你的填写内容仍保留')
-    const remote = example(); remote.revision = 2; remote.workbook.sheets[0]!.cells[1]!.value = 30
-    vi.mocked(api.detail).mockResolvedValue(remote)
-    await button('读取最新版本（保留我的填写）').trigger('click'); await flushPromises()
-    expect(wrapper!.text()).toContain('服务器已改为“30”')
+    expect(wrapper!.text()).toContain('同事 已修改')
     expect(wrapper!.get('[data-cell=B2]').text()).toBe('45')
-    expect(api.save).toHaveBeenCalledTimes(1)
-    await button('保存填写').trigger('click'); await flushPromises()
-    expect(api.save).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ revision: 2 }), [{ sheet: 0, address: 'B2', value: 45 }])
+    expect(wrapper!.text()).toContain('确认保留我的填写')
   })
   it('does not submit completion if saving fails', async () => {
-    vi.mocked(api.save).mockRejectedValueOnce(new Error('连接失败'))
+    vi.mocked(saved).mockRejectedValueOnce(new Error('连接失败'))
     await render()
     await wrapper!.get('[data-cell=B2]').trigger('click')
     await wrapper!.get('textarea').setValue('50')
     await button('我已填完').trigger('click'); await flushPromises()
     expect(api.submit).not.toHaveBeenCalled()
-    expect(wrapper!.text()).toContain('连接失败')
+    expect(wrapper!.text()).toContain('网络暂不可用')
   })
   it('does not grant group fallback access', async () => {
     wrapper = mount(Workspace, { props: { factoryId: 'group' } }); await flushPromises()
@@ -423,26 +434,21 @@ describe('协同填表', () => {
     await button('保存分配设置').trigger('click'); await flushPromises()
     expect(api.grants).toHaveBeenCalledWith('huaxing', expect.objectContaining({ revision: 2 }), expect.arrayContaining([expect.objectContaining({ range: 'B3', principal_id: 'sales-business' })]))
   })
-  it('preserves pending assignments and values through conflict refresh', async () => {
-    vi.mocked(api.save).mockRejectedValueOnce({ response: { status: 409 } })
-    await render()
-    await button('分配填写').trigger('click')
+  it('preserves pending assignments and values while reading remote cell updates', async () => {
+    await render(); await button('分配填写').trigger('click')
     await wrapper!.get('input[type="checkbox"][value="sales-business"]').setValue(true)
-    await chooseRange('B3')
-    await button('添加').trigger('click')
-    await wrapper!.get('[data-cell=B2]').trigger('click')
-    await wrapper!.get('textarea').setValue('99')
-    await button('保存填写').trigger('click'); await flushPromises()
-    vi.mocked(api.detail).mockResolvedValue({ ...example(), revision: 2 })
-    await button('读取最新版本（保留我的填写）').trigger('click'); await flushPromises()
+    await chooseRange('B3'); await button('添加').trigger('click')
+    await wrapper!.get('[data-cell=B2]').trigger('click'); await wrapper!.get('textarea').setValue('99')
+    await button('确认此格').trigger('click')
+    vi.mocked(api.changes).mockResolvedValue({ ...example(), revision: 2, grants: [{ principal_type: 'user', principal_id: 'u2', sheet: 0, range: 'C3' }], overrides: { '0:B2': 30 }, events: [] })
+    await button('读取最新').trigger('click'); await flushPromises()
     expect(wrapper!.get('.cs-grants').text()).toContain('B3')
     expect(wrapper!.get('[data-cell=B2]').text()).toBe('99')
-    expect(wrapper!.text()).toContain('你的分配设置也已保留')
     await button('保存填写').trigger('click'); await flushPromises()
     await button('保存分配设置').trigger('click'); await flushPromises()
-    expect(api.grants).toHaveBeenCalledWith('huaxing', expect.objectContaining({ revision: 3 }), expect.arrayContaining([expect.objectContaining({ range: 'B3' })]))
-  })
-})
+    expect(api.grants).not.toHaveBeenCalled()
+    expect(wrapper!.text()).toContain('其他页面已调整分配')
+  })})
 describe('原表位置与输入类型', () => {
   it('reads quoted Excel clipboard rows and preserves multiline cell text', () => {
     expect(clipboardRows('"第一行\n第二行"\t"带""引号"\r\n')).toEqual([['第一行\n第二行', '带"引号']])
