@@ -1,17 +1,17 @@
 import type { ICellData, IObjectMatrixPrimitiveType, IStyleData, IWorkbookData, Nullable } from '@univerjs/core'
 import type { FillCell, FillChange, FillSheet, FillTaskDetail, SheetValue } from '@/api/collaborativeSheets'
-import { canFill, columnName, coordinates, rangeBounds } from './grid'
+import { canFill, columnName, coordinates, rangeBounds, findCell } from './grid'
 
 export const TRIAL_SHEET_ID = 'original-sheet'
 export const VALUE_MUTATION = 'sheet.mutation.set-range-values'
 
 export function cellAt(sheet: FillSheet, row: number, column: number): FillCell {
-  return sheet.cells.find(c => c.row === row && c.column === column)
+  return findCell(sheet, `${columnName(column)}${row + 1}`)
     ?? { address: `${columnName(column)}${row + 1}`, row, column, value: null, display: '', formula: false, style: {} }
 }
 
 export function validateScalar(value: unknown, address: string): asserts value is SheetValue {
-  if (value !== null && typeof value !== 'string' && typeof value !== 'boolean' && (typeof value !== 'number' || !Number.isFinite(value))) throw new Error(`${address} 只能填写文字、数字或是 / 否。`)
+  if (value !== null && typeof value !== 'string' && typeof value !== 'boolean' && (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1e100)) throw new Error(`${address} 只能填写文字、数字或是 / 否；数字绝对值不能超过 1e100。`)
   if (typeof value === 'string' && (value.length > 2000 || value.trimStart().startsWith('=') || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))) throw new Error(`${address} 内容过长、包含公式或不支持的字符，本次修改未写入。`)
 }
 
@@ -24,7 +24,7 @@ export function stageFillChanges(task: FillTaskDetail, pending: FillChange[], ba
     if (!sheet || !position || !canFill(task, sheet, ...position)) throw new Error(`${change.address} 是公式、合并区域内部或未授权单元格，本次修改未写入。`)
     validateScalar(change.value, change.address)
     const key = `${change.sheet}:${change.address}`
-    if (change.value === (sheet.cells.find(c => c.address === change.address)?.value ?? null)) next.delete(key)
+    if (change.value === (findCell(sheet, change.address)?.value ?? null)) next.delete(key)
     else next.set(key, change)
   }
   if (next.size > 500) throw new Error('待保存内容超过 500 格，请先保存现有填写，再继续填写。')
@@ -59,7 +59,7 @@ export function trialWorkbook(task: FillTaskDetail, sheet: FillSheet, changes: F
   const cellData: IObjectMatrixPrimitiveType<ICellData> = {}
   const pending = new Map(changes.filter(c => c.sheet === sheet.index).map(c => [c.address, c.value]))
   for (const cell of sheet.cells) {
-    const value = cell.image ? '图片（选中预览）' : cell.formula ? cell.display : pending.has(cell.address) ? pending.get(cell.address)! : cell.value
+    const value = cell.image ? '' : cell.formula ? cell.display : pending.has(cell.address) ? pending.get(cell.address)! : cell.value
     ;(cellData[cell.row] ??= {})[cell.column] = { ...scalarCell(value), s: originalStyle(cell) }
   }
   for (const change of changes.filter(c => c.sheet === sheet.index)) {
@@ -69,7 +69,7 @@ export function trialWorkbook(task: FillTaskDetail, sheet: FillSheet, changes: F
   return {
     id: `fill-${task.id}-${sheet.index}`, name: task.title, sheetOrder: [TRIAL_SHEET_ID],
     sheets: { [TRIAL_SHEET_ID]: {
-      id: TRIAL_SHEET_ID, name: sheet.name, rowCount: sheet.rows, columnCount: sheet.columns,
+      id: TRIAL_SHEET_ID, name: sheet.name, rowCount: Math.max(50, sheet.rows + 20), columnCount: Math.max(26, sheet.columns + 5),
       defaultRowHeight: 25, defaultColumnWidth: 100, cellData,
       mergeData: sheet.merges.flatMap(range => { const b = rangeBounds(range); return b ? [{ startRow: b[0], startColumn: b[1], endRow: b[2], endColumn: b[3] }] : [] }),
       rowData: Object.fromEntries(Array.from({ length: sheet.rows }, (_, row) => [row, { h: sheet.row_heights[String(row)] ?? 25, ia: 0 }])),

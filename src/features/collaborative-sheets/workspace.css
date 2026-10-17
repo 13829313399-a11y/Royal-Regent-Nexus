@@ -15,6 +15,11 @@
 .cs-error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 .cs-upload-form { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 16px; }
 .cs-layout { display: grid; grid-template-columns: 238px minmax(0,1fr); gap: 16px; align-items: start; }
+.cs-layout.cs-focus { grid-template-columns: minmax(0,1fr); }
+.cs-panel-switches { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #e2e8f0; }
+.cs-history { position: fixed; right: 16px; top: 110px; bottom: 16px; width: min(460px, calc(100vw - 32px)); padding: 16px; overflow: auto; background: white; border: 1px solid #cbd5e1; border-radius: 12px; box-shadow: 0 8px 40px #0f172a33; z-index: 30; }
+.cs-history article { padding: 12px 0; border-bottom: 1px solid #e2e8f0; font-size: 13px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.cs-status-bar { position: sticky; top: 0; z-index: 10; }
 .cs-task-list { border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; padding: 12px; display: grid; gap: 10px; max-height: 75vh; overflow-y: auto; }
 .cs-task { display: grid; gap: 6px; text-align: left; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; background: white; }
 .cs-task.active { border-color: #0d9488; box-shadow: inset 3px 0 #0d9488; background: #f0fdfa; }
@@ -55,7 +60,7 @@
 .cs-sheet-tabs { display: flex; gap: 2px; overflow-x: auto; padding: 10px 12px 0; background: #f8fafc; }
 .cs-sheet-tabs button { white-space: nowrap; padding: 9px 14px; font-size: 13px; border-bottom: 3px solid transparent; }
 .cs-sheet-tabs button[aria-selected=true] { border-color: #0f766e; color: #0f766e; background: white; font-weight: 600; }
-.cs-cell-editor { min-height: 66px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-block: 1px solid #e2e8f0; font-size: 13px; }
+.cs-cell-editor { min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-block: 1px solid #e2e8f0; font-size: 13px; }
 .cs-cell-editor textarea { flex: 1; min-width: 100px; resize: vertical; }
 .cs-cell-editor strong { min-width: 38px; color: #0f766e; }
 .cs-cell-editor small { margin-left: auto; color: #64748b; white-space: nowrap; }

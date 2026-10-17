@@ -19,7 +19,7 @@ def accounting(custody):
         with Operations.context(MigrationContext.configure(conn)):
             migration['upgrade']()
     p.cutting_auth['user'] = actor('material_request', 'material_receive', 'usage_write', 'usage_review',
-                                 'cost_read', 'cost_write', 'allocation_confirm', 'report_write', 'acceptance_write', 'handover_write')
+                                 'cost_read', 'cost_write', 'allocation_confirm', 'report_write', 'return_write', 'acceptance_write', 'handover_write')
     p.report_id = doc(ok(report(p, sets=10)))
     consume(p)
     return p

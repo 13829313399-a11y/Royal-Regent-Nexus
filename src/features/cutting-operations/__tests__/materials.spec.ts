@@ -30,6 +30,16 @@ async function receipt(){await button('分批签收').trigger('click');await fie
 beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(false);vi.mocked(materialApi.read).mockResolvedValue(clone(ledger));vi.mocked(materialApi.catalog).mockResolvedValue({items:[material],total:1,page:1});vi.mocked(materialApi.post).mockResolvedValue({})})
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 describe('cutting material bridge',()=>{
+  it('asks the workspace to revalidate a forbidden material read without treating it as a quantity error',async()=>{
+    const recheck=vi.fn();window.addEventListener('cutting-authorization-recheck',recheck)
+    try {
+      vi.mocked(materialApi.read).mockRejectedValueOnce({response:{status:403,data:{detail:'任职授权已撤销'}}})
+      await open()
+      expect(recheck).toHaveBeenCalledTimes(1)
+      expect(wrapper.text()).toContain('任职授权已撤销')
+      expect(materialApi.post).not.toHaveBeenCalled()
+    } finally {window.removeEventListener('cutting-authorization-recheck',recheck)}
+  })
   it('submits the frozen task/BOM row and explicitly selected material revision',async()=>{
     await open();await button('新建领料申请').trigger('click');await button('查询物料映射').trigger('click');await flushPromises();await field('仓库物料版本').setValue('wm1');await field('物料对应依据').setValue('规格A蓝色米一致');await field('本次申请数量').setValue('6.50');await field('申请数量').setValue('任务分批领料');await wrapper.get('form').trigger('submit');await flushPromises()
     expect(materialApi.post).toHaveBeenCalledWith('line-1','request',expect.objectContaining({factory_id:'huakang-c',expected_version:9,plan_version:8,task_id:'t1',row:0,material_id:'wm1',material_revision:2,quantity:'6.50'}))
