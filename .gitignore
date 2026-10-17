@@ -124,6 +124,10 @@ outputs/opening-inventory-template-20260909/
 
 # Shared Codex configuration/docs; local credentials and runtime state stay private.
 !/docs/agent-routing/*.md
+!/.agents/skills/enterprise-ui-art-director/SKILL.md
+!/.agents/skills/visual-qa-loop/SKILL.md
+!/docs/frontend/WORKFLOWS.md
+!/docs/frontend/UI_BRIEF_TEMPLATE.md
 !/docs/spray-production/*.md
 /.codex/*
 !/.codex/config.toml

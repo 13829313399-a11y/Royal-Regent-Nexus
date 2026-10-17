@@ -75,6 +75,15 @@ Report:
 3. verification commands run
 4. remaining risks
 
+### Frontend Design and Visual Verification
+
+- For frontend work, read the relevant sections of [DESIGN.md](DESIGN.md), the affected route and neighboring components. Confirm design facts against `src/style.css`, shared components and the affected feature's scoped styles. Preserve documented local exceptions; do not create a competing design baseline from a generic template.
+- Use [frontend workflows](docs/frontend/WORKFLOWS.md) to choose a proportional path. New modules and substantial redesigns use the [UI brief](docs/frontend/UI_BRIEF_TEMPLATE.md); small, well-defined fixes do not require a full brief.
+- Use the project skill [enterprise-ui-art-director](.agents/skills/enterprise-ui-art-director/SKILL.md) for enterprise page design or substantial layout changes. Use [visual-qa-loop](.agents/skills/visual-qa-loop/SKILL.md) for rendered appearance and interaction verification. Do not run duplicate design or QA workflows when an existing skill already covers that phase.
+- The main application uses Vue; inspect the nearest package before applying framework-specific guidance to subprojects such as `shinobu-web`. Reuse existing browser and design tools; a template's tool list is not an installation requirement.
+- Visual work must preserve field meanings, API contracts, factory isolation, permission checks and workflow state transitions. Resolve reference-image conflicts using the current business contract and explain intentional visual deviations.
+- For UI changes, inspect the actual rendered route, relevant states and supported viewports. Repair evidenced defects and recheck until acceptance criteria are met or a concrete limitation prevents verification; no fixed correction count or self-score substitutes for evidence. Report screenshot paths and unverified states separately from tests/build results. Pure workflow-documentation changes need only relevant configuration and document checks.
+
 ## Git Operations
 
 Do not run `git commit`, create commits, push branches, or open pull requests unless the user explicitly asks for that Git operation in the current turn.

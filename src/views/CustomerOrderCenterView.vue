@@ -13,18 +13,19 @@ import {
   Search,
   Table2,
 } from '@lucide/vue'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
 import ModuleFeedbackHub from '@/features/module-feedback/ModuleFeedbackHub.vue'
 import type { FeedbackContext } from '@/api/moduleFeedback'
 import CustomerOrderCenterWorkspace from '@/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue'
+import HuakangBJPIntake from '@/components/modules/sales/customer-order-center/HuakangBJPIntake.vue'
 import { customerOrderUsageGuide } from '@/data/salesUsageGuides'
 import { getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 
-export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule' | 'feedback'
+export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule' | 'feedback' | 'jp-intake'
 
 const appStore = useAppStore()
 appStore.setActiveDepartment('sales-business')
@@ -36,7 +37,7 @@ const feedbackUnread = ref(0)
 const activeFactory = computed(() => appStore.activeProductionFactory)
 const departmentRoute = computed(() => getFactoryScopedRoute('/modules/sales-business', activeFactory.value.id))
 
-const navigationItems = [
+const standardNavigationItems = [
   { id: 'dashboard' as const, label: '工作台', icon: LayoutDashboard },
   { id: 'import' as const, label: 'PO 与排期导入', icon: FileInput },
   { id: 'preview' as const, label: '预览与确认', icon: ClipboardList },
@@ -46,11 +47,15 @@ const navigationItems = [
   { id: 'schedule' as const, label: '厂区总排期', icon: CalendarRange },
   { id: 'feedback' as const, label: '反馈与答复', icon: MessagesSquare },
 ]
+const navigationItems = computed(() => activeFactory.value.id === 'huakang-b'
+  ? [...standardNavigationItems.slice(0, 2), { id: 'jp-intake' as const, label: 'JP问单录入', icon: FileInput }, ...standardNavigationItems.slice(2)]
+  : standardNavigationItems)
+watch(() => activeFactory.value.id, () => { if (activeSection.value === 'jp-intake') activeSection.value = 'ledger' })
 
 function reportProblem(context?: FeedbackContext) {
   feedbackHub.value?.openComposer(context ?? {
     ...orderWorkspace.value?.feedbackContext(),
-    page: navigationItems.find(item => item.id === activeSection.value)?.label ?? '客户订单中心',
+    page: navigationItems.value.find(item => item.id === activeSection.value)?.label ?? '客户订单中心',
     section: activeSection.value,
   })
 }
@@ -156,7 +161,7 @@ function navigate(section: CustomerOrderCenterSection) {
       </nav>
 
       <CustomerOrderCenterWorkspace
-        v-show="activeSection !== 'feedback'"
+        v-show="activeSection !== 'feedback' && activeSection !== 'jp-intake'"
         ref="orderWorkspace"
         :key="activeFactory.id"
         :active-section="activeSection"
@@ -165,6 +170,8 @@ function navigate(section: CustomerOrderCenterSection) {
         @navigate="navigate"
         @feedback="reportProblem"
       />
+      <HuakangBJPIntake v-if="activeSection === 'jp-intake' && activeFactory.id === 'huakang-b'"
+        :key="`jp-${activeFactory.id}`" :factory-id="activeFactory.id" />
       <ModuleFeedbackHub
         :key="`feedback-${activeFactory.id}`"
         ref="feedbackHub"
