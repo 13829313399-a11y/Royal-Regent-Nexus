@@ -35,7 +35,7 @@ function beforeUnload(e:BeforeUnloadEvent){if(dirty.value||pending.value||saving
 window.addEventListener('beforeunload',beforeUnload)
 onBeforeUnmount(()=>{alive=false;generation++;searchGeneration++;window.removeEventListener('beforeunload',beforeUnload);emit('editing',false)})
 const today=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
-function fail(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status:number}}).response?.status;if(status===401)needsLogin.value=true;else if(status&&status>=400&&status<500)needsLogin.value=false}
+function fail(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status:number}}).response?.status;if(status===401)needsLogin.value=true;else if(status&&status>=400&&status<500)needsLogin.value=false;if(status===403)window.dispatchEvent(new Event('cutting-authorization-recheck'))}
 async function load(){const ticket=++generation;loading.value=true;error.value='';try{const value=await materialApi.read(props.order.line_id);if(alive&&ticket===generation){ledger.value=value;needsLogin.value=false;return true}}catch(e){if(alive&&ticket===generation)fail(e)}finally{if(alive&&ticket===generation)loading.value=false}}
 watch(()=>props.order.line_id,()=>{refreshedOrder.value=undefined;ledger.value=undefined;draft.value=undefined;mode.value=undefined;materials.value=[];refreshComparison.value='';void load()},{immediate:true})
 watch(()=>props.order,()=>{refreshedOrder.value=undefined})

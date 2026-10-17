@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute, onBeforeRouteUpdate } from 'vue-router'
 import { ArrowLeft, Scissors, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator } from '@lucide/vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import { CUTTING_BASE, CUTTING_FACTORY, CUTTING_WORKSPACES, isCuttingFactory } from './navigation'
 import { guardCuttingFactory } from './routes'
+import { cuttingApi, type Access } from './api'
 import './workspace.css'
 
 const route = useRoute()
@@ -14,6 +15,42 @@ const icons = { CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2,
 const productionRoute = { path: '/modules/production', query: { factory: CUTTING_FACTORY } }
 // Parent beforeEnter does not run for query-only or sibling navigation.
 onBeforeRouteUpdate(guardCuttingFactory)
+const authorizationEpoch = ref(0), verifying = ref(true), denied = ref(false), authorizationError = ref('')
+let accessFingerprint: string | undefined, accessGeneration = 0, alive = true
+const fingerprint = (value: Access) => JSON.stringify({ ...value, permissions: [...value.permissions].sort() })
+async function revalidate() {
+  const ticket = ++accessGeneration
+  verifying.value = true; authorizationError.value = ''
+  try {
+    const current = fingerprint(await cuttingApi.access())
+    if (!alive || ticket !== accessGeneration) return
+    if (accessFingerprint !== undefined && current !== accessFingerprint) authorizationEpoch.value++
+    accessFingerprint = current; denied.value = false
+  } catch (error) {
+    if (!alive || ticket !== accessGeneration) return
+    const status = (error as { response?: { status?: number } }).response?.status
+    if (status === 401 || status === 403) {
+      denied.value = true; authorizationEpoch.value++; accessFingerprint = undefined
+      authorizationError.value = '当前账号已无权访问裁床工作区，旧表单已清除。请重新登录或联系授权负责人。'
+    } else authorizationError.value = '暂时无法核验裁床权限，填写已保留；重新核验成功后可继续。'
+  } finally { if (alive && ticket === accessGeneration) verifying.value = false }
+}
+function sessionBoundary() {
+  denied.value = true; authorizationEpoch.value++; accessFingerprint = undefined
+  void revalidate()
+}
+onMounted(() => {
+  window.addEventListener('authorization-context-changed', revalidate)
+  window.addEventListener('cutting-authorization-recheck', revalidate)
+  window.addEventListener('auth-session-boundary-changed', sessionBoundary)
+  void revalidate()
+})
+onBeforeUnmount(() => {
+  alive = false; accessGeneration++
+  window.removeEventListener('authorization-context-changed', revalidate)
+  window.removeEventListener('cutting-authorization-recheck', revalidate)
+  window.removeEventListener('auth-session-boundary-changed', sessionBoundary)
+})
 </script>
 
 <template>
@@ -37,7 +74,11 @@ onBeforeRouteUpdate(guardCuttingFactory)
       </RouterLink>
     </nav>
     <main id="cutting-main" class="cutting-main" tabindex="-1">
-      <RouterView v-slot="{ Component }"><component :is="Component" :key="route.path" /></RouterView>
+      <p v-if="verifying" role="status">正在核验裁床工作区权限…</p>
+      <div v-if="authorizationError" role="alert"><p>{{ authorizationError }}</p><button type="button" :disabled="verifying" @click="revalidate">重新核验权限</button></div>
+      <div v-show="!verifying && !authorizationError">
+        <RouterView v-if="!denied" v-slot="{ Component }"><component :is="Component" :key="`${route.path}:${authorizationEpoch}`" /></RouterView>
+      </div>
     </main>
   </div>
 </template>

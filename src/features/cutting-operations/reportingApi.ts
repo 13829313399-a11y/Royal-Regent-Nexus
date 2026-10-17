@@ -26,4 +26,4 @@ export const reportingApi = {
   async recover(id: string, action: ReportAction, command: ReportCommand): Promise<{state:'committed';result:ProductionView} | {state:'abandoned'}> { return (await http.post(`${url(id)}/report-operations/recover`, { action, command })).data },
 }
 export const reportLabels: Record<ReportKind,string> = { daily:'每日报数', match:'裁片核套', return:'外发收回', accept:'外发验收', handover:'交接下道' }
-export const reportPermission = (kind: ReportKind) => kind === 'handover' ? 'handover_write' : kind === 'return' || kind === 'accept' ? 'acceptance_write' : 'report_write'
+export const reportPermission = (kind: ReportKind) => kind === 'handover' ? 'handover_write' : kind === 'return' ? 'return_write' : kind === 'accept' ? 'acceptance_write' : 'report_write'

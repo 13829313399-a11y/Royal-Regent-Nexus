@@ -25,8 +25,9 @@ const can=(permission:string)=>!!access.value?.permissions.includes(permission)
 const stateSnapshot=()=>JSON.stringify([entry.value,reason.value])
 const dirty=computed(()=>!!entry.value && stateSnapshot()!==baseline.value)
 const task=computed(()=>result.value?.tasks.find(t=>t.task_id===entry.value?.task_id))
-const kindOptions=computed(()=>Object.entries(reportLabels).filter(([kind])=>
-  (kind!=='daily'||!task.value?.historical) && (kind!=='match'||entry.value?.mode==='parts') && (!['return','accept'].includes(kind)||(task.value?.settlement_context?.execution??task.value?.execution)==='outsourced')))
+const kindsFor=(t:ReportTask|undefined,mode:ProductionInput['mode'])=>Object.entries(reportLabels).filter(([kind])=>
+  can(reportPermission(kind as ReportKind)) && (kind!=='daily'||!t?.historical) && (kind!=='match'||mode==='parts') && (!['return','accept'].includes(kind)||(t?.settlement_context?.execution??t?.execution)==='outsourced'))
+const kindOptions=computed(()=>kindsFor(task.value,entry.value?.mode||'sets'))
 const summary=computed(()=>result.value?.summary)
 const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T
 function discard() {
@@ -66,7 +67,10 @@ async function select(row:CuttingOrder){
 function today(){return new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
 function start(t:ReportTask){
   if(!discard())return
-  entry.value={task_id:t.task_id,plan_version:t.plan_version,day:today(),mode:t.mode||'sets',kind:t.historical?'handover':'daily',sets:0,rejected:0,scrap:0,parts:[],evidence:'',exception_reason:''}
+  const options=kindsFor(t,t.mode||'sets'),preferred=t.historical?'handover':'daily'
+  const kind=(options.find(([key])=>key===preferred)||options[0])?.[0] as ReportKind|undefined
+  if(!kind)return
+  entry.value={task_id:t.task_id,plan_version:t.plan_version,day:today(),mode:t.mode||'sets',kind,sets:0,rejected:0,scrap:0,parts:[],evidence:'',exception_reason:''}
   frozenParts.value=clone(t.parts);documentId.value=crypto.randomUUID();reason.value='';editingExisting.value=false;decision.value=null
   normalize();baseline.value=stateSnapshot()
 }
@@ -80,12 +84,15 @@ function edit(doc:ReportDocument, action:ReportAction|null=null){
 function normalize(){
   if(!entry.value)return
   const e=entry.value
+  if(!editingExisting.value&&!kindOptions.value.some(([kind])=>kind===e.kind)){
+    const first=kindOptions.value[0]?.[0] as ReportKind|undefined
+    if(first)e.kind=first
+  }
   const settlement=task.value?.settlement_context
   if(!editingExisting.value && task.value){
     e.plan_version=e.kind!=='daily'&&settlement?settlement.plan_version:task.value.plan_version
     frozenParts.value=clone(e.kind!=='daily'&&settlement?settlement.parts:task.value.parts)
   }
-  if(e.mode==='sets'&&e.kind==='match')e.kind='daily'
   e.sets=0;e.rejected=0;e.scrap=0
   e.parts=e.kind==='daily'&&e.mode==='parts'?frozenParts.value.map(p=>({code:p.code,good:0,rejected:0,scrap:0})):[]
 }
@@ -94,6 +101,7 @@ async function submit(action:ReportAction){
   if(saving.value)return
   if(!pending.value){
     if(!selected.value||!result.value||!entry.value)return
+    if(!can(action==='review'?'report_review':reportPermission(entry.value.kind))){error.value='没有此业务类型的操作权限。';return}
     if(!reason.value.trim()){error.value='请填写本次提交、更正或抽查说明。';return}
     pending.value={id:selected.value.line_id,action,body:{factory_id:CUTTING_FACTORY,operation_id:crypto.randomUUID(),expected_version:result.value.version,
       document_id:documentId.value,reason:reason.value,...(action==='save'||action==='post'?{entry:clone(entry.value)}:{})}}
@@ -131,9 +139,9 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
     <p v-if="loading" role="status">正在读取生产记录…</p>
     <div v-if="needsLogin"><p>登录已失效，填报内容暂时隐藏。请在新标签页重新登录，再重试或核对原操作。</p><a href="/login" target="_blank" rel="noopener">重新登录</a></div>
     <div v-if="pending" class="cutting-master-actions"><Button variant="outline" :disabled="saving" @click="submit(pending.action)">重试原操作</Button><Button variant="outline" :disabled="saving" @click="recover">核对保存结果／停止未执行操作</Button></div>
-    <p v-if="!loading&&!available&&!needsLogin">每日填数尚未启用。需完成 0155 迁移，并为生产岗位单独授予填报、抽查、收回验收或交接权限。</p>
+    <p v-if="!loading&&!available&&!needsLogin">每日填数尚未启用。需完成 0155 迁移，并为生产岗位分别授予填报、抽查、外发收回、外发验收或交接权限。</p>
     <template v-if="available&&!needsLogin">
-      <p class="cutting-notice">采购交期和预排不代表实际完成。每个任务固定一种报数方式；外发报称完成经实际收回、验收合格后才计入完成数。“实际交数”按已交接套数统计。</p>
+      <p class="cutting-notice">采购交期和预排不代表实际完成。每个任务固定一种报数方式；外发收回由文员登记，验收由主管确认，验收合格后才计入完成数。“实际交数”按已交接套数统计。</p>
       <SectionPanel title="已签收订单" class="cutting-content-panel"><form class="cutting-master-toolbar" @submit.prevent="load()"><label>订单／货号<input v-model="query" maxlength="80" /></label><Button :disabled="saving||!!pending||loading">查询订单</Button></form>
       <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><caption class="sr-only">已签收订单（{{ total }} 条来源订单）</caption><thead><tr><th>客户</th><th>生产／订单号</th><th>货号</th><th>货名</th><th>款式分类</th><th>状态</th><th>操作</th></tr></thead><tbody>
         <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td class="cutting-order-product-name">{{ orderProductName(row.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td><td><StatusPill :label="row.needs_receipt?'来源待重签收':row.snapshot.status==='cancelled'?'已取消':'已签收'" compact /></td><td><Button variant="outline" :disabled="saving||!!pending" @click="select(row)">查看填数</Button></td></tr>
@@ -154,7 +162,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           <p>合格完成 {{ t.balance?.completed ?? 0 }} · 已交接 {{ t.balance?.handed ?? 0 }} · 可新增核套 {{ t.balance?.matchable ?? 0 }}</p>
           <p v-if="(t.settlement_context?.execution??t.execution)==='outsourced'">外厂报称 {{ t.balance?.claimed ?? 0 }} · 实收 {{ t.balance?.returned ?? 0 }} · 验收合格 {{ t.balance?.accepted ?? 0 }} · 不合格 {{ t.balance?.rejected ?? 0 }} · 待验 {{ (t.balance?.returned??0)-(t.balance?.accepted??0)-(t.balance?.rejected??0) }}</p>
           <p v-if="t.mode==='parts'">散片：<span v-for="p in (t.settlement_context?.parts??t.parts)" :key="p.code">{{ p.name }} {{ t.balance?.loose[p.code]??0 }} 片（不良 {{ t.balance?.part_rejected[p.code]??0 }}／报废 {{ t.balance?.part_scrap[p.code]??0 }}）；</span></p>
-          <Button variant="outline" v-if="(!t.historical||t.settlement_context)&&(can('report_write')||can('handover_write')||can('acceptance_write'))" :disabled="saving||!!pending" @click="start(t)">{{ t.historical?'办理历史余额':'填报此任务' }}</Button>
+          <Button variant="outline" v-if="(!t.historical||t.settlement_context)&&kindsFor(t,t.mode||'sets').length" :disabled="saving||!!pending" @click="start(t)">{{ t.historical?'办理历史余额':'填报此任务' }}</Button>
         </div>
         <p v-if="!result.tasks.length">暂无已发布任务，请先在排期页发布任务与日计划。</p>
         <form v-if="entry" class="cutting-master-form report-form" @submit.prevent="submit(decision||'post')">

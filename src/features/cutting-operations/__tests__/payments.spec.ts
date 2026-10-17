@@ -18,7 +18,7 @@ beforeEach(()=>{vi.clearAllMocks();vi.spyOn(window,'confirm').mockReturnValue(tr
 afterEach(()=>{wrapper?.unmount();wrapper=undefined;vi.restoreAllMocks()})
 async function open(rights=access){const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingPayments},{path:'/next',component:{template:'<div />'}}]});await router.push('/');await router.isReady();const root=defineComponent({props:['access','accessLoading'],components:{RouterView},template:'<RouterView v-slot="{Component}"><component :is="Component" :access="access" :access-loading="accessLoading" /></RouterView>'});wrapper=mount(root,{props:{access:rights},global:{plugins:[router]}});return router}
 async function click(text:string){const button=wrapper!.findAll('button').find(b=>b.text()===text);expect(button,text).toBeDefined();await button!.trigger('click');await flushPromises()}
-function field(name:string){const label=wrapper!.findAll('label').find(l=>l.text()===name);expect(label,name).toBeDefined();return label!.find('input,textarea,select')}
+function field(name:string){const label=wrapper!.findAll('label').find(l=>l.text()===name);expect(label,name).toBeDefined();return label!.find<HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement>('input,textarea,select')}
 async function edit(){await click('新建付款登记');await field('付款凭证号（本厂唯一）').setValue('PAY-001');await field('实际付款金额').setValue('5.00');await field('付款凭据／交易流水说明').setValue('实际银行回单');await field('登记／更正依据').setValue('登记依据');await wrapper!.get('input[aria-label="核销金额 statement-1"]').setValue('5.00')}
 async function submit(){await wrapper!.get('form').trigger('submit');await flushPromises()}
 

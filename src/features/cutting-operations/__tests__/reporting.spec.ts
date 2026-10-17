@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-
 import { cuttingOperationsRoutes } from '../routes'
 import { cuttingApi } from '../api'
 import { ordersApi, type CuttingOrder } from '../ordersApi'
-import { reportingApi, type ProductionView } from '../reportingApi'
+import { reportingApi, type ProductionView, type ReportKind, type ReportEvent } from '../reportingApi'
 
 vi.mock('@/components/layout/AccountMenu.vue',()=>({default:{template:'<span />'}}))
 vi.mock('../api',async original=>({...await original<typeof import('../api')>(),cuttingApi:{access:vi.fn()}}))
@@ -19,7 +19,7 @@ let wrapper:VueWrapper,router:Router
 const clone=<T,>(v:T):T=>JSON.parse(JSON.stringify(v))
 function button(text:string){const b=wrapper.findAll('button').find(b=>b.text()===text);if(!b)throw Error('Missing '+text);return b}
 function field(label:string){const l=wrapper.findAll('label').find(l=>l.text().startsWith(label));if(!l)throw Error('Missing field '+label);return l.find('input,select,textarea')}
-async function open(permissions=['read','report_write','report_review','handover_write','acceptance_write'],data=view){
+async function open(permissions=['read','report_write','report_review','handover_write','return_write','acceptance_write'],data=view){
   vi.mocked(cuttingApi.access).mockResolvedValue({enabled:true,schema_ready:true,orders_schema_ready:true,reporting_schema_ready:true,permissions})
   vi.mocked(ordersApi.list).mockResolvedValue({data:[order],page:1,page_size:50,total:1})
   vi.mocked(reportingApi.read).mockResolvedValue(clone(data))
@@ -32,6 +32,43 @@ beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(fa
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 
 describe('cutting production facts and save protection',()=>{
+  it.each([['return_write','return'],['acceptance_write','accept']] as const)('limits %s to its own external flow and selects it by default',async(permission,kind)=>{
+    const data=clone(view);data.tasks[0]!.execution='outsourced'
+    await open(['read',permission],data)
+    await button('填报此任务').trigger('click')
+    expect(field('业务类型').findAll('option').map(o=>o.attributes('value'))).toEqual([kind])
+    expect(field('业务类型').element).toHaveProperty('value',kind)
+    await field(kind==='accept'?'验收合格套数':'本次套数').setValue('5')
+    await field('现场依据').setValue('外发凭据');await field('本次提交').setValue('独立岗位登记')
+    vi.mocked(reportingApi.command).mockResolvedValue(data)
+    await wrapper.get('form.report-form').trigger('submit');await flushPromises()
+    expect(reportingApi.command).toHaveBeenCalledWith('line-1','post',expect.objectContaining({entry:expect.objectContaining({kind,sets:5})}))
+  })
+  it.each(['return_write','acceptance_write'])('does not offer internal tasks to a %s-only operator',async permission=>{
+    await open(['read',permission])
+    expect(wrapper.findAll('button').some(b=>b.text()==='填报此任务')).toBe(false)
+  })
+  it.each([['return_write','return'],['acceptance_write','accept']] as const)('gates historical corrections, void and draft discard by %s',async(permission,kind)=>{
+    const data=clone(view),t=data.tasks[0]!;t.execution='outsourced';t.historical=true
+    t.settlement_context={plan_version:3,dispatch_id:'old',bom_id:'bom',bom_version:2,parts:t.parts,task_name:t.name,task_target:50,resource_id:'r',resource_name:'外厂',execution:'outsourced',actual_review_pending:false}
+    data.documents=(['return','accept'] as ReportKind[]).map((k,i)=>{
+      const event:ReportEvent={id:k,version:i+1,document_id:k,action:'post',actor_id:'old-user',created_at:'',reason:'历史记录',data:{context:t.settlement_context!,entry:{task_id:t.task_id,plan_version:3,day:'2026-10-10',mode:'sets',kind:k,sets:5,rejected:0,scrap:0,parts:[],evidence:'原凭据',exception_reason:''}}}
+      return {document_id:k,posted:event,draft:{...event,action:'save'},review:null,voided:false,history:[event],first_version:i+1}
+    })
+    await open(['read',permission],data)
+    const own=wrapper.get(`[data-cutting-report="${kind}"]`),other=wrapper.get(`[data-cutting-report="${kind==='return'?'accept':'return'}"]`)
+    expect(own.findAll('button').map(b=>b.text())).toEqual(['编辑／更正','放弃草稿','作废'])
+    expect(other.findAll('button')).toHaveLength(0)
+    await button('办理历史余额').trigger('click')
+    expect(field('业务类型').element).toHaveProperty('value',kind)
+    await button('取消编辑').trigger('click')
+    await own.findAll('button')[0]!.trigger('click')
+    await field(kind==='accept'?'验收合格套数':'本次套数').setValue('4')
+    await field('本次提交').setValue('更正凭据')
+    vi.mocked(reportingApi.command).mockResolvedValue(data)
+    await wrapper.get('form.report-form').trigger('submit');await flushPromises()
+    expect(reportingApi.command).toHaveBeenCalledWith('line-1','post',expect.objectContaining({document_id:kind,entry:expect.objectContaining({kind,sets:4,plan_version:3})}))
+  })
   it('keeps an unsaved report when query navigation to a monthly target is rejected',async()=>{
     await open();await form()
     await router.push(path+'&line_id=another-order&month=2026-09&focus_kind=task&focus_id=other')
