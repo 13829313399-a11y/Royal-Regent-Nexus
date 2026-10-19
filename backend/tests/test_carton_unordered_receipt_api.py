@@ -133,7 +133,8 @@ def test_unordered_unit_normalization_rejects_unsupported_or_conflicting_units()
     from fastapi import HTTPException
     assert _unordered_specification("12*10*5 英寸", "in") == "12 × 10 × 5 [in]"
     assert _unordered_specification("12*10*5 [cm]", "cm") == "12 × 10 × 5 [cm]"
-    for spec in ["12*10*5 mm", "12*10*5 毫米", "12*10*5 [mm]", "12*10*5 ft", "12*10*5 foo", "12*10*5 mm [cm]", "12*10*5 foo [cm]", "12*10*5 英寸", "cm"]:
+    assert _unordered_specification("12*10*5cm", "cm") == "12 × 10 × 5 [cm]"
+    for spec in ["12*10*5 mm", "12*10*5 毫米", "12*10*5 [mm]", "12*10*5 ft", "12*10*5 foo", "12*10*5 mm [cm]", "12*10*5mm[cm]", "12*10*5 foo [cm]", "12*10*5 英寸", "cm"]:
         with pytest.raises(HTTPException):
             _unordered_specification(spec, "cm")
 

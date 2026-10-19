@@ -1,15 +1,37 @@
 """Actual Alembic upgrade in an isolated file; never use the configured database."""
+import ast
 import os
 from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import warnings
 import pytest
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 
-@pytest.mark.parametrize('starting_revision', ['20261009_0150', '20261015_0163', '20261016_0163'])
+def test_migration_revisions_are_unique_and_jp_follows_applied_cutting_history():
+    backend = Path(__file__).resolve().parents[1]
+    revisions = {}
+    for path in (backend / 'alembic/versions').glob('*.py'):
+        for node in ast.parse(path.read_text(encoding='utf-8')).body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == 'revision'
+                for target in node.targets
+            ):
+                revision = ast.literal_eval(node.value)
+                assert revision not in revisions, (revision, revisions.get(revision), path.name)
+                revisions[revision] = path.name
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', UserWarning)
+        script = ScriptDirectory(str(backend / 'alembic'))
+        assert script.get_current_head() is not None
+        assert script.get_revision('20261019_0167').down_revision == '20261016_0166'
+        assert Path(script.get_revision('20261015_0163').path).name == '20261015_0163_cutting_internal_periods.py'
+
+
+@pytest.mark.parametrize('starting_revision', ['20261009_0150', '20261015_0163', '20261016_0163', '20261016_0166'])
 def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path, starting_revision):
     backend = Path(__file__).resolve().parents[1]
     expected_head = ScriptDirectory(str(backend / 'alembic')).get_current_head()
@@ -65,4 +87,7 @@ def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path, starting
         assert set(actual) == {column.name for column in table.columns}
         for column in table.columns:
             assert actual[column.name]['nullable'] == column.nullable
+    from app.models.huakang_b_jp import JPReference, JPReferenceEvent, JPCounter, JPExport, JPExportIdentity
+    for model in (JPReference, JPReferenceEvent, JPCounter, JPExport, JPExportIdentity):
+        assert set(column['name'] for column in inspect(engine).get_columns(model.__tablename__)) == set(model.__table__.columns.keys())
     engine.dispose()
