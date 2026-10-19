@@ -9,6 +9,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from app.services.carton_dimensions import specification_for_display
 from app.models.carton_procurement import CartonOrder, CartonOrderLine, CartonPurchaseOrderIssue
 
 
@@ -154,7 +155,7 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
             index,
             line["packaging_type"],
             line["paper_quality"],
-            f"{line['specification']} {line.get('dimension_unit', '')}".strip(),
+            specification_for_display(line["specification"], line.get("dimension_unit")),
             _quantity_basis(line),
             before_required,
             delta,
@@ -297,7 +298,7 @@ def build_purchase_order_issue_batch_workbook(
                 snapshot.get("after_due_date", ""),
                 line["packaging_type"],
                 line["paper_quality"],
-                f"{line['specification']} {line.get('dimension_unit', '')}".strip(),
+                specification_for_display(line["specification"], line.get("dimension_unit")),
                 _quantity_basis(line),
                 float(line["before_required_quantity"]),
                 float(line["required_quantity_delta"]),
@@ -434,7 +435,7 @@ def build_purchase_order_workbook(
             index,
             line.packaging_type,
             line.paper_quality,
-            f"{line.specification} {line.dimension_unit}".strip(),
+            specification_for_display(line.specification, line.dimension_unit),
             _quantity_basis(line),
             _known_number(order.product_order_quantity),
             None,
@@ -638,7 +639,7 @@ def build_combined_purchase_order_workbook(
                 _known_number(order.product_order_quantity),
                 line.packaging_type,
                 line.paper_quality,
-                f"{line.specification} {line.dimension_unit}".strip(),
+                specification_for_display(line.specification, line.dimension_unit),
                 _quantity_basis(line),
                 None,
                 line.unit,

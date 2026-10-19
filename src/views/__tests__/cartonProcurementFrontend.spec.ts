@@ -393,6 +393,40 @@ function mockWeeklySchedule(rows: CartonImportPreviewRow[]) {
 }
 
 describe('CartonProcurementView frontend workspace', () => {
+  it('posts an unordered receipt without customer, contract or item and retains its draft on close', async () => {
+    mockReceiptWorkspace([])
+    cartonApiMock.createReceipt.mockImplementation(async payload => ({ ...payload, id: 'CTR-U', receipt_no: 'RC-U', status: 'POSTED', revision: 2 }))
+    const wrapper = mountView('receipts')
+    await flushPromises()
+    await findButton(wrapper, '无落单入库').trigger('click')
+    const field = (suffix: string) => wrapper.get(`input[aria-label$=" ${suffix}"]`)
+    await wrapper.get('input[aria-label="人工送货单号"]').setValue('DN-UNORDERED')
+    await field('纸品类型').setValue('空白箱')
+    await field('纸质').setValue('A33+B')
+    await field('规格').setValue('12*11*5')
+    await field('送货数量').setValue('20')
+    await field('实收').setValue('20')
+    await field('单价').setValue('2.5')
+    await wrapper.get('select[aria-label$=" 尺寸单位"]').setValue('in')
+    await wrapper.get('input[aria-label="仓库及仓位"]').setValue('A-01')
+    expect(wrapper.find('select[aria-label$=" 客户"]').exists()).toBe(false)
+    await wrapper.get('button[aria-label="关闭收料录入"]').trigger('click')
+    await findButton(wrapper, '无落单入库').trigger('click')
+    expect(field('规格').element.value).toBe('12*11*5')
+    await findButton(wrapper, '确认入库').trigger('click')
+    await flushPromises()
+    expect(cartonApiMock.createReceipt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      delivery_note_no: 'DN-UNORDERED', import_batch_id: null, post_immediately: true,
+      lines: [expect.objectContaining({ source_type: 'AD_HOC', unordered_receipt: true, dimension_unit: 'in',
+        customer_code: '', contract_no: '', item_no: '', specification: '12*11*5', received_quantity: 20, unit_price: 2.5,
+        location_allocations: [expect.objectContaining({ location_id: 'LOC-A', quantity: 20 })] })],
+    }))
+    expect(wrapper.text()).toContain('已生成独立入库流水，并纳入对应月份月结')
+    expect(field('规格').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+
 it('opens existing-order merge from the pending order row More menu only', async () => {
   const order = orderFixture('CT-MERGE', businessDateOffset(5), 'CONFIRMED')
   mockReceiptWorkspace([order])
@@ -1909,7 +1943,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     mockReceiptWorkspace([orderFixture('KEEP', businessDateOffset(3), 'PENDING_SUPPLIER')])
     const wrapper = mountView('receipts'); await flushPromises()
     const pages = wrapper.get('nav[aria-label="收料入库子页面"]')
-    expect(pages.findAll('button').map(b => b.text())).toEqual(['供应商发货待收', '待收订单（手动收料）', '收料历史'])
+    expect(pages.findAll('button').map(b => b.text())).toEqual(['供应商发货待收', '待收订单（手动收料）', '收料历史', '无落单入库'])
     expect(wrapper.find('table[aria-label="收料历史台账摘要"]').exists()).toBe(false)
     await wrapper.get('button[aria-label="登记 KEEP 收料"]').trigger('click'); await flushPromises()
     await fillAllManualReceiptPapers(wrapper)
