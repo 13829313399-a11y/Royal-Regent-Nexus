@@ -238,13 +238,23 @@ def _sheet_rows(filename: str, content: bytes, *, strict_item_limit: bool = Fals
                 # before materializing cells, not after reading the whole book.
                 sheets = [sheet for sheet in sheets if "item" in sheet.title.casefold()] or sheets
             for sheet in sheets:
-                if strict_row_limit and sheet.max_row > strict_row_limit:
+                if strict_row_limit and (sheet.max_row or 0) > strict_row_limit:
                     raise HTTPException(422, f"送货工作表“{sheet.title}”超过 {strict_row_limit} 行，请拆分文件后导入")
-                if strict_item_limit and "item" in sheet.title.casefold() and sheet.max_row > MAX_IMPORT_ROWS:
+                if strict_item_limit and "item" in sheet.title.casefold() and (sheet.max_row or 0) > MAX_IMPORT_ROWS:
                     raise HTTPException(422, f"ITEM 工作表“{sheet.title}”超过 {MAX_IMPORT_ROWS} 行，请拆分或清理空白格式后导入")
-                if sheet.max_row > MAX_IMPORT_ROWS + 1 or sheet.max_column > 256:
+                if (sheet.max_row or 0) > MAX_IMPORT_ROWS + 1 or (sheet.max_column or 0) > 256:
                     raise HTTPException(422, f"工作表“{sheet.title}”超过 5000 条明细或 256 列，请拆分或清理空白格式后导入；本次未导入任何行")
-                rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+                # Valid OOXML may omit dimensions (including our published templates).
+                # Enforce the same limits while reading instead of trusting metadata.
+                rows = []
+                for index, row in enumerate(sheet.iter_rows(values_only=True), 1):
+                    if strict_row_limit and index > strict_row_limit:
+                        raise HTTPException(422, f"送货工作表“{sheet.title}”超过 {strict_row_limit} 行，请拆分文件后导入")
+                    if strict_item_limit and "item" in sheet.title.casefold() and index > MAX_IMPORT_ROWS:
+                        raise HTTPException(422, f"ITEM 工作表“{sheet.title}”超过 {MAX_IMPORT_ROWS} 行，请拆分或清理空白格式后导入")
+                    if index > MAX_IMPORT_ROWS + 1 or len(row) > 256:
+                        raise HTTPException(422, f"工作表“{sheet.title}”超过 5000 条明细或 256 列，请拆分或清理空白格式后导入；本次未导入任何行")
+                    rows.append(list(row))
                 result.append((sheet.title, rows, 1 if workbook.epoch.year == 1904 else 0))
         finally:
             workbook.close()
