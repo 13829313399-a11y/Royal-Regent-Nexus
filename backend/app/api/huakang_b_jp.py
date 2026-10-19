@@ -33,7 +33,7 @@ def guard(db, user, factory, action="read"):
         raise HTTPException(400, "JP问单录入仅支持华康B")
     ensure_permission_for_departments(db, user, "customer_order:" + action, factory, ("sales-business",))
     if not TABLES.issubset(set(inspect(db.connection()).get_table_names())):
-        raise HTTPException(503, "华康B问单模块尚未执行迁移 20261015_0163，请联系管理员部署")
+        raise HTTPException(503, "华康B问单模块尚未执行迁移 20261019_0167，请联系管理员部署")
 
 
 @router.get("/capabilities")
