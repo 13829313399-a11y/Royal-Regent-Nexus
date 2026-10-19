@@ -27,7 +27,7 @@ def test_migration_revisions_are_unique_and_jp_follows_applied_cutting_history()
         warnings.simplefilter('error', UserWarning)
         script = ScriptDirectory(str(backend / 'alembic'))
         assert script.get_current_head() is not None
-        assert script.get_revision('20261017_0167').down_revision == '20261016_0166'
+        assert script.get_revision('20261019_0167').down_revision == '20261016_0166'
         assert Path(script.get_revision('20261015_0163').path).name == '20261015_0163_cutting_internal_periods.py'
 
 

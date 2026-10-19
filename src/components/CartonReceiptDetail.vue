@@ -2,6 +2,7 @@
 import { computed, onMounted, onBeforeUnmount } from 'vue'
 import { X } from '@lucide/vue'
 import type { CartonReceiptResponse } from '@/api/cartonProcurement'
+import { formatCartonSpecification } from '@/lib/cartonDimensions'
 
 const props = defineProps<{ receipt: CartonReceiptResponse; pinned: boolean; canContinue: boolean }>()
 const emit = defineEmits<{ close: []; continue: [] }>()
@@ -33,7 +34,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', escape))
           <thead class="bg-slate-50 text-slate-500"><tr><th class="px-4 py-3">客户 / 合同 / 货号</th><th class="px-4 py-3">纸品 / 规格</th><th class="px-4 py-3 text-right">送货</th><th class="px-4 py-3 text-right">单价</th><th class="px-4 py-3 text-right">实收</th><th class="px-4 py-3 text-right">破损</th><th class="px-4 py-3 text-right">拒收</th><th class="px-4 py-3 text-right">其他不可用</th><th class="px-4 py-3 text-right">有效收料</th><th class="px-4 py-3">仓位</th></tr></thead>
           <tbody class="divide-y divide-slate-100"><tr v-for="line in receipt.lines" :key="line.id">
             <td class="px-4 py-4"><div class="font-semibold">{{ line.customer_name || line.customer_code }}</div><div class="mt-1 font-mono">{{ line.contract_no || '非正式收料' }}</div><div class="mt-1 font-mono text-slate-500">{{ line.item_no }}</div></td>
-            <td class="px-4 py-4"><div class="font-semibold">{{ line.packaging_type }} {{ line.paper_quality }}</div><div class="mt-1 text-slate-500">{{ line.specification }}</div><div v-if="line.feedback_note" class="mt-1 text-slate-500">{{ line.feedback_note }}</div></td>
+            <td class="px-4 py-4"><div class="font-semibold">{{ line.packaging_type }} {{ line.paper_quality }}</div><div class="mt-1 text-slate-500">{{ formatCartonSpecification(line.specification, line.dimension_unit) }}</div><div v-if="line.feedback_note" class="mt-1 text-slate-500">{{ line.feedback_note }}</div></td>
             <td class="px-4 py-4 text-right tabular-nums">{{ quantity(line.delivered_quantity) }}</td><td class="px-4 py-4 text-right tabular-nums"><div>{{ quantity(line.unit_price) }}</div><p v-if="line.zero_price_kind" class="mt-1 max-w-40 text-[10px] text-amber-800">{{ line.zero_price_kind === 'FREE' ? '免费赠送 · 应付 0' : '入库时暂未定价，当前核价见月结' }}</p><div class="mt-1 text-[10px] text-slate-500">{{ line.currency }} / {{ line.unit }}</div></td>
             <td class="px-4 py-4 text-right tabular-nums">{{ quantity(line.received_quantity) }}</td><td class="px-4 py-4 text-right tabular-nums">{{ quantity(line.damaged_quantity) }}</td><td class="px-4 py-4 text-right tabular-nums">{{ quantity(line.rejected_quantity) }}</td><td class="px-4 py-4 text-right tabular-nums">{{ quantity(line.unusable_quantity) }}</td><td class="whitespace-nowrap px-4 py-4 text-right font-bold text-teal-700">{{ quantity(line.effective_quantity) }} {{ line.unit }}</td><td class="px-4 py-4"><template v-if="line.location_allocations?.length"><div v-for="part in line.location_allocations" :key="part.location_id" class="whitespace-nowrap">{{ part.label || part.location_id }}：{{ Number(part.quantity) }} {{ line.unit }}</div></template><template v-else>{{ line.location || '未填写' }}</template></td>
           </tr></tbody>

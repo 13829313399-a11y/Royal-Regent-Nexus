@@ -384,6 +384,18 @@ def attachment_out(row):
     return {key: getattr(row, key) for key in ("id", "filename", "version", "size", "sha256", "created_at")}
 
 
+def _snapshot_line_no(value, order_no):
+    if isinstance(value, int) and not isinstance(value, bool):
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        number = int(value.strip())
+    else:
+        raise HTTPException(409, f"订单 {order_no} 的采购快照纸品行号无效，请核对原始采购记录")
+    if number <= 0:
+        raise HTTPException(409, f"订单 {order_no} 的采购快照纸品行号必须为正整数，请核对原始采购记录")
+    return number
+
+
 def order_out(db, order, *, internal=False):
     issue = latest_issue(db, order)
     if not issue and not internal:
@@ -416,7 +428,8 @@ def order_out(db, order, *, internal=False):
         commitment = db.get(SupplierCommitment, line_id)
         accepted = bool(issue and commitment and commitment.issue_id == issue.id and not changed)
         line = {key: item.get(key, "") for key in ("id", "line_no", "packaging_type", "paper_quality", "specification", "dimension_unit", "unit")}
-        line.update(child_no=f"{order.order_no}/{item['line_no']:02d}", required_quantity=str(required),
+        line_no = _snapshot_line_no(item.get("line_no"), order.order_no)
+        line.update(line_no=line_no, child_no=f"{order.order_no}/{line_no:02d}", required_quantity=str(required),
             received_quantity=str(fulfilled.get(line_id, 0)), in_transit_quantity=str(shipped.get(line_id, 0)),
             remaining_to_ship=str(max(Decimal(0), required - fulfilled.get(line_id, 0) - pending.get(line_id, 0) - shipped.get(line_id, 0))),
             shipping_blocked_reason="纸品资料更正待双方确认，暂停发货和正式入库" if line_id in material_holds else "此纸品有补单待核对，请联系内部仓库按原补单流程处理" if line_id in blocked else "",
@@ -1299,9 +1312,9 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 if effective != 0 or len(item.difference_reason.strip()) < 4:
                     raise HTTPException(422, "送错货必须全部拒收并填写至少四字原因")
                 continue
-            if item.no_order_decision not in {"SAMPLE", "GIFT"}:
-                raise HTTPException(422, "无单纸品须明确选择样板箱、免费赠送或送错货")
-            if not item.customer_code or (item.no_order_decision == "SAMPLE" and len(item.requested_by.strip()) < 2):
+            if item.no_order_decision not in {"SAMPLE", "GIFT", "UNORDERED"}:
+                raise HTTPException(422, "无单纸品须明确选择无落单入库、样板箱、免费赠送或送错货")
+            if item.no_order_decision != "UNORDERED" and (not item.customer_code or (item.no_order_decision == "SAMPLE" and len(item.requested_by.strip()) < 2)):
                 raise HTTPException(422, "样板箱及赠品须选择客户；样板箱还需填写需求人")
             if effective <= 0:
                 raise HTTPException(422, "样板箱或赠品有效入库数量须大于 0；全部拒收请选择送错货")
@@ -1309,14 +1322,16 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
             if snapshot.get("contract_no") and (
                 _dongkang_identity(snapshot["contract_no"]), _dongkang_identity(snapshot["item_no"])) in active_order_keys:
                 raise HTTPException(409, "此无单纸品已存在相同合同和货号的正式订单，请先核对，不得按样板箱或赠品绕过正式订单入库")
+            if item.no_order_decision == "UNORDERED" and item.unit_price <= 0:
+                raise HTTPException(422, "无落单入库必须填写大于零的单价")
             if item.no_order_decision == "GIFT" and item.unit_price != 0:
                 raise HTTPException(422, "免费赠送的单价必须为 0")
             if not item.location_allocations:
                 raise HTTPException(422, "样板箱或赠品有效入库须分配实际仓位")
             positions.validate_allocations(db, payload.factory_id,
                 [allocation.model_dump(mode="json") for allocation in item.location_allocations], effective)
-            receipt_lines.append(CartonReceiptLineCreate(source_type="AD_HOC", customer_code=item.customer_code,
-                contract_no=snapshot.get("contract_no") or row.delivery_note_no, item_no=snapshot["item_no"],
+            receipt_lines.append(CartonReceiptLineCreate(source_type="AD_HOC", unordered_receipt=item.no_order_decision == "UNORDERED", dimension_unit=item.dimension_unit, customer_code=item.customer_code,
+                contract_no=(snapshot.get("contract_no") or "") if item.no_order_decision == "UNORDERED" else (snapshot.get("contract_no") or row.delivery_note_no), item_no=snapshot["item_no"],
                 packaging_type=snapshot["packaging_type"], paper_quality=snapshot["paper_quality"],
                 specification=snapshot["specification"], unit=item.unit or snapshot["unit"], currency="CNY",
                 delivered_quantity=item.received_quantity if payload.remaining_action == "WAIT" else available_quantity, received_quantity=item.received_quantity,
@@ -1324,7 +1339,7 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 unusable_quantity=item.unusable_quantity, unit_price=item.unit_price,
                 zero_price_kind="FREE" if item.no_order_decision == "GIFT" else item.zero_price_kind,
                 location_allocations=item.location_allocations,
-                feedback_note=f"{'免费赠送' if item.no_order_decision == 'GIFT' else '无正式订单样板箱'}；用途：{item.sample_purpose.strip() or '未填写'}；需求人：{item.requested_by}；{item.difference_reason}"))
+                feedback_note=f"{'无落单入库' if item.no_order_decision == 'UNORDERED' else ('免费赠送' if item.no_order_decision == 'GIFT' else '无正式订单样板箱')}；用途：{item.sample_purpose.strip() or '未填写'}；需求人：{item.requested_by}；{item.difference_reason}"))
             continue
         if item.no_order_decision or item.customer_code or item.sample_purpose or item.requested_by:
             raise HTTPException(422, "正式订单纸品不得选择无单处理")
