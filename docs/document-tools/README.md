@@ -48,7 +48,7 @@ API 接收上传并创建持久任务，独立 Python worker 领取任务。Post
 .venv/Scripts/python.exe -m app.workers.document_tools
 ```
 
-前端在仓库根目录运行 `npm run dev`。开发服务器忽略业务文件与转换输出目录，防止生成 HTML 预览触发整页重载。
+Windows 日常开发在仓库根目录运行 `npm run dev:local`，统一启动前端、API 和独立文档 worker；`npm run dev:status` 检查三项状态，`npm run dev:stop` 停止该入口创建的进程。入口会读取原有 `backend/.env`、复用健康实例，并检查 worker 的本机进程及新鲜数据库心跳，防止只启动前后端后漏掉处理服务；不会自动迁移或创建缺失的 SQLite 文件。其他环境或逐项排查仍可使用上面的独立启动命令，前端单独运行 `npm run dev`。开发服务器忽略业务文件与转换输出目录，防止生成 HTML 预览触发整页重载。完整参数、日志及停止边界见仓库 [README](../../README.md)。
 
 迁移 `20260908_0103_docs` 添加四张文档表，合流迁移 `20260908_0105` 将它与已发布的纸箱 `20260908_0104` 分支汇合。它不修改已有业务记录；已有文档记录时拒绝直接降级删除。备份必须包含数据库与 `DOCUMENT_TOOLS_STORAGE_DIR` 整个持久目录，包括密码加密的 `.password-key`。只备份数据库无法恢复源文件和打开密码。
 

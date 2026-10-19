@@ -51,19 +51,6 @@ function Wait-ForPortRelease {
     throw 'Port 5173 was not released within 5 seconds.'
 }
 
-function Wait-ForExpectedVite {
-    for ($attempt = 0; $attempt -lt 20; $attempt += 1) {
-        $owner = Get-ListenerOwner
-        if ($owner -and (Test-ProjectViteProcess -Process $owner)) {
-            return $owner
-        }
-
-        Start-Sleep -Milliseconds 250
-    }
-
-    throw 'Expected Vite server did not listen on port 5173 within 5 seconds.'
-}
-
 if (-not (Test-Path $viteScript)) {
     throw "Vite dependency is missing in this worktree: $viteScript. Run npm ci here first."
 }
@@ -97,45 +84,26 @@ $owner = Get-ListenerOwner
 if ($owner) {
     if (Test-ProjectViteProcess -Process $owner) {
         Write-Host "Port 5173 is already served by this worktree (PID $($owner.ProcessId), branch $branch, HEAD $head, ahead of main by $ahead commit(s))."
-        return
+    } else {
+        $staleSource = $owner.CommandLine
+        if ($Check) {
+            throw "Port 5173 is occupied by another worktree (PID $($owner.ProcessId)): $staleSource"
+        }
+        if (-not $ReplaceStale) {
+            throw "Port 5173 is occupied by another worktree (PID $($owner.ProcessId)). It was not stopped automatically. Re-run with -ReplaceStale after confirming: $staleSource"
+        }
+        if ($owner.Name -ine 'node.exe' -or $staleSource -notmatch 'vite') {
+            throw "Port 5173 is occupied by an unrelated application (PID $($owner.ProcessId)). It was not stopped."
+        }
+        Stop-Process -Id $owner.ProcessId -Force
+        Wait-ForPortRelease
     }
-
-    $staleSource = $owner.CommandLine
-    if ($Check) {
-        throw "Port 5173 is occupied by another worktree (PID $($owner.ProcessId)): $staleSource"
-    }
-    if (-not $ReplaceStale) {
-        throw "Port 5173 is occupied by another worktree (PID $($owner.ProcessId)). It was not stopped automatically. Re-run with -ReplaceStale after confirming: $staleSource"
-    }
-
-    Stop-Process -Id $owner.ProcessId -Force
-    Wait-ForPortRelease
 }
 
 if ($Check) {
     Write-Host "Startup check passed: branch $branch, HEAD $head, origin/main $remoteMain, behind 0 commit(s); port 5173 is safe to use."
+    & (Join-Path $PSScriptRoot 'local-dev.ps1') -Action Status
     return
 }
 
-$node = (Get-Command node.exe -ErrorAction Stop).Source
-$runtimeLogDirectory = Join-Path ([System.IO.Path]::GetTempPath()) 'royal-regent-nexus-dev'
-New-Item -ItemType Directory -Force -Path $runtimeLogDirectory | Out-Null
-$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$stdout = Join-Path $runtimeLogDirectory "vite-5173-$timestamp.stdout.log"
-$stderr = Join-Path $runtimeLogDirectory "vite-5173-$timestamp.stderr.log"
-
-$startInfo = @{
-    FilePath = $node
-    ArgumentList = @($viteScript, '--host', '127.0.0.1', '--port', '5173', '--strictPort')
-    WorkingDirectory = $projectRoot
-    WindowStyle = 'Hidden'
-    RedirectStandardOutput = $stdout
-    RedirectStandardError = $stderr
-    PassThru = $true
-}
-$viteProcess = Start-Process @startInfo
-
-$startedOwner = Wait-ForExpectedVite
-Write-Host "Started Vite from this worktree (PID $($startedOwner.ProcessId), branch $branch, HEAD $head, ahead of main by $ahead commit(s))."
-Write-Host "URL: http://127.0.0.1:5173"
-Write-Host "Runtime log: $stdout"
+& (Join-Path $PSScriptRoot 'local-dev.ps1') -Action Start
