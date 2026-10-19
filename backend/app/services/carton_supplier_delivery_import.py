@@ -126,16 +126,13 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
         except (ValueError, TypeError, InvalidOperation):
             item["reason"] = "发货数量或送货日期无效"
             continue
-        if not source_row.get("item_no"):
-            item["reason"] = "客户料号为空，不能安全核实纸品"
-            continue
         orders = [order for order in workspaces[factory]["orders"]
             if _same_text(order["contract_no"], source_row["contract_no"])
             and _same_text(order["item_no"], source_row["item_no"])] if source_row.get("contract_no") else []
         if not orders:
             if all(source_row.get(key) not in (None, "", "待复核")
                    for key in ("packaging_type", "paper_quality", "specification")):
-                item.update(status="AD_HOC_REVIEW", reason="未找到正式订单；正单由仓库补建或关联，样板箱或送错货须另行核实")
+                item.update(status="AD_HOC_REVIEW", reason="未找到正式订单；由仓库明确核实无落单入库、样板箱、赠品或送错货")
             else:
                 item["reason"] = "未匹配订单且纸品类型、纸质或规格缺失，请核对原单"
             continue

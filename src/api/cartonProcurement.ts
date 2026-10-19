@@ -466,6 +466,7 @@ export interface CartonImportBatchResponse {
 }
 
 export interface CartonImportPreviewRow {
+  dimension_unit?: string
   source_material?: { packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string }
   material_candidates?: { order_no: string; order_line_id: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string; conflicts: string[] }[]
   schedule_customer_code?: string
@@ -550,6 +551,8 @@ export interface CartonReceiptResponse {
     id: string
     line_no: number
     source_type: 'FORMAL_ORDER' | 'AD_HOC'
+    unordered_receipt?: boolean
+    dimension_unit?: string
     replenishment_issue_id?: string | null
     document_no?: string | null
     responsibility?: 'OWN' | 'SUPPLIER' | null
@@ -1151,6 +1154,8 @@ export const cartonProcurementApi = {
     note: string
     lines: Array<{
       source_type: 'FORMAL_ORDER' | 'AD_HOC'
+      unordered_receipt?: boolean
+      dimension_unit?: 'cm' | 'in'
       replenishment_issue_id?: string | null
       material_correction_id?: string
       order_line_id: string | null

@@ -19,6 +19,7 @@ from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
+from app.services.carton_dimensions import dimension_unit_for_display, specification_unit
 from app.services.transaction_lock import lock_transaction
 from app.core.time import business_now, business_today
 from app.models.carton_supplier_settlement import CartonSupplierSettlement  # noqa: F401 - register additive schema
@@ -642,7 +643,7 @@ def create_order(
                 packaging_type=line.packaging_type,
                 paper_quality=line.paper_quality,
                 specification=line.specification,
-                dimension_unit=line.dimension_unit,
+                dimension_unit=line.dimension_unit or "cm",
                 usage_quantity=line.usage_quantity,
                 quantity_rule_json=rule_json(line),
                 net_weight_kg=line.net_weight_kg,
@@ -2509,7 +2510,7 @@ def order_out(db: Session, order: CartonOrder, *, usage=None, projection=None) -
                 packaging_type=line.packaging_type,
                 paper_quality=line.paper_quality,
                 specification=line.specification,
-                dimension_unit=line.dimension_unit,
+                dimension_unit=dimension_unit_for_display(line.dimension_unit, line.specification),
                 usage_quantity=line.usage_quantity,
                 quantity_rule=rule_data(line),
                 net_weight_kg=line.net_weight_kg,
@@ -2763,7 +2764,7 @@ def search_order_history_items(
                         packaging_type=line.packaging_type,
                         paper_quality=line.paper_quality,
                         specification=line.specification,
-                        dimension_unit=line.dimension_unit,
+                        dimension_unit=dimension_unit_for_display(line.dimension_unit, line.specification),
                         usage_quantity=line.usage_quantity,
                         quantity_rule=rule_data(line, reusable=True),
                         net_weight_kg=line.net_weight_kg,
@@ -2803,6 +2804,25 @@ def _ensure_receipt_capacity(
                 f"需求 {line.required_quantity}，已入库 {received}，待确认 {reserved}，"
                 f"本次新增 {incoming} {line.unit}。请先核对或作废多余的待确认收料单。"
             ))
+
+
+def _unordered_specification(specification: str, dimension_unit: str) -> str:
+    # The unit belongs to the immutable standalone material identity. Never
+    # reinterpret existing unmarked stock or duplicate a suffix on re-entry.
+    raw = specification.strip()
+    stated_unit, base = specification_unit(raw)
+    if stated_unit and stated_unit != dimension_unit:
+        raise HTTPException(status_code=422, detail="规格中的尺寸单位与所选单位不一致，请核对")
+    if specification_unit(base)[0] or re.search(r"\d\s*(?:\[[A-Za-z]+\]|[A-Za-z]{1,12})$", base):
+        raise HTTPException(status_code=422, detail="无落单规格只支持cm或in尺寸单位")
+    if not base:
+        raise HTTPException(status_code=422, detail="无落单入库必须填写有效规格")
+    raw = base
+    base = re.sub(r"\s*[×xX*]\s*", " × ", raw)
+    result = f"{base} [{dimension_unit}]"
+    if len(result) > 255:
+        raise HTTPException(status_code=422, detail="无落单规格含尺寸单位后不能超过255字")
+    return result
 
 
 def create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext) -> CartonReceipt:
@@ -2855,7 +2875,18 @@ def _ensure_delivery_import_evidence(db, factory_id, batch_id):
 def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext, *, commit: bool = True, supplier_shipment_id: str | None = None, corrects_receipt_id: str | None = None, shipment_batch_key: str | None = None) -> CartonReceipt:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
-    supplier = get_active_supplier(db, factory_id, payload.supplier_id)
+    has_unordered = any(line.unordered_receipt for line in payload.lines)
+    supplier_id = payload.supplier_id
+    if has_unordered and not supplier_id:
+        supplier_id = db.scalar(select(CartonSupplier.id).where(
+            CartonSupplier.factory_id == factory_id,
+            CartonSupplier.supplier_code == CARTON_DEFAULT_SUPPLIER_CODE,
+            CartonSupplier.status == "ACTIVE"))
+        if not supplier_id:
+            raise HTTPException(status_code=409, detail="当前厂区尚未配置有效固定纸箱供应商")
+    supplier = get_active_supplier(db, factory_id, supplier_id)
+    if has_unordered and supplier.supplier_code != CARTON_DEFAULT_SUPPLIER_CODE:
+        raise HTTPException(status_code=422, detail="无落单入库只能使用当前厂区固定纸箱供应商")
     _ensure_delivery_import_evidence(db, factory_id, payload.import_batch_id)
     from app.services.carton_supplier_settlement import date_check, ensure_open
     if payload.acceptance_date:
@@ -2953,7 +2984,7 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         for customer_code in {
             line.customer_code
             for line in payload.lines
-            if line.source_type == "AD_HOC"
+            if line.source_type == "AD_HOC" and not line.unordered_receipt
         }
     }
 
@@ -3015,16 +3046,16 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
                 "currency": order_line.currency,
             }
         else:
-            customer = ad_hoc_customers[input_line.customer_code]
+            customer = ad_hoc_customers.get(input_line.customer_code) if not input_line.unordered_receipt else None
             snapshot = {
                 "order_line_id": None,
-                "customer_code": customer.customer_code,
-                "customer_name": customer.customer_name,
-                "contract_no": input_line.contract_no or payload.delivery_note_no,
+                "customer_code": "__UNORDERED__" if input_line.unordered_receipt else customer.customer_code,
+                "customer_name": "无落单入库" if input_line.unordered_receipt else customer.customer_name,
+                "contract_no": input_line.contract_no if input_line.unordered_receipt else (input_line.contract_no or payload.delivery_note_no),
                 "item_no": input_line.item_no,
                 "packaging_type": input_line.packaging_type,
                 "paper_quality": input_line.paper_quality,
-                "specification": input_line.specification,
+                "specification": _unordered_specification(input_line.specification, input_line.dimension_unit) if input_line.unordered_receipt else input_line.specification,
                 "unit": input_line.unit,
                 "unit_price": input_line.unit_price or Decimal(0),
                 "currency": normalize_currency(input_line.currency),
@@ -3115,6 +3146,10 @@ def _receipt_lines(db: Session, receipt_id: str) -> list[CartonReceiptLine]:
 def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
     from app.services.carton_replenishment_receipts import receipt_links, public_link
     links = receipt_links(db, receipt.factory_id)
+    receipt_lines = _receipt_lines(db, receipt.id)
+    order_line_ids = [line.order_line_id for line in receipt_lines if line.order_line_id]
+    order_lines = {line.id: line for line in db.scalars(select(CartonOrderLine).where(
+        CartonOrderLine.factory_id == receipt.factory_id, CartonOrderLine.id.in_(order_line_ids))).all()} if order_line_ids else {}
     from app.services.carton_receipt_pricing import declarations
     zero_prices = declarations(db, receipt.factory_id, receipt.id)
     return CartonReceiptOut(
@@ -3137,7 +3172,7 @@ def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
         created_at=receipt.created_at,
         updated_at=receipt.updated_at,
         confirmed_at=receipt.confirmed_at,
-        lines=[CartonReceiptLineOut.model_validate(line).model_copy(update={**public_link(links.get(line.id)), "zero_price_kind": zero_prices.get(line.id, "PENDING" if line.unit_price == 0 else None), "location_allocations": [CartonLocationAllocation.model_validate(a) for a in json.loads(line.location_allocations_json or "[]")]}) for line in _receipt_lines(db, receipt.id)],
+        lines=[CartonReceiptLineOut.model_validate(line).model_copy(update={**public_link(links.get(line.id)), "zero_price_kind": zero_prices.get(line.id, "PENDING" if line.unit_price == 0 else None), "unordered_receipt": line.customer_code == "__UNORDERED__", "dimension_unit": dimension_unit_for_display(getattr(order_lines.get(line.order_line_id), "dimension_unit", None), line.specification), "location_allocations": [CartonLocationAllocation.model_validate(a) for a in json.loads(line.location_allocations_json or "[]")]}) for line in receipt_lines],
     )
 
 
