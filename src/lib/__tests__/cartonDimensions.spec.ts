@@ -20,4 +20,10 @@ describe('carton dimension display', () => {
     expect(cartonDimensionParts('thin')).toEqual({ specification: 'thin', unit: 'cm' })
     expect(formatCartonSpecification('12*11*5', 'inch')).toBe('12*11*5 in')
   })
+  it('recognizes separated and bracketed units after text without hiding earlier unit markers', () => {
+    expect(cartonDimensionParts('foam [in]')).toEqual({ specification: 'foam', unit: 'in' })
+    expect(cartonDimensionParts('foam in')).toEqual({ specification: 'foam', unit: 'in' })
+    expect(cartonDimensionParts('12*10*5 mm [cm]')).toEqual({ specification: '12*10*5 mm', unit: 'cm' })
+    expect(cartonDimensionParts('12*10*5mm[cm]')).toEqual({ specification: '12*10*5mm', unit: 'cm' })
+  })
 })
