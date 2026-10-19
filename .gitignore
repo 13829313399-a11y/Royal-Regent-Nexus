@@ -141,3 +141,6 @@ outputs/opening-inventory-template-20260909/
 
 # Isolated collaborative workbench acceptance data and local servers
 /outputs/sheet-workbench/
+
+# Local frontend/API/document worker process identities and logs
+/.local-dev/
