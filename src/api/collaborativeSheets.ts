@@ -77,6 +77,11 @@ export interface FillChange { sheet: number; address: string; value: SheetValue 
 export interface SyncChange extends FillChange { base_value: SheetValue; base_revision: number }
 export interface SyncRequest { expected_revision: number; operation_id: string; changes: SyncChange[] }
 export interface CellConflict extends FillChange { actor_name: string; revision: number }
+export interface SheetDownloadOptions {
+  signal?: AbortSignal
+  requestId?: string
+  onResponse?: (info: { bytes: number; requestId: string; serverTiming: string; revision: string }) => void
+}
 export interface SyncDelta {
   applied_revision?: number
   id: string; revision: number; status: FillTask['status']; grants: FillGrant[]
@@ -141,10 +146,14 @@ export const collaborativeSheetsApi = {
       expected_revision: task.revision,
     }, config(factoryId))).data
   },
-  async download(factoryId: string, task: FillTask, progress?: (loaded: number, total?: number) => void) {
-    return (await http.get<Blob>(`${base}/${task.id}/download`, {
+  async download(factoryId: string, task: Pick<FillTask, 'id'>, progress?: (loaded: number, total?: number) => void, options: SheetDownloadOptions = {}) {
+    const response = await http.get<Blob>(`${base}/${task.id}/download`, {
       ...config(factoryId), responseType: 'blob', timeout: 300_000,
+      signal: options.signal,
+      headers: options.requestId ? { 'X-Request-ID': options.requestId } : undefined,
       onDownloadProgress: event => progress?.(event.loaded, event.total),
-    })).data
+    })
+    options.onResponse?.({ bytes: response.data.size, requestId: String(response.headers['x-request-id'] ?? ''), serverTiming: String(response.headers['server-timing'] ?? ''), revision: String(response.headers['x-workbook-revision'] ?? '') })
+    return response.data
   },
 }

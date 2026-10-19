@@ -10,6 +10,7 @@ import { departments } from '@/data/enterpriseMock'
 import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard'
 import { canFill, clipboardRows, columnName, parseInput, rangeBounds } from './grid'
 import FillGrid from './FillGrid.vue'
+import { useSheetDownload } from './useSheetDownload'
 import { useSheetSync } from './useSheetSync'
 import './workspace.css'
 
@@ -32,7 +33,15 @@ const editorKind = ref<'auto' | 'text' | 'number' | 'boolean'>('auto'), editorTo
 const changes = ref<FillChange[]>([])
 const sync = useSheetSync(task, changes, () => props.factoryId, () => props.accountId ?? '')
 const showPeople = ref(false), showTasks = ref(true), showHistory = ref(false)
-const downloading = ref(false), downloadStatus = ref('')
+const sheetDownload = useSheetDownload(
+  () => task.value ? { id: task.value.id, factory: props.factoryId, account: props.accountId ?? '', name: task.value.original_name } : undefined,
+  async current => {
+    if (!(await finishTrial()) || !current() || !applyEditor()) return false
+    return await sync.flush()
+  },
+  (target, progress, options) => api.download(target.factory, target, progress, options),
+)
+const downloading = sheetDownload.active, downloadStatus = sheetDownload.status
 const historyRows = ref<FillTaskDetail['activity']>([]), historyActor = ref(''), historyAddress = ref('')
 const historyNext = ref<number | null>(null), historyLoading = ref(false), historyError = ref('')
 let historyGeneration = 0
@@ -350,21 +359,8 @@ async function submit() {
 async function download() {
   if (!task.value || busy.value || downloading.value) return
   if (grantsDirty.value) { error.value = '请先保存分配设置，再下载。'; return }
-  if (!(await save())) { error.value = '填写尚未保存，请先处理同步提示再下载。'; return }
-  const target = task.value
-  downloading.value = true; downloadStatus.value = '正在生成汇总…'; error.value = ''
-  try {
-    const blob = await api.download(props.factoryId, target, (loaded, total) => {
-      if (!alive) return
-      downloadStatus.value = total ? `正在下载 ${Math.round(loaded / total * 100)}%` : `正在下载 ${(loaded / 1024 / 1024).toFixed(1)} MB`
-    })
-    if (!alive || task.value?.id !== target.id) return
-    const url = URL.createObjectURL(blob), anchor = document.createElement('a')
-    anchor.href = url; anchor.download = target.original_name.replace(/(\.[^.]+)$/, '-已填写$1')
-    document.body.appendChild(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 60_000)
-    downloadStatus.value = '文件已接收，已交给浏览器保存。'
-  } catch (e) { if (alive) { error.value = getApiErrorMessage(e); downloadStatus.value = '下载失败，可重试；已保存填写不受影响。' } }
-  finally { if (alive) downloading.value = false }
+  error.value = ''
+  await sheetDownload.start()
 }
 onMounted(() => {
   void initialize()
@@ -393,6 +389,7 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
     </div>
     <p v-if="factoryId === 'group'" class="cs-message">请先在顶部选择你所属的厂区，再上传或填写表格。</p>
     <p v-if="error" class="cs-error" role="alert">{{ error }}</p>
+    <p v-if="sheetDownload.error.value" class="cs-error" role="alert">{{ sheetDownload.error.value }}</p>
     <p v-if="notice" class="cs-message" role="status">{{ notice }}</p>
     <p v-if="sync.message.value" class="cs-warning" role="status">{{ sync.message.value }}</p>
     <div v-for="c in sync.conflicts.value" :key="`${c.sheet}:${c.address}`" class="cs-warning" role="alert">
@@ -423,6 +420,8 @@ onBeforeUnmount(() => { alive = false; loadSequence++; clearInterval(poll); remo
             <Button variant="outline" :disabled="busy" @click="reload()"><RefreshCw :size="15" />读取最新</Button>
             <Button v-if="task.is_owner" variant="outline" :disabled="busy || changes.length > 0 || editorTouched" @click="showGrants = !showGrants">分配填写</Button>
             <Button v-if="task.is_owner" variant="outline" :disabled="busy || downloading" @click="download"><Download :size="15" />{{ downloading ? downloadStatus : '下载汇总' }}</Button>
+            <Button v-if="downloading" variant="outline" @click="sheetDownload.cancel()">取消下载</Button>
+            <a v-if="sheetDownload.readyUrl.value" :href="sheetDownload.readyUrl.value" :download="sheetDownload.readyName.value" class="text-sm font-medium text-teal-800 underline underline-offset-4">再次保存文件</a>
           </div>
         </div>
         <div v-if="task.is_owner && showGrants" class="cs-assignment">
