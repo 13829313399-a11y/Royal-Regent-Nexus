@@ -17,11 +17,14 @@ MANUAL_EDITABLE_FIELDS: dict[str, dict[str, str]] = {
     "product_name_en": {"label": "产品名称", "input_type": "text"},
     "quantity": {"label": "数量", "input_type": "number"},
     "units_per_carton": {"label": "装箱数", "input_type": "number"},
+    "edu_reservation_row": {"label": "EDU 备料行号（原 ITEM表）", "input_type": "text"},
     "carton_count": {"label": "箱数", "input_type": "number"},
     "standard": {"label": "国家标准", "input_type": "text"},
     "unit_price_hkd": {"label": "单价 HKD", "input_type": "number"},
     "amount_hkd": {"label": "金额 HKD", "input_type": "number"},
     "packaging": {"label": "包装", "input_type": "text"},
+    "product_version": {"label": "版本", "input_type": "text"},
+    "shipping_item": {"label": "出货货号", "input_type": "text"},
     "line_q": {"label": "行Q/验货日期", "input_type": "date"},
     "customer_q": {"label": "客Q/FCD", "input_type": "date"},
     "requested_ship_date": {"label": "客要求走货期", "input_type": "date"},
@@ -31,6 +34,7 @@ MANUAL_EDITABLE_FIELDS: dict[str, dict[str, str]] = {
     "fcd_date": {"label": "FCD期", "input_type": "date"},
     "po_ship_date": {"label": "走货期", "input_type": "date"},
     "date_code": {"label": "日期码", "input_type": "text"},
+    "po_unit_prices": {"label": "各PO单价(HKD)，每行PO=单价", "input_type": "textarea"},
     "factory_price_hkd": {"label": "出厂价 HKD", "input_type": "number"},
     "outer_pack": {"label": "外箱装箱数", "input_type": "number"},
     "cartons": {"label": "箱数", "input_type": "number"},
@@ -59,7 +63,7 @@ PREVIEW_VALUE_FIELDS = frozenset({
     "po_no", "contract_no", "customer_country", "customer_name", "country",
     "product_no", "product_name_zh", "product_name_en", "quantity",
     "units_per_carton", "carton_count", "standard", "unit_price_hkd",
-    "amount_hkd", "packaging", "line_q", "customer_q", "requested_ship_date",
+    "amount_hkd", "packaging", "line_q", "customer_q", "requested_ship_date", "product_version", "shipping_item", "date_code", "edu_reservation_row",
 })
 DUPLICATE_CONFIRMATION_CODES = frozenset({
     "duplicate_reference",
@@ -105,6 +109,9 @@ def decorate_manual_resolution_policy(preview: dict[str, Any]) -> dict[str, Any]
             issue.setdefault("edit_field", "")
             issue.setdefault("edit_label", "")
             issue.setdefault("edit_input_type", "text")
+            if issue.get("requires_source_correction"):
+                issue.update(can_skip=False, can_edit=False, skip_label="")
+                continue
             if (
                 issue.get("severity") != "blocked"
                 or str(issue.get("code") or "") in DUPLICATE_CONFIRMATION_CODES

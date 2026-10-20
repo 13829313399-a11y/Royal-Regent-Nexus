@@ -32,7 +32,11 @@ HEADERS = {
     "客要求走货期": "requested_ship_date", "备注": "note", "国家": "country", "条码": "barcode",
     "印刷要求": "printing_requirement", "联系人": "contact",
 }
-MARKERS = {"取消单": "cancelled", "已走货订单": "shipped", "未走货订单": "unshipped"}
+MARKERS = {
+    "取消单": "cancelled", "已走货订单": "shipped", "未走货订单": "unshipped",
+    # Date-based placement is not evidence of a shipment or an opening shipped balance.
+    "已完成（按验货日期）": "unshipped",
+}
 
 
 def text(value):
@@ -192,7 +196,8 @@ def preview(db, content, filename, factory, customer, customer_name, *, workbook
             identity = ledger.identity_for(row["data"], customer)
             row["identity"] = identity
             identities[identity].append(row)
-            if identity in existing:
+            matched = ledger.resolve_existing_line(db, factory, customer, row["data"], identity) if customer == "edu" else None
+            if identity in existing or matched is not None:
                 row["existing"] = True
                 row["issues"].append("台账已有此订单，不覆盖；若要补齐 PO 请使用关联已有订单")
         except HTTPException as exc:
@@ -240,11 +245,12 @@ def confirm(db, *, parsed, content, selections, fingerprint, cutoff_date, reason
         if opening > qty:
             raise HTTPException(400, f"{row['reference_no']} 期初走货不能超过订单总量")
         record_key = ledger.digest([file_hash, row["id"], cutoff_date.isoformat(), selection.status, ledger.decimal_text(opening)])
-        alias = db.get(Identity, (factory, customer, row["identity"]))
-        line = db.get(Line, alias.line_id) if alias else db.scalar(select(Line).where(Line.factory_id == factory, Line.customer_code == customer, Line.identity_key == row["identity"]))
+        line = ledger.resolve_existing_line(db, factory, customer, row["data"], row["identity"])
         if line:
             if line.data.get("history_migration", {}).get("record_key") != record_key:
                 raise HTTPException(409, f"{row['reference_no']} 已存在，历史迁入不能覆盖已有订单")
+            if customer == "edu" and db.get(Identity, (factory, customer, row["identity"])) is None:
+                db.add(Identity(factory_id=factory, customer_code=customer, identity_key=row["identity"], line_id=line.id))
             existing_count += 1
             lines.append(line)
             continue

@@ -22,7 +22,7 @@ OPERATIONS = frozenset({
     "_create_unified_single_preview", "_export_unified_single_schedule",
     "_create_special_batch_preview", "_export_special_batch_schedule",
     "_create_mapped_customer_preview", "_export_mapped_customer_schedule",
-    "parse_workbook", "_jp_validate_reference", "_jp_preview",
+    "parse_workbook", "_jp_validate_reference", "_jp_preview", "organize_workbook",
 })
 
 

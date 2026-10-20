@@ -719,7 +719,7 @@ def _decrypt_schedule(content: bytes) -> tuple[bytes, bool]:
         office.decrypt(output)
         return output.getvalue(), True
     except Exception as exc:
-        raise CustomerOrderWorkbookError("客户排期无法用已配置的 BuzzBee 密码打开") from exc
+        raise CustomerOrderWorkbookError("客户排期无法用已配置的排期工作簿密码打开") from exc
 
 
 def _encrypt_schedule(content: bytes) -> bytes:

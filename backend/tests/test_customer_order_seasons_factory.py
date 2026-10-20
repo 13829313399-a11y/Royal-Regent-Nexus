@@ -111,6 +111,31 @@ def test_seasons_outer_conflict_cannot_fall_back_to_schedule_pack(factory):
         service.create_unified_customer_preview(**args)
 
 
+@pytest.mark.parametrize('factory', ['huaxing', 'huakang-d'])
+def test_seasons_explicit_date_code_reaches_preview_and_export(factory):
+    args = arguments(factory)
+    args['po_files'] = seasons_po('DATE CODE: 012301JAN31\nPacking: Outer: 288P', 576)
+    preview = service.create_unified_customer_preview(**args)
+    row = preview['rows'][0]
+    assert row['date_code'] == '012301JAN31'
+    keys = {issue['skip_key'] for issue in row['issues'] if issue.get('skip_key')}
+    output, _, exported = service.export_unified_customer_schedule(**args, skipped_issue_keys=keys)
+    assert exported['rows'][0]['date_code'] == '012301JAN31'
+    wb = openpyxl.load_workbook(BytesIO(output))
+    assert wb['ITEM表']['U5'].value == '012301JAN31'
+
+
+@pytest.mark.parametrize('factory', ['huaxing', 'huakang-d'])
+def test_standalone_formal_po_does_not_treat_absent_qf_as_zero(factory):
+    args = arguments(factory)
+    args['po_files'] = seasons_po('Packing: Outer: 288P\nOQF NO.: QF90000999', 576)
+    preview = service.create_unified_customer_preview(**args)
+    assert not any(issue['severity'] == 'blocked' for row in preview['rows'] for issue in row['issues'])
+    assert any('剩余数量未知' in warning for warning in preview['warnings'])
+    output, _, _ = service.export_unified_customer_schedule(**args)
+    assert openpyxl.load_workbook(BytesIO(output))['ITEM表']['L5'].value == 288
+
+
 @pytest.mark.parametrize('factory', ['huakang-a', 'huakang-b', 'huakang-c', 'huadeng'])
 def test_seasons_other_factories_still_rejected(factory):
     with pytest.raises(HTTPException) as error:

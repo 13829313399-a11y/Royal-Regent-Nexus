@@ -326,8 +326,63 @@ def _extract_pdf(path_text: str, modified_ns: int, size: int) -> tuple[str, int]
     path = Path(path_text)
     with pdfplumber.open(path) as pdf:
         page_count = len(pdf.pages)
-        text = "\n".join((page.extract_text() or "") for page in pdf.pages[:3])
+        # Keep physical page boundaries for source evidence without expanding
+        # the existing three-page extraction budget.
+        text = "\n\f\n".join((page.extract_text() or "") for page in pdf.pages[:3])
     return text, page_count
+
+
+_SSCC_LABEL = r"SSCC\s+(?:bar\s*code\s+)?(?:labels?|stickers?)"
+_OUTER_CARTON = r"(?:the\s+)?(?:master|outer|shipping)\s+cartons?"
+_SSCC_CARTON_REQUIREMENT = re.compile(
+    rf"\b(?:"
+    rf"SSCC\s+bar\s*code\s+(?:labeled|labelled)\s+(?:on|to)\s+{_OUTER_CARTON}"
+    rf"|{_SSCC_LABEL}\s+(?:(?:is|are|must\s+be|shall\s+be|should\s+be|to\s+be)\s+)?"
+    rf"(?:required|needed|applied|affixed|attached|placed)\s+(?:on|to)\s+{_OUTER_CARTON}"
+    rf"|(?:apply|affix|attach|place)\s+(?:the\s+)?{_SSCC_LABEL}\s+(?:on|to)\s+{_OUTER_CARTON}"
+    rf"|{_SSCC_LABEL}\s+(?:on|for)\s+{_OUTER_CARTON}"
+    rf")\b",
+    re.IGNORECASE,
+)
+
+
+def _sscc_carton_requirements(
+    path: Path, text: str, relative_path: str
+) -> tuple[str, list[dict[str, Any]]]:
+    """Read an explicit outer-carton label instruction, never a barcode value."""
+    sources: list[dict[str, Any]] = []
+    requirements: list[str] = []
+    for page_number, page_text in enumerate(text.split("\f"), start=1):
+        for match in _SSCC_CARTON_REQUIREMENT.finditer(page_text):
+            before = page_text[max(0, match.start() - 80):match.start()]
+            after = page_text[match.end():match.end() + 80]
+            # A nearby generic "No stickers" is not a negation of the later,
+            # explicit SSCC carton instruction. Only a directly attached
+            # negative/optional qualifier can suppress this match.
+            negated_before = re.search(
+                r"(?:\bno|\bwithout|\bnot|\bomit|\bremove|\boptional|"
+                r"\bno\s+(?:need\s+to|requirement\s+for)|"
+                r"\bnot\s+(?:required|needed|applicable)|"
+                r"\b(?:do|does|must|shall|should)\s+not(?:\s+\w+){0,2})\s*:?\s*$",
+                before, re.IGNORECASE,
+            )
+            negated_after = re.match(
+                r"\s*[:,-]?\s*(?:(?:is|are)\s+)?(?:not\s+(?:required|needed|applicable)|optional)\b",
+                after, re.IGNORECASE,
+            )
+            if negated_before or negated_after:
+                continue
+            raw_text = match.group(0)
+            requirement = _clean_text(raw_text)
+            if requirement not in requirements:
+                requirements.append(requirement)
+            sources.append({
+                "file_name": path.name,
+                "relative_path": relative_path,
+                "page": page_number if path.suffix.lower() == ".pdf" else None,
+                "raw_text": raw_text,
+            })
+    return "\n".join(requirements), sources
 
 
 def _extract_workbook(path: Path) -> tuple[str, int]:
@@ -397,13 +452,16 @@ def _parse_po_text(path: Path, text: str, page_count: int, root: Path | None = N
     elif item_match:
         tail = text[item_match.end() :]
         description = next((line.strip() for line in tail.splitlines() if line.strip()), "")
-    inspection = _first(r"Planned Inspection Date\s*:\s*([^\r\n]+?)(?=\s+Factory Commit Date\s*:|$)", text)
+    inspection = _first(r"Planned Inspection(?: Date)?\s*:\s*([^\r\n]+?)(?=\s+Factory Commit Date\s*:|$)", text)
     fcd = _first(r"Factory Commit Date\s*:\s*([^\r\n]+)", text)
     root = (root or path.parent).resolve()
     try:
         relative_path = str(path.resolve().relative_to(root))
     except ValueError:
         relative_path = path.name
+    outer_carton_sticker, outer_carton_sticker_sources = _sscc_carton_requirements(
+        path, text, relative_path
+    )
     parsed = {
         "file_name": path.name,
         "relative_path": relative_path,
@@ -419,6 +477,8 @@ def _parse_po_text(path: Path, text: str, page_count: int, root: Path | None = N
         "customer_name": _first(r"End Customer[ \t]*:[ \t]*([^\r\n]+)", text),
         "product_packaging": _first(r"Package Type[ \t]*:[ \t]*([^\r\n]+)", text),
         "barcode": _first(r"UPC Code[ \t]*:[ \t]*([0-9]+)", text),
+        "outer_carton_sticker": outer_carton_sticker,
+        "outer_carton_sticker_sources": outer_carton_sticker_sources,
         "consolidated_id": _first(r"Consolidated ID[ \t]*:[ \t]*([^\r\n]+)", text),
         "product_specialist": _first(r"Product Specialist\s*:\s*([^\r\n]+)", text),
         "contact": _first(r"Our Contact\s*:\s*([^\r\n]+)", text),

@@ -112,11 +112,16 @@ def test_broken_reserved_review_price_uses_exact_new_order_row_only():
     wb['正单评审表']['N5'] = '=IFERROR(接单表!#REF!,"")'
     wb['正单评审表']['N6'] = '=IFERROR(INDEX(接单表!N4:N30,ROW(接单表!#REF!)),"")'
     row = dict(item_sheet_name='ITEM表', product_no='I1', reference_no='NEW', quantity='12',
-               units_per_carton='6', _huaxing_customer='edu')
+               units_per_carton='6', _huaxing_customer='edu', contract_no='C1', received_date='2026-10-16')
     mapping.export_rows(wb, [row])
-    assert wb['正单评审表']['N6'].value == '=IF(LEN(\'接单表\'!N4)=0,"",\'接单表\'!N4)'
-    assert wb['正单评审表']['N5'].value == '=IFERROR(接单表!#REF!,"")'
-    assert wb['接单表']['N4'].value is None
+    review = wb['正单评审表']
+    new_row = next(r for r in range(4, review.max_row + 1) if review.cell(r, 4).value == 'NEW')
+    order = wb['接单表']
+    order_row = next(r for r in range(4, order.max_row + 1) if order.cell(r, 4).value == 'NEW')
+    assert review.cell(new_row, 14).value == f'=IF(LEN(\'接单表\'!N{order_row})=0,"",\'接单表\'!N{order_row})'
+    old_row = next(r for r in range(4, review.max_row + 1) if review.cell(r, 4).value == 'OLD')
+    assert '#REF!' in review.cell(old_row, 14).value
+    assert order.cell(order_row, 14).value is None
 
 
 def test_silverlit_numeric_so_matches_existing_schedule():

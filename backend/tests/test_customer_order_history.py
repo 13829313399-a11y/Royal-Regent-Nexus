@@ -88,6 +88,20 @@ def test_opening_is_audited_without_fake_shipments_or_auto_dispatch(db):
     assert again['created_count'] == 0 and again['existing_count'] == 3
 
 
+def test_date_completed_section_after_shipped_does_not_inherit_shipping(db):
+    w = openpyxl.load_workbook(BytesIO(workbook()))
+    w.active.append(['已完成（按验货日期）'])
+    w.active.append([None, 'CTR4', '00126', '00093', '子公司', '00048', 90, None])
+    b = BytesIO(); w.save(b)
+    p = parsed(db, b.getvalue())
+    assert [r['section'] for r in p['rows']] == ['unshipped', 'cancelled', 'shipped', 'unshipped']
+    assert p['rows'][-1]['reference_no'] == '00126'
+    result = confirm(db, p, content=b.getvalue(), selections=selections(p, ('20', '10', '80', '0')))
+    moved = next(r for r in result['items'] if r['reference_no'] == '00126')
+    assert moved['shipped_quantity'] == '0' and moved['remaining_quantity'] == '90'
+    assert db.scalar(select(func.count()).select_from(Shipment)) == 0
+
+
 @pytest.mark.parametrize('amount', ['', '-1', 'NaN', 'Infinity', '100.00001', '101'])
 def test_invalid_baselines_and_failed_batch_never_partially_persist(db, amount):
     p = parsed(db)
