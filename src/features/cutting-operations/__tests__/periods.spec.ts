@@ -22,6 +22,16 @@ async function click(label:string){const target=wrapper!.findAll('button').find(
 async function edit(){await click('读取月结记录');await click('编制／重新核对月结')}
 
 describe('internal monthly closing',()=>{
+  it('keeps the active month and unsaved reason when overview requests another month',async()=>{
+    await open();await click('读取月结记录')
+    const field=wrapper!.get('input[type=month]'),original=(field.element as HTMLInputElement).value
+    await wrapper!.get('input[maxlength="500"]').setValue('当前月的独立复核依据')
+    wrapper!.findComponent(CuttingPeriodClosing).vm.activateMonth('2025-01')
+    await flushPromises()
+    expect((field.element as HTMLInputElement).value).toBe(original)
+    expect(wrapper!.get('input[maxlength="500"]').element.value).toBe('当前月的独立复核依据')
+    expect(wrapper!.text()).toContain('请先处理当前内容再切换期间')
+  })
   it('filters displayed rows without losing hidden allocations on save',async()=>{
     await open();await edit();await wrapper!.findAll('input[type=number]')[1]!.setValue('1.2')
     await wrapper!.get('input[type=search]').setValue('不存在的客户')

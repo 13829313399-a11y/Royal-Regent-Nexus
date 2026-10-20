@@ -243,20 +243,30 @@ def cost_summary(rows):
     return dict(tasks=list(tasks.values()), materials=list(materials.values()))
 
 
-def read(db, line_id, *, show_costs=False):
-    ensure_schema(db)
-    c.require(orders.latest(db, line_id) is not None, '裁床来源订单不存在', 404)
-    wh.ensure_schema(db)
-    # A single consistent cross-ledger view also on PostgreSQL READ COMMITTED.
-    # A linked warehouse write takes these same locks in this order.
-    lock_transaction(db, 'cutting-master', c.FACTORY)
-    wh.procurement.lock_factory(db)
-    _, entries = wh.projection(db, 'fabric')
-    history = events(db)
-    docs, balances = replay(entries, history)
-    price_map = prices(history)
+def read(db, line_id, *, show_costs=False, _snapshot=None):
+    if _snapshot is None:
+        ensure_schema(db)
+        c.require(orders.latest(db, line_id) is not None, '裁床来源订单不存在', 404)
+        wh.ensure_schema(db)
+        # A single consistent cross-ledger view also on PostgreSQL READ COMMITTED.
+        # A linked warehouse write takes these same locks in this order.
+        lock_transaction(db, 'cutting-master', c.FACTORY)
+        wh.procurement.lock_factory(db)
+        _, entries = wh.projection(db, 'fabric')
+        history = events(db)
+        docs, balances = replay(entries, history)
+        price_map = prices(history)
+        issue_entries = entries.values()
+        line_docs = docs.items()
+        allocation_history = history
+    else:
+        # Private, request-local snapshot created only after both factory locks.
+        entries, history, docs, balances, price_map = _snapshot['projection']
+        issue_entries = _snapshot['issues'].get(line_id, [])
+        line_docs = _snapshot['documents'].get(line_id, [])
+        allocation_history = _snapshot['history'].get(line_id, [])
     rows, root_ids = [], set()
-    for issue in entries.values():
+    for issue in issue_entries:
         if issue['kind'] != 'ISSUE':
             continue
         request = entries.get(issue['data'].get('original_id'))
@@ -276,7 +286,7 @@ def read(db, line_id, *, show_costs=False):
                 loss_cost=amount(balance['loss_quantity'], price['data']['entry']['unit_cost']) if price else None)
         rows.append(row)
     output_docs = []
-    for identifier, document in docs.items():
+    for identifier, document in line_docs:
         first = document['history'][0]
         if first['line_id'] != line_id:
             continue
@@ -287,7 +297,7 @@ def read(db, line_id, *, show_costs=False):
             replaced_by_document_id=next((e['data'].get('replaced_by_document_id') for e in document['history'] if e['action'] == 'void'), None),
             history=[dict({k: e[k] for k in ('id', 'action', 'version', 'actor', 'date', 'reason')}, business_day=e['data']['entry']['day']) for e in document['history']],
             **({'cost_at_post': first['data'].get('cost_at_post')} if show_costs else {})))
-    result = dict(revision=max((e['version'] for e in history), default=0), issues=rows, documents=output_docs)
+    result = dict(revision=_snapshot['revision'] if _snapshot else max((e['version'] for e in history), default=0), issues=rows, documents=output_docs)
     if show_costs:
         currencies = {}
         with localcontext() as context:
@@ -297,10 +307,10 @@ def read(db, line_id, *, show_costs=False):
                     currency = row['price']['data']['entry']['currency']
                     currencies[currency] = wh.text(wh.decimal(currencies.get(currency, '0')) + wh.decimal(row['normal_cost']) + wh.decimal(row['loss_cost']))
         result.update(amounts=currencies, pending_pricing=sum(1 for r in rows if not r['price'] and wh.decimal(r['consumed_quantity']) + wh.decimal(r['loss_quantity']) > 0),
-                      price_history=[e for e in history if e['action'] == 'price' and e['data']['context']['root_batch_id'] in root_ids],
+                      price_history=sorted((e for root in root_ids for e in _snapshot['prices'].get(root, [])), key=lambda e:e['version']) if _snapshot else [e for e in history if e['action'] == 'price' and e['data']['context']['root_batch_id'] in root_ids],
                       cost_summary=cost_summary(rows))
         from app.services import cutting_cost_allocation as allocation
-        result['cost_allocation'] = allocation.view(db, line_id, rows, history)
+        result['cost_allocation'] = allocation.view(db, line_id, rows, allocation_history)
     return result
 
 
