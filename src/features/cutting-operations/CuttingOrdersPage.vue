@@ -84,8 +84,9 @@ onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void lo
 onBeforeUnmount(() => { alive = false; generation++; searchGeneration++; historyGeneration++; window.removeEventListener('beforeunload', beforeUnload) })
 watch(bomQuery, () => { searchGeneration++; bomRows.value = []; versions.value = []; versionId.value = '' }, { flush: 'sync' })
 
-async function load(nextPage = page.value, navigation = false, followLocation = false) {
+async function load(nextPage = page.value, navigation = false, followLocation = false, apply = false) {
   if (!navigation && !discard()) return
+  if(apply){appliedQuery.value=query.value;appliedStatus.value=statusFilter.value;appliedPlanStatus.value=planStatusFilter.value;nextPage=1}
   const request = ++generation
   manualLocation.value=undefined
   selected.value = null; action.value = null; history.value = []; rows.value = []; historyGeneration++; searchGeneration++
@@ -95,7 +96,7 @@ async function load(nextPage = page.value, navigation = false, followLocation = 
     if (!alive || request !== generation) return
     access.value = rights
     if (!available.value) return
-    appliedQuery.value=query.value;appliedStatus.value=statusFilter.value;appliedPlanStatus.value=planStatusFilter.value;summaryRefresh.value++
+    summaryRefresh.value++
     const target = followLocation ? location.value : undefined
     if (target) {
       const order = await ordersApi.read(target.lineId)
@@ -104,7 +105,7 @@ async function load(nextPage = page.value, navigation = false, followLocation = 
       if(props.workspace.path==='materials')materialsView.value=target.kind==='usage'||target.kind==='issue'?'usage':'requests'
       return
     }
-    const result = await ordersApi.list(nextPage, query.value, statusFilter.value, planStatusFilter.value)
+    const result = await ordersApi.list(nextPage, appliedQuery.value, appliedStatus.value, appliedPlanStatus.value)
     if (!alive || request !== generation) return
     rows.value = result.data; total.value = result.total; page.value = nextPage
   } catch (e) { if (alive && request === generation) { error.value = errorMessage(e); access.value = null } }
@@ -259,7 +260,7 @@ function status(row: CuttingOrder) {
       <CuttingActivityPage v-if="workspace.path==='materials'&&materialsView==='movements'" embedded initial-source="warehouse" />
       <div v-show="workspace.path!=='materials'||!['inventory','orders','movements'].includes(materialsView)" class="cutting-overview">
       <SectionPanel class="order-ledger min-w-0" :title="workspace.path === 'materials' ? materialsView==='eta'?'采购交期':'选择领用订单' : '订单总台账'">
-        <form class="order-toolbar order-filters" @submit.prevent="load(1)">
+        <form class="order-toolbar order-filters" @submit.prevent="load(1,false,false,true)">
           <label class="order-filter-field">
             <span>订单号／货号</span>
             <input v-model="query" class="order-filter-control" maxlength="80" placeholder="输入订单号或货号" />
@@ -302,7 +303,7 @@ function status(row: CuttingOrder) {
             <ClipboardList :size="28" aria-hidden="true" />
             <p class="order-empty-title">{{ loading ? '正在读取订单…' : '暂无订单记录' }}</p>
             <p>{{ loading ? '请稍候，正在获取订单台账。' : appliedQuery||appliedStatus||appliedPlanStatus ? '当前筛选无匹配订单，请清除筛选后查看。' : '暂无已下发订单，请由华康C业务在订单中心选择裁床部下发。' }}</p>
-            <Button v-if="!loading&&(appliedQuery||appliedStatus||appliedPlanStatus)" type="button" variant="outline" @click="query='';statusFilter='';planStatusFilter='';load(1)">清除筛选</Button>
+            <Button v-if="!loading&&(appliedQuery||appliedStatus||appliedPlanStatus)" type="button" variant="outline" @click="query='';statusFilter='';planStatusFilter='';load(1,false,false,true)">清除筛选</Button>
           </div>
         </div>
         <nav class="order-pagination" aria-label="订单分页">

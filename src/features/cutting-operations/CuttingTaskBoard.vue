@@ -12,6 +12,7 @@ import { errorMessage } from './api'
 import { cuttingDestination } from './location'
 const props=defineProps<{reporting?:boolean}>()
 const day=ref(businessDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
+const applied=ref({day:day.value,q:'',execution:'',scope:'daily'})
 let generation=0,alive=true
 const tabs=computed(()=>props.reporting?[
   {id:'daily',label:'每日任务'},{id:'reported',label:'已填报任务'},{id:'unreported',label:'待填任务'},{id:'history',label:'计划外与历史实绩'},{id:'abnormal',label:'异常待办'},
@@ -33,13 +34,14 @@ function exceptionLink(row:TaskView['data'][number],reason:string) {
   return {...target,query:{...target.query,day:date,...(isReport?{reporting_view:reason==='外发收回待验收'?'external':'records'}:{})}}
 }
 const exceptionLabels:Record<string,string>={'外发收回待验收':'收回与验收','已结束业务日未填报':'补填当日日报','计划依据已变更':'复核计划','计划已逾期未完成':'核对逾期计划','物料及前置条件待实际核定':'核定执行条件'}
-async function load(page=1){
+async function load(page=1,apply=false){
+  if(apply){applied.value={day:day.value,q:query.value,execution:execution.value,scope:scope.value};page=1}
   const ticket=++generation;busy.value=true;error.value='';result.value=undefined
-  try{const value=await workspaceApi.tasks({day:day.value,q:query.value,execution:execution.value,scope:scope.value,page});if(alive&&ticket===generation)result.value=value}
+  try{const value=await workspaceApi.tasks({...applied.value,page});if(alive&&ticket===generation)result.value=value}
   catch(e){if(alive&&ticket===generation)error.value=errorMessage(e)}
   finally{if(alive&&ticket===generation)busy.value=false}
 }
-function change(value:string){scope.value=value;void load()}
+function change(value:string){scope.value=value;void load(1,true)}
 onMounted(()=>void load())
 onBeforeUnmount(()=>{alive=false;generation++})
 watchCuttingWorkspace(()=>void load())
@@ -48,7 +50,7 @@ watchCuttingWorkspace(()=>void load())
   <div class="cutting-overview">
     <CuttingMetrics :items="metrics" />
     <SectionPanel :title="reporting?'每日任务与填报进度':'生产任务与异常跟进'" class="cutting-content-panel">
-      <form class="order-toolbar" @submit.prevent="load()">
+      <form class="order-toolbar" @submit.prevent="load(1,true)">
         <label>业务日期<input v-model="day" type="date" required /></label>
         <label>订单号／货号<input v-model="query" maxlength="80" placeholder="查询全部匹配订单" /></label>
         <label>执行方<select v-model="execution"><option value="">本厂与外发</option><option value="internal">本厂</option><option value="outsourced">外发</option></select></label>

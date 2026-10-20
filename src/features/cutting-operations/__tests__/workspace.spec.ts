@@ -3,6 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import TaskBoard from '../CuttingTaskBoard.vue'
 import Inventory from '../CuttingInventory.vue'
+import Costs from '../CuttingCostOverview.vue'
 import Activity from '../CuttingActivityPage.vue'
 import Monthly from '../CuttingMonthlyOverview.vue'
 import { workspaceApi, type TaskView, type ActivityRow } from '../workspaceApi'
@@ -10,7 +11,7 @@ import { readCuttingLocation } from '../location'
 import { invalidateCuttingWorkspace } from '../workspaceRefresh'
 vi.mock('../workspaceApi',()=>({
   businessDay:()=> '2026-10-20',
-  workspaceApi:{tasks:vi.fn(),inventory:vi.fn(),activity:vi.fn(),monthly:vi.fn()},
+  workspaceApi:{tasks:vi.fn(),inventory:vi.fn(),activity:vi.fn(),monthly:vi.fn(),costs:vi.fn()},
 }))
 vi.mock('../CuttingReportExport.vue',()=>({default:{props:['selection','access'],template:'<pre class="export-selection">{{JSON.stringify(selection)}}</pre>'}}))
 const empty={data:[],total:0,page:1,page_size:50}
@@ -22,6 +23,59 @@ const button=(name:string)=>wrapper.findAll('button').find(b=>b.text()===name)!
 beforeEach(()=>{vi.resetAllMocks()})
 afterEach(()=>wrapper?.unmount())
 describe('cutting read-only workspaces',()=>{
+  it('keeps inventory paging and write refresh on applied filters, and distinguishes no matches',async()=>{
+    vi.mocked(workspaceApi.inventory).mockResolvedValue({...empty,total:51,units:{}})
+    wrapper=mount(Inventory);await flushPromises()
+    await wrapper.get('input').setValue('NEW-ORDER')
+    await button('下一页').trigger('click');await flushPromises()
+    expect(workspaceApi.inventory).toHaveBeenLastCalledWith(expect.objectContaining({q:'',page:2}))
+    invalidateCuttingWorkspace();await flushPromises()
+    expect(workspaceApi.inventory).toHaveBeenLastCalledWith(expect.objectContaining({q:'',page:1}))
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('NEW-ORDER')
+    vi.mocked(workspaceApi.inventory).mockResolvedValue({...empty,units:{}})
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(workspaceApi.inventory).toHaveBeenLastCalledWith(expect.objectContaining({q:'NEW-ORDER',page:1}))
+    expect(wrapper.text()).toContain('当前筛选无匹配库存记录')
+    expect(wrapper.text()).not.toContain('先在“领料申请”')
+    await button('清除筛选').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('暂无关联实发记录')
+  })
+  it('keeps task date, text and executor on applied filters when paging back to page one',async()=>{
+    vi.mocked(workspaceApi.tasks).mockImplementation(async params=>({...task,page:params.page??1}))
+    wrapper=mount(TaskBoard,{global:{plugins:[router]}});await flushPromises()
+    await wrapper.get('input[type=date]').setValue('2026-09-01')
+    await wrapper.get('input[maxlength]').setValue('NEW')
+    await wrapper.get('select').setValue('internal')
+    await button('下一页').trigger('click');await flushPromises()
+    expect(workspaceApi.tasks).toHaveBeenLastCalledWith(expect.objectContaining({day:'2026-10-20',q:'',execution:'',page:2}))
+    await button('上一页').trigger('click');await flushPromises()
+    expect(workspaceApi.tasks).toHaveBeenLastCalledWith(expect.objectContaining({day:'2026-10-20',q:'',page:1}))
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(workspaceApi.tasks).toHaveBeenLastCalledWith(expect.objectContaining({day:'2026-09-01',q:'NEW',execution:'internal',page:1}))
+  })
+  it('does not pair a log page fence with newly typed filters and links the exact master version',async()=>{
+    const row={source:'master',document_id:'master-1',version:1,id:'revision-1',occurred_at:'2026-10-10T00:00:00Z',action:'revision',actor:'operator',reason:'原依据'} as ActivityRow
+    vi.mocked(workspaceApi.activity).mockResolvedValue({...empty,data:[row],total:51,token:'original-fence'})
+    wrapper=mount(Activity,{global:{plugins:[router]}});await flushPromises()
+    expect(wrapper.get('a').attributes('href')).toContain('master_version=1')
+    await wrapper.get('select').setValue('order')
+    await wrapper.get('input[type=month]').setValue('2026-09')
+    await wrapper.findAll('input')[0]!.setValue('NEW-ORDER')
+    await button('下一页').trigger('click');await flushPromises()
+    expect(workspaceApi.activity).toHaveBeenLastCalledWith(expect.objectContaining({source:'',order_q:'',month:undefined,page:2,expected_token:'original-fence'}))
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(workspaceApi.activity).toHaveBeenLastCalledWith(expect.objectContaining({source:'order',order_q:'NEW-ORDER',month:'2026-09',page:1,expected_token:undefined}))
+  })
+  it('keeps cost paging on the queried scope and explains filtered empty results',async()=>{
+    vi.mocked(workspaceApi.costs).mockResolvedValue({...empty,total:51,currencies:{},pending_pricing:0})
+    wrapper=mount(Costs);await flushPromises()
+    await wrapper.get('input').setValue('NOT-FOUND');await button('下一页').trigger('click');await flushPromises()
+    expect(workspaceApi.costs).toHaveBeenLastCalledWith({q:'',page:2})
+    vi.mocked(workspaceApi.costs).mockResolvedValue({...empty,currencies:{},pending_pricing:0})
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(wrapper.text()).toContain('当前筛选无匹配费用记录')
+  })
+
   it('splits exception actions and retains the result day and correct reporting view',async()=>{
     vi.mocked(workspaceApi.tasks).mockResolvedValue({...task,data:task.data.map(r=>({...r,reasons:['外发收回待验收','已结束业务日未填报','计划依据已变更']}))})
     wrapper=mount(TaskBoard,{global:{plugins:[router]}});await flushPromises()

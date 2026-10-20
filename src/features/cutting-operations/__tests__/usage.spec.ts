@@ -10,8 +10,8 @@ let wrapper:VueWrapper,router:Router
 const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value))
 function button(name:string){const element=wrapper.findAll('button').find(b=>b.text()===name);if(!element)throw new Error('Missing '+name);return element}
 function field(name:string){return wrapper.findAll('label').find(l=>l.text().startsWith(name))!.get('input,select,textarea')}
-async function open(withCosts=false,permissions=['read','usage_write','usage_review','cost_read','cost_write']){
-  router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingMaterialUsage,props:{lineId:'l1',permissions,withCosts}},{path:'/away',component:{template:'<div>离开</div>'}}]})
+async function open(withCosts=false,permissions=['read','usage_write','usage_review','cost_read','cost_write'],view?:string){
+  router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingMaterialUsage,props:{lineId:'l1',permissions,withCosts,view}},{path:'/away',component:{template:'<div>离开</div>'}}]})
   await router.push('/');await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
 }
 async function fill(){await button('登记耗用').trigger('click');await field('本次实际正常耗用').setValue('2');await field('本次裁剪损耗').setValue('0.5');await field('本次盘余').setValue('1.5');await field('耗用、损耗').setValue('实际裁剪及现场盘余核对')}
@@ -33,6 +33,16 @@ function allocation():CostAllocationView{
 beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(false);vi.mocked(usageApi.read).mockResolvedValue(clone(ledger));vi.mocked(usageApi.post).mockResolvedValue({id:'u1'});vi.mocked(usageApi.balance).mockResolvedValue(hint)})
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 describe('P3b custody and cost editor',()=>{
+  it('explains the pending-price empty state when all original issues are priced',async()=>{
+    const value=clone(ledger)
+    value.issues[0]!.price={version:4,data:{entry:{unit_cost:'2',currency:'CNY'}}} as NonNullable<UsageLedger['issues'][number]['price']>
+    vi.mocked(usageApi.read).mockResolvedValue(value)
+    await open(true,undefined,'pending')
+    expect(wrapper.text()).toContain('当前订单暂无待计价实发')
+    expect(wrapper.find('[aria-label="实际耗用与余料明细"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('暂无裁床关联实发')
+  })
+
   it('shows priced amounts by currency and unpriced quantities by their original units',async()=>{
     vi.mocked(usageApi.read).mockResolvedValue({...clone(ledger),cost_summary:summary()})
     await open(true)

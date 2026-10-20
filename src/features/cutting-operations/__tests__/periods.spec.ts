@@ -22,6 +22,27 @@ async function click(label:string){const target=wrapper!.findAll('button').find(
 async function edit(){await click('读取月结记录');await click('编制／重新核对月结')}
 
 describe('internal monthly closing',()=>{
+  it('protects reasons on direct period links, historical reads, month input and route exit',async()=>{
+    const router=await open();await click('读取月结记录')
+    const panel=wrapper!.findComponent(CuttingPeriodClosing),oldMonth=(wrapper!.get('input[type=month]').element as HTMLInputElement).value
+    await wrapper!.get('input[maxlength="500"]').setValue('仅属于原月的复核依据')
+    vi.mocked(window.confirm).mockReturnValue(false)
+    vi.mocked(periodApi.read).mockClear()
+    await panel.vm.openPeriod('2025-01');await flushPromises()
+    expect(periodApi.read).not.toHaveBeenCalled()
+    await click('读取月结记录')
+    await wrapper!.get('input[type=month]').setValue('2025-01')
+    expect((wrapper!.get('input[type=month]').element as HTMLInputElement).value).toBe(oldMonth)
+    await router.push('/next');expect(router.currentRoute.value.path).toBe('/')
+    const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);expect(event.defaultPrevented).toBe(true)
+    expect(wrapper!.get('input[maxlength="500"]').element.value).toBe('仅属于原月的复核依据')
+    vi.mocked(window.confirm).mockReturnValue(true).mockClear()
+    await panel.vm.openPeriod('2025-01','old-event');await flushPromises()
+    expect(window.confirm).toHaveBeenCalledTimes(1)
+    expect(periodApi.read).toHaveBeenLastCalledWith('2025-01','old-event')
+    expect(wrapper!.get('input[maxlength="500"]').element.value).toBe('')
+  })
+
   it('keeps the active month and unsaved reason when overview requests another month',async()=>{
     await open();await click('读取月结记录')
     const field=wrapper!.get('input[type=month]'),original=(field.element as HTMLInputElement).value
