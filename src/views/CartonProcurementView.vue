@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { cartonDimensionParts, formatCartonSpecification, UNORDERED_CUSTOMER_CODE } from '@/lib/cartonDimensions'
 import { paperStandard } from '@/features/carton-procurement/paperCatalog'
 import CartonQuantityRuleInput from '@/components/CartonQuantityRuleInput.vue'
 import { paperDemands, reusableQuantityRule, referencesAfterRemoval, quantityRuleLabel } from '@/features/carton-procurement/paperQuantity'
@@ -418,7 +419,7 @@ const receiptFeedbackTone = ref<'error' | 'success'>('error')
 const manualDeliveryNoteInput = ref<HTMLInputElement | null>(null)
 const manualDeliveryDateInput = ref<HTMLInputElement | null>(null)
 const manualAcceptanceDateInput = ref<HTMLInputElement | null>(null)
-const receiptEntryMode = ref<'IMPORT' | 'MANUAL'>('MANUAL')
+const receiptEntryMode = ref<'IMPORT' | 'MANUAL' | 'UNORDERED'>('MANUAL')
 const receiptPage = ref<'PENDING' | 'SUPPLIER' | 'HISTORY'>(route.query.receipt_page === 'pending' ? 'PENDING' : route.query.receipt_page === 'history' ? 'HISTORY' : 'SUPPLIER')
 watch(() => route.query.receipt_page, page => { receiptPage.value = page === 'pending' ? 'PENDING' : page === 'history' ? 'HISTORY' : 'SUPPLIER' })
 const showMarkUpload = ref(false)
@@ -823,6 +824,8 @@ const inventoryOrderLines = computed(() => {
 })
 
 interface ReceiptReviewLine extends ReceiptLineSeed {
+  unorderedReceipt?: boolean
+  dimensionUnit?: string
   zeroPriceKind?: 'FREE' | 'PENDING'
   materialCorrectionId?: string
   selectedForReceipt?: boolean
@@ -895,7 +898,7 @@ const orderForm = reactive<OrderDraftForm>({
       specification: '',
       unitsPerCarton: 120,
       unit: '个',
-      dimensionUnit: '',
+      dimensionUnit: 'cm',
       unitPrice: 0,
       currency: 'CNY',
       priceSource: 'manual',
@@ -1786,7 +1789,7 @@ const receiptHistoryRows = computed(() => {
     packagingType: line.packaging_type,
     paperQuality: line.paper_quality,
     paper: `${line.packaging_type} ${line.paper_quality}`.trim(),
-    specification: line.specification,
+    specification: formatCartonSpecification(line.specification, inventoryOrderLines.value.get(line.order_line_id || '')?.dimension_unit),
     effectiveQuantity: Number(line.effective_quantity),
     unit: line.unit,
     location: line.location_allocations?.length ? line.location_allocations.map(a => `${a.label || a.location_id}：${Number(a.quantity)} ${line.unit}`).join('；') : line.location,
@@ -2048,7 +2051,7 @@ function populateManualReceipt(orderNos: string[]) {
         selectedForReceipt: false,
         orderNo: `${order.order_no} · ${order.contract_no}-${order.item_no}`,
         description: `${line.packaging_type} ${line.paper_quality}`.trim(),
-        specification: `${line.specification}${line.dimension_unit ? ` ${line.dimension_unit}` : ''}`,
+        specification: formatCartonSpecification(line.specification, line.dimension_unit),
         deliveryQuantity: 0,
         unitPrice: Number(line.unit_price),
         receivedQuantity: 0,
@@ -2194,6 +2197,38 @@ async function openManualReceipt(orderNo = '') {
   populateManualReceipt(manualReceiptOrderNos.value)
   showReceiptDialog.value = true
   setActiveTab('receipts')
+}
+
+function addUnorderedReceiptLine() {
+  if (currentReceipt.value || savingReceipt.value) return
+  receiptLines.push({
+    id: `UNORDERED-${createRandomUuid()}`, orderNo: '无落单入库', sourceType: 'AD_HOC', unorderedReceipt: true,
+    orderLineId: '', customerCode: '', contractNo: '', itemNo: '', description: '',
+    packagingType: '', paperQuality: '', specification: '', dimensionUnit: 'cm', unit: '个', currency: 'CNY',
+    deliveryQuantity: 0, receivedQuantity: 0, damagedQuantity: 0, rejectedQuantity: 0, unusableQuantity: 0,
+    unitPrice: 0, location: '', sourceLabel: '无落单入库', remainingQuantity: 0,
+  })
+}
+
+function openUnorderedReceipt() {
+  if (!canCorrectReceipt.value || savingReceipt.value) return
+  const resume = receiptEntryMode.value === 'UNORDERED'
+    && (!currentReceipt.value || currentReceipt.value.status === 'PENDING_CONFIRMATION')
+    && receiptLines.length > 0
+  if (!resume) {
+    receiptLines.splice(0)
+    currentReceipt.value = null
+    receiptCorrectionNote.value = ''
+    manualReceiptOrderNos.value = []
+    receiptBatchId.value = ''
+    receiptDeliveryNoteNo.value = ''
+    receiptDeliveryDate.value = businessTodayIso()
+    receiptAcceptanceDate.value = businessTodayIso()
+    receiptFeedbackMessage.value = ''
+    addUnorderedReceiptLine()
+  }
+  receiptEntryMode.value = 'UNORDERED'
+  showReceiptDialog.value = true
 }
 
 function toneClass(tone: CartonTone, variant: 'badge' | 'surface' = 'badge') {
@@ -2840,7 +2875,7 @@ function mapOrder(row: CartonOrderResponse): CartonOrderRow {
       id: line.id,
       packagingType: line.packaging_type,
       paperQuality: line.paper_quality,
-      specification: `${line.specification}${line.dimension_unit ? ` ${line.dimension_unit}` : ''}`,
+      specification: formatCartonSpecification(line.specification, line.dimension_unit),
       unitsPerCarton: line.usage_quantity == null ? null : Number(line.usage_quantity),
       unit: line.unit,
     })),
@@ -2886,7 +2921,7 @@ function mapMovement(row: CartonInventoryMovementResponse & { is_reversed?: bool
     itemNo: row.item_no,
     packagingType: row.packaging_type,
     paperQuality: row.paper_quality,
-    specification: row.specification,
+    specification: formatCartonSpecification(row.specification, inventoryOrderLines.value.get(row.order_line_id || '')?.dimension_unit),
     movementType,
     quantity: Number(row.quantity),
     balance: Number(row.balance),
@@ -2921,7 +2956,7 @@ function mapInventoryBalance(row: CartonInventoryBalanceResponse): InventoryBala
     itemNo: row.item_no,
     packagingType: row.packaging_type,
     paperQuality: row.paper_quality,
-    specification: row.specification,
+    specification: formatCartonSpecification(row.specification, inventoryOrderLines.value.get(row.order_line_id || '')?.dimension_unit),
     unit: row.unit,
     orderLineId: row.order_line_id,
     latestMovementId: row.latest_movement_id,
@@ -3258,7 +3293,7 @@ function receiptImportRowAdded(row: CartonImportPreviewRow, index: number) {
   return receiptLines.some((line) => line.id === receiptImportLineId(receiptImportBatch.value!.id, row, index))
 }
 
-function addAdHocReceiptLine(row: CartonImportPreviewRow, index: number) {
+function addAdHocReceiptLine(row: CartonImportPreviewRow, index: number, unordered = false) {
   const batch = receiptImportBatch.value
   if (!batch || row.match_status !== 'MISSING_ORDER' || row.template === 'dongkang-delivery'
     || (row.delivery_note_no && row.delivery_note_no !== receiptDeliveryNoteNo.value)) return
@@ -3270,9 +3305,11 @@ function addAdHocReceiptLine(row: CartonImportPreviewRow, index: number) {
   )
   receiptLines.push({
     id,
-    orderNo: '非正式 / 打板收料',
+    orderNo: unordered ? '无落单入库' : '非正式 / 打板收料',
+    unorderedReceipt: unordered,
+    dimensionUnit: cartonDimensionParts(row.specification ?? '', row.dimension_unit).unit,
     description: `${row.packaging_type ?? ''} ${row.paper_quality ?? ''}`.trim(),
-    specification: row.specification ?? '',
+    specification: unordered ? cartonDimensionParts(row.specification ?? '', row.dimension_unit).specification : row.specification ?? '',
     deliveryQuantity: Number(row.delivered_quantity ?? row.quantity ?? 0),
     unitPrice: Number(row.unit_price ?? 0),
     receivedQuantity: Number(row.delivered_quantity ?? row.quantity ?? 0),
@@ -3281,7 +3318,7 @@ function addAdHocReceiptLine(row: CartonImportPreviewRow, index: number) {
     unusableQuantity: 0,
     sourceType: 'AD_HOC',
     orderLineId: '',
-    customerCode: matchedCustomer?.customer_code ?? '',
+    customerCode: unordered ? '' : matchedCustomer?.customer_code ?? '',
     contractNo: row.contract_no ?? row.reference ?? '',
     itemNo: row.item_no ?? '',
     packagingType: row.packaging_type ?? '',
@@ -3289,13 +3326,15 @@ function addAdHocReceiptLine(row: CartonImportPreviewRow, index: number) {
     unit: row.unit ?? '个',
     currency: 'CNY',
     location: row.location ?? '',
-    sourceLabel: `非正式收料 · ${row.source_sheet ?? '文件'} 第 ${row.source_row ?? index + 1} 行`,
+    sourceLabel: `${unordered ? '无落单入库' : '非正式收料'} · ${row.source_sheet ?? '文件'} 第 ${row.source_row ?? index + 1} 行`,
     remainingQuantity: 0,
   })
   currentReceipt.value = null
   receiptFeedbackMessage.value = ''
   showReceiptDialog.value = true
-  actionMessage.value = '已把未匹配明细加入非正式/打板收料；请补齐客户与物料信息，核对无误后点击“确认入库”即可入库并计入月结。'
+  actionMessage.value = unordered
+    ? '已加入无落单入库；客户、合同、货号可空，请核对物料、数量、单价及仓位，确认后计入供应商月结。'
+    : '已把未匹配明细加入非正式/打板收料；请补齐客户与物料信息，核对无误后点击“确认入库”即可入库并计入月结。'
 }
 
 function removeAdHocReceiptLine(lineId: string) {
@@ -4780,7 +4819,7 @@ async function openReceiptHistoryDocument(receipt: CartonReceiptResponse, reente
     reportActionFailure('关联订单当前不能收料，请先核对订单状态。')
     return
   }
-  receiptEntryMode.value = 'MANUAL'
+  receiptEntryMode.value = receipt.lines.every(line => line.customer_code === UNORDERED_CUSTOMER_CODE) ? 'UNORDERED' : 'MANUAL'
   receiptPage.value = 'PENDING'
   receiptBatchId.value = ''
   manualReceiptOrderNos.value = linkedOrders.map((order) => order.order_no)
@@ -4793,9 +4832,10 @@ async function openReceiptHistoryDocument(receipt: CartonReceiptResponse, reente
   receiptAcceptanceDate.value = receipt.acceptance_date ?? ''
   receiptLines.splice(0, receiptLines.length, ...receipt.lines.map((line) => ({
     id: `HISTORY-${line.id}`, orderNo: receipt.receipt_no, sourceType: line.source_type || 'FORMAL_ORDER',
-    orderLineId: line.order_line_id || '', customerCode: line.customer_code, contractNo: line.contract_no,
+    unorderedReceipt: line.customer_code === UNORDERED_CUSTOMER_CODE, dimensionUnit: cartonDimensionParts(line.specification, line.dimension_unit).unit,
+    orderLineId: line.order_line_id || '', customerCode: line.customer_code === UNORDERED_CUSTOMER_CODE ? '' : line.customer_code, contractNo: line.contract_no,
     itemNo: line.item_no, description: `${line.packaging_type} ${line.paper_quality}`, packagingType: line.packaging_type,
-    paperQuality: line.paper_quality, specification: line.specification, unit: line.unit, currency: line.currency,
+    paperQuality: line.paper_quality, specification: line.customer_code === UNORDERED_CUSTOMER_CODE ? cartonDimensionParts(line.specification).specification : line.specification, unit: line.unit, currency: line.currency,
     replenishmentIssueId: line.replenishment_issue_id ?? undefined, replacementResponsibility: line.responsibility ?? undefined,
     replacementDocumentNo: line.document_no ?? undefined,
     unitPrice: Number(line.settlement_unit_price ?? line.unit_price), zeroPriceKind: line.zero_price_kind || undefined, deliveryQuantity: Number(line.delivered_quantity),
@@ -5922,15 +5962,14 @@ async function saveReceiptFeedback() {
     return
   }
   const incompleteAdHocLine = candidateLines.find((row) => row.sourceType === 'AD_HOC' && [
-    row.customerCode,
-    row.itemNo,
+    ...(row.unorderedReceipt ? [row.dimensionUnit ?? ''] : [row.customerCode, row.itemNo]),
     row.packagingType,
     row.paperQuality,
     row.specification,
     row.unit,
   ].some((value) => !value.trim()))
   if (incompleteAdHocLine) {
-    setReceiptFeedback('入库未完成：非正式/打板收料必须补齐客户、货号、纸品类型、纸质、规格和单位。')
+    setReceiptFeedback(incompleteAdHocLine.unorderedReceipt ? '入库未完成：无落单入库必须补齐纸品类型、纸质、规格、尺寸单位和计数单位。' : '入库未完成：非正式/打板收料必须补齐客户、货号、纸品类型、纸质、规格和单位。')
     return
   }
   if (candidateLines.some(row => row.sourceType === 'FORMAL_ORDER' && (Number(row.deliveryQuantity) > 0 || Number(row.receivedQuantity) > 0) && (!row.paperQuality.trim() || !row.specification.trim()))) {
@@ -5988,10 +6027,10 @@ async function saveReceiptFeedback() {
   const invalidPriceLine = linesToSubmit.find((row) => {
     if (freeReplacement(row)) return false
     const price = String(row.unitPrice ?? '').trim()
-    return !/^\d{1,12}(\.\d{1,6})?$/.test(price)
+    return (row.unorderedReceipt && Number(price) <= 0) || !/^\d{1,12}(\.\d{1,6})?$/.test(price)
   })
   if (invalidPriceLine) {
-    setReceiptFeedback('入库未完成：单价须为大于或等于 0 的数字，最多 12 位整数和 6 位小数。零价请选择免费赠送或暂未定价。')
+    setReceiptFeedback('入库未完成：无落单入库单价须大于 0；其他收料单价须为大于或等于 0 的数字，最多 12 位整数和 6 位小数。零价请选择免费赠送或暂未定价。')
     return
   }
   savingReceipt.value = true
@@ -6014,12 +6053,14 @@ async function saveReceiptFeedback() {
       delivery_note_no: receiptDeliveryNoteNo.value.trim(),
       delivery_date: receiptDeliveryDate.value,
       acceptance_date: receiptAcceptanceDate.value,
-      import_batch_id: receiptEntryMode.value === 'MANUAL' ? null : receiptBatchId.value,
-      note: receiptCorrectionNote.value || (receiptEntryMode.value === 'MANUAL'
+      import_batch_id: receiptEntryMode.value === 'IMPORT' ? receiptBatchId.value : null,
+      note: receiptCorrectionNote.value || (receiptEntryMode.value === 'UNORDERED' ? '供应商送货，无落单入库' : receiptEntryMode.value === 'MANUAL'
         ? `人工批量录入订单收料：${manualReceiptOrderNos.value.join('、')}`
         : `来源文件：${selectedReceiptFileName.value}；已逐行人工复核；非正式/打板明细 ${adHocReceiptLineCount.value} 行`),
       lines: linesToSubmit.map((row) => ({
         source_type: row.sourceType,
+        unordered_receipt: row.unorderedReceipt || false,
+        ...(row.unorderedReceipt ? { dimension_unit: row.dimensionUnit as 'cm' | 'in' } : {}),
         replenishment_issue_id: row.replenishmentIssueId || undefined,
         material_correction_id: row.materialCorrectionId,
         order_line_id: row.orderLineId || null,
@@ -6040,7 +6081,7 @@ async function saveReceiptFeedback() {
         zero_price_kind: !freeReplacement(row) && Number(row.unitPrice) === 0 ? row.zeroPriceKind || 'PENDING' : undefined,
         location: row.location,
         location_allocations: receiptLineEffectiveQuantity(row) > 0 ? row.allocations : [],
-        feedback_note: row.sourceType === 'AD_HOC'
+        feedback_note: row.unorderedReceipt ? '供应商送货，无落单入库，人工复核' : row.sourceType === 'AD_HOC'
           ? '送货单未匹配正式订单，作为非正式/打板收料人工复核'
           : receiptEntryMode.value === 'MANUAL' ? '仓管人工录入收料' : '导入识别后人工复核',
       })),
@@ -6781,7 +6822,7 @@ watch([
             <p class="mt-1 text-[11px] text-slate-500">待下单订单确认后整单锁定，并自动生成首次采购单到供应商协同；后续追加、减单或改期保存时同步生成变更单，供应商需重新确认。有权限的仓管或主管可继续调整尚未入库部分。</p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
-            <a href="/templates/carton-history-order-import-template.xlsx?v=carton-weights-v2" download="纸箱历史订单导入模板.xlsx" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
+            <a href="/templates/carton-history-order-import-template.xlsx?v=carton-history-po-v3" download="纸箱历史订单导入模板.xlsx" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
               <Download class="size-4" aria-hidden="true" />
               下载历史订单模板
             </a>
@@ -7268,6 +7309,7 @@ watch([
           <button v-for="page in [{ id: 'SUPPLIER' as const, label: '供应商发货待收' }, { id: 'PENDING' as const, label: '待收订单（手动收料）' }, { id: 'HISTORY' as const, label: '收料历史' }]" :key="page.id" type="button" :aria-current="receiptPage === page.id ? 'page' : undefined" class="rounded-lg px-4 py-2 text-xs font-semibold" :class="receiptPage === page.id ? 'bg-teal-50 text-teal-800 ring-1 ring-teal-200' : 'text-slate-500 hover:bg-slate-50'" @click="openReceiptPage(page.id)">{{ page.label }}</button>
 
           <label class="ml-auto text-xs font-semibold" title="可查看同厂其他客户；操作仍需客户授权。客户认领和授权在基础资料中设置。">客户范围<select v-model="customerViewScope" aria-label="查看客户范围" class="ml-2 rounded-lg border bg-white px-3 py-2"><option value="OWN">{{ responsibilities.unrestricted ? '本厂客户（统筹）' : '我负责的 + 未认领' }}</option><option value="ALL">全部客户（含其他人负责的）</option></select></label>
+        <button v-if="canCorrectReceipt" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white hover:bg-teal-800" :disabled="savingReceipt" @click="openUnorderedReceipt"><Plus class="size-3.5" />无落单入库</button>
         </nav>
         <article v-if="receiptPage === 'PENDING'" class="overflow-hidden rounded-xl border border-blue-200 bg-white shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 px-5 py-4">
@@ -7663,7 +7705,7 @@ watch([
       <DialogOverlay class="fixed inset-0 z-[70] bg-slate-950/45" />
       <DialogContent class="fixed left-1/2 top-1/2 z-[71] flex max-h-[92vh] w-[calc(100%-2rem)] max-w-[1500px] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-white shadow-2xl" @interact-outside.prevent @close-auto-focus="restoreReceiptFocus">
         <div class="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-6 py-4">
-          <div><DialogTitle class="text-lg font-bold text-slate-950">{{ receiptEntryMode === 'MANUAL' ? '人工录入订单收料' : '送货单收料反馈' }}</DialogTitle><DialogDescription class="mt-1 text-sm text-slate-500">核对送货信息、单价、数量及仓位，点击确认入库后立即更新库存。</DialogDescription></div>
+          <div><DialogTitle class="text-lg font-bold text-slate-950">{{ receiptEntryMode === 'UNORDERED' ? '无落单入库' : receiptEntryMode === 'MANUAL' ? '人工录入订单收料' : '送货单收料反馈' }}</DialogTitle><DialogDescription class="mt-1 text-sm text-slate-500">核对送货信息、单价、数量及仓位，点击确认入库后立即更新库存。</DialogDescription></div>
           <DialogClose as-child><button type="button" aria-label="关闭收料录入" class="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X class="size-5" /></button></DialogClose>
         </div>
         <div class="min-h-0 space-y-4 overflow-y-auto p-4 sm:p-6">
@@ -7679,8 +7721,10 @@ watch([
           </div>
         <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div class="border-b border-slate-200 px-4 py-3">
-            <h2 class="font-bold text-slate-950">收料反馈明细</h2>
-            <p class="mt-1 text-sm text-teal-700">请核对本次入库单价；采购单为 CNY 时优先带入东康送货单的有效单价，缺价或币种不同时带入采购单价。零单价可入库，请区分免费赠送与暂未定价。</p>
+            <div class="flex items-center justify-between gap-3"><h2 class="font-bold text-slate-950">收料反馈明细</h2><button v-if="receiptEntryMode === 'UNORDERED' && !currentReceipt" type="button" :disabled="savingReceipt" class="rounded-lg border border-teal-200 px-3 py-2 text-xs font-bold text-teal-700" @click="addUnorderedReceiptLine">新增纸品明细</button></div>
+            <p v-if="receiptEntryMode === 'UNORDERED'" class="mt-2 text-sm text-slate-600">供应商沿用当前厂区配置；客户、合同、货号可空，确认后计入供应商月结。</p>
+            <p v-if="receiptEntryMode === 'UNORDERED'" class="mt-1 text-sm text-teal-700">请填写大于 0 的入库单价，按实际验收日期计入供应商月结。</p>
+            <p v-else class="mt-1 text-sm text-teal-700">请核对本次入库单价；采购单为 CNY 时优先带入东康送货单的有效单价，缺价或币种不同时带入采购单价。零单价可入库，请区分免费赠送与暂未定价。</p>
             <p class="mt-1 text-sm text-slate-500">有效收料 = 实收 − 破损 − 拒收 − 其他不可用；非正式/打板明细不补建正式订单，人工核对后点击确认入库，即生成库存流水并进入月结。</p>
             <button v-if="receiptEntryMode === 'IMPORT' && !currentReceipt" type="button" :disabled="savingReceipt" class="mt-2 rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-xs font-bold text-teal-800 disabled:opacity-40" @click="selectAllImportedArrival">本单全部到齐</button>
           </div>
@@ -7694,10 +7738,10 @@ watch([
                   <td v-if="manualReceiptDialogSelection" class="px-3 py-3"><input type="checkbox" :aria-label="`选择纸品 ${row.orderLineId}`" :checked="row.selectedForReceipt !== false" :disabled="savingReceipt" class="size-4 accent-teal-600" @change="selectReceiptPaper(row.id, ($event.target as HTMLInputElement).checked)"></td>
                   <td class="px-4 py-3">
                     <div v-if="row.sourceType === 'AD_HOC'" class="w-52 space-y-1.5">
-                      <span class="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[9px] font-bold text-amber-800 ring-1 ring-inset ring-amber-200">非正式 / 打板收料</span>
-                      <select v-model="row.customerCode" :aria-label="`${row.id} 客户`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50"><option value="">请选择客户 *</option><option v-for="customer in activeCustomers" :key="customer.id" :value="customer.customer_code">{{ customer.customer_name }}</option></select>
-                      <input v-model="row.contractNo" :aria-label="`${row.id} 合同或来源号`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="合同/打板来源号（可空）" class="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
-                      <input v-model="row.itemNo" :aria-label="`${row.id} 货号`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="货号 *" class="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <span class="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[9px] font-bold text-amber-800 ring-1 ring-inset ring-amber-200">{{ row.unorderedReceipt ? '无落单入库' : '非正式 / 打板收料' }}</span>
+                      <select v-if="!row.unorderedReceipt" v-model="row.customerCode" :aria-label="`${row.id} 客户`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" class="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50"><option value="">请选择客户 *</option><option v-for="customer in activeCustomers" :key="customer.id" :value="customer.customer_code">{{ customer.customer_name }}</option></select>
+                      <input v-model="row.contractNo" :aria-label="`${row.id} 合同或来源号`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" :placeholder="row.unorderedReceipt ? '合同号（可空）' : '合同/打板来源号（可空）'" class="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <input v-model="row.itemNo" :aria-label="`${row.id} 货号`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" :placeholder="row.unorderedReceipt ? '货号（可空）' : '货号 *'" class="h-8 w-full rounded-md border border-slate-200 px-2 font-mono text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
                     </div>
                     <div v-else class="space-y-1">
                       <div class="break-all font-mono text-sm font-semibold">{{ row.contractNo || '—' }}</div>
@@ -7711,6 +7755,7 @@ watch([
                       <input v-model="row.packagingType" :aria-label="`${row.id} 纸品类型`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="纸品类型 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
                       <input v-model="row.paperQuality" :aria-label="`${row.id} 纸质`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="纸质 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
                       <input v-model="row.specification" :aria-label="`${row.id} 规格`" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" placeholder="规格 *" class="h-8 w-full rounded-md border border-slate-200 px-2 text-xs outline-none focus:border-amber-500 disabled:bg-slate-50">
+                      <label v-if="row.unorderedReceipt" class="flex items-center gap-2 text-xs text-slate-600">尺寸单位<select v-model="row.dimensionUnit" :aria-label="`${row.id} 尺寸单位`" :disabled="Boolean(currentReceipt) || savingReceipt" class="h-8 flex-1 rounded-md border border-slate-200 bg-white px-2"><option value="cm">cm（厘米）</option><option value="in">in（英寸）</option></select></label>
                     </div>
                     <div v-else-if="orderRecords.some(order => order.lines.some(line => line.id === row.orderLineId && (!line.paper_quality || !line.specification)))" class="w-48 space-y-1.5">
                       <div class="font-semibold">{{ row.packagingType }}</div>
@@ -7731,7 +7776,7 @@ watch([
                       <div v-else class="mt-1 text-xs text-slate-500">{{ row.currency === 'CNY' ? '人民币 CNY' : row.currency }} / {{ row.unit }}</div><p v-if="!freeReplacement(row) && moneyReference(row.unitPrice, row.currency, 6)" class="mt-1 text-[10px] text-teal-700" title="基础资料设置的参考汇率，不改变收料原价">{{ moneyReference(row.unitPrice, row.currency, 6) }} / {{ row.unit }}</p>
                       <div v-if="row.deliveryUnitPrice && row.currency.toUpperCase() !== 'CNY'" class="mt-1 text-[10px] text-amber-700">送货单价按 CNY 识别；采购单为 {{ row.currency }}，已带采购单价，请核对</div>
                       <div v-else-if="row.deliveryUnitPrice && row.orderUnitPrice && row.deliveryUnitPrice !== row.orderUnitPrice" class="mt-1 text-[10px] text-amber-700">送货单 CNY {{ row.deliveryUnitPrice }} · 采购单 {{ row.currency }} {{ row.orderUnitPrice }}</div>
-                      <label v-if="!freeReplacement(row) && Number(row.unitPrice) === 0" class="mt-2 block text-xs text-amber-800">零价处理<select :value="row.zeroPriceKind || 'PENDING'" :aria-label="`${row.id} 零价处理`" :disabled="Boolean(currentReceipt) || savingReceipt" class="mt-1 h-8 w-full rounded border px-1" @change="row.zeroPriceKind = ($event.target as HTMLSelectElement).value as 'FREE' | 'PENDING'"><option value="PENDING">暂未定价 · 后续核价</option><option value="FREE">免费赠送 · 应付 0</option></select></label>
+                      <label v-if="!row.unorderedReceipt && !freeReplacement(row) && Number(row.unitPrice) === 0" class="mt-2 block text-xs text-amber-800">零价处理<select :value="row.zeroPriceKind || 'PENDING'" :aria-label="`${row.id} 零价处理`" :disabled="Boolean(currentReceipt) || savingReceipt" class="mt-1 h-8 w-full rounded border px-1" @change="row.zeroPriceKind = ($event.target as HTMLSelectElement).value as 'FREE' | 'PENDING'"><option value="PENDING">暂未定价 · 后续核价</option><option value="FREE">免费赠送 · 应付 0</option></select></label>
                     </div>
                   </td>
                   <td class="px-3 py-2"><input :value="row.receivedQuantity || ''" @input="updateReceiptActual(row, Number(($event.target as HTMLInputElement).value))" :aria-label="`${row.id} 实收`" :max="receiptEntryMode === 'MANUAL' ? row.remainingQuantity : undefined" step="0.0001" :disabled="Boolean(currentReceipt) || savingReceipt || row.selectedForReceipt === false" type="number" min="0" class="ml-auto block h-8 w-20 rounded-md border border-slate-200 px-2 text-right font-semibold outline-none focus:border-teal-500 disabled:bg-slate-50"></td>
@@ -7779,7 +7824,7 @@ watch([
 
 
         </div>
-        <div class="flex shrink-0 justify-end border-t border-slate-200 px-6 py-3"><DialogClose as-child><button type="button" class="h-9 rounded-lg border border-slate-200 px-4 text-sm font-semibold text-slate-600">{{ receiptEntryMode === 'MANUAL' ? '返回待收订单' : '返回导入结果' }}</button></DialogClose></div>
+        <div class="flex shrink-0 justify-end border-t border-slate-200 px-6 py-3"><DialogClose as-child><button type="button" class="h-9 rounded-lg border border-slate-200 px-4 text-sm font-semibold text-slate-600">{{ receiptEntryMode === 'UNORDERED' ? '返回收料入库' : receiptEntryMode === 'MANUAL' ? '返回待收订单' : '返回导入结果' }}</button></DialogClose></div>
       </DialogContent>
     </DialogRoot>
 

@@ -15,7 +15,7 @@ from test_cutting_reporting import production, send, ok, doc
 
 URL = BASE+'/settlements'
 ACTIONS = ('read', 'settlement_read', 'settlement_price', 'settlement_prepare', 'settlement_confirm', 'settlement_reopen',
-           'report_write', 'acceptance_write', 'report_review')
+           'report_write', 'return_write', 'acceptance_write', 'report_review')
 
 
 @pytest.fixture

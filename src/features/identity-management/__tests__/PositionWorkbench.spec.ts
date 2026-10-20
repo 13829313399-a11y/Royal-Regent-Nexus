@@ -235,3 +235,66 @@ it('selecting a person is read-only; only the named start action may create a re
   expect(mocks.adjust).toHaveBeenCalledTimes(1)
   wrapper.unmount()
 })
+
+it.each(['todo', 'people'])('clears search and filters in %s without creating an authorization task', async view => {
+  mocks.catalog.mockResolvedValue({ organizations: [{ id: 'huakang-a', name: '华康A', kind: 'factory', status: 'active', departments: [] }], writes_enabled: true })
+  const { wrapper, router } = await setup(`/system/users?view=${view}&org=huakang-a&kind=position&state=blocked&page=2`)
+  await wrapper.get('input[type=search]').setValue('工程师')
+  await wrapper.findAll('button').find(button => button.text() === '重置')!.trigger('click')
+  await flushPromises()
+  expect(router.currentRoute.value.query.org).toBeUndefined()
+  expect(router.currentRoute.value.query.page).toBeUndefined()
+  expect((wrapper.get('input[type=search]').element as HTMLInputElement).value).toBe('')
+  if (view === 'people') expect(mocks.people).toHaveBeenLastCalledWith(expect.objectContaining({ q: '', org_unit_id: '', page: 1 }))
+  else expect(mocks.tasks).toHaveBeenLastCalledWith(expect.objectContaining({ q: '', org_unit_id: '', kind: '', state: 'open', page: 1 }))
+  expect(mocks.adjust).not.toHaveBeenCalled()
+  expect(mocks.updateUserStatus).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('opens the welcome person action as a read without preparing an adjustment', async () => {
+  const { wrapper, router } = await setup('/system/users?view=people')
+  expect(mocks.person).not.toHaveBeenCalled()
+  await wrapper.findAll('button').find(button => button.text() === '查看首位人员')!.trigger('click')
+  await flushPromises()
+  expect(router.currentRoute.value.query).toMatchObject({ view: 'people', person: 'p', panel: 'profile' })
+  expect(mocks.person).toHaveBeenCalledWith('p')
+  expect(mocks.adjust).not.toHaveBeenCalled()
+  expect(mocks.updateUserStatus).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('preserves the displayed filters and current results when reset navigation is cancelled', async () => {
+  mocks.catalog.mockResolvedValue({ organizations: [{ id: 'huakang-a', name: '华康A', kind: 'factory', status: 'active', departments: [] }], writes_enabled: true })
+  const { wrapper, router } = await setup('/system/users?view=todo&org=huakang-a&kind=position&state=blocked&page=2')
+  await wrapper.get('input[type=search]').setValue('工程师')
+  const originalPath = router.currentRoute.value.fullPath
+  const callsBeforeReset = mocks.tasks.mock.calls.length
+  const removeGuard = router.beforeEach(() => false)
+  await wrapper.findAll('button').find(button => button.text() === '重置')!.trigger('click')
+  await flushPromises()
+  expect(router.currentRoute.value.fullPath).toBe(originalPath)
+  expect((wrapper.get('input[type=search]').element as HTMLInputElement).value).toBe('工程师')
+  expect((wrapper.get('select[aria-label="组织筛选"]').element as HTMLSelectElement).value).toBe('huakang-a')
+  expect((wrapper.get('select[aria-label="任务类型"]').element as HTMLSelectElement).value).toBe('position')
+  expect((wrapper.get('select[aria-label="办理状态"]').element as HTMLSelectElement).value).toBe('blocked')
+  expect(mocks.tasks).toHaveBeenCalledTimes(callsBeforeReset)
+  expect(mocks.adjust).not.toHaveBeenCalled()
+  expect(mocks.updateUserStatus).not.toHaveBeenCalled()
+  removeGuard()
+  wrapper.unmount()
+})
+
+it('opens the first listed task without changing its status', async () => {
+  mocks.tasks.mockResolvedValue({ items: [{ key: 'position:first', kind: 'position', source_id: 'first', source_revision: '1',
+    subject: { user_id: 'p', display_name: '只读人员甲', username: 'person-a' }, org_unit_id: 'huakang-a', department: 'engineering',
+    current_position: '工程师', proposed_position: '工程主管', raw_status: 'pending', state: 'actionable', created_at: '2026-10-17T09:00:00Z',
+    available_actions: ['preview'], blocked_reasons: [] }], visible_total: 1, actionable_total: 1, coverage: [], partial: false })
+  const { wrapper, router } = await setup('/system/users?view=todo')
+  await wrapper.findAll('button').find(button => button.text() === '查看首条待办')!.trigger('click')
+  await flushPromises()
+  expect(router.currentRoute.value.query.task).toBe('position:first')
+  expect(mocks.adjust).not.toHaveBeenCalled()
+  expect(mocks.updateUserStatus).not.toHaveBeenCalled()
+  wrapper.unmount()
+})

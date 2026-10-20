@@ -51,3 +51,13 @@ class CellChange(BaseModel):
 
 class CellsInput(RevisionInput):
     changes: list[CellChange] = Field(min_length=1, max_length=500)
+
+
+class SyncCellChange(CellChange):
+    base_value: StrictStr | StrictInt | StrictFloat | StrictBool | None
+    base_revision: int = Field(ge=1)
+
+
+class SyncCellsInput(RevisionInput):
+    operation_id: str = Field(pattern=r"^[a-zA-Z0-9-]{16,64}$")
+    changes: list[SyncCellChange] = Field(min_length=1, max_length=500)

@@ -1,5 +1,6 @@
 """Real API, isolated SQLite, no production data or implicit grants."""
 from copy import deepcopy
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
@@ -26,7 +27,7 @@ def production(planned):
     response=save(flow,[task(a,target_sets=25,days=[dict(day='2026-10-15',sets=25)]),task(b,task_id='external',target_sets=25,days=[dict(day='2026-10-15',sets=25)])])
     assert response.status_code==200,response.text
     assert publish(flow).status_code==200
-    flow.cutting_auth['user']=user('read','report_write','report_review','handover_write','acceptance_write','order_receive','plan_write','plan_publish')
+    flow.cutting_auth['user']=user('read','report_write','report_review','handover_write','return_write','acceptance_write','order_receive','plan_write','plan_publish')
     return flow
 
 
@@ -121,6 +122,36 @@ def test_outsourced_claim_return_accept_handover_separate(production):
     assert send(p,'void',document_id=rid).status_code==422
 
 
+@pytest.mark.parametrize('kind,permission,other', [('return','return_write','acceptance_write'),('accept','acceptance_write','return_write')])
+@pytest.mark.parametrize('action', ['save','post','void','discard'])
+def test_return_and_accept_permissions_cover_drafts_corrections_and_decisions(production,kind,permission,other,action):
+    p=production
+    ok(send(p,task_id='external',sets=20))
+    if kind=='accept':
+        ok(send(p,task_id='external',kind='return',sets=20))
+    initial=ok(send(p,'save' if action=='discard' else 'post',task_id='external',kind=kind,sets=15))
+    did=doc(initial)
+    p.cutting_auth['user']=user('read',other,department='production')
+    before=read(p)
+    assert send(p,action,document_id=did,task_id='external',kind=kind,sets=15).status_code==403
+    assert read(p)==before
+    p.cutting_auth['user']=user('read',permission,department='production')
+    ok(send(p,action,document_id=did,task_id='external',kind=kind,sets=15))
+
+
+@pytest.mark.parametrize('kind,permission,other_kind', [('return','acceptance_write','accept'),('accept','return_write','return')])
+def test_report_kind_cannot_be_changed_to_bypass_original_permission(production,kind,permission,other_kind):
+    p=production
+    ok(send(p,task_id='external',sets=20))
+    returned=ok(send(p,task_id='external',kind='return',sets=20))
+    original=returned if kind=='return' else ok(send(p,task_id='external',kind='accept',sets=15))
+    did=doc(original)
+    p.cutting_auth['user']=user('read',permission,department='production')
+    before=read(p)
+    assert send(p,document_id=did,task_id='external',kind=other_kind,sets=15).status_code==422
+    assert read(p)==before
+
+
 def test_concurrent_same_operation_and_recovery_fence(production):
     p=production
     body=command(expected_version=read(p)['version'],document_id=uuid4().hex,entry=entry(p))
@@ -136,6 +167,28 @@ def test_concurrent_same_operation_and_recovery_fence(production):
     p.cutting_auth['user']=user('read','report_write')
     assert p.post(URL+'/post',json=pending).status_code==409
     assert p.post(URL+'/post',json=dict(body,reason='变更原操作内容')).status_code==409
+
+
+def test_return_recovery_after_revocation_preserves_owner_and_original_command(production):
+    p=production
+    ok(send(p,task_id='external',sets=20))
+    body=command(expected_version=read(p)['version'],document_id=uuid4().hex,entry=entry(p,task_id='external',kind='return',sets=18))
+    p.cutting_auth['user']=user('read','return_write',department='production')
+    ok(p.post(URL+'/post',json=body))
+    p.cutting_auth['user']=user('read',department='production')
+    url=BASE+'/orders/line-1/report-operations/recover'
+    recovery=ok(p.post(url,json=dict(action='post',command=body)))
+    assert recovery['state']=='committed'
+    changed=deepcopy(body);changed['entry']['kind']='accept'
+    assert p.post(url,json=dict(action='post',command=changed)).status_code==409
+    p.cutting_auth['user']=replace(user('read','acceptance_write',department='production'),id='another-user')
+    assert p.post(url,json=dict(action='post',command=body)).status_code==409
+    p.cutting_auth['user']=user('read',department='production')
+    pending=dict(body,operation_id=uuid4().hex,document_id=uuid4().hex,expected_version=read(p)['version'])
+    assert ok(p.post(url,json=dict(action='post',command=pending)))['state']=='abandoned'
+    p.cutting_auth['user']=user('read','return_write',department='production')
+    assert p.post(URL+'/post',json=pending).status_code==409
+    assert next(t for t in read(p)['tasks'] if t['task_id']=='external')['balance']['returned']==18
 
 
 def test_source_change_preserves_facts_and_allows_corrections(production):
@@ -228,8 +281,13 @@ def test_historical_balances_can_flow_after_cancellation(production):
     ok(send(p,task_id='external',sets=20))
     ok(send(p,mode='parts',sets=0,parts=[dict(code='P01',good=20),dict(code='P02',good=10)]))
     amend(p,True);receive(p)
+    p.cutting_auth['user']=user('read','return_write',department='production')
     ok(send(p,task_id='external',kind='return',sets=18))
+    assert send(p,task_id='external',kind='accept',sets=15).status_code==403
+    p.cutting_auth['user']=user('read','acceptance_write',department='production')
+    assert send(p,task_id='external',kind='return',sets=1).status_code==403
     ok(send(p,task_id='external',kind='accept',sets=15))
+    p.cutting_auth['user']=user('read','handover_write','report_write',department='production')
     ok(send(p,task_id='external',kind='handover',sets=12))
     ok(send(p,mode='parts',kind='match',sets=10))
     final=ok(send(p,mode='parts',kind='handover',sets=10))

@@ -74,10 +74,36 @@ export interface FillRecipients {
   departments: { id: string; name: string }[]
 }
 export interface FillChange { sheet: number; address: string; value: SheetValue }
+export interface SyncChange extends FillChange { base_value: SheetValue; base_revision: number }
+export interface SyncRequest { expected_revision: number; operation_id: string; changes: SyncChange[] }
+export interface CellConflict extends FillChange { actor_name: string; revision: number }
+export interface SheetDownloadOptions {
+  signal?: AbortSignal
+  requestId?: string
+  onResponse?: (info: { bytes: number; requestId: string; serverTiming: string; revision: string }) => void
+}
+export interface SyncDelta {
+  applied_revision?: number
+  id: string; revision: number; status: FillTask['status']; grants: FillGrant[]
+  editable_ranges: FillTaskDetail['editable_ranges']; events: FillTaskDetail['activity']
+  overrides: Record<string, SheetValue> | null
+}
 
 const base = '/tools/collaborative-sheets'
 const config = (factory_id: string) => ({ params: { factory_id }, timeout: 120_000 })
 export const collaborativeSheetsApi = {
+  streamUrl(factoryId: string, id: string) {
+    return `${http.defaults.baseURL}${base}/${encodeURIComponent(id)}/stream?${new URLSearchParams({ factory_id: factoryId })}`
+  },
+  async sync(factoryId: string, id: string, payload: SyncRequest) {
+    return (await http.patch<SyncDelta>(`${base}/${id}/sync`, payload, { ...config(factoryId), timeout: 20_000 })).data
+  },
+  async changes(factoryId: string, id: string, since: number) {
+    return (await http.get<SyncDelta>(`${base}/${id}/changes`, { ...config(factoryId), params: { factory_id: factoryId, since } })).data
+  },
+  async history(factoryId: string, id: string, filters: { before?: number; actor?: string; sheet?: number; address?: string }) {
+    return (await http.get<{ items: FillTaskDetail['activity']; next_before: number | null }>(`${base}/${id}/history`, { ...config(factoryId), params: { factory_id: factoryId, ...filters } })).data
+  },
   async recipients(factoryId: string) {
     return (await http.get<FillRecipients>(`${base}/recipients`, config(factoryId))).data
   },
@@ -120,9 +146,14 @@ export const collaborativeSheetsApi = {
       expected_revision: task.revision,
     }, config(factoryId))).data
   },
-  async download(factoryId: string, task: FillTask) {
-    return (await http.get<Blob>(`${base}/${task.id}/download`, {
-      ...config(factoryId), responseType: 'blob',
-    })).data
+  async download(factoryId: string, task: Pick<FillTask, 'id'>, progress?: (loaded: number, total?: number) => void, options: SheetDownloadOptions = {}) {
+    const response = await http.get<Blob>(`${base}/${task.id}/download`, {
+      ...config(factoryId), responseType: 'blob', timeout: 300_000,
+      signal: options.signal,
+      headers: options.requestId ? { 'X-Request-ID': options.requestId } : undefined,
+      onDownloadProgress: event => progress?.(event.loaded, event.total),
+    })
+    options.onResponse?.({ bytes: response.data.size, requestId: String(response.headers['x-request-id'] ?? ''), serverTiming: String(response.headers['server-timing'] ?? ''), revision: String(response.headers['x-workbook-revision'] ?? '') })
+    return response.data
   },
 }

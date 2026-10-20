@@ -6,6 +6,7 @@ import { reactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAppStore } from '@/stores/app'
 import { pdfRenameApi } from '@/api/pdfRename'
+import { spreadsheetMergeApi } from '@/api/spreadsheetMerge'
 import ToolCenterView from '@/views/ToolCenterView.vue'
 import { navigationGroups } from '@/data/enterpriseMock'
 import {
@@ -86,6 +87,7 @@ async function upload(wrapper: VueWrapper, files: File[]) {
 beforeEach(() => {
   setActivePinia(createPinia())
   routeState.query = { factory: 'group' }
+  vi.spyOn(spreadsheetMergeApi, 'templates').mockResolvedValue([])
   vi.spyOn(pdfRenameApi, 'getPdfRenameRules').mockResolvedValue({ rules: [], limits: { max_files: 50, max_file_bytes: 20 * 1024 * 1024, max_batch_bytes: 200 * 1024 * 1024 } })
   vi.spyOn(documentTools, 'capabilities').mockResolvedValue({
     operations: Object.entries(operationLabels).map(([id, label]) => ({
@@ -124,6 +126,20 @@ afterEach(() => {
 })
 
 describe('public tool center', () => {
+  it('opens spreadsheet merging for every factory and preserves factory context on return', async () => {
+    useAppStore().setActiveFactory('huakang-c')
+    routeState.query = { factory: 'huakang-c', tool: 'spreadsheet-merge' }
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.get('[aria-label="表格转换与合并"]').isVisible()).toBe(true)
+    expect(wrapper.find('input[aria-label="上传文档"]').exists()).toBe(false)
+    expect((wrapper.get('.dt-desk').element as HTMLElement).style.display).toBe('none')
+    await wrapper.findAll('button').find(button => button.text() === '返回文档转换')!.trigger('click')
+    await flushPromises()
+    expect(routeState.query).toEqual({ factory: 'huakang-c' })
+    expect(wrapper.find('[aria-label="表格转换与合并"]').exists()).toBe(false)
+    expect(wrapper.find('input[aria-label="上传文档"]').exists()).toBe(true)
+  })
   it.each(['group', 'huadeng', 'huakang-a', 'huakang-b', 'huakang-c', 'huakang-d'] as const)('does not expose or mount renaming in %s, even with a deep link', async (factory) => {
     useAppStore().setActiveFactory(factory)
     routeState.query = { factory, tool: 'pdf-batch-rename' }
@@ -387,7 +403,7 @@ describe('public tool center', () => {
     )
   })
 
-  it('keeps the authenticated route and exposes ten real tools without invented history', async () => {
+  it('keeps the authenticated route and exposes document tools plus spreadsheet merging without invented history', async () => {
     const routerSource = readFileSync(
       join(process.cwd(), 'src/router/index.ts'),
       'utf8',
@@ -404,7 +420,7 @@ describe('public tool center', () => {
     expect(
       wrapper.find('input[type="file"]').attributes('multiple'),
     ).toBeDefined()
-    expect(wrapper.findAll('.dt-tools button')).toHaveLength(10)
+    expect(wrapper.findAll('.dt-tools button')).toHaveLength(11)
     expect(wrapper.text()).toContain('还没有任务')
     expect(wrapper.findAll('.dt-task')).toHaveLength(0)
   })
@@ -437,7 +453,7 @@ describe('public tool center', () => {
       .toBe('/image-translation/?factory=huaxing')
     routeState.query = { factory: 'huaxing' }
     await flushPromises()
-    expect(wrapper.findAll('.dt-tools button')).toHaveLength(11)
+    expect(wrapper.findAll('.dt-tools button')).toHaveLength(12)
   })
 
   it('keeps a failed file independent while uploading the next file', async () => {
