@@ -42,6 +42,18 @@ beforeEach(() => { vi.resetAllMocks(); vi.mocked(materialApi.read).mockResolvedV
 afterEach(() => { wrapper?.unmount(); vi.restoreAllMocks() })
 
 describe('cutting order workflow and save protection', () => {
+  it('uses applied filters for ledger paging and metrics until the next explicit search',async()=>{
+    await open()
+    vi.mocked(ordersApi.list).mockResolvedValue({data:[row],total:51,page:1,page_size:50})
+    await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
+    await wrapper.get('input[maxlength="80"]').setValue('NEW')
+    await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await button('下一页').trigger('click');await flushPromises()
+    expect(ordersApi.list).toHaveBeenLastCalledWith(2,'','','')
+    await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'NEW','awaiting_receipt','')
+  })
+
   it.each([false, true])('opens material operations only in the materials workspace (request permission: %s)', async permitted => {
     await open(received, ['read', ...(permitted ? ['material_request'] : [])])
     await router.push({ path: '/modules/production/cutting/planning', query: { factory: 'huakang-c', line_id: received.line_id, month: '2026-10' } })
@@ -207,6 +219,8 @@ describe('cutting order workflow and save protection', () => {
   it('refreshes filtered rows and totals after a save changes the workflow status', async () => {
     await open()
     await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
+    await button('查看').trigger('click')
     await receiptForm()
     vi.mocked(ordersApi.command).mockResolvedValue(received)
     vi.mocked(ordersApi.list).mockResolvedValue(page([]))
