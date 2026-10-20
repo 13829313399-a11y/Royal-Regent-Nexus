@@ -5,7 +5,7 @@ import os
 import sys
 from collections import Counter, defaultdict
 
-import openpyxl
+from .workbooks import reference_workbook
 
 
 def _base_dir():
@@ -42,89 +42,85 @@ class ScheduleRef:
 
     def load(self, path=REF_FILE, name='', uploaded_at=''):
         import re
-        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-        if not any(s in wb.sheetnames for s in REF_SHEETS):
-            wb.close()
-            raise ValueError('文件中没有「问单 / 华康B」等工作表——请上传排货报表，而不是金山订单表的导出')
-        self.known_items.clear()
-        self.po_item_keys.clear()
-        self.cust_item_qty_keys.clear()
-        self.item_detail.clear()
-        self.max_seq = 0
-        country_votes = defaultdict(Counter)
-        version_votes = defaultdict(Counter)
-        n = 0
-        for sheet in REF_SHEETS:
-            if sheet not in wb.sheetnames:
-                continue
-            ws = wb[sheet]
-            if ws.max_row and ws.max_row > 200000:
-                wb.close()
-                raise ValueError("排期参照行数或格式范围过大，请先整理导出")
-            for index, cells in enumerate(ws.iter_rows(min_row=4, max_col=14), start=4):
-                if index > 200000:
-                    wb.close()
-                    raise ValueError("排期参照超过 20 万行，请先整理")
-                row = [c.value for c in cells]
-                # Preserve zero-padded identifiers from the original workbook.
-                for column in (0, 2, 5, 6, 7):
-                    cell = cells[column]
-                    value, fmt = cell.value, cell.number_format
-                    if isinstance(value, (int, float)) and not isinstance(value, bool) and re.fullmatch(r"0+", fmt or ""):
-                        if float(value).is_integer():
-                            row[column] = str(int(value)).zfill(len(fmt))
-                if not row or row[0] in (None, '', '汇总'):
+        with reference_workbook(path) as wb:
+            if not any(s in wb.sheetnames for s in REF_SHEETS):
+                raise ValueError('文件中没有「问单 / 华康B」等工作表——请上传排货报表，而不是金山订单表的导出')
+            self.known_items.clear()
+            self.po_item_keys.clear()
+            self.cust_item_qty_keys.clear()
+            self.item_detail.clear()
+            self.max_seq = 0
+            country_votes = defaultdict(Counter)
+            version_votes = defaultdict(Counter)
+            n = 0
+            for sheet in REF_SHEETS:
+                if sheet not in wb.sheetnames:
                     continue
-                m = re.match(r'^\d{4}-(\d{4,5})$', str(row[0]).strip())
-                if m:
-                    self.max_seq = max(self.max_seq, int(m.group(1)))
-                item = str(row[COL_货号] or '').strip()
-                cust = str(row[COL_客名] or '').strip()
-                po = str(row[COL_客PO] or '').strip()
-                qty = row[COL_数量]
-                country = str(row[COL_国家] or '').strip()
-                if not item or item in ('#REF!', '0'):
-                    continue
-                n += 1
-                self.known_items.add(item)
-                if po:
-                    self.po_item_keys.add((po, item))
-                if cust:
-                    try:
-                        q = int(float(qty)) if qty not in (None, '') else 0
-                    except (ValueError, TypeError):
-                        q = 0
-                    self.cust_item_qty_keys.add((cust, item, q))
-                if cust and country:
-                    country_votes[cust][country] += 1
-                version = str(row[COL_版本] or '').strip()
-                if version:
-                    version_votes[item][version] += 1
-                # 货号资料（填 T 列）：后扫到的工作表（生产单）覆盖前面的（问单）
-                customs = str(row[COL_报关货号] or '').strip()
-                detail = {
-                    '货号': item,
-                    '子货号': str(row[COL_子货号] or '').strip(),
-                    '产品名称': str(row[COL_产品名称] or '').strip(),
-                    '装箱数': str(row[COL_装箱数] or '').strip(),
-                }
-                self.item_detail[customs or item] = detail
-        wb.close()
-        # 国家带出：该客名历史国家高度集中（≥80%）才带出，像 JPEU 这种多国/常留空的不带
-        self.country_by_customer = {}
-        for c, cnt in country_votes.items():
-            top, topn = cnt.most_common(1)[0]
-            if topn / sum(cnt.values()) >= 0.8:
-                self.country_by_customer[c] = top
-        # 版本建议：该货号历史只有唯一版本时才带出，多个版本宁可不带
-        self.version_by_item = {}
-        for item, cnt in version_votes.items():
-            if len(cnt) == 1:
-                self.version_by_item[item] = cnt.most_common(1)[0][0]
-        self.loaded = True
-        self.name = name
-        self.uploaded_at = uploaded_at
-        self.row_count = n
+                ws = wb[sheet]
+                if ws.max_row and ws.max_row > 200000:
+                    raise ValueError("排期参照行数或格式范围过大，请先整理导出")
+                for index, cells in enumerate(ws.iter_rows(min_row=4, max_col=14), start=4):
+                    if index > 200000:
+                        raise ValueError("排期参照超过 20 万行，请先整理")
+                    row = [c.value for c in cells]
+                    # Preserve zero-padded identifiers from the original workbook.
+                    for column in (0, 2, 5, 6, 7):
+                        cell = cells[column]
+                        value, fmt = cell.value, cell.number_format
+                        if isinstance(value, (int, float)) and not isinstance(value, bool) and re.fullmatch(r"0+", fmt or ""):
+                            if float(value).is_integer():
+                                row[column] = str(int(value)).zfill(len(fmt))
+                    if not row or row[0] in (None, '', '汇总'):
+                        continue
+                    m = re.match(r'^\d{4}-(\d{4,5})$', str(row[0]).strip())
+                    if m:
+                        self.max_seq = max(self.max_seq, int(m.group(1)))
+                    item = str(row[COL_货号] or '').strip()
+                    cust = str(row[COL_客名] or '').strip()
+                    po = str(row[COL_客PO] or '').strip()
+                    qty = row[COL_数量]
+                    country = str(row[COL_国家] or '').strip()
+                    if not item or item in ('#REF!', '0'):
+                        continue
+                    n += 1
+                    self.known_items.add(item)
+                    if po:
+                        self.po_item_keys.add((po, item))
+                    if cust:
+                        try:
+                            q = int(float(qty)) if qty not in (None, '') else 0
+                        except (ValueError, TypeError):
+                            q = 0
+                        self.cust_item_qty_keys.add((cust, item, q))
+                    if cust and country:
+                        country_votes[cust][country] += 1
+                    version = str(row[COL_版本] or '').strip()
+                    if version:
+                        version_votes[item][version] += 1
+                    # 货号资料（填 T 列）：后扫到的工作表（生产单）覆盖前面的（问单）
+                    customs = str(row[COL_报关货号] or '').strip()
+                    detail = {
+                        '货号': item,
+                        '子货号': str(row[COL_子货号] or '').strip(),
+                        '产品名称': str(row[COL_产品名称] or '').strip(),
+                        '装箱数': str(row[COL_装箱数] or '').strip(),
+                    }
+                    self.item_detail[customs or item] = detail
+            # 国家带出：该客名历史国家高度集中（≥80%）才带出，像 JPEU 这种多国/常留空的不带
+            self.country_by_customer = {}
+            for c, cnt in country_votes.items():
+                top, topn = cnt.most_common(1)[0]
+                if topn / sum(cnt.values()) >= 0.8:
+                    self.country_by_customer[c] = top
+            # 版本建议：该货号历史只有唯一版本时才带出，多个版本宁可不带
+            self.version_by_item = {}
+            for item, cnt in version_votes.items():
+                if len(cnt) == 1:
+                    self.version_by_item[item] = cnt.most_common(1)[0][0]
+            self.loaded = True
+            self.name = name
+            self.uploaded_at = uploaded_at
+            self.row_count = n
 
     def check_row(self, customer, customer_po, baby_item, qty):
         """返回 (exists, known_item, country_suggest, version_suggest)。"""
