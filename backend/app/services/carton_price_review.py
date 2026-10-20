@@ -35,6 +35,10 @@ def record_line(db, user, receipt_line, source, shipment, acceptance, *, source_
     value = Decimal(supplied_value) if supplied_value is not None else Decimal(receipt_line.unit_price)
     action = getattr(acceptance, "price_action", "MATCH")
     kind = getattr(acceptance, "zero_price_kind", None)
+    # Legacy gift corrections already carry an explicit free classification.
+    # It permits recording zero; supplier agreement still follows matched below.
+    if kind is None and getattr(acceptance, "no_order_decision", None) == "GIFT":
+        kind = "FREE"
     reason = getattr(acceptance, "price_reason", "") or getattr(acceptance, "difference_reason", "")
     if action == "FREE" and value != 0:
         raise HTTPException(422, "确认免费必须明确填写零单价")

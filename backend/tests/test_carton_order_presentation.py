@@ -73,9 +73,12 @@ def test_customer_linked_sample_stock_uses_its_actual_receipt_source(monkeypatch
         assert Decimal(stock['balance']) == 20
 
 
-def test_origin_projection_preserves_mixed_pool_and_excludes_reversed_sources():
+def test_origin_projection_preserves_mixed_pool_and_excludes_reversed_sources(monkeypatch):
     from app.services.carton_inventory_types import annotate_types
     from app.services.carton_inventory_identity import inventory_key
+    # Source-link queries are covered by the real receipt integration tests;
+    # this unit double only supplies the stock-origin classification rows.
+    monkeypatch.setattr('app.services.carton_source_links.line_sources', lambda *_: {})
     def movement(identifier, receipt, quantity='10', **extra):
         data = dict(id=identifier, customer_code='LINKED-CUSTOMER', contract_no='', item_no='ITEM', packaging_type='外箱',
             paper_quality='A33', specification='10*20*30 cm', unit='个', order_line_id=None, quantity=Decimal(quantity),

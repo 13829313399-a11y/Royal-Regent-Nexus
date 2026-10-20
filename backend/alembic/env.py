@@ -108,7 +108,8 @@ def run_migrations_online() -> None:
         inspector = inspect(connection)
         revisions = set(connection.scalars(text('SELECT version_num FROM alembic_version'))) if inspector.has_table('alembic_version') else set()
         collision_versions = {'20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166',
-                              '20261017_0167', '20261019_0167', '20261020_0168'}
+                              '20261017_0167', '20261019_0167', '20261020_0168',
+                              '20261019_0168', '20261019_0169', '20261019_0170', '20261020_0171'}
         if revisions & collision_versions or any(inspector.has_table(name) for name in (
             'cutting_ops_period_events', 'jp_intake_references', 'jp_intake_reference_events',
             'jp_intake_counters', 'jp_intake_exports', 'jp_intake_export_identities')):

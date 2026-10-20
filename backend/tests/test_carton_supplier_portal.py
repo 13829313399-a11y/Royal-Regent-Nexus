@@ -221,7 +221,14 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
             settlement_rows, _, settlement_issues, undated = sources(db, "huaxing", receipt.supplier_id, "2026-09", "CNY")
             assert not settlement_issues and not undated
             assert {row["item_no"] for row in settlement_rows} == {order["item_no"], "SAMPLE-BOX"}
-            assert all(row["unit_price"] is not None for row in settlement_rows)
+            # This original vendor file has no prices. Recorded warehouse costs
+            # remain physical evidence, while payables await vendor agreement.
+            assert all(row["unit_price"] is None and row["amount"] is None for row in settlement_rows)
+            assert all(row["price_review"]["status"] == "PROPOSED" for row in settlement_rows)
+            assert {line.source_type: line.unit_price for line in receipt_lines} == {
+                "FORMAL_ORDER": Decimal("2.5"),
+                "AD_HOC": Decimal("0") if sample_purpose == "GIFT" else Decimal("2.5"),
+            }
 
         # A later formal order can consume the original sample evidence without
         # posting another receipt, inventory movement, or month-end source.

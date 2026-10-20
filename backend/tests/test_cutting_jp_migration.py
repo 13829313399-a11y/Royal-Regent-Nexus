@@ -208,6 +208,7 @@ def test_both_0167_paths_join_with_nonempty_evidence(base_database, tmp_path, se
 @pytest.mark.parametrize('versions,groups', [
     (['20261017_0167'], ['jp']), (['20261019_0167'], ['cutting']),
     (['20261020_0168'], ['jp']), (['20261017_0167', '20261016_0166'], ['cutting', 'jp']),
+    (['20261019_0170'], ['cutting']), (['20261020_0171'], ['jp']),
 ])
 def test_labeled_heads_require_their_complete_contract(base_database, tmp_path, versions, groups):
     path = clone(base_database, tmp_path)

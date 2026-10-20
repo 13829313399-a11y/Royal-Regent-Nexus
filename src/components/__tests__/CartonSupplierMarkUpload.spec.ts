@@ -58,7 +58,7 @@ describe('supplier batch mark upload', () => {
     expect(api.uploadMarkAssets).not.toHaveBeenCalled()
     const file = new File(['pdf'], 'a.pdf'); await choose(wrapper, [file])
     api.uploadMarkAssets.mockRejectedValue(new Error('请求中断')); await submit(wrapper); await flushPromises()
-    expect(wrapper.text()).toContain('请刷新资料库确认'); expect(wrapper.text()).toContain(file.name)
+    expect(wrapper.text()).toContain('请先刷新资料库核实结果'); expect(wrapper.text()).toContain(file.name)
     wrapper.unmount()
   })
   it('clears drafts on scope or permission changes and discards late upload outcomes', async () => {
