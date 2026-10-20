@@ -28,7 +28,7 @@ const labels={blocked:'依据待核对',unconfirmed:'待确认归属',stale:'变
       <Button v-if="canConfirm" variant="outline" :disabled="disabled||group.status==='blocked'" @click="$emit('confirm',group.key)">{{group.latest_id?'重新确认完工耗用归属':'确认完工耗用归属'}}</Button>
     </article>
     <details v-if="value.history.length"><summary>归集确认与更正历史</summary>
-      <article v-for="event in value.history" :key="event.id" class="cutting-master-line">
+      <article v-for="event in value.history" :key="event.id" :data-cutting-cost_event="event.id" class="cutting-master-line">
         <p>{{event.context.task_name}} · V{{event.version}} · {{event.actor}} · {{event.date}} · {{event.reason}}</p>
         <p>确认单 {{event.id}}<span v-if="event.replaces_id"> · 替代确认单 {{event.replaces_id}}</span> · 当时合格完成 {{event.completed_sets}} 套</p>
         <p>全部物料核对：{{event.entry.materials_complete?'已确认':'未完整'}}；公共耗料：{{event.entry.public_material_pending?'待分配':'已核对无待分配项'}}</p>

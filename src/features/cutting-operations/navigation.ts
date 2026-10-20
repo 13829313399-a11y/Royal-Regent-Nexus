@@ -8,6 +8,13 @@ export function isCuttingFactory(factory: unknown): factory is typeof CUTTING_FA
 // Each implemented workspace uses the canonical backend permission boundary.
 export const CUTTING_WORKSPACES = [
   {
+    path: 'dashboard', short: '生产看板', title: '生产看板', icon: 'LayoutDashboard',
+    description: '跟进当日任务与异常，分别核对计划、完成和交接。',
+    tabs: ['当日任务', '异常任务', '历史实绩'], columns: [], empty: '暂无生产任务',
+    next: '签收订单并发布计划后，可在看板跟进每日执行。',
+    rules: ['有效生产实绩与计划分别保留。', '当日未结束不直接判为逾期。'],
+  },
+  {
     path: 'planning', short: '排期', title: '生产排期', icon: 'CalendarRange',
     description: '从订单、工程 BOM 和物料交期出发，安排本厂与外发裁剪。',
     tabs: ['订单总台账', '待排任务', '每日计划'],
@@ -60,6 +67,13 @@ export const CUTTING_WORKSPACES = [
     empty: '实际材料费用尚未接入',
     next: '实际耗料、批次价格和计价政策确认后归集费用，不用计划用量代替实际成本。',
     rules: ['未知价格显示待计价，不用零元代替缺失价格。', '材料费用与外发加工费分开，不同币种不直接相加。', '历史费用保留原依据，补价不覆盖已冻结的月结。'],
+  },
+  {
+    path: 'activity', short: '操作日志', title: '操作日志', icon: 'History',
+    description: '追溯原始业务操作、关联单据与版本依据。',
+    tabs: ['全部授权来源'], columns: [], empty: '暂无可查看的操作记录',
+    next: '业务操作生效后可按原单、操作人和依据查询。',
+    rules: ['仅显示当前权限可查看的来源。', '操作记录只读，历史版本保留。'],
   },
 ] as const
 

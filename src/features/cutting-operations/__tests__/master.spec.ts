@@ -1,6 +1,8 @@
+vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import CuttingMasterPage from '../CuttingMasterPage.vue'
+import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
 import { cuttingApi, type MasterRecord } from '../api'
 
 vi.mock('../api', async importOriginal => {
@@ -30,6 +32,18 @@ async function materialForm() {
 }
 
 describe('cutting master data', () => {
+  it('does not let a late linked-master response overwrite a newer route target',async()=>{
+    let resolve!:(v:{data:MasterRecord[];total:number;page:number;page_size:number})=>void
+    const newer={...record,id:'material-2',code:'NEW-002'}
+    vi.mocked(cuttingApi.versions).mockReturnValueOnce(new Promise(r=>resolve=r)).mockResolvedValue({data:[newer],total:1,page:1,page_size:50})
+    const router=createRouter({history:createMemoryHistory(),routes:[{path:'/master',component:CuttingMasterPage}]})
+    await router.push('/master?master_id=material-1');await router.isReady()
+    wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+    await router.push('/master?master_id=material-2');await flushPromises()
+    resolve({data:[record],total:1,page:1,page_size:50});await flushPromises()
+    expect(wrapper.text()).toContain('NEW-002')
+    expect(wrapper.text()).not.toContain('001 · 版本记录')
+  })
   it('ignores old history success and failure after a newer request or close', async () => {
     vi.mocked(cuttingApi.list).mockResolvedValue({data:[record],total:1,page:1,page_size:50})
     await open()
