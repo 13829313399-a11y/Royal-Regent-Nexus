@@ -41,7 +41,12 @@ describe('monthly reconciliation destinations',()=>{
     expect(ordersApi.read).toHaveBeenCalledWith(order.line_id);expect(ordersApi.list).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('TARGET-ORDER');expect(wrapper.text()).toContain('核对月份 2026-09')
     expect(wrapper.findAll('a').find(a=>a.text()==='返回该月核对')!.attributes('href')).toContain('month=2026-09')
-    if(workspace==='reporting')expect(reportingApi.read).toHaveBeenCalledWith(order.line_id,undefined)
+    if(workspace==='reporting')expect(reportingApi.read).toHaveBeenCalledWith(order.line_id,undefined,1,undefined,undefined)
+  })
+  it('locates the history page containing a linked production document',async()=>{
+    const router=await open('reporting')
+    await router.push(cuttingDestination(order.line_id,'2026-09','reporting','report','old-report'));await flushPromises()
+    expect(reportingApi.read).toHaveBeenLastCalledWith(order.line_id,undefined,1,undefined,'old-report')
   })
   it('ignores an earlier order response after query navigation',async()=>{
     let resolve!:(v:CuttingOrder)=>void
