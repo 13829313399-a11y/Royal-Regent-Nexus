@@ -157,16 +157,21 @@ def test_preview_and_export_customer_fields(monkeypatch, customer):
     # API regression fixtures reload service modules between tests.
     from app.services.huakang_a_order_legacy import schedule_parser, green_toys_headstart
     record = {
-        'contract_no': 'RL-450783-19' if customer == '360' else '2022802AB',
-        'customer_release': 'RL232670318', 'customer_po': '2326703',
+        'contract_no': 'RL-765431-19' if customer == '360' else '2022802AB',
+        'customer_release': 'RL765432118', 'customer_po': '7654321',
         'item_no': 'NEW', 'description': 'New toy', 'quantity': 2500,
         'master_carton_qty': 6, 'barcode': '001234567890', 'container_type': 'LCL',
         'consolidated_id': 'FCL', 'port': 'China', 'unit_price_usd': 1.89,
-        'country': '美国', 'product_packaging': 'Window Box', 'customer_name': 'Target',
+        'country': '美国', 'product_packaging': 'Window Box', 'customer_name': 'Example Retailer',
         'planned_inspection_date': '2026-09-20', 'factory_commit_date': '2026-09-21',
         'parse_ok': True, 'parse_warnings': [],
     }
     if customer == '360':
+        record['outer_carton_sticker'] = 'Apply shipping label to each master carton'
+        record['outer_carton_sticker_sources'] = [{
+            'file_name': 'po.pdf', 'relative_path': 'po.pdf', 'page': 2,
+            'raw_text': 'Apply shipping label to each master carton',
+        }]
         monkeypatch.setattr(schedule_parser, 'parse_po_file', lambda *_: copy(record))
     else:
         fn = 'parse_green_toys_image' if customer == 'green-toys' else 'parse_headstart_pdf'
@@ -182,19 +187,108 @@ def test_preview_and_export_customer_fields(monkeypatch, customer):
     assert row['carton_count'] == '417'
     w = openpyxl.load_workbook(BytesIO(output))
     s = w[service.ITEM_SHEET]
-    assert s['M5'].value == '=CEILING(K5/L5,1)'
-    assert s['N5'].value is None
+    item_row = next(c.row for c in s._cells.values() if c.column == 8 and c.value == 'NEW')
+    assert s.cell(item_row, 13).value == f'=CEILING(K{item_row}/L{item_row},1)'
+    assert s.cell(item_row, 14).value is None
     if customer == '360':
-        assert s['D5'].value == 'RL232670318'
-        assert s['E5'].value == s['F5'].value == 'RL-450783-19'
-        assert [s.cell(5, c).value for c in range(30, 34)] == ['001234567890', 'LCL', 'FCL', 'China']
+        assert s.cell(item_row, 3).value == 'RL765432118'
+        assert s.cell(item_row, 4).value == s.cell(item_row, 5).value == 'RL-765431-19'
+        assert s.cell(item_row, 6).value == '7654321'
+        assert row['customer_release_no'] == 'RL765432118'
+        assert row['lineage']['production_no'] == 'po.pdf · Customer Release No.（客户 Release/OH 号）'
+        assert row['lineage']['po_no'] == 'po.pdf · Customer PO Number'
+        assert row['customer_label'] == 'Apply shipping label to each master carton'
+        assert row['lineage']['customer_label'] == 'po.pdf · 第2页 · Apply shipping label to each master carton'
+        assert s.cell(item_row, 17).value == 'Apply shipping label to each master carton'
+        assert [s.cell(item_row, c).value for c in range(30, 34)] == ['001234567890', 'LCL', 'FCL', 'China']
     else:
         assert s['AH5'].value == 1.89
         assert '7.8' in s['AJ5'].value
         assert 'ROUND' not in s['AI5'].value
         assert s['AL5'].value is None
     for name in (service.ORDER_SHEET, service.REVIEW_SHEET):
-        assert [w[name].cell(5, c).value for c in range(3, 8)] == [s.cell(5, c).value for c in range(4, 9)]
+        summary_row = next(c.row for c in w[name]._cells.values() if c.column == 7 and c.value == 'NEW')
+        assert [w[name].cell(summary_row, c).value for c in range(3, 8)] == [s.cell(item_row, c).value for c in range(4, 9)]
+
+
+def _release_record(reference, customer_release, customer_po='7654321'):
+    return {
+        'contract_no': reference, 'customer_release': customer_release,
+        'customer_po': customer_po, 'item_no': 'NEW', 'description': 'New toy',
+        'quantity': 120, 'master_carton_qty': 6, 'customer_name': 'Example Retailer',
+        'planned_inspection_date': '2026-09-20', 'factory_commit_date': '2026-09-21',
+        'parse_ok': True, 'parse_warnings': [],
+    }
+
+
+def test_360_same_customer_po_keeps_distinct_rl_orders_and_preserves_history(monkeypatch):
+    from app.services.huakang_a_order_legacy import schedule_parser
+    records = {
+        'first.pdf': _release_record('RL-765431-19', 'OH-001'),
+        'second.pdf': _release_record('RL-765431-20', 'OH-002'),
+    }
+    monkeypatch.setattr(schedule_parser, 'parse_po_file',
+                        lambda path, *_: copy(records[path.name.split('_', 1)[1]]))
+    original = openpyxl.load_workbook(BytesIO(template('360')))
+    old = original[service.ITEM_SHEET]
+    old_product = old.cell(4, 8).value
+    # Previous generated/manual identifiers remain source evidence, not a
+    # migration target when exporting newly received releases.
+    old_values = ['RL-765431-18', 'OH-OLD', 'RL-765431-18', 'RL-765431-18']
+    for column, value in enumerate(old_values, 3):
+        old.cell(4, column, value)
+    original_content = BytesIO()
+    original.save(original_content)
+    output, _, preview = service.export_unified_customer_schedule(
+        customer_code='360', factory_id='huakang-a', received_date='2026-09-07',
+        po_files=[(name, name.encode()) for name in records],
+        schedule_file_name='new.xlsx', schedule_content=original_content.getvalue(),
+    )
+    assert preview['summary']['blocked'] == 0
+    assert {row['reference_no'] for row in preview['rows']} == {'RL-765431-19', 'RL-765431-20'}
+    workbook = openpyxl.load_workbook(BytesIO(output))
+    item = workbook[service.ITEM_SHEET]
+    old_row = next(c.row for c in item._cells.values() if c.column == 8 and c.value == old_product)
+    assert [item.cell(old_row, c).value for c in range(3, 7)] == old_values
+    for record in records.values():
+        item_row = next(c.row for c in item._cells.values()
+                        if c.column == 5 and c.value == record['contract_no'])
+        assert [item.cell(item_row, c).value for c in range(3, 7)] == [
+            record['customer_release'], record['contract_no'], record['contract_no'], '7654321',
+        ]
+        for name in (service.ORDER_SHEET, service.REVIEW_SHEET):
+            summary = workbook[name]
+            summary_row = next(c.row for c in summary._cells.values()
+                               if c.column == 4 and c.value == record['contract_no'])
+            assert [summary.cell(summary_row, c).value for c in range(3, 6)] == [
+                record['contract_no'], record['contract_no'], '7654321',
+            ]
+
+
+def test_360_different_oh_does_not_create_a_new_identity_for_same_rl(monkeypatch):
+    from app.services.huakang_a_order_legacy import schedule_parser
+    records = {
+        'first.pdf': _release_record('RL-765431-19', 'OH-001'),
+        'second.pdf': _release_record('RL-765431-19', 'OH-002'),
+    }
+    monkeypatch.setattr(schedule_parser, 'parse_po_file',
+                        lambda path, *_: copy(records[path.name.split('_', 1)[1]]))
+    preview = service.create_unified_customer_preview(
+        customer_code='360', factory_id='huakang-a', received_date='2026-09-07',
+        po_files=[(name, name.encode()) for name in records],
+        schedule_file_name='new.xlsx', schedule_content=template('360'),
+    )
+    assert {row['reference_no'] for row in preview['rows']} == {'RL-765431-19'}
+    assert {row['production_no'] for row in preview['rows']} == {'OH-001', 'OH-002'}
+    assert any(issue['code'] == 'duplicate_batch_order_line'
+               for row in preview['rows'] for issue in row['issues'])
+
+
+def test_360_missing_customer_identifiers_are_not_replaced_by_rl():
+    row = mapping.map_record({}, _release_record('RL-765431-19', '', ''), '360')
+    assert row['contract_no'] == row['reference_no'] == 'RL-765431-19'
+    assert row['production_no'] == row['po_no'] == row['customer_release_no'] == ''
+    assert 'customer_label' not in row['lineage']
 
 
 def test_reserved_summary_formulas_take_priority_over_legacy_contract_formulas():

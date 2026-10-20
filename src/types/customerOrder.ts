@@ -32,14 +32,30 @@ export interface CustomerOrderPreviewRow {
   customer_name: string
   country: string
   product_no: string
+  reference_no?: string
+  source_product_no?: string
+  shipping_item?: string
+  source_order_date?: string
+  edu_reservation_row?: string
   product_name_zh: string
   product_name_en: string
+  product_version?: string
+  date_code?: string
+  production_no?: string
+  order_type?: string
+  customer_release_no?: string
+  customer_label?: string
+  price_basis?: string
+  price_details?: Record<string, string>[]
+  price_details_text?: string
   quantity: string
   units_per_carton: string
   carton_count: string
   standard: string
   unit_price_hkd: string
   amount_hkd: string
+  unit_price_usd?: string
+  amount_usd?: string
   packaging: string
   line_q: string
   customer_q: string

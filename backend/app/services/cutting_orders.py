@@ -4,7 +4,7 @@ from datetime import datetime, UTC
 from zoneinfo import ZoneInfo
 from decimal import Decimal, localcontext
 from sqlalchemy import inspect, select, func, or_
-from app.models.cutting_ops import CuttingOrder, CuttingOrderRevision, CuttingCommand
+from app.models.cutting_ops import CuttingOrder, CuttingOrderRevision, CuttingCommand, CuttingMaster, CuttingRevision
 from app.models.customer_order_ledger import OrderLedgerLine, OrderLedgerDispatch
 from app.services import cutting_ops as c
 from app.services.transaction_lock import lock_transaction
@@ -31,9 +31,9 @@ def revision(db, order, version=None):
     return dict(version=r.version, data=r.data, actor_id=r.actor_id, created_at=r.created_at, reason=r.reason)
 
 
-def view(db, dispatch):
-    order = db.get(CuttingOrder, dispatch.line_id)
-    current = revision(db, order) if order else None
+def view(db, dispatch, loaded=None, planning_summary=None):
+    order = db.get(CuttingOrder, dispatch.line_id) if loaded is None else loaded[0]
+    current = (revision(db, order) if order else None) if loaded is None else loaded[1]
     needs_receipt = order is None or order.dispatch_id != dispatch.id
     data = current['data'] if current else {}
     status = workflow_status(data, dispatch.snapshot.get('status'), needs_receipt)
@@ -42,7 +42,7 @@ def view(db, dispatch):
     pending_version = pending_purchase_version(db, order, data) if order else None
     pending = purchase_snapshot(db, order.line_id, pending_version) if pending_version else None
     from app.services.cutting_planning import summary
-    return dict(planning_summary=summary(db, data, needs_receipt), line_id=dispatch.line_id, dispatch_id=dispatch.id, source_version=dispatch.version,
+    return dict(planning_summary=summary(db, data, needs_receipt) if planning_summary is None else planning_summary, line_id=dispatch.line_id, dispatch_id=dispatch.id, source_version=dispatch.version,
         snapshot=dispatch.snapshot, received_at=dispatch.received_at,
         needs_receipt=needs_receipt, current=current, workflow_status=status,
         expected_date_passed=overdue, pending_purchase=pending)
@@ -91,6 +91,29 @@ def pending_purchase_version(db, order, data):
     return r.data['requisition']['version']
 
 
+def planning_rows(db, query):
+    """Request-local ORM prefetch; no cross-request cache of dynamic statuses."""
+    for rows in db.execute(query).yield_per(50).partitions(50):
+        ids = set()
+        for _, _, revision_row in rows:
+            data = revision_row.data if revision_row else {}
+            planning = data.get('planning', {})
+            if not planning:
+                continue
+            ids.update(r['material_id'] for r in (data.get('bom') or {}).get('data', {}).get('requirements', []))
+            for plan in (planning.get('draft'), planning.get('published')):
+                ids.update(t['resource_id'] for t in (plan or {}).get('tasks', []))
+        # Strong references keep identity-map entries alive throughout this batch.
+        references = []
+        ordered = sorted(ids)
+        for offset in range(0, len(ordered), 200):
+            references.extend(db.execute(select(CuttingMaster, CuttingRevision).outerjoin(
+                CuttingRevision, (CuttingRevision.master_id == CuttingMaster.id) &
+                (CuttingRevision.version == CuttingMaster.version)).where(
+                CuttingMaster.factory_id == c.FACTORY, CuttingMaster.id.in_(ordered[offset:offset+200]))).all())
+        yield from rows
+
+
 def list_orders(db, page, q, status=None, plan_status=None):
     newest = select(OrderLedgerDispatch.line_id, func.max(OrderLedgerDispatch.version).label('version')).where(
         OrderLedgerDispatch.factory_id == c.FACTORY, OrderLedgerDispatch.recipient == 'cutting').group_by(
@@ -102,12 +125,27 @@ def list_orders(db, page, q, status=None, plan_status=None):
         query = query.where(OrderLedgerLine.reference_no.contains(q.strip(), autoescape=True) |
                             OrderLedgerLine.product_no.contains(q.strip(), autoescape=True))
     if plan_status:
+        from app.services.cutting_planning import summary
+        # Read the current order and its snapshot together. Unreceived orders
+        # must not issue one db.get miss per row; only selected rows need the
+        # full purchasing detail. Dynamic plan checks still run on every match.
+        joined = query.add_columns(CuttingOrder, CuttingOrderRevision).outerjoin(
+            CuttingOrder, CuttingOrder.line_id == OrderLedgerDispatch.line_id).outerjoin(
+            CuttingOrderRevision, (CuttingOrderRevision.line_id == CuttingOrder.line_id) &
+            (CuttingOrderRevision.version == CuttingOrder.version))
         matches, total = [], 0
-        for dispatch in db.scalars(query.order_by(OrderLedgerDispatch.created_at.desc(), OrderLedgerDispatch.id)).yield_per(50):
-            result = view(db, dispatch)
-            if status and result['workflow_status'] != status: continue
-            if plan_status not in result['planning_summary']['states']: continue
-            if (page-1)*50 <= total < page*50: matches.append(result)
+        for dispatch, order, current_row in planning_rows(db, joined.order_by(
+                OrderLedgerDispatch.created_at.desc(), OrderLedgerDispatch.id)):
+            c.require(order is None or current_row is not None, '裁床订单版本不存在', 404)
+            current = None if current_row is None else dict(version=current_row.version, data=current_row.data,
+                actor_id=current_row.actor_id, created_at=current_row.created_at, reason=current_row.reason)
+            data = current['data'] if current else {}
+            needs_receipt = order is None or order.dispatch_id != dispatch.id
+            if status and workflow_status(data, dispatch.snapshot.get('status'), needs_receipt) != status: continue
+            state = summary(db, data, needs_receipt)
+            if plan_status not in state['states']: continue
+            if (page-1)*50 <= total < page*50:
+                matches.append(view(db, dispatch, (order, current), state))
             total += 1
         return dict(data=matches, total=total, page=page, page_size=50)
     if status:

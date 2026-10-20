@@ -1,6 +1,6 @@
 import { http } from '@/lib/http'
 import { CUTTING_FACTORY } from './navigation'
-import type { ReportDocument } from './reportingApi'
+import type { ReportDocument, HistoryPagination } from './reportingApi'
 
 export interface MonthlyProduction {
   task_id:string; task_name:string; resource_name:string; execution:string; planned:number
@@ -17,6 +17,7 @@ export interface MonthlyMaterial {
   price?:{version:number;actor:string;date:string;reason:string;data:{entry:{unit_cost:string;currency:string;price_reference:string}}}|null
 }
 export interface ClosingPreview {
+  history_pagination?:HistoryPagination & {scope:'all'|'opening'|'period';token:string}
   order_snapshot?:{reference_no?:string;product_no?:string;customer_name?:string;product_name_zh?:string;product_name_en?:string}
   line_id:string;month:string;start:string;end:string;through:string;generated_at:string;state:'preview';partial:boolean
   basis:{order_version:number;plan_version:number|null;usage_revision:number;warehouse_revision:number}
@@ -32,8 +33,8 @@ export interface TraceScope {opening:boolean;period:boolean;earlier_history:bool
 export interface TraceContext {task_id?:string;task_name?:string;resource_name?:string;item_code?:string;item_name?:string;unit?:string;issue_id?:string;request_id?:string;root_batch_id?:string}
 
 export const closingApi = {
-  async read(lineId:string, month:string, withCosts=false):Promise<ClosingPreview> {
+  async read(lineId:string, month:string, withCosts=false, page=1, scope:'all'|'opening'|'period'='all', token?:string):Promise<ClosingPreview> {
     return (await http.get(`/cutting-operations/orders/${encodeURIComponent(lineId)}/closing-preview`,
-      {params:{factory_id:CUTTING_FACTORY,month,with_costs:withCosts}})).data
+      {params:{factory_id:CUTTING_FACTORY,month,with_costs:withCosts,history_page:page,history_scope:scope,expected_history_token:token}})).data
   },
 }

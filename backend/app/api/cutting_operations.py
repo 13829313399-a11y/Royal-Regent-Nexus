@@ -381,11 +381,17 @@ def recover_order_operation(line_id: str, body: s.RecoverOperation, db: Db, user
 
 
 @router.get('/orders/{line_id}/reports')
-def production_reports(line_id: str, db: Db, user: User, factory_id: str = '', as_of: ps.BusinessDate | None = None):
+def production_reports(line_id: str, db: Db, user: User, factory_id: str = '', as_of: ps.BusinessDate | None = None,
+                       history_page: int | None = Query(None, ge=1), expected_version: int | None = Query(None, ge=1),
+                       history_document_id: str = Query('', max_length=64)):
     c.authorize(user, factory_id)
     orders_ready(db)
     c.require(reporting.schema_ready(db.connection()), '每日填数需先完成 0155 显式迁移', 503)
-    return reporting.view(db, line_id, as_of.isoformat() if as_of else None)
+    value = reporting.view(db, line_id, as_of.isoformat() if as_of else None)
+    if history_page is not None:
+        from app.services.cutting_history import production
+        return production(value, history_page, expected_version, history_document_id)
+    return value
 
 
 def report_permission(db, line_id, body, action):
@@ -400,7 +406,8 @@ def report_permission(db, line_id, body, action):
 
 
 @router.post('/orders/{line_id}/reports/{action}')
-def production_command(line_id: str, action: Literal['save', 'post', 'void', 'review', 'discard'], body: dict, db: Db, user: User):
+def production_command(line_id: str, action: Literal['save', 'post', 'void', 'review', 'discard'], body: dict, db: Db, user: User,
+                       paged_history: bool = False):
     c.authorize(user, body.get('factory_id', ''))
     orders_ready(db)
     c.require(reporting.schema_ready(db.connection()), '每日填数需先完成 0155 显式迁移', 503)
@@ -408,7 +415,11 @@ def production_command(line_id: str, action: Literal['save', 'post', 'void', 're
     c.authorize(user, parsed.factory_id, report_permission(db, line_id, parsed, action))
     c.command(db, user, parsed, 'report-'+action+':'+line_id, lambda: reporting.apply(db, user, line_id, parsed, action))
     db.expire_all()
-    return reporting.view(db, line_id)
+    value = reporting.view(db, line_id)
+    if paged_history:
+        from app.services.cutting_history import production
+        return production(value, focus=parsed.document_id)
+    return value
 
 
 @router.post('/orders/{line_id}/report-operations/recover')
@@ -474,11 +485,18 @@ def material_usage(line_id: str, db: Db, user: User, factory_id: str = '', with_
 
 @router.get('/orders/{line_id}/closing-preview')
 def closing_preview(line_id: str, db: Db, user: User, month: str = Query(..., min_length=7, max_length=7),
-                    factory_id: str = '', with_costs: bool = False):
+                    factory_id: str = '', with_costs: bool = False,
+                    history_page: int | None = Query(None, ge=1),
+                    history_scope: Literal['all', 'opening', 'period'] = 'all',
+                    expected_history_token: str | None = Query(None, max_length=64)):
     from app.services import cutting_closing
     c.authorize(user, factory_id, 'cost_read' if with_costs else 'read')
     orders_ready(db)
-    return cutting_closing.read(db, line_id, month, show_costs=with_costs)
+    value = cutting_closing.read(db, line_id, month, show_costs=with_costs)
+    if history_page is not None:
+        from app.services.cutting_history import closing
+        return closing(value, history_page, history_scope, expected_history_token)
+    return value
 
 
 @router.get('/orders/{line_id}/usage-balance')

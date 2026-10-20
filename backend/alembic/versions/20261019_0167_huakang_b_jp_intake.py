@@ -1,6 +1,8 @@
 """Huakang B JP enquiry intake, no formal order or production writes."""
 from alembic import op
 import sqlalchemy as sa
+from pathlib import Path
+import runpy
 
 revision = "20261019_0167"
 down_revision = "20261016_0166"
@@ -10,6 +12,26 @@ NAMES = ("jp_intake_references", "jp_intake_reference_events", "jp_intake_counte
 
 
 def upgrade():
+    # Preserve the published revision/DDL while accepting an existing legacy
+    # JP group only after the same complete contract check as collision repair.
+    # This is needed whichever sibling 0167 branch Alembic executes first.
+    bind = op.get_bind()
+    if not op.get_context().as_sql and any(sa.inspect(bind).has_table(name) for name in NAMES):
+        preflight = runpy.run_path(str(Path(__file__).with_name(
+            '20261017_0167_reconcile_cutting_jp_collision.py')))['preflight']
+        plan = preflight(bind)
+        if not plan['jp']:
+            return
+    if op.get_context().as_sql:
+        _create_schema()
+    else:
+        # SQLite DDL needs an explicit savepoint for a failed CREATE to leave
+        # neither partial evidence tables nor consumed migration identity.
+        with bind.begin_nested():
+            _create_schema()
+
+
+def _create_schema():
     # Freeze the schema here: future ORM changes must not rewrite this migration.
     op.create_table("jp_intake_references",
         sa.Column("factory_id", sa.String(64), primary_key=True),
