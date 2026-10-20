@@ -126,6 +126,74 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).toContain('每个货号先按现有产品标题行写入货号和名称')
   })
 
+  it('shows the distinct 360 numbers and source-backed outer carton sticker requirement', async () => {
+    // All source names, identifiers and commercial details below are synthetic.
+    customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
+      customer_code: '360', factory_id: 'huakang-a', preview_fingerprint: '360-fields',
+      po_file_count: 1, po_file_names: ['RL-765431-17.pdf'], po_file_name: 'RL-765431-17.pdf',
+      schedule_file_name: 'schedule.xlsx', output_file_name: '360.xlsx',
+      input_template: 'HUAKANG_A_360_PO_RELEASE_V1', target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4',
+      summary: { total: 1, valid: 1, warning: 0, blocked: 0 }, warnings: [],
+      rows: [{
+        id: '360-fields', status: 'warning', status_label: '待核对', issues: [{
+          severity: 'warning', code: 'huakang_a_360_shipping_item', field: 'shipping_item',
+          message: '出货货号按旧表格式生成，可补录特殊值', can_skip: true,
+          skip_key: '360-fields|huakang_a_360_shipping_item|shipping_item', skip_label: '',
+          can_edit: true, edit_field: 'shipping_item', edit_label: '出货货号', edit_input_type: 'text',
+        }, {
+          severity: 'warning', code: 'test_product_correction', field: 'product_no',
+          message: '核对完整产品编号', can_skip: true,
+          skip_key: '360-fields|test_product_correction|product_no', skip_label: '',
+          can_edit: true, edit_field: 'product_no', edit_label: '产品编号', edit_input_type: 'text',
+        }],
+        lineage: { customer_label: 'RL-765431-17.pdf · 第3页 · SSCC Barcode labeled on master carton', source_order_type: 'RL-765431-17.pdf · RL Order Type: DI Order' },
+        received_date: '2026-10-19', po_no: '7654321', contract_no: 'RL-765431-17',
+        reference_no: 'RL-765431-17', production_no: 'RL765432117', customer_release_no: 'RL765432117',
+        order_type: '正单', shipping_item: '7654001',
+        customer_label: 'SSCC Barcode labeled on master carton', customer_country: 'Example Retailer',
+        customer_name: 'Example Retailer', country: '', product_no: '76540010069', product_name_zh: '',
+        product_name_en: 'Toy Example Robot', quantity: '480', units_per_carton: '6', carton_count: '80',
+        standard: '', unit_price_hkd: '', amount_hkd: '', packaging: '', line_q: '', customer_q: '',
+        requested_ship_date: '', input_template: 'HUAKANG_A_360_PO_RELEASE_V1',
+        target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4', item_sheet_name: 'ITEM表',
+        source_po_file_name: 'RL-765431-17.pdf',
+      }],
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: { activeSection: 'import', factoryId: 'huakang-a', factoryName: '华康A厂' },
+    })
+    await wrapper.get('[data-testid="customer-choice-360"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    for (const [index, file] of [new File(['po'], 'RL-765431-17.pdf'), new File(['schedule'], 'schedule.xlsx')].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ activeSection: 'preview' })
+    const panel = wrapper.get('[data-testid="360-number-label-preview"]')
+    expect(panel.findAll('tbody td').map((cell) => cell.text())).toEqual([
+      '76540010069', '7654001', '正单RL-765431-17.pdf · RL Order Type: DI Order', 'RL765432117', 'RL-765431-17', 'RL-765431-17', '7654321',
+      expect.stringContaining('SSCC Barcode labeled on master carton'),
+    ])
+    expect(panel.text()).toContain('第3页')
+    expect(panel.text()).toContain('备料单可在导出的排期中选择')
+    expect(panel.text()).toContain('保留完整产品编号')
+    await wrapper.get('input[placeholder="填写产品编号"]').setValue('00123450067')
+    expect(panel.findAll('tbody td')[0]!.text()).toBe('00123450067')
+    expect(panel.findAll('tbody td')[1]!.text()).toContain('生成时重新匹配出货货号')
+    expect(panel.findAll('tbody td')[1]!.text()).not.toContain('7654001')
+    await wrapper.get('input[placeholder="填写产品编号"]').setValue('')
+    await wrapper.get('input[placeholder="填写出货货号"]').setValue('0000123')
+    expect(panel.findAll('tbody td')[0]!.text()).toBe('76540010069')
+    expect(panel.findAll('tbody td')[1]!.text()).toContain('0000123')
+    expect(panel.findAll('tbody td')[1]!.text()).toContain('业务人工补录出货货号')
+    await wrapper.setProps({ factoryId: 'huaxing', factoryName: '华兴厂' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="360-number-label-preview"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('shows three independent customers in Huakang A and routes 360 with the Huakang A factory id', async () => {
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
       preview_schema_version: 'customer-order-huakang-a-mapped-preview-v1',
@@ -659,6 +727,101 @@ describe('customer order center static frontend', () => {
     expect(payload.get('expected_revision')).toBe('9')
     expect(payload.get('reconciliation_reason')).toBe('正式 PO 已核对数量与交期')
     expect(wrapper.text()).toContain('订单已关联并更新原订单')
+    expect(wrapper.emitted('navigate')).not.toContainEqual(['ledger'])
+    expect(wrapper.find('[data-testid="order-preview"]').exists()).toBe(true)
+    expect(wrapper.findAll('button').find(button => button.text().includes('确认并生成客户排期'))!.attributes('disabled')).toBeUndefined()
+  })
+
+  it('shows duplicate warnings and editable per-PO prices without blocking an empty optional value', async () => {
+    // Synthetic mixed-price orders preserve the partial-price correction case.
+    customerOrderApiMock.previewDickieBatch.mockResolvedValueOnce({
+      customer_code: 'dickie', factory_id: 'huaxing', preview_fingerprint: 'dickie-fingerprint',
+      po_file_count: 1, po_file_names: ['Dickie.pdf'], po_file_name: 'Dickie.pdf',
+      schedule_file_name: 'schedule.xlsx', output_file_name: 'dickie-new.xlsx',
+      input_template: 'DICKIE', target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
+      summary: { total: 1, valid: 0, warning: 1, blocked: 0 }, warnings: [],
+      rows: [{
+        id: 'dickie-1', status: 'warning', status_label: '需核对',
+        issues: [
+          { severity: 'warning', code: 'duplicate_order_warning', field: 'contract_no', message: '重复订单，导出红字', can_skip: false, skip_key: '', skip_label: '' },
+          { severity: 'warning', code: 'missing_po_unit_prices', field: 'unit_price_hkd', message: '部分PO单价待核对', can_skip: true, skip_key: 'price-key', skip_label: '', can_edit: true, edit_field: 'po_unit_prices', edit_label: '各PO单价(HKD)', edit_input_type: 'textarea' },
+        ], lineage: {}, received_date: '2026-10-15', po_no: '710000001/10\n710000002/10', contract_no: '',
+        production_no: '720000001/10 240pc', date_code: '00042', price_basis: 'incomplete',
+        price_details_text: 'PO 710000001/10：240 × 12.50 HKD\nPO 710000002/10：720 × 待核对 HKD',
+        customer_country: 'Dickie', customer_name: 'Dickie', product_no: '765432109',
+        product_name_zh: '测试玩具套装', product_name_en: 'Example Toy Set', quantity: '960', units_per_carton: '8',
+        carton_count: '120', standard: '', unit_price_hkd: '', amount_hkd: '', packaging: '', line_q: '', customer_q: '',
+        requested_ship_date: '2030-03-15', input_template: 'DICKIE', target_template: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
+        item_sheet_name: 'ITEM表', source_po_file_name: 'Dickie.pdf',
+      }],
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, { props: { activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴厂' } })
+    await wrapper.get('[data-testid="customer-choice-dickie"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    for (const [index, file] of [new File(['po'], 'Dickie.pdf'), new File(['xlsx'], 'schedule.xlsx')].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find(button => button.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ activeSection: 'preview' })
+    expect(wrapper.get('[data-testid="duplicate-advisory"]').text()).toContain('红色字体')
+    const extras = wrapper.get('[data-testid="customer-order-extra-fields"]')
+    expect(extras.text()).toContain('00042')
+    expect(extras.text()).toContain('12.50')
+    expect(wrapper.get('[data-testid="preview-next-step"] .button').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="open-field-resolution"]').trigger('click')
+    const dialog = wrapper.get('[data-testid="blocker-resolution-dialog"]')
+    expect(dialog.findAll('textarea').length).toBeGreaterThan(0)
+    expect(dialog.text()).toContain('各PO单价(HKD)')
+    const priceInput = dialog.findAll('textarea').find(input => input.attributes('placeholder')?.includes('各PO单价'))!
+    expect(priceInput.exists()).toBe(true)
+    await priceInput.setValue('710000002/10=18.75')
+    expect(extras.text()).toContain('原单识别明细')
+    expect(extras.text()).toContain('保存和导出时校验并计算金额')
+    expect(extras.text()).toContain('710000002/10=18.75')
+  })
+
+  it('recalculates EDU cartons when manually editing packing without changing source facts', async () => {
+    const issue = { severity: 'warning', code: 'edu_case_pack', field: 'units_per_carton', message: '装箱数可补录',
+      can_skip: true, skip_key: 'edu-1|edu_case_pack|units_per_carton', skip_label: '', can_edit: true,
+      edit_field: 'units_per_carton', edit_label: '装箱数', edit_input_type: 'number' }
+    const row = { id: 'edu-1', status: 'warning', status_label: '需复核', received_date: '2026-10-16',
+      po_no: 'P1', contract_no: 'C1', customer_country: 'EDU', customer_name: 'EDU', country: '',
+      product_no: 'F12-AA123-B456', product_name_zh: '', product_name_en: '', quantity: '1000',
+      units_per_carton: '', carton_count: '', standard: '', unit_price_hkd: '', amount_hkd: '', packaging: '',
+      line_q: '', customer_q: '', requested_ship_date: '', input_template: 'EDU', target_template: 'EDU',
+      item_sheet_name: 'ITEM表', source_po_file_name: 'PO.xls', lineage: {}, issues: [issue] }
+    customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
+      customer_code: 'edu', factory_id: 'huaxing', po_file_names: ['PO.xls'], po_file_count: 1,
+      schedule_file_name: 'schedule.xlsx', output_file_name: 'output.xlsx', rows: [row], warnings: [],
+      summary: { total: 1, valid: 0, warning: 1, blocked: 0 },
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: { activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴厂' },
+    })
+    await wrapper.get('[data-testid="customer-choice-edu"]').trigger('click')
+    expect(wrapper.text()).toContain('按货号归组到绿色备料行上方')
+    const inputs = wrapper.findAll('input[type="file"]')
+    for (const [index, name] of ['PO.xls', 'schedule.xlsx'].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [new File(['test'], name)] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find((b) => b.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ activeSection: 'preview' })
+    expect(wrapper.text()).toContain('同货号最后一条绿色行')
+    const pack = wrapper.get('.manual-override-field input')
+    await pack.setValue('16')
+    expect(wrapper.get('.unified-table tbody tr').text()).toContain('62.5')
+    await pack.setValue('32')
+    expect(wrapper.get('.unified-table tbody tr').text()).toContain('31.25')
+    await pack.setValue('0')
+    expect(wrapper.get('.unified-table tbody tr').text()).not.toContain('Infinity')
+    expect(wrapper.get('.unified-table tbody tr').text()).not.toContain('31.25')
+    expect(row.units_per_carton).toBe('')
+    expect(row.carton_count).toBe('')
+    wrapper.unmount()
   })
 
   it('writes a manual value for a missing field and clears the blocker', async () => {
@@ -759,7 +922,7 @@ describe('customer order center static frontend', () => {
     await openResolutionButton!.trigger('click')
     const resolutionDialog = wrapper.get('[data-testid="blocker-resolution-dialog"]')
     expect(resolutionDialog.attributes('role')).toBe('dialog')
-    expect(resolutionDialog.text()).toContain('补录缺失内容或人工确认放行')
+    expect(resolutionDialog.text()).toContain('更正字段与处理提示')
     expect(resolutionDialog.text()).toContain('确认缺失并放行')
     expect(resolutionDialog.get('[data-testid="select-all-skippable-issues"]').text()).toContain('全选可放行项（1）')
     expect(wrapper.text()).toContain('2 份PO')

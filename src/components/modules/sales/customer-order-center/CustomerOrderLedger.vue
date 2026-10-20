@@ -77,6 +77,7 @@ const BUSINESS_FIELD_LABELS: Record<string, string> = {
   line_q: '行要求', customer_q: '客户要求', note: '备注', remark: '备注', manual: '人工说明',
   label: '标签要求', customer_label: '客户标签', carton_mark: '箱唛', fabric_label: '布标', date_code: '日期码', barcode: '条码',
   port: '目的港', printing_requirement: '印刷要求', contact: '联系人', merchandiser: '跟单员',
+  product_version: '版本备注',
   customer_release_no: '客户 Release 单号', factory_commit_date: '工厂承诺交期', planned_inspection_date: '验货日期',
   case_pack: '每箱数量', pack_qty: '每箱数量', master_carton_qty: '外箱数量', customer_po: '客户 P/O',
 }
