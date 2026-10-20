@@ -327,12 +327,21 @@ def _insert_rows(workbook, target, start, amount):
         sheet.cell(new_row, column).value = value
 
 
-def output_slots(workbook, count, *, sheet_counts=None):
-    from app.services.customer_order_unified import SHEETS, _marker_row, _copy_template_row
+def output_slots(workbook, count, *, sheet_counts=None, top_order_area=False):
+    from app.services.customer_order_unified import (
+        SHEETS, _marker_row, _copy_template_row, CustomerOrderUnifiedError,
+    )
     result = {}
     for name, count in (sheet_counts if sheet_counts is not None else dict.fromkeys(SHEETS, count)).items():
         sheet = workbook[name]
-        marker = _marker_row(sheet)
+        is_total = False
+        if top_order_area and count:
+            from app.services.customer_order_top_area import boundary
+            marker, is_total = boundary(sheet)
+            if marker <= 4:
+                raise CustomerOrderUnifiedError(f"{name} 顶部正单区缺少明细模板行，请保留至少一行明细格式后重试")
+        else:
+            marker = _marker_row(sheet)
         # Any literal value is user-owned, including notes without order keys.
         occupied = [r for r in range(4, marker) if any(
             c.value not in (None, "") and c.data_type != "f" for c in sheet[r]
@@ -340,14 +349,19 @@ def output_slots(workbook, count, *, sheet_counts=None):
         start = max(occupied, default=3) + 1
         template_row = next((r for r in range(start - 1, 3, -1) if any(
             c.data_type == "f" for c in sheet[r]
-        )), 4)
+        )), max(4, start - 1) if top_order_area else 4)
         if name != "ITEM表":
             template_row = next((r for r in range(start, marker) if sum(
                 c.data_type == "f" for c in sheet[r]
             ) >= 8), template_row)
         free = marker - start
-        if count > free:
-            _insert_rows(workbook, sheet, marker, count - free)
+        inserted = max(0, count - free)
+        if inserted:
+            if top_order_area:
+                from app.services.customer_order_top_area import insert_rows
+                insert_rows(workbook, sheet, marker, inserted)
+            else:
+                _insert_rows(workbook, sheet, marker, inserted)
         slots = list(range(start, start + count))
         # Existing reserved formulas are authoritative. Only new rows need a copy.
         for row in slots:
@@ -364,6 +378,9 @@ def output_slots(workbook, count, *, sheet_counts=None):
                         if isinstance(source.value, ArrayFormula)
                         else Translator(source.value, origin=source.coordinate).translate_formula(target.coordinate)
                     )
+        if is_total and slots:
+            from app.services.customer_order_top_area import extend_total
+            extend_total(sheet, marker + inserted, slots[-1])
         result[name] = slots
     return result
 

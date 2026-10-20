@@ -411,7 +411,10 @@ def export_rows(workbook, rows):
         buzzbee_column = prepare_review(workbook)
     counts = Counter(row['item_sheet_name'] for row in rows)
     counts.update({'接单表': len(rows), '正单评审表': len(rows)})
-    slots = output_slots(workbook, len(rows), sheet_counts=counts)
+    slots = output_slots(
+        workbook, len(rows), sheet_counts=counts,
+        top_order_area=any(row.get('_huaxing_customer') == 'shushupapa' for row in rows),
+    )
     if any(row.get('_huaxing_customer') == 'dickie' for row in rows):
         _repair_dickie_duplicate_rules(workbook)
     used = Counter()
