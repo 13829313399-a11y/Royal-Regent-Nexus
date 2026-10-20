@@ -405,6 +405,10 @@ def export_rows(workbook, rows):
     for row in rows:
         if row.get('item_sheet_name') not in item_sheets(workbook, row['_huaxing_customer']):
             raise unified.CustomerOrderUnifiedError('尚未确定产品的 ITEM 分类页，请核对货号及分类后重新预览')
+    buzzbee_column = None
+    if any(row.get('_huaxing_customer') == 'buzzbee' for row in rows):
+        from app.services.customer_order_buzzbee_color_box import prepare_review
+        buzzbee_column = prepare_review(workbook)
     counts = Counter(row['item_sheet_name'] for row in rows)
     counts.update({'接单表': len(rows), '正单评审表': len(rows)})
     slots = output_slots(workbook, len(rows), sheet_counts=counts)
@@ -443,6 +447,9 @@ def export_rows(workbook, rows):
                     sheet.cell(number, 15).value = unified._number(row.get('amount_hkd'))
                     sheet.cell(number, 15).number_format = '0.00'
                     unified._fit_generated_text(sheet, number)
+        if row.get('_huaxing_customer') == 'buzzbee':
+            from app.services.customer_order_buzzbee_color_box import write_new_row
+            write_new_row(workbook, buzzbee_column, slots['正单评审表'][index], workbook[name], item_row)
         if row.get('_huaxing_customer') == 'shushupapa':
             _repair_shushupapa_summary_amounts(
                 workbook, slots['接单表'][index], slots['正单评审表'][index], row,
