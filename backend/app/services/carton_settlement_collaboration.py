@@ -119,6 +119,9 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
         evidence.append(item)
         if shipment.receipt_id:
             by_receipt.setdefault(shipment.receipt_id, []).append(item)
+    from app.services.carton_special_requests import settlement_evidence
+    special_by_line, special_evidence = settlement_evidence(db, factory, supplier, period)
+    evidence.extend(special_evidence)
     enriched, suggested, matched = [], [], set()
     for source in rows:
         row = dict(source)
@@ -154,6 +157,12 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
                     "difference_reason": accepted_line.get("difference_reason", ""),
                     "quantity_difference": str(Decimal(line["quantity"]) - Decimal(row["quantity"])),
                     "price_difference": str(Decimal(price) - Decimal(row["unit_price"])) if price is not None and row["unit_price"] is not None else None}
+        if vendor is None and receipt_line and receipt_line.id in special_by_line:
+            vendor = special_by_line[receipt_line.id]
+            matched.add((vendor["shipment_id"], receipt_line.receipt_id + ":" + vendor["line_id"], vendor["line_id"]))
+        if receipt_line:
+            from app.services.carton_price_review import apply_vendor
+            vendor = apply_vendor(db, factory, receipt_line.id, vendor, receipt_line.effective_quantity)
         row["supplier_delivery"] = vendor
         enriched.append(row)
         suggested.append({"id": "AUTO-" + row["source_key"], "source_key": row["source_key"], "document_no": row["document_no"],

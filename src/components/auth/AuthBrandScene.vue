@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { authApi } from '@/api/auth'
-import logo from '../../../public/brand/huadeng_group_dynamic_logo_topbar.svg?raw'
 const organizations = ref<{id:string;name:string}[]>([])
 const points = [[125,196],[568,134],[657,274],[604,407],[152,401],[80,311],[391,459]]
 const tracks = [
@@ -17,7 +16,7 @@ onBeforeUnmount(() => { disposed = true })
 </script>
 <template>
 <aside class="ng-brand" aria-label="华登集团数字化协作平台">
-<header class="ng-brand-header"><div class="ng-logo" v-html="logo" /><div class="ng-brand-name"><div class="ng-brand-word">Royal Regent Nexus</div><div class="ng-brand-sub">华登集团 · 数字化协作平台</div></div></header>
+<header class="ng-brand-header"><div class="ng-logo"><img src="/brand/huadeng_group_dynamic_logo_topbar.svg" alt="华登集团" /></div><div class="ng-brand-name"><div class="ng-brand-word">Royal Regent Nexus</div><div class="ng-brand-sub">华登集团 · 数字化协作平台</div></div></header>
 <section class="ng-heading"><h2>让每一次协作，<span>从容启程。</span></h2><p>连接集团各厂区与部门，<br>让日常工作在同一平台顺畅开展。</p><span class="ng-rule" aria-hidden="true" /></section>
 <div class="ng-art" aria-hidden="true">
    <svg viewBox="0 0 780 500" xmlns="http://www.w3.org/2000/svg">

@@ -15,6 +15,13 @@ const protectedRouteMeta = {
 }
 
 describe('global authenticated page access policy', () => {
+  it('requires the selected factory for routes opting into factory context', () => {
+    const can = vi.fn((_codes: string[], factory?: string) => factory === 'huaxing')
+    const meta = { permissionFactoryContext: true }
+    expect(hasRoutePermissions(meta, ['request:submit'], can, 'huaxing')).toBe(true)
+    expect(hasRoutePermissions(meta, ['request:submit'], can, 'huadeng')).toBe(false)
+    expect(hasRoutePermissions(meta, ['request:submit'], can)).toBe(false)
+  })
   it('checks each permitted department within the same factory and does not change the single-department default', () => {
     const can = vi.fn((_permissions: string[], factory?: string, department?: string) => factory === 'huaxing' && department === 'pmc-warehouse')
     const meta = { permissionFactoryId: 'huaxing', permissionDepartments: ['sales-business', 'pmc-warehouse'] }

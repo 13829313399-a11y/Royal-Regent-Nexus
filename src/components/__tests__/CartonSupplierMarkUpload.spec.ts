@@ -13,8 +13,19 @@ async function choose(wrapper: ReturnType<typeof mount>, files: File[]) {
   const input = wrapper.get('[aria-label="供应商批量选择箱唛原文件"]')
   Object.defineProperty(input.element, 'files', { configurable: true, value: files }); await input.trigger('change')
 }
-function submit(wrapper: ReturnType<typeof mount>) { return wrapper.findAll('button').find(button => button.text().startsWith('上传并自动关联'))!.trigger('click') }
+function submit(wrapper: ReturnType<typeof mount>) { return wrapper.findAll('button').find(button => button.text().startsWith('上传共享资料'))!.trigger('click') }
 describe('supplier batch mark upload', () => {
+  it('uploads shared unbound files even before any order exists', async () => {
+    api.markUploadOrders.mockResolvedValue([])
+    api.uploadMarkAssets.mockResolvedValue([{ file_name: '共享.pdf', status: 'created', asset: { orders: [] }, message: '' }])
+    const wrapper = mount(CartonSupplierMarkUpload, { props: { factoryIds: ['huaxing'] } }); await flushPromises()
+    const file = new File(['pdf'], '共享.pdf')
+    await choose(wrapper, [file]); await submit(wrapper); await flushPromises()
+    expect(api.uploadMarkAssets).toHaveBeenCalledWith('huaxing', [file], undefined, expect.any(AbortSignal), true)
+    expect(wrapper.text()).toContain('已上传共享资料')
+    expect(wrapper.text()).not.toContain('已绑定：')
+    wrapper.unmount()
+  })
   it('accepts Excel, PDF and images together, keeping only failed files for retry', async () => {
     const wrapper = mount(CartonSupplierMarkUpload, { props: { factoryIds: ['huakang-b'] } }); await flushPromises()
     expect(wrapper.get('[aria-label="供应商箱唛上传订单"]').text()).toContain('采购-B-P01')

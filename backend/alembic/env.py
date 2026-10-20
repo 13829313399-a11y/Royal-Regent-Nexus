@@ -46,6 +46,8 @@ from app.models import (
     carton_customer_assignment,  # noqa: F401
     carton_supplier_settlement,  # noqa: F401
     carton_supplier_portal,  # noqa: F401
+    carton_special_requests,  # noqa: F401
+    carton_price_review,  # noqa: F401
     customer_order,  # noqa: F401
     customer_order_ledger,  # noqa: F401
     huakang_b_jp,  # noqa: F401

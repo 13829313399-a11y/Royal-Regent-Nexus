@@ -153,6 +153,17 @@ describe('库存盘点工作台', () => {
     expect(wrapper.text()).toContain('没有库存操作权限')
     expect(wrapper.findAll('button').some(item => item.text() === '确认差额入账')).toBe(false)
   })
+  it('uses the host header query while preserving hidden selections and emitting clear', async () => {
+    const wrapper = mount(CartonStocktakeWorkspace, { props: { factoryId: 'huaxing', search: '' } })
+    await flushPromises()
+    expect(wrapper.find('[aria-label="盘点库存搜索"]').exists()).toBe(false)
+    await wrapper.get('[aria-label="全选盘点筛选结果"]').setValue(true)
+    await wrapper.setProps({ search: 'missing' })
+    expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('其中 1 条不在当前筛选内')
+    await button(wrapper, '清空筛选').trigger('click')
+    expect(wrapper.emitted('update:search')).toEqual([['']])
+    wrapper.unmount()
+  })
   it('shows selections hidden by search and clears failed status results', async () => {
     const wrapper = mount(CartonStocktakeWorkspace, { props: { factoryId: 'huaxing' } })
     await flushPromises()

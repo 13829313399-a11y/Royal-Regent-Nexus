@@ -4,7 +4,7 @@ import { reactive } from 'vue'
 import CartonMarkAssetLibrary from '../CartonMarkAssetLibrary.vue'
 import type { CartonMarkAsset, CartonMarkAssetUploadResult } from '@/api/cartonMark'
 
-const api = vi.hoisted(() => ({ listAssets: vi.fn(), uploadAssets: vi.fn(), bindAsset: vi.fn(), downloadAsset: vi.fn(), archiveAsset: vi.fn(), bindingOrders: vi.fn(), savePhotoGroup: vi.fn(), ungroupPhotos: vi.fn(), classifyAsset: vi.fn(), assetClassificationHistory: vi.fn() }))
+const api = vi.hoisted(() => ({ listAssets: vi.fn(), uploadAssets: vi.fn(), bindAsset: vi.fn(), downloadAsset: vi.fn(), archiveAsset: vi.fn(), bindingOrders: vi.fn(), savePhotoGroup: vi.fn(), ungroupPhotos: vi.fn(), classifyAsset: vi.fn(), assetClassificationHistory: vi.fn(), shareRecipients: vi.fn(), setAssetSharing: vi.fn(), bindingTargets: vi.fn(), proposeAssetBindings: vi.fn(), confirmAssetBinding: vi.fn(), bindSpecialAsset: vi.fn() }))
 const supplierApi = vi.hoisted(() => ({ markAssets: vi.fn(), previewMarkAssetUrl: vi.fn(), downloadMarkAsset: vi.fn() }))
 vi.mock('@/api/cartonMark', () => ({ cartonMarkApi: api }))
 vi.mock('@/api/cartonSupplierPortal', () => ({ cartonSupplierPortalApi: supplierApi }))
@@ -21,12 +21,79 @@ beforeEach(() => {
   vi.clearAllMocks()
   authState.currentUser = { id: 'warehouse-user', name: '仓管' }
   authState.authorizationVersion = 1
+  api.shareRecipients.mockResolvedValue([{ id: 'supplier-a', name: '东康' }])
+  api.bindingTargets.mockResolvedValue([])
   api.listAssets.mockResolvedValue([asset])
   api.bindingOrders.mockResolvedValue(asset.orders)
   api.assetClassificationHistory.mockResolvedValue([])
 })
 
 describe('carton-mark source repository', () => {
+  it('requires an explicit shared supplier when there are several and supports internal-only upload', async () => {
+    api.shareRecipients.mockResolvedValue([{ id: 'a', name: '供应商甲' }, { id: 'b', name: '供应商乙' }])
+    api.uploadAssets.mockResolvedValue([])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', uploadOnly: true } }); await flushPromises()
+    const file = new File(['pdf'], '未绑定.pdf'), input = wrapper.get('input[type=file]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] }); await input.trigger('change')
+    const submit = () => wrapper.findAll('button').find(row => row.text().startsWith('上传入库'))!.trigger('click')
+    await submit(); await flushPromises()
+    expect(api.uploadAssets).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('请选择共享给哪家供应商')
+    await wrapper.get('[aria-label="上传资料共享范围"]').setValue('INTERNAL')
+    await submit(); await flushPromises()
+    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', [file], expect.any(AbortSignal), [{ status: 'DRAFT', note: '', sharing_mode: 'INTERNAL', supplier_id: undefined }])
+    wrapper.unmount()
+  })
+
+  it('shows and downloads supplier shared files without pretending they have an order', async () => {
+    supplierApi.markAssets.mockResolvedValue([{ ...asset, orders: [], binding_status: 'UNBOUND', sharing_mode: 'SUPPLIER', shared_supplier_name: '东康' }])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true, readOnly: true } }); await flushPromises()
+    const row = wrapper.get(`[data-asset-id="${asset.id}"]`)
+    expect(row.text()).toContain('未关联订单')
+    expect(row.text()).toContain('共享给 东康')
+    expect(row.find('[aria-label^="下载"]').exists()).toBe(true)
+    expect(row.text()).not.toContain('已关联采购订单')
+    wrapper.unmount()
+  })
+
+  it('submits supplier order binding as a pending proposal and never confirms it', async () => {
+    supplierApi.markAssets.mockResolvedValue([{ ...asset, orders: [], binding_status: 'UNBOUND' }])
+    api.bindingTargets.mockResolvedValue([{ order_id: 'order-b', order_kind: 'REGULAR', order_no: 'CTR-b', contract_no: 'B', customer_name: 'ZURU', item_no: 'I', revision: 2, lines: [] }])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', supplier: true, readOnly: true } }); await flushPromises()
+    await wrapper.findAll('button').find(row => row.text() === '绑定到订单')!.trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="箱唛绑定订单"]').setValue('order-b')
+    await wrapper.findAll('button').find(row => row.text() === '提交绑定，待我方确认')!.trigger('click'); await flushPromises()
+    expect(api.proposeAssetBindings).toHaveBeenCalledWith('huaxing', expect.objectContaining({ id: asset.id, revision: 1 }), ['order-b'], expect.any(AbortSignal))
+    expect(api.confirmAssetBinding).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('binds a sample to the selected paper and discards a late target list after factory change', async () => {
+    const target = { order_id: 'sample-a', order_kind: 'SAMPLE', order_no: 'SP-a', contract_no: '', customer_name: '', item_no: 'I', revision: 3, lines: [{ id: 'line-a', label: '外箱 · I' }] }
+    api.bindingTargets.mockResolvedValue([target])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await wrapper.findAll('button').find(row => row.text() === '绑定到订单')!.trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="箱唛绑定订单"]').setValue('sample-a')
+    await wrapper.findAll('button').find(row => row.text() === '绑定此订单')!.trigger('click'); await flushPromises()
+    expect(api.bindSpecialAsset).toHaveBeenCalledWith('huaxing', target, 'line-a', asset, expect.any(String), false, expect.any(AbortSignal))
+    let finish!: (rows: unknown[]) => void
+    api.bindingTargets.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    await wrapper.findAll('button').find(row => row.text() === '绑定到订单')!.trigger('click')
+    await wrapper.setProps({ factoryId: 'huakang-a' }); await flushPromises()
+    finish([target]); await flushPromises()
+    expect(wrapper.find('[aria-label="选择使用箱唛的订单"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps sample links distinct from ordinary QC order identities and filters them', async () => {
+    api.listAssets.mockResolvedValue([{ ...asset, orders: [], binding_status: 'UNBOUND', special_orders: [{ order_id: 's', order_no: 'SP-s', order_kind: 'SAMPLE', line_id: 'line', attachment_id: 'file', confirmed: false }] }])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await wrapper.get('[aria-label="箱唛关联订单类型"]').setValue('SAMPLE')
+    expect(wrapper.text()).toContain('样板 · SP-s · 本单待确认使用')
+    await wrapper.get('[aria-label="箱唛关联订单类型"]').setValue('REGULAR')
+    expect(wrapper.find(`[data-asset-id="${asset.id}"]`).exists()).toBe(false)
+    wrapper.unmount()
+  })
   it('refreshes an order-specific supplier list when its issued version changes and discards the old response', async () => {
     let finishOld!: (assets: unknown[]) => void
     supplierApi.markAssets.mockReturnValueOnce(new Promise(resolve => { finishOld = resolve }))
@@ -55,7 +122,7 @@ describe('carton-mark source repository', () => {
     await wrapper.get('[aria-label="已确认.pdf 资料备注 1"]').setValue('客户邮件确认')
     await wrapper.findAll('button').find(button => button.text().startsWith('上传入库'))!.trigger('click'); await flushPromises()
     expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', files, expect.any(AbortSignal), [
-      { status: 'READY', note: '客户邮件确认' }, { status: 'DRAFT', note: '' },
+      { status: 'READY', note: '客户邮件确认', sharing_mode: 'SUPPLIER', supplier_id: 'supplier-a' }, { status: 'DRAFT', note: '', sharing_mode: 'SUPPLIER', supplier_id: 'supplier-a' },
     ])
     expect(wrapper.find('[aria-label="已确认.pdf 上传分类 1"]').exists()).toBe(false)
     expect(wrapper.get<HTMLSelectElement>('[aria-label="制作中.pdf 上传分类 1"]').element.value).toBe('DRAFT')
@@ -297,7 +364,7 @@ describe('carton-mark source repository', () => {
     expect(supplier.get('[aria-label="箱唛照片组预览"]').findAll('img')).toHaveLength(2)
     expect(supplier.text()).not.toContain('整组关联')
     expect(supplier.text()).not.toContain('解除分组')
-    expect(supplier.find('input[type="checkbox"]').exists()).toBe(false)
+    expect(supplier.find('[aria-label^="选择照片"]').exists()).toBe(false)
     supplier.unmount()
   })
 
@@ -334,7 +401,7 @@ describe('carton-mark source repository', () => {
     api.uploadAssets.mockResolvedValue([{ file_name: file.name, status: 'created', message: '', asset: photo }])
     await wrapper.findAll('button').find(b => b.text().includes('上传入库'))!.trigger('click')
     await flushPromises()
-    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', [file], expect.any(AbortSignal), [{ status: 'DRAFT', note: '' }])
+    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', [file], expect.any(AbortSignal), [{ status: 'DRAFT', note: '', sharing_mode: 'SUPPLIER', supplier_id: 'supplier-a' }])
     expect(wrapper.text()).toContain('已入库')
     wrapper.unmount()
   })
@@ -362,7 +429,7 @@ describe('carton-mark source repository', () => {
     expect(wrapper.findAll('li.mark-library-columns')).toHaveLength(2)
     const huakang = wrapper.findAll('li.mark-library-columns').find(row => row.text().includes('华康A'))!
     expect(huakang.get('a').attributes('href')).toBe('/api/huakang-a/asset-huakang-a.pdf')
-    await huakang.get('button').trigger('click'); await flushPromises()
+    await huakang.get('[aria-label^="下载"]').trigger('click'); await flushPromises()
     expect(supplierApi.downloadMarkAsset).toHaveBeenCalledWith('asset-huakang-a', 'huakang-a', expect.any(AbortSignal))
     expect(wrapper.find('input[type=file]').exists()).toBe(false)
     wrapper.unmount()
@@ -438,7 +505,7 @@ describe('carton-mark source repository', () => {
       { file_name: files[1]!.name, status: 'failed', message: 'PDF 损坏', asset: null }])
     await wrapper.findAll('button').find(b => b.text().includes('上传入库'))!.trigger('click')
     await flushPromises()
-    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', files, expect.any(AbortSignal), files.map(() => ({ status: 'DRAFT', note: '' })))
+    expect(api.uploadAssets).toHaveBeenCalledWith('huaxing', files, expect.any(AbortSignal), files.map(() => ({ status: 'DRAFT', note: '', sharing_mode: 'SUPPLIER', supplier_id: 'supplier-a' })))
     expect(wrapper.text()).toContain('PDF 损坏')
     expect(wrapper.text()).toContain('上传入库（1）')
     await wrapper.findAll('button').find(b => b.text() === '用于PDF核对')!.trigger('click')

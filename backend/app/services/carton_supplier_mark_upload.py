@@ -64,7 +64,7 @@ def _visible_duplicate(db, user, factory, existing, order_id):
     raise HTTPException(409, "相同文件已有其他关联或已归档，请联系仓库核实")
 
 
-def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id=""):
+def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id="", *, shared_unbound=False):
     supplier = portal.supplier_access(db, user, factory, "carton_supplier:edit")
     current_orders = upload_orders(db, user, factory)
     if current_orders != original_orders:
@@ -72,6 +72,8 @@ def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id
     selected = next((order for order in current_orders if order["id"] == order_id), None)
     if order_id and (selected is None or selected["issue_id"] != issue_id):
         raise HTTPException(409, "所选采购订单已变更，请刷新后重新选择")
+    if shared_unbound:
+        return save_shared_batch(db, user, factory, supplier, parsed, selected)
     outcomes = []
     for item in parsed:
         outcome = dict(file_name=item["file_name"], status="failed", message=item.get("error", ""), asset=None)
@@ -116,6 +118,54 @@ def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id
                     outcome.update(_visible_duplicate(db, user, factory, existing, order["id"]))
         except HTTPException as exc:
             outcome.update(status="failed", message=str(exc.detail), asset=None)
+        outcomes.append(outcome)
+    db.commit()
+    return outcomes
+
+
+def save_shared_batch(db, user, factory, supplier, parsed, selected):
+    from app.services import carton_mark_sharing as sharing, carton_mark_asset_workflow as lifecycle
+    from app.schemas.carton_mark import CartonMarkAssetUploadOptions
+    outcomes = []
+    for item in parsed:
+        outcome = dict(file_name=item['file_name'], status='failed', message=item.get('error', ''), asset=None)
+        if 'error' in item:
+            outcomes.append(outcome); continue
+        recognition, content = item['recognition'], item['content']
+        try:
+            if selected: _target(recognition, [selected], selected)
+            # Never reuse or expose an inaccessible equal-hash original. Each new
+            # shared upload is an independent file, as warehouse uploads are.
+            candidates = {assets.identity(x) for x in recognition['candidates']}
+            known = [o for o in assets.available_orders(db, factory) if assets.identity(o.contract_no) in candidates]
+            if any(o.supplier_id != supplier.id for o in known):
+                raise HTTPException(422, '文件合同包含其他供应商订单，请核实文件')
+            timestamp = _now_text()
+            asset = CartonMarkAsset(id=f'CMA-{uuid4().hex}', factory_id=factory,
+                file_name=recognition['file_name'], kind=recognition['kind'], content=content,
+                content_type=assets.IMAGE_CONTENT_TYPES[Path(recognition['file_name']).suffix.lower()]
+                    if recognition['kind'] == 'image' else 'application/pdf' if recognition['kind'] == 'pdf'
+                    else _excel_content_type(recognition['file_name']),
+                sha256=hashlib.sha256(content).hexdigest(), size_bytes=len(content), contract_number='',
+                recognition_source='manual_orders', candidates_json=json.dumps(recognition['candidates']),
+                warning=recognition['warning'], created_by=user.id, created_by_name=user.display_name,
+                created_at=timestamp, updated_at=timestamp, revision=1, is_archived=False)
+            with db.begin_nested():
+                db.add(asset); db.flush()
+                lifecycle.initialize(db, user, asset, CartonMarkAssetUploadOptions(status='PENDING'))
+                sharing.record(db, user, asset, 'SUPPLIER', supplier.id)
+                assets.audit(db, user, asset, 'CARTON_MARK_ASSET_CREATED', dict(sha256=asset.sha256,
+                    supplier_context=dict(supplier_id=supplier.id, source='supplier_shared_upload')))
+                if selected:
+                    assets.audit(db, user, asset, sharing.PROPOSED, dict(id='CMB-' + uuid4().hex,
+                        order_id=selected['id'], order_no='', contract_no=selected['contract_no'],
+                        item_no=selected['item_no'], issue_id=selected['issue_id'], supplier_id=supplier.id,
+                        sha256=asset.sha256, requested_at=timestamp))
+            db.flush()
+            output = next(x for x in portal.supplier_mark_assets(db, user, factory) if x['id'] == asset.id)
+            outcome.update(status='created', message='已共享；关联订单须由仓库确认' if selected else '已共享，可稍后绑定订单', asset=output)
+        except HTTPException as exc:
+            outcome.update(message=str(exc.detail))
         outcomes.append(outcome)
     db.commit()
     return outcomes

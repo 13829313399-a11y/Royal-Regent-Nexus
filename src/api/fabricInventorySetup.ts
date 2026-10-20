@@ -2,6 +2,7 @@ import { http } from '@/lib/http'
 import type { WarehouseBatch, WarehouseOperationsWorkspace } from './warehouseOperations'
 
 export interface OpeningRow {
+  style_no?: string; customer_name?: string; material_detail?: string
   row_number: number; source_line: string; item_code: string; item_name: string; material_category: string
   unit: string; location: string; warehouse: string; location_code: string; lot: string; roll_no: string
   quantity: string; counterparty: string; reason: string; action: 'NEW' | 'SKIP' | 'ERROR'; errors: string[]

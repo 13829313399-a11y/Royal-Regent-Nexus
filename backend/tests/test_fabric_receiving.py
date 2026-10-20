@@ -21,7 +21,7 @@ from warehouse_location_fixtures import make_client, seed_fabric_locations
 def request(line, **changes):
     body = {"factory_id": "huakang-c", "request_id": str(uuid4()), "expected_source_revision": line["revision"],
         "expected_receipt_count": line.get("receipt_count", 0), "receipt_date": "2026-09-16",
-        "delivery_reference": "DN-001", "material_category": "FABRIC",
+        "delivery_reference": "DN-001", "material_category": "FABRIC", "delivery_quantity": "1000",
         "batches": [{"quantity": "20.1", "location": "A01", "dye_lot": "00001", "roll_no": "00002"},
                     {"quantity": "29.9", "location": "A02", "dye_lot": "00001", "roll_no": "00003"}],
         "confirmed": True, **changes}
