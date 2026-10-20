@@ -1325,6 +1325,8 @@ def create_unified_customer_preview(
             '只校验公共区域，客户专属字段按已确认的实际表头映射；人工生产和出货内容保留。',
             '历史查重兼容未填SO的客户PO编号，并读取取消单和已走货区中的历史订单。',
         ]
+        if factory_id == 'huaxing' and customer_code == 'shushupapa':
+            warnings[0] = '新单只追加在各表顶部正单区，空间不足时在首个合计或分区标题前自动增行；各表关联实际 ITEM 行。'
         if customer_code == 'edu':
             warnings[0] = 'EDU 新单按货号归组到绿色备料行上方，摘要关联实际 ITEM 行，同时更新 PO订单。'
             warnings[2] = 'EDU 按客户完整合同/PO＋产品查重，EDUHX 仅为内部编号；不同客户订单独立续编号，源排期不会被覆盖。'

@@ -1,4 +1,4 @@
-"""Synthetic export cases for Shushupapa detail rows after legacy subtotals."""
+"""Synthetic export cases for Shushupapa details before legacy subtotals."""
 from io import BytesIO
 
 import openpyxl
@@ -26,8 +26,8 @@ def workbook():
         sheet['J4'], sheet['N4'], sheet['P4'] = 10, 15, 2
         sheet['O4'], sheet['Q4'] = '=J4*N4', '=J4*P4'
         sheet.cell(total, 1, '合计')
-        # This is deliberately the last row containing formulas. The legacy
-        # slot copier uses it as the template for newly appended details.
+        # A subtotal must remain below the new orders and cannot act as the
+        # detail-row source for their prices or amounts.
         for column in ('N', 'O', 'P', 'Q'):
             sheet[f'{column}{total}'] = f'=SUM({column}4:{column}{total - 1})'
         sheet.cell(cancel, 1, '取消单')
@@ -82,12 +82,14 @@ def assert_detail_prices(book, row):
     return a, b
 
 
-def test_new_detail_replaces_inherited_totals_and_uses_exact_paired_summary_row():
+def test_new_detail_precedes_totals_and_uses_exact_paired_summary_row():
     book = workbook()
     row = order()
     mapping.export_rows(book, [row])
     a, b = assert_detail_prices(book, row)
-    assert (a, b) == (6, 7)
+    assert (a, b) == (5, 5)
+    assert book['接单表']['A6'].value == '合计'
+    assert book['正单评审表']['A6'].value == '合计'
     detail = find_row(book['ITEM表'], row['reference_no'])
     for sheet, number in ((book['接单表'], a), (book['正单评审表'], b)):
         assert sheet[f'J{number}'].value == f'=IF(LEN(\'ITEM表\'!K{detail})=0,"",\'ITEM表\'!K{detail})'
@@ -121,7 +123,7 @@ def test_six_rows_survive_save_reload_without_cross_order_totals_or_price_refere
 def test_history_totals_cancelled_content_and_other_sheet_are_retained():
     book = workbook()
     protected = {}
-    for name, end in (('ITEM表', 4), ('接单表', 5), ('正单评审表', 6)):
+    for name, end in (('ITEM表', 4), ('接单表', 4), ('正单评审表', 4)):
         sheet = book[name]
         protected[name] = {cell.coordinate: (cell.value, tuple(cell._style or (0,) * 9))
                            for row in sheet.iter_rows(max_row=end) for cell in row}
@@ -131,6 +133,12 @@ def test_history_totals_cancelled_content_and_other_sheet_are_retained():
             assert book[name][coordinate].value == value
             assert tuple(book[name][coordinate]._style or (0,) * 9) == style
         assert sum(cell.value == 'SYNTH-CANCELLED' for row in book[name] for cell in row) == 1
+    for name in ('接单表', '正单评审表'):
+        sheet = book[name]
+        total = next(c.row for row in sheet for c in row if c.value == '合计')
+        assert total == 11
+        for column in ('N', 'O', 'P', 'Q'):
+            assert sheet[f'{column}{total}'].value == f'=SUM({column}4:{column}10)'
     assert book['用户资料']['A1'].value == '保留此页'
     assert book['用户资料']['B1'].value == '=2+3'
 
