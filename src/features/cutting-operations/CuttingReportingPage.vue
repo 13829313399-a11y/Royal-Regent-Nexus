@@ -15,6 +15,8 @@ import CuttingLocationNotice from './CuttingLocationNotice.vue'
 import CuttingHistoryPager from './CuttingHistoryPager.vue'
 import CuttingTaskBoard from './CuttingTaskBoard.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
+// Editable search text is applied only by an explicit query.
+const appliedQuery=ref('')
 const reportingView=ref('tasks')
 const reportingTabs=[{id:'tasks',label:'每日任务'},{id:'records',label:'日报记录'},{id:'parts',label:'裁片配套'},{id:'external',label:'外发收回与验收'},{id:'handover',label:'交接与抽查'}]
 function changeReportingView(value:string){
@@ -49,8 +51,9 @@ function beforeUnload(e:BeforeUnloadEvent){if(dirty.value||pending.value||saving
 onMounted(()=>{window.addEventListener('beforeunload',beforeUnload);void load(1,false,true)})
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',beforeUnload)})
 function fail(e:unknown){error.value=errorMessage(e);if((e as {response?:{status?:number}}).response?.status===401)needsLogin.value=true}
-async function load(nextPage=1,navigation=false,followLocation=false){
+async function load(nextPage=1,navigation=false,followLocation=false,apply=false){
   if(!navigation&&!discard())return
+  if(apply){appliedQuery.value=query.value;nextPage=1}
   const request=++generation;loading.value=true;error.value='';selected.value=null;result.value=null;entry.value=null;rows.value=[]
   try{
     const rights=await cuttingApi.access();if(!alive||request!==generation)return
@@ -62,7 +65,7 @@ async function load(nextPage=1,navigation=false,followLocation=false){
       rows.value=[order];total.value=1;page.value=1;asOf.value=target.day??'';reportingView.value=target.reportingView??'records'
       await select(order);return
     }
-    const response=await ordersApi.list(nextPage,query.value);if(!alive||request!==generation)return
+    const response=await ordersApi.list(nextPage,appliedQuery.value);if(!alive||request!==generation)return
     rows.value=response.data.filter(r=>r.current);total.value=response.total;page.value=nextPage
   }catch(e){if(alive&&request===generation){access.value=null;fail(e)}}
   finally{if(alive&&request===generation)loading.value=false}
@@ -170,10 +173,10 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
       <CuttingTaskBoard v-show="reportingView==='tasks'" reporting />
       <div v-show="reportingView!=='tasks'||!!entry||!!pending" class="cutting-overview">
       <p class="cutting-notice">采购交期和预排不代表实际完成。每个任务固定一种报数方式；外发收回由文员登记，验收由主管确认，验收合格后才计入完成数。“实际交数”按已交接套数统计。</p>
-      <SectionPanel title="已签收订单" class="cutting-content-panel"><form class="cutting-master-toolbar" @submit.prevent="load()"><label>订单／货号<input v-model="query" maxlength="80" /></label><Button :disabled="saving||!!pending||loading">查询订单</Button></form>
+      <SectionPanel title="已签收订单" class="cutting-content-panel"><form class="cutting-master-toolbar" @submit.prevent="load(1,false,false,true)"><label>订单／货号<input v-model="query" maxlength="80" /></label><Button :disabled="saving||!!pending||loading">查询订单</Button></form>
       <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><caption class="sr-only">已签收订单（{{ total }} 条来源订单）</caption><thead><tr><th>客户</th><th>生产／订单号</th><th>货号</th><th>货名</th><th>款式分类</th><th>状态</th><th>操作</th></tr></thead><tbody>
         <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td class="cutting-order-product-name">{{ orderProductName(row.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td><td><StatusPill :label="row.needs_receipt?'来源待重签收':row.snapshot.status==='cancelled'?'已取消':'已签收'" compact /></td><td><Button variant="outline" :disabled="saving||!!pending" @click="select(row)">查看填数</Button></td></tr>
-      </tbody></table></div><p v-if="!rows.length&&!loading" class="cutting-no-records">当前页暂无已签收订单，请先在排期页接单。</p>
+      </tbody></table></div><p v-if="!rows.length&&!loading&&!error" class="cutting-no-records">{{appliedQuery?'当前筛选范围本页暂无已签收订单，可清除筛选或翻页查看。':total?'本页来源订单尚未签收，可翻页查看或到排期页核对接单。':'暂无已下发订单，请先由业务下发至裁床部。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(1,false,false,true)">清除筛选</Button></p>
       <nav class="cutting-pagination" aria-label="生产填数订单分页"><span>第 {{ page }} 页 · 共 {{ total }} 条</span><div class="cutting-master-actions"><Button variant="outline" :disabled="page<=1||loading" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="page*50>=total||loading" @click="load(page+1)">下一页</Button></div></nav>
       </SectionPanel>
       <SectionPanel v-if="selected&&result&&summary" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`"><div class="report-detail">

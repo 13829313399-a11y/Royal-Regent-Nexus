@@ -17,6 +17,8 @@ import CuttingCutover from './CuttingCutover.vue'
 import { useCuttingLocation } from './location'
 import CuttingSubnav from './CuttingSubnav.vue'
 import CuttingMonthlyOverview from './CuttingMonthlyOverview.vue'
+// Editable search text is applied only by an explicit query.
+const appliedQuery=ref('')
 const closingView=ref('overview')
 async function changeClosingView(value:string){
  closingView.value=value;await nextTick()
@@ -59,7 +61,8 @@ onBeforeUnmount(()=>{alive=false;generation++})
 function clearPreview(){generation++;result.value=undefined;loading.value=false;error.value=''}
 watch(month,clearPreview,{flush:'sync'})
 function ready(rights:Access){return rights.enabled&&rights.orders_schema_ready&&rights.reporting_schema_ready&&rights.usage_schema_ready}
-async function load(nextPage=1,followLocation=false){
+async function load(nextPage=1,followLocation=false,apply=false){
+  if(apply){appliedQuery.value=query.value;nextPage=1}
   const target=followLocation?location.value:undefined
   if(target?.month)month.value=target.month
   const ticket=++generation;result.value=undefined;selected.value=undefined;rows.value=[];access.value=undefined;loading.value=true;error.value=''
@@ -72,7 +75,7 @@ async function load(nextPage=1,followLocation=false){
       if(order.current)await preview(order)
       return
     }
-    const response=await ordersApi.list(nextPage,query.value)
+    const response=await ordersApi.list(nextPage,appliedQuery.value)
     if(alive&&ticket===generation){rows.value=response.data;page.value=response.page;total.value=response.total}
   }catch(e){if(alive&&ticket===generation){access.value=undefined;error.value=errorMessage(e)}}
   finally{if(alive&&ticket===generation)loading.value=false}
@@ -109,7 +112,7 @@ onMounted(()=>void loadLocation())
     <template v-else-if="access&&ready(access)">
       <div v-show="closingView==='overview'" class="cutting-overview">
       <SectionPanel title="实时核对 · 选择订单与月份" class="cutting-content-panel">
-        <form class="order-toolbar" @submit.prevent="load(1)">
+        <form class="order-toolbar" @submit.prevent="load(1,false,true)">
           <label>核对月份<input v-model="month" aria-label="核对月份" type="month" min="2000-01" :max="currentMonth" required @change="clearPreview" /></label>
           <label>订单号／货号<input v-model="query" maxlength="80" /></label>
           <Button type="submit" variant="outline" :disabled="loading">查询订单</Button>
@@ -119,7 +122,7 @@ onMounted(()=>void loadLocation())
           <thead><tr><th>客户</th><th>订单号</th><th>货号</th><th>货名</th><th>款式分类</th><th>操作</th></tr></thead>
           <tbody><tr v-for="order in rows" :key="order.line_id"><td>{{order.snapshot.customer_name}}</td><td>{{order.snapshot.reference_no}}</td><td>{{order.snapshot.product_no}}</td><td>{{orderProductName(order.snapshot)}}</td><td :title="unclassifiedStyleHint">{{unclassifiedStyle}}</td><td><Button size="sm" variant="outline" :disabled="loading||!month||!order.current" @click="preview(order)">{{order.current?'月度核对':'待签收订单'}}</Button></td></tr></tbody>
         </table></div>
-        <p v-if="!rows.length&&!loading" class="cutting-no-records">暂无已下发裁床订单。</p>
+        <p v-if="!rows.length&&!loading&&!error" class="cutting-no-records">{{appliedQuery?'当前筛选无匹配订单，请清除筛选后查看。':'暂无已下发裁床订单。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(1,false,true)">清除筛选</Button></p>
         <nav class="order-pagination" aria-label="月结订单分页"><span>第 {{page}} 页 · 共 {{total}} 条</span><Button variant="outline" :disabled="loading||page<=1" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="loading||page*50>=total" @click="load(page+1)">下一页</Button></nav>
       </SectionPanel>
       <p v-if="selected">当前订单：{{selected.snapshot.reference_no}} · {{orderProductName(selected.snapshot)}}</p>

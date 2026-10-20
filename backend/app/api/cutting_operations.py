@@ -302,11 +302,18 @@ def period_recover(body: pcs.RecoverPeriod, db: Db, user: User):
 
 
 @router.get('/masters/{entity_id}/versions')
-def versions(entity_id: str, db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1)):
+def versions(entity_id: str, db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1),
+             focus_version: int | None = Query(None, ge=1)):
     c.authorize(user, factory_id)
     ready(db)
     item = c.master(db, entity_id)
-    numbers = db.scalars(select(CuttingRevision.version).where(CuttingRevision.master_id == item.id)
+    if focus_version is not None:
+        c.require(focus_version <= item.version, '指定资料版本不存在', 404)
+        # Revisions are immutable and contiguous; resolve against the same head
+        # used to read this page, rather than a previously fetched client count.
+        page = (item.version - focus_version) // 50 + 1
+    numbers = db.scalars(select(CuttingRevision.version).where(CuttingRevision.master_id == item.id,
+                         CuttingRevision.version <= item.version)
                          .order_by(CuttingRevision.version.desc()).offset((page-1)*50).limit(50))
     return dict(data=[c.view(db, item, version) for version in numbers], total=item.version, page=page, page_size=50)
 

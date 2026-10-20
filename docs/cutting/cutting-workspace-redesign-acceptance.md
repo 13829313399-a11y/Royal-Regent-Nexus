@@ -91,6 +91,37 @@ Vitest 在受限 Windows 临时目录初次重跑时遇到 EPERM，未执行任�
 
 本轮截图位于 `.tmp/cutting-redesign-fixes/`：`planning-filter.png`、`closing-month.png`、`logs-320.png`、`logs-640.png`、`logs-1440.png`、`exception-location.png`。测试日志在 `.tmp/redesign-*`。独立复核发现的跨月深链取消和原因跨月沿用问题均已修复并有回归覆盖。
 
+## 月结切换、筛选分页与历史定位复验
+
+本批修复范围：
+
+- 月结直接定位、手动切月、读取历史和路由离开均检查未保存草稿及操作原因；取消保留，确认成功切换后清空旧输入。路由被其他守卫取消时不提前清空，未知结果继续阻止离开。
+- 生产任务、库存、费用、操作日志以及六区订单／基础资料列表区分编辑中的筛选与已查询条件。翻页及成功写入后的刷新使用已查询条件，显式查询回到第一页；日志翻页令牌继续绑定原筛选。
+- 日志携带基础资料原版本号，后端 `focus_version` 在同一版本上界中定位历史页，前端展开指定版本；列表修订仍依据当前资料。用户开始编辑时取消旧定位，迟到响应不关闭新表单。
+- 库存、费用、月结、填数及基础资料区分筛选无匹配与无业务资料，提供清除筛选；待计价视图在全部记录已有价格时显示明确提示。
+
+本批验证（模拟接口／独立临时 SQLite）：
+
+| 命令／检查 | 结果 |
+| --- | --- |
+| `npm run test:unit -- src/features/cutting-operations/__tests__ --maxWorkers=2` | 21 文件、272 项通过 |
+| `npm run typecheck:test` | 通过 |
+| `npm run build` | 通过，含帮助指纹及图片翻译构建；既有包体积提示保留 |
+| `backend/.venv/Scripts/python.exe -m pytest backend/tests/test_cutting_ops.py -q -p no:cacheprovider --basetemp=.tmp/cutting-ui-fixes-pytest-3` | 27 项通过，含指定版本、读取间新增版本、厂区与读取权限 |
+| 独立代码复核 | 慢定位响应和版本分页上界问题已修复，复核未发现新的阻断项 |
+| 运行服务只读检查 | 5173 返回 200，8000 健康且 OpenAPI 已含 `focus_version`；后端继续使用既有 `.tmp/service-start/redesign-20261020-171435/runtime.db` 副本 |
+
+测试日志位于 `.tmp/cutting-ui-fixes-*`。首次沙箱测试遇到 Windows 临时文件／测试运行限制，最终以上结果来自获准的非沙箱测试进程，临时数据库路径独立。构建发现帮助资料的源文件指纹失效；核对订单业务说明未受本次只读版本查询变化影响后，仅同步了对应源文件指纹。
+
+**本批浏览器视觉与手动交互尚未验收**：当前没有 Chrome DevTools MCP 工具，按项目规则没有切换其他浏览器工具，也没有将上文历史截图作为本批修复证据。待工具可用后，需复查直接跨月／历史定位、取消确认、筛选输入后翻页、日志跨历史页定位及各类空状态，包含窄屏布局。
+
+改动文件：
+
+- 前端：`src/features/cutting-operations/` 下 `CuttingPeriodClosing.vue`、`CuttingOrdersPage.vue`、`CuttingReportingPage.vue`、`CuttingClosingPage.vue`、`CuttingCostsPage.vue`、`CuttingMasterPage.vue`、`CuttingTaskBoard.vue`、`CuttingInventory.vue`、`CuttingCostOverview.vue`、`CuttingActivityPage.vue`、`CuttingMaterialUsage.vue`、`api.ts`。
+- 回归：同目录 `__tests__/periods.spec.ts`、`orders.spec.ts`、`closing.spec.ts`、`master.spec.ts`、`usage.spec.ts`、`workspace.spec.ts`。
+- 后端与帮助：`backend/app/api/cutting_operations.py`、`backend/tests/test_cutting_ops.py`、`shared/assistant-help/modules/customer-orders.json`。
+- 约定与证据：`PROJECT_MEMORY.md`、本文档。
+
 ## 原数据与待办
 
 原数据库 `backend/data/royal_regent_nexus.db` 修改前后 SHA256 一致：
