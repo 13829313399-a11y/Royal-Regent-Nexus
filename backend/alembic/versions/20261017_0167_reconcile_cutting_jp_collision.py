@@ -7,6 +7,7 @@ only after exact inspection; missing groups are created from frozen scripts.
 from pathlib import Path
 from uuid import uuid4
 import runpy
+import re
 
 from alembic import op
 from alembic.migration import MigrationContext
@@ -59,6 +60,25 @@ def _sqlite_expected():
         engine.dispose()
 
 
+def _equivalent_pg_check(value):
+    # Match the complete action predicate, never a substring inside SQL literals.
+    # Both forms are text arrays; bounded varchar and other expressions stay exact.
+    prefix = 'action::text = ANY ('
+    if not value.startswith(prefix) or not value.endswith(')'):
+        return value
+    literal = r"'(?:[^']|'')*'"
+    for cast, suffix in ((r'::character varying', r'::text\[\]'),
+                         (r'::character varying::text', '')):
+        term = '(' + literal + ')' + cast
+        array = r'ARRAY\[(' + term + r'(?:,\s*' + term + r')*)\]' + suffix
+        match = re.fullmatch(array, value[len(prefix):-1])
+        if match:
+            # Copy literal tokens unchanged, including quotes and embedded SQL text.
+            values = [item[1] + '::text' for item in re.finditer(term, match[1])]
+            return prefix + 'ARRAY[' + ', '.join(values) + '])'
+    return value
+
+
 def _pg_contract(bind, schema, table, base_schema=None):
     inspector = sa.inspect(bind)
     invalid = bind.scalar(sa.text('''SELECT
@@ -91,9 +111,12 @@ def _pg_contract(bind, schema, table, base_schema=None):
     '''), {'schema':schema, 'table':table}).all()
     normalized = [tuple(value.replace('"'+schema+'".', '<self>.').replace(schema+'.', '<self>.')
                         if isinstance(value, str) else value for value in row) for row in triggers]
+    checks = inspector.get_check_constraints(table,schema=schema)
+    for item in checks:
+        item['sqltext'] = _equivalent_pg_check(item['sqltext'])
     return (columns, inspector.get_pk_constraint(table,schema=schema),
             inspector.get_unique_constraints(table,schema=schema),
-            inspector.get_check_constraints(table,schema=schema),
+            checks,
             inspector.get_indexes(table,schema=schema), foreign, normalized)
 
 
