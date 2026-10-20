@@ -82,6 +82,10 @@ def _ocr_contract_page(pytesseract_module, image, language: str) -> str:
         config="--oem 3 --psm 6 -c preserve_interword_spaces=1",
         timeout=30,
     )
+    if _barter_header_complete(dense):
+        # A complete printed Barter header needs no second reading. Keep the
+        # sparse fallback for ambiguous characters and every other PO layout.
+        return dense
     # A sparse second pass over the contract header/customer band is especially
     # useful for distinguishing 8/9 in Walmart PO numbers without doubling the
     # OCR cost for the full page.
@@ -93,6 +97,25 @@ def _ocr_contract_page(pytesseract_module, image, language: str) -> str:
             timeout=15,
         )
     return dense + "\n" + sparse
+
+
+def _barter_header_complete(text: str) -> bool:
+    if not re.search(r"\bCONTRACT\s*#\s*:?\s*TNT\s*/\s*F\s*\d{5}\b", text, re.I):
+        return False
+    customer_lines = [line for line in text.splitlines() if re.match(r"\s*CUSTOMER\s*[:=]", line, re.I)]
+    customer_pos = {
+        match.group(1)
+        for line in customer_lines
+        for match in re.finditer(r"\(\s*(\d{10})\s*\)", line)
+    }
+    delivery = _search(
+        r"DELIVERY\s*[:<#]?\s*([A-Z]{3,9}[\s.\-]*\d{1,2}\s*,?\s*20\d{2})", text,
+    )
+    # The sparse pass historically repairs Walmart's 0990 prefix when dense
+    # OCR reports 0980. Preserve that targeted fallback even though all ten
+    # characters happen to be numeric.
+    return (len(customer_pos) == 1 and not next(iter(customer_pos)).startswith("0980")
+            and bool(_iso_date(delivery)))
 
 
 def read_pdf_pages(
@@ -730,11 +753,26 @@ def _barter_customer_po(text: str) -> str:
 
 
 def _barter_date_code(text: str, item_code: str) -> str:
-    compact = re.sub(r"\s+", "", text.upper()).translate(_BARTER_DIGIT_TRANSLATION)
-    match = re.search(rf"WM{re.escape(item_code)}RR[-~]?([0-9]{{4}})", compact)
-    if not match:
-        match = re.search(r"DATEC0DE.*?RR[-~]?([0-9]{4})", compact)
-    return f"WM{item_code}RR-{match.group(1)}" if match else ""
+    # Translate only an explicitly identified numeric field. Translating the
+    # whole sentence destroys DATE CODE and can turn the trailing word TO into
+    # digits. Handwritten punctuation is not evidence for a missing digit.
+    candidates: set[str] = set()
+    for line in text.upper().splitlines():
+        line = re.sub(r"[‐‑‒–—−]", "-", line)
+        match = re.search(r"\bWM\s*([0-9OQDISZBGL ]+)\s*RR\s*[-~]?\s*(.*)", line)
+        if match:
+            if _barter_digits(match.group(1)) != item_code:
+                continue
+            tail = match.group(2)
+        else:
+            match = re.search(r"\bDATE\s*C[O0]DE\s*[:#-]?\s*RR\s*[-~]?\s*(.*)", line)
+            if not match:
+                continue
+            tail = match.group(1)
+        digits = re.match(r"([0-9OQDISZBGL](?:\s*[0-9OQDISZBGL]){3})(?=\s|TO\b|$|[.,;])", tail)
+        if digits:
+            candidates.add(_barter_digits(digits.group(1)))
+    return f"WM{item_code}RR-{next(iter(candidates))}" if len(candidates) == 1 else ""
 
 
 def _parse_barter_page(
@@ -768,7 +806,8 @@ def _parse_barter_page(
     ), "")
     product_match = re.search(
         r"^\s*([A-Z0-9]{4,})\s+(.+?)\s+([0-9OQDISZTBG§$,]+)\s+P[CO]S\s+"
-        r"([0-9OQDISZTBG§$,.]+)\s*/\s*P[CO]S[,]?\s+([0-9OQDISZTBG§$,. ]+)",
+        r"[_(]*\s*([0-9OQDISZTBG§$,.]+)\s*/\s*P[CO]S[),]?\s+"
+        r"(?:[-_]\s+)?([0-9OQDISZTBG§$,. ]+)",
         product_line,
         re.I,
     )

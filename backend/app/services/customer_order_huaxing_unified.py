@@ -8,6 +8,95 @@ CUSTOMERS = {'buzzbee', 'dickie', 'caixing', 'edu', '360', 'yinhui', 'disney', '
 TARGET_TEMPLATE = 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
 BUZZBEE_SHEETS = ('ITEM表-子弹枪', 'ITEM表-水枪', 'ITEM表-套装', 'ITEM表-公仔')
 DICKIE_EXTRA = '恐龙蛋口水车Iteam表'
+ADVISORY_CUSTOMERS = {'dickie', 'seasons', 'maxx', 'shushupapa', 'barter'}
+DUPLICATE_CODES = {'duplicate_reference', 'existing_order_line', 'duplicate_batch_order_line', 'duplicate_existing_order'}
+
+
+def apply_advisory_policy(rows):
+    """Business-approved Huaxing warnings; identity and quantity conflicts stay hard."""
+    from app.services.customer_order_unified import _refresh_status, _text, _number, _issue
+    for row in rows:
+        if _number(row.get('quantity')) is None or _number(row.get('quantity')) <= 0:
+            if not any(i.get('field') == 'quantity' and i.get('severity') == 'blocked' for i in row.get('issues', [])):
+                row.setdefault('issues', []).append(_issue('blocked', 'missing_quantity', 'quantity', '缺少有效订单数量，请核对原单'))
+        for field, label in (('date_code', '日期码'), ('units_per_carton', '装箱数')):
+            if not _text(row.get(field)) and not any(i.get('field') == field for i in row.get('issues', [])):
+                issue = _issue('warning', 'missing_' + field, field, f'{label}暂缺，可补录；留空仍可导出')
+                issue.update(can_edit=True, can_skip=True, edit_field=field, edit_label=label,
+                             edit_input_type='text' if field == 'date_code' else 'number')
+                row.setdefault('issues', []).append(issue)
+        for issue in row.get('issues', []):
+            if issue.get('code') in DUPLICATE_CODES:
+                issue.update(code='duplicate_order_warning', severity='warning', can_skip=False,
+                             skip_key='', skip_label='')
+                issue['message'] = issue['message'].rstrip('；。') + '；导出新行以红色字体标记，请核对重复订单'
+            elif issue.get('code') in {'past_ship_date', 'past_inspection_date', 'missing_po_unit_prices'}:
+                from app.services.customer_order_manual import MANUAL_EDITABLE_FIELDS
+                issue.update(severity='warning', can_skip=True)
+                field = issue.get('edit_field') or issue.get('field')
+                if field in MANUAL_EDITABLE_FIELDS:
+                    meta = MANUAL_EDITABLE_FIELDS[field]
+                    issue.update(can_edit=True, edit_field=field, edit_label=meta['label'], edit_input_type=meta['input_type'])
+            elif issue.get('severity') == 'blocked':
+                issue.update(requires_source_correction=True, can_skip=False, can_edit=False)
+        _refresh_status(row)
+
+
+def _extension_column(sheet, header, *, after=19):
+    from copy import copy
+    from app.services.customer_order_unified import _normalized_header
+    matches = [c.column for c in sheet[3] if _normalized_header(c.value) == header]
+    if len(matches) > 1:
+        from app.services.customer_order_unified import CustomerOrderUnifiedError
+        raise CustomerOrderUnifiedError(f'{sheet.title} 的“{header}”列重复，请先核对表头')
+    if matches:
+        return matches[0]
+    column = max(after, sheet.max_column) + 1
+    target, source = sheet.cell(3, column), sheet.cell(3, after)
+    target._style = copy(source._style)
+    target.value = header
+    from openpyxl.utils import get_column_letter
+    sheet.column_dimensions[get_column_letter(column)].width = 30 if header == 'PO单价明细' else 22
+    return column
+
+
+def _mark_generated_row(sheet, number, *, duplicate=False, blue=False):
+    if not duplicate and not blue:
+        return
+    from copy import copy
+    from openpyxl.styles import Font
+    from openpyxl.formatting.rule import FormulaRule
+    from openpyxl.utils import get_column_letter
+    color = 'FFFF0000' if duplicate else 'FF0000FF'
+    for cell in sheet[number]:
+        font = copy(cell.font)
+        font.color = color
+        cell.font = font
+    # Only the generated row bypasses legacy duplicate rules (some use wrong
+    # columns or #REF!). Historical conditional formatting is left intact.
+    for rules in sheet.conditional_formatting._cf_rules.values():
+        for rule in rules:
+            rule.priority += 1
+    rule = FormulaRule(formula=['TRUE'], font=Font(color=color), stopIfTrue=True)
+    rule.priority = 1
+    sheet.conditional_formatting.add(f'A{number}:{get_column_letter(sheet.max_column)}{number}', rule)
+
+
+def _repair_dickie_duplicate_rules(workbook):
+    """Correct only the supplied SO/item duplicate rules, preserving other styles."""
+    pattern = re.compile(r'AND\((?:\$E\d+|#REF!)<>"",(?:\$H\d+|#REF!)<>"",COUNTIFS\(\$E\$\d+:\$E\$\d+,(?:\$E\d+|#REF!),\$H\$\d+:\$H\$\d+,(?:\$H\d+|#REF!)\)>1\)')
+    for name in ('接单表', '正单评审表', 'ITEM表', DICKIE_EXTRA):
+        if name not in workbook.sheetnames:
+            continue
+        sheet = workbook[name]
+        ref_col, item_col = ('D', 'G') if name in ('接单表', '正单评审表') else ('E', 'H')
+        for key, rules in sheet.conditional_formatting._cf_rules.items():
+            start = min(cell_range.min_row for cell_range in key.sqref.ranges)
+            end = max(sheet.max_row, start)
+            for rule in rules:
+                if rule.type != 'expression' or len(rule.formula or []) != 1 or not pattern.fullmatch(rule.formula[0]):
+                    continue
+                rule.formula = [f'AND(${ref_col}{start}<>"",${item_col}{start}<>"",COUNTIFS(${ref_col}$4:${ref_col}${end},${ref_col}{start},${item_col}$4:${item_col}${end},${item_col}{start})>1)']
 
 
 def enabled(factory_id, customer_code):
@@ -52,8 +141,9 @@ def edu_order_key(contract, po):
 
 def edu_identity(contract, po, product):
     from app.services.customer_order_unified import _key
+    from app.services.huaxing_order_legacy.edu_schedule import normalize_edu_item
     order = edu_order_key(contract, po)
-    return (*order, _key(product)) if any(order) else ('', '', '')
+    return (*order, _key(normalize_edu_item(product))) if any(order) else ('', '', '')
 
 
 def edu_history_matches(row, history):
@@ -71,7 +161,7 @@ def edu_history_matches(row, history):
 def allocate_edu_references(records, next_number):
     assigned = {}
     for record in records:
-        order = edu_order_key(record.get('contract_no'), record.get('customer_po'))
+        order = edu_identity(record.get('contract_no'), record.get('customer_po'), record.get('item_no'))
         if record.get('huaxing_po'):
             continue
         if order not in assigned:
@@ -98,6 +188,13 @@ def read_history(workbook, customer_code):
             if not values['product_no'] or values['product_no'] == '产品编号' or '模拟数据' in remarks:
                 continue
             values['reference_no'] = reference
+            if customer_code == 'edu':
+                from app.services.huaxing_order_legacy.edu_schedule import normalize_edu_item
+                from app.services.huaxing_order_legacy.edu_grouped_export import is_reservation_row
+                values['product_no'] = normalize_edu_item(values['product_no'])
+                if is_reservation_row(sheet, r):
+                    # Reservations enrich product fields, but are not customer orders.
+                    values.update(reference_no='', contract_no='', po_no='')
             values['quantity'] = history_number(sheet.cell(r, 11), workbook, customer_code)
             values['units_per_carton'] = outer_pack(history_number(sheet.cell(r, 12), workbook, customer_code, pack=True))
             result.append(UnifiedHistoryRow(row=r, source_sheet=name, **values,
@@ -110,7 +207,9 @@ def map_record(row, record, customer_code):
     get = lambda field: _text(record.get(field))
     if customer_code == 'edu':
         row.update(reference_no=get('huaxing_po'), production_no='',
-                   contract_no=get('contract_no'), po_no=get('customer_po'))
+                   contract_no=get('contract_no'), po_no=get('customer_po'),
+                   source_product_no=get('source_item_no') or get('item_no'),
+                   source_order_date=get('order_date'))
     elif customer_code == '360':
         row.update(reference_no=get('production_no'), contract_no='',
                    po_no=get('unified_customer_po') or get('customer_po') or get('po_no'), product_no=get('item_full') or row.get('product_no', ''),
@@ -142,11 +241,21 @@ def map_record(row, record, customer_code):
 def prepare_row(row, history, customer_code, available_sheets, factory_id='huaxing'):
     from app.services.customer_order_unified import _key, _text, _issue
     row['_huaxing_customer'] = customer_code
+    if customer_code == 'edu':
+        from app.services.huaxing_order_legacy.edu_schedule import normalize_edu_item
+        row['product_no'] = normalize_edu_item(row.get('product_no'))
     if customer_code == 'caixing':
         row['reference_no'], row['contract_no'] = row.get('contract_no', ''), ''
     if customer_code == 'dickie':
         row['production_no'], row['contract_no'] = row.get('contract_no', ''), ''
     matches = [h for h in history if _key(h.product_no) == _key(row.get('product_no'))]
+    if customer_code in {'barter', 'maxx', 'shushupapa'} and not _text(row.get('date_code')):
+        same_order = [h for h in matches if h.reference_no and _key(h.reference_no) == _key(row.get('reference_no'))]
+        codes = {h.date_code for h in same_order if h.date_code}
+        if len(codes) == 1:
+            row['date_code'] = next(iter(codes))
+            row.setdefault('lineage', {})['date_code'] = '当前排期同合同/同产品唯一日期码；原单未可靠识别'
+            row['issues'] = [i for i in row.get('issues', []) if i.get('code') != 'missing_date_code']
     if customer_code == 'buzzbee' and not matches:
         # Latest BuzzBee item suffixes describe schedule variants, not PO line numbers.
         base = _key(row.get('product_no'))
@@ -198,6 +307,10 @@ def prepare_row(row, history, customer_code, available_sheets, factory_id='huaxi
         if len(refs) == 1 and len(contracts) == 1:
             row['reference_no'] = next(iter(refs))
             row['contract_no'] = next(iter(contracts))
+            packs = {outer_pack(h.units_per_carton) for h in same_order if outer_pack(h.units_per_carton)}
+            if not outer_pack(row.get('units_per_carton')) and len(packs) == 1:
+                row['units_per_carton'] = next(iter(packs))
+                row.setdefault('lineage', {})['units_per_carton'] = '当前排期同客户合同/PO与货号的唯一装箱数'
         elif same_order:
             row.setdefault('issues', []).append(_issue('blocked', 'ambiguous_edu_history', 'contract_no',
                 '客户合同/PO 与产品对应多个历史编号，必须核对完整订单身份'))
@@ -262,6 +375,9 @@ def validate_edited_identities(preview, original, history, available_sheets, ove
 
 
 def export_rows(workbook, rows):
+    if rows and all(row.get('_huaxing_customer') == 'edu' for row in rows):
+        from app.services.huaxing_order_legacy.edu_grouped_export import export_rows as export_edu
+        return export_edu(workbook, rows)
     from app.services import customer_order_unified as unified
     from app.services.huakang_a_order_legacy.unified_schedule import output_slots
     for row in rows:
@@ -270,7 +386,14 @@ def export_rows(workbook, rows):
     counts = Counter(row['item_sheet_name'] for row in rows)
     counts.update({'接单表': len(rows), '正单评审表': len(rows)})
     slots = output_slots(workbook, len(rows), sheet_counts=counts)
+    if any(row.get('_huaxing_customer') == 'dickie' for row in rows):
+        _repair_dickie_duplicate_rules(workbook)
     used = Counter()
+    dickie_columns = {}
+    if any(row.get('_huaxing_customer') == 'dickie' for row in rows):
+        for name in ('接单表', '正单评审表'):
+            dickie_columns[name] = {header: _extension_column(workbook[name], header)
+                for header in ('生产单号', 'PO单价明细', '单价口径')}
     for index, row in enumerate(rows):
         name = row['item_sheet_name']
         item_row = slots[name][used[name]]
@@ -280,6 +403,29 @@ def export_rows(workbook, rows):
         for summary in ('接单表', '正单评审表'):
             unified._write_summary_row(workbook[summary], slots[summary][index], row,
                                        item_row=item_row, item_sheet=workbook[name])
+            if row.get('_huaxing_customer') == 'dickie':
+                sheet, number = workbook[summary], slots[summary][index]
+                cols = dickie_columns[summary]
+                ref = f"'{name}'!C{item_row}"
+                sheet.cell(number, cols['生产单号']).value = f'=IF(LEN({ref})=0,"",{ref})'
+                sheet.cell(number, cols['PO单价明细']).value = row.get('price_details_text') or None
+                sheet.cell(number, cols['单价口径']).value = '按PO数量加权均价' if row.get('price_basis') == 'weighted' else '原单单价'
+                if row.get('price_details'):
+                    from copy import copy
+                    cell = sheet.cell(number, cols['PO单价明细'])
+                    alignment = copy(cell.alignment)
+                    alignment.wrapText = True
+                    cell.alignment = alignment
+                    sheet.cell(number, 14).value = unified._number(row.get('unit_price_hkd'))
+                    sheet.cell(number, 14).number_format = '0.00#####'
+                    sheet.cell(number, 15).value = unified._number(row.get('amount_hkd'))
+                    sheet.cell(number, 15).number_format = '0.00'
+                    unified._fit_generated_text(sheet, number)
+        duplicate = any(i.get('code') in DUPLICATE_CODES | {'duplicate_order_warning'} for i in row.get('issues', []))
+        blue = row.get('_huaxing_customer') == 'dickie'
+        _mark_generated_row(workbook[name], item_row, duplicate=duplicate, blue=blue)
+        for summary in ('接单表', '正单评审表'):
+            _mark_generated_row(workbook[summary], slots[summary][index], duplicate=duplicate, blue=blue)
         # Some supplied EDU reserved rows have a broken price lookup anchor.
         # New paired summary rows can reference their exact order counterpart;
         # the order sheet's manually maintained price remains authoritative.

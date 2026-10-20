@@ -38,7 +38,7 @@ def test_nine_distinct_contracts_with_repeated_item_export_all_three_sheets():
     contracts = [f'46000020{37 + i}/EP{25 + i}' for i in range(9)]
     args = preview_args(po_bytes(contracts))
     preview = service.create_unified_customer_preview(**args)
-    assert preview['summary'] == dict(total=9, valid=9, warning=0, blocked=0)
+    assert preview['summary'] == dict(total=9, valid=0, warning=9, blocked=0)
     refs = [r['reference_no'] for r in preview['rows']]
     assert len(set(refs)) == 9
     output, _, _ = service.export_unified_customer_schedule(**args)
@@ -62,11 +62,11 @@ def test_real_batch_duplicates_and_quantity_conflicts_remain_blocked(qty, code, 
     assert issue['can_skip'] is skippable
 
 
-def test_same_contract_different_products_share_reference_but_different_po_do_not():
+def test_every_new_detail_has_own_reference_even_when_contract_and_po_match():
     args = preview_args(po_bytes(['C1', 'C1', 'C1'], products=['I1', 'I2', 'I1'], pos=['P1', 'P1', 'P2']))
     rows = service.create_unified_customer_preview(**args)['rows']
-    assert rows[0]['reference_no'] == rows[1]['reference_no'] != rows[2]['reference_no']
-    assert all(r['status'] == 'valid' for r in rows)
+    assert len({r['reference_no'] for r in rows}) == 3
+    assert all(r['status'] == 'warning' for r in rows)
 
 
 def test_full_composite_contract_matches_history_but_sibling_suffix_does_not():
