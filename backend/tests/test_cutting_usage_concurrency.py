@@ -1,6 +1,6 @@
 """P3b races on isolated SQLite and an opt-in dedicated PostgreSQL schema.
 
-Set CUTTING_TEST_POSTGRES_URL to a database whose name contains cutting_test.
+Set CUTTING_TEST_POSTGRES_URL to cutting_test or a cutting_test_ prefixed database.
 Never point this fixture at the local business database.
 """
 import os
@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.engine import make_url
+from cutting_postgres_safety import dedicated_postgres_url
 from sqlalchemy.orm import Session
 
 from app.api import cutting_operations as api
@@ -40,8 +40,7 @@ def race_engine(request, tmp_path):
     url = os.getenv('CUTTING_TEST_POSTGRES_URL', '')
     if not url:
         pytest.skip('未配置专用 CUTTING_TEST_POSTGRES_URL，不能计作 PostgreSQL 已验收')
-    parsed = make_url(url)
-    assert parsed.get_backend_name() == 'postgresql' and 'cutting_test' in (parsed.database or '')
+    parsed = dedicated_postgres_url(url)
     schema = 'cutting_test_' + uuid4().hex
     admin = create_engine(parsed)
     engine = create_engine(parsed, connect_args={'options': f'-csearch_path={schema} -clock_timeout=10000 -cstatement_timeout=20000'})

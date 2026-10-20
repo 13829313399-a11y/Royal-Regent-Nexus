@@ -28,7 +28,7 @@ from test_customer_order_ledger import user, migration as ledger_migration
 
 
 def migration():
-    path = Path(__file__).parents[1] / "alembic/versions/20261015_0163_huakang_b_jp_intake.py"
+    path = Path(__file__).parents[1] / "alembic/legacy/20261015_0163_huakang_b_jp_intake.py"
     spec = importlib.util.spec_from_file_location("jp_migration", path)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
@@ -508,3 +508,45 @@ def test_confirmation_amount_not_an_unrelated_number(tmp_path, value, expected):
 def test_ambiguous_confirmation_is_rejected(amount, currency):
     with pytest.raises(ValueError):
         intake._jp_validate_reference("confirmed", confirmation(amount, currency))
+
+
+@pytest.mark.parametrize('kind', ['schedule', 'price', 'confirmed'])
+@pytest.mark.parametrize('failure', ['none', 'load', 'iteration'])
+def test_reference_import_releases_file_even_with_retained_traceback(tmp_path, monkeypatch, kind, failure):
+    import builtins
+    from openpyxl.worksheet._read_only import ReadOnlyWorksheet
+    from app.services.huakang_b_jp import workbooks
+    from app.services.huakang_b_jp.prices import PriceTable
+    from app.services.huakang_b_jp.schedule import ScheduleRef
+    path = tmp_path / 'reference.xlsx'
+    path.write_bytes(xlsx(kind))
+    handles = []
+    def tracked_open(*args, **kwargs):
+        handle = builtins.open(*args, **kwargs)
+        handles.append(handle)
+        return handle
+    monkeypatch.setattr(workbooks, 'open', tracked_open, raising=False)
+    if failure == 'load':
+        def fail_load(*args, **kwargs): raise ValueError('injected workbook load')
+        monkeypatch.setattr(workbooks.openpyxl, 'load_workbook', fail_load)
+    elif failure == 'iteration':
+        original_iter = ReadOnlyWorksheet.iter_rows
+        def fail_iter(self, *args, **kwargs):
+            rows = original_iter(self, *args, **kwargs)
+            yield next(rows)
+            raise ValueError('injected row parsing')
+        monkeypatch.setattr(ReadOnlyWorksheet, 'iter_rows', fail_iter)
+    callback = {'schedule': ScheduleRef().load, 'price': PriceTable().import_xlsx,
+                'confirmed': PriceTable().import_confirmed_xlsx}[kind]
+    if failure != 'none':
+        # Retain the exception/streaming generator references while deleting:
+        # gc.collect() must not be needed for Windows temporary-file cleanup.
+        with pytest.raises(ValueError, match='injected') as error:
+            callback(path)
+        assert error.traceback
+    else:
+        callback(path)
+    assert handles and all(handle.closed for handle in handles)
+    renamed = path.with_name('released.xlsx')
+    path.rename(renamed)
+    renamed.unlink()

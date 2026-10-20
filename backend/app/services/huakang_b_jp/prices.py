@@ -10,7 +10,7 @@ import re
 from datetime import datetime
 from decimal import Decimal
 
-import openpyxl
+from .workbooks import reference_workbook
 
 from .schedule import DATA_DIR
 
@@ -139,73 +139,66 @@ class PriceTable:
     def import_confirmed_xlsx(self, path, name='', source_mtime=None, default_currency=None):
         """导入文员填好的货价确认表：只收「确认价格」列已填的行。
         返回 (填入行数, 跳过行数)。同 key 后导入的覆盖先导入的。"""
-        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-        ws = wb.worksheets[0]
-        if ws.max_row and ws.max_row > 200000:
-            wb.close()
-            raise ValueError("货价参照超过 20 万行，请先整理")
-        rows = ws.iter_rows(max_col=100, values_only=True)
-        header = next(rows, None)
-        col_of = {}
-        for i, h in enumerate(header or []):
-            key = CONFIRM_HEADER_MAP.get(str(h or '').strip())
-            if key and key not in col_of:
-                col_of[key] = i
-        if 'confirmed' not in col_of or 'item' not in col_of:
-            wb.close()
-            raise ValueError('表头不对——请上传系统导出的《货价确认表》（需含「确认价格(文员填写)」列）')
+        with reference_workbook(path) as wb:
+            ws = wb.worksheets[0]
+            if ws.max_row and ws.max_row > 200000:
+                raise ValueError("货价参照超过 20 万行，请先整理")
+            rows = ws.iter_rows(max_col=100, values_only=True)
+            header = next(rows, None)
+            col_of = {}
+            for i, h in enumerate(header or []):
+                key = CONFIRM_HEADER_MAP.get(str(h or '').strip())
+                if key and key not in col_of:
+                    col_of[key] = i
+            if 'confirmed' not in col_of or 'item' not in col_of:
+                raise ValueError('表头不对——请上传系统导出的《货价确认表》（需含「确认价格(文员填写)」列）')
 
-        def cell(row, key):
-            i = col_of.get(key)
-            return row[i] if i is not None and i < len(row) else None
+            def cell(row, key):
+                i = col_of.get(key)
+                return row[i] if i is not None and i < len(row) else None
 
-        at = datetime.now().strftime('%Y/%m/%d %H:%M')
-        filled = skipped = 0
-        for index, row in enumerate(rows, start=2):
-            if index > 200000:
-                wb.close()
-                raise ValueError("确认价参照超过 20 万行，请先整理")
-            if not row or all(c in (None, '') for c in row):
-                continue
-            raw_conf = cell(row, 'confirmed')
-            item = str(cell(row, 'item') or '').strip()
-            if raw_conf is None or str(raw_conf).strip() == '' or not item:
-                continue
-            try:
-                amount, tagged = _confirmed_amount(raw_conf)
-            except ValueError as exc:
-                wb.close()
-                raise ValueError(f'确认表第 {index} 行：{exc}') from exc
-            # 确认价归一成港币：文员习惯填美金价，直接存会当成 HK$ 用（差 7.8 倍）
-            explicit = str(cell(row, 'confirmed_currency') or '').strip().upper()
-            if explicit and tagged and explicit != tagged:
-                wb.close()
-                raise ValueError(f"确认表第 {index} 行的币种与金额标签矛盾")
-            cur = explicit or tagged or default_currency
-            if cur not in ('HKD', 'USD'):
-                wb.close()
-                raise ValueError(f"确认表第 {index} 行未明确币种，请填确认币种 HKD/USD 或在上传时指定数字币种")
-            conf_hkd = amount * Decimal('7.8') if cur == 'USD' else amount
-            conf = format(conf_hkd, 'f')
-            if '.' in conf:
-                conf = conf.rstrip('0').rstrip('.')
-            cat = str(cell(row, 'category') or '').strip()
-            ctn = _norm_ctn(cell(row, 'carton_qty')) if cell(row, 'carton_qty') not in (None, '') else ''
-            filled += 1
-            val = {'price': conf, 'source': name, 'at': at}
-            self.confirmed['|'.join([_base_item(item), cat, ctn])] = val
-            lc = str(cell(row, 'long_item') or '').strip().upper()
-            if lc:
-                self.confirmed_long['|'.join([lc, cat])] = val
-        wb.close()
-        if source_mtime is None:
-            try:
-                source_mtime = os.path.getmtime(path)
-            except OSError:
-                source_mtime = 0
-        self.confirmed_mtime = max(self.confirmed_mtime, source_mtime)
-        self.save_confirmed()
-        return filled, skipped
+            at = datetime.now().strftime('%Y/%m/%d %H:%M')
+            filled = skipped = 0
+            for index, row in enumerate(rows, start=2):
+                if index > 200000:
+                    raise ValueError("确认价参照超过 20 万行，请先整理")
+                if not row or all(c in (None, '') for c in row):
+                    continue
+                raw_conf = cell(row, 'confirmed')
+                item = str(cell(row, 'item') or '').strip()
+                if raw_conf is None or str(raw_conf).strip() == '' or not item:
+                    continue
+                try:
+                    amount, tagged = _confirmed_amount(raw_conf)
+                except ValueError as exc:
+                    raise ValueError(f'确认表第 {index} 行：{exc}') from exc
+                # 确认价归一成港币：文员习惯填美金价，直接存会当成 HK$ 用（差 7.8 倍）
+                explicit = str(cell(row, 'confirmed_currency') or '').strip().upper()
+                if explicit and tagged and explicit != tagged:
+                    raise ValueError(f"确认表第 {index} 行的币种与金额标签矛盾")
+                cur = explicit or tagged or default_currency
+                if cur not in ('HKD', 'USD'):
+                    raise ValueError(f"确认表第 {index} 行未明确币种，请填确认币种 HKD/USD 或在上传时指定数字币种")
+                conf_hkd = amount * Decimal('7.8') if cur == 'USD' else amount
+                conf = format(conf_hkd, 'f')
+                if '.' in conf:
+                    conf = conf.rstrip('0').rstrip('.')
+                cat = str(cell(row, 'category') or '').strip()
+                ctn = _norm_ctn(cell(row, 'carton_qty')) if cell(row, 'carton_qty') not in (None, '') else ''
+                filled += 1
+                val = {'price': conf, 'source': name, 'at': at}
+                self.confirmed['|'.join([_base_item(item), cat, ctn])] = val
+                lc = str(cell(row, 'long_item') or '').strip().upper()
+                if lc:
+                    self.confirmed_long['|'.join([lc, cat])] = val
+            if source_mtime is None:
+                try:
+                    source_mtime = os.path.getmtime(path)
+                except OSError:
+                    source_mtime = 0
+            self.confirmed_mtime = max(self.confirmed_mtime, source_mtime)
+            self.save_confirmed()
+            return filled, skipped
 
     def lookup_confirmed(self, item, category=None, carton=None, long_code=None):
         """查文员确认价：长货号+类别 优先，其次 货号+类别+装箱数（类别/装箱数可模糊）。"""
@@ -244,72 +237,67 @@ class PriceTable:
 
     # ── 导入 xlsx ──────────────────────────
     def import_xlsx(self, path, name='', source_mtime=None):
-        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-        ws = wb.worksheets[0]
-        if ws.max_row and ws.max_row > 200000:
-            wb.close()
-            raise ValueError("货价参照超过 20 万行，请先整理")
-        rows = ws.iter_rows(max_col=100, values_only=True)
-        header = next(rows, None)
-        if not header or '货价' not in ''.join(str(c or '') for c in header[:10]):
-            wb.close()
-            raise ValueError('表头不对——请上传《生产货号货价浏览总表》格式的货价表')
-        col_of = {}
-        for i, h in enumerate(header):
-            key = HEADER_MAP.get(str(h or '').strip())
-            if key and key not in col_of:
-                col_of[key] = i
-        missing = [k for k in ('code', 'item', 'price_hk', 'category') if k not in col_of]
-        if missing:
-            wb.close()
-            raise ValueError('货价表缺少必需列：' + '、'.join(missing))
-
-        def cell(row, key):
-            i = col_of.get(key)
-            return row[i] if i is not None and i < len(row) else None
-
-        recs = []
-        for index, row in enumerate(rows, start=2):
-            if index > 200000:
-                wb.close()
+        with reference_workbook(path) as wb:
+            ws = wb.worksheets[0]
+            if ws.max_row and ws.max_row > 200000:
                 raise ValueError("货价参照超过 20 万行，请先整理")
-            if not row or not row[0]:
-                continue
-            item = str(cell(row, 'item') or '').strip()
-            if not item:
-                continue
-            recs.append({
-                'code': str(cell(row, 'code') or '').strip(),
-                'date': _fmt_date(cell(row, 'date')),
-                'total_item': str(cell(row, 'total_item') or '').strip(),
-                'item': item,
-                'customer': str(cell(row, 'customer') or '').strip(),
-                'carton_qty': _fmt_num(cell(row, 'carton_qty')),
-                'currency': str(cell(row, 'currency') or '').strip(),
-                'price': _fmt_num(cell(row, 'price')),
-                'price_hk': _fmt_num(cell(row, 'price_hk')),
-                'category': str(cell(row, 'category') or '').strip(),
-                'long_item': str(cell(row, 'long_item') or '').strip().upper(),
-            })
-        wb.close()
-        if not recs:
-            raise ValueError('没有读到任何货价记录')
-        self.records = []
-        self._next_id = 1
-        for r in recs:
-            r['id'] = self._next_id
-            self._next_id += 1
-            self.records.append(r)
-        self.name = name
-        self.uploaded_at = datetime.now().strftime('%Y/%m/%d %H:%M')
-        if source_mtime is None:
-            try:
-                source_mtime = os.path.getmtime(path)
-            except OSError:
-                source_mtime = 0
-        self.source_mtime = source_mtime
-        self.loaded = True
-        self.save()
+            rows = ws.iter_rows(max_col=100, values_only=True)
+            header = next(rows, None)
+            if not header or '货价' not in ''.join(str(c or '') for c in header[:10]):
+                raise ValueError('表头不对——请上传《生产货号货价浏览总表》格式的货价表')
+            col_of = {}
+            for i, h in enumerate(header):
+                key = HEADER_MAP.get(str(h or '').strip())
+                if key and key not in col_of:
+                    col_of[key] = i
+            missing = [k for k in ('code', 'item', 'price_hk', 'category') if k not in col_of]
+            if missing:
+                raise ValueError('货价表缺少必需列：' + '、'.join(missing))
+
+            def cell(row, key):
+                i = col_of.get(key)
+                return row[i] if i is not None and i < len(row) else None
+
+            recs = []
+            for index, row in enumerate(rows, start=2):
+                if index > 200000:
+                    raise ValueError("货价参照超过 20 万行，请先整理")
+                if not row or not row[0]:
+                    continue
+                item = str(cell(row, 'item') or '').strip()
+                if not item:
+                    continue
+                recs.append({
+                    'code': str(cell(row, 'code') or '').strip(),
+                    'date': _fmt_date(cell(row, 'date')),
+                    'total_item': str(cell(row, 'total_item') or '').strip(),
+                    'item': item,
+                    'customer': str(cell(row, 'customer') or '').strip(),
+                    'carton_qty': _fmt_num(cell(row, 'carton_qty')),
+                    'currency': str(cell(row, 'currency') or '').strip(),
+                    'price': _fmt_num(cell(row, 'price')),
+                    'price_hk': _fmt_num(cell(row, 'price_hk')),
+                    'category': str(cell(row, 'category') or '').strip(),
+                    'long_item': str(cell(row, 'long_item') or '').strip().upper(),
+                })
+            if not recs:
+                raise ValueError('没有读到任何货价记录')
+            self.records = []
+            self._next_id = 1
+            for r in recs:
+                r['id'] = self._next_id
+                self._next_id += 1
+                self.records.append(r)
+            self.name = name
+            self.uploaded_at = datetime.now().strftime('%Y/%m/%d %H:%M')
+            if source_mtime is None:
+                try:
+                    source_mtime = os.path.getmtime(path)
+                except OSError:
+                    source_mtime = 0
+            self.source_mtime = source_mtime
+            self.loaded = True
+            self.save()
 
     # ── 增删改查 ───────────────────────────
     def add(self, rec):

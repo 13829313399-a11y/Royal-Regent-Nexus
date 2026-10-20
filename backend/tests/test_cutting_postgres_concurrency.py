@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, select, text
-from sqlalchemy.engine import make_url
+from cutting_postgres_safety import dedicated_postgres_url
 from sqlalchemy.orm import Session
 from app.models.customer_order_ledger import OrderLedgerLine as Line
 from app.services import cutting_orders as orders, cutting_ops as c, cutting_schemas as s, customer_order_ledger as ledger
@@ -20,8 +20,7 @@ pytestmark = pytest.mark.skipif(not URL, reason='需要独立 PostgreSQL cutting
 
 @pytest.fixture
 def pg_engine():
-    url = make_url(URL)
-    assert url.get_backend_name() == 'postgresql' and 'cutting_test' in (url.database or ''), '只允许专用 cutting_test 测试库'
+    url = dedicated_postgres_url(URL)
     name = 'cutting_test_' + uuid4().hex
     admin = create_engine(url)
     engine = create_engine(url, connect_args={'options': f'-csearch_path={name} -clock_timeout=10000 -cstatement_timeout=15000'})

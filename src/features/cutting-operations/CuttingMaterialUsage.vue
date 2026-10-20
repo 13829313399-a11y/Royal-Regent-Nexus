@@ -89,7 +89,7 @@ function hasBalance(issue:UsageIssue){return !issue.reversed&&Number(issue.remai
   <SectionPanel :title="withCosts?'实际耗用与原批次材料费用':'耗用、损耗与现场／在外余料'" class="cutting-content-panel">
     <p class="cutting-notice">P3b：按原实发、实际签收登记本次耗用与损耗，盘余仅作同批物料的核对，不重复入库。文员提交即生效，主管抽查；退仓仍由布料仓办理。</p>
     <p class="cutting-notice">盘余按耗用登记时点核对；同日后续签收及退仓另行计入当前余料，不改写原盘余。补录按所选业务日期核对；更正保留原日期及盘余截止流水。</p>
-    <p v-if="withCosts" class="cutting-notice">按原批次已确认实际成本计价，缺价显示待计价。采购岗位单独授权确认单价、币种和凭据；税费、运费不自动分摊。主管另行确认完工耗用归属，余下正常耗用列在制，损耗单列；当前计价随已确认批次版本计算，登记快照与历史保留，锁月待后续实施。</p>
+    <p v-if="withCosts" class="cutting-notice">按原批次已确认实际成本计价，缺价显示待计价。采购岗位单独授权确认单价、币种和凭据；税费、运费不自动分摊。主管另行确认完工耗用归属，余下正常耗用列在制，损耗单列。本页展示当前实时核对数，登记快照与历史保留；已锁月份的冻结金额请在“月结”工作区的“内部月结与锁月”中查询。</p>
     <p v-if="error" role="alert">{{error}}</p><p v-if="notice" role="status">{{notice}}</p><p v-if="loading" role="status">正在读取耗用与成本…</p>
     <p v-if="needsLogin" role="alert">登录已失效，填写保留。<a href="/login" target="_blank" rel="noopener">重新登录</a><Button v-if="!pending" variant="outline" :disabled="saving||loading" @click="load">登录后继续读取</Button></p>
     <p v-else-if="!readAllowed&&!loading" role="status">尚未取得当前读取授权或数据，填写暂存并隐藏。<Button v-if="!pending" variant="outline" :disabled="saving||loading" @click="load">重新读取耗用与成本</Button></p>
