@@ -31,7 +31,10 @@ def test_migration_revisions_are_unique_and_jp_follows_applied_cutting_history()
         assert Path(script.get_revision('20261015_0163').path).name == '20261015_0163_cutting_internal_periods.py'
 
 
-@pytest.mark.parametrize('starting_revision', ['20261009_0150', '20261015_0163', '20261016_0163', '20261016_0166'])
+@pytest.mark.parametrize('starting_revision', [
+    '20261009_0150', '20261015_0163', '20261016_0163', '20261016_0166',
+    '20261019_0170', '20261020_0168',
+])
 def test_upgrade_preserves_existing_tables_and_matches_models(tmp_path, starting_revision):
     backend = Path(__file__).resolve().parents[1]
     expected_head = ScriptDirectory(str(backend / 'alembic')).get_current_head()

@@ -99,6 +99,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'carton_mark:template_release': '人工放行箱唛模板',
   'carton_mark:customer_manage': '维护箱唛客户',
   'carton_procurement:read': '查看纸箱采购台账',
+  'carton_procurement:special_request_submit': '提交并查看自己的样板与杂单申请',
   'carton_supplier:read': '查看纸箱供应商协同',
   'carton_supplier:edit': '登记纸箱供应商送货',
   'carton_supplier:approve': '确认纸箱接单与承诺交期',

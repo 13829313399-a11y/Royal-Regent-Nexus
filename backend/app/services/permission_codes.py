@@ -88,6 +88,7 @@ CUSTOMER_ORDER_PERMISSION_CODES = (
 )
 
 CARTON_PROCUREMENT_PERMISSION_CODES = (
+    "carton_procurement:special_request_submit",
     "carton_procurement:read",
     "carton_procurement:order_write",
     "carton_procurement:order_adjust",

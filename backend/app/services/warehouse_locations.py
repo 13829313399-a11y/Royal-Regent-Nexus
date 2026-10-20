@@ -25,7 +25,9 @@ def catalog(db, warehouse):
 
 
 def validate_category(location, material_category):
-    if location.get('category') and location['category'] != material_category:
+    if not location.get('category'):
+        raise HTTPException(422, '所选仓位尚未分类，请先在基础资料设置布料、辅料或线分区，通用仓位不能用于新入库或调入')
+    if location['category'] != material_category:
         raise HTTPException(422, '所选仓位不属于该原料分区，请重新选择对应架位或区域')
 
 

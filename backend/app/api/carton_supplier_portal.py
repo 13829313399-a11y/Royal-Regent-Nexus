@@ -98,6 +98,22 @@ def carton_mark_asset_document(asset_id: str, factory_id: str, preview: bool = F
         "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
 
 
+from app.schemas.carton_mark import CartonMarkSupplierBinding
+
+
+@router.get('/carton-mark/binding-targets')
+def mark_binding_targets(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_mark_sharing import binding_targets
+    return binding_targets(db, user, factory_id, external=True)
+
+
+@router.put('/carton-mark/assets/{asset_id}/binding', response_model=SupplierMarkAssetOut)
+def propose_mark_binding(asset_id: str, factory_id: str, payload: CartonMarkSupplierBinding,
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_mark_sharing import propose
+    return propose(db, user, factory_id, asset_id, payload)
+
+
 @router.get("/carton-mark/upload-orders", response_model=list[SupplierMarkUploadOrderOut])
 def carton_mark_upload_orders(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return mark_upload.upload_orders(db, user, factory_id)
@@ -106,6 +122,7 @@ def carton_mark_upload_orders(factory_id: str, db: Session = Depends(get_db), us
 @router.post("/carton-mark/assets/upload", response_model=list[SupplierMarkAssetUploadOut], status_code=201)
 async def upload_carton_mark_assets(request: Request, factory_id: str = Form(..., max_length=64),
         order_id: str = Form("", max_length=96), issue_id: str = Form("", max_length=96),
+        shared_unbound: bool = Form(False),
         files: list[UploadFile] = File(...), db: Session = Depends(get_db),
         user: AuthContext = Depends(get_current_user)):
     orders = mark_upload.upload_orders(db, user, factory_id)
@@ -127,7 +144,7 @@ async def upload_carton_mark_assets(request: Request, factory_id: str = Form(...
     db.rollback()
     parsed = await run_in_threadpool(mark_upload.recognize_batch, contents, orders)
     _lock_receipt_factory(db, factory_id)
-    return mark_upload.save_batch(db, get_current_user(request, db), factory_id, parsed, orders, order_id, issue_id)
+    return mark_upload.save_batch(db, get_current_user(request, db), factory_id, parsed, orders, order_id, issue_id, shared_unbound=shared_unbound)
 
 
 @router.get("/carton-mark/templates", response_model=list[SupplierMarkTemplateOut])

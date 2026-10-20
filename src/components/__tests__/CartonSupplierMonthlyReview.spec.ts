@@ -19,6 +19,33 @@ const button = (w: ReturnType<typeof mount>, text: string) => w.findAll('button'
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-01T04:00:00Z')); vi.resetAllMocks(); mocks.can.mockReturnValue(true); vi.mocked(api.supplierWorkspace).mockResolvedValue(fixture()) })
 afterEach(() => vi.useRealTimers())
 describe('供应商月结确认', () => {
+  it('filters from the host search without changing settlement totals', async () => {
+    const w = mount(Component, { props: { factories, search: 'missing' } }); await flushPromises()
+    expect(w.find('[aria-label="月结明细搜索"]').exists()).toBe(false)
+    expect(w.get('table[aria-label="双方月结明细"]').findAll('tbody tr')).toHaveLength(0)
+    expect(w.text()).toContain('本厂应结 16 · 拟结算 16 CNY')
+    await w.setProps({ search: 'DN1' })
+    expect(w.get('table[aria-label="双方月结明细"]').findAll('tbody tr')).toHaveLength(1)
+    w.unmount()
+  })
+  it('filters sample rows for display without changing the whole-month totals or confirmation', async () => {
+    const ws = fixture(), doc = ws.documents[0]!
+    doc.sources[0]!.special_request_kind = 'SAMPLE'
+    doc.sources.push({ ...doc.sources[0]!, source_key: 'RECEIPT:R2', special_request_kind: 'WORKSHOP_MISC' })
+    doc.statement.lines.push({ ...doc.statement.lines[0]!, id: 'L2', source_key: 'RECEIPT:R2', document_no: 'DN2' })
+    doc.result.net_amount = '32'; doc.result.statement_amount = '32'
+    vi.mocked(api.supplierWorkspace).mockResolvedValue(ws)
+    vi.mocked(api.supplierReview).mockResolvedValue(doc)
+    const w = mount(Component, { props: { factories } }); await flushPromises()
+    await w.get('[aria-label="月结业务类型"]').setValue('SAMPLE')
+    expect(w.get('table[aria-label="双方月结明细"]').findAll('tbody tr')).toHaveLength(1)
+    expect(w.text()).toContain('显示 1 / 2 条')
+    expect(w.text()).toContain('本厂应结 32 · 拟结算 32 CNY')
+    await button(w, '确认本月结算明细').trigger('click'); await flushPromises()
+    expect(api.supplierReview).toHaveBeenCalledWith('D1', 'huaxing', 4, 'CONFIRMED', '')
+    expect(doc.statement.lines).toHaveLength(2)
+    w.unmount()
+  })
   it('keeps rejected vendor papers and original unsupported prices visible without adding payable rows', async () => {
     const ws = fixture(), doc = ws.documents[0]!
     doc.result.unsettled_shipments = [{ shipment_id: 'SHIP', line_id: 'REJECTED', document_no: 'DN-REJECTED',

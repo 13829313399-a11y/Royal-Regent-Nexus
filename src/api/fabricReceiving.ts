@@ -5,12 +5,14 @@ export type MaterialCategory = 'FABRIC' | 'ACCESSORY' | 'THREAD'
 export interface ReceiptPriceInput { unit_price?: string; price_unit?: string; currency?: '' | 'CNY' | 'HKD' | 'USD' | 'EUR' }
 export interface ReceiptBatchInput { location_id?: string; quantity: string; location: string; dye_lot: string; roll_no: string }
 export interface ReceiveRequest extends ReceiptPriceInput {
+  delivery_quantity?: string
   factory_id: 'huakang-c'; request_id: string; expected_source_revision: number; expected_receipt_count: number
   receipt_date: string; delivery_reference: string; delivery_note_date: string | null
   material_category: MaterialCategory; difference_reason: string; note: string
   batches: ReceiptBatchInput[]; confirmed: boolean
 }
 export interface FabricReceipt {
+  delivery_quantity?: string
   history_key?: string; receipt_origin?: 'PROCUREMENT' | 'HANDOVER' | 'MANUAL'; operation_id?: string
   handover_document_id?: string; source_version?: string
   reversed?: boolean; reversal?: { id: string; date: string; reason: string; actor_name: string } | null
@@ -25,7 +27,7 @@ export interface FabricReceiptReversalRequest { factory_id: 'huakang-c'; request
 export interface ReceiveSourcesRequest {
   factory_id: 'huakang-c'; request_id: string; receipt_date: string; delivery_reference: string
   delivery_note_date: string | null; note: string; confirmed: boolean
-  items: (Pick<ReceiveRequest, 'expected_source_revision' | 'expected_receipt_count' | 'material_category' | 'difference_reason' | 'batches'> & ReceiptPriceInput & { source_line_id: string })[]
+  items: (Pick<ReceiveRequest, 'expected_source_revision' | 'expected_receipt_count' | 'material_category' | 'difference_reason' | 'batches' | 'delivery_quantity'> & ReceiptPriceInput & { source_line_id: string })[]
 }
 export interface ReceiveSourcesResult { request_id: string; receipts: FabricReceipt[] }
 export interface FabricStockBatch {

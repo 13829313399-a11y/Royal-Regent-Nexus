@@ -22,6 +22,13 @@ const scope: CartonCustomerResponsibilities = { can_manage: true, unrestricted: 
 beforeEach(() => { vi.resetAllMocks(); api.get.mockResolvedValue(scope); api.save.mockResolvedValue(scope); actor.currentUser = currentUser(); actor.authorizationVersion = 1; actor.authzMode = 'enforce' })
 
 describe('carton customer responsibilities', () => {
+  it('uses the host search for both customer and responsible person', async () => {
+    const wrapper = mount(Responsibilities, { props: { factoryId: 'huaxing', search: 'missing' } }); await flushPromises()
+    expect(wrapper.find('[aria-label="分配客户 迪奇"]').exists()).toBe(false)
+    await wrapper.setProps({ search: '甲' })
+    expect(wrapper.find('[aria-label="分配客户 迪奇"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
   it('saves multiple responsible users with the displayed revision and an explicit reason', async () => {
     const wrapper = mount(Responsibilities, { props: { factoryId: 'huaxing' } }); await flushPromises()
     await wrapper.get('[aria-label="分配客户 迪奇"]').trigger('click')

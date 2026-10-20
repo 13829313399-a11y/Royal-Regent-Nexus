@@ -16,6 +16,42 @@ router = APIRouter(prefix='/api/warehouse-operations', tags=['warehouse-operatio
 Warehouse = Literal['fabric', 'semi']
 
 
+from app.schemas.fabric_issue_groups import GroupSave, GroupPreview, GroupIssue, GroupRecovery
+from app.services import fabric_issue_groups
+
+
+def group_access(actor, factory_id):
+    permissions = capabilities(actor, 'fabric', factory_id)
+    if not permissions['read'] or not permissions['operate']:
+        raise HTTPException(403, '无布料仓配套发料权限')
+
+
+@router.post('/fabric/issue-groups')
+def save_issue_group(payload: GroupSave, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    group_access(actor, payload.factory_id)
+    return fabric_issue_groups.save(db, actor, payload)
+
+
+@router.post('/fabric/issue-groups/preview')
+def preview_issue_group(payload: GroupPreview, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    group_access(actor, payload.factory_id)
+    from fastapi.responses import JSONResponse
+    return JSONResponse(fabric_issue_groups.preview(db, actor, payload), headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/fabric/issue-groups/issue')
+def post_issue_group(payload: GroupIssue, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    group_access(actor, payload.factory_id)
+    return fabric_issue_groups.post(db, actor, payload)
+
+
+@router.post('/fabric/issue-groups/recover')
+def recover_issue_group(payload: GroupRecovery, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    if not capabilities(actor, 'fabric', payload.body.factory_id)['read']:
+        raise HTTPException(403, '无布料仓查询权限')
+    return fabric_issue_groups.recover(db, actor, payload)
+
+
 def capabilities(actor, warehouse, factory_id):
     service.procurement.require_factory(factory_id)
     family = 'fabric_operations' if warehouse == 'fabric' else 'semi_operations'

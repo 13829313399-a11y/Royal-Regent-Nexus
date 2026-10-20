@@ -8,6 +8,7 @@ import { guardWarehouseFactory } from './routes'
 import WarehouseGuide from './WarehouseGuide.vue'
 import './workspace.css'
 import './fabric-presentation.css'
+import './fabric-mobile.css'
 import { purchaseSearchKey } from './purchaseSearch'
 import { inventorySearchKey, exceptionSearchKey, activitySearchKey, monthlySearchKey } from './inventorySearch'
 

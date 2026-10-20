@@ -1,0 +1,21 @@
+/* Carton workspaces share table sizing; dense rows become labelled fields
+   according to the actual panel width, including dialogs. */
+.carton-table-wrap { position:relative; container-type:inline-size; min-width:0; max-width:100%; }
+.carton-table-fit { width:100% !important; min-width:0 !important; table-layout:fixed; }
+.carton-table-fit :is(th,td) { overflow-wrap:anywhere; white-space:normal; }
+.carton-table-fit :is(input:not([type=checkbox]),select,textarea) { min-width:0; max-width:100%; }
+.carton-table-fit td > :is(div,label,span) { max-width:100%; }
+@container (max-width:900px) {
+  .carton-table-fit,.carton-table-fit > :is(tbody,tfoot) { display:block; }
+  .carton-table-fit colgroup { display:none; }
+  .carton-table-fit thead { position:absolute; top:0; left:0; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+  .carton-table-fit :is(tbody,tfoot) > tr { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px 14px; padding:12px; border-bottom:1px solid var(--border); }
+  .carton-table-fit :is(tbody,tfoot) > tr > td { display:block; min-width:0; border:0; padding:4px; text-align:left; }
+  .carton-table-fit td[data-label]::before { display:block; content:attr(data-label); margin-bottom:5px; font-size:10px; line-height:1.4; font-weight:500; color:var(--muted-foreground); }
+  .carton-table-fit td[colspan] { grid-column:1/-1; }
+  .carton-table-fit td :is(input:not([type=checkbox]),select,textarea) { width:100%; }
+  .carton-table-fit td > div { width:auto; }
+}
+@container (max-width:600px) {
+  .carton-table-fit :is(tbody,tfoot) > tr { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}

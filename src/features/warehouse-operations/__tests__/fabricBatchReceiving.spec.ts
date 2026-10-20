@@ -15,7 +15,7 @@ vi.mock('@/api/fabricReceiving', () => ({ fabricReceivingApi: api, materialCateg
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: sourceApi }))
 const source = (id: string, unit = '码', category: 'FABRIC' | 'ACCESSORY' = 'FABRIC'): PurchaseDetail => ({ id, revision: 2, receipt_count: 0, can_receive: true,
   material_category: category, warehouse_received_quantity: '0', warehouse_outstanding_quantity: id === 'L1' ? '5' : null,
-  facts: { order_no: `PO-${id}`, material_code: id, material_name: `物料${id}`, supplier: '供应商', unit, source_category: 'PURCHASE', production_no: 'P1', style_no: 'ST1' }, available_locations: ['A01','A02'].map(code => ({ id: code, code, name: code, warehouse: '一仓', label: `一仓／${code}` })), evidence: [] } as PurchaseDetail)
+  facts: { order_no: `PO-${id}`, material_code: id, material_name: `物料${id}`, supplier: '供应商', unit, source_category: 'PURCHASE', production_no: 'P1', style_no: 'ST1' }, available_locations: ['A01','A02'].map(code => ({ id: code, code, name: code, warehouse: '一仓', category, label: `一仓／${code}` })), evidence: [] } as PurchaseDetail)
 let wrapper: VueWrapper | undefined
 const body = () => new DOMWrapper(document.body)
 const button = (label: string) => body().findAll('button').find(item => item.text().startsWith(label))!
@@ -31,12 +31,21 @@ async function openDialog(sources = [source('L1'), source('L2', '个', 'ACCESSOR
 async function fill() {
   await body().get('[aria-label="批量送货依据编号"]').setValue('DN-ALL')
   for (const index of [1, 2]) {
+    await body().get(`[aria-label="第${index}项本单到货量"]`).setValue('1000')
     await body().get(`[aria-label="物料${index}明细1实收数量"]`).setValue('0.125')
     await body().get(`[aria-label="物料${index}明细1仓位"]`).setValue(`一仓／A0${index}`)
   }
   await body().get('[aria-label="物料1明细1缸号"]').setValue('0001')
 }
 describe('carton-style fabric selection and batch receiving', () => {
+  it('blocks the entire batch when one delivery line exceeds its physical limit', async () => {
+    await openDialog(); await fill()
+    await body().get('[aria-label="第2项本单到货量"]').setValue('0.124999')
+    expect(button('保存全部并入库').attributes('disabled')).toBeDefined()
+    expect(api.receiveBatch).not.toHaveBeenCalled()
+    await body().get('[aria-label="第2项本单到货量"]').setValue('0.125')
+    expect(button('保存全部并入库').attributes('disabled')).toBeUndefined()
+  })
   it('calculates each item and groups batch amounts by currency without mixing inventory units', async () => {
     await openDialog(); await fill()
     expect(body().get<HTMLSelectElement>('[aria-label="第1项入库币种"]').element.value).toBe('CNY')

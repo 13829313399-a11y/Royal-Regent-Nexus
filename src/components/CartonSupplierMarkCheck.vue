@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import '@/features/carton-procurement/layout.css'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { cartonSupplierPortalApi, type SupplierMarkAsset, type SupplierMarkCheck } from '@/api/cartonSupplierPortal'
 import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
@@ -157,7 +158,7 @@ onBeforeUnmount(() => { generation++; controller.abort() })
         <div v-if="expandedId === record.id && record.check_result.review_method !== 'manual_sources'" class="mt-4 space-y-3">
           <p class="text-sm">通过 {{ record.check_result.summary.pass_count }} · 文字差异 {{ record.check_result.summary.changed_count }} · 缺失 {{ record.check_result.summary.missing_count }} · 新增 {{ record.check_result.summary.unexpected_count }} · 需复核 {{ record.check_result.summary.review_count }}</p>
           <div v-for="(item, index) in record.check_result.extraction.filter(row => !row.ok || row.requires_review)" :key="index" class="rounded bg-amber-50 p-3 text-sm text-amber-800">{{ item.review_reason || item.message }}</div>
-          <div class="overflow-x-auto"><table class="w-full min-w-[480px] text-left text-sm"><thead><tr class="bg-slate-50"><th class="p-2">结果</th><th class="p-2">Excel 原文</th><th class="p-2">PDF 原文</th><th class="p-2">说明</th></tr></thead><tbody><tr v-for="(item, index) in record.check_result.comparisons" :key="index" class="border-b align-top"><td class="p-2">{{ ({ pass: '通过', changed: '差异', missing: '缺失', unexpected: '新增', review: '复核' })[item.status] }}</td><td class="whitespace-pre-wrap break-all p-2">{{ item.expected }}<p class="text-xs text-slate-400">{{ item.expected_location }}</p></td><td class="whitespace-pre-wrap break-all p-2">{{ item.actual }}<p class="text-xs text-slate-400">{{ item.actual_location }}</p></td><td class="p-2">{{ item.note }}</td></tr></tbody></table></div>
+          <div class="overflow-x-auto carton-table-wrap"><table class="w-full min-w-[480px] text-left text-sm carton-table-fit"><thead><tr class="bg-slate-50"><th class="p-2">结果</th><th class="p-2">Excel 原文</th><th class="p-2">PDF 原文</th><th class="p-2">说明</th></tr></thead><tbody><tr v-for="(item, index) in record.check_result.comparisons" :key="index" class="border-b align-top"><td data-label="结果" class="p-2">{{ ({ pass: '通过', changed: '差异', missing: '缺失', unexpected: '新增', review: '复核' })[item.status] }}</td><td data-label="Excel 原文" class="whitespace-pre-wrap break-all p-2">{{ item.expected }}<p class="text-xs text-slate-400">{{ item.expected_location }}</p></td><td data-label="PDF 原文" class="whitespace-pre-wrap break-all p-2">{{ item.actual }}<p class="text-xs text-slate-400">{{ item.actual_location }}</p></td><td data-label="说明" class="p-2">{{ item.note }}</td></tr></tbody></table></div>
         </div>
       </article>
     </section>

@@ -4,6 +4,15 @@ import Component from '../CartonShipmentFilters.vue'
 import { emptyShipmentFilters } from '@/features/carton-procurement/queryFilters'
 
 describe('shipment keyword placement', () => {
+  it('offers all business types and clears the selection with the other filters', async () => {
+    const w = mount(Component, { props: { rows: [], modelValue: emptyShipmentFilters() } })
+    expect(w.get('[aria-label="送货单业务类型"]').findAll('option').map(option => option.text())).toEqual(['全部类型', '正单', '样板', '杂单', '历史或无单'])
+    await w.get('[aria-label="送货单业务类型"]').setValue('SAMPLE')
+    expect(w.props('modelValue').businessKind).toBe('SAMPLE')
+    await w.findAll('button').find(button => button.text() === '清除筛选')!.trigger('click')
+    expect(w.emitted('update:modelValue')?.[0]).toEqual([emptyShipmentFilters()])
+    w.unmount()
+  })
   it('keeps local keyword search for existing warehouse callers', async () => {
     const w = mount(Component, { props: { rows: [], modelValue: emptyShipmentFilters() } })
     await w.get('[aria-label="送货单关键字"]').setValue('合同-1')
