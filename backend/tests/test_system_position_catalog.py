@@ -118,6 +118,7 @@ def test_fixed_system_position_definition_contract():
             *permission_codes.CUTTING_OPS_PERMISSION_CODES,
             *permission_codes.UV_OPS_PERMISSION_CODES,
             *permission_codes.CARTON_SUPPLIER_PERMISSION_CODES,
+            *permission_codes.CARTON_SPECIAL_REQUEST_PERMISSION_CODES,
             *permission_codes.WAREHOUSE_OPERATIONS_PERMISSION_CODES,
         )
     )
@@ -956,3 +957,15 @@ def test_reconcile_rejects_an_unregistered_definition_permission(monkeypatch):
             with pytest.raises(RuntimeError, match="权限目录缺少.*future_module:undeclared"):
                 reconcile.reconcile_system_position_catalog(db)
             assert db.get(models.AuthRole, role_id).name == name_before
+
+
+def test_sample_submission_permission_is_registered_but_never_auto_granted():
+    permission_codes = importlib.import_module("app.services.permission_codes")
+    positions = importlib.import_module("app.services.system_positions")
+    code = "carton_procurement:special_request_submit"
+    assert code in permission_codes.APPLICATION_PERMISSION_CODES
+    assert code not in permission_codes.CARTON_PROCUREMENT_PERMISSION_CODES
+    assert all(code not in role.permission_codes for role in positions.SYSTEM_POSITION_DEFINITIONS)
+    for role_id in ("position_carton_manager", "position_carton_supervisor", "position_carton_warehouse_keeper",
+                    "position_general_manager", "position_warehouse_keeper", "position_warehouse_manager", "position_warehouse_supervisor"):
+        assert "carton_procurement:order_write" in positions.get_system_position(role_id).permission_codes
