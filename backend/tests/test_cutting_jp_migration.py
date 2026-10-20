@@ -94,7 +94,7 @@ def test_unique_revision_graph_and_frozen_archive():
                 identifiers.append(ast.literal_eval(node.value))
     assert len(identifiers) == len(set(identifiers))
     scripts=ScriptDirectory(str(BACKEND/'alembic'))
-    assert scripts.get_heads() == ['20261017_0167']
+    assert scripts.get_heads() == ['20261020_0168']
     assert list(scripts.walk_revisions())
     assert runpy.run_path(str(JP))['revision'] == '20261015_0163'
     assert sha256(JP.read_bytes().replace(b'\r\n',b'\n')).hexdigest() == 'dd653505555f3fe0847974ee14f379e41dc78a728bd2eeffbf26c63b3ecce47e'
@@ -114,7 +114,7 @@ def test_historical_variants_preserve_evidence_and_repeat_safely(base_database,t
             assert after[name] == value, name
     assert 'cutting_ops_period_events' in after and 'jp_intake_exports' in after
     with sqlite3.connect(path) as conn:
-        assert conn.execute('SELECT version_num FROM alembic_version').fetchall()==[('20261017_0167',)]
+        assert conn.execute('SELECT version_num FROM alembic_version').fetchall()==[('20261020_0168',)]
         assert conn.execute('PRAGMA integrity_check').fetchall()==[('ok',)]
         assert not conn.execute('PRAGMA foreign_key_check').fetchall()
         for table in ('cutting_ops_period_events','jp_intake_reference_events','jp_intake_exports','jp_intake_export_identities'):
@@ -183,6 +183,62 @@ def test_published_cutting_and_carton_heads_join_without_replaying_either(base_d
 def test_repair_downgrade_refuses():
     with pytest.raises(RuntimeError,match='cannot be deleted'):
         runpy.run_path(str(REPAIR))['downgrade']()
+
+
+@pytest.mark.parametrize('sequence', [
+    ['20261017_0167'], ['20261019_0167'],
+    ['20261017_0167', '20261019_0167'], ['20261019_0167', '20261017_0167'],
+])
+def test_both_0167_paths_join_with_nonempty_evidence(base_database, tmp_path, sequence):
+    path = clone(base_database, tmp_path)
+    legacy(path, ['cutting', 'jp'], True)
+    before = snapshot(path)
+    for revision in sequence:
+        migrate(path, revision)
+        assert snapshot(path) == before
+    assert {row[0] for row in version_snapshot(path)} == set(sequence)
+    migrate(path)
+    assert version_snapshot(path) == [('20261020_0168',)]
+    assert snapshot(path) == before
+    migrate(path)
+    assert snapshot(path) == before
+
+
+@pytest.mark.parametrize('versions,groups', [
+    (['20261017_0167'], ['jp']), (['20261019_0167'], ['cutting']),
+    (['20261020_0168'], ['jp']), (['20261017_0167', '20261016_0166'], ['cutting', 'jp']),
+])
+def test_labeled_heads_require_their_complete_contract(base_database, tmp_path, versions, groups):
+    path = clone(base_database, tmp_path)
+    legacy(path, groups, True)
+    with sqlite3.connect(path) as db:
+        db.execute('DELETE FROM alembic_version')
+        db.executemany('INSERT INTO alembic_version VALUES (?)', [(v,) for v in versions])
+    before, heads = snapshot(path), version_snapshot(path)
+    migrate(path, success=False)
+    assert snapshot(path) == before and version_snapshot(path) == heads
+
+
+def test_main_jp_creation_failure_rolls_back_and_retries(base_database, tmp_path, monkeypatch):
+    path = clone(base_database, tmp_path)
+    legacy(path, ['cutting'], True)
+    before, heads = snapshot(path), version_snapshot(path)
+    engine = sa.create_engine('sqlite:///'+path.as_posix())
+    module = runpy.run_path(str(VERSIONS/'20261019_0167_huakang_b_jp_intake.py'))
+    original = Operations.create_table
+    def fail_create(operation, name, *args, **kwargs):
+        result = original(operation, name, *args, **kwargs)
+        if name == 'jp_intake_reference_events':
+            raise RuntimeError('injected main JP create failure')
+        return result
+    with monkeypatch.context() as patch:
+        patch.setattr(Operations, 'create_table', fail_create)
+        with engine.begin() as db, Operations.context(MigrationContext.configure(db)):
+            with pytest.raises(RuntimeError, match='injected'):
+                module['upgrade']()
+    engine.dispose()
+    assert snapshot(path) == before and version_snapshot(path) == heads
+    migrate(path)
 
 
 # Optional dedicated-engine validation; no configured PostgreSQL is an explicit

@@ -97,7 +97,7 @@ def main():
         'concurrency': ['test_cutting_usage_concurrency.py', 'test_cutting_period_concurrency.py',
                         'test_cutting_settlement_concurrency.py', 'test_cutting_payments_concurrency.py',
                         'test_cutting_postgres_concurrency.py'],
-        'migration': ['test_cutting_migration.py', 'test_cutting_jp_migration.py'],
+        'migration': ['test_cutting_migration.py', 'test_cutting_jp_migration.py', 'test_migration_revision_identity.py'],
         'compatibility': ['test_unversioned_database_audit.py', 'test_database_takeover.py', 'test_huakang_b_jp.py'],
         'capacity': ['test_cutting_sqlite_capacity.py'],
     }

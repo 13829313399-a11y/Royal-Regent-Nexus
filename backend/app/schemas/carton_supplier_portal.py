@@ -76,7 +76,7 @@ class UnmatchedShipLine(BaseModel):
     source_sheet: str = Field(min_length=1, max_length=128)
     source_row: int = Field(ge=1)
     contract_no: str = Field(default="", max_length=128)
-    item_no: str = Field(min_length=1, max_length=128)
+    item_no: str = Field(default="", max_length=128)
     packaging_type: str = Field(min_length=1, max_length=64)
     paper_quality: str = Field(min_length=1, max_length=128)
     specification: str = Field(min_length=1, max_length=255)
@@ -102,6 +102,7 @@ class ShipmentCreate(Payload):
         return self
 
 class ReceiveLine(BaseModel):
+    dimension_unit: Literal["cm", "in"] = "cm"
     zero_price_kind: Literal["FREE", "PENDING"] | None = None
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     shipment_line_id: str = Field(min_length=1, max_length=96)
@@ -114,7 +115,7 @@ class ReceiveLine(BaseModel):
     specification: str = Field(default="", max_length=255)
     location_allocations: list[CartonLocationAllocation] = Field(default_factory=list, max_length=100)
     difference_reason: str = Field(default="", max_length=1000)
-    no_order_decision: Literal["", "SAMPLE", "GIFT", "WRONG_DELIVERY"] = ""
+    no_order_decision: Literal["", "SAMPLE", "GIFT", "WRONG_DELIVERY", "UNORDERED"] = ""
     customer_code: str = Field(default="", max_length=64)
     sample_purpose: str = Field(default="", max_length=255)
     requested_by: str = Field(default="", max_length=128)

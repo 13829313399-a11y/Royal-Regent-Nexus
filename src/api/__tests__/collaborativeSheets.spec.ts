@@ -5,6 +5,13 @@ import { http } from '@/lib/http'
 afterEach(() => vi.restoreAllMocks())
 
 describe('collaborative sheet upload size', () => {
+  it('carries cancellation and request correlation through the blob transport', async () => {
+    const blob = new Blob(['xlsx']), controller = new AbortController(), response = vi.fn()
+    const get = vi.spyOn(http, 'get').mockResolvedValue({ data: blob, headers: { 'x-request-id': 'opaque-id', 'server-timing': 'app;dur=12', 'x-workbook-revision': '9' } })
+    expect(await api.download('huaxing', { id: 'task' }, undefined, { signal: controller.signal, requestId: 'opaque-id', onResponse: response })).toBe(blob)
+    expect(get).toHaveBeenCalledWith('/tools/collaborative-sheets/task/download', expect.objectContaining({ signal: controller.signal, timeout: 300_000, responseType: 'blob', headers: { 'X-Request-ID': 'opaque-id' } }))
+    expect(response).toHaveBeenCalledWith({ bytes: blob.size, requestId: 'opaque-id', serverTiming: 'app;dur=12', revision: '9' })
+  })
   it('rejects files over 100 MiB without sending a request', async () => {
     const post = vi.spyOn(http, 'post').mockResolvedValue({ data: {} })
     const file = new File(['sample'], 'large.xlsx')

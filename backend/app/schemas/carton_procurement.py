@@ -164,7 +164,7 @@ class CartonOrderLineCreate(CartonPackingWeights):
     packaging_type: str = Field(min_length=1, max_length=64)
     paper_quality: str = Field(default="", max_length=128)
     specification: str = Field(default="", max_length=255)
-    dimension_unit: str = Field(default="", max_length=16)
+    dimension_unit: str = Field(default="cm", max_length=16)
     usage_quantity: Decimal | None = Field(
         default=None, gt=0,
         max_digits=18,
@@ -752,6 +752,8 @@ class CartonLocationAllocation(BaseModel):
 
 
 class CartonReceiptLineCreate(BaseModel):
+    unordered_receipt: bool = False
+    dimension_unit: Literal["cm", "in"] = "cm"
     zero_price_kind: Literal["FREE", "PENDING"] | None = None
     material_correction_id: str = Field(default="", max_length=96)
     replenishment_issue_id: str | None = Field(default=None, min_length=1, max_length=96)
@@ -806,6 +808,10 @@ class CartonReceiptLineCreate(BaseModel):
             raise ValueError("破损、拒收和其他不可用数量之和不能大于实收数量")
         if self.received_quantity > self.delivered_quantity:
             raise ValueError("实收数量不能大于送货数量")
+        if self.unordered_receipt and self.source_type != "AD_HOC":
+            raise ValueError("无落单入库必须使用非正式收料类型")
+        if self.customer_code == "__UNORDERED__" and not self.unordered_receipt:
+            raise ValueError("无落单入库必须明确选择无落单模式")
         if self.source_type == "FORMAL_ORDER":
             if not self.order_line_id:
                 raise ValueError("正式订单收料必须关联订单明细")
@@ -817,8 +823,8 @@ class CartonReceiptLineCreate(BaseModel):
         missing = [
             label
             for label, value in (
-                ("客户", self.customer_code),
-                ("货号", self.item_no),
+                ("客户", self.customer_code or self.unordered_receipt),
+                ("货号", self.item_no or self.unordered_receipt),
                 ("纸品类型", self.packaging_type),
                 ("纸质", self.paper_quality),
                 ("规格", self.specification),
@@ -828,6 +834,10 @@ class CartonReceiptLineCreate(BaseModel):
         ]
         if missing:
             raise ValueError(f"非正式收料必须补齐：{'、'.join(missing)}")
+        if self.unordered_receipt and not (self.location or self.location_allocations):
+            raise ValueError("无落单入库必须选择仓位")
+        if self.unordered_receipt and (self.unit_price is None or self.unit_price <= 0):
+            raise ValueError("无落单入库必须填写大于零的单价")
         if self.received_quantity - unusable <= 0:
             raise ValueError("非正式收料的有效收料数量必须大于 0")
         return self
@@ -848,6 +858,8 @@ class CartonReceiptCreate(BaseModel):
 
     @model_validator(mode="after")
     def require_posting_request(self):
+        if any(line.unordered_receipt for line in self.lines) and not self.acceptance_date:
+            raise ValueError("无落单入库必须填写验收日期")
         if self.post_immediately and not (self.request_id or "").strip():
             raise ValueError("直接入库必须提供提交标识")
         return self
@@ -869,6 +881,8 @@ class CartonReceiptCreate(BaseModel):
 
 
 class CartonReceiptLineOut(BaseModel):
+    unordered_receipt: bool = False
+    dimension_unit: str | None = None
     zero_price_kind: Literal["FREE", "PENDING"] | None = None
     replenishment_issue_id: str | None = None
     document_no: str | None = None

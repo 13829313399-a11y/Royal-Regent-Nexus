@@ -25,8 +25,9 @@ GROUPS = {
     'jp': ('jp_intake_references', 'jp_intake_reference_events', 'jp_intake_counters',
            'jp_intake_exports', 'jp_intake_export_identities'),
 }
-VALID_VERSIONS = [{v} for v in ('20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166', revision)] + [
-    {'20261015_0163', '20261016_0163'}]
+VALID_VERSIONS = [{v} for v in ('20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166',
+                              revision, '20261019_0167', '20261020_0168')] + [
+    {'20261015_0163', '20261016_0163'}, {revision, '20261019_0167'}]
 FUNCTIONS = {'cutting': 'cutting_period_immutable', 'jp': 'jp_intake_immutable'}
 
 
@@ -120,8 +121,10 @@ def preflight(bind):
     for group, flags in present.items():
         if any(flags) and not all(flags):
             raise RuntimeError(f'Partial 0163 schema group: {group}; no repair was applied')
-    if revision in versions and not all(all(flags) for flags in present.values()):
+    if versions & {revision, '20261020_0168'} and not all(all(flags) for flags in present.values()):
         raise RuntimeError('Reconciled 0167 schema is incomplete; refusing automatic repair')
+    if '20261019_0167' in versions and not all(present['jp']):
+        raise RuntimeError('Published JP 0167 schema is incomplete; refusing automatic repair')
     if bind.dialect.name == 'sqlite':
         expected = _sqlite_expected()
         for group, names in GROUPS.items():

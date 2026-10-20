@@ -162,8 +162,8 @@ def detail(db, task, user):
                       "created_at": e.created_at, "detail": e.detail} for e in events]}
 
 
-def event(db, task, user, action, data):
-    db.add(Event(id=uid(), task_id=task.id, actor_id=user.id, actor_name=user.display_name or user.username,
+def event(db, task, user, action, data, event_id=None):
+    db.add(Event(id=event_id or uid(), task_id=task.id, actor_id=user.id, actor_name=user.display_name or user.username,
                  action=action, revision=task.revision, detail=data, created_at=now()))
 
 
@@ -278,29 +278,21 @@ def source_bytes(task):
     return data
 
 
-def save_cells(db, task, user, payload):
-    if task.status != "open":
-        raise HTTPException(409, "任务尚未开放或已经结束，不能填写")
-    if task.revision != payload.expected_revision:
-        raise HTTPException(409, "表格已被其他人更新，请刷新后核对再保存")
+def validated_changes(task, user, incoming):
+    """One permission/type/merge contract for manual and incremental saves."""
     grants = task.grants if task.owner_user_id == user.id else matching_grants(task, user)
     overrides = dict(task.overrides)
     changes, seen = [], set()
-    for change in payload.changes:
+    requested_sheets = {c.sheet for c in incoming}
+    indexes = {s["index"]: {c["address"]: c for c in s["cells"]} for s in task.manifest["sheets"] if s["index"] in requested_sheets}
+    for change in incoming:
         r, c = coordinate_to_tuple(change.address)
         _range(task, change.sheet, change.address)
-        allowed = False
-        for grant in grants:
-            if grant["sheet"] != change.sheet:
-                continue
-            c1, r1, c2, r2 = range_boundaries(grant["range"])
-            if c1 <= c <= c2 and r1 <= r <= r2:
-                allowed = True
-        if not allowed:
+        if not any(g["sheet"] == change.sheet and (lambda b: b[0] <= c <= b[2] and b[1] <= r <= b[3])(range_boundaries(g["range"])) for g in grants):
             raise HTTPException(403, "所填单元格未获授权")
         sheet = task.manifest["sheets"][change.sheet]
-        original = next((x for x in sheet["cells"] if x["address"] == change.address), None)
-        if original and original["formula"]:
+        original = indexes[change.sheet].get(change.address)
+        if original and (original["formula"] or original.get("image")):
             raise HTTPException(422, "原表公式不可覆盖")
         for merge in sheet["merges"]:
             c1, r1, c2, r2 = range_boundaries(merge)
@@ -312,6 +304,15 @@ def save_cells(db, task, user, payload):
         seen.add(key)
         changes.append({"sheet": change.sheet, "address": change.address, "before": overrides.get(key, original["value"] if original else None), "after": change.value})
         overrides[key] = change.value
+    return changes, overrides
+
+
+def save_cells(db, task, user, payload):
+    if task.status != "open":
+        raise HTTPException(409, "任务尚未开放或已经结束，不能填写")
+    if task.revision != payload.expected_revision:
+        raise HTTPException(409, "表格已被其他人更新，请刷新后核对再保存")
+    changes, overrides = validated_changes(task, user, payload.changes)
     # Validate the actual exporter before acknowledging a saved fill, so an
     # unsupported BIFF structure can never strand accepted work at download.
     try:

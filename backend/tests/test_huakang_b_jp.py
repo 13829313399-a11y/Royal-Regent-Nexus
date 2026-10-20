@@ -28,7 +28,7 @@ from test_customer_order_ledger import user, migration as ledger_migration
 
 
 def migration():
-    path = Path(__file__).parents[1] / "alembic/legacy/20261015_0163_huakang_b_jp_intake.py"
+    path = Path(__file__).parents[1] / "alembic/versions/20261019_0167_huakang_b_jp_intake.py"
     spec = importlib.util.spec_from_file_location("jp_migration", path)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)

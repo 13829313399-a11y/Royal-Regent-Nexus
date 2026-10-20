@@ -296,6 +296,33 @@ describe('supplier-origin material and draft guards', () => {
   })
 })
 
+it('accepts blank customer, contract and item only after an explicit unordered decision with price and allocations', async () => {
+  const data = fixture(); data.shipments = [data.shipments[0]!]
+  data.shipments[0]!.lines = [sourceLine('SOURCE', { contract_no: '', item_no: '', customer_name: '' })]
+  api.workspace.mockResolvedValue(data)
+  api.receive.mockResolvedValue({ ...data.shipments[0]!, receipt_id: 'RECEIPT' })
+  const wrapper = mount(Component, options); await flushPromises()
+  await button(wrapper, '核实实际收到').trigger('click'); await flushPromises()
+  const dialog = wrapper.get('[role="dialog"]')
+  wrapper.findComponent({ name: 'CartonReceiptAllocations' }).vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 836 }])
+  await dialog.trigger('submit'); await flushPromises()
+  expect(api.receive).not.toHaveBeenCalled()
+  await dialog.get('[aria-label="SOURCE 无单处理结论"]').setValue('UNORDERED')
+  expect(dialog.find('[aria-label="SOURCE 样板箱客户"]').exists()).toBe(false)
+  expect(dialog.get('[aria-label="SOURCE 无落单尺寸单位"]').element).toHaveProperty('value', 'in')
+  await dialog.get('[aria-label="SOURCE 入库单价"]').setValue(0)
+  await dialog.trigger('submit'); await flushPromises()
+  expect(api.receive).not.toHaveBeenCalled()
+  await dialog.get('[aria-label="SOURCE 入库单价"]').setValue(2.5)
+  await dialog.trigger('submit'); await flushPromises()
+  expect(api.receive).toHaveBeenCalledWith('SHIPMENT', expect.objectContaining({ lines: [expect.objectContaining({
+    shipment_line_id: 'SOURCE', no_order_decision: 'UNORDERED', customer_code: '', requested_by: '',
+    dimension_unit: 'in', received_quantity: 836, unit_price: 2.5, location_allocations: [{ location_id: 'BIN', quantity: 836 }],
+  })] }))
+  expect(api.linkShipmentLine).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
 it.each(['FREE', 'PENDING'] as const)('preserves default actual quantity and submits explicit zero-price %s', async kind => {
   const data = fixture(); data.shipments = [data.shipments[0]!]; data.shipments[0]!.lines = [sourceLine('SOURCE', { contract_no: 'GIFT-ONLY', item_no: 'GIFT-ONLY' })]
   api.workspace.mockResolvedValue(data)

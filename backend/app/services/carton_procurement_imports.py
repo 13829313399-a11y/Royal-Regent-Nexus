@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.carton_procurement import CartonOrder, CartonOrderLine
+from app.services.carton_dimensions import specification_unit
 from app.services.carton_material_identity import material_conflicts
 from app.services.carton_schedule_tracking import identity as schedule_identity, tracked
 
@@ -39,7 +40,7 @@ def prepared_sheets(filename, content, sheets):
 
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
-DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v10-dongkang-carton-alias"
+DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v11-unordered"
 SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-so-identity-v4-complete"
 INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v3-complete"
 PACKAGING_TYPES = (
@@ -82,6 +83,7 @@ DELIVERY_ALIASES = {
     "item_no": {"货号", "产品编号", "itemno", "item", "客户料号"},
     "quantity": {"外箱", "送货数量", "数量", "入库数量", "qty", "quantity"},
     "paper_quality": {"纸质", "材质", "paperquality", "description"},
+    "dimension_unit": {"尺寸单位", "dimensionunit"},
     "length": {"长", "l", "length"},
     "width": {"宽", "w", "width"},
     "height": {"高", "h", "height"},
@@ -89,7 +91,7 @@ DELIVERY_ALIASES = {
     "location": {"仓位", "库位", "location"},
     "destination": {"客户"},
     "packaging_type": {"名称"},
-    "specification": {"规格"},
+    "specification": {"规格", "尺寸", "specification", "size"},
 }
 
 
@@ -236,13 +238,23 @@ def _sheet_rows(filename: str, content: bytes, *, strict_item_limit: bool = Fals
                 # before materializing cells, not after reading the whole book.
                 sheets = [sheet for sheet in sheets if "item" in sheet.title.casefold()] or sheets
             for sheet in sheets:
-                if strict_row_limit and sheet.max_row > strict_row_limit:
+                if strict_row_limit and (sheet.max_row or 0) > strict_row_limit:
                     raise HTTPException(422, f"送货工作表“{sheet.title}”超过 {strict_row_limit} 行，请拆分文件后导入")
-                if strict_item_limit and "item" in sheet.title.casefold() and sheet.max_row > MAX_IMPORT_ROWS:
+                if strict_item_limit and "item" in sheet.title.casefold() and (sheet.max_row or 0) > MAX_IMPORT_ROWS:
                     raise HTTPException(422, f"ITEM 工作表“{sheet.title}”超过 {MAX_IMPORT_ROWS} 行，请拆分或清理空白格式后导入")
-                if sheet.max_row > MAX_IMPORT_ROWS + 1 or sheet.max_column > 256:
+                if (sheet.max_row or 0) > MAX_IMPORT_ROWS + 1 or (sheet.max_column or 0) > 256:
                     raise HTTPException(422, f"工作表“{sheet.title}”超过 5000 条明细或 256 列，请拆分或清理空白格式后导入；本次未导入任何行")
-                rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+                # Valid OOXML may omit dimensions (including our published templates).
+                # Enforce the same limits while reading instead of trusting metadata.
+                rows = []
+                for index, row in enumerate(sheet.iter_rows(values_only=True), 1):
+                    if strict_row_limit and index > strict_row_limit:
+                        raise HTTPException(422, f"送货工作表“{sheet.title}”超过 {strict_row_limit} 行，请拆分文件后导入")
+                    if strict_item_limit and "item" in sheet.title.casefold() and index > MAX_IMPORT_ROWS:
+                        raise HTTPException(422, f"ITEM 工作表“{sheet.title}”超过 {MAX_IMPORT_ROWS} 行，请拆分或清理空白格式后导入")
+                    if index > MAX_IMPORT_ROWS + 1 or len(row) > 256:
+                        raise HTTPException(422, f"工作表“{sheet.title}”超过 5000 条明细或 256 列，请拆分或清理空白格式后导入；本次未导入任何行")
+                    rows.append(list(row))
                 result.append((sheet.title, rows, 1 if workbook.epoch.year == 1904 else 0))
         finally:
             workbook.close()
@@ -309,9 +321,16 @@ def _split_paper(value: Any) -> tuple[str, str]:
 
 
 def _specification(row: list[Any], mapping: dict[str, int]) -> str:
+    explicit = _text(_cell(row, mapping, "specification"))
+    dimension_unit = _text(_cell(row, mapping, "dimension_unit")).lower()
+    if explicit:
+        if dimension_unit and not specification_unit(explicit)[0]:
+            return f"{explicit} {dimension_unit}"
+        return explicit
     dimensions = [_number(_cell(row, mapping, field)) for field in ("length", "width", "height")]
     present = [str(value.normalize()) for value in dimensions if value is not None]
-    return " × ".join(present) + (" in" if present else "")
+    suffix = f" {dimension_unit}" if dimension_unit else ""
+    return " × ".join(present) + (suffix if present else "")
 
 
 def _dongkang_destination_factory(value: Any) -> str:
@@ -522,8 +541,11 @@ def _delivery_specification(words: list[DeliveryOcrWord], row_words: list[Delive
     if match is None:
         return text.strip()
     dimensions = [part.replace(",", ".") for part in match.groups()]
-    has_inches = any(_ocr_key(word.text) in {"IN", "INCH", "INCHES"} for word in row_words)
-    return " × ".join(dimensions) + (" in" if has_inches else "")
+    units = {"IN": "in", "INCH": "in", "INCHES": "in", "英寸": "in", "英吋": "in",
+             "CM": "cm", "厘米": "cm", "公分": "cm", "MM": "mm", "毫米": "mm"}
+    stated = list(dict.fromkeys(units[key] for word in row_words if (key := _ocr_key(word.text)) in units))
+    suffix = " " + " / ".join(stated) if stated else ""
+    return " × ".join(dimensions) + suffix
 
 
 def _delivery_document_metadata(words: list[DeliveryOcrWord]) -> tuple[str, str]:
@@ -848,7 +870,7 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes, *, strict_rows: b
     for sheet_name, rows, datemode in _sheet_rows(filename, content,
             strict_row_limit=MAX_PREVIEW_ROWS if strict_rows else None):
         header = _header_mapping(rows, DELIVERY_ALIASES)
-        if header is None or not {"item_no", "quantity"}.issubset(header[1]):
+        if header is None or "quantity" not in header[1] or not ({"item_no", "paper_quality", "specification", "length"} & set(header[1])):
             continue
         header_index, mapping = header
         dongkang_format = {_header_key(value) for value in rows[header_index]} >= {"客户单号", "客户料号", "送货单号"}
@@ -868,7 +890,7 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes, *, strict_rows: b
                     and all(not _text(value) or _number(value) is not None for index, value in enumerate(row)
                             if index not in {mapping.get("specification"), mapping.get("unit_price")})):
                 continue
-            if not any((delivery_note_no, contract_no, item_no)) and not (strict_rows and any(_text(value) for value in row)):
+            if not any((delivery_note_no, contract_no, item_no, _text(_cell(row, mapping, "paper_quality")), _specification(row, mapping))) and not (strict_rows and any(_text(value) for value in row)):
                 continue
             if (amount is None or amount <= 0) and not strict_rows:
                 continue
@@ -977,6 +999,24 @@ def _parse_delivery_document(filename: str, content: bytes) -> dict[str, Any]:
                 "location": "",
             }
         )
+    if not rows:
+        # Keep material-only PDF/OCR lines reviewable; matching identifiers must
+        # never be invented from dimensions or the delivery-note number.
+        dimension_pattern = r"\d+(?:\.\d+)?\s*[x×*]\s*\d+(?:\.\d+)?(?:\s*[x×*]\s*\d+(?:\.\d+)?)?(?:\s*(?:cm|inches|inch|in|mm|ft|m|英寸|厘米|毫米))?"
+        for source_row, text_line in enumerate(compact.splitlines(), start=1):
+            material = next((kind for kind in PACKAGING_TYPES if kind in text_line), None)
+            dimensions = re.search(dimension_pattern, text_line, re.IGNORECASE)
+            if not material or dimensions is None:
+                continue
+            tail = text_line[dimensions.end():].strip()
+            qty = re.match(r"(?:数量[:：]?\s*)?(\d+(?:\.\d+)?)(?:\s*(?:个|件|PCS))?(?:\s|$)", tail, re.IGNORECASE)
+            amount = _number(qty.group(1)) if qty else None
+            rows.append({"source_sheet": "OCR", "source_row": source_row,
+                         "delivery_note_no": delivery_note_no, "delivery_date": delivery_date,
+                         "contract_no": "", "item_no": "", "packaging_type": material,
+                         "paper_quality": text_line[:dimensions.start()].replace(material, "").strip() or "待复核",
+                         "specification": dimensions.group(0), "delivered_quantity": _json_number(amount) if amount else 0,
+                         "unit_price": 0, "location": ""})
     warnings = ["图片/PDF 仅作为 OCR 预览，数量和纸品字段必须逐行人工复核"]
     if message:
         warnings.append(message)
