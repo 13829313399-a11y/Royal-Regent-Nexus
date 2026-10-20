@@ -123,13 +123,15 @@ def read_pdf_pages(
     *,
     min_native_chars_per_page: int = 40,
     max_pages: int = 60,
+    x_tolerance: float = 2,
+    y_tolerance: float = 3,
 ) -> tuple[list[str], bool]:
     """Read native PDF text, falling back to bounded page-preserving OCR."""
     content = _pdf_bytes(source)
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         if len(pdf.pages) > max_pages:
             raise ValueError(f"扫描 PDF 最多支持 {max_pages} 页，当前为 {len(pdf.pages)} 页")
-        pages = [(page.extract_text(x_tolerance=2, y_tolerance=3) or "") for page in pdf.pages]
+        pages = [(page.extract_text(x_tolerance=x_tolerance, y_tolerance=y_tolerance) or "") for page in pdf.pages]
     if not pages:
         raise ValueError("PDF 没有页面")
     native_chars = sum(len(re.sub(r"\s+", "", page)) for page in pages)
@@ -368,70 +370,300 @@ def _parse_maxx_excel(rows: list[list[Any]], filename: str) -> dict[str, Any]:
     return result
 
 
+_SHUSHUPAPA_DATE = (
+    r"(?:January|February|March|April|May|June|July|August|September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)"
+    r"\s*\d{1,2}(?:st|nd|rd|th)?\s*,?\s*20\d{2}"
+)
+
+
+def _shushupapa_date(value: str) -> str | None:
+    match = re.fullmatch(
+        r"([A-Za-z]+)\s*(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(20\d{2})",
+        _clean(value), re.I,
+    )
+    if not match:
+        return None
+    month, day, year = match.groups()
+    if month.lower() == "sept":
+        month = "Sep"
+    return _iso_date(f"{month} {day}, {year}")
+
+
+def _shushupapa_section(text: str, label: str, following: str) -> re.Match | None:
+    return re.search(
+        rf"(?:{label})\s*:\s*:?[ \t]*(.*?)(?=(?:{following})\s*:|$)",
+        text, re.I | re.S,
+    )
+
+
+def _shushupapa_amount_words(value: str) -> int | None:
+    """Read only a complete English dollars/cents amount; return integer cents."""
+    match = re.fullmatch(
+        r"([A-Za-z -]+)\s+Dollars?(?:\s+and\s+([A-Za-z -]+)\s+Cents?)?\.?",
+        _clean(value), re.I,
+    )
+    if not match:
+        return None
+    small = dict(zip(
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(),
+        range(20),
+    ))
+    small.update(dict(zip("twenty thirty forty fifty sixty seventy eighty ninety".split(), range(20, 100, 10))))
+
+    def under_thousand(tokens: list[str]) -> int | None:
+        if not tokens:
+            return None
+        value = 0
+        if len(tokens) >= 2 and tokens[1] == "hundred":
+            if small.get(tokens[0], 0) not in range(1, 10):
+                return None
+            value = small[tokens[0]] * 100
+            tokens = tokens[2:]
+            if tokens[:1] == ["and"]:
+                tokens = tokens[1:]
+            if not tokens:
+                return value
+        if len(tokens) == 1 and tokens[0] in small:
+            return value + small[tokens[0]]
+        if (len(tokens) == 2 and small.get(tokens[0], 0) in range(20, 100, 10)
+                and small.get(tokens[1], 0) in range(1, 10)):
+            return value + small[tokens[0]] + small[tokens[1]]
+        return None
+
+    def integer(words: str) -> int | None:
+        tokens = words.lower().replace("-", " ").split()
+        total = 0
+        last_scale = 10**9
+        while any(word in {"thousand", "million"} for word in tokens):
+            index = next(index for index, word in enumerate(tokens) if word in {"thousand", "million"})
+            scale = {"thousand": 1000, "million": 1000000}[tokens[index]]
+            group = under_thousand(tokens[:index])
+            if not group or scale >= last_scale:
+                return None
+            total += group * scale
+            last_scale = scale
+            tokens = tokens[index + 1:]
+            if tokens[:1] == ["and"]:
+                tokens = tokens[1:]
+        if not tokens:
+            return total or None
+        remainder = under_thousand(tokens)
+        return total + remainder if remainder is not None else None
+
+    dollars = integer(match.group(1))
+    cents = integer(match.group(2)) if match.group(2) else 0
+    if dollars is None or cents is None or not 0 <= cents < 100:
+        return None
+    return dollars * 100 + cents
+
+
 def _parse_shushupapa(text: str, filename: str, pages: int) -> dict[str, Any]:
     result = _base_result("shushupapa", filename, pages)
-    upper = text.upper()
-    compact = re.sub(r"[ \t]", "", text)
-    po_number = _search(r"PO\s*Number:\s*([A-Z0-9-]+)", text)
-    customer = "BJs" if "BJS CDU" in upper else (
-        "Price Smart" if "PRICESMART" in upper else "SHUSHUPAPA"
+    # The native template uses separate bullet glyphs between wrapped lines.
+    # Remove only those glyphs, retaining page separators for source evidence.
+    text = re.sub(r"[•\uf0b7]", "", text)
+    compact = re.sub(r"\s+", "", text).upper()
+    customer = "BJs" if "BJSCDU" in compact else (
+        "Price Smart" if "PRICESMART" in compact else "SHUSHUPAPA"
     )
+    destination_match = _shushupapa_section(
+        text, r"Destination\s*&\s*Shipping", r"Incoterms|Quality\s*&\s*Compliance",
+    )
+    destination = _clean(destination_match.group(1)) if destination_match else ""
+    terminal_po = re.search(r"(Costco|Price\s*Smart)\s*PO\s*Number\s*:\s*([A-Z0-9-]+)", text, re.I)
+    if re.search(r"Costco", destination, re.I) or (terminal_po and terminal_po.group(1).lower() == "costco"):
+        customer = "Costco"
+    country = _search(
+        r"(?:Costco\s*Wholesale|Destination\s*Country\s*:)\s*(Japan|Canada|Australia|United\s*Kingdom|United\s*States|USA|UK)\b",
+        destination,
+    )
+    # Anchor to the labelled supplier PO line so a terminal customer PO can
+    # never become the supplier identity if the first header is missing.
+    po_match = re.search(r"^\s*PO\s*Number\s*:\s*([A-Z0-9-]+)", text, re.I | re.M)
+    issue_match = re.search(rf"Issue\s*Date\s*:\s*({_SHUSHUPAPA_DATE})", text, re.I)
+    delivery_match = _shushupapa_section(
+        text, r"Delivery\s*Date", r"Destination\s*&\s*Shipping|Incoterms|Quality\s*&\s*Compliance",
+    )
+    # Older BJs/PriceSmart PDFs print only the 'on or before' sentence.
+    delivery_text = delivery_match.group(1) if delivery_match else text
+    ship_match = re.search(rf"\bon\s*(?:or\s*before\s*)?({_SHUSHUPAPA_DATE})", delivery_text, re.I)
+    quality_match = _shushupapa_section(
+        text, r"Quality\s*&\s*Compliance", r"Packaging\s*&\s*Marking|Payment\s*Terms",
+    )
+    quality_text = _clean(quality_match.group(1)).rstrip(" -") if quality_match else ""
+    quality_parts = re.split(r"(?<=[.!?])\s+", quality_text, maxsplit=1)
+    standard = quality_parts[0]
+    quality_notes = quality_parts[1] if len(quality_parts) > 1 else ""
+    packaging_match = _shushupapa_section(
+        text, r"Packaging\s*&\s*Marking", r"Payment\s*Terms|Intellectual\s*Property",
+    )
+    packaging = _clean(packaging_match.group(1)) if packaging_match else ""
+    master_matches = list(re.finditer(r"Master\s*Carton\s*Packed\s*(?:with|:)\s*(\d+)\s*pcs?\b", text, re.I))
+    master_packs = {int(match.group(1)) for match in master_matches if int(match.group(1)) > 0}
+    if len(master_packs) > 1:
+        raise ValueError("Shushupapa PO 的 Master Carton 装箱数量互相冲突，请核对原单。")
+
     result.update({
-        "po_number": po_number,
-        "customer_po": _search(r"PriceSmart\s*PO\s*Number:\s*([A-Z0-9-]+)", text),
+        "po_number": po_match.group(1) if po_match else "",
+        "customer_po": terminal_po.group(2) if terminal_po else "",
+        "po_date": _shushupapa_date(issue_match.group(1)) if issue_match else None,
+        "ship_date": _shushupapa_date(ship_match.group(1)) if ship_match else None,
         "customer": customer,
+        "country": country,
+        "destination": destination,
+        "standard": standard,
     })
-    issue = _search(
-        r"Issue\s*Date[^:]*:\s*([A-Za-z]+\s*\d{1,2}(?:st|nd|rd|th)?\s*,?\s*20\d{2})",
-        text,
+    lineage: dict[str, Any] = {}
+
+    def evidence(field: str, match: re.Match | None, raw: str | None = None) -> None:
+        if match:
+            lineage[field] = {
+                "source": "po_pdf", "source_file": filename,
+                "page": text[:match.start()].count("\f") + 1,
+                "raw_text": _clean(raw if raw is not None else match.group(0)),
+            }
+
+    evidence("po_number", po_match)
+    evidence("customer_po", terminal_po)
+    evidence("po_date", issue_match)
+    evidence("ship_date", delivery_match, ship_match.group(0) if ship_match else None)
+    evidence("country", destination_match)
+    evidence("customer", destination_match or terminal_po)
+    evidence("standard", quality_match, quality_text)
+    result["source_lineage"] = lineage
+
+    # Restrict row detection to the item table, not eight-digit numbers in
+    # terms/addresses. More than one product requires a supported row parser.
+    end = re.search(r"Total\s*Order\s*Value|Terms\s*and\s*Conditions", text, re.I)
+    item_text = text[:end.start()] if end else text
+    starts = list(re.finditer(r"^\s*(\d{8})(?=\s)", item_text, re.M))
+    if len(starts) > 1:
+        raise ValueError("Shushupapa PO 含多条产品明细，当前版式未支持逐行定位；请核对原单，不能只导入首项。")
+    if not starts:
+        result["confidence"] = "low"
+        result["warnings"].append("未定位到 Shushupapa 产品明细行。")
+        return result
+    row_text = item_text[starts[0].end():].strip()
+    # A second numeric detail is still a second product when its SKU format
+    # is unsupported. Do not absorb it into the first product's description.
+    numeric_details = re.findall(
+        r"\b\d[\d,]*\s*(?:pcs)?\s+\$?\d[\d,.]*[^\n]*?USD\s*\$?\d[\d,.]*",
+        row_text, re.I,
     )
-    result["po_date"] = _iso_date(issue)
-    delivery = _search(
-        r"on\s+or\s+before\s+([A-Za-z]+\s*\d{1,2}(?:st|nd|rd|th)?\s*,?\s*20\d{2})",
-        text,
-    )
-    result["ship_date"] = _iso_date(delivery)
+    if len(numeric_details) > 1:
+        raise ValueError("Shushupapa PO 含多条产品明细或未支持的货号格式；请核对原单，不能只导入首项。")
     line = re.search(
-        r"(?s)(\d{8})\s+(.+?)\s+([\d,]+)\s*(?:pcs)?\s+\$?([\d,.]+).*?USD\$?([\d,.]+)",
-        text,
-        re.I,
+        r"(?s)^(.+?)\s+([\d,]+)\s*(?:pcs)?\s+\$?([\d,.]+)\s*(.*?)"
+        r"USD\s*\$?([\d,.]+)(.*)$", row_text, re.I,
     )
-    if line:
-        item_block = text[line.start():]
-        item_block = item_block.split("Total Order Value", 1)[0]
-        description = _clean(line.group(2))
-        if "DARTH VADER" in item_block.upper() and "DARTH VADER" not in description.upper():
-            description += ", Wars, Darth Vader"
-        if "LIGHT UP SABER" in item_block.upper() and "LIGHT UP SABER" not in description.upper():
-            description += " Light Up Saber"
-        base_line = _shushupapa_product_line(
-            source_item=line.group(1),
-            description=description,
-            quantity=_number(line.group(3)),
-            unit_price=_number(line.group(4)),
-            amount=_number(line.group(5)),
-            casepack=item_block,
-            customer=customer,
-        )
-        shipments = [
-            (_iso_date(match.group(1)), _number(match.group(2)))
-            for match in re.finditer(
-                r"(?m)^(\d{1,2}/\d{1,2}/20\d{2})\s+([\d,]+)\s*$",
-                text,
-            )
-        ]
-        if customer == "BJs" and shipments:
-            result["lines"] = _split_shushupapa_shipments(
-                base_line,
-                po_number,
-                shipments,
-            )
-        else:
-            base_line["po_number"] = po_number
-            base_line["ship_date"] = result["ship_date"]
-            result["lines"].append(base_line)
+    if not line:
+        result["confidence"] = "low"
+        result["warnings"].append("未定位到 Shushupapa 产品数量、单价和金额，请核对原单表格。")
+        return result
+    description, quantity, price, first_pack, amount, continuation = line.groups()
+    # In the six-column native template the description and casepack may
+    # continue below the numeric row. Split only at explicit packing words.
+    pack_continuation = re.search(
+        r"\d+\s*(?:pcs?\s*(?:per|Darth|Storm)|[- ]*Vader|[- ]*Trooper)|\b(?:POD|CDU)\s*\.?\s*$",
+        continuation, re.I | re.S,
+    )
+    if pack_continuation:
+        description += " " + continuation[:pack_continuation.start()]
+        casepack = _clean(first_pack + " " + continuation[pack_continuation.start():])
     else:
-        result["warnings"].append("未从 Shushupapa PO 识别到产品行，请人工核对原文件。")
+        description += " " + continuation
+        casepack = _clean(first_pack)
+    base_line = _shushupapa_product_line(
+        source_item=starts[0].group(1), description=_clean(description),
+        quantity=quantity, unit_price=price, amount=amount,
+        casepack=casepack, customer=customer,
+    )
+    base_line.update({
+        "customer": customer, "country": country, "standard": standard,
+        "source_currency": "USD",
+        "source_page": text[:starts[0].start()].count("\f") + 1,
+        "source_warnings": [], "source_lineage": lineage,
+    })
+    for field in ("quantity", "unit_price", "amount", "description"):
+        lineage[field] = {
+            "source": "po_pdf", "source_file": filename, "page": base_line["source_page"],
+            "raw_text": _clean(starts[0].group(1) + " " + row_text),
+        }
+    if quality_notes:
+        base_line["shipment_note"] = "；".join(filter(None, (base_line["shipment_note"], quality_notes)))
+        base_line["remarks"] = quality_notes
+        evidence("remarks", quality_match, quality_text)
+    result["source_currency"] = "USD"
+    lineage["source_currency"] = {
+        "source": "po_pdf", "source_file": filename, "page": base_line["source_page"],
+        "raw_text": "USD " + amount,
+    }
+    if master_packs:
+        master_pack = next(iter(master_packs))
+        factory_pack, external_pack = _shushupapa_mixed_packs(casepack)
+        mixed_total = factory_pack + external_pack if factory_pack is not None and external_pack is not None else None
+        # PriceSmart's established schedule outer_pack counts only this
+        # factory's pieces. The physical carton also contains external pieces.
+        if mixed_total is not None and mixed_total != master_pack:
+            raise ValueError("Shushupapa PO 的混装比例与 Master Carton 装箱数量冲突，请核对原单。")
+        if base_line.get("outer_pack") is None:
+            base_line["outer_pack"] = master_pack
+            qty = base_line.get("quantity")
+            base_line["cartons"] = int(qty / master_pack) if qty is not None and qty % master_pack == 0 else None
+        evidence("master_carton", master_matches[0])
+        if mixed_total is None:
+            evidence("outer_pack", master_matches[0])
+        else:
+            lineage["outer_pack"] = {
+                "source": "po_pdf", "source_file": filename,
+                "page": base_line["source_page"], "raw_text": casepack,
+                "rule": "Price Smart 按本厂装量" if customer == "Price Smart" else "本厂与外厂装量合计",
+            }
+    if casepack:
+        # POD is the printed packaging description; it does not on its own
+        # establish a master-carton quantity or a special colour-box type.
+        color_box = re.sub(r"(\d+)\s*pcs?\s*Per\s*POD\.?", r"；\1 pcs/POD", casepack, flags=re.I)
+        base_line["color_box"] = color_box.replace(" ；", "；").strip("； ")
+        lineage["color_box"] = {
+            "source": "po_pdf", "source_file": filename,
+            "page": base_line["source_page"], "raw_text": casepack,
+        }
+    tba = re.search(r"(?:Final\s*)?carton\s*markings\s*and\s*label\s*specifications\s*are\s*TBA\s*\(To\s*Be\s*Advised\)", packaging, re.I)
+    if tba:
+        note = _clean(tba.group(0)) + "."
+        base_line.update({"label": "TBA（待客户提供）", "box_mark": "TBA（待客户提供）"})
+        base_line["remarks"] = "；".join(filter(None, (base_line.get("remarks"), note)))
+        base_line["shipment_note"] = "；".join(filter(None, (base_line["shipment_note"], note)))
+        base_line["source_warnings"].append("PO 的箱唛和标签为 TBA（待客户提供），需确认后补充。")
+        evidence("label", packaging_match, note)
+        evidence("box_mark", packaging_match, note)
+
+    words_match = _shushupapa_section(text, r"Total\s*Order\s*Value", r"Terms\s*and\s*Conditions|Costco\s*PO\s*Number|Price\s*Smart\s*PO\s*Number")
+    if words_match:
+        words = _clean(words_match.group(1))
+        # 'Terms and Conditions' is a heading without a colon in this layout.
+        words = re.split(r"Terms\s*and\s*Conditions", words, flags=re.I)[0].strip()
+        words_amount = _shushupapa_amount_words(words)
+        if words_amount is not None and abs(words_amount / 100 - float(base_line["amount"])) > 0.005:
+            warning = (
+                f"PO 金额大写为 USD {words_amount / 100:,.2f}，与明细金额 USD {float(base_line['amount']):,.2f} 不一致；"
+                "保留原明细数量、单价和金额，请人工核对原单。"
+            )
+            base_line["amount_words_conflict"] = True
+            base_line["source_warnings"].append(warning)
+            result["confidence"] = "low"
+            evidence("amount_words", words_match, words)
+    result["warnings"].extend(base_line["source_warnings"])
+    shipments = [
+        (_iso_date(ship.group(1)), _number(ship.group(2)))
+        for ship in re.finditer(r"(?m)^(\d{1,2}/\d{1,2}/20\d{2})\s+([\d,]+)\s*$", text)
+    ]
+    if customer == "BJs" and shipments:
+        result["lines"] = _split_shushupapa_shipments(base_line, result["po_number"], shipments)
+    else:
+        base_line.update({"po_number": result["po_number"], "ship_date": result["ship_date"]})
+        result["lines"] = [base_line]
     return result
 
 
@@ -456,6 +688,18 @@ def _shushupapa_header_columns(rows: list[list[Any]]) -> tuple[int, dict[str, in
     return -1, {}
 
 
+def _shushupapa_mixed_packs(casepack: str) -> tuple[int | None, int | None]:
+    upper_pack = casepack.upper()
+    bjs_pack = re.search(
+        r"(\d+)\s*PCS?\s*DARTH.*?(\d+)\s*PCS?\s*STORM", upper_pack, re.S,
+    )
+    price_pack = re.search(
+        r"(\d+)\s*[- ]*\s*VADER.*?(\d+)\s*[- ]*\s*TROOPER", upper_pack, re.S,
+    )
+    match = bjs_pack or price_pack
+    return (int(match.group(1)), int(match.group(2))) if match else (None, None)
+
+
 def _shushupapa_product_line(
     *,
     source_item: Any,
@@ -469,7 +713,6 @@ def _shushupapa_product_line(
     source = _clean(source_item)
     product = _clean(description)
     pack = _clean(casepack)
-    upper_pack = pack.upper()
     internal_item = source
     if source == "50002008":
         internal_item = "50002008"
@@ -479,22 +722,7 @@ def _shushupapa_product_line(
     elif source in {"50002010", "50002011"}:
         internal_item = "50002010"
 
-    factory_per_carton = None
-    external_per_carton = None
-    bjs_pack = re.search(
-        r"(\d+)\s*PCS?\s*DARTH.*?(\d+)\s*PCS?\s*STORM",
-        upper_pack,
-        re.S,
-    )
-    price_pack = re.search(
-        r"(\d+)\s*[- ]*\s*VADER.*?(\d+)\s*[- ]*\s*TROOPER",
-        upper_pack,
-        re.S,
-    )
-    pack_match = bjs_pack or price_pack
-    if pack_match:
-        factory_per_carton = int(pack_match.group(1))
-        external_per_carton = int(pack_match.group(2))
+    factory_per_carton, external_per_carton = _shushupapa_mixed_packs(pack)
 
     qty = _number(quantity)
     price = _number(unit_price)
@@ -981,14 +1209,19 @@ def parse_po(source: str | Path | bytes | BinaryIO, filename: str = "") -> dict[
         result = _parse_excel(source, name)
         _check_line_math(result)
         return result
-    page_texts, ocr_used = read_pdf_pages(source)
+    content = _pdf_bytes(source)
+    page_texts, ocr_used = read_pdf_pages(content)
     text = "\n".join(page_texts)
     pages = len(page_texts)
     client = detect_client(text, name)
     if client == "maxx":
         result = _parse_maxx(text, name, pages)
     elif client == "shushupapa":
-        result = _parse_shushupapa(text, name, pages)
+        if not ocr_used:
+            # This native template has close baselines and no literal space
+            # glyphs. Other customer layouts retain their existing tolerances.
+            page_texts, _ = read_pdf_pages(content, x_tolerance=1, y_tolerance=1)
+        result = _parse_shushupapa("\f".join(page_texts), name, pages)
     elif client == "barter":
         result = _parse_barter_pages(page_texts, name, ocr_used=ocr_used)
     else:

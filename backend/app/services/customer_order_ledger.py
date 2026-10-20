@@ -369,6 +369,14 @@ def amend(db: Session, line: Line, body, actor: str) -> None:
         for key in ("carton_count", "cartons", "amount_hkd", "amount_usd", "amount", "total_amount", "total_cartons"):
             if key in data:
                 data[key] = ""
+        if line.factory_id == "huaxing" and line.customer_code == "shushupapa":
+            price = data.get("unit_price_usd")
+            price_text = "" if price is None else str(price).strip()
+            data["price_details_text"] = (
+                (f"原 PO 单价 USD {price_text}；" if price_text else "")
+                + "数量已调整，美元金额待新 PO 核对"
+            )
+            data.setdefault("lineage", {})["amount_usd"] = "订单台账数量已调整，美元金额已清空，待新 PO 核对"
         notices.append("数量已调整，原箱数、金额等派生数据已清空，请按新 PO 核对。")
     if body.requested_ship_date != str(data.get("requested_ship_date") or ""):
         for key in ("line_q", "customer_q", "date_code", "inspection_date", "planned_inspection_date", "fcd_date"):

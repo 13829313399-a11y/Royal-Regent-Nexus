@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class CustomerOrderIssueOut(BaseModel):
@@ -50,6 +50,8 @@ class CustomerOrderLineOut(BaseModel):
     standard: str
     unit_price_hkd: str
     amount_hkd: str
+    unit_price_usd: str = ""
+    amount_usd: str = ""
     packaging: str
     line_q: str
     customer_q: str
@@ -60,6 +62,12 @@ class CustomerOrderLineOut(BaseModel):
     source_po_file_name: str
     lineage: dict[str, str]
     issues: list[CustomerOrderIssueOut]
+
+    @field_validator('unit_price_usd', 'amount_usd', mode='before')
+    @classmethod
+    def normalize_optional_usd(cls, value):
+        # Other customer parsers may already expose numeric or absent USD facts.
+        return '' if value is None else str(value)
 
 
 class CustomerOrderImportSummaryOut(BaseModel):

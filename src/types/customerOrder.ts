@@ -54,6 +54,8 @@ export interface CustomerOrderPreviewRow {
   standard: string
   unit_price_hkd: string
   amount_hkd: string
+  unit_price_usd?: string
+  amount_usd?: string
   packaging: string
   line_q: string
   customer_q: string

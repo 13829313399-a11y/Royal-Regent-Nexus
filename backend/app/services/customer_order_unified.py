@@ -394,10 +394,13 @@ def _enrich_row(
         "unit_price_hkd": "unit_price_hkd",
     }
     for target, source in inherited.items():
-        if (row.get('_regional_customer') == 'ubtech' or row.get('_jakks_supplementary') or row.get('price_basis') == 'incomplete') and target == 'unit_price_hkd':
+        if (row.get('_regional_customer') == 'ubtech' or row.get('_jakks_supplementary') or row.get('price_basis') == 'incomplete' or row.get('_huaxing_customer') == 'shushupapa') and target == 'unit_price_hkd':
             continue
         if not _text(row.get(target)):
-            value = _unique_history_value(history, product_no, source, row["customer_name"])
+            candidates = history
+            if row.get('_huaxing_customer') == 'shushupapa' and target in {'units_per_carton', 'standard', 'packaging'}:
+                candidates = [item for item in history if _key(item.customer_name) == _key(row['customer_name'])]
+            value = _unique_history_value(candidates, product_no, source, row["customer_name"])
             if value:
                 row[target] = value
                 row.setdefault("lineage", {})[target] = (
@@ -817,7 +820,11 @@ def _parse_huaxing_rows(
             default_source_file=po_files[0][0],
             sheet_name=ITEM_SHEET,
         )
-        rows.append(huaxing.map_record(_attach_available_fields(row, record), record, customer_code))
+        huaxing.map_record(_attach_available_fields(row, record), record, customer_code)
+        if customer_code == 'shushupapa':
+            from app.services.customer_order_shushupapa import prepare_row
+            prepare_row(row, record)
+        rows.append(row)
     return rows, warnings, spec.input_template
 
 
@@ -1543,6 +1550,9 @@ def _recalculate_preview_row(row: dict[str, Any]) -> None:
     if row.get('_regional_customer') == 'ubtech':
         from app.services.customer_order_ubtech import finish_row
         finish_row(row)
+    if row.get('_huaxing_customer') == 'shushupapa':
+        from app.services.customer_order_shushupapa import finish_row
+        finish_row(row)
 
 
 def _validate_resolutions(preview: dict[str, Any], requested: set[str]) -> None:
@@ -1588,6 +1598,14 @@ def export_unified_customer_schedule(
     decorate_manual_resolution_policy(preview)
     original_identities = {row['id']: tuple(_text(row.get(k)) for k in ('product_no', 'reference_no', 'contract_no', 'po_no')) for row in preview['rows']}
     apply_overrides_to_preview(preview, manual_overrides or [])
+    if factory_id == 'huaxing' and customer_code == 'shushupapa':
+        for row in preview['rows']:
+            row['_shushupapa_inspection_manual'] = any(
+                item['row_id'] == row['id'] and item['field'] == 'customer_q'
+                for item in manual_overrides or []
+            )
+            if row['_shushupapa_inspection_manual']:
+                row.setdefault('lineage', {})['customer_q'] = '业务人工补录计划验货日期'
     if factory_id == 'huakang-a' and customer_code == '360':
         from app.services.customer_order_360_shipping_item import prepare_shipping_item
         shipping_overrides = {item['row_id'] for item in manual_overrides or [] if item['field'] == 'shipping_item'}

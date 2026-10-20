@@ -374,6 +374,28 @@ def validate_edited_identities(preview, original, history, available_sheets, ove
             raise unified.CustomerOrderUnifiedError('修改后的订单身份存在重复或数量冲突，原重复确认不适用，请修订 PO 后重新预览')
 
 
+def _repair_shushupapa_summary_amounts(workbook, order_row, review_row, row):
+    """Bind new detail amounts to their prices, never a copied subtotal row."""
+    from app.services import customer_order_unified as unified
+
+    order = workbook['接单表']
+    review = workbook['正单评审表']
+    for column, field in ((14, 'unit_price_hkd'), (16, 'unit_price_usd')):
+        order.cell(order_row, column).value = unified._number(row.get(field))
+        letter = 'N' if column == 14 else 'P'
+        ref = f"'接单表'!{letter}{order_row}"
+        review.cell(review_row, column).value = f'=IF(LEN({ref})=0,"",{ref})'
+
+    for sheet, number in ((order, order_row), (review, review_row)):
+        for amount_column, price_column in ((15, 'N'), (17, 'P')):
+            sheet.cell(number, amount_column).value = (
+                f'=IF(OR(LEN($J{number})=0,LEN(${price_column}{number})=0),'
+                f'"",ROUND($J{number}*${price_column}{number},2))'
+            )
+        for column in range(14, 18):
+            sheet.cell(number, column).number_format = '#,##0.00'
+
+
 def export_rows(workbook, rows):
     if rows and all(row.get('_huaxing_customer') == 'edu' for row in rows):
         from app.services.huaxing_order_legacy.edu_grouped_export import export_rows as export_edu
@@ -421,6 +443,10 @@ def export_rows(workbook, rows):
                     sheet.cell(number, 15).value = unified._number(row.get('amount_hkd'))
                     sheet.cell(number, 15).number_format = '0.00'
                     unified._fit_generated_text(sheet, number)
+        if row.get('_huaxing_customer') == 'shushupapa':
+            _repair_shushupapa_summary_amounts(
+                workbook, slots['接单表'][index], slots['正单评审表'][index], row,
+            )
         duplicate = any(i.get('code') in DUPLICATE_CODES | {'duplicate_order_warning'} for i in row.get('issues', []))
         blue = row.get('_huaxing_customer') == 'dickie'
         _mark_generated_row(workbook[name], item_row, duplicate=duplicate, blue=blue)
