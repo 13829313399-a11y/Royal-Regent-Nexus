@@ -50,6 +50,17 @@ async function load(eventId?:string){
   draft.value=undefined;clearEvidence();error.value='';notice.value='';busy.value=true;const ticket=++generation
   try{if(!await fresh()||ticket!==generation)return;const result=await periodApi.read(month.value,eventId);if(alive&&ticket===generation)record.value=result}catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
+async function openPeriod(targetMonth:string,eventId?:string){
+  if(!canLeave())return
+  draft.value=undefined;month.value=targetMonth
+  await load(eventId)
+}
+function activateMonth(target:string){
+  if(month.value===target)return
+  if(draft.value||pending.value||busy.value||reason.value.trim()){notice.value=`当前 ${month.value} 的填写或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。`;return}
+  month.value=target;generation++;record.value=undefined;basis.value=undefined
+}
+defineExpose({openPeriod,activateMonth})
 async function edit(){
   if(busy.value||pending.value||historical.value)return
   busy.value=true;error.value='';const ticket=++generation,old=draft.value??record.value?.data?.input
@@ -90,7 +101,7 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
 </script>
 
 <template>
-  <SectionPanel v-if="access?.enabled||pending||draft" title="内部月结与锁月 · P4b" class="cutting-content-panel">
+  <SectionPanel v-if="access?.enabled||pending||draft" title="内部月结与锁月" class="cutting-content-panel">
     <p class="cutting-notice">华康 C 裁床部整月核对，覆盖本厂及外发的我方材料、产量与耗用。主管编制提交，会计复核锁月；外发加工费另行结算。</p>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p><p v-if="notice" role="status">{{notice}}</p><p v-if="busy" role="status">正在处理月结…</p>
     <div v-if="pending" class="cutting-master-actions"><Button :disabled="busy||!readable" @click="execute(pending.action)">重试原操作</Button><Button variant="outline" :disabled="busy" @click="recover">核对原操作结果</Button></div>

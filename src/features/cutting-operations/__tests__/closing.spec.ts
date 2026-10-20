@@ -1,3 +1,4 @@
+vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
@@ -22,6 +23,34 @@ async function open(path='/'){const router=createRouter({history:createMemoryHis
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(cuttingApi.access).mockResolvedValue(rights);vi.mocked(ordersApi.list).mockResolvedValue({data:[order],total:1,page:1,page_size:50});vi.mocked(closingApi.read).mockResolvedValue(snapshot)})
 afterEach(()=>wrapper?.unmount())
 describe('P4a monthly reconciliation',()=>{
+  it('awaits parent authorization before opening a same-route payment trace',async()=>{
+    const granted={...rights,payments_schema_ready:true,permissions:['read','payment_read']}
+    vi.mocked(cuttingApi.access).mockResolvedValue(granted)
+    const router=await open()
+    let resolve!:(value:Access)=>void
+    vi.mocked(cuttingApi.access).mockReturnValueOnce(new Promise(r=>resolve=r))
+    const payment:PaymentRecord={month:'2026-09',current_month:'2026-09',revision:1,rows:[],totals:[],documents:[],document_id:'payment-9',state:'open',selected_state:'open',event_id:null,data:null,history:[],replacements:[]}
+    vi.mocked(paymentApi.read).mockResolvedValue(payment)
+    await router.push('/?factory=huakang-c&view=payment&month=2026-09&document_id=payment-9')
+    await flushPromises()
+    expect(paymentApi.read).not.toHaveBeenCalled()
+    resolve(granted);await flushPromises()
+    expect(paymentApi.read).toHaveBeenCalledWith('2026-09','payment-9',undefined)
+  })
+  it('pages complete scoped traces without changing the parent totals and reports conflicts',async()=>{
+    const data={...snapshot,history_pagination:{page:1,page_size:20,total:45,scope:'all' as const,token:'evidence'}}
+    vi.mocked(closingApi.read).mockResolvedValue(data)
+    await open();await button('月度核对').trigger('click');await flushPromises()
+    await button('来源及更正追溯').trigger('click')
+    vi.mocked(closingApi.read).mockResolvedValueOnce({...data,history_pagination:{...data.history_pagination,page:2}})
+    await button('下一页历史').trigger('click');await flushPromises()
+    expect(closingApi.read).toHaveBeenLastCalledWith('line','2026-10',true,2,'all','evidence')
+    expect(wrapper.text()).toContain('第 2 页 · 共 45')
+    vi.mocked(closingApi.read).mockRejectedValueOnce({response:{status:409,data:{detail:'核对依据已变化，请刷新'}}})
+    await button('下一页历史').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('核对依据已变化')
+    expect(wrapper.text()).toContain('第 2 页 · 共 45')
+  })
   it('returns directly to the linked order and month beyond the list page',async()=>{
     vi.mocked(ordersApi.read).mockResolvedValue(order)
     await open('/?factory=huakang-c&line_id=line&month=2026-09')

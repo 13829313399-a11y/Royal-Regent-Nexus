@@ -7,7 +7,7 @@ export interface UsageCommand extends Command {
   unit_cost?:string;currency?:string;price_reference?:string
   basis_token?:string;allocations?:Array<{issue_id:string;completed_quantity:string}>;materials_complete?:boolean;public_material_pending?:boolean
 }
-export interface UsagePrice {version:number;actor:string;date:string;reason:string;data:{context?:UsageIssue['context'];entry:{day:string;unit_cost:string;currency:string;price_reference:string;issue_id?:string}}}
+export interface UsagePrice {id?:string;version:number;actor:string;date:string;reason:string;data:{context?:UsageIssue['context'];entry:{day:string;unit_cost:string;currency:string;price_reference:string;issue_id?:string}}}
 export interface UsageIssue {
   issue_id:string;context:MaterialRequestRow['context']&{root_batch_id:string;unit:string;item_code:string;item_name:string;lot:string;roll_no:string;location:string}
   reversed:boolean;issued_quantity:string;received_quantity:string;returned_quantity:string;consumed_quantity:string;loss_quantity:string;remaining_quantity:string

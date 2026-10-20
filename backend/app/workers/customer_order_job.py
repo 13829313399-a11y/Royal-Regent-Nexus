@@ -46,6 +46,9 @@ def compute(source):
     elif operation == "parse_workbook":
         from app.services.customer_order_history import parse_workbook
         function = parse_workbook
+    elif operation == "organize_workbook":
+        from app.services.customer_order_360_workbook import organize_workbook
+        function = organize_workbook
     else:
         from app.api import customer_order
         function = getattr(customer_order, operation)

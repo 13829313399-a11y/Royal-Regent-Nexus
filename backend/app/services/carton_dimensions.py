@@ -8,8 +8,7 @@ _ALIASES = {"inch": "in", "inches": "in", "英寸": "in", "英吋": "in", "″":
 def specification_unit(specification: str | None) -> tuple[str | None, str]:
     text = (specification or "").strip()
     match = _UNIT_SUFFIX.search(text)
-    if not match or (match.start() > 0 and text[match.start() - 1].isalpha()
-        and not match.group(1) and not match.group(0)[0].isspace()):
+    if not match or (match.start() > 0 and match.group(0)[0].isalpha() and text[match.start() - 1].isalpha()):
         return None, text
     unit = (match.group(1) or match.group(2)).lower()
     return _ALIASES.get(unit, unit), text[:match.start()].strip()

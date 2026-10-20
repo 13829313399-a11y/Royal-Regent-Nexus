@@ -3,11 +3,40 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { Button } from '@/components/ui/button'
-import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, inject, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, routeLocationKey } from 'vue-router'
 import { cuttingApi, errorMessage, type Access, type Kind, type MasterRecord, type MaterialData, type ResourceData, type BomData, type SaveCommand, type StateCommand } from './api'
 import CuttingCalendarEditor from './CuttingCalendarEditor.vue'
 import { CUTTING_FACTORY } from './navigation'
+import CuttingMetrics from './CuttingMetrics.vue'
+import { workspaceApi } from './workspaceApi'
+const masterStats=ref<{bom:number;draft:number;material:number;resource:number}>()
+const statsError=ref('')
+const calendarView=ref(false)
+const route=inject(routeLocationKey,undefined)
+async function loadStats(){
+  const ticket=generation
+  try{const value=await workspaceApi.masters();if(alive&&ticket===generation){masterStats.value=value;statsError.value=''}}
+  catch(e){if(alive&&ticket===generation){masterStats.value=undefined;statsError.value=errorMessage(e)}}
+}
+let linkedGeneration=0
+async function openLinkedMaster(){
+  const linkedTicket=++linkedGeneration
+  const id=route?.query.master_id
+  if(typeof id!=='string'||!available.value)return
+  const ticket=generation
+  try{const value=await cuttingApi.versions(id);if(!alive||ticket!==generation||linkedTicket!==linkedGeneration||id!==route?.query.master_id)return
+    const row=value.data[0];if(!row)return
+    kind.value=row.kind;records.value=[row];total.value=1;page.value=1;calendarView.value=false
+    await showHistory(row)
+  }catch(e){if(alive&&ticket===generation&&linkedTicket===linkedGeneration)error.value=errorMessage(e)}
+}
+function showCalendar(){
+  if(!permitDiscard())return
+  if(kind.value!=='resource'){switchKind('resource')}
+  else {editor.value=false;transition.value=null;closeHistory()}
+  calendarView.value=true
+}
 
 const access = ref<Access | null>(null)
 const loading = ref(true), saving = ref(false), editor = ref(false)
@@ -44,6 +73,10 @@ function permitDiscard() {
   return !dirty.value || window.confirm('有尚未保存的内容，离开将放弃这些内容。确定继续？')
 }
 onBeforeRouteLeave(permitDiscard)
+if(route){
+  onBeforeRouteUpdate(permitDiscard)
+  watch(()=>route.query.master_id,()=>void openLinkedMaster())
+}
 function beforeUnload(event: BeforeUnloadEvent) {
   if (!dirty.value && !saving.value && !pending.value) return
   event.preventDefault()
@@ -74,12 +107,14 @@ async function load() {
     const result = await cuttingApi.list(kind.value, page.value, query.value)
     if (!alive || request !== generation) return
     records.value = result.data; total.value = result.total
+    void loadStats()
   } catch (e) { if (alive && request === generation) { access.value = null; error.value = errorMessage(e) } }
   finally { if (alive && request === generation) loading.value = false }
 }
-onMounted(load)
+onMounted(async()=>{await load();await openLinkedMaster()})
 function switchKind(next: Kind) {
-  if (next === kind.value || !permitDiscard()) return
+  if ((next === kind.value&&!calendarView.value) || !permitDiscard()) return
+  calendarView.value=false
   closeHistory(); kind.value = next; page.value = 1; query.value = ''; editor.value = false; transition.value = null; notice.value = ''; void load()
 }
 function openEditor(record?: MasterRecord) {
@@ -188,20 +223,27 @@ function requirements(data: MasterRecord['data']) { return (data as BomData).req
 
 <template>
   <section class="cutting-page cutting-master">
-    <PageHeader title="基础资料" description="登记物料、执行方及工程生产 BOM；修订保留原版本。"><template #actions><StatusPill label="基础资料 · P1b" /></template></PageHeader>
-    <p class="cutting-notice">BOM 可分别指定当前裁剪必需料和后续辅料；资源支持工作日历和默认准备周期，订单关联与交期已接入。每日填数已独立接入，单位换算与实际库存仍待后续阶段。</p>
+    <PageHeader title="基础资料" description="登记物料、执行方及工程生产 BOM；修订保留原版本。"></PageHeader>
+    <p class="cutting-notice">BOM 由工程核对并发布；物料与执行方分别维护版本，工作日历沿用执行方资料。历史订单保留原 BOM，不自动改用新版本。</p>
     <p v-if="error" role="alert" class="cutting-error">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <Button variant="outline" v-if="pending" type="button" :disabled="saving" @click="executePending">重试原操作</Button>
     <a v-if="pending && needsLogin" href="/login" target="_blank" rel="noopener noreferrer">在新标签页重新登录</a>
-    <SectionPanel class="cutting-content-panel" :title="labels[kind]">
-      <nav class="cutting-section-nav" aria-label="基础资料分类"><Button variant="outline" v-for="(label, key) in labels" :key="key" :disabled="saving || !!pending" :aria-pressed="kind === key" @click="switchKind(key)">{{ label }}</Button></nav>
-      <p v-if="loading" role="status" class="cutting-master-message">正在读取基础资料…</p>
+    <CuttingMetrics v-if="available" :items="[{label:'产品 BOM',value:masterStats?.bom??'—',unit:'项'},{label:'待发布草稿',value:masterStats?.draft??'—',unit:'项'},{label:'有效物料',value:masterStats?.material??'—',unit:'项'},{label:'有效执行方',value:masterStats?.resource??'—',unit:'个'}]" />
+    <p v-if="statsError" role="alert">统计暂不可用：{{statsError}}</p>
+    <SectionPanel class="cutting-content-panel" :title="calendarView?'工作日历':labels[kind]">
+      <nav class="cutting-section-nav" aria-label="基础资料分类"><Button variant="outline" v-for="(label, key) in labels" :key="key" :disabled="saving || !!pending" :aria-pressed="kind === key&&!calendarView" @click="switchKind(key)">{{ label }}</Button><Button variant="outline" :disabled="saving||!!pending" :aria-pressed="calendarView" @click="showCalendar">工作日历</Button></nav>
+      <p v-if="calendarView" class="cutting-notice">未配置日历时按周一至周六工作、周日休息。休息、调休或加班需登记例外及依据；日历修订会提示关联计划复核，不自动改写已发布日期。</p><p v-if="loading" role="status" class="cutting-master-message">正在读取基础资料…</p>
       <div v-else-if="!available" class="cutting-master-message"><p>{{ access ? '基础资料尚未启用，请由管理员完成迁移与启用。' : '基础资料暂不可读取，请检查账号权限或服务状态。' }}</p><Button variant="outline" type="button" @click="load">重新检查</Button></div>
       <template v-else>
-        <div class="cutting-master-toolbar"><form @submit.prevent="page = 1; load()"><label>资料编码 <input v-model="query" maxlength="80" /></label><Button :disabled="saving || !!pending">查询</Button></form><Button v-if="canEdit" :disabled="saving || !!pending" type="button" @click="openEditor()">新增资料</Button><span v-else>当前为只读</span></div>
-        <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>编码</th><th>名称</th><th>版本</th><th>状态</th><th>资料来源</th><th>操作</th></tr></thead><tbody>
-          <tr v-for="row in records" :key="row.id"><td>{{ row.code }}</td><td>{{ row.data.name }}</td><td>V{{ row.version }}</td><td><StatusPill :label="statuses[row.status]" compact /></td><td>{{ row.data.source_reference }}</td><td><div class="cutting-master-actions">
-            <Button variant="outline" :disabled="saving || !!pending" @click="showHistory(row)">版本记录</Button><Button variant="outline" v-if="canEdit && row.status !== 'inactive'" :disabled="saving || !!pending" @click="openEditor(row)">{{ row.kind === 'bom' ? '修订草稿' : '修订' }}</Button>
+        <div class="cutting-master-toolbar"><form @submit.prevent="page = 1; load()"><label>编码／名称／货号 <input v-model="query" maxlength="80" /></label><Button :disabled="saving || !!pending">查询</Button></form><Button v-if="canEdit" :disabled="saving || !!pending" type="button" @click="openEditor()">新增资料</Button><span v-else>当前为只读</span></div>
+        <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>编码</th><th>名称</th><th>{{calendarView?'工作周／例外':kind==='bom'?'货号／款式／配套':kind==='material'?'规格／颜色／单位':'执行方式／准备周期'}}</th><th>版本</th><th>状态</th><th>资料来源</th><th>操作</th></tr></thead><tbody>
+          <tr v-for="row in records" :key="row.id"><td>{{ row.code }}</td><td>{{ row.data.name }}</td><td>
+            <template v-if="calendarView&&'execution' in row.data">{{row.data.calendar?row.data.calendar.weekdays.map(d=>'周'+['一','二','三','四','五','六','日'][d-1]).join('、'):'默认周一至周六'}}<br />{{row.data.calendar?.exceptions.length??0}} 个例外日期 · 准备 {{row.data.preparation_workdays??3}} 个工作日</template>
+            <template v-else-if="'parts' in row.data">{{row.data.item_no}}<br />{{row.data.style}} / {{row.data.color}}<br />{{row.data.parts.length}} 种裁片 · {{row.data.requirements.filter(r=>r.required_for_cutting).length}} 项裁剪必需料</template>
+            <template v-else-if="'unit' in row.data">{{row.data.specification}} / {{row.data.color}}<br />{{row.data.unit}}</template>
+            <template v-else-if="'execution' in row.data">{{row.data.execution==='internal'?'本厂裁剪':'外发裁剪'}}<br />准备 {{row.data.preparation_workdays??3}} 个工作日</template>
+          </td><td>V{{ row.version }}</td><td><StatusPill :label="statuses[row.status]" class="whitespace-nowrap" compact /></td><td>{{ row.data.source_reference }}</td><td><div class="cutting-master-actions">
+            <Button variant="outline" :disabled="saving || !!pending" @click="showHistory(row)">版本记录</Button><Button variant="outline" v-if="canEdit && row.status !== 'inactive'" :disabled="saving || !!pending" @click="openEditor(row)">{{ calendarView?'设置日历':row.kind === 'bom' ? '修订草稿' : '修订' }}</Button>
             <Button variant="outline" v-if="row.kind === 'bom' ? row.status === 'draft' && can('bom_publish') : can('master_write')" :disabled="saving || !!pending" @click="openTransition(row)">{{ row.kind === 'bom' ? '发布' : row.status === 'active' ? '停用' : '启用' }}</Button>
           </div></td></tr>
         </tbody></table></div><p v-if="!records.length" class="cutting-no-records" role="status">暂无符合条件的资料</p>

@@ -1,3 +1,4 @@
+vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-router'
@@ -32,6 +33,31 @@ beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(fa
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 
 describe('cutting production facts and save protection',()=>{
+  it('preserves draft fields across history pages and rejects late history after a successful post',async()=>{
+    const first=clone(view);first.history_pagination={page:1,page_size:20,total:45}
+    await open(undefined,first);await form()
+    let resolve!:(v:ProductionView)=>void
+    vi.mocked(reportingApi.read).mockReturnValueOnce(new Promise(r=>resolve=r))
+    await button('下一页历史').trigger('click');await flushPromises()
+    expect(field('本次套数').element).toHaveProperty('value','10')
+    expect(reportingApi.read).toHaveBeenLastCalledWith('line-1',first.as_of,2,7)
+    const committed=clone(first);committed.version=8;committed.summary.completed=10
+    vi.mocked(reportingApi.command).mockResolvedValue(committed)
+    await wrapper.get('form.report-form').trigger('submit');await flushPromises()
+    resolve({...first,history_pagination:{page:2,page_size:20,total:45}});await flushPromises()
+    expect(wrapper.text()).toContain('第 1 页 · 共 45')
+    expect(wrapper.text()).not.toContain('正在读取生产记录')
+    expect(wrapper.text()).toContain('操作已保存')
+  })
+  it('retains current page and input after a history version conflict',async()=>{
+    const data=clone(view);data.history_pagination={page:1,page_size:20,total:45}
+    await open(undefined,data);await form()
+    vi.mocked(reportingApi.read).mockRejectedValueOnce({response:{status:409,data:{detail:'生产记录已变化，请刷新'}}})
+    await button('下一页历史').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('生产记录已变化')
+    expect(field('本次套数').element).toHaveProperty('value','10')
+    expect(wrapper.text()).toContain('第 1 页 · 共 45')
+  })
   it.each([['return_write','return'],['acceptance_write','accept']] as const)('limits %s to its own external flow and selects it by default',async(permission,kind)=>{
     const data=clone(view);data.tasks[0]!.execution='outsourced'
     await open(['read',permission],data)

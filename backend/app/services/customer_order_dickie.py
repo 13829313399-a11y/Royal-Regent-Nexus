@@ -10,12 +10,17 @@ from io import BytesIO
 from math import gcd
 from typing import Any
 
+from lxml import etree
+from openpyxl.utils import column_index_from_string, get_column_letter
+
 from app.services.carton_mark import configure_tesseract
 from app.services.customer_order_buzzbee import (
     MAX_BATCH_PO_BYTES,
     MAX_BATCH_PO_FILES,
     MAX_PO_BYTES,
     MAX_SCHEDULE_BYTES,
+    MAIN_NS,
+    NS,
     CustomerOrderWorkbookError,
     OoxmlSchedule,
     _clean_identifier,
@@ -82,6 +87,7 @@ class DickieParsedOrder:
     contact: str = ""
     packaging: str = ""
     allocations: list[tuple[str, Decimal]] = field(default_factory=list)
+    release_allocations: list[DickieAttachmentAllocation] = field(default_factory=list)
     attachment_allocations: list[DickieAttachmentAllocation] = field(default_factory=list)
     lineage: dict[str, str] = field(default_factory=dict)
 
@@ -121,6 +127,7 @@ def _date_from_match(day: str, month: str, year: str, *, expected_year: int) -> 
 
 
 def _extract_source_date(text: str, *, expected_year: int) -> str:
+    text = re.sub(r"(?<=\.)0CT(?=\.)", "OCT", text, flags=re.IGNORECASE)
     match = re.search(
         r"Date\s+of\s+creation\s*:\s*(\d{1,2})[.\-/ ]"
         r"(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
@@ -386,6 +393,34 @@ def _extract_main_order_numbers(
     )
 
 
+def _extract_release_allocations(
+    text: str, product_no: str,
+) -> list[DickieAttachmentAllocation]:
+    """Keep every homepage PO row, including rows with unreadable prices.
+
+    A release may have the same article at different contract prices. Matching
+    only the first valid price silently loses both quantity and the second PO.
+    OCR may also split the nine-digit contract with whitespace.
+    """
+    pattern = re.compile(
+        r"(?<!\d)(?P<quantity>[\d,]+)\s*PCS?\s+[^0-9\n]{0,8}"
+        r"(?P<master>5(?:[ \t]*\d){8})\s*/\s*(?P<master_suffix>\d{1,3})\s+"
+        r"(?P<po>3(?:[ \t]*\d){8})\s*/\s*(?P<po_suffix>\d{1,3})"
+        r"(?P<price>[^\n]*)",
+        re.IGNORECASE,
+    )
+    return [
+        DickieAttachmentAllocation(
+            item_no=product_no,
+            master_contract=f"{''.join(match.group('master').split())}/{match.group('master_suffix')}",
+            po_no=f"{''.join(match.group('po').split())}/{match.group('po_suffix')}",
+            quantity=Decimal(match.group("quantity").replace(",", "")),
+            unit_price_hkd=_extract_single_attachment_price(match.group("price")),
+        )
+        for match in pattern.finditer(text)
+    ]
+
+
 def _extract_pdf_ocr_pages(content: bytes) -> list[str]:
     try:
         import pypdfium2 as pdfium  # type: ignore
@@ -441,6 +476,19 @@ def _parse_dickie_ocr_pages(
     customer_name, country = _extract_customer(all_text)
     packaging = _extract_packaging(first_page)
     master_contract, po_no, quantity, unit_price = _extract_main_order_numbers(first_page)
+    release_allocations = _extract_release_allocations(first_page, product_no)
+    if release_allocations:
+        master_contract = "\n".join(item.master_contract for item in release_allocations)
+        po_no = "\n".join(item.po_no for item in release_allocations)
+        quantity = sum((item.quantity for item in release_allocations), Decimal("0"))
+        unit_price = (
+            sum(
+                (item.quantity * item.unit_price_hkd for item in release_allocations),
+                Decimal("0"),
+            ) / quantity
+            if quantity and all(item.unit_price_hkd is not None for item in release_allocations)
+            else None
+        )
 
     attachment_text = "\n".join(
         page
@@ -487,6 +535,8 @@ def _parse_dickie_ocr_pages(
             for item in attachment_allocations
             if item.master_contract
         ]
+    elif release_allocations:
+        allocations = [(item.master_contract, item.quantity) for item in release_allocations]
     elif master_contract and quantity is not None:
         allocations = [(master_contract, quantity)]
 
@@ -511,6 +561,7 @@ def _parse_dickie_ocr_pages(
         contact=contact,
         packaging=packaging,
         allocations=allocations,
+        release_allocations=release_allocations,
         attachment_allocations=attachment_allocations,
         lineage={
             "received_date": "PDF首页 · Date of creation",
@@ -706,6 +757,45 @@ def _country_standard(customer_name: str, country: str) -> str:
 
 
 class DickieSchedule(OoxmlSchedule):
+    def write_price_details(self, sheet_name: str, row_number: int, row: dict[str, Any]) -> None:
+        """Keep original PO prices beside a legacy template's single price cell."""
+        if len(row.get("price_details") or []) < 2:
+            return
+        path = self.sheet_paths[sheet_name]
+        root = etree.fromstring(self.parts[path])
+        sheet_data = root.find("m:sheetData", NS)
+        header_number = 1 if sheet_name == DINO_ITEM_SHEET else 3
+        headers = self.read_rows(sheet_name, limit=header_number).get(header_number, {})
+        header = next((r for r in sheet_data if int(r.get("r", "0")) == header_number), None)
+        if header is None:
+            header = etree.Element(f"{{{MAIN_NS}}}row", r=str(header_number))
+            sheet_data.append(header)
+            sheet_data[:] = sorted(sheet_data, key=lambda r: int(r.get("r", "0")))
+        target = next(r for r in sheet_data if int(r.get("r", "0")) == row_number)
+        last_column = max((
+            column_index_from_string(re.sub(r"\d", "", c.get("r", "A1")))
+            for c in root.findall("m:sheetData/m:row/m:c", NS)
+            if len(c)
+        ), default=0)
+        basis = {"weighted": "数量加权均价", "single": "原始单价", "incomplete": "部分原价待核对"}.get(row.get("price_basis"), "")
+        for label, value in (("PO单价明细", row.get("price_details_text", "")), ("单价口径", basis)):
+            matches = [column for column, text in headers.items() if text == label]
+            if len(matches) > 1:
+                raise CustomerOrderWorkbookError(f"{sheet_name} 的{label}列不唯一，请先核对表头")
+            if matches:
+                column = matches[0]
+            else:
+                last_column += 1
+                column = get_column_letter(last_column)
+                self._set_cell(header, column, header_number, value=label, inline=True)
+                headers[column] = label
+            self._set_cell(target, column, row_number, value=value, inline=True)
+        dimension = root.find("m:dimension", NS)
+        if dimension is not None:
+            end_row = max(int(r.get("r", "0")) for r in sheet_data)
+            dimension.set("ref", f"A1:{get_column_letter(last_column)}{end_row}")
+        self.parts[path] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
     def insert_row_at(
         self,
         sheet_name: str,
@@ -885,6 +975,42 @@ def _preview_row(
     )
     unit_price = parsed.unit_price_hkd
     amount = quantity * unit_price if quantity is not None and unit_price is not None else None
+    price_allocations = parsed.attachment_allocations or parsed.release_allocations
+    price_details = [
+        {
+            "item_no": item.item_no,
+            "master_contract": item.master_contract,
+            "po_no": item.po_no,
+            "quantity": _decimal_text(item.quantity),
+            "unit_price_hkd": _decimal_text(item.unit_price_hkd),
+            "amount_hkd": _decimal_text(
+                item.quantity * item.unit_price_hkd if item.unit_price_hkd is not None else None
+            ),
+        }
+        for item in price_allocations
+    ]
+    if price_allocations and quantity == sum((item.quantity for item in price_allocations), Decimal("0")):
+        # Sum the original amounts; repeating-decimal weighted unit prices
+        # must never introduce rounding into the total contract amount.
+        amount = (
+            sum((item.quantity * item.unit_price_hkd for item in price_allocations), Decimal("0"))
+            if all(item.unit_price_hkd is not None for item in price_allocations)
+            else None
+        )
+    price_basis = (
+        "weighted"
+        if len({item.unit_price_hkd for item in price_allocations if item.unit_price_hkd is not None}) > 1
+        else "single"
+    )
+    if any(item.unit_price_hkd is None for item in price_allocations):
+        price_basis = "incomplete"
+    price_details_text = "\n".join(
+        f"PO {item['po_no'] or '未识别'}：{item['quantity']} × "
+        f"{item['unit_price_hkd'] or '待核对'} HKD = {item['amount_hkd'] or '待核对'} HKD"
+        for item in price_details
+    )
+    if price_basis == "weighted":
+        price_details_text += "\n汇总单价为按数量加权均价，原始单价见各 PO 明细。"
     inspection = date.fromisoformat(parsed.ship_date) - timedelta(days=7) if parsed.ship_date else None
     while inspection is not None and inspection.weekday() >= 5:
         inspection -= timedelta(days=1)
@@ -901,6 +1027,20 @@ def _preview_row(
     }
     for field_name, (label, value) in required.items():
         if not value:
+            if field_name == "unit_price_hkd" and price_basis == "incomplete":
+                issue = _make_issue(
+                    "warning", "missing_po_unit_prices", "unit_price_hkd",
+                    "部分 PO 单价未识别，原价和汇总金额保持空白；可按每行 PO号=单价 补录港币原价。",
+                    can_skip=True,
+                )
+                issue.update({
+                    "can_edit": True,
+                    "edit_field": "po_unit_prices",
+                    "edit_label": "各PO单价(HKD)",
+                    "edit_input_type": "textarea",
+                })
+                issues.append(issue)
+                continue
             issues.append(
                 _make_issue(
                     "blocked",
@@ -1011,6 +1151,9 @@ def _preview_row(
         value for value in (customer_name, parsed.country) if value
     )
     lineage = dict(parsed.lineage)
+    if price_basis == "weighted":
+        lineage["unit_price_hkd"] = "系统计算 · 各 PO 原始金额合计 ÷ 数量合计（加权均价，非原始报价）"
+        lineage["amount_hkd"] = "PDF 各 PO 行 · 逐行数量 × 原始单价后合计"
     lineage["product_name_zh"] = (
         f"当前 Dickie 排期 · 货号 {formatted_product_no}"
         if lookup and lookup.product_name_zh
@@ -1019,7 +1162,7 @@ def _preview_row(
         else "PDF产品英文名回退"
     )
     contract_no = _format_mixed_contracts(
-        parsed.attachment_allocations,
+        parsed.attachment_allocations or parsed.release_allocations,
         parsed.master_contract,
     )
     return {
@@ -1043,6 +1186,9 @@ def _preview_row(
         "standard": _country_standard(customer_name, parsed.country),
         "unit_price_hkd": _decimal_text(unit_price),
         "amount_hkd": _decimal_text(amount),
+        "price_details": price_details,
+        "price_basis": price_basis,
+        "price_details_text": price_details_text,
         "packaging": packaging,
         "contact": contact,
         "line_q": parsed.ship_date,
@@ -1067,6 +1213,63 @@ def _preview_row(
             for allocation in parsed.attachment_allocations
         ],
     }
+
+
+def apply_po_price_overrides(row: dict[str, Any], value: str) -> None:
+    """Apply explicit per-PO prices without changing source identities/quantities."""
+    if not value.strip():
+        return
+    details = [dict(item) for item in row.get("price_details") or []]
+    updates: dict[str, Decimal] = {}
+    for line in value.splitlines():
+        if not line.strip():
+            continue
+        match = re.fullmatch(r"\s*([\d /]+)\s*[=＝]\s*(\d+(?:\.\d+)?)\s*", line)
+        if not match:
+            raise CustomerOrderWorkbookError("各 PO 单价请每行填写 PO号=港币单价，例如 300527245/10=51.20")
+        po_no = "".join(match.group(1).split())
+        price = Decimal(match.group(2))
+        if price <= 0 or not price.is_finite():
+            raise CustomerOrderWorkbookError("各 PO 单价必须是大于 0 的有效数字")
+        if po_no in updates:
+            raise CustomerOrderWorkbookError(f"PO {po_no} 的单价重复填写")
+        matches = [item for item in details if item.get("po_no") == po_no]
+        if len(matches) != 1:
+            raise CustomerOrderWorkbookError(f"PO {po_no} 未在当前明细中唯一匹配，不能补录价格")
+        updates[po_no] = price
+    # Validate the entire override before mutating the preview.
+    for item in details:
+        if item.get("po_no") in updates:
+            price = updates[item["po_no"]]
+            item["unit_price_hkd"] = _decimal_text(price)
+            item["amount_hkd"] = _decimal_text(Decimal(item["quantity"]) * price)
+    prices = [_decimal(item.get("unit_price_hkd")) for item in details]
+    quantity = sum((Decimal(item["quantity"]) for item in details), Decimal("0"))
+    complete = bool(details) and quantity > 0 and all(price is not None for price in prices)
+    basis = "weighted" if len(set(prices)) > 1 else "single"
+    amount = sum((Decimal(item["amount_hkd"]) for item in details), Decimal("0")) if complete else None
+    if complete and _decimal(row.get("quantity")) != quantity:
+        # A separate quantity amendment cannot silently change PO allocation.
+        raise CustomerOrderWorkbookError("各 PO 数量合计与当前订单数量不一致，请先核对数量明细")
+    row["price_details"] = details
+    row["price_basis"] = basis if complete else "incomplete"
+    row["unit_price_hkd"] = _decimal_text(amount / quantity if amount is not None else None)
+    row["amount_hkd"] = _decimal_text(amount)
+    row["price_details_text"] = "\n".join(
+        f"PO {item['po_no'] or '未识别'}：{item['quantity']} × "
+        f"{item['unit_price_hkd'] or '待核对'} HKD = {item['amount_hkd'] or '待核对'} HKD"
+        for item in details
+    )
+    if complete and basis == "weighted":
+        row["price_details_text"] += "\n汇总单价为按数量加权均价，原始单价见各 PO 明细。"
+    row.setdefault("lineage", {})["unit_price_hkd"] = (
+        "人工核对各 PO 原价 · 数量加权均价" if basis == "weighted" else "人工核对各 PO 原价"
+    )
+    row["lineage"]["amount_hkd"] = "各 PO 明细 · 逐行数量 × 原价后合计"
+    if complete:
+        for issue in row.get("issues", []):
+            if issue.get("code") == "missing_po_unit_prices":
+                issue["message"] = "各 PO 单价已人工补录，汇总单价与金额按明细重新计算。"
 
 
 def _combined_hash(file_names: list[str], hashes: list[str]) -> str:
@@ -1353,6 +1556,7 @@ def _write_item_row(workbook: DickieSchedule, row: dict[str, Any]) -> None:
         values=_item_values(row),
         reference_row_number=template_row,
     )
+    workbook.write_price_details(sheet_name, insert_row, row)
     _deduct_allocations(workbook, row)
 
 
@@ -1448,6 +1652,11 @@ def export_dickie_batch_schedule(
     )
     decorate_manual_resolution_policy(preview)
     apply_overrides_to_preview(preview, manual_overrides or [])
+    for override in manual_overrides or []:
+        if override["field"] == "po_unit_prices":
+            row = next((item for item in preview["rows"] if item["id"] == override["row_id"]), None)
+            if row is not None:
+                apply_po_price_overrides(row, override["value"])
     _validate_skips(preview, skipped_issue_keys or set())
     plain_schedule, _ = _decrypt_schedule(schedule_content)
     workbook = DickieSchedule(plain_schedule)
@@ -1466,6 +1675,7 @@ def export_dickie_batch_schedule(
             values=_order_values(row, order_insert_row),
             reference_row_number=order_reference_row,
         )
+        workbook.write_price_details("接单表", order_insert_row, row)
         review_insert_row, review_reference_row = workbook.find_review_append_position()
         workbook.insert_row_at(
             "正单评审表",
@@ -1473,6 +1683,7 @@ def export_dickie_batch_schedule(
             values=_review_values(row, review_insert_row),
             reference_row_number=review_reference_row,
         )
+        workbook.write_price_details("正单评审表", review_insert_row, row)
 
     workbook.set_recalculation()
     output = _encrypt_schedule(workbook.to_bytes())

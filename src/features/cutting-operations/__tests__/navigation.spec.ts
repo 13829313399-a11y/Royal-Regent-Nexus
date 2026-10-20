@@ -1,3 +1,4 @@
+vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
@@ -87,11 +88,11 @@ describe('cutting workspace entry', () => {
     await flushPromises()
     expect(wrapper.find('input').exists()).toBe(false)
   })
-  it('opens planning and navigates all six workspaces without dropping the factory', async () => {
+  it('opens dashboard and navigates all eight workspaces without dropping the factory', async () => {
     const router = await open(`${CUTTING_BASE}?factory=huakang-c`)
-    expect(router.currentRoute.value.path).toBe(`${CUTTING_BASE}/planning`)
+    expect(router.currentRoute.value.path).toBe(`${CUTTING_BASE}/dashboard`)
     expect(router.currentRoute.value.meta.requiresAuth).toBe(true)
-    expect(wrapper!.findAll('nav[aria-label="裁床工作区导航"] a')).toHaveLength(6)
+    expect(wrapper!.findAll('nav[aria-label="裁床工作区导航"] a')).toHaveLength(8)
     for (const workspace of CUTTING_WORKSPACES) {
       await wrapper!.get(`nav a[href="${CUTTING_BASE}/${workspace.path}?factory=huakang-c"]`).trigger('click')
       await flushPromises()
@@ -117,7 +118,7 @@ describe('cutting workspace entry', () => {
         await flushPromises()
         expect(cutoverApi.preview).not.toHaveBeenCalled()
         expect(wrapper!.findAll('form')).toHaveLength(cutover.findAll('form').length)
-      } else {
+      } else if (workspace.path === 'planning' || workspace.path === 'materials') {
         expect(wrapper!.text()).toContain('尚不能录入、保存或结算业务数据')
         expect(wrapper!.text()).toContain(workspace.empty)
       }

@@ -1,3 +1,4 @@
+vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
@@ -19,7 +20,7 @@ describe('P3b cost workspace access and asynchronous navigation',()=>{
   it('removes old selectable rows while permission refresh is in flight',async()=>{
     await open();expect(wrapper.text()).toContain('ORDER-1')
     let resolve!:(v:Access)=>void;vi.mocked(cuttingApi.access).mockReturnValueOnce(new Promise(r=>resolve=r))
-    await wrapper.get('form').trigger('submit');await flushPromises()
+    await wrapper.findAll('form').at(-1)!.trigger('submit');await flushPromises()
     expect(wrapper.findAll('button').some(b=>b.text()==='查看耗用与费用')).toBe(false)
     resolve({...rights,permissions:['read']});await flushPromises()
     expect(wrapper.text()).toContain('单独授予成本查询权限');expect(usageApi.read).not.toHaveBeenCalled()
