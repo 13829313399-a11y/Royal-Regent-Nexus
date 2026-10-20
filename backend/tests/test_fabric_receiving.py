@@ -199,6 +199,10 @@ def test_unknown_quantity_requires_source_check_and_explicit_zero_can_receive_no
         line = stored(client)["items"][0]
         assert receive(client, line, request(line, material_category=category)).status_code == 422
         body = request(line, receipt_date="2026-08-31", material_category=category, batches=[{"quantity": "10", "location": "A"}])
+        assert receive(client, line, body).status_code == 422  # Fabric zones cannot hold accessories/thread.
+        location = "辅料位" if category == "ACCESSORY" else "线位"
+        body = request(line, receipt_date="2026-08-31", material_category=category,
+                       batches=[{"quantity": "10", "location": location}])
         posted = receive(client, line, body)
         assert posted.status_code == 200, posted.text
         assert posted.json()["accounting_month"] == "2026-08" and posted.json()["prior_received_quantity"] == "0"
