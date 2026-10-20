@@ -67,11 +67,30 @@ def test_long_correction_history_read_baseline(month_client, tmp_path, count):
                 assert response.json()['summary'] == before
         metrics[name] = {'seconds':timings, 'median_seconds':statistics.median(timings),
                          'max_seconds':max(timings), 'response_bytes':len(response.content)}
+    # The browser requests bounded history, but summary/effective balances are
+    # identical to the full replay used by immutable closing/export workflows.
+    paged = {}
+    for name, endpoint in [('reports', '/reports'), ('closing', '/closing-preview')]:
+        params = dict(factory_id='huakang-c', history_page=1)
+        if name == 'closing': params['month'] = '2026-10'
+        start = perf_counter()
+        response = p.get(BASE+'/orders/line-1'+endpoint, params=params)
+        elapsed = perf_counter()-start
+        assert response.status_code == 200, response.text[:1000]
+        value = response.json()
+        full = endpoints[name]().json()
+        for key in (('summary','tasks') if name == 'reports' else ('production','materials','issues','basis')):
+            assert value[key] == full[key]
+        count_in_page = sum(len(d['history']) for d in value.get('documents', value.get('production_documents', [])))
+        assert count_in_page <= 20
+        assert len(response.content) < metrics[name]['response_bytes']
+        paged[name] = dict(seconds=elapsed, response_bytes=len(response.content),
+                           history=value['history_pagination'])
     assert logical_digest(p.engine.url.database) == digest_before
     (evidence(tmp_path)/f'history-{count}.json').write_text(json.dumps({
         'additional_correction_events':count, 'orders':1, 'engine':'SQLite', 'concurrent_readers':1,
         'scope':'in-process API, warm serial reads; not HTTP/network or production SLA',
-        'metrics':metrics, 'read_only':True, 'quantity_unchanged':True}, indent=2), encoding='utf-8')
+        'metrics':metrics, 'paged':paged, 'read_only':True, 'quantity_unchanged':True}, indent=2), encoding='utf-8')
 
 
 def test_isolated_sqlite_backup_restores_frozen_rows_and_guards(month_client, tmp_path):
@@ -97,6 +116,25 @@ def test_isolated_sqlite_backup_restores_frozen_rows_and_guards(month_client, tm
         'bytes':restored.stat().st_size,'logical_digest':logical_digest(restored),'integrity':'ok',
         'foreign_keys':'ok','immutable_delete_blocked':True,'trigger_count':len(triggers),
         'scope':'synthetic database only; excludes attachments, secrets and PostgreSQL'}), encoding='utf-8')
+
+
+def test_browser_history_contract_rejects_stale_versions_and_invalid_pages(month_client):
+    p = month_client
+    params = dict(factory_id='huakang-c', history_page=1)
+    response = p.get(BASE+'/orders/line-1/reports', params=params)
+    assert response.status_code == 200
+    value = response.json()
+    full = reports(p)
+    assert value['summary'] == full['summary']
+    assert p.get(BASE+'/orders/line-1/reports', params=dict(params, expected_version=value['version']+1)).status_code == 409
+    assert p.get(BASE+'/orders/line-1/reports', params=dict(params, history_page=0)).status_code == 422
+    assert p.get(BASE+'/orders/line-1/reports', params=dict(params, factory_id='huakang-b')).status_code == 422
+    params['month'] = '2026-10'
+    response = p.get(BASE+'/orders/line-1/closing-preview', params=params)
+    assert response.status_code == 200
+    assert 'costs' not in response.json()
+    assert p.get(BASE+'/orders/line-1/closing-preview', params=dict(params, expected_history_token='old')).status_code == 409
+    assert p.get(BASE+'/orders/line-1/closing-preview', params=dict(params, history_scope='bad')).status_code == 422
 
 
 def retain_export(p, body, name, tmp_path):

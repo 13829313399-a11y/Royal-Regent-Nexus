@@ -12,6 +12,7 @@ import { CUTTING_FACTORY } from './navigation'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
 import { useCuttingLocation } from './location'
 import CuttingLocationNotice from './CuttingLocationNotice.vue'
+import CuttingHistoryPager from './CuttingHistoryPager.vue'
 
 const access=ref<Access|null>(null), rows=ref<CuttingOrder[]>([]), selected=ref<CuttingOrder|null>(null), result=ref<ProductionView|null>(null)
 const loading=ref(false), saving=ref(false), error=ref(''), notice=ref(''), needsLogin=ref(false)
@@ -61,8 +62,22 @@ async function load(nextPage=1,navigation=false,followLocation=false){
 async function select(row:CuttingOrder){
   if(!discard())return
   const request=++generation;selected.value=row;result.value=null;entry.value=null;error.value='';notice.value='';loading.value=true
-  try{const response=await reportingApi.read(row.line_id,asOf.value||undefined);if(alive&&request===generation){result.value=response;needsLogin.value=false}}
+  try{const response=await reportingApi.read(row.line_id,asOf.value||undefined,1,undefined,location.value?.kind==='report'?location.value.id:undefined);if(alive&&request===generation){result.value=response;needsLogin.value=false}}
   catch(e){if(alive&&request===generation)fail(e)}finally{if(alive&&request===generation)loading.value=false}
+}
+async function historyPage(next:number){
+  if(!selected.value||!result.value||loading.value||saving.value||pending.value)return
+  const request=++generation;loading.value=true;error.value=''
+  try{
+    const response=await reportingApi.read(selected.value.line_id,result.value.as_of,next,result.value.version)
+    if(alive&&request===generation)result.value=response
+  }catch(e){
+    if(alive&&request===generation){
+      fail(e)
+      const status=(e as {response?:{status?:number}}).response?.status
+      if(status===401||status===403){result.value=null;entry.value=null}
+    }
+  }finally{if(alive&&request===generation)loading.value=false}
 }
 function today(){return new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
 function start(t:ReportTask){
@@ -107,7 +122,7 @@ async function submit(action:ReportAction){
       document_id:documentId.value,reason:reason.value,...(action==='save'||action==='post'?{entry:clone(entry.value)}:{})}}
     uncertain.value=false
   }
-  saving.value=true;error.value=''
+  generation++;loading.value=false;saving.value=true;error.value=''
   try{
     const response=await reportingApi.command(pending.value.id,pending.value.action,pending.value.body);if(!alive)return
     result.value=response;asOf.value=response.as_of;pending.value=null;uncertain.value=false;needsLogin.value=false;entry.value=null;decision.value=null
@@ -182,6 +197,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           </fieldset>
         </form>
         <h3>日报与业务记录</h3><p>记录列表保留全部日期；上方统计按截止日计算。草稿及更正草稿不覆盖原生效数量。</p>
+        <CuttingHistoryPager v-if="result.history_pagination" :value="result.history_pagination" :busy="loading||saving||!!pending" @page="historyPage" />
         <div v-for="doc in result.documents" :key="doc.document_id" :data-cutting-report="doc.document_id" class="cutting-master-line">
           <h4>{{ effectiveEntry(doc).day }} · {{ reportLabels[effectiveEntry(doc).kind] }} · {{ (doc.posted||doc.draft||doc.history[0])?.data.context.task_name }}</h4>
           <p>{{ doc.voided?'已作废':doc.posted?'已生效':'未生效' }}{{ doc.draft?' · 有草稿':'' }} · {{ doc.review?'主管已抽查':'尚未抽查' }} · {{ effectiveEntry(doc).mode==='parts'&&effectiveEntry(doc).kind==='daily'?'裁片明细见历史':effectiveEntry(doc).sets+' 套' }}</p>

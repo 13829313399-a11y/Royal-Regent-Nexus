@@ -93,7 +93,7 @@ def main():
     initial = source_state()
     backend = ROOT/'backend'
     groups = {
-        'baseline': ['test_cutting_p5c.py', 'test_cutting_p5c_runner.py', 'test_cutting_exports.py'],
+        'baseline': ['test_cutting_p5c.py', 'test_cutting_p5c_runner.py', 'test_cutting_exports.py', 'test_cutting_history.py'],
         'concurrency': ['test_cutting_usage_concurrency.py', 'test_cutting_period_concurrency.py',
                         'test_cutting_settlement_concurrency.py', 'test_cutting_payments_concurrency.py',
                         'test_cutting_postgres_concurrency.py'],
