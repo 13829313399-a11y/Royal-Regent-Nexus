@@ -132,6 +132,10 @@
 .im-workspace .im-weight-detail summary { color:var(--im-green); font-weight:600; white-space:nowrap; }
 .im-workspace .im-weight-detail p { font-size:11px; min-width:170px; padding:7px; background:var(--im-mint); border-radius:6px; margin-top:6px; }
 .im-workspace .im-master-layout { display:grid; grid-template-columns:180px minmax(0,1fr); gap:16px; align-items:start; }
+.im-workspace .im-catalog-path { display:flex; flex-wrap:wrap; gap:8px; color:var(--im-green); background:var(--im-mint); padding:12px 14px; border-radius:8px; margin-bottom:16px; }
+.im-workspace .im-catalog-path span { color:var(--im-muted); }
+.im-workspace .im-customer-filter { max-width:360px; margin-bottom:16px; }
+.im-workspace .im-recipe-preview { padding:14px; background:var(--im-mint); border:1px solid var(--im-green-line); border-radius:8px; }
 .im-workspace .im-master-nav { display:flex; flex-direction:column; background:var(--im-panel); border:1px solid var(--im-line); padding:8px; border-radius:10px; gap:4px; }
 .im-workspace .im-master-nav button { border:0; justify-content:flex-start; padding:12px; color:var(--im-muted); }
 .im-workspace .im-master-nav button[aria-pressed=true] { color:var(--im-green); background:var(--im-mint); }
@@ -178,3 +182,13 @@
   .im-workspace .im-editor { padding:13px; }
 }
 @media(pointer:coarse) { .im-workspace .im-main button,.im-workspace .im-main-tabs button { min-height:44px; } .im-workspace input,.im-workspace select,.im-workspace textarea { font-size:16px!important; } }
+.im-workspace .im-draft-center { border: 1px solid var(--im-border, #d9e6e7); background: #fff; border-radius: 12px; padding: 16px 20px; margin-bottom: 20px; }
+.im-workspace .im-draft-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.im-workspace .im-draft-heading p { color: #718096; font-size: 12px; margin: 4px 0 0; }
+.im-workspace .im-draft-heading > span { color: #267b72; font-size: 12px; }
+.im-workspace .im-draft-heading > .im-draft-warning { color: #b45309; }
+.im-workspace .im-draft-list { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 285px), 1fr)); gap: 10px; }
+.im-workspace .im-draft-list li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; border-top: 1px solid #e4ecef; padding-top: 10px; font-size: 13px; }
+.im-workspace .im-draft-list small { display: block; color: #718096; font-size: 11px; margin-top: 4px; }
+.im-workspace .im-draft-list .im-actions { gap: 6px; }
+.im-workspace .im-draft-list button { padding: 6px 9px; font-size: 12px; }

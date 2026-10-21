@@ -34,6 +34,16 @@ VALID_VERSIONS += [{version} for version in CARTON_SUCCESSORS]
 VALID_VERSIONS += [{version, parent} for version in CARTON_SUCCESSORS
                    for parent in (revision, '20261020_0168')]
 VALID_VERSIONS += [{'20261020_0171'}]
+INDONESIA_CUSTOMER = '20261021_0169'
+INDONESIA_MERGE = '20261021_0172'
+# A customer head is a sibling of carton successors, descended from published JP.
+# Register only the exact parallel combinations; ancestor/unknown heads stay invalid.
+VALID_VERSIONS += [{INDONESIA_CUSTOMER}, {INDONESIA_MERGE}]
+VALID_VERSIONS += [{INDONESIA_CUSTOMER, parent} for parent in
+                   (revision, '20261020_0168', '20261020_0171')]
+VALID_VERSIONS += [{INDONESIA_CUSTOMER, version} for version in CARTON_SUCCESSORS]
+VALID_VERSIONS += [{INDONESIA_CUSTOMER, version, parent} for version in CARTON_SUCCESSORS
+                   for parent in (revision, '20261020_0168')]
 FUNCTIONS = {'cutting': 'cutting_period_immutable', 'jp': 'jp_intake_immutable'}
 
 
@@ -149,9 +159,9 @@ def preflight(bind):
     for group, flags in present.items():
         if any(flags) and not all(flags):
             raise RuntimeError(f'Partial 0163 schema group: {group}; no repair was applied')
-    if versions & {revision, '20261020_0168', '20261020_0171'} and not all(all(flags) for flags in present.values()):
+    if versions & {revision, '20261020_0168', '20261020_0171', INDONESIA_MERGE} and not all(all(flags) for flags in present.values()):
         raise RuntimeError('Reconciled 0167 schema is incomplete; refusing automatic repair')
-    if versions & ({'20261019_0167'} | CARTON_SUCCESSORS) and not all(present['jp']):
+    if versions & ({'20261019_0167', INDONESIA_CUSTOMER} | CARTON_SUCCESSORS) and not all(present['jp']):
         raise RuntimeError('Published JP 0167 schema is incomplete; refusing automatic repair')
     if bind.dialect.name == 'sqlite':
         expected = _sqlite_expected()

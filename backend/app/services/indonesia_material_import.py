@@ -67,6 +67,13 @@ def reconcile_rows(ledger, rows):
         identity = [row[k] for k in ('customer', 'recipient', 'contract_no', 'item_no', 'batch')]
         order = existing.get(digest(identity))
         row['match_status'] = 'new'
+        if not order and not row['blocked']:
+            from fastapi import HTTPException
+            try:
+                ledger.validate_catalog_order(row)
+            except HTTPException as error:
+                row['blocked'] = True
+                row['issues'].append(str(error.detail))
         if not order or row['blocked']:
             continue
         row['existing_order_id'] = order.id
@@ -100,6 +107,7 @@ def preview(db, user, factory, customer, recipient, filename, content, workbook=
             require(user.id == original_actor, '账号身份已变化，请重新上传核对', 401)
         from app.services.indonesia_materials import authorize
         authorize(user, factory, 'write')
+        ledger.fixed_customer(customer)
         previous = db.scalar(select(Record).where(Record.factory_id == factory, Record.kind == 'import', Record.business_key == digest(key_value)))
         if previous:
             result = view(previous)
