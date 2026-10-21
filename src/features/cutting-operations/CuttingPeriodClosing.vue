@@ -65,9 +65,10 @@ async function load(eventId?:string){
   try{if(!await fresh()||ticket!==generation)return;const result=await periodApi.read(month.value,eventId);if(alive&&ticket===generation)record.value=result}catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
 async function openPeriod(targetMonth:string,eventId?:string){
-  if(!canLeave())return
+  if(!canLeave())return false
   discardInputs();month.value=targetMonth
   await load(eventId)
+  return true
 }
 function activateMonth(target:string){
   if(month.value===target)return

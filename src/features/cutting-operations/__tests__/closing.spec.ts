@@ -25,6 +25,32 @@ async function open(path='/'){const router=createRouter({history:createMemoryHis
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(cuttingApi.access).mockResolvedValue(rights);vi.mocked(ordersApi.list).mockResolvedValue({data:[order],total:1,page:1,page_size:50});vi.mocked(closingApi.read).mockResolvedValue(snapshot)})
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 describe('P4a monthly reconciliation',()=>{
+  it('synchronizes a financial deep link without an order to overview, exports and tab reentry',async()=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true})
+    vi.mocked(periodApi.read).mockImplementation(async month=>({month,revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]}))
+    await open('/?factory=huakang-c&view=period&month=2026-08')
+    expect((wrapper.get('[aria-label="核对月份"]').element as HTMLInputElement).value).toBe('2026-08')
+    await button('月结总览').trigger('click');await flushPromises()
+    await button('冻结报表').trigger('click');await flushPromises()
+    expect(wrapper.findComponent({name:'CuttingMonthlyOverview'}).props('month')).toBe('2026-08')
+    await button('内部月结').trigger('click');await flushPromises()
+    expect((wrapper.findComponent({name:'CuttingPeriodClosing'}).get('input[type=month]').element as HTMLInputElement).value).toBe('2026-08')
+  })
+
+  it('does not change overview month or discard a reason when an in-page historical switch is cancelled',async()=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true})
+    vi.mocked(periodApi.read).mockImplementation(async month=>({month,revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]}))
+    await open('/?factory=huakang-c&view=period&month=2026-08')
+    await wrapper.get('input[maxlength="500"]').setValue('八月尚未保存的依据')
+    await button('月结总览').trigger('click');await flushPromises()
+    vi.spyOn(window,'confirm').mockReturnValue(false)
+    wrapper.findComponent({name:'CuttingMonthlyOverview'}).vm.$emit('open','period','2026-09','')
+    await flushPromises()
+    expect((wrapper.get('[aria-label="核对月份"]').element as HTMLInputElement).value).toBe('2026-08')
+    expect(wrapper.get('input[maxlength="500"]').element.value).toBe('八月尚未保存的依据')
+    expect(periodApi.read).not.toHaveBeenCalledWith('2026-09',undefined)
+  })
+
   it('asks once for a committed same-route cross-month link and keeps cancelled navigation intact',async()=>{
     vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true})
     vi.mocked(periodApi.read).mockImplementation(async month=>({month,revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]}))
@@ -155,4 +181,5 @@ it('opens the actual payment panel from a settlement blocker in another month',a
   await button('定位占用付款').trigger('click');await flushPromises()
   expect(paymentApi.read).toHaveBeenCalledWith('2026-09','payment-9',undefined)
   expect(wrapper.findAll('label').find(label=>label.text()==='付款月份')!.get('input').element.value).toBe('2026-09')
+  expect(wrapper.findComponent({name:'CuttingMonthlyOverview'}).props('month')).toBe('2026-09')
 })

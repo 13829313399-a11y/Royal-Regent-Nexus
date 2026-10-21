@@ -17,6 +17,7 @@ const route = useRoute()
 const main=ref<HTMLElement>()
 watch(()=>route.path,()=>main.value?.scrollTo?.({top:0,left:0}),{flush:'post'})
 const logoUrl = '/brand/huadeng_group_dynamic_logo_topbar.svg'
+const acceptanceRelease = import.meta.env.VITE_CUTTING_ACCEPTANCE_RELEASE?.trim()
 const validFactory = computed(() => isCuttingFactory(route.query.factory))
 const icons = { LayoutDashboard, History, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator }
 const currentTitle = computed(() => CUTTING_WORKSPACES.find(w => route.path.endsWith(`/${w.path}`))?.title ?? '裁床部')
@@ -66,6 +67,9 @@ onBeforeUnmount(() => {
   <div v-if="validFactory" class="cutting-shell">
     <a class="cutting-skip" href="#cutting-main">跳到工作区内容</a>
     <header class="cutting-header">
+      <div v-if="acceptanceRelease" class="cutting-environment" role="note" aria-label="独立验收环境标识">
+        <strong>独立验收环境 · 数据库副本</strong><span>合成业务样本仅供验收，不代表真实订单或正式岗位验收。</span><small>发布版本 {{acceptanceRelease}}</small>
+      </div>
       <RouterLink :to="productionRoute" class="cutting-brand" aria-label="裁床部，返回华康 C 生产部">
         <img :src="logoUrl" alt="华登集团" />
         <span><strong>裁床部</strong><small>华康 C · 生产管理</small></span>

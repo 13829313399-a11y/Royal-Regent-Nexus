@@ -42,6 +42,31 @@ beforeEach(() => { vi.resetAllMocks(); vi.mocked(materialApi.read).mockResolvedV
 afterEach(() => { wrapper?.unmount(); vi.restoreAllMocks() })
 
 describe('cutting order workflow and save protection', () => {
+  it.each([401,403])('keeps an authorization failure explicit and rechecks before retrying (%s)',async status=>{
+    await open()
+    vi.mocked(ordersApi.list).mockRejectedValueOnce({response:{status,data:{detail:'验收授权边界'}}})
+    await router.push(`/modules/production/cutting/planning?factory=huakang-c&auth_case=${status}`);await flushPromises()
+    expect(wrapper.text()).toContain(status===401?'登录已失效':'当前账号无权读取裁床订单')
+    expect(wrapper.text()).not.toContain('建设中')
+    const count=vi.mocked(cuttingApi.access).mock.calls.length
+    vi.mocked(ordersApi.list).mockResolvedValue(page([row]))
+    await button('重新核验权限').trigger('click');await flushPromises()
+    expect(vi.mocked(cuttingApi.access).mock.calls.length).toBeGreaterThan(count)
+    expect(wrapper.text()).toContain('ORDER-001')
+  })
+  it.each(['planning','materials'])('recovers %s from a transient child access read failure without construction text',async workspace=>{
+    await open()
+    vi.mocked(cuttingApi.access).mockResolvedValue({enabled:true,schema_ready:true,orders_schema_ready:true,permissions:['read']})
+    vi.mocked(ordersApi.list).mockRejectedValueOnce(new Error('offline'))
+    await router.push(`/modules/production/cutting/${workspace}?factory=huakang-c&retry_case=1`);await flushPromises()
+    expect(wrapper.text()).toContain('订单读取失败')
+    expect(wrapper.text()).not.toContain('建设中')
+    expect(wrapper.text()).not.toContain('尚不能录入、保存或结算')
+    vi.mocked(ordersApi.list).mockResolvedValue(page([row]))
+    await button('重新读取订单').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('ORDER-001')
+    expect(wrapper.text()).not.toContain('订单读取失败')
+  })
   it('uses applied filters for ledger paging and metrics until the next explicit search',async()=>{
     await open()
     vi.mocked(ordersApi.list).mockResolvedValue({data:[row],total:51,page:1,page_size:50})
