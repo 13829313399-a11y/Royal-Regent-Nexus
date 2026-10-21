@@ -1,6 +1,7 @@
 import type { PaperQuantityRule } from '@/features/carton-procurement/paperQuantity'
 import type { MaterialCorrection } from './cartonMaterialCorrection'
 import { http } from '@/lib/http'
+import type { CartonSourceRequest } from '@/features/carton-procurement/sourceLinks'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
 import type { SplitRecord } from './cartonOrderSplits'
 
@@ -313,6 +314,8 @@ export interface CartonInventoryMovementResponse {
 }
 
 export interface CartonInventoryBalanceResponse {
+  source_requests?: CartonSourceRequest[]
+  business_kinds?: ('PURCHASE' | 'SAMPLE' | 'WORKSHOP_MISC' | 'SUPPLIER_GIFT' | 'LEGACY')[]
   inbound_quantity?: string | null
   outbound_quantity?: string | null
   opening_quantity?: string | null
@@ -528,6 +531,10 @@ export interface CartonImportPreviewRow {
 }
 
 export interface CartonReceiptResponse {
+  source_requests?: CartonSourceRequest[]
+  delivery_id?: string | null
+  business_kinds?: string[]
+  special_request_id?: string
   id: string
   factory_id: string
   receipt_no: string
@@ -1144,6 +1151,8 @@ export const cartonProcurementApi = {
     return response.data
   },
   async createReceipt(payload: {
+    legacy_correction_receipt_id?: string
+    supplier_id?: string
     post_immediately?: boolean
     split_confirmation?: string
     factory_id: string
@@ -1267,6 +1276,9 @@ export const cartonProcurementApi = {
 }
 
 export interface CartonReceiptSummary {
+  source_requests?: CartonSourceRequest[]
+  delivery_id?: string | null
+  business_kinds?: string[]
   id: string; receipt_no: string; delivery_note_no: string; delivery_date: string; acceptance_date: string | null
   status: CartonReceiptResponse['status']; confirmed_at: string | null; operator: string; line_count: number; customers: string; contracts: string
 }

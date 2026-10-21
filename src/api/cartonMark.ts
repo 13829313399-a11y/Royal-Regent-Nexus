@@ -279,8 +279,21 @@ export interface CartonMarkUploadOptions {
   note: string
   previous_asset_id?: string
   previous_revision?: number
+  sharing_mode?: 'SUPPLIER' | 'INTERNAL'
+  supplier_id?: string
 }
-export interface CartonMarkAsset {
+export interface CartonMarkSharing {
+  sharing_mode?: 'ORDER_BOUND' | 'SUPPLIER' | 'INTERNAL'
+  shared_supplier_id?: string
+  shared_supplier_name?: string
+  special_orders?: { order_id: string; order_no: string; order_kind: 'SAMPLE' | 'MISC'; line_id: string; attachment_id: string; confirmed: boolean }[]
+  pending_bindings?: { id: string; order_id: string; order_no: string; contract_no: string; item_no: string; requested_at: string }[]
+}
+export interface CartonMarkBindingTarget {
+  order_id: string; order_kind: 'REGULAR' | 'SAMPLE' | 'MISC'; order_no: string; contract_no: string
+  customer_name: string; item_no: string; revision: number; lines: { id: string; label: string }[]
+}
+export interface CartonMarkAsset extends CartonMarkSharing {
   id: string
   factory_id: string
   file_name: string
@@ -311,6 +324,25 @@ export interface CartonMarkAssetUploadResult {
 
 export function createCartonMarkApi(client = http) {
   return {
+    async bindingTargets(factoryId: string, supplier = false, signal?: AbortSignal) {
+      return (await client.get<CartonMarkBindingTarget[]>(supplier ? '/carton-supplier/carton-mark/binding-targets' : '/carton-mark/assets/binding-targets', { params: { factory_id: factoryId }, signal })).data
+    },
+    async bindSpecialAsset(factoryId: string, target: CartonMarkBindingTarget, lineId: string, asset: Pick<CartonMarkAsset, 'id' | 'revision'>, requestId: string, supplier = false, signal?: AbortSignal) {
+      const prefix = supplier ? '/carton-supplier/special-requests' : '/carton-special-requests'
+      return (await client.post(`${prefix}/${target.order_id}/lines/${lineId}/mark`, { factory_id: factoryId, expected_revision: target.revision, request_id: requestId, mark_mode: 'EXISTING', asset_id: asset.id, asset_revision: asset.revision }, { signal })).data
+    },
+    async shareRecipients(factoryId: string, signal?: AbortSignal) {
+      return (await client.get<{ id: string; name: string }[]>('/carton-mark/assets/share-recipients', { params: { factory_id: factoryId }, signal })).data
+    },
+    async setAssetSharing(factoryId: string, asset: Pick<CartonMarkAsset, 'id' | 'revision'>, sharing_mode: 'SUPPLIER' | 'INTERNAL', supplier_id?: string, signal?: AbortSignal) {
+      return (await client.put<CartonMarkAsset>(`/carton-mark/assets/${asset.id}/sharing`, { revision: asset.revision, sharing_mode, supplier_id }, { params: { factory_id: factoryId }, signal })).data
+    },
+    async proposeAssetBindings(factoryId: string, asset: Pick<CartonMarkAsset, 'id' | 'revision'>, order_ids: string[], signal?: AbortSignal) {
+      return (await client.put(`/carton-supplier/carton-mark/assets/${asset.id}/binding`, { revision: asset.revision, order_ids }, { params: { factory_id: factoryId }, signal })).data
+    },
+    async confirmAssetBinding(factoryId: string, asset: Pick<CartonMarkAsset, 'id' | 'revision'>, bindingId: string, signal?: AbortSignal) {
+      return (await client.post(`/carton-mark/assets/${asset.id}/bindings/${bindingId}/confirm`, { revision: asset.revision }, { params: { factory_id: factoryId }, signal })).data
+    },
     async submitManualReview(payload: { factory_id: string; order_id: string; issue_id?: string; assets: { id: string; revision: number }[]; note?: string; approve?: boolean }, supplier = false, signal?: AbortSignal) {
       return (await client.post<{ id: string }>(supplier ? '/carton-supplier/carton-mark/manual-reviews' : '/carton-mark/manual-reviews', payload, { signal })).data
     },

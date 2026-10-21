@@ -127,7 +127,7 @@ def role_flow(flow, monkeypatch):
                 source_id=assignment.id, reason='隔离验收任职确认'))
         for key, kind, code, data in (
             ('fabric-mat', 'MATERIAL', 'FAB-01', dict(category='FABRIC', unit='米', spec='规格A', color='蓝')),
-            ('bin', 'LOCATION', 'A01', dict(warehouse='布料一仓')),
+            ('bin', 'LOCATION', 'A01', dict(warehouse='布料一仓', category='FABRIC')),
         ):
             db.add(FabricMasterRecord(id=key, factory_id='huakang-c', kind=kind, code=code,
                 name='蓝布' if kind == 'MATERIAL' else code, status='ACTIVE', revision=1, data_json=json.dumps(data), updated_at='2026-10-10'))

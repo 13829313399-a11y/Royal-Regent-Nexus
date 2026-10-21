@@ -4,6 +4,7 @@ export type WarehouseDomain = 'fabric' | 'semi'
 export type WarehouseOperationKind = 'RECEIPT' | 'REQUEST' | 'ISSUE' | 'RETURN' | 'TRANSFER' | 'QUALITY' | 'CORRECTION' | 'TASK' | 'PROCESS_SEND' | 'PROCESS_RETURN' | 'PACK_SEND' | 'PACK_RECEIVE' | 'LOCATION_BIND' | 'REQUEST_CLOSE' | 'CUTTING_RECEIPT' | 'CUTTING_RECEIPT_VOID' | 'CUTTING_REQUEST_REUSE' | 'OPENING' | 'STOCKTAKE'
 export type WarehouseQuality = 'PENDING_INSPECTION' | 'QUALIFIED' | 'REJECTED' | 'HOLD'
 export interface WarehouseDocumentInput {
+  issue_group?: FabricIssueGroup
   factory_id: 'huakang-c'; request_id: string; expected_revision: number; kind: WarehouseOperationKind; business_date: string
   source_system: string; source_no: string; source_line: string; source_version: string
   item_code: string; item_name: string; unit: string; process_state: string; material_category: 'FABRIC' | 'ACCESSORY' | 'THREAD'
@@ -18,6 +19,7 @@ export interface WarehouseDocumentInput {
 export interface WarehouseLocation { category?: string; id: string; warehouse: string; code: string; label: string; status: string; revision: number }
 export interface WarehouseBulkIssue { factory_id: 'huakang-c'; request_id: string; expected_revision: number; business_date: string; counterparty: string; reason: string; items: { batch_id: string; quantity: string; counterparty: string }[] }
 export interface WarehouseBatch {
+  style_no?: string; customer_name?: string; material_detail?: string
   location_id?: string; location_verified?: boolean; location_status?: string; location_label?: string; warehouse_name?: string
   inbound_quantity?: string; outbound_quantity?: string; transfer_quantity?: string; opening_quantity?: string; adjustment_quantity?: string
   id: string; item_code: string; item_name: string; unit: string; process_state: string; material_category: string
@@ -32,6 +34,7 @@ export interface WarehouseDocument {
   issued_quantity?: string; returned_quantity?: string; received_quantity?: string; consumed_quantity?: string
 }
 export interface WarehouseOperationsWorkspace {
+  issue_groups?: FabricIssueGroup[]
   revision: number; stock: WarehouseBatch[]; documents: WarehouseDocument[]
   original_receipts?: WarehouseDocument[]
   locations?: WarehouseLocation[]
@@ -75,7 +78,22 @@ export interface FabricOrderReport extends FabricOrderSummaryQuery {
   rows: FabricOrderRow[]; details: FabricOrderDetail[]; totals: (FabricOrderQuantities & { unit: string })[]
   suppliers: string[]; basis: string; version: string
 }
+export interface FabricIssueGroup { group_id: string; order_no: string; name: string; request_ids: string[] }
+export interface FabricIssueGroupSave extends FabricIssueGroup { factory_id: 'huakang-c'; request_id: string; expected_revision: number }
+export interface FabricIssuePlanLine { original_id: string; batch_id: string; quantity: string }
+export interface FabricIssuePlan {
+  group: FabricIssueGroup; revision: number; token: string; items: FabricIssuePlanLine[]; candidates: WarehouseBatch[]
+  demands: { request: WarehouseDocument; remaining: string; recommended: string; shortage: string }[]
+}
+export interface FabricGroupIssue {
+  factory_id: 'huakang-c'; group_id: string; request_id: string; expected_revision: number; token: string
+  business_date: string; confirmed: boolean; reason: string; items: FabricIssuePlanLine[]
+}
 export const warehouseOperationsApi = {
+  async recoverIssueGroup(input: { kind: 'group'; body: FabricIssueGroupSave } | { kind: 'issue'; body: FabricGroupIssue }): Promise<{ state: 'committed' | 'abandoned' }> { return (await http.post('/warehouse-operations/fabric/issue-groups/recover', input)).data },
+  async saveIssueGroup(input: FabricIssueGroupSave): Promise<FabricIssueGroup> { return (await http.post('/warehouse-operations/fabric/issue-groups', input)).data },
+  async previewIssueGroup(group_id: string, business_date: string): Promise<FabricIssuePlan> { return (await http.post('/warehouse-operations/fabric/issue-groups/preview', { factory_id: 'huakang-c', group_id, business_date })).data },
+  async issueGroup(input: FabricGroupIssue): Promise<{ documents: WarehouseDocument[] }> { return (await http.post('/warehouse-operations/fabric/issue-groups/issue', input)).data },
   async recover(warehouse: WarehouseDomain, input: WarehouseDocumentInput): Promise<{state:'committed'|'abandoned'}> { return (await http.post(`/warehouse-operations/${warehouse}/documents/recover`, input)).data },
   async orderSummary(query: FabricOrderSummaryQuery) { return (await http.get<FabricOrderReport>('/warehouse-operations/fabric/order-summary', { params: { factory_id: 'huakang-c', ...query } })).data },
   async monthly(query: FabricMonthlyQuery) { return (await http.get<FabricMonthlyReport>('/warehouse-operations/fabric/monthly', { params: { factory_id: 'huakang-c', ...query } })).data },

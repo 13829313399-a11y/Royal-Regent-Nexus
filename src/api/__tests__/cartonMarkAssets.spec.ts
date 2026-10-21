@@ -4,6 +4,16 @@ import { createCartonMarkApi, type CartonMarkAsset } from '@/api/cartonMark'
 import { http } from '@/lib/http'
 
 describe('carton-mark repository API', () => {
+  it('keeps sharing, supplier proposals and special paper binding as separate revisioned commands', async () => {
+    const client = { get: vi.fn().mockResolvedValue({ data: [] }), post: vi.fn().mockResolvedValue({ data: {} }), put: vi.fn().mockResolvedValue({ data: {} }) }
+    const api = createCartonMarkApi(client as never), file = { id: 'asset', revision: 4 }
+    await api.setAssetSharing('huaxing', file, 'SUPPLIER', 'supplier-a')
+    expect(client.put).toHaveBeenLastCalledWith('/carton-mark/assets/asset/sharing', { revision: 4, sharing_mode: 'SUPPLIER', supplier_id: 'supplier-a' }, { params: { factory_id: 'huaxing' }, signal: undefined })
+    await api.proposeAssetBindings('huaxing', file, ['order'])
+    expect(client.put).toHaveBeenLastCalledWith('/carton-supplier/carton-mark/assets/asset/binding', { revision: 4, order_ids: ['order'] }, { params: { factory_id: 'huaxing' }, signal: undefined })
+    await api.bindSpecialAsset('huaxing', { order_id: 'sample', order_kind: 'SAMPLE', order_no: 'SP', contract_no: '', customer_name: '', item_no: 'I', revision: 2, lines: [] }, 'line', file, 'request', true)
+    expect(client.post).toHaveBeenLastCalledWith('/carton-supplier/special-requests/sample/lines/line/mark', { factory_id: 'huaxing', expected_revision: 2, request_id: 'request', mark_mode: 'EXISTING', asset_id: 'asset', asset_revision: 4 }, { signal: undefined })
+  })
   it('sends file classification and original revision with upload and status changes', async () => {
     const client = { post: vi.fn().mockResolvedValue({ data: [] }), put: vi.fn().mockResolvedValue({ data: {} }) }
     const api = createCartonMarkApi(client as never)

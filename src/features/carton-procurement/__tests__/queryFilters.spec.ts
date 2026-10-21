@@ -5,6 +5,35 @@ import type { SettlementDocument, StatementLine, SupplierSource } from '@/api/ca
 
 const shipment = (id: string, date: string, acceptance: string | null, customer = '东康客户'): PortalShipment => ({ id, delivery_note_no: id, delivery_date: date, acceptance_date: acceptance, status: 'RECEIVED', revision: 1, created_at: date, confirmed_at: '', acceptance_lines: [], lines: [{ id: id + '-line', order_line_id: 'line', order_no: 'CT-1', contract_no: 'SC-1', customer_po: 'PO-1', item_no: 'ITEM-1', customer_name: customer, child_no: '', packaging_type: '外箱', paper_quality: 'A33', specification: '1*1', unit: '个', quantity: '10' }] })
 describe('carton read-only query projections', () => {
+  it('matches a mixed note as a whole while combining type with customer, status and date', () => {
+    const row = shipment('mixed', '2026-10-20', null)
+    row.status = 'SENT'
+    row.lines.push({ ...row.lines[0]!, id: 'sample', customer_name: '样板客户', business_kind: 'SAMPLE' })
+    const query = { ...emptyShipmentFilters(), businessKind: 'SAMPLE' as const, customer: '东康客户', status: 'SENT', from: '2026-10-20', to: '2026-10-20' }
+    const result = filterShipments([row], query)
+    expect(result).toEqual([row])
+    expect(result[0]!.lines).toBe(row.lines)
+    expect(result[0]!.lines).toHaveLength(2)
+    expect(filterShipments([row], { ...query, businessKind: 'REGULAR' })).toEqual([row])
+    expect(filterShipments([row], { ...query, businessKind: 'MISC' })).toEqual([])
+    expect(filterShipments([row], { ...query, status: 'RECEIVED' })).toEqual([])
+    expect(filterShipments([row], { ...query, from: '2026-10-21' })).toEqual([])
+  })
+  it('does not infer a regular order from historical no-order review linkage', () => {
+    const row = shipment('legacy', '2026-10-20', null)
+    row.lines[0]!.source_type = 'AD_HOC_REVIEW'
+    expect(filterShipments([row], { ...emptyShipmentFilters(), businessKind: 'UNKNOWN' })).toEqual([row])
+    expect(filterShipments([row], { ...emptyShipmentFilters(), businessKind: 'REGULAR' })).toEqual([])
+  })
+  it('uses recorded settlement kind only and leaves monetary evidence unchanged', () => {
+    const line = { amount: '123.40', document_no: 'DN', note: '' } as StatementLine
+    const source = { special_request_kind: 'SAMPLE', issues: [] } as unknown as SupplierSource
+    expect(matchesSettlementLine(line, source, undefined, 'DN', 'ALL', 'SAMPLE')).toBe(true)
+    expect(matchesSettlementLine(line, source, undefined, 'missing', 'ALL', 'SAMPLE')).toBe(false)
+    expect(matchesSettlementLine(line, source, undefined, '', 'ALL', 'MISC')).toBe(false)
+    expect(matchesSettlementLine(line, undefined, undefined, '', 'ALL', 'OTHER')).toBe(true)
+    expect(line.amount).toBe('123.40')
+  })
   it('finds a multi-batch delivery in each actual acceptance month', () => {
     const row = { ...shipment('split', '2026-09-29', '2026-10-01'), acceptance_history: [
       { confirmed_at: '', acceptance_date: '2026-09-30', status: 'POSTED', lines: [] },

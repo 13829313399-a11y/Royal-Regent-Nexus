@@ -9,10 +9,18 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [vue(), tailwindcss(), imageTranslationPlugin()],
     server: {
-      // Worker artifacts are data, not frontend sources. HTML previews must
-      // never trigger a full-page reload that discards the current selection.
+      // Runtime and test artifacts are not frontend sources. Ignore locked
+      // temporary files and previews that could crash or reload the dev server.
       watch: {
-        ignored: ['**/backend/data/**', '**/outputs/**', '**/.tmp/**', '**/backend/.pytest-tmp*/**', '**/dist/**'],
+        ignored: [
+          '**/backend/data/**',
+          '**/outputs/**',
+          '**/.tmp/**',
+          '**/.tmp-tests/**',
+          '**/.local-dev/**',
+          '**/backend/.pytest-tmp*/**',
+          '**/dist/**',
+        ],
       },
       proxy: {
         '/api': {

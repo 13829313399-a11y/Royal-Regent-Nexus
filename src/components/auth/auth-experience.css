@@ -19,7 +19,7 @@ body:has(.rr-auth.ng-shell){min-width:0}
 .rr-auth .ng-brand-name{min-width:0}
 .rr-auth .ng-logo{display:grid;place-items:center;width:64px;height:64px;flex:none;border-radius:8px;background:#f7faf6}
 /* Use the homepage asset's original fit, geometry and animation; inline SVG keeps pause support. */
-.rr-auth .ng-logo>svg{display:block;width:100%;height:100%;object-fit:contain}
+.rr-auth .ng-logo>img{display:block;width:100%;height:100%;object-fit:contain}
 .rr-auth .ng-brand-word{font-family:Arial,sans-serif;font-size:20px;letter-spacing:-.5px;font-weight:550}
 .rr-auth .ng-brand-sub{margin-top:7px;font-size:11px;color:#a5bdb4;letter-spacing:2.1px}
 .rr-auth .ng-heading{position:relative;z-index:1;padding:68px 64px 0}

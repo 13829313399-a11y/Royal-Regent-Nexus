@@ -10,7 +10,8 @@ describe('authentication layout boundary', () => {
   })
   it('uses the original shared logo and only real public organization nodes', () => {
     const brand = read('src/components/auth/AuthBrandScene.vue')
-    expect(brand).toContain('huadeng_group_dynamic_logo_topbar.svg?raw')
+    expect(brand).toContain('src="/brand/huadeng_group_dynamic_logo_topbar.svg"')
+    expect(brand).not.toContain('public/brand/')
     expect(brand).toContain('authApi.organizationCatalog()')
     expect(brand).not.toContain('23/24')
     expect(read('index.html')).toContain('正在准备工作空间')

@@ -19,6 +19,7 @@ def test_manual_returns_transfers_and_history_use_authoritative_category(monkeyp
         fabric = zone(client, '布料1架', 'FABRIC')
         thread = zone(client, '配线1区', 'THREAD')
         before = workspace(client)
+        post(client, payload(client, 'RECEIPT', location_id='fabric-未分类位', material_category='FABRIC'), status=422)
         post(client, payload(client, 'RECEIPT', location_id=thread['id'], material_category='FABRIC'), status=422)
         assert workspace(client)['stock'] == before['stock']
         request = payload(client, 'RECEIPT', location_id=fabric['id'])

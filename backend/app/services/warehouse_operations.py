@@ -101,7 +101,7 @@ def original_for(entries, key, kinds):
 
 def new_batch(stock, entry, data, quantity_value, base=None, quality='PENDING_INSPECTION'):
     row = copy.deepcopy(base) if base else {key: data.get(key, '') for key in
-        ('item_code', 'item_name', 'unit', 'process_state', 'material_category', 'lot', 'roll_no', 'counterparty', 'production_no')}
+        ('item_code', 'item_name', 'unit', 'process_state', 'material_category', 'lot', 'roll_no', 'counterparty', 'production_no', 'style_no', 'customer_name', 'material_detail')}
     row.update(id=entry['id'], quantity=text(quantity_value), quality_status=quality, location=data['location'],
         source_no=data['source_no'], source_document=entry['id'], received_on=entry['business_date'], last_business_date=entry['business_date'])
     row.update(location_id=data.get('location_id', ''), location_snapshot=data.get('location_snapshot', {}),
@@ -185,7 +185,7 @@ def apply_entry(stock, entries, entry, warehouse):
         from app.services.fabric_receipt_corrections import apply_original_reversal
         apply_original_reversal(stock, entries, entry)
         return
-    if kind in {'MASTER_LOCATION', 'COMMAND_ABANDONED'}:
+    if kind in {'MASTER_LOCATION', 'COMMAND_ABANDONED', 'FABRIC_ISSUE_GROUP'}:
         entries[identifier] = entry
         return
     if kind == 'LOCATION_BIND':
@@ -407,8 +407,10 @@ def workspace(db, warehouse):
         batch['warehouse_name'] = place['warehouse'] if place else ''
         batch['location_label'] = place['label'] if place else batch['location']
         batch['available_quantity'] = '0' if not place or batch['quality_status'] in {'REJECTED', 'HOLD'} else batch['quantity']
+    from app.services.fabric_issue_groups import groups
     return {'revision': max((row['sequence'] for row in rows), default=0), 'stock': list(stock.values()),
-            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] not in {'MASTER_LOCATION', 'OPENING_IMPORT', 'COMMAND_ABANDONED'} and not row['kind'].startswith('STOCKTAKE_')], 'original_receipts': original_receipts}
+            'issue_groups': groups(entries) if warehouse == 'fabric' else [],
+            'locations': catalog, 'documents': [row for row in rows[::-1] if row['kind'] not in {'MASTER_LOCATION', 'OPENING_IMPORT', 'COMMAND_ABANDONED', 'FABRIC_ISSUE_GROUP'} and not row['kind'].startswith('STOCKTAKE_')], 'original_receipts': original_receipts}
 
 
 def request_body(payload):

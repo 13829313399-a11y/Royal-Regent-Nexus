@@ -27,6 +27,7 @@ class ReceiptPriceInput(BaseModel):
 
 class ReceiveSourceRequest(ReceiptPriceInput):
     model_config = ConfigDict(extra="forbid")
+    delivery_quantity: str = Field(default='', max_length=32)
     factory_id: Literal["huakang-c"]
     request_id: UUID
     expected_source_revision: int = Field(ge=1)
@@ -55,6 +56,7 @@ class ReverseReceiptRequest(BaseModel):
 
 class ReceiveSourceItem(ReceiptPriceInput):
     model_config = ConfigDict(extra="forbid")
+    delivery_quantity: str = Field(default='', max_length=32)
     source_line_id: str = Field(min_length=1, max_length=128)
     expected_source_revision: int = Field(ge=1)
     expected_receipt_count: int = Field(ge=0)

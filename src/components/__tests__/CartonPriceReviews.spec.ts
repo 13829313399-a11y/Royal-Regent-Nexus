@@ -1,0 +1,100 @@
+import { mount, flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { reactive } from 'vue'
+import Component from '../CartonPriceReviews.vue'
+import { cartonPriceReviewsApi as api, type CartonPriceReview } from '@/api/cartonPriceReviews'
+
+const mocks = vi.hoisted(() => ({ can: vi.fn((_code: string, _factory?: string, _department?: string) => true) }))
+const authState = reactive({ currentUser: { id: 'warehouse' } })
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ can: mocks.can, get currentUser() { return authState.currentUser } }) }))
+vi.mock('@/lib/http', () => ({ http: {}, getApiErrorMessage: (error: Error) => error.message }))
+vi.mock('@/api/cartonPriceReviews', () => ({ cartonPriceReviewsApi: { list: vi.fn(), propose: vi.fn(), decide: vi.fn() } }))
+const row = (id = 'R1'): CartonPriceReview => ({ id, factory_id: 'huaxing', receipt_line_id: 'RL1', shipment_id: 'S1', shipment_line_id: 'SL1', source_kind: 'REGULAR', status: 'PROPOSED', revision: 1,
+  original_unit_price: '2', proposed_unit_price: '3', effective_unit_price: null, original_free_confirmed: false,
+  currency: 'CNY', document_no: id, item_no: 'BOX', packaging_type: '外箱', specification: '30*20*10', unit: '个', quantity: '6', receipt_status: 'POSTED', reason: '送货价格有误', locked: false, actionable: true, history: [] })
+const button = (w: ReturnType<typeof mount>, text: string) => w.findAll('button').find(button => button.text() === text)!
+beforeEach(() => { vi.resetAllMocks(); mocks.can.mockReturnValue(true); vi.mocked(api.list).mockResolvedValue([row()]) })
+
+describe('送货价格核对', () => {
+  it('preserves a pending load across same-identity session refreshes', async () => {
+    let resolve!: (rows: CartonPriceReview[]) => void
+    vi.mocked(api.list).mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const w = mount(Component, { props: { factoryId: 'huaxing' } })
+    authState.currentUser = { id: 'warehouse' }; await flushPromises()
+    expect(api.list).toHaveBeenCalledTimes(1)
+    resolve([row()]); await flushPromises()
+    expect(w.text()).toContain('供应商原单价 2')
+    expect(w.text()).not.toContain('正在读取核价记录')
+    w.unmount()
+  })
+  it('allows an open-month confirmed price to be proposed again without editing the original', async () => {
+    vi.mocked(api.list).mockResolvedValue([{ ...row(), status: 'CONFIRMED', effective_unit_price: '3' }])
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    expect(button(w, '提出价格更正')).toBeUndefined()
+    await w.get('input[type="checkbox"]').setValue(true)
+    await button(w, '提出价格更正').trigger('click')
+    expect(w.get('[aria-label="R1 建议单价"]').exists()).toBe(true)
+    expect(w.text()).toContain('供应商原单价 2')
+    expect(w.findAll('input').some(input => input.attributes('aria-label')?.includes('原单价'))).toBe(false)
+    w.unmount()
+  })
+  it('requires explicit zero confirmation and preserves an ambiguous retry identity', async () => {
+    vi.mocked(api.propose).mockRejectedValue(new Error('网络中断，结果待核实'))
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await w.get('[aria-label="R1 建议单价"]').setValue('0')
+    await w.get('[aria-label="R1 核价原因"]').setValue('核实为免费补送')
+    await button(w, '保存核价意见').trigger('click')
+    expect(api.propose).not.toHaveBeenCalled()
+    const free = w.findAll('input[type="checkbox"]').find(input => input.element.parentElement?.textContent?.includes('确认本行免费'))!
+    await free.setValue(true)
+    await button(w, '保存核价意见').trigger('click'); await flushPromises()
+    await button(w, '保存核价意见').trigger('click'); await flushPromises()
+    const calls = vi.mocked(api.propose).mock.calls
+    expect(calls).toHaveLength(2)
+    expect(calls[0]![1]).toEqual(expect.objectContaining({ proposed_unit_price: '0', free_confirmed: true, expected_revision: 1 }))
+    expect(calls[1]![1].request_id).toBe(calls[0]![1].request_id)
+    w.unmount()
+  })
+  it('clears old context while an old write cannot unlock a new write', async () => {
+    let resolveOld!: (value: CartonPriceReview) => void, resolveNew!: (value: CartonPriceReview) => void
+    vi.mocked(api.propose).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve })).mockImplementationOnce(() => new Promise(resolve => { resolveNew = resolve }))
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    await w.get('[aria-label="R1 核价原因"]').setValue('第一厂区价格核实')
+    await button(w, '保存核价意见').trigger('click')
+    vi.mocked(api.list).mockResolvedValue([row('R2')])
+    await w.setProps({ factoryId: 'huadeng' }); await flushPromises()
+    expect(w.text()).not.toContain('第一厂区价格核实')
+    await w.get('[aria-label="R2 核价原因"]').setValue('第二厂区价格核实')
+    await button(w, '保存核价意见').trigger('click')
+    resolveOld(row()); await flushPromises()
+    expect(button(w, '保存核价意见').attributes('disabled')).toBeDefined()
+    expect(w.emitted('changed')).toBeUndefined()
+    resolveNew(row('R2')); await flushPromises()
+    expect(w.emitted('changed')).toHaveLength(1)
+    w.unmount()
+  })
+  it('keeps warehouse-only and supplier-only actions behind their canonical permissions', async () => {
+    mocks.can.mockImplementation(code => !code.endsWith(':approve'))
+    const w = mount(Component, { props: { factoryId: 'huaxing', supplier: true } }); await flushPromises()
+    expect(button(w, '确认本批价格')).toBeUndefined()
+    expect(button(w, '保存核价意见')).toBeUndefined()
+    expect(w.text()).toContain('供应商原单价 2')
+    w.unmount()
+    mocks.can.mockReturnValue(false)
+    vi.mocked(api.list).mockClear()
+    const denied = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    expect(api.list).not.toHaveBeenCalled()
+    expect(denied.find('section').exists()).toBe(false)
+    denied.unmount()
+  })
+  it('requires a reason to reject and makes confirmed or locked rows read only', async () => {
+    const locked = { ...row('LOCKED'), locked: true, actionable: false }
+    vi.mocked(api.list).mockResolvedValue([row(), locked])
+    const w = mount(Component, { props: { factoryId: 'huaxing', supplier: true } }); await flushPromises()
+    await button(w, '退回核实').trigger('click')
+    expect(api.decide).not.toHaveBeenCalled()
+    expect(w.get('[role="alert"]').text()).toContain('四字')
+    expect(w.find('[aria-label="LOCKED 核价原因"]').exists()).toBe(false)
+    w.unmount()
+  })
+})

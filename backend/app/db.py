@@ -693,6 +693,35 @@ def ensure_carton_supplier_portal_schema_ready() -> None:
             raise RuntimeError("供应商协同尚未迁移至 20260921_0118；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def ensure_carton_special_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "auth_users" not in names:
+            return
+        from app.models.carton_special_requests import TABLES, UnifiedDelivery
+        missing = []
+        for table in TABLES + (UnifiedDelivery.__table__,):
+            columns = {column["name"] for column in inspector.get_columns(table.name)} if table.name in names else set()
+            missing.extend(table.name + "." + column.name for column in table.columns if column.name not in columns)
+        if missing:
+            raise RuntimeError("纸品统一送货和箱唛需要显式迁移至 20261019_0169；请先完整备份并迁移。缺少：" + ", ".join(missing))
+
+
+def ensure_carton_price_review_schema_ready() -> None:
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        if "auth_users" not in names:
+            return
+        from app.models.carton_price_review import CartonPriceReview
+        table = CartonPriceReview.__table__
+        columns = {column["name"] for column in inspector.get_columns(table.name)} if table.name in names else set()
+        missing = [table.name + "." + column.name for column in table.columns if column.name not in columns]
+        if missing:
+            raise RuntimeError("纸箱双方核价需要显式迁移至 20261019_0170；请先完整备份并迁移。缺少：" + ", ".join(missing))
+
+
 def ensure_carton_explicit_quantity_schema_ready() -> None:
     with engine.connect() as connection:
         inspector = inspect(connection)
@@ -871,6 +900,8 @@ def init_db() -> None:
         carton_customer_assignment,  # noqa: F401
         carton_supplier_settlement,  # noqa: F401
         carton_supplier_portal,  # noqa: F401
+        carton_special_requests,  # noqa: F401
+        carton_price_review,  # noqa: F401
         customer_order,  # noqa: F401
         customer_order_ledger,  # noqa: F401
         huakang_b_jp,  # noqa: F401
@@ -915,6 +946,8 @@ def init_db() -> None:
     ensure_carton_master_schema_ready()
     ensure_carton_supplier_settlement_schema_ready()
     ensure_carton_supplier_portal_schema_ready()
+    ensure_carton_special_schema_ready()
+    ensure_carton_price_review_schema_ready()
     ensure_carton_explicit_quantity_schema_ready()
     ensure_carton_customer_po_schema_ready()
     ensure_carton_order_deletion_schema_ready()
@@ -951,6 +984,8 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
                             # Cutting and JP intake require explicit migrations.
                             if not name.startswith(("cutting_ops_", "jp_intake_"))
+                            and (not name.startswith("carton_special_") or "auth_users" not in existing_tables)
+                            and (name != "carton_price_reviews" or "auth_users" not in existing_tables)
                             and not name.startswith("indonesia_material_")
                             and (not name.startswith(("collab_", "member_")) or not existing_tables)
                             # An existing business store upgrades this new domain explicitly.
