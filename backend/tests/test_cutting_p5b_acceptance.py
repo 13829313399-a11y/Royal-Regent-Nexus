@@ -208,8 +208,8 @@ def prepare_order(p):
     assert published['tasks'][0]['earliest_supply_date'] == '2026-10-15'
 
 
-def test_joined_roles_order_to_frozen_cost_payment_and_cutover(role_flow):
-    p = role_flow
+def prepare_closed_order(p):
+    """Reusable synthetic scenario; all business transitions use the APIs."""
     prepare_order(p)
     login(p, 'warehouse')
     stock = warehouse_post(p, 'RECEIPT', quantity='20', source_no='P5B-SYNTHETIC', source_line='1',
@@ -375,6 +375,9 @@ def test_joined_roles_order_to_frozen_cost_payment_and_cutover(role_flow):
     login(p, 'warehouse')
     assert warehouse_view(p)['stock'][0]['quantity'] == '14'
 
+
+def test_joined_roles_order_to_frozen_cost_payment_and_cutover(role_flow):
+    prepare_closed_order(role_flow)
 
 @pytest.mark.parametrize('role', [name for name in ROLE_ACTIONS if name != 'foreign'])
 def test_capabilities_match_explicit_role_only(role_flow, role):

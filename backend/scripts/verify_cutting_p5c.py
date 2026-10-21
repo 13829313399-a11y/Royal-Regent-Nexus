@@ -100,13 +100,17 @@ def main():
         'migration': ['test_cutting_migration.py', 'test_cutting_jp_migration.py', 'test_migration_revision_identity.py'],
         'compatibility': ['test_unversioned_database_audit.py', 'test_database_takeover.py', 'test_huakang_b_jp.py'],
         'capacity': ['test_cutting_sqlite_capacity.py'],
+        'http-capacity': ['test_cutting_http_capacity.py', 'test_cutting_http_soak.py', 'test_cutting_receipt_projection.py',
+                          'test_cutting_read_batch.py', 'test_cutting_export_gate.py', 'test_cutting_export_process.py'],
     }
     steps = [(name, [sys.executable, '-m', 'pytest', *['tests/'+test for test in tests], '-q',
                     '-p', 'no:cacheprovider', '--basetemp='+str(output/(name+'-db')),
                     '--junitxml='+str(output/(name+'.xml'))], backend) for name, tests in groups.items()]
     env = dict(os.environ, DATABASE_URL='sqlite://', SEED_DEFAULT_ACCOUNTS='false',
                PYTHONUTF8='1', PYTHONIOENCODING='utf-8', CUTTING_P5C_EVIDENCE=str(output/'evidence'),
-               CUTTING_TEST_POSTGRES_URL=connection, PYTEST_ADDOPTS='')
+               CUTTING_TEST_POSTGRES_URL=connection, PYTEST_ADDOPTS='',
+               CUTTING_SOAK_ORDERS='3', CUTTING_SOAK_CHAINS='3', CUTTING_SOAK_WORKERS='3', CUTTING_SOAK_SECONDS='3',
+               CUTTING_SOAK_WORKLOAD='paced')
     report = {'run_id': run, 'source': initial, 'status': 'running', 'python': sys.version,
               'business_data_used': False, 'release_ready': False,
               'database_scope': 'sqlite_only' if args.sqlite_only else 'sqlite_and_optional_postgres'}

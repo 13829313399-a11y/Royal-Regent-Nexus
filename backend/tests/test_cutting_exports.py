@@ -117,14 +117,14 @@ def test_export_permission_factory_bounds_and_draft_rejection(paid_setup):
 @pytest.mark.parametrize('change',['permission','session','balance'])
 def test_generation_rechecks_identity_permissions_and_balance(paid_setup,monkeypatch,change):
     p=paid_setup;body=request();preview=ok(p.post(BASE+'/exports/preview',json=body))
-    original=exports.render
+    original=exports.package_isolated
     def altered(report, user_context):
         content=original(report,user_context)
         if change=='permission':p.cutting_auth['user']=user('read',department='accounting')
         elif change=='session':p.cutting_auth['user']=replace(p.cutting_auth['user'],id='another-user')
         else:save(p)
         return content
-    monkeypatch.setattr(exports,'render',altered)
+    monkeypatch.setattr(exports,'package_isolated',altered)
     response=p.post(BASE+'/exports/download',json=body|{'token':preview['token']})
     assert response.status_code==(409 if change=='balance' else 403)
     assert 'spreadsheetml' not in response.headers['content-type']
@@ -137,6 +137,26 @@ def test_workbook_limits_and_large_exact_values():
     report['sheets'][0]['rows']=[['x'*32768,'000001']]
     with pytest.raises(Exception) as too_long:exports.render(report,user('read'))
     assert too_long.value.status_code==413
+
+
+def test_named_styles_keep_printing_and_text_contract():
+    report = dict(kind='payments', metadata=[], token='fixed', captured_at='2026-10-16',
+        sheets=[exports.sheet('样式', ['货号', '金额'], [['00001', '1.20'], ['=literal', '0.00']])])
+    wb = load_workbook(BytesIO(exports.render(report, user('read'))))
+    ws = wb['样式']
+    assert rows(wb, '样式') == [('00001', '1.20'), ('=literal', '0.00')]
+    assert ws['A4'].data_type == 's'
+    for cell, bold, color in [(ws['A2'], True, '00FFFFFF'), (ws['A3'], False, '00173E43')]:
+        assert cell.font.name == 'Microsoft YaHei' and cell.font.sz == 10
+        assert cell.font.bold == bold and cell.font.color.rgb == color
+        assert cell.alignment.horizontal == cell.alignment.vertical == 'center'
+        assert cell.alignment.wrap_text
+    assert ws['A2'].fill.fgColor.rgb == '00007F78'
+    assert ws['A3'].fill.patternType is None
+    assert ws['A4'].fill.fgColor.rgb == '00EFF7F7'
+    assert ws.freeze_panes == 'B3' and ws.print_title_rows == '$1:$2'
+    assert ws.column_dimensions['A'].width == 18 and ws.row_dimensions[1].height == 58
+    assert ws.page_setup.orientation == 'landscape' and str(ws.page_setup.paperSize) == ws.PAPERSIZE_A3
 
 
 def test_currency_and_explicit_zero_are_never_combined_or_lost():
@@ -244,6 +264,9 @@ def test_wide_table_cell_budget_and_empty_table_coverage():
 @pytest.mark.parametrize('change',['permission','balance'])
 def test_volume_api_rechecks_before_returning_zip(paid_setup,monkeypatch,change):
     p=paid_setup;original_sheets=exports.payment_sheets;original_render=exports.render
+    # Exercise reduced per-volume limits in this process; the subprocess uses
+    # the same production constants and has its own contract/readback test.
+    monkeypatch.setattr(exports, 'package_isolated', exports.package)
     def expanded(value,events):
         return original_sheets(value,events)+[exports.sheet('分卷测试',['序号','内容'],[[i,'长依据'*2000] for i in range(5)])]
     monkeypatch.setattr(exports,'payment_sheets',expanded)

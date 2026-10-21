@@ -21,6 +21,7 @@ from app.models.warehouse_operations import WarehouseOperation
 from app.services import cutting_ops as c, cutting_orders as orders, cutting_planning as plans
 from app.services import cutting_reporting as reporting, cutting_usage as usage
 from app.services.transaction_lock import lock_transaction
+from app.services import cutting_read_batch
 
 
 def paged(rows, page, **extra):
@@ -48,8 +49,22 @@ def order_identity(dispatch):
         customer=dispatch.snapshot.get('customer_name', ''), item_no=dispatch.snapshot.get('product_no', ''))
 
 
+def production_sources(db, q='', *, snapshot=None):
+    ready = reporting.schema_ready(db.connection()) if snapshot is not None else True
+    for batch in cutting_read_batch.batches(sources(db, q)):
+        ids = [order.line_id for _, order, revision in batch if order and revision
+               and (snapshot is None or order.line_id in snapshot['issues'])]
+        docs, versions = cutting_read_batch.production(db, ids, revisions=snapshot is not None) if ready else ({}, {})
+        if snapshot is not None:
+            snapshot['production'] = (ready, docs, versions)
+        for dispatch, order, revision in batch:
+            yield dispatch, order, revision, docs.get(order.line_id, {}) if order else {}
+
+
 def scheduling(db, q='', status='', bucket='', page=1, plan_status=''):
     lock_transaction(db, 'cutting-master', c.FACTORY)
+    from app.services.cutting_materials import receipt_reader
+    receipt_entries = receipt_reader(db)
     stats = dict(total=0, scheduled=0, unscheduled=0, partial=0, review=0)
     rows = []
     for dispatch, order, revision in sources(db, q):
@@ -59,7 +74,7 @@ def scheduling(db, q='', status='', bucket='', page=1, plan_status=''):
         needs = order is None or order.dispatch_id != dispatch.id
         if status and orders.workflow_status(data, dispatch.snapshot.get('status'), needs) != status:
             continue
-        summary = plans.summary(db, data, needs)
+        summary = plans.summary(db, data, needs, receipt_entries=receipt_entries)
         if plan_status and plan_status not in summary['states']:
             continue
         published = data.get('planning', {}).get('published') or {}
@@ -84,18 +99,19 @@ def scheduling(db, q='', status='', bucket='', page=1, plan_status=''):
 def task_board(db, day, q='', execution='', scope='daily', page=1):
     c.require(reporting.schema_ready(db.connection()), '每日填数依据尚未就绪', 503)
     lock_transaction(db, 'cutting-master', c.FACTORY)
+    from app.services.cutting_materials import receipt_reader
+    receipt_entries = receipt_reader(db)
     all_rows = []
     previous = (day-timedelta(days=1)).isoformat()
     date = day.isoformat()
     today = plans.business_today().isoformat()
-    for dispatch, order, revision in sources(db, q):
+    for dispatch, order, revision, docs in production_sources(db, q):
         if not order or not revision:
             continue
         data = revision.data
         published = data.get('planning', {}).get('published') or {}
-        summary = plans.summary(db, data, order.dispatch_id != dispatch.id)
+        summary = plans.summary(db, data, order.dispatch_id != dispatch.id, receipt_entries=receipt_entries)
         valid = dispatch.snapshot.get('status') != 'cancelled' and not summary['published_stale']
-        docs = reporting.documents(reporting.events(db, order.line_id))
         balances, _ = reporting.replay(docs, date)
         before, _ = reporting.replay(docs, previous)
         task_map = {t['task_id']: t for t in published.get('tasks', [])}
@@ -222,7 +238,7 @@ def cost_overview(db, q='', page=1):
     snapshot = material_snapshot(db)
     rows, currencies = [], {}
     pending = 0
-    for dispatch, order, _ in sources(db, q):
+    for dispatch, order, _, _reports in production_sources(db, q, snapshot=snapshot):
         if not order:
             continue
         if dispatch.line_id not in snapshot['issues']:
