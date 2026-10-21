@@ -7,6 +7,8 @@ const text = (key: string, label: string, required = false): Field => ({ key, la
 const number = (key: string, label: string, required = false, nullable = false): Field => ({ key, label, type: 'number', min: '0', step: 'any', required, nullable })
 const date = (key: string, label: string, required = true): Field => ({ key, label, type: 'date', required, nullable: !required })
 export const recipient: Field = { key: 'recipient', label: '印尼接收方', type: 'select', required: true, options: [{ value: 'RRI', label: 'RRI' }, { value: 'RRM', label: 'RRM' }] }
+export const customerDefaults: Data = { name: '', status: 'active', notes: '' }
+export const customerFields: Field[] = [text('name', '固定客人名称', true), { key: 'status', label: '使用状态', type: 'select', options: [{ value: 'active', label: '启用' }, { value: 'inactive', label: '停用' }] }, { key: 'notes', label: '备注', type: 'textarea' }]
 const billing: Field = { key: 'billing_basis', label: '计费方式', type: 'select', required: true, options: [{ value: 'quantity', label: '按数量' }, { value: 'weight', label: '按重量' }] }
 export const materialFields: Field[] = [
   text('code', '物料编码', true), text('name', '物料名称', true), text('english_name', '英文名称'), text('specification', '规格'), text('category', '类别'),
