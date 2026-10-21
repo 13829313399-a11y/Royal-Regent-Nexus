@@ -77,9 +77,10 @@ async function previewDraft(){
   catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
 async function openStatement(targetMonth:string,id:string,eventId?:string){
-  if(!canLeave())return
+  if(!canLeave())return false
   draft.value=undefined;quote.value=undefined;reason.value='';month.value=targetMonth
   await load(id,eventId)
+  return true
 }
 function activateMonth(target:string){
   if(month.value===target)return

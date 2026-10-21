@@ -39,10 +39,11 @@ onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('before
 function failed(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status?:number}}).response?.status;if(status===401||status===403){rights.value=undefined;clearEvidence()}return status}
 async function fresh(ticket:number){const value=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=value;if(!readable.value){clearEvidence();error.value='付款登记未启用或未获付款查询权限。';return false}return true}
 async function load(id?:string,eventId?:string,targetMonth=month.value){
-  if(!leave())return
+  if(!leave())return false
   month.value=targetMonth;conflict.value=undefined;draft.value=undefined;preview.value=undefined;record.value=undefined;basis.value=undefined;reason.value='';error.value='';busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return;const value=await paymentApi.read(month.value,id,eventId);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined}}
+  try{if(!await fresh(ticket))return true;const value=await paymentApi.read(month.value,id,eventId);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined}}
   catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
+  return true
 }
 async function start(mode:'new'|'edit'|'replace'|'refresh'){
   if(busy.value||pending.value)return
@@ -108,8 +109,9 @@ async function recover(){
   }catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
 async function openPayment(targetMonth:string,id:string,eventId?:string){
-  await load(id,eventId,targetMonth)
+  if(!await load(id,eventId,targetMonth))return false
   if(record.value?.document_id===id&&!draft.value&&!pending.value){await nextTick();const element=panel.value?.$el as HTMLElement|undefined;element?.scrollIntoView?.({block:'start'});element?.focus?.({preventScroll:true})}
+  return true
 }
 function activateMonth(target:string){
   if(month.value===target)return

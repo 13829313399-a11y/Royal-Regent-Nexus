@@ -1,5 +1,8 @@
 .cutting-shell { height: 100dvh; display: grid; grid-template: auto auto minmax(0, 1fr) / minmax(0, 1fr); background: var(--background); color: var(--foreground); }
 .cutting-header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 28px; background: var(--card); border-bottom: 1px solid var(--border); }
+.cutting-environment { flex:1 0 100%; min-width:0; display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--accent); color:var(--foreground); font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.cutting-environment strong { color:var(--primary); }
+.cutting-environment small { color:var(--muted-foreground); font-size:12px; }
 .cutting-brand { display: flex; align-items: center; gap: 12px; color: inherit; text-decoration: none; }
 .cutting-brand img { width: 36px; height: 36px; object-fit: contain; }
 .cutting-brand strong { display: block; font-size: 17px; }

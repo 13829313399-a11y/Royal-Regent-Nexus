@@ -20,7 +20,9 @@ import CuttingMonthlyOverview from './CuttingMonthlyOverview.vue'
 // Editable search text is applied only by an explicit query.
 const appliedQuery=ref('')
 const closingView=ref('overview')
+let financialGeneration=0
 async function changeClosingView(value:string){
+ financialGeneration++
  closingView.value=value;await nextTick()
  if(value==='period')periodPanel.value?.activateMonth(month.value)
  if(value==='settlement')settlementPanel.value?.activateMonth(month.value)
@@ -30,10 +32,14 @@ const closingTabs=[{id:'overview',label:'月结总览'},{id:'period',label:'内�
 const periodPanel=ref<InstanceType<typeof CuttingPeriodClosing>>()
 const route=inject(routeLocationKey,undefined)
 async function openMonthly(kind:'period'|'settlement'|'payment',targetMonth:string,id:string,eventId?:string){
+  const ticket=++financialGeneration,previousView=closingView.value
   closingView.value=kind;await nextTick()
-  if(kind==='period')await periodPanel.value?.openPeriod(targetMonth,eventId)
-  else if(kind==='settlement')await settlementPanel.value?.openStatement(targetMonth,id,eventId)
-  else await paymentPanel.value?.openPayment(targetMonth,id,eventId)
+  const opened=kind==='period'?await periodPanel.value?.openPeriod(targetMonth,eventId)
+    :kind==='settlement'?await settlementPanel.value?.openStatement(targetMonth,id,eventId)
+    :await paymentPanel.value?.openPayment(targetMonth,id,eventId)
+  if(!alive||ticket!==financialGeneration)return
+  if(opened)month.value=targetMonth
+  else closingView.value=previousView
 }
 async function followFinancialLocation(){
   const view=route?.query.view,targetMonth=route?.query.month,id=route?.query.document_id,event=route?.query.event_id
@@ -52,12 +58,12 @@ const currentMonth = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',y
 const month=ref(currentMonth),query=ref(''),page=ref(1),total=ref(0),rows=ref<CuttingOrder[]>([])
 const access=ref<Access>(),selected=ref<CuttingOrder>(),result=ref<ClosingPreview>(),loading=ref(false),error=ref('')
 const paymentPanel=ref<InstanceType<typeof CuttingPayments>>()
-async function openPayment(month:string,id:string,eventId?:string){closingView.value='payment';await nextTick();await paymentPanel.value?.openPayment(month,id,eventId)}
+async function openPayment(targetMonth:string,id:string,eventId?:string){await openMonthly('payment',targetMonth,id,eventId)}
 const settlementPanel=ref<InstanceType<typeof CuttingSettlement>>()
-async function openSettlement(month:string,id:string,eventId?:string){closingView.value='settlement';await nextTick();await settlementPanel.value?.openStatement(month,id,eventId)}
+async function openSettlement(targetMonth:string,id:string,eventId?:string){await openMonthly('settlement',targetMonth,id,eventId)}
 let generation=0,alive=true
 const location=useCuttingLocation(()=>true,()=>{void loadLocation()})
-onBeforeUnmount(()=>{alive=false;generation++})
+onBeforeUnmount(()=>{alive=false;generation++;financialGeneration++})
 function clearPreview(){generation++;result.value=undefined;loading.value=false;error.value=''}
 watch(month,clearPreview,{flush:'sync'})
 function ready(rights:Access){return rights.enabled&&rights.orders_schema_ready&&rights.reporting_schema_ready&&rights.usage_schema_ready}
