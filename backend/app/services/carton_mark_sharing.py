@@ -18,6 +18,7 @@ SHARED = 'CARTON_MARK_ASSET_SHARED'
 PROPOSED = 'CARTON_MARK_BINDING_PROPOSED'
 DECIDED = 'CARTON_MARK_BINDING_CONFIRMED'
 SPECIAL = 'CARTON_MARK_SPECIAL_LINKED'
+ASSOCIATED = 'CARTON_MARK_ASSOCIATIONS_SAVED'
 
 
 def recipients(db, factory):
@@ -29,12 +30,12 @@ def recipients(db, factory):
 def states(db, factory, ids=None):
     query = select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
         CartonAuditEvent.entity_type == 'carton_mark_asset',
-        CartonAuditEvent.event_type.in_([SHARED, PROPOSED, DECIDED, SPECIAL]))
+        CartonAuditEvent.event_type.in_([SHARED, PROPOSED, DECIDED, SPECIAL, ASSOCIATED]))
     if ids is not None:
         if not ids: return {}
         query = query.where(CartonAuditEvent.entity_id.in_(ids))
     result = {}
-    for event in db.scalars(query.order_by(CartonAuditEvent.created_at, CartonAuditEvent.id)):
+    for event in db.scalars(query.order_by(CartonAuditEvent.sequence)):
         data = json.loads(event.detail_json)
         state = result.setdefault(event.entity_id, {'sharing_mode': 'ORDER_BOUND',
             'shared_supplier_id': '', 'shared_supplier_name': '', 'pending_bindings': [], 'special_orders': [], '_revision': -1})
@@ -47,6 +48,11 @@ def states(db, factory, ids=None):
             state.setdefault('_decided', set()).add(data['id'])
         elif event.event_type == SPECIAL:
             state['special_orders'].append(data)
+        elif event.event_type == ASSOCIATED:
+            state['associations'] = data['targets']
+            state['special_orders'] = [dict(x, confirmed=False, attachment_id='') for x in data['targets']
+                if x['order_kind'] != 'REGULAR']
+            state.setdefault('_decided', set()).update(data.get('resolved_pending_ids', []))
     for state in result.values():
         state.pop('_revision', None)
         decided = state.pop('_decided', set())
@@ -68,11 +74,23 @@ def related_orders(db, asset, seen=None):
     from types import SimpleNamespace
     from app.models.carton_special_requests import SpecialRequest
     from app.models.carton_mark import CartonMarkAsset
+    from app.models.carton_procurement import CartonOrder
     seen = set() if seen is None else seen
     if asset.id in seen: raise HTTPException(409, '资料版本关系异常，请核实')
     seen.add(asset.id)
     orders = assets.matching_asset_orders(asset, assets.available_orders(db, asset.factory_id))
-    special_links = current(db, asset)['special_orders']
+    # Visible current targets are not the ownership boundary. Removed/cancelled
+    # orders retain their customer scope until an authorized operator unlinks.
+    identifiers = {link.order_id for link in asset.order_bindings}
+    if asset.bound_order_id: identifiers.add(asset.bound_order_id)
+    orders.extend(db.scalars(select(CartonOrder).where(CartonOrder.factory_id == asset.factory_id,
+        CartonOrder.id.in_(identifiers))))
+    audience = current(db, asset)
+    for link in audience.get('associations', []):
+        if link.get('supplier_id') and 'customer_code' in link:
+            orders.append(SimpleNamespace(id=link['order_id'], factory_id=asset.factory_id,
+                supplier_id=link['supplier_id'], customer_code=link['customer_code']))
+    special_links = audience['special_orders']
     for identifier in {x['order_id'] for x in special_links}:
         row = db.get(SpecialRequest, identifier)
         if row and row.factory_id == asset.factory_id: orders.append(row)
@@ -115,7 +133,7 @@ def filter_internal(db, user, values):
 
 def ensure_asset_access(db, user, asset, *, write=False):
     state = current(db, asset)
-    if state['sharing_mode'] == 'ORDER_BOUND' and not state['special_orders'] and not lifecycle.current(db, asset).previous_asset_id:
+    if not write and state['sharing_mode'] == 'ORDER_BOUND' and not state['special_orders'] and not lifecycle.current(db, asset).previous_asset_id:
         return
     from app.services.auth import authorization_decision
     from app.services.carton_mark_library import CARTON_MARK_READ_DEPARTMENTS
@@ -157,9 +175,21 @@ def record(db, user, asset, mode, supplier_id=''):
 def initialize(db, user, asset, options):
     if options.previous_asset_id:
         parent = assets.active_asset(db, asset.factory_id, options.previous_asset_id)
-        ensure_asset_access(db, user, parent)
+        ensure_asset_access(db, user, parent, write=True)
         previous = current(db, parent)
         record(db, user, asset, previous['sharing_mode'], previous['shared_supplier_id'])
+        if previous['special_orders'] and options.targets is None:
+            from app.services.carton_mark_associations import projection, target_rows
+            from app.schemas.carton_mark import CartonMarkAssociationTarget
+            inherited = projection(db, parent, assets.matching_asset_orders(parent, assets.available_orders(db, asset.factory_id)), previous)
+            special_targets = [CartonMarkAssociationTarget.model_validate({k: v for k, v in x.items()
+                if k in {'order_kind', 'order_id', 'expected_revision', 'issue_id', 'line_id'}})
+                for x in inherited if x['order_kind'] != 'REGULAR']
+            # Preserve the parent's ordinary automatic/manual contract semantics.
+            # Only additional special links need new audit evidence on this file.
+            for target in target_rows(db, user, asset.factory_id, special_targets):
+                assets.audit(db, user, asset, SPECIAL, dict(target, attachment_id='', confirmed=False,
+                    inherited_from_asset_id=parent.id))
     elif options.sharing_mode != 'ORDER_BOUND':
         record(db, user, asset, options.sharing_mode, options.supplier_id)
 
@@ -205,32 +235,24 @@ def validate_binding_change(db, user, asset, payload):
 
 
 def propose(db, user, factory, identifier, payload):
+    # Compatibility endpoint: a current supplier association is direct evidence.
+    from app.services.carton_mark_associations import save, projection
+    from app.schemas.carton_mark import CartonMarkAssociations
     from app.services import carton_supplier_portal as portal
     from app.services.carton_special_requests import locked_actor
     user = locked_actor(db, user, factory)
-    supplier = portal.supplier_access(db, user, factory, 'carton_supplier:edit')
+    portal.supplier_access(db, user, factory, 'carton_supplier:edit')
     asset = portal.supplier_mark_asset_document(db, user, factory, identifier)
-    if asset.photo_group_id:
-        raise HTTPException(409, '整组照片请由仓库统一关联，或先解除分组')
-    _, _, eligible = portal._supplier_mark_orders(db, user, factory)
-    requested = set(payload.order_ids)
-    if len(requested) != len(payload.order_ids) or not requested <= set(eligible):
-        raise HTTPException(404, '请选择本供应商当前已下单订单')
-    existing = related_orders(db, asset)
-    targets = [row for row in assets.available_orders(db, factory) if row.id in requested]
-    if len({assets.identity(row.customer_code) for row in existing + targets}) > 1:
-        raise HTTPException(422, '同一资料不能跨客户关联，请分别上传和核实')
-    lifecycle.bump(db, asset, payload.revision)
-    pending = current(db, asset)['pending_bindings']
-    for identifier in sorted(requested):
-        if any(x['order_id'] == identifier and x['supplier_id'] == supplier.id for x in pending): continue
-        target = next(x for x in targets if x.id == identifier)
-        assets.audit(db, user, asset, PROPOSED, dict(id='CMB-' + uuid4().hex,
-            order_id=identifier, order_no=target.order_no, contract_no=eligible[identifier]['contract_no'],
-            item_no=eligible[identifier]['item_no'], issue_id=eligible[identifier]['issue_id'],
-            supplier_id=supplier.id, sha256=asset.sha256, requested_at=_now_text()))
-    db.commit()
-    return next(x for x in portal.supplier_mark_assets(db, user, factory) if x['id'] == asset.id)
+    if len(set(payload.order_ids)) != len(payload.order_ids): raise HTTPException(422, '关联订单不能重复')
+    candidates = {x['order_id']: x for x in binding_targets(db, user, factory, external=True) if x['order_kind'] == 'REGULAR'}
+    if not set(payload.order_ids) <= set(candidates): raise HTTPException(404, '请选择本供应商当前已下单订单')
+    current_targets = projection(db, asset, assets.matching_asset_orders(asset, assets.available_orders(db, factory)), current(db, asset))
+    targets = [x for x in current_targets if x['order_kind'] != 'REGULAR']
+    targets += [dict(order_kind='REGULAR', order_id=x, expected_revision=candidates[x]['revision'],
+        issue_id=candidates[x]['issue_id']) for x in payload.order_ids]
+    targets = [{k: v for k, v in x.items() if k in {'order_kind','order_id','expected_revision','issue_id','line_id'}} for x in targets]
+    return save(db, user, factory, identifier, CartonMarkAssociations(revision=payload.revision,
+        request_id='legacy-binding-' + identifier + '-' + str(payload.revision), targets=targets), external=True)
 
 
 def confirm(db, user, factory, identifier, binding_id, payload):
@@ -280,17 +302,24 @@ def binding_targets(db, user, factory, external=False):
     result = []
     for o in assets.available_orders(db, factory):
         if eligible is not None and o.id not in eligible: continue
-        if not external:
-            try: ensure_customer(db, user, o)
-            except HTTPException: continue
+        if external:
+            issued = eligible[o.id]
+            result.append(dict(order_id=o.id, order_kind='REGULAR', contract_no=issued['contract_no'],
+                customer_name=issued['customer_name'], item_no=issued['item_no'], revision=o.revision,
+                issue_id=issued['issue_id'], lines=[]))
+            continue
+        try: ensure_customer(db, user, o)
+        except HTTPException: continue
+        issue = portal.latest_issue(db, o)
         result.append(dict(order_id=o.id, order_kind='REGULAR', order_no=o.order_no, contract_no=o.contract_no,
-            customer_name=o.customer_name, item_no=o.item_no, revision=o.revision, lines=[]))
+            customer_name=o.customer_name, item_no=o.item_no, revision=o.revision, issue_id=issue.id if issue else '', lines=[]))
     from app.models.carton_special_requests import SpecialRequest
     for row in db.scalars(select(SpecialRequest).where(SpecialRequest.factory_id == factory, SpecialRequest.status != 'CANCELLED')):
         try: special.access(db, user, factory, row.id, external=external)
         except HTTPException: continue
-        if not special.flags(db, user, row, external)['can_attach' if external else 'can_confirm_material']: continue
+        if db.scalar(select(special.SpecialVersion.id).where(special.SpecialVersion.request_id == row.id,
+                special.SpecialVersion.action == 'DELETED').limit(1)): continue
         result.append(dict(order_id=row.id, order_kind='SAMPLE' if row.kind == 'SAMPLE' else 'MISC', order_no=row.request_no, contract_no='',
-            customer_name=row.customer_name, item_no='', revision=row.revision,
+            customer_name=row.customer_name, item_no='', revision=row.revision, issue_id=row.current_version_id,
             lines=[dict(id=line.id, label=f'{line.packaging_type} · {line.item_no}') for line in special.lines(db, row)]))
     return result

@@ -2,11 +2,17 @@ from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from test_molding_sample_api import make_client, login_as
 from test_carton_master_api import prepare, read, payload
 from test_carton_transaction_guards_api import BASE
+
+
+@pytest.fixture(autouse=True)
+def isolated(monkeypatch, tmp_path):
+    import test_molding_sample_api
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path)
 
 
 def excel(kind, rows):
@@ -46,7 +52,8 @@ def test_templates_preview_only_and_options_preserve_rules_restore_hidden(monkey
                 examples = list(book["说明与示例"].iter_rows(values_only=True))[-2:]
                 assert [row[0] for row in examples] == ["00123", "00123"]
                 assert [row[2] for row in examples] == ["标准装", "标准装"]
-                assert [row[3] for row in examples] == ["外箱", "内箱"]
+                assert [row[3] for row in examples] == ["外箱", "平卡"]
+                assert examples[1][7] is None and examples[1][17:20] == ("按箱配套", 1, 2)
                 assert [row[13] for row in examples] == ["同一货号多纸品示例", "同一货号多纸品示例"]
             assert upload(client, kind, response.content).json()["errors"]
         original = client.post(BASE + "/master-data", json={"factory_id": "huaxing", "kind": "RULE", "code": "",
@@ -87,7 +94,8 @@ def test_configuration_template_examples_apply_as_one_multi_paper_configuration(
         preview = upload(client, "configurations", content.getvalue()).json()
         assert preview["errors"] == []
         assert (preview["added"], preview["skipped"]) == (1, 0)
-        assert preview["details"] == ["00123 / 标准装：新增 2 行纸品"]
+        assert preview["details"][0] == "00123 / 标准装：新增 2 行纸品"
+        assert any("第2行配套第1行，每箱2片" in detail for detail in preview["details"])
 
         applied = upload(client, "configurations", content.getvalue(), preview["preview_token"])
         assert applied.status_code == 200, applied.text
@@ -407,8 +415,10 @@ def test_paper_weight_import_and_legacy_template_compatibility(monkeypatch):
         assert {paper["packaging_type"]: (paper["net_weight_kg"], paper["gross_weight_kg"]) for paper in papers} == {"外箱": ("8.125", "9.25"), "内箱": ("0.4", "0.5")}
         invalid = upload(client, "configurations", excel("configurations", [config(code="BAD") + ["5", "4"]])).json()
         assert invalid["errors"] and "毛重" in invalid["errors"][0]
-        old = load_workbook(BytesIO(excel("configurations", [config(code="LEGACY")])))
-        old["导入数据"].delete_cols(15, 2)
+        old = Workbook()
+        old.active.title = "导入数据"
+        old.active.append(["货号", "产品名称", "配置组", "纸品类型", "纸质", "长", "宽", "高", "尺寸单位", "计量单位", "每箱装产品数", "推荐", "状态", "备注"])
+        old.active.append(config(code="LEGACY"))
         result = BytesIO(); old.save(result)
         legacy = upload(client, "configurations", result.getvalue()).json()
         assert legacy["errors"] == [] and legacy["added"] == 1

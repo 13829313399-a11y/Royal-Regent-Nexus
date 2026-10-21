@@ -52,7 +52,7 @@ def perform(db, user, payload, *, refresh_actor=None):
                 if row.status not in {"DRAFT", "CONFIRMED"}: raise HTTPException(409, "所选正单已锁定或结束")
                 core._require_order_complete(db, row)
             elif payload.action == "CANCEL":
-                if row.status not in {"DRAFT", "CONFIRMED"}: raise HTTPException(409, "所选正单不可批量取消")
+                if row.status not in {"DRAFT", "CONFIRMED", "PENDING_SUPPLIER"}: raise HTTPException(409, "所选正单已有收料或已结束，请按退单流程处理")
                 core._guard_no_supplier_transit(db, row)
                 if core._order_has_business_activity(db, row): raise HTTPException(409, "所选订单已有收发记录")
             elif core.order_deletion_block_reason(db, row): raise HTTPException(409, core.order_deletion_block_reason(db, row))

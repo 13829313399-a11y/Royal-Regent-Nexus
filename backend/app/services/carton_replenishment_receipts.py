@@ -14,7 +14,8 @@ NORMAL_EVENT = "RECEIPT_ORDINARY_CLASSIFIED"
 
 def receipt_links(db, factory):
     return {event.entity_id: json.loads(event.detail_json) for event in db.scalars(select(CartonAuditEvent).where(
-        CartonAuditEvent.factory_id == factory, CartonAuditEvent.event_type == EVENT))}
+        CartonAuditEvent.factory_id == factory, CartonAuditEvent.event_type.in_([EVENT, "SPECIAL_RECEIPT_REPLENISHMENT_LINKED"])))
+        }
 
 
 def legacy_review_lines(db, factory, line_ids):
@@ -117,5 +118,6 @@ def select_link(db, factory, order_line, qty, issue_id, *, exclude_receipt=None)
 def public_link(link):
     if not link:
         return {}
-    return {**{key: link.get(key) for key in ("replenishment_issue_id", "document_no", "responsibility")},
-            "settlement_unit_price": Decimal(link["settlement_unit_price"])}
+    value = link.get("settlement_unit_price")
+    return {**{key: link.get(key) for key in ("replenishment_issue_id", "document_no", "responsibility", "child_request_id", "parent_request_id")},
+            "settlement_unit_price": Decimal(value) if value is not None else None}

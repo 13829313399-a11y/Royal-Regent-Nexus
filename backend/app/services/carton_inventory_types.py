@@ -22,7 +22,7 @@ def annotate_types(db, factory, balances, movements):
     reversed_ids = {movement.reversal_of_movement_id for movement in movements if movement.movement_type == "REVERSAL"}
     for movement in movements:
         if movement.quantity <= 0 or movement.movement_type == "REVERSAL" or movement.id in reversed_ids: continue
-        kind = sources.get(movement.source_line_id) if movement.source_type == "RECEIPT" else None
+        kind = (sources.get(movement.source_line_id) or refs.get(movement.source_line_id, {}).get("kind")) if movement.source_type == "RECEIPT" else None
         kinds[inventory_key(movement)].add(kind or ("PURCHASE" if movement.order_line_id else "LEGACY"))
         source = refs.get(movement.source_line_id)
         if source and source.get('id'):

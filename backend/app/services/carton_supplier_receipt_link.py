@@ -194,6 +194,13 @@ def associate(db, user, shipment_id, payload):
         # Bind the original lineage, then use the existing reasoned correction flow.
         portal.reopen_reversed_shipment(db, receipt, user, payload.reason)
     else:
+        from app.services.carton_supplier_manual_evidence import adopt
+        from app.services.carton_price_review import original_price
+        for source in formal:
+            value, free = original_price(source, "REGULAR")
+            adopt(db, user, by_id[source.order_line_id], supplier_id=shipment.supplier_id,
+                shipment_id=shipment.id, shipment_line_id=source.id, source_kind="REGULAR",
+                raw_price=value, free=free, evidence={"shipment_id": shipment.id})
         portal.shipment_notifications.handle_notification(db, shipment)
     db.commit()
     return portal.shipment_out(db, shipment, internal=True)

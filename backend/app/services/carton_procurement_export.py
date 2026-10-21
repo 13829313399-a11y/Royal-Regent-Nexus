@@ -45,7 +45,7 @@ def _quantity_basis(line):
 def _issue_document_label(issue, snapshot):
     if snapshot.get("cancellation"):
         return "取消采购通知"
-    if snapshot.get("replenishment"):
+    if snapshot.get("replenishment") or snapshot.get("special_replenishment"):
         return "补单采购单"
     return PURCHASE_ORDER_TYPE_LABELS.get(issue.document_type, "采购变更单")
 
@@ -54,6 +54,7 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
     snapshot = json.loads(issue.snapshot_json)
     order = snapshot["order"]
     lines = snapshot["lines"]
+    special_kind = order.get("order_kind") in {"SAMPLE", "WORKSHOP_MISC"}
     document_label = _issue_document_label(issue, snapshot)
 
     workbook = Workbook()
@@ -93,14 +94,14 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
     information = {
         "A4": "采购单号",
         "B4": issue.document_no,
-        "E4": "原合同订单号",
+        "E4": "原订单号" if special_kind else "原合同订单号",
         "F4": issue.order_no,
         "I4": "单据类型",
         "J4": document_label,
         "A5": "供应商",
         "B5": order.get("supplier_name", ""),
-        "E5": "客户 / 合同号 / 客户 PO",
-        "F5": f"{order.get('customer_name', '')} / {order.get('contract_no', '')} / {order.get('customer_po', '')}",
+        "E5": "订单类型" if special_kind else "客户 / 合同号 / 客户 PO",
+        "F5": ("样板单" if order.get("order_kind") == "SAMPLE" else "杂单") if special_kind else f"{order.get('customer_name', '')} / {order.get('contract_no', '')} / {order.get('customer_po', '')}",
         "I5": "货号",
         "J5": order.get("item_no", ""),
         "A6": "变更前产品数量",
@@ -116,7 +117,11 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
         "I7": "产品名称",
         "J7": order.get("product_name") or "—",
     }
+    if special_kind:
+        information.update(A6="备注", B6=order.get("note", ""), E6="", F6="", I6="", J6="", I7="", J7="")
     for cell_ref, value in information.items():
+        if special_kind and isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+            value = "'" + value
         sheet[cell_ref] = value
     for merged_range in ("B4:D4", "F4:H4", "B5:D5", "F5:H5", "B6:D6", "F6:H6", "B7:D7", "F7:H7"):
         sheet.merge_cells(merged_range)
@@ -161,9 +166,11 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
             delta,
             after_required,
             line["unit"],
-            "停止后续生产和送货" if snapshot.get("cancellation") else snapshot["replenishment"]["responsibility_label"] if snapshot.get("replenishment") else ("现有余量覆盖，无需新增" if issue.document_type == "APPEND" and delta == 0 else ""),
+            "停止后续生产和送货" if snapshot.get("cancellation") else snapshot["replenishment"]["responsibility_label"] if snapshot.get("replenishment") else line.get("change_note") or ("现有余量覆盖，无需新增" if issue.document_type == "APPEND" and delta == 0 else ""),
         ]
         for column, value in enumerate(values, start=1):
+            if special_kind and isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+                value = "'" + value
             cell = sheet.cell(row=row, column=column, value=value)
             cell.font = Font(name="Microsoft YaHei", size=9, color="0F172A")
             cell.alignment = Alignment(
@@ -183,6 +190,8 @@ def build_purchase_order_issue_workbook(issue: CartonPurchaseOrderIssue) -> byte
     sheet.merge_cells(start_row=notice_row, start_column=1, end_row=notice_row, end_column=10)
     if snapshot.get("cancellation"):
         notice = "原订单已取消，请停止后续生产和送货，并确认收到取消通知；历史收货、退货和对账记录保留。"
+    elif snapshot.get("special_replenishment"):
+        notice = "本单为独立补货需求，按本次变化执行；原订单需求数量保持不变，退补记录及责任归属沿原业务记录核对。"
     elif snapshot.get("replenishment"):
         notice = "供应商仅按“本次补单”补货；原订单需求不变。责任：" + snapshot["replenishment"]["responsibility_label"]
         if snapshot["replenishment"].get("settlement_policy"):

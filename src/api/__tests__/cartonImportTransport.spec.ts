@@ -25,6 +25,22 @@ it('sends the selected schedule customer with the untouched file and factory thr
   expect(requests[1]!.params).toEqual({ factory_id: 'huaxing' })
 })
 
+it('freezes the declared schedule version, full due-date range and explicit completeness with the original file job', async () => {
+  const requests: InternalAxiosRequestConfig[] = []
+  http.defaults.adapter = async config => { requests.push(config); return { data: { id: 'JOB-SCOPE', status: 'READY' }, status: 200, statusText: 'OK', headers: {}, config } }
+  const file = new File(['unchanged-source'], '完整排期.xlsx')
+  const scope = { scope_mode: 'FULL' as const, as_of_date: '2026-10-01', coverage_start: '2026-10-01', coverage_end: '2026-10-31', full_scope_confirmed: true }
+  const pending = cartonProcurementApi.uploadWeeklySchedule('huaxing', file, 'DICKIE', scope)
+  scope.as_of_date = '2026-10-02'
+  await pending
+  const body = requests[0]!.data as FormData
+  expect(body.get('file')).toBe(file); expect(body.get('customer_code')).toBe('DICKIE')
+  expect(body.get('scope_mode')).toBe('FULL'); expect(body.get('as_of_date')).toBe('2026-10-01')
+  expect(body.get('coverage_start')).toBe('2026-10-01'); expect(body.get('coverage_end')).toBe('2026-10-31')
+  expect(body.get('full_scope_confirmed')).toBe('true')
+  expect(requests[1]!.url).toBe('/carton-procurement/file-jobs/JOB-SCOPE/complete')
+})
+
 it('preserves Excel files through the real Axios transforms for previews and confirmation', async () => {
   const requests: InternalAxiosRequestConfig[] = []
   http.defaults.adapter = async (config) => {

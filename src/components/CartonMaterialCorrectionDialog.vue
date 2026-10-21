@@ -87,8 +87,8 @@ onBeforeUnmount(() => { generation++; controller.abort(); returnFocus?.focus() }
 </script>
 <template>
   <div class="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/45 p-4" @click.self="close">
-    <section ref="dialog" role="dialog" aria-modal="true" aria-label="纸品资料更正" class="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-5 shadow-xl" @keydown="keys">
-      <div class="flex items-start justify-between gap-3"><div><h2 class="text-lg font-bold">纸品资料更正</h2><p class="mt-1 text-xs text-slate-500">仓库申请 → 供应商确认 → 双方同时生效。采购数量、单价和已入库记录保留。</p></div><button type="button" :disabled="busy" aria-label="关闭纸品资料更正" @click="close">关闭</button></div>
+    <section ref="dialog" role="dialog" aria-modal="true" aria-label="调整订单信息" class="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-5 shadow-xl" @keydown="keys">
+      <div class="flex items-start justify-between gap-3"><div><h2 class="text-lg font-bold">调整订单信息</h2><p class="mt-1 text-xs text-slate-500">调整纸品类型、纸质、规格或尺寸单位，须经供应商同意后双方生效。采购数量、单价和已入库记录保留。</p></div><button type="button" :disabled="busy" aria-label="关闭调整订单信息" @click="close">关闭</button></div>
       <p v-if="error" role="alert" class="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
       <p v-if="success" role="status" class="mt-3 rounded-lg bg-teal-50 p-3 text-sm text-teal-800">{{ success }}</p>
       <p v-if="loading" class="py-4 text-sm">正在核对当前资料…</p>

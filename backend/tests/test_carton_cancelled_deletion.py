@@ -10,6 +10,7 @@ from test_molding_sample_api import make_client, login_as
 from test_carton_order_delete import BASE, delete_body, current_orders
 from test_carton_receipt_correction_api import receipt, reverse
 from test_carton_supplier_portal import setup_portal, accept_all, ship_payload, receive_payload
+from carton_p1_helpers import cancel_and_acknowledge
 
 
 @pytest.mark.parametrize("receipt_mode", ["pending", "posted", "reversed"])
@@ -50,8 +51,9 @@ def test_cancelled_removal_preserves_all_references_and_batch_is_atomic(monkeypa
                 source_id=order.id, category="TEST", severity="LOW", title="旧任务", status="OPEN", revision=1,
                 created_by="admin", updated_by="admin", created_at="old", updated_at="old"))
             db.commit()
+        current = cancel_and_acknowledge(client, current_orders(client)[0])
+        with SessionLocal() as db:
             before = {table: db.execute(text(f'SELECT * FROM "{table}"')).all() for table in watched}
-        current = current_orders(client)[0]
         assert current["can_delete"] and current["split_records"]
         body = {"factory_id": "huaxing", "reason": "清理已取消历史订单", "items": [
             {"order_no": current["order_no"], "expected_revision": current["revision"]},

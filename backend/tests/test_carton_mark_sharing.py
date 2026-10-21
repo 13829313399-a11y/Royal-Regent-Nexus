@@ -17,7 +17,7 @@ def upload(client, mode='SUPPLIER', supplier_id=''):
     return response.json()[0]
 
 
-def test_unbound_shared_visibility_internal_revocation_and_confirmed_binding(monkeypatch):
+def test_unbound_shared_visibility_internal_revocation_and_direct_binding(monkeypatch):
     with make_client(monkeypatch) as client:
         order = setup_portal(client)
         login_as(client, 'admin')
@@ -31,13 +31,10 @@ def test_unbound_shared_visibility_internal_revocation_and_confirmed_binding(mon
         assert client.get(SUP + f"/assets/{asset['id']}/document", params=SCOPE).content == photo_bytes()
         proposed = ok(client.put(SUP + f"/assets/{asset['id']}/binding", params=SCOPE,
             json={'revision': asset['revision'], 'order_ids': [order['id']]}))
-        assert proposed['orders'] == [] and len(proposed['pending_bindings']) == 1
+        assert proposed['orders'][0]['id'] == order['id'] and not proposed['pending_bindings']
         login_as(client, 'admin')
-        confirmed = ok(client.post(BASE + f"/{asset['id']}/bindings/{proposed['pending_bindings'][0]['id']}/confirm",
-            params=SCOPE, json={'revision': proposed['revision']}))
-        assert confirmed['orders'][0]['id'] == order['id'] and not confirmed['pending_bindings']
         private_now = ok(client.put(BASE + f"/{asset['id']}/sharing", params=SCOPE,
-            json={'revision': confirmed['revision'], 'sharing_mode': 'INTERNAL'}))
+            json={'revision': proposed['revision'], 'sharing_mode': 'INTERNAL'}))
         supplier_login(client)
         assert ok(client.get(SUP + '/assets', params=SCOPE)) == []
         assert client.get(SUP + f"/assets/{asset['id']}/document", params=SCOPE).status_code == 404
@@ -79,7 +76,7 @@ def test_multiple_recipients_require_choice_and_legacy_assets_stay_hidden(monkey
             assert client.get(SUP + f"/assets/{asset['id']}/document", params=SCOPE).status_code == 404
 
 
-def test_special_library_binding_is_draft_until_internal_confirm_and_upload_roundtrip(monkeypatch):
+def test_special_library_binding_is_file_evidence_without_procurement_or_approval_change(monkeypatch):
     with make_client(monkeypatch) as client:
         setup_portal(client)
         login_as(client, 'admin')
@@ -96,11 +93,12 @@ def test_special_library_binding_is_draft_until_internal_confirm_and_upload_roun
         login_as(client, 'admin')
         confirmed = ok(client.post(SPECIAL + f"/{row['id']}/lines/{row['lines'][0]['id']}/mark",
             json=command(draft, mark_mode='UPLOAD', attachment_id=draft['attachments'][-1]['id'])))
-        assert confirmed['lines'][0]['mark_ready']
-        assert confirmed['lines'][0]['mark_asset_id'] == asset['id']
+        assert not confirmed['lines'][0]['mark_ready']
+        assert confirmed['current_version_id'] == row['current_version_id']
+        assert confirmed['revision'] == row['revision']
         source = next(x for x in ok(client.get(BASE, params=SCOPE)) if x['id'] == asset['id'])
-        assert source['workflow']['status'] == 'READY'
-        assert any(x['confirmed'] for x in source['special_orders'])
+        assert source['workflow']['status'] == 'PENDING'
+        assert all(not x['confirmed'] for x in source['special_orders'])
         uploaded = ok(client.post(SPECIAL + f"/{row['id']}/attachments", data={**command(confirmed),
             'role': 'DRAFT', 'line_id': row['lines'][0]['id']}, files={'file': ('other.png', photo_bytes(), 'image/png')}), 201)
         library = ok(client.get(BASE, params=SCOPE))

@@ -39,10 +39,23 @@ def setup(client):
     return place
 
 
-def created(client):
+def accept(client, row):
+    supplier_login(client)
+    ok(client.post("/api/carton-supplier/changes/respond", json={"factory_id": row["factory_id"],
+        "source_kind": "SPECIAL", "source_id": row["current_version_id"], "expected_revision": row["revision"],
+        "action": "ACCEPT", "promised_date": row["required_date"], "request_id": uuid4().hex}))
+    return ok(client.get(SUP + f"/{row['id']}", params={"factory_id": row["factory_id"]}))
+
+
+def created(client, *, accept_order=True):
     login_as(client, "admin")
     row = ok(client.post(BASE, json=create_body()), 201)
-    return ok(client.post(BASE + f"/{row['id']}/send", json=command(row)))
+    row = ok(client.post(BASE + f"/{row['id']}/send", json=command(row)))
+    if accept_order:
+        accept(client, row)
+        login_as(client, "admin")
+        row = ok(client.get(BASE + f"/{row['id']}", params={"factory_id": row["factory_id"]}))
+    return row
 
 
 def quote(client, row, kind="CHARGEABLE", price="2"):
@@ -58,6 +71,8 @@ def approve(client, row):
 
 def ship(client, row, quantity="100", price=None):
     supplier_login(client)
+    if row.get("supplier_confirmation", {}).get("status") not in {"ACCEPTED", "SUPPLIER_ORIGIN"}:
+        row = accept(client, row)
     return ok(client.post(SUP + f"/{row['id']}/ship", json=command(row, version_id=row["current_version_id"],
         delivery_note_no="DN-SP-" + uuid4().hex[:12], delivery_date="2026-10-18",
         lines=[{"line_id": row["lines"][0]["id"], "quantity": quantity, "unit_price": price if price is not None else "0" if row["pricing_kind"] == "FREE" else "2", "free_confirmed": True}])))
@@ -135,6 +150,7 @@ def test_optional_title_and_purpose_and_delivery_price_validation(monkeypatch):
         row = ok(client.post(BASE, json=body), 201)
         assert row["title"] == "" and row["purpose"] == ""
         row = ok(client.post(BASE + f"/{row['id']}/send", json=command(row)))
+        row = accept(client, row)
         supplier_login(client)
         payload = command(row, version_id=row["current_version_id"], delivery_note_no="SP-PRICE-VALIDATION",
             delivery_date="2026-10-18", lines=[{"line_id": row["lines"][0]["id"], "quantity": "10"}])
@@ -186,18 +202,19 @@ def test_partial_multiline_delivery_does_not_make_unpriced_lines_free(monkeypatc
     with make_client(monkeypatch) as client:
         setup(client)
         from test_carton_supplier_portal import revoke_supplier_permission
-        revoke_supplier_permission("carton_supplier:approve")
         body = create_body()
         body["lines"].append({**body["lines"][0], "packaging_type": "平卡"})
         row = ok(client.post(BASE, json=body), 201)
         row = ok(client.post(BASE + f"/{row['id']}/send", json=command(row)))
+        row = accept(client, row)
+        revoke_supplier_permission("carton_supplier:approve")
         from app.db import SessionLocal
         from app.models.auth import SystemNotification
         from sqlalchemy import select
         import json
         with SessionLocal() as db:
             notices = list(db.scalars(select(SystemNotification).where(SystemNotification.target_user_id == "supplier-test", SystemNotification.type == "carton_special_request")))
-            assert any(json.loads(notice.payload_json)["required_permission"] == "carton_supplier:edit" for notice in notices)
+            assert any(json.loads(notice.payload_json)["required_permission"] == "carton_supplier:read" for notice in notices)
         row = ship(client, row, quantity="10", price="2")
         assert row["pricing_kind"] == "CHARGEABLE" and not row["quote_version_id"]
         payload = command(row, version_id=row["current_version_id"], delivery_note_no="SP-UNPRICED-LINE", delivery_date="2026-10-18",
@@ -236,12 +253,14 @@ def test_material_change_keeps_old_delivery_price_and_allows_original_receipt(mo
     with make_client(monkeypatch) as client:
         place = setup(client)
         row = ship(client, created(client), price="2")
+        procurement_state = (row['status'], row['revision'], row['current_version_id'], row['quote_version_id'], row['promised_date'])
         login_as(client, "admin")
         from pypdf import PdfWriter
         output = BytesIO(); writer = PdfWriter(); writer.add_blank_page(width=100, height=100); writer.write(output)
         row = ok(client.post(BASE + f"/{row['id']}/attachments", data={**command(row), "role": "CONFIRMED"},
             files={"file": ("mark.pdf", output.getvalue(), "application/pdf")}), 201)
-        assert row["status"] == "SENT"
+        assert (row['status'], row['revision'], row['current_version_id'], row['quote_version_id'], row['promised_date']) == procurement_state
+        assert row['attachments'][-1]['role'] == 'DRAFT'
         row, _ = receive(client, row, place)
         receipt_line = row["shipments"][0]["receipts"][0]["lines"][0]
         assert Decimal(receipt_line["unit_price"]) == 2
@@ -316,10 +335,12 @@ def test_reversal_cannot_overreceive_after_replacement_and_history_units_stay_st
         assert response.status_code == 409 and "需求" in response.text
 
 
-def test_gift_cannot_be_repriced_and_same_second_confirmed_files_are_versioned(monkeypatch):
+def test_gift_cannot_be_repriced_and_same_second_files_stay_independent_evidence(monkeypatch):
     with make_client(monkeypatch) as client:
         setup(client); supplier_login(client)
         row = ok(client.post(SUP + "/gifts", json=create_body("SUPPLIER_GIFT")), 201)
+        procurement_state = (row['revision'], row['current_version_id'], row['quote_version_id'])
+        pricing_state = (row['promised_date'], [(x['id'], x['unit_price']) for x in row['lines']])
         login_as(client, "admin")
         from pypdf import PdfWriter
         from app.services import carton_procurement as core
@@ -328,12 +349,22 @@ def test_gift_cannot_be_repriced_and_same_second_confirmed_files_are_versioned(m
             writer = PdfWriter(); writer.add_blank_page(width=width, height=100); output=BytesIO(); writer.write(output)
             row = ok(client.post(BASE+f"/{row['id']}/attachments", data={**command(row), "role":"CONFIRMED"},
                 files={"file":("same.pdf",output.getvalue(),"application/pdf")}),201)
-        manifest = row["history"][-1]["snapshot"]["material_manifest"]
-        assert manifest[0]["id"] == row["attachments"][-1]["id"]
+        assert not row['history'][-1]['snapshot']['material_manifest']
+        assert (row['revision'], row['current_version_id'], row['quote_version_id']) == procurement_state
+        assert len({x['id'] for x in row['attachments']}) == 2
+        assert len({x['sha256'] for x in row['attachments']}) == 2
+        assert len({x['version'] for x in row['attachments']}) == 2
+        assert all(x['role'] == 'DRAFT' for x in row['attachments'])
         supplier_login(client)
         response = client.post(SUP+f"/{row['id']}/quote", json=command(row, version_id=row["current_version_id"],
             pricing_kind="CHARGEABLE", promised_date="2026-10-20", lines=[{"line_id":row["lines"][0]["id"],"unit_price":"1"}]))
-        assert response.status_code == 422
+        # Uploading evidence retains READY/FREE, so quotation stays unavailable.
+        assert response.status_code == 409 and "需求当前阶段不允许此操作" in response.text
+        unchanged = ok(client.get(SUP+f"/{row['id']}", params={"factory_id": FACTORY}))
+        assert unchanged['status'] == 'READY' and unchanged['pricing_kind'] == 'FREE'
+        assert (unchanged['revision'], unchanged['current_version_id'], unchanged['quote_version_id']) == procurement_state
+        assert (unchanged['promised_date'], [(x['id'], x['unit_price']) for x in unchanged['lines']]) == pricing_state
+        assert len({x['version'] for x in unchanged['attachments']}) == 2
         from app.db import SessionLocal
         from sqlalchemy import text
         from sqlalchemy.exc import IntegrityError

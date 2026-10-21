@@ -55,3 +55,30 @@ class AcceptanceDateUpdate(SettlementAction):
     @classmethod
     def valid_date(cls, value):
         return _validate_iso_date(value)
+
+
+class ReturnDateUpdate(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_posting_date: str
+    expected_date_basis: Literal["RETURN_POSTING"]
+    return_date: str
+    reason: str = Field(min_length=4, max_length=2000)
+
+    @field_validator("return_date", "expected_posting_date")
+    @classmethod
+    def valid_date(cls, value):
+        return _validate_iso_date(value)
+
+
+class ReturnDateCorrection(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
+    expected_evidence_revision: int = Field(ge=1)
+    expected_evidence_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    return_date: str
+    reason: str = Field(min_length=4, max_length=2000)
+
+    @field_validator("return_date")
+    @classmethod
+    def valid_date(cls, value):
+        return _validate_iso_date(value)

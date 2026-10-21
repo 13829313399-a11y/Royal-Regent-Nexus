@@ -35,9 +35,26 @@ def line_sources(db, factory, line_ids):
             kind=request.kind if request.origin == 'SUPPLIER_EXTRA' else frozen.get('kind', request.kind),
             line_id=paper.request_line_id, shipment_id=shipment.id,
             delivery_id=groups.get(shipment.id, 'SPECIAL:' + shipment.id))
-    for review in db.scalars(select(CartonPriceReview).where(CartonPriceReview.factory_id == factory,
-            CartonPriceReview.receipt_line_id.in_(line_ids), CartonPriceReview.source_kind == 'REGULAR')):
-        result.setdefault(review.receipt_line_id, dict(delivery_id=groups.get(review.shipment_id, 'FORMAL:' + review.shipment_id)))
+    reviews = list(db.scalars(select(CartonPriceReview).where(CartonPriceReview.factory_id == factory,
+        CartonPriceReview.receipt_line_id.in_(line_ids), CartonPriceReview.source_kind == 'REGULAR')))
+    classifications = {}
+    for event in db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
+            CartonAuditEvent.event_type == 'SUPPLIER_SHIPMENT_RECEIVED',
+            CartonAuditEvent.entity_id.in_({review.shipment_id for review in reviews}))):
+        detail = json.loads(event.detail_json)
+        for line in detail.get('acceptance', {}).get('lines', []):
+            kind = {'SAMPLE': 'SAMPLE', 'MISC': 'WORKSHOP_MISC', 'GIFT': 'SUPPLIER_GIFT'}.get(line.get('no_order_decision'))
+            if kind:
+                classifications[(detail.get('receipt_id'), line.get('shipment_line_id'))] = kind
+    papers = {paper.id: paper for paper in db.scalars(select(CartonReceiptLine).where(
+        CartonReceiptLine.factory_id == factory, CartonReceiptLine.id.in_(line_ids)))}
+    for review in reviews:
+        source = dict(delivery_id=groups.get(review.shipment_id, 'FORMAL:' + review.shipment_id))
+        paper = papers.get(review.receipt_line_id)
+        kind = classifications.get((paper.receipt_id, review.shipment_line_id)) if paper else None
+        if kind:
+            source['kind'] = kind
+        result.setdefault(review.receipt_line_id, source)
     return result
 
 
@@ -67,10 +84,10 @@ def receipt_sources(db, receipt, papers=None):
                 if shipment and shipment.factory_id == receipt.factory_id and shipment.supplier_id == receipt.supplier_id:
                     identifiers = [delivery_ids(db, receipt.factory_id).get(shipment.id, 'FORMAL:' + shipment.id)]
                     break
-    kinds = {source['kind'] for source in requests.values()}
+    kinds = {source['kind'] for source in sources.values() if source.get('kind')}
     if any(paper.order_line_id for paper in papers):
         kinds.add('PURCHASE')
-    if any(not paper.order_line_id and not sources.get(paper.id, {}).get('id') for paper in papers):
+    if any(not paper.order_line_id and not sources.get(paper.id, {}).get('kind') for paper in papers):
         kinds.add('LEGACY')
     return dict(source_requests=list(requests.values()), delivery_id=identifiers[0] if len(identifiers) == 1 else None,
         business_kinds=sorted(kinds))
