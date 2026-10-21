@@ -188,8 +188,8 @@
         "sha256": "18b46b9ae9184cc604e8ea1078bad977146abc39ac13a1a4968e1ed08a3f175b"
       }
     ],
-    "knowledge_version": "2026-10-21-cutting-export-queue",
-    "verified_commit": "287678d7: reviewed batched cutting reads, receipt evidence, queued export authorization and unchanged workbook contracts",
+    "knowledge_version": "2026-10-21-cutting-export-capture",
+    "verified_commit": "3372f346: reviewed selected immutable capture, transaction release and final source fence; business, permission and workbook explanations unchanged",
     "status": "verified"
   }
 ]
