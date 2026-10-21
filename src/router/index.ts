@@ -5,7 +5,8 @@ import {
   shouldEnforcePagePermissions,
   shouldRedirectForbiddenPageToHome,
 } from '@/config/pageAccessPolicy'
-import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
+import { getDepartmentModule, isFactoryContextId, isModuleDepartmentId } from '@/data/enterpriseMock'
+import { canChangeFactory } from '@/lib/factoryChangeGuard'
 import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { uvOperationsRoutes } from '@/features/uv-operations/routes'
@@ -705,6 +706,11 @@ router.beforeEach(async (to, from) => {
     return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
   }
   if (!await guardSprayNavigation(to, from)) return false
+  // A same-route query change does not run component leave guards. Ask before
+  // the global guard updates the factory store and destroys scoped drafts.
+  if (from.name === 'indonesia-material-shipment' && to.name === from.name
+      && typeof to.query.factory === 'string' && isFactoryContextId(to.query.factory) && to.query.factory !== useAppStore().activeFactoryId
+      && !canChangeFactory()) return false
   const navigationVersion = ++latestNavigationVersion
   if (routeLoadingTimer) {
     window.clearTimeout(routeLoadingTimer)

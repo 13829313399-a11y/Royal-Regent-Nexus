@@ -16,10 +16,16 @@ class Input(BaseModel):
 class Command(Input):
     factory_id: Text
     operation_id: Annotated[str, StringConstraints(min_length=16, max_length=64)]
-    action: Literal['material_save', 'product_save', 'order_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm']
+    action: Literal['customer_save', 'material_save', 'product_save', 'order_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm']
     entity_id: str | None = Field(None, max_length=64)
     expected_version: int = Field(0, ge=0)
     data: dict = Field(default_factory=dict)
+
+
+class Customer(Input):
+    name: Text
+    status: Literal['active', 'inactive'] = 'active'
+    notes: str = Field('', max_length=500)
 
 
 class Material(Input):
@@ -53,6 +59,7 @@ class Recipe(Input):
 class Product(Input):
     code: Text
     customer: Text
+    customer_id: str | None = Field(None, max_length=64)
     name: str = Field('', max_length=200)
     unit: Text = 'PCS'
     daily_capacity: Positive | None = None

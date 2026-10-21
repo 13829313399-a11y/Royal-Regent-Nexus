@@ -87,7 +87,17 @@ def material(client, code='00001', **changes):
     return command(client, 'material_save', data | changes)
 
 
+def customer(client, name='合成客户', **changes):
+    return command(client, 'customer_save', dict(name=name, status='active', notes='') | changes)
+
+
+def ensure_customer(client, name='合成客户'):
+    existing = next((r for r in workspace(client)['records'] if r['kind'] == 'customer' and r['data']['name'] == name), None)
+    return existing or customer(client, name)
+
+
 def product(client, m, code='ITEM01', **changes):
+    ensure_customer(client, changes.get('customer', '合成客户'))
     return command(client, 'product_save', dict(code=code, customer='合成客户', daily_capacity='10',
                     materials=[dict(material_id=m['id'], usage='1')]) | changes)
 
@@ -160,6 +170,73 @@ def test_manual_demand_and_pinned_master_recalculation(client):
     assert o['data']['demands'][0]['computed_quantity'] == '200'
     assert o['data']['demands'][0]['quantity'] == '120.12345678'
     assert o['data']['demands'][0]['id'] == d['id']
+
+
+def test_fixed_customer_identity_scope_versions_and_legacy_contract_edits(client):
+    c = customer(client, '  合成客户  ')
+    assert c['kind'] == 'customer' and c['data']['name'] == '合成客户'
+    command(client, 'customer_save', c['data'], status=409)
+    command(client, 'customer_save', c['data'] | {'name': '覆盖关联身份'}, c, status=422)
+    m = material(client)
+    command(client, 'product_save', dict(code='X', customer='未配置客户', materials=[]), status=422)
+    p = product(client, m)
+    assert p['data']['customer_id'] == c['id']
+    old = order(client)
+    before = deepcopy(old['data']['customer_snapshot'])
+    client.materials_auth['user'] = actor('read', 'write', factory='huakang-a')
+    other = command(client, 'customer_save', c['data'], factory='huakang-a')
+    command(client, 'customer_save', c['data'], c, factory='huakang-a', status=404)
+    assert other['id'] != c['id']
+    client.materials_auth['user'] = actor('read', 'write', 'receipt_confirm', 'export')
+    assert all(r['id'] != other['id'] for r in workspace(client)['records'])
+    command(client, 'product_save', p['data'] | {'customer_id': other['id']}, p, status=422)
+    inactive = command(client, 'customer_save', c['data'] | {'status': 'inactive'}, c)
+    command(client, 'customer_save', c['data'], c, status=409)
+    command(client, 'order_save', dict(customer='合成客户', recipient='RRI', contract_no='NEW', item_no='ITEM01', batch='1', quantity='1', delivery_date='2026-11-30'), status=422)
+    command(client, 'order_recalculate', {'reason': '禁止停用客户重新生成'}, old, status=422)
+    changed = command(client, 'order_save', {key: old['data'][key] for key in ('customer', 'recipient', 'contract_no', 'po_no', 'item_no', 'batch', 'quantity', 'unit', 'delivery_date')} | {'reason': '历史合同核对', 'quantity': '101'}, old)
+    assert changed['data']['customer_snapshot'] == before
+    client.materials_auth['user'] = actor('read', 'receipt_confirm', department='pmc-warehouse')
+    command(client, 'customer_save', inactive['data'], inactive, status=403)
+
+
+def test_customer_product_and_material_recipe_are_required_for_new_contracts(client):
+    data = dict(customer='合成客户', recipient='RRI', contract_no='NEW', item_no='ITEM01', batch='1', quantity='3', delivery_date='2026-11-30')
+    command(client, 'order_save', data, status=422)
+    customer(client)
+    command(client, 'order_save', data, status=422)
+    p = command(client, 'product_save', dict(code='ITEM01', customer='合成客户', materials=[]))
+    command(client, 'order_save', data, status=422)
+    m = material(client)
+    p = command(client, 'product_save', p['data'] | {'materials': [dict(material_id=m['id'], usage='4')]}, p)
+    created = command(client, 'order_save', data)
+    assert created['data']['demands'][0]['quantity'] == '12'
+    customer(client, '另一客户')
+    command(client, 'order_save', data | {'customer': '另一客户'}, status=422)
+
+
+def test_import_catalog_errors_recover_and_confirmation_rechecks_customer_status(client):
+    c = customer(client)
+    payload = dict(factory_id='huaxing', customer='合成客户', recipient='RRI')
+    content = schedule_bytes()
+    def preview():
+        result = client.post(BASE + '/imports/preview', data=payload, files={'file': ('schedule.xlsx', content)})
+        assert result.status_code == 200, result.text
+        return result.json()['record']
+    first = preview()
+    assert first['data']['rows'][0]['blocked']
+    product(client, material(client), code='00001')
+    recovered = next(r for r in workspace(client)['records'] if r['id'] == first['id'])
+    assert recovered['id'] == first['id'] and not recovered['data']['rows'][0]['blocked']
+    assert preview() == recovered
+    with Session(client.engine) as db:
+        assert db.get(Record, first['id']).data['rows'][0]['blocked']  # Reading must not rewrite source evidence.
+    inactive = command(client, 'customer_save', c['data'] | {'status': 'inactive'}, c)
+    command(client, 'import_confirm', {'indexes': [0]}, recovered, status=422)
+    assert not any(r['kind'] == 'order' for r in workspace(client)['records'])
+    command(client, 'customer_save', inactive['data'] | {'status': 'active'}, inactive)
+    confirmed = command(client, 'import_confirm', {'indexes': [0]}, recovered)
+    assert confirmed['data']['status'] == 'confirmed'
 
 
 def test_missing_capacity_does_not_hide_actual_complete(client):
@@ -369,6 +446,7 @@ def schedule_bytes(*, duplicate=False):
 
 
 def test_import_selected_rows_repeated_files_and_original_lineage(client):
+    product(client, material(client), code='00001')
     original = schedule_bytes()
     data = dict(factory_id='huaxing', customer='合成客户', recipient='RRI')
     result = client.post(BASE + '/imports/preview', data=data, files={'file': ('schedule.xlsx', original)})
@@ -385,6 +463,7 @@ def test_import_selected_rows_repeated_files_and_original_lineage(client):
 
 
 def test_ambiguous_delivery_rows_and_caches_are_blocked(client):
+    customer(client)
     result = client.post(BASE + '/imports/preview', data=dict(factory_id='huaxing', customer='合成客户', recipient='RRI'),
                          files={'file': ('schedule.xlsx', schedule_bytes(duplicate=True))})
     assert result.status_code == 200, result.text
@@ -432,6 +511,9 @@ def test_received_board_preserves_promised_and_actual_dates(client):
 
 
 def test_reimport_previews_changes_and_allows_new_rows_independently(client):
+    m = material(client)
+    product(client, m, code='00001')
+    product(client, m, code='00002')
     order(client, contract='TEST-I', item_no='00001', po_no='PO-TEST')
     wb = openpyxl.load_workbook(BytesIO(schedule_bytes())); sheet = wb['ITEM表']
     sheet['F4'] = '2026-12-15'
@@ -448,6 +530,9 @@ def test_reimport_previews_changes_and_allows_new_rows_independently(client):
 
 
 def test_partial_selected_import_can_be_completed_later(client):
+    m = material(client)
+    product(client, m, code='00001')
+    product(client, m, code='00002')
     wb = openpyxl.load_workbook(BytesIO(schedule_bytes())); wb['ITEM表'].append(['TEST-B', 'SO-B', 'PO-B', '00002', 50, '2026-12-15', '合成客户'])
     content = BytesIO(); wb.save(content)
     response = client.post(BASE + '/imports/preview', data=dict(factory_id='huaxing', customer='合成客户', recipient='RRI'),
@@ -544,7 +629,18 @@ def test_migration_is_explicit_and_evidence_is_immutable(tmp_path):
     with engine.begin() as connection:
         with Operations.context(MigrationContext.configure(connection)):
             migration.upgrade()
+        with pytest.raises(HTTPException, match='固定客人'):
+            service.ready(Session(bind=connection))
+        customer_path = path.with_name('20261021_0169_indonesia_customers.py')
+        customer_spec = importlib.util.spec_from_file_location('materials_customer_migration', customer_path)
+        customer_migration = importlib.util.module_from_spec(customer_spec); customer_spec.loader.exec_module(customer_migration)
+        with Operations.context(MigrationContext.configure(connection)):
+            customer_migration.upgrade()
         assert service.ready(Session(bind=connection)) is None
+        connection.execute(text("INSERT INTO indonesia_material_customers VALUES ('customer','huaxing','customer-key',1,'{}','2026-10-21')"))
+        with Operations.context(MigrationContext.configure(connection)):
+            with pytest.raises(RuntimeError, match='拒绝'):
+                customer_migration.downgrade()
         connection.execute(text("INSERT INTO indonesia_material_assets VALUES ('a','huaxing','synthetic.xlsx','test','digest',X'01','2026-10-13')"))
         with pytest.raises(IntegrityError, match='immutable'):
             connection.execute(text("DELETE FROM indonesia_material_assets WHERE id='a'"))
