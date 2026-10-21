@@ -107,7 +107,9 @@ function freightKey(value: unknown): FreightKey | undefined {
   if (/20(?:FT|GP)|(?:YT|盐田|鹽田)20/.test(key)) return 'freight20FtHkd'
   if (/40(?:FT|GP)|(?:YT|盐田|鹽田)40|盐田柜|鹽田柜|鹽田櫃/.test(key)) return 'freightFclHkd'
   if (/LCL|盐田散|鹽田散/.test(key)) return 'freightLclHkd'
+  if (/^FCL(?:运费|運費)$/.test(key)) return 'freightFclHkd'
 }
+const domesticRmbLabel = (value: unknown) => /(?:内销|內銷).*R(?:MB|BM)/i.test(text(value).normalize('NFKC'))
 function numeric(v: unknown, label: string, allowBlank = false) {
   if (!hasValue(v) && allowBlank) return 0
   const result = Number(v)
@@ -187,7 +189,7 @@ function addCost(data: YinhuiQuoteData, category: string, description: string, q
     if (/电池|電池|battery/i.test(`${category} ${description}`)) { line.isBattery = true; data.battery = [data.battery, line.description].filter(Boolean).join('; ') }
   } else if (/车身贴纸|產品貼紙|产品贴纸|(?:PC|PVC)\s*片|(?:PC|PVC)\s+sheet/i.test(description)) data.mechanical.push(line)
   else if (/橡[膠胶]圈|rubber ring|PE泡棉|PVC拉管|介子 .*PET|扎带3\.5[*x×]250/i.test(description) || (!/五金|hardware/i.test(category) && /EVA/i.test(description))) data.plastic.push(line)
-  else if (/吸塑|利宝|利寶|彩盒|内咭|包装|报关|packaging/i.test(category) || /胶钉带|透明胶圈|扎带|^垫片[（(]|胶纸|膠紙|胶水|膠水|胶袋|吸塑|说明书|文件费|custom|document|carton/i.test(description)) data.packagingRows.push(line)
+  else if (/吸塑|利宝|利寶|彩盒|内咭|包装|报关|packaging/i.test(category) || /胶钉带|透明胶圈|扎带|^垫片[（(]|胶纸|膠紙|胶水|膠水|[胶膠][袋针針]|包[装裝][线線]|拷[贝貝][纸紙]|吸塑|说明书|文件费|custom|document|carton/i.test(description)) data.packagingRows.push(line)
   else if (/马达|馬達|五金|其他外购|其他外購|hardware|auxiliary/i.test(category)) data.mechanical.push(line)
   else if (amountHkd !== 0) throw new Error(`银辉尚未映射成本类别“${category}”：${description}（${source}），不能漏项输出`)
 }
@@ -548,18 +550,31 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
     data.documentFees!.push({ description: text(rows[extraIndex]?.[2]), originalDescription: text(rows[extraIndex]?.[2]), source: `${main.name}!D${extraIndex + 1}`, quantity: 1, amountHkd: extraFee, internalHkd: extraFee })
     }, [[`D${extraIndex + 1}`, '文件费']])
   }
-  const freightRow = rows.find((r, i) => i >= costStart && i < end && text(r[1]) === '运费')
-  const costHeader = rows[costStart - 1]!
+  const freightIndex = rows.findIndex((r, i) => i >= costStart && i < end && /^(?:运费|運費)$/.test(text(r[1])))
+  const freightRow = rows[freightIndex]
+  const adjacentHeader = rows[freightIndex - 1] || []
+  // Some originals repeat converted freight to the right of the internal grid.
+  // Its explicit FCL/LCL freight labels delimit that separate check-only block.
+  const quotedStart = adjacentHeader.findIndex(v => /^(?:FCL|LCL)\s*(?:运费|運費)$/i.test(text(v)))
+  const adjacentRoutes = quotedStart >= 0 ? adjacentHeader.slice(0, quotedStart) : adjacentHeader
+  const useAdjacent = new Set(adjacentRoutes.map(freightKey).filter(Boolean)).size >= 2
+  const costHeader = useAdjacent ? adjacentRoutes : rows[costStart - 1]!
   if (freightRow) {
     for (const key of ['freightFclHkd', 'freightLclHkd', 'freight20FtHkd', 'freight40HqHkd', 'freightLocalHkd'] as const) {
       const columns = costHeader.flatMap((v, i) => freightKey(v) === key ? [i] : [])
       if (!columns.length) continue
       const col = columns[0]!
-      if (hasValue(freightRow[col])) attempt(`${main.name} · ${text(costHeader[col])}运费`, () => {
+      const checks = adjacentHeader.flatMap((v, i) => useAdjacent && quotedStart >= 0 && i >= quotedStart && freightKey(v) === key ? [i] : [])
+      if ([...columns, ...checks].some(i => hasValue(freightRow[i]) || hasValue(originalRows[freightIndex]?.[i]))) attempt(`${main.name} · ${text(costHeader[col])}运费`, () => {
         if (columns.length !== 1) throw new Error('同类运输路线不唯一，请明确本次路线')
         if (mainFactor === undefined) throw new Error('运费缺少有效的主倍率')
-        data[key] = numeric(numeric(freightRow[col], '盐田运费') * mainFactor - extraFee, '盐田运费扣除另列文件费后的金额')
-      }, [[`${String.fromCharCode(65 + col)}${rows.indexOf(freightRow) + 1}`, '原运费']])
+        const amount = numeric(numeric(freightRow[col], '盐田运费') * mainFactor - extraFee, '盐田运费扣除另列文件费后的金额')
+        if (checks.length > 1) throw new Error('同类运输路线不唯一，请明确本次路线')
+        const check = checks[0]
+        if (check !== undefined && (hasValue(freightRow[check]) || hasValue(originalRows[freightIndex]?.[check])) && Math.abs(numeric(freightRow[check], '报客运费校验值') - amount) > .005) throw new Error('报客运费与原运费×倍率不一致，请核对，不能自动选一边')
+        data[key] = amount
+      }, [[`${String.fromCharCode(65 + col)}${freightIndex + 1}`, '原运费'],
+        ...checks.map((i): [string, string] => [`${String.fromCharCode(65 + i)}${freightIndex + 1}`, '报客运费校验值'])])
     }
   }
   // Earlier source version has explicit per-piece FCL/LCL prices next to the document fee.
@@ -574,13 +589,13 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   }
   // Domestic RMB is an independently calculated final quote. Do not derive it
   // by adding HKD freight or converting the customer ex-factory subtotal.
-  const domesticColumns = costHeader.flatMap((v, i) => /(?:内销|內銷).*RMB/i.test(text(v)) ? [i] : [])
+  const domesticColumns = costHeader.flatMap((v, i) => domesticRmbLabel(v) ? [i] : [])
   const domesticValues: Array<{ row: number; col: number }> = []
   if (finalIndex >= 0 && domesticColumns.length === 1 && hasValue(rows[finalIndex]?.[domesticColumns[0]!])) domesticValues.push({ row: finalIndex, col: domesticColumns[0]! })
   else rows.forEach((row, i) => {
     if (i <= (blocks.at(-1)?.end ?? end) + 2) return
     row.forEach((v, col) => {
-      if (/(?:内销|內銷).*RMB/i.test(text(v)) && hasValue(rows[i - 1]?.[col])) domesticValues.push({ row: i - 1, col })
+      if (domesticRmbLabel(v) && hasValue(rows[i - 1]?.[col])) domesticValues.push({ row: i - 1, col })
     })
   })
   if (domesticValues.length) attempt(`${main.name} · 内销 RMB 最终单价`, () => {
