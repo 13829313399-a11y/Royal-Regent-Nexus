@@ -172,19 +172,45 @@ def projection_event(stock, entries, entry):
     return True
 
 
-def receipt_evidence(db, data, task):
+def receipt_reader(db):
+    """Lazy, single-read-call projection under the caller's cutting lock.
+
+    Never store this on the session or use it across mutations/transactions.
+    Write paths omit it and continue to load fresh evidence.
+    """
+    transaction = db.get_transaction()
+    entries = None
+    def read():
+        nonlocal entries
+        if db.get_transaction() is not transaction:
+            raise RuntimeError('Receipt projection cannot cross transactions')
+        if entries is None:
+            wh.ensure_schema(db)
+            _, entries = wh.projection(db, 'fabric')
+        return entries
+    return read
+
+
+def receipt_evidence(db, data, task, *, receipt_entries=None):
     """Validate explicit scheduling links; receipt evidence never proves full readiness."""
     ids = task.get('material_receipt_ids', [])
     if not ids:
         return []
-    wh.ensure_schema(db)
-    _, entries = wh.projection(db, 'fabric')
+    if receipt_entries is None:
+        wh.ensure_schema(db)
+        _, entries = wh.projection(db, 'fabric')
+    else:
+        entries = receipt_entries()
     result = []
     for identifier in ids:
         receipt = entries.get(identifier)
         c.require(receipt and receipt['kind'] == 'CUTTING_RECEIPT' and not receipt.get('reversed'), '关联签收已撤销或不存在，请重新核对实际领料凭据')
         issue = entries.get(receipt['data']['original_id'])
-        request = linked(db, identifier)
+        # The validated fabric projection already contains the entire immutable
+        # receipt -> issue -> request chain. Do not re-query all three rows.
+        request = entries.get(issue['data']['original_id']) if issue else None
+        if not request or request['kind'] != 'REQUEST' or not request['data'].get('cutting_request'):
+            request = None
         frozen = request['data']['cutting_request'] if request else {}
         c.require(issue and not issue.get('reversed') and frozen.get('dispatch_id') == data['dispatch_id']
                   and frozen.get('bom_id') == data['bom']['id'] and frozen.get('bom_version') == data['bom']['version']
@@ -198,7 +224,7 @@ def receipt_evidence(db, data, task):
     return result
 
 
-def receipts_changed(db, data, plan):
+def receipts_changed(db, data, plan, *, receipt_entries=None):
     if not plan:
         return False
     from fastapi import HTTPException
@@ -206,7 +232,7 @@ def receipts_changed(db, data, plan):
         if not task.get('material_receipt_ids'):
             continue
         try:
-            if receipt_evidence(db, data, task) != task.get('material_receipts', []):
+            if receipt_evidence(db, data, task, receipt_entries=receipt_entries) != task.get('material_receipts', []):
                 return True
         except HTTPException as error:
             if error.status_code == 503:

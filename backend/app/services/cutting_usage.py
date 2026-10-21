@@ -310,7 +310,8 @@ def read(db, line_id, *, show_costs=False, _snapshot=None):
                       price_history=sorted((e for root in root_ids for e in _snapshot['prices'].get(root, [])), key=lambda e:e['version']) if _snapshot else [e for e in history if e['action'] == 'price' and e['data']['context']['root_batch_id'] in root_ids],
                       cost_summary=cost_summary(rows))
         from app.services import cutting_cost_allocation as allocation
-        result['cost_allocation'] = allocation.view(db, line_id, rows, allocation_history)
+        result['cost_allocation'] = allocation.view(db, line_id, rows, allocation_history,
+            production_snapshot=_snapshot.get('production') if _snapshot else None)
     return result
 
 

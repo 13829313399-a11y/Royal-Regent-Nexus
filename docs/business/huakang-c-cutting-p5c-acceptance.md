@@ -1,6 +1,6 @@
 # 裁床部 P5c：性能、打印与上线准备
 
-对应[实施方案第 16 节](huakang-c-cutting-module-plan.md) P5c。当前已完成 SQLite 副本扩展验证、0168 原数据候选演练及首批筛选／历史展示优化，**尚未达到上线条件**。真实员工、业务资料和生产发布后续指定；本批不修改业务原库，不自动授权，不执行生产迁移。
+对应[实施方案第 16 节](huakang-c-cutting-module-plan.md) P5c。当前已完成SQLite副本扩展验证、0168原数据候选演练、首批筛选／历史展示优化及扩大生产样本的十分钟HTTP混合验证。集中导出仍出现锁超时，错峰负载仍有长尾响应，**尚未达到上线条件**。真实员工、业务资料和生产发布后续指定；本批不修改业务原库，不自动授权，不执行生产迁移。
 
 ## 1. 本批交付及复现
 
@@ -31,7 +31,7 @@
 | JP 导入、基线及接管安全 | 完整运行器中 86 项通过 | 覆盖 Windows 文件释放、只读备份、冲突拒绝、候选导入回滚、空表保留、二进制与编号语义保护 |
 | 排期状态筛选 | 合并读取订单及当前版本、批内预取资料；500 订单筛选 P95 约 0.922 秒 | 仍逐项检查动态状态，未使用跨请求缓存；目标已发布计划／真实签收混合负载待验收 |
 
-最新完整复验：`.tmp/cutting-p5c/20261020T055314Z-78ab22f7/report.json`。基础／导出／恢复及分页 55 项、SQLite 并发 19 项、迁移 34 项、JP 导入及基线／接管安全 86 项、容量 3 项，合计 **197 项通过、0 项失败、27 项 PostgreSQL 跳过**；运行前后源码指纹一致，`automated_status=passed`，`database_scope=sqlite_only`，`postgresql=not_accepted`，`release_ready=false`。同目录 `p5c-evidence.zip` 已归档。另有排期及分页接口专项 **92 项通过**，与完整运行器重复的接口用例不累加。此通过结论不包含正式数据库接管和人工验收。
+最新完整复验：`.tmp/cutting-p5c/20261020T120757Z-a55dc951/report.json`。基础／导出／恢复及分页55项、SQLite并发19项、迁移34项、JP导入及基线／接管安全86项、原容量3项、HTTP容量与守卫5项，合计 **202项通过、0项失败、27项PostgreSQL跳过**；运行前后源码指纹一致，`automated_status=passed`，`database_scope=sqlite_only`，`postgresql=not_accepted`，`release_ready=false`。同目录 `p5c-evidence.zip` 已归档。另有排期及分页接口专项 **92 项通过**，与完整运行器重复的接口用例不累加。此通过结论不包含正式数据库接管和人工验收。
 
 此前 164／182／194 项及分组专项仅作历史证据，不与本次累计。初次接口测试把非华康 C 厂区的既有 422 校验误写为 403，已按授权入口实际契约修正并完整重跑；初次失败不计通过。中断且停留在 `status=running` 的运行不能视为通过。当前前端、浏览器及性能边界见 4.3～4.4；文档在完整回归后对齐，应用及测试源码未再改变。
 
@@ -242,7 +242,7 @@ npm run build
 
 2026-10-20 按用户确认先使用 SQLite 继续验证，真实员工和业务资料后续指定。运行器新增 `--sqlite-only`，清空子进程 PostgreSQL 连接及外部 pytest 过滤参数；每组必须实际执行测试，未知跳过、失败、缺失证据及运行期间源码变化均判失败。此路线不改变现有生产 PostgreSQL 部署，也不批准原库接管。
 
-**完整回归命令**：`backend/.venv/Scripts/python.exe backend/scripts/verify_cutting_p5c.py --sqlite-only`。当前证据为 `.tmp/cutting-p5c/20261020T055314Z-78ab22f7/report.json` 和同目录 `p5c-evidence.zip`，**197 项通过、0 失败、27 项 PostgreSQL 跳过**，分组及边界见第 2 节。合并前 `.tmp/cutting-p5c/20261020T011939Z-cf9ebb37/` 的 182 项是旧基线，不能代替 0168 当前链验证，也不与新结果累加。
+**完整回归命令**：`backend/.venv/Scripts/python.exe backend/scripts/verify_cutting_p5c.py --sqlite-only`。本节进程内容量表来自 `.tmp/cutting-p5c/20261020T055314Z-78ab22f7/report.json` 的197项通过、27项PostgreSQL跳过旧基线；增加HTTP组后的最新完整复验为第2节的202项通过，HTTP测量见4.5节。合并前 `.tmp/cutting-p5c/20261020T011939Z-cf9ebb37/` 的 182 项是旧基线，不能代替 0168 当前链验证，也不与新结果累加。
 
 **最新原数据副本**：第 3.2 节 `.tmp/takeover-candidate/20261020T053444Z-312577ac/` 从原库只读在线备份后在新候选真实执行全链，确认候选及恢复副本为 0168，27 个模块组、206 张原表、2,074 条原记录保留；两次初始化无数据／结构／权限变化、重复升级不变、恢复后全库逻辑一致。九条候选喷油／UV 种子只保留且模块关闭，十一条 3D 占位记录未关联现场。此前 `20261020T012031Z-5b69e59b` 属合并前证据，不再标作最新。
 
@@ -261,7 +261,7 @@ npm run build
 
 本轮未发现重复入账、数据丢失或迁移覆盖。500 订单排期筛选 P95 从旧基线约 2.568 秒到本次约 0.922 秒；普通分页和混合读写本次较旧基线慢，受同机运行条件影响，不能宣称全系统加速或将一次数据当 SLA。当前样本主要覆盖下发／接单，仍须补目标规模的已发布计划、真实签收及成本／锁月／导出持续 HTTP 混合负载；保留动态状态逐项校验，不采用可能掩盖失效计划的缓存。
 
-仍未完成：目标规模与响应指标确认及持续负载、六区完整状态／高缩放、原生 Excel 分页及实体打印、真实岗位与业务期初签字、目标环境连同附件／配置的恢复及切换演练、独立生产放行。PostgreSQL 不阻塞本轮 SQLite 验证，但保持未验收；面向现有 PostgreSQL 生产环境发布时仍须完成对应数据库验收。本次应用改动及构建见下一节。
+仍未完成：目标规模已确认5～10人、100～500在办订单；响应指标及目标环境持续负载、六区完整状态／高缩放、原生 Excel 分页及实体打印、真实岗位与业务期初签字、目标环境连同附件／配置的恢复及切换演练、独立生产放行。PostgreSQL 不阻塞本轮 SQLite 验证，但保持未验收；面向现有 PostgreSQL 生产环境发布时仍须完成对应数据库验收。本次应用改动及构建见下一节。
 
 ### 4.4 排期筛选与长历史展示分页
 
@@ -289,6 +289,118 @@ npm run build
 
 修改范围：后端 `cutting_orders.py`、`cutting_operations.py`、新增 `cutting_history.py`；前端填数页、月结追溯、两个 API 客户端及新增 `CuttingHistoryPager.vue`；对应后端／前端回归和 P5c 运行器、订单助手知识、验收清单、方案与项目记忆。未执行 Git 提交或推送。
 
+### 4.5 独立回环 HTTP 查询与冻结导出
+
+用户确认试运行约 **5～10人同时在线、100～500笔在办订单**。在办包括已下发裁床但尚未全部办结的待料、待排期、在产、外发及待交接／结算订单；不能只统计当天开工订单。
+
+运行器增加 `http-capacity` 组，使用 pytest 新建的 SQLite、随机独占回环端口和真实 V2 Cookie 登录。每个会话拥有独立连接池及 Cookie；5／10会话使用同一合成复核账号，不代表正式员工岗位签字。临时服务器与客户端在验证后关闭，不连接原库或已有前后端服务。
+
+- 每档100／500笔下发订单，仅一条完整本厂／外发业务链，含两个已发布任务、两笔签收实发、合格完成25套、交接22套、内部反结改价重结及外发结算／付款更正。其余为已下发订单，不能声称500笔均有已发布计划及完整成本历史。
+- 每会话至少30秒闭环循环：排期、每日任务、库存、费用、填数、冻结月结、外发结算、付款查询，以及冻结 Excel 预览／下载。逐请求记录状态、耗时、字节、P95及最大值；HTTP失败与内容校验失败分别统计，任何失败或零样本均不能通过。
+- 导出回读校验HKD正常费用8.00、完工4.80、在制3.20、损耗2.00；实时查询与已核对的稳定事实一致。另检查文员不得查看费用、非本厂请求拒绝，以及查询／导出前后全库逻辑摘要不变。
+- 守卫回归检查非测试数据库路径、鉴权覆盖在打开端口前拒绝；HTTP200但内容错误不能被计作验收通过。最小权限和原有完整业务链回归保留。
+
+**本批结果与证据**：运行 `backend/.venv/Scripts/python.exe backend/scripts/verify_cutting_p5c.py --sqlite-only`，完整202项通过、0失败、27项PostgreSQL跳过。证据位于 `.tmp/cutting-p5c/20261020T120757Z-a55dc951/`，包含 `report.json`、各组JUnit／日志、`evidence/http-capacity-*.json`及`p5c-evidence.zip`。运行期间源码指纹一致；下表来自这次完整运行，响应指标不是正式SLA。
+
+| 下发订单／独立会话 | 请求数／实际窗口 | 排期查询P95 | Excel下载P95 | HTTP／内容失败 | 查询导出后数据 |
+| --- | --- | --- | --- | --- | --- |
+| 100／5 | 630／32.34秒 | 0.619秒 | 1.975秒 | 0／0 | 全库逻辑摘要一致 |
+| 500／10 | 380／33.32秒 | 4.692秒 | 7.001秒 | 0／0 | 全库逻辑摘要一致 |
+
+专项 `python -m pytest backend/tests/test_cutting_http_capacity.py backend/tests/test_cutting_p5c_runner.py -q -x -p no:cacheprovider --basetemp=D:/RR/.tmp/http-capacity-recheck-20261020` 为36项通过，不与完整回归累加。此前首轮500／10档发生10次ReadTimeout，该轮1失败、16通过，未计为成功；其证据保存在 `.tmp/http-capacity-first-20261020/`。异常期间记录到约1267秒请求耗时；后续已找到重合的1283秒Windows休眠区间（见4.6节），此轮不作正常运行耗时依据。专项复测和完整运行均无失败，但500档下载P95分别约2.78秒、7.00秒，存在明显波动，必须继续长时复测／定位；尚未确认正式响应目标，不宣布容量达标。
+
+独立审查后补齐HTTP状态失败与内容失败的分离统计，以及零样本、非测试数据库、鉴权覆盖拒绝回归。原有P5b业务链测试入口保留。本批只改测试、运行器和文档，未更改应用界面、业务算法、数据库配置或原数据；没有重复执行前端构建。原库SHA-256仍为 `0E6912AEB263F9C309D399CA694671A338D2EB69708797DFA5FE91F9F40F5F1A`。最终仅补录文档结果，实际测试代码与归档源码一致。
+
+这是一项有界的单机客户端／服务端同进程真实TCP HTTP验证。登录在计时前完成，未测登录峰值、持续业务写入、反向代理、附件或目标硬件。30秒窗口不等同长时稳定性；完整活动订单分布、正式响应目标、目标部署容量及人工验收仍未完成。原库保持不变，`release_ready=false`。
+
+### 4.6 扩大生产样本、超时定位与十分钟混合验证
+
+**范围**：全新 pytest SQLite 与独占随机回环端口，使用真实 Cookie 鉴权；100单档扩充10条、500单档扩充50条生产／材料／内部月结链。新增样本通过接口完成工程BOM、采购交期、本厂／外发排期、仓库实发、裁床签收、实际核定、填数、外发收回及验收、交接、耗用、计价、完工归集与整月锁定。500单中其余450单仅为下发订单；外发加工费结算／付款仍只有原始样本，不能声称500条完整财务链。两名文员会话与其余复核会话为合成账号的独立登录，不代表真实员工验收。
+
+**超时定位与应用修复**：只读系统日志显示，旧首轮约1267秒请求异常与2026-10-20 19:41:16～20:02:39的Windows Modern Standby重合（506／507事件，共1283秒，证据 `.tmp/soak-investigation/standby-evidence.json`）。该轮属于运行被休眠打断；后续正常运行的锁竞争另行保留。独立长测在准备和运行期间临时防止空闲休眠，退出恢复线程状态，不改变电源计划。排期和每日任务的多条签收校验改为单次读取内共享仓库投影，事务结束后不可复用；写入路径保持新读取，不增加跨请求缓存。100单／10链对比中，排期平均SQL由236降至104，服务端响应头就绪平均耗时由1.625秒降至0.724秒，仅作为这两次样本对比。真实退料后新请求仍显示排期待复核、每日有效计划清零。
+
+**独立运行命令**（合成临时库，无业务服务URL参数）：
+
+```powershell
+backend/.venv/Scripts/python.exe backend/scripts/verify_cutting_http_soak.py --profile 500 --seconds 600 --workload paced
+```
+
+- `paced`：2个文员会话分别更正两笔订单交接记录，每次提交后以相同操作ID重试；8个复核会话轮流读取七类端点，每次循环间隔2秒，每会话约60秒导出一次、起始错峰。查询与Excel金额逐次核对。
+- `burst`：复核会话连续读取全部七类端点并每轮导出，循环仅间隔0.2秒；文员每轮间隔1秒。保留为集中压力边界，不能用paced通过覆盖burst失败。
+- 报告记录完整客户端耗时、响应头就绪耗时、SQL及失败SQL次数、锁等待、心跳、原始请求与最终对账。任何HTTP／内容失败、暂停、未跑满或重复入账均失败；失败也保存证据。标准P5c运行器仅执行3单／3会话／3秒脚本冒烟，不冒充十分钟验收。
+
+| 负载与证据目录（`.tmp/`下） | 结果 | 请求／写入 | 数据核对 |
+| --- | --- | --- | --- |
+| `cutting-http-soak/20261021T002728Z-383b6a60`，100单／10链／5会话，优化后30秒连续负载 | 通过，33.19秒 | 195／23 | 完整性正常，无重复入账、冻结变化或心跳中断 |
+| `cutting-http-soak/20261021T003022Z-a78cc069`，500单／50链／10会话连续集中导出 | **失败**，50.28秒提前停止，未完成600秒 | 84／7；2次409锁超时（费用、月结读取） | 已写7笔一致，冻结及完整性正常；不能据此算容量通过 |
+| `cutting-http-soak/20261021T004500Z-08c06a74`，500单／50链／10会话错峰混合负载 | 有界一致性验证通过，609.07秒 | 1,416／161；其中69次Excel下载、161次幂等重试 | 161条post事件，无重复；最终交接数量与更正一致；冻结不变、完整性ok、外键错误0、无心跳中断 |
+
+错峰档客户端P95：排期11.57秒、任务12.58秒、库存11.87秒、费用10.46秒、月结8.90秒、Excel下载14.58秒、写入8.40秒；费用最大约20.98秒。**通过的是该档数据一致性与无失败完成，响应速度仍待改善**。客户端与服务端同进程，CPU时间570.02秒／墙钟609.07秒，包含客户端Excel解析；不能归为纯服务端CPU，亦不能当生产SLA。集中负载失败SQL及约5秒锁等待证明仍有真实SQLite锁竞争；未扩大超时或删除业务锁掩盖问题。
+
+验证：生产变更相关的工作区／物料／排期专项139项通过；最终脚本守卫、签收回归及P5c运行器回归37项通过（两组有重叠，不累加）。长测12类端点均有实际样本，后补的显式覆盖断言再次校验本次归档；长测后只补覆盖断言及文档，没有再改生产逻辑。独立审查确认未绕过签收失效判断。旧202项完整P5c结果属于4.5节历史基线，本轮未重复执行全库迁移、前端构建或浏览器验收。补充对账在 `.tmp/soak-investigation/final-review.json`；成功、失败、休眠证据和最终JUnit合并于同目录 `p5c-expanded-http-evidence.zip`，不包含任何数据库文件。原库SHA-256仍为 `0E6912AEB263F9C309D399CA694671A338D2EB69708797DFA5FE91F9F40F5F1A`。
+
+专项命令（均用新建临时SQLite）：
+
+```powershell
+backend/.venv/Scripts/python.exe -m pytest backend/tests/test_cutting_receipt_projection.py backend/tests/test_cutting_workspace.py backend/tests/test_cutting_materials.py backend/tests/test_cutting_planning.py -q -x -p no:cacheprovider --basetemp=D:/RR/.tmp/receipt-regression-20261021-a
+backend/.venv/Scripts/python.exe -m pytest backend/tests/test_cutting_http_soak.py backend/tests/test_cutting_receipt_projection.py backend/tests/test_cutting_p5c_runner.py -q -x -p no:cacheprovider --basetemp=D:/RR/.tmp/soak-final-regression-20261021 --junitxml=D:/RR/.tmp/soak-final-regression-20261021.xml
+```
+
+变更文件：生产读取位于 `backend/app/services/cutting_materials.py`、`cutting_planning.py`、`cutting_workspace.py`；新增 `backend/tests/cutting_capacity_fixture.py`、`test_cutting_http_soak.py`、`test_cutting_receipt_projection.py` 和 `backend/scripts/verify_cutting_http_soak.py`；复用／扩展 `test_cutting_p5b_acceptance.py`、`test_cutting_http_capacity.py`、`test_cutting_p5c_runner.py`、`backend/scripts/verify_cutting_p5c.py`。同步本清单、实施方案和 `PROJECT_MEMORY.md`，未执行Git提交或推送。
+
+**剩余与建议顺序**：先减少任务／费用逐单SQL与锁内回放，并验证Excel有界并发或排队提示；再用独立服务进程、目标硬件复测突发和持续负载，确定响应目标。继续增加活跃订单比例、外发结算／付款样本，以及签收／退料／同单冲突／锁月等混合写入；当前写入仅两笔订单交接更正。随后做小时级／工作日负载、完整页面高缩放、原生Excel和实体打印、真实员工与期初签字、带附件配置恢复及切换。原库不迁移、不初始化、不授权，`release_ready=false`。
+
+### 4.7 锁内批量读取与导出隔离复验
+
+本轮继续使用独立合成 SQLite，未迁移、初始化或授权原库。样本和写入边界沿用4.6节：500笔下发订单、50条生产／材料／内部月结链、10个真实Cookie会话；450笔仍只有下发记录，外发结算／付款仍只有一条财务链，持续写入仍为两笔订单的交接更正及幂等重试。以下是本轮验证结果，替代4.6节关于当前集中导出失败及响应长尾的结论；旧失败记录保留。
+
+**实现**：
+
+- 签收证据使用当前读取事务中已经验证的仓库投影关联申请、实发与签收，避免逐条重复SQL；任务与费用按50单分批预取完整生产事件和对应计划版本。工厂、订单、计划版本及后续退料失效判断保留，不做跨请求业务状态缓存。
+- 工作区、月结及财务读取先形成完整普通数据，再释放事务和编码响应；不再在响应编码期间占用业务锁。筛选总量、完整更正历史和冻结口径不变。
+- 导出采用每API进程容量16、单生成者的先进先出队列，等待上限仍为20秒。等待前释放事务，超限明确返回429；不能把429算成通过。排队入场、文件生成后均重新检查登录身份、权限和报表依据。
+- Excel复用工作簿内命名样式，保留精确文本、公式字面量、分卷和打印设置；生成移到受队列限制的独立短生命周期进程，输入只有已捕获报表、标题和导出人ID／姓名。worker不加载应用或数据库，环境继承但覆盖为`DATABASE_URL=sqlite://`、不播种；无业务临时文件。60秒生成看门狗用于终止并回收异常子进程，未延长20秒排队或30秒HTTP测试超时。正常返回后再次核对来源变化；异常不返回部分文件。
+
+**保留的失败与复测**（目录均在`.tmp/cutting-http-soak/`）：
+
+| 证据目录 | 结果 | 请求／有效写入 | 说明 |
+| --- | --- | --- | --- |
+| `20261021T012609Z-d4704a3c` | 失败，72.40秒 | 147／13 | 批量读取和初版队列后，仍有1次429等待超时 |
+| `20261021T020946Z-e23ad29c` | 失败，111.36秒 | 687／73 | 命名样式和响应编码调整后，仍有1次429 |
+| `20261021T021918Z-c91d7bab` | 失败，56.81秒 | 144／12 | FIFO后仍有1次429，不能认定旧失败完全由插队引起 |
+| `20261021T023127Z-b8483c2b` | 集中导出通过，135.58秒 | 684／90 | 120秒负载及在途请求结束，46次下载、90次相同操作重试；无HTTP／内容失败 |
+| `20261021T024412Z-d40f7a5b` | 十分钟错峰混合通过，603.18秒 | 3,048／370 | 75次下载、370次相同操作重试；12类端点均有样本，无HTTP／内容失败 |
+
+两个通过档的有效post事件数量与提交一致，最终数量及更正一致、冻结快照未变、SQLite完整性`ok`、外键错误0、无心跳中断。集中导出通过后仅补强子进程异常提示／协议校验及真实分卷测试；十分钟档使用最终代码。未删除业务锁或放宽请求超时。
+
+| 客户端P95 | 前轮错峰（4.6节） | 本轮错峰 | 本轮集中导出 |
+| --- | ---: | ---: | ---: |
+| 排期 | 11.57秒 | 1.86秒 | 1.83秒 |
+| 每日任务 | 12.58秒 | 1.83秒 | 2.08秒 |
+| 物料库存 | 11.87秒 | 1.44秒 | 1.77秒 |
+| 费用 | 10.46秒 | 1.75秒 | 3.01秒 |
+| 月结 | 8.90秒 | 1.43秒 | 3.04秒 |
+| 下载 | 14.58秒 | 4.75秒 | 20.27秒 |
+| 写入 | 8.40秒 | 1.49秒 | 2.69秒 |
+
+本轮错峰下载最大7.94秒、排期最大3.36秒；集中下载最大20.55秒、任务最大10.16秒，仍有高峰长尾。错峰排期／任务／库存／费用的平均SQL分别约42／48／49／58次，平均锁等待约0.315／0.275／0.242／0.286秒。查询和写入改善，但集中导出串行排队仍慢，单次有界通过不是高峰容量保证。API及HTTP客户端仍同进程，新增Excel生成在子进程；报告的`process_cpu_seconds`不含这些子进程，不可与旧总CPU值直接比较或宣称资源使用降低。
+
+**自查与验证命令**（均显式`DATABASE_URL=sqlite://`、清空`PYTEST_ADDOPTS`，使用独立`--basetemp`）：
+
+```powershell
+backend/.venv/Scripts/python.exe -m pytest backend/tests/test_cutting_exports.py backend/tests/test_cutting_export_gate.py backend/tests/test_cutting_workspace.py backend/tests/test_cutting_periods.py backend/tests/test_cutting_payments.py backend/tests/test_cutting_settlement.py -q -x -p no:cacheprovider --basetemp=D:/RR/.tmp/cutting-json-style-regression-b
+backend/.venv/Scripts/python.exe -m pytest backend/tests/test_cutting_export_process.py backend/tests/test_cutting_export_gate.py backend/tests/test_cutting_exports.py -q -x -p no:cacheprovider --basetemp=D:/RR/.tmp/cutting-render-process
+backend/.venv/Scripts/python.exe -m pytest backend/tests/test_cutting_export_process.py backend/tests/test_cutting_export_gate.py backend/tests/test_cutting_read_batch.py backend/tests/test_cutting_p5c_runner.py -q -x -p no:cacheprovider --basetemp=D:/RR/.tmp/cutting-final-guards
+backend/.venv/Scripts/python.exe backend/scripts/verify_cutting_http_soak.py --profile 500 --seconds 120 --workload burst
+backend/.venv/Scripts/python.exe backend/scripts/verify_cutting_http_soak.py --profile 500 --seconds 600 --workload paced
+```
+
+对应回归97项、26项、46项通过，有覆盖重叠且对应阶段不同，不累加为一个最终全套。最终46项含实际子进程ZIP逐行无缺漏／无重复和文件摘要校验、精度／字面量、异常返回、FIFO／截止时间／容量恢复、排队期间权限或依据变化拒绝、批量读取与原逐单读取对照。独立只读审查未发现权限／原库隔离阻断，发现的截止边界和子进程异常提示已修复并验证。本轮没有重跑完整迁移套件、前端构建、浏览器或实体打印；相关旧验收不能算成本轮重新通过。
+
+本轮生产文件：`backend/app/api/cutting_operations.py`；`backend/app/services/cutting_materials.py`、`cutting_workspace.py`、`cutting_read_batch.py`、`cutting_usage.py`、`cutting_cost_allocation.py`、`cutting_exports.py`、`cutting_export_workbook.py`、`cutting_export_gate.py`、`cutting_export_process.py`、`cutting_export_worker.py`。运行器和对应读取／队列／子进程／导出测试同步更新。证据摘要和不含数据库的归档位于`.tmp/cutting-lock-export-review/`。原库SHA-256仍为`0E6912AEB263F9C309D399CA694671A338D2EB69708797DFA5FE91F9F40F5F1A`。
+
+**仍未完成**：集中导出的高峰等待优化、独立API服务进程与目标硬件上的重复测量及正式响应目标；更高完整生产／财务链占比、签收／退料／同单冲突／锁月等混合写入；小时级／工作日验证。P5b真实岗位与业务签字、P5c完整页面高缩放、原生Excel／实体打印、含附件配置恢复与切换及独立生产放行继续保留。`release_ready=false`，原库不迁移、不初始化、不授权。
+
 ## 5. 上线与回退检查清单
 
 1. 版本编号冲突已修复；有可信版本的 SQLite 旧库与本地限定 JP 增量副本已验证。无版本本地库已完成首批全库候选技术验证，九条新增基础种子已确认保留且模块关闭、十一条 3D 占位暂不关联；仍须用真实资料核对；在目标同版本数据库的隔离副本执行升级与重复升级，记录前后版本和完整性核对。未通过禁止生产迁移。
@@ -300,6 +412,6 @@ npm run build
 
 ## 6. 待办顺序
 
-0168 含原数据候选及恢复演练、排期筛选优化和首批展示历史分页已完成，范围见 3.2、4.3～4.4。下一步确认目标规模并验证已发布计划／签收及成本／锁月／导出持续负载 → 完整页面／高缩放与原生打印验收 → 真实资料与岗位签字 → 目标环境含附件恢复及切换演练 → 独立生产放行。后端完整历史回放和动态状态扫描仍存在，是否进一步做存储读取优化应由目标负载结果决定，不能由页面响应变小直接认定正式容量通过。
+0168 含原数据候选及恢复演练、排期筛选优化和首批展示历史分页已完成，范围见 3.2、4.3～4.4；50条生产链及原始十分钟混合验证见4.6，锁内批量读取、导出隔离及最终复测见4.7。下一步先在独立服务进程及目标硬件重复测量集中导出高峰等待，明确响应目标，再扩大活跃生产与财务链／写入种类并做小时级验证 → 完整页面／高缩放与原生打印验收 → 真实资料与岗位签字 → 目标环境含附件恢复及切换演练 → 独立生产放行。后端完整历史回放和动态状态扫描仍存在，不能由十分钟无错误直接认定正式容量通过。
 
 候选九条种子保留且模块关闭、十一条本地 3D 占位记录不关联现场的决定继续有效，实机映射随独立 3D 启用计划推进。无版本原库没有写版本、迁移、初始化或授权变更；真实员工和业务资料后续指定。业务副本不进入 Git，技术通过仍不批准全库接管或正式上线。

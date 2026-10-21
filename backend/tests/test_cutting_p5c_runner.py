@@ -106,12 +106,16 @@ def test_sqlite_only_ignores_inherited_connection_and_preserves_incomplete_failu
     captured = {}
     def execute(steps, output, env):
         captured.update(env)
+        assert any(name == 'http-capacity' and 'tests/test_cutting_http_capacity.py' in command
+                   for name, command, _ in steps)
         return []
     monkeypatch.setattr(runner, 'execute_steps', execute)
     assert runner.main() == 1  # No test evidence must never become a pass.
     assert captured['CUTTING_TEST_POSTGRES_URL'] == ''
     assert captured['DATABASE_URL'] == 'sqlite://'
     assert captured['PYTEST_ADDOPTS'] == ''
+    assert captured['CUTTING_SOAK_SECONDS'] == '3'
+    assert captured['CUTTING_SOAK_WORKLOAD'] == 'paced'
     for path in tmp_path.rglob('*.json'):
         assert 'private:secret' not in path.read_text(encoding='utf-8')
 
