@@ -17,6 +17,22 @@ from app.services.fabric_receipt_pricing import omit_empty_prices, evidence as p
 MODELS = (FabricReceipt, FabricStockBatch, FabricInventoryMovement)
 
 
+def receipt_request_body(payload):
+    body = omit_empty_prices(payload.model_dump(mode='json'))
+    for item in body.get('items', [body]):
+        # Old committed requests must retain their exact canonical hash.
+        if not item.get('delivery_quantity'):
+            item.pop('delivery_quantity', None)
+    return body
+
+
+def validate_delivery_quantity(total, declared):
+    limit = quantity(declared, '本单该采购明细到货量')
+    if total > limit:
+        raise HTTPException(422, '分仓实收合计超过本单该采购明细到货量，请核对数量；填写超收说明不能放行')
+    return limit
+
+
 def schema_ready(db):
     inspector = inspect(db.get_bind())
     return {model.__tablename__ for model in MODELS} <= set(inspector.get_table_names()) and "baseline_known" in {c["name"] for c in inspector.get_columns("fabric_receipts")}
@@ -153,7 +169,7 @@ def receipt_data(db, receipt, *, reversals=None):
 
 def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _commit=True):
     ensure_schema(db)
-    body = omit_empty_prices(payload.model_dump(mode="json"))
+    body = receipt_request_body(payload)
     for item in body.get("items", [body]):
         for part in item.get("batches", []):
             if not part.get("location_id"):
@@ -230,6 +246,7 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
         batches.append({"quantity": decimal_text(amount), "location": key[2], "dye_lot": key[0], "roll_no": key[1], "location_record": location_records[batch.location_id]})
     total = sum((Decimal(batch["quantity"]) for batch in batches), Decimal(0))
     quantity(decimal_text(total), "本次实收总数")
+    validate_delivery_quantity(total, payload.delivery_quantity)
     pricing = price_evidence(total, facts['unit'], body)
     remaining = valid_reference(progress["warehouse_outstanding_quantity"])
     if remaining is not None and total > remaining and not payload.difference_reason.strip():
@@ -283,7 +300,7 @@ def receive_many(db, actor, payload):
     if sum(len(item.batches) for item in payload.items) > 500:
         raise HTTPException(422, "一次最多登记 500 项实物明细，请分批收料")
     batch_id = str(payload.request_id)
-    batch_body = omit_empty_prices(payload.model_dump(mode="json"))
+    batch_body = receipt_request_body(payload)
     for item in batch_body["items"]:
         for part in item["batches"]:
             if not part.get("location_id"):

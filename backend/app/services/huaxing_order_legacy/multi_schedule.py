@@ -343,7 +343,11 @@ def _line_values(order: dict[str, Any], line: dict[str, Any]) -> dict[str, Any]:
         "customer_label": line.get("customer_label"),
         "label": line.get("label"),
         "battery": line.get("battery"),
-        "country": line.get("country"),
+        "country": line.get("country") or order.get("country"),
+        "standard": line.get("standard") or order.get("standard"),
+        "source_currency": line.get("source_currency") or order.get("source_currency"),
+        "source_lineage": line.get("source_lineage") or {},
+        "source_warnings": line.get("source_warnings") or [],
         "unit_price": line.get("unit_price"), "amount": line.get("amount"),
         "date_code": line.get("date_code"),
         # Maxx 规则文档明确：完成日期在 Shipment 前一周。

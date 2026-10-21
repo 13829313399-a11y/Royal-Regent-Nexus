@@ -1,6 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { createXlsxWorkbook, excelDateSerial, parseXlsxWorkbook } from './xlsxLite'
 import { pricingRate } from './pricingSettings'
+import { YINHUI_MAX_MECHANICAL_ROWS } from './yinhuiProfiles'
 import { validateYinhuiExport, yinhuiTotals, yinhuiToolMaterialPrice, YINHUI_HKD_USD, type YinhuiConversionResult, type YinhuiCostRow } from './yinhui'
 
 export interface YinhuiProductImage { bytes: Uint8Array; extension: 'png' | 'jpg' }
@@ -149,10 +150,10 @@ export function sanitizeYinhuiTemplate(buffer: ArrayBuffer, options: { mechanica
   return zipSync(output)
 }
 
-// Explicit template maintenance only: extend the existing mechanical detail style,
+// Extend a sanitized working copy using the existing mechanical detail style,
 // shifting references to BOM (1) so every downstream formula keeps its meaning.
 function extendMechanicalRows(zip: Record<string, Uint8Array>, heading: number, before: number, count: number) {
-  if (!Number.isInteger(count) || count > 20) throw new Error('银辉模板扩展行数无效')
+  if (!Number.isInteger(count) || count <= 0 || before - heading - 1 + count > YINHUI_MAX_MECHANICAL_ROWS) throw new Error('银辉模板扩展行数无效')
   const docs = YINHUI_SHEET_NAMES.map((_, i) => xml(strFromU8(zip[`xl/worksheets/sheet${i + 1}.xml`]!)))
   const target = docs[2]!
   const sample = elements(target, 'row').find(row => Number(row.getAttribute('r')) === before - 1)
@@ -173,7 +174,7 @@ function extendMechanicalRows(zip: Record<string, Uint8Array>, heading: number, 
       for (const [totalColumn, detailColumn] of [['H', 'H'], ['K', 'J']]) {
         const cell = elements(doc, 'c').find(c => c.getAttribute('r') === `${totalColumn}${heading}`)
         const f = cell && elements(cell, 'f')[0]
-        if (!f) continue
+        if (!f) throw new Error('银辉五金小计公式缺失，不能安全扩展')
         const expected = `SUM(${detailColumn}${heading + 1}:${detailColumn}${before - 1})`
         if ((f.textContent || '').replace(/[$\s]/g, '').toUpperCase() !== expected) throw new Error('银辉五金小计公式无法安全扩展')
         f.textContent = `SUM(${detailColumn}${heading + 1}:${detailColumn}${before + count - 1})`
@@ -378,7 +379,9 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
   const total = yinhuiTotals(d)
   const pricePending = total.missingMaterialPrices.length > 0
   if (pricePending && !options.missingMaterialPricesConfirmed) throw new Error(`缺少银辉报客料价：${total.missingMaterialPrices.join('、')}。请确认单价留空、合计暂未包含这些料价后再导出。`)
-  const layout = templateLayout(parseXlsxWorkbook(template))
+  if (d.mechanical.length > YINHUI_MAX_MECHANICAL_ROWS) throw new Error(`银辉五金超过 ${YINHUI_MAX_MECHANICAL_ROWS} 行容量，不能截断明细`)
+  const prepared = sanitizeYinhuiTemplate(template, { mechanicalCapacity: d.mechanical.length })
+  const layout = templateLayout(parseXlsxWorkbook(prepared.buffer.slice(prepared.byteOffset, prepared.byteOffset + prepared.byteLength) as ArrayBuffer))
   const first = layout.bom[0]!
   for (const [label, count, capacity] of [
     ['Tool Plan', d.tools.length, layout.tools[0]! - 8],
@@ -388,7 +391,7 @@ export function createYinhuiCustomerQuoteWorkbook(result: YinhuiConversionResult
     ['车缝', (d.fabric || []).length, first.labor - first.fabric - 1],
     ['包装', d.packagingRows.length, 12],
   ] as const) if (count > capacity) throw new Error(`银辉${label}有 ${count} 行，超过该客表 ${capacity} 行容量，不能截断明细`)
-  const zip = unzipSync(sanitizeYinhuiTemplate(template))
+  const zip = unzipSync(prepared)
   const date = excelDateSerial(new Date(`${d.quoteDate}T12:00:00Z`))
   const summary = writer(zip, 0); const s = summary.set
   s('C3', 'Royal Regent Products International Ltd'); s('H3', date)

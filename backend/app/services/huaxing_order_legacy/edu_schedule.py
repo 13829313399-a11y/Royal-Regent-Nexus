@@ -54,6 +54,25 @@ def normalize_text(value: Any) -> str | None:
     return value or None
 
 
+def normalize_edu_item(value: Any) -> str:
+    """Remove EDU's four-digit tail only from the evidenced F11/F12 layout."""
+    text = normalize_text(value) or ""
+    match = re.fullmatch(r"(F(?:11|12)-[A-Z]{2}\d{3}-(?:[A-Z]\d{3}|\d{4}))\d{4}", text, re.I)
+    return match.group(1) if match else text
+
+
+def _edu_case_pack(value: Any) -> float | int | None:
+    if isinstance(value, str):
+        text = value.strip()
+        composite = re.fullmatch(r"\d+\s*/\s*(\d+)", text)
+        if composite:
+            value = composite.group(1)
+        elif not re.fullmatch(r"\d+(?:,\d{3})*(?:\.\d+)?", text):
+            return None
+    number = coerce_number(value)
+    return number if number is not None and number > 0 else None
+
+
 def coerce_number(value: Any) -> float | int | None:
     if value in (None, "", "-") or isinstance(value, bool):
         return None
@@ -107,10 +126,16 @@ def infer_customer_type(row: dict[str, Any], filename: str = "") -> str:
 
 
 def add_derived_fields(row: dict[str, Any], today: date | None = None) -> dict[str, Any]:
+    is_edu = row.get("customer_type") == "EDU"
+    if is_edu:
+        if normalize_text(row.get("item_no")):
+            row.setdefault("source_item_no", str(row["item_no"]))
+        row["item_no"] = normalize_edu_item(row.get("item_no"))
+        row.setdefault("source_case_pack", row.get("case_pack"))
     for field in ("order_date", "inspection_date", "ship_date"):
         row[field] = normalize_date(row.get(field))
     for field in ("quantity", "case_pack", "cartons", "shipped_quantity", "remaining_quantity", "unit_price", "amount"):
-        row[field] = coerce_number(row.get(field))
+        row[field] = _edu_case_pack(row.get(field)) if is_edu and field == "case_pack" else coerce_number(row.get(field))
     for field in EXPORT_FIELDS:
         if field not in {"order_date", "inspection_date", "ship_date", "quantity", "case_pack", "cartons", "shipped_quantity", "remaining_quantity", "unit_price", "amount"}:
             row[field] = normalize_text(row.get(field))
@@ -165,7 +190,8 @@ def _header(rows: list[list[Any]]) -> tuple[int, dict[int, str]]:
     return best
 
 
-def _parse_rows(rows: list[list[Any]], sheet: str, filename: str, datemode: int | None) -> list[dict[str, Any]]:
+def _parse_rows(rows: list[list[Any]], sheet: str, filename: str, datemode: int | None,
+                customer_type: str | None = None) -> list[dict[str, Any]]:
     header_index, mapping = _header(rows)
     if header_index < 0 or len(mapping) < 4:
         return []
@@ -180,7 +206,7 @@ def _parse_rows(rows: list[list[Any]], sheet: str, filename: str, datemode: int 
             continue
         if str(row.get("item_no") or "").strip() in {"合计", "总计"}:
             continue
-        row.update(customer_type=infer_customer_type(row, filename), source_sheet=sheet, source_row=row_no)
+        row.update(customer_type=customer_type or infer_customer_type(row, filename), source_sheet=sheet, source_row=row_no)
         result.append(add_derived_fields(row))
     return result
 
@@ -199,9 +225,12 @@ def read_schedule(source: str | Path | bytes | BinaryIO, filename: str | None = 
             sheets.append((ws.title, [[cell.value for cell in row] for row in ws.iter_rows()], None))
     priority = {"ITEM表": 0, "Iteam表": 0, "正单评审表": 1, "接单表": 2, "PO订单": 3, "订单": 3}
     sheets.sort(key=lambda item: (priority.get(item[0], 9), item[0]))
+    # Determine EDU before numeric coercion: otherwise a workbook identified by
+    # its Chinese EDU reference sheet would already have reduced "1/16" to 1.
+    customer_type = "EDU" if "EDU" in name.upper() or any("EDU" in sheet.upper() for sheet, _, _ in sheets) else None
     best: tuple[str, list[dict[str, Any]]] | None = None
     for sheet, rows, datemode in sheets:
-        records = _parse_rows(rows, sheet, name, datemode)
+        records = _parse_rows(rows, sheet, name, datemode, customer_type=customer_type)
         if records and (best is None or len(records) > len(best[1])):
             best = (sheet, records)
         if records and priority.get(sheet) == 0:

@@ -220,3 +220,44 @@ def test_outsourcing_only_accepts_cutting_and_code_search_is_literal(client):
     create(client, material_body('M%01')); create(client, material_body('M201'))
     result = client.get(BASE + '/masters', params=dict(factory_id='huakang-c', kind='material', q='%')).json()
     assert result['total'] == 1 and result['data'][0]['code'] == 'M%01'
+
+
+def test_version_focus_finds_old_page_and_preserves_authorization(client):
+    item = create(client)
+    for version in range(1, 52):
+        body = material_body()
+        body['expected_version'] = version
+        response = client.put(f"{BASE}/masters/{item['id']}", json=body)
+        assert response.status_code == 200, response.text
+    url = f"{BASE}/masters/{item['id']}/versions"
+    params = dict(factory_id='huakang-c', focus_version=1)
+    value = client.get(url, params=params)
+    assert value.status_code == 200
+    assert value.json()['page'] == 2
+    assert [row['version'] for row in value.json()['data']] == [2, 1]
+    # Insert a new head after the API read its head but before it fetches the
+    # revision page. The requested boundary revision must remain in that page.
+    inserted = False
+    def append_between_reads(connection, cursor, statement, parameters, context, executemany):
+        nonlocal inserted
+        if inserted or 'ORDER BY cutting_ops_revisions.version DESC' not in statement:
+            return
+        inserted = True
+        connection.execute(CuttingRevision.__table__.insert().values(
+            master_id=item['id'], version=53, status=item['status'], data=item['data'],
+            actor_id='concurrent-test', created_at=item['created_at'], reason='并发新增'))
+        connection.execute(CuttingMaster.__table__.update().where(CuttingMaster.id == item['id']).values(version=53))
+    event.listen(client.engine, 'before_cursor_execute', append_between_reads)
+    try:
+        boundary = client.get(url, params=dict(params, focus_version=3))
+        assert boundary.status_code == 200, boundary.text
+        assert inserted
+        assert boundary.json()['total'] == 52
+        assert [row['version'] for row in boundary.json()['data']] == list(range(52, 2, -1))
+    finally:
+        event.remove(client.engine, 'before_cursor_execute', append_between_reads)
+    assert client.get(url, params=dict(params, focus_version=53)).status_code == 404
+    assert client.get(url, params=dict(params, focus_version=0)).status_code == 422
+    assert client.get(url, params=dict(params, factory_id='huakang-d')).status_code == 422
+    client.cutting_auth['user'] = user('master_write')
+    assert client.get(url, params=params).status_code == 403

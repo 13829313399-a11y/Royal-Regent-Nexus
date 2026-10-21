@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { CartonSourceRequest } from '@/features/carton-procurement/sourceLinks'
+import CartonSourceLinks from './CartonSourceLinks.vue'
 import type { CartonOrderLineResponse } from '@/api/cartonProcurement'
 
 const props = defineProps<{
   balance: number
   unit: string
   formal: boolean
+  factoryId?: string
+  sources?: CartonSourceRequest[]
   line?: CartonOrderLineResponse
 }>()
 const facts = computed(() => {
@@ -27,6 +31,7 @@ const format = (value: number) => value.toLocaleString('zh-CN', { maximumFractio
       <div class="tabular-nums text-slate-500">已到 {{ format(facts.received) }} / 需求 {{ format(facts.required) }} {{ unit }}</div>
       <div v-if="facts.remaining > 0" class="text-amber-700">还差 {{ format(facts.remaining) }} {{ unit }}</div>
     </template>
+    <div v-else-if="sources?.length" class="space-y-1"><span class="text-slate-600">到货情况见来源订单</span><CartonSourceLinks :factory-id="factoryId || ''" :sources="sources" /></div>
     <span v-else class="text-slate-400">{{ formal ? '订单明细未匹配' : '无单库存' }}</span>
   </div>
 </template>

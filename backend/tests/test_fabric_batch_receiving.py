@@ -41,7 +41,7 @@ def warehouse(tmp_path):
 def body(lines):
     return {"factory_id": "huakang-c", "request_id": str(uuid4()), "receipt_date": "2026-09-16", "delivery_reference": "DN-BATCH",
             "confirmed": True, "items": [{"source_line_id": line["id"], "expected_source_revision": line["revision"], "expected_receipt_count": 0,
-            "material_category": "FABRIC" if index == 0 else "ACCESSORY", "batches": [{"quantity": "10.125", "location": "A01", "location_id": "fabric-A01",
+            "material_category": "FABRIC" if index == 0 else "ACCESSORY", "delivery_quantity": "1000", "batches": [{"quantity": "10.125", "location": "A01" if index == 0 else "辅料位", "location_id": "fabric-A01" if index == 0 else "fabric-辅料位",
             "dye_lot": "0001" if index == 0 else "", "roll_no": "0002" if index == 0 else ""}]} for index, line in enumerate(lines)]}
 
 
@@ -50,13 +50,17 @@ def post(db, receiving, actor, data):
     return receiving.receive_many(db, actor, schema.ReceiveSourcesRequest(**data))
 
 
-@pytest.mark.parametrize("failure", ["location", "dye", "overage", "revision", "count", "withdrawn", "missing", "duplicate", "unconfirmed"])
+@pytest.mark.parametrize("failure", ["location", "dye", "overage", "delivery_missing", "delivery_exceeded", "unclassified", "revision", "count", "withdrawn", "missing", "duplicate", "unconfirmed"])
 def test_entire_batch_rolls_back_on_any_invalid_item(warehouse, failure):
     engine, actor, lines, receiving = warehouse
     data = body(lines)
     if failure == "location": data["items"][1]["batches"][0]["location"] = " "
     if failure == "dye": data["items"][1]["material_category"] = "FABRIC"
     if failure == "overage": data["items"][1]["batches"][0]["quantity"] = "1000000000000"
+    if failure == "delivery_missing": data["items"][1].pop('delivery_quantity')
+    if failure == "delivery_exceeded":
+        data["items"][1].update(delivery_quantity='10.124999', difference_reason='不能用说明放行')
+    if failure == "unclassified": data["items"][1]["batches"][0]['location_id'] = 'fabric-未分类位'
     if failure == "revision": data["items"][1]["expected_source_revision"] += 1
     if failure == "count": data["items"][1]["expected_receipt_count"] = 1
     if failure == "duplicate": data["items"][1]["source_line_id"] = data["items"][0]["source_line_id"]

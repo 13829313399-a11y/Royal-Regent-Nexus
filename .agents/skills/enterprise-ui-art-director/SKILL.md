@@ -21,7 +21,7 @@ Adapt the requested enterprise page to its real users and business operations wh
 3. Specify the main operation, must-see information, filters, working surface and secondary details. Preserve useful density without shrinking essential text or hiding actions behind hover-only controls.
 4. Describe relevant default, loading, empty, error, permission-restricted and detail states. Reuse existing state semantics, focus behavior and responsive patterns.
 5. When implementation is authorized, reuse or deliberately extend existing components and tokens. Keep feature-specific effects scoped, preserve documented exceptions and take motion values from the project baseline. Do not change API contracts, permissions or factory isolation to match a mockup.
-6. Use the existing browser workflow to inspect the implemented route. The companion [visual-qa-loop](../visual-qa-loop/SKILL.md) covers this phase; when another active skill already performs equivalent checks, share its evidence instead of repeating the entire workflow.
+6. Use Chrome DevTools MCP to inspect the implemented route through the companion [visual-qa-loop](../visual-qa-loop/SKILL.md). Do not select the Playwright CLI Skill automatically for this phase. When another active skill already performs equivalent DevTools checks, share its evidence instead of repeating the entire workflow.
 
 ## Evidence and handoff
 

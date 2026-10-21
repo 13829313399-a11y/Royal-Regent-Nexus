@@ -169,6 +169,31 @@ describe('module center factory scope', () => {
     wrapper.unmount()
   })
 
+  it('shows the carton submission entry only for the current factory and accepted department scope', async () => {
+    routeState.path = '/modules/pmc-warehouse'
+    routeState.params.department = 'pmc-warehouse'
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAppStore().setActiveFactory('huaxing')
+    const auth = useAuthStore()
+    auth.factoryScopes = ['huaxing']
+    auth.permissions = ['carton_procurement:special_request_submit']
+    auth.authzMode = 'enforce'
+    auth.hasEffectiveAccessSnapshot = true
+    const grant = { permission_code: 'carton_procurement:special_request_submit', factory_id: 'huaxing', department: 'engineering', effect: 'allow' as const, allowed: true, source_type: 'user_override', source_ids: ['submit'] }
+    auth.effectiveAccess = [grant]
+    const wrapper = mount(ModuleCenterView, { global: { plugins: [pinia] } })
+    const visible = () => wrapper.findAllComponents(ModuleCard).some(card => card.props('module').id === 'carton-procurement')
+    expect(visible()).toBe(false)
+    auth.effectiveAccess = [{ ...grant, department: 'pmc-warehouse' }]
+    await nextTick()
+    expect(visible()).toBe(true)
+    useAppStore().setActiveFactory('huakang-c')
+    await nextTick()
+    expect(visible()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('registers the 3D printing card only for Huakang A', () => {
     const module = departmentModuleRegistry.production.modules.find(
       (item) => item.id === 'three-d-printing',

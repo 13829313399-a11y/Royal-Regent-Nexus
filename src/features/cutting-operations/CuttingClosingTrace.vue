@@ -1,24 +1,44 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { RouterLink } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import { cuttingDestination } from './location'
-import type { ClosingPreview, TraceScope } from './closingApi'
+import { closingApi, type ClosingPreview, type TraceScope } from './closingApi'
 import { reportLabels } from './reportingApi'
+import { errorMessage } from './api'
+import CuttingHistoryPager from './CuttingHistoryPager.vue'
 const props = defineProps<{ value: ClosingPreview }>()
 const filter = ref<'all' | 'opening' | 'period'>('all')
+const fetched=ref<ClosingPreview>(),busy=ref(false),error=ref(''),denied=ref(false)
+let ticket=0,alive=true
+const trace=computed(()=>fetched.value??props.value)
+watch(()=>props.value,()=>{ticket++;fetched.value=undefined;filter.value='all';error.value='';denied.value=false;busy.value=false})
+onBeforeUnmount(()=>{alive=false;ticket++})
+async function loadPage(page:number,scope=filter.value){
+  if(!props.value.history_pagination){filter.value=scope;return}
+  const request=++ticket;busy.value=true;error.value=''
+  try{
+    const value=await closingApi.read(props.value.line_id,props.value.month,props.value.costs!==undefined,page,scope,props.value.history_pagination.token)
+    if(alive&&request===ticket){fetched.value=value;filter.value=scope;denied.value=false}
+  }catch(e){
+    if(alive&&request===ticket){error.value=errorMessage(e);const status=(e as {response?:{status?:number}}).response?.status;if(status===401||status===403){denied.value=true;fetched.value=undefined}}
+  }finally{if(alive&&request===ticket)busy.value=false}
+}
 const filters = { all: '全部关联历史', opening: '期初形成依据', period: '本期发生及更正' } as const
 const actions: Record<string, string> = { save: '保存草稿', post: '提交生效', void: '作废', review: '抽查', discard: '放弃草稿' }
 const warehouseLabels: Record<string, string> = { REQUEST: '领料申请', ISSUE: '仓库实发', CUTTING_RECEIPT: '裁床签收', CUTTING_RECEIPT_VOID: '撤销签收', RETURN: '余料退仓', CORRECTION: '仓库冲销', REQUEST_CLOSE: '申请关闭', CUTTING_REQUEST_REUSE: '计划续用' }
 function matches(scope?: TraceScope) { return filter.value === 'all' || !!(filter.value === 'opening' ? scope?.earlier_history : scope?.period_history) }
 function scopeLabel(scope?: TraceScope) { return scope?.opening ? '取数时生效数量计入期初' : scope?.period ? '取数时生效数量计入本期' : '取数时数量不计入本期或期初；保留原单及更正依据' }
-const production = computed(() => props.value.production_documents.filter(d => matches(d.scope)))
-const usage = computed(() => props.value.usage_documents.filter(d => matches(d.scope)))
-const warehouse = computed(() => props.value.warehouse_documents.filter(d => filter.value === 'all' || d.scope === filter.value))
+const production = computed(() => denied.value?[]:trace.value.production_documents.filter(d => matches(d.scope)))
+const usage = computed(() => denied.value?[]:trace.value.usage_documents.filter(d => matches(d.scope)))
+const warehouse = computed(() => denied.value?[]:trace.value.warehouse_documents.filter(d => filter.value === 'all' || d.scope === filter.value))
 </script>
 <template>
   <div class="closing-trace">
-    <nav aria-label="追溯期间"><Button v-for="(label,key) in filters" :key="key" variant="outline" :aria-pressed="filter===key" @click="filter=key">{{ label }}</Button></nav>
+    <nav aria-label="追溯期间"><Button v-for="(label,key) in filters" :key="key" variant="outline" :disabled="busy||denied" :aria-pressed="filter===key" @click="loadPage(1,key)">{{ label }}</Button></nav>
+    <p v-if="error" role="alert">{{error}}</p>
+    <p v-if="busy" role="status">正在读取历史明细…</p>
+    <CuttingHistoryPager v-if="trace.history_pagination&&!denied" :value="trace.history_pagination" :busy="busy" @page="loadPage" />
     <p>期初依据包含月初前的生产、耗用、签收和退仓，以及取数时已有的关联更正。已作废版本和草稿仅供追溯；数量按取数时生效记录及业务日期计算，历史明细不再次相加。</p>
     <h3>生产记录及更正</h3>
     <details v-for="document in production" :key="document.document_id">

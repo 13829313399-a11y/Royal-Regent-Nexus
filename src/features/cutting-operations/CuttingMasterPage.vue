@@ -3,17 +3,52 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { Button } from '@/components/ui/button'
-import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, inject, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, routeLocationKey } from 'vue-router'
 import { cuttingApi, errorMessage, type Access, type Kind, type MasterRecord, type MaterialData, type ResourceData, type BomData, type SaveCommand, type StateCommand } from './api'
 import CuttingCalendarEditor from './CuttingCalendarEditor.vue'
 import { CUTTING_FACTORY } from './navigation'
+import CuttingMetrics from './CuttingMetrics.vue'
+import { workspaceApi } from './workspaceApi'
+const masterStats=ref<{bom:number;draft:number;material:number;resource:number}>()
+const statsError=ref('')
+const calendarView=ref(false)
+const route=inject(routeLocationKey,undefined)
+async function loadStats(){
+  const ticket=generation
+  try{const value=await workspaceApi.masters();if(alive&&ticket===generation){masterStats.value=value;statsError.value=''}}
+  catch(e){if(alive&&ticket===generation){masterStats.value=undefined;statsError.value=errorMessage(e)}}
+}
+let linkedGeneration=0
+async function openLinkedMaster(){
+  const linkedTicket=++linkedGeneration
+  const id=route?.query.master_id
+  if(typeof id!=='string'||!available.value)return
+  const rawVersion=route?.query.master_version
+  const version=typeof rawVersion==='string'&&/^[1-9]\d*$/.test(rawVersion)?Number(rawVersion):undefined
+  if(rawVersion!==undefined&&(!Number.isSafeInteger(version)||!version)){error.value='指定资料版本无效，请从操作日志重新定位。';return}
+  const ticket=generation
+  try{const value=await cuttingApi.versions(id);if(!alive||ticket!==generation||linkedTicket!==linkedGeneration||id!==route?.query.master_id)return
+    const row=value.data[0];if(!row){error.value='未找到关联的基础资料，请核对原记录。';return}
+    editor.value=false;transition.value=null
+    kind.value=row.kind;records.value=[row];total.value=1;page.value=1;calendarView.value=false
+    await showHistory(row,1,version)
+  }catch(e){if(alive&&ticket===generation&&linkedTicket===linkedGeneration)error.value=errorMessage(e)}
+}
+function showCalendar(){
+  if(!permitDiscard())return
+  linkedGeneration++
+  if(kind.value!=='resource'){switchKind('resource')}
+  else {editor.value=false;transition.value=null;closeHistory()}
+  calendarView.value=true
+}
 
 const access = ref<Access | null>(null)
 const loading = ref(true), saving = ref(false), editor = ref(false)
 const error = ref(''), notice = ref(''), query = ref(''), code = ref(''), reason = ref('')
 const kind = ref<Kind>('bom'), records = ref<MasterRecord[]>([]), editing = ref<MasterRecord | null>(null)
 const page = ref(1), total = ref(0)
+const appliedQuery=ref('')
 const material = reactive<MaterialData>({ name: '', category: 'fabric', unit: '', specification: '', color: '', source_reference: '' })
 const resource = reactive<ResourceData & { calendar: import('./api').WorkCalendarData | null }>({ name: '', execution: 'internal', process: 'cutting', contact: '', source_reference: '', calendar: null })
 const bom = reactive<BomData>({ name: '', item_no: '', style: '', color: '', source_reference: '', parts: [], requirements: [] })
@@ -22,6 +57,7 @@ const materialPage = ref(1), materialTotal = ref(0)
 const materialReferences = reactive<Record<string, { code: string; name: string }>>({})
 const history = ref<MasterRecord | null>(null), historyRows = ref<MasterRecord[]>([])
 const historyPage = ref(1), historyTotal = ref(0), historyBusy = ref(false)
+const historyFocus=ref<number>()
 const transition = ref<MasterRecord | null>(null), transitionReason = ref('')
 type Pending = { type: 'save'; body: SaveCommand; id?: string } | { type: 'state'; body: StateCommand; id: string }
 const pending = ref<Pending | null>(null)
@@ -30,7 +66,7 @@ const editorBaseline = ref('')
 const editorSnapshot = () => JSON.stringify({ code: code.value, reason: reason.value, data: kind.value === 'material' ? material : kind.value === 'resource' ? resource : bom })
 const dirty = computed(() => (editor.value && editorSnapshot() !== editorBaseline.value) || (!!transition.value && !!transitionReason.value))
 let generation = 0, materialGeneration = 0, historyGeneration = 0, alive = true
-function closeHistory() { historyGeneration++; history.value = null; historyRows.value = []; historyBusy.value = false }
+function closeHistory() { historyGeneration++; history.value = null; historyRows.value = []; historyBusy.value = false;historyFocus.value=undefined }
 function resetMaterialSearch() {
   materialGeneration++
   materialOptions.value = []; selectedMaterial.value = ''; materialPage.value = 1; materialTotal.value = 0
@@ -44,6 +80,10 @@ function permitDiscard() {
   return !dirty.value || window.confirm('有尚未保存的内容，离开将放弃这些内容。确定继续？')
 }
 onBeforeRouteLeave(permitDiscard)
+if(route){
+  onBeforeRouteUpdate(permitDiscard)
+  watch(()=>[route.query.master_id,route.query.master_version],()=>{closeHistory();void openLinkedMaster()})
+}
 function beforeUnload(event: BeforeUnloadEvent) {
   if (!dirty.value && !saving.value && !pending.value) return
   event.preventDefault()
@@ -63,7 +103,9 @@ const fieldLabels: Record<string, string> = { name: '名称', category: '类别'
 const valueLabels: Record<string, string> = { fabric: '布料', accessory: '辅料', internal: '本厂', outsourced: '外发', cutting: '裁剪' }
 const businessTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(value))
 
-async function load() {
+async function load(apply=false) {
+  linkedGeneration++
+  if(apply){appliedQuery.value=query.value;page.value=1}
   const request = ++generation
   loading.value = true; error.value = ''; records.value = []
   try {
@@ -71,19 +113,22 @@ async function load() {
     if (!alive || request !== generation) return
     access.value = rights
     if (!rights.enabled || !rights.schema_ready) return
-    const result = await cuttingApi.list(kind.value, page.value, query.value)
+    const result = await cuttingApi.list(kind.value, page.value, appliedQuery.value)
     if (!alive || request !== generation) return
     records.value = result.data; total.value = result.total
+    void loadStats()
   } catch (e) { if (alive && request === generation) { access.value = null; error.value = errorMessage(e) } }
   finally { if (alive && request === generation) loading.value = false }
 }
-onMounted(load)
+onMounted(async()=>{await load();await openLinkedMaster()})
 function switchKind(next: Kind) {
-  if (next === kind.value || !permitDiscard()) return
-  closeHistory(); kind.value = next; page.value = 1; query.value = ''; editor.value = false; transition.value = null; notice.value = ''; void load()
+  if ((next === kind.value&&!calendarView.value) || !permitDiscard()) return
+  calendarView.value=false
+  closeHistory(); kind.value = next; page.value = 1; query.value = ''; appliedQuery.value='';editor.value = false; transition.value = null; notice.value = ''; void load()
 }
 function openEditor(record?: MasterRecord) {
   if (!permitDiscard()) return
+  linkedGeneration++
   transition.value = null; resetMaterialSearch()
   editing.value = record ?? null; code.value = record?.code ?? ''; reason.value = ''; error.value = ''; notice.value = ''
   materialOptions.value = []; selectedMaterial.value = ''; materialQuery.value = ''
@@ -100,6 +145,7 @@ function closeEditor() {
 }
 function openTransition(record: MasterRecord) {
   if (!permitDiscard()) return
+  linkedGeneration++
   editor.value = false; transition.value = record; transitionReason.value = ''
 }
 function closeTransition() {
@@ -170,15 +216,17 @@ async function executePending() {
     }
   } finally { saving.value = false }
 }
-async function showHistory(record: MasterRecord, nextPage = 1) {
+async function showHistory(record: MasterRecord, nextPage = 1, focusVersion?:number) {
   const request = ++historyGeneration
   const current = () => alive && request === historyGeneration && history.value?.id === record.id
-  history.value = record; historyRows.value = []; historyBusy.value = true; error.value = ''
+  history.value = record; historyRows.value = []; historyBusy.value = true; historyFocus.value=focusVersion;error.value = ''
   try {
-    const result = await cuttingApi.versions(record.id, nextPage)
+    const result = await cuttingApi.versions(record.id, nextPage, focusVersion)
     if (!current()) return
-    historyRows.value = result.data; historyPage.value = nextPage; historyTotal.value = result.total
+    historyRows.value = result.data; historyPage.value = result.page; historyTotal.value = result.total
+    if(focusVersion&&!result.data.some(row=>row.version===focusVersion))error.value=`未找到指定历史版本 V${focusVersion}，请核对原日志。`
     for (const row of result.data) Object.assign(materialReferences, row.material_references ?? {})
+    if(focusVersion){await nextTick();if(current())document.getElementById(`cutting-master-version-${focusVersion}`)?.scrollIntoView?.({block:'nearest'})}
   } catch (e) { if (current()) error.value = errorMessage(e) }
   finally { if (current()) historyBusy.value = false }
 }
@@ -188,23 +236,30 @@ function requirements(data: MasterRecord['data']) { return (data as BomData).req
 
 <template>
   <section class="cutting-page cutting-master">
-    <PageHeader title="基础资料" description="登记物料、执行方及工程生产 BOM；修订保留原版本。"><template #actions><StatusPill label="基础资料 · P1b" /></template></PageHeader>
-    <p class="cutting-notice">BOM 可分别指定当前裁剪必需料和后续辅料；资源支持工作日历和默认准备周期，订单关联与交期已接入。每日填数已独立接入，单位换算与实际库存仍待后续阶段。</p>
+    <PageHeader title="基础资料" description="登记物料、执行方及工程生产 BOM；修订保留原版本。"></PageHeader>
+    <p class="cutting-notice">BOM 由工程核对并发布；物料与执行方分别维护版本，工作日历沿用执行方资料。历史订单保留原 BOM，不自动改用新版本。</p>
     <p v-if="error" role="alert" class="cutting-error">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <Button variant="outline" v-if="pending" type="button" :disabled="saving" @click="executePending">重试原操作</Button>
     <a v-if="pending && needsLogin" href="/login" target="_blank" rel="noopener noreferrer">在新标签页重新登录</a>
-    <SectionPanel class="cutting-content-panel" :title="labels[kind]">
-      <nav class="cutting-section-nav" aria-label="基础资料分类"><Button variant="outline" v-for="(label, key) in labels" :key="key" :disabled="saving || !!pending" :aria-pressed="kind === key" @click="switchKind(key)">{{ label }}</Button></nav>
-      <p v-if="loading" role="status" class="cutting-master-message">正在读取基础资料…</p>
-      <div v-else-if="!available" class="cutting-master-message"><p>{{ access ? '基础资料尚未启用，请由管理员完成迁移与启用。' : '基础资料暂不可读取，请检查账号权限或服务状态。' }}</p><Button variant="outline" type="button" @click="load">重新检查</Button></div>
+    <CuttingMetrics v-if="available" :items="[{label:'产品 BOM',value:masterStats?.bom??'—',unit:'项'},{label:'待发布草稿',value:masterStats?.draft??'—',unit:'项'},{label:'有效物料',value:masterStats?.material??'—',unit:'项'},{label:'有效执行方',value:masterStats?.resource??'—',unit:'个'}]" />
+    <p v-if="statsError" role="alert">统计暂不可用：{{statsError}}</p>
+    <SectionPanel class="cutting-content-panel" :title="calendarView?'工作日历':labels[kind]">
+      <nav class="cutting-section-nav" aria-label="基础资料分类"><Button variant="outline" v-for="(label, key) in labels" :key="key" :disabled="saving || !!pending" :aria-pressed="kind === key&&!calendarView" @click="switchKind(key)">{{ label }}</Button><Button variant="outline" :disabled="saving||!!pending" :aria-pressed="calendarView" @click="showCalendar">工作日历</Button></nav>
+      <p v-if="calendarView" class="cutting-notice">未配置日历时按周一至周六工作、周日休息。休息、调休或加班需登记例外及依据；日历修订会提示关联计划复核，不自动改写已发布日期。</p><p v-if="loading" role="status" class="cutting-master-message">正在读取基础资料…</p>
+      <div v-else-if="!available" class="cutting-master-message"><p>{{ access ? '基础资料尚未启用，请由管理员完成迁移与启用。' : '基础资料暂不可读取，请检查账号权限或服务状态。' }}</p><Button variant="outline" type="button" @click="load()">重新检查</Button></div>
       <template v-else>
-        <div class="cutting-master-toolbar"><form @submit.prevent="page = 1; load()"><label>资料编码 <input v-model="query" maxlength="80" /></label><Button :disabled="saving || !!pending">查询</Button></form><Button v-if="canEdit" :disabled="saving || !!pending" type="button" @click="openEditor()">新增资料</Button><span v-else>当前为只读</span></div>
-        <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>编码</th><th>名称</th><th>版本</th><th>状态</th><th>资料来源</th><th>操作</th></tr></thead><tbody>
-          <tr v-for="row in records" :key="row.id"><td>{{ row.code }}</td><td>{{ row.data.name }}</td><td>V{{ row.version }}</td><td><StatusPill :label="statuses[row.status]" compact /></td><td>{{ row.data.source_reference }}</td><td><div class="cutting-master-actions">
-            <Button variant="outline" :disabled="saving || !!pending" @click="showHistory(row)">版本记录</Button><Button variant="outline" v-if="canEdit && row.status !== 'inactive'" :disabled="saving || !!pending" @click="openEditor(row)">{{ row.kind === 'bom' ? '修订草稿' : '修订' }}</Button>
+        <div class="cutting-master-toolbar"><form @submit.prevent="load(true)"><label>编码／名称／货号 <input v-model="query" maxlength="80" /></label><Button :disabled="saving || !!pending">查询</Button></form><Button v-if="canEdit" :disabled="saving || !!pending" type="button" @click="openEditor()">新增资料</Button><span v-else>当前为只读</span></div>
+        <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>编码</th><th>名称</th><th>{{calendarView?'工作周／例外':kind==='bom'?'货号／款式／配套':kind==='material'?'规格／颜色／单位':'执行方式／准备周期'}}</th><th>版本</th><th>状态</th><th>资料来源</th><th>操作</th></tr></thead><tbody>
+          <tr v-for="row in records" :key="row.id"><td>{{ row.code }}</td><td>{{ row.data.name }}</td><td>
+            <template v-if="calendarView&&'execution' in row.data">{{row.data.calendar?row.data.calendar.weekdays.map(d=>'周'+['一','二','三','四','五','六','日'][d-1]).join('、'):'默认周一至周六'}}<br />{{row.data.calendar?.exceptions.length??0}} 个例外日期 · 准备 {{row.data.preparation_workdays??3}} 个工作日</template>
+            <template v-else-if="'parts' in row.data">{{row.data.item_no}}<br />{{row.data.style}} / {{row.data.color}}<br />{{row.data.parts.length}} 种裁片 · {{row.data.requirements.filter(r=>r.required_for_cutting).length}} 项裁剪必需料</template>
+            <template v-else-if="'unit' in row.data">{{row.data.specification}} / {{row.data.color}}<br />{{row.data.unit}}</template>
+            <template v-else-if="'execution' in row.data">{{row.data.execution==='internal'?'本厂裁剪':'外发裁剪'}}<br />准备 {{row.data.preparation_workdays??3}} 个工作日</template>
+          </td><td>V{{ row.version }}</td><td><StatusPill :label="statuses[row.status]" class="whitespace-nowrap" compact /></td><td>{{ row.data.source_reference }}</td><td><div class="cutting-master-actions">
+            <Button variant="outline" :disabled="saving || !!pending" @click="showHistory(row)">版本记录</Button><Button variant="outline" v-if="canEdit && row.status !== 'inactive'" :disabled="saving || !!pending" @click="openEditor(row)">{{ calendarView?'设置日历':row.kind === 'bom' ? '修订草稿' : '修订' }}</Button>
             <Button variant="outline" v-if="row.kind === 'bom' ? row.status === 'draft' && can('bom_publish') : can('master_write')" :disabled="saving || !!pending" @click="openTransition(row)">{{ row.kind === 'bom' ? '发布' : row.status === 'active' ? '停用' : '启用' }}</Button>
           </div></td></tr>
-        </tbody></table></div><p v-if="!records.length" class="cutting-no-records" role="status">暂无符合条件的资料</p>
+        </tbody></table></div><p v-if="!records.length&&!loading&&!error" class="cutting-no-records" role="status">{{appliedQuery?'当前筛选无匹配资料，请清除筛选后查看。':'暂无此类基础资料，请由有权限的负责人登记。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(true)">清除筛选</Button></p>
         <nav class="cutting-pagination" aria-label="基础资料分页"><span>共 {{ total }} 条 · 第 {{ page }} 页</span><div class="cutting-master-actions"><Button variant="outline" :disabled="page <= 1 || saving || !!pending" @click="page--; load()">上一页</Button><Button variant="outline" :disabled="page * 50 >= total || saving || !!pending" @click="page++; load()">下一页</Button></div></nav>
       </template>
     </SectionPanel>
@@ -233,7 +288,7 @@ function requirements(data: MasterRecord['data']) { return (data as BomData).req
       <label>登记／修订原因<input v-model="reason" required maxlength="500" /></label><div class="cutting-master-toolbar"><Button type="submit">{{ kind === 'bom' ? '保存草稿' : '保存资料' }}</Button><Button variant="outline" type="button" @click="closeEditor">取消</Button></div></fieldset>
     </form></SectionPanel>
     <SectionPanel v-if="transition && available" :title="`${transition.kind === 'bom' ? '确认发布 BOM' : '确认变更资料状态'}：${transition.code}`"><form class="cutting-master-form" @submit.prevent="confirmTransition"><p>本次操作保留原资料版本及操作依据。</p><fieldset :disabled="saving || !!pending"><label>核对依据／原因<input v-model="transitionReason" required maxlength="500" /></label><div class="cutting-master-toolbar"><Button>确认</Button><Button variant="outline" type="button" @click="closeTransition">取消</Button></div></fieldset></form></SectionPanel>
-    <SectionPanel v-if="history && available" class="cutting-content-panel" :title="`${history.code} · 版本记录`"><div class="cutting-master-form"><p v-if="historyBusy">正在读取版本…</p><details v-for="revision in historyRows" :key="revision.version"><summary>V{{ revision.version }} · {{ statuses[revision.status] }} · {{ businessTime(revision.created_at) }}</summary><p>{{ revision.data.name }} · 来源：{{ revision.data.source_reference }}</p><p>操作人：{{ revision.actor_id }} · 原因：{{ revision.reason }}</p>
+    <SectionPanel v-if="history && available" class="cutting-content-panel" :title="`${history.code} · 版本记录`"><div class="cutting-master-form"><p v-if="historyBusy">正在读取版本…</p><p v-if="historyFocus" role="status">正在追溯指定历史版本 V{{historyFocus}}；修订仍以列表中的最新资料为依据。</p><details v-for="revision in historyRows" :key="revision.version" :id="`cutting-master-version-${revision.version}`" :open="revision.version===historyFocus"><summary>V{{ revision.version }} · {{ statuses[revision.status] }} · {{ businessTime(revision.created_at) }}</summary><p v-if="revision.version===historyFocus" class="cutting-notice">日志关联版本 V{{revision.version}}</p><p>{{ revision.data.name }} · 来源：{{ revision.data.source_reference }}</p><p>操作人：{{ revision.actor_id }} · 原因：{{ revision.reason }}</p>
       <dl v-if="revision.kind !== 'bom'"><template v-for="(value, key) in revision.data" :key="key"><dt>{{ fieldLabels[key] ?? key }}</dt><dd>{{ key === 'calendar' ? (value ? '已配置（见下方日历明细）' : '默认周一至周六工作；预计交期预排、实领后核定') : valueLabels[String(value)] ?? value }}</dd></template></dl>
       <template v-else><p>货号：{{ (revision.data as BomData).item_no }} · 款式：{{ (revision.data as BomData).style }} · 颜色：{{ (revision.data as BomData).color }}</p><ul><li v-for="part in parts(revision.data)" :key="part.code">{{ part.code }} · {{ part.name }}：每套 {{ part.pieces_per_set }} 片</li></ul><ul><li v-for="(row, i) in requirements(revision.data)" :key="i">{{ materialLabel(row.material_id, row.material_version) }}：每套 {{ row.quantity_per_set }} {{ row.unit }}；部件 {{ row.part_codes.join('、') }}；{{ row.stage }}；{{ row.required_for_cutting ? '裁剪必需' : '后续辅料' }}；{{ row.note }}</li></ul></template>
     <template v-if="revision.kind === 'resource' && (revision.data as ResourceData).calendar"><p>工作周：{{ (revision.data as ResourceData).calendar!.weekdays.map(d => ['周一','周二','周三','周四','周五','周六','周日'][d-1]).join('、') }} · {{ (revision.data as ResourceData).calendar!.basis }}</p><ul><li v-for="e in (revision.data as ResourceData).calendar!.exceptions" :key="e.day">{{ e.day }}：{{ e.working ? '工作' : '休息' }} · {{ e.reason }}</li></ul></template>

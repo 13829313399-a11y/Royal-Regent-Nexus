@@ -12,6 +12,17 @@ import { CUTTING_FACTORY } from './navigation'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
 import { useCuttingLocation } from './location'
 import CuttingLocationNotice from './CuttingLocationNotice.vue'
+import CuttingHistoryPager from './CuttingHistoryPager.vue'
+import CuttingTaskBoard from './CuttingTaskBoard.vue'
+import CuttingSubnav from './CuttingSubnav.vue'
+// Editable search text is applied only by an explicit query.
+const appliedQuery=ref('')
+const reportingView=ref('tasks')
+const reportingTabs=[{id:'tasks',label:'每日任务'},{id:'records',label:'日报记录'},{id:'parts',label:'裁片配套'},{id:'external',label:'外发收回与验收'},{id:'handover',label:'交接与抽查'}]
+function changeReportingView(value:string){
+  // Switching views retains the mounted editor and its pending command.
+  reportingView.value=value
+}
 
 const access=ref<Access|null>(null), rows=ref<CuttingOrder[]>([]), selected=ref<CuttingOrder|null>(null), result=ref<ProductionView|null>(null)
 const loading=ref(false), saving=ref(false), error=ref(''), notice=ref(''), needsLogin=ref(false)
@@ -40,8 +51,9 @@ function beforeUnload(e:BeforeUnloadEvent){if(dirty.value||pending.value||saving
 onMounted(()=>{window.addEventListener('beforeunload',beforeUnload);void load(1,false,true)})
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',beforeUnload)})
 function fail(e:unknown){error.value=errorMessage(e);if((e as {response?:{status?:number}}).response?.status===401)needsLogin.value=true}
-async function load(nextPage=1,navigation=false,followLocation=false){
+async function load(nextPage=1,navigation=false,followLocation=false,apply=false){
   if(!navigation&&!discard())return
+  if(apply){appliedQuery.value=query.value;nextPage=1}
   const request=++generation;loading.value=true;error.value='';selected.value=null;result.value=null;entry.value=null;rows.value=[]
   try{
     const rights=await cuttingApi.access();if(!alive||request!==generation)return
@@ -50,10 +62,10 @@ async function load(nextPage=1,navigation=false,followLocation=false){
     if(target){
       const order=await ordersApi.read(target.lineId);if(!alive||request!==generation)return
       if(!order.current)throw new Error('关联订单尚未签收，请先在排期区核对。')
-      rows.value=[order];total.value=1;page.value=1;asOf.value=''
+      rows.value=[order];total.value=1;page.value=1;asOf.value=target.day??'';reportingView.value=target.reportingView??'records'
       await select(order);return
     }
-    const response=await ordersApi.list(nextPage,query.value);if(!alive||request!==generation)return
+    const response=await ordersApi.list(nextPage,appliedQuery.value);if(!alive||request!==generation)return
     rows.value=response.data.filter(r=>r.current);total.value=response.total;page.value=nextPage
   }catch(e){if(alive&&request===generation){access.value=null;fail(e)}}
   finally{if(alive&&request===generation)loading.value=false}
@@ -61,16 +73,32 @@ async function load(nextPage=1,navigation=false,followLocation=false){
 async function select(row:CuttingOrder){
   if(!discard())return
   const request=++generation;selected.value=row;result.value=null;entry.value=null;error.value='';notice.value='';loading.value=true
-  try{const response=await reportingApi.read(row.line_id,asOf.value||undefined);if(alive&&request===generation){result.value=response;needsLogin.value=false}}
+  try{const response=await reportingApi.read(row.line_id,asOf.value||undefined,1,undefined,location.value?.kind==='report'?location.value.id:undefined);if(alive&&request===generation){result.value=response;needsLogin.value=false}}
   catch(e){if(alive&&request===generation)fail(e)}finally{if(alive&&request===generation)loading.value=false}
+}
+async function historyPage(next:number){
+  if(!selected.value||!result.value||loading.value||saving.value||pending.value)return
+  const request=++generation;loading.value=true;error.value=''
+  try{
+    const response=await reportingApi.read(selected.value.line_id,result.value.as_of,next,result.value.version)
+    if(alive&&request===generation)result.value=response
+  }catch(e){
+    if(alive&&request===generation){
+      fail(e)
+      const status=(e as {response?:{status?:number}}).response?.status
+      if(status===401||status===403){result.value=null;entry.value=null}
+    }
+  }finally{if(alive&&request===generation)loading.value=false}
 }
 function today(){return new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
 function start(t:ReportTask){
   if(!discard())return
-  const options=kindsFor(t,t.mode||'sets'),preferred=t.historical?'handover':'daily'
+  const mode=t.mode||(reportingView.value==='parts'?'parts':'sets')
+  const preferred=t.historical||reportingView.value==='handover'?'handover':reportingView.value==='external'?(can('return_write')?'return':'accept'):'daily'
+  const options=kindsFor(t,mode)
   const kind=(options.find(([key])=>key===preferred)||options[0])?.[0] as ReportKind|undefined
   if(!kind)return
-  entry.value={task_id:t.task_id,plan_version:t.plan_version,day:today(),mode:t.mode||'sets',kind,sets:0,rejected:0,scrap:0,parts:[],evidence:'',exception_reason:''}
+  entry.value={task_id:t.task_id,plan_version:t.plan_version,day:asOf.value||today(),mode,kind,sets:0,rejected:0,scrap:0,parts:[],evidence:'',exception_reason:''}
   frozenParts.value=clone(t.parts);documentId.value=crypto.randomUUID();reason.value='';editingExisting.value=false;decision.value=null
   normalize();baseline.value=stateSnapshot()
 }
@@ -107,7 +135,7 @@ async function submit(action:ReportAction){
       document_id:documentId.value,reason:reason.value,...(action==='save'||action==='post'?{entry:clone(entry.value)}:{})}}
     uncertain.value=false
   }
-  saving.value=true;error.value=''
+  generation++;loading.value=false;saving.value=true;error.value=''
   try{
     const response=await reportingApi.command(pending.value.id,pending.value.action,pending.value.body);if(!alive)return
     result.value=response;asOf.value=response.as_of;pending.value=null;uncertain.value=false;needsLogin.value=false;entry.value=null;decision.value=null
@@ -134,18 +162,21 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
 <template>
   <section class="cutting-page cutting-master reporting-page">
     <CuttingLocationNotice :location="location" :selected-id="result?selected?.line_id:undefined" />
-    <PageHeader title="每日生产填数" description="文员提交即生效，主管抽查；完整套数、散片、外发验收与交接分别追踪。"><template #actions><StatusPill label="每日填数 · P2b" /></template></PageHeader>
+    <PageHeader title="每日生产填数" description="文员提交即生效，主管抽查；完整套数、散片、外发验收与交接分别追踪。" />
+    <CuttingSubnav :model-value="reportingView" :items="reportingTabs" label="每日填数工作视图" @update:model-value="changeReportingView" />
     <p v-if="error" role="alert" class="cutting-error">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="loading" role="status">正在读取生产记录…</p>
     <div v-if="needsLogin"><p>登录已失效，填报内容暂时隐藏。请在新标签页重新登录，再重试或核对原操作。</p><a href="/login" target="_blank" rel="noopener">重新登录</a></div>
     <div v-if="pending" class="cutting-master-actions"><Button variant="outline" :disabled="saving" @click="submit(pending.action)">重试原操作</Button><Button variant="outline" :disabled="saving" @click="recover">核对保存结果／停止未执行操作</Button></div>
     <p v-if="!loading&&!available&&!needsLogin">每日填数尚未启用。需完成 0155 迁移，并为生产岗位分别授予填报、抽查、外发收回、外发验收或交接权限。</p>
     <template v-if="available&&!needsLogin">
+      <CuttingTaskBoard v-show="reportingView==='tasks'" reporting />
+      <div v-show="reportingView!=='tasks'||!!entry||!!pending" class="cutting-overview">
       <p class="cutting-notice">采购交期和预排不代表实际完成。每个任务固定一种报数方式；外发收回由文员登记，验收由主管确认，验收合格后才计入完成数。“实际交数”按已交接套数统计。</p>
-      <SectionPanel title="已签收订单" class="cutting-content-panel"><form class="cutting-master-toolbar" @submit.prevent="load()"><label>订单／货号<input v-model="query" maxlength="80" /></label><Button :disabled="saving||!!pending||loading">查询订单</Button></form>
+      <SectionPanel title="已签收订单" class="cutting-content-panel"><form class="cutting-master-toolbar" @submit.prevent="load(1,false,false,true)"><label>订单／货号<input v-model="query" maxlength="80" /></label><Button :disabled="saving||!!pending||loading">查询订单</Button></form>
       <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><caption class="sr-only">已签收订单（{{ total }} 条来源订单）</caption><thead><tr><th>客户</th><th>生产／订单号</th><th>货号</th><th>货名</th><th>款式分类</th><th>状态</th><th>操作</th></tr></thead><tbody>
         <tr v-for="row in rows" :key="row.line_id"><td>{{ row.snapshot.customer_name }}</td><td>{{ row.snapshot.reference_no }}</td><td>{{ row.snapshot.product_no }}</td><td class="cutting-order-product-name">{{ orderProductName(row.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td><td><StatusPill :label="row.needs_receipt?'来源待重签收':row.snapshot.status==='cancelled'?'已取消':'已签收'" compact /></td><td><Button variant="outline" :disabled="saving||!!pending" @click="select(row)">查看填数</Button></td></tr>
-      </tbody></table></div><p v-if="!rows.length&&!loading" class="cutting-no-records">当前页暂无已签收订单，请先在排期页接单。</p>
+      </tbody></table></div><p v-if="!rows.length&&!loading&&!error" class="cutting-no-records">{{appliedQuery?'当前筛选范围本页暂无已签收订单，可清除筛选或翻页查看。':total?'本页来源订单尚未签收，可翻页查看或到排期页核对接单。':'暂无已下发订单，请先由业务下发至裁床部。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(1,false,false,true)">清除筛选</Button></p>
       <nav class="cutting-pagination" aria-label="生产填数订单分页"><span>第 {{ page }} 页 · 共 {{ total }} 条</span><div class="cutting-master-actions"><Button variant="outline" :disabled="page<=1||loading" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="page*50>=total||loading" @click="load(page+1)">下一页</Button></div></nav>
       </SectionPanel>
       <SectionPanel v-if="selected&&result&&summary" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`"><div class="report-detail">
@@ -155,7 +186,9 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
         <p>截至 {{ result.as_of }}；未完成＝订单总套数−合格完成，允许保留超产后的负数。待交接 {{ summary.completed_unhanded }} 套。</p>
         <details><summary>月度汇总（截至所选日期）</summary><div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>月份</th><th>计划</th><th>完成</th><th>交接</th></tr></thead><tbody><tr v-for="(m,month) in summary.months" :key="month"><td>{{ month }}</td><td>{{ m.planned }}</td><td>{{ m.completed }}</td><td>{{ m.handed }}</td></tr></tbody></table></div></details>
         <h3>执行任务</h3>
-        <div v-for="t in result.tasks" :key="t.task_id" :data-cutting-task="t.task_id" class="cutting-master-line">
+        <p v-if="reportingView==='parts'">仅列按裁片核套或尚未确定报数方式的任务；已固定直接报套的任务不能改用裁片核套。</p>
+        <p v-if="reportingView==='external'">文员负责收回，主管负责验收；操作按钮沿用各自独立授权。</p>
+        <div v-for="t in result.tasks" v-show="(reportingView!=='external'||(t.settlement_context?.execution??t.execution)==='outsourced')&&(reportingView!=='parts'||t.mode!=='sets')" :key="t.task_id" :data-cutting-task="t.task_id" class="cutting-master-line">
           <h4>{{ t.name }} · {{ t.execution==='internal'?'本厂':'外发' }} · {{ t.historical?'历史任务':'发布 V'+t.plan_version }}</h4>
           <p>报数方式：{{ t.mode==='parts'?'按裁片核套':t.mode==='sets'?'直接报完整套数':'首次填报时确定' }}；目标 {{ t.target_sets }} 套</p>
           <p v-if="t.settlement_context">以下实绩余额归属：{{ t.settlement_context.resource_name }} · {{ t.settlement_context.execution==='outsourced'?'外发':'本厂' }} · 冻结 BOM V{{ t.settlement_context.bom_version }}／计划 V{{ t.settlement_context.plan_version }}。计划变更不转移原执行方的数量。</p>
@@ -182,6 +215,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           </fieldset>
         </form>
         <h3>日报与业务记录</h3><p>记录列表保留全部日期；上方统计按截止日计算。草稿及更正草稿不覆盖原生效数量。</p>
+        <CuttingHistoryPager v-if="result.history_pagination" :value="result.history_pagination" :busy="loading||saving||!!pending" @page="historyPage" />
         <div v-for="doc in result.documents" :key="doc.document_id" :data-cutting-report="doc.document_id" class="cutting-master-line">
           <h4>{{ effectiveEntry(doc).day }} · {{ reportLabels[effectiveEntry(doc).kind] }} · {{ (doc.posted||doc.draft||doc.history[0])?.data.context.task_name }}</h4>
           <p>{{ doc.voided?'已作废':doc.posted?'已生效':'未生效' }}{{ doc.draft?' · 有草稿':'' }} · {{ doc.review?'主管已抽查':'尚未抽查' }} · {{ effectiveEntry(doc).mode==='parts'&&effectiveEntry(doc).kind==='daily'?'裁片明细见历史':effectiveEntry(doc).sets+' 套' }}</p>
@@ -189,6 +223,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           <details><summary>版本与操作依据</summary><article v-for="event in doc.history" :key="event.id"><p>V{{ event.version }} · {{ {save:'保存草稿',post:'提交生效',void:'作废',review:'主管抽查',discard:'放弃草稿'}[event.action] }} · {{ event.actor_id }} · {{ event.created_at }}</p><p>{{ event.reason }}；{{ event.data.entry.evidence }}；{{ event.data.entry.exception_reason }}</p><p>{{ event.data.entry.day }} · {{ event.data.entry.sets }} 套／不良 {{ event.data.entry.rejected }}／报废 {{ event.data.entry.scrap }} · BOM V{{ event.data.context.bom_version }} · {{ event.data.context.resource_name }}</p><p v-for="p in event.data.entry.parts" :key="p.code">{{ p.code }}：合格 {{ p.good }}／不良 {{ p.rejected }}／报废 {{ p.scrap }} 片</p></article></details>
         </div>
       </div></SectionPanel>
+      </div>
     </template>
   </section>
 </template>

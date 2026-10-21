@@ -62,25 +62,13 @@ def test_auto_vendor_evidence_short_receipt_and_bilateral_confirmation(monkeypat
     with make_client(monkeypatch) as client:
         received(client, monkeypatch, quantity=8)
         work = workspace(client)
-        assert all(Decimal(line["quantity"]) == 10 for line in work["collaboration"]["lines"])
+        assert all(Decimal(line["quantity"]) == 8 for line in work["collaboration"]["lines"])
         assert all(Decimal(row["quantity"]) == 8 for row in work["sources"])
         assert all(row["supplier_delivery"]["difference_reason"] == "供应商少送两件" for row in work["collaboration"]["sources"])
         doc = save(client, work)
-        assert any("数量、单价或金额存在差异" in issue for issue in doc["result"]["issues"])
-        supplier_login(client)
-        assert review(client, doc).status_code == 409
-        disputed = review(client, doc, "DISPUTED", "请核实少送数量")
-        assert disputed.status_code == 200, disputed.text
-        login_as(client, "carton_supervisor")
-        lines = work["collaboration"]["lines"]
-        for line in lines:
-            line.update(quantity="8", amount="16.00")
-        doc = save(client, work, doc=disputed.json(), lines=lines)
-        assert any("核对依据" in issue for issue in doc["result"]["issues"])
-        for line in lines:
-            line["note"] = "供应商确认按实际验收量结算"
-        doc = save(client, work, doc=doc, lines=lines)
-        assert not doc["result"]["issues"] and "supplier_review" not in doc["result"]
+        # New agreements use effective accepted quantity automatically; no
+        # repeated manual quantity/price entry is required for a normal note.
+        assert not doc["result"]["issues"]
         assert action(client, doc).status_code == 409
         supplier_login(client)
         listing = client.get(PORTAL + "/settlements/workspace", params={"factory_id": "huaxing", "period": "2026-09"})
@@ -102,7 +90,7 @@ def test_missing_vendor_price_never_copies_factory_price(monkeypatch):
     with make_client(monkeypatch) as client:
         received(client, monkeypatch, vendor_price=None)
         work = workspace(client)
-        assert all(row["unit_price"] is not None for row in work["sources"])
+        assert all(row["unit_price"] is None for row in work["sources"])
         assert all(line["unit_price"] is None and line["amount"] is None for line in work["collaboration"]["lines"])
         doc = save(client, work)
         assert doc["result"]["statement_amount"] is None

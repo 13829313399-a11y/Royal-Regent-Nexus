@@ -4,11 +4,12 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
+import re
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.customer_order_ledger import (
@@ -19,6 +20,7 @@ from app.models.customer_order_ledger import (
     OrderLedgerIdentity as Identity,
 )
 from app.services.auth import now_text
+from app.services.huaxing_order_legacy.edu_schedule import normalize_edu_item
 
 RECIPIENTS = {"pmc": ("pmc-warehouse",), "warehouse": ("pmc-warehouse", "warehouse"), "injection": ("production", "molding")}
 PUBLIC_FIELDS = (
@@ -47,16 +49,123 @@ def digest(value) -> str:
     return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _edu_identity_key(row: dict, product: str) -> str | None:
+    contract, po = (str(row.get(key) or "").strip().casefold() for key in ("contract_no", "po_no"))
+    return digest(["edu-po", contract, po, product]) if contract or po else None
+
+
 def identity_for(row: dict, customer: str) -> str:
     product = str(row.get("product_no") or "").strip().casefold()
     if customer == "edu":
         # EDUHX is allocated from a user's workbook; it is a display reference, not a PO identity.
-        contract, po = (str(row.get(key) or "").strip().casefold() for key in ("contract_no", "po_no"))
-        if not contract and not po:
+        identity = _edu_identity_key(row, normalize_edu_item(product).casefold())
+        if identity is None:
             raise HTTPException(400, "EDU 保存订单需要客户合同号或客户 PO，不能仅使用底表续编号")
-        return digest(["edu-po", contract, po, product])
+        return identity
     reference = str(row.get("reference_no") or row.get("contract_no") or row.get("po_no") or "").strip().casefold()
     return digest([reference, product])
+
+
+def resolve_existing_line(db: Session, factory: str, customer: str, row: dict,
+                          identity: str | None = None) -> Line | None:
+    """Resolve EDU's old suffixed identities without rewriting their stored evidence."""
+    identity = identity or identity_for(row, customer)
+    alias = db.get(Identity, (factory, customer, identity))
+    direct = db.get(Line, alias.line_id) if alias else db.scalar(select(Line).where(
+        Line.factory_id == factory, Line.customer_code == customer, Line.identity_key == identity))
+    if customer != "edu":
+        return direct
+    if direct is not None and (direct.factory_id != factory or direct.customer_code != customer):
+        raise HTTPException(409, "EDU 订单身份归属异常，请先核对当前厂区台账")
+
+    product = normalize_edu_item(row.get("product_no")).casefold()
+    # Only the evidenced short EDU layout can have a legacy four-digit identity.
+    if normalize_edu_item(product + "0000").casefold() != product:
+        return direct
+    stored_product = func.lower(func.trim(Line.product_no))
+    scoped = {line.id: line for line in db.scalars(select(Line).where(
+        Line.factory_id == factory, Line.customer_code == customer,
+        or_(stored_product == product, stored_product.like(product + "____"))))
+        if normalize_edu_item(line.product_no).casefold() == product}
+    candidates = {direct.id: direct} if direct is not None else {}
+    if scoped:
+        owned = {line.id: {line.identity_key} for line in scoped.values()}
+        for item in db.scalars(select(Identity).where(Identity.factory_id == factory,
+                Identity.customer_code == customer, Identity.line_id.in_(scoped))):
+            owned[item.line_id].add(item.identity_key)
+
+        def consider(line_id: str, data: dict) -> None:
+            old_product = str(data.get("product_no") or scoped[line_id].product_no).strip().casefold()
+            raw = _edu_identity_key(data, old_product)
+            normalized = _edu_identity_key(data, normalize_edu_item(old_product).casefold())
+            # A snapshot is evidence only for an identity this line actually owns. This also
+            # resolves previous contract/PO aliases retained by explicit reconciliation.
+            if normalized == identity and (raw in owned[line_id] or normalized in owned[line_id]):
+                candidates[line_id] = scoped[line_id]
+
+        for line in scoped.values():
+            consider(line.id, line.data)
+        for line_id, data in db.execute(select(Version.line_id, Version.data).where(Version.line_id.in_(scoped))):
+            consider(line_id, data)
+    if len(candidates) > 1:
+        raise HTTPException(409, "EDU 同一客户合同 / PO / 去尾码货号匹配到多条历史订单，请先核对，不能自动合并或重复建单")
+    return next(iter(candidates.values()), None)
+
+
+def _same_edu_import_representation(key: str, data: dict, line: Line) -> bool:
+    if key == "edu_reservation_row":
+        return True  # An uploaded workbook coordinate is not a persisted order fact.
+    if key == "source_order_date" and not line.data.get(key):
+        return True  # Older previews did not expose this original-source metadata.
+    if key == "units_per_carton":
+        def pack(value):
+            text = str(value or "").strip()
+            composite = re.fullmatch(r"\d+\s*/\s*(\d+)", text)
+            try:
+                result = Decimal(composite[1] if composite else text.replace(",", ""))
+                return result if result.is_finite() and result > 0 else None
+            except InvalidOperation:
+                return None
+        old, new = pack(line.data.get(key)), pack(data.get(key))
+        return old is not None and old == new
+    if key not in {"product_no", "source_product_no"}:
+        return False
+    product = normalize_edu_item(line.product_no).casefold()
+    old = line.data.get(key) or line.data.get("product_no") or line.product_no
+    new = data.get(key) or data.get("product_no")
+    return normalize_edu_item(old).casefold() == product == normalize_edu_item(new).casefold()
+
+
+def _is_360_legacy_number_mapping(line: Line, data: dict) -> bool:
+    """Identify the evidenced old Huakang A mapping for an explicit revision prompt only."""
+    if line.factory_id != "huakang-a" or line.customer_code != "360":
+        return False
+    old = line.data
+    text = lambda value: str(value or "").strip().casefold()
+    reference = text(data.get("reference_no"))
+    release = text(data.get("customer_release_no"))
+    return bool(
+        re.fullmatch(r"rl-\d+-\d+", reference)
+        and release and release != reference
+        and text(line.reference_no) == reference == text(old.get("reference_no"))
+        and text(line.product_no) == text(data.get("product_no"))
+        and text(old.get("po_no")) == reference == text(data.get("contract_no"))
+        and text(old.get("contract_no")) == release == text(data.get("production_no"))
+        and text(old.get("production_no")) in {"", reference, release}
+        and text(old.get("customer_release_no")) in {"", release}
+        and text(data.get("po_no")) != reference
+    )
+
+
+def _same_360_shipping_item_representation(key: str, data: dict, line: Line) -> bool:
+    """Allow a newly exposed deterministic display code without revising old facts."""
+    if (key != "shipping_item" or line.factory_id != "huakang-a" or line.customer_code != "360"
+            or line.data.get(key) not in (None, "")):
+        return False
+    from app.services.customer_order_360_shipping_item import derive_shipping_item
+    # Use the persisted product identity, not a proposed replacement, and keep
+    # exact string equality so leading zeroes/manual alternatives are protected.
+    return data.get(key) == derive_shipping_item(line.product_no)
 
 
 def number(value, *, optional=False) -> Decimal | None:
@@ -180,15 +289,21 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
         data.update(source_kind=source_kind, import_controls=controls)
         qty = number(row.get("quantity"), optional=True)
         alias = db.get(Identity, (factory, customer, identity))
-        line = db.get(Line, alias.line_id) if alias else db.scalar(select(Line).where(Line.factory_id == factory, Line.customer_code == customer, Line.identity_key == identity))
+        line = resolve_existing_line(db, factory, customer, row, identity)
         if reconcile_line:
-            if product.casefold() != reconcile_line.product_no.casefold():
+            incoming_product = normalize_edu_item(product) if customer == "edu" else product
+            existing_product = normalize_edu_item(reconcile_line.product_no) if customer == "edu" else reconcile_line.product_no
+            if incoming_product.casefold() != existing_product.casefold():
                 raise HTTPException(409, "正式 PO 货号与已有订单不一致，不能关联")
             if line and line.id != reconcile_line.id:
                 raise HTTPException(409, "此 PO 已属于另一条订单，不能合并或覆盖")
             if qty is None or qty < reconcile_line.shipped_quantity:
                 raise HTTPException(409, "正式 PO 数量缺失或小于已走货数量")
             line = reconcile_line
+            if customer == "edu" and line.identity_key != identity and db.get(Identity, (factory, customer, line.identity_key)) is None:
+                # Very early rows may own only their primary identity. Preserve it before
+                # a formal PO changes that primary key, so old raw products remain traceable.
+                db.add(Identity(factory_id=factory, customer_code=customer, identity_key=line.identity_key, line_id=line.id))
             # Historical opening evidence remains authoritative when a later formal PO supplies new fields.
             for key in ("history_migration", "history_fields", "history_review"):
                 if key in line.data:
@@ -201,11 +316,18 @@ def import_preview(db: Session, *, preview: dict, files: list[tuple[str, bytes, 
             record_version(db, line, reason, actor)
             publish(db, line, _existing_recipients(db, line), actor, reason)
         elif line:
+            if (_is_360_legacy_number_mapping(line, data) and line.quantity == qty
+                    and str(line.data.get("requested_ship_date", "")) == str(data.get("requested_ship_date", ""))):
+                # Reference + product already identifies this very same line. Never accept a
+                # silent remap: the existing formal-PO flow records and publishes a new version.
+                raise HTTPException(409, f"{reference} / {product} 检测到旧 360 单号对应关系，请在台账关联原订单核对并修订合同号、客户 PO 和外箱贴纸等信息，避免重复新建")
             if line.quantity != qty or str(line.data.get("requested_ship_date", "")) != str(data.get("requested_ship_date", "")) or str(line.data.get("po_no", "")) != str(data.get("po_no", "")):
                 raise HTTPException(409, f"{reference} / {product} 已存在且订单字段不同，请到台账核对并变更，不能重复建单")
             # A formal PO may have new prices/requirements. Never silently replace the earlier contract.
             changed_fields = [key for key in data if key not in {"id", "status", "status_label", "issues", "lineage", "source_po_file_name", "received_date", "input_template", "target_template", "item_sheet_name", "source_kind", "import_controls"}
                               and not (customer == "edu" and key in {"reference_no", "production_no"})
+                              and not (customer == "edu" and _same_edu_import_representation(key, data, line))
+                              and not _same_360_shipping_item_representation(key, data, line)
                               and data.get(key) != line.data.get(key)]
             if changed_fields:
                 raise HTTPException(409, f"{reference} / {product} 已有订单的客户字段存在差异，请核对后关联正式 PO：{', '.join(changed_fields[:6])}")
@@ -247,6 +369,14 @@ def amend(db: Session, line: Line, body, actor: str) -> None:
         for key in ("carton_count", "cartons", "amount_hkd", "amount_usd", "amount", "total_amount", "total_cartons"):
             if key in data:
                 data[key] = ""
+        if line.factory_id == "huaxing" and line.customer_code == "shushupapa":
+            price = data.get("unit_price_usd")
+            price_text = "" if price is None else str(price).strip()
+            data["price_details_text"] = (
+                (f"原 PO 单价 USD {price_text}；" if price_text else "")
+                + "数量已调整，美元金额待新 PO 核对"
+            )
+            data.setdefault("lineage", {})["amount_usd"] = "订单台账数量已调整，美元金额已清空，待新 PO 核对"
         notices.append("数量已调整，原箱数、金额等派生数据已清空，请按新 PO 核对。")
     if body.requested_ship_date != str(data.get("requested_ship_date") or ""):
         for key in ("line_q", "customer_q", "date_code", "inspection_date", "planned_inspection_date", "fcd_date"):

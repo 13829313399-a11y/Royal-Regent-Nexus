@@ -6,7 +6,7 @@ import { buildYinhuiCustomerQuoteFileName, convertYinhuiInternalQuote, convertYi
 import { createYinhuiCustomerQuoteWorkbook, sanitizeYinhuiTemplate, YINHUI_SHEET_NAMES } from '@/lib/customerPriceConverters/yinhuiTemplate'
 import { createXlsxWorkbook, parseXlsxWorkbook, type XlsxCellInput } from '@/lib/customerPriceConverters/xlsxLite'
 import { P4_SECTION_CODES, type P4InternalQuoteArtifact } from '@/lib/customerPriceConverters/p4Artifact'
-import { YINHUI_PROFILES } from '@/lib/customerPriceConverters/yinhuiProfiles'
+import { YINHUI_PROFILES, YINHUI_MAX_MECHANICAL_ROWS } from '@/lib/customerPriceConverters/yinhuiProfiles'
 
 function buffer(bytes: Uint8Array) { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer }
 const template = buffer(readFileSync('public/templates/yinhui-customer-quote-template.bin'))
@@ -75,6 +75,31 @@ function p4(): P4InternalQuoteArtifact {
 }
 
 describe('Silverlit temporary independent mapping', () => {
+  it.each(['吹气', '吹氣', '吹塑'])('maps priced %s components as purchased plastic and keeps price cross-checks', category => {
+    const source = changedLegacy(sheets => {
+      Object.assign(sheets[0]!.rows[28]!, { 1: category, 2: '吹塑圓球 HDPE (2PCS)', 3: .26, 4: .286 })
+    })
+    const result = convertYinhuiInternalQuote(source, '银辉00012.xlsx')
+    expect(result.quoteData.plastic).toMatchObject([{ description: '吹塑圓球 HDPE (2PCS)', quantity: 2, internalHkd: .26, amountHkd: .286, source: '明细!D29' }])
+    expect(result.quoteData.tools).toHaveLength(1)
+    expect(result.quoteData.mechanical).toHaveLength(0)
+    const parsed = parseXlsxWorkbook(source)
+    parsed.sheets[0]!.rows[28]![4] = 99
+    expect(() => convertYinhuiInternalQuote(buffer(createXlsxWorkbook(parsed.sheets)), '银辉00012.xlsx')).toThrow(/报客|报价/)
+  })
+  it('imports 33 separate mechanical rows and still blocks unsupported excessive row counts', () => {
+    const input = (count: number) => changedLegacy(sheets => {
+      sheets[0]!.rows.splice(33, 0, ...Array.from({ length: count - 1 }, (_, i) => [null, '五金', `Part ${i + 2}`, 1, 1.1]))
+    })
+    const data = convertYinhuiInternalQuote(input(33), '银辉00012.xlsx').quoteData
+    expect(data.mechanical).toHaveLength(33)
+    expect(yinhuiTotals(data).mechanical).toBeCloseTo(36.3, 8)
+    expect(data.importIssues || []).toEqual([])
+    const excess = input(YINHUI_MAX_MECHANICAL_ROWS + 1)
+    expect(() => convertYinhuiInternalQuote(excess, '银辉00012.xlsx')).toThrow(/五金.*容量/)
+    data.mechanical = Array.from({ length: YINHUI_MAX_MECHANICAL_ROWS + 1 }, () => ({ ...data.mechanical[0]! }))
+    expect(() => createYinhuiCustomerQuoteWorkbook({ ...convertYinhuiInternalQuote(input(33), '银辉00012.xlsx'), quoteData: data }, template)).toThrow(/五金.*容量/)
+  })
   it.each(['ABS', 'PVC80', 'GPPS'])('converts source gram prices for %s without requiring a fixed resin mapping', resin => {
     const source = changedLegacy(sheets => {
       sheets[0]!.rows[10]![5] = '料价(G)'
@@ -130,6 +155,43 @@ describe('Silverlit temporary independent mapping', () => {
     const d = convertYinhuiP4InternalQuote(artifact, '银辉88578.xlsx').quoteData
     expect(d).toMatchObject({freightFclHkd:1.1,freightLclHkd:2.2,freight40HqHkd:.55,domesticPriceRmb:55.615})
     expect(d.freight20FtHkd).toBeCloseTo(.88)
+  })
+  it.each(['RMB', 'RBM'])('reads adjacent freight headers and the final domestic %s quote, without multiplying quoted freight twice', currency => {
+    const source = changedLegacy(sheets => {
+      const rows = sheets[0]!.rows
+      rows[31] = [null, '报关费', '报关费用/文件费/操作费用：', .1, '40GP', 'LCL', '20FT', '40HQ', `内销（${currency} ）`, null, 'FCL运费', 'LCL运费', '20FT', '40HQ', `内销（${currency} ）`]
+      rows[32] = [null, '运费', '运费', null, .3, 1, .8, 0, 1, null, .33, 1.1, .88, 0, 1.1]
+      rows[42] = []; rows[43] = []; rows[44] = []
+      rows[45]![8] = 56.2087253408366
+    })
+    const d = convertYinhuiInternalQuote(source, '银辉00012.xlsx').quoteData
+    expect(d).toMatchObject({ freightFclHkd: .33, freightLclHkd: 1.1, freight40HqHkd: 0, freightLocalHkd: 1.1, domesticPriceRmb: 56.2087253408366 })
+    expect(d.freight20FtHkd).toBeCloseTo(.88, 10)
+    expect(yinhuiTotals(d).documentFees).toBeCloseTo(.11, 8)
+    const parsed = parseXlsxWorkbook(source)
+    parsed.sheets[0]!.rows[32]![12] = 9
+    expect(() => convertYinhuiInternalQuote(buffer(createXlsxWorkbook(parsed.sheets)), '银辉00012.xlsx')).toThrow(/运费.*不一致/)
+    parsed.sheets[0]!.rows[32]![12] = .88
+    parsed.sheets[0]!.rows[32]![6] = null
+    expect(() => convertYinhuiInternalQuote(buffer(createXlsxWorkbook(parsed.sheets)), '银辉00012.xlsx')).toThrow(/运费.*缺少/)
+    parsed.sheets[0]!.rows[32]![6] = .8
+    parsed.sheets[0]!.rows[32]![12] = '#VALUE!'
+    expect(() => convertYinhuiInternalQuote(buffer(createXlsxWorkbook(parsed.sheets)), '银辉00012.xlsx')).toThrow(/运费.*缺少/)
+    parsed.sheets[0]!.rows[32]![12] = .88
+    parsed.sheets[0]!.rows[31]![7] = '20FT'
+    expect(() => convertYinhuiInternalQuote(buffer(createXlsxWorkbook(parsed.sheets)), '银辉00012.xlsx')).toThrow(/路线不唯一/)
+  })
+  it.each(['膠袋 透明PE平袋', '胶袋 透明PE平袋', '膠針-彈性膠針60X6X1.2mm*2pcs', '胶针80X6X1.2mm*2pcs', '包裝線-黑色尼龍鎖帶*2pcs', '包装线-黑色尼龙锁带*2pcs', '拷貝紙 14克', '拷贝纸 14克'])('routes packaging consumable %s out of mechanical without changing its amount', description => {
+    const before = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx').quoteData
+    const source = changedLegacy(sheets => { Object.assign(sheets[0]!.rows[28]!, { 1: '其他外购', 2: description }) })
+    const result = convertYinhuiInternalQuote(source, '银辉00012.xlsx')
+    const line = result.quoteData.packagingRows.find(r => r.source === '明细!D29')!
+    expect(line).toMatchObject({ description, internalHkd: 1, amountHkd: 1.1, quantity: description.includes('*2pcs') ? 2 : 1 })
+    expect(result.quoteData.mechanical).toHaveLength(0)
+    expect(yinhuiTotals(result.quoteData).exFactory).toBeCloseTo(yinhuiTotals(before).exFactory, 8)
+    const output = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template)))
+    expect(output.sheets[1]!.rows.flat()).toContain(description)
+    expect(output.sheets[2]!.rows.flat()).not.toContain(description)
   })
   it.each(Object.keys(YINHUI_PROFILES) as Array<keyof typeof YINHUI_PROFILES>)('exports 20FT, 40HQ and RMB independently in %s', profile => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
@@ -468,22 +530,45 @@ describe('Silverlit temporary independent mapping', () => {
     expect(read.sheets[0]?.rows[58]?.[3]).toBe('not included')
     expect(read.sheets[0]?.rows[59]?.[3]).toBe('NO')
     expect(formulaAndStyle(out)).toEqual(formulaAndStyle(variant))
-    expect(() => createYinhuiCustomerQuoteWorkbook(result,template)).toThrow(/容量/)
+    expect(() => createYinhuiCustomerQuoteWorkbook(result,template)).not.toThrow()
     const clean = parseXlsxWorkbook(buffer(sanitizeYinhuiTemplate(variant)))
     expect(clean.sheets[0]?.rows[57]?.[5]).not.toContain('Battery 4PCS')
   })
   it('extends mechanical rows with matching styles and updates subtotal, shared and cross-sheet formulas', () => {
-    const expanded = buffer(sanitizeYinhuiTemplate(template,{mechanicalCapacity:29}))
+    const expanded = buffer(sanitizeYinhuiTemplate(template,{mechanicalCapacity:33}))
     const result = convertYinhuiInternalQuote(legacy(),'银辉00012.xlsx')
-    result.quoteData.mechanical = Array.from({length:29},(_,i) => ({description:`Part ${i+1}`,source:'test',quantity:2,amountHkd:.1,internalHkd:.09}))
-    const output = buffer(createYinhuiCustomerQuoteWorkbook(result,expanded))
+    result.quoteData.mechanical = Array.from({length:33},(_,i) => ({description:`Part ${i+1}`,source:'test',quantity:2,amountHkd:.1,internalHkd:.09}))
+    const output = buffer(createYinhuiCustomerQuoteWorkbook(result,template))
     const read = parseXlsxWorkbook(output,{includeFormulas:true})
-    expect(read.sheets[2]?.rows[17]?.[10]).toBeCloseTo(2.9,8)
-    expect(read.sheets[2]?.cellFormulas?.K18).toBe('SUM(J19:J47)')
-    expect(read.sheets[2]?.cellFormulas?.J47).toBe('I47*H47')
-    expect(read.sheets[0]?.cellFormulas?.H15).toBe("'BOM (1)'!K48")
+    expect(read.sheets[2]?.rows[17]?.[10]).toBeCloseTo(3.3,8)
+    expect(read.sheets[2]?.rows.slice(18,51).map(row => row[1])).toEqual(result.quoteData.mechanical.map(row => row.description))
+    expect(read.sheets[2]?.cellFormulas?.K18).toBe('SUM(J19:J51)')
+    expect(read.sheets[2]?.cellFormulas?.J51).toBe('I51*H51')
+    expect(read.sheets[0]?.cellFormulas?.H15).toBe("'BOM (1)'!K52")
     expect(read.sheets[0]?.rows[31]?.[9]).toBeCloseTo(yinhuiTotals(result.quoteData).exFactory,8)
     expect(formulaAndStyle(output)).toEqual(formulaAndStyle(expanded))
+    const beforeZip = unzipSync(new Uint8Array(template))
+    const afterZip = unzipSync(new Uint8Array(output))
+    const doc = (bytes: Uint8Array) => new DOMParser().parseFromString(strFromU8(bytes), 'application/xml')
+    const before = doc(beforeZip['xl/worksheets/sheet3.xml']!)
+    const after = doc(afterZip['xl/worksheets/sheet3.xml']!)
+    const cells = (document: Document, row: number) => Array.from(document.getElementsByTagName('c')).filter(c => Number(c.getAttribute('r')!.match(/\d+/)![0]) === row).map(c => [c.getAttribute('r')!.replace(/\d+$/, ''), c.getAttribute('s')])
+    expect(cells(after, 51)).toEqual(cells(before, 45))
+    expect(after.getElementsByTagName('dimension')[0]!.getAttribute('ref')).toBe(before.getElementsByTagName('dimension')[0]!.getAttribute('ref')!.replace(/(\d+)$/, n => String(Number(n) + 6)))
+    const printArea = (bytes: Uint8Array) => Array.from(doc(bytes).getElementsByTagName('definedName')).find(n => n.getAttribute('name') === '_xlnm.Print_Area' && n.getAttribute('localSheetId') === '2')!.textContent!
+    expect(printArea(afterZip['xl/workbook.xml']!)).toBe(printArea(beforeZip['xl/workbook.xml']!).replace(/(\d+)$/, n => String(Number(n) + 6)))
+  })
+  it.each(Object.keys(YINHUI_PROFILES) as Array<keyof typeof YINHUI_PROFILES>)('can extend %s mechanical layout beyond its original capacity', profile => {
+    const variant = buffer(readFileSync(`public/templates/${YINHUI_PROFILES[profile].file}`))
+    const before = parseXlsxWorkbook(variant, { includeFormulas: true })
+    const output = buffer(sanitizeYinhuiTemplate(variant, { mechanicalCapacity: 38 }))
+    const after = parseXlsxWorkbook(output, { includeFormulas: true })
+    const heading = after.sheets[2]!.rows.findIndex(row => row[1] === "MECHANICAL MAT'L") + 1
+    const electronic = after.sheets[2]!.rows.findIndex(row => row[1] === "ELECTRICAL MAT'L") + 1
+    expect(electronic - heading - 1).toBe(38)
+    expect(after.sheets[2]!.cellFormulas?.[`K${heading}`]).toBe(`SUM(J${heading + 1}:J${electronic - 1})`)
+    expect(after.sheets[0]!.cellFormulas?.H15).toBe(`'BOM (1)'!K${electronic}`)
+    expect(after.sheets[3]!.cellFormulas).toEqual(before.sheets[3]!.cellFormulas)
   })
   it('treats a trailing long parenthesized number as a model reference, not BOM quantity', () => {
     const input = changedLegacy(sheets => {

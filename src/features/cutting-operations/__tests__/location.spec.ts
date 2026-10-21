@@ -1,3 +1,4 @@
+vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
@@ -41,7 +42,18 @@ describe('monthly reconciliation destinations',()=>{
     expect(ordersApi.read).toHaveBeenCalledWith(order.line_id);expect(ordersApi.list).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('TARGET-ORDER');expect(wrapper.text()).toContain('核对月份 2026-09')
     expect(wrapper.findAll('a').find(a=>a.text()==='返回该月核对')!.attributes('href')).toContain('month=2026-09')
-    if(workspace==='reporting')expect(reportingApi.read).toHaveBeenCalledWith(order.line_id,undefined)
+    if(workspace==='reporting')expect(reportingApi.read).toHaveBeenCalledWith(order.line_id,undefined,1,undefined,undefined)
+  })
+  it('locates the history page containing a linked production document',async()=>{
+    const router=await open('reporting')
+    await router.push(cuttingDestination(order.line_id,'2026-09','reporting','report','old-report'));await flushPromises()
+    expect(reportingApi.read).toHaveBeenLastCalledWith(order.line_id,undefined,1,undefined,'old-report')
+  })
+  it('uses the queried task day when opening reporting',async()=>{
+    const router=await open('reporting')
+    const destination=cuttingDestination(order.line_id,'2026-09','reporting','task','task-1')
+    await router.push({...destination,query:{...destination.query,day:'2026-09-18'}});await flushPromises()
+    expect(reportingApi.read).toHaveBeenLastCalledWith(order.line_id,'2026-09-18',1,undefined,undefined)
   })
   it('ignores an earlier order response after query navigation',async()=>{
     let resolve!:(v:CuttingOrder)=>void
@@ -54,9 +66,9 @@ describe('monthly reconciliation destinations',()=>{
   })
   it('allows a manual search after opening a linked order',async()=>{
     await open('materials')
-    const query=wrapper.findAll('input').find(input=>input.attributes('maxlength')==='80')!
+    const query=wrapper.get('form.order-filters input')
     await query.setValue('ANOTHER-ORDER')
-    await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
+    await wrapper.get('form.order-filters').trigger('submit');await flushPromises()
     expect(ordersApi.list).toHaveBeenLastCalledWith(1,'ANOTHER-ORDER','','')
     expect(wrapper.text()).not.toContain('TARGET-ORDER')
   })

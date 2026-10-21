@@ -19,7 +19,7 @@ const base = '/cutting-operations'
 export const cuttingApi = {
   async access(): Promise<Access> { return (await http.get(`${base}/access`, { params: { factory_id: CUTTING_FACTORY } })).data },
   async list(kind: Kind, page = 1, q = ''): Promise<MasterPage> { return (await http.get(`${base}/masters`, { params: { factory_id: CUTTING_FACTORY, kind, page, q } })).data },
-  async versions(id: string, page = 1): Promise<MasterPage> { return (await http.get(`${base}/masters/${encodeURIComponent(id)}/versions`, { params: { factory_id: CUTTING_FACTORY, page } })).data },
+  async versions(id: string, page = 1, focusVersion?: number): Promise<MasterPage> { return (await http.get(`${base}/masters/${encodeURIComponent(id)}/versions`, { params: { factory_id: CUTTING_FACTORY, page, ...(focusVersion===undefined?{}:{focus_version:focusVersion}) } })).data },
   async save(body: SaveCommand, id?: string): Promise<MasterRecord> { return id ? (await http.put(`${base}/masters/${encodeURIComponent(id)}`, body)).data : (await http.post(`${base}/masters`, body)).data },
   async state(id: string, body: StateCommand): Promise<MasterRecord> { return (await http.post(`${base}/masters/${encodeURIComponent(id)}/state`, body)).data },
 }

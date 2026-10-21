@@ -5,7 +5,7 @@ import importlib
 import json
 from test_molding_sample_api import make_client as empty_client
 
-CODES = ('A', 'A1', 'A01', 'A02', 'B1', 'B03', '退料位', '隔离区')
+CODES = ('A', 'A1', 'A01', 'A02', 'B1', 'B03', '退料位', '隔离区', '辅料位', '线位', '未分类位')
 
 
 def seed_fabric_locations(db):
@@ -14,7 +14,7 @@ def seed_fabric_locations(db):
         model.__table__.create(db.get_bind(), checkfirst=True)
     for code in CODES:
         db.add(master.FabricMasterRecord(id=f'fabric-{code}', factory_id='huakang-c', kind='LOCATION', code=code, name=code,
-            status='ACTIVE', revision=1, data_json=json.dumps({'warehouse': '布料一仓'}), updated_at='2026-07-01'))
+            status='ACTIVE', revision=1, data_json=json.dumps({'warehouse': '布料一仓', 'category': 'ACCESSORY' if code == '辅料位' else 'THREAD' if code == '线位' else '' if code == '未分类位' else 'FABRIC'}), updated_at='2026-07-01'))
     db.commit()
 
 

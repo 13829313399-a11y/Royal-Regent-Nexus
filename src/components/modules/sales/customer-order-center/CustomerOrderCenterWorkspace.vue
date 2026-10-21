@@ -121,7 +121,7 @@ const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[
       poDescription: 'EDU Excel PO（支持同 PO 修订版批量导入）',
       templateDescription: 'EDU 华兴排期底表',
       targetTemplate: 'HUAXING_EDU_NEW_ORDER_V1',
-      ruleDescription: '按 PO 版本去重并续编 EDUHX 单号；验货期为走货期前 7 天，遇周末向前调整。',
+      ruleDescription: '每条新明细续编 EDUHX，按货号分组并更新 PO订单；先匹配扣数PO，否则扣同货号最后一条绿色备料行。装箱可补录，重复单保留原号且不重复扣料。',
     },
     {
       code: '360',
@@ -400,6 +400,9 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
       profile.targetTemplate = 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
       profile.templateDescription = `华兴 ${profile.name} 最新统一排期（含 ITEM 分类页）`
       profile.ruleDescription = '按主要公共字段匹配最新排期，BuzzBee 和迪奇按产品对应 ITEM 分类页。各表在自己的取消单前追加，接单表、正单评审表关联实际明细页和行；合同、SO、客户 PO 分别映射，保留历史订单、公式和人工字段。'
+      if (profile.code === 'edu') {
+        profile.ruleDescription = 'EDU 每条新明细续编 EDUHX，并同步三张排期与 PO订单。按去尾码货号归组到绿色备料行上方；先匹配扣数PO，否则扣同货号最后一条绿色行，余额允许负数。装箱可补录，重复单保留原号、不再次扣料，历史与走货资料保留。'
+      }
     }
   })
 })
@@ -483,10 +486,16 @@ interface OrderRow {
   receivedDate: string
   poNo: string
   contractNo: string
+  productionNo?: string
+  orderType?: string
+  referenceNo?: string
+  outerCartonSticker?: string
   customerCountry: string
   productNo: string
+  shippingItem?: string
   productNameZh: string
   productNameEn: string
+  productVersion?: string
   quantity: string
   unitsPerCarton: string
   cartonCount: string
@@ -605,8 +614,10 @@ const manualRowFieldMap: Partial<Record<string, keyof OrderRow>> = {
   contract_no: 'contractNo',
   customer_country: 'customerCountry',
   product_no: 'productNo',
+  shipping_item: 'shippingItem',
   product_name_zh: 'productNameZh',
   product_name_en: 'productNameEn',
+  product_version: 'productVersion',
   quantity: 'quantity',
   units_per_carton: 'unitsPerCarton',
   carton_count: 'cartonCount',
@@ -685,11 +696,29 @@ const activeOrderRows = computed(() => (
     ? []
     : factoryOrderRows.value.map((sourceRow) => {
         const row = { ...sourceRow }
-        const issues = row.issues ?? []
+        let issues = row.issues ?? []
         for (const issue of issues) {
           const value = manualOverrideValues.value[issue.skip_key]?.trim()
           const target = issue.edit_field ? manualRowFieldMap[issue.edit_field] : undefined
           if (value && target) row[target] = value as never
+        }
+        if (previewBatch.value?.factory_id === 'huakang-a' && previewBatch.value.customer_code === '360') {
+          if (issues.some((issue) => issue.edit_field === 'shipping_item' && isIssueManuallyOverridden(issue))) {
+            row.lineage = { ...row.lineage, shipping_item: '业务人工补录出货货号；完整产品编号保持独立' }
+          } else if (row.productNo !== sourceRow.productNo) {
+            row.shippingItem = ''
+            row.lineage = { ...row.lineage, shipping_item: '完整产品编号已更正，生成时重新匹配出货货号；也可直接补录' }
+            issues = issues.map((issue) => issue.edit_field === 'shipping_item'
+              ? { ...issue, message: row.lineage!.shipping_item! } : issue)
+            row.issues = issues
+          }
+        }
+        if (props.factoryId === 'huaxing' && selectedCustomerCode.value === 'edu'
+          && issues.some((issue) => ['quantity', 'units_per_carton'].includes(issue.edit_field ?? '') && isIssueManuallyOverridden(issue))) {
+          const quantity = Number(String(row.quantity).replaceAll(',', ''))
+          const pack = Number(String(row.unitsPerCarton).replaceAll(',', ''))
+          row.cartonCount = Number.isFinite(quantity) && quantity > 0 && Number.isFinite(pack) && pack > 0
+            ? String(quantity / pack) : ''
         }
         if (issues.length === 0) return row
         const remainingBlockers = issues.filter(
@@ -832,6 +861,15 @@ const unconfirmedDuplicateIssueCount = computed(() => (
       && !isIssueResolved(issue))
     .length
 ))
+const advisoryDuplicateCount = computed(() => (
+  (previewBatch.value?.rows ?? []).filter(row => row.issues.some(issue => issue.code === 'duplicate_order_warning')).length
+))
+function previewDateCode(row: CustomerOrderPreviewRow) {
+  return manualOverrides.value.find(value => value.row_id === row.id && value.field === 'date_code')?.value ?? row.date_code ?? ''
+}
+function previewPoPriceOverride(row: CustomerOrderPreviewRow) {
+  return manualOverrides.value.find(value => value.row_id === row.id && value.field === 'po_unit_prices')?.value ?? ''
+}
 
 const blockingIssueDetails = computed(() => {
   const seen = new Set<string>()
@@ -1090,8 +1128,13 @@ const traceFields = computed(() => {
     { label: '来单日期', value: row.receivedDate, source: lineage.received_date || '业务登记 · 来单日期' },
     { label: 'P/O#', value: row.poNo, source: lineage.po_no || row.poSource },
     { label: 'Contract No.', value: row.contractNo, source: lineage.contract_no || row.contractSource },
+    ...(row.productionNo ? [{ label: '生产单号', value: row.productionNo, source: lineage.production_no || '原单 · 生产单号' }] : []),
+    ...(row.orderType ? [{ label: '订单类型', value: row.orderType, source: lineage.order_type || '订单类型' }] : []),
+    ...(row.referenceNo ? [{ label: 'SO#/Reference', value: row.referenceNo, source: lineage.reference_no || '原单 · SO#/Reference' }] : []),
+    ...(row.outerCartonSticker ? [{ label: '外箱贴纸', value: row.outerCartonSticker, source: lineage.customer_label || '原单 · 外箱贴纸要求' }] : []),
     { label: '客名/国家', value: row.customerCountry, source: lineage.customer_country || `${inputKind} · 客户与市场识别` },
     { label: '产品编号', value: row.productNo, source: lineage.product_no || row.productSource },
+    ...(row.shippingItem ? [{ label: '出货货号', value: row.shippingItem, source: lineage.shipping_item || '360出货货号' }] : []),
     { label: '中文名称', value: row.productNameZh, source: lineage.product_name_zh || `河源业务统一排期 · 货号 ${row.productNo}` },
     { label: '产品名称', value: row.productNameEn, source: lineage.product_name_en || `${sheetName} · 产品名称区域` },
     { label: '数量', value: row.quantity, source: lineage.quantity || `${inputKind} · Quantity` },
@@ -1284,10 +1327,16 @@ function mapPreviewRow(row: CustomerOrderPreviewRow, factoryId: string): OrderRo
     receivedDate: row.received_date,
     poNo: row.po_no,
     contractNo: row.contract_no,
+    productionNo: row.production_no ?? '',
+    orderType: row.order_type ?? '',
+    referenceNo: row.reference_no ?? '',
+    outerCartonSticker: row.customer_label ?? '',
     customerCountry: row.customer_country,
     productNo: row.product_no,
+    shippingItem: row.shipping_item ?? '',
     productNameZh: row.product_name_zh,
     productNameEn: row.product_name_en,
+    productVersion: row.product_version ?? '',
     quantity: row.quantity,
     unitsPerCarton: row.units_per_carton,
     cartonCount: row.carton_count,
@@ -1456,7 +1505,7 @@ function resolveBlockedRow() {
 
 function finishBlockingResolution() {
   if (blockingIssueDetails.value.length > 0) {
-    notify(`仍有 ${blockingIssueDetails.value.length} 类阻断未处理，请逐项补录或确认放行。`)
+    notify(`仍有 ${blockingIssueDetails.value.length} 类阻断未处理，请按各项提示核对或纠正资料。`)
     return
   }
   if (confirmationReasonMissing.value) {
@@ -1473,7 +1522,7 @@ async function confirmAndGenerateSchedule() {
     return
   }
   if (orderSummary.value.blocked > 0) {
-    notify('仍有未处理的阻断项；请人工补录，或确认资料暂缺并放行。')
+    notify('仍有未处理的阻断项；请按各项提示核对或纠正资料。')
     return
   }
   if (!previewBatch.value || poFiles.value.length === 0 || !scheduleFile.value) {
@@ -1683,7 +1732,7 @@ async function confirmAndSaveOrder() {
     notify(result.reconciled_count > 0
       ? '订单已关联并更新原订单，原走货与版本记录已保留。'
       : `订单已确认并保存：新增 ${result.created_count} 条，已存在 ${result.existing_count} 条。`)
-    navigate('ledger')
+    // Keep the source files and preview available for the separate Excel export.
   } catch (error) {
     if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
     notify(`保存订单失败：${getApiErrorMessage(error)}`)
@@ -1973,7 +2022,7 @@ onBeforeUnmount(() => {
                 <span class="upload-card__type">文件 02 · 客户输出模板</span>
                 <div class="upload-card__icon upload-card__icon--green"><Layers3 aria-hidden="true" /></div>
                 <h3>导入客户现有排期</h3>
-                <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；仅在“取消单”上方追加，写入可取得的映射字段。` : '请先选择客户，再导入河源业务统一排期。' }}</p>
+                <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；${selectedCustomer.code === 'edu' ? '按货号归组到绿色备料行上方，并同步三张排期与PO订单。' : '仅在“取消单”上方追加，写入可取得的映射字段。'}` : '请先选择客户，再导入河源业务统一排期。' }}</p>
                 <strong>{{ selectedScheduleFile }}</strong>
                 <button type="button" class="button button--secondary" :disabled="!selectedCustomer" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
                 <input ref="scheduleInput" class="visually-hidden" type="file" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
@@ -2098,13 +2147,44 @@ onBeforeUnmount(() => {
         >
           <span class="persistent-parse-alert__icon"><AlertTriangle aria-hidden="true" /></span>
           <div class="persistent-parse-alert__content">
-            <h3>当前批次有 {{ blockingIssueDetails.length }} 项待人工处理，补录或确认放行后可生成排期</h3>
+            <h3>当前批次有 {{ blockingIssueDetails.length }} 项待人工处理，处理完成后可生成排期</h3>
             <ul>
               <li v-for="item in blockingIssueDetails" :key="item.key">
                 <b>{{ item.fileName }}</b>
                 <span>{{ item.message }}</span>
               </li>
             </ul>
+          </div>
+        </article>
+
+        <article v-if="advisoryDuplicateCount" class="parse-error-card" data-testid="duplicate-advisory" role="status">
+          <CircleAlert aria-hidden="true" />
+          <div><h3>发现 {{ advisoryDuplicateCount }} 条重复订单</h3><p>可以继续导出，重复的新行会使用红色字体；保存台账时不会重复新增相同订单。</p></div>
+        </article>
+
+        <article v-if="previewBatch?.factory_id === 'huakang-a' && previewBatch.customer_code === '360'" class="panel-card" data-testid="360-number-label-preview">
+          <header class="panel-card__head"><div><h3>360 出货货号、订单类型与单号</h3><p>出货货号另列在 ITEM 表后部，保留完整产品编号；特殊货号可补录。新 PO 订单类型为正单，备料单可在导出的排期中选择。生产单号取 Customer Release／OH，合同号和 SO 取完整 RL，P/O 取 Customer PO Number。</p></div></header>
+          <div class="table-scroll">
+            <table class="unified-table">
+              <thead><tr><th>产品编号</th><th>出货货号</th><th>订单类型</th><th>生产单号（OH）</th><th>Contract No.</th><th>SO#/Reference</th><th>P/O#</th><th>外箱贴纸</th></tr></thead>
+              <tbody><tr v-for="row in activeOrderRows.filter((item) => item.rowRole !== 'parent')" :key="row.id">
+                <td>{{ row.productNo }}</td><td style="white-space: normal; min-width: 10rem">{{ row.shippingItem || '待核对' }}<small v-if="row.lineage?.shipping_item" style="display: block">{{ row.lineage.shipping_item }}</small></td><td style="white-space: normal; min-width: 12rem">{{ row.orderType || '未提供' }}<small v-if="row.lineage?.source_order_type" style="display: block">{{ row.lineage.source_order_type }}</small></td><td>{{ row.productionNo || '未提供' }}</td><td>{{ row.contractNo }}</td><td>{{ row.referenceNo }}</td><td>{{ row.poNo || '未提供' }}</td>
+                <td style="white-space: normal; min-width: 18rem">{{ row.outerCartonSticker || '未识别到明确要求' }}<small v-if="row.lineage?.customer_label" style="display: block">{{ row.lineage.customer_label }}</small></td>
+              </tr></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article v-if="previewBatch && ['dickie', 'seasons', 'barter', 'maxx', 'shushupapa'].includes(previewBatch.customer_code)" class="panel-card" data-testid="customer-order-extra-fields">
+          <header class="panel-card__head"><div><h3>客户补充信息</h3><p>日期码可在“更正日期/补录字段”中补填。单价以原单各 PO 明细为准。</p></div></header>
+          <div v-for="row in previewBatch.rows" :key="row.id" class="mapping-card">
+            <strong>{{ row.po_no || row.contract_no }} · {{ row.product_no }}</strong>
+            <p v-if="row.production_no">生产单号：{{ row.production_no }}</p>
+            <p>日期码：{{ previewDateCode(row) || '待补录' }}</p>
+            <p v-if="row.lineage.date_code">{{ row.lineage.date_code }}</p>
+            <p v-if="row.price_basis === 'weighted'">单价口径：按 PO 数量加权均价，原始单价保留在下方明细及导出表中。</p>
+            <p v-if="row.price_details_text" style="white-space: pre-line"><span v-if="previewPoPriceOverride(row)">原单识别明细：<br></span>{{ row.price_details_text }}</p>
+            <p v-if="previewPoPriceOverride(row)" style="white-space: pre-line">各 PO 单价补录（保存和导出时校验并计算金额）：{{ previewPoPriceOverride(row) }}</p>
           </div>
         </article>
 
@@ -2174,7 +2254,7 @@ onBeforeUnmount(() => {
           <span><FileCheck2 aria-hidden="true" /></span>
           <div>
             <strong>解析已完成，当前尚未输出排期</strong>
-            <p>请核对下方明细；红色项可直接补录正确内容，确实无法取得时也可人工确认放行，再写入新排期。</p>
+            <p>请核对下方明细，按提示补录或确认资料；数量、订单身份等冲突须纠正后才能生成排期。</p>
           </div>
           <button
             type="button"
@@ -2197,7 +2277,7 @@ onBeforeUnmount(() => {
           <article><span>总行数</span><strong>{{ orderSummary.total }}</strong><small>订单明细</small></article>
           <article class="valid"><span>有效项</span><strong>{{ orderSummary.valid }}</strong><small>可直接写入</small></article>
           <article class="warning"><span>警告/待确认</span><strong>{{ orderSummary.warning }}</strong><small>不形成阻断</small></article>
-          <article class="blocked"><span>待人工处理</span><strong>{{ orderSummary.blocked }}</strong><small>补录或确认放行</small></article>
+          <article class="blocked"><span>待人工处理</span><strong>{{ orderSummary.blocked }}</strong><small>按提示核对或纠正</small></article>
         </div>
 
         <div class="preview-layout">
@@ -2230,7 +2310,7 @@ onBeforeUnmount(() => {
                   <tr>
                     <th class="sticky-left">状态</th><th class="resolution-column">人工处理</th>
                     <th>来单日期</th><th>P/O#</th><th>Contract No.</th><th>客名/国家</th><th>产品编号</th>
-                    <th>中文名称</th><th>产品名称</th><th>数量</th><th>装箱数</th><th>箱数</th>
+                    <th>中文名称</th><th>产品名称</th><th v-if="props.factoryId === 'huakang-a' && selectedCustomerCode === '360'">版本</th><th>数量</th><th>装箱数</th><th>箱数</th>
                     <th>国家标准</th><th>单价HK</th><th>金额HK</th><th>包装</th><th>行Q</th><th>客Q</th><th>客要求走货期</th><th>溯源</th>
                   </tr>
                 </thead>
@@ -2248,12 +2328,21 @@ onBeforeUnmount(() => {
                     </td>
                     <td class="resolution-column">
                       <div v-if="row.issues?.some((issue) => issue.severity === 'blocked' || isConfirmationIssue(issue) || issue.can_edit)" class="issue-resolution-list">
-                        <template v-for="issue in (row.issues ?? []).filter((item) => item.severity === 'blocked' || isConfirmationIssue(item))" :key="`${row.id}-${issue.code}-${issue.field}`">
+                        <template v-for="issue in (row.issues ?? []).filter((item) => item.severity === 'blocked' || isConfirmationIssue(item) || item.can_edit)" :key="`${row.id}-${issue.code}-${issue.field}`">
                           <div class="issue-resolution-item">
                             <p class="issue-resolution-message">{{ issue.message }}</p>
                             <label v-if="issue.can_edit" class="manual-override-field">
                               <span><b>人工补录 {{ issue.edit_label }}</b><small>该值会写入新排期，不修改客户原 PO</small></span>
+                              <textarea
+                                v-if="issue.edit_field === 'product_version' || issue.edit_input_type === 'textarea'"
+                                :value="manualOverrideValues[issue.skip_key] ?? row.productVersion ?? ''"
+                                maxlength="500"
+                                rows="3"
+                                :placeholder="issue.edit_field === 'product_version' ? '填写版本备注，可换行' : `填写${issue.edit_label || '正确内容'}，可换行`"
+                                @input="updateManualOverride(issue, $event)"
+                              />
                               <input
+                                v-else
                                 :type="issue.edit_input_type || 'text'"
                                 :step="issue.edit_input_type === 'number' ? 'any' : undefined"
                                 :value="manualOverrideValues[issue.skip_key] || ''"
@@ -2282,7 +2371,7 @@ onBeforeUnmount(() => {
                       <span v-else-if="row.parentProductNo" class="product-role-badge product-role-badge--child">小货号</span>
                       <b>{{ row.productNo }}</b>
                     </td>
-                    <td :class="{ 'cell-issue': row.productNameZh === '待映射' }">{{ row.productNameZh }}</td><td>{{ row.productNameEn }}</td><td class="number">{{ row.quantity }}</td><td class="number">{{ row.unitsPerCarton }}</td><td class="number">{{ row.cartonCount }}</td>
+                    <td :class="{ 'cell-issue': row.productNameZh === '待映射' }">{{ row.productNameZh }}</td><td>{{ row.productNameEn }}</td><td v-if="props.factoryId === 'huakang-a' && selectedCustomerCode === '360'" class="version-note-cell">{{ row.productVersion || '—' }}</td><td class="number">{{ row.quantity }}</td><td class="number">{{ row.unitsPerCarton }}</td><td class="number">{{ row.cartonCount }}</td>
                     <td>{{ row.standard }}</td><td class="number">{{ row.unitPriceHkd }}</td><td class="number">{{ row.amountHkd }}</td><td>{{ row.packaging }}</td><td>{{ row.lineQ }}</td><td>{{ row.customerQ }}</td><td>{{ row.requestedShipDate || '待补充' }}</td>
                     <td><button type="button" class="trace-button" @click="traceRow = row">查看来源</button></td>
                   </tr>
@@ -2603,7 +2692,7 @@ onBeforeUnmount(() => {
           <header>
             <div>
               <span>客户订单人工处理</span>
-              <h3 id="blocker-resolution-title">补录缺失内容或人工确认放行</h3>
+              <h3 id="blocker-resolution-title">更正字段与处理提示</h3>
               <p>共 {{ blockingResolutionItems.length }} 项；人工值写入新排期，客户原始 PO 不会被修改。</p>
             </div>
             <button type="button" aria-label="关闭人工处理窗口" @click="blockingResolutionOpen = false"><X aria-hidden="true" /></button>
@@ -2644,8 +2733,17 @@ onBeforeUnmount(() => {
                 <p class="blocker-resolution-item__message">{{ item.issue.message }}</p>
 
                 <label v-if="item.issue.can_edit" class="manual-override-field manual-override-field--dialog">
-                  <span><b>人工补录 {{ item.issue.edit_label }}</b><small>{{ item.issue.severity === 'warning' ? '不填写则使用PO原值；填写后写入新排期' : '填写正确内容后，本项立即解除阻断并写入新排期' }}</small></span>
+                  <span><b>人工补录 {{ item.issue.edit_label }}</b><small>{{ item.issue.edit_field === 'shipping_item' ? '不填写则保留当前映射；填写后写入新排期' : item.issue.severity === 'warning' ? '不填写则使用PO原值；填写后写入新排期' : '填写正确内容后，本项立即解除阻断并写入新排期' }}</small></span>
+                  <textarea
+                    v-if="item.issue.edit_field === 'product_version' || item.issue.edit_input_type === 'textarea'"
+                    :value="manualOverrideValues[item.issue.skip_key] ?? item.row.product_version ?? ''"
+                    maxlength="500"
+                    rows="3"
+                    :placeholder="item.issue.edit_field === 'product_version' ? '填写版本备注，可换行' : `填写${item.issue.edit_label || '正确内容'}，可换行`"
+                    @input="updateManualOverride(item.issue, $event)"
+                  />
                   <input
+                    v-else
                     :type="item.issue.edit_input_type || 'text'"
                     :step="item.issue.edit_input_type === 'number' ? 'any' : undefined"
                     :value="manualOverrideValues[item.issue.skip_key] || ''"
@@ -4506,7 +4604,15 @@ tbody tr:hover td {
   font-weight: 600;
 }
 
-.manual-override-field input {
+.unified-table .version-note-cell {
+  white-space: pre-wrap;
+  min-width: 180px;
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+
+.manual-override-field input,
+.manual-override-field textarea {
   width: 100%;
   min-width: 0;
   border: 1px solid #91b6a5;
@@ -4518,7 +4624,8 @@ tbody tr:hover td {
   outline: none;
 }
 
-.manual-override-field input:focus {
+.manual-override-field input:focus,
+.manual-override-field textarea:focus {
   border-color: #007a58;
   box-shadow: 0 0 0 2px rgb(0 122 88 / 12%);
 }

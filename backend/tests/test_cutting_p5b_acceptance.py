@@ -127,7 +127,7 @@ def role_flow(flow, monkeypatch):
                 source_id=assignment.id, reason='隔离验收任职确认'))
         for key, kind, code, data in (
             ('fabric-mat', 'MATERIAL', 'FAB-01', dict(category='FABRIC', unit='米', spec='规格A', color='蓝')),
-            ('bin', 'LOCATION', 'A01', dict(warehouse='布料一仓')),
+            ('bin', 'LOCATION', 'A01', dict(warehouse='布料一仓', category='FABRIC')),
         ):
             db.add(FabricMasterRecord(id=key, factory_id='huakang-c', kind=kind, code=code,
                 name='蓝布' if kind == 'MATERIAL' else code, status='ACTIVE', revision=1, data_json=json.dumps(data), updated_at='2026-10-10'))
@@ -208,8 +208,8 @@ def prepare_order(p):
     assert published['tasks'][0]['earliest_supply_date'] == '2026-10-15'
 
 
-def test_joined_roles_order_to_frozen_cost_payment_and_cutover(role_flow):
-    p = role_flow
+def prepare_closed_order(p):
+    """Reusable synthetic scenario; all business transitions use the APIs."""
     prepare_order(p)
     login(p, 'warehouse')
     stock = warehouse_post(p, 'RECEIPT', quantity='20', source_no='P5B-SYNTHETIC', source_line='1',
@@ -375,6 +375,9 @@ def test_joined_roles_order_to_frozen_cost_payment_and_cutover(role_flow):
     login(p, 'warehouse')
     assert warehouse_view(p)['stock'][0]['quantity'] == '14'
 
+
+def test_joined_roles_order_to_frozen_cost_payment_and_cutover(role_flow):
+    prepare_closed_order(role_flow)
 
 @pytest.mark.parametrize('role', [name for name in ROLE_ACTIONS if name != 'foreign'])
 def test_capabilities_match_explicit_role_only(role_flow, role):

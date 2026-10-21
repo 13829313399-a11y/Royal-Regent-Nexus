@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import '@/features/carton-procurement/layout.css'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { cartonOrderTimelineApi, type OrderTimelineEvent } from '@/api/cartonOrderTimeline'
 import { getApiErrorMessage } from '@/lib/http'
@@ -70,17 +71,17 @@ onBeforeUnmount(() => { ++version })
     <p class="border-b border-slate-100 px-4 py-3 text-xs leading-5 text-slate-500">仅显示订单和库存变化；保存、确认等过程记录可在操作日志查看。</p>
     <p v-if="loading" role="status" class="p-10 text-center text-sm text-slate-500">正在读取订单流水…</p>
     <div v-else-if="error" role="alert" class="flex items-center justify-between gap-3 p-6 text-sm text-red-700"><span>{{ error }}</span><button class="rounded-lg border border-red-200 px-3 py-2 font-semibold" @click="load">重新读取流水</button></div>
-    <div v-else class="overflow-x-auto">
-      <table class="w-full min-w-[980px] text-left text-xs" aria-label="订单全过程流水表">
+    <div v-else class="overflow-x-auto carton-table-wrap">
+      <table class="w-full min-w-[980px] text-left text-xs carton-table-fit" aria-label="订单全过程流水表">
         <thead class="bg-slate-50 text-slate-500"><tr><th class="px-4 py-3">时间</th><th class="px-4 py-3">事项</th><th class="px-4 py-3">纸品 / 单据</th><th class="px-4 py-3">数量变动</th><th class="px-4 py-3">备注</th><th class="px-4 py-3">经手人</th></tr></thead>
         <tbody class="divide-y divide-slate-100">
           <tr v-for="event in visibleEvents" :key="event.id" class="hover:bg-slate-50/60">
-            <td class="whitespace-nowrap px-4 py-4"><span class="text-slate-500">{{ event.occurred_at.replace('T', ' ').slice(0, 16) }}</span></td>
-            <td class="whitespace-nowrap px-4 py-4 font-bold text-teal-800">{{ event.event_label }}</td>
-            <td class="max-w-56 px-4 py-4"><div>{{ event.material_label || '整单' }}</div><div v-if="event.document_no" class="mt-1 break-all font-mono text-slate-500">{{ event.document_no }}</div></td>
-            <td class="px-4 py-4 tabular-nums"><template v-if="event.quantity_basis !== 'NONE'"><div class="text-[10px] text-slate-500">{{ event.quantity_basis === 'ORDER_PRODUCT' ? '订单产品' : '库存纸品' }}</div><div class="mt-1 font-bold" :class="event.quantity_change?.startsWith('-') ? 'text-rose-700' : 'text-teal-700'">{{ quantity(event.quantity_change, true) }} {{ event.unit }}</div><div v-if="event.quantity_before !== null && event.quantity_after !== null" class="mt-1 whitespace-nowrap text-slate-500">{{ quantity(event.quantity_before) }} → {{ quantity(event.quantity_after) }} {{ event.unit }}</div></template><span v-else class="text-slate-400">—</span></td>
-            <td class="max-w-80 px-4 py-4 leading-5"><div v-if="event.reason">{{ event.reason }}</div><div v-if="event.description" :class="event.reason ? 'mt-1 text-slate-500' : 'text-slate-600'">{{ event.description }}</div><span v-if="!event.reason && !event.description" class="text-slate-400">—</span></td>
-            <td class="px-4 py-4">{{ event.actor_name || '未记录' }}</td>
+            <td data-label="时间" class="whitespace-nowrap px-4 py-4"><span class="text-slate-500">{{ event.occurred_at.replace('T', ' ').slice(0, 16) }}</span></td>
+            <td data-label="事项" class="whitespace-nowrap px-4 py-4 font-bold text-teal-800">{{ event.event_label }}</td>
+            <td data-label="纸品 / 单据" class="max-w-56 px-4 py-4"><div>{{ event.material_label || '整单' }}</div><div v-if="event.document_no" class="mt-1 break-all font-mono text-slate-500">{{ event.document_no }}</div></td>
+            <td data-label="数量变动" class="px-4 py-4 tabular-nums"><template v-if="event.quantity_basis !== 'NONE'"><div class="text-[10px] text-slate-500">{{ event.quantity_basis === 'ORDER_PRODUCT' ? '订单产品' : '库存纸品' }}</div><div class="mt-1 font-bold" :class="event.quantity_change?.startsWith('-') ? 'text-rose-700' : 'text-teal-700'">{{ quantity(event.quantity_change, true) }} {{ event.unit }}</div><div v-if="event.quantity_before !== null && event.quantity_after !== null" class="mt-1 whitespace-nowrap text-slate-500">{{ quantity(event.quantity_before) }} → {{ quantity(event.quantity_after) }} {{ event.unit }}</div></template><span v-else class="text-slate-400">—</span></td>
+            <td data-label="备注" class="max-w-80 px-4 py-4 leading-5"><div v-if="event.reason">{{ event.reason }}</div><div v-if="event.description" :class="event.reason ? 'mt-1 text-slate-500' : 'text-slate-600'">{{ event.description }}</div><span v-if="!event.reason && !event.description" class="text-slate-400">—</span></td>
+            <td data-label="经手人" class="px-4 py-4">{{ event.actor_name || '未记录' }}</td>
           </tr>
           <tr v-if="!visibleEvents.length"><td colspan="6" class="p-12 text-center text-slate-400">所选条件下没有订单流水记录</td></tr>
         </tbody>

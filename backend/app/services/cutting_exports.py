@@ -238,3 +238,8 @@ def render(report, user):
 
 def package(report, user):
     return workbook_export.package(report, user, render)
+
+
+def package_isolated(report, user):
+    from app.services.cutting_export_process import package as isolated
+    return isolated(report, user, TITLES[report['kind']])

@@ -8,12 +8,17 @@ from zipfile import ZipFile, ZIP_STORED
 
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill, NamedStyle
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.pagebreak import Break
 from openpyxl.worksheet.page import PageMargins
 
-from app.services import cutting_ops as c
+from fastapi import HTTPException
+
+
+def require(condition, message, status=409):
+    if not condition:
+        raise HTTPException(status, message)
 
 MAX_ROWS = 20000
 MAX_CELLS = 400000
@@ -26,8 +31,8 @@ MAX_PACKAGE_BYTES = 100 * 1024 * 1024
 
 def checked(value):
     if isinstance(value, str):
-        c.require(len(value) <= 32767, '单元格内容超长，不能静默截断导出', 413)
-        c.require(not ILLEGAL_CHARACTERS_RE.search(value), '来源含不支持的控制字符，请核对原始依据', 422)
+        require(len(value) <= 32767, '单元格内容超长，不能静默截断导出', 413)
+        require(not ILLEGAL_CHARACTERS_RE.search(value), '来源含不支持的控制字符，请核对原始依据', 422)
     return value if value is not None else '待核对'
 
 
@@ -39,7 +44,7 @@ def row_size(row):
 def plan(report):
     """Stable row ranges: each logical data row occurs in exactly one volume."""
     tables = report['sheets']
-    c.require(sum((len(t['rows']) + 1) * len(t['headers']) for t in tables) <= MAX_REPORT_CELLS,
+    require(sum((len(t['rows']) + 1) * len(t['headers']) for t in tables) <= MAX_REPORT_CELLS,
               '完整报表超过两百万单元格的在线导出上限；未生成部分文件，请联系管理员安排完整离线导出', 413)
     overhead = sum(row_size(row) for row in report['metadata']) + 256000
     volumes, current = [], []
@@ -56,7 +61,7 @@ def plan(report):
                 if part_cells + width > MAX_CELLS - 10000 or part_size + amount > MAX_TEXT_BYTES - overhead:
                     break
                 part_cells += width; part_size += amount; end += 1
-            c.require(end > start or count == 0, '单行报表内容超过分卷容量；未生成部分文件，请联系管理员核对来源内容', 413)
+            require(end > start or count == 0, '单行报表内容超过分卷容量；未生成部分文件，请联系管理员核对来源内容', 413)
             if current and (cells + part_cells > MAX_CELLS - 10000 or size + part_size > MAX_TEXT_BYTES):
                 volumes.append(current); current = []; cells = 0; size = overhead
             current.append(dict(table=index, start=start, end=end))
@@ -64,7 +69,7 @@ def plan(report):
             start = end
             if count == 0: break
     if current: volumes.append(current)
-    c.require(len(volumes) <= MAX_VOLUMES, '完整报表超过100卷的在线导出上限；未生成部分文件，请联系管理员安排完整离线导出', 413)
+    require(len(volumes) <= MAX_VOLUMES, '完整报表超过100卷的在线导出上限；未生成部分文件，请联系管理员安排完整离线导出', 413)
     return volumes or [[]]
 
 
@@ -119,9 +124,9 @@ def package(report, user, renderer):
                 ['完整性说明', '明细数据行按清单连续分卷且不重复；打印摘要只在首卷，引用汇总不可再次累计。请保留全部卷。'],
                 ['打印说明', '打印摘要适合整页打印；宽明细保留100%字号横向分页并重复首列、表头，长依据请在电子文件中查看。']])
         content = renderer(part_report, user)
-        c.require(len(content) <= MAX_FILE_BYTES, '单卷文件超过20MB安全上限；整份下载已取消，请联系管理员核对报表容量', 413)
+        require(len(content) <= MAX_FILE_BYTES, '单卷文件超过20MB安全上限；整份下载已取消，请联系管理员核对报表容量', 413)
         files.append((f'cutting-{report["kind"]}-{report["month"]}-{report["token"][:12]}-{number:03d}.xlsx', content))
-        c.require(sum(len(data) for _, data in files) <= MAX_PACKAGE_BYTES,
+        require(sum(len(data) for _, data in files) <= MAX_PACKAGE_BYTES,
                   '完整报表超过100MB在线下载上限；未返回部分文件，请联系管理员安排完整离线导出', 413)
     if len(files) == 1: return files[0][1], 'xlsx'
     output = BytesIO()
@@ -130,7 +135,7 @@ def package(report, user, renderer):
         archive.writestr('manifest.json', json.dumps(dict(token=report['token'], month=report['month'],
             metadata=report['metadata'], coverage=catalog,
             files=[dict(name=name, sha256=sha256(content).hexdigest(), bytes=len(content)) for name, content in files]), ensure_ascii=False, indent=2))
-    c.require(output.tell() <= MAX_PACKAGE_BYTES, '完整压缩包超过100MB在线上限；未返回部分文件，请联系管理员安排完整离线导出', 413)
+    require(output.tell() <= MAX_PACKAGE_BYTES, '完整压缩包超过100MB在线上限；未返回部分文件，请联系管理员安排完整离线导出', 413)
     return output.getvalue(), 'zip'
 
 
@@ -142,6 +147,17 @@ def text_lines(value, width):
 
 def render_workbook(report, user, title):
     workbook = Workbook(); workbook.remove(workbook.active)
+    # openpyxl styles are immutable once assigned. Share the same few styles
+    # instead of constructing/hashing three new objects for every single cell.
+    heading_font = Font(name='Microsoft YaHei', size=10, bold=True, color='FFFFFF')
+    body_font = Font(name='Microsoft YaHei', size=10, bold=False, color='173E43')
+    centered = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    heading_fill = PatternFill('solid', fgColor='007F78')
+    stripe_fill = PatternFill('solid', fgColor='EFF7F7')
+    for name, font, fill in [('cutting-heading', heading_font, heading_fill),
+                             ('cutting-body', body_font, PatternFill()),
+                             ('cutting-stripe', body_font, stripe_fill)]:
+        workbook.add_named_style(NamedStyle(name=name, font=font, alignment=centered, fill=fill))
     metadata = report['metadata'] + [['导出人', user.display_name], ['导出人ID', user.id],
         ['取数／导出时间', report['captured_at']], ['报表依据校验值', report['token']]]
     warning = next((str(value) for key, value in metadata if key in {'使用状态', '口径'}), '')
@@ -156,9 +172,7 @@ def render_workbook(report, user, title):
         for row in ws:
             for cell in row:
                 if isinstance(cell.value, str): cell.data_type = 's'
-                cell.font = Font(name='Microsoft YaHei', size=10, bold=cell.row <= 2, color='FFFFFF' if cell.row <= 2 else '173E43')
-                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                if cell.row <= 2 or cell.row % 2 == 0: cell.fill = PatternFill('solid', fgColor='007F78' if cell.row <= 2 else 'EFF7F7')
+                cell.style = 'cutting-heading' if cell.row <= 2 else 'cutting-stripe' if cell.row % 2 == 0 else 'cutting-body'
             if row[0].row > 1:
                 height = max(text_lines(cell.value or '', widths[i]) for i, cell in enumerate(row)) * 16 + 8
                 ws.row_dimensions[row[0].row].height = min(300, max(32, height))

@@ -144,9 +144,14 @@ def _combined_hash(file_names: list[str], hashes: list[str]) -> str:
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _load_workbook(content: bytes):
+def _load_workbook(content: bytes, *, read_only: bool = False):
     try:
-        return openpyxl.load_workbook(BytesIO(content), data_only=False)
+        if not content.startswith(b"PK"):
+            from app.services.customer_order_buzzbee import _decrypt_schedule
+            content, _ = _decrypt_schedule(content)
+        if len(content) > MAX_SCHEDULE_BYTES:
+            raise ValueError("解密后的排期超过 35MB 限制")
+        return openpyxl.load_workbook(BytesIO(content), data_only=False, read_only=read_only)
     except Exception as exc:
         raise CustomerOrderUnifiedError(f"无法读取河源业务统一排期：{exc}") from exc
 
@@ -200,7 +205,7 @@ def ensure_unified_schedule(
 
 def is_unified_schedule(schedule_content: bytes) -> bool:
     try:
-        workbook = openpyxl.load_workbook(BytesIO(schedule_content), read_only=True, data_only=False)
+        workbook = _load_workbook(schedule_content, read_only=True)
     except Exception:
         return False
     try:
@@ -389,10 +394,13 @@ def _enrich_row(
         "unit_price_hkd": "unit_price_hkd",
     }
     for target, source in inherited.items():
-        if (row.get('_regional_customer') == 'ubtech' or row.get('_jakks_supplementary')) and target == 'unit_price_hkd':
+        if (row.get('_regional_customer') == 'ubtech' or row.get('_jakks_supplementary') or row.get('price_basis') == 'incomplete' or row.get('_huaxing_customer') == 'shushupapa') and target == 'unit_price_hkd':
             continue
         if not _text(row.get(target)):
-            value = _unique_history_value(history, product_no, source, row["customer_name"])
+            candidates = history
+            if row.get('_huaxing_customer') == 'shushupapa' and target in {'units_per_carton', 'standard', 'packaging'}:
+                candidates = [item for item in history if _key(item.customer_name) == _key(row['customer_name'])]
+            value = _unique_history_value(candidates, product_no, source, row["customer_name"])
             if value:
                 row[target] = value
                 row.setdefault("lineage", {})[target] = (
@@ -418,6 +426,18 @@ def _enrich_row(
         # unified writer only requires the two keys needed to place and dedupe a
         # line reliably.
         if code.startswith("missing_") or code == "product_not_in_schedule":
+            if row.get('_huaxing_review_customer') in huaxing.ADVISORY_CUSTOMERS:
+                if existing_issue.get('field') in {'quantity', 'contract_no', 'product_no', 'reference_no'}:
+                    cleaned.append(existing_issue)
+                else:
+                    from app.services.customer_order_manual import MANUAL_EDITABLE_FIELDS
+                    existing_issue.update(severity='warning', can_skip=True, skip_label='')
+                    field_name = existing_issue.get('edit_field') or existing_issue.get('field')
+                    if field_name in MANUAL_EDITABLE_FIELDS:
+                        meta = MANUAL_EDITABLE_FIELDS[field_name]
+                        existing_issue.update(can_edit=True, edit_field=field_name,
+                            edit_label=meta['label'], edit_input_type=meta['input_type'])
+                    cleaned.append(existing_issue)
             continue
         cleaned.append(existing_issue)
     row["issues"] = cleaned
@@ -493,7 +513,7 @@ def _mark_batch_duplicates(rows: list[dict[str, Any]]) -> None:
         if previous is None:
             seen[identity] = row
             continue
-        conflict = is_edu and _number(row.get('quantity')) != _number(previous.get('quantity'))
+        conflict = (is_edu or row.get('_huaxing_review_customer') in huaxing.ADVISORY_CUSTOMERS) and _number(row.get('quantity')) != _number(previous.get('quantity'))
         code = 'existing_quantity_conflict' if conflict else 'duplicate_batch_order_line'
         field = 'quantity' if conflict else 'contract_no'
         label = '客户合同/PO 与产品' if is_edu else 'SO#/Reference 与产品'
@@ -800,7 +820,11 @@ def _parse_huaxing_rows(
             default_source_file=po_files[0][0],
             sheet_name=ITEM_SHEET,
         )
-        rows.append(huaxing.map_record(_attach_available_fields(row, record), record, customer_code))
+        huaxing.map_record(_attach_available_fields(row, record), record, customer_code)
+        if customer_code == 'shushupapa':
+            from app.services.customer_order_shushupapa import prepare_row
+            prepare_row(row, record)
+        rows.append(row)
     return rows, warnings, spec.input_template
 
 
@@ -1050,6 +1074,10 @@ def _parse_huakang_a_rows(
                 record["file_name"] = file_name
                 record["relative_path"] = file_name
                 record["_source_po_file_name"] = file_name
+                record["outer_carton_sticker_sources"] = [
+                    {**source, "file_name": file_name, "relative_path": file_name}
+                    for source in record.get("outer_carton_sticker_sources", [])
+                ]
                 warnings.extend(f"{file_name}：{message}" for message in record.get("parse_warnings", []))
                 records.append(record)
     else:
@@ -1229,10 +1257,15 @@ def create_unified_customer_preview(
         workbook = _load_workbook(schedule_content)
         try:
             huaxing_sheets = huaxing.item_sheets(workbook, customer_code)
+            if customer_code == 'edu':
+                from app.services.customer_order_edu import allocate_references
+                allocate_references(workbook, detail_rows)
         finally:
             workbook.close()
     for row in detail_rows:
         row["received_date"] = normalized_received_date
+        if factory_id == 'huaxing' and customer_code in huaxing.ADVISORY_CUSTOMERS:
+            row['_huaxing_review_customer'] = customer_code
         if huaxing_sheets:
             huaxing.prepare_row(row, history, customer_code, huaxing_sheets, factory_id)
         if regional.enabled(factory_id, customer_code):
@@ -1249,12 +1282,25 @@ def create_unified_customer_preview(
                         row[field] = candidates.pop()
                         row.setdefault("lineage", {})[field] = f"ITEM表 · 货号 {row['product_no']} 唯一历史值"
             huakang_unified.round_cartons(row)
+            if customer_code == '360':
+                huakang_unified.prepare_360_version(row, history)
+                from app.services.customer_order_360_shipping_item import prepare_shipping_item
+                prepare_shipping_item(row, history)
         elif regional.enabled(factory_id, customer_code):
             regional.enrich(row, history, factory_id, customer_code)
         if customer_code == 'ubtech':
             from app.services.customer_order_ubtech import finish_row
             finish_row(row)
     _mark_batch_duplicates(detail_rows)
+    if factory_id == 'huaxing' and customer_code == 'edu':
+        from app.services.customer_order_edu import prepare_controls
+        workbook = _load_workbook(schedule_content)
+        try:
+            prepare_controls(workbook, detail_rows)
+        finally:
+            workbook.close()
+    if factory_id == 'huaxing' and customer_code in huaxing.ADVISORY_CUSTOMERS:
+        huaxing.apply_advisory_policy(detail_rows)
     file_names = [name for name, _ in po_files]
     hashes = [sha256(content).hexdigest() for _, content in po_files]
     safe_stem = re.sub(r'[\\/:*?"<>|]+', "_", Path(schedule_file_name).stem).strip(" ._")
@@ -1271,14 +1317,23 @@ def create_unified_customer_preview(
             "通用字段及已明确映射的客户专属字段可自动写入；生产、出货、发票等人工字段保留。",
             "历史查重兼容未填SO的客户PO/Release编号；源排期不会被覆盖。",
         ]
+        if customer_code == "360":
+            warnings.append("导出时按已有验货日期自动归类：早于上海当天的订单移至已完成区；当天、未来及日期不明的保留未完成，走货记录不变。")
     elif regional.enabled(factory_id, customer_code) or huaxing.enabled(factory_id, customer_code):
         warnings[:3] = [
             '各 ITEM 分类页独立追加，接单表和正单评审表关联实际明细页及行。',
             '只校验公共区域，客户专属字段按已确认的实际表头映射；人工生产和出货内容保留。',
             '历史查重兼容未填SO的客户PO编号，并读取取消单和已走货区中的历史订单。',
         ]
+        if factory_id == 'huaxing' and customer_code == 'shushupapa':
+            warnings[0] = '新单只追加在各表顶部正单区，空间不足时在首个合计或分区标题前自动增行；各表关联实际 ITEM 行。'
         if customer_code == 'edu':
+            warnings[0] = 'EDU 新单按货号归组到绿色备料行上方，摘要关联实际 ITEM 行，同时更新 PO订单。'
             warnings[2] = 'EDU 按客户完整合同/PO＋产品查重，EDUHX 仅为内部编号；不同客户订单独立续编号，源排期不会被覆盖。'
+            warnings.extend([
+                'EDU 每条新订单明细独立续编 EDUHX，重复单保留原编号并避免再次写入及扣备料；同步更新 PO订单。',
+                '绿色行是备料：优先匹配扣数PO，否则扣同货号最后一条绿色行；余额可为负数。浅绿色为公式，浅黄色为人工填写区。',
+            ])
     return {
         "preview_schema_version": PREVIEW_SCHEMA_VERSION,
         "customer_code": customer_code,
@@ -1497,6 +1552,9 @@ def _recalculate_preview_row(row: dict[str, Any]) -> None:
     if row.get('_regional_customer') == 'ubtech':
         from app.services.customer_order_ubtech import finish_row
         finish_row(row)
+    if row.get('_huaxing_customer') == 'shushupapa':
+        from app.services.customer_order_shushupapa import finish_row
+        finish_row(row)
 
 
 def _validate_resolutions(preview: dict[str, Any], requested: set[str]) -> None:
@@ -1504,7 +1562,7 @@ def _validate_resolutions(preview: dict[str, Any], requested: set[str]) -> None:
         issue.get("skip_key")
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue.get("skip_key")
+        if issue.get("skip_key") and issue.get('can_skip') and not issue.get('requires_source_correction')
     }
     if requested - available:
         raise CustomerOrderUnifiedError("所选确认项已失效，请重新预览后再生成")
@@ -1512,7 +1570,9 @@ def _validate_resolutions(preview: dict[str, Any], requested: set[str]) -> None:
         issue["message"]
         for row in preview["rows"]
         for issue in row["issues"]
-        if issue.get("severity") == "blocked" and issue.get("skip_key") not in requested
+        if issue.get("severity") == "blocked" and (
+            issue.get('requires_source_correction') or not issue.get('can_skip') or issue.get("skip_key") not in requested
+        )
     ]
     if blockers:
         raise CustomerOrderUnifiedError("仍有阻断项：" + "；".join(dict.fromkeys(blockers)))
@@ -1540,6 +1600,36 @@ def export_unified_customer_schedule(
     decorate_manual_resolution_policy(preview)
     original_identities = {row['id']: tuple(_text(row.get(k)) for k in ('product_no', 'reference_no', 'contract_no', 'po_no')) for row in preview['rows']}
     apply_overrides_to_preview(preview, manual_overrides or [])
+    if factory_id == 'huaxing' and customer_code == 'shushupapa':
+        for row in preview['rows']:
+            row['_shushupapa_inspection_manual'] = any(
+                item['row_id'] == row['id'] and item['field'] == 'customer_q'
+                for item in manual_overrides or []
+            )
+            if row['_shushupapa_inspection_manual']:
+                row.setdefault('lineage', {})['customer_q'] = '业务人工补录计划验货日期'
+    if factory_id == 'huakang-a' and customer_code == '360':
+        from app.services.customer_order_360_shipping_item import prepare_shipping_item
+        shipping_overrides = {item['row_id'] for item in manual_overrides or [] if item['field'] == 'shipping_item'}
+        for row in preview['rows']:
+            if row['id'] in shipping_overrides:
+                row.setdefault('lineage', {})['shipping_item'] = '业务人工补录出货货号；完整产品编号保持独立'
+            elif _text(row.get('product_no')) != original_identities[row['id']][0]:
+                prepare_shipping_item(row, read_unified_history(schedule_content, factory_id=factory_id, customer_code=customer_code))
+    if factory_id == 'huaxing' and customer_code == 'edu':
+        from app.services.customer_order_edu import validate_controls
+        workbook = _load_workbook(schedule_content)
+        try:
+            validate_controls(workbook, preview['rows'], manual_overrides or [])
+        finally:
+            workbook.close()
+    if customer_code == 'dickie':
+        from app.services.customer_order_dickie import apply_po_price_overrides
+        for override in manual_overrides or []:
+            if override['field'] == 'po_unit_prices':
+                row = next((r for r in preview['rows'] if r['id'] == override['row_id']), None)
+                if row is not None:
+                    apply_po_price_overrides(row, override['value'])
     for row in preview['rows']:
         _recalculate_preview_row(row)
     if huaxing.enabled(factory_id, customer_code) and manual_overrides:
@@ -1560,6 +1650,14 @@ def export_unified_customer_schedule(
         if huaxing.enabled(factory_id, customer_code):
             huaxing.export_rows(workbook, rows)
         elif huakang_unified.enabled(factory_id, customer_code) or regional.enabled(factory_id, customer_code):
+            if factory_id == 'huakang-a' and customer_code == '360':
+                from app.services.customer_order_360_shipping_item import backfill_shipping_items, ShippingItemError
+                try:
+                    shipping_report = backfill_shipping_items(workbook)
+                    preview['warnings'].extend(shipping_report.get('warnings', []))
+                except ShippingItemError as exc:
+                    raise CustomerOrderUnifiedError(str(exc)) from exc
+            version_columns = huakang_unified.ensure_360_version_columns(workbook) if factory_id == 'huakang-a' and customer_code == '360' else {}
             recovery = {}
             if factory_id == 'huakang-a' and customer_code == 'green-toys':
                 recovery = huakang_unified.green_summary_recovery(workbook, rows,
@@ -1582,6 +1680,8 @@ def export_unified_customer_schedule(
                 _write_item_row(workbook[ITEM_SHEET], row_number, row)
                 if huakang_unified.enabled(factory_id, customer_code):
                     huakang_unified.write_extras(workbook[ITEM_SHEET], row_number, row, customer_code)
+                    if version_columns:
+                        huakang_unified.write_360_version(workbook[ITEM_SHEET], row_number, version_columns[ITEM_SHEET], row)
                 else:
                     regional.write_extras(workbook[ITEM_SHEET], row_number, row, factory_id, customer_code)
                 if customer_code == 'ubtech':
@@ -1590,6 +1690,8 @@ def export_unified_customer_schedule(
                 for name in (ORDER_SHEET, REVIEW_SHEET):
                     summary_row = recovered_rows[index][name] if recovered_rows[index] else slots_by_sheet[name][summary_index]
                     _write_summary_row(workbook[name], summary_row, row, item_row=row_number, item_sheet=workbook[ITEM_SHEET])
+                    if version_columns:
+                        huakang_unified.write_360_version(workbook[name], summary_row, version_columns[name], row)
                     if factory_id == 'huakang-a' and customer_code == 'green-toys':
                         green_pairs.append((name, summary_row, row_number))
                     if customer_code == 'ubtech':
@@ -1614,6 +1716,17 @@ def export_unified_customer_schedule(
                 _write_item_row(workbook[ITEM_SHEET], row_number, row)
                 _write_summary_row(workbook[ORDER_SHEET], row_number, row)
                 _write_summary_row(workbook[REVIEW_SHEET], row_number, row)
+                if factory_id == 'huaxing' and customer_code in huaxing.ADVISORY_CUSTOMERS:
+                    duplicate = any(i.get('code') == 'duplicate_order_warning' for i in row.get('issues', []))
+                    for name in SHEETS:
+                        huaxing._mark_generated_row(workbook[name], row_number, duplicate=duplicate)
+        if factory_id == "huakang-a" and customer_code == "360":
+            huakang_unified.organize_360_schedule(workbook, source_content=schedule_content)
+            from app.services.customer_order_360_order_types import ensure_360_order_type_dropdowns, OrderTypeValidationError
+            try:
+                ensure_360_order_type_dropdowns(workbook, factory_id=factory_id, customer_code=customer_code)
+            except OrderTypeValidationError as exc:
+                raise CustomerOrderUnifiedError(str(exc)) from exc
         workbook.calculation.calcMode = "auto"
         workbook.calculation.fullCalcOnLoad = True
         workbook.calculation.forceFullCalc = True
