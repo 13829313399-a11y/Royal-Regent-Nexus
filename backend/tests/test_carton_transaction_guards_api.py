@@ -39,6 +39,9 @@ def ledger(client):
 
 
 def outbound(row, qty=2, **overrides):
+    if overrides.get("issue_kind") == "RETURN" and "return_date" not in overrides:
+        from app.services import carton_procurement as core
+        overrides["return_date"] = core.now_text()[:10]
     return {"factory_id": "huaxing", "request_id": uuid4().hex, "movement_type": "OUTBOUND",
             "order_line_id": row["lines"][0]["id"], "quantity": qty,
             "document_no": "OUT-SAME-DOCUMENT", "reason": "客户要货", **overrides}

@@ -134,8 +134,11 @@ def test_legacy_acceptance_correction_missing_price_and_reversal(monkeypatch):
         assert action(client, saved).status_code == 409
 
 
-def test_supplier_return_uses_approved_credit_not_average_cost_and_concurrent_confirm(monkeypatch):
+def test_supplier_return_uses_approved_credit_not_average_cost_and_concurrent_confirm(monkeypatch, tmp_path):
     from concurrent.futures import ThreadPoolExecutor
+    import test_molding_sample_api
+    from test_carton_return_dates import confirm_collaborative_returns
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path)
     with make_client(monkeypatch) as client:
         login_as(client, "admin"); clock(monkeypatch)
         row = order(client)
@@ -151,7 +154,14 @@ def test_supplier_return_uses_approved_credit_not_average_cost_and_concurrent_co
         return_line.update(quantity="2", unit_price="3", amount="6")
         saved = client.post(BASE + "/supplier-settlements", json=data).json()
         assert action(client, saved).status_code == 409
-        return_line.update(approved_return_unit_price="3", credit_document_no="CREDIT-1", credit_date="2026-10-05", note="采购主管核实供应商退货凭证")
+        confirm_collaborative_returns(client, work['sources'])
+        work = view(client)
+        return_source = next(source for source in work['sources'] if source['kind'] == 'RETURN')
+        agreement = return_source['return_agreement']
+        data = payload(work)
+        return_line = next(line for line in data['lines'] if line['source_key'] == return_source['source_key'])
+        return_line.update(approved_return_unit_price="3", credit_document_no=agreement['credit_document_no'],
+            credit_date=agreement['credit_date'], note="采购主管核实供应商退货凭证")
         data.update(id=saved["id"], expected_revision=saved["revision"])
         saved_response = client.post(BASE + "/supplier-settlements", json=data)
         assert saved_response.status_code == 200, saved_response.text
@@ -170,7 +180,9 @@ def test_supplier_return_uses_approved_credit_not_average_cost_and_concurrent_co
         assert reverse.status_code == 409, reverse.text
 
 
-def test_whole_order_return_and_supplier_mismatch_are_not_silently_misclassified(monkeypatch):
+def test_whole_order_return_and_supplier_mismatch_are_not_silently_misclassified(monkeypatch, tmp_path):
+    import test_molding_sample_api
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path)
     with make_client(monkeypatch) as client:
         login_as(client, "admin"); clock(monkeypatch)
         row = order(client)
@@ -186,10 +198,12 @@ def test_whole_order_return_and_supplier_mismatch_are_not_silently_misclassified
         assert rejected.status_code == 422, rejected.text
         post(client, row, 4)
         current = client.get(BASE + "/orders", params={"factory_id": "huaxing"}).json()["items"][0]
-        returned = client.post(BASE + f"/orders/{row['order_no']}/return", json={"factory_id": "huaxing", "expected_revision": current["revision"], "reason": "全部库存退给供应商"})
+        returned = client.post(BASE + f"/orders/{row['order_no']}/return", json={"factory_id": "huaxing", "expected_revision": current["revision"], "reason": "全部库存退给供应商", "return_date": "2026-10-05"})
         assert returned.status_code == 200, returned.text
         work = view(client)
         assert len(work["sources"]) == 2
         assert {source["kind"] for source in work["sources"]} == {"RECEIPT", "RETURN"}
-        assert next(source for source in work["sources"] if source["kind"] == "RETURN")["quantity"] == "4.0000"
+        return_source = next(source for source in work["sources"] if source["kind"] == "RETURN")
+        assert return_source['quantity'] == '4.0000'
+        assert return_source['unit_price'] is None and return_source['return_agreement']['credit_event_id'] is None
         assert view(client, supplier_id="OTHER-SUPPLIER")["sources"] == []

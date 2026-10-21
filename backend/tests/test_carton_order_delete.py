@@ -4,6 +4,7 @@ from test_molding_sample_api import make_client, login_as
 from test_carton_procurement_api import _create_order, _freeze_carton_time, _order_payload
 from test_carton_receipt_correction_api import receipt, reverse
 from test_carton_history_delete_and_exception_bulk import historical
+from carton_p1_helpers import cancel_and_acknowledge
 
 
 BASE = "/api/carton-procurement"
@@ -31,6 +32,12 @@ def test_supervisor_deletes_unused_ordinary_orders_with_full_audit(monkeypatch, 
             assert response.status_code == 200, response.text
             order = response.json()
         assert order["status"] == status
+        if submitted:
+            assert not order["can_delete"]
+            blocked = client.post(f"{BASE}/orders/{order['order_no']}/delete", json=delete_body(order))
+            assert blocked.status_code == 409, blocked.text
+            order = cancel_and_acknowledge(client, order)
+            status = "CANCELLED"
         assert order["can_delete"] and not order["can_delete_history"]
         path = f"{BASE}/orders/{order['order_no']}/delete"
         assert client.post(path, json=delete_body(order, reason="   错")).status_code == 422
@@ -65,12 +72,14 @@ def test_ordinary_order_with_receipt_evidence_cannot_be_deleted(monkeypatch, mod
             assert response.status_code == 200, response.text
         if mode == "returned":
             current = next(row for row in current_orders(client) if row["id"] == order["id"])
-            response = client.post(f"{BASE}/orders/{order['order_no']}/return", json=delete_body(current))
+            response = client.post(f"{BASE}/orders/{order['order_no']}/return", json=delete_body(current, return_date="2026-08-05"))
             assert response.status_code == 200, response.text
             assert response.json()["status"] == "CANCELLED"
         current = next(row for row in current_orders(client) if row["id"] == order["id"])
         login_as(client, "warehouse_keeper")
         if mode == "returned":
+            current = cancel_and_acknowledge(client, current)
+            login_as(client, "warehouse_keeper")
             before_receipts = client.get(f"{BASE}/receipts", params={"factory_id": "huaxing"}).json()
             before_movements = client.get(f"{BASE}/inventory/movements", params={"factory_id": "huaxing"}).json()
             before_report = client.get(f"{BASE}/inventory/report", params={"factory_id": "huaxing"}).json()
@@ -145,7 +154,9 @@ def test_warehouse_operator_can_delete_eligible_orders(monkeypatch, operation, u
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         _freeze_carton_time(monkeypatch)
-        order = historical(client) if "history" in operation else _create_order(client)
+        order = historical(client) if "history" in operation else _create_order(client, submit_supplier=False)
+        if "history" in operation:
+            order = cancel_and_acknowledge(client, order)
         actor = login_as(client, username)
         assert "carton_procurement:order_adjust" not in actor["permissions"]
         if operation.startswith("bulk"):
@@ -241,7 +252,7 @@ def test_deletion_requires_both_factory_scoped_supervisor_and_write_permissions(
     monkeypatch.setenv("AUTHZ_MODE", "enforce")
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
-        order = _create_order(client)
+        order = _create_order(client, submit_supplier=False)
         from app.services.auth import AuthContext, AuthGrantContext, AuthOverrideContext, get_current_user
         permissions = frozenset({"carton_procurement:order_adjust"} | (
             set() if scope == "no_write" else {"carton_procurement:order_write"}))

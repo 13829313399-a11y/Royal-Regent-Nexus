@@ -30,6 +30,7 @@ from app.schemas.carton_mark import (
     CartonMarkTemplateOut,
     CartonMarkManualReviewRequest,
     CartonMarkAssetOut,
+    CartonMarkAssociations,
     CartonMarkAssetBindingRequest,
     CartonMarkAssetOrderOut,
     CartonMarkPhotoGroupRequest,
@@ -115,6 +116,13 @@ def change_sharing(asset_id: str, factory_id: str, payload: CartonMarkAssetShari
 def confirm_binding(asset_id: str, binding_id: str, factory_id: str, payload: CartonMarkBindingConfirmation,
                     db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return sharing.confirm(db, user, _asset_scope(db, user, factory_id, True), asset_id, binding_id, payload)
+
+
+@router.put('/api/carton-mark/assets/{asset_id}/associations', response_model=CartonMarkAssetOut)
+def associate_asset(asset_id: str, factory_id: str, payload: CartonMarkAssociations,
+                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_mark_associations import save
+    return save(db, user, _asset_scope(db, user, factory_id, True), asset_id, payload)
 
 
 @router.post("/api/carton-mark/assets/batch", response_model=list[CartonMarkAssetUploadResult])

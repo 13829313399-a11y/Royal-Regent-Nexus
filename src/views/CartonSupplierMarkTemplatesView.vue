@@ -113,7 +113,7 @@ onMounted(async () => {
       <div>
         <RouterLink :to="{ path: '/carton-supplier', query: factory === ALL_FACTORIES ? {} : { factory } }" class="text-sm font-semibold text-teal-700">← 返回供应商协同</RouterLink>
         <h1 class="mt-2 text-2xl font-bold">箱唛资料库</h1>
-        <p class="mt-1 text-sm text-slate-500">仓库与本供应商共享的资料上传后即可查看，需要时再绑定正单、样板或杂单；资料确认与 QC 审核分别保留。</p>
+        <p class="mt-1 text-sm text-slate-500">仓库与本供应商共享的资料上传后即可查看，由经办人直接关联正单、样板或杂单，无需关联审批；资料状态与历史保留，QC 核对仍单独进行。</p>
       </div>
       <div class="flex w-full flex-wrap items-center gap-3 sm:w-auto">
         <select v-model="factory" aria-label="箱唛资料厂区" :disabled="discovering" class="min-w-0 max-w-full rounded-lg border bg-white p-2">

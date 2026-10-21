@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { dimensionReference, isCardPaper, paperFlute, standardPaperTypes } from '../paperCatalog'
 import { masterPaperOptions, type MasterRecord } from '@/api/cartonMaster'
 import { matchesSettlementLine } from '../queryFilters'
-import { settlementCsv } from '../settlementExport'
+import { settlementCsv, settlementDateLabel, settlementSignedAmount, settlementSourceLabel } from '../settlementExport'
 import type { StatementLine, SupplierSource } from '@/api/cartonSupplierSettlement'
 
 describe('confirmed paper catalog and dimensions', () => {
@@ -38,4 +38,30 @@ it('exports only supplied filtered rows with original units, identifiers, accept
   const csv = settlementCsv([statement('平卡')], new Map([['平卡', source('平卡')], ['普通箱', source('普通箱')]]), '2026-10', 'CNY')
   expect(csv).toContain('英寸（inch）'); expect(csv).toContain('"\'000123"'); expect(csv).toContain('"\'=BAD()"')
   expect(csv).toContain('2026-10-01'); expect(csv).not.toContain('普通箱')
+})
+
+it('exports actual and legacy return date evidence separately from inventory posting and credit prices', () => {
+  const actual = { ...source('平卡'), kind: 'RETURN' as const, date_basis: 'RETURN_ACTUAL', acceptance_date: '2026-09-30', return_date: '2026-09-30', posting_date: '2026-10-02', unit_price: null, amount: null }
+  const csv = settlementCsv([statement('平卡')], new Map([['平卡', actual]]), '2026-09', 'CNY')
+  expect(csv).toContain('实际退货日期'); expect(csv).toContain('库存记账日期'); expect(csv).toContain('2026-09-30'); expect(csv).toContain('2026-10-02')
+  const legacy = settlementCsv([statement('平卡')], new Map([['平卡', { ...actual, date_basis: 'RETURN_POSTING', return_date: undefined, posting_date: undefined }]]), '2026-09', 'CNY')
+  expect(legacy).toContain('历史记账日期（实际退货日期待核实）')
+})
+
+it('exports cash refunds as positive financial evidence and return credit as a negative payable effect without changing original amounts', () => {
+  const refund = { ...source('平卡'), kind: 'RETURN_REFUND' as const, date_basis: 'REFUND_ACTUAL', acceptance_date: '2026-10-04', quantity: '1', unit: '笔', amount: '6.00' }
+  const credit = { ...source('普通箱'), kind: 'RETURN' as const }
+  const refundLine = { ...statement('平卡'), amount: '6.00', quantity: '1' }
+  const creditLine = { ...statement('普通箱'), amount: '20.00' }
+  const csv = settlementCsv([refundLine, creditLine], new Map([['平卡', refund], ['普通箱', credit]]), '2026-10', 'CNY')
+  expect(settlementDateLabel(refund)).toBe('现金退款到账日期')
+  expect(settlementSourceLabel(refund)).toBe('现金退款（加回应结）')
+  expect(settlementSignedAmount(refundLine, refund)).toBe('6.00')
+  expect(settlementSignedAmount(creditLine, credit)).toBe('-20.00')
+  expect(csv).toContain('"应结方向","本行应结金额"')
+  expect(csv).toContain('"增加应结（已核实现金退款）","6.00"')
+  expect(csv).toContain('"减少应结","-20.00"')
+  expect(csv).toContain('"\'=BAD()"')
+  expect(creditLine.amount).toBe('20.00'); expect(refundLine.amount).toBe('6.00')
+  expect(matchesSettlementLine(refundLine, refund, undefined, '', 'UNMATCHED')).toBe(false)
 })

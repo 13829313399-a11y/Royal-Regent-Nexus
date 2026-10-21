@@ -19,8 +19,33 @@ const button = (w: ReturnType<typeof mount>, text: string) => w.findAll('button'
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-01T04:00:00Z')); vi.resetAllMocks(); mocks.can.mockReturnValue(true); vi.mocked(api.supplierWorkspace).mockResolvedValue(fixture()) })
 afterEach(() => vi.useRealTimers())
 describe('供应商月结确认', () => {
+  it('allows supplier acknowledgement of an ended genuinely reopened zero bill with server-approved empty evidence', async () => {
+    const ws = fixture(), doc = ws.documents[0]!
+    doc.reopen_reason = '原实收撤回后双方重新核实'; doc.sources = []; doc.statement.lines = []
+    doc.result = { ...doc.result, issues: [], line_results: [], inbound_amount: '0.00', return_amount: '0.00', net_amount: '0.00', statement_amount: '0.00' }
+    vi.mocked(api.supplierWorkspace).mockResolvedValue(ws); vi.mocked(api.supplierReview).mockResolvedValue(doc)
+    const w = mount(Component, { props: { factories } }); await flushPromises()
+    expect(button(w, '确认本月结算明细').attributes('disabled')).toBeUndefined()
+    await button(w, '确认本月结算明细').trigger('click'); await flushPromises()
+    expect(api.supplierReview).toHaveBeenCalledWith('D1', 'huaxing', 4, 'CONFIRMED', '')
+    expect(w.text()).toContain('本页货款净额不含独立费用或付款核销'); w.unmount()
+  })
+  it('labels positive cash evidence, omits fake stock receipts, and shows the server net payable equation', async () => {
+    const ws = fixture(), doc = ws.documents[0]!
+    const source = { ...doc.sources[0]!, source_key: 'RETURN_REFUND:M1:F1', kind: 'RETURN_REFUND' as const, quantity: '1', unit: '笔', amount: '6.00', unit_price: '6.00', date_basis: 'REFUND_ACTUAL', acceptance_date: '2026-10-04' }
+    doc.sources = [source]; doc.statement.lines[0] = { ...doc.statement.lines[0]!, source_key: source.source_key, quantity: '1', amount: '6.00' }
+    doc.result.cash_refund_amount = '6.00'; doc.result.return_amount = '10.00'; doc.result.net_amount = '12.00'; doc.result.statement_amount = '12.00'
+    vi.mocked(api.supplierWorkspace).mockResolvedValue(ws)
+    const w = mount(Component, { props: { factories } }); await flushPromises()
+    expect(w.get('td[data-label="本厂有效验收"]').text()).toContain('不计实物收料')
+    expect(w.get('td[data-label="本厂有效验收"]').text()).not.toContain('1 笔')
+    expect(w.text()).toContain('现金退款（加回应结）'); expect(w.text()).toContain('现金退款到账日期 2026-10-04')
+    expect(w.text()).toContain('供货 16 − 退货贷项 10.00 + 本月已确认现金退款 6.00 = 本期净应结 12.00 CNY')
+    w.unmount()
+  })
   it('filters from the host search without changing settlement totals', async () => {
     const w = mount(Component, { props: { factories, search: 'missing' } }); await flushPromises()
+    expect(w.text()).toContain('已确认月份补录原送货凭证，须由内部说明原因重开，补证后双方重新确认')
     expect(w.find('[aria-label="月结明细搜索"]').exists()).toBe(false)
     expect(w.get('table[aria-label="双方月结明细"]').findAll('tbody tr')).toHaveLength(0)
     expect(w.text()).toContain('本厂应结 16 · 拟结算 16 CNY')

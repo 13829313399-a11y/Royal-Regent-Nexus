@@ -4,6 +4,10 @@ from openpyxl import Workbook
 import pytest
 
 from app.services.carton_packaging_adapter import adapt_carton_sheets, adapt_carton_workbook
+from app.services.carton_master_import import HEADERS
+
+PROBLEMS_COLUMN = (HEADERS['configurations'] + ['待核问题', '原表位置']).index('待核问题')
+SOURCE_COLUMN = (HEADERS['configurations'] + ['待核问题', '原表位置']).index('原表位置')
 
 
 @pytest.mark.parametrize('quality_column', [26, 255])
@@ -14,8 +18,10 @@ def test_wide_generic_header_and_short_rows_keep_missing_dimensions_pending(qual
     assert len(rows) == 2
     assert rows[1][0] == '00123' and rows[1][10] == 12
     assert rows[1][5:8] == [None, None, None]
-    assert '做箱长宽高缺失' in rows[1][16] and '缺纸质' in rows[1][16]
-    assert rows[1][17] == '其他客户!2'
+    assert len(rows[1]) == len(rows[0])
+    assert rows[1][16:20] == [None] * 4
+    assert '做箱长宽高缺失' in rows[1][PROBLEMS_COLUMN] and '缺纸质' in rows[1][PROBLEMS_COLUMN]
+    assert rows[1][SOURCE_COLUMN] == '其他客户!2'
     assert any('A=00123' in str(row) for row in result['sheets'][1]['rows'])
 
 
@@ -40,7 +46,7 @@ def test_conflicting_cm_header_never_silently_converts_dimensions():
     ]})
     row = result["sheets"][0]["rows"][1]
     assert row[5:8] == [13, 7.125, 8.75]
-    assert row[8] is None and "疑似英寸" in row[16]
+    assert row[8] is None and "疑似英寸" in row[PROBLEMS_COLUMN]
 
 
 def test_shipping_sizes_are_not_ordering_sizes_and_weights_not_swapped():
@@ -48,7 +54,7 @@ def test_shipping_sizes_are_not_ordering_sizes_and_weights_not_swapped():
     row = adapt_carton_sheets({"9251更新-0309": source})["sheets"][0]["rows"][1]
     assert row[5:8] == [None, None, None]
     assert row[14:16] == [1.61, 1.29]
-    assert "未自动对调" in row[16]
+    assert "未自动对调" in row[PROBLEMS_COLUMN]
     assert "43.8" in row[13]
 
 
@@ -61,7 +67,7 @@ def test_block_accessories_stay_with_explicit_product_without_invented_sku():
     assert len(rows) == 2 and rows[1][0] == "9459-S004"
     assert "左右折卡" in rows[1][13] and "1*2" in rows[1][13]
     assert rows[1][14:16] == [3.65, 4.34]
-    assert "未擅自改号" in rows[1][16]
+    assert "未擅自改号" in rows[1][PROBLEMS_COLUMN]
 
 
 def test_hunan_material_strength_and_ratios_never_become_packing_count():
@@ -99,7 +105,7 @@ def test_missing_sku_is_not_filled_from_previous_row():
         [None, 6, "A=B", 15, 10, 8],
     ]})
     rows = result['sheets'][0]['rows']
-    assert rows[2][0] is None and '未从上一行继承' in rows[2][16]
+    assert rows[2][0] is None and '未从上一行继承' in rows[2][PROBLEMS_COLUMN]
 
 
 def test_one_header_row_does_not_swallow_first_product():
@@ -117,4 +123,4 @@ def test_mixed_units_in_text_spec_are_flagged_without_wrong_conversion():
     ]})
     row = result['sheets'][0]['rows'][1]
     assert row[5:8] == [100, 20, 3] and row[8] is None
-    assert "单位不一致" in row[16]
+    assert "单位不一致" in row[PROBLEMS_COLUMN]

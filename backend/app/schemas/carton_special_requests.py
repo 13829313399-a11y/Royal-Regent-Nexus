@@ -16,6 +16,34 @@ class Delete(Command):
     reason: str = Field(min_length=4, max_length=1000)
 
 
+class StockLine(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    receipt_line_id: str = Field(min_length=1, max_length=96)
+    movement_id: str = Field(min_length=1, max_length=96)
+    location_id: str = Field(min_length=1, max_length=96)
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+
+
+class StockAction(Delete):
+    source_fingerprint: str = Field(min_length=64, max_length=64)
+    action: Literal["RETURN", "REPLENISH"]
+    return_date: date | None = None
+    required_date: date | None = None
+    responsibility: Literal["OWN", "SUPPLIER"] | None = None
+    lines: list[StockLine] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def action_fields(self):
+        if self.action == "RETURN" and (not self.return_date or self.required_date or self.responsibility):
+            raise ValueError("退货须填写实际退货日期，不指定补单责任或交期")
+        if self.action == "REPLENISH" and (not self.required_date or not self.responsibility or self.return_date):
+            raise ValueError("补单须填写责任及需求日期，不指定退货日期")
+        keys = [(line.receipt_line_id, line.movement_id, line.location_id) for line in self.lines]
+        if len(set(keys)) != len(keys):
+            raise ValueError("同一收料及仓位不能重复选择")
+        return self
+
+
 class Line(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     id: str = Field(default="", max_length=96)
@@ -86,8 +114,9 @@ class Ship(Command):
 
 class ReceiveLine(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    close_remaining: bool = False
     shipment_line_id: str = Field(min_length=1, max_length=96)
-    received_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+    received_quantity: Decimal = Field(ge=0, max_digits=18, decimal_places=4)
     damaged_quantity: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=4)
     rejected_quantity: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=4)
     unusable_quantity: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=4)
@@ -110,6 +139,8 @@ class ReceiveLine(BaseModel):
 
 
 class Receive(Command):
+    remaining_action: Literal["WAIT", "CLOSE"] = "WAIT"
+    close_reason: str = Field(default="", max_length=1000)
     acceptance_date: date
     lines: list[ReceiveLine] = Field(min_length=1, max_length=50)
     received_kind: Literal["SAMPLE", "WORKSHOP_MISC"] | None = None
@@ -118,6 +149,7 @@ class Receive(Command):
 
 
 class ManualReceiveLine(ReceiveLine):
+    received_quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
     shipment_line_id: str = ""
     line_id: str = Field(min_length=1, max_length=96)
 

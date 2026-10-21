@@ -104,6 +104,7 @@ class ShipmentCreate(Payload):
         return self
 
 class ReceiveLine(BaseModel):
+    close_remaining: bool = False
     replenishment_issue_id: str | None = Field(default=None, max_length=96)
     price_action: Literal["MATCH", "PENDING", "PROPOSE", "FREE"] = "MATCH"
     price_reason: str = Field(default="", max_length=1000)
@@ -120,8 +121,9 @@ class ReceiveLine(BaseModel):
     specification: str = Field(default="", max_length=255)
     location_allocations: list[CartonLocationAllocation] = Field(default_factory=list, max_length=100)
     difference_reason: str = Field(default="", max_length=1000)
-    no_order_decision: Literal["", "SAMPLE", "GIFT", "WRONG_DELIVERY", "UNORDERED"] = ""
+    no_order_decision: Literal["", "SAMPLE", "GIFT", "MISC", "WRONG_DELIVERY", "UNORDERED"] = ""
     customer_code: str = Field(default="", max_length=64)
+    workshop_id: str = Field(default="", max_length=96)
     sample_purpose: str = Field(default="", max_length=255)
     requested_by: str = Field(default="", max_length=128)
     unit: str = Field(default="", max_length=32)
@@ -214,6 +216,7 @@ class SupplierMarkAssetOut(BaseModel):
     binding_status: str = 'UNBOUND'
     pending_bindings: list[dict] = Field(default_factory=list)
     special_orders: list[dict] = Field(default_factory=list)
+    associations: list[dict] = Field(default_factory=list)
 
 
 class SupplierMarkUploadOrderOut(SupplierMarkAssetOrderOut):

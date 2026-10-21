@@ -98,7 +98,7 @@ function seedAccount(id = 'user-a', authorizationVersion = 1) {
       factory_id: 'huaxing',
       department: 'engineering',
       permissions: ['molding_sample:notification_read'],
-      scope_mode: 'local_operate',
+      scope_mode: 'own_factory',
       data_scope: 'department',
     }],
     factory_scopes: ['huaxing'],
@@ -139,6 +139,14 @@ function deferred<T>() {
 }
 
 describe('useNotificationCenter', () => {
+  it('routes adopted-price notices to factory settlement without creating an approval task', async () => {
+    systemApiMock.listNotifications.mockResolvedValue([createSystemNotification({ id: 'PRICE', title: '已采用供应商价', type: 'carton_supplier_price_adopted', payload: { review_id: 'CPR-1', factory_id: 'huaxing' } })])
+    const { center } = mountCenter(); await flushPromises()
+    const item = center().items.value.find(row => row.id === 'PRICE')!
+    expect(item.categoryLabel).toBe('供应商价格更新')
+    expect(item.route).toContain('factory=huaxing&tab=closing')
+    expect(item.isPending).toBe(false); expect(item.isUnread).toBe(true)
+  })
   it.each(['INTERNAL', 'SUPPLIER'])('routes %s special request notices to the exact request work panel', async audience => {
     systemApiMock.listNotifications.mockResolvedValue([createSystemNotification({ id: 'SPECIAL', title: '纸箱申请待处理', type: 'carton_special_request', payload: { request_id: 'CSR-abc123', request_no: 'SP-1', audience, factory_id: 'huaxing' } })])
     const { center } = mountCenter(); await flushPromises()

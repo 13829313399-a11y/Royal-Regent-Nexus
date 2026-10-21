@@ -19,6 +19,11 @@ function capture(expected: Record<string, string>, fileNames: string[]) {
 }
 
 describe('supplier carton-mark request serialization', () => {
+  it('sends atomic association targets and the replay key as multipart without legacy regular-order assumptions', async () => {
+    const targets = [{ order_kind: 'MISC' as const, order_id: 'misc', expected_revision: 3, issue_id: 'version-3', line_id: '' }]
+    capture({ factory_id: 'huaxing', shared_unbound: 'true', request_id: 'upload-123', targets_json: JSON.stringify(targets) }, ['photo.png'])
+    await cartonSupplierPortalApi.uploadMarkAssets('huaxing', [new File(['image'], 'photo.png')], undefined, undefined, true, { request_id: 'upload-123', targets })
+  })
   it('saves customer layout rules, previous version and historical PDF as multipart fields', async () => {
     const config = { mode: 'front_side' as const, paper: 'A4' as const, font: 'Helvetica' as const, font_size: 11, front_percent: 55, front_copies: 2, side_copies: 2, barcode: 'none' as const, side_address: '', instructions: '', reference_page: 0, logo_region: null, stamp_region: null, field_cells: {} }
     capture({ factory_id: 'huaxing', order_id: 'order-a', issue_id: 'issue-a', name: 'BUZZ', expected_version: '0', config: JSON.stringify(config) }, ['old.pdf'])

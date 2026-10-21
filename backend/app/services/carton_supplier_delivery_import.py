@@ -13,6 +13,7 @@ from app.models.carton_supplier_portal import SupplierShipment
 from app.schemas.carton_supplier_portal import ShipmentCreate, DeliveryRowSelection
 from app.services import carton_supplier_portal as portal
 from app.services import carton_supplier_receipt_link as receipt_link
+from app.services import carton_supplier_manual_evidence as manual_evidence
 from app.services.carton_material_identity import dimension_unit, material_conflicts
 from app.services.carton_procurement_imports import _dongkang_identity, _parse_delivery_spreadsheet
 
@@ -95,6 +96,14 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
     # Candidate identities and demand are still read freshly under its locks.
     rows = _parse_source_rows(filename, content, selections) if _parsed_rows is None else _parsed_rows
     workspaces = {factory: portal.workspace(db, user, factory) for factory in factories}
+    # One paper can have ordinary and B demand. Preserve both explicit source
+    # identities; never merge their quotas or infer a replacement responsibility.
+    for workspace in workspaces.values():
+        workspace["orders"] = [entry for order in workspace["orders"] for entry in [order, *[
+            dict(order, issue_id=source["issue_id"], document_no=source["document_no"],
+                planned_date=source["planned_date"], awaiting_issue=False, lines=source["lines"],
+                replenishment=True, responsibility=source["responsibility"])
+            for source in order.get("replenishment_sources", [])]]]
     groups = {}
     for source_row in rows:
         factory = source_row.get("destination_factory_id") or ""
@@ -106,7 +115,7 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
         item = {field: source_row.get(field) for field in ("source_sheet", "source_row", "contract_no", "item_no",
             "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "delivered_quantity")}
         item["unit"] = "个"
-        item["unit_price"] = source_row.get("unit_price") or 0
+        item["unit_price"] = source_row.get("unit_price")
         item.update(order_no="", child_no="", order_line_id="", issue_id="", order_revision=0, candidates=[], status="BLOCKED", reason="")
         group["rows"].append(item)
         if factory not in factories:
@@ -137,7 +146,7 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
                 item["reason"] = "未匹配订单且纸品类型、纸质或规格缺失，请核对原单"
             continue
         candidates = [(order, line) for order in orders for line in order["lines"]
-            if Decimal(line["required_quantity"]) > 0]
+            if Decimal(line["required_quantity"]) > 0 and (not order.get("replenishment") or Decimal(line["remaining_to_ship"]) > 0)]
         checked = [(order, line, material_conflicts(source_row, line, dongkang_delivery=True))
                    for order, line in candidates]
         candidates = [(order, line) for order, line, conflicts in checked if not conflicts]
@@ -145,10 +154,11 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
             "order_revision": order["revision"], "order_no": order["order_no"], "customer_po": order["customer_po"],
             "document_no": order["document_no"], "planned_date": order["planned_date"], "status": order["status"],
             "required_quantity": line["required_quantity"], "remaining_to_ship": line["remaining_to_ship"],
-            "child_no": line["child_no"], "unit": line["unit"]} for order, line in candidates] if len(candidates) > 1 else []
+            "child_no": line["child_no"], "unit": line["unit"], "replenishment": bool(order.get("replenishment")),
+            "responsibility": order.get("responsibility")} for order, line in candidates] if len(candidates) > 1 else []
         selected = chosen.get((item["source_sheet"], item["source_row"]))
         if selected:
-            candidates = [(order, line) for order, line in candidates if line["id"] == selected["order_line_id"]]
+            candidates = [(order, line) for order, line in candidates if line["id"] == selected["order_line_id"] and order["issue_id"] == selected["issue_id"]]
             if len(candidates) != 1:
                 item["reason"] = "所选订单不在同厂区、同合同货号及纸品的有效候选中"
                 continue
@@ -161,13 +171,16 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
             continue
         order, line = candidates[0]
         item.update(order_no=order["order_no"], child_no=line["child_no"],
-            order_line_id=line["id"], issue_id=order["issue_id"], order_revision=order["revision"])
-        item["receipt_link_eligible"] = bool(order["issue_id"] and order["status"] != "CANCELLED"
+            order_line_id=line["id"], issue_id=order["issue_id"], order_revision=order["revision"],
+            document_no=order["document_no"], responsibility=order.get("responsibility"), replenishment=bool(order.get("replenishment")))
+        item["receipt_link_eligible"] = bool(not order.get("replenishment") and order["issue_id"] and order["status"] != "CANCELLED"
             and not order["awaiting_issue"] and not line["shipping_blocked_reason"])
         if order["status"] not in portal.OPEN_STATES or order["awaiting_issue"]:
             item["reason"] = "订单已结束或采购版本有待生成变更"
         elif any(Decimal(paper["required_quantity"]) > 0 and not paper["accepted"] for paper in order["lines"]):
             item["reason"] = "此订单尚未整单确认接单"
+        elif order.get("responsibility") == "SUPPLIER" and item["unit_price"] not in (None, 0, Decimal(0)):
+            item["reason"] = "供应商责任补单必须免费，请核实供应商原单价"
         elif line["shipping_blocked_reason"]:
             item["reason"] = line["shipping_blocked_reason"]
         elif quantity > Decimal(line["remaining_to_ship"]):
@@ -185,6 +198,31 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
         shipment_exists = False
         receipt_exists = False
         if factory in factories and note_no:
+            from app.services.carton_supplier_evidence_guard import ensure_evidence_open
+            supplier = portal.supplier_access(db, user, factory, "carton_supplier:edit")
+            try:
+                ensure_evidence_open(db, factory, supplier.id, group["delivery_date"])
+            except HTTPException as error:
+                if error.status_code not in {409, 422}:
+                    raise
+                group["issues"].append(error.detail)
+            manual = manual_evidence.manual_group(db, factory, supplier.id, note_no)
+            if manual:
+                group.update(manual_delivery_id=manual.id, existing_receipt_count=1, receipt_link_ready=False, ready=False)
+                try:
+                    if group["issues"]:
+                        raise HTTPException(409, "；".join(group["issues"]))
+                    if any((row["source_sheet"], row["source_row"]) in chosen for row in group["rows"]):
+                        raise HTTPException(409, "后补手工收料原单不能重新选择订单")
+                    manual_evidence.match(db, user, manual, group["rows"], group["delivery_date"])
+                    group["receipt_link_ready"] = True
+                    for row in group["rows"]:
+                        row.update(status="READY", reason="已匹配手工收料；仅补供应商原单与单价，不重复入库")
+                except HTTPException as error:
+                    if error.status_code not in {409, 422}:
+                        raise
+                    group["issues"].append(error.detail)
+                continue
             shipment_exists = bool(db.scalar(select(SupplierShipment.id).where(SupplierShipment.factory_id == factory,
                 SupplierShipment.delivery_note_no == note_no).limit(1)))
             receipt_exists = bool(db.scalar(select(CartonReceipt.id).where(CartonReceipt.factory_id == factory,
@@ -194,7 +232,7 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
         duplicates = {line_id for line_id, count in Counter(row["order_line_id"] for row in group["rows"]
             if row["order_line_id"]).items() if count > 1}
         if duplicates:
-            group["issues"].append("同一送货单内重复出现同一纸品，请先在原系统合并明细")
+            group["issues"].append("同一原单同纸品不能同时归普通采购与补单或多张补单；请供应商拆为真实单据，原始行保留且不能转无单入库")
         if len(group["rows"]) > 200:
             group["issues"].append("一张送货单最多 200 条纸品")
         group["existing_receipt_count"] = 0
@@ -234,6 +272,16 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
             raise HTTPException(422, "所选送货单不在上传文件中")
         for factory, note_no, mode in sorted(selections):
             group = groups[(factory, note_no)]
+            if group.get("manual_delivery_id"):
+                if mode != "EXISTING_RECEIPT":
+                    raise HTTPException(409, "此单已手工入库，只能后补原单，不能再次发货")
+                supplier = portal.supplier_access(db, user, factory, "carton_supplier:edit")
+                manual = manual_evidence.manual_group(db, factory, supplier.id, note_no)
+                if any((row["source_sheet"], row["source_row"]) in {(item["source_sheet"], item["source_row"]) for item in row_selections} for row in group["rows"]):
+                    raise HTTPException(409, "后补手工收料原单不能重新选择订单")
+                sent.append(manual_evidence.attach(db, user, manual, group["rows"], group["delivery_date"],
+                    {"filename": filename, "sha256": expected_sha256}))
+                continue
             request_id = _request_id(expected_sha256, factory, note_no)
             existing = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == factory,
                 SupplierShipment.created_by == user.id, SupplierShipment.request_id == request_id))
@@ -266,7 +314,7 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
                     "contract_no": row["contract_no"] or "", "item_no": row["item_no"],
                     "packaging_type": row["packaging_type"], "paper_quality": row["paper_quality"],
                     "specification": row["specification"], "quantity": row["delivered_quantity"], "unit": row["unit"],
-                    "unit_price": row["unit_price"]}
+                    "unit_price": row["unit_price"] or 0}
                     for row in group["rows"] if row["status"] == "AD_HOC_REVIEW"])
             sent.append(portal.create_shipment(db, user, payload, commit=False,
                 source={"filename": filename, "sha256": expected_sha256,
@@ -277,7 +325,7 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
                         "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "source_sheet", "source_row")}
                         for row in group["rows"] if row["order_line_id"]},
                     "delivery_unit_prices": {row["order_line_id"]: row["unit_price"]
-                        for row in group["rows"] if row["order_line_id"]}}))
+                        for row in group["rows"] if row["order_line_id"] and row["unit_price"] is not None}}))
         db.commit()
     except Exception:
         db.rollback()

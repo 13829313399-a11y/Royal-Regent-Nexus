@@ -190,9 +190,56 @@ it.each(['paper-options', 'configurations', 'locations'] as const)('previews and
   wrapper.unmount(); get.mockRestore(); preview.mockRestore(); apply.mockRestore()
 })
 
+it('explains explicit group paper references and true two-dimensional sizes without inferring calculations or importing examples', async () => {
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
+  const preview = vi.spyOn(cartonMasterApi, 'importPreview')
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } }); await flushPromises()
+  try {
+    await wrapper.findAll('button').find(row => row.text() === '导入货号与包装')!.trigger('click')
+    const rules = wrapper.get('[aria-label="货号包装模板填写规则"]')
+    expect(rules.text()).toContain('纸品行号、计算方式、对应箱行号、每箱配套用量'); expect(rules.text()).toContain('共 20 列'); expect(rules.text()).toContain('原 14 / 16 列模板仍可用')
+    expect(rules.text()).toContain('对应箱行号不是 Excel 行号'); expect(rules.text()).toContain('不能跨组、自身引用或引用另一条配套纸品')
+    expect(rules.text()).toContain('不保存本次手动数量'); expect(rules.text()).toContain('任一行错误须修正后重新预览')
+    expect(wrapper.get('[aria-label="包装配套填写示例"]').text()).toContain('同一货号 00123'); expect(rules.text()).toContain('向上取整为 5 箱'); expect(rules.text()).toContain('每箱2片，共 10 片')
+    expect(wrapper.get('[role="dialog"]').text()).toContain('高度可空表示真实二维规格，不能以 0 代替空白'); expect(preview).not.toHaveBeenCalled()
+  } finally { wrapper.unmount(); get.mockRestore(); preview.mockRestore() }
+})
+
+it('preserves per-group server calculation evidence and its preview token without merging or parsing detail text', async () => {
+  const result = { factory_id: 'huaxing', kind: 'configurations' as const, fingerprint: 'file', master_revision: 'revision', preview_token: 'exact-group-token', added: 2, skipped: 1, errors: [] as string[], details: ['货号00123 · 组A\n第1行普通箱 30*20*15 cm · 每箱装24\n第2行二维平卡30*20 cm · 第2行配套第1行，每箱2片', '货号00123 · 组B\n第2行配套第1行，每箱3片 · <b>凭证原文</b>'] }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true }), preview = vi.spyOn(cartonMasterApi, 'importPreview').mockResolvedValue(result), apply = vi.spyOn(cartonMasterApi, 'importApply').mockResolvedValue(result)
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } }); await flushPromises()
+  try {
+    await wrapper.findAll('button').find(row => row.text() === '导入货号与包装')!.trigger('click')
+    const file = new File(['xlsx'], '二维配卡配置.xlsx'), input = wrapper.get<HTMLInputElement>('[aria-label="选择基础资料模板文件"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] }); await input.trigger('change'); await wrapper.findAll('button').find(row => row.text() === '预览导入')!.trigger('click'); await flushPromises()
+    const evidence = wrapper.get('[aria-label="基础资料预览依据"]'), rows = evidence.findAll('li')
+    expect(rows.map(row => row.text())).toEqual(result.details); expect(rows[0]!.classes()).toContain('whitespace-pre-wrap'); expect(evidence.find('b').exists()).toBe(false)
+    expect(wrapper.text()).toContain('待新增 2 · 跳过 1 · 错误 0'); expect(apply).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(row => row.text() === '确认导入')!.trigger('click'); await flushPromises()
+    expect(apply).toHaveBeenCalledWith('huaxing', 'configurations', file, 'exact-group-token'); expect(wrapper.text()).toContain('导入完成')
+  } finally { wrapper.unmount(); get.mockRestore(); preview.mockRestore(); apply.mockRestore() }
+})
+
+it('keeps whole-batch rule errors blocking and requires a new preview after stale master evidence', async () => {
+  const result = { factory_id: 'huaxing', kind: 'configurations' as const, fingerprint: 'file', master_revision: 'revision', preview_token: 'group-token', added: 0, skipped: 0, errors: ['第6行：组内纸品行号断号，对应箱行号不能引用其他配置组'], details: [] as string[] }
+  const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true }), preview = vi.spyOn(cartonMasterApi, 'importPreview').mockResolvedValue(result), apply = vi.spyOn(cartonMasterApi, 'importApply').mockRejectedValue(new Error('基础资料已变化，请重新预览'))
+  const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [], initialTab: 'CONFIG' } }); await flushPromises()
+  try {
+    await wrapper.findAll('button').find(row => row.text() === '导入货号与包装')!.trigger('click')
+    const file = new File(['xlsx'], '引用待核实.xlsx'), input = wrapper.get<HTMLInputElement>('[aria-label="选择基础资料模板文件"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] }); await input.trigger('change'); await wrapper.findAll('button').find(row => row.text() === '预览导入')!.trigger('click'); await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('组内纸品行号断号'); expect(wrapper.findAll('button').find(row => row.text() === '确认导入')!.attributes('disabled')).toBeDefined(); expect(apply).not.toHaveBeenCalled()
+    preview.mockResolvedValue({ ...result, added: 1, errors: [] }); await wrapper.findAll('button').find(row => row.text() === '预览导入')!.trigger('click'); await flushPromises()
+    await wrapper.findAll('button').find(row => row.text() === '确认导入')!.trigger('click'); await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('基础资料已变化，请重新预览'); expect(wrapper.text()).not.toContain('导入完成')
+    expect(wrapper.findAll('button').find(row => row.text() === '确认导入')!.attributes('disabled')).toBeDefined(); expect(apply).toHaveBeenCalledTimes(1)
+  } finally { wrapper.unmount(); get.mockRestore(); preview.mockRestore(); apply.mockRestore() }
+})
+
 it('shows import row errors, invalidates previews on file change and closes on factory switch', async () => {
   const get = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
-  const preview = vi.spyOn(cartonMasterApi, 'importPreview').mockResolvedValue({ factory_id: 'huaxing', kind: 'paper-options', fingerprint: '', master_revision: '', preview_token: 'token', added: 1, skipped: 0, errors: ['第 3 行：长、宽、高必须全部填写'], details: [] })
+  const preview = vi.spyOn(cartonMasterApi, 'importPreview').mockResolvedValue({ factory_id: 'huaxing', kind: 'paper-options', fingerprint: '', master_revision: '', preview_token: 'token', added: 1, skipped: 0, errors: ['第 3 行：长、宽须完整填写，高度可空但不能填0'], details: [] })
   const wrapper = mount(Workspace, { props: { factoryId: 'huaxing', customers: [] } })
   await flushPromises()
   await wrapper.findAll('button').find(b => b.text() === '导入纸品选项')!.trigger('click')

@@ -30,6 +30,10 @@ def make_router(external=False):
         def receive(identifier: str, payload: schema.Receive, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
             return service.receive(db, user, identifier, payload)
 
+        @router.post("/{identifier}/reopen-shortfall")
+        def reopen_shortfall(identifier: str, payload: schema.ReopenShortfall, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+            return service.reopen_shortfall(db, user, identifier, payload)
+
     @router.get("/{identifier}")
     def detail(identifier: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
         return service.project(db, user, factory_id, identifier, external=external)

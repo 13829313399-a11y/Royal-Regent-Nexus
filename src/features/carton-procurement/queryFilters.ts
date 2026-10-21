@@ -39,7 +39,7 @@ export function matchesSettlementLine(line: StatementLine, source: SupplierSourc
   const matches = [line.document_no, line.note, source?.special_request_no, source?.customer_name, source?.contract_no, source?.item_no, source?.packaging_type, source?.specification].join(' ').toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
   const difference = !!source?.issues.length || !!result?.issues.length || [result?.quantity_difference, result?.price_difference, result?.amount_difference, source?.supplier_delivery?.quantity_difference, source?.supplier_delivery?.price_difference].some(value => value != null && Number(value) !== 0)
   const kind = source?.special_request_kind === 'SAMPLE' ? 'SAMPLE' : source?.special_request_kind === 'WORKSHOP_MISC' ? 'MISC' : 'OTHER'
-  return matches && (!businessKind || kind === businessKind) && (filter === 'CARD' ? !!source && isCardPaper(source.packaging_type) : filter === 'NON_CARD' ? !!source?.packaging_type && !isCardPaper(source.packaging_type) : (filter === 'ALL' || (filter === 'UNMATCHED' ? !source || !source.supplier_delivery && source.kind !== 'RETURN' : difference)))
+  return matches && (!businessKind || kind === businessKind) && (filter === 'CARD' ? !!source && isCardPaper(source.packaging_type) : filter === 'NON_CARD' ? !!source?.packaging_type && !isCardPaper(source.packaging_type) : (filter === 'ALL' || (filter === 'UNMATCHED' ? !source || !source.supplier_delivery && source.kind === 'RECEIPT' : difference)))
 }
 export function settlementStage(doc: SettlementDocument) {
   if (doc.status === 'SUPERSEDED') return 'HISTORY'

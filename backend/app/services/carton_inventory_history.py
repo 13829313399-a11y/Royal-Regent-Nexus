@@ -57,6 +57,8 @@ def inventory_movement_history(
         raise HTTPException(422, "库存流水分页参数无效")
 
     rows = ordered_ledger_rows(db, factory_id)
+    from app.services.carton_return_dates import dates
+    return_dates = dates(db, factory_id)
     reversed_ids = {row.reversal_of_movement_id for row in rows if row.reversal_of_movement_id}
     balances: dict[str, Decimal] = defaultdict(Decimal)
     matches = []
@@ -90,7 +92,7 @@ def inventory_movement_history(
         )).casefold():
             continue
         matches.append(CartonInventoryHistoryMovementOut(
-            **_movement_out(row, balances[key]).model_dump(),
+            **_movement_out(row, balances[key], return_dates=return_dates).model_dump(),
             is_reversed=row.id in reversed_ids,
         ))
     matches.reverse()

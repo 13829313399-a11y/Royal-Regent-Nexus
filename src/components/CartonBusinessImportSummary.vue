@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { CartonImportBatchResponse, CartonImportPreviewRow } from '@/api/cartonProcurement'
+import type { CartonImportBatchResponse, CartonImportPreviewRow, CartonScheduleOrderMark } from '@/api/cartonProcurement'
+import { scheduleMarkChanges, scheduleMarkState } from '@/features/carton-procurement/scheduleDemand'
 
-const props = defineProps<{ batch?: CartonImportBatchResponse; orderedMarks?: Record<string, { marked: boolean }> }>()
+const props = defineProps<{ batch?: CartonImportBatchResponse; orderedMarks?: Record<string, Partial<CartonScheduleOrderMark>> }>()
+const needsReview = (row: CartonImportPreviewRow) => scheduleMarkChanges(row, scheduleMarkState(row, props.orderedMarks || {})).length > 0
 function isMarked(row: CartonImportPreviewRow) {
   return row.schedule_identity ? (props.orderedMarks?.[row.schedule_identity]?.marked ?? row.manual_ordered ?? false) : false
 }
@@ -16,9 +18,9 @@ const counts = computed(() => {
     cancelled: rows.filter(row => row.schedule_section === 'CANCELLED').length,
     newOrders: rows.filter(row => row.schedule_change === 'NEW').length,
     cancelledAfterOrder: rows.filter(row => row.schedule_change === 'CANCELLED_AFTER_ORDER').length,
-    review: rows.filter(row => row.schedule_section !== 'SHIPPED' && (row.schedule_section !== 'CANCELLED' || ['CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(row.schedule_change || '')) && (row.match_status === 'REVIEW_REQUIRED' || row.match_status === 'AMBIGUOUS' || row.procurement_state === 'REVIEW' || row.date_review_required)).length,
+    review: rows.filter(row => row.schedule_section !== 'SHIPPED' && (row.schedule_section !== 'CANCELLED' || ['CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(row.schedule_change || '')) && (needsReview(row) || row.match_status === 'REVIEW_REQUIRED' || row.match_status === 'AMBIGUOUS' || row.procurement_state === 'REVIEW' || row.date_review_required)).length,
     needs: rows.filter(row => row.procurement_state === 'NEEDS_ORDER' && !isMarked(row)).length,
-    ordered: rows.filter(row => (row.procurement_state === 'ORDERED' || isMarked(row)) && row.procurement_state !== 'COMPLETED').length,
+    ordered: rows.filter(row => (row.procurement_state === 'ORDERED' || isMarked(row)) && row.procurement_state !== 'COMPLETED' && !needsReview(row)).length,
     completed: rows.filter(row => row.procurement_state === 'COMPLETED').length,
   }
 })

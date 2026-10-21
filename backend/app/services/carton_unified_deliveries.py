@@ -62,8 +62,10 @@ def project(db, user, factory, identifier, *, external=False, read_only_all=Fals
         # Unified notes share the supplier's own frozen price with both sides.
         # Do not substitute the separate internal order cost for missing evidence,
         # or change the legacy portal's intentionally restricted projection.
-        formal_sources, _ = portal._shipment_sources(db, formal)
+        formal_sources, unmatched_sources = portal._shipment_sources(db, formal)
         original_by_id = {line.id: json.loads(line.snapshot_json) for line in formal_sources}
+        original_by_id.update({line.id: dict(json.loads(line.snapshot_json),
+            delivery_unit_price=json.loads(line.snapshot_json).get("unit_price")) for line in unmatched_sources})
         for line in formal_out["lines"]:
             original = original_by_id.get(line["id"])
             if original is not None:
@@ -71,7 +73,17 @@ def project(db, user, factory, identifier, *, external=False, read_only_all=Fals
                     free_confirmed=bool(original.get("free_confirmed")), currency=original.get("currency", "CNY"),
                     source_origin=original.get("source_origin"), warehouse_unit_price=original.get("warehouse_unit_price"))
             papers.append(dict(line, source_kind="FORMAL", formal_shipment_id=formal.id))
-        receipts.extend(formal_out.get("acceptance_history", []))
+        receipts.extend(batch for batch in formal_out.get("acceptance_history", []) if batch.get("receipt_id"))
+    defect_totals = {row[0]: dict(zip(("damaged_quantity", "rejected_quantity", "unusable_quantity"), map(str, row[1:])))
+        for row in db.execute(select(SpecialReceiptLink.shipment_line_id,
+            func.sum(CartonReceiptLine.damaged_quantity), func.sum(CartonReceiptLine.rejected_quantity),
+            func.sum(CartonReceiptLine.unusable_quantity)).join(CartonReceiptLine,
+                CartonReceiptLine.id == SpecialReceiptLink.receipt_line_id).join(CartonReceipt,
+                CartonReceipt.id == CartonReceiptLine.receipt_id).join(SpecialShipmentLine,
+                SpecialShipmentLine.id == SpecialReceiptLink.shipment_line_id).where(
+                SpecialReceiptLink.factory_id == factory, CartonReceipt.factory_id == factory,
+                SpecialShipmentLine.shipment_id.in_([shipment.id for shipment in shipments]),
+                CartonReceipt.status == "POSTED").group_by(SpecialReceiptLink.shipment_line_id))}
     correction = bool(formal_out and formal_out["requires_correction"])
     for shipment in shipments:
         detail = special.detail(db, user, factory, shipment.request_id, external=external)
@@ -82,7 +94,7 @@ def project(db, user, factory, identifier, *, external=False, read_only_all=Fals
         correction = correction or any(item["status"] == "REVERSED" for item in chosen["receipts"])
         for line in chosen["lines"]:
             frozen = line["snapshot"]
-            papers.append({**frozen, "id": line["id"], "quantity": line["quantity"],
+            papers.append({**frozen, **defect_totals.get(line["id"], {}), "id": line["id"], "quantity": line["quantity"],
                 "source_kind": "SPECIAL", "source_type": "SPECIAL_REQUEST", "order_line_id": None,
                 "special_request_id": detail["id"], "special_shipment_id": shipment.id,
                 "special_request_revision": detail["revision"], "original_special_line_id": line["request_line_id"],
@@ -93,14 +105,29 @@ def project(db, user, factory, identifier, *, external=False, read_only_all=Fals
                 "delivery_unit_price": None if frozen.get("source_origin") == "WAREHOUSE_MANUAL" else frozen["unit_price"],
                 "free_confirmed": frozen["pricing_kind"] == "FREE",
                 "remaining_quantity": line["remaining_quantity"], "receivable_quantity": line["remaining_quantity"],
+                "closed_quantity": line.get("closed_quantity", "0"),
                 "received_quantity": line["gross_received_quantity"], "effective_quantity": line["effective_received_quantity"]})
+    from app.services.carton_supplier_manual_evidence import DOCUMENT_EVENT
+    supplement = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
+        CartonAuditEvent.entity_id == identifier, CartonAuditEvent.event_type == DOCUMENT_EVENT))
+    if supplement:
+        original = json.loads(supplement.detail_json)
+        by_source = {row["shipment_line_id"]: row for row in original["rows"]}
+        for paper in papers:
+            if paper["id"] in by_source:
+                paper.update(delivery_unit_price=by_source[paper["id"]].get("unit_price"),
+                    supplier_original_supplemented=True, supplier_original_file=original["evidence"]["filename"])
     pending = any(Decimal(str(paper.get("receivable_quantity", paper.get("remaining_quantity", "0")))) > 0 for paper in papers)
     correction = correction and pending
     status = formal_out["status"] if formal_out and not shipments else "RECEIPT_REVERSED" if correction else "SENT" if pending else "RECEIVED"
+    from app.services.carton_delivery_reopening import events as reopen_events
+    reopen_history = [dict(json.loads(event.detail_json), created_at=event.created_at) for kind, ids in [
+        ("supplier_shipment", [formal.id] if formal else []), ("carton_special_shipment", [item.id for item in shipments])]
+        for event in reopen_events(db, factory, kind, ids)]
     return {"id": identifier, "factory_id": factory, "delivery_note_no": note, "delivery_date": day, "created_at": created,
         "formal": formal_out, "special": output, "lines": papers, "receipts": receipts,
         "requires_correction": correction, "can_operate": external or not formal or portal.visible_shipment(db, user, formal),
-        "status": status,
+        "status": status, "shortfall_reopen_history": reopen_history,
         "revision": formal_out["revision"] if formal_out else max((item["revision"] for item in output), default=1)}
 
 
@@ -135,6 +162,8 @@ def workspace(db, user, factory, *, external=False, responsibility_scope="OWN"):
 def pending(db, user, factory, *, limit=3):
     """One SQL source snapshot for the count and bounded original-note preview."""
     vendor = authorize(db, user, factory)
+    from app.services.carton_special_receiving import closed_quantity_query
+    closed = closed_quantity_query(db, factory)
     consumed = select(SpecialReceiptLink.shipment_line_id.label("line_id"),
         func.sum(CartonReceiptLine.received_quantity).label("quantity")).join(CartonReceiptLine,
             CartonReceiptLine.id == SpecialReceiptLink.receipt_line_id).join(CartonReceipt,
@@ -161,9 +190,10 @@ def pending(db, user, factory, *, limit=3):
     other = select(*source_columns(SpecialShipment, "SPECIAL:", case((reversed_special.c.shipment_id.is_not(None), 1), else_=0)))\
         .select_from(SpecialShipment).join(SpecialShipmentLine, SpecialShipmentLine.shipment_id == SpecialShipment.id)\
         .outerjoin(consumed, consumed.c.line_id == SpecialShipmentLine.id)\
+        .outerjoin(closed, closed.c.line_id == SpecialShipmentLine.id)\
         .outerjoin(reversed_special, reversed_special.c.shipment_id == SpecialShipment.id)\
         .outerjoin(UnifiedDelivery, group_join(SpecialShipment)).where(SpecialShipment.factory_id == factory,
-            SpecialShipment.supplier_id == vendor, SpecialShipmentLine.quantity > func.coalesce(consumed.c.quantity, 0))
+            SpecialShipment.supplier_id == vendor, SpecialShipmentLine.quantity > func.coalesce(consumed.c.quantity, 0) + func.coalesce(closed.c.quantity, 0))
     all_notes = union_all(formal, other).subquery()
     query = select(all_notes.c.identifier, all_notes.c.note, all_notes.c.day,
         func.max(all_notes.c.created).label("created"), func.max(all_notes.c.correction).label("correction"))\
@@ -205,6 +235,8 @@ def dispatch(db, user, payload):
         if old:
             if old.fingerprint != digest: raise HTTPException(409, "提交标识已用于其他送货内容")
             return project(db, user, payload.factory_id, old.id, external=True)
+        from app.services.carton_supplier_evidence_guard import ensure_evidence_open
+        ensure_evidence_open(db, payload.factory_id, vendor.id, payload.delivery_date)
         for model in (UnifiedDelivery, SupplierShipment, SpecialShipment, CartonReceipt):
             if db.scalar(select(model.id).where(model.factory_id == payload.factory_id, model.supplier_id == vendor.id,
                 model.delivery_note_no == payload.delivery_note_no)):
@@ -257,9 +289,36 @@ def receive(db, user, identifier, payload):
             special.receive(db, user, shipment.request_id, shipment.id, ss.Receive(factory_id=payload.factory_id,
                 request_id=child_key(payload.request_id, shipment.id), expected_revision=item.expected_revision,
                 acceptance_date=payload.acceptance_date, lines=item.lines, received_kind=item.received_kind,
-                workshop_id=item.workshop_id, requester_name=item.requester_name), commit=False)
+                workshop_id=item.workshop_id, requester_name=item.requester_name,
+                remaining_action=item.remaining_action, close_reason=item.close_reason), commit=False)
         result = project(db, user, payload.factory_id, identifier)
         event = special.core._audit(db, user, payload.factory_id, "UNIFIED_RECEIVED", "carton_unified_delivery", identifier,
+            {"fingerprint": digest, "request_id": payload.request_id, "response": result})
+        event.id = special.replay_id(user, payload)
+        db.commit()
+        return result
+    except Exception:
+        db.rollback(); raise
+
+
+def reopen_shortfall(db, user, identifier, payload):
+    from app.services import carton_delivery_reopening as reopening
+    try:
+        user = special.locked_actor(db, user, payload.factory_id)
+        formal, shipments, _, _, _ = descriptors(db, user, payload.factory_id, identifier)
+        digest, saved = special.replay(db, user, payload, "UNIFIED_REOPEN_SHORTFALL", identifier)
+        if saved: return saved
+        if payload.formal:
+            if formal is None: raise HTTPException(422, "此原单没有普通采购明细")
+            reopening.formal(db, user, formal, payload.formal, payload.reason)
+        available = {shipment.id: shipment for shipment in shipments}
+        for item in payload.special:
+            shipment = available.get(item.shipment_id)
+            if not shipment or shipment.request_id != item.request_id:
+                raise HTTPException(422, "重开来源不属于此原送货单")
+            reopening.special(db, user, shipment, item, payload.reason)
+        result = project(db, user, payload.factory_id, identifier)
+        event = special.core._audit(db, user, payload.factory_id, "UNIFIED_CLOSURE_REOPENED", "carton_unified_delivery", identifier,
             {"fingerprint": digest, "request_id": payload.request_id, "response": result})
         event.id = special.replay_id(user, payload)
         db.commit()

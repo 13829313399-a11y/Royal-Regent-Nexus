@@ -27,6 +27,24 @@ import json
 
 router = APIRouter(prefix="/api/carton-supplier", tags=["carton-supplier"])
 
+from app.schemas.carton_supplier_changes import SupplierChangeResponse
+from app.services import carton_supplier_changes as changes
+
+
+@router.get("/changes")
+def supplier_changes(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return changes.workspace(db, user, factory_id)
+
+
+@router.get("/internal/changes")
+def internal_supplier_changes(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return changes.workspace(db, user, factory_id, internal=True)
+
+
+@router.post("/changes/respond")
+def respond_supplier_change(payload: SupplierChangeResponse, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return changes.respond(db, user, payload)
+
 @router.get("/memberships")
 def memberships(db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return [{"factory_id": supplier.factory_id, "supplier_name": supplier.supplier_name}
@@ -98,7 +116,7 @@ def carton_mark_asset_document(asset_id: str, factory_id: str, preview: bool = F
         "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
 
 
-from app.schemas.carton_mark import CartonMarkSupplierBinding
+from app.schemas.carton_mark import CartonMarkSupplierBinding, CartonMarkAssociations, CartonMarkAssociationTarget
 
 
 @router.get('/carton-mark/binding-targets')
@@ -114,6 +132,13 @@ def propose_mark_binding(asset_id: str, factory_id: str, payload: CartonMarkSupp
     return propose(db, user, factory_id, asset_id, payload)
 
 
+@router.put('/carton-mark/assets/{asset_id}/associations', response_model=SupplierMarkAssetOut)
+def associate_mark_asset(asset_id: str, factory_id: str, payload: CartonMarkAssociations,
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_mark_associations import save
+    return save(db, user, factory_id, asset_id, payload, external=True)
+
+
 @router.get("/carton-mark/upload-orders", response_model=list[SupplierMarkUploadOrderOut])
 def carton_mark_upload_orders(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return mark_upload.upload_orders(db, user, factory_id)
@@ -123,9 +148,17 @@ def carton_mark_upload_orders(factory_id: str, db: Session = Depends(get_db), us
 async def upload_carton_mark_assets(request: Request, factory_id: str = Form(..., max_length=64),
         order_id: str = Form("", max_length=96), issue_id: str = Form("", max_length=96),
         shared_unbound: bool = Form(False),
+        request_id: str = Form('', max_length=96, pattern=r'^[A-Za-z0-9_-]*$'), targets_json: str = Form(''),
         files: list[UploadFile] = File(...), db: Session = Depends(get_db),
         user: AuthContext = Depends(get_current_user)):
     orders = mark_upload.upload_orders(db, user, factory_id)
+    from pydantic import TypeAdapter, ValidationError
+    try:
+        targets = TypeAdapter(list[CartonMarkAssociationTarget]).validate_json(targets_json) if targets_json else None
+        if targets is not None and len(targets) > 100: raise ValueError()
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(422, '关联目标参数不正确') from exc
+    if targets is not None and (order_id or issue_id): raise HTTPException(422, '请仅选择一种关联参数')
     if not 1 <= len(files) <= 50:
         raise HTTPException(413, "每批须为 1–50 个箱唛文件")
     if bool(order_id) != bool(issue_id):
@@ -143,8 +176,10 @@ async def upload_carton_mark_assets(request: Request, factory_id: str = Form(...
         contents.append((file.filename or "", content))
     db.rollback()
     parsed = await run_in_threadpool(mark_upload.recognize_batch, contents, orders)
-    _lock_receipt_factory(db, factory_id)
-    return mark_upload.save_batch(db, get_current_user(request, db), factory_id, parsed, orders, order_id, issue_id, shared_unbound=shared_unbound)
+    from app.services.carton_special_requests import locked_actor
+    user = locked_actor(db, get_current_user(request, db), factory_id)
+    return mark_upload.save_batch(db, user, factory_id, parsed, orders, order_id, issue_id,
+        shared_unbound=shared_unbound, targets=targets, request_id=request_id)
 
 
 @router.get("/carton-mark/templates", response_model=list[SupplierMarkTemplateOut])

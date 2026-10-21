@@ -7,7 +7,7 @@ import { cartonSpecialRequestsApi as api, type SpecialRequest } from '@/api/cart
 import type { CartonLocation } from '@/api/cartonPositions'
 import { getApiErrorMessage } from '@/lib/http'
 
-const props = defineProps<{ open: boolean; factoryId: string; requestId: string; viewerKey: string }>()
+const props = defineProps<{ open: boolean; factoryId: string; requestId: string; viewerKey: string; libraryEnabled?: boolean }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; saved: []; 'open-delivery': [number: string]; 'open-library': [requestId: string, lineId?: string] }>()
 const request = ref<SpecialRequest | null>(null), locations = ref<CartonLocation[]>([])
 const loading = ref(false), busy = ref(false), error = ref(''), locationError = ref('')
@@ -49,7 +49,7 @@ async function refreshLocations() {
       <template v-else-if="request">
         <CartonSpecialManualReceipt :request="request" :locations="locations" :viewer-key="viewerKey" @saved="saved" @busy="busy = $event" @cancel="emit('update:open', false)" @open-delivery="emit('open-delivery', $event)" @locations-changed="refreshLocations" />
         <p v-if="locationError" role="alert" class="mt-3 text-sm text-red-700">仓位刷新失败：{{ locationError }}<Button variant="link" @click="refreshLocations">重试</Button></p>
-        <Button v-if="request.lines.some(line => !line.mark_ready && line.mark_mode !== 'NONE')" type="button" variant="link" :disabled="busy" @click="emit('open-library', request.id, request.lines.find(line => !line.mark_ready && line.mark_mode !== 'NONE')?.id)">前往箱唛资料库核对箱唛</Button>
+        <Button v-if="libraryEnabled && request.lines.some(line => !line.mark_ready && line.mark_mode !== 'NONE')" type="button" variant="link" :disabled="busy" @click="emit('open-library', request.id, request.lines.find(line => !line.mark_ready && line.mark_mode !== 'NONE')?.id)">箱唛资料库</Button>
       </template>
     </DialogContent>
   </DialogPortal></DialogRoot>

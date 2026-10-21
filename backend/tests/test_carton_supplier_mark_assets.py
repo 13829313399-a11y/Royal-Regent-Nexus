@@ -1,5 +1,6 @@
 """Raw carton-mark sharing follows issued contracts and supplier ownership."""
 import hashlib
+from uuid import uuid4
 from test_molding_sample_api import make_client
 from test_carton_supplier_portal import setup_portal, revoke_supplier_permission
 
@@ -121,12 +122,33 @@ def test_sharing_uses_issued_contract_and_never_expands_an_explicit_binding(monk
             add_asset(db, "issued", order["contract_no"])
             add_asset(db, "unissued", "UNISSUED-CONTRACT")
             original = db.get(CartonOrder, order["id"])
+            original.order_no = "UNISSUED-ORDER-NO"
             original.contract_no = "UNISSUED-CONTRACT"
             original.item_no = "UNISSUED-ITEM"
+            original.customer_name = "UNISSUED-CUSTOMER"
+            original.customer_po = "UNISSUED-PO"
+            original.revision += 1
+            current_revision = original.revision
             db.commit()
-        rows = client.get(BASE, params=SCOPE).json()
+        response = client.get(BASE, params=SCOPE)
+        assert response.status_code == 200, response.text
+        rows = response.json()
         assert [row["id"] for row in rows] == ["issued"]
         assert rows[0]["orders"][0]["item_no"] == order["item_no"]
+        issued_association = dict(order_kind="REGULAR", order_id=order["id"], contract_no=order["contract_no"],
+            customer_name=order["customer_name"], item_no=order["item_no"], expected_revision=current_revision,
+            issue_id=rows[0]["orders"][0]["issue_id"], line_id="")
+        assert rows[0]["associations"] == [issued_association]
+        for private in ("UNISSUED-", "order_no", "customer_code"):
+            assert private not in response.text
+        targets_response = client.get("/api/carton-supplier/carton-mark/binding-targets", params=SCOPE)
+        assert targets_response.status_code == 200, targets_response.text
+        regular_targets = [target for target in targets_response.json() if target["order_kind"] == "REGULAR"]
+        assert regular_targets == [dict(order_kind="REGULAR", order_id=order["id"], contract_no=order["contract_no"],
+            customer_name=order["customer_name"], item_no=order["item_no"], revision=current_revision,
+            issue_id=issued_association["issue_id"], lines=[])]
+        for private in ("UNISSUED-", "order_no", "customer_code"):
+            assert private not in targets_response.text
         assert client.get(BASE + "/unissued/document", params=SCOPE).status_code == 404
         with SessionLocal() as db:
             original = db.get(CartonOrder, order["id"])
@@ -150,6 +172,22 @@ def test_sharing_uses_issued_contract_and_never_expands_an_explicit_binding(monk
         rows = client.get(BASE, params=SCOPE).json()
         assert [row["id"] for row in rows] == ["issued"]
         assert [entry["id"] for entry in rows[0]["orders"]] == [order["id"]]
+        # Rebinding an authorized issued target must not adopt its unpublished
+        # internal header or drop it from the supplier's association projection.
+        rebound = client.put(BASE + "/issued/associations", params=SCOPE, json=dict(
+            revision=rows[0]["revision"], request_id=uuid4().hex, targets=[{
+                key: value for key, value in issued_association.items()
+                if key in {"order_kind", "order_id", "expected_revision", "issue_id", "line_id"}}]))
+        assert rebound.status_code == 200, rebound.text
+        assert rebound.json()["associations"] == [issued_association]
+        assert [entry["id"] for entry in rebound.json()["orders"]] == [order["id"]]
+        assert rebound.json()["orders"][0] == rows[0]["orders"][0]
+        for private in ("UNISSUED-", "order_no", "customer_code", "OTHER-CUSTOMER"):
+            assert private not in rebound.text
+        assert client.get(BASE + "/issued/document", params=SCOPE).status_code == 200
+        with SessionLocal() as db:
+            original = db.get(CartonOrder, order["id"])
+            assert original.revision == current_revision and original.contract_no == "UNISSUED-CONTRACT"
         with SessionLocal() as db:
             original = db.get(CartonOrder, order["id"])
             original.deleted_at = "2026-10-05"

@@ -356,6 +356,15 @@ class CartonOrderCancelRequest(BaseModel):
         return _strip(value)
 
 
+class CartonOrderReturnRequest(CartonOrderCancelRequest):
+    return_date: str | None = None
+
+    @field_validator("return_date")
+    @classmethod
+    def valid_return_date(cls, value):
+        return _validate_iso_date(value) if value else None
+
+
 class CartonOrderSubmitRequest(BaseModel):
     factory_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
@@ -887,6 +896,8 @@ class CartonReceiptLineOut(BaseModel):
     dimension_unit: str | None = None
     zero_price_kind: Literal["FREE", "PENDING"] | None = None
     replenishment_issue_id: str | None = None
+    child_request_id: str | None = None
+    parent_request_id: str | None = None
     document_no: str | None = None
     responsibility: str | None = None
     settlement_unit_price: Decimal | None = None
@@ -982,6 +993,7 @@ class CartonInventoryRelocateRequest(BaseModel):
 
 
 class CartonInventoryMovementCreate(BaseModel):
+    return_date: str | None = None
     workshop_id: str = Field(default="", max_length=96)
     location_id: str = ""
     issue_kind: Literal["USAGE", "RETURN", "LOSS", "LOAN", "OTHER", "UNKNOWN"] = "UNKNOWN"
@@ -1008,6 +1020,10 @@ class CartonInventoryMovementCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_quantity(self):
+        if self.return_date:
+            self.return_date = _validate_iso_date(self.return_date)
+            if self.movement_type != "OUTBOUND" or self.issue_kind != "RETURN":
+                raise ValueError("实际退货日期仅适用于退供应商出库")
         if not self.order_line_id and not self.reference_movement_id:
             raise ValueError("必须选择一条库存结存记录")
         if self.movement_type == "OUTBOUND" and self.quantity <= 0:
@@ -1044,6 +1060,7 @@ class CartonInventoryBulkItem(BaseModel):
 
 
 class CartonInventoryBulkCreate(BaseModel):
+    return_date: str | None = None
     workshop_id: str = Field(default="", max_length=96)
     issue_kind: Literal["USAGE", "RETURN", "LOSS", "LOAN", "OTHER", "UNKNOWN"] = "UNKNOWN"
     request_id: str = Field(min_length=16, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
@@ -1059,6 +1076,10 @@ class CartonInventoryBulkCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_unique_targets(self):
+        if self.return_date:
+            self.return_date = _validate_iso_date(self.return_date)
+            if self.issue_kind != "RETURN":
+                raise ValueError("实际退货日期仅适用于退供应商出库")
         targets = [(item.order_line_id or item.reference_movement_id, item.location_id) for item in self.items]
         if len(targets) != len(set(targets)):
             raise ValueError("批量出库不能重复选择同一条库存结存")
@@ -1076,6 +1097,10 @@ class CartonInventoryReversalRequest(BaseModel):
 
 
 class CartonInventoryMovementOut(BaseModel):
+    issue_kind: str = "UNKNOWN"
+    return_date: str | None = None
+    return_date_basis: str = ""
+    return_posting_date: str = ""
     cost_status: str = "待核算"
     cost_currency: str = ""
     cost_amount: Decimal | None = None
@@ -1316,6 +1341,7 @@ class CartonImportBatchListOut(BaseModel):
 
 
 class CartonScheduleOrderMarkRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
     factory_id: str = Field(min_length=1, max_length=64)
     batch_id: str = Field(min_length=1, max_length=96)
     source_sheet: str = Field(min_length=1, max_length=128)
@@ -1329,6 +1355,7 @@ class CartonScheduleOrderMarkRow(BaseModel):
 
 
 class CartonScheduleOrderMarkBulkRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
     factory_id: str = Field(min_length=1, max_length=64)
     batch_id: str = Field(min_length=1, max_length=96)
     rows: list[CartonScheduleOrderMarkRow] = Field(min_length=1, max_length=100)

@@ -281,8 +281,11 @@ export interface CartonMarkUploadOptions {
   previous_revision?: number
   sharing_mode?: 'SUPPLIER' | 'INTERNAL'
   supplier_id?: string
+  request_id?: string
+  targets?: CartonMarkAssociationTarget[]
 }
 export interface CartonMarkSharing {
+  associations?: CartonMarkAssociation[]
   sharing_mode?: 'ORDER_BOUND' | 'SUPPLIER' | 'INTERNAL'
   shared_supplier_id?: string
   shared_supplier_name?: string
@@ -290,8 +293,14 @@ export interface CartonMarkSharing {
   pending_bindings?: { id: string; order_id: string; order_no: string; contract_no: string; item_no: string; requested_at: string }[]
 }
 export interface CartonMarkBindingTarget {
-  order_id: string; order_kind: 'REGULAR' | 'SAMPLE' | 'MISC'; order_no: string; contract_no: string
-  customer_name: string; item_no: string; revision: number; lines: { id: string; label: string }[]
+  order_id: string; order_kind: 'REGULAR' | 'SAMPLE' | 'MISC'; order_no?: string; contract_no: string
+  customer_name: string; item_no: string; revision: number; issue_id?: string; lines: { id: string; label: string }[]
+}
+export interface CartonMarkAssociationTarget {
+  order_kind: CartonMarkBindingTarget['order_kind']; order_id: string; expected_revision: number; issue_id: string; line_id: string
+}
+export interface CartonMarkAssociation extends CartonMarkAssociationTarget {
+  order_no?: string; contract_no: string; customer_name: string; item_no: string
 }
 export interface CartonMarkAsset extends CartonMarkSharing {
   id: string
@@ -326,6 +335,9 @@ export function createCartonMarkApi(client = http) {
   return {
     async bindingTargets(factoryId: string, supplier = false, signal?: AbortSignal) {
       return (await client.get<CartonMarkBindingTarget[]>(supplier ? '/carton-supplier/carton-mark/binding-targets' : '/carton-mark/assets/binding-targets', { params: { factory_id: factoryId }, signal })).data
+    },
+    async associateAsset(factoryId: string, asset: Pick<CartonMarkAsset, 'id' | 'revision'>, targets: CartonMarkAssociationTarget[], requestId: string, supplier = false, signal?: AbortSignal) {
+      return (await client.put<CartonMarkAsset>(`${supplier ? '/carton-supplier/carton-mark' : '/carton-mark'}/assets/${encodeURIComponent(asset.id)}/associations`, { revision: asset.revision, request_id: requestId, targets }, { params: { factory_id: factoryId }, signal })).data
     },
     async bindSpecialAsset(factoryId: string, target: CartonMarkBindingTarget, lineId: string, asset: Pick<CartonMarkAsset, 'id' | 'revision'>, requestId: string, supplier = false, signal?: AbortSignal) {
       const prefix = supplier ? '/carton-supplier/special-requests' : '/carton-special-requests'

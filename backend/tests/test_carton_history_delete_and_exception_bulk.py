@@ -4,6 +4,7 @@ from test_molding_sample_api import make_client, login_as
 from test_carton_history_identity_api import _customer, _row, _upload, _orders, BASE
 from test_carton_procurement_api import _freeze_carton_time, _create_order, _workbook_bytes
 from test_carton_receipt_correction_api import receipt, reverse
+from carton_p1_helpers import cancel_and_acknowledge
 
 
 def historical(client):
@@ -18,12 +19,15 @@ def delete(client, order, **overrides):
         "reason": "历史订单重复录入", **overrides})
 
 
-def test_history_delete_preserves_audit_master_and_allows_reimport(monkeypatch):
+def test_history_delete_preserves_audit_master_and_does_not_revive_retained_source(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         _freeze_carton_time(monkeypatch)
         row = historical(client)
-        assert row["status"] == "PENDING_SUPPLIER" and row["can_delete_history"]
+        assert row["status"] == "PENDING_SUPPLIER" and not row["can_delete_history"]
+        assert delete(client, row).status_code == 409
+        row = cancel_and_acknowledge(client, row)
+        assert row["can_delete_history"]
         customers = client.get(f"{BASE}/customers", params={"factory_id": "huaxing"}).json()
         assert delete(client, row, expected_revision=row["revision"] + 1).status_code == 409
         assert delete(client, row, factory_id="huadeng").status_code == 404
@@ -34,7 +38,11 @@ def test_history_delete_preserves_audit_master_and_allows_reimport(monkeypatch):
         audits = client.get(f"{BASE}/audit-events", params={"factory_id": "huaxing"}).json()["items"]
         event = next(row for row in audits if row["event_type"] == "HISTORY_ORDER_DELETED")
         assert event["detail"]["order"]["lines"] and event["detail"]["purchase_issues"]
-        assert _upload(client, [_row("Alpha")])["imported_count"] == 1
+        # Archiving preserves the historical identity. Re-uploading that source
+        # must not silently revive the stopped purchase or duplicate its demand.
+        repeated = _upload(client, [_row("Alpha")])
+        assert repeated["imported_count"] == 0 and repeated["skipped_count"] == 1
+        assert _orders(client) == []
 
 
 @pytest.mark.parametrize("mode", ["pending", "posted", "reversed"])

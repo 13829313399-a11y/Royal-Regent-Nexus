@@ -1,7 +1,7 @@
 """Internal and supplier entry points for the same versioned request contract."""
 from urllib.parse import quote
 from typing import Literal
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from app.db import get_db
@@ -12,6 +12,18 @@ from app.services import carton_special_requests as service
 
 def make_router(external=False):
     router = APIRouter(prefix="/api/carton-supplier/special-requests" if external else "/api/carton-special-requests", tags=["carton-special-requests"])
+
+    @router.get("/{identifier}/purchase-orders")
+    def purchase_context(identifier: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+        from app.services import carton_special_purchase
+        return carton_special_purchase.context(db, user, factory_id, identifier, external=external)
+
+    @router.get("/{identifier}/purchase-orders/{version_id}/export")
+    def purchase_export(identifier: str, version_id: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+        from app.services import carton_special_purchase
+        from app.services.carton_procurement_export import XLSX_MEDIA_TYPE
+        content, filename = carton_special_purchase.export(db, user, factory_id, identifier, version_id, external=external)
+        return Response(content, media_type=XLSX_MEDIA_TYPE, headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(filename)})
 
     @router.get("")
     def workspace(factory_id: str, responsibility_scope: Literal["OWN", "ALL"] = "OWN",
@@ -51,6 +63,23 @@ def make_router(external=False):
         def ship(identifier: str, payload: schema.Ship, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
             return service.ship(db, user, identifier, payload)
     else:
+        @router.get("/{identifier}/stock-actions")
+        def stock_preview(identifier: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+            from app.services import carton_special_stock
+            return carton_special_stock.preview(db, user, factory_id, identifier)
+
+        @router.post("/{identifier}/stock-actions")
+        def stock_action(identifier: str, payload: schema.StockAction, request: Request,
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+            from app.services import carton_special_stock
+            return carton_special_stock.submit(db, user, identifier, payload, refresh_actor=lambda: get_current_user(request, db))
+
+        @router.post("/{identifier}/stock-actions/undo")
+        def stock_undo(identifier: str, payload: schema.Delete, request: Request,
+                       db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+            from app.services import carton_special_stock
+            return carton_special_stock.undo(db, user, identifier, payload, refresh_actor=lambda: get_current_user(request, db))
+
         @router.get("/mark-options")
         def mark_options(factory_id: str, request_id: str = '', db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
             from app.services.carton_special_marks import options

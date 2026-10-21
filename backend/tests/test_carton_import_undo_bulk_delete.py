@@ -235,14 +235,20 @@ def test_concurrent_schedule_reimports_share_one_new_batch(monkeypatch, kind):
             "factory_id": "huaxing", "reason": "撤销后重新导入",
         }).status_code == 200
         from app.services import carton_procurement as service
-        original_lock = service.lock_transaction
+        from app.services import identity_policy
+        # Weekly imports acquire IAM before the factory lock. Synchronize
+        # before that first exclusive lock, never while one thread holds IAM
+        # and waits for another thread which cannot acquire it.
+        lock_owner = identity_policy if kind == "weekly" else service
+        lock_name = "lock_mutation" if kind == "weekly" else "lock_transaction"
+        original_lock = getattr(lock_owner, lock_name)
         barrier = Barrier(2)
 
         def synchronized_lock(*args, **kwargs):
             barrier.wait(timeout=10)
             return original_lock(*args, **kwargs)
 
-        monkeypatch.setattr(service, "lock_transaction", synchronized_lock)
+        monkeypatch.setattr(lock_owner, lock_name, synchronized_lock)
         from io import BytesIO
         from fastapi import UploadFile
         from app.db import SessionLocal
@@ -261,7 +267,7 @@ def test_concurrent_schedule_reimports_share_one_new_batch(monkeypatch, kind):
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(reimport, (1, 2)))
-        monkeypatch.setattr(service, "lock_transaction", original_lock)
+        monkeypatch.setattr(lock_owner, lock_name, original_lock)
         assert len({response.id for response in responses}) == 1
         assert sorted(response.duplicate for response in responses) == [False, True]
         assert all(response.parse_summary["reimported_from_batch_id"] == batch["id"] for response in responses)

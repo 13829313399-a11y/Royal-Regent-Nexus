@@ -69,7 +69,7 @@ def access(db, user, factory, identifier=None, *, external=False):
         raise HTTPException(403, "没有本厂纸品需求权限")
     row = db.get(SpecialRequest, identifier) if identifier else None
     if identifier:
-        if row is None or row.factory_id != factory or (external and (row.supplier_id != vendor.id or row.status == "SUBMITTED")):
+        if row is None or row.factory_id != factory or (external and (row.supplier_id != vendor.id or row.status == "SUBMITTED" or not is_published(db, row))):
             raise HTTPException(404, "未找到此厂区纸品需求")
         if not external:
             if not (allowed(user, factory, "order_write") or can_receive(user, factory)) and row.created_by != user.id:
@@ -95,6 +95,13 @@ def lines(db, row):
 
 def attachments(db, row):
     return list(db.scalars(select(SpecialAttachment).where(SpecialAttachment.request_id == row.id).order_by(SpecialAttachment.version)))
+
+
+def next_attachment_version(db, row):
+    # Attachment ordering is independent of the immutable procurement revision.
+    saved = [file.version for file in attachments(db, row)]
+    pending = [file.version for file in db.new if isinstance(file, SpecialAttachment) and file.request_id == row.id]
+    return max([row.revision, *saved, *pending]) + 1
 
 
 def line_out(line):
@@ -134,6 +141,14 @@ def replay_id(user, payload):
 
 def replay(db, user, payload, action, identifier="", extra=None):
     data = payload.model_dump(mode="json")
+    # New default continuation controls are equivalent to pre-upgrade payloads.
+    for body in [data, *data.get("special", [])]:
+        if body.get("remaining_action") == "WAIT": body.pop("remaining_action", None)
+        if body.get("close_reason") == "": body.pop("close_reason", None)
+        for line in body.get("lines", []):
+            if line.get("close_remaining") is False: line.pop("close_remaining", None)
+    for line in (data.get("formal") or {}).get("lines", []):
+        if line.get("close_remaining") is False: line.pop("close_remaining", None)
     # The optional formal receipt bridge must preserve older unified retries.
     for line in (data.get("formal") or {}).get("lines", []):
         if line.get("replenishment_issue_id") is None:
@@ -185,6 +200,9 @@ def state_counts(db, row):
         if receipt.status == "POSTED":
             received[link.shipment_line_id] = received.get(link.shipment_line_id, Decimal(0)) + paper.effective_quantity
             consumed[link.shipment_line_id] = consumed.get(link.shipment_line_id, Decimal(0)) + paper.received_quantity
+    from app.services.carton_special_receiving import closed_quantities
+    for key, value in closed_quantities(db, row.factory_id, [paper.shipment_id for paper in shipped]).items():
+        consumed[key] = consumed.get(key, Decimal(0)) + value
     by_request = {}
     for paper in shipped:
         by_request[paper.request_line_id] = by_request.get(paper.request_line_id, Decimal(0)) + received.get(paper.id, Decimal(0))
@@ -196,10 +214,19 @@ def deleted_predicate():
         SpecialVersion.factory_id == SpecialRequest.factory_id, SpecialVersion.action == "DELETED").exists()
 
 
+def is_published(db, row):
+    return row.origin == "SUPPLIER_EXTRA" or row.kind == "SUPPLIER_GIFT" or bool(db.scalar(select(SpecialVersion.id).where(
+        SpecialVersion.factory_id == row.factory_id, SpecialVersion.request_id == row.id,
+        SpecialVersion.action == "SEND").limit(1)))
+
+
 def deletion_allowed(db, user, row):
     if not allowed(user, row.factory_id, "order_write") or not (
         allowed(user, row.factory_id, "inventory_write") or allowed(user, row.factory_id, "order_adjust")):
         return False
+    if is_published(db, row):
+        from app.services.carton_supplier_changes import special_confirmation
+        return row.status == "CANCELLED" and special_confirmation(db, row)["status"] == "CANCEL_ACKNOWLEDGED"
     if row.status == "CANCELLED": return True
     return row.origin == "INTERNAL" and not db.scalar(select(SpecialShipment.id).where(SpecialShipment.request_id == row.id).limit(1)) \
         and not db.scalar(select(SpecialVersion.id).where(SpecialVersion.request_id == row.id, SpecialVersion.action == "QUOTE").limit(1)) \
@@ -207,23 +234,41 @@ def deletion_allowed(db, user, row):
 
 
 def flags(db, user, row, external):
+    from app.services.carton_supplier_changes import special_confirmation
+    confirmation = special_confirmation(db, row)
     manager = not external and allowed(user, row.factory_id, "order_write")
+    from app.services.carton_mark_library import CARTON_MARK_WRITE_DEPARTMENTS
+    from app.services.auth import authorization_decision
+    mark_writer = not external and any(authorization_decision(user, 'carton_mark:template_upload', row.factory_id, dept)[0]
+        for dept in CARTON_MARK_WRITE_DEPARTMENTS)
     active = row.status not in {"CANCELLED", "COMPLETED"}
     result = dict(can_edit=not external and active and row.status == "SUBMITTED" and (manager or row.created_by == user.id),
         can_confirm=manager and row.status == "SUBMITTED",
-        can_adjust=manager and active and row.status != "SUBMITTED" and row.origin != "SUPPLIER_EXTRA",
+        can_adjust=manager and active and row.status != "SUBMITTED" and row.origin not in {"SUPPLIER_EXTRA", "REPLENISHMENT"}
+        and row.kind in {"SAMPLE", "WORKSHOP_MISC"},
+        can_append=manager and row.status not in {"SUBMITTED", "CANCELLED"} and row.origin not in {"SUPPLIER_EXTRA", "REPLENISHMENT"}
+        and row.kind in {"SAMPLE", "WORKSHOP_MISC"},
         can_manual_receive=not external and can_receive(user, row.factory_id) and row.kind in {"SAMPLE", "WORKSHOP_MISC"} and row.status in {"SENT", "QUOTED", "READY", "PARTIALLY_RECEIVED"} and row.origin != "SUPPLIER_EXTRA",
         can_send=manager and row.status == "SUBMITTED", can_approve=manager and row.status == "QUOTED",
         can_cancel=manager and active, can_quote=external and active and row.status in {"SENT", "QUOTED"}
         and portal.supplier_permission(user, "carton_supplier:approve", row.factory_id),
         can_ship=external and row.status in {"SENT", "QUOTED", "READY", "PARTIALLY_RECEIVED"}
+        and confirmation["status"] in {"ACCEPTED", "SUPPLIER_ORIGIN"}
         and portal.supplier_permission(user, "carton_supplier:edit", row.factory_id),
         can_receive=not external and can_receive(user, row.factory_id),
-        can_attach=active and (manager or (not external and row.created_by == user.id) or
+        can_attach=row.status != 'CANCELLED' and (manager or mark_writer or (not external and row.created_by == user.id) or
             (external and portal.supplier_permission(user, "carton_supplier:edit", row.factory_id))),
         can_message=not external or portal.supplier_permission(user, "carton_supplier:edit", row.factory_id),
         can_confirm_material=manager and active,
         can_delete=not external and deletion_allowed(db, user, row))
+    from app.services import carton_special_stock
+    stock_writer = manager and allowed(user, row.factory_id, "inventory_write")
+    result.update(can_return_stock=stock_writer and carton_special_stock.eligible(db, row),
+        can_replenish=stock_writer and carton_special_stock.eligible(db, row),
+        can_undo_replenish=stock_writer and row.origin == carton_special_stock.ORIGIN and not carton_special_stock.undo_blockers(db, row, carton_special_stock.replacement(db, row)))
+    if row.origin == carton_special_stock.ORIGIN:
+        for key in ("can_edit", "can_confirm", "can_adjust", "can_append", "can_send", "can_cancel", "can_delete", "can_confirm_material"):
+            result[key] = False
     if db.scalar(select(SpecialVersion.id).where(SpecialVersion.request_id == row.id, SpecialVersion.action == "DELETED").limit(1)):
         return dict.fromkeys(result, False)
     return result
@@ -239,29 +284,40 @@ def delete_request(db, user, identifier, payload, *, commit=True):
     if saved: return saved
     require_revision(row, payload)
     if not flags(db, user, row, False)["can_delete"]:
-        raise HTTPException(409, "订单已删除，或已有供应商执行、附件及收料记录，请核实后按取消流程处理")
+        raise HTTPException(409, "已发布订单须先取消并取得供应商收到当前停止通知的回执，才能归档删除")
     # Keep every source row and immutable batch; only remove it from order lists.
     row.status = "CANCELLED"
     version(db, user, row, "DELETED", execution=True, reason=payload.reason)
     return finish(db, user, payload, row, "DELETED", digest, response_extra={"deleted": True}, commit=commit)
 
 
-def detail(db, user, factory, identifier, *, external=False):
+def detail(db, user, factory, identifier, *, external=False, mark_assets_by_order=None):
     row = access(db, user, factory, identifier, external=external)
+    from app.services.carton_replenishment_receipts import receipt_links
+    receipt_price_links = receipt_links(db, factory) if external else {}
     shipped, received, consumed, received_by_request, receipt_rows = state_counts(db, row)
     response = {key: getattr(row, key) for key in ("id", "factory_id", "request_no", "kind", "title", "requester_name",
         "customer_code", "customer_name", "workshop_id", "purpose", "required_date", "status", "revision", "current_version_id",
         "quote_version_id", "pricing_kind", "promised_date", "created_by", "created_at", "updated_at", "origin")}
     response["deleted"] = bool(db.scalar(select(SpecialVersion.id).where(SpecialVersion.request_id == row.id, SpecialVersion.action == "DELETED").limit(1)))
+    from app.services.carton_supplier_changes import special_confirmation
+    response["supplier_confirmation"] = special_confirmation(db, row)
+    from app.services.carton_special_stock import replacement_out
+    response["replacement"] = replacement_out(db, row, user=user, external=external)
     response["lines"] = [line_out(line) | {"received_quantity": str(received_by_request.get(line.id, Decimal(0))),
         "remaining_quantity": str(max(Decimal(0), line.quantity - received_by_request.get(line.id, Decimal(0)))),
         "remaining_to_ship": str(max(Decimal(0), line.quantity - received_by_request.get(line.id, Decimal(0)) -
             sum((paper.quantity - consumed.get(paper.id, Decimal(0)) for paper in shipped if paper.request_line_id == line.id), Decimal(0))))} for line in lines(db, row)]
     response["attachments"] = [{key: getattr(file, key) for key in ("id", "role", "filename", "media_type", "sha256", "size", "version", "created_by", "created_at", "line_id")} for file in attachments(db, row)]
+    from app.services.carton_special_marks import associated_files
+    if mark_assets_by_order is None: mark_assets_by_order = associated_files(db, user, factory, external=external, request_ids={row.id})
+    response['mark_assets'] = mark_assets_by_order.get(row.id, [])
     response["messages"] = [{key: getattr(message, key) for key in ("id", "body", "actor_id", "actor_name", "audience", "created_at")}
         for message in db.scalars(select(SpecialMessage).where(SpecialMessage.request_id == row.id).order_by(SpecialMessage.created_at, SpecialMessage.id))]
     response["history"] = [{key: getattr(event, key) for key in ("id", "revision", "action", "actor_id", "actor_name", "created_at")} |
         {"snapshot": json.loads(event.snapshot_json)} for event in db.scalars(select(SpecialVersion).where(SpecialVersion.request_id == row.id).order_by(SpecialVersion.revision))]
+    from app.services.carton_special_receiving import closed_quantities, closures
+    closed = closed_quantities(db, factory, [paper.shipment_id for paper in shipped])
     response["shipments"] = []
     for shipment in db.scalars(select(SpecialShipment).where(SpecialShipment.request_id == row.id).order_by(SpecialShipment.created_at)):
         papers = [paper for paper in shipped if paper.shipment_id == shipment.id]
@@ -270,21 +326,26 @@ def detail(db, user, factory, identifier, *, external=False):
         response["shipments"].append({key: getattr(shipment, key) for key in ("id", "version_id", "delivery_note_no", "delivery_date", "created_at")} |
             {"source_origin": "WAREHOUSE_MANUAL" if any(json.loads(paper.snapshot_json).get("source_origin") == "WAREHOUSE_MANUAL" for paper in papers) else "SUPPLIER",
              "lines": [{"id": paper.id, "request_line_id": paper.request_line_id, "quantity": str(paper.quantity),
-                "snapshot": json.loads(paper.snapshot_json), "gross_received_quantity": str(consumed.get(paper.id, Decimal(0))),
+                "snapshot": json.loads(paper.snapshot_json), "gross_received_quantity": str(consumed.get(paper.id, Decimal(0)) - closed.get(paper.id, Decimal(0))),
+                "closed_quantity": str(closed.get(paper.id, Decimal(0))),
                 "effective_received_quantity": str(received.get(paper.id, Decimal(0))),
                 "received_quantity": str(received.get(paper.id, Decimal(0))),
                 "remaining_quantity": str(max(Decimal(0), paper.quantity - consumed.get(paper.id, Decimal(0))))} for paper in papers],
+             "closures": [dict(detail, created_at=event.created_at) for event, detail in closures(db, factory, [shipment.id])],
              "receipts": [{key: getattr(receipt_rows[rid], key) for key in ("id", "receipt_no", "status", "revision", "acceptance_date")} |
-                {"lines": [receipt_line_out(paper, external=external) for paper in core._receipt_lines(db, rid)]} for rid in sorted(linked_ids)]})
+                {"lines": [receipt_line_out(paper, external=external, replacement_link=receipt_price_links.get(paper.id)) for paper in core._receipt_lines(db, rid)]} for rid in sorted(linked_ids)]})
     response["permissions"] = flags(db, user, row, external)
     return response
 
 
-def receipt_line_out(paper, *, external=False):
+def receipt_line_out(paper, *, external=False, replacement_link=None):
     result = {key: str(getattr(paper, key)) for key in ("id", "delivered_quantity", "received_quantity", "damaged_quantity",
         "rejected_quantity", "unusable_quantity", "effective_quantity", "unit_price", "unit", "packaging_type", "paper_quality", "specification")}
     if not external:
         result["location_allocations"] = json.loads(paper.location_allocations_json or "[]")
+    elif replacement_link and replacement_link.get("responsibility") == "SUPPLIER":
+        value = replacement_link.get("settlement_unit_price")
+        result["unit_price"] = str(value) if value is not None else None
     return result
 
 
@@ -292,13 +353,15 @@ def workspace(db, user, factory, *, external=False, responsibility_scope="OWN"):
     access(db, user, factory, external=external)
     if responsibility_scope not in {"OWN", "ALL"}: raise HTTPException(422, "客户范围无效")
     items = []
+    from app.services.carton_special_marks import associated_files
+    mark_assets_by_order = associated_files(db, user, factory, external=external)
     query = select(SpecialRequest).where(SpecialRequest.factory_id == factory, ~deleted_predicate())
     if not external and responsibility_scope == "OWN":
         from app.services.carton_customer_assignment import customer_predicate
         query = query.where(customer_predicate(user, factory, SpecialRequest.customer_code))
     for row in db.scalars(query.order_by(SpecialRequest.updated_at.desc())):
         try:
-            items.append(detail(db, user, factory, row.id, external=external))
+            items.append(detail(db, user, factory, row.id, external=external, mark_assets_by_order=mark_assets_by_order))
         except HTTPException as error:
             if error.status_code not in {403, 404}: raise
     options = {"customers": [], "workshops": [], "locations": []}
@@ -327,7 +390,7 @@ def notify(db, row, action, *, audience):
         try:
             access(db, user, row.factory_id, row.id, external=audience == "SUPPLIER")
         except HTTPException: continue
-        permission = "carton_supplier:edit" if audience == "SUPPLIER" else (
+        permission = "carton_supplier:read" if audience == "SUPPLIER" else (
             "carton_procurement:receipt_write" if action == "SHIPPED" else "carton_procurement:order_write")
         capable = portal.supplier_permission(user, permission, row.factory_id) if audience == "SUPPLIER" else (
             can_receive(user, row.factory_id) if action == "SHIPPED" else allowed(user, row.factory_id, "order_write"))
@@ -335,14 +398,12 @@ def notify(db, row, action, *, audience):
         identifier = "cs-notice:" + hashlib.sha256(f"{row.id}:{row.revision}:{action}:{audience}:{user.id}".encode()).hexdigest()
         if db.get(SystemNotification, identifier): continue
         db.add(SystemNotification(id=identifier, target_user_id=user.id, target_permission="", target_factory_id=row.factory_id,
-            target_department="", type="carton_special_request", title="纸品需求协作有新进展", message={"SENT": "订单已确认锁定，可核对资料并登记送货", "ADJUSTED": "已锁定订单有调整，请核对调整原因及最新资料", "QUOTED": "供应商报价待确认", "APPROVED": "收费报价已确认，可制作送货", "SHIPPED": "有送货待验收", "MATERIAL_CHANGED": "确认资料已变更，请按最新资料送货", "MESSAGE": "有新的协作留言"}.get(action, "请查看需求当前版本"),
+            target_department="", type="carton_special_request", title="纸品需求协作有新进展", message={"SENT": "新订单待接单，请核对纸品并承诺交期", "ADJUSTED": "订单有调整，请核对最新版本并明确同意或提出异议", "CANCEL": "订单已停止执行，请确认收到停止通知；费用及赔偿仍须另行协商", "QUOTED": "供应商报价待确认", "APPROVED": "收费报价已确认，可制作送货", "SHIPPED": "有送货待验收", "MATERIAL_CHANGED": "确认资料已变更，请核对最新版本后重新接单", "MESSAGE": "有新的协作留言"}.get(action, "请查看需求当前版本"),
             payload_json=pack({"request_id": row.id, "factory_id": row.factory_id, "audience": audience, "required_permission": permission}), status="unread",
             created_at=core.now_text(), read_at="", handled_at=""))
 
 
 def assign_input(db, user, row, payload):
-    if payload.kind == "WORKSHOP_MISC" and not payload.workshop_id:
-        raise HTTPException(422, "车间杂用须选择实际车间")
     from app.services.carton_master import workshop_snapshot
     workshop_snapshot(db, row.factory_id, payload.workshop_id)
     customer = core.get_active_customer(db, row.factory_id, payload.customer_code) if payload.customer_code else None
@@ -410,7 +471,9 @@ def update(db, user, identifier, payload: schema.Create, *, adjusting=False):
     digest, saved = replay(db, user, payload, action_name, identifier)
     if saved: return saved
     require_revision(row, payload)
-    if not flags(db, user, row, False)["can_adjust" if adjusting else "can_edit"]:
+    capabilities = flags(db, user, row, False)
+    permitted = (capabilities["can_adjust"] or capabilities["can_append"]) if adjusting else capabilities["can_edit"]
+    if not permitted:
         raise HTTPException(409, "已锁定订单请使用有原因的调整；未锁定订单请直接修改")
     if payload.kind == "SUPPLIER_GIFT": raise HTTPException(422, "内部不能创建赠送")
     was_sent = row.status != "SUBMITTED"
@@ -429,13 +492,24 @@ def update(db, user, identifier, payload: schema.Create, *, adjusting=False):
         for line_id, total in totals.items():
             if incoming[line_id].quantity < total:
                 raise HTTPException(409, "需求数量不可低于有效验收数量")
+        if row.status == "COMPLETED":
+            original = {paper.id: paper for paper in lines(db, row)}
+            identity = ("item_no", "packaging_type", "paper_quality", "specification", "dimension_unit", "unit")
+            if any(identifier not in incoming or any(getattr(incoming[identifier], key) != getattr(paper, key) for key in identity)
+                   for identifier, paper in original.items()):
+                raise HTTPException(409, "已完成订单加单须保留原纸品资料；其他纸品请另增明细")
+            if any(incoming[identifier].quantity < paper.quantity for identifier, paper in original.items()):
+                raise HTTPException(409, "已完成需求不能通过调整减量；退货须按实际库存另行登记")
+            if not any(item.id not in original or item.quantity > original[item.id].quantity for item in payload.lines):
+                raise HTTPException(409, "已完成订单加单须增加实际纸品需求")
     assign_input(db, user, row, payload)
     db.flush()
     if was_sent:
         row.status = "SENT"; row.quote_version_id = ""; row.pricing_kind = "PENDING_QUOTE"; row.promised_date = ""
         if any(totals.values()):
             row.status = "COMPLETED" if all(totals.get(paper.id, Decimal(0)) >= paper.quantity for paper in lines(db, row)) else "PARTIALLY_RECEIVED"
-    version(db, user, row, "ADJUSTED" if adjusting else "UPDATED", execution=True)
+    version(db, user, row, "ADJUSTED" if adjusting else "UPDATED", execution=True,
+        reason=payload.reason if adjusting else "")
     if adjusting:
         db.add(SpecialMessage(id=uid("CSM-"), factory_id=row.factory_id, request_id=row.id,
             body="订单调整：" + payload.reason, actor_id=user.id, actor_name=user.display_name,
@@ -456,6 +530,7 @@ def action(db, user, identifier, payload, name, *, external=False, commit=True):
     if saved: return saved
     require_revision(row, payload)
     if not flags(db, user, row, external)[flag]: raise HTTPException(409, "需求当前阶段不允许此操作")
+    was_published = is_published(db, row)
     if name == "SEND": row.status = "SENT"
     elif name == "CANCEL":
         if state_counts(db, row)[0]: raise HTTPException(409, "已发货需求须先核实送货及冲销，不可直接取消")
@@ -467,6 +542,10 @@ def action(db, user, identifier, payload, name, *, external=False, commit=True):
         if payload.version_id != row.current_version_id: raise HTTPException(409, "需求或确认资料版本已变更，请重新确认")
         if row.kind == "SUPPLIER_GIFT" and payload.pricing_kind != "FREE":
             raise HTTPException(422, "供应商赠送必须免费，不能转为收费需求")
+        from app.services.carton_special_stock import replacement
+        stock_source = replacement(db, row)
+        if stock_source and stock_source["responsibility"] == "SUPPLIER" and payload.pricing_kind != "FREE":
+            raise HTTPException(422, "供应商责任补单须免费，不能改为收费采购")
         papers = lines(db, row)
         prices = {item.line_id: item.unit_price for item in payload.lines}
         if set(prices) != {paper.id for paper in papers}: raise HTTPException(422, "须对本次需求全部纸品逐行报价")
@@ -475,7 +554,8 @@ def action(db, user, identifier, payload, name, *, external=False, commit=True):
         row.status = "READY" if payload.pricing_kind == "FREE" else "QUOTED"
     event = version(db, user, row, name, execution=True)
     if name == "QUOTE": row.quote_version_id = event.id
-    if name in {"SEND", "APPROVE"}: notify(db, row, "SENT" if name == "SEND" else "APPROVED", audience="SUPPLIER")
+    if name in {"SEND", "APPROVE"} or (name == "CANCEL" and was_published):
+        notify(db, row, "SENT" if name == "SEND" else "APPROVED" if name == "APPROVE" else "CANCEL", audience="SUPPLIER")
     if name == "QUOTE": notify(db, row, "QUOTED", audience="INTERNAL")
     return finish(db, user, payload, row, name, digest, external=external, commit=commit)
 
@@ -486,6 +566,8 @@ def ship(db, user, identifier, payload: schema.Ship, *, commit=True, allow_share
     supplier(db, user, row.factory_id, "carton_supplier:edit")
     digest, saved = replay(db, user, payload, "SHIP", identifier)
     if saved: return saved
+    from app.services.carton_supplier_evidence_guard import ensure_evidence_open
+    ensure_evidence_open(db, row.factory_id, row.supplier_id, payload.delivery_date)
     require_revision(row, payload)
     if not flags(db, user, row, True)["can_ship"] or row.current_version_id != payload.version_id:
         raise HTTPException(409, "需求尚未发送、已结束或资料版本已变更，请刷新后核对当前需求")
@@ -505,11 +587,11 @@ def ship(db, user, identifier, payload: schema.Ship, *, commit=True, allow_share
     shipment = SpecialShipment(id=uid("CSSP-"), factory_id=row.factory_id, supplier_id=row.supplier_id, request_id=row.id,
         version_id=row.current_version_id, delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(), created_by=user.id, created_at=core.now_text())
     db.add(shipment); db.flush()
+    from app.services.carton_mark_associations import freeze_files
+    file_manifest = freeze_files(db, user, row, order_kind='SAMPLE' if row.kind == 'SAMPLE' else 'MISC')
     for item in payload.lines:
         paper = papers.get(item.line_id)
         if paper is None: raise HTTPException(422, "发货纸品不属于此需求")
-        if not line_out(paper)["mark_ready"]:
-            raise HTTPException(409, f"第 {paper.line_no} 行箱唛资料待补或制作稿未确认，暂不可制作送货")
         if item.quantity > paper.quantity - received_by_request.get(paper.id, Decimal(0)) - reserved.get(paper.id, Decimal(0)):
             raise HTTPException(409, "发货数量超过需求剩余数量（含在途保留）")
         # Price belongs to this physical delivery, not a quotation/approval gate.
@@ -521,6 +603,10 @@ def ship(db, user, identifier, payload: schema.Ship, *, commit=True, allow_share
             price = paper.unit_price
         if row.kind == "SUPPLIER_GIFT" and price != 0:
             raise HTTPException(422, "供应商赠送必须免费")
+        from app.services.carton_special_stock import replacement
+        stock_source = replacement(db, row)
+        if stock_source and stock_source["responsibility"] == "SUPPLIER" and price != 0:
+            raise HTTPException(422, "供应商责任补单须免费，不能登记收费送货")
         legacy_free = item.unit_price is None and row.quote_version_id and row.pricing_kind == "FREE"
         if price == 0 and not item.free_confirmed and not legacy_free:
             raise HTTPException(422, "零单价必须明确确认本行免费")
@@ -529,6 +615,7 @@ def ship(db, user, identifier, payload: schema.Ship, *, commit=True, allow_share
             request_line_id=paper.id, quantity=item.quantity, snapshot_json=pack(line_out(paper) | {
                 "pricing_kind": "FREE" if price == 0 else "CHARGEABLE", "customer_code": row.customer_code, "customer_name": row.customer_name,
                 "kind": row.kind, "request_no": row.request_no,
+                "file_manifest": [file for file in file_manifest if not file['line_id'] or file['line_id'] == paper.id],
                 "material_manifest": [file for file in snapshot(db, row)["material_manifest"] if file["line_id"] == paper.id]})))
     row.pricing_kind = "CHARGEABLE" if any(paper.unit_price > 0 for paper in papers.values()) else "FREE"
     if row.status in {"SENT", "QUOTED"}: row.status = "READY"
@@ -544,11 +631,9 @@ def receive(db, user, identifier, shipment_id, payload: schema.Receive, *, commi
     digest, saved = replay(db, user, payload, "RECEIVE", identifier, shipment_id)
     if saved: return saved
     require_revision(row, payload)
-    if row.origin == "SUPPLIER_EXTRA":
-        if not payload.received_kind or not payload.requester_name:
-            raise HTTPException(422, "额外送货须核对样板或杂单用途并填写需求人")
-        if payload.received_kind == "WORKSHOP_MISC" and not payload.workshop_id:
-            raise HTTPException(422, "杂单额外送货须选择使用车间")
+    if row.origin == "SUPPLIER_EXTRA" and any(item.received_quantity - item.damaged_quantity - item.rejected_quantity - item.unusable_quantity > 0 for item in payload.lines):
+        if not payload.received_kind:
+            raise HTTPException(422, "额外送货须选择样板或杂单入库类型")
         if any(receipt.status == "POSTED" for receipt in state_counts(db, row)[4].values()) and (
                 payload.received_kind != row.kind or payload.workshop_id != row.workshop_id):
             raise HTTPException(409, "额外送货已按原用途入库，后续批次须保持相同类型及使用车间；更正请先冲销原收料")
@@ -563,18 +648,29 @@ def receive(db, user, identifier, shipment_id, payload: schema.Receive, *, commi
     if len({item.shipment_line_id for item in payload.lines}) != len(payload.lines): raise HTTPException(422, "验收纸品不能重复")
     shipped, _, consumed, _, _ = state_counts(db, row)
     sources = {paper.id: paper for paper in shipped if paper.shipment_id == shipment.id}
-    receipt_inputs = []
+    if (payload.remaining_action == "CLOSE" or any(item.close_remaining for item in payload.lines)) and len(payload.close_reason.strip()) < 4:
+        raise HTTPException(422, "短送结束须填写至少四字原因；采购欠数仍保留")
+    from app.services.carton_supplier_settlement import date_check, ensure_open
+    date_check(payload.acceptance_date.isoformat())
+    ensure_open(db, row.factory_id, row.supplier_id, payload.acceptance_date.isoformat()[:7])
+    receipt_inputs, accepted_items, closed = [], [], {}
     for item in payload.lines:
         source = sources.get(item.shipment_line_id)
         if source is None: raise HTTPException(422, "验收纸品不属于此送货单")
         if item.received_quantity > source.quantity - consumed.get(source.id, Decimal(0)):
             raise HTTPException(409, "验收数量超过此送货单剩余数量")
+        if payload.remaining_action == "CLOSE" or item.close_remaining:
+            remaining = source.quantity - consumed.get(source.id, Decimal(0)) - item.received_quantity
+            if remaining > 0: closed[source.id] = str(remaining)
+        if item.received_quantity == 0:
+            continue
+        accepted_items.append(item)
         saved_line = json.loads(source.snapshot_json)
         receipt_inputs.append(CartonReceiptLineCreate(source_type="AD_HOC", special_source_line_id=source.id,
             customer_code=saved_line["customer_code"], item_no=saved_line["item_no"], contract_no="",
             packaging_type=saved_line["packaging_type"], paper_quality=saved_line["paper_quality"],
             specification=saved_line["specification"], dimension_unit=saved_line["dimension_unit"], unit=saved_line["unit"], currency="CNY",
-            unit_price=Decimal(saved_line["unit_price"]), zero_price_kind="PENDING" if saved_line.get("source_origin") == "WAREHOUSE_MANUAL" and Decimal(saved_line["unit_price"]) == 0 else "FREE" if saved_line["pricing_kind"] == "FREE" else None,
+            unit_price=Decimal(saved_line["unit_price"]), zero_price_kind="FREE" if saved_line["pricing_kind"] == "FREE" else "PENDING" if saved_line.get("source_origin") == "WAREHOUSE_MANUAL" and Decimal(saved_line["unit_price"]) == 0 else None,
             delivered_quantity=item.received_quantity, received_quantity=item.received_quantity, damaged_quantity=item.damaged_quantity,
             rejected_quantity=item.rejected_quantity, unusable_quantity=item.unusable_quantity, location_allocations=item.location_allocations,
             feedback_note=f"纸品需求 {row.request_no}；原送货单 {shipment.delivery_note_no}；版本 {shipment.version_id}"))
@@ -585,20 +681,29 @@ def receive(db, user, identifier, shipment_id, payload: schema.Receive, *, commi
     db.flush()
     receipt = core._create_receipt(db, CartonReceiptCreate(factory_id=row.factory_id, supplier_id=row.supplier_id,
         delivery_note_no=f"{shipment.delivery_note_no[:75]}#SP-{payload.request_id[:24]}", delivery_date=shipment.delivery_date,
-        acceptance_date=payload.acceptance_date.isoformat(), lines=receipt_inputs), user, commit=False, special_request_id=row.id)
-    receipt_id = receipt.id
-    core.confirm_receipt(db, receipt.id, CartonReceiptConfirmRequest(factory_id=row.factory_id, expected_revision=receipt.revision), user, commit=False)
-    db.flush()
-    for paper, item in zip(core._receipt_lines(db, receipt_id), payload.lines):
+        acceptance_date=payload.acceptance_date.isoformat(), lines=receipt_inputs), user, commit=False, special_request_id=row.id) if receipt_inputs else None
+    if receipt:
+        core.confirm_receipt(db, receipt.id, CartonReceiptConfirmRequest(factory_id=row.factory_id, expected_revision=receipt.revision), user, commit=False)
+        db.flush()
+    for paper, item in zip(core._receipt_lines(db, receipt.id) if receipt else [], accepted_items):
         db.add(SpecialReceiptLink(id=uid("CSRL-"), factory_id=row.factory_id, shipment_line_id=item.shipment_line_id, receipt_line_id=paper.id))
-        from app.services.carton_price_review import record_line
-        record_line(db, user, paper, sources[item.shipment_line_id], shipment, item, source_kind="SPECIAL")
+        from app.services.carton_special_stock import replacement
+        stock_source = replacement(db, row)
+        if not stock_source or stock_source["responsibility"] != "SUPPLIER":
+            from app.services.carton_price_review import record_line
+            record_line(db, user, paper, sources[item.shipment_line_id], shipment, item, source_kind="SPECIAL")
+    if closed:
+        from app.services.carton_special_receiving import EVENT
+        core._audit(db, user, row.factory_id, EVENT, "carton_special_shipment", shipment.id,
+            {"quantities": closed, "reason": payload.close_reason.strip(), "acceptance_date": payload.acceptance_date.isoformat(),
+             "receipt_id": receipt.id if receipt else None})
     db.flush()
     _, _, _, totals, _ = state_counts(db, row)
-    if row.status in {"SENT", "QUOTED", "READY", "PARTIALLY_RECEIVED", "COMPLETED"}:
+    if any(totals.values()) and row.status in {"SENT", "QUOTED", "READY", "PARTIALLY_RECEIVED", "COMPLETED"}:
         row.status = "COMPLETED" if all(totals.get(paper.id, Decimal(0)) >= paper.quantity for paper in lines(db, row)) else "PARTIALLY_RECEIVED"
-    version(db, user, row, "RECEIVED")
-    notify(db, row, "RECEIVED", audience="SUPPLIER")
+    receive_action = "RECEIVED" if receipt else "DELIVERY_CLOSED" if closed else "DELIVERY_DEFERRED"
+    version(db, user, row, receive_action)
+    notify(db, row, receive_action, audience="SUPPLIER")
     return finish(db, user, payload, row, "RECEIVE", digest, commit=commit)
 
 
@@ -607,8 +712,10 @@ def attachment(db, user, identifier, payload, role, filename, content, *, extern
     row = access(db, user, payload.factory_id, identifier, external=external)
     if not flags(db, user, row, external)["can_attach"]: raise HTTPException(403, "当前需求不可上传附件")
     if role not in {"REFERENCE", "DRAFT", "CONFIRMED"}: raise HTTPException(422, "附件类型无效")
-    if role == "CONFIRMED" and not flags(db, user, row, external)["can_confirm_material"]:
-        raise HTTPException(403, "只有内部负责人可发布确认资料")
+    # The old parameter remains readable/replayable, but a new file is evidence,
+    # never an implicit production approval or a replacement of historical art.
+    requested_role = role
+    if role == 'CONFIRMED': role = 'DRAFT'
     from pathlib import PurePosixPath
     from app.services.carton_mark_assets import IMAGE_CONTENT_TYPES, validate_asset_image
     suffix = PurePosixPath(filename).suffix.lower()
@@ -630,25 +737,20 @@ def attachment(db, user, identifier, payload, role, filename, content, *, extern
         raise HTTPException(404, "纸品明细不存在")
     if role == "CONFIRMED" and paper is None:
         raise HTTPException(422, "确认制作稿须指定对应纸品明细")
-    extra = {"filename": filename, "role": role, "line_id": line_id, "sha256": hashlib.sha256(content).hexdigest()}
+    extra = {"filename": filename, "role": requested_role, "line_id": line_id, "sha256": hashlib.sha256(content).hexdigest()}
     digest, saved = replay(db, user, payload, "ATTACHMENT", identifier, extra)
     if saved: return saved
     require_revision(row, payload)
     attachment_id = uid("CSA-SP-")
     attachment_row = SpecialAttachment(id=attachment_id, factory_id=row.factory_id, request_id=row.id, role=role, line_id=line_id,
-        filename=filename, media_type=media, sha256=extra["sha256"], size=len(content), content=content, created_by=user.id, created_at=core.now_text(), version=row.revision+1)
+        filename=filename, media_type=media, sha256=extra["sha256"], size=len(content), content=content, created_by=user.id, created_at=core.now_text(), version=next_attachment_version(db, row))
     db.add(attachment_row)
     if role in {'DRAFT', 'CONFIRMED'}:
         from app.services.carton_special_marks import publish_attachment
         publish_attachment(db, user, row, paper, attachment_row, external=external)
-    if role == "CONFIRMED":
-        paper.mark_mode = "UPLOAD"; paper.mark_attachment_id = attachment_id
-        paper.mark_asset_id = ""; paper.mark_asset_revision = 0
-    if role == "CONFIRMED" and row.status != "SUBMITTED":
-        row.status = "SENT"; row.pricing_kind = "PENDING_QUOTE"; row.quote_version_id = ""
-        row.promised_date = ""
-    version(db, user, row, "MATERIAL_CHANGED" if role == "CONFIRMED" else "ATTACHMENT_ADDED", execution=role == "CONFIRMED")
-    if role == "CONFIRMED" and row.status == "SENT": notify(db, row, "MATERIAL_CHANGED", audience="SUPPLIER")
+    # No procurement revision is advanced by storing a file.
+    # Include the new library association in both the response and its replay.
+    db.flush()
     return finish(db, user, payload, row, "ATTACHMENT", digest, external=external)
 
 
@@ -702,6 +804,12 @@ def validate_receipt_source(db, request_id, payload):
             "contract_no": "", "item_no": saved["item_no"], "packaging_type": saved["packaging_type"], "paper_quality": saved["paper_quality"],
             "specification": core._unordered_specification(saved["specification"], saved["dimension_unit"]), "unit": saved["unit"], "unit_price": price,
             "currency": "CNY", "order_line_id": None}
+        from app.services.carton_special_stock import receipt_link
+        link = receipt_link(db, row, source.request_line_id, effective)
+        if link:
+            if link["responsibility"] == "SUPPLIER" and price != 0:
+                raise HTTPException(422, "供应商责任补单须以免费原送货证据入库")
+            result[source.id]["special_replenishment_link"] = link
     return result
 
 
@@ -757,17 +865,28 @@ def validate_legacy_correction(db, user, payload):
 def settlement_evidence(db, factory, supplier_id, period):
     """Allocate vendor evidence to exact existing receipt source keys, never money twice."""
     from app.services.carton_supplier_settlement import money
+    from app.services.carton_replenishment_receipts import receipt_links
+    receipt_price_links = receipt_links(db, factory)
     by_line, evidence = {}, []
     shipments = list(db.scalars(select(SpecialShipment).where(SpecialShipment.factory_id == factory,
         SpecialShipment.supplier_id == supplier_id).order_by(SpecialShipment.id)))
     for shipment in shipments:
         request = db.get(SpecialRequest, shipment.request_id)
+        from app.services.carton_special_stock import replacement
+        stock_source = replacement(db, request)
         papers = list(db.scalars(select(SpecialShipmentLine).where(SpecialShipmentLine.shipment_id == shipment.id).order_by(SpecialShipmentLine.id)))
         for source in papers:
             frozen = json.loads(source.snapshot_json)
-            price = None if frozen.get("source_origin") == "WAREHOUSE_MANUAL" else Decimal(frozen["unit_price"])
+            if stock_source:
+                frozen = {**frozen, "special_replenishment_request_id": request.id,
+                    "parent_request_id": stock_source["parent_request_id"], "parent_request_no": stock_source["parent_request_no"],
+                    "responsibility": stock_source["responsibility"]}
+            free_replacement = bool(stock_source and stock_source["responsibility"] == "SUPPLIER")
+            original_price = None if frozen.get("source_origin") == "WAREHOUSE_MANUAL" else Decimal(frozen["unit_price"])
+            original_price_text = str(original_price) if original_price is not None else None
+            price = Decimal(0) if free_replacement else original_price
             price_text = str(price) if price is not None else None
-            price_warning = "仓库代录，供应商原价待核实" if price is None else ""
+            price_warning = "仓库代录，供应商原价待核实" if original_price is None else ""
             consumed_to_period = Decimal(0)
             for link, paper, receipt in db.execute(select(SpecialReceiptLink, CartonReceiptLine, CartonReceipt)
                 .join(CartonReceiptLine, CartonReceiptLine.id == SpecialReceiptLink.receipt_line_id)
@@ -780,25 +899,39 @@ def settlement_evidence(db, factory, supplier_id, period):
                 allocated = paper.received_quantity
                 vendor = {"shipment_id": shipment.id, "line_id": source.id, "document_no": shipment.delivery_note_no,
                     "delivery_date": shipment.delivery_date, "quantity": str(allocated), "original_quantity": str(source.quantity),
-                    "unit_price": price_text, "amount": str(money(allocated * price)) if price is not None else None, "original_unit_price": price_text,
+                    "unit_price": price_text, "amount": str(money(allocated * price)) if price is not None else None, "original_unit_price": original_price_text,
                     "currency": "CNY", "price_warning": price_warning, "received_quantity": str(paper.received_quantity),
                     "damaged_quantity": str(paper.damaged_quantity), "rejected_quantity": str(paper.rejected_quantity),
                     "unusable_quantity": str(paper.unusable_quantity), "difference_reason": paper.feedback_note,
                     "quantity_difference": str(allocated - paper.effective_quantity), "price_difference": "0" if price is not None else None,
                     "request_id": request.id, "request_no": request.request_no, "request_kind": request.kind,
-                    "version_id": shipment.version_id}
+                    "version_id": shipment.version_id,
+                    **({"special_replenishment_request_id": request.id, "responsibility": stock_source["responsibility"],
+                        "parent_request_no": stock_source["parent_request_no"]} if stock_source else {})}
                 by_line[paper.id] = vendor
                 evidence.append({"shipment_id": shipment.id, "revision": receipt.id + ":" + source.id, "receipt_id": receipt.id,
                     "document_no": shipment.delivery_note_no, "delivery_date": shipment.delivery_date, "acceptance_date": day,
                     "status": "RECEIVED", "lines": [{"id": source.id, "order_line_id": None, "quantity": str(allocated),
                         "original_quantity": str(source.quantity), "unit_price": price_text, "amount": str(money(allocated*price)) if price is not None else None,
-                        "original_unit_price": price_text, "price_warning": price_warning, "currency": "CNY", "snapshot": frozen}],
-                    "acceptance": {"lines": [{"shipment_line_id": source.id, **receipt_line_out(paper, external=True)}]}})
-            pending = source.quantity - consumed_to_period
+                        "original_unit_price": original_price_text, "price_warning": price_warning, "currency": "CNY", "snapshot": frozen}],
+                    "acceptance": {"lines": [{"shipment_line_id": source.id, **receipt_line_out(paper, external=True, replacement_link=receipt_price_links.get(paper.id))}]}})
+            from app.services.carton_special_receiving import closed_quantities, closures
+            closed = closed_quantities(db, factory, [shipment.id], period=period).get(source.id, Decimal(0))
+            for event, closure in closures(db, factory, [shipment.id], period=period):
+                quantity = Decimal(closure["quantities"].get(source.id, "0"))
+                if quantity <= 0 or closure["acceptance_date"][:7] != period: continue
+                evidence.append({"shipment_id": shipment.id, "revision": event.id, "receipt_id": None,
+                    "document_no": shipment.delivery_note_no, "delivery_date": shipment.delivery_date,
+                    "acceptance_date": closure["acceptance_date"], "status": "NOT_RECEIVED",
+                    "lines": [{"id": source.id, "order_line_id": None, "quantity": str(quantity),
+                        "unit_price": price_text, "amount": str(money(quantity*price)) if price is not None else None,
+                        "original_unit_price": original_price_text, "price_warning": price_warning, "currency": "CNY", "snapshot": frozen}],
+                    "acceptance": {"lines": [{"shipment_line_id": source.id, "received_quantity": "0", "difference_reason": closure["reason"]}]}})
+            pending = source.quantity - consumed_to_period - closed
             if pending > 0 and shipment.delivery_date[:7] == period:
                 evidence.append({"shipment_id": shipment.id, "revision": "PENDING:" + source.id, "receipt_id": None,
                     "document_no": shipment.delivery_note_no, "delivery_date": shipment.delivery_date, "acceptance_date": None,
                     "status": "SENT", "as_of_period": True, "lines": [{"id": source.id, "order_line_id": None,
                         "quantity": str(pending), "unit_price": price_text, "amount": str(money(pending*price)) if price is not None else None,
-                        "original_unit_price": price_text, "price_warning": price_warning, "currency": "CNY", "snapshot": frozen}], "acceptance": {}})
+                        "original_unit_price": original_price_text, "price_warning": price_warning, "currency": "CNY", "snapshot": frozen}], "acceptance": {}})
     return by_line, evidence

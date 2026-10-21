@@ -40,6 +40,19 @@ it('opens only the receiving form and preserves it when refreshing locations', a
   wrapper.unmount()
 })
 
+it('offers the source library only when the parent grants its read access', async () => {
+  api.detail.mockResolvedValue({ ...row, lines: [{ ...row.lines[0]!, mark_ready: false, mark_mode: 'PENDING' }] })
+  const wrapper = mount(Receipt, { props: { open: true, factoryId: 'huaxing', requestId: 'REQ', viewerKey: 'u1', libraryEnabled: false }, global: { stubs: { CartonSpecialManualReceipt: true } } })
+  await flushPromises()
+  expect(document.body.textContent).not.toContain('箱唛资料库')
+  await wrapper.setProps({ libraryEnabled: true }); await flushPromises()
+  button('箱唛资料库').click(); await flushPromises()
+  expect(wrapper.emitted('open-library')).toEqual([['REQ', 'L1']])
+  await wrapper.setProps({ libraryEnabled: false }); await flushPromises()
+  expect(document.body.textContent).not.toContain('箱唛资料库')
+  wrapper.unmount()
+})
+
 it('routes pending shipments to the original note and never mounts a duplicate receipt form', async () => {
   api.detail.mockResolvedValue({ ...row, shipments: [{ id: 'SHIP', delivery_note_no: 'OLD-DN', lines: [{ remaining_quantity: '10' }] }] })
   const wrapper = mount(Receipt, { props: { open: true, factoryId: 'huaxing', requestId: 'REQ', viewerKey: 'u1' } })
