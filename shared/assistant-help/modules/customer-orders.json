@@ -65,7 +65,7 @@
       {
         "path": "backend/app/api/cutting_operations.py",
         "symbol": "def order_command",
-        "sha256": "ae603e5a280fdf922d4216048901a1d44c40393eb57fdd578cc96faa261359f9"
+        "sha256": "23840b440568e6341c48f98ae11e869677198170869f7ad8a421c914bf4bf070"
       },
       {
         "path": "backend/app/services/cutting_planning.py",
@@ -135,7 +135,7 @@
       {
         "path": "backend/app/services/cutting_exports.py",
         "symbol": "def capture",
-        "sha256": "ff13251d9275e9b351e1d4f3f754f3780309b5d27045aa68d227119537ee0852"
+        "sha256": "87016bc6f0fde90b7554aa7402567ab2a0556218f712ff81601965137c39de1e"
       },
       {
         "path": "backend/app/services/cutting_export_workbook.py",
@@ -188,8 +188,8 @@
         "sha256": "18b46b9ae9184cc604e8ea1078bad977146abc39ac13a1a4968e1ed08a3f175b"
       }
     ],
-    "knowledge_version": "2026-10-21-cutting-export-queue",
-    "verified_commit": "287678d7: reviewed batched cutting reads, receipt evidence, queued export authorization and unchanged workbook contracts",
+    "knowledge_version": "2026-10-21-cutting-export-capture",
+    "verified_commit": "3372f346: reviewed selected immutable capture, transaction release and final source fence; business, permission and workbook explanations unchanged",
     "status": "verified"
   }
 ]
