@@ -1,6 +1,7 @@
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Event, local
 from time import monotonic, sleep
 import pytest
 from fastapi import HTTPException
@@ -77,6 +78,100 @@ def test_gate_rejects_full_queue_without_leaking_capacity():
         assert caught.value.headers['Retry-After'] == '3'
     with gate.slot():
         pass
+
+
+def test_two_renderers_are_bounded_and_failure_releases_only_its_slot():
+    gate = ExportGate(capacity=3, timeout=.03, parallelism=2)
+    entered, release = Event(), Event()
+    def first():
+        with gate.slot():
+            entered.set()
+            assert release.wait(2)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        job = pool.submit(first)
+        assert entered.wait(1)
+        try:
+            with pytest.raises(ValueError):
+                with gate.slot():
+                    with pytest.raises(HTTPException):
+                        with gate.slot():
+                            pytest.fail('Third concurrent renderer admitted')
+                    raise ValueError('second renderer failed')
+            with gate.slot():
+                assert gate.active == 2
+        finally:
+            release.set()
+        job.result()
+    assert gate.active == 0 and not gate.waiters
+
+
+@pytest.mark.parametrize('parallelism', [0, 4])
+def test_invalid_parallelism_rejected(parallelism):
+    with pytest.raises(ValueError):
+        ExportGate(capacity=3, parallelism=parallelism)
+
+
+@pytest.mark.parametrize('expire_head', [False, True])
+def test_two_free_slots_admit_fifo_and_skip_only_expired_head(monkeypatch,expire_head):
+    gate = ExportGate(capacity=5, timeout=2, parallelism=2)
+    actor, expired, finish = local(), Event(), Event()
+    admitted, labels = [], {}
+    class Tickets(deque):
+        def append(self,ticket):
+            labels[ticket] = getattr(actor,'index',-1)
+            super().append(ticket)
+        def popleft(self):
+            ticket = super().popleft()
+            if labels[ticket]>=0:
+                admitted.append(labels[ticket])  # observed under the gate lock
+            return ticket
+    gate.waiters = Tickets()
+    monkeypatch.setattr(cutting_export_gate,'monotonic',lambda: monotonic()+
+        (10 if expired.is_set() and getattr(actor,'index',-1)==0 else 0))
+    def waiter(index):
+        actor.index = index
+        if index==0 and expire_head:
+            with pytest.raises(HTTPException):
+                with gate.slot():
+                    pytest.fail('Expired head admitted')
+        else:
+            with gate.slot():
+                assert finish.wait(3)
+    with ThreadPoolExecutor(max_workers=3) as pool, ExitStack() as held:
+        held.enter_context(gate.slot()); held.enter_context(gate.slot())
+        jobs = []
+        try:
+            for index in range(3):
+                jobs.append(pool.submit(waiter,index))
+                deadline = monotonic()+1
+                while True:
+                    with gate.condition:
+                        if len(gate.waiters)==index+1:
+                            break
+                    assert monotonic()<deadline
+                    sleep(.001)
+            if expire_head:
+                expired.set()
+                with gate.condition:
+                    gate.condition.notify_all()
+                jobs[0].result(timeout=1)
+            with gate.condition:
+                held.close()  # both slots freed before any waiting admission
+            deadline = monotonic()+1
+            while True:
+                with gate.condition:
+                    if len(admitted)==2:
+                        assert admitted==([1,2] if expire_head else [0,1])
+                        assert gate.active==2
+                        break
+                assert monotonic()<deadline
+                sleep(.001)
+        finally:
+            finish.set()
+        for job in jobs:
+            job.result()
+    assert admitted==([1,2] if expire_head else [0,1,2])
+    assert gate.active==0 and not gate.waiters
 
 
 def test_waiter_cannot_enter_after_deadline_even_when_renderer_becomes_free(monkeypatch):

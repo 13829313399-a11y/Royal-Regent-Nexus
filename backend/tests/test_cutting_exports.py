@@ -16,6 +16,8 @@ from test_cutting_usage import read as usage_read
 from zipfile import ZipFile
 from hashlib import sha256
 import json
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 
 
 def request(kind='payments', **kwargs):
@@ -39,6 +41,83 @@ def fresh_auth(monkeypatch, client):
 
 def rows(wb, name):
     return list(wb[name].values)[2:]
+
+
+@pytest.mark.parametrize('kind', ['period', 'settlement'])
+def test_narrow_frozen_capture_matches_full_reader_without_loading_other_payloads(request, monkeypatch, kind):
+    # pytest's request fixture is shadowed by the module helper, but fixture
+    # injection still resolves the argument by name.
+    p = request.getfixturevalue('month_client' if kind == 'period' else 'paid_setup')
+    if kind == 'period':
+        identifier = lock(p)['id']
+        selection = exports.Selection(factory_id='huakang-c', kind=kind, month='2026-10', event_id=identifier)
+    else:
+        value = ok(p.get(BASE+'/settlements/2026-10', params={'factory_id':'huakang-c','document_id':p.one}))
+        selection = exports.Selection(factory_id='huakang-c',kind=kind,month='2026-10',document_id=p.one,event_id=value['event_id'])
+    sql = []
+    def observed(conn, cursor, statement, parameters, context, many):
+        sql.append(statement)
+    with Session(p.engine) as db:
+        original_delivery = exports.workbook_export.delivery
+        def detached_delivery(value):
+            assert not db.in_transaction(), 'Formatting must not retain the writer lock'
+            return original_delivery(value)
+        monkeypatch.setattr(exports.workbook_export,'delivery',detached_delivery)
+        event.listen(p.engine,'before_cursor_execute',observed)
+        try:
+            actual = exports.capture(db,selection,release_transaction=True)
+        finally:
+            event.remove(p.engine,'before_cursor_execute',observed)
+        assert not db.in_transaction()
+        table = 'cutting_ops_period_events' if kind=='period' else 'cutting_ops_settlement_events'
+        payloads = [s for s in sql if s.lstrip().startswith('SELECT') and table+'.data' in s]
+        assert len(payloads)==1 and table+'.id =' in payloads[0]
+        def full_reader(session, body):
+            return (exports.periods.read(session,body.month,body.event_id) if kind=='period' else
+                    exports.fees.read(session,body.month,body.document_id,body.event_id))
+        monkeypatch.setattr(exports,'frozen_source',full_reader)
+        assert exports.capture(db,selection,release_transaction=True)==actual
+
+
+@pytest.mark.parametrize('kind', ['period','settlement'])
+def test_final_lightweight_fence_rejects_reopen_during_generation(request,monkeypatch,kind):
+    p = request.getfixturevalue('month_client' if kind=='period' else 'paid_setup')
+    if kind=='period':
+        value = lock(p)
+        body = dict(factory_id='huakang-c',kind=kind,month='2026-10',event_id=value['id'])
+    else:
+        value = ok(p.get(BASE+'/settlements/2026-10',params={'factory_id':'huakang-c','document_id':p.one}))
+        body = dict(factory_id='huakang-c',kind=kind,month='2026-10',document_id=p.one,event_id=value['event_id'])
+    preview = ok(p.post(BASE+'/exports/preview',json=body))
+    def render_and_reopen(report,user_context):
+        result = exports.package(report,user_context)
+        if kind=='period':
+            act(p,'reopen')
+        else:
+            ok(fee_decision(p,p.two,'reopen')); ok(fee_decision(p,p.one,'reopen'))
+        return result
+    monkeypatch.setattr(exports,'package_isolated',render_and_reopen)
+    response = p.post(BASE+'/exports/download',json=body|{'token':preview['token']})
+    assert response.status_code==409 and 'spreadsheetml' not in response.headers['content-type']
+
+
+def test_payment_format_and_volume_planning_run_after_transaction_release(paid_setup,monkeypatch):
+    p = paid_setup
+    with Session(p.engine) as db:
+        original_sheets, original_delivery = exports.payment_sheets, exports.workbook_export.delivery
+        checked = []
+        def sheets(*args):
+            assert not db.in_transaction()
+            checked.append('sheets')
+            return original_sheets(*args)
+        def delivery(report):
+            assert not db.in_transaction()
+            checked.append('delivery')
+            return original_delivery(report)
+        monkeypatch.setattr(exports,'payment_sheets',sheets)
+        monkeypatch.setattr(exports.workbook_export,'delivery',delivery)
+        exports.capture(db,exports.Selection(**request()),release_transaction=True)
+        assert checked==['sheets','delivery'] and not db.in_transaction()
 
 
 def test_payment_export_exact_balances_statuses_and_trace(paid_setup):

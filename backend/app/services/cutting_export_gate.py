@@ -11,18 +11,21 @@ from fastapi import HTTPException
 
 
 class ExportGate:
-    def __init__(self, capacity=16, timeout=20):
+    def __init__(self, capacity=16, timeout=20, parallelism=1):
+        if not 1 <= parallelism <= capacity:
+            raise ValueError('Renderer concurrency must fit queue capacity')
         self.capacity = capacity
+        self.parallelism = parallelism
         self.condition = Condition()
         self.waiters = deque()
-        self.active = False
+        self.active = 0
         self.timeout = timeout
 
     @contextmanager
     def slot(self):
         ticket = object()
         with self.condition:
-            if len(self.waiters) + int(self.active) >= self.capacity:
+            if len(self.waiters) + self.active >= self.capacity:
                 raise HTTPException(429, '报表导出队列已满，请稍后重试', headers={'Retry-After': '3'})
             self.waiters.append(ticket)
             deadline = monotonic() + self.timeout
@@ -30,7 +33,7 @@ class ExportGate:
             try:
                 # A semaphore permits new arrivals to overtake old waiters.
                 # FIFO prevents repeated downloads from starving earlier users.
-                while self.active or self.waiters[0] is not ticket:
+                while self.active >= self.parallelism or self.waiters[0] is not ticket:
                     remaining = deadline - monotonic()
                     if remaining <= 0:
                         raise HTTPException(429, '报表导出等待超时，请稍后重试', headers={'Retry-After': '3'})
@@ -39,7 +42,8 @@ class ExportGate:
                 if waited and monotonic() >= deadline:
                     raise HTTPException(429, '报表导出等待超时，请稍后重试', headers={'Retry-After': '3'})
                 self.waiters.popleft()
-                self.active = True
+                self.active += 1
+                self.condition.notify_all()
             except BaseException:
                 self.waiters.remove(ticket)
                 self.condition.notify_all()
@@ -48,8 +52,8 @@ class ExportGate:
             yield
         finally:
             with self.condition:
-                self.active = False
+                self.active -= 1
                 self.condition.notify_all()
 
 
-gate = ExportGate()
+gate = ExportGate(parallelism=1)
