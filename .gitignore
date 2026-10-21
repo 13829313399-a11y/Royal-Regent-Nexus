@@ -122,6 +122,7 @@ outputs/opening-inventory-template-20260909/
 !/docs/business/huakang-c-cutting-p5a-acceptance.md
 !/docs/business/huakang-c-cutting-p5b-acceptance.md
 !/docs/business/huakang-c-cutting-p5c-acceptance.md
+!/docs/business/huakang-c-cutting-independent-acceptance.md
 
 # Shared Codex configuration/docs; local credentials and runtime state stay private.
 !/docs/agent-routing/*.md

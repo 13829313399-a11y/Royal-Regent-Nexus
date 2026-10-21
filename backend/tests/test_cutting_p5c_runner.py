@@ -106,12 +106,19 @@ def test_sqlite_only_ignores_inherited_connection_and_preserves_incomplete_failu
     captured = {}
     def execute(steps, output, env):
         captured.update(env)
+        assert any(name == 'http-capacity' and 'tests/test_cutting_http_capacity.py' in command
+                   for name, command, _ in steps)
         return []
     monkeypatch.setattr(runner, 'execute_steps', execute)
     assert runner.main() == 1  # No test evidence must never become a pass.
     assert captured['CUTTING_TEST_POSTGRES_URL'] == ''
     assert captured['DATABASE_URL'] == 'sqlite://'
     assert captured['PYTEST_ADDOPTS'] == ''
+    assert captured['CUTTING_SOAK_SECONDS'] == '3'
+    assert captured['CUTTING_SOAK_WORKLOAD'] == 'paced'
+    assert captured['CUTTING_FINANCE_SOAK_WORKERS'] == '5'
+    assert captured['CUTTING_FINANCE_SOAK_FINANCE_CHAINS'] == '2'
+    assert captured['CUTTING_FINANCE_SOAK_SECONDS'] == '3'
     for path in tmp_path.rglob('*.json'):
         assert 'private:secret' not in path.read_text(encoding='utf-8')
 
@@ -121,3 +128,24 @@ def test_sqlite_only_cannot_request_postgres(monkeypatch):
     with pytest.raises(SystemExit) as error:
         runner.main()
     assert error.value.code == 2
+
+
+def test_expanded_financial_runner_pins_synthetic_scope_and_cannot_pass_without_evidence(tmp_path,monkeypatch):
+    import verify_cutting_http_soak as soak
+    monkeypatch.setattr(sys,'argv',['verify_cutting_http_soak.py','--profile','500','--expanded-finance','--seconds','600'])
+    monkeypatch.setenv('DATABASE_URL','sqlite:///original-business.db')
+    monkeypatch.setenv('CUTTING_FINANCE_SOAK_CHAINS','9999')
+    monkeypatch.setenv('PYTEST_ADDOPTS','-k nothing')
+    monkeypatch.setattr(soak,'ROOT',tmp_path)
+    monkeypatch.setattr(soak,'source_state',lambda:{})
+    captured = {}
+    def execute(steps,output,env,**kwargs):
+        captured.update(env)
+        assert 'tests/test_cutting_financial_soak.py::test_expanded_financial_mixed_http' in steps[0][1]
+        return []
+    monkeypatch.setattr(soak,'execute_steps',execute)
+    assert soak.main()==1
+    assert captured['DATABASE_URL']=='sqlite://' and captured['CUTTING_TEST_POSTGRES_URL']==''
+    assert captured['PYTEST_ADDOPTS']==''
+    assert {k:captured['CUTTING_FINANCE_SOAK_'+k] for k in ('ORDERS','CHAINS','FINANCE_CHAINS','WORKERS','SECONDS')} == dict(
+        ORDERS='500',CHAINS='100',FINANCE_CHAINS='20',WORKERS='10',SECONDS='600')

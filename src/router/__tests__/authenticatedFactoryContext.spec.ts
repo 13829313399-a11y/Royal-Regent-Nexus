@@ -13,6 +13,7 @@ import { router, refreshAndRevalidateAuthorization } from '@/router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { installIdentitySync } from '@/lib/identitySync'
+import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard'
 
 function user(primaryFactoryId: string, id = 'a'): AuthMeResponse {
   return {
@@ -114,6 +115,25 @@ describe('authenticated factory context with real navigation guards', () => {
     api.getMe.mockResolvedValue(user('huakang-c'))
     await refreshAndRevalidateAuthorization(useAuthStore(), router)
     expect(useAppStore().activeFactoryId).toBe('huadeng')
+  })
+
+  it('checks material drafts before a same-route factory query change can mutate the store', async () => {
+    useAuthStore().applySession({ ...user('huaxing'), permissions: ['indonesia_material:read'] })
+    const path = '/modules/sales-business/indonesia-material-shipment'
+    await router.replace(path + '?factory=huaxing')
+    expect(router.currentRoute.value.name).toBe('indonesia-material-shipment')
+    const guard = vi.fn().mockReturnValue(false)
+    const unregister = registerFactoryChangeGuard(guard)
+    try {
+      await router.push(path + '?factory=huadeng')
+      expect(guard).toHaveBeenCalledTimes(1)
+      expect(useAppStore().activeFactoryId).toBe('huaxing')
+      expect(router.currentRoute.value.query.factory).toBe('huaxing')
+      guard.mockReturnValue(true)
+      await router.push(path + '?factory=huadeng')
+      expect(useAppStore().activeFactoryId).toBe('huadeng')
+      expect(router.currentRoute.value.query.factory).toBe('huadeng')
+    } finally { unregister() }
   })
 
   it.each(['not-a-factory', '*', ''])( 'ignores invalid deep link %s', async (factory) => {
