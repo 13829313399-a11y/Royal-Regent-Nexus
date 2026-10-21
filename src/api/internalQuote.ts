@@ -601,10 +601,25 @@ export interface ApiInternalQuoteAttachmentContentPreview {
   warnings: string[]
 }
 
+export interface ApiPackagingCopyStatus {
+  material_count: number
+  carton_count: number
+  packaging_group_count: number
+  packaging_labor_hkd: string | null
+  source_issue: string
+  assembly_issue: string
+  target_issue: string
+  assembly_target_issue: string
+}
+
 export interface ApiInternalQuoteBatchProduct {
   quote_id: string
   quote_no: string
   product_name: string
+  version_label?: string
+  scenario_name?: string
+  archived?: boolean
+  packaging_copy?: ApiPackagingCopyStatus | null
   qty: number
   position: number
   batch_size: number
