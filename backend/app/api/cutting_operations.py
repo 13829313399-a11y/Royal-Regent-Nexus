@@ -75,7 +75,7 @@ def cutover_preview(body: cutover.Selection, db: Db, user: User):
 def export_preview(body: exports.Selection, db: Db, user: User):
     c.authorize(user, body.factory_id, exports.PERMISSIONS[body.kind])
     orders_ready(db)
-    report = exports.capture(db, body)
+    report = exports.capture(db, body, release_transaction=True)
     db.rollback()  # Captured plain data; hashing/serialization need no business lock.
     return JSONResponse(dict(token=periods.digest(report), title=exports.TITLES[body.kind], metadata=report['metadata'],
                 sheets=[dict(name=s['name'], rows=len(s['rows'])) for s in report['sheets']], delivery=report['delivery']),
@@ -98,7 +98,7 @@ def export_download(body: exports.Selection, request: Request, db: Db, user: Use
 
 def generate_export(body, request, db, user, permission):
     orders_ready(db)
-    report = exports.capture(db, body)
+    report, source_revision = exports.capture(db, body, release_transaction=True, with_revision=True)
     c.require(body.token and body.token == periods.digest(report), '报表依据或当前有效状态已变化，请重新预览导出')
     report.update(token=body.token, captured_at=exports.business_now().isoformat())
     db.rollback()  # XLSX generation holds no cutting/warehouse write lock.
@@ -109,7 +109,7 @@ def generate_export(body, request, db, user, permission):
     c.authorize(current, body.factory_id, permission)
     orders_ready(db)
     # Recheck after generation: do not download a newly reopened or changed live report unnoticed.
-    c.require(periods.digest(exports.capture(db, body)) == body.token, '生成期间报表依据发生变化，请重新预览导出')
+    c.require(exports.source_revision(db, body) == source_revision, '生成期间报表依据发生变化，请重新预览导出')
     db.rollback()
     filename = f'cutting-{body.kind}-{body.month}-{body.token[:12]}.{extension}'
     return Response(content, media_type='application/zip' if extension == 'zip' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

@@ -14,6 +14,8 @@ from time import monotonic, perf_counter, sleep
 from types import SimpleNamespace
 import json
 import socket
+from zipfile import ZipFile
+from hashlib import sha256
 
 import httpx
 import pytest
@@ -108,17 +110,69 @@ def login_http(session, role):
     assert session.cookies and 'HttpOnly' in response.headers['set-cookie']
 
 
-def validate_workbook(response, multiplier=1):
+def validate_workbook(response, multiplier=1, expected_delivery=None, *, full_readback=False):
     assert response.headers['cache-control'] == 'no-store'
-    with BytesIO(response.content) as stream:
-        book = load_workbook(stream, read_only=True)
+    collected, covered = [], []
+    def inspect_book(raw, volume, coverage):
+        book = load_workbook(BytesIO(raw), read_only=True)
         try:
-            value = sheet_records(book, '费用汇总')[0]
-            assert tuple(value[k] for k in (
-                '币种', '本期正常费用', '期末累计完工费用', '期末在制费用', '本期损耗费用',
-            )) == ('HKD', *(f'{amount*multiplier:.2f}' for amount in (Decimal('8'), Decimal('4.8'), Decimal('3.2'), Decimal('2'))))
+            if full_readback:
+                embedded = [dict(zip(('volume','sheet','source','first','last','rows','total'),row))
+                            for row in list(book['完整性清单'].values)[2:]]
+                assert embedded == coverage
+            for part in coverage:
+                if part['volume'] != volume:
+                    continue
+                assert book[part['sheet']].max_row == part['rows']+2
+                if full_readback:
+                    sheet = book[part['sheet']]
+                    sheet.reset_dimensions()
+                    assert sum(1 for _ in sheet.iter_rows(min_row=3,values_only=True)) == part['rows']
+                covered.append(part)
+                if part['source']=='费用汇总':
+                    collected.extend(sheet_records(book,part['sheet']))
         finally:
             book.close()
+    if response.headers.get('content-type','').split(';')[0] == 'application/zip':
+        with ZipFile(BytesIO(response.content)) as archive:
+            manifest = json.loads(archive.read('manifest.json'))
+            files, coverage = manifest['files'], manifest['coverage']
+            assert manifest['token']==response.headers['x-cutting-report-token']
+            assert len({f['name'] for f in files})==len(files)
+            assert sorted(archive.namelist())==sorted(['manifest.json']+[f['name'] for f in files])
+            if expected_delivery is not None:
+                assert expected_delivery==dict(format='zip',volumes=len(files),manifest=coverage)
+            for volume,item in enumerate(files,1):
+                raw = archive.read(item['name'])
+                assert len(raw)==item['bytes'] and sha256(raw).hexdigest()==item['sha256']
+                inspect_book(raw,volume,coverage)
+    else:
+        book = load_workbook(BytesIO(response.content),read_only=True)
+        try:
+            coverage = [dict(zip(('volume','sheet','source','first','last','rows','total'),row))
+                        for row in list(book['完整性清单'].values)[2:]]
+        finally:
+            book.close()
+        if expected_delivery is not None:
+            assert expected_delivery==dict(format='xlsx',volumes=1,manifest=coverage)
+        inspect_book(response.content,1,coverage)
+    assert len(covered)==len(coverage)==len({(r['volume'],r['sheet']) for r in covered})
+    for source in {part['source'] for part in coverage}:
+        parts = sorted((p for p in coverage if p['source']==source),key=lambda p:p['first'])
+        cursor,total = 1,parts[0]['total']
+        for part in parts:
+            assert part['total']==total
+            if total:
+                assert part['first']==cursor and part['last']-part['first']+1==part['rows']>0
+                cursor = part['last']+1
+            else:
+                assert part['first']==part['last']==part['rows']==0 and len(parts)==1
+        assert cursor-1==total
+    assert len(collected)==1
+    value = collected[0]
+    assert tuple(value[k] for k in (
+        '币种', '本期正常费用', '期末累计完工费用', '期末在制费用', '本期损耗费用',
+    )) == ('HKD', *(f'{amount*multiplier:.2f}' for amount in (Decimal('8'), Decimal('4.8'), Decimal('3.2'), Decimal('2'))))
 
 
 def projection(name, value):
