@@ -1,6 +1,8 @@
+vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import CuttingMasterPage from '../CuttingMasterPage.vue'
+import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
 import { cuttingApi, type MasterRecord } from '../api'
 
 vi.mock('../api', async importOriginal => {
@@ -30,6 +32,61 @@ async function materialForm() {
 }
 
 describe('cutting master data', () => {
+  it('does not let a slow linked-history request close a newly edited form',async()=>{
+    let resolve!:(value:import('../api').MasterPage)=>void
+    vi.mocked(cuttingApi.versions).mockReturnValueOnce(new Promise(r=>resolve=r))
+    const router=createRouter({history:createMemoryHistory(),routes:[{path:'/master',component:CuttingMasterPage}]})
+    await router.push('/master?master_id=material-1&master_version=1');await router.isReady()
+    wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+    await button('新增资料').trigger('click');await input('资料编码','DRAFT-KEEP')
+    resolve({data:[record],total:1,page:1,page_size:50});await flushPromises()
+    expect(wrapper.get('form.cutting-master-form').exists()).toBe(true)
+    expect(wrapper.get('form.cutting-master-form').findAll('input').some(i=>(i.element as HTMLInputElement).value==='DRAFT-KEEP')).toBe(true)
+    expect(cuttingApi.versions).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the requested older version page and responds to version-only links',async()=>{
+    const latest={...record,version:101,reason:'当前资料'}
+    vi.mocked(cuttingApi.versions).mockImplementation(async(_id,_page,focus)=>({data:[focus?{...record,version:focus,reason:`原始依据${focus}`} :latest],total:101,page:focus===1?3:focus?2:1,page_size:50}))
+    const router=createRouter({history:createMemoryHistory(),routes:[{path:'/master',component:CuttingMasterPage}]})
+    await router.push('/master?master_id=material-1&master_version=1');await router.isReady()
+    wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+    expect(cuttingApi.versions).toHaveBeenLastCalledWith('material-1',1,1)
+    expect(wrapper.get('#cutting-master-version-1').attributes('open')).toBeDefined()
+    expect(wrapper.text()).toContain('原始依据1')
+    await router.push('/master?master_id=material-1&master_version=51');await flushPromises()
+    expect(cuttingApi.versions).toHaveBeenLastCalledWith('material-1',1,51)
+    expect(wrapper.get('#cutting-master-version-51').attributes('open')).toBeDefined()
+    expect(wrapper.find('#cutting-master-version-1').exists()).toBe(false)
+  })
+  it('does not silently open current history when the requested version is invalid',async()=>{
+    const router=createRouter({history:createMemoryHistory(),routes:[{path:'/master',component:CuttingMasterPage}]})
+    await router.push('/master?master_id=material-1&master_version=bad');await router.isReady()
+    wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+    expect(wrapper.text()).toContain('指定资料版本无效')
+    expect(cuttingApi.versions).not.toHaveBeenCalled()
+  })
+  it('pages only applied master filters and resets a submitted search to page one',async()=>{
+    vi.mocked(cuttingApi.list).mockResolvedValue({data:[record],total:51,page:1,page_size:50})
+    await open();await wrapper.get('input[maxlength="80"]').setValue('NEW')
+    await button('下一页').trigger('click');await flushPromises()
+    expect(cuttingApi.list).toHaveBeenLastCalledWith('bom',2,'')
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(cuttingApi.list).toHaveBeenLastCalledWith('bom',1,'NEW')
+  })
+
+  it('does not let a late linked-master response overwrite a newer route target',async()=>{
+    let resolve!:(v:{data:MasterRecord[];total:number;page:number;page_size:number})=>void
+    const newer={...record,id:'material-2',code:'NEW-002'}
+    vi.mocked(cuttingApi.versions).mockReturnValueOnce(new Promise(r=>resolve=r)).mockResolvedValue({data:[newer],total:1,page:1,page_size:50})
+    const router=createRouter({history:createMemoryHistory(),routes:[{path:'/master',component:CuttingMasterPage}]})
+    await router.push('/master?master_id=material-1');await router.isReady()
+    wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+    await router.push('/master?master_id=material-2');await flushPromises()
+    resolve({data:[record],total:1,page:1,page_size:50});await flushPromises()
+    expect(wrapper.text()).toContain('NEW-002')
+    expect(wrapper.text()).not.toContain('001 · 版本记录')
+  })
   it('ignores old history success and failure after a newer request or close', async () => {
     vi.mocked(cuttingApi.list).mockResolvedValue({data:[record],total:1,page:1,page_size:50})
     await open()

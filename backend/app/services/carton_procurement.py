@@ -1276,11 +1276,11 @@ def _delete_order(db: Session, order: CartonOrder, reason: str, user: AuthContex
     )).all())
     _audit(db, user, order.factory_id, event_type, "carton_order", order.id,
            {"order_no": order.order_no, "reason": reason, "order": snapshot, "operation_id": operation_id,
-            "history_retained": order.status == "CANCELLED",
+            "history_retained": order.status != "DRAFT",
             "exceptions": [CartonExceptionOut.model_validate(item).model_dump(mode="json") for item in exceptions],
             "purchase_issues": [{**{column.name: getattr(issue, column.name) for column in issue.__table__.columns},
                                  "snapshot": json.loads(issue.snapshot_json)} for issue in issues]})
-    if order.status == "CANCELLED":
+    if order.status != "DRAFT":
         timestamp = now_text()
         order.deleted_at = timestamp
         order.revision += 1
@@ -1290,7 +1290,7 @@ def _delete_order(db: Session, order: CartonOrder, reason: str, user: AuthContex
         for exception in exceptions:
             if exception.status not in {"RESOLVED", "CLOSED"}:
                 exception.status = "CLOSED"
-                exception.resolution_note = f"已取消订单从台账删除：{reason}"
+                exception.resolution_note = f"订单从台账删除：{reason}"
                 exception.revision += 1
                 exception.updated_at = exception.resolved_at = timestamp
                 exception.updated_by = exception.resolved_by = user.id
@@ -1310,7 +1310,7 @@ def bulk_delete_history_orders(db: Session, payload: CartonHistoryOrderBulkDelet
     bulk_delete_orders(db, payload, user, history_only=True)
 
 
-def bulk_delete_orders(db: Session, payload: CartonOrderBulkDeleteRequest, user: AuthContext, *, history_only: bool = False) -> None:
+def bulk_delete_orders(db: Session, payload: CartonOrderBulkDeleteRequest, user: AuthContext, *, history_only: bool = False, commit: bool = True) -> None:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
     orders = []
@@ -1329,7 +1329,7 @@ def bulk_delete_orders(db: Session, payload: CartonOrderBulkDeleteRequest, user:
     operation_id = f"{'HDEL' if history_only else 'ODEL'}-{uuid4().hex}"
     for order in orders:
         _delete_order(db, order, payload.reason, user, operation_id, "HISTORY_ORDER_DELETED" if history_only else "ORDER_DELETED")
-    db.commit()
+    db.commit() if commit else db.flush()
 
 
 def _order_line_signature(line: CartonOrderLine | object) -> tuple[str, ...]:
@@ -1696,6 +1696,7 @@ def bulk_submit_orders_to_supplier(
     db: Session,
     payload: CartonOrderBulkSubmitRequest,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> list[CartonOrder]:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
@@ -1758,7 +1759,7 @@ def bulk_submit_orders_to_supplier(
                                  "order_nos": [order.order_no for order in supplier_orders]})
 
     master_data.sync_history(db, factory_id)
-    db.commit()
+    db.commit() if commit else db.flush()
     for order in orders:
         db.refresh(order)
     return orders
@@ -2244,6 +2245,7 @@ def bulk_cancel_orders(
     db: Session,
     payload: CartonOrderBulkCancelRequest,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> list[CartonOrder]:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
@@ -2282,7 +2284,7 @@ def bulk_cancel_orders(
                 "bulk": True,
             },
         )
-    db.commit()
+    db.commit() if commit else db.flush()
     for order in orders:
         db.refresh(order)
     return orders
@@ -2832,7 +2834,13 @@ def create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext)
     _lock_receipt_factory(db, factory_id)
     scope = json.dumps([factory_id, user.id, payload.request_id], separators=(",", ":"))
     event_id = f"CAE-RCP-{hashlib.sha256(scope.encode()).hexdigest()}"
-    fingerprint = hashlib.sha256(json.dumps(payload.model_dump(mode="json", exclude={"request_id"}),
+    fingerprint_payload = payload.model_dump(mode="json", exclude={"request_id"})
+    if fingerprint_payload.get("legacy_correction_receipt_id") is None:
+        fingerprint_payload.pop("legacy_correction_receipt_id", None)
+    for paper in fingerprint_payload.get("lines", []):
+        if not paper.get("special_source_line_id"):
+            paper.pop("special_source_line_id", None)
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_payload,
         sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
     previous = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.id == event_id))
     if previous is not None:
@@ -2872,9 +2880,23 @@ def _ensure_delivery_import_evidence(db, factory_id, batch_id):
             raise HTTPException(409, "历史送货预览未经过完整物料校验，请重新导入原文件后复核")
 
 
-def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext, *, commit: bool = True, supplier_shipment_id: str | None = None, corrects_receipt_id: str | None = None, shipment_batch_key: str | None = None) -> CartonReceipt:
+def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext, *, commit: bool = True, supplier_shipment_id: str | None = None, corrects_receipt_id: str | None = None, shipment_batch_key: str | None = None, special_request_id: str | None = None) -> CartonReceipt:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
+    special_sources = {}
+    legacy_correction = None
+    if payload.legacy_correction_receipt_id:
+        from app.services.carton_special_requests import validate_legacy_correction
+        legacy_correction = validate_legacy_correction(db, user, payload)
+    if any(line.special_source_line_id for line in payload.lines):
+        if not special_request_id:
+            raise HTTPException(422, "特殊需求收料必须沿原需求送货单验收，不可直接入库")
+        from app.services.carton_special_requests import validate_receipt_source
+        special_sources = validate_receipt_source(db, special_request_id, payload)
+    if any(line.source_type == "AD_HOC" for line in payload.lines) and not special_request_id and not corrects_receipt_id and not legacy_correction:
+        raise HTTPException(422, "无来源到货须先异常核实并关联有效需求，不可直接按样板或赠送入库")
+    if any(line.unordered_receipt for line in payload.lines) and not corrects_receipt_id and not legacy_correction:
+        raise HTTPException(422, "无来源到货须先异常核实并关联有效需求，不可新建无落单应付")
     has_unordered = any(line.unordered_receipt for line in payload.lines)
     supplier_id = payload.supplier_id
     if has_unordered and not supplier_id:
@@ -2898,11 +2920,24 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
     guard_lines(db, factory_id, line_ids)
     registered_shipment = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == factory_id,
         SupplierShipment.supplier_id == supplier.id, SupplierShipment.delivery_note_no == payload.delivery_note_no))
+    from app.models.carton_special_requests import SpecialShipment
+    # One coordinated original note can legitimately contain both formal and
+    # special children. Only its exact immutable formal link permits this path.
+    from app.models.carton_special_requests import UnifiedDelivery
+    unified_note = db.scalar(select(UnifiedDelivery).where(UnifiedDelivery.factory_id == factory_id,
+        UnifiedDelivery.supplier_id == supplier.id, UnifiedDelivery.delivery_note_no == payload.delivery_note_no))
+    unified_formal = bool(unified_note and supplier_shipment_id and
+        json.loads(unified_note.children_json).get("formal_id") == supplier_shipment_id)
+    if not special_request_id and db.scalar(select(SpecialShipment.id).where(SpecialShipment.factory_id == factory_id,
+        SpecialShipment.supplier_id == supplier.id, SpecialShipment.delivery_note_no == payload.delivery_note_no)) and not unified_formal:
+        raise HTTPException(409, "此送货单已关联样板或车间需求，请沿原需求验收，不可重复入库")
     if registered_shipment and (registered_shipment.id != supplier_shipment_id or registered_shipment.status != "SENT"):
         raise HTTPException(409, "此送货单已由供应商登记，请从供应商协同管理核实实际收到，不可重复人工登记")
     if supplier_shipment_id and (not registered_shipment or registered_shipment.id != supplier_shipment_id):
         raise HTTPException(409, "供应商发货关联与送货单不一致")
     receipt_note_no = payload.delivery_note_no
+    if legacy_correction:
+        receipt_note_no = f"{legacy_correction.delivery_note_no[:90]}#LC-{uuid4().hex[:16]}"
     if shipment_batch_key:
         import hashlib
         if not registered_shipment or registered_shipment.id != supplier_shipment_id:
@@ -2984,7 +3019,7 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         for customer_code in {
             line.customer_code
             for line in payload.lines
-            if line.source_type == "AD_HOC" and not line.unordered_receipt
+            if line.source_type == "AD_HOC" and not line.unordered_receipt and not line.special_source_line_id
         }
     }
 
@@ -3045,6 +3080,8 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
                 ),
                 "currency": order_line.currency,
             }
+        elif input_line.special_source_line_id:
+            snapshot = special_sources[input_line.special_source_line_id]
         else:
             customer = ad_hoc_customers.get(input_line.customer_code) if not input_line.unordered_receipt else None
             snapshot = {
@@ -3124,6 +3161,9 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
             "inventory_posted": False,
         },
     )
+    if legacy_correction:
+        _audit(db, user, factory_id, "LEGACY_RECEIPT_REENTERED", "carton_receipt", legacy_correction.id,
+            {"replacement_receipt_id": receipt_id, "original_receipt_id": legacy_correction.id})
     try:
         db.commit() if commit else db.flush()
     except IntegrityError as exc:
@@ -3144,6 +3184,7 @@ def _receipt_lines(db: Session, receipt_id: str) -> list[CartonReceiptLine]:
 
 
 def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
+    from app.services.carton_source_links import receipt_sources
     from app.services.carton_replenishment_receipts import receipt_links, public_link
     links = receipt_links(db, receipt.factory_id)
     receipt_lines = _receipt_lines(db, receipt.id)
@@ -3152,7 +3193,15 @@ def receipt_out(db: Session, receipt: CartonReceipt) -> CartonReceiptOut:
         CartonOrderLine.factory_id == receipt.factory_id, CartonOrderLine.id.in_(order_line_ids))).all()} if order_line_ids else {}
     from app.services.carton_receipt_pricing import declarations
     zero_prices = declarations(db, receipt.factory_id, receipt.id)
+    from app.models.carton_special_requests import SpecialReceiptLink, SpecialShipmentLine, SpecialShipment
+    special_source = db.execute(select(SpecialShipment.request_id, SpecialShipment.id).join(SpecialShipmentLine,
+        SpecialShipmentLine.shipment_id == SpecialShipment.id).join(SpecialReceiptLink,
+        SpecialReceiptLink.shipment_line_id == SpecialShipmentLine.id).where(
+            SpecialReceiptLink.receipt_line_id.in_([line.id for line in receipt_lines]))).first()
     return CartonReceiptOut(
+        **receipt_sources(db, receipt, receipt_lines),
+        special_request_id=special_source[0] if special_source else None,
+        special_shipment_id=special_source[1] if special_source else None,
         id=receipt.id,
         factory_id=receipt.factory_id,
         receipt_no=receipt.receipt_no,
@@ -3191,8 +3240,26 @@ def list_receipts(
     date_from: str = "",
     date_to: str = "",
     sort: str = "DESC",
+    business_kind: str = "",
 ) -> tuple[int, list[CartonReceipt]]:
     query = select(CartonReceipt).where(CartonReceipt.factory_id == factory_id)
+    if business_kind:
+        from app.models.carton_special_requests import SpecialReceiptLink, SpecialShipmentLine, SpecialShipment, SpecialRequest
+        linked = select(CartonReceiptLine.receipt_id).join(SpecialReceiptLink,
+            SpecialReceiptLink.receipt_line_id == CartonReceiptLine.id).join(SpecialShipmentLine,
+            SpecialShipmentLine.id == SpecialReceiptLink.shipment_line_id).join(SpecialShipment,
+            SpecialShipment.id == SpecialShipmentLine.shipment_id).join(SpecialRequest,
+            SpecialRequest.id == SpecialShipment.request_id).where(CartonReceiptLine.factory_id == factory_id,
+                SpecialReceiptLink.factory_id == factory_id, SpecialRequest.factory_id == factory_id)
+        if business_kind == 'PURCHASE':
+            query = query.where(CartonReceipt.id.in_(select(CartonReceiptLine.receipt_id).where(
+                CartonReceiptLine.factory_id == factory_id, CartonReceiptLine.order_line_id.is_not(None))))
+        elif business_kind == 'LEGACY':
+            query = query.where(CartonReceipt.id.not_in(linked), CartonReceipt.id.not_in(
+                select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory_id,
+                    CartonReceiptLine.order_line_id.is_not(None))))
+        else:
+            query = query.where(CartonReceipt.id.in_(linked.where(SpecialRequest.kind == business_kind)))
     if receipt_id:
         query = query.where(CartonReceipt.id == receipt_id)
     if status_filter:
@@ -3225,6 +3292,7 @@ def list_receipts(
                     CartonReceiptLine.packaging_type.ilike(pattern, escape="!"),
                     CartonReceiptLine.paper_quality.ilike(pattern, escape="!"),
                     CartonReceiptLine.specification.ilike(pattern, escape="!"),
+                    CartonReceiptLine.feedback_note.ilike(pattern, escape="!"),
                 )
             )
         if search:
@@ -3233,6 +3301,7 @@ def list_receipts(
                     CartonReceipt.id.in_(line_query),
                     CartonReceipt.receipt_no.ilike(pattern, escape="!"),
                     CartonReceipt.delivery_note_no.ilike(pattern, escape="!"),
+                    CartonReceipt.note.ilike(pattern, escape="!"),
                 )
             )
         else:
@@ -3993,6 +4062,8 @@ def reverse_receipt(
     })
     from app.services.carton_supplier_portal import reopen_reversed_shipment
     reopen_reversed_shipment(db, receipt, user, payload.reason)
+    from app.services.carton_special_requests import receipt_reversed
+    receipt_reversed(db, receipt, user)
     try:
         db.commit()
     except IntegrityError as exc:

@@ -16,7 +16,7 @@ from openpyxl.worksheet.formula import ArrayFormula
 TARGET_TEMPLATE = "HEYUAN_BUSINESS_UNIFIED_HUAKANG_A_V4"
 
 ITEM_TAILS = {
-    "360": ("条码", "MS Container Type (FCL/LCL)", "Consolidated ID", "Port of Discharge", "备注"),
+    "360": ("条码", "MS Container Type (FCL/LCL)", "Consolidated ID", "Port of Discharge", "备注", "版本"),
     "green-toys": (
         "走货国家", "落货港", "完成状态", "走货方式", "单价US", "货价总金额US$",
         "PO单价HK$", "货价总金额HK$", "装好纸箱报库存价HK$", "出厂总金额HK$",
@@ -33,6 +33,8 @@ EXTRA_HEADERS = {
     "360": {
         "barcode": "条码", "container_type": "MS Container Type (FCL/LCL)",
         "consolidated_id": "Consolidated ID", "port": "Port of Discharge",
+        "product_version": "版本",
+        "shipping_item": "出货货号",
     },
     "green-toys": {
         "country": "走货国家", "port": "落货港", "transportation_mode": "走货方式",
@@ -68,6 +70,12 @@ def extra_columns(sheet, customer_code):
 
 def enabled(factory_id, customer_code):
     return factory_id == "huakang-a" and customer_code in ITEM_TAILS
+
+
+def organize_360_schedule(workbook, *, source_content=None, today=None):
+    """Only the Huakang A / 360 caller invokes this layout-only operation."""
+    from .inspection_archive import organize
+    return organize(workbook, source_content=source_content, today=today)
 
 
 def history_reference(customer_code, contract, reference, po):
@@ -159,16 +167,41 @@ def map_record(row, record, customer_code):
         if field not in {"amount_usd", "unit_price_hkd", "amount_hkd"}:
             row[field] = record.get(field) if record.get(field) is not None else ""
     if customer_code == "360":
-        row["contract_no"] = record.get("customer_release") or ""
-        row["po_no"] = record.get("contract_no") or ""
-        row["reference_no"] = record.get("contract_no") or record.get("customer_po") or ""
+        # RL Order Type is the customer's routing vocabulary (e.g. DI Order),
+        # not the schedule's business category. New release orders are 正单;
+        # any explicit business correction is applied after this source map.
+        source_order_type = record.get("order_type") or ""
+        row["order_type"] = "正单"
+        # Customer Release (including OH numbers), the complete RL and the
+        # customer's PO are separate identifiers, even when a value is absent.
+        row["production_no"] = record.get("customer_release") or ""
+        row["contract_no"] = record.get("contract_no") or ""
+        row["reference_no"] = record.get("contract_no") or ""
+        row["po_no"] = record.get("customer_po") or ""
+        row["customer_release_no"] = record.get("customer_release") or ""
         row["customer_name"] = record.get("customer_name") or "ThreeSixty"
+        source = row.get("source_po_file_name") or record.get("file_name") or "PO"
         row.setdefault("lineage", {}).update({
-            "contract_no": "PO · Customer Release No.",
-            "reference_no": "PO · PURCHASE ORDER RELEASE 的 RL 编号",
-            "po_no": "PO · PURCHASE ORDER RELEASE 的 RL 编号",
-            "customer_po_number": f"PO · Customer PO Number: {record.get('customer_po') or ''}",
+            "order_type": "华康A 360 业务规则 · 新 PURCHASE ORDER RELEASE 记为正单，客户 RL Order Type 不作为排期订单类型",
+            "source_order_type": f"{source} · RL Order Type: {source_order_type or '未提供'}",
+            "production_no": f"{source} · Customer Release No.（客户 Release/OH 号）",
+            "contract_no": f"{source} · PURCHASE ORDER RELEASE 标题的完整 RL 编号",
+            "reference_no": f"{source} · PURCHASE ORDER RELEASE 标题的完整 RL 编号",
+            "po_no": f"{source} · Customer PO Number",
+            "customer_release_no": f"{source} · Customer Release No.（保留来源值）",
+            "customer_po_number": f"{source} · Customer PO Number: {record.get('customer_po') or ''}",
         })
+        sticker_sources = []
+        for evidence in record.get("outer_carton_sticker_sources") or []:
+            if not isinstance(evidence, dict) or not evidence.get("raw_text"):
+                continue
+            parts = [str(evidence.get("file_name") or evidence.get("relative_path") or source)]
+            if evidence.get("page") is not None:
+                parts.append(f"第{evidence['page']}页")
+            parts.append(str(evidence["raw_text"]))
+            sticker_sources.append(" · ".join(parts))
+        if sticker_sources:
+            row["lineage"]["customer_label"] = "\n".join(sticker_sources)
     elif customer_code == "green-toys":
         row["reference_no"] = record.get("customer_po") or record.get("contract_no") or ""
         row["transportation_mode"] = "40'YT"
@@ -190,6 +223,66 @@ def round_cartons(row):
     quantity, units = _number(row.get("quantity")), _number(row.get("units_per_carton"))
     if quantity is not None and units is not None and units > 0:
         row["carton_count"] = _number_text((quantity / units).to_integral_value(rounding=ROUND_CEILING))
+
+
+def prepare_360_version(row, history):
+    """Business notes belong to this Release/item, not a PO revision."""
+    from app.services.customer_order_unified import _text, _issue, _refresh_status
+    key = identity('360', row.get('reference_no'), row.get('product_no'))
+    if not _text(row.get('product_version')) and all(key):
+        candidates = {item.extras['product_version'] for item in history
+                      if identity('360', item.reference_no, item.product_no) == key
+                      and item.extras.get('product_version')}
+        if len(candidates) == 1:
+            row['product_version'] = candidates.pop()
+            row.setdefault('lineage', {})['product_version'] = 'ITEM表 · 同Release及货号的唯一版本备注'
+    row.setdefault('product_version', '')
+    row.setdefault('lineage', {}).setdefault('product_version', '业务补填版本备注；非PO REVISION，不按货号推断')
+    issue = _issue('warning', 'huakang_a_360_version_note', 'product_version',
+                   '版本为业务备注（如两个装、语言版本、拆单说明），可选补填；不填写则保留同单原值或空白。', can_skip=True)
+    issue.update(skip_key=f"{row['id']}|huakang_a_360_version_note|product_version",
+                 can_edit=True, edit_field='product_version', edit_label='版本', edit_input_type='text')
+    row['issues'].append(issue)
+    _refresh_status(row)
+
+
+def ensure_360_version_columns(workbook):
+    """Append missing columns without moving historical cells or formulas."""
+    from app.services.customer_order_unified import _normalized_header, CustomerOrderUnifiedError
+    result = {}
+    for name in ('ITEM表', '接单表', '正单评审表'):
+        sheet = workbook[name]
+        common_end = 28 if name == 'ITEM表' else 19
+        found = [c.column for c in sheet[3] if c.column > common_end
+                 and _normalized_header(c.value) == '版本']
+        if len(found) > 1:
+            raise CustomerOrderUnifiedError(f'{name} 的“版本”列重复，请保留唯一表头后重试，不能猜测写入位置')
+        column = found[0] if found else sheet.max_column + 1
+        if not found:
+            header = sheet.cell(3, column)
+            header._style = copy(sheet.cell(3, common_end)._style)
+            header.value = '版本'
+            alignment = copy(header.alignment)
+            alignment.wrap_text = True
+            header.alignment = alignment
+            sheet.column_dimensions[get_column_letter(column)].width = 36
+        result[name] = column
+    return result
+
+
+def write_360_version(sheet, row_number, column, row):
+    from app.services.customer_order_unified import _text, _fit_generated_text
+    cell = sheet.cell(row_number, column)
+    if not cell.has_style:
+        cell._style = copy(sheet.cell(row_number, 10 if sheet.title == 'ITEM表' else 9)._style)
+    alignment = copy(cell.alignment)
+    alignment.wrap_text = True
+    cell.alignment = alignment
+    cell.number_format = '@'
+    cell.value = _text(row.get('product_version')) or None
+    if cell.value is not None:
+        cell.data_type = 's'  # Notes starting '=' must never execute as formulas.
+    _fit_generated_text(sheet, row_number, {column: cell.value})
 
 
 def copy_array_formula(value, source_coordinate, target_coordinate):
@@ -234,12 +327,21 @@ def _insert_rows(workbook, target, start, amount):
         sheet.cell(new_row, column).value = value
 
 
-def output_slots(workbook, count, *, sheet_counts=None):
-    from app.services.customer_order_unified import SHEETS, _marker_row, _copy_template_row
+def output_slots(workbook, count, *, sheet_counts=None, top_order_area=False):
+    from app.services.customer_order_unified import (
+        SHEETS, _marker_row, _copy_template_row, CustomerOrderUnifiedError,
+    )
     result = {}
     for name, count in (sheet_counts if sheet_counts is not None else dict.fromkeys(SHEETS, count)).items():
         sheet = workbook[name]
-        marker = _marker_row(sheet)
+        is_total = False
+        if top_order_area and count:
+            from app.services.customer_order_top_area import boundary
+            marker, is_total = boundary(sheet)
+            if marker <= 4:
+                raise CustomerOrderUnifiedError(f"{name} 顶部正单区缺少明细模板行，请保留至少一行明细格式后重试")
+        else:
+            marker = _marker_row(sheet)
         # Any literal value is user-owned, including notes without order keys.
         occupied = [r for r in range(4, marker) if any(
             c.value not in (None, "") and c.data_type != "f" for c in sheet[r]
@@ -247,14 +349,19 @@ def output_slots(workbook, count, *, sheet_counts=None):
         start = max(occupied, default=3) + 1
         template_row = next((r for r in range(start - 1, 3, -1) if any(
             c.data_type == "f" for c in sheet[r]
-        )), 4)
+        )), max(4, start - 1) if top_order_area else 4)
         if name != "ITEM表":
             template_row = next((r for r in range(start, marker) if sum(
                 c.data_type == "f" for c in sheet[r]
             ) >= 8), template_row)
         free = marker - start
-        if count > free:
-            _insert_rows(workbook, sheet, marker, count - free)
+        inserted = max(0, count - free)
+        if inserted:
+            if top_order_area:
+                from app.services.customer_order_top_area import insert_rows
+                insert_rows(workbook, sheet, marker, inserted)
+            else:
+                _insert_rows(workbook, sheet, marker, inserted)
         slots = list(range(start, start + count))
         # Existing reserved formulas are authoritative. Only new rows need a copy.
         for row in slots:
@@ -271,12 +378,15 @@ def output_slots(workbook, count, *, sheet_counts=None):
                         if isinstance(source.value, ArrayFormula)
                         else Translator(source.value, origin=source.coordinate).translate_formula(target.coordinate)
                     )
+        if is_total and slots:
+            from app.services.customer_order_top_area import extend_total
+            extend_total(sheet, marker + inserted, slots[-1])
         result[name] = slots
     return result
 
 
 def write_extras(sheet, row_number, row, customer_code):
-    from app.services.customer_order_unified import _number, _excel_value
+    from app.services.customer_order_unified import _number, _excel_value, _fit_generated_text
     columns = extra_columns(sheet, customer_code)
     for field, column in columns.items():
         if field in {"amount_usd", "unit_price_hkd", "amount_hkd"}:
@@ -285,6 +395,18 @@ def write_extras(sheet, row_number, row, customer_code):
         if field == "unit_price_usd":
             value = _excel_value(_number(value))
         sheet.cell(row_number, column).value = value if value not in (None, "") else None
+        if field == "shipping_item":
+            cell = sheet.cell(row_number, column)
+            if not cell.has_style:
+                cell._style = copy(sheet.cell(row_number, 8)._style)
+            alignment = copy(cell.alignment)
+            alignment.wrap_text = True
+            cell.alignment = alignment
+            cell.number_format = '@'
+            if value not in (None, ""):
+                cell.value = str(value)
+                cell.data_type = 's'
+                _fit_generated_text(sheet, row_number, {column: cell.value})
     if customer_code in {"green-toys", "headstart"}:
         r = row_number
         usd = _number(row.get("unit_price_usd"))

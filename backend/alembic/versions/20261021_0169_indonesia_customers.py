@@ -9,6 +9,15 @@ depends_on = None
 
 
 def upgrade():
+    if op.get_context().as_sql:
+        _create_schema()
+    else:
+        # Failed SQLite DDL must leave neither a partial customer table nor a revision.
+        with op.get_bind().begin_nested():
+            _create_schema()
+
+
+def _create_schema():
     op.create_table('indonesia_material_customers',
         sa.Column('id', sa.String(64), primary_key=True),
         sa.Column('factory_id', sa.String(32), nullable=False),

@@ -10,7 +10,7 @@ import type { WarehouseDocument, WarehouseDocumentInput, WarehouseDomain, Wareho
 const api = vi.hoisted(() => ({ workspace: vi.fn(), post: vi.fn(), recover: vi.fn(), bulkIssue: vi.fn() }))
 vi.mock('@/api/warehouseOperations', () => ({ warehouseOperationsApi: api }))
 let wrapper: VueWrapper | undefined
-const empty = (): WarehouseOperationsWorkspace => ({ revision: 3, locations: ['A01', 'A02', 'B03'].map(code => ({ id: code, warehouse: '一仓', code, label: `一仓／${code}`, status: 'ACTIVE', revision: 1 })), stock: [], documents: [], permissions: { read: true, operate: true, quality: false, correct: false } })
+const empty = (): WarehouseOperationsWorkspace => ({ revision: 3, locations: ['A01', 'A02', 'B03'].map(code => ({ id: code, warehouse: '一仓', code, label: `一仓／${code}`, status: 'ACTIVE', revision: 1, category: 'FABRIC' })), stock: [], documents: [], permissions: { read: true, operate: true, quality: false, correct: false } })
 async function open(section = 'inventory', view = 'pending-issues', data = empty(), warehouse: WarehouseDomain = 'fabric') {
   data.stock = data.stock.map(row => ({ location_id: row.location, location_verified: true, location_status: 'ACTIVE', ...row }))
   api.workspace.mockResolvedValue(data)

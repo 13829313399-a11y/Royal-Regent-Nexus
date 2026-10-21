@@ -1,5 +1,7 @@
 from typing import Literal
 from datetime import date
+from hashlib import sha256
+import json
 from pydantic import TypeAdapter, ValidationError
 from urllib.parse import quote
 
@@ -18,6 +20,7 @@ from app.services.business_authz import ensure_permission_for_departments, has_p
 from app.services import customer_order_ledger as ledger
 from app.services import customer_order_history as history
 from app.services import customer_order_schedule as schedule
+from app.services.customer_order_360_workbook import organize_workbook
 
 router = APIRouter(prefix="/api/customer-order-ledger", tags=["customer-order-ledger"], dependencies=[Depends(order_job_request)])
 FACTORIES = {"huaxing", "huadeng", "huakang-a", "huakang-b", "huakang-c", "huakang-d"}
@@ -135,6 +138,7 @@ def schedule_customers(factory_id: str, db: Session = Depends(get_db), current_u
 def customer_schedule(factory_id: str, customer_code: str = Query(..., min_length=1, max_length=64),
                       q: str = Query("", max_length=255), date_from: date | None = None, date_to: date | None = None,
                       unshipped_page: int = Query(1, ge=1), shipped_page: int = Query(1, ge=1),
+                      inspection_pending_page: int = Query(1, ge=1), completed_page: int = Query(1, ge=1),
                       cancelled_page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
                       db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     authorize(db, current_user, factory_id)
@@ -145,7 +149,45 @@ def customer_schedule(factory_id: str, customer_code: str = Query(..., min_lengt
         raise HTTPException(400, "交期开始日期不能晚于结束日期")
     return schedule.read_schedule(db, factory=factory_id, customer=customer_code, customer_name=names[customer_code],
         q=q, date_from=date_from, date_to=date_to,
-        pages={"unshipped": unshipped_page, "shipped": shipped_page, "cancelled": cancelled_page}, page_size=page_size)
+        pages={"unshipped": unshipped_page, "shipped": shipped_page, "cancelled": cancelled_page,
+               "inspection_pending": inspection_pending_page, "completed": completed_page}, page_size=page_size)
+
+
+@router.post("/schedule/organize-360")
+async def organize_360_schedule(factory_id: str, schedule_file: UploadFile = File(...),
+                               db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    authorize(db, current_user, factory_id)
+    authorize(db, current_user, factory_id, "export")
+    if factory_id != "huakang-a":
+        raise HTTPException(400, "按验货日期整理仅适用于华康 A 的 360 排期")
+    mapping._validate_upload(schedule_file, kind="客户排期", supported=(".xlsx",))
+    content = await schedule_file.read(mapping.MAX_SCHEDULE_BYTES + 1)
+    if not content or len(content) > mapping.MAX_SCHEDULE_BYTES:
+        raise HTTPException(400, "客户排期为空或超过 35MB 限制")
+    name = schedule_file.filename or "360排期.xlsx"
+    try:
+        output, output_name, report, source_hash = await run_order_job(organize_workbook, name, content, db=db)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    as_of = report["as_of_date"]
+    fingerprint = sha256(f"360-inspection-placement-v1|{source_hash}|{as_of}".encode()).hexdigest()
+    audit = mapping._record_export_audit(db, current_user, preview={
+        "factory_id": factory_id, "customer_code": "360", "schedule_file_name": name,
+        "source_schedule_sha256": source_hash, "preview_schema_version": "360-inspection-placement-v1",
+        "target_template": "HUAKANG_A_360_INSPECTION_PLACEMENT_V1",
+    }, received_date=as_of, preview_fingerprint=fingerprint, actual_issue_keys=set(), manual_overrides=[],
+       confirmation_reason=f"按已有验货日期整理排期，截至 {as_of}（上海日期）；走货记录保持不变。\n整理报告："
+                           + json.dumps(report, ensure_ascii=False, separators=(",", ":")),
+       output=output, file_name=output_name)
+    warnings = report.get("warnings", [])
+    # Keep the response header bounded; retain the full report in the audit.
+    response_report = {"as_of_date": as_of, "sheets": report.get("sheets", {}),
+                       "warning_count": len(warnings), "warnings": [str(w)[:100] for w in warnings[:3]]}
+    return Response(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(output_name),
+                             "X-Export-Audit-Id": audit.id, "Cache-Control": "no-store",
+                             "X-Schedule-Organize-Report": quote(json.dumps(response_report, ensure_ascii=False, separators=(",", ":")), safe=""),
+                             "X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/lines")

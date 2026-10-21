@@ -132,13 +132,17 @@ def matching_asset_orders(asset, orders):
     return matches
 
 
-def asset_out(asset, orders, workflow=None):
+def asset_out(asset, orders, workflow=None, sharing=None):
     from app.services import carton_mark_asset_workflow as lifecycle
     from app.schemas.carton_mark import CartonMarkAssetWorkflow
     if workflow is None:
         session = object_session(asset)
         workflow = lifecycle.current(session, asset) if session else CartonMarkAssetWorkflow()
     matches = matching_asset_orders(asset, orders)
+    if sharing is None:
+        from app.services.carton_mark_sharing import current
+        session = object_session(asset)
+        sharing = current(session, asset) if session else {}
     explicit = asset.recognition_source in {"manual_order", "manual_orders"} or bool(asset.bound_order_id)
     ambiguous = not explicit and len({identity(o.customer_code) for o in matches}) > 1
     status = "AMBIGUOUS" if ambiguous else "BOUND" if matches else "NO_ORDER" if asset.contract_number else "UNBOUND"
@@ -148,7 +152,7 @@ def asset_out(asset, orders, workflow=None):
         bound_order_ids=[link.order_id for link in asset.order_bindings] if asset.recognition_source == "manual_orders" else ([asset.bound_order_id] if asset.bound_order_id else []),
         recognition_source=asset.recognition_source, candidates=json.loads(asset.candidates_json),
         warning=asset.warning, binding_status=status, revision=asset.revision,
-        created_by_name=asset.created_by_name, created_at=asset.created_at, workflow=workflow,
+        created_by_name=asset.created_by_name, created_at=asset.created_at, workflow=workflow, **sharing,
         orders=[CartonMarkAssetOrderOut(id=o.id, order_no=o.order_no, contract_no=o.contract_no,
             customer_name=o.customer_name, item_no=o.item_no) for o in matches])
 
@@ -170,7 +174,9 @@ def list_assets(db, factory, order_id=None):
     assets = list(db.scalars(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory,
         CartonMarkAsset.is_archived.is_(False)).order_by(CartonMarkAsset.created_at.desc(), CartonMarkAsset.id)))
     workflows = lifecycle.states(db, factory, [asset.id for asset in assets])
-    result = [asset_out(asset, orders, workflows.get(asset.id, CartonMarkAssetWorkflow())) for asset in assets]
+    from app.services import carton_mark_sharing
+    sharing = carton_mark_sharing.states(db, factory, [asset.id for asset in assets])
+    result = [asset_out(asset, orders, workflows.get(asset.id, CartonMarkAssetWorkflow()), sharing.get(asset.id, {})) for asset in assets]
     if order_id:
         result = [asset for asset in result if asset.binding_status == "BOUND" and any(o.id == order_id for o in asset.orders)]
     return result
@@ -187,7 +193,8 @@ def save_asset(db, user, factory, content, recognition, options=None):
     from app.services import carton_mark_asset_workflow as lifecycle
     from app.schemas.carton_mark import CartonMarkAssetUploadOptions
     from app.services.carton_procurement import _lock_receipt_factory
-    _lock_receipt_factory(db, factory)
+    from app.services.carton_mark_sharing import internal_actor
+    user = internal_actor(db, user, factory)
     sha = hashlib.sha256(content).hexdigest()
     timestamp = _now_text()
     asset = CartonMarkAsset(id=f"CMA-{uuid4().hex}", factory_id=factory,
@@ -200,15 +207,23 @@ def save_asset(db, user, factory, content, recognition, options=None):
         created_at=timestamp, updated_at=timestamp, revision=1, is_archived=False)
     db.add(asset)
     lifecycle.initialize(db, user, asset, options or CartonMarkAssetUploadOptions())
+    from app.services import carton_mark_sharing
+    carton_mark_sharing.initialize(db, user, asset, options or CartonMarkAssetUploadOptions())
     audit(db, user, asset, "CARTON_MARK_ASSET_CREATED", {"sha256": sha, "contract_number": asset.contract_number})
     db.commit()
     return asset_out(asset, available_orders(db, factory)), "created"
 
 
-def binding_orders(db, factory):
+def binding_orders(db, factory, user=None):
+    from app.services.carton_mark_sharing import ensure_customer
+    def allowed(order):
+        if user is None: return True
+        try: ensure_customer(db, user, order)
+        except HTTPException: return False
+        return True
     return [CartonMarkAssetOrderOut(id=o.id, order_no=o.order_no, contract_no=o.contract_no,
         customer_name=o.customer_name, item_no=o.item_no)
-        for o in sorted(available_orders(db, factory), key=lambda o: (o.contract_no, o.order_no, o.id))]
+        for o in sorted(available_orders(db, factory), key=lambda o: (o.contract_no, o.order_no, o.id)) if allowed(o)]
 
 
 def binding_values(db, factory, payload):
@@ -250,6 +265,8 @@ def change_binding(db, user, factory, asset_id, payload):
     if asset.photo_group_id:
         raise HTTPException(409, "照片已组成组，请修改整组关联，或先解除分组")
     values = binding_values(db, factory, payload)
+    from app.services.carton_mark_sharing import validate_binding_change
+    validate_binding_change(db, user, asset, payload)
     before_ids = [link.order_id for link in asset.order_bindings] or ([asset.bound_order_id] if asset.bound_order_id else [])
     try:
         result = db.execute(update(CartonMarkAsset).where(CartonMarkAsset.id == asset.id,
@@ -284,6 +301,8 @@ def change_photo_group(db, user, factory, payload, *, group_id=None, ungroup=Fal
     selected = list(db.scalars(select(CartonMarkAsset).where(
         CartonMarkAsset.factory_id == factory, CartonMarkAsset.id.in_(references),
         CartonMarkAsset.is_archived.is_(False)).order_by(CartonMarkAsset.id)))
+    from app.services.carton_mark_sharing import ensure_asset_access
+    for asset in selected: ensure_asset_access(db, user, asset, write=True)
     if len(selected) != len(references):
         raise HTTPException(404, "未找到本厂有效照片，请刷新后重试")
     if any(asset.kind != "image" for asset in selected):
@@ -299,6 +318,9 @@ def change_photo_group(db, user, factory, payload, *, group_id=None, ungroup=Fal
     if not group_id and len(selected) < 2:
         raise HTTPException(422, "请选择至少两张照片组成组")
     values = {} if ungroup else binding_values(db, factory, payload)
+    if not ungroup:
+        from app.services.carton_mark_sharing import validate_binding_change
+        for asset in selected: validate_binding_change(db, user, asset, payload)
     target = None if ungroup else group_id or f"CMP-{uuid4().hex}"
     timestamp = _now_text()
     try:
@@ -334,6 +356,8 @@ def archive_asset(db, user, factory, asset_id, revision):
     from app.services.carton_procurement import _lock_receipt_factory
     _lock_receipt_factory(db, factory)
     asset = active_asset(db, factory, asset_id)
+    from app.services.carton_mark_sharing import ensure_asset_access
+    ensure_asset_access(db, user, asset, write=True)
     result = db.execute(update(CartonMarkAsset).where(CartonMarkAsset.id == asset.id,
         CartonMarkAsset.revision == revision, CartonMarkAsset.is_archived.is_(False)).values(
             is_archived=True, photo_group_id=None, revision=revision + 1, updated_at=_now_text()))

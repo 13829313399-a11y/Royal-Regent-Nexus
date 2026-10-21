@@ -172,8 +172,22 @@ def sources(db, factory, supplier, period, currency):
     # Unknown dates can belong to any month. Do not silently omit historical debt.
     if undated:
         issues.append(f"有 {len(undated)} 张历史收料单未核实实际验收日期，请先补齐日期")
+    from app.services.carton_special_requests import settlement_evidence
+    special_sources, _ = settlement_evidence(db, factory, supplier, period)
+    from app.services.carton_source_links import delivery_ids
+    group_ids = delivery_ids(db, factory)
+    for row in result:
+        vendor = special_sources.get(row["source_key"].removeprefix("RECEIPT:")) if row["kind"] == "RECEIPT" else None
+        if vendor:
+            row.update(document_no=vendor["document_no"], supplier_delivery=vendor, special_request_kind=vendor["request_kind"],
+                special_request_no=vendor["request_no"], special_request_id=vendor["request_id"],
+                delivery_id=group_ids.get(vendor["shipment_id"], "SPECIAL:" + vendor["shipment_id"]))
+    from app.services.carton_price_review import apply_sources
+    apply_sources(db, factory, result)
     result.sort(key=lambda row: (row["acceptance_date"] or "", row["document_no"], row["source_key"]))
-    fingerprint = hashlib.sha256(dump({"sources": result, "issues": issues, "undated": sorted(undated, key=lambda row: row["receipt_id"])}).encode()).hexdigest()
+    # Navigation metadata must not invalidate a previously reconciled month.
+    fingerprint_sources = [{key: value for key, value in row.items() if key != "delivery_id"} for row in result]
+    fingerprint = hashlib.sha256(dump({"sources": fingerprint_sources, "issues": issues, "undated": sorted(undated, key=lambda row: row["receipt_id"])}).encode()).hexdigest()
     return result, fingerprint, issues, undated
 
 

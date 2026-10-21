@@ -1,5 +1,5 @@
-.cutting-shell { height: 100dvh; display: grid; grid-template: 64px minmax(0, 1fr) / 84px minmax(0, 1fr); background: var(--background); color: var(--foreground); }
-.cutting-header { grid-column: 1 / -1; display: flex; align-items: center; gap: 24px; padding: 0 24px; background: var(--card); border-bottom: 1px solid var(--border); }
+.cutting-shell { height: 100dvh; display: grid; grid-template: auto auto minmax(0, 1fr) / minmax(0, 1fr); background: var(--background); color: var(--foreground); }
+.cutting-header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 28px; background: var(--card); border-bottom: 1px solid var(--border); }
 .cutting-brand { display: flex; align-items: center; gap: 12px; color: inherit; text-decoration: none; }
 .cutting-brand img { width: 36px; height: 36px; object-fit: contain; }
 .cutting-brand strong { display: block; font-size: 17px; }
@@ -7,10 +7,10 @@
 .cutting-scope, .cutting-back { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
 .cutting-scope { border-left: 1px solid var(--border); padding-left: 24px; color: var(--muted-foreground); }
 .cutting-back { margin-left: auto; color: var(--primary); min-height: 44px; }
-.cutting-rail { display: flex; flex-direction: column; gap: 8px; padding: 18px 6px; background: var(--card); border-right: 1px solid var(--border); overflow-y: auto; }
-.cutting-rail a { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 7px; padding: 10px 3px; min-height: 68px; border-radius: 8px; color: var(--muted-foreground); font-size: 12px; text-decoration: none; }
+.cutting-rail { display: flex; gap: 6px; padding: 0 28px; background: var(--card); border-bottom: 1px solid var(--border); overflow-x: auto; }
+.cutting-rail a { display: flex; flex: 0 0 auto; justify-content: center; align-items: center; gap: 8px; padding: 14px 16px; min-height: 52px; color: var(--muted-foreground); font-size: 14px; text-decoration: none; white-space: nowrap; border-bottom: 3px solid transparent; }
 .cutting-rail a:hover { background: var(--muted); }
-.cutting-rail a[aria-current='page'] { color: var(--primary); background: var(--accent); font-weight: 600; box-shadow: inset 3px 0 var(--primary); }
+.cutting-rail a[aria-current='page'] { color: var(--primary); background: var(--accent); font-weight: 600; border-bottom-color: var(--primary); }
 .cutting-main { overflow: auto; min-width: 0; }
 .cutting-page { display: flex; flex-direction: column; gap: 22px; padding: 28px 32px; max-width: 1920px; margin: 0 auto; }
 .cutting-page-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
@@ -45,16 +45,34 @@
 .cutting-skip:focus { top: 10px; }
 @media (max-width: 1023px) { .cutting-page { padding: 22px; } .cutting-scope { display: none; } }
 @media (max-width: 639px) {
-  .cutting-shell { grid-template: 64px auto minmax(0, 1fr) / minmax(0, 1fr); }
   .cutting-header { gap: 12px; padding: 0 12px; }
   .cutting-brand img { width: 28px; height: 28px; }
   .cutting-rail { flex-direction: row; gap: 0; padding: 4px; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
-  .cutting-rail a { flex: 1; min-width: 48px; min-height: 60px; font-size: 10px; }
-  .cutting-rail a[aria-current='page'] { box-shadow: inset 0 -3px var(--primary); }
+  .cutting-rail a { flex: 0 0 auto; min-height: 48px; font-size: 13px; padding: 10px 12px; }
   .cutting-page { padding: 18px 12px; gap: 16px; }
 
   .cutting-table-heading { flex-wrap: wrap; }
   .cutting-empty { padding: 28px 16px; }
+}
+.cutting-factory { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid var(--border); border-radius:var(--radius); color:var(--primary); white-space:nowrap; min-height:40px; font-size:14px; }
+.cutting-help { white-space:nowrap; min-height:40px; }
+.cutting-overview { display:flex; flex-direction:column; gap:20px; min-width:0; }
+.cutting-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)); gap:16px; }
+.cutting-metrics article { border:1px solid var(--border); border-radius:12px; background:var(--card); padding:20px 22px; min-width:0; }
+.cutting-metrics p { color:var(--muted-foreground); font-size:14px; }
+.cutting-metrics strong { display:block; font-size:30px; line-height:1.5; font-variant-numeric:tabular-nums; margin:4px 0; overflow-wrap:anywhere; }
+.cutting-metrics small { font-size:13px; font-weight:400; color:var(--muted-foreground); }
+.cutting-metrics span, .cutting-muted { color:var(--muted-foreground); font-size:13px; line-height:1.7; }
+.cutting-subnav { background:var(--card); border-bottom:1px solid var(--border); min-width:0; }
+.cutting-subnav button { flex:0 0 auto; }
+@media (max-width:639px) {
+  .cutting-header { padding:12px; gap:8px; }
+  .cutting-brand { flex:1 0 calc(100% - 120px); }
+  .cutting-back { margin-left:0; }
+  .cutting-factory { margin-right:auto; }
+  .cutting-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .cutting-metrics article { padding:14px 12px; }
+  .cutting-metrics strong { font-size:24px; }
 }
 .cutting-master-toolbar, .cutting-master-toolbar form, .cutting-master-actions { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
 .cutting-master-toolbar { margin: 16px 0; }
@@ -123,3 +141,11 @@
 .cutting-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; color: var(--muted-foreground); font-size: 13px; font-variant-numeric: tabular-nums; }
 /* Monthly reconciliation targets remain read-only until the user chooses an operation. */
 .cutting-page [data-cutting-focused="true"] { outline: 2px solid var(--primary); outline-offset: -2px; background: var(--accent); scroll-margin-block: 100px; }
+
+/* Read-only overview filters share the same compact working surface. */
+.cutting-overview .order-toolbar { display:flex; align-items:end; flex-wrap:wrap; gap:12px; }
+.cutting-overview .order-toolbar > label { flex:1 1 180px; max-width:320px; }
+.cutting-overview .order-pagination { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+@media (max-width:639px) {
+  .cutting-overview .order-toolbar > label { flex-basis:100%; max-width:none; }
+}

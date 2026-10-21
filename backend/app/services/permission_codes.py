@@ -87,6 +87,9 @@ CUSTOMER_ORDER_PERMISSION_CODES = (
     "customer_order:inbox_receive",
 )
 
+# Request-only access is an explicit grant, separate from built-in carton jobs.
+CARTON_SPECIAL_REQUEST_PERMISSION_CODES = ("carton_procurement:special_request_submit",)
+
 CARTON_PROCUREMENT_PERMISSION_CODES = (
     "carton_procurement:read",
     "carton_procurement:order_write",
@@ -204,6 +207,7 @@ BUSINESS_PERMISSION_CODES = (
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     *MOLDING_SAMPLE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,
+    *CARTON_SPECIAL_REQUEST_PERMISSION_CODES,
     *CARTON_PROCUREMENT_PERMISSION_CODES,
     *CARTON_SUPPLIER_PERMISSION_CODES,
     *CUSTOMER_PRICE_PERMISSION_CODES,

@@ -26,8 +26,8 @@ from app.services.fabric_procurement_parser import digest, dump
 from app.services.fabric_receiving import quantity
 
 META = {'OPENING_IMPORT', 'STOCKTAKE_DRAFT', 'STOCKTAKE_SAVE', 'STOCKTAKE_REFRESH', 'STOCKTAKE_POST', 'STOCKTAKE_CANCEL'}
-HEADERS = ['来源行号', '物料编码', '物料名称', '物料分类', '单位', '仓库', '仓位', '缸号', '卷号', '期初数量', '来源单位', '备注']
-KEYS = ['source_line', 'item_code', 'item_name', 'material_category', 'unit', 'warehouse', 'location_code', 'lot', 'roll_no', 'quantity', 'counterparty', 'reason']
+HEADERS = ['来源行号', '物料编码', '物料名称', '物料分类', '单位', '仓库', '仓位', '缸号', '卷号', '期初数量', '来源单位', '备注', '货号', '客户名称', '物料明细']
+KEYS = ['source_line', 'item_code', 'item_name', 'material_category', 'unit', 'warehouse', 'location_code', 'lot', 'roll_no', 'quantity', 'counterparty', 'reason', 'style_no', 'customer_name', 'material_detail']
 CATEGORIES = {'布料': 'FABRIC', '辅料': 'ACCESSORY', '线': 'THREAD'}
 MAX_BYTES = 2 * 1024 * 1024
 
@@ -38,11 +38,11 @@ def template(db):
     sheet.title = '期初库存'
     sheet.append(HEADERS)
     sheet.freeze_panes = 'A2'
-    sheet.auto_filter.ref = 'A1:L1001'
+    sheet.auto_filter.ref = 'A1:O1001'
     for cell in sheet[1]:
         cell.font = Font(color='FFFFFF', bold=True)
         cell.fill = PatternFill('solid', fgColor='0F766E')
-    for index, width in enumerate([16, 24, 32, 14, 12, 22, 20, 20, 20, 18, 28, 40], 1):
+    for index, width in enumerate([16, 24, 32, 14, 12, 22, 20, 20, 20, 18, 28, 40, 24, 28, 48], 1):
         from openpyxl.utils import get_column_letter
         sheet.column_dimensions[get_column_letter(index)].width = width
     for row in sheet.iter_rows(min_row=2, max_row=1001):
@@ -53,8 +53,10 @@ def template(db):
                  '仅导入尚未在本系统登记的历史结余，已收料的实物不能再次导入。',
                  '来源清单编号、库存截止日由页面统一填写；同一清单同一来源行号不能重复。',
                  '编码、缸号和卷号按文本填写，保留前导零。分类填写：布料、辅料、线。',
+                 '货号、客户名称、物料明细必填；货号填写产品/款号，物料明细填写规格、颜色、成分等实物说明。',
+                 '客户和货号记录本行库存的来源/用途，不改变共用物料资料；共用库存须填写经核实的共用说明。',
                  '数量为正数，最多六位小数；不同单位不自动换算。布料必须填写缸号。',
-                 '仓库与仓位填写基础资料中的名称/编号。停用仓位不能导入。',
+                 '仓库与仓位填写基础资料中的名称/编号。须与物料分类匹配，停用或未分类仓位不能导入。',
                  '预览不会入账；确认后建立期初批次，不增加采购实收及供应商本期进货。',
                  '相同来源及内容重复导入会跳过；有冲突的行须修正后整批重新预览。']:
         guide.append([line])
@@ -108,10 +110,10 @@ def parse(filename, content):
                 value = cell.value
                 if cell.data_type == 'f':
                     errors.append(f'{HEADERS[index]}不能使用公式')
-                if index in (1, 7, 8) and value is not None and not isinstance(value, str):
+                if index in (1, 7, 8, 12) and value is not None and not isinstance(value, str):
                     errors.append(f'{HEADERS[index]}请设为文本后填写，防止丢失前导零')
                 value = '' if value is None else str(value).strip()
-                if len(value) > (1000 if index == 11 else 255):
+                if len(value) > (1000 if index in (11, 14) else 255):
                     errors.append(f'{HEADERS[index]}过长')
                 values.append(value)
             result.append(dict(zip(KEYS, values), row_number=row_number, errors=errors))
@@ -193,7 +195,8 @@ def opening_preview(db, actor, filename, content, cutoff, source_no):
         row['material_category'] = CATEGORIES.get(row['material_category'], row['material_category'])
         if row['material_category'] not in CATEGORIES.values():
             row['errors'].append('物料分类须为布料、辅料或线')
-        for key, label in [('source_line', '来源行号'), ('item_code', '物料编码'), ('item_name', '物料名称'), ('unit', '单位')]:
+        for key, label in [('source_line', '来源行号'), ('item_code', '物料编码'), ('item_name', '物料名称'), ('unit', '单位'),
+                           ('style_no', '货号'), ('customer_name', '客户名称'), ('material_detail', '物料明细')]:
             if not row[key]:
                 row['errors'].append(f'请填写{label}')
         if any(len(row[key]) > limit for key, limit in [('source_line',128),('item_code',128),('unit',32),('lot',128),('roll_no',128)]):
@@ -206,7 +209,9 @@ def opening_preview(db, actor, filename, content, cutoff, source_no):
         row.update(location_id=place['id'] if place else '', location=place['label'] if place else '', location_snapshot=place or {})
         if not place:
             row['errors'].append('仓库或仓位不存在/已停用，请先维护基础资料')
-        elif place.get('category') and place['category'] != row['material_category']:
+        elif not place.get('category'):
+            row['errors'].append('仓位尚未分类，请先在基础资料设置对应原料分区')
+        elif place['category'] != row['material_category']:
             row['errors'].append('仓位与物料分类不匹配，请选择对应原料分区')
         try:
             row['quantity'] = ops.text(quantity(row['quantity'], '期初数量'))
@@ -223,7 +228,7 @@ def opening_preview(db, actor, filename, content, cutoff, source_no):
         if row['source_line'] in used or key in physical:
             row['errors'].append('文件内来源行号或实物批次重复，请合并后导入')
         used.add(row['source_line']); physical.add(key)
-        identity_fields = ('item_code','item_name','material_category','unit','location_id','lot','roll_no','quantity','counterparty','reason')
+        identity_fields = ('item_code','item_name','material_category','unit','location_id','lot','roll_no','quantity','counterparty','reason','style_no','customer_name','material_detail')
         row['line_fingerprint'] = digest([cutoff.isoformat(), {k: row[k] for k in identity_fields}])
         existing = next((e for e in entries.values() if e['kind'] == 'OPENING' and e['data']['source_no'] == source_no.strip() and e['data']['source_line'] == row['source_line']), None)
         if existing:

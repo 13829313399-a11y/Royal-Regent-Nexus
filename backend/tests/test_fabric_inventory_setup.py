@@ -11,7 +11,7 @@ from warehouse_location_fixtures import make_client
 from test_warehouse_operations import payload, post, workspace, quality
 
 BASE = '/api/warehouse-operations/fabric/inventory-setup'
-HEADERS = ['来源行号','物料编码','物料名称','物料分类','单位','仓库','仓位','缸号','卷号','期初数量','来源单位','备注']
+HEADERS = ['来源行号','物料编码','物料名称','物料分类','单位','仓库','仓位','缸号','卷号','期初数量','来源单位','备注','货号','客户名称','物料明细']
 
 
 def book(rows=None):
@@ -22,7 +22,7 @@ def book(rows=None):
 
 
 def line(**changes):
-    row=dict(zip(HEADERS,['001','00012','白色布','布料','码','布料一仓','A01','00001','0001','10.000001','旧供应商','上线核实']))
+    row=dict(zip(HEADERS,['001','00012','白色布','布料','码','布料一仓','A01','00001','0001','10.000001','旧供应商','上线核实','0007','测试客户','白色棉布 58寸']))
     row.update(changes);return list(row.values())
 
 
@@ -56,13 +56,16 @@ def test_opening_template_atomic_post_repeat_precision_and_reports(monkeypatch):
         assert template.status_code==200
         workbook=load_workbook(io.BytesIO(template.content));assert workbook.active['B2'].number_format=='@'
         assert '可用仓位' in workbook.sheetnames
-        content=book([line(),line(**{'来源行号':'002','物料编码':'00013','物料名称':'扣子','物料分类':'辅料','单位':'个','缸号':'','卷号':'','期初数量':'3'})])
+        assert [cell.value for cell in workbook.active[1]][-3:] == ['货号', '客户名称', '物料明细']
+        assert workbook.active['M2'].number_format == '@'
+        content=book([line(),line(**{'来源行号':'002','物料编码':'00013','物料名称':'扣子','物料分类':'辅料','单位':'个','缸号':'','卷号':'','期初数量':'3','仓位':'辅料位'})])
         result=preview(client,content).json();assert result['new_count']==2 and result['totals']=={'码':'10.000001','个':'3'}
         assert workspace(client)['stock']==[]
         request=str(uuid4());posted=apply(client,content,result,request);assert posted.status_code==200,posted.text
         assert apply(client,content,result,request).json()==posted.json()
         assert apply(client,content,result,request,source_no='另一份').status_code==409
         assert len(workspace(client)['stock'])==2
+        assert all(batch['style_no'] == '0007' and batch['customer_name'] == '测试客户' and batch['material_detail'] == '白色棉布 58寸' for batch in workspace(client)['stock'])
         repeat=preview(client,content).json();assert repeat['skip_count']==2
         again=apply(client,content,repeat);assert again.status_code==200 and again.json()['posted_count']==0
         altered=preview(client,book([line(**{'期初数量':'11'})])).json();assert altered['error_count']==1
@@ -71,12 +74,20 @@ def test_opening_template_atomic_post_repeat_precision_and_reports(monkeypatch):
         monthly=client.get('/api/warehouse-operations/fabric/monthly',params={'factory_id':'huakang-c','month':'2026-07'}).json()
         assert monthly['details']==[]
         assert not any(r['kind']=='RECEIPT' for r in workspace(client)['documents'])
+        original = next(batch for batch in workspace(client)['stock'] if batch['item_code'] == '00012')
+        moved = post(client, payload(client, 'TRANSFER', batch_id=original['id'], quantity='1', location_id='fabric-A02'))
+        issued = post(client, payload(client, 'ISSUE', batch_id=original['id'], quantity='1'))
+        returned = post(client, payload(client, 'RETURN', original_id=issued['id'], quantity='1', location_id='fabric-A01'))
+        for batch in workspace(client)['stock']:
+            if batch['id'] in {moved['id'], returned['id']}:
+                assert (batch['style_no'], batch['customer_name'], batch['material_detail']) == ('0007', '测试客户', '白色棉布 58寸')
 
 
 def test_opening_invalid_rows_and_stale_preview_never_partially_post(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client,'admin')
-        for changed in [{'期初数量':'0'},{'期初数量':'1.0000001'},{'物料编码':12},{'期初数量':'=SUM(1,2)'},{'仓位':'不存在'},{'缸号':''}]:
+        for changed in [{'期初数量':'0'},{'期初数量':'1.0000001'},{'物料编码':12},{'期初数量':'=SUM(1,2)'},{'仓位':'不存在'},{'缸号':''},
+                        {'货号':''},{'货号':7},{'客户名称':' '},{'物料明细':''},{'仓位':'未分类位'}]:
             content=book([line(),line(**{'来源行号':'002','物料编码':'00013',**changed})])
             result=preview(client,content).json();assert result['error_count']>0
             assert apply(client,content,result).status_code==422
@@ -168,7 +179,7 @@ def test_count_cancel_dates_and_factory_access(monkeypatch):
 def test_opening_rejects_cells_outside_template_bounds():
     from app.services.fabric_inventory_setup import parse
     from fastapi import HTTPException
-    for address in ('B1003', 'N2'):
+    for address in ('B1003', 'P2'):
         workbook = load_workbook(io.BytesIO(book()))
         workbook.active[address] = '不能丢掉的库存资料'
         output = io.BytesIO(); workbook.save(output)

@@ -52,7 +52,9 @@ FORMULA_CELL_REF_PATTERN = re.compile(r"(?<![A-Z0-9_])(\$?[A-Z]{1,3})(\$?)(\d+)"
 FORMULA_RANGE_PATTERN = re.compile(
     r"(?<![A-Z0-9_])(\$?[A-Z]{1,3})(\$?)(\d+):(\$?[A-Z]{1,3})(\$?)(\d+)"
 )
-PACKAGING_PATTERN = re.compile(r"\b(\d{5}-\d{2}-\d{2}-[A-Za-z0-9]+)\b")
+PACKAGING_PATTERN = re.compile(
+    r"\b(\d{5}-\d{2}-\d{2}-[A-Za-z0-9]+(?:-[A-Za-z][A-Za-z0-9]*)*\b(?:\([rR]\d+\))?)"
+)
 PO_PATTERN = re.compile(r"(?:P\s*/?\s*O|PO)\s*(?:NUMBER|NO\.?|/[^:]+)?\s*:\s*([0-9]{7,})", re.I)
 
 LABEL_FIELDS = (
@@ -719,7 +721,7 @@ def _decrypt_schedule(content: bytes) -> tuple[bytes, bool]:
         office.decrypt(output)
         return output.getvalue(), True
     except Exception as exc:
-        raise CustomerOrderWorkbookError("客户排期无法用已配置的 BuzzBee 密码打开") from exc
+        raise CustomerOrderWorkbookError("客户排期无法用已配置的排期工作簿密码打开") from exc
 
 
 def _encrypt_schedule(content: bytes) -> bytes:

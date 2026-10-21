@@ -5,10 +5,12 @@ from sqlalchemy import func, or_, select
 
 from app.models.customer_order_ledger import OrderLedgerLine as Line, OrderLedgerDispatch as Dispatch
 from app.services import customer_order_ledger as ledger
+from app.services.customer_order_360_dates import inspection_date_from_data, natural_key, shanghai_today
 
 # These are saved order facts. Original spreadsheet extensions remain in source details;
 # manufacturing/material fields and prices are not promoted into this schedule view.
 COLUMNS = (
+    ("product_version", "版本备注"),
     ("packaging", "包装"), ("units_per_carton", "装箱数"), ("carton_count", "箱数"),
     ("standard", "国家标准"), ("manual", "说明书"), ("label", "贴纸"),
     ("customer_label", "外箱贴纸"), ("carton_mark", "箱唛"), ("fabric_label", "布标"),
@@ -20,6 +22,8 @@ COLUMNS = (
 
 
 def read_schedule(db, *, factory, customer, customer_name, q, date_from, date_to, pages, page_size):
+    inspection_grouping = factory == "huakang-a" and customer == "360"
+    as_of = shanghai_today() if inspection_grouping else None
     base = select(Line).where(Line.factory_id == factory, Line.customer_code == customer)
     present = set()
     for data in db.scalars(select(Line.data).where(Line.factory_id == factory, Line.customer_code == customer).execution_options(yield_per=500)):
@@ -65,14 +69,43 @@ def read_schedule(db, *, factory, customer, customer_name, q, date_from, date_to
                            .offset((page - 1) * page_size).limit(page_size)).all()
         sections[name] = {"items": items, "total": total, "page": page, "page_size": page_size}
         line_by_id.update((line.id, line) for line in items)
+    inspection_dates = {}
+    if inspection_grouping:
+        groups = {"inspection_pending": [], "completed": []}
+        # Parse real calendar dates before classification and pagination. Lexical
+        # SQL comparisons would misclassify TBD, malformed dates and short months.
+        metadata = query.with_only_columns(Line.id, Line.product_no, Line.reference_no, Line.data, Line.status)
+        for line_id, product, reference, data, status in db.execute(metadata.execution_options(yield_per=500)):
+            inspection, warning = inspection_date_from_data(data)
+            inspection_dates[line_id] = (inspection.isoformat() if inspection else "", warning)
+            if status == "cancelled":
+                continue
+            key = "completed" if inspection and inspection < as_of else "inspection_pending"
+            groups[key].append((line_id, (natural_key(product), product, inspection is None,
+                inspection or as_of, natural_key(reference), reference, line_id)))
+        for name, entries in groups.items():
+            entries.sort(key=lambda entry: entry[1])
+            total = len(entries)
+            page = min(pages.get(name, 1), max(1, (total + page_size - 1) // page_size))
+            ids = [entry[0] for entry in entries[(page - 1) * page_size:page * page_size]]
+            fetched = {line.id: line for line in db.scalars(base.where(Line.id.in_(ids)))} if ids else {}
+            items = [fetched[line_id] for line_id in ids]
+            sections[name] = {"items": items, "total": total, "page": page, "page_size": page_size}
+            line_by_id.update(fetched)
     versions = {line_id: [] for line_id in line_by_id}
     if versions:
         for line_id, version in db.execute(select(Dispatch.line_id, Dispatch.version).where(Dispatch.line_id.in_(list(versions)))):
             versions[line_id].append(version)
     for section in sections.values():
         section["items"] = [ledger.line_out(db, line, dispatch_versions=versions[line.id]) for line in section["items"]]
+        if inspection_grouping:
+            for item in section["items"]:
+                item["schedule_inspection_date"], item["inspection_date_warning"] = inspection_dates[item["id"]]
     for field in ("ordered_quantity", "shipped_quantity", "remaining_quantity"):
         summary[field] = ledger.decimal_text(summary[field])
-    return {"factory_id": factory, "customer_code": customer, "customer_name": customer_name,
+    result = {"factory_id": factory, "customer_code": customer, "customer_name": customer_name,
             "columns": [{"key": key, "label": label} for key, label in COLUMNS if key in present],
             "summary": summary, "sections": sections}
+    if inspection_grouping:
+        result["inspection_grouping"] = {"as_of_date": as_of.isoformat(), "timezone": "Asia/Shanghai"}
+    return result

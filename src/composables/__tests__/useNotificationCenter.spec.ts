@@ -139,6 +139,15 @@ function deferred<T>() {
 }
 
 describe('useNotificationCenter', () => {
+  it.each(['INTERNAL', 'SUPPLIER'])('routes %s special request notices to the exact request work panel', async audience => {
+    systemApiMock.listNotifications.mockResolvedValue([createSystemNotification({ id: 'SPECIAL', title: '纸箱申请待处理', type: 'carton_special_request', payload: { request_id: 'CSR-abc123', request_no: 'SP-1', audience, factory_id: 'huaxing' } })])
+    const { center } = mountCenter(); await flushPromises()
+    const item = center().items.value.find(row => row.id === 'SPECIAL')!
+    expect(item.categoryLabel).toBe('样板与杂单')
+    const [path, query] = item.route.split('?')
+    expect(path).toBe(audience === 'SUPPLIER' ? '/carton-supplier' : '/modules/pmc-warehouse/carton-procurement')
+    expect(Object.fromEntries(new URLSearchParams(query))).toMatchObject({ factory: 'huaxing', tab: 'orders', order_kind: 'special', special_request: 'CSR-abc123' })
+  })
   beforeEach(() => {
     setActivePinia(createPinia())
     window.localStorage.clear()

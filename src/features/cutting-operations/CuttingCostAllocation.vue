@@ -9,7 +9,7 @@ const labels={blocked:'依据待核对',unconfirmed:'待确认归属',stale:'变
 <template>
   <section class="allocation-summary" aria-label="在制归集与单套材料成本">
     <h3>在制归集与单套材料成本</h3>
-    <p class="cutting-notice">主管逐笔确认累计正常耗用中归属于合格完工的数量，其余列在制。单套成本＝已归属完工的正常材料费用÷合格完成套数，损耗单列；公共耗料未分配、缺价或归集未完整时不计算单套成本。各币种分别核算，当前核对数尚未锁月。</p>
+    <p class="cutting-notice">主管逐笔确认累计正常耗用中归属于合格完工的数量，其余列在制。单套成本＝已归属完工的正常材料费用÷合格完成套数，损耗单列；公共耗料未分配、缺价或归集未完整时不计算单套成本。各币种分别核算。本归集为实时核对数，已锁月份以内部月结的冻结快照为准。</p>
     <p v-if="!value.schema_ready" role="status">每日填数证据尚未就绪，暂不能确认成本归属。</p>
     <p v-if="!value.groups.length" class="cutting-no-records">暂无有效实发可归集。</p>
     <article v-for="group in value.groups" :key="group.key" class="cutting-master-line">
@@ -28,7 +28,7 @@ const labels={blocked:'依据待核对',unconfirmed:'待确认归属',stale:'变
       <Button v-if="canConfirm" variant="outline" :disabled="disabled||group.status==='blocked'" @click="$emit('confirm',group.key)">{{group.latest_id?'重新确认完工耗用归属':'确认完工耗用归属'}}</Button>
     </article>
     <details v-if="value.history.length"><summary>归集确认与更正历史</summary>
-      <article v-for="event in value.history" :key="event.id" class="cutting-master-line">
+      <article v-for="event in value.history" :key="event.id" :data-cutting-cost_event="event.id" class="cutting-master-line">
         <p>{{event.context.task_name}} · V{{event.version}} · {{event.actor}} · {{event.date}} · {{event.reason}}</p>
         <p>确认单 {{event.id}}<span v-if="event.replaces_id"> · 替代确认单 {{event.replaces_id}}</span> · 当时合格完成 {{event.completed_sets}} 套</p>
         <p>全部物料核对：{{event.entry.materials_complete?'已确认':'未完整'}}；公共耗料：{{event.entry.public_material_pending?'待分配':'已核对无待分配项'}}</p>

@@ -312,7 +312,9 @@ const routes: RouteRecordRaw[] = [
       title: '纸箱采购协同',
       fullPage: true,
       requiresAuth: true,
-      permissions: ['carton_procurement:read'],
+      permissions: ['carton_procurement:read', 'carton_procurement:special_request_submit'],
+      permissionFactoryContext: true,
+      permissionDepartments: ['pmc-warehouse', 'carton'],
       enforcePermissions: true,
       strictPermissions: true,
     },
@@ -661,7 +663,7 @@ export async function refreshAndRevalidateAuthorization(
     currentRoute.name !== 'forbidden'
     && shouldEnforcePagePermissions(currentRoute.meta)
     && permissions.length
-    && !hasRoutePermissions(currentRoute.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department))
+    && !hasRoutePermissions(currentRoute.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department), useAppStore().activeFactoryId)
   ) {
     await activeRouter.replace({ name: 'forbidden' })
     return 'forbidden'
@@ -802,7 +804,7 @@ router.beforeEach(async (to, from) => {
   if (
     shouldEnforcePagePermissions(to.meta)
     && permissions.length
-    && !hasRoutePermissions(to.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department))
+    && !hasRoutePermissions(to.meta, permissions, (codes, factory, department) => authStore.canAny(codes, factory, department), appStore.activeFactoryId)
   ) {
     return {
       name: 'forbidden',

@@ -1,10 +1,13 @@
 import { http } from '@/lib/http'
 
 export interface SupplierSource {
+  special_request_id?: string; special_request_no?: string; receipt_id?: string; delivery_id?: string;
+  special_request_kind?: 'SAMPLE' | 'WORKSHOP_MISC' | 'SUPPLIER_GIFT';
   source_key: string; kind: 'RECEIPT' | 'RETURN'; document_no: string; acceptance_date: string | null;
   date_basis: string; customer_name: string; contract_no: string; item_no: string; packaging_type: string;
   paper_quality: string; specification: string; dimension_unit?: string; unit: string; quantity: string; unit_price: string | null;
   amount: string | null; currency: string; issues: string[];
+  price_review?: { id: string; status: 'PENDING' | 'PROPOSED' | 'CONFIRMED'; revision: number };
   supplier_delivery?: { original_quantity?: string; shipment_id: string; line_id: string; document_no: string; delivery_date: string;
     quantity: string; unit_price: string | null; amount: string | null; currency: string;
     received_quantity: string; damaged_quantity: string; rejected_quantity: string; unusable_quantity: string;

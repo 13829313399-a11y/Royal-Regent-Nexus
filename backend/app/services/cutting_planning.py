@@ -29,7 +29,7 @@ def resource_changed(db, plan):
     return False
 
 
-def summary(db, data, needs_receipt=False):
+def summary(db, data, needs_receipt=False, *, receipt_entries=None):
     planning = data.get('planning', {})
     references_invalid = False
     if data.get('bom') and planning:
@@ -41,8 +41,8 @@ def summary(db, data, needs_receipt=False):
     published = planning.get('published')
     draft = planning.get('draft')
     from app.services.cutting_materials import receipts_changed
-    published_receipts_changed = receipts_changed(db, data, published)
-    draft_receipts_changed = receipts_changed(db, data, draft)
+    published_receipts_changed = receipts_changed(db, data, published, receipt_entries=receipt_entries)
+    draft_receipts_changed = receipts_changed(db, data, draft, receipt_entries=receipt_entries)
     result = dict(published_stale=bool(published and (needs_receipt or references_invalid or stale(published, data) or resource_changed(db, published) or published_receipts_changed)),
                 draft_stale=bool(draft and (needs_receipt or references_invalid or stale(draft, data) or resource_changed(db, draft) or draft_receipts_changed)),
                 receipt_review_required=published_receipts_changed or draft_receipts_changed,

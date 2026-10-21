@@ -1510,6 +1510,24 @@ def can_access_notification(
     current_user: AuthContext,
     notification: SystemNotification,
 ) -> bool:
+    if notification.type == "carton_special_request":
+        if notification.target_user_id != current_user.id:
+            return False
+        from app.services import carton_special_requests as special
+        payload = parse_payload(notification.payload_json)
+        try:
+            row = special.access(db, current_user, str(payload.get("factory_id") or ""), str(payload.get("request_id") or ""),
+                external=payload.get("audience") == "SUPPLIER")
+            if row is None:
+                return False
+            permission = str(payload.get("required_permission") or "")
+            if permission.startswith("carton_supplier:"):
+                return special.portal.supplier_permission(current_user, permission, row.factory_id)
+            if permission == "carton_procurement:receipt_write":
+                return special.can_receive(current_user, row.factory_id)
+            return special.allowed(current_user, row.factory_id, "order_write") or row.created_by == current_user.id
+        except HTTPException:
+            return False
     if notification.type == "user_registration":
         source = db.get(AuthRegistrationRequest, str(parse_payload(notification.payload_json).get("registration_request_id") or ""))
         return bool(source and can_access_registration(db, current_user, source))

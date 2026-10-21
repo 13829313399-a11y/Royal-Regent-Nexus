@@ -374,6 +374,22 @@ def _packing_from_block(block: str) -> tuple[str, str]:
     return pack_qty, packaging
 
 
+def _date_code_from_block(block: str) -> str:
+    # Only the current item's labelled value is evidence. The appendix tells
+    # factories whose DATE CODE to use, but does not supply a code itself.
+    packing = re.search(r"\bPacking\s*(?:/ Cube)?\s*[:：]", block, re.I)
+    remarks = block[:packing.start()] if packing else block
+    values = re.findall(
+        r"(?:日期[码碼]|\bDATE[ \t]*CODE)[ \t]*[:：][ \t]*([A-Z0-9][A-Z0-9/-]*)",
+        remarks,
+        re.I,
+    )
+    candidates = {value for value in values if re.search(r"\d", value)}
+    if len(candidates) > 1:
+        raise ValueError("日期码存在冲突，请核对原单，不会从交期或历史订单推算")
+    return next(iter(candidates)) if candidates else ""
+
+
 def _workbook_line_parts(row: str, is_qf: bool) -> dict[str, str] | None:
     if is_qf:
         match = re.search(
@@ -491,6 +507,7 @@ def _parse_document_lines(
             "pack_qty": number(pack_qty) if pack_qty else "",
             "cartons": 0,
             "packaging": packaging,
+            "date_code": _date_code_from_block(block),
             "standard": "",
             "notes": "",
             "schedule_family": "seasons",
@@ -773,7 +790,7 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
 
     incoming_ids = {identity(record) for record in new_records}
     base = [record for record in existing if identity(record) not in incoming_ids]
-    groups: dict[tuple[str, str], dict[str, Any]] = defaultdict(lambda: {"qf": 0, "po": 0})
+    groups: dict[tuple[str, str], dict[str, Any]] = defaultdict(lambda: {"qf": 0, "po": 0, "has_qf": False})
     for record in [*base, *new_records]:
         key = (clean(record.get("oqf_no")).upper(), clean(record.get("item_no")).upper())
         if not all(key):
@@ -783,6 +800,7 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
             groups[key]["po"] += qty
         else:
             groups[key]["qf"] += qty
+            groups[key]["has_qf"] = True
     warnings = [warning for doc in documents for warning in doc.get("warnings", [])] + _dup_warnings
     for record in existing_records:
         warnings.append(
@@ -796,11 +814,15 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
         )
     for record in new_records:
         key = (clean(record.get("oqf_no")).upper(), clean(record.get("item_no")).upper())
-        state = groups.get(key, {"qf": 0, "po": 0})
-        record["qf_quantity"] = state["qf"]
+        state = groups.get(key, {"qf": 0, "po": 0, "has_qf": False})
+        # A standalone formal PO may cite a QF that was not uploaded. Missing
+        # reservation evidence is unknown, not a zero allowance/overdraw.
+        record["qf_quantity"] = state["qf"] if state["has_qf"] else None
         record["po_total"] = state["po"]
-        record["remaining_qf"] = state["qf"] - state["po"]
-        if record["remaining_qf"] < 0:
+        record["remaining_qf"] = state["qf"] - state["po"] if state["has_qf"] else None
+        if record.get("po_no") and key[0] and not state["has_qf"]:
+            warnings.append(f"{key[0]} / {key[1]} 未提供对应QF预备数量，剩余数量未知，请另行核对预备单扣减")
+        if record["remaining_qf"] is not None and record["remaining_qf"] < 0:
             record["risk_level"], record["risk_text"] = "high", "QF数量不足，正式PO累计超扣"
             warnings.append(f"{record.get('oqf_no')} / {record.get('item_no')} 正式PO累计超出QF {abs(record['remaining_qf'])} 件")
     files = [

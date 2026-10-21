@@ -19,8 +19,11 @@ export function hasRoutePermissions(
   meta: RoutePermissionMeta,
   permissions: string[],
   canAny: (permissions: string[], factory?: string, department?: string) => boolean,
+  activeFactoryId?: string,
 ) {
-  const factory = typeof meta.permissionFactoryId === 'string' ? meta.permissionFactoryId : undefined
+  const factory = typeof meta.permissionFactoryId === 'string' ? meta.permissionFactoryId
+    : meta.permissionFactoryContext === true ? activeFactoryId : undefined
+  if (meta.permissionFactoryContext === true && !factory) return false
   if (Array.isArray(meta.permissionDepartments)) {
     return meta.permissionDepartments.some(department =>
       typeof department === 'string' && department.length > 0 && canAny(permissions, factory, department))

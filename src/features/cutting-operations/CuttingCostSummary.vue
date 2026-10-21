@@ -6,7 +6,7 @@ defineProps<{ summary:UsageCostSummary }>()
 <template>
   <section aria-label="任务与物料成本核对汇总" class="cost-summary">
     <h3>成本核对汇总</h3>
-    <p class="cutting-notice">已计价金额按原实发明细汇总，正常耗用和损耗分列、币种分列；待计价部分未计入金额。在制与单套正常材料成本见下方主管归集确认，当前核对数尚未锁月。</p>
+    <p class="cutting-notice">已计价金额按原实发明细汇总，正常耗用和损耗分列、币种分列；待计价部分未计入金额。在制与单套正常材料成本见下方主管归集确认。本汇总为实时核对数，已锁月份以内部月结的冻结快照为准。</p>
     <p v-if="!summary.tasks.length" class="cutting-no-records">暂无有效实发可汇总。</p>
     <template v-else>
       <h4>按任务与执行方核对</h4>

@@ -59,6 +59,7 @@ from app.services.iam_scope import (
     VALID_SCOPE_MODES,
     default_permission_access_kind,
 )
+from app.services.identity_catalog import DEPARTMENTS as IDENTITY_DEPARTMENTS
 from app.services.permission_codes import (
     WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     APPLICATION_PERMISSION_CODES,
@@ -430,24 +431,10 @@ RETIRED_DEFAULT_USER_IDS = {
 }
 DEFAULT_USERNAMES = {username for _, username, *_ in DEFAULT_USERS}
 ALLOWED_FACTORY_IDS = {"huakang-a", "huakang-b", "huakang-c", "huakang-d", "huadeng", "huaxing"}
-ALLOWED_DEPARTMENTS = {
-    "assembly",
-    "electronic",
-    "engineering",
-    "management",
-    "molding",
-    "painting",
-    "pmc-warehouse",
-    "production",
-    "qa",
-    "qc",
-    "carton",
-    "sales-business",
-    "sewing",
-    "hair",
-    "slush",
-    "three-d-printing",
-}
+# Registration and approval must accept the same department codes advertised
+# by the organization catalog; organization-specific active status is checked
+# separately by registration_org.
+ALLOWED_DEPARTMENTS = frozenset(IDENTITY_DEPARTMENTS)
 
 
 @dataclass(frozen=True)
