@@ -156,6 +156,43 @@ describe('Silverlit temporary independent mapping', () => {
     expect(d).toMatchObject({freightFclHkd:1.1,freightLclHkd:2.2,freight40HqHkd:.55,domesticPriceRmb:55.615})
     expect(d.freight20FtHkd).toBeCloseTo(.88)
   })
+  it.each(['RMB', 'RBM'])('reads adjacent freight headers and the final domestic %s quote, without multiplying quoted freight twice', currency => {
+    const source = changedLegacy(sheets => {
+      const rows = sheets[0]!.rows
+      rows[31] = [null, '报关费', '报关费用/文件费/操作费用：', .1, '40GP', 'LCL', '20FT', '40HQ', `内销（${currency} ）`, null, 'FCL运费', 'LCL运费', '20FT', '40HQ', `内销（${currency} ）`]
+      rows[32] = [null, '运费', '运费', null, .3, 1, .8, 0, 1, null, .33, 1.1, .88, 0, 1.1]
+      rows[42] = []; rows[43] = []; rows[44] = []
+      rows[45]![8] = 56.2087253408366
+    })
+    const d = convertYinhuiInternalQuote(source, '银辉00012.xlsx').quoteData
+    expect(d).toMatchObject({ freightFclHkd: .33, freightLclHkd: 1.1, freight40HqHkd: 0, freightLocalHkd: 1.1, domesticPriceRmb: 56.2087253408366 })
+    expect(d.freight20FtHkd).toBeCloseTo(.88, 10)
+    expect(yinhuiTotals(d).documentFees).toBeCloseTo(.11, 8)
+    const parsed = parseXlsxWorkbook(source)
+    parsed.sheets[0]!.rows[32]![12] = 9
+    expect(() => convertYinhuiInternalQuote(buffer(createXlsxWorkbook(parsed.sheets)), '银辉00012.xlsx')).toThrow(/运费.*不一致/)
+    parsed.sheets[0]!.rows[32]![12] = .88
+    parsed.sheets[0]!.rows[32]![6] = null
+    expect(() => convertYinhuiInternalQuote(buffer(createXlsxWorkbook(parsed.sheets)), '银辉00012.xlsx')).toThrow(/运费.*缺少/)
+    parsed.sheets[0]!.rows[32]![6] = .8
+    parsed.sheets[0]!.rows[32]![12] = '#VALUE!'
+    expect(() => convertYinhuiInternalQuote(buffer(createXlsxWorkbook(parsed.sheets)), '银辉00012.xlsx')).toThrow(/运费.*缺少/)
+    parsed.sheets[0]!.rows[32]![12] = .88
+    parsed.sheets[0]!.rows[31]![7] = '20FT'
+    expect(() => convertYinhuiInternalQuote(buffer(createXlsxWorkbook(parsed.sheets)), '银辉00012.xlsx')).toThrow(/路线不唯一/)
+  })
+  it.each(['膠袋 透明PE平袋', '胶袋 透明PE平袋', '膠針-彈性膠針60X6X1.2mm*2pcs', '胶针80X6X1.2mm*2pcs', '包裝線-黑色尼龍鎖帶*2pcs', '包装线-黑色尼龙锁带*2pcs', '拷貝紙 14克', '拷贝纸 14克'])('routes packaging consumable %s out of mechanical without changing its amount', description => {
+    const before = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx').quoteData
+    const source = changedLegacy(sheets => { Object.assign(sheets[0]!.rows[28]!, { 1: '其他外购', 2: description }) })
+    const result = convertYinhuiInternalQuote(source, '银辉00012.xlsx')
+    const line = result.quoteData.packagingRows.find(r => r.source === '明细!D29')!
+    expect(line).toMatchObject({ description, internalHkd: 1, amountHkd: 1.1, quantity: description.includes('*2pcs') ? 2 : 1 })
+    expect(result.quoteData.mechanical).toHaveLength(0)
+    expect(yinhuiTotals(result.quoteData).exFactory).toBeCloseTo(yinhuiTotals(before).exFactory, 8)
+    const output = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template)))
+    expect(output.sheets[1]!.rows.flat()).toContain(description)
+    expect(output.sheets[2]!.rows.flat()).not.toContain(description)
+  })
   it.each(Object.keys(YINHUI_PROFILES) as Array<keyof typeof YINHUI_PROFILES>)('exports 20FT, 40HQ and RMB independently in %s', profile => {
     const result = convertYinhuiInternalQuote(legacy(), '银辉00012.xlsx')
     Object.assign(result.quoteData, {templateId:profile,freight20FtHkd:1.0362,freight40HqHkd:.2235,freightLocalHkd:1.2186,domesticPriceRmb:55.615})
