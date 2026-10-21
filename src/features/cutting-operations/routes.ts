@@ -17,10 +17,14 @@ export const cuttingOperationsRoutes: RouteRecordRaw[] = [{
   meta,
   beforeEnter: guardCuttingFactory,
   children: [
-    { path: '', redirect: to => ({ path: `${CUTTING_BASE}/planning`, query: to.query }) },
+    { path: '', redirect: to => ({ path: `${CUTTING_BASE}/dashboard`, query: to.query }) },
     ...CUTTING_WORKSPACES.map(workspace => ({
       path: workspace.path,
-      component: workspace.path === 'master'
+      component: workspace.path === 'dashboard'
+        ? () => import('./CuttingDashboardPage.vue')
+        : workspace.path === 'activity'
+        ? () => import('./CuttingActivityPage.vue')
+        : workspace.path === 'master'
         ? () => import('./CuttingMasterPage.vue')
         : workspace.path === 'reporting'
         ? () => import('./CuttingReportingPage.vue')

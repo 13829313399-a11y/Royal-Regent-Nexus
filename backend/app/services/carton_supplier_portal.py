@@ -68,19 +68,30 @@ def fixed_supplier(db, factory):
 
 
 def supplier_factories(db, user):
-    """Dongkang service factories with issued orders, gated by the global module permission."""
+    """Dongkang service factories with issued formal or published special requests."""
     if not supplier_permission(user, "carton_supplier:read", "*"):
         return []
     suppliers = db.scalars(select(CartonSupplier).where(CartonSupplier.supplier_code == "HEYUAN-DONGKANG",
         CartonSupplier.status == "ACTIVE").order_by(CartonSupplier.factory_id)).all()
+    from app.models.carton_special_requests import SpecialRequest
+    from app.services import carton_mark_sharing as sharing
+    def has_shared_sources(supplier):
+        audiences = sharing.states(db, supplier.factory_id)
+        shared_ids = [identifier for identifier, state in audiences.items()
+            if state['sharing_mode'] == 'SUPPLIER' and state['shared_supplier_id'] == supplier.id]
+        return bool(shared_ids and db.scalar(select(CartonMarkAsset.id).where(
+            CartonMarkAsset.factory_id == supplier.factory_id, CartonMarkAsset.is_archived.is_(False),
+            CartonMarkAsset.id.in_(shared_ids)).limit(1)))
     return [supplier for supplier in suppliers if supplier_permission(
-        user, "carton_supplier:read", supplier.factory_id) and db.scalar(
+        user, "carton_supplier:read", supplier.factory_id) and (db.scalar(
         select(CartonOrder.id).join(CartonPurchaseOrderIssue, and_(
             CartonPurchaseOrderIssue.order_id == CartonOrder.id,
             CartonPurchaseOrderIssue.factory_id == CartonOrder.factory_id)).where(
                 CartonOrder.factory_id == supplier.factory_id,
                 CartonOrder.supplier_id == supplier.id,
-                CartonOrder.status.in_(VISIBLE_STATES)).limit(1))]
+                CartonOrder.status.in_(VISIBLE_STATES)).limit(1)) or db.scalar(select(SpecialRequest.id).where(
+                    SpecialRequest.factory_id == supplier.factory_id, SpecialRequest.supplier_id == supplier.id,
+                    SpecialRequest.status != "SUBMITTED").limit(1)) or has_shared_sources(supplier))]
 
 
 def supplier_permission(user, permission, factory):
@@ -107,6 +118,17 @@ def fingerprint(payload):
         data.pop("new_delivery_confirmation")
     if data.get("remaining_action") == "CLOSE":
         data.pop("remaining_action")  # Preserve pre-batch receipt request fingerprints.
+    for line in data.get("lines", []):
+        if line.get("replenishment_issue_id") is None:
+            line.pop("replenishment_issue_id", None)  # Keep pre-bridge receipt retry identities.
+        if line.get("unit_price", "provided") is None:
+            line.pop("unit_price")
+        if line.get("free_confirmed") is False:
+            line.pop("free_confirmed")
+        if line.get("price_action") == "MATCH":
+            line.pop("price_action")
+        if line.get("price_reason") == "":
+            line.pop("price_reason")
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -225,16 +247,22 @@ def _supplier_mark_orders(db, user, factory):
 def _supplier_mark_assets(db, user, factory):
     """Share source files by contract using issued headers, with factory-wide ambiguity checks."""
     from app.schemas.carton_mark import CartonMarkAssetWorkflow
-    _, projections, eligible = _supplier_mark_orders(db, user, factory)
+    supplier, projections, eligible = _supplier_mark_orders(db, user, factory)
+    from app.services import carton_mark_sharing as sharing
+    audiences = sharing.states(db, factory)
     result = []
     for asset in db.scalars(select(CartonMarkAsset).where(
             CartonMarkAsset.factory_id == factory, CartonMarkAsset.is_archived.is_(False))
             .order_by(CartonMarkAsset.created_at.desc(), CartonMarkAsset.id.desc())):
-        projected = mark_assets.asset_out(asset, projections, CartonMarkAssetWorkflow())
-        if projected.binding_status != "BOUND":
+        audience = audiences.get(asset.id, {})
+        if audience.get('sharing_mode') == 'INTERNAL':
             continue
+        explicitly_shared = audience.get('sharing_mode') == 'SUPPLIER'
+        if explicitly_shared and audience.get('shared_supplier_id') != supplier.id:
+            continue
+        projected = mark_assets.asset_out(asset, projections, CartonMarkAssetWorkflow(), {})
         orders = [eligible[o.id] for o in projected.orders if o.id in eligible]
-        if orders:
+        if explicitly_shared or (projected.binding_status == 'BOUND' and orders):
             result.append((asset, orders))
     return result
 
@@ -244,10 +272,21 @@ def supplier_mark_assets(db, user, factory):
     from app.schemas.carton_mark import CartonMarkAssetWorkflow
     visible = _supplier_mark_assets(db, user, factory)
     workflows = lifecycle.states(db, factory, [asset.id for asset, _ in visible])
+    from app.services import carton_mark_sharing as sharing
+    audiences = sharing.states(db, factory, [asset.id for asset, _ in visible])
+    supplier, _, eligible = _supplier_mark_orders(db, user, factory)
+    def audience(asset):
+        state = dict(audiences.get(asset.id, {}))
+        state['pending_bindings'] = [x for x in state.get('pending_bindings', [])
+            if x['supplier_id'] == supplier.id and x['order_id'] in eligible]
+        from app.models.carton_special_requests import SpecialRequest
+        state['special_orders'] = [x for x in state.get('special_orders', []) if (row := db.get(SpecialRequest, x['order_id']))
+            and row.factory_id == factory and row.supplier_id == supplier.id and row.status not in {'SUBMITTED', 'CANCELLED'}]
+        return state
     return [dict(id=asset.id, revision=asset.revision, file_name=asset.file_name, kind=asset.kind,
         photo_group_id=asset.photo_group_id,
         size_bytes=asset.size_bytes, contract_number="、".join(sorted({order["contract_no"] for order in orders})),
-        created_at=asset.created_at, orders=orders,
+        created_at=asset.created_at, orders=orders, binding_status='BOUND' if orders else 'UNBOUND', **audience(asset),
         workflow=workflows.get(asset.id, CartonMarkAssetWorkflow()).model_dump())
         for asset, orders in visible]
 
@@ -501,25 +540,9 @@ def visible_shipment(db, user, shipment):
 
 
 def pending_shipments(db, user, factory, *, limit=3):
-    """The factory receiving queue is independent of personal work-center state."""
-    factory = internal_permission(user, factory, "carton_procurement:read",
-        "carton_procurement:receipt_write", "carton_procurement:inventory_write")
-    supplier_id = fixed_supplier(db, factory).id
-    queue = select(SupplierShipment.id, SupplierShipment.delivery_note_no,
-        SupplierShipment.delivery_date, CartonReceipt.status.label("receipt_status"),
-        func.count().over().label("total")).outerjoin(
-        CartonReceipt, and_(CartonReceipt.id == SupplierShipment.receipt_id,
-                           CartonReceipt.factory_id == SupplierShipment.factory_id)).where(
-        SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier_id,
-        or_(SupplierShipment.status == "SENT", CartonReceipt.status == "REVERSED"))
-    visible_ids = [row.id for row in db.scalars(select(SupplierShipment).where(
-        SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier_id))
-        if visible_shipment(db, user, row)]
-    queue = queue.where(SupplierShipment.id.in_(visible_ids))
-    rows = db.execute(queue.order_by(SupplierShipment.created_at.desc(), SupplierShipment.id.desc()).limit(limit)).all()
-    return {"factory_id": factory, "total": rows[0].total if rows else 0, "items": [
-        {"id": row.id, "delivery_note_no": row.delivery_note_no, "delivery_date": row.delivery_date,
-         "requires_correction": row.receipt_status == "REVERSED"} for row in rows]}
+    """The dashboard counts original notes across all authorized paper sources."""
+    from app.services.carton_unified_deliveries import pending
+    return pending(db, user, factory, limit=limit)
 
 
 def workspace(db, user, factory, *, internal=False, responsibility_scope="OWN"):
@@ -640,6 +663,8 @@ def shipment_out(db, row, *, internal=False):
         result["acceptance_date"] = None
         result["acceptance_lines"] = []  # Old acceptance is history, not current received quantity.
     if internal:
+        result["legacy_correction_lines"] = [item for item in (correction_batch["acceptance"].get("lines", []) if correction_batch else [])
+            if item.get("no_order_decision") in {"SAMPLE", "GIFT", "UNORDERED"} and Decimal(str(item.get("received_quantity") or 0)) > 0]
         result["receipt_id"] = receipt.id if receipt else row.receipt_id
         result["receipt_status"] = receipt.status if receipt else None
         receipt_lines = db.scalars(select(CartonReceiptLine).where(
@@ -712,6 +737,7 @@ def documents(db, user, factory):
                 "is_cancellation": bool(snapshot.get("cancellation")),
                 "supplier_acceptance": acceptance,
                 "orders": [{
+                    "order_kind": "REGULAR",
                     "order_no": issue.order_no, "customer_name": header.get("customer_name") or "",
                     "contract_no": header.get("contract_no") or "", "customer_po": header.get("customer_po") or "",
                     "item_no": header.get("item_no") or "", "product_name": header.get("product_name") or "",
@@ -719,6 +745,7 @@ def documents(db, user, factory):
                     "planned_date": snapshot.get("after_due_date") or "",
                 }],
                 "lines": [{
+                    "order_kind": "REGULAR",
                     "order_no": issue.order_no, "child_no": f"{issue.order_no}/{int(line.get('line_no', 0)):02d}",
                     "packaging_type": line.get("packaging_type", ""),
                     "paper_quality": line.get("paper_quality", ""),
@@ -730,36 +757,44 @@ def documents(db, user, factory):
                 } for line in snapshot.get("lines", [])],
             })
     result = group_purchase_documents(result, batches)
-    shipments = db.scalars(select(SupplierShipment).where(
-        SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier.id)
-        .order_by(SupplierShipment.created_at.desc())).all()
-    for shipment in shipments:
-        visible = shipment_out(db, shipment)
+    from app.services.carton_unified_deliveries import workspace as unified_workspace
+    for group in unified_workspace(db, user, factory, external=True)["items"]:
+        visible = group["formal"] or {}
+        special_by_id = {row["id"]: row for row in group["special"]}
+        def business_kind(line):
+            if line["source_kind"] == "FORMAL":
+                if line.get("source_type") == "AD_HOC_REVIEW":
+                    return "UNKNOWN"
+                return "REGULAR" if line.get("source_type") == "FORMAL_ORDER" or line.get("order_line_id") else "UNKNOWN"
+            source = special_by_id.get(line.get("special_request_id"))
+            if not source or source.get("origin") == "SUPPLIER_EXTRA" and not any(shipment.get("receipts") for shipment in source["shipments"]):
+                return "UNKNOWN"
+            return {"SAMPLE": "SAMPLE", "WORKSHOP_MISC": "MISC"}.get(source.get("kind"), "UNKNOWN")
         orders_by_no = {}
-        for line in visible["lines"]:
-            if not line["order_no"]:
+        for line in group["lines"]:
+            if not line.get("order_no"):
                 continue
             orders_by_no.setdefault(line["order_no"], {
-                "order_no": line["order_no"], "customer_name": line["customer_name"],
-                "contract_no": line["contract_no"], "customer_po": line["customer_po"],
-                "item_no": line["item_no"], "product_name": "", "order_date": "", "planned_date": "",
+                "order_kind": business_kind(line),
+                "order_no": line["order_no"], "customer_name": line.get("customer_name", ""),
+                "contract_no": line.get("contract_no", ""), "customer_po": line.get("customer_po", ""),
+                "item_no": line.get("item_no", ""), "product_name": "", "order_date": "", "planned_date": "",
             })
-        accepted = {row["shipment_line_id"]: row for row in visible["acceptance_lines"]}
         result.append({
-            "id": shipment.id, "kind": "DELIVERY", "factory_id": factory,
-            "document_no": shipment.delivery_note_no, "document_type": "DELIVERY",
-            "date": shipment.delivery_date, "created_at": shipment.created_at,
-            "status": visible["status"], "replenishment": False,
-            "source_filename": visible["source_filename"], "source_sha256": visible["source_sha256"],
+            "id": group["id"].removeprefix("FORMAL:"), "kind": "DELIVERY", "factory_id": factory,
+            "document_no": group["delivery_note_no"], "document_type": "DELIVERY",
+            "date": group["delivery_date"], "created_at": group["created_at"],
+            "status": group["status"], "replenishment": False,
+            "source_filename": visible.get("source_filename", ""), "source_sha256": visible.get("source_sha256", ""),
             "orders": list(orders_by_no.values()),
-            "unmatched_line_count": sum(line["source_type"] == "AD_HOC_REVIEW" for line in visible["lines"]),
+            "unmatched_line_count": sum(line.get("source_type") == "AD_HOC_REVIEW" for line in group["lines"]),
             "lines": [{
+                "order_kind": business_kind(line),
                 **{key: line.get(key, "") for key in (
                     "order_no", "child_no", "contract_no", "item_no", "customer_name",
-                    "packaging_type", "paper_quality", "specification", "unit")},
-                "quantity": line["quantity"],
-                "received_quantity": str(accepted.get(line["id"], {}).get("received_quantity") or "0"),
-            } for line in visible["lines"]],
+                    "packaging_type", "paper_quality", "specification", "unit", "source_kind")},
+                "quantity": line["quantity"], "received_quantity": str(line.get("received_quantity") or "0"),
+            } for line in group["lines"]],
         })
     if result:
         purchase_ids = [row["id"] for row in result if row["kind"] == "PURCHASE" and not row.get("is_batch")]
@@ -1120,7 +1155,7 @@ def accept_lines(db, user, payload: BatchCommitmentSave):
     return order_ids
 
 
-def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=None):
+def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=None, allow_shared_note=False):
     _lock_receipt_factory(db, payload.factory_id)
     supplier = supplier_access(db, user, payload.factory_id, "carton_supplier:edit")
     late = payload.registration_mode == "EXISTING_RECEIPT"
@@ -1128,6 +1163,10 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
         raise HTTPException(422, "后补凭证必须来自原送货单文件，且整单已匹配正式纸品")
     if payload.unmatched_lines and not source:
         raise HTTPException(422, "无单明细只能来自已预览的原始送货单")
+    from app.models.carton_special_requests import SpecialShipment
+    if not allow_shared_note and db.scalar(select(SpecialShipment.id).where(SpecialShipment.factory_id == payload.factory_id,
+        SpecialShipment.supplier_id == supplier.id, SpecialShipment.delivery_note_no == payload.delivery_note_no)):
+        raise HTTPException(409, "此送货单已关联样板或车间需求，不可再次登记正式送货")
     digest = fingerprint(payload)
     previous = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == payload.factory_id,
         SupplierShipment.created_by == user.id, SupplierShipment.request_id == payload.request_id))
@@ -1162,6 +1201,8 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
     snapshots = []
     checked_orders = set()
     for item in payload.lines:
+        if item.unit_price == 0 and not item.free_confirmed:
+            raise HTTPException(422, "零单价必须明确确认本行免费")
         line = db.get(CartonOrderLine, item.order_line_id)
         if not line or line.factory_id != payload.factory_id:
             raise HTTPException(404, "未找到纸品子单")
@@ -1194,6 +1235,8 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
             **{key: str(getattr(line, key)) for key in ("packaging_type", "paper_quality", "specification", "dimension_unit", "unit", "unit_price", "currency")},
             **({"delivery_unit_price": str(source["delivery_unit_prices"][line.id])}
                 if source and line.id in source.get("delivery_unit_prices", {}) else {}),
+            **({"delivery_unit_price": str(item.unit_price), "free_confirmed": item.free_confirmed}
+                if item.unit_price is not None else {}),
             **({"original_source_material": source["delivery_materials"][line.id]}
                 if source and line.id in source.get("delivery_materials", {}) else {}),
             **({"source_file": {key: source[key] for key in ("filename", "sha256", "rows") if key in source}}
@@ -1232,7 +1275,7 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
     return shipment_out(db, row)
 
 
-def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
+def receive_shipment(db, user, shipment_id, payload: ShipmentReceive, *, commit=True):
     internal_permission(user, payload.factory_id, "carton_procurement:receipt_write", "carton_procurement:inventory_write")
     _lock_receipt_factory(db, payload.factory_id)
     row = db.scalar(select(SupplierShipment).where(SupplierShipment.id == shipment_id, SupplierShipment.factory_id == payload.factory_id))
@@ -1290,6 +1333,15 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
     for shipped in formal:
         own_reservations[shipped.order_line_id] = progress[shipped.id]["reserved_quantity"]
     receipt_lines = []
+    receipt_sources = []
+    original_replacements = {}
+    if correction and previous_receipt:
+        from app.services.carton_replenishment_receipts import receipt_links
+        from app.services.carton_procurement import _receipt_lines
+        links = receipt_links(db, payload.factory_id)
+        for paper in _receipt_lines(db, previous_receipt.id):
+            if paper.id in links and paper.order_line_id:
+                original_replacements.setdefault(paper.order_line_id, set()).add(links[paper.id]['replenishment_issue_id'])
     for shipped in source:
         item = supplied[shipped.id]
         available_quantity = progress[shipped.id]["receivable_quantity"]
@@ -1312,6 +1364,14 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 if effective != 0 or len(item.difference_reason.strip()) < 4:
                     raise HTTPException(422, "送错货必须全部拒收并填写至少四字原因")
                 continue
+            if not correction:
+                raise HTTPException(422, "无来源到货须先异常核实并关联有效需求；新样板、杂用或赠送请沿需求送货单验收")
+            previous_line = receiving.entry(correction_batch, shipped)
+            if (previous_line.get("no_order_decision") not in {"SAMPLE", "GIFT", "UNORDERED"}
+                or Decimal(str(previous_line.get("received_quantity") or 0)) <= 0):
+                raise HTTPException(422, "此无单纸品未形成原历史收料，不能借其他纸品冲销新增应付")
+            if (item.no_order_decision, item.customer_code) != (previous_line.get("no_order_decision"), previous_line.get("customer_code", "")):
+                raise HTTPException(422, "历史更正须保留原纸品分类及客户来源")
             if item.no_order_decision not in {"SAMPLE", "GIFT", "UNORDERED"}:
                 raise HTTPException(422, "无单纸品须明确选择无落单入库、样板箱、免费赠送或送错货")
             if item.no_order_decision != "UNORDERED" and (not item.customer_code or (item.no_order_decision == "SAMPLE" and len(item.requested_by.strip()) < 2)):
@@ -1340,6 +1400,7 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 zero_price_kind="FREE" if item.no_order_decision == "GIFT" else item.zero_price_kind,
                 location_allocations=item.location_allocations,
                 feedback_note=f"{'无落单入库' if item.no_order_decision == 'UNORDERED' else ('免费赠送' if item.no_order_decision == 'GIFT' else '无正式订单样板箱')}；用途：{item.sample_purpose.strip() or '未填写'}；需求人：{item.requested_by}；{item.difference_reason}"))
+            receipt_sources.append((shipped, item))
             continue
         if item.no_order_decision or item.customer_code or item.sample_purpose or item.requested_by:
             raise HTTPException(422, "正式订单纸品不得选择无单处理")
@@ -1364,18 +1425,27 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
             continue  # Non-arrival remains shipment evidence, never a fabricated receipt line.
         from app.services.carton_material_correction import latest_approved
         material_correction = latest_approved(db, payload.factory_id, line.id)
-        receipt_lines.append(CartonReceiptLineCreate(material_correction_id=material_correction['id'] if material_correction else '',
+        replacement_id = item.replenishment_issue_id
+        prior_ids = original_replacements.get(line.id, set())
+        if prior_ids:
+            if len(prior_ids) != 1 or replacement_id and replacement_id not in prior_ids:
+                raise HTTPException(409, '原批次补单来源须保持一致，请核实原收料')
+            replacement_id = next(iter(prior_ids))
+        receipt_lines.append(CartonReceiptLineCreate(replenishment_issue_id=replacement_id, material_correction_id=material_correction['id'] if material_correction else '',
             order_line_id=line.id, delivered_quantity=item.received_quantity if payload.remaining_action == "WAIT" else available_quantity,
             received_quantity=item.received_quantity, damaged_quantity=item.damaged_quantity, rejected_quantity=item.rejected_quantity,
-            unusable_quantity=item.unusable_quantity, unit_price=item.unit_price, zero_price_kind=item.zero_price_kind, paper_quality=item.paper_quality,
+            unusable_quantity=item.unusable_quantity, unit_price=item.unit_price,
+            zero_price_kind=("FREE" if item.price_action == "FREE" else "PENDING" if item.price_action == "PENDING" and item.unit_price == 0 else item.zero_price_kind), paper_quality=item.paper_quality,
             specification=item.specification, location_allocations=item.location_allocations, feedback_note=item.difference_reason))
+        receipt_sources.append((shipped, item))
     try:
         if reject_all and payload.remaining_action == "WAIT" and not correction:
             row.revision += 1
             _audit(db, user, payload.factory_id, "SUPPLIER_SHIPMENT_DEFERRED", "supplier_shipment", row.id,
                 {"acceptance": payload.model_dump(mode="json"), "request_fingerprint": digest,
                  "reason": "本次暂无实到，余货继续待收", "revision": row.revision})
-            db.commit()
+            if commit: db.commit()
+            else: db.flush()
             return shipment_out(db, row, internal=True)
         if correction:
             row.status = "SENT"  # Also recovers reversed notes recorded before the reversal hook existed.
@@ -1391,6 +1461,10 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
                 corrects_receipt_id=previous_receipt.id if correction else None,
                 shipment_batch_key=payload.request_id if history and not correction else None)
             confirm_receipt(db, receipt.id, CartonReceiptConfirmRequest(factory_id=payload.factory_id, expected_revision=receipt.revision, split_confirmation=payload.split_confirmation), user, commit=False)
+            from app.services.carton_price_review import record_line
+            from app.services.carton_procurement import _receipt_lines
+            for paper, (source_paper, acceptance) in zip(_receipt_lines(db, receipt.id), receipt_sources):
+                record_line(db, user, paper, source_paper, row, acceptance, source_kind="REGULAR")
         # The core lock helper expires ORM state, so update the shipment only after core posting.
         row.revision += 1
         row.confirmed_by = user.id; row.confirmed_at = now_text()
@@ -1412,7 +1486,8 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive):
             notice.message = "已登记本次实收，余货继续待收；请沿原送货单办理下一次入库。"
         else:
             shipment_notifications.handle_notification(db, row)
-        db.commit()
+        if commit: db.commit()
+        else: db.flush()
         return shipment_out(db, row, internal=True)
     except Exception:
         db.rollback()

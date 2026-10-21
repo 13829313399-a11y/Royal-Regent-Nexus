@@ -890,6 +890,7 @@ def get_receipts(
 
 @router.get("/receipt-history")
 def get_receipt_history(factory_id: str, responsibility_scope: Literal["OWN", "ALL"] = "OWN",
+    business_kind: Literal["", "PURCHASE", "SAMPLE", "WORKSHOP_MISC", "SUPPLIER_GIFT", "LEGACY"] = "",
     customer_code: str = Query(default="", max_length=64), search: str = Query(default="", max_length=128),
     status_filter: Literal["", "PENDING_CONFIRMATION", "POSTED", "REVERSED"] = "",
     date_field: Literal["ACCEPTANCE", "DELIVERY"] = "ACCEPTANCE", date_from: str = "", date_to: str = "",
@@ -899,11 +900,12 @@ def get_receipt_history(factory_id: str, responsibility_scope: Literal["OWN", "A
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
     total, rows = list_receipts(db, factory_id, user=current_user if responsibility_scope == "OWN" else None,
         customer_code=customer_code.strip(), search=search.strip(), status_filter=status_filter, date_field=date_field,
-        date_from=date_from, date_to=date_to, sort=sort, limit=limit, offset=offset)
+        date_from=date_from, date_to=date_to, sort=sort, limit=limit, offset=offset, business_kind=business_kind)
     items = []
     for row in rows:
         lines = _receipt_lines(db, row.id)
-        items.append(dict(id=row.id, receipt_no=row.receipt_no, delivery_note_no=row.delivery_note_no,
+        from app.services.carton_source_links import receipt_sources
+        items.append(dict(**receipt_sources(db, row, lines), id=row.id, receipt_no=row.receipt_no, delivery_note_no=row.delivery_note_no,
             delivery_date=row.delivery_date, acceptance_date=row.acceptance_date, status=row.status,
             confirmed_at=row.confirmed_at, operator=row.confirmed_by_name or row.created_by_name,
             line_count=len(lines), customers="、".join(dict.fromkeys(line.customer_name for line in lines))[:160],

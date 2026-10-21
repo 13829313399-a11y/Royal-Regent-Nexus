@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import PageHeader from '@/components/common/PageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave, RouterLink } from 'vue-router'
 import { ChevronLeft, ChevronRight, ClipboardList, Search } from '@lucide/vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -18,10 +18,28 @@ import CuttingMaterialUsage from './CuttingMaterialUsage.vue'
 import CuttingProductionSummary from './CuttingProductionSummary.vue'
 import { taskInput, type PlanTaskInput } from './planning'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
-import { useCuttingLocation } from './location'
+import { cuttingDestination, useCuttingLocation, type CuttingLocation } from './location'
 import CuttingLocationNotice from './CuttingLocationNotice.vue'
+import CuttingPlanningMetrics from './CuttingPlanningMetrics.vue'
+import CuttingInventory from './CuttingInventory.vue'
+import CuttingActivityPage from './CuttingActivityPage.vue'
+import CuttingSubnav from './CuttingSubnav.vue'
 
-defineProps<{ workspace: CuttingWorkspace }>()
+const props=defineProps<{ workspace: CuttingWorkspace }>()
+const materialsView=ref('inventory')
+const manualLocation=ref<CuttingLocation>()
+const appliedQuery=ref(''),appliedStatus=ref(''),appliedPlanStatus=ref(''),summaryRefresh=ref(0)
+const materialTabs=[{id:'inventory',label:'库存台账'},{id:'orders',label:'订单领用汇总'},{id:'movements',label:'收发记录'},{id:'requests',label:'领料申请'},{id:'usage',label:'耗用与余料'},{id:'eta',label:'采购交期'}]
+async function openMaterial(lineId:string,issueId:string){
+  if(!discard())return
+  const ticket=++generation;loading.value=true;error.value=''
+  try{const row=await ordersApi.read(lineId);if(alive&&ticket===generation){
+    selected.value=row;action.value=null;history.value=[];historyTotal.value=0;historyGeneration++;searchGeneration++
+    manualLocation.value={lineId,...(issueId?{kind:'issue' as const,id:issueId}:{})};materialsView.value='usage'
+  }}
+  catch(e){if(alive&&ticket===generation)error.value=errorMessage(e)}
+  finally{if(alive&&ticket===generation)loading.value=false}
+}
 const materialEditor = ref<InstanceType<typeof CuttingMaterialRequests>>()
 const usageEditor = ref<InstanceType<typeof CuttingMaterialUsage>>()
 const materialEditing=ref(false),usageEditing=ref(false)
@@ -66,9 +84,11 @@ onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void lo
 onBeforeUnmount(() => { alive = false; generation++; searchGeneration++; historyGeneration++; window.removeEventListener('beforeunload', beforeUnload) })
 watch(bomQuery, () => { searchGeneration++; bomRows.value = []; versions.value = []; versionId.value = '' }, { flush: 'sync' })
 
-async function load(nextPage = page.value, navigation = false, followLocation = false) {
+async function load(nextPage = page.value, navigation = false, followLocation = false, apply = false) {
   if (!navigation && !discard()) return
+  if(apply){appliedQuery.value=query.value;appliedStatus.value=statusFilter.value;appliedPlanStatus.value=planStatusFilter.value;nextPage=1}
   const request = ++generation
+  manualLocation.value=undefined
   selected.value = null; action.value = null; history.value = []; rows.value = []; historyGeneration++; searchGeneration++
   loading.value = true; error.value = ''
   try {
@@ -76,14 +96,16 @@ async function load(nextPage = page.value, navigation = false, followLocation = 
     if (!alive || request !== generation) return
     access.value = rights
     if (!available.value) return
+    summaryRefresh.value++
     const target = followLocation ? location.value : undefined
     if (target) {
       const order = await ordersApi.read(target.lineId)
       if (!alive || request !== generation) return
       rows.value = [order]; total.value = 1; page.value = 1; selected.value = order
+      if(props.workspace.path==='materials')materialsView.value=target.kind==='usage'||target.kind==='issue'?'usage':'requests'
       return
     }
-    const result = await ordersApi.list(nextPage, query.value, statusFilter.value, planStatusFilter.value)
+    const result = await ordersApi.list(nextPage, appliedQuery.value, appliedStatus.value, appliedPlanStatus.value)
     if (!alive || request !== generation) return
     rows.value = result.data; total.value = result.total; page.value = nextPage
   } catch (e) { if (alive && request === generation) { error.value = errorMessage(e); access.value = null } }
@@ -224,16 +246,21 @@ function status(row: CuttingOrder) {
     <CuttingWorkspacePage :workspace="workspace" />
   </template>
   <section v-else class="cutting-page orders-page">
-    <CuttingLocationNotice :location="location" :selected-id="selected?.line_id" />
-    <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '采购分批交期与需求跟进' : '订单、工程需求与生产预排'"><template #actions><StatusPill label="订单与交期" /></template></PageHeader>
-    <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；领料申请与实发签收已对接布料仓。P3b 首批支持按原实发登记耗用、损耗和盘余核对，材料费用按已确认批次成本计算，缺价显示待计价。</p>
+    <CuttingLocationNotice :location="manualLocation??location" :selected-id="selected?.line_id" />
+    <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '本厂现场、外发在外物料与订单领用，按原实发追溯。' : '订单、工程需求与生产预排'"/>
+    <CuttingPlanningMetrics v-if="workspace.path==='planning'" :query="appliedQuery" :status="appliedStatus" :plan-status="appliedPlanStatus" :refresh="summaryRefresh" />
+    <CuttingSubnav v-if="workspace.path==='materials'" v-model="materialsView" :items="materialTabs" label="物料库存工作视图" />
+    <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；领料申请与实发签收已对接布料仓。按原实发登记耗用、损耗和盘余核对，材料费用按已确认批次成本计算，缺价显示待计价。</p>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p>
     <p v-if="needsLogin" role="alert">登录已失效，请在新标签页重新登录后重试。<a href="/login" target="_blank" rel="noopener">重新登录</a></p>
     <Button variant="outline" v-if="pending" :disabled="saving" @click="save">{{ saving ? '正在保存…' : '重试原操作' }}</Button>
     <Button variant="outline" v-if="pending" :disabled="saving" @click="recover">核对保存结果／停止未执行操作</Button>
     <template v-if="!needsLogin">
-      <SectionPanel class="order-ledger min-w-0" :title="workspace.path === 'materials' ? '采购交期' : '订单总台账'">
-        <form class="order-toolbar order-filters" @submit.prevent="load(1)">
+      <CuttingInventory v-if="workspace.path==='materials'" v-show="materialsView==='inventory'||materialsView==='orders'" :summary="materialsView==='orders'" @open="openMaterial" />
+      <CuttingActivityPage v-if="workspace.path==='materials'&&materialsView==='movements'" embedded initial-source="warehouse" />
+      <div v-show="workspace.path!=='materials'||!['inventory','orders','movements'].includes(materialsView)" class="cutting-overview">
+      <SectionPanel class="order-ledger min-w-0" :title="workspace.path === 'materials' ? materialsView==='eta'?'采购交期':'选择领用订单' : '订单总台账'">
+        <form class="order-toolbar order-filters" @submit.prevent="load(1,false,false,true)">
           <label class="order-filter-field">
             <span>订单号／货号</span>
             <input v-model="query" class="order-filter-control" maxlength="80" placeholder="输入订单号或货号" />
@@ -275,7 +302,8 @@ function status(row: CuttingOrder) {
           <div v-if="!rows.length" class="order-ledger-empty" role="status">
             <ClipboardList :size="28" aria-hidden="true" />
             <p class="order-empty-title">{{ loading ? '正在读取订单…' : '暂无订单记录' }}</p>
-            <p>{{ loading ? '请稍候，正在获取订单台账。' : '暂无已下发订单，请由华康C业务在订单中心选择裁床部下发。' }}</p>
+            <p>{{ loading ? '请稍候，正在获取订单台账。' : appliedQuery||appliedStatus||appliedPlanStatus ? '当前筛选无匹配订单，请清除筛选后查看。' : '暂无已下发订单，请由华康C业务在订单中心选择裁床部下发。' }}</p>
+            <Button v-if="!loading&&(appliedQuery||appliedStatus||appliedPlanStatus)" type="button" variant="outline" @click="query='';statusFilter='';planStatusFilter='';load(1,false,false,true)">清除筛选</Button>
           </div>
         </div>
         <nav class="order-pagination" aria-label="订单分页">
@@ -286,8 +314,14 @@ function status(row: CuttingOrder) {
           </div>
         </nav>
       </SectionPanel>
-      <CuttingMaterialRequests v-if="selected && selected.current" ref="materialEditor" :key="selected.line_id" :order="selected" :permissions="access?.permissions ?? []" :blocked="saving || !!pending || !!action || usageEditing" @editing="materialEditing=$event" @refreshed="r => { if(selected?.line_id===r.line_id){selected=r;rows=rows.map(old=>old.line_id===r.line_id?r:old)} }" />
-      <CuttingMaterialUsage v-if="workspace.path==='materials'&&selected?.current&&access?.usage_schema_ready" ref="usageEditor" :key="`usage-${selected.line_id}`" :line-id="selected.line_id" :permissions="access.permissions" :blocked="saving||!!pending||!!action||materialEditing" @editing="usageEditing=$event" />
+      <SectionPanel v-if="workspace.path === 'planning' && selected" title="领料办理" class="cutting-content-panel">
+        <p>领料申请、仓库回传与分批签收统一在物料库存工作区办理。</p>
+        <div class="order-toolbar">
+          <Button as-child variant="outline"><RouterLink :to="cuttingDestination(selected.line_id, location?.month ?? '', 'materials')">前往物料库存办理领料</RouterLink></Button>
+        </div>
+      </SectionPanel>
+      <CuttingMaterialRequests v-if="workspace.path === 'materials' && selected && selected.current" v-show="materialsView!=='usage'&&materialsView!=='eta'" ref="materialEditor" :key="selected.line_id" :order="selected" :permissions="access?.permissions ?? []" :blocked="saving || !!pending || !!action || usageEditing" @editing="materialEditing=$event" @refreshed="r => { if(selected?.line_id===r.line_id){selected=r;rows=rows.map(old=>old.line_id===r.line_id?r:old)} }" />
+      <CuttingMaterialUsage v-if="workspace.path==='materials'&&selected?.current&&access?.usage_schema_ready" v-show="materialsView==='usage'" ref="usageEditor" :key="`usage-${selected.line_id}`" :line-id="selected.line_id" :permissions="access.permissions" :blocked="saving||!!pending||!!action||materialEditing" @editing="usageEditing=$event" />
       <SectionPanel v-if="selected" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`">
         <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
         <p>{{ status(selected) }} · 裁床记录 V{{ selected.current?.version ?? 0 }}</p>
@@ -382,6 +416,7 @@ function status(row: CuttingOrder) {
           <ul><li v-for="(batch, i) in r.data.batches" :key="i">需求行 {{ batch.row+1 }} · {{ batch.expected_date }} / {{ batch.quantity }} / {{ batch.supplier }} / {{ batch.purchase_reference }}</li></ul>
         </details>
       </SectionPanel>
+      </div>
     </template>
   </section>
 </template>

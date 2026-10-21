@@ -257,6 +257,12 @@ export function useNotificationCenter() {
   }
 
   function getSystemRoute(notification: SystemNotificationResponse) {
+    if (notification.type === 'carton_special_request') {
+      const requestId = typeof notification.payload.request_id === 'string' ? notification.payload.request_id : ''
+      if (!isProductionFactoryContextId(notification.target_factory_id) || !/^[A-Za-z0-9-]{1,100}$/.test(requestId)) return ''
+      const query = new URLSearchParams({ factory: notification.target_factory_id, tab: 'orders', order_kind: 'special', special_request: requestId })
+      return `${notification.payload.audience === 'SUPPLIER' ? '/carton-supplier' : '/modules/pmc-warehouse/carton-procurement'}?${query.toString()}`
+    }
     if (notification.type === 'carton_supplier_shipment') {
       const shipmentId = typeof notification.payload.shipment_id === 'string' ? notification.payload.shipment_id : ''
       const query = new URLSearchParams({ factory: notification.target_factory_id })
@@ -356,6 +362,7 @@ export function useNotificationCenter() {
   function normalizeSystemNotification(notification: SystemNotificationResponse): NotificationCenterItem {
     const internalQuoteEvent = typeof notification.payload.event === 'string' ? notification.payload.event : ''
     const isSupplierShipment = notification.type === 'carton_supplier_shipment'
+    const isSpecialRequest = notification.type === 'carton_special_request'
     const isPending = notification.status !== 'handled'
       && notification.type !== 'identity_changed'
       && (notification.type !== 'internal_quote' || ACTIONABLE_INTERNAL_QUOTE_EVENTS.has(internalQuoteEvent))
@@ -374,7 +381,7 @@ export function useNotificationCenter() {
       role: notification.target_permission,
       title: notification.title,
       summary: notification.message,
-      contextLabel: isSupplierShipment
+      contextLabel: isSpecialRequest ? [notification.target_factory_id, notification.payload.request_no, '样板与杂单'].filter(Boolean).join(' · ') : isSupplierShipment
         ? [notification.target_factory_id, notification.payload.delivery_note_no, '仓库收料'].filter(Boolean).join(' · ')
         : [
           notification.target_factory_id,
@@ -388,12 +395,12 @@ export function useNotificationCenter() {
       createdAt: notification.created_at,
       categoryLabel: notification.type === 'password_reset'
         ? '密码重置'
-        : notification.type === 'internal_quote' ? '内部报价' : isSupplierShipment ? '供应商送货' : '系统通知',
+        : notification.type === 'internal_quote' ? '内部报价' : isSpecialRequest ? '样板与杂单' : isSupplierShipment ? '供应商送货' : '系统通知',
       referenceLabel: notification.type === 'password_reset'
         ? '账号服务'
         : notification.type === 'internal_quote' ? String(notification.payload.quote_no || '内部报价')
-          : isSupplierShipment ? String(notification.payload.delivery_note_no || '送货单') : '用户与授权',
-      targetLabel: notification.type === 'internal_quote' ? '业务协作' : isSupplierShipment ? '仓库收料' : '系统管理',
+          : isSpecialRequest ? String(notification.payload.request_no || '特殊申请') : isSupplierShipment ? String(notification.payload.delivery_note_no || '送货单') : '用户与授权',
+      targetLabel: notification.type === 'internal_quote' ? '业务协作' : isSpecialRequest ? '纸箱协作' : isSupplierShipment ? '仓库收料' : '系统管理',
       raw: notification,
     }
   }

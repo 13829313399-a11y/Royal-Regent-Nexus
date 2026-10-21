@@ -111,13 +111,18 @@ async function openPayment(targetMonth:string,id:string,eventId?:string){
   await load(id,eventId,targetMonth)
   if(record.value?.document_id===id&&!draft.value&&!pending.value){await nextTick();const element=panel.value?.$el as HTMLElement|undefined;element?.scrollIntoView?.({block:'start'});element?.focus?.({preventScroll:true})}
 }
-defineExpose({openPayment})
+function activateMonth(target:string){
+  if(month.value===target)return
+  if(dirty.value||pending.value||busy.value){notice.value=`当前 ${month.value} 的填写或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。`;return}
+  month.value=target;generation++;record.value=undefined;basis.value=undefined
+}
+defineExpose({openPayment,activateMonth})
 function changeMonth(event:Event){const input=event.target as HTMLInputElement;if(dirty.value||busy.value||pending.value){input.value=month.value;notice.value='请先保存或放弃填写，并核对原操作。';return}month.value=input.value;generation++;record.value=undefined;basis.value=undefined}
 function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement',row.month,row.settlement_id,row.settlement_event_id)}
 </script>
 
 <template>
-  <SectionPanel ref="panel" tabindex="-1" v-if="access?.enabled||draft||pending" title="外发加工费付款登记与核销 · P4d" class="cutting-content-panel">
+  <SectionPanel ref="panel" tabindex="-1" v-if="access?.enabled||draft||pending" title="外发加工费付款登记与核销" class="cutting-content-panel">
     <p class="cutting-notice">仅登记已有凭证的实际付款，不操作银行。每笔同一家外厂、同一币种并全额分配；会计登记、另一名会计复核生效。预付款、超付、汇兑及实际退款暂不办理。</p>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p><p v-if="notice" role="status">{{notice}}</p><p v-if="busy" role="status">正在处理付款登记…</p>
     <Button v-if="pending" variant="outline" :disabled="busy" @click="recover">核对原付款操作结果</Button>

@@ -4,12 +4,12 @@ import { cartonCustomerResponsibilitiesApi as api, emptyResponsibilities } from 
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 
-const props = defineProps<{ factoryId: string }>()
+const props = defineProps<{ factoryId: string; search?: string }>()
 const emit = defineEmits<{ changed: [] }>()
 const auth = useAuthStore()
 const data = ref(emptyResponsibilities()), error = ref(''), search = ref(''), saving = ref(false), loading = ref(false)
 const editing = ref(''), selected = ref<string[]>([]), reason = ref(''), ownerId = ref<string | undefined>()
-const rows = computed(() => data.value.customers.filter(row => [row.name, row.code, ...row.users.map(user => user.name)].some(value => value.toLowerCase().includes(search.value.trim().toLowerCase()))))
+const rows = computed(() => data.value.customers.filter(row => [row.name, row.code, ...row.users.map(user => user.name)].some(value => value.toLowerCase().includes((props.search ?? search.value).trim().toLowerCase()))))
 let epoch = 0, controller = new AbortController()
 async function refresh() {
   const current = ++epoch
@@ -65,7 +65,7 @@ onBeforeUnmount(() => { epoch++; controller.abort() })
     <p v-if="error" role="alert" class="mt-3 text-sm text-red-700">{{ error }}</p>
     <p v-if="loading" class="mt-3 text-sm text-slate-500">正在读取责任范围…</p>
     <template v-else-if="!error">
-      <input v-model="search" aria-label="搜索责任客户" placeholder="客户 / 责任人员" class="mt-3 h-9 w-full rounded-lg border px-3 text-sm">
+      <input v-if="props.search === undefined" v-model="search" aria-label="搜索责任客户" placeholder="客户 / 责任人员" class="mt-3 h-9 w-full rounded-lg border px-3 text-sm">
       <div v-for="row in rows" :key="row.id" class="mt-3 rounded-lg border p-3 text-sm">
         <div class="flex flex-wrap items-center gap-3"><b>{{ row.name }}</b><span class="flex-1 text-xs text-slate-500">{{ row.users.length ? `负责人：${row.owner?.name || '待主管指定'}；协作人员：${row.users.map(user => user.name).join('、')}` : '未认领 · 本厂有岗位权限的人员均可操作' }}</span>
           <button v-if="row.can_claim" type="button" :disabled="saving" :aria-label="`认领客户 ${row.name}`" class="rounded border bg-teal-700 px-3 py-1.5 text-white" @click="claim(row)">我来负责</button>

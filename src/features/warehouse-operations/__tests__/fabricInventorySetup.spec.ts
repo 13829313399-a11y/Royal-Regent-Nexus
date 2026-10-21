@@ -15,7 +15,7 @@ const session=reactive({currentUser:{id:'keeper'},authorizationVersion:0})
 vi.mock('@/stores/auth',()=>({useAuthStore:()=>session}))
 const batch={id:'B1',item_code:'001',item_name:'白布',unit:'码',location:'A/A01',location_id:'A01',location_verified:true,warehouse_name:'A',lot:'0001',roll_no:'01',quantity:'10.000001',quality_status:'PENDING_INSPECTION',available_quantity:'10.000001',material_category:'FABRIC',process_state:'',source_no:'OLD',source_document:'O',received_on:'2026-10-01',counterparty:'纺织厂',production_no:''} as const
 const count:CountDocument={id:'COUNT1',revision:1,status:'DRAFT',actor_name:'仓管',business_date:'2026-10-13',reason:'实物盘点',lines:[{batch_id:'B1',snapshot:{...batch},actual:'',reason:''}],events:[]}
-const preview={filename:'opening.xlsx',token:'t'.repeat(64),new_count:1,skip_count:0,error_count:0,totals:{码:'10.000001'},rows:[{row_number:2,source_line:'1',item_code:'001',item_name:'白布',location:'A/A01',lot:'0001',roll_no:'01',quantity:'10.000001',unit:'码',action:'NEW',errors:[]}]}
+const preview={filename:'opening.xlsx',token:'t'.repeat(64),new_count:1,skip_count:0,error_count:0,totals:{码:'10.000001'},rows:[{row_number:2,source_line:'1',style_no:'0007',customer_name:'测试客户',material_detail:'白色棉布58寸',item_code:'001',item_name:'白布',location:'A/A01',lot:'0001',roll_no:'01',quantity:'10.000001',unit:'码',action:'NEW',errors:[]}]}
 let wrapper:VueWrapper
 const search=ref('')
 beforeEach(()=>{vi.resetAllMocks();search.value='';session.authorizationVersion=0;vi.spyOn(window,'confirm').mockReturnValue(true);api.workspace.mockResolvedValue({openings:[],counts:[structuredClone(count)],permissions:{read:true,operate:true,correct:true}});warehouseApi.workspace.mockResolvedValue({stock:[{...batch}],locations:[{id:'A01',warehouse:'A',code:'A01',label:'A/A01',status:'ACTIVE'}]});api.preview.mockResolvedValue(structuredClone(preview))})
@@ -25,6 +25,12 @@ function button(name:string){return wrapper.findAll('button').find(item=>item.te
 async function inspect(){await wrapper.get('[aria-label="原始清单编号"]').setValue('OLD-1');const input=wrapper.get('[aria-label="期初库存文件"]');Object.defineProperty(input.element,'files',{value:[new File(['sample'],'opening.xlsx')],configurable:true});await input.trigger('change');await button('预览导入').trigger('click');await flushPromises()}
 
 describe('fabric opening and stocktaking',()=>{
+  it('shows opening source identity fields and keeps table columns aligned',async()=>{
+    await open('opening');await inspect()
+    expect(wrapper.text()).toContain('0007');expect(wrapper.text()).toContain('测试客户');expect(wrapper.text()).toContain('白色棉布58寸')
+    const table=wrapper.findAll('table').find(t=>t.text().includes('货号 / 客户 / 物料明细'))!
+    expect(table.findAll('thead th')).toHaveLength(table.findAll('tbody tr')[0]!.findAll('td').length)
+  })
   it('refreshes an untouched count to the latest cancelled version',async()=>{
     await open('stocktake');await button('继续盘点').trigger('click')
     api.workspace.mockResolvedValue({openings:[],counts:[{...structuredClone(count),revision:2,status:'CANCELLED'}],permissions:{read:true,operate:true,correct:true}})

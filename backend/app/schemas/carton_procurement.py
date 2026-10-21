@@ -752,6 +752,7 @@ class CartonLocationAllocation(BaseModel):
 
 
 class CartonReceiptLineCreate(BaseModel):
+    special_source_line_id: str = Field(default="", max_length=96)
     unordered_receipt: bool = False
     dimension_unit: Literal["cm", "in"] = "cm"
     zero_price_kind: Literal["FREE", "PENDING"] | None = None
@@ -823,8 +824,8 @@ class CartonReceiptLineCreate(BaseModel):
         missing = [
             label
             for label, value in (
-                ("客户", self.customer_code or self.unordered_receipt),
-                ("货号", self.item_no or self.unordered_receipt),
+                ("客户", self.customer_code or self.unordered_receipt or self.special_source_line_id),
+                ("货号", self.item_no or self.unordered_receipt or self.special_source_line_id),
                 ("纸品类型", self.packaging_type),
                 ("纸质", self.paper_quality),
                 ("规格", self.specification),
@@ -838,12 +839,13 @@ class CartonReceiptLineCreate(BaseModel):
             raise ValueError("无落单入库必须选择仓位")
         if self.unordered_receipt and (self.unit_price is None or self.unit_price <= 0):
             raise ValueError("无落单入库必须填写大于零的单价")
-        if self.received_quantity - unusable <= 0:
+        if self.received_quantity - unusable <= 0 and not self.special_source_line_id:
             raise ValueError("非正式收料的有效收料数量必须大于 0")
         return self
 
 
 class CartonReceiptCreate(BaseModel):
+    legacy_correction_receipt_id: str | None = Field(default=None, min_length=1, max_length=96)
     acceptance_date: str | None = None
     post_immediately: bool = False
     split_confirmation: str = Field(default="", max_length=64)
@@ -916,6 +918,11 @@ class CartonReceiptLineOut(BaseModel):
 
 
 class CartonReceiptOut(BaseModel):
+    source_requests: list[dict[str, str]] = Field(default_factory=list)
+    delivery_id: str | None = None
+    business_kinds: list[str] = Field(default_factory=list)
+    special_request_id: str | None = None
+    special_shipment_id: str | None = None
     acceptance_date: str | None = None
     id: str
     factory_id: str
@@ -1138,6 +1145,8 @@ class CartonHistoryInventoryImportOut(BaseModel):
 
 
 class CartonInventoryBalanceOut(BaseModel):
+    source_requests: list[dict[str, str]] = Field(default_factory=list)
+    business_kinds: list[Literal["PURCHASE", "SAMPLE", "WORKSHOP_MISC", "SUPPLIER_GIFT", "LEGACY"]] = Field(default_factory=list)
     inbound_quantity: Decimal | None = None
     outbound_quantity: Decimal | None = None
     opening_quantity: Decimal | None = None

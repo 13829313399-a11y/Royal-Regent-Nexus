@@ -8,6 +8,8 @@ import { isSupplierOrderSource, supplierPaperCompatible, type SupplierOrderSourc
 const api = vi.hoisted(() => ({ workspace: vi.fn(), receiptOptions: vi.fn(), linkShipmentLine: vi.fn(), receive: vi.fn(), linkReceipt: vi.fn(), changeNonArrival: vi.fn() }))
 const can = vi.hoisted(() => vi.fn((_permission: string) => true))
 const authState = reactive({ currentUser: { id: 'warehouse', identity: { employment_epoch: 1, effective_context_key: 'original' } }, authorizationVersion: 1, authzMode: 'enforce' })
+const unified = vi.hoisted(() => ({ list: vi.fn() }))
+vi.mock('@/api/cartonUnifiedDeliveries', async original => ({ ...await original<typeof import('@/api/cartonUnifiedDeliveries')>(), cartonUnifiedDeliveriesApi: unified }))
 vi.mock('@/api/cartonSupplierPortal', () => ({ cartonSupplierPortalApi: api }))
 vi.mock('@/api/cartonPositions', () => ({ cartonPositionsApi: { locations: vi.fn(async () => [{ id: 'BIN', factory_id: 'huaxing', status: 'ACTIVE', warehouse: 'A', bin_code: '01' }]) } }))
 vi.mock('@/api/cartonProcurement', () => ({ cartonProcurementApi: { listCustomers: vi.fn(async () => [{ customer_code: 'CUSTOMER', customer_name: '客户', status: 'ACTIVE' }]) } }))
@@ -20,7 +22,7 @@ const options = { props: { factoryId: 'huaxing' }, global: { stubs: { CartonRece
 function sourceLine(id = 'SOURCE', patch: Partial<ShipmentLine> = {}): ShipmentLine {
   return { id, source_type: 'AD_HOC_REVIEW', order_line_id: null, order_no: '', contract_no: 'CONTRACT', item_no: 'ITEM',
     customer_po: 'PO', customer_name: '', child_no: '', packaging_type: '普通箱', paper_quality: 'A=B', specification: '19.875X11.25X15.375inch',
-    unit: '个', quantity: '836', unit_price: '3.22', currency: 'CNY', ...patch }
+    unit: '个', quantity: '836', unit_price: '3.22', delivery_unit_price: '3.22', currency: 'CNY', ...patch }
 }
 function fixture(): PortalWorkspace {
   return { factory_id: 'huaxing', supplier_name: '东康', orders: [{ id: 'ORDER', order_no: 'CT-ORDER', customer_code: 'CUSTOMER', customer_name: '客户', revision: 2,
@@ -41,12 +43,32 @@ const emittedSource = (wrapper: ReturnType<typeof mount>) => wrapper.emitted('cr
 
 beforeEach(() => {
   vi.resetAllMocks(); can.mockReturnValue(true)
+  unified.list.mockResolvedValue({ items: [], total: 0 })
   authState.currentUser = { id: 'warehouse', identity: { employment_epoch: 1, effective_context_key: 'original' } }
   authState.authorizationVersion = 1; authState.authzMode = 'enforce'
   api.workspace.mockResolvedValue(fixture()); api.receiptOptions.mockResolvedValue([])
 })
 
 describe('supplier-origin ordinary order entry', () => {
+  it('resolves legacy FORMAL references and grouped child IDs to their exact original note', async () => {
+    const plain = mount(Component, { ...options, props: { factoryId: 'huaxing', shipmentId: 'FORMAL:SHIPMENT' } })
+    await flushPromises()
+    expect(plain.find('[role="dialog"]').exists()).toBe(true)
+    expect(plain.text()).not.toContain('未找到当前权限内的原送货单')
+    plain.unmount()
+    const workspace = fixture(), shipment = workspace.shipments[0]!
+    unified.list.mockResolvedValue({ total: 1, items: [{ id: 'CUD-ORIGINAL', factory_id: 'huaxing', delivery_note_no: shipment.delivery_note_no,
+      delivery_date: shipment.delivery_date, created_at: '', formal: shipment, special: [], lines: shipment.lines.map(line => ({ ...line, source_kind: 'FORMAL' })),
+      receipts: [], status: 'SENT', revision: 3, requires_correction: false, can_operate: true }] })
+    const grouped = mount(Component, { props: { factoryId: 'huaxing', shipmentId: 'SHIPMENT' }, global: { stubs: { CartonUnifiedDeliveryNotes: true } } })
+    await flushPromises()
+    const card = grouped.getComponent({ name: 'CartonUnifiedDeliveryNotes' })
+    expect(card.props()).toMatchObject({ group: expect.objectContaining({ id: 'CUD-ORIGINAL' }), autoOpen: true })
+    expect(grouped.text()).not.toContain('未找到当前权限内的原送货单')
+    await grouped.findAll('button').find(button => button.text() === '查看全部送货单')!.trigger('click')
+    expect(grouped.emitted('clear-focus')).toHaveLength(1)
+    grouped.unmount()
+  })
   it('continues the original delivery using only its remaining quantity and preserves the chosen remainder action', async () => {
     const data = fixture()
     data.shipments = [{ ...data.shipments[0]!, receipt_id: 'FIRST', receipt_status: 'POSTED', partially_received: true,
@@ -123,6 +145,8 @@ describe('supplier-origin ordinary order entry', () => {
     await dialog.get('[aria-label="SOURCE 实收"]').setValue(800)
     await dialog.get('[aria-label="SOURCE 差异原因"]').setValue('核对实物短收')
     await dialog.get('[aria-label="发货验收日期"]').setValue('2026-10-13')
+    await dialog.get('[aria-label="SOURCE 价格核对"]').setValue('PROPOSE')
+    await dialog.get('[aria-label="SOURCE 价格说明"]').setValue('与原约定价不符')
     await dialog.get('[aria-label="SOURCE 入库单价"]').setValue(7.5)
     const allocations = wrapper.findAllComponents({ name: 'CartonReceiptAllocations' })
     allocations[0]!.vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 800 }]); await flushPromises()
@@ -213,15 +237,14 @@ describe('supplier-origin ordinary order entry', () => {
     const wrapper = mount(Component, options); await flushPromises()
     await button(wrapper, '核实实际收到').trigger('click'); await flushPromises()
     const dialog = wrapper.get('[role="dialog"]')
-    await dialog.get('[aria-label="SOURCE 无单处理结论"]').setValue('SAMPLE')
-    await dialog.get('[aria-label="SOURCE 样板箱客户"]').setValue('CUSTOMER')
-    await dialog.get('[aria-label="SOURCE 样板箱需求人"]').setValue('旧样板需求人')
     await dialog.get('[aria-label="SOURCE 实收"]').setValue(800)
     await dialog.get('[aria-label="SECOND 实收"]').setValue(600)
     await dialog.get('[aria-label="SOURCE 差异原因"]').setValue('纸箱短收核实')
     await dialog.get('[aria-label="SOURCE 破损"]').setValue(2)
     await dialog.get('[aria-label="SOURCE 拒收"]').setValue(3)
     await dialog.get('[aria-label="SOURCE 其他不可用"]').setValue(4)
+    await dialog.get('[aria-label="SOURCE 价格核对"]').setValue('PROPOSE')
+    await dialog.get('[aria-label="SOURCE 价格说明"]').setValue('核对采购约定价格')
     await dialog.get('[aria-label="SOURCE 入库单价"]').setValue(7.5)
     wrapper.findAllComponents({ name: 'CartonReceiptAllocations' })[0]!.vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 791 }])
     await dialog.get('[aria-label="SOURCE 验收关联客户"]').setValue('CUSTOMER')
@@ -296,48 +319,42 @@ describe('supplier-origin material and draft guards', () => {
   })
 })
 
-it('accepts blank customer, contract and item only after an explicit unordered decision with price and allocations', async () => {
-  const data = fixture(); data.shipments = [data.shipments[0]!]
-  data.shipments[0]!.lines = [sourceLine('SOURCE', { contract_no: '', item_no: '', customer_name: '' })]
+it('keeps unknown deliveries pending or rejected and never turns them directly into samples, gifts or payable miscellaneous stock', async () => {
+  const data = fixture(); data.shipments = [data.shipments[0]!]; data.shipments[0]!.lines = [sourceLine('SOURCE', { contract_no: '', item_no: '', customer_name: '' })]
   api.workspace.mockResolvedValue(data)
   api.receive.mockResolvedValue({ ...data.shipments[0]!, receipt_id: 'RECEIPT' })
   const wrapper = mount(Component, options); await flushPromises()
   await button(wrapper, '核实实际收到').trigger('click'); await flushPromises()
   const dialog = wrapper.get('[role="dialog"]')
-  wrapper.findComponent({ name: 'CartonReceiptAllocations' }).vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 836 }])
-  await dialog.trigger('submit'); await flushPromises()
-  expect(api.receive).not.toHaveBeenCalled()
-  await dialog.get('[aria-label="SOURCE 无单处理结论"]').setValue('UNORDERED')
+  expect(dialog.get('[aria-label="SOURCE 无单处理结论"]').findAll('option').map(row => row.attributes('value'))).toEqual(['', 'WRONG_DELIVERY'])
   expect(dialog.find('[aria-label="SOURCE 样板箱客户"]').exists()).toBe(false)
-  expect(dialog.get('[aria-label="SOURCE 无落单尺寸单位"]').element).toHaveProperty('value', 'in')
-  await dialog.get('[aria-label="SOURCE 入库单价"]').setValue(0)
   await dialog.trigger('submit'); await flushPromises()
-  expect(api.receive).not.toHaveBeenCalled()
-  await dialog.get('[aria-label="SOURCE 入库单价"]').setValue(2.5)
+  expect(api.receive).not.toHaveBeenCalled(); expect(wrapper.text()).toContain('未知到货请先关联正式订单')
+  await dialog.get('[aria-label="SOURCE 无单处理结论"]').setValue('WRONG_DELIVERY')
+  await dialog.get('[aria-label="SOURCE 差异原因"]').setValue('送错物料全数拒收')
   await dialog.trigger('submit'); await flushPromises()
-  expect(api.receive).toHaveBeenCalledWith('SHIPMENT', expect.objectContaining({ lines: [expect.objectContaining({
-    shipment_line_id: 'SOURCE', no_order_decision: 'UNORDERED', customer_code: '', requested_by: '',
-    dimension_unit: 'in', received_quantity: 836, unit_price: 2.5, location_allocations: [{ location_id: 'BIN', quantity: 836 }],
-  })] }))
-  expect(api.linkShipmentLine).not.toHaveBeenCalled()
-  wrapper.unmount()
+  expect(api.receive).toHaveBeenCalledWith('SHIPMENT', expect.objectContaining({ lines: [expect.objectContaining({ no_order_decision: 'WRONG_DELIVERY', received_quantity: 836, rejected_quantity: 836, location_allocations: [] })] }))
+  expect(api.linkShipmentLine).not.toHaveBeenCalled(); wrapper.unmount()
 })
 
-it.each(['FREE', 'PENDING'] as const)('preserves default actual quantity and submits explicit zero-price %s', async kind => {
-  const data = fixture(); data.shipments = [data.shipments[0]!]; data.shipments[0]!.lines = [sourceLine('SOURCE', { contract_no: 'GIFT-ONLY', item_no: 'GIFT-ONLY' })]
-  api.workspace.mockResolvedValue(data)
-  api.receive.mockResolvedValue({ ...data.shipments[0]!, receipt_id: 'RECEIPT' })
+it('reopens only the original legacy sample classification for a verified reversed shipment batch', async () => {
+  const data = fixture(); data.shipments = [data.shipments[0]!]
+  const shipment = data.shipments[0]!
+  shipment.lines = [sourceLine('SOURCE', { quantity: '10', receivable_quantity: '10' })]
+  shipment.requires_correction = true; shipment.receipt_id = 'REVERSED-RECEIPT'; shipment.receipt_status = 'REVERSED'
+  shipment.legacy_correction_lines = [{ shipment_line_id: 'SOURCE', received_quantity: 10, damaged_quantity: 0, rejected_quantity: 0, unusable_quantity: 0,
+    no_order_decision: 'SAMPLE', customer_code: 'CUSTOMER', requested_by: '原需求人', sample_purpose: '原样板确认', unit: '个', unit_price: 0, zero_price_kind: 'FREE',
+    paper_quality: 'A=B', specification: '19.875X11.25X15.375inch', dimension_unit: 'in', location_allocations: [], difference_reason: '' }]
+  api.workspace.mockResolvedValue(data); api.receive.mockResolvedValue({ ...shipment, status: 'RECEIVED' })
   const wrapper = mount(Component, options); await flushPromises()
-  await button(wrapper, '核实实际收到').trigger('click'); await flushPromises()
-  const dialog = wrapper.get('[role="dialog"]')
-  expect(dialog.get('[aria-label="SOURCE 实收"]').element).toHaveProperty('value', '836')
-  await dialog.get('[aria-label="SOURCE 无单处理结论"]').setValue(kind === 'FREE' ? 'GIFT' : 'SAMPLE')
-  await dialog.get('[aria-label="SOURCE 样板箱客户"]').setValue('CUSTOMER')
-  if (kind === 'PENDING') await dialog.get('[aria-label="SOURCE 样板箱需求人"]').setValue('纸箱部')
-  else expect(dialog.get('[aria-label="SOURCE 样板箱需求人"]').attributes('required')).toBeUndefined()
-  await dialog.get('[aria-label="SOURCE 入库单价"]').setValue(0)
-  wrapper.findComponent({ name: 'CartonReceiptAllocations' }).vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 836 }])
-  await dialog.trigger('submit'); await flushPromises()
-  expect(api.receive).toHaveBeenCalledWith('SHIPMENT', expect.objectContaining({ lines: [expect.objectContaining({ received_quantity: 836, unit_price: 0, zero_price_kind: kind })] }))
+  await button(wrapper, '更正原单验收').trigger('click'); await flushPromises()
+  expect(wrapper.get('[aria-label="SOURCE 无单处理结论"]').findAll('option').map(row => row.attributes('value'))).toEqual(['', 'SAMPLE', 'WRONG_DELIVERY'])
+  expect(wrapper.get<HTMLSelectElement>('[aria-label="SOURCE 无单处理结论"]').element.value).toBe('SAMPLE')
+  expect(wrapper.text()).toContain('原需求人')
+  await wrapper.get('[aria-label="送货单验收更正原因"]').setValue('核对原样板实际数量')
+  await wrapper.get('[aria-label="SOURCE 价格说明"]').setValue('按原免费样板核实')
+  wrapper.findComponent({ name: 'CartonReceiptAllocations' }).vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 10 }])
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(api.receive).toHaveBeenCalledWith('SHIPMENT', expect.objectContaining({ lines: [expect.objectContaining({ no_order_decision: 'SAMPLE', customer_code: 'CUSTOMER', requested_by: '原需求人', unit_price: 0, zero_price_kind: 'FREE' })] }))
   wrapper.unmount()
 })

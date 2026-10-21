@@ -19,6 +19,7 @@ from app.services import cutting_settlement as settlement, cutting_settlement_sc
 from app.services import cutting_payments as payments, cutting_payment_schemas as pay
 from app.services import cutting_exports as exports
 from app.services import cutting_cutover as cutover
+from app.services import cutting_workspace as workspace
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -114,6 +115,65 @@ def masters(db: Db, user: User, factory_id: str = '', kind: s.Kind = 'material',
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     rows = db.scalars(query.order_by(CuttingMaster.code).offset((page-1)*page_size).limit(page_size))
     return dict(data=[c.view(db, item) for item in rows], total=total, page=page, page_size=page_size)
+
+
+@router.get('/workspace/masters')
+def workspace_masters(db: Db, user: User, factory_id: str = ''):
+    c.authorize(user, factory_id)
+    ready(db)
+    return workspace.master_summary(db)
+
+
+@router.get('/workspace/planning')
+def workspace_planning(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80),
+                       status: s.WorkflowStatus | None = None, bucket: Literal['', 'scheduled', 'unscheduled'] = '',
+                       page: int = Query(1, ge=1),
+                       plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return workspace.scheduling(db, q, status, bucket, page, plan_status)
+
+
+@router.get('/workspace/tasks')
+def workspace_tasks(db: Db, user: User, day: ps.BusinessDate, factory_id: str = '', q: str = Query('', max_length=80),
+                    execution: Literal['', 'internal', 'outsourced'] = '',
+                    scope: Literal['daily', 'reported', 'unreported', 'abnormal', 'history'] = 'daily', page: int = Query(1, ge=1)):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return workspace.task_board(db, day, q, execution, scope, page)
+
+
+@router.get('/workspace/inventory')
+def workspace_inventory(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80),
+                        execution: Literal['', 'internal', 'outsourced'] = '', page: int = Query(1, ge=1),
+                        view: Literal['issues', 'orders'] = 'issues'):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return workspace.inventory(db, q, execution, page, view)
+
+
+@router.get('/workspace/costs')
+def workspace_costs(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80), page: int = Query(1, ge=1)):
+    c.authorize(user, factory_id, 'cost_read')
+    orders_ready(db)
+    return workspace.cost_overview(db, q, page)
+
+
+@router.get('/workspace/activity')
+def workspace_activity(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80),
+                       source: Literal['', 'master', 'order', 'production', 'material', 'warehouse', 'period', 'settlement', 'payment'] = '',
+                       page: int = Query(1, ge=1), expected_token: str = Query('', max_length=64),
+                       order_q: str = Query('', max_length=80), month: pcs.Month | None = None):
+    c.authorize(user, factory_id)
+    ready(db)
+    return JSONResponse(workspace.activity(db, user, source, q, page, expected_token, order_q, month or ''), headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/workspace/months/{month}')
+def workspace_month(month: pcs.Month, db: Db, user: User, factory_id: str = ''):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return JSONResponse(workspace.monthly(db, user, month), headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/settlements/{month}')
@@ -242,11 +302,18 @@ def period_recover(body: pcs.RecoverPeriod, db: Db, user: User):
 
 
 @router.get('/masters/{entity_id}/versions')
-def versions(entity_id: str, db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1)):
+def versions(entity_id: str, db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1),
+             focus_version: int | None = Query(None, ge=1)):
     c.authorize(user, factory_id)
     ready(db)
     item = c.master(db, entity_id)
-    numbers = db.scalars(select(CuttingRevision.version).where(CuttingRevision.master_id == item.id)
+    if focus_version is not None:
+        c.require(focus_version <= item.version, '指定资料版本不存在', 404)
+        # Revisions are immutable and contiguous; resolve against the same head
+        # used to read this page, rather than a previously fetched client count.
+        page = (item.version - focus_version) // 50 + 1
+    numbers = db.scalars(select(CuttingRevision.version).where(CuttingRevision.master_id == item.id,
+                         CuttingRevision.version <= item.version)
                          .order_by(CuttingRevision.version.desc()).offset((page-1)*50).limit(50))
     return dict(data=[c.view(db, item, version) for version in numbers], total=item.version, page=page, page_size=50)
 
