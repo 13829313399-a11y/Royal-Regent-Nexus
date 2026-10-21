@@ -137,6 +137,107 @@ def test_packaging_copy_preserves_identity_images_costs_and_target_reference(mon
         assert section(current(client, c), "sales")["payload"]["packaging_materials"][0]["item"] == "来源彩盒"
 
 
+def test_packaging_direction_identifies_saved_empty_source_and_packaging_only_source(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "pack-direction", "admin", "*", "*")
+        a, b, c = batch(client)
+        fill_product(client, a)
+        packaging = {"labor_base_hkd": 260, "standard_work_hours": 11, "groups": [
+            {"name": "包装人工", "category": "packaging", "production_qty": 5000, "teams": 1, "total_persons": 20},
+            {"name": "混装人工", "category": "packaging", "production_qty": 8000, "teams": 1, "total_persons": 18},
+        ]}
+        for identity, payload in ((a, packaging), (b, {"labor_base_hkd": 260, "groups": []})):
+            row = section(current(client, identity), "assembly")
+            checked(client.put(f"/api/internal-quotes/{identity}/sections/assembly", json={"revision": row["revision"], "payload": payload}))
+        before = current(client, a)
+        failed = checked(client.post(f"/api/internal-quotes/{b}/packaging-copy/preview", json=request(client, b, [a], True)), 409)
+        assert "B款" in failed["detail"] and "装配部已保存，但核算未通过" in failed["detail"]
+        assert "没有符合字段契约的可计算明细" in failed["detail"]
+        rows = checked(client.get(f"/api/internal-quotes/{b}/batch-products"))
+        ready, empty = rows[0]["packaging_copy"], rows[1]["packaging_copy"]
+        assert ready["packaging_labor_hkd"] == "1.6250" and ready["packaging_group_count"] == 2
+        assert ready["source_issue"] == ready["assembly_issue"] == ""
+        assert "已保存，但核算未通过" in empty["assembly_issue"]
+        assert "尚未保存" in rows[2]["packaging_copy"]["assembly_issue"]
+        assert rows[0]["version_label"] == before["version_label"]
+        assert current(client, a) == before  # Listing and rejected preview are read-only.
+        apply(client, a, preview(client, a, request(client, a, [b, c], True)))
+        assert section(current(client, b), "assembly")["calculation_status"] == "valid"
+
+
+def test_packaging_status_reports_version_archive_and_keeps_receivers_without_costing_eligible(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "pack-archive-status", "admin", "*", "*")
+        a, b, _ = batch(client)
+        fill_product(client, a)
+        family = checked(client.get(f"/api/internal-quotes/{a}/alternatives"))
+        checked(client.post(f"/api/internal-quotes/{a}/alternative-archive", json={
+            "family_revision": family["revision"], "archived": True, "reason": "仅归档此版用于验证"}))
+        rows = checked(client.get(f"/api/internal-quotes/{b}/batch-products"))
+        assert rows[0]["archived"] is True
+        assert "此方案版本已归档" in rows[0]["packaging_copy"]["source_issue"]
+        assert "此方案版本已归档" in rows[0]["packaging_copy"]["target_issue"]
+        assert rows[1]["packaging_copy"]["target_issue"] == ""
+        assert rows[1]["packaging_copy"]["assembly_target_issue"] == ""
+        checked(client.post(f"/api/internal-quotes/{a}/packaging-copy/preview", json=request(client, a, [b], True)), 409)
+
+
+@pytest.mark.parametrize("whole", [False, True])
+def test_save_repairs_stale_quote_formula_header_only_after_all_costs_are_current(monkeypatch, whole):
+    with make_client(monkeypatch) as client:
+        login(client, "pack-formula-header", "admin", "*", "*")
+        a, b, _ = batch(client)
+        fill_product(client, a)
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.internal_quote")
+        calculator = importlib.import_module("app.services.internal_quote_calculator")
+        with db_module.SessionLocal() as db:
+            db.get(models.InternalQuote, a).formula_version = "rr2-2026-v7"
+            db.commit()
+        before = current(client, a)
+        assert "按当前公式重算" in checked(client.get(f"/api/internal-quotes/{a}/batch-products"))[0]["packaging_copy"]["source_issue"]
+        assert current(client, a)["formula_version"] == "rr2-2026-v7"  # Reads never repair data.
+        row = section(before, "sales")
+        draft = {"revision": row["revision"], "payload": row["payload"]}
+        if whole:
+            checked(client.put(f"/api/internal-quotes/{a}/sections/save-all", json={"sections": [{"section_code": "sales", **draft}]}))
+        else:
+            checked(client.put(f"/api/internal-quotes/{a}/sections/sales", json=draft))
+        after = current(client, a)
+        assert after["formula_version"] == calculator.FORMULA_VERSION
+        assert after["header_revision"] == before["header_revision"] + 1
+        assert after["sections"] == before["sections"]
+        preview(client, a, request(client, a, [b], True))
+        # A second unchanged save is still a no-op, not another header revision.
+        checked(client.put(f"/api/internal-quotes/{a}/sections/sales", json=draft))
+        assert current(client, a)["header_revision"] == after["header_revision"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("calculation_formula_version", "rr2-2026-v7"), ("calculation_status", "blocked"),
+    ("dependency_status", "stale"), ("filled_at", ""), ("calculation_reference_snapshot_id", "old-reference"),
+    ("dependency_hash", "outdated"),
+])
+def test_saving_one_department_cannot_relabel_another_stale_or_incomplete_cost(monkeypatch, field, value):
+    with make_client(monkeypatch) as client:
+        login(client, "pack-formula-protection", "admin", "*", "*")
+        a, _, _ = batch(client)
+        fill_product(client, a)
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.internal_quote")
+        with db_module.SessionLocal() as db:
+            db.get(models.InternalQuote, a).formula_version = "rr2-2026-v7"
+            setattr(db.get(models.InternalQuoteSection, f"{a}-assembly"), field, value)
+            db.commit()
+        before = current(client, a)
+        sales = section(before, "sales")
+        checked(client.put(f"/api/internal-quotes/{a}/sections/sales", json={"revision": sales["revision"], "payload": sales["payload"]}))
+        after = current(client, a)
+        assert after["formula_version"] == "rr2-2026-v7"
+        assert after["header_revision"] == before["header_revision"]
+        assert section(after, "assembly") == section(before, "assembly")
+
+
 def test_packaging_scope_stale_preview_and_atomic_rollback(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "pack-atomic", "admin", "*", "*")
@@ -243,7 +344,8 @@ def test_invalid_target_geometry_rejects_copy_without_committing_any_target(monk
         # be overwritten merely to make the copied packaging calculate.
         body = preview(client, a, request(client, a, [b, c]))
         before_b, before_c = current(client, b), current(client, c)
-        apply(client, a, body, 400)
+        result = apply(client, a, body, 409)
+        assert "C款的业务部核算未通过，整批未复制" in result["detail"]
         assert current(client, b) == before_b and current(client, c) == before_c
 
 
