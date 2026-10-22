@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { label, str, type Entity } from '../contracts'
+import { computed, inject } from 'vue'
+import { uvPageState } from '../usePage'
 import UvState from './UvState.vue'
-defineProps<{rows:Entity[];columns:{key:string;label:string;state?:boolean}[];empty?:string;selectable?:boolean}>()
+const props=defineProps<{rows:Entity[];columns:{key:string;label:string;state?:boolean}[];empty?:string;selectable?:boolean;loading?:boolean;error?:string}>()
+const page=inject(uvPageState,null)
+const busy=computed(()=>props.loading??page?.busy.value??false)
+const failure=computed(()=>props.error??page?.error.value??'')
 const emit=defineEmits<{select:[row:Entity]}>()
 </script>
 <template>
-  <div v-if="rows.length" class="uv-table-scroll" tabindex="0" aria-label="数据表格，可横向滚动">
+  <div v-if="rows.length" class="uv-table-scroll" :aria-busy="busy" tabindex="0" aria-label="数据表格，可横向滚动">
     <table class="uv-table"><thead><tr><th v-for="column in columns" :key="column.key" scope="col">{{column.label}}</th><th v-if="$slots.actions" scope="col">操作</th></tr></thead>
       <tbody><tr v-for="row in rows" :key="row.id"><td v-for="(column,index) in columns" :key="column.key">
         <button v-if="selectable&&index===0" class="uv-link" @click="emit('select',row)">{{str(row,column.key)}}</button>
@@ -13,5 +18,7 @@ const emit=defineEmits<{select:[row:Entity]}>()
       </td><td v-if="$slots.actions"><div class="uv-row-actions"><slot name="actions" :row="row" /></div></td></tr></tbody>
     </table>
   </div>
+  <UvState v-else-if="busy" kind="loading" title="正在读取记录"/>
+  <UvState v-else-if="failure" kind="error" :title="failure" description="读取未完成，请重试。"/>
   <UvState v-else :title="empty??'暂无记录'" description="完成业务操作后，记录将显示在这里。" />
 </template>
