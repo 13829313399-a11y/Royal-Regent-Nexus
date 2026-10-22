@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import Notice from '../CuttingAcceptanceNotice.vue'
 import { acceptanceSamples } from '../acceptanceSamples'
-afterEach(()=>{vi.unstubAllEnvs();vi.unstubAllGlobals()})
+afterEach(()=>{vi.unstubAllEnvs();vi.unstubAllGlobals();vi.useRealTimers()})
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/:pathMatch(.*)*',component:{template:'<div />'}}]})
 describe('isolated acceptance navigation',()=>{
   it('does not fetch or display local metadata in a normal build or on the login notice',async()=>{
@@ -18,11 +18,44 @@ describe('isolated acceptance navigation',()=>{
     vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE','test-release')
     const fetch=vi.fn().mockRejectedValueOnce(new Error('暂时无法读取')).mockResolvedValue({ok:true,json:async()=>({release:'test-release',links:[{label:'样本日看板',workspace:'dashboard',day:'2026-10-21'}]})})
     vi.stubGlobal('fetch',fetch)
-    const view=mount(Notice,{props:{showSamples:true},global:{plugins:[router]}});await flushPromises()
+    const view=mount(Notice,{props:{showSamples:true,permissions:['read']},global:{plugins:[router]}});await flushPromises()
     expect(view.text()).toContain('暂时无法读取');await view.get('button').trigger('click');await flushPromises()
     expect(view.get('a').attributes('href')).toContain('day=2026-10-21')
     expect(fetch).toHaveBeenLastCalledWith('/cutting-acceptance-samples.json',expect.objectContaining({credentials:'omit',cache:'no-store'}))
     await view.setProps({showSamples:false});expect(view.find('a').exists()).toBe(false);view.unmount()
+  })
+  it('times out a pending request, retries explicitly and ignores a late response',async()=>{
+    vi.useFakeTimers();vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE','test-release')
+    let resolve!:(value:unknown)=>void
+    const response=(label:string)=>({ok:true,json:async()=>({release:'test-release',links:[{label,workspace:'dashboard'}]})})
+    const fetch=vi.fn().mockImplementationOnce(()=>new Promise(r=>resolve=r)).mockResolvedValueOnce(response('新请求样本'))
+    vi.stubGlobal('fetch',fetch)
+    const view=mount(Notice,{props:{showSamples:true,permissions:['read']},global:{plugins:[router]}})
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(view.text()).toContain('样本导航读取超时');expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true)
+    await view.get('button').trigger('click');await flushPromises()
+    expect(view.text()).toContain('新请求样本')
+    resolve(response('已过期旧样本'));await flushPromises()
+    expect(view.text()).not.toContain('已过期旧样本');view.unmount();expect(vi.getTimerCount()).toBe(0)
+  })
+  it('cancels the timeout when authorization hides navigation',async()=>{
+    vi.useFakeTimers();vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE','test-release');vi.stubGlobal('fetch',vi.fn(()=>new Promise(()=>{})))
+    const view=mount(Notice,{props:{showSamples:true,permissions:['read']}})
+    await view.setProps({showSamples:false,permissions:[]});await vi.advanceTimersByTimeAsync(20000)
+    expect(view.find('details').exists()).toBe(false);expect(view.text()).not.toContain('超时');view.unmount();expect(vi.getTimerCount()).toBe(0)
+  })
+  it('explains suggested roles and expected outcomes without granting access to restricted financial links',async()=>{
+    vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE','test-release')
+    const fetch=vi.fn().mockResolvedValue({ok:true,json:async()=>({release:'test-release',links:[{label:'九月旧冻结版',workspace:'closing',group:'月结与财务',month:'2026-09',view:'period',roles:['supervisor','reviewer'],required_permissions:['read','cost_read'],expected:'旧冻结版本保留，不重复计入当前余额。'}]})})
+    vi.stubGlobal('fetch',fetch)
+    const view=mount(Notice,{props:{showSamples:true,permissions:['read']},global:{plugins:[router]}});await flushPromises()
+    expect(view.text()).toContain('裁床主管、复核会计');expect(view.text()).toContain('旧冻结版本保留')
+    expect(view.text()).toContain('查看条件：裁床工作区查询、材料费用查询')
+    expect(view.text()).toContain('当前账号缺少：材料费用查询')
+    expect(view.text()).toContain('具备查看条件不代表可以办理')
+    expect(view.text()).toContain('负责办理：裁床主管编制提交；会计独立复核锁月')
+    expect(view.text()).toContain('暂无查询权限');expect(view.find('a').exists()).toBe(false)
+    await view.setProps({permissions:['read','cost_read']});expect(view.get('a').attributes('href')).toContain('month=2026-09');expect(view.text()).not.toContain('当前账号缺少');expect(fetch).toHaveBeenCalledTimes(1);view.unmount()
   })
   it('rejects mismatched releases, arbitrary destinations, repeated query values and invalid calendar dates',()=>{
     const value=(row:object,release='r')=>({release,links:[{label:'合成样本',workspace:'closing',...row}]})
@@ -30,5 +63,8 @@ describe('isolated acceptance navigation',()=>{
     expect(()=>acceptanceSamples(value({workspace:'https://example.com'}),'r')).toThrow()
     expect(()=>acceptanceSamples(value({day:'2026-02-30'}),'r')).toThrow()
     expect(()=>acceptanceSamples(value({month:['2026-09']}),'r')).toThrow()
+    expect(()=>acceptanceSamples(value({roles:['admin']}),'r')).toThrow()
+    expect(()=>acceptanceSamples(value({required_permissions:['period_lock']}),'r')).toThrow()
+    expect(()=>acceptanceSamples(value({expected:{}}),'r')).toThrow()
   })
 })

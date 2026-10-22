@@ -21,10 +21,81 @@ const order:CuttingOrder={line_id:'line',dispatch_id:'d',source_version:1,snapsh
 const snapshot:ClosingPreview={line_id:'line',month:'2026-10',start:'2026-10-01',end:'2026-10-31',through:'2026-10-15',generated_at:'2026-10-15T12:00:00+08:00',state:'preview',partial:true,basis:{order_version:1,plan_version:2,usage_revision:3,warehouse_revision:4},production:[],materials:[],issues:[],production_documents:[],usage_documents:[],warehouse_documents:[],costs:{CNY:{normal:'16.25',loss:'2.00'}},pending_pricing:0,wip_status:'not_frozen',current_allocation_review:[]}
 let wrapper:VueWrapper
 const button=(text:string)=>wrapper.findAll('button').find(b=>b.text()===text)!
+const overviewForm=()=>wrapper.findAll('form').find(form=>form.findAll('button').some(item=>item.text()==='查询订单'))!
 async function open(path='/'){const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingClosingPage,props:{workspace:CUTTING_WORKSPACES.find(w=>w.path==='closing')}},{path:'/away',component:{template:'<div>其他工作区</div>'}}]});await router.push(path);await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises();return router}
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(cuttingApi.access).mockResolvedValue(rights);vi.mocked(ordersApi.list).mockResolvedValue({data:[order],total:1,page:1,page_size:50});vi.mocked(closingApi.read).mockResolvedValue(snapshot)})
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 describe('P4a monthly reconciliation',()=>{
+  it.each(['period','settlement','payment'] as const)('retains the interrupted historical %s target through overview refresh and ignores late completion',async kind=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true,settlements_schema_ready:true,payments_schema_ready:true,permissions:['read','cost_read','settlement_read','payment_read']})
+    const api=kind==='period'?periodApi:kind==='settlement'?settlementApi:paymentApi
+    const value=kind==='period'?{month:'2026-09',revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]}:kind==='settlement'?{revision:0,document_id:null,state:'open',selected_state:'open',event_id:null,statements:[],data:null,history:[],price_history:[]}:{month:'2026-09',revision:0,rows:[],totals:[],documents:[],document_id:null,state:'open',selected_state:'open',event_id:null,data:null,history:[],replacements:[]}
+    let completeOld!:(value:never)=>void,completeRetry!:(value:never)=>void
+    vi.mocked(api.read).mockImplementationOnce(()=>new Promise(resolve=>completeOld=resolve))
+    await open(`/?factory=huakang-c&view=${kind}&month=2026-09&document_id=original-doc&event_id=original-event`)
+    const retry=kind==='period'?'重试原月结记录':kind==='settlement'?'重试原结算记录':'重试原付款记录'
+    const tab=kind==='period'?'内部月结':kind==='settlement'?'外发对账与结算':'付款与核销'
+    await button('月结总览').trigger('click');await overviewForm().trigger('submit');await flushPromises()
+    await button(tab).trigger('click');await flushPromises()
+    expect(button(retry).attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('历史版本：original-event')
+    if(kind!=='period')expect(wrapper.text()).toContain('单据编号：original-doc')
+    vi.mocked(api.read).mockImplementationOnce(()=>new Promise(resolve=>completeRetry=resolve))
+    await button(retry).trigger('click');await flushPromises()
+    expect(api.read).toHaveBeenLastCalledWith(...(kind==='period'?['2026-09','original-event']:['2026-09','original-doc','original-event']))
+    completeOld(value as never);await flushPromises()
+    expect(button(retry).attributes('disabled')).toBeDefined()
+    completeRetry(value as never);await flushPromises()
+    expect(button(retry)).toBeUndefined()
+  })
+  it.each([503,403])('preserves historical retry only for transient parent failures (status=%s)',async status=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true})
+    let rejectOld!:(error:unknown)=>void
+    vi.mocked(periodApi.read).mockImplementationOnce(()=>new Promise((_resolve,reject)=>rejectOld=reject))
+    await open('/?factory=huakang-c&view=period&month=2026-09&event_id=original-event')
+    await button('月结总览').trigger('click')
+    vi.mocked(ordersApi.list).mockRejectedValueOnce({response:{status}})
+    await overviewForm().trigger('submit');await flushPromises()
+    rejectOld(new Error('late error'));await flushPromises()
+    await button('重新读取月结工作区').trigger('click');await flushPromises()
+    await button('内部月结').trigger('click');await flushPromises()
+    if(status===403){expect(button('重试原月结记录')).toBeUndefined();expect(wrapper.text()).not.toContain('original-event')}
+    else{
+      expect(button('重试原月结记录')).toBeDefined()
+      vi.mocked(periodApi.read).mockResolvedValue({month:'2026-09',revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]})
+      await button('重试原月结记录').trigger('click');await flushPromises()
+      expect(periodApi.read).toHaveBeenLastCalledWith('2026-09','original-event')
+    }
+  })
+  it.each(['period','settlement','payment'] as const)('retries the exact failed historical %s target and separates a manual current read',async kind=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true,settlements_schema_ready:true,payments_schema_ready:true,permissions:['read','cost_read','settlement_read','payment_read']})
+    const api=kind==='period'?periodApi:kind==='settlement'?settlementApi:paymentApi
+    if(kind==='period')vi.mocked(periodApi.read).mockResolvedValue({month:'2026-09',revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]})
+    if(kind==='settlement')vi.mocked(settlementApi.read).mockResolvedValue({revision:0,document_id:null,state:'open',selected_state:'open',event_id:null,statements:[],data:null,history:[],price_history:[]})
+    if(kind==='payment')vi.mocked(paymentApi.read).mockResolvedValue({month:'2026-09',revision:0,rows:[],totals:[],documents:[],document_id:null,state:'open',selected_state:'open',event_id:null,data:null,history:[],replacements:[]})
+    vi.mocked(api.read).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('still offline'))
+    await open(`/?factory=huakang-c&view=${kind}&month=2026-09&document_id=original-doc&event_id=original-event`)
+    const retry=kind==='period'?'重试原月结记录':kind==='settlement'?'重试原结算记录':'重试原付款记录'
+    const expected=kind==='period'?['2026-09','original-event']:['2026-09','original-doc','original-event']
+    await button(retry).trigger('click');await flushPromises()
+    expect(api.read).toHaveBeenLastCalledWith(...expected)
+    expect(button(retry)).toBeDefined()
+    await button(retry).trigger('click');await flushPromises()
+    expect(api.read).toHaveBeenLastCalledWith(...expected)
+    expect(button(retry)).toBeUndefined()
+    const generic=kind==='period'?'读取月结记录':kind==='settlement'?'读取外发结算':'读取付款登记'
+    await button(generic).trigger('click');await flushPromises()
+    expect(vi.mocked(api.read).mock.calls.at(-1)).toEqual(kind==='period'?['2026-09',undefined]:['2026-09',undefined,undefined])
+  })
+  it.each(['period','settlement','payment'] as const)('clears the failed %s read target after an explicit authorization denial',async kind=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true,settlements_schema_ready:true,payments_schema_ready:true,permissions:['read','cost_read','settlement_read','payment_read']})
+    const api=kind==='period'?periodApi:kind==='settlement'?settlementApi:paymentApi
+    vi.mocked(api.read).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce({response:{status:403}})
+    await open(`/?factory=huakang-c&view=${kind}&month=2026-09&document_id=private-doc&event_id=private-event`)
+    const retry=kind==='period'?'重试原月结记录':kind==='settlement'?'重试原结算记录':'重试原付款记录'
+    await button(retry).trigger('click');await flushPromises()
+    expect(button(retry)).toBeUndefined()
+  })
   it('does not replay a pending historical link after the user explicitly chooses another view',async()=>{
     let resolve!:(value:Access)=>void
     vi.mocked(cuttingApi.access).mockReturnValueOnce(new Promise(r=>resolve=r))

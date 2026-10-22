@@ -19,7 +19,7 @@ VERSIONS = BACKEND/'alembic/versions'
 REPAIR = VERSIONS/'20261017_0167_reconcile_cutting_jp_collision.py'
 JP = BACKEND/'alembic/legacy/20261015_0163_huakang_b_jp_intake.py'
 CUTTING = VERSIONS/'20261015_0163_cutting_internal_periods.py'
-FINAL_HEAD = '20261021_0172'
+FINAL_HEAD = '20261022_0174'
 
 
 def seed_customer(path):

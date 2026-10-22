@@ -1,7 +1,7 @@
 import type { MaterialRecord } from '@/api/indonesiaMaterials'
 
 export function fixedCustomers(records: MaterialRecord[], activeOnly = true) {
-  return records.filter(row => row.kind === 'customer' && (!activeOnly || row.data.status === 'active'))
+  return records.filter(row => row.kind === 'customer' && !row.data.deleted && (!activeOnly || row.data.status === 'active'))
     .sort((a, b) => String(a.data.name).localeCompare(String(b.data.name), 'zh-CN'))
 }
 
@@ -12,6 +12,6 @@ export function customerOptions(records: MaterialRecord[], historical = '') {
 }
 
 export function customerProducts(records: MaterialRecord[], customer: string) {
-  return records.filter(row => row.kind === 'product' && row.data.customer === customer)
+  return records.filter(row => row.kind === 'product' && !row.data.deleted && row.data.customer === customer)
     .sort((a, b) => String(a.data.code).localeCompare(String(b.data.code)))
 }
