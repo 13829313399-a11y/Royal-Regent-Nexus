@@ -1,12 +1,35 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.api.carton_procurement import _ensure_permission
 from app.services.auth import AuthContext, get_current_user
-from app.schemas.carton_supplier_settlement import SettlementSave, SettlementAction, AcceptanceDateUpdate, ReturnDateUpdate, ReturnDateCorrection
+from app.schemas.carton_supplier_settlement import SettlementSave, SettlementAction, AcceptanceDateUpdate, ReturnDateUpdate, ReturnDateCorrection, MonthlySettlementAction
 from app.services import carton_supplier_settlement as service
+from app.services import carton_monthly_settlement as monthly
 
 router = APIRouter(prefix="/api/carton-procurement", tags=["carton-supplier-settlement"])
+
+
+@router.get("/monthly-settlements/workspace")
+def monthly_workspace(factory_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+                      currency: str = "CNY", db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, user, "carton_procurement:read", factory_id)
+    return monthly.workspace(db, factory_id, period, currency)
+
+
+@router.post("/monthly-settlements/submit")
+def monthly_submit(payload: MonthlySettlementAction, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    raise HTTPException(410, "新月结锁定已停用；本月对账仅供核对，请按原月结流程办理")
+
+
+@router.post("/monthly-settlements/lock")
+def monthly_lock(payload: MonthlySettlementAction, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    raise HTTPException(410, "新月结锁定已停用；本月对账仅供核对，请按原月结流程办理")
+
+
+@router.post("/monthly-settlements/unlock")
+def monthly_unlock(payload: MonthlySettlementAction, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    raise HTTPException(410, "新月结锁定已停用；本月对账仅供核对，请按原月结流程办理")
 
 
 @router.get("/supplier-settlements/workspace")

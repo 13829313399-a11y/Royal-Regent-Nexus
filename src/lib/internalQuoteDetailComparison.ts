@@ -21,7 +21,7 @@ const labels: Record<string, string> = {
   position: '位置', paint_cost_hkd: '油漆 HKD', labor_cost_hkd: '人工 HKD', spray_labor_hkd: '喷油人工 HKD',
   paint_hkd: '油漆 HKD', part: '部位', craft: '工艺', pieces: '片数', usage: '用量', markup: '倍率',
   fabric_moq_y: '布料起订量 码', below_moq_fee_rmb: '不足起订量附加费 RMB', exchange_rate: '汇率',
-  length: '长', width: '宽', height: '高', length_in: '长 英寸', width_in: '宽 英寸', height_in: '高 英寸',
+  length: '长', width: '宽', height: '高', length_in: '长 inch', width_in: '宽 inch', height_in: '高 inch',
   qty_per_carton: '每箱数量', paper_price_factor: '主纸箱系数', inner_paper_price_factor: '内纸箱系数',
   flat_card_price_factor: '平卡系数', testing_fee_enabled: '计算测试费', testing_fee_total_usd: '测试费 USD',
   moq: '起订量', include_in_output: '参与输出', selected_markup_moq: '采用起订量', misc_ratio: '杂项比例',
@@ -38,7 +38,7 @@ const labels: Record<string, string> = {
 const containers: Record<string, string> = {
   materials: '材料', molds: '模具', parts: '子配件', production_mold_costs: '生产模具费用',
   packaging_materials: '包装材料', cartons: '纸箱', flat_cards: '平卡',
-  product_size_in: '产品尺寸（英寸）', color_box_size_in: '彩盒尺寸（英寸）', pdq_size_in: '展示盒尺寸（英寸）',
+  product_size_in: '产品尺寸（inch）', color_box_size_in: '彩盒尺寸（inch）', pdq_size_in: '展示盒尺寸（inch）',
   freight_calc: '运输', shipping: '倍率与杂项', markup_tiers: '起订量与倍率',
   injection_lines: '注塑', blow_lines: '吹塑', lines: '明细', rows: '工序明细',
   components: '电子元件', children: '子元件', quick_quotes: '快速报价', quick_quote: '快速报价',

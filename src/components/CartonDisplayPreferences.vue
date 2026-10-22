@@ -15,7 +15,7 @@ function save() { saved.value = setPreference(currency.value, rate.value) }
     <div class="mt-3 grid gap-5 lg:grid-cols-2">
       <div aria-label="我的尺寸习惯">
         <label class="flex flex-wrap items-center gap-3 text-xs font-semibold">常用尺寸单位
-          <select :value="dimensionUnit || 'cm'" aria-label="我的常用尺寸单位" class="h-9 rounded-lg border border-teal-200 bg-white px-3" @change="emit('update:dimensionUnit', ($event.target as HTMLSelectElement).value)"><option value="cm">cm</option><option value="inch">英寸</option><option value="mm">mm</option></select>
+          <select :value="dimensionUnit || 'cm'" aria-label="我的常用尺寸单位" class="h-9 rounded-lg border border-teal-200 bg-white px-3" @change="emit('update:dimensionUnit', ($event.target as HTMLSelectElement).value)"><option value="cm">cm</option><option value="inch">inch</option><option value="mm">mm</option></select>
         </label>
         <p class="mt-2 text-xs leading-5 text-slate-500">订单默认使用此单位，可在表单临时切换；已有规格保留原单位，并显示换算参考。</p>
         <p v-if="dimensionPreferenceError" role="alert" class="mt-2 text-xs text-red-700">{{ dimensionPreferenceError }}</p>

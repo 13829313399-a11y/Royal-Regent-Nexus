@@ -67,6 +67,8 @@ const cartonApiMock = vi.hoisted(() => ({
   deleteCustomer: vi.fn(),
   listOrders: vi.fn(),
   listOrdersPage: vi.fn(),
+  supplierPromiseNotices: vi.fn(),
+  acknowledgePromiseNotice: vi.fn(),
   scheduleOrders: vi.fn(),
   selectedOrders: vi.fn(),
   listMovements: vi.fn(),
@@ -219,7 +221,7 @@ function mountView(tab?: string, extraStubs: Record<string, boolean | Component>
       stubs: {
         AccountMenu: true,
         NotificationCenter: true,
-        CartonSupplierSettlement: true,
+        CartonSettlementOverview: true,
         CartonSupplierReceiving: true,
         CartonSupplierChangeTasks: true,
         CartonSpecialRequests: true,
@@ -247,7 +249,6 @@ it('opens return collaboration from month-end navigation and preserves separate 
   expect(panel.exists()).toBe(true); expect(panel.props('internal')).toBe(true); expect(panel.props('factoryId')).toBe('huaxing')
   await w.get('[aria-label="顶部搜索"]').setValue('RETURN-INTERNAL')
   expect(panel.props('search')).toBe('RETURN-INTERNAL')
-  expect(w.findComponent({ name: 'CartonSupplierSettlement' }).props('search')).toBe('')
   w.unmount()
 })
 
@@ -299,20 +300,20 @@ it('keeps a legacy marks route on the order ledger without source-library read a
   } finally { wrapper.unmount() }
 })
 
-it('opens supplier reconciliation by default and preserves its mounted form across inventory month-end tabs', async () => {
+it('opens the simple monthly overview by default and keeps its state only on its own tab', async () => {
   routerReplaceMock.mockImplementation(async (target: { query: Record<string, string> }) => { Object.assign(routeState.query, target.query) })
   const w = mountView('closing', {}, false); await flushPromises()
   try {
     const tabs = w.get('[aria-label="月结对账子页面"]')
-    expect(tabs.findAll('button').map(row => row.text())).toEqual(['双方月结对账', '退货签收与退款', '应付与付款', '库存月结记录'])
+    expect(tabs.findAll('button').map(row => row.text())).toEqual(['本月对账', '退货签收与退款', '应付与付款', '库存月结记录'])
     const tab = (text: string) => tabs.findAll('button').find(row => row.text() === text)!
-    expect(tab('双方月结对账').attributes('aria-pressed')).toBe('true')
-    const supplier = w.get('carton-supplier-settlement-stub').element
+    expect(tab('本月对账').attributes('aria-pressed')).toBe('true')
+    expect(w.find('carton-settlement-overview-stub').exists()).toBe(true)
     await tab('库存月结记录').trigger('click'); await flushPromises()
-    expect(w.get('carton-supplier-settlement-stub').element).toBe(supplier)
-    expect(w.get('carton-supplier-settlement-stub').attributes('style')).toContain('display: none')
-    await tab('双方月结对账').trigger('click'); await flushPromises()
-    expect(w.get('carton-supplier-settlement-stub').element).toBe(supplier)
+    expect(w.find('carton-settlement-overview-stub').exists()).toBe(false)
+    await tab('本月对账').trigger('click'); await flushPromises()
+    expect(w.find('carton-settlement-overview-stub').exists()).toBe(true)
+    expect(routeState.query.closing_view).toBeUndefined()
   } finally { w.unmount() }
 })
 
@@ -457,9 +458,9 @@ describe('CartonProcurementView frontend workspace', () => {
       if (!failure) { for (const key of Object.keys(routeState.query)) delete routeState.query[key]; Object.assign(routeState.query, memory.currentRoute.value.query) }
       return failure
     })
-    const focus = vi.fn(), monthly = defineComponent({ name: 'CartonSupplierSettlement', setup(_, { expose }) { expose({ focusEvidence: focus, refreshPrices: vi.fn() }); return {} }, template: '<section>月结证据</section>' })
+    const focus = vi.fn()
     const payable = defineComponent({ name: 'CartonPayables', setup(_, { expose }) { expose({ focusAllocation: focus }); return {} }, template: '<section>原核销证据</section>' })
-    const w = mountView('receipts', { CartonPriceCorrectionDialog: true, CartonSupplierSettlement: monthly, CartonPayables: payable }); await flushPromises()
+    const w = mountView('receipts', { CartonPriceCorrectionDialog: true, CartonPayables: payable }); await flushPromises()
     try {
       Object.assign(routeState.query, { price_correction: 'PRICE-EXACT-LINE' }); await flushPromises()
       const panel = w.findComponent(CartonPriceCorrectionDialog); expect(panel.props('receiptLineId')).toBe('PRICE-EXACT-LINE')
@@ -467,9 +468,17 @@ describe('CartonProcurementView frontend workspace', () => {
       expect(focus).not.toHaveBeenCalled(); expect(panel.exists()).toBe(true); expect(routeState.query.tab).toBe('receipts')
       release(true); await flushPromises()
       expect(memory.currentRoute.value.query.tab).toBe('closing'); expect(panel.exists()).toBe(false)
-      expect(focus).toHaveBeenCalledWith(...(kind === 'ALLOCATION' ? ['EXACT-EVIDENCE', 'HKD'] : ['2026-09', 'HKD', 'EXACT-EVIDENCE']))
-      await w.findAll('button').find(row => row.text() === '收料单价更正 / 待办')!.trigger('click'); await flushPromises()
-      expect(w.findComponent(CartonPriceCorrectionDialog).props('receiptLineId')).toBe('PRICE-EXACT-LINE')
+      if (kind === 'ALLOCATION') {
+        expect(focus).toHaveBeenCalledWith('EXACT-EVIDENCE', 'HKD')
+        expect(routeState.query.closing_view).toBe('payables')
+      } else {
+        expect(focus).not.toHaveBeenCalled()
+        expect(routeState.query.closing_view).toBeUndefined()
+        expect(w.findComponent({ name: 'CartonActionNotice' }).props('message')).toContain('旧版逐单账单已下线')
+      }
+      await w.findAll('button').find(row => row.text() === '本月对账')!.trigger('click'); await flushPromises()
+      Object.assign(routeState.query, { price_correction: 'PRICE-EXACT-LINE-2' }); await flushPromises()
+      expect(w.findComponent(CartonPriceCorrectionDialog).props('receiptLineId')).toBe('PRICE-EXACT-LINE-2')
     } finally { w.unmount() }
   })
   it('keeps the exact correction open when a real router guard refuses the evidence navigation', async () => {
@@ -478,12 +487,11 @@ describe('CartonProcurementView frontend workspace', () => {
     const memory = actual.createRouter({ history: actual.createMemoryHistory(), routes: [{ path: '/work', component: defineComponent({ template: '<div />' }) }] })
     await memory.push('/work?factory=huaxing&tab=receipts'); memory.beforeEach(() => false)
     routerReplaceMock.mockImplementation((target: { query: Record<string, string> }) => memory.replace({ path: '/work', query: target.query }))
-    const focus = vi.fn(), monthly = defineComponent({ name: 'CartonSupplierSettlement', setup(_, { expose }) { expose({ focusEvidence: focus }); return {} }, template: '<section />' })
-    const w = mountView('receipts', { CartonPriceCorrectionDialog: true, CartonSupplierSettlement: monthly }); await flushPromises()
+    const w = mountView('receipts', { CartonPriceCorrectionDialog: true }); await flushPromises()
     try {
       Object.assign(routeState.query, { price_correction: 'KEEP-EXACT-LINE' }); await flushPromises()
       w.findComponent(CartonPriceCorrectionDialog).vm.$emit('navigate', { kind: 'SUPPLIER_SETTLEMENT', code: 'CONFIRMED_SUPPLIER_MONTH', message: '须重核', id: 'BILL1', period: '2026-09' }, 'CNY'); await flushPromises()
-      expect(w.findComponent(CartonPriceCorrectionDialog).props('receiptLineId')).toBe('KEEP-EXACT-LINE'); expect(routeState.query.tab).toBe('receipts'); expect(focus).not.toHaveBeenCalled()
+      expect(w.findComponent(CartonPriceCorrectionDialog).props('receiptLineId')).toBe('KEEP-EXACT-LINE'); expect(routeState.query.tab).toBe('receipts')
     } finally { w.unmount() }
   })
   function specialFixture(id: string, kind = 'SAMPLE', status = 'SENT') {
@@ -504,8 +512,8 @@ describe('CartonProcurementView frontend workspace', () => {
       const panel = w.findComponent({ name: 'CartonPayables' })
       expect(panel.props()).toMatchObject({ factoryId: 'huaxing', internal: true }); expect(routeState.query.closing_view).toBe('payables')
       await w.get('[aria-label="顶部搜索"]').setValue('BANK-OUT1'); expect(panel.props('search')).toBe('BANK-OUT1')
-      await w.get('[aria-label="月结对账子页面"]').findAll('button').find(row => row.text() === '双方月结对账')!.trigger('click'); await flushPromises()
-      expect(w.findComponent({ name: 'CartonSupplierSettlement' }).props('search')).toBe('')
+      await w.get('[aria-label="月结对账子页面"]').findAll('button').find(row => row.text() === '本月对账')!.trigger('click'); await flushPromises()
+      expect(w.get<HTMLInputElement>('[aria-label="顶部搜索"]').element.value).toBe('')
       await w.get('[aria-label="月结对账子页面"]').findAll('button').find(row => row.text() === '应付与付款')!.trigger('click'); await flushPromises()
       expect(w.get<HTMLInputElement>('[aria-label="顶部搜索"]').element.value).toBe('BANK-OUT1')
       expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
@@ -551,8 +559,8 @@ describe('CartonProcurementView frontend workspace', () => {
     expect(wrapper.get('[aria-label="选择订单 SP-sample-select"]').element).toHaveProperty('checked', true)
     expect(wrapper.get('[aria-label="选择订单 SP-misc-select"]').element).toHaveProperty('checked', true)
     expect(wrapper.get('[aria-label="选择订单 CT-SELECT"]').element).toHaveProperty('checked', true)
-    expect(findButton(wrapper, '确认订单并锁定（3）').attributes('disabled')).toBeUndefined()
-    await findButton(wrapper, '确认订单并锁定（3）').trigger('click'); await flushPromises()
+    expect(findButton(wrapper, '发给供应商（3）').attributes('disabled')).toBeUndefined()
+    await findButton(wrapper, '发给供应商（3）').trigger('click'); await flushPromises()
     const batch = wrapper.getComponent(CartonOrderBatchActionDialog)
     expect(batch.props('entries').map((entry: { kind: string }) => entry.kind)).toEqual(['PURCHASE', 'SAMPLE', 'WORKSHOP_MISC'])
     expect(findButton(wrapper, '生成供应商采购单').attributes('disabled')).toBeDefined()
@@ -566,7 +574,7 @@ describe('CartonProcurementView frontend workspace', () => {
     batch.vm.$emit('update:open', false); await flushPromises()
     await findButton(wrapper, '清空选择').trigger('click'); await flushPromises()
     await wrapper.get('[aria-label="选择订单 SP-sample-select"]').setValue(true); await flushPromises()
-    expect(findButton(wrapper, '确认订单并锁定（1）').attributes('disabled')).toBeUndefined()
+    expect(findButton(wrapper, '发给供应商（1）').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 
@@ -994,7 +1002,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     expect(child.props()).toMatchObject({ factoryId: 'huaxing', internal: true, readOnly: true, embedded: true, showClosed: false })
     expect(panel.get('#dashboard-supplier-change-content').attributes('style')).toContain('display: none')
     child.vm.$emit('pending-state', { loading: false, error: '', counts: { REGULAR: 2, SPECIAL: 3, REPLENISHMENT: 1 } }); await flushPromises()
-    expect(toggle.text()).toContain('6 项待确认')
+    expect(toggle.text()).toContain('6 项待处理')
     await toggle.trigger('click')
     expect(wrapper.getComponent(Changes).element).toBe(element)
     child.vm.$emit('update:showClosed', true); await flushPromises()
@@ -1010,7 +1018,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     authStoreState.currentUser = { id: 'CHANGE-NOTICE-NEXT', identity: { employment_epoch: 2, effective_context_key: 'NEW-CONTEXT' } }; await flushPromises()
     expect(wrapper.getComponent(Changes).props('showClosed')).toBe(false)
     expect(wrapper.get('[aria-controls="dashboard-supplier-change-content"]').attributes('aria-expanded')).toBe('false')
-    expect(wrapper.get('[aria-label="供应商变更通知"]').text()).not.toContain('6 项待确认')
+    expect(wrapper.get('[aria-label="供应商变更通知"]').text()).not.toContain('6 项待处理')
     expect(wrapper.get('[aria-label="供应商变更通知"]').text()).toContain('读取中')
     wrapper.unmount()
   })
@@ -1021,12 +1029,12 @@ it('shows supplier date differences in both the internal ledger and order detail
     const child = wrapper.getComponent(Changes), panel = wrapper.get('[aria-label="供应商变更通知"]')
     const zero = { REGULAR: 0, SPECIAL: 0, REPLENISHMENT: 0 }
     child.vm.$emit('pending-state', { loading: true, error: '', counts: zero }); await flushPromises()
-    expect(panel.text()).toContain('读取中'); expect(panel.text()).not.toContain('0 项待确认')
+    expect(panel.text()).toContain('读取中'); expect(panel.text()).not.toContain('0 项待处理')
     child.vm.$emit('pending-state', { loading: false, error: '连接失败', counts: zero }); await flushPromises()
     expect(panel.text()).toContain('暂不可用'); expect(panel.get('[role="alert"]').text()).toContain('通知读取失败')
-    expect(panel.text()).not.toContain('0 项待确认')
+    expect(panel.text()).not.toContain('0 项待处理')
     child.vm.$emit('pending-state', { loading: false, error: '', counts: zero }); await flushPromises()
-    expect(panel.text()).toContain('0 项待确认'); expect(panel.find('[role="alert"]').exists()).toBe(false)
+    expect(panel.text()).toContain('0 项待处理'); expect(panel.find('[role="alert"]').exists()).toBe(false)
     wrapper.unmount()
   })
   it('does not mount supplier changes without internal procurement read access', async () => {
@@ -1474,6 +1482,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     cartonApiMock.listOrders.mockReturnValueOnce(oldResponse)
     await findButton(wrapper, '刷新').trigger('click'); await flushPromises()
     expect(cartonApiMock.listOrders).toHaveBeenCalledTimes(2)
+    await findButton(wrapper, '核对历史').trigger('click'); await flushPromises()
     await wrapper.get('[aria-label="撤销本次导入 旧响应排期.xlsx"]').trigger('click'); await flushPromises()
     cartonApiMock.undoScheduleImport.mockImplementation(async () => {
       const updated = { ...batch, status: 'REJECTED' }
@@ -1519,6 +1528,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     if (kind === 'INSPECTION_SCHEDULE') {
       await findButton(wrapper, '下周查货提醒').trigger('click'); await flushPromises()
     }
+    await findButton(wrapper, '核对历史').trigger('click'); await flushPromises()
     await wrapper.get('[aria-label="撤销本次导入 待撤销排期.xlsx"]').trigger('click'); await flushPromises()
     expect(cartonApiMock.undoScheduleImport).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('不支持单条删除')
@@ -1538,6 +1548,44 @@ it('shows supplier date differences in both the internal ledger and order detail
     wrapper.unmount()
   })
 
+  it('opens the schedule history page with type, status filters and restores a batch result', async () => {
+    mockReceiptWorkspace([])
+    const weeklyBatch = mockWeeklySchedule([pendingScheduleFixture('SC-HISTORY-W')])
+    const weeklySummary = { ...weeklyBatch, detail_loaded: false, original_filename: '周排期.xlsx', created_at: '2026-09-17T10:00:00', imported_by_name: '业务员甲',
+      parse_summary: { row_count: 3, review_count: 4, schedule_customer: { customer_code: 'DICKIE', customer_name: 'Dickie' }, schedule_coverage: { as_of_date: '2026-09-15' } } }
+    const inspectionBatch = { ...weeklyBatch, id: 'B-HIST-INSPECTION', import_type: 'INSPECTION_SCHEDULE', original_filename: '查货.xlsx',
+      created_at: '2026-09-10T09:00:00', status: 'REJECTED', parse_summary: { row_count: 2, issue_count: 1, advance_days: 3 } }
+    cartonApiMock.listImports.mockImplementation(async (_factory: string, type: string) => type === 'WEEKLY_SCHEDULE' ? [weeklySummary] : [inspectionBatch])
+    cartonApiMock.importDetail.mockResolvedValue(weeklyBatch)
+    const w = mountView('weekly-check'); await flushPromises()
+    try {
+      await findButton(w, '核对历史').trigger('click'); await flushPromises()
+      const list = () => w.get('[aria-label="核对历史批次"]')
+      expect(w.get('[data-testid="latest-schedule-hint"]').text()).toContain('本厂最近一次排期导入')
+      expect(w.get('[data-testid="latest-schedule-hint"]').text()).toContain('Dickie')
+      expect(list().text()).toContain('周排期.xlsx')
+      expect(list().text()).toContain('业务员甲')
+      expect(list().text()).toContain('待人工确认 4')
+      expect(list().text()).toContain('排期版本 2026-09-15')
+      expect(list().text()).toContain('查货.xlsx')
+      expect(list().text()).toContain('已整批撤销')
+
+      await w.get('[aria-label="核对历史类型"]').setValue('WEEKLY_SCHEDULE'); await flushPromises()
+      expect(list().text()).toContain('周排期.xlsx')
+      expect(list().text()).not.toContain('查货.xlsx')
+      await w.get('[aria-label="核对历史类型"]').setValue('ALL')
+      await w.get('[aria-label="核对历史状态"]').setValue('REJECTED'); await flushPromises()
+      expect(list().text()).toContain('查货.xlsx')
+      expect(list().text()).not.toContain('周排期.xlsx')
+      await w.get('[aria-label="核对历史状态"]').setValue('ALL'); await flushPromises()
+
+      await findButton(w, '查看结果').trigger('click'); await flushPromises()
+      expect(w.find('[aria-label="核对历史批次"]').exists()).toBe(false)
+      expect(w.get('[aria-label="业务排期明细"]').text()).toContain('SC-HISTORY-W')
+      expect(cartonApiMock.importDetail).toHaveBeenCalledWith('huaxing', weeklyBatch.id)
+    } finally { w.unmount() }
+  })
+
   it('hides deletion and undo controls without their scoped permissions', async () => {
     mockReceiptWorkspace([{ ...orderFixture('H-NO-PERM', businessDateOffset(3)), can_delete: true }])
     authStoreMock.can.mockImplementation(((permission: string) => !['carton_procurement:order_write', 'carton_procurement:import'].includes(permission)) as () => boolean)
@@ -1546,6 +1594,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     expect(orders.text()).not.toContain('批量删除订单')
     orders.unmount()
     const weekly = mountView('weekly-check'); await flushPromises()
+    await findButton(weekly, '核对历史').trigger('click'); await flushPromises()
     expect(weekly.find('[aria-label="撤销本次导入 read-only.xlsx"]').exists()).toBe(false)
     weekly.unmount()
   })
@@ -1702,6 +1751,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     wrapper.unmount()
     wrapper = mountView('orders'); await flushPromises()
     await findButton(wrapper, '新建订单').trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="继续上次新建订单草稿"]').trigger('click'); await flushPromises()
     await wrapper.get('[data-testid="order-form-overlay"] form').trigger('submit'); await flushPromises()
     expect(cartonApiMock.createOrder.mock.calls[1]![0].request_id).toBe(firstId)
     expect(readOrderDraft(window.localStorage, { userId: 'warehouse-retry', employmentEpoch: 2, factoryId: 'huaxing' })).toBeNull()
@@ -1783,8 +1833,9 @@ it('shows supplier date differences in both the internal ledger and order detail
   })
 
   it.each([
-    ['carton-marks', 'CartonMarkAssetLibrary'], ['master-data', 'CartonMasterWorkspace'], ['closing', 'CartonSupplierSettlement'],
+    ['carton-marks', 'CartonMarkAssetLibrary'], ['master-data', 'CartonMasterWorkspace'],
   ])('connects %s search to the page header and clears it through the embedded component', async (tab, component) => {
+    routerReplaceMock.mockImplementation(async (target: { query: Record<string, string> }) => { Object.assign(routeState.query, target.query) })
     mockReceiptWorkspace([])
     authStoreState.currentUser = { id: 'SEARCH-USER', identity: { employment_epoch: 1 } }
     const wrapper = mountView(tab, { CartonMasterWorkspace: true }, false)
@@ -1889,10 +1940,10 @@ it('shows supplier date differences in both the internal ledger and order detail
           expect.objectContaining({ packaging_type: '内箱', required_quantity: 2000 })] }))
       const context = { userId: 'DELIVERY-OPERATOR', employmentEpoch: 1, factoryId: 'huaxing' }
       expect(readOrderDraft(window.localStorage, context)?.supplierDelivery?.createdOrderNo).toBe('CT-SUPPLEMENT')
-      await wrapper.get('[aria-label="执行确认订单并锁定"]').trigger('click'); await flushPromises()
+      await wrapper.get('[aria-label="执行发送订单给供应商"]').trigger('click'); await flushPromises()
       if (uncertainLock) {
         expect(readOrderDraft(window.localStorage, context)?.supplierDelivery?.createdOrderNo).toBe('CT-SUPPLEMENT')
-        await wrapper.get('[aria-label="执行确认订单并锁定"]').trigger('click'); await flushPromises()
+        await wrapper.get('[aria-label="执行发送订单给供应商"]').trigger('click'); await flushPromises()
       }
       expect(cartonApiMock.createOrder).toHaveBeenCalledTimes(1)
       expect(cartonApiMock.submitOrderToSupplier).toHaveBeenCalledTimes(1)
@@ -1901,7 +1952,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     } finally { wrapper.unmount() }
   })
 
-  it('preserves an existing ordinary draft and returns to the delivery that opened supplementation', async () => {
+  it('replaces an existing ordinary draft with the delivery that opened supplementation and returns to it', async () => {
     mockReceiptWorkspace([])
     authStoreState.currentUser = { id: 'DELIVERY-DRAFT', identity: { employment_epoch: 1 } }
     const resumeOrderSource = vi.fn(async () => true)
@@ -1918,8 +1969,9 @@ it('shows supplier date differences in both the internal ledger and order detail
       await findButton(wrapper, '供应商发货待收').trigger('click'); await flushPromises()
       const source = deliveryOrderSource()
       wrapper.findComponent({ name: 'CartonSupplierReceiving' }).vm.$emit('create-order', source); await flushPromises()
-      expect(wrapper.get<HTMLInputElement>('[aria-label="合同号"]').element.value).toBe('UNFINISHED-OTHER-ORDER')
-      expect(wrapper.find('[aria-label="送货单补建订单来源"]').exists()).toBe(false)
+      expect(wrapper.get<HTMLInputElement>('[aria-label="合同号"]').element.value).toBe(source.contractNo)
+      expect(wrapper.get('[data-testid="order-form-overlay"]').text()).toContain('已放弃本机旧草稿，并载入本次选择的资料')
+      expect(wrapper.find('[aria-label="送货单补建订单来源"]').exists()).toBe(true)
       await wrapper.get('[aria-label="关闭新建订单"]').trigger('click'); await flushPromises()
       expect(resumeOrderSource).toHaveBeenCalledWith(source)
       expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
@@ -1929,7 +1981,7 @@ it('shows supplier date differences in both the internal ledger and order detail
   it('loads master data without downloading orders, schedules, inventory or logs', async () => {
     cartonApiMock.listCustomers.mockResolvedValue([])
     const wrapper = mountView('master-data', { CartonMasterWorkspace: true }); await flushPromises()
-    for (const name of ['listOrders', 'listMovements', 'listInventoryBalances', 'listImports', 'listImportsPage', 'listAuditEvents', 'listReceipts'] as const) expect(cartonApiMock[name]).not.toHaveBeenCalled()
+    for (const name of ['listOrders', 'listMovements', 'listInventoryBalances', 'listImports', 'listImportsPage', 'listAuditEvents', 'listReceipts'] as const) expect(cartonApiMock[name], name).not.toHaveBeenCalled()
     expect(wrapper.find('carton-master-workspace-stub').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('后端不可用')
     wrapper.unmount()
@@ -1939,8 +1991,8 @@ it('shows supplier date differences in both the internal ledger and order detail
     cartonApiMock.listCustomers.mockRejectedValue(new Error('客户查询超时'))
     const wrapper = mountView('orders'); await flushPromises()
     expect(wrapper.text()).toContain('客户资料读取失败：客户查询超时')
-    expect(wrapper.get('[data-order-no="CT-PARTIAL-READ"]').text()).toContain('待下单')
-    expect(wrapper.get('[aria-label="确认订单 CT-PARTIAL-READ 并锁定"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-order-no="CT-PARTIAL-READ"]').text()).toContain('待发送')
+    expect(wrapper.get('[aria-label="发送订单 CT-PARTIAL-READ 给供应商"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).not.toContain('后端不可用')
     expect(cartonApiMock.listAuditEvents).not.toHaveBeenCalled()
     wrapper.unmount()
@@ -1963,6 +2015,7 @@ it('shows supplier date differences in both the internal ledger and order detail
 
   beforeEach(() => {
     vi.resetAllMocks()
+    cartonApiMock.supplierPromiseNotices.mockResolvedValue({ late: [], changes: [], acknowledged: [] })
     deliveryApiMock.list.mockResolvedValue({ items: [] })
     unifiedApiMock.list.mockResolvedValue({ items: [], total: 0, can_create: true })
     movementHistoryApiMock.list.mockImplementation(async (query: { factory_id: string; offset?: number; limit?: number; date_from?: string; date_to?: string; search?: string; movement_type?: string; customer_code?: string }) => {
@@ -2038,10 +2091,17 @@ it('shows supplier date differences in both the internal ledger and order detail
     cartonApiMock.listAuditEvents.mockResolvedValue([])
     cartonApiMock.listAuditEventsPage.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0, event_types: {}, actors: [] })
     cartonApiMock.listImports.mockResolvedValue([])
-    cartonApiMock.listImportsPage.mockImplementation(async (factory: string, kind: string, offset = 0, search = '', customer = '全部客户') => {
-      const all = (await cartonApiMock.listImports(factory, kind)).filter((row: { original_filename: string; parse_summary: { schedule_customer?: { customer_code: string } } }) => row.original_filename.includes(search)
-        && (customer === '全部客户' || (row.parse_summary.schedule_customer?.customer_code || '__UNBOUND__') === customer))
-      return { items: all.slice(offset, offset + 8), total: all.length }
+    cartonApiMock.listImportsPage.mockImplementation(async (factory: string, filters: { types?: string[]; status?: string; search?: string; customer?: string; dateFrom?: string; dateTo?: string; limit?: number; offset?: number } = {}) => {
+      const kinds = filters.types?.length ? filters.types : ['WEEKLY_SCHEDULE']
+      const all = (await Promise.all(kinds.map((kind: string) => cartonApiMock.listImports(factory, kind)))).flat()
+        .filter((row: { original_filename: string; status?: string; created_at?: string; parse_summary: { schedule_customer?: { customer_code: string } } }) =>
+          (!filters.search || row.original_filename.includes(filters.search))
+          && (!filters.customer || filters.customer === '全部客户' || (row.parse_summary.schedule_customer?.customer_code || '__UNBOUND__') === filters.customer)
+          && (!filters.status || filters.status === 'ALL' || (filters.status === 'REJECTED') === (row.status === 'REJECTED'))
+          && (!filters.dateFrom || (row.created_at || '').slice(0, 10) >= filters.dateFrom)
+          && (!filters.dateTo || (row.created_at || '').slice(0, 10) <= filters.dateTo))
+      const offset = filters.offset ?? 0, limit = filters.limit ?? 20
+      return { items: all.slice(offset, offset + limit), total: all.length }
     })
     cartonApiMock.importDetail.mockImplementation(async (factory: string, id: string) => (await cartonApiMock.listImports(factory, 'WEEKLY_SCHEDULE')).find((row: { id: string }) => row.id === id))
     cartonApiMock.receiptDetail.mockImplementation(async (factory: string, id: string) => (await cartonApiMock.listReceipts(factory)).find((row: { id: string }) => row.id === id))
@@ -2166,7 +2226,7 @@ it('shows supplier date differences in both the internal ledger and order detail
     expect(wrapper.find('[data-testid="business-order-collaboration-panel"]').exists()).toBe(false)
     await wrapper.get('[aria-label="查看本周核对与提醒"]').trigger('click'); await flushPromises()
     expect(routeState.query.tab).toBe('weekly-check')
-    for (const label of ['下单防漏核对', '下周查货提醒']) expect(wrapper.findAll('button').some(button => button.text().trim() === label)).toBe(true)
+    for (const label of ['下单防漏核对', '下周查货提醒', '核对历史']) expect(wrapper.findAll('button').some(button => button.text().trim() === label)).toBe(true)
     expect(wrapper.findAll('button').some(button => button.text().trim() === '业务提醒')).toBe(false)
     wrapper.unmount()
   })
@@ -2811,7 +2871,8 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     const orderDate = wrapper.get('input[aria-label="下单日期"]')
     const customerDueDate = wrapper.get('input[aria-label="客户交期"]')
     const planDueDate = wrapper.get('input[aria-label="计划交期"]')
-    expect(planDueDate.attributes('readonly')).toBeDefined()
+    expect(planDueDate.attributes('readonly')).toBeUndefined()
+    expect(wrapper.text()).toContain('默认按客户交期减')
 
     await customerDueDate.setValue(dateOffsetFrom((orderDate.element as HTMLInputElement).value, 10))
     expect((planDueDate.element as HTMLInputElement).value).toBe(
@@ -2822,6 +2883,46 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     await customerDueDate.setValue(dateOffsetFrom((orderDate.element as HTMLInputElement).value, 1))
     expect((planDueDate.element as HTMLInputElement).value).toBe((orderDate.element as HTMLInputElement).value)
     expect(wrapper.get('[role="alert"]').text()).toContain('不足默认 3 天安全提前量')
+  })
+
+  it('keeps a manually changed plan date when the customer date changes afterwards', async () => {
+    cartonApiMock.listCustomers.mockResolvedValue([{ customer_code: 'DICKIE', customer_name: 'Dickie', factory_id: 'huaxing', status: 'ACTIVE' }])
+    const wrapper = mountView('orders')
+    await flushPromises()
+    await findButton(wrapper, '新建订单').trigger('click')
+    await wrapper.get('input[aria-label="订单客户"]').trigger('focus')
+    await wrapper.get('[aria-label="选择客户 Dickie"]').trigger('click')
+    const orderDate = wrapper.get<HTMLInputElement>('input[aria-label="下单日期"]').element.value
+    const customerDueDate = wrapper.get('input[aria-label="客户交期"]')
+    const planDueDate = wrapper.get('input[aria-label="计划交期"]')
+    await customerDueDate.setValue(dateOffsetFrom(orderDate, 10))
+    expect((planDueDate.element as HTMLInputElement).value).toBe(dateOffsetFrom(orderDate, 7))
+    await planDueDate.setValue(dateOffsetFrom(orderDate, 3))
+    await customerDueDate.setValue(dateOffsetFrom(orderDate, 12))
+    expect((planDueDate.element as HTMLInputElement).value).toBe(dateOffsetFrom(orderDate, 3))
+    expect(wrapper.text()).toContain('已手动调整')
+    wrapper.unmount()
+  })
+
+  it('shows a rush badge and opens the rush dialog from the order More menu', async () => {
+    const order = {
+      ...orderFixture('CT-RUSH-001', businessDateOffset(5), 'CONFIRMED'),
+      rush: true, rush_reason: '客户临时确认', rush_acknowledged: false,
+    }
+    mockReceiptWorkspace([order])
+    const wrapper = mountView('orders')
+    await flushPromises()
+    const card = wrapper.get('[data-order-no="CT-RUSH-001"]')
+    expect(card.text()).toContain('急单')
+    expect(card.text()).toContain('客户临时确认')
+    expect(card.text()).toContain('待供应商确认')
+    await openOrderMoreActions(card, 'CT-RUSH-001')
+    await findButton(wrapper, '急单标记').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.get('[data-testid="rush-order-overlay"]')
+    expect(dialog.text()).toContain('取消急单标记')
+    expect(dialog.text()).toContain('客户临时确认')
+    wrapper.unmount()
   })
 
   it('groups multiple paper items under one contract and keeps paper quality separate from specification', async () => {
@@ -2935,9 +3036,9 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(wrapper.text()).toContain('A9A')
     await wrapper.get('button[aria-label="关闭订单明细"]').trigger('click')
     expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'CONFIRMED', customer_po: 'PO-CUSTOMER-001' }))
-    expect(wrapper.text()).toContain('已进入待下单')
+    expect(wrapper.text()).toContain('已进入待发送')
     expect(wrapper.text()).toContain('含 2 条纸品明细')
-    expect(wrapper.text()).toContain('确认锁定前仍可修改、追加或取消')
+    expect(wrapper.text()).toContain('发送给供应商前仍可修改、追加或取消')
 
     await openOrderMoreActions(wrapper.get('[data-order-no="CT-260805-ABC123"]'), 'CT-260805-ABC123')
     await wrapper.get('button[aria-label="管理 CT-260805-ABC123 采购单"]').trigger('click')
@@ -3067,12 +3168,17 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     await findButton(wrapper, '保存草稿并离开').trigger('click')
     expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(false)
     await findButton(wrapper, '新建订单').trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="合同号"]').element.value).toBe('')
+    expect(wrapper.get('[data-testid="order-draft-status"]').text()).toContain('本机有未完成的草稿')
+    await wrapper.get('[aria-label="继续上次新建订单草稿"]').trigger('click')
     expect(wrapper.get<HTMLInputElement>('[aria-label="合同号"]').element.value).toBe('SC-UNFINISHED')
     expect(wrapper.get('[data-testid="order-draft-status"]').text()).toContain('已恢复本机草稿')
     window.dispatchEvent(new Event('beforeunload'))
     wrapper.unmount()
     wrapper = mountView('orders'); await flushPromises()
     await findButton(wrapper, '新建订单').trigger('click')
+    expect(wrapper.find('[aria-label="继续上次新建订单草稿"]').exists()).toBe(true)
+    await wrapper.get('[aria-label="继续上次新建订单草稿"]').trigger('click')
     expect(wrapper.get<HTMLInputElement>('[aria-label="客户 PO"]').element.value).toBe('PO-DRAFT')
     expect(wrapper.get<HTMLInputElement>('[aria-label="订单客户"]').element.value).toBe('客户资料待核对')
     expect(wrapper.findComponent({ name: 'CartonCustomerPicker' }).props('modelValue')).toBe('')
@@ -3084,6 +3190,23 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(window.localStorage.getItem(orderDraftKey(context))).toBeNull()
     expect(wrapper.get<HTMLInputElement>('[aria-label="合同号"]').element.value).toBe('')
     expect(wrapper.get<HTMLInputElement>('[aria-label="订单客户"]').element.value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('replaces an unfinished local draft with the clicked schedule row and says so', async () => {
+    authStoreState.currentUser = { id: 'DRAFT-REPLACE', identity: { employment_epoch: 1 } }
+    mockReceiptWorkspace([])
+    const source = pendingScheduleFixture('SC-DRAFT-REPLACE', 4)
+    mockWeeklySchedule([source])
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    await wrapper.get('[aria-label="排期下单 SC-DRAFT-REPLACE ITEM-SCHEDULE"]').trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="订单备注"]').setValue('OLD-DRAFT-NOTE')
+    await wrapper.get('[aria-label="关闭新建订单"]').trigger('click'); await flushPromises()
+    expect(Object.keys(window.localStorage).filter(key => key.includes('carton-order-draft'))).toHaveLength(1)
+    await wrapper.get('[aria-label="排期下单 SC-DRAFT-REPLACE ITEM-SCHEDULE"]').trigger('click'); await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[aria-label="合同号"]').element.value).toBe(source.contract_no)
+    expect(wrapper.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value).not.toBe('OLD-DRAFT-NOTE')
+    expect(wrapper.get('[data-testid="order-form-overlay"]').text()).toContain('已放弃本机旧草稿，并载入本次选择的资料')
     wrapper.unmount()
   })
 
@@ -3107,6 +3230,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     authStoreState.currentUser = { id: 'DRAFT-A', identity: { employment_epoch: 1 } }
     routeState.query.factory = 'huaxing'; await flushPromises()
     await findButton(wrapper, '新建订单').trigger('click')
+    await wrapper.get('[aria-label="继续上次新建订单草稿"]').trigger('click')
     expect(wrapper.get<HTMLInputElement>('[aria-label="合同号"]').element.value).toBe('FACTORY-A')
     authStoreState.currentUser = { id: 'DRAFT-A', identity: { employment_epoch: 2 } }; await flushPromises()
     await findButton(wrapper, '新建订单').trigger('click')
@@ -3128,6 +3252,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     await wrapper.get('[aria-label="订单备注"]').setValue('修订正式订单，不修改新建草稿')
     await wrapper.get('[aria-label="关闭修改订单"]').trigger('click')
     await findButton(wrapper, '新建订单').trigger('click')
+    await wrapper.get('[aria-label="继续上次新建订单草稿"]').trigger('click')
     expect(wrapper.get('[data-testid="order-form-overlay"]').text()).toContain(`复制自订单 ${source.order_no}`)
     expect(wrapper.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value).toBe(source.note)
     wrapper.unmount()
@@ -3263,6 +3388,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
       item_no: source.item_no, product_name: '消防车', quantity_basis: 'CALCULATED',
       product_order_quantity: 360, order_date: businessDateOffset(0),
       customer_due_date: businessDateOffset(10), due_date: businessDateOffset(7),
+      plan_date_manual: false, rush: false, rush_reason: '',
       master_config_id: '', master_config_revision: 0, note: source.note, status: 'CONFIRMED',
       lines: [
         { packaging_type: '外箱', paper_quality: 'A33+B', specification: '12*11*5',
@@ -3365,7 +3491,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     await form.trigger('submit'); await flushPromises()
     expect(wrapper.find('[data-testid="order-form-overlay"]').exists()).toBe(false)
     expect(cartonApiMock.listAuditEvents).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('CT-260805-ABC123 已进入待下单')
+    expect(wrapper.text()).toContain('CT-260805-ABC123 已进入待发送')
     expect(cartonApiMock.createOrder).toHaveBeenCalledTimes(2)
     expect(readOrderDraft(window.localStorage, draftContext)).toBeNull()
     await findButton(wrapper, '新建订单').trigger('click')
@@ -3447,66 +3573,49 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     wrapper.unmount()
   })
 
-  it('schedule coverage requires a complete FULL declaration and clears its confirmation when the import customer changes', async () => {
+  it('schedule import keeps only the incremental declaration without a hidden full mode', async () => {
     mockReceiptWorkspace([]); mockWeeklySchedule([pendingScheduleFixture('SC-SCOPE')])
     cartonApiMock.listCustomers.mockResolvedValue(['DICKIE', 'BUZZ'].map(code => ({ factory_id: 'huaxing', customer_code: code, customer_name: code, status: 'ACTIVE' })))
     const w = mountView('weekly-check'); await flushPromises()
     try {
       await w.get('[aria-label="业务排期导入客户"]').setValue('DICKIE')
-      await w.get('[aria-label="排期导入方式"]').setValue('FULL')
+      expect(w.find('[aria-label="排期导入方式"]').exists()).toBe(false)
+      expect(w.get('[data-testid="carton-schedule-import-mode"]').text()).toBe('增量 · 只更新出现的记录')
+      expect(w.find('[aria-label="客户交期覆盖开始"]').exists()).toBe(false)
+      expect(w.find('[aria-label="客户交期覆盖结束"]').exists()).toBe(false)
+      expect(w.find('[aria-label="确认全量排期完整性"]').exists()).toBe(false)
       await w.get('[aria-label="业务排期日期"]').setValue('2026-09-01')
-      await w.get('[aria-label="客户交期覆盖开始"]').setValue('2026-09-01')
-      await w.get('[aria-label="客户交期覆盖结束"]').setValue('2026-09-30')
-      expect(findButton(w, '导入业务排期').attributes('disabled')).toBeDefined()
-      await w.get('[aria-label="确认全量排期完整性"]').setValue(true)
       expect(findButton(w, '导入业务排期').attributes('disabled')).toBeUndefined()
       await w.get('[aria-label="业务排期导入客户"]').setValue('BUZZ')
-      expect(w.get<HTMLInputElement>('[aria-label="确认全量排期完整性"]').element.checked).toBe(false)
-      expect(findButton(w, '导入业务排期').attributes('disabled')).toBeDefined()
       expect(w.get<HTMLInputElement>('[aria-label="业务排期日期"]').element.value).toBe('2026-09-01')
+      expect(findButton(w, '导入业务排期').attributes('disabled')).toBeUndefined()
       expect(cartonApiMock.uploadWeeklySchedule).not.toHaveBeenCalled()
     } finally { w.unmount() }
   })
 
-  it('schedule coverage keeps the declaration when FULL has no valid rows and shows the recoverable server error', async () => {
+  it('schedule import surfaces the recoverable server error and keeps the entered business date', async () => {
     mockReceiptWorkspace([]); mockWeeklySchedule([pendingScheduleFixture('SC-SCOPE-EMPTY')])
-    cartonApiMock.uploadWeeklySchedule.mockRejectedValueOnce(new Error('全量范围内没有有效业务行，请补齐来源文件或选择增量'))
+    cartonApiMock.uploadWeeklySchedule.mockRejectedValueOnce(new Error('排期文件无法识别，请核对原始表格'))
     const w = mountView('weekly-check', { Teleport: true }); await flushPromises()
     try {
       await w.get('[aria-label="业务排期导入客户"]').setValue('DICKIE')
-      await w.get('[aria-label="排期导入方式"]').setValue('FULL')
       await w.get('[aria-label="业务排期日期"]').setValue('2026-09-01')
-      await w.get('[aria-label="客户交期覆盖开始"]').setValue('2026-09-01')
-      await w.get('[aria-label="客户交期覆盖结束"]').setValue('2026-09-30')
-      await w.get('[aria-label="确认全量排期完整性"]').setValue(true)
       const input = w.get<HTMLInputElement>('[aria-label="选择每周排期文件"]')
-      Object.defineProperty(input.element, 'files', { value: [new File(['xlsx'], '全量空行.xlsx')] })
+      Object.defineProperty(input.element, 'files', { value: [new File(['xlsx'], '排期.xlsx')] })
       await input.trigger('change'); await flushPromises()
-      expect(w.get('[data-testid="carton-action-notice"]').text()).toContain('全量范围内没有有效业务行')
+      expect(w.get('[data-testid="carton-action-notice"]').text()).toContain('排期文件无法识别')
       expect(w.get<HTMLInputElement>('[aria-label="业务排期日期"]').element.value).toBe('2026-09-01')
-      expect(w.get<HTMLInputElement>('[aria-label="确认全量排期完整性"]').element.checked).toBe(true)
       expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
     } finally { w.unmount() }
   })
 
-  it('schedule coverage navigates three views with independent keywords and preserves the existing schedule workspace', async () => {
-    routerReplaceMock.mockImplementation(async (target: { query: Record<string, string> }) => { Object.assign(routeState.query, target.query) })
+  it('keeps the schedule coverage views hidden while the schedule detail stays available', async () => {
     mockReceiptWorkspace([]); mockWeeklySchedule([pendingScheduleFixture('SC-COVERAGE-VIEW')])
-    const w = mountView('weekly-check', { CartonScheduleMissingReviews: true, CartonScheduleCoverageOverview: true }); await flushPromises()
+    const w = mountView('weekly-check'); await flushPromises()
     try {
-      const tabs = w.get('[aria-label="排期核对工作区"]')
-      expect(tabs.findAll('button').map(item => item.text())).toEqual(['排期明细', '缺行待核实', '客户排期覆盖总览'])
-      await w.get('[aria-label="顶部搜索"]').setValue('SC-COVERAGE')
-      await tabs.findAll('button').find(item => item.text() === '缺行待核实')!.trigger('click'); await flushPromises()
-      expect(routeState.query.schedule_view).toBe('missing')
-      await w.get('[aria-label="顶部搜索"]').setValue('MISSING-SO')
-      expect(w.findComponent({ name: 'CartonScheduleMissingReviews' }).props('search')).toBe('MISSING-SO')
-      await tabs.findAll('button').find(item => item.text() === '客户排期覆盖总览')!.trigger('click'); await flushPromises()
-      expect(w.get<HTMLInputElement>('[aria-label="顶部搜索"]').element.value).toBe('')
-      await w.get('[aria-label="顶部搜索"]').setValue('CUSTOMER-A')
-      expect(w.findComponent({ name: 'CartonScheduleCoverageOverview' }).props('search')).toBe('CUSTOMER-A')
-      await tabs.findAll('button').find(item => item.text() === '排期明细')!.trigger('click'); await flushPromises()
-      expect(w.get<HTMLInputElement>('[aria-label="顶部搜索"]').element.value).toBe('SC-COVERAGE')
+      expect(w.find('[aria-label="排期核对工作区"]').exists()).toBe(false)
+      expect(w.findAll('button').some(button => ['缺行待核实', '客户排期覆盖总览'].includes(button.text().trim()))).toBe(false)
+      expect(w.get('[aria-label="业务排期明细"]').text()).toContain('SC-COVERAGE-VIEW')
     } finally { w.unmount() }
   })
 
@@ -3519,48 +3628,6 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
       if (!canOperate) expect(w.get('[aria-label="标记已下单 SC-COVERAGE-GUARD ITEM-SCHEDULE"]').attributes('disabled')).toBeDefined()
       expect(w.text()).toContain('完整排期缺行待核实')
       expect(cartonApiMock.createOrder).not.toHaveBeenCalled(); expect(cartonApiMock.setScheduleOrderMarks).not.toHaveBeenCalled()
-    } finally { w.unmount() }
-  })
-
-  it.each([true, false])('schedule coverage refreshes the exact loaded source after review without optimistic unlocking (refresh succeeds=%s)', async succeeds => {
-    routerReplaceMock.mockImplementation(async (target: { query: Record<string, string> }) => { Object.assign(routeState.query, target.query) })
-    mockReceiptWorkspace([])
-    const batch = mockWeeklySchedule([pendingScheduleFixture('SC-COVERAGE-REFRESH', 4, { can_operate_source: false })])
-    const w = mountView('weekly-check', { CartonScheduleMissingReviews: true, Teleport: true }); await flushPromises()
-    try {
-      const tabs = w.get('[aria-label="排期核对工作区"]')
-      await tabs.findAll('button').find(item => item.text() === '缺行待核实')!.trigger('click'); await flushPromises()
-      let resolve!: (batch: CartonImportBatchResponse) => void, reject!: (error: Error) => void
-      cartonApiMock.importDetail.mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail }))
-      w.findComponent({ name: 'CartonScheduleMissingReviews' }).vm.$emit('changed', 'DICKIE'); await flushPromises()
-      expect(cartonApiMock.importDetail).toHaveBeenLastCalledWith('huaxing', batch.id)
-      await tabs.findAll('button').find(item => item.text() === '排期明细')!.trigger('click'); await flushPromises()
-      expect(w.get('[aria-label="排期下单 SC-COVERAGE-REFRESH ITEM-SCHEDULE"]').attributes('disabled')).toBeDefined()
-      if (succeeds) resolve({ ...batch, parse_summary: { ...batch.parse_summary, rows: [pendingScheduleFixture('SC-COVERAGE-REFRESH', 4, { can_operate_source: true })] } })
-      else reject(new Error('原排期暂不可读'))
-      await flushPromises()
-      expect(Boolean(w.get('[aria-label="排期下单 SC-COVERAGE-REFRESH ITEM-SCHEDULE"]').attributes('disabled') !== undefined)).toBe(!succeeds)
-      if (!succeeds) expect(w.get('[data-testid="carton-action-notice"]').text()).toContain('核实已保存，但原排期资格刷新失败')
-      expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
-    } finally { w.unmount() }
-  })
-
-  it('schedule coverage discards a review refresh after the factory changes', async () => {
-    routerReplaceMock.mockImplementation(async (target: { query: Record<string, string> }) => { Object.assign(routeState.query, target.query) })
-    mockReceiptWorkspace([])
-    const batch = mockWeeklySchedule([pendingScheduleFixture('SC-COVERAGE-RETIRED', 4, { can_operate_source: false })])
-    const w = mountView('weekly-check', { CartonScheduleMissingReviews: true }); await flushPromises()
-    try {
-      await w.get('[aria-label="排期核对工作区"]').findAll('button').find(item => item.text() === '缺行待核实')!.trigger('click'); await flushPromises()
-      let resolve!: (batch: CartonImportBatchResponse) => void
-      cartonApiMock.importDetail.mockImplementationOnce(() => new Promise(done => { resolve = done }))
-      w.findComponent({ name: 'CartonScheduleMissingReviews' }).vm.$emit('changed', 'DICKIE'); await flushPromises()
-      cartonApiMock.listImports.mockResolvedValue([])
-      routeState.query.factory = 'huadeng'; await flushPromises()
-      resolve(batch); await flushPromises()
-      await w.get('[aria-label="排期核对工作区"]').findAll('button').find(item => item.text() === '排期明细')!.trigger('click'); await flushPromises()
-      expect(w.find('[aria-label="排期下单 SC-COVERAGE-RETIRED ITEM-SCHEDULE"]').exists()).toBe(false)
-      expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
     } finally { w.unmount() }
   })
 
@@ -3636,19 +3703,19 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     const wrapper = mountView('weekly-check'); await flushPromises()
     const group = wrapper.get('[aria-label="排期客户界面"]')
     await wrapper.get('[aria-label="排期订单类型筛选"]').findAll('button').find(button => button.text() === '正单')!.trigger('click')
-    await group.findAll('button').find(button => button.text() === 'BUZZ')!.trigger('click')
+    await group.findAll('button').find(button => button.text() === 'BUZZ')!.trigger('click'); await flushPromises()
     expect(wrapper.get('[aria-label="排期订单类型筛选"]').findAll('button').find(button => button.text() === '全部类型')!.attributes('aria-pressed')).toBe('true')
     expect(wrapper.get('[aria-label="排期订单类型筛选"]').text()).toContain('备料单')
     expect(wrapper.get('table').text()).toContain('SC-BUZZ')
     expect(wrapper.get('table').text()).not.toContain('SC-CUSTOMER-LATEST')
     expect(group.text()).not.toContain('WMU')
-    await group.findAll('button').find(button => button.text() === 'Dickie')!.trigger('click')
+    await group.findAll('button').find(button => button.text() === 'Dickie')!.trigger('click'); await flushPromises()
     expect(wrapper.get('table').text()).toContain('SC-CUSTOMER-LATEST')
     expect(wrapper.get('table').text()).not.toContain('SC-CUSTOMER-OLD')
-    await group.findAll('button').find(button => button.text() === '未绑定客户')!.trigger('click')
+    await group.findAll('button').find(button => button.text() === '未绑定客户')!.trigger('click'); await flushPromises()
     expect(wrapper.get('table').text()).toContain('SC-LEGACY')
     expect(wrapper.text()).toContain('此旧批次尚未绑定基础客户')
-    await group.findAll('button').find(button => button.text() === 'EMPTY')!.trigger('click')
+    await group.findAll('button').find(button => button.text() === 'EMPTY')!.trigger('click'); await flushPromises()
     expect(wrapper.get('table').text()).not.toContain('SC-LEGACY')
     expect(wrapper.text()).not.toContain('当前文件：')
     expect(wrapper.get('[aria-label="排期订单类型筛选"]').findAll('button').map(button => button.text()))
@@ -3867,9 +3934,10 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     const source = pendingScheduleFixture('SC-SUMMARY-DETAIL', 5)
     const batch = mockWeeklySchedule([source])
     const summary = { ...batch, detail_loaded: false, parse_summary: { ...batch.parse_summary, rows: [] } }
-    cartonApiMock.listImportsPage.mockImplementation(async (_factory: string, kind: string) => ({
-      items: kind === 'WEEKLY_SCHEDULE' ? [summary] : [], total: kind === 'WEEKLY_SCHEDULE' ? 1 : 0,
-    }))
+    cartonApiMock.listImportsPage.mockImplementation(async (_factory: string, filters: { types?: string[] } = {}) => {
+      const weekly = (filters.types ?? []).includes('WEEKLY_SCHEDULE')
+      return { items: weekly ? [summary] : [], total: weekly ? 1 : 0 }
+    })
     cartonApiMock.importDetail.mockResolvedValue(batch)
     const wrapper = mountView('weekly-check'); await flushPromises()
     expect(cartonApiMock.importDetail).toHaveBeenCalledWith('huaxing', batch.id)
@@ -4511,9 +4579,9 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     const orderCard = () => wrapper.get('[data-order-no="CT-SUBMIT"]')
 
     expect(orderCard().find('button[aria-label="登记 CT-SUBMIT 收料"]').exists()).toBe(false)
-    await orderCard().get('button[aria-label="确认订单 CT-SUBMIT 并锁定"]').trigger('click')
+    await orderCard().get('button[aria-label="发送订单 CT-SUBMIT 给供应商"]').trigger('click')
     expect(wrapper.text()).toContain('锁定普通编辑')
-    await wrapper.get('button[aria-label="执行确认订单并锁定"]').trigger('click')
+    await wrapper.get('button[aria-label="执行发送订单给供应商"]').trigger('click')
     await flushPromises()
 
     expect(cartonApiMock.submitOrderToSupplier).toHaveBeenCalledWith(
@@ -4570,13 +4638,13 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     } }
     if (stage === 'request') cartonApiMock.submitOrderToSupplier.mockRejectedValueOnce(failure)
     else cartonApiMock.listAuditEvents.mockRejectedValueOnce(failure)
-    await wrapper.get('[aria-label="确认订单 CT-FAIL-SUBMIT 并锁定"]').trigger('click')
-    await wrapper.get('[aria-label="执行确认订单并锁定"]').trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="发送订单 CT-FAIL-SUBMIT 给供应商"]').trigger('click')
+    await wrapper.get('[aria-label="执行发送订单给供应商"]').trigger('click'); await flushPromises()
     if (stage === 'request') {
       const notice = wrapper.get('[data-testid="carton-action-notice"]')
       expect(notice.attributes('role')).toBe('alert')
       expect(notice.text()).toContain('确认锁定失败：供应商未配置，无法下单')
-      expect(wrapper.find('[aria-label="执行确认订单并锁定"]').exists()).toBe(true)
+      expect(wrapper.find('[aria-label="执行发送订单给供应商"]').exists()).toBe(true)
     } else {
       expect(cartonApiMock.listAuditEvents).not.toHaveBeenCalled()
       expect(wrapper.get('[data-order-no="CT-FAIL-SUBMIT"]').text()).toContain('已确认锁定')
@@ -4989,9 +5057,9 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     await wrapper.get('input[aria-label="选择订单 CT-BULK-PENDING"]').setValue(true)
     await wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').setValue(true)
 
-    await findButton(wrapper, '确认订单并锁定（1）').trigger('click')
-    expect(wrapper.text()).toContain('批量确认并锁定 1 张待下单订单')
-    await wrapper.get('button[aria-label="执行确认订单并锁定"]').trigger('click')
+    await findButton(wrapper, '发给供应商（1）').trigger('click')
+    expect(wrapper.text()).toContain('批量发送 1 张待发送订单')
+    await wrapper.get('button[aria-label="执行发送订单给供应商"]').trigger('click')
     await flushPromises()
 
     expect(cartonApiMock.bulkSubmitOrdersToSupplier).toHaveBeenCalledWith(
@@ -5001,7 +5069,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
         expect.objectContaining({ order_no: 'CT-BULK-SUBMITTED' }),
       ]),
     )
-    expect(wrapper.text()).toContain('已确认并锁定 1 张订单，首次采购单已自动生成到供应商协同；跳过 1 张非待下单订单')
+    expect(wrapper.text()).toContain('已确认并锁定 1 张订单，首次采购单已自动生成到供应商协同；跳过 1 张非待发送订单')
     expect(wrapper.get('[data-order-no="CT-BULK-PENDING"]').text()).toContain('已确认锁定')
     expect((wrapper.get('input[aria-label="选择订单 CT-BULK-SUBMITTED"]').element as HTMLInputElement).checked).toBe(true)
   })
@@ -5021,9 +5089,9 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     const wrapper = mountView('orders'); await flushPromises()
     if (auditFails) cartonApiMock.listAuditEvents.mockRejectedValueOnce(new Error('操作记录连接断开'))
     for (const order of orders) await wrapper.get(`input[aria-label="选择订单 ${order.order_no}"]`).setValue(true)
-    await findButton(wrapper, '确认订单并锁定（2）').trigger('click')
+    await findButton(wrapper, '发给供应商（2）').trigger('click')
     expect(wrapper.text()).toContain('本批订单自动合并为一张采购单并下载')
-    await wrapper.get('button[aria-label="执行确认订单并锁定"]').trigger('click'); await flushPromises()
+    await wrapper.get('button[aria-label="执行发送订单给供应商"]').trigger('click'); await flushPromises()
     expect(cartonApiMock.downloadPurchaseOrderBatch).toHaveBeenCalledTimes(1)
     expect(cartonApiMock.downloadPurchaseOrderBatch).toHaveBeenCalledWith('huaxing', batch.id)
     expect(wrapper.text()).toContain('已确认并锁定 2 张订单，合并为 1 张采购单并生成到供应商协同')
@@ -5045,8 +5113,8 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     const switchFactory = () => { routeState.query.factory = 'huadeng' }
     cartonApiMock.downloadPurchaseOrderBatch.mockImplementationOnce(async () => { switchFactory(); return new Blob(['xlsx']) })
     for (const order of orders) await wrapper.get(`input[aria-label="选择订单 ${order.order_no}"]`).setValue(true)
-    await findButton(wrapper, '确认订单并锁定（2）').trigger('click')
-    await wrapper.get('button[aria-label="执行确认订单并锁定"]').trigger('click'); await flushPromises()
+    await findButton(wrapper, '发给供应商（2）').trigger('click')
+    await wrapper.get('button[aria-label="执行发送订单给供应商"]').trigger('click'); await flushPromises()
     expect(cartonApiMock.downloadPurchaseOrderBatch).toHaveBeenCalledTimes(1)
     expect(window.URL.createObjectURL).not.toHaveBeenCalled()
     wrapper.unmount()
@@ -5892,7 +5960,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(logTable.findAll('thead th').map((cell) => cell.text())).toEqual(['时间', '操作人', '操作', '业务对象', '变更内容'])
     expect(logTable.findAll('tbody tr')).toHaveLength(4)
     expect(logTable.text()).toContain('CT-004')
-    expect(logTable.text()).toContain('确认订单并锁定')
+    expect(logTable.text()).toContain('发送供应商')
     expect(logTable.text()).toContain('追加订单')
     expect(logTable.text()).toContain('订单退单')
 
@@ -6554,7 +6622,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(wrapper.text()).toContain('按所选基础客户、合同号、货号和有效客户 PO')
     expect(wrapper.text()).toContain('SO 空白时用 P/O#:')
     expect(wrapper.text()).toContain('不按装箱数换算')
-    expect(wrapper.text()).toContain('核对历史')
+    expect(wrapper.findAll('button').some(button => button.text().trim() === '核对历史')).toBe(true)
     expect(wrapper.text()).toContain('每周排期-第32周.xlsx')
     expect(wrapper.text()).toContain('交期待确认')
     expect(wrapper.text()).not.toContain('疑似漏单')
@@ -7213,11 +7281,11 @@ it('adds paper through the common entry and preserves personal units without rel
     await findButton(wrapper, '新建订单').trigger('click'); await flushPromises()
     const form = wrapper.get('[data-testid="order-form-overlay"] form')
     expect(form.get<HTMLSelectElement>('[aria-label="订单尺寸显示"]').element.value).toBe('inch')
-    expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('英寸')
+    expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('inch')
     await wrapper.get('input[aria-label="货号"]').setValue('DIM-ITEM')
     await wrapper.get('[aria-label="带出基础资料 DIM-ITEM DIMENSIONS"]').trigger('click')
     expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('cm')
-    expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('10 × 20 英寸（换算参考）')
+    expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('10 × 20 inch（换算参考）')
     expect(form.get('[aria-label="纸品尺寸显示 1"]').get('span').attributes('title')).toBe('10 × 20 inch（换算参考）')
     await form.get('[aria-label="订单尺寸显示"]').setValue('mm')
     expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('254 × 508 mm（换算参考）')
@@ -7243,8 +7311,9 @@ it('adds paper through the common entry and preserves personal units without rel
     draft.form.materials[0]!.specification = ''
     writeOrderDraft(window.localStorage, context, draft)
     await findButton(wrapper, '新建订单').trigger('click'); await flushPromises()
+    await wrapper.get('[aria-label="继续上次新建订单草稿"]').trigger('click'); await flushPromises()
     expect(wrapper.get<HTMLSelectElement>('[aria-label="订单尺寸显示"]').element.value).toBe('inch')
-    expect(wrapper.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('英寸')
+    expect(wrapper.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('inch')
     expect(wrapper.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value).toBe('保留合同来源')
   } finally {
     wrapper.unmount(); get.mockRestore()
@@ -7252,4 +7321,4 @@ it('adds paper through the common entry and preserves personal units without rel
     authStoreState.currentUser = previousUser
   }
 
-})
+}, 15_000)

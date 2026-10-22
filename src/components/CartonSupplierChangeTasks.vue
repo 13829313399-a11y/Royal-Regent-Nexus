@@ -6,7 +6,7 @@ import { createRandomUuid } from '@/lib/randomUuid'
 import { factoryContexts } from '@/data/enterpriseMock'
 
 const props = withDefaults(defineProps<{ factoryId?: string; factories?: { factory_id: string }[]; viewerKey?: string; internal?: boolean; readOnly?: boolean; sourceId?: string; sourceKinds?: SupplierChangeTask['source_kind'][]; embedded?: boolean; showClosed?: boolean }>(), { factoryId: '', internal: false, embedded: false, showClosed: undefined })
-const emit = defineEmits<{ changed: []; 'pending-state': [state: { loading: boolean; error: string; counts: Record<SupplierChangeTask['source_kind'], number> }]; 'update:showClosed': [value: boolean] }>()
+const emit = defineEmits<{ changed: []; 'pending-state': [state: { loading: boolean; error: string; counts: Record<SupplierChangeTask['source_kind'], number>; stats: { pending: number; read: number; cancellation: number; disputed: number; overdue: number } }]; 'update:showClosed': [value: boolean] }>()
 const tasks = ref<SupplierChangeTask[]>([]), loading = ref(false), busy = ref(false), error = ref(''), success = ref('')
 const localShowClosed = ref(false)
 const showClosed = computed({ get: () => props.showClosed ?? localShowClosed.value, set: value => { localShowClosed.value = value; emit('update:showClosed', value) } })
@@ -24,6 +24,12 @@ watch(() => ({ loading: loading.value, error: readError.value, counts: {
   REGULAR: scoped.value.filter(row => row.pending && row.source_kind === 'REGULAR').length,
   SPECIAL: scoped.value.filter(row => row.pending && row.source_kind === 'SPECIAL').length,
   REPLENISHMENT: scoped.value.filter(row => row.pending && row.source_kind === 'REPLENISHMENT').length,
+}, stats: {
+  pending: pending.value.length,
+  read: pending.value.filter(row => row.read).length,
+  cancellation: pending.value.filter(row => row.is_cancellation).length,
+  disputed: selected.value.filter(row => row.status === 'DISPUTED').length,
+  overdue: pending.value.filter(row => row.overdue).length,
 } }), state => emit('pending-state', state), { immediate: true })
 const key = (row: SupplierChangeTask) => `${row.factory_id}:${row.source_kind}:${row.source_id}`
 const factoryName = (factory: string) => factoryContexts.find(row => row.id === factory)?.name || factory

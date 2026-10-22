@@ -74,6 +74,13 @@ def test_missing_dimensions_block_supplier_issuance_without_rewriting_order(monk
         created = client.post(BASE + "/orders", json=body)
         assert created.status_code == 201, created.text
         order = created.json()
+        # Creation normalizes a blank unit; blank the stored line to exercise the issuance guard.
+        from app.db import SessionLocal
+        from app.models.carton_procurement import CartonOrderLine
+        with SessionLocal() as db:
+            line = db.get(CartonOrderLine, order["lines"][0]["id"])
+            line.dimension_unit = ""
+            db.commit()
         response = client.post(BASE + f"/orders/{order['order_no']}/submit-supplier", json={"factory_id": "huaxing", "expected_revision": order["revision"]})
         assert response.status_code == 422, response.text
         assert "尺寸单位" in response.text

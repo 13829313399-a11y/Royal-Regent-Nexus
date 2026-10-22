@@ -82,3 +82,10 @@ class ReturnDateCorrection(BaseModel):
     @classmethod
     def valid_date(cls, value):
         return _validate_iso_date(value)
+
+
+class MonthlySettlementAction(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    currency: str = Field(default="CNY", min_length=1, max_length=8)
+    reason: str = Field(default="", max_length=2000)
