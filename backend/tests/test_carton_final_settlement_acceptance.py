@@ -11,7 +11,10 @@ def save(client, data):
     return response.json()
 
 
-def test_return_credit_needs_both_vendor_values_and_local_approval_and_cannot_overdraw(monkeypatch):
+def test_return_credit_needs_both_vendor_values_and_local_approval_and_cannot_overdraw(monkeypatch, tmp_path):
+    import test_molding_sample_api
+    from test_carton_return_dates import confirm_collaborative_returns
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path)
     with make_client(monkeypatch) as client:
         clock(monkeypatch)
         login_as(client, "carton_supervisor")
@@ -28,12 +31,27 @@ def test_return_credit_needs_both_vendor_values_and_local_approval_and_cannot_ov
         credit.update(approved_return_unit_price="3", credit_document_no="FINAL-CREDIT", credit_date="2026-10-05", note="供应商签字认可退货单价")
         doc = save(client, data)
         assert D(doc["result"]["inbound_amount"]) == 20
-        assert D(doc["result"]["return_amount"]) == 6
-        assert D(doc["result"]["net_amount"]) == 14
+        # Client-entered approval cannot bypass the actual supplier sign-off and
+        # independent credit confirmation for a newly enrolled return.
+        assert doc['result']['return_amount'] is None and doc['result']['net_amount'] is None
+        assert any('独立贷项' in issue for issue in doc['result']['issues'])
         assert doc["result"]["statement_amount"] is None
         close_month(monkeypatch)
         blocked = action(client, doc)
-        assert blocked.status_code == 409 and "尚未填齐" in blocked.text
+        assert blocked.status_code == 409 and '独立贷项尚未由内部核定' in blocked.text
+        confirm_collaborative_returns(client, work['sources'])
+        work = view(client)
+        data = payload(work)
+        credit = next(line for line in data['lines'] if line['source_key'].startswith('RETURN:'))
+        agreement = next(source['return_agreement'] for source in work['sources'] if source['kind'] == 'RETURN')
+        credit.update(quantity=None, unit_price=None, amount=None, approved_return_unit_price='3',
+            credit_document_no=agreement['credit_document_no'], credit_date=agreement['credit_date'], note='供应商签字认可退货单价')
+        data.update(id=doc['id'], expected_revision=doc['revision'])
+        doc = save(client, data)
+        assert D(doc['result']['return_amount']) == 6 and D(doc['result']['net_amount']) == 14
+        assert doc['result']['statement_amount'] is None
+        blocked = action(client, doc)
+        assert blocked.status_code == 409 and '尚未填齐' in blocked.text
         credit.update(quantity="2", unit_price="3", amount="5")
         data.update(id=doc["id"], expected_revision=doc["revision"])
         doc = save(client, data)
@@ -89,8 +107,10 @@ def test_same_quantity_same_amount_receipt_replacement_invalidates_saved_evidenc
         assert versions[1]["result"] == original_done["result"]
 
 
-def test_legacy_utc_return_timestamp_uses_shanghai_business_month(monkeypatch):
+def test_legacy_utc_return_timestamp_uses_shanghai_business_month(monkeypatch, tmp_path):
     from datetime import datetime
+    import test_molding_sample_api
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path)
     with make_client(monkeypatch) as client:
         from app.services import carton_procurement as core
         monkeypatch.setattr(core, "business_now", lambda: datetime(2026, 9, 30, 12, 0, 0))
@@ -103,10 +123,14 @@ def test_legacy_utc_return_timestamp_uses_shanghai_business_month(monkeypatch):
         assert returned.status_code == 201, returned.text
         # A supported persisted ISO timestamp: 00:30 on October 1 in Shanghai.
         from app.db import SessionLocal
-        from app.models.carton_procurement import CartonInventoryMovement
+        from app.models.carton_procurement import CartonInventoryMovement, CartonAuditEvent
+        from sqlalchemy import delete
         with SessionLocal() as db:
             movement = db.get(CartonInventoryMovement, returned.json()["id"])
             movement.occurred_at = "2026-09-30T16:30:00+00:00"
+            db.execute(delete(CartonAuditEvent).where(CartonAuditEvent.event_type.in_(
+                ['RETURN_DATE_RECORDED', 'RETURN_COLLABORATION_OPENED']),
+                CartonAuditEvent.entity_id == movement.id))  # Explicitly model pre-upgrade, unenrolled evidence.
             db.commit()
         september = view(client, "2026-09")
         october = view(client, "2026-10")
@@ -114,6 +138,7 @@ def test_legacy_utc_return_timestamp_uses_shanghai_business_month(monkeypatch):
         returns = [source for source in october["sources"] if source["kind"] == "RETURN"]
         assert len(returns) == 1
         assert returns[0]["acceptance_date"] == "2026-10-01"
+        assert returns[0]['date_basis'] == 'RETURN_POSTING' and 'return_agreement' not in returns[0]
         data = payload(october)
         data["lines"][0].update(unit_price="2", amount="2", approved_return_unit_price="2",
             credit_document_no="UTC-CREDIT", credit_date="2026-10-01", note="核实跨月退货凭证")

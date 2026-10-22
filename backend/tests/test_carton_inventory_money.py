@@ -30,6 +30,8 @@ def test_unknown_consumption_and_reversal_propagate_until_clean_depletion():
 def annotate(monkeypatch, rows, quantities):
     value = value_movements(rows, events_for(rows))
     monkeypatch.setattr(display, 'projection', lambda *_: (rows, value))
+    # These tests exercise money allocation; origin labels have their own DB/API tests.
+    monkeypatch.setattr('app.services.carton_inventory_types.annotate_types', lambda *_: None)
     positions = [Obj(inventory_key=inventory_key(rows[0]), position_key=str(i), balance=D(q), cost_amount=None)
                  for i, q in enumerate(quantities)]
     return display.annotate_balances(None, 'huaxing', positions)

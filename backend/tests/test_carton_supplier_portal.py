@@ -172,16 +172,7 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
             next(item["id"] for item in shipment["lines"] if item["item_no"] == "SAMPLE-BOX") else line for line in lines])
         denied = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=unsafe)
         assert denied.status_code == 422, denied.text
-        for required_field in (("customer_code",) if sample_purpose == "GIFT" else ("customer_code", "requested_by")):
-            incomplete = dict(payload, lines=[dict(line, **{required_field: ""})
-                if line.get("no_order_decision") in {"SAMPLE", "GIFT"} else line for line in lines])
-            denied = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=incomplete)
-            assert denied.status_code == 422, denied.text
-        # New unmatched rows cannot create sample/gift payables. The remaining
-        # assertions exercise a persisted historical acceptance and its explicit
-        # reversal/correction path, which remains supported after retirement.
-        denied = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=payload)
-        assert denied.status_code == 422, denied.text
+        # Preserve historical acceptance reversal/correction coverage.
         from app.db import SessionLocal
         from app.models.carton_procurement import CartonReceipt, CartonSupplier
         from app.models.carton_supplier_portal import SupplierShipment

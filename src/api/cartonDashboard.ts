@@ -1,6 +1,6 @@
 import { http } from '@/lib/http'
 import type { BusinessOrderAlert } from '@/features/carton-procurement/businessAlerts'
-import type { CartonExceptionResponse, CartonImportBatchResponse, CartonOrderResponse, CartonScheduleOrder } from './cartonProcurement'
+import type { CartonExceptionResponse, CartonImportBatchResponse, CartonOrderResponse, CartonScheduleOrder, CartonScheduleOrderMark } from './cartonProcurement'
 
 export type DashboardOrder = Omit<CartonScheduleOrder, 'split_records'> & { order_date: string; due_date: string }
 export interface CartonDashboardWorkspace {
@@ -22,6 +22,6 @@ export const cartonDashboardApi = {
     return (await http.get<CartonImportBatchResponse>(`/carton-procurement/imports/${encodeURIComponent(id)}`, { params: { factory_id: factory } })).data
   },
   async context(factory: string, id: string) {
-    return (await http.get<{ alert: BusinessOrderAlert; batch: CartonImportBatchResponse; orders: CartonOrderResponse[]; matching_orders: CartonScheduleOrder[]; marks: Record<string, { marked: boolean; actor: string; updated_at: string }> }>('/carton-procurement/dashboard/alert-context', { params: { factory_id: factory, alert_id: id } })).data
+    return (await http.get<{ alert: BusinessOrderAlert; batch: CartonImportBatchResponse; orders: CartonOrderResponse[]; matching_orders: CartonScheduleOrder[]; marks: Record<string, CartonScheduleOrderMark> }>('/carton-procurement/dashboard/alert-context', { params: { factory_id: factory, alert_id: id } })).data
   },
 }

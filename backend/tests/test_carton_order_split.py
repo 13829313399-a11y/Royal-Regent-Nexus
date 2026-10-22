@@ -285,7 +285,13 @@ def test_schedule_split_matches_and_later_cancellation_reminds_without_duplicate
         new_body = _order_payload()
         new_body.update(contract_no="NEW-CONTRACT", item_no=order["item_no"], product_order_quantity="40",
             schedule_source={"batch_id": batch["id"], "source_sheet": source["source_sheet"], "source_row": source["source_row"]})
-        assert client.post(BASE + "/orders", json=new_body).status_code == 409
+        missing_po = client.post(BASE + "/orders", json=new_body)
+        assert missing_po.status_code == 422, missing_po.text
+        assert "客户 PO" in missing_po.json()["detail"]
+        new_body["customer_po"] = "NEW-PO"
+        duplicate = client.post(BASE + "/orders", json=new_body)
+        assert duplicate.status_code == 409, duplicate.text
+        assert "勿重复下单" in duplicate.json()["detail"]
         cancelled = client.post(BASE + "/weekly-imports", params={"factory_id": "huaxing"}, data={"customer_code": "DICKIE"},
             files={"file": ("cancelled.xlsx", workbook([["退单"], row]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
         assert cancelled.status_code == 201, cancelled.text

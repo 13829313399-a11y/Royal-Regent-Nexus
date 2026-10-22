@@ -15,6 +15,8 @@ QUANTITIES = ("received_quantity", "damaged_quantity", "rejected_quantity", "unu
 
 
 def batches(db, shipment, *, period=None):
+    from app.services.carton_delivery_reopening import totals
+    reopened = totals(db, shipment.factory_id, "supplier_shipment", [shipment.id])
     events = db.scalars(select(CartonAuditEvent).where(
         CartonAuditEvent.factory_id == shipment.factory_id,
         CartonAuditEvent.entity_type == "supplier_shipment",
@@ -34,11 +36,12 @@ def batches(db, shipment, *, period=None):
         if supersedes:
             result = [batch for batch in result if batch.get("receipt_id") != supersedes]
         result.append({**detail, "acceptance": acceptance, "event_id": event.id,
-                       "confirmed_at": event.created_at})
+                       "confirmed_at": event.created_at, "closure_reopens": reopened})
     if not events and shipment.receipt_id:
         result = [{"receipt_id": shipment.receipt_id,
                    "acceptance": json.loads(shipment.acceptance_json or "{}"),
-                   "event_id": shipment.id, "confirmed_at": shipment.confirmed_at}]
+                   "event_id": shipment.id, "confirmed_at": shipment.confirmed_at,
+                   "closure_reopens": reopened, "legacy_unsequenced": True}]
     for batch in result:
         receipt = db.get(CartonReceipt, batch.get("receipt_id")) if batch.get("receipt_id") else None
         batch["receipt"] = receipt if receipt and receipt.factory_id == shipment.factory_id else None
@@ -59,13 +62,53 @@ def effective(item):
     return amount(item, QUANTITIES[0]) - sum(amount(item, key) for key in QUANTITIES[1:])
 
 
-def allocated(batch, paper):
+def raw_allocated(batch, paper):
     # Legacy acceptance closed the complete delivery, including its shortfall.
     values = batch.get("delivery_quantities")
     if values is None:
         return paper.quantity
     original = json.loads(paper.snapshot_json).get("original_unmatched_line_id")
     return Decimal(str(values.get(paper.id, values.get(original, 0))))
+
+
+def closure_sources(batch, paper):
+    """Keep original closure identities through a later physical correction."""
+    original = json.loads(paper.snapshot_json).get("original_unmatched_line_id")
+    carried = [dict(item) for item in batch.get("carried_closures", {}).get(paper.id,
+        batch.get("carried_closures", {}).get(original, []))]
+    own = max(Decimal(0), raw_allocated(batch, paper) - amount(entry(batch, paper), "received_quantity")
+        - sum((Decimal(item["quantity"]) for item in carried), Decimal(0)))
+    if own:
+        from app.services.carton_ledger_time import ledger_time
+        day = batch["acceptance"].get("acceptance_date") or (
+            ledger_time(batch["confirmed_at"]).date().isoformat() if batch.get("confirmed_at") else "")
+        carried.append({"closure_event_id": batch["event_id"], "quantity": str(own),
+            "acceptance_date": day, "reason": entry(batch, paper).get("difference_reason", "")})
+    return carried
+
+
+def allocated(batch, paper):
+    return raw_allocated(batch, paper) - sum((min(Decimal(item["quantity"]),
+        reopened_quantity(batch, paper, item["closure_event_id"]))
+        for item in closure_sources(batch, paper)), Decimal(0))
+
+
+def reopened_quantity(batch, paper, source_id):
+    reopened = batch.get("closure_reopens", {})
+    original = json.loads(paper.snapshot_json).get("original_unmatched_line_id")
+    return reopened.get((source_id, paper.id), Decimal(0)) + (
+        reopened.get((source_id, original), Decimal(0)) if original and original != paper.id else Decimal(0))
+
+
+def closure_pool(db, shipment, papers):
+    result = {}
+    for batch in batches(db, shipment):
+        for paper in papers:
+            for item in closure_sources(batch, paper):
+                remaining = Decimal(item["quantity"]) - reopened_quantity(batch, paper, item["closure_event_id"])
+                if remaining > 0:
+                    result.setdefault(paper.id, []).append(dict(item, remaining_quantity=remaining))
+    return result
 
 
 def progress(db, shipment, papers, *, history=None):
@@ -85,7 +128,7 @@ def progress(db, shipment, papers, *, history=None):
         reserved = remaining + sum(max(Decimal(0), effective(entry(batch, paper))) for batch in corrections)
         result[paper.id] = {**totals, "effective_quantity": effective(totals),
             "remaining_quantity": remaining, "reserved_quantity": reserved,
-            "receivable_quantity": allocated(correction, paper) if correction else remaining,
+            "receivable_quantity": amount(entry(correction, paper), "received_quantity") if correction else remaining,
             "closed_quantity": sum(max(Decimal(0), allocated(batch, paper) - amount(entry(batch, paper), "received_quantity")) for batch in history)}
     return history, correction, result
 

@@ -14,6 +14,35 @@ def require_library(user, factory):
         raise HTTPException(403, "没有本厂箱唛资料库读取权限")
 
 
+def associated_files(db, user, factory, *, external=False, request_ids=None):
+    from app.services import carton_mark_sharing as sharing, carton_mark_assets as assets
+    states = sharing.states(db, factory)
+    ids = [identifier for identifier, state in states.items() if any(
+        request_ids is None or x['order_id'] in request_ids for x in state['special_orders'])]
+    if not ids: return {}
+    try:
+        if external:
+            from app.services.carton_supplier_portal import supplier_mark_assets
+            values = supplier_mark_assets(db, user, factory, asset_ids=ids)
+        else:
+            require_library(user, factory)
+            orders = assets.available_orders(db, factory)
+            values = [x.model_dump() for x in sharing.filter_internal(db, user, [assets.asset_out(asset, orders)
+                for asset in db.scalars(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory,
+                    CartonMarkAsset.is_archived.is_(False), CartonMarkAsset.id.in_(ids)))])]
+    except HTTPException as exc:
+        if exc.status_code != 403: raise
+        return {}
+    result = {}
+    for value in values:
+        for link in value.get('associations', []):
+            if link['order_kind'] == 'REGULAR': continue
+            if request_ids is not None and link['order_id'] not in request_ids: continue
+            result.setdefault(link['order_id'], []).append(dict(id=value['id'], file_name=value['file_name'],
+                revision=value['revision'], kind=value['kind'], line_id=link.get('line_id', '')))
+    return result
+
+
 def options(db, user, factory, request_id='', external=False):
     target = special.access(db, user, factory, request_id or None, external=external)
     if external:
@@ -89,106 +118,75 @@ def publish_attachment(db, user, row, paper, attachment, external=False):
         warning='', revision=1, is_archived=False, created_by=user.id, created_by_name=user.display_name,
         created_at=attachment.created_at, updated_at=attachment.created_at)
     db.add(asset); db.flush()
-    lifecycle.initialize(db, user, asset, CartonMarkAssetUploadOptions(status='READY' if attachment.role == 'CONFIRMED' else 'PENDING'))
+    lifecycle.initialize(db, user, asset, CartonMarkAssetUploadOptions(status='PENDING'))
     sharing.record(db, user, asset, 'SUPPLIER', row.supplier_id)
-    link_event(db, user, asset, row, paper, attachment.id, attachment.role == 'CONFIRMED')
+    link_event(db, user, asset, row, paper, attachment.id)
     assets.audit(db, user, asset, 'CARTON_MARK_ASSET_CREATED', dict(sha256=asset.sha256,
         source_attachment_id=attachment.id, special_order_id=row.id))
     return asset
 
 
-def propose_mark(db, user, identifier, line_id, payload):
+def _mark_evidence(db, user, identifier, line_id, payload, *, external=False):
     user = special.locked_actor(db, user, payload.factory_id)
-    row = special.access(db, user, payload.factory_id, identifier, external=True)
-    if not special.flags(db, user, row, True)['can_attach']:
-        raise HTTPException(403, '当前订单不可提交箱唛')
-    if payload.mark_mode != 'EXISTING': raise HTTPException(422, '供应商只能选择已有资料作为待确认稿')
-    digest, saved = special.replay(db, user, payload, 'MARK_PROPOSE', identifier, line_id)
+    row = special.access(db, user, payload.factory_id, identifier, external=external)
+    if not special.flags(db, user, row, external)['can_attach']:
+        raise HTTPException(403, '当前订单不可维护资料')
+    action = 'MARK_PROPOSE' if external else 'MARK_SET'
+    digest, saved = special.replay(db, user, payload, action, identifier, line_id)
     if saved: return saved
     special.require_revision(row, payload)
     line = db.get(SpecialLine, line_id)
-    if not line or line.request_id != row.id or line.factory_id != row.factory_id: raise HTTPException(404, '纸品不存在')
-    from app.services.carton_supplier_portal import supplier_mark_asset_document
-    asset = supplier_mark_asset_document(db, user, row.factory_id, payload.asset_id)
-    if asset.revision != payload.asset_revision: raise HTTPException(409, '资料版本已变更')
-    validate_asset_target(db, asset, row)
-    if asset.size_bytes > 10 * 1024 * 1024: raise HTTPException(422, '制作资料不能超过 10 MiB')
-    file = SpecialAttachment(id=special.uid('CSA-SP-'), factory_id=row.factory_id, request_id=row.id,
-        line_id=line.id, role='DRAFT', filename=asset.file_name, media_type=asset.content_type,
-        sha256=asset.sha256, size=asset.size_bytes, content=asset.content, created_by=user.id,
-        created_at=special.core.now_text(), version=row.revision + 1)
-    db.add(file)
-    link_event(db, user, asset, row, line, file.id)
-    special.version(db, user, row, 'ATTACHMENT_ADDED')
-    return special.finish(db, user, payload, row, 'MARK_PROPOSE', digest, external=True)
+    if not line or line.request_id != row.id or line.factory_id != row.factory_id:
+        raise HTTPException(404, '纸品不存在')
+    asset = None
+    if payload.mark_mode == 'EXISTING':
+        if external:
+            from app.services.carton_supplier_portal import supplier_mark_asset_document
+            asset = supplier_mark_asset_document(db, user, row.factory_id, payload.asset_id)
+        else:
+            require_library(user, row.factory_id)
+            asset = db.get(CartonMarkAsset, payload.asset_id)
+            if not asset or asset.factory_id != row.factory_id or asset.is_archived:
+                raise HTTPException(404, '资料不存在或无权访问')
+            from app.services.carton_mark_sharing import ensure_asset_access
+            ensure_asset_access(db, user, asset)
+        if asset.revision != payload.asset_revision: raise HTTPException(409, '资料版本已变化，请刷新')
+        validate_asset_target(db, asset, row)
+        if asset.size_bytes > 10 * 1024 * 1024: raise HTTPException(422, '订单附件不能超过 10 MiB；大文件请从资料库直接关联')
+        file = SpecialAttachment(id=special.uid('CSA-SP-'), factory_id=row.factory_id, request_id=row.id,
+            line_id=line.id, role='DRAFT', filename=asset.file_name, media_type=asset.content_type,
+            sha256=asset.sha256, size=asset.size_bytes, content=asset.content, created_by=user.id,
+            created_at=special.core.now_text(), version=special.next_attachment_version(db, row))
+        db.add(file)
+    elif payload.mark_mode == 'UPLOAD':
+        file = db.get(SpecialAttachment, payload.attachment_id)
+        if not file or file.factory_id != row.factory_id or file.request_id != row.id or file.line_id not in {'', line.id}:
+            raise HTTPException(404, '附件必须属于本订单对应纸品')
+        from app.services import carton_mark_sharing as sharing
+        source_id = next((key for key, state in sharing.states(db, row.factory_id).items()
+            if any(x['attachment_id'] == file.id for x in state['special_orders'])), '')
+        asset = db.get(CartonMarkAsset, source_id) if source_id else None
+        if asset:
+            if asset.is_archived: raise HTTPException(409, '源资料已归档，请核实')
+            validate_asset_target(db, asset, row)
+    else:
+        if payload.asset_id or payload.attachment_id: raise HTTPException(422, '资料参数不一致')
+        # Legacy NONE/PENDING are optional informational input, not a printing
+        # decision. In particular they cannot erase an old confirmed manifest.
+        file = None
+    if asset:
+        from app.services.carton_mark_asset_workflow import bump
+        bump(db, asset, asset.revision)
+        link_event(db, user, asset, row, line, file.id)
+    # File evidence does not change line marks, execution version, price or promise.
+    # The response and replay snapshot must include the evidence just appended.
+    db.flush()
+    return special.finish(db, user, payload, row, action, digest, external=external)
+
+
+def propose_mark(db, user, identifier, line_id, payload):
+    return _mark_evidence(db, user, identifier, line_id, payload, external=True)
 
 
 def set_mark(db, user, identifier, line_id, payload):
-    user = special.locked_actor(db, user, payload.factory_id)
-    row = special.access(db, user, payload.factory_id, identifier)
-    if not special.flags(db, user, row, False)["can_confirm_material"]:
-        raise HTTPException(403, "只有本厂内部负责人可确认制作资料")
-    digest, saved = special.replay(db, user, payload, "MARK_SET", identifier, line_id)
-    if saved: return saved
-    special.require_revision(row, payload)
-    line = db.get(SpecialLine, line_id)
-    if line is None or line.request_id != row.id or line.factory_id != row.factory_id:
-        raise HTTPException(404, "未找到此订单纸品明细")
-    file = None
-    if payload.mark_mode == "EXISTING":
-        require_library(user, row.factory_id)
-        asset = db.get(CartonMarkAsset, payload.asset_id)
-        if not asset or asset.factory_id != row.factory_id or asset.is_archived:
-            raise HTTPException(404, "箱唛资料不存在或无权访问")
-        if asset.revision != payload.asset_revision:
-            raise HTTPException(409, "箱唛资料版本已变更，请重新选择并确认")
-        validate_asset_target(db, asset, row)
-        if asset.size_bytes > 10 * 1024 * 1024:
-            raise HTTPException(422, "订单制作资料不能超过 10 MiB，请拆分文件后上传")
-        from app.services import carton_mark_asset_workflow as lifecycle
-        from app.schemas.carton_mark import CartonMarkAssetClassification
-        if lifecycle.current(db, asset).status != 'READY':
-            lifecycle.classify(db, user, row.factory_id, asset.id,
-                CartonMarkAssetClassification(status='READY', revision=asset.revision, note='订单制作稿确认'), commit=False, material_confirmation=True)
-        file = SpecialAttachment(id=special.uid("CSA-SP-"), factory_id=row.factory_id, request_id=row.id,
-            line_id=line.id, role="CONFIRMED", filename=asset.file_name, media_type=asset.content_type,
-            sha256=asset.sha256, size=asset.size_bytes, content=asset.content, created_by=user.id,
-            created_at=special.core.now_text(), version=row.revision + 1)
-        line.mark_asset_id = asset.id; line.mark_asset_revision = asset.revision
-        link_event(db, user, asset, row, line, file.id, True)
-    elif payload.mark_mode == "UPLOAD":
-        draft = db.get(SpecialAttachment, payload.attachment_id)
-        if not draft or draft.factory_id != row.factory_id or draft.request_id != row.id or draft.line_id != line.id:
-            raise HTTPException(404, "制作稿必须属于本订单对应纸品明细")
-        if draft.role not in {"DRAFT", "CONFIRMED"}:
-            raise HTTPException(422, "参考资料不能直接作为制作稿，请先上传待确认稿")
-        from pathlib import Path
-        if Path(draft.filename).suffix.lower() not in {'.pdf', '.xls', '.xlsx', '.xlsm', '.jpg', '.jpeg', '.png', '.webp'}:
-            raise HTTPException(422, '此文件仅作为参考附件；确认制作稿请上传 PDF、图片或 Excel')
-        file = SpecialAttachment(id=special.uid("CSA-SP-"), factory_id=row.factory_id, request_id=row.id,
-            line_id=line.id, role="CONFIRMED", filename=draft.filename, media_type=draft.media_type,
-            sha256=draft.sha256, size=draft.size, content=draft.content, created_by=user.id,
-            created_at=special.core.now_text(), version=row.revision + 1)
-        from app.services import carton_mark_sharing as sharing, carton_mark_asset_workflow as lifecycle
-        source_id = next((identifier for identifier, state in sharing.states(db, row.factory_id).items()
-            if any(link['attachment_id'] == draft.id for link in state['special_orders'])), '')
-        source = db.get(CartonMarkAsset, source_id) if source_id else None
-        if source:
-            if source.is_archived: raise HTTPException(409, '源资料已归档，请重新核实')
-            validate_asset_target(db, source, row)
-            from app.schemas.carton_mark import CartonMarkAssetClassification
-            lifecycle.classify(db, user, row.factory_id, source.id,
-                CartonMarkAssetClassification(status='READY', revision=source.revision, note='订单制作稿确认'), commit=False, material_confirmation=True)
-            link_event(db, user, source, row, line, file.id, True)
-        line.mark_asset_id = source.id if source else ''
-        line.mark_asset_revision = source.revision if source else 0
-    else:
-        if payload.asset_id or payload.attachment_id:
-            raise HTTPException(422, "无需箱唛或待补资料不能同时指定制作文件")
-        line.mark_asset_id = ""; line.mark_asset_revision = 0
-    if file: db.add(file)
-    line.mark_attachment_id = file.id if file else ""
-    line.mark_mode = payload.mark_mode
-    special.version(db, user, row, "MATERIAL_CHANGED", execution=True)
-    if row.status != "SUBMITTED": special.notify(db, row, "MATERIAL_CHANGED", audience="SUPPLIER")
-    return special.finish(db, user, payload, row, "MARK_SET", digest)
+    return _mark_evidence(db, user, identifier, line_id, payload)

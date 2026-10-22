@@ -16,6 +16,44 @@ const button = (w: ReturnType<typeof mount>, text: string) => w.findAll('button'
 beforeEach(() => { vi.resetAllMocks(); mocks.can.mockReturnValue(true); vi.mocked(api.list).mockResolvedValue([row()]) })
 
 describe('送货价格核对', () => {
+  it('reports scoped reading, errors and pending counts without treating failed reads as zero', async () => {
+    let reject!: (reason: Error) => void
+    vi.mocked(api.list).mockImplementationOnce(() => new Promise((_done, fail) => { reject = fail })).mockResolvedValueOnce([row(), { ...row('DONE'), status: 'CONFIRMED' }])
+    const w = mount(Component, { props: { factoryId: 'huaxing', supplier: true, embedded: true } }); await flushPromises()
+    expect(w.emitted('review-state')!.at(-1)![0]).toMatchObject({ factoryId: 'huaxing', loading: true, pendingCount: null })
+    reject(new Error('核价服务不可用')); await flushPromises()
+    expect(w.emitted('review-state')!.at(-1)![0]).toMatchObject({ loading: false, readError: '核价服务不可用', pendingCount: null })
+    await button(w, '刷新核价').trigger('click'); await flushPromises()
+    expect(w.emitted('review-state')!.at(-1)![0]).toMatchObject({ factoryId: 'huaxing', loading: false, readError: '', error: '', pendingCount: 1 })
+    expect(w.text()).toContain('缺价与异议核对'); w.unmount()
+  })
+  it('resets private drafts and failed-write state when the viewer scope or approval permission changes', async () => {
+    const permissions = reactive({ approve: true })
+    mocks.can.mockImplementation(code => permissions.approve || !code.endsWith(':approve'))
+    vi.mocked(api.decide).mockRejectedValue(new Error('提交结果待核实'))
+    const w = mount(Component, { props: { factoryId: 'huaxing', supplier: true, viewerKey: 'VIEWER-1' } }); await flushPromises()
+    await w.get('[aria-label="R1 核价原因"]').setValue('旧账号私有意见')
+    await button(w, '确认本批价格').trigger('click'); await flushPromises()
+    expect(w.get('[role="alert"]').text()).toContain('提交结果待核实')
+    await w.setProps({ viewerKey: 'VIEWER-2' }); await flushPromises()
+    expect(w.get<HTMLInputElement>('[aria-label="R1 核价原因"]').element.value).toBe('')
+    expect(w.find('[role="alert"]').exists()).toBe(false)
+    await w.get('[aria-label="R1 核价原因"]').setValue('授权变化前意见')
+    permissions.approve = false; await flushPromises()
+    expect(button(w, '确认本批价格')).toBeUndefined()
+    permissions.approve = true; await flushPromises()
+    expect(w.get<HTMLInputElement>('[aria-label="R1 核价原因"]').element.value).toBe('')
+    w.unmount()
+  })
+  it('routes known-cost corrections to the full workflow and never invokes legacy price writes', async () => {
+    vi.mocked(api.list).mockResolvedValue([{ ...row(), need_full_correction: true, can_propose: false }])
+    const w = mount(Component, { props: { factoryId: 'huaxing' } }); await flushPromises()
+    expect(w.text()).toContain('同步库存与应付'); expect(button(w, '保存核价意见')).toBeUndefined()
+    await button(w, '前往完整单价更正').trigger('click'); expect(w.emitted('full-correction')?.[0]).toEqual(['RL1'])
+    expect(api.propose).not.toHaveBeenCalled(); expect(api.decide).not.toHaveBeenCalled(); w.unmount()
+    const supplier = mount(Component, { props: { factoryId: 'huaxing', supplier: true } }); await flushPromises()
+    expect(button(supplier, '确认本批价格')).toBeUndefined(); expect(supplier.text()).not.toContain('current_cost_unit_price'); supplier.unmount()
+  })
   it('preserves a pending load across same-identity session refreshes', async () => {
     let resolve!: (rows: CartonPriceReview[]) => void
     vi.mocked(api.list).mockImplementationOnce(() => new Promise(done => { resolve = done }))

@@ -123,6 +123,8 @@ def test_pre_bridge_direct_and_unified_receipt_request_fingerprints_remain_repla
     from app.services import carton_supplier_portal as portal, carton_special_requests as special
     direct = ShipmentReceive.model_validate(command(expected_revision=1, acceptance_date='2026-10-18', lines=[dict(shipment_line_id='original-paper', received_quantity='1', unit_price='1')]))
     legacy = direct.model_dump(mode='json'); legacy['lines'][0].pop('replenishment_issue_id')
+    # This historical request predates both source bridging and per-line short-close fields.
+    legacy['lines'][0].pop('close_remaining')
     # The portal has other established compatibility omissions.
     normalized = json.loads(json.dumps(legacy))
     normalized.pop('new_delivery_confirmation')
@@ -133,6 +135,7 @@ def test_pre_bridge_direct_and_unified_receipt_request_fingerprints_remain_repla
     assert portal.fingerprint(direct) == expected
     root = Receive.model_validate(command(acceptance_date='2026-10-18', formal=direct.model_dump(mode='json', include={'expected_revision', 'lines'})))
     legacy = root.model_dump(mode='json'); legacy['formal']['lines'][0].pop('replenishment_issue_id')
+    legacy['formal']['lines'][0].pop('close_remaining')
     digest = hashlib.sha256(special.pack(dict(action='UNIFIED_RECEIVE', id='old-group', payload=legacy, extra=None)).encode()).hexdigest()
     event = SimpleNamespace(detail_json=special.pack(dict(fingerprint=digest, response={'saved': True})))
     db = SimpleNamespace(scalar=lambda _: event)

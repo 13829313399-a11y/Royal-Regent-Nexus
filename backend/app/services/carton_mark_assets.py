@@ -143,6 +143,11 @@ def asset_out(asset, orders, workflow=None, sharing=None):
         from app.services.carton_mark_sharing import current
         session = object_session(asset)
         sharing = current(session, asset) if session else {}
+    sharing = dict(sharing)
+    session = object_session(asset)
+    if session:
+        from app.services.carton_mark_associations import projection
+        sharing['associations'] = projection(session, asset, matches, sharing)
     explicit = asset.recognition_source in {"manual_order", "manual_orders"} or bool(asset.bound_order_id)
     ambiguous = not explicit and len({identity(o.customer_code) for o in matches}) > 1
     status = "AMBIGUOUS" if ambiguous else "BOUND" if matches else "NO_ORDER" if asset.contract_number else "UNBOUND"
@@ -195,7 +200,16 @@ def save_asset(db, user, factory, content, recognition, options=None):
     from app.services.carton_procurement import _lock_receipt_factory
     from app.services.carton_mark_sharing import internal_actor
     user = internal_actor(db, user, factory)
+    options = options or CartonMarkAssetUploadOptions()
     sha = hashlib.sha256(content).hexdigest()
+    from app.services import carton_mark_associations as associations
+    request_id, saved = associations.request_event(db, user, factory, options.request_id, 'UPLOAD',
+        {'sha256': sha, 'recognition': recognition, 'options': options.model_dump(mode='json')})
+    if saved and 'result' in saved:
+        previous = active_asset(db, factory, saved['result']['asset_id'])
+        from app.services.carton_mark_sharing import ensure_asset_access
+        ensure_asset_access(db, user, previous, write=True)
+        return asset_out(previous, available_orders(db, factory)), 'duplicate'
     timestamp = _now_text()
     asset = CartonMarkAsset(id=f"CMA-{uuid4().hex}", factory_id=factory,
         file_name=recognition["file_name"], kind=recognition["kind"], content=content,
@@ -209,7 +223,10 @@ def save_asset(db, user, factory, content, recognition, options=None):
     lifecycle.initialize(db, user, asset, options or CartonMarkAssetUploadOptions())
     from app.services import carton_mark_sharing
     carton_mark_sharing.initialize(db, user, asset, options or CartonMarkAssetUploadOptions())
+    if options.targets is not None:
+        associations.apply(db, user, asset, options.targets)
     audit(db, user, asset, "CARTON_MARK_ASSET_CREATED", {"sha256": sha, "contract_number": asset.contract_number})
+    associations.record_request(db, user, asset, request_id, saved, {'asset_id': asset.id})
     db.commit()
     return asset_out(asset, available_orders(db, factory)), "created"
 

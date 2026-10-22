@@ -15,9 +15,11 @@ export interface UnifiedDelivery {
   formal: PortalShipment | null; special: SpecialRequest[]; lines: UnifiedDeliveryLine[]
   receipts: { id?: string; receipt_id?: string; receipt_no?: string; status?: string; acceptance_date?: string | null }[]
   status: string; revision: number; requires_correction: boolean; can_operate: boolean
+  shortfall_reopen_history?: { reason: string; created_at: string; quantities: Record<string, string> }[]
 }
 export type PriceAction = 'MATCH' | 'PENDING' | 'PROPOSE' | 'FREE'
 export function unifiedDeliveryLineKind(group: UnifiedDelivery, line: UnifiedDeliveryLine): SupplierDocumentBusinessKind {
+  if (line.business_kind) return line.business_kind
   if (line.source_kind === 'FORMAL') return line.source_type === 'AD_HOC_REVIEW' ? 'UNKNOWN' : line.source_type === 'FORMAL_ORDER' || line.order_line_id ? 'REGULAR' : 'UNKNOWN'
   const request = group.special.find(item => item.id === line.special_request_id)
   if (!request || (request.origin === 'SUPPLIER_EXTRA' || line.origin === 'SUPPLIER_EXTRA') && !request.shipments.some(shipment => shipment.receipts?.length > 0)) return 'UNKNOWN'
@@ -42,4 +44,5 @@ export const cartonUnifiedDeliveriesApi = {
   async list(factory: string, supplier = false, signal?: AbortSignal) { return (await http.get<{ items: UnifiedDelivery[]; total: number; options?: { workshops: { id: string; name: string }[] } }>(prefix(supplier), { params: { factory_id: factory }, signal })).data },
   async dispatch(body: Record<string, unknown>, signal?: AbortSignal) { return (await http.post<UnifiedDelivery>(prefix(true), body, { signal })).data },
   async receive(id: string, body: Record<string, unknown>, signal?: AbortSignal) { return (await http.post<UnifiedDelivery>(`${prefix(false)}/${encodeURIComponent(id)}/receive`, body, { signal })).data },
+  async reopenShortfall(id: string, body: Record<string, unknown>, signal?: AbortSignal) { return (await http.post<UnifiedDelivery>(`${prefix(false)}/${encodeURIComponent(id)}/reopen-shortfall`, body, { signal })).data },
 }

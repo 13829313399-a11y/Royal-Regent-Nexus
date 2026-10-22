@@ -243,7 +243,7 @@ def test_supplier_order_import_exports_replenishment_delta_with_settlement_note(
         assert purchase["export_count"] == 0
         selection = {"factory_id": "huaxing", "kind": "PURCHASE", "id": issue["id"]}
         blocked = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection]})
-        assert blocked.status_code == 409 and "补单待单独确认" in blocked.text
+        assert blocked.status_code == 409 and "补单待确认接单" in blocked.text
         response = client.post(BASE + "/documents/order-import.xlsx", json={"documents": [selection], "acknowledge_unaccepted": True})
         assert response.status_code == 200, response.text
         book = load_workbook(BytesIO(response.content), read_only=True, data_only=True)

@@ -50,8 +50,13 @@ def bump(db, asset, revision):
 
 
 def binding_key(asset):
+    from sqlalchemy.orm import object_session
+    from app.services.carton_mark_sharing import current as audience
+    session = object_session(asset)
+    special_targets = tuple(sorted({(x['order_id'], x.get('line_id', ''))
+        for x in audience(session, asset)['special_orders']})) if session else ()
     return (asset.contract_number, asset.bound_order_id, asset.recognition_source,
-        tuple(sorted(link.order_id for link in asset.order_bindings)))
+        tuple(sorted(link.order_id for link in asset.order_bindings)), special_targets)
 
 
 def initialize(db, user, asset, options):

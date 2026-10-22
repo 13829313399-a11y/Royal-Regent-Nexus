@@ -424,7 +424,7 @@ def annotate_schedule(db, factory, row, records=None):
     plan, target = matches[0]
     parent = db.get(CartonOrder, plan["order_id"])
     exact_orders = list(db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory,
-        CartonOrder.customer_code == plan["customer_code"], CartonOrder.status != "CANCELLED")))
+        CartonOrder.customer_code == plan["customer_code"], CartonOrder.status != "CANCELLED", CartonOrder.deleted_at.is_(None))))
     po = row.get("source_reference") if row.get("template") == "unified-item" and row.get("source_reference") else row.get("customer_po")
     if any(norm(order.contract_no) == norm(target["contract_no"]) and norm(order.item_no) == norm(plan["item_no"])
            and (not po or norm(order.customer_po) == norm(po)) for order in exact_orders):

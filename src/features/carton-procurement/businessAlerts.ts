@@ -58,7 +58,7 @@ export function buildBusinessOrderAlerts(context: {
   }
   const sourceKey = (row: CartonImportPreviewRow) => row.schedule_identity || JSON.stringify([
     row.schedule_customer_code || row.customer_code || identifier(row.customer_name),
-    identifier(row.contract_no || row.reference), identifier(row.item_no), identifier(row.source_reference),
+    identifier(row.contract_no || row.reference), identifier(row.item_no), identifier(row.source_reference || row.customer_po),
   ])
   const candidates = context.exceptions.filter(exception => exception.factory_id === context.factoryId
     && exception.source_type === 'WEEKLY_SCHEDULE'
@@ -109,7 +109,7 @@ export function buildBusinessOrderAlerts(context: {
       const alertNo = exception?.exception_no || `排期-${sourceRow.source_sheet || 'ITEM'}-${sourceRow.source_row || 1}`
       alerts.set(`TIMING:${key}`, {
         id: `TIMING:${batch.id}:${key}`, alertNo,
-        kind: sourceRow.schedule_change === 'NEW' ? 'NEW_ORDER' : 'MISSING_ORDER',
+        kind: reminder.state === 'CHANGE_REVIEW' ? 'QUANTITY_REVIEW' : sourceRow.schedule_change === 'NEW' ? 'NEW_ORDER' : 'MISSING_ORDER',
         customerCode: sourceRow.schedule_customer_code || sourceRow.customer_code || '',
         customerName: sourceRow.schedule_customer_name || sourceRow.customer_name || '未绑定客户',
         contractNo: sourceRow.contract_no || sourceRow.reference || '', itemNo: sourceRow.item_no || '',
