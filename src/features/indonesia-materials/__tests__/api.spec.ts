@@ -29,4 +29,14 @@ describe('materials API contract', () => {
     expect(await indonesiaMaterialsApi.download('huaxing', 'id/one', kind)).toBe(blob)
     expect(http.get).toHaveBeenCalledWith(`/indonesia-materials/${kind === 'shipment' ? 'shipments/id%2Fone/export' : 'assets/id%2Fone'}`, { params: { factory_id: 'huaxing' }, responseType: 'blob', timeout: 120_000 })
   })
+  it('sends warehouse documents to their own preview endpoint and preserves the selected warehouse', async () => {
+    const file = new File(['csv'], 'receipt.csv')
+    http.post.mockResolvedValue({ data: { record: { id: 'receipt', kind: 'import' } } })
+    await indonesiaMaterialsApi.preview('huaxing', 'CLIENT', 'RRM', file, '塑胶仓')
+    const [path, form] = http.post.mock.calls[0]!
+    expect(path).toBe('/indonesia-materials/warehouse-imports/preview')
+    expect(form.get('warehouse')).toBe('塑胶仓')
+    expect(form.get('factory_id')).toBe('huaxing')
+    expect(form.get('file')).toBe(file)
+  })
 })

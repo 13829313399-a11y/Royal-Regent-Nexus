@@ -11,6 +11,8 @@ from app.schemas.indonesia_materials import Command
 from app.services.auth import AuthContext, get_current_user
 from app.services import indonesia_materials as service
 from app.services import indonesia_material_import as imports
+from app.services import indonesia_shared_options as shared_options
+from app.services import indonesia_warehouse_import as warehouse_import
 from app.services.customer_order_jobs import order_job_request, run_order_job
 
 
@@ -46,6 +48,16 @@ def command(body: Command, db: Db, user: User, request: Request):
     return service.run_command(db, user, body, refresh_user=lambda: refresh_user(request, db))
 
 
+@router.get('/shared-options')
+def shared_workspace(db: Db, user: User):
+    return shared_options.workspace(db, user)
+
+
+@router.post('/shared-options/commands')
+def shared_command(body: Command, db: Db, user: User, request: Request):
+    return shared_options.run_command(db, user, body, refresh_user=lambda: refresh_user(request, db))
+
+
 @router.post('/imports/preview', dependencies=[Depends(order_job_request)])
 async def preview(db: Db, user: User, request: Request,
                   factory_id: str = Form(...), customer: str = Form(..., min_length=1, max_length=160),
@@ -64,6 +76,33 @@ async def preview(db: Db, user: User, request: Request,
 def download(asset):
     return Response(asset.content, media_type=asset.media_type,
                     headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote(asset.filename), 'Cache-Control': 'no-store'})
+
+
+@router.get('/warehouse-imports/template')
+def warehouse_template(db: Db, user: User, factory_id: str = Query(...)):
+    service.authorize(user, factory_id, 'write')
+    from io import StringIO
+    import csv
+    output = StringIO()
+    csv.writer(output).writerow(warehouse_import.TEMPLATE)
+    return Response(output.getvalue().encode('utf-8-sig'), media_type='text/csv; charset=utf-8',
+        headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote('仓库实收导入模板.csv'), 'Cache-Control': 'no-store'})
+
+
+@router.post('/warehouse-imports/preview', dependencies=[Depends(order_job_request)])
+async def warehouse_preview(db: Db, user: User, request: Request,
+                            factory_id: str = Form(...), customer: str = Form(..., min_length=1, max_length=160),
+                            recipient: Literal['RRI', 'RRM'] = Form(...), warehouse: str = Form('', max_length=160), file: UploadFile = File(...)):
+    service.authorize(user, factory_id, 'write')
+    service.ready(db)
+    form = await request.form()
+    service.require(all(len(form.getlist(key)) == 1 for key in ('factory_id', 'customer', 'recipient', 'warehouse', 'file')), '上传字段不能重复', 422)
+    content = await file.read(25 * 1024 * 1024 + 1)
+    service.require(0 < len(content) <= 25 * 1024 * 1024, '实收单为空或超过 25 MB', 413)
+    filename = file.filename or '实收单.xlsx'
+    rows = await run_order_job(warehouse_import.parse_warehouse_receipts, content, filename, db=db)
+    return warehouse_import.preview(db, user, factory_id, customer.strip(), recipient, warehouse.strip(), filename, content, rows,
+        refresh_user=lambda: refresh_user(request, db))
 
 
 @router.get('/shipments/{entity_id}/export')
