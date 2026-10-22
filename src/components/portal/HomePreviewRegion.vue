@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Eye, X } from '@lucide/vue'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription, DialogClose } from 'reka-ui'
 import type { EnterpriseModule } from '@/data/enterpriseMock'
@@ -12,6 +12,8 @@ const open = defineModel<boolean>('open', { default: false })
 defineEmits<{ unpin: [] }>()
 const { effectiveMotion, density } = useHomeAppearance()
 const summaryOpener = ref<HTMLElement | null>(null)
+let disposed = false
+onBeforeUnmount(() => { disposed = true })
 watch(() => props.narrow, () => { open.value = false })
 function openSummary(event: MouseEvent) {
   summaryOpener.value = event.currentTarget as HTMLElement
@@ -22,6 +24,7 @@ function restoreFocus(event: Event) {
   const target = summaryOpener.value ?? props.opener
   summaryOpener.value = null
   void nextTick(() => {
+    if (disposed) return
     if (target?.isConnected && target.getClientRects().length) target.focus()
     else document.querySelector<HTMLInputElement>('#home-module-search')?.focus()
   })

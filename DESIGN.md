@@ -460,12 +460,16 @@ font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
 - 按压可下移 1px 或轻微缩放；
 - 不对大面积表格持续做呼吸或闪烁动画；
 - 无限动画用于实时、加载等持续状态；认证品牌场景的持续装饰动效属于第 15.2 节明确例外，并须提供暂停与减少动态效果支持；
-- 路由切换保持轻微淡入和 3–6px 位移；
+- 跨模块导航由 `src/features/route-motion` 共享宿主协调，普通壳与业务 fullPage 使用原单份路由内容。业务根节点只淡入，不做整页位移、缩放或模糊，不使用 out-in、全局 route key 或 KeepAlive；
+- 首页来源明确且坐标有效时，可叠加一枚不可交互、对辅助技术隐藏的目录图标徽记。距离过远退为目标附近 6px 到达，丰富模式装饰最长 360ms；简约模式仅 140ms 淡入，关闭/减少动态/隐藏页面时取消装饰；
+- 同模块 query、hash、局部导航不重播全局进入。守卫成功后才呈现目标；取消、错误、更新的导航意图及账号/厂区/授权边界立即清理旧装饰。UV、3D、注塑及首页仅让首次进入让位于共享宿主，本地 Dialog、编辑和后续局部过渡保持独立；
 - 所有新增动效必须支持 `prefers-reduced-motion: reduce`。
 
 ### 11.3 高触感按钮的适用范围
 
 全局 Button（`src/components/ui/button/index.ts`）的变体、尺寸与焦点语义是共享基线。模块需要引入微渐变、扫光或点击波纹等局部质感时，应先评估全局影响，并限制在自身命名空间内。
+
+模块导航动效复用首页账号偏好；AppShell 在全屏工作区仍监听系统减少动态与页面可见性。工程回退开关为构建环境变量 `VITE_ROUTE_MOTION_ENABLED=false`，不影响路由、权限和数据加载。实现与验收边界见 `docs/frontend/module-transitions/IMPLEMENTATION.md`。
 
 ## 12. 无障碍基线
 

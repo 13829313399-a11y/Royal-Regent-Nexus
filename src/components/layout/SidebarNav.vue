@@ -8,6 +8,8 @@ import { shouldShowPageNavigation } from '@/config/pageAccessPolicy'
 import { isModuleDepartmentId, navigationGroups, type NavigationItem } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { useModuleEntryMotion } from '@/features/route-motion/useModuleEntryMotion'
+const recordEntry = useModuleEntryMotion()
 
 const route = useRoute()
 const appStore = useAppStore()
@@ -201,6 +203,8 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); cancelAnimation
             v-for="item in group.items"
             :key="`${group.label}-${item.label}`"
             :to="getNavigationTarget(item)"
+            :data-route-entry-id="`nav:${group.label}:${item.to}`"
+            @click.capture="recordEntry($event, { id: item.to, icon: item.icon }, getNavigationTarget(item))"
             class="sidebar-nav-link group relative flex h-10 items-center gap-3 overflow-hidden rounded-lg px-3 text-sm transition-[color,background-color,box-shadow] duration-150 lg:justify-center lg:px-0 2xl:justify-start 2xl:px-3"
             :class="isActive(item, group.label)
               ? 'bg-gradient-to-r from-teal-50 to-teal-50/45 font-semibold text-teal-800 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.08)]'
@@ -217,6 +221,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); cancelAnimation
               aria-hidden="true"
             />
             <span
+              data-route-entry-icon
               class="sidebar-nav-icon flex size-7 shrink-0 items-center justify-center rounded-md transition-colors"
               :class="isActive(item, group.label) ? 'bg-white/85 text-teal-700 shadow-sm' : 'text-slate-400 group-hover:bg-white group-hover:text-slate-700'"
             >

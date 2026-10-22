@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import { refreshAndRevalidateAuthorization } from '@/router'
 
 function route(overrides: Record<string, unknown> = {}) {
@@ -48,6 +49,7 @@ function routerFor(currentRoute = route()) {
 }
 
 describe('authorization snapshot route revalidation', () => {
+  beforeEach(() => setActivePinia(createPinia()))
   it.each([true, false])('revalidates a multi-department gate after refreshed shipping read access is %s', async (allowed) => {
     const authStore = {
       isAuthenticated: true,

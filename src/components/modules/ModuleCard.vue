@@ -5,6 +5,7 @@ import { RouterLink, useRouter } from 'vue-router'
 import type { EnterpriseModule } from '@/data/enterpriseMock'
 import StatusPill from '@/components/common/StatusPill.vue'
 import HomeSearchText from '@/components/portal/HomeSearchText.vue'
+import { acceptsEntryActivation, useModuleEntryMotion } from '@/features/route-motion/useModuleEntryMotion'
 
 const props = withDefaults(defineProps<{
   module: EnterpriseModule
@@ -24,16 +25,19 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ preview: [event: MouseEvent]; peek: []; cancelPeek: []; focusPreview: [] }>()
 
 const router = useRouter()
+const recordEntry = useModuleEntryMotion()
 const isExternalLink = (href: string) => /^https?:\/\//i.test(href)
 
 /** 卡片自身是否是一个导航目标。没有目标的展示卡不呈现手型、焦点或键盘激活。 */
 const isNavigable = computed(() => Boolean(props.module.route))
 
-function openModule(module: EnterpriseModule) {
+function openModule(module: EnterpriseModule, event: MouseEvent | KeyboardEvent) {
   if (!module.route) {
     return
   }
 
+  if (!acceptsEntryActivation(event)) return
+  recordEntry(event, module, module.route)
   void router.push(module.route)
 }
 
@@ -48,8 +52,8 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
   if (event.key !== 'Enter' && event.key !== ' ') {
     return
   }
+  openModule(module, event)
   event.preventDefault()
-  openModule(module)
 }
 </script>
 
@@ -59,6 +63,7 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
     :data-featured="active ? 'true' : 'false'"
     :data-pinned="pinned ? 'true' : undefined"
     :data-navigable="isNavigable ? 'true' : 'false'"
+    :data-route-entry-id="module.id"
     :data-portal-tone="module.statusTone"
     :style="{ '--portal-card-index': index }"
     :class="[
@@ -70,7 +75,7 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
     :role="module.route ? 'link' : undefined"
     :tabindex="module.route ? 0 : undefined"
     :aria-label="module.route ? `打开${module.title}` : undefined"
-    @click="openModule(module)"
+    @click="openModule(module, $event)"
     @keydown="handleKeydown($event, module)"
     @pointerenter="previewable && emit('peek')"
     @pointerleave="emit('cancelPeek')"
@@ -83,6 +88,7 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
     />
     <div class="mb-5 flex items-start gap-4">
       <span
+        data-route-entry-icon
         class="portal-module-card__icon flex size-10 shrink-0 items-center justify-center rounded-xl ring-1 ring-inset ring-white/70 transition-transform duration-200 group-hover:scale-105"
       >
         <component :is="module.icon" class="size-5" aria-hidden="true" />
@@ -127,6 +133,7 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
       <RouterLink
         v-if="module.route"
         :to="module.route"
+        @click.capture="recordEntry($event, module, module.route)"
         class="portal-action portal-action--primary inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/30"
         @click.stop
       >
@@ -136,6 +143,7 @@ function handleKeydown(event: KeyboardEvent, module: EnterpriseModule) {
       <RouterLink
         v-if="module.href && !isExternalLink(module.href)"
         :to="module.href"
+        @click.capture="recordEntry($event, module, module.href)"
         class="portal-action portal-action--secondary inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-teal-200 hover:bg-teal-50/60 hover:text-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/25"
         @click.stop
       >
