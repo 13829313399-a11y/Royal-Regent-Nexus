@@ -1,3 +1,4 @@
+vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createRouter, createMemoryHistory, RouterView, type Router } from 'vue-router'
@@ -9,7 +10,7 @@ vi.mock('../materialsApi',()=>({materialApi:{read:vi.fn(),catalog:vi.fn(),post:v
 
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span />' } }))
 vi.mock('../api', async original => ({ ...await original<typeof import('../api')>(), cuttingApi: { access: vi.fn(), list: vi.fn(), versions: vi.fn() } }))
-vi.mock('../ordersApi', () => ({ ordersApi: { list: vi.fn(), command: vi.fn(), history: vi.fn(), recover: vi.fn() } }))
+vi.mock('../ordersApi', () => ({ ordersApi: { list: vi.fn(), read: vi.fn(), command: vi.fn(), history: vi.fn(), recover: vi.fn() } }))
 const path = '/modules/production/cutting/planning?factory=huakang-c'
 const row: CuttingOrder = { line_id: 'line-1', dispatch_id: 'dispatch-1', source_version: 1, needs_receipt: true, received_at: '', current: null,
   snapshot: { customer_name: '合成洋行', reference_no: 'ORDER-001', product_no: 'P001', quantity: '100', status: 'active' } }
@@ -27,6 +28,7 @@ function button(text: string) {
 async function open(record = row, permissions = ['read', 'order_receive', 'bom_write', 'requisition_submit', 'eta_write', 'requisition_reconcile']) {
   vi.mocked(cuttingApi.access).mockResolvedValue({ enabled: true, schema_ready: true, orders_schema_ready: true, permissions })
   vi.mocked(ordersApi.list).mockResolvedValue(page([record]))
+  vi.mocked(ordersApi.read).mockResolvedValue(record)
   router = createRouter({ history: createMemoryHistory(), routes: [...cuttingOperationsRoutes, { path: '/modules/production', component: { template: '<div>生产部</div>' } }] })
   await router.push(path); await router.isReady()
   wrapper = mount(RouterView, { global: { plugins: [router] } }); await flushPromises()
@@ -40,6 +42,74 @@ beforeEach(() => { vi.resetAllMocks(); vi.mocked(materialApi.read).mockResolvedV
 afterEach(() => { wrapper?.unmount(); vi.restoreAllMocks() })
 
 describe('cutting order workflow and save protection', () => {
+  it.each([401,403])('keeps an authorization failure explicit and rechecks before retrying (%s)',async status=>{
+    await open()
+    vi.mocked(ordersApi.list).mockRejectedValueOnce({response:{status,data:{detail:'验收授权边界'}}})
+    await router.push(`/modules/production/cutting/planning?factory=huakang-c&auth_case=${status}`);await flushPromises()
+    expect(wrapper.text()).toContain(status===401?'登录已失效':'当前账号无权读取裁床订单')
+    expect(wrapper.text()).not.toContain('建设中')
+    const count=vi.mocked(cuttingApi.access).mock.calls.length
+    vi.mocked(ordersApi.list).mockResolvedValue(page([row]))
+    await button('重新核验权限').trigger('click');await flushPromises()
+    expect(vi.mocked(cuttingApi.access).mock.calls.length).toBeGreaterThan(count)
+    expect(wrapper.text()).toContain('ORDER-001')
+  })
+  it.each(['planning','materials'])('recovers %s from a transient child access read failure without construction text',async workspace=>{
+    await open()
+    vi.mocked(cuttingApi.access).mockResolvedValue({enabled:true,schema_ready:true,orders_schema_ready:true,permissions:['read']})
+    vi.mocked(ordersApi.list).mockRejectedValueOnce(new Error('offline'))
+    await router.push(`/modules/production/cutting/${workspace}?factory=huakang-c&retry_case=1`);await flushPromises()
+    expect(wrapper.text()).toContain('订单读取失败')
+    expect(wrapper.text()).not.toContain('建设中')
+    expect(wrapper.text()).not.toContain('尚不能录入、保存或结算')
+    vi.mocked(ordersApi.list).mockResolvedValue(page([row]))
+    await button('重新读取订单').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('ORDER-001')
+    expect(wrapper.text()).not.toContain('订单读取失败')
+  })
+  it('uses applied filters for ledger paging and metrics until the next explicit search',async()=>{
+    await open()
+    vi.mocked(ordersApi.list).mockResolvedValue({data:[row],total:51,page:1,page_size:50})
+    await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
+    await wrapper.get('input[maxlength="80"]').setValue('NEW')
+    await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await button('下一页').trigger('click');await flushPromises()
+    expect(ordersApi.list).toHaveBeenLastCalledWith(2,'','','')
+    await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'NEW','awaiting_receipt','')
+  })
+
+  it.each([false, true])('opens material operations only in the materials workspace (request permission: %s)', async permitted => {
+    await open(received, ['read', ...(permitted ? ['material_request'] : [])])
+    await router.push({ path: '/modules/production/cutting/planning', query: { factory: 'huakang-c', line_id: received.line_id, month: '2026-10' } })
+    await flushPromises()
+    expect(materialApi.read).not.toHaveBeenCalled()
+    expect(wrapper.text()).not.toContain('领料申请与布料仓回传')
+    const link = wrapper.findAll('a').find(a => a.text() === '前往物料库存办理领料')!
+    expect(link.attributes('href')).toContain('line_id=line-1')
+    expect(link.attributes('href')).toContain('month=2026-10')
+    await link.trigger('click'); await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/modules/production/cutting/materials')
+    expect(ordersApi.read).toHaveBeenLastCalledWith(received.line_id)
+    expect(materialApi.read).toHaveBeenCalledWith(received.line_id)
+    expect(wrapper.text()).toContain('领料申请与布料仓回传')
+    expect(wrapper.findAll('button').some(b => b.text() === '新建领料申请')).toBe(permitted)
+    expect(wrapper.text()).not.toContain('前往物料库存办理领料')
+  })
+  it('keeps an unsaved planning-page form when the material jump is cancelled', async () => {
+    await open()
+    await receiptForm()
+    const link = wrapper.findAll('a').find(a => a.text() === '前往物料库存办理领料')!
+    await link.trigger('click'); await flushPromises()
+    expect(window.confirm).toHaveBeenCalled()
+    expect(router.currentRoute.value.path).toBe('/modules/production/cutting/planning')
+    expect((wrapper.get('form.order-form textarea').element as HTMLTextAreaElement).value).toBe('核对来源订单签收')
+    expect(materialApi.read).not.toHaveBeenCalled()
+    vi.mocked(window.confirm).mockReturnValue(true)
+    await link.trigger('click'); await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/modules/production/cutting/materials')
+    expect(ordersApi.read).toHaveBeenLastCalledWith(row.line_id)
+  })
   it('sends planning state filters to the server', async () => {
     await open()
     await wrapper.get('[aria-label="排期状态筛选"]').setValue('review')
@@ -174,6 +244,8 @@ describe('cutting order workflow and save protection', () => {
   it('refreshes filtered rows and totals after a save changes the workflow status', async () => {
     await open()
     await wrapper.get('[aria-label="办理状态筛选"]').setValue('awaiting_receipt')
+    await wrapper.get('form.order-toolbar').trigger('submit');await flushPromises()
+    await button('查看').trigger('click')
     await receiptForm()
     vi.mocked(ordersApi.command).mockResolvedValue(received)
     vi.mocked(ordersApi.list).mockResolvedValue(page([]))

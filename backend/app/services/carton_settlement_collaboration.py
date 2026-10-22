@@ -33,6 +33,9 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
     from app.services.carton_supplier_settlement import dump, _posting_date
     from app.services import carton_shipment_receiving as receiving
 
+    # Original-note evidence also belongs to its delivery month, independently
+    # of payable accrual. New/backfilled notes must pass the evidence-period
+    # guard; existing notes retain the acceptance-batch cutoff below.
     shipments = list(db.scalars(select(SupplierShipment).where(
         SupplierShipment.factory_id == factory, SupplierShipment.supplier_id == supplier
     ).order_by(SupplierShipment.id)))
@@ -47,6 +50,16 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
         papers = formal + unmatched
         history = receiving.batches(db, shipment, period=period)
         all_history = receiving.batches(db, shipment)
+        # New correction batches carry only the identity of earlier unreceived
+        # closures. Their vendor quantities stay with that original closure's
+        # month, while the corrected physical receipt belongs to its own month.
+        carried = {}
+        for batch in all_history:
+            for paper in papers:
+                original = json.loads(paper.snapshot_json).get("original_unmatched_line_id")
+                for source in batch.get("carried_closures", {}).get(paper.id,
+                        batch.get("carried_closures", {}).get(original, [])):
+                    carried[(source["closure_event_id"], paper.id)] = (source, batch, paper)
         if not all_history or any("delivery_quantities" in batch for batch in all_history):
             # One immutable vendor allocation per acceptance batch. Later-month
             # batches cannot change a previously confirmed month's fingerprint.
@@ -59,6 +72,9 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
                 vendor_lines = []
                 for paper in papers:
                     quantity = receiving.allocated(batch, paper)
+                    quantity -= sum((max(Decimal(0), Decimal(source["quantity"]) - receiving.reopened_quantity(
+                        batch, paper, source["closure_event_id"])) for source in receiving.closure_sources(batch, paper)
+                        if (source["closure_event_id"], paper.id) in carried), Decimal(0))
                     if quantity <= 0:
                         continue
                     snapshot = json.loads(paper.snapshot_json)
@@ -72,9 +88,28 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
                     "document_no": shipment.delivery_note_no, "delivery_date": shipment.delivery_date,
                     "acceptance_date": day, "status": "RECEIVED" if receipt else "NOT_RECEIVED",
                     "lines": vendor_lines, "acceptance": accepted}
-                evidence.append(item)
+                if vendor_lines or not carried:
+                    evidence.append(item)
                 if batch.get("receipt_id"):
                     by_receipt.setdefault(batch["receipt_id"], []).append(item)
+            for (source_id, _), (source, batch, paper) in sorted(carried.items()):
+                day = source["acceptance_date"]
+                if day[:7] > period or not (shipment.delivery_date[:7] == period or day[:7] == period):
+                    continue
+                quantity = Decimal(source["quantity"]) - receiving.reopened_quantity(batch, paper, source_id)
+                if quantity <= 0: continue
+                snapshot = json.loads(paper.snapshot_json)
+                raw = snapshot.get("delivery_unit_price") if hasattr(paper, "order_line_id") else snapshot.get("unit_price")
+                price, amount, warning = vendor_values(raw, quantity, currency)
+                evidence.append({"shipment_id": shipment.id, "revision": "CLOSED:" + source_id + ":" + paper.id,
+                    "closure_event_id": source_id, "receipt_id": None, "document_no": shipment.delivery_note_no,
+                    "delivery_date": shipment.delivery_date, "acceptance_date": day, "status": "NOT_RECEIVED",
+                    "lines": [{"id": paper.id, "order_line_id": getattr(paper, "order_line_id", None),
+                        "quantity": str(quantity), "original_quantity": str(paper.quantity), "unit_price": price,
+                        "amount": amount, "original_unit_price": str(raw) if raw is not None else None,
+                        "price_warning": warning, "currency": "CNY", "snapshot": snapshot}],
+                    "acceptance": {"lines": [{"shipment_line_id": paper.id, "received_quantity": "0",
+                        "difference_reason": source.get("reason", "")}]}})
             if shipment.delivery_date[:7] == period:
                 pending = []
                 for paper in papers:
@@ -119,6 +154,9 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
         evidence.append(item)
         if shipment.receipt_id:
             by_receipt.setdefault(shipment.receipt_id, []).append(item)
+    from app.services.carton_special_requests import settlement_evidence
+    special_by_line, special_evidence = settlement_evidence(db, factory, supplier, period)
+    evidence.extend(special_evidence)
     enriched, suggested, matched = [], [], set()
     for source in rows:
         row = dict(source)
@@ -154,12 +192,24 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
                     "difference_reason": accepted_line.get("difference_reason", ""),
                     "quantity_difference": str(Decimal(line["quantity"]) - Decimal(row["quantity"])),
                     "price_difference": str(Decimal(price) - Decimal(row["unit_price"])) if price is not None and row["unit_price"] is not None else None}
+        if vendor is None and receipt_line and receipt_line.id in special_by_line:
+            vendor = special_by_line[receipt_line.id]
+            matched.add((vendor["shipment_id"], receipt_line.receipt_id + ":" + vendor["line_id"], vendor["line_id"]))
+        if receipt_line:
+            from app.services.carton_price_review import apply_vendor
+            vendor = apply_vendor(db, factory, receipt_line.id, vendor, receipt_line.effective_quantity)
         row["supplier_delivery"] = vendor
         enriched.append(row)
         suggested.append({"id": "AUTO-" + row["source_key"], "source_key": row["source_key"], "document_no": row["document_no"],
             "quantity": vendor["quantity"] if vendor else None, "unit_price": vendor["unit_price"] if vendor else None,
             "amount": vendor["amount"] if vendor else None, "approved_return_unit_price": None,
             "credit_document_no": "", "credit_date": None, "note": ""})
+        if row.get("return_agreement") or row["kind"] == "RETURN_REFUND":
+            agreement = row.get("return_agreement") or {}
+            suggested[-1].update(quantity=row["quantity"], unit_price=row["unit_price"], amount=row["amount"],
+                approved_return_unit_price=row["unit_price"] if row["kind"] == "RETURN" else None,
+                credit_document_no=agreement.get("credit_document_no", ""), credit_date=agreement.get("credit_date"),
+                note="按退货协同已认可贷项核对" if row["kind"] == "RETURN" else "按内部已核对现金退款正项核对，不重复抵扣")
     # Every omitted vendor line remains visible, including an entirely rejected
     # paper on a document whose other papers produced a valid posted receipt.
     for shipment in evidence:
@@ -182,6 +232,8 @@ def build(db, factory, supplier, period, currency, rows, base_fingerprint):
                 effective = Decimal(str(accepted_line.get("received_quantity") or 0)) - sum(
                     Decimal(str(accepted_line.get(key) or 0)) for key in ("damaged_quantity", "rejected_quantity", "unusable_quantity"))
                 reason = "有效验收为零，不计应结" if effective <= 0 else "未关联本期有效结算来源，请核实币种及来源"
+                if effective > 0 and (line["snapshot"].get("replenishment_issue_id") or line["snapshot"].get("special_replenishment_request_id")) and line["snapshot"].get("responsibility") == "SUPPLIER":
+                    reason = "供应商责任补单，恢复库存成本，不计应结"
             unsettled.append({key: shipment[key] for key in ("shipment_id", "document_no", "delivery_date", "acceptance_date", "status")} | {
                 "line_id": line["id"], "item_no": line["snapshot"].get("item_no", ""),
                 "specification": line["snapshot"].get("specification", ""), "unit": line["snapshot"].get("unit", ""),

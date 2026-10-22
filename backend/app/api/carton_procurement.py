@@ -66,6 +66,7 @@ from app.schemas.carton_procurement import (
     CartonOrderBulkCancelRequest,
     CartonOrderBulkSubmitRequest,
     CartonOrderCancelRequest,
+    CartonOrderReturnRequest,
     CartonOrderCreate,
     CartonOrderDatesRequest,
     CartonOrderHistorySuggestionListOut,
@@ -618,7 +619,7 @@ def post_order_cancel(
 @router.post("/orders/{order_no}/return", response_model=CartonOrderOut)
 def post_order_return(
     order_no: str,
-    payload: CartonOrderCancelRequest,
+    payload: CartonOrderReturnRequest,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -890,6 +891,7 @@ def get_receipts(
 
 @router.get("/receipt-history")
 def get_receipt_history(factory_id: str, responsibility_scope: Literal["OWN", "ALL"] = "OWN",
+    business_kind: Literal["", "PURCHASE", "SAMPLE", "WORKSHOP_MISC", "SUPPLIER_GIFT", "LEGACY"] = "",
     customer_code: str = Query(default="", max_length=64), search: str = Query(default="", max_length=128),
     status_filter: Literal["", "PENDING_CONFIRMATION", "POSTED", "REVERSED"] = "",
     date_field: Literal["ACCEPTANCE", "DELIVERY"] = "ACCEPTANCE", date_from: str = "", date_to: str = "",
@@ -899,11 +901,12 @@ def get_receipt_history(factory_id: str, responsibility_scope: Literal["OWN", "A
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
     total, rows = list_receipts(db, factory_id, user=current_user if responsibility_scope == "OWN" else None,
         customer_code=customer_code.strip(), search=search.strip(), status_filter=status_filter, date_field=date_field,
-        date_from=date_from, date_to=date_to, sort=sort, limit=limit, offset=offset)
+        date_from=date_from, date_to=date_to, sort=sort, limit=limit, offset=offset, business_kind=business_kind)
     items = []
     for row in rows:
         lines = _receipt_lines(db, row.id)
-        items.append(dict(id=row.id, receipt_no=row.receipt_no, delivery_note_no=row.delivery_note_no,
+        from app.services.carton_source_links import receipt_sources
+        items.append(dict(**receipt_sources(db, row, lines), id=row.id, receipt_no=row.receipt_no, delivery_note_no=row.delivery_note_no,
             delivery_date=row.delivery_date, acceptance_date=row.acceptance_date, status=row.status,
             confirmed_at=row.confirmed_at, operator=row.confirmed_by_name or row.created_by_name,
             line_count=len(lines), customers="、".join(dict.fromkeys(line.customer_name for line in lines))[:160],
@@ -994,6 +997,9 @@ def start_import_job(
     factory_id: str,
     import_type: Literal["WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE", "DELIVERY_NOTE"],
     file: UploadFile = File(...), customer_code: str = Form(default="", max_length=64),
+    scope_mode: str = Form(default="UNDECLARED", max_length=16), as_of_date: str = Form(default="", max_length=10),
+    coverage_start: str = Form(default="", max_length=10), coverage_end: str = Form(default="", max_length=10),
+    full_scope_confirmed: bool = Form(default=False),
     advance_days: int = Query(default=3, ge=0, le=30),
     db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1003,6 +1009,10 @@ def start_import_job(
         customer_code = get_active_customer(db, factory_id, customer_code).customer_code
     content = _read_carton_upload(file)
     profile = {"customer_code": customer_code} if import_type == "WEEKLY_SCHEDULE" else {"advance_days": advance_days} if import_type == "INSPECTION_SCHEDULE" else {}
+    if import_type == "WEEKLY_SCHEDULE":
+        from app.services.carton_schedule_coverage import normalize_scope
+        profile = normalize_scope(dict(profile, scope_mode=scope_mode, as_of_date=as_of_date,
+            coverage_start=coverage_start, coverage_end=coverage_end, full_scope_confirmed=full_scope_confirmed))
     metadata = {"filename": file.filename, "content_type": file.content_type, "profile": profile}
     db.rollback()
     return file_jobs.start_job(current_user.id, factory_id, "parse",
@@ -1023,7 +1033,8 @@ def complete_import_job(job_id: str, factory_id: str, db: Session = Depends(get_
         raise HTTPException(422, "此任务不是导入任务")
     with file_jobs.result(job) as (parsed, args):
         if job.batch_id:
-            return get_import_batch(db, factory_id, job.batch_id)
+            from app.services.carton_schedule_coverage import completed_batch
+            return completed_batch(db, current_user, factory_id, job.batch_id)
         kind, filename, content = args
         upload = SimpleNamespace(filename=filename, content_type=job.metadata["content_type"])
         batch = create_import_batch(db, factory_id, kind, upload, content, current_user,
@@ -1048,11 +1059,17 @@ def post_weekly_import(
     factory_id: str,
     customer_code: str = Form(..., min_length=1, max_length=64),
     file: UploadFile = File(...),
+    scope_mode: str = Form(default="UNDECLARED", max_length=16), as_of_date: str = Form(default="", max_length=10),
+    coverage_start: str = Form(default="", max_length=10), coverage_end: str = Form(default="", max_length=10),
+    full_scope_confirmed: bool = Form(default=False),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
-    return _isolated_import(db, factory_id, "WEEKLY_SCHEDULE", file, current_user, {"customer_code": customer_code})
+    from app.services.carton_schedule_coverage import normalize_scope
+    profile = normalize_scope(dict(customer_code=customer_code, scope_mode=scope_mode, as_of_date=as_of_date,
+        coverage_start=coverage_start, coverage_end=coverage_end, full_scope_confirmed=full_scope_confirmed))
+    return _isolated_import(db, factory_id, "WEEKLY_SCHEDULE", file, current_user, profile)
 
 
 @router.get("/schedule-order-marks")
@@ -1075,6 +1092,7 @@ def post_schedule_order_mark(
     return set_schedule_order_mark(
         db, factory_id, payload.batch_id, payload.source_sheet,
         payload.source_row, payload.marked, current_user,
+        reason=payload.reason,
     )
 
 
@@ -1089,6 +1107,7 @@ def post_schedule_order_marks_bulk(
         db, factory_id, payload.batch_id,
         [(row.source_sheet, row.source_row) for row in payload.rows],
         payload.marked, current_user,
+        reason=payload.reason,
     )
 
 

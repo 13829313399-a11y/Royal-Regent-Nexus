@@ -77,7 +77,7 @@ watch(filtered,()=>{page.value=1})
 </script>
 
 <template>
-  <SectionPanel title="历史期初核对与切入准备 · P5a" class="cutting-content-panel">
+  <SectionPanel title="历史期初核对与切入准备" class="cutting-content-panel">
     <p>按切入月份 1 日以前的最新有效记录核对。仅作准备预览，不保存期初、不增加库存或应付，不改变锁月起点。</p>
     <p>对照值只计算差额，不叠加系统数。空白表示未核对，明确填写 0 才表示零。对照资料仅在本页临时保留。</p>
     <form class="order-toolbar" @submit.prevent="run()">

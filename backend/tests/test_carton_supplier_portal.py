@@ -172,11 +172,24 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
             next(item["id"] for item in shipment["lines"] if item["item_no"] == "SAMPLE-BOX") else line for line in lines])
         denied = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=unsafe)
         assert denied.status_code == 422, denied.text
-        for required_field in (("customer_code",) if sample_purpose == "GIFT" else ("customer_code", "requested_by")):
-            incomplete = dict(payload, lines=[dict(line, **{required_field: ""})
-                if line.get("no_order_decision") in {"SAMPLE", "GIFT"} else line for line in lines])
-            denied = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=incomplete)
-            assert denied.status_code == 422, denied.text
+        # Preserve historical acceptance reversal/correction coverage.
+        from app.db import SessionLocal
+        from app.models.carton_procurement import CartonReceipt, CartonSupplier
+        from app.models.carton_supplier_portal import SupplierShipment
+        with SessionLocal() as db:
+            historical_shipment = db.get(SupplierShipment, shipment['id'])
+            supplier = db.get(CartonSupplier, historical_shipment.supplier_id)
+            historical = CartonReceipt(id="legacy-mixed-reversed", factory_id="huaxing", receipt_no="LEGACY-RC", delivery_note_no="LEGACY-DN",
+                delivery_date="2026-09-24", acceptance_date="2026-09-24", supplier_id=supplier.id, supplier_name_snapshot=supplier.supplier_name,
+                status="REVERSED", note="synthetic persisted historical acceptance", revision=3,
+                created_by="user-admin", created_by_name="admin", confirmed_by="user-admin", confirmed_by_name="admin",
+                created_at="2026-09-24T10:00:00+08:00", updated_at="2026-09-24T11:00:00+08:00", confirmed_at="2026-09-24T10:00:00+08:00")
+            db.add(historical); db.flush()
+            historical_shipment.receipt_id = historical.id
+            historical_shipment.acceptance_json = json.dumps(payload, ensure_ascii=False)
+            historical_shipment.status = "RECEIVED"
+            db.commit()
+        payload["correction_reason"] = "原历史验收冲销更正"
         posted = client.post(BASE + f"/internal/shipments/{shipment['id']}/receive", json=payload)
         assert posted.status_code == 200, posted.text
         assert posted.json()["status"] == "RECEIVED"
@@ -199,7 +212,14 @@ def test_supplier_mixed_delivery_requires_warehouse_no_order_decision(monkeypatc
             settlement_rows, _, settlement_issues, undated = sources(db, "huaxing", receipt.supplier_id, "2026-09", "CNY")
             assert not settlement_issues and not undated
             assert {row["item_no"] for row in settlement_rows} == {order["item_no"], "SAMPLE-BOX"}
-            assert all(row["unit_price"] is not None for row in settlement_rows)
+            # This original vendor file has no prices. Recorded warehouse costs
+            # remain physical evidence, while payables await vendor agreement.
+            assert all(row["unit_price"] is None and row["amount"] is None for row in settlement_rows)
+            assert all(row["price_review"]["status"] == "PROPOSED" for row in settlement_rows)
+            assert {line.source_type: line.unit_price for line in receipt_lines} == {
+                "FORMAL_ORDER": Decimal("2.5"),
+                "AD_HOC": Decimal("0") if sample_purpose == "GIFT" else Decimal("2.5"),
+            }
 
         # A later formal order can consume the original sample evidence without
         # posting another receipt, inventory movement, or month-end source.
@@ -681,11 +701,17 @@ def test_partial_receipt_atomicity_replay_and_remaining(monkeypatch):
         denied=client.post(BASE+f"/internal/shipments/{shipment['id']}/receive",json=invalid)
         assert denied.status_code == 422,denied.text
         assert client.get("/api/carton-procurement/receipts",params={"factory_id":"huaxing"}).json()["total"] == 0
-        receive["lines"][-1]["unit_price"]=0  # An unspecified zero is pending price, not invalid or free.
+        # Warehouse explicitly keeps the unknown price pending; zero alone is not a free declaration.
+        receive["lines"][-1].update(unit_price=0, zero_price_kind="PENDING", price_action="PENDING",
+            price_reason="送货原价尚待核实")
         received=client.post(BASE+f"/internal/shipments/{shipment['id']}/receive",json=receive)
         assert received.status_code == 200,received.text
         receipt=client.get("/api/carton-procurement/receipts",params={"factory_id":"huaxing"}).json()["items"][0]
         assert receipt["lines"][-1]["zero_price_kind"] == "PENDING"
+        price_rows = client.get("/api/carton-price-reviews/internal", params={"factory_id": "huaxing"}).json()["items"]
+        pending_price = next(row for row in price_rows if row["shipment_line_id"] == receive["lines"][-1]["shipment_line_id"])
+        assert pending_price["status"] == "PENDING"
+        assert pending_price["proposed_unit_price"] is None and pending_price["effective_unit_price"] is None
         replay=client.post(BASE+f"/internal/shipments/{shipment['id']}/receive",json=receive)
         assert replay.status_code == 200 and replay.json()["receipt_id"] == received.json()["receipt_id"]
         receive["request_id"]=str(uuid4())

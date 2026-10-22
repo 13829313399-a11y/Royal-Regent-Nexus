@@ -1,7 +1,7 @@
 import { http } from '@/lib/http'
 
 export type Data = Record<string, any>
-export type RecordKind = 'material' | 'product' | 'order' | 'supply' | 'allocation' | 'shipment' | 'import'
+export type RecordKind = 'customer' | 'material' | 'product' | 'order' | 'supply' | 'allocation' | 'shipment' | 'import'
 export interface MaterialRecord { id: string; kind: RecordKind; version: number; data: Data }
 export interface Demand {
   id: string; material_id: string; code: string; name: string; unit: string
@@ -18,7 +18,7 @@ export interface BoardOrder {
   planning_status?: 'ready' | 'missing_master' | 'missing_parameters'
 }
 export interface WorkspaceResponse { records: MaterialRecord[]; board: BoardOrder[]; permissions: string[] }
-export type Action = 'material_save' | 'product_save' | 'order_save' | 'order_recalculate' | 'demand_adjust'
+export type Action = 'customer_save' | 'material_save' | 'product_save' | 'order_save' | 'order_recalculate' | 'demand_adjust'
   | 'supply_save' | 'supply_reply' | 'output_material_refresh' | 'receipt_confirm' | 'allocate' | 'reallocate'
   | 'shipment_save' | 'shipment_confirm' | 'import_confirm'
 export interface Command {

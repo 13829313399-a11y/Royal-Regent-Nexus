@@ -20,7 +20,7 @@ def identity(context):
     return tuple(context.get(key) for key in FIELDS)
 
 
-def production_basis(db, line_id, context, docs, ready):
+def production_basis(db, line_id, context, docs, ready, versions=None):
     if not ready:
         return None, [], '需先完成每日填数迁移及证据保护'
     selected = {key: d for key, d in docs.items() if d['posted'] and
@@ -29,7 +29,8 @@ def production_basis(db, line_id, context, docs, ready):
     for document in selected.values():
         event = document['posted']
         frozen = event['data']['context']
-        revision = db.get(CuttingOrderRevision, (line_id, frozen['plan_version']))
+        key = (line_id, frozen['plan_version'])
+        revision = db.get(CuttingOrderRevision, key) if versions is None else versions.get(key)
         plan = (revision.data.get('planning', {}).get('published') if revision else None) or {}
         task = next((t for t in plan.get('tasks', []) if t['task_id'] == context['task_id']), None)
         version = task.get('resource_version') if task else None
@@ -43,9 +44,14 @@ def production_basis(db, line_id, context, docs, ready):
     return balances.get(context['task_id'], {}).get('completed', 0), basis, ''
 
 
-def view(db, line_id, rows, history):
-    ready = reporting.schema_ready(db.connection())
-    reports = reporting.documents(reporting.events(db, line_id)) if ready else {}
+def view(db, line_id, rows, history, *, production_snapshot=None):
+    if production_snapshot is None:
+        ready = reporting.schema_ready(db.connection())
+        reports = reporting.documents(reporting.events(db, line_id)) if ready else {}
+        versions = None
+    else:
+        ready, all_reports, versions = production_snapshot
+        reports = all_reports.get(line_id, {})
     uses = usage.documents(history)
     confirmations = [e for e in history if e['action'] == 'allocate' and e['line_id'] == line_id]
     latest = {identity(e['data']['context']): e for e in confirmations}
@@ -58,7 +64,7 @@ def view(db, line_id, rows, history):
         precision.prec = 60
         for key, members in groups.items():
             context = members[0]['context']
-            completed, production, blocked = production_basis(db, line_id, context, reports, ready)
+            completed, production, blocked = production_basis(db, line_id, context, reports, ready, versions)
             ids = {row['issue_id'] for row in members}
             used = [d['posted'] for d in uses.values() if d['posted'] and d['posted']['data']['entry']['issue_id'] in ids]
             # Price revisions revalue unlocked reports, but never invalidate confirmed physical allocation.

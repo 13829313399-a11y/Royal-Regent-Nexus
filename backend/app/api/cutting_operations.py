@@ -19,6 +19,8 @@ from app.services import cutting_settlement as settlement, cutting_settlement_sc
 from app.services import cutting_payments as payments, cutting_payment_schemas as pay
 from app.services import cutting_exports as exports
 from app.services import cutting_cutover as cutover
+from app.services import cutting_workspace as workspace
+from app.services.cutting_export_gate import gate as export_gate
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
 
@@ -73,28 +75,42 @@ def cutover_preview(body: cutover.Selection, db: Db, user: User):
 def export_preview(body: exports.Selection, db: Db, user: User):
     c.authorize(user, body.factory_id, exports.PERMISSIONS[body.kind])
     orders_ready(db)
-    report = exports.capture(db, body)
-    return dict(token=periods.digest(report), title=exports.TITLES[body.kind], metadata=report['metadata'],
-                sheets=[dict(name=s['name'], rows=len(s['rows'])) for s in report['sheets']], delivery=report['delivery'])
+    report = exports.capture(db, body, release_transaction=True)
+    db.rollback()  # Captured plain data; hashing/serialization need no business lock.
+    return JSONResponse(dict(token=periods.digest(report), title=exports.TITLES[body.kind], metadata=report['metadata'],
+                sheets=[dict(name=s['name'], rows=len(s['rows'])) for s in report['sheets']], delivery=report['delivery']),
+                headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/exports/download')
 def export_download(body: exports.Selection, request: Request, db: Db, user: User):
     permission = exports.PERMISSIONS[body.kind]
     c.authorize(user, body.factory_id, permission)
+    # Authentication may have opened a transaction. Release it before queuing;
+    # after admission, authenticate again rather than trusting the queued user.
+    db.rollback()
+    with export_gate.slot():
+        current = get_current_user(request, db)
+        c.require(current.id == user.id, '登录身份已变化，请重新导出', 403)
+        c.authorize(current, body.factory_id, permission)
+        return generate_export(body, request, db, current, permission)
+
+
+def generate_export(body, request, db, user, permission):
     orders_ready(db)
-    report = exports.capture(db, body)
+    report, source_revision = exports.capture(db, body, release_transaction=True, with_revision=True)
     c.require(body.token and body.token == periods.digest(report), '报表依据或当前有效状态已变化，请重新预览导出')
     report.update(token=body.token, captured_at=exports.business_now().isoformat())
     db.rollback()  # XLSX generation holds no cutting/warehouse write lock.
-    content, extension = exports.package(report, user)
+    content, extension = exports.package_isolated(report, user)
     db.expire_all()
     current = get_current_user(request, db)
     c.require(current.id == user.id, '登录身份已变化，请重新导出', 403)
     c.authorize(current, body.factory_id, permission)
     orders_ready(db)
     # Recheck after generation: do not download a newly reopened or changed live report unnoticed.
-    c.require(periods.digest(exports.capture(db, body)) == body.token, '生成期间报表依据发生变化，请重新预览导出')
+    c.require(exports.source_revision(db, body) == source_revision, '生成期间报表依据发生变化，请重新预览导出')
+    db.rollback()
     filename = f'cutting-{body.kind}-{body.month}-{body.token[:12]}.{extension}'
     return Response(content, media_type='application/zip' if extension == 'zip' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         headers={'Content-Disposition': f'attachment; filename="{filename}"', 'Cache-Control': 'no-store',
@@ -116,6 +132,73 @@ def masters(db: Db, user: User, factory_id: str = '', kind: s.Kind = 'material',
     return dict(data=[c.view(db, item) for item in rows], total=total, page=page, page_size=page_size)
 
 
+@router.get('/workspace/masters')
+def workspace_masters(db: Db, user: User, factory_id: str = ''):
+    c.authorize(user, factory_id)
+    ready(db)
+    return workspace.master_summary(db)
+
+
+@router.get('/workspace/planning')
+def workspace_planning(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80),
+                       status: s.WorkflowStatus | None = None, bucket: Literal['', 'scheduled', 'unscheduled'] = '',
+                       page: int = Query(1, ge=1),
+                       plan_status: Annotated[str | None, Query(pattern='^(unplanned|partial|published|pending_actual|review)$')] = None):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    result = workspace.scheduling(db, q, status, bucket, page, plan_status)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/workspace/tasks')
+def workspace_tasks(db: Db, user: User, day: ps.BusinessDate, factory_id: str = '', q: str = Query('', max_length=80),
+                    execution: Literal['', 'internal', 'outsourced'] = '',
+                    scope: Literal['daily', 'reported', 'unreported', 'abnormal', 'history'] = 'daily', page: int = Query(1, ge=1)):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    result = workspace.task_board(db, day, q, execution, scope, page)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/workspace/inventory')
+def workspace_inventory(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80),
+                        execution: Literal['', 'internal', 'outsourced'] = '', page: int = Query(1, ge=1),
+                        view: Literal['issues', 'orders'] = 'issues'):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    result = workspace.inventory(db, q, execution, page, view)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/workspace/costs')
+def workspace_costs(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80), page: int = Query(1, ge=1)):
+    c.authorize(user, factory_id, 'cost_read')
+    orders_ready(db)
+    result = workspace.cost_overview(db, q, page)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/workspace/activity')
+def workspace_activity(db: Db, user: User, factory_id: str = '', q: str = Query('', max_length=80),
+                       source: Literal['', 'master', 'order', 'production', 'material', 'warehouse', 'period', 'settlement', 'payment'] = '',
+                       page: int = Query(1, ge=1), expected_token: str = Query('', max_length=64),
+                       order_q: str = Query('', max_length=80), month: pcs.Month | None = None):
+    c.authorize(user, factory_id)
+    ready(db)
+    return JSONResponse(workspace.activity(db, user, source, q, page, expected_token, order_q, month or ''), headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/workspace/months/{month}')
+def workspace_month(month: pcs.Month, db: Db, user: User, factory_id: str = ''):
+    c.authorize(user, factory_id)
+    orders_ready(db)
+    return JSONResponse(workspace.monthly(db, user, month), headers={'Cache-Control': 'no-store'})
+
+
 @router.get('/settlements/{month}')
 def settlement_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', document_id: str | None = None, event_id: str | None = None):
     c.authorize(user, factory_id, 'settlement_read')
@@ -123,7 +206,8 @@ def settlement_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', 
     result = settlement.read(db, month, document_id, event_id)
     if document_id and c.allowed(user, 'payment_read'):
         result['payment_dependencies'] = payments.blockers(db, document_id)
-    return result
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/settlements/{month}/basis')
@@ -166,7 +250,9 @@ def settlement_recover(body: ss.Recover, db: Db, user: User):
 def payment_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', document_id: str | None = None, event_id: str | None = None):
     c.authorize(user, factory_id, 'payment_read')
     orders_ready(db)
-    return payments.read(db, month, document_id, event_id)
+    result = payments.read(db, month, document_id, event_id)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/payment-basis')
@@ -209,7 +295,9 @@ def payment_recover(body: pay.Recover, db: Db, user: User):
 def period_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', event_id: str | None = None):
     c.authorize(user, factory_id, 'cost_read')
     orders_ready(db)
-    return periods.read(db, month, event_id)
+    result = periods.read(db, month, event_id)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/periods/{month}/basis')
@@ -242,11 +330,18 @@ def period_recover(body: pcs.RecoverPeriod, db: Db, user: User):
 
 
 @router.get('/masters/{entity_id}/versions')
-def versions(entity_id: str, db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1)):
+def versions(entity_id: str, db: Db, user: User, factory_id: str = '', page: int = Query(1, ge=1),
+             focus_version: int | None = Query(None, ge=1)):
     c.authorize(user, factory_id)
     ready(db)
     item = c.master(db, entity_id)
-    numbers = db.scalars(select(CuttingRevision.version).where(CuttingRevision.master_id == item.id)
+    if focus_version is not None:
+        c.require(focus_version <= item.version, '指定资料版本不存在', 404)
+        # Revisions are immutable and contiguous; resolve against the same head
+        # used to read this page, rather than a previously fetched client count.
+        page = (item.version - focus_version) // 50 + 1
+    numbers = db.scalars(select(CuttingRevision.version).where(CuttingRevision.master_id == item.id,
+                         CuttingRevision.version <= item.version)
                          .order_by(CuttingRevision.version.desc()).offset((page-1)*50).limit(50))
     return dict(data=[c.view(db, item, version) for version in numbers], total=item.version, page=page, page_size=50)
 

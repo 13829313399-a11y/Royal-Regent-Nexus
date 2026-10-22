@@ -32,7 +32,7 @@ def bridge(planned, request):
     tables=[t for t in WarehouseOperation.metadata.sorted_tables if t.name.startswith('fabric_') or t.name=='warehouse_operations_documents']
     WarehouseOperation.metadata.create_all(p.engine,tables=tables)
     with Session(p.engine) as db:
-        for key,kind,code,name,data in [('fabric-mat','MATERIAL','FAB-01','蓝布',dict(category='FABRIC',unit='米',spec='规格A',color='蓝')),('bin','LOCATION','A01','A01',dict(warehouse='布料一仓'))]:
+        for key,kind,code,name,data in [('fabric-mat','MATERIAL','FAB-01','蓝布',dict(category='FABRIC',unit='米',spec='规格A',color='蓝')),('bin','LOCATION','A01','A01',dict(warehouse='布料一仓',category='FABRIC'))]:
             db.add(FabricMasterRecord(id=key,factory_id='huakang-c',kind=kind,code=code,name=name,status='ACTIVE',revision=1,data_json=json.dumps(data),updated_at='2026-10-10'))
         db.commit()
     p.cutting_auth['user']=actor('material_request','material_receive')
@@ -429,3 +429,36 @@ def test_material_totals_keep_closed_remainders_returns_and_reversals_distinct(b
     assert total['issued_quantity']=='4' and total['outstanding_quantity']=='40'
     assert total['received_quantity']=='3' and total['returned_quantity']=='1' and total['net_received_quantity']=='2'
     assert total['exceeds_theoretical']
+
+
+def test_coordinated_multi_request_issue_preserves_cutting_guards_and_replay(bridge):
+    p = bridge
+    first = send(p, 'request', request_body(p))
+    second = send(p, 'request', request_body(p))
+    endpoint = '/api/warehouse-operations/fabric/issue-groups'
+    result = p.post(endpoint, json=dict(factory_id='huakang-c', request_id=str(uuid4()),
+        expected_revision=warehouse_view(p)['revision'], order_no=first['data']['production_no'],
+        name='裁床配套', request_ids=[first['id'], second['id']]))
+    assert result.status_code == 200, result.text
+    group_id = result.json()['group_id']
+    def proposal():
+        r = p.post(endpoint+'/preview', json=dict(factory_id='huakang-c', group_id=group_id, business_date='2026-10-10'))
+        assert r.status_code == 200, r.text
+        return r.json()
+    plan = proposal()
+    body = dict(factory_id='huakang-c', request_id=str(uuid4()), group_id=group_id, business_date='2026-10-10',
+        expected_revision=plan['revision'], token=plan['token'], confirmed=True,
+        items=[dict(row, quantity='1') for row in plan['items']])
+    result = p.post(endpoint+'/issue', json=body)
+    assert result.status_code == 200, result.text
+    assert len(result.json()['documents']) == 2
+    assert all(d['data']['source_system'] == 'CUTTING_P3A' and not d['data']['allocations'] for d in result.json()['documents'])
+    assert {r['id']: r['issued_quantity'] for r in warehouse_view(p)['documents'] if r['kind']=='REQUEST'} == {first['id']:'1',second['id']:'1'}
+    plan = proposal()
+    amend(p, cancelled=True)
+    # A saved kit replays after source cancellation, while any new kit must fail atomically.
+    assert p.post(endpoint+'/issue', json=body).json() == result.json()
+    before = warehouse_view(p)
+    response = p.post(endpoint+'/issue', json=body | dict(request_id=str(uuid4()), expected_revision=plan['revision'], token=plan['token']))
+    assert response.status_code == 409, response.text
+    assert warehouse_view(p) == before

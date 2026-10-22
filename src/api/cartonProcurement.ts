@@ -1,8 +1,10 @@
 import type { PaperQuantityRule } from '@/features/carton-procurement/paperQuantity'
 import type { MaterialCorrection } from './cartonMaterialCorrection'
 import { http } from '@/lib/http'
+import type { CartonSourceRequest } from '@/features/carton-procurement/sourceLinks'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
 import type { SplitRecord } from './cartonOrderSplits'
+import type { CartonScheduleImportScope, ScheduleCoverageEvidence } from './cartonScheduleCoverage'
 
 export interface CartonCustomerResponse {
   id: string
@@ -146,6 +148,7 @@ export interface CartonPurchaseOrderIssueResponse {
 }
 
 export interface CartonPurchaseOrderContextResponse {
+  empty_reason?: string
   factory_id: string
   order_no: string
   order_revision: number
@@ -278,6 +281,10 @@ export interface OpeningInventoryPreview {
 }
 
 export interface CartonInventoryMovementResponse {
+  issue_kind?: string
+  return_date?: string | null
+  return_date_basis?: string
+  return_posting_date?: string
   cost_status?: string
   cost_currency?: string
   cost_amount?: string | null
@@ -313,6 +320,8 @@ export interface CartonInventoryMovementResponse {
 }
 
 export interface CartonInventoryBalanceResponse {
+  source_requests?: CartonSourceRequest[]
+  business_kinds?: ('PURCHASE' | 'SAMPLE' | 'WORKSHOP_MISC' | 'SUPPLIER_GIFT' | 'LEGACY')[]
   inbound_quantity?: string | null
   outbound_quantity?: string | null
   opening_quantity?: string | null
@@ -348,6 +357,7 @@ export interface CartonInventoryBalanceResponse {
 }
 
 export interface CartonInventoryMovementCreateRequest {
+  return_date?: string
   workshop_id?: string
   location_id?: string
   issue_kind?: string
@@ -459,13 +469,31 @@ export interface CartonImportBatchResponse {
     field_mappings?: Array<{ sheet: string; header_row: number; fields: Record<string, string> }>
     change_counts?: Record<string, number>
     schedule_customer?: { customer_code: string; customer_name: string }
+    schedule_coverage?: ScheduleCoverageEvidence
     document?: { delivery_note_no?: string; delivery_date?: string; raw_text_excerpt?: string }
     rows?: CartonImportPreviewRow[]
   }
   duplicate: boolean
 }
 
+export interface CartonScheduleDemandSnapshot {
+  quantity: string
+  carton_rule: string
+  inspection_window: string
+  customer_due_date: string
+}
+export interface CartonScheduleOrderMark {
+  marked: boolean
+  actor: string
+  updated_at: string
+  order_ids?: string[]
+  demand_snapshot?: CartonScheduleDemandSnapshot | null
+  review_required?: boolean
+}
+
 export interface CartonImportPreviewRow {
+  can_operate_source?: boolean
+  missing_review?: { id: string; status: string; can_operate_source: boolean; reason: string }
   dimension_unit?: string
   source_material?: { packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string }
   material_candidates?: { order_no: string; order_line_id: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string; conflicts: string[] }[]
@@ -476,8 +504,9 @@ export interface CartonImportPreviewRow {
   source_reference?: string
   source_customer_name?: string
   schedule_section?: 'PENDING' | 'CANCELLED' | 'SHIPPED'
-  schedule_change?: 'BASELINE' | 'UNCHANGED' | 'NEW' | 'CANCELLED' | 'CANCELLED_AFTER_ORDER' | 'SHIPPED' | 'REOPENED' | 'REVIEW_REQUIRED' | 'NOT_TRACKED'
+  schedule_change?: 'BASELINE' | 'UNCHANGED' | 'NEW' | 'MODIFIED' | 'CANCELLED' | 'CANCELLED_AFTER_ORDER' | 'SHIPPED' | 'REOPENED' | 'REVIEW_REQUIRED' | 'NOT_TRACKED'
   schedule_identity?: string
+  schedule_identity_aliases?: string[]
   schedule_identity_duplicate?: boolean
   legacy_match_stale?: boolean
   manual_ordered?: boolean
@@ -528,6 +557,10 @@ export interface CartonImportPreviewRow {
 }
 
 export interface CartonReceiptResponse {
+  source_requests?: CartonSourceRequest[]
+  delivery_id?: string | null
+  business_kinds?: string[]
+  special_request_id?: string
   id: string
   factory_id: string
   receipt_no: string
@@ -627,10 +660,17 @@ async function waitForFileJob(factoryId: string, job: CartonFileJob) {
   return job
 }
 
-async function importFile(factoryId: string, file: File, importType: string, customerCode = '', advanceDays = 3) {
+async function importFile(factoryId: string, file: File, importType: string, customerCode = '', advanceDays = 3, scope?: CartonScheduleImportScope) {
   const form = new FormData()
   form.append('file', file)
   if (customerCode) form.append('customer_code', customerCode)
+  if (scope) {
+    form.append('scope_mode', scope.scope_mode)
+    form.append('as_of_date', scope.as_of_date)
+    if (scope.coverage_start) form.append('coverage_start', scope.coverage_start)
+    if (scope.coverage_end) form.append('coverage_end', scope.coverage_end)
+    form.append('full_scope_confirmed', String(scope.full_scope_confirmed))
+  }
   const submitted = await http.post<CartonFileJob>('/carton-procurement/file-jobs/imports', form, {
     params: { factory_id: factoryId, import_type: importType, advance_days: advanceDays },
     headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60_000,
@@ -845,13 +885,14 @@ export const cartonProcurementApi = {
     )
     return response.data
   },
-  async returnOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
+  async returnOrder(factoryId: string, order: CartonOrderResponse, reason: string, returnDate: string) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/return`,
       {
         factory_id: factoryId,
         expected_revision: order.revision,
         reason,
+        return_date: returnDate,
       },
     )
     return response.data
@@ -1002,6 +1043,7 @@ export const cartonProcurementApi = {
     return response.data
   },
   async createInventoryMovementsBulk(payload: {
+    return_date?: string
     workshop_id?: string
     issue_kind?: string
     factory_id: string
@@ -1075,26 +1117,26 @@ export const cartonProcurementApi = {
       params: { factory_id: factoryId },
     })
   },
-  async uploadWeeklySchedule(factoryId: string, file: File, customerCode: string) {
-    return importFile(factoryId, file, 'WEEKLY_SCHEDULE', customerCode)
+  async uploadWeeklySchedule(factoryId: string, file: File, customerCode: string, scope?: CartonScheduleImportScope) {
+    return importFile(factoryId, file, 'WEEKLY_SCHEDULE', customerCode, 3, scope)
   },
   async listScheduleOrderMarks(factoryId: string) {
-    const response = await http.get<Record<string, { marked: boolean; actor: string; updated_at: string; order_ids?: string[] }>>(
+    const response = await http.get<Record<string, CartonScheduleOrderMark>>(
       '/carton-procurement/schedule-order-marks', { params: { factory_id: factoryId } },
     )
     return response.data
   },
-  async setScheduleOrderMark(factoryId: string, batchId: string, sourceSheet: string, sourceRow: number, marked: boolean) {
-    const response = await http.post<{ identity: string; marked: boolean }>(
+  async setScheduleOrderMark(factoryId: string, batchId: string, sourceSheet: string, sourceRow: number, marked: boolean, reason?: string) {
+    const response = await http.post<{ identity: string; marked: boolean; demand_snapshot: CartonScheduleDemandSnapshot }>(
       '/carton-procurement/schedule-order-marks',
-      { factory_id: factoryId, batch_id: batchId, source_sheet: sourceSheet, source_row: sourceRow, marked },
+      { factory_id: factoryId, batch_id: batchId, source_sheet: sourceSheet, source_row: sourceRow, marked, ...(reason ? { reason } : {}) },
     )
     return response.data
   },
-  async setScheduleOrderMarks(factoryId: string, batchId: string, rows: Array<{ source_sheet: string; source_row: number }>, marked: boolean) {
-    const response = await http.post<{ items: Array<{ identity: string; marked: boolean }>; changed_count: number }>(
+  async setScheduleOrderMarks(factoryId: string, batchId: string, rows: Array<{ source_sheet: string; source_row: number }>, marked: boolean, reason?: string) {
+    const response = await http.post<{ items: Array<{ identity: string; marked: boolean; demand_snapshot: CartonScheduleDemandSnapshot }>; changed_count: number }>(
       '/carton-procurement/schedule-order-marks/bulk',
-      { factory_id: factoryId, batch_id: batchId, rows, marked },
+      { factory_id: factoryId, batch_id: batchId, rows, marked, ...(reason ? { reason } : {}) },
     )
     return response.data
   },
@@ -1144,6 +1186,8 @@ export const cartonProcurementApi = {
     return response.data
   },
   async createReceipt(payload: {
+    legacy_correction_receipt_id?: string
+    supplier_id?: string
     post_immediately?: boolean
     split_confirmation?: string
     factory_id: string
@@ -1267,6 +1311,9 @@ export const cartonProcurementApi = {
 }
 
 export interface CartonReceiptSummary {
+  source_requests?: CartonSourceRequest[]
+  delivery_id?: string | null
+  business_kinds?: string[]
   id: string; receipt_no: string; delivery_note_no: string; delivery_date: string; acceptance_date: string | null
   status: CartonReceiptResponse['status']; confirmed_at: string | null; operator: string; line_count: number; customers: string; contracts: string
 }

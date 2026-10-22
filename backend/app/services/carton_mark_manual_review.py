@@ -48,6 +48,8 @@ def source(db, user, payload, supplier=False):
         orders = assets.available_orders(db, factory)
         visible = {ref.id: (asset, assets.asset_out(asset, orders).orders if assets.asset_out(asset, orders).binding_status == "BOUND" else [])
                    for ref in payload.assets for asset in [assets.active_asset(db, factory, ref.id)]}
+        from app.services.carton_mark_sharing import ensure_asset_access
+        for asset, _ in visible.values(): ensure_asset_access(db, user, asset)
         context = None
     selected, identity = [], None
     for ref in payload.assets:

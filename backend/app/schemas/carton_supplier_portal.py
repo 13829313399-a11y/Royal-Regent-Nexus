@@ -70,6 +70,8 @@ class ShipLine(BaseModel):
     order_line_id: str = Field(min_length=1, max_length=96)
     issue_id: str = Field(min_length=1, max_length=96)
     quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=6)
+    free_confirmed: bool = False
 
 class UnmatchedShipLine(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -102,6 +104,10 @@ class ShipmentCreate(Payload):
         return self
 
 class ReceiveLine(BaseModel):
+    close_remaining: bool = False
+    replenishment_issue_id: str | None = Field(default=None, max_length=96)
+    price_action: Literal["MATCH", "PENDING", "PROPOSE", "FREE"] = "MATCH"
+    price_reason: str = Field(default="", max_length=1000)
     dimension_unit: Literal["cm", "in"] = "cm"
     zero_price_kind: Literal["FREE", "PENDING"] | None = None
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -115,14 +121,17 @@ class ReceiveLine(BaseModel):
     specification: str = Field(default="", max_length=255)
     location_allocations: list[CartonLocationAllocation] = Field(default_factory=list, max_length=100)
     difference_reason: str = Field(default="", max_length=1000)
-    no_order_decision: Literal["", "SAMPLE", "GIFT", "WRONG_DELIVERY", "UNORDERED"] = ""
+    no_order_decision: Literal["", "SAMPLE", "GIFT", "MISC", "WRONG_DELIVERY", "UNORDERED"] = ""
     customer_code: str = Field(default="", max_length=64)
+    workshop_id: str = Field(default="", max_length=96)
     sample_purpose: str = Field(default="", max_length=255)
     requested_by: str = Field(default="", max_length=128)
     unit: str = Field(default="", max_length=32)
 
     @model_validator(mode="after")
     def validate_zero_price(self):
+        if self.price_action == "FREE" and self.unit_price != 0:
+            raise ValueError("确认免费须填写零单价")
         if self.zero_price_kind and self.unit_price != 0:
             raise ValueError("免费赠送或暂未定价须明确填写零单价")
         return self
@@ -201,6 +210,13 @@ class SupplierMarkAssetOut(BaseModel):
     created_at: str
     orders: list[SupplierMarkAssetOrderOut]
     workflow: CartonMarkAssetWorkflow = Field(default_factory=CartonMarkAssetWorkflow)
+    sharing_mode: str = 'ORDER_BOUND'
+    shared_supplier_id: str = ''
+    shared_supplier_name: str = ''
+    binding_status: str = 'UNBOUND'
+    pending_bindings: list[dict] = Field(default_factory=list)
+    special_orders: list[dict] = Field(default_factory=list)
+    associations: list[dict] = Field(default_factory=list)
 
 
 class SupplierMarkUploadOrderOut(SupplierMarkAssetOrderOut):

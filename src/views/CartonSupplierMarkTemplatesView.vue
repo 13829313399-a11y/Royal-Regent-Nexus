@@ -14,6 +14,7 @@ import { factoryContexts } from '@/data/enterpriseMock'
 
 const route = useRoute()
 const auth = useAuthStore()
+const librarySearch = ref('')
 const tab = ref<'library' | 'check' | 'review' | 'pdf'>('library')
 const generationSource = ref<(SupplierMarkAsset & { factory_id: string }) | null>(null)
 function chooseGeneration(asset: SupplierMarkAsset & { factory_id: string }) { generationSource.value = asset; tab.value = 'pdf' }
@@ -42,12 +43,12 @@ function selectRequestedFactory() {
   const requested = typeof route.query.factory === 'string' ? route.query.factory : ''
   if (!memberships.value.length) {
     factory.value = ''
-    error.value = '暂无可查看的已下单厂区，请联系内部确认供应商账号已开通且采购单已生成。'
+    error.value = '暂无已授权服务厂区，请联系内部开通供应商账号及厂区权限。'
     return
   }
   if (requested && requested !== ALL_FACTORIES && !memberships.value.some(member => member.factory_id === requested)) {
     factory.value = ''
-    error.value = '所选厂区没有此供应商可查看的已生成订单，请选择其他服务厂区。'
+    error.value = '当前账号没有所选厂区的资料库权限，请选择已授权服务厂区。'
     return
   }
   factory.value = requested || ALL_FACTORIES
@@ -67,7 +68,7 @@ async function refresh(restart = false) {
     memberships.value = available
     if (!available.length) {
       factory.value = ''
-      error.value = '暂无可查看的已下单厂区，请联系内部确认供应商账号已开通且采购单已生成。'
+      error.value = '暂无已授权服务厂区，请联系内部开通供应商账号及厂区权限。'
       return
     }
     const scope = factory.value === ALL_FACTORIES || available.some(item => item.factory_id === factory.value)
@@ -80,6 +81,7 @@ async function refresh(restart = false) {
 }
 
 watch(factory, scope => {
+  librarySearch.value = ''
   clearSource()
   if ((scope === ALL_FACTORIES && memberships.value.length) || memberships.value.some(member => member.factory_id === scope)) {
     error.value = ''; load()
@@ -111,7 +113,7 @@ onMounted(async () => {
       <div>
         <RouterLink :to="{ path: '/carton-supplier', query: factory === ALL_FACTORIES ? {} : { factory } }" class="text-sm font-semibold text-teal-700">← 返回供应商协同</RouterLink>
         <h1 class="mt-2 text-2xl font-bold">箱唛资料库</h1>
-        <p class="mt-1 text-sm text-slate-500">Excel / PDF 可一起核对；只有 PDF 或图片时，提交内部人工审核后供 QC 使用。</p>
+        <p class="mt-1 text-sm text-slate-500">仓库与本供应商共享的资料上传后即可查看，由经办人直接关联正单、样板或杂单，无需关联审批；资料状态与历史保留，QC 核对仍单独进行。</p>
       </div>
       <div class="flex w-full flex-wrap items-center gap-3 sm:w-auto">
         <select v-model="factory" aria-label="箱唛资料厂区" :disabled="discovering" class="min-w-0 max-w-full rounded-lg border bg-white p-2">
@@ -121,6 +123,7 @@ onMounted(async () => {
         <button type="button" :disabled="discovering" class="rounded-lg border bg-white px-3 py-2 disabled:opacity-50" @click="refresh()">{{ discovering ? '更新中…' : '刷新' }}</button>
         <AccountMenu />
       </div>
+      <label v-if="tab === 'library'" class="block w-full text-xs text-slate-600">搜索资料<input v-model="librarySearch" aria-label="顶部搜索" placeholder="搜索客户 / 合同 / 货号 / 文件名" class="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm"></label>
     </header>
     <section class="mx-auto max-w-[1500px]">
       <p v-if="error" role="alert" class="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{{ error }}</p>
@@ -129,7 +132,7 @@ onMounted(async () => {
         <nav class="mb-4 flex flex-wrap gap-2" aria-label="供应商箱唛工作区"><button type="button" class="rounded-lg border px-4 py-2" :class="tab === 'library' ? 'bg-teal-700 text-white' : 'bg-white'" @click="tab = 'library'">资料库</button><button type="button" class="rounded-lg border px-4 py-2" :class="tab === 'pdf' ? 'bg-teal-700 text-white' : 'bg-white'" @click="tab = 'pdf'">文档生成 PDF</button><button type="button" class="rounded-lg border px-4 py-2" :class="tab === 'check' ? 'bg-teal-700 text-white' : 'bg-white'" @click="tab = 'check'">核对 / 审核记录</button><button type="button" class="rounded-lg border px-4 py-2" :class="tab === 'review' ? 'bg-amber-700 text-white' : 'bg-white'" @click="tab = 'review'">单 PDF / 图片审核</button></nav>
         <CartonSupplierMarkUpload v-show="tab === 'library'" :factory-ids="factory === ALL_FACTORIES ? memberFactoryIds : [factory]" @uploaded="load" />
         <p v-if="reviewMessage" role="status" class="mb-4 rounded-lg bg-teal-50 p-3 text-sm text-teal-800">{{ reviewMessage }}</p>
-        <CartonMarkAssetLibrary v-show="tab === 'library'" :key="`${factory}:${refreshKey}`" :factory-id="factory === ALL_FACTORIES ? '' : factory" :supplier-factories="factory === ALL_FACTORIES ? memberFactoryIds : undefined" supplier read-only supplier-check-enabled @supplier-excel="chooseExcel" @supplier-sources="chooseSources" @supplier-review="chooseReview" @supplier-generate-pdf="chooseGeneration" />
+        <CartonMarkAssetLibrary v-model:search="librarySearch" v-show="tab === 'library'" :key="`${factory}:${refreshKey}`" :factory-id="factory === ALL_FACTORIES ? '' : factory" :supplier-factories="factory === ALL_FACTORIES ? memberFactoryIds : undefined" supplier read-only supplier-check-enabled @supplier-excel="chooseExcel" @supplier-sources="chooseSources" @supplier-review="chooseReview" @supplier-generate-pdf="chooseGeneration" />
         <CartonSupplierMarkPdf v-show="tab === 'pdf'" :factory-ids="factory === ALL_FACTORIES ? memberFactoryIds : [factory]" :source="generationSource" @choose="tab = 'library'" @saved="load" @check="chooseSources" />
         <CartonMarkManualReview v-show="tab === 'review'" :sources="reviewSources" supplier @choose="tab = 'library'" @saved="reviewSaved" />
         <CartonSupplierMarkCheck v-show="tab === 'check'" :factory-ids="factory === ALL_FACTORIES ? memberFactoryIds : [factory]" :source="source" :pdf-source="pdfSource" :refresh-key="refreshKey" @choose-source="tab = 'library'" @clear-source="clearSource" @clear-pdf-source="pdfSource = null" />

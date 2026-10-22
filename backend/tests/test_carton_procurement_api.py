@@ -1336,7 +1336,7 @@ def test_batch_receipt_bulk_outbound_summary_and_return(monkeypatch):
             },
         )
         assert blocked_pre_inventory_return.status_code == 409
-        assert "已确认锁定但未入库的订单不可取消" in blocked_pre_inventory_return.json()["detail"]
+        assert "退单仅用于已发生入库的订单" in blocked_pre_inventory_return.json()["detail"]
         confirmed = client.post(
             f"/api/carton-procurement/receipts/{receipt['id']}/confirm",
             json={"factory_id": "huaxing", "expected_revision": receipt["revision"]},
@@ -1393,6 +1393,7 @@ def test_batch_receipt_bulk_outbound_summary_and_return(monkeypatch):
                 "factory_id": "huaxing",
                 "expected_revision": refreshed["revision"],
                 "reason": "客户退货并终止剩余纸品订单",
+                "return_date": "2026-08-05",
             },
         )
         assert returned.status_code == 200, returned.text

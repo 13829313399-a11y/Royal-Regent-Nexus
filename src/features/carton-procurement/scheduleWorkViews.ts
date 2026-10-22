@@ -25,7 +25,7 @@ export interface ScheduleWorkProjection {
 
 const reviewResults = new Set(['数量差异', '交期差异', '待人工选择', '待人工确认', '匹配不唯一'])
 const substantiveReviewResults = new Set(['数量差异', '交期差异', '待人工选择', '匹配不唯一'])
-const reviewReminderStates = new Set<ScheduleOrderReminder['state']>(['REVIEW', 'DATE_REVIEW', 'RULE_REVIEW'])
+const reviewReminderStates = new Set<ScheduleOrderReminder['state']>(['REVIEW', 'DATE_REVIEW', 'RULE_REVIEW', 'CHANGE_REVIEW'])
 
 /** Read-only queue membership; it never changes source evidence or action eligibility. */
 export function scheduleWorkItem(row: WeeklyCheckRow, projection: ScheduleWorkProjection): ScheduleWorkItem {

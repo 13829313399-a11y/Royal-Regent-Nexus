@@ -73,4 +73,29 @@ describe('supplier management route scope', () => {
     expect(router.currentRoute.value.name).toBe('dashboard')
     expect(useAuthStore().can('carton_procurement:read', 'huaxing', 'carton')).toBe(false)
   })
+
+  it('opens the request workspace for a scoped submitter without granting procurement or supplier access', async () => {
+    const permission = 'carton_procurement:special_request_submit'
+    const user: AuthMeResponse = {
+      id: 'requester', username: 'requester', display_name: '需求人', roles: [],
+      permissions: [permission], authz_mode: 'enforce', factory_scopes: ['huaxing'], department_scopes: ['carton'],
+      force_password_change: false, grants: [],
+      effective_access: [{ permission_code: permission, factory_id: 'huaxing', department: 'carton',
+        effect: 'allow', allowed: true, source_type: 'user_override', source_ids: ['request-submit'] }],
+      profile: { primary_factory_id: 'huaxing', primary_department: 'carton', position: '', confirmation_status: 'confirmed' },
+    }
+    api.getMe.mockResolvedValue(user); useAuthStore().applySession(user)
+    await router.replace('/modules/pmc-warehouse/carton-procurement?factory=huaxing')
+    expect(router.currentRoute.value.name).toBe('carton-procurement')
+    expect(useAuthStore().can('carton_procurement:read', 'huaxing')).toBe(false)
+    expect(useAuthStore().can('carton_procurement:order_write', 'huaxing')).toBe(false)
+    await router.replace('/modules/pmc-warehouse/carton-procurement?factory=huadeng')
+    expect(router.currentRoute.value.name).toBe('dashboard')
+    await router.replace('/carton-supplier?factory=huaxing')
+    expect(router.currentRoute.value.name).toBe('dashboard')
+    useAuthStore().applySession({ ...user, permissions: [], effective_access: [] })
+    api.getMe.mockResolvedValue({ ...user, permissions: [], effective_access: [] })
+    await router.replace('/modules/pmc-warehouse/carton-procurement?factory=huaxing')
+    expect(router.currentRoute.value.name).toBe('dashboard')
+  })
 })

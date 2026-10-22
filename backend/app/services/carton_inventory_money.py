@@ -21,6 +21,8 @@ def money(amount):
 
 def annotate_balances(db, factory, balances):
     rows, value = projection(db, factory)
+    from app.services.carton_inventory_types import annotate_types
+    annotate_types(db, factory, balances, rows)
     keys = defaultdict(set)
     for row in rows:
         keys[inventory_key(row)].add(cost_key(row))

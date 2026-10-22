@@ -1,3 +1,4 @@
+vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
@@ -14,7 +15,7 @@ vi.mock('../api', () => ({ cuttingApi: { access: accessMock }, errorMessage: () 
 vi.mock('../cutoverApi', async importOriginal => ({ ...await importOriginal<typeof import('../cutoverApi')>(), cutoverApi: { preview: vi.fn() } }))
 let wrapper: VueWrapper | undefined
 beforeEach(() => { vi.clearAllMocks(); accessMock.mockReset().mockResolvedValue({ enabled: false, schema_ready: false, permissions: [] }) })
-afterEach(() => { wrapper?.unmount(); wrapper = undefined })
+afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.unstubAllEnvs() })
 
 async function open(path: string) {
   const router = createRouter({ history: createMemoryHistory(), routes: [
@@ -29,6 +30,13 @@ async function open(path: string) {
 }
 
 describe('cutting workspace entry', () => {
+  it.each(['', 'acceptance-synthetic-20261021'])('labels only explicitly built acceptance releases: %s',async release=>{
+    vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE',release)
+    await open(`${CUTTING_BASE}/master?factory=huakang-c`)
+    const marker=wrapper!.find('[aria-label="独立验收环境标识"]')
+    expect(marker.exists()).toBe(!!release)
+    if(release){expect(marker.text()).toContain('数据库副本');expect(marker.text()).toContain(release);expect(marker.text()).toContain('合成业务样本')}
+  })
   it('revalidates live authorization without losing drafts for unrelated changes or transient failures', async () => {
     const rights = { enabled: true, schema_ready: true, permissions: ['read', 'material_request'] }
     accessMock.mockResolvedValue(rights)
@@ -87,11 +95,11 @@ describe('cutting workspace entry', () => {
     await flushPromises()
     expect(wrapper.find('input').exists()).toBe(false)
   })
-  it('opens planning and navigates all six workspaces without dropping the factory', async () => {
+  it('opens dashboard and navigates all eight workspaces without dropping the factory', async () => {
     const router = await open(`${CUTTING_BASE}?factory=huakang-c`)
-    expect(router.currentRoute.value.path).toBe(`${CUTTING_BASE}/planning`)
+    expect(router.currentRoute.value.path).toBe(`${CUTTING_BASE}/dashboard`)
     expect(router.currentRoute.value.meta.requiresAuth).toBe(true)
-    expect(wrapper!.findAll('nav[aria-label="裁床工作区导航"] a')).toHaveLength(6)
+    expect(wrapper!.findAll('nav[aria-label="裁床工作区导航"] a')).toHaveLength(8)
     for (const workspace of CUTTING_WORKSPACES) {
       await wrapper!.get(`nav a[href="${CUTTING_BASE}/${workspace.path}?factory=huakang-c"]`).trigger('click')
       await flushPromises()
@@ -117,9 +125,10 @@ describe('cutting workspace entry', () => {
         await flushPromises()
         expect(cutoverApi.preview).not.toHaveBeenCalled()
         expect(wrapper!.findAll('form')).toHaveLength(cutover.findAll('form').length)
-      } else {
-        expect(wrapper!.text()).toContain('尚不能录入、保存或结算业务数据')
-        expect(wrapper!.text()).toContain(workspace.empty)
+      } else if (workspace.path === 'planning' || workspace.path === 'materials') {
+        expect(wrapper!.text()).toContain('裁床订单模块尚未启用')
+        expect(wrapper!.text()).not.toContain('建设中')
+        expect(wrapper!.find('form').exists()).toBe(false)
       }
       expect(router.currentRoute.value.query.factory).toBe('huakang-c')
     }
@@ -148,8 +157,8 @@ describe('cutting workspace entry', () => {
     expect(wrapper!.find('table').exists()).toBe(false)
     await router.push(`${CUTTING_BASE}/planning?factory=huakang-c`)
     await flushPromises()
-    expect(wrapper!.get('h2').text()).toBe('订单总台账')
-    expect(wrapper!.text()).toContain('当前阶段必需物料')
+    expect(wrapper!.get('h1').text()).toBe('生产排期')
+    expect(wrapper!.text()).toContain('裁床订单模块尚未启用')
     expect(wrapper!.find('input').exists()).toBe(false)
   })
 })

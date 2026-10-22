@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink, useRoute } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
 import { cuttingApi, errorMessage, type Access } from './api'
@@ -36,20 +36,46 @@ watch([()=>props.access,()=>props.accessLoading],([value,loading])=>{
     if(draft.value)Object.assign(draft.value,{materials_complete:false,public_material_pending:true,opening_verified:false,unrecorded_opening:true,exceptions_reviewed:false})
   }
 },{immediate:true})
-function canLeave(){if(pending.value||busy.value){notice.value='请先核对原月结操作结果，再离开。';return false}return !draft.value||window.confirm('月结填写尚未保存，是否放弃并离开？')}
+const unsaved=computed(()=>!!draft.value||!!reason.value.trim())
+function canLeave(){if(pending.value||busy.value){notice.value='请先核对原月结操作结果，再离开。';return false}return !unsaved.value||window.confirm('月结填写或操作原因尚未保存，是否放弃并离开？')}
+function discardInputs(){draft.value=undefined;basis.value=undefined;reason.value=''}
 onBeforeRouteLeave(canLeave)
-onBeforeRouteUpdate(canLeave)
-function beforeUnload(event:BeforeUnloadEvent){if(pending.value||draft.value||busy.value){event.preventDefault();event.returnValue=''}}
+const route=useRoute()
+const inputFingerprint=()=>JSON.stringify([month.value,draft.value,reason.value])
+let approvedNavigation:{path:string;inputs:string}|undefined
+onBeforeRouteUpdate(to=>{
+  approvedNavigation=undefined
+  if(!canLeave())return false
+  approvedNavigation={path:to.fullPath,inputs:inputFingerprint()}
+  return true
+})
+// Clear only after navigation succeeds; another guard may still cancel it.
+watch(()=>route.fullPath,path=>{
+  if(approvedNavigation?.path===path&&approvedNavigation.inputs===inputFingerprint())discardInputs()
+  approvedNavigation=undefined
+},{flush:'sync'})
+function beforeUnload(event:BeforeUnloadEvent){if(pending.value||unsaved.value||busy.value){event.preventDefault();event.returnValue=''}}
 window.addEventListener('beforeunload',beforeUnload)
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',beforeUnload)})
 async function fresh(ticket=generation){const access=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=access;if(!readable.value){clearEvidence();error.value='月结迁移或成本查询权限尚未就绪。';return false}return true}
 function failed(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status?:number}}).response?.status;if(status===401||status===403){rights.value=undefined;clearEvidence()}return status}
 async function load(eventId?:string){
-  if(busy.value||pending.value)return
-  if(draft.value&&!window.confirm('放弃尚未保存的月结填写，读取所选版本？'))return
-  draft.value=undefined;clearEvidence();error.value='';notice.value='';busy.value=true;const ticket=++generation
+  if(!canLeave())return
+  discardInputs();clearEvidence();error.value='';notice.value='';busy.value=true;const ticket=++generation
   try{if(!await fresh()||ticket!==generation)return;const result=await periodApi.read(month.value,eventId);if(alive&&ticket===generation)record.value=result}catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
+async function openPeriod(targetMonth:string,eventId?:string){
+  if(!canLeave())return false
+  discardInputs();month.value=targetMonth
+  await load(eventId)
+  return true
+}
+function activateMonth(target:string){
+  if(month.value===target)return
+  if(draft.value||pending.value||busy.value||reason.value.trim()){notice.value=`当前 ${month.value} 的填写或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。`;return}
+  month.value=target;generation++;record.value=undefined;basis.value=undefined
+}
+defineExpose({openPeriod,activateMonth})
 async function edit(){
   if(busy.value||pending.value||historical.value)return
   busy.value=true;error.value='';const ticket=++generation,old=draft.value??record.value?.data?.input
@@ -81,16 +107,16 @@ async function execute(action:PeriodAction){
 async function recover(){
   if(!pending.value||busy.value)return;busy.value=true;error.value='';const ticket=++generation
   try{const result=await periodApi.recover(pending.value.action,pending.value.body);if(!alive||ticket!==generation)return;pending.value=undefined
-    if(result.state==='committed'){draft.value=undefined;basis.value=undefined;notice.value='原操作已成功，已读取结果。'}else{if(draft.value)draft.value.operation_id=crypto.randomUUID();notice.value='原操作已确认未执行并停止，填写保留。'}
+    if(result.state==='committed'){discardInputs();notice.value='原操作已成功，已读取结果。'}else{if(draft.value)draft.value.operation_id=crypto.randomUUID();notice.value='原操作已确认未执行并停止，填写保留。'}
     if(await fresh(ticket)){const value=await periodApi.read(month.value);if(alive&&ticket===generation)record.value=value}
   }catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
-function changeMonth(event:Event){const input=event.target as HTMLInputElement;if(draft.value||pending.value||busy.value){input.value=month.value;notice.value='请先保存或放弃填写，并核对待处理操作结果。';return}month.value=input.value;generation++;clearEvidence();reason.value=''}
-function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃当前未保存填写？')){draft.value=undefined;basis.value=undefined}}
+function changeMonth(event:Event){const input=event.target as HTMLInputElement;if(input.value===month.value)return;if(!canLeave()){input.value=month.value;return}discardInputs();month.value=input.value;generation++;clearEvidence()}
+function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃当前未保存填写？'))discardInputs()}
 </script>
 
 <template>
-  <SectionPanel v-if="access?.enabled||pending||draft" title="内部月结与锁月 · P4b" class="cutting-content-panel">
+  <SectionPanel v-if="access?.enabled||pending||draft" title="内部月结与锁月" class="cutting-content-panel">
     <p class="cutting-notice">华康 C 裁床部整月核对，覆盖本厂及外发的我方材料、产量与耗用。主管编制提交，会计复核锁月；外发加工费另行结算。</p>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p><p v-if="notice" role="status">{{notice}}</p><p v-if="busy" role="status">正在处理月结…</p>
     <div v-if="pending" class="cutting-master-actions"><Button :disabled="busy||!readable" @click="execute(pending.action)">重试原操作</Button><Button variant="outline" :disabled="busy" @click="recover">核对原操作结果</Button></div>

@@ -466,7 +466,7 @@ def test_schedule_comparison_only_flags_explicit_new_and_cancelled_transition():
              item_no='0040220-2', order_type='正单', schedule_section='PENDING'),
     ]
     rows = [
-        dict(previous[0], customer_po='PO-LATER-FILLED', schedule_section='CANCELLED'),
+        dict(previous[0], schedule_section='CANCELLED'),
         dict(previous[0], contract_no='53136', schedule_section='PENDING'),
     ]
     annotate_changes(rows, {customer_key(previous[0]): previous}, {identity(previous[0])})
@@ -475,7 +475,8 @@ def test_schedule_comparison_only_flags_explicit_new_and_cancelled_transition():
     assert all(row['schedule_change'] != 'CANCELLED' for row in rows[1:])
     duplicates = [dict(previous[0], customer_po='PO-A'), dict(previous[0], customer_po='PO-B')]
     annotate_changes(duplicates, {}, set())
-    assert [row['schedule_change'] for row in duplicates] == ['REVIEW_REQUIRED', 'REVIEW_REQUIRED']
+    assert [row['schedule_change'] for row in duplicates] == ['BASELINE', 'BASELINE']
+    assert identity(duplicates[0]) != identity(duplicates[1])
 
 
 def test_manual_order_mark_survives_import_and_cancelled_change_is_actionable(monkeypatch):
@@ -643,7 +644,7 @@ def test_source_order_creation_rejects_marked_ambiguous_stale_and_other_factory_
             files={'file': ('baseline.xlsx', workbook([source_row(), source_row(contract='53136')]))})
         assert batch.status_code == 201, batch.text
         source = {'batch_id': batch.json()['id'], 'source_sheet': '子弹枪ITEM表', 'source_row': 4}
-        payload = {**_order_payload(), 'contract_no': '53135', 'item_no': '0040220-1', 'schedule_source': source}
+        payload = {**_order_payload(), 'contract_no': '53135', 'item_no': '0040220-1', 'customer_po': '0989551378', 'schedule_source': source}
         assert client.post('/api/carton-procurement/orders', json={**payload, 'factory_id': 'huadeng'}).status_code == 404
         assert client.post('/api/carton-procurement/orders', json={**payload, 'item_no': 'OTHER'}).status_code == 422
         marked = client.post('/api/carton-procurement/schedule-order-marks', json={
@@ -708,7 +709,6 @@ def test_weekly_import_requires_active_factory_customer_and_isolated_customer_id
         assert marked.status_code == 200, marked.text
         renamed_buyer = source_row()
         renamed_buyer[4] = 'ABU ISSA'
-        renamed_buyer[3] = 'FILLED-PO'
         next_import = upload('OTHER', workbook([renamed_buyer]), 'later.xlsx')
         assert next_import.status_code == 201, next_import.text
         next_row = next_import.json()['parse_summary']['rows'][0]

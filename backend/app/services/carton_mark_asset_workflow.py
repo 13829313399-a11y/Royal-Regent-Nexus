@@ -50,8 +50,13 @@ def bump(db, asset, revision):
 
 
 def binding_key(asset):
+    from sqlalchemy.orm import object_session
+    from app.services.carton_mark_sharing import current as audience
+    session = object_session(asset)
+    special_targets = tuple(sorted({(x['order_id'], x.get('line_id', ''))
+        for x in audience(session, asset)['special_orders']})) if session else ()
     return (asset.contract_number, asset.bound_order_id, asset.recognition_source,
-        tuple(sorted(link.order_id for link in asset.order_bindings)))
+        tuple(sorted(link.order_id for link in asset.order_bindings)), special_targets)
 
 
 def initialize(db, user, asset, options):
@@ -91,12 +96,14 @@ def initialize(db, user, asset, options):
     record(db, user, asset, state)
 
 
-def classify(db, user, factory, asset_id, payload):
+def classify(db, user, factory, asset_id, payload, *, commit=True, material_confirmation=False):
     from app.services.carton_mark_assets import active_asset, asset_out, available_orders
     from app.services.carton_procurement import _lock_receipt_factory
     _lock_receipt_factory(db, factory)
     try:
         asset = active_asset(db, factory, asset_id)
+        from app.services.carton_mark_sharing import ensure_asset_access
+        ensure_asset_access(db, user, asset, write=not material_confirmation)
         before = current(db, asset)
         if before.superseded_by_asset_id and payload.status != 'HISTORY':
             raise HTTPException(409, '历史稿仅供追溯，请从当前版本上传修改稿')
@@ -124,7 +131,8 @@ def classify(db, user, factory, asset_id, payload):
                     record(db, user, parent, archived)
                 parent_id = parent_state.previous_asset_id
         record(db, user, asset, state)
-        db.commit()
+        if commit: db.commit()
+        else: db.flush()
     except Exception:
         db.rollback()
         raise

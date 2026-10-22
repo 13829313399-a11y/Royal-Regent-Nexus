@@ -52,14 +52,15 @@ def receipt_guard(db, receipt):
         ensure_open(db, receipt.factory_id, receipt.supplier_id, day[:7])
 
 
-def movement_guard(db, movement):
+def movement_guard(db, movement, *, return_date=None):
     if movement.source_type == "RECEIPT":
         receipt = db.get(CartonReceipt, movement.source_id)
         if receipt:
             receipt_guard(db, receipt)
     elif movement.source_type == "ORDER_RETURN" or (movement.movement_type == "OUTBOUND" and movement.issue_kind == "RETURN"):
         supplier = return_supplier(db, movement)
-        period = _posting_date(movement.occurred_at)[:7]
+        from app.services.carton_return_dates import dates
+        period = (return_date or dates(db, movement.factory_id).get(movement.id) or _posting_date(movement.occurred_at))[:7]
         if supplier:
             ensure_open(db, movement.factory_id, supplier, period)
         elif db.scalar(select(CartonSupplierSettlement.id).where(
@@ -70,6 +71,14 @@ def movement_guard(db, movement):
 
 
 def return_supplier(db, movement):
+    if movement.source_type == "SPECIAL_RETURN":
+        event = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == movement.factory_id,
+            CartonAuditEvent.event_type == "SPECIAL_STOCK_SOURCE_LINKED", CartonAuditEvent.entity_id == movement.id))
+        if not event: return None
+        data = json.loads(event.detail_json)
+        line = db.get(CartonReceiptLine, data.get("receipt_line_id"))
+        receipt = db.get(CartonReceipt, line.receipt_id) if line and line.factory_id == movement.factory_id else None
+        return receipt.supplier_id if receipt and receipt.factory_id == movement.factory_id and receipt.supplier_id == data.get("supplier_id") else None
     from app.services.carton_order_split import target_origin
     split = target_origin(db, movement.factory_id, movement.order_line_id)
     if split:
@@ -93,6 +102,9 @@ def return_supplier(db, movement):
 
 
 def sources(db, factory, supplier, period, currency):
+    from app.services import carton_return_dates
+    return_evidence = carton_return_dates.evidence(db, factory)
+    return_dates = {key: value["return_date"] for key, value in return_evidence.items()}
     from app.services.carton_replenishment_receipts import receipt_links, legacy_review_lines
     replacements = receipt_links(db, factory)
     receipts = list(db.scalars(select(CartonReceipt).where(
@@ -104,7 +116,8 @@ def sources(db, factory, supplier, period, currency):
     incoming = {m.source_line_id: m for m in movements if m.source_type == "RECEIPT"}
     prices = {}
     for event in db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
-                                                         CartonAuditEvent.event_type == "INVENTORY_PRICE_CONFIRMED")):
+                                                         CartonAuditEvent.event_type.in_(["INVENTORY_PRICE_CONFIRMED", "INVENTORY_PRICE_CORRECTED"]))
+            .order_by(CartonAuditEvent.sequence)):
         prices[event.entity_id] = Decimal(str(json.loads(event.detail_json)["unit_price"]))
     lines = list(db.scalars(select(CartonReceiptLine).where(CartonReceiptLine.factory_id == factory,
                     CartonReceiptLine.receipt_id.in_(list(receipt_by_id))))) if receipt_by_id else []
@@ -156,7 +169,9 @@ def sources(db, factory, supplier, period, currency):
         if not (movement.source_type == "ORDER_RETURN" or (movement.movement_type == "OUTBOUND" and movement.issue_kind == "RETURN")) or movement.id in reversed_ids:
             continue
         posting_date = _posting_date(movement.occurred_at)
-        if posting_date[:7] != period or core.normalize_currency(movement.currency) != currency:
+        actual_date = return_dates.get(movement.id)
+        return_day = actual_date or posting_date
+        if return_day[:7] != period or core.normalize_currency(movement.currency) != currency:
             continue
         matched_supplier = return_supplier(db, movement)
         if matched_supplier is None:
@@ -165,20 +180,42 @@ def sources(db, factory, supplier, period, currency):
         if matched_supplier != supplier:
             continue
         result.append({"source_key": "RETURN:" + movement.id, "kind": "RETURN", "receipt_id": None,
-            "document_no": movement.document_no, "acceptance_date": posting_date, "date_basis": "RETURN_POSTING",
+            "document_no": movement.document_no, "acceptance_date": return_day, "date_basis": "RETURN_ACTUAL" if actual_date else "RETURN_POSTING",
+            **({"return_date": actual_date, "posting_date": posting_date} if actual_date else {}),
+            **({"return_date_revision": return_evidence[movement.id]["revision"],
+                "return_date_evidence_fingerprint": return_evidence[movement.id]["fingerprint"]}
+                if return_evidence.get(movement.id, {}).get("revision", 0) >= 2 else {}),
             **{key: getattr(movement, key) for key in ("customer_name", "contract_no", "item_no", "packaging_type", "paper_quality", "specification", "unit")},
             "quantity": str(-movement.quantity), "unit_price": None, "amount": None, "currency": currency,
             "issues": [], "reason": movement.reason})
+    from app.services.carton_return_collaboration import financial_sources
+    financial_sources(db, factory, supplier, period, currency, result, issues)
     # Unknown dates can belong to any month. Do not silently omit historical debt.
     if undated:
         issues.append(f"有 {len(undated)} 张历史收料单未核实实际验收日期，请先补齐日期")
+    from app.services.carton_special_requests import settlement_evidence
+    special_sources, _ = settlement_evidence(db, factory, supplier, period)
+    from app.services.carton_source_links import delivery_ids
+    group_ids = delivery_ids(db, factory)
+    for row in result:
+        vendor = special_sources.get(row["source_key"].removeprefix("RECEIPT:")) if row["kind"] == "RECEIPT" else None
+        if vendor:
+            row.update(document_no=vendor["document_no"], supplier_delivery=vendor, special_request_kind=vendor["request_kind"],
+                special_request_no=vendor["request_no"], special_request_id=vendor["request_id"],
+                delivery_id=group_ids.get(vendor["shipment_id"], "SPECIAL:" + vendor["shipment_id"]))
+    from app.services.carton_price_review import apply_sources
+    apply_sources(db, factory, result)
     result.sort(key=lambda row: (row["acceptance_date"] or "", row["document_no"], row["source_key"]))
-    fingerprint = hashlib.sha256(dump({"sources": result, "issues": issues, "undated": sorted(undated, key=lambda row: row["receipt_id"])}).encode()).hexdigest()
+    # Navigation metadata must not invalidate a previously reconciled month.
+    fingerprint_sources = [{key: value for key, value in row.items() if key != "delivery_id"} for row in result]
+    fingerprint = hashlib.sha256(dump({"sources": fingerprint_sources, "issues": issues, "undated": sorted(undated, key=lambda row: row["receipt_id"])}).encode()).hexdigest()
     return result, fingerprint, issues, undated
 
 
 def compare(rows, statement, source_issues):
     issues = list(source_issues)
+    if any(row["kind"] not in {"RECEIPT", "RETURN", "RETURN_REFUND"} for row in rows):
+        issues.append("存在未知结算来源类型，请核实；不能默认作为退货扣款")
     if not statement.get("statement_no", "").strip():
         issues.append("请填写供应商账单编号")
     if not statement.get("same_price_basis"):
@@ -187,6 +224,7 @@ def compare(rows, statement, source_issues):
     seen, ids, results = set(), set(), []
     inbound = sum((Decimal(row["amount"]) for row in rows if row["kind"] == "RECEIPT" and row["amount"] is not None), Decimal(0))
     returns, supplier_total = Decimal(0), Decimal(0)
+    cash = sum((Decimal(row["amount"]) for row in rows if row["kind"] == "RETURN_REFUND" and row["amount"] is not None), Decimal(0))
     inbound_unknown = any(row["kind"] == "RECEIPT" and row["amount"] is None for row in rows)
     return_unknown = False
     statement_unknown = False
@@ -218,7 +256,14 @@ def compare(rows, statement, source_issues):
                 line_issues.append("供应商单据号与本厂单据号不一致")
             local_price = Decimal(row["unit_price"]) if row["unit_price"] is not None else None
             if row["kind"] == "RETURN":
-                local_price = Decimal(str(line["approved_return_unit_price"])) if line.get("approved_return_unit_price") is not None else None
+                agreement = row.get("return_agreement")
+                local_price = (Decimal(row["unit_price"]) if row["unit_price"] is not None else None) if agreement else (
+                    Decimal(str(line["approved_return_unit_price"])) if line.get("approved_return_unit_price") is not None else None)
+                if agreement and (line.get("approved_return_unit_price") is None or local_price is None
+                    or Decimal(str(line["approved_return_unit_price"])) != local_price
+                    or line.get("credit_document_no") != agreement["credit_document_no"]
+                    or line.get("credit_date") != agreement["credit_date"]):
+                    line_issues.append("退货协同须沿已认可的独立贷项价格及凭证，修改请先在退货协同重核")
                 if local_price is None or not line.get("credit_document_no", "").strip() or not line.get("note", "").strip() or not line.get("credit_date"):
                     line_issues.append("退货需本厂认可单价、贷项凭证号、日期及依据说明")
                     return_unknown = True
@@ -245,7 +290,12 @@ def compare(rows, statement, source_issues):
             qty, price, amount = (Decimal(str(line[field])) for field in ("quantity", "unit_price", "amount"))
             if money(qty * price) != amount:
                 line_issues.append("供应商行金额不等于数量乘单价，请核实舍入或额外费用")
-            supplier_total += amount * (-1 if row and row["kind"] == "RETURN" else 1)
+            sign = {"RECEIPT": 1, "RETURN": -1, "RETURN_REFUND": 1}.get(row["kind"]) if row else None
+            if sign is None:
+                statement_unknown = True
+                line_issues.append("未知结算来源不可计入应结金额")
+            else:
+                supplier_total += amount * sign
         if any(value is not None and Decimal(value) != 0 for value in diffs.values()):
             line_issues.append("数量、单价或金额存在差异")
         results.append({"id": line["id"], "source_key": key, **diffs, "issues": line_issues})
@@ -257,8 +307,10 @@ def compare(rows, statement, source_issues):
     if not rows and not statement.get("lines"):
         issues.append("本期无有效供货或退货，不生成空对账确认")
     return {"issues": issues, "line_results": results, "inbound_amount": None if inbound_unknown else str(inbound),
-            "return_amount": None if return_unknown else str(returns), "net_amount": None if inbound_unknown or return_unknown else str(inbound - returns),
-            "statement_amount": None if statement_unknown or missing else str(supplier_total)}
+            "return_amount": None if return_unknown else str(returns), "net_amount": None if inbound_unknown or return_unknown else str(inbound - returns + cash),
+            "statement_amount": None if statement_unknown or missing else str(supplier_total),
+            **({"cash_refund_amount": str(cash), "return_deduction_amount": None if return_unknown else str(returns - cash)}
+                if cash or any(row.get("return_agreement") or row["kind"] == "RETURN_REFUND" for row in rows) else {})}
 
 
 def document_out(row, current_fingerprint=None):
@@ -300,6 +352,15 @@ def comparison_context(current, origin):
 
 def calculate(current, statement):
     result = compare(current["sources"], statement, current["issues"])
+    # A real prior confirmed liability can become zero after source correction.
+    # This is a new bilateral reconciliation, never a fresh empty-month bill.
+    zero_reopen = (not current["sources"] and not statement.get("lines")
+        and statement.get("origin") == "COLLABORATION"
+        and any(doc["confirmed_at"] for doc in current["documents"])
+        and any(doc["status"] == "DRAFT" and len(doc["reopen_reason"].strip()) >= 4 for doc in current["documents"]))
+    if zero_reopen:
+        result["issues"] = [issue for issue in result["issues"] if issue != "本期无有效供货或退货，不生成空对账确认"]
+        result["historical_zero_reconciliation"] = True
     if statement.get("origin") == "COLLABORATION":
         result["unsettled_shipments"] = current["collaboration"]["unsettled_shipments"]
     return result
@@ -310,6 +371,10 @@ def review_fingerprint(row):
 
 
 def save(db, payload, user):
+    from app.services.carton_special_requests import locked_actor, allowed
+    user = locked_actor(db, user, core.require_carton_factory(payload.factory_id))
+    if not all(allowed(user, payload.factory_id, key) for key in ("read", "closing_manage")):
+        raise HTTPException(403, "没有本厂读取及供应商月结管理权限")
     current = workspace(db, payload.factory_id, payload.supplier_id, payload.period, payload.currency)
     if not payload.id and payload.origin != "COLLABORATION" and current.get("collaboration") and any(row.get("supplier_delivery") for row in current["collaboration"]["sources"]):
         raise HTTPException(409, "本期已有供应商协同送货记录，请使用协同对账并保留双方确认")
@@ -347,7 +412,10 @@ def save(db, payload, user):
 
 def act(db, identifier, payload, user, reopen=False):
     factory = core.require_carton_factory(payload.factory_id)
-    core._lock_receipt_factory(db, factory)
+    from app.services.carton_special_requests import locked_actor, allowed
+    user = locked_actor(db, user, factory)
+    if not all(allowed(user, factory, key) for key in ("read", "closing_manage", "order_adjust")):
+        raise HTTPException(403, "没有本厂读取、月结及调整权限")
     row = db.get(CartonSupplierSettlement, identifier)
     if row is None or row.factory_id != factory:
         raise HTTPException(404, "对账单不存在")
@@ -356,6 +424,8 @@ def act(db, identifier, payload, user, reopen=False):
     if reopen:
         if row.status != "CONFIRMED" or len(payload.reason.strip()) < 4:
             raise HTTPException(409, "只有已确认对账可重核，并须填写至少四字原因")
+        from app.services.carton_supplier_payables import reopen_guard
+        reopen_guard(db, row)
         row.status = "SUPERSEDED"
         row.revision += 1
         new = CartonSupplierSettlement(id="CSS-" + uuid4().hex, factory_id=factory, supplier_id=row.supplier_id,
@@ -399,6 +469,12 @@ def act(db, identifier, payload, user, reopen=False):
     return document_out(row)
 
 
+def supplier_document(document):
+    # Warehouse's previous manual proposal and audit delta are internal notices.
+    return {**document, "sources": [{key: value for key, value in source.items() if key != "supplier_price_update"}
+        for source in document["sources"]]}
+
+
 def supplier_workspace(db, user, factory, period, currency):
     from app.services.carton_supplier_portal import supplier_access
     supplier = supplier_access(db, user, factory)
@@ -407,13 +483,16 @@ def supplier_workspace(db, user, factory, period, currency):
     # legacy independently entered statements are not vendor acknowledgements.
     return {"factory_id": factory, "supplier_name": supplier.supplier_name,
             "period": current["period"], "currency": current["currency"],
-            "documents": [doc for doc in current["documents"] if doc["statement"].get("origin") == "COLLABORATION"]}
+            "documents": [supplier_document(doc) for doc in current["documents"] if doc["statement"].get("origin") == "COLLABORATION"]}
 
 
 def supplier_review(db, identifier, payload, user):
     from app.services.carton_supplier_portal import supplier_access
     factory = core.require_carton_factory(payload.factory_id)
-    core._lock_receipt_factory(db, factory)
+    from app.services.carton_special_requests import locked_actor
+    from app.services.carton_supplier_portal import supplier_permission
+    user = locked_actor(db, user, factory)
+    if not supplier_permission(user, "carton_supplier:read", factory): raise HTTPException(403, "没有本厂供应商月结读取权限")
     supplier = supplier_access(db, user, factory, "carton_supplier:approve")
     row = db.get(CartonSupplierSettlement, identifier)
     if row is None or row.factory_id != factory or row.supplier_id != supplier.id:
@@ -440,7 +519,37 @@ def supplier_review(db, identifier, payload, user):
     core._audit(db, user, factory, "SUPPLIER_SETTLEMENT_REVIEWED", "carton_supplier_settlement", row.id,
                 {"revision": row.revision, "version": row.version, "review": result["supplier_review"]})
     db.commit()
-    return document_out(row)
+    return supplier_document(document_out(row))
+
+
+def set_return_date(db, movement_id, payload, user):
+    """Verify a historical date once, protecting both supplier month snapshots."""
+    from app.services import carton_return_dates
+    from app.services.carton_special_requests import locked_actor, allowed
+    factory = core.require_carton_factory(payload.factory_id)
+    user = locked_actor(db, user, factory)  # IAM lock precedes the shared factory lock.
+    if not all(allowed(user, factory, permission) for permission in ("closing_manage", "order_adjust")):
+        raise HTTPException(403, "核实退货日期须具备本厂主管月结与调整权限")
+    movement = db.get(CartonInventoryMovement, movement_id)
+    if movement is None or movement.factory_id != factory or not carton_return_dates.is_return(movement):
+        raise HTTPException(404, "退货库存流水不存在")
+    core.ensure_customer_operation(db, user, factory, movement.customer_code)
+    posting_date = _posting_date(movement.occurred_at)
+    if (posting_date != payload.expected_posting_date or movement.id in carton_return_dates.dates(db, factory)
+        or db.scalar(select(CartonInventoryMovement.id).where(CartonInventoryMovement.factory_id == factory,
+            CartonInventoryMovement.reversal_of_movement_id == movement.id))):
+        raise HTTPException(409, "退货日期依据或状态已变化；已有实际日期不能在此覆盖，请刷新核对")
+    if len(payload.reason.strip()) < 4:
+        raise HTTPException(422, "请填写实际退货日期核实依据，至少四字")
+    day = carton_return_dates.require_date(payload.return_date)
+    supplier = return_supplier(db, movement)
+    if not supplier:
+        raise HTTPException(409, "无法确定退货供应商，请先核实原收料来源")
+    ensure_open(db, factory, supplier, posting_date[:7])
+    ensure_open(db, factory, supplier, day[:7])
+    carton_return_dates.record(db, user, movement, day, reason=payload.reason.strip(), verified=True)
+    db.commit()
+    return {"movement_id": movement.id, "return_date": day, "posting_date": posting_date, "date_basis": "RETURN_ACTUAL"}
 
 
 def set_acceptance_date(db, receipt_id, payload, user):

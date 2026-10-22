@@ -30,6 +30,7 @@ from app.schemas.carton_mark import (
     CartonMarkTemplateOut,
     CartonMarkManualReviewRequest,
     CartonMarkAssetOut,
+    CartonMarkAssociations,
     CartonMarkAssetBindingRequest,
     CartonMarkAssetOrderOut,
     CartonMarkPhotoGroupRequest,
@@ -78,6 +79,8 @@ from app.services import carton_mark_customer_matching as customer_matching
 from app.services import carton_mark_manual_review as manual_review
 
 router = APIRouter()
+from app.schemas.carton_mark import CartonMarkAssetSharing, CartonMarkBindingConfirmation
+from app.services import carton_mark_sharing as sharing
 
 
 def _asset_scope(db, user, factory, write=False):
@@ -90,7 +93,36 @@ def _asset_scope(db, user, factory, write=False):
 def get_assets(factory_id: str, order_id: str | None = None,
                db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     factory = _asset_scope(db, user, factory_id)
-    return assets.list_assets(db, factory, order_id)
+    return sharing.filter_internal(db, user, assets.list_assets(db, factory, order_id))
+
+
+@router.get('/api/carton-mark/assets/share-recipients')
+def share_recipients(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return sharing.recipients(db, _asset_scope(db, user, factory_id, True))
+
+
+@router.get('/api/carton-mark/assets/binding-targets')
+def binding_targets(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return sharing.binding_targets(db, user, _asset_scope(db, user, factory_id, True))
+
+
+@router.put('/api/carton-mark/assets/{asset_id}/sharing', response_model=CartonMarkAssetOut)
+def change_sharing(asset_id: str, factory_id: str, payload: CartonMarkAssetSharing,
+                   db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return sharing.change(db, user, _asset_scope(db, user, factory_id, True), asset_id, payload)
+
+
+@router.post('/api/carton-mark/assets/{asset_id}/bindings/{binding_id}/confirm', response_model=CartonMarkAssetOut)
+def confirm_binding(asset_id: str, binding_id: str, factory_id: str, payload: CartonMarkBindingConfirmation,
+                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return sharing.confirm(db, user, _asset_scope(db, user, factory_id, True), asset_id, binding_id, payload)
+
+
+@router.put('/api/carton-mark/assets/{asset_id}/associations', response_model=CartonMarkAssetOut)
+def associate_asset(asset_id: str, factory_id: str, payload: CartonMarkAssociations,
+                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_mark_associations import save
+    return save(db, user, _asset_scope(db, user, factory_id, True), asset_id, payload)
 
 
 @router.post("/api/carton-mark/assets/batch", response_model=list[CartonMarkAssetUploadResult])
@@ -139,6 +171,7 @@ def classify_asset(asset_id: str, factory_id: str, payload: CartonMarkAssetClass
 def asset_classification_history(asset_id: str, factory_id: str,
                                  db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     factory = _asset_scope(db, user, factory_id)
+    sharing.ensure_asset_access(db, user, assets.active_asset(db, factory, asset_id))
     return asset_workflow.history(db, factory, asset_id)
 
 
@@ -146,7 +179,7 @@ def asset_classification_history(asset_id: str, factory_id: str,
 def asset_binding_orders(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     factory = _asset_scope(db, user, factory_id)
     _asset_scope(db, user, factory_id, True)
-    return assets.binding_orders(db, factory)
+    return assets.binding_orders(db, factory, user)
 
 
 @router.post("/api/carton-mark/assets/photo-groups", response_model=list[CartonMarkAssetOut])
@@ -185,6 +218,7 @@ def download_asset(asset_id: str, factory_id: str, preview: bool = False,
                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     factory = _asset_scope(db, user, factory_id)
     asset = assets.active_asset(db, factory, asset_id)
+    sharing.ensure_asset_access(db, user, asset)
     disposition = "inline" if preview and asset.kind in {"pdf", "image"} else "attachment"
     return Response(content=asset.content, media_type=asset.content_type, headers={
         "Content-Disposition": f"{disposition}; filename*=UTF-8''{url_quote(asset.file_name, safe='')}",
@@ -205,6 +239,7 @@ async def _template_source(db, user, factory, upload, asset_id, kind):
     if asset_id:
         _asset_scope(db, user, factory)
         asset = assets.active_asset(db, factory, asset_id)
+        sharing.ensure_asset_access(db, user, asset)
         if asset.kind != kind:
             raise HTTPException(422, "仓库资料的文件类型不符")
         return asset.file_name, asset.content

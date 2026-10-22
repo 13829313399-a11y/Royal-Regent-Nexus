@@ -22,7 +22,9 @@ return computed(() => {
       if (WAREHOUSES.some(warehouse => warehouse.id === module.id) && !isWarehouseFactory(appStore.activeFactoryId)) return false
       if (module.factoryIds?.length && !module.factoryIds.includes(factory.id)) return false
       if (toValue(department) === 'pmc-warehouse' && module.id === 'carton-procurement'
-        && !authStore.can('carton_procurement:read', factory.id)) return false
+        && !['pmc-warehouse', 'carton'].some(scope =>
+          authStore.can('carton_procurement:read', factory.id, scope)
+          || authStore.can('carton_procurement:special_request_submit', factory.id, scope))) return false
       if (
         module.strictAccess
         && module.permissions?.length

@@ -1,17 +1,26 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, onBeforeRouteUpdate } from 'vue-router'
-import { ArrowLeft, Scissors, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator } from '@lucide/vue'
+import { ArrowLeft, Building2, BookOpen, LayoutDashboard, History, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator } from '@lucide/vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
+import { Button } from '@/components/ui/button'
+import { cuttingGuideSteps, cuttingGuideTips } from './usageGuide'
 import { CUTTING_BASE, CUTTING_FACTORY, CUTTING_WORKSPACES, isCuttingFactory } from './navigation'
 import { guardCuttingFactory } from './routes'
 import { cuttingApi, type Access } from './api'
 import './workspace.css'
+import { trackCuttingWrites } from './workspaceRefresh'
+const stopTrackingWrites = trackCuttingWrites()
 
 const route = useRoute()
+const main=ref<HTMLElement>()
+watch(()=>route.path,()=>main.value?.scrollTo?.({top:0,left:0}),{flush:'post'})
 const logoUrl = '/brand/huadeng_group_dynamic_logo_topbar.svg'
+const acceptanceRelease = import.meta.env.VITE_CUTTING_ACCEPTANCE_RELEASE?.trim()
 const validFactory = computed(() => isCuttingFactory(route.query.factory))
-const icons = { CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator }
+const icons = { LayoutDashboard, History, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator }
+const currentTitle = computed(() => CUTTING_WORKSPACES.find(w => route.path.endsWith(`/${w.path}`))?.title ?? '裁床部')
 const productionRoute = { path: '/modules/production', query: { factory: CUTTING_FACTORY } }
 // Parent beforeEnter does not run for query-only or sibling navigation.
 onBeforeRouteUpdate(guardCuttingFactory)
@@ -46,6 +55,7 @@ onMounted(() => {
   void revalidate()
 })
 onBeforeUnmount(() => {
+  stopTrackingWrites()
   alive = false; accessGeneration++
   window.removeEventListener('authorization-context-changed', revalidate)
   window.removeEventListener('cutting-authorization-recheck', revalidate)
@@ -57,12 +67,18 @@ onBeforeUnmount(() => {
   <div v-if="validFactory" class="cutting-shell">
     <a class="cutting-skip" href="#cutting-main">跳到工作区内容</a>
     <header class="cutting-header">
+      <div v-if="acceptanceRelease" class="cutting-environment" role="note" aria-label="独立验收环境标识">
+        <strong>独立验收环境 · 数据库副本</strong><span>合成业务样本仅供验收，不代表真实订单或正式岗位验收。</span><small>发布版本 {{acceptanceRelease}}</small>
+      </div>
       <RouterLink :to="productionRoute" class="cutting-brand" aria-label="裁床部，返回华康 C 生产部">
         <img :src="logoUrl" alt="华登集团" />
         <span><strong>裁床部</strong><small>华康 C · 生产管理</small></span>
       </RouterLink>
-      <span class="cutting-scope"><Scissors :size="16" aria-hidden="true" /> 本厂 / 外发裁剪</span>
       <RouterLink :to="productionRoute" class="cutting-back"><ArrowLeft :size="16" aria-hidden="true" />生产部</RouterLink>
+      <span class="cutting-factory"><Building2 :size="17" aria-hidden="true" />华康 C</span>
+      <UsageGuideDialog :title="currentTitle" description="华康 C 裁床部 · 按当前岗位权限办理，原单与更正全程保留。" :steps="cuttingGuideSteps" :tips="cuttingGuideTips">
+        <template #trigger><Button variant="outline" class="cutting-help"><BookOpen :size="17" aria-hidden="true" />使用说明</Button></template>
+      </UsageGuideDialog>
       <AccountMenu compact />
     </header>
     <nav class="cutting-rail" aria-label="裁床工作区导航">
@@ -70,10 +86,10 @@ onBeforeUnmount(() => {
         :to="{ path: `${CUTTING_BASE}/${workspace.path}`, query: { factory: CUTTING_FACTORY } }"
         :aria-label="workspace.title" :aria-current="route.path === `${CUTTING_BASE}/${workspace.path}` ? 'page' : undefined">
         <component :is="icons[workspace.icon]" :size="21" aria-hidden="true" />
-        <span>{{ workspace.short }}</span>
+        <span>{{ workspace.path === 'planning' ? '生产排期' : workspace.path === 'reporting' ? '每日填数' : workspace.short }}</span>
       </RouterLink>
     </nav>
-    <main id="cutting-main" class="cutting-main" tabindex="-1">
+    <main ref="main" id="cutting-main" class="cutting-main" tabindex="-1">
       <p v-if="verifying" role="status">正在核验裁床工作区权限…</p>
       <div v-if="authorizationError" role="alert"><p>{{ authorizationError }}</p><button type="button" :disabled="verifying" @click="revalidate">重新核验权限</button></div>
       <div v-show="!verifying && !authorizationError">

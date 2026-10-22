@@ -1,8 +1,10 @@
 """P4e read-only XLSX reports, pinned to immutable evidence or a live read token."""
 from copy import deepcopy
 from typing import Literal
+from types import SimpleNamespace
 
 from pydantic import Field, model_validator
+from sqlalchemy import select, func
 
 from app.services import cutting_ops as c, cutting_periods as periods
 from app.services import cutting_settlement as fees, cutting_payments as payments
@@ -174,21 +176,75 @@ def payment_sheets(value, events):
         sheet('所选月核销明细', ['付款单ID', '付款事件ID', '付款日期', '凭证号', '当前状态', '结算单ID', '原冻结结算版本ID', '币种', '分配金额'], allocations)]
 
 
-def capture(db, selection):
-    """Caller authorizes first. Copy under the shared writer lock, render outside it."""
+def frozen_scope(db, selection):
+    is_period = selection.kind == 'period'
+    if is_period:
+        periods.guards.ensure_schema(db)
+        periods.preview.period(selection.month, periods.wh.business_now().date())
+        model, state = periods.Event, periods.state
+        scope = [model.factory_id == c.FACTORY, model.month == selection.month]
+    else:
+        c.require(fees.schema_ready(db.connection()), '外发结算需先完成0165显式迁移及证据保护', 503)
+        model, state = fees.Event, fees.state
+        scope = [model.factory_id == c.FACTORY, model.document_id == selection.document_id, model.action != 'price']
+    return model, state, scope
+
+
+def frozen_source(db, selection):
+    """One immutable payload and complete trace; caller holds the factory lock."""
+    is_period = selection.kind == 'period'
+    model, state, scope = frozen_scope(db, selection)
+    trace = [dict(row) for row in db.execute(select(model.id, model.version, model.action,
+        model.actor_name.label('actor'), model.actor_id, model.created_at.label('date'), model.reason)
+        .where(*scope).order_by(model.version)).mappings()]
+    selected = next((row for row in trace if row['id'] == selection.event_id), None)
+    c.require(selected is not None, '月结历史版本不存在' if is_period else '结算版本不存在', 404)
+    data = db.scalar(select(model.data).where(*scope, model.id == selection.event_id))
+    c.require(is_period or data['snapshot']['month'] == selection.month, '结算单不属于所选月份', 404)
+    return dict(data=data, history=trace, selected_state=state(SimpleNamespace(action=selected['action'])),
+                state=state(SimpleNamespace(action=trace[-1]['action'])))
+
+
+def source_revision(db, selection):
+    """Final lightweight fence, under lock, against the captured immutable source.
+
+    Protected append-only ledgers make the latest scoped event sufficient; live
+    payments additionally depend on the full settlement revision. No report
+    formatting or workbook sizing occurs between this check and lock release.
+    """
     lock_transaction(db, 'cutting-master', c.FACTORY)
-    meta = [['报表', TITLES[selection.kind]], ['厂区／部门', '华康 C／裁床部'], ['所选月份', selection.month]]
+    if selection.kind == 'payments':
+        c.require(payments.schema_ready(db.connection()) and fees.schema_ready(db.connection()),
+                  '付款或结算证据保护不完整，不能导出', 503)
+        return (db.scalar(select(func.max(payments.Event.version)).where(payments.Event.factory_id == c.FACTORY)) or 0,
+                db.scalar(select(func.max(fees.Event.version)).where(fees.Event.factory_id == c.FACTORY)) or 0)
+    model, _, scope = frozen_scope(db, selection)
+    return db.scalar(select(model.id).where(*scope).order_by(model.version.desc()).limit(1))
+
+
+def capture(db, selection, *, release_transaction=False, with_revision=False):
+    """Capture under lock; HTTP callers release before formatting/sizing tables."""
+    lock_transaction(db, 'cutting-master', c.FACTORY)
     if selection.kind == 'payments':
         value = payments.read(db, selection.month)
-        # read() itself does not validate future months; exports do so explicitly.
         c.require(selection.month <= business_now().strftime('%Y-%m'), '不能导出未来月份', 422)
-        events = payments.history(db)
+        # Materialize plain fields now: no ORM lazy loads after rollback.
+        events = [SimpleNamespace(document_id=e.document_id, id=e.id, action=e.action, data=e.data,
+                  actor_name=e.actor_name, created_at=e.created_at) for e in payments.history(db)]
+        settlement_revision = db.scalar(select(func.max(fees.Event.version)).where(fees.Event.factory_id == c.FACTORY)) or 0
+        revision = (value['revision'], settlement_revision)
+    else:
+        value = frozen_source(db, selection)
+        revision = value['history'][-1]['id']
+    if release_transaction:
+        db.rollback()
+    meta = [['报表', TITLES[selection.kind]], ['厂区／部门', '华康 C／裁床部'], ['所选月份', selection.month]]
+    if selection.kind == 'payments':
         data = payment_sheets(value, events)
         meta += [['口径', '所选月付款登记＋当前全部期间有效结算余额；不是历史月末余额或锁月快照'],
                  ['金额规则', '草稿、退回、冲销不计已付；待复核仅占用；已生效才计核销。各币种分别汇总'],
-                 ['付款版本', value['revision']], ['结算版本', max((e.version for e in fees.history(db)), default=0)]]
+                 ['付款版本', value['revision']], ['结算版本', settlement_revision]]
     else:
-        value = periods.read(db, selection.month, selection.event_id) if selection.kind == 'period' else fees.read(db, selection.month, selection.document_id, selection.event_id)
         expected = 'locked' if selection.kind == 'period' else 'confirmed'
         c.require(value['selected_state'] == expected, '正式冻结导出只接受已锁月／已确认版本；草稿及待复核不能冒充正式报表')
         selected = next(e for e in value['history'] if e['id'] == selection.event_id)
@@ -229,7 +285,7 @@ def capture(db, selection):
              ['模板版本', 'cutting-p4e-v2']]
     result = deepcopy(dict(kind=selection.kind, month=selection.month, metadata=meta, sheets=data))
     result['delivery'] = workbook_export.delivery(result)
-    return result
+    return (result, revision) if with_revision else result
 
 
 def render(report, user):
@@ -238,3 +294,8 @@ def render(report, user):
 
 def package(report, user):
     return workbook_export.package(report, user, render)
+
+
+def package_isolated(report, user):
+    from app.services.cutting_export_process import package as isolated
+    return isolated(report, user, TITLES[report['kind']])

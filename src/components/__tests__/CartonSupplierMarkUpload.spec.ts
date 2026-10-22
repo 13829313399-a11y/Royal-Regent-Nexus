@@ -3,18 +3,62 @@ import { reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CartonSupplierMarkUpload from '../CartonSupplierMarkUpload.vue'
 
-const api = vi.hoisted(() => ({ markUploadOrders: vi.fn(), uploadMarkAssets: vi.fn() }))
+const api = vi.hoisted(() => ({ bindingTargets: vi.fn(), uploadMarkAssets: vi.fn() }))
 const access = reactive({ edit: true, authorizationVersion: 1 })
 vi.mock('@/api/cartonSupplierPortal', () => ({ cartonSupplierPortalApi: api }))
+vi.mock('@/api/cartonMark', () => ({ cartonMarkApi: api }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'supplier' }, get authorizationVersion() { return access.authorizationVersion }, can: (code: string) => code.endsWith(':edit') ? access.edit : true }) }))
-const order = { id: 'order-b', issue_id: 'issue-b', customer_name: 'BUZZ', contract_no: '4500222793', customer_po: 'PO', item_no: 'I-B', document_no: '采购-B-P01', order_date: '2026-10-07' }
-beforeEach(() => { vi.resetAllMocks(); access.edit = true; access.authorizationVersion = 1; api.markUploadOrders.mockResolvedValue([order]); api.uploadMarkAssets.mockResolvedValue([]) })
+const order = { order_id: 'order-b', order_kind: 'REGULAR', revision: 2, lines: [], order_no: '采购-B-P01', issue_id: 'issue-b', customer_name: 'BUZZ', contract_no: '4500222793', customer_po: 'PO', item_no: 'I-B', document_no: '采购-B-P01', order_date: '2026-10-07' }
+beforeEach(() => { vi.resetAllMocks(); access.edit = true; access.authorizationVersion = 1; api.bindingTargets.mockResolvedValue([order]); api.uploadMarkAssets.mockResolvedValue([]) })
 async function choose(wrapper: ReturnType<typeof mount>, files: File[]) {
   const input = wrapper.get('[aria-label="供应商批量选择箱唛原文件"]')
   Object.defineProperty(input.element, 'files', { configurable: true, value: files }); await input.trigger('change')
 }
-function submit(wrapper: ReturnType<typeof mount>) { return wrapper.findAll('button').find(button => button.text().startsWith('上传并自动关联'))!.trigger('click') }
+function submit(wrapper: ReturnType<typeof mount>) { return wrapper.findAll('button').find(button => button.text().startsWith('上传共享资料'))!.trigger('click') }
 describe('supplier batch mark upload', () => {
+  it.each(['SAMPLE', 'MISC'] as const)('uploads and directly associates a %s with optional paper and a visible result', async kind => {
+    const target = { order_id: 'special', order_kind: kind, order_no: 'SP-真实单', customer_name: '', contract_no: '', item_no: '', revision: 6, issue_id: 'special-v6', lines: [{ id: 'paper', label: '平卡' }] }
+    api.bindingTargets.mockResolvedValue([target])
+    api.uploadMarkAssets.mockResolvedValue([{ file_name: '资料.pdf', status: 'created', message: '', asset: { orders: [], associations: [{ order_kind: target.order_kind, order_id: target.order_id, order_no: target.order_no, contract_no: target.contract_no, customer_name: target.customer_name, item_no: target.item_no, expected_revision: target.revision, issue_id: target.issue_id, line_id: '' }] } }])
+    const wrapper = mount(CartonSupplierMarkUpload, { props: { factoryIds: ['huaxing'] } }); await flushPromises()
+    await wrapper.get('[aria-label="供应商箱唛上传订单"]').setValue('special')
+    expect(wrapper.get<HTMLSelectElement>('[aria-label="供应商箱唛上传纸品"]').element.value).toBe('')
+    const file = new File(['pdf'], '资料.pdf'); await choose(wrapper, [file]); await submit(wrapper); await flushPromises()
+    expect(api.uploadMarkAssets.mock.calls[0]![5]).toEqual({ request_id: expect.any(String), targets: [{ order_kind: kind, order_id: 'special', expected_revision: 6, issue_id: 'special-v6', line_id: '' }] })
+    expect(wrapper.get('[role="status"]').text()).toContain(`已关联：华兴 · ${kind === 'SAMPLE' ? '样板' : '杂单'} · SP-真实单 · 整单资料`)
+    expect(wrapper.text()).not.toContain('待我方确认'); expect(wrapper.text()).not.toContain('确认前不可')
+    await submit(wrapper); expect(api.uploadMarkAssets).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+  it('replays an unknown upload with its exact key and permits a new target revision after a definite file failure', async () => {
+    api.bindingTargets.mockResolvedValue([{ ...order, order_no: undefined }])
+    const wrapper = mount(CartonSupplierMarkUpload, { props: { factoryIds: ['huaxing'] } }); await flushPromises()
+    await wrapper.get('[aria-label="供应商箱唛上传订单"]').setValue(order.order_id)
+    expect(wrapper.get('[aria-label="供应商箱唛绑定信息"]').text()).toContain(order.contract_no)
+    expect(wrapper.get('[aria-label="供应商箱唛绑定信息"]').text()).not.toContain('订单号')
+    await choose(wrapper, [new File(['pdf'], '原件.pdf')])
+    api.uploadMarkAssets.mockRejectedValueOnce(new Error('响应丢失')).mockResolvedValueOnce([{ file_name: '原件.pdf', status: 'failed', message: '版本冲突', asset: null }])
+    await submit(wrapper); await flushPromises(); const first = api.uploadMarkAssets.mock.calls[0]![5]
+    await submit(wrapper); await flushPromises(); expect(api.uploadMarkAssets.mock.calls[1]![5]).toEqual(first)
+    api.bindingTargets.mockResolvedValue([{ ...order, revision: 7, issue_id: 'new-issue' }])
+    await wrapper.findAll('button').find(button => button.text() === '刷新可关联订单')!.trigger('click'); await flushPromises()
+    api.uploadMarkAssets.mockResolvedValue([{ file_name: '原件.pdf', status: 'created', message: '', asset: { orders: [] } }])
+    await submit(wrapper); await flushPromises()
+    expect(api.uploadMarkAssets.mock.calls[2]![5].request_id).not.toBe(first.request_id)
+    expect(api.uploadMarkAssets.mock.calls[2]![5].targets[0]).toMatchObject({ expected_revision: 7, issue_id: 'new-issue' })
+    wrapper.unmount()
+  })
+  it('uploads shared unbound files even before any order exists', async () => {
+    api.bindingTargets.mockResolvedValue([])
+    api.uploadMarkAssets.mockResolvedValue([{ file_name: '共享.pdf', status: 'created', asset: { orders: [] }, message: '' }])
+    const wrapper = mount(CartonSupplierMarkUpload, { props: { factoryIds: ['huaxing'] } }); await flushPromises()
+    const file = new File(['pdf'], '共享.pdf')
+    await choose(wrapper, [file]); await submit(wrapper); await flushPromises()
+    expect(api.uploadMarkAssets).toHaveBeenCalledWith('huaxing', [file], undefined, expect.any(AbortSignal), true, { request_id: expect.any(String), targets: [] })
+    expect(wrapper.text()).toContain('已上传共享资料')
+    expect(wrapper.text()).not.toContain('已绑定：')
+    wrapper.unmount()
+  })
   it('accepts Excel, PDF and images together, keeping only failed files for retry', async () => {
     const wrapper = mount(CartonSupplierMarkUpload, { props: { factoryIds: ['huakang-b'] } }); await flushPromises()
     expect(wrapper.get('[aria-label="供应商箱唛上传订单"]').text()).toContain('采购-B-P01')
@@ -24,20 +68,21 @@ describe('supplier batch mark upload', () => {
     expect(api.uploadMarkAssets.mock.calls[0]!.slice(0, 3)).toEqual(['huakang-b', files, undefined])
     expect(wrapper.text()).toContain('请选择订单后重试'); expect(wrapper.emitted('uploaded')).toHaveLength(1)
     expect(wrapper.text()).toContain('已绑定：华康B · BUZZ · 合同 4500222793 · PO PO · ITEM I-B')
-    await wrapper.get('[aria-label="供应商箱唛上传订单"]').setValue(order.id)
-    expect(wrapper.get('[aria-label="供应商箱唛绑定信息"]').text()).toContain('绑定客户BUZZ')
+    await wrapper.get('[aria-label="供应商箱唛上传订单"]').setValue(order.order_id)
+    expect(wrapper.get('[aria-label="供应商箱唛绑定信息"]').text()).toContain('关联客户BUZZ')
     expect(wrapper.get('[aria-label="供应商箱唛绑定信息"]').text()).toContain('货号 / ITEMI-B')
     await submit(wrapper); await flushPromises()
-    expect(api.uploadMarkAssets.mock.calls[1]!.slice(0, 3)).toEqual(['huakang-b', [files[2]], order])
+    expect(api.uploadMarkAssets.mock.calls[1]!.slice(0, 3)).toEqual(['huakang-b', [files[2]], undefined])
+    expect(api.uploadMarkAssets.mock.calls[1]![5]).toEqual({ request_id: expect.any(String), targets: [{ order_id: order.order_id, order_kind: 'REGULAR', issue_id: order.issue_id, expected_revision: 2, line_id: '' }] })
     wrapper.unmount()
   })
   it('requires a destination when listing all factories and never guesses one', async () => {
     const wrapper = mount(CartonSupplierMarkUpload, { props: { factoryIds: ['huaxing', 'huakang-b'] } }); await flushPromises()
-    expect(api.markUploadOrders).not.toHaveBeenCalled()
+    expect(api.bindingTargets).not.toHaveBeenCalled()
     await choose(wrapper, [new File(['pdf'], 'a.pdf')]); await submit(wrapper); await flushPromises()
     expect(api.uploadMarkAssets).not.toHaveBeenCalled()
     await wrapper.get('[aria-label="供应商箱唛上传厂区"]').setValue('huakang-b'); await flushPromises()
-    expect(api.markUploadOrders).toHaveBeenCalledWith('huakang-b', expect.any(AbortSignal))
+    expect(api.bindingTargets).toHaveBeenCalledWith('huakang-b', true, expect.any(AbortSignal))
     wrapper.unmount()
   })
   it('rejects oversized batches and preserves a retryable error on network failure', async () => {
@@ -47,7 +92,7 @@ describe('supplier batch mark upload', () => {
     expect(api.uploadMarkAssets).not.toHaveBeenCalled()
     const file = new File(['pdf'], 'a.pdf'); await choose(wrapper, [file])
     api.uploadMarkAssets.mockRejectedValue(new Error('请求中断')); await submit(wrapper); await flushPromises()
-    expect(wrapper.text()).toContain('请刷新资料库确认'); expect(wrapper.text()).toContain(file.name)
+    expect(wrapper.text()).toContain('请先刷新资料库核实结果'); expect(wrapper.text()).toContain(file.name)
     wrapper.unmount()
   })
   it('clears drafts on scope or permission changes and discards late upload outcomes', async () => {

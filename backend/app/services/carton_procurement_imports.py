@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.models.carton_procurement import CartonOrder, CartonOrderLine
 from app.services.carton_dimensions import specification_unit
 from app.services.carton_material_identity import material_conflicts
-from app.services.carton_schedule_tracking import identity as schedule_identity, tracked
+from app.services.carton_schedule_tracking import identity as schedule_identity, tracked, effective_po
 
 
 MAX_IMPORT_ROWS = 5_000
@@ -41,7 +41,7 @@ def prepared_sheets(filename, content, sheets):
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
 DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v11-unordered"
-SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-so-identity-v4-complete"
+SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-effective-po-v5"
 INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v3-complete"
 PACKAGING_TYPES = (
     "普通箱",
@@ -217,7 +217,7 @@ def _inspection_start_date(value: Any, reference_date: date) -> date | None:
 
 
 def _sheet_rows(filename: str, content: bytes, *, strict_item_limit: bool = False,
-                strict_row_limit: int | None = None) -> list[tuple[str, list[list[Any]], int]]:
+                strict_row_limit: int | None = None, include_ignored_sheets: bool = False) -> list[tuple[str, list[list[Any]], int]]:
     prepared = _prepared_sheets.get()
     if prepared is not None and not strict_item_limit and strict_row_limit is None \
             and prepared[:2] == (filename, hashlib.sha256(content).digest()):
@@ -236,7 +236,10 @@ def _sheet_rows(filename: str, content: bytes, *, strict_item_limit: bool = Fals
             if strict_item_limit:
                 # The ITEM contract excludes duplicate summary sheets. Select
                 # before materializing cells, not after reading the whole book.
-                sheets = [sheet for sheet in sheets if "item" in sheet.title.casefold()] or sheets
+                selected = [sheet for sheet in sheets if "item" in sheet.title.casefold()] or sheets
+                if include_ignored_sheets:
+                    result.extend((sheet.title, [], 0) for sheet in sheets if sheet not in selected)
+                sheets = selected
             for sheet in sheets:
                 if strict_row_limit and (sheet.max_row or 0) > strict_row_limit:
                     raise HTTPException(422, f"送货工作表“{sheet.title}”超过 {strict_row_limit} 行，请拆分文件后导入")
@@ -267,15 +270,19 @@ def _sheet_rows(filename: str, content: bytes, *, strict_item_limit: bool = Fals
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"无法读取旧版 XLS 文件：{exc}") from exc
         sheets = workbook.sheets()
+        ignored = []
         if strict_item_limit:
-            sheets = [sheet for sheet in sheets if "item" in sheet.name.casefold()] or sheets
+            selected = [sheet for sheet in sheets if "item" in sheet.name.casefold()] or sheets
+            if include_ignored_sheets:
+                ignored = [(sheet.name, [], workbook.datemode) for sheet in sheets if sheet not in selected]
+            sheets = selected
         if any(sheet.nrows > MAX_IMPORT_ROWS + 1 or sheet.ncols > 256 for sheet in sheets):
             raise HTTPException(422, "工作表超过 5000 条明细或 256 列，请拆分后导入；本次未导入任何行")
         if strict_row_limit and any(sheet.nrows > strict_row_limit for sheet in sheets):
             raise HTTPException(422, f"送货工作表超过 {strict_row_limit} 行，请拆分文件后导入")
         if strict_item_limit and any("item" in sheet.name.casefold() and sheet.nrows > MAX_IMPORT_ROWS for sheet in workbook.sheets()):
             raise HTTPException(422, f"ITEM 工作表超过 {MAX_IMPORT_ROWS} 行，请拆分后导入")
-        return [
+        return ignored + [
             (
                 sheet.name,
                 [sheet.row_values(index) for index in range(sheet.nrows)],
@@ -802,7 +809,7 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
         if row.get("match_status") == "REVIEW_REQUIRED":
             continue
         key = tuple(unicodedata.normalize("NFKC", str(row.get(field) or "")).strip().casefold()
-                    for field in ("contract_no", "item_no", "source_reference"))
+                    for field in ("contract_no", "item_no")) + (effective_po(row),)
         identities.setdefault(key, []).append(row)
     for duplicates in identities.values():
         if len(duplicates) > 1:
@@ -810,16 +817,26 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
                 row.update(match_status="REVIEW_REQUIRED", suggestion="合同、货号和 SO#/Reference 相同，待人工确认是否重复或分批；可继续标记或按此下单")
     return {"rows": result, "engine": "unified-item-header-mapping", "field_mappings": mappings,
             "warnings": ["读取 ITEM 表的待下单、取消单和已走货分区；仅待下单区正单参与纸箱漏单核对，其他记录保留待确认。接单表不重复导入。",
-                         "Contract No.、SO#/Reference、P/O#: 分别保留；同合同货号按 SO#/Reference 区分，空白编号不从相邻行补齐。",
+                         "Contract No.、SO#/Reference、P/O#: 分别保留；同合同货号优先按 SO#/Reference 区分，SO 空白时用 P/O，空白编号不从相邻行补齐。",
                          "无年份、多阶段或无效日期保留原文并标记待确认，不猜测日期。"],
             "review_count": sum(row.get("match_status") == "REVIEW_REQUIRED" or row.get("date_review_required", False) for row in result)}
 
 
 def _parse_weekly(filename: str, content: bytes) -> dict[str, Any]:
-    sheets = _sheet_rows(filename, content, strict_item_limit=True)
+    sheets = _sheet_rows(filename, content, strict_item_limit=True, include_ignored_sheets=True)
     item_sheets = [sheet for sheet in sheets if "item" in sheet[0].casefold()]
     if item_sheets:
-        return _parse_item_schedule(item_sheets)
+        parsed = _parse_item_schedule(item_sheets)
+        # FULL claims completeness only for the documented ITEM layout. Keep
+        # ignored, unfamiliar sheets explicit rather than guessing.
+        unknown = [name for name, rows, _ in sheets if "item" not in name.casefold()
+            and name.strip() != "接单表"
+            and not any(marker in _header_key(name) for marker in ("说明", "示例", "instruction", "example"))]
+        parsed["coverage_parse"] = {"version": 1, "unrecognized_sheets": unknown}
+        if unknown:
+            parsed["warnings"].append("以下工作表未按 ITEM 识别：" + "、".join(unknown)
+                + "；本次仅导入 ITEM，不是全量覆盖，请核对这些表是否还有业务明细。")
+        return parsed
     parsed: list[dict[str, Any]] = []
     warnings: list[str] = []
     for sheet_name, rows, _ in sheets:
@@ -1043,6 +1060,7 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
             .where(
                 CartonOrder.factory_id == factory_id,
                 CartonOrder.status != "CANCELLED",
+                CartonOrder.deleted_at.is_(None),
             )
         ).all()
     )
@@ -1069,7 +1087,9 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
         linked_pairs = [(line, order) for identifier in linked_ids for line, order in by_id[identifier]
                         if (not row.get("schedule_customer_code") or order.customer_code == row["schedule_customer_code"])
                         and order.contract_no.strip().casefold() == str(row.get("contract_no") or "").strip().casefold()
-                        and order.item_no.strip().casefold() == str(row.get("item_no") or "").strip().casefold()]
+                        and order.item_no.strip().casefold() == str(row.get("item_no") or "").strip().casefold()
+                        and (not effective_po(row) or effective_po({"customer_po": order.customer_po}) == effective_po(row))]
+        linked_ids = list({order.id for _, order in linked_pairs})
         linked_orders = {order.id: order for _, order in linked_pairs}
         if len(linked_orders) == 1:
             linked_order = next(iter(linked_orders.values()))
@@ -1091,12 +1111,12 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                 row.update(match_status="REVIEW_REQUIRED", suggestion=(
                     f"送货对象“{row.get('destination') or '空'}”与当前厂区不符或无法识别；请在正确厂区导入并人工核对"))
                 continue
-        po_key = str((row.get("source_reference") if row.get("template") == "unified-item" and row.get("source_reference")
-                      else row.get("customer_po")) or "").strip().casefold()
+        po_key = effective_po(row) if row.get("template") == "unified-item" else effective_po({"customer_po": row.get("customer_po")})
         def scoped(pairs):
             return [(line, order) for line, order in pairs
                     if (not row.get("schedule_customer_code") or order.customer_code == row["schedule_customer_code"])
-                    and (order.id in linked_ids if linked_ids else not po_key or order.customer_po.strip().casefold() == po_key)]
+                    and (not po_key or effective_po({"customer_po": order.customer_po}) == po_key)
+                    and (not linked_ids or order.id in linked_ids)]
         if row.get("template") == "unified-item":
             identity = lambda value: _text(value).casefold()
         elif row.get("template") == "dongkang-delivery":

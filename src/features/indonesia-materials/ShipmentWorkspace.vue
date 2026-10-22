@@ -8,12 +8,26 @@ import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
 import Fields from './Fields.vue'
 import { inputData, packageFields, showStatus, setNumberText } from './forms'
 import { useMaterials } from './workspace'
+import { useMaterialDraft } from './useDraft'
+import { recordRef, restoreRecord } from './draftPersistence'
 const ws = useMaterials()
 const defaults: Data = { customer: '', recipient: 'RRI', shipment_date: '', lines: [], packages: [], remarks: '' }
 const form = ref<Data | null>(null)
 const editing = ref<MaterialRecord>()
 const confirming = ref<MaterialRecord>()
 const readOnly = computed(() => editing.value?.data.status === 'confirmed')
+const context = ref({ customer: '', recipient: 'RRI' })
+const draft = useMaterialDraft(() => readOnly.value ? null : form.value ?? (confirming.value ? { confirming: confirming.value.id } : null), {
+  id: 'shipment', capture: () => readOnly.value || (!form.value && !confirming.value) ? null : { form: form.value, editing: recordRef(editing.value), confirming: recordRef(confirming.value), context: context.value },
+  restore: saved => {
+    const row = restoreRecord(ws.records, saved.editing, 'shipment'), source = restoreRecord(ws.records, saved.confirming, 'shipment')
+    if (row?.data.status === 'confirmed' || source?.data.status === 'confirmed') throw new Error('该出货单已确认，不能恢复为可编辑草稿或再次确认；原草稿仍保留。')
+    const data = saved.form ? inputData(defaults, saved.form) : null
+    if (data && data.lines.some((line: Data) => !ws.kind('allocation').some(item => item.id === line.allocation_id))) throw new Error('草稿中的原分配记录已不可用，请先核对，草稿仍保留。')
+    editing.value = row; confirming.value = source; form.value = data; context.value = saved.context || { customer: data?.customer || '', recipient: data?.recipient || 'RRI' }
+  },
+  reset: () => { form.value = null; confirming.value = undefined; editing.value = undefined },
+})
 const packingTotals = computed(() => readOnly.value ? editing.value?.data.packing_totals : null)
 const candidates = computed(() => ws.kind('allocation').filter(row => {
   const order = ws.record(row.data.order_id)?.data
@@ -27,8 +41,19 @@ function label(id: string) {
   const supply = ws.record(allocation.data.supply_id)
   return `${ws.orderName(allocation.data.order_id)} · ${ws.materialName(supply?.data.material_id)} · ${supply?.data.batch ?? ''}`
 }
-function edit(row?: MaterialRecord) { confirming.value = undefined; editing.value = row; form.value = inputData(defaults, row?.data) }
-function resetLines() { if (form.value) { form.value.lines = []; form.value.packages = [] } }
+function edit(row?: MaterialRecord) { if (!draft.beforeOpen()) return; confirming.value = undefined; editing.value = row; form.value = inputData(defaults, row?.data); context.value = { customer: form.value.customer, recipient: form.value.recipient }; draft.accept() }
+function close() { if (draft.permitDiscard()) form.value = null }
+function beginConfirm(row: MaterialRecord) { if (draft.beforeOpen()) { editing.value = undefined; confirming.value = row; form.value = null; draft.accept() } }
+function resetLines(key: 'customer' | 'recipient', event: Event) {
+  if (!form.value) return
+  if ((form.value.lines.length || form.value.packages.length) && !window.confirm('更改客户或接收方会清空本次出货数量和包装资料，确定继续吗？')) {
+    Object.assign(form.value, context.value)
+    ;(event.target as HTMLSelectElement).value = context.value[key]
+    return
+  }
+  form.value.lines = []; form.value.packages = []
+  context.value = { customer: form.value.customer, recipient: form.value.recipient }
+}
 function selected(id: string) { return form.value?.lines.some((row: Data) => row.allocation_id === id) }
 function toggle(row: MaterialRecord, event: Event) {
   if (!form.value) return
@@ -40,14 +65,14 @@ function toggle(row: MaterialRecord, event: Event) {
 }
 function addPackage() { form.value?.packages.push({ label: '', cartons: 1, length_cm: '', width_cm: '', height_cm: '', carton_weight_kg: '0', pallet: '', items: [] }) }
 const confirmationCartons = computed(() => confirming.value?.data.packages.reduce((total: number, group: Data) => total + Number(group.cartons), 0) ?? 0)
-async function save() { if (form.value && await ws.run('shipment_save', form.value, editing.value)) form.value = null }
-async function confirm() { if (confirming.value && await ws.run('shipment_confirm', {}, confirming.value)) confirming.value = undefined }
+async function save() { if (form.value) await draft.run('shipment_save', form.value, editing.value, () => { form.value = null }) }
+async function confirm() { if (confirming.value) await draft.run('shipment_confirm', {}, confirming.value, () => { confirming.value = undefined }) }
 </script>
 <template>
   <SectionPanel title="客户出货单台账" subtitle="每次一个客户、一个接收方。保存草稿、业务确认出货、下载原版文件分别操作。">
     <template #action><button type="button" class="im-primary" :disabled="!ws.canWrite || ws.locked" @click="edit()"><Plus :size="15" />新建出货草稿</button></template>
     <div class="im-summary-strip"><div><span>出货单</span><strong>{{ ws.kind('shipment').length }} <small>张</small></strong></div><div><span>待业务确认</span><strong>{{ ws.kind('shipment').filter(row => row.data.status === 'draft').length }} <small>张</small></strong></div><div><span>已确认出货</span><strong>{{ ws.kind('shipment').filter(row => row.data.status === 'confirmed').length }} <small>张</small></strong></div></div>
-    <div v-if="ws.kind('shipment').length" class="im-scroll"><table><thead><tr><th>客户／接收方</th><th>出货日期</th><th>分配行／包装组</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="row in ws.kind('shipment')" :key="row.id"><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.shipment_date }}</td><td>{{ row.data.lines.length }} / {{ row.data.packages.length }}</td><td><StatusPill :label="showStatus(row.data.status)" :tone="row.data.status === 'confirmed' ? 'green' : 'slate'" /></td><td><div class="flex flex-wrap gap-2"><button type="button" :disabled="ws.locked" @click="edit(row)">{{ row.data.status === 'draft' && ws.canWrite ? '编辑草稿' : '查看明细' }}</button><button v-if="row.data.status === 'draft'" type="button" :disabled="!ws.canWrite || ws.locked" @click="confirming = row; form = null">核对并确认出货</button><button v-else type="button" :disabled="!ws.has('export') || ws.busy" @click="ws.download(row.id, `${row.data.shipment_date}_${row.data.customer}_${row.data.recipient}_出货明细.xlsx`)">下载原版出货明细</button></div></td></tr></tbody></table></div>
+    <div v-if="ws.kind('shipment').length" class="im-scroll"><table><thead><tr><th>客户／接收方</th><th>出货日期</th><th>分配行／包装组</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="row in ws.kind('shipment')" :key="row.id"><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.shipment_date }}</td><td>{{ row.data.lines.length }} / {{ row.data.packages.length }}</td><td><StatusPill :label="showStatus(row.data.status)" :tone="row.data.status === 'confirmed' ? 'green' : 'slate'" /></td><td><div class="flex flex-wrap gap-2"><button type="button" :disabled="ws.locked" @click="edit(row)">{{ row.data.status === 'draft' && ws.canWrite ? '编辑草稿' : '查看明细' }}</button><button v-if="row.data.status === 'draft'" type="button" :disabled="!ws.canWrite || ws.locked" @click="beginConfirm(row)">核对并确认出货</button><button v-else type="button" :disabled="!ws.has('export') || ws.busy" @click="ws.download(row.id, `${row.data.shipment_date}_${row.data.customer}_${row.data.recipient}_出货明细.xlsx`)">下载原版出货明细</button></div></td></tr></tbody></table></div>
     <div v-else-if="!form" class="im-onboarding"><span class="im-empty-icon"><FileSpreadsheet :size="28" /></span><h3>整理一份客户出货明细</h3><p>暂无出货记录。先完成物料分配及船务入库确认，再建立出货草稿。</p><p>支持整箱、尾箱与混箱；同一物料在导出表中归为一行。</p></div>
     <form v-if="form" class="im-editor im-stack" @submit.prevent="save">
       <h3>{{ readOnly ? '已确认出货明细' : editing ? '编辑出货草稿' : '新建出货草稿' }}</h3>
@@ -60,7 +85,7 @@ async function confirm() { if (confirming.value && await ws.run('shipment_confir
       </template>
       <p v-else class="im-message">草稿先核对出货数量与装箱构成；确认成功后显示已核算的物料重量、混箱总箱数及供应商金额。</p>
       <fieldset :disabled="readOnly || !ws.canWrite || ws.locked" class="im-stack">
-        <div class="im-fields"><label class="im-field"><span>客户 *</span><select v-model="form.customer" required @change="resetLines"><option value="">请选择客户</option><option v-for="customer in customers" :key="customer" :value="customer">{{ customer }}</option></select></label><label class="im-field"><span>本次唯一接收方 *</span><select v-model="form.recipient" @change="resetLines"><option>RRI</option><option>RRM</option></select></label><label class="im-field"><span>实际出货日期 *</span><input v-model="form.shipment_date" type="date" required></label></div>
+        <div class="im-fields"><label class="im-field"><span>客户 *</span><select v-model="form.customer" required @change="resetLines('customer', $event)"><option value="">请选择客户</option><option v-for="customer in customers" :key="customer" :value="customer">{{ customer }}</option></select></label><label class="im-field"><span>本次唯一接收方 *</span><select v-model="form.recipient" @change="resetLines('recipient', $event)"><option>RRI</option><option>RRM</option></select></label><label class="im-field"><span>实际出货日期 *</span><input v-model="form.shipment_date" type="date" required></label></div>
         <p class="im-note">更改客户或接收方会清空本次选择及包装资料。以下仅列该客户、该接收方且船务已确认入库的分配行。</p>
         <div v-if="candidates.length && !readOnly" class="im-scroll"><table><thead><tr><th>选择</th><th>合同物料／来源</th><th>已分配正常／备品</th><th>已发正常／备品</th></tr></thead><tbody><tr v-for="row in candidates" :key="row.id"><td><input type="checkbox" :checked="selected(row.id)" :aria-label="`选择出货 ${label(row.id)}`" @change="toggle(row, $event)"></td><td>{{ label(row.id) }}</td><td>{{ row.data.normal_quantity }} / {{ row.data.spare_quantity }}</td><td>{{ row.data.shipped_normal ?? '0' }} / {{ row.data.shipped_spare ?? '0' }}</td></tr></tbody></table></div>
         <p v-else-if="!readOnly" class="im-message">{{ form.customer ? '该客户及接收方暂无已入库的物料分配行。' : '选择客户后查看可出货分配。' }}</p>
@@ -77,7 +102,7 @@ async function confirm() { if (confirming.value && await ws.run('shipment_confir
         <button type="button" :disabled="!form.lines.length" @click="addPackage">添加包装组</button>
         <label class="im-field"><span>出货备注</span><textarea v-model="form.remarks" maxlength="1000" /></label>
         <div v-if="!readOnly" class="im-actions"><button class="im-primary" type="submit" :disabled="!form.lines.length">保存出货草稿</button><span class="im-note">保存草稿不扣减出货数量；草稿列表另行核对确认。</span></div>
-      </fieldset><button type="button" :disabled="ws.busy || !!ws.pending" @click="form = null">关闭明细</button>
+      </fieldset><button type="button" :disabled="ws.busy || !!ws.pending" @click="close">关闭明细</button>
     </form>
     <form v-if="confirming" class="im-editor im-stack" @submit.prevent="confirm">
       <h3>业务确认出货：{{ confirming.data.customer }} / {{ confirming.data.recipient }} · {{ confirming.data.shipment_date }}</h3>

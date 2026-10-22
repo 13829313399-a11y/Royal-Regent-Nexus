@@ -2,7 +2,7 @@ import type { CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { CartonTone } from '@/features/carton-procurement/demoData'
 
 export interface ScheduleOrderReminder {
-  state: 'WAIT' | 'DUE_SOON' | 'DUE_TODAY' | 'OVERDUE' | 'ORDERED' | 'REVIEW' | 'DATE_REVIEW' | 'RULE_REVIEW'
+  state: 'WAIT' | 'DUE_SOON' | 'DUE_TODAY' | 'OVERDUE' | 'ORDERED' | 'REVIEW' | 'DATE_REVIEW' | 'RULE_REVIEW' | 'CHANGE_REVIEW'
   label: string
   tone: CartonTone
   attention: boolean
@@ -28,6 +28,7 @@ export function scheduleOrderReminder(source: CartonImportPreviewRow, options: {
   leadDays: number
   productionDays: number | null
   marked: boolean
+  markChanges?: string[]
   orderStatus?: string
   orderCount: number
   identityReview?: boolean
@@ -41,6 +42,8 @@ export function scheduleOrderReminder(source: CartonImportPreviewRow, options: {
   if (!source.item_no?.trim() || !(source.contract_no || source.reference)?.trim() || Number(source.quantity ?? 0) <= 0) {
     return result('REVIEW', '待人工确认', 'amber', '合同、货号或数量不完整，请核实后计算下单时限。')
   }
+  if (options.markChanges?.length) return result('CHANGE_REVIEW', '已下单需求待复核', 'amber',
+    `${options.markChanges.join('、')}与人工确认的下单依据不一致，请核对原采购及供应商后填写理由重新确认；不会自动修改订单或库存。`)
   if (source.schedule_identity_duplicate) return result('REVIEW', '待人工确认', 'amber',
     '合同、货号和 SO#/Reference 相同，请核实是否重复或分批；仍可标记已下单或按此下单。')
   if (source.schedule_change === 'REVIEW_REQUIRED')

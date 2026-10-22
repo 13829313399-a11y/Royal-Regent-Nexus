@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, insert
 from sqlalchemy.orm import Session
 
 from app.services.carton_dashboard import Context, SourceIndex, alert_page, build_alerts, reminder
+from app.services.carton_schedule_tracking import demand_snapshot
 
 
 def row(index=0, **changes):
@@ -46,7 +47,7 @@ def test_resolved_exception_is_not_placed_order_and_latest_identity_wins():
     alerts = build_alerts(context(), [batch([r]), batch([old], "OLD")], [e])
     assert len(alerts) == 1 and alerts[0]["status"] == "OPEN" and alerts[0]["scheduleQuantity"] == 100
     assert alerts[0]["reminder"]["state"] == "OVERDUE"
-    assert not build_alerts(context(marks={r["schedule_identity"]: {"marked": True}}), [batch([r])], [e])
+    assert not build_alerts(context(marks={r["schedule_identity"]: {"marked": True, "demand_snapshot": demand_snapshot(r)}}), [batch([r])], [e])
     withdrawn = batch([r]); withdrawn["status"] = "REJECTED"
     assert not build_alerts(context(), [withdrawn], [e])
     other = batch([r]); other["factory_id"] = "huaxing"

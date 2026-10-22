@@ -46,6 +46,8 @@ from app.models import (
     carton_customer_assignment,  # noqa: F401
     carton_supplier_settlement,  # noqa: F401
     carton_supplier_portal,  # noqa: F401
+    carton_special_requests,  # noqa: F401
+    carton_price_review,  # noqa: F401
     customer_order,  # noqa: F401
     customer_order_ledger,  # noqa: F401
     huakang_b_jp,  # noqa: F401
@@ -106,12 +108,17 @@ def run_migrations_online() -> None:
         inspector = inspect(connection)
         revisions = set(connection.scalars(text('SELECT version_num FROM alembic_version'))) if inspector.has_table('alembic_version') else set()
         collision_versions = {'20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166',
-                              '20261017_0167', '20261019_0167', '20261020_0168'}
+                              '20261017_0167', '20261019_0167', '20261020_0168',
+                              '20261019_0168', '20261019_0169', '20261019_0170', '20261020_0171',
+                              '20261021_0169', '20261021_0172'}
         if revisions & collision_versions or any(inspector.has_table(name) for name in (
             'cutting_ops_period_events', 'jp_intake_references', 'jp_intake_reference_events',
             'jp_intake_counters', 'jp_intake_exports', 'jp_intake_export_identities')):
             preflight = runpy.run_path(str(Path(__file__).parent / 'versions/20261017_0167_reconcile_cutting_jp_collision.py'))['preflight']
             preflight(connection)
+        if revisions & {'20261021_0169', '20261021_0172'}:
+            validate_customer = runpy.run_path(str(Path(__file__).parent / 'versions/20261021_0172_merge_indonesia_customer_head.py'))['validate_customer_schema']
+            validate_customer(connection)
         if inspector.has_table('alembic_version') and inspector.has_table('warehouse_operations_documents'):
             revisions = set(connection.scalars(text('SELECT version_num FROM alembic_version')))
             if revisions & {'20261009_0150', '20261009_0151'}:

@@ -77,11 +77,17 @@ async function previewDraft(){
   catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
 async function openStatement(targetMonth:string,id:string,eventId?:string){
-  if(!canLeave())return
+  if(!canLeave())return false
   draft.value=undefined;quote.value=undefined;reason.value='';month.value=targetMonth
   await load(id,eventId)
+  return true
 }
-defineExpose({openStatement})
+function activateMonth(target:string){
+  if(month.value===target)return
+  if(dirty.value||pending.value||busy.value){notice.value=`当前 ${month.value} 的填写或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。`;return}
+  month.value=target;generation++;record.value=undefined;basis.value=undefined
+}
+defineExpose({openStatement,activateMonth})
 function newDraft(){if(!basis.value||busy.value||pending.value||quote.value)return;record.value=undefined;draft.value={factory_id:CUTTING_FACTORY,operation_id:crypto.randomUUID(),expected_version:basis.value.revision,reason:'',document_id:crypto.randomUUID(),month:month.value,basis_token:basis.value.basis_token,selections:[],vendor_evidence:''}}
 function quantity(row:FeeRow){return draft.value?.selections.find(s=>s.line_id===row.line_id&&s.acceptance_id===row.acceptance_id)?.sets??0}
 function changeQuantity(row:FeeRow,event:Event){if(!draft.value)return;const value=Number((event.target as HTMLInputElement).value);draft.value.selections=draft.value.selections.filter(s=>!(s.line_id===row.line_id&&s.acceptance_id===row.acceptance_id));if(value!==0)draft.value.selections.push({line_id:row.line_id,acceptance_id:row.acceptance_id,sets:value})}
@@ -123,7 +129,7 @@ function changeMonth(event:Event){const input=event.target as HTMLInputElement;i
 </script>
 
 <template>
-  <SectionPanel v-if="access?.enabled||draft||pending" title="外发加工费对账与结算 · P4c" class="cutting-content-panel">
+  <SectionPanel v-if="access?.enabled||draft||pending" title="外发加工费对账与结算" class="cutting-content-panel">
     <p class="cutting-notice">按截止日期内已验收合格且未占用的套数办理，可部分结算、跨月续结。含税加工费与我方材料费用分别核算；超产、额外费用、付款及核销另行办理。</p>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p><p v-if="notice" role="status">{{notice}}</p><p v-if="busy" role="status">正在处理外发结算…</p>
     <Button v-if="pending" variant="outline" :disabled="busy" @click="recover">核对原外发结算操作结果</Button>

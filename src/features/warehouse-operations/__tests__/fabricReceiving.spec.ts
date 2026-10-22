@@ -17,7 +17,7 @@ const source: PurchaseDetail = { id: 'L1', revision: 2, receipt_count: 0, prior_
     status: 'PENDING', source_line_id: '', production_no: 'P1', plan_no: '', old_material_code: '', contract_no: '', unit_price: '0',
     order_date: null, order_date_raw: '', delivery_detail: '', delivery_note_no: '', delivery_note_date: null, delivery_note_date_raw: '',
     reported_receipt_date: null, reported_receipt_date_raw: '', supplier_reply: '', supplier_reply_date: null, second_reply: '', second_reply_date: null,
-    note: '', warehouse_note: '' }, available_locations: ['A01','A02'].map(code => ({ id: code, code, name: code, warehouse: '一仓', label: `一仓／${code}` })), evidence: [] }
+    note: '', warehouse_note: '' }, available_locations: ['A01','A02'].map(code => ({ id: code, code, name: code, warehouse: '一仓', category: 'FABRIC', label: `一仓／${code}` })), evidence: [] }
 let wrapper: VueWrapper | undefined
 const body = () => new DOMWrapper(document.body)
 const button = (label: string) => body().findAll('button').find(item => item.text() === label)!
@@ -30,12 +30,29 @@ afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHT
 async function open(receiptSource = source) { wrapper = mount(Dialog, { props: { source: receiptSource }, attachTo: document.body, global: { plugins: [await router(), createPinia()] } }); await flushPromises() }
 async function fill() {
   await body().get('[aria-label="送货依据编号"]').setValue('DN-001')
+  await body().get('[aria-label="本单到货量"]').setValue('1000')
   await body().get('[aria-label="入库物料分类"]').setValue('FABRIC')
   await body().get('[aria-label="第1项实收数量"]').setValue('0.1')
   await body().get('[aria-label="第1项仓位"]').setValue('一仓／A01')
   await body().get('[aria-label="第1项缸号"]').setValue('0001')
 }
 describe('fabric actual receiving', () => {
+  it('blocks split totals above the delivery quantity even with an overage reason', async () => {
+    await open(); await fill()
+    await body().get('[aria-label="本单到货量"]').setValue('0.3')
+    await button('＋ 增加明细').trigger('click')
+    await body().get('[aria-label="第2项实收数量"]').setValue('0.200001')
+    await body().get('[aria-label="第2项仓位"]').setValue('一仓／A02')
+    await body().get('[aria-label="第2项缸号"]').setValue('0001')
+    expect(body().text()).toContain('分仓实收合计超过本单到货量')
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    expect(api.receive).not.toHaveBeenCalled()
+    await body().get('[aria-label="第2项实收数量"]').setValue('0.2')
+    expect(button('保存并入库').attributes('disabled')).toBeUndefined()
+    api.receive.mockResolvedValue({ id: 'split' })
+    await button('保存并入库').trigger('click'); await flushPromises()
+    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ delivery_quantity: '0.3', batches: expect.arrayContaining([expect.objectContaining({ quantity: '0.2' })]) }))
+  })
   it('calculates amounts exactly with whole-receipt rounding, without floating-point or missing-price zeroes', () => {
     expect(receiptAmount('0.125', '0.04')).toBe('0.01')
     expect(receiptAmount('0.1', '0.2')).toBe('0.02')
@@ -82,6 +99,7 @@ describe('fabric actual receiving', () => {
   it('requires manual category, every location and dye lot for fabric, with no first-receipt question', async () => {
     await open()
     await body().get('[aria-label="送货依据编号"]').setValue('DN-001')
+  await body().get('[aria-label="本单到货量"]').setValue('1000')
     await body().get('[aria-label="第1项实收数量"]').setValue('29')
     await body().get('[aria-label="第1项仓位"]').setValue('一仓／A01')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
@@ -116,15 +134,17 @@ describe('fabric actual receiving', () => {
     expect(api.receive.mock.calls[0]![1].expected_receipt_count).toBe(1)
   })
   it.each(['ACCESSORY', 'THREAD'])('hides fabric identifiers for %s and clears them in the submitted payload', async category => {
-    await open(); await fill()
+    await open({ ...source, available_locations: [...source.available_locations!, { id: 'NEW', code: 'NEW', name: 'NEW', warehouse: '分类仓', label: '分类仓／NEW', category }] } as PurchaseDetail); await fill()
     await body().get('[aria-label="第1项卷号"]').setValue('0002')
     await body().get('[aria-label="入库物料分类"]').setValue(category)
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    await body().get('[aria-label="第1项仓位"]').setValue('分类仓／NEW')
     expect(body().find('[aria-label="第1项缸号"]').exists()).toBe(false)
     expect(body().find('[aria-label="第1项卷号"]').exists()).toBe(false)
     expect(button('保存并入库').attributes('disabled')).toBeUndefined()
     api.receive.mockResolvedValue({ id: 'R1' })
     await button('保存并入库').trigger('click'); await flushPromises()
-    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ material_category: category, batches: [{ quantity: '0.1', location_id: 'A01', location: '一仓／A01', dye_lot: '', roll_no: '' }] }))
+    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ material_category: category, batches: [{ quantity: '0.1', location_id: 'NEW', location: '分类仓／NEW', dye_lot: '', roll_no: '' }] }))
   })
   it('only requires an explanation for exact overage and clears stale explanations for normal partial receipts', async () => {
     await open(); await fill()
