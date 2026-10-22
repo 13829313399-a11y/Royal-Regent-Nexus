@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import PaymentComparison from './PaymentComparison.vue'
 import CuttingReportExport from './CuttingReportExport.vue'
+import CuttingReadTarget from './CuttingReadTarget.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
 import { cuttingApi, errorMessage, type Access } from './api'
@@ -10,8 +11,8 @@ import { CUTTING_FACTORY } from './navigation'
 import { paymentApi, type PaymentAction, type PaymentBasis, type PaymentBody, type PaymentRecord, type PaymentSave, type PaymentSnapshot, type PaymentState, type PayableRow } from './paymentApi'
 
 const panel=ref<InstanceType<typeof SectionPanel>>()
-const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean}>()
-const emit=defineEmits<{settlement:[month:string,id:string,eventId:string]}>()
+const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean;navigationContext?:number}>()
+const emit=defineEmits<{settlement:[month:string,id:string,eventId:string];restored:[month:string,context:number|undefined]}>()
 const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
 const month=ref(today.slice(0,7)),rights=ref<Access>(),record=ref<PaymentRecord>(),basis=ref<PaymentBasis>(),draft=ref<PaymentSave>(),preview=ref<PaymentSnapshot>()
 const conflict=ref<NonNullable<PaymentBasis['document']>>()
@@ -39,15 +40,15 @@ window.addEventListener('beforeunload',unload)
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',unload)})
 function failed(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status?:number}}).response?.status;if(status===401||status===403){rights.value=undefined;clearEvidence()}return status}
 async function fresh(ticket:number){const value=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=value;if(!readable.value){clearEvidence();error.value='付款登记未启用或未获付款查询权限。';return false}return true}
-async function load(id?:string,eventId?:string,targetMonth=month.value){
+async function load(id?:string,eventId?:string,targetMonth=month.value,onRead?:()=>void){
   if(!leave())return false
   const target={month:targetMonth,id,eventId}
   month.value=targetMonth;failedRead.value=target;conflict.value=undefined;draft.value=undefined;preview.value=undefined;record.value=undefined;basis.value=undefined;reason.value='';error.value='';busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return true;const value=await paymentApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined;failedRead.value=undefined}}
+  try{if(!await fresh(ticket))return true;const value=await paymentApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined;failedRead.value=undefined;onRead?.()}}
   catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}finally{if(alive&&ticket===generation)busy.value=false}
   return true
 }
-function retryRead(){const target=failedRead.value;if(target)void load(target.id,target.eventId,target.month)}
+function retryRead(){const target=failedRead.value,context=props.navigationContext;if(target)void load(target.id,target.eventId,target.month,()=>emit('restored',month.value,context))}
 async function start(mode:'new'|'edit'|'replace'|'refresh'){
   if(busy.value||pending.value)return
   const old=mode==='refresh'?draft.value:mode==='edit'||mode==='replace'?record.value?.data?.input:undefined
@@ -134,7 +135,7 @@ function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement'
     <Button v-if="pending" variant="outline" :disabled="busy" @click="recover">核对原付款操作结果</Button>
     <p v-if="!access?.payments_schema_ready">付款登记需先完成数据库迁移及单独岗位授权。</p><p v-else-if="!access.permissions.includes('payment_read')">付款查询仅限单独授权的会计岗位。</p>
     <template v-if="readable">
-      <p v-if="failedRead" class="cutting-notice cutting-read-target"><span>读取未完成：{{failedRead.month}} · {{failedRead.id?`单据编号：${failedRead.id}`:'原月份列表'}}</span><span>{{failedRead.eventId?`历史版本：${failedRead.eventId}`:'原当前版本'}}</span><Button variant="outline" :disabled="busy||!!pending||!readable" @click="retryRead">重试原付款记录</Button></p>
+      <CuttingReadTarget v-if="failedRead" :target="failedRead" label="付款登记" retry-label="重试原付款记录" :disabled="busy||!!pending" :readable="readable" @retry="retryRead" />
       <CuttingReportExport v-if="record&&!draft" :selection="{kind:'payments',month}" :access="rights" :disabled="busy||!!pending" />
       <Button v-if="savedTarget" variant="outline" :disabled="busy||!!pending" @click="load(savedTarget.id,savedTarget.eventId,savedTarget.month)">打开已保存付款记录</Button>
       <div class="order-toolbar cutting-master-toolbar"><label>付款月份<input type="month" min="2000-01" :max="today.slice(0,7)" :value="month" :disabled="busy||!!pending||dirty" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending" @click="load()">读取付款登记</Button><Button v-if="can('payment_prepare')" :disabled="busy||!!pending||!!draft" @click="start('new')">新建付款登记</Button></div>

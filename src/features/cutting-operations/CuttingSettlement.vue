@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import CuttingReportExport from './CuttingReportExport.vue'
+import CuttingReadTarget from './CuttingReadTarget.vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
@@ -10,8 +11,8 @@ import { cuttingDestination } from './location'
 import { orderProductName, unclassifiedStyle } from './orderDisplay'
 import { settlementApi, type FeeAction, type FeeBasis, type FeeBody, type FeeQuote, type FeeRecord, type FeeRow, type FeeSave, type FeeState, type FeeSnapshot } from './settlementApi'
 
-const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean}>()
-const emit=defineEmits<{payment:[month:string,id:string]}>()
+const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean;navigationContext?:number}>()
+const emit=defineEmits<{payment:[month:string,id:string];restored:[month:string,context:number|undefined]}>()
 const currentMonth=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const month=ref(currentMonth),rights=ref<Access>(),record=ref<FeeRecord>(),basis=ref<FeeBasis>()
 const draft=ref<FeeSave>(),quote=ref<FeeQuote>(),quoteName=ref(''),reason=ref(''),error=ref(''),notice=ref(''),busy=ref(false)
@@ -53,15 +54,15 @@ window.addEventListener('beforeunload',beforeUnload)
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',beforeUnload)})
 function failed(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status?:number}}).response?.status;if(status===401||status===403){rights.value=undefined;clearEvidence()}return status}
 async function fresh(ticket:number){const value=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=value;if(!value.permissions.includes('payment_read')&&record.value)record.value.payment_dependencies=undefined;if(!readable.value){clearEvidence();error.value='外发结算尚未启用或没有加工费查询权限。';return false}return true}
-async function load(documentId?:string,eventId?:string,targetMonth=month.value){
+async function load(documentId?:string,eventId?:string,targetMonth=month.value,onRead?:()=>void){
   if(busy.value||pending.value)return
   if(dirty.value&&!window.confirm('放弃未保存填写，读取所选外发结算记录？'))return
   const target={month:targetMonth,id:documentId,eventId}
   month.value=targetMonth;failedRead.value=target;draft.value=undefined;quote.value=undefined;reason.value='';record.value=undefined;basis.value=undefined;error.value='';notice.value='';busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return;const value=await settlementApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){record.value=value;failedRead.value=undefined}}
+  try{if(!await fresh(ticket))return;const value=await settlementApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){record.value=value;failedRead.value=undefined;onRead?.()}}
   catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}finally{if(alive&&ticket===generation)busy.value=false}
 }
-function retryRead(){const target=failedRead.value;if(target)void load(target.id,target.eventId,target.month)}
+function retryRead(){const target=failedRead.value,context=props.navigationContext;if(target)void load(target.id,target.eventId,target.month,()=>emit('restored',target.month,context))}
 async function candidates(edit=false){
   if(busy.value||pending.value||quote.value)return
   failedRead.value=undefined
@@ -140,7 +141,7 @@ function changeMonth(event:Event){const input=event.target as HTMLInputElement;i
     <p v-if="!access?.settlements_schema_ready">外发结算尚未启用，请完成数据库迁移及岗位授权。</p>
     <p v-else-if="!access.permissions.includes('settlement_read')">加工费需单独授予外发结算查询权限。</p>
     <template v-if="readable">
-      <p v-if="failedRead" class="cutting-notice cutting-read-target"><span>读取未完成：{{failedRead.month}} · {{failedRead.id?`单据编号：${failedRead.id}`:'原月份列表'}}</span><span>{{failedRead.eventId?`历史版本：${failedRead.eventId}`:'原当前版本'}}</span><Button variant="outline" :disabled="busy||!!pending||!readable" @click="retryRead">重试原结算记录</Button></p>
+      <CuttingReadTarget v-if="failedRead" :target="failedRead" label="外发结算" retry-label="重试原结算记录" :disabled="busy||!!pending" :readable="readable" @retry="retryRead" />
       <div class="order-toolbar cutting-master-toolbar"><label>对账月份<input type="month" min="2000-01" :max="currentMonth" :value="month" :disabled="busy||!!pending||dirty" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取外发结算</Button><Button variant="outline" :disabled="busy||!!pending||!!quote||!!draft||!month" @click="candidates()">查询待结验收</Button></div>
       <p v-if="draft&&!basis">填写数量已保留，需要重新读取依据。<Button :disabled="busy||!!pending||!can('settlement_prepare')" @click="candidates(true)">恢复对账填写</Button></p>
       <div v-if="basis||record" class="order-toolbar cutting-master-toolbar"><label>加工厂筛选<input v-model="filterVendor" placeholder="加工厂名称" /></label><label>币种筛选<select v-model="filterCurrency"><option value="">全部币种</option><option>CNY</option><option>HKD</option><option>USD</option></select></label></div>
