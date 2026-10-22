@@ -61,15 +61,36 @@ export interface ReturnDateCorrectionResult {
   movement_id: string; return_date: string; posting_date: string;
   date_basis: 'RETURN_ACTUAL'; date_evidence: ReturnDateEvidence;
 }
-const base = '/carton-procurement/supplier-settlements'
+export interface MonthlySettlementLine {
+  source_key: string; kind: 'RECEIPT' | 'RETURN' | 'RETURN_REFUND'; document_no: string; acceptance_date: string | null;
+  date_basis: string; customer_name?: string; contract_no?: string; item_no?: string; packaging_type?: string;
+  paper_quality?: string; specification?: string; unit?: string; quantity: string; unit_price: string | null;
+  amount: string | null; currency: string; issues: string[]; price_basis?: string;
+}
+export type MonthlySettlementStatus = 'OPEN' | 'SUBMITTED' | 'CONFIRMED' | 'DISPUTED' | 'STALE' | 'LOCKED'
+export interface MonthlySettlement {
+  factory_id: string; supplier_id: string; supplier_name: string; period: string; currency: string;
+  source_fingerprint: string; status: MonthlySettlementStatus; locked_at: string | null; locked_by: string | null;
+  locked_totals: Record<string, string | number> | null; stale: boolean;
+  submitted_at: string | null; submitted_by: string | null;
+  supplier_confirmed_at: string | null; supplier_confirmed_by: string | null;
+  disputed_reason: string; unlocked_reason: string;
+  can_submit: boolean; can_lock: boolean;
+  totals: { inbound: string | null; returns: string | null; refunds: string | null; net: string | null;
+    documents: number; receipt_lines: number; return_lines: number; refund_lines: number };
+  blockers: string[]; lines: MonthlySettlementLine[];
+}
+export interface SupplierMonthlySummary {
+  factory_id: string; supplier_name: string; period: string; currency: string;
+  status: MonthlySettlementStatus; stale: boolean; locked_at: string | null;
+  submitted_at: string | null; supplier_confirmed_at: string | null; disputed_reason: string;
+  can_confirm: boolean; can_dispute: boolean;
+  totals: MonthlySettlement['totals']; lines: MonthlySettlementLine[];
+}
 export const supplierSettlementApi = {
-  async workspace(factory_id: string, period: string, currency: string) { return (await http.get<SupplierWorkspace>(base + '/workspace', { params: { factory_id, period, currency } })).data },
-  async save(payload: SettlementSave) { return (await http.post<SettlementDocument>(base, payload)).data },
-  async confirm(id: string, factory_id: string, expected_revision: number) { return (await http.post<SettlementDocument>(`${base}/${id}/confirm`, { factory_id, expected_revision })).data },
-  async reopen(id: string, factory_id: string, expected_revision: number, reason: string) { return (await http.post<SettlementDocument>(`${base}/${id}/reopen`, { factory_id, expected_revision, reason })).data },
+  async supplierMonthlyWorkspace(factory_id: string, period: string, currency: string) { return (await http.get<SupplierMonthlySummary>('/carton-supplier/monthly-settlements/workspace', { params: { factory_id, period, currency } })).data },
+  async monthlyWorkspace(factory_id: string, period: string, currency: string) { return (await http.get<MonthlySettlement>('/carton-procurement/monthly-settlements/workspace', { params: { factory_id, period, currency } })).data },
   async acceptance(receipt_id: string, factory_id: string, expected_revision: number, acceptance_date: string, reason: string) { return (await http.post(`/carton-procurement/receipts/${receipt_id}/acceptance-date`, { factory_id, expected_revision, acceptance_date, reason })).data },
   async returnDate(movement_id: string, factory_id: string, expected_posting_date: string, return_date: string, reason: string) { return (await http.post(`/carton-procurement/inventory/movements/${encodeURIComponent(movement_id)}/return-date`, { factory_id, expected_posting_date, expected_date_basis: 'RETURN_POSTING', return_date, reason })).data },
   async correctReturnDate(movement_id: string, body: ReturnDateCorrection, signal?: AbortSignal) { return (await http.post<ReturnDateCorrectionResult>(`/carton-procurement/inventory/movements/${encodeURIComponent(movement_id)}/return-date/corrections`, body, { signal })).data },
-  async supplierWorkspace(factory_id: string, period: string, currency: string) { return (await http.get<SupplierSettlementWorkspace>('/carton-supplier/settlements/workspace', { params: { factory_id, period, currency } })).data },
-  async supplierReview(id: string, factory_id: string, expected_revision: number, decision: 'CONFIRMED' | 'DISPUTED', reason: string) { return (await http.post<SettlementDocument>(`/carton-supplier/settlements/${id}/review`, { factory_id, expected_revision, decision, reason })).data },
 }

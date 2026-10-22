@@ -153,6 +153,10 @@ class CancellationAcknowledge(Payload):
     expected_order_revision: int = Field(ge=1)
 
 
+class RushAcknowledge(Payload):
+    """Only the factory scope is required; the order id comes from the route."""
+
+
 class ShipmentStatusChange(Payload):
     request_id: str = Field(min_length=8, max_length=128)
     expected_revision: int = Field(ge=1)

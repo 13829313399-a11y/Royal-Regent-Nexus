@@ -75,6 +75,28 @@ export interface CartonSupplierAcceptanceResponse {
   delivery_differences?: { order_line_id: string; packaging_type: string; planned_date: string; promised_date: string; difference_days: number }[]
 }
 
+export interface CartonSupplierPromiseLate {
+  key: string
+  order_no: string
+  customer_name: string
+  packaging_type: string
+  promised_date: string
+  difference_days: number
+}
+
+export interface CartonSupplierPromiseChange {
+  id: string
+  order_id: string
+  order_no: string
+  customer_name: string
+  packaging_type: string
+  line_no: number
+  previous_promised_date: string
+  promised_date: string
+  actor_name: string
+  created_at: string
+}
+
 export interface CartonPurchaseOrderBatchResponse {
   id: string
   document_no: string
@@ -113,6 +135,12 @@ export interface CartonOrderResponse {
   customer_due_date?: string | null
   safety_lead_days?: number
   due_date: string
+  plan_date_manual?: boolean
+  rush?: boolean
+  rush_reason?: string
+  rush_at?: string | null
+  rush_ack_at?: string | null
+  rush_acknowledged?: boolean
   status: string
   note: string
   revision: number
@@ -181,6 +209,9 @@ export interface CartonOrderCreateRequest {
   order_date: string
   customer_due_date?: string | null
   due_date: string
+  plan_date_manual?: boolean
+  rush?: boolean
+  rush_reason?: string
   status: 'CONFIRMED'
   note: string
   lines: Array<{
@@ -687,6 +718,16 @@ export const cartonProcurementApi = {
       { params: { factory_id: factoryId, ...filters } })
     return response.data
   },
+  async supplierPromiseNotices(factoryId: string, limit = 20) {
+    const response = await http.get<{ late: CartonSupplierPromiseLate[]; changes: CartonSupplierPromiseChange[]; acknowledged: string[] }>(
+      '/carton-procurement/supplier-promise-changes', { params: { factory_id: factoryId, limit } })
+    return response.data
+  },
+  async acknowledgePromiseNotice(factoryId: string, key: string) {
+    const response = await http.post<{ key: string }>('/carton-procurement/promise-notices/ack',
+      { factory_id: factoryId, key })
+    return response.data
+  },
   async scheduleOrders(factoryId: string) {
     const items: CartonScheduleOrder[] = []
     for (let offset = 0; ; offset += 500) {
@@ -863,6 +904,13 @@ export const cartonProcurementApi = {
       { factory_id: factoryId, expected_revision: order.revision, issue_to_supplier: order.status !== 'CONFIRMED', reason,
         ...(customerDueDate ? { customer_due_date: customerDueDate } : {}),
         ...(dueDate ? { due_date: dueDate } : {}) },
+    )
+    return response.data
+  },
+  async setOrderRush(factoryId: string, orderNo: string, rush: boolean, reason = '') {
+    const response = await http.post<CartonOrderResponse>(
+      `/carton-procurement/orders/${encodeURIComponent(orderNo)}/rush`,
+      { factory_id: factoryId, rush, reason },
     )
     return response.data
   },
@@ -1149,9 +1197,32 @@ export const cartonProcurementApi = {
     })
     return response.data.items
   },
-  async listImportsPage(factoryId: string, importType: CartonImportBatchResponse['import_type'], offset = 0, search = '', customer = '全部客户') {
+  async listImportsPage(
+    factoryId: string,
+    filters: {
+      types?: CartonImportBatchResponse['import_type'][]
+      status?: 'ALL' | 'ACTIVE' | 'REJECTED'
+      search?: string
+      customer?: string
+      dateFrom?: string
+      dateTo?: string
+      limit?: number
+      offset?: number
+    } = {},
+  ) {
     return (await http.get<{ items: CartonImportBatchResponse[]; total: number }>('/carton-procurement/imports', {
-      params: { factory_id: factoryId, import_type: importType, summary_only: true, limit: 8, offset, search, customer_code: customer === '全部客户' ? '' : customer },
+      params: {
+        factory_id: factoryId,
+        import_types: (filters.types ?? []).join(','),
+        status: filters.status && filters.status !== 'ALL' ? filters.status : '',
+        summary_only: true,
+        limit: filters.limit ?? 20,
+        offset: filters.offset ?? 0,
+        search: filters.search ?? '',
+        customer_code: filters.customer && filters.customer !== '全部客户' ? filters.customer : '',
+        date_from: filters.dateFrom ?? '',
+        date_to: filters.dateTo ?? '',
+      },
     })).data
   },
   async importDetail(factoryId: string, batchId: string) {
