@@ -21,7 +21,9 @@ import CuttingMonthlyOverview from './CuttingMonthlyOverview.vue'
 const appliedQuery=ref('')
 const closingView=ref('overview')
 let financialGeneration=0
+let locationPending=true
 async function changeClosingView(value:string){
+ locationPending=false
  financialGeneration++
  closingView.value=value;await nextTick()
  if(value==='period')periodPanel.value?.activateMonth(month.value)
@@ -48,10 +50,15 @@ async function followFinancialLocation(){
 }
 let navigationGeneration=0
 async function loadLocation(){
+  locationPending=true
   const ticket=++navigationGeneration
   await load(1,true)
-  if(alive&&ticket===navigationGeneration&&access.value)await followFinancialLocation()
+  if(alive&&ticket===navigationGeneration&&locationPending&&access.value&&!error.value){
+    await followFinancialLocation()
+    if(alive&&ticket===navigationGeneration)locationPending=false
+  }
 }
+async function retryWorkspace(){if(locationPending)await loadLocation();else await load(1)}
 
 defineProps<{workspace:CuttingWorkspace}>()
 const currentMonth = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
@@ -111,7 +118,7 @@ onMounted(()=>void loadLocation())
     <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" @payment="openPayment" /></div>
     <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" @settlement="openSettlement" /></div>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p>
-    <Button v-if="error" variant="outline" :disabled="loading" @click="load(1)">重新读取月结工作区</Button>
+    <Button v-if="error" variant="outline" :disabled="loading" @click="retryWorkspace">重新读取月结工作区</Button>
     <p v-if="loading" role="status">正在读取月度核对…</p>
     <p v-if="access&&!access.enabled" class="cutting-notice">月结前核对尚未启用。</p>
     <p v-else-if="access&&!ready(access)" class="cutting-notice">请先完成订单、每日填数及耗用的显式迁移；缺少依据时不以零数代替。</p>
