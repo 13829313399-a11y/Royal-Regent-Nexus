@@ -28,6 +28,19 @@ CALC_PART = 'xl/worksheets/indonesia-calculations.xml'
 CALC_PREFIX = "'" + CALC_NAME + "'!"
 
 
+def customs_conversion(material):
+    rule = material.get('customs_rule')
+    if rule:
+        divisor = number(rule.get('divisor'))
+        require(rule.get('basis') in {'weight', 'quantity'} and divisor > 0, '报关单位快照换算规则无效', 422)
+        return rule['basis'], divisor
+    unit, quantity_unit = material['customs_unit'].upper(), material['unit'].upper()
+    if unit in {'KG', 'KGM', 'TNE'}:
+        return 'weight', Decimal(1000 if unit == 'TNE' else 1)
+    require(unit == quantity_unit or {unit, quantity_unit} <= {'PCS', 'PCE'}, '报关单位缺少明确换算关系', 422)
+    return 'quantity', Decimal(1)
+
+
 def xml(content):
     return ET.fromstring(content, ET.XMLParser(resolve_entities=False, no_network=True))
 
@@ -247,7 +260,7 @@ class Calculations:
         self.data = ET.SubElement(self.sheet, '{'+NS['s']+'}sheetData')
         self.add(dict(zip([*'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'AA', 'AB'], [
             '类型', '物料编码', '供应商／包装组', '币种', '正常数量', '免费备品', '采购单价', '计费因子',
-            '单件计费重量', '采购金额', '物理箱数', '物料净重', '分摊纸箱重', '每箱毛重', '长(cm)',
+            '计价单重（kg）', '采购金额', '物理箱数', '物料净重', '分摊纸箱重', '每箱毛重', '长(cm)',
             '宽(cm)', '高(cm)', '单箱CBM', '组总CBM', '实装数量', '单件净重', '纸箱单重', '组物料净重',
             '采购日期', '每箱毛重组合／供应商总额', '采购单号', '成品合同', '货号'])))
 
@@ -280,6 +293,7 @@ def build_rows(shipment):
         if code not in materials:
             materials[code] = dict(material=material, lines=[], packs=[], amounts={}, currency=currency)
         target = materials[code]
+        require(customs_conversion(material) == customs_conversion(target['material']), f'物料 {code} 的报关换算快照不一致，不能合并', 422)
         require(all((number(material[f]) == number(target['material'][f]) if f == 'net_weight_kg'
                      else material[f] == target['material'][f]) for f in identity),
                 f'物料 {code} 的规格、单位、单重或出口公司快照不一致，请核对出货资料后再汇总', 422)
@@ -287,11 +301,12 @@ def build_rows(shipment):
                 f'物料 {code} 的采购来源币种不一致，不能把不同币种合计为一行金额，请核对采购资料或本次出货范围', 422)
         normal, spare = number(line['normal_quantity']), number(line['spare_quantity'])
         basis = normal
-        weight = number(material.get('billing_weight_kg') or 0)
+        weight_field = 'net_weight_kg' if supply.get('billing_weight_source') == 'net_weight_kg' else 'billing_weight_kg'
+        weight = number(material.get(weight_field) or 0)
         index = len(calc.data) + 1
         expression = f'E{index}*G{index}/H{index}'
         if supply['billing_basis'] == 'weight' and normal > 0:
-            require(weight > 0, '按重量计费需有效单件计费重量', 422)
+            require(weight > 0, '按重量计价缺少有效计价单重，请补全本批出货资料', 422)
             basis *= weight
             expression = f'E{index}*I{index}*G{index}/H{index}'
         amount = basis * number(supply['price']) / number(supply['billing_factor'])
@@ -373,8 +388,8 @@ def build_rows(shipment):
             physical = normal + spare
             net = sum((p['net'] for p in packs), Decimal(0)); carton = sum((p['carton'] for p in packs), Decimal(0))
             unit = material['customs_unit'].upper()
-            require(unit in {'KG', 'KGM', 'TNE'} or unit == material['unit'].upper(), '报关单位缺少明确换算关系', 422)
-            customs = net if unit in {'KG', 'KGM'} else net / Decimal(1000) if unit == 'TNE' else physical
+            customs_basis, customs_divisor = customs_conversion(material)
+            customs = net / customs_divisor if customs_basis == 'weight' else physical
             amount = sum((amount for _, amount in target['amounts'].values()), Decimal(0))
             loadings = {}
             for p in packs:
@@ -401,7 +416,7 @@ def build_rows(shipment):
             else:
                 values['BB'] = '＋'.join(f'{p["group"]["cartons"]}箱×{format(weight.quantize(Decimal(".000001"), rounding=ROUND_HALF_UP), ".6f")} kg' for p, weight in zip(packs, gross_per_box))
                 bb_formula = '&"＋"&'.join(calc.ref('Y', p['ref']) for p in packs)
-            result.append(dict(values=values, material=material, physical=physical, customs_unit=unit, packs=packs,
+            result.append(dict(values=values, material=material, physical=physical, customs_unit=unit, customs_basis=customs_basis, customs_divisor=customs_divisor, packs=packs,
                                amounts=target['amounts'], bb_formula=bb_formula))
         start = result[first]
         start['component'] = component
@@ -523,7 +538,7 @@ def export_shipment_with_summary(shipment):
             formulas['S'] = sum_refs([calc.ref('S', g['ref']) for g in item['component']['groups']])
             if item['span'] > 1:
                 merge_ranges.extend(f'{col}{index}:{col}{index+item["span"]-1}' for col in ('AT', 'S'))
-        formulas['K'] = f'Q{index}' if item['customs_unit'] in {'KG', 'KGM'} else f'Q{index}/1000' if item['customs_unit'] == 'TNE' else decimal_text(item['physical'])
+        formulas['K'] = (f'Q{index}' if item['customs_divisor'] == 1 else f'Q{index}/{decimal_text(item["customs_divisor"])}') if item['customs_basis'] == 'weight' else decimal_text(item['physical'])
         for column, formula in formulas.items():
             set_cell(columns[column], values[column], formula)
         pending_suppliers = [s for s in item['amounts'] if s not in shown_suppliers]
