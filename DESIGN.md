@@ -571,6 +571,14 @@ font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
 
 内部供应商确认跟进集中在工作看板“今日待办”的“供应商变更通知”，与现有待办放在一起，默认收起、点击展开；数量、读取中或失败提示在收起时仍可见。订单页和异常处理不重复展示此面板。正单、样板、杂单的“更多”共用 CartonOrderMoreMenu 和 CartonOrderMenuItem，沿用正单 176px 宽、10px 字号、统一内边距与操作颜色；共同操作保持相同顺序，菜单自动避让视口并在高度不足时滚动。内部台账复用 CartonOrderLedgerRow，供应商台账复用 CartonSupplierOrderRow；明细窗口、摘要、纸品表及汇总共用，悬停预览和点击固定规则一致。新建/修改复用 CartonOrderEditorForm 与 CartonOrderPaperEditor，沿用正单单一纵向滚动表单；追加、减单与改期复用 CartonOrderAdjustmentForm，按操作只开放必要字段。锁单/取消/删除共用 CartonOrderActionDialog，退补库存字段共用 CartonOrderStockFields；供应商接单共用窗口及 CartonSupplierAcceptanceFields，整单或逐纸品确认由业务合同决定。不得为订单类型另建一套相同布局。各来源仍按真实权限与状态显示操作；样板、杂单沿用已有需求调整、补单和退货处理，不套用正单的合单、拆单或采购单流程。退货签收及退款保留“月结对账”子页。此局部布局不改变接单权限、厂区范围和记录状态。
 
+### 15.10 华康 A UV 打印工作区
+
+`/modules/production/uv-printing` 七页共用 `.uv-workspace`，传送到 body 的弹层使用 `[data-uv-overlay]` 限定样式。沿用玉白/深青与 Lucide 图标，不修改共享 Button 或 UV 外页面。桌面档案为 364px 非模态侧栏；1350px 及以下使用单实例模态覆盖，关闭恢复焦点和背景滚动。时间轴保持 100px 行高、12 行虚拟窗口、15 分钟排程吸附及局部横向滚动，几何节点不加装饰 transform。
+
+动效时长、位移和缓动统一来自 `src/features/uv-operations/styles/motion-tokens.css`：按下 120ms、反馈 150ms、常规/指示器/退出 180ms、表单进入 240ms、档案进入 260ms；首屏分组揭示总长最多 350ms。导航与页签底片测量实际对象；页签方向键只移焦，Enter/Space 激活。同页 query 不重建页面。加载、失败、未知结果与确认成功按真实数据表达，不给产量、金额或无证据进度制造补间。
+
+账号可选跟随系统或关闭动效；匿名及 storage 写入失败使用内存值。系统减少动态、用户关闭或页面隐藏同时约束 CSS、WAAPI、RAF 和品牌 SVG 内部动画；返回页面不补播入场。退出中重开从当前视觉状态继续，异步上下文撤销立即清空。未知提交沿原回执/同编号重试流程保留冻结载荷，不用动效改变业务状态。实施与有限验收范围见 `docs/uv-operations/frontend-motion/IMPLEMENTATION.md`。
+
 ## 16. 新页面实施清单
 
 开发新页面前依次确认：
