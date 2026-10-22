@@ -20,7 +20,7 @@
 .uv-preview-icon img{width:100%;height:100%;object-fit:contain}.uv-form-grid .uv-collection-footer{padding:4px 0;background:none;border:0;flex-wrap:wrap;font-size:11px}.uv-form-grid .uv-collection-footer .uv-button{padding:4px 8px;min-height:30px;font-size:11px}
 @media(min-width:1001px){.uv-machine-lane{min-height:155px;padding-top:18px;padding-bottom:18px}.uv-brand-logo{width:60px;height:46px}}
 
-.uv-timeline-scroll{max-height:620px}.uv-timeline-row{height:100px}.uv-timeline-header{position:sticky;top:0;z-index:5}
+.uv-timeline-scroll{max-height:620px}.uv-timeline-row{height:100px;grid-template-rows:minmax(0,1fr)}.uv-timeline-row>strong{min-width:0;min-height:0;padding:16px;overflow:hidden}.uv-timeline-row>strong small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}.uv-timeline-track{min-height:0}.uv-timeline-header{position:sticky;top:0;z-index:5}
 body:has(.uv-workspace){min-width:0}@media(max-width:360px){.uv-topbar{gap:8px;padding:0 12px}.uv-topbar h1{font-size:14px;white-space:nowrap}.uv-topbar .uv-avatar{display:none}}
 
 @media(max-width:700px){.uv-toast{position:static;margin-bottom:16px;max-width:100%;box-shadow:none}.uv-live-summary .uv-link{font-size:11px}}

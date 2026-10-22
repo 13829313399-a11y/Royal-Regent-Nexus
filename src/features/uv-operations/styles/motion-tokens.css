@@ -1,0 +1,57 @@
+.uv-workspace,
+[data-uv-overlay] {
+  --uv-motion-press: 120ms;
+  --uv-motion-feedback: 150ms;
+  --uv-motion-standard: 180ms;
+  --uv-motion-indicator: 180ms;
+  --uv-motion-dialog-enter: 240ms;
+  --uv-motion-drawer-enter: 260ms;
+  --uv-motion-leave: 180ms;
+  --uv-motion-highlight: 240ms;
+  --uv-motion-reveal: 260ms;
+  --uv-motion-reveal-step: 30ms;
+  --uv-motion-reveal-max-delay: 90ms;
+  --uv-motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --uv-motion-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --uv-motion-page-distance: 4px;
+  --uv-motion-dialog-distance: 6px;
+  --uv-motion-drawer-distance: 16px;
+}
+/* The controller sets this on the actual UV root AND any teleported overlay.
+   CSS variables do not cancel RAF/WAAPI or resolve close promises by themselves. */
+.uv-workspace[data-uv-motion="off"],
+[data-uv-overlay][data-uv-motion="off"] {
+  --uv-motion-press: 0ms;
+  --uv-motion-feedback: 0ms;
+  --uv-motion-standard: 0ms;
+  --uv-motion-indicator: 0ms;
+  --uv-motion-dialog-enter: 0ms;
+  --uv-motion-drawer-enter: 0ms;
+  --uv-motion-leave: 0ms;
+  --uv-motion-highlight: 0ms;
+  --uv-motion-reveal: 0ms;
+  --uv-motion-reveal-step: 0ms;
+  --uv-motion-reveal-max-delay: 0ms;
+  --uv-motion-page-distance: 0px;
+  --uv-motion-dialog-distance: 0px;
+  --uv-motion-drawer-distance: 0px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .uv-workspace,
+  [data-uv-overlay] {
+    --uv-motion-press: 0ms;
+    --uv-motion-feedback: 0ms;
+    --uv-motion-standard: 0ms;
+    --uv-motion-indicator: 0ms;
+    --uv-motion-dialog-enter: 0ms;
+    --uv-motion-drawer-enter: 0ms;
+    --uv-motion-leave: 0ms;
+    --uv-motion-highlight: 0ms;
+    --uv-motion-reveal: 0ms;
+    --uv-motion-reveal-step: 0ms;
+    --uv-motion-reveal-max-delay: 0ms;
+    --uv-motion-page-distance: 0px;
+    --uv-motion-dialog-distance: 0px;
+    --uv-motion-drawer-distance: 0px;
+  }
+}
