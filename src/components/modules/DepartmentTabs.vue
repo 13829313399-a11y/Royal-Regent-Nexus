@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 
 import { homePrismPresentation } from '@/components/portal/homePrismPresentation'
+import { useModuleEntryMotion } from '@/features/route-motion/useModuleEntryMotion'
+const recordEntry = useModuleEntryMotion()
 
 const props = defineProps<{ homeExperience?: boolean }>()
 const route = useRoute()
@@ -18,7 +20,10 @@ const activeDepartmentId = computed<ModuleDepartmentId>(() => {
   return isModuleDepartmentId(routeDepartment) ? routeDepartment : appStore.activeDepartmentId
 })
 
-function selectDepartment(departmentId: ModuleDepartmentId) {
+function selectDepartment(departmentId: ModuleDepartmentId, event: MouseEvent) {
+  recordEntry(event, { id: departmentId, icon: homePrismPresentation[departmentId].icon }, {
+    path: getDepartmentRoute(departmentId), query: { ...route.query, factory: appStore.activeFactoryId },
+  })
   appStore.setActiveDepartment(departmentId)
   router.push({
     path: getDepartmentRoute(departmentId),
@@ -125,9 +130,10 @@ watch(activeDepartmentId, () => {
       :class="['portal-tab', { 'portal-tab--current': department.id === activeDepartmentId }]"
       class="min-w-24"
       :data-department-id="department.id"
+      :data-route-entry-id="`department:${department.id}`"
       :data-portal-current="department.id === activeDepartmentId ? 'true' : 'false'"
       :aria-current="department.id === activeDepartmentId ? 'page' : undefined"
-      @click="selectDepartment(department.id as ModuleDepartmentId)"
+      @click="selectDepartment(department.id as ModuleDepartmentId, $event)"
     >
       <component :is="homePrismPresentation[department.id as ModuleDepartmentId].icon" v-if="homeExperience" :size="18" aria-hidden="true" />
       {{ department.name }}

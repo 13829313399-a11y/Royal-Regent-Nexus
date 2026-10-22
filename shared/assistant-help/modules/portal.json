@@ -45,7 +45,7 @@
       {
         "path": "src/views/ModuleCenterView.vue",
         "symbol": "visibleModules",
-        "sha256": "d1999407ebe372327497cc42e8e214a16102c08cfc06b3245d58c3e4f8eb08e8"
+        "sha256": "97f7b8cc43803150b7850a70cfd591a1fb755ea593532164ef684c5f6d380d22"
       },
       {
         "path": "src/composables/useVisibleModules.ts",
@@ -103,7 +103,7 @@
       {
         "path": "src/views/DashboardView.vue",
         "symbol": "运营指标示例",
-        "sha256": "b121bd65b0aae98ebce01e61588599a2938ad1e4341d79f0040f294636dc8b91"
+        "sha256": "abf71d3846b1234726b8da048d6f10b5b9013e81131057dd4da5213ff2d5d3a6"
       }
     ],
     "knowledge_version": "2026.10.12-v2",

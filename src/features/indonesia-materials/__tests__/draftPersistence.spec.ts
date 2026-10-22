@@ -13,6 +13,47 @@ beforeEach(() => savedBuckets.clear())
 afterEach(() => { controllers.splice(0).forEach(controller => controller.dispose()); vi.restoreAllMocks() })
 
 describe('durable drafts and operation journal', () => {
+  const productState = (id: string, name: string) => ({ category: 'product', editing: { id, kind: 'product', version: 3 }, form: { code: id, name, materials: [] } })
+  it('preserves both product drafts across reopening and clears only the journaled product', async () => {
+    const draft = await open()
+    await draft.save('master:product:a', productState('a', 'first product'))
+    await draft.save('master:product:b', productState('b', 'second product'))
+    const reopened = await open()
+    reopened.adopt('master:product:a')
+    const save = { ...command, action: 'product_save' as const, entity_id: 'a', expected_version: 3 }
+    expect(await reopened.begin(save, 'master:product:a')).toBe(true)
+    expect((await open()).bucket.value.pending?.owner).toBe('master:product:a')
+    expect(await reopened.finish(save.operation_id, true)).toBe(true)
+    const result = (await open()).bucket.value
+    expect(result.drafts['master:product:a']).toBeUndefined()
+    expect(result.drafts['master:product:b']!.state.form.name).toBe('second product')
+  })
+  it('isolates product leases across tabs while rejecting stale writes and deletes for the same product', async () => {
+    const left = await open()
+    await left.save('master:product:a', productState('a', 'A'))
+    await left.save('master:product:b', productState('b', 'B'))
+    const oldB = left.bucket.value.drafts['master:product:b']!.revision
+    const right = await open(); right.adopt('master:product:b')
+    await right.save('master:product:b', productState('b', 'new B'))
+    await left.load()
+    expect(await left.save('master:product:a', productState('a', 'new A'))).toBe(true)
+    expect(await left.save('master:product:b', productState('b', 'stale B'))).toBe(false)
+    expect(await left.remove('master:product:b', oldB)).toBe(false)
+    const result = (await open()).bucket.value.drafts
+    expect(result['master:product:a']!.state.form.name).toBe('new A')
+    expect(result['master:product:b']!.state.form.name).toBe('new B')
+  })
+  it('keeps legacy and multiple unnamed new-product drafts without sharing a cleanup owner', async () => {
+    const draft = await open()
+    await draft.save('master', productState('legacy', 'old draft'))
+    await draft.save('master:new:uuid-a', { category: 'product', editing: null, form: { code: '', name: 'new A' } })
+    await draft.save('master:new:uuid-b', { category: 'product', editing: null, form: { code: '', name: 'new B' } })
+    expect(await draft.remove('master:new:uuid-a')).toBe(true)
+    const reopened = (await open()).bucket.value.drafts
+    expect(reopened.master!.state.form.name).toBe('old draft')
+    expect(reopened['master:new:uuid-b']!.state.form.name).toBe('new B')
+    expect(reopened['master:new:uuid-a']).toBeUndefined()
+  })
   it('serializes rapid edits without dropping the final keystroke', async () => {
     const draft = await open()
     const outcomes = await Promise.all(['a', 'ab', 'abc', 'abcd'].map(text => draft.save('customer', { form: { name: text } })))
