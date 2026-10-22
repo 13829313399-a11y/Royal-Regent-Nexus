@@ -5,6 +5,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AuthField from '@/components/auth/AuthField.vue'
 import AuthPasswordField from '@/components/auth/AuthPasswordField.vue'
 import PasswordRecoveryDialog from '@/components/auth/PasswordRecoveryDialog.vue'
+import CuttingAcceptanceNotice from '@/features/cutting-operations/CuttingAcceptanceNotice.vue'
 import { readRecentAccount, saveRecentAccount, removeRecentAccount, takeRegistrationUsername } from '@/lib/authAccountPreference'
 import { authProblem } from '@/lib/authProblem'
 import { focusFirstError, passwordError, type FieldErrors } from '@/lib/authFormValidation'
@@ -66,6 +67,7 @@ onBeforeUnmount(() => { disposed = true; password.value = '' })
 </script>
 <template>
   <div class="ng-page-enter">
+    <CuttingAcceptanceNotice />
     <header class="ng-form-header"><h1 tabindex="-1">欢迎回来</h1><p>使用企业账号，进入你的工作空间。</p></header>
     <p v-if="route.query.redirect" class="auth-hint">登录后继续刚才的操作</p>
     <div v-if="recentAccount" class="auth-recent"><button type="button" @click="continueRecent">继续使用上次账号<small>{{ recentAccount.displayName || recentAccount.username }} · {{ recentAccount.username }}</small></button><button class="ng-eye" type="button" aria-label="清除记住的账号" @click="clearRecentAccount"><X :size="16" /></button></div>

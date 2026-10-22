@@ -23,9 +23,15 @@ beforeEach(() => {
   mocks.register.mockResolvedValue({ status: 'pending', message: '已收到', request_id: 'registration-real', submitted_at: '2026-10-10T12:00:00+08:00' })
   mocks.replace.mockResolvedValue(undefined)
 })
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs() })
 
 describe('login boundary behavior', () => {
+  it.each(['','synthetic-acceptance'])('labels the login environment only for an explicit acceptance build: %s',release=>{
+    vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE',release)
+    const wrapper=view(LoginView)
+    expect(wrapper.find('[aria-label="独立验收环境标识"]').exists()).toBe(!!release)
+    expect(wrapper.find('[aria-label="合成验收样本"]').exists()).toBe(false)
+  })
   it.each(['getter','set','remove'])('keeps successful authentication and redirect when storage %s throws', async mode => {
     if (mode === 'getter') vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => { throw new DOMException('denied', 'SecurityError') })
     else vi.spyOn(Storage.prototype, mode === 'set' ? 'setItem' : 'removeItem').mockImplementation(() => { throw new DOMException('denied') })

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { watchCuttingWorkspace } from './workspaceRefresh'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterLink, routeLocationKey } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -11,7 +11,9 @@ import { workspaceApi,businessDay,type TaskView } from './workspaceApi'
 import { errorMessage } from './api'
 import { cuttingDestination } from './location'
 const props=defineProps<{reporting?:boolean}>()
-const day=ref(businessDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
+const route=inject(routeLocationKey,undefined)
+function linkedDay(){const value=route?.query.day;return route?.query.factory==='huakang-c'&&typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString().slice(0,10)===value?value:businessDay()}
+const day=ref(linkedDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
 const applied=ref({day:day.value,q:'',execution:'',scope:'daily'})
 let generation=0,alive=true
 const tabs=computed(()=>props.reporting?[
@@ -43,6 +45,7 @@ async function load(page=1,apply=false){
 }
 function change(value:string){scope.value=value;void load(1,true)}
 onMounted(()=>void load())
+watch(()=>route?.query.day,()=>{day.value=linkedDay();void load(1,true)})
 onBeforeUnmount(()=>{alive=false;generation++})
 watchCuttingWorkspace(()=>void load())
 </script>
