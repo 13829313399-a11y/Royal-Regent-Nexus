@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ACCEPTANCE_GROUPS, acceptanceSamples } from './acceptanceSamples'
+import { ACCEPTANCE_GROUPS, acceptancePermissionLabels, acceptanceSamples } from './acceptanceSamples'
 const props = defineProps<{ showSamples?: boolean; permissions?: string[] }>()
 const release = import.meta.env.VITE_CUTTING_ACCEPTANCE_RELEASE?.trim()
 const links = ref<ReturnType<typeof acceptanceSamples>>([]), error = ref(''), busy = ref(false)
@@ -9,6 +9,7 @@ let controller: AbortController | undefined, generation = 0
 let timeout: ReturnType<typeof setTimeout> | undefined
 const groups = computed(() => ACCEPTANCE_GROUPS.map(title => ({ title, links: links.value.filter(link => link.group === title) })).filter(group => group.links.length))
 const canOpen = (link: ReturnType<typeof acceptanceSamples>[number]) => link.required.every(p => props.permissions?.includes(p))
+const missingPermissions = (link: ReturnType<typeof acceptanceSamples>[number]) => link.required.filter(p => !props.permissions?.includes(p)).map(p => acceptancePermissionLabels[p]).join('、')
 async function load() {
   const ticket = ++generation
   clearTimeout(timeout)
@@ -39,7 +40,7 @@ onBeforeUnmount(() => { generation++; clearTimeout(timeout); controller?.abort()
     <small>发布版本 {{ release }}</small>
     <details v-if="showSamples"><summary>验收样本导航</summary>
       <p>样本采用固定业务日期。默认页面仍显示当天；入口按样本日期定位，不提交未查询的筛选。若已有筛选遮住样本，可在任务列表点击“清空筛选”。</p>
-      <p>适用岗位说明用于分工，不提供授权。标注“暂无查询权限”的入口，请由对应岗位核对；其他操作仍按原权限办理。</p>
+      <p>具备查看条件不代表可以办理。参考岗位和办理分工不提供授权；登记、验收、复核及冲销仍按各自权限执行。</p>
       <p v-if="busy" role="status">正在读取样本导航…</p>
       <p v-if="error" role="alert">{{ error }} <button type="button" @click="load">重新读取样本导航</button></p>
       <nav v-if="links.length" aria-label="合成验收样本" tabindex="0">
@@ -47,7 +48,8 @@ onBeforeUnmount(() => { generation++; clearTimeout(timeout); controller?.abort()
           <li v-for="link in group.links" :key="JSON.stringify(link.to)">
             <RouterLink v-if="canOpen(link)" :to="link.to">{{ link.label }}</RouterLink>
             <span v-else class="sample-restricted">{{ link.label }} · 暂无查询权限</span>
-            <p>适用岗位：{{ link.roles.join('、') }}</p><p>预期：{{ link.expected }}</p>
+            <p>查看条件：{{ link.required.map(p => acceptancePermissionLabels[p]).join('、') }}。{{canOpen(link)?'当前账号具备所列查询权限，目标页仍需核验。':`当前账号缺少：${missingPermissions(link)}。`}}</p>
+            <p>核对参考岗位：{{ link.roles.join('、') }}</p><p>负责办理：{{link.handling}}</p><p>预期：{{ link.expected }}</p>
           </li>
         </ul></section>
       </nav>

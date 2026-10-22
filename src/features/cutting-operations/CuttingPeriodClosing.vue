@@ -11,7 +11,7 @@ import CuttingReportExport from './CuttingReportExport.vue'
 import { periodMatches, periodOrderLabel } from './periodDisplay'
 import { cuttingDestination } from './location'
 
-const props=defineProps<{access?:Access;accessLoading?:boolean}>()
+const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean}>()
 const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const [year,number]=today.split('-').map(Number)
 const lastMonth=`${number===1?year!-1:year}-${String(number===1?12:number!-1).padStart(2,'0')}`
@@ -27,11 +27,11 @@ const historical=computed(()=>!!record.value?.history.length&&record.value.event
 const can=(action:string)=>readable.value&&!!rights.value?.permissions.includes(action)
 function issueLink(item:PeriodIssue){return cuttingDestination(item.line_id!,month.value,item.workspace??(item.code==='price'?'costs':'materials'),item.document_id?'report':item.issue_id?'issue':item.task_id?'task':undefined,item.document_id||item.issue_id||item.task_id)}
 function clearEvidence(){record.value=undefined;basis.value=undefined;failedRead.value=undefined}
-watch([()=>props.access,()=>props.accessLoading],([value,loading])=>{
-  generation++;rights.value=value
+watch([()=>props.access,()=>props.accessLoading,()=>props.accessUnavailable],([value,loading,unavailable])=>{
+  generation++;if(failedRead.value)busy.value=false;rights.value=value
   // Parent order searches briefly unset access. Hide sensitive views while checking,
   // but do not destroy the independent monthly form on this loading transition.
-  if(!value&&loading)return
+  if(!value&&(loading||unavailable))return
   if(!value?.enabled||!value.periods_schema_ready||!value.permissions.includes('cost_read')){
     clearEvidence()
     if(draft.value)Object.assign(draft.value,{materials_complete:false,public_material_pending:true,opening_verified:false,unrecorded_opening:true,exceptions_reviewed:false})
@@ -63,10 +63,10 @@ function failed(e:unknown){error.value=errorMessage(e);const status=(e as {respo
 async function load(eventId?:string,targetMonth=month.value){
   if(!canLeave())return
   const target={month:targetMonth,eventId}
-  discardInputs();clearEvidence();month.value=targetMonth;error.value='';notice.value='';busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return;const result=await periodApi.read(target.month,target.eventId);if(alive&&ticket===generation)record.value=result}
+  discardInputs();clearEvidence();month.value=targetMonth;error.value='';notice.value='';failedRead.value=target;busy.value=true;const ticket=++generation
+  try{if(!await fresh(ticket))return;const result=await periodApi.read(target.month,target.eventId);if(alive&&ticket===generation){record.value=result;failedRead.value=undefined}}
   catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}
-  finally{if(alive)busy.value=false}
+  finally{if(alive&&ticket===generation)busy.value=false}
 }
 function retryRead(){const target=failedRead.value;if(target)void load(target.eventId,target.month)}
 async function openPeriod(targetMonth:string,eventId?:string){
@@ -77,7 +77,7 @@ async function openPeriod(targetMonth:string,eventId?:string){
 }
 function activateMonth(target:string){
   if(month.value===target)return
-  if(draft.value||pending.value||busy.value||reason.value.trim()){notice.value=`当前 ${month.value} 的填写或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。`;return}
+  if(draft.value||pending.value||busy.value||failedRead.value||reason.value.trim()){notice.value=`当前 ${month.value} 的填写、读取目标或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。放弃原读取目标时，请在本区明确选择月份。`;return}
   month.value=target;generation++;clearEvidence()
 }
 defineExpose({openPeriod,activateMonth})
@@ -129,7 +129,7 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
     <p v-if="!access?.enabled||!access.periods_schema_ready">内部月结需完成 0163 迁移及独立岗位授权后启用。</p>
     <p v-else-if="!access.permissions.includes('cost_read')">内部月结含材料费用，需单独授予成本查询权限。</p>
     <template v-else>
-      <p v-if="failedRead" class="cutting-notice">读取未完成：{{failedRead.month}} · {{failedRead.eventId?'原历史版本':'原当前版本'}}。<Button variant="outline" :disabled="busy||!!pending" @click="retryRead">重试原月结记录</Button></p>
+      <p v-if="failedRead" class="cutting-notice cutting-read-target"><span>读取未完成：{{failedRead.month}} · 内部月结</span><span>{{failedRead.eventId?`历史版本：${failedRead.eventId}`:'原当前版本'}}</span><Button variant="outline" :disabled="busy||!!pending||!readable" @click="retryRead">重试原月结记录</Button></p>
       <div class="order-toolbar"><label>月结月份<input type="month" min="2000-01" :max="lastMonth" :value="month" :disabled="busy||!!pending||!!draft" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取月结记录</Button></div>
       <template v-if="readable">
         <div v-if="draft&&!basis&&!pending" class="cutting-master-actions"><p>填写数量已保留，请重新读取依据后继续。</p><Button :disabled="busy||!can('period_prepare')" @click="edit">恢复填写并重新核对</Button><Button variant="outline" :disabled="busy" @click="discard">放弃填写</Button></div>
