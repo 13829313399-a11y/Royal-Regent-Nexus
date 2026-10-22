@@ -8,6 +8,8 @@ import { acquireBodyScrollLock, type BodyScrollLockRelease } from '@/lib/bodyScr
 import { usePresenceHeartbeat } from '@/composables/usePresenceHeartbeat'
 import { getPortalScope, getHomeExperienceScope, resolvePortalShellAttribute } from '@/lib/portalRouteScope'
 import { createHomeAppearance, homeAppearanceKey, homeSearchKey } from '@/composables/useHomeAppearance'
+import RouteMotionHost from '@/features/route-motion/RouteMotionHost.vue'
+import { useRouteMotionHost } from '@/features/route-motion/useRouteMotionHost'
 import '@/components/portal/styles/portal.css'
 import '@/components/portal/styles/portal-shell.css'
 import '@/components/portal/styles/home-prism.css'
@@ -16,9 +18,15 @@ import '@/components/portal/styles/home-prism-shell.css'
 
 const route = useRoute()
 const homeScope = computed(() => getHomeExperienceScope(route))
-const homeAppearance = createHomeAppearance(computed(() => Boolean(homeScope.value)))
+const homeAppearance = createHomeAppearance()
 provide(homeAppearanceKey, homeAppearance)
 const { effectiveMotion, density } = homeAppearance
+const standardSurface = ref<HTMLElement | null>(null)
+const fullPageSurface = ref<HTMLElement | null>(null)
+const { ghost } = useRouteMotionHost(homeAppearance, () => {
+  const host = isFullPage.value ? fullPageSurface.value : standardSurface.value
+  return host?.firstElementChild instanceof HTMLElement ? host.firstElementChild : null
+})
 const searchRequest = ref(0)
 provide(homeSearchKey, searchRequest)
 const topbarHeight = ref(72)
@@ -77,7 +85,7 @@ onBeforeUnmount(() => {
 
 <template>
   <AuthExperienceShell v-if="isAuthExperience"><RouterView /></AuthExperienceShell>
-  <RouterView v-else-if="isFullPage" />
+  <div v-else-if="isFullPage" ref="fullPageSurface" class="rr-route-fullpage"><RouterView /></div>
 
   <div v-else class="app-shell" :data-portal-shell="portalShellAttribute" :data-home-experience="homeScope ? 'prism-v4' : undefined" :data-home-motion="homeScope ? effectiveMotion : undefined" :data-home-density="homeScope ? density : undefined" :style="homeScope ? { '--home-topbar-height': `${topbarHeight}px` } : undefined">
     <a
@@ -98,13 +106,10 @@ onBeforeUnmount(() => {
         :mobile-open="isMobileNavigationOpen"
         @close="isMobileNavigationOpen = false"
       />
-      <main id="app-content" class="app-main w-full max-w-full flex-1 px-4 py-6 sm:px-6 lg:py-7 xl:px-8 xl:py-8 2xl:px-10">
-        <RouterView v-slot="{ Component }">
-          <Transition name="route-page" mode="out-in">
-            <component :is="Component" />
-          </Transition>
-        </RouterView>
+      <main id="app-content" ref="standardSurface" class="app-main w-full max-w-full flex-1 px-4 py-6 sm:px-6 lg:py-7 xl:px-8 xl:py-8 2xl:px-10">
+        <RouterView />
       </main>
     </div>
   </div>
+  <RouteMotionHost :ghost="ghost" />
 </template>

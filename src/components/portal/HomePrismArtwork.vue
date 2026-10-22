@@ -49,8 +49,11 @@ onBeforeUnmount(() => { reset(); pointer?.removeEventListener('change', reset); 
         <g class="home-artwork__trace" stroke="#D9C594"><path d="M278 191 502 228M279 186 276 196M503 223 500 233M570 106 532 210M565 105 575 107M527 209 537 211" /></g>
       </g>
       <g v-else-if="identity === 'pmc-warehouse'" :stroke="`url(#${id}-edge)`" stroke-linejoin="round">
-        <g v-for="(y, index) in [28, 87, 146]" :key="y" :class="index === 2 ? 'home-artwork__front' : 'home-artwork__back'" :transform="`translate(0 ${y})`">
+        <!-- Static placement must not share the CSS entrance animation's transform. -->
+        <g v-for="(y, index) in [28, 87, 146]" :key="y" :transform="`translate(0 ${y})`">
+          <g :class="index === 2 ? 'home-artwork__front' : 'home-artwork__back'">
           <path d="M280 20 450 0 595 39 425 60Z" :fill="`url(#${id}-glass)`" /><path d="M280 20V49L425 89V60M425 89 595 68V39" fill="#75B99C" fill-opacity=".18" /><path d="M304 21 449 5 568 38 423 55Z" stroke-opacity=".3" /><path d="M447 66 479 62" stroke="#E3CEA4" stroke-width="5" /><path d="M491 59V72M497 58V71M505 57V70M510 56V69M517 55V68M525 54V67" stroke-opacity=".7" /><path d="M301 38 326 45M337 48 365 55M376 58 403 65" />
+          </g>
         </g>
       </g>
       <g v-else-if="identity === 'production'" :stroke="`url(#${id}-edge)`" stroke-linejoin="round">
@@ -59,7 +62,7 @@ onBeforeUnmount(() => { reset(); pointer?.removeEventListener('change', reset); 
         <path class="home-artwork__trace" d="M267 195 373 172" stroke="#B8FFF0" stroke-width="3" />
       </g>
       <g v-else-if="identity === 'qa'" :stroke="`url(#${id}-edge)`">
-        <g class="home-artwork__back" transform="translate(19 -15)"><path d="M521 56C475 12 376 20 339 82S342 192 407 205 553 180 562 123" stroke-width="25" stroke-opacity=".25" /><path d="M521 56C475 12 376 20 339 82S342 192 407 205 553 180 562 123" stroke-width="1.5" /></g>
+        <g transform="translate(19 -15)"><g class="home-artwork__back"><path d="M521 56C475 12 376 20 339 82S342 192 407 205 553 180 562 123" stroke-width="25" stroke-opacity=".25" /><path d="M521 56C475 12 376 20 339 82S342 192 407 205 553 180 562 123" stroke-width="1.5" /></g></g>
         <g class="home-artwork__front"><path d="M529 72C482 23 389 34 357 88S353 180 414 193 544 171 551 123" stroke="var(--home-light)" stroke-opacity=".4" stroke-width="24" /><path d="M529 72C482 23 389 34 357 88S353 180 414 193 544 171 551 123" stroke-width="2" /><path d="M409 113 437 141 491 86" stroke="#F1D6A1" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" /><circle cx="446" cy="117" r="61" stroke-dasharray="2 12" /></g>
         <g class="home-artwork__trace" stroke="#D9C594"><path d="M311 75H342M314 151H337M560 84H596M559 164H587" /><circle cx="589" cy="164" r="3" /></g>
       </g>

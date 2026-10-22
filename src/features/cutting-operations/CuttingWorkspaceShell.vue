@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, onBeforeRouteUpdate } from 'vue-router'
 import { ArrowLeft, Building2, BookOpen, LayoutDashboard, History, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator } from '@lucide/vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import CuttingAcceptanceNotice from './CuttingAcceptanceNotice.vue'
 import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
 import { Button } from '@/components/ui/button'
 import { cuttingGuideSteps, cuttingGuideTips } from './usageGuide'
@@ -17,7 +18,8 @@ const route = useRoute()
 const main=ref<HTMLElement>()
 watch(()=>route.path,()=>main.value?.scrollTo?.({top:0,left:0}),{flush:'post'})
 const logoUrl = '/brand/huadeng_group_dynamic_logo_topbar.svg'
-const acceptanceRelease = import.meta.env.VITE_CUTTING_ACCEPTANCE_RELEASE?.trim()
+const samplesAllowed = ref(false)
+const samplePermissions = ref<string[]>([])
 const validFactory = computed(() => isCuttingFactory(route.query.factory))
 const icons = { LayoutDashboard, History, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator }
 const currentTitle = computed(() => CUTTING_WORKSPACES.find(w => route.path.endsWith(`/${w.path}`))?.title ?? '裁床部')
@@ -30,11 +32,16 @@ const fingerprint = (value: Access) => JSON.stringify({ ...value, permissions: [
 async function revalidate() {
   const ticket = ++accessGeneration
   verifying.value = true; authorizationError.value = ''
+  samplesAllowed.value = false
+  samplePermissions.value = []
   try {
-    const current = fingerprint(await cuttingApi.access())
+    const rights = await cuttingApi.access()
+    const current = fingerprint(rights)
     if (!alive || ticket !== accessGeneration) return
     if (accessFingerprint !== undefined && current !== accessFingerprint) authorizationEpoch.value++
     accessFingerprint = current; denied.value = false
+    samplesAllowed.value = rights.enabled && rights.permissions.includes('read')
+    samplePermissions.value = [...rights.permissions]
   } catch (error) {
     if (!alive || ticket !== accessGeneration) return
     const status = (error as { response?: { status?: number } }).response?.status
@@ -67,9 +74,7 @@ onBeforeUnmount(() => {
   <div v-if="validFactory" class="cutting-shell">
     <a class="cutting-skip" href="#cutting-main">跳到工作区内容</a>
     <header class="cutting-header">
-      <div v-if="acceptanceRelease" class="cutting-environment" role="note" aria-label="独立验收环境标识">
-        <strong>独立验收环境 · 数据库副本</strong><span>合成业务样本仅供验收，不代表真实订单或正式岗位验收。</span><small>发布版本 {{acceptanceRelease}}</small>
-      </div>
+      <CuttingAcceptanceNotice :show-samples="samplesAllowed" :permissions="samplePermissions" />
       <RouterLink :to="productionRoute" class="cutting-brand" aria-label="裁床部，返回华康 C 生产部">
         <img :src="logoUrl" alt="华登集团" />
         <span><strong>裁床部</strong><small>华康 C · 生产管理</small></span>

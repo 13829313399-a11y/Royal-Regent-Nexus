@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, provide, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { House, Printer, RefreshCw } from "@lucide/vue";
 import AccountMenu from "@/components/layout/AccountMenu.vue";
+import { useRouteEntryOwned } from '@/features/route-motion/useModuleEntryMotion';
 import { useWorkspace } from "./composables/useWorkspace";
 import { useTdpNavIndicator } from "./composables/useTdpNavIndicator";
 import { workspaceKey } from "./context";
@@ -53,7 +54,7 @@ const title = computed(() =>
     : tabs.value.find((t) => t.id === activeTab.value)?.label,
 );
 const { nav, indicator } = useTdpNavIndicator(() => activeTab.value);
-const firstReveal = ref(true);
+const firstReveal = ref(!useRouteEntryOwned());
 const refreshing = ref(false);
 const viewHost = ref<HTMLElement | null>(null);
 let revealTimer: ReturnType<typeof setTimeout> | undefined;
@@ -86,7 +87,7 @@ function releaseViewHeight() {
     <a class="tdp-skip-link" href="#tdp-main">跳到主要内容</a>
     <aside class="legacy-sidebar">
       <div class="legacy-brand" data-yl-help="three-d-printing.overview" :class="{ 'tdp-reveal-once': firstReveal }">
-        <span class="tdp-brand-icon" aria-hidden="true"><Printer :size="18" /></span>
+        <span class="tdp-brand-icon" data-route-motion-anchor aria-hidden="true"><Printer :size="18" /></span>
         <span>3D打印管理<small>部门生产管理系统 · 华康A</small></span>
       </div>
       <div class="legacy-sidebar-scroll">

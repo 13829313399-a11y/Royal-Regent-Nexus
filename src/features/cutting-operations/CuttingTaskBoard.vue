@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { watchCuttingWorkspace } from './workspaceRefresh'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterLink, routeLocationKey } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -11,8 +11,11 @@ import { workspaceApi,businessDay,type TaskView } from './workspaceApi'
 import { errorMessage } from './api'
 import { cuttingDestination } from './location'
 const props=defineProps<{reporting?:boolean}>()
-const day=ref(businessDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
+const route=inject(routeLocationKey,undefined)
+function linkedDay(){const value=route?.query.day;return route?.query.factory==='huakang-c'&&typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString().slice(0,10)===value?value:businessDay()}
+const day=ref(linkedDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
 const applied=ref({day:day.value,q:'',execution:'',scope:'daily'})
+const unapplied=computed(()=>day.value!==applied.value.day||query.value!==applied.value.q||execution.value!==applied.value.execution)
 let generation=0,alive=true
 const tabs=computed(()=>props.reporting?[
   {id:'daily',label:'每日任务'},{id:'reported',label:'已填报任务'},{id:'unreported',label:'待填任务'},{id:'history',label:'计划外与历史实绩'},{id:'abnormal',label:'异常待办'},
@@ -41,8 +44,10 @@ async function load(page=1,apply=false){
   catch(e){if(alive&&ticket===generation)error.value=errorMessage(e)}
   finally{if(alive&&ticket===generation)busy.value=false}
 }
-function change(value:string){scope.value=value;void load(1,true)}
+function change(value:string){scope.value=value;applied.value={...applied.value,scope:value};void load(1)}
+function resetFilters(){query.value='';execution.value='';applied.value={...applied.value,q:'',execution:''};void load(1)}
 onMounted(()=>void load())
+watch(()=>route?.query.day,()=>{day.value=linkedDay();applied.value={...applied.value,day:day.value};void load(1)})
 onBeforeUnmount(()=>{alive=false;generation++})
 watchCuttingWorkspace(()=>void load())
 </script>
@@ -55,7 +60,10 @@ watchCuttingWorkspace(()=>void load())
         <label>订单号／货号<input v-model="query" maxlength="80" placeholder="查询全部匹配订单" /></label>
         <label>执行方<select v-model="execution"><option value="">本厂与外发</option><option value="internal">本厂</option><option value="outsourced">外发</option></select></label>
         <Button :disabled="busy">查询／刷新</Button>
+        <Button type="button" variant="outline" :disabled="busy" @click="resetFilters">清空筛选</Button>
       </form>
+      <p v-if="unapplied" class="cutting-muted" role="status">筛选有未查询的修改，当前结果仍按上次查询条件展示。</p>
+      <p class="cutting-muted">当前查询日期：{{applied.day}}。切换任务视图、翻页及刷新不提交未查询的日期、订单或执行方条件。</p>
       <CuttingSubnav :model-value="scope" :items="tabs" @update:model-value="change" />
       <p v-if="busy" role="status">正在核对有效计划与生产实绩…</p>
       <p v-if="error" role="alert">{{error}}</p>

@@ -14,6 +14,8 @@ import { useAppStore } from '@/stores/app'
 import HomePrismArtwork from '@/components/portal/HomePrismArtwork.vue'
 import HomeAppearanceControl from '@/components/portal/HomeAppearanceControl.vue'
 import { useHomeAppearance } from '@/composables/useHomeAppearance'
+import { useRouteEntryOwnership } from '@/features/route-motion/useModuleEntryMotion'
+const routeEntryOwned = useRouteEntryOwnership()
 import '@/components/dashboard/styles/dashboard.css'
 
 const appStore = useAppStore()
@@ -37,7 +39,7 @@ const sourceNote = '示例数据 · 筛选与导出暂未接入'
 
 <template>
   <div class="dashboard-page-container" data-yl-help="portal.overview">
-    <div class="app-page dashboard-page rrn-home space-y-6" data-dashboard-ui="jade-v2" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-home-density="density">
+    <div class="app-page dashboard-page rrn-home space-y-6" data-dashboard-ui="jade-v2" data-home-experience="prism-v4" :data-route-entry-owned="routeEntryOwned || undefined" :data-home-motion="effectiveMotion" :data-home-density="density">
     <div class="dashboard-hero" data-yl-help="portal.dashboard.header">
       <div class="dashboard-hero__art" aria-hidden="true" />
       <span class="dashboard-hero__breath" aria-hidden="true" />

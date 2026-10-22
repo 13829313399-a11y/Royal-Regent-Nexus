@@ -20,7 +20,7 @@ const { motion, density, reduced, effectiveMotion } = useHomeAppearance()
         <button type="button" :aria-pressed="motion === 'off'" @click="motion = 'off'">关闭</button>
       </div></fieldset>
       <p v-if="reduced">系统已启用减少动态，当前动效关闭。</p>
-      <p v-else>仅用于导航首页，按当前账号记住偏好。</p>
+      <p v-else>用于首页和模块导航，按当前账号记住偏好。</p>
     </PopoverContent>
     </div></PopoverPortal>
   </PopoverRoot>

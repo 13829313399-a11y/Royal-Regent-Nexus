@@ -5,14 +5,15 @@ import { getApiErrorMessage } from '@/lib/http'
 import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard'
-import { createDraftPersistence, draftKinds, type DraftKind } from './draftPersistence'
+import { createDraftPersistence, draftKind, draftLabel, type DraftKind, type DraftId } from './draftPersistence'
 import { indonesiaMaterialsApi as api, type Action, type BoardOrder, type Command, type Data, type MaterialRecord, type RecordKind } from '@/api/indonesiaMaterials'
 
-export function createMaterialsWorkspace() {
+export function createMaterialsWorkspace(sharedOptions = false) {
   const app = useAppStore()
   const auth = useAuthStore()
-  const factory = computed(() => app.activeFactoryId === 'group' ? '' : app.activeFactoryId)
+  const factory = computed(() => sharedOptions ? 'shared-options' : app.activeFactoryId === 'group' ? '' : app.activeFactoryId)
   const records = ref<MaterialRecord[]>([])
+  const optionDefaults = ref<Data[]>([])
   const board = ref<BoardOrder[]>([])
   const permissions = ref<string[]>([])
   const loading = ref(false)
@@ -23,13 +24,17 @@ export function createMaterialsWorkspace() {
   const pending = ref<Command | null>(null)
   const scopeEpoch = ref(0)
   const localDrafts = createDraftPersistence()
-  const restoreTarget = ref<DraftKind | null>(null)
-  const owners = new Map<DraftKind, { restore: (state: Data, revision: string) => Promise<boolean>; reset: () => void; flush: () => Promise<boolean> }>()
-  const registerDraftOwner = (id: DraftKind, owner: { restore: (state: Data, revision: string) => Promise<boolean>; reset: () => void; flush: () => Promise<boolean> }) => {
+  const restoreTarget = ref<DraftId | null>(null)
+  const shipmentTarget = ref<string | null>(null)
+  const boardStage = ref('board'), supplyStage = ref('warehouse')
+  type DraftOwner = { restore: (state: Data, revision: string, id: DraftId) => Promise<boolean>; reset: (id?: DraftId) => void; flush: () => Promise<boolean> }
+  const owners = new Map<DraftKind, DraftOwner>()
+  const ownerFor = (id: DraftId) => { const kind = draftKind(id); return kind ? owners.get(kind) : undefined }
+  const registerDraftOwner = (id: DraftKind, owner: DraftOwner) => {
     owners.set(id, owner)
     return () => { if (owners.get(id) === owner) owners.delete(id) }
   }
-  async function restoreDraft(id: DraftKind) {
+  async function restoreDraft(id: DraftId) {
     if (!localDrafts.ready.value || busy.value) return
     const epoch = scopeEpoch.value, selected = factory.value
     await localDrafts.flush()
@@ -40,15 +45,17 @@ export function createMaterialsWorkspace() {
     await nextTick()
     if (!same(epoch, selected)) return
     const saved = localDrafts.bucket.value.drafts[id]
-    if (!saved || !owners.has(id)) { error.value = '草稿入口尚未就绪，请重新打开对应工作区。'; return }
+    if (!sharedOptions && saved && draftKind(id) === 'options') { notice.value = '这是旧厂区选项草稿，原内容保留。请在共用基础选项中查看并明确复制核对；不会自动改写全厂资料。'; return }
+    const owner = ownerFor(id)
+    if (!saved || !owner) { error.value = '草稿入口尚未就绪，请重新打开对应工作区。'; return }
     try {
-      if (await owners.get(id)!.restore(saved.state, saved.revision) && same(epoch, selected)) { notice.value = `已恢复${draftKinds[id].label}草稿；仍需核对并正式保存。`; if (!pending.value) error.value = '' }
+      if (await owner.restore(saved.state, saved.revision, id) && same(epoch, selected)) { notice.value = `已恢复${draftLabel(saved)}；仍需核对并正式保存。`; if (!pending.value) error.value = '' }
     } catch (cause) { if (same(epoch, selected)) error.value = getApiErrorMessage(cause) }
   }
-  async function deleteDraft(id: DraftKind) {
+  async function deleteDraft(id: DraftId) {
     if (busy.value || pending.value || !window.confirm('删除这份本机草稿及其未提交内容？正式业务记录不受影响。')) return
     const epoch = scopeEpoch.value, selected = factory.value
-    if (await localDrafts.remove(id) && same(epoch, selected)) owners.get(id)?.reset()
+    if (await localDrafts.remove(id) && same(epoch, selected)) ownerFor(id)?.reset(id)
   }
   const drafts = shallowReactive(new Set<() => boolean>())
   let pendingCompletion: (() => void) | undefined
@@ -86,18 +93,18 @@ export function createMaterialsWorkspace() {
   const canWrite = computed(() => has('write'))
   const invalidPending = ref(false)
   const locked = computed(() => busy.value || !!pending.value || invalidPending.value || !factory.value || !localDrafts.ready.value)
-  const kind = (type: RecordKind) => records.value.filter(record => record.kind === type)
+  const kind = (type: RecordKind) => records.value.filter(record => record.kind === type && !record.data.deleted)
   const record = (id: string) => records.value.find(item => item.id === id)
   const materialName = (id: string) => { const data = record(id)?.data; return data ? `${data.code} · ${data.name}` : '物料资料缺失' }
-  const orderName = (id: string) => { const data = record(id)?.data; return data ? `${data.contract_no} / ${data.batch} / ${data.item_no}` : '合同资料缺失' }
+  const orderName = (id: string) => { const data = record(id)?.data; return data ? `PO ${data.po_no || '未填写'} · ${data.contract_no} / ${data.item_no} · ${data.delivery_date}${data.batch ? '（历史批次 ' + data.batch + '）' : ''}` : '合同资料缺失' }
   const same = (epoch: number, selected: string) => epoch === scopeEpoch.value && selected === factory.value
   function restoredPending() {
     const saved = localDrafts.bucket.value.pending
     invalidPending.value = false
     if (!saved) { if (!busy.value) { pending.value = null; pendingCompletion = undefined } return }
     const command = saved.command
-    const actions: Action[] = ['customer_save', 'material_save', 'product_save', 'order_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm']
-    if (command?.factory_id !== factory.value || !actions.includes(command.action) || typeof command.operation_id !== 'string' || command.operation_id.length < 16 || !command.data || !Number.isInteger(command.expected_version)) {
+    const actions: Action[] = ['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm']
+    if (command?.factory_id !== factory.value || !actions.includes(command.action) || typeof command.operation_id !== 'string' || command.operation_id.length < 16 || !command.data || !Number.isInteger(command.expected_version) || (saved.owner !== undefined && !draftKind(saved.owner))) {
       invalidPending.value = true; localDrafts.error.value = '上次提交凭据无法识别，原内容已保留，请联系管理员核对。'; return
     }
     if (pending.value?.operation_id !== command.operation_id) pendingCompletion = undefined
@@ -115,7 +122,7 @@ export function createMaterialsWorkspace() {
   function revokePrivateState() {
     // A denial on any endpoint invalidates already displayed data and all in-flight responses.
     scopeEpoch.value++; requestEpoch++; pendingCompletion = undefined
-    records.value = []; board.value = []; permissions.value = []; pending.value = null
+    records.value = []; optionDefaults.value = []; board.value = []; permissions.value = []; pending.value = null; shipmentTarget.value = null; boardStage.value = 'board'; supplyStage.value = 'warehouse'
     busy.value = false; loading.value = false; notice.value = ''
     localDrafts.reset()
     invalidPending.value = false
@@ -131,6 +138,7 @@ export function createMaterialsWorkspace() {
       const result = await api.workspace(selected)
       if (!same(epoch, selected) || request !== requestEpoch) return
       records.value = result.records
+      optionDefaults.value = result.option_defaults ?? []
       board.value = result.board
       permissions.value = result.permissions
     } catch (cause) {
@@ -142,9 +150,9 @@ export function createMaterialsWorkspace() {
   }
   watch([factory, identity], () => {
     scopeEpoch.value++
-    records.value = []; board.value = []; permissions.value = []
+    records.value = []; optionDefaults.value = []; board.value = []; permissions.value = []
     pending.value = null; pendingCompletion = undefined; error.value = ''; loadError.value = ''; notice.value = ''; busy.value = false; loading.value = false
-    restoreTarget.value = null; invalidPending.value = false
+    restoreTarget.value = null; shipmentTarget.value = null; boardStage.value = 'board'; supplyStage.value = 'warehouse'; invalidPending.value = false
     const epoch = scopeEpoch.value, selected = factory.value
     const user = auth.currentUser
     const storageKey = user?.id && selected ? JSON.stringify(['v1', user.id, user.identity?.employment_epoch ?? 1, selected]) : ''
@@ -155,7 +163,7 @@ export function createMaterialsWorkspace() {
       if (await localDrafts.load(storageKey)) restoredPending()
     })()
   }, { immediate: true, flush: 'sync' })
-  async function execute(command: Command, onCommitted?: () => void, owner?: DraftKind, retry = false) {
+  async function execute(command: Command, onCommitted?: () => void, owner?: DraftId, retry = false) {
     const epoch = scopeEpoch.value
     const selected = command.factory_id
     busy.value = true; error.value = ''; notice.value = ''
@@ -183,7 +191,7 @@ export function createMaterialsWorkspace() {
       await reload()
       if (!same(epoch, selected)) return false
       if (onCommitted) onCommitted()
-      else if (owner) owners.get(owner)?.reset()
+      else if (owner) ownerFor(owner)?.reset(owner)
       return true
     } catch (cause) {
       if (!same(epoch, selected)) return false
@@ -213,7 +221,7 @@ export function createMaterialsWorkspace() {
       return false
     } finally { if (same(epoch, selected)) busy.value = false }
   }
-  async function run(action: Action, data: Data, target?: MaterialRecord, onCommitted?: () => void, owner?: DraftKind) {
+  async function run(action: Action, data: Data, target?: MaterialRecord, onCommitted?: () => void, owner?: DraftId) {
     if (locked.value || !(action === 'receipt_confirm' ? has('receipt_confirm') : canWrite.value)) return false
     const command: Command = JSON.parse(JSON.stringify({
       factory_id: factory.value, operation_id: createRandomUuid(), action,
@@ -227,12 +235,12 @@ export function createMaterialsWorkspace() {
     if (!has(permission)) { error.value = '当前权限不允许重试该操作。'; return }
     await execute(pending.value, pendingCompletion, localDrafts.bucket.value.pending?.owner, true)
   }
-  async function preview(customer: string, recipient: string, file: File) {
+  async function preview(customer: string, recipient: string, file: File, warehouse?: string) {
     if (locked.value || !canWrite.value) return null
     const selected = factory.value; const epoch = scopeEpoch.value
     busy.value = true; error.value = ''; notice.value = ''
     try {
-      const result = await api.preview(selected, customer, recipient, file)
+      const result = await api.preview(selected, customer, recipient, file, ...(warehouse === undefined ? [] : [warehouse]))
       return same(epoch, selected) ? result.record : null
     } catch (cause) {
       if (same(epoch, selected)) {
@@ -269,7 +277,7 @@ export function createMaterialsWorkspace() {
     } finally { if (same(epoch, selected)) busy.value = false }
   }
   onBeforeUnmount(() => { scopeEpoch.value++; pendingCompletion = undefined; drafts.clear(); owners.clear(); localDrafts.dispose(); removeFactoryGuard(); window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('auth-session-boundary-changed', boundary) })
-  return reactive({ factory, records, board, permissions, loading, busy, error, loadError, notice, pending, scopeEpoch, canWrite, locked, has, kind, record, materialName, orderName, reload, run, retry, preview, download, registerDraft, permitLeave, localDrafts, restoreTarget, restoreDraft, deleteDraft, registerDraftOwner, reloadDrafts, hasUnstoredDrafts })
+  return reactive({ factory, records, optionDefaults, board, permissions, loading, busy, error, loadError, notice, pending, scopeEpoch, canWrite, locked, has, kind, record, materialName, orderName, reload, run, retry, preview, download, registerDraft, permitLeave, localDrafts, restoreTarget, shipmentTarget, boardStage, supplyStage, restoreDraft, deleteDraft, registerDraftOwner, reloadDrafts, hasUnstoredDrafts })
 }
 function status(cause: unknown) { return (cause as { response?: { status?: number } })?.response?.status }
 export type MaterialsWorkspace = ReturnType<typeof createMaterialsWorkspace>
