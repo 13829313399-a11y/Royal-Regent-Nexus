@@ -23,6 +23,17 @@ const button=(name:string)=>wrapper.findAll('button').find(b=>b.text()===name)!
 beforeEach(()=>{vi.resetAllMocks()})
 afterEach(()=>wrapper?.unmount())
 describe('cutting read-only workspaces',()=>{
+  it('opens and updates an explicit sample business day without changing the default-today contract',async()=>{
+    vi.mocked(workspaceApi.tasks).mockResolvedValue(task)
+    const sampleRouter=createRouter({history:createMemoryHistory(),routes:[{path:'/:pathMatch(.*)*',component:{template:'<div />'}}]})
+    await sampleRouter.push('/dashboard?factory=huakang-c&day=2026-09-10')
+    wrapper=mount(TaskBoard,{global:{plugins:[sampleRouter]}});await flushPromises()
+    expect(workspaceApi.tasks).toHaveBeenLastCalledWith(expect.objectContaining({day:'2026-09-10',page:1}))
+    await sampleRouter.push('/dashboard?factory=huakang-c&day=2026-10-21');await flushPromises()
+    expect(workspaceApi.tasks).toHaveBeenLastCalledWith(expect.objectContaining({day:'2026-10-21',page:1}))
+    await sampleRouter.push('/dashboard?factory=huakang-c&day=2026-02-30');await flushPromises()
+    expect(workspaceApi.tasks).toHaveBeenLastCalledWith(expect.objectContaining({day:'2026-10-20'}))
+  })
   it('keeps inventory paging and write refresh on applied filters, and distinguishes no matches',async()=>{
     vi.mocked(workspaceApi.inventory).mockResolvedValue({...empty,total:51,units:{}})
     wrapper=mount(Inventory);await flushPromises()

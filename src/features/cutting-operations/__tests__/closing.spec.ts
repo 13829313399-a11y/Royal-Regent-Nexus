@@ -25,6 +25,33 @@ async function open(path='/'){const router=createRouter({history:createMemoryHis
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(cuttingApi.access).mockResolvedValue(rights);vi.mocked(ordersApi.list).mockResolvedValue({data:[order],total:1,page:1,page_size:50});vi.mocked(closingApi.read).mockResolvedValue(snapshot)})
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 describe('P4a monthly reconciliation',()=>{
+  it('does not replay a pending historical link after the user explicitly chooses another view',async()=>{
+    let resolve!:(value:Access)=>void
+    vi.mocked(cuttingApi.access).mockReturnValueOnce(new Promise(r=>resolve=r))
+    await open('/?factory=huakang-c&view=period&month=2026-08')
+    await button('冻结报表').trigger('click')
+    resolve({...rights,periods_schema_ready:true});await flushPromises()
+    expect(periodApi.read).not.toHaveBeenCalled()
+    expect(button('冻结报表').attributes('aria-pressed')).toBe('true')
+  })
+  it('recovers a historical month and frozen event after a failed initial access read',async()=>{
+    vi.mocked(cuttingApi.access).mockRejectedValueOnce(new Error('offline')).mockResolvedValue({...rights,periods_schema_ready:true})
+    vi.mocked(periodApi.read).mockImplementation(async month=>({month,revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]}))
+    await open('/?factory=huakang-c&view=period&month=2026-08&event_id=frozen-august')
+    expect(periodApi.read).not.toHaveBeenCalled()
+    await button('重新读取月结工作区').trigger('click');await flushPromises()
+    expect(periodApi.read).toHaveBeenCalledWith('2026-08','frozen-august')
+    expect(wrapper.findComponent({name:'CuttingMonthlyOverview'}).props('month')).toBe('2026-08')
+  })
+  it('retries failed order-list loading before restoring the exact historical payment document',async()=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,payments_schema_ready:true,permissions:['read','payment_read']})
+    vi.mocked(ordersApi.list).mockRejectedValueOnce(new Error('offline')).mockResolvedValue({data:[order],total:1,page:1,page_size:50})
+    vi.mocked(paymentApi.read).mockResolvedValue({month:'2026-08',current_month:'2026-09',revision:1,rows:[],totals:[],documents:[],document_id:'payment-8',state:'open',selected_state:'open',event_id:null,data:null,history:[],replacements:[]})
+    await open('/?factory=huakang-c&view=payment&month=2026-08&document_id=payment-8&event_id=old-payment-event')
+    expect(paymentApi.read).not.toHaveBeenCalled()
+    await button('重新读取月结工作区').trigger('click');await flushPromises()
+    expect(paymentApi.read).toHaveBeenCalledWith('2026-08','payment-8','old-payment-event')
+  })
   it('synchronizes a financial deep link without an order to overview, exports and tab reentry',async()=>{
     vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true})
     vi.mocked(periodApi.read).mockImplementation(async month=>({month,revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]}))
