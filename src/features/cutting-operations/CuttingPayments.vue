@@ -16,6 +16,7 @@ const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'nume
 const month=ref(today.slice(0,7)),rights=ref<Access>(),record=ref<PaymentRecord>(),basis=ref<PaymentBasis>(),draft=ref<PaymentSave>(),preview=ref<PaymentSnapshot>()
 const conflict=ref<NonNullable<PaymentBasis['document']>>()
 const savedTarget=ref<{month:string;id:string;eventId?:string}>()
+const failedRead=ref<{month:string;id?:string;eventId?:string}>()
 const reason=ref(''),error=ref(''),notice=ref(''),busy=ref(false),filter=ref('')
 const pending=ref<{action:PaymentAction;body:PaymentBody}>()
 const labels:Record<PaymentState,string>={open:'未登记',draft:'草稿',submitted:'待复核',returned:'已退回',confirmed:'已生效',reversed:'已冲销登记'}
@@ -28,7 +29,7 @@ const dirty=computed(()=>!!draft.value||!!reason.value.trim())
 const historical=computed(()=>!!record.value?.event_id&&record.value.event_id!==record.value.history.at(-1)?.id)
 const rows=computed(()=>(basis.value?.rows??record.value?.rows??[]).filter(r=>!filter.value||`${r.resource_name} ${r.settlement_id}`.includes(filter.value)))
 const missing=computed(()=>draft.value?.allocations.filter(a=>!basis.value?.rows.some(r=>r.settlement_id===a.settlement_id))??[])
-function clearEvidence(){conflict.value=undefined;record.value=undefined;basis.value=undefined;preview.value=undefined;reason.value='';filter.value='';if(draft.value){draft.value.evidence='';draft.value.voucher_no='';draft.value.amount='';draft.value.allocations=[];draft.value.reason=''}}
+function clearEvidence(){failedRead.value=undefined;conflict.value=undefined;record.value=undefined;basis.value=undefined;preview.value=undefined;reason.value='';filter.value='';if(draft.value){draft.value.evidence='';draft.value.voucher_no='';draft.value.amount='';draft.value.allocations=[];draft.value.reason=''}}
 watch([()=>props.access,()=>props.accessLoading],([value,loading])=>{generation++;rights.value=value;if(!value&&loading)return;if(!readable.value)clearEvidence()},{immediate:true})
 watch(()=>JSON.stringify(draft.value),()=>{preview.value=undefined},{flush:'sync'})
 function leave(){if(pending.value||busy.value){notice.value='请先核对原付款操作结果。';return false}return !dirty.value||window.confirm('付款登记尚未保存，是否放弃填写并离开？')}
@@ -40,16 +41,19 @@ function failed(e:unknown){error.value=errorMessage(e);const status=(e as {respo
 async function fresh(ticket:number){const value=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=value;if(!readable.value){clearEvidence();error.value='付款登记未启用或未获付款查询权限。';return false}return true}
 async function load(id?:string,eventId?:string,targetMonth=month.value){
   if(!leave())return false
-  month.value=targetMonth;conflict.value=undefined;draft.value=undefined;preview.value=undefined;record.value=undefined;basis.value=undefined;reason.value='';error.value='';busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return true;const value=await paymentApi.read(month.value,id,eventId);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined}}
-  catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
+  const target={month:targetMonth,id,eventId}
+  month.value=targetMonth;failedRead.value=undefined;conflict.value=undefined;draft.value=undefined;preview.value=undefined;record.value=undefined;basis.value=undefined;reason.value='';error.value='';busy.value=true;const ticket=++generation
+  try{if(!await fresh(ticket))return true;const value=await paymentApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined}}
+  catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}finally{if(alive)busy.value=false}
   return true
 }
+function retryRead(){const target=failedRead.value;if(target)void load(target.id,target.eventId,target.month)}
 async function start(mode:'new'|'edit'|'replace'|'refresh'){
   if(busy.value||pending.value)return
   const old=mode==='refresh'?draft.value:mode==='edit'||mode==='replace'?record.value?.data?.input:undefined
   const baseEvent=mode==='edit'?record.value?.event_id??null:mode==='refresh'?old?.base_event_id??null:null
   if(mode!=='refresh'&&dirty.value&&!window.confirm('放弃当前未保存付款填写？'))return
+  failedRead.value=undefined
   const id=mode==='replace'||mode==='new'?crypto.randomUUID():old?.document_id??crypto.randomUUID()
   const original=mode==='replace'?record.value?.document_id??null:old?.replaces_document_id??null
   busy.value=true;error.value='';preview.value=undefined;const ticket=++generation
@@ -116,10 +120,10 @@ async function openPayment(targetMonth:string,id:string,eventId?:string){
 function activateMonth(target:string){
   if(month.value===target)return
   if(dirty.value||pending.value||busy.value){notice.value=`当前 ${month.value} 的填写或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。`;return}
-  month.value=target;generation++;record.value=undefined;basis.value=undefined
+  month.value=target;generation++;record.value=undefined;basis.value=undefined;failedRead.value=undefined
 }
 defineExpose({openPayment,activateMonth})
-function changeMonth(event:Event){const input=event.target as HTMLInputElement;if(dirty.value||busy.value||pending.value){input.value=month.value;notice.value='请先保存或放弃填写，并核对原操作。';return}month.value=input.value;generation++;record.value=undefined;basis.value=undefined}
+function changeMonth(event:Event){const input=event.target as HTMLInputElement;if(dirty.value||busy.value||pending.value){input.value=month.value;notice.value='请先保存或放弃填写，并核对原操作。';return}month.value=input.value;generation++;record.value=undefined;basis.value=undefined;failedRead.value=undefined}
 function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement',row.month,row.settlement_id,row.settlement_event_id)}
 </script>
 
@@ -130,6 +134,7 @@ function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement'
     <Button v-if="pending" variant="outline" :disabled="busy" @click="recover">核对原付款操作结果</Button>
     <p v-if="!access?.payments_schema_ready">付款登记需先完成数据库迁移及单独岗位授权。</p><p v-else-if="!access.permissions.includes('payment_read')">付款查询仅限单独授权的会计岗位。</p>
     <template v-if="readable">
+      <p v-if="failedRead" class="cutting-notice">读取未完成：{{failedRead.month}} · {{failedRead.eventId?'原历史版本':failedRead.id?'原指定单据':'原月份列表'}}。<Button variant="outline" :disabled="busy||!!pending" @click="retryRead">重试原付款记录</Button></p>
       <CuttingReportExport v-if="record&&!draft" :selection="{kind:'payments',month}" :access="rights" :disabled="busy||!!pending" />
       <Button v-if="savedTarget" variant="outline" :disabled="busy||!!pending" @click="load(savedTarget.id,savedTarget.eventId,savedTarget.month)">打开已保存付款记录</Button>
       <div class="order-toolbar cutting-master-toolbar"><label>付款月份<input type="month" min="2000-01" :max="today.slice(0,7)" :value="month" :disabled="busy||!!pending||dirty" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending" @click="load()">读取付款登记</Button><Button v-if="can('payment_prepare')" :disabled="busy||!!pending||!!draft" @click="start('new')">新建付款登记</Button></div>

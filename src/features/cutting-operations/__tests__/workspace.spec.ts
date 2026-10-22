@@ -23,6 +23,21 @@ const button=(name:string)=>wrapper.findAll('button').find(b=>b.text()===name)!
 beforeEach(()=>{vi.resetAllMocks()})
 afterEach(()=>wrapper?.unmount())
 describe('cutting read-only workspaces',()=>{
+  it('changes a linked day using applied filters, retains unqueried input and supports clearing',async()=>{
+    vi.mocked(workspaceApi.tasks).mockResolvedValue(task)
+    const sampleRouter=createRouter({history:createMemoryHistory(),routes:[{path:'/:pathMatch(.*)*',component:{template:'<div />'}}]})
+    await sampleRouter.push('/dashboard?factory=huakang-c&day=2026-10-20')
+    wrapper=mount(TaskBoard,{global:{plugins:[sampleRouter]}});await flushPromises()
+    await wrapper.get('input[maxlength]').setValue('APPLIED');await wrapper.get('form').trigger('submit');await flushPromises()
+    await wrapper.get('input[maxlength]').setValue('NOT-QUERIED');await wrapper.get('select').setValue('internal')
+    await sampleRouter.push('/dashboard?factory=huakang-c&day=2026-10-21');await flushPromises()
+    expect(workspaceApi.tasks).toHaveBeenLastCalledWith(expect.objectContaining({day:'2026-10-21',q:'APPLIED',execution:'',page:1}))
+    expect((wrapper.get('input[maxlength]').element as HTMLInputElement).value).toBe('NOT-QUERIED')
+    expect(wrapper.text()).toContain('筛选有未查询的修改')
+    await button('清空筛选').trigger('click');await flushPromises()
+    expect(workspaceApi.tasks).toHaveBeenLastCalledWith(expect.objectContaining({day:'2026-10-21',q:'',execution:'',page:1}))
+    expect(wrapper.text()).not.toContain('筛选有未查询的修改')
+  })
   it('opens and updates an explicit sample business day without changing the default-today contract',async()=>{
     vi.mocked(workspaceApi.tasks).mockResolvedValue(task)
     const sampleRouter=createRouter({history:createMemoryHistory(),routes:[{path:'/:pathMatch(.*)*',component:{template:'<div />'}}]})
