@@ -15,6 +15,8 @@ import UvBrandLogo from './components/UvBrandLogo.vue'
 import TaskPassport from './components/TaskPassport.vue'
 import './uv-operations.css'
 import './styles/motion.css'
+import { provideModuleEntryOwnership } from '@/features/route-motion/useModuleEntryMotion'
+provideModuleEntryOwnership()
 const w=provideUvWorkspace(), auth=useAuthStore(), route=useRoute()
 const motion=provideUvMotionPreference(()=>auth.currentUser?.id)
 const active=computed(()=>navigation.find(item=>route.path===UV_BASE+'/'+item.path)?.path??'')
@@ -33,7 +35,7 @@ onBeforeUnmount(()=>{menuVersion++;menu.value?.close()})
 </script>
 <template>
   <div class="uv-workspace" :data-uv-motion="motion.attribute.value" data-yl-help="uv-operations.overview">
-    <header class="uv-topbar"><RouterLink class="uv-brand" :to="{path:'/modules/production',query:{factory:'huakang-a'}}"><UvBrandLogo/><strong>Royal Regent Nexus</strong></RouterLink><span class="uv-topbar-divider"/><span class="uv-factory">华康 A <span>/ 生产部</span></span><h1>UV打印管理</h1><div class="uv-topbar-end"><span v-if="w.meta.value?.data_mode==='synthetic'" class="uv-badge synthetic">合成验收 · 非现场数据</span><span class="uv-avatar">{{auth.currentUser?.display_name?.slice(0,1)??'用'}}</span><span class="uv-user-name">{{auth.currentUser?.display_name}}</span></div></header>
+    <header class="uv-topbar"><RouterLink class="uv-brand" :to="{path:'/modules/production',query:{factory:'huakang-a'}}"><UvBrandLogo/><strong>Royal Regent Nexus</strong></RouterLink><span class="uv-topbar-divider"/><span class="uv-factory">华康 A <span>/ 生产部</span></span><h1 data-route-motion-anchor>UV打印管理</h1><div class="uv-topbar-end"><span v-if="w.meta.value?.data_mode==='synthetic'" class="uv-badge synthetic">合成验收 · 非现场数据</span><span class="uv-avatar">{{auth.currentUser?.display_name?.slice(0,1)??'用'}}</span><span class="uv-user-name">{{auth.currentUser?.display_name}}</span></div></header>
     <aside class="uv-nav"><nav ref="nav" class="uv-indicator-host" aria-label="UV 工作区导航"><span class="uv-active-plate" :style="indicator.style" aria-hidden="true"/><RouterLink v-for="item in navigation" :key="item.path" :aria-label="item.title" :title="item.title" :to="{path:UV_BASE+'/'+item.path,query:{factory:'huakang-a'}}" :class="{active:active===item.path}"><component :is="item.icon" :size="20" aria-hidden="true"/><span>{{item.title}}</span></RouterLink></nav><div class="uv-nav-bottom"><RouterLink :to="{path:'/modules/production',query:{factory:'huakang-a'}}"><ArrowLeft :size="18" aria-hidden="true"/>返回生产部</RouterLink><div class="uv-nav-hint"><CircleHelp :size="16" aria-hidden="true"/><span>现场采集只读<br>产量以确认核数为准</span></div></div></aside>
     <main class="uv-main" :class="{'has-passport':w.selectedTaskId.value}" tabindex="-1" data-uv-focus-fallback>
       <div v-if="w.offline.value&&w.ready.value" class="uv-connection-banner" role="status"><WifiOff :size="17" aria-hidden="true"/>连接中断，保留最后一次快照 · {{displayTime(w.meta.value?.as_of)}}<button :disabled="w.refreshing.value" :aria-busy="w.refreshing.value" @click="w.refresh">{{w.refreshing.value?'正在重连…':'重新连接'}}</button></div>

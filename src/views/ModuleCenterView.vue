@@ -27,6 +27,8 @@ import { useHomePresentation, canPreviewModule } from '@/composables/useHomePres
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { useRouteEntryOwned, useRouteEntryOwnership } from '@/features/route-motion/useModuleEntryMotion'
+const routeEntryOwned = useRouteEntryOwnership()
 
 const route = useRoute()
 const appStore = useAppStore()
@@ -64,7 +66,7 @@ const containerRef = ref<HTMLElement | null>(null)
 const searchRef = ref<HTMLInputElement | null>(null)
 const opener = ref<HTMLElement | null>(null)
 const narrow = ref(false)
-const revealing = ref(true)
+const revealing = ref(!useRouteEntryOwned())
 const searchRequest = inject(homeSearchKey, ref(0))
 let resizeObserver: ResizeObserver | undefined
 let revealTimer: ReturnType<typeof setTimeout> | undefined
@@ -103,7 +105,7 @@ watch(currentDepartmentId, (departmentId) => {
 
 <template>
   <div ref="containerRef" class="rrn-home-container">
-  <div data-yl-help="portal.overview" class="rrn-portal rrn-home app-page space-y-6" data-portal-ui="jade-v3" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-home-density="density" :data-department="currentDepartmentId" :style="portalRootStyle">
+  <div data-yl-help="portal.overview" class="rrn-portal rrn-home app-page space-y-6" data-portal-ui="jade-v3" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-route-entry-owned="routeEntryOwned || undefined" :data-home-density="density" :data-department="currentDepartmentId" :style="portalRootStyle">
     <PortalHero eyebrow="Department Workspace" :title="title" :description="departmentEntry.heroSubtitle" :motif="departmentPresentation.motif" pending-note="新增系统模块暂未接入">
       <template #artwork><HomePrismArtwork :identity="currentDepartmentId" /></template>
       <template #actions><HomeAppearanceControl /><Button type="button" size="lg" disabled><Plus class="size-4" aria-hidden="true" />新增系统模块</Button></template>

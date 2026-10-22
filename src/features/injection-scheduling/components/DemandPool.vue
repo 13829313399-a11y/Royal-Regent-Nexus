@@ -10,6 +10,7 @@ import {
 import { dateText, numberText, type DataRow } from '../types';
 import { useInjectionViewState } from '../composables/useInjectionViewState';
 import InjEmptyState from './ui/InjEmptyState.vue';
+import { consumeModuleEntryOwnership } from '@/features/route-motion/useModuleEntryMotion';
 const props = defineProps<{
   rows: DataRow[];
   total: number;
@@ -51,7 +52,7 @@ onBeforeUnmount(() => {
   if (list.value && context === view.contextGeneration)
     view.scroll.pool = { top: list.value.scrollTop, left: 0 };
 });
-const initialEntrance = !view.poolEntered;
+const initialEntrance = !consumeModuleEntryOwnership() && !view.poolEntered;
 const entered = new Set<string>();
 watch(
   () => props.rows.length,

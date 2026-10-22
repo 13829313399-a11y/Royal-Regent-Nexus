@@ -18,7 +18,7 @@ withDefaults(defineProps<{
           {{ eyebrow }}
         </span>
       </div>
-      <h1 class="text-[clamp(1.65rem,2.4vw,2.25rem)] font-semibold tracking-[-0.035em] text-slate-950">
+      <h1 data-route-motion-anchor class="text-[clamp(1.65rem,2.4vw,2.25rem)] font-semibold tracking-[-0.035em] text-slate-950">
         {{ title }}
       </h1>
       <p v-if="description" class="mt-2 max-w-3xl text-sm leading-6 text-slate-600">

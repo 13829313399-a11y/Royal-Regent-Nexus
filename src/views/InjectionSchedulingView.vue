@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { provideModuleEntryOwnership } from '@/features/route-motion/useModuleEntryMotion';
+const routeEntryOwned = provideModuleEntryOwnership();
 import { vInjDialog } from "@/features/injection-scheduling/composables/injDialog";
 import { registerAssistantTarget } from '@/features/assistant/anchors';
 import { registerAssistantSelection } from '@/features/assistant/selection';
@@ -486,6 +488,7 @@ const templateLabels1: Record<string, string> = {
 <template>
   <main
     class="inj-workspace"
+    :data-route-entry-owned="routeEntryOwned || undefined"
     :class="{
       'inj-focus-mode': view.focusMode,
       'inj-no-motion': !motionAllowed,
@@ -503,7 +506,7 @@ const templateLabels1: Record<string, string> = {
         aria-label="返回生产模块"
         ><ArrowLeft
       /></RouterLink>
-      <h1>注塑排产中枢</h1>
+      <h1 data-route-motion-anchor>注塑排产中枢</h1>
       <select
         :value="store.factory || ''"
         aria-label="当前厂区"

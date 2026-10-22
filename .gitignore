@@ -75,6 +75,7 @@ backend/models/image-translation/
 !/edge/uv-printing-agent/README.md
 !/docs/uv-operations/*.md
 !/docs/uv-operations/frontend-motion/*.md
+!/docs/frontend/module-transitions/*.md
 !/docs/work-center/*.md
 !/deploy/three-d-printing/network/README.md
 !/services/three-d-printer-connector/README.md

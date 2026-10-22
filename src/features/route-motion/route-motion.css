@@ -1,0 +1,7 @@
+/* No layout box or containing block around full-page business roots. */
+.rr-route-fullpage { display: contents; }
+.rr-route-motion { position: fixed; inset: 0; z-index: 25; pointer-events: none; }
+.rr-route-motion__badge { position: absolute; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 13px; background: var(--route-accent-soft); pointer-events: none; opacity: 0; will-change: transform, opacity; }
+.rr-route-motion__badge > svg { position: relative; }
+.rr-route-motion__surface { position: absolute; inset: -10px; border-radius: 18px; background: var(--route-accent-soft); pointer-events: none; opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .rr-route-motion { display: none; } }
