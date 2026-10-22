@@ -18,6 +18,7 @@ const lastMonth=`${number===1?year!-1:year}-${String(number===1?12:number!-1).pa
 const month=ref(lastMonth),rights=ref<Access>(),record=ref<PeriodRecord>(),basis=ref<PeriodBasis>(),draft=ref<PeriodSave>()
 const reason=ref(''),error=ref(''),notice=ref(''),busy=ref(false),pending=ref<{action:PeriodAction;body:PeriodSave|PeriodDecision}>()
 const detailQuery=ref('')
+const failedRead=ref<{month:string;eventId?:string}>()
 const actionLabels:Record<PeriodAction,string>={save:'保存编制',submit:'提交复核',return:'退回',lock:'复核锁月',reopen:'反结'}
 const labels:Record<PeriodState,string>={open:'未编制',draft:'草稿',submitted:'待会计复核',returned:'已退回',locked:'已锁月',reopened:'已反结'}
 let generation=0,alive=true
@@ -25,7 +26,7 @@ const readable=computed(()=>!!rights.value?.enabled&&!!rights.value?.periods_sch
 const historical=computed(()=>!!record.value?.history.length&&record.value.event_id!==record.value.history.at(-1)?.id)
 const can=(action:string)=>readable.value&&!!rights.value?.permissions.includes(action)
 function issueLink(item:PeriodIssue){return cuttingDestination(item.line_id!,month.value,item.workspace??(item.code==='price'?'costs':'materials'),item.document_id?'report':item.issue_id?'issue':item.task_id?'task':undefined,item.document_id||item.issue_id||item.task_id)}
-function clearEvidence(){record.value=undefined;basis.value=undefined}
+function clearEvidence(){record.value=undefined;basis.value=undefined;failedRead.value=undefined}
 watch([()=>props.access,()=>props.accessLoading],([value,loading])=>{
   generation++;rights.value=value
   // Parent order searches briefly unset access. Hide sensitive views while checking,
@@ -59,11 +60,15 @@ window.addEventListener('beforeunload',beforeUnload)
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',beforeUnload)})
 async function fresh(ticket=generation){const access=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=access;if(!readable.value){clearEvidence();error.value='月结迁移或成本查询权限尚未就绪。';return false}return true}
 function failed(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status?:number}}).response?.status;if(status===401||status===403){rights.value=undefined;clearEvidence()}return status}
-async function load(eventId?:string){
+async function load(eventId?:string,targetMonth=month.value){
   if(!canLeave())return
-  discardInputs();clearEvidence();error.value='';notice.value='';busy.value=true;const ticket=++generation
-  try{if(!await fresh()||ticket!==generation)return;const result=await periodApi.read(month.value,eventId);if(alive&&ticket===generation)record.value=result}catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
+  const target={month:targetMonth,eventId}
+  discardInputs();clearEvidence();month.value=targetMonth;error.value='';notice.value='';busy.value=true;const ticket=++generation
+  try{if(!await fresh(ticket))return;const result=await periodApi.read(target.month,target.eventId);if(alive&&ticket===generation)record.value=result}
+  catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}
+  finally{if(alive)busy.value=false}
 }
+function retryRead(){const target=failedRead.value;if(target)void load(target.eventId,target.month)}
 async function openPeriod(targetMonth:string,eventId?:string){
   if(!canLeave())return false
   discardInputs();month.value=targetMonth
@@ -73,11 +78,12 @@ async function openPeriod(targetMonth:string,eventId?:string){
 function activateMonth(target:string){
   if(month.value===target)return
   if(draft.value||pending.value||busy.value||reason.value.trim()){notice.value=`当前 ${month.value} 的填写或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。`;return}
-  month.value=target;generation++;record.value=undefined;basis.value=undefined
+  month.value=target;generation++;clearEvidence()
 }
 defineExpose({openPeriod,activateMonth})
 async function edit(){
   if(busy.value||pending.value||historical.value)return
+  failedRead.value=undefined
   busy.value=true;error.value='';const ticket=++generation,old=draft.value??record.value?.data?.input
   try{if(!await fresh()||ticket!==generation)return;const value=await periodApi.basis(month.value);if(!alive||ticket!==generation)return
     basis.value=value
@@ -123,6 +129,7 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
     <p v-if="!access?.enabled||!access.periods_schema_ready">内部月结需完成 0163 迁移及独立岗位授权后启用。</p>
     <p v-else-if="!access.permissions.includes('cost_read')">内部月结含材料费用，需单独授予成本查询权限。</p>
     <template v-else>
+      <p v-if="failedRead" class="cutting-notice">读取未完成：{{failedRead.month}} · {{failedRead.eventId?'原历史版本':'原当前版本'}}。<Button variant="outline" :disabled="busy||!!pending" @click="retryRead">重试原月结记录</Button></p>
       <div class="order-toolbar"><label>月结月份<input type="month" min="2000-01" :max="lastMonth" :value="month" :disabled="busy||!!pending||!!draft" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取月结记录</Button></div>
       <template v-if="readable">
         <div v-if="draft&&!basis&&!pending" class="cutting-master-actions"><p>填写数量已保留，请重新读取依据后继续。</p><Button :disabled="busy||!can('period_prepare')" @click="edit">恢复填写并重新核对</Button><Button variant="outline" :disabled="busy" @click="discard">放弃填写</Button></div>

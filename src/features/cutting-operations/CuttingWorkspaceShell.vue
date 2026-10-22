@@ -19,6 +19,7 @@ const main=ref<HTMLElement>()
 watch(()=>route.path,()=>main.value?.scrollTo?.({top:0,left:0}),{flush:'post'})
 const logoUrl = '/brand/huadeng_group_dynamic_logo_topbar.svg'
 const samplesAllowed = ref(false)
+const samplePermissions = ref<string[]>([])
 const validFactory = computed(() => isCuttingFactory(route.query.factory))
 const icons = { LayoutDashboard, History, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator }
 const currentTitle = computed(() => CUTTING_WORKSPACES.find(w => route.path.endsWith(`/${w.path}`))?.title ?? '裁床部')
@@ -32,6 +33,7 @@ async function revalidate() {
   const ticket = ++accessGeneration
   verifying.value = true; authorizationError.value = ''
   samplesAllowed.value = false
+  samplePermissions.value = []
   try {
     const rights = await cuttingApi.access()
     const current = fingerprint(rights)
@@ -39,6 +41,7 @@ async function revalidate() {
     if (accessFingerprint !== undefined && current !== accessFingerprint) authorizationEpoch.value++
     accessFingerprint = current; denied.value = false
     samplesAllowed.value = rights.enabled && rights.permissions.includes('read')
+    samplePermissions.value = [...rights.permissions]
   } catch (error) {
     if (!alive || ticket !== accessGeneration) return
     const status = (error as { response?: { status?: number } }).response?.status
@@ -71,7 +74,7 @@ onBeforeUnmount(() => {
   <div v-if="validFactory" class="cutting-shell">
     <a class="cutting-skip" href="#cutting-main">跳到工作区内容</a>
     <header class="cutting-header">
-      <CuttingAcceptanceNotice :show-samples="samplesAllowed" />
+      <CuttingAcceptanceNotice :show-samples="samplesAllowed" :permissions="samplePermissions" />
       <RouterLink :to="productionRoute" class="cutting-brand" aria-label="裁床部，返回华康 C 生产部">
         <img :src="logoUrl" alt="华登集团" />
         <span><strong>裁床部</strong><small>华康 C · 生产管理</small></span>
