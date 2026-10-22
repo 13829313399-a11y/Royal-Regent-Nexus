@@ -50,8 +50,12 @@ describe('isolated acceptance navigation',()=>{
     vi.stubGlobal('fetch',fetch)
     const view=mount(Notice,{props:{showSamples:true,permissions:['read']},global:{plugins:[router]}});await flushPromises()
     expect(view.text()).toContain('裁床主管、复核会计');expect(view.text()).toContain('旧冻结版本保留')
+    expect(view.text()).toContain('查看条件：裁床工作区查询、材料费用查询')
+    expect(view.text()).toContain('当前账号缺少：材料费用查询')
+    expect(view.text()).toContain('具备查看条件不代表可以办理')
+    expect(view.text()).toContain('负责办理：裁床主管编制提交；会计独立复核锁月')
     expect(view.text()).toContain('暂无查询权限');expect(view.find('a').exists()).toBe(false)
-    await view.setProps({permissions:['read','cost_read']});expect(view.get('a').attributes('href')).toContain('month=2026-09');expect(fetch).toHaveBeenCalledTimes(1);view.unmount()
+    await view.setProps({permissions:['read','cost_read']});expect(view.get('a').attributes('href')).toContain('month=2026-09');expect(view.text()).not.toContain('当前账号缺少');expect(fetch).toHaveBeenCalledTimes(1);view.unmount()
   })
   it('rejects mismatched releases, arbitrary destinations, repeated query values and invalid calendar dates',()=>{
     const value=(row:object,release='r')=>({release,links:[{label:'合成样本',workspace:'closing',...row}]})

@@ -64,6 +64,7 @@ defineProps<{workspace:CuttingWorkspace}>()
 const currentMonth = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const month=ref(currentMonth),query=ref(''),page=ref(1),total=ref(0),rows=ref<CuttingOrder[]>([])
 const access=ref<Access>(),selected=ref<CuttingOrder>(),result=ref<ClosingPreview>(),loading=ref(false),error=ref('')
+const accessUnavailable=ref(false)
 const paymentPanel=ref<InstanceType<typeof CuttingPayments>>()
 async function openPayment(targetMonth:string,id:string,eventId?:string){await openMonthly('payment',targetMonth,id,eventId)}
 const settlementPanel=ref<InstanceType<typeof CuttingSettlement>>()
@@ -78,7 +79,7 @@ async function load(nextPage=1,followLocation=false,apply=false){
   if(apply){appliedQuery.value=query.value;nextPage=1}
   const target=followLocation?location.value:undefined
   if(target?.month)month.value=target.month
-  const ticket=++generation;result.value=undefined;selected.value=undefined;rows.value=[];access.value=undefined;loading.value=true;error.value=''
+  const ticket=++generation;result.value=undefined;selected.value=undefined;rows.value=[];access.value=undefined;accessUnavailable.value=false;loading.value=true;error.value=''
   try{
     const rights=await cuttingApi.access();if(!alive||ticket!==generation)return;access.value=rights
     if(!ready(rights))return
@@ -90,18 +91,18 @@ async function load(nextPage=1,followLocation=false,apply=false){
     }
     const response=await ordersApi.list(nextPage,appliedQuery.value)
     if(alive&&ticket===generation){rows.value=response.data;page.value=response.page;total.value=response.total}
-  }catch(e){if(alive&&ticket===generation){access.value=undefined;error.value=errorMessage(e)}}
+  }catch(e){if(alive&&ticket===generation){const status=(e as {response?:{status?:number}}).response?.status;accessUnavailable.value=status!==401&&status!==403;access.value=undefined;error.value=errorMessage(e)}}
   finally{if(alive&&ticket===generation)loading.value=false}
 }
 async function preview(order=selected.value){
   if(!order)return
-  const ticket=++generation,requestedMonth=month.value;result.value=undefined;selected.value=order;loading.value=true;error.value=''
+  const ticket=++generation,requestedMonth=month.value;result.value=undefined;selected.value=order;accessUnavailable.value=false;loading.value=true;error.value=''
   try{
     const rights=await cuttingApi.access();if(!alive||ticket!==generation)return;access.value=rights
     if(!ready(rights)){rows.value=[];return}
     const response=await closingApi.read(order.line_id,requestedMonth,rights.permissions.includes('cost_read'))
     if(alive&&ticket===generation)result.value=response
-  }catch(e){if(alive&&ticket===generation){result.value=undefined;rows.value=[];access.value=undefined;error.value=errorMessage(e)}}
+  }catch(e){if(alive&&ticket===generation){const status=(e as {response?:{status?:number}}).response?.status;accessUnavailable.value=status!==401&&status!==403;result.value=undefined;rows.value=[];access.value=undefined;error.value=errorMessage(e)}}
   finally{if(alive&&ticket===generation)loading.value=false}
 }
 onMounted(()=>void loadLocation())
@@ -114,9 +115,9 @@ onMounted(()=>void loadLocation())
     <p class="cutting-notice">内部材料月结与外发加工费结算分别办理；下方订单预览提供实时核对，尚未冻结或锁月。付款登记与核销在下方独立办理，不操作银行。</p>
     <CuttingMonthlyOverview v-model:month="month" v-if="access?.enabled" v-show="closingView==='overview'||closingView==='exports'" :access="access" :exports-only="closingView==='exports'" @open="openMonthly" />
     <div v-show="closingView==='opening'"><CuttingCutover :access="access" :access-loading="loading" @payment="openPayment" @settlement="openSettlement" /></div>
-    <div v-show="closingView==='period'"><CuttingPeriodClosing ref="periodPanel" :access="access" :access-loading="loading" /></div>
-    <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" @payment="openPayment" /></div>
-    <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" @settlement="openSettlement" /></div>
+    <div v-show="closingView==='period'"><CuttingPeriodClosing ref="periodPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" /></div>
+    <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" @payment="openPayment" /></div>
+    <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" @settlement="openSettlement" /></div>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p>
     <Button v-if="error" variant="outline" :disabled="loading" @click="retryWorkspace">重新读取月结工作区</Button>
     <p v-if="loading" role="status">正在读取月度核对…</p>

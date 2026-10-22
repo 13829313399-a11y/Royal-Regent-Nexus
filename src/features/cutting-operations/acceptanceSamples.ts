@@ -2,7 +2,17 @@ import { CUTTING_BASE, CUTTING_FACTORY, CUTTING_WORKSPACES } from './navigation'
 
 export const ACCEPTANCE_GROUPS = ['生产与物料', '月结与财务', '操作追溯'] as const
 const roleLabels = { readers:'已授权裁床岗位', clerk:'裁床文员', supervisor:'裁床主管', engineering:'工程岗位', procurement:'采购岗位', warehouse:'布料仓岗位', registrar:'登记会计', reviewer:'复核会计' }
-const readablePermissions = ['read', 'cost_read', 'settlement_read', 'payment_read']
+export const acceptancePermissionLabels = { read:'裁床工作区查询', cost_read:'材料费用查询', settlement_read:'外发结算查询', payment_read:'付款登记查询' }
+const readablePermissions = Object.keys(acceptancePermissionLabels)
+function handling(workspace:unknown,view:unknown) {
+  if(workspace==='reporting')return '裁床文员负责填数、外发收回及交接；裁床主管负责外发验收。'
+  if(workspace==='planning')return '裁床主管编制和发布排期；实际条件按原流程核定。'
+  if(workspace==='materials')return '裁床文员办理申请、签收及耗用登记；布料仓核对实发，裁床主管抽查复核。'
+  if(workspace==='closing'&&view==='period')return '裁床主管编制提交；会计独立复核锁月，反结另行授权。'
+  if(workspace==='closing'&&view==='settlement')return '裁床主管确认单价、编制对账及登记外厂确认凭据；会计独立复核应付。'
+  if(workspace==='closing'&&view==='payment')return '登记会计登记及分配核销；另一名会计独立复核，冲销另行授权。'
+  return '本入口仅供查询核对；需要办理时，进入原单并按具体操作授权执行。'
+}
 
 // Local acceptance metadata is navigation only; every destination retains its own authorization.
 export function acceptanceSamples(value: unknown, release: string) {
@@ -28,6 +38,6 @@ export function acceptanceSamples(value: unknown, release: string) {
       if (key === 'day' && (!/^\d{4}-\d{2}-\d{2}$/.test(entry) || !Number.isFinite(Date.parse(entry)) || new Date(entry).toISOString().slice(0, 10) !== entry)) throw new Error('样本日期无效')
       query[key] = entry
     }
-    return { label: row.label, group: group as typeof ACCEPTANCE_GROUPS[number], roles: roles.map(role => roleLabels[role as keyof typeof roleLabels]), expected, required: required as string[], to: { path: `${CUTTING_BASE}/${row.workspace}`, query } }
+    return { label: row.label, group: group as typeof ACCEPTANCE_GROUPS[number], roles: roles.map(role => roleLabels[role as keyof typeof roleLabels]), expected, required: required as (keyof typeof acceptancePermissionLabels)[], handling:handling(row.workspace,row.view), to: { path: `${CUTTING_BASE}/${row.workspace}`, query } }
   })
 }
