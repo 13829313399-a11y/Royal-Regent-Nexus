@@ -8,10 +8,12 @@ import { CUTTING_FACTORY } from './navigation'
 import { periodApi, type PeriodAction, type PeriodBasis, type PeriodRecord, type PeriodSave, type PeriodDecision, type PeriodState, type PeriodIssue } from './periodApi'
 import CuttingPeriodReview from './CuttingPeriodReview.vue'
 import CuttingReportExport from './CuttingReportExport.vue'
+import CuttingReadTarget from './CuttingReadTarget.vue'
 import { periodMatches, periodOrderLabel } from './periodDisplay'
 import { cuttingDestination } from './location'
 
-const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean}>()
+const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean;navigationContext?:number}>()
+const emit=defineEmits<{restored:[month:string,context:number|undefined]}>()
 const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const [year,number]=today.split('-').map(Number)
 const lastMonth=`${number===1?year!-1:year}-${String(number===1?12:number!-1).padStart(2,'0')}`
@@ -60,15 +62,15 @@ window.addEventListener('beforeunload',beforeUnload)
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',beforeUnload)})
 async function fresh(ticket=generation){const access=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=access;if(!readable.value){clearEvidence();error.value='月结迁移或成本查询权限尚未就绪。';return false}return true}
 function failed(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status?:number}}).response?.status;if(status===401||status===403){rights.value=undefined;clearEvidence()}return status}
-async function load(eventId?:string,targetMonth=month.value){
+async function load(eventId?:string,targetMonth=month.value,onRead?:()=>void){
   if(!canLeave())return
   const target={month:targetMonth,eventId}
   discardInputs();clearEvidence();month.value=targetMonth;error.value='';notice.value='';failedRead.value=target;busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return;const result=await periodApi.read(target.month,target.eventId);if(alive&&ticket===generation){record.value=result;failedRead.value=undefined}}
+  try{if(!await fresh(ticket))return;const result=await periodApi.read(target.month,target.eventId);if(alive&&ticket===generation){record.value=result;failedRead.value=undefined;onRead?.()}}
   catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}
   finally{if(alive&&ticket===generation)busy.value=false}
 }
-function retryRead(){const target=failedRead.value;if(target)void load(target.eventId,target.month)}
+function retryRead(){const target=failedRead.value,context=props.navigationContext;if(target)void load(target.eventId,target.month,()=>emit('restored',target.month,context))}
 async function openPeriod(targetMonth:string,eventId?:string){
   if(!canLeave())return false
   discardInputs();month.value=targetMonth
@@ -129,7 +131,7 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
     <p v-if="!access?.enabled||!access.periods_schema_ready">内部月结需完成 0163 迁移及独立岗位授权后启用。</p>
     <p v-else-if="!access.permissions.includes('cost_read')">内部月结含材料费用，需单独授予成本查询权限。</p>
     <template v-else>
-      <p v-if="failedRead" class="cutting-notice cutting-read-target"><span>读取未完成：{{failedRead.month}} · 内部月结</span><span>{{failedRead.eventId?`历史版本：${failedRead.eventId}`:'原当前版本'}}</span><Button variant="outline" :disabled="busy||!!pending||!readable" @click="retryRead">重试原月结记录</Button></p>
+      <CuttingReadTarget v-if="failedRead" :target="failedRead" label="内部月结" retry-label="重试原月结记录" :disabled="busy||!!pending" :readable="readable" @retry="retryRead" />
       <div class="order-toolbar"><label>月结月份<input type="month" min="2000-01" :max="lastMonth" :value="month" :disabled="busy||!!pending||!!draft" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取月结记录</Button></div>
       <template v-if="readable">
         <div v-if="draft&&!basis&&!pending" class="cutting-master-actions"><p>填写数量已保留，请重新读取依据后继续。</p><Button :disabled="busy||!can('period_prepare')" @click="edit">恢复填写并重新核对</Button><Button variant="outline" :disabled="busy" @click="discard">放弃填写</Button></div>
