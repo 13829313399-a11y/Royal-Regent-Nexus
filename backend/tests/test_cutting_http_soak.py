@@ -85,6 +85,13 @@ class Diagnostics:
         self.origin = perf_counter()
         self.patches = ExitStack()
         from app.services import cutting_ops, cutting_payments, cutting_exports, cutting_workspace
+        try:
+            from app.services import cutting_sqlite_queue
+        except ImportError:  # Retained frozen pre-admission releases.
+            cutting_sqlite_queue = None
+        if cutting_sqlite_queue is not None:
+            self.patches.enter_context(patch.object(cutting_sqlite_queue, 'reserve',
+                self.tracked(cutting_sqlite_queue.reserve, 'cutting_sqlite_queue.reserve')))
         for module, names in [(cutting_ops, ['command', 'payment_command']),
                 (cutting_payments, ['basis', 'preview', 'read', 'execute', 'balances']),
                 (cutting_exports, ['capture', 'source_revision', 'package_isolated']),
@@ -124,7 +131,10 @@ class Diagnostics:
             try:
                 return function(*args, **kwargs)
             finally:
-                stats['phases'].append(dict(name=name, start=began-self.origin, end=perf_counter()-self.origin))
+                ended = perf_counter()
+                stats['phases'].append(dict(name=name, start=began-self.origin, end=ended-self.origin))
+                if name == 'cutting_sqlite_queue.reserve':
+                    stats['admission_seconds'] = stats.get('admission_seconds', 0.)+ended-began
                 stats['phase'] = previous
         return wrapped
 

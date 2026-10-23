@@ -28,6 +28,7 @@ def diagnostics_summary(diagnostic, samples):
     measured = [r for r in diagnostic['requests'] if r['request_id'] in retries]
     assert retries and {r['request_id'] for r in measured} == retries, 'Missing payment retry diagnostics'
     assert all(r['lock_seconds'] == 0 for r in measured), 'Committed payment retry reserved the writer'
+    assert all(r.get('admission_seconds',0.) == 0 for r in measured), 'Committed payment retry entered writer admission'
     phases = {}
     for span in diagnostic['lock_spans']:
         group = phases.setdefault(span['phase'], dict(count=0, hold_seconds=0., max_hold_seconds=0., max_wait_seconds=0.))
@@ -36,6 +37,8 @@ def diagnostics_summary(diagnostic, samples):
         group['max_hold_seconds'] = max(group['max_hold_seconds'], span['hold_seconds'])
         group['max_wait_seconds'] = max(group['max_wait_seconds'], span['wait_seconds'])
     return dict(payment_retries=len(measured), payment_retry_write_lock_seconds=0, phases=phases,
+                total_admission_seconds=sum(r.get('admission_seconds',0.) for r in diagnostic['requests']),
+                max_request_admission_seconds=max((r.get('admission_seconds',0.) for r in diagnostic['requests']),default=0.),
                 boundary='Lock hold ends at connection return; upper bound, not exact DBAPI release instant')
 
 
@@ -54,7 +57,7 @@ def seed_file(path, *, root=ROOT):
     return path
 
 
-def run_probe(database, seconds, report):
+def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2):
     # Defensive environment fence before importing any app/test package.
     os.environ.update(DATABASE_URL='sqlite://', SEED_DEFAULT_ACCOUNTS='false')
     sys.path[:0]=[str(ROOT/'backend'),str(ROOT/'backend/tests')]
@@ -68,7 +71,7 @@ def run_probe(database, seconds, report):
     samples=[];failures=[];payments=[]
     abort=Event();registrar_done=Event();barrier=Barrier(10,timeout=30);reviews=Queue(maxsize=1)
     report.update(samples=samples,failures=failures,payment_documents=payments)
-    with awake_system(), independent_http(database) as url, ExitStack() as stack:
+    with awake_system(), (server_context or independent_http)(database) as url, ExitStack() as stack:
         sessions=[stack.enter_context(httpx.Client(base_url=url,trust_env=False,timeout=30)) for _ in range(10)]
         for i,session in enumerate(sessions):login_http(session,'clerk' if i<2 else 'registrar' if i==2 else 'reviewer')
         def read(path,**params):
@@ -114,7 +117,7 @@ def run_probe(database, seconds, report):
                 try:
                     response=session.request(method,base+path,headers={'X-Test-Request-ID':identifier},**kwargs)
                     status=response.status_code;size=len(response.content)
-                    assert status==200,f'{name}: HTTP {status}'
+                    assert status==200,f'{name}: HTTP {status}; {response.text[:250]}'
                     return response
                 finally:
                     local.append(dict(endpoint=name,seconds=perf_counter()-began,status=status,bytes=size,request_id=identifier))
@@ -127,7 +130,7 @@ def run_probe(database, seconds, report):
                 current=get('payment_read','/payments/2026-12',document_id=identifier)
                 return post('payment_'+name,'/payments/'+name,dict(factory_id='huakang-c',operation_id=uuid4().hex,
                     expected_version=current['revision'],reason='Synthetic isolated lock-phase probe',document_id=identifier))
-            began=perf_counter()
+            began=perf_counter();last_progress=began
             try:
                 barrier.wait();began=perf_counter();deadline=began+seconds
                 while not abort.is_set() and (cycles==0 or perf_counter()<deadline or (index==3 and not registrar_done.is_set())):
@@ -171,7 +174,10 @@ def run_probe(database, seconds, report):
                         if fee:validate_settlement_workbook(content,statement)
                         else:validate_workbook(content,multiplier=100,expected_delivery=preview['delivery'])
                     cycles+=1
-                    if index!=3:abort.wait(.2)
+                    if index==0 and perf_counter()-last_progress>=30:
+                        print(f'Full probe {perf_counter()-began:.0f}s; first reader completed {cycles} cycles',flush=True)
+                        last_progress=perf_counter()
+                    if index!=3:abort.wait(cycle_pause)
             except Exception as error:
                 errors.append(dict(endpoint=active,type=type(error).__name__,detail=str(error)[:500]));abort.set()
             finally:

@@ -103,7 +103,7 @@ def main():
         'http-capacity': ['test_cutting_http_capacity.py', 'test_cutting_http_soak.py', 'test_cutting_receipt_projection.py',
                           'test_cutting_read_batch.py', 'test_cutting_export_gate.py', 'test_cutting_export_process.py',
                           'test_cutting_http_export_readback.py', 'test_cutting_http_process.py',
-                          'test_cutting_lock_phases.py'],
+                          'test_cutting_lock_phases.py', 'test_cutting_full_app_probe.py', 'test_cutting_sqlite_queue.py'],
         'financial-http-smoke': ['test_cutting_financial_soak.py'],
     }
     steps = [(name, [sys.executable, '-m', 'pytest', *['tests/'+test for test in tests], '-q',
