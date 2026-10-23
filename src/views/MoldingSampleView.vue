@@ -6287,11 +6287,13 @@ onUnmounted(() => {
     />
   </main>
 
-  <MoldingSampleEngineeringPrintDocument
-    class="hidden"
-    data-testid="molding-sample-print-area"
-    :records="printableRecords"
-    :material-prices="rawMaterialPriceList"
-    :can-view-cost="canViewRecordCost"
-  />
+  <Teleport to="body">
+    <MoldingSampleEngineeringPrintDocument
+      class="hidden"
+      data-testid="molding-sample-print-area"
+      :records="printableRecords"
+      :material-prices="rawMaterialPriceList"
+      :can-view-cost="canViewRecordCost"
+    />
+  </Teleport>
 </template>
