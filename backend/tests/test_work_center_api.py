@@ -211,6 +211,21 @@ def test_quote_batch_reviewer_version_and_v2_nonroot(monkeypatch):
             assert data["summary"]["actionable_total"] == 1
             assert data["health"]["status"] == "partial"
             assert data["health"]["issues"] == [{"module": "internal_quote", "reason": "source_inconsistent", "count": 1}]
+            verification = svc.snapshot(db, reviewer, view="verification")
+            assert verification["query"]["filtered_total"] == 1
+            item = verification["items"][0]
+            assert item["reference_label"] == "v3-1" and not item["can_act_now"]
+            assert item["verification_state"] == "unverified"
+            assert "整批产品" in item["unavailable_reason"]
+            assert item["actions"][0]["label"] == "查看源单据"
+            assert svc.snapshot(db, actor(), view="verification")["items"] == []
+            assert svc.snapshot(db, reviewer, view="verification", factory_scope="huakang-b")["items"] == []
+            assert svc.snapshot(db, reviewer, view="verification", module="molding")["items"] == []
+            assert svc.snapshot(db, reviewer, view="verification", q="not-present")["items"] == []
+            db.get(model.InternalQuote, "v3-1").formula_version = "rr2-2026-v7"; db.commit()
+            item = svc.snapshot(db, reviewer, view="verification")["items"][0]
+            assert "旧版计算公式" in item["unavailable_reason"]
+            assert item["details"] == [{"label": "单据公式版本", "value": "rr2-2026-v7"}, {"label": "当前公式版本", "value": formula}]
             for pos in (1, 2):
                 q = db.get(model.InternalQuote, f"v3-{pos}"); q.status = "rejected"; q.final_release_status = "rejected"
                 section = db.get(model.InternalQuoteSection, f"s{pos}")
@@ -218,6 +233,7 @@ def test_quote_batch_reviewer_version_and_v2_nonroot(monkeypatch):
             db.commit()
             editor = actor(permissions=("internal_quote:read", "internal_quote:engineering_edit"))
             assert svc.snapshot(db, editor)["summary"]["actionable_total"] == 2
+            assert svc.snapshot(db, reviewer, view="verification")["items"] == []
 
 
 def test_reconcile_twice_snapshot_read_only_savepoint_events_cursor(monkeypatch):

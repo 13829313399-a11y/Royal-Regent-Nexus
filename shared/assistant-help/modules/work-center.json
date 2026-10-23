@@ -12,7 +12,7 @@
     "anchor_id": "work-center.overview",
     "field_keys": [],
     "summary": "阅读状态与业务办理状态是两件事。",
-    "content": "可处理责任是 task、can_act=true，且业务状态为 open 或 in_progress。标记已读不会完成审批、生产或收货。有效稍后提醒还需时间未到且关注版本一致；当前聚焦排除这些有效稍后项，所以 focus_total 与 actionable_total 可不同。筛选后的 filtered_total 与总览可能范围不同。health=partial 表示来源不完整，不能据此说没有待办。\n岗位更新的管理员待办只在完整管理范围内显示，点击后在人员与权限工作台核对；员工结果知会指向“我的岗位与权限”。已读、归档和稍后提醒不批准岗位或改变权限。通知暂未投递不会回滚已经确认的身份与权限；业务办理回执和源请求是结果依据。\n整合权限界面启用时，账号和岗位待办跳转到“人员与权限”的按类型办理面板；仅查看不创建新的调整单。旧书签由兼容路由保留原目标。\n待审核的职位与权限调整也进入管理员待办，点击打开对应申请；审批完成、拒绝或取消后结束该待办。标记通知已读不会结束审核。注册和密码找回待办按完整人员与原申请范围筛选。",
+    "content": "可处理责任是 task、can_act=true，且业务状态为 open 或 in_progress。标记已读不会完成审批、生产或收货。有效稍后提醒还需时间未到且关注版本一致；当前聚焦排除这些有效稍后项，所以 focus_total 与 actionable_total 可不同。筛选后的 filtered_total 与总览可能范围不同。health=partial 需要区分来源同步失败、历史提醒缺少原单据和当前业务状态待核对。同步失败才提供重试；历史提醒不计入待办；当前业务异常可通过“待核对事项”定位源单据，不能把整个通知列表误报为无法同步。旧版报价需由原业务责任人核对公式、重算并重新提交，通知中心不修改审批状态。\n岗位更新的管理员待办只在完整管理范围内显示，点击后在人员与权限工作台核对；员工结果知会指向“我的岗位与权限”。已读、归档和稍后提醒不批准岗位或改变权限。通知暂未投递不会回滚已经确认的身份与权限；业务办理回执和源请求是结果依据。\n整合权限界面启用时，账号和岗位待办跳转到“人员与权限”的按类型办理面板；仅查看不创建新的调整单。旧书签由兼容路由保留原目标。\n待审核的职位与权限调整也进入管理员待办，点击打开对应申请；审批完成、拒绝或取消后结束该待办。标记通知已读不会结束审核。注册和密码找回待办按完整人员与原申请范围筛选。",
     "steps": [
       {
         "title": "区分总览范围",
@@ -40,12 +40,12 @@
       {
         "path": "backend/app/services/work_center/service.py",
         "symbol": "flags",
-        "sha256": "600100424e516fc7dfa80972e15c31e28a6b767859aca6f957609de1bc908464"
+        "sha256": "1cb4eeb7a13460a2a6347446633395eb3cddabd7822e52e050267a0d6486711d"
       },
       {
         "path": "src/views/NotificationCenterView.vue",
         "symbol": "nc-filters",
-        "sha256": "9f67fd7ceecd9c7e92d38f2de9a67ba6c3ede00995783a6bb4fbe417438b3029"
+        "sha256": "c9c59a314c2c04150af505054a52868072bdad5c0116443175fe1cb696b739be"
       },
       {
         "path": "backend/app/services/work_center/registry.py",
@@ -58,8 +58,8 @@
         "sha256": "7dad8e19f96d495f6f79a214bb9a7f1b5e1a8114941de738f8525451a0422e68"
       }
     ],
-    "knowledge_version": "2026.10.14-iam-consolidation",
-    "verified_commit": "working-tree:iam-consolidation",
+    "knowledge_version": "2026.10.23-work-center-verification",
+    "verified_commit": "working-tree:work-center-verification",
     "status": "verified"
   }
 ]
