@@ -57,7 +57,7 @@ def seed_file(path, *, root=ROOT):
     return path
 
 
-def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2):
+def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2, production_write_orders=0):
     # Defensive environment fence before importing any app/test package.
     os.environ.update(DATABASE_URL='sqlite://', SEED_DEFAULT_ACCOUNTS='false')
     sys.path[:0]=[str(ROOT/'backend'),str(ROOT/'backend/tests')]
@@ -66,11 +66,12 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2)
     from test_cutting_http_soak import awake_system
     from test_cutting_http_capacity import login_http, endpoint_metrics, projection, validate_workbook
     from cutting_financial_capacity_fixture import validate_settlement_workbook, assert_payment_balances
+    from cutting_production_mix import ProductionMix, reconcile_totals
 
     base='/api/cutting-operations'
-    samples=[];failures=[];payments=[]
+    samples=[];failures=[];payments=[];payment_statements=[]
     abort=Event();registrar_done=Event();barrier=Barrier(10,timeout=30);reviews=Queue(maxsize=1)
-    report.update(samples=samples,failures=failures,payment_documents=payments)
+    report.update(samples=samples,failures=failures,payment_documents=payments,payment_statement_ids=payment_statements)
     with awake_system(), (server_context or independent_http)(database) as url, ExitStack() as stack:
         sessions=[stack.enter_context(httpx.Client(base_url=url,trust_env=False,timeout=30)) for _ in range(10)]
         for i,session in enumerate(sessions):login_http(session,'clerk' if i<2 else 'registrar' if i==2 else 'reviewer')
@@ -107,6 +108,9 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2)
             return rows
         inventory=all_rows('/workspace/inventory');costs=all_rows('/workspace/costs')
         assert len(inventory)==200 and len(costs)==100
+        mix = ProductionMix(read, inventory, costs, production_write_orders) if production_write_orders else None
+        if mix:
+            report['production_write_records'] = mix.records
         initial_basis=sessions[2].get(base+'/payment-basis',params={'factory_id':'huakang-c'}).json()
         baseline_revision=initial_basis['revision']
         def worker(index):
@@ -135,7 +139,10 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2)
                 barrier.wait();began=perf_counter();deadline=began+seconds
                 while not abort.is_set() and (cycles==0 or perf_counter()<deadline or (index==3 and not registrar_done.is_set())):
                     if index<2:
-                        get('clerk_inventory','/workspace/inventory')
+                        if mix:
+                            mix.write(index,cycles,get,post)
+                        else:
+                            get('clerk_inventory','/workspace/inventory')
                     elif index==2:
                         value=get('payment_basis','/payment-basis')
                         identifier=uuid4().hex
@@ -148,6 +155,7 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2)
                         done=Event();reviews.put((identifier,done),timeout=30)
                         while not done.wait(.1):assert not abort.is_set(),'Reviewer did not finish'
                         posted.append(identifier)
+                        payment_statements.append(body['allocations'][0]['settlement_id'])
                     elif index==3:
                         try:identifier,done=reviews.get(timeout=.25)
                         except Empty:
@@ -164,6 +172,7 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2)
                         for name,path,params in endpoints:
                             value=get(name,path,**params)
                             if name=='payments':assert_payment_balances(value,20,active=True)
+                            elif mix and name in {'inventory','costs'}:mix.validate_live(name,value,expected)
                             else:assert projection(name,value)==expected[name],name
                         fee=(cycles+index)%2==1;statement=statements[(cycles+index)%20]
                         body=dict(factory_id='huakang-c',kind='settlement',month='2026-10',
@@ -202,8 +211,16 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2)
         assert_payment_balances(read('/payments/2026-11'),20)
         assert read('/payments/2026-11')['totals']==initial_payments['totals']
         assert read('/payments/2026-12')['revision']==baseline_revision+4*len(payments)
-        assert all_rows('/workspace/inventory')==inventory
-        assert all_rows('/workspace/costs')==costs
+        final_inventory=all_rows('/workspace/inventory');final_costs=all_rows('/workspace/costs')
+        if mix:
+            report['production_reconciliation'] = mix.reconcile(read,final_inventory,final_costs,seconds)
+            reconcile_totals(read('/workspace/inventory'),final_inventory,read('/workspace/costs'),final_costs)
+            report['production_aggregate_headers_reconciled']=True
+            if seconds>=600:
+                assert len(set(payment_statements))==20, 'Incomplete rotating payment statement coverage'
+        else:
+            assert final_inventory==inventory
+            assert final_costs==costs
         preview=sessions[-1].post(base+'/exports/preview',json=period_body)
         assert preview.status_code==200
         exported=sessions[-1].post(base+'/exports/download',json=period_body|{'token':preview.json()['token']})
@@ -220,6 +237,8 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2)
         assert report['integrity']=='ok' and not report['foreign_key_errors']
         for identifier in payments:
             assert [row[0] for row in db.execute('SELECT action FROM cutting_ops_payment_events WHERE document_id=? ORDER BY version',(identifier,))]==['save','submit','confirm','reverse']
+        if mix:
+            report['production_persisted'] = mix.verify_persisted(db)
 
 
 def main():
