@@ -300,6 +300,22 @@ export interface OpeningInventoryOptions {
   dimension_unit: 'cm' | 'in'
   currency: string
 }
+export interface OpeningInventoryBatch {
+  batch_id: string; filename: string; imported_at: string; actor_name: string
+  row_count: number; reversed_count: number; status: 'ACTIVE' | 'PARTIAL' | 'REVERSED'
+  date_from: string; date_to: string
+}
+export interface OpeningBatchReversalPreview extends OpeningInventoryBatch {
+  factory_id: string; source_fingerprint: string; errors: string[]
+  totals: Array<{ unit: string; quantity: string }>
+  rows: Array<{ movement_id: string; customer_name: string; contract_no: string; item_no: string
+    packaging_type: string; paper_quality: string; specification: string; quantity: string
+    unit: string; unit_price: string; location: string; occurred_at: string }>
+}
+export interface OpeningBatchReversalResult {
+  factory_id: string; batch_id: string; reversed_count: number; status: 'REVERSED'
+  duplicate: boolean; movement_ids: string[]
+}
 export interface OpeningInventoryPreview {
   factory_id: string; original_filename: string; source_fingerprint: string
   row_count: number; skipped_count: number; missing_price_count: number
@@ -718,9 +734,9 @@ export const cartonProcurementApi = {
       { params: { factory_id: factoryId, ...filters } })
     return response.data
   },
-  async supplierPromiseNotices(factoryId: string, limit = 20) {
-    const response = await http.get<{ late: CartonSupplierPromiseLate[]; changes: CartonSupplierPromiseChange[]; acknowledged: string[] }>(
-      '/carton-procurement/supplier-promise-changes', { params: { factory_id: factoryId, limit } })
+  async supplierPromiseNotices(factoryId: string, limit = 20, offset = 0) {
+    const response = await http.get<{ late: CartonSupplierPromiseLate[]; changes: CartonSupplierPromiseChange[]; acknowledged: string[]; total: number; has_more: boolean }>(
+      '/carton-procurement/supplier-promise-changes', { params: { factory_id: factoryId, limit, offset } })
     return response.data
   },
   async acknowledgePromiseNotice(factoryId: string, key: string) {
@@ -1132,6 +1148,22 @@ export const cartonProcurementApi = {
     form.append('file', file)
     form.append('options', JSON.stringify(options))
     return (await http.post<OpeningInventoryPreview>('/carton-procurement/inventory/history-imports/preview', form, { params: { factory_id: factoryId }, headers: { 'Content-Type': 'multipart/form-data' } })).data
+  },
+  async listOpeningInventoryBatches(factoryId: string, offset = 0) {
+    return (await http.get<{ factory_id: string; total: number; items: OpeningInventoryBatch[] }>(
+      '/carton-procurement/inventory/history-imports/batches', { params: { factory_id: factoryId, limit: 20, offset } },
+    )).data
+  },
+  async previewOpeningBatchReversal(factoryId: string, batchId: string) {
+    return (await http.post<OpeningBatchReversalPreview>(
+      `/carton-procurement/inventory/history-imports/batches/${encodeURIComponent(batchId)}/reversal-preview`,
+      null, { params: { factory_id: factoryId } },
+    )).data
+  },
+  async reverseOpeningBatch(batchId: string, payload: { factory_id: string; request_id: string; expected_fingerprint: string; reason: string }) {
+    return (await http.post<OpeningBatchReversalResult>(
+      `/carton-procurement/inventory/history-imports/batches/${encodeURIComponent(batchId)}/reverse`, payload,
+    )).data
   },
   async uploadHistoryInventory(factoryId: string, file: File, options?: OpeningInventoryOptions, fingerprint?: string) {
     const form = new FormData()

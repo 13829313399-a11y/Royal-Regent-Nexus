@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 const { workspaceMock } = vi.hoisted(() => ({ workspaceMock: vi.fn() }))
@@ -17,7 +17,8 @@ const line = (overrides: Record<string, unknown> = {}) => ({
 
 function settlement(overrides: Record<string, unknown> = {}) {
   return {
-    factory_id: 'huaxing', supplier_id: 'SUP', supplier_name: '东康', period: '2026-10', currency: 'CNY',
+    factory_id: 'huaxing', supplier_id: 'SUP', supplier_name: '东康',
+    period: new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(0, 7), currency: 'CNY',
     source_fingerprint: 'fingerprint', status: 'OPEN', locked_at: null, locked_by: null, locked_totals: null, stale: false,
     submitted_at: null, submitted_by: null, supplier_confirmed_at: null, supplier_confirmed_by: null,
     disputed_reason: '', unlocked_reason: '', can_submit: false, can_lock: false, read_only: true,
@@ -29,6 +30,113 @@ function settlement(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => { workspaceMock.mockReset() })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void, reject!: (reason: Error) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+it.each(['factory', 'period', 'currency'] as const)('automatically reloads %s and immediately hides previous amounts', async field => {
+  workspaceMock.mockImplementationOnce(async (factory, period, currency) => settlement({ factory_id: factory, period, currency }))
+  const pending = deferred<ReturnType<typeof settlement>>()
+  workspaceMock.mockReturnValueOnce(pending.promise)
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
+  try {
+    await flushPromises()
+    expect(wrapper.text()).toContain('1,380.00')
+    const query = { factory: 'huaxing', period: wrapper.get<HTMLInputElement>('[aria-label="本月对账月份"]').element.value, currency: 'CNY' }
+    if (field === 'factory') { query.factory = 'huakang-a'; await wrapper.setProps({ factoryId: query.factory }) }
+    if (field === 'period') { query.period = '2025-12'; await wrapper.get('[aria-label="本月对账月份"]').setValue(query.period) }
+    if (field === 'currency') { query.currency = 'USD'; await wrapper.get('[aria-label="本月对账币种"]').setValue(query.currency) }
+    expect(workspaceMock).toHaveBeenLastCalledWith(query.factory, query.period, query.currency)
+    expect(wrapper.text()).not.toContain('1,380.00')
+    expect(wrapper.find('[aria-label="本月对账明细表"]').exists()).toBe(false)
+    expect(wrapper.get('[role="status"]').text()).toContain('正在汇总')
+    pending.resolve(settlement({ factory_id: query.factory, period: query.period, currency: query.currency,
+      totals: { ...settlement().totals, inbound: '42.00', net: '42.00' } }))
+    await flushPromises()
+    expect(wrapper.text()).toContain('42.00')
+    expect(wrapper.find('[role="status"]').exists()).toBe(false)
+  } finally { wrapper.unmount() }
+})
+
+it('ignores old successes and failures after a factory round trip', async () => {
+  const first = deferred<ReturnType<typeof settlement>>(), second = deferred<ReturnType<typeof settlement>>()
+  workspaceMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    .mockImplementationOnce(async (factory, period, currency) => settlement({ factory_id: factory, period, currency }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
+  try {
+    await wrapper.setProps({ factoryId: 'huakang-a' })
+    await wrapper.setProps({ factoryId: 'huaxing' }); await flushPromises()
+    expect(wrapper.text()).toContain('1,380.00')
+    second.resolve(settlement({ factory_id: 'huakang-a', supplier_name: 'OLD-FACTORY-DATA' }))
+    first.reject(new Error('OLD-FACTORY-ERROR')); await flushPromises()
+    expect(wrapper.text()).not.toContain('OLD-FACTORY')
+    expect(wrapper.text()).toContain('1,380.00')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  } finally { wrapper.unmount() }
+})
+
+it('keeps only the latest month and currency result when responses arrive out of order', async () => {
+  const old = deferred<ReturnType<typeof settlement>>()
+  workspaceMock.mockReturnValueOnce(old.promise)
+    .mockImplementation(async (factory, period, currency) => settlement({ factory_id: factory, period, currency,
+      totals: { ...settlement().totals, inbound: '25.00', net: '25.00' } }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
+  try {
+    await wrapper.get('[aria-label="本月对账月份"]').setValue('2025-12')
+    await wrapper.get('[aria-label="本月对账币种"]').setValue('USD'); await flushPromises()
+    old.resolve(settlement({ supplier_name: 'OLD-MONTH' })); await flushPromises()
+    expect(wrapper.text()).toContain('25.00 美元')
+    expect(wrapper.text()).not.toContain('1,380.00')
+    expect(wrapper.text()).not.toContain('OLD-MONTH')
+  } finally { wrapper.unmount() }
+})
+
+it('clears old figures when the current read fails and permits a read-only retry', async () => {
+  workspaceMock.mockImplementationOnce(async (factory, period, currency) => settlement({ factory_id: factory, period, currency }))
+    .mockRejectedValueOnce(new Error('月结读取失败'))
+    .mockImplementationOnce(async (factory, period, currency) => settlement({ factory_id: factory, period, currency }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
+  try {
+    await flushPromises()
+    await wrapper.get('[aria-label="本月对账币种"]').setValue('USD'); await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('月结读取失败')
+    expect(wrapper.text()).not.toContain('1,380.00')
+    expect(wrapper.text()).not.toContain('本月没有已验收送货或退货')
+    await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('1,380.00 美元')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  } finally { wrapper.unmount() }
+})
+
+it('does not request an empty month or retain its previous amount', async () => {
+  workspaceMock.mockImplementation(async (factory, period, currency) => settlement({ factory_id: factory, period, currency }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
+  try {
+    await flushPromises()
+    await wrapper.get('[aria-label="本月对账月份"]').setValue('')
+    expect(workspaceMock).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).not.toContain('1,380.00')
+    expect(wrapper.get('[role="alert"]').text()).toContain('有效的对账月份')
+    await wrapper.get('[aria-label="本月对账月份"]').setValue('2025-12'); await flushPromises()
+    expect(workspaceMock).toHaveBeenLastCalledWith('huaxing', '2025-12', 'CNY')
+  } finally { wrapper.unmount() }
+})
+
+it('reloads the same factory for a different viewer and rejects inconsistent response scopes', async () => {
+  workspaceMock.mockImplementationOnce(async (factory, period, currency) => settlement({ factory_id: factory, period, currency }))
+    .mockResolvedValueOnce(settlement({ factory_id: 'huakang-a' }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing', viewerKey: 'viewer-a' } })
+  try {
+    await flushPromises()
+    await wrapper.setProps({ viewerKey: 'viewer-b' }); await flushPromises()
+    expect(workspaceMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).not.toContain('1,380.00')
+    expect(wrapper.get('[role="alert"]').text()).toContain('不一致')
+  } finally { wrapper.unmount() }
+})
 
 it('shows a read-only month without submit, lock or unlock actions', async () => {
   workspaceMock.mockResolvedValue(settlement())
@@ -69,4 +177,16 @@ it('refreshes the read-only view without calling any write endpoint', async () =
   expect(workspaceMock).toHaveBeenCalledTimes(2)
   expect(wrapper.text()).toContain('本月应结')
   wrapper.unmount()
+})
+
+it('keeps the overview read-only even if historical metadata allows a workflow action', async () => {
+  workspaceMock.mockImplementation(async (factory, period, currency) => settlement({ factory_id: factory, period, currency,
+    status: 'CONFIRMED', can_submit: true, can_lock: true }))
+  const wrapper = mount(Component, { props: { factoryId: 'huaxing' } })
+  try {
+    await flushPromises()
+    await wrapper.get('[aria-label="本月对账币种"]').setValue('USD'); await flushPromises()
+    expect(wrapper.findAll('button').map(button => button.text())).toEqual(['刷新'])
+    expect(wrapper.text()).toContain('不提交、不确认、不锁定，也不生成应付')
+  } finally { wrapper.unmount() }
 })

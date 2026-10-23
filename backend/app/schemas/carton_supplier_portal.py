@@ -154,7 +154,7 @@ class CancellationAcknowledge(Payload):
 
 
 class RushAcknowledge(Payload):
-    """Only the factory scope is required; the order id comes from the route."""
+    expected_rush_version: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class ShipmentStatusChange(Payload):

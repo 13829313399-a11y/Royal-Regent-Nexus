@@ -3,14 +3,16 @@ import '@/features/carton-procurement/layout.css'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { cartonProcurementApi as api, type OpeningInventoryOptions, type OpeningInventoryPreview, type CartonHistoryInventoryImportResponse } from '@/api/cartonProcurement'
 import type { CartonLocation } from '@/api/cartonPositions'
+import CartonOpeningInventoryBatches from './CartonOpeningInventoryBatches.vue'
 import { getApiErrorMessage } from '@/lib/http'
 
 const props = defineProps<{
   factoryId: string; connected: boolean; canImport: boolean
   customers: Array<{ customer_name: string; customer_code: string; status?: string }>
-  locations: CartonLocation[]
+  locations: CartonLocation[]; viewerKey?: string
 }>()
-const emit = defineEmits<{ close: []; imported: [result: CartonHistoryInventoryImportResponse] }>()
+const emit = defineEmits<{ close: []; imported: [result: CartonHistoryInventoryImportResponse]; reversed: [] }>()
+const batchRefresh = ref(0)
 const options = reactive({ customer_name: '', warehouse: '', dimension_unit: '' as '' | 'cm' | 'in', currency: 'CNY' })
 const input = ref<HTMLInputElement | null>(null), file = ref<File | null>(null)
 const preview = ref<OpeningInventoryPreview | null>(null), busy = ref(false), saving = ref(false), reviewed = ref(false)
@@ -65,11 +67,13 @@ async function confirmImport() {
     success.value = `期初库存已入账 ${result.imported_count} 行，跳过 ${result.skipped_count} 行。`
     preview.value = null; reviewed.value = false; file.value = null
     emit('imported', result)
+    batchRefresh.value++
   } catch (e) {
     if (token === generation) { error.value = `${getApiErrorMessage(e)} 请重新预览，核实本次是否已入账。`; preview.value = null; reviewed.value = false }
   } finally { if (token === generation) saving.value = false }
 }
 function statusLabel(status: string) { return ({ READY: '待入账', DUPLICATE: '重复，跳过', ZERO: '零结余，跳过' } as Record<string, string>)[status] || status }
+function batchReversed() { invalidate(); emit('reversed') }
 </script>
 
 <template>
@@ -79,6 +83,7 @@ function statusLabel(status: string) { return ({ READY: '待入账', DUPLICATE: 
       <button type="button" :disabled="saving" class="rounded-lg border px-3 py-2 text-xs disabled:opacity-40" @click="emit('close')">返回库存台账</button>
     </header>
     <div class="space-y-5 p-5">
+      <CartonOpeningInventoryBatches :factory-id="factoryId" :viewer-key="viewerKey || ''" :connected="connected" :can-manage="canImport" :refresh-key="batchRefresh" @reversed="batchReversed" />
       <section class="rounded-xl bg-slate-50 p-4">
         <h3 class="mb-3 text-sm font-bold text-slate-800">1. 选择本批库存的共同资料</h3>
         <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
