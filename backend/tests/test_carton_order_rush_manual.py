@@ -31,7 +31,8 @@ def test_manual_plan_date_and_supplier_rush_acknowledgement(monkeypatch):
         assert marked.json()["rush"] is True and marked.json()["rush_acknowledged"] is False
 
         supplier_login(client)
-        acknowledged = client.post(PORTAL + f"/orders/{portal_order['id']}/rush-ack", json={"factory_id": "huaxing"})
+        current = next(row for row in client.get(PORTAL + "/workspace", params={"factory_id": "huaxing"}).json()["orders"] if row["id"] == portal_order["id"])
+        acknowledged = client.post(PORTAL + f"/orders/{portal_order['id']}/rush-ack", json={"factory_id": "huaxing", "expected_rush_version": current["rush_version"]})
         assert acknowledged.status_code == 200, acknowledged.text
         assert acknowledged.json()["rush_acknowledged"] is True
         workspace = client.get(PORTAL + "/workspace", params={"factory_id": "huaxing"}).json()

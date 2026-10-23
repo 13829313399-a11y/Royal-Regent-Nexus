@@ -502,7 +502,7 @@ def order_out(db, order, *, internal=False):
         planned_date=snapshot.get("after_due_date", ""), awaiting_issue=changed, lines=[],
         rush=bool(order.rush), rush_reason=order.rush_reason,
         rush_at=order.rush_at, rush_acknowledged=bool(order.rush and order.rush_ack_at),
-        rush_ack_at=order.rush_ack_at)
+        rush_ack_at=order.rush_ack_at, rush_version=rush_version(db, order))
     from app.services.carton_material_correction import records, blocked_lines
     result["material_corrections"] = records(db, order.factory_id, order.id)
     material_holds = blocked_lines(db, order.factory_id, ids)
@@ -573,17 +573,33 @@ def acknowledge_cancellation(db, user, order_id, payload: CancellationAcknowledg
     return order_out(db, order)
 
 
+def rush_version(db, order):
+    """Bind acknowledgement to immutable marking evidence, including same-second re-marks."""
+    if not order.rush:
+        return ""
+    marked = db.scalar(select(CartonAuditEvent.id).where(
+        CartonAuditEvent.factory_id == order.factory_id,
+        CartonAuditEvent.entity_type == "carton_order", CartonAuditEvent.entity_id == order.id,
+        CartonAuditEvent.event_type == "ORDER_RUSH_MARKED",
+    ).order_by(CartonAuditEvent.sequence.desc()).limit(1))
+    return hashlib.sha256(json.dumps([order.factory_id, order.id, marked, order.rush_at,
+        order.rush_reason, order.rush_by], ensure_ascii=False).encode()).hexdigest()
+
+
 def acknowledge_rush(db, user, order_id, payload: RushAcknowledge, *, commit=True):
     _lock_receipt_factory(db, payload.factory_id)
     supplier = supplier_access(db, user, payload.factory_id, "carton_supplier:approve")
     order = supplier_order(db, order_id, payload.factory_id, supplier.id)
     if not order.rush:
         raise HTTPException(409, "该订单当前不是急单，请刷新核对")
+    version = rush_version(db, order)
+    if payload.expected_rush_version != version:
+        raise HTTPException(409, "急单要求已变化，请刷新重看本次急单原因后再确认收到")
     if not order.rush_ack_at:
         order.rush_ack_at = now_text()
         order.rush_ack_by = user.id
         _audit(db, user, payload.factory_id, "SUPPLIER_RUSH_ACKNOWLEDGED", "carton_order", order.id,
-               {"rush_at": order.rush_at, "rush_reason": order.rush_reason})
+               {"rush_at": order.rush_at, "rush_reason": order.rush_reason, "rush_version": version})
     db.commit() if commit else db.flush()
     return order_out(db, order)
 

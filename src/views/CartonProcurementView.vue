@@ -483,7 +483,13 @@ const promiseAcks = ref<Set<string>>(new Set())
 const promiseChangeLoading = ref(false)
 const promiseChangeError = ref('')
 const promiseAcking = ref('')
+const promiseNoticeOffset = ref(0), promiseNoticeTotal = ref<number | null>(null), promiseNoticeMore = ref(false)
+const promiseNoticeCount = computed(() => promiseNoticeTotal.value ?? promiseNotices.value.length)
+const promiseNoticeContext = () => JSON.stringify([selectedFactoryId.value, authStore.currentUser?.id,
+  authStore.authorizationVersion, authStore.currentUser?.identity?.employment_epoch, canReadRegularCarton.value])
 let promiseChangeGeneration = 0
+let promiseNoticesDisposed = false
+onBeforeUnmount(() => { promiseNoticesDisposed = true; promiseChangeGeneration++ })
 interface PromiseNotice { key: string; orderNo: string; text: string; detail: string }
 const promiseNotices = computed<PromiseNotice[]>(() => {
   const items: PromiseNotice[] = []
@@ -507,45 +513,54 @@ const supplierNoticeChips = computed(() => {
     { label: '已读未回', value: stats.read },
     { label: '停止通知待确认', value: stats.cancellation },
     { label: '有异议', value: stats.disputed },
-    { label: '承诺晚到/改期', value: promiseNotices.value.length },
+    { label: '承诺晚到/改期', value: promiseChangeError.value ? '暂不可用' : promiseChangeLoading.value && promiseNoticeTotal.value === null ? '读取中' : promiseNoticeCount.value },
   ]
 })
 const supplierChangeCountLabel = computed(() => {
   const state = supplierChangeState.value
-  if (state.loading) return '读取中…'
-  if (state.error) return '暂不可用'
+  if (state.loading || promiseChangeLoading.value) return '读取中…'
+  if (state.error || promiseChangeError.value) return '暂不可用'
   const pending = state.stats?.pending ?? Object.values(state.counts).reduce((sum, value) => sum + value, 0)
-  return `${pending + promiseNotices.value.length} 项待处理`
+  return `${pending + promiseNoticeCount.value} 项待处理`
 })
-async function loadPromiseChanges() {
-  if (!canReadRegularCarton.value) return
-  const factory = selectedFactoryId.value, token = ++promiseChangeGeneration
+async function loadPromiseChanges(more = false) {
+  if (!canReadRegularCarton.value || promiseNoticesDisposed) return
+  const factory = selectedFactoryId.value, context = promiseNoticeContext(), token = ++promiseChangeGeneration
+  const offset = more ? promiseNoticeOffset.value + 20 : 0
   promiseChangeLoading.value = true; promiseChangeError.value = ''
   try {
-    const result = await cartonProcurementApi.supplierPromiseNotices(factory, 20)
-    if (token === promiseChangeGeneration && factory === selectedFactoryId.value) {
-      promiseChanges.value = result?.changes ?? []
-      promiseLate.value = result?.late ?? []
+    const result = await cartonProcurementApi.supplierPromiseNotices(factory, 20, offset)
+    if (token === promiseChangeGeneration && context === promiseNoticeContext()) {
+      promiseChanges.value = more ? [...promiseChanges.value, ...result.changes] : result?.changes ?? []
+      promiseLate.value = more ? [...promiseLate.value, ...result.late] : result?.late ?? []
       promiseAcks.value = new Set(result?.acknowledged ?? [])
+      promiseNoticeOffset.value = offset
+      promiseNoticeTotal.value = result?.total ?? null
+      promiseNoticeMore.value = Boolean(result?.has_more)
     }
   } catch (error) {
-    if (token === promiseChangeGeneration) promiseChangeError.value = getApiErrorMessage(error)
+    if (token === promiseChangeGeneration && context === promiseNoticeContext()) promiseChangeError.value = getApiErrorMessage(error)
   } finally {
     if (token === promiseChangeGeneration) promiseChangeLoading.value = false
   }
 }
 async function acknowledgePromise(notice: PromiseNotice) {
   if (promiseAcking.value) return
+  const factory = selectedFactoryId.value, context = promiseNoticeContext()
   promiseAcking.value = notice.key
   try {
-    await cartonProcurementApi.acknowledgePromiseNotice(selectedFactoryId.value, notice.key)
+    await cartonProcurementApi.acknowledgePromiseNotice(factory, notice.key)
+    if (promiseNoticesDisposed || context !== promiseNoticeContext()) return
     const next = new Set(promiseAcks.value)
     next.add(notice.key)
     promiseAcks.value = next
+    if (promiseNoticeTotal.value !== null) promiseNoticeTotal.value = Math.max(0, promiseNoticeTotal.value - 1)
+    // Acknowledgements change the pending queue's offsets; restart from its first page.
+    await loadPromiseChanges()
   } catch (error) {
-    reportActionFailure(`确认收到失败：${getApiErrorMessage(error)}`)
+    if (context === promiseNoticeContext()) reportActionFailure(`确认收到失败：${getApiErrorMessage(error)}`)
   } finally {
-    promiseAcking.value = ''
+    if (context === promiseNoticeContext()) promiseAcking.value = ''
   }
 }
 const cancellingOrder = ref(false)
@@ -1400,7 +1415,7 @@ const appendingOrderRecord = computed(() =>
 const orderMasterRules = computed(() => masterDueRules(masterWorkspace.value.records, orderForm.customerCode))
 const orderLeadDays = computed(() => editingOrderRecord.value?.safety_lead_days ?? orderMasterRules.value.lead_days)
 const appendLeadDays = computed(() => appendingOrderRecord.value?.safety_lead_days ?? DEFAULT_CARTON_SAFETY_LEAD_DAYS)
-const orderDueDateManual = ref(false)
+const orderDueDateManual = computed({ get: () => orderForm.planDateManual, set: value => { orderForm.planDateManual = value } })
 const calculatedOrderDueDate = computed(() => {
   if (orderForm.quantityBasis === 'EXPLICIT' || orderDueDateManual.value) return orderForm.dueDate
   return orderForm.customerDueDate ? derivePlanDueDate(orderForm.orderDate, orderForm.customerDueDate, orderLeadDays.value) : orderForm.dueDate
@@ -1903,7 +1918,12 @@ watch([selectedFactoryId, activeTab, canReviewSupplierDeliveries, () => authStor
 }, { immediate: true })
 
 watch(() => workCenter.bell?.health.as_of, () => { void loadSupplierReminders() })
-watch([activeTab, selectedFactoryId, canReadRegularCarton], () => {
+watch([activeTab, selectedFactoryId, canReadRegularCarton, () => authStore.currentUser?.id,
+  () => authStore.authorizationVersion, () => authStore.currentUser?.identity?.employment_epoch], () => {
+  promiseChangeGeneration++
+  promiseChanges.value = []; promiseLate.value = []; promiseAcks.value = new Set()
+  promiseNoticeOffset.value = 0; promiseNoticeTotal.value = null; promiseNoticeMore.value = false
+  promiseChangeLoading.value = false; promiseChangeError.value = ''; promiseAcking.value = ''
   if (activeTab.value !== 'dashboard' || !canReadRegularCarton.value) return
   void loadPromiseChanges()
 }, { immediate: true })
@@ -4613,6 +4633,7 @@ function auditEventLabel(eventType: string) {
     INVENTORY_BULK_OUTBOUND_CREATED: '批量出库',
     INVENTORY_MOVEMENT_REVERSED: '库存流水冲销',
     HISTORY_INVENTORY_IMPORTED: '历史库存导入',
+    HISTORY_INVENTORY_BATCH_REVERSED: '期初库存整批撤销',
     IMPORT_BATCH_CREATED: '导入批次创建',
     SCHEDULE_IMPORT_UNDONE: '整批撤销排期导入',
     UNMATCHED_DELIVERY_IMPORT_DELETED: '未匹配送货导入删除',
@@ -6126,7 +6147,7 @@ function openEditOrderModal(orderNo: string) {
   orderForm.orderDate = order.order_date
   orderForm.customerDueDate = order.customer_due_date ?? ''
   orderForm.dueDate = order.due_date
-  orderDueDateManual.value = orderForm.dueDate !== (orderForm.customerDueDate ? derivePlanDueDate(orderForm.orderDate, orderForm.customerDueDate, orderLeadDays.value) : '')
+  orderDueDateManual.value = Boolean(order.plan_date_manual) || orderForm.dueDate !== (orderForm.customerDueDate ? derivePlanDueDate(orderForm.orderDate, orderForm.customerDueDate, orderLeadDays.value) : '')
   orderForm.note = order.note
   orderForm.materials.splice(0, orderForm.materials.length, ...order.lines.map((line) => ({
     id: line.id,
@@ -7500,13 +7521,15 @@ watch([
               <p v-if="supplierChangeState.error && !supplierChangeOpen" role="alert" class="px-3 py-2 text-xs text-red-700">通知读取失败，请展开后刷新核对。</p>
               <div id="dashboard-supplier-change-content" v-show="supplierChangeOpen" class="border-t border-teal-100 p-3">
                 <div v-if="promiseNotices.length || promiseChangeError" class="mb-3 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-2" aria-label="承诺与改期提醒">
-                  <p class="text-[11px] font-bold text-amber-900">承诺与改期 · {{ promiseNotices.length }} 项待确认收到</p>
+                  <p class="text-[11px] font-bold text-amber-900">承诺与改期 · {{ promiseNoticeCount }} 项待确认收到<span v-if="promiseNoticeMore" class="ml-2 font-normal">已显示 {{ promiseNotices.length }} 项</span></p>
                   <p v-if="promiseChangeError" role="alert" class="text-[11px] text-red-700">读取失败：{{ promiseChangeError }}</p>
                   <div v-for="notice in promiseNotices" :key="notice.key" class="flex flex-wrap items-center justify-between gap-2 rounded bg-white px-2 py-1.5 text-[11px]">
                     <span class="min-w-0"><b>{{ notice.text }}</b><span class="ml-2 text-slate-600">{{ notice.detail }}</span></span>
                     <span class="flex shrink-0 items-center gap-2"><button type="button" class="underline" @click="openPromiseOrder(notice.orderNo)">查看订单</button><button type="button" :disabled="promiseAcking === notice.key" class="rounded bg-amber-700 px-2 py-1 font-bold text-white disabled:opacity-40" @click="acknowledgePromise(notice)">确认收到</button></span>
                   </div>
                   <button v-if="promiseLate.length" type="button" class="text-[10px] font-bold text-amber-800 underline" @click="openLatePromiseOrders">在订单台账筛选承诺晚于计划</button>
+                  <button v-if="promiseNoticeMore" type="button" :disabled="promiseChangeLoading || Boolean(promiseAcking) || Boolean(promiseChangeError)" class="ml-3 rounded border border-amber-300 bg-white px-2 py-1 text-[11px] font-semibold text-amber-900 disabled:opacity-40" @click="loadPromiseChanges(true)">{{ promiseChangeLoading ? '正在读取…' : '加载更多承诺与改期提醒' }}</button>
+                  <button v-if="promiseChangeError" type="button" :disabled="promiseChangeLoading" class="ml-3 text-[11px] font-bold text-amber-800 underline" @click="loadPromiseChanges()">重新读取提醒</button>
                 </div>
                 <p v-else-if="promiseChangeLoading" class="mb-3 text-[11px] text-slate-500">正在读取承诺与改期…</p>
                 <CartonSupplierChangeTasks :key="supplierChangeContext" ref="supplierChangeTasksRef" v-model:show-closed="supplierChangeShowClosed" internal read-only embedded :factory-id="selectedFactoryId" :viewer-key="supplierChangeContext" @pending-state="supplierChangePendingHandler" />
@@ -8165,7 +8188,7 @@ watch([
       <CartonMasterWorkspace v-else-if="activeTab === 'master-data'" :key="selectedFactoryId" :factory-id="selectedFactoryId" :customers="customerRecords" :initial-tab="masterSection" :preference-scope="currentOrderDraftContext" :dimension-unit="newPaperDimensionUnit" :dimension-preference-error="dimensionPreferenceError" @update:dimension-unit="setDimensionPreference" v-model:search="masterSearch" @changed="masterChanged" @customers="openCustomerManager" @use="orderFromMaster" />
       <section v-else-if="activeTab === 'inventory' || activeTab === 'inventory-movements'" class="space-y-4">
         <CartonStocktakeWorkspace v-model:search="stocktakeSearch" v-if="showStocktake && activeTab === 'inventory'" :key="selectedFactoryId" :factory-id="selectedFactoryId" :initial-position-keys="selectedInventoryBalances.map(row => row.id)" @close="showStocktake = false" @posted="refreshInventoryLedger" />
-        <CartonOpeningInventoryImport v-else-if="showInventoryImport && activeTab === 'inventory'" :key="selectedFactoryId" :factory-id="selectedFactoryId" :connected="apiConnected" :can-import="authStore.can('carton_procurement:inventory_write')" :customers="customerRecords" :locations="inventoryLocations" @close="showInventoryImport = false" @imported="openingInventoryImported" />
+        <CartonOpeningInventoryImport v-else-if="showInventoryImport && activeTab === 'inventory'" :key="selectedFactoryId" :factory-id="selectedFactoryId" :viewer-key="currentOrderDraftContext ? `${currentOrderDraftContext.userId}:${currentOrderDraftContext.employmentEpoch}` : ''" :connected="apiConnected" :can-import="authStore.can('carton_procurement:inventory_write')" :customers="customerRecords" :locations="inventoryLocations" @close="showInventoryImport = false" @imported="openingInventoryImported" @reversed="refreshInventoryLedger" />
         <template v-else>
         <div v-if="activeTab === 'inventory'" class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div class="border-b border-slate-200 px-4 py-3">
@@ -8223,7 +8246,7 @@ watch([
           <div class="border-b border-slate-200 px-4 py-3">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div><h2 class="font-bold text-slate-950">逐笔交易流水</h2><p class="mt-1 text-[11px] text-slate-500">本表追踪库存数量与成本变化；提交、追加、退单和修改请在操作日志中追溯。</p></div>
-              <label class="ml-auto inline-flex items-center gap-2 text-xs text-slate-600"><input v-model="showInventoryMoney" type="checkbox" class="accent-teal-700">显示金额</label><button type="button" class="h-9 rounded-lg border border-violet-200 bg-violet-50 px-3 text-[11px] font-bold text-violet-700 hover:bg-violet-100" @click="setActiveTab('audit')"><GitBranch class="mr-1 inline size-3.5" />查看操作日志</button>
+              <label class="ml-auto inline-flex items-center gap-2 text-xs text-slate-600"><input v-model="showInventoryMoney" type="checkbox" class="accent-teal-700">显示金额</label>
             </div>
             <CartonFilterBar label="库存流水筛选" class="mt-3 rounded-lg"><label>客户<select v-model="selectedCustomer" aria-label="客户筛选" class="h-9 rounded-lg border bg-white px-3 text-xs"><option v-for="customer in customerFilterOptions" :key="customer" :value="customer">{{ customer }}</option></select></label>
               <label class="space-y-1"><span class="block text-[10px] font-bold text-slate-500">流水类型</span><select v-model="inventoryMovementFilter" aria-label="库存流水类型" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px]"><option value="ALL">全部</option><option value="INBOUND">入库</option><option value="OUTBOUND">出库</option><option value="ADJUSTMENT">调整</option><option value="REVERSAL">冲销</option></select></label>
@@ -8263,7 +8286,7 @@ watch([
 
       <section v-else-if="activeTab === 'closing'" class="space-y-4">
         <nav aria-label="月结对账子页面" class="flex flex-wrap gap-2 rounded-xl border bg-white p-2 text-xs"><button type="button" :aria-pressed="closingView === 'OVERVIEW'" class="rounded-lg px-4 py-2" :class="closingView === 'OVERVIEW' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('OVERVIEW')">本月对账</button><button type="button" :aria-pressed="closingView === 'RETURNS'" class="rounded-lg px-4 py-2" :class="closingView === 'RETURNS' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('RETURNS')">退货签收与退款</button><button type="button" :aria-pressed="closingView === 'PAYABLES'" class="rounded-lg px-4 py-2" :class="closingView === 'PAYABLES' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('PAYABLES')">应付与付款</button><button type="button" :aria-pressed="closingView === 'INVENTORY'" class="rounded-lg px-4 py-2" :class="closingView === 'INVENTORY' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('INVENTORY')">库存月结记录</button></nav>
-        <CartonSettlementOverview v-if="closingView === 'OVERVIEW'" :factory-id="selectedFactoryId" />
+        <CartonSettlementOverview v-if="closingView === 'OVERVIEW'" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" />
         <CartonSupplierReturns v-if="closingView === 'RETURNS'" :factory-id="selectedFactoryId" internal :viewer-key="specialViewerKey" v-model:search="returnSearch" />
         <CartonPayables ref="payablesRef" v-if="closingView === 'PAYABLES'" :factory-id="selectedFactoryId" internal :viewer-key="specialViewerKey" v-model:search="payablesSearch" />
         <template v-if="closingView === 'INVENTORY'">
