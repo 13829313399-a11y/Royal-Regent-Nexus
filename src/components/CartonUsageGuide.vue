@@ -64,7 +64,7 @@ function imageFailed(id: string) {
   <DialogRoot :open="true" @update:open="!$event && emit('close')">
     <DialogPortal>
       <DialogOverlay class="carton-guide-overlay fixed inset-0 z-[149] bg-slate-950/45 backdrop-blur-sm" />
-      <DialogContent class="carton-usage-guide fixed left-1/2 top-1/2 z-[150] flex h-[92dvh] w-[calc(100%_-_24px)] max-w-6xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" @close-auto-focus.prevent>
+      <DialogContent class="carton-usage-guide fixed left-1/2 top-1/2 z-[150] flex h-[92dvh] w-[calc(100%_-_24px)] max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" @close-auto-focus.prevent>
         <header class="shrink-0 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
@@ -157,6 +157,8 @@ function imageFailed(id: string) {
 </template>
 
 <style>
+/* Keep screen centering in transform so the print reset also survives CSS lowering. */
+.carton-usage-guide { transform: translate(-50%, -50%); }
 @media print {
   @page carton-tutorial { size: A4; margin: 14mm; }
   body:has(.carton-usage-guide) { overflow: visible !important; height: auto !important; }
