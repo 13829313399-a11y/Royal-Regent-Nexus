@@ -7,10 +7,12 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import wraps
 from threading import Barrier, Event, Thread, Lock
 from time import perf_counter, process_time
 from uuid import uuid4
 from types import SimpleNamespace
+from unittest.mock import patch
 import json
 import os
 import sys
@@ -77,12 +79,22 @@ def configuration():
 
 class Diagnostics:
     def __init__(self, p):
-        self.rows, self.gaps = [], []
+        self.rows, self.gaps, self.lock_spans = [], [], []
         self.lock, self.stop = Lock(), Event()
         self.engine = p.engine
+        self.origin = perf_counter()
+        self.patches = ExitStack()
+        from app.services import cutting_ops, cutting_payments, cutting_exports, cutting_workspace
+        for module, names in [(cutting_ops, ['command', 'payment_command']),
+                (cutting_payments, ['basis', 'preview', 'read', 'execute', 'balances']),
+                (cutting_exports, ['capture', 'source_revision', 'package_isolated']),
+                (cutting_workspace, ['task_board', 'inventory', 'cost_overview', 'scheduling'])]:
+            for name in names:
+                self.patches.enter_context(patch.object(module, name, self.tracked(getattr(module, name), module.__name__.rsplit('.', 1)[-1]+'.'+name)))
         @p.app.middleware('http')
         async def measure(request, call_next):
-            stats = dict(sql_count=0, sql_seconds=0., lock_seconds=0., failed_sql=0)
+            stats = dict(sql_count=0, sql_seconds=0., lock_seconds=0., failed_sql=0,
+                         request_id=request.headers.get('X-Test-Request-ID', ''), phase='request', phases=[])
             token = request_stats.set(stats)
             began = perf_counter()
             try:
@@ -92,18 +104,50 @@ class Diagnostics:
             finally:
                 with self.lock:
                     self.rows.append(dict(stats, request_id=request.headers.get('X-Test-Request-ID', ''),
-                        path=request.url.path, header_ready_seconds=perf_counter()-began))
+                        path=request.url.path, started_seconds=began-self.origin,
+                        header_ready_seconds=perf_counter()-began))
                 request_stats.reset(token)
         event.listen(self.engine, 'before_cursor_execute', self.before)
         event.listen(self.engine, 'after_cursor_execute', self.after)
         event.listen(self.engine, 'handle_error', self.sql_error)
+        event.listen(self.engine, 'checkin', self.released)
         self.thread = Thread(target=self.heartbeat, daemon=True)
+
+    def tracked(self, function, name):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            stats = request_stats.get()
+            if stats is None:
+                return function(*args, **kwargs)
+            previous, began = stats['phase'], perf_counter()
+            stats['phase'] = name
+            try:
+                return function(*args, **kwargs)
+            finally:
+                stats['phases'].append(dict(name=name, start=began-self.origin, end=perf_counter()-self.origin))
+                stats['phase'] = previous
+        return wrapped
 
     def before(self, conn, cursor, statement, parameters, context, many):
         context.capacity_began = perf_counter()
 
     def after(self, conn, cursor, statement, parameters, context, many):
         self.record_sql(statement, context, False)
+        if statement.lstrip().upper().startswith('BEGIN IMMEDIATE'):
+            stats = request_stats.get()
+            conn.info['cutting_test_lock_span'] = dict(request_id=stats.get('request_id', '') if stats else '',
+                phase=stats.get('phase', 'request') if stats else 'outside-request',
+                waiting=context.capacity_began-self.origin, acquired=perf_counter()-self.origin)
+
+    def released(self, connection, record):
+        span = record.info.pop('cutting_test_lock_span', None)
+        if span:
+            span['released'] = perf_counter()-self.origin
+            span['wait_seconds'] = span['acquired']-span['waiting']
+            span['hold_seconds'] = span['released']-span['acquired']
+            span['release_boundary'] = 'connection-return-after-transaction'
+            with self.lock:
+                self.lock_spans.append(span)
 
     def sql_error(self, error):
         if error.execution_context is not None:
@@ -137,6 +181,8 @@ class Diagnostics:
         event.remove(self.engine, 'before_cursor_execute', self.before)
         event.remove(self.engine, 'after_cursor_execute', self.after)
         event.remove(self.engine, 'handle_error', self.sql_error)
+        event.remove(self.engine, 'checkin', self.released)
+        self.patches.close()
 
 
 def test_failed_lock_wait_is_measured():
@@ -187,7 +233,7 @@ def run_mixed_http(role_flow, tmp_path, report):
     # diagnostic wrapper only to this isolated application, then rebuild it.
     p.app.middleware_stack = None
     diagnostics = Diagnostics(p)
-    report.update(server_requests=diagnostics.rows, heartbeat_gaps=diagnostics.gaps)
+    report.update(server_requests=diagnostics.rows, heartbeat_gaps=diagnostics.gaps, lock_spans=diagnostics.lock_spans)
     endpoints = [
         ('planning', '/workspace/planning', {}),
         ('tasks', '/workspace/tasks', {'day': '2026-10-15'}),
