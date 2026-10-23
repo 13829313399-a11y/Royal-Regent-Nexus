@@ -26,7 +26,8 @@ from app.models.auth import AuthIamState
 from app.services import indonesia_materials as service
 from app.services.auth import AuthContext, AuthGrantContext, AuthOverrideContext, get_current_user
 from app.services.indonesia_material_calculations import packaging_totals, production_plan
-from app.services.indonesia_material_excel import TEMPLATE, NS, DRAWING_PART, SHEET_PART
+from app.services.indonesia_material_excel import TEMPLATE, NS, DRAWING_PART, SHEET_PART, SHEET_NAME, CALC_NAME
+from test_indonesia_material_export import detail_book
 from app.services.permission_codes import INDONESIA_MATERIAL_PERMISSION_CODES
 
 BASE = '/api/indonesia-materials'
@@ -285,7 +286,7 @@ def test_automatic_customs_unit_pricing_reaches_frozen_excel(client, unit, basis
     sh = shipment(client, alloc, normal='100', spare='0')
     sh = command(client, 'shipment_confirm', {}, sh)
     response = client.get(BASE + f"/shipments/{sh['id']}/export", params={'factory_id': 'huaxing'})
-    sheet = openpyxl.load_workbook(BytesIO(response.content), data_only=True).worksheets[0]
+    sheet = detail_book(BytesIO(response.content), data_only=True).worksheets[0]
     assert Decimal(str(sheet['AP4'].value)) == Decimal(amount)
     assert Decimal(str(sheet['K4'].value)) == (Decimal('200') / Decimal(factor) if basis == 'weight' else Decimal('100'))
 
@@ -777,8 +778,8 @@ def test_confirm_export_is_immutable_and_normal_shipment_preserves_fulfilment(cl
     assert record['data']['shipped_normal'] == '9' and record['data']['shipped_spare'] == '1'
     with Session(client.engine) as db:
         assert db.scalar(select(func.count()).select_from(Asset)) == 1
-    wb = openpyxl.load_workbook(BytesIO(file_a.content), data_only=True)
-    sheet = wb[SHEET_NAME := '5.21出货明细']
+    wb = detail_book(BytesIO(file_a.content), data_only=True)
+    sheet = wb[SHEET_NAME]
     assert sheet['L4'].value == 9 and sheet['K4'].value == .01
     assert sheet['AP4'].value == .9 and sheet['P4'].value == .03
     summary = confirmed['data']['supplier_summary']
@@ -788,14 +789,17 @@ def test_confirm_export_is_immutable_and_normal_shipment_preserves_fulfilment(cl
     assert all(sheet[f'{col}4'].value is None for col in ('B', 'C', 'E', 'N', 'O', 'V', 'Z', 'AA', 'AG'))
     assert sheet['AS4'].value == '華登製品實業有限公司'
     assert '备品 1 PCS，免费' in sheet['BE4'].value
-    assert all(wb[name].sheet_state == 'hidden' for name in wb.sheetnames if name != SHEET_NAME)
+    assert wb[CALC_NAME].sheet_state == 'hidden'
     # The latest request removes tutorial images; only this shipment's actual photo survives.
     with ZipFile(BytesIO(file_a.content)) as exported, ZipFile(TEMPLATE) as template:
-        assert exported.read('xl/styles.xml') == template.read('xl/styles.xml')
+        original_styles = ET.fromstring(template.read('xl/styles.xml'))
+        output_styles = ET.fromstring(exported.read('xl/styles.xml'))
+        for section in ('fonts', 'fills', 'borders', 'numFmts'):
+            assert ET.tostring(original_styles.find('s:'+section, NS)) == ET.tostring(output_styles.find('s:'+section, NS))
         drawing = ET.fromstring(exported.read(DRAWING_PART))
         assert len(drawing.findall('.//xdr:pic', NS)) == 1
-        assert len([n for n in exported.namelist() if n.startswith('xl/media/')]) == 1
-        assert not any(n in exported.namelist() for n in ('xl/worksheets/sheet1.xml', 'xl/worksheets/sheet3.xml'))
+        assert len([n for n in exported.namelist() if n.startswith('xl/media/indonesia-material-')]) == 1
+        assert all(exported.read(n) == template.read(n) for n in ('xl/worksheets/sheet1.xml', 'xl/worksheets/sheet3.xml'))
     client.materials_auth['user'] = actor('read')
     assert client.get(BASE + f'/shipments/{confirmed["id"]}/export?factory_id=huaxing').status_code == 403
     assert client.get(BASE + f'/assets/{confirmed["data"]["export_asset_id"]}?factory_id=huaxing').status_code == 403
@@ -826,7 +830,7 @@ def test_mixed_carton_can_confirm_once_with_frozen_material_rows(client):
     confirmed = command(client, 'shipment_confirm', {}, draft)
     assert confirmed['data']['export_material_count'] == 2 and confirmed['data']['export_layout_version'] == 'material_row_v2'
     content = client.get(BASE + f'/shipments/{draft["id"]}/export?factory_id=huaxing').content
-    sheet = openpyxl.load_workbook(BytesIO(content), data_only=True)['5.21出货明细']
+    sheet = detail_book(BytesIO(content), data_only=True)[SHEET_NAME]
     assert {str(r) for r in sheet.merged_cells.ranges} >= {'AT4:AT5', 'S4:S5'}
     assert sheet['AT4'].value == 1 and sheet['AT5'].value is None
     assert sheet['P4'].value == pytest.approx(.014) and sheet['P5'].value == pytest.approx(.014)
@@ -1111,7 +1115,7 @@ def test_concurrent_confirmations_never_over_ship(client):
         assert db.scalar(select(func.count()).select_from(Asset)) == 1
 
 
-def test_template_three_rows_keeps_guide_and_actual_photo_locations(client):
+def test_template_three_rows_cleans_guide_and_keeps_actual_photo_locations(client):
     _, _, o, sup = received_flow(client); alloc = allocation(client, sup, o)
     draft = shipment(client, alloc)
     data = deepcopy(draft['data']); data.pop('status')
@@ -1133,18 +1137,19 @@ def test_template_three_rows_keeps_guide_and_actual_photo_locations(client):
     draft = command(client, 'shipment_save', data, draft)
     confirmed = command(client, 'shipment_confirm', {}, draft)
     response = client.get(BASE + f'/shipments/{confirmed["id"]}/export?factory_id=huaxing')
-    formulas = openpyxl.load_workbook(BytesIO(response.content), data_only=False)
-    sheet = formulas['5.21出货明细']
+    formulas = detail_book(BytesIO(response.content), data_only=False)
+    sheet = formulas[SHEET_NAME]
     assert sheet['R6'].value == '=AW6*AX6*AY6/28316.75*0.0283'
     assert sheet['AQ4'].value.startswith("=SUM('出货计算'!J")
-    cached = openpyxl.load_workbook(BytesIO(response.content), data_only=True)['5.21出货明细']
+    cached = detail_book(BytesIO(response.content), data_only=True)[SHEET_NAME]
     assert cached['AQ4'].value == pytest.approx(.9)
-    with ZipFile(BytesIO(response.content)) as output, ZipFile(TEMPLATE) as template:
-        source = ET.fromstring(template.read(SHEET_PART)); result = ET.fromstring(output.read(SHEET_PART))
-        source_guide = source.find("s:sheetData/s:row[@r='7']/s:c[@r='L7']", NS)
-        result_guide = result.find("s:sheetData/s:row[@r='8']/s:c[@r='L8']", NS)
-        assert source_guide.get('s') == result_guide.get('s')
-        assert source_guide.findtext('s:v',namespaces=NS) == result_guide.findtext('s:v',namespaces=NS)
+    assert sheet.max_row == 6
+    assert str(sheet.print_area) == f"'{SHEET_NAME}'!$A$3:$BE$6"
+    with ZipFile(BytesIO(response.content)) as output:
+        result = ET.fromstring(output.read(SHEET_PART))
+        assert result.find("s:sheetData/s:row[@r='8']", NS) is None
+        assert 'xl/comments2.xml' not in output.namelist()
+        assert 'xl/drawings/vmlDrawing2.vml' not in output.namelist()
         picture = ET.fromstring(output.read(DRAWING_PART)).findall('.//xdr:oneCellAnchor',NS)
         assert [p.findtext('xdr:from/xdr:row',namespaces=NS) for p in picture] == ['3','4','5']
         assert all(p.findtext('xdr:from/xdr:col',namespaces=NS) == '19' for p in picture)
