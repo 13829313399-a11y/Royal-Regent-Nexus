@@ -163,7 +163,7 @@ function imageFailed(id: string) {
   body:has(.carton-usage-guide) > *:not(.carton-usage-guide):not(:has(.carton-usage-guide)) { display: none !important; }
   .carton-guide-overlay, .carton-guide-sidebar, .carton-guide-tools { display: none !important; }
   .carton-usage-guide {
-    page: carton-tutorial; position: static !important; inset: auto !important; transform: none !important;
+    page: carton-tutorial; position: static !important; inset: auto !important; transform: none !important; translate: none !important;
     display: block !important; width: 100% !important; height: auto !important;
     max-width: none !important; max-height: none !important; overflow: visible !important;
     border: 0 !important; box-shadow: none !important; border-radius: 0 !important;
