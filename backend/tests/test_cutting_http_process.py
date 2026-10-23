@@ -18,7 +18,7 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 
-@pytest.mark.parametrize('damage', ['gap', 'failed_sql', 'missing_retry', 'retry_lock'])
+@pytest.mark.parametrize('damage', ['gap', 'failed_sql', 'missing_retry', 'retry_lock', 'retry_admission'])
 def test_diagnostic_failures_cannot_be_reported_as_passed(damage):
     sample = dict(endpoint='payment_save_retry', request_id='retry')
     diagnostic = dict(heartbeat_gaps=[], lock_spans=[], requests=[dict(request_id='retry', failed_sql=0, lock_seconds=0)])
@@ -27,6 +27,7 @@ def test_diagnostic_failures_cannot_be_reported_as_passed(damage):
     if damage == 'failed_sql': diagnostic['requests'][0]['failed_sql'] = 1
     if damage == 'missing_retry': diagnostic['requests'] = []
     if damage == 'retry_lock': diagnostic['requests'][0]['lock_seconds'] = .01
+    if damage == 'retry_admission': diagnostic['requests'][0]['admission_seconds'] = .01
     with pytest.raises(AssertionError):
         runner.diagnostics_summary(diagnostic, [sample])
 
@@ -88,7 +89,9 @@ def test_lock_telemetry_pairs_owner_phase_and_connection_return(tmp_path):
         assert [s['request_id'] for s in diagnostic.lock_spans] == ['first-owner', 'second-owner']
         assert all(s['phase']=='probe.capture' and s['waiting'] <= s['acquired'] <= s['released']
                    and s['release_boundary']=='connection-return-after-transaction' for s in diagnostic.lock_spans)
-        assert all(row['phases'][0]['name']=='probe.capture' for row in diagnostic.rows)
+        assert all(row['phases'][-1]['name']=='probe.capture' for row in diagnostic.rows)
+        assert all(sum(p['name']=='cutting_sqlite_queue.reserve' for p in row['phases'])==1
+                   and row['admission_seconds']>=0 for row in diagnostic.rows)
     finally:
         diagnostic.close()
         engine.dispose()
