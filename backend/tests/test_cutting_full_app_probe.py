@@ -46,6 +46,14 @@ def test_direct_serve_without_owned_identity_fails_before_importing_the_app(monk
         probe.serve(tmp_path/'business.db')
 
 
+@pytest.mark.parametrize('count',['-1','41'])
+def test_production_rotation_bounds_fail_before_opening_a_fixture(monkeypatch,count):
+    monkeypatch.setattr(sys,'argv',['verify_cutting_full_app.py','--seed','must-not-open',
+        '--production-write-orders',count])
+    with pytest.raises(SystemExit) as error:probe.main()
+    assert error.value.code==2
+
+
 def test_validate_copy_refuses_missing_provenance_and_real_users(frozen):
     path,_=frozen;db=probe.OUTPUT/'run/cutting.db';db.parent.mkdir(parents=True)
     with sqlite3.connect(db) as q:

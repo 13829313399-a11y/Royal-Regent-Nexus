@@ -195,10 +195,13 @@ def full_http(database):
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--seed');parser.add_argument('--seconds',type=int,default=600);parser.add_argument('--serve')
     parser.add_argument('--workload',choices=['burst','paced'],default='burst',help='Burst retains the .2s baseline; paced uses a 2s pause per worker cycle. No failed request is automatically retried.')
+    parser.add_argument('--production-write-orders',type=int,default=0,
+        help='Rotate handover and usage writes over this many separate orders per clerk (0 disables, 1–40); no receipt/return/month-lock writes.')
     args=parser.parse_args()
     if args.serve:
         serve(args.serve);return 0
     if not args.seed or not 10<=args.seconds<=600:parser.error('Requires a proven seed and 10–600 seconds')
+    if not 0<=args.production_write_orders<=40:parser.error('Use 0–40 production-write orders per clerk')
     from verify_cutting_lock_phases import seed_file,run_probe,diagnostics_summary
     from verify_cutting_p5b import source_state
     seed=seed_file(args.seed);manifest=Path(read(CONTROL/'staged.json')['release'])/'manifest.json';m=release_manifest(manifest)
@@ -207,13 +210,15 @@ def main():
     pause=2. if args.workload=='paced' else .2
     report=dict(status='failed',seconds=args.seconds,release=m['acceptance_release'],source=initial,release_ready=False,workload=args.workload,cycle_pause_seconds=pause,
         scope='Frozen full application with full lifespan; fresh synthetic schema; 500 dispatch/100 production/20 finance chains; test business clock 2026-12-15; not target hardware, competing writers or production approval')
+    report['production_write_orders_per_kind']=args.production_write_orders
     print(str(folder),flush=True)
     try:
         with (folder/'migration.log').open('w',encoding='utf-8') as log:
             subprocess.run([sys.executable,'-m','alembic','upgrade','head'],cwd=Path(m['source'])/'backend',env=environment(m,database),stdout=log,stderr=subprocess.STDOUT,check=True,timeout=240)
         report['imported_tables']=install_fixture(seed,database)
         (folder/'fixture.json').write_text(json.dumps(dict(kind='cutting-full-app-synthetic',database=str(database.resolve()),manifest=str(manifest.resolve()),manifest_sha256=sha256(manifest.read_bytes()).hexdigest(),seed_sha256=seed_hash)),encoding='utf-8')
-        run_probe(database,args.seconds,report,server_context=full_http,cycle_pause=pause)
+        run_probe(database,args.seconds,report,server_context=full_http,cycle_pause=pause,
+            production_write_orders=args.production_write_orders)
         report['diagnostic_summary']=diagnostics_summary(read(folder/'diagnostics.json'),report['samples'])
         report['runtime']=read(folder/'runtime.json')
         if report['runtime']['sqlite_busy_timeout_ms']!=5000:raise ValueError('Full-app SQLite timeout differs from the unchanged 5s baseline')
