@@ -1,6 +1,7 @@
 """Huakang C master revisions, pinned BOM references and transactional commands."""
 import hashlib
 import json
+from copy import deepcopy
 from datetime import datetime, UTC
 from uuid import uuid4
 from fastapi import HTTPException
@@ -147,16 +148,42 @@ def payload_fingerprint(payload, action):
                                 sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def receipt_result(receipt, user, fingerprint, action):
+    require(receipt.factory_id == FACTORY and receipt.actor_id == user.id
+            and receipt.action == action and receipt.fingerprint == fingerprint,
+            '操作编号已用于其他请求，请核对原保存结果')
+    require(receipt.result.get('operation_status') != 'abandoned', '此操作已核实未执行并停止，请重新提交新操作')
+    return deepcopy(receipt.result)
+
+
+def payment_command(db: Session, user, body, action, handler):
+    """Replay only an already committed payment receipt, after API authorization.
+
+    Receipts are immutable application evidence. A miss still goes through the
+    normal writer lock and second lookup, including concurrent save/recovery.
+    Other commands may reproject current order state and must keep their path.
+    """
+    require(action in {'payment-save', 'payment-submit', 'payment-confirm', 'payment-return', 'payment-reverse'},
+            '付款操作类型不正确', 422)
+    try:
+        receipt = db.get(CuttingCommand, body.operation_id)
+        if receipt is not None:
+            return receipt_result(receipt, user, command_fingerprint(body, action), action)
+    finally:
+        db.rollback()
+    try:
+        return command(db, user, body, action, handler)
+    finally:
+        db.rollback()
+
+
 def command(db: Session, user, body, action, handler):
     fingerprint = command_fingerprint(body, action)
     try:
         lock_transaction(db, 'cutting-master', FACTORY)
         receipt = db.get(CuttingCommand, body.operation_id)
         if receipt:
-            require(receipt.actor_id == user.id and receipt.fingerprint == fingerprint,
-                    '操作编号已用于其他请求，请核对原保存结果')
-            require(receipt.result.get('operation_status') != 'abandoned', '此操作已核实未执行并停止，请重新提交新操作')
-            return receipt.result
+            return receipt_result(receipt, user, fingerprint, action)
         result = handler()
         db.add(CuttingCommand(operation_id=body.operation_id, factory_id=FACTORY, actor_id=user.id,
                               action=action, fingerprint=fingerprint, result=result,
