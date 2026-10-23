@@ -55,6 +55,8 @@
 
 项目使用 Tailwind CSS 4 的 CSS-first 模式，**不存在独立的 `tailwind.config.js` 或 PostCSS 配置文件**。不要仅为普通样式调整而新建 Tailwind 配置文件。
 
+工具类输入在 `src/style.css` 中通过 `source(none)` 与 `@source` 明确限定为 `src/` 和根 `index.html`。不自动扫描整个 checkout，避免 Windows `node_modules` 目录联接、冻结发布及运行产物扩大扫描范围；组件库 CSS 仍由原有 import 引入。项目主题使用 `@theme inline static` 保留共享 token，不能依赖文档或工具类的偶然引用使组件 CSS 所需变量存活。`npm run check:tailwind-sources` 使用真实编译器核对输入边界、基础工具类和共享圆角变量，完整构建会先执行此检查。
+
 ### 3.2 权威顺序
 
 | 优先级 | 来源 | 作用 |
