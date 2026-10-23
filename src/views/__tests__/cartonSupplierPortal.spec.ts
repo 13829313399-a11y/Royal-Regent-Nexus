@@ -22,7 +22,7 @@ const unifiedApi = vi.hoisted(() => ({ list: vi.fn(), receive: vi.fn(), dispatch
 vi.mock('@/api/cartonUnifiedDeliveries', async importOriginal => ({ ...await importOriginal<typeof import('@/api/cartonUnifiedDeliveries')>(), cartonUnifiedDeliveriesApi: unifiedApi }))
 const priceApi = vi.hoisted(() => ({ list: vi.fn(), propose: vi.fn(), decide: vi.fn() }))
 vi.mock('@/api/cartonPriceReviews', () => ({ cartonPriceReviewsApi: priceApi }))
-const api = vi.hoisted(() => ({ acknowledgeCancellation: vi.fn(), changeNonArrival: vi.fn(), memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receiptOptions: vi.fn(), linkReceipt: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markAssets: vi.fn(), markUploadOrders: vi.fn(), uploadMarkAssets: vi.fn(), markChecks: vi.fn(), createMarkCheck: vi.fn(), downloadMarkCheck: vi.fn(), previewMarkCheckUrl: vi.fn(), downloadMarkAsset: vi.fn(), previewMarkAssetUrl: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), activityPage: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
+const api = vi.hoisted(() => ({ acknowledgeRush: vi.fn(), acknowledgeCancellation: vi.fn(), changeNonArrival: vi.fn(), memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receiptOptions: vi.fn(), linkReceipt: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markAssets: vi.fn(), markUploadOrders: vi.fn(), uploadMarkAssets: vi.fn(), markChecks: vi.fn(), createMarkCheck: vi.fn(), downloadMarkCheck: vi.fn(), previewMarkCheckUrl: vi.fn(), downloadMarkAsset: vi.fn(), previewMarkAssetUrl: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), activityPage: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
 const router = vi.hoisted(() => ({ replace: vi.fn(), push: vi.fn() }))
 const routeState = vi.hoisted(() => ({ query: { factory: 'huaxing', shipment: undefined } as Record<string, string | undefined> }))
 const can = vi.hoisted(() => vi.fn((_permission: string, _factory?: string, _department?: string) => true))
@@ -44,6 +44,34 @@ function fixture(): PortalWorkspace {
   return { factory_id: 'huaxing', supplier_name: '河源东康', orders: [{ id: 'ORDER-A', order_no: 'ORDER-A', customer_name: 'Dickie', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A', product_name: '产品', status: 'PENDING_SUPPLIER', issue_id: 'ISSUE-A', document_no: 'ORDER-A-P00', order_date: '2026-09-10', planned_date: '2026-09-25', awaiting_issue: false, attachments: [], lines: ['外箱', '平卡'].map((name, index) => ({ id: `LINE-${index}`, line_no: index+1, child_no: `ORDER-A/0${index+1}`, packaging_type: name, paper_quality: 'A33', specification: '10*20', dimension_unit: 'cm', unit: index ? '张' : '个', required_quantity: '100', received_quantity: '0', in_transit_quantity: '0', remaining_to_ship: '100', accepted: true, commitment_revision: 1, promised_date: '2026-09-25' })) }], shipments: [{ id: 'SHIP-A', delivery_note_no: 'DN-A', delivery_date: '2026-09-21', status: 'SENT', revision: 1, created_at: '', confirmed_at: '', acceptance_date: null, acceptance_lines: [], lines: [0,1].map(index => ({ id: `SL-${index}`, order_line_id: `LINE-${index}`, order_no: 'ORDER-A', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A', customer_name: 'Dickie', child_no: `ORDER-A/0${index+1}`, packaging_type: index ? '平卡' : '外箱', paper_quality: 'A33', specification: '10*20', unit: '个', quantity: '10', unit_price: '2', delivery_unit_price: '2', currency: 'CNY' })) }] }
 }
 const options = { global: { stubs: { AccountMenu: true, NotificationCenter: true, RouterLink: { template: '<a><slot /></a>' }, CartonReceiptAllocations: true } } }
+
+it('keeps rush orders first under each supplier order sort', async () => {
+  const data = fixture(), original = data.orders[0]!
+  data.orders = [{ ...original, rush: false }, { ...original, id: 'RUSH-ORDER', order_no: 'RUSH-ORDER',
+    contract_no: 'RUSH-CONTRACT', rush: true, rush_version: 'a'.repeat(64),
+    lines: original.lines.map(line => ({ ...line, id: `RUSH-${line.id}` })) }]
+  api.workspace.mockResolvedValue(data)
+  const wrapper = mount(CartonSupplierView, options); await flushPromises()
+  try {
+    for (const sort of ['DEFAULT', 'PLANNED_ASC', 'PROMISED_ASC', 'ORDER_DESC']) {
+      await wrapper.get('[aria-label="供应商订单排序"]').setValue(sort)
+      expect(wrapper.findAll('[data-testid="supplier-regular-order-row"]')[0]!.text()).toContain('RUSH-CONTRACT')
+    }
+  } finally { wrapper.unmount() }
+})
+
+it('confirms the rush version displayed on the supplier row', async () => {
+  const data = fixture()
+  data.orders[0] = { ...data.orders[0]!, rush: true, rush_version: 'b'.repeat(64), rush_reason: '客户催货' }
+  api.workspace.mockResolvedValue(data)
+  api.acknowledgeRush.mockResolvedValue({})
+  const wrapper = mount(CartonSupplierView, options); await flushPromises()
+  try {
+    await wrapper.findAll('button').find(button => button.text() === '确认收到急单')!.trigger('click')
+    await flushPromises()
+    expect(api.acknowledgeRush).toHaveBeenCalledWith(expect.objectContaining({ id: 'ORDER-A', rush_version: 'b'.repeat(64) }), 'huaxing')
+  } finally { wrapper.unmount() }
+})
 
 describe('supplier order carton-mark access', () => {
   function mark(id: string, overrides: Partial<SupplierMarkAsset> = {}): SupplierMarkAsset {
@@ -305,18 +333,17 @@ describe('supplier purchase acceptance reminders', () => {
   })
 })
 const guideOptions = { global: { stubs: { ...options.global.stubs,
-  CartonSupplierMonthlyReview: true,
+  CartonSupplierMonthlySummary: true,
   CartonUsageGuide: { name: 'CartonUsageGuide', props: ['audience', 'factoryName'], emits: ['close', 'supplierNavigate'], template: '<section data-testid="supplier-usage-guide" />' },
 } } }
-it('opens supplier published price corrections from monthly review in the exact factory and clears the panel on actor change', async () => {
+it('shows the shared monthly summary in the supplier portal without a standalone correction entry', async () => {
   routeState.query.settlement_view = undefined
-  const w = mount(CartonSupplierView, { global: { stubs: { ...guideOptions.global.stubs, CartonPriceCorrectionDialog: true, CartonSupplierChangeTasks: true } } }); await flushPromises()
+  const w = mount(CartonSupplierView, { global: { stubs: { ...guideOptions.global.stubs, CartonSupplierChangeTasks: true } } }); await flushPromises()
   try {
     await w.findAll('button').find(row => row.text() === '月结对账')!.trigger('click'); await flushPromises()
-    w.findComponent({ name: 'CartonSupplierMonthlyReview' }).vm.$emit('prices', 'huaxing'); await flushPromises()
-    const panel = w.findComponent({ name: 'CartonPriceCorrectionDialog' }); expect(panel.props('factoryId')).toBe('huaxing'); expect(panel.props('internal')).not.toBe(true); expect(panel.props('factories')).toMatchObject([{ factory_id: 'huaxing' }])
-    authState.currentUser = { id: 'another-supplier', display_name: '其他供应商' }; await flushPromises()
-    expect(w.findComponent({ name: 'CartonPriceCorrectionDialog' }).exists()).toBe(false)
+    expect(w.findComponent({ name: 'CartonSupplierMonthlySummary' }).exists()).toBe(true)
+    expect(w.findAll('button').some(row => row.text().includes('收料单价更正'))).toBe(false)
+    expect(w.get('[aria-label="供应商月结子页面"]').text()).toContain('本月对账')
   } finally { w.unmount(); routeState.query.settlement_view = undefined }
 })
 it('opens supplier payable receipts with the authorized factory list and an independent keyword', async () => {
@@ -329,8 +356,8 @@ it('opens supplier payable receipts with the authorized factory list and an inde
     expect(panel.props('internal')).toBe(false); expect(panel.props('factories')).toMatchObject([{ factory_id: 'huaxing' }])
     expect(router.replace).toHaveBeenCalledWith({ query: expect.objectContaining({ settlement_view: 'payables' }) })
     await w.get('[aria-label="顶部搜索"]').setValue('BANK-RECEIVED1'); expect(panel.props('search')).toBe('BANK-RECEIVED1')
-    await w.findAll('button').find(row => row.text() === '双方月结对账')!.trigger('click'); await flushPromises()
-    expect(w.findComponent({ name: 'CartonSupplierMonthlyReview' }).props('search')).toBe('')
+    await w.findAll('button').find(row => row.text() === '本月对账')!.trigger('click'); await flushPromises()
+    expect(w.findComponent({ name: 'CartonSupplierMonthlySummary' }).props('search')).toBe('')
   } finally { w.unmount(); routeState.query.settlement_view = undefined }
 })
 it('discovers return collaboration from supplier todos and keeps the return search separate from monthly review', async () => {
@@ -342,8 +369,8 @@ it('discovers return collaboration from supplier todos and keeps the return sear
   expect(router.replace).toHaveBeenCalledWith({ query: expect.objectContaining({ settlement_view: 'returns' }) })
   await wrapper.get('[aria-label="顶部搜索"]').setValue('RETURN-SEARCH')
   expect(panel.props('search')).toBe('RETURN-SEARCH')
-  await wrapper.findAll('button').find(item => item.text() === '双方月结对账')!.trigger('click'); await flushPromises()
-  expect(wrapper.findComponent({ name: 'CartonSupplierMonthlyReview' }).props('search')).toBe('')
+  await wrapper.findAll('button').find(item => item.text() === '本月对账')!.trigger('click'); await flushPromises()
+  expect(wrapper.findComponent({ name: 'CartonSupplierMonthlySummary' }).props('search')).toBe('')
   wrapper.unmount()
 })
 beforeEach(() => { routeState.query.shipment = undefined; vi.resetAllMocks(); can.mockReturnValue(true); api.memberships.mockResolvedValue([{ factory_id: 'huaxing', supplier_name: '河源东康' }]); api.workspace.mockResolvedValue(fixture()); api.members.mockResolvedValue([]); api.ship.mockResolvedValue({ id: 'NEW' }); api.previewDeliveryImport.mockResolvedValue({ filename: '送货明细表.xlsx', sha256: 'abc', row_count: 1, groups: [{ factory_id: 'huaxing', destination: '华兴', delivery_note_no: 'DN-NEW', delivery_date: '2026-09-24', ready: true, issues: [], rows: [{ source_sheet: '送货明细', source_row: 2, contract_no: 'SC-A', item_no: 'ITEM-A', packaging_type: '外箱', paper_quality: 'A33', specification: '10*20', delivered_quantity: 4, order_no: 'ORDER-A', child_no: 'ORDER-A/01', order_line_id: 'LINE-0', issue_id: 'ISSUE-A', status: 'READY', reason: '已匹配' }] }] }); api.confirmDeliveryImport.mockResolvedValue({ shipments: [{ id: 'NEW' }] }); api.acceptBatch.mockResolvedValue({ order_ids: [] }); api.documents.mockResolvedValue([]); api.activityPage.mockResolvedValue({ items: [{ id: 'ACT1', factory_id: 'huaxing', action: '送货单已登记', created_at: '2026-09-25', reference_no: 'DN-1', actor_name: '供应商' }], total: 1, limit: 50, offset: 0 }); api.activity.mockResolvedValue([]); api.exportDocuments.mockResolvedValue(undefined); api.exportOrderImport.mockResolvedValue(undefined); api.receiptOptions.mockResolvedValue([]); api.linkReceipt.mockResolvedValue({ id: 'SHIP-A' }); api.receive.mockResolvedValue({ id: 'SHIP-A' }); api.linkSampleReceipt.mockResolvedValue({ receipt_line_id: 'RL-SAMPLE', order_line_id: 'LINE-0', order_no: 'ORDER-A', quantity: '4' }); api.markUploadOrders.mockResolvedValue([]); api.uploadMarkAssets.mockResolvedValue([]); api.markAssets.mockResolvedValue([]); api.markChecks.mockResolvedValue([]); api.previewMarkCheckUrl.mockReturnValue("/api/check.pdf"); api.previewMarkAssetUrl.mockReturnValue('/api/preview.pdf'); api.markTemplates.mockResolvedValue([]); api.previewMarkPdfUrl.mockReturnValue('/api/preview.pdf') })
@@ -747,9 +774,9 @@ describe('supplier usage guide entry', () => {
     const wrapper = mount(CartonSupplierView, guideOptions); await flushPromises()
     await wrapper.get('button[aria-label="打开供应商协同使用教程"]').trigger('click'); await flushPromises()
     wrapper.findComponent({ name: 'CartonUsageGuide' }).vm.$emit('supplierNavigate', 'supplier-settlements'); await flushPromises()
-    expect(wrapper.findComponent({ name: 'CartonSupplierMonthlyReview' }).exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'CartonSupplierMonthlySummary' }).exists()).toBe(true)
     await wrapper.get('[aria-label="顶部搜索"]').setValue('DN-HEADER')
-    expect(wrapper.findComponent({ name: 'CartonSupplierMonthlyReview' }).props('search')).toBe('DN-HEADER')
+    expect(wrapper.findComponent({ name: 'CartonSupplierMonthlySummary' }).props('search')).toBe('DN-HEADER')
     expect(api.acceptBatch).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -2244,7 +2271,7 @@ describe('supplier receipt pricing entry', () => {
     await priceCategory(wrapper).trigger('click')
     const panel = wrapper.get('[aria-label="供应商价格核对厂区"]')
     expect(panel.text()).toContain('缺价与异议核对')
-    expect(panel.findAll('button').some(button => button.text() === '收料单价更正 / 待办')).toBe(true)
+    expect(panel.findAll('button').some(button => button.text() === '收料单价更正 / 待办')).toBe(false)
     await panel.findAll('button').find(button => button.text() === '前往完整单价更正')!.trigger('click'); await flushPromises()
     expect(wrapper.getComponent({ name: 'CartonPriceCorrectionDialog' }).props()).toMatchObject({ factoryId: 'huaxing', receiptLineId: 'RL-KNOWN', internal: false })
     expect(priceApi.decide).not.toHaveBeenCalled(); expect(priceApi.propose).not.toHaveBeenCalled()

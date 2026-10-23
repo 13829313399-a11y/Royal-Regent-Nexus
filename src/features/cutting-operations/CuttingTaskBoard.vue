@@ -60,7 +60,7 @@ watchCuttingWorkspace(()=>void load())
         <label>订单号／货号<input v-model="query" maxlength="80" placeholder="查询全部匹配订单" /></label>
         <label>执行方<select v-model="execution"><option value="">本厂与外发</option><option value="internal">本厂</option><option value="outsourced">外发</option></select></label>
         <Button :disabled="busy">查询／刷新</Button>
-        <Button type="button" variant="outline" :disabled="busy" @click="resetFilters">清空筛选</Button>
+        <Button type="button" variant="outline" :disabled="busy" @click="resetFilters">清除订单／执行方筛选</Button>
       </form>
       <p v-if="unapplied" class="cutting-muted" role="status">筛选有未查询的修改，当前结果仍按上次查询条件展示。</p>
       <p class="cutting-muted">当前查询日期：{{applied.day}}。切换任务视图、翻页及刷新不提交未查询的日期、订单或执行方条件。</p>

@@ -75,6 +75,28 @@ export interface CartonSupplierAcceptanceResponse {
   delivery_differences?: { order_line_id: string; packaging_type: string; planned_date: string; promised_date: string; difference_days: number }[]
 }
 
+export interface CartonSupplierPromiseLate {
+  key: string
+  order_no: string
+  customer_name: string
+  packaging_type: string
+  promised_date: string
+  difference_days: number
+}
+
+export interface CartonSupplierPromiseChange {
+  id: string
+  order_id: string
+  order_no: string
+  customer_name: string
+  packaging_type: string
+  line_no: number
+  previous_promised_date: string
+  promised_date: string
+  actor_name: string
+  created_at: string
+}
+
 export interface CartonPurchaseOrderBatchResponse {
   id: string
   document_no: string
@@ -113,6 +135,12 @@ export interface CartonOrderResponse {
   customer_due_date?: string | null
   safety_lead_days?: number
   due_date: string
+  plan_date_manual?: boolean
+  rush?: boolean
+  rush_reason?: string
+  rush_at?: string | null
+  rush_ack_at?: string | null
+  rush_acknowledged?: boolean
   status: string
   note: string
   revision: number
@@ -181,6 +209,9 @@ export interface CartonOrderCreateRequest {
   order_date: string
   customer_due_date?: string | null
   due_date: string
+  plan_date_manual?: boolean
+  rush?: boolean
+  rush_reason?: string
   status: 'CONFIRMED'
   note: string
   lines: Array<{
@@ -268,6 +299,22 @@ export interface OpeningInventoryOptions {
   snapshot_date?: string
   dimension_unit: 'cm' | 'in'
   currency: string
+}
+export interface OpeningInventoryBatch {
+  batch_id: string; filename: string; imported_at: string; actor_name: string
+  row_count: number; reversed_count: number; status: 'ACTIVE' | 'PARTIAL' | 'REVERSED'
+  date_from: string; date_to: string
+}
+export interface OpeningBatchReversalPreview extends OpeningInventoryBatch {
+  factory_id: string; source_fingerprint: string; errors: string[]
+  totals: Array<{ unit: string; quantity: string }>
+  rows: Array<{ movement_id: string; customer_name: string; contract_no: string; item_no: string
+    packaging_type: string; paper_quality: string; specification: string; quantity: string
+    unit: string; unit_price: string; location: string; occurred_at: string }>
+}
+export interface OpeningBatchReversalResult {
+  factory_id: string; batch_id: string; reversed_count: number; status: 'REVERSED'
+  duplicate: boolean; movement_ids: string[]
 }
 export interface OpeningInventoryPreview {
   factory_id: string; original_filename: string; source_fingerprint: string
@@ -687,6 +734,16 @@ export const cartonProcurementApi = {
       { params: { factory_id: factoryId, ...filters } })
     return response.data
   },
+  async supplierPromiseNotices(factoryId: string, limit = 20, offset = 0) {
+    const response = await http.get<{ late: CartonSupplierPromiseLate[]; changes: CartonSupplierPromiseChange[]; acknowledged: string[]; total: number; has_more: boolean }>(
+      '/carton-procurement/supplier-promise-changes', { params: { factory_id: factoryId, limit, offset } })
+    return response.data
+  },
+  async acknowledgePromiseNotice(factoryId: string, key: string) {
+    const response = await http.post<{ key: string }>('/carton-procurement/promise-notices/ack',
+      { factory_id: factoryId, key })
+    return response.data
+  },
   async scheduleOrders(factoryId: string) {
     const items: CartonScheduleOrder[] = []
     for (let offset = 0; ; offset += 500) {
@@ -863,6 +920,13 @@ export const cartonProcurementApi = {
       { factory_id: factoryId, expected_revision: order.revision, issue_to_supplier: order.status !== 'CONFIRMED', reason,
         ...(customerDueDate ? { customer_due_date: customerDueDate } : {}),
         ...(dueDate ? { due_date: dueDate } : {}) },
+    )
+    return response.data
+  },
+  async setOrderRush(factoryId: string, orderNo: string, rush: boolean, reason = '') {
+    const response = await http.post<CartonOrderResponse>(
+      `/carton-procurement/orders/${encodeURIComponent(orderNo)}/rush`,
+      { factory_id: factoryId, rush, reason },
     )
     return response.data
   },
@@ -1085,6 +1149,22 @@ export const cartonProcurementApi = {
     form.append('options', JSON.stringify(options))
     return (await http.post<OpeningInventoryPreview>('/carton-procurement/inventory/history-imports/preview', form, { params: { factory_id: factoryId }, headers: { 'Content-Type': 'multipart/form-data' } })).data
   },
+  async listOpeningInventoryBatches(factoryId: string, offset = 0) {
+    return (await http.get<{ factory_id: string; total: number; items: OpeningInventoryBatch[] }>(
+      '/carton-procurement/inventory/history-imports/batches', { params: { factory_id: factoryId, limit: 20, offset } },
+    )).data
+  },
+  async previewOpeningBatchReversal(factoryId: string, batchId: string) {
+    return (await http.post<OpeningBatchReversalPreview>(
+      `/carton-procurement/inventory/history-imports/batches/${encodeURIComponent(batchId)}/reversal-preview`,
+      null, { params: { factory_id: factoryId } },
+    )).data
+  },
+  async reverseOpeningBatch(batchId: string, payload: { factory_id: string; request_id: string; expected_fingerprint: string; reason: string }) {
+    return (await http.post<OpeningBatchReversalResult>(
+      `/carton-procurement/inventory/history-imports/batches/${encodeURIComponent(batchId)}/reverse`, payload,
+    )).data
+  },
   async uploadHistoryInventory(factoryId: string, file: File, options?: OpeningInventoryOptions, fingerprint?: string) {
     const form = new FormData()
     form.append('file', file)
@@ -1149,9 +1229,32 @@ export const cartonProcurementApi = {
     })
     return response.data.items
   },
-  async listImportsPage(factoryId: string, importType: CartonImportBatchResponse['import_type'], offset = 0, search = '', customer = '全部客户') {
+  async listImportsPage(
+    factoryId: string,
+    filters: {
+      types?: CartonImportBatchResponse['import_type'][]
+      status?: 'ALL' | 'ACTIVE' | 'REJECTED'
+      search?: string
+      customer?: string
+      dateFrom?: string
+      dateTo?: string
+      limit?: number
+      offset?: number
+    } = {},
+  ) {
     return (await http.get<{ items: CartonImportBatchResponse[]; total: number }>('/carton-procurement/imports', {
-      params: { factory_id: factoryId, import_type: importType, summary_only: true, limit: 8, offset, search, customer_code: customer === '全部客户' ? '' : customer },
+      params: {
+        factory_id: factoryId,
+        import_types: (filters.types ?? []).join(','),
+        status: filters.status && filters.status !== 'ALL' ? filters.status : '',
+        summary_only: true,
+        limit: filters.limit ?? 20,
+        offset: filters.offset ?? 0,
+        search: filters.search ?? '',
+        customer_code: filters.customer && filters.customer !== '全部客户' ? filters.customer : '',
+        date_from: filters.dateFrom ?? '',
+        date_to: filters.dateTo ?? '',
+      },
     })).data
   },
   async importDetail(factoryId: string, batchId: string) {

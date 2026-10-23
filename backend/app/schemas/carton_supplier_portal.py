@@ -153,6 +153,10 @@ class CancellationAcknowledge(Payload):
     expected_order_revision: int = Field(ge=1)
 
 
+class RushAcknowledge(Payload):
+    expected_rush_version: str | None = Field(default=None, min_length=64, max_length=64)
+
+
 class ShipmentStatusChange(Payload):
     request_id: str = Field(min_length=8, max_length=128)
     expected_revision: int = Field(ge=1)

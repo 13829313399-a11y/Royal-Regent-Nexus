@@ -15,7 +15,7 @@ export const paperFlute = (value: string) => paperQualities.find(row => key(row.
 export const paperStandard = (value: string) => standardPaperTypes.find(row => key(row.name) === key(value))
 // Old names remain exact historical identities. Do not rename or merge their stock.
 export const isCardPaper = (value: string) => !!paperStandard(value)?.card || ['卡纸', '隔卡'].includes(key(value))
-export const dimensionLabel = (unit: string) => ({ cm: '厘米（cm）', mm: '毫米（mm）', in: '英寸（inch）', inch: '英寸（inch）' })[unit.trim().toLowerCase()] || (unit ? `原单位：${unit}` : '未注明尺寸单位')
+export const dimensionLabel = (unit: string) => ({ cm: '厘米（cm）', mm: '毫米（mm）', in: 'inch', inch: 'inch' })[unit.trim().toLowerCase()] || (unit ? `原单位：${unit}` : '未注明尺寸单位')
 
 /** Display only: neither the stored specification nor its original unit is changed. */
 export function dimensionReference(specification: string, unit: string, preferredUnit?: 'cm' | 'inch' | 'mm'): string {

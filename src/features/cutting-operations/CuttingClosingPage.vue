@@ -20,11 +20,13 @@ import CuttingMonthlyOverview from './CuttingMonthlyOverview.vue'
 // Editable search text is applied only by an explicit query.
 const appliedQuery=ref('')
 const closingView=ref('overview')
+const financialContext=ref(0)
 let financialGeneration=0
 let locationPending=true
 async function changeClosingView(value:string){
  locationPending=false
  financialGeneration++
+ financialContext.value++
  closingView.value=value;await nextTick()
  if(value==='period')periodPanel.value?.activateMonth(month.value)
  if(value==='settlement')settlementPanel.value?.activateMonth(month.value)
@@ -34,12 +36,12 @@ const closingTabs=[{id:'overview',label:'月结总览'},{id:'period',label:'内�
 const periodPanel=ref<InstanceType<typeof CuttingPeriodClosing>>()
 const route=inject(routeLocationKey,undefined)
 async function openMonthly(kind:'period'|'settlement'|'payment',targetMonth:string,id:string,eventId?:string){
-  const ticket=++financialGeneration,previousView=closingView.value
+  const ticket=++financialGeneration,context=++financialContext.value,previousView=closingView.value
   closingView.value=kind;await nextTick()
   const opened=kind==='period'?await periodPanel.value?.openPeriod(targetMonth,eventId)
     :kind==='settlement'?await settlementPanel.value?.openStatement(targetMonth,id,eventId)
     :await paymentPanel.value?.openPayment(targetMonth,id,eventId)
-  if(!alive||ticket!==financialGeneration)return
+  if(!alive||ticket!==financialGeneration||context!==financialContext.value)return
   if(opened)month.value=targetMonth
   else closingView.value=previousView
 }
@@ -73,7 +75,12 @@ let generation=0,alive=true
 const location=useCuttingLocation(()=>true,()=>{void loadLocation()})
 onBeforeUnmount(()=>{alive=false;generation++;financialGeneration++})
 function clearPreview(){generation++;result.value=undefined;loading.value=false;error.value=''}
-watch(month,clearPreview,{flush:'sync'})
+watch(month,()=>{financialContext.value++;clearPreview()},{flush:'sync'})
+function restoredMonth(kind:'period'|'settlement'|'payment',targetMonth:string,context:number|undefined){
+  if(!alive||context!==financialContext.value||closingView.value!==kind||loading.value||accessUnavailable.value||!access.value?.enabled)return
+  const permission=kind==='period'?'cost_read':kind==='settlement'?'settlement_read':'payment_read'
+  if(access.value.permissions.includes(permission))month.value=targetMonth
+}
 function ready(rights:Access){return rights.enabled&&rights.orders_schema_ready&&rights.reporting_schema_ready&&rights.usage_schema_ready}
 async function load(nextPage=1,followLocation=false,apply=false){
   if(apply){appliedQuery.value=query.value;nextPage=1}
@@ -115,9 +122,9 @@ onMounted(()=>void loadLocation())
     <p class="cutting-notice">内部材料月结与外发加工费结算分别办理；下方订单预览提供实时核对，尚未冻结或锁月。付款登记与核销在下方独立办理，不操作银行。</p>
     <CuttingMonthlyOverview v-model:month="month" v-if="access?.enabled" v-show="closingView==='overview'||closingView==='exports'" :access="access" :exports-only="closingView==='exports'" @open="openMonthly" />
     <div v-show="closingView==='opening'"><CuttingCutover :access="access" :access-loading="loading" @payment="openPayment" @settlement="openSettlement" /></div>
-    <div v-show="closingView==='period'"><CuttingPeriodClosing ref="periodPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" /></div>
-    <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" @payment="openPayment" /></div>
-    <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" @settlement="openSettlement" /></div>
+    <div v-show="closingView==='period'"><CuttingPeriodClosing ref="periodPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @restored="(target,context)=>restoredMonth('period',target,context)" /></div>
+    <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @restored="(target,context)=>restoredMonth('settlement',target,context)" @payment="openPayment" /></div>
+    <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @restored="(target,context)=>restoredMonth('payment',target,context)" @settlement="openSettlement" /></div>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p>
     <Button v-if="error" variant="outline" :disabled="loading" @click="retryWorkspace">重新读取月结工作区</Button>
     <p v-if="loading" role="status">正在读取月度核对…</p>

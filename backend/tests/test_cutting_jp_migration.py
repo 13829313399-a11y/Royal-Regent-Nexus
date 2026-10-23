@@ -19,6 +19,8 @@ VERSIONS = BACKEND/'alembic/versions'
 REPAIR = VERSIONS/'20261017_0167_reconcile_cutting_jp_collision.py'
 JP = BACKEND/'alembic/legacy/20261015_0163_huakang_b_jp_intake.py'
 CUTTING = VERSIONS/'20261015_0163_cutting_internal_periods.py'
+# These preservation fixtures end at the historical reconciliation/options head.
+# New carton columns are verified separately by test_carton_order_rush_migration.
 FINAL_HEAD = '20261022_0174'
 
 
@@ -30,7 +32,7 @@ def seed_customer(path):
                    (b'\x00\xff-original-material-evidence', '2026-10-21'))
 
 
-def migrate(path, revision='head', success=True):
+def migrate(path, revision=FINAL_HEAD, success=True):
     env = dict(os.environ, DATABASE_URL='sqlite:///'+path.as_posix(), SEED_DEFAULT_ACCOUNTS='false',
                CUTTING_OPS_ENABLED='false', PYTHONUTF8='1', PYTHONIOENCODING='utf-8')
     result = subprocess.run([sys.executable,'-m','alembic','upgrade',revision],cwd=BACKEND,env=env,
@@ -103,7 +105,7 @@ def test_unique_revision_graph_and_frozen_archive():
                 identifiers.append(ast.literal_eval(node.value))
     assert len(identifiers) == len(set(identifiers))
     scripts=ScriptDirectory(str(BACKEND/'alembic'))
-    assert scripts.get_heads() == [FINAL_HEAD]
+    assert scripts.get_heads() == ['20261022_0175']
     assert list(scripts.walk_revisions())
     assert runpy.run_path(str(JP))['revision'] == '20261015_0163'
     assert sha256(JP.read_bytes().replace(b'\r\n',b'\n')).hexdigest() == 'dd653505555f3fe0847974ee14f379e41dc78a728bd2eeffbf26c63b3ecce47e'

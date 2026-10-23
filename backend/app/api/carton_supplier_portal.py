@@ -8,12 +8,12 @@ from sqlalchemy import select
 from app.models.carton_mark import CartonMarkAsset
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
-from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, CancellationAcknowledge, ShipmentStatusChange, ShipmentReceiptLink, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
+from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, CancellationAcknowledge, RushAcknowledge, ShipmentStatusChange, ShipmentReceiptLink, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.services import carton_supplier_portal as service
 from app.services import carton_supplier_delivery_import as delivery_import
 from app.services import carton_supplier_receipt_link as receipt_link
 from app.services import carton_supplier_settlement as settlement
-from app.schemas.carton_supplier_settlement import SupplierSettlementReview
+from app.schemas.carton_supplier_settlement import SupplierSettlementReview, MonthlySettlementAction
 from app.schemas.carton_supplier_portal import SupplierMarkAssetOut, SupplierMarkCheckOut, SupplierMarkUploadOrderOut, SupplierMarkAssetUploadOut
 from app.services import carton_supplier_mark_check as mark_check
 from app.services import carton_supplier_mark_upload as mark_upload
@@ -55,6 +55,43 @@ def memberships(db: Session = Depends(get_db), user: AuthContext = Depends(get_c
 def settlement_workspace(factory_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), currency: str = "CNY",
                          db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return settlement.supplier_workspace(db, user, factory_id, period, currency)
+
+
+@router.get("/monthly-settlements/workspace")
+def monthly_settlement_workspace(factory_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+                                 currency: str = "CNY", db: Session = Depends(get_db),
+                                 user: AuthContext = Depends(get_current_user)):
+    """Read-only copy of the internal simplified month, without internal blockers."""
+    from app.services import carton_monthly_settlement as monthly
+    if not service.supplier_permission(user, "carton_supplier:read", factory_id):
+        raise HTTPException(403, "没有本厂供应商月结查看权限")
+    data = monthly.workspace(db, factory_id, period, currency)
+    keys = ("source_key", "kind", "document_no", "acceptance_date", "customer_name", "contract_no",
+            "item_no", "packaging_type", "paper_quality", "specification", "unit", "quantity",
+            "unit_price", "amount", "currency")
+    return {
+        "factory_id": data["factory_id"], "supplier_name": data["supplier_name"],
+        "period": data["period"], "currency": data["currency"], "read_only": True,
+        "status": data["status"], "stale": data["stale"],
+        "submitted_at": data["submitted_at"], "supplier_confirmed_at": data["supplier_confirmed_at"],
+        "disputed_reason": data["disputed_reason"], "locked_at": data["locked_at"],
+        "can_confirm": False,
+        "can_dispute": False,
+        "totals": data["totals"],
+        "lines": [{key: line.get(key) for key in keys} for line in data["lines"]],
+    }
+
+
+@router.post("/monthly-settlements/confirm")
+def monthly_settlement_confirm(payload: MonthlySettlementAction, db: Session = Depends(get_db),
+                               user: AuthContext = Depends(get_current_user)):
+    raise HTTPException(410, "新月结确认已停用；本月对账仅供核对，请按原月结流程办理")
+
+
+@router.post("/monthly-settlements/dispute")
+def monthly_settlement_dispute(payload: MonthlySettlementAction, db: Session = Depends(get_db),
+                               user: AuthContext = Depends(get_current_user)):
+    raise HTTPException(410, "新月结异议已停用；本月对账仅供核对，请按原月结流程办理")
 
 
 @router.post("/settlements/{identifier}/review")
@@ -337,6 +374,12 @@ def carton_mark_document(template_id: str, kind: str, factory_id: str, preview: 
 def acknowledge_cancellation(order_id: str, payload: CancellationAcknowledge, db: Session = Depends(get_db),
                              user: AuthContext = Depends(get_current_user)):
     return service.acknowledge_cancellation(db, user, order_id, payload)
+
+
+@router.post("/orders/{order_id}/rush-ack")
+def acknowledge_rush(order_id: str, payload: RushAcknowledge, db: Session = Depends(get_db),
+                     user: AuthContext = Depends(get_current_user)):
+    return service.acknowledge_rush(db, user, order_id, payload)
 
 
 @router.put("/papers/{line_id}/commitment")

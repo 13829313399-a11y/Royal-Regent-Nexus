@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing import Literal
 from sqlalchemy import select
 
-from app.models.carton_procurement import CartonCustomer, CartonOrder, CartonOrderLine, CartonInventoryMovement, CartonClosing
+from app.models.carton_procurement import CartonAuditEvent, CartonCustomer, CartonOrder, CartonOrderLine, CartonInventoryMovement, CartonClosing
 from app.models.carton_positions import CartonLocation, CartonPositionEntry
 from app.services import carton_positions as positions
 from app.services.carton_history_wide import date_value, number
@@ -219,20 +219,9 @@ def semantic(row):
     return tuple(normalize(row[key]) for key in ("customer_code","contract_no","item_no","packaging_type","paper_quality","specification","unit","location_id"))
 
 
-def conflicting_file_rows(row, old):
-    """Explain the actual collision; different materials never share this key."""
-    differences=[]
-    for key,label in (("opening_quantity","数量"),("unit_price","单价"),("occurred_at","入库时间")):
-        if old[key]!=row[key]:
-            def display(value):
-                if value is None: return "待核价"
-                if isinstance(value,Decimal): return format(value.normalize(),"f")
-                return str(value)
-            differences.append(f"{label}：前行 {display(old[key])}，本行 {display(row[key])}")
-    identity=f"合同 {row['contract_no'] or '未填写'}，货号 {row['item_no']}，{row['paper_quality']}{row['packaging_type']}，{row['specification']}，{row['location']}"
-    return (f"与{old['source']}的客户、合同、货号、纸品类型、纸质、规格、单位及仓位相同（{identity}），"
-            + "；".join(differences)
-            + "。请核对是否为重复记录或需要累计的分笔结余；不同纸质可分行导入，本批尚未入账")
+def opening_value(quantity, price, currency, occurred_at):
+    """Compare source lots independently of Excel row order and decimal formatting."""
+    return (Decimal(quantity), Decimal(price or 0), currency, inbound_time(occurred_at, 0, "期初库存"))
 
 
 def _preview(db,factory,filename,content,options):
@@ -241,11 +230,16 @@ def _preview(db,factory,filename,content,options):
     locations=list(db.scalars(select(CartonLocation).where(CartonLocation.factory_id==factory)))
     customers=list(db.scalars(select(CartonCustomer).where(CartonCustomer.factory_id==factory)))
     movements=list(db.scalars(select(CartonInventoryMovement).where(CartonInventoryMovement.factory_id==factory)))
+    from app.services.carton_opening_batches import REVERSED_EVENT, retired_openings
+    retired=retired_openings(db.scalars(select(CartonAuditEvent).where(
+        CartonAuditEvent.factory_id==factory, CartonAuditEvent.event_type==REVERSED_EVENT)))
+    retirement_generation=digest(sorted(retired)) if retired else ""
     orders=list(db.scalars(select(CartonOrder).where(CartonOrder.factory_id==factory)))
     lines=list(db.scalars(select(CartonOrderLine).where(CartonOrderLine.factory_id==factory)))
     closings=list(db.scalars(select(CartonClosing).where(CartonClosing.factory_id==factory)))
     parts=list(db.scalars(select(CartonPositionEntry).where(CartonPositionEntry.factory_id==factory)))
-    evidence={"version":5,"factory":factory,"file":hashlib.sha256(content).hexdigest(),"options":options.model_dump(),
+    evidence={"version":7,"factory":factory,"file":hashlib.sha256(content).hexdigest(),"options":options.model_dump(),
+        "retired_openings":sorted(retired),
         "customers":sorted((r.id,r.revision,r.customer_name,r.status) for r in customers),
         "locations":sorted((r.id,r.revision,r.warehouse,r.bin_code,r.status) for r in locations),
         "movements":sorted((r.id,str(r.quantity),str(r.unit_price),r.currency,r.source_line_id) for r in movements),
@@ -266,7 +260,7 @@ def _preview(db,factory,filename,content,options):
         if p.movement_id: parts_by_movement[p.movement_id].append(p)
     existing={}
     for movement in movements:
-        if movement.source_type!="HISTORY_INVENTORY": continue
+        if movement.source_type!="HISTORY_INVENTORY" or movement.id in retired: continue
         allocations=parts_by_movement[movement.id]
         if len(allocations)!=1: continue
         saved={key:getattr(movement,key) for key in ("customer_code","contract_no","item_no","packaging_type","paper_quality","specification","unit")}
@@ -275,7 +269,7 @@ def _preview(db,factory,filename,content,options):
         if linked and linked.dimension_unit in {"cm","in"} and dimensions(linked.specification):
             saved["specification"]=" × ".join(format(v.normalize(),"f") for v in dimensions(linked.specification))+" "+linked.dimension_unit
         existing.setdefault(semantic(saved),[]).append(movement)
-    seen={};prepared=[];totals={}
+    groups=defaultdict(list);prepared=[];totals={}
     for row in rows:
         if row["status"]=="ZERO":
             result["skipped_count"]+=1;result["rows"].append(row);continue
@@ -305,48 +299,58 @@ def _preview(db,factory,filename,content,options):
                 and line.packaging_type==row["packaging_type"] and line.paper_quality==row["paper_quality"] and line.unit==row["unit"]
                 and line.dimension_unit==options.dimension_unit and dimensions(line.specification)==row["dimensions"]]
             key=semantic(row)
-            source_line_id="CHI2-LINE-"+digest([factory,key,row["occurred_at"]])[:48]
-            row["source_line_id"]=source_line_id
-            previous=existing.get(key,[])
-            uncertain_openings=[movement for movement in movements if movement.source_type=="HISTORY_INVENTORY" and not movement.order_line_id
+            uncertain_openings=[movement for movement in movements if movement.source_type=="HISTORY_INVENTORY" and movement.id not in retired and not movement.order_line_id
                 and all(normalize(getattr(movement,field))==normalize(row[field]) for field in ("customer_code","contract_no","item_no","packaging_type","paper_quality","unit"))
                 and dimensions(movement.specification)==row["dimensions"] and not re.search(r"(?:cm|in|厘米|英寸)\s*$",movement.specification,re.I)
                 and any(part.location_id==loc.id for part in parts_by_movement[movement.id])]
             if uncertain_openings:
                 fail(row["source"],"已有同纸品同数字规格的期初记录未明确尺寸单位，请先核实旧记录，不能猜测合并或再次入账")
-            if previous:
-                if len(previous)!=1: fail(row["source"],"已有多笔同库存身份的期初记录，请先核实，不能再次累计")
-                saved=previous[0]
-                same_date=inbound_time(saved.occurred_at,0,row["source"])==row["occurred_at"]
-                same_value=saved.quantity==row["opening_quantity"] and saved.unit_price==(row["unit_price"] or Decimal(0)) and saved.currency==row["currency"]
-                if not same_date or not same_value: fail(row["source"],"同一库存身份已有不同入库时间、数量或价格的期初记录，请核实原单；不能覆盖或再次累计")
-                row.update(status="DUPLICATE",existing_movement_id=saved.id)
-                row["warnings"].append("相同库存身份及期初数值已入账，本次跳过")
-                result["skipped_count"]+=1
-            elif key in seen:
-                old=seen[key]
-                if old["opening_quantity"]!=row["opening_quantity"] or old["unit_price"]!=row["unit_price"] or old["occurred_at"]!=row["occurred_at"]:
-                    fail(row["source"],conflicting_file_rows(row,old))
-                row["status"]="DUPLICATE";row["warnings"].append("与本文件前行相同，跳过重复期初")
-                result["skipped_count"]+=1
-            else:
-                if any(c.status=="LOCKED" and c.customer_code==row["customer_code"] and c.period>=row["snapshot_date"][:7] for c in closings):
-                    fail(row["source"],"入库时间所在或后续月份已锁账，请先由主管核对锁账范围")
-                seen[key]=row
             if len(matches)==1:
                 row.update(order_line_id=matches[0].id,posting_specification=matches[0].specification)
                 row["warnings"].append("按相同尺寸单位唯一关联正式纸品；仅恢复期初库存，不增加到货进度")
             else:
                 row.update(order_line_id=None,posting_specification=canonical_spec)
                 row["warnings"].append("未按相同尺寸单位唯一匹配订单，作为带明确尺寸单位的独立旧库存")
-            if row["status"]=="READY":
+            groups[key].append(row)
+            result["rows"].append(row)
+        except HTTPException as exc: result["errors"].append(str(exc.detail))
+    # Stock is already aggregated by material and location in the inventory projection.
+    # Post each source lot so prices, accounting dates and audit rows stay intact.
+    for key, group in groups.items():
+        try:
+            previous=existing.get(key,[])
+            saved_by_value=defaultdict(list)
+            for saved in previous:
+                saved_by_value[opening_value(saved.quantity,saved.unit_price,saved.currency,saved.occurred_at)].append(saved)
+            values=[opening_value(row["opening_quantity"],row["unit_price"],row["currency"],row["occurred_at"]) for row in group]
+            if previous and Counter(values)!=Counter({value:len(saved) for value,saved in saved_by_value.items()}):
+                fail(group[0]["source"],"同一库存身份已有不同入库时间、数量或价格的期初记录，或分笔行数不一致；请核实整组原单，不能覆盖或再次累计")
+            total=sum((row["opening_quantity"] for row in group),Decimal(0))
+            if total>Decimal("99999999999999.9999"):
+                fail(group[0]["source"],"相同库存合并数量超过库存数量范围，请核实整组结余")
+            if len(group)>1:
+                first=group[0]
+                result["warnings"].append(f"{first['source']}等 {len(group)} 行：相同客户、合同、货号、纸品、规格、单位及仓位的库存合并汇总 {format(total.normalize(),'f')} {first['unit']}；各原表行的数量、单价和入库时间分别保留。")
+            occurrences=Counter()
+            for row,value in zip(group,values,strict=True):
+                occurrences[value]+=1
+                # Equal-valued rows are intentional lots too; their ordinal makes IDs unique.
+                identity=[format(value[0].normalize(),'f'),format(value[1].normalize(),'f'),value[2],value[3]]
+                row["source_line_id"]="CHI2-LINE-"+digest([factory,key,identity,occurrences[value],retirement_generation])[:48]
+                if previous:
+                    saved=saved_by_value[value].pop()
+                    row.update(status="DUPLICATE",existing_movement_id=saved.id)
+                    row["warnings"].append("整组期初分笔及数值已入账，本次跳过，不重复累计")
+                    result["skipped_count"]+=1
+                    continue
+                if any(c.status=="LOCKED" and c.customer_code==row["customer_code"] and c.period>=row["snapshot_date"][:7] for c in closings):
+                    fail(row["source"],"入库时间所在或后续月份已锁账，请先由主管核对锁账范围")
                 bucket=totals.setdefault((row["unit"],row["currency"]),{"unit":row["unit"],"currency":row["currency"],"quantity":Decimal(0),"amount":Decimal(0),"missing_price_count":0})
                 bucket["quantity"]+=row["opening_quantity"]
                 if row["amount"] is None:
                     result["missing_price_count"]+=1;bucket["missing_price_count"]+=1
                 else: bucket["amount"]+=row["amount"]
                 prepared.append(row)
-            result["rows"].append(row)
         except HTTPException as exc: result["errors"].append(str(exc.detail))
     for bucket in totals.values():
         if bucket["missing_price_count"]: bucket["amount"]=None
@@ -372,7 +376,7 @@ def import_opening_inventory(db,factory_id,filename,content,user,options,expecte
         if expected_preview_fingerprint!=preview["source_fingerprint"] and not duplicate:
             raise HTTPException(409,detail="文件、导入设置、客户、仓位、订单或库存已变化，请重新预览")
         source_hash=digest({"file":hashlib.sha256(content).hexdigest(),"options":options.model_dump()})
-        source_id="CHI2-"+source_hash[:32]
+        source_id="CHI2-"+uuid4().hex
         ids=[];matched=0;total=Decimal(0)
         for row in prepared:
             occurred_at=row["occurred_at"]

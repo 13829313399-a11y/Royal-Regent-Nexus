@@ -10,6 +10,9 @@ export interface CartonMaterialLine {
 }
 
 export interface CartonOrderRow {
+  rush?: boolean
+  rushReason?: string
+  rushAcknowledged?: boolean
   id: string
   orderDate: string
   customerDueDate?: string | null

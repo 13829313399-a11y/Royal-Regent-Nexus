@@ -20,6 +20,8 @@ export default defineConfig(({ mode }) => {
           '**/.local-dev/**',
           '**/backend/.pytest-tmp*/**',
           '**/dist/**',
+          '**/*.tmpdir/**',
+          '**/.*.tmpdir/**',
         ],
       },
       proxy: {

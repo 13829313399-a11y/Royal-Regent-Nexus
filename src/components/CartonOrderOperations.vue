@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { CalendarClock, Copy, Download, GitBranch, Minus, Pencil, Plus, Trash2, Truck, X } from '@lucide/vue'
+import { CalendarClock, Copy, Download, GitBranch, Minus, Pencil, Plus, Trash2, Truck, X, Zap } from '@lucide/vue'
 import CartonOrderMoreMenu from './CartonOrderMoreMenu.vue'
 import CartonOrderMenuItem from './CartonOrderMenuItem.vue'
-type ActionKey = 'material' | 'correction' | 'edit' | 'merge' | 'copy' | 'split' | 'purchase' | 'date' | 'replenish' | 'append' | 'reduce' | 'adjust' | 'return-stock' | 'undo-replenish' | 'cancel' | 'delete'
+type ActionKey = 'material' | 'correction' | 'edit' | 'merge' | 'copy' | 'split' | 'rush' | 'purchase' | 'date' | 'replenish' | 'append' | 'reduce' | 'adjust' | 'return-stock' | 'undo-replenish' | 'cancel' | 'delete'
 defineProps<{ orderNo: string; disabled?: boolean; actions: { key: ActionKey; visible?: boolean; disabled?: boolean; label?: string; aria?: string; hint?: string; run: () => void }[] }>()
 const opened = defineModel<boolean>('open', { default: false })
 const config = {
   material: { label: '修改未送货纸品', icon: Pencil, tone: 'amber' }, correction: { label: '调整订单信息', icon: Pencil, tone: 'correction' },
   edit: { label: '修改订单', icon: Pencil, tone: 'neutral' }, merge: { label: '合单 · 新建合同', icon: GitBranch, tone: 'teal' },
   copy: { label: '复制订单信息', icon: Copy, tone: 'teal' }, split: { label: '拆单 / 拆分记录', icon: GitBranch, tone: 'teal' },
+  rush: { label: '急单标记', icon: Zap, tone: 'danger' },
   purchase: { label: '采购单', icon: Download, tone: 'teal' }, date: { label: '调整交期', icon: CalendarClock, tone: 'blue' },
   replenish: { label: '补单（原数量不变）', icon: Plus, tone: 'teal' }, append: { label: '追加订单', icon: Plus, tone: 'amber' },
   reduce: { label: '减少未入库量', icon: Minus, tone: 'danger' }, adjust: { label: '调整订单', icon: Pencil, tone: 'neutral' },

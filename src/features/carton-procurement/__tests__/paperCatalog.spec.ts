@@ -36,7 +36,7 @@ it('filters card evidence separately, leaving unmatched and unrelated paper outs
 })
 it('exports only supplied filtered rows with original units, identifiers, acceptance month and safe Excel text', () => {
   const csv = settlementCsv([statement('平卡')], new Map([['平卡', source('平卡')], ['普通箱', source('普通箱')]]), '2026-10', 'CNY')
-  expect(csv).toContain('英寸（inch）'); expect(csv).toContain('"\'000123"'); expect(csv).toContain('"\'=BAD()"')
+  expect(csv).toContain('"inch"'); expect(csv).toContain('"\'000123"'); expect(csv).toContain('"\'=BAD()"')
   expect(csv).toContain('2026-10-01'); expect(csv).not.toContain('普通箱')
 })
 

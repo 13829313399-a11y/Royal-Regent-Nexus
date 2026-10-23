@@ -79,12 +79,18 @@ def test_actual_opening_template_concurrent_confirmation_one_post_and_row_audit_
         preview=response.json();assert preview["errors"]==[]
         assert preview["skipped_count"]==1 and preview["missing_price_count"]==1
         assert {row["item_no"] for row in preview["rows"]}=={"000203307004","000203307005"}
+        assert {row["customer_name"] for row in preview["rows"]}=={"迪奇"}
         barrier=Barrier(2)
         def confirm():
             barrier.wait(timeout=10)
             return opening_upload(client,content,preview=False,token=preview["source_fingerprint"])
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses=[future.result(timeout=30) for future in [pool.submit(confirm),pool.submit(confirm)]]
+        # The existing file-admission guard may ask one concurrent upload to retry.
+        assert all(response.status_code in {201,429} for response in responses),[response.text for response in responses]
+        assert any(response.status_code==201 for response in responses)
+        responses=[opening_upload(client,content,preview=False,token=preview["source_fingerprint"])
+                   if response.status_code==429 else response for response in responses]
         assert [response.status_code for response in responses]==[201,201],[response.text for response in responses]
         assert sorted(response.json()["imported_count"] for response in responses)==[0,3]
         assert sorted(response.json()["duplicate"] for response in responses)==[False,True]

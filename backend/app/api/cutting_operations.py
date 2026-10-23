@@ -214,14 +214,18 @@ def settlement_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', 
 def settlement_basis(month: pcs.Month, db: Db, user: User, factory_id: str = '', document_id: str | None = None):
     c.authorize(user, factory_id, 'settlement_read')
     orders_ready(db)
-    return settlement.basis(db, month, document_id)
+    result = settlement.basis(db, month, document_id)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/settlement-preview')
 def settlement_preview(body: ss.Save, db: Db, user: User):
     c.authorize(user, body.factory_id, 'settlement_read')
     orders_ready(db)
-    return settlement.preview(db, body)
+    result = settlement.preview(db, body)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/settlements/{action}')
@@ -259,14 +263,18 @@ def payment_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', doc
 def payment_basis(db: Db, user: User, factory_id: str = '', document_id: str | None = None):
     c.authorize(user, factory_id, 'payment_read')
     orders_ready(db)
-    return payments.basis(db, document_id)
+    result = payments.basis(db, document_id)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/payment-preview')
 def payment_preview(body: pay.Save, db: Db, user: User):
     c.authorize(user, body.factory_id, 'payment_read')
     orders_ready(db)
-    return payments.preview(db, body)
+    result = payments.preview(db, body)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/payments/{action}')
@@ -276,7 +284,7 @@ def payment_write(action: pay.Action, body: dict, db: Db, user: User):
     c.authorize(user, body.get('factory_id', ''), permission)
     orders_ready(db)
     parsed = pay.parse(action, body)
-    return c.command(db, user, parsed, 'payment-'+action, lambda: payments.execute(db, user, parsed, action))
+    return c.payment_command(db, user, parsed, 'payment-'+action, lambda: payments.execute(db, user, parsed, action))
 
 
 @router.post('/payment-operations/recover')
@@ -304,7 +312,9 @@ def period_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', even
 def period_basis(month: pcs.Month, db: Db, user: User, factory_id: str = ''):
     c.authorize(user, factory_id, 'cost_read')
     orders_ready(db)
-    return periods.prepare(db, month)
+    result = periods.prepare(db, month)
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 @router.post('/periods/{action}')

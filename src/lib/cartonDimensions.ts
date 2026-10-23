@@ -11,7 +11,7 @@ export function cartonDimensionParts(specification: string, unit?: string | null
 export function formatCartonSpecification(specification: string, unit?: string | null) {
   if (!specification.trim()) return ''
   const parts = cartonDimensionParts(specification, unit)
-  return `${parts.specification} ${parts.unit}`
+  return `${parts.specification} ${parts.unit === 'in' ? 'inch' : parts.unit}`
 }
 
 export const UNORDERED_CUSTOMER_CODE = '__UNORDERED__'
