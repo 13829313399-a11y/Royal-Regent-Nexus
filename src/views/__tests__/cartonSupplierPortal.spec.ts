@@ -22,7 +22,7 @@ const unifiedApi = vi.hoisted(() => ({ list: vi.fn(), receive: vi.fn(), dispatch
 vi.mock('@/api/cartonUnifiedDeliveries', async importOriginal => ({ ...await importOriginal<typeof import('@/api/cartonUnifiedDeliveries')>(), cartonUnifiedDeliveriesApi: unifiedApi }))
 const priceApi = vi.hoisted(() => ({ list: vi.fn(), propose: vi.fn(), decide: vi.fn() }))
 vi.mock('@/api/cartonPriceReviews', () => ({ cartonPriceReviewsApi: priceApi }))
-const api = vi.hoisted(() => ({ acknowledgeCancellation: vi.fn(), changeNonArrival: vi.fn(), memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receiptOptions: vi.fn(), linkReceipt: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markAssets: vi.fn(), markUploadOrders: vi.fn(), uploadMarkAssets: vi.fn(), markChecks: vi.fn(), createMarkCheck: vi.fn(), downloadMarkCheck: vi.fn(), previewMarkCheckUrl: vi.fn(), downloadMarkAsset: vi.fn(), previewMarkAssetUrl: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), activityPage: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
+const api = vi.hoisted(() => ({ acknowledgeRush: vi.fn(), acknowledgeCancellation: vi.fn(), changeNonArrival: vi.fn(), memberships: vi.fn(), workspace: vi.fn(), accept: vi.fn(), acceptBatch: vi.fn(), ship: vi.fn(), previewDeliveryImport: vi.fn(), confirmDeliveryImport: vi.fn(), receiptOptions: vi.fn(), linkReceipt: vi.fn(), receive: vi.fn(), linkSampleReceipt: vi.fn(), linkShipmentLine: vi.fn(), members: vi.fn(), member: vi.fn(), upload: vi.fn(), download: vi.fn(), markAssets: vi.fn(), markUploadOrders: vi.fn(), uploadMarkAssets: vi.fn(), markChecks: vi.fn(), createMarkCheck: vi.fn(), downloadMarkCheck: vi.fn(), previewMarkCheckUrl: vi.fn(), downloadMarkAsset: vi.fn(), previewMarkAssetUrl: vi.fn(), markTemplates: vi.fn(), downloadMarkDocument: vi.fn(), previewMarkPdfUrl: vi.fn(), documents: vi.fn(), activity: vi.fn(), activityPage: vi.fn(), exportDocuments: vi.fn(), exportOrderImport: vi.fn() }))
 const router = vi.hoisted(() => ({ replace: vi.fn(), push: vi.fn() }))
 const routeState = vi.hoisted(() => ({ query: { factory: 'huaxing', shipment: undefined } as Record<string, string | undefined> }))
 const can = vi.hoisted(() => vi.fn((_permission: string, _factory?: string, _department?: string) => true))
@@ -44,6 +44,34 @@ function fixture(): PortalWorkspace {
   return { factory_id: 'huaxing', supplier_name: '河源东康', orders: [{ id: 'ORDER-A', order_no: 'ORDER-A', customer_name: 'Dickie', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A', product_name: '产品', status: 'PENDING_SUPPLIER', issue_id: 'ISSUE-A', document_no: 'ORDER-A-P00', order_date: '2026-09-10', planned_date: '2026-09-25', awaiting_issue: false, attachments: [], lines: ['外箱', '平卡'].map((name, index) => ({ id: `LINE-${index}`, line_no: index+1, child_no: `ORDER-A/0${index+1}`, packaging_type: name, paper_quality: 'A33', specification: '10*20', dimension_unit: 'cm', unit: index ? '张' : '个', required_quantity: '100', received_quantity: '0', in_transit_quantity: '0', remaining_to_ship: '100', accepted: true, commitment_revision: 1, promised_date: '2026-09-25' })) }], shipments: [{ id: 'SHIP-A', delivery_note_no: 'DN-A', delivery_date: '2026-09-21', status: 'SENT', revision: 1, created_at: '', confirmed_at: '', acceptance_date: null, acceptance_lines: [], lines: [0,1].map(index => ({ id: `SL-${index}`, order_line_id: `LINE-${index}`, order_no: 'ORDER-A', contract_no: 'SC-A', customer_po: 'PO-A', item_no: 'ITEM-A', customer_name: 'Dickie', child_no: `ORDER-A/0${index+1}`, packaging_type: index ? '平卡' : '外箱', paper_quality: 'A33', specification: '10*20', unit: '个', quantity: '10', unit_price: '2', delivery_unit_price: '2', currency: 'CNY' })) }] }
 }
 const options = { global: { stubs: { AccountMenu: true, NotificationCenter: true, RouterLink: { template: '<a><slot /></a>' }, CartonReceiptAllocations: true } } }
+
+it('keeps rush orders first under each supplier order sort', async () => {
+  const data = fixture(), original = data.orders[0]!
+  data.orders = [{ ...original, rush: false }, { ...original, id: 'RUSH-ORDER', order_no: 'RUSH-ORDER',
+    contract_no: 'RUSH-CONTRACT', rush: true, rush_version: 'a'.repeat(64),
+    lines: original.lines.map(line => ({ ...line, id: `RUSH-${line.id}` })) }]
+  api.workspace.mockResolvedValue(data)
+  const wrapper = mount(CartonSupplierView, options); await flushPromises()
+  try {
+    for (const sort of ['DEFAULT', 'PLANNED_ASC', 'PROMISED_ASC', 'ORDER_DESC']) {
+      await wrapper.get('[aria-label="供应商订单排序"]').setValue(sort)
+      expect(wrapper.findAll('[data-testid="supplier-regular-order-row"]')[0]!.text()).toContain('RUSH-CONTRACT')
+    }
+  } finally { wrapper.unmount() }
+})
+
+it('confirms the rush version displayed on the supplier row', async () => {
+  const data = fixture()
+  data.orders[0] = { ...data.orders[0]!, rush: true, rush_version: 'b'.repeat(64), rush_reason: '客户催货' }
+  api.workspace.mockResolvedValue(data)
+  api.acknowledgeRush.mockResolvedValue({})
+  const wrapper = mount(CartonSupplierView, options); await flushPromises()
+  try {
+    await wrapper.findAll('button').find(button => button.text() === '确认收到急单')!.trigger('click')
+    await flushPromises()
+    expect(api.acknowledgeRush).toHaveBeenCalledWith(expect.objectContaining({ id: 'ORDER-A', rush_version: 'b'.repeat(64) }), 'huaxing')
+  } finally { wrapper.unmount() }
+})
 
 describe('supplier order carton-mark access', () => {
   function mark(id: string, overrides: Partial<SupplierMarkAsset> = {}): SupplierMarkAsset {

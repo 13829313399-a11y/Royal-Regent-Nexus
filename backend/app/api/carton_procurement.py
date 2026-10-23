@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.schemas.carton_customer_assignment import CartonCustomerAssignmentSave, CartonCustomerClaim
 from app.services import carton_file_jobs as file_jobs
+from app.services import carton_opening_batches as opening_batches
 from app.schemas.carton_order_split import SplitCreate, SplitAction, SplitReceiptPreview
 from app.services import carton_order_split as order_splits
 from app.schemas.carton_inventory_report import CartonInventoryReportOut
@@ -1367,6 +1368,31 @@ def post_history_inventory_preview(
         return preview_history_inventory(db,factory_id,file.filename or "history-inventory.xlsx",content,options=options)
 
 
+@router.get("/inventory/history-imports/batches")
+def opening_batches_list(factory_id: str, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _ensure_permission(db, user, "carton_procurement:inventory_write", factory_id)
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, factory)
+    return opening_batches.list_batches(db, factory, limit, offset)
+
+
+@router.post("/inventory/history-imports/batches/{batch_id}/reversal-preview")
+def opening_batch_reversal_preview(batch_id: str, factory_id: str, db: Session = Depends(get_db),
+                                   user: AuthContext = Depends(get_current_user)):
+    factory = _ensure_permission(db, user, "carton_procurement:inventory_write", factory_id)
+    return opening_batches.preview_batch_reversal(db, factory, batch_id)
+
+
+@router.post("/inventory/history-imports/batches/{batch_id}/reverse")
+def opening_batch_reverse(batch_id: str, payload: opening_batches.OpeningBatchReversal,
+                          db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.auth import build_auth_context, get_authenticated_user
+    actor = build_auth_context(db, get_authenticated_user(db, user))
+    _ensure_permission(db, actor, "carton_procurement:inventory_write", payload.factory_id)
+    return opening_batches.reverse_batch(db, batch_id, payload, actor)
+
+
 @router.get("/stocktakes")
 def stocktakes_list(factory_id: str, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0),
                     status: Literal["", "DRAFT", "SUBMITTED", "POSTED", "CANCELLED"] = "",
@@ -1748,10 +1774,12 @@ def withdraw_material_correction(identifier: str, payload: MaterialCorrectionAct
     return material_corrections.act(db, current_user, identifier, payload)
 
 @router.get("/supplier-promise-changes")
-def supplier_promise_change_list(factory_id: str, limit: int = Query(20, ge=1, le=100),
+def supplier_promise_change_list(factory_id: str, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
                                  db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_procurement import _lock_receipt_factory
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
-    return supplier_promise_notices(db, factory_id, limit)
+    _lock_receipt_factory(db, factory_id)
+    return supplier_promise_notices(db, factory_id, limit, offset)
 
 
 @router.post("/promise-notices/ack")

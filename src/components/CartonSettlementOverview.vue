@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import CartonFilterBar from '@/components/CartonFilterBar.vue'
 import { supplierSettlementApi as api, type MonthlySettlement, type MonthlySettlementLine } from '@/api/cartonSupplierSettlement'
 import { getApiErrorMessage } from '@/lib/http'
 
-const props = defineProps<{ factoryId: string }>()
+const props = defineProps<{ factoryId: string; viewerKey?: string }>()
 
 const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' })
 const period = ref(today().slice(0, 7))
@@ -13,19 +13,30 @@ const data = ref<MonthlySettlement | null>(null)
 const busy = ref(false)
 const error = ref('')
 let generation = 0
+let disposed = false
 
 async function load() {
-  const token = ++generation, factory = props.factoryId
-  busy.value = true; error.value = ''
+  const token = ++generation
+  const query = { factory: props.factoryId, period: period.value, currency: currency.value, viewer: props.viewerKey }
+  const current = () => !disposed && token === generation && query.factory === props.factoryId
+    && query.period === period.value && query.currency === currency.value && query.viewer === props.viewerKey
+  data.value = null; error.value = ''; busy.value = false
+  if (!query.factory) { error.value = '请选择厂区后查看本月对账。'; return }
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(query.period)) { error.value = '请选择有效的对账月份。'; return }
+  busy.value = true
   try {
-    const result = await api.monthlyWorkspace(factory, period.value, currency.value)
-    if (token !== generation || factory !== props.factoryId) return
+    const result = await api.monthlyWorkspace(query.factory, query.period, query.currency)
+    if (!current()) return
+    if (result.factory_id !== query.factory || result.period !== query.period || result.currency !== query.currency) {
+      throw new Error('返回的对账数据与当前厂区、月份或币种不一致，请刷新重试。')
+    }
     data.value = result
   } catch (cause) {
-    if (token === generation) { data.value = null; error.value = getApiErrorMessage(cause) }
-  } finally { if (token === generation) busy.value = false }
+    if (current()) error.value = getApiErrorMessage(cause)
+  } finally { if (current()) busy.value = false }
 }
-onMounted(load)
+watch([() => props.factoryId, () => props.viewerKey, period, currency], () => { void load() }, { immediate: true, flush: 'sync' })
+onBeforeUnmount(() => { disposed = true; generation++ })
 
 const lines = computed(() => data.value?.lines ?? [])
 const receipts = computed(() => lines.value.filter(row => row.kind === 'RECEIPT'))
@@ -62,23 +73,23 @@ const byPackaging = computed(() => {
 <template>
   <section class="space-y-4" aria-label="本月对账">
     <CartonFilterBar label="本月对账筛选">
-      <label>对账月份<input v-model="period" :disabled="busy" aria-label="本月对账月份" type="month" class="mt-1 block h-9 rounded-lg border px-3"></label>
-      <label>原账币种<select v-model="currency" :disabled="busy" aria-label="本月对账币种" class="mt-1 block h-9 rounded-lg border px-3"><option value="CNY">人民币</option><option value="HKD">港币</option><option value="USD">美元</option></select></label>
+      <label>对账月份<input v-model="period" aria-label="本月对账月份" type="month" class="mt-1 block h-9 rounded-lg border px-3"></label>
+      <label>原账币种<select v-model="currency" aria-label="本月对账币种" class="mt-1 block h-9 rounded-lg border px-3"><option value="CNY">人民币</option><option value="HKD">港币</option><option value="USD">美元</option></select></label>
       <template #actions>
         <button type="button" :disabled="busy" class="h-9 rounded-lg border px-4 text-xs font-semibold disabled:opacity-40" @click="load">刷新</button>
         <span class="pb-2 text-[10px] text-slate-500">只读对账，不提交、不锁定，不作为付款依据</span>
       </template>
-      <template #footer><span class="pb-2 text-slate-500">{{ data?.supplier_name || '读取供应商中' }} · {{ period }} · {{ currencyName(currency) }} · <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-600">只读</span></span></template>
+      <template #footer><span class="pb-2 text-slate-500">{{ data?.supplier_name || (busy ? '读取供应商中' : '暂无对账数据') }} · {{ data?.period || period }} · {{ currencyName(data?.currency || currency) }} · <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-600">只读</span></span></template>
     </CartonFilterBar>
 
     <p v-if="error" role="alert" class="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">{{ error }}</p>
     <p class="rounded-xl border border-slate-200 bg-white p-3 text-[11px] text-slate-600">本页仅供核对本月送货、退货和应结金额；不提交、不确认、不锁定，也不生成应付。月结仍按原流程办理。</p>
 
-    <p v-if="busy && !data" class="rounded-xl border bg-white p-6 text-center text-xs text-slate-500">正在汇总本月收料与退货…</p>
+    <p v-if="busy" role="status" class="rounded-xl border bg-white p-6 text-center text-xs text-slate-500">正在汇总 {{ period }} · {{ currencyName(currency) }} 的收料与退货…</p>
 
     <template v-else-if="data">
       <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <article class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div class="text-[11px] text-slate-500">本月已验收送货</div><div class="mt-2 text-xl font-bold tabular-nums">{{ format(data.totals.inbound) }} <span class="text-xs font-medium text-slate-400">{{ currencyName(currency) }}</span></div><div class="mt-1 text-[10px] text-slate-500">{{ data.totals.documents }} 张送货单 · {{ data.totals.receipt_lines }} 行</div></article>
+        <article class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div class="text-[11px] text-slate-500">本月已验收送货</div><div class="mt-2 text-xl font-bold tabular-nums">{{ format(data.totals.inbound) }} <span class="text-xs font-medium text-slate-400">{{ currencyName(data.currency) }}</span></div><div class="mt-1 text-[10px] text-slate-500">{{ data.totals.documents }} 张送货单 · {{ data.totals.receipt_lines }} 行</div></article>
         <article class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div class="text-[11px] text-slate-500">退货贷项</div><div class="mt-2 text-xl font-bold tabular-nums text-rose-700">{{ format(data.totals.returns) }}</div><div class="mt-1 text-[10px] text-slate-500">{{ data.totals.return_lines }} 笔{{ data.totals.refund_lines ? ` · 退款 ${format(data.totals.refunds)}` : '' }}</div></article>
         <article class="rounded-xl border border-teal-200 bg-teal-50/40 p-4 shadow-sm"><div class="text-[11px] font-bold text-teal-800">本月应结</div><div class="mt-2 text-2xl font-bold tabular-nums text-teal-900">{{ format(data.totals.net) }}</div><div class="mt-1 text-[10px] text-teal-700">送货金额 − 退货贷项 ＋ 已核实退款</div></article>
         <article class="rounded-xl border p-4 shadow-sm" :class="blockers.length ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-white'"><div class="text-[11px]" :class="blockers.length ? 'font-bold text-amber-800' : 'text-slate-500'">待处理事项</div><div class="mt-2 text-xl font-bold tabular-nums" :class="blockers.length ? 'text-amber-900' : 'text-slate-900'">{{ blockers.length }}</div><div class="mt-1 text-[10px]" :class="blockers.length ? 'text-amber-700' : 'text-slate-500'">{{ blockers.length ? '请核对，暂不影响旧月结流程' : '本月没有发现明显异常' }}</div></article>

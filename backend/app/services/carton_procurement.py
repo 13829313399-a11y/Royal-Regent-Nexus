@@ -5842,17 +5842,21 @@ def dashboard(db: Session, factory_id: str) -> CartonDashboardOut:
         open_exception_count=int(open_exception_count),
     )
 
-def supplier_promise_changes(db: Session, factory_id: str, limit: int = 20) -> list[dict]:
+def supplier_promise_changes(db: Session, factory_id: str, limit: int | None = 20,
+                             *, acknowledged: set[str] | None = None) -> list[dict]:
     """Supplier acceptance promise changes after the first commitment, newest first."""
     factory_id = require_carton_factory(factory_id)
-    events = list(db.scalars(
+    events = db.scalars(
         select(CartonAuditEvent).where(
             CartonAuditEvent.factory_id == factory_id,
             CartonAuditEvent.event_type == "SUPPLIER_PAPER_ACCEPTED",
-        ).order_by(CartonAuditEvent.sequence.desc()).limit(300)
-    ))
+        ).order_by(CartonAuditEvent.sequence.desc())
+    )
     items: list[dict] = []
+    lines, orders = {}, {}
     for event in events:
+        if acknowledged is not None and f"CHANGE:{event.id}" in acknowledged:
+            continue
         try:
             detail = json.loads(event.detail_json or "{}")
         except json.JSONDecodeError:
@@ -5861,9 +5865,14 @@ def supplier_promise_changes(db: Session, factory_id: str, limit: int = 20) -> l
         current = str(detail.get("promised_date") or "")
         if not detail.get("promise_updated") or not previous or not current or previous == current:
             continue
-        line = db.get(CartonOrderLine, str(detail.get("line_id") or ""))
-        order = db.get(CartonOrder, event.entity_id)
-        if line is None or order is None:
+        line_id = str(detail.get("line_id") or "")
+        if line_id not in lines:
+            lines[line_id] = db.get(CartonOrderLine, line_id)
+        if event.entity_id not in orders:
+            orders[event.entity_id] = db.get(CartonOrder, event.entity_id)
+        line, order = lines[line_id], orders[event.entity_id]
+        if (line is None or order is None or line.factory_id != factory_id
+                or order.factory_id != factory_id or line.order_id != order.id):
             continue
         items.append({
             "id": event.id, "order_id": order.id, "order_no": order.order_no,
@@ -5871,19 +5880,19 @@ def supplier_promise_changes(db: Session, factory_id: str, limit: int = 20) -> l
             "line_no": line.line_no, "previous_promised_date": previous, "promised_date": current,
             "actor_name": event.actor_name, "created_at": event.created_at,
         })
-        if len(items) >= limit:
+        if limit is not None and len(items) >= limit:
             break
     return items
 
 def promise_notice_acks(db: Session, factory_id: str) -> list[str]:
     factory_id = require_carton_factory(factory_id)
-    return [event.entity_id for event in db.scalars(
-        select(CartonAuditEvent).where(
+    return list(db.scalars(
+        select(CartonAuditEvent.entity_id).where(
             CartonAuditEvent.factory_id == factory_id,
             CartonAuditEvent.event_type == "SUPPLIER_PROMISE_ACKNOWLEDGED",
             CartonAuditEvent.entity_type == "carton_promise_notice",
-        ).order_by(CartonAuditEvent.sequence.desc()).limit(500)
-    )]
+        ).distinct()
+    ))
 
 
 def acknowledge_promise_notice(db: Session, user, payload) -> dict:
@@ -5893,10 +5902,12 @@ def acknowledge_promise_notice(db: Session, user, payload) -> dict:
     db.commit()
     return {"key": payload.key}
 
-def supplier_promise_notices(db: Session, factory_id: str, limit: int = 20) -> dict:
+def supplier_promise_notices(db: Session, factory_id: str, limit: int = 20, offset: int = 0) -> dict:
     """One inbox payload: promise-late orders, post-acceptance promise changes and acknowledgements."""
     factory_id = require_carton_factory(factory_id)
     from app.services import carton_supplier_portal as portal
+    acknowledged = promise_notice_acks(db, factory_id)
+    acknowledged_keys = set(acknowledged)
     late = []
     _, orders = list_orders(db, factory_id, limit=None, offset=0, collaboration_filter="LATE_PROMISE")
     for order in orders:
@@ -5906,13 +5917,18 @@ def supplier_promise_notices(db: Session, factory_id: str, limit: int = 20) -> d
         if not differences:
             continue
         worst = max(differences, key=lambda item: int(item["difference_days"]))
+        key = f"LATE:{order.order_no}:{worst.get('promised_date', '')}"
+        if key in acknowledged_keys:
+            continue
         late.append({
             "order_no": order.order_no, "customer_name": order.customer_name,
             "packaging_type": worst.get("packaging_type", ""), "promised_date": worst.get("promised_date", ""),
             "difference_days": int(worst["difference_days"]),
-            "key": f"LATE:{order.order_no}:{worst.get('promised_date', '')}",
+            "key": key,
         })
-        if len(late) >= limit:
-            break
-    changes = [{**item, "key": f"CHANGE:{item['id']}"} for item in supplier_promise_changes(db, factory_id, limit)]
-    return {"late": late, "changes": changes, "acknowledged": promise_notice_acks(db, factory_id)}
+    changes = [{**item, "key": f"CHANGE:{item['id']}"} for item in supplier_promise_changes(
+        db, factory_id, None, acknowledged=acknowledged_keys)]
+    return {"late": late[offset:offset + limit], "changes": changes[offset:offset + limit],
+            "acknowledged": acknowledged, "total": len(late) + len(changes),
+            "late_total": len(late), "change_total": len(changes),
+            "has_more": offset + limit < max(len(late), len(changes))}
