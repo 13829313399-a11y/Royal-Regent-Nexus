@@ -425,8 +425,9 @@
     visibility: hidden;
   }
 
-  body.molding-sample-overview-printing #app > :not(.molding-print-engineering-root),
-  body.molding-sample-task-printing #app > :not(.molding-print-production-root) {
+  /* Print documents are body portals, independent of route shells and dialogs. */
+  body.molding-sample-overview-printing > :not(.molding-print-engineering-root),
+  body.molding-sample-task-printing > :not(.molding-print-production-root) {
     display: none !important;
   }
 
@@ -437,8 +438,8 @@
     visibility: visible;
   }
 
-  body.molding-sample-overview-printing #app > .molding-print-engineering-root,
-  body.molding-sample-task-printing #app > .molding-print-production-root {
+  body.molding-sample-overview-printing > .molding-print-engineering-root,
+  body.molding-sample-task-printing > .molding-print-production-root {
     display: block !important;
     position: static !important;
     inset: auto !important;

@@ -1,4 +1,4 @@
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { DOMWrapper, enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Component } from 'vue'
@@ -24,6 +24,8 @@ import type {
 import MoldingSampleTrialReportDialog from '@/components/molding/MoldingSampleTrialReportDialog.vue'
 import MoldingSampleProductionTaskView from '../MoldingSampleProductionTaskView.vue'
 import MoldingSampleView from '../MoldingSampleView.vue'
+
+enableAutoUnmount(afterEach)
 
 const routerReplace = vi.hoisted(() => vi.fn())
 const routeState = vi.hoisted(() => ({
@@ -204,6 +206,14 @@ function getButtonByText(wrapper: VueWrapper, text: string) {
   expect(button, `button containing "${text}"`).toBeTruthy()
 
   return button!
+}
+
+function getPrintArea(testId: string) {
+  const element = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`)
+  expect(element, 'print output must survive hidden application/route ancestors').not.toBeNull()
+  expect(element!.parentElement).toBe(document.body)
+  expect(element!.classList.contains('hidden')).toBe(true)
+  return new DOMWrapper(element!)
 }
 
 function getButtonByExactText(wrapper: VueWrapper, text: string) {
@@ -1506,7 +1516,7 @@ describe('molding sample runtime error handling', () => {
 
     expect(printSpy).not.toHaveBeenCalled()
     expect(wrapper.get('[data-testid="molding-sample-print-preview"]').text()).toContain('BP-PRINT-CURRENT')
-    expect(wrapper.get('[data-testid="molding-sample-print-area"]').text()).toContain('BP-PRINT-CURRENT')
+    expect(getPrintArea('molding-sample-print-area').text()).toContain('BP-PRINT-CURRENT')
 
     await getButtonByExactText(wrapper, '确认打印').trigger('click')
     expect(printSpy).toHaveBeenCalledTimes(1)
@@ -1518,6 +1528,7 @@ describe('molding sample runtime error handling', () => {
     expect(document.getElementById('molding-sample-active-print-page')).toBeNull()
 
     wrapper.unmount()
+    expect(document.querySelector('[data-testid="molding-sample-print-area"]')).toBeNull()
   })
 
   it('keeps out-of-scope factory orders readable while disabling molding sample writes', async () => {
@@ -1633,7 +1644,7 @@ describe('molding sample runtime error handling', () => {
     await flushPromises()
     await nextTick()
 
-    const printArea = wrapper.get('[data-testid="molding-sample-print-area"]').text()
+    const printArea = getPrintArea('molding-sample-print-area').text()
     const printPreview = wrapper.get('[data-testid="molding-sample-print-preview"]').text()
     expect(printSpy).not.toHaveBeenCalled()
     expect(printPreview).toContain('打印预览')
@@ -1871,7 +1882,7 @@ describe('molding sample runtime error handling', () => {
     await nextTick()
 
     const preview = wrapper.get('[data-testid="molding-sample-task-print-preview"]').text()
-    const printArea = wrapper.get('[data-testid="molding-sample-task-print-area"]').text()
+    const printArea = getPrintArea('molding-sample-task-print-area').text()
     expect(printSpy).not.toHaveBeenCalled()
     expect(preview).toContain('BP-PROD-PRINT-001')
     expect(preview).toContain('70%ABS PA-757 + 30%PVC 90度（本白,普通）水口料')
@@ -2009,7 +2020,7 @@ describe('molding sample runtime error handling', () => {
     await nextTick()
 
     const preview = wrapper.get('[data-testid="molding-sample-task-print-preview"]')
-    const printArea = wrapper.get('[data-testid="molding-sample-task-print-area"]')
+    const printArea = getPrintArea('molding-sample-task-print-area')
     expect(preview.text()).toContain('2 张通知单 · 2 项模具明细')
     expect(preview.findAll('[data-testid="molding-sample-task-print-preview-notice"]')).toHaveLength(2)
     expect(printArea.findAll('[data-testid="molding-sample-task-print-notice"]')).toHaveLength(2)
@@ -2032,6 +2043,7 @@ describe('molding sample runtime error handling', () => {
     vi.useRealTimers()
 
     wrapper.unmount()
+    expect(document.querySelector('[data-testid="molding-sample-task-print-area"]')).toBeNull()
   })
 
   it('invalidates an open task print preview when the task is reassigned before confirmation', async () => {
