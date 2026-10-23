@@ -4,6 +4,7 @@ No application patching or database writes live here. All commands use the
 caller's authenticated HTTP client against its separately guarded fixture.
 """
 from collections import defaultdict
+from copy import deepcopy
 from decimal import Decimal
 from uuid import uuid4
 
@@ -62,7 +63,7 @@ class ProductionMix:
                 sets=sets, rejected=0, scrap=0, parts=[], evidence='Synthetic P5c rotation', exception_reason=''))
             post('handover', path+'/post', body)
             self.records[0].append(dict(line_id=line, document_id=body['document_id'],
-                operation_id=body['operation_id'], sets=sets))
+                operation_id=body['operation_id'], sets=sets, command=deepcopy(body)))
         else:
             path = '/orders/'+line+'/usage'
             current = get('usage_basis', path)
@@ -77,7 +78,8 @@ class ProductionMix:
             result = post('usage', path+('/correct' if previous else '/post'), body)
             self.usage_documents[issue] = result['document_id']
             self.records[1].append(dict(line_id=line, issue_id=issue, document_id=result['document_id'],
-                replaces=previous, operation_id=body['operation_id'], consumed=str(consumed)))
+                replaces=previous, operation_id=body['operation_id'], consumed=str(consumed),
+                command=deepcopy(body), receipt=deepcopy(result)))
 
     def validate_live(self, name, value, expected):
         if name == 'inventory':

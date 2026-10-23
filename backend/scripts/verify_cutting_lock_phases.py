@@ -22,6 +22,7 @@ ROOT=Path(__file__).resolve().parents[2]
 
 
 def diagnostics_summary(diagnostic, samples):
+    from cutting_mix_audit import segmented_diagnostics
     assert not diagnostic['heartbeat_gaps'], 'Run interrupted by a heartbeat gap'
     assert not any(r['failed_sql'] for r in diagnostic['requests']), 'SQL failure during probe'
     retries = {r['request_id'] for r in samples if r['endpoint'].startswith('payment_') and r['endpoint'].endswith('_retry')}
@@ -37,6 +38,7 @@ def diagnostics_summary(diagnostic, samples):
         group['max_hold_seconds'] = max(group['max_hold_seconds'], span['hold_seconds'])
         group['max_wait_seconds'] = max(group['max_wait_seconds'], span['wait_seconds'])
     return dict(payment_retries=len(measured), payment_retry_write_lock_seconds=0, phases=phases,
+                segmented=segmented_diagnostics(diagnostic, samples),
                 total_admission_seconds=sum(r.get('admission_seconds',0.) for r in diagnostic['requests']),
                 max_request_admission_seconds=max((r.get('admission_seconds',0.) for r in diagnostic['requests']),default=0.),
                 boundary='Lock hold ends at connection return; upper bound, not exact DBAPI release instant')
@@ -57,7 +59,7 @@ def seed_file(path, *, root=ROOT):
     return path
 
 
-def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2, production_write_orders=0):
+def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2, production_write_orders=0, workflow_probes=False):
     # Defensive environment fence before importing any app/test package.
     os.environ.update(DATABASE_URL='sqlite://', SEED_DEFAULT_ACCOUNTS='false')
     sys.path[:0]=[str(ROOT/'backend'),str(ROOT/'backend/tests')]
@@ -124,7 +126,8 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2,
                     assert status==200,f'{name}: HTTP {status}; {response.text[:250]}'
                     return response
                 finally:
-                    local.append(dict(endpoint=name,seconds=perf_counter()-began,status=status,bytes=size,request_id=identifier))
+                    local.append(dict(endpoint=name,seconds=perf_counter()-began,started_seconds=began,
+                                      status=status,bytes=size,request_id=identifier))
             def get(name,path,**params):return request(name,'GET',path,params={'factory_id':'huakang-c',**params}).json()
             def post(name,path,body):
                 result=request(name,'POST',path,json=body).json()
@@ -214,6 +217,8 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2,
         final_inventory=all_rows('/workspace/inventory');final_costs=all_rows('/workspace/costs')
         if mix:
             report['production_reconciliation'] = mix.reconcile(read,final_inventory,final_costs,seconds)
+            from cutting_mix_audit import audit_history
+            report['production_history_reconciliation'] = audit_history(read, database, mix.records)
             reconcile_totals(read('/workspace/inventory'),final_inventory,read('/workspace/costs'),final_costs)
             report['production_aggregate_headers_reconciled']=True
             if seconds>=600:
@@ -231,6 +236,10 @@ def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2,
         assert len(payments)>0
         # Logouts affect synthetic sessions only, not business facts.
         for session in sessions:assert session.post('/api/auth/logout').status_code==204
+        if workflow_probes:
+            from cutting_workflow_mix import run_workflows
+            report['workflow_probes']={}
+            run_workflows(url,database,report['workflow_probes'])
     with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True) as db:
         report['integrity']=db.execute('PRAGMA integrity_check').fetchone()[0]
         report['foreign_key_errors']=len(db.execute('PRAGMA foreign_key_check').fetchall())
