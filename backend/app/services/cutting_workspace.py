@@ -6,6 +6,7 @@ financial sources are removed before searching/paging for unauthorized readers.
 from datetime import timedelta
 import hashlib
 import json
+from types import SimpleNamespace
 from decimal import Decimal, localcontext
 from sqlalchemy import select, func, literal, union_all, cast, JSON, inspect, DateTime, case
 from app.models.cutting_ops import (
@@ -173,6 +174,11 @@ def material_snapshot(db):
     usage.wh.procurement.lock_factory(db)
     _, entries = usage.wh.projection(db, 'fabric')
     history = usage.events(db)
+    return material_index(entries, history)
+
+
+def material_index(entries, history):
+    """Pure replay/indexing over captured evidence, with no session or cache."""
     docs, balances = usage.replay(entries, history)
     by_issue, by_document, by_history, by_price = {}, {}, {}, {}
     for issue in entries.values():
@@ -192,20 +198,64 @@ def material_snapshot(db):
         revision=max((e['version'] for e in history), default=0))
 
 
+def capture_materials(db, q='', *, costs=False):
+    # Capture all cross-ledger inputs under the existing cutting -> fabric
+    # locks. Replay and presentation need no writer reservation or ORM access.
+    usage.ensure_schema(db)
+    usage.wh.ensure_schema(db)
+    lock_transaction(db, 'cutting-master', c.FACTORY)
+    usage.wh.procurement.lock_factory(db)
+    stock = usage.wh.initial_stock(db, 'fabric')
+    documents = [usage.wh.entry_data(row) for row in usage.wh.documents(db, 'fabric')]
+    history = usage.events(db)
+    newest = select(OrderLedgerDispatch.line_id, func.max(OrderLedgerDispatch.version).label('version')).where(
+        OrderLedgerDispatch.factory_id == c.FACTORY, OrderLedgerDispatch.recipient == 'cutting'
+    ).group_by(OrderLedgerDispatch.line_id).subquery()
+    query = select(OrderLedgerDispatch).join(newest,
+        (newest.c.line_id == OrderLedgerDispatch.line_id) & (newest.c.version == OrderLedgerDispatch.version)
+    ).join(OrderLedgerLine).join(CuttingOrder, CuttingOrder.line_id == OrderLedgerDispatch.line_id).where(
+        OrderLedgerDispatch.factory_id == c.FACTORY, OrderLedgerDispatch.recipient == 'cutting')
+    if q.strip():
+        query = query.where(OrderLedgerLine.reference_no.contains(q.strip(), autoescape=True) |
+                            OrderLedgerLine.product_no.contains(q.strip(), autoescape=True))
+    query = query.order_by(OrderLedgerDispatch.created_at.desc(), OrderLedgerDispatch.id)
+    if costs:
+        selected = db.execute(query.add_columns(CuttingOrderRevision.line_id).outerjoin(
+            CuttingOrderRevision, (CuttingOrderRevision.line_id == CuttingOrder.line_id) &
+            (CuttingOrderRevision.version == CuttingOrder.version))).all()
+        identities = [order_identity(row) for row, _ in selected]
+        production_ids = [row.line_id for row, current_revision in selected if current_revision is not None]
+    else:
+        identities = [order_identity(row) for row in db.scalars(query)]
+    production = None
+    if costs:
+        ready = reporting.schema_ready(db.connection())
+        docs, versions = cutting_read_batch.production(db, production_ids, revisions=True) if ready else ({}, {})
+        # Allocation needs only .data for its exact line/plan-version checks.
+        # Do not retain ORM objects that can lazily read after rollback.
+        production = (ready, docs, {key: SimpleNamespace(data=row.data) for key, row in versions.items()})
+    db.rollback()
+    entries = {}
+    for document in documents:
+        usage.wh.apply_entry(stock, entries, document, 'fabric')
+    snapshot = material_index(entries, history)
+    if production is not None:
+        snapshot['production'] = production
+    return identities, snapshot
+
+
 def inventory(db, q='', execution='', page=1, view='issues'):
-    snapshot = material_snapshot(db)
+    identities, snapshot = capture_materials(db, q)
     rows = []
     units = {}
-    for dispatch, order, _ in sources(db, q):
-        if not order:
+    for identity in identities:
+        if identity['line_id'] not in snapshot['issues']:
             continue
-        if dispatch.line_id not in snapshot['issues']:
-            continue
-        ledger = usage.read(db, dispatch.line_id, _snapshot=snapshot)
+        ledger = usage.read(None, identity['line_id'], _snapshot=snapshot)
         for issue in ledger['issues']:
             if issue['reversed'] or (execution and issue['context']['execution'] != execution):
                 continue
-            row = dict(**order_identity(dispatch), **issue)
+            row = dict(**identity, **issue)
             row['unsigned_quantity'] = usage.wh.text(Decimal(issue['issued_quantity'])-Decimal(issue['received_quantity']))
             rows.append(row)
             totals = units.setdefault(issue['context']['unit'], {k: Decimal(0) for k in
@@ -235,15 +285,13 @@ def inventory(db, q='', execution='', page=1, view='issues'):
 
 
 def cost_overview(db, q='', page=1):
-    snapshot = material_snapshot(db)
+    identities, snapshot = capture_materials(db, q, costs=True)
     rows, currencies = [], {}
     pending = 0
-    for dispatch, order, _, _reports in production_sources(db, q, snapshot=snapshot):
-        if not order:
+    for identity in identities:
+        if identity['line_id'] not in snapshot['issues']:
             continue
-        if dispatch.line_id not in snapshot['issues']:
-            continue
-        ledger = usage.read(db, dispatch.line_id, show_costs=True, _snapshot=snapshot)
+        ledger = usage.read(None, identity['line_id'], show_costs=True, _snapshot=snapshot)
         if not ledger['issues']:
             continue
         pending += ledger['pending_pricing']
@@ -273,7 +321,7 @@ def cost_overview(db, q='', page=1):
                 total['loss'] += loss[currency]
                 for field, values in (('completed', completed), ('wip', wip)):
                     total[field] = None if total[field] is None or currency in incomplete else total[field]+values.get(currency, Decimal(0))
-        rows.append(dict(**order_identity(dispatch), pending_pricing=ledger['pending_pricing'],
+        rows.append(dict(**identity, pending_pricing=ledger['pending_pricing'],
             normal={k: usage.wh.text(v) for k, v in normal.items()}, loss={k: usage.wh.text(v) for k, v in loss.items()},
             completed={k: None if k in incomplete else usage.wh.text(completed.get(k, Decimal(0))) for k in normal},
             wip={k: None if k in incomplete else usage.wh.text(wip.get(k, Decimal(0))) for k in normal},

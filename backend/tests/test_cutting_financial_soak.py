@@ -114,7 +114,7 @@ def run(p, tmp_path, report):
     diagnostic = Diagnostics(p)
     samples, failures, records, runs = [], [], [], []
     report.update(samples=samples, failures=failures, write_records=records, worker_runs=runs,
-                  server_requests=diagnostic.rows, heartbeat_gaps=diagnostic.gaps)
+                  server_requests=diagnostic.rows, heartbeat_gaps=diagnostic.gaps, lock_spans=diagnostic.lock_spans)
     endpoints = [('planning','/workspace/planning',{}), ('tasks','/workspace/tasks',{'day':'2026-10-15'}),
         ('inventory','/workspace/inventory',{}), ('costs','/workspace/costs',{}), ('period','/periods/2026-10',{}),
         ('settlement','/settlements/2026-10',{'document_id':p.one}), ('payments','/payments/2026-11',{})]
