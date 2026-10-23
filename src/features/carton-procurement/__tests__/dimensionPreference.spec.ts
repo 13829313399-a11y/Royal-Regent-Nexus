@@ -61,7 +61,7 @@ describe('personal dimension habits', () => {
     const wrapper = mount(DimensionInput, { props: { modelValue: 'inch', specification: '10*20', label: '尺寸显示', readonly: true, preferredUnit: 'mm' } })
     try {
       expect(wrapper.find('select').exists()).toBe(false)
-      expect(wrapper.text()).toBe('英寸')
+      expect(wrapper.text()).toBe('inch')
       expect(wrapper.get('span').attributes('title')).toBe('254 × 508 mm（换算参考）')
       await wrapper.setProps({ preferredUnit: 'cm' })
       expect(wrapper.get('span').attributes('title')).toBe('25.4 × 50.8 cm（换算参考）')
@@ -78,7 +78,7 @@ describe('personal dimension habits', () => {
     const wrapper = mount(DimensionInput, { props: { modelValue: 'cm', specification: '25.4*50.8', label: '尺寸显示', readonly: true, showReference: true, preferredUnit: 'inch' } })
     try {
       expect(wrapper.text()).toContain('cm')
-      expect(wrapper.text()).toContain('10 × 20 英寸（换算参考）')
+      expect(wrapper.text()).toContain('10 × 20 inch（换算参考）')
       await wrapper.setProps({ preferredUnit: 'mm' })
       expect(wrapper.text()).toContain('254 × 508 mm（换算参考）')
       await wrapper.setProps({ preferredUnit: 'cm' })

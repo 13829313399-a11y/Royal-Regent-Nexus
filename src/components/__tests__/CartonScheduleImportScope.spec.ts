@@ -10,6 +10,8 @@ it('defaults to incremental with an editable Shanghai business date and hides fu
   const scope = emptyScheduleImportScope(), w = mount(Component, { props: { modelValue: scope } })
   expect(scope.scope_mode).toBe('INCREMENTAL'); expect(scope.as_of_date).toBe('2026-10-21')
   expect(w.text()).toContain('不因未出现而推断缺行'); expect(w.text()).toContain('默认当天')
+  expect(w.find('[aria-label="排期导入方式"]').exists()).toBe(false)
+  expect(w.get('[data-testid="carton-schedule-import-mode"]').text()).toBe('增量 · 只更新出现的记录')
   expect(w.get<HTMLInputElement>('[aria-label="业务排期日期"]').element.value).toBe('2026-10-21')
   expect(w.find('[aria-label="客户交期覆盖开始"]').exists()).toBe(false)
   expect(w.find('[aria-label="客户交期覆盖结束"]').exists()).toBe(false)
@@ -22,9 +24,11 @@ it('defaults to incremental with an editable Shanghai business date and hides fu
   expect(scheduleScopeErrors({ ...scope, as_of_date: '' })).toEqual(['请填写完整的业务排期日期。'])
   w.unmount()
 })
-it('requires explicit full coverage and resets the completeness confirmation when its evidence changes', async () => {
+it('renders retained full declarations without offering the hidden mode selector', async () => {
   const scope = { ...emptyScheduleImportScope(), scope_mode: 'FULL' as const, as_of_date: '2026-10-01', coverage_start: '2026-10-01', coverage_end: '2026-10-31', full_scope_confirmed: true }
   const w = mount(Component, { props: { modelValue: scope } })
+  expect(w.find('[aria-label="排期导入方式"]').exists()).toBe(false)
+  expect(w.get('[data-testid="carton-schedule-import-mode"]').text()).toBe('全量 · 核对覆盖段内缺行')
   expect(scheduleScopeErrors(scope)).toEqual([])
   await w.get('[aria-label="客户交期覆盖结束"]').setValue('2026-11-01')
   const next = w.emitted('update:modelValue')![0]![0] as typeof scope
@@ -33,18 +37,10 @@ it('requires explicit full coverage and resets the completeness confirmation whe
   await w.get('[aria-label="确认全量排期完整性"]').setValue(true)
   expect(w.emitted('update:modelValue')!.at(-1)![0]).toMatchObject({ full_scope_confirmed: true })
   expect(w.text()).toContain('不自动取消采购单')
-  await w.setProps({ modelValue: { ...scope, coverage_end: '' } })
-  await w.get('[aria-label="排期导入方式"]').setValue('INCREMENTAL')
-  const incremental = w.emitted('update:modelValue')!.at(-1)![0] as typeof scope
-  expect(incremental).toMatchObject({ scope_mode: 'INCREMENTAL', as_of_date: '2026-10-01', coverage_start: '', coverage_end: '', full_scope_confirmed: false })
-  expect(scheduleScopeErrors(incremental)).toEqual([])
-  await w.setProps({ modelValue: incremental })
+  expect(scheduleScopeErrors({ ...scope, coverage_start: '', coverage_end: '', full_scope_confirmed: false })).toHaveLength(2)
+  await w.setProps({ modelValue: emptyScheduleImportScope() })
   expect(w.find('[aria-label="客户交期覆盖开始"]').exists()).toBe(false)
-  await w.get('[aria-label="排期导入方式"]').setValue('FULL')
-  const full = w.emitted('update:modelValue')!.at(-1)![0] as typeof scope
-  await w.setProps({ modelValue: full })
-  expect(w.find('[aria-label="客户交期覆盖开始"]').exists()).toBe(true)
-  expect(scheduleScopeErrors(full)).toHaveLength(2)
+  expect(w.get('[data-testid="carton-schedule-import-mode"]').text()).toBe('增量 · 只更新出现的记录')
   w.unmount()
 })
 it('validates genuine calendar dates, paired/inclusive ranges and a nonfuture Shanghai version date', () => {

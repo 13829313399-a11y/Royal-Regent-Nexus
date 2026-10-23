@@ -39,6 +39,9 @@ export interface OrderDraftForm {
   orderDate: string
   customerDueDate: string
   dueDate: string
+  planDateManual?: boolean
+  rush?: boolean
+  rushReason?: string
   note: string
   materials: OrderDraftMaterial[]
 }

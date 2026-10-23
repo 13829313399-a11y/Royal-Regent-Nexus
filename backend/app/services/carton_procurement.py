@@ -70,6 +70,7 @@ from app.schemas.carton_procurement import (
     CartonOrderReturnRequest,
     CartonOrderCreate,
     CartonOrderDatesRequest,
+    CartonOrderRushRequest,
     CartonOrderLineOut,
     CartonOrderHistoryLineOut,
     CartonOrderHistorySuggestionOut,
@@ -566,7 +567,9 @@ def create_order(
                                      ).strip().casefold())
     if not duplicate_schedule_source:
         _validate_customer_po_identity(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, payload.customer_po)
-    planned = derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"]) if payload.customer_due_date and payload.quantity_basis == "CALCULATED" and audit_event != "HISTORY_ORDER_IMPORTED" else payload.due_date
+    planned = (derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"])
+               if payload.customer_due_date and payload.quantity_basis == "CALCULATED" and not payload.plan_date_manual
+               and audit_event != "HISTORY_ORDER_IMPORTED" else payload.due_date)
     if payload.master_config_id:
         from app.models.carton_master import CartonMasterRecord
         config = json.loads(db.get(CartonMasterRecord, payload.master_config_id).data_json)
@@ -615,9 +618,14 @@ def create_order(
         order_date=payload.order_date,
         customer_due_date=payload.customer_due_date,
         safety_lead_days=rules["lead_days"],
+        plan_date_manual=payload.plan_date_manual,
         master_config_id=payload.master_config_id,
         master_config_revision=payload.master_config_revision,
         due_date=planned,
+        rush=payload.rush,
+        rush_reason=payload.rush_reason if payload.rush else "",
+        rush_at=timestamp if payload.rush else None,
+        rush_by=user.id if payload.rush else None,
         status="CONFIRMED",
         note=payload.note,
         revision=1,
@@ -1369,6 +1377,44 @@ def _order_line_signature(line: CartonOrderLine | object) -> tuple[str, ...]:
     )
 
 
+def set_order_rush(
+    db: Session, order_no: str, payload: CartonOrderRushRequest, user: AuthContext,
+) -> CartonOrder:
+    factory_id = require_carton_factory(payload.factory_id)
+
+    def permitted(permission: str) -> bool:
+        return any(can(user, f"carton_procurement:{permission}", factory_id, department)
+                   for department in CARTON_DEPARTMENTS)
+
+    if not permitted("order_write"):
+        raise HTTPException(403, "标记急单需要当前厂区的订单维护权限")
+    _lock_receipt_factory(db, factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    ensure_customer_operation(db, user, factory_id, order.customer_code)
+    if order.status == "CANCELLED":
+        raise HTTPException(409, "已取消订单不能标记急单")
+    reason = payload.reason.strip()
+    if order.rush == payload.rush and (not payload.rush or order.rush_reason == reason):
+        raise HTTPException(422, "急单标记没有发生变化")
+    before = {"rush": order.rush, "rush_reason": order.rush_reason, "rush_at": order.rush_at}
+    timestamp = now_text()
+    order.rush = payload.rush
+    order.rush_reason = reason if payload.rush else ""
+    order.rush_at = timestamp if payload.rush else None
+    order.rush_by = user.id if payload.rush else None
+    order.rush_ack_at = None
+    order.rush_ack_by = None
+    order.updated_by = user.id
+    order.updated_by_name = user.display_name
+    order.updated_at = timestamp
+    _audit(db, user, factory_id, "ORDER_RUSH_MARKED" if payload.rush else "ORDER_RUSH_CLEARED",
+           "carton_order", order.id, {"order_no": order.order_no, "before": before,
+           "rush": order.rush, "rush_reason": order.rush_reason, "rush_at": order.rush_at})
+    db.commit()
+    db.refresh(order)
+    return order
+
+
 def update_order_dates(
     db: Session, order_no: str, payload: CartonOrderDatesRequest, user: AuthContext,
 ) -> CartonOrder:
@@ -1393,9 +1439,8 @@ def update_order_dates(
         raise HTTPException(409, "仅待下单、已确认锁定或部分到货的订单可以调整交期")
     target_customer_date = payload.customer_due_date or order.customer_due_date
     target_due_date = payload.due_date or order.due_date
-    if order.quantity_basis == "CALCULATED" and target_customer_date is not None:
-        if payload.customer_due_date is None and payload.due_date and payload.due_date != order.due_date:
-            raise HTTPException(422, "已有客户交期的订单必须通过客户交期自动计算计划交期")
+    manual_plan = order.plan_date_manual if payload.plan_date_manual is None else payload.plan_date_manual
+    if not manual_plan and order.quantity_basis == "CALCULATED" and target_customer_date is not None:
         try:
             target_due_date = derive_carton_plan_due_date(order.order_date, target_customer_date, order.safety_lead_days)
         except ValueError as exc:
@@ -1406,6 +1451,7 @@ def update_order_dates(
         raise HTTPException(422, "交期没有发生变化")
     before = {"customer_due_date": order.customer_due_date, "due_date": order.due_date, "revision": order.revision}
     order.customer_due_date = target_customer_date
+    order.plan_date_manual = manual_plan
     order.due_date = target_due_date
     order.revision += 1
     order.updated_by = user.id
@@ -1511,19 +1557,16 @@ def update_order(
             target_line_signatures != [_order_line_signature(line) for line in existing_lines],
         )
     )
-    if order.quantity_basis == "CALCULATED" and order.customer_due_date is not None and payload.customer_due_date is None:
-        if payload.due_date != order.due_date:
-            raise HTTPException(
-                status_code=422,
-                detail="已有客户交期的订单必须通过客户交期自动计算计划交期",
-            )
-        target_customer_due_date = order.customer_due_date
-        target_due_date = order.due_date
-    else:
-        target_customer_due_date = payload.customer_due_date
+    target_customer_due_date = payload.customer_due_date if payload.customer_due_date is not None else order.customer_due_date
+    manual_plan = order.plan_date_manual if payload.plan_date_manual is None else payload.plan_date_manual
+    if manual_plan:
         target_due_date = payload.due_date
-    if target_customer_due_date and payload.quantity_basis == "CALCULATED":
+        if target_due_date < payload.order_date:
+            raise HTTPException(status_code=422, detail="计划交期不能早于下单日期")
+    elif target_customer_due_date and payload.quantity_basis == "CALCULATED":
         target_due_date = derive_carton_plan_due_date(payload.order_date, target_customer_due_date, order.safety_lead_days)
+    else:
+        target_due_date = payload.due_date
     # Existing orders retain their snapshot: changing a date/note must not reapply
     # newly introduced master rules or invalidate a previously selected configuration.
     if structural_changed:
@@ -1612,6 +1655,7 @@ def update_order(
             db.delete(line)
 
     order.customer_due_date = target_customer_due_date
+    order.plan_date_manual = manual_plan
     if structural_changed:
         order.master_config_id = payload.master_config_id
         order.master_config_revision = payload.master_config_revision
@@ -2520,6 +2564,12 @@ def order_out(db: Session, order: CartonOrder, *, usage=None, projection=None) -
         customer_due_date=order.customer_due_date,
         safety_lead_days=order.safety_lead_days,
         due_date=order.due_date,
+        plan_date_manual=bool(order.plan_date_manual),
+        rush=bool(order.rush),
+        rush_reason=order.rush_reason,
+        rush_at=order.rush_at,
+        rush_ack_at=order.rush_ack_at,
+        rush_acknowledged=bool(order.rush and order.rush_ack_at),
         status=order.status,
         note=order.note,
         revision=order.revision,
@@ -4260,7 +4310,7 @@ def import_batch_out(batch: CartonImportBatch, *, duplicate: bool = False, summa
     except (TypeError, json.JSONDecodeError):
         parse_summary = {"message": "历史导入批次的解析摘要无法读取，请重新导入原文件"}
     if summary_only:
-        keys = {"row_count", "matched_count", "issue_count", "reminder_count", "advance_days", "schedule_customer"}
+        keys = {"row_count", "matched_count", "issue_count", "reminder_count", "advance_days", "schedule_customer", "review_count", "change_counts"}
         from app.services.carton_schedule_coverage import compact_coverage
         coverage = compact_coverage(parse_summary.get("schedule_coverage")) if isinstance(parse_summary, dict) else None
         parse_summary = {key: value for key, value in parse_summary.items() if key in keys} if isinstance(parse_summary, dict) else {}
@@ -5028,6 +5078,10 @@ def list_import_batches(
     factory_id: str,
     *,
     import_type: str = "",
+    import_types: str = "",
+    status: str = "",
+    date_from: str = "",
+    date_to: str = "",
     limit: int = 50,
     offset: int = 0,
     summary_only: bool = False,
@@ -5038,9 +5092,30 @@ def list_import_batches(
     allowed_types = {"DELIVERY_NOTE", "WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}
     if import_type and import_type not in allowed_types:
         raise HTTPException(status_code=422, detail="导入批次类型无效")
+    requested_types = [value.strip() for value in import_types.split(",") if value.strip()]
+    if any(value not in allowed_types for value in requested_types):
+        raise HTTPException(status_code=422, detail="导入批次类型无效")
+    if status not in {"", "ACTIVE", "REJECTED"}:
+        raise HTTPException(status_code=422, detail="导入批次状态无效")
+    for value in (date_from, date_to):
+        if value and (len(value) != 10 or value[4] != "-" or value[7] != "-"
+                      or not (value[:4] + value[5:7] + value[8:]).isdigit()):
+            raise HTTPException(status_code=422, detail="导入批次日期须为 YYYY-MM-DD")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="导入批次日期范围无效")
     query = select(CartonImportBatch).where(CartonImportBatch.factory_id == factory_id)
-    if import_type:
+    if requested_types:
+        query = query.where(CartonImportBatch.import_type.in_(requested_types))
+    elif import_type:
         query = query.where(CartonImportBatch.import_type == import_type)
+    if status == "REJECTED":
+        query = query.where(CartonImportBatch.status == "REJECTED")
+    elif status == "ACTIVE":
+        query = query.where(CartonImportBatch.status != "REJECTED")
+    if date_from:
+        query = query.where(func.substr(CartonImportBatch.created_at, 1, 10) >= date_from)
+    if date_to:
+        query = query.where(func.substr(CartonImportBatch.created_at, 1, 10) <= date_to)
     if customer_code:
         from sqlalchemy import cast, JSON
         customer = cast(CartonImportBatch.parse_summary_json, JSON)["schedule_customer"]["customer_code"].as_string()
@@ -5054,7 +5129,8 @@ def list_import_batches(
         query = query.where(or_(CartonImportBatch.original_filename.ilike(pattern, escape="!"),
                                CartonImportBatch.created_at.ilike(pattern, escape="!")))
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    if import_type == "WEEKLY_SCHEDULE":
+    weekly_only = requested_types == ["WEEKLY_SCHEDULE"] or (not requested_types and import_type == "WEEKLY_SCHEDULE")
+    if weekly_only:
         query = query.outerjoin(CartonAuditEvent,
             (CartonAuditEvent.factory_id == CartonImportBatch.factory_id)
             & (CartonAuditEvent.entity_id == CartonImportBatch.id)
@@ -5765,3 +5841,78 @@ def dashboard(db: Session, factory_id: str) -> CartonDashboardOut:
         unlocked_closing_count=int(unlocked_closing_count),
         open_exception_count=int(open_exception_count),
     )
+
+def supplier_promise_changes(db: Session, factory_id: str, limit: int = 20) -> list[dict]:
+    """Supplier acceptance promise changes after the first commitment, newest first."""
+    factory_id = require_carton_factory(factory_id)
+    events = list(db.scalars(
+        select(CartonAuditEvent).where(
+            CartonAuditEvent.factory_id == factory_id,
+            CartonAuditEvent.event_type == "SUPPLIER_PAPER_ACCEPTED",
+        ).order_by(CartonAuditEvent.sequence.desc()).limit(300)
+    ))
+    items: list[dict] = []
+    for event in events:
+        try:
+            detail = json.loads(event.detail_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        previous = str(detail.get("previous_promised_date") or "")
+        current = str(detail.get("promised_date") or "")
+        if not detail.get("promise_updated") or not previous or not current or previous == current:
+            continue
+        line = db.get(CartonOrderLine, str(detail.get("line_id") or ""))
+        order = db.get(CartonOrder, event.entity_id)
+        if line is None or order is None:
+            continue
+        items.append({
+            "id": event.id, "order_id": order.id, "order_no": order.order_no,
+            "customer_name": order.customer_name, "packaging_type": line.packaging_type,
+            "line_no": line.line_no, "previous_promised_date": previous, "promised_date": current,
+            "actor_name": event.actor_name, "created_at": event.created_at,
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+def promise_notice_acks(db: Session, factory_id: str) -> list[str]:
+    factory_id = require_carton_factory(factory_id)
+    return [event.entity_id for event in db.scalars(
+        select(CartonAuditEvent).where(
+            CartonAuditEvent.factory_id == factory_id,
+            CartonAuditEvent.event_type == "SUPPLIER_PROMISE_ACKNOWLEDGED",
+            CartonAuditEvent.entity_type == "carton_promise_notice",
+        ).order_by(CartonAuditEvent.sequence.desc()).limit(500)
+    )]
+
+
+def acknowledge_promise_notice(db: Session, user, payload) -> dict:
+    factory_id = require_carton_factory(payload.factory_id)
+    _audit(db, user, factory_id, "SUPPLIER_PROMISE_ACKNOWLEDGED", "carton_promise_notice",
+           payload.key, {"key": payload.key})
+    db.commit()
+    return {"key": payload.key}
+
+def supplier_promise_notices(db: Session, factory_id: str, limit: int = 20) -> dict:
+    """One inbox payload: promise-late orders, post-acceptance promise changes and acknowledgements."""
+    factory_id = require_carton_factory(factory_id)
+    from app.services import carton_supplier_portal as portal
+    late = []
+    _, orders = list_orders(db, factory_id, limit=None, offset=0, collaboration_filter="LATE_PROMISE")
+    for order in orders:
+        summary = portal.acceptance_summary(db, order, get_order_lines(db, order.id))
+        differences = [item for item in summary.get("delivery_differences", [])
+                       if int(item.get("difference_days") or 0) > 0]
+        if not differences:
+            continue
+        worst = max(differences, key=lambda item: int(item["difference_days"]))
+        late.append({
+            "order_no": order.order_no, "customer_name": order.customer_name,
+            "packaging_type": worst.get("packaging_type", ""), "promised_date": worst.get("promised_date", ""),
+            "difference_days": int(worst["difference_days"]),
+            "key": f"LATE:{order.order_no}:{worst.get('promised_date', '')}",
+        })
+        if len(late) >= limit:
+            break
+    changes = [{**item, "key": f"CHANGE:{item['id']}"} for item in supplier_promise_changes(db, factory_id, limit)]
+    return {"late": late, "changes": changes, "acknowledged": promise_notice_acks(db, factory_id)}

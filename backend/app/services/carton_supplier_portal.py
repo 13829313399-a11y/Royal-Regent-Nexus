@@ -22,7 +22,7 @@ from app.models.carton_mark import CartonMarkAsset, CartonMarkDocument, CartonMa
 from app.services import carton_mark_assets as mark_assets
 from app.models.carton_procurement import CartonOrder, CartonOrderLine, CartonSupplier, CartonPurchaseOrderIssue, CartonReceipt, CartonReceiptLine, CartonAuditEvent
 from app.models.carton_supplier_portal import SupplierCommitment, SupplierShipment, SupplierShipmentLine, SupplierShipmentUnmatchedLine, SupplierAttachment
-from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, CancellationAcknowledge, ShipmentStatusChange, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
+from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, CancellationAcknowledge, RushAcknowledge, ShipmentStatusChange, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.schemas.carton_procurement import CartonReceiptCreate, CartonReceiptLineCreate, CartonReceiptConfirmRequest
 from app.services.auth import AuthContext, authorization_decision, has_permission_in_scope
 from app.services import carton_positions as positions
@@ -216,7 +216,11 @@ def acceptance_order_ids(db, orders, status):
             own = lines[order.id]
             projection = {"issues": issues[order.id], "commitments": [row for line in own for row in commitments[line.id]],
                 "supplier_change_states": change_states[order.factory_id]}
-            if acceptance_summary(db, order, own, projection=projection)["status"] == status:
+            summary = acceptance_summary(db, order, own, projection=projection)
+            if status == "LATE_PROMISE":
+                if any(int(item.get("difference_days") or 0) > 0 for item in summary.get("delivery_differences", [])):
+                    result.append(order.id)
+            elif summary["status"] == status:
                 result.append(order.id)
     return result
 
@@ -495,7 +499,10 @@ def order_out(db, order, *, internal=False):
     result.update(id=order.id, status=order.status, revision=order.revision,
         issue_id=issue.id if issue else "", document_no=issue.document_no if issue else "尚未生成",
         order_date=header.get("order_date") or order.order_date,
-        planned_date=snapshot.get("after_due_date", ""), awaiting_issue=changed, lines=[])
+        planned_date=snapshot.get("after_due_date", ""), awaiting_issue=changed, lines=[],
+        rush=bool(order.rush), rush_reason=order.rush_reason,
+        rush_at=order.rush_at, rush_acknowledged=bool(order.rush and order.rush_ack_at),
+        rush_ack_at=order.rush_ack_at)
     from app.services.carton_material_correction import records, blocked_lines
     result["material_corrections"] = records(db, order.factory_id, order.id)
     material_holds = blocked_lines(db, order.factory_id, ids)
@@ -562,6 +569,21 @@ def acknowledge_cancellation(db, user, order_id, payload: CancellationAcknowledg
     if not cancellation_notice(db, order, issue)["acknowledged"]:
         _audit(db, user, payload.factory_id, "SUPPLIER_CANCELLATION_ACKNOWLEDGED", "carton_order", order.id,
                {"issue_id": issue.id, "order_revision": order.revision, "document_no": issue.document_no})
+    db.commit() if commit else db.flush()
+    return order_out(db, order)
+
+
+def acknowledge_rush(db, user, order_id, payload: RushAcknowledge, *, commit=True):
+    _lock_receipt_factory(db, payload.factory_id)
+    supplier = supplier_access(db, user, payload.factory_id, "carton_supplier:approve")
+    order = supplier_order(db, order_id, payload.factory_id, supplier.id)
+    if not order.rush:
+        raise HTTPException(409, "该订单当前不是急单，请刷新核对")
+    if not order.rush_ack_at:
+        order.rush_ack_at = now_text()
+        order.rush_ack_by = user.id
+        _audit(db, user, payload.factory_id, "SUPPLIER_RUSH_ACKNOWLEDGED", "carton_order", order.id,
+               {"rush_at": order.rush_at, "rush_reason": order.rush_reason})
     db.commit() if commit else db.flush()
     return order_out(db, order)
 

@@ -223,6 +223,9 @@ class CartonOrderCreate(CartonPackingWeights):
     order_date: str
     customer_due_date: str | None = None
     due_date: str
+    plan_date_manual: bool = False
+    rush: bool = False
+    rush_reason: str = Field(default="", max_length=255)
     status: Literal["DRAFT", "PENDING_SUPPLIER", "CONFIRMED"] = "CONFIRMED"
     note: str = Field(default="", max_length=4000)
     lines: list[CartonOrderLineCreate] = Field(min_length=1, max_length=50)
@@ -262,7 +265,7 @@ class CartonOrderCreate(CartonPackingWeights):
 
     @model_validator(mode="after")
     def validate_due_date(self):
-        if self.customer_due_date is not None and self.quantity_basis == "CALCULATED":
+        if self.customer_due_date is not None and self.quantity_basis == "CALCULATED" and self.plan_date_manual is False:
             self.due_date = derive_carton_plan_due_date(
                 self.order_date,
                 self.customer_due_date,
@@ -296,6 +299,7 @@ class CartonOrderUpdate(CartonPackingWeights):
     order_date: str
     customer_due_date: str | None = None
     due_date: str
+    plan_date_manual: bool | None = None
     note: str = Field(default="", max_length=4000)
     lines: list[CartonOrderLineCreate] = Field(min_length=1, max_length=50)
 
@@ -335,7 +339,7 @@ class CartonOrderUpdate(CartonPackingWeights):
 
     @model_validator(mode="after")
     def validate_due_date(self):
-        if self.customer_due_date is not None and self.quantity_basis == "CALCULATED":
+        if self.customer_due_date is not None and self.quantity_basis == "CALCULATED" and self.plan_date_manual is False:
             self.due_date = derive_carton_plan_due_date(
                 self.order_date,
                 self.customer_due_date,
@@ -383,6 +387,7 @@ class CartonOrderDatesRequest(BaseModel):
     reason: str = Field(min_length=4, max_length=500)
     customer_due_date: str | None = None
     due_date: str | None = None
+    plan_date_manual: bool | None = None
 
     @field_validator("customer_due_date", "due_date")
     @classmethod
@@ -394,6 +399,13 @@ class CartonOrderDatesRequest(BaseModel):
         if self.customer_due_date is None and self.due_date is None:
             raise ValueError("请填写客户交期或计划交期")
         return self
+
+
+class CartonOrderRushRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    factory_id: str = Field(min_length=1, max_length=64)
+    rush: bool
+    reason: str = Field(default="", max_length=255)
 
 
 class CartonOrderLineTarget(BaseModel):
@@ -651,6 +663,12 @@ class CartonOrderOut(BaseModel):
     customer_due_date: str | None
     safety_lead_days: int
     due_date: str
+    plan_date_manual: bool = False
+    rush: bool = False
+    rush_reason: str = ""
+    rush_at: str | None = None
+    rush_ack_at: str | None = None
+    rush_acknowledged: bool = False
     status: CartonOrderStatus
     note: str
     revision: int
@@ -1455,3 +1473,7 @@ class CartonDashboardOut(BaseModel):
     inventory_balance: Decimal
     unlocked_closing_count: int
     open_exception_count: int
+
+class PromiseNoticeAck(BaseModel):
+    factory_id: str = Field(min_length=1, max_length=64)
+    key: str = Field(min_length=3, max_length=200)

@@ -25,8 +25,9 @@ from app.schemas.carton_order_timeline import CartonOrderTimelineOut
 from app.services.carton_order_timeline import order_timeline
 from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction
 from app.services.carton_stocktake import create_stocktake, stocktake_detail, list_stocktakes, act_stocktake
-from app.services.carton_procurement import audit_query_options
+from app.services.carton_procurement import audit_query_options, supplier_promise_changes, supplier_promise_notices, promise_notice_acks, acknowledge_promise_notice
 from app.schemas.carton_procurement import (
+    PromiseNoticeAck,
     CartonAuditEventListOut,
     CartonAuditEventOut,
     CartonClosingGenerateRequest,
@@ -69,6 +70,7 @@ from app.schemas.carton_procurement import (
     CartonOrderReturnRequest,
     CartonOrderCreate,
     CartonOrderDatesRequest,
+    CartonOrderRushRequest,
     CartonOrderHistorySuggestionListOut,
     CartonOrderListOut,
     CartonOrderOut,
@@ -143,6 +145,7 @@ from app.services.carton_procurement import (
     submit_order_to_supplier,
     update_order,
     update_order_dates,
+    set_order_rush,
     update_closing_status,
     unlock_closing,
     update_customer,
@@ -371,7 +374,7 @@ def get_orders(
     order_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     due_filter: Literal["ALL", "OVERDUE", "TODAY", "DUE_SOON", "UPCOMING"] = "ALL",
     sort: Literal["ORDER_DESC", "DUE_ASC", "DUE_DESC"] = "ORDER_DESC",
-    collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED"] = "ALL",
+    collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED", "LATE_PROMISE"] = "ALL",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -519,6 +522,16 @@ def post_order_dates(
     if order.status in {"PENDING_SUPPLIER", "PARTIALLY_RECEIVED"}:
         _ensure_order_adjustment_permission(db, current_user, payload.factory_id)
     return order_out(db, update_order_dates(db, order_no, payload, current_user))
+
+
+@router.post("/orders/{order_no}/rush", response_model=CartonOrderOut)
+def post_order_rush(
+    order_no: str,
+    payload: CartonOrderRushRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return order_out(db, set_order_rush(db, order_no, payload, current_user))
 
 
 @router.post("/orders/{order_no}/append", response_model=CartonOrderOut)
@@ -1148,6 +1161,10 @@ def remove_unmatched_receipt_import(
 def get_imports(
     factory_id: str,
     import_type: str = Query(default="", max_length=32),
+    import_types: str = Query(default="", max_length=96),
+    status: str = Query(default="", max_length=16),
+    date_from: str = Query(default="", max_length=10),
+    date_to: str = Query(default="", max_length=10),
     summary_only: bool = False,
     search: str = Query(default="", max_length=128),
     customer_code: str = Query(default="", max_length=64),
@@ -1161,6 +1178,10 @@ def get_imports(
         db,
         factory_id,
         import_type=import_type.strip(),
+        import_types=import_types.strip(),
+        status=status.strip(),
+        date_from=date_from.strip(),
+        date_to=date_to.strip(),
         summary_only=summary_only,
         search=search.strip(),
         customer_code=customer_code.strip(),
@@ -1725,3 +1746,17 @@ def request_material_correction(order_no: str, payload: MaterialCorrectionCreate
 @router.post("/material-corrections/{identifier}/actions")
 def withdraw_material_correction(identifier: str, payload: MaterialCorrectionAction, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     return material_corrections.act(db, current_user, identifier, payload)
+
+@router.get("/supplier-promise-changes")
+def supplier_promise_change_list(factory_id: str, limit: int = Query(20, ge=1, le=100),
+                                 db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    return supplier_promise_notices(db, factory_id, limit)
+
+
+@router.post("/promise-notices/ack")
+def acknowledge_promise_notice_route(payload: PromiseNoticeAck,
+                                     db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    payload.factory_id = factory_id
+    return acknowledge_promise_notice(db, current_user, payload)

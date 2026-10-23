@@ -2,6 +2,7 @@ from decimal import Decimal
 import json
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     ForeignKeyConstraint,
     Index,
@@ -100,6 +101,13 @@ class CartonOrder(Base):
     master_config_revision: Mapped[int] = mapped_column(Integer, default=0)
     safety_lead_days: Mapped[int] = mapped_column(Integer, default=3)
     due_date: Mapped[str] = mapped_column(String(10), index=True)
+    plan_date_manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    rush: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    rush_reason: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    rush_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    rush_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rush_ack_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    rush_ack_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", index=True)
     # Cancelled orders leave the ledger without deleting referenced business history.
     deleted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -111,6 +119,10 @@ class CartonOrder(Base):
     updated_by_name: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[str] = mapped_column(String(40), index=True)
     updated_at: Mapped[str] = mapped_column(String(40), index=True)
+
+    @property
+    def rush_acknowledged(self) -> bool:
+        return bool(self.rush and self.rush_ack_at)
 
 
 class CartonOrderLine(Base):

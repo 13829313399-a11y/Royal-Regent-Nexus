@@ -33,7 +33,7 @@ def ledger(factory_id: str, responsibility_scope: Literal["OWN", "ALL"] = "OWN",
            order_to: str = Query("", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
            due_filter: Literal["ALL", "OVERDUE", "TODAY", "DUE_SOON", "UPCOMING"] = "ALL",
            sort: Literal["ORDER_DESC", "DUE_ASC", "DUE_DESC"] = "DUE_ASC",
-           collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED"] = "ALL",
+           collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED", "LATE_PROMISE"] = "ALL",
            limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
            db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     special.access(db, user, factory_id)

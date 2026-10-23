@@ -25,7 +25,7 @@ describe('unified delivery receipt', () => {
     for (const supplier of [false, true]) {
       const wrapper = setup(source, { supplier })
       expect(wrapper.text()).toContain('整单已拒收退回 · 入库 0')
-      expect(wrapper.text()).toContain('到货 2600 · 拒收退回 2600')
+      expect(wrapper.text()).toContain('到货 2,600 · 拒收退回 2,600')
       expect(wrapper.text()).toContain('实际入库 0')
       expect(wrapper.text()).not.toContain('实收 2600')
       wrapper.unmount()

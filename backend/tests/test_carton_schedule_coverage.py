@@ -54,10 +54,10 @@ def test_unknown_sheets_are_visible_in_both_structured_diagnostic_and_warnings()
     parsed = _parse_weekly("diagnostic.xlsx", output.getvalue())
     assert parsed["coverage_parse"]["unrecognized_sheets"] == ["额外业务明细"]
     assert len(parsed["rows"]) == 1 and parsed["rows"][0]["contract_no"] == "KNOWN"
-    assert any("额外业务明细" in warning and "不是全量覆盖" in warning for warning in parsed["warnings"])
+    assert any("额外业务明细" in warning and "请核对这些表是否还有业务明细" in warning for warning in parsed["warnings"])
     clean = _parse_weekly("clean.xlsx", workbook([source_row(contract="KNOWN")]))
     assert not clean["coverage_parse"]["unrecognized_sheets"]
-    assert not any("不是全量覆盖" in warning for warning in clean["warnings"])
+    assert not any("请核对这些表是否还有业务明细" in warning for warning in clean["warnings"])
 
 
 def test_concurrent_review_has_one_winner_old_tasks_supersede_and_undo_restores(monkeypatch):

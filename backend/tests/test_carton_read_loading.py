@@ -58,3 +58,41 @@ def test_history_summaries_details_pagination_and_factory_scope(monkeypatch):
         assert client.get(BASE + '/receipts/R-09', params={'factory_id': 'huaxing'}).status_code == 200
         assert client.get(BASE + '/receipts/R-10', params={'factory_id': 'huaxing'}).status_code == 404
         assert client.get(BASE + '/receipt-history', params={'factory_id': 'huaxing', 'date_from': 'bad'}).status_code == 422
+
+
+def test_import_history_filters_by_types_status_and_business_date(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client, 'admin')
+        from app.db import SessionLocal
+        from app.models.carton_procurement import CartonImportBatch
+        with SessionLocal() as db:
+            for identifier, kind, status, created_at in [
+                ('W-1', 'WEEKLY_SCHEDULE', 'REQUIRES_REVIEW', '2026-09-01T08:00:00+08:00'),
+                ('W-2', 'WEEKLY_SCHEDULE', 'REJECTED', '2026-09-05T08:00:00+08:00'),
+                ('I-1', 'INSPECTION_SCHEDULE', 'REQUIRES_REVIEW', '2026-09-03T08:00:00+08:00'),
+            ]:
+                db.add(CartonImportBatch(id=identifier, factory_id='huaxing', import_type=kind,
+                    original_filename=f'{identifier}.xlsx', source_sha256=(identifier * 24)[:64], import_profile='',
+                    status=status, imported_by='admin', imported_by_name='管理员', created_at=created_at,
+                    parse_summary_json=json.dumps({'row_count': 1, 'review_count': 2, 'change_counts': {'NEW': 1},
+                        'schedule_customer': {'customer_code': 'C1', 'customer_name': '客户一'}, 'rows': []})))
+            db.commit()
+
+        base = {'factory_id': 'huaxing', 'summary_only': True}
+        both = client.get(BASE + '/imports', params={**base, 'import_types': 'WEEKLY_SCHEDULE,INSPECTION_SCHEDULE'})
+        assert both.status_code == 200, both.text
+        assert both.json()['total'] == 3
+        assert [item['id'] for item in both.json()['items']] == ['W-2', 'I-1', 'W-1']
+        summary = both.json()['items'][1]['parse_summary']
+        assert summary['review_count'] == 2 and summary['change_counts'] == {'NEW': 1}
+        assert client.get(BASE + '/imports', params={**base, 'import_types': 'WEEKLY_SCHEDULE'}).json()['total'] == 2
+        assert client.get(BASE + '/imports', params={**base, 'import_types': 'WEEKLY_SCHEDULE', 'status': 'ACTIVE'}).json()['total'] == 1
+        rejected = client.get(BASE + '/imports', params={**base, 'import_types': 'WEEKLY_SCHEDULE', 'status': 'REJECTED'}).json()
+        assert [item['id'] for item in rejected['items']] == ['W-2']
+        ranged = client.get(BASE + '/imports', params={**base, 'import_types': 'WEEKLY_SCHEDULE,INSPECTION_SCHEDULE',
+            'date_from': '2026-09-02', 'date_to': '2026-09-04'}).json()
+        assert [item['id'] for item in ranged['items']] == ['I-1']
+        assert client.get(BASE + '/imports', params={**base, 'import_types': 'UNKNOWN'}).status_code == 422
+        assert client.get(BASE + '/imports', params={**base, 'status': 'UNKNOWN'}).status_code == 422
+        assert client.get(BASE + '/imports', params={**base, 'date_from': '2026-9-1'}).status_code == 422
+        assert client.get(BASE + '/imports', params={**base, 'date_from': '2026-09-05', 'date_to': '2026-09-01'}).status_code == 422
