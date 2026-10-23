@@ -20,8 +20,8 @@ spec.loader.exec_module(runner)
 
 @pytest.mark.parametrize('damage', ['gap', 'failed_sql', 'missing_retry', 'retry_lock', 'retry_admission'])
 def test_diagnostic_failures_cannot_be_reported_as_passed(damage):
-    sample = dict(endpoint='payment_save_retry', request_id='retry')
-    diagnostic = dict(heartbeat_gaps=[], lock_spans=[], requests=[dict(request_id='retry', failed_sql=0, lock_seconds=0)])
+    sample = dict(endpoint='payment_save_retry', request_id='retry', started_seconds=0, seconds=.01)
+    diagnostic = dict(heartbeat_gaps=[], lock_spans=[], requests=[dict(request_id='retry', failed_sql=0, lock_seconds=0, phases=[])])
     assert runner.diagnostics_summary(diagnostic, [sample])['payment_retries'] == 1
     if damage == 'gap': diagnostic['heartbeat_gaps'] = [{'elapsed':10}]
     if damage == 'failed_sql': diagnostic['requests'][0]['failed_sql'] = 1

@@ -156,14 +156,20 @@ def serve(database):
         sock.bind(('127.0.0.1',0));sock.listen(128)
         server=uvicorn.Server(uvicorn.Config(app,access_log=False,log_level='warning',timeout_graceful_shutdown=10))
         def control():
+            last_snapshot = 0
             while not stop.wait(.1):
+                if time.monotonic()-last_snapshot >= 5:
+                    partial=folder/'diagnostics.partial.tmp'
+                    partial.write_text(json.dumps(diagnostic.snapshot(),ensure_ascii=False),encoding='utf-8')
+                    partial.replace(folder/'diagnostics.partial.json')
+                    last_snapshot=time.monotonic()
                 if server.started and not (folder/'ready.json').exists():
                     (folder/'ready.json').write_text(json.dumps(dict(port=sock.getsockname()[1],instance=os.environ['CUTTING_FULL_APP_INSTANCE'],full_lifespan=True)),encoding='utf-8')
                 if (folder/'stop').exists():server.should_exit=True;return
         threading.Thread(target=control,daemon=True).start();diagnostic.start();server.run(sockets=[sock])
     finally:
         stop.set();diagnostic.close();sock.close();engine.dispose()
-        (folder/'diagnostics.json').write_text(json.dumps(dict(requests=diagnostic.rows,lock_spans=diagnostic.lock_spans,heartbeat_gaps=diagnostic.gaps),ensure_ascii=False),encoding='utf-8')
+        (folder/'diagnostics.json').write_text(json.dumps(diagnostic.snapshot(),ensure_ascii=False),encoding='utf-8')
 
 
 @contextmanager
@@ -173,6 +179,7 @@ def full_http(database):
     if any((folder/n).exists() for n in ['ready.json','stop','diagnostics.json']):raise ValueError('Never reuse a probe directory')
     with (folder/'api.log').open('w',encoding='utf-8') as log:
         proc=subprocess.Popen([sys.executable,str(Path(__file__)), '--serve',str(database)],cwd=Path(m['source'])/'backend',env=env,stdout=log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0)
+        original_error = None
         try:
             deadline=time.monotonic()+120
             while not (folder/'ready.json').exists():
@@ -181,6 +188,9 @@ def full_http(database):
             ready=read(folder/'ready.json')
             if ready['instance']!=instance or proc.poll() is not None:raise RuntimeError('Owned full-app identity mismatch')
             yield 'http://127.0.0.1:'+str(ready['port'])
+        except BaseException as error:
+            original_error = error
+            raise
         finally:
             (folder/'stop').touch(exist_ok=False)
             try:proc.wait(timeout=45)
@@ -188,8 +198,13 @@ def full_http(database):
                 if sys.platform=='win32':subprocess.run(['taskkill','/PID',str(proc.pid),'/T','/F'],capture_output=True,check=True,creationflags=subprocess.CREATE_NO_WINDOW)
                 else:proc.kill()
                 proc.wait(timeout=10)
-                raise RuntimeError('Owned full-app shutdown timed out')
-            if proc.returncode:raise RuntimeError('Owned full-app exited with failure; see api.log')
+                if original_error is None:
+                    raise RuntimeError('Owned full-app shutdown timed out')
+                original_error.add_note('Owned full-app shutdown timed out; owned process was stopped.')
+            if proc.returncode:
+                if original_error is None:
+                    raise RuntimeError('Owned full-app exited with failure; see api.log')
+                original_error.add_note('Owned full-app exited with failure; see api.log')
 
 
 def main():
@@ -197,6 +212,8 @@ def main():
     parser.add_argument('--workload',choices=['burst','paced'],default='burst',help='Burst retains the .2s baseline; paced uses a 2s pause per worker cycle. No failed request is automatically retried.')
     parser.add_argument('--production-write-orders',type=int,default=0,
         help='Rotate handover and usage writes over this many separate orders per clerk (0 disables, 1–40); no receipt/return/month-lock writes.')
+    parser.add_argument('--workflow-probes',action='store_true',
+        help='After baseline reconciliation, run finite balance/receipt/return/month-lock races with concurrent readers on this same exclusive copy.')
     args=parser.parse_args()
     if args.serve:
         serve(args.serve);return 0
@@ -211,6 +228,7 @@ def main():
     report=dict(status='failed',seconds=args.seconds,release=m['acceptance_release'],source=initial,release_ready=False,workload=args.workload,cycle_pause_seconds=pause,
         scope='Frozen full application with full lifespan; fresh synthetic schema; 500 dispatch/100 production/20 finance chains; test business clock 2026-12-15; not target hardware, competing writers or production approval')
     report['production_write_orders_per_kind']=args.production_write_orders
+    report['workflow_probes_enabled']=args.workflow_probes
     print(str(folder),flush=True)
     try:
         with (folder/'migration.log').open('w',encoding='utf-8') as log:
@@ -218,13 +236,32 @@ def main():
         report['imported_tables']=install_fixture(seed,database)
         (folder/'fixture.json').write_text(json.dumps(dict(kind='cutting-full-app-synthetic',database=str(database.resolve()),manifest=str(manifest.resolve()),manifest_sha256=sha256(manifest.read_bytes()).hexdigest(),seed_sha256=seed_hash)),encoding='utf-8')
         run_probe(database,args.seconds,report,server_context=full_http,cycle_pause=pause,
-            production_write_orders=args.production_write_orders)
+            production_write_orders=args.production_write_orders,workflow_probes=args.workflow_probes)
         report['diagnostic_summary']=diagnostics_summary(read(folder/'diagnostics.json'),report['samples'])
+        if args.workflow_probes:
+            from cutting_mix_audit import segmented_diagnostics
+            report['workflow_probes']['segmented']=segmented_diagnostics(read(folder/'diagnostics.json'),report['workflow_probes']['samples'])
         report['runtime']=read(folder/'runtime.json')
         if report['runtime']['sqlite_busy_timeout_ms']!=5000:raise ValueError('Full-app SQLite timeout differs from the unchanged 5s baseline')
+        api_log=(folder/'api.log').read_text(encoding='utf-8',errors='replace')
+        report['background_lock_errors']=api_log.count('identity_background_retry_required')
+        if report['background_lock_errors']:raise ValueError('Full-app background identity worker hit a database lock; see api.log')
         report['status']='passed'
-    except Exception as error:report['error']=dict(type=type(error).__name__,detail=str(error)[:1000])
+    except Exception as error:report['error']=dict(type=type(error).__name__,detail=str(error)[:1000],notes=getattr(error,'__notes__',[]))
     finally:
+        # Keep failure evidence too; never replace the primary error with cleanup
+        # or a secondary summary failure, and never turn an incomplete run green.
+        diagnostic_path=folder/'diagnostics.json'
+        if not diagnostic_path.is_file():diagnostic_path=folder/'diagnostics.partial.json'
+        if diagnostic_path.is_file():
+            from cutting_mix_audit import segmented_diagnostics
+            all_samples=report.get('samples',[])+report.get('workflow_probes',{}).get('samples',[])
+            try:
+                report['diagnostics_complete']=diagnostic_path.name=='diagnostics.json'
+                report['in_flight_at_capture']=read(diagnostic_path).get('in_flight',[])
+                report['all_segmented_diagnostics']=segmented_diagnostics(read(diagnostic_path),all_samples)
+            except Exception as error:
+                report['diagnostic_evidence_error']=dict(type=type(error).__name__,detail=str(error)[:500])
         report.update(source_after=source_state(),seed_unchanged=seed_hash==sha256(seed.read_bytes()).hexdigest())
         report['source_unchanged']=initial==report['source_after']
         if not report['source_unchanged'] or not report['seed_unchanged']:report['status']='failed'

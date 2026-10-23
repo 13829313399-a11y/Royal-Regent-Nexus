@@ -77,8 +77,9 @@ def prepare(db, month):
     prior_rows = {r['issue_id']: r for r in (prior or {}).get('allocations', [])}
     reports, rows, blockers, notices = [], [], [], []
     before_day = (date.fromisoformat(start) - timedelta(days=1)).isoformat()
+    read_month, production_docs, plan_versions = preview.month_reader(db, [item.line_id for item in items], warehouse, usage_history, uses)
     for item in items:
-        result = preview.read(db, item.line_id, month, show_costs=True)
+        result = read_month(item.line_id, month)
         result.pop('generated_at', None)
         result.pop('current_allocation_review', None)  # Today's allocation is never a month-end basis.
         result.pop('wip_status', None)
@@ -91,7 +92,7 @@ def prepare(db, month):
         for issue in result['issues']:
             notice = dict(issue, line_id=item.line_id)
             (blockers if issue['code'] == 'report_draft' else notices).append(notice)
-        documents = reporting.documents(reporting.events(db, item.line_id))
+        documents = production_docs[item.line_id]
         for row in result['materials']:
             context = row['context']
             totals = {side: dict(normal=Decimal(0), loss=Decimal(0)) for side in ('opening', 'ending')}
@@ -107,7 +108,7 @@ def prepare(db, month):
             completions = {}
             for side, cutoff in (('opening', before_day), ('ending', end)):
                 clipped = {key: doc for key, doc in documents.items() if doc['posted'] and doc['posted']['data']['entry']['day'] <= cutoff}
-                completed, _, error = allocation.production_basis(db, item.line_id, context, clipped, True)
+                completed, _, error = allocation.production_basis(db, item.line_id, context, clipped, True, plan_versions)
                 completions[side] = completed
                 if error:
                     blockers.append(dict(code='identity', message=error, line_id=item.line_id, issue_id=row['issue_id']))

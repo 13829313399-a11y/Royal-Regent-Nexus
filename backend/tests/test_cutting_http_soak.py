@@ -79,12 +79,14 @@ def configuration():
 
 class Diagnostics:
     def __init__(self, p):
-        self.rows, self.gaps, self.lock_spans = [], [], []
+        self.rows, self.gaps, self.lock_spans, self.in_flight = [], [], [], {}
         self.lock, self.stop = Lock(), Event()
         self.engine = p.engine
         self.origin = perf_counter()
         self.patches = ExitStack()
-        from app.services import cutting_ops, cutting_payments, cutting_exports, cutting_workspace
+        from app.services import cutting_ops, cutting_payments, cutting_exports, cutting_workspace, cutting_periods, cutting_materials
+        from app.services.cutting_export_gate import gate
+        self.patches.enter_context(patch.object(gate, 'slot', self.tracked_context(gate.slot, 'export_gate')))
         try:
             from app.services import cutting_sqlite_queue
         except ImportError:  # Retained frozen pre-admission releases.
@@ -95,7 +97,9 @@ class Diagnostics:
         for module, names in [(cutting_ops, ['command', 'payment_command']),
                 (cutting_payments, ['basis', 'preview', 'read', 'execute', 'balances']),
                 (cutting_exports, ['capture', 'source_revision', 'package_isolated']),
-                (cutting_workspace, ['task_board', 'inventory', 'cost_overview', 'scheduling'])]:
+                (cutting_workspace, ['task_board', 'inventory', 'cost_overview', 'scheduling']),
+                (cutting_periods, ['prepare', 'calculate', 'execute']),
+                (cutting_materials, ['execute'])]:
             for name in names:
                 self.patches.enter_context(patch.object(module, name, self.tracked(getattr(module, name), module.__name__.rsplit('.', 1)[-1]+'.'+name)))
         @p.app.middleware('http')
@@ -104,6 +108,8 @@ class Diagnostics:
                          request_id=request.headers.get('X-Test-Request-ID', ''), phase='request', phases=[])
             token = request_stats.set(stats)
             began = perf_counter()
+            with self.lock:
+                self.in_flight[id(stats)] = (request.url.path, began, stats)
             try:
                 response = await call_next(request)
                 response.headers['X-Test-Request-ID'] = request.headers.get('X-Test-Request-ID', '')
@@ -113,12 +119,41 @@ class Diagnostics:
                     self.rows.append(dict(stats, request_id=request.headers.get('X-Test-Request-ID', ''),
                         path=request.url.path, started_seconds=began-self.origin,
                         header_ready_seconds=perf_counter()-began))
+                    self.in_flight.pop(id(stats), None)
                 request_stats.reset(token)
         event.listen(self.engine, 'before_cursor_execute', self.before)
         event.listen(self.engine, 'after_cursor_execute', self.after)
         event.listen(self.engine, 'handle_error', self.sql_error)
         event.listen(self.engine, 'checkin', self.released)
         self.thread = Thread(target=self.heartbeat, daemon=True)
+
+    def snapshot(self):
+        with self.lock:
+            now = perf_counter()
+            active = [dict(stats.copy(), phases=list(stats['phases']), path=path,
+                started_seconds=began-self.origin, elapsed_seconds=now-began, incomplete=True)
+                for path,began,stats in self.in_flight.values()]
+            return dict(requests=list(self.rows),lock_spans=list(self.lock_spans),
+                        heartbeat_gaps=list(self.gaps),in_flight=active)
+
+    def tracked_context(self, function, name):
+        @contextmanager
+        def wrapped(*args, **kwargs):
+            stats = request_stats.get()
+            began = perf_counter()
+            acquired = None
+            try:
+                with function(*args, **kwargs) as value:
+                    acquired = perf_counter()
+                    if stats is not None:
+                        stats['phases'].append(dict(name=name+'.wait', start=began-self.origin, end=acquired-self.origin))
+                    yield value
+            finally:
+                ended = perf_counter()
+                if stats is not None:
+                    stats['phases'].append(dict(name=name+'.held' if acquired is not None else name+'.failed_wait',
+                        start=(acquired if acquired is not None else began)-self.origin, end=ended-self.origin))
+        return wrapped
 
     def tracked(self, function, name):
         @wraps(function)
