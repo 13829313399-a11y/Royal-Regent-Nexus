@@ -450,7 +450,7 @@ const visibleOrderRows = computed(() => {
     ...visibleOrders.value.map(regular => ({ key: selectionKey('REGULAR', regular), date: orderSort.value === 'ORDER_DESC' ? regular.order_date : orderSort.value === 'PROMISED_ASC' ? regular.lines.map(line => line.promised_date).filter(Boolean).sort()[0] || '' : regular.planned_date, stage: orderStage(regular), regular })),
     ...visibleSpecialOrders.value.map(special => ({ key: selectionKey('SPECIAL', special), date: orderSort.value === 'ORDER_DESC' ? special.created_at ? formatBusinessDate(special.created_at) : '' : orderSort.value === 'PROMISED_ASC' ? specialSupplierPromise(special) : special.required_date, stage: specialStage(special), special })),
   ]
-  return rows.sort((a, b) => Number(!b.regular?.rush) - Number(!a.regular?.rush) || (orderSort.value === 'DEFAULT' ? (stagePriority[a.stage] ?? 9) - (stagePriority[b.stage] ?? 9) : 0) || Number(!a.date) - Number(!b.date) || (orderSort.value === 'ORDER_DESC' ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date)) || a.key.localeCompare(b.key))
+  return rows.sort((a, b) => Number(!a.regular?.rush) - Number(!b.regular?.rush) || (orderSort.value === 'DEFAULT' ? (stagePriority[a.stage] ?? 9) - (stagePriority[b.stage] ?? 9) : 0) || Number(!a.date) - Number(!b.date) || (orderSort.value === 'ORDER_DESC' ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date)) || a.key.localeCompare(b.key))
 })
 const detailSpecial = computed(() => specialRequests.value.find(row => row.id === specialSelection.value?.id && row.factory_id === specialSelection.value?.factoryId) || null)
 const detailOrder = computed(() => orders.value.find(order => order.id === detailOrderId.value) ?? null)

@@ -32,8 +32,9 @@
 .rrn-home[data-home-experience='prism-v4'][data-home-motion='calm'] .portal-module-card:hover { transform: none; }
 /* Pointer-down feedback exists before the router can commit a cached page. */
 .rrn-home[data-home-experience='prism-v4'][data-home-motion]:not([data-home-motion='off']) .portal-module-card[data-navigable='true']:active { transform: scale(.985); transition-duration: 80ms; }
-/* Only first-entry decoration yields to the route host; controls/dialogs stay local. */
-.rrn-home[data-home-experience='prism-v4'][data-home-motion][data-route-entry-owned] :is(.home-card-reveal, .home-artwork__front, .home-artwork__back, .home-artwork__trace, .home-artwork__scan, .dashboard-section, .dashboard-metric) { animation: none; }
+/* Content reveals yield to the route host. Identity-keyed artwork keeps its finite
+   local motion: the host only fades the page and cannot replace SVG layer/trace motion. */
+.rrn-home[data-home-experience='prism-v4'][data-home-motion][data-route-entry-owned] :is(.home-card-reveal, .dashboard-section, .dashboard-metric) { animation: none; }
 .rrn-home[data-home-experience='prism-v4'][data-home-motion='off'] *,
 .rrn-home[data-home-experience='prism-v4'][data-home-motion='off'] *::before,
 .rrn-home[data-home-experience='prism-v4'][data-home-motion='off'] *::after { animation: none !important; transition: none !important; }

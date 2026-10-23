@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import type { WorkSnapshot } from './types'
 import { workHealth } from './health'
 const props = defineProps<{ snapshot?: WorkSnapshot | null; syncing?: boolean }>()
-defineEmits<{ retry: [] }>()
+defineEmits<{ retry: []; navigate: [] }>()
 const health = computed(() => workHealth(props.snapshot))
 </script>
 
@@ -14,6 +14,9 @@ const health = computed(() => workHealth(props.snapshot))
       <p>{{ health.description }}</p>
       <ul v-if="health.details.length"><li v-for="detail in health.details" :key="detail">{{ detail }}</li></ul>
     </details>
-    <button v-if="health.warning" type="button" :disabled="syncing" @click="$emit('retry')">{{ syncing ? '正在同步…' : '重试同步' }}</button>
+    <div v-if="health.retryable || health.verificationCount" class="nc-health-actions">
+      <RouterLink v-if="health.verificationCount" :to="{ name: 'notification-center', query: { view: 'verification' } }" @click="$emit('navigate')">查看待核对事项</RouterLink>
+      <button v-if="health.retryable" type="button" :disabled="syncing" @click="$emit('retry')">{{ syncing ? '正在同步…' : '重试同步' }}</button>
+    </div>
   </div>
 </template>

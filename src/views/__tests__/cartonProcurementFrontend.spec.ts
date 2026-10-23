@@ -309,6 +309,9 @@ it('opens the simple monthly overview by default and keeps its state only on its
     const tab = (text: string) => tabs.findAll('button').find(row => row.text() === text)!
     expect(tab('本月对账').attributes('aria-pressed')).toBe('true')
     expect(w.find('carton-settlement-overview-stub').exists()).toBe(true)
+    expect(w.findComponent({ name: 'CartonSettlementOverview' }).props()).toMatchObject({
+      factoryId: 'huaxing', viewerKey: expect.any(String),
+    })
     await tab('库存月结记录').trigger('click'); await flushPromises()
     expect(w.find('carton-settlement-overview-stub').exists()).toBe(false)
     await tab('本月对账').trigger('click'); await flushPromises()
@@ -2883,6 +2886,68 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     await customerDueDate.setValue(dateOffsetFrom((orderDate.element as HTMLInputElement).value, 1))
     expect((planDueDate.element as HTMLInputElement).value).toBe((orderDate.element as HTMLInputElement).value)
     expect(wrapper.get('[role="alert"]').text()).toContain('不足默认 3 天安全提前量')
+  })
+
+  it('preserves the manual flag in a saved new-order draft', async () => {
+    authStoreState.currentUser = { id: 'MANUAL-DRAFT', identity: { employment_epoch: 1 } }
+    mockReceiptWorkspace([])
+    const wrapper = mountView('orders'); await flushPromises()
+    try {
+      await findButton(wrapper, '新建订单').trigger('click')
+      const date = wrapper.get<HTMLInputElement>('[aria-label="下单日期"]').element.value
+      await wrapper.get('[aria-label="客户交期"]').setValue(dateOffsetFrom(date, 10))
+      await wrapper.get('[aria-label="计划交期"]').setValue(dateOffsetFrom(date, 3))
+      await findButton(wrapper, '保存草稿并离开').trigger('click')
+      const draft = readOrderDraft(window.localStorage, { userId: 'MANUAL-DRAFT', employmentEpoch: 1, factoryId: 'huaxing' })
+      expect(draft?.form.dueDate).toBe(dateOffsetFrom(date, 3))
+      expect(draft?.form.planDateManual).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+  it('preserves the manually entered date after resuming a draft', async () => {
+    authStoreState.currentUser = { id: 'MANUAL-DRAFT', identity: { employment_epoch: 1 } }
+    mockReceiptWorkspace([])
+    const wrapper = mountView('orders'); await flushPromises()
+    try {
+      await findButton(wrapper, '新建订单').trigger('click')
+      const date = wrapper.get<HTMLInputElement>('[aria-label="下单日期"]').element.value
+      await wrapper.get('[aria-label="客户交期"]').setValue(dateOffsetFrom(date, 10))
+      await wrapper.get('[aria-label="计划交期"]').setValue(dateOffsetFrom(date, 3))
+      await findButton(wrapper, '保存草稿并离开').trigger('click')
+      await findButton(wrapper, '新建订单').trigger('click')
+      await wrapper.get('[aria-label="继续上次新建订单草稿"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.get<HTMLInputElement>('[aria-label="计划交期"]').element.value).toBe(dateOffsetFrom(date, 3))
+      await wrapper.get('[aria-label="客户交期"]').setValue(dateOffsetFrom(date, 12))
+      expect(wrapper.get<HTMLInputElement>('[aria-label="计划交期"]').element.value).toBe(dateOffsetFrom(date, 3))
+    } finally { wrapper.unmount() }
+  })
+  it('shows the complete promise count and reloads pending pagination after acknowledgement', async () => {
+    mockReceiptWorkspace([])
+    const acknowledged = new Set<string>()
+    const rows = Array.from({ length: 21 }, (_, index) => ({ id: `CHANGE-${index + 1}`,
+      key: `CHANGE:CHANGE-${index + 1}`, order_no: `ORDER-${index + 1}`, packaging_type: '外箱',
+      previous_promised_date: '2026-10-20', promised_date: '2026-10-30' }))
+    cartonApiMock.supplierPromiseNotices.mockImplementation(async (_factory, limit, offset) => {
+      const pending = rows.filter(row => !acknowledged.has(row.key))
+      return { late: [], changes: pending.slice(offset, offset + limit), acknowledged: [...acknowledged],
+        total: pending.length, has_more: offset + limit < pending.length }
+    })
+    cartonApiMock.acknowledgePromiseNotice.mockImplementation(async (_factory, key) => { acknowledged.add(key) })
+    const wrapper = mountView('dashboard'); await flushPromises()
+    try {
+      const panel = wrapper.get('[aria-label="供应商变更通知"]')
+      await panel.get('[aria-controls="dashboard-supplier-change-content"]').trigger('click')
+      expect(panel.text()).toContain('承诺与改期 · 21 项待确认收到')
+      expect(panel.findAll('button').filter(button => button.text() === '确认收到')).toHaveLength(20)
+      await findButton(wrapper, '加载更多承诺与改期提醒').trigger('click'); await flushPromises()
+      expect(cartonApiMock.supplierPromiseNotices).toHaveBeenLastCalledWith('huaxing', 20, 20)
+      expect(panel.findAll('button').filter(button => button.text() === '确认收到')).toHaveLength(21)
+      await panel.findAll('button').find(button => button.text() === '确认收到')!.trigger('click'); await flushPromises()
+      expect(cartonApiMock.supplierPromiseNotices).toHaveBeenLastCalledWith('huaxing', 20, 0)
+      expect(panel.text()).toContain('承诺与改期 · 20 项待确认收到')
+      expect(panel.text()).toContain('ORDER-21')
+      expect(panel.findAll('button').filter(button => button.text() === '确认收到')).toHaveLength(20)
+    } finally { wrapper.unmount() }
   })
 
   it('keeps a manually changed plan date when the customer date changes afterwards', async () => {

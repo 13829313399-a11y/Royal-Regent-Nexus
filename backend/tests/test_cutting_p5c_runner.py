@@ -108,6 +108,9 @@ def test_sqlite_only_ignores_inherited_connection_and_preserves_incomplete_failu
         captured.update(env)
         assert any(name == 'http-capacity' and 'tests/test_cutting_http_capacity.py' in command
                    for name, command, _ in steps)
+        assert any(name == 'http-capacity' and all('tests/'+file in command for file in
+                   ['test_cutting_http_process.py', 'test_cutting_lock_phases.py',
+                    'test_cutting_production_mix.py']) for name, command, _ in steps)
         return []
     monkeypatch.setattr(runner, 'execute_steps', execute)
     assert runner.main() == 1  # No test evidence must never become a pass.

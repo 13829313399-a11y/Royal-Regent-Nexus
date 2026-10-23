@@ -26,6 +26,14 @@ def test_batch_matches_individual_reads_and_uses_composite_versions(role_flow, m
             queries.clear()
             optimized_costs = workspace.cost_overview(db)
             assert len(queries) == 1
+            identities, captured = workspace.capture_materials(db, costs=True)
+            assert not db.in_transaction() and captured['production'][0]
+            assert captured['production'][2]
+            assert all(not hasattr(row, '_sa_instance_state') for row in captured['production'][2].values())
+            for identity in identities:
+                with Session(p.engine) as individual_db:
+                    assert usage.read(None, identity['line_id'], show_costs=True, _snapshot=captured) == usage.read(
+                        individual_db, identity['line_id'], show_costs=True)
             docs, versions = cutting_read_batch.production(db, ['line-1', 'http-capacity-1', 'http-capacity-2'], revisions=True)
             assert {key[0] for key in versions} == {'line-1', 'http-capacity-1', 'http-capacity-2'}
             for line, documents in docs.items():

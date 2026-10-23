@@ -65,7 +65,7 @@
       {
         "path": "backend/app/api/cutting_operations.py",
         "symbol": "def order_command",
-        "sha256": "23840b440568e6341c48f98ae11e869677198170869f7ad8a421c914bf4bf070"
+        "sha256": "9c897b9896788292199100bae8e74bddf7f4d7866621c50f262bad77e468ecb0"
       },
       {
         "path": "backend/app/services/cutting_planning.py",
@@ -188,8 +188,8 @@
         "sha256": "18b46b9ae9184cc604e8ea1078bad977146abc39ac13a1a4968e1ed08a3f175b"
       }
     ],
-    "knowledge_version": "2026-10-21-cutting-export-capture",
-    "verified_commit": "3372f346: reviewed selected immutable capture, transaction release and final source fence; business, permission and workbook explanations unchanged",
+    "knowledge_version": "2026-10-23-cutting-lock-capture",
+    "verified_commit": "e804f99b: reviewed detached inventory/cost captures, committed payment retry authorization and financial response transaction release; business, permission and workbook explanations unchanged",
     "status": "verified"
   }
 ]

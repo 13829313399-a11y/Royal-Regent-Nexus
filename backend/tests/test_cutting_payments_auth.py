@@ -33,8 +33,11 @@ def test_real_accounting_sessions_enforce_independence_and_revocation(paid_setup
     def login(name):
         p.cookies.clear();ok(p.post('/api/auth/login',json={'username':'payment-test-'+name,'password':'SyntheticPass123!'}))
     login('production');assert p.get(URL+'/2026-10',params={'factory_id':'huakang-c'}).status_code==403
-    login('registrar');did=save(p);ok(decision(p,did,'submit'))
+    login('registrar');saved=body(p);ok(p.post(URL+'/save',json=saved));did=saved['document_id'];ok(decision(p,did,'submit'))
     assert decision(p,did,'confirm').status_code==409
+    with Session(p.engine) as db:
+        db.execute(delete(AuthRolePermission).where(AuthRolePermission.id=='registrar:payment_prepare'));db.commit()
+    assert p.post(URL+'/save',json=saved).status_code==403  # Even an exact committed receipt needs current authority.
     login('reviewer');ok(decision(p,did,'confirm'))
     assert read(p,did)['data']['prepared_by']=='registrar'
     assert read(p,did)['history'][-1]['actor']=='reviewer'
@@ -49,13 +52,13 @@ def test_real_accounting_sessions_enforce_independence_and_revocation(paid_setup
         db.execute(delete(AuthUserPermissionOverride).where(AuthUserPermissionOverride.id=='deny-reverse'));db.commit()
     ok(decision(p,did,'reverse'))
     export_preview=ok(p.post(BASE+'/exports/preview',json=export_body))
-    render=cutting_exports.render
+    render=cutting_exports.package_isolated
     def revoke_during_render(report,context):
         content=render(report,context)
         with Session(p.engine) as db:
             db.execute(delete(AuthRolePermission).where(AuthRolePermission.id=='reviewer:payment_read'));db.commit()
         return content
-    monkeypatch.setattr(cutting_exports,'render',revoke_during_render)
+    monkeypatch.setattr(cutting_exports,'package_isolated',revoke_during_render)
     assert p.post(BASE+'/exports/download',json=export_body|{'token':export_preview['token']}).status_code==403
     with Session(p.engine) as db:
         db.execute(delete(AuthRolePermission).where(AuthRolePermission.id=='reviewer:payment_read'));db.commit()

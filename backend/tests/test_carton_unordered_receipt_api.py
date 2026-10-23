@@ -93,7 +93,8 @@ def test_delivery_excel_material_only_rows_and_pdf_ocr_without_identifiers(monke
 def test_legacy_display_dimension_without_rewriting_identity(spec, field, expected):
     from app.services.carton_dimensions import dimension_unit_for_display, specification_for_display
     assert dimension_unit_for_display(field, spec) == expected
-    assert specification_for_display(spec, field) == f"12 × 10 × 5 {expected}"
+    display_unit = "inch" if expected == "in" else expected
+    assert specification_for_display(spec, field) == f"12 × 10 × 5 {display_unit}"
 
 
 def test_unordered_unit_normalization_rejects_unsupported_or_conflicting_units():

@@ -79,6 +79,10 @@ def test_master_templates_examples_parse_with_current_contracts_and_empty_data_s
 def test_opening_template_examples_parse_without_turning_missing_price_into_zero():
     book = load_workbook(TEMPLATES / "carton-history-inventory-import-template.xlsx")
     sheet = book["期初库存导入"]
+    assert sheet["A2"].value == "合同号"
+    assert sheet["P2"].value == "客户"
+    assert book["填写示例"]["A5"].value == "合同号"
+    assert book["填写示例"]["P5"].value == "客户"
     assert sheet["O2"].value == "入库时间"
     for target, source in enumerate(range(6, 10), 3):
         for column, cell in enumerate(book["填写示例"][source], 1):
@@ -88,6 +92,33 @@ def test_opening_template_examples_parse_without_turning_missing_price_into_zero
     assert rows[1]["unit_price"] is None and rows[1]["amount"] is None
     assert rows[-1]["status"] == "ZERO"
     assert all(row["item_no"].startswith("000") for row in rows)
+
+
+@pytest.mark.parametrize("default_customer", ["", "迪奇"])
+def test_opening_template_customer_column_is_optional_and_row_value_overrides_default(default_customer):
+    book = load_workbook(TEMPLATES / "carton-history-inventory-import-template.xlsx")
+    sheet = book["期初库存导入"]
+    for target, source in enumerate(range(6, 9), 3):
+        for column, cell in enumerate(book["填写示例"][source], 1):
+            sheet.cell(target, column, cell.value)
+    sheet["P3"] = "360"
+    sheet["P4"] = None
+    sheet["P5"] = "迪奇"
+    rows, _ = parse_opening("opening.xlsx", saved(book), options_from_json({
+        "customer_name": default_customer, "warehouse": "A", "dimension_unit": "cm",
+    }))
+    assert [row["customer_name"] for row in rows] == ["360", default_customer, "迪奇"]
+    assert all(row["contract_no"] == "0010001234/200" for row in rows)
+    assert all(row["item_no"] == "000203307004" for row in rows)
+
+    # A legacy file without the appended customer column and using PO still works.
+    sheet.delete_cols(16)
+    sheet["A2"] = "PO"
+    legacy, _ = parse_opening("legacy.xlsx", saved(book), options_from_json({
+        "customer_name": default_customer, "warehouse": "A", "dimension_unit": "cm",
+    }))
+    assert len(legacy) == 3 and all(row["customer_name"] == default_customer for row in legacy)
+    assert [row["contract_no"] for row in legacy] == [row["contract_no"] for row in rows]
 
 
 def test_weekly_template_keeps_customer_po_separate_from_po_source_display():

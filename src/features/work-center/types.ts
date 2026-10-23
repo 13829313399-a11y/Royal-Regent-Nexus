@@ -1,4 +1,4 @@
-export type WorkView = 'todo' | 'assigned' | 'team' | 'waiting' | 'info' | 'history'
+export type WorkView = 'todo' | 'assigned' | 'team' | 'waiting' | 'info' | 'history' | 'verification'
 export interface WorkEntry {
   id: string; kind: 'task' | 'info'; module: string; title: string; summary: string
   reference_label: string; lifecycle: 'open' | 'in_progress' | 'resolved' | 'cancelled' | 'superseded' | null
