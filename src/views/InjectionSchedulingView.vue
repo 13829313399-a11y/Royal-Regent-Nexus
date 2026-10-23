@@ -98,6 +98,12 @@ const section = computed(() =>
     ? "planning"
     : tab.value,
 );
+// Only the first planning toolbar yields to the shared route entrance.
+// Returning from reports/master data is a local reveal of a newly mounted toolbar.
+const planningEntryOwned = ref(routeEntryOwned);
+watch(section, (value) => {
+  if (value !== "planning") planningEntryOwned.value = false;
+});
 const sectionOptions = [
   { value: "planning", label: "排产工作台", icon: ChartGantt },
   { value: "reports", label: "白夜班报工", icon: ClipboardList },
@@ -591,6 +597,7 @@ const templateLabels1: Record<string, string> = {
       <div
         v-if="['timeline', 'table', 'machines'].includes(tab)"
         class="inj-global-toolbar"
+        :data-route-entry-owned="planningEntryOwned || undefined"
         data-yl-help="injection.views"
         :inert="store.dirty || store.busy"
       >
