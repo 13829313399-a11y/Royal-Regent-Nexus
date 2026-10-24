@@ -6,7 +6,7 @@ import Inventory from '../CuttingInventory.vue'
 import Costs from '../CuttingCostOverview.vue'
 import Activity from '../CuttingActivityPage.vue'
 import Monthly from '../CuttingMonthlyOverview.vue'
-import { workspaceApi, type TaskView, type ActivityRow } from '../workspaceApi'
+import { workspaceApi, type TaskView, type ActivityRow, type Page } from '../workspaceApi'
 import { readCuttingLocation } from '../location'
 import { invalidateCuttingWorkspace } from '../workspaceRefresh'
 vi.mock('../workspaceApi',()=>({
@@ -21,8 +21,84 @@ let wrapper:VueWrapper
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/:pathMatch(.*)*',component:{template:'<div />'}}]})
 const button=(name:string)=>wrapper.findAll('button').find(b=>b.text()===name)!
 beforeEach(()=>{vi.resetAllMocks()})
-afterEach(()=>wrapper?.unmount())
+afterEach(()=>{wrapper?.unmount();vi.useRealTimers()})
 describe('cutting read-only workspaces',()=>{
+  it.each([false,true])('discards an in-flight task retry after the linked day changes (reporting=%s)',async reporting=>{
+    let resolve!:(value:TaskView)=>void
+    vi.mocked(workspaceApi.tasks).mockResolvedValueOnce(task).mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(()=>new Promise(r=>{resolve=r})).mockResolvedValueOnce({...task,day:'2026-09-10',total:0,data:[]})
+    const sampleRouter=createRouter({history:createMemoryHistory(),routes:[{path:'/:pathMatch(.*)*',component:{template:'<div />'}}]})
+    await sampleRouter.push('/dashboard?factory=huakang-c&day=2026-10-21')
+    wrapper=mount(TaskBoard,{props:{reporting},global:{plugins:[sampleRouter]}});await flushPromises()
+    await button('下一页').trigger('click');await flushPromises()
+    await button('按原条件重试（第 2 页）').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('正在按原条件重试：2026-10-21')
+    await sampleRouter.push('/dashboard?factory=huakang-c&day=2026-09-10');await flushPromises()
+    resolve({...task,page:2});await flushPromises()
+    expect(wrapper.text()).toContain('当前查询日期：2026-09-10')
+    expect(wrapper.text()).toContain('第 1 页 · 共 0 项')
+    expect(wrapper.text()).not.toContain('正在按原条件重试')
+    expect(wrapper.text()).not.toContain('ORD-001')
+    expect(wrapper.find('[role=alert]').exists()).toBe(false)
+  })
+  it.each([401,403])('clears task recovery notice and target if the corrective first-page read is rejected %s',async status=>{
+    vi.mocked(workspaceApi.tasks).mockResolvedValueOnce(task).mockResolvedValueOnce({...task,page:2,total:1,data:[]}).mockRejectedValueOnce({response:{status}})
+    wrapper=mount(TaskBoard,{global:{plugins:[router]}});await flushPromises()
+    await button('下一页').trigger('click');await flushPromises()
+    expect(wrapper.find('[role=alert]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('原第 2 页')
+    expect(wrapper.text()).not.toContain('重试目标')
+    expect(wrapper.text()).not.toContain('ORD-001')
+  })
+  it('keeps a newer activity result and its read time when an older retry completes late',async()=>{
+    vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date('2026-10-24T03:00:00Z'))
+    let resolve!:(value:Page<ActivityRow>)=>void
+    vi.mocked(workspaceApi.activity).mockResolvedValueOnce({...empty,total:51,token:'old'})
+      .mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(()=>new Promise(r=>{resolve=r})).mockResolvedValueOnce({...empty,token:'new'})
+    wrapper=mount(Activity,{global:{plugins:[router]}});await flushPromises()
+    await button('下一页').trigger('click');await flushPromises()
+    await button('按原条件重试（第 2 页）').trigger('click');await flushPromises()
+    expect(wrapper.text()).toContain('正在按原条件重试')
+    vi.setSystemTime(new Date('2026-10-24T04:00:00Z'));invalidateCuttingWorkspace();await flushPromises()
+    vi.setSystemTime(new Date('2026-10-24T05:00:00Z'));resolve({...empty,page:2,total:51,token:'old'});await flushPromises()
+    expect(wrapper.text()).toContain('第 1 页 · 共 0 条')
+    expect(wrapper.get('time').attributes('datetime')).toBe('2026-10-24T04:00:00.000Z')
+    expect(wrapper.text()).not.toContain('以下仍为上次成功读取')
+    expect(wrapper.text()).not.toContain('正在按原条件重试')
+  })
+  it('binds the displayed activity read time to successful rows and retains it during failed paging and retry',async()=>{
+    vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date('2026-10-24T03:00:00Z'))
+    vi.mocked(workspaceApi.activity).mockResolvedValue({...empty,total:51,token:'basis'})
+    wrapper=mount(Activity,{global:{plugins:[router]}});await flushPromises()
+    expect(wrapper.get('time').attributes('datetime')).toBe('2026-10-24T03:00:00.000Z')
+    expect(wrapper.get('time').text()).toContain('11:00:00')
+    expect(wrapper.text()).toContain('页面读取时间，非业务日期')
+    vi.setSystemTime(new Date('2026-10-24T04:00:00Z'))
+    vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline'))
+    await button('下一页').trigger('click');await flushPromises()
+    expect(wrapper.get('time').attributes('datetime')).toBe('2026-10-24T03:00:00.000Z')
+    let resolve!:(value:Page<ActivityRow>)=>void
+    vi.mocked(workspaceApi.activity).mockImplementationOnce(()=>new Promise(r=>{resolve=r}))
+    await button('按原条件重试（第 2 页）').trigger('click');await flushPromises()
+    expect(wrapper.get('time').attributes('datetime')).toBe('2026-10-24T03:00:00.000Z')
+    vi.setSystemTime(new Date('2026-10-24T05:00:00Z'));resolve({...empty,page:2,total:51,token:'basis'});await flushPromises()
+    expect(wrapper.get('time').attributes('datetime')).toBe('2026-10-24T05:00:00.000Z')
+    vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('refresh offline'))
+    await button('刷新当前结果').trigger('click');await flushPromises()
+    expect(wrapper.find('time').exists()).toBe(false)
+  })
+  it('retries an initial activity read with fresh pagination evidence without applying draft inputs',async()=>{
+    vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({...empty,token:'fresh'})
+    wrapper=mount(Activity,{global:{plugins:[router]}});await flushPromises()
+    expect(wrapper.find('time').exists()).toBe(false)
+    await wrapper.findAll('input[maxlength]')[0]!.setValue('DRAFT')
+    expect(wrapper.text()).toContain('本次没有分页依据')
+    expect(wrapper.text()).not.toContain('保留原分页依据')
+    await button('按原条件重试（第 1 页）').trigger('click');await flushPromises()
+    expect(workspaceApi.activity).toHaveBeenLastCalledWith(expect.objectContaining({page:1,order_q:'',expected_token:undefined}))
+    expect(wrapper.find('time').exists()).toBe(true)
+    expect(wrapper.text()).toContain('筛选有未查询的修改')
+  })
   it.each([[false,1],[true,1],[false,0],[true,0]] as const)('recovers an out-of-range task page without applying drafts (reporting=%s, remaining=%s)',async(reporting,remaining)=>{
     let total=51
     vi.mocked(workspaceApi.tasks).mockImplementation(async p=>({...task,total,page:Number(p.page),data:total&&Number(p.page)===1?task.data:[]}))
@@ -98,7 +174,7 @@ describe('cutting read-only workspaces',()=>{
     expect(wrapper.text()).toContain('正在按原条件重试：业务来源 每日填数与交接')
     expect(wrapper.text()).toContain('业务期间 2026-09；单据／操作人／原因 未限定，第 2 页')
     resolve({...empty,page:2,total:51,token:'original-token'});await flushPromises()
-    expect(wrapper.text()).not.toContain('上次成功读取')
+    expect(wrapper.text()).not.toContain('以下仍为上次成功读取')
     expect(wrapper.text()).not.toContain('正在按原条件重试')
     expect(wrapper.text()).toContain('筛选有未查询的修改')
     expect((wrapper.get('input[type=month]').element as HTMLInputElement).value).toBe('2026-10')
@@ -111,9 +187,14 @@ describe('cutting read-only workspaces',()=>{
     await button('下一页').trigger('click');await flushPromises()
     expect(wrapper.text()).toContain('原分页依据已失效')
     expect(button('下一页').attributes('disabled')).toBeDefined()
+    vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('first page offline'))
     await button('按原条件重读第 1 页').trigger('click');await flushPromises()
     expect(workspaceApi.activity).toHaveBeenLastCalledWith(expect.objectContaining({order_q:'',page:1,expected_token:undefined}))
     expect(wrapper.text()).not.toContain('原分页依据已失效')
+    expect(wrapper.text()).toContain('本次没有分页依据')
+    expect(wrapper.text()).not.toContain('保留原分页依据')
+    await button('按原条件重试（第 1 页）').trigger('click');await flushPromises()
+    expect(workspaceApi.activity).toHaveBeenLastCalledWith(expect.objectContaining({order_q:'',page:1,expected_token:undefined}))
     expect((wrapper.findAll('input[maxlength]')[0]!.element as HTMLInputElement).value).toBe('DRAFT')
   })
   it('does not mistake a database-lock 409 for an expired activity token',async()=>{
@@ -129,10 +210,12 @@ describe('cutting read-only workspaces',()=>{
     const row:ActivityRow={source:'production',id:'log',line_id:'line',version:1,action:'post',occurred_at:'2026-10-21T00:00:00Z',business_day:'2026-10-21',document_id:'doc',actor:'文员',reason:'敏感旧记录',related_id:null,month:'2026-10'}
     vi.mocked(workspaceApi.activity).mockResolvedValueOnce({...empty,total:51,data:[row],token:'token'}).mockRejectedValueOnce({response:{status}})
     wrapper=mount(Activity,{global:{plugins:[router]}});await flushPromises()
+    expect(wrapper.find('time').exists()).toBe(true)
     await button('下一页').trigger('click');await flushPromises()
     expect(wrapper.text()).not.toContain('敏感旧记录')
     expect(wrapper.text()).not.toContain('上次成功读取')
     expect(wrapper.text()).not.toContain('重试目标')
+    expect(wrapper.find('time').exists()).toBe(false)
   })
   it('does not restore an old activity retry state after a newer refresh succeeds',async()=>{
     let reject!:(reason:unknown)=>void
@@ -143,7 +226,7 @@ describe('cutting read-only workspaces',()=>{
     invalidateCuttingWorkspace();await flushPromises()
     reject(new Error('late failure'));await flushPromises()
     expect(wrapper.find('[role=alert]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('上次成功读取')
+    expect(wrapper.text()).not.toContain('以下仍为上次成功读取')
     expect(wrapper.text()).not.toContain('重试目标')
   })
   it.each([false,true])('retries the original task page and refreshes applied criteria without submitting drafts (reporting=%s)',async reporting=>{
