@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, onBeforeRouteUpdate } from 'vue-router'
 import { ArrowLeft, Building2, BookOpen, LayoutDashboard, History, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator } from '@lucide/vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
@@ -28,10 +28,22 @@ const productionRoute = { path: '/modules/production', query: { factory: CUTTING
 // Parent beforeEnter does not run for query-only or sibling navigation.
 onBeforeRouteUpdate(guardCuttingFactory)
 const authorizationEpoch = ref(0), verifying = ref(true), denied = ref(false), authorizationError = ref('')
+const authorizationAlert = ref<HTMLElement>(), focusCleanups = new Set<() => void>()
 let accessFingerprint: string | undefined, accessGeneration = 0, alive = true
 const fingerprint = (value: Access) => JSON.stringify({ ...value, permissions: [...value.permissions].sort() })
-async function revalidate() {
+async function revalidate(event?: Event) {
   const ticket = ++accessGeneration
+  let restoreFocus = event instanceof MouseEvent && event.detail === 0 && event.currentTarget === document.activeElement
+  const cancelFocus = () => { restoreFocus = false }
+  const cancelOnTab = (e: KeyboardEvent) => { if (e.key === 'Tab') cancelFocus() }
+  const cleanupFocus = () => {
+    document.removeEventListener('focusin', cancelFocus); document.removeEventListener('pointerdown', cancelFocus); document.removeEventListener('keydown', cancelOnTab)
+    focusCleanups.delete(cleanupFocus)
+  }
+  if (restoreFocus) {
+    document.addEventListener('focusin', cancelFocus); document.addEventListener('pointerdown', cancelFocus); document.addEventListener('keydown', cancelOnTab)
+    focusCleanups.add(cleanupFocus)
+  }
   verifying.value = true; authorizationError.value = ''
   samplesAllowed.value = false
   samplePermissions.value = []
@@ -49,8 +61,18 @@ async function revalidate() {
     if (status === 401 || status === 403) {
       denied.value = true; authorizationEpoch.value++; accessFingerprint = undefined
       authorizationError.value = '当前账号已无权访问裁床工作区，旧表单已清除。请重新登录或联系授权负责人。'
-    } else authorizationError.value = '暂时无法核验裁床权限，填写已保留；重新核验成功后可继续。'
-  } finally { if (alive && ticket === accessGeneration) verifying.value = false }
+    } else authorizationError.value = denied.value
+      ? '暂时无法核验裁床权限，旧工作区已清除，尚未恢复访问。请恢复网络后重试，或联系授权负责人。'
+      : accessFingerprint !== undefined
+        ? '暂时无法核验裁床权限，填写已保留；重新核验成功后可继续。'
+        : '暂时无法核验裁床权限，工作区尚未开放。请恢复网络后重试。'
+  } finally {
+    if (alive && ticket === accessGeneration) { verifying.value = false; await nextTick() }
+    cleanupFocus()
+    if (restoreFocus && alive && ticket === accessGeneration && authorizationError.value && document.activeElement === document.body) {
+      authorizationAlert.value?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
+    }
+  }
 }
 function sessionBoundary() {
   denied.value = true; authorizationEpoch.value++; accessFingerprint = undefined
@@ -65,6 +87,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopTrackingWrites()
   alive = false; accessGeneration++
+  for (const cleanup of focusCleanups) cleanup()
   window.removeEventListener('authorization-context-changed', revalidate)
   window.removeEventListener('cutting-authorization-recheck', revalidate)
   window.removeEventListener('auth-session-boundary-changed', sessionBoundary)
@@ -98,7 +121,7 @@ onBeforeUnmount(() => {
     <main ref="main" id="cutting-main" class="cutting-main" tabindex="-1">
       <div v-if="verifying || authorizationError" class="cutting-page">
         <SectionPanel class="cutting-content-panel" :title="verifying?'正在核验访问权限':denied?'工作区访问受限':'权限核验暂未完成'">
-          <div :role="authorizationError?'alert':'status'">
+          <div ref="authorizationAlert" :role="authorizationError?'alert':'status'">
             <p>{{ authorizationError || '正在核验裁床工作区权限…' }}</p>
             <Button v-if="authorizationError" class="mt-4" type="button" variant="outline" :disabled="verifying" @click="revalidate">重新核验权限</Button>
           </div>

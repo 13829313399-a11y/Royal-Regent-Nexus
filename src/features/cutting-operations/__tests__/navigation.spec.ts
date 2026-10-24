@@ -28,8 +28,60 @@ async function open(path: string) {
   await flushPromises()
   return router
 }
+async function openAccessShell() {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{
+    path: CUTTING_BASE, component: CuttingWorkspaceShell,
+    children: [{ path: 'materials', component: { template: '<input aria-label="隔离申请草稿" />' } }],
+  }] })
+  await router.push(`${CUTTING_BASE}/materials?factory=huakang-c`)
+  wrapper = mount(RouterView, { attachTo: document.body, global: { plugins: [router] } })
+  await flushPromises()
+}
+const recheckButton = () => wrapper!.get<HTMLButtonElement>('[role="alert"] button')
 
 describe('cutting workspace entry', () => {
+  it.each([401,403])('keeps cleared-workspace wording after denial %s followed by an offline recheck',async status=>{
+    accessMock.mockRejectedValueOnce({response:{status}})
+    await openAccessShell()
+    expect(wrapper!.find('input').exists()).toBe(false)
+    accessMock.mockRejectedValueOnce(new Error('offline'))
+    await recheckButton().trigger('click');await flushPromises()
+    expect(wrapper!.text()).toContain('旧工作区已清除，尚未恢复访问')
+    expect(wrapper!.text()).not.toContain('填写已保留')
+    expect(wrapper!.find('input').exists()).toBe(false)
+  })
+  it('does not claim retained input before the first successful authorization check',async()=>{
+    accessMock.mockRejectedValueOnce(new Error('offline'))
+    await openAccessShell()
+    expect(wrapper!.text()).toContain('工作区尚未开放')
+    expect(wrapper!.text()).not.toContain('填写已保留')
+  })
+  it.each([0,401,403])('keeps keyboard focus after repeated permission rechecks fail: %s',async status=>{
+    accessMock.mockRejectedValue(new Error('offline'));await openAccessShell()
+    for(let i=0;i<2;i++){
+      accessMock.mockRejectedValueOnce(status?{response:{status}}:new Error('offline'))
+      const button=recheckButton();button.element.focus()
+      button.element.dispatchEvent(new MouseEvent('click',{detail:0,bubbles:true}));await flushPromises()
+      expect(document.activeElement).toBe(recheckButton().element)
+    }
+  })
+  it.each(['nav','tab','pointer','newer','boundary','unmount','mouse'] as const)('does not steal focus after permission recheck failure and %s',async action=>{
+    accessMock.mockRejectedValue(new Error('offline'));await openAccessShell()
+    let reject!:(reason:Error)=>void
+    accessMock.mockImplementationOnce(()=>new Promise((_res,rej)=>{reject=rej}))
+    const button=recheckButton();button.element.focus()
+    button.element.dispatchEvent(new MouseEvent('click',{detail:action==='mouse'?1:0,bubbles:true}));await flushPromises()
+    const nav=wrapper!.get<HTMLAnchorElement>('nav a').element
+    if(action==='nav')nav.focus()
+    if(action==='tab')document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}))
+    if(action==='pointer')document.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+    if(action==='newer'){window.dispatchEvent(new Event('authorization-context-changed'));await flushPromises()}
+    if(action==='boundary'){window.dispatchEvent(new Event('auth-session-boundary-changed'));await flushPromises()}
+    if(action==='unmount'){wrapper!.unmount();wrapper=undefined}
+    reject(new Error('offline again'));await flushPromises()
+    if(wrapper)expect(document.activeElement).not.toBe(recheckButton().element)
+    if(action==='nav')expect(document.activeElement).toBe(nav)
+  })
   it.each(['', 'acceptance-synthetic-20261021'])('labels only explicitly built acceptance releases: %s',async release=>{
     vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE',release)
     await open(`${CUTTING_BASE}/master?factory=huakang-c`)
@@ -58,6 +110,7 @@ describe('cutting workspace entry', () => {
     await flushPromises()
     expect(input().isVisible()).toBe(false)
     expect(input().element.value).toBe('保留填写')
+    expect(wrapper!.text()).toContain('填写已保留')
     expect(wrapper!.get('[role="alert"] button').attributes('data-variant')).toBe('outline')
     expect(wrapper!.get('[role="alert"]').element.closest('.enterprise-panel')).not.toBeNull()
     accessMock.mockResolvedValue(rights)
