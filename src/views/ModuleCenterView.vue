@@ -27,6 +27,7 @@ import { useHomePresentation, canPreviewModule } from '@/composables/useHomePres
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import CuttingAcceptanceNotice from '@/features/cutting-operations/CuttingAcceptanceNotice.vue'
 import { useRouteEntryOwned, useRouteEntryOwnership } from '@/features/route-motion/useModuleEntryMotion'
 const routeEntryOwned = useRouteEntryOwnership()
 
@@ -40,6 +41,8 @@ const currentDepartmentId = computed<ModuleDepartmentId>(() => {
 })
 
 const departmentEntry = computed(() => departmentModuleRegistry[currentDepartmentId.value])
+const cuttingAcceptanceEntry = computed(() => currentDepartmentId.value === 'production'
+  && appStore.activeFactoryId === 'huakang-c' && Boolean(import.meta.env.VITE_CUTTING_ACCEPTANCE_RELEASE?.trim()))
 const currentDepartment = computed(() => departmentMap[currentDepartmentId.value])
 /**
  * 部门展示配置由当前部门参数计算，不只在 onMounted 读取一次：
@@ -105,6 +108,7 @@ watch(currentDepartmentId, (departmentId) => {
 
 <template>
   <div ref="containerRef" class="rrn-home-container">
+  <CuttingAcceptanceNotice v-if="cuttingAcceptanceEntry" />
   <div data-yl-help="portal.overview" class="rrn-portal rrn-home app-page space-y-6" data-portal-ui="jade-v3" data-home-experience="prism-v4" :data-home-motion="effectiveMotion" :data-route-entry-owned="routeEntryOwned || undefined" :data-home-density="density" :data-department="currentDepartmentId" :style="portalRootStyle">
     <PortalHero eyebrow="Department Workspace" :title="title" :description="departmentEntry.heroSubtitle" :motif="departmentPresentation.motif" pending-note="新增系统模块暂未接入">
       <template #artwork><HomePrismArtwork :identity="currentDepartmentId" /></template>

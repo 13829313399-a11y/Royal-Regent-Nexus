@@ -35,12 +35,12 @@ describe('internal monthly closing',()=>{
     expect((wrapper!.get('input[type=month]').element as HTMLInputElement).value).toBe(oldMonth)
     await router.push('/next');expect(router.currentRoute.value.path).toBe('/')
     const event=new Event('beforeunload',{cancelable:true});window.dispatchEvent(event);expect(event.defaultPrevented).toBe(true)
-    expect(wrapper!.get('input[maxlength="500"]').element.value).toBe('仅属于原月的复核依据')
+    expect((wrapper!.get('input[maxlength="500"]').element as HTMLInputElement).value).toBe('仅属于原月的复核依据')
     vi.mocked(window.confirm).mockReturnValue(true).mockClear()
     await panel.vm.openPeriod('2025-01','old-event');await flushPromises()
     expect(window.confirm).toHaveBeenCalledTimes(1)
     expect(periodApi.read).toHaveBeenLastCalledWith('2025-01','old-event')
-    expect(wrapper!.get('input[maxlength="500"]').element.value).toBe('')
+    expect((wrapper!.get('input[maxlength="500"]').element as HTMLInputElement).value).toBe('')
   })
 
   it('keeps the active month and unsaved reason when overview requests another month',async()=>{
@@ -50,7 +50,7 @@ describe('internal monthly closing',()=>{
     wrapper!.findComponent(CuttingPeriodClosing).vm.activateMonth('2025-01')
     await flushPromises()
     expect((field.element as HTMLInputElement).value).toBe(original)
-    expect(wrapper!.get('input[maxlength="500"]').element.value).toBe('当前月的独立复核依据')
+    expect((wrapper!.get('input[maxlength="500"]').element as HTMLInputElement).value).toBe('当前月的独立复核依据')
     expect(wrapper!.text()).toContain('请先处理当前内容再切换期间')
   })
   it('filters displayed rows without losing hidden allocations on save',async()=>{
