@@ -305,6 +305,30 @@ describe('module center factory scope', () => {
     wrapper.unmount()
   })
 
+  it.each(['', 'acceptance-test'])('scopes the acceptance copy marker and entry text to the dedicated production build (%s)', async release => {
+    vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE',release)
+    routeState.path='/modules/production';routeState.params.department='production'
+    const pinia=createPinia();setActivePinia(pinia)
+    const store=useAppStore();store.setActiveFactory('huakang-c')
+    const wrapper=mount(ModuleCenterView,{global:{plugins:[pinia]}})
+    try {
+      const card=wrapper.findAllComponents(ModuleCard).find(card=>card.props('module').id==='cutting')!
+      expect(card.props('module').stats).toBe(release?'合成流程已接入 · 正式业务待验收':'工作区已开放 · 业务待接入')
+      expect(wrapper.text().includes('独立验收环境 · 数据库副本')).toBe(Boolean(release))
+      expect(wrapper.find('[aria-label="合成验收样本"]').exists()).toBe(false)
+      store.setActiveFactory('huakang-d');await nextTick()
+      expect(wrapper.text()).not.toContain('独立验收环境')
+      expect(wrapper.findAllComponents(ModuleCard).some(card=>card.props('module').id==='cutting')).toBe(false)
+    } finally {wrapper.unmount();vi.unstubAllEnvs()}
+  })
+  it('does not display the cutting acceptance notice in another department',()=>{
+    vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE','acceptance-test')
+    routeState.params.department='engineering'
+    const pinia=createPinia();setActivePinia(pinia);useAppStore().setActiveFactory('huakang-c')
+    const wrapper=mount(ModuleCenterView,{global:{plugins:[pinia]}})
+    try {expect(wrapper.text()).not.toContain('独立验收环境')} finally {wrapper.unmount();vi.unstubAllEnvs()}
+  })
+
   it('opens both warehouse frameworks only from the explicit Huakang C catalog', async () => {
     routeState.params.department = 'pmc-warehouse'
     const pinia = createPinia()

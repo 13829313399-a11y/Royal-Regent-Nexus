@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watchCuttingWorkspace } from './workspaceRefresh'
-import { onMounted,onBeforeUnmount,ref } from 'vue'
+import { computed,onMounted,onBeforeUnmount,ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
@@ -12,6 +12,7 @@ import { CUTTING_BASE,CUTTING_FACTORY } from './navigation'
 const props=defineProps<{embedded?:boolean;initialSource?:string}>()
 const source=ref(props.initialSource??''),query=ref(''),orderQuery=ref(''),month=ref(''),result=ref<Page<ActivityRow>>(),busy=ref(false),error=ref('')
 const applied=ref({source:source.value,q:'',order_q:'',month:undefined as string|undefined})
+const unapplied=computed(()=>source.value!==applied.value.source||query.value!==applied.value.q||orderQuery.value!==applied.value.order_q||(month.value||undefined)!==applied.value.month)
 let generation=0,alive=true
 const sources:Record<string,string>={master:'基础资料',order:'接单／工程／排期',production:'每日填数与交接',warehouse:'领料／实发／签收／退仓',material:'耗用／成本／归属',period:'内部月结',settlement:'外发结算',payment:'付款核销'}
 const actions:Record<string,string>={revision:'版本更新',draft:'草稿',active:'启用',inactive:'停用',published:'发布',save:'保存草稿',post:'提交生效',void:'撤销',review:'主管抽查',discard:'放弃草稿',price:'确认价格',allocate:'确认完工归属',submit:'提交复核',return:'退回',lock:'锁月',reopen:'反结',confirm:'复核确认',reverse:'整笔冲销',REQUEST:'领料申请',ISSUE:'仓库实发',RETURN:'退仓',CUTTING_RECEIPT:'裁床签收',CUTTING_RECEIPT_VOID:'撤销签收',CUTTING_REQUEST_REUSE:'确认计划续用',REQUEST_CLOSE:'关闭申请',CORRECTION:'仓库更正'}
@@ -38,7 +39,10 @@ watchCuttingWorkspace(()=>void load())
   <section :class="embedded?'cutting-overview':'cutting-page cutting-overview'">
     <PageHeader v-if="!embedded" title="操作日志" description="追溯原单、版本、操作人及更正依据；仅展示当前权限可查看的业务记录。" />
     <SectionPanel title="业务操作与关联记录" class="cutting-content-panel">
-      <form class="order-toolbar" @submit.prevent="load(1,true)"><label>业务来源<select v-model="source"><option value="">全部授权来源</option><option v-for="(label,key) in sources" :key="key" :value="key">{{label}}</option></select></label><label>订单号／货号<input v-model="orderQuery" maxlength="80" /></label><label>业务期间<input v-model="month" type="month" min="2000-01" /></label><label>单据／操作人／原因<input v-model="query" maxlength="80" /></label><Button :disabled="busy">查询／刷新</Button><Button type="button" variant="outline" :disabled="busy" @click="clearFilters">清除筛选</Button></form>
+      <form class="order-toolbar" @submit.prevent="load(1,true)"><label>业务来源<select v-model="source"><option value="">全部授权来源</option><option v-for="(label,key) in sources" :key="key" :value="key">{{label}}</option></select></label><label>订单号／货号<input v-model="orderQuery" maxlength="80" /></label><label>业务期间<input v-model="month" type="month" min="2000-01" /></label><label>单据／操作人／原因<input v-model="query" maxlength="80" /></label><Button type="submit" :disabled="busy">查询</Button><Button type="button" variant="outline" :disabled="busy" @click="load(1)">刷新当前结果</Button><Button type="button" variant="outline" :disabled="busy" @click="clearFilters">清除筛选</Button></form>
+      <p class="cutting-muted">当前查询条件：业务来源 {{sources[applied.source]||'全部授权来源'}}；订单号／货号 {{applied.order_q||'全部'}}；业务期间 {{applied.month||'全部期间'}}；单据／操作人／原因 {{applied.q||'未限定'}}。</p>
+      <p class="cutting-muted">刷新从第 1 页重新核对当前已查询条件，不应用尚未查询的新输入。</p>
+      <p v-if="unapplied" class="cutting-muted" role="status">筛选有未查询的修改，当前结果仍按上次查询条件展示；翻页和刷新不应用新输入，点击“查询”才应用。</p>
       <p v-if="busy" role="status">正在读取操作记录…</p><p v-if="error" role="alert">{{error}}</p>
       <div class="cutting-table-scroll" role="region" tabindex="0" aria-label="可追溯操作日志"><table><thead><tr><th>操作时间／业务日期</th><th>来源与操作</th><th>单据／版本</th><th>操作人</th><th>依据与关联</th><th>操作</th></tr></thead><tbody><tr v-for="row in result?.data" :key="`${row.source}:${row.id}:${row.version}`">
         <td>{{new Date(row.occurred_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}}<br />{{row.business_day||row.month||'未单独登记业务日期'}}</td>
