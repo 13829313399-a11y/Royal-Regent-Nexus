@@ -23,6 +23,43 @@ const button=(name:string)=>wrapper.findAll('button').find(b=>b.text()===name)!
 beforeEach(()=>{vi.resetAllMocks()})
 afterEach(()=>{wrapper?.unmount();vi.useRealTimers()})
 describe('cutting read-only workspaces',()=>{
+  it('keeps keyboard focus on repeated activity failures and then moves to successful results',async()=>{
+    vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline again')).mockResolvedValueOnce({...empty,token:'fresh'})
+    wrapper=mount(Activity,{attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    const retry=button('按原条件重试（第 1 页）');retry.element.focus()
+    retry.element.dispatchEvent(new MouseEvent('click',{detail:0,bubbles:true}));await flushPromises()
+    expect(document.activeElement).toBe(button('按原条件重试（第 1 页）').element)
+    button('按原条件重试（第 1 页）').element.dispatchEvent(new MouseEvent('click',{detail:0,bubbles:true}));await flushPromises()
+    expect(document.activeElement).toBe(wrapper.get('[aria-label="可追溯操作日志"]').element)
+  })
+  it.each([401,403])('does not restore activity retry focus after authorization rejection %s',async status=>{
+    vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce({response:{status}})
+    wrapper=mount(Activity,{attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    const retry=button('按原条件重试（第 1 页）');retry.element.focus()
+    retry.element.dispatchEvent(new MouseEvent('click',{detail:0,bubbles:true}));await flushPromises()
+    expect(wrapper.find('[role=alert] button').exists()).toBe(false)
+    expect(document.activeElement).toBe(document.body)
+  })
+  it.each(['input','tab','pointer','newer','unmount','mouse'] as const)('does not reclaim activity retry focus after a failed request and %s',async action=>{
+    let reject!:(reason:Error)=>void
+    vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(()=>new Promise((_r,rej)=>{reject=rej})).mockResolvedValueOnce({...empty,token:'newer'})
+    wrapper=mount(Activity,{attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    const retry=button('按原条件重试（第 1 页）');retry.element.focus()
+    retry.element.dispatchEvent(new MouseEvent('click',{detail:action==='mouse'?1:0,bubbles:true}));await flushPromises()
+    const input=wrapper.get<HTMLInputElement>('input[name="order_q"]').element
+    if(action==='input')input.focus()
+    if(action==='tab')document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}))
+    if(action==='pointer')document.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+    if(action==='newer'){invalidateCuttingWorkspace();await flushPromises()}
+    if(action==='unmount')wrapper.unmount()
+    reject(new Error('still offline'));await flushPromises()
+    if(action!=='unmount'){
+      const currentRetry=wrapper.find('[role=alert] button')
+      if(currentRetry.exists())expect(document.activeElement).not.toBe(currentRetry.element)
+      else expect(document.activeElement).toBe(document.body)
+    }
+    if(action==='input')expect(document.activeElement).toBe(input)
+  })
   it.each([0,26])('restores keyboard retry focus to the current activity result region (rows=%s)',async total=>{
     vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({...empty,total,token:'fresh'})
     wrapper=mount(Activity,{attachTo:document.body,global:{plugins:[router]}});await flushPromises()
@@ -50,7 +87,7 @@ describe('cutting read-only workspaces',()=>{
     expect(document.activeElement).not.toBe(region)
     if(action==='input')expect(document.activeElement).toBe(input)
     if(action==='newer')expect(wrapper.get('time').exists()).toBe(true)
-    if(action==='failure')expect(wrapper.text()).toContain('按原条件重试')
+    if(action==='failure')expect(document.activeElement).toBe(button('按原条件重试（第 1 页）').element)
   })
   it('provides unique named activity filters with explicit labels for embedded instances',async()=>{
     vi.mocked(workspaceApi.activity).mockResolvedValue({...empty,token:'basis'})
