@@ -58,6 +58,8 @@ describe('cutting workspace entry', () => {
     await flushPromises()
     expect(input().isVisible()).toBe(false)
     expect(input().element.value).toBe('保留填写')
+    expect(wrapper!.get('[role="alert"] button').attributes('data-variant')).toBe('outline')
+    expect(wrapper!.get('[role="alert"]').element.closest('.enterprise-panel')).not.toBeNull()
     accessMock.mockResolvedValue(rights)
     await wrapper!.get('[role="alert"] button').trigger('click')
     await flushPromises()
@@ -73,6 +75,9 @@ describe('cutting workspace entry', () => {
     await flushPromises()
     expect(wrapper!.find('input').exists()).toBe(false)
     expect(wrapper!.text()).toContain('旧表单已清除')
+    expect(wrapper!.text()).toContain('工作区访问受限')
+    expect(wrapper!.get('[role="alert"] button').attributes('data-slot')).toBe('button')
+    expect(wrapper!.get('[role="alert"]').element.closest('.enterprise-panel')).not.toBeNull()
   })
   it('clears old session input immediately and ignores a late pre-boundary authorization response', async () => {
     const rights = { enabled: true, schema_ready: true, permissions: ['read'] }

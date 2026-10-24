@@ -23,6 +23,46 @@ const button=(name:string)=>wrapper.findAll('button').find(b=>b.text()===name)!
 beforeEach(()=>{vi.resetAllMocks()})
 afterEach(()=>{wrapper?.unmount();vi.useRealTimers()})
 describe('cutting read-only workspaces',()=>{
+  it.each([0,26])('restores keyboard retry focus to the current activity result region (rows=%s)',async total=>{
+    vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({...empty,total,token:'fresh'})
+    wrapper=mount(Activity,{attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    const retry=button('按原条件重试（第 1 页）');retry.element.focus()
+    retry.element.dispatchEvent(new MouseEvent('click',{detail:0,bubbles:true}));await flushPromises()
+    expect(document.activeElement).toBe(wrapper.get('[aria-label="可追溯操作日志"]').element)
+    expect(wrapper.find('time').exists()).toBe(true)
+  })
+  it.each(['input','tab','pointer','newer','unmount','failure','mouse'] as const)('does not steal focus after activity retry: %s',async action=>{
+    let resolve!:(value:Page<ActivityRow>)=>void,reject!:(reason:Error)=>void
+    vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(()=>new Promise((res,rej)=>{resolve=res;reject=rej})).mockResolvedValueOnce({...empty,token:'newer'})
+    wrapper=mount(Activity,{attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    const retry=button('按原条件重试（第 1 页）');retry.element.focus()
+    retry.element.dispatchEvent(new MouseEvent('click',{detail:action==='mouse'?1:0,bubbles:true}));await flushPromises()
+    const region=wrapper.get<HTMLElement>('[aria-label="可追溯操作日志"]').element
+    const input=wrapper.get<HTMLInputElement>('input[name="order_q"]').element
+    if(action==='input')input.focus()
+    if(action==='tab')document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}))
+    if(action==='pointer')document.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+    if(action==='newer'){invalidateCuttingWorkspace();await flushPromises()}
+    if(action==='unmount')wrapper.unmount()
+    if(action==='failure')reject(new Error('still offline'));else resolve({...empty,token:'retry'})
+    await flushPromises()
+    expect(document.activeElement).not.toBe(region)
+    if(action==='input')expect(document.activeElement).toBe(input)
+    if(action==='newer')expect(wrapper.get('time').exists()).toBe(true)
+    if(action==='failure')expect(wrapper.text()).toContain('按原条件重试')
+  })
+  it('provides unique named activity filters with explicit labels for embedded instances',async()=>{
+    vi.mocked(workspaceApi.activity).mockResolvedValue({...empty,token:'basis'})
+    wrapper=mount({components:{Activity},template:'<Activity embedded /><Activity embedded />'},{global:{plugins:[router]}});await flushPromises()
+    const controls=wrapper.findAll<HTMLInputElement|HTMLSelectElement>('form input, form select')
+    expect(controls).toHaveLength(8)
+    expect(new Set(controls.map(c=>c.element.id)).size).toBe(8)
+    for(const control of controls){
+      expect(control.attributes('name')).toBeTruthy()
+      expect(wrapper.findAll('label').some(label=>label.attributes('for')===control.element.id)).toBe(true)
+    }
+  })
   it.each([false,true])('discards an in-flight task retry after the linked day changes (reporting=%s)',async reporting=>{
     let resolve!:(value:TaskView)=>void
     vi.mocked(workspaceApi.tasks).mockResolvedValueOnce(task).mockRejectedValueOnce(new Error('offline'))

@@ -6,6 +6,7 @@ import AccountMenu from '@/components/layout/AccountMenu.vue'
 import CuttingAcceptanceNotice from './CuttingAcceptanceNotice.vue'
 import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
 import { Button } from '@/components/ui/button'
+import SectionPanel from '@/components/common/SectionPanel.vue'
 import { cuttingGuideSteps, cuttingGuideTips } from './usageGuide'
 import { CUTTING_BASE, CUTTING_FACTORY, CUTTING_WORKSPACES, isCuttingFactory } from './navigation'
 import { guardCuttingFactory } from './routes'
@@ -95,8 +96,14 @@ onBeforeUnmount(() => {
       </RouterLink>
     </nav>
     <main ref="main" id="cutting-main" class="cutting-main" tabindex="-1">
-      <p v-if="verifying" role="status">正在核验裁床工作区权限…</p>
-      <div v-if="authorizationError" role="alert"><p>{{ authorizationError }}</p><button type="button" :disabled="verifying" @click="revalidate">重新核验权限</button></div>
+      <div v-if="verifying || authorizationError" class="cutting-page">
+        <SectionPanel class="cutting-content-panel" :title="verifying?'正在核验访问权限':denied?'工作区访问受限':'权限核验暂未完成'">
+          <div :role="authorizationError?'alert':'status'">
+            <p>{{ authorizationError || '正在核验裁床工作区权限…' }}</p>
+            <Button v-if="authorizationError" class="mt-4" type="button" variant="outline" :disabled="verifying" @click="revalidate">重新核验权限</Button>
+          </div>
+        </SectionPanel>
+      </div>
       <div v-show="!verifying && !authorizationError">
         <RouterView v-if="!denied" v-slot="{ Component }"><component :is="Component" :key="`${route.path}:${authorizationEpoch}`" /></RouterView>
       </div>
