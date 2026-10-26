@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Boxes, Plus, Users, SlidersHorizontal } from '@lucide/vue'
 import SectionPanel from './MaterialsPanel.vue'
 import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
@@ -12,6 +12,7 @@ import { createRandomUuid } from '@/lib/randomUuid'
 import { useMaterials } from './workspace'
 import { useMaterialDraft } from './useDraft'
 import { draftKind, productDraftId, recordRef, restoreRecord, type DraftId } from './draftPersistence'
+import { focusFollowup } from './focusFollowup'
 const ws = useMaterials()
 const category = ref<'customer' | 'material' | 'product' | 'options'>('customer')
 const customerFilter = ref('')
@@ -20,6 +21,8 @@ const form = ref<Data | null>(null)
 const imageReaders = ref(0)
 const optionsEditor = ref<InstanceType<typeof OptionsWorkspace>>()
 const customerEditor = ref<InstanceType<typeof CustomerWorkspace>>()
+const root = ref<HTMLElement | null>(null)
+const followupOrderId = ref('')
 const draft = useMaterialDraft(() => form.value, {
   id: 'master', multiple: true, capture: () => form.value ? { form: form.value, category: category.value, customerFilter: customerFilter.value, editing: recordRef(editing.value) } : null,
   restore: saved => {
@@ -34,6 +37,27 @@ const draft = useMaterialDraft(() => form.value, {
   reset: () => { form.value = null; editing.value = undefined },
 })
 watch(() => ws.restoreTarget, id => { const kind = id ? draftKind(id) : undefined; if (kind === 'customer' || kind === 'options') changeCategory(kind) })
+watch(() => ws.followupTarget, async target => {
+  if (target?.kind !== 'master' || !ws.canWrite || ws.locked) return
+  if (imageReaders.value || draft.switching.value) { ws.error = '物料图片或草稿正在处理，请稍候再打开计划资料。'; return }
+  if (customerEditor.value?.permitDiscard() === false || optionsEditor.value?.permitDiscard() === false) return
+  const order = ws.record(target.orderId)
+  const product = ws.kind('product').find(row => row.data.customer === order?.data.customer && row.data.code === order?.data.item_no)
+  if (!product) { ws.error = '该合同对应的客人货号资料已不可用，请先核对基础资料。'; return }
+  const epoch = ws.scopeEpoch
+  if (!await open('product', product) || epoch !== ws.scopeEpoch || ws.followupTarget !== target) return
+  customerFilter.value = product.data.customer
+  followupOrderId.value = target.orderId
+  if (target.materialId) {
+    const item = form.value?.materials.find((recipe: Data) => recipe.material_id === target.materialId)
+    if (!item) { ws.error = '该物料已不在当前货号用量或草稿中，请核对关联；原草稿仍保留。'; return }
+    if (!item.material) editMaterial(item)
+  }
+  await nextTick()
+  if (ws.followupTarget !== target || epoch !== ws.scopeEpoch) return
+  const editor = target.materialId ? [...(root.value?.querySelectorAll<HTMLElement>('[data-material-id]') ?? [])].find(node => node.dataset.materialId === target.materialId) : root.value?.querySelector<HTMLElement>('form')
+  focusFollowup(editor, target.materialId ? '采购备料自然日' : '日产能')
+})
 function changeCategory(next: 'customer' | 'material' | 'product' | 'options') {
   if (next === category.value) return
   if (draft.switching.value || imageReaders.value || !draft.permitDiscard() || customerEditor.value?.permitDiscard() === false || optionsEditor.value?.permitDiscard() === false) return
@@ -114,11 +138,16 @@ async function save() {
 }
 </script>
 <template>
-  <div class="im-master-layout">
+  <div ref="root" class="im-master-layout">
     <nav class="im-master-nav" aria-label="基础资料分类"><p class="im-note">本厂区资料</p><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'customer'" @click="changeCategory('customer')"><Users :size="16" />固定客人</button><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'product'" @click="changeCategory('product')"><Boxes :size="16" />货号与物料</button><p class="im-note">全厂共用资料</p><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'options'" @click="changeCategory('options')"><SlidersHorizontal :size="16" />基础选项</button></nav>
     <CustomerWorkspace ref="customerEditor" v-if="category === 'customer'" @products="showCustomerProducts" />
     <OptionsWorkspace ref="optionsEditor" v-else-if="category === 'options'" />
   <SectionPanel v-else :title="category === 'material' ? '恢复历史物料草稿' : '货号与物料'" :subtitle="category === 'material' ? '原草稿可继续保存；新增物料请从所属货号内维护。' : '选择固定客人，在每个货号下直接维护物料资料及单件用量。'">
+    <div v-if="followupOrderId" class="im-message im-stack" aria-label="合同计划补充指引">
+      <strong>{{ ws.orderName(followupOrderId) }}</strong>
+      <p>日产能、运输自然日在货号资料填写；采购备料自然日在对应物料中填写。保存资料后，再更新本合同计划，采购开始日期才会按最新参数重新计算。</p>
+      <div class="im-actions"><button type="button" :disabled="!ws.canWrite || ws.locked || !!form || !!imageReaders || draft.switching.value" @click="ws.followup('recalculate', followupOrderId)">更新本合同计划</button><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" @click="ws.followup('board', followupOrderId)">返回合同明细</button></div>
+    </div>
     <template #action><button v-if="category === 'product'" type="button" class="im-primary" :disabled="!ws.canWrite || ws.locked || !!imageReaders || draft.switching.value" @click="open('product')"><Plus :size="15" />新增货号</button></template>
     <label v-if="category === 'product'" class="im-field im-customer-filter"><span>筛选固定客人</span><select v-model="customerFilter" :disabled="!!form"><option value="">全部客人／历史资料</option><option v-for="customer in customers" :key="customer.id" :value="customer.data.name">{{ customer.data.name }}{{ customer.data.status === 'inactive' ? '（已停用）' : '' }}</option></select></label>
     <p v-if="category === 'product' && !customers.length" class="im-message">请先在“固定客人”新增本厂区客人，再维护客人名下的货号。已有历史货号仍可查看。</p>

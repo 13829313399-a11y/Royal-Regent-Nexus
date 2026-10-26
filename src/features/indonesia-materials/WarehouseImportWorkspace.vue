@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
 import { indonesiaMaterialsApi } from '@/api/indonesiaMaterials'
 import { fixedCustomers } from './catalog'
@@ -10,11 +10,20 @@ import Fields from './Fields.vue'
 import type { Field } from './forms'
 import { setNumberText } from './forms'
 import { sameQuantity, purchaseFactsAgree } from './warehouseMatching'
+import { focusFollowup } from './focusFollowup'
 const ws = useMaterials()
 const customer = ref(''), recipient = ref('RRI'), warehouse = ref(''), shipmentDate = ref('')
 const file = ref<File | null>(null), preview = ref<MaterialRecord | null>(null), choices = ref<Data>({})
 const context = ref({ customer: '', recipient: 'RRI', warehouse: '' })
-const downloading = ref(false)
+const downloading = ref(false), showUpload = ref(true)
+const completedShipment = ref('')
+const sourceId = computed(() => preview.value?.id || '')
+let beforePicker = true
+watch([showUpload, preview, () => ws.supplyStage], () => { if (ws.supplyStage === 'warehouse') ws.wizardStep = preview.value && !showUpload.value ? 2 : 1 }, { flush: 'sync' })
+function goStep(step: number) { if (step === 2 && !preview.value) return; showUpload.value = step === 1 }
+const hasPreview = computed(() => !!preview.value)
+const uploadForm = ref<HTMLFormElement | null>(null), fileInput = ref<HTMLInputElement | null>(null)
+const importRequested = ref(false)
 const records = computed(() => ws.kind('import').filter(row => row.data.import_type === 'warehouse_receipt'))
 const customers = computed(() => fixedCustomers(ws.records))
 const selectedRows = computed<Data[]>(() => (preview.value?.data.rows || []).filter((row: Data) => choices.value[row.index]?.selected && !row.blocked && !row.imported_supply_id))
@@ -22,17 +31,45 @@ const started = () => !!(file.value || preview.value || customer.value || wareho
 const draft = useMaterialDraft(() => started() ? { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value, shipmentDate: shipmentDate.value, choices: choices.value, preview: preview.value?.id, file: file.value } : null, {
   id: 'warehouse', multiple: true,
   capture: () => started() ? { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value, shipmentDate: shipmentDate.value,
-    choices: choices.value, preview: recordRef(preview.value), file: file.value, context: context.value,
+    showUpload: showUpload.value, choices: choices.value, preview: recordRef(preview.value), file: file.value, context: context.value,
     label: `${customer.value} · ${warehouse.value || '多仓库'} · ${file.value?.name || preview.value?.data.filename || '新实收单'}` } : null,
   restore: saved => {
     const source = restoreRecord(ws.records, saved.preview, 'import')
     if (source && source.data.import_type !== 'warehouse_receipt') throw new Error('原记录不是仓库实收单，草稿仍保留。')
     if (saved.file && !(saved.file instanceof File)) throw new Error('原实收文件草稿无法读取。')
     customer.value = saved.customer || ''; recipient.value = saved.recipient || 'RRI'; warehouse.value = saved.warehouse || ''; shipmentDate.value = saved.shipmentDate || ''
+    showUpload.value = saved.showUpload ?? !source
     file.value = saved.file || null; preview.value = source || null; choices.value = saved.choices || {}; context.value = saved.context || { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }
   },
   reset: () => { file.value = null; preview.value = null; choices.value = {}; shipmentDate.value = ''; customer.value = ''; recipient.value = 'RRI'; warehouse.value = ''; context.value = { customer: '', recipient: 'RRI', warehouse: '' } },
 })
+const importBlocked = computed(() => !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
+const importHint = computed(() => {
+  if (!importRequested.value) return ''
+  if (!ws.canWrite) return '当前账号没有实收单导入权限，可查看已有导入记录。'
+  if (draft.recoveryWaiting.value) return '请先在本机草稿中继续填写，或点击“新建实收导入”保留原草稿后开始新单。'
+  if (ws.locked || draft.switching.value) return '请等待当前操作完成，再选择仓库实收文件。'
+  return '选择仓库实收文件（XLSX／CSV），再点击“上传实收单并匹配”。取消选择会保留当前资料。'
+})
+async function openImport() {
+  const epoch = ws.scopeEpoch
+  importRequested.value = true
+  beforePicker = showUpload.value
+  showUpload.value = true
+  // Keep the native picker in the user's click event, before waiting for the tab to render.
+  if (!importBlocked.value) fileInput.value?.click()
+  await nextTick()
+  if (epoch === ws.scopeEpoch && ws.supplyStage === 'warehouse') {
+    focusFollowup(uploadForm.value, importBlocked.value ? undefined : '仓库实收文件')
+  }
+}
+watch([completedShipment, () => ws.locked, draft.submitting], () => {
+  if (completedShipment.value && !ws.locked && !draft.submitting.value) {
+    ws.shipmentTarget = completedShipment.value; completedShipment.value = ''
+    ws.notice = '实收与 PO 已确认，下一步补齐装箱资料。'
+  }
+}, { flush: 'post' })
+defineExpose({ openImport, goStep, hasPreview, sourceId })
 const purchaseFields: Field[] = [
   { key: 'purchase_no', label: '采购单号', required: true }, { key: 'purchase_line', label: '采购行号', required: true },
   { key: 'purchase_date', label: '采购日期', type: 'date', required: true }, { key: 'purchase_quantity', label: '采购总量（含各回料批次）', type: 'number', required: true, min: '0.00000001', step: 'any' },
@@ -77,13 +114,13 @@ function chooseMaterial(row: Data) {
   if (supplies.length === 1 && row.source.purchase_no) { choice.supply_id = supplies[0]!.id; chooseSupply(row) }
 }
 function initialize(record: MaterialRecord) {
-  preview.value = record; choices.value = {}
+  preview.value = record; choices.value = {}; showUpload.value = false
   for (const row of record.data.rows) {
     choices.value[row.index] = { selected: !row.blocked && !row.imported_supply_id, material_id: row.auto_material_id || '', material_version: 0, supply_id: '', supply_version: 0, purchase: {}, allocations: [] }
     if (row.auto_material_id) chooseMaterial(row)
   }
 }
-function fresh() { return draft.openRecord(newDraftId('warehouse'), () => { file.value = null; preview.value = null; choices.value = {}; shipmentDate.value = ''; context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value } }) }
+function fresh() { return draft.openRecord(newDraftId('warehouse'), () => { showUpload.value = true; file.value = null; preview.value = null; choices.value = {}; shipmentDate.value = ''; context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value } }) }
 async function changeContext() {
   const next = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }
   if (file.value || preview.value) {
@@ -115,7 +152,7 @@ async function confirm() {
       purchase: choice.supply_id ? {} : choice.purchase, allocations: choice.allocations.map(({ key: _key, ...plan }: Data) => plan),
       ...(choice.replace_allocations?.length ? { replace_allocations: choice.replace_allocations, replacement_reason: choice.replacement_reason } : {}) }
   })
-  if (await draft.run('warehouse_import_confirm', { shipment_date: shipmentDate.value, rows }, preview.value, () => { if (preview.value) { preview.value = ws.record(preview.value.id) || preview.value; for (const choice of Object.values(choices.value) as Data[]) choice.selected = false } })) ws.notice = '已确认仓库实收并生成出货草稿，请进入出货明细补齐装箱资料。'
+  await draft.run('warehouse_import_confirm', { shipment_date: shipmentDate.value, rows }, preview.value, result => { preview.value = result; for (const choice of Object.values(choices.value) as Data[]) choice.selected = false; completedShipment.value = result.data.shipment_ids?.at(-1) || '' })
 }
 async function template() {
   if (!ws.canWrite || ws.locked || downloading.value) return
@@ -129,16 +166,15 @@ async function template() {
 </script>
 <template>
   <section aria-label="仓库实收导入" class="im-stack">
-    <div class="im-steps" aria-label="仓库实收导入步骤"><div class="im-step is-active"><b>1</b><div>导入实收单<small>保留各仓库原始记录</small></div></div><div class="im-step" :class="{ 'is-active': preview }"><b>2</b><div>点选分配 PO<small>物料自动匹配，PO 由业务选择</small></div></div><div class="im-step" :class="{ 'is-active': preview?.data.shipment_ids?.length }"><b>3</b><div>生成出货草稿<small>实收与分配一次保存</small></div></div><div class="im-step"><b>4</b><div>补装箱并导出<small>核对后正式确认出货</small></div></div></div>
     <div class="im-toolbar"><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="fresh">新建实收导入</button><button type="button" :disabled="!ws.canWrite || ws.locked || downloading" @click="template">下载实收导入模板</button></div>
-    <form class="im-upload-form" @submit.prevent="upload"><fieldset class="im-fields" :disabled="!ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value">
+    <form v-show="showUpload || !preview" id="im-warehouse-upload" ref="uploadForm" class="im-upload-form" @submit.prevent="upload"><p v-if="importHint" class="im-note" role="status">{{ importHint }}</p><fieldset class="im-fields" :disabled="importBlocked">
       <label class="im-field"><span>实收客户 *</span><select v-model="customer" required @change="changeContext"><option value="">请选择本厂区固定客人</option><option v-for="row in customers" :key="row.id" :value="row.data.name">{{ row.data.name }}</option></select></label>
       <label class="im-field"><span>实收接收方 *</span><select v-model="recipient" @change="changeContext"><option>RRI</option><option>RRM</option></select></label>
       <label class="im-field"><span>仓库名称（原单无仓库列时填写）</span><input v-model="warehouse" maxlength="160" @change="changeContext"></label>
-      <label class="im-field"><span>仓库实收文件 *</span><input type="file" accept=".xlsx,.csv" :required="!file" @change="fileChanged"><small v-if="file">已保留：{{ file.name }}</small></label>
+      <label class="im-field"><span>仓库实收文件 *</span><input ref="fileInput" type="file" accept=".xlsx,.csv" :required="!file" @change="fileChanged" @cancel="showUpload = beforePicker"><small v-if="file">已保留：{{ file.name }}</small></label>
       <button class="im-primary" type="submit" :disabled="!customer || !file">上传实收单并匹配</button>
-    </fieldset><p class="im-note">支持 XLSX／CSV 常见表头。无编码时按名称、规格和单位查找；实收合计包含备品。收料单号与行号用于防止重复导入，原单不完整请先补齐。未提供的采购资料可在核对区选择原批次或补录。</p></form>
-    <form v-if="preview" class="im-editor im-stack" @submit.prevent="confirm">
+    </fieldset><p class="im-note">无物料编码时按名称、规格和单位匹配。取消或重新选文件，原草稿仍保留。</p></form>
+    <form v-if="preview" v-show="!showUpload" class="im-editor im-stack" @submit.prevent="confirm">
       <fieldset class="im-stack" :disabled="draft.switching.value || ws.locked || !ws.canWrite">
       <div class="im-inline"><h3>{{ preview.data.filename }} · {{ preview.data.status === 'confirmed' ? '全部已导入' : '实收匹配核对' }}</h3><button type="button" :disabled="ws.busy" @click="ws.download(preview!.data.asset_id, preview!.data.filename, 'asset')">下载原单</button></div>
       <div class="im-scroll"><table><thead><tr><th>本次导入</th><th>仓库／收料单行</th><th>原单物料／规格</th><th>正常／备品实收</th><th>匹配与问题</th></tr></thead><tbody><tr v-for="row in preview.data.rows" :key="row.index"><td><input v-model="choices[row.index].selected" type="checkbox" :aria-label="`选择实收行 ${row.index + 1}`" :disabled="!ws.canWrite || ws.locked || row.blocked || !!row.imported_supply_id"></td><td>{{ row.source.warehouse || preview.data.warehouse }}<br>{{ row.source.receipt_no }} / {{ row.source.receipt_line }}<small>{{ row.source_sheet }} 第 {{ row.source_row }} 行 · {{ row.source.actual_date }}</small></td><td>{{ row.source.material_code || '无编码' }} · {{ row.source.material_name }}<small>{{ row.source.specification }} / {{ row.source.unit }}</small></td><td>{{ row.source.normal_quantity }} / {{ row.source.spare_quantity }}</td><td><strong>{{ row.imported_supply_id ? '已导入' : row.blocked ? '原单需核对' : !choices[row.index].material_id || choices[row.index].allocations.some((item: Data) => !item.order_id) ? '待业务确认' : '已匹配，待确认导入' }}</strong><p v-for="issue in row.issues" :key="issue" class="im-danger-text">{{ issue }}</p></td></tr></tbody></table></div>
@@ -164,10 +200,11 @@ async function template() {
           <button type="button" @click="choices[row.index].allocations.push({ key: '', order_id: '', demand_id: '', order_version: 0, normal_quantity: '', spare_quantity: '0' })">拆分给另一个 PO</button>
         </template>
       </fieldset>
-      <fieldset v-if="selectedRows.length" class="im-stack" :disabled="!ws.canWrite || ws.locked || draft.switching.value"><label class="im-field"><span>本次计划河源出货日期 *</span><input v-model="shipmentDate" type="date" required></label><p class="im-message">确认将依据原单登记 {{ selectedRows.length }} 行实际回料，并生成一份当前客人／接收方的出货草稿。系统校验物料、采购上限、合同需求及重复单据；不完整装箱资料继续在草稿补填，正式出货另行确认。</p><button class="im-primary" type="submit" :disabled="selectedRows.length > 200">确认实收并生成出货草稿</button><p v-if="selectedRows.length > 200" class="im-error">每次最多确认 200 行，请分批选择。</p></fieldset>
+      <fieldset v-if="selectedRows.length" class="im-stack" :disabled="!ws.canWrite || ws.locked || draft.switching.value"><label class="im-field"><span>本次计划河源出货日期 *</span><input v-model="shipmentDate" type="date" required></label><p class="im-note">确认 {{ selectedRows.length }} 行实收及 PO 分配，并生成出货草稿。正式出货在第 4 步确认。</p><button class="im-primary" type="submit" :disabled="selectedRows.length > 200">确认实收与 PO，去补装箱</button><p v-if="selectedRows.length > 200" class="im-error">每次最多确认 200 行，请分批选择。</p></fieldset>
       </fieldset>
       <div v-if="preview.data.shipment_ids?.length" class="im-message"><strong>已生成出货草稿</strong><p v-for="id in preview.data.shipment_ids" :key="id"><button type="button" :disabled="ws.locked" @click="ws.shipmentTarget = id">打开出货草稿并补装箱</button></p></div>
     </form>
-    <h3>仓库实收导入记录</h3><div v-if="records.length" class="im-scroll"><table><thead><tr><th>原单</th><th>客人／接收方</th><th>已收行／总行数</th><th>出货草稿</th><th>操作</th></tr></thead><tbody><tr v-for="row in records" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.rows.filter((item: Data) => item.imported_supply_id).length }} / {{ row.data.rows.length }}</td><td>{{ row.data.shipment_ids.length }}</td><td><button type="button" :disabled="ws.locked || draft.switching.value" @click="inspect(row)">继续核对实收单</button></td></tr></tbody></table></div><p v-else class="im-empty">导入各仓库实际收到单后，在此核对匹配并生成出货草稿。</p>
+    <details class="im-history"><summary>历史实收单 · {{ records.length }} 份</summary><h3>仓库实收导入记录</h3><div v-if="records.length" class="im-scroll"><table><thead><tr><th>原单</th><th>客人／接收方</th><th>已收行／总行数</th><th>出货草稿</th><th>操作</th></tr></thead><tbody><tr v-for="row in records" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.rows.filter((item: Data) => item.imported_supply_id).length }} / {{ row.data.rows.length }}</td><td>{{ row.data.shipment_ids.length }}</td><td><button type="button" :disabled="ws.locked || draft.switching.value" @click="inspect(row)">继续核对实收单</button></td></tr></tbody></table></div><p v-else class="im-empty">导入各仓库实际收到单后，在此核对匹配并生成出货草稿。</p>
+    </details>
   </section>
 </template>

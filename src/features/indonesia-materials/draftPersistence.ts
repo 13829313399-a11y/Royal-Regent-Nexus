@@ -5,6 +5,7 @@ import { createRandomUuid } from '@/lib/randomUuid'
 export const draftKinds = {
   customer: { label: '固定客人', area: 'master' }, master: { label: '货号与物料', area: 'master' },
   options: { label: '基础选项', area: 'master' },
+  planning: { label: '合同计划', area: 'board' },
   demand: { label: '合同需求', area: 'board' }, supply: { label: '采购／回料', area: 'supply' },
   shipment: { label: '出货明细', area: 'supply' }, import: { label: '统一排期导入', area: 'import' },
   warehouse: { label: '仓库实收导入', area: 'supply' },
@@ -29,6 +30,7 @@ export const recordDraftId = (kind: DraftKind, operation: string, ...keys: strin
 /** Recover old singleton slots and upload drafts by their source identity, without migrating/deleting input. */
 export function draftIdentity(kind: DraftKind, state: Data): DraftId | undefined {
   if (kind === 'master') return state.category === 'product' && state.editing?.id ? productDraftId(state.editing.id) : undefined
+  if (kind === 'planning') return state.editing?.id ? recordDraftId(kind, 'edit', state.editing.id) : undefined
   if (kind === 'customer') return state.editing?.id ? recordDraftId(kind, 'edit', state.editing.id) : undefined
   if (kind === 'options') return state.named && state.form?.group && state.form?.value ? recordDraftId(kind, 'edit', state.form.group, state.form.value) : undefined
   if (kind === 'demand' || kind === 'allocation') {
@@ -36,7 +38,7 @@ export function draftIdentity(kind: DraftKind, state: Data): DraftId | undefined
     return state.editing?.id ? recordDraftId(kind, 'edit', state.editing.id) : undefined
   }
   if (kind === 'supply') return state.selected?.id ? recordDraftId(kind, state.mode, state.selected.id) : state.editing?.id ? recordDraftId(kind, 'edit', state.editing.id) : undefined
-  if (kind === 'shipment') return state.confirming?.id ? recordDraftId(kind, 'confirm', state.confirming.id) : state.editing?.id ? recordDraftId(kind, 'edit', state.editing.id) : undefined
+  if (kind === 'shipment') return state.confirming?.id ? recordDraftId(kind, 'confirm', state.confirming.id, String(state.confirming.version)) : state.editing?.id ? recordDraftId(kind, 'edit', state.editing.id) : undefined
   if (kind === 'import' || kind === 'warehouse') return state.preview?.id ? recordDraftId(kind, 'inspect', state.preview.id) : undefined
 }
 export interface SavedDraft { id: DraftId; revision: string; writer: string; savedAt: string; state: Data }
@@ -64,14 +66,15 @@ export function copyDraft<T>(value: T): T {
   if (Array.isArray(raw)) return raw.map(copyDraft) as T
   return Object.fromEntries(Object.entries(raw).map(([key, entry]) => [key, copyDraft(entry)])) as T
 }
-function checkedBucket(value: unknown): DraftBucket {
+export function checkedBucket(value: unknown): DraftBucket {
   if (value == null) return emptyDraftBucket()
   const bucket = value as DraftBucket
   if (bucket.format !== 1 || !bucket.drafts || typeof bucket.drafts !== 'object' || Array.isArray(bucket.drafts) || !(bucket.pending === null || (bucket.pending && typeof bucket.pending === 'object'))) throw new Error('本机草稿格式无法识别，原内容已保留，请联系管理员核对。')
   for (const [id, draft] of Object.entries(bucket.drafts)) {
     if (!draftKind(id) || !draft || draft.id !== id || typeof draft.revision !== 'string' || typeof draft.writer !== 'string' || typeof draft.savedAt !== 'string' || !draft.state || typeof draft.state !== 'object' || Array.isArray(draft.state)) throw new Error('本机草稿内容无法识别，原内容已保留，请联系管理员核对。')
     if (id.startsWith('master:') && (draft.state.category !== 'product' || (id.startsWith('master:product:') ? draft.state.editing?.kind !== 'product' || draft.state.editing.id !== id.slice('master:product:'.length) : !!draft.state.editing))) throw new Error('货号草稿身份无法识别，原内容已保留，请联系管理员核对。')
-    if (id.includes(':record:') && draftIdentity(draftKind(id)!, draft.state) !== id) throw new Error('草稿与原记录身份不一致，原内容已保留，请核对。')
+    const legacyConfirmation = draftKind(id) === 'shipment' && draft.state.confirming?.id && id === recordDraftId('shipment', 'confirm', draft.state.confirming.id)
+    if (id.includes(':record:') && !legacyConfirmation && draftIdentity(draftKind(id)!, draft.state) !== id) throw new Error('草稿与原记录身份不一致，原内容已保留，请核对。')
   }
   return bucket
 }
