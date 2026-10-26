@@ -40,7 +40,8 @@ return computed(() => {
     }
 
     if (module.id === 'cutting' || WAREHOUSES.some(warehouse => warehouse.id === module.id)) {
-      return { ...scopedModule, stats: module.stats }
+      return { ...scopedModule, stats: module.id === 'cutting' && import.meta.env.VITE_CUTTING_ACCEPTANCE_RELEASE?.trim()
+        ? '合成流程已接入 · 正式业务待验收' : module.stats }
     }
 
     if (toValue(department) === 'pmc-warehouse') {
