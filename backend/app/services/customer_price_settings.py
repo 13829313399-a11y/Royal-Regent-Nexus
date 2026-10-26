@@ -12,12 +12,15 @@ from app.models.customer_price_settings import CustomerPriceSettings, CustomerPr
 from app.schemas.customer_price_settings import (
     CustomerPriceSettingsOut, CustomerPriceSettingsUpdate, CustomerPriceSettingsSnapshotOut,
 )
-from app.services.auth import AuthContext, add_auth_audit, can, now_text, time_window_is_active
+from app.services.auth import AuthContext, add_auth_audit, authorization_decision, can, now_text, time_window_is_active
 from app.services.business_authz import is_wildcard_super_admin
 
 
 DEFAULTS_PATH = Path(__file__).resolve().parents[3] / "shared" / "customerPriceDefaults.json"
 DEFINITIONS = json.loads(DEFAULTS_PATH.read_text(encoding="utf-8"))
+HUAXING_360_ALLOCATION_KEYS = frozenset({
+    "testing_allocation_qty", "tooling_allocation_qty", "sample_allocation_qty",
+})
 
 
 def _json(value):
@@ -95,6 +98,27 @@ def _validate(payload, definition):
             raise HTTPException(422, "彩星啤机有效工时系数必须大于 0")
     if any(len(value) > 10000 for value in payload.texts.values()):
         raise HTTPException(422, "报价文字不能超过10000字")
+    if definition.get("name") == "360（华兴临时）":
+        if payload.rates["scrap_include_labor"] not in (0, 1):
+            raise HTTPException(422, "360损耗基数必须为0（仅材料）或1（材料加人工）")
+        for key in HUAXING_360_ALLOCATION_KEYS:
+            quantity = payload.rates[key]
+            if quantity <= 0 or quantity != int(quantity):
+                raise HTTPException(422, "费用摊分数量必须为正整数")
+        if any(row.currency != "USD" or row.unit != "kg" for row in payload.materials):
+            raise HTTPException(422, "华兴360报客料价须使用USD/公斤")
+        import re
+        aliases = re.split(r"[;；\n]+", payload.texts["material_aliases"])
+        seen = set()
+        materials = {row.material.strip().upper() for row in payload.materials
+                     if row.currency == "USD" and row.unit == "kg"}
+        for alias in aliases:
+            if not alias.strip():
+                continue
+            pair = [part.strip().upper() for part in alias.split("=")]
+            if len(pair) != 2 or not all(pair) or pair[0] in seen or pair[1] not in materials:
+                raise HTTPException(422, "料型对应须为唯一的 原料型=已维护USD/kg料型")
+            seen.add(pair[0])
 
 
 def _condition(factory_id, customer_id, revision):
@@ -124,8 +148,28 @@ def get_settings(db: Session, factory_id: str, customer_id: str, user: AuthConte
 def update_settings(db: Session, factory_id: str, customer_id: str,
                     payload: CustomerPriceSettingsUpdate, user: AuthContext, request: Request | None = None):
     _authorize(db, user, factory_id)
-    _authorize(db, user, factory_id, "customer_price:settings_manage")
     definition = _definition(factory_id, customer_id)
+    management = authorization_decision(user, "customer_price:settings_manage", factory_id, "sales-business")
+    # This temporary route gives its authorized sales operators a narrow editing
+    # scope. A deliberate IAM denial/inactive permission still wins; no grants
+    # are changed and other customers keep their existing management boundary.
+    follower_maintenance = (
+        not management[0] and management[1] == "default"
+        and factory_id == "huaxing" and customer_id == "three-sixty-huaxing"
+    )
+    if follower_maintenance:
+        _authorize(db, user, factory_id, "customer_price:import_internal_quote")
+        current = get_settings(db, factory_id, customer_id, user)
+        if payload.revision != current.revision:
+            _conflict(db)
+        protected_rates = {key: value for key, value in current.rates.items()
+                           if key not in HUAXING_360_ALLOCATION_KEYS}
+        submitted_rates = {key: value for key, value in payload.rates.items()
+                           if key not in HUAXING_360_ALLOCATION_KEYS}
+        if payload.texts != current.texts or submitted_rates != protected_rates:
+            raise HTTPException(403, "跟客可维护360料价及费用摊分数量；其他参数需要基础信息维护权限")
+    else:
+        _authorize(db, user, factory_id, "customer_price:settings_manage")
     _validate(payload, definition)
     result = CustomerPriceSettingsOut.model_validate({
         **_default(factory_id, customer_id).model_dump(),

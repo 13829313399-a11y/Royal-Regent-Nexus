@@ -18,6 +18,15 @@ const emit = defineEmits<{
 const auth = useAuthStore()
 const canRead = computed(() => auth.can('customer_price:settings_read', props.factoryId, 'sales-business'))
 const canManage = computed(() => canRead.value && auth.can('customer_price:settings_manage', props.factoryId, 'sales-business'))
+const allocationKeys = ['testing_allocation_qty', 'tooling_allocation_qty', 'sample_allocation_qty']
+const canMaintain360 = computed(() => canRead.value
+  && props.factoryId === 'huaxing' && props.customerId === 'three-sixty-huaxing'
+  && auth.can('customer_price:import_internal_quote', props.factoryId, 'sales-business')
+  && !['customer_price:settings_manage', 'customer_price:import_internal_quote'].some(permission =>
+    auth.matchingEffectiveAccess(permission, props.factoryId, 'sales-business').some(access =>
+      (access.effect === 'deny' || access.allowed === false)
+      && ['override', 'user_override', 'inactive_permission', 'inactive_account'].includes(access.source_type))))
+const canEditMaterials = computed(() => canManage.value || canMaintain360.value)
 const expanded = ref(false)
 const draft = ref<CustomerPricingSettings | null>(null)
 const loading = ref(false)
@@ -48,7 +57,7 @@ async function load() {
 watch(() => [props.factoryId, props.customerId, canRead.value, expanded.value], load)
 
 async function save() {
-  if (!draft.value || !canManage.value || saving.value) return
+  if (!draft.value || !canEditMaterials.value || saving.value) return
   const request = generation
   saving.value = true; error.value = ''; message.value = ''
   try {
@@ -94,29 +103,30 @@ async function save() {
       <p v-if="message" role="status" class="text-sm text-teal-700">{{ message }}</p>
       <template v-if="draft">
         <p class="text-xs text-slate-500">参数版本 {{ draft.revision }}<span v-if="draft.updated_at"> · {{ draft.updated_by_name }} · {{ draft.updated_at }}</span> · 倍率 1 表示不加乘；费率使用小数，如 0.1 表示 10%。</p>
-        <fieldset :disabled="!canManage || saving" class="space-y-5 disabled:opacity-80">
-          <div v-if="draft.materials.length || ['buzzbee', 'yinhui', 'three-sixty', 'dicky'].includes(customerId)">
+        <p v-if="canMaintain360 && !canManage" class="text-xs text-teal-700">跟客可维护本客户料价和费用摊分数量；汇率、损耗、加价及其他文字按现有维护权限管理。</p>
+        <fieldset :disabled="!canEditMaterials || saving" class="space-y-5 disabled:opacity-80">
+          <div v-if="draft.materials.length || ['buzzbee', 'yinhui', 'three-sixty', 'three-sixty-huaxing', 'dicky'].includes(customerId)">
             <p v-if="customerId === 'yinhui'" class="mb-2 text-xs text-slate-600">银辉优先按原报价胶料单价及本单倍率换算；以下公斤价仅用于缺少原单价的旧资料。胶料倍率仍应用于本次转换，保存后须重新导入或恢复预览。</p>
-            <div class="mb-2 flex items-center justify-between"><strong class="text-sm">报客料价</strong><button v-if="canManage" type="button" class="text-sm text-teal-700" @click="draft.materials.push({ material: '', price: 0, currency: customerId === 'three-sixty' ? 'USD' : 'HKD', unit: customerId === 'dicky' ? 'lb' : 'kg' })">新增料型</button></div>
+            <div class="mb-2 flex items-center justify-between"><strong class="text-sm">报客料价</strong><button v-if="canEditMaterials" type="button" class="text-sm text-teal-700" @click="draft.materials.push({ material: '', price: 0, currency: ['three-sixty', 'three-sixty-huaxing'].includes(customerId) ? 'USD' : 'HKD', unit: customerId === 'dicky' ? 'lb' : 'kg' })">新增料型</button></div>
             <div class="max-h-80 overflow-auto"><table class="w-full text-left text-sm"><thead class="sticky top-0 bg-slate-50"><tr><th class="p-2">料型／专用料价名称</th><th class="p-2">单价</th><th class="p-2">币种</th><th class="p-2">单位</th><th /></tr></thead><tbody>
               <tr v-for="(row, index) in draft.materials" :key="index" class="border-t border-slate-100">
                 <td class="p-2"><input v-model="row.material" :aria-label="`料型 ${index + 1}`" class="w-full rounded border border-slate-200 px-2 py-1.5"></td>
                 <td class="p-2"><input v-model.number="row.price" type="number" min="0" step="any" :aria-label="`料价 ${index + 1}`" class="w-28 rounded border border-slate-200 px-2 py-1.5"></td>
                 <td class="p-2">{{ row.currency }}</td><td class="p-2">{{ row.unit === 'kg' ? '公斤' : '磅' }}</td>
-                <td class="p-2"><button v-if="canManage" type="button" class="text-xs text-rose-700" @click="draft.materials.splice(index, 1)">移除</button></td>
+                <td class="p-2"><button v-if="canEditMaterials" type="button" class="text-xs text-rose-700" @click="draft.materials.splice(index, 1)">移除</button></td>
               </tr>
             </tbody></table></div>
           </div>
           <div class="grid gap-4 md:grid-cols-3">
             <label v-for="(definition, key) in draft.rate_definitions" :key="key" class="block text-sm">
               <span class="mb-1 block text-slate-700">{{ definition.label }}</span>
-              <input v-model.number="draft.rates[key]" type="number" step="any" :min="definition.kind === 'multiplier' || definition.kind === 'exchange' ? 0.000001 : 0" :aria-label="definition.label" class="w-full rounded border border-slate-200 px-3 py-2">
+              <input v-model.number="draft.rates[key]" :disabled="!canManage && !(canMaintain360 && allocationKeys.includes(String(key)))" type="number" :step="allocationKeys.includes(String(key)) ? 1 : 'any'" :min="allocationKeys.includes(String(key)) ? 1 : definition.kind === 'multiplier' || definition.kind === 'exchange' ? 0.000001 : 0" :aria-label="definition.label" class="w-full rounded border border-slate-200 px-3 py-2 disabled:bg-slate-50">
               <span v-if="definition.description" class="mt-1 block text-xs text-slate-500">{{ definition.description }}</span>
             </label>
           </div>
-          <label v-for="(definition, key) in draft.text_definitions" :key="key" class="block text-sm"><span class="mb-1 block">{{ definition.label }}</span><textarea v-model="draft.texts[key]" :aria-label="definition.label" rows="3" class="w-full rounded border border-slate-200 p-2" /></label>
+          <label v-for="(definition, key) in draft.text_definitions" :key="key" class="block text-sm"><span class="mb-1 block">{{ definition.label }}</span><textarea v-model="draft.texts[key]" :disabled="!canManage" :aria-label="definition.label" rows="3" class="w-full rounded border border-slate-200 p-2 disabled:bg-slate-50" /></label>
         </fieldset>
-        <div class="flex items-center gap-3"><button v-if="canManage" type="button" :disabled="saving" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50" @click="save">{{ saving ? '保存中…' : '保存基础信息' }}</button><button type="button" :disabled="saving || loading" class="text-sm text-slate-600" @click="load">重新读取</button><span v-if="!canManage" class="text-xs text-slate-500">当前为只读权限</span></div>
+        <div class="flex items-center gap-3"><button v-if="canEditMaterials" type="button" :disabled="saving" class="rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50" @click="save">{{ saving ? '保存中…' : '保存基础信息' }}</button><button type="button" :disabled="saving || loading" class="text-sm text-slate-600" @click="load">重新读取</button><span v-if="!canEditMaterials" class="text-xs text-slate-500">当前为只读权限</span></div>
       </template>
     </div>
   </section>
