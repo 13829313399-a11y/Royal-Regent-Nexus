@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.db import get_db
-from app.schemas.indonesia_materials import Command
+from app.schemas.indonesia_materials import Command, ReceiptTemplate
 from app.services.auth import AuthContext, get_current_user
 from app.services import indonesia_materials as service
 from app.services import indonesia_material_import as imports
@@ -87,6 +87,14 @@ def warehouse_template(db: Db, user: User, factory_id: str = Query(...)):
     csv.writer(output).writerow(warehouse_import.TEMPLATE)
     return Response(output.getvalue().encode('utf-8-sig'), media_type='text/csv; charset=utf-8',
         headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote('仓库实收导入模板.csv'), 'Cache-Control': 'no-store'})
+
+
+@router.post('/warehouse-imports/template')
+def order_receipt_template(body: ReceiptTemplate, db: Db, user: User):
+    from app.services.indonesia_receipt_template import build_template
+    content = build_template(db, user, body)
+    return Response(content, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote('仓库实收回传模板.xlsx'), 'Cache-Control': 'no-store'})
 
 
 @router.post('/warehouse-imports/preview', dependencies=[Depends(order_job_request)])

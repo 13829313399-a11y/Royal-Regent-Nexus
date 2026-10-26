@@ -241,3 +241,16 @@ class WarehouseRowSelection(Input):
 class WarehouseSelection(Input):
     shipment_date: date
     rows: list[WarehouseRowSelection] = Field(min_length=1, max_length=200)
+
+
+class ReceiptTemplateRow(Input):
+    order_id: Text
+    demand_id: Text
+
+
+class ReceiptTemplate(Input):
+    factory_id: Text
+    customer: Text
+    recipient: Literal['RRI', 'RRM']
+    warehouse: str = Field('', max_length=160)
+    selections: list[ReceiptTemplateRow] = Field(min_length=1, max_length=200)
