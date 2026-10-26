@@ -40,7 +40,7 @@ class HandoverLine(Strict):
     color: str = Field(default='', max_length=128)
     quantity: str = Field(default='', max_length=32, pattern=r'^(?:|[0-9]+(?:\.[0-9]{1,6})?)$')
     unit: str = Field(default='', max_length=32)
-    material_category: Literal['FABRIC', 'ACCESSORY', 'THREAD'] = 'FABRIC'
+    material_category: Literal['', 'FABRIC', 'ACCESSORY', 'THREAD'] = 'FABRIC'
     lot: str = Field(default='', max_length=128)
     roll_no: str = Field(default='', max_length=128)
     roll_quantities: str = Field(default='', max_length=2000)
