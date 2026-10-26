@@ -8,6 +8,8 @@ import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard'
 import { createDraftPersistence, draftKind, draftLabel, type DraftKind, type DraftId } from './draftPersistence'
 import { indonesiaMaterialsApi as api, type Action, type BoardOrder, type Command, type Data, type MaterialRecord, type RecordKind } from '@/api/indonesiaMaterials'
 
+export type FollowupTarget = { kind: 'master' | 'reply' | 'recalculate' | 'board'; orderId: string; materialId?: string }
+
 export function createMaterialsWorkspace(sharedOptions = false) {
   const app = useAppStore()
   const auth = useAuthStore()
@@ -26,7 +28,13 @@ export function createMaterialsWorkspace(sharedOptions = false) {
   const localDrafts = createDraftPersistence()
   const restoreTarget = ref<DraftId | null>(null)
   const shipmentTarget = ref<string | null>(null)
-  const boardStage = ref('board'), supplyStage = ref('warehouse')
+  const followupTarget = ref<FollowupTarget | null>(null)
+  function followup(kind: FollowupTarget['kind'], orderId: string, materialId?: string) {
+    if (locked.value || (kind !== 'board' && !canWrite.value)) return
+    if (!record(orderId) || record(orderId)?.kind !== 'order') { error.value = '原合同已不可用，请刷新核对。'; return }
+    followupTarget.value = { kind, orderId, materialId }
+  }
+  const boardStage = ref('board'), supplyStage = ref('warehouse'), wizardStep = ref(1)
   type DraftOwner = { restore: (state: Data, revision: string, id: DraftId) => Promise<boolean>; reset: (id?: DraftId) => void; flush: () => Promise<boolean> }
   const owners = new Map<DraftKind, DraftOwner>()
   const ownerFor = (id: DraftId) => { const kind = draftKind(id); return kind ? owners.get(kind) : undefined }
@@ -58,7 +66,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     if (await localDrafts.remove(id) && same(epoch, selected)) ownerFor(id)?.reset(id)
   }
   const drafts = shallowReactive(new Set<() => boolean>())
-  let pendingCompletion: (() => void) | undefined
+  let pendingCompletion: ((record: MaterialRecord) => void) | undefined
   function registerDraft(dirty: () => boolean) {
     const epoch = scopeEpoch.value
     const scoped = () => epoch === scopeEpoch.value && dirty()
@@ -103,7 +111,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     invalidPending.value = false
     if (!saved) { if (!busy.value) { pending.value = null; pendingCompletion = undefined } return }
     const command = saved.command
-    const actions: Action[] = ['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm']
+    const actions: Action[] = ['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm']
     if (command?.factory_id !== factory.value || !actions.includes(command.action) || typeof command.operation_id !== 'string' || command.operation_id.length < 16 || !command.data || !Number.isInteger(command.expected_version) || (saved.owner !== undefined && !draftKind(saved.owner))) {
       invalidPending.value = true; localDrafts.error.value = '上次提交凭据无法识别，原内容已保留，请联系管理员核对。'; return
     }
@@ -120,9 +128,10 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     }
   }
   function revokePrivateState() {
+    followupTarget.value = null
     // A denial on any endpoint invalidates already displayed data and all in-flight responses.
     scopeEpoch.value++; requestEpoch++; pendingCompletion = undefined
-    records.value = []; optionDefaults.value = []; board.value = []; permissions.value = []; pending.value = null; shipmentTarget.value = null; boardStage.value = 'board'; supplyStage.value = 'warehouse'
+    records.value = []; optionDefaults.value = []; board.value = []; permissions.value = []; pending.value = null; shipmentTarget.value = null; boardStage.value = 'board'; supplyStage.value = 'warehouse'; wizardStep.value = 1
     busy.value = false; loading.value = false; notice.value = ''
     localDrafts.reset()
     invalidPending.value = false
@@ -149,10 +158,11 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     } finally { if (same(epoch, selected) && request === requestEpoch) loading.value = false }
   }
   watch([factory, identity], () => {
+    followupTarget.value = null
     scopeEpoch.value++
     records.value = []; optionDefaults.value = []; board.value = []; permissions.value = []
     pending.value = null; pendingCompletion = undefined; error.value = ''; loadError.value = ''; notice.value = ''; busy.value = false; loading.value = false
-    restoreTarget.value = null; shipmentTarget.value = null; boardStage.value = 'board'; supplyStage.value = 'warehouse'; invalidPending.value = false
+    restoreTarget.value = null; shipmentTarget.value = null; boardStage.value = 'board'; supplyStage.value = 'warehouse'; wizardStep.value = 1; invalidPending.value = false
     const epoch = scopeEpoch.value, selected = factory.value
     const user = auth.currentUser
     const storageKey = user?.id && selected ? JSON.stringify(['v1', user.id, user.identity?.employment_epoch ?? 1, selected]) : ''
@@ -163,9 +173,11 @@ export function createMaterialsWorkspace(sharedOptions = false) {
       if (await localDrafts.load(storageKey)) restoredPending()
     })()
   }, { immediate: true, flush: 'sync' })
-  async function execute(command: Command, onCommitted?: () => void, owner?: DraftId, retry = false) {
+  async function execute(command: Command, onCommitted?: (record: MaterialRecord) => void, owner?: DraftId, retry = false) {
     const epoch = scopeEpoch.value
     const selected = command.factory_id
+    let completedShipment: string | undefined
+    let completedPlan: string | undefined
     busy.value = true; error.value = ''; notice.value = ''
     await nextTick()
     if (!same(epoch, selected)) return false
@@ -176,7 +188,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     }
     if (!same(epoch, selected)) return false
     try {
-      await api.command(command)
+      const result = await api.command(command)
       if (!same(epoch, selected)) return false
       if (!await localDrafts.finish(command.operation_id, true)) {
         if (!same(epoch, selected)) return false
@@ -190,8 +202,13 @@ export function createMaterialsWorkspace(sharedOptions = false) {
       notice.value = '已保存，数据以服务器重新核算结果为准。'
       await reload()
       if (!same(epoch, selected)) return false
-      if (onCommitted) onCommitted()
-      else if (owner) ownerFor(owner)?.reset(owner)
+      if (onCommitted) onCommitted(result.record)
+      else if (owner) {
+        ownerFor(owner)?.reset(owner)
+        if (command.action === 'warehouse_import_confirm') completedShipment = result.record.data.shipment_ids?.at(-1)
+        if (command.action === 'shipment_save' || command.action === 'shipment_confirm') completedShipment = result.record.id
+        if (command.action === 'order_plan_save') completedPlan = result.record.id
+      }
       return true
     } catch (cause) {
       if (!same(epoch, selected)) return false
@@ -219,9 +236,15 @@ export function createMaterialsWorkspace(sharedOptions = false) {
         error.value = code === 409 ? `${getApiErrorMessage(cause)}。请刷新并重新打开记录核对；系统不会自动覆盖。` : getApiErrorMessage(cause)
       }
       return false
-    } finally { if (same(epoch, selected)) busy.value = false }
+    } finally {
+      if (same(epoch, selected)) {
+        busy.value = false
+        if (completedShipment) shipmentTarget.value = completedShipment
+        if (completedPlan) followup('board', completedPlan)
+      }
+    }
   }
-  async function run(action: Action, data: Data, target?: MaterialRecord, onCommitted?: () => void, owner?: DraftId) {
+  async function run(action: Action, data: Data, target?: MaterialRecord, onCommitted?: (record: MaterialRecord) => void, owner?: DraftId) {
     if (locked.value || !(action === 'receipt_confirm' ? has('receipt_confirm') : canWrite.value)) return false
     const command: Command = JSON.parse(JSON.stringify({
       factory_id: factory.value, operation_id: createRandomUuid(), action,
@@ -277,7 +300,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     } finally { if (same(epoch, selected)) busy.value = false }
   }
   onBeforeUnmount(() => { scopeEpoch.value++; pendingCompletion = undefined; drafts.clear(); owners.clear(); localDrafts.dispose(); removeFactoryGuard(); window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('auth-session-boundary-changed', boundary) })
-  return reactive({ factory, records, optionDefaults, board, permissions, loading, busy, error, loadError, notice, pending, scopeEpoch, canWrite, locked, has, kind, record, materialName, orderName, reload, run, retry, preview, download, registerDraft, permitLeave, localDrafts, restoreTarget, shipmentTarget, boardStage, supplyStage, restoreDraft, deleteDraft, registerDraftOwner, reloadDrafts, hasUnstoredDrafts })
+  return reactive({ factory, records, optionDefaults, board, permissions, loading, busy, error, loadError, notice, pending, scopeEpoch, canWrite, locked, has, kind, record, materialName, orderName, reload, run, retry, preview, download, registerDraft, permitLeave, localDrafts, restoreTarget, shipmentTarget, followupTarget, followup, boardStage, supplyStage, wizardStep, restoreDraft, deleteDraft, registerDraftOwner, reloadDrafts, hasUnstoredDrafts })
 }
 function status(cause: unknown) { return (cause as { response?: { status?: number } })?.response?.status }
 export type MaterialsWorkspace = ReturnType<typeof createMaterialsWorkspace>
