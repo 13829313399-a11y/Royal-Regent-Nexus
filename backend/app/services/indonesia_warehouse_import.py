@@ -26,9 +26,10 @@ TYPE = 'warehouse_receipt'
 MAX_ROWS = 2000
 FIELDS = {
     'factory': ['厂区', '厂区编码', '工厂'],
+    'customer': ['客户', '客人'], 'recipient': ['接收方', '印尼接收方'],
     'warehouse': ['仓库', '收料仓库', '仓库名称'], 'receipt_no': ['收料单号', '入库单号', '实收单号', '送货单号'],
     'receipt_line': ['行号', '单据行号', '收料行号'], 'actual_date': ['实收日期', '收料日期', '入库日期'],
-    'material_code': ['物料编码', '物料编号', '料号'], 'material_name': ['物料名称', '品名', '物料中文名称'],
+    'material_code': ['物料编码', '物料编号', '料号'], 'material_name': ['物料名称', '品名', '物料中文名称', '正式报关名称', '正式报关中文名称'],
     'specification': ['规格', '规格型号'], 'unit': ['单位', '数量单位', '计量单位'],
     'normal_quantity': ['正常实收数量', '正常数量', '正常量'], 'quantity': ['实收数量', '实收合计', '实际收到数量'],
     'spare_quantity': ['备品数量', '免费备品量', '备品量'], 'contract_no': ['合同号', '合同编号', '合同单号'],
@@ -109,7 +110,8 @@ def parse_warehouse_receipts(content, filename):
             for sheet in book:
                 require(sheet.max_row <= MAX_ROWS + 30 and sheet.max_column <= 80, '实收单超过 2000 行或 80 列，请分批导入', 422)
                 sheets.append((sheet.title, list(sheet.iter_rows())))
-        result = []
+        from app.services.indonesia_receipt_template import TITLE, REFERENCE_HEADERS, ENTRY_FIELDS
+        result, empty_template = [], False
         for sheet, rows in sheets:
             header_index, fields = None, []
             for index, cells in enumerate(rows[:30]):
@@ -120,12 +122,18 @@ def parse_warehouse_receipts(content, filename):
                     break
             if header_index is None:
                 continue
+            headers = {text(cell) for cell in rows[header_index]}
+            order_template = REFERENCE_HEADERS <= headers and '正式报关中文名称' in headers and any(
+                text(cells[0]) == TITLE for cells in rows[:header_index] if cells)
             for position, cells in enumerate(rows[header_index + 1:], header_index + 2):
                 raw = [text(cell) for cell in cells]
                 if not any(raw):
                     continue
                 require(all(len(value) <= 1000 for value in raw), '原单单元格内容过长，请拆分或整理后导入', 422)
                 source = {field: raw[i] for i, field in enumerate(fields) if field and i < len(raw)}
+                if order_template and not any(source.get(field) for field in ENTRY_FIELDS):
+                    empty_template = True
+                    continue
                 if normalized(source.get('material_name')) in {'合计', '总计'} and not source.get('receipt_no'):
                     continue
                 issues = []
@@ -161,7 +169,8 @@ def parse_warehouse_receipts(content, filename):
                 require(all(len(value) <= 500 for value in source.values()), '实收字段过长，请整理原表', 422)
                 result.append(dict(index=len(result), source_sheet=sheet, source_row=position, source=source,
                                    source_issues=issues, raw_headers=[text(c) for c in rows[header_index]], raw_values=raw))
-        require(result, '未找到实收表头；请使用导入模板或包含物料、实收数量的常见表头', 422)
+        require(result, '模板尚未填写本次实收数量，请填写后再导入。' if empty_template else
+                '未找到实收表头；请使用导入模板或包含物料、实收数量的常见表头', 422)
         return result
     except HTTPException:
         raise
@@ -216,6 +225,10 @@ def reconcile(ledger, record):
                            'huakang-b': ['华康B', '华康 B', 'B厂'], 'huakang-c': ['华康C', '华康 C', 'C厂'], 'huakang-d': ['华康D', '华康 D', 'D厂']}
         if source.get('factory') and value_key(source['factory']) not in {value_key(item) for item in [ledger.factory, *factory_aliases[ledger.factory]]}:
             row['issues'].append('原单厂区与当前厂区不一致或无法识别，请核对原单')
+        if source.get('customer') and value_key(source['customer']) != value_key(record.data['customer']):
+            row['issues'].append('原单客户与本次实收客户不一致，请核对上传选项')
+        if source.get('recipient') and value_key(source['recipient']) != value_key(record.data['recipient']):
+            row['issues'].append('原单接收方与本次实收接收方不一致，请核对上传选项')
         if not (source.get('warehouse') or record.data['warehouse']).strip():
             row['issues'].append('缺少仓库名称')
         if seen[identity(record.data['warehouse'], source)] > 1:

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
-import { indonesiaMaterialsApi } from '@/api/indonesiaMaterials'
 import { fixedCustomers } from './catalog'
 import { newDraftId, recordDraftId, recordRef, restoreRecord } from './draftPersistence'
 import { useMaterialDraft } from './useDraft'
@@ -11,11 +10,13 @@ import type { Field } from './forms'
 import { setNumberText } from './forms'
 import { sameQuantity, purchaseFactsAgree } from './warehouseMatching'
 import { focusFollowup } from './focusFollowup'
+import ReceiptTemplatePicker from './ReceiptTemplatePicker.vue'
 const ws = useMaterials()
 const customer = ref(''), recipient = ref('RRI'), warehouse = ref(''), shipmentDate = ref('')
 const file = ref<File | null>(null), preview = ref<MaterialRecord | null>(null), choices = ref<Data>({})
 const context = ref({ customer: '', recipient: 'RRI', warehouse: '' })
-const downloading = ref(false), showUpload = ref(true)
+const showUpload = ref(true)
+const templatePicker = ref<InstanceType<typeof ReceiptTemplatePicker>>()
 const completedShipment = ref('')
 const sourceId = computed(() => preview.value?.id || '')
 let beforePicker = true
@@ -154,19 +155,11 @@ async function confirm() {
   })
   await draft.run('warehouse_import_confirm', { shipment_date: shipmentDate.value, rows }, preview.value, result => { preview.value = result; for (const choice of Object.values(choices.value) as Data[]) choice.selected = false; completedShipment.value = result.data.shipment_ids?.at(-1) || '' })
 }
-async function template() {
-  if (!ws.canWrite || ws.locked || downloading.value) return
-  downloading.value = true
-  try {
-    const blob = await indonesiaMaterialsApi.warehouseTemplate(ws.factory), url = URL.createObjectURL(blob)
-    const link = document.createElement('a'); link.href = url; link.download = '仓库实收导入模板.csv'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
-  } catch { ws.error = '模板下载失败，请核对权限后重试。' }
-  finally { downloading.value = false }
-}
 </script>
 <template>
   <section aria-label="仓库实收导入" class="im-stack">
-    <div class="im-toolbar"><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="fresh">新建实收导入</button><button type="button" :disabled="!ws.canWrite || ws.locked || downloading" @click="template">下载实收导入模板</button></div>
+    <div class="im-toolbar"><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="fresh">新建实收导入</button><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="templatePicker?.open(customer, recipient, warehouse)">下载实收导入模板</button></div>
+    <ReceiptTemplatePicker ref="templatePicker" :blocked="draft.switching.value" />
     <form v-show="showUpload || !preview" id="im-warehouse-upload" ref="uploadForm" class="im-upload-form" @submit.prevent="upload"><p v-if="importHint" class="im-note" role="status">{{ importHint }}</p><fieldset class="im-fields" :disabled="importBlocked">
       <label class="im-field"><span>实收客户 *</span><select v-model="customer" required @change="changeContext"><option value="">请选择本厂区固定客人</option><option v-for="row in customers" :key="row.id" :value="row.data.name">{{ row.data.name }}</option></select></label>
       <label class="im-field"><span>实收接收方 *</span><select v-model="recipient" @change="changeContext"><option>RRI</option><option>RRM</option></select></label>
