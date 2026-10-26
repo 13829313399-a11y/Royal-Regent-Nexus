@@ -2711,21 +2711,8 @@ def list_quotes(
     ]
 
 
-def list_quotes_page(
-    db: Session,
-    user: AuthContext,
-    factory_id: str,
-    *,
-    page: int,
-    page_size: int,
-    status: str = "",
-    keyword: str = "",
-    customer: str = "",
-    include_sections: bool = False,
-) -> InternalQuotePageOut:
-    """Return one factory-scoped page without loading the remaining quote rows."""
-
-    ensure_quote_read(db, user, factory_id)
+def quote_page_statement(factory_id: str, *, status: str = "", keyword: str = "", customer: str = ""):
+    """Native document-page predicates. Callers must authorize the factory first."""
     statement = select(InternalQuote).where(
         InternalQuote.factory_id == factory_id,
         InternalQuote.batch_position == 1,
@@ -2745,6 +2732,25 @@ def list_quotes_page(
         return and_(*conditions) if conditions else true()
     if status or customer or keyword:
         statement = statement.where(document_filter_condition(matches))
+    return statement
+
+
+def list_quotes_page(
+    db: Session,
+    user: AuthContext,
+    factory_id: str,
+    *,
+    page: int,
+    page_size: int,
+    status: str = "",
+    keyword: str = "",
+    customer: str = "",
+    include_sections: bool = False,
+) -> InternalQuotePageOut:
+    """Return one factory-scoped page without loading the remaining quote rows."""
+
+    ensure_quote_read(db, user, factory_id)
+    statement = quote_page_statement(factory_id, status=status, keyword=keyword, customer=customer)
 
     total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -3231,6 +3237,58 @@ def _batch_product_differences(
     return different_header_fields, different_sections, different_section_details
 
 
+def packaging_section_issue(section: InternalQuoteSection | None, label: str) -> str:
+    """Explain readiness without confusing a saved incomplete draft with lost data."""
+    if section is None or not section.is_required:
+        return f"{label}未参与报价，请先添加该部门"
+    if not section.filled_at:
+        return f"{label}尚未保存，请先填写并保存，或选择已有包装资料的产品作为来源"
+    if section.calculation_status != "valid":
+        warnings = _json_object(section.calculation_json).get("warnings", [])
+        warnings = warnings if isinstance(warnings, list) else []
+        messages = [str(row["message"]) for row in warnings
+                    if isinstance(row, dict) and row.get("severity") == "blocking" and row.get("message")]
+        reason = "；".join(dict.fromkeys(messages)) or "尚未完成有效核算"
+        return f"{label}已保存，但核算未通过：{reason}。请补全资料，或选择已有包装资料的产品作为来源"
+    if section.dependency_status != "current":
+        return f"{label}已保存，但依赖资料已更新，请重新核算后再复制"
+    return ""
+
+
+def _packaging_copy_status(quote, sections, archive_reason):
+    by_code = {section.department: section for section in sections}
+    sales, assembly = by_code.get("sales"), by_code.get("assembly")
+    sales_payload = _json_object(sales.payload_json) if sales else {}
+    assembly_payload = _json_object(assembly.payload_json) if assembly else {}
+    label = f"{quote.product_name}（{quote.version_label}）"
+    formula_issue = "请先执行“按当前公式重算”，再复制包装" if quote_formula_mismatches(quote, sections) else ""
+    source_issue = archive_reason or formula_issue
+    target_issue = archive_reason
+    if not target_issue and (quote.status not in {"drafting", "rejected"} or quote.final_release_status in {"issued", "approved", "pending"}):
+        target_issue = "已提交或已输出，请先复制新版本后接收包装"
+    target_issue = target_issue or formula_issue
+
+    def target_section_issue(section, name):
+        if section is None or not section.is_required or section.status not in MUTABLE_SECTION_STATUSES:
+            return f"接收产品 {label} 的{name}当前不可编辑"
+        return ""
+
+    def rows(payload, key):
+        value = payload.get(key)
+        return value if isinstance(value, list) else []
+
+    return {
+        "material_count": len(rows(sales_payload, "packaging_materials")),
+        "carton_count": len(rows(sales_payload, "cartons")),
+        "packaging_group_count": sum(1 for row in rows(assembly_payload, "groups") if isinstance(row, dict) and row.get("category") == "packaging"),
+        "packaging_labor_hkd": str(_section_totals(assembly).get("packaging_hkd", "0.0000")) if assembly and assembly.calculation_status == "valid" and assembly.dependency_status == "current" else None,
+        "source_issue": f"来源产品 {label}：{source_issue}" if source_issue else packaging_section_issue(sales, f"来源产品 {label} 的业务部"),
+        "assembly_issue": packaging_section_issue(assembly, f"来源产品 {label} 的装配部"),
+        "target_issue": f"接收产品 {label}：{target_issue}" if target_issue else target_section_issue(sales, "业务部"),
+        "assembly_target_issue": target_section_issue(assembly, "装配部"),
+    }
+
+
 def list_quote_batch_products(
     db: Session,
     quote_id: str,
@@ -3243,6 +3301,10 @@ def list_quote_batch_products(
     rows = [quote if item.id == root.id else item for item in roots]
     quote_ids = [item.id for item in rows]
     sections_by_quote = _list_quote_sections(db, rows)
+    alternatives = {row.quote_id: row for row in db.scalars(
+        select(InternalQuoteAlternative).where(InternalQuoteAlternative.quote_id.in_(quote_ids))
+    )}
+    whole_document_archived = bool(document_archive(db, quote))
     references = {
         item.id: db.get(InternalQuoteReferenceSet, item.reference_snapshot_id)
         if item.reference_snapshot_id else None
@@ -3268,6 +3330,11 @@ def list_quote_batch_products(
     baseline_reference = references.get(baseline.id)
     output: list[InternalQuoteBatchProductOut] = []
     for item in rows:
+        alternative = alternatives.get(item.id)
+        archive_reason = (
+            "整单已归档，请先恢复整单报价" if whole_document_archived else
+            "此方案版本已归档，请先在包装方案与版本中恢复" if alternative and alternative.archived else ""
+        )
         different_header_fields, different_sections, different_section_details = (
             ([], [], {})
             if item.id == baseline.id
@@ -3284,6 +3351,10 @@ def list_quote_batch_products(
             quote_id=item.id,
             quote_no=item.quote_no,
             product_name=item.product_name,
+            version_label=item.version_label,
+            scenario_name=alternative.scenario_name if alternative else "原方案",
+            archived=bool(archive_reason),
+            packaging_copy=_packaging_copy_status(item, sections_by_quote.get(item.id, []), archive_reason),
             qty=item.qty,
             position=product_root(db, item).batch_position or 1,
             batch_size=len(rows),
@@ -4242,6 +4313,39 @@ def preview_section_cost(
     )
 
 
+def _sync_saved_formula_version(db, quote, user, request):
+    """Advance only a stale header whose participating saved calculations are current.
+
+    Ordinary saves can refresh every department without recreating the frozen
+    reference set. Never relabel old, incomplete or sealed calculations as fresh.
+    """
+    if (quote.formula_version == FORMULA_VERSION or quote.status not in {"drafting", "rejected"}
+            or quote.final_release_status in {"pending", "approved", "issued"}):
+        return
+    sections = list(db.scalars(select(InternalQuoteSection).where(
+        InternalQuoteSection.quote_id == quote.id, InternalQuoteSection.is_required.is_(True))))
+    if not sections:
+        return
+    for section in sections:
+        calculation = _json_object(section.calculation_json)
+        if (not section.filled_at or section.calculation_status != "valid"
+                or section.dependency_status != "current"
+                or section.calculation_formula_version != FORMULA_VERSION
+                or calculation.get("formula_version") != FORMULA_VERSION
+                or section.calculation_reference_snapshot_id != quote.reference_snapshot_id
+                or calculation.get("input_hash") != content_hash(_json_object(section.payload_json))
+                or section.dependency_hash != content_hash(_calculation_dependencies(db, quote, section.department))):
+            return
+    previous = quote.formula_version
+    quote.formula_version = FORMULA_VERSION
+    old_revision = quote.header_revision
+    quote.header_revision += 1
+    quote.updated_at = now_text()
+    _add_audit(db, quote, user, "formula_version_synced", old_revision=old_revision,
+               new_revision=quote.header_revision, detail=canonical_json({"previous": previous, "current": FORMULA_VERSION}),
+               reason="全部参与部门已按当前公式保存核算，同步整单公式版本", request=request)
+
+
 def _save_section_in_transaction(
     db: Session,
     quote: InternalQuote,
@@ -4276,6 +4380,7 @@ def _save_section_in_transaction(
             and section.dependency_hash == content_hash(_calculation_dependencies(db, quote, section.department))
         )
     ):
+        _sync_saved_formula_version(db, quote, user, request)
         return section
     previous_dependency_hashes = _downstream_dependency_hashes(
         db,
@@ -4325,6 +4430,7 @@ def _save_section_in_transaction(
         reason=reason,
         request=request,
     )
+    _sync_saved_formula_version(db, quote, user, request)
     return section
 
 
@@ -4888,7 +4994,12 @@ def list_section_revisions(
     ]
 
 
-def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str, object]:
+def get_quote_summary(db: Session, quote_id: str, user: AuthContext, *, read_only: bool = False) -> dict[str, object]:
+    """Native summary; strict readers may opt out of legacy reference initialization.
+
+    The HTTP route keeps its existing behavior. The read-only option is internal
+    and never repairs a missing snapshot, even for a reference manager.
+    """
     quote = _get_quote(db, quote_id)
     ensure_quote_permission(
         db,
@@ -4905,12 +5016,18 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
                               and molding_projection_pending(db, quote, sections))
     participating_sections = [section for section in sections if section.is_required]
     if projection_pending:
-        participating_sections = [copy.copy(section) for section in participating_sections]
+        # A shallow ORM copy shares instrumentation and can dirty the original
+        # session. Summary-only stale flags belong to detached read models.
+        participating_sections = [SimpleNamespace(**{
+            column.key: getattr(section, column.key) for column in InternalQuoteSection.__table__.columns
+        }) for section in participating_sections]
         for section in participating_sections:
             if section.department == "molding":
                 section.calculation_status = section.dependency_status = "stale"
                 section.calculation_json = canonical_json({"status": "stale", "warnings": [_molding_projection_warning()]})
-    reference = _ensure_reference_set_for_read(db, quote, user)
+    reference = _find_reference_set(db, quote) if read_only else _ensure_reference_set_for_read(db, quote, user)
+    if reference is None:
+        raise HTTPException(status_code=409, detail="报价缺少已保存的参考快照，请在原报价中核实；只读查询不会补建。")
     counts: dict[str, int] = {}
     for section in participating_sections:
         counts[section.status] = counts.get(section.status, 0) + 1
@@ -4971,7 +5088,8 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
                 "is_draft_amount": section.status not in COMPLETED_SECTION_STATUSES,
             }
         )
-    db.commit()
+    if not read_only:
+        db.commit()
     return {
         "quote_id": quote.id,
         "pricing_complete": not (incomplete := _pricing_completeness(quote, participating_sections)),

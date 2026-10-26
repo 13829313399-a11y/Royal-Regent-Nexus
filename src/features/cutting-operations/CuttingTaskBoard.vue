@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { watchCuttingWorkspace } from './workspaceRefresh'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, inject, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { RouterLink, routeLocationKey } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -11,12 +11,21 @@ import { workspaceApi,businessDay,type TaskView } from './workspaceApi'
 import { errorMessage } from './api'
 import { cuttingDestination } from './location'
 const props=defineProps<{reporting?:boolean}>()
-const day=ref(businessDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
+const filterId=`cutting-tasks-${useId()}`
+const route=inject(routeLocationKey,undefined)
+function linkedDay(){const value=route?.query.day;return route?.query.factory==='huakang-c'&&typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString().slice(0,10)===value?value:businessDay()}
+const day=ref(linkedDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
 const applied=ref({day:day.value,q:'',execution:'',scope:'daily'})
+type TaskQuery=typeof applied.value & {page:number}
+const failedQuery=ref<TaskQuery>(),currentPage=ref(1)
+const readingTarget=ref<TaskQuery & {retry:boolean}>(),pageNotice=ref('')
+const unapplied=computed(()=>day.value!==applied.value.day||query.value!==applied.value.q||execution.value!==applied.value.execution)
 let generation=0,alive=true
 const tabs=computed(()=>props.reporting?[
   {id:'daily',label:'每日任务'},{id:'reported',label:'已填报任务'},{id:'unreported',label:'待填任务'},{id:'history',label:'计划外与历史实绩'},{id:'abnormal',label:'异常待办'},
 ]:[{id:'daily',label:'当日生产任务'},{id:'abnormal',label:'异常任务'},{id:'history',label:'历史与计划外实绩'}])
+const viewLabel=(value:string)=>tabs.value.find(tab=>tab.id===value)?.label??value
+const targetLabel=(value:TaskQuery)=>`${value.day}；订单号／货号 ${value.q||'全部'}；执行方 ${value.execution==='internal'?'本厂':value.execution==='outsourced'?'外发':'本厂与外发'}；${viewLabel(value.scope)}，第 ${value.page} 页`
 const metrics=computed(()=>{const s=result.value?.stats;return props.reporting?[
   {label:'当日应报任务',value:s?.tasks??'—',unit:'项'},
   {label:'已填报任务',value:s?.reported??'—',unit:'项',hint:'已有生效日报，包含明确填零'},
@@ -36,29 +45,61 @@ function exceptionLink(row:TaskView['data'][number],reason:string) {
 const exceptionLabels:Record<string,string>={'外发收回待验收':'收回与验收','已结束业务日未填报':'补填当日日报','计划依据已变更':'复核计划','计划已逾期未完成':'核对逾期计划','物料及前置条件待实际核定':'核定执行条件'}
 async function load(page=1,apply=false){
   if(apply){applied.value={day:day.value,q:query.value,execution:execution.value,scope:scope.value};page=1}
-  const ticket=++generation;busy.value=true;error.value='';result.value=undefined
-  try{const value=await workspaceApi.tasks({...applied.value,page});if(alive&&ticket===generation)result.value=value}
-  catch(e){if(alive&&ticket===generation)error.value=errorMessage(e)}
-  finally{if(alive&&ticket===generation)busy.value=false}
+  await read({...applied.value,page})
 }
-function change(value:string){scope.value=value;void load(1,true)}
+async function read(request:TaskQuery,retry=false){
+  let target={...request}
+  const ticket=++generation;busy.value=true;error.value='';pageNotice.value='';result.value=undefined;failedQuery.value=undefined;currentPage.value=target.page
+  readingTarget.value={...target,retry}
+  try{
+    let value=await workspaceApi.tasks(target)
+    if(!alive||ticket!==generation)return
+    if(target.page>Math.max(1,Math.ceil(value.total/value.page_size))){
+      pageNotice.value=`原第 ${target.page} 页已超出当前任务范围，正在按原条件读取第 1 页。`
+      target={...target,page:1};currentPage.value=1;readingTarget.value={...target,retry}
+      value=await workspaceApi.tasks(target)
+      if(!alive||ticket!==generation)return
+      pageNotice.value=`原第 ${request.page} 页已超出当前任务范围，已按原条件返回第 1 页。`
+    }
+    result.value=value
+  }
+  catch(e){if(alive&&ticket===generation){
+    error.value=errorMessage(e)
+    const status=(e as {response?:{status:number}}).response?.status
+    if(status!==401&&status!==403){
+      failedQuery.value={...target}
+      if(target.page!==request.page)pageNotice.value=`原第 ${request.page} 页已超出当前任务范围，第 1 页读取未完成，可按原条件重试。`
+    }else pageNotice.value=''
+  }}
+  finally{if(alive&&ticket===generation){busy.value=false;readingTarget.value=undefined}}
+}
+function retry(){if(failedQuery.value&&!busy.value)void read({...failedQuery.value},true)}
+function change(value:string){scope.value=value;applied.value={...applied.value,scope:value};void load(1)}
+function resetFilters(){query.value='';execution.value='';applied.value={...applied.value,q:'',execution:''};void load(1)}
 onMounted(()=>void load())
+watch(()=>route?.query.day,()=>{day.value=linkedDay();applied.value={...applied.value,day:day.value};void load(1)})
 onBeforeUnmount(()=>{alive=false;generation++})
-watchCuttingWorkspace(()=>void load())
+watchCuttingWorkspace(()=>void load(currentPage.value))
 </script>
 <template>
   <div class="cutting-overview">
     <CuttingMetrics :items="metrics" />
     <SectionPanel :title="reporting?'每日任务与填报进度':'生产任务与异常跟进'" class="cutting-content-panel">
       <form class="order-toolbar" @submit.prevent="load(1,true)">
-        <label>业务日期<input v-model="day" type="date" required /></label>
-        <label>订单号／货号<input v-model="query" maxlength="80" placeholder="查询全部匹配订单" /></label>
-        <label>执行方<select v-model="execution"><option value="">本厂与外发</option><option value="internal">本厂</option><option value="outsourced">外发</option></select></label>
-        <Button :disabled="busy">查询／刷新</Button>
+        <label :for="`${filterId}-day`">业务日期<input :id="`${filterId}-day`" v-model="day" name="day" type="date" required /></label>
+        <label :for="`${filterId}-order`">订单号／货号<input :id="`${filterId}-order`" v-model="query" name="q" maxlength="80" placeholder="查询全部匹配订单" /></label>
+        <label :for="`${filterId}-execution`">执行方<select :id="`${filterId}-execution`" v-model="execution" name="execution"><option value="">本厂与外发</option><option value="internal">本厂</option><option value="outsourced">外发</option></select></label>
+        <Button type="submit" :disabled="busy">查询</Button>
+        <Button type="button" variant="outline" :disabled="busy" @click="load(currentPage)">刷新当前结果</Button>
+        <Button type="button" variant="outline" :disabled="busy" @click="resetFilters">清除订单／执行方筛选</Button>
       </form>
+      <p v-if="unapplied" class="cutting-muted" role="status">筛选有未查询的修改，当前结果仍按上次查询条件展示。</p>
+      <p class="cutting-muted">当前查询日期：{{applied.day}}。订单号／货号：{{applied.q||'全部'}}；执行方：{{applied.execution==='internal'?'本厂':applied.execution==='outsourced'?'外发':'本厂与外发'}}；视图：{{viewLabel(applied.scope)}}。查询应用当前输入；切换任务视图、翻页及刷新不提交未查询的日期、订单或执行方条件。</p>
       <CuttingSubnav :model-value="scope" :items="tabs" @update:model-value="change" />
-      <p v-if="busy" role="status">正在核对有效计划与生产实绩…</p>
-      <p v-if="error" role="alert">{{error}}</p>
+      <p v-if="busy" role="status">{{readingTarget?.retry?`正在按原条件重试：${targetLabel(readingTarget)}。`:'正在核对有效计划与生产实绩…'}}</p>
+      <p v-if="pageNotice" class="cutting-muted" role="status">{{pageNotice}}</p>
+      <p v-if="error" role="alert">{{error}} <Button v-if="failedQuery" type="button" variant="outline" :disabled="busy" @click="retry">按原条件重试（第 {{failedQuery.page}} 页）</Button></p>
+      <p v-if="failedQuery" class="cutting-muted">重试目标：{{failedQuery.day}}；订单号／货号 {{failedQuery.q||'全部'}}；执行方 {{failedQuery.execution==='internal'?'本厂':failedQuery.execution==='outsourced'?'外发':'本厂与外发'}}；{{viewLabel(failedQuery.scope)}}，第 {{failedQuery.page}} 页。保留尚未查询的新输入，重试不提交业务记录。</p>
       <p class="cutting-muted">应报任务以当日有效发布日计划为准；外厂自报不计合格完成。实收条件待核定不直接判为缺料。</p>
       <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="生产任务列表"><table>
         <thead><tr><th>客户／订单</th><th>货号／任务</th><th>执行方</th><th>当日计划</th><th>合格完成／交接</th><th>填报状态</th><th>异常与核对</th><th>操作</th></tr></thead>

@@ -52,7 +52,7 @@
       {
         "path": "src/views/InjectionSchedulingView.vue",
         "symbol": "switchTab",
-        "sha256": "09bf7cc0747a6585e78d4542982831a39ecb24948af50481e363261e8a5bd862"
+        "sha256": "11079e375d091f3fe28adfbe04f8cfbade4c1792d8fb488112da477d9bc302e6"
       }
     ],
     "knowledge_version": "2026.10.12-v2",

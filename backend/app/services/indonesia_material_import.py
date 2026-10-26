@@ -5,7 +5,7 @@ from pydantic import ValidationError
 from app.schemas.indonesia_materials import Order
 from app.services.customer_order_history import parse_workbook, key
 from app.services.indonesia_material_calculations import require
-from app.services.indonesia_materials import Ledger, Record, digest, view
+from app.services.indonesia_materials import Ledger, Record, digest, view, order_key, matching_orders
 from app.services.transaction_lock import lock_transaction
 from sqlalchemy import select
 
@@ -18,7 +18,7 @@ def parse_schedule(content, customer, recipient, workbook=None):
         original = source['data']
         fields = original.get('history_fields', [])
         batch_values = [f['value'] for f in fields if key(f['header']) in {'交付批次', '批次', 'deliverybatch', 'batch'}]
-        batch = batch_values[0] if len(batch_values) == 1 else '1'
+        batch = batch_values[0] if len(batch_values) == 1 else ''
         row = dict(index=index, customer=customer, recipient=recipient,
                    contract_no=original.get('contract_no') or source['reference_no'], po_no=original.get('po_no', ''),
                    item_no=source['product_no'], batch=batch, quantity=source['quantity'], unit='PCS',
@@ -43,11 +43,11 @@ def parse_schedule(content, customer, recipient, workbook=None):
             row['blocked'] = True
             row['issues'].append('合同参考号、货号、数量或成品出货日期不完整，请核对原表')
         rows.append(row)
-    identities = Counter(tuple(row[k] for k in ('contract_no', 'item_no', 'batch')) for row in rows if not row['blocked'])
+    identities = Counter(tuple(order_key(row)) for row in rows if not row['blocked'])
     for row in rows:
-        if identities[tuple(row[k] for k in ('contract_no', 'item_no', 'batch'))] > 1:
+        if identities[tuple(order_key(row))] > 1:
             row['blocked'] = True
-            row['issues'].append('同合同同货号存在多行，请在原表提供稳定的交付批次；不能把日期当作批次身份')
+            row['issues'].append('同合同、客户 PO、货号存在重复需求行，请先核对原表；供应商回料批次在实收时登记')
     # These schedules are new module intake, never opening-balance migration.
     for row in rows:
         row['source_blocked'] = row['blocked']
@@ -59,19 +59,29 @@ def reconcile_rows(ledger, rows):
     from copy import deepcopy
     from app.services.indonesia_material_calculations import number
     result = deepcopy(rows)
-    existing = {r.business_key: r for r in ledger.rows('order')}
+    existing = ledger.rows('order')
     for row in result:
         row['blocked'] = row.get('source_blocked', row['blocked'])
         row['issues'] = list(row.get('source_issues', row['issues']))
         row['changes'] = []
-        identity = [row[k] for k in ('customer', 'recipient', 'contract_no', 'item_no', 'batch')]
-        order = existing.get(digest(identity))
+        matches = matching_orders(existing, row)
+        order = matches[0] if len(matches) == 1 else None
         row['match_status'] = 'new'
+        if len(matches) > 1:
+            row['blocked'] = True
+            row['issues'].append('该 PO 对应多条历史合同需求，请核对原记录；不能自动合并或重复建单')
+        if not order and not row['blocked']:
+            from fastapi import HTTPException
+            try:
+                ledger.validate_catalog_order(row)
+            except HTTPException as error:
+                row['blocked'] = True
+                row['issues'].append(str(error.detail))
         if not order or row['blocked']:
             continue
         row['existing_order_id'] = order.id
         for field in Order.model_fields:
-            if field == 'reason':
+            if field == 'reason' or (field == 'batch' and not row.get('batch')):
                 continue
             old, new = order.data[field], row.get(field, '')
             equal = number(old) == number(new) if field == 'quantity' else old == new
@@ -100,6 +110,7 @@ def preview(db, user, factory, customer, recipient, filename, content, workbook=
             require(user.id == original_actor, '账号身份已变化，请重新上传核对', 401)
         from app.services.indonesia_materials import authorize
         authorize(user, factory, 'write')
+        ledger.fixed_customer(customer)
         previous = db.scalar(select(Record).where(Record.factory_id == factory, Record.kind == 'import', Record.business_key == digest(key_value)))
         if previous:
             result = view(previous)

@@ -1,4 +1,4 @@
-"""Surgical OOXML template output; preserve original drawings, styles and guide."""
+"""Clean the shipment detail while preserving the complete original workbook."""
 import base64
 import binascii
 from copy import deepcopy
@@ -7,6 +7,8 @@ from io import BytesIO
 from pathlib import Path
 import posixpath
 import re
+import math
+import unicodedata
 from zipfile import ZipFile, ZIP_DEFLATED
 
 from lxml import etree as ET
@@ -19,13 +21,29 @@ NS = dict(s='http://schemas.openxmlformats.org/spreadsheetml/2006/main',
           xdr='http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing',
           a='http://schemas.openxmlformats.org/drawingml/2006/main')
 TEMPLATE = Path(__file__).resolve().parents[1] / 'templates' / 'indonesia_materials_v1.xlsx'
-SHEET_NAME = '5.21出货明细'
+TEMPLATE_SHEET_NAME = '5.21出货明细'
+# Other original worksheets reference this name in their formulas.
+SHEET_NAME = TEMPLATE_SHEET_NAME
 SHEET_PART = 'xl/worksheets/sheet6.xml'
 DRAWING_PART = 'xl/drawings/drawing2.xml'
+OUTPUT_COLUMNS = {chr(65+i) for i in range(26)} | {'A'+chr(65+i) for i in range(26)} | {'B'+chr(65+i) for i in range(5)}
 CUSTOMS_BLANK = {'B', 'C', 'E', 'N', 'O', *('V W X Y Z AA AB AC AD AE AF AG AH AI AJ AK'.split())}
 CALC_NAME = '出货计算'
 CALC_PART = 'xl/worksheets/indonesia-calculations.xml'
 CALC_PREFIX = "'" + CALC_NAME + "'!"
+
+
+def customs_conversion(material):
+    rule = material.get('customs_rule')
+    if rule:
+        divisor = number(rule.get('divisor'))
+        require(rule.get('basis') in {'weight', 'quantity'} and divisor > 0, '报关单位快照换算规则无效', 422)
+        return rule['basis'], divisor
+    unit, quantity_unit = material['customs_unit'].upper(), material['unit'].upper()
+    if unit in {'KG', 'KGM', 'TNE'}:
+        return 'weight', Decimal(1000 if unit == 'TNE' else 1)
+    require(unit == quantity_unit or {unit, quantity_unit} <= {'PCS', 'PCE'}, '报关单位缺少明确换算关系', 422)
+    return 'quantity', Decimal(1)
 
 
 def xml(content):
@@ -46,7 +64,7 @@ def target_path(part, target):
 
 
 def reachable_parts(parts):
-    """Drop all unreferenced worksheets/media, including unrelated source business data."""
+    """Keep workbook dependencies and drop orphaned parts such as replaced photos."""
     keep, queue = {'[Content_Types].xml'}, ['']
     while queue:
         part = queue.pop()
@@ -81,96 +99,45 @@ def write_package(parts):
     return out.getvalue()
 
 
-def prepare_template(source, destination):
-    """Build a distributable template containing only the output and its dictionaries."""
-    with ZipFile(source) as archive:
-        parts = {p: archive.read(p) for p in archive.namelist() if not p.endswith('/')}
-    workbook = xml(parts['xl/workbook.xml'])
-    sheets = workbook.find('s:sheets', NS)
-    keep_names = {SHEET_NAME, '类别金额', '单位对照'}
-    retained = [s for s in sheets if s.get('name') in keep_names]
-    require(len(retained) == 3, '原版模板的出货明细及单位／类别字典不完整', 422)
-    retained.sort(key=lambda s: s.get('name') != SHEET_NAME)
-    sheets[:] = retained
-    for index, sheet in enumerate(sheets):
-        sheet.set('state', 'visible' if index == 0 else 'hidden')
-    rels = xml(parts['xl/_rels/workbook.xml.rels'])
-    sheet_ids = {s.get('{'+NS['r']+'}id') for s in sheets}
-    for rel in list(rels):
-        category = rel.get('Type').rsplit('/', 1)[-1]
-        if (category == 'worksheet' and rel.get('Id') not in sheet_ids) or category not in {'worksheet', 'styles', 'sharedStrings', 'theme'}:
-            rels.remove(rel)
-    for name in ('definedNames', 'externalReferences'):
-        node = workbook.find('s:'+name, NS)
-        if node is not None:
-            workbook.remove(node)
-    names = ET.Element('{'+NS['s']+'}definedNames')
-    calculation = workbook.find('s:calcPr', NS)
-    workbook.insert(workbook.index(calculation) if calculation is not None else len(workbook), names)
-    ET.SubElement(names, '{'+NS['s']+'}definedName', name='_xlnm.Print_Area', localSheetId='0').text = f"'{SHEET_NAME}'!$A$3:$BE$64"
-    book_view = workbook.find('s:bookViews/s:workbookView', NS)
-    if book_view is not None:
-        book_view.set('activeTab', '0')
-        book_view.set('firstSheet', '0')
-    parts['xl/workbook.xml'] = serialized(workbook)
-    parts['xl/_rels/workbook.xml.rels'] = serialized(rels)
-    drawing = xml(parts[DRAWING_PART])
-    for anchor in list(drawing):
-        # Latest user direction removes tutorial/example pictures. Actual
-        # material photos are inserted from the shipment snapshot at export.
-        if anchor.find('xdr:pic', NS) is not None:
-            drawing.remove(anchor)
-    drawing_rels = xml(parts[relationship_path(DRAWING_PART)])
-    embedded = {n.get('{'+NS['r']+'}embed') for n in drawing.findall('.//a:blip', NS)}
-    for rel in list(drawing_rels):
-        if rel.get('Id') not in embedded:
-            drawing_rels.remove(rel)
-    parts[DRAWING_PART] = serialized(drawing)
-    parts[relationship_path(DRAWING_PART)] = serialized(drawing_rels)
-    # Compact shared strings to references on the three retained sheets only.
+def clear_unused_detail_strings(parts, candidates):
+    """Clear discarded detail text only; keep every other sheet's string indices."""
     shared = xml(parts['xl/sharedStrings.xml'])
-    string_map, strings, refs = {}, [], 0
-    for rel in rels:
+    referenced, refs = set(), 0
+    for rel in xml(parts['xl/_rels/workbook.xml.rels']):
         if not rel.get('Type').endswith('/worksheet'):
             continue
         path = target_path('xl/workbook.xml', rel.get('Target'))
         sheet = xml(parts[path])
-        if path != SHEET_PART:
-            # Hidden helpers carry only lookup dictionaries, never unrelated
-            # source-workbook monetary summaries or shipment history.
-            for row in sheet.findall('s:sheetData/s:row', NS):
-                for cell in list(row):
-                    ref = cell.get('r', '')
-                    match = re.fullmatch(r'([A-Z]+)(\d+)', ref)
-                    keep = bool(match) and ((path.endswith('sheet2.xml') and match[1] == 'B' and 3 <= int(match[2]) <= 39)
-                                             or (path.endswith('sheet13.xml') and match[1] in {'A', 'B'} and int(match[2]) <= 18))
-                    if not keep:
-                        row.remove(cell)
         for cell in sheet.findall('.//s:c', NS):
             if cell.get('t') != 's':
                 continue
             value = cell.find('s:v', NS)
             if value is None:
                 continue
-            original = int(value.text)
-            if original not in string_map:
-                string_map[original] = len(strings)
-                strings.append(deepcopy(shared[original]))
-            value.text = str(string_map[original])
+            referenced.add(int(value.text))
             refs += 1
-        parts[path] = serialized(sheet)
-    shared[:] = strings
-    shared.set('count', str(refs)); shared.set('uniqueCount', str(len(strings)))
+    for index in candidates - referenced:
+        shared[index] = ET.Element('{'+NS['s']+'}si')
+        ET.SubElement(shared[index], '{'+NS['s']+'}t').text = ''
+    shared.set('count', str(refs))
     parts['xl/sharedStrings.xml'] = serialized(shared)
-    # Source workbook application metadata lists unrelated business-sheet names.
-    root_rels = xml(parts['_rels/.rels'])
-    for rel in list(root_rels):
-        if rel.get('Type').endswith('/extended-properties') or rel.get('Type').endswith('/custom-properties'):
-            root_rels.remove(rel)
-    parts['_rels/.rels'] = serialized(root_rels)
+
+
+def prepare_template(source, destination):
+    """Install the complete supplied workbook without trimming or hiding its sheets."""
+    with ZipFile(source) as archive:
+        parts = {p: archive.read(p) for p in archive.namelist() if not p.endswith('/')}
+    workbook = xml(parts['xl/workbook.xml'])
+    sheets = workbook.find('s:sheets', NS)
+    require({TEMPLATE_SHEET_NAME, '类别金额', '单位对照'} <= {s.get('name') for s in sheets},
+            '原版模板的出货明细及单位／类别字典不完整', 422)
+    detail = next(s for s in sheets if s.get('name') == TEMPLATE_SHEET_NAME)
+    rels = xml(parts['xl/_rels/workbook.xml.rels'])
+    target = next(r.get('Target') for r in rels if r.get('Id') == detail.get('{'+NS['r']+'}id'))
+    require(target_path('xl/workbook.xml', target) == SHEET_PART, '原版明细页位置与导出模板不匹配', 422)
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(write_package(parts))
+    destination.write_bytes(Path(source).read_bytes())
 
 
 def validate_image(data_uri):
@@ -211,10 +178,6 @@ def set_cell(cell, value=None, formula=None):
         text.text = str(value)
 
 
-def shift_reference(reference, delta):
-    return re.sub(r'(\$?[A-Z]{1,3}\$?)(\d+)', lambda m: m[1] + str(int(m[2]) + delta if int(m[2]) >= 6 else int(m[2])), reference)
-
-
 def unique_text(values):
     return '／'.join(dict.fromkeys(str(v) for v in values if v))
 
@@ -235,9 +198,48 @@ def wrap_cell(parts, cell):
         alignment = ET.SubElement(style, '{'+NS['s']+'}alignment')
     alignment.set('wrapText', '1')
     style.set('applyAlignment', '1')
+    for index, existing in enumerate(formats):
+        if serialized(existing) == serialized(style):
+            cell.set('s', str(index))
+            return
     cell.set('s', str(len(formats)))
     formats.append(style); formats.set('count', str(len(formats)))
     parts['xl/styles.xml'] = serialized(styles)
+
+
+def fit_wrapped_row(parts, sheet, row):
+    """Expand wrapped source lists without changing template widths or fonts.
+
+    Excel does not reliably autofit custom-height rows on file open. Estimate
+    East Asian/Latin line lengths with a conservative margin, bounded by Excel's
+    409.5-point row-height limit. Full text remains in the original cells.
+    """
+    styles = xml(parts['xl/styles.xml'])
+    formats, fonts = styles.find('s:cellXfs', NS), styles.find('s:fonts', NS)
+    height = float(row.get('ht', '15'))
+    for cell in row:
+        if cell.get('t') not in {'inlineStr', 'str'}:
+            continue
+        style = formats[int(cell.get('s', '0'))]
+        alignment = style.find('s:alignment', NS)
+        if alignment is None or alignment.get('wrapText') != '1':
+            continue
+        value = ''.join(cell.itertext()) if cell.get('t') == 'inlineStr' else cell.findtext('s:v', namespaces=NS)
+        if not value:
+            continue
+        column = 0
+        for letter in re.sub(r'\d+', '', cell.get('r')):
+            column = column * 26 + ord(letter) - 64
+        width = next(float(c.get('width')) for c in sheet.find('s:cols', NS)
+                     if int(c.get('min')) <= column <= int(c.get('max')))
+        font = fonts[int(style.get('fontId', '0'))]
+        size = float(font.find('s:sz', NS).get('val'))
+        capacity = max((width * 7 - 10) / (size * 4 / 3 * .55), 1)
+        lines = sum(max(1, math.ceil(sum(2 if unicodedata.east_asian_width(c) in {'W', 'F'} else 1
+                                         for c in line) / capacity)) for line in value.split('\n'))
+        height = max(height, (lines + 1) * size * 1.35 + 6)
+    row.set('ht', str(min(height, 409.5)))
+    row.set('customHeight', '1')
 
 
 class Calculations:
@@ -247,7 +249,7 @@ class Calculations:
         self.data = ET.SubElement(self.sheet, '{'+NS['s']+'}sheetData')
         self.add(dict(zip([*'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'AA', 'AB'], [
             '类型', '物料编码', '供应商／包装组', '币种', '正常数量', '免费备品', '采购单价', '计费因子',
-            '单件计费重量', '采购金额', '物理箱数', '物料净重', '分摊纸箱重', '每箱毛重', '长(cm)',
+            '计价单重（kg）', '采购金额', '物理箱数', '物料净重', '分摊纸箱重', '每箱毛重', '长(cm)',
             '宽(cm)', '高(cm)', '单箱CBM', '组总CBM', '实装数量', '单件净重', '纸箱单重', '组物料净重',
             '采购日期', '每箱毛重组合／供应商总额', '采购单号', '成品合同', '货号'])))
 
@@ -280,6 +282,7 @@ def build_rows(shipment):
         if code not in materials:
             materials[code] = dict(material=material, lines=[], packs=[], amounts={}, currency=currency)
         target = materials[code]
+        require(customs_conversion(material) == customs_conversion(target['material']), f'物料 {code} 的报关换算快照不一致，不能合并', 422)
         require(all((number(material[f]) == number(target['material'][f]) if f == 'net_weight_kg'
                      else material[f] == target['material'][f]) for f in identity),
                 f'物料 {code} 的规格、单位、单重或出口公司快照不一致，请核对出货资料后再汇总', 422)
@@ -287,11 +290,12 @@ def build_rows(shipment):
                 f'物料 {code} 的采购来源币种不一致，不能把不同币种合计为一行金额，请核对采购资料或本次出货范围', 422)
         normal, spare = number(line['normal_quantity']), number(line['spare_quantity'])
         basis = normal
-        weight = number(material.get('billing_weight_kg') or 0)
+        weight_field = 'net_weight_kg' if supply.get('billing_weight_source') == 'net_weight_kg' else 'billing_weight_kg'
+        weight = number(material.get(weight_field) or 0)
         index = len(calc.data) + 1
         expression = f'E{index}*G{index}/H{index}'
         if supply['billing_basis'] == 'weight' and normal > 0:
-            require(weight > 0, '按重量计费需有效单件计费重量', 422)
+            require(weight > 0, '按重量计价缺少有效计价单重，请补全本批出货资料', 422)
             basis *= weight
             expression = f'E{index}*I{index}*G{index}/H{index}'
         amount = basis * number(supply['price']) / number(supply['billing_factor'])
@@ -373,8 +377,8 @@ def build_rows(shipment):
             physical = normal + spare
             net = sum((p['net'] for p in packs), Decimal(0)); carton = sum((p['carton'] for p in packs), Decimal(0))
             unit = material['customs_unit'].upper()
-            require(unit in {'KG', 'KGM', 'TNE'} or unit == material['unit'].upper(), '报关单位缺少明确换算关系', 422)
-            customs = net if unit in {'KG', 'KGM'} else net / Decimal(1000) if unit == 'TNE' else physical
+            customs_basis, customs_divisor = customs_conversion(material)
+            customs = net / customs_divisor if customs_basis == 'weight' else physical
             amount = sum((amount for _, amount in target['amounts'].values()), Decimal(0))
             loadings = {}
             for p in packs:
@@ -401,7 +405,7 @@ def build_rows(shipment):
             else:
                 values['BB'] = '＋'.join(f'{p["group"]["cartons"]}箱×{format(weight.quantize(Decimal(".000001"), rounding=ROUND_HALF_UP), ".6f")} kg' for p, weight in zip(packs, gross_per_box))
                 bb_formula = '&"＋"&'.join(calc.ref('Y', p['ref']) for p in packs)
-            result.append(dict(values=values, material=material, physical=physical, customs_unit=unit, packs=packs,
+            result.append(dict(values=values, material=material, physical=physical, customs_unit=unit, customs_basis=customs_basis, customs_divisor=customs_divisor, packs=packs,
                                amounts=target['amounts'], bb_formula=bb_formula))
         start = result[first]
         start['component'] = component
@@ -463,48 +467,47 @@ def export_shipment_with_summary(shipment):
         parts = {p: archive.read(p) for p in archive.namelist()}
     sheet = xml(parts[SHEET_PART]); data = sheet.find('s:sheetData', NS)
     base_row = next(r for r in data if r.get('r') == '4')
-    delta = max(len(items)-2, 0)
-    # Keep the entire guide below the expanding output, including cell comments and objects.
-    for old in list(data):
-        index = int(old.get('r'))
-        if index in {4, 5}:
-            data.remove(old)
-        elif index >= 6 and delta:
-            old.set('r', str(index + delta))
-            for cell in old:
-                cell.set('r', shift_reference(cell.get('r'), delta))
-    for reference in sheet.xpath('//*[@sqref or @ref]'):
-        for attribute in ('sqref', 'ref'):
-            if reference.get(attribute):
-                reference.set(attribute, shift_reference(reference.get(attribute), delta))
+    old_detail_strings = {int(cell.find('s:v', NS).text) for cell in data.findall('.//s:c', NS)
+                          if cell.get('t') == 's' and cell.find('s:v', NS) is not None}
+    # The original header is the only source content retained on the output page.
+    # Actual data, packing merges and photos are rebuilt from this shipment.
+    data[:] = [row for row in data if row.get('r') == '3']
+    for row in data:
+        row[:] = [cell for cell in row if re.sub(r'\d+', '', cell.get('r')) in OUTPUT_COLUMNS]
+        row.set('spans', '1:57')
+    for name in ('mergeCells', 'legacyDrawing', 'legacyDrawingHF', 'headerFooter',
+                 'hyperlinks', 'rowBreaks', 'colBreaks', 'extLst'):
+        node = sheet.find('s:'+name, NS)
+        if node is not None:
+            sheet.remove(node)
+    last_row = len(items) + 3
+    sheet.find('s:dimension', NS).set('ref', f'A3:BE{last_row}')
+    auto_filter = sheet.find('s:autoFilter', NS)
+    if auto_filter is not None:
+        auto_filter.set('ref', f'A3:BE{last_row}')
+        auto_filter[:] = []
+    for column in list(sheet.find('s:cols', NS)):
+        if int(column.get('min')) > 57:
+            column.getparent().remove(column)
+        else:
+            column.set('max', str(min(int(column.get('max')), 57)))
+    for view in sheet.findall('s:sheetViews/s:sheetView', NS):
+        view.set('topLeftCell', 'A3')
+        for selection in view.findall('s:selection', NS):
+            selection.set('activeCell', 'A3'); selection.set('sqref', 'A3')
     drawing = xml(parts[DRAWING_PART]); rels = xml(parts[relationship_path(DRAWING_PART)])
-    if delta:
-        for r in drawing.findall('.//xdr:row', NS):
-            if int(r.text) >= 5:
-                r.text = str(int(r.text) + delta)
-        comments = xml(parts['xl/comments2.xml'])
-        for comment in comments.findall('s:commentList/s:comment', NS):
-            comment.set('ref', shift_reference(comment.get('ref'), delta))
-        parts['xl/comments2.xml'] = serialized(comments)
-        vml = xml(parts['xl/drawings/vmlDrawing2.vml'])
-        for node in vml.iter():
-            if ET.QName(node).localname == 'Row' and node.text and int(node.text) >= 5:
-                node.text = str(int(node.text) + delta)
-            elif ET.QName(node).localname == 'Anchor' and node.text:
-                coords = [int(x.strip()) for x in node.text.split(',')]
-                for offset in (2, 6):
-                    if coords[offset] >= 5:
-                        coords[offset] += delta
-                node.text = ', '.join(str(x) for x in coords)
-        parts['xl/drawings/vmlDrawing2.vml'] = serialized(vml)
+    drawing[:] = []; rels[:] = []
+    sheet_rels = xml(parts[relationship_path(SHEET_PART)])
+    sheet_rels[:] = [rel for rel in sheet_rels if rel.get('Type').endswith('/drawing')]
+    parts[relationship_path(SHEET_PART)] = serialized(sheet_rels)
     shown_suppliers = set()
     merge_ranges = []
     for index, item in enumerate(items, 4):
-        row = deepcopy(base_row); row.set('r', str(index))
+        row = deepcopy(base_row); row.set('r', str(index)); row.set('spans', '1:57')
         columns = {}
         for cell in row:
             column = re.sub(r'\d+', '', cell.get('r'))
-            if len(column) <= 2 and (len(column) == 1 or column <= 'BE'):
+            if column in OUTPUT_COLUMNS:
                 cell.set('r', column + str(index)); set_cell(cell); columns[column] = cell
         for cell in list(row):
             if re.sub(r'\d+', '', cell.get('r')) not in columns:
@@ -523,7 +526,7 @@ def export_shipment_with_summary(shipment):
             formulas['S'] = sum_refs([calc.ref('S', g['ref']) for g in item['component']['groups']])
             if item['span'] > 1:
                 merge_ranges.extend(f'{col}{index}:{col}{index+item["span"]-1}' for col in ('AT', 'S'))
-        formulas['K'] = f'Q{index}' if item['customs_unit'] in {'KG', 'KGM'} else f'Q{index}/1000' if item['customs_unit'] == 'TNE' else decimal_text(item['physical'])
+        formulas['K'] = (f'Q{index}' if item['customs_divisor'] == 1 else f'Q{index}/{decimal_text(item["customs_divisor"])}') if item['customs_basis'] == 'weight' else decimal_text(item['physical'])
         for column, formula in formulas.items():
             set_cell(columns[column], values[column], formula)
         pending_suppliers = [s for s in item['amounts'] if s not in shown_suppliers]
@@ -541,6 +544,8 @@ def export_shipment_with_summary(shipment):
                 set_cell(columns['AQ'], '\n'.join(supplier_values), '&CHAR(10)&'.join(supplier_formulas))
                 wrap_cell(parts, columns['AQ'])
             shown_suppliers.update(pending_suppliers)
+        wrap_cell(parts, columns['BE'])
+        fit_wrapped_row(parts, sheet, row)
         data.append(row)
         add_image(parts, drawing, rels, item['material']['image_data'], index, index-3)
     if merge_ranges:
@@ -557,9 +562,6 @@ def export_shipment_with_summary(shipment):
         for reference in merge_ranges:
             ET.SubElement(merges, '{'+NS['s']+'}mergeCell', ref=reference)
         merges.set('count', str(len(merges)))
-    for cell in sheet.findall('s:sheetData/s:row/s:c', NS):
-        if cell.get('r') in {'N1', 'Z1', 'AB2', 'AP1', 'AP2', 'AQ1', 'AQ2'}:
-            set_cell(cell)
     data[:] = sorted(data, key=lambda row: int(row.get('r')))
     # Restrict category dropdowns to actual item cells; the source accidentally included guide cells.
     validations = sheet.find('s:dataValidations', NS)
@@ -567,8 +569,13 @@ def export_shipment_with_summary(shipment):
         base = deepcopy(validations[0]); validations[:] = [base]
         validations.set('count', '1'); base.set('sqref', f'I4:I{len(items)+3}')
     workbook = xml(parts['xl/workbook.xml'])
+    sheets = workbook.find('s:sheets', NS)
+    detail_index = next(index for index, tab in enumerate(sheets) if tab.get('name') == SHEET_NAME)
+    # Scope print/filter names to the detail sheet. Other tabs keep their own
+    # print areas and every original formula keeps its original sheet reference.
     for name in workbook.findall('s:definedNames/s:definedName', NS):
-        name.text = shift_reference(name.text, delta)
+        if name.get('localSheetId') == str(detail_index) and name.get('name') in {'_xlnm.Print_Area', '_xlnm._FilterDatabase'}:
+            name.text = f"'{SHEET_NAME}'!$A$3:$BE${last_row}"
     calculation = workbook.find('s:calcPr', NS)
     if calculation is not None:
         calculation.set('fullCalcOnLoad', '1'); calculation.set('forceFullCalc', '1')
@@ -576,7 +583,6 @@ def export_shipment_with_summary(shipment):
     calc_rel = 'rrnCalculations'
     ET.SubElement(rels_book, '{'+NS['p']+'}Relationship', Id=calc_rel, Type=NS['r']+'/worksheet',
                   Target='worksheets/indonesia-calculations.xml')
-    sheets = workbook.find('s:sheets', NS)
     ET.SubElement(sheets, '{'+NS['s']+'}sheet', name=CALC_NAME,
                   sheetId=str(max(int(s.get('sheetId')) for s in sheets)+1), state='hidden',
                   attrib={'{'+NS['r']+'}id': calc_rel})
@@ -590,6 +596,7 @@ def export_shipment_with_summary(shipment):
     parts[SHEET_PART] = serialized(sheet)
     parts[DRAWING_PART] = serialized(drawing)
     parts[relationship_path(DRAWING_PART)] = serialized(rels)
+    clear_unused_detail_strings(parts, old_detail_strings)
     currencies = {line['supply']['supplier']: line['supply']['currency'].upper() for line in shipment['snapshot_lines']}
     summary = [dict(name=supplier, currency=currencies[supplier],
                     materials=sum(supplier in item['amounts'] for item in items), amount=format(amount, '.2f'))

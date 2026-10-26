@@ -4,6 +4,7 @@ import { http } from '@/lib/http'
 import type { CartonSourceRequest } from '@/features/carton-procurement/sourceLinks'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
 import type { SplitRecord } from './cartonOrderSplits'
+import type { CartonScheduleImportScope, ScheduleCoverageEvidence } from './cartonScheduleCoverage'
 
 export interface CartonCustomerResponse {
   id: string
@@ -74,6 +75,28 @@ export interface CartonSupplierAcceptanceResponse {
   delivery_differences?: { order_line_id: string; packaging_type: string; planned_date: string; promised_date: string; difference_days: number }[]
 }
 
+export interface CartonSupplierPromiseLate {
+  key: string
+  order_no: string
+  customer_name: string
+  packaging_type: string
+  promised_date: string
+  difference_days: number
+}
+
+export interface CartonSupplierPromiseChange {
+  id: string
+  order_id: string
+  order_no: string
+  customer_name: string
+  packaging_type: string
+  line_no: number
+  previous_promised_date: string
+  promised_date: string
+  actor_name: string
+  created_at: string
+}
+
 export interface CartonPurchaseOrderBatchResponse {
   id: string
   document_no: string
@@ -112,6 +135,12 @@ export interface CartonOrderResponse {
   customer_due_date?: string | null
   safety_lead_days?: number
   due_date: string
+  plan_date_manual?: boolean
+  rush?: boolean
+  rush_reason?: string
+  rush_at?: string | null
+  rush_ack_at?: string | null
+  rush_acknowledged?: boolean
   status: string
   note: string
   revision: number
@@ -147,6 +176,7 @@ export interface CartonPurchaseOrderIssueResponse {
 }
 
 export interface CartonPurchaseOrderContextResponse {
+  empty_reason?: string
   factory_id: string
   order_no: string
   order_revision: number
@@ -179,6 +209,9 @@ export interface CartonOrderCreateRequest {
   order_date: string
   customer_due_date?: string | null
   due_date: string
+  plan_date_manual?: boolean
+  rush?: boolean
+  rush_reason?: string
   status: 'CONFIRMED'
   note: string
   lines: Array<{
@@ -267,6 +300,22 @@ export interface OpeningInventoryOptions {
   dimension_unit: 'cm' | 'in'
   currency: string
 }
+export interface OpeningInventoryBatch {
+  batch_id: string; filename: string; imported_at: string; actor_name: string
+  row_count: number; reversed_count: number; status: 'ACTIVE' | 'PARTIAL' | 'REVERSED'
+  date_from: string; date_to: string
+}
+export interface OpeningBatchReversalPreview extends OpeningInventoryBatch {
+  factory_id: string; source_fingerprint: string; errors: string[]
+  totals: Array<{ unit: string; quantity: string }>
+  rows: Array<{ movement_id: string; customer_name: string; contract_no: string; item_no: string
+    packaging_type: string; paper_quality: string; specification: string; quantity: string
+    unit: string; unit_price: string; location: string; occurred_at: string }>
+}
+export interface OpeningBatchReversalResult {
+  factory_id: string; batch_id: string; reversed_count: number; status: 'REVERSED'
+  duplicate: boolean; movement_ids: string[]
+}
 export interface OpeningInventoryPreview {
   factory_id: string; original_filename: string; source_fingerprint: string
   row_count: number; skipped_count: number; missing_price_count: number
@@ -279,6 +328,10 @@ export interface OpeningInventoryPreview {
 }
 
 export interface CartonInventoryMovementResponse {
+  issue_kind?: string
+  return_date?: string | null
+  return_date_basis?: string
+  return_posting_date?: string
   cost_status?: string
   cost_currency?: string
   cost_amount?: string | null
@@ -351,6 +404,7 @@ export interface CartonInventoryBalanceResponse {
 }
 
 export interface CartonInventoryMovementCreateRequest {
+  return_date?: string
   workshop_id?: string
   location_id?: string
   issue_kind?: string
@@ -462,13 +516,31 @@ export interface CartonImportBatchResponse {
     field_mappings?: Array<{ sheet: string; header_row: number; fields: Record<string, string> }>
     change_counts?: Record<string, number>
     schedule_customer?: { customer_code: string; customer_name: string }
+    schedule_coverage?: ScheduleCoverageEvidence
     document?: { delivery_note_no?: string; delivery_date?: string; raw_text_excerpt?: string }
     rows?: CartonImportPreviewRow[]
   }
   duplicate: boolean
 }
 
+export interface CartonScheduleDemandSnapshot {
+  quantity: string
+  carton_rule: string
+  inspection_window: string
+  customer_due_date: string
+}
+export interface CartonScheduleOrderMark {
+  marked: boolean
+  actor: string
+  updated_at: string
+  order_ids?: string[]
+  demand_snapshot?: CartonScheduleDemandSnapshot | null
+  review_required?: boolean
+}
+
 export interface CartonImportPreviewRow {
+  can_operate_source?: boolean
+  missing_review?: { id: string; status: string; can_operate_source: boolean; reason: string }
   dimension_unit?: string
   source_material?: { packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string }
   material_candidates?: { order_no: string; order_line_id: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string; conflicts: string[] }[]
@@ -479,8 +551,9 @@ export interface CartonImportPreviewRow {
   source_reference?: string
   source_customer_name?: string
   schedule_section?: 'PENDING' | 'CANCELLED' | 'SHIPPED'
-  schedule_change?: 'BASELINE' | 'UNCHANGED' | 'NEW' | 'CANCELLED' | 'CANCELLED_AFTER_ORDER' | 'SHIPPED' | 'REOPENED' | 'REVIEW_REQUIRED' | 'NOT_TRACKED'
+  schedule_change?: 'BASELINE' | 'UNCHANGED' | 'NEW' | 'MODIFIED' | 'CANCELLED' | 'CANCELLED_AFTER_ORDER' | 'SHIPPED' | 'REOPENED' | 'REVIEW_REQUIRED' | 'NOT_TRACKED'
   schedule_identity?: string
+  schedule_identity_aliases?: string[]
   schedule_identity_duplicate?: boolean
   legacy_match_stale?: boolean
   manual_ordered?: boolean
@@ -634,10 +707,17 @@ async function waitForFileJob(factoryId: string, job: CartonFileJob) {
   return job
 }
 
-async function importFile(factoryId: string, file: File, importType: string, customerCode = '', advanceDays = 3) {
+async function importFile(factoryId: string, file: File, importType: string, customerCode = '', advanceDays = 3, scope?: CartonScheduleImportScope) {
   const form = new FormData()
   form.append('file', file)
   if (customerCode) form.append('customer_code', customerCode)
+  if (scope) {
+    form.append('scope_mode', scope.scope_mode)
+    form.append('as_of_date', scope.as_of_date)
+    if (scope.coverage_start) form.append('coverage_start', scope.coverage_start)
+    if (scope.coverage_end) form.append('coverage_end', scope.coverage_end)
+    form.append('full_scope_confirmed', String(scope.full_scope_confirmed))
+  }
   const submitted = await http.post<CartonFileJob>('/carton-procurement/file-jobs/imports', form, {
     params: { factory_id: factoryId, import_type: importType, advance_days: advanceDays },
     headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60_000,
@@ -652,6 +732,16 @@ export const cartonProcurementApi = {
   async listOrdersPage(factoryId: string, filters: Record<string, string | number>) {
     const response = await http.get<{ items: CartonOrderResponse[]; total: number; statistics?: { overdue: number; today: number; dueSoon: number; pending: number } }>('/carton-procurement/orders',
       { params: { factory_id: factoryId, ...filters } })
+    return response.data
+  },
+  async supplierPromiseNotices(factoryId: string, limit = 20, offset = 0) {
+    const response = await http.get<{ late: CartonSupplierPromiseLate[]; changes: CartonSupplierPromiseChange[]; acknowledged: string[]; total: number; has_more: boolean }>(
+      '/carton-procurement/supplier-promise-changes', { params: { factory_id: factoryId, limit, offset } })
+    return response.data
+  },
+  async acknowledgePromiseNotice(factoryId: string, key: string) {
+    const response = await http.post<{ key: string }>('/carton-procurement/promise-notices/ack',
+      { factory_id: factoryId, key })
     return response.data
   },
   async scheduleOrders(factoryId: string) {
@@ -833,6 +923,13 @@ export const cartonProcurementApi = {
     )
     return response.data
   },
+  async setOrderRush(factoryId: string, orderNo: string, rush: boolean, reason = '') {
+    const response = await http.post<CartonOrderResponse>(
+      `/carton-procurement/orders/${encodeURIComponent(orderNo)}/rush`,
+      { factory_id: factoryId, rush, reason },
+    )
+    return response.data
+  },
   async reduceOrder(
     factoryId: string,
     order: CartonOrderResponse,
@@ -852,13 +949,14 @@ export const cartonProcurementApi = {
     )
     return response.data
   },
-  async returnOrder(factoryId: string, order: CartonOrderResponse, reason: string) {
+  async returnOrder(factoryId: string, order: CartonOrderResponse, reason: string, returnDate: string) {
     const response = await http.post<CartonOrderResponse>(
       `/carton-procurement/orders/${encodeURIComponent(order.order_no)}/return`,
       {
         factory_id: factoryId,
         expected_revision: order.revision,
         reason,
+        return_date: returnDate,
       },
     )
     return response.data
@@ -1009,6 +1107,7 @@ export const cartonProcurementApi = {
     return response.data
   },
   async createInventoryMovementsBulk(payload: {
+    return_date?: string
     workshop_id?: string
     issue_kind?: string
     factory_id: string
@@ -1050,6 +1149,22 @@ export const cartonProcurementApi = {
     form.append('options', JSON.stringify(options))
     return (await http.post<OpeningInventoryPreview>('/carton-procurement/inventory/history-imports/preview', form, { params: { factory_id: factoryId }, headers: { 'Content-Type': 'multipart/form-data' } })).data
   },
+  async listOpeningInventoryBatches(factoryId: string, offset = 0) {
+    return (await http.get<{ factory_id: string; total: number; items: OpeningInventoryBatch[] }>(
+      '/carton-procurement/inventory/history-imports/batches', { params: { factory_id: factoryId, limit: 20, offset } },
+    )).data
+  },
+  async previewOpeningBatchReversal(factoryId: string, batchId: string) {
+    return (await http.post<OpeningBatchReversalPreview>(
+      `/carton-procurement/inventory/history-imports/batches/${encodeURIComponent(batchId)}/reversal-preview`,
+      null, { params: { factory_id: factoryId } },
+    )).data
+  },
+  async reverseOpeningBatch(batchId: string, payload: { factory_id: string; request_id: string; expected_fingerprint: string; reason: string }) {
+    return (await http.post<OpeningBatchReversalResult>(
+      `/carton-procurement/inventory/history-imports/batches/${encodeURIComponent(batchId)}/reverse`, payload,
+    )).data
+  },
   async uploadHistoryInventory(factoryId: string, file: File, options?: OpeningInventoryOptions, fingerprint?: string) {
     const form = new FormData()
     form.append('file', file)
@@ -1082,26 +1197,26 @@ export const cartonProcurementApi = {
       params: { factory_id: factoryId },
     })
   },
-  async uploadWeeklySchedule(factoryId: string, file: File, customerCode: string) {
-    return importFile(factoryId, file, 'WEEKLY_SCHEDULE', customerCode)
+  async uploadWeeklySchedule(factoryId: string, file: File, customerCode: string, scope?: CartonScheduleImportScope) {
+    return importFile(factoryId, file, 'WEEKLY_SCHEDULE', customerCode, 3, scope)
   },
   async listScheduleOrderMarks(factoryId: string) {
-    const response = await http.get<Record<string, { marked: boolean; actor: string; updated_at: string; order_ids?: string[] }>>(
+    const response = await http.get<Record<string, CartonScheduleOrderMark>>(
       '/carton-procurement/schedule-order-marks', { params: { factory_id: factoryId } },
     )
     return response.data
   },
-  async setScheduleOrderMark(factoryId: string, batchId: string, sourceSheet: string, sourceRow: number, marked: boolean) {
-    const response = await http.post<{ identity: string; marked: boolean }>(
+  async setScheduleOrderMark(factoryId: string, batchId: string, sourceSheet: string, sourceRow: number, marked: boolean, reason?: string) {
+    const response = await http.post<{ identity: string; marked: boolean; demand_snapshot: CartonScheduleDemandSnapshot }>(
       '/carton-procurement/schedule-order-marks',
-      { factory_id: factoryId, batch_id: batchId, source_sheet: sourceSheet, source_row: sourceRow, marked },
+      { factory_id: factoryId, batch_id: batchId, source_sheet: sourceSheet, source_row: sourceRow, marked, ...(reason ? { reason } : {}) },
     )
     return response.data
   },
-  async setScheduleOrderMarks(factoryId: string, batchId: string, rows: Array<{ source_sheet: string; source_row: number }>, marked: boolean) {
-    const response = await http.post<{ items: Array<{ identity: string; marked: boolean }>; changed_count: number }>(
+  async setScheduleOrderMarks(factoryId: string, batchId: string, rows: Array<{ source_sheet: string; source_row: number }>, marked: boolean, reason?: string) {
+    const response = await http.post<{ items: Array<{ identity: string; marked: boolean; demand_snapshot: CartonScheduleDemandSnapshot }>; changed_count: number }>(
       '/carton-procurement/schedule-order-marks/bulk',
-      { factory_id: factoryId, batch_id: batchId, rows, marked },
+      { factory_id: factoryId, batch_id: batchId, rows, marked, ...(reason ? { reason } : {}) },
     )
     return response.data
   },
@@ -1114,9 +1229,32 @@ export const cartonProcurementApi = {
     })
     return response.data.items
   },
-  async listImportsPage(factoryId: string, importType: CartonImportBatchResponse['import_type'], offset = 0, search = '', customer = '全部客户') {
+  async listImportsPage(
+    factoryId: string,
+    filters: {
+      types?: CartonImportBatchResponse['import_type'][]
+      status?: 'ALL' | 'ACTIVE' | 'REJECTED'
+      search?: string
+      customer?: string
+      dateFrom?: string
+      dateTo?: string
+      limit?: number
+      offset?: number
+    } = {},
+  ) {
     return (await http.get<{ items: CartonImportBatchResponse[]; total: number }>('/carton-procurement/imports', {
-      params: { factory_id: factoryId, import_type: importType, summary_only: true, limit: 8, offset, search, customer_code: customer === '全部客户' ? '' : customer },
+      params: {
+        factory_id: factoryId,
+        import_types: (filters.types ?? []).join(','),
+        status: filters.status && filters.status !== 'ALL' ? filters.status : '',
+        summary_only: true,
+        limit: filters.limit ?? 20,
+        offset: filters.offset ?? 0,
+        search: filters.search ?? '',
+        customer_code: filters.customer && filters.customer !== '全部客户' ? filters.customer : '',
+        date_from: filters.dateFrom ?? '',
+        date_to: filters.dateTo ?? '',
+      },
     })).data
   },
   async importDetail(factoryId: string, batchId: string) {

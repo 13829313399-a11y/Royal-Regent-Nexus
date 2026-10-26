@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, onBeforeRouteUpdate } from 'vue-router'
 import { ArrowLeft, Building2, BookOpen, LayoutDashboard, History, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator } from '@lucide/vue'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import CuttingAcceptanceNotice from './CuttingAcceptanceNotice.vue'
 import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
 import { Button } from '@/components/ui/button'
+import SectionPanel from '@/components/common/SectionPanel.vue'
 import { cuttingGuideSteps, cuttingGuideTips } from './usageGuide'
 import { CUTTING_BASE, CUTTING_FACTORY, CUTTING_WORKSPACES, isCuttingFactory } from './navigation'
 import { guardCuttingFactory } from './routes'
@@ -17,6 +19,8 @@ const route = useRoute()
 const main=ref<HTMLElement>()
 watch(()=>route.path,()=>main.value?.scrollTo?.({top:0,left:0}),{flush:'post'})
 const logoUrl = '/brand/huadeng_group_dynamic_logo_topbar.svg'
+const samplesAllowed = ref(false)
+const samplePermissions = ref<string[]>([])
 const validFactory = computed(() => isCuttingFactory(route.query.factory))
 const icons = { LayoutDashboard, History, CalendarRange, ClipboardCheck, Boxes, CalendarCheck2, Settings2, Calculator }
 const currentTitle = computed(() => CUTTING_WORKSPACES.find(w => route.path.endsWith(`/${w.path}`))?.title ?? '裁床部')
@@ -24,24 +28,52 @@ const productionRoute = { path: '/modules/production', query: { factory: CUTTING
 // Parent beforeEnter does not run for query-only or sibling navigation.
 onBeforeRouteUpdate(guardCuttingFactory)
 const authorizationEpoch = ref(0), verifying = ref(true), denied = ref(false), authorizationError = ref('')
+const authorizationAlert = ref<HTMLElement>(), focusCleanups = new Set<() => void>()
 let accessFingerprint: string | undefined, accessGeneration = 0, alive = true
 const fingerprint = (value: Access) => JSON.stringify({ ...value, permissions: [...value.permissions].sort() })
-async function revalidate() {
+async function revalidate(event?: Event) {
   const ticket = ++accessGeneration
+  let restoreFocus = event instanceof MouseEvent && event.detail === 0 && event.currentTarget === document.activeElement
+  const cancelFocus = () => { restoreFocus = false }
+  const cancelOnTab = (e: KeyboardEvent) => { if (e.key === 'Tab') cancelFocus() }
+  const cleanupFocus = () => {
+    document.removeEventListener('focusin', cancelFocus); document.removeEventListener('pointerdown', cancelFocus); document.removeEventListener('keydown', cancelOnTab)
+    focusCleanups.delete(cleanupFocus)
+  }
+  if (restoreFocus) {
+    document.addEventListener('focusin', cancelFocus); document.addEventListener('pointerdown', cancelFocus); document.addEventListener('keydown', cancelOnTab)
+    focusCleanups.add(cleanupFocus)
+  }
   verifying.value = true; authorizationError.value = ''
+  samplesAllowed.value = false
+  samplePermissions.value = []
   try {
-    const current = fingerprint(await cuttingApi.access())
+    const rights = await cuttingApi.access()
+    const current = fingerprint(rights)
     if (!alive || ticket !== accessGeneration) return
     if (accessFingerprint !== undefined && current !== accessFingerprint) authorizationEpoch.value++
     accessFingerprint = current; denied.value = false
+    samplesAllowed.value = rights.enabled && rights.permissions.includes('read')
+    samplePermissions.value = [...rights.permissions]
   } catch (error) {
     if (!alive || ticket !== accessGeneration) return
     const status = (error as { response?: { status?: number } }).response?.status
     if (status === 401 || status === 403) {
       denied.value = true; authorizationEpoch.value++; accessFingerprint = undefined
       authorizationError.value = '当前账号已无权访问裁床工作区，旧表单已清除。请重新登录或联系授权负责人。'
-    } else authorizationError.value = '暂时无法核验裁床权限，填写已保留；重新核验成功后可继续。'
-  } finally { if (alive && ticket === accessGeneration) verifying.value = false }
+    } else authorizationError.value = denied.value
+      ? '暂时无法核验裁床权限，旧工作区已清除，尚未恢复访问。请恢复网络后重试，或联系授权负责人。'
+      : accessFingerprint !== undefined
+        ? '暂时无法核验裁床权限，填写已保留；重新核验成功后可继续。'
+        : '暂时无法核验裁床权限，工作区尚未开放。请恢复网络后重试。'
+  } finally {
+    if (alive && ticket === accessGeneration) { verifying.value = false; await nextTick() }
+    cleanupFocus()
+    if (restoreFocus && alive && ticket === accessGeneration && document.activeElement === document.body) {
+      const target = authorizationError.value ? authorizationAlert.value?.querySelector<HTMLButtonElement>('button') : main.value
+      target?.focus({ preventScroll: true })
+    }
+  }
 }
 function sessionBoundary() {
   denied.value = true; authorizationEpoch.value++; accessFingerprint = undefined
@@ -56,6 +88,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopTrackingWrites()
   alive = false; accessGeneration++
+  for (const cleanup of focusCleanups) cleanup()
   window.removeEventListener('authorization-context-changed', revalidate)
   window.removeEventListener('cutting-authorization-recheck', revalidate)
   window.removeEventListener('auth-session-boundary-changed', sessionBoundary)
@@ -66,6 +99,7 @@ onBeforeUnmount(() => {
   <div v-if="validFactory" class="cutting-shell">
     <a class="cutting-skip" href="#cutting-main">跳到工作区内容</a>
     <header class="cutting-header">
+      <CuttingAcceptanceNotice :show-samples="samplesAllowed" :permissions="samplePermissions" />
       <RouterLink :to="productionRoute" class="cutting-brand" aria-label="裁床部，返回华康 C 生产部">
         <img :src="logoUrl" alt="华登集团" />
         <span><strong>裁床部</strong><small>华康 C · 生产管理</small></span>
@@ -86,8 +120,14 @@ onBeforeUnmount(() => {
       </RouterLink>
     </nav>
     <main ref="main" id="cutting-main" class="cutting-main" tabindex="-1">
-      <p v-if="verifying" role="status">正在核验裁床工作区权限…</p>
-      <div v-if="authorizationError" role="alert"><p>{{ authorizationError }}</p><button type="button" :disabled="verifying" @click="revalidate">重新核验权限</button></div>
+      <div v-if="verifying || authorizationError" class="cutting-page">
+        <SectionPanel class="cutting-content-panel" :title="verifying?'正在核验访问权限':denied?'工作区访问受限':'权限核验暂未完成'">
+          <div ref="authorizationAlert" :role="authorizationError?'alert':'status'">
+            <p>{{ authorizationError || '正在核验裁床工作区权限…' }}</p>
+            <Button v-if="authorizationError" class="mt-4" type="button" variant="outline" :disabled="verifying" @click="revalidate">重新核验权限</Button>
+          </div>
+        </SectionPanel>
+      </div>
       <div v-show="!verifying && !authorizationError">
         <RouterView v-if="!denied" v-slot="{ Component }"><component :is="Component" :key="`${route.path}:${authorizationEpoch}`" /></RouterView>
       </div>

@@ -35,7 +35,7 @@ describe('shared work center', () => {
     api.snapshot.mockResolvedValue(snap([])); await center.refresh(true)
     expect(center.count).toBe(0); expect(center.snapshot?.items).toEqual([])
     api.snapshot.mockRejectedValue(new Error('offline')); await center.refresh(true)
-    expect(center.snapshot?.health.status).toBe('stale'); expect(center.error).toBeTruthy()
+    expect(center.snapshot?.health.status).toBe('stale'); expect(center.bell?.health.status).toBe('stale'); expect(center.error).toBeTruthy()
   })
   it('discards a late list and information response from the prior account', async () => {
     let resolve!: (value: WorkSnapshot) => void
@@ -96,6 +96,14 @@ describe('shared work center', () => {
     await vi.advanceTimersByTimeAsync(25_000); expect(api.snapshot).toHaveBeenCalledTimes(4)
     center.stop(); await vi.advanceTimersByTimeAsync(100_000); expect(api.snapshot).toHaveBeenCalledTimes(4)
   })
+  it('preserves initial workspace URL filters when the host starts later, then resets them for another account', async () => {
+    center.workspaceOpen = true
+    await center.setQuery({ view: 'verification', module: 'internal_quote' })
+    center.start(); await flushPromises()
+    expect(center.query.view).toBe('verification'); expect(center.query.module).toBe('internal_quote')
+    account('B'); await flushPromises()
+    expect(center.query.view).toBe('todo'); expect(center.query.module).toBe('')
+  })
   it('replaces stale work after more than five minutes of failed polling', async () => {
     vi.useFakeTimers(); Object.defineProperty(document, 'hidden', { configurable: true, value: false })
     center.start(); await flushPromises(); expect(center.count).toBe(1)
@@ -120,5 +128,37 @@ describe('shared work center', () => {
   it('routes only allowlisted actions and includes the real source id', () => {
     expect(entryRoute(entry())).toMatchObject({ query: { order_id: 'first', factory: 'huakang-a' } })
     const bad = entry(); bad.actions[0]!.target!.route_key = 'https://outside.test'; expect(entryRoute(bad)).toBeNull()
+  })
+  it('refreshes the visible info tab and isolates its loading and failure from tasks', async () => {
+    await center.refresh(); center.panelOpen = true; center.panelTab = 'info'
+    let finish!: (value: WorkSnapshot) => void
+    api.snapshot.mockImplementation(query => query.view === 'info' ? new Promise<WorkSnapshot>(done => { finish = done }) : Promise.resolve(snap()))
+    const pending = center.refresh(); await flushPromises()
+    expect(center.informationLoading).toBe(true); expect(center.informationLoaded).toBe(false)
+    finish(snap([entry('info-new')])); await pending
+    expect(center.information.map(x => x.id)).toEqual(['info-new'])
+    expect(center.informationLoading).toBe(false); expect(center.informationLoaded).toBe(true)
+    api.snapshot.mockImplementation(query => query.view === 'info' ? Promise.reject(new Error('info offline')) : Promise.resolve(snap()))
+    await center.refresh()
+    expect(center.error).toBe(''); expect(center.informationError).toBeTruthy()
+    expect(center.information.map(x => x.id)).toEqual(['info-new'])
+    api.snapshot.mockResolvedValue(snap([])); await center.refresh()
+    expect(center.informationError).toBe(''); expect(center.information).toEqual([])
+  })
+  it('does not let an older info result replace a newer request or clear its loading state', async () => {
+    await center.refresh()
+    const done: ((value: WorkSnapshot) => void)[] = []
+    api.snapshot.mockImplementation(() => new Promise<WorkSnapshot>(resolve => done.push(resolve)))
+    const first = center.loadInformation(), second = center.loadInformation()
+    done[0]!(snap([entry('old')])); await first
+    expect(center.informationLoading).toBe(true); expect(center.information).toEqual([])
+    done[1]!(snap([entry('latest')])); await second
+    expect(center.informationLoading).toBe(false); expect(center.information[0]?.id).toBe('latest')
+  })
+  it('clears info and personal details when info refresh is forbidden', async () => {
+    await center.refresh(); center.information = [entry()]; center.selected = entry()
+    api.snapshot.mockRejectedValue({ response: { status: 403 } }); await center.loadInformation()
+    expect(center.information).toEqual([]); expect(center.selected).toBeNull()
+    expect(center.informationLoading).toBe(false); expect(center.informationLoaded).toBe(false)
   })
 })

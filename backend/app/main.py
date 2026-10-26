@@ -23,9 +23,13 @@ from app.api.fabric_procurement import router as fabric_procurement_router
 from app.api.warehouse_operations import router as warehouse_operations_router
 from app.api.fabric_master import router as fabric_master_router
 from app.api.carton_supplier_settlement import router as carton_supplier_settlement_router
+from app.api.carton_supplier_payables import router as carton_supplier_payables_router
+from app.api.carton_return_collaboration import router as carton_return_collaboration_router, supplier_router as carton_supplier_return_collaboration_router
+from app.api.carton_schedule_coverage import router as carton_schedule_coverage_router
 from app.api.carton_supplier_portal import router as carton_supplier_portal_router
 from app.api.carton_special_requests import router as carton_special_router, supplier_router as carton_supplier_special_router
 from app.api.carton_price_review import router as carton_price_review_router
+from app.api.carton_price_correction import router as carton_price_correction_router
 from app.api.carton_unified_orders import router as carton_unified_orders_router
 from app.api.carton_unified_deliveries import router as carton_unified_deliveries_router, supplier_router as carton_supplier_unified_deliveries_router
 from app.api.customer_order import router as customer_order_router
@@ -280,9 +284,14 @@ app.include_router(fabric_procurement_router)
 app.include_router(warehouse_operations_router)
 app.include_router(fabric_master_router)
 app.include_router(carton_supplier_settlement_router)
+app.include_router(carton_supplier_payables_router)
+app.include_router(carton_return_collaboration_router)
+app.include_router(carton_schedule_coverage_router)
+app.include_router(carton_supplier_return_collaboration_router)
 app.include_router(carton_supplier_portal_router)
 app.include_router(carton_special_router)
 app.include_router(carton_price_review_router)
+app.include_router(carton_price_correction_router)
 app.include_router(carton_unified_orders_router)
 app.include_router(carton_unified_deliveries_router)
 app.include_router(carton_supplier_unified_deliveries_router)

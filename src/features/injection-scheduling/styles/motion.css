@@ -57,6 +57,10 @@
 .inj-global-toolbar {
   animation-delay: 30ms;
 }
+.inj-workspace[data-route-entry-owned] :is(.inj-header, .inj-signal-bar),
+.inj-workspace .inj-global-toolbar[data-route-entry-owned] {
+  animation: none;
+}
 .inj-signal-bar {
   animation-delay: 60ms;
 }

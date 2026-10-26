@@ -12,7 +12,7 @@ class FabricReceipt(Base):
         UniqueConstraint("factory_id", "source_line_id", "delivery_reference", name="uq_fabric_receipt_delivery"),
         ForeignKeyConstraint(["source_line_id", "factory_id"], ["fabric_procurement_lines.id", "fabric_procurement_lines.factory_id"]),
         CheckConstraint("factory_id = 'huakang-c'", name="ck_fabric_receipt_factory"),
-        CheckConstraint("CAST(quantity AS NUMERIC) > 0", name="ck_fabric_receipt_quantity"),
+        CheckConstraint("CAST(quantity AS NUMERIC) >= 0", name="ck_fabric_receipt_quantity"),
     )
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     factory_id: Mapped[str] = mapped_column(String(64), index=True)

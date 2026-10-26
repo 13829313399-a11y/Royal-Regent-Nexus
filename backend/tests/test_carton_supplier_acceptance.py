@@ -99,3 +99,41 @@ def test_drafts_cancelled_orders_and_zero_demand_have_explicit_acceptance_states
             db.commit()
         cancelled = internal_order(client, raw["order_no"])["supplier_acceptance"]
         assert cancelled["status"] == "CANCELLED" and cancelled["accepted_line_count"] == 0
+
+
+def test_promise_change_after_acceptance_is_visible_to_procurement(monkeypatch):
+    with make_client(monkeypatch) as client:
+        raw = setup_portal(client)
+        order = client.get(BASE + "/workspace", params={"factory_id": "huaxing"}).json()["orders"][0]
+        line = order["lines"][0]
+        supplier_login(client)
+        first = client.put(BASE + f"/papers/{line['id']}/commitment", json={
+            "factory_id": "huaxing", "issue_id": order["issue_id"],
+            "expected_revision": 0, "promised_date": "2026-09-23"})
+        assert first.status_code == 200, first.text
+        supplier_login(client)
+        second = client.put(BASE + f"/papers/{line['id']}/commitment", json={
+            "factory_id": "huaxing", "issue_id": order["issue_id"],
+            "expected_revision": 1, "promised_date": "2026-09-30"})
+        assert second.status_code == 200, second.text
+        login_as(client, "warehouse_keeper")
+        changes = client.get("/api/carton-procurement/supplier-promise-changes", params={"factory_id": "huaxing"})
+        assert changes.status_code == 200, changes.text
+        data = changes.json()
+        items = data["changes"]
+        assert len(items) == 1 and items[0]["order_no"] == raw["order_no"]
+        assert items[0]["previous_promised_date"] == "2026-09-23" and items[0]["promised_date"] == "2026-09-30"
+        assert items[0]["packaging_type"] and items[0]["key"] == f"CHANGE:{items[0]['id']}"
+        assert [row["order_no"] for row in data["late"]] == [raw["order_no"]]
+        assert data["late"][0]["difference_days"] > 0 and data["late"][0]["key"].startswith("LATE:")
+        listed = client.get("/api/carton-procurement/orders", params={
+            "factory_id": "huaxing", "collaboration_filter": "LATE_PROMISE"})
+        assert listed.status_code == 200, listed.text
+        assert [row["order_no"] for row in listed.json()["items"]] == [raw["order_no"]]
+        assert data["acknowledged"] == []
+        key = items[0]["key"]
+        acked = client.post("/api/carton-procurement/promise-notices/ack", json={
+            "factory_id": "huaxing", "key": key})
+        assert acked.status_code == 200, acked.text
+        after = client.get("/api/carton-procurement/supplier-promise-changes", params={"factory_id": "huaxing"})
+        assert after.json()["acknowledged"] == [key]

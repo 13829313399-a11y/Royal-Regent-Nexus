@@ -19,6 +19,52 @@ function capture(expected: Record<string, string>, fileNames: string[]) {
 }
 
 describe('supplier carton-mark request serialization', () => {
+  it('reads selected source sheets once and rerenders signed review data as multipart', async () => {
+    const file = new File(['excel'], 'read.xlsx')
+    const paths: string[] = []
+    http.defaults.adapter = async config => {
+      paths.push(config.url!); const body = config.data as FormData
+      expect(body).toBeInstanceOf(FormData); expect(body.get('excel')).toBe(file)
+      expect(body.has('order_id')).toBe(false)
+      if (config.url?.endsWith('read-pdf-draft')) { expect(body.get('ai_consent')).toBe('true'); expect(body.get('worksheets_json')).toBe('["SM"]') }
+      else { expect(body.get('review_payload')).toBe('signed'); expect(body.has('ai_consent')).toBe(false); expect(body.get('edits_json')).toBe('{"r0p0f0":"2.5 KGS"}'); expect(body.get('include_sources')).toBe('false') }
+      return { data: new Blob(['pdf']), status: 200, statusText: 'OK', headers: {}, config }
+    }
+    await cartonSupplierPortalApi.readMarkPdfDraft({ excel: file, worksheets: ['SM'] })
+    const review = { payload: 'signed', signature: 'proof' } as Parameters<typeof cartonSupplierPortalApi.renderReviewedMarkDraft>[1]
+    await cartonSupplierPortalApi.renderReviewedMarkDraft({ excel: file }, review, { edits: { r0p0f0: '2.5 KGS' }, reviewed_notes: [], paper: 'A3', orientation: 'portrait', include_sources:false })
+    expect(paths).toEqual(['/carton-supplier/carton-mark/read-pdf-draft', '/carton-supplier/carton-mark/render-reviewed-draft'])
+  })
+  it('exports an upload as a draft without serializing factory or purchase order identifiers', async () => {
+    const file = new File(['excel'], 'draft.xlsx')
+    http.defaults.adapter = async config => {
+      expect(config.url).toBe('/carton-supplier/carton-mark/generate-pdf-draft')
+      expect(config.responseType).toBe('blob')
+      const body = config.data as FormData
+      expect(body).toBeInstanceOf(FormData)
+      expect(body.get('excel')).toBe(file); expect(body.get('engine')).toBe('excel_original')
+      expect(body.has('factory_id')).toBe(false); expect(body.has('order_id')).toBe(false)
+      expect(config.headers.getContentType()).not.toContain('application/json')
+      return { data: new Blob(['pdf']), status: 200, statusText: 'OK', headers: {
+        'x-carton-pdf-pages': '2', 'x-carton-pdf-warnings': encodeURIComponent(JSON.stringify(['未关联'])) }, config }
+    }
+    const result = await cartonSupplierPortalApi.generateMarkPdfDraft({ excel: file, engine: 'excel_original' })
+    expect(result.page_count).toBe(2); expect(result.warnings).toEqual(['未关联'])
+    expect(result.file_name).toBe('draft_审阅稿.pdf')
+  })
+  it('scopes the DeepSeek status lookup to the exact factory and issued order', async () => {
+    http.defaults.adapter = async config => {
+      expect(config.url).toBe('/carton-supplier/carton-mark/pdf-ai-status')
+      expect(config.params).toEqual({ factory_id: 'huaxing', order_id: 'order-a', issue_id: 'issue-a' })
+      return { data: { available: true }, status: 200, statusText: 'OK', headers: {}, config }
+    }
+    expect((await cartonSupplierPortalApi.markPdfAiStatus('huaxing', { id: 'order-a', issue_id: 'issue-a' })).available).toBe(true)
+  })
+  it('sends atomic association targets and the replay key as multipart without legacy regular-order assumptions', async () => {
+    const targets = [{ order_kind: 'MISC' as const, order_id: 'misc', expected_revision: 3, issue_id: 'version-3', line_id: '' }]
+    capture({ factory_id: 'huaxing', shared_unbound: 'true', request_id: 'upload-123', targets_json: JSON.stringify(targets) }, ['photo.png'])
+    await cartonSupplierPortalApi.uploadMarkAssets('huaxing', [new File(['image'], 'photo.png')], undefined, undefined, true, { request_id: 'upload-123', targets })
+  })
   it('saves customer layout rules, previous version and historical PDF as multipart fields', async () => {
     const config = { mode: 'front_side' as const, paper: 'A4' as const, font: 'Helvetica' as const, font_size: 11, front_percent: 55, front_copies: 2, side_copies: 2, barcode: 'none' as const, side_address: '', instructions: '', reference_page: 0, logo_region: null, stamp_region: null, field_cells: {} }
     capture({ factory_id: 'huaxing', order_id: 'order-a', issue_id: 'issue-a', name: 'BUZZ', expected_version: '0', config: JSON.stringify(config) }, ['old.pdf'])

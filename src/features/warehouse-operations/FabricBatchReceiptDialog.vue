@@ -11,13 +11,14 @@ import FabricReceiptPriceFields from './FabricReceiptPriceFields.vue'
 import type { ReceiptPriceInput } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
 import WarehouseLocationPicker from './WarehouseLocationPicker.vue'
+import { suggestMaterialCategory } from './materialCategorySuggestion'
 
 const props = defineProps<{ sources: PurchaseDetail[] }>()
 const emit = defineEmits<{ close: []; saved: [result: ReceiveSourcesResult]; stale: [message: string] }>()
 const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 const receiptDate = ref(today), deliveryReference = ref(''), deliveryDate = ref(today), note = ref('')
 const newRow = (key: number) => ({ key, quantity: '', location: '', location_id: '', dye_lot: '', roll_no: '' })
-const entries = ref(props.sources.map(source => ({ source, category: (source.material_category ?? '') as MaterialCategory | '', deliveryQuantity: '', unitPrice: '', currency: 'CNY' as NonNullable<ReceiptPriceInput['currency']>, reason: '', rows: [newRow(1)] })))
+const entries = ref(props.sources.map(source => ({ source, category: (source.material_category || suggestMaterialCategory(source.facts.unit)) as MaterialCategory | '', deliveryQuantity: '', unitPrice: '', currency: 'CNY' as NonNullable<ReceiptPriceInput['currency']>, reason: '', rows: [newRow(1)] })))
 const busy = ref(false), error = ref(''), submitted = ref<ReceiveSourcesRequest>()
 let nextKey = 2, alive = true, saved = false
 const requestId = warehouseRequestId()
@@ -40,7 +41,7 @@ const valid = computed(() => entries.value.length > 0 && entries.value.length <=
     entry.rows.every(row => row.location_id && (entry.category !== 'FABRIC' || row.dye_lot.trim())) &&
     (!progress.value[index]?.overage || entry.reason.trim())))
 const dirty = computed(() => deliveryReference.value || receiptDate.value !== today || deliveryDate.value !== today || note.value ||
-  entries.value.some(entry => entry.deliveryQuantity || entry.unitPrice || entry.currency !== 'CNY' || entry.category !== (entry.source.material_category ?? '') || entry.reason || entry.rows.some(row => row.quantity || row.location_id || row.location || row.dye_lot || row.roll_no)))
+  entries.value.some(entry => entry.deliveryQuantity || entry.unitPrice || entry.currency !== 'CNY' || entry.category !== (entry.source.material_category || suggestMaterialCategory(entry.source.facts.unit)) || entry.reason || entry.rows.some(row => row.quantity || row.location_id || row.location || row.dye_lot || row.roll_no)))
 function allowLeave() {
   if (busy.value) return false
   return saved || !dirty.value || window.confirm(submitted.value ? '保存结果尚未确认，系统可能已入库。离开后请先查入库记录，避免重复登记。确定离开？' : '本次批量收料尚未保存，离开会清空填写内容。确定离开？')
@@ -91,7 +92,7 @@ async function save() {
     <form class="fabric-intake-form" @submit.prevent="save"><div class="fabric-intake-body"><fieldset :disabled="busy || !!submitted" class="fabric-receipt-fields">
       <div class="fabric-intake-document-fields"><label>收货日期<input v-model="receiptDate" type="date" aria-label="批量收货日期" :max="today" required /></label><label>送货单号 / 收料依据<input v-model="deliveryReference" aria-label="批量送货依据编号" placeholder="送货单号或本批手工收料编号" maxlength="128" required /></label></div>
       <section v-for="(entry, itemIndex) in entries" :key="entry.source.id" class="fabric-batch-item" :aria-label="`第${itemIndex + 1}项物料 ${entry.source.facts.order_no}`">
-        <div class="fabric-batch-item-heading"><div><span class="fabric-intake-tag">{{ itemIndex + 1 }} · {{ entry.source.facts.source_category === 'SUPPLEMENT' ? '补数' : '正常采购' }}</span><h3>{{ entry.source.facts.material_name }}</h3><p>{{ entry.source.facts.order_no }} · {{ entry.source.facts.material_code }} · {{ entry.source.facts.supplier }}</p><p>剩余待收 {{ progress[itemIndex]?.remaining ?? '待核对' }} {{ entry.source.facts.unit }} · 本系统已入库 {{ entry.source.warehouse_received_quantity ?? '0' }} {{ entry.source.facts.unit }}</p></div><label>物料分类<select v-model="entry.category" :aria-label="`第${itemIndex + 1}项物料分类`" required><option value="" disabled>请选择</option><option v-for="(label, value) in materialCategoryLabels" :key="value" :value="value">{{ label }}</option></select></label></div>
+        <div class="fabric-batch-item-heading"><div><span class="fabric-intake-tag">{{ itemIndex + 1 }} · {{ entry.source.facts.source_category === 'SUPPLEMENT' ? '补数' : '正常采购' }}</span><h3>{{ entry.source.facts.material_name }}</h3><p>{{ entry.source.facts.order_no }} · {{ entry.source.facts.material_code }} · {{ entry.source.facts.supplier }}</p><p>剩余待收 {{ progress[itemIndex]?.remaining ?? '待核对' }} {{ entry.source.facts.unit }} · 本系统已入库 {{ entry.source.warehouse_received_quantity ?? '0' }} {{ entry.source.facts.unit }}</p></div><label>物料分类<select v-model="entry.category" :aria-label="`第${itemIndex + 1}项物料分类`" required><option value="" disabled>请选择</option><option v-for="(label, value) in materialCategoryLabels" :key="value" :value="value">{{ label }}</option></select><small v-if="!entry.source.material_category && suggestMaterialCategory(entry.source.facts.unit)">已按单位建议分类，可修改。</small></label></div>
         <p v-if="progress[itemIndex]?.remaining === undefined" class="fabric-intake-alert" role="note">起始数量待核对，本次可按实物入库。</p>
         <label>本单该采购明细到货量（{{ entry.source.facts.unit }}）<input v-model.trim="entry.deliveryQuantity" :aria-label="`第${itemIndex + 1}项本单到货量`" inputmode="decimal" maxlength="32" required placeholder="填写本单分配给这条采购明细的到货量" /></label>
         <p v-if="entry.deliveryQuantity && !progress[itemIndex]?.deliveryValid" class="fabric-intake-error" role="alert">请核对本单到货量，分仓实收合计不可超量。</p>

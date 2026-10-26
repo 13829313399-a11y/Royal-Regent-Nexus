@@ -4,6 +4,19 @@ import { createCartonMarkApi, type CartonMarkAsset } from '@/api/cartonMark'
 import { http } from '@/lib/http'
 
 describe('carton-mark repository API', () => {
+  it.each([false, true])('directly replaces three-kind associations with exact source revisions (supplier=%s)', async supplier => {
+    const client = { put: vi.fn().mockResolvedValue({ data: { id: 'asset' } }) }
+    const api = createCartonMarkApi(client as never), file = { id: 'asset', revision: 4 }
+    const targets = [
+      { order_kind: 'REGULAR' as const, order_id: 'regular', expected_revision: 2, issue_id: 'purchase-v2', line_id: '' },
+      { order_kind: 'SAMPLE' as const, order_id: 'sample', expected_revision: 3, issue_id: 'sample-v3', line_id: '' },
+      { order_kind: 'MISC' as const, order_id: 'misc', expected_revision: 5, issue_id: 'misc-v5', line_id: 'paper-2' },
+    ]
+    await api.associateAsset('huaxing', file, targets, 'request-123', supplier)
+    expect(client.put).toHaveBeenLastCalledWith(`${supplier ? '/carton-supplier/carton-mark' : '/carton-mark'}/assets/asset/associations`, { revision: 4, request_id: 'request-123', targets }, { params: { factory_id: 'huaxing' }, signal: undefined })
+    await api.associateAsset('huaxing', file, [], 'detach-123', supplier)
+    expect(client.put.mock.calls[1]![1]).toEqual({ revision: 4, request_id: 'detach-123', targets: [] })
+  })
   it('keeps sharing, supplier proposals and special paper binding as separate revisioned commands', async () => {
     const client = { get: vi.fn().mockResolvedValue({ data: [] }), post: vi.fn().mockResolvedValue({ data: {} }), put: vi.fn().mockResolvedValue({ data: {} }) }
     const api = createCartonMarkApi(client as never), file = { id: 'asset', revision: 4 }

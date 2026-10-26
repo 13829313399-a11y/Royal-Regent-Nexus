@@ -11,12 +11,17 @@ export interface SpecialLine {
   quantity: string; unit: string; item_no: string; unit_price?: string; received_quantity?: string; remaining_quantity?: string; remaining_to_ship?: string
 }
 export interface SpecialShipment {
+  closures?: { quantities: Record<string, string>; reason: string; acceptance_date: string }[]
   source_origin?: 'WAREHOUSE_MANUAL' | 'SUPPLIER'
   id: string; version_id: string; delivery_note_no: string; delivery_date: string; status?: string
-  lines: { id: string; request_line_id: string; quantity: string; received_quantity: string; remaining_quantity: string; snapshot?: Partial<SpecialLine> & { pricing_kind?: PricingKind; warehouse_unit_price?: string | null; supplier_price_confirmed?: boolean; source_origin?: 'WAREHOUSE_MANUAL' | 'SUPPLIER' }; gross_received_quantity?: string; effective_received_quantity?: string }[]
+  lines: { id: string; request_line_id: string; quantity: string; received_quantity: string; remaining_quantity: string; snapshot?: Partial<SpecialLine> & { pricing_kind?: PricingKind; warehouse_unit_price?: string | null; supplier_price_confirmed?: boolean; source_origin?: 'WAREHOUSE_MANUAL' | 'SUPPLIER' }; closed_quantity?: string; gross_received_quantity?: string; effective_received_quantity?: string }[]
   receipts: { id: string; receipt_no?: string; acceptance_date?: string; status?: string; lines?: { id?: string; shipment_line_id?: string; packaging_type?: string; paper_quality?: string; specification?: string; unit?: string; received_quantity?: string; damaged_quantity?: string; rejected_quantity?: string; unusable_quantity?: string; effective_quantity?: string; unit_price?: string }[] }[]
 }
 export interface SpecialRequest {
+  updated_at?: string
+  replacement?: { parent_request_id: string; parent_request_no: string; responsibility: 'OWN' | 'SUPPLIER'; can_undo: boolean; blockers: string[] } | null
+  mark_assets?: { id: string; file_name: string; revision: number; kind: 'pdf' | 'excel' | 'image'; line_id?: string }[]
+  supplier_confirmation?: { status: string; version_id: string; promised_date: string; reason: string; responded_at: string; responded_by: string }
   deleted?: boolean
   manual_delivery_id?: string
   origin?: string; id: string; request_no: string; factory_id: string; kind: SpecialKind; title: string; requester_name: string
@@ -26,7 +31,7 @@ export interface SpecialRequest {
   attachments: { id: string; role: AttachmentRole; filename: string; created_at?: string; version_id?: string; line_id?: string; sha256?: string; version?: number }[]
   messages: { id: string; body: string; author_name?: string; actor_name?: string; created_at: string }[]
   history: { id?: string; action: string; actor_name?: string; created_at: string; note?: string }[]
-  permissions: Partial<Record<'can_edit' | 'can_send' | 'can_confirm' | 'can_adjust' | 'can_manual_receive' | 'can_approve' | 'can_cancel' | 'can_delete' | 'can_quote' | 'can_ship' | 'can_receive' | 'can_attach' | 'can_message' | 'can_confirm_material', boolean>>
+  permissions: Partial<Record<'can_edit' | 'can_send' | 'can_confirm' | 'can_adjust' | 'can_append' | 'can_return_stock' | 'can_replenish' | 'can_undo_replenish' | 'can_manual_receive' | 'can_approve' | 'can_cancel' | 'can_delete' | 'can_quote' | 'can_ship' | 'can_receive' | 'can_attach' | 'can_message' | 'can_confirm_material', boolean>>
 }
 export interface SpecialWorkspace {
   items: SpecialRequest[]; total: number; can_create: boolean
@@ -47,6 +52,8 @@ export interface UnifiedOrderRef { kind: UnifiedOrderEntry['kind']; id: string; 
 export interface UnifiedOrderPage { items: UnifiedOrderEntry[]; total: number; can_create: boolean; statistics: { overdue: number; today: number; dueSoon: number; pending: number } }
 export interface MarkOption { id: string; file_name: string; revision: number; contract_number?: string }
 export const cartonSpecialRequestsApi = {
+  async purchaseContext(factory: string, id: string, supplier = false, signal?: AbortSignal) { return (await http.get<import('./cartonProcurement').CartonPurchaseOrderContextResponse>(`${prefix(supplier)}/${encodeURIComponent(id)}/purchase-orders`, { params: { factory_id: factory }, signal })).data },
+  async purchaseExport(factory: string, id: string, versionId: string, supplier = false, signal?: AbortSignal) { return (await http.get<Blob>(`${prefix(supplier)}/${encodeURIComponent(id)}/purchase-orders/${encodeURIComponent(versionId)}/export`, { params: { factory_id: factory }, signal, responseType: 'blob' })).data },
   async selected(factory: string, items: UnifiedOrderRef[], signal?: AbortSignal) { return (await http.post<UnifiedOrderEntry[]>('/carton-unified-orders/selected', { factory_id: factory, items }, { signal })).data },
   async batchAction(body: { factory_id: string; request_id: string; action: 'CONFIRM' | 'CANCEL' | 'DELETE'; reason: string; items: UnifiedOrderRef[] }, signal?: AbortSignal) { return (await http.post<{ count: number }>('/carton-unified-orders/batch-actions', body, { signal })).data },
   async ledger(factory: string, filters: Record<string, string | number>, signal?: AbortSignal) { return (await http.get<UnifiedOrderPage>('/carton-unified-orders', { params: { factory_id: factory, ...filters }, signal })).data },

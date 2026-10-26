@@ -4,9 +4,16 @@ const post = vi.hoisted(() => vi.fn())
 const get = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/http', () => ({ http: { post, get } }))
 
-import { cartonSupplierPortalApi } from '../cartonSupplierPortal'
+import { cartonSupplierPortalApi, type PortalOrder } from '../cartonSupplierPortal'
 
 describe('supplier document export request', () => {
+  it('binds rush acknowledgement to the displayed marking version', async () => {
+    post.mockResolvedValueOnce({ data: {} })
+    await cartonSupplierPortalApi.acknowledgeRush({ id: 'order/a', rush_version: 'a'.repeat(64) } as PortalOrder, 'huaxing')
+    expect(post).toHaveBeenLastCalledWith('/carton-supplier/orders/order%2Fa/rush-ack', {
+      factory_id: 'huaxing', expected_rush_version: 'a'.repeat(64),
+    })
+  })
   it('uploads mixed originals with only the selected factory and issued order identifiers', async () => {
     post.mockResolvedValueOnce({ data: [] })
     const signal = new AbortController().signal

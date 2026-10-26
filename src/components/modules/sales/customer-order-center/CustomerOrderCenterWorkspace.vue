@@ -528,11 +528,13 @@ const props = defineProps<{
   activeSection: CustomerOrderCenterSection
   factoryId: string
   factoryName: string
+  focusLineId?: string
 }>()
 
 const emit = defineEmits<{
   navigate: [section: CustomerOrderCenterSection]
   feedback: [context: FeedbackContext]
+  'close-order': []
 }>()
 
 const poInput = ref<HTMLInputElement | null>(null)
@@ -2406,7 +2408,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-else-if="activeSection === 'ledger'" key="ledger" class="order-view" data-testid="order-ledger">
-        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" @import="navigate('import')" @feedback="emit('feedback', $event)" />
+        <CustomerOrderLedger :factory-id="factoryId" :factory-name="factoryName" :focus-line-id="focusLineId" @close-detail="emit('close-order')" @import="navigate('import')" @feedback="emit('feedback', $event)" />
       </section>
 
       <section v-else-if="activeSection === 'exceptions'" key="exceptions" class="order-view" data-testid="order-exceptions">

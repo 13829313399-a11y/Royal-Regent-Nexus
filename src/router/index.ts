@@ -5,8 +5,14 @@ import {
   shouldEnforcePagePermissions,
   shouldRedirectForbiddenPageToHome,
 } from '@/config/pageAccessPolicy'
-import { getDepartmentModule, isModuleDepartmentId } from '@/data/enterpriseMock'
+import { getDepartmentModule, isFactoryContextId, isModuleDepartmentId } from '@/data/enterpriseMock'
+import { canChangeFactory } from '@/lib/factoryChangeGuard'
 import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
+import { guardInjectionNavigation } from '@/features/injection-scheduling/navigationGuard'
+import { guardThreeDNavigation } from '@/features/three-d-printing/navigationGuard'
+import { guardCartonNavigation } from '@/features/carton-procurement/navigationGuard'
+import { guardQuoteNavigation } from '@/features/internal-quote/navigationGuard'
+import { guardUvNavigation } from '@/features/uv-operations/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { uvOperationsRoutes } from '@/features/uv-operations/routes'
 import { cuttingOperationsRoutes } from '@/features/cutting-operations/routes'
@@ -17,6 +23,8 @@ import { resolvePostLoginRedirect } from '@/lib/postLoginRedirect'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { collaborationApi, type Capabilities } from '@/api/collaboration'
+import { installRouteMotionNavigation } from '@/features/route-motion/navigation'
+import { installCuttingResourceRecovery } from '@/features/cutting-operations/resourceRecovery'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
 import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
@@ -306,7 +314,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/modules/pmc-warehouse/carton-procurement',
     name: 'carton-procurement',
-    component: () => import('@/views/CartonProcurementView.vue'),
+    component: () => import('@/views/CartonProcurementRoute.vue'),
     meta: {
       title: '纸箱采购协同',
       fullPage: true,
@@ -568,11 +576,13 @@ export const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
 })
+const routeMotionNavigation = installRouteMotionNavigation(router)
 
 let routeLoadingStartedAt = 0
 let routeLoadingTimer: number | undefined
 let lastAuthorizationRefreshAt = 0
 let latestNavigationVersion = 0
+const loadingVersions = new WeakMap<object, number>()
 const browserBackExitGuard = installBrowserBackExitGuard(router)
 
 type AuthorizationRefreshResult = 'refreshed' | 'password-change' | 'forbidden' | 'login' | 'unchanged'
@@ -681,7 +691,8 @@ const refreshAuthorizationSnapshot = () => {
 
 window.addEventListener('focus', refreshAuthorizationSnapshot)
 
-const finishRouteLoading = () => {
+const finishRouteLoading = (version: number | undefined) => {
+  if (version !== latestNavigationVersion) return
   if (routeLoadingTimer) {
     window.clearTimeout(routeLoadingTimer)
   }
@@ -690,11 +701,14 @@ const finishRouteLoading = () => {
   const remainingTime = Math.max(180 - elapsed, 0)
 
   routeLoadingTimer = window.setTimeout(() => {
-    useAppStore().finishRouteLoading()
+    if (version === latestNavigationVersion) useAppStore().finishRouteLoading()
   }, remainingTime)
 }
 
 router.beforeEach(async (to, from) => {
+  const navigationVersion = ++latestNavigationVersion
+  loadingVersions.set(to, navigationVersion)
+  if (routeLoadingTimer) window.clearTimeout(routeLoadingTimer)
   const consolidatedTarget = consolidatedIamTarget(to, consolidatedIamEnabled)
   if (consolidatedTarget) return consolidatedTarget
   if (to.path === '/system/users') {
@@ -705,11 +719,20 @@ router.beforeEach(async (to, from) => {
     return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
   }
   if (!await guardSprayNavigation(to, from)) return false
-  const navigationVersion = ++latestNavigationVersion
-  if (routeLoadingTimer) {
-    window.clearTimeout(routeLoadingTimer)
+  if (!guardInjectionNavigation(to, from)) return false
+  if (!guardThreeDNavigation(to, from)) return false
+  if (!guardCartonNavigation(to, from)) return false
+  if (!await guardQuoteNavigation(to, from)) return false
+  if (!guardUvNavigation(to, from)) return false
+  if (to.name === 'three-d-printing-management' && to.query.factory !== 'huakang-a') {
+    return { name: to.name, query: { ...to.query, factory: 'huakang-a', printer: undefined }, replace: true }
   }
-
+  if (navigationVersion !== latestNavigationVersion) return false
+  // A same-route query change does not run component leave guards. Ask before
+  // the global guard updates the factory store and destroys scoped drafts.
+  if (from.name === 'indonesia-material-shipment' && to.name === from.name
+      && typeof to.query.factory === 'string' && isFactoryContextId(to.query.factory) && to.query.factory !== useAppStore().activeFactoryId
+      && !canChangeFactory()) return false
   routeLoadingStartedAt = window.performance.now()
   const appStore = useAppStore()
   appStore.startRouteLoading()
@@ -809,7 +832,9 @@ router.beforeEach(async (to, from) => {
   return true
 })
 
-router.afterEach((to) => {
+router.afterEach((to, _from, failure) => {
+  finishRouteLoading(loadingVersions.get(to))
+  if (failure) return
   if (to.meta.requiresAuth === false) {
     browserBackExitGuard.unlock()
   } else {
@@ -826,9 +851,17 @@ router.afterEach((to) => {
     : routeTitle
 
   document.title = `${title} | Royal Regent Nexus`
-  finishRouteLoading()
 })
 
-router.onError(() => {
-  finishRouteLoading()
+router.onError((_error, to) => {
+  finishRouteLoading(loadingVersions.get(to))
+})
+
+export const cuttingResourceRecovery = installCuttingResourceRecovery(router)
+
+if (import.meta.hot) import.meta.hot.dispose(() => {
+  cuttingResourceRecovery.dispose()
+  routeMotionNavigation.dispose()
+  window.removeEventListener('focus', refreshAuthorizationSnapshot)
+  if (routeLoadingTimer) window.clearTimeout(routeLoadingTimer)
 })

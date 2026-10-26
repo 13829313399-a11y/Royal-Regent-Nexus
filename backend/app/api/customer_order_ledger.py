@@ -6,7 +6,7 @@ from pydantic import TypeAdapter, ValidationError
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from app.services.customer_order_jobs import run_order_job, order_job_request
@@ -20,6 +20,7 @@ from app.services.business_authz import ensure_permission_for_departments, has_p
 from app.services import customer_order_ledger as ledger
 from app.services import customer_order_history as history
 from app.services import customer_order_schedule as schedule
+from app.services import customer_order_queries as queries
 from app.services.customer_order_360_workbook import organize_workbook
 
 router = APIRouter(prefix="/api/customer-order-ledger", tags=["customer-order-ledger"], dependencies=[Depends(order_job_request)])
@@ -195,22 +196,8 @@ def list_lines(factory_id: str, customer_code: str = "", view: Literal["all", "u
                q: str = Query("", max_length=255), page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
                db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     authorize(db, current_user, factory_id)
-    query = select(Line).where(Line.factory_id == factory_id)
-    if customer_code:
-        query = query.where(Line.customer_code == customer_code)
-    if view == "unshipped":
-        query = query.where(Line.status == "active", or_(Line.quantity.is_(None), Line.quantity > Line.shipped_quantity))
-    elif view == "shipped":
-        query = query.where(Line.shipped_quantity > 0)
-    elif view == "cancelled":
-        query = query.where(Line.status == "cancelled")
-    if q.strip():
-        query = query.where(or_(Line.reference_no.contains(q.strip(), autoescape=True), Line.product_no.contains(q.strip(), autoescape=True),
-                               Line.data["po_no"].as_string().contains(q.strip(), autoescape=True),
-                               Line.data["contract_no"].as_string().contains(q.strip(), autoescape=True),
-                               Line.customer_name.contains(q.strip(), autoescape=True)))
-    total = db.scalar(select(func.count()).select_from(query.subquery()))
-    items = db.scalars(query.order_by(Line.updated_at.desc(), Line.id).offset((page - 1) * page_size).limit(page_size)).all()
+    query = queries.statement(factory_id, customer_code=customer_code, view=view, q=q)
+    total, items = queries.page(db, query, page_number=page, page_size=page_size)
     customers = db.execute(select(Line.customer_code, Line.customer_name).where(Line.factory_id == factory_id).distinct()).all()
     return {"items": [ledger.line_out(db, item) for item in items], "total": total, "page": page, "page_size": page_size,
             "customers": [{"code": code, "name": name} for code, name in customers]}

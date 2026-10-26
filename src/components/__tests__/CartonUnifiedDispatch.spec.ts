@@ -28,13 +28,15 @@ describe('one supplier note for all carton purposes', () => {
     expect(post).toHaveBeenCalledWith('/carton-supplier/unified-deliveries', expect.objectContaining({ delivery_note_no: 'DN1', formal_lines: [{ order_line_id: 'PL', issue_id: 'ISSUE', quantity: '10', unit_price: '2.5', free_confirmed: false }], special_requests: [{ id: 'SP', expected_revision: 2, version_id: 'VERSION', lines: [{ line_id: 'SL', quantity: '3', unit_price: '0', free_confirmed: true }] }] }))
     expect(wrapper.emitted('saved')).toHaveLength(1); wrapper.unmount()
   })
-  it('holds unconfirmed printed samples and does not let search discard selected regular lines', async () => {
+  it('allows samples without mark declarations and does not let search discard selected lines', async () => {
     const wrapper = setup([{ ...special, lines: special.lines.map(line => ({ ...line, mark_mode: 'PENDING', mark_ready: false })) }]); await base(wrapper)
-    expect(wrapper.findAll('article')[1]!.get('input[type="checkbox"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('article')[1]!.get('input[type="checkbox"]').attributes('disabled')).toBeUndefined()
+    await wrapper.findAll('article')[1]!.get('input[type="checkbox"]').setValue(true)
+    await wrapper.findAll('article')[1]!.findAll('input[type="number"]')[1]!.setValue('2')
     await wrapper.findAll('article')[0]!.get('input[type="checkbox"]').setValue(true)
     await wrapper.findAll('article')[0]!.findAll('input[type="number"]')[1]!.setValue('1')
     await wrapper.get('[aria-label="选择送货纸品"]').setValue('不存在')
-    await submit(wrapper); expect(post.mock.calls[0]![1].formal_lines).toHaveLength(1); expect(post.mock.calls[0]![1].special_requests).toHaveLength(0); wrapper.unmount()
+    await submit(wrapper); expect(post.mock.calls[0]![1].formal_lines).toHaveLength(1); expect(post.mock.calls[0]![1].special_requests).toHaveLength(1); wrapper.unmount()
   })
   it('reuses an unchanged request key after an unknown outcome, but discards drafts on access context change', async () => {
     const wrapper = setup(); await base(wrapper)

@@ -80,7 +80,7 @@ def complete_date(value):
         return None
 
 
-def reminder(source, *, today, lead_days, production_days, marked=False, orders=()):
+def reminder(source, *, today, lead_days, production_days, marked=False, orders=(), review_changes=()):
     if source.get("schedule_section") and source["schedule_section"] != "PENDING":
         return None
     if source.get("template") == "unified-item" and (source.get("order_type") or "").strip() not in ("正单", "加单", "正式PO"):
@@ -92,6 +92,8 @@ def reminder(source, *, today, lead_days, production_days, marked=False, orders=
         return result("REVIEW", "待人工确认", "amber", "订单身份或关联不唯一，请核实后判断是否已下单。")
     if not (source.get("item_no") or "").strip() or not (source.get("contract_no") or source.get("reference") or "").strip() or float(source.get("quantity") or 0) <= 0:
         return result("REVIEW", "待人工确认", "amber", "合同、货号或数量不完整，请核实后计算下单时限。")
+    if review_changes:
+        return result("CHANGE_REVIEW", "已下单需求待复核", "amber", "、".join(review_changes) + "与人工确认的下单依据不一致，请核对原采购及供应商后填写理由重新确认；不会自动修改订单或库存。")
     if source.get("schedule_identity_duplicate"):
         return result("REVIEW", "待人工确认", "amber", "合同、货号和 SO#/Reference 相同，请核实是否重复或分批；仍可标记已下单或按此下单。")
     if source.get("schedule_change") == "REVIEW_REQUIRED":
@@ -140,10 +142,15 @@ class Context:
     def marked(self, row):
         return bool(self.marks.get(row.get("schedule_identity"), {}).get("marked", row.get("manual_ordered", False))) if row.get("schedule_identity") else False
 
+    def mark_changes(self, row):
+        from app.services.carton_schedule_tracking import mark_changes, mark_for_row
+        return mark_changes(row, mark_for_row(row, self.marks))
+
     def matching(self, row):
         linked_ids = list(dict.fromkeys(self.marks.get(row.get("schedule_identity"), {}).get("order_ids", []) + ([row["order_id"]] if row.get("order_id") else [])))
         linked = [self.orders[i] for i in linked_ids if i in self.orders and (not row.get("schedule_customer_code") or self.orders[i]["customer_code"] == row["schedule_customer_code"])
-                  and norm(self.orders[i]["contract_no"]) == norm(row.get("contract_no") or row.get("reference")) and norm(self.orders[i]["item_no"]) == norm(row.get("item_no"))]
+                  and norm(self.orders[i]["contract_no"]) == norm(row.get("contract_no") or row.get("reference")) and norm(self.orders[i]["item_no"]) == norm(row.get("item_no"))
+                  and (not (row.get("source_reference") or row.get("customer_po")) or norm(self.orders[i].get("customer_po")) == norm(row.get("source_reference") or row.get("customer_po")))]
         if linked:
             return linked
         if row.get("schedule_identity_duplicate"):
@@ -163,12 +170,12 @@ class Context:
         rules = {"lead_days": 3, "production_days": 7}
         for code in dict.fromkeys(["", customer]):
             rules.update({k: v for k, v in self.rules.get(code, {}).items() if k in rules and v is not None})
-        return reminder(row, today=self.today, **rules, marked=self.marked(row), orders=self.matching(row))
+        return reminder(row, today=self.today, **rules, marked=self.marked(row), orders=self.matching(row), review_changes=self.mark_changes(row))
 
 
 def source_key(row):
     return row.get("schedule_identity") or compact([row.get("schedule_customer_code") or row.get("customer_code") or norm(row.get("customer_name")),
-        norm(row.get("contract_no") or row.get("reference")), norm(row.get("item_no")), norm(row.get("source_reference"))])
+        norm(row.get("contract_no") or row.get("reference")), norm(row.get("item_no")), norm(row.get("source_reference") or row.get("customer_po"))])
 
 
 def build_alerts(context, batches, exceptions):
@@ -221,11 +228,15 @@ def build_alerts(context, batches, exceptions):
             e = timing_exceptions.get(id(row))
             orders = context.matching(row)
             order = orders[0] if len(orders) == 1 else None
+            is_review = r["state"] == "CHANGE_REVIEW"
+            frozen = context.marks.get(row.get("schedule_identity"), {}).get("demand_snapshot") or {}
+            previous_quantity = float(frozen.get("quantity") or 0) if is_review else float((order or {}).get("product_order_quantity") or 0)
+            difference = float(row.get("quantity") or 0) - previous_quantity if is_review and frozen.get("quantity") else 0
             timing[key] = dict(id=f"TIMING:{batch['id']}:{key}", alertNo=e["exception_no"] if e else f"排期-{row.get('source_sheet') or 'ITEM'}-{row.get('source_row') or 1}",
-                kind="NEW_ORDER" if row.get("schedule_change") == "NEW" else "MISSING_ORDER",
+                kind=("QUANTITY_INCREASE" if difference > 0 else "QUANTITY_DECREASE" if difference < 0 else "QUANTITY_REVIEW") if is_review else "NEW_ORDER" if row.get("schedule_change") == "NEW" else "MISSING_ORDER",
                 customerCode=row.get("schedule_customer_code") or row.get("customer_code") or "", customerName=row.get("schedule_customer_name") or row.get("customer_name") or "未绑定客户",
                 contractNo=row.get("contract_no") or row.get("reference") or "", itemNo=row.get("item_no") or "", productName=row.get("product_name") or "",
-                scheduleQuantity=float(row.get("quantity") or 0), orderQuantity=float((order or {}).get("product_order_quantity") or 0), differenceQuantity=0,
+                scheduleQuantity=float(row.get("quantity") or 0), orderQuantity=previous_quantity, differenceQuantity=difference,
                 orderNo=(order or {}).get("order_no", ""), orderStatus=(order or {}).get("status", ""), sourceFilename=batch["original_filename"],
                 sourceOperatorName=batch.get("imported_by_name") or "业务接单员", sourceCreatedAt=batch["created_at"], suggestion=r["detail"],
                 exception=e, batchId=batch["id"], status="OPEN", reminder=r, sourceRow=row, order=order)
@@ -282,7 +293,7 @@ REDUCTION_KINDS = ("QUANTITY_DECREASE", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_O
 
 
 def alert_summary(actionable):
-    return dict(total=len(actionable), missing=sum(bool(a["reminder"] and a["reminder"]["attention"]) for a in actionable),
+    return dict(total=len(actionable), missing=sum(bool(a["reminder"] and a["reminder"]["attention"] and a["reminder"]["state"] != "CHANGE_REVIEW") for a in actionable),
                 increase=sum(a["kind"] == "QUANTITY_INCREASE" for a in actionable),
                 decrease=sum(a["kind"] in REDUCTION_KINDS for a in actionable))
 
@@ -291,7 +302,7 @@ def alert_kind_matches(alert, kind):
     if kind == "ACTIONABLE":
         return alert["status"] in ("OPEN", "IN_PROGRESS") and (not alert["reminder"] or bool(alert["reminder"]["attention"]))
     if kind == "TIMING":
-        return bool(alert["reminder"] and alert["reminder"]["attention"])
+        return bool(alert["reminder"] and alert["reminder"]["attention"] and alert["reminder"]["state"] != "CHANGE_REVIEW")
     if kind == "REDUCTION":
         return alert["kind"] in REDUCTION_KINDS
     return kind == "ALL" or alert["kind"] == kind

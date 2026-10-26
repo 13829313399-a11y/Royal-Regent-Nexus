@@ -104,6 +104,7 @@ class ShipmentCreate(Payload):
         return self
 
 class ReceiveLine(BaseModel):
+    close_remaining: bool = False
     replenishment_issue_id: str | None = Field(default=None, max_length=96)
     price_action: Literal["MATCH", "PENDING", "PROPOSE", "FREE"] = "MATCH"
     price_reason: str = Field(default="", max_length=1000)
@@ -120,8 +121,9 @@ class ReceiveLine(BaseModel):
     specification: str = Field(default="", max_length=255)
     location_allocations: list[CartonLocationAllocation] = Field(default_factory=list, max_length=100)
     difference_reason: str = Field(default="", max_length=1000)
-    no_order_decision: Literal["", "SAMPLE", "GIFT", "WRONG_DELIVERY", "UNORDERED"] = ""
+    no_order_decision: Literal["", "SAMPLE", "GIFT", "MISC", "WRONG_DELIVERY", "UNORDERED"] = ""
     customer_code: str = Field(default="", max_length=64)
+    workshop_id: str = Field(default="", max_length=96)
     sample_purpose: str = Field(default="", max_length=255)
     requested_by: str = Field(default="", max_length=128)
     unit: str = Field(default="", max_length=32)
@@ -149,6 +151,10 @@ class ShipmentReceive(Payload):
 class CancellationAcknowledge(Payload):
     issue_id: str = Field(min_length=1, max_length=96)
     expected_order_revision: int = Field(ge=1)
+
+
+class RushAcknowledge(Payload):
+    expected_rush_version: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class ShipmentStatusChange(Payload):
@@ -214,6 +220,7 @@ class SupplierMarkAssetOut(BaseModel):
     binding_status: str = 'UNBOUND'
     pending_bindings: list[dict] = Field(default_factory=list)
     special_orders: list[dict] = Field(default_factory=list)
+    associations: list[dict] = Field(default_factory=list)
 
 
 class SupplierMarkUploadOrderOut(SupplierMarkAssetOrderOut):
@@ -243,12 +250,16 @@ class SupplierMarkPdfRequest(Payload):
     excel_asset_id: str = Field(min_length=1, max_length=96)
     expected_revision: int = Field(ge=1)
     layout_id: str = Field(min_length=1, max_length=96)
+    engine: Literal["customer_layout", "deepseek_zumiez"] = "customer_layout"
+    ai_consent: bool = False
     supplements: dict[Literal["quantity", "carton_total", "dimensions", "gross_weight", "net_weight"], str] = Field(default_factory=dict)
     source_item: str = Field(default="", max_length=128)
 
     @model_validator(mode="after")
     def valid_supplements(self):
         import re
+        if self.engine == "deepseek_zumiez" and not self.ai_consent:
+            raise ValueError("使用DeepSeek须明确同意发送本单必要文字")
         if any(len(value) > 100 or not re.search(r"\d", value) for value in self.supplements.values()):
             raise ValueError("本单补齐内容须包含数值，最多100字符")
         return self

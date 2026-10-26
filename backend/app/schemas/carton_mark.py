@@ -25,6 +25,20 @@ class CartonMarkAssetClassification(BaseModel):
     revision: int = Field(ge=1)
 
 
+class CartonMarkAssociationTarget(BaseModel):
+    order_kind: Literal['REGULAR', 'SAMPLE', 'MISC']
+    order_id: str = Field(min_length=1, max_length=96)
+    expected_revision: int = Field(ge=1)
+    issue_id: str = Field(default='', max_length=96)
+    line_id: str = Field(default='', max_length=96)
+
+
+class CartonMarkAssociations(BaseModel):
+    revision: int = Field(ge=1)
+    request_id: str = Field(min_length=8, max_length=96, pattern=r'^[A-Za-z0-9_-]+$')
+    targets: list[CartonMarkAssociationTarget] = Field(default_factory=list, max_length=100)
+
+
 class CartonMarkAssetUploadOptions(BaseModel):
     status: Literal['DRAFT', 'PENDING', 'READY'] = 'DRAFT'
     note: str = Field(default='', max_length=500)
@@ -32,6 +46,8 @@ class CartonMarkAssetUploadOptions(BaseModel):
     previous_revision: int | None = Field(default=None, ge=1)
     sharing_mode: Literal['ORDER_BOUND', 'SUPPLIER', 'INTERNAL'] = 'ORDER_BOUND'
     supplier_id: str = Field(default='', max_length=96)
+    request_id: str = Field(default='', max_length=96, pattern=r'^[A-Za-z0-9_-]*$')
+    targets: list[CartonMarkAssociationTarget] | None = Field(default=None, max_length=100)
 
 
 class CartonMarkAssetSharing(BaseModel):
@@ -82,6 +98,7 @@ class CartonMarkAssetOut(BaseModel):
     shared_supplier_name: str = ''
     pending_bindings: list[dict] = Field(default_factory=list)
     special_orders: list[dict] = Field(default_factory=list)
+    associations: list[dict] = Field(default_factory=list)
 
 
 class CartonMarkAssetBindingRequest(BaseModel):

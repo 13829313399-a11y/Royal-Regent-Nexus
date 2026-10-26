@@ -172,7 +172,7 @@ def printer_detail(db, printer_id):
         .limit(50)
     )
     return {
-        "printer": business.printer_out(printer),
+        "printer": business.printer_status_snapshot(db, factory_id="huakang-a", printer_id=printer_id)['printers'][0],
         "events": [
             {
                 "id": e.id,

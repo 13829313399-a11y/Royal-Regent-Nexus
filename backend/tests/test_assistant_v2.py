@@ -120,7 +120,11 @@ def test_native_capability_profiles_and_option_matrix(tmp_path, monkeypatch):
             profile['endpoint']=endpoint.replace('native.','old.')
             profile['verified_combinations']=profiles['native-text-verified']['verified_combinations']
         path.write_text(json.dumps(profile),encoding='utf-8')
-        assert cap.capability()==expected
+        actual = cap.capability()
+        # V3 adds actionable reasons; profile probes cannot stand in for the
+        # authenticated user's last execution. V3's guarded page reader is an
+        # independent capability, not a native-search profile probe result.
+        assert {key: actual[key] for key in expected} == {**expected, 'last_result': None, 'page_fetch': True}
     for case in data['option_matrix']:
         profile=profiles[case['capability_case_id']]
         path.write_text(json.dumps(dict(model='qwen3.7-plus',endpoint=endpoint,region='cn-beijing',verified_combinations=profile['verified_combinations'])),encoding='utf-8')
@@ -164,7 +168,7 @@ def test_document_artifact_revision_export_deletion_and_private_ownership(env):
     client.cookies.set("rr_session", "bob")
     assert client.get(f"/api/assistant/files/{ident}").status_code == 404
     client.cookies.set("rr_session", "alice")
-    r = client.post(f"/api/assistant/sessions/{sid}/messages", json=payload(protocol_version=2, document_ids=[ident], intent="analyze_files"))
+    r = client.post(f"/api/assistant/sessions/{sid}/messages", json=payload(protocol_version=2, document_ids=[ident], intent="analyze_files") | {'text':'总结这些文件。'})
     assert "event: run.completed" in r.text, r.text
     history = client.get(f"/api/assistant/sessions/{sid}/messages").json()
     answer = history["items"][-1]
@@ -210,7 +214,7 @@ def test_native_runtime_persists_same_evidence_through_recovery_and_export(env):
     recovered = client.get(f"/api/assistant/runs/{rid}").json()
     assert recovered["items"][-1]["content_parts"] == messages[-1]["content_parts"]
     assert "https://sources.example.test/material/a" in client.get(f"/api/assistant/runs/{rid}/export").text
-    assert len(calls) == 0
+    assert len(calls) == 1  # V3 always finishes through search-off synthesis.
     assert client.post(f"/api/assistant/sessions/{sid}/messages", json=body).json()["reused"]
 
 
@@ -226,7 +230,7 @@ def test_file_failures_and_restart(env):
     with dbm.SessionLocal() as db:
         row=db.get(AssistantFile,ident); row.parse_status="parsing"; row.parse_owner="previous-process"; db.commit()
     assert client.get(f"/api/assistant/files/{ident}").json()["error_code"] == "parse_interrupted"
-    assert client.post(f"/api/assistant/sessions/{sid}/files", files={"file":("fake.xlsx",b'fake')}).status_code == 422
+    assert client.post(f"/api/assistant/sessions/{sid}/files", files={"file":("legacy.xls",b'fake')}).status_code == 422
 
 
 def test_legacy_followup_retains_document_revocation(env):
@@ -285,7 +289,8 @@ def test_search_then_synthesis_keeps_both_citation_namespaces_and_count():
 
 
 def test_readonly_business_adapter_real_scope_and_fixture_math(env, monkeypatch):
-    from test_work_center_api import actor
+    from test_work_center_api import actor, applicant
+    from app.models import auth as auth_models
     from app.services.assistant import business
     from app.models.auth import AuthRegistrationRequest
     from app.models.injection_scheduling import Demand
@@ -296,7 +301,8 @@ def test_readonly_business_adapter_real_scope_and_fixture_math(env, monkeypatch)
     client, dbm, _, _ = env
     user=actor('alice',permissions=('system:user_manage',))
     with dbm.SessionLocal() as db:
-        db.add(AuthRegistrationRequest(id="a-request",user_id="alice",username="applicant",factory_id="huakang-a",department="engineering",submitted_at="2026-01-01 00:00:00"))
+        applicant_id = applicant(db, auth_models, "assistant-synthetic-applicant")
+        db.add(AuthRegistrationRequest(id="a-request",user_id=applicant_id,username="applicant",factory_id="huakang-a",department="engineering",submitted_at="2026-01-01 00:00:00"))
         # These fixture rows are calculations, never real business records.
         case=fixture("business-contracts")["cases"][1]
         for row in case["seed_rows"]:
@@ -307,21 +313,21 @@ def test_readonly_business_adapter_real_scope_and_fixture_math(env, monkeypatch)
     result, source, actions=business.query(user,"get_my_work",{"factory_id":"huakang-a"},"r")
     _, later, _=business.query(user,"get_my_work",{"factory_id":"huakang-a","q":"not-matching"},"r")
     assert source["source_id"] != later["source_id"] and not later["resources"]
-    assert result["authorized_summary"]["values"] == native["summary"]
-    assert result["filtered_total"] == native["query"]["filtered_total"] == 1
+    assert {key.removeprefix('authorized_'): metric['value'] for key, metric in result['metrics'].items() if key.startswith('authorized_')} == native['summary']
+    assert result["total_count"] == native["query"]["filtered_total"] == 1
     assert actions[-1]["query"]["entry"] == native["items"][0]["id"]
     selected, _, _ = business.query(user,"get_my_work",{"factory_id":"huakang-a","resource_id":native["items"][0]["id"]},"r")
-    assert selected["items"][0]["id"] == native["items"][0]["id"]
+    assert selected["rows"][0]["id"] == native["items"][0]["id"]
     with pytest.raises(AssistantError):
         business.query(user,"get_my_work",{"factory_id":"huaxing","resource_id":native["items"][0]["id"]},"r")
     with dbm.SessionLocal() as db:
         assert not business.visible(db,actor('alice'),source)
     user=actor('alice',factory="huaxing",department="production",permissions=("injection_scheduling:read",))
     result, _, _=business.query(user,"get_injection_overview",{"factory_id":"huaxing"},"r")
-    assert result["reference_summary"]["values"] == native_injection
-    summary=result["summary"]
+    assert result["total_count"] == native_injection["total_count"]
+    summary={k: v["value"] for k, v in result["metrics"].items()}
     assert summary["wait_material_count"]==2 and summary["held_count"]==4
-    assert summary["remaining_material_kg"]==19 and summary["warehouse_shortage_kg"] is None
+    assert summary["remaining_material_kg"] is None and summary["known_remaining_material_kg"]=="19" and summary["warehouse_shortage_kg"] is None
     assert summary["remaining_material_unknown_count"]==1 and summary["forecast_unknown_count"]==2
     with pytest.raises(Exception): business.query(user,"get_injection_overview",{"factory_id":"huakang-c"},"r")
     with pytest.raises(Exception): business.query(actor('alice'),"get_injection_overview",{"factory_id":"huaxing"},"r")
@@ -378,7 +384,7 @@ def test_printer_adapter_uses_readonly_freshness_and_factory_policy(env, monkeyp
     def forbidden(*a,**k): raise AssertionError('read-only tool cannot create settings or call dashboard')
     monkeypatch.setattr(printers,'ensure_settings',forbidden)
     result, source, _=business.query(user,'get_printer_status',{'factory_id':'huakang-a'},'r')
-    assert [(p['id'],p['status_stale']) for p in result['items'] if p['id'].startswith('qa-')]==[(p['id'],p['status_stale']) for p in expected]
+    assert [(p['id'],p['status_stale']) for p in result['rows'] if p['id'].startswith('qa-')]==[(p['id'],p['status_stale']) for p in expected]
     assert 'physical_state' in source['unknown_fields']
     with pytest.raises(Exception): business.query(user,'get_printer_status',{'factory_id':'huaxing'},'r')
 
@@ -410,8 +416,10 @@ def test_text_pdf_real_parser_page_locations_and_explicit_resource_limits(env, m
     monkeypatch.setattr(files.settings,'assistant_max_document_characters',200000)
     writer=PdfWriter();writer.add_blank_page(width=300,height=300)
     blank=BytesIO();writer.write(blank)
-    with pytest.raises(AssistantError) as exc: files.extract(blank.getvalue(),'.pdf')
-    assert exc.value.detail['code']=='pdf_ocr_required'
+    blank_parts=files.extract(blank.getvalue(),'.pdf')
+    assert blank_parts[0]['locator']['kind']=='ocr_region'
+    assert blank_parts[0]['metadata']['uncertainty_reasons']==['no_text_detected']
+    assert '没有内容' in blank_parts[0]['metadata']['coverage']
     writer.encrypt('synthetic-password');encrypted=BytesIO();writer.write(encrypted)
     with pytest.raises(AssistantError) as exc: files.extract(encrypted.getvalue(),'.pdf')
     assert exc.value.detail['code']=='pdf_encrypted'

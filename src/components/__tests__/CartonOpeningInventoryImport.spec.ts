@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Component from '../CartonOpeningInventoryImport.vue'
 const api = vi.hoisted(() => ({ previewHistoryInventory: vi.fn(), uploadHistoryInventory: vi.fn() }))
 vi.mock('@/api/cartonProcurement', () => ({ cartonProcurementApi: api }))
+vi.mock('../CartonOpeningInventoryBatches.vue', () => ({ default: { template: '<div />' } }))
 const file = new File(['xlsx'], '期初库存.xlsx')
 const options = { customer_name: '迪奇', warehouse: 'A', dimension_unit: 'in', currency: 'CNY' }
 const props = { factoryId: 'huaxing', connected: true, canImport: true,

@@ -842,10 +842,25 @@ class InternalQuoteProductImageOut(BaseModel):
     uploaded_at: str
 
 
+class InternalQuotePackagingCopyStatusOut(BaseModel):
+    material_count: int
+    carton_count: int
+    packaging_group_count: int
+    packaging_labor_hkd: str | None = None
+    source_issue: str = ""
+    assembly_issue: str = ""
+    target_issue: str = ""
+    assembly_target_issue: str = ""
+
+
 class InternalQuoteBatchProductOut(BaseModel):
     quote_id: str
     quote_no: str
     product_name: str
+    version_label: str = ""
+    scenario_name: str = ""
+    archived: bool = False
+    packaging_copy: InternalQuotePackagingCopyStatusOut | None = None
     qty: int
     position: int
     batch_size: int

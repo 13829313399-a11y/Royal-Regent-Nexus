@@ -19,9 +19,20 @@ VERSIONS = BACKEND/'alembic/versions'
 REPAIR = VERSIONS/'20261017_0167_reconcile_cutting_jp_collision.py'
 JP = BACKEND/'alembic/legacy/20261015_0163_huakang_b_jp_intake.py'
 CUTTING = VERSIONS/'20261015_0163_cutting_internal_periods.py'
+# These preservation fixtures end at the historical reconciliation/options head.
+# New carton columns are verified separately by test_carton_order_rush_migration.
+FINAL_HEAD = '20261022_0174'
 
 
-def migrate(path, revision='head', success=True):
+def seed_customer(path):
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO indonesia_material_customers VALUES ('retained-customer','huaxing','retained-key',3,?,?)",
+                   ('{"name":"retained customer","notes":"0000123"}', '2026-10-21'))
+        db.execute("INSERT INTO indonesia_material_assets VALUES ('retained-asset','huaxing','retained.xlsx','test','digest',?,?)",
+                   (b'\x00\xff-original-material-evidence', '2026-10-21'))
+
+
+def migrate(path, revision=FINAL_HEAD, success=True):
     env = dict(os.environ, DATABASE_URL='sqlite:///'+path.as_posix(), SEED_DEFAULT_ACCOUNTS='false',
                CUTTING_OPS_ENABLED='false', PYTHONUTF8='1', PYTHONIOENCODING='utf-8')
     result = subprocess.run([sys.executable,'-m','alembic','upgrade',revision],cwd=BACKEND,env=env,
@@ -94,7 +105,7 @@ def test_unique_revision_graph_and_frozen_archive():
                 identifiers.append(ast.literal_eval(node.value))
     assert len(identifiers) == len(set(identifiers))
     scripts=ScriptDirectory(str(BACKEND/'alembic'))
-    assert scripts.get_heads() == ['20261020_0171']
+    assert scripts.get_heads() == ['20261022_0175']
     assert list(scripts.walk_revisions())
     assert runpy.run_path(str(JP))['revision'] == '20261015_0163'
     assert sha256(JP.read_bytes().replace(b'\r\n',b'\n')).hexdigest() == 'dd653505555f3fe0847974ee14f379e41dc78a728bd2eeffbf26c63b3ecce47e'
@@ -114,7 +125,7 @@ def test_historical_variants_preserve_evidence_and_repeat_safely(base_database,t
             assert after[name] == value, name
     assert 'cutting_ops_period_events' in after and 'jp_intake_exports' in after
     with sqlite3.connect(path) as conn:
-        assert conn.execute('SELECT version_num FROM alembic_version').fetchall()==[('20261020_0171',)]
+        assert conn.execute('SELECT version_num FROM alembic_version').fetchall()==[(FINAL_HEAD,)]
         assert conn.execute('PRAGMA integrity_check').fetchall()==[('ok',)]
         assert not conn.execute('PRAGMA foreign_key_check').fetchall()
         for table in ('cutting_ops_period_events','jp_intake_reference_events','jp_intake_exports','jp_intake_export_identities'):
@@ -185,6 +196,85 @@ def test_repair_downgrade_refuses():
         runpy.run_path(str(REPAIR))['downgrade']()
 
 
+def test_main_head_adds_customer_schema_and_preserves_original_rows(base_database, tmp_path):
+    path = clone(base_database, tmp_path)
+    migrate(path, '20261020_0171')
+    before = snapshot(path)
+    migrate(path)
+    after = snapshot(path)
+    assert all(after[name] == value for name, value in before.items())
+    assert 'indonesia_material_customers' in after
+    seed_customer(path)
+    retained = snapshot(path)
+    migrate(path)
+    assert snapshot(path) == retained
+    assert version_snapshot(path) == [(FINAL_HEAD,)]
+
+
+@pytest.mark.parametrize('parallel', [[], ['20261020_0171'], ['20261019_0170', '20261017_0167']])
+def test_customer_and_legal_parallel_heads_preserve_nonempty_evidence(base_database, tmp_path, parallel):
+    path = clone(base_database, tmp_path)
+    migrate(path, '20261021_0169')
+    seed_customer(path)
+    before = snapshot(path)
+    for revision in parallel:
+        migrate(path, revision)
+    assert set(row[0] for row in version_snapshot(path)) == {'20261021_0169', *parallel}
+    migrate(path)
+    after = snapshot(path)
+    assert all(after[name] == value for name, value in before.items())
+    assert version_snapshot(path) == [(FINAL_HEAD,)]
+    with sqlite3.connect(path) as db:
+        assert db.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
+        assert db.execute('PRAGMA foreign_key_check').fetchall() == []
+        with pytest.raises(sqlite3.DatabaseError, match='immutable'):
+            db.execute("DELETE FROM indonesia_material_assets WHERE id='retained-asset'")
+    migrate(path)
+    assert snapshot(path) == after
+
+
+@pytest.mark.parametrize('label', ['20261021_0169', FINAL_HEAD])
+def test_customer_successor_label_requires_complete_customer_schema(base_database, tmp_path, label):
+    path = clone(base_database, tmp_path)
+    migrate(path, '20261021_0169')
+    seed_customer(path)
+    with sqlite3.connect(path) as db:
+        db.execute('ALTER TABLE indonesia_material_customers DROP COLUMN updated_at')
+        db.execute('UPDATE alembic_version SET version_num=?', (label,))
+    before, versions = snapshot(path), version_snapshot(path)
+    result = migrate(path, success=False)
+    assert 'customer schema is incomplete' in result.stderr
+    assert snapshot(path) == before
+    assert version_snapshot(path) == versions
+
+
+def test_customer_index_failure_rolls_back_table_and_preserves_version(base_database, tmp_path, monkeypatch):
+    path = clone(base_database, tmp_path)
+    migrate(path, '20261020_0171')
+    before, versions = snapshot(path), version_snapshot(path)
+    customer = runpy.run_path(str(VERSIONS / '20261021_0169_indonesia_customers.py'))
+    engine = sa.create_engine('sqlite:///' + path.as_posix())
+    with engine.begin() as connection:
+        with Operations.context(MigrationContext.configure(connection)):
+            with monkeypatch.context() as patch:
+                def fail_index(*args, **kwargs):
+                    raise RuntimeError('injected customer index failure')
+                patch.setattr(customer['op'], 'create_index', fail_index)
+                with pytest.raises(RuntimeError, match='injected customer index failure'):
+                    customer['upgrade']()
+    engine.dispose()
+    assert snapshot(path) == before
+    assert version_snapshot(path) == versions
+    migrate(path)
+    assert version_snapshot(path) == [(FINAL_HEAD,)]
+
+
+def test_customer_merge_downgrade_refuses():
+    migration = runpy.run_path(str(VERSIONS / '20261021_0172_merge_indonesia_customer_head.py'))
+    with pytest.raises(RuntimeError, match='must be preserved'):
+        migration['downgrade']()
+
+
 @pytest.mark.parametrize('sequence', [
     ['20261017_0167'], ['20261019_0167'],
     ['20261017_0167', '20261019_0167'], ['20261019_0167', '20261017_0167'],
@@ -198,7 +288,7 @@ def test_both_0167_paths_join_with_nonempty_evidence(base_database, tmp_path, se
         assert snapshot(path) == before
     assert {row[0] for row in version_snapshot(path)} == set(sequence)
     migrate(path)
-    assert version_snapshot(path) == [('20261020_0171',)]
+    assert version_snapshot(path) == [(FINAL_HEAD,)]
     after = snapshot(path)
     assert all(after[name] == value for name, value in before.items())
     migrate(path)
@@ -209,6 +299,9 @@ def test_both_0167_paths_join_with_nonempty_evidence(base_database, tmp_path, se
     (['20261017_0167'], ['jp']), (['20261019_0167'], ['cutting']),
     (['20261020_0168'], ['jp']), (['20261017_0167', '20261016_0166'], ['cutting', 'jp']),
     (['20261019_0170'], ['cutting']), (['20261020_0171'], ['jp']),
+    (['20261021_0169'], ['cutting']), (['20261021_0172'], ['jp']),
+    (['20261021_0169', '20261020_0171'], ['jp']),
+    (['20261021_0169', '20261019_0167'], ['cutting', 'jp']),
 ])
 def test_labeled_heads_require_their_complete_contract(base_database, tmp_path, versions, groups):
     path = clone(base_database, tmp_path)

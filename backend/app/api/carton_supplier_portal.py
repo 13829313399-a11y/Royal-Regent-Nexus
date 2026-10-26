@@ -1,4 +1,5 @@
 from urllib.parse import quote
+from pathlib import Path
 from typing import Literal
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
@@ -8,12 +9,12 @@ from sqlalchemy import select
 from app.models.carton_mark import CartonMarkAsset
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
-from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, CancellationAcknowledge, ShipmentStatusChange, ShipmentReceiptLink, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
+from app.schemas.carton_supplier_portal import CommitmentSave, BatchCommitmentSave, ShipmentCreate, ShipmentReceive, CancellationAcknowledge, RushAcknowledge, ShipmentStatusChange, ShipmentReceiptLink, SampleReceiptLink, ShipmentLineLink, SupplierMarkTemplateOut, SupplierDocumentExport
 from app.services import carton_supplier_portal as service
 from app.services import carton_supplier_delivery_import as delivery_import
 from app.services import carton_supplier_receipt_link as receipt_link
 from app.services import carton_supplier_settlement as settlement
-from app.schemas.carton_supplier_settlement import SupplierSettlementReview
+from app.schemas.carton_supplier_settlement import SupplierSettlementReview, MonthlySettlementAction
 from app.schemas.carton_supplier_portal import SupplierMarkAssetOut, SupplierMarkCheckOut, SupplierMarkUploadOrderOut, SupplierMarkAssetUploadOut
 from app.services import carton_supplier_mark_check as mark_check
 from app.services import carton_supplier_mark_upload as mark_upload
@@ -27,6 +28,24 @@ import json
 
 router = APIRouter(prefix="/api/carton-supplier", tags=["carton-supplier"])
 
+from app.schemas.carton_supplier_changes import SupplierChangeResponse
+from app.services import carton_supplier_changes as changes
+
+
+@router.get("/changes")
+def supplier_changes(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return changes.workspace(db, user, factory_id)
+
+
+@router.get("/internal/changes")
+def internal_supplier_changes(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return changes.workspace(db, user, factory_id, internal=True)
+
+
+@router.post("/changes/respond")
+def respond_supplier_change(payload: SupplierChangeResponse, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    return changes.respond(db, user, payload)
+
 @router.get("/memberships")
 def memberships(db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return [{"factory_id": supplier.factory_id, "supplier_name": supplier.supplier_name}
@@ -37,6 +56,43 @@ def memberships(db: Session = Depends(get_db), user: AuthContext = Depends(get_c
 def settlement_workspace(factory_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), currency: str = "CNY",
                          db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return settlement.supplier_workspace(db, user, factory_id, period, currency)
+
+
+@router.get("/monthly-settlements/workspace")
+def monthly_settlement_workspace(factory_id: str, period: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+                                 currency: str = "CNY", db: Session = Depends(get_db),
+                                 user: AuthContext = Depends(get_current_user)):
+    """Read-only copy of the internal simplified month, without internal blockers."""
+    from app.services import carton_monthly_settlement as monthly
+    if not service.supplier_permission(user, "carton_supplier:read", factory_id):
+        raise HTTPException(403, "没有本厂供应商月结查看权限")
+    data = monthly.workspace(db, factory_id, period, currency)
+    keys = ("source_key", "kind", "document_no", "acceptance_date", "customer_name", "contract_no",
+            "item_no", "packaging_type", "paper_quality", "specification", "unit", "quantity",
+            "unit_price", "amount", "currency")
+    return {
+        "factory_id": data["factory_id"], "supplier_name": data["supplier_name"],
+        "period": data["period"], "currency": data["currency"], "read_only": True,
+        "status": data["status"], "stale": data["stale"],
+        "submitted_at": data["submitted_at"], "supplier_confirmed_at": data["supplier_confirmed_at"],
+        "disputed_reason": data["disputed_reason"], "locked_at": data["locked_at"],
+        "can_confirm": False,
+        "can_dispute": False,
+        "totals": data["totals"],
+        "lines": [{key: line.get(key) for key in keys} for line in data["lines"]],
+    }
+
+
+@router.post("/monthly-settlements/confirm")
+def monthly_settlement_confirm(payload: MonthlySettlementAction, db: Session = Depends(get_db),
+                               user: AuthContext = Depends(get_current_user)):
+    raise HTTPException(410, "新月结确认已停用；本月对账仅供核对，请按原月结流程办理")
+
+
+@router.post("/monthly-settlements/dispute")
+def monthly_settlement_dispute(payload: MonthlySettlementAction, db: Session = Depends(get_db),
+                               user: AuthContext = Depends(get_current_user)):
+    raise HTTPException(410, "新月结异议已停用；本月对账仅供核对，请按原月结流程办理")
 
 
 @router.post("/settlements/{identifier}/review")
@@ -98,7 +154,7 @@ def carton_mark_asset_document(asset_id: str, factory_id: str, preview: bool = F
         "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})
 
 
-from app.schemas.carton_mark import CartonMarkSupplierBinding
+from app.schemas.carton_mark import CartonMarkSupplierBinding, CartonMarkAssociations, CartonMarkAssociationTarget
 
 
 @router.get('/carton-mark/binding-targets')
@@ -114,6 +170,13 @@ def propose_mark_binding(asset_id: str, factory_id: str, payload: CartonMarkSupp
     return propose(db, user, factory_id, asset_id, payload)
 
 
+@router.put('/carton-mark/assets/{asset_id}/associations', response_model=SupplierMarkAssetOut)
+def associate_mark_asset(asset_id: str, factory_id: str, payload: CartonMarkAssociations,
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_mark_associations import save
+    return save(db, user, factory_id, asset_id, payload, external=True)
+
+
 @router.get("/carton-mark/upload-orders", response_model=list[SupplierMarkUploadOrderOut])
 def carton_mark_upload_orders(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return mark_upload.upload_orders(db, user, factory_id)
@@ -123,9 +186,17 @@ def carton_mark_upload_orders(factory_id: str, db: Session = Depends(get_db), us
 async def upload_carton_mark_assets(request: Request, factory_id: str = Form(..., max_length=64),
         order_id: str = Form("", max_length=96), issue_id: str = Form("", max_length=96),
         shared_unbound: bool = Form(False),
+        request_id: str = Form('', max_length=96, pattern=r'^[A-Za-z0-9_-]*$'), targets_json: str = Form(''),
         files: list[UploadFile] = File(...), db: Session = Depends(get_db),
         user: AuthContext = Depends(get_current_user)):
     orders = mark_upload.upload_orders(db, user, factory_id)
+    from pydantic import TypeAdapter, ValidationError
+    try:
+        targets = TypeAdapter(list[CartonMarkAssociationTarget]).validate_json(targets_json) if targets_json else None
+        if targets is not None and len(targets) > 100: raise ValueError()
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(422, '关联目标参数不正确') from exc
+    if targets is not None and (order_id or issue_id): raise HTTPException(422, '请仅选择一种关联参数')
     if not 1 <= len(files) <= 50:
         raise HTTPException(413, "每批须为 1–50 个箱唛文件")
     if bool(order_id) != bool(issue_id):
@@ -143,8 +214,10 @@ async def upload_carton_mark_assets(request: Request, factory_id: str = Form(...
         contents.append((file.filename or "", content))
     db.rollback()
     parsed = await run_in_threadpool(mark_upload.recognize_batch, contents, orders)
-    _lock_receipt_factory(db, factory_id)
-    return mark_upload.save_batch(db, get_current_user(request, db), factory_id, parsed, orders, order_id, issue_id, shared_unbound=shared_unbound)
+    from app.services.carton_special_requests import locked_actor
+    user = locked_actor(db, get_current_user(request, db), factory_id)
+    return mark_upload.save_batch(db, user, factory_id, parsed, orders, order_id, issue_id,
+        shared_unbound=shared_unbound, targets=targets, request_id=request_id)
 
 
 @router.get("/carton-mark/templates", response_model=list[SupplierMarkTemplateOut])
@@ -167,6 +240,128 @@ def carton_mark_layouts(factory_id: str, order_id: str, issue_id: str,
         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     scope = mark_layout.context(db, user, factory_id, order_id, issue_id)
     return [mark_layout.output(row) for row in mark_layout.rows(db, scope)]
+
+
+@router.get("/carton-mark/pdf-ai-status")
+def carton_mark_pdf_ai_status(factory_id: str, order_id: str, issue_id: str,
+        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    mark_layout.context(db, user, factory_id, order_id, issue_id, write=True)
+    from app.services import carton_supplier_mark_ai
+    return carton_supplier_mark_ai.status()
+
+
+@router.get("/carton-mark/pdf-draft-status")
+def carton_mark_pdf_draft_status(factory_id: str = "", db: Session = Depends(get_db),
+        user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_supplier_mark_draft as draft
+    draft.access(db, user, factory_id)
+    return draft.ai.status()
+
+
+@router.post("/carton-mark/generate-pdf-draft")
+async def generate_carton_mark_pdf_draft(request: Request,
+        engine: Literal["excel_original", "deepseek_zumiez"] = Form("excel_original"),
+        factory_id: str = Form(""), excel_asset_id: str = Form(""),
+        expected_revision: int = Form(0, ge=0), ai_consent: bool = Form(False),
+        supplements_json: str = Form("{}", max_length=1024), excel: UploadFile | None = File(None),
+        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_supplier_mark_draft as draft
+    scope = draft.access(db, user, factory_id)
+    if bool(excel) == bool(excel_asset_id):
+        raise HTTPException(422, "请选择一个新 Excel 或一份资料库原稿")
+    stored = draft.source(db, user, factory_id, excel_asset_id, expected_revision) if excel_asset_id else None
+    content = stored["content"] if stored else await excel.read(MAX_DOCUMENT_FILE_BYTES + 1)
+    name = stored["name"] if stored else excel.filename or "document.xlsx"
+    try:
+        supplements = json.loads(supplements_json)
+        if not isinstance(supplements, dict):
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise HTTPException(422, "补齐内容格式无效") from None
+    original = draft.original(name, content, engine, ai_consent, supplements)
+    db.rollback()
+    pdf, pages, warnings = await run_in_threadpool(draft.prepare, original, engine)
+    current_user = get_current_user(request, db)
+    if scope != draft.access(db, current_user, factory_id):
+        raise HTTPException(409, "资料权限范围已变化，请刷新后重新生成")
+    if stored and stored != draft.source(db, current_user, factory_id, excel_asset_id, expected_revision):
+        raise HTTPException(409, "Excel 原稿已变化，请刷新后重新生成")
+    filename = Path(original["excel_file_name"]).stem[:180] + "_审阅稿.pdf"
+    return Response(pdf, media_type="application/pdf", headers={"Cache-Control": "private, no-store",
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+        "X-Carton-Pdf-Pages": str(pages), "X-Carton-Pdf-Warnings": quote(json.dumps(warnings, ensure_ascii=False))})
+
+
+async def _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel):
+    from app.services import carton_supplier_mark_draft as draft
+    scope=draft.access(db,user,factory_id)
+    if bool(excel)==bool(excel_asset_id):raise HTTPException(422,"请选择一个新Excel或一份资料库原稿")
+    stored=draft.source(db,user,factory_id,excel_asset_id,expected_revision) if excel_asset_id else None
+    content=stored["content"] if stored else await excel.read(MAX_DOCUMENT_FILE_BYTES+1)
+    name=stored["name"] if stored else excel.filename or "document.xlsx"
+    original=draft.original(name,content,"excel_original",False,{})
+    owner=user.id+json.dumps([user.authorization_version,factory_id,excel_asset_id,expected_revision,scope],ensure_ascii=True)
+    db.rollback()
+    return scope,stored,original,owner
+
+
+def _carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,expected_revision):
+    from app.services import carton_supplier_mark_draft as draft
+    user=get_current_user(request,db)
+    if scope!=draft.access(db,user,factory_id):raise HTTPException(409,"资料权限范围已变化，请重新读取")
+    if stored and stored!=draft.source(db,user,factory_id,excel_asset_id,expected_revision):
+        raise HTTPException(409,"Excel原稿已变化，请重新读取")
+    return user
+
+
+@router.post("/carton-mark/read-pdf-draft")
+async def read_carton_mark_draft(request:Request,factory_id:str=Form(""),excel_asset_id:str=Form(""),
+        expected_revision:int=Form(0,ge=0),ai_consent:bool=Form(False),worksheets_json:str=Form("[]",max_length=10000),excel:UploadFile|None=File(None),
+        db:Session=Depends(get_db),user:AuthContext=Depends(get_current_user)):
+    from app.services import carton_mark_workbench as workbench
+    scope,stored,original,owner=await _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel)
+    try:
+        original["worksheets"]=json.loads(worksheets_json)
+        if not isinstance(original["worksheets"],list) or len(original["worksheets"])>50 or any(not isinstance(s,str) for s in original["worksheets"]):raise ValueError()
+    except (ValueError,TypeError):raise HTTPException(422,"工作表选择无效") from None
+    result=await run_in_threadpool(workbench.read,original,owner,ai_consent)
+    current=_carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,expected_revision)
+    if current.id!=user.id or current.authorization_version!=user.authorization_version:raise HTTPException(409,"账号授权已变化，请重新读取")
+    return Response(json.dumps(result,ensure_ascii=False),media_type="application/json",headers={"Cache-Control":"private, no-store"})
+
+
+@router.post("/carton-mark/inspect-pdf-draft")
+async def inspect_carton_mark_draft(request:Request,factory_id:str=Form(""),excel_asset_id:str=Form(""),
+        expected_revision:int=Form(0,ge=0),excel:UploadFile|None=File(None),
+        db:Session=Depends(get_db),user:AuthContext=Depends(get_current_user)):
+    from app.services import carton_mark_workbench as workbench
+    scope,stored,original,_=await _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel)
+    result=await run_in_threadpool(workbench.inspect,original)
+    _carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,expected_revision)
+    return Response(json.dumps(result,ensure_ascii=False),media_type="application/json",headers={"Cache-Control":"private, no-store"})
+
+
+@router.post("/carton-mark/render-reviewed-draft")
+async def render_reviewed_carton_mark_draft(request:Request,factory_id:str=Form(""),excel_asset_id:str=Form(""),
+        expected_revision:int=Form(0,ge=0),excel:UploadFile|None=File(None),
+        review_payload:str=Form(...,max_length=500000),review_signature:str=Form(...,max_length=64),
+        edits_json:str=Form("{}",max_length=50000),reviewed_notes_json:str=Form("[]",max_length=30000),
+        additions_json:str=Form("[]",max_length=50000),omissions_json:str=Form("[]",max_length=5000),
+        graphics_json:str=Form("[]",max_length=10000),
+        include_sources:bool=Form(True),
+        paper:Literal["A3","A4"]=Form("A3"),orientation:Literal["portrait","landscape"]=Form("landscape"),
+        db:Session=Depends(get_db),user:AuthContext=Depends(get_current_user)):
+    from app.services import carton_mark_workbench as workbench
+    scope,stored,original,owner=await _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel)
+    try:edits=json.loads(edits_json);reviewed=json.loads(reviewed_notes_json);additions=json.loads(additions_json);omissions=json.loads(omissions_json);graphics=json.loads(graphics_json)
+    except (ValueError,TypeError):raise HTTPException(422,"核对内容格式无效") from None
+    pdf,pages,warnings=await run_in_threadpool(workbench.render,original,owner,review_payload,review_signature,edits,reviewed,paper,orientation,additions,omissions,graphics,include_sources)
+    current=_carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,expected_revision)
+    if current.id!=user.id or current.authorization_version!=user.authorization_version:raise HTTPException(409,"账号授权已变化，请重新读取")
+    filename=Path(original["excel_file_name"]).stem[:180]+"_审阅稿.pdf"
+    return Response(pdf,media_type="application/pdf",headers={"Cache-Control":"private, no-store",
+        "Content-Disposition":f"inline; filename*=UTF-8''{quote(filename)}",
+        "X-Carton-Pdf-Pages":str(pages),"X-Carton-Pdf-Warnings":quote(json.dumps(warnings,ensure_ascii=False))})
 
 
 @router.post("/carton-mark/layout-reference-preview")
@@ -302,6 +497,12 @@ def carton_mark_document(template_id: str, kind: str, factory_id: str, preview: 
 def acknowledge_cancellation(order_id: str, payload: CancellationAcknowledge, db: Session = Depends(get_db),
                              user: AuthContext = Depends(get_current_user)):
     return service.acknowledge_cancellation(db, user, order_id, payload)
+
+
+@router.post("/orders/{order_id}/rush-ack")
+def acknowledge_rush(order_id: str, payload: RushAcknowledge, db: Session = Depends(get_db),
+                     user: AuthContext = Depends(get_current_user)):
+    return service.acknowledge_rush(db, user, order_id, payload)
 
 
 @router.put("/papers/{line_id}/commitment")

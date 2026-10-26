@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas import carton_special_requests as special, carton_supplier_portal as portal
@@ -44,9 +45,8 @@ class SpecialDispatch(BaseModel):
 
 
 class ExtraLine(special.Line):
-    # Extra unprinted goods can be declared here. Printed extras must use an
-    # ordinary special request with confirmed materials before dispatch.
-    mark_mode: Literal["NONE"]
+    # Optional legacy description; printing material is independent file evidence.
+    mark_mode: Literal['EXISTING', 'UPLOAD', 'NONE', 'PENDING'] = 'PENDING'
     unit_price: special.Decimal = Field(ge=0, max_digits=18, decimal_places=6)
     free_confirmed: bool = False
     purpose: str = Field(min_length=1, max_length=255)
@@ -88,6 +88,8 @@ class SpecialAcceptance(BaseModel):
     request_id: str = Field(min_length=1, max_length=96)
     shipment_id: str = Field(min_length=1, max_length=96)
     expected_revision: int = Field(ge=1)
+    remaining_action: Literal["WAIT", "CLOSE"] = "WAIT"
+    close_reason: str = Field(default="", max_length=1000)
     lines: list[special.ReceiveLine] = Field(min_length=1, max_length=50)
     received_kind: Literal["SAMPLE", "WORKSHOP_MISC"] | None = None
     workshop_id: str = Field(default="", max_length=96)
@@ -104,4 +106,45 @@ class Receive(special.Command):
         if not self.formal and not self.special: raise ValueError("请选择本次实际核实的送货明细")
         if len({item.shipment_id for item in self.special}) != len(self.special):
             raise ValueError("同一收料操作不能重复引用送货明细")
+        return self
+
+
+class ReopenLine(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    shipment_line_id: str = Field(min_length=1, max_length=96)
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+
+
+class ReopenFormal(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    expected_revision: int = Field(ge=1)
+    lines: list[ReopenLine] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def unique(self):
+        if len({item.shipment_line_id for item in self.lines}) != len(self.lines):
+            raise ValueError("重开纸品不能重复")
+        return self
+
+
+class ReopenSpecial(ReopenFormal):
+    request_id: str = Field(min_length=1, max_length=96)
+    shipment_id: str = Field(min_length=1, max_length=96)
+
+
+class ReopenShortfall(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    factory_id: str = Field(min_length=1, max_length=64)
+    request_id: str = Field(min_length=8, max_length=128)
+    reason: str = Field(min_length=4, max_length=1000)
+    formal: ReopenFormal | None = None
+    special: list[ReopenSpecial] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def unique(self):
+        if not self.formal and not self.special: raise ValueError("请选择误关闭而需重开的纸品")
+        if len({item.shipment_id for item in self.special}) != len(self.special):
+            raise ValueError("重开不能重复引用同一送货来源")
+        if (len(self.formal.lines) if self.formal else 0) + sum(len(item.lines) for item in self.special) > 200:
+            raise ValueError("一次不能重开超过200条纸品")
         return self

@@ -6,7 +6,7 @@ export interface CartonPriceReview {
   original_unit_price: string | null; proposed_unit_price: string | null; effective_unit_price: string | null
   original_free_confirmed: boolean; currency: string; document_no: string; item_no: string
   packaging_type: string; specification: string; unit: string; quantity: string; receipt_status: string
-  reason: string; locked: boolean; actionable: boolean
+  reason: string; locked: boolean; actionable: boolean; need_full_correction?: boolean; can_propose?: boolean
   history: { revision: number; status: string; reason: string; action: string; occurred_at: string; actor_user_id: string; proposed_unit_price?: string | null }[]
 }
 const base = '/carton-price-reviews'

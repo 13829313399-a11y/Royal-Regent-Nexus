@@ -2,7 +2,7 @@
 from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import select
-from app.models.carton_procurement import CartonOrderLine, CartonOrder, CartonReceipt
+from app.models.carton_procurement import CartonOrderLine, CartonOrder, CartonReceipt, CartonPurchaseOrderIssue
 from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine
 from app.models.carton_special_requests import UnifiedDelivery, SpecialShipment
 from app.schemas import carton_special_requests as ss, carton_supplier_portal as ps
@@ -32,11 +32,13 @@ def receive(db, user, payload, *, refresh_actor):
         digest, saved = special.replay(db, user, payload, 'WAREHOUSE_BATCH_RECEIVE')
         if saved:
             return saved
+        from app.services.carton_supplier_evidence_guard import ensure_evidence_open
+        ensure_evidence_open(db, payload.factory_id, vendor, payload.delivery_date)
         for model in (UnifiedDelivery, SupplierShipment, SpecialShipment, CartonReceipt):
             if db.scalar(select(model.id).where(model.factory_id == payload.factory_id,
                     model.supplier_id == vendor, model.delivery_note_no == payload.delivery_note_no)):
                 raise HTTPException(409, '原送货单号已登记，请沿原送货单核实，不能重复入库')
-        formal_sources = []
+        formal_sources, replacement_links = [], {}
         from app.services import carton_supplier_portal as portal
         for item, line, order in regular:
             if payload.order_revisions.get(order.order_no) != order.revision:
@@ -46,7 +48,19 @@ def receive(db, user, payload, *, refresh_actor):
             issue = portal.latest_issue(db, order)
             if not issue:
                 raise HTTPException(409, '正单缺少原采购版本，请先核实采购单')
-            portal.executable(db, order, issue.id)
+            from app.services.carton_replenishment_receipts import select_link
+            effective = item.received_quantity - item.damaged_quantity - item.rejected_quantity - item.unusable_quantity
+            link = select_link(db, payload.factory_id, line, effective, item.replenishment_issue_id)
+            if link:
+                from app.services.carton_replenishment_supplier import validate_issue, sources
+                issue = validate_issue(db, order, link['replenishment_issue_id'])
+                source = next(source for source in sources(db, order) if source['issue_id'] == issue.id)
+                capacity = next(paper for paper in source['lines'] if paper['id'] == line.id)['remaining_to_ship']
+                if item.delivered_quantity > Decimal(capacity):
+                    raise HTTPException(409, '本次送货数量超过所选补单版本的可送额度，请分清普通采购与补单')
+                replacement_links[line.id] = link
+            else:
+                portal.executable(db, order, issue.id)
             from app.services.carton_material_correction import guard_lines
             guard_lines(db, payload.factory_id, [line.id])
             outstanding = portal.outstanding(db, [line.id]).get(line.id, Decimal(0))
@@ -76,21 +90,24 @@ def receive(db, user, payload, *, refresh_actor):
                 created_by=user.id, created_at=special.core.now_text())
             db.add(formal); db.flush()
             for index, (item, line, order, issue) in enumerate(formal_sources):
+                replacement = replacement_links.get(line.id)
                 source = SupplierShipmentLine(id=f'{formal.id}-{index+1:03d}', factory_id=payload.factory_id,
                     shipment_id=formal.id, order_line_id=line.id, issue_id=issue.id, quantity=item.delivered_quantity,
                     snapshot_json=special.pack(dict(order_no=order.order_no, contract_no=order.contract_no,
                         customer_po=order.customer_po, customer_name=order.customer_name, item_no=order.item_no,
                         child_no=f'{order.order_no}/{line.line_no:02d}', source_origin='WAREHOUSE_MANUAL',
                         supplier_price_confirmed=False, warehouse_unit_price=str(item.unit_price) if item.unit_price is not None else None,
+                        **(dict(replenishment_issue_id=issue.id, replenishment_document_no=issue.document_no,
+                            responsibility=replacement['responsibility']) if replacement else {}),
                         **{key: str(getattr(line, key)) for key in ('packaging_type', 'paper_quality', 'specification', 'dimension_unit', 'unit', 'unit_price', 'currency')})))
                 db.add(source)
-                price = item.unit_price if item.unit_price is not None else Decimal(0)
+                price = Decimal(0) if replacement and replacement['responsibility'] == 'SUPPLIER' else item.unit_price if item.unit_price is not None else Decimal(0)
                 formal_acceptance.append(ps.ReceiveLine(shipment_line_id=source.id, received_quantity=item.received_quantity,
                     damaged_quantity=item.damaged_quantity, rejected_quantity=item.rejected_quantity,
                     unusable_quantity=item.unusable_quantity, unit_price=price, price_action='PENDING' if item.unit_price is None or price == 0 and item.zero_price_kind != 'FREE' else 'PROPOSE',
                     zero_price_kind=('FREE' if item.zero_price_kind == 'FREE' else 'PENDING') if price == 0 else None, price_reason='仓库依据实际到货代录，待供应商核实价格',
                     difference_reason=item.feedback_note or '仓库按实际到货核实数量', paper_quality=item.paper_quality,
-                    specification=item.specification, replenishment_issue_id=item.replenishment_issue_id,
+                    specification=item.specification, replenishment_issue_id=issue.id if replacement else None,
                     location_allocations=item.location_allocations))
         children = []
         for item, row in specials:

@@ -3,7 +3,7 @@ from uuid import uuid4
 from decimal import Decimal
 import pytest
 from test_molding_sample_api import make_client, login_as
-from test_carton_special_requests import command, create_body, created, setup, ok, BASE, SUP, FACTORY
+from test_carton_special_requests import command, create_body, created, setup, ok, accept, BASE, SUP, FACTORY
 from test_carton_supplier_portal import supplier_login, accept_all
 
 INTERNAL = "/api/carton-unified-deliveries"
@@ -142,7 +142,7 @@ def test_bad_special_line_rolls_back_formal_dispatch_and_receipt(monkeypatch):
         assert all(Decimal(line["received_quantity"]) == 0 for line in unchanged["lines"])
 
 
-def test_marks_pending_can_send_but_cannot_ship_and_line_confirmation_is_frozen(monkeypatch):
+def test_marks_pending_never_gate_accepted_dispatch_and_file_evidence_is_frozen(monkeypatch):
     from PIL import Image
     from io import BytesIO
     content = BytesIO(); Image.new("RGB", (20, 20), "white").save(content, format="PNG")
@@ -162,8 +162,9 @@ def test_marks_pending_can_send_but_cannot_ship_and_line_confirmation_is_frozen(
         login_as(client, "admin")
         row = ok(client.post(BASE + f"/{row['id']}/lines/{row['lines'][0]['id']}/mark", json=command(draft,
             mark_mode="UPLOAD", attachment_id=file["id"])))
-        assert row["lines"][0]["mark_ready"]
-        old_file = row["lines"][0]["mark_attachment_id"]
+        assert not row["lines"][0]["mark_ready"]
+        assert row['current_version_id'] == draft['current_version_id']
+        row = accept(client, row)
         supplier_login(client)
         group = ok(client.post(EXTERNAL, json=dispatch_body(row)), 201)
         login_as(client, "admin")
@@ -171,9 +172,10 @@ def test_marks_pending_can_send_but_cannot_ship_and_line_confirmation_is_frozen(
         changed = ok(client.post(BASE + f"/{row['id']}/lines/{row['lines'][0]['id']}/mark", json=command(latest, mark_mode="PENDING")))
         assert not changed["lines"][0]["mark_ready"]
         frozen = ok(client.get(INTERNAL + f"/{group['id']}", params={"factory_id": FACTORY}))["lines"][0]
-        assert frozen["mark_attachment_id"] == old_file
-        assert frozen["material_manifest"][0]["id"] == old_file
-        original = client.get(BASE + f"/{row['id']}/attachments/{old_file}", params={"factory_id": FACTORY})
+        assert frozen['file_manifest'][0]['asset_id'] == draft['mark_assets'][0]['id']
+        assert frozen['file_manifest'][0]['sha256'] == file['sha256']
+        assert frozen['material_manifest'] == []
+        original = client.get(BASE + f"/{row['id']}/attachments/{frozen['file_manifest'][0]['attachment_id']}", params={"factory_id": FACTORY})
         assert original.status_code == 200 and original.content == content.getvalue()
 
 
@@ -192,10 +194,10 @@ def test_existing_library_selection_checks_scope_revision_and_freezes_original(m
         assert client.post(path, json=command(row, mark_mode="EXISTING", asset_id="asset-other", asset_revision=2)).status_code == 404
         assert client.post(path, json=command(row, mark_mode="EXISTING", asset_id="asset-local", asset_revision=1)).status_code == 409
         bound = ok(client.post(path, json=command(row, mark_mode="EXISTING", asset_id="asset-local", asset_revision=2)))
-        # Internal use confirms the selected library source, advancing its
-        # optimistic metadata revision while preserving the original bytes.
-        assert bound["lines"][0]["mark_asset_revision"] == 3
-        file_id = bound["lines"][0]["mark_attachment_id"]
+        # Association advances only the library metadata and retains DRAFT bytes.
+        assert bound['mark_assets'][0]['revision'] == 3
+        assert bound['current_version_id'] == row['current_version_id']
+        file_id = bound['attachments'][-1]['id']
         with SessionLocal() as db:
             asset = db.get(CartonMarkAsset, "asset-local"); asset.is_archived = True; asset.content = b"updated"; db.commit()
         supplier_login(client)
@@ -246,7 +248,8 @@ def test_formal_only_group_honors_current_factory_explicit_receipt_deny(monkeypa
         assert client.post(INTERNAL + f"/{group['id']}/receive", json=body).status_code == 403
 
 
-def test_extra_goods_require_warehouse_classification_and_price_zero_confirmation(monkeypatch):
+@pytest.mark.parametrize("received_kind", ["SAMPLE", "WORKSHOP_MISC"])
+def test_extra_goods_require_warehouse_classification_and_price_zero_confirmation(monkeypatch, received_kind):
     with make_client(monkeypatch) as client:
         place = setup(client); supplier_login(client)
         payload = command(delivery_note_no="EXTRA-1", delivery_date="2026-10-18", extra_lines=[dict(
@@ -261,15 +264,15 @@ def test_extra_goods_require_warehouse_classification_and_price_zero_confirmatio
         login_as(client, "admin")
         body = receive_body(group, place)
         assert client.post(INTERNAL + f"/{group['id']}/receive", json=body).status_code == 422
-        body["special"][0].update(received_kind="SAMPLE", requester_name="仓库核对人")
+        body["special"][0].update(received_kind=received_kind)
         received = ok(client.post(INTERNAL + f"/{group['id']}/receive", json=body))
-        assert received["special"][0]["kind"] == "SAMPLE"
+        assert received["special"][0]["kind"] == received_kind
         from app.db import SessionLocal
         from app.models.carton_procurement import CartonReceiptLine
         from sqlalchemy import select
         with SessionLocal() as db:
-            assert db.scalar(select(CartonReceiptLine.customer_code)) == "__SAMPLE__"
+            assert db.scalar(select(CartonReceiptLine.customer_code)) == f"__{received_kind}__"
         supplier_login(client)
         documents = ok(client.get("/api/carton-supplier/documents", params={"factory_id": FACTORY}))
         extra_document = next(item for item in documents if item["document_no"] == "EXTRA-1")
-        assert {line["order_kind"] for line in extra_document["lines"]} == {"SAMPLE"}
+        assert {line["order_kind"] for line in extra_document["lines"]} == {"SAMPLE" if received_kind == "SAMPLE" else "MISC"}

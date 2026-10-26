@@ -1510,6 +1510,18 @@ def can_access_notification(
     current_user: AuthContext,
     notification: SystemNotification,
 ) -> bool:
+    if notification.type == "carton_supplier_price_adopted":
+        from app.models.carton_price_review import CartonPriceReview
+        from app.services import carton_price_review as price_review
+        row = db.get(CartonPriceReview, str(parse_payload(notification.payload_json).get("review_id") or ""))
+        if row is None or row.factory_id != notification.target_factory_id:
+            return False
+        try:
+            price_review.authorize(db, current_user, row.factory_id)
+            price_review.customer_access(db, current_user, row)
+            return True
+        except HTTPException:
+            return False
     if notification.type == "carton_special_request":
         if notification.target_user_id != current_user.id:
             return False

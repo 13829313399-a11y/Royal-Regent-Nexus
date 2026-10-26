@@ -39,6 +39,9 @@ export interface OrderDraftForm {
   orderDate: string
   customerDueDate: string
   dueDate: string
+  planDateManual?: boolean
+  rush?: boolean
+  rushReason?: string
   note: string
   materials: OrderDraftMaterial[]
 }
@@ -87,6 +90,7 @@ function validDraft(value: unknown, context: OrderDraftContext): value is OrderD
     || typeof value.submission.requestId !== 'string' || !/^[A-Za-z0-9_-]{16,96}$/.test(value.submission.requestId)
     || typeof value.submission.payloadFingerprint !== 'string' || value.submission.payloadFingerprint.length > MAX_DRAFT_BYTES)) return false
   const form = value.form
+  if (form.planDateManual !== undefined && typeof form.planDateManual !== 'boolean') return false
   if (!formStrings.every(key => textValue(form[key])) || !['CALCULATED', 'EXPLICIT'].includes(String(form.quantityBasis))
     || !numberInput(form.orderQuantity) || !Array.isArray(form.materials) || form.materials.length < 1 || form.materials.length > 100) return false
   if (!form.materials.every(line => record(line) && materialStrings.every(key => textValue(line[key]))

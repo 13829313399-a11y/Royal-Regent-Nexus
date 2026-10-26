@@ -52,7 +52,7 @@ describe('enterprise UI shell contract', () => {
   it('keeps motion accessible and surfaces responsive', () => {
     expect(styleSource).toContain('@media (prefers-reduced-motion: reduce)')
     expect(styleSource).toContain('.enterprise-panel')
-    expect(styleSource).toContain('.route-page-enter-active')
+    expect(appShellSource).not.toContain('mode="out-in"')
     expect(styleSource).toContain('overflow-x: clip')
     expect(appShellSource).toContain('class="app-shell-content flex min-w-0"')
     expect(sidebarSource).toContain('lg:w-[88px]')
@@ -74,8 +74,8 @@ describe('enterprise UI shell contract', () => {
     expect(legacyNotificationSource).toContain("right: '12px'")
     expect(legacyNotificationSource).toContain("width: '430px'")
     expect(legacyNotificationSource).toContain('class="fixed z-[70]')
-    expect(accountMenuSource).toContain('fixed left-3 right-3 top-[68px]')
-    expect(accountMenuSource).toContain('sm:w-[calc(100vw-1.5rem)] sm:max-w-80')
+    expect(accountMenuSource).toContain(':style="menuStyle"')
+    expect(accountMenuSource).toContain('window.visualViewport')
   })
 
   it('adapts dashboard columns to the available content width', () => {

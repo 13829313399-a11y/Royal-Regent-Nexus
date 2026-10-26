@@ -19,13 +19,15 @@ from sqlalchemy import select
 from app.models.carton_master import CartonMasterRecord as Record
 from app.models.carton_positions import CartonLocation
 from app.schemas.carton_master import MasterSave
+from app.schemas.carton_quantity import PaperQuantityRule
 from app.services import carton_master as master
+from app.services.carton_quantity import requirements as paper_requirements
 
 MAX_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 1000
 HEADERS = {
     "paper-options": ["纸品类型", "纸质", "长", "宽", "高"],
-    "configurations": ["货号", "产品名称", "配置组", "纸品类型", "纸质", "长", "宽", "高", "尺寸单位", "计量单位", "每箱装产品数", "推荐", "状态", "备注", "每箱净重kg", "每箱毛重kg"],
+    "configurations": ["货号", "产品名称", "配置组", "纸品类型", "纸质", "长", "宽", "高", "尺寸单位", "计量单位", "每箱装产品数", "推荐", "状态", "备注", "每箱净重kg", "每箱毛重kg", "纸品行号", "计算方式", "对应箱行号", "每箱配套用量"],
     "locations": ["仓库", "仓位或范围"],
 }
 
@@ -43,12 +45,15 @@ def template(kind):
     notes = book.create_sheet("说明与示例")
     messages = ["仅导入“导入数据”页；本页示例不会导入。支持 xlsx / xlsm，最多 5 MB、1000 行。",
                     "纸品类型与纸质每格仅填一项，不使用逗号、顿号、分号或换行拼接。禁止公式，请粘贴为值。",
-                    "长、宽、高为正数，最多 8 位小数；纸品选项允许三项全空，货号包装必须全部填写。",
-                    "空行忽略；货号、产品名称、单位、装箱数须显式填写，不从相邻行推测。货号必须是真实文本，保留前导零；数字货号一律拒绝，仅修改显示格式无效，请先设为文本后重新输入或以单引号开头输入。",
+                    "尺寸填写长、宽或长、宽、高，须为正数，最多 8 位小数；空高度保留为二维规格，不补 0。纸品选项允许尺寸全空，货号包装至少须有长、宽。",
+                    "空行忽略；货号、产品名称、单位须显式填写；装箱数与配套用量按所选计算方式填写，不从相邻行推测。货号必须是真实文本，保留前导零；数字货号一律拒绝，仅修改显示格式无效，请先设为文本后重新输入或以单引号开头输入。",
                     "相同货号+配置组组成一套多纸品配置；配置组空白统一为“默认”。同组产品、推荐、状态和备注必须一致。",
                     "推荐填 是/否（空白为否），状态填 启用/停用（空白为启用）；同货号最多一个启用推荐组。",
                     "不同配置追加为包装变体；完全相同配置跳过，保留现有状态、推荐和备注。客户与价格不导入。",
-                    "货号包装的每箱净重kg、每箱毛重kg按每条纸品分别填写，选填、非负、最多四位小数，毛重不得小于净重；仍可导入不含这两列的旧模板。"]
+                    "货号包装的每箱净重kg、每箱毛重kg按每条纸品分别填写，选填、非负、最多四位小数，毛重不得小于净重；原 14 列及 16 列模板仍可导入。",
+                    "计算方式空白或填“按装箱数”时，填写每箱装产品数，对应箱行号及每箱配套用量留空；填“按箱配套”时，每箱装产品数须留空，填写对应箱行号和每箱配套用量。",
+                    "每箱配套用量须为正数，最多 14 位数字、4 位小数。组内使用配套时每行都须填写唯一连续纸品行号 1..N；对应箱行号引用本组编号，不是 Excel 行号，不能引用自身或另一配卡。",
+                    "例如同组第1行纸箱24装，第2行平卡关联第1行且每箱2片；100个产品需要5箱、10片。纸品行号支持倒序填写，系统按编号组成完整配置；不支持本次手动数量。"]
     if kind == "locations":
         messages = ["仅导入“导入数据”页；本页示例不会导入。支持 xlsx / xlsm，最多 5 MB、1000 数据行；所有行展开后合计最多 1000 个仓位（含跳过项）。",
                     "两列均须填写真实文本，禁止公式和数字单元格；请先设为文本后重新输入，或以单引号开头输入，保留 001 等前导零。",
@@ -73,9 +78,9 @@ def template(kind):
     elif kind == "paper-options":
         notes.append(["外箱", "A33", 30, 20, 15])
     else:
-        notes.append(["00123", "示例产品", "标准装", "外箱", "A33", 30, 20, 15, "cm", "个", 24, "是", "启用", "同一货号多纸品示例"])
-        notes.append(["00123", "示例产品", "标准装", "内箱", "B25", 18, 12.5, 10, "cm", "个", 24, "是", "启用", "同一货号多纸品示例"])
-    widths = ([18, 22, 14, 14, 14, 10, 10, 10, 12, 12, 16, 10, 10, 24, 16, 16]
+        notes.append(["00123", "示例产品", "标准装", "外箱", "A33", 30, 20, 15, "cm", "个", 24, "是", "启用", "同一货号多纸品示例", None, None, 1, "按装箱数", None, None])
+        notes.append(["00123", "示例产品", "标准装", "平卡", "B25", 18, 12.5, None, "cm", "片", None, "是", "启用", "同一货号多纸品示例", None, None, 2, "按箱配套", 1, 2])
+    widths = ([18, 22, 14, 14, 14, 10, 10, 10, 12, 12, 16, 10, 10, 24, 16, 16, 14, 16, 16, 18]
               if kind == "configurations" else [20] * len(HEADERS[kind]))
     for index, width in enumerate(widths, 1):
         notes.column_dimensions[get_column_letter(index)].width = width
@@ -113,9 +118,43 @@ def dimensions(values, required):
     present = [v is not None and str(v).strip() != "" for v in values]
     if not any(present) and not required:
         return ""
-    if not all(present):
-        raise ValueError("长、宽、高必须全部填写")
-    return "*".join(positive(value, name) for value, name in zip(values, ["长", "宽", "高"]))
+    if not all(present[:2]):
+        raise ValueError("长、宽必须全部填写；高度可留空，有高度时长、宽也须齐全")
+    return "*".join(positive(value, name) for value, name in zip(values, ["长", "宽", "高"]) if value is not None and str(value).strip() != "")
+
+
+def line_number(value, label, *, required=False):
+    if value is None or str(value).strip() == "":
+        if not required:
+            return None
+        raise ValueError(f"请填写{label}，须为 1 至 50 的整数")
+    try:
+        number = Decimal(str(value))
+        if isinstance(value, bool) or not number.is_finite() or number != number.to_integral_value() or not 1 <= number <= 50:
+            raise ValueError()
+        return int(number)
+    except (ValueError, InvalidOperation):
+        raise ValueError(f"{label}须为 1 至 50 的整数") from None
+
+
+def quantity_basis(values):
+    mode = scalar(values[17], "计算方式", 16)
+    if mode in {"", "按装箱数"}:
+        if any(value is not None and str(value).strip() != "" for value in values[18:20]):
+            raise ValueError("按装箱数计算时，对应箱行号和每箱配套用量须留空")
+        return {"usage_quantity": positive(values[10], "每箱装产品数")}
+    if mode != "按箱配套":
+        raise ValueError("计算方式仅支持按装箱数或按箱配套；留空沿用按装箱数")
+    if values[10] is not None and str(values[10]).strip() != "":
+        raise ValueError("按箱配套时，每箱装产品数须留空，不能混填两种计算依据")
+    parent = line_number(values[18], "对应箱行号", required=True)
+    try:
+        rule = PaperQuantityRule(mode="PER_CARTON", carton_line_no=parent, per_carton_quantity=values[19])
+    except ValidationError:
+        raise ValueError("每箱配套用量须为正数，最多 14 位数字、4 位小数") from None
+    data = rule.model_dump(mode="json")
+    data["per_carton_quantity"] = format(rule.per_carton_quantity.normalize(), "f")
+    return {"usage_quantity": None, "quantity_rule": data}
 
 
 def location_bins(expression, remaining):
@@ -187,10 +226,13 @@ def parse(content, filename, kind):
         sheet.reset_dimensions()
         rows = sheet.iter_rows()
         headers = [c.value for c in next(rows, [])]
-        if headers != HEADERS[kind] and not (kind == "configurations" and headers == HEADERS[kind][:-2]):
+        accepted_headers = [HEADERS[kind]]
+        if kind == "configurations":
+            accepted_headers.extend([HEADERS[kind][:14], HEADERS[kind][:16]])
+        if headers not in accepted_headers:
             raise HTTPException(422, "模板列名或顺序不正确，请重新下载对应模板")
         for index, cells in enumerate(rows, 2):
-            if index > MAX_ROWS + 1 or len(cells) > len(HEADERS[kind]):
+            if index > MAX_ROWS + 1 or len(cells) > len(headers):
                 raise HTTPException(422, "数据最多 1000 行且不能有模板外的列")
             values = [c.value for c in cells]
             values.extend([None] * (len(HEADERS[kind]) - len(values)))
@@ -226,7 +268,8 @@ def parse(content, filename, kind):
                                       "specification": dimensions(values[5:8], True),
                                       "dimension_unit": scalar(values[8], "尺寸单位", 16, True),
                                       "unit": scalar(values[9], "计量单位", 32, True),
-                                      "usage_quantity": positive(values[10], "每箱装产品数")},
+                                      **quantity_basis(values)},
+                             "line_no": line_number(values[16], "纸品行号"),
                              "preferred": scalar(values[11], "推荐", 2) or "否",
                              "status": scalar(values[12], "状态", 2) or "启用",
                              "note": scalar(values[13], "备注", 1000)}
@@ -282,6 +325,40 @@ def plan_locations(db, factory, entries, errors):
     return {"added": len(writes), "skipped": skipped, "errors": errors, "details": details}, writes
 
 
+def configuration_details(group, lines):
+    details = []
+    for number, line in enumerate(lines, 1):
+        rule = line.get("quantity_rule") or {}
+        if rule.get("mode") == "PER_CARTON":
+            quantity = format(Decimal(rule["per_carton_quantity"]).normalize(), "f")
+            basis = f"第{number}行配套第{rule['carton_line_no']}行，每箱{quantity}{line['unit']}"
+        else:
+            basis = f"按装箱数，每箱装产品数{line['usage_quantity']}"
+        details.append(f"{group['code']} / {group['group']}：第{number}行 {line['packaging_type']} {line['paper_quality']}，规格{line['specification']} {line['dimension_unit']}；{basis}")
+    return details
+
+
+def configuration_lines(lines):
+    # Compare reusable numeric meaning without rewriting any existing CONFIG or
+    # its immutable identity. Formal master maintenance keeps its own contract.
+    redundant_packing = []
+    for line in lines:
+        raw_rule = line.get("quantity_rule") if isinstance(line, dict) else getattr(line, "quantity_rule", None)
+        raw = raw_rule if isinstance(raw_rule, dict) else raw_rule.model_dump() if raw_rule else {}
+        redundant_packing.append(raw.get("mode") == "PACKING" and all(raw.get(field) is None
+            for field in ("manual_quantity", "carton_line_no", "per_carton_quantity")))
+    result = master.canonical_lines(lines)
+    for index, line in enumerate(result):
+        rule = line.get("quantity_rule") or {}
+        if rule.get("mode") == "PACKING" and redundant_packing[index]:
+            line.pop("quantity_rule")
+        elif rule.get("mode") == "PER_CARTON":
+            rule["per_carton_quantity"] = format(Decimal(rule["per_carton_quantity"]).normalize(), "f")
+    # Any original rule keeps canonical_lines positional, so redundant markers
+    # align by index. Only completely unreferenced groups can use legacy sorting.
+    return result if any(line.get("quantity_rule") for line in result) else sorted(result, key=master.encoded)
+
+
 def plan(db, factory, kind, entries, errors):
     if kind == "locations":
         return plan_locations(db, factory, entries, errors)
@@ -317,19 +394,39 @@ def plan(db, factory, kind, entries, errors):
         groups = {}
         for index, entry in entries:
             key = (norm(entry["code"]), norm(entry["group"]))
-            group = groups.setdefault(key, {**entry, "lines": [], "index": index})
+            group = groups.setdefault(key, {**entry, "lines": [], "numbers": [], "index": index})
             if any(group[field] != entry[field] for field in ("code", "product_name", "group", "preferred", "status", "note")):
                 errors.append(f"第 {index} 行：同一货号/配置组的产品、推荐、状态或备注冲突")
                 continue
             if entry["line"] in group["lines"]:
                 errors.append(f"第 {index} 行：同组纸品行重复")
             group["lines"].append(entry["line"])
+            group["numbers"].append(entry["line_no"])
         seen, preferred = set(), set()
         existing = {master.digest([r.code, {"product_name": json.loads(r.data_json).get("product_name", ""),
-                    "lines": master.canonical_lines(json.loads(r.data_json).get("lines", []))}]) for r in rows if r.kind == "CONFIG"}
+                    "lines": configuration_lines(json.loads(r.data_json).get("lines", []))}]) for r in rows if r.kind == "CONFIG"}
         identities = {r.identity for r in rows if r.kind == "CONFIG"}
         for group in groups.values():
-            semantic = {"product_name": group["product_name"], "lines": master.canonical_lines(group["lines"])}
+            lines, numbers = group["lines"], group["numbers"]
+            has_references = any(line.get("quantity_rule", {}).get("mode") == "PER_CARTON" for line in lines)
+            if has_references or any(number is not None for number in numbers):
+                if any(number is None for number in numbers) or len(set(numbers)) != len(numbers) or set(numbers) != set(range(1, len(lines) + 1)):
+                    errors.append(f"第 {group['index']} 行：同组纸品行号须逐行填写为唯一连续的 1..N；使用按箱配套时不能缺号、重号或跨组引用")
+                    continue
+                lines = [line for _, line in sorted(zip(numbers, lines), key=lambda item: item[0])]
+            try:
+                request = MasterSave(factory_id=factory, kind="CONFIG", code=group["code"],
+                    data={"product_name": group["product_name"], "lines": lines, "note": group["note"]},
+                    preferred=group["preferred"] == "是", status="ACTIVE" if group["status"] == "启用" else "INACTIVE",
+                    reason="模板导入货号包装")
+                paper_requirements(1, request.data.lines)
+            except ValidationError:
+                errors.append(f"第 {group['index']} 行：配置超出限制（每组最多 50 行纸品，请核对装箱数精度）")
+                continue
+            except HTTPException as exc:
+                errors.append(f"第 {group['index']} 行：{exc.detail}")
+                continue
+            semantic = {"product_name": group["product_name"], "lines": configuration_lines(request.data.lines)}
             signature = master.digest([group["code"], semantic])
             if signature in seen:
                 errors.append(f"第 {group['index']} 行：不同配置组包含相同配置，请合并后导入")
@@ -341,31 +438,30 @@ def plan(db, factory, kind, entries, errors):
             if signature in existing:
                 skipped += 1
                 details.append(f"{group['code']} / {group['group']}：相同配置已存在，跳过")
+                details.extend(configuration_details(group, semantic["lines"]))
                 continue
             if signature in identities:
                 errors.append(f"货号 {group['code']} 与已维护资料的原始配置冲突，请在现有资料中核对")
                 continue
-            try:
-                request = MasterSave(factory_id=factory, kind="CONFIG", code=group["code"],
-                                     data={**semantic, "note": group["note"]}, preferred=group["preferred"] == "是",
-                                     status="ACTIVE" if group["status"] == "启用" else "INACTIVE", reason="模板导入货号包装")
-                writes.append(("", request))
-                additions += 1
-                details.append(f"{group['code']} / {group['group']}：新增 {len(group['lines'])} 行纸品")
-            except ValidationError:
-                errors.append(f"第 {group['index']} 行：配置超出限制（每组最多 50 行纸品，请核对装箱数精度）")
+            writes.append(("", request))
+            additions += 1
+            details.append(f"{group['code']} / {group['group']}：新增 {len(lines)} 行纸品")
+            details.extend(configuration_details(group, semantic["lines"]))
     return {"added": additions, "skipped": skipped, "errors": errors, "details": details}, writes
 
 
 def run(db, user, factory, kind, content, filename, expected=None, *, parsed=None):
-    from app.services.carton_procurement import _lock_receipt_factory, _audit
-    master.require_manage(db, user, factory)
+    from app.services.carton_procurement import _audit
     if expected is not None:
-        _lock_receipt_factory(db, factory)
+        from app.services.carton_special_requests import locked_actor, allowed
+        user = locked_actor(db, user, factory)
+        if not all(allowed(user, factory, permission) for permission in ("read", "master_manage")):
+            raise HTTPException(403, "确认导入须具备当前厂区读取及基础资料维护权限，请重新核对授权")
+    master.require_manage(db, user, factory)
     entries, errors = parsed if parsed is not None else parse(content, filename, kind)
     fingerprint = hashlib.sha256(content).hexdigest()
     revision = snapshot(db, factory, kind)
-    token = master.digest(["master-import-v1", factory, kind, fingerprint, revision])
+    token = master.digest(["master-import-v2", factory, kind, fingerprint, revision])
     if expected is not None and expected != token:
         raise HTTPException(409, "文件、厂区、导入类型或基础资料已变化，请重新预览")
     result, writes = plan(db, factory, kind, entries, errors)

@@ -66,6 +66,9 @@ def source(db, user, payload):
         raise HTTPException(409, "Excel 原稿完整性校验失败，请联系仓库核实")
     if Path(original["excel_file_name"]).suffix.lower() not in {".xls", ".xlsx"}:
         raise HTTPException(422, "目前支持 .xls / .xlsx，请将其他 Excel 格式另存为 .xlsx")
+    if payload.engine == "deepseek_zumiez":
+        from app.services import carton_supplier_mark_ai as ai
+        return ai.snapshot(original, payload, issued_outer_fields(db, payload.order_id))
     original["layout"] = layouts.current(db, user, payload.factory_id, payload.order_id, payload.issue_id, payload.layout_id)
     if original["layout"]["config"].get("series") == "zuru":
         original["order_fields"] = issued_outer_fields(db, payload.order_id)
@@ -78,6 +81,9 @@ def source(db, user, payload):
 
 def prepare_pdf(original):
     # Render outside the business transaction, without modifying originals.
+    if original.get("engine") == "deepseek_zumiez":
+        from app.services import carton_supplier_mark_ai as ai
+        return ai.prepare(original)
     return render(original)
 
 
@@ -88,7 +94,8 @@ def save_pdf(db, user, payload, original, prepared):
     current = source(db, user, payload)
     if current != original:
         raise HTTPException(409, "订单或 Excel 资料已变更，请刷新后重新生成")
-    content, pages, warnings = prepared
+    content, pages, warnings = prepared[:3]
+    ai_metadata = prepared[3] if len(prepared) == 4 else {}
     timestamp = _now_text()
     name = Path(original["excel_file_name"]).stem[:230] + "_排版.pdf"
     asset = CartonMarkAsset(id=f"CMA-{uuid4().hex}", factory_id=payload.factory_id,
@@ -101,12 +108,13 @@ def save_pdf(db, user, payload, original, prepared):
     db.add(asset)
     db.flush()
     assets.audit(db, user, asset, "CARTON_MARK_ASSET_CREATED", dict(sha256=asset.sha256,
-        contract_number=asset.contract_number, conversion=dict(method="customer_layout",
+        contract_number=asset.contract_number, conversion=dict(method=original.get("engine", "customer_layout"),
             source_asset_id=original["excel_asset_id"], source_revision=original["asset_revision"],
             source_sha256=original["excel_sha256"], page_count=pages,
             layout_id=payload.layout_id, layout_version=original["layout"]["version"],
             supplements=original.get("supplements", {}), order_fields=original.get("order_fields", {}),
             source_item=original.get("source_item", ""),
+            **({"ai": ai_metadata} if ai_metadata else {}),
             layout_reference_sha256=original["layout"]["reference_sha256"],
             layout_config_sha256=hashlib.sha256(json.dumps(original["layout"]["config"], sort_keys=True).encode()).hexdigest()),
         supplier_context=dict(supplier_id=original["supplier_id"], order_id=payload.order_id,

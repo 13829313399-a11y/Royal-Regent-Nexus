@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.schemas.carton_customer_assignment import CartonCustomerAssignmentSave, CartonCustomerClaim
 from app.services import carton_file_jobs as file_jobs
+from app.services import carton_opening_batches as opening_batches
 from app.schemas.carton_order_split import SplitCreate, SplitAction, SplitReceiptPreview
 from app.services import carton_order_split as order_splits
 from app.schemas.carton_inventory_report import CartonInventoryReportOut
@@ -25,8 +26,9 @@ from app.schemas.carton_order_timeline import CartonOrderTimelineOut
 from app.services.carton_order_timeline import order_timeline
 from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction
 from app.services.carton_stocktake import create_stocktake, stocktake_detail, list_stocktakes, act_stocktake
-from app.services.carton_procurement import audit_query_options
+from app.services.carton_procurement import audit_query_options, supplier_promise_changes, supplier_promise_notices, promise_notice_acks, acknowledge_promise_notice
 from app.schemas.carton_procurement import (
+    PromiseNoticeAck,
     CartonAuditEventListOut,
     CartonAuditEventOut,
     CartonClosingGenerateRequest,
@@ -66,8 +68,10 @@ from app.schemas.carton_procurement import (
     CartonOrderBulkCancelRequest,
     CartonOrderBulkSubmitRequest,
     CartonOrderCancelRequest,
+    CartonOrderReturnRequest,
     CartonOrderCreate,
     CartonOrderDatesRequest,
+    CartonOrderRushRequest,
     CartonOrderHistorySuggestionListOut,
     CartonOrderListOut,
     CartonOrderOut,
@@ -142,6 +146,7 @@ from app.services.carton_procurement import (
     submit_order_to_supplier,
     update_order,
     update_order_dates,
+    set_order_rush,
     update_closing_status,
     unlock_closing,
     update_customer,
@@ -370,7 +375,7 @@ def get_orders(
     order_to: str = Query(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
     due_filter: Literal["ALL", "OVERDUE", "TODAY", "DUE_SOON", "UPCOMING"] = "ALL",
     sort: Literal["ORDER_DESC", "DUE_ASC", "DUE_DESC"] = "ORDER_DESC",
-    collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED"] = "ALL",
+    collaboration_filter: Literal["ALL", "NOT_ISSUED", "PENDING_CHANGE", "PENDING", "PARTIAL", "ACCEPTED", "NOT_REQUIRED", "CANCELLED", "LATE_PROMISE"] = "ALL",
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -520,6 +525,16 @@ def post_order_dates(
     return order_out(db, update_order_dates(db, order_no, payload, current_user))
 
 
+@router.post("/orders/{order_no}/rush", response_model=CartonOrderOut)
+def post_order_rush(
+    order_no: str,
+    payload: CartonOrderRushRequest,
+    db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    return order_out(db, set_order_rush(db, order_no, payload, current_user))
+
+
 @router.post("/orders/{order_no}/append", response_model=CartonOrderOut)
 def post_order_append(
     order_no: str,
@@ -618,7 +633,7 @@ def post_order_cancel(
 @router.post("/orders/{order_no}/return", response_model=CartonOrderOut)
 def post_order_return(
     order_no: str,
-    payload: CartonOrderCancelRequest,
+    payload: CartonOrderReturnRequest,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -996,6 +1011,9 @@ def start_import_job(
     factory_id: str,
     import_type: Literal["WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE", "DELIVERY_NOTE"],
     file: UploadFile = File(...), customer_code: str = Form(default="", max_length=64),
+    scope_mode: str = Form(default="UNDECLARED", max_length=16), as_of_date: str = Form(default="", max_length=10),
+    coverage_start: str = Form(default="", max_length=10), coverage_end: str = Form(default="", max_length=10),
+    full_scope_confirmed: bool = Form(default=False),
     advance_days: int = Query(default=3, ge=0, le=30),
     db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1005,6 +1023,10 @@ def start_import_job(
         customer_code = get_active_customer(db, factory_id, customer_code).customer_code
     content = _read_carton_upload(file)
     profile = {"customer_code": customer_code} if import_type == "WEEKLY_SCHEDULE" else {"advance_days": advance_days} if import_type == "INSPECTION_SCHEDULE" else {}
+    if import_type == "WEEKLY_SCHEDULE":
+        from app.services.carton_schedule_coverage import normalize_scope
+        profile = normalize_scope(dict(profile, scope_mode=scope_mode, as_of_date=as_of_date,
+            coverage_start=coverage_start, coverage_end=coverage_end, full_scope_confirmed=full_scope_confirmed))
     metadata = {"filename": file.filename, "content_type": file.content_type, "profile": profile}
     db.rollback()
     return file_jobs.start_job(current_user.id, factory_id, "parse",
@@ -1025,7 +1047,8 @@ def complete_import_job(job_id: str, factory_id: str, db: Session = Depends(get_
         raise HTTPException(422, "此任务不是导入任务")
     with file_jobs.result(job) as (parsed, args):
         if job.batch_id:
-            return get_import_batch(db, factory_id, job.batch_id)
+            from app.services.carton_schedule_coverage import completed_batch
+            return completed_batch(db, current_user, factory_id, job.batch_id)
         kind, filename, content = args
         upload = SimpleNamespace(filename=filename, content_type=job.metadata["content_type"])
         batch = create_import_batch(db, factory_id, kind, upload, content, current_user,
@@ -1050,11 +1073,17 @@ def post_weekly_import(
     factory_id: str,
     customer_code: str = Form(..., min_length=1, max_length=64),
     file: UploadFile = File(...),
+    scope_mode: str = Form(default="UNDECLARED", max_length=16), as_of_date: str = Form(default="", max_length=10),
+    coverage_start: str = Form(default="", max_length=10), coverage_end: str = Form(default="", max_length=10),
+    full_scope_confirmed: bool = Form(default=False),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:import", factory_id)
-    return _isolated_import(db, factory_id, "WEEKLY_SCHEDULE", file, current_user, {"customer_code": customer_code})
+    from app.services.carton_schedule_coverage import normalize_scope
+    profile = normalize_scope(dict(customer_code=customer_code, scope_mode=scope_mode, as_of_date=as_of_date,
+        coverage_start=coverage_start, coverage_end=coverage_end, full_scope_confirmed=full_scope_confirmed))
+    return _isolated_import(db, factory_id, "WEEKLY_SCHEDULE", file, current_user, profile)
 
 
 @router.get("/schedule-order-marks")
@@ -1077,6 +1106,7 @@ def post_schedule_order_mark(
     return set_schedule_order_mark(
         db, factory_id, payload.batch_id, payload.source_sheet,
         payload.source_row, payload.marked, current_user,
+        reason=payload.reason,
     )
 
 
@@ -1091,6 +1121,7 @@ def post_schedule_order_marks_bulk(
         db, factory_id, payload.batch_id,
         [(row.source_sheet, row.source_row) for row in payload.rows],
         payload.marked, current_user,
+        reason=payload.reason,
     )
 
 
@@ -1131,6 +1162,10 @@ def remove_unmatched_receipt_import(
 def get_imports(
     factory_id: str,
     import_type: str = Query(default="", max_length=32),
+    import_types: str = Query(default="", max_length=96),
+    status: str = Query(default="", max_length=16),
+    date_from: str = Query(default="", max_length=10),
+    date_to: str = Query(default="", max_length=10),
     summary_only: bool = False,
     search: str = Query(default="", max_length=128),
     customer_code: str = Query(default="", max_length=64),
@@ -1144,6 +1179,10 @@ def get_imports(
         db,
         factory_id,
         import_type=import_type.strip(),
+        import_types=import_types.strip(),
+        status=status.strip(),
+        date_from=date_from.strip(),
+        date_to=date_to.strip(),
         summary_only=summary_only,
         search=search.strip(),
         customer_code=customer_code.strip(),
@@ -1327,6 +1366,31 @@ def post_history_inventory_preview(
     factory_id=_ensure_permission(db,current_user,"carton_procurement:inventory_write",factory_id)
     with _isolated_sheet_upload(db, file, factory_id, current_user, "carton_procurement:inventory_write") as (content, _):
         return preview_history_inventory(db,factory_id,file.filename or "history-inventory.xlsx",content,options=options)
+
+
+@router.get("/inventory/history-imports/batches")
+def opening_batches_list(factory_id: str, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    factory = _ensure_permission(db, user, "carton_procurement:inventory_write", factory_id)
+    from app.services.carton_procurement import _lock_receipt_factory
+    _lock_receipt_factory(db, factory)
+    return opening_batches.list_batches(db, factory, limit, offset)
+
+
+@router.post("/inventory/history-imports/batches/{batch_id}/reversal-preview")
+def opening_batch_reversal_preview(batch_id: str, factory_id: str, db: Session = Depends(get_db),
+                                   user: AuthContext = Depends(get_current_user)):
+    factory = _ensure_permission(db, user, "carton_procurement:inventory_write", factory_id)
+    return opening_batches.preview_batch_reversal(db, factory, batch_id)
+
+
+@router.post("/inventory/history-imports/batches/{batch_id}/reverse")
+def opening_batch_reverse(batch_id: str, payload: opening_batches.OpeningBatchReversal,
+                          db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.auth import build_auth_context, get_authenticated_user
+    actor = build_auth_context(db, get_authenticated_user(db, user))
+    _ensure_permission(db, actor, "carton_procurement:inventory_write", payload.factory_id)
+    return opening_batches.reverse_batch(db, batch_id, payload, actor)
 
 
 @router.get("/stocktakes")
@@ -1708,3 +1772,19 @@ def request_material_correction(order_no: str, payload: MaterialCorrectionCreate
 @router.post("/material-corrections/{identifier}/actions")
 def withdraw_material_correction(identifier: str, payload: MaterialCorrectionAction, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     return material_corrections.act(db, current_user, identifier, payload)
+
+@router.get("/supplier-promise-changes")
+def supplier_promise_change_list(factory_id: str, limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+                                 db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_procurement import _lock_receipt_factory
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    _lock_receipt_factory(db, factory_id)
+    return supplier_promise_notices(db, factory_id, limit, offset)
+
+
+@router.post("/promise-notices/ack")
+def acknowledge_promise_notice_route(payload: PromiseNoticeAck,
+                                     db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
+    payload.factory_id = factory_id
+    return acknowledge_promise_notice(db, current_user, payload)

@@ -21,4 +21,5 @@ def dimension_unit_for_display(unit: str | None, specification: str | None) -> s
 
 def specification_for_display(specification: str | None, unit: str | None) -> str:
     _, base = specification_unit(specification)
-    return f"{base} {dimension_unit_for_display(unit, specification)}".strip()
+    display_unit = dimension_unit_for_display(unit, specification)
+    return f"{base} {'inch' if display_unit == 'in' else display_unit}".strip()

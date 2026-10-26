@@ -4,6 +4,50 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
 
 
+class IndonesiaMaterialCustomer(Base):
+    __tablename__ = 'indonesia_material_customers'
+    __table_args__ = (UniqueConstraint('factory_id', 'business_key'), CheckConstraint('version > 0'))
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(32), index=True)
+    business_key: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+    data: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+    @property
+    def kind(self):
+        return 'customer'
+
+
+class IndonesiaMaterialOption(Base):
+    __tablename__ = 'indonesia_material_options'
+    __table_args__ = (UniqueConstraint('factory_id', 'business_key'), CheckConstraint('version > 0'))
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factory_id: Mapped[str] = mapped_column(String(32), index=True)
+    business_key: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+    data: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+    @property
+    def kind(self):
+        return 'option'
+
+
+class IndonesiaMaterialSharedOption(Base):
+    __tablename__ = 'indonesia_material_shared_options'
+    __table_args__ = (CheckConstraint('version > 0'),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    business_key: Mapped[str] = mapped_column(String(64), unique=True)
+    version: Mapped[int] = mapped_column(Integer)
+    data: Mapped[dict] = mapped_column(JSON)
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+    @property
+    def kind(self):
+        return 'option'
+
+
 class IndonesiaMaterialRecord(Base):
     __tablename__ = 'indonesia_material_records'
     __table_args__ = (

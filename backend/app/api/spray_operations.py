@@ -1,6 +1,6 @@
 """Strict authority and projection for the rebuilt four-factory spray domain."""
 from datetime import datetime, UTC
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.exceptions import RequestValidationError
@@ -13,12 +13,14 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.db import get_db
 from app.models import spray_ops as m
-from app.services.auth import AuthContext, get_current_user, authorization_decision
+from app.services.auth import AuthContext, get_current_user
 from app.services.spray_ops import common as c, schemas as s, production as p, scheduling
 from app.services.spray_ops import handover, materials, finance, history
 from app.services.spray_ops import imports as ingest
 from app.services.spray_ops import exports
-from app.services.spray_ops.query_filters import related_order
+from app.services.spray_ops.query_filters import related_order, collection_statement
+from app.services.spray_ops.authz import allowed, authorize, ready
+from app.services.spray_ops.progress import task_record
 from app.services.spray_ops.source_reader import PROFILES, read_source, MAX_FILE
 
 
@@ -44,20 +46,8 @@ Db = Annotated[Session, Depends(get_db)]
 User = Annotated[AuthContext, Depends(get_current_user)]
 
 
-def allowed(user, factory, action):
-    return authorization_decision(user, "spray_ops:" + action, factory, "production")[0]
-
-
-def authorize(user, factory, *actions):
-    c.require(factory in m.FACTORIES, "factory_required", "请选择华兴、华登、华康A或华康B的明确工厂", 422)
-    for action in {"read", *actions}:
-        c.require(allowed(user, factory, action), "permission_denied", "没有当前工厂喷油模块的相应权限", 403)
-    c.require(settings.spray_ops_enabled, "module_disabled", "喷油部生产管理尚未启用", 503)
-
-
 def envelope(db, user, f, data, *, pagination=None, warnings=None, coverage=None):
-    gate = db.get(m.SprayOpsFactory, f)
-    c.require(gate is not None, "schema_not_ready", "喷油模块尚未迁移", 503)
+    gate = ready(db, f)
     meta = dict(factory_id=f, as_of=datetime.now(UTC).isoformat(), factory_revision=gate.revision, data_mode="live", warnings=warnings or [])
     if coverage:
         meta["coverage"] = coverage
@@ -405,24 +395,12 @@ COLLECTIONS = {
 
 
 @router.get("/{collection}")
-def list_collection(collection: str, db: Db, user: User, factory_id: str = "", page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), search: str = Query("", max_length=128), status: str = "", from_date: str = "", to_date: str = "", demand_id: str = ""):
+def list_collection(collection: str, db: Db, user: User, factory_id: str = "", page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), search: str = Query("", max_length=128), status: str = "", from_date: str = "", to_date: str = "", demand_id: str = "", task_scope: Literal['all', 'active'] = 'all'):
     authorize(user, factory_id, *COLLECTION_PERMISSIONS.get(collection, ()))
     c.require(collection in COLLECTIONS, "not_found", "工作区不存在", 404)
     model, detail = COLLECTIONS[collection]
-    stmt = c.scoped(db, model, factory_id)
-    stmt = related_order(db, factory_id, demand_id, collection, stmt)
-    if search:
-        fields = [getattr(model, key) for key in ("document_no", "code", "item_no", "name", "label") if hasattr(model, key)]
-        if fields:
-            from sqlalchemy import or_
-            stmt = stmt.where(or_(*(field.contains(search, autoescape=True) for field in fields)))
-    if status and hasattr(model, "status"):
-        stmt = stmt.where(model.status == status)
-    if hasattr(model, "business_date"):
-        if from_date:
-            stmt = stmt.where(model.business_date >= from_date)
-        if to_date:
-            stmt = stmt.where(model.business_date <= to_date)
+    stmt = collection_statement(db, factory_id, collection, model, search=search, status=status,
+                                from_date=from_date, to_date=to_date, demand_id=demand_id, task_scope=task_scope)
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
     items = list(db.scalars(stmt.order_by(model.created_at.desc(), model.id).offset((page - 1) * page_size).limit(page_size)))
     data = [detail(db, factory_id, item) if detail else c.serialize(item) for item in items]
@@ -438,4 +416,6 @@ def get_entity(collection: str, entity_id: str, db: Db, user: User, factory_id: 
     result = detail(db, factory_id, item) if detail else c.serialize(item)
     if collection == "demands":
         result['journey'] = p.demand_journey(db, factory_id, item.id)
+    elif collection == 'tasks':
+        result = task_record(db, factory_id, item)
     return envelope(db, user, factory_id, result)

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 const enterpriseSource = readFileSync(join(process.cwd(), 'src/data/enterpriseMock.ts'), 'utf8')
 const moduleCenterSource = readFileSync(join(process.cwd(), 'src/views/ModuleCenterView.vue'), 'utf8')
+const visibleModulesSource = readFileSync(join(process.cwd(), 'src/composables/useVisibleModules.ts'), 'utf8')
 const routerSource = readFileSync(join(process.cwd(), 'src/router/index.ts'), 'utf8')
 const moduleCardSource = readFileSync(join(process.cwd(), 'src/components/modules/ModuleCard.vue'), 'utf8')
 const rawMaterialSource = readFileSync(join(process.cwd(), 'src/views/RawMaterialManagementView.vue'), 'utf8')
@@ -33,8 +34,9 @@ describe('production module entry', () => {
     expect(enterpriseSource).not.toMatch(/啤机外发协同/)
     expect(enterpriseSource).not.toMatch(/\/pi-outsource\//)
 
-    expect(moduleCenterSource).toMatch(/module\.id === 'molding-sample-production-task'/)
-    expect(moduleCenterSource).toMatch(
+    expect(moduleCenterSource).toContain('useVisibleModules')
+    expect(visibleModulesSource).toMatch(/module\.id === 'molding-sample-production-task'/)
+    expect(visibleModulesSource).toMatch(
       /getFactoryScopedRoute\('\/modules\/production\/molding-sample-tasks', factory\.id\)/,
     )
     expect(moduleCenterSource).not.toMatch(/moldingSampleWorkflowMock/)
@@ -56,7 +58,7 @@ describe('production module entry', () => {
       '用料回填',
       '工程同步',
     ]) {
-      expect(moduleCenterSource).toMatch(new RegExp(businessCopy))
+      expect(visibleModulesSource).toMatch(new RegExp(businessCopy))
     }
 
     expect(moduleCenterSource).not.toMatch(/正式接口|显错|不兜底|不离线/)
@@ -160,7 +162,7 @@ describe('production module entry', () => {
     expect(enterpriseSource).not.toMatch(/title: '订单审批工作台'/)
     expect(enterpriseSource).toMatch(/id: 'indonesia-material-shipment'/)
     expect(enterpriseSource).toMatch(/title: '送印尼物料'/)
-    expect(enterpriseSource).toMatch(/统筹送往印尼的物料需求、备料、装运、清关和到货跟踪/)
+    expect(enterpriseSource).toMatch(/按合同与交付批次计算物料需求、倒排回料，按数量分配并输出原版出货明细/)
     expect(enterpriseSource).toMatch(/route: '\/modules\/sales-business\/indonesia-material-shipment'/)
     expect(enterpriseSource).not.toMatch(/id: 'customer-delivery'/)
     expect(enterpriseSource).not.toMatch(/title: '客户交付风险'/)

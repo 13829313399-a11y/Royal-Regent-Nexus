@@ -9,6 +9,10 @@ from fastapi import HTTPException
 from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from app.models.indonesia_materials import IndonesiaMaterialRecord as Record, IndonesiaMaterialCommand as Receipt, IndonesiaMaterialAsset as Asset
+from app.models.indonesia_materials import IndonesiaMaterialCustomer as Customer
+from app.models.indonesia_materials import IndonesiaMaterialOption as OptionRecord
+from app.models.indonesia_materials import IndonesiaMaterialSharedOption as SharedOption
+from app.services.indonesia_material_options import Option, OptionIdentity, defaults as option_defaults, automatic_billing, option_key
 from app.schemas import indonesia_materials as s
 from app.services.auth import authorization_decision
 from app.core.time import business_now
@@ -17,7 +21,7 @@ from app.services.identity_policy import lock_mutation
 from app.services.indonesia_material_calculations import require, number, decimal_text, ZERO, production_plan, packaging_totals, precise_decimals
 
 FACTORIES = {'huakang-a', 'huakang-b', 'huakang-c', 'huakang-d', 'huadeng', 'huaxing'}
-TABLES = (Record.__table__, Receipt.__table__, Asset.__table__)
+TABLES = (Record.__table__, Receipt.__table__, Asset.__table__, Customer.__table__, OptionRecord.__table__, SharedOption.__table__)
 ACTIONS = ('read', 'write', 'receipt_confirm', 'export')
 
 
@@ -39,15 +43,36 @@ def ready(db):
     inspector = inspect(db.connection())
     names = set(inspector.get_table_names())
     require(all(t.name in names and {c.name for c in t.columns} <= {c['name'] for c in inspector.get_columns(t.name)} for t in TABLES),
-            '送印尼物料需要先完成显式数据库迁移 20261013_0160', 503)
+            '送印尼物料需要先完成显式数据库迁移 20261022_0174（全厂共用基础选项）', 503)
 
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
+def order_key(data):
+    if data.get('batch'):
+        return [data[k] for k in ('customer', 'recipient', 'contract_no', 'item_no', 'batch')]
+    # Delivery dates may change; they must not create duplicate material demand.
+    return ['po_order', *[data.get(k, '') for k in ('customer', 'recipient', 'contract_no', 'po_no', 'item_no')]]
+
+
+def matching_orders(orders, data):
+    if data.get('batch'):
+        return [row for row in orders if row.business_key == digest(order_key(data)) or
+                (not row.data.get('batch') and all(row.data.get(k, '') == data.get(k, '')
+                 for k in ('customer', 'recipient', 'contract_no', 'item_no')) and
+                 (not data.get('po_no') or not row.data.get('po_no') or row.data.get('po_no', '') == data.get('po_no', '')))]
+    return [row for row in orders if all(row.data.get(k, '') == data.get(k, '')
+            for k in ('customer', 'recipient', 'contract_no', 'item_no')) and
+            (not data.get('po_no') or not row.data.get('po_no') or row.data.get('po_no', '') == data.get('po_no', ''))]
+
+
 def view(row):
-    return dict(id=row.id, kind=row.kind, version=row.version, data=deepcopy(row.data), updated_at=row.updated_at)
+    result = dict(id=row.id, kind=row.kind, version=row.version, data=deepcopy(row.data), updated_at=row.updated_at)
+    if isinstance(row, SharedOption):
+        result['scope'] = 'shared-options'
+    return result
 
 
 class Ledger:
@@ -56,20 +81,27 @@ class Ledger:
         self._rows = {}
         self._shipped = None
 
-    def get(self, entity_id, kind):
-        row = self.db.get(Record, entity_id) if entity_id else None
-        require(row is not None and row.factory_id == self.factory and row.kind == kind, '业务记录不存在或不属于当前厂区', 404)
+    def get(self, entity_id, kind, *, include_deleted=False):
+        model = {'customer': Customer, 'option': OptionRecord}.get(kind, Record)
+        row = self.db.get(model, entity_id) if entity_id else None
+        require(row is not None and row.factory_id == self.factory and row.kind == kind and (include_deleted or not row.data.get('deleted')), '业务记录不存在或不属于当前厂区', 404)
         return row
 
-    def rows(self, kind):
+    def rows(self, kind, *, include_deleted=False):
         if kind not in self._rows:
-            self._rows[kind] = list(self.db.scalars(select(Record).where(Record.factory_id == self.factory, Record.kind == kind).order_by(Record.id)))
-        return self._rows[kind]
+            model = {'customer': Customer, 'option': SharedOption}.get(kind, Record)
+            query = select(model) if model is SharedOption else select(model).where(model.factory_id == self.factory)
+            if model is Record:
+                query = query.where(Record.kind == kind)
+            self._rows[kind] = list(self.db.scalars(query.order_by(model.id)))
+        return [row for row in self._rows[kind] if include_deleted or not row.data.get('deleted')]
 
     def save(self, kind, data, row=None, key=None):
         before = view(row) if row else None
         if row is None:
-            row = Record(id=str(uuid4()), factory_id=self.factory, kind=kind, business_key=digest(key or str(uuid4())), version=0)
+            values = dict(id=str(uuid4()), factory_id=self.factory, business_key=digest(key or str(uuid4())), version=0)
+            model = {'customer': Customer, 'option': OptionRecord}.get(kind, Record)
+            row = Record(kind=kind, **values) if model is Record else model(**values)
             self.db.add(row)
         elif key is not None:
             row.business_key = digest(key)
@@ -83,14 +115,81 @@ class Ledger:
         self.changes.append(dict(before=before, after=view(row)))
         return row
 
+    def save_material(self, data, row=None):
+        self.validate_option_values(data, row.data if row else None)
+        # One maintained weight. Keep the old key only for frozen snapshots/API compatibility.
+        data['billing_weight_kg'] = data['net_weight_kg']
+        if row and data['unit'].casefold() == row.data['unit'].casefold():
+            data['unit'] = row.data['unit']
+        if data['billing_mode'] == 'automatic':
+            if row and row.data.get('billing_mode') == 'automatic' and data['customs_unit'].casefold() == row.data['customs_unit'].casefold():
+                data.update({key: row.data[key] for key in ('billing_basis', 'billing_factor', 'billing_unit')})
+                data['customs_rule'] = deepcopy(row.data.get('customs_rule')) or dict(basis=data['billing_basis'], divisor=data['billing_factor'])
+            else:
+                data.update(automatic_billing(data['customs_unit'], self.rows('option', include_deleted=True)))
+                data['customs_rule'] = dict(basis=data['billing_basis'], divisor=data['billing_factor'])
+        else:
+            data['customs_rule'] = None
+        require(not row or data['code'] == row.data['code'], '物料编码不可覆盖修改；请维护原编码资料', 422)
+        if row and any(data[k] != row.data[k] for k in ('unit', 'specification')):
+            used = any(r.data['material_id'] == row.id for r in self.rows('supply')) or any(
+                d['material_id'] == row.id for r in self.rows('order') for d in r.data['demands'])
+            require(not used, '该物料已被合同或供应引用，规格和计数单位不能覆盖修改；新规格请建立独立编码', 422)
+        if data['image_data']:
+            from app.services.indonesia_material_excel import validate_image
+            validate_image(data['image_data'])
+        return self.save('material', data, row, data['code'])
+
+    def validate_option_values(self, data, prior=None):
+        choices = {option_key(item['group'], item['value']): item for item in option_defaults()}
+        choices.update({row.business_key: row.data for row in self.rows('option', include_deleted=True)})
+        for group in ('category', 'customs_unit', 'unit', 'usage', 'currency', 'supplier', 'export_company'):
+            value = str(data.get(group, '')).strip()
+            if not value or (prior and str(prior.get(group, '')).strip().casefold() == value.casefold()):
+                continue
+            choice = choices.get(option_key(group, value))
+            require(not choice or (not choice.get('deleted') and choice['status'] == 'active'), '所选共用选项已停用或删除，请刷新选项后核对；原填写内容保留', 409)
+
     def matching_product(self, order):
         return next((r for r in self.rows('product') if r.data['code'] == order['item_no'] and r.data['customer'] == order['customer']), None)
 
-    def snapshot_order(self, data, prior=None):
+    def delete_material(self, material, product, actor):
+        other_products = [r for r in self.rows('product', include_deleted=True) if r is not product and any(
+            item['material_id'] == material.id for item in r.data['materials'])]
+        require(not other_products, '该物料仍被其他货号引用（含已删除货号），不能删除物料资料；可仅移除本货号关联')
+        used = any(r.data['material_id'] == material.id for r in self.rows('supply', include_deleted=True)) or any(
+            any(d['material_id'] == material.id for d in r.data['demands']) or any(
+                item['material_id'] == material.id for item in (r.data.get('product_snapshot') or {}).get('data', {}).get('materials', []))
+            for r in self.rows('order', include_deleted=True))
+        require(not used, '该物料已有合同或采购引用，不能删除物料资料；可仅移除本货号关联，保留业务历史')
+        data = deepcopy(material.data)
+        data.update(deleted=True, deleted_by=actor, deleted_at=now_text())
+        return self.save('material', data, material)
+
+    def fixed_customer(self, name):
+        customer = next((r for r in self.rows('customer') if r.data['name'] == name), None)
+        require(customer is not None, '请先在当前厂区基础资料库新增该固定客人', 422)
+        require(customer.data['status'] == 'active', '该固定客人已停用，请先核对基础资料', 422)
+        return customer
+
+    def validate_catalog_order(self, data):
+        customer = self.fixed_customer(data['customer'])
+        product = self.matching_product(data)
+        require(product is not None, '该货号未配置在当前厂区此固定客人名下，请先维护客人货号', 422)
+        require(bool(product.data['materials']), '该货号尚未配置物料及单件用量，请先补齐基础资料', 422)
+        return customer, product
+
+    def snapshot_order(self, data, prior=None, *, require_catalog=False):
+        customer = self.validate_catalog_order(data)[0] if require_catalog else None
         product = self.matching_product(data)
         data = deepcopy(data)
+        if customer:
+            data['customer_snapshot'] = view(customer)
+        elif prior and prior.get('customer_snapshot'):
+            data['customer_snapshot'] = deepcopy(prior['customer_snapshot'])
         require(not product or product.data['unit'] == data['unit'], '合同数量单位必须与日产能单位一致', 422)
         old_demands = {d['material_id']: d for d in (prior or {}).get('demands', [])}
+        data.pop('planning_snapshot', None)
         data['product_snapshot'] = view(product) if product else None
         data['plan'] = production_plan(data['quantity'], product.data['daily_capacity'], data['delivery_date'], product.data['transport_days']) if product else None
         data['demands'] = []
@@ -128,6 +227,7 @@ class Ledger:
 
     def validate_allocation(self, data, existing=None):
         supply = self.get(data['supply_id'], 'supply')
+        require(supply.data['status'] == 'received', '请先导入仓库实收单或确认实际回料，再由业务选择客户 PO 分配', 422)
         _, demand = self.demand(data['order_id'], data['demand_id'])
         require(supply.data['material_id'] == demand['material_id'], '只能分配对应编码的同种物料', 422)
         require(supply.data['material_snapshot']['data']['unit'] == demand['unit'], '供应与合同物料单位不一致，需先核对', 422)
@@ -164,35 +264,83 @@ class Ledger:
     def execute(self, body, actor):
         action = body.action
         row = None
-        kind = {'material_save': 'material', 'product_save': 'product', 'order_save': 'order', 'order_recalculate': 'order',
+        kind = {'option_save': 'option', 'option_delete': 'option', 'option_restore': 'option', 'customer_delete': 'customer', 'customer_restore': 'customer', 'product_delete': 'product', 'product_restore': 'product', 'material_restore': 'material', 'customer_save': 'customer', 'material_save': 'material', 'product_save': 'product', 'order_save': 'order', 'order_plan_save': 'order', 'order_recalculate': 'order',
                 'demand_adjust': 'order', 'supply_save': 'supply', 'supply_reply': 'supply', 'output_material_refresh': 'supply', 'receipt_confirm': 'supply',
-                'reallocate': 'allocation', 'shipment_save': 'shipment', 'shipment_confirm': 'shipment', 'import_confirm': 'import'}.get(action)
+                'reallocate': 'allocation', 'shipment_save': 'shipment', 'shipment_confirm': 'shipment', 'import_confirm': 'import', 'warehouse_import_confirm': 'import'}.get(action)
         if body.entity_id:
             require(kind is not None, '此操作不接受现有记录编号', 422)
-            row = self.get(body.entity_id, kind)
+            row = self.get(body.entity_id, kind, include_deleted=action.endswith('_restore'))
             require(row.version == body.expected_version, '记录已被更新，请刷新核对后重试')
         else:
-            require(action in {'material_save', 'product_save', 'order_save', 'supply_save', 'allocate', 'shipment_save'} and body.expected_version == 0,
+            require(action in {'option_save', 'option_delete', 'customer_save', 'material_save', 'product_save', 'order_save', 'supply_save', 'allocate', 'shipment_save'} and body.expected_version == 0,
                     '请选择原记录及其版本', 422)
+        if action == 'option_delete' and row is None:
+            identity = OptionIdentity.model_validate(body.data).model_dump(mode='json')
+            if identity['group'] in {'customs_unit', 'currency'}:
+                identity['value'] = identity['value'].upper()
+            data = next((item for item in option_defaults() if (item['group'], item['value']) == (identity['group'], identity['value'])), None)
+            require(data is not None, '请选择已存在的基础选项', 422)
+            data.update(deleted=True, deleted_by=actor, deleted_at=now_text())
+            return self.save('option', data, key=[data['group'], data['value']])
+        if action in {'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore'}:
+            require(not body.data and row is not None, '删除或恢复需选择原记录，不接受覆盖资料', 422)
+            deleting = action.endswith('_delete')
+            require(bool(row.data.get('deleted')) != deleting, '该记录状态已变化，请刷新核对')
+            if deleting:
+                if kind == 'customer':
+                    require(not any(r.data['customer'] == row.data['name'] for r in self.rows('product')), '该客人仍有货号，请先处理货号；已有业务可使用停用')
+                    require(not any(r.data['customer'] == row.data['name'] for r in self.rows('order')), '该客人已有合同引用，请使用停用，保留历史资料')
+                elif kind == 'product':
+                    require(not any((r.data['customer'], r.data['item_no']) == (row.data['customer'], row.data['code']) for r in self.rows('order')), '该货号已有合同引用，不能删除')
+            elif kind == 'product':
+                self.fixed_customer(row.data['customer'])
+                for recipe in row.data['materials']:
+                    self.get(recipe['material_id'], 'material')
+            data = deepcopy(row.data)
+            data.update(deleted=deleting, deleted_by=actor if deleting else None, deleted_at=now_text() if deleting else None)
+            return self.save(kind, data, row)
+        if action == 'option_save':
+            data = Option.model_validate(body.data).model_dump(mode='json')
+            if data['group'] in {'customs_unit', 'currency'}:
+                data['value'] = data['value'].upper()
+            require(not row or (row.data['group'], row.data['value']) == (data['group'], data['value']), '选项分类和名称不可覆盖修改，请停用原项后新增', 422)
+            if data['group'] != 'customs_unit':
+                data.update(billing_basis='quantity', kg_per_unit='1')
+            return self.save('option', data, row, [data['group'], data['value']])
+        if action == 'customer_save':
+            data = s.Customer.model_validate(body.data).model_dump(mode='json')
+            require(not row or data['name'] == row.data['name'], '固定客人名称是关联身份，不能覆盖修改；请停用原客人后新增', 422)
+            return self.save('customer', data, row, data['name'])
         if action == 'material_save':
             data = s.Material.model_validate(body.data).model_dump(mode='json')
-            require(not row or data['code'] == row.data['code'], '物料编码不可覆盖修改；请维护原编码资料', 422)
-            if row and any(data[k] != row.data[k] for k in ('unit', 'specification')):
-                used = any(r.data['material_id'] == row.id for r in self.rows('supply')) or any(
-                    d['material_id'] == row.id for r in self.rows('order') for d in r.data['demands'])
-                require(not used, '该物料已被合同或供应引用，规格和计数单位不能覆盖修改；新规格请建立独立编码', 422)
-            if data['image_data']:
-                from app.services.indonesia_material_excel import validate_image
-                validate_image(data['image_data'])
-            return self.save('material', data, row, data['code'])
+            return self.save_material(data, row)
         if action == 'product_save':
             data = s.Product.model_validate(body.data).model_dump(mode='json')
+            deletions = data.pop('material_deletions')
             require(not row or (data['code'], data['customer']) == (row.data['code'], row.data['customer']), '货号与客户身份不可覆盖修改', 422)
-            ids = [r['material_id'] for r in data['materials']]
+            customer = self.fixed_customer(data['customer'])
+            require(data['customer_id'] in {None, customer.id}, '客人与当前厂区固定客人编号不一致', 422)
+            data['customer_id'] = customer.id
+            ids = [r['material_id'] for r in data['materials'] if r['material_id']]
             require(len(ids) == len(set(ids)), '同货号不能重复定义同种物料用量', 422)
-            for entity_id in ids:
-                self.get(entity_id, 'material')
+            deleted_ids = [item['material_id'] for item in deletions]
+            require(len(deleted_ids) == len(set(deleted_ids)) and not set(deleted_ids).intersection(ids), '待删除物料不能重复或同时保留在货号用量中', 422)
+            recipes = []
+            for recipe in data['materials']:
+                material = self.get(recipe['material_id'], 'material') if recipe['material_id'] else None
+                if recipe['material'] is not None:
+                    require(not material or material.version == recipe['material_version'], '物料资料已被更新，请刷新核对后重试')
+                    material = self.save_material(recipe['material'], material)
+                recipes.append(dict(material_id=material.id, usage=recipe['usage']))
+            data['materials'] = recipes
+            for deletion in deletions:
+                material = self.get(deletion['material_id'], 'material')
+                require(material.version == deletion['expected_version'], '待删除物料资料已被更新，请刷新核对后重试')
+                self.delete_material(material, row, actor)
             return self.save('product', data, row, [data['customer'], data['code']])
+        if action == 'order_plan_save':
+            from app.services.indonesia_material_planning import save_order_plan
+            return save_order_plan(self, row, body.data)
         if action in {'order_save', 'order_recalculate'}:
             if action == 'order_recalculate':
                 reason = s.Reason.model_validate(body.data).reason
@@ -204,11 +352,16 @@ class Ledger:
                     require(data['reason'], '修改合同需填写原因', 422)
                     for key in ('customer', 'recipient', 'contract_no', 'item_no', 'batch'):
                         require(data[key] == row.data[key], '已建合同的身份字段不可修改，请核对原记录', 422)
+                    if not row.data.get('batch'):
+                        require(not row.data.get('po_no') or data['po_no'] == row.data['po_no'], '已建合同的客户 PO 不可修改，请核对原记录', 422)
+                        require(not matching_orders([other for other in self.rows('order') if other.id != row.id], data), '该客户 PO 与货号已有需求，请核对原记录')
                     data['source'] = row.data.get('source')
-            data = self.snapshot_order(data, row.data if row else None)
+                else:
+                    require(not matching_orders(self.rows('order'), data), '该客户 PO 与货号已有合同需求，请编辑原记录，不要重复建单')
+            data = self.snapshot_order(data, row.data if row else None, require_catalog=not row or action == 'order_recalculate')
             if row:
                 self.validate_order_coverage(row, data)
-            key = [data[k] for k in ('customer', 'recipient', 'contract_no', 'item_no', 'batch')]
+            key = order_key(data)
             return self.save('order', data, row, key)
         if action == 'demand_adjust':
             change = s.Adjust.model_validate(body.data)
@@ -220,10 +373,30 @@ class Ledger:
             return self.save('order', data, row)
         if action == 'supply_save':
             data = s.Supply.model_validate(body.data).model_dump(mode='json')
+            self.validate_option_values(data, row.data if row else None)
+            requested_weight_source = data.pop('billing_weight_source')
             require(not row or (row.data['status'] == 'expected' and not any(a.data['supply_id'] == row.id for a in self.rows('allocation'))),
                     '已确认或已分配的供应不能覆盖修改；供应商回复请使用更新交期')
             material = self.get(data['material_id'], 'material')
-            data.update(status='expected', material_snapshot=view(material), actual_date=None)
+            if row:
+                require(data['material_id'] == row.data['material_id'], '旧采购批次不可更换物料，请新建采购批次', 422)
+            snapshot = deepcopy(row.data['material_snapshot']) if row else view(material)
+            if row:
+                if 'billing_weight_source' in row.data:
+                    data['billing_weight_source'] = row.data['billing_weight_source']
+            elif requested_weight_source == 'net_weight_kg':
+                # Also applies to an old master that has not been edited since the single-weight rule.
+                data['billing_weight_source'] = 'net_weight_kg'
+                snapshot['data']['billing_weight_kg'] = snapshot['data'].get('net_weight_kg')
+            if row:
+                # Existing purchase pricing is frozen even when editing its expected quantities.
+                for key in ('billing_mode', 'billing_basis', 'billing_factor'):
+                    data[key] = row.data.get(key, 'manual' if key == 'billing_mode' else data[key])
+            elif data['billing_mode'] == 'automatic':
+                rule = automatic_billing(material.data['customs_unit'], self.rows('option', include_deleted=True))
+                data.update({key: rule[key] for key in ('billing_basis', 'billing_factor')})
+                snapshot['data']['customs_rule'] = dict(basis=rule['billing_basis'], divisor=rule['billing_factor'])
+            data.update(status='expected', material_snapshot=snapshot, actual_date=None)
             siblings = [r for r in self.rows('supply') if r.id != (row.id if row else None) and
                         all(r.data[k] == data[k] for k in ('supplier', 'purchase_no', 'purchase_line'))]
             require(all(r.data['material_id'] == data['material_id'] and number(r.data['purchase_quantity']) == number(data['purchase_quantity']) for r in siblings),
@@ -250,7 +423,8 @@ class Ledger:
             origins = data.setdefault('measured_weight_sources', {})
             for field in ('net_weight_kg', 'billing_weight_kg'):
                 missing = original.get(field) is None or number(original[field]) == 0
-                current = material.data.get(field)
+                source = 'net_weight_kg' if field == 'billing_weight_kg' and data.get('billing_weight_source') == 'net_weight_kg' else field
+                current = material.data.get(source)
                 if missing and field not in measured and current is not None and number(current) > 0:
                     measured[field] = current
                     origins[field] = dict(material_id=material.id, version=material.version, actor_id=actor, measured_at=now_text())
@@ -282,6 +456,8 @@ class Ledger:
             data = s.Shipment.model_validate(body.data).model_dump(mode='json')
             self.shipment_lines(data)
             data['status'] = 'draft'
+            if row and row.data.get('warehouse_import_id'):
+                data['warehouse_import_id'] = row.data['warehouse_import_id']
             return self.save('shipment', data, row)
         if action == 'shipment_confirm':
             require(not body.data, '确认出货不接受覆盖数据', 422)
@@ -301,7 +477,11 @@ class Ledger:
             data['export_material_count'] = len({line['material']['code'] for line in lines.values()})
             data['supplier_summary'] = supplier_summary
             return self.save('shipment', data, row)
+        if action == 'warehouse_import_confirm':
+            from app.services.indonesia_warehouse_import import confirm
+            return confirm(self, row, body.data, actor)
         if action == 'import_confirm':
+            require(row.data.get('import_type') != 'warehouse_receipt', '仓库实收单须通过实收核对流程确认', 422)
             from app.services.indonesia_material_import import reconcile_rows
             selection = s.ImportSelection.model_validate(body.data)
             require(len(selection.indexes) == len(set(selection.indexes)), '不可重复选择同一行', 422)
@@ -312,8 +492,10 @@ class Ledger:
                 require(source is not None and not source.get('blocked'), '所选行存在资料问题，请先核对原表', 422)
                 require(not source.get('imported_order_id'), '所选行已在本导入中确认，请选择未导入行', 422)
                 order = s.Order.model_validate({k: v for k, v in source.items() if k in s.Order.model_fields}).model_dump(mode='json')
-                key = [order[k] for k in ('customer', 'recipient', 'contract_no', 'item_no', 'batch')]
-                existing = self.db.scalar(select(Record).where(Record.factory_id == self.factory, Record.kind == 'order', Record.business_key == digest(key)))
+                key = order_key(order)
+                matches = matching_orders(self.rows('order'), order)
+                require(len(matches) <= 1, '该 PO 对应多条历史合同需求，请先核对原记录，不能自动合并', 422)
+                existing = matches[0] if matches else None
                 if existing:
                     require(source['match_status'] == 'unchanged',
                             '排期包含已有合同的变更，请在合同原记录中核对修改，不可重新建单')
@@ -322,7 +504,7 @@ class Ledger:
                         imported.append(existing.id)
                     continue
                 order['source'] = dict(import_id=row.id, asset_id=row.data['asset_id'], sheet=source['source_sheet'], row=source['source_row'], order_center_id=None)
-                new_order = self.save('order', self.snapshot_order(order), key=key)
+                new_order = self.save('order', self.snapshot_order(order, require_catalog=True), key=key)
                 imported.append(new_order.id)
                 source['imported_order_id'] = new_order.id
             data = deepcopy(row.data)
@@ -342,7 +524,7 @@ class Ledger:
             supply = self.get(allocation.data['supply_id'], 'supply')
             order, demand = self.demand(allocation.data['order_id'], allocation.data['demand_id'])
             require(order.data['customer'] == data['customer'] and order.data['recipient'] == data['recipient'], '本次出货只能包含同一客户、同一接收方', 422)
-            require(supply.data['status'] == 'received', '船务确认入库后才能出货')
+            require(supply.data['status'] == 'received', '实际回料确认入库后才能出货')
             require(number(line['normal_quantity']) + number(line['spare_quantity']) > 0, '本次出货数量必须大于零', 422)
             shipped = self.shipped(key)
             for index, field in enumerate(('normal_quantity', 'spare_quantity')):
@@ -358,9 +540,11 @@ class Ledger:
                         material[field] = supply.data.get('measured_weights', {}).get(field)
             basis = number(line['normal_quantity'])
             amount = None
+            if supply.data.get('billing_weight_source') == 'net_weight_kg':
+                material['billing_weight_kg'] = material.get('net_weight_kg')
             weight_missing = supply.data['billing_basis'] == 'weight' and basis > 0 and (
                 material.get('billing_weight_kg') is None or number(material['billing_weight_kg']) <= 0)
-            require(not for_confirm or not weight_missing, '按重量计费需明确有效单件计费重量（与净重分开维护）', 422)
+            require(not for_confirm or not weight_missing, '按重量计价需补齐有效单个净重（kg）并补全本批出货资料' if supply.data.get('billing_weight_source') == 'net_weight_kg' else '该历史采购缺少有效计价重量，请先补全出货资料后再确认', 422)
             if not weight_missing:
                 if supply.data['billing_basis'] == 'weight' and basis > 0:
                     basis *= number(material['billing_weight_kg'])
@@ -386,6 +570,7 @@ def run_command(db, user, body, *, refresh_user):
     try:
         # Serialize with IAM revocation before acquiring the business resource.
         lock_mutation(db)
+        lock_transaction(db, 'indonesia-shared-options', 'shared-options')
         lock_transaction(db, 'indonesia-materials', body.factory_id)
         current_user = refresh_user()
         require(current_user.id == user.id, '账号身份已变化，请重新核对操作', 401)
@@ -396,6 +581,7 @@ def run_command(db, user, body, *, refresh_user):
             require(previous.actor_id == user.id and previous.factory_id == body.factory_id and previous.fingerprint == fingerprint,
                     '操作编号已用于不同请求，请核对原操作结果')
             return previous.result
+        require(not body.action.startswith('option_'), '基础选项已改为全厂共用；旧请求不会自动改写共用库，请核对后在共用基础选项中重新提交', 409)
         ledger = Ledger(db, body.factory_id)
         result = dict(record=view(ledger.execute(body, user.id)))
         db.add(Receipt(operation_id=body.operation_id, factory_id=body.factory_id, actor_id=user.id,
@@ -415,8 +601,10 @@ def workspace(db, user, factory):
     ready(db)
     ledger = Ledger(db, factory)
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory).order_by(Record.updated_at.desc()).limit(5001)))
+    rows += list(db.scalars(select(Customer).where(Customer.factory_id == factory).order_by(Customer.updated_at.desc()).limit(5001)))
+    rows += list(db.scalars(select(SharedOption).order_by(SharedOption.updated_at.desc()).limit(5001)))
     require(len(rows) <= 5000, '当前厂区记录超过首期工作区容量，请先联系管理员扩展分页', 409)
-    for kind in ('material', 'product', 'order', 'supply', 'allocation', 'shipment', 'import'):
+    for kind in ('option', 'customer', 'material', 'product', 'order', 'supply', 'allocation', 'shipment', 'import'):
         ledger._rows[kind] = [row for row in rows if row.kind == kind]
     supplies = {r.id: r for r in rows if r.kind == 'supply'}
     allocations = [r for r in rows if r.kind == 'allocation']
@@ -451,7 +639,14 @@ def workspace(db, user, factory):
         board.append(data)
     result = [view(r) for r in rows]
     for row in result:
+        if row['kind'] == 'import' and row['data']['status'] != 'confirmed':
+            if row['data'].get('import_type') == 'warehouse_receipt':
+                from app.services.indonesia_warehouse_import import reconcile
+                row['data']['rows'] = reconcile(ledger, ledger.get(row['id'], 'import'))
+            else:
+                from app.services.indonesia_material_import import reconcile_rows
+                row['data']['rows'] = reconcile_rows(ledger, row['data']['rows'])
         if row['kind'] == 'allocation':
             normal, spare = ledger.shipped(row['id'])
             row['data'].update(shipped_normal=decimal_text(normal), shipped_spare=decimal_text(spare))
-    return dict(records=result, board=board, permissions=[a for a in ACTIONS if allowed(user, factory, a)])
+    return dict(records=result, board=board, permissions=[a for a in ACTIONS if allowed(user, factory, a)], option_defaults=option_defaults())

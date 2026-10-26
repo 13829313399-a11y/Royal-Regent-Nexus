@@ -143,7 +143,9 @@ def _finish(records, source_rows, warnings):
         else:
             values[13] = note
         problems = "；".join(dict.fromkeys(record["problems"]))
-        rows.append(values + [problems, record["location"]])
+        # Staging never infers calculation links; align its review fields after
+        # every current import column, including newly added optional inputs.
+        rows.append(values + [None] * (len(HEADERS["configurations"]) - len(values)) + [problems, record["location"]])
         notes.append([record["location"], note, problems])
     notes.extend([[location, raw, "原始文字保留（包含表头、配件、未识别或排除行）"] for location, raw in source_rows])
     return {"sheets": [{"name": "货号包装整理", "rows": rows}, {"name": "原表文字索引", "rows": notes}],

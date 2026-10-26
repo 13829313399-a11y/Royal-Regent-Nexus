@@ -88,6 +88,8 @@ def receive(db, user, identifier, payload: schema.ManualReceive):
 
 def build_shipment(db, user, row, payload):
     """Trusted builder after the caller validates and locks every source."""
+    from app.services.carton_supplier_evidence_guard import ensure_evidence_open
+    ensure_evidence_open(db, row.factory_id, row.supplier_id, payload.delivery_date)
     papers = {paper.id: paper for paper in special.lines(db, row)}
     shipment = SpecialShipment(id=special.uid("CSSP-"), factory_id=row.factory_id,
         supplier_id=row.supplier_id, request_id=row.id, version_id=row.current_version_id,
@@ -97,15 +99,20 @@ def build_shipment(db, user, row, payload):
     db.flush()
     receipt_lines = []
     manifest = special.snapshot(db, row)["material_manifest"]
+    from app.services.carton_special_stock import replacement
+    stock_source = replacement(db, row)
+    free_replacement = bool(stock_source and stock_source["responsibility"] == "SUPPLIER")
     for item in payload.lines:
         paper = papers[item.line_id]
         # The physical ledger requires a cost value. Zero is only a pending
         # stock-cost placeholder; the payable price remains unknown.
         stock_price = item.unit_price if item.unit_price is not None else Decimal(0)
+        if free_replacement and stock_price != 0:
+            raise HTTPException(422, "供应商责任补单免费，不可填收费单价")
         source = SpecialShipmentLine(id=special.uid("CSSPL-"), factory_id=row.factory_id,
             shipment_id=shipment.id, request_line_id=paper.id, quantity=item.received_quantity,
             snapshot_json=special.pack(special.line_out(paper) | {
-                "unit_price": str(stock_price), "pricing_kind": "PENDING_QUOTE",
+                "unit_price": str(stock_price), "pricing_kind": "FREE" if free_replacement else "PENDING_QUOTE",
                 "source_origin": "WAREHOUSE_MANUAL", "supplier_price_confirmed": False,
                 "warehouse_unit_price": str(item.unit_price) if item.unit_price is not None else None,
                 "customer_code": row.customer_code, "customer_name": row.customer_name,
@@ -117,7 +124,7 @@ def build_shipment(db, user, row, payload):
             rejected_quantity=item.rejected_quantity, unusable_quantity=item.unusable_quantity,
             location_allocations=item.location_allocations, unit_price=item.unit_price,
             price_action="PENDING" if item.unit_price is None else "PROPOSE",
-            zero_price_kind="PENDING" if item.unit_price is None else "FREE" if item.unit_price == 0 else None,
+            zero_price_kind="FREE" if free_replacement else "PENDING" if item.unit_price is None else "FREE" if item.unit_price == 0 else None,
             price_reason="仓库依据实际到货代录，待供应商核实价格"))
     db.flush()
     return shipment, receipt_lines

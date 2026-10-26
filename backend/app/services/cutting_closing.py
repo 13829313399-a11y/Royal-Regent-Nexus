@@ -129,31 +129,58 @@ def material_rows(entries, docs, line_id, start, through, price_map=None):
     return rows, {currency: {key: format(value, '.2f') for key, value in amounts.items()} for currency, amounts in costs.items()}, pending
 
 
-def read(db, line_id, month, *, show_costs=False):
+def month_reader(db, line_ids, entries, history, uses):
+    """One locked preparation call shares full evidence, never across requests.
+
+    Caller already holds cutting -> source -> fabric locks. Keep every date,
+    correction and immutable plan revision; month filtering remains in read().
+    """
+    from app.services.cutting_read_batch import production as batch_production
+    transaction = db.get_transaction()
+    if transaction is None:
+        raise RuntimeError('Monthly evidence requires the owning transaction')
+    reports, versions = batch_production(db, line_ids, revisions=True)
+    shared = dict(session=db, transaction=transaction, entries=entries, history=history,
+                  uses=uses, prices=usage.prices(history), reports=reports)
+    def read_month(line_id, month):
+        return read(db, line_id, month, show_costs=True, _monthly=shared)
+    return read_month, reports, versions
+
+
+def read(db, line_id, month, *, show_costs=False, _monthly=None):
     now = wh.business_now()
     start, end, through = period(month, now.date())
-    c.require(reporting.schema_ready(db.connection()), '月度生产核对需先完成0155迁移及证据保护', 503)
-    usage.ensure_schema(db)
-    wh.ensure_schema(db)
-    lock_transaction(db, 'cutting-master', c.FACTORY)
-    wh.procurement.lock_factory(db)
+    if _monthly is None:
+        c.require(reporting.schema_ready(db.connection()), '月度生产核对需先完成0155迁移及证据保护', 503)
+        usage.ensure_schema(db)
+        wh.ensure_schema(db)
+        lock_transaction(db, 'cutting-master', c.FACTORY)
+        wh.procurement.lock_factory(db)
+    elif (_monthly['session'] is not db or db.get_transaction() is not _monthly['transaction']
+          or line_id not in _monthly['reports']):
+        raise RuntimeError('Monthly evidence cannot cross sessions, transactions or scope')
     order = db.get(CuttingOrder, line_id)
     c.require(order is not None and order.factory_id == c.FACTORY, '请先签收当前裁床订单，再进行月度核对', 404)
     data = orders.revision(db, order)['data']
     published = data.get('planning', {}).get('published')
     # These cooperating locks fence reports, allocations and all linked warehouse writes.
-    _, entries = wh.projection(db, 'fabric')
-    history = usage.events(db)
-    uses, _ = usage.replay(entries, history)
-    reports = reporting.documents(reporting.events(db, line_id))
+    if _monthly is None:
+        _, entries = wh.projection(db, 'fabric')
+        history = usage.events(db)
+        uses, _ = usage.replay(entries, history)
+        reports = reporting.documents(reporting.events(db, line_id))
+        price_map = usage.prices(history) if show_costs else None
+    else:
+        entries, history, uses = (_monthly[k] for k in ('entries','history','uses'))
+        reports, price_map = _monthly['reports'][line_id], _monthly['prices'] if show_costs else None
     production_rows = production(reports, published, start, through)
-    materials, costs, pending = material_rows(entries, uses, line_id, start, through, usage.prices(history) if show_costs else None)
+    materials, costs, pending = material_rows(entries, uses, line_id, start, through, price_map)
     issues = []
     def flag(code, message, workspace, document_id='', *, task_id='', issue_id=''):
         issues.append(dict(code=code, message=message, workspace=workspace, document_id=document_id,
                            task_id=task_id, issue_id=issue_id))
     source_changed = order.dispatch_id != getattr(orders.latest(db, line_id), 'id', None)
-    plan_state = planning.summary(db, data, source_changed)
+    plan_state = planning.summary(db, data, source_changed, **({'receipt_entries': lambda: entries} if _monthly is not None else {}))
     if source_changed:
         flag('source_changed', '来源订单已变化，当前核对保留已签收及历史证据，请先核对新下发', 'planning')
     if not published:
@@ -228,10 +255,12 @@ def read(db, line_id, month, *, show_costs=False):
             flag('pending_price', f'本期有{pending}笔实发耗用待计价，已计价金额不代表完整费用', 'costs')
         flag('period_wip_unconfirmed', '历史月末在制归属及结转尚未冻结，不能用当前累计归属代替', 'costs')
         # Current attribution is a separate follow-up list, never a historical WIP balance.
-        allocation = usage.read(db, line_id, show_costs=True)['cost_allocation']
-        relevant = {r['issue_id'] for r in materials}
-        review = [dict(task_name=g['context']['task_name'], resource_name=g['context']['resource_name'], status=g['status'], reasons=g['reasons'])
-                  for g in allocation['groups'] if relevant.intersection(r['issue_id'] for r in g['rows'])]
+        review = []
+        if _monthly is None:
+            allocation = usage.read(db, line_id, show_costs=True)['cost_allocation']
+            relevant = {r['issue_id'] for r in materials}
+            review = [dict(task_name=g['context']['task_name'], resource_name=g['context']['resource_name'], status=g['status'], reasons=g['reasons'])
+                      for g in allocation['groups'] if relevant.intersection(r['issue_id'] for r in g['rows'])]
         result.update(costs=costs, pending_pricing=pending, wip_status='not_frozen', price_basis='current_confirmed_batch_price',
                       current_allocation_review=review)
     return result

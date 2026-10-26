@@ -20,7 +20,13 @@ import CuttingMonthlyOverview from './CuttingMonthlyOverview.vue'
 // Editable search text is applied only by an explicit query.
 const appliedQuery=ref('')
 const closingView=ref('overview')
+const financialContext=ref(0)
+let financialGeneration=0
+let locationPending=true
 async function changeClosingView(value:string){
+ locationPending=false
+ financialGeneration++
+ financialContext.value++
  closingView.value=value;await nextTick()
  if(value==='period')periodPanel.value?.activateMonth(month.value)
  if(value==='settlement')settlementPanel.value?.activateMonth(month.value)
@@ -30,10 +36,14 @@ const closingTabs=[{id:'overview',label:'月结总览'},{id:'period',label:'内�
 const periodPanel=ref<InstanceType<typeof CuttingPeriodClosing>>()
 const route=inject(routeLocationKey,undefined)
 async function openMonthly(kind:'period'|'settlement'|'payment',targetMonth:string,id:string,eventId?:string){
+  const ticket=++financialGeneration,context=++financialContext.value,previousView=closingView.value
   closingView.value=kind;await nextTick()
-  if(kind==='period')await periodPanel.value?.openPeriod(targetMonth,eventId)
-  else if(kind==='settlement')await settlementPanel.value?.openStatement(targetMonth,id,eventId)
-  else await paymentPanel.value?.openPayment(targetMonth,id,eventId)
+  const opened=kind==='period'?await periodPanel.value?.openPeriod(targetMonth,eventId)
+    :kind==='settlement'?await settlementPanel.value?.openStatement(targetMonth,id,eventId)
+    :await paymentPanel.value?.openPayment(targetMonth,id,eventId)
+  if(!alive||ticket!==financialGeneration||context!==financialContext.value)return
+  if(opened)month.value=targetMonth
+  else closingView.value=previousView
 }
 async function followFinancialLocation(){
   const view=route?.query.view,targetMonth=route?.query.month,id=route?.query.document_id,event=route?.query.event_id
@@ -42,30 +52,41 @@ async function followFinancialLocation(){
 }
 let navigationGeneration=0
 async function loadLocation(){
+  locationPending=true
   const ticket=++navigationGeneration
   await load(1,true)
-  if(alive&&ticket===navigationGeneration&&access.value)await followFinancialLocation()
+  if(alive&&ticket===navigationGeneration&&locationPending&&access.value&&!error.value){
+    await followFinancialLocation()
+    if(alive&&ticket===navigationGeneration)locationPending=false
+  }
 }
+async function retryWorkspace(){if(locationPending)await loadLocation();else await load(1)}
 
 defineProps<{workspace:CuttingWorkspace}>()
 const currentMonth = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const month=ref(currentMonth),query=ref(''),page=ref(1),total=ref(0),rows=ref<CuttingOrder[]>([])
 const access=ref<Access>(),selected=ref<CuttingOrder>(),result=ref<ClosingPreview>(),loading=ref(false),error=ref('')
+const accessUnavailable=ref(false)
 const paymentPanel=ref<InstanceType<typeof CuttingPayments>>()
-async function openPayment(month:string,id:string,eventId?:string){closingView.value='payment';await nextTick();await paymentPanel.value?.openPayment(month,id,eventId)}
+async function openPayment(targetMonth:string,id:string,eventId?:string){await openMonthly('payment',targetMonth,id,eventId)}
 const settlementPanel=ref<InstanceType<typeof CuttingSettlement>>()
-async function openSettlement(month:string,id:string,eventId?:string){closingView.value='settlement';await nextTick();await settlementPanel.value?.openStatement(month,id,eventId)}
+async function openSettlement(targetMonth:string,id:string,eventId?:string){await openMonthly('settlement',targetMonth,id,eventId)}
 let generation=0,alive=true
 const location=useCuttingLocation(()=>true,()=>{void loadLocation()})
-onBeforeUnmount(()=>{alive=false;generation++})
+onBeforeUnmount(()=>{alive=false;generation++;financialGeneration++})
 function clearPreview(){generation++;result.value=undefined;loading.value=false;error.value=''}
-watch(month,clearPreview,{flush:'sync'})
+watch(month,()=>{financialContext.value++;clearPreview()},{flush:'sync'})
+function restoredMonth(kind:'period'|'settlement'|'payment',targetMonth:string,context:number|undefined){
+  if(!alive||context!==financialContext.value||closingView.value!==kind||loading.value||accessUnavailable.value||!access.value?.enabled)return
+  const permission=kind==='period'?'cost_read':kind==='settlement'?'settlement_read':'payment_read'
+  if(access.value.permissions.includes(permission))month.value=targetMonth
+}
 function ready(rights:Access){return rights.enabled&&rights.orders_schema_ready&&rights.reporting_schema_ready&&rights.usage_schema_ready}
 async function load(nextPage=1,followLocation=false,apply=false){
   if(apply){appliedQuery.value=query.value;nextPage=1}
   const target=followLocation?location.value:undefined
   if(target?.month)month.value=target.month
-  const ticket=++generation;result.value=undefined;selected.value=undefined;rows.value=[];access.value=undefined;loading.value=true;error.value=''
+  const ticket=++generation;result.value=undefined;selected.value=undefined;rows.value=[];access.value=undefined;accessUnavailable.value=false;loading.value=true;error.value=''
   try{
     const rights=await cuttingApi.access();if(!alive||ticket!==generation)return;access.value=rights
     if(!ready(rights))return
@@ -77,18 +98,18 @@ async function load(nextPage=1,followLocation=false,apply=false){
     }
     const response=await ordersApi.list(nextPage,appliedQuery.value)
     if(alive&&ticket===generation){rows.value=response.data;page.value=response.page;total.value=response.total}
-  }catch(e){if(alive&&ticket===generation){access.value=undefined;error.value=errorMessage(e)}}
+  }catch(e){if(alive&&ticket===generation){const status=(e as {response?:{status?:number}}).response?.status;accessUnavailable.value=status!==401&&status!==403;access.value=undefined;error.value=errorMessage(e)}}
   finally{if(alive&&ticket===generation)loading.value=false}
 }
 async function preview(order=selected.value){
   if(!order)return
-  const ticket=++generation,requestedMonth=month.value;result.value=undefined;selected.value=order;loading.value=true;error.value=''
+  const ticket=++generation,requestedMonth=month.value;result.value=undefined;selected.value=order;accessUnavailable.value=false;loading.value=true;error.value=''
   try{
     const rights=await cuttingApi.access();if(!alive||ticket!==generation)return;access.value=rights
     if(!ready(rights)){rows.value=[];return}
     const response=await closingApi.read(order.line_id,requestedMonth,rights.permissions.includes('cost_read'))
     if(alive&&ticket===generation)result.value=response
-  }catch(e){if(alive&&ticket===generation){result.value=undefined;rows.value=[];access.value=undefined;error.value=errorMessage(e)}}
+  }catch(e){if(alive&&ticket===generation){const status=(e as {response?:{status?:number}}).response?.status;accessUnavailable.value=status!==401&&status!==403;result.value=undefined;rows.value=[];access.value=undefined;error.value=errorMessage(e)}}
   finally{if(alive&&ticket===generation)loading.value=false}
 }
 onMounted(()=>void loadLocation())
@@ -101,11 +122,11 @@ onMounted(()=>void loadLocation())
     <p class="cutting-notice">内部材料月结与外发加工费结算分别办理；下方订单预览提供实时核对，尚未冻结或锁月。付款登记与核销在下方独立办理，不操作银行。</p>
     <CuttingMonthlyOverview v-model:month="month" v-if="access?.enabled" v-show="closingView==='overview'||closingView==='exports'" :access="access" :exports-only="closingView==='exports'" @open="openMonthly" />
     <div v-show="closingView==='opening'"><CuttingCutover :access="access" :access-loading="loading" @payment="openPayment" @settlement="openSettlement" /></div>
-    <div v-show="closingView==='period'"><CuttingPeriodClosing ref="periodPanel" :access="access" :access-loading="loading" /></div>
-    <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" @payment="openPayment" /></div>
-    <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" @settlement="openSettlement" /></div>
+    <div v-show="closingView==='period'"><CuttingPeriodClosing ref="periodPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @restored="(target,context)=>restoredMonth('period',target,context)" /></div>
+    <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @restored="(target,context)=>restoredMonth('settlement',target,context)" @payment="openPayment" /></div>
+    <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @restored="(target,context)=>restoredMonth('payment',target,context)" @settlement="openSettlement" /></div>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p>
-    <Button v-if="error" variant="outline" :disabled="loading" @click="load(1)">重新读取月结工作区</Button>
+    <Button v-if="error" variant="outline" :disabled="loading" @click="retryWorkspace">重新读取月结工作区</Button>
     <p v-if="loading" role="status">正在读取月度核对…</p>
     <p v-if="access&&!access.enabled" class="cutting-notice">月结前核对尚未启用。</p>
     <p v-else-if="access&&!ready(access)" class="cutting-notice">请先完成订单、每日填数及耗用的显式迁移；缺少依据时不以零数代替。</p>

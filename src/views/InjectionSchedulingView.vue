@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { provideModuleEntryOwnership } from '@/features/route-motion/useModuleEntryMotion';
+const routeEntryOwned = provideModuleEntryOwnership();
 import { vInjDialog } from "@/features/injection-scheduling/composables/injDialog";
 import { registerAssistantTarget } from '@/features/assistant/anchors';
 import { registerAssistantSelection } from '@/features/assistant/selection';
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type { ContextSelection } from '@/features/assistant/v2';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAppStore } from "@/stores/app";
 import { useAuthStore } from "@/stores/auth";
@@ -11,6 +14,7 @@ import { injectionApi as api } from "@/api/injectionScheduling";
 import {
   dateText,
   factories,
+  statusText,
   numberText,
   type DataRow,
   type FactoryId,
@@ -54,6 +58,8 @@ import InjButton from "@/features/injection-scheduling/components/ui/InjButton.v
 import InjLoadingState from "@/features/injection-scheduling/components/ui/InjLoadingState.vue";
 import { provideInjectionViewState } from "@/features/injection-scheduling/composables/useInjectionViewState";
 import { useInjMotionPreference } from "@/features/injection-scheduling/composables/useInjMotionPreference";
+import { registerInjectionNavigationGuard } from '@/features/injection-scheduling/navigationGuard';
+import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard';
 import "@/features/injection-scheduling/injection.css";
 
 const route = useRoute(),
@@ -62,6 +68,18 @@ const route = useRoute(),
   auth = useAuthStore(),
   store = useInjectionStore();
 const view = provideInjectionViewState();
+let ownerUserId = auth.currentUser?.id;
+function canNavigate() {
+  const stillAuthorized = !!store.factory && ['production', 'molding', 'management']
+    .some(department => auth.can('injection_scheduling:read', store.factory!, department));
+  if (stillAuthorized && auth.currentUser?.id === ownerUserId && (store.dirty || store.busy)) {
+    store.error = '当前有未保存输入或请求尚未结束，请先保存或取消本次修改';
+    return false;
+  }
+  return true;
+}
+onBeforeUnmount(registerInjectionNavigationGuard(canNavigate));
+onBeforeUnmount(registerFactoryChangeGuard(canNavigate));
 const { motionAllowed } = useInjMotionPreference();
 const tab = ref(view.planningView),
   runningOnly = ref(false),
@@ -96,6 +114,12 @@ const section = computed(() =>
     ? "planning"
     : tab.value,
 );
+// Only the first planning toolbar yields to the shared route entrance.
+// Returning from reports/master data is a local reveal of a newly mounted toolbar.
+const planningEntryOwned = ref(routeEntryOwned);
+watch(section, (value) => {
+  if (value !== "planning") planningEntryOwned.value = false;
+});
 const sectionOptions = [
   { value: "planning", label: "排产工作台", icon: ChartGantt },
   { value: "reports", label: "白夜班报工", icon: ClipboardList },
@@ -159,9 +183,7 @@ const factoryContext = computed(() => {
 });
 const factoryLoading = ref(false);
 let factoryLoadGeneration = 0;
-watch(
-  factoryContext,
-  async (id) => {
+async function loadFactory(id: FactoryId | null) {
     const generation = ++factoryLoadGeneration;
     factoryLoading.value = true;
     try {
@@ -169,14 +191,55 @@ watch(
     } finally {
       if (generation === factoryLoadGeneration) factoryLoading.value = false;
     }
-  },
-  { immediate: true },
-);
+}
+watch(factoryContext, loadFactory, { immediate: true });
 async function changeFactory(event: Event) {
   const id = (event.target as HTMLSelectElement).value as FactoryId;
-  if (!id) return;
-  app.setActiveFactory(id);
-  await router.replace({ query: { ...route.query, factory: id } });
+  if (!id || !canNavigate()) return;
+  const failure = await router.replace({ query: { ...route.query, factory: id, demand: undefined } });
+  if (!failure) app.setActiveFactory(id);
+}
+let recordTrigger: HTMLElement | null = null;
+let ownedDemand: string | null = null;
+const routeDemand = computed(() => typeof route.query.demand === 'string' && route.query.demand.length <= 64
+  && route.query.factory === store.factory ? route.query.demand : null);
+watch(() => route.query.demand, () => {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body && !active.closest('.inj-drawer')) recordTrigger = active;
+}, { immediate: true, flush: 'sync' });
+watch([routeDemand, factoryLoading, () => store.factory], ([id, loading]) => {
+  if (loading) return;
+  if (!id) {
+    if (ownedDemand && store.selectedId === ownedDemand && !store.dirty && !store.busy) {
+      store.drawer = false;
+      store.selectedId = null;
+      store.detail = null;
+    }
+    ownedDemand = null;
+    return;
+  }
+  if (!canNavigate()) return;
+  ownedDemand = id;
+  newDemand.value = false;
+  if (!['timeline', 'machines', 'table'].includes(tab.value)) switchTab('table');
+  void store.select(id, true);
+}, { immediate: true });
+watch(() => auth.currentUser?.id, (id, previous) => {
+  if (id === previous) return;
+  ownerUserId = id;
+  ownedDemand = null;
+  recordTrigger = null;
+  void loadFactory(factoryContext.value);
+  if (route.query.demand) void router.replace({ query: { ...route.query, demand: undefined } });
+});
+async function closeDemand() {
+  if (!canNavigate()) return;
+  newDemand.value = false;
+  store.drawer = false;
+  if (route.query.demand) await router.replace({ query: { ...route.query, demand: undefined } });
+  await nextTick();
+  if (recordTrigger?.isConnected) recordTrigger.focus();
+  recordTrigger = null;
 }
 function switchTab(key: string) {
   if (store.dirty || store.busy) {
@@ -196,10 +259,16 @@ const unregisterAssistantRemaining = registerAssistantTarget({
   },
 });
 onBeforeUnmount(unregisterAssistantRemaining);
-const unregisterAssistantSelection = registerAssistantSelection('injection-scheduling', () => ({
+const unregisterAssistantSelection = registerAssistantSelection('injection-scheduling', (): ContextSelection => ({
   selection_id: store.selectedId || 'injection-filters',
   resources: store.selectedId ? [{ module_id: 'injection-scheduling', resource_type: 'demand', resource_id: store.selectedId }] : [],
-  filters: { factory_id: store.factory || null, view: tab.value },
+  filters: store.selectedId ? { factory_id: store.factory || null } : {
+    factory_id: store.factory || null,
+    query_summary: [store.filter ? filterLabel(store.filter) : '全部需求',
+      store.search.text ? `${store.fieldMap[store.search.field]?.label || (store.search.field === 'all' ? '全部字段' : store.search.field)}${({exact:'精确匹配',contains:'包含',prefix:'开头为',in:'批量匹配'} as Record<string,string>)[store.search.mode] || store.search.mode}：${store.search.text}` : '',
+      store.sort.map(s => `${store.fieldMap[s.field]?.label || s.field}${s.direction === 'desc' ? '降序' : '升序'}`).join('，')].filter(Boolean).join('；'),
+    filter_json: JSON.stringify(store.filter), search_json: JSON.stringify(store.search), sort_json: JSON.stringify(store.sort),
+  },
 }));
 onBeforeUnmount(unregisterAssistantSelection);
 onBeforeUnmount(registerAssistantTarget({
@@ -286,7 +355,8 @@ function filterLabel(node: FilterNode): string {
       } as Record<string, string>
     )[node.op || ""] +
     " " +
-    (Array.isArray(node.value) ? node.value.join("、") : (node.value ?? ""))
+    (Array.isArray(node.value) ? node.value.map(v => node.field === 'dispatch_state' ? statusText[String(v)] || v : v).join("、")
+      : node.field === 'dispatch_state' ? statusText[String(node.value)] || node.value || '' : (node.value ?? ""))
   );
 }
 async function applyFilter() {
@@ -486,6 +556,7 @@ const templateLabels1: Record<string, string> = {
 <template>
   <main
     class="inj-workspace"
+    :data-route-entry-owned="routeEntryOwned || undefined"
     :class="{
       'inj-focus-mode': view.focusMode,
       'inj-no-motion': !motionAllowed,
@@ -503,7 +574,7 @@ const templateLabels1: Record<string, string> = {
         aria-label="返回生产模块"
         ><ArrowLeft
       /></RouterLink>
-      <h1>注塑排产中枢</h1>
+      <h1 data-route-motion-anchor>注塑排产中枢</h1>
       <select
         :value="store.factory || ''"
         aria-label="当前厂区"
@@ -588,6 +659,7 @@ const templateLabels1: Record<string, string> = {
       <div
         v-if="['timeline', 'table', 'machines'].includes(tab)"
         class="inj-global-toolbar"
+        :data-route-entry-owned="planningEntryOwned || undefined"
         data-yl-help="injection.views"
         :inert="store.dirty || store.busy"
       >
@@ -857,10 +929,7 @@ const templateLabels1: Record<string, string> = {
           :creating="newDemand"
           :can-plan="canPlan"
           :can-report="canReport"
-          @close="
-            newDemand = false;
-            store.drawer = false;
-          "
+          @close="closeDemand"
           @action="beginAction"
           @report="openReport"
         />

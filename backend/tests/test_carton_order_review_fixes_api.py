@@ -360,7 +360,7 @@ def test_order_return_canonical_permissions_prevent_inventory_deduction_and_auth
         ledger = client.get(BASE + "/inventory/movements", params={"factory_id": "huaxing"}).json()["items"]
         assert sum(Decimal(item["quantity"]) for item in ledger) == 5
         response = client.post(f"{BASE}/orders/{row['order_no']}/return", json={
-            "factory_id": "huaxing", "expected_revision": row["revision"], "reason": "客户取消整单退回"})
+            "factory_id": "huaxing", "expected_revision": row["revision"], "reason": "客户取消整单退回", "return_date": "2026-08-05"})
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "CANCELLED"
         assert context(client, response.json())["issues"][0]["is_cancellation"] is True

@@ -23,7 +23,7 @@ async function ready(supplier=false) {
 describe('bilateral material correction', () => {
  it('sends a narrow correction retaining literal size and order revision', async()=>{
   vi.mocked(api.create).mockResolvedValue(row)
-  const w=await ready();await w.get('[aria-label="更正后尺寸单位"]').setValue('inch');await w.get('[aria-label="纸品更正原因"]').setValue('尺寸单位录入错误')
+  const w=await ready();expect(w.get('[role="dialog"]').attributes('aria-label')).toBe('调整订单信息');expect(w.text()).toContain('须经供应商同意后双方生效');await w.get('[aria-label="更正后尺寸单位"]').setValue('inch');await w.get('[aria-label="纸品更正原因"]').setValue('尺寸单位录入错误')
   await w.get('form').trigger('submit');await flushPromises()
   expect(api.create).toHaveBeenCalledWith('ORDER-1',expect.objectContaining({ expected_revision:2, issue_id:'P1', order_line_id:'L1', after:row.after }),expect.any(AbortSignal))
   expect(Object.keys(vi.mocked(api.create).mock.calls[0]![1].after).sort()).toEqual(['dimension_unit','packaging_type','paper_quality','specification'])

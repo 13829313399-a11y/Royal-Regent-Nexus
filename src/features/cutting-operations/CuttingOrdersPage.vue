@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button'
 import { cuttingApi, errorMessage, type Access, type BomData, type MasterRecord, type Command } from './api'
 import { ordersApi, type CuttingOrder, type OrderAction, type OrderCommand, type OrderRevision, type EtaBatch, type DemandInput } from './ordersApi'
 import { CUTTING_FACTORY, type CuttingWorkspace } from './navigation'
-import CuttingWorkspacePage from './CuttingWorkspacePage.vue'
 import CuttingPlanEditor from './CuttingPlanEditor.vue'
 import CuttingPlanSummary from './CuttingPlanSummary.vue'
 import CuttingPlanDiff from './CuttingPlanDiff.vue'
@@ -45,6 +44,7 @@ const usageEditor = ref<InstanceType<typeof CuttingMaterialUsage>>()
 const materialEditing=ref(false),usageEditing=ref(false)
 const access = ref<Access | null>(null), loading = ref(true), saving = ref(false), needsLogin = ref(false)
 const error = ref(''), notice = ref(''), query = ref(''), page = ref(1), total = ref(0)
+const readFailureStatus=ref<number>()
 const statusFilter = ref('')
 const planStatusFilter = ref('')
 const planStatusLabels: Record<string,string> = { unplanned:'未排',partial:'部分排期',published:'已发布',pending_actual:'待实际核定',review:'待复核' }
@@ -90,7 +90,7 @@ async function load(nextPage = page.value, navigation = false, followLocation = 
   const request = ++generation
   manualLocation.value=undefined
   selected.value = null; action.value = null; history.value = []; rows.value = []; historyGeneration++; searchGeneration++
-  loading.value = true; error.value = ''
+  loading.value = true; error.value = ''; readFailureStatus.value=undefined
   try {
     const rights = await cuttingApi.access()
     if (!alive || request !== generation) return
@@ -108,7 +108,7 @@ async function load(nextPage = page.value, navigation = false, followLocation = 
     const result = await ordersApi.list(nextPage, appliedQuery.value, appliedStatus.value, appliedPlanStatus.value)
     if (!alive || request !== generation) return
     rows.value = result.data; total.value = result.total; page.value = nextPage
-  } catch (e) { if (alive && request === generation) { error.value = errorMessage(e); access.value = null } }
+  } catch (e) { if (alive && request === generation) { error.value = errorMessage(e); readFailureStatus.value=(e as {response?:{status?:number}}).response?.status; access.value = null } }
   finally { if (alive && request === generation) loading.value = false }
 }
 function select(row: CuttingOrder) {
@@ -240,11 +240,18 @@ function status(row: CuttingOrder) {
 </script>
 
 <template>
-  <template v-if="!available">
-    <p v-if="loading" role="status">正在检查裁床接单权限…</p>
-    <p v-else role="alert">{{ error || '订单与交期尚未启用，请完成迁移及独立授权后使用。' }}</p>
-    <CuttingWorkspacePage :workspace="workspace" />
-  </template>
+  <section v-if="!available" class="cutting-page">
+    <PageHeader :title="workspace.title" description="按当前厂区和岗位授权读取裁床订单。" />
+    <p v-if="loading" role="status">正在读取订单并核验裁床接单权限…</p>
+    <div v-else-if="error" class="cutting-notice" role="alert">
+      <div><p>{{readFailureStatus===401?'登录已失效，请重新登录。':readFailureStatus===403?'当前账号无权读取裁床订单，请联系授权负责人。':'订单读取失败，请重试。'}}</p><p>{{error}}</p>
+        <Button type="button" variant="outline" @click="load(1,false,true)">{{readFailureStatus===401||readFailureStatus===403?'重新核验权限':'重新读取订单'}}</Button>
+        <a v-if="readFailureStatus===401" href="/login" target="_blank" rel="noopener">重新登录</a>
+      </div>
+    </div>
+    <p v-else-if="access&&!access.enabled" class="cutting-notice">裁床订单模块尚未启用，请联系系统负责人。</p>
+    <p v-else class="cutting-notice">裁床订单结构尚未就绪，请先完成显式迁移；当前不读取或录入业务数据。</p>
+  </section>
   <section v-else class="cutting-page orders-page">
     <CuttingLocationNotice :location="manualLocation??location" :selected-id="selected?.line_id" />
     <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '本厂现场、外发在外物料与订单领用，按原实发追溯。' : '订单、工程需求与生产预排'"/>

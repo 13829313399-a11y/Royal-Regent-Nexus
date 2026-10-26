@@ -165,14 +165,20 @@ def test_raw_repository_permissions_and_stale_copy_never_restore_original(monkey
         assert client.post("/api/carton-mark/assets/batch", data={"factory_id": "huaxing"}, files=[("files", ("a.xlsx", content))]).status_code == 403
         client.app.dependency_overrides.clear()
         with db_module.SessionLocal() as first, db_module.SessionLocal() as stale:
-            service.archive_asset(first, user, "huaxing", asset["id"], 1)
+            with pytest.raises(HTTPException) as denied:
+                service.archive_asset(first, user, "huaxing", asset["id"], 1)
+            assert denied.value.status_code == 403
+            first.rollback()
+            from app.models.auth import AuthUser
+            writer = auth.build_auth_context(first, first.scalar(select(AuthUser).where(AuthUser.username == "admin")))
+            service.archive_asset(first, writer, "huaxing", asset["id"], 1)
             cached = stale.scalar(select(model.CartonMarkAsset).where(model.CartonMarkAsset.id == asset["id"]))
             stale.commit()  # Retain the stale identity map, release the read transaction.
             recognition = service.recognize_asset("4500222793.xlsx", content, [])
-            first_copy, first_status = service.save_asset(first, user, "huaxing", content, recognition)
+            first_copy, first_status = service.save_asset(first, writer, "huaxing", content, recognition)
             assert first_status == "created" and first_copy.id != asset["id"]
             assert cached.revision == 2
-            stale_copy, stale_status = service.save_asset(stale, user, "huaxing", content, recognition)
+            stale_copy, stale_status = service.save_asset(stale, writer, "huaxing", content, recognition)
             assert stale_status == "created" and stale_copy.id not in {asset["id"], first_copy.id}
             first.expire_all()
             original = first.get(model.CartonMarkAsset, asset["id"])

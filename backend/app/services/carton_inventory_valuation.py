@@ -8,13 +8,15 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
-from decimal import Decimal, localcontext
+from decimal import Decimal, InvalidOperation, localcontext
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovement
 from app.services.carton_ledger_time import ledger_rows, ledger_time
+
+SPECIAL_REPLACEMENT_EVENT = "SPECIAL_RECEIPT_REPLENISHMENT_LINKED"
 
 
 def cost_key(row: CartonInventoryMovement) -> tuple[str, ...]:
@@ -52,13 +54,139 @@ def load_valuation(db: Session, factory_id: str, *, before: str | None = None) -
 
 
 def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAuditEvent]) -> Valuation:
+    """Correction versions revalue exact downstream B sources, preserving old freezes.
+
+    Each B batch remembers the valuation available when its immutable link was
+    recorded. Only subsequent correction deltas are inherited, so a B received
+    after an earlier correction never receives that difference twice.
+    """
+    corrections = [event for event in events if event.event_type == "INVENTORY_PRICE_CORRECTED"]
+    by_line = {row.source_line_id: row for row in rows if row.source_type == "RECEIPT" and row.quantity > 0}
+    by_id = {row.id: row for row in rows}
+    special_links, special_errors = _special_replacement_links(rows, events, by_line, by_id)
+    split_edges = []
+    for event in events:
+        if event.event_type == "ORDER_SPLIT_STOCK_MOVED":
+            for pair in json.loads(event.detail_json or "{}").get("pairs", []):
+                if pair["from_id"] in by_id and pair["to_id"] in by_id: split_edges.append((cost_key(by_id[pair["from_id"]]),cost_key(by_id[pair["to_id"]])))
+    def affected_keys(since, cutoff):
+        result={cost_key(by_id[event.entity_id]) for event in corrections if since < event.sequence <= cutoff and event.entity_id in by_id}
+        while True:
+            more={target for source,target in split_edges if source in result}-result
+            if not more: return result
+            result.update(more)
+    links = []
+    for event in events:
+        if event.event_type != "RECEIPT_REPLENISHMENT_LINKED": continue
+        data = json.loads(event.detail_json or "{}")
+        row = by_line.get(event.entity_id)
+        if row is not None and data.get("responsibility") == "SUPPLIER": links.append((event, data, row))
+    cache = {}
+    def build(cutoff):
+        if cutoff in cache: return cache[cutoff]
+        selected = [event for event in events if event.event_type != "INVENTORY_PRICE_CORRECTED" or event.sequence <= cutoff]
+        latest = max((event.sequence for event in corrections if event.sequence <= cutoff), default=0)
+        replacements, invalid = {}, []
+        for event, data, row in links:
+            if event.sequence >= latest: continue
+            originals = [item for item in rows if item.source_type == "ORDER_REPLENISHMENT"
+                and item.source_id == data.get("replenishment_issue_id") and item.order_line_id == row.order_line_id
+                and item.quantity < 0 and cost_key(item) == cost_key(row)]
+            total = -sum((item.quantity for item in originals), Decimal(0))
+            if not originals or total <= 0:
+                if cost_key(row) in affected_keys(event.sequence,cutoff): invalid.append(row)
+                continue
+            reference = build(event.sequence)
+            replacements[row.id] = ([item.id for item in originals], total, reference.amounts)
+        invalid_special = []
+        for identifier, link in special_links.items():
+            if link["event"].sequence >= latest:
+                continue
+            reference = build(link["event"].sequence)
+            replacements[identifier] = (link["sources"], link["quantity"], reference.amounts)
+            if (any(source in reference.unpriced_movements for source in link["sources"])
+                or any(bad.id in link["sources"] for bad, _ in reference.errors)):
+                invalid_special.append(by_id[identifier])
+        result = _value_movements(rows, selected, replacements, special_links)
+        result.errors.extend(special_errors)
+        result.errors.extend((row, "样板杂单免费补货原出库在冻结时尚无可靠成本，请核对历史凭证") for row in invalid_special)
+        result.errors.extend((row, "免费补货缺少可验证的原补单出库成本来源，不能自动承接单价更正") for row in invalid)
+        cache[cutoff] = result
+        return result
+    return build(max((event.sequence for event in corrections), default=0))
+
+
+def _special_replacement_links(rows, events, by_line, by_id):
+    """Validate exact SPECIAL debit evidence; pooled stock is never a source link."""
+    links, errors, seen = {}, [], set()
+    sequence = {event.entity_id: event.sequence for event in events
+                if event.event_type == "INVENTORY_MOVEMENT_CREATED"}
+    reversed_ids = {row.reversal_of_movement_id for row in rows if row.reversal_of_movement_id}
+    active_quantities = defaultdict(Decimal)
+    linked_rows = defaultdict(list)
+    for event in events:
+        if event.event_type != SPECIAL_REPLACEMENT_EVENT:
+            continue
+        row = by_line.get(event.entity_id)
+        if row is None:
+            continue  # A historical cutoff may intentionally exclude this receipt.
+        try:
+            data = json.loads(event.detail_json or "{}")
+            if not isinstance(data, dict) or data.get("responsibility") not in {"OWN", "SUPPLIER"}:
+                raise ValueError
+            if row.id in seen:
+                raise ValueError
+            seen.add(row.id)
+            if data["responsibility"] == "OWN":
+                continue  # Actual receipt prices retain the ordinary valuation policy.
+            identifiers = data["source_movement_ids"]
+            total = Decimal(str(data["source_quantity"]))
+            amount = Decimal(str(data["inventory_amount"]))
+            accepted = Decimal(str(data["quantity"]))
+            if (not isinstance(identifiers, list) or len(identifiers) != 1
+                or any(not isinstance(identifier, str) for identifier in identifiers)
+                or len(identifiers) != len(set(identifiers))
+                or not total.is_finite() or total <= 0 or not amount.is_finite() or amount < 0
+                or not accepted.is_finite() or accepted != row.quantity or accepted > total
+                or Decimal(str(data["settlement_unit_price"])) != 0
+                or not data.get("child_request_id") or not data.get("parent_request_id")
+                or event.factory_id != row.factory_id or data.get("receipt_id") != row.source_id):
+                raise ValueError
+            originals = [by_id[identifier] for identifier in identifiers]
+            if any(original.factory_id != row.factory_id or original.source_type != "SPECIAL_REPLENISHMENT"
+                   or original.movement_type != "OUTBOUND" or original.quantity >= 0
+                   or original.source_id != data["child_request_id"] or original.id in reversed_ids
+                   or cost_key(original) != cost_key(row)
+                   or not sequence.get(original.id) or sequence[original.id] >= event.sequence
+                   for original in originals):
+                raise ValueError
+            if -sum((original.quantity for original in originals), Decimal(0)) != total:
+                raise ValueError
+            links[row.id] = {"event": event, "sources": identifiers, "quantity": total, "amount": amount}
+            key = tuple(sorted(identifiers))
+            linked_rows[key].append(row)
+            if row.id not in reversed_ids:
+                active_quantities[key] += row.quantity
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            errors.append((row, "样板杂单免费补货成本来源缺失或不一致，请核对原补单出库及收料凭证"))
+    for key, sources in linked_rows.items():
+        if active_quantities[key] > links[sources[0].id]["quantity"]:
+            errors.extend((row, "样板杂单免费补货有效收料超过原补单出库额度") for row in sources)
+    return links, errors
+
+
+def _value_movements(rows, events, replacements=None, special_links=None):
+    replacements = replacements or {}
+    special_links = special_links or {}
     sequence: dict[str, int] = {}
     split_sources: dict[str, str] = {}
     split_order: dict[str, int] = {}
     prices: dict[str, Decimal] = {}
     for event in events:
+        if event.event_type == SPECIAL_REPLACEMENT_EVENT:
+            continue  # Parsed and validated separately, including malformed evidence.
         detail = json.loads(event.detail_json or "{}")
-        if event.event_type == "INVENTORY_PRICE_CONFIRMED":
+        if event.event_type in {"INVENTORY_PRICE_CONFIRMED", "INVENTORY_PRICE_CORRECTED"}:
             prices[event.entity_id] = Decimal(str(detail["unit_price"]))
         elif event.event_type == "INVENTORY_MOVEMENT_CREATED":
             sequence[event.entity_id] = event.sequence
@@ -124,7 +252,25 @@ def value_movements(rows: list[CartonInventoryMovement], events: list[CartonAudi
                     unknown = {identifier: -coefficient for identifier, coefficient in movement_dependencies[source].items()}
             elif qty > 0:
                 amount = qty * price
-                if price == 0 and row.id not in prices:
+                special = special_links.get(row.id)
+                if special:
+                    amount = qty * special["amount"] / special["quantity"]
+                    reference = replacements.get(row.id, (None, None, result.amounts))[2]
+                    sources = special["sources"]
+                    if (any(identifier not in result.amounts or identifier not in reference
+                            or identifier in result.unpriced_movements for identifier in sources)
+                        or any(cost_key(bad) == key for bad, _ in result.errors)
+                        or -sum((reference.get(identifier, Decimal(0)) for identifier in sources), Decimal(0)) != special["amount"]):
+                        result.errors.append((row, "样板杂单免费补货冻结成本与原出库计价不一致，不能自动估价"))
+                        unknown = {row.id: qty}
+                if row.id in replacements:
+                    sources, total, previous = replacements[row.id]
+                    if any(identifier not in result.amounts or identifier not in previous for identifier in sources):
+                        result.errors.append((row, "免费补货先于其原出库或缺少成本来源，不能自动承接单价更正"))
+                    else:
+                        delta = -sum((result.amounts[identifier] - previous[identifier] for identifier in sources), Decimal(0))
+                        amount += qty * delta / total
+                if not special and price == 0 and row.id not in prices:
                     result.missing.append(row)
                     unknown = {row.id: qty}
             else:

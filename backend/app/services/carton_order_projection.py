@@ -34,6 +34,8 @@ def order_page_out(db, orders, *, usage=None):
     by_issue_order = defaultdict(list)
     for issue in issues:
         by_issue_order[issue.order_id].append(issue)
+    from app.services.carton_supplier_changes import response_states
+    supplier_change_states = response_states(db, factory, "REGULAR", [issue.id for issue in issues])
     split_by_order = defaultdict(list)
     for plan in plans(db, factory):
         if plan["order_id"] in order_ids:
@@ -72,6 +74,7 @@ def order_page_out(db, orders, *, usage=None):
         own_lines = by_order[order.id]
         own_ids = {line.id for line in own_lines}
         projection = {**shared, "lines": own_lines, "issues": by_issue_order[order.id],
+            "supplier_change_states": supplier_change_states,
             "plans": split_by_order[order.id], "history_imported": order.id in history,
             "append_details": append_details[order.id],
             "business_activity": bool(own_ids & business_lines),

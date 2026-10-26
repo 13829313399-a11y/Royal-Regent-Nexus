@@ -13,6 +13,7 @@ from app.services.internal_quote import (
     ensure_quote_read, ensure_section_permission, ensure_quote_permission,
     ensure_quote_formula_current, _save_section_in_transaction, _derive_quote_status,
     _add_audit, quote_to_out, MUTABLE_SECTION_STATUSES,
+    packaging_section_issue,
 )
 from app.services.transaction_lock import lock_transaction
 from app.services.internal_quote_document import lock_documents, ensure_not_archived
@@ -100,8 +101,9 @@ def _plan(db, quote_id, payload, user):
     source_payloads = {}
     for code in codes:
         section = _get_section(db, source.id, code)
-        if not section.is_required or not section.filled_at or section.calculation_status != "valid" or section.dependency_status != "current":
-            raise HTTPException(409, f"来源{section.department_name}须先保存并完成有效核算")
+        issue = packaging_section_issue(section, f"来源产品 {source.product_name}（{source.version_label}）的{section.department_name}")
+        if issue:
+            raise HTTPException(409, issue)
         source_payloads[code] = _json_object(section.payload_json)
     plans = []
     for selection in payload.targets:

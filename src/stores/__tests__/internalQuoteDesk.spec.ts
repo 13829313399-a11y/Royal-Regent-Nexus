@@ -201,6 +201,95 @@ describe('internal quote desk real API state', () => {
     apiMock.updateReferenceFx.mockResolvedValue(quote({ header_revision: 3, reference_snapshot_id: 'REF-2' }))
   })
 
+  it('does not restore an earlier actor response after reset and a newer request', async () => {
+    const store = useInternalQuoteDeskStore()
+    store.activateFactoryContext('huaxing')
+    const old = deferred<ApiInternalQuote>()
+    apiMock.get.mockReturnValueOnce(old.promise)
+    const pending = store.loadQuote('quote-1')
+    const oldSequence = store.quoteDetailRequestSequence
+    store.resetPrivateContext()
+    store.activateFactoryContext('huaxing')
+    apiMock.get.mockResolvedValueOnce(quote({ product_name: '当前账号报价' }))
+    await store.loadQuote('quote-1')
+    old.resolve(quote({ product_name: '旧账号私有报价' }))
+    expect(await pending).toBeUndefined()
+    expect(store.quoteDetailRequestSequence).toBeGreaterThan(oldSequence)
+    expect(store.getQuoteById('quote-1')?.productName).toBe('当前账号报价')
+    expect(apiMock.getSummary).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a foreign native detail before requesting any financial or attachment data', async () => {
+    const store = useInternalQuoteDeskStore()
+    store.activateFactoryContext('huaxing')
+    apiMock.get.mockResolvedValueOnce(quote({ factory_id: 'huakang-b' }))
+    expect(await store.loadQuote('quote-1')).toBeUndefined()
+    expect(store.quoteDetailVerifiedId).toBe('')
+    expect(store.quoteDetailFailedId).toBe('quote-1')
+    expect(apiMock.getSummary).not.toHaveBeenCalled()
+    expect(apiMock.listAttachments).not.toHaveBeenCalled()
+  })
+
+  it('marks failed authoritative data unavailable while preserving saved revisions for retry', async () => {
+    const store = useInternalQuoteDeskStore()
+    await store.loadQuote('quote-1')
+    apiMock.getSummary.mockRejectedValueOnce(new Error('当前账号没有汇总权限'))
+    expect(await store.loadQuote('quote-1')).toBeUndefined()
+    expect(store.quoteDetailFailedId).toBe('quote-1')
+    expect(store.quoteDetailVerifiedId).toBe('')
+    expect(store.getQuoteById('quote-1')?.headerRevision).toBe(2)
+    await store.loadQuote('quote-1')
+    expect(store.quoteDetailVerifiedId).toBe('quote-1')
+    expect(store.quoteDetailFailedId).toBe('')
+  })
+
+  it('cannot apply an old mutation receipt, refresh it, or unlock a new actor operation', async () => {
+    const store = useInternalQuoteDeskStore()
+    const operation = deferred<ApiInternalQuoteSection>()
+    const pending = store.executeMutation('quote-1', () => operation.promise)
+    const rejected = expect(pending).rejects.toThrow('报价账号、权限或厂区已变化')
+    store.resetPrivateContext()
+    store.submitting = true
+    operation.resolve({ ...section('engineering', 1), revision: 99 })
+    await rejected
+    expect(apiMock.get).not.toHaveBeenCalled()
+    expect(store.quotes).toEqual([])
+    expect(store.submitting).toBe(true)
+    expect(store.errorMessage).toBe('')
+  })
+
+  it('stops a multi-step save before writing when its preflight returns after context reset', async () => {
+    const store = useInternalQuoteDeskStore()
+    const preflight = deferred<ApiInternalQuote>()
+    apiMock.get.mockReturnValueOnce(preflight.promise)
+    const pending = store.saveWholeProductSections('quote-1', [{ sectionCode: 'engineering', revision: 1, payload: { source: 'new' }, baselinePayload: { source: 'backend' } }])
+    const rejected = expect(pending).rejects.toThrow('报价账号、权限或厂区已变化')
+    store.resetPrivateContext()
+    preflight.resolve(quote())
+    await rejected
+    expect(apiMock.saveWholeProduct).not.toHaveBeenCalled()
+    expect(store.errorMessage).toBe('')
+  })
+
+  it('does not download an old identity file or repopulate version caches after reset', async () => {
+    const store = useInternalQuoteDeskStore()
+    const file = deferred<Blob>(), versions = deferred<never[]>()
+    apiMock.downloadExport.mockReturnValueOnce(file.promise)
+    apiMock.listVersionCandidates.mockReturnValueOnce(versions.promise)
+    const pendingFile = store.downloadExport('quote-1', 'export-1', 'old.xlsx')
+    const pendingVersions = store.loadVersionCandidates('quote-1')
+    const fileRejected = expect(pendingFile).rejects.toThrow('报价账号、权限或厂区已变化')
+    const versionsRejected = expect(pendingVersions).rejects.toThrow('报价账号、权限或厂区已变化')
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click')
+    store.resetPrivateContext()
+    file.resolve(new Blob(['old private data'])); versions.resolve([])
+    await Promise.all([fileRejected, versionsRejected])
+    expect(click).not.toHaveBeenCalled()
+    expect(store.versionCandidates).toEqual({})
+    expect(store.fileBusy).toBe(false)
+    click.mockRestore()
+  })
+
   it('keeps archived and incomplete business errors separate from revision conflicts', async () => {
     const store = useInternalQuoteDeskStore()
     for (const detail of ['方案版本已归档，请先恢复后操作', '以下部门须完成填写、保存及有效计算：啤机部']) {
@@ -943,6 +1032,8 @@ describe('internal quote desk real API state', () => {
       .resolves.toMatchObject({ revision: 2 })
     expect(apiMock.saveSection).toHaveBeenCalledTimes(1)
     expect(store.refreshWarning).toContain('详情读取失败')
+    expect(store.quoteDetailFailedId).toBe('quote-1')
+    expect(store.quoteDetailVerifiedId).toBe('')
     expect(store.errorMessage).toBe('')
     expect(store.getQuoteById('quote-1')?.sections.find((row) => row.code === 'engineering')?.revision).toBe(2)
     expect(apiMock.listBatchProducts).toHaveBeenCalledWith('quote-1')

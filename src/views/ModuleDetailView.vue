@@ -74,7 +74,7 @@ watch(currentDepartmentId, (departmentId) => {
             <StatusPill :label="currentModule.status" :tone="currentModule.statusTone" />
             <span class="text-sm text-slate-500">{{ activeFactory.shortName }} / {{ currentDepartment.name }} / {{ currentModule.owner }}</span>
           </div>
-          <h1 class="mt-4 text-4xl font-semibold tracking-tight text-slate-950">{{ currentModule.title }}</h1>
+          <h1 data-route-motion-anchor class="mt-4 text-4xl font-semibold tracking-tight text-slate-950">{{ currentModule.title }}</h1>
           <p class="mt-4 max-w-3xl text-base leading-8 text-slate-700">
             {{ currentModule.summary }}
           </p>

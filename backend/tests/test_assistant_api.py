@@ -51,6 +51,12 @@ def env(monkeypatch, tmp_path):
                 for byte in raw.encode(): yield bytes([byte])
             yield chunks()
         monkeypatch.setattr(provider, "open_stream", simulated)
+        # Offline service tests must never read the network through new adapters.
+        web_pages = importlib.import_module("app.services.assistant.web_pages")
+        errors = importlib.import_module("app.services.assistant.errors")
+        async def no_public_network(url):
+            raise errors.AssistantError("page_offline_fixture", "合成离线测试未读取网页正文。")
+        monkeypatch.setattr(web_pages, "read", no_public_network)
         yield client, dbm, calls, monkeypatch
 
 

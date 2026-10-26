@@ -35,13 +35,14 @@ def test_document_dates_post_into_separate_months_and_carry_forward_without_supp
     with make_client(monkeypatch) as client:
         setup(client,monkeypatch)
         rows=[["PO-1","I1","A33外箱",30,20,15,"A1",10,2,"2026-07-31 10:30"],
-              ["PO-2","I2","A33外箱",30,20,15,"A1",20,2,"2026-07-31T23:30:00Z"]]
+              ["PO-1","I1","A33外箱",30,20,15,"A1",20,2,"2026-07-31T23:30:00Z"]]
         content=workbook(rows,HEADERS+["入库时间"])
         preview=upload(client,content,options=ROW_OPTIONS).json()
         assert preview["errors"]==[],preview
         assert [row["occurred_at"] for row in preview["rows"]]==["2026-07-31T10:30:00+08:00","2026-08-01T07:30:00+08:00"]
         posted=upload(client,content,preview=False,options=ROW_OPTIONS,token=preview["source_fingerprint"])
         assert posted.status_code==201,posted.text
+        assert len(balances(client))==1 and Decimal(balances(client)[0]["balance"])==30
         movements=client.get(f"{BASE}/inventory/movements",params={"factory_id":"huaxing"}).json()["items"]
         assert {row["occurred_at"] for row in movements}=={row["occurred_at"] for row in preview["rows"]}
         for period,opening,adjustment,ending in [("2026-07",0,10,10),("2026-08",10,20,30)]:
@@ -76,13 +77,19 @@ def test_invalid_or_future_document_date_rejects_entire_batch(monkeypatch,bad_ti
         assert balances(client)==[]
 
 
-def test_same_stock_different_times_within_file_is_not_silently_dropped(monkeypatch):
+def test_same_stock_different_times_within_file_preserves_each_date_and_merges_balance(monkeypatch):
     with make_client(monkeypatch) as client:
         setup(client,monkeypatch)
         rows=[["PO","I","A33外箱",30,20,15,"A1",10,2,"2026-08-01 09:00"],
               ["PO","I","A33外箱",30,20,15,"A1",10,2,"2026-08-01 10:00"]]
-        preview=upload(client,workbook(rows,HEADERS+["入库时间"]),options=ROW_OPTIONS).json()
-        assert "入库时间" in preview["errors"][0] and balances(client)==[]
+        content=workbook(rows,HEADERS+["入库时间"])
+        preview=upload(client,content,options=ROW_OPTIONS).json()
+        assert preview["errors"]==[] and preview["skipped_count"]==0,preview
+        posted=upload(client,content,preview=False,options=ROW_OPTIONS,token=preview["source_fingerprint"])
+        assert posted.status_code==201,posted.text
+        assert len(balances(client))==1 and Decimal(balances(client)[0]["balance"])==20
+        movements=client.get(f"{BASE}/inventory/movements",params={"factory_id":"huaxing"}).json()["items"]
+        assert {row["occurred_at"] for row in movements}=={row["occurred_at"] for row in preview["rows"]}
 
 
 def test_row_date_cannot_modify_locked_or_earlier_period_and_whole_batch_rolls_back(monkeypatch):
@@ -223,18 +230,62 @@ def test_options_and_location_changes_invalidate_preview_and_locations_are_never
         assert balances(client)==[]
 
 
-def test_same_physical_identity_with_conflicting_rows_blocks_entire_import(monkeypatch):
+@pytest.mark.parametrize("prices", [(2,2), (2,3), (None,3)])
+def test_same_physical_identity_accumulates_every_source_row_and_retries_skip_the_group(monkeypatch,prices):
     with make_client(monkeypatch) as client:
         setup(client,monkeypatch)
-        data=[["PO","I","A33外箱",30,20,15,"A1",10,2],["PO","I","A33外箱",30,20,15,"A1",12,2]]
-        preview=upload(client,workbook(data)).json()
-        message=preview["errors"][0]
-        assert '第 4 行' in message and '与“期初库存导入”第 3 行' in message
-        assert 'A33外箱' in message and '数量：前行 10，本行 12' in message
-        assert '不同纸质可分行导入' in message
-        response=upload(client,workbook(data),preview=False,token=preview["source_fingerprint"])
-        assert response.status_code==422,response.text
-        assert balances(client)==[]
+        data=[["PO","I","A33外箱",30,20,15,"A1",10,prices[0]],
+              ["PO","I","A33外箱",30,20,15,"A1",12,prices[1]]]
+        content=workbook(data)
+        preview=upload(client,content).json()
+        assert preview["errors"]==[] and preview["skipped_count"]==0,preview
+        assert len({r["source_line_id"] for r in preview["rows"]})==2
+        assert any("合并" in message and "22" in message for message in preview["warnings"])
+        assert Decimal(preview["totals"][0]["quantity"])==22
+        response=upload(client,content,preview=False,token=preview["source_fingerprint"])
+        assert response.status_code==201,response.text
+        assert response.json()["imported_count"]==2
+        current=balances(client)
+        assert len(current)==1 and Decimal(current[0]["balance"])==22
+        if prices[0] is not None:
+            assert Decimal(current[0]["cost_amount"])==10*prices[0]+12*prices[1]
+        else:
+            assert current[0]["cost_status"]=="待核价"
+        audit=client.get(f"{BASE}/audit-events",params={"factory_id":"huaxing"}).text
+        assert '第 3 行' in audit and '第 4 行' in audit
+        for replay in (content,workbook(list(reversed(data)))):
+            checked=upload(client,replay).json()
+            assert checked["errors"]==[] and checked["skipped_count"]==2,checked
+            retry=upload(client,replay,preview=False,token=preview["source_fingerprint"])
+            assert retry.status_code==201 and retry.json()["imported_count"]==0,retry.text
+            assert Decimal(balances(client)[0]["balance"])==22
+        # A partial or changed group is never treated as another opening addition.
+        for changed in (data[:1], [data[0], [*data[1][:7],13,prices[1]]], data+[data[1]]):
+            checked=upload(client,workbook(changed)).json()
+            assert checked["errors"],checked
+            rejected=upload(client,workbook(changed),preview=False,token=checked["source_fingerprint"])
+            assert rejected.status_code==422 and Decimal(balances(client)[0]["balance"])==22
+
+
+def test_identical_rows_in_one_file_are_counted_once_each_not_deduplicated(monkeypatch):
+    with make_client(monkeypatch) as client:
+        setup(client,monkeypatch)
+        row=["PO","I","A33外箱",30,20,15,"A1",10,2]
+        content=workbook([row,row,row])
+        preview=upload(client,content).json()
+        assert preview["errors"]==[] and preview["skipped_count"]==0,preview
+        assert len({r["source_line_id"] for r in preview["rows"]})==3
+        posted=upload(client,content,preview=False,token=preview["source_fingerprint"])
+        assert posted.status_code==201 and posted.json()["imported_count"]==3,posted.text
+        assert len(balances(client))==1 and Decimal(balances(client)[0]["balance"])==30
+        retry=upload(client,content,preview=False,token=preview["source_fingerprint"])
+        assert retry.status_code==201 and retry.json()["imported_count"]==0,retry.text
+        overflowing=workbook([["PO","OVERFLOW","A33外箱",30,20,15,"A1","99999999999999.9999",2],
+                              ["PO","OVERFLOW","A33外箱",30,20,15,"A1",1,2]])
+        checked=upload(client,overflowing).json()
+        assert any("合并数量超过" in message for message in checked["errors"]),checked
+        rejected=upload(client,overflowing,preview=False,token=checked["source_fingerprint"])
+        assert rejected.status_code==422 and len(balances(client))==1
 
 
 def test_same_contract_item_different_paper_quality_keeps_quantity_and_price_separate(monkeypatch):

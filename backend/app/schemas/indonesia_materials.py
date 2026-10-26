@@ -2,7 +2,7 @@
 from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
 Number = Annotated[Decimal, Field(ge=0, le=Decimal('1000000000000'), max_digits=24, decimal_places=8, allow_inf_nan=False)]
@@ -16,10 +16,21 @@ class Input(BaseModel):
 class Command(Input):
     factory_id: Text
     operation_id: Annotated[str, StringConstraints(min_length=16, max_length=64)]
-    action: Literal['material_save', 'product_save', 'order_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm']
+    action: Literal['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm']
     entity_id: str | None = Field(None, max_length=64)
     expected_version: int = Field(0, ge=0)
     data: dict = Field(default_factory=dict)
+
+
+class Customer(Input):
+    name: Text
+    status: Literal['active', 'inactive'] = 'active'
+    notes: str = Field('', max_length=500)
+
+
+class CustomsRule(Input):
+    basis: Literal['quantity', 'weight']
+    divisor: Positive
 
 
 class Material(Input):
@@ -30,9 +41,11 @@ class Material(Input):
     category: str = Field('', max_length=100)
     unit: Text
     customs_unit: Text = 'KGM'
+    customs_rule: CustomsRule | None = None
     net_weight_kg: Number | None = None
-    billing_weight_kg: Number | None = None
+    billing_weight_kg: Number | None = None  # Legacy API compatibility; new master saves derive this from net weight.
     billing_basis: Literal['quantity', 'weight'] = 'quantity'
+    billing_mode: Literal['manual', 'automatic'] = 'manual'
     billing_unit: Text = 'PCS'
     billing_factor: Positive = Decimal(1)
     price: Number = Decimal(0)
@@ -50,14 +63,36 @@ class Recipe(Input):
     usage: Positive
 
 
+class ProductMaterial(Input):
+    material_id: Text | None = None
+    usage: Positive
+    material: Material | None = None
+    material_version: int = Field(0, ge=0)
+
+    @model_validator(mode='after')
+    def validate_source(self):
+        if not self.material_id and self.material is None:
+            raise ValueError('请选择已有物料或填写新物料资料')
+        if self.material is not None and bool(self.material_id) != (self.material_version > 0):
+            raise ValueError('修改已有物料须提供原版本；新增物料版本须为零')
+        return self
+
+
+class MaterialDeletion(Input):
+    material_id: Text
+    expected_version: int = Field(gt=0)
+
+
 class Product(Input):
     code: Text
     customer: Text
+    customer_id: str | None = Field(None, max_length=64)
     name: str = Field('', max_length=200)
     unit: Text = 'PCS'
     daily_capacity: Positive | None = None
     transport_days: int = Field(25, ge=0, le=3650)
-    materials: list[Recipe] = Field(default_factory=list, max_length=100)
+    materials: list[ProductMaterial] = Field(default_factory=list, max_length=100)
+    material_deletions: list[MaterialDeletion] = Field(default_factory=list, max_length=100)
 
 
 class Order(Input):
@@ -66,7 +101,7 @@ class Order(Input):
     contract_no: Text
     po_no: str = Field('', max_length=160)
     item_no: Text
-    batch: Text
+    batch: str = Field('', max_length=160)  # Retained only for historical delivery identities.
     quantity: Positive
     unit: Text = 'PCS'
     delivery_date: date
@@ -86,7 +121,9 @@ class Supply(Input):
     price: Number
     currency: Text = 'USD'
     billing_basis: Literal['quantity', 'weight'] = 'quantity'
+    billing_mode: Literal['manual', 'automatic'] = 'manual'
     billing_factor: Positive = Decimal(1)
+    billing_weight_source: Literal['net_weight_kg'] | None = None  # Missing on legacy commands/retries.
     promised_date: date | None = None
 
 
@@ -160,3 +197,47 @@ class ImportSelection(Input):
 
 class Reason(Input):
     reason: Text
+
+
+class PlanningMaterial(Input):
+    material_id: Text
+    expected_version: int = Field(gt=0)
+    procurement_days: int = Field(ge=0, le=3650)
+
+
+class OrderPlan(Input):
+    product_id: Text
+    product_version: int = Field(gt=0)
+    daily_capacity: Positive
+    transport_days: int = Field(ge=0, le=3650)
+    materials: list[PlanningMaterial] = Field(min_length=1, max_length=100)
+
+
+class WarehouseAllocation(Input):
+    order_id: Text
+    demand_id: Text
+    order_version: int = Field(gt=0)
+    normal_quantity: Number
+    spare_quantity: Number = Decimal(0)
+
+
+class WarehouseAllocationRef(Input):
+    allocation_id: Text
+    version: int = Field(gt=0)
+
+
+class WarehouseRowSelection(Input):
+    index: int = Field(ge=0)
+    material_id: Text
+    material_version: int = Field(gt=0)
+    supply_id: str | None = Field(None, max_length=64)
+    supply_version: int = Field(0, ge=0)
+    purchase: dict = Field(default_factory=dict)
+    allocations: list[WarehouseAllocation] = Field(min_length=1, max_length=100)
+    replace_allocations: list[WarehouseAllocationRef] = Field(default_factory=list, max_length=1000)
+    replacement_reason: str = Field('', max_length=500)
+
+
+class WarehouseSelection(Input):
+    shipment_date: date
+    rows: list[WarehouseRowSelection] = Field(min_length=1, max_length=200)

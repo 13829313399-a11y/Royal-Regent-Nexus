@@ -12,10 +12,46 @@ const selection:ReportSelection={kind:'period',month:'2026-09',event_id:'locked-
 const info:ReportPreview={token:'pinned-token',title:'内部月结冻结表',metadata:[['使用状态','历史失效冻结版本'],['版本',3]],sheets:[{name:'费用汇总',rows:2}]}
 let wrapper:VueWrapper
 beforeEach(()=>{vi.clearAllMocks();vi.mocked(cuttingApi.access).mockResolvedValue(access);vi.mocked(exportApi.preview).mockResolvedValue(info);vi.mocked(exportApi.download).mockResolvedValue(new Blob(['xlsx']))})
-afterEach(()=>wrapper?.unmount())
+afterEach(()=>{wrapper?.unmount();vi.useRealTimers()})
 async function open(props={}){wrapper=mount(CuttingReportExport,{props:{selection,access,...props}});await flushPromises()}
 async function click(label:string){await wrapper.findAll('button').find(b=>b.text()===label)!.trigger('click');await flushPromises()}
 describe('P4e controlled exports',()=>{
+  it('shows elapsed preview waiting, cancels it and ignores the late response',async()=>{
+    vi.useFakeTimers()
+    let resolve!:(value:ReportPreview)=>void
+    vi.mocked(exportApi.preview).mockImplementationOnce(()=>new Promise(r=>{resolve=r}))
+    await open();await click('预览 Excel 导出');await vi.advanceTimersByTimeAsync(2100)
+    expect(wrapper.text()).toContain('正在核对报表内容，已等待 2 秒')
+    const signal=vi.mocked(exportApi.preview).mock.calls[0]![1]!
+    await click('取消本次等待');expect(signal.aborted).toBe(true)
+    expect(wrapper.text()).toContain('后台生成可能仍会短暂运行')
+    expect(vi.getTimerCount()).toBe(0)
+    await click('预览 Excel 导出');expect(wrapper.text()).toContain('确认下载 Excel')
+    resolve({...info,title:'迟到的旧报表'});await flushPromises()
+    expect(wrapper.text()).not.toContain('迟到的旧报表');expect(saveReport).not.toHaveBeenCalled()
+  })
+  it('cancels download waiting without saving a late binary and releases timers on selection changes',async()=>{
+    vi.useFakeTimers()
+    let resolve!:(blob:Blob)=>void
+    vi.mocked(exportApi.download).mockImplementation(()=>new Promise(r=>{resolve=r}))
+    await open();await click('预览 Excel 导出');await click('确认下载 Excel')
+    await vi.advanceTimersByTimeAsync(3200)
+    expect(wrapper.text()).toContain('正在等待完整报表文件，已等待 3 秒')
+    await click('取消本次等待');resolve(new Blob(['late']));await flushPromises()
+    expect(saveReport).not.toHaveBeenCalled();expect(wrapper.text()).not.toContain('确认下载 Excel')
+    expect(vi.getTimerCount()).toBe(0)
+    vi.mocked(exportApi.preview).mockImplementation(()=>new Promise(()=>{}))
+    await click('预览 Excel 导出');await wrapper.setProps({selection:{...selection,event_id:'another'}})
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('distinguishes live payment balances from frozen versions before and after download',async()=>{
+    await open({selection:{kind:'payments',month:'2026-09'}});await click('预览 Excel 导出')
+    expect(wrapper.text()).toContain('不是所选月份的历史月末冻结余额')
+    await click('确认下载 Excel')
+    expect(wrapper.text()).toContain('付款报表已生成并发起下载')
+    expect(wrapper.text()).toContain('本次导出时的当前全期余额')
+    expect(wrapper.text()).not.toContain('金额按所选冻结版本')
+  })
   it('shows automatic volumes and downloads the full package after preview',async()=>{
     vi.mocked(exportApi.preview).mockResolvedValue({...info,delivery:{format:'zip',volumes:3,manifest:[]}})
     const blob=new Blob(['package'],{type:'application/zip'})

@@ -15,7 +15,7 @@ vi.mock('../api', () => ({ cuttingApi: { access: accessMock }, errorMessage: () 
 vi.mock('../cutoverApi', async importOriginal => ({ ...await importOriginal<typeof import('../cutoverApi')>(), cutoverApi: { preview: vi.fn() } }))
 let wrapper: VueWrapper | undefined
 beforeEach(() => { vi.clearAllMocks(); accessMock.mockReset().mockResolvedValue({ enabled: false, schema_ready: false, permissions: [] }) })
-afterEach(() => { wrapper?.unmount(); wrapper = undefined })
+afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.unstubAllEnvs() })
 
 async function open(path: string) {
   const router = createRouter({ history: createMemoryHistory(), routes: [
@@ -28,8 +28,97 @@ async function open(path: string) {
   await flushPromises()
   return router
 }
+async function openAccessShell() {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{
+    path: CUTTING_BASE, component: CuttingWorkspaceShell,
+    children: [{ path: 'materials', component: { template: '<input aria-label="隔离申请草稿" />' } }],
+  }] })
+  await router.push(`${CUTTING_BASE}/materials?factory=huakang-c`)
+  wrapper = mount(RouterView, { attachTo: document.body, global: { plugins: [router] } })
+  await flushPromises()
+}
+const recheckButton = () => wrapper!.get<HTMLButtonElement>('[role="alert"] button')
 
 describe('cutting workspace entry', () => {
+  it('hands keyboard focus to the stable main region after authorization recovery and preserves input',async()=>{
+    accessMock.mockResolvedValue({enabled:true,schema_ready:true,permissions:['read']});await openAccessShell()
+    await wrapper!.get('input').setValue('保留草稿')
+    accessMock.mockRejectedValueOnce(new Error('offline'))
+    window.dispatchEvent(new Event('authorization-context-changed'));await flushPromises()
+    accessMock.mockResolvedValueOnce({enabled:true,schema_ready:true,permissions:['read']})
+    const button=recheckButton();button.element.focus()
+    button.element.dispatchEvent(new MouseEvent('click',{detail:0,bubbles:true}));await flushPromises()
+    expect(document.activeElement).toBe(wrapper!.get('#cutting-main').element)
+    expect(wrapper!.get('input').element.value).toBe('保留草稿')
+  })
+  it.each(['nav','tab','pointer','newer','boundary','unmount','mouse'] as const)('does not steal successful permission focus after %s',async action=>{
+    accessMock.mockRejectedValueOnce(new Error('offline'));await openAccessShell()
+    let resolve!:(value:{enabled:boolean;schema_ready:boolean;permissions:string[]})=>void
+    accessMock.mockImplementationOnce(()=>new Promise(res=>{resolve=res}))
+    const button=recheckButton();button.element.focus()
+    button.element.dispatchEvent(new MouseEvent('click',{detail:action==='mouse'?1:0,bubbles:true}));await flushPromises()
+    const main=wrapper!.get<HTMLElement>('#cutting-main').element,nav=wrapper!.get<HTMLAnchorElement>('nav a').element
+    if(action==='nav')nav.focus()
+    if(action==='tab')document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}))
+    if(action==='pointer')document.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+    if(action==='newer'||action==='boundary'){
+      accessMock.mockRejectedValueOnce(new Error('still unavailable'))
+      window.dispatchEvent(new Event(action==='newer'?'authorization-context-changed':'auth-session-boundary-changed'));await flushPromises()
+    }
+    if(action==='unmount'){wrapper!.unmount();wrapper=undefined}
+    resolve({enabled:true,schema_ready:true,permissions:['read']});await flushPromises()
+    expect(document.activeElement).not.toBe(main)
+    if(action==='nav')expect(document.activeElement).toBe(nav)
+  })
+  it.each([401,403])('keeps cleared-workspace wording after denial %s followed by an offline recheck',async status=>{
+    accessMock.mockRejectedValueOnce({response:{status}})
+    await openAccessShell()
+    expect(wrapper!.find('input').exists()).toBe(false)
+    accessMock.mockRejectedValueOnce(new Error('offline'))
+    await recheckButton().trigger('click');await flushPromises()
+    expect(wrapper!.text()).toContain('旧工作区已清除，尚未恢复访问')
+    expect(wrapper!.text()).not.toContain('填写已保留')
+    expect(wrapper!.find('input').exists()).toBe(false)
+  })
+  it('does not claim retained input before the first successful authorization check',async()=>{
+    accessMock.mockRejectedValueOnce(new Error('offline'))
+    await openAccessShell()
+    expect(wrapper!.text()).toContain('工作区尚未开放')
+    expect(wrapper!.text()).not.toContain('填写已保留')
+  })
+  it.each([0,401,403])('keeps keyboard focus after repeated permission rechecks fail: %s',async status=>{
+    accessMock.mockRejectedValue(new Error('offline'));await openAccessShell()
+    for(let i=0;i<2;i++){
+      accessMock.mockRejectedValueOnce(status?{response:{status}}:new Error('offline'))
+      const button=recheckButton();button.element.focus()
+      button.element.dispatchEvent(new MouseEvent('click',{detail:0,bubbles:true}));await flushPromises()
+      expect(document.activeElement).toBe(recheckButton().element)
+    }
+  })
+  it.each(['nav','tab','pointer','newer','boundary','unmount','mouse'] as const)('does not steal focus after permission recheck failure and %s',async action=>{
+    accessMock.mockRejectedValue(new Error('offline'));await openAccessShell()
+    let reject!:(reason:Error)=>void
+    accessMock.mockImplementationOnce(()=>new Promise((_res,rej)=>{reject=rej}))
+    const button=recheckButton();button.element.focus()
+    button.element.dispatchEvent(new MouseEvent('click',{detail:action==='mouse'?1:0,bubbles:true}));await flushPromises()
+    const nav=wrapper!.get<HTMLAnchorElement>('nav a').element
+    if(action==='nav')nav.focus()
+    if(action==='tab')document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}))
+    if(action==='pointer')document.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+    if(action==='newer'){window.dispatchEvent(new Event('authorization-context-changed'));await flushPromises()}
+    if(action==='boundary'){window.dispatchEvent(new Event('auth-session-boundary-changed'));await flushPromises()}
+    if(action==='unmount'){wrapper!.unmount();wrapper=undefined}
+    reject(new Error('offline again'));await flushPromises()
+    if(wrapper)expect(document.activeElement).not.toBe(recheckButton().element)
+    if(action==='nav')expect(document.activeElement).toBe(nav)
+  })
+  it.each(['', 'acceptance-synthetic-20261021'])('labels only explicitly built acceptance releases: %s',async release=>{
+    vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE',release)
+    await open(`${CUTTING_BASE}/master?factory=huakang-c`)
+    const marker=wrapper!.find('[aria-label="独立验收环境标识"]')
+    expect(marker.exists()).toBe(!!release)
+    if(release){expect(marker.text()).toContain('数据库副本');expect(marker.text()).toContain(release);expect(marker.text()).toContain('合成业务样本')}
+  })
   it('revalidates live authorization without losing drafts for unrelated changes or transient failures', async () => {
     const rights = { enabled: true, schema_ready: true, permissions: ['read', 'material_request'] }
     accessMock.mockResolvedValue(rights)
@@ -51,6 +140,9 @@ describe('cutting workspace entry', () => {
     await flushPromises()
     expect(input().isVisible()).toBe(false)
     expect(input().element.value).toBe('保留填写')
+    expect(wrapper!.text()).toContain('填写已保留')
+    expect(wrapper!.get('[role="alert"] button').attributes('data-variant')).toBe('outline')
+    expect(wrapper!.get('[role="alert"]').element.closest('.enterprise-panel')).not.toBeNull()
     accessMock.mockResolvedValue(rights)
     await wrapper!.get('[role="alert"] button').trigger('click')
     await flushPromises()
@@ -66,6 +158,9 @@ describe('cutting workspace entry', () => {
     await flushPromises()
     expect(wrapper!.find('input').exists()).toBe(false)
     expect(wrapper!.text()).toContain('旧表单已清除')
+    expect(wrapper!.text()).toContain('工作区访问受限')
+    expect(wrapper!.get('[role="alert"] button').attributes('data-slot')).toBe('button')
+    expect(wrapper!.get('[role="alert"]').element.closest('.enterprise-panel')).not.toBeNull()
   })
   it('clears old session input immediately and ignores a late pre-boundary authorization response', async () => {
     const rights = { enabled: true, schema_ready: true, permissions: ['read'] }
@@ -119,8 +214,9 @@ describe('cutting workspace entry', () => {
         expect(cutoverApi.preview).not.toHaveBeenCalled()
         expect(wrapper!.findAll('form')).toHaveLength(cutover.findAll('form').length)
       } else if (workspace.path === 'planning' || workspace.path === 'materials') {
-        expect(wrapper!.text()).toContain('尚不能录入、保存或结算业务数据')
-        expect(wrapper!.text()).toContain(workspace.empty)
+        expect(wrapper!.text()).toContain('裁床订单模块尚未启用')
+        expect(wrapper!.text()).not.toContain('建设中')
+        expect(wrapper!.find('form').exists()).toBe(false)
       }
       expect(router.currentRoute.value.query.factory).toBe('huakang-c')
     }
@@ -149,8 +245,8 @@ describe('cutting workspace entry', () => {
     expect(wrapper!.find('table').exists()).toBe(false)
     await router.push(`${CUTTING_BASE}/planning?factory=huakang-c`)
     await flushPromises()
-    expect(wrapper!.get('h2').text()).toBe('订单总台账')
-    expect(wrapper!.text()).toContain('当前阶段必需物料')
+    expect(wrapper!.get('h1').text()).toBe('生产排期')
+    expect(wrapper!.text()).toContain('裁床订单模块尚未启用')
     expect(wrapper!.find('input').exists()).toBe(false)
   })
 })
