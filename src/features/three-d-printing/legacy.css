@@ -497,6 +497,7 @@
   }
   .legacy-sidebar-footer {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
     padding: 6px 12px;
@@ -507,9 +508,13 @@
     min-width: 0;
   }
   .legacy-account-label,
-  .legacy-sync,
   .legacy-more {
     display: none;
+  }
+  .legacy-sync {
+    flex-basis: 100%;
+    min-height: 32px;
+    padding: 0 5px;
   }
   .legacy-sidebar-account .account-menu__trigger {
     min-height: 38px;

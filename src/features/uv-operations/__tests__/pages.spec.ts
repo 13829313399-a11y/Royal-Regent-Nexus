@@ -10,7 +10,7 @@ import type { Entity } from '../contracts'
 const request=vi.fn(),command=vi.fn(),load=vi.fn(),replace=vi.fn()
 const data=ref<Record<string,Entity[]>>({})
 const route={query:{} as Record<string,string>}
-const w={contextVersion:ref(1),meta:ref({view_revision:1}),notification:ref(''),pagination:{},can:()=>true,items:(name:string)=>data.value[name]??[],request,command,load,explain:(e:unknown)=>(e as Error).message,selectedTaskId:ref(null)}
+const w={contextVersion:ref(1),meta:ref({view_revision:1}),notification:ref(''),ready:ref(true),assistantListReady:ref(false),pagination:{},can:()=>true,items:(name:string)=>data.value[name]??[],request,command,load,explain:(e:unknown)=>(e as Error).message,selectedTaskId:ref(null)}
 vi.mock('../workspace',()=>({useUvWorkspace:()=>w,UvError:class extends Error{constructor(message:string,public status=0){super(message)}}}))
 vi.mock('vue-router',()=>({useRoute:()=>route,useRouter:()=>({replace}),onBeforeRouteLeave:vi.fn()}))
 const deferred=<T,>()=>{let resolve!:(v:T)=>void,reject!:(e:unknown)=>void;const promise=new Promise<T>((a,b)=>{resolve=a;reject=b});return{promise,resolve,reject}}

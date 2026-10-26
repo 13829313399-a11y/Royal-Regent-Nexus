@@ -7,11 +7,14 @@ import { Button } from '@/components/ui/button'
 import WorkspaceDialog from './components/WorkspaceDialog.vue'
 import ActionQuestion from './components/ActionQuestion.vue'
 import OrderPassport from './components/OrderPassport.vue'
+import TaskPassport from './components/TaskPassport.vue'
+import { useSprayAssistantContext } from './assistantContext'
 import { provideSprayWorkspace } from './workspace'
 import { registerSprayNavigationGuard } from './navigationGuard'
 import { SPRAY_BASE, SPRAY_NAV, SPRAY_FACTORIES, FACTORY_NAMES, type Demand } from './contracts'
 import './workspace.css'
 const w = provideSprayWorkspace(), route = useRoute(), router = useRouter()
+const sourceContext = useSprayAssistantContext(w)
 const icons = { LayoutDashboard, CalendarRange, ClipboardCheck, PackageCheck, PaintBucket, ChartNoAxesCombined, SlidersHorizontal }
 const current = computed(() => SPRAY_NAV.find(item => route.path.startsWith(`${SPRAY_BASE}/${item.path}`)))
 const search = ref(''), searchOpen = ref(false), found = ref<Demand[]>([])
@@ -19,18 +22,21 @@ watch(w.contextVersion,()=>{found.value=[];searchOpen.value=false;search.value='
 const leaveOpen = ref(false), savingDraft = ref(false)
 let leaveResolver: ((value: boolean) => void) | null = null
 function guard() {
+  if (w.hasPending.value) { w.notification.value='保存仍在进行或结果待核对，请先查询原操作回执。'; return false }
   if (!w.dirty.value) return true
+  leaveResolver?.(false)
   leaveOpen.value = true
   return new Promise<boolean>(resolve => { leaveResolver = resolve })
 }
 const unregisterGuard = registerSprayNavigationGuard(guard)
 function finishLeave(proceed: boolean) { if (proceed) w.dirty.value = false; leaveOpen.value = false; leaveResolver?.(proceed); leaveResolver = null }
+watch(w.contextVersion,()=>finishLeave(false),{flush:'sync'})
 async function saveAndLeave() {
   if (!w.saveDraft.value) return
   savingDraft.value = true
   try { if (await w.saveDraft.value()) finishLeave(true) } catch (cause) { w.error.value = w.explain(cause) } finally { savingDraft.value = false }
 }
-function beforeUnload(event: BeforeUnloadEvent) { if (w.dirty.value || [...w.pending.values()].some(op => op.state === 'uncertain')) { event.preventDefault(); event.returnValue = '' } }
+function beforeUnload(event: BeforeUnloadEvent) { if (w.dirty.value || w.hasPending.value) { event.preventDefault(); event.returnValue = '' } }
 window.addEventListener('beforeunload', beforeUnload)
 onBeforeUnmount(() => { unregisterGuard(); window.removeEventListener('beforeunload', beforeUnload); leaveResolver?.(false) })
 async function find() {
@@ -45,7 +51,7 @@ async function switchFactory(event: Event) {
 }
 </script>
 <template>
-  <div class="spray-workspace spray-shell" :class="{ 'has-passport': w.passportId.value }">
+  <div class="spray-workspace spray-shell" :class="{ 'has-passport': w.passportId.value || w.taskPassportId.value }">
     <header class="spray-identity" data-yl-help="spray-production.overview">
       <RouterLink class="spray-brand" :to="{ path: '/modules/production', query: { factory: w.factory.value } }" aria-label="返回生产部"><img src="/brand/huadeng_group_dynamic_logo_topbar.svg" alt="华登集团" /><span><strong>喷油生产管理</strong><small>ROYAL REGENT NEXUS</small></span></RouterLink>
       <div class="spray-identity__divider" />
@@ -61,15 +67,18 @@ async function switchFactory(event: Event) {
       <RouterLink v-if="w.can('import')" :to="{ path: `${SPRAY_BASE}/imports`, query: { factory: w.factory.value } }" aria-label="导入中心" :class="{ active: route.path.includes('/imports') }"><FileInput :size="21" /><span>导入</span></RouterLink>
       <RouterLink :to="{ path: `${SPRAY_BASE}/activity`, query: { factory: w.factory.value } }" aria-label="操作记录" :class="{ active: route.path.endsWith('/activity') }"><History :size="21" /><span>记录</span></RouterLink>
     </nav>
-    <main class="spray-main">
+    <main class="spray-main" tabindex="-1" data-spray-focus-fallback>
       <div v-if="!w.valid.value" class="spray-empty spray-empty--full"><h1>请选择明确的执行工厂</h1><p>本工作区支持华兴、华登、华康A、华康B。模块尚未启用时，请返回生产部。</p><RouterLink :to="{ path: '/modules/production', query: route.query }" class="spray-primary">返回生产部</RouterLink></div>
       <div v-else-if="!w.ready.value" class="spray-empty spray-empty--full"><h1>{{ w.error.value ? '工作区暂时无法进入' : '正在确认工作区权限' }}</h1><p>{{ w.error.value || '获取当前工厂的有效授权…' }}</p><Button v-if="w.error.value" variant="outline" @click="w.retryAccess">重新连接</Button></div>
       <template v-else>
+        <div v-if="sourceContext.sourceError.value" class="spray-alert" role="alert"><span>{{sourceContext.sourceError.value}}</span><button class="spray-text-button" @click="sourceContext.removeSource()">关闭无效来源</button></div>
         <div v-for="operation in [...w.pending.values()].filter(op => op.state === 'uncertain' && op.factory === w.factory.value)" :key="operation.operation_id" class="spray-alert" role="alert"><span>上次保存结果待核对 · {{ operation.operation_id.slice(0, 8) }}</span><button class="spray-text-button" @click="w.resolveOperation(operation)">查询结果 / 安全重试</button></div>
-        <RouterView v-slot="{ Component }"><component :is="Component" :key="`${w.factory.value}:${route.path}`" /></RouterView>
+        <div v-if="w.assistantRecord.value" class="spray-assistant-selection" role="status"><span>曜灵查询范围：{{w.assistantRecord.value.kind==='task'?'工序任务':'需求'}} · {{w.assistantRecord.value.label}}</span><button class="spray-text-button" @click="w.assistantRecord.value.kind==='task' ? w.taskPassportId.value=w.assistantRecord.value.id : w.passportId.value=w.assistantRecord.value.id">查看来源</button><button class="spray-text-button" @click="w.assistantRecord.value=null;w.taskPassportId.value=null;w.passportId.value=null">清除选择</button></div>
+        <RouterView v-slot="{ Component }"><component :is="Component" :key="`${w.contextVersion.value}:${route.path}:${w.relatedDemand.value}`" /></RouterView>
       </template>
     </main>
     <OrderPassport />
+    <TaskPassport />
     <ActionQuestion />
     <div v-if="w.notification.value" class="spray-toast" role="status"><span>{{ w.notification.value }}</span><button class="spray-icon-button" aria-label="关闭提示" @click="w.notification.value = ''"><X :size="15" /></button></div>
     <WorkspaceDialog :open="leaveOpen" title="保留当前未保存的填写" @close="finishLeave(false)"><p>当前内容属于{{ w.factory.value ? FACTORY_NAMES[w.factory.value] : '原工厂' }}。离开前可保存到原工厂，或放弃这次填写。</p><template #footer><Button variant="outline" @click="finishLeave(false)">继续填写</Button><Button variant="outline" @click="finishLeave(true)">放弃并离开</Button><Button v-if="w.saveDraft.value" :disabled="savingDraft" @click="saveAndLeave">保存到原工厂并离开</Button></template></WorkspaceDialog>

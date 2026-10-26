@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
+import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
+import { useQuoteOperationScope } from '@/features/internal-quote/operationScope'
 import { internalQuoteApi } from '@/api/internalQuote'
 import { getApiErrorMessage } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
@@ -14,6 +16,11 @@ const input = ref<HTMLInputElement>()
 const busy = ref(false)
 const error = ref('')
 const message = ref('')
+const captureScope = useQuoteOperationScope(() => props.quote.id)
+onBeforeUnmount(registerQuoteNavigationGuard(() => {
+  if (busy.value) { error.value = '主图操作尚未完成，请等待结果后再切换。'; return false }
+  return true
+}))
 const canUpload = computed(() => ['sales-business', 'engineering'].some(dept => auth.can('internal_quote:create', props.quote.factoryId, dept)))
 const frozen = computed(() => ['released', 'exported'].includes(props.quote.status))
 const canCopy = computed(() => ['sales-business', 'engineering'].some(dept => auth.can('internal_quote:create', props.quote.factoryId, dept) && auth.can('internal_quote:clone', props.quote.factoryId, dept)))
@@ -24,6 +31,7 @@ function choose() {
   input.value?.click()
 }
 async function upload(event: Event) {
+  const check = captureScope()
   const field = event.target as HTMLInputElement
   const file = field.files?.[0]
   field.value = ''
@@ -39,13 +47,16 @@ async function upload(event: Event) {
   try {
     if (frozen.value) {
       const family = await internalQuoteApi.listAlternatives(sourceId)
+      check()
       const current = family.items.find(item => item.quote_id === sourceId)
       const created = await internalQuoteApi.createAlternative(sourceId, {
         revision, family_revision: family.revision, kind: 'version', name: current?.scenario_name ?? '', change_note: '补充或更新产品主图',
       })
+      check()
       targetId = created.id; revision = created.header_revision
     }
     await store.uploadProductImage(targetId, file, revision)
+    check()
     if (props.quote.id === sourceId) {
       message.value = '产品主图已上传。'
       if (targetId !== sourceId) emit('open', targetId)

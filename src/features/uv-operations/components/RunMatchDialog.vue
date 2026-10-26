@@ -8,12 +8,18 @@ import { useUvWorkspace, UvError } from '../workspace'
 import { useUvPresence } from '../composables/useUvPresence'
 import { useUvReturnFocus } from '../composables/useUvReturnFocus'
 import { useUvScrollLock } from '../composables/useUvScrollLock'
+import { useUvNavigationGuard } from '../navigationGuard'
 const props=defineProps<{run:Entity|null}>(),emit=defineEmits<{close:[];saved:[]}>(),w=useUvWorkspace(),dialog=ref<HTMLDialogElement|null>(null)
 const presentation=useUvPresence(dialog),displayedRun=ref<Entity|null>(null)
 const focus=useUvReturnFocus(dialog)
 useUvScrollLock(()=>presentation.present.value)
 const rows=ref<{key:string;task_id:string;batch_id:string;pass_index:number;slots:string;full_boards:number;tail_pieces:number;share:string}[]>([])
 const evidence=ref(''),error=ref(''),saving=ref(false),uncertain=ref(false),conflict=ref(false),fields=ref<Record<string,string>>({})
+useUvNavigationGuard(()=>{
+  if(!props.run)return true
+  w.notification.value=saving.value||uncertain.value?'请先完成运行归属保存或核对同一操作的回执。':'请先保存或关闭运行归属表单。'
+  return false
+})
 const evidenceError=()=>fields.value['body.evidence']??fields.value.evidence
 const fieldError=(index:number,name:string)=>fields.value['body.allocations.'+index+'.'+name]??fields.value['allocations.'+index+'.'+name]
 let op=createRandomUuid(),submitted:Record<string,unknown>|null=null,session=0

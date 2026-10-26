@@ -2711,21 +2711,8 @@ def list_quotes(
     ]
 
 
-def list_quotes_page(
-    db: Session,
-    user: AuthContext,
-    factory_id: str,
-    *,
-    page: int,
-    page_size: int,
-    status: str = "",
-    keyword: str = "",
-    customer: str = "",
-    include_sections: bool = False,
-) -> InternalQuotePageOut:
-    """Return one factory-scoped page without loading the remaining quote rows."""
-
-    ensure_quote_read(db, user, factory_id)
+def quote_page_statement(factory_id: str, *, status: str = "", keyword: str = "", customer: str = ""):
+    """Native document-page predicates. Callers must authorize the factory first."""
     statement = select(InternalQuote).where(
         InternalQuote.factory_id == factory_id,
         InternalQuote.batch_position == 1,
@@ -2745,6 +2732,25 @@ def list_quotes_page(
         return and_(*conditions) if conditions else true()
     if status or customer or keyword:
         statement = statement.where(document_filter_condition(matches))
+    return statement
+
+
+def list_quotes_page(
+    db: Session,
+    user: AuthContext,
+    factory_id: str,
+    *,
+    page: int,
+    page_size: int,
+    status: str = "",
+    keyword: str = "",
+    customer: str = "",
+    include_sections: bool = False,
+) -> InternalQuotePageOut:
+    """Return one factory-scoped page without loading the remaining quote rows."""
+
+    ensure_quote_read(db, user, factory_id)
+    statement = quote_page_statement(factory_id, status=status, keyword=keyword, customer=customer)
 
     total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -4988,7 +4994,12 @@ def list_section_revisions(
     ]
 
 
-def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str, object]:
+def get_quote_summary(db: Session, quote_id: str, user: AuthContext, *, read_only: bool = False) -> dict[str, object]:
+    """Native summary; strict readers may opt out of legacy reference initialization.
+
+    The HTTP route keeps its existing behavior. The read-only option is internal
+    and never repairs a missing snapshot, even for a reference manager.
+    """
     quote = _get_quote(db, quote_id)
     ensure_quote_permission(
         db,
@@ -5005,12 +5016,18 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
                               and molding_projection_pending(db, quote, sections))
     participating_sections = [section for section in sections if section.is_required]
     if projection_pending:
-        participating_sections = [copy.copy(section) for section in participating_sections]
+        # A shallow ORM copy shares instrumentation and can dirty the original
+        # session. Summary-only stale flags belong to detached read models.
+        participating_sections = [SimpleNamespace(**{
+            column.key: getattr(section, column.key) for column in InternalQuoteSection.__table__.columns
+        }) for section in participating_sections]
         for section in participating_sections:
             if section.department == "molding":
                 section.calculation_status = section.dependency_status = "stale"
                 section.calculation_json = canonical_json({"status": "stale", "warnings": [_molding_projection_warning()]})
-    reference = _ensure_reference_set_for_read(db, quote, user)
+    reference = _find_reference_set(db, quote) if read_only else _ensure_reference_set_for_read(db, quote, user)
+    if reference is None:
+        raise HTTPException(status_code=409, detail="报价缺少已保存的参考快照，请在原报价中核实；只读查询不会补建。")
     counts: dict[str, int] = {}
     for section in participating_sections:
         counts[section.status] = counts.get(section.status, 0) + 1
@@ -5071,7 +5088,8 @@ def get_quote_summary(db: Session, quote_id: str, user: AuthContext) -> dict[str
                 "is_draft_amount": section.status not in COMPLETED_SECTION_STATUSES,
             }
         )
-    db.commit()
+    if not read_only:
+        db.commit()
     return {
         "quote_id": quote.id,
         "pricing_complete": not (incomplete := _pricing_completeness(quote, participating_sections)),

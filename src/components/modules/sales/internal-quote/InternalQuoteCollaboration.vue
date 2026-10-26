@@ -2,7 +2,9 @@
 import BusinessShareButton from '@/features/collaboration/BusinessShareButton.vue'
 import { AlertTriangle, ArrowLeft, BarChart3, Building2, CalendarDays, CheckCircle2, ChevronRight, CircleUserRound, FileImage, FileText, Layers3, LockKeyhole, Maximize2, Pencil, RefreshCw, Save, Send, ShieldCheck, UserPlus, XCircle } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
+import { quoteSelection, useQuoteAssistantSelection } from '@/features/internal-quote/assistantContext'
 import InternalQuoteAlternatives from './InternalQuoteAlternatives.vue'
 import InternalQuoteActivityPanel from './InternalQuoteActivityPanel.vue'
 import InternalQuoteComponentScopePicker from './InternalQuoteComponentScopePicker.vue'
@@ -41,6 +43,8 @@ const wholeDocumentArchived = computed(() => Boolean(quote.value.documentArchive
 const currentAlternativeArchived = computed(() => (alternativeArchived.value ?? quote.value.versionArchived ?? false) || wholeDocumentArchived.value)
 const editorResetKey = ref(0)
 let quoteContextGeneration = 0
+let active = true
+onBeforeUnmount(() => { active = false; ++quoteContextGeneration })
 const syncPanelOpen = ref(false)
 const syncReason = ref('')
 const participationPanelOpen = ref(false)
@@ -256,7 +260,7 @@ const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignFactory(authStore, quote.value.factoryId))
 const getQuoteRoute = (path: string) => getFactoryScopedRoute(
   path,
-  isFactoryContextId(quote.value.factoryId) ? quote.value.factoryId : 'huaxing',
+  loadedQuote.value && isFactoryContextId(loadedQuote.value.factoryId) ? loadedQuote.value.factoryId : selectedFactoryId.value,
 )
 
 function canRemoveSection(code: InternalQuoteSectionCode) {
@@ -362,6 +366,7 @@ function startRightPanelResize(event: PointerEvent) {
 }
 
 async function loadQuote() {
+  if (!active) return
   message.value = ''
   errorMessage.value = ''
   const requestedId = quoteId.value
@@ -752,8 +757,20 @@ function guardSidebarChanges() {
   return pendingPricingNavigation
 }
 onBeforeUnmount(() => answerPricingNavigation(false))
-onBeforeRouteLeave(guardSidebarChanges)
-onBeforeRouteUpdate((to) => String(to.params.quoteId ?? '') === quoteId.value || guardSidebarChanges())
+onBeforeUnmount(registerQuoteNavigationGuard(() => {
+  if (headerDialogOpen.value || materialsDialogOpen.value || packagingCopyOpen.value || seriesExportOpen.value
+      || wholeProductSaving.value || headerDialogBusy.value || materialsDialogBusy.value || copyBusyQuoteId.value
+      || hasParticipationChanges.value || wholeRejectOpen.value || wholeWithdrawOpen.value || syncPanelOpen.value) {
+    errorMessage.value = '请先完成或关闭当前报价操作，再切换页面或厂区。'
+    return false
+  }
+  return guardSidebarChanges()
+}))
+useQuoteAssistantSelection(() => quoteSelection(selectedFactoryId.value, [quoteId.value], {
+  ...(quoteStore.detailLoading || quoteStore.quoteDetailVerifiedId !== quoteId.value || loadedQuote.value?.factoryId !== selectedFactoryId.value
+    ? { scope_error: '原报价版本尚未读取成功，请先重新读取。' } : {}),
+  scope_note: '只查询此版本已保存的数据；页面未保存内容不带入。',
+}))
 function guardSidebarUnload(event: BeforeUnloadEvent) {
   if (!pricingPanel.value?.hasUnsavedChanges?.()) return
   event.preventDefault()
@@ -814,6 +831,7 @@ async function saveWholeProductDraft() {
 }
 
 async function openAlternative(id: string) {
+  if (!active) return
   await router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${id}/collaboration`))
 }
 
@@ -998,6 +1016,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="quote-collaboration-page">
+    <section v-if="!loadedQuote || quoteStore.detailLoading || quoteStore.quoteDetailFailedId === quoteId" class="rounded-xl border border-border bg-card p-5" aria-live="polite">
+      <h1 class="text-lg font-semibold">{{ quoteStore.detailLoading ? '正在读取原报价…' : '原报价暂不可用' }}</h1>
+      <p v-if="quoteStore.errorMessage" role="alert" class="my-3 text-destructive">{{ quoteStore.errorMessage }}</p>
+      <button type="button" class="my-3 rounded-md border border-input px-4 py-2 focus-visible:outline-2 focus-visible:outline-ring" :disabled="quoteStore.detailLoading" @click="loadQuote">重新读取</button>
+      <RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')" class="ml-4 text-primary underline">返回报价首页</RouterLink>
+    </section>
+    <div v-if="loadedQuote" v-show="!quoteStore.detailLoading && quoteStore.quoteDetailFailedId !== quoteId" class="quote-verified-content">
     <BusinessShareButton v-if="loadedQuote" :reference="{ resource_type: 'internal_quote', resource_id: quote.id, factory_id: quote.factoryId }" />
     <nav class="quote-breadcrumb" aria-label="内部报价导航"><RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft />报价首页</RouterLink><ChevronRight /><span>{{ quote.quoteNo }}</span><ChevronRight /><strong>{{ isContinuousQuote ? '整单协作' : '部门协作' }}</strong></nav>
 
@@ -1145,10 +1170,12 @@ onBeforeUnmount(() => {
       @close="closeMaterialsDialog"
       @save="saveReferenceMaterials"
     />
+    </div>
   </div>
 </template>
 
 <style scoped>
+.quote-verified-content { display: contents; }
 .quote-action-feedback { width: 100%; flex-basis: 100%; }
 .quote-action-feedback:empty { display: none; }
 @media (max-width: 1280px) { .quote-action-feedback { flex-basis: auto; } }

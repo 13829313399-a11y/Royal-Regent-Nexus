@@ -1,0 +1,81 @@
+{
+  "record_type": "tool_result",
+  "contract_version": 3,
+  "tool_name": "list_customer_orders",
+  "tool_version": "design-example-1",
+  "tool_call_id": "SYN-T001",
+  "run_id": "SYN-R001",
+  "step_id": "orders_1",
+  "status": "ok",
+  "scope": {
+    "factory_ids": [
+      "huakang-a"
+    ],
+    "module_id": "customer-orders",
+    "filters": {
+      "state": "open"
+    },
+    "resource_refs": [],
+    "coverage": "filtered_scope",
+    "label": "华康A / 未发完订单"
+  },
+  "requested_at": "2026-10-23T01:00:00Z",
+  "as_of": "2026-10-23T01:00:00Z",
+  "observed_at": null,
+  "retrieved_at": "2026-10-23T01:00:00Z",
+  "timezone": "Asia/Shanghai",
+  "data_mode": "snapshot",
+  "freshness": {
+    "state": "fresh",
+    "max_age_seconds": 30,
+    "cache_hit": false,
+    "cache_created_at": null,
+    "policy_id": "orders-current-v1"
+  },
+  "metrics": {
+    "open_orders": {
+      "value": 2,
+      "unit": "orders",
+      "definition_id": "open_orders",
+      "status": "known"
+    },
+    "open_quantity": {
+      "value": 900,
+      "unit": "piece",
+      "definition_id": "open_quantity",
+      "status": "known"
+    }
+  },
+  "rows": [
+    {
+      "resource_ref": "SYN-O-A001",
+      "open_quantity": 400
+    },
+    {
+      "resource_ref": "SYN-O-A003",
+      "open_quantity": 500
+    }
+  ],
+  "total_count": 2,
+  "returned_count": 2,
+  "truncated": false,
+  "next_cursor": null,
+  "definitions": {
+    "open_orders": "授权范围内数量大于已发数量的订单数",
+    "open_quantity": "同一筛选范围内quantity-shipped之和"
+  },
+  "unknown_fields": [],
+  "source_refs": [
+    "biz_o1",
+    "biz_o3"
+  ],
+  "allowed_actions": [
+    {
+      "action_id": "open_order_o1",
+      "kind": "navigate",
+      "label": "打开原订单",
+      "resource_ref": "SYN-O-A001"
+    }
+  ],
+  "diagnostic_code": null
+}

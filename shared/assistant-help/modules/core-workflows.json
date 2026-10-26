@@ -1,0 +1,469 @@
+[
+  {
+    "id": "work-center.responsibility-guide",
+    "module_id": "work-center",
+    "title": "待办数量、稍后提醒与来源异常",
+    "kind": "workflow",
+    "audience": "internal",
+    "route_names": [
+      "notification-center"
+    ],
+    "factory_ids": [],
+    "anchor_id": "work-center.summary",
+    "field_keys": [
+      "actionable_total",
+      "snoozed_total"
+    ],
+    "summary": "先核对完整授权范围，再看筛选结果；已读和稍后提醒都不等于事项完成。",
+    "content": "可处理数量只计当前有操作资格且仍处于 open / in_progress 的任务。稍后提醒须仍在有效时间内且提醒版本与事项一致；关注内容变化后，旧提醒不能继续隐藏新事项。逾期依据任务期限与当前时钟判断，不是最后更新时间。\n\n顶部汇总表示授权范围，列表数量表示当前视图、厂区、模块、期限与未读筛选后的范围，两者不能直接互相替代。已读只改变阅读状态，不关闭源业务。暂缓提醒不取消责任。\n\n排查：列表为空时先检查视图、厂区和未读筛选；显示来源异常或部分可用时，只能确认已成功核验的来源，不能推断其它模块没有待办。打开原记录核对当前责任和阶段，权限或源记录失效时停止处理，不根据旧通知执行审批。",
+    "steps": [
+      {
+        "title": "核对汇总范围",
+        "description": "查看可处理、稍后提醒及数据时点。",
+        "anchor_id": "work-center.summary",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "检查筛选",
+        "description": "核对厂区、来源模块、期限和未读条件。",
+        "anchor_id": "work-center.filters",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "核对源事项",
+        "description": "选择事项预览责任依据；已读不代表完成。",
+        "anchor_id": "work-center.list",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/views/NotificationCenterView.vue",
+        "symbol": "nc-filters",
+        "sha256": "653337f07d90a1da62c42c0e4ea627df55674f506f2b06f0a10b19d4d0013ceb"
+      },
+      {
+        "path": "backend/app/services/work_center/service.py",
+        "symbol": "actionable",
+        "sha256": "1cb4eeb7a13460a2a6347446633395eb3cddabd7822e52e050267a0d6486711d"
+      }
+    ],
+    "knowledge_version": "2026.10.26-core-workflows-v1",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "status": "verified"
+  },
+  {
+    "id": "injection-scheduling.remaining-guide",
+    "module_id": "injection-scheduling",
+    "title": "剩余啤数为什么未知或与产量不同",
+    "kind": "workflow",
+    "audience": "internal",
+    "route_names": [
+      "injection-scheduling"
+    ],
+    "factory_ids": [
+      "huaxing",
+      "huadeng",
+      "huakang-a",
+      "huakang-b"
+    ],
+    "anchor_id": "injection.factory",
+    "field_keys": [
+      "planned_shots",
+      "remaining_shots",
+      "production_duration_hours"
+    ],
+    "summary": "核对厂区、数量模式和实际报产；剩余啤数、件数、估算工时各有独立口径。",
+    "content": "计划表的“欠数”对应 remaining_shots，单位为啤，不是欠件数。\n\n顺序啤数模式以计划啤数 + 调整啤数 −（期初啤数 + 已报啤数）计算带符号余额；展示剩余啤数下限为 0，超产另列。缺少计划啤数时仍是未知，不能补成 0。\n\n共出件数模式先计算 max(0, 需求件数 − 良品件数)，再除以每啤有效出数向上取整。缺少需求件数、每啤出数无效或不大于 0 时，剩余啤数未知。啤与件不能直接相加；共出任务也不能把各产品的啤数简单重复累计。\n\n估算生产工时 = 剩余啤数 ÷（目标日产啤数 ÷ 基准小时数），缺少有效产能时未知；这不是承诺交付时间。排查时先核对厂区和任务行，再核对数量模式、期初、报产及参数。未保存编辑或执行中的操作会阻止切换视图；先在原页面处理草稿，不让引导替你保存或丢弃。",
+    "steps": [
+      {
+        "title": "核对厂区",
+        "description": "不同厂区的需求和参数独立。",
+        "anchor_id": "injection.factory",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "核对工作视图",
+        "description": "准备进入表格；已有草稿先在原页面处理。",
+        "anchor_id": "injection.views",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "定位欠数（剩余啤数）",
+        "description": "查看“欠数”表头与该行啤数，再核对数量模式和原始参数。",
+        "anchor_id": "injection.remaining_shots",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "backend/app/services/injection_scheduling/calculations.py",
+        "symbol": "def quantities",
+        "sha256": "f72706a7b992e2f3a1b704fa18479d93a4c980e35a7ba81075c0f07ddfe786c5"
+      },
+      {
+        "path": "src/views/InjectionSchedulingView.vue",
+        "symbol": "injection.views",
+        "sha256": "11079e375d091f3fe28adfbe04f8cfbade4c1792d8fb488112da477d9bc302e6"
+      },
+      {
+        "path": "src/features/injection-scheduling/PlanTable.vue",
+        "symbol": "remaining_shots",
+        "sha256": "a8cf72e6411a77edd87ddc3363c7818c7f1a23ba6fd6299d6a83443062239cda"
+      },
+      {
+        "path": "backend/app/services/injection_scheduling/field_registry.py",
+        "symbol": "remaining_shots",
+        "sha256": "f466a1c3fd614bafcf19e590ac76c994ee0e23fbbd322ae23138a943689727bd"
+      }
+    ],
+    "knowledge_version": "2026.10.26-core-workflows-v2",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "status": "verified"
+  },
+  {
+    "id": "three-d-printing.telemetry-guide",
+    "module_id": "three-d-printing",
+    "title": "设备离线、待更新与打印完成的区别",
+    "kind": "workflow",
+    "audience": "internal",
+    "route_names": [
+      "three-d-printing-management"
+    ],
+    "factory_ids": [
+      "huakang-a"
+    ],
+    "anchor_id": "three-d-printing.sync",
+    "field_keys": [
+      "connected",
+      "status_stale",
+      "progress_percent"
+    ],
+    "summary": "先检查同步，再读取设备状态；遥测完成不能代替生产、核对或入库记录。",
+    "content": "设备卡先判断 connected：未连接显示离线；已连接但 status_stale 显示等待状态更新。二者都不能证明现场已经停机。新鲜遥测中的 RUNNING 表示打印中，PAUSE 表示暂停；PREPARE / PREPARING / DOWNLOADING / SLICING 表示准备中，FINISH 只表示设备报告打印完成。\n\n打印百分比、剩余分钟、层数和温度属于设备遥测。离线或陈旧时，卡片隐藏旧进度与温度，避免把历史数值当作当前事实；空缺、未知和陈旧都不是 0。\n\n排查：先看同步状态并手动刷新一次，再在“机器状态”页核对设备卡。持续离线或待更新，应检查原采集连接和观察时间；不能仅凭页面判定机器故障。设备完成后的业务产量、对账和库存必须另查对应记录。引导不发送打印、暂停、取消或其它设备指令。",
+    "steps": [
+      {
+        "title": "核对同步",
+        "description": "确认当前是实时同步或定时同步，并核对刷新结果。",
+        "anchor_id": "three-d-printing.sync",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "打开机器状态",
+        "description": "在原页面菜单选择“机器状态”，引导不会自动点击菜单。",
+        "anchor_id": "three-d-printing.navigation",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "读取机台状态",
+        "description": "先看离线或待更新，再看打印状态。",
+        "anchor_id": "three-d-printing.machines",
+        "precondition": "先在 3D 打印菜单打开“机器状态”；没有可见机台区域时停止定位",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/features/three-d-printing/WorkspaceView.vue",
+        "symbol": "legacy-sync",
+        "sha256": "0354c5424816ac9225fe61794fa9669162748dfbee474bfd9b8d98fb9bd3d328"
+      },
+      {
+        "path": "src/features/three-d-printing/components/LegacyPrinterGrid.vue",
+        "symbol": "statusText",
+        "sha256": "757a42c0d577245e940ca066517d1177114f9d6ab5ff36f346bcd139b66ee6b5"
+      },
+      {
+        "path": "src/features/three-d-printing/printerPresentation.ts",
+        "symbol": "printerStateText",
+        "sha256": "2426521b139268b0f3f239c2e98b905252004e6913c6f7823bc0ce801a6a08ec"
+      },
+      {
+        "path": "src/features/three-d-printing/legacy.css",
+        "symbol": ".legacy-sync",
+        "sha256": "0cae68d9d57932c9606ab176577a5ab3303e7f6b3ae6b5de23a4be74b838c5da"
+      }
+    ],
+    "knowledge_version": "2026.10.26-core-workflows-v2",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "status": "verified"
+  },
+  {
+    "id": "customer-orders.shipment-guide",
+    "module_id": "customer-orders",
+    "title": "订单数量、未走货与发送状态如何核对",
+    "kind": "workflow",
+    "audience": "internal",
+    "route_names": [
+      "customer-order-center"
+    ],
+    "factory_ids": [],
+    "anchor_id": "customer-orders.filters",
+    "field_keys": [
+      "quantity",
+      "shipped_quantity",
+      "remaining_quantity"
+    ],
+    "summary": "订单有效性、发送状态和走货事实分别核对；取消不等于已经走货。",
+    "content": "订单数量是该明细的数量；已走货来自历史期初和有效走货记录，未走货按当前订单数量减实际已走货计算。原数量未知时仍需核对，不能当成 0；订单数量不能改成低于已走货数量。\n\n有效 / 已取消是订单生命周期；未发送 / 已发送 / 有变更是发送状态；未走货 / 已走货筛选针对走货范围。这些状态不能互相替代。恢复取消订单保留原编号和历史，只新增版本，不自动恢复生产任务或调整库存。\n\n排查：先检查厂区、客户、搜索和走货状态筛选；按参考号、产品与版本核对同一明细。走货需原页面凭出货单确认，日期、数量和单号不符合原系统规则时不能靠助手绕过。需要纠错时在原记录保留原因并撤销对应批次，不能通过重复确认抵消错误。已发送订单的修改还需要发送权限。",
+    "steps": [
+      {
+        "title": "检查台账筛选",
+        "description": "核对厂区及客户、搜索、走货状态。",
+        "anchor_id": "customer-orders.filters",
+        "precondition": "先打开客户订单中心的订单台账",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "核对剩余数量",
+        "description": "同时对照该行订单数量与已走货，不用取消状态代替走货。",
+        "anchor_id": "customer-orders.remaining",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "区分状态",
+        "description": "分别查看有效性、发送状态与版本。",
+        "anchor_id": "customer-orders.status",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue",
+        "symbol": "remaining_quantity",
+        "sha256": "c89e7608d4f65dd2f27a38c3a54c6b5be4c4e539b6f6ba45a7a783d8973922f6"
+      },
+      {
+        "path": "backend/app/services/customer_order_ledger.py",
+        "symbol": "def amend",
+        "sha256": "c7cdbfb22fa52f9095c783138d9725269ab9c68725f9c7431b35de72ec943ef4"
+      }
+    ],
+    "knowledge_version": "2026.10.26-core-workflows-v1",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "status": "verified"
+  },
+  {
+    "id": "carton-procurement.inventory-guide",
+    "module_id": "carton-procurement",
+    "title": "库存结余、单位与待核价如何核对",
+    "kind": "workflow",
+    "audience": "internal",
+    "route_names": [
+      "carton-procurement"
+    ],
+    "factory_ids": [],
+    "anchor_id": "carton.inventory.scope",
+    "field_keys": [
+      "inventoryBalanceSummary",
+      "inventoryMoneySummary"
+    ],
+    "summary": "结存按库存身份与仓位累计，数量分单位；待核价部分不能按零金额合计。",
+    "content": "当前结余 = 期初 + 入库 − 出库 + 调仓净额 + 调整。累计净入库与净出库包含对应冲销的抵减，不能再把冲销数量加一遍。结存是本仓位账面事实，不直接代表可分配、可领用或已经送达的数量。\n\n先核对客户、仓库、仓位、纸品类型与计数单位。不同单位不直接相加；同一库存身份混合多种订单来源时，类型筛选保留整项结存，不拆分或重复计算。当前筛选结果与全部库存条数应区分。\n\n显示金额后，如果存在待核价或核算记录，已计价小计只包含可计价部分；待核价数量明确单列，不按 0 补齐。金额按币种分开。排查：先清理无意筛选、核对仓位及单位，再查看相关收发与冲销原始记录；不能直接改结余来凑数。引导只定位台账，盘点、出入库和月结仍由原流程执行。",
+    "steps": [
+      {
+        "title": "核对库存范围",
+        "description": "查看当前结存、计数单位及显示条数，再核对上方筛选。",
+        "anchor_id": "carton.inventory.scope",
+        "precondition": "先打开纸箱采购的库存页，并退出导入或盘点子页",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "核对当前结余",
+        "description": "以首条可见库存的当前结余为例，结合同一仓位的收发、期初、调仓及调整核对；这不是全部库存合计。",
+        "anchor_id": "carton.inventory.balance",
+        "precondition": "库存筛选结果中至少有一条记录；空列表时停止定位",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "检查待核价",
+        "description": "已计价小计不能当作完整库存金额。",
+        "anchor_id": "carton.inventory.valuation",
+        "precondition": "先在库存页勾选“显示金额”；未显示时停止定位",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/views/CartonProcurementView.vue",
+        "symbol": "inventoryMoneySummary",
+        "sha256": "d2856f438511b11239b707f193c531ea48a57e247e819b63a7f978bb7d4dbdee"
+      }
+    ],
+    "knowledge_version": "2026.10.26-core-workflows-v2",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "status": "verified"
+  },
+  {
+    "id": "uv-operations.live-guide",
+    "module_id": "uv-operations",
+    "title": "采集正常、待匹配运行与良品的区别",
+    "kind": "workflow",
+    "audience": "internal",
+    "route_names": [
+      "uv-live"
+    ],
+    "factory_ids": [
+      "huakang-a"
+    ],
+    "anchor_id": "uv.live.coverage",
+    "field_keys": [
+      "collection_health",
+      "work_state",
+      "observed_at"
+    ],
+    "summary": "采集健康、设备状态、运行归属与确认产量分开读取。",
+    "content": "采集正常统计 collection_health 为 fresh 的机台数；它不是正在打印的机台数。设备的 work_state 是另一项状态，采集于 observed_at 与页面快照时间也不同。当前来源未提供已验证进度时，页面显示进度未知，不应猜测百分比。\n\n待匹配运行表示原始作业尚待核对任务归属。运行记录本身不折算为良品；待检件数也不是已确认良品。核对归属后，仍须走原班次核数和质量流程。接下来显示的是计划，不能据此断言设备已经开始任务。\n\n排查：先核对快照时间、采集健康和观察时间；没有运行证据时检查原采集源与机台配置。待核对列表只展示部分记录，完整数量看顶部范围及原运行页面，不能用可见卡片数代替总量。核对归属按钮受生产权限控制；助手不代替匹配、报产、核数或设备控制。",
+    "steps": [
+      {
+        "title": "核对覆盖和时点",
+        "description": "分别看采集正常、待匹配运行、待检件数及快照时间。",
+        "anchor_id": "uv.live.coverage",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "检查机台证据",
+        "description": "区分采集健康与设备工作状态，未知进度保持未知。",
+        "anchor_id": "uv.live.machines",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "查看待核对运行",
+        "description": "核对原始作业后，再由原流程确认归属和产量。",
+        "anchor_id": "uv.live.unmatched",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/features/uv-operations/pages/LivePage.vue",
+        "symbol": "collection_health",
+        "sha256": "6ce5ead5e73b01f6208c6a395e1bde5fedc5080afd1502c69bb5e1364bfc27d9"
+      }
+    ],
+    "knowledge_version": "2026.10.26-core-workflows-v1",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "status": "verified"
+  },
+  {
+    "id": "spray-production.demand-guide",
+    "module_id": "spray-production",
+    "title": "需求量、已收白件与工艺待确认",
+    "kind": "workflow",
+    "audience": "internal",
+    "route_names": [
+      "spray-demands"
+    ],
+    "factory_ids": [],
+    "anchor_id": "spray.demands.filters",
+    "field_keys": [
+      "quantity",
+      "received",
+      "route_id"
+    ],
+    "summary": "按订单明细和单位读数量；收到白件不能当作喷油完工或合格产出。",
+    "content": "需求量属于订单明细，必须连同该行单位读取；一个订单可能包含多条明细，表头订单数与明细行数不是同一指标。已收白件是该明细的收料数量，不代表已完成加工、良品或已交接。不同工序的投入与产出也不能直接相加。\n\n工艺栏有 route_id 时显示关联工艺或“已关联”，没有关联则显示“待确认”。这说明工艺关联状态，不能当作订单已经确认或任务已经开工。优先级大于 0 显示优先等级，常规不代表可以忽略交期。草稿的确认与明细变更是独立业务操作，受计划权限控制。\n\n排查：先核对厂区及单号筛选，再按货号、部位、颜色、单位确认同一明细。数量不一致时打开原订单核对收料、交接和报产来源，不用页面需求量补出缺失的执行结果。工艺待确认时先在原系统完善关联；引导不会点击确认草稿、变更或开工按钮。",
+    "steps": [
+      {
+        "title": "核对单号筛选",
+        "description": "输入单号并在原页面提交筛选；检查当前厂区。",
+        "anchor_id": "spray.demands.filters",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "核对需求与收料",
+        "description": "逐行检查需求单位，已收白件与完工产出分开。",
+        "anchor_id": "spray.demands.quantity",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "核对工艺关联",
+        "description": "待确认表示缺少工艺关联，不代表已开工。",
+        "anchor_id": "spray.demands.route",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/features/spray-production/pages/DemandPage.vue",
+        "symbol": "line.received",
+        "sha256": "54172e0243be1a59d79d4a05757cdad285f926e17aa728eb4c3968161bb5c2f1"
+      }
+    ],
+    "knowledge_version": "2026.10.26-core-workflows-v1",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "status": "verified"
+  },
+  {
+    "id": "internal-quote.readiness-guide",
+    "module_id": "internal-quote",
+    "title": "核价就绪、待重算与冻结版本",
+    "kind": "workflow",
+    "audience": "internal",
+    "route_names": [
+      "internal-quote-desk-home"
+    ],
+    "factory_ids": [],
+    "anchor_id": "internal-quote.filters",
+    "field_keys": [
+      "ready_sections",
+      "required_sections"
+    ],
+    "summary": "就绪情况对应当前列示产品版本；资料齐全不等于审批通过或已经输出报价。",
+    "content": "就绪部门数 / 必需部门数表示当前版本的资料就绪情况。待填写（empty）、待补齐（incomplete）、待重算（stale）对应不同阻塞原因；展开待办详情查看具体部门与原因。没有状态数据时是待读取，不能补成全部就绪。\n\nready 表示资料齐全可用于核价；issued 显示已输出并保留冻结核价。已输出版本保留当时的核价依据，不能用后来更新的材料价格悄悄改写旧结果。就绪状态不是旧式逐部门审批，也不是已开票、已收款或财务确认。\n\n排查：先核对客户、状态、搜索与当前产品版本，再查看每个阻塞部门。待重算时由有权限的人员在原页面补齐资料并重新核算；缺失金额保留未知，不能按 0 输出。旧版本与当前版本分开比较。助手只解释和定位，不提交、审批、冻结或输出正式报价。",
+    "steps": [
+      {
+        "title": "检查报价筛选",
+        "description": "确认当前客户、状态和搜索范围。",
+        "anchor_id": "internal-quote.filters",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "核对版本",
+        "description": "确认正在读取的产品版本，避免把历史核价当作当前结果。",
+        "anchor_id": "internal-quote.version",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      },
+      {
+        "title": "读取就绪阻塞",
+        "description": "看就绪比例，并在原页面展开部门待办详情。",
+        "anchor_id": "internal-quote.readiness",
+        "precondition": "在当前模块的对应页面，等待数据加载完成",
+        "completion": "已定位并核对该区域；后续业务操作仍由你在原页面确认"
+      }
+    ],
+    "source_refs": [
+      {
+        "path": "src/components/modules/sales/internal-quote/InternalQuoteHome.vue",
+        "symbol": "quote-list-toolbar",
+        "sha256": "c55a66e63ebf21692ea2a16a6301421f5d0142e4e49ec48934ef705a813b1319"
+      },
+      {
+        "path": "src/components/modules/sales/internal-quote/InternalQuoteReadiness.vue",
+        "symbol": "blockers",
+        "sha256": "afc2f5def81ecabe4b74da4c87de6d7709b3d82f8c0079aa02309df619cf7501"
+      }
+    ],
+    "knowledge_version": "2026.10.26-core-workflows-v2",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "status": "verified"
+  }
+]
