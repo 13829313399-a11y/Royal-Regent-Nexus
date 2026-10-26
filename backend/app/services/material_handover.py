@@ -285,7 +285,7 @@ def confirmation_issues(data):
     if not data.lines:
         issues.append('尚无物料明细，请添加明细或交仓库按原件补录')
     for index, line in enumerate(data.lines, 1):
-        missing = ['缺少' + label for value, label in ((line.item_code, '物料编码'), (line.item_name, '物料名称'), (line.unit, '单位')) if not value]
+        missing = ['缺少' + label for value, label in ((line.item_code, '物料编码'), (line.item_name, '物料名称'), (line.unit, '单位'), (line.material_category, '物料分类')) if not value]
         for value, label, allow_zero in ((line.quantity, '数量', False), (line.unit_price, '参考单价', True)):
             if allow_zero and not value:
                 continue

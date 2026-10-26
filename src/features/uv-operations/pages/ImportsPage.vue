@@ -7,6 +7,7 @@ import { createRandomUuid } from '@/lib/randomUuid'
 import { entities, str, today, type Entity } from '../contracts'
 import { useUvWorkspace, UvError } from '../workspace'
 import { useUvRequestScope } from '../composables/useUvRequestScope'
+import { sameUvPageScope, useUvNavigationGuard } from '../navigationGuard'
 import UvTable from '../components/UvTable.vue'
 const route=useRoute(),router=useRouter(),mapping=ref(''),unitsConfirmed=ref(false),exportUncertain=ref(false)
 const w=useUvWorkspace(),requests=useUvRequestScope(w.contextVersion),templates=ref<Record<string,{fields:string[];permissions:string[]}>>({}),template=ref(''),file=ref<File|null>(null),preview=ref<Entity|null>(null),error=ref(''),busy=ref(false),uncertain=ref(false),exporting=ref(false),jobs=ref<Entity[]>([])
@@ -14,6 +15,11 @@ const initialLoading=ref(true),jobsLoading=ref(false),retrying=reactive(new Set<
 const kind=ref('production'),start=ref(today().slice(0,7)+'-01'),end=ref(today()),selection=ref(''),scope=ref('filtered')
 let importOperation=createRandomUuid(),exportOperation=createRandomUuid(),timer:ReturnType<typeof setTimeout>|undefined,exportBody:Record<string,unknown>|null=null,polling=false
 let importRevision=0
+useUvNavigationGuard((to,from)=>{
+  if(sameUvPageScope(to,from))return true
+  if(busy.value||exporting.value||uncertain.value||exportUncertain.value||retrying.size){w.notification.value='请先完成导入导出操作或核对同一操作的回执，再离开。';return false}
+  return !file.value||preview.value?.status==='committed'||window.confirm('已选择的导入文件或映射尚未确认，确认离开？')
+})
 function clearPreview(){importRevision++;preview.value=null}
 const templateNames:Record<string,string>={'products-v1':'产品基础资料 v1','processes-v1':'工艺版本 v1','demands-v1':'生产需求 v1','manual-production-v1':'人工核数 v1','expenses-v1':'费用凭证 v1','reference-efficiency-v1':'参考效率 v1'}
 const errors=computed(()=>entities(preview.value?.errors).map((x,index)=>({...x,id:String(index)})))

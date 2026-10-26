@@ -64,7 +64,11 @@ def schema_ready():
 def configuration_status():
     if not (settings.assistant_qwen_api_key.get_secret_value() and settings.assistant_qwen_base_url and settings.assistant_model):
         return "unconfigured"
-    url = urlsplit(settings.assistant_qwen_base_url)
+    try:
+        url = urlsplit(settings.assistant_qwen_base_url)
+        url.port
+    except ValueError:
+        return "invalid"
     if (url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment
             or not url.path.rstrip("/").endswith("/v1") or "ocr" in settings.assistant_model.lower()):
         return "invalid"
@@ -73,6 +77,7 @@ def configuration_status():
 
 def capabilities():
     from .search_capabilities import capability
+    from .registry import coverage
     config = configuration_status()
     p = None
     try:
@@ -81,11 +86,17 @@ def capabilities():
         config = "invalid"
     verified = bool(p and p.verified_at and "text" in p.verified_combinations)
     ready = schema_ready() if settings.assistant_enabled else False
+    reason = ("disabled" if not settings.assistant_enabled else "schema_pending" if not ready else
+              "model_unconfigured" if config == "unconfigured" else "model_configuration_invalid" if config == "invalid" else None)
+    labels = {"disabled": "曜灵暂未启用。", "schema_pending": "助手数据准备尚未完成。",
+              "model_unconfigured": "模型连接待配置；仍可查看页面说明。",
+              "model_configuration_invalid": "模型配置或能力记录不匹配，请管理员核对。"}
     return dict(enabled=settings.assistant_enabled, configuration_status=config,
+        reason_code=reason, status_label=labels.get(reason, "模型已配置；能力验证记录不代表当前服务健康。"),
         schema_status="ready" if ready else "schema_pending", connection_status="verified" if verified else "unverified",
         verified_at=p.verified_at if verified else None, provider=settings.assistant_provider, model=settings.assistant_model or None,
-        help_status="ready", search=capability(), materials=dict(available=inspect(database.engine).has_table(models.AssistantFile.__tablename__) if ready else False,
-            max_file_bytes=settings.assistant_max_file_bytes, extensions=["txt", "md", "csv", "pdf"]), profiles=[dict(id="default", label="默认模型", thinking=p.thinking if verified else "unknown",
+        help_status="ready", search=capability(), business_modules=coverage(), materials=dict(available=inspect(database.engine).has_table(models.AssistantFile.__tablename__) if ready else False,
+            max_file_bytes=settings.assistant_max_file_bytes, extensions=["txt", "md", "csv", "pdf", "docx", "xlsx", "png", "jpg", "jpeg"]), profiles=[dict(id="default", label="默认模型", thinking=p.thinking if verified else "unknown",
             vision=bool(verified and p.vision and "vision" in p.verified_combinations), web_search=False,
             function_calling=bool(verified and p.function_calling and "tools" in p.verified_combinations))])
 
@@ -104,9 +115,10 @@ def require_enabled(*, schema=True, chat=False):
 
 def validate_options(payload):
     caps = capabilities()["profiles"][0]
-    if payload.web_search != "off":
+    from .public_context import wants_search
+    if wants_search(payload):
         from .search_capabilities import validate
-        validate(payload)
+        validate(payload.model_copy(update={"attachment_ids": []}))
     if payload.attachment_ids and not caps["vision"]:
         raise AssistantError("vision_unavailable", "当前模型尚未验证图片理解。")
     thinking = caps["thinking"]

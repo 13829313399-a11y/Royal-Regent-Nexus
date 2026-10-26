@@ -44,6 +44,13 @@ const view = useInjectionViewState(),
 const ready = computed(
   () => props.creating || store.detail?.demand.id === store.selectedId,
 );
+function retryDemand() {
+  if (!store.selectedId || store.busy || store.dirty) return;
+  // The retry control is replaced by the loading state. Keep keyboard focus
+  // inside the persistent panel so Escape remains available during/after retry.
+  panel.value?.focus();
+  void store.select(store.selectedId, true);
+}
 const tabOptions = computed(() =>
   (props.creating ? ['参数'] : ['概览', '参数', '排程', '报工', '记录']).map(
     (value) => ({ value, label: value }),
@@ -267,7 +274,11 @@ const templateLabels0: Record<string, string> = {
         label="详情页签"
         @update:model-value="chooseTab"
       />
-      <InjLoadingState v-if="!ready" label="正在读取所选需求…" />
+      <InjLoadingState v-if="!ready && store.detailLoading" label="正在读取所选需求…" />
+      <div v-else-if="!ready" class="inj-drawer-content">
+        <p role="alert" class="inj-error-text">{{ store.detailError || '当前需求无法读取，请核对厂区和读取权限。' }}</p>
+        <InjButton v-if="store.selectedId" :disabled="store.busy || store.dirty" @click="retryDemand">重新读取需求</InjButton>
+      </div>
       <div v-if="ready" class="inj-drawer-content">
         <p v-if="store.error" role="alert" class="inj-error-text">
           {{ store.error }}

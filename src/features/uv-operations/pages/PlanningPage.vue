@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import UvPageFrame from '../components/UvPageFrame.vue'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { sameUvPageScope, useUvNavigationGuard } from '../navigationGuard'
 import { CalendarDays, Plus, RefreshCw, ShieldAlert, X, Check, Sparkles } from '@lucide/vue'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { displayTime, entities, label, num, object, str, today, utcInput, type Entity } from '../contracts'
@@ -15,6 +15,8 @@ import CollectionFooter from '../components/CollectionFooter.vue'
 const p=useUvPage(()=>['demands','tasks','machines','fixtures','batches','executions']),w=p.w
 const requests=useUvRequestScope(w.contextVersion)
 const tab=ref('timeline'),start=ref(today()),days=ref(1),mobileList=ref(false),scrollTop=ref(0)
+watch([tab,p.busy,p.error,w.ready],()=>{w.assistantListReady.value=tab.value==='tasks'&&!p.busy.value&&!p.error.value&&w.ready.value},{immediate:true})
+onBeforeUnmount(()=>{w.assistantListReady.value=false})
 const form=reactive({task_id:'',batch_id:'',machine_id:'',fixture_id:'',fixture_evidence:'',start_at:today()+'T08:00',end_at:today()+'T09:00',fixed:false,manual_minutes:'',estimate_reason:''})
 const taskDetail=ref<Entity|null>(null),windowRows=ref<Entity[]>([]),suggestions=ref<Entity[]>([]),proposed=ref<Entity|null>(null)
 const detailLoading=ref(false)
@@ -61,7 +63,11 @@ async function reload(){
 }
 async function commit(){if(!body||working.value)return;const current=requests.start('commit');working.value=true;error.value='';try{await w.command('schedule/commit',body,operationId);if(!current())return;proposed.value=null;uncertain.value=false;body=null;await reload()}catch(cause){if(!current())return;error.value=w.explain(cause);uncertain.value=!(cause instanceof UvError)||cause.status>=500;if(!uncertain.value){proposed.value=null;await reload()}}finally{if(current())working.value=false}}
 onBeforeUnmount(()=>{windowVersion++;detailVersion++})
-onBeforeRouteLeave(()=>!proposed.value||window.confirm('排程预览尚未提交，确认离开并放弃草案？'))
+useUvNavigationGuard((to,from)=>{
+  if(sameUvPageScope(to,from))return true
+  if(working.value||uncertain.value){w.notification.value='请先完成当前排程操作或核对同一操作的回执，再离开。';return false}
+  return !proposed.value||window.confirm('排程预览尚未提交，确认离开并放弃草案？')
+})
 </script>
 <template><UvPageFrame>
 <div class="uv-page-heading"><div><span class="uv-eyebrow">PLAN WITH CONFIDENCE</span><h2>任务与排程</h2><p>按实体批次分配机台，核对治具与时间，再确认计划。</p></div><div class="uv-heading-actions"><button class="uv-button" :disabled="p.busy.value||windowLoading" :aria-busy="p.busy.value||windowLoading" @click="reload"><RefreshCw :size="16"/>刷新</button><button class="uv-button" :disabled="!w.can('plan_write')" @click="p.open('demand')"><Plus :size="16"/>新建需求</button><button class="uv-button primary" :disabled="!w.can('plan_write')" @click="p.open('task')"><Plus :size="16"/>新建任务</button></div></div>

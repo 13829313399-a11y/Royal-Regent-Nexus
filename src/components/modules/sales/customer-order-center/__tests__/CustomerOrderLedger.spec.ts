@@ -23,6 +23,40 @@ function mountLedger() {
 
 describe('CustomerOrderLedger', () => {
   beforeEach(() => { vi.clearAllMocks() })
+  it('opens a linked record outside the current list and keeps keyboard focus inside its detail', async () => {
+    api.capabilities.mockResolvedValue({ read: true, write: false, dispatch: false, shipment_confirm: false })
+    api.list.mockResolvedValue({ items: [], total: 70, page: 1, page_size: 50, customers: [] })
+    api.detail.mockResolvedValue({ line, versions: [], dispatches: [], shipments: [], sources: [] })
+    const wrapper = mount(CustomerOrderLedger, { attachTo: document.body,
+      props: { factoryId: 'huaxing', factoryName: '华兴厂', focusLineId: line.id } })
+    await flushPromises()
+    expect(api.detail).toHaveBeenCalledWith(line.id, 'huaxing')
+    const dialog = wrapper.get('[role="dialog"]')
+    expect(dialog.text()).toContain(line.reference_no)
+    expect(dialog.element.contains(document.activeElement)).toBe(true)
+    await dialog.trigger('keydown', { key: 'Escape' })
+    expect(wrapper.emitted('close-detail')).toHaveLength(1)
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('clears linked detail on factory changes and ignores an old factory response', async () => {
+    api.capabilities.mockResolvedValue({ read: true, write: false })
+    api.list.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, customers: [] })
+    let finishOld: ((value: unknown) => void) | undefined
+    api.detail.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+    const wrapper = mount(CustomerOrderLedger, { props: { factoryId: 'huaxing', factoryName: '华兴厂', focusLineId: line.id } })
+    await flushPromises()
+    api.detail.mockRejectedValueOnce(new Error('当前厂区中没有此订单'))
+    await wrapper.setProps({ factoryId: 'huakang-a', factoryName: '华康A' })
+    await flushPromises()
+    finishOld?.({ line, versions: [], dispatches: [], shipments: [], sources: [] })
+    await flushPromises()
+    expect(wrapper.get('[role="dialog"]').text()).toContain('当前厂区中没有此订单')
+    expect(wrapper.text()).not.toContain(line.reference_no)
+    wrapper.unmount()
+  })
+
   it('requires a second identity confirmation for business cancellation', async () => {
     const wrapper = mountLedger()
     await flushPromises()

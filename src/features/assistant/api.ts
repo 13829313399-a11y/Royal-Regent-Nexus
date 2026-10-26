@@ -1,6 +1,6 @@
 import { dispatchAccessFailure } from '@/lib/http'
 import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
-import type { Artifact, DocumentFile, Capabilities, Conversation, HelpArticle, MessagePage, PageContext, SendPayload, Snapshot } from './types'
+import type { Artifact, DocumentFile, Capabilities, Conversation, HelpArticle, MessagePage, ModuleCoverage, PageContext, SendPayload, Snapshot } from './types'
 
 export function assistantUrl(path: string, base = import.meta.env.VITE_API_BASE_URL || '/api') {
   return `${base.replace(/\/$/, '')}/assistant${path}`
@@ -24,6 +24,8 @@ export async function request(path: string, init: RequestInit = {}) {
 async function json<T>(path: string, init: RequestInit = {}): Promise<T> { return (await request(path, init)).json() }
 export const assistantApi = {
   capabilities: () => json<Capabilities>('/capabilities'),
+  diagnostics: () => json<Record<string, unknown>>('/diagnostics'),
+  coverage: (factory: string, module: string | undefined, signal: AbortSignal) => json<ModuleCoverage>(`/coverage?${new URLSearchParams({factory_id: factory, ...(module ? {module_id: module} : {})})}`, {signal}),
   help: (page: PageContext) => json<{ items: HelpArticle[]; status: string }>(`/help/context?${new URLSearchParams({ module_id: page.module_id, route_name: page.route_name, ...(page.factory_id ? { factory_id: page.factory_id } : {}) })}`),
   article: (id: string) => json<HelpArticle>(`/help/articles/${encodeURIComponent(id)}`),
   create: (client_request_id: string) => json<Conversation>('/sessions', { method: 'POST', body: JSON.stringify({ client_request_id }) }),
@@ -41,7 +43,10 @@ export const assistantApi = {
   attachment: async (id: string) => (await request(`/attachments/${id}/content`)).blob(),
   uploadDocument: async (sid: string, file: File) => { const body = new FormData(); body.append('file', file); return json<DocumentFile>(`/sessions/${sid}/files`, { method: 'POST', body }) },
   document: (id: string) => json<DocumentFile>(`/files/${id}`),
-  documentContent: (id: string) => json<{ text: string; locator: import('./v2').FileSource['locator'] }[]>(`/files/${id}/content?extracted=true`),
+  searchDocuments: (sid: string, ids: string[], query: string) => json<import('./types').DocumentSearchResult>(`/sessions/${sid}/files/search`, { method: 'POST', body: JSON.stringify({ document_ids: ids, query }) }),
+  replaceDocument: (id: string, replacement: string, expectedVersion: string, replacementVersion: string) => json<{replaced_file_id: string; file: DocumentFile}>(`/files/${id}/replace`, { method: 'POST', body: JSON.stringify({ replacement_id: replacement, expected_version: expectedVersion, replacement_version: replacementVersion }) }),
+  documentContent: (id: string, version?: string) => json<import('./documentFormat').DocumentSegment[]>(`/files/${id}/content?extracted=true${version ? `&version=${encodeURIComponent(version)}` : ''}`),
+  documentPage: async (id: string, page: number, version?: string) => (await request(`/files/${id}/pages/${page}${version ? `?version=${encodeURIComponent(version)}` : ''}`)).blob(),
   removeDocument: (id: string) => request(`/files/${id}`, { method: 'DELETE' }),
   saveArtifact: (sid: string, value: { source_run_id: string; title: string; kind: string; content: string }) => json<Artifact>(`/sessions/${sid}/artifacts`, { method: 'POST', body: JSON.stringify(value) }),
   artifacts: (cursor = '', q = '') => json<{ items: Artifact[]; next_cursor: string | null }>(`/artifacts?${new URLSearchParams({cursor, q})}`),
