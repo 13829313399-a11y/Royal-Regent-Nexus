@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AppShell from '@/components/layout/AppShell.vue'
 import WorkCenterHost from '@/features/work-center/WorkCenterHost.vue'
 import DeploymentNotice from '@/components/layout/DeploymentNotice.vue'
+import CuttingResourceRecoveryNotice from '@/features/cutting-operations/CuttingResourceRecoveryNotice.vue'
 import AssistantHost from '@/features/assistant/AssistantHost.vue'
 import CollaborationHost from '@/features/collaboration/CollaborationHost.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -21,6 +22,7 @@ onUnmounted(() => window.removeEventListener('authorization-context-changed', on
   <div v-if="auth.isConfirmingSession" class="session-confirmation" role="status">正在确认工作空间身份…</div>
   <AppShell v-else />
   <DeploymentNotice />
+  <CuttingResourceRecoveryNotice v-if="privateHostsReady" />
   <AssistantHost v-if="privateHostsReady" />
   <CollaborationHost v-if="privateHostsReady && collaborationEnabled" />
   <WorkCenterHost v-if="privateHostsReady && workCenterEnabled" />
