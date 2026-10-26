@@ -5,10 +5,25 @@ import { createYinhuiDraft, saveYinhuiDraft, loadYinhuiDraft } from '../customer
 import { yinhuiTotals } from '../customerPriceConverters/yinhui'
 import { createYinhuiCustomerQuoteWorkbook } from '../customerPriceConverters/yinhuiTemplate'
 import { parseXlsxWorkbook } from '../customerPriceConverters/xlsxLite'
+import { readYinhuiSource } from '../customerPriceConverters/yinhuiSource'
+import { readYinhuiElectronicSources } from '../customerPriceConverters/yinhuiElectronic'
 
 const path = process.env.YINHUI_88490_SAMPLE
 const checkedPath = process.env.YINHUI_88490_CHECKED_QUOTE
 const buffer = (bytes: Uint8Array) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+
+it.skipIf(!path)('reads all five actual 88490 IC parts from their own electronic quotations', () => {
+  const original = readFileSync(path!)
+  const groups = readYinhuiElectronicSources(readYinhuiSource(buffer(original)).sheets)
+  expect(groups.map(group => [group.model, group.role, group.chips.length])).toEqual([
+    ['88490', 'TX', 1], ['88490', 'RX', 4],
+  ])
+  expect(groups[0]!.chips[0]).toMatchObject({ quantity: 1, unitPrice: .3, amount: .3, currency: 'RMB', source: '电子报价!E9' })
+  expect(groups[1]!.chips.map(chip => [chip.source, chip.quantity, chip.amount])).toEqual([
+    ['电子报价!E58', 1, 1.05], ['电子报价!E59', 1, .4], ['电子报价!E60', 2, .3], ['电子报价!E61', 1, .09],
+  ])
+  expect(readFileSync(path!)).toEqual(original)
+}, 60000)
 
 it.skipIf(!path)('imports all 88490 parts with five packaging consumables separated and all freight routes intact', () => {
   const original = readFileSync(path!)
@@ -16,6 +31,11 @@ it.skipIf(!path)('imports all 88490 parts with five packaging consumables separa
   const data = draft.result.quoteData
   expect(data.importIssues || []).toEqual([])
   expect(data.model).toBe('88490')
+  expect(data.electronic).toHaveLength(7)
+  expect(data.electronic.map(row => row.quantity)).toEqual([1, 1, 1, 1, 1, 2, 1])
+  expect(data.electronic[1]!.amountHkd).toBeCloseTo(.3 / .84 * 1.08 / .96, 10)
+  expect(data.electronic[5]!.amountHkd).toBeCloseTo(.15 / .84 * 1.08 / .96 * 2, 10)
+  expect(yinhuiTotals(data).electronic).toBeCloseTo((2.01 + 8.28) / .84 * 1.08 / .96, 7)
   expect(data.mechanical).toHaveLength(28)
   const packagingSources = [74, 75, 76, 77, 78].map(row => `明细!D${row}`)
   expect(data.packagingRows.filter(line => packagingSources.includes(line.source))).toHaveLength(5)
@@ -34,6 +54,7 @@ it.skipIf(!path)('imports all 88490 parts with five packaging consumables separa
   expect(restored.result.quoteData.importIssues || []).toEqual([])
   expect(restored.result.quoteData.mechanical).toEqual(data.mechanical)
   expect(restored.result.quoteData.plastic).toEqual(data.plastic)
+  expect(restored.result.quoteData.electronic).toEqual(data.electronic)
 
   // Test-only labels satisfy the existing English-name gate; no customer file is delivered.
   const result = structuredClone(draft.result)
@@ -77,4 +98,4 @@ it.skipIf(!path)('imports all 88490 parts with five packaging consumables separa
     expect(readFileSync(checkedPath)).toEqual(checkedBytes)
   }
   expect(readFileSync(path!)).toEqual(original)
-}, 30000)
+}, 60000)
