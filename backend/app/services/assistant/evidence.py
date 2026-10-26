@@ -53,7 +53,7 @@ class RunContent:
         self.evidence["activities"].append(dict(step_id=step_id, kind=kind, status="running", label=label,
                                                started_at=now_iso(), finished_at=None))
         if kind == "search":
-            self.evidence["search"].update(execution="pending", search_count=None)
+            self.evidence["search"].update(execution="pending", search_count=None, attempted=True)
         self.changed()
 
     def finish(self, step_id, status="completed"):
@@ -82,24 +82,28 @@ class RunContent:
             sources[sources.index(old)] = deepcopy(source)
         else:
             sources.append(deepcopy(source))
-        web = [s for s in sources if s["kind"] == "web"]
+        web = [s for s in sources if s["kind"] == "web" and not s.get("origin")]
         self.evidence["search"]["evidence_level"] = "pages_fetched" if any(s["evidence_level"] == "page_content" for s in web) else "results_returned" if web else "none"
+        self.evidence["search"].update(sources_returned=len(web), pages_read=sum(s["evidence_level"] == "page_content" for s in web))
         self.changed()
         self.bind()
 
     def web(self, step_id, rows, provider_id=None):
+        returned = False
         for row in rows:
             url = safe_url(row.get("url"))
             ref = str(row.get("index", ""))
             if not url or not ref.isdigit():
                 continue
+            returned = True
             ident = stable_id(self.run_id, step_id, ref)
             old = next((s for s in self.evidence["sources"] if s["source_id"] == ident), None)
             self.add_source(dict(kind="web", source_id=ident, run_id=self.run_id, step_id=step_id,
                 provider="dashscope_multimodal", provider_ref=ref, provider_request_id=provider_id,
                 title=str(row.get("title") or url)[:500], url=url, site_name=str(row.get("site_name") or urlsplit(url).hostname)[:160],
-                retrieved_at=old["retrieved_at"] if old else now_iso(), published_at=None, evidence_level="search_result"))
-        if rows and any(s.get("step_id") == step_id for s in self.evidence["sources"]):
+                retrieved_at=old["retrieved_at"] if old else now_iso(), published_at=None,
+                excerpt=str(row.get("snippet") or row.get("summary") or "")[:4000], evidence_level="search_result", read_status="not_attempted"))
+        if returned:
             self.evidence["search"].update(execution="confirmed", reason_code=None)
             self.changed()
 
@@ -120,11 +124,17 @@ class RunContent:
             self.changed()
 
     def citation_context(self, step_id):
-        for index, source in enumerate(self.evidence["sources"], 1):
+        eligible = [s for s in self.evidence['sources'] if s.get('citation_eligible',True)]
+        for index, source in enumerate(eligible, 1):
             source.setdefault("citation_aliases", {})[step_id] = str(index)
         self.changed()
         self.bind()
-        return [{**s, "citation_ref": s["citation_aliases"][step_id]} for s in self.evidence["sources"]]
+        # The full authorized resource registry stays in persisted evidence and
+        # is rechecked on every read/action. It is not needed a second time in
+        # citation metadata: tool rows already carry their exact record refs.
+        return [{**{k: v for k, v in s.items() if k not in (
+            {"resources", "authorization_fingerprint", "responsibility_fingerprint", "financial_access", "citation_aliases"} if s["kind"] == "business" else {"citation_aliases"}
+        )}, "citation_ref": s["citation_aliases"][step_id]} for s in eligible]
 
     def account(self, step_id, *, usage=None, search_count=None, request_id=None):
         step = self.steps.setdefault(step_id, dict(step_id=step_id, provider_request_id=None, tokens=None, search_count=None))
@@ -137,8 +147,7 @@ class RunContent:
             search_steps = [self.steps.get(a["step_id"], {}) for a in self.evidence["activities"] if a["kind"] == "search"]
             counts = [s.get("search_count") for s in search_steps]
             self.evidence["search"]["search_count"] = sum(counts) if counts and all(c is not None for c in counts) else None if counts else 0
-            if any(c is not None and c > 0 for c in counts):
-                self.evidence["search"].update(execution="confirmed", reason_code=None)
+            # Provider plugin count is diagnostic metadata, not returned evidence.
             self.changed()
 
     def usage_summary(self):

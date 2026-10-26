@@ -80,6 +80,17 @@ class FavoritePatch(Strict):
     favorite: bool
 
 
+class DocumentSearch(Strict):
+    document_ids: list[str] = Field(min_length=1, max_length=8)
+    query: str = Field(min_length=1, max_length=2000)
+
+
+class DocumentReplacement(Strict):
+    replacement_id: str = Field(min_length=1,max_length=64)
+    expected_version: str = Field(pattern=r'^[a-f0-9]{64}$')
+    replacement_version: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
 class ActionRequest(Strict):
     run_id: str = Field(min_length=1, max_length=64)
     index: int = Field(ge=0, le=100)

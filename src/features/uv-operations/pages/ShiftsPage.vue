@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import UvPageFrame from '../components/UvPageFrame.vue'
 import { computed, reactive, ref, watch } from 'vue'
-import { useRoute, onBeforeRouteLeave } from 'vue-router'
+import { useRoute } from 'vue-router'
+import { sameUvPageScope, useUvNavigationGuard } from '../navigationGuard'
 import { Plus, ClipboardCheck, RefreshCw, Check, Trash2, X } from '@lucide/vue'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { displayTime, label, num, object, str, type Entity } from '../contracts'
@@ -27,7 +28,11 @@ const quantityLabels={processed:'加工',good:'良品',rework:'返工',scrap:'�
 watch(()=>w.items('shifts'),rows=>{if(!shiftId.value&&rows.length)shiftId.value=rows.find(row=>row.status==='open')?.id??rows[0]!.id})
 watch(()=>[shiftId.value,w.meta.value?.view_revision],async()=>{const current=requests.start('gaps'),id=shiftId.value;try {if(id){const value=(await w.request<Entity>('shifts/'+id+'/gaps')).data;if(current()&&id===shiftId.value)gaps.value=value}}catch(cause){if(current())globalError.value=w.explain(cause)}},{immediate:true})
 const dirty=computed(()=>drafts.some(x=>x.state!=='saved'&&(x.task_id||x.processed)))
-onBeforeRouteLeave(()=>!dirty.value||window.confirm('核数草稿尚未全部确认。离开将丢弃这些未提交输入，是否继续？'))
+useUvNavigationGuard((to,from)=>{
+  if(sameUvPageScope(to,from))return true
+  if(saving.value||drafts.some(row=>row.state==='uncertain')){w.notification.value='请先完成核数保存或核对同一操作的回执，再离开。';return false}
+  return !dirty.value||window.confirm('核数草稿尚未全部确认。离开将丢弃这些未提交输入，是否继续？')
+})
 watch(w.contextVersion,()=>{drafts.splice(0);gaps.value=null;paste.value='';matching.value=null;globalError.value='';saving.value=false})
 function add(values?:Quantities){drafts.push({key:createRandomUuid(),task_id:String(route.query.task??''),batch_id:'',processed:0,good:0,rework:0,scrap:0,pending:0,...values,evidence:'',state:'draft',error:'',operationId:createRandomUuid(),submitted:null})}
 function batches(row:Draft){const task=w.items('tasks').find(x=>x.id===row.task_id);return w.items('batches').filter(x=>x.task_id===(task?.parent_task_id||row.task_id))}

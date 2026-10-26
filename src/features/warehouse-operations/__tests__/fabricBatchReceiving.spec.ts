@@ -38,6 +38,19 @@ async function fill() {
   await body().get('[aria-label="物料1明细1缸号"]').setValue('0001')
 }
 describe('carton-style fabric selection and batch receiving', () => {
+  it('suggests per source, preserves confirmed categories and closes untouched suggestions', async () => {
+    const inputs = [source('L1'), source('L2', 'Pcs'), source('L3', '公斤'), source('L4', '码', 'ACCESSORY')]
+    inputs.slice(0, 3).forEach(item => { item.material_category = null })
+    await openDialog(inputs)
+    for (const [index, value] of ['FABRIC', 'ACCESSORY', '', 'ACCESSORY'].entries()) {
+      expect(body().get<HTMLSelectElement>(`[aria-label="第${index + 1}项物料分类"]`).element.value).toBe(value)
+    }
+    const confirm = vi.spyOn(window, 'confirm')
+    await button('关闭').trigger('click')
+    expect(confirm).not.toHaveBeenCalled()
+    expect(wrapper!.emitted('close')).toHaveLength(1)
+    expect(api.receiveBatch).not.toHaveBeenCalled()
+  })
   it('blocks the entire batch when one delivery line exceeds its physical limit', async () => {
     await openDialog(); await fill()
     await body().get('[aria-label="第2项本单到货量"]').setValue('0.124999')

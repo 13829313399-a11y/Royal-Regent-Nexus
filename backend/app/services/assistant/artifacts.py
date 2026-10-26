@@ -6,7 +6,7 @@ import time
 from uuid import uuid4
 from sqlalchemy import select, or_, and_
 from app.models.assistant import AssistantArtifact as Artifact, AssistantArtifactVersion as Version, AssistantMessage as Message, AssistantRun as Run, AssistantFavorite as Favorite
-from . import service, visibility, files
+from . import service, visibility, files, help_registry
 from .errors import AssistantError
 from app import db as database
 
@@ -14,6 +14,9 @@ from app import db as database
 def visible(db, user, row):
     try:
         service.owned(db, user, row.session_id)
+        message = db.scalar(select(Message).where(Message.run_id == row.source_run_id, Message.role == 'assistant'))
+        if message is None or service.message_out(message, user).get('unavailable'):
+            return False
         return visibility.allowed(user, row.source_refs, db)
     except AssistantError:
         return False
@@ -30,19 +33,52 @@ def owned(db, user, ident):
 
 def source_lines(refs):
     lines = []
-    for i, source in enumerate(refs, 1):
+    for i, source in enumerate((s for s in refs if s.get('citation_eligible',True)), 1):
         title = source.get("title", "资料")
         if source["kind"] == "web":
             lines.append(f"{i}. {title} — {source['url']}；检索时间 {source['retrieved_at']}；{source['evidence_level']}")
+            if source.get("origin"):
+                lines.append("   沿用历史来源，保留原获取时间。")
+            if source.get("read_status") == "failed":
+                lines.append("   正文读取失败：" + source.get("read_error", "page_read_failed") + "；保留检索条目。")
+            elif source["evidence_level"] != "page_content":
+                lines.append("   尚未取得正文，不能据此声称已读全文。")
+            else:
+                lines.append("   正文摘录；跳转后地址：" + source.get("final_url", source["url"]))
+                lines.append("   内容指纹：" + source.get("content_hash", "未记录"))
+                if source.get("excerpt"):
+                    lines.append("   摘录（不代表全文）：\n" + "\n".join("   > " + line for line in source["excerpt"].splitlines()))
         elif source["kind"] == "file":
             loc = source["locator"]
-            position = f"第{loc['page']}页" if loc["kind"] == "page" else f"第{loc['start']}–{loc['end']}行" if loc["kind"] == "lines" else str(loc)
+            position = f"第{loc['page']}页" if loc["kind"] == "page" else f"第{loc['start']}–{loc['end']}行" if loc["kind"] == "lines" else f"第{loc['paragraph']}段" if loc['kind'] == 'paragraph' else f"{loc['sheet']}!{loc['cells']}" if loc['kind'] == 'sheet' else str(loc)
+            if loc['kind'] == 'ocr_region':
+                position = f"第{loc['page']}页 · 识别区域{loc['region']}"
             lines.append(f"{i}. {title} — {position}；文件 {source['file_ref']['id']}")
+            if loc['kind'] == 'ocr_region':
+                lines.append('   图像识别候选，必须对照原页核实；识别评分不是正确率，模糊字符与数值不得推定。')
         elif source["kind"] == "business":
             lines.append(f"{i}. {title} — {source['scope']['scope_label']}；截至 {source['as_of']}；{source['data_mode']}")
         else:
             lines.append(f"{i}. {title} — 系统说明 {source['help_id']} / {source['knowledge_version']}")
+            lines.append('   说明指纹：' + (source.get('source_fingerprint') or '旧记录未保存；仅有历史版本号，不能据此确认当前规则。'))
+    for source in refs:
+        if source.get('citation_eligible') is False:
+            report=source.get('retrieval',{})
+            lines.append(f"检索范围：{source.get('title','文件')}；召回 {report.get('selected_chunks',0)}/{report.get('total_chunks',0)} 片段；仅召回片段进入上下文，未命中不代表不存在。")
     return "\n".join(lines)
+
+
+def evidence_summary(evidence):
+    search = evidence.get("search", {})
+    sources = [s for s in evidence.get("sources", []) if s["kind"] == "web"]
+    if not sources and not search.get("attempted"):
+        return ""
+    current = [s for s in sources if not s.get("origin")]
+    read = sum(s["evidence_level"] == "page_content" for s in current)
+    failed = sum(s["evidence_level"] != "page_content" and s.get("read_status") == "failed" for s in current)
+    notice = {"unconfirmed": "本次未取得可核验的联网证据。", "failed": "检索未完成，已有资料保留。", "pending": "正在查找公开资料。"}.get(search.get("execution"), "")
+    return (notice + f"本轮公开来源 {len(current)} 项：已取得正文摘录 {read} 项，读取失败 {failed} 项，未尝试读取 {len(current)-read-failed} 项。"
+            f"沿用历史公开来源 {len(sources)-len(current)} 项。引用表示资料关联，不代表内容已核实。")
 
 
 def formats(kind):
@@ -70,9 +106,14 @@ def create(user, sid, payload):
         if safe.get("unavailable"):
             raise AssistantError("source_unavailable", "回答所依赖的来源已失效。", 410)
         now = time.time()
+        refs = visibility.sources(safe['content_parts'])
+        existing_help = {(s['help_id'],s.get('source_fingerprint')) for s in refs if s['kind']=='help'}
+        for citation in safe['help_citations']:
+            if (citation['id'],citation.get('source_fingerprint')) not in existing_help:
+                refs.append(help_registry.source_from_reference(user,citation,run.id))
         row = Artifact(id=uuid4().hex, owner_user_id=user.id, employment_epoch=service.epoch(user), session_id=sid,
             source_run_id=run.id, kind=payload.kind, title=payload.title.strip(), current_revision=1,
-            source_refs=visibility.sources(safe["content_parts"]), created_at=now, updated_at=now)
+            source_refs=refs, created_at=now, updated_at=now)
         db.add(row)
         db.flush()
         db.add(Version(artifact_id=row.id, revision=1, content=payload.content, created_at=now))

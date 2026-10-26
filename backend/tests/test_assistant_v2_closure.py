@@ -99,16 +99,18 @@ def test_periodic_save_late_source_and_cancel_preserve_one_complete_evidence(env
         with dbm.SessionLocal() as db:
             row=db.scalar(select(AssistantMessage).where(AssistantMessage.session_id==sid,AssistantMessage.role=='assistant'))
             return (row.run_id,row.content_parts) if row else None
-    def text_at_least(needle):
+    def research_at_least(needle):
         value=saved()
-        return value if value and needle in ''.join(p.get('text','') for p in value[1]) else None
+        draft=next((p['search'].get('research_summary','') for p in value[1] if p['type']=='evidence'),'') if value else ''
+        return value if needle in draft else None
     with ThreadPoolExecutor(max_workers=1) as pool:
         result=pool.submit(client.post,f'/api/assistant/sessions/{sid}/messages',json=payload(protocol_version=2,web_search='on'))
         try:
-            rid, first=eventually(lambda:text_at_least('先保存正文'))
+            rid, first=eventually(lambda:research_at_least('先保存正文'))
             assert not next(p for p in first if p['type']=='evidence')['sources']
+            assert not any(p.get('text') for p in first if p['type']=='text'), 'Research is not a final answer'
             release.set()
-            _, second=eventually(lambda:text_at_least('后续正文'))
+            _, second=eventually(lambda:research_at_least('后续正文'))
             before=next(p for p in second if p['type']=='evidence')
             assert len(before['sources'])==1
             assert client.post(f'/api/assistant/runs/{rid}/cancel').status_code==200
@@ -120,7 +122,8 @@ def test_periodic_save_late_source_and_cancel_preserve_one_complete_evidence(env
     parts=final['items'][-1]['content_parts']
     assert sum(p['type']=='evidence' for p in parts)==1
     evidence=next(p for p in parts if p['type']=='evidence')
-    assert evidence['sources']==before['sources'] and evidence['citations'][0]['resolution']=='resolved'
+    assert evidence['sources']==before['sources'] and evidence['citations']==[]
+    assert evidence['search']['research_summary']==before['search']['research_summary']
     assert all(a['status']!='running' for a in evidence['activities'])
     assert 'https://example.test/late' in client.get(f'/api/assistant/runs/{rid}/export').text
 
@@ -208,7 +211,8 @@ def test_cleanup_failures_always_release_slots_and_recover_status(env, monkeypat
     assert not files.worker_path(key).exists()
 
 
-def test_worker_exits_when_supervisor_pipe_closes(tmp_path):
+@pytest.mark.parametrize('extension', ['.txt', '.pdf', '.png'])
+def test_worker_exits_when_supervisor_pipe_closes(tmp_path, extension):
     # Exercise the actual worker's parent-death path with a deliberately slow parser.
     from app.services.assistant import files
     import shutil
@@ -217,7 +221,7 @@ def test_worker_exits_when_supervisor_pipe_closes(tmp_path):
     shutil.copy2(Path(files.__file__).with_name('document_limits.py'),tmp_path/'document_limits.py')
     (tmp_path/'document_parser.py').write_text('import time\nclass DocumentParseError(Exception): pass\ndef extract(*a):\n time.sleep(30)\n return []\n',encoding='utf-8')
     source=tmp_path/'source';source.write_bytes(b'synthetic')
-    child=subprocess.Popen([sys.executable,str(worker),str(source),str(tmp_path/'output'),'.txt','1','1000','30'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0)
+    child=subprocess.Popen([sys.executable,str(worker),str(source),str(tmp_path/'output'),extension,'1','1000','30'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0)
     try:
         time.sleep(.15); assert child.poll() is None
         child.stdin.close(); assert child.wait(timeout=3)==125
@@ -275,8 +279,10 @@ def test_printer_unknown_future_missing_and_network_outage_reuse_real_dto(env):
         result,source,_=business.query(user,'get_printer_status',{'factory_id':'huakang-a'},'probe')
         with dbm.SessionLocal() as db:
             expected={f'closure-{i}':printers.printer_out(db.get(ThreeDPrintingPrinter,f'closure-{i}'),network_stale=network_status!='healthy') for i in range(5)}
-        actual={p['id']:p for p in result['items'] if p['id'] in expected}
-        assert actual==expected and all(actual[f'closure-{i}']['status_stale'] for i in (1,2,3))
+        from app.services.assistant.printers import ROW_FIELDS
+        actual={p['id']:p for p in result['rows'] if p['id'] in expected}
+        assert {key:{field:value.get(field) for field in ROW_FIELDS} for key,value in actual.items()} == {key:{field:value.get(field) for field in ROW_FIELDS} for key,value in expected.items()}
+        assert all(actual[f'closure-{i}']['status_stale'] for i in (1,2,3))
         assert actual['closure-0']['status_stale']==(network_status!='healthy')
         assert actual['closure-4']['status_stale'] is False
-        assert result['network_health']['status']==network_status and 'physical_state' in source['unknown_fields']
+        assert source['scope']['network_health']['status']==network_status and 'physical_state' in source['unknown_fields']

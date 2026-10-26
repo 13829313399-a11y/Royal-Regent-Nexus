@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from io import BytesIO
@@ -2046,10 +2046,10 @@ def maintenance_out(record: ThreeDPrintingMaintenance) -> dict[str, Any]:
     }
 
 
-def printer_out(record: ThreeDPrintingPrinter, *, network_stale: bool = False) -> dict[str, Any]:
+def printer_out(record: ThreeDPrintingPrinter, *, network_stale: bool = False, as_of: datetime | None = None) -> dict[str, Any]:
     telemetry = json.loads(record.status_payload_json or "{}").get("connector", {})
     last_seen = parse_business_timestamp(record.last_seen_at)
-    age = (business_now() - last_seen).total_seconds() if last_seen else None
+    age = ((as_of or business_now()) - last_seen).total_seconds() if last_seen else None
     # Site diagnostics still gate control, but cannot invalidate fresh,
     # authenticated read-only telemetry from an individual printer.
     stale = (network_stale and not telemetry.get("observation_only")) or age is None or age > 30 or age < -5
@@ -2074,6 +2074,26 @@ def printer_out(record: ThreeDPrintingPrinter, *, network_stale: bool = False) -
         "status_stale": stale,
         **{key: telemetry[key] for key in ("nozzle_target", "bed_target", "layer_num", "total_layers") if key in telemetry},
     }
+
+
+def printer_status_snapshot(db: Session, *, factory_id: str, printer_id: str | None = None,
+                            as_of: datetime | None = None) -> dict[str, Any]:
+    """Pure read shared by dashboard, native detail and authorized assistants.
+
+    Unlike dashboard_snapshot this never initializes settings or any other row.
+    One query clock is used across the fleet; each printer retains last_seen_at.
+    """
+    factory_id = require_three_d_factory(factory_id)
+    clock = as_of or business_now()
+    stmt = select(ThreeDPrintingPrinter).where(ThreeDPrintingPrinter.factory_id == factory_id)
+    if printer_id is not None:
+        stmt = stmt.where(ThreeDPrintingPrinter.id == printer_id)
+    records = db.scalars(stmt.order_by(ThreeDPrintingPrinter.machine_no, ThreeDPrintingPrinter.id)).all()
+    if printer_id is not None and not records:
+        raise HTTPException(404, {"code": "printer_not_found"})
+    network = network_health_snapshot(db)
+    stale = network['configured'] and network['status'] != 'healthy'
+    return dict(printers=[printer_out(p, network_stale=stale, as_of=clock) for p in records], network_health=network)
 
 
 def command_out(record: ThreeDPrintingPrinterCommand) -> dict[str, Any]:
@@ -2192,13 +2212,6 @@ def dashboard_snapshot(
             ).limit(50 if compact else None)
         )
     )
-    printers = list(
-        db.scalars(
-            select(ThreeDPrintingPrinter)
-            .where(ThreeDPrintingPrinter.factory_id == factory_id)
-            .order_by(ThreeDPrintingPrinter.machine_no)
-        )
-    )
     day_off_dates = list(
         db.scalars(
             select(ThreeDPrintingDayStatus.business_date)
@@ -2216,7 +2229,7 @@ def dashboard_snapshot(
     record_count = 0
     daily = {}
     legacy_days = {}
-    machine_hours = {p.machine_no: 0.0 for p in printers}
+    machine_hours = {}
     for record in summary_records:
         record_count += 1
         if record.status not in {"running", "done"}:
@@ -2269,13 +2282,19 @@ def dashboard_snapshot(
                       for key in ("revenue", "materialCost", "electricityCost", "laborCost", "totalCost", "balance")}
     legacy_display.update(daily=legacy_daily, productionDays=len(legacy_daily),
                           maintenanceCost=round(maintenance_cost, 2), costBasis="daily_fixed_labor")
-    network = network_health_snapshot(db)
+    # Keep the original end-of-aggregation freshness check. Slow historical
+    # totals must not make an expired device observation appear current.
+    printer_snapshot = printer_status_snapshot(db, factory_id=factory_id)
+    printers = printer_snapshot['printers']
+    for printer in printers:
+        machine_hours.setdefault(printer['machine_no'], 0.0)
+    network = printer_snapshot['network_health']
     return {
         "factory_id": factory_id,
         "generated_at": _now(),
         "settings": _settings_out(setting),
         "network_health": network,
-        "printers": [printer_out(item, network_stale=network["configured"] and network["status"] != "healthy") for item in printers],
+        "printers": printers,
         "materials": [material_out(item) for item in materials],
         "products": [product_out(item, images.get(item.id)) for item in products],
         "records": [production_record_out(item) for item in records],

@@ -262,6 +262,7 @@ describe('inspector drafts and identity', () => {
   it('never presents the old demand as the newly selected demand', async () => {
     const store = useInjectionStore();
     store.selectedId = 'new';
+    store.detailLoading = true;
     store.detail = { demand: { id: 'old', mold_code: 'OLD', revision: 1 } };
     store.fields = [field];
     const wrapper = mount(DemandDrawer, {

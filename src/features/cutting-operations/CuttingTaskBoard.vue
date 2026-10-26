@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watchCuttingWorkspace } from './workspaceRefresh'
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { RouterLink, routeLocationKey } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import SectionPanel from '@/components/common/SectionPanel.vue'
@@ -11,6 +11,7 @@ import { workspaceApi,businessDay,type TaskView } from './workspaceApi'
 import { errorMessage } from './api'
 import { cuttingDestination } from './location'
 const props=defineProps<{reporting?:boolean}>()
+const filterId=`cutting-tasks-${useId()}`
 const route=inject(routeLocationKey,undefined)
 function linkedDay(){const value=route?.query.day;return route?.query.factory==='huakang-c'&&typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString().slice(0,10)===value?value:businessDay()}
 const day=ref(linkedDay()),query=ref(''),execution=ref(''),scope=ref('daily'),result=ref<TaskView>(),busy=ref(false),error=ref('')
@@ -85,9 +86,9 @@ watchCuttingWorkspace(()=>void load(currentPage.value))
     <CuttingMetrics :items="metrics" />
     <SectionPanel :title="reporting?'每日任务与填报进度':'生产任务与异常跟进'" class="cutting-content-panel">
       <form class="order-toolbar" @submit.prevent="load(1,true)">
-        <label>业务日期<input v-model="day" type="date" required /></label>
-        <label>订单号／货号<input v-model="query" maxlength="80" placeholder="查询全部匹配订单" /></label>
-        <label>执行方<select v-model="execution"><option value="">本厂与外发</option><option value="internal">本厂</option><option value="outsourced">外发</option></select></label>
+        <label :for="`${filterId}-day`">业务日期<input :id="`${filterId}-day`" v-model="day" name="day" type="date" required /></label>
+        <label :for="`${filterId}-order`">订单号／货号<input :id="`${filterId}-order`" v-model="query" name="q" maxlength="80" placeholder="查询全部匹配订单" /></label>
+        <label :for="`${filterId}-execution`">执行方<select :id="`${filterId}-execution`" v-model="execution" name="execution"><option value="">本厂与外发</option><option value="internal">本厂</option><option value="outsourced">外发</option></select></label>
         <Button type="submit" :disabled="busy">查询</Button>
         <Button type="button" variant="outline" :disabled="busy" @click="load(currentPage)">刷新当前结果</Button>
         <Button type="button" variant="outline" :disabled="busy" @click="resetFilters">清除订单／执行方筛选</Button>

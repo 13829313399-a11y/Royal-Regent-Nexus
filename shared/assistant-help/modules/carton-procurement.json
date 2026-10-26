@@ -55,7 +55,7 @@
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "4ef0ac31bffcbb2092aee93c214c82ebd605da95485db8788f393ff28fe2746c"
+        "sha256": "7a973a2f4b4cccbd0aa7f8a7fb4c4ebafa8aab17a673f97fe4511c2c79fea1cf"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
@@ -75,7 +75,7 @@
       {
         "path": "src/views/CartonProcurementView.vue",
         "symbol": "activeHeaderSearch",
-        "sha256": "89d8fd83a96ba4370b5877010fc55e204a58e9aedc69cc7e1d8d3712194f805d"
+        "sha256": "d2856f438511b11239b707f193c531ea48a57e247e819b63a7f978bb7d4dbdee"
       },
       {
         "path": "src/components/CartonSupplierReceiving.vue",
@@ -360,7 +360,7 @@
       {
         "path": "src/components/CartonOrderDetailDialog.vue",
         "symbol": "DialogDescription",
-        "sha256": "26be359cb211f80666d15cfaf5b8ed777fa9235c6e7f1d1bc7a8ad98132469fe"
+        "sha256": "6a04f3fa6e2fc18de817e261af3360e94e5d4a232adb74008452c0e6ab5fe1d3"
       },
       {
         "path": "src/components/CartonOrderActionDialog.vue",
@@ -423,8 +423,8 @@
         "sha256": "1c82a161aeae3ef08cdb8e0d8c080b41e243587ba9722799fc932c7ecd3eac8f"
       }
     ],
-    "knowledge_version": "2026-10-22-monthly-auto-refresh-v1",
-    "verified_commit": "working-tree: reviewed read-only monthly scope refresh",
+    "knowledge_version": "2026.10.26-core-workflows-v2",
+    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
     "status": "verified"
   }
 ]

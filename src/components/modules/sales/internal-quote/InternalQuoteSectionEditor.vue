@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { AlertCircle, CheckCircle2, Download, Eye, FileSpreadsheet, Info, LockKeyhole, Paperclip, RefreshCw, Save, Send, Trash2, Undo2, XCircle, Zap } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
+import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
 import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection, ApiInternalQuoteAttachment } from '@/api/internalQuote'
 import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue'
 import InternalQuoteSectionForm from './InternalQuoteSectionForm.vue'
@@ -679,8 +679,7 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
   event.returnValue = ''
 }
 
-onBeforeRouteUpdate(confirmUnsavedNavigation)
-onBeforeRouteLeave(confirmUnsavedNavigation)
+onBeforeUnmount(registerQuoteNavigationGuard(confirmUnsavedNavigation))
 onMounted(() => window.addEventListener('beforeunload', handleBeforeUnload))
 
 async function submitSection() {

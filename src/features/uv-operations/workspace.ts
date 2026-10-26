@@ -3,6 +3,7 @@ import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { createRandomUuid } from '@/lib/randomUuid'
+import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
 import { ContextFence, UV_FACTORY, type Entity, type Envelope, type Meta, type WorkspaceSnapshot } from './contracts'
 
 export class UvError extends Error {
@@ -18,6 +19,7 @@ export function createUvWorkspace() {
   const permissions = ref<string[]>([]), error = ref(''), errorCode = ref(''), notification = ref('')
   const loading = ref(false), refreshing = ref(false), ready = ref(false), offline = ref(!navigator.onLine)
   const selectedTaskId = ref<string | null>(null), contextVersion = ref(0)
+  const verifiedTaskId = ref<string | null>(null), assistantListReady = ref(false), boundary = ref(0)
   const pagination = reactive<Record<string, { total: number; next_cursor: string | null; has_more: boolean }>>({})
   const fence = new ContextFence()
   const valid = computed(() => route.query.factory === UV_FACTORY && app.activeFactoryId === UV_FACTORY && auth.isAuthenticated)
@@ -30,7 +32,7 @@ export function createUvWorkspace() {
   function stopLive() { live?.close(); live = undefined; clearTimeout(reconnect); reconnect = undefined; clearInterval(streamWatch); streamWatch=undefined }
   function clear() {
     stopLive(); fence.clear(); data.value = {}; liveData.value = {}; loaded.clear(); meta.value = null; permissions.value = []; selectedTaskId.value = null
-    ready.value = false; contextVersion.value++; initializedAuthorization = -1
+    verifiedTaskId.value=null; assistantListReady.value=false; ready.value = false; contextVersion.value++; initializedAuthorization = -1
     Object.keys(pagination).forEach(key => delete pagination[key])
   }
   async function request<T>(path: string, options: RequestInit = {}, params: Record<string, string> = {}): Promise<Envelope<T>> {
@@ -102,6 +104,7 @@ export function createUvWorkspace() {
   }
   async function initialize() {
     clear(); error.value=''; errorCode.value=''
+    const generation=fence.generation
     if (!valid.value) { error.value='UV 打印仅在明确选择华康 A 时开放'; errorCode.value='factory_required'; return }
     loading.value=true
     try {
@@ -110,7 +113,7 @@ export function createUvWorkspace() {
       permissions.value=access.data.permissions; meta.value=access.meta; ready.value=true
       await refresh(); startLive()
     } catch (cause) { if (!(cause instanceof DOMException && cause.name==='AbortError')) { error.value=explain(cause); errorCode.value=cause instanceof UvError ? cause.code : 'connection_error' } }
-    finally { loading.value=false }
+    finally { if(generation===fence.generation)loading.value=false }
   }
   async function load(names: string[], append = false) {
     const generation = fence.generation
@@ -126,19 +129,26 @@ export function createUvWorkspace() {
     if (failure) throw failure.reason
   }
   async function command<T = Entity>(path: string, values: Record<string, unknown>, operationId = createRandomUuid(), method = 'POST'): Promise<T> {
+    const generation=fence.generation
     const result = await request<T>(path, { method, headers:{'Content-Type':'application/json'}, body:JSON.stringify({factory_id:UV_FACTORY, operation_id:operationId, expected_version:0, ...values}) })
+    if(generation!==fence.generation)throw new DOMException('上下文已变化','AbortError')
     notification.value='已保存，业务记录和操作回执已确认'
     await refresh()
+    if(generation!==fence.generation)throw new DOMException('上下文已变化','AbortError')
     return result.data
   }
   function explain(cause: unknown) { return cause instanceof Error ? cause.message : '服务暂时不可用，请保留输入后重试' }
   function online() { offline.value=!navigator.onLine; if(navigator.onLine) { void refresh(); startLive() } else stopLive() }
   function visibility() { if(document.hidden) stopLive(); else { void refresh(); startLive() } }
   // Refreshing an unchanged session must not remount pages and discard a draft.
-  watch(() => JSON.stringify([auth.currentUser?.id, auth.authorizationVersion, auth.effectiveAccess, route.query.factory, app.activeFactoryId]), () => { void initialize() }, { immediate:true })
+  watch(() => JSON.stringify([auth.currentUser?.id, auth.currentUser?.identity?.employment_epoch, auth.authorizationVersion,
+    auth.authzMode, auth.isAuthenticated, getAuthenticationGeneration(), boundary.value, auth.effectiveAccess,
+    route.query.factory, app.activeFactoryId]), () => { void initialize() }, { immediate:true, flush:'sync' })
+  const sessionBoundary=()=>{boundary.value++}
+  window.addEventListener('auth-session-boundary-changed',sessionBoundary)
   window.addEventListener('online',online); window.addEventListener('offline',online); document.addEventListener('visibilitychange',visibility)
-  onBeforeUnmount(() => { clear(); window.removeEventListener('online',online); window.removeEventListener('offline',online); document.removeEventListener('visibilitychange',visibility) })
-  return {data,liveData,meta,permissions,error,errorCode,notification,loading,refreshing,ready,offline,selectedTaskId,contextVersion,pagination,valid,can,items,request,refresh,initialize,load,command,explain,clear}
+  onBeforeUnmount(() => { clear(); window.removeEventListener('auth-session-boundary-changed',sessionBoundary); window.removeEventListener('online',online); window.removeEventListener('offline',online); document.removeEventListener('visibilitychange',visibility) })
+  return {data,liveData,meta,permissions,error,errorCode,notification,loading,refreshing,ready,offline,selectedTaskId,verifiedTaskId,assistantListReady,contextVersion,pagination,valid,can,items,request,refresh,initialize,load,command,explain,clear}
 }
 export type UvWorkspace = ReturnType<typeof createUvWorkspace>
 const key: InjectionKey<UvWorkspace> = Symbol('uv-operations')

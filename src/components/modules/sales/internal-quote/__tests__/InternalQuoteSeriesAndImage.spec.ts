@@ -23,6 +23,26 @@ async function chooseFile(wrapper: ReturnType<typeof mount>) {
 }
 
 describe('quotation main image upload', () => {
+  it.each(['family', 'copy'])('does not continue an issued-image operation after disposal during %s read/write', async stage => {
+    const { pinia, store, quote } = setup()
+    let resolveFamily!: (value: Awaited<ReturnType<typeof internalQuoteApi.listAlternatives>>) => void
+    let resolveCopy!: (value: Awaited<ReturnType<typeof internalQuoteApi.createAlternative>>) => void
+    const family = { revision: 4, items: [{ quote_id: 'q1', scenario_name: '原方案' }] } as Awaited<ReturnType<typeof internalQuoteApi.listAlternatives>>
+    vi.spyOn(internalQuoteApi, 'listAlternatives').mockImplementation(() => stage === 'family'
+      ? new Promise(resolve => { resolveFamily = resolve }) : Promise.resolve(family))
+    const copy = vi.spyOn(internalQuoteApi, 'createAlternative').mockImplementation(() => new Promise(resolve => { resolveCopy = resolve }))
+    const upload = vi.spyOn(store, 'uploadProductImage').mockResolvedValue({ id: 'picture' } as never)
+    const wrapper = mount(InternalQuoteProductImageUpload, { props: { quote: { ...quote, status: 'exported' }, hasImage: false, hasUnsavedChanges: () => false }, global: { plugins: [pinia] } })
+    await chooseFile(wrapper)
+    wrapper.unmount()
+    if (stage === 'family') resolveFamily(family)
+    else resolveCopy({ id: 'already-created', header_revision: 1 } as never)
+    await flushPromises()
+    expect(copy).toHaveBeenCalledTimes(stage === 'family' ? 0 : 1)
+    expect(upload).not.toHaveBeenCalled()
+    expect(wrapper.emitted('open')).toBeUndefined()
+  })
+
   it('uploads an editable quote image with its revision and blocks unsaved changes', async () => {
     const { pinia, store, quote } = setup()
     const upload = vi.spyOn(store, 'uploadProductImage').mockResolvedValue({ id: 'picture' } as never)

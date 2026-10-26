@@ -265,6 +265,11 @@
 .tdp-theme .legacy-error,
 .tdp-theme .legacy-success { border: 1px solid color-mix(in oklch, currentColor 18%, var(--border)); }
 
+.tdp-theme .tdp-assistant-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--accent); color: var(--foreground); font-size: 13px; }
+.tdp-theme .tdp-assistant-selection > span { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.tdp-theme .tdp-assistant-selection > button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--primary); }
+.tdp-theme .tdp-assistant-selection > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
 @media (max-width: 700px) {
   .tdp-theme .legacy-sidebar nav button { min-height: 42px; }
   .tdp-theme .tdp-button { min-height: 40px; }

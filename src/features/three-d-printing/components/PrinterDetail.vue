@@ -28,10 +28,10 @@ import {
   printerPreparationText,
   type PrinterEvent,
 } from "../printerPresentation";
-const props = defineProps<{ id: string; printer?: ThreeDPrinter; open: boolean }>();
-const emit = defineEmits<{ close: []; 'after-close': [] }>();
+const props = defineProps<{ id: string; printer?: ThreeDPrinter; open: boolean; returnFocus?: () => HTMLElement | null }>();
+const emit = defineEmits<{ close: []; 'after-close': []; ready: []; unavailable: [] }>();
 const root = ref<HTMLElement | null>(null);
-useDialogFocus(() => true, root, { onEscape: () => emit("close") });
+useDialogFocus(() => true, root, { onEscape: () => emit("close"), returnFocus: () => props.returnFocus?.() ?? null });
 const data = ref<{
   printer: ThreeDPrinter;
   events: PrinterEvent[];
@@ -45,8 +45,9 @@ const data = ref<{
 }>();
 const error = ref(""),
   loading = ref(false);
+const unavailable = ref(false);
 const printer = computed(() =>
-  freshestPrinter(props.printer, data.value?.printer),
+  unavailable.value ? undefined : freshestPrinter(props.printer, data.value?.printer),
 );
 const online = computed(
   () => !!printer.value?.connected && !printer.value.status_stale,
@@ -112,15 +113,22 @@ async function refresh() {
   loading.value = true;
   try {
     const response = await http.get(
-      `/three-d-printing/printers/${props.id}/timeline`,
+      `/three-d-printing/printers/${encodeURIComponent(props.id)}/timeline`,
       { params: { factory_id: "huakang-a" }, signal: request.signal },
     );
     if (!disposed && activeRequest === request && !request.signal.aborted) {
       data.value = response.data;
       error.value = "";
+      unavailable.value = false;
+      emit('ready');
     }
   } catch (e) {
     if (!disposed && activeRequest === request && !request.signal.aborted) {
+      if (axios.isAxiosError(e) && [401, 403, 404, 410].includes(e.response?.status || 0)) {
+        data.value = undefined;
+        unavailable.value = true;
+        emit('unavailable');
+      }
       const timedOut = axios.isAxiosError(e) && (
         ["ECONNABORTED", "ETIMEDOUT"].includes(e.code || "") ||
         [408, 504].includes(e.response?.status || 0)
@@ -133,6 +141,10 @@ async function refresh() {
       loading.value = false;
     }
   }
+}
+function manualRefresh() {
+  root.value?.focus({ preventScroll: true });
+  void refresh();
 }
 function startRefreshing() {
   clearInterval(timer);
@@ -173,7 +185,7 @@ onBeforeUnmount(() => {
           <p>机台详情</p>
           <h2 id="printer-detail-title">
             {{ printer ? `${printer.machine_no} 号机` : "打印机"
-            }}<small>{{ printer?.model || "Bambu" }}</small>
+            }}<small v-if="printer?.model">{{ printer.model }}</small>
           </h2>
         </div>
         <button
@@ -188,12 +200,12 @@ onBeforeUnmount(() => {
       <div class="detail-body">
         <div class="connection-line">
           <span :class="{ connected: online }"
-            >● {{ online ? "设备在线" : "等待连接" }}</span
+            >● {{ !printer ? (unavailable ? "机台不可用" : "尚未读取机台") : online ? "设备在线" : "等待连接" }}</span
           ><button
             class="refresh-button"
             type="button"
             :disabled="loading"
-            @click="refresh"
+            @click="manualRefresh"
           >
             <RefreshCw :size="14" />{{ loading ? "刷新中…" : "刷新" }}
           </button>
@@ -201,10 +213,13 @@ onBeforeUnmount(() => {
         <p v-if="error" role="alert" class="error-message">
           详情加载失败：{{ error }}。
         </p>
-        <section class="status-panel" :class="`status-panel--${stateTone}`">
+        <p v-if="loading && !printer" role="status">正在读取所选机台…</p>
+        <section v-if="printer" class="status-panel" :class="`status-panel--${stateTone}`">
           <span class="eyebrow">当前状态</span>
           <h3><component :is="stateIcon(state)" :size="24" aria-hidden="true" />{{ printerStateText(state) }}</h3>
           <p>{{ guidance }}</p>
+          <p class="muted">设备观测：{{ chinaTime(printer.last_seen_at) }}（北京时间）<template v-if="printer.status_stale"> · 状态已过期</template></p>
+          <p v-if="!online" class="muted">当前状态未知；失联或过期不代表机器已物理停机。</p>
           <p v-if="printer?.error_text" class="error-message">
             设备提示：{{ printer.error_text }}
           </p>
@@ -260,7 +275,7 @@ onBeforeUnmount(() => {
             材料：{{ printer.live_material || "设备未提供材料信息" }}
           </p>
         </section>
-        <section class="history-panel">
+        <section v-if="data" class="history-panel">
           <div class="section-heading">
             <History :size="18" />
             <h3>最近状态变化</h3>
@@ -296,7 +311,7 @@ onBeforeUnmount(() => {
             </li>
           </ol>
         </section>
-        <details class="command-history">
+        <details v-if="data" class="command-history">
           <summary>
             远程操作记录 <span>{{ data?.commands.length || 0 }}</span>
           </summary>
@@ -319,7 +334,7 @@ onBeforeUnmount(() => {
           </ol>
         </details>
       </div>
-      <footer>
+      <footer v-if="printer">
         最后上报：{{ chinaTime(printer?.last_seen_at || "") }} · 北京时间
       </footer>
     </aside>
