@@ -71,6 +71,7 @@ backend/models/image-translation/
 !/docs/business/纸箱模块-基础资料建设方案.md
 !/docs/business/纸箱月结与供应商对账方案.md
 !/docs/business/纸箱全流程核查报告.md
+!/docs/business/纸箱仓与布料仓复用对照分析.md
 !/edge/three-d-printing-agent/README.md
 !/edge/uv-printing-agent/README.md
 !/docs/uv-operations/*.md
