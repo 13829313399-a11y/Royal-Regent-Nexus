@@ -12,6 +12,7 @@ def allowed(user, refs, db=None):
         with database.SessionLocal() as session:
             return allowed(user, refs, session)
     try:
+        snapshots = {}
         for source in refs:
             if source["kind"] == "business":
                 from .business import visible
@@ -19,8 +20,12 @@ def allowed(user, refs, db=None):
                     return False
             elif source["kind"] == "file":
                 if source["file_ref"]["kind"] == "document":
-                    from .files import owned
-                    owned(db, user, source["file_ref"]["id"], ready=True)
+                    from .files import snapshot, source_matches
+                    ident = source['file_ref']['id']
+                    if ident not in snapshots:
+                        snapshots[ident] = snapshot(db,user,ident)
+                    if not source_matches(snapshots[ident],source):
+                        return False
                 else:
                     from .storage import validate_attachments
                     from app.models.assistant import AssistantAttachment
@@ -29,8 +34,9 @@ def allowed(user, refs, db=None):
                         return False
                     validate_attachments(db, user, row.session_id, [row.id])
             elif source["kind"] == "help":
-                from .help_registry import get
-                get(user, source["help_id"])
+                from .help_registry import get, matches
+                if not matches(get(user, source["help_id"]), source):
+                    return False
         return True
-    except (HTTPException, KeyError, ValueError):
+    except (HTTPException, KeyError, ValueError, TypeError):
         return False

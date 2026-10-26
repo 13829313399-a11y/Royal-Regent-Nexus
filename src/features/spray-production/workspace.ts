@@ -8,7 +8,8 @@ import { ContextFence } from './contextFence'
 import { isSprayFactory, sprayEnabled, today, type Entity, type Envelope, type SprayFactory } from './contracts'
 
 class StaleContext extends Error {}
-export interface PendingOperation { operation_id: string; factory: SprayFactory; path: string; userId: string; authorizationVersion: number; accessKey: string; canRetry: boolean; body: Record<string, unknown>; state: 'sending' | 'uncertain' | 'confirmed'; result?: Entity }
+export interface PendingOperation { operation_id: string; factory: SprayFactory; path: string; userId: string; identityKey: string; authorizationVersion: number; accessKey: string; canRetry: boolean; body: Record<string, unknown>; state: 'sending' | 'uncertain' | 'confirmed'; result?: Entity }
+export interface CollectionScope { ready: boolean; sequence: number; params: Record<string, unknown>; demandId: string }
 
 export function createSprayWorkspace() {
   const route = useRoute(), app = useAppStore(), auth = useAuthStore()
@@ -23,6 +24,11 @@ export function createSprayWorkspace() {
   const loading = ref(false), error = ref(''), ready = ref(false), refreshing = ref(false)
   const asOf = ref(''), revision = ref(0), notification = ref('')
   const passportId = ref<string | null>(null)
+  const taskPassportId = ref<string | null>(null), verifiedDemandId = ref<string | null>(null), verifiedTaskId = ref<string | null>(null)
+  const assistantView = ref<'demands' | 'tasks' | null>(null)
+  const assistantRecord = ref<{id:string;kind:'demand'|'task';label:string}|null>(null)
+  const readScopes = reactive<Record<string, CollectionScope>>({})
+  const queryParams = reactive<Record<string, Record<string, unknown>>>({})
   const dirty = ref(false)
   const actionQuestion = ref<{ message: string; requiresReason: boolean } | null>(null)
   let answerAction: ((answer: string | null) => void) | null = null
@@ -38,10 +44,20 @@ export function createSprayWorkspace() {
   const pending = reactive(new Map<string, PendingOperation>())
   const fence = new ContextFence()
   const contextVersion = ref(0)
-  const valid = computed(() => factory.value !== null && auth.isAuthenticated && sprayEnabled())
+  const active = ref(true)
+  const valid = computed(() => active.value && factory.value !== null && auth.isAuthenticated && sprayEnabled())
   const can = (action: string) => valid.value && permissions.value.includes(action)
-  const accessKey = () => JSON.stringify(auth.effectiveAccess)
+  // sessionVersion increments on every /auth/me refresh; it is not an identity
+  // boundary. Logout clears the user, while re-employment changes the epoch.
+  const identityKey = () => JSON.stringify([auth.currentUser?.id, auth.currentUser?.identity?.employment_epoch])
+  const accessKey = () => JSON.stringify([identityKey(), auth.authorizationVersion, auth.effectiveAccess])
+  const hasPending = computed(() => [...pending.values()].some(op => op.state !== 'confirmed' && op.identityKey === identityKey()))
   const items = <T extends Entity = Entity>(key: string) => (data.value[key] ?? []) as T[]
+  let loadSequence = 0, collectionSequence = 0
+  function configureCollection(key: string, params: Record<string, unknown> = {}) {
+    queryParams[key] = { ...params }
+    delete readScopes[key]
+  }
 
   function explain(cause: unknown): string {
     if (isAxiosError(cause)) {
@@ -66,18 +82,24 @@ export function createSprayWorkspace() {
     } finally { fence.finish(ticket) }
   }
 
-  async function load(keys: string[], params: Record<string, unknown> = {}) {
+  async function load(keys: string[], params?: Record<string, unknown>) {
     const version = contextVersion.value
+    const loadId = ++loadSequence
     loading.value = true
     error.value = ''
     const results = await Promise.allSettled(keys.map(async key => {
-      const response = await query<Entity[]>(key, { page_size: 200, ...params }, key)
-      if (version !== contextVersion.value) return
+      const actualParams = { ...(params ?? queryParams[key] ?? {}) }
+      queryParams[key] = actualParams
+      const sequence = ++collectionSequence
+      readScopes[key] = { ready: false, sequence, params: actualParams, demandId: relatedDemand.value }
+      const response = await query<Entity[]>(key, { page_size: 200, ...actualParams }, key)
+      if (version !== contextVersion.value || readScopes[key]?.sequence !== sequence) return
       data.value = { ...data.value, [key]: response.data }
       totals[key] = response.pagination?.total ?? response.data.length
-      if (params.page === undefined && params.page_size === undefined && !['activity','demands'].includes(key)) paging[key] = { page: 1, params }
+      readScopes[key]!.ready = true
+      if (actualParams.page === undefined && actualParams.page_size === undefined && !['activity','demands'].includes(key)) paging[key] = { page: 1, params: actualParams }
     }))
-    if (version !== contextVersion.value) return
+    if (version !== contextVersion.value || loadId !== loadSequence) return
     const failure = results.find(result => result.status === 'rejected' && !(result.reason instanceof StaleContext) && !(isAxiosError(result.reason) && result.reason.code === 'ERR_CANCELED'))
     if (failure?.status === 'rejected') error.value = explain(failure.reason)
     loading.value = false
@@ -87,25 +109,30 @@ export function createSprayWorkspace() {
     const current = paging[key]
     if (!current || loading.value) return
     const version = contextVersion.value
+    const sequence = ++collectionSequence
+    readScopes[key] = { ready: false, sequence, params: { ...current.params }, demandId: relatedDemand.value }
     loading.value = true
     try {
       const response = await query<Entity[]>(key, { ...current.params, page_size: 200, page: current.page + 1 }, key)
-      if (version !== contextVersion.value) return
+      if (version !== contextVersion.value || readScopes[key]?.sequence !== sequence) return
       const merged = new Map([...items(key), ...response.data].map(row => [row.id, row]))
       data.value = { ...data.value, [key]: [...merged.values()] }
       current.page++
       totals[key] = response.pagination?.total ?? merged.size
+      readScopes[key]!.ready = true
     } catch (cause) { if (version === contextVersion.value) error.value = explain(cause) }
     finally { if (version === contextVersion.value) loading.value = false }
   }
 
   async function retryAccess() {
+    const version = contextVersion.value
     error.value = ''
     try {
       const result = await query<{ permissions: string[] }>('access')
+      if (version !== contextVersion.value) return
       permissions.value = result.data.permissions
       ready.value = true
-    } catch (cause) { if (!(cause instanceof StaleContext)) error.value = explain(cause) }
+    } catch (cause) { if (version === contextVersion.value && !(cause instanceof StaleContext)) error.value = explain(cause) }
   }
 
   async function command<T extends Entity = Entity>(path: string, values: Record<string, unknown>, expectedVersion = 0, operationId?: string): Promise<T> {
@@ -118,10 +145,12 @@ export function createSprayWorkspace() {
     }
     operationId ??= crypto.randomUUID()
     const existing = pending.get(operationId)
+    if (existing?.state === 'sending') throw new Error('原操作仍在保存，请等待结果后核对回执')
     if (existing?.state === 'confirmed') return existing.result as T
-    if (existing && (existing.factory !== factory.value || existing.userId !== auth.currentUser?.id)) throw new Error('请回到原工厂核对该操作的回执')
+    if (existing && (existing.factory !== factory.value || existing.identityKey !== identityKey())) throw new Error('请回到原工厂和原身份核对该操作的回执')
     if (existing && !existing.canRetry) throw new Error('权限已变化，原内容已清除；请核对服务器回执后重新填写')
-    const operation: PendingOperation = existing ?? { operation_id: operationId, factory: factory.value, userId: auth.currentUser?.id ?? '', authorizationVersion: auth.authorizationVersion, accessKey: accessKey(), canRetry: true, path, body: { ...values, factory_id: factory.value, expected_version: expectedVersion, operation_id: operationId }, state: 'sending' }
+    const operation = reactive<PendingOperation>(existing ?? { operation_id: operationId, factory: factory.value, userId: auth.currentUser?.id ?? '', identityKey: identityKey(), authorizationVersion: auth.authorizationVersion, accessKey: accessKey(), canRetry: true, path, body: { ...values, factory_id: factory.value, expected_version: expectedVersion, operation_id: operationId }, state: 'sending' })
+    operation.state = 'sending'
     pending.set(operationId, operation)
     fence.wrote()
     const ticket = fence.begin('command:' + operationId)
@@ -130,7 +159,7 @@ export function createSprayWorkspace() {
       // the original operation ID. Never send a second ID after a timeout.
       const response = await http.post<Envelope<T>>('/spray-operations/' + operation.path, operation.body)
       operation.state = 'confirmed'
-      operation.result = operation.canRetry && operation.accessKey === accessKey() ? response.data.data : undefined
+      operation.result = fence.sameContext(ticket) && operation.canRetry && operation.accessKey === accessKey() ? response.data.data : undefined
       if (fence.sameContext(ticket)) {
         fence.wrote()
         revision.value = response.data.meta.factory_revision
@@ -148,16 +177,24 @@ export function createSprayWorkspace() {
   }
 
   async function resolveOperation(operation: PendingOperation) {
-    if (operation.factory !== factory.value) throw new Error('请先回到原工厂核对操作结果')
+    const context = contextVersion.value
     try {
-      const result = await query<Entity>('commands/' + operation.operation_id)
-      operation.state = 'confirmed'; operation.result = result.data
-      notification.value = '已找到成功回执，可刷新查看结果'
-      dirty.value = false
+      if (operation.factory !== factory.value || operation.identityKey !== identityKey()) throw new Error('请先回到原工厂和原身份核对操作结果')
+      if (operation.state === 'sending') return
+      try {
+        const result = await query<Entity>('commands/' + operation.operation_id)
+        operation.state = 'confirmed'; operation.result = result.data
+        fence.wrote()
+        notification.value = '已找到成功回执，正在刷新原工作区'
+        dirty.value = false
+      } catch (cause) {
+        if (isAxiosError(cause) && cause.response?.status === 404) {
+          await command(operation.path, operation.body, Number(operation.body.expected_version), operation.operation_id)
+        } else throw cause
+      }
+      if (context === contextVersion.value) await refresh()
     } catch (cause) {
-      if (isAxiosError(cause) && cause.response?.status === 404) {
-        await command(operation.path, operation.body, Number(operation.body.expected_version), operation.operation_id)
-      } else throw cause
+      if (context === contextVersion.value) error.value = explain(cause)
     }
   }
 
@@ -179,16 +216,22 @@ export function createSprayWorkspace() {
     notification.value = '导出已生成并冻结，可按原回执重复下载'
   }
 
-  watch([factory, () => auth.currentUser?.id, () => auth.authorizationVersion, () => auth.isAuthenticated, () => JSON.stringify(auth.effectiveAccess)], async () => {
+  watch([factory, identityKey, () => auth.authorizationVersion, () => auth.isAuthenticated, () => JSON.stringify(auth.effectiveAccess)], async () => {
+    ready.value = false
     contextVersion.value++
     finishAction(null)
     fence.switch({ userId: auth.currentUser?.id ?? '', factory: factory.value ?? '', authorizationVersion: auth.authorizationVersion })
     data.value = {}; permissions.value = []; ready.value = false; error.value = ''; asOf.value = ''; passportId.value = null
+    taskPassportId.value = null; verifiedDemandId.value = null; verifiedTaskId.value = null
+    assistantRecord.value = null
+    dirty.value = false; saveDraft.value = null; notification.value = ''; loading.value = false; refreshing.value = false
+    for (const key of Object.keys(readScopes)) delete readScopes[key]
+    for (const key of Object.keys(queryParams)) delete queryParams[key]
     for (const key of Object.keys(totals)) delete totals[key]
     for (const key of Object.keys(paging)) delete paging[key]
     // Revocation/logout clears values and results; no sensitive localStorage cache.
     for (const [key, operation] of pending) {
-      if (operation.userId !== auth.currentUser?.id || !auth.isAuthenticated) pending.delete(key)
+      if (operation.identityKey !== identityKey() || !auth.isAuthenticated) pending.delete(key)
       else if (operation.authorizationVersion !== auth.authorizationVersion || operation.accessKey !== accessKey()) {
         operation.body = {}; operation.result = undefined; operation.canRetry = false
         if (operation.state === 'confirmed') pending.delete(key)
@@ -203,9 +246,9 @@ export function createSprayWorkspace() {
     } catch (cause) {
       if (context === contextVersion.value && !(cause instanceof StaleContext) && !(isAxiosError(cause) && cause.code === 'ERR_CANCELED')) error.value = explain(cause)
     }
-  }, { immediate: true })
-  onScopeDispose(() => { finishAction(null); fence.abort(); data.value = {}; pending.clear() })
-  return { factory, businessDate, relatedDemand, permissions, data, totals, activeCollections, paging, loadMore, retryAccess, actionQuestion, finishAction, confirmDiscard, promptReason, loading, error, ready, asOf, revision, notification, passportId, dirty, saveDraft, pending, valid, contextVersion, can, items, query, load, command, refresh, refreshing, explain, resolveOperation, download }
+  }, { immediate: true, flush: 'sync' })
+  onScopeDispose(() => { active.value = false; ready.value = false; contextVersion.value++; finishAction(null); fence.switch({userId:'',factory:'',authorizationVersion:-1}); data.value = {}; assistantRecord.value=null; pending.clear() })
+  return { factory, businessDate, relatedDemand, permissions, data, totals, activeCollections, paging, loadMore, retryAccess, actionQuestion, finishAction, confirmDiscard, promptReason, loading, error, ready, asOf, revision, notification, passportId, taskPassportId, verifiedDemandId, verifiedTaskId, assistantView, assistantRecord, readScopes, configureCollection, dirty, saveDraft, pending, hasPending, valid, contextVersion, can, items, query, load, command, refresh, refreshing, explain, resolveOperation, download }
 }
 
 export type SprayWorkspace = ReturnType<typeof createSprayWorkspace>

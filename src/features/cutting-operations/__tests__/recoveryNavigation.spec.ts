@@ -31,7 +31,7 @@ beforeEach(()=>{vi.resetAllMocks();vi.mocked(cuttingApi.access).mockResolvedValu
 afterEach(()=>wrapper?.unmount())
 async function interrupted(kind:Kind){
  let reject!:(value:unknown)=>void
- vi.mocked(apis[kind].read).mockImplementationOnce(()=>new Promise((_resolve,r)=>reject=r)).mockResolvedValue(records[kind] as never)
+ vi.mocked(apis[kind].read).mockImplementationOnce(()=>new Promise<never>((_resolve,r)=>reject=r)).mockResolvedValue(records[kind] as never)
  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:Closing,props:{workspace:CUTTING_WORKSPACES.find(w=>w.path==='closing')!}}]})
  await router.push(`/?factory=huakang-c&view=${kind}&month=2026-09&document_id=chosen-doc&event_id=chosen-event`);await router.isReady()
  wrapper=mount(RouterView,{global:{plugins:[router],stubs:{CuttingMonthlyOverview:true,CuttingCutover:true,CuttingReportExport:true,CuttingPeriodReview:true}}});await flushPromises()
@@ -51,7 +51,7 @@ it.each(['period','settlement','payment'] as Kind[])('synchronizes exact %s retr
 it.each(['period','settlement','payment'] as Kind[])('never overrides a newer overview month after %s retry starts',async kind=>{
  await interrupted(kind)
  let resolve!:(value:never)=>void
- vi.mocked(apis[kind].read).mockImplementationOnce(()=>new Promise(r=>resolve=r))
+ vi.mocked(apis[kind].read).mockImplementationOnce(()=>new Promise<never>(r=>resolve=r))
  await button(retries[kind]).trigger('click');await flushPromises()
  await button('月结总览').trigger('click');await parentMonth().setValue('2026-08');await button(tabs[kind]).trigger('click');await flushPromises()
  resolve(records[kind] as never);await flushPromises()

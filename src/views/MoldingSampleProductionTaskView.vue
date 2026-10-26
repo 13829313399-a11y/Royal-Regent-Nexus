@@ -2962,12 +2962,14 @@ watchEffect(() => {
     </div>
   </main>
 
-  <MoldingSampleProductionPrintDocument
-    class="hidden"
-    data-testid="molding-sample-task-print-area"
-    :records="printableTaskRecords"
-    :density-class-for-record="getTaskPrintDensityClass"
-  />
+  <Teleport to="body">
+    <MoldingSampleProductionPrintDocument
+      class="hidden"
+      data-testid="molding-sample-task-print-area"
+      :records="printableTaskRecords"
+      :density-class-for-record="getTaskPrintDensityClass"
+    />
+  </Teleport>
 </template>
 
 <style>

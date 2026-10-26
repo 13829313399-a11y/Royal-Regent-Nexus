@@ -8,6 +8,7 @@ import { useUvPage } from '../usePage'
 import { useUvWorkspace, UvError } from '../workspace'
 import UvTabs from '../components/UvTabs.vue'
 import { useUvRequestScope } from '../composables/useUvRequestScope'
+import { sameUvPageScope, useUvNavigationGuard } from '../navigationGuard'
 import { useUvMotion } from '../composables/useUvMotionPreference'
 import { uvCatalogIcons } from '../presentation'
 import UvTable from '../components/UvTable.vue'
@@ -17,6 +18,11 @@ const w=useUvWorkspace(),p=useUvPage(()=>['machines','fixtures','products','proc
 const motion=useUvMotion(),requests=useUvRequestScope(w.contextVersion)
 const tab=ref('masters'),master=ref('products'),uploadOpen=ref(false),file=ref<File|null>(null),processId=ref(''),role=ref('production'),uploading=ref(false),error=ref(''),uncertain=ref(false)
 let operationId=createRandomUuid(),submitted:FormData|null=null
+useUvNavigationGuard((to,from)=>{
+  if(sameUvPageScope(to,from))return true
+  if(uploading.value||uncertain.value){w.notification.value='请先完成文件上传或核对同一操作的回执，再离开。';return false}
+  return !uploadOpen.value||!file.value||window.confirm('生产文件尚未上传，确认离开并放弃当前文件选择？')
+})
 const catalogs:Record<string,{title:string;action:string;columns:{key:string;label:string}[]}>= {
   products:{title:'产品',action:'product',columns:[{key:'code',label:'产品编号'},{key:'name',label:'名称'},{key:'customer',label:'客户'}]},
   fixtures:{title:'治具',action:'fixture',columns:[{key:'code',label:'治具编号'},{key:'revision',label:'版本'},{key:'slots',label:'槽位'},{key:'width_mm',label:'宽 mm'},{key:'height_mm',label:'高 mm'}]},

@@ -51,6 +51,11 @@ export interface SearchTrace {
   evidence_level: 'none' | 'results_returned' | 'pages_fetched';
   search_count: number | null;
   reason_code: string | null;
+  attempted?: boolean;
+  sources_returned?: number;
+  pages_read?: number;
+  research_summary?: string;
+  page_failures?: Array<{url: string; code: string}>;
 }
 interface SourceBase {
   source_id: string;
@@ -61,7 +66,7 @@ interface SourceBase {
 export interface WebSource extends SourceBase {
   kind: 'web';
   step_id: string;
-  provider: 'dashscope_multimodal' | 'qwen_responses' | 'custom_search';
+  provider: 'dashscope_multimodal' | 'qwen_responses' | 'custom_search' | 'public_reader';
   provider_ref: string;
   provider_request_id: string | null;
   url: string;
@@ -69,17 +74,25 @@ export interface WebSource extends SourceBase {
   retrieved_at: ISOTime;
   published_at: ISOTime | null;
   evidence_level: 'search_result' | 'page_content';
+  excerpt?: string;
+  excerpt_truncated?: boolean;
+  final_url?: string;
+  content_hash?: string;
+  read_status?: 'completed' | 'failed' | 'not_attempted';
+  read_error?: string | null;
+  locator?: {kind: 'extracted_lines'; start: number; end: number};
 }
 export interface HelpSource extends SourceBase {
   kind: 'help';
   help_id: string;
   knowledge_version: string;
+  source_fingerprint?: string | null;
   route_name: string;
   anchor_id: string | null;
 }
 export interface BusinessSource extends SourceBase {
   kind: 'business';
-  tool_name: 'get_my_work' | 'get_injection_overview' | 'get_printer_status';
+  tool_name: 'get_my_work' | 'get_injection_overview' | 'get_printer_status' | 'list_customer_orders' | 'get_carton_overview' | 'get_internal_quote_overview' | 'get_uv_operations_snapshot' | 'get_spray_operations_snapshot';
   resources: ResourceRef[];
   scope: Scope;
   as_of: ISOTime;
@@ -90,11 +103,18 @@ export interface FileSource extends SourceBase {
   kind: 'file';
   file_ref: { kind: 'document' | 'image_attachment'; id: string };
   extracted_at: ISOTime;
+  document_version?: string;
+  excerpt_range?: { start: number; end: number; total: number };
+  citation_eligible?: boolean;
+  retrieval?: { selected_chunks: number; total_chunks: number; coverage: string; notice: string };
+  ocr?: { signal_score: number | null; uncertain: boolean; uncertainty_reasons: string[]; engine: string };
   locator:
+    | { kind: 'document' }
     | { kind: 'page'; page: number }
     | { kind: 'sheet'; sheet: string; cells: string }
     | { kind: 'paragraph'; paragraph: number }
     | { kind: 'lines'; start: number; end: number }
+    | { kind: 'ocr_region'; page: number; region: number; bbox: { x: number; y: number; width: number; height: number; coordinate_system: 'normalized_0_1' } }
     | { kind: 'image' };
 }
 export type SourceRecord = WebSource | HelpSource | BusinessSource | FileSource;
@@ -127,7 +147,7 @@ export type ContentPart =
   | { type: 'text'; text: string; part_id?: string }
   | { type: 'reasoning'; text: string; part_id?: string }
   | { type: 'image_ref'; attachment_id: string }
-  | { type: 'document_ref'; file_id: string } // P1用户消息保留原文档归属。
+  | { type: 'document_ref'; file_id: string; document_version?: string } // P1用户消息保留原文档归属。
   | { type: 'tool_call'; calls: unknown[] }
   | { type: 'tool_result'; call_id: string; name: string; arguments: unknown; result: unknown }
   | EvidencePart
@@ -179,6 +199,8 @@ export interface VerifiedSearchCombination {
   verified_at: ISOTime;
 }
 export interface SearchCapability {
+  reason_code?: string | null;
+  status_label?: string;
   configured: boolean;
   verification: 'unverified' | 'verified' | 'failed';
   verified_at: ISOTime | null;
@@ -188,7 +210,14 @@ export interface SearchCapability {
   source_return: boolean;
   inline_citations: boolean;
   page_fetch: boolean;
-  last_result: { at: ISOTime; status: 'success' | 'failed' | 'unconfirmed'; code: string | null } | null;
+  last_result: ExecutionResult | null;
+  last_success?: ExecutionResult | null;
+  last_failure?: ExecutionResult | null;
+}
+
+export interface ExecutionResult {
+  at: ISOTime; run_id?: string; state?: string; status?: 'success' | 'failed' | 'unconfirmed'; code: string | null;
+  execution?: SearchTrace['execution']; evidence_level?: SearchTrace['evidence_level']; search_count?: number | null;
 }
 
 // GET /api/assistant/capabilities在既有返回对象上新增search字段。

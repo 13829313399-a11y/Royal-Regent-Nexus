@@ -496,7 +496,7 @@
           "total_tokens": 68
         },
         "search_count": 1,
-        "search_execution": "confirmed",
+        "search_execution": "unconfirmed",
         "evidence_level": "none",
         "usage_is_cumulative": true,
         "provider_error": null

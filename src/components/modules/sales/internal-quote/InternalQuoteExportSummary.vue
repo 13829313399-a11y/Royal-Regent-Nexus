@@ -11,7 +11,9 @@ import {
   LockKeyhole,
   ShieldCheck,
 } from '@lucide/vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
+import { quoteSelection, useQuoteAssistantSelection } from '@/features/internal-quote/assistantContext'
 import { useRoute, useRouter } from 'vue-router'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
@@ -38,6 +40,15 @@ const confirmChecked = ref(false)
 const message = ref('')
 const errorMessage = ref('')
 const seriesExportOpen = ref(false)
+onBeforeUnmount(registerQuoteNavigationGuard(() => {
+  if (seriesExportOpen.value) { errorMessage.value = '请先完成或关闭系列输出，再切换页面或厂区。'; return false }
+  return true
+}))
+useQuoteAssistantSelection(() => quoteSelection(selectedFactoryId.value, [quoteId.value], {
+  ...(quoteStore.detailLoading || quoteStore.quoteDetailVerifiedId !== quoteId.value || loadedQuote.value?.factoryId !== selectedFactoryId.value
+    ? { scope_error: '原报价版本尚未读取成功，请先重新读取。' } : {}),
+  scope_note: '只查询原版本已保存或冻结的证据；未执行任何输出操作。',
+}))
 const totalHkd = computed(() => quote.value.factoryPriceHkd)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
 const isDirectOutput = computed(() => quote.value.moduleVersion === 'v4')
@@ -49,7 +60,7 @@ const isForeignQuote = computed(() => isForeignFactory(authStore, quote.value.fa
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignQuote.value)
 const getQuoteRoute = (path: string) => getFactoryScopedRoute(
   path,
-  isFactoryContextId(quote.value.factoryId) ? quote.value.factoryId : 'huaxing',
+  loadedQuote.value && isFactoryContextId(loadedQuote.value.factoryId) ? loadedQuote.value.factoryId : selectedFactoryId.value,
 )
 const exportStatusLabel = computed(() => {
   if (archived.value) return '报价已归档，请返回协作页恢复后输出；历史文件仍可下载'
@@ -143,6 +154,13 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
 
 <template>
   <div class="quote-export-page">
+    <section v-if="!loadedQuote || quoteStore.detailLoading || quoteStore.quoteDetailFailedId === quoteId" class="rounded-xl border border-border bg-card p-5" aria-live="polite">
+      <h1 class="text-lg font-semibold">{{ quoteStore.detailLoading ? '正在读取原报价…' : '原报价暂不可用' }}</h1>
+      <p v-if="quoteStore.errorMessage" role="alert" class="my-3 text-destructive">{{ quoteStore.errorMessage }}</p>
+      <button type="button" class="my-3 rounded-md border border-input px-4 py-2 focus-visible:outline-2 focus-visible:outline-ring" :disabled="quoteStore.detailLoading" @click="loadQuote">重新读取</button>
+      <RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')" class="ml-4 text-primary underline">返回报价首页</RouterLink>
+    </section>
+    <div v-if="loadedQuote" v-show="!quoteStore.detailLoading && quoteStore.quoteDetailFailedId !== quoteId" class="quote-verified-content">
     <nav class="quote-breadcrumb" aria-label="内部报价导航">
       <RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft aria-hidden="true" />报价首页</RouterLink><ChevronRight aria-hidden="true" />
       <RouterLink :to="getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/summary`)">汇总与放行</RouterLink><ChevronRight aria-hidden="true" /><strong>导出汇总</strong>
@@ -198,10 +216,12 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
       <div v-if="quote.exports.length"><article v-for="record in quote.exports" :key="record.id"><FileSpreadsheet aria-hidden="true" /><span><strong>{{ record.fileName }}</strong><small>{{ record.templateName }} · {{ record.exportedBy }} · {{ record.exportedAt }}</small><code>{{ record.sha256 }}</code></span><em :class="record.status">{{ record.status === 'current' ? '当前版本' : '已取代' }}</em><button type="button" :disabled="!canExport" :title="canExport ? '下载受控文件' : isForeignQuote ? '跨厂只读，不能下载' : '当前账号没有下载权限'" @click="downloadRecord(record.id, record.fileName)"><Download />下载</button></article></div><p v-else>尚无历史导出记录。</p>
     </section>
     <InternalQuoteSeriesExport v-if="seriesExportOpen" :key="quote.id" :quote="quote" :products="batchProducts" :has-unsaved-changes="() => false" @close="seriesExportOpen = false" @completed="seriesExportOpen = false; message = '系列报价已输出到一个 Excel，每款一个工作表。'" />
+    </div>
   </div>
 </template>
 
 <style scoped>
+.quote-verified-content { display: contents; }
 .quote-export-page{display:grid;gap:14px;padding-bottom:32px}.quote-breadcrumb{display:flex;align-items:center;gap:7px;color:#94a3b8;font-size:9px}.quote-breadcrumb a{display:inline-flex;align-items:center;gap:5px;color:#475569;font-weight:800}.quote-breadcrumb a:hover{color:#0f766e}.quote-breadcrumb svg{width:12px}.quote-breadcrumb strong{color:#0f766e}.quote-export-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}.quote-export-head>div>span{color:#0f766e;font-size:10px;font-weight:900;letter-spacing:.08em}.quote-export-head h1{margin:5px 0 0;color:#0f172a;font-size:30px;font-weight:950;letter-spacing:-.04em}.quote-export-head p{margin:7px 0 0;color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px}.quote-export-ready{display:inline-flex;align-items:center;gap:6px;border:1px solid #a7f3d0;border-radius:999px;background:#ecfdf5;padding:8px 11px;color:#047857;font-size:9px;font-weight:900}.quote-export-ready.blocked{border-color:#fed7aa;background:#fff7ed;color:#c2410c}.quote-export-ready svg{width:15px}.quote-page-message{margin:0;border-radius:8px;padding:8px 11px;font-size:9px}.quote-page-message.success{border:1px solid #a7f3d0;background:#ecfdf5;color:#047857}.quote-page-message.error{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}.quote-readonly-banner{display:flex;align-items:center;gap:7px;margin:0;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:9px 11px;color:#0f766e;font-size:11px}.quote-readonly-banner svg{width:15px;flex:0 0 auto}
 .quote-export-products{display:flex;align-items:stretch;gap:7px;overflow:auto;border:1px solid #dbe5ea;border-radius:11px;background:#fff;padding:9px}.quote-export-products>div{display:grid;min-width:190px;align-content:center;margin-right:3px}.quote-export-products>div strong{color:#334155;font-size:10px}.quote-export-products>div small{margin-top:3px;color:#94a3b8;font-size:8px}.quote-export-products>button{display:grid;min-width:190px;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:7px;border:1px solid #e2e8f0;border-radius:9px;background:#f8fafc;padding:8px;color:#475569;text-align:left}.quote-export-products>button.active{border-color:#14b8a6;background:#f0fdfa;color:#0f766e;box-shadow:0 0 0 1px rgb(20 184 166/.12)}.quote-export-products button>b{display:grid;width:24px;height:24px;place-items:center;border-radius:7px;background:#e2e8f0;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px}.quote-export-products button.active>b{background:#ccfbf1}.quote-export-products button>span{display:grid;min-width:0;overflow:hidden;font-size:10px;font-weight:900;text-overflow:ellipsis;white-space:nowrap}.quote-export-products button>span small{margin-top:2px;color:#94a3b8;font-size:7px;font-weight:700}.quote-export-products button>em{border-radius:999px;background:#e2e8f0;padding:3px 6px;color:#64748b;font-size:7px;font-style:normal;font-weight:900}.quote-export-products button>em.released,.quote-export-products button>em.exported{background:#d1fae5;color:#047857}.quote-export-products button>em.final_pending{background:#fef3c7;color:#b45309}.quote-export-products button>em.rejected{background:#fee2e2;color:#b91c1c}
 .quote-export-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.quote-export-kpis article{display:grid;gap:5px;border:1px solid #dbe5ea;border-radius:10px;background:#fff;padding:12px}.quote-export-kpis span{color:#64748b;font-size:8px;font-weight:900}.quote-export-kpis strong{color:#334155;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}.quote-export-kpis article.primary{border-color:#99f6e4;background:#f0fdfa}.quote-export-kpis article.primary span,.quote-export-kpis article.primary strong{color:#0f766e}

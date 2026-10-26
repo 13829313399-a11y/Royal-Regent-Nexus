@@ -25,6 +25,9 @@ def make_client(monkeypatch) -> TestClient:
         f"sqlite:///{TEST_TMP_DIR / f'three_d_printing_{run_id}.db'}",
     )
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
+    # This fixture owns a new disposable database; workstation defaults must
+    # not suppress the synthetic accounts required by its native API tests.
+    monkeypatch.setenv("SEED_DEFAULT_ACCOUNTS", "true")
     monkeypatch.setenv("AUTHZ_MODE", "enforce")
     monkeypatch.setenv("AUTHZ_WRITES_ENABLED", "false")
     monkeypatch.setenv("THREE_D_EDGE_AGENT_TOKEN", EDGE_TOKEN)

@@ -31,6 +31,8 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
     total = ref(0)
   const selectedId = ref<string | null>(null),
     detail = ref<any>(null),
+    detailLoading = ref(false),
+    detailError = ref(''),
     drawer = ref(false)
   const busy = ref(false),
     loading = ref(false),
@@ -43,6 +45,7 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
     settings = ref<Record<string, any>>({}),
     lastResult = ref<any>(null)
   let epoch = 0,
+    detailSequence = 0,
     loadSequence = 0,
     refreshSequence = 0
   let uncertainWrite: { key: string; payload: Record<string, unknown> } | null =
@@ -64,21 +67,29 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
       (e instanceof Error ? e.message : '请求失败，输入已保留')
   }
   async function select(id: string, open = false) {
-    if (dirty.value) {
+    if (dirty.value || busy.value || !factory.value) {
       error.value = '请先保存或取消当前输入，再切换需求'
       return
     }
+    if (selectedId.value !== id) detail.value = null
     selectedId.value = id
     if (open) drawer.value = true
-    const expected = epoch
+    const expected = epoch, sequence = ++detailSequence
+    detailLoading.value = true
+    detailError.value = ''
     try {
       const result = await api.get('/demands/' + id, {
         factory_id: factory.value,
       })
-      if (expected === epoch && selectedId.value === id && !dirty.value)
+      if (expected === epoch && sequence === detailSequence && selectedId.value === id && !dirty.value)
         detail.value = result
     } catch (e) {
-      if (expected === epoch) showError(e)
+      if (expected === epoch && sequence === detailSequence && selectedId.value === id) {
+        showError(e)
+        detailError.value = error.value
+      }
+    } finally {
+      if (expected === epoch && sequence === detailSequence) detailLoading.value = false
     }
   }
   async function loadTable() {
@@ -160,6 +171,7 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
   async function setFactory(id: FactoryId | null) {
     uncertainWrite = null
     ++epoch
+    ++detailSequence
     ++loadSequence
     ++refreshSequence
     busy.value = false
@@ -170,6 +182,8 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
     factory.value = id
     selectedId.value = null
     detail.value = null
+    detailLoading.value = false
+    detailError.value = ''
     drawer.value = false
     rows.value = []
     pending.value = []
@@ -338,6 +352,8 @@ export const useInjectionStore = defineStore('injection-scheduling-v3', () => {
     total,
     selectedId,
     detail,
+    detailLoading,
+    detailError,
     drawer,
     busy,
     loading,

@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import WorkEntryRow from '../WorkEntryRow.vue'
 import WorkEntryDetail from '../WorkEntryDetail.vue'
 import WorkCenterHealth from '../WorkCenterHealth.vue'
-import { workHealth } from '../health'
+import { workHealth, workEmptyState, verificationCount } from '../health'
 import { entryRoute } from '../routes'
 import type { WorkEntry, WorkSnapshot } from '../types'
 
@@ -113,5 +113,22 @@ describe('source health explanations', () => {
     expect(workHealth(data)?.warning).toBe(true)
     data.health.status = 'fresh'
     expect(workHealth(data)).toBeNull()
+  })
+  it('links mixed business issues to verification without implying that retry repairs source data', () => {
+    const data = snapshot()
+    data.health.issues!.push({ module: 'internal_quote', reason: 'source_inconsistent', count: 1 })
+    data.summary.verification_required_total = 3
+    expect(verificationCount(data)).toBe(1)
+    expect(workHealth(data)).toMatchObject({ warning: true, retryable: false, verificationCount: 1 })
+    const wrapper = mount(WorkCenterHealth, { props: { snapshot: data }, global: { stubs: { RouterLink: { name: 'RouterLink', props: ['to'], template: '<a><slot /></a>' } } } })
+    expect(wrapper.text()).toContain('同步已完成')
+    expect(wrapper.text()).toContain('查看待核对事项')
+    expect(wrapper.findComponent({ name: 'RouterLink' }).props('to')).toEqual({ name: 'notification-center', query: { view: 'verification' } })
+    expect(wrapper.find('button').exists()).toBe(false)
+    expect(workEmptyState(data, 'todo').title).toBe('暂无可直接处理的待办')
+    expect(workEmptyState(data, 'info').title).toBe('暂无知会消息')
+    data.health.status = 'stale'
+    expect(workHealth(data)?.retryable).toBe(true)
+    expect(workEmptyState(data, 'todo').title).toBe('暂时无法读取完整列表')
   })
 })

@@ -189,6 +189,7 @@ class Ledger:
             data['customer_snapshot'] = deepcopy(prior['customer_snapshot'])
         require(not product or product.data['unit'] == data['unit'], '合同数量单位必须与日产能单位一致', 422)
         old_demands = {d['material_id']: d for d in (prior or {}).get('demands', [])}
+        data.pop('planning_snapshot', None)
         data['product_snapshot'] = view(product) if product else None
         data['plan'] = production_plan(data['quantity'], product.data['daily_capacity'], data['delivery_date'], product.data['transport_days']) if product else None
         data['demands'] = []
@@ -263,7 +264,7 @@ class Ledger:
     def execute(self, body, actor):
         action = body.action
         row = None
-        kind = {'option_save': 'option', 'option_delete': 'option', 'option_restore': 'option', 'customer_delete': 'customer', 'customer_restore': 'customer', 'product_delete': 'product', 'product_restore': 'product', 'material_restore': 'material', 'customer_save': 'customer', 'material_save': 'material', 'product_save': 'product', 'order_save': 'order', 'order_recalculate': 'order',
+        kind = {'option_save': 'option', 'option_delete': 'option', 'option_restore': 'option', 'customer_delete': 'customer', 'customer_restore': 'customer', 'product_delete': 'product', 'product_restore': 'product', 'material_restore': 'material', 'customer_save': 'customer', 'material_save': 'material', 'product_save': 'product', 'order_save': 'order', 'order_plan_save': 'order', 'order_recalculate': 'order',
                 'demand_adjust': 'order', 'supply_save': 'supply', 'supply_reply': 'supply', 'output_material_refresh': 'supply', 'receipt_confirm': 'supply',
                 'reallocate': 'allocation', 'shipment_save': 'shipment', 'shipment_confirm': 'shipment', 'import_confirm': 'import', 'warehouse_import_confirm': 'import'}.get(action)
         if body.entity_id:
@@ -337,6 +338,9 @@ class Ledger:
                 require(material.version == deletion['expected_version'], '待删除物料资料已被更新，请刷新核对后重试')
                 self.delete_material(material, row, actor)
             return self.save('product', data, row, [data['customer'], data['code']])
+        if action == 'order_plan_save':
+            from app.services.indonesia_material_planning import save_order_plan
+            return save_order_plan(self, row, body.data)
         if action in {'order_save', 'order_recalculate'}:
             if action == 'order_recalculate':
                 reason = s.Reason.model_validate(body.data).reason
@@ -452,6 +456,8 @@ class Ledger:
             data = s.Shipment.model_validate(body.data).model_dump(mode='json')
             self.shipment_lines(data)
             data['status'] = 'draft'
+            if row and row.data.get('warehouse_import_id'):
+                data['warehouse_import_id'] = row.data['warehouse_import_id']
             return self.save('shipment', data, row)
         if action == 'shipment_confirm':
             require(not body.data, '确认出货不接受覆盖数据', 422)

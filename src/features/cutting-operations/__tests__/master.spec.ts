@@ -40,7 +40,7 @@ describe('cutting master data', () => {
     wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
     await button('新增资料').trigger('click');await input('资料编码','DRAFT-KEEP')
     resolve({data:[record],total:1,page:1,page_size:50});await flushPromises()
-    expect(wrapper.get('form.cutting-master-form').exists()).toBe(true)
+    expect(wrapper.find('form.cutting-master-form').exists()).toBe(true)
     expect(wrapper.get('form.cutting-master-form').findAll('input').some(i=>(i.element as HTMLInputElement).value==='DRAFT-KEEP')).toBe(true)
     expect(cuttingApi.versions).toHaveBeenCalledTimes(1)
   })

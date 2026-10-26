@@ -9,9 +9,12 @@ import CartonOrderTimeline from '@/components/CartonOrderTimeline.vue'
 import type { CartonCustomerResponse } from '@/api/cartonProcurement'
 import { cartonInventoryReportApi, type InventoryReport, type InventoryFlowCategory, type InventoryOrderReportRow } from '@/api/cartonInventoryReport'
 import { getApiErrorMessage } from '@/lib/http'
+import { cartonInventoryIdentity } from '@/features/carton-procurement/assistantContext'
+import type { ContextSelection } from '@/features/assistant/v2'
 
 const props = defineProps<{ factoryId: string; customers: CartonCustomerResponse[]; search: string; refreshKey: number; connected: boolean }>()
-const emit = defineEmits<{ clearSearch: []; inventory: []; closing: [] }>()
+const emit = defineEmits<{ clearSearch: []; inventory: []; closing: []; context: [ContextSelection['filters'] | null];
+  selected: [id: string, label: string, dates: { date_from: string; date_to: string }] }>()
 const customerCode = ref('')
 const dateRange = shallowRef<DateRange>({ start: undefined, end: undefined })
 const mode = ref<'SUMMARY' | InventoryFlowCategory>('SUMMARY')
@@ -20,6 +23,7 @@ const report = ref<InventoryReport>({ rows: [], order_rows: [], movements: [] })
 const loading = ref(false)
 const error = ref('')
 let requestVersion = 0
+let timelineVersion = 0
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 const options = computed(() => props.customers.filter(row => row.factory_id === props.factoryId))
 const from = computed(() => dateRange.value.start?.toString() ?? '')
@@ -77,10 +81,18 @@ async function load() {
     if (version === requestVersion) loading.value = false
   }
 }
-function openOrderTimeline(row: InventoryOrderReportRow) {
+async function openOrderTimeline(row: InventoryOrderReportRow) {
+  const selectionVersion = ++timelineVersion
   timelineTarget.value = { orderId: row.order_id ?? '', inventoryKey: row.order_id ? '' : row.key, label: `${row.contract_no || '无单库存'} · ${row.item_no}` }
+  const version = requestVersion, factory = props.factoryId
+  try {
+    const id = await cartonInventoryIdentity(row.key)
+    if (selectionVersion === timelineVersion && version === requestVersion && factory === props.factoryId && timelineTarget.value)
+      emit('selected', id, `${row.contract_no || '无单库存'} · ${row.item_no}`, { date_from: from.value, date_to: to.value })
+  } catch { /* No selected identity is advertised when the browser cannot hash it. */ }
 }
 function closeTimeline() {
+  ++timelineVersion
   timelineTarget.value = null
 }
 function handleTimelineKey(event: KeyboardEvent) {
@@ -107,6 +119,11 @@ watch(() => props.search, () => {
   searchTimer = setTimeout(() => { void load() }, 250)
 })
 onBeforeUnmount(() => { ++requestVersion; clearTimeout(searchTimer); window.removeEventListener('keydown', handleTimelineKey) })
+watch([loading, error, customerCode, from, to, mode, () => props.search, () => props.connected], () => {
+  emit('context', !props.connected || loading.value || error.value ? null : mode.value !== 'SUMMARY'
+    ? { scope_error: '当前是库存流水明细；请切换到订单汇总，再带入曜灵查询完整范围。' }
+    : { view: 'inventory', customer_code: customerCode.value, date_from: from.value, date_to: to.value, search: props.search.trim() })
+}, { immediate: true })
 </script>
 
 <template>

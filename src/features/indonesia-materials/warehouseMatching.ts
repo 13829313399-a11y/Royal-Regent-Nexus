@@ -1,5 +1,5 @@
 /** Only advisory matching uses these checks; the server revalidates all facts with Decimal. */
-function quantity(value: unknown): bigint | null {
+export function quantity(value: unknown): bigint | null {
   const text = String(value ?? '').trim(), match = /^(\d*)(?:\.(\d{0,8}))?$/.exec(text)
   if (!match || !/\d/.test(text)) return null
   return BigInt((match[1] || '0') + (match[2] || '').padEnd(8, '0'))

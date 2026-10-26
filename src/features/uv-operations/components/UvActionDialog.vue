@@ -9,6 +9,7 @@ import { useUvWorkspace, UvError } from '../workspace'
 import { useUvPresence } from '../composables/useUvPresence'
 import { useUvReturnFocus } from '../composables/useUvReturnFocus'
 import { useUvScrollLock } from '../composables/useUvScrollLock'
+import { useUvNavigationGuard } from '../navigationGuard'
 const props=defineProps<{action:string|null;target?:Entity|null;preset?:Record<string,unknown>}>()
 const emit=defineEmits<{close:[];saved:[result:Entity]}>()
 const w=useUvWorkspace(), dialog=ref<HTMLDialogElement|null>(null), draft=ref<Record<string,string|number|boolean>>({})
@@ -21,6 +22,11 @@ let operationId=createRandomUuid(), submitted:Record<string,unknown>|null=null, 
 const form=computed(()=>displayedAction.value?forms[displayedAction.value]:undefined)
 const visibleFields=computed(()=>form.value?.fields.filter(field=>!(field.source==='pricing-policies'&&!w.can('cost_read'))&&!(field.source==='wage-policies'&&!w.can('payroll_read')))??[])
 const editable=computed(()=>!saving.value&&!uncertain.value&&presentation.phase.value!=='closing')
+useUvNavigationGuard(()=>{
+  if(!props.action)return true
+  w.notification.value=saving.value||uncertain.value?'请先完成保存或核对同一操作的回执。':'请先保存或关闭当前表单，再打开其他来源。'
+  return false
+})
 function clear(){dialog.value?.close();focus.restore();displayedAction.value=null;displayedTarget.value=null;draft.value={};result.value=null;submitted=null;fields.value={};error.value='';saving.value=false;uncertain.value=false}
 function dismiss(immediate=false){session++;presentation.close(clear,immediate)}
 function close(){if(!saving.value)emit('close')}
