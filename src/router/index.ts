@@ -24,6 +24,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { collaborationApi, type Capabilities } from '@/api/collaboration'
 import { installRouteMotionNavigation } from '@/features/route-motion/navigation'
+import { installCuttingResourceRecovery } from '@/features/cutting-operations/resourceRecovery'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
 import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
@@ -856,7 +857,10 @@ router.onError((_error, to) => {
   finishRouteLoading(loadingVersions.get(to))
 })
 
+export const cuttingResourceRecovery = installCuttingResourceRecovery(router)
+
 if (import.meta.hot) import.meta.hot.dispose(() => {
+  cuttingResourceRecovery.dispose()
   routeMotionNavigation.dispose()
   window.removeEventListener('focus', refreshAuthorizationSnapshot)
   if (routeLoadingTimer) window.clearTimeout(routeLoadingTimer)
