@@ -250,12 +250,16 @@ class SupplierMarkPdfRequest(Payload):
     excel_asset_id: str = Field(min_length=1, max_length=96)
     expected_revision: int = Field(ge=1)
     layout_id: str = Field(min_length=1, max_length=96)
+    engine: Literal["customer_layout", "deepseek_zumiez"] = "customer_layout"
+    ai_consent: bool = False
     supplements: dict[Literal["quantity", "carton_total", "dimensions", "gross_weight", "net_weight"], str] = Field(default_factory=dict)
     source_item: str = Field(default="", max_length=128)
 
     @model_validator(mode="after")
     def valid_supplements(self):
         import re
+        if self.engine == "deepseek_zumiez" and not self.ai_consent:
+            raise ValueError("使用DeepSeek须明确同意发送本单必要文字")
         if any(len(value) > 100 or not re.search(r"\d", value) for value in self.supplements.values()):
             raise ValueError("本单补齐内容须包含数值，最多100字符")
         return self

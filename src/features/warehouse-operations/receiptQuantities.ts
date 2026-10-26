@@ -19,7 +19,7 @@ export function receiptTotal(values: string[]): string | undefined {
 // Round the complete receipt once to cents, matching Decimal HALF_UP.
 export function receiptAmount(quantity: string, price: string): string | undefined {
   const count = receiptQuantity(quantity), rate = receiptQuantity(price)
-  if (count === undefined || count <= 0n || rate === undefined) return undefined
+  if (count === undefined || rate === undefined) return undefined
   const cents = (count * rate + 5_000_000_000n) / 10_000_000_000n
   return `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`
 }

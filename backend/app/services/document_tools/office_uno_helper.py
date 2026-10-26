@@ -4,8 +4,10 @@ Only JSON request/response cross the interpreter boundary. This module must not
 import the application package, SQLAlchemy or the worker's site-packages.
 """
 import json
+import math
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 import uno
@@ -114,6 +116,48 @@ def main(request):
                 if options.get("print_mode") in ("fit_width", "selection"):
                     style.ScaleToPages = 0
                     style.ScaleToPagesX, style.ScaleToPagesY = 1, 0
+                compact = options.get("compact_handover")
+                if compact and compact["sheet"] == name:
+                    # Only the recognized handover template supplies this option.
+                    # Change the disposable print document, never the uploaded file.
+                    rows = sheet.getRows()
+                    sheet.removeAllManualPageBreaks()
+                    sheet.getCellRangeByName(options["range"]).getRows().IsVisible = True
+                    sheet.getCellRangeByName(options["range"]).getColumns().IsVisible = True
+                    minimum_heights = {row: rows.getByIndex(row).Height for row in range(7, compact["footer_row"])}
+                    material_range = sheet.getCellRangeByPosition(0, 7, 12, compact["footer_row"] - 1)
+                    material_range.IsTextWrapped = True
+                    material_range.getRows().OptimalHeight = True
+                    for row, height in minimum_heights.items():
+                        # Calc's imported CJK font metrics can underestimate a
+                        # wrapped row. Add a conservative width-based lower bound
+                        # so the last line cannot paint over a neighbouring row.
+                        for column in range(13):
+                            cell = sheet.getCellByPosition(column, row)
+                            text = cell.getString()
+                            if not text:
+                                continue
+                            font = max(11, cell.CharHeight)
+                            width = max(1, sheet.getColumns().getByIndex(column).Width * 72 / 2540 - 6)
+                            lines = sum(max(1, math.ceil(sum(1 if unicodedata.east_asian_width(char) in ('W', 'F') else .65
+                                for char in paragraph) * font / width)) for paragraph in text.split('\n'))
+                            if lines > 1:
+                                height = max(height, math.ceil((lines * font * 1.35 + 8) * 2540 / 72))
+                        height = max(rows.getByIndex(row).Height, height)
+                        rows.getByIndex(row).OptimalHeight = False
+                        rows.getByIndex(row).Height = height
+                    for row in compact["hidden_rows"]:
+                        rows.getByIndex(row).IsVisible = False
+                    style.LeftMargin = style.RightMargin = 800
+                    style.TopMargin = style.BottomMargin = 800
+                    style.HeaderIsOn = style.FooterIsOn = False
+                    style.CenterHorizontally = True
+                    sheet.setPrintTitleRows(True)
+                    sheet.setTitleRows(sheet.getCellRangeByName("A7:M7").getRangeAddress())
+                    footer = compact["footer_row"]
+                    if any(footer < entry.Position <= footer + 5 for entry in sheet.getRowPageBreaks()):
+                        rows.getByIndex(footer).IsStartOfNewPage = True
+                    result["handover_hidden_rows"] = compact["hidden_rows"]
                 style.PrintFormulas = options.get("formula_mode") == "formula"
             if options.get("recalculate"):
                 document.calculateAll()
