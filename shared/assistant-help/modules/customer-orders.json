@@ -198,8 +198,8 @@
         "sha256": "a64ad1133e321d1018e52e32fe6b86c32321ba79cd79b03726779910e11e326d"
       }
     ],
-    "knowledge_version": "2026-10-23-assistant-order-reader",
-    "verified_commit": "2065b2d8 + working tree: authorized read-only order adapter, native shared predicates, explicit unknown quantities and original units, factory-bound original record resolver. Existing order and cutting descriptions retained. Runtime/browser acceptance tracked separately in V3 ledger.",
+    "knowledge_version": "2026-10-25-assistant-order-reader-main-sync",
+    "verified_commit": "b4b4cd1d + 1efbdaa17 merge: preserve authorized read-only order adapter, native shared predicates and original units; retain main review of same-transaction batched monthly preparation. Existing order/cutting permissions and workbook explanations retained; V3 full acceptance remains incomplete.",
     "status": "verified"
   }
 ]

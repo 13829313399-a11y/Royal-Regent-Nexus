@@ -1,5 +1,9 @@
 
-@import "tailwindcss";
+/* Explicit inputs avoid scanning release archives and Windows dependency junctions. */
+@import "tailwindcss" source(none);
+
+@source "./";
+@source "../index.html";
 
 @import "tw-animate-css";
 
@@ -212,7 +216,8 @@
   }
 }
 
-@theme inline {
+/* Scoped component CSS can reference these tokens without a matching utility. */
+@theme inline static {
   --font-sans: 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', sans-serif;
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);

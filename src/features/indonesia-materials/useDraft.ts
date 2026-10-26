@@ -24,7 +24,8 @@ export function useMaterialDraft(value: () => unknown, editor: DraftEditor) {
   const ws = useMaterials(), epoch = ws.scopeEpoch
   const activeId = ref<DraftId>(editor.id), switching = ref(false)
   const baseline = ref(fingerprint(value())), durable = ref(''), opened = ref(false)
-  let paused = false, submitting = false, alive = true
+  let paused = false, alive = true
+  const submitting = ref(false)
   const permitted = (data: Data) => editor.allowed ? editor.allowed(data) : ws.canWrite
   const state = computed(() => { const data = editor.capture(); return data && permitted(data) ? data : null })
   const signature = computed(() => fingerprint(state.value))
@@ -72,7 +73,7 @@ export function useMaterialDraft(value: () => unknown, editor: DraftEditor) {
   const unregisterOwner = ws.registerDraftOwner(editor.id, {
     reset, flush: persist,
     async restore(saved, revision, id) {
-      if (switching.value || submitting) return false
+      if (switching.value || submitting.value) return false
       switching.value = true
       try { return await recover(saved, revision, id) }
       finally { switching.value = false }
@@ -80,7 +81,7 @@ export function useMaterialDraft(value: () => unknown, editor: DraftEditor) {
   })
   /** Switch records only after the old record is durable; a target draft is resumed, never replaced. */
   async function openRecord(id: DraftId, initialize: () => void, editable = ws.canWrite) {
-    if (!editor.multiple || draftKind(id) !== editor.id || switching.value || submitting || ws.locked || !current()) return false
+    if (!editor.multiple || draftKind(id) !== editor.id || switching.value || submitting.value || ws.locked || !current()) return false
     switching.value = true
     try {
       if (state.value) {
@@ -106,18 +107,18 @@ export function useMaterialDraft(value: () => unknown, editor: DraftEditor) {
       return false
     } finally { paused = false; switching.value = false }
   }
-  async function run(action: Action, data: Data, target?: MaterialRecord, committed?: () => void) {
-    if (submitting || switching.value || ws.locked || epoch !== ws.scopeEpoch) return false
-    submitting = true
+  async function run(action: Action, data: Data, target?: MaterialRecord, committed?: (record: MaterialRecord) => void) {
+    if (submitting.value || switching.value || ws.locked || epoch !== ws.scopeEpoch) return false
+    submitting.value = true
     const owner = activeId.value
     try {
       await nextTick(); await ws.localDrafts.flush()
       if (epoch !== ws.scopeEpoch || !await persist()) return false
       if (epoch !== ws.scopeEpoch || ws.locked || activeId.value !== owner) return false
       paused = true
-      return await ws.run(action, data, target, () => { if (activeId.value !== owner) return; committed?.(); baseline.value = fingerprint(value()); durable.value = signature.value }, owner)
-    } finally { await nextTick(); paused = false; submitting = false }
+      return await ws.run(action, data, target, result => { if (activeId.value !== owner) return; committed?.(result); baseline.value = fingerprint(value()); durable.value = signature.value }, owner)
+    } finally { await nextTick(); paused = false; submitting.value = false }
   }
   onBeforeUnmount(() => { alive = false; unregister(); unregisterOwner() })
-  return { accept, permitDiscard, openRecord, activeId, switching, run, recoveryWaiting }
+  return { accept, permitDiscard, openRecord, activeId, switching, submitting, run, recoveryWaiting }
 }

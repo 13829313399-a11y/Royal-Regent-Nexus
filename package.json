@@ -8,13 +8,14 @@
     "dev:local": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1",
     "dev:status": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1 -Action Status",
     "dev:stop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1 -Action Stop",
-    "build": "node scripts/check-assistant-help.mjs && vue-tsc -b && vite build && npm run build:image-translation",
+    "build": "node scripts/check-assistant-help.mjs && node scripts/check-tailwind-sources.mjs && vue-tsc -b && vite build && npm run build:image-translation",
     "build:image-translation": "node scripts/build-image-translation.mjs",
     "preview": "vite preview",
     "test:unit": "vitest run",
     "typecheck:app": "vue-tsc --noEmit -p tsconfig.app.json",
     "typecheck:test": "vue-tsc --noEmit -p tsconfig.test.json",
-    "check:assistant-help": "node scripts/check-assistant-help.mjs"
+    "check:assistant-help": "node scripts/check-assistant-help.mjs",
+    "check:tailwind-sources": "node scripts/check-tailwind-sources.mjs"
   },
   "dependencies": {
     "@lucide/vue": "^1.21.0",
