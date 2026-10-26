@@ -79,6 +79,7 @@ def test_no_code_exact_match_posts_real_receipt_allocation_and_unpacked_shipment
     payload = {k: shipment['data'][k] for k in ('customer', 'recipient', 'shipment_date', 'lines', 'packages', 'remarks')}
     payload['packages'] = [dict(label='仓库装箱', cartons=1, length_cm='27', width_cm='14.5', height_cm='27.3', carton_weight_kg='.02', items=[line])]
     saved = command(client, 'shipment_save', payload, shipment)
+    assert saved['data']['warehouse_import_id'] == imported['id']
     done = command(client, 'shipment_confirm', {}, saved)
     assert done['data']['status'] == 'confirmed'
     assert client.get(BASE + f"/shipments/{done['id']}/export", params={'factory_id': 'huaxing'}).status_code == 200

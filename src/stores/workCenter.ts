@@ -15,6 +15,7 @@ export const useWorkCenterStore = defineStore('work-center', () => {
   const loading = ref(false), error = ref(''), detailError = ref(''), syncing = ref(false), pendingRefresh = ref(false)
   const workspaceOpen = ref(false), workspaceEngaged = ref(false), panelOpen = ref(false), personalBusy = ref(false)
   const toasts = ref<WorkEntry[]>([]), toastOverflow = ref(0), information = ref<WorkEntry[]>([])
+  const panelTab = ref<'todo' | 'info'>('todo'), informationLoading = ref(false), informationError = ref(''), informationLoaded = ref(false)
   const preferences = ref<WorkPreferences>({ sound_enabled: false, toast_level: 'assigned', version: 0, business_timezone: 'Asia/Shanghai' })
   let sequence = 0, detailSequence = 0, controller: AbortController | undefined
   let timer: ReturnType<typeof setTimeout> | undefined, running = false, failures = 0, channel: BroadcastChannel | undefined
@@ -29,6 +30,7 @@ export const useWorkCenterStore = defineStore('work-center', () => {
     clearTimeout(timer)
     ++sequence; ++detailSequence; controller?.abort(); snapshot.value = bell.value = null; selected.value = null
     ++infoSequence; information.value = []; panelOpen.value = false; toasts.value = []; toastOverflow.value = 0; known = new Set(); baseline = false; pendingRefresh.value = false; error.value = detailError.value = ''
+    informationLoading.value = informationLoaded.value = false; informationError.value = ''; panelTab.value = 'todo'
     query.value = defaultWorkQuery(); loading.value = syncing.value = false
     workspaceEngaged.value = false
     preferences.value = { sound_enabled: false, toast_level: 'assigned', version: 0, business_timezone: 'Asia/Shanghai' }
@@ -69,6 +71,7 @@ export const useWorkCenterStore = defineStore('work-center', () => {
       const top = bellResponse.context.viewer_key === next.context.viewer_key ? bellResponse : { ...next, items: [], next_cursor: null }
       if (snapshot.value && snapshot.value.context.viewer_key !== next.context.viewer_key) {
         ++detailSequence; ++infoSequence; information.value = []
+        informationLoaded.value = informationLoading.value = false; informationError.value = ''
         selected.value = null; toasts.value = []; toastOverflow.value = 0; known.clear(); baseline = false
       }
       const ids = new Set(top.items.map(stamp))
@@ -93,12 +96,16 @@ export const useWorkCenterStore = defineStore('work-center', () => {
       snapshot.value = next; bell.value = top; error.value = ''; failures = 0
       if (next.selected_entry_state && 'state' in next.selected_entry_state) { selected.value = null; detailError.value = '事项已失效或不在当前可见范围' }
       else if (next.selected_entry_state) selected.value = next.selected_entry_state
+      if (panelOpen.value && panelTab.value === 'info') await loadInformation()
     } catch (failure) {
       if (seq !== sequence || identity !== account.value) return
       const status = (failure as { response?: { status?: number } }).response?.status
       if (status === 401 || status === 403) clear()
       else if (status === 409 && query.value.cursor) { query.value.cursor = undefined; void refresh(); return }
-      else if (snapshot.value) snapshot.value.health.status = 'stale'
+      else {
+        if (snapshot.value) snapshot.value.health.status = 'stale'
+        if (bell.value) bell.value.health.status = 'stale'
+      }
       error.value = getApiErrorMessage(failure); failures++
     } finally {
       if (seq === sequence) { loading.value = syncing.value = false; schedule() }
@@ -142,12 +149,20 @@ export const useWorkCenterStore = defineStore('work-center', () => {
     finally { if (identity === account.value) personalBusy.value = false }
   }
   async function loadInformation() {
+    if (!auth.currentUser) { clear(); return }
     const seq = ++infoSequence, identity = account.value, viewer = snapshot.value?.context.viewer_key
-    information.value = []
+    informationLoading.value = true; informationError.value = ''
     try {
       const result = await workCenterApi.snapshot({ view: 'info', limit: 5 })
-      if (seq === infoSequence && identity === account.value && viewer === snapshot.value?.context.viewer_key) information.value = result.items
-    } catch (failure) { if (seq === infoSequence && identity === account.value && viewer === snapshot.value?.context.viewer_key) error.value = getApiErrorMessage(failure) }
+      if (seq !== infoSequence || identity !== account.value || viewer !== snapshot.value?.context.viewer_key) return
+      if (viewer && result.context.viewer_key !== viewer) { clear(); void refresh(); return }
+      information.value = result.items; informationLoaded.value = true
+    } catch (failure) {
+      if (seq !== infoSequence || identity !== account.value || viewer !== snapshot.value?.context.viewer_key) return
+      const status = (failure as { response?: { status?: number } }).response?.status
+      if (status === 401 || status === 403) { clear(); return }
+      informationError.value = getApiErrorMessage(failure)
+    } finally { if (seq === infoSequence) informationLoading.value = false }
   }
   async function savePreferences(values: Partial<WorkPreferences>) {
     const identity = account.value
@@ -174,10 +189,17 @@ export const useWorkCenterStore = defineStore('work-center', () => {
   function start() {
     if (running) return
     running = true
+    // The routed workspace can mount before the application host. Preserve
+    // its initial URL filters, but still clear them on real account changes.
+    const initialQuery = workspaceOpen.value ? { ...query.value } : undefined
     try { channel = new BroadcastChannel('rr-work-center'); channel.onmessage = event => { if (event.data?.viewer === snapshot.value?.context.viewer_key) wake() } } catch { /* polling fallback */ }
     document.addEventListener('visibilitychange', wake); window.addEventListener('online', wake); window.addEventListener('offline', wake)
     window.addEventListener('work-center-invalidated', invalidate)
-    stopAuthWatch = watch(account, () => { clear(); if (auth.currentUser) { void loadPreferences(); void refresh() } }, { immediate: true })
+    stopAuthWatch = watch(account, (_, previous) => {
+      clear()
+      if (previous === undefined && initialQuery) query.value = initialQuery
+      if (auth.currentUser) { void loadPreferences(); void refresh() }
+    }, { immediate: true })
   }
   function stop() {
     running = false; clearTimeout(timer); controller?.abort(); stopAuthWatch?.(); channel?.close()
@@ -186,5 +208,5 @@ export const useWorkCenterStore = defineStore('work-center', () => {
   }
   function setQuery(value: Partial<WorkQuery>) { query.value = { ...query.value, cursor: undefined, ...value }; pendingRefresh.value = false; return refresh() }
   return { snapshot, bell, selected, query, loading, error, detailError, syncing, pendingRefresh, workspaceOpen, workspaceEngaged, panelOpen,
-    personalBusy, toasts, toastOverflow, information, loadInformation, preferences, summary, count, clear, refresh, selectEntry, patch, markVisibleRead, savePreferences, start, stop, setQuery }
+    personalBusy, toasts, toastOverflow, information, informationLoading, informationError, informationLoaded, panelTab, loadInformation, preferences, summary, count, clear, refresh, selectEntry, patch, markVisibleRead, savePreferences, start, stop, setQuery }
 })

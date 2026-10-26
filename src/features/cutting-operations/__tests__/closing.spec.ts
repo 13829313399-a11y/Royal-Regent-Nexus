@@ -31,7 +31,7 @@ describe('P4a monthly reconciliation',()=>{
     const api=kind==='period'?periodApi:kind==='settlement'?settlementApi:paymentApi
     const value=kind==='period'?{month:'2026-09',revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]}:kind==='settlement'?{revision:0,document_id:null,state:'open',selected_state:'open',event_id:null,statements:[],data:null,history:[],price_history:[]}:{month:'2026-09',revision:0,rows:[],totals:[],documents:[],document_id:null,state:'open',selected_state:'open',event_id:null,data:null,history:[],replacements:[]}
     let completeOld!:(value:never)=>void,completeRetry!:(value:never)=>void
-    vi.mocked(api.read).mockImplementationOnce(()=>new Promise(resolve=>completeOld=resolve))
+    vi.mocked(api.read).mockImplementationOnce(()=>new Promise<never>(resolve=>completeOld=resolve))
     await open(`/?factory=huakang-c&view=${kind}&month=2026-09&document_id=original-doc&event_id=original-event`)
     const retry=kind==='period'?'重试原月结记录':kind==='settlement'?'重试原结算记录':'重试原付款记录'
     const tab=kind==='period'?'内部月结':kind==='settlement'?'外发对账与结算':'付款与核销'
@@ -40,7 +40,7 @@ describe('P4a monthly reconciliation',()=>{
     expect(button(retry).attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).toContain('历史版本：original-event')
     if(kind!=='period')expect(wrapper.text()).toContain('单据编号：original-doc')
-    vi.mocked(api.read).mockImplementationOnce(()=>new Promise(resolve=>completeRetry=resolve))
+    vi.mocked(api.read).mockImplementationOnce(()=>new Promise<never>(resolve=>completeRetry=resolve))
     await button(retry).trigger('click');await flushPromises()
     expect(api.read).toHaveBeenLastCalledWith(...(kind==='period'?['2026-09','original-event']:['2026-09','original-doc','original-event']))
     completeOld(value as never);await flushPromises()
@@ -145,7 +145,7 @@ describe('P4a monthly reconciliation',()=>{
     wrapper.findComponent({name:'CuttingMonthlyOverview'}).vm.$emit('open','period','2026-09','')
     await flushPromises()
     expect((wrapper.get('[aria-label="核对月份"]').element as HTMLInputElement).value).toBe('2026-08')
-    expect(wrapper.get('input[maxlength="500"]').element.value).toBe('八月尚未保存的依据')
+    expect((wrapper.get('input[maxlength="500"]').element as HTMLInputElement).value).toBe('八月尚未保存的依据')
     expect(periodApi.read).not.toHaveBeenCalledWith('2026-09',undefined)
   })
 
@@ -157,12 +157,12 @@ describe('P4a monthly reconciliation',()=>{
     const confirm=vi.spyOn(window,'confirm').mockReturnValue(false)
     await router.push('/?factory=huakang-c&view=period&month=2026-09');await flushPromises()
     expect(router.currentRoute.value.query.month).toBe('2026-08')
-    expect(wrapper.get('input[maxlength="500"]').element.value).toBe('八月复核依据')
+    expect((wrapper.get('input[maxlength="500"]').element as HTMLInputElement).value).toBe('八月复核依据')
     confirm.mockReturnValue(true).mockClear()
     await router.push('/?factory=huakang-c&view=period&month=2026-09');await flushPromises()
     expect(confirm).toHaveBeenCalledTimes(1)
     expect(periodApi.read).toHaveBeenLastCalledWith('2026-09',undefined)
-    expect(wrapper.get('input[maxlength="500"]').element.value).toBe('')
+    expect((wrapper.get('input[maxlength="500"]').element as HTMLInputElement).value).toBe('')
   })
 
   it('awaits parent authorization before opening a same-route payment trace',async()=>{

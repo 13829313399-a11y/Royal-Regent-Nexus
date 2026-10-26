@@ -12,6 +12,7 @@ import { customerOrderHistoryApi } from '@/api/customerOrderHistory'
 import CustomerOrderHistoryImport from './CustomerOrderHistoryImport.vue'
 import { getApiErrorMessage } from '@/lib/http'
 import type { FeedbackContext } from '@/api/moduleFeedback'
+import { useDialogFocus } from '@/composables/useDialogFocus'
 
 const props = withDefaults(defineProps<{
   factoryId: string
@@ -37,6 +38,7 @@ const view = ref<CustomerOrderLedgerView>(props.initialView)
 const query = ref('')
 const selected = ref<CustomerOrderLedgerDetail | null>(null)
 const detailLoading = ref(false)
+const detailDialog = ref<HTMLElement | null>(null)
 const actionError = ref('')
 const actionBusy = ref(false)
 const page = ref(1)
@@ -153,6 +155,11 @@ function clearDetail() {
   actionError.value = ''
   emit('close-detail')
 }
+
+const detailOpen = computed(() => Boolean(selected.value || detailLoading.value || ((props.detailOnly || props.focusLineId) && actionError.value)))
+useDialogFocus(() => detailOpen.value, detailDialog, {
+  onEscape: () => { if (statusConfirmation.value) statusConfirmation.value = null; else clearDetail() },
+})
 
 async function openDetail(line: Pick<CustomerOrderLedgerLine, 'id'>) {
   const token = ++detailRequestSequence
@@ -440,7 +447,12 @@ watch(() => [props.factoryId, props.detailOnly, props.focusLineId], () => {
   resetForFactory()
   capabilities.value = emptyCapabilities
   if (props.detailOnly) void loadFocusedDetail()
-  else void loadList()
+  else {
+    const factory = props.factoryId, id = props.focusLineId
+    void loadList().then(() => {
+      if (id && factory === props.factoryId && id === props.focusLineId) return openDetail({ id })
+    })
+  }
 }, { immediate: true })
 watch(() => props.initialView, (next) => { view.value = next; applyFilters() })
 onBeforeUnmount(() => {
@@ -462,7 +474,7 @@ onBeforeUnmount(() => {
       <div class="ledger__header-actions"><button class="ledger__button" type="button" :disabled="!capabilities.write || !capabilities.shipment_confirm" title="需要写入订单和确认走货权限" @click="showHistoryImport = true">历史排期迁入</button><button class="ledger__button ledger__button--primary" type="button" @click="emit('import')">新建导入</button></div>
     </header>
 
-    <div class="ledger__filters">
+    <div class="ledger__filters" data-yl-help="customer-orders.filters">
       <input v-model="query" type="search" placeholder="搜索客户、参考号或产品编号" @keyup.enter="applyFilters">
       <select v-model="customerCode" aria-label="筛选客户" @change="applyFilters"><option value="">全部客户</option><option v-for="customer in customers" :key="customer.code" :value="customer.code">{{ customer.name || customer.code }}</option></select>
       <select v-model="view" aria-label="筛选走货状态" @change="applyFilters"><option value="all">全部订单</option><option value="unshipped">未走货</option><option value="shipped">已走货</option><option value="cancelled">已取消</option></select>
@@ -472,7 +484,7 @@ onBeforeUnmount(() => {
     <p v-if="message" class="ledger__message">{{ message }}</p>
     <div class="ledger__table-wrap">
       <table>
-        <thead><tr><th>客户</th><th>参考号 / P/O</th><th>产品编号</th><th>订单数量</th><th>客户要求交期</th><th>已走货</th><th>未走货</th><th>状态</th><th>发送</th><th>版本</th><th></th></tr></thead>
+        <thead><tr><th>客户</th><th>参考号 / P/O</th><th>产品编号</th><th data-yl-help="customer-orders.quantity">订单数量</th><th>客户要求交期</th><th>已走货</th><th data-yl-help="customer-orders.remaining">未走货</th><th data-yl-help="customer-orders.status">状态</th><th>发送</th><th>版本</th><th></th></tr></thead>
         <tbody>
           <tr v-for="line in displayLines" :key="line.id"><td>{{ line.customer_name || line.customer_code }}</td><td class="mono">{{ line.reference_no }}</td><td class="mono">{{ line.product_no }}</td><td>{{ line.quantity }}</td><td>{{ stringField(line.data, ['requested_ship_date', 'ship_date']) || '—' }}</td><td>{{ line.shipped_quantity }}</td><td>{{ line.remaining_quantity }}</td><td>{{ line.status === 'cancelled' ? '已取消' : '有效' }}</td><td>{{ line.dispatch_status === 'unsent' ? '未发送' : line.dispatch_status === 'changed' ? '有变更' : '已发送' }}</td><td>V{{ line.version }}</td><td><button class="ledger__link" type="button" @click="openDetail(line)">详情</button></td></tr>
           <tr v-if="!loading && displayLines.length === 0"><td colspan="11">当前筛选范围没有订单记录。</td></tr>
@@ -486,8 +498,8 @@ onBeforeUnmount(() => {
     </footer>
     </template>
 
-    <div v-if="selected || detailLoading || (detailOnly && actionError)" class="ledger__backdrop" @click.self="clearDetail">
-      <aside class="ledger__detail" role="dialog" aria-modal="true">
+    <div v-if="detailOpen" class="ledger__backdrop" @click.self="clearDetail">
+      <aside ref="detailDialog" class="ledger__detail" role="dialog" aria-modal="true" aria-label="订单详情" tabindex="-1">
         <button class="ledger__close" type="button" aria-label="关闭详情" :disabled="actionBusy" @click="clearDetail">×</button>
         <p v-if="detailLoading">正在读取详情…</p>
         <p v-else-if="!selected && actionError" class="ledger__message">{{ actionError }}</p>

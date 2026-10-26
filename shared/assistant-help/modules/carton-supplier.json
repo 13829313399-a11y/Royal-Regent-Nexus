@@ -212,7 +212,7 @@
       {
         "path": "src/components/CartonOrderDetailDialog.vue",
         "symbol": "DialogDescription",
-        "sha256": "26be359cb211f80666d15cfaf5b8ed777fa9235c6e7f1d1bc7a8ad98132469fe"
+        "sha256": "6a04f3fa6e2fc18de817e261af3360e94e5d4a232adb74008452c0e6ab5fe1d3"
       },
       {
         "path": "src/components/CartonOrderActionDialog.vue",

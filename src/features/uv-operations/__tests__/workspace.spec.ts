@@ -2,6 +2,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest'
 import {defineComponent,reactive} from 'vue'
 import {flushPromises,mount} from '@vue/test-utils'
 import {createUvWorkspace,type UvWorkspace} from '../workspace'
+import { announceSessionBoundary } from '@/lib/authenticationGeneration'
 const auth=reactive({currentUser:{id:'A'},authorizationVersion:1,effectiveAccess:[],isAuthenticated:true,refreshSession:vi.fn()})
 const app=reactive({activeFactoryId:'huakang-a'})
 const route=reactive({query:{factory:'huakang-a'}})
@@ -74,5 +75,16 @@ describe('UV live workspace lifecycle',()=>{
     const staleStream=Stream.instances[0]!
     await w.refresh()
     expect(w.offline.value).toBe(false);expect(staleStream.closed).toBe(true);expect(Stream.instances).toHaveLength(2)
+  })
+  it('clears verified source and private cache immediately on a session boundary and rejects old requests',async()=>{
+    await flushPromises();w.verifiedTaskId.value='OLD';w.selectedTaskId.value='OLD';w.assistantListReady.value=true
+    w.data.value={tasks:[{id:'OLD',version:1}]}
+    let finish!:(value:ReturnType<typeof response>)=>void
+    fetcher.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve}))
+    const pending=w.load(['tasks']).catch(cause=>cause)
+    announceSessionBoundary()
+    expect(w.verifiedTaskId.value).toBeNull();expect(w.assistantListReady.value).toBe(false);expect(w.data.value).toEqual({})
+    finish(response([{id:'LATE',version:1}]));expect((await pending).name).toBe('AbortError')
+    await flushPromises();expect(w.items('tasks')).toEqual([])
   })
 })

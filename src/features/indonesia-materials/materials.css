@@ -6,6 +6,21 @@
   min-height:100svh; background:var(--im-bg); color:var(--im-text); font-size:13px; line-height:1.5;
 }
 .im-workspace * { box-sizing:border-box; }
+.im-workspace .im-wizard-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.im-workspace .im-wizard-steps { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.im-workspace .im-wizard-steps button { justify-content:flex-start; padding:13px; background:var(--im-panel); font-size:14px; }
+.im-workspace .im-wizard-steps b { display:grid; place-items:center; width:26px; height:26px; flex-shrink:0; border-radius:50%; background:var(--im-soft); }
+.im-workspace .im-wizard-steps button[aria-current=step] { background:var(--im-mint); color:var(--im-green); border-color:var(--im-green); }
+.im-workspace .im-more summary,.im-workspace .im-history summary,.im-workspace .im-priority-details summary { cursor:pointer; color:var(--im-green); padding:10px 0; font-size:13px; }
+.im-workspace .im-more .im-toolbar { margin-top:8px; }
+.im-workspace .im-history { margin:0 0 14px; }
+.im-workspace .im-inline-plan { margin:0 0 16px; background:var(--im-mint); }
+.im-workspace .im-inline-plan input { font-size:14px; }
+.im-workspace .im-packing-status { border-left:3px solid var(--im-green-line); padding:8px 12px; }
+.im-workspace .im-packing-status p { margin:4px 0; overflow-wrap:anywhere; }
+.im-workspace .im-page-bar { box-shadow:none; }
+@media(max-width:760px) { .im-workspace .im-wizard-steps { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:400px) { .im-workspace .im-wizard-steps button { font-size:12px; padding:10px 7px; } }
 .im-workspace .im-flow-nav { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:16px; color:var(--im-muted); }
 .im-workspace .im-flow-nav button { flex:1 1 190px; justify-content:flex-start; background:var(--im-panel); }
 .im-workspace .im-flow-nav b { display:grid; place-items:center; width:22px; height:22px; border-radius:50%; background:var(--im-mint); color:var(--im-green); }

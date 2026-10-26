@@ -28,6 +28,13 @@ def lock_transaction(db: Session, namespace: str, identity: str) -> None:
             # SQLAlchemy may have a logical transaction while sqlite has only
             # performed SELECTs. Reserve the writer before reading business state.
             if not connection.connection.driver_connection.in_transaction:
+                if namespace == 'cutting-master':
+                    from app.services.cutting_sqlite_queue import reserve
+                    try:
+                        reserve(db, transaction, connection)
+                    except TimeoutError as error:
+                        db.rollback()
+                        raise HTTPException(409, "其他裁床操作正在处理，请稍后重新读取并重试") from error
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
         else:
             raise RuntimeError("Business transaction locking requires PostgreSQL or SQLite")

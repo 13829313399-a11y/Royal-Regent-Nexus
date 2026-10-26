@@ -201,7 +201,14 @@ def lock_line(db: Session, line: Line, expected: int) -> None:
 
 
 def line_out(db: Session, line: Line, *, dispatch_versions=None) -> dict:
-    versions = dispatch_versions if dispatch_versions is not None else db.scalars(select(Dispatch.version).where(Dispatch.line_id == line.id)).all()
+    if dispatch_versions is None:
+        sent, current = db.execute(select(
+            select(Dispatch.id).where(Dispatch.line_id == line.id).exists(),
+            select(Dispatch.id).where(Dispatch.line_id == line.id, Dispatch.version == line.version).exists(),
+        )).one()
+        dispatch_status = "sent" if current else "changed" if sent else "unsent"
+    else:
+        dispatch_status = "unsent" if not dispatch_versions else "sent" if line.version in dispatch_versions else "changed"
     remaining = None if line.quantity is None else line.quantity - line.shipped_quantity
     return {
         "id": line.id, "factory_id": line.factory_id, "customer_code": line.customer_code,
@@ -210,7 +217,7 @@ def line_out(db: Session, line: Line, *, dispatch_versions=None) -> dict:
         "shipped_quantity": decimal_text(line.shipped_quantity),
         "remaining_quantity": "0" if line.status == "cancelled" else decimal_text(remaining),
         "status": line.status, "version": line.version, "revision": line.revision,
-        "dispatch_status": "unsent" if not versions else "sent" if line.version in versions else "changed",
+        "dispatch_status": dispatch_status,
         "data": line.data, "created_at": line.created_at, "updated_at": line.updated_at,
     }
 
@@ -486,12 +493,25 @@ def reverse_shipment(db: Session, line: Line, shipment: Shipment, body, actor: s
     db.flush()
 
 
-def detail(db: Session, line: Line) -> dict:
-    versions = db.scalars(select(Version).where(Version.line_id == line.id).order_by(Version.version.desc())).all()
-    dispatches = db.scalars(select(Dispatch).where(Dispatch.line_id == line.id).order_by(Dispatch.created_at.desc())).all()
-    shipments = db.scalars(select(Shipment).where(Shipment.line_id == line.id).order_by(Shipment.created_at.desc())).all()
-    sources = db.scalars(select(Source).join(LineSource).where(LineSource.line_id == line.id)).all()
-    reversals = {item.shipment_id: item for item in db.scalars(select(Reversal).join(Shipment).where(Shipment.line_id == line.id)).all()}
+def detail(db: Session, line: Line, *, history_limit: int | None = None) -> dict:
+    if history_limit is not None and (type(history_limit) is not int or not 1 <= history_limit <= 50):
+        raise ValueError("invalid history limit")
+    statements = {
+        "versions": select(Version).where(Version.line_id == line.id).order_by(Version.version.desc()),
+        "dispatches": select(Dispatch).where(Dispatch.line_id == line.id).order_by(Dispatch.created_at.desc()),
+        "shipments": select(Shipment).where(Shipment.line_id == line.id).order_by(Shipment.created_at.desc()),
+        "sources": select(Source).join(LineSource).where(LineSource.line_id == line.id),
+    }
+    history_counts = {key: db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+                      for key, stmt in statements.items()} if history_limit is not None else None
+    def read(key):
+        stmt = statements[key]
+        return db.scalars(stmt.limit(history_limit) if history_limit is not None else stmt).all()
+    versions, dispatches, shipments, sources = (read(key) for key in statements)
+    reversal_query = select(Reversal).join(Shipment).where(Shipment.line_id == line.id)
+    if history_limit is not None:
+        reversal_query = reversal_query.where(Reversal.shipment_id.in_([s.id for s in shipments]))
+    reversals = {item.shipment_id: item for item in db.scalars(reversal_query).all()}
     return {
         "line": line_out(db, line),
         "versions": [{key: getattr(item, key) for key in ("version", "data", "reason", "actor", "created_at")} for item in versions],
@@ -503,4 +523,5 @@ def detail(db: Session, line: Line) -> dict:
             "reversal_at": reversals[item.id].created_at if item.id in reversals else "",
         } for item in shipments],
         "sources": [{"id": item.id, "file_name": item.file_name, "kind": item.kind} for item in sources],
+        **({"history_counts": history_counts} if history_counts is not None else {}),
     }

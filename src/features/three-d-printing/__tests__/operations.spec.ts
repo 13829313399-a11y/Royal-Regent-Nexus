@@ -22,6 +22,7 @@ import ProductPicker from "../components/ProductPicker.vue";
 import PageControls from "../components/PageControls.vue";
 import EntityPicker from "../components/EntityPicker.vue";
 import { workspaceKey } from "../context";
+import { threeDEditorBlocks } from '../navigationGuard';
 
 let wrapper: ReturnType<typeof mount>;
 beforeEach(() => {
@@ -44,6 +45,24 @@ afterEach(() => {
 });
 
 describe("3D operations workspace", () => {
+  it('blocks workspace navigation for an operations draft and releases it on clear or unmount', async () => {
+    wrapper = mount(OperationsPage, {
+      global: { provide: { [workspaceKey as symbol]: {
+        canOperate: ref(true), activeTab: ref('operations'), editSchedule: vi.fn(),
+      } } },
+    });
+    await flushPromises();
+    expect(threeDEditorBlocks()).toBe(false);
+    const material = wrapper.get('form').findAll('label').find(label => label.text() === '材料')!.get('input');
+    await material.setValue('未保存材料');
+    expect(threeDEditorBlocks()).toBe(true);
+    await wrapper.findAll('button').find(button => button.text() === '清空')!.trigger('click');
+    expect(threeDEditorBlocks()).toBe(false);
+    await material.setValue('仍未保存');
+    wrapper.unmount();
+    expect(threeDEditorBlocks()).toBe(false);
+    expect(mocks.post).not.toHaveBeenCalled();
+  });
   it.each([false, true])("keeps analytics busy even if advice fails (%s)", async (adviceFails) => {
     let finish!: (value: unknown) => void;
     mocks.get.mockImplementation((url: string) => url.endsWith("/analytics")

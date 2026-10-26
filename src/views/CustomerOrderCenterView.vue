@@ -14,7 +14,7 @@ import {
   Table2,
 } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
 import ModuleFeedbackHub from '@/features/module-feedback/ModuleFeedbackHub.vue'
@@ -28,6 +28,8 @@ import { useAppStore } from '@/stores/app'
 export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule' | 'feedback' | 'jp-intake'
 
 const appStore = useAppStore()
+const route = useRoute()
+const router = useRouter()
 appStore.setActiveDepartment('sales-business')
 
 const activeSection = ref<CustomerOrderCenterSection>('ledger')
@@ -35,6 +37,12 @@ const orderWorkspace = ref<InstanceType<typeof CustomerOrderCenterWorkspace> | n
 const feedbackHub = ref<InstanceType<typeof ModuleFeedbackHub> | null>(null)
 const feedbackUnread = ref(0)
 const activeFactory = computed(() => appStore.activeProductionFactory)
+const focusedOrderId = computed(() => route.query.factory === activeFactory.value.id
+  && typeof route.query.order === 'string' && route.query.order.length <= 64 ? route.query.order : '')
+watch(focusedOrderId, id => { if (id) activeSection.value = 'ledger' }, { immediate: true })
+function clearFocusedOrder() {
+  if (route.query.order) void router.replace({ query: { ...route.query, order: undefined } })
+}
 const departmentRoute = computed(() => getFactoryScopedRoute('/modules/sales-business', activeFactory.value.id))
 
 const standardNavigationItems = [
@@ -61,6 +69,7 @@ function reportProblem(context?: FeedbackContext) {
 }
 
 function navigate(section: CustomerOrderCenterSection) {
+  if (section !== 'ledger') clearFocusedOrder()
   activeSection.value = section
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
@@ -167,6 +176,8 @@ function navigate(section: CustomerOrderCenterSection) {
         :active-section="activeSection"
         :factory-id="activeFactory.id"
         :factory-name="activeFactory.shortName"
+        :focus-line-id="focusedOrderId"
+        @close-order="clearFocusedOrder"
         @navigate="navigate"
         @feedback="reportProblem"
       />
@@ -522,7 +533,7 @@ function navigate(section: CustomerOrderCenterSection) {
   min-height: 100vh;
   margin-left: 240px;
   padding: 82px 24px 48px;
-  animation: order-main-enter 300ms cubic-bezier(.2, .8, .2, 1) both;
+  animation: order-main-enter 300ms cubic-bezier(.2, .8, .2, 1) backwards;
 }
 
 .order-mobile-nav {
@@ -614,7 +625,7 @@ function navigate(section: CustomerOrderCenterSection) {
 
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 

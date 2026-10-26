@@ -22,12 +22,14 @@ ROOT=Path(__file__).resolve().parents[2]
 
 
 def diagnostics_summary(diagnostic, samples):
+    from cutting_mix_audit import segmented_diagnostics
     assert not diagnostic['heartbeat_gaps'], 'Run interrupted by a heartbeat gap'
     assert not any(r['failed_sql'] for r in diagnostic['requests']), 'SQL failure during probe'
     retries = {r['request_id'] for r in samples if r['endpoint'].startswith('payment_') and r['endpoint'].endswith('_retry')}
     measured = [r for r in diagnostic['requests'] if r['request_id'] in retries]
     assert retries and {r['request_id'] for r in measured} == retries, 'Missing payment retry diagnostics'
     assert all(r['lock_seconds'] == 0 for r in measured), 'Committed payment retry reserved the writer'
+    assert all(r.get('admission_seconds',0.) == 0 for r in measured), 'Committed payment retry entered writer admission'
     phases = {}
     for span in diagnostic['lock_spans']:
         group = phases.setdefault(span['phase'], dict(count=0, hold_seconds=0., max_hold_seconds=0., max_wait_seconds=0.))
@@ -36,6 +38,9 @@ def diagnostics_summary(diagnostic, samples):
         group['max_hold_seconds'] = max(group['max_hold_seconds'], span['hold_seconds'])
         group['max_wait_seconds'] = max(group['max_wait_seconds'], span['wait_seconds'])
     return dict(payment_retries=len(measured), payment_retry_write_lock_seconds=0, phases=phases,
+                segmented=segmented_diagnostics(diagnostic, samples),
+                total_admission_seconds=sum(r.get('admission_seconds',0.) for r in diagnostic['requests']),
+                max_request_admission_seconds=max((r.get('admission_seconds',0.) for r in diagnostic['requests']),default=0.),
                 boundary='Lock hold ends at connection return; upper bound, not exact DBAPI release instant')
 
 
@@ -54,7 +59,7 @@ def seed_file(path, *, root=ROOT):
     return path
 
 
-def run_probe(database, seconds, report):
+def run_probe(database, seconds, report, *, server_context=None, cycle_pause=.2, production_write_orders=0, workflow_probes=False):
     # Defensive environment fence before importing any app/test package.
     os.environ.update(DATABASE_URL='sqlite://', SEED_DEFAULT_ACCOUNTS='false')
     sys.path[:0]=[str(ROOT/'backend'),str(ROOT/'backend/tests')]
@@ -63,12 +68,13 @@ def run_probe(database, seconds, report):
     from test_cutting_http_soak import awake_system
     from test_cutting_http_capacity import login_http, endpoint_metrics, projection, validate_workbook
     from cutting_financial_capacity_fixture import validate_settlement_workbook, assert_payment_balances
+    from cutting_production_mix import ProductionMix, reconcile_totals
 
     base='/api/cutting-operations'
-    samples=[];failures=[];payments=[]
+    samples=[];failures=[];payments=[];payment_statements=[]
     abort=Event();registrar_done=Event();barrier=Barrier(10,timeout=30);reviews=Queue(maxsize=1)
-    report.update(samples=samples,failures=failures,payment_documents=payments)
-    with awake_system(), independent_http(database) as url, ExitStack() as stack:
+    report.update(samples=samples,failures=failures,payment_documents=payments,payment_statement_ids=payment_statements)
+    with awake_system(), (server_context or independent_http)(database) as url, ExitStack() as stack:
         sessions=[stack.enter_context(httpx.Client(base_url=url,trust_env=False,timeout=30)) for _ in range(10)]
         for i,session in enumerate(sessions):login_http(session,'clerk' if i<2 else 'registrar' if i==2 else 'reviewer')
         def read(path,**params):
@@ -104,6 +110,9 @@ def run_probe(database, seconds, report):
             return rows
         inventory=all_rows('/workspace/inventory');costs=all_rows('/workspace/costs')
         assert len(inventory)==200 and len(costs)==100
+        mix = ProductionMix(read, inventory, costs, production_write_orders) if production_write_orders else None
+        if mix:
+            report['production_write_records'] = mix.records
         initial_basis=sessions[2].get(base+'/payment-basis',params={'factory_id':'huakang-c'}).json()
         baseline_revision=initial_basis['revision']
         def worker(index):
@@ -114,10 +123,11 @@ def run_probe(database, seconds, report):
                 try:
                     response=session.request(method,base+path,headers={'X-Test-Request-ID':identifier},**kwargs)
                     status=response.status_code;size=len(response.content)
-                    assert status==200,f'{name}: HTTP {status}'
+                    assert status==200,f'{name}: HTTP {status}; {response.text[:250]}'
                     return response
                 finally:
-                    local.append(dict(endpoint=name,seconds=perf_counter()-began,status=status,bytes=size,request_id=identifier))
+                    local.append(dict(endpoint=name,seconds=perf_counter()-began,started_seconds=began,
+                                      status=status,bytes=size,request_id=identifier))
             def get(name,path,**params):return request(name,'GET',path,params={'factory_id':'huakang-c',**params}).json()
             def post(name,path,body):
                 result=request(name,'POST',path,json=body).json()
@@ -127,12 +137,15 @@ def run_probe(database, seconds, report):
                 current=get('payment_read','/payments/2026-12',document_id=identifier)
                 return post('payment_'+name,'/payments/'+name,dict(factory_id='huakang-c',operation_id=uuid4().hex,
                     expected_version=current['revision'],reason='Synthetic isolated lock-phase probe',document_id=identifier))
-            began=perf_counter()
+            began=perf_counter();last_progress=began
             try:
                 barrier.wait();began=perf_counter();deadline=began+seconds
                 while not abort.is_set() and (cycles==0 or perf_counter()<deadline or (index==3 and not registrar_done.is_set())):
                     if index<2:
-                        get('clerk_inventory','/workspace/inventory')
+                        if mix:
+                            mix.write(index,cycles,get,post)
+                        else:
+                            get('clerk_inventory','/workspace/inventory')
                     elif index==2:
                         value=get('payment_basis','/payment-basis')
                         identifier=uuid4().hex
@@ -145,6 +158,7 @@ def run_probe(database, seconds, report):
                         done=Event();reviews.put((identifier,done),timeout=30)
                         while not done.wait(.1):assert not abort.is_set(),'Reviewer did not finish'
                         posted.append(identifier)
+                        payment_statements.append(body['allocations'][0]['settlement_id'])
                     elif index==3:
                         try:identifier,done=reviews.get(timeout=.25)
                         except Empty:
@@ -161,6 +175,7 @@ def run_probe(database, seconds, report):
                         for name,path,params in endpoints:
                             value=get(name,path,**params)
                             if name=='payments':assert_payment_balances(value,20,active=True)
+                            elif mix and name in {'inventory','costs'}:mix.validate_live(name,value,expected)
                             else:assert projection(name,value)==expected[name],name
                         fee=(cycles+index)%2==1;statement=statements[(cycles+index)%20]
                         body=dict(factory_id='huakang-c',kind='settlement',month='2026-10',
@@ -171,7 +186,10 @@ def run_probe(database, seconds, report):
                         if fee:validate_settlement_workbook(content,statement)
                         else:validate_workbook(content,multiplier=100,expected_delivery=preview['delivery'])
                     cycles+=1
-                    if index!=3:abort.wait(.2)
+                    if index==0 and perf_counter()-last_progress>=30:
+                        print(f'Full probe {perf_counter()-began:.0f}s; first reader completed {cycles} cycles',flush=True)
+                        last_progress=perf_counter()
+                    if index!=3:abort.wait(cycle_pause)
             except Exception as error:
                 errors.append(dict(endpoint=active,type=type(error).__name__,detail=str(error)[:500]));abort.set()
             finally:
@@ -196,8 +214,18 @@ def run_probe(database, seconds, report):
         assert_payment_balances(read('/payments/2026-11'),20)
         assert read('/payments/2026-11')['totals']==initial_payments['totals']
         assert read('/payments/2026-12')['revision']==baseline_revision+4*len(payments)
-        assert all_rows('/workspace/inventory')==inventory
-        assert all_rows('/workspace/costs')==costs
+        final_inventory=all_rows('/workspace/inventory');final_costs=all_rows('/workspace/costs')
+        if mix:
+            report['production_reconciliation'] = mix.reconcile(read,final_inventory,final_costs,seconds)
+            from cutting_mix_audit import audit_history
+            report['production_history_reconciliation'] = audit_history(read, database, mix.records)
+            reconcile_totals(read('/workspace/inventory'),final_inventory,read('/workspace/costs'),final_costs)
+            report['production_aggregate_headers_reconciled']=True
+            if seconds>=600:
+                assert len(set(payment_statements))==20, 'Incomplete rotating payment statement coverage'
+        else:
+            assert final_inventory==inventory
+            assert final_costs==costs
         preview=sessions[-1].post(base+'/exports/preview',json=period_body)
         assert preview.status_code==200
         exported=sessions[-1].post(base+'/exports/download',json=period_body|{'token':preview.json()['token']})
@@ -208,12 +236,18 @@ def run_probe(database, seconds, report):
         assert len(payments)>0
         # Logouts affect synthetic sessions only, not business facts.
         for session in sessions:assert session.post('/api/auth/logout').status_code==204
+        if workflow_probes:
+            from cutting_workflow_mix import run_workflows
+            report['workflow_probes']={}
+            run_workflows(url,database,report['workflow_probes'])
     with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True) as db:
         report['integrity']=db.execute('PRAGMA integrity_check').fetchone()[0]
         report['foreign_key_errors']=len(db.execute('PRAGMA foreign_key_check').fetchall())
         assert report['integrity']=='ok' and not report['foreign_key_errors']
         for identifier in payments:
             assert [row[0] for row in db.execute('SELECT action FROM cutting_ops_payment_events WHERE document_id=? ORDER BY version',(identifier,))]==['save','submit','confirm','reverse']
+        if mix:
+            report['production_persisted'] = mix.verify_persisted(db)
 
 
 def main():

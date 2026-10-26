@@ -1,6 +1,7 @@
 import { mount, flushPromises, shallowMount } from '@vue/test-utils'
 import { reactive } from 'vue'
-import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
+import type { RouteLocationNormalized } from 'vue-router'
+import { clearQuoteNavigationGuards, guardQuoteNavigation } from '@/features/internal-quote/navigationGuard'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuthStore } from '@/stores/auth'
@@ -32,9 +33,48 @@ function setup() {
   vi.spyOn(internalQuoteApi, 'get').mockResolvedValue({ sections: [] } as never)
   return { pinia, store, quote, auth }
 }
-beforeEach(() => { routeState.params.quoteId = 'q1'; vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} }) })
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+beforeEach(() => { clearQuoteNavigationGuards(); routeState.params.quoteId = 'q1'; vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} }) })
+afterEach(() => { clearQuoteNavigationGuards(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('independent quotation alternatives', () => {
+  it.each([
+    ['collaboration', InternalQuoteCollaboration], ['summary', InternalQuoteSummary], ['export', InternalQuoteExportSummary],
+  ] as const)('keeps the active factory in the %s unavailable-record return link', async (_name, component) => {
+    const { pinia, store } = setup()
+    vi.spyOn(useAppStore(), 'activeFactory', 'get').mockReturnValue({ id: 'huakang-a' } as ReturnType<typeof useAppStore>['activeFactory'])
+    store.quotes = []
+    vi.mocked(store.loadQuote).mockResolvedValue(undefined)
+    vi.spyOn(store, 'loadVersionCandidates').mockResolvedValue([])
+    const wrapper = shallowMount(component, { global: { plugins: [pinia], stubs: {
+      RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
+    } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('原报价暂不可用')
+    expect(wrapper.get('a').attributes('href')).toBe('/modules/sales-business/internal-quote-desk?factory=huakang-a')
+    wrapper.unmount()
+  })
+
+  it('hides unverified financial contents on a failed refresh without destroying local department drafts', async () => {
+    const { pinia, store } = setup()
+    const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia], stubs: {
+      RouterLink: true,
+      InternalQuoteSectionEditor: { template: '<input data-local-draft v-model="draft">', data: () => ({ draft: '原输入' }), methods: { hasUnsavedChanges: () => true } },
+    } } })
+    await flushPromises()
+    const input = wrapper.findAll('input[data-local-draft]')[0]!
+    await input.setValue('仍须保留的本地草稿')
+    store.quoteDetailFailedId = 'q1'; store.errorMessage = '权威汇总暂不可读'
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('权威汇总暂不可读')
+    expect((wrapper.get('.quote-verified-content').element as HTMLElement).style.display).toBe('none')
+    expect((input.element as HTMLInputElement).value).toBe('仍须保留的本地草稿')
+    store.quoteDetailFailedId = ''; store.quoteDetailVerifiedId = 'q1'; store.errorMessage = ''
+    await flushPromises()
+    expect(wrapper.findAll('input[data-local-draft]')[0]!.element).toBe(input.element)
+    expect((wrapper.get('.quote-verified-content').element as HTMLElement).style.display).not.toBe('none')
+    expect((input.element as HTMLInputElement).value).toBe('仍须保留的本地草稿')
+    wrapper.unmount()
+  })
+
   it('confirms discard without a premature dialog-close cancellation', async () => {
     const wrapper = mount(InternalQuoteLeaveDialog, { props: { open: true }, global: { stubs: { AlertDialogPortal: { template: '<div><slot /></div>' } } } })
     await flushPromises()
@@ -53,19 +93,20 @@ describe('independent quotation alternatives', () => {
       InternalQuoteActivityPanel: { template: '<div />', methods: { hasUnsavedChanges: () => dirty } },
     } } })
     await flushPromises()
-    const leave = vi.mocked(onBeforeRouteLeave).mock.calls.at(-1)![0] as () => boolean | Promise<boolean>
-    const update = vi.mocked(onBeforeRouteUpdate).mock.calls.at(-1)![0] as (to: { params: { quoteId: string } }) => boolean | Promise<boolean>
-    expect(leave()).toBe(true)
+    const from = { fullPath: '/quotes/q1?factory=huaxing', params: { quoteId: 'q1' } } as unknown as RouteLocationNormalized
+    const leave = (path = '/quotes/q2?factory=huaxing') => guardQuoteNavigation({ fullPath: path } as RouteLocationNormalized, from)
+    expect(await leave()).toBe(true)
     dirty = true
     const pending = leave()
-    expect(leave()).toBe(pending)
+    const repeated = leave()
     await flushPromises()
     expect(wrapper.getComponent(InternalQuoteLeaveDialog).props('open')).toBe(true)
     wrapper.getComponent(InternalQuoteLeaveDialog).vm.$emit('cancel')
     expect(await pending).toBe(false)
+    expect(await repeated).toBe(false)
     expect(dirty).toBe(true)
-    expect(update({ params: { quoteId: 'q1' } })).toBe(true)
-    const switching = update({ params: { quoteId: 'q2' } })
+    expect(await leave(from.fullPath)).toBe(true)
+    const switching = leave('/quotes/q1?factory=huakang-a')
     await flushPromises()
     wrapper.getComponent(InternalQuoteLeaveDialog).vm.$emit('discard')
     expect(await switching).toBe(true)

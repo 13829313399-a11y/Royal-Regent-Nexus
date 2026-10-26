@@ -32,6 +32,14 @@ const draft = useMaterialDraft(() => ({ customer: customer.value, recipient: rec
 })
 const customers = computed(() => fixedCustomers(ws.records))
 const products = computed(() => customerProducts(ws.records, customer.value))
+const selectableIndexes = computed<number[]>(() => preview.value?.data.status === 'confirmed' ? [] :
+  (preview.value?.data.rows || []).filter((row: { blocked?: boolean; imported_order_id?: string }) => !row.blocked && !row.imported_order_id)
+    .map((row: { index: number }) => row.index))
+const canChangeSelection = computed(() => !!preview.value && preview.value.data.status !== 'confirmed' && ws.canWrite && !ws.locked && !draft.switching.value)
+function selectAll(checked: boolean) {
+  if (!canChangeSelection.value) return
+  selected.value = checked ? [...selectableIndexes.value] : []
+}
 async function changeContext(_key: 'customer' | 'recipient', _event: Event) {
   const next = { customer: customer.value, recipient: recipient.value }
   if (file.value || preview.value || selected.value.length) {
@@ -95,7 +103,14 @@ async function confirm() {
         <tr v-for="row in preview.data.rows" :key="row.index"><td><input v-model="selected" type="checkbox" :value="row.index" :aria-label="`选择来源行 ${row.source_row}`" :disabled="row.blocked || !!row.imported_order_id || preview.data.status === 'confirmed' || !ws.canWrite || (ws.locked || draft.switching.value)"></td><td>{{ row.customer }} / {{ row.recipient }}</td><td>{{ row.contract_no }}<br>{{ row.po_no }}</td><td>{{ row.item_no }}<small v-if="row.batch">历史批次 {{ row.batch }}</small></td><td>{{ row.quantity }} {{ row.unit }}</td><td>{{ row.delivery_date }}</td><td>{{ row.source_sheet }} · 第 {{ row.source_row }} 行</td><td><b>{{ row.imported_order_id ? '已在本批确认' : row.match_status === 'changed' ? '已有合同有变更' : row.match_status === 'unchanged' ? '已有记录，无变化' : '新增行' }}</b><p>{{ row.issues?.join('；') || (row.blocked ? '不可导入' : '可核对导入') }}</p><p v-for="change in row.changes || []" :key="change.field">{{ change.field === 'quantity' ? '数量' : change.field === 'delivery_date' ? '成品交期' : change.field }}：{{ change.old }} → {{ change.new }}</p></td></tr>
       </tbody></table></div>
       <p v-else class="im-empty">未识别到可导入的合同明细，请核对文件及识别提示。</p>
-      <div class="im-actions"><button v-if="preview.data.status !== 'confirmed'" type="button" class="im-primary" :disabled="!ws.canWrite || (ws.locked || draft.switching.value) || !selected.length" @click="confirm">确认导入选中 {{ selected.length }} 行</button><button v-if="preview.data.source_asset_id || preview.data.asset_id" type="button" :disabled="ws.busy" @click="ws.download(preview.data.source_asset_id || preview.data.asset_id, preview.data.filename, 'asset')">下载来源原件</button></div>
+      <div class="im-actions">
+        <template v-if="preview.data.status !== 'confirmed'">
+          <button type="button" :disabled="!canChangeSelection || !selectableIndexes.length || selected.length === selectableIndexes.length" @click="selectAll(true)">全选可导入行</button>
+          <button type="button" :disabled="!canChangeSelection || !selected.length" @click="selectAll(false)">取消全选</button>
+          <button type="button" class="im-primary" :disabled="!canChangeSelection || !selected.length" @click="confirm">确认导入选中 {{ selected.length }} 行</button>
+        </template>
+        <button v-if="preview.data.source_asset_id || preview.data.asset_id" type="button" :disabled="ws.busy" @click="ws.download(preview.data.source_asset_id || preview.data.asset_id, preview.data.filename, 'asset')">下载来源原件</button>
+      </div>
     </div>
     <h3 class="mt-6">导入记录</h3>
     <div v-if="scheduleImports().length" class="im-scroll"><table><thead><tr><th>来源文件</th><th>状态</th><th>来源行数</th><th>操作</th></tr></thead><tbody><tr v-for="row in scheduleImports()" :key="row.id" :data-import-id="row.id"><td>{{ row.data.filename }}</td><td>{{ showStatus(row.data.status || 'preview') }}</td><td>{{ row.data.rows?.length ?? 0 }}</td><td><button type="button" :disabled="(ws.locked || draft.switching.value)" @click="inspect(row)">查看核对</button></td></tr></tbody></table></div>

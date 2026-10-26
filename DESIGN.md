@@ -55,6 +55,8 @@
 
 项目使用 Tailwind CSS 4 的 CSS-first 模式，**不存在独立的 `tailwind.config.js` 或 PostCSS 配置文件**。不要仅为普通样式调整而新建 Tailwind 配置文件。
 
+工具类输入在 `src/style.css` 中通过 `source(none)` 与 `@source` 明确限定为 `src/` 和根 `index.html`。不自动扫描整个 checkout，避免 Windows `node_modules` 目录联接、冻结发布及运行产物扩大扫描范围；组件库 CSS 仍由原有 import 引入。项目主题使用 `@theme inline static` 保留共享 token，不能依赖文档或工具类的偶然引用使组件 CSS 所需变量存活。`npm run check:tailwind-sources` 使用真实编译器核对输入边界、基础工具类和共享圆角变量，完整构建会先执行此检查。
+
 ### 3.2 权威顺序
 
 | 优先级 | 来源 | 作用 |
@@ -544,7 +546,7 @@ font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
 - 本范围允许深翡翠 Hero、七部门光谱与分层工业 SVG，颜色配置位于 `homePrismPresentation.ts`；Logo、状态色语义、中文字体和业务目录不变。
 - 内容、动效和导航样式分别在 `home-prism.css`、`home-prism-motion.css`、`home-prism-shell.css`，所有普通规则都限定 V4 根节点。不要更改共享组件默认样式来实现首页效果。
 - 部门页以 `.rrn-home-container` 为 `home-page` 祖先容器；内容宽度不足 640px 为单列，640px 起为双卡，1000px 起增加 320px 侧栏。单模块保持一张完整主卡。驾驶舱沿用 `dashboard-page` 祖先及 36/62/68rem 查询。
-- 列表位置变化、首次入场、卡片悬停与图标层移分别由独立节点承担。卡片自身关闭旧入场动画，首次级联延迟最多 180ms；新艺术动画一次结束，没有常驻动画循环。
+- 列表位置变化、首次入场、卡片悬停与图标层移分别由独立节点承担。卡片自身关闭旧入场动画，首次级联延迟最多 180ms；内容揭示让位于共享路由宿主，Hero SVG 的分层、描线与扫描动效仍由按视觉身份重建的插画节点独立播放，一次结束，没有常驻动画循环。
 - 首页提供舒适/紧凑密度、丰富/简约/关闭动效；系统减少动态及页面隐藏时有效动效关闭。仅枚举偏好和版本按账号存储，匿名状态仅在内存中保留。
 - 搜索、预览和固定只读取最终可见目录。搜索匹配名称、说明和标签，支持 IME、Escape、清除和安全文本高亮。无真实目标的占位保持惰性。
 - 桌面停留约 140ms切换临时预览，显式预览固定目标；移动端用同一目录组件打开模态层，关闭恢复焦点。切账号、原始厂区或部门清空查询和固定；撤权立即清理无效内容。

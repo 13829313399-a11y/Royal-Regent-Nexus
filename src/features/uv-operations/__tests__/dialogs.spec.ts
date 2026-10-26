@@ -9,7 +9,7 @@ import { UvError } from '../workspace'
 import type { Entity } from '../contracts'
 
 const command=vi.fn(),request=vi.fn(),load=vi.fn()
-const w={contextVersion:ref(1),selectedTaskId:ref<string|null>(null),can:()=>true,command,request,load,refresh:vi.fn(),explain:(cause:unknown)=>(cause as Error).message,items:()=>[],pagination:{}}
+const w={contextVersion:ref(1),selectedTaskId:ref<string|null>(null),verifiedTaskId:ref<string|null>(null),notification:ref(''),can:()=>true,command,request,load,refresh:vi.fn(),explain:(cause:unknown)=>(cause as Error).message,items:()=>[],pagination:{}}
 vi.mock('../workspace',()=>({useUvWorkspace:()=>w,UvError:class extends Error{constructor(message:string,public status=0,public code='',public fields:Record<string,string>={}){super(message)}}}))
 const deferred=<T,>()=>{let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((a,b)=>{resolve=a;reject=b});return{resolve,reject,promise}}
 const run=(id='RUN'):Entity=>({id,version:7,native_job_id:'合成作业 '+id})
@@ -18,7 +18,7 @@ const keep=<T extends VueWrapper>(wrapper:T)=>{wrappers.push(wrapper);return wra
 
 beforeEach(()=>{
   command.mockReset();request.mockReset();load.mockReset();load.mockResolvedValue(undefined);command.mockResolvedValue({id:'saved',version:1})
-  w.selectedTaskId.value=null;w.contextVersion.value=1
+  w.selectedTaskId.value=null;w.verifiedTaskId.value=null;w.contextVersion.value=1
   vi.stubGlobal('matchMedia',vi.fn(()=>Object.assign(new EventTarget(),{matches:false})))
   vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}})
   vi.spyOn(document,'hidden','get').mockReturnValue(false)
@@ -29,6 +29,24 @@ beforeEach(()=>{
 afterEach(()=>{wrappers.splice(0).forEach(wrapper=>wrapper.unmount());vi.restoreAllMocks();vi.unstubAllGlobals();vi.useRealTimers();document.body.innerHTML='';localStorage.clear()})
 
 describe('UV task passport request identity',()=>{
+  it('returns narrow-modal keyboard focus to the original task after background inert cleanup',async()=>{
+    vi.stubGlobal('matchMedia',vi.fn(()=>Object.assign(new EventTarget(),{matches:true})))
+    request.mockResolvedValue({data:{id:'A',version:1,code:'TASK-A',batches:[]}})
+    const wrapper=keep(mount(defineComponent({setup(){
+      provideUvMotionPreference(()=>'USER').setPreference('off')
+      return()=>h('main',{'data-uv-focus-fallback':'',tabindex:-1},[
+        h('button',{onClick:()=>{w.selectedTaskId.value='A'}},'原任务入口'),h(TaskPassport),
+      ])
+    }}),{attachTo:document.body,global:{stubs:{RouterLink:true}}}))
+    const opener=wrapper.get('button');(opener.element as HTMLButtonElement).focus()
+    await opener.trigger('click');await flushPromises()
+    const panel=document.querySelector<HTMLElement>('[aria-label="任务档案"]')!
+    expect(panel.getAttribute('aria-modal')).toBe('true')
+    expect(document.activeElement).toBe(panel)
+    panel.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await flushPromises()
+    expect(document.querySelector('[aria-label="任务档案"]')).toBeNull()
+    expect(document.activeElement).toBe(opener.element)
+  })
   it('keeps reopened B and its quality tab when the interrupted A exit deadline passes',async()=>{
     vi.useFakeTimers({toFake:['setTimeout','clearTimeout']})
     request.mockImplementation(async(path:string)=>({data:{id:path.slice(6),version:1,code:path.slice(6),batches:[]}}))

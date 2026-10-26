@@ -54,7 +54,7 @@ function imageFailed(id: string) {
   <DialogRoot :open="true" @update:open="!$event && emit('close')">
     <DialogPortal>
       <DialogOverlay class="internal-quote-guide-overlay fixed inset-0 z-[149] bg-slate-950/45 backdrop-blur-sm" />
-      <DialogContent class="internal-quote-usage-guide fixed left-1/2 top-1/2 z-[150] flex h-[92dvh] w-[calc(100%_-_24px)] max-w-6xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" @close-auto-focus.prevent>
+      <DialogContent class="internal-quote-usage-guide fixed left-1/2 top-1/2 z-[150] flex h-[92dvh] w-[calc(100%_-_24px)] max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" @close-auto-focus.prevent>
         <header class="shrink-0 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
@@ -145,13 +145,15 @@ function imageFailed(id: string) {
 </template>
 
 <style>
+/* Keep screen centering in transform so the print reset also survives CSS lowering. */
+.internal-quote-usage-guide { transform: translate(-50%, -50%); }
 @media print {
   @page internal-quote-tutorial { size: A4; margin: 14mm; }
   body:has(.internal-quote-usage-guide) { overflow: visible !important; height: auto !important; }
   body:has(.internal-quote-usage-guide) > *:not(.internal-quote-usage-guide):not(:has(.internal-quote-usage-guide)) { display: none !important; }
   .internal-quote-guide-overlay, .internal-quote-guide-sidebar, .internal-quote-guide-tools { display: none !important; }
   .internal-quote-usage-guide {
-    page: internal-quote-tutorial; position: static !important; inset: auto !important; transform: none !important; translate: none !important;
+    page: internal-quote-tutorial; position: static !important; inset: auto !important; transform: none !important;
     display: block !important; width: 100% !important; height: auto !important;
     max-width: none !important; max-height: none !important; overflow: visible !important;
     border: 0 !important; box-shadow: none !important; border-radius: 0 !important;

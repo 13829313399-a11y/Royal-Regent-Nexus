@@ -150,7 +150,7 @@ def encode_cursor(fingerprint, values):
 def snapshot(db, user, *, view="todo", factory_scope="authorized", module="", q="", unread_only=False,
              due="all", cursor=None, limit=30, selected_id=None):
     from app.services.auth import ALLOWED_FACTORY_IDS
-    if view not in {"todo", "assigned", "team", "waiting", "info", "history"}:
+    if view not in {"todo", "assigned", "team", "waiting", "info", "history", "verification"}:
         raise HTTPException(422, "事项视图无效")
     if factory_scope != "authorized" and factory_scope not in ALLOWED_FACTORY_IDS:
         raise HTTPException(422, "厂区范围无效")
@@ -172,7 +172,8 @@ def snapshot(db, user, *, view="todo", factory_scope="authorized", module="", q=
                    "count": item["count"]} for item in issue_rows]
     conditions = {"todo": f["actionable_total"], "assigned": f["assigned_total"], "team": f["team_queue_total"],
                   "waiting": f["waiting_total"], "info": and_(c.kind == "info", c.archived_at.is_(None)),
-                  "history": or_(c.lifecycle.in_(("resolved", "cancelled", "superseded")), c.archived_at.is_not(None))}
+                  "history": or_(c.lifecycle.in_(("resolved", "cancelled", "superseded")), c.archived_at.is_not(None)),
+                  "verification": and_(c.kind == "task", c.verified.is_(False))}
     query = select(rows).where(conditions[view])
     if factory_scope != "authorized":
         query = query.where(or_(c.factory == factory_scope, c.execution == factory_scope))
@@ -238,7 +239,7 @@ def dto(row, user, clock):
             "priority": "normal", "priority_reasons": ["已到业务期限"] if row["due_epoch"] and row["due_epoch"] < clock.timestamp() else [],
             "due_at": stamp(datetime.fromtimestamp(row["due_epoch"], timezone.utc)) if row["due_epoch"] else None,
             "due_source": "business" if row["due_epoch"] else None, "opened_at": stamp(row["opened"]),
-            "can_act_now": active, "unavailable_reason": None if active or row["kind"] == "info" else row["resolution_reason"] or "当前阶段等待其他责任人处理",
+            "can_act_now": active, "unavailable_reason": "当前业务版本或状态需要核对，请查看源单据。" if not row["verified"] else None if active or row["kind"] == "info" else row["resolution_reason"] or "当前阶段等待其他责任人处理",
             "resolution_reason": row["resolution_reason"], "verification_state": "verified" if row["verified"] else "unverified",
             "content_version": row["version"], "attention_version": row["attention"],
             "personal": {"read_state": read_state, "snoozed_until": stamp(snoozed), "archived_at": stamp(row["archived_at"]), "pinned": bool(row["pinned_at"]), "state_version": row["state_version"], "following": row["following"]},
@@ -254,6 +255,12 @@ def present_entries(db, rows, user, clock):
     Source data also makes pre-upgrade history readable without a DB backfill.
     """
     from app.models.auth import AuthRegistrationRequest, AuthPasswordResetRequest
+    from app.models.internal_quote import InternalQuote
+    from app.services.internal_quote_calculator import FORMULA_VERSION
+    # Only enrich already-authorized rows on this page; never expose orphan
+    # notices or broaden scope while explaining a source verification warning.
+    quote_ids = {row["entity_id"] for row in rows if row["module"] == "internal_quote" and not row["verified"]}
+    quotes = {quote.id: quote for quote in db.scalars(select(InternalQuote).where(InternalQuote.id.in_(quote_ids)))} if quote_ids else {}
     sources = {}
     for model, stages in ((AuthRegistrationRequest, {"registration"}),
                           (AuthPasswordResetRequest, {"password_reset", "password_reset_claim"})):
@@ -265,6 +272,14 @@ def present_entries(db, rows, user, clock):
     result = []
     for row in rows:
         item = dto(row, user, clock)
+        quote = quotes.get(row["entity_id"]) if row["module"] == "internal_quote" else None
+        if quote is not None:
+            if quote.formula_version != FORMULA_VERSION:
+                item["unavailable_reason"] = "报价使用旧版计算公式，请由原业务责任人在源单据中核对并按当前公式重算、重新提交。"
+                item["details"] = [{"label": "单据公式版本", "value": quote.formula_version or "未记录"},
+                                   {"label": "当前公式版本", "value": FORMULA_VERSION}]
+            else:
+                item["unavailable_reason"] = "本批报价的提交版本、部门计算或审核状态需要核对，请在源单据中检查整批产品。"
         request = sources.get((row["stage"], row["entity_id"])) if row["module"] == "account_requests" else None
         if request is not None:
             name, username = request.display_name.strip(), request.username.strip()

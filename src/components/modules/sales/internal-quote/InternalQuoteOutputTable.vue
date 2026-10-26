@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch, type CSSProperties } from 'vue'
-import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
+import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
 import { ArrowLeft, Check, FileSpreadsheet, LoaderCircle, RotateCcw, Save, Search, X } from '@lucide/vue'
 import { internalQuoteOutputApi, type OutputCell, type OutputField, type OutputLayout } from '@/api/internalQuoteOutput'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
@@ -162,8 +162,7 @@ async function reset() {
 function beforeUnload(event: BeforeUnloadEvent) {
   if (dirty.value || saving.value) { event.preventDefault(); event.returnValue = '' }
 }
-onBeforeRouteLeave(canLeave)
-onBeforeRouteUpdate(canLeave)
+onBeforeUnmount(registerQuoteNavigationGuard(canLeave))
 window.addEventListener('beforeunload', beforeUnload)
 onBeforeUnmount(() => { ++generation; ++previewSequence; clearTimeout(timer); window.removeEventListener('beforeunload', beforeUnload) })
 watch(() => props.quoteId, () => {

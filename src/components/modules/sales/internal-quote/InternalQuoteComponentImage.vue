@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
+import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
+import { useQuoteOperationScope } from '@/features/internal-quote/operationScope'
 import { internalQuoteApi, internalQuoteAttachmentPreviewUrl, type ApiInternalQuoteAttachment } from '@/api/internalQuote'
 const props = defineProps<{ quoteId: string; componentId: string; componentName: string; revision: number; editable: boolean }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -7,6 +9,12 @@ const current = ref<ApiInternalQuoteAttachment>()
 const busy = ref(false)
 const error = ref('')
 let requestId = 0
+const captureScope = useQuoteOperationScope(() => `${props.quoteId}:${props.componentId}`)
+onBeforeUnmount(() => { ++requestId })
+onBeforeUnmount(registerQuoteNavigationGuard(() => {
+  if (busy.value) { error.value = '分项图片操作尚未完成，请等待结果后再切换。'; return false }
+  return true
+}))
 watch(() => [props.quoteId, props.componentId, props.revision], async () => {
   const request = ++requestId
   current.value = undefined
@@ -17,20 +25,24 @@ watch(() => [props.quoteId, props.componentId, props.revision], async () => {
   } catch { if (request === requestId) error.value = '分项图片读取失败，请重新读取报价。' }
 }, { immediate: true })
 async function upload(event: Event) {
+  const check = captureScope()
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file || !props.editable || busy.value) return
   busy.value = true; error.value = ''
   try {
-    current.value = await internalQuoteApi.uploadComponentImage(props.quoteId, props.componentId, file, props.revision)
+    const result = await internalQuoteApi.uploadComponentImage(props.quoteId, props.componentId, file, props.revision)
+    check()
+    current.value = result
     emit('changed')
   } catch (e) { error.value = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail || '图片上传失败，请检查权限和版本后重试。' }
   finally { busy.value = false; input.value = '' }
 }
 async function remove() {
+  const check = captureScope()
   if (!props.editable || busy.value || !window.confirm(`删除“${props.componentName}”的分项图片？`)) return
   busy.value = true; error.value = ''
-  try { await internalQuoteApi.deleteComponentImage(props.quoteId, props.componentId, props.revision); current.value = undefined; emit('changed') }
+  try { await internalQuoteApi.deleteComponentImage(props.quoteId, props.componentId, props.revision); check(); current.value = undefined; emit('changed') }
   catch (e) { error.value = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail || '删除失败，请重新读取报价后重试。' }
   finally { busy.value = false }
 }
