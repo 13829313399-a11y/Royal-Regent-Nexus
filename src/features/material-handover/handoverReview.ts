@@ -17,7 +17,7 @@ export function handoverReviewIssues(data: HandoverData): HandoverReviewIssue[] 
   }
   data.lines.forEach((line, index) => {
     const fields: string[] = [], messages: string[] = []
-    for (const [value, label] of [[line.item_code, '物料编码'], [line.item_name, '物料名称'], [line.unit, '单位']] as const) {
+    for (const [value, label] of [[line.item_code, '物料编码'], [line.item_name, '物料名称'], [line.unit, '单位'], [line.material_category, '物料分类']] as const) {
       if (missing(value)) { messages.push(`缺少${label}`); fields.push(`第${index + 1}行${label}`) }
     }
     if (!validNumber(line.quantity)) {

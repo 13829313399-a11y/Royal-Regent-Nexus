@@ -199,7 +199,7 @@ def test_incomplete_supplier_draft_can_be_completed_by_warehouse_without_posting
     doc = upload(client, headers)
     body = copy.deepcopy(doc['data'])
     body.update(source_no='', document_date=None)
-    body['lines'][0].update(item_code='', quantity='', unit='')
+    body['lines'][0].update(item_code='', quantity='', unit='', material_category='')
     saved = client.put(BASE + '/external/documents/' + doc['id'], headers=headers,
         json=dict(request_id=str(uuid4()), expected_revision=doc['revision'], data=body))
     assert saved.status_code == 200, saved.text
@@ -208,7 +208,7 @@ def test_incomplete_supplier_draft_can_be_completed_by_warehouse_without_posting
     denied = client.post(BASE + '/external/documents/' + doc['id'] + '/confirm', headers=headers,
         json=dict(request_id=str(uuid4()), expected_revision=draft['revision'], acknowledge_warnings=True))
     assert denied.status_code == 422, denied.text
-    for message in ('缺少原单号', '缺少单据日期', '第 1 行', '缺少物料编码', '缺少数量', '缺少单位', '交仓库补全'):
+    for message in ('缺少原单号', '缺少单据日期', '第 1 行', '缺少物料编码', '缺少数量', '缺少单位', '缺少物料分类', '交仓库补全'):
         assert message in denied.json()['detail']
     assert client.get(BASE + '/external/documents/' + doc['id'] + '/qr', headers=headers).status_code == 409
     internal = client.get(BASE + '/documents/' + doc['id'], params={'factory_id': FACTORY})
@@ -230,11 +230,12 @@ def test_incomplete_supplier_draft_can_be_completed_by_warehouse_without_posting
             assert '不能变更制单方或收发用途' in rejected.json()['detail']
     complete = copy.deepcopy(body)
     complete.update(source_no='WAREHOUSE-COMPLETED', document_date='2026-07-18')
-    complete['lines'][0].update(item_code='01-01-00001', quantity='40', unit='码')
+    complete['lines'][0].update(item_code='01-01-00001', quantity='40', unit='码', material_category='THREAD')
     result = client.post(BASE + '/documents/' + doc['id'] + '/actions/confirm', params={'factory_id': FACTORY},
         json=dict(request_id=str(uuid4()), expected_revision=draft['revision'], acknowledge_warnings=True, data=complete))
     assert result.status_code == 200, result.text
     assert result.json()['status'] == 'CONFIRMED' and result.json()['code']
+    assert result.json()['data']['lines'][0]['material_category'] == 'THREAD'
     assert result.json()['source_sha256'] == doc['source_sha256']
     assert workspace(client)['stock'] == []
 
