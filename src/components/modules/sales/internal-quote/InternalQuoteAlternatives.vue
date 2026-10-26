@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
+import { useQuoteOperationScope } from '@/features/internal-quote/operationScope'
 import { internalQuoteApi, type ApiInternalQuoteAlternativeFamily, type ApiInternalQuoteVersionComparison, type ApiInternalQuote } from '@/api/internalQuote'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
@@ -11,6 +13,7 @@ import type { InternalQuote, InternalQuoteSectionCode } from '@/types/internalQu
 const props = defineProps<{ quote: InternalQuote; hasUnsavedChanges?: () => boolean }>()
 const emit = defineEmits<{ open: [quoteId: string]; changed: []; archiveState: [archived: boolean] }>()
 const auth = useAuthStore()
+const captureScope = useQuoteOperationScope(() => props.quote.id)
 const family = ref<ApiInternalQuoteAlternativeFamily>()
 const error = ref('')
 const message = ref('')
@@ -53,6 +56,14 @@ const canRestoreDocument = computed(() => auth.can('internal_quote:archive', pro
 const restoreOpen = ref(false)
 const restoreReason = ref('')
 const restoreError = ref('')
+onBeforeUnmount(() => { ++quoteGeneration; ++loadSequence })
+onBeforeUnmount(registerQuoteNavigationGuard(() => {
+  if (busy.value || copyOpen.value || archiveTarget.value || restoreOpen.value || exportOpen.value || deleteId.value) {
+    error.value = '请先完成或关闭当前方案操作，再切换页面或厂区。'
+    return false
+  }
+  return true
+}))
 const canClone = computed(() => !documentArchive.value && ['sales-business', 'engineering'].some(department =>
   auth.can('internal_quote:clone', props.quote.factoryId, department) && auth.can('internal_quote:create', props.quote.factoryId, department)))
 const canManage = computed(() => !documentArchive.value && auth.can('internal_quote:sales_edit', props.quote.factoryId, 'sales-business'))
@@ -90,17 +101,19 @@ watch(() => props.quote.id, load, { immediate: true })
 watch(() => props.quote.headerRevision, () => { void load() })
 watch([baseId, targetId], () => { comparison.value = undefined })
 async function refreshAfterSync() {
+  const check = captureScope()
   const id = props.quote.id
   try {
     const latest = await internalQuoteApi.listAlternatives(id)
+    check()
     if (props.quote.id === id) family.value = latest
   } catch (cause) { error.value = `同步已保存，方案列表读取失败：${getApiErrorMessage(cause)}` }
 }
-async function run(action: () => Promise<void>) {
+async function run(action: (check: () => void) => Promise<void>) {
   if (busy.value) return
   busy.value = true
   error.value = ''; message.value = ''
-  try { await action() } catch (cause) { error.value = getApiErrorMessage(cause) }
+  try { await action(captureScope()) } catch (cause) { error.value = getApiErrorMessage(cause) }
   finally { busy.value = false }
 }
 function startCopy(nextKind: 'scenario' | 'version') {
@@ -128,17 +141,21 @@ function open(id: string) {
   try { ensureSaved(); emit('open', id) } catch (cause) { error.value = (cause as Error).message }
 }
 async function select(id: string) {
-  await run(async () => {
+  await run(async (check) => {
     if (!family.value || !canManage.value) return
     if (!selectionReason.value.trim()) throw new Error('请填写客户采用或改选的说明。')
-    family.value = await internalQuoteApi.selectAlternative(props.quote.id, { family_revision: family.value.revision, selected_quote_id: id, reason: selectionReason.value.trim() })
+    const result = await internalQuoteApi.selectAlternative(props.quote.id, { family_revision: family.value.revision, selected_quote_id: id, reason: selectionReason.value.trim() })
+    check()
+    family.value = result
     selectionReason.value = ''; message.value = id ? `已记录客户采用：${label(id)}` : '已清除客户采用标记，历史记录保留。'
   })
 }
 async function reported() {
-  await run(async () => {
+  await run(async (check) => {
     if (!canManage.value) return
-    family.value = await internalQuoteApi.markReported(props.quote.id, props.quote.headerRevision)
+    const result = await internalQuoteApi.markReported(props.quote.id, props.quote.headerRevision)
+    check()
+    family.value = result
     message.value = '已记录此方案版本实际报客日期。'; emit('changed')
   })
 }
@@ -188,14 +205,18 @@ async function restoreDocument() {
   } finally { busy.value = false }
 }
 async function removeDraft(id: string) {
-  await run(async () => {
+  await run(async (check) => {
     ensureSaved()
     if (!family.value || !family.value.items.find(item => item.quote_id === id)?.can_delete) return
     const fallback = family.value.family_id
     const target = await internalQuoteApi.get(id)
+    check()
     await internalQuoteApi.deleteQuote(id, target.header_revision)
+    check()
     deleteId.value = ''
-    family.value = await internalQuoteApi.listAlternatives(fallback)
+    const result = await internalQuoteApi.listAlternatives(fallback)
+    check()
+    family.value = result
     message.value = '未使用草稿已删除。'
     if (props.quote.id === id) emit('open', fallback)
     else emit('changed')
@@ -203,7 +224,7 @@ async function removeDraft(id: string) {
 }
 
 async function compare() {
-  await run(async () => {
+  await run(async (check) => {
     ensureSaved()
     if (!baseId.value || !targetId.value || baseId.value === targetId.value) throw new Error('请选择两个不同的方案版本。')
     const base = baseId.value, target = targetId.value
@@ -212,6 +233,7 @@ async function compare() {
     const [result, baseQuote, targetQuote] = await Promise.all([
       internalQuoteApi.compareVersion(target, base), internalQuoteApi.get(base), internalQuoteApi.get(target),
     ])
+    check()
     if (props.quote.id === quoteId && baseId.value === base && targetId.value === target) {
       comparedBase.value = baseQuote; comparedTarget.value = targetQuote; comparison.value = result
     }

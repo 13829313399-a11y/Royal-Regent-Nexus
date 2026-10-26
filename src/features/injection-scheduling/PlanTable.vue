@@ -151,6 +151,24 @@ const table = useVueTable({
 });
 const visible = computed(() => table.getVisibleLeafColumns()),
   model = computed(() => table.getRowModel().rows);
+const viewportWidth = ref(0);
+const frozenColumns = computed(() => {
+  // Keep at least half of the viewport scrollable without changing the saved preference.
+  const budget = viewportWidth.value / 2;
+  let width = 38, count = 0;
+  for (const column of visible.value.slice(0, Math.max(0, freeze.value))) {
+    if (width + column.getSize() > budget) break;
+    width += column.getSize();
+    count++;
+  }
+  return { count, width };
+});
+watch(() => frozenColumns.value.width, (width, previous) => {
+  // Preserve the visible content beside the frozen area when that area changes size.
+  if (scroll.value?.scrollLeft)
+    scroll.value.scrollLeft = Math.max(0, scroll.value.scrollLeft + previous - width);
+}, { flush: 'post' });
+let viewportObserver: ResizeObserver | undefined;
 const virtual = useVirtualizer(
   computed(() => ({
     count: model.value.length,
@@ -212,16 +230,23 @@ function rememberScroll() {
       left: scroll.value.scrollLeft,
     };
 }
-onMounted(() =>
+onMounted(() => {
+  if (scroll.value) {
+    const measure = () => { viewportWidth.value = scroll.value?.clientWidth ?? 0; };
+    measure();
+    viewportObserver = new ResizeObserver(measure);
+    viewportObserver.observe(scroll.value);
+  }
   nextTick(() => {
     const position = view.scroll.table;
     if (scroll.value && position) {
       scroll.value.scrollTop = position.top;
       scroll.value.scrollLeft = position.left;
     }
-  }),
-);
+  });
+});
 onBeforeUnmount(() => {
+  viewportObserver?.disconnect();
   if (viewContext !== view.contextGeneration) return;
   rememberScroll();
   view.table = {
@@ -281,7 +306,7 @@ watch(
 );
 function cellStyle(index: number) {
   const c = visible.value[index]!,
-    fixed = index < freeze.value;
+    fixed = index < frozenColumns.value.count;
   return {
     width: c.getSize() + 'px',
     minWidth: c.getSize() + 'px',
@@ -619,6 +644,7 @@ function restoreView(id: string) {
     <div
       ref="scroll"
       class="inj-grid-scroll"
+      :style="{ scrollPaddingInlineStart: frozenColumns.width + 8 + 'px' }"
       @scroll="rememberScroll"
       @copy="copy"
       @paste="paste"

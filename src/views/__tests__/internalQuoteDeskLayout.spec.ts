@@ -86,7 +86,7 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['新建内部报价', '复制报价', '业务部', '工程部', '搜索报价号']) expect(homeSource).toContain(text)
     for (const text of ['报价经营概览', '总报价数', '进行中报价数', '已完成报价数', '已取消报价数', '本周统计', '本月统计', '本年统计', '报价状态占比', '各客户报价数量', '客户首次出价用时', '首次建单至首次正式输出', '用时中位数', 'InternalQuotePendingOutput']) expect(homeSource).toContain(text)
     expect(homeSource).not.toContain('进行中报价进度')
-    expect(homeSource).toContain('<th>核价就绪情况')
+    expect(homeSource).toMatch(/<th\b[^>]*>核价就绪情况/)
     expect(homeSource).toContain('InternalQuoteStatusDonut')
     expect(homeSource).not.toContain('statusDonutStyle')
     expect(statusDonutSource).toContain('viewBox="0 0 160 160"')
@@ -175,7 +175,7 @@ describe('internal quote desk frontend layout', () => {
     expect(sectionEditorSource).toContain('删除导入附件和相关数据？')
     expect(sectionEditorSource).toContain('该文件仍在使用的导入明细及关联图片会被清除')
     expect(sectionEditorSource).toContain('未识别为本部门结构化报价单，已作为普通附件保存')
-    for (const text of ['onBeforeRouteUpdate', 'onBeforeRouteLeave', 'beforeunload', '有未保存修改', '是否先保存为草稿', '不保存并切换', '继续填写', '保存草稿并切换', 'confirmUnsavedNavigation']) expect(sectionEditorSource).toContain(text)
+    for (const text of ['registerQuoteNavigationGuard', 'beforeunload', '有未保存修改', '是否先保存为草稿', '不保存并切换', '继续填写', '保存草稿并切换', 'confirmUnsavedNavigation']) expect(sectionEditorSource).toContain(text)
     for (const text of ['isOwnPendingSubmission', 'canWithdraw', '返回修改', '内容没有变化，沿用 revision', '相同内容不会重复生成版本']) expect(sectionEditorSource).toContain(text)
     expect(apiSource).toContain('/withdraw')
     expect(storeSource).toContain('submittedById: section.submitted_by_id')
@@ -319,7 +319,7 @@ describe('internal quote desk frontend layout', () => {
     expect(homeSource).toMatch(/router\.push\(getQuoteRoute\(`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/\$\{target\}`\)\)/)
 
     for (const detailSource of [collaborationSource, summarySource, exportSource]) {
-      expect(detailSource).toMatch(/const getQuoteRoute = \(path: string\) => getFactoryScopedRoute\([\s\S]{0,100}isFactoryContextId\(quote\.value\.factoryId\) \? quote\.value\.factoryId : 'huaxing'/)
+      expect(detailSource).toMatch(/const getQuoteRoute = \(path: string\) => getFactoryScopedRoute\([\s\S]{0,180}loadedQuote\.value\.factoryId : selectedFactoryId\.value/)
       expect(detailSource).not.toMatch(/<RouterLink[^>]+to="\/modules\/sales-business\/internal-quote-desk/)
     }
 

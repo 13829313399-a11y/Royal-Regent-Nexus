@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app import db as database
 from app.models.assistant import AssistantMessage
-from app.schemas.assistant import CreateSession, RenameSession, SendMessage, PageContext, ArtifactCreate, ArtifactVersion, FavoritePatch, ActionRequest
+from app.schemas.assistant import CreateSession, RenameSession, SendMessage, PageContext, ArtifactCreate, ArtifactVersion, FavoritePatch, ActionRequest, DocumentSearch, DocumentReplacement
 from app.services.assistant import service, runtime, capabilities, help_registry, storage, files, artifacts, visibility
 from app.services.assistant.errors import AssistantError
 
@@ -48,23 +48,41 @@ router = APIRouter(prefix="/api/assistant", tags=["assistant"], route_class=Assi
 
 @router.get("/capabilities")
 def get_capabilities(user=Depends(viewer)):
+    from app.services.assistant import diagnostics
     value = capabilities.capabilities()
+    value["diagnostics_available"] = diagnostics.allowed(user)
     if value["schema_status"] == "ready":
-        value["search"]["last_result"] = service.last_search_result(user)
+        recent = service.recent_execution_status(user)
+        value["execution_status"] = recent["chat"]
+        value["search"].update(recent["search"])
     return value
+
+
+@router.get("/diagnostics")
+def get_diagnostics(user=Depends(viewer)):
+    from app.services.assistant import diagnostics
+    return diagnostics.details(user)
+
+
+@router.get("/coverage")
+def get_coverage(factory_id: str = Query(..., min_length=1, max_length=32),
+                 module_id: str | None = Query(None, min_length=1, max_length=64), user=Depends(viewer)):
+    from app.services.assistant import module_coverage
+    return JSONResponse(module_coverage.report(user, factory_id, module_id),
+                        headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/help/context")
 def get_context(module_id: str, route_name: str, factory_id: str | None = None, user=Depends(viewer)):
     capabilities.require_enabled(schema=False)
     items = help_registry.context(user, PageContext(module_id=module_id, route_name=route_name, factory_id=factory_id))
-    return dict(items=[help_registry.public(a) for a in items], status="ready" if all(a.status == "verified" for a in items) else "partial")
+    return JSONResponse(dict(items=[help_registry.public(a, verification=True) for a in items], status="ready" if all(a.status == "verified" for a in items) else "partial"), headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/help/articles/{help_id}")
 def article(help_id: str, user=Depends(viewer)):
     capabilities.require_enabled(schema=False)
-    return help_registry.public(help_registry.get(user, help_id))
+    return JSONResponse(help_registry.public(help_registry.get(user, help_id), verification=True), headers={"Cache-Control": "private, no-store"})
 
 
 @router.post("/sessions")
@@ -142,14 +160,15 @@ def export(sid: str, user=Depends(viewer)):
                     chunks.append(part["text"] + "\n")
                 elif part["type"] == "image_ref":
                     chunks.append("![主动上传的图片](" + storage.data_url(db, user, sid, part["attachment_id"]) + ")\n")
-                elif part["type"] in ("tool_call", "tool_result"):
+                elif part["type"] in ("tool_call", "tool_result", "business_snapshot", "business_failure"):
                     chunks.append("\n工具记录：\n\n~~~~json\n" + json_safe(part) + "\n~~~~\n")
                 elif part["type"] == "evidence":
-                    chunks.append("\n依据：\n" + artifacts.source_lines(part["sources"]) + "\n检索状态：" + json_safe(part["search"]))
+                    chunks.append("\n资料状态：\n" + artifacts.evidence_summary(part) + "\n依据：\n" + artifacts.source_lines(part["sources"]) + "\n检索诊断：" + json_safe(part["search"]))
             if safe["context_descriptor"]:
                 chunks.append("\n页面上下文：" + json_safe(safe["context_descriptor"]) + "\n")
             for c in safe["help_citations"]:
                 chunks.append("来源：" + c["id"] + " / " + c["version"] + "\n")
+                chunks.append('说明指纹：' + (c.get('source_fingerprint') or '旧记录未保存，不能据此确认当前规则。') + '\n')
     return Response("\n".join(chunks), media_type="text/markdown; charset=utf-8", headers={"Cache-Control": "private, no-store", "Content-Disposition": 'attachment; filename="yaoling-conversation.md"'})
 
 
@@ -185,7 +204,7 @@ async def upload_document(sid: str, file: UploadFile = File(), user=Depends(view
     import asyncio
     capabilities.require_enabled()
     raw = await file.read(settings.assistant_max_file_bytes+1)
-    return await asyncio.to_thread(files.save, user, sid, raw, file.filename)
+    return await asyncio.to_thread(files.save, user, sid, raw, file.filename, file.content_type)
 
 
 @router.get("/files/{ident}")
@@ -194,11 +213,28 @@ def get_document(ident: str, user=Depends(viewer)):
     return files.metadata(user, ident)
 
 
-@router.get("/files/{ident}/content")
-def document_content(ident: str, extracted: bool = False, user=Depends(viewer)):
+@router.post('/sessions/{sid}/files/search')
+def search_documents(sid: str, payload: DocumentSearch, user=Depends(viewer)):
     capabilities.require_enabled()
-    data, media = files.content(user, ident, extracted)
+    files.require_schema()
+    with database.SessionLocal() as db:
+        service.owned(db,user,sid)
+        result=files.search_documents(db,user,sid,payload.document_ids,payload.query,'inspection')
+    return JSONResponse(result,headers={'Cache-Control':'private, no-store'})
+
+
+@router.get("/files/{ident}/content")
+def document_content(ident: str, extracted: bool = False, version: str | None = Query(None,max_length=64), user=Depends(viewer)):
+    capabilities.require_enabled()
+    data, media = files.content(user, ident, extracted, version)
     return Response(data, media_type=media, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.get('/files/{ident}/pages/{page}')
+def document_page(ident: str, page: int, version: str | None = Query(None,max_length=64), user=Depends(viewer)):
+    capabilities.require_enabled()
+    return Response(files.page_preview(user, ident, page, version), media_type='image/png',
+                    headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
 @router.delete("/files/{ident}")
@@ -206,6 +242,13 @@ def delete_document(ident: str, user=Depends(viewer)):
     capabilities.require_enabled()
     files.remove(user, ident)
     return Response(status_code=204)
+
+
+@router.post('/files/{ident}/replace')
+def replace_document(ident: str, payload: DocumentReplacement, user=Depends(viewer)):
+    capabilities.require_enabled()
+    return JSONResponse(files.replace(user,ident,payload.replacement_id,payload.expected_version,payload.replacement_version),
+                        headers={'Cache-Control':'private, no-store'})
 
 
 @router.post("/sessions/{sid}/artifacts")
@@ -252,7 +295,11 @@ def answer_export(rid: str, format: str = "md", user=Depends(viewer)):
     answer = next(m for m in snapshot["items"] if m["role"] == "assistant")
     if answer.get("unavailable"):
         raise AssistantError("source_unavailable", "来源已失效，无法导出。", 410)
-    value, media = artifacts.render("".join(p["text"] for p in answer["content_parts"] if p["type"] == "text"), "markdown", "曜灵回答", visibility.sources(answer["content_parts"]), format)
+    content = "".join(p["text"] for p in answer["content_parts"] if p["type"] == "text")
+    evidence = next((p for p in answer["content_parts"] if p["type"] == "evidence"), {})
+    if summary := artifacts.evidence_summary(evidence):
+        content += "\n\n资料状态：\n" + summary
+    value, media = artifacts.render(content, "markdown", "曜灵回答", visibility.sources(answer["content_parts"]), format)
     return Response(value, media_type=media, headers={"Cache-Control": "private, no-store", "Content-Disposition": f'attachment; filename="yaoling-answer.{format}"'})
 
 
@@ -266,14 +313,81 @@ def resolve_action(payload: ActionRequest, user=Depends(viewer)):
         raise AssistantError("source_unavailable", "操作已失效，请重新查询。", 410)
     action = actions[payload.index]
     if action["type"] == "highlight":
-        help_registry.get(user, action["help_id"])
+        if not action.get('source_fingerprint'):
+            raise AssistantError('help_legacy', '旧引导未保存说明指纹，请从本页说明重新开始。', 409)
+        help_registry.require_references(user, [action])
     elif action["type"] == "open_record":
         from app.services.assistant.business import ROUTES, authorize
         name = next((n for n, (_, route) in ROUTES.items() if route == action["route_name"]), None)
+        if action['route_name'] in ('spray-demands', 'spray-execution'):
+            name = 'get_spray_operations_snapshot'
         with database.SessionLocal() as db:
             authorize(db, user, name, action["query"].get("factory", "authorized"))
-        if action["params"] or set(action["query"]) - {"factory", "entry"}:
-            raise AssistantError("action_invalid", "导航参数未注册。")
+            keys = {"factory"} if name == 'get_internal_quote_overview' else {"factory", "order"} if name == "list_customer_orders" else {"factory", "demand"} if name == "get_injection_overview" else {"factory", "entry", "view", "module", "q", "due", "unread"} if name == "get_my_work" else {"factory", "tab", "carton_record", "carton_from", "carton_to"} if name == "get_carton_overview" else {"factory", "printer", "tab"}
+            valid_params = set(action['params']) == {'quoteId'} if name == 'get_internal_quote_overview' else not action['params']
+            if name == 'get_uv_operations_snapshot':
+                keys = {'factory', 'uv_task'}
+            if name == 'get_spray_operations_snapshot':
+                keys = {'factory', 'spray_demand' if action['route_name'] == 'spray-demands' else 'spray_task'}
+            if not valid_params or set(action["query"]) - keys:
+                raise AssistantError("action_invalid", "导航参数未注册。")
+            if name == 'get_spray_operations_snapshot':
+                from app.models import spray_ops as spray_models
+                demand = action['route_name'] == 'spray-demands'
+                kind, model = ('demand', spray_models.SprayOpsDemand) if demand else ('task', spray_models.SprayOpsTask)
+                factory, ident = action['query'].get('factory'), action['query'].get('spray_' + kind)
+                if (not ident or action.get('resource') != dict(module_id='spray-production', resource_type=kind, resource_id=ident)
+                    or not db.scalar(select(model.id).where(model.id == ident, model.factory_id == factory))):
+                    raise AssistantError('source_unavailable', '原喷油记录已不可用，请重新查询。', 410)
+            if name == 'get_uv_operations_snapshot':
+                from app.models.uv_operations import UvOpsTask, FACTORY
+                factory, ident = action['query'].get('factory'), action['query'].get('uv_task')
+                if (factory != FACTORY or not ident
+                    or action.get('resource') != dict(module_id='uv-operations', resource_type='task', resource_id=ident)
+                    or not db.scalar(select(UvOpsTask.id).where(UvOpsTask.id == ident, UvOpsTask.factory_id == factory))):
+                    raise AssistantError('source_unavailable', '原UV任务已不可用，请重新查询。', 410)
+            if name == 'get_internal_quote_overview':
+                from app.models.internal_quote import InternalQuote
+                factory, ident = action['query'].get('factory'), action['params'].get('quoteId')
+                if (not ident or action.get('resource') != dict(module_id='internal-quote', resource_type='quote', resource_id=ident)
+                    or not db.scalar(select(InternalQuote.id).where(InternalQuote.id == ident, InternalQuote.factory_id == factory))):
+                    raise AssistantError('source_unavailable', '原报价版本已不可用，请重新查询。', 410)
+            if name == "get_my_work":
+                from app.services.assistant import work_items
+                from app.services.work_center import service as work_service
+                factory, ident = action['query'].get('factory', 'authorized'), action['query'].get('entry')
+                expected = dict(module_id='work-center', resource_type='entry' if ident else 'overview', resource_id=ident or factory)
+                if action.get('resource') != expected:
+                    raise AssistantError('source_unavailable', '原事项入口已失效，请重新查询。', 410)
+                if ident and not work_items.in_factory(work_service.detail(db, user, ident), factory):
+                    raise AssistantError('source_unavailable', '原事项已不在当前范围，请重新查询。', 410)
+            if name == "list_customer_orders":
+                from app.services.assistant import orders
+                factory, ident = action["query"].get("factory"), action["query"].get("order")
+                if not ident or action.get("resource") != dict(module_id="customer-orders", resource_type="order", resource_id=ident) or not orders.exists(db, factory, ident):
+                    raise AssistantError("source_unavailable", "原订单已不可用，请重新查询。", 410)
+            if name == "get_injection_overview":
+                from app.models.injection_scheduling import Demand
+                factory, ident = action['query'].get('factory'), action['query'].get('demand')
+                expected = dict(module_id='injection-scheduling', resource_type='demand' if ident else 'overview', resource_id=ident or factory)
+                if action.get('resource') != expected or ident and not db.scalar(select(Demand.id).where(Demand.id == ident, Demand.factory_id == factory)):
+                    raise AssistantError('source_unavailable', '原需求已不可用，请重新查询。', 410)
+            if name == "get_printer_status":
+                from app.models.three_d_printing import ThreeDPrintingPrinter
+                factory, ident = action['query'].get('factory'), action['query'].get('printer')
+                expected = dict(module_id='three-d-printing', resource_type='printer' if ident else 'overview', resource_id=ident or factory)
+                if (action.get('resource') != expected or action['query'].get('tab') not in (None, 'machines')
+                    or ident and not db.scalar(select(ThreeDPrintingPrinter.id).where(ThreeDPrintingPrinter.id == ident, ThreeDPrintingPrinter.factory_id == factory))):
+                    raise AssistantError('source_unavailable', '原机台已不可用，请重新查询。', 410)
+            if name == 'get_carton_overview':
+                from app.services.assistant import cartons
+                factory, ident = action['query'].get('factory'), action['query'].get('carton_record')
+                inventory = isinstance(ident, str) and ident.startswith('INVENTORY:')
+                expected = dict(module_id='carton-procurement', resource_type='inventory' if inventory else 'order', resource_id=ident)
+                if (action.get('resource') != expected or action['query'].get('tab') != ('inventory-summary' if inventory else 'orders')
+                    or cartons.selected_record(db, user, factory, ident, date_from=action['query'].get('carton_from', ''),
+                        date_to=action['query'].get('carton_to', '')) is None):
+                    raise AssistantError('source_unavailable', '原纸品记录已不可用，请重新查询。', 410)
     else:
         raise AssistantError("action_invalid", "操作未注册。")
     return action

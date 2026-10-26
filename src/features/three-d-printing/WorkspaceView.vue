@@ -17,6 +17,7 @@ import AuditPage from "./pages/AuditPage.vue";
 import OperationsPage from "./pages/OperationsPage.vue";
 import MigrationPage from "./pages/MigrationPage.vue";
 import LegacyPrinterGrid from "./components/LegacyPrinterGrid.vue";
+import PrinterDetail from './components/PrinterDetail.vue';
 import ReportsPage from "./pages/ReportsPage.vue";
 const workspace = useWorkspace();
 provide(workspaceKey, workspace);
@@ -29,7 +30,25 @@ const {
   successMessage,
   live,
   loadDashboard,
+  assistantPrinter,
+  assistantPrinterId,
+  openPrinter,
+  closePrinter,
+  selectedPrinter,
+  selectAssistantPrinter,
+  invalidateAssistantPrinter,
 } = workspace;
+const detailId = ref(''), detailOpen = ref(false);
+let printerTrigger: HTMLElement | null = null;
+watch(selectedPrinter, id => {
+  if (id) {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && focused !== document.body && !focused.closest('.printer-overlay')) printerTrigger = focused;
+    detailId.value = id; detailOpen.value = true;
+  } else detailOpen.value = false;
+}, { immediate: true, flush: 'sync' });
+function afterDetailClose() { if (!selectedPrinter.value) detailId.value = ''; }
+function printerReturnFocus() { return printerTrigger?.isConnected ? printerTrigger : document.querySelector<HTMLElement>('#tdp-main'); }
 const order = [
   "overview",
   "records",
@@ -91,7 +110,7 @@ function releaseViewHeight() {
         <span>3D打印管理<small>部门生产管理系统 · 华康A</small></span>
       </div>
       <div class="legacy-sidebar-scroll">
-        <nav ref="nav" aria-label="3D打印管理菜单" :class="{ 'tdp-reveal-once': firstReveal }"
+        <nav ref="nav" data-yl-help="three-d-printing.navigation" aria-label="3D打印管理菜单" :class="{ 'tdp-reveal-once': firstReveal }"
           :style="{
             '--tdp-nav-top': `${indicator.top}px`,
             '--tdp-nav-left': `${indicator.left}px`,
@@ -125,7 +144,7 @@ function releaseViewHeight() {
         </details>
       </div>
       <footer class="legacy-sidebar-footer">
-        <div class="legacy-sync">
+        <div class="legacy-sync" data-yl-help="three-d-printing.sync">
           <span
             ><i :class="{ connected: live.connected.value }" />{{
               live.connected.value ? "实时同步中" : "定时同步中"
@@ -154,6 +173,11 @@ function releaseViewHeight() {
     </aside>
     <main id="tdp-main" class="legacy-main" tabindex="-1">
       <h1 :class="{ 'tdp-reveal-once': firstReveal }">{{ title }}</h1>
+      <div v-if="assistantPrinter" class="tdp-assistant-selection" role="status">
+        <span>曜灵查询范围：{{ assistantPrinter.machine_no }} 号机 · {{ assistantPrinter.name }}</span>
+        <button type="button" @click="openPrinter(assistantPrinter.id)">查看机台</button>
+        <button type="button" @click="assistantPrinterId = ''">清除选择</button>
+      </div>
       <p v-if="errorMessage" role="alert" class="legacy-error">
         {{ errorMessage }}
       </p>
@@ -197,6 +221,10 @@ function releaseViewHeight() {
         </Transition>
       </div>
     </main>
+    <PrinterDetail v-if="detailId" :key="detailId" :id="detailId" :open="detailOpen"
+      :printer="dashboard?.printers.find(p => p.id === detailId)" :return-focus="printerReturnFocus"
+      @close="closePrinter" @after-close="afterDetailClose"
+      @ready="selectAssistantPrinter(detailId)" @unavailable="invalidateAssistantPrinter(detailId)" />
   </div>
 </template>
 <style src="./workspace.css"></style>

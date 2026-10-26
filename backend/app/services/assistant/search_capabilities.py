@@ -43,21 +43,30 @@ def configured():
 def capability():
     result = dict(configured=configured(), verification="unverified", verified_at=None, supported_modes=["off"],
         supported_protocols=["dashscope_multimodal"] if configured() else [], verified_combinations=[],
-        source_return=False, inline_citations=False, page_fetch=False, last_result=None)
-    if not result["configured"] or not settings.assistant_search_capabilities_file:
+        source_return=False, inline_citations=False, page_fetch=True, last_result=None,
+        reason_code="search_unconfigured", status_label="联网连接待配置；可关闭联网继续问答。")
+    if not result["configured"]:
+        return result
+    result.update(reason_code="search_profile_missing", status_label="联网连接已配置，能力组合尚未验证。")
+    if not settings.assistant_search_capabilities_file:
         return result
     try:
         p = SearchProfile.model_validate_json(Path(settings.assistant_search_capabilities_file).read_text(encoding="utf-8"))
         if (p.model, p.endpoint, p.region) != (settings.assistant_model, settings.assistant_search_endpoint, settings.assistant_search_region):
+            result.update(reason_code="search_profile_mismatch", status_label="联网能力记录与当前模型、地域或连接不匹配，请管理员核对。")
             return result
         combos = [c.model_dump() for c in p.verified_combinations if c.model == p.model and c.source_return and c.forced_search]
-        result.update(last_result=p.last_result, verified_combinations=combos)
+        # Profile probes are historical verification, never a user's last execution.
+        result.update(verified_combinations=combos, reason_code="search_combination_unverified",
+                      status_label="尚无可用的联网组合；可关闭联网继续问答。")
         if combos:
             result.update(verification="verified", verified_at=max(c["verified_at"] for c in combos),
                           supported_modes=["off", "auto", "on"], source_return=True,
-                          inline_citations=any(c["inline_citations"] for c in combos))
+                          inline_citations=any(c["inline_citations"] for c in combos), reason_code=None,
+                          status_label="可使用已验证的联网组合；实际来源以本次返回为准。")
     except (OSError, ValueError, json.JSONDecodeError):
         result["verification"] = "failed"
+        result.update(reason_code="search_profile_invalid", status_label="联网能力记录无法读取，请管理员核对。")
     return result
 
 

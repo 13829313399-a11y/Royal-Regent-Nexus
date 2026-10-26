@@ -11,7 +11,9 @@ import {
   LockKeyhole,
   Rocket,
 } from '@lucide/vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
+import { quoteSelection, useQuoteAssistantSelection } from '@/features/internal-quote/assistantContext'
 import { useRoute, useRouter } from 'vue-router'
 import type { ApiInternalQuoteVersionComparison } from '@/api/internalQuote'
 import { getFactoryScopedRoute, isFactoryContextId } from '@/data/enterpriseMock'
@@ -34,6 +36,8 @@ const finalReason = ref('')
 const finalRejectError = ref('')
 const versionBaseId = ref('')
 const comparison = ref<ApiInternalQuoteVersionComparison>()
+let comparisonRequest = 0
+const comparisonLoading = ref(false)
 const tableDirty = ref(false)
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
@@ -86,7 +90,7 @@ const isForeignQuote = computed(() => isForeignFactory(authStore, quote.value.fa
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignQuote.value)
 const getQuoteRoute = (path: string) => getFactoryScopedRoute(
   path,
-  isFactoryContextId(quote.value.factoryId) ? quote.value.factoryId : 'huaxing',
+  loadedQuote.value && isFactoryContextId(loadedQuote.value.factoryId) ? loadedQuote.value.factoryId : selectedFactoryId.value,
 )
 const versionCandidates = computed(() => quoteStore.versionCandidates[quote.value.id] ?? [])
 const statusMeta: Record<InternalQuoteSectionStatus, { label: string; tone: string }> = {
@@ -166,10 +170,31 @@ function toggleFinalReject() {
 
 async function compareSelectedVersion() {
   if (!versionBaseId.value) return
+  const sequence = ++comparisonRequest, target = quoteId.value, base = versionBaseId.value
+  comparison.value = undefined
+  comparisonLoading.value = true
   errorMessage.value = ''
-  try { comparison.value = await quoteStore.compareVersion(quote.value.id, versionBaseId.value) }
-  catch (error) { errorMessage.value = error instanceof Error ? error.message : '版本对比失败。' }
+  try {
+    const result = await quoteStore.compareVersion(target, base)
+    if (sequence === comparisonRequest && target === quoteId.value && base === versionBaseId.value) comparison.value = result
+  } catch (error) { if (sequence === comparisonRequest) errorMessage.value = error instanceof Error ? error.message : '版本对比失败。' }
+  finally { if (sequence === comparisonRequest) comparisonLoading.value = false }
 }
+watch([quoteId, versionBaseId], () => { ++comparisonRequest; comparison.value = undefined; comparisonLoading.value = false })
+onBeforeUnmount(() => { ++comparisonRequest })
+onBeforeUnmount(registerQuoteNavigationGuard(() => {
+  if (finalRejectOpen.value) { errorMessage.value = '请先完成或关闭退回操作，再切换页面或厂区。'; return false }
+  return true
+}))
+useQuoteAssistantSelection(() => {
+  const pair = comparison.value?.base.id === versionBaseId.value && comparison.value?.target.id === quoteId.value
+  return quoteSelection(selectedFactoryId.value, pair ? [versionBaseId.value, quoteId.value] : [quoteId.value], {
+    ...(pair ? { view: 'compare' } : {}),
+    ...(quoteStore.detailLoading || quoteStore.quoteDetailVerifiedId !== quoteId.value || loadedQuote.value?.factoryId !== selectedFactoryId.value || comparisonLoading.value
+      ? { scope_error: '原报价或版本比较尚未读取成功，请先完成读取。' } : {}),
+    scope_note: '只查询已保存版本；表格中未保存的试算不带入。',
+  })
+})
 
 function finalActionLabel() {
   if (archived.value) return '返回协作页查看归档状态'
@@ -215,6 +240,13 @@ watch([quoteId, canFinalApprove], () => {
 
 <template>
   <div class="quote-summary-page">
+    <section v-if="!loadedQuote || quoteStore.detailLoading || quoteStore.quoteDetailFailedId === quoteId" class="rounded-xl border border-border bg-card p-5" aria-live="polite">
+      <h1 class="text-lg font-semibold">{{ quoteStore.detailLoading ? '正在读取原报价…' : '原报价暂不可用' }}</h1>
+      <p v-if="quoteStore.errorMessage" role="alert" class="my-3 text-destructive">{{ quoteStore.errorMessage }}</p>
+      <button type="button" class="my-3 rounded-md border border-input px-4 py-2 focus-visible:outline-2 focus-visible:outline-ring" :disabled="quoteStore.detailLoading" @click="loadQuote">重新读取</button>
+      <RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')" class="ml-4 text-primary underline">返回报价首页</RouterLink>
+    </section>
+    <div v-if="loadedQuote" v-show="!quoteStore.detailLoading && quoteStore.quoteDetailFailedId !== quoteId" class="quote-verified-content">
     <nav class="quote-breadcrumb" aria-label="内部报价导航">
       <RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft aria-hidden="true" />报价首页</RouterLink>
       <ChevronRight aria-hidden="true" />
@@ -253,10 +285,12 @@ watch([quoteId, canFinalApprove], () => {
       <article class="quote-final-release" :class="{ ready: allSectionsReady }"><Rocket aria-hidden="true" /><div><span>{{ isDirectOutput ? '方案直接输出' : isWholeQuoteReview ? '整单审核与受控输出' : '业务跟客最终放行' }}</span><h2>{{ finalPanelTitle }}</h2><p>{{ finalPanelDescription }}</p><div v-if="quote.finalReleaseStatus === 'rejected'" class="final-rejected">{{ isWholeQuoteReview ? '上一轮整单审核已退回，报价头及全部部门内容已解锁。' : '上一轮最终放行已退回，可修正后由负责跟客重新放行。' }}</div></div><div class="final-buttons"><button v-if="!isWholeQuoteReview && quote.status === 'final_pending' && canFinalApprove" type="button" class="reject" @click="toggleFinalReject">退回历史待审放行</button><button type="button" :disabled="!archived && (isWholeQuoteReview ? (isReleased && !canExport) : (!allSectionsReady || (['fully_approved','final_pending'].includes(quote.status) && !canResponsibleRelease) || (isReleased && !canExport)))" @click="runFinalAction"><Download v-if="canOpenExport" aria-hidden="true" /><Rocket v-else aria-hidden="true" />{{ finalActionLabel() }}</button></div></article>
     </section>
     <section v-if="!isWholeQuoteReview && finalRejectOpen && canFinalApprove" class="quote-final-reason"><div><strong>退回最终放行</strong><span>原因将写入不可变最终审核记录并通知提交人。</span></div><textarea v-model="finalReason" rows="2" placeholder="必须填写退回原因" /><button type="button" @click="finalRejectOpen = false">取消</button><button type="button" class="primary" :disabled="!finalReason.trim() || quoteStore.submitting || !canFinalApprove" @click="rejectFinal">{{ quoteStore.submitting ? '退回中…' : '确认退回' }}</button><p v-if="finalRejectError" class="quote-final-inline-error" role="alert">{{ finalRejectError }}</p></section>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.quote-verified-content { display: contents; }
 .quote-summary-page{display:grid;gap:14px;padding-bottom:32px}.quote-breadcrumb{display:flex;align-items:center;gap:7px;color:#94a3b8;font-size:9px}.quote-breadcrumb a{display:inline-flex;align-items:center;gap:5px;color:#475569;font-weight:800}.quote-breadcrumb a:hover{color:#0f766e}.quote-breadcrumb svg{width:12px}.quote-breadcrumb strong{color:#0f766e}.quote-summary-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}.quote-eyebrow{color:#0f766e;font-size:10px;font-weight:900;letter-spacing:.08em}.quote-summary-head h1{margin:5px 0 0;color:#0f172a;font-size:30px;font-weight:950;letter-spacing:-.04em}.quote-summary-head p{margin:7px 0 0;color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px}.quote-total-card{display:grid;min-width:280px;border:1px solid #99f6e4;border-radius:13px;background:#f0fdfa;padding:13px 16px;text-align:right}.quote-total-card span{color:#0f766e;font-size:9px;font-weight:900}.quote-total-card strong{margin-top:5px;color:#115e59;font-size:21px}.quote-total-card small{margin-top:4px;color:#0f766e;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px}.quote-page-message{margin:0;border-radius:8px;padding:8px 11px;font-size:9px}.quote-page-message.success{border:1px solid #a7f3d0;background:#ecfdf5;color:#047857}.quote-page-message.error{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}.quote-readonly-banner{display:flex;align-items:center;gap:7px;margin:0;border:1px solid #99f6e4;border-radius:9px;background:#f0fdfa;padding:9px 11px;color:#0f766e;font-size:11px}.quote-readonly-banner svg{width:15px;flex:0 0 auto}
 .quote-summary-products{display:flex;align-items:center;gap:7px;overflow:auto;border:1px solid #dbe5ea;border-radius:11px;background:#fff;padding:9px}.quote-summary-products>span{flex:0 0 auto;margin-right:4px;color:#64748b;font-size:10px}.quote-summary-products button{display:flex;flex:0 0 auto;align-items:center;gap:5px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;padding:7px 9px;color:#475569;font-size:10px}.quote-summary-products button.active{border-color:#14b8a6;background:#f0fdfa;color:#0f766e}.quote-summary-products b{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.quote-summary-products small{border-radius:999px;background:#e2e8f0;padding:2px 4px;font-size:8px}.quote-summary-products button.active small{background:#ccfbf1}.quote-logistics-panel,.quote-release-status,.quote-export-history,.quote-final-release{overflow:hidden;border:1px solid #dbe5ea;border-radius:13px;background:#fff;box-shadow:0 10px 28px rgb(15 23 42/.045)}.quote-logistics-panel>header,.quote-release-status>header,.quote-export-history>header{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #e2e8f0;padding:13px 15px;background:#f8fafc}.quote-logistics-panel>header>div,.quote-release-status>header>div,.quote-export-history>header{display:flex;align-items:center;gap:8px}.quote-logistics-panel header svg,.quote-release-status header svg,.quote-export-history header svg{width:17px;color:#0f766e}.quote-logistics-panel header span,.quote-release-status header span,.quote-export-history header span{display:grid}.quote-logistics-panel header strong,.quote-release-status header strong,.quote-export-history header strong{color:#334155;font-size:11px}.quote-logistics-panel header small,.quote-release-status header small,.quote-export-history header small{margin-top:2px;color:#94a3b8;font-size:8px}.section-status{display:inline-flex;align-items:center;gap:4px;border-radius:999px;background:color-mix(in srgb,var(--tone) 10%,white);padding:4px 6px;color:var(--tone);font-family:'Microsoft YaHei','PingFang SC',sans-serif;font-size:7px;font-weight:900}.section-status i{width:5px;height:5px;border-radius:99px;background:currentColor}.tone-slate{--tone:#64748b}.tone-amber{--tone:#d97706}.tone-green{--tone:#059669}.tone-red{--tone:#dc2626}.tone-blue{--tone:#2563eb}.tone-teal{--tone:#0f766e}
 .quote-cost-overview,.quote-tax-summary-panel{overflow:hidden;border:1px solid #dbe5ea;border-radius:13px;background:#fff;box-shadow:0 10px 28px rgb(15 23 42/.045)}.quote-cost-overview>header,.quote-tax-summary-panel>header{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #e2e8f0;background:#f8fafc;padding:12px 15px}.quote-cost-overview>header>div,.quote-tax-summary-panel>header>div{display:flex;align-items:center;gap:8px}.quote-cost-overview header svg,.quote-tax-summary-panel header svg{width:17px;color:#0f766e}.quote-cost-overview header span,.quote-tax-summary-panel header span{display:grid}.quote-cost-overview header strong,.quote-tax-summary-panel header strong{color:#334155;font-size:12px}.quote-cost-overview header small,.quote-tax-summary-panel header small{margin-top:2px;color:#94a3b8;font-size:9px}.quote-cost-overview header em,.quote-tax-summary-panel header em{color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9px;font-style:normal}.quote-cost-overview-body{display:grid;grid-template-columns:190px minmax(0,1fr) 230px;align-items:center;gap:16px;padding:12px 15px}.cost-snapshot-note{display:flex;align-items:center;gap:9px;border-radius:9px;background:#f1f5f9;padding:10px}.cost-snapshot-note>svg{width:17px;flex:0 0 auto;color:#64748b}.cost-snapshot-note>span{display:grid;min-width:0}.cost-snapshot-note strong{color:#475569;font-size:10px}.cost-snapshot-note small{overflow:hidden;margin-top:3px;color:#94a3b8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:8px;text-overflow:ellipsis;white-space:nowrap}

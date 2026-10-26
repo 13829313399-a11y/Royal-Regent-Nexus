@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { Printer, X } from '@lucide/vue'
+import { registerThreeDEditor } from '../navigationGuard'
 
 const props = defineProps<{ title: string; open: boolean }>()
+onBeforeUnmount(registerThreeDEditor(() => props.open))
 const emit = defineEmits<{ close: []; 'after-close': [] }>()
 const dialog = ref<HTMLDialogElement | null>(null)
 const present = ref(props.open)

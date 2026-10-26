@@ -45,7 +45,7 @@
       {
         "path": "src/views/NotificationCenterView.vue",
         "symbol": "nc-filters",
-        "sha256": "c9c59a314c2c04150af505054a52868072bdad5c0116443175fe1cb696b739be"
+        "sha256": "653337f07d90a1da62c42c0e4ea627df55674f506f2b06f0a10b19d4d0013ceb"
       },
       {
         "path": "backend/app/services/work_center/registry.py",

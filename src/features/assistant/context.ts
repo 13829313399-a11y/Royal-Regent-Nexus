@@ -22,7 +22,7 @@ export function pageContext(routeName: unknown, factory: string, queryFactory?: 
   if (typeof routeName !== 'string') return null
   const entry = Object.entries(moduleRoutes).find(([, routes]) => routes.includes(routeName))
   if (!entry) return null
-  const scopedQuery = ['injection-scheduling','three-d-printing','spray-production'].includes(entry[0]) && typeof queryFactory === 'string'
+  const scopedQuery = ['injection-scheduling','three-d-printing','spray-production','carton-procurement','internal-quote'].includes(entry[0]) && typeof queryFactory === 'string'
   return { module_id: entry[0], route_name: routeName, factory_id: ['uv-operations','three-d-printing'].includes(entry[0]) ? 'huakang-a' : scopedQuery ? queryFactory : factory }
 }
 export function eligible(user: AuthMeResponse | null, routeName: unknown) {

@@ -133,7 +133,7 @@ onUnmounted(() => { unregisterSurface(); clearHoverTimers(); document.removeEven
 </script>
 <template>
   <Teleport to="body">
-    <div v-if="shown" class="yl-assistant" :class="{ 'yl-hidden-page': pageHidden }" :data-side="side">
+    <div v-if="shown" class="yl-assistant" :class="{ 'yl-hidden-page': pageHidden }" :data-side="side" :data-module="page?.module_id">
       <button ref="launcher" v-show="mode !== 'focus'" class="yl-launcher" :class="{ 'yl-launcher-open': mode !== 'edge', 'yl-launcher-result': !!pendingResult && !assistant.anyBusy }" :style="{ top: `${position*100}%` }" :disabled="businessModal" :aria-label="mode === 'edge' ? `打开曜灵 · Nexus AI${edgeDescription ? ' · ' + edgeDescription : ''}` : '收起曜灵边缘面板'" aria-haspopup="dialog" :aria-expanded="mode !== 'edge'" :title="edgeDescription || '移入展开，移开收起 · 点击或 Alt+J 也可打开'" @click="toggle" @pointerenter="hoverEnter($event, 'launcher')" @pointerleave="hoverLeave($event, 'launcher')" @pointerdown="dragStart" @pointermove="dragMove" @pointerup="dragEnd" @pointercancel="dragEnd">
         <AssistantCore :active="assistant.anyBusy" /><span>{{ edgeStatus || '曜灵' }}</span><i v-if="assistant.anyBusy || pendingResult" aria-hidden="true" />
       </button>

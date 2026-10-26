@@ -43,6 +43,10 @@ function navigateQuery(values: Record<string, string | undefined>) { return rout
 async function choose(id: string) { trigger = document.activeElement as HTMLElement; await router.replace({ query: { ...route.query, entry: id } }) }
 async function close() { center.selected = null; await router.replace({ query: { ...route.query, entry: undefined } }); await nextTick(); trigger?.focus() }
 async function applyRoute() {
+  if (typeof route.query.entry === 'string' && route.query.entry !== center.selected?.id) {
+    const initiator = document.activeElement
+    if (initiator instanceof HTMLElement && initiator !== document.body && !initiator.closest('.nc-sheet')) trigger = initiator
+  }
   const view = String(route.query.view || 'todo') as WorkView
   const value = { ...defaultWorkQuery(), view: navigation.some(item => item.key === view) ? view : 'todo', factory_scope: String(route.query.factory || 'authorized'), module: String(route.query.module || ''), q: String(route.query.q || ''), due: String(route.query.due || 'all'), unread_only: route.query.unread === '1', cursor: route.query.cursor ? String(route.query.cursor) : undefined }
   search.value = value.q
