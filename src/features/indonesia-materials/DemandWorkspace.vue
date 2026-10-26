@@ -8,6 +8,7 @@ import { useMaterials } from './workspace'
 import { customerOptions, customerProducts, fixedCustomers } from './catalog'
 import { useMaterialDraft } from './useDraft'
 import { newDraftId, recordDraftId, recordRef, restoreRecord } from './draftPersistence'
+import { focusFollowup } from './focusFollowup'
 const props = defineProps<{ allocationOnly?: boolean }>()
 const draftType = props.allocationOnly ? 'allocation' : 'demand'
 const ws = useMaterials()
@@ -16,6 +17,8 @@ const editing = ref<MaterialRecord>()
 const selection = ref<{ mode: 'adjust' | 'recalculate' | 'allocate' | 'reallocate' | 'received'; record: MaterialRecord; demand?: Demand } | null>(null)
 const data = ref<Data>({})
 const restoring = ref(false)
+const actionForm = ref<HTMLElement | null>(null)
+const followupOrderId = ref('')
 const draft = useMaterialDraft(() => orderForm.value ?? (selection.value ? data.value : null), {
   id: draftType, multiple: true, capture: () => orderForm.value || selection.value ? { orderForm: orderForm.value, editing: recordRef(editing.value), selection: selection.value ? { mode: selection.value.mode, record: recordRef(selection.value.record), demandId: selection.value.demand?.id } : null, data: data.value,
     label: selection.value ? `${({ adjust: '需求调整', recalculate: '重新生成需求', allocate: '历史分配', received: '回料分配 PO', reallocate: '未发改绑' })[selection.value.mode]} · ${ws.orderName(selection.value.mode === 'received' ? data.value.order_id : selection.value.mode === 'reallocate' ? selection.value.record.data.order_id : selection.value.record.id)}${selection.value.demand ? ` · ${selection.value.demand.code}` : ''}` : '' } : null,
@@ -38,6 +41,16 @@ const draft = useMaterialDraft(() => orderForm.value ?? (selection.value ? data.
   reset: () => { orderForm.value = null; selection.value = null; editing.value = undefined },
 })
 function close() { if (!draft.switching.value && draft.permitDiscard()) { orderForm.value = null; selection.value = null } }
+watch(() => ws.followupTarget, async target => {
+  if (props.allocationOnly || target?.kind !== 'recalculate' || !ws.canWrite || ws.locked) return
+  const order = ws.board.find(row => row.id === target.orderId)
+  if (!order) { ws.error = '原合同已不可用，请刷新核对。'; return }
+  const epoch = ws.scopeEpoch
+  if (!await choose('recalculate', order) || epoch !== ws.scopeEpoch || ws.followupTarget !== target) return
+  followupOrderId.value = target.orderId
+  await nextTick()
+  if (epoch === ws.scopeEpoch && ws.followupTarget === target) focusFollowup(actionForm.value, '业务原因')
+})
 const products = computed(() => customerProducts(ws.records, orderForm.value?.customer || ''))
 const fields = computed(() => orderFields.map(field => {
   const result = { ...field, readonly: !!editing.value && ['customer', 'recipient', 'contract_no', 'item_no', 'batch', ...(!editing.value.data.batch && editing.value.data.po_no ? ['po_no'] : [])].includes(field.key) }
@@ -92,6 +105,7 @@ async function apply() {
 </script>
 <template>
   <SectionPanel :title="allocationOnly ? '已回料分配 PO' : '合同物料需求'" :subtitle="allocationOnly ? '先选已确认的回料，再由业务指定客户 PO 和分配数量；未回料不能分配。' : '由排期和货号用量计算需求与最迟回料期；实际回料后，在河源回料中选择分配 PO。'">
+    <div v-if="!allocationOnly && followupOrderId" class="im-message im-stack"><p>{{ ws.orderName(followupOrderId) }}：请填写原因并确认更新，系统会核对最新用量、计划参数与已分配数量。</p><button type="button" :disabled="ws.locked || draft.switching.value" @click="ws.followup('board', followupOrderId)">返回合同明细</button></div>
     <template v-if="!allocationOnly" #action><button type="button" class="im-primary" :disabled="!ws.canWrite || (ws.locked || draft.switching.value)" @click="edit()">新增合同需求</button></template>
     <div v-if="!allocationOnly" class="im-summary-strip"><div><span>合同需求</span><strong>{{ ws.board.length }} <small>条</small></strong></div><div><span>合同物料需求</span><strong>{{ ws.board.reduce((total, row) => total + row.demands.length, 0) }} <small>项</small></strong></div><div><span>物料分配记录</span><strong>{{ ws.kind('allocation').length }} <small>条</small></strong></div></div>
     <div v-if="allocationOnly" class="im-stack" data-received-allocation><div v-if="ws.kind('supply').some(row => row.data.status === 'received')" class="im-scroll"><table><thead><tr><th>已回料物料／供应商</th><th>实收单／采购来源</th><th>实收日期</th><th>正常／备品实收</th><th>操作</th></tr></thead><tbody><tr v-for="row in ws.kind('supply').filter(row => row.data.status === 'received')" :key="row.id" :data-received-supply-id="row.id"><td>{{ ws.materialName(row.data.material_id) }}<br>{{ row.data.supplier }}</td><td>{{ row.data.warehouse_source?.receipt_no || row.data.purchase_no }} / {{ row.data.batch }}</td><td>{{ row.data.actual_date }}</td><td>{{ row.data.normal_quantity }} / {{ row.data.spare_quantity }}</td><td><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="assignReceived(row)">选择分配 PO</button></td></tr></tbody></table></div><p v-else class="im-empty">尚无已确认回料，请先导入仓库实收单或确认实际回料。</p></div>
@@ -102,7 +116,7 @@ async function apply() {
     </article></div>
     <p v-else-if="!allocationOnly && !orderForm" class="im-empty">暂无合同需求，可以手工新增或从统一排期导入。</p>
     <form v-if="orderForm && !allocationOnly" class="im-editor im-stack" @submit.prevent="saveOrder"><h3>{{ editing ? '编辑' : '新增' }}合同需求</h3><p v-if="!editing && !fixedCustomers(ws.records).length" class="im-message">请先到基础资料库新增本厂区固定客人，并配置其货号及物料用量。</p><fieldset :disabled="!ws.canWrite || (ws.locked || draft.switching.value)" class="im-stack"><Fields :model="orderForm" :fields="fields" /><p v-if="editing" class="im-note">合同身份字段保留原值。数量或交期修改会按服务器规则重新核对需求与已分配数量，请填写变更原因。</p><p v-else class="im-note">按当前厂区的固定客人和货号读取物料用量、日产能及运输参数；接收方单独选择。</p><div v-if="!editing && orderForm.item_no" class="im-recipe-preview"><h3>该货号的固定物料</h3><p v-for="product in products.filter(row => row.data.code === orderForm?.item_no)" :key="product.id"><span v-if="!product.data.materials.length">物料用量尚未配置，请先补齐资料。</span><span v-for="recipe in product.data.materials" :key="recipe.material_id">{{ ws.materialName(recipe.material_id) }} · 每件 {{ recipe.usage }} {{ ws.record(recipe.material_id)?.data.unit }}<br></span></p></div><button class="im-primary" type="submit">保存合同需求</button></fieldset><button type="button" :disabled="ws.busy || !!ws.pending || draft.switching.value" @click="close">关闭表单</button></form>
-    <form v-if="selection" class="im-editor im-stack" @submit.prevent="apply">
+    <form v-if="selection" ref="actionForm" class="im-editor im-stack" @submit.prevent="apply">
       <h3>{{ ({ adjust: '调整最终需求', recalculate: '业务确认重新生成需求', allocate: '历史分配草稿', received: '选择客户 PO 分配实收物料', reallocate: '未发物料改绑' })[selection.mode] }}</h3>
       <p v-if="selection.mode === 'received'">{{ ws.materialName(selection.record.data.material_id) }} · {{ selection.record.data.purchase_no }} · 已回料 {{ selection.record.data.actual_date }}</p><p v-else-if="selection.mode !== 'reallocate'">{{ ws.orderName(selection.record.id) }} <span v-if="selection.demand">· {{ selection.demand.code }} · {{ selection.demand.name }}</span></p>
       <p v-else>原合同：{{ ws.orderName(selection.record.data.order_id) }} · 已分配正常／备品 {{ selection.record.data.normal_quantity }} / {{ selection.record.data.spare_quantity }} · 已发正常／备品 {{ selection.record.data.shipped_normal ?? '0' }} / {{ selection.record.data.shipped_spare ?? '0' }}</p>

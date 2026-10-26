@@ -110,27 +110,27 @@ def run_migrations_online() -> None:
         collision_versions = {'20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166',
                               '20261017_0167', '20261019_0167', '20261020_0168',
                               '20261019_0168', '20261019_0169', '20261019_0170', '20261020_0171',
-                              '20261021_0169', '20261021_0172', '20261022_0173', '20261022_0174', '20261022_0175'}
+                              '20261021_0169', '20261021_0172', '20261022_0173', '20261022_0174', '20261022_0175', '20261023_0176'}
         if revisions & collision_versions or any(inspector.has_table(name) for name in (
             'cutting_ops_period_events', 'jp_intake_references', 'jp_intake_reference_events',
             'jp_intake_counters', 'jp_intake_exports', 'jp_intake_export_identities')):
             preflight = runpy.run_path(str(Path(__file__).parent / 'versions/20261017_0167_reconcile_cutting_jp_collision.py'))['preflight']
             # Extend successor recognition without rewriting the applied migration.
-            if revisions == {'20261022_0175'}:
-                preflight.__globals__['VALID_VERSIONS'].append({'20261022_0175'})
+            if revisions in ({'20261022_0175'}, {'20261023_0176'}):
+                preflight.__globals__['VALID_VERSIONS'].append(revisions)
             missing_groups = preflight(connection)
-            if '20261022_0175' in revisions and any(missing_groups.values()):
+            if revisions & {'20261022_0175', '20261023_0176'} and any(missing_groups.values()):
                 raise RuntimeError('Reconciled 0167 schema is incomplete; refusing automatic repair')
-        if revisions & {'20261021_0169', '20261021_0172', '20261022_0173', '20261022_0174', '20261022_0175'}:
+        if revisions & {'20261021_0169', '20261021_0172', '20261022_0173', '20261022_0174', '20261022_0175', '20261023_0176'}:
             validate_customer = runpy.run_path(str(Path(__file__).parent / 'versions/20261021_0172_merge_indonesia_customer_head.py'))['validate_customer_schema']
             validate_customer(connection)
-        if revisions & {'20261022_0173', '20261022_0174', '20261022_0175'}:
+        if revisions & {'20261022_0173', '20261022_0174', '20261022_0175', '20261023_0176'}:
             validate_options = runpy.run_path(str(Path(__file__).parent / 'versions/20261022_0173_indonesia_options.py'))['validate_options_schema']
             validate_options(connection)
-        if revisions & {'20261022_0174', '20261022_0175'}:
+        if revisions & {'20261022_0174', '20261022_0175', '20261023_0176'}:
             validate_shared = runpy.run_path(str(Path(__file__).parent / 'versions/20261022_0174_indonesia_shared_options.py'))['validate_shared_options_schema']
             validate_shared(connection)
-        if '20261022_0175' in revisions:
+        if revisions & {'20261022_0175', '20261023_0176'}:
             validate_rush = runpy.run_path(str(Path(__file__).parent / 'versions/20261022_0175_carton_order_rush_manual.py'))['validate_rush_schema']
             validate_rush(connection)
         if inspector.has_table('alembic_version') and inspector.has_table('warehouse_operations_documents'):

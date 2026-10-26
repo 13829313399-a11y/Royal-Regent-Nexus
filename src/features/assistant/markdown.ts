@@ -1,9 +1,21 @@
 import MarkdownIt from 'markdown-it'
-import type { EvidencePart } from './v2'
+import type { EvidencePart, UIAction } from './v2'
 const markdown = new MarkdownIt({ html: false, linkify: false, breaks: true, typographer: false })
 markdown.renderer.rules.image = (tokens, index) => `<span class="yl-image-note">[图片未自动加载：${markdown.utils.escapeHtml(tokens[index]?.content || '图片')}]</span>`
 const renderLink = markdown.renderer.rules.link_open
 markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
+  const token = tokens[index]!, href = String(token.attrGet('href') || '')
+  const actions = (env?.actions || []) as UIAction[]
+  const actionIndex = actions.findIndex(action => action.type === 'open_record' &&
+    href === `${action.resource.module_id}:${action.resource.resource_type}:${action.resource.resource_id}`)
+  if (actionIndex >= 0 || !/^(https?:\/\/|mailto:)/i.test(href)) {
+    // A model reference can only reuse a server action. Never invoke a custom URI handler.
+    token.tag = actionIndex >= 0 ? 'button' : 'span'
+    token.attrs = actionIndex >= 0 ? [['type', 'button'], ['class', 'yl-record-link'], ['data-yl-action', String(actionIndex)]] : []
+    const close = tokens.slice(index + 1).find(item => item.type === 'link_close' && item.level === token.level)
+    if (close) close.tag = token.tag
+    return self.renderToken(tokens, index, options)
+  }
   tokens[index]?.attrSet('target', '_blank')
   tokens[index]?.attrSet('rel', 'noopener noreferrer nofollow')
   return renderLink ? renderLink(tokens, index, options, env, self) : self.renderToken(tokens, index, options)
@@ -31,4 +43,4 @@ markdown.renderer.rules.text = (tokens, index, options, env, self) => {
       : `<span class="yl-pending-source" title="${binding.resolution === 'pending' ? '来源尚在返回' : '来源不可核验'}">${markdown.utils.escapeHtml(piece)}</span>`
   }).join('')
 }
-export function renderMarkdown(value: string, evidence?: EvidencePart, partId?: string) { return markdown.render(value, {evidence, partId}) }
+export function renderMarkdown(value: string, evidence?: EvidencePart, partId?: string, actions?: UIAction[]) { return markdown.render(value, {evidence, partId, actions}) }

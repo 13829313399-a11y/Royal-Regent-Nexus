@@ -8,6 +8,11 @@ import {
 import { getDepartmentModule, isFactoryContextId, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { canChangeFactory } from '@/lib/factoryChangeGuard'
 import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
+import { guardInjectionNavigation } from '@/features/injection-scheduling/navigationGuard'
+import { guardThreeDNavigation } from '@/features/three-d-printing/navigationGuard'
+import { guardCartonNavigation } from '@/features/carton-procurement/navigationGuard'
+import { guardQuoteNavigation } from '@/features/internal-quote/navigationGuard'
+import { guardUvNavigation } from '@/features/uv-operations/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { uvOperationsRoutes } from '@/features/uv-operations/routes'
 import { cuttingOperationsRoutes } from '@/features/cutting-operations/routes'
@@ -309,7 +314,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/modules/pmc-warehouse/carton-procurement',
     name: 'carton-procurement',
-    component: () => import('@/views/CartonProcurementView.vue'),
+    component: () => import('@/views/CartonProcurementRoute.vue'),
     meta: {
       title: '纸箱采购协同',
       fullPage: true,
@@ -714,6 +719,14 @@ router.beforeEach(async (to, from) => {
     return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
   }
   if (!await guardSprayNavigation(to, from)) return false
+  if (!guardInjectionNavigation(to, from)) return false
+  if (!guardThreeDNavigation(to, from)) return false
+  if (!guardCartonNavigation(to, from)) return false
+  if (!await guardQuoteNavigation(to, from)) return false
+  if (!guardUvNavigation(to, from)) return false
+  if (to.name === 'three-d-printing-management' && to.query.factory !== 'huakang-a') {
+    return { name: to.name, query: { ...to.query, factory: 'huakang-a', printer: undefined }, replace: true }
+  }
   if (navigationVersion !== latestNavigationVersion) return false
   // A same-route query change does not run component leave guards. Ask before
   // the global guard updates the factory store and destroys scoped drafts.

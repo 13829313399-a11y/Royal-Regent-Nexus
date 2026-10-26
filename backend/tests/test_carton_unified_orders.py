@@ -12,6 +12,9 @@ ENDPOINT = '/api/carton-unified-orders'
 def isolated_directory(monkeypatch, tmp_path):
     import test_molding_sample_api
     monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path)
+    # The synthetic native API fixture needs its own admin; workstation .env
+    # may correctly disable default accounts for the running business service.
+    monkeypatch.setenv('SEED_DEFAULT_ACCOUNTS', 'true')
 
 
 def test_combined_page_filters_before_pagination_and_preserves_purchase_projection(monkeypatch):

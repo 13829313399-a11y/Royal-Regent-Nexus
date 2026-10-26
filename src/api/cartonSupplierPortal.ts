@@ -64,6 +64,26 @@ export type MarkPdfSupplements = Partial<Record<'quantity' | 'carton_total' | 'd
 export interface SupplierMarkLayout { id: string; factory_id: string; customer_name: string; name: string; version: number; reference_name: string; created_at: string; config: MarkLayoutConfig }
 export interface MarkLayoutPreview { preview_data_url: string; page_width_mm: number; page_height_mm: number; page_count: number; suggested_side_address: string }
 export interface SupplierMarkPdfResult { asset: SupplierMarkAsset; page_count: number; warnings: string[]; layout_id: string; layout_name: string; layout_version: number }
+export interface MarkPdfAiStatus { available: boolean; template_id: string; name: string; model: string; message: string }
+export interface MarkPdfDraftResult { blob: Blob; page_count: number; warnings: string[]; file_name: string }
+export interface MarkConfirmedTemplate { id: string; name: string; version: number; reference_sha256: string }
+export interface MarkDraftSource { factory_id?: string; excel?: File; excel_asset_id?: string; expected_revision?: number; worksheets?: string[]; ai_consent?: boolean }
+export interface MarkSourceInspection { worksheets: { name: string; cells: number; chars: number }[]; selected: string[]; confirmed_template?: MarkConfirmedTemplate }
+export interface MarkReadField { id: string; label: string; value: string; sources: string[]; locked: boolean; placeholder: boolean }
+export interface MarkReadResult {
+  mode?: 'ai' | 'native_layout' | 'needs_mapping' | 'confirmed_template'
+  confirmed_template?: MarkConfirmedTemplate | null
+  logo_available?: boolean
+  payload: string; signature: string; source_cells: number; paper: 'A3' | 'A4'; orientation: 'portrait' | 'landscape'; warnings: string[]
+  records: { title?: string; panels: { face: 'front' | 'side'; copies: number; logo?: boolean; symbols?: string[]; fields: MarkReadField[]; barcodes: { value: string; kind: string; width_mm: number; height_mm: number; frame: string }[] }[] }[]
+  notes: { id: string; location: string; text: string; status: string }[]
+  images: { id: string; location: string; preview: string; text: string; status: string }[]
+  unselected_cells: { id: string; location: string; text: string; printable: boolean }[]
+  issues?: { kind: string; message: string; field_ids: string[]; sources: string[] }[]
+}
+export interface MarkReviewAddition { record: number; face: 'front' | 'side'; label?: string; value?: string; source_id?: string; as_barcode?: boolean }
+export interface MarkGraphicSelection { record: number; face: 'front' | 'side'; logo: boolean; symbols: string[] }
+export interface MarkReviewEdits { edits: Record<string, string>; reviewed_notes: string[]; paper: 'A3' | 'A4'; orientation: 'portrait' | 'landscape'; additions?: MarkReviewAddition[]; omissions?: string[]; graphics?: MarkGraphicSelection[]; include_sources?: boolean }
 export type SupplierMarkUploadOrder = SupplierMarkAsset['orders'][number] & { document_no: string; order_date: string }
 const base = '/carton-supplier'
 export const cartonSupplierPortalApi = {
@@ -125,7 +145,69 @@ export const cartonSupplierPortalApi = {
     if (file) body.append('reference_pdf', file)
     return (await http.post<SupplierMarkLayout>(base + '/carton-mark/layouts', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 120000 })).data
   },
-  async generateMarkPdf(request: { factory_id: string; order_id: string; issue_id: string; excel_asset_id: string; expected_revision: number; layout_id: string; supplements?: MarkPdfSupplements; source_item?: string }, signal?: AbortSignal) {
+  async markPdfAiStatus(factory_id: string, order: Pick<SupplierMarkAsset['orders'][number], 'id' | 'issue_id'>, signal?: AbortSignal) {
+    return (await http.get<MarkPdfAiStatus>(base + '/carton-mark/pdf-ai-status', { params: { factory_id, order_id: order.id, issue_id: order.issue_id }, signal })).data
+  },
+  async markPdfDraftStatus(factory_id = '', signal?: AbortSignal) {
+    return (await http.get<MarkPdfAiStatus>(base + '/carton-mark/pdf-draft-status', { params: { factory_id }, signal })).data
+  },
+  async readMarkPdfDraft(request: MarkDraftSource, signal?: AbortSignal): Promise<MarkReadResult> {
+    const body = new FormData()
+    for (const key of ['factory_id', 'excel_asset_id', 'expected_revision'] as const) if (request[key] !== undefined) body.append(key, String(request[key]))
+    if (request.excel) body.append('excel', request.excel)
+    body.append('ai_consent', String(request.ai_consent ?? true))
+    body.append('worksheets_json', JSON.stringify(request.worksheets ?? []))
+    return (await http.post<MarkReadResult>(base + '/carton-mark/read-pdf-draft', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 360000 })).data
+  },
+  async inspectMarkPdfDraft(request: MarkDraftSource, signal?: AbortSignal): Promise<MarkSourceInspection> {
+    const body = new FormData()
+    for (const key of ['factory_id', 'excel_asset_id', 'expected_revision'] as const) if (request[key] !== undefined) body.append(key, String(request[key]))
+    if (request.excel) body.append('excel', request.excel)
+    return (await http.post<MarkSourceInspection>(base + '/carton-mark/inspect-pdf-draft', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 120000 })).data
+  },
+  async renderReviewedMarkDraft(request: MarkDraftSource, review: MarkReadResult, edits: MarkReviewEdits, signal?: AbortSignal): Promise<MarkPdfDraftResult> {
+    const body = new FormData()
+    for (const key of ['factory_id', 'excel_asset_id', 'expected_revision'] as const) if (request[key] !== undefined) body.append(key, String(request[key]))
+    if (request.excel) body.append('excel', request.excel)
+    body.append('review_payload', review.payload); body.append('review_signature', review.signature)
+    body.append('edits_json', JSON.stringify(edits.edits)); body.append('reviewed_notes_json', JSON.stringify(edits.reviewed_notes))
+    body.append('include_sources', String(edits.include_sources ?? true))
+    body.append('additions_json', JSON.stringify(edits.additions ?? [])); body.append('omissions_json', JSON.stringify(edits.omissions ?? []))
+    body.append('graphics_json', JSON.stringify(edits.graphics ?? []))
+    body.append('paper', edits.paper); body.append('orientation', edits.orientation)
+    try {
+      const response = await http.post<Blob>(base + '/carton-mark/render-reviewed-draft', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, responseType: 'blob', timeout: 180000 })
+      return { blob: response.data, page_count: Number(response.headers['x-carton-pdf-pages'] ?? 1), warnings: JSON.parse(decodeURIComponent(String(response.headers['x-carton-pdf-warnings'] ?? '%5B%5D'))) as string[], file_name: '箱唛_审阅稿.pdf' }
+    } catch (cause) {
+      const response = (cause as { response?: { data: unknown } })?.response
+      if (response?.data instanceof Blob) { try { response.data = JSON.parse(await response.data.text()) } catch { /* Retain transport error. */ } }
+      throw cause
+    }
+  },
+  async generateMarkPdfDraft(request: { factory_id?: string; excel?: File; excel_asset_id?: string; expected_revision?: number; engine: 'excel_original' | 'deepseek_zumiez'; ai_consent?: boolean; supplements?: MarkPdfSupplements }, signal?: AbortSignal): Promise<MarkPdfDraftResult> {
+    const body = new FormData()
+    for (const key of ['factory_id', 'excel_asset_id', 'expected_revision', 'engine', 'ai_consent'] as const) {
+      if (request[key] !== undefined) body.append(key, String(request[key]))
+    }
+    if (request.excel) body.append('excel', request.excel)
+    body.append('supplements_json', JSON.stringify(request.supplements ?? {}))
+    try {
+      const response = await http.post<Blob>(base + '/carton-mark/generate-pdf-draft', body, {
+        headers: { 'Content-Type': 'multipart/form-data' }, signal, responseType: 'blob', timeout: 360000,
+      })
+      const name = request.excel?.name ?? '箱唛'
+      return { blob: response.data, page_count: Number(response.headers['x-carton-pdf-pages'] ?? 1),
+        warnings: JSON.parse(decodeURIComponent(String(response.headers['x-carton-pdf-warnings'] ?? '%5B%5D'))) as string[],
+        file_name: name.replace(/\.(xls|xlsx)$/i, '') + '_审阅稿.pdf' }
+    } catch (cause) {
+      const response = (cause as { response?: { data: unknown } })?.response
+      if (response?.data instanceof Blob) {
+        try { response.data = JSON.parse(await response.data.text()) } catch { /* Keep the original HTTP error. */ }
+      }
+      throw cause
+    }
+  },
+  async generateMarkPdf(request: { factory_id: string; order_id: string; issue_id: string; excel_asset_id: string; expected_revision: number; layout_id: string; engine?: 'customer_layout' | 'deepseek_zumiez'; ai_consent?: boolean; supplements?: MarkPdfSupplements; source_item?: string }, signal?: AbortSignal) {
     return (await http.post<SupplierMarkPdfResult>(base + '/carton-mark/generate-pdf', request, { signal, timeout: 360000 })).data
   },
   async createMarkCheck(request: SupplierMarkCheckRequest) {

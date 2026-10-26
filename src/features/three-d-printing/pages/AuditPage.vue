@@ -9,6 +9,8 @@ const {
   canOperate,
   canReadAudit,
   settingsForm,
+  settingsDirty,
+  resetSettings,
   saveSettings,
   restoreRecord,
   History,
@@ -73,6 +75,7 @@ const {
       >
         <template #icon><Save class="size-4" /></template>保存设置
       </TdpButton>
+      <TdpButton v-if="canOperate && settingsDirty" class="mt-4 ml-2" tone="secondary" :disabled="saving" @click="resetSettings">取消修改</TdpButton>
     </form>
     <div v-if="canReadAudit" class="panel-card p-5">
       <h2>已撤销记录（最近500条）</h2>

@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
+import { useQuoteOperationScope } from '@/features/internal-quote/operationScope'
 import { internalQuoteApi, type ApiInternalQuoteAlternativeFamily, type ApiAlternativeSyncRequest, type ApiAlternativeSyncPreview, type ApiInternalQuoteVersionComparison } from '@/api/internalQuote'
 import type { InternalQuote } from '@/types/internalQuoteDesk'
 import { getApiErrorMessage } from '@/lib/http'
@@ -8,6 +10,11 @@ import InternalQuoteComparison from './InternalQuoteComparison.vue'
 const props = defineProps<{ quote: InternalQuote; family: ApiInternalQuoteAlternativeFamily; hasUnsavedChanges?: () => boolean }>()
 const emit = defineEmits<{ changed: []; open: [id: string] }>()
 const opened = ref(false), busy = ref(false), error = ref(''), reason = ref('')
+const captureScope = useQuoteOperationScope(() => props.quote.id)
+onBeforeUnmount(registerQuoteNavigationGuard(() => {
+  if (busy.value || opened.value) { error.value = '请先完成或关闭方案同步，再切换页面或厂区。'; return false }
+  return true
+}))
 const blocks = ref<string[]>([]), targets = ref<string[]>([]), copyDrafts = ref<string[]>([])
 const options = ref<Array<{ key: string; label: string; department: string }>>([])
 const preview = ref<ApiAlternativeSyncPreview>()
@@ -20,12 +27,14 @@ watch([blocks, targets, copyDrafts, reason, () => props.quote.headerRevision, ()
 watch(() => props.quote.id, () => { clearPreview(); opened.value = false; blocks.value = []; targets.value = []; results.value = [] })
 function saved() { if (props.hasUnsavedChanges?.()) throw new Error('请先保存当前报价，再预览或确认同步。') }
 async function start() {
+  const check = captureScope()
   error.value = ''; results.value = []
-  try { saved(); busy.value = true; options.value = await internalQuoteApi.syncOptions(props.quote.id); opened.value = true }
+  try { saved(); busy.value = true; const result = await internalQuoteApi.syncOptions(props.quote.id); check(); options.value = result; opened.value = true }
   catch (cause) { error.value = getApiErrorMessage(cause) }
   finally { busy.value = false }
 }
 async function review() {
+  const check = captureScope()
   clearPreview(); error.value = ''; results.value = []
   const current = generation, id = props.quote.id
   try {
@@ -34,22 +43,26 @@ async function review() {
     busy.value = true
     const selected = [...targets.value]
     const quotes = await Promise.all(selected.map(target => internalQuoteApi.get(target)))
+    check()
     const payload: ApiAlternativeSyncRequest = { revision: props.quote.headerRevision, family_revision: props.family.revision,
       blocks: [...blocks.value], reason: reason.value.trim(), targets: quotes.map(quote => ({ quote_id: quote.id, revision: quote.header_revision,
         create_version: quote.final_release_status === 'issued' || copyDrafts.value.includes(quote.id) })) }
     const response = await internalQuoteApi.previewAlternativeSync(id, payload)
+    check()
     if (generation !== current || props.quote.id !== id) return
     confirmedRequest.value = { ...payload, preview_token: response.preview_token }; preview.value = response
   } catch (cause) { error.value = getApiErrorMessage(cause) }
   finally { busy.value = false }
 }
 async function apply() {
+  const check = captureScope()
   error.value = ''
   try {
     saved()
     if (!confirmedRequest.value || !preview.value) return
     busy.value = true
     const response = await internalQuoteApi.applyAlternativeSync(props.quote.id, confirmedRequest.value)
+    check()
     results.value = response.targets; clearPreview(); emit('changed')
   } catch (cause) { clearPreview(); error.value = `${getApiErrorMessage(cause)}；请刷新方案核对结果，再重新预览。` }
   finally { busy.value = false }
