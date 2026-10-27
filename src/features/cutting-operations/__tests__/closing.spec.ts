@@ -10,6 +10,7 @@ import { closingApi, type ClosingPreview } from '../closingApi'
 import { settlementApi, type FeeRecord } from '../settlementApi'
 import { paymentApi, type PaymentRecord } from '../paymentApi'
 import { periodApi } from '../periodApi'
+import { workspaceApi } from '../workspaceApi'
 vi.mock('../periodApi',()=>({periodApi:{read:vi.fn()}}))
 vi.mock('../api',async original=>({...await original<typeof import('../api')>(),cuttingApi:{access:vi.fn()}}))
 vi.mock('../ordersApi',()=>({ordersApi:{list:vi.fn(),read:vi.fn()}}))
@@ -26,6 +27,60 @@ async function open(path='/'){const router=createRouter({history:createMemoryHis
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(cuttingApi.access).mockResolvedValue(rights);vi.mocked(ordersApi.list).mockResolvedValue({data:[order],total:1,page:1,page_size:50});vi.mocked(closingApi.read).mockResolvedValue(snapshot)})
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 describe('P4a monthly reconciliation',()=>{
+  it('restores exports and its applied month after a remount, without applying search input',async()=>{
+    const router=await open('/?factory=huakang-c&view=exports&month=2026-09')
+    expect(button('冻结报表').attributes('aria-pressed')).toBe('true')
+    const monthly=wrapper.findComponent({name:'CuttingMonthlyOverview'})
+    await overviewForm().get('input[name=order_q]').setValue('尚未查询')
+    await monthly.get('input[name=month]').setValue('2026-08');await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',view:'exports',month:'2026-08'})
+    expect(ordersApi.list).toHaveBeenCalledTimes(1)
+    expect(overviewForm().get<HTMLInputElement>('input[name=order_q]').element.value).toBe('尚未查询')
+    const path=router.currentRoute.value.fullPath;wrapper.unmount();await open(path)
+    expect(button('冻结报表').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.findComponent({name:'CuttingMonthlyOverview'}).props('month')).toBe('2026-08')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'')
+  })
+  it('does not persist a failed or late monthly query as the applied export month',async()=>{
+    const router=await open('/?factory=huakang-c&view=exports&month=2026-09')
+    let finish!:(value:Awaited<ReturnType<typeof workspaceApi.monthly>>)=>void
+    const spy=vi.spyOn(workspaceApi,'monthly').mockImplementationOnce(()=>new Promise(r=>finish=r)).mockRejectedValueOnce(new Error('offline'))
+    const monthly=wrapper.findComponent({name:'CuttingMonthlyOverview'})
+    await monthly.get('input[name=month]').setValue('2026-08');await flushPromises()
+    await monthly.get('input[name=month]').setValue('2026-07');await flushPromises()
+    finish({month:'2026-08',domains:[],frozen:[]});await flushPromises()
+    expect(router.currentRoute.value.query.month).toBe('2026-09')
+    expect(monthly.text()).toContain('请求未完成，请检查连接后重试')
+    spy.mockRestore()
+  })
+  it('keeps a hidden reason during presentation updates while external navigation still asks',async()=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true})
+    vi.mocked(periodApi.read).mockImplementation(async month=>({month,revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]}))
+    const router=await open('/?factory=huakang-c&view=period&month=2026-09')
+    const reason=wrapper.findComponent({name:'CuttingPeriodClosing'}).get('input[name=reason]')
+    await reason.setValue('九月尚未保存的核对原因')
+    const confirm=vi.spyOn(window,'confirm').mockReturnValue(false)
+    await button('冻结报表').trigger('click');await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('exports')
+    expect(confirm).not.toHaveBeenCalled()
+    expect((reason.element as HTMLInputElement).value).toBe('九月尚未保存的核对原因')
+    await router.push('/?factory=huakang-c&view=exports&month=2026-08');await flushPromises()
+    expect(confirm).toHaveBeenCalled()
+    expect(router.currentRoute.value.query.month).toBe('2026-09')
+    expect((reason.element as HTMLInputElement).value).toBe('九月尚未保存的核对原因')
+  })
+  it('gives all mounted monthly controls unique IDs, stable names and accessible labels',async()=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true,settlements_schema_ready:true,payments_schema_ready:true,permissions:['read','cost_read','settlement_read','payment_read']})
+    await open()
+    const fields=wrapper.findAll<HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement>('input,select,textarea')
+    expect(fields.length).toBeGreaterThanOrEqual(10)
+    expect(new Set(fields.map(f=>f.element.id)).size).toBe(fields.length)
+    for(const field of fields){
+      expect(field.attributes('name')).toBeTruthy()
+      expect(field.element.id).toBeTruthy()
+      expect(field.attributes('aria-label')||wrapper.findAll('label').some(l=>l.attributes('for')===field.element.id)).toBeTruthy()
+    }
+  })
   it.each(['period','settlement','payment'] as const)('retains the interrupted historical %s target through overview refresh and ignores late completion',async kind=>{
     vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true,settlements_schema_ready:true,payments_schema_ready:true,permissions:['read','cost_read','settlement_read','payment_read']})
     const api=kind==='period'?periodApi:kind==='settlement'?settlementApi:paymentApi

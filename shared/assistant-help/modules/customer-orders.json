@@ -140,7 +140,7 @@
       {
         "path": "backend/app/services/cutting_export_workbook.py",
         "symbol": "def package(report, user, renderer):",
-        "sha256": "5be6a0c27e4eaacd6245f83cc4a874db00175ea1a459be28ba136769583ccff7"
+        "sha256": "9097258e4c669d6e13ed81364fc82361e685374a0603970f7aa87b13025e1d87"
       },
       {
         "path": "backend/app/services/cutting_cutover.py",
