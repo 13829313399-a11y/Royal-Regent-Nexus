@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { closingPresentationKey } from './closingPresentation'
 import { RouterLink, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -9,6 +10,8 @@ import { canReadCutover,cutoverApi,type CutoverPreview,type CutoverScope,type Ex
 import { cuttingDestination } from './location'
 
 const props=defineProps<{access?:Access;accessLoading?:boolean}>()
+const presentation=inject(closingPresentationKey,()=>false)
+const formId=`cutting-cutover-${useId()}`
 const emit=defineEmits<{payment:[month:string,id:string,eventId?:string];settlement:[month:string,id:string,eventId?:string]}>()
 const currentMonth=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const month=ref(currentMonth),scope=ref<CutoverScope>('internal'),result=ref<CutoverPreview>(),busy=ref(false),error=ref('')
@@ -33,7 +36,7 @@ watch(()=>props.access,checkDraftAccess,{deep:true})
 watch(()=>props.accessLoading,checkDraftAccess)
 function beforeLeave(){return !dirty.value||window.confirm('期初对照资料仅在本页临时保留，离开后将丢失。确定离开？')}
 onBeforeRouteLeave(beforeLeave)
-onBeforeRouteUpdate(beforeLeave)
+onBeforeRouteUpdate(to=>presentation(to.fullPath)||beforeLeave())
 function beforeUnload(e:BeforeUnloadEvent){if(dirty.value){e.preventDefault();e.returnValue=''}}
 window.addEventListener('beforeunload',beforeUnload)
 window.addEventListener('auth-session-boundary-changed',clear)
@@ -81,10 +84,10 @@ watch(filtered,()=>{page.value=1})
     <p>按切入月份 1 日以前的最新有效记录核对。仅作准备预览，不保存期初、不增加库存或应付，不改变锁月起点。</p>
     <p>对照值只计算差额，不叠加系统数。空白表示未核对，明确填写 0 才表示零。对照资料仅在本页临时保留。</p>
     <form class="order-toolbar" @submit.prevent="run()">
-      <label>切入月份<input v-model="month" type="month" min="2000-02" :max="currentMonth" required :disabled="busy" /></label>
-      <label>核对范围<select v-model="scope" :disabled="busy"><option value="internal" :disabled="!canReadCutover(access,'internal')">内部物料、在制与生产</option><option value="finance" :disabled="!canReadCutover(access,'finance')">外发验收与应付款</option></select></label>
-      <label>范围查询<input v-model="query" maxlength="80" :disabled="busy" placeholder="内部：客户／订单／货号；财务：凭据／对象" /></label>
-      <label>每批数量<input v-model.number="batchSize" type="number" min="1" max="200" required :disabled="busy" /></label>
+      <label :for="`${formId}-month`">切入月份<input :id="`${formId}-month`" name="month" v-model="month" type="month" min="2000-02" :max="currentMonth" required :disabled="busy" /></label>
+      <label :for="`${formId}-scope`">核对范围<select :id="`${formId}-scope`" name="scope" v-model="scope" :disabled="busy"><option value="internal" :disabled="!canReadCutover(access,'internal')">内部物料、在制与生产</option><option value="finance" :disabled="!canReadCutover(access,'finance')">外发验收与应付款</option></select></label>
+      <label :for="`${formId}-q`">范围查询<input :id="`${formId}-q`" name="q" v-model="query" maxlength="80" :disabled="busy" placeholder="内部：客户／订单／货号；财务：凭据／对象" /></label>
+      <label :for="`${formId}-batch_size`">每批数量<input :id="`${formId}-batch_size`" name="batch_size" v-model.number="batchSize" type="number" min="1" max="200" required :disabled="busy" /></label>
       <Button type="submit" variant="outline" :disabled="busy||!allowed||accessLoading">{{busy?'正在核对…':'读取系统依据'}}</Button>
     </form>
     <p v-if="!allowed&&!accessLoading">内部范围需材料成本查看权限；财务范围需外发结算及付款查看权限。</p>
@@ -104,13 +107,13 @@ watch(filtered,()=>{page.value=1})
       <p v-for="(notice,i) in result.notices" :key="i" class="cutting-error">{{notice.message}}</p>
       <p>{{Object.entries(result.counts).map(([key,value])=>`${key} ${value} 项`).join('；')||'输入已变化，须重新核对差异。'}}</p>
       <p v-if="!result.rows.length">系统在本批无可核对数值明细；不代表账外期初为零，请核查原始资料及凭据链。</p>
-      <label>本批明细筛选<input v-model="filtered" placeholder="类别／对象／核对状态" /></label>
+      <label :for="`${formId}-detail_q`">本批明细筛选<input :id="`${formId}-detail_q`" name="detail_q" v-model="filtered" placeholder="类别／对象／核对状态" /></label>
       <div class="cutting-table-scroll" role="region" aria-label="期初对照明细" tabindex="0"><table>
         <thead><tr><th>类别／对象</th><th>系统值</th><th>单位／币种</th><th>账外对照值</th><th>原始资料依据</th><th>差额／状态</th><th>来源与口径</th></tr></thead>
         <tbody><tr v-for="row in visible" :key="row.key">
           <td>{{row.category}}<br />{{row.label}}</td><td>{{row.value??'待确认'}}</td><td>{{row.unit}}</td>
-          <td><input v-if="inputs[row.key]" v-model="inputs[row.key]!.value" :aria-label="row.category+'对照值'" inputmode="decimal" maxlength="30" :disabled="busy" @input="edit" /><template v-if="inputs[row.key]&&inputs[row.key]!.unit!==row.unit"><p>原对照单位 {{inputs[row.key]!.unit}} 已变化，请核对原始资料。</p><Button variant="outline" :disabled="busy" @click="inputs[row.key]={value:'',evidence:'',unit:row.unit};edit()">清空旧单位对照</Button></template></td>
-          <td><input v-if="inputs[row.key]" v-model="inputs[row.key]!.evidence" :aria-label="row.category+'原始资料依据'" maxlength="500" :disabled="busy" @input="edit" /></td>
+          <td><input :id="`${formId}-opening_value-${encodeURIComponent(row.key)}`" name="opening_value" v-if="inputs[row.key]" v-model="inputs[row.key]!.value" :aria-label="row.category+'对照值'" inputmode="decimal" maxlength="30" :disabled="busy" @input="edit" /><template v-if="inputs[row.key]&&inputs[row.key]!.unit!==row.unit"><p>原对照单位 {{inputs[row.key]!.unit}} 已变化，请核对原始资料。</p><Button variant="outline" :disabled="busy" @click="inputs[row.key]={value:'',evidence:'',unit:row.unit};edit()">清空旧单位对照</Button></template></td>
+          <td><input :id="`${formId}-opening_evidence-${encodeURIComponent(row.key)}`" name="opening_evidence" v-if="inputs[row.key]" v-model="inputs[row.key]!.evidence" :aria-label="row.category+'原始资料依据'" maxlength="500" :disabled="busy" @input="edit" /></td>
           <td>{{row.status}}<br />{{row.difference??'—'}}</td><td><details><summary>查看依据</summary><p>{{row.note}}</p><p v-for="source in row.sources" :key="source">{{source}}</p></details>
             <RouterLink v-if="row.target?.line_id" :to="destination(row.target)">定位原记录</RouterLink>
             <Button v-else-if="row.target" variant="outline" :disabled="busy||accessLoading" @click="openFinance(row.target)">定位原凭据</Button>
@@ -129,8 +132,8 @@ watch(filtered,()=>{page.value=1})
       </details>
       <h3>无法映射的账外事项</h3><p>登记缺少的库存、在制或历史未付资料，后续核实后再办理专门期初；不会自动入账。</p>
       <div v-for="(item,index) in external" :key="index" class="order-toolbar">
-        <label>事项说明<input v-model="item.description" maxlength="500" :disabled="busy" @input="edit" /></label>
-        <label>资料依据<input v-model="item.evidence" maxlength="500" :disabled="busy" @input="edit" /></label>
+        <label :for="`${formId}-description-${index}`">事项说明<input :id="`${formId}-description-${index}`" name="description" v-model="item.description" maxlength="500" :disabled="busy" @input="edit" /></label>
+        <label :for="`${formId}-evidence-${index}`">资料依据<input :id="`${formId}-evidence-${index}`" name="evidence" v-model="item.evidence" maxlength="500" :disabled="busy" @input="edit" /></label>
         <Button variant="outline" :disabled="busy" @click="external.splice(index,1);edit()">移除事项</Button>
       </div>
       <div class="order-toolbar"><Button variant="outline" :disabled="busy||external.length>=100" @click="external.push({description:'',evidence:''});edit()">增加账外事项</Button><Button :disabled="busy||obsolete.length>0" @click="run(true)">核对差异</Button></div>

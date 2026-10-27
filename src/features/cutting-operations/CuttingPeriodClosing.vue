@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { closingPresentationKey } from './closingPresentation'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink, useRoute } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -13,6 +14,8 @@ import { periodMatches, periodOrderLabel } from './periodDisplay'
 import { cuttingDestination } from './location'
 
 const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean;navigationContext?:number}>()
+const presentation=inject(closingPresentationKey,()=>false)
+const formId=`cutting-period-${useId()}`
 const emit=defineEmits<{restored:[month:string,context:number|undefined]}>()
 const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const [year,number]=today.split('-').map(Number)
@@ -48,6 +51,7 @@ const inputFingerprint=()=>JSON.stringify([month.value,draft.value,reason.value]
 let approvedNavigation:{path:string;inputs:string}|undefined
 onBeforeRouteUpdate(to=>{
   approvedNavigation=undefined
+  if(presentation(to.fullPath))return true
   if(!canLeave())return false
   approvedNavigation={path:to.fullPath,inputs:inputFingerprint()}
   return true
@@ -132,7 +136,7 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
     <p v-else-if="!access.permissions.includes('cost_read')">内部月结含材料费用，需单独授予成本查询权限。</p>
     <template v-else>
       <CuttingReadTarget v-if="failedRead" :target="failedRead" label="内部月结" retry-label="重试原月结记录" :disabled="busy||!!pending" :readable="readable" @retry="retryRead" />
-      <div class="order-toolbar"><label>月结月份<input type="month" min="2000-01" :max="lastMonth" :value="month" :disabled="busy||!!pending||!!draft" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取月结记录</Button></div>
+      <div class="order-toolbar"><label :for="`${formId}-month`">月结月份<input :id="`${formId}-month`" name="month" type="month" min="2000-01" :max="lastMonth" :value="month" :disabled="busy||!!pending||!!draft" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取月结记录</Button></div>
       <template v-if="readable">
         <div v-if="draft&&!basis&&!pending" class="cutting-master-actions"><p>填写数量已保留，请重新读取依据后继续。</p><Button :disabled="busy||!can('period_prepare')" @click="edit">恢复填写并重新核对</Button><Button variant="outline" :disabled="busy" @click="discard">放弃填写</Button></div>
         <p v-if="record">{{month}} · {{labels[record.state]}} <span v-if="historical">· 当前查看历史版本（{{labels[record.selected_state]}}）</span></p>
@@ -140,10 +144,10 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
         <p v-if="record?.first_month">首次月结：{{record.first_month}} · 下个应办理月份：{{record.next_month}}</p>
         <p v-if="record?.pending_reclose?.length">待重结月份：{{record.pending_reclose.join('、')}}</p>
         <p v-if="record?.sequence_repair" class="cutting-error">历史锁月顺序存在缺口，请先从最近已锁月逐月反结，再顺序重结。</p>
-        <div v-if="basis||record?.data" class="order-toolbar"><label>明细筛选：客户／订单号／货号／货名<input v-model="detailQuery" type="search" placeholder="输入关键字筛选明细" /></label><p>筛选仅影响明细显示；整月汇总、版本金额差异和保存范围均不缩减。</p></div>
+        <div v-if="basis||record?.data" class="order-toolbar"><label :for="`${formId}-detail_q`">明细筛选：客户／订单号／货号／货名<input :id="`${formId}-detail_q`" name="detail_q" v-model="detailQuery" type="search" placeholder="输入关键字筛选明细" /></label><p>筛选仅影响明细显示；整月汇总、版本金额差异和保存范围均不缩减。</p></div>
         <div v-if="record&&!historical&&!pending&&!draft" class="cutting-master-actions">
           <Button v-if="can('period_prepare')&&['open','draft','returned','reopened'].includes(record.state)" :disabled="busy" @click="edit">编制／重新核对月结</Button>
-          <label>操作原因／复核依据<input v-model="reason" maxlength="500" :disabled="busy" /></label>
+          <label :for="`${formId}-reason`">操作原因／复核依据<input :id="`${formId}-reason`" name="reason" v-model="reason" maxlength="500" :disabled="busy" /></label>
           <Button v-if="can('period_prepare')&&['draft','returned'].includes(record.state)" :disabled="busy" @click="execute('submit')">提交会计复核</Button>
           <Button v-if="can('period_lock')&&record.state==='submitted'" :disabled="busy" @click="execute('lock')">复核并锁月</Button>
           <Button v-if="can('period_lock')&&record.state==='submitted'" variant="outline" :disabled="busy" @click="execute('return')">退回主管</Button>
@@ -154,15 +158,15 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
           <p v-for="(item,index) in basis.blockers" :key="index" class="cutting-error">{{item.message}} <RouterLink v-if="item.line_id" :to="issueLink(item)">定位当前处理记录</RouterLink></p>
           <p v-for="(item,index) in basis.notices" :key="`notice-${index}`">待核对：{{item.message}} <RouterLink v-if="item.line_id" :to="issueLink(item)">定位当前处理记录</RouterLink></p>
           <div class="cutting-table-scroll" role="region" aria-label="月末耗用归集" tabindex="0"><table><thead><tr><th>原实发／任务／物料</th><th>单位</th><th>期初／期末正常耗用</th><th>期初／期末合格套数</th><th>期初完工耗用归属</th><th>期末累计完工耗用归属</th></tr></thead><tbody>
-            <tr v-for="(row,index) in basis.rows" v-show="periodMatches(basis.orders??[],row.line_id,detailQuery)" :key="row.issue_id"><td>{{periodOrderLabel(basis.orders??[],row.line_id)}}<br />{{row.issue_id}}<br />{{row.context.task_name}} · {{row.context.resource_name}}<br />{{row.context.item_name}}</td><td>{{row.context.unit}}</td><td>{{row.opening_normal_quantity}} / {{row.ending_normal_quantity}}</td><td>{{row.opening_sets??'待核对'}} / {{row.ending_sets??'待核对'}}</td><td><input v-model="draft.allocations[index]!.opening_completed_quantity" type="number" min="0" step="0.000001" required :disabled="busy||!!pending||row.carried_completed_quantity!==null" /></td><td><input v-model="draft.allocations[index]!.completed_quantity" type="number" min="0" step="0.000001" required :disabled="busy||!!pending" /></td></tr>
+            <tr v-for="(row,index) in basis.rows" v-show="periodMatches(basis.orders??[],row.line_id,detailQuery)" :key="row.issue_id"><td>{{periodOrderLabel(basis.orders??[],row.line_id)}}<br />{{row.issue_id}}<br />{{row.context.task_name}} · {{row.context.resource_name}}<br />{{row.context.item_name}}</td><td>{{row.context.unit}}</td><td>{{row.opening_normal_quantity}} / {{row.ending_normal_quantity}}</td><td>{{row.opening_sets??'待核对'}} / {{row.ending_sets??'待核对'}}</td><td><input :id="`${formId}-opening_completed_quantity-${encodeURIComponent(row.issue_id)}`" name="opening_completed_quantity" v-model="draft.allocations[index]!.opening_completed_quantity" :aria-label="`期初归属完工量 ${row.issue_id}`" type="number" min="0" step="0.000001" required :disabled="busy||!!pending||row.carried_completed_quantity!==null" /></td><td><input :id="`${formId}-completed_quantity-${encodeURIComponent(row.issue_id)}`" name="completed_quantity" v-model="draft.allocations[index]!.completed_quantity" :aria-label="`月末归属完工量 ${row.issue_id}`" type="number" min="0" step="0.000001" required :disabled="busy||!!pending" /></td></tr>
           </tbody></table></div>
           <fieldset :disabled="busy||!!pending" class="period-declarations">
-            <label><input v-model="draft.materials_complete" type="checkbox" />全部物料耗用已核对完整</label>
-            <label><input v-model="draft.public_material_pending" type="checkbox" />仍有公共耗料待分配核对</label>
-            <label><input v-model="draft.opening_verified" type="checkbox" />期初数量、完工／在制归属及依据已核实</label>
-            <label><input v-model="draft.unrecorded_opening" type="checkbox" />仍有系统外期初库存或在制未补齐依据</label>
-            <label><input v-model="draft.exceptions_reviewed" type="checkbox" />已核对本期异常与跨月未完成事项</label>
-            <label>编制依据／异常处理说明<textarea v-model="draft.reason" required maxlength="500" /></label>
+            <label :for="`${formId}-materials_complete`"><input :id="`${formId}-materials_complete`" name="materials_complete" v-model="draft.materials_complete" type="checkbox" />全部物料耗用已核对完整</label>
+            <label :for="`${formId}-public_material_pending`"><input :id="`${formId}-public_material_pending`" name="public_material_pending" v-model="draft.public_material_pending" type="checkbox" />仍有公共耗料待分配核对</label>
+            <label :for="`${formId}-opening_verified`"><input :id="`${formId}-opening_verified`" name="opening_verified" v-model="draft.opening_verified" type="checkbox" />期初数量、完工／在制归属及依据已核实</label>
+            <label :for="`${formId}-unrecorded_opening`"><input :id="`${formId}-unrecorded_opening`" name="unrecorded_opening" v-model="draft.unrecorded_opening" type="checkbox" />仍有系统外期初库存或在制未补齐依据</label>
+            <label :for="`${formId}-exceptions_reviewed`"><input :id="`${formId}-exceptions_reviewed`" name="exceptions_reviewed" v-model="draft.exceptions_reviewed" type="checkbox" />已核对本期异常与跨月未完成事项</label>
+            <label :for="`${formId}-draft_reason`">编制依据／异常处理说明<textarea :id="`${formId}-draft_reason`" name="draft_reason" v-model="draft.reason" required maxlength="500" /></label>
           </fieldset>
           <div class="cutting-master-actions"><Button type="submit" :disabled="busy||!!pending">保存月结草稿</Button><Button type="button" variant="outline" :disabled="busy||!!pending" @click="edit">保留数量，刷新依据</Button><Button type="button" variant="outline" :disabled="busy||!!pending" @click="discard">放弃填写</Button></div>
         </form>
