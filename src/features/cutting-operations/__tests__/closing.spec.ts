@@ -10,6 +10,8 @@ import { closingApi, type ClosingPreview } from '../closingApi'
 import { settlementApi, type FeeRecord } from '../settlementApi'
 import { paymentApi, type PaymentRecord } from '../paymentApi'
 import { periodApi } from '../periodApi'
+import type { PeriodRecord } from '../periodApi'
+import { workspaceApi } from '../workspaceApi'
 vi.mock('../periodApi',()=>({periodApi:{read:vi.fn()}}))
 vi.mock('../api',async original=>({...await original<typeof import('../api')>(),cuttingApi:{access:vi.fn()}}))
 vi.mock('../ordersApi',()=>({ordersApi:{list:vi.fn(),read:vi.fn()}}))
@@ -26,6 +28,82 @@ async function open(path='/'){const router=createRouter({history:createMemoryHis
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(cuttingApi.access).mockResolvedValue(rights);vi.mocked(ordersApi.list).mockResolvedValue({data:[order],total:1,page:1,page_size:50});vi.mocked(closingApi.read).mockResolvedValue(snapshot)})
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 describe('P4a monthly reconciliation',()=>{
+  it('keeps the selected frozen period month, view and event when opening a detail and remounting',async()=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true})
+    const history:PeriodRecord['history']=[3,10].map(version=>({id:`event-${version}`,month:'2026-09',version,action:'lock',actor:'复核',actor_id:'reviewer',date:'2026-10-01',reason:'合成依据'}))
+    vi.mocked(periodApi.read).mockImplementation(async (month,eventId)=>({month,revision:10,state:'locked',selected_state:'locked',event_id:eventId??'event-10',data:null,history,locked_months:[month]}))
+    const router=await open('/?factory=huakang-c&view=exports&month=2026-09')
+    wrapper.findComponent({name:'CuttingMonthlyOverview'}).vm.$emit('open','period','2026-09','','event-3')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',view:'period',month:'2026-09',event_id:'event-3'})
+    expect(wrapper.text()).toContain('所选版本 V3 · 当前最新版本 V10')
+    expect(wrapper.text()).toContain('历史已失效冻结版本，仅供追溯')
+    const path=router.currentRoute.value.fullPath;wrapper.unmount();const restored=await open(path)
+    expect(periodApi.read).toHaveBeenLastCalledWith('2026-09','event-3')
+    expect(button('内部月结').attributes('aria-pressed')).toBe('true')
+    await button('读取月结记录').trigger('click');await flushPromises()
+    expect(restored.currentRoute.value.query.event_id).toBe('event-10')
+    expect(wrapper.text()).toContain('当前有效冻结版本')
+  })
+  it('restores the month from an older month-only link rather than reading the current month',async()=>{
+    await open('/?factory=huakang-c&month=2026-09')
+    expect(button('月结总览').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.findComponent({name:'CuttingMonthlyOverview'}).props('month')).toBe('2026-09')
+  })
+  it('restores exports and its applied month after a remount, without applying search input',async()=>{
+    const router=await open('/?factory=huakang-c&view=exports&month=2026-09')
+    expect(button('冻结报表').attributes('aria-pressed')).toBe('true')
+    const monthly=wrapper.findComponent({name:'CuttingMonthlyOverview'})
+    await overviewForm().get('input[name=order_q]').setValue('尚未查询')
+    await monthly.get('input[name=month]').setValue('2026-08');await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',view:'exports',month:'2026-08'})
+    expect(ordersApi.list).toHaveBeenCalledTimes(1)
+    expect(overviewForm().get<HTMLInputElement>('input[name=order_q]').element.value).toBe('尚未查询')
+    const path=router.currentRoute.value.fullPath;wrapper.unmount();await open(path)
+    expect(button('冻结报表').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.findComponent({name:'CuttingMonthlyOverview'}).props('month')).toBe('2026-08')
+    expect(ordersApi.list).toHaveBeenLastCalledWith(1,'')
+  })
+  it('does not persist a failed or late monthly query as the applied export month',async()=>{
+    const router=await open('/?factory=huakang-c&view=exports&month=2026-09')
+    let finish!:(value:Awaited<ReturnType<typeof workspaceApi.monthly>>)=>void
+    const spy=vi.spyOn(workspaceApi,'monthly').mockImplementationOnce(()=>new Promise(r=>finish=r)).mockRejectedValueOnce(new Error('offline'))
+    const monthly=wrapper.findComponent({name:'CuttingMonthlyOverview'})
+    await monthly.get('input[name=month]').setValue('2026-08');await flushPromises()
+    await monthly.get('input[name=month]').setValue('2026-07');await flushPromises()
+    finish({month:'2026-08',domains:[],frozen:[]});await flushPromises()
+    expect(router.currentRoute.value.query.month).toBe('2026-09')
+    expect(monthly.text()).toContain('请求未完成，请检查连接后重试')
+    spy.mockRestore()
+  })
+  it('keeps a hidden reason during presentation updates while external navigation still asks',async()=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true})
+    vi.mocked(periodApi.read).mockImplementation(async month=>({month,revision:0,state:'open',selected_state:'open',event_id:null,data:null,history:[],locked_months:[]}))
+    const router=await open('/?factory=huakang-c&view=period&month=2026-09')
+    const reason=wrapper.findComponent({name:'CuttingPeriodClosing'}).get('input[name=reason]')
+    await reason.setValue('九月尚未保存的核对原因')
+    const confirm=vi.spyOn(window,'confirm').mockReturnValue(false)
+    await button('冻结报表').trigger('click');await flushPromises()
+    expect(router.currentRoute.value.query.view).toBe('exports')
+    expect(confirm).not.toHaveBeenCalled()
+    expect((reason.element as HTMLInputElement).value).toBe('九月尚未保存的核对原因')
+    await router.push('/?factory=huakang-c&view=exports&month=2026-08');await flushPromises()
+    expect(confirm).toHaveBeenCalled()
+    expect(router.currentRoute.value.query.month).toBe('2026-09')
+    expect((reason.element as HTMLInputElement).value).toBe('九月尚未保存的核对原因')
+  })
+  it('gives all mounted monthly controls unique IDs, stable names and accessible labels',async()=>{
+    vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true,settlements_schema_ready:true,payments_schema_ready:true,permissions:['read','cost_read','settlement_read','payment_read']})
+    await open()
+    const fields=wrapper.findAll<HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement>('input,select,textarea')
+    expect(fields.length).toBeGreaterThanOrEqual(10)
+    expect(new Set(fields.map(f=>f.element.id)).size).toBe(fields.length)
+    for(const field of fields){
+      expect(field.attributes('name')).toBeTruthy()
+      expect(field.element.id).toBeTruthy()
+      expect(field.attributes('aria-label')||wrapper.findAll('label').some(l=>l.attributes('for')===field.element.id)).toBeTruthy()
+    }
+  })
   it.each(['period','settlement','payment'] as const)('retains the interrupted historical %s target through overview refresh and ignores late completion',async kind=>{
     vi.mocked(cuttingApi.access).mockResolvedValue({...rights,periods_schema_ready:true,settlements_schema_ready:true,payments_schema_ready:true,permissions:['read','cost_read','settlement_read','payment_read']})
     const api=kind==='period'?periodApi:kind==='settlement'?settlementApi:paymentApi
@@ -195,9 +273,10 @@ describe('P4a monthly reconciliation',()=>{
   })
   it('returns directly to the linked order and month beyond the list page',async()=>{
     vi.mocked(ordersApi.read).mockResolvedValue(order)
-    await open('/?factory=huakang-c&line_id=line&month=2026-09')
+    const router=await open('/?factory=huakang-c&line_id=line&month=2026-09')
     expect(ordersApi.read).toHaveBeenCalledWith('line');expect(ordersApi.list).not.toHaveBeenCalled()
     expect(closingApi.read).toHaveBeenCalledWith('line','2026-09',true)
+    expect(router.currentRoute.value.query.line_id).toBe('line')
   })
   it('shows stale-plan warning and links to the exact task',async()=>{
     vi.mocked(closingApi.read).mockResolvedValue({...snapshot,plan_stale:true,issues:[{code:'outsourced_unreturned',message:'尚未收回10套',workspace:'reporting',document_id:'',task_id:'task-1'}]})
@@ -225,7 +304,8 @@ describe('P4a monthly reconciliation',()=>{
   it('shows live period and price basis without presenting a closed period',async()=>{
     await open();await button('月度核对').trigger('click');await flushPromises()
     expect(wrapper.text()).toContain('2026-10-01 至 2026-10-15')
-    expect(wrapper.text()).toContain('尚未冻结或锁月')
+    expect(wrapper.text()).toContain('实时核对不代表锁月')
+    expect(wrapper.text()).not.toContain('尚未冻结或锁月')
     await button('材料费用试算').trigger('click')
     expect(wrapper.text()).toContain('16.25');expect(wrapper.text()).toContain('当前已确认的原批次价格试算')
     expect(wrapper.text()).toContain('不是所选月末余额')

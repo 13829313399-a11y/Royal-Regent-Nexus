@@ -83,6 +83,89 @@ def test_defaults_read_only_and_all_customer_definitions(api):
         assert client.get(f'/api/customer-price/settings?factory_id={definition["factoryId"]}&customer_id={customer}').status_code == 200
 
 
+def test_huaxing_360_profile_is_independent_and_snapshot_is_frozen(api):
+    client, context, _ = api
+    url = URL.replace("buzzbee", "three-sixty-huaxing")
+    snapshots = SNAPSHOTS.replace("buzzbee", "three-sixty-huaxing")
+    before = client.get(url).json()
+    assert before["rates"]["scrap_include_labor"] == 1
+    assert next(row["price"] for row in before["materials"] if row["material"] == "PP") == 1.55
+    assert before["rates"]["testing_allocation_qty"] == 100000
+    frozen = client.post(snapshots, json={"revision": 0}).json()
+    body = {key: before[key] for key in ("revision", "materials", "rates", "texts")}
+    body["rates"]["hkd_usd"] = 8
+    assert client.put(url, json=body).status_code == 200
+    saved = client.get("/api/customer-price/settings/snapshots/" + frozen["snapshot_id"]).json()
+    assert saved["rates"]["hkd_usd"] == 7.8
+    context["user"] = user(factory="huakang-a")
+    assert client.get(url).status_code == 403
+    assert client.get(url.replace("huaxing&", "huakang-a&")).status_code == 404
+    legacy = client.get("/api/customer-price/settings?factory_id=huakang-a&customer_id=three-sixty").json()
+    assert legacy["rates"]["hkd_usd"] == 7.8
+    assert "scrap_include_labor" not in legacy["rates"]
+
+
+@pytest.mark.parametrize("change", [
+    lambda p: p["rates"].update(scrap_include_labor=0.5),
+    lambda p: p["texts"].update(material_aliases="ABS GP22=NO SUCH MATERIAL"),
+    lambda p: p["texts"].update(material_aliases="ABS GP22=ABS;ABS GP22=PP"),
+    lambda p: p["rates"].update(testing_allocation_qty=0),
+    lambda p: p["rates"].update(tooling_allocation_qty=1.5),
+    lambda p: p["materials"][0].update(currency="HKD"),
+])
+def test_huaxing_360_rejects_ambiguous_business_settings(api, change):
+    client, _, _ = api
+    url = URL.replace("buzzbee", "three-sixty-huaxing")
+    data = client.get(url).json()
+    body = {key: data[key] for key in ("revision", "materials", "rates", "texts")}
+    change(body)
+    assert client.put(url, json=body).status_code == 422
+
+
+def test_huaxing_360_follower_only_updates_material_prices_and_allocations(api):
+    client, context, _ = api
+    url = URL.replace("buzzbee", "three-sixty-huaxing")
+    context["user"] = user(PERMISSIONS - {"customer_price:settings_manage"})
+    data = client.get(url).json()
+    body = {key: data[key] for key in ("revision", "materials", "rates", "texts")}
+    frozen = client.post(SNAPSHOTS.replace("buzzbee", "three-sixty-huaxing"), json={"revision": 0}).json()
+    body["materials"][0]["price"] = 2.5
+    body["rates"]["testing_allocation_qty"] = 120000
+    response = client.put(url, json=body)
+    assert response.status_code == 200
+    assert response.json()["revision"] == 1
+    assert response.json()["rates"]["testing_allocation_qty"] == 120000
+    assert client.get("/api/customer-price/settings/snapshots/" + frozen["snapshot_id"]).json() == frozen
+    # Stale follower requests cannot overwrite a later maintained version.
+    assert client.put(url, json=body).status_code == 409
+    body["revision"] = 1
+    body["rates"]["markup_rate"] = 0.5
+    assert client.put(url, json=body).status_code == 403
+    body["rates"]["markup_rate"] = data["rates"]["markup_rate"]
+    body["texts"]["comments"] = "Changed terms"
+    assert client.put(url, json=body).status_code == 403
+    # Existing customers retain supervisor-only full maintenance.
+    assert client.put(URL, json=payload(client)).status_code == 403
+
+
+@pytest.mark.parametrize("permission", ["customer_price:settings_manage", "customer_price:import_internal_quote"])
+def test_huaxing_360_follower_maintenance_respects_explicit_denies(api, permission):
+    client, context, _ = api
+    url = URL.replace("buzzbee", "three-sixty-huaxing")
+    data = client.get(url).json()
+    body = {key: data[key] for key in ("revision", "materials", "rates", "texts")}
+    body["materials"][0]["price"] += 0.1
+    follower = user(PERMISSIONS - {"customer_price:settings_manage"})
+    context["user"] = replace(follower, overrides=(AuthOverrideContext(
+        id="deny", permission_code=permission, effect="deny", factory_id="huaxing", department="sales-business",
+    ),))
+    assert client.put(url, json=body).status_code == 403
+    context["user"] = user(frozenset({"customer_price:settings_read"}))
+    assert client.put(url, json=body).status_code == 403
+    context["user"] = user(PERMISSIONS - {"customer_price:settings_manage"}, factory="huakang-a")
+    assert client.put(url, json=body).status_code == 403
+
+
 @pytest.mark.parametrize("department", ["engineering", "production", "management"])
 def test_non_sales_cannot_read_even_with_granted_permissions(api, department):
     client, context, _ = api

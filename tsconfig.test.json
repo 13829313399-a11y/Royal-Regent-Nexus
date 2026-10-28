@@ -6,6 +6,7 @@
     "src/components/__tests__/CartonBatchDemand.spec.ts",
     "src/types/**/*.d.ts",
     "src/lib/__tests__/tailwindSources.spec.ts",
+    "src/lib/__tests__/huaxingThreeSixty*.spec.ts",
     "src/features/route-motion/__tests__/*.spec.ts",
     "src/features/module-feedback/__tests__/*.spec.ts",
     "src/features/indonesia-materials/__tests__/*.spec.ts",

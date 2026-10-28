@@ -140,7 +140,7 @@
       {
         "path": "backend/app/services/cutting_export_workbook.py",
         "symbol": "def package(report, user, renderer):",
-        "sha256": "5be6a0c27e4eaacd6245f83cc4a874db00175ea1a459be28ba136769583ccff7"
+        "sha256": "9097258e4c669d6e13ed81364fc82361e685374a0603970f7aa87b13025e1d87"
       },
       {
         "path": "backend/app/services/cutting_cutover.py",
@@ -185,7 +185,7 @@
       {
         "path": "backend/app/services/customer_order_huaxing_unified.py",
         "symbol": "def export_rows",
-        "sha256": "18b46b9ae9184cc604e8ea1078bad977146abc39ac13a1a4968e1ed08a3f175b"
+        "sha256": "4cfdde0b7fdff3e582acda567a398003574d1fdf982f03a0bdf7a3c5aa661c11"
       },
       {
         "path": "backend/app/services/customer_order_queries.py",

@@ -43,6 +43,9 @@ import {
   createThreeSixtyCustomerQuoteWorkbook,
   type ThreeSixtyConversionResult,
 } from '@/lib/customerPriceConverters/threeSixty'
+import HuaxingThreeSixtyReview from './HuaxingThreeSixtyReview.vue'
+import { convertHuaxing360InternalQuote, huaxing360PreviewSheets, validateHuaxing360Export, type Huaxing360Result } from '@/lib/customerPriceConverters/huaxingThreeSixty'
+import { createHuaxing360Workbook } from '@/lib/customerPriceConverters/huaxingThreeSixtyWorkbook'
 import YinhuiQuoteReview from '@/components/modules/sales/YinhuiQuoteReview.vue'
 import YinhuiDraftReview from '@/components/modules/sales/YinhuiDraftReview.vue'
 import { createYinhuiDraft, loadYinhuiDraft, saveYinhuiDraft, type YinhuiDraft } from '@/lib/customerPriceConverters/yinhuiDraft'
@@ -155,6 +158,7 @@ const customerOptions: CustomerOption[] = [
     factoryId: 'huaxing',
     department: 'sales-business',
   },
+  { id: 'three-sixty-huaxing', name: '360（华兴临时）', factoryId: 'huaxing', department: 'sales-business' },
   {
     id: 'three-sixty',
     name: '360',
@@ -238,6 +242,11 @@ function previewDickieBatch() {
   }
 }
 const caixingConversionResult = ref<CaixingConversionResult | null>(null)
+const huaxing360Result = ref<Huaxing360Result | null>(null)
+function refreshHuaxing360Preview() {
+  if (huaxing360Result.value && importedCustomerId.value === 'three-sixty-huaxing') importedWorkbookSheets.value = huaxing360PreviewSheets(huaxing360Result.value)
+}
+watch(huaxing360Result, refreshHuaxing360Preview, { deep: true })
 const threeSixtyConversionResult = ref<ThreeSixtyConversionResult | null>(null)
 const yinhuiConversionResult = ref<YinhuiConversionResult | null>(null)
 const yinhuiConfirmed = ref(false)
@@ -393,6 +402,8 @@ function resetFactoryTransientState() {
   dickieBatch.value = []
   caixingConversionResult.value = null
   threeSixtyConversionResult.value = null
+
+  huaxing360Result.value = null
   yinhuiConversionResult.value = null
   yinhuiConfirmed.value = false
   isImportDragActive.value = false
@@ -613,7 +624,7 @@ const comparisonMetrics = computed(() => {
   return [
     { label: '导入 Sheet', value: String(activeWorkbookSheets.value.length), detail: `${activeWorkbookDetailRows.value.length} 条明细` },
     { label: '内部价合计', value: formatHkd(totalInternal), detail: selectedImportFileName.value || '等待导入' },
-    { label: '报客价合计', value: formatHkd(totalCustomer), detail: delta === 0 ? '暂无版本差异' : `较上一版 ${formatSignedHkd(delta)}` },
+    { label: selectedCustomerId.value === 'three-sixty-huaxing' ? '报客价合计（折合HKD）' : '报客价合计', value: formatHkd(totalCustomer), detail: delta === 0 ? '暂无版本差异' : `较上一版 ${formatSignedHkd(delta)}` },
     { label: '已输出版本', value: String(activeExportedVersions.value.length), detail: activeExportedVersions.value[0]?.fileName ?? '暂无导出' },
   ]
 })
@@ -639,6 +650,10 @@ const canExportCustomerQuote = computed(() => {
     return hasActiveCaixingConversion.value
   }
 
+  if (selectedCustomer.value.id === 'three-sixty-huaxing') {
+    if (isImportingInternalQuote.value || !selectedImportMatchesCurrentChoice.value || !huaxing360Result.value) return false
+    try { validateHuaxing360Export(huaxing360Result.value); return true } catch { return false }
+  }
   if (selectedCustomer.value.id === 'three-sixty') {
     return hasActiveThreeSixtyConversion.value
   }
@@ -654,7 +669,7 @@ const hasSelectedCustomerImport = computed(() => Boolean(selectedImportFileName.
 
 const importOverviewMetrics = computed(() => [
   { label: '当前客户', value: selectedCustomer.value.name, detail: selectedCustomer.value.id === 'caixing' ? selectedCaixingProductTypeOption.value.label : '' },
-  { label: '内部报价', value: selectedImportFileName.value ? (receivedQuoteNo.value ? '已接收' : '已导入') : '待接收', detail: selectedImportFileName.value || '等待内部报价台输出' },
+  { label: '内部报价', value: selectedImportFileName.value ? (receivedQuoteNo.value ? '已接收' : '已导入') : (selectedCustomerId.value === 'three-sixty-huaxing' ? '待导入' : '待接收'), detail: selectedImportFileName.value || (selectedCustomerId.value === 'three-sixty-huaxing' ? '直接上传旧版内部成本明细' : '等待内部报价台输出') },
   {
     label: '操作权限',
     value: selectedCustomerOperationSummary.value.value,
@@ -856,6 +871,8 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = null
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = null
+
+    huaxing360Result.value = null
     yinhuiConversionResult.value = null
     yinhuiConfirmed.value = false
     importedWorkbookSheets.value = result.sheets
@@ -868,6 +885,8 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = null
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = null
+
+    huaxing360Result.value = null
     yinhuiConversionResult.value = null
     yinhuiConfirmed.value = false
     importedWorkbookSheets.value = result.sheets
@@ -880,6 +899,8 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = result
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = null
+
+    huaxing360Result.value = null
     yinhuiConversionResult.value = null
     yinhuiConfirmed.value = false
     importedWorkbookSheets.value = result.sheets
@@ -892,6 +913,8 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = null
     caixingConversionResult.value = result
     threeSixtyConversionResult.value = null
+
+    huaxing360Result.value = null
     yinhuiConversionResult.value = null
     yinhuiConfirmed.value = false
     selectedCaixingProductType.value = result.productType
@@ -905,6 +928,8 @@ function commitP4Artifact(handoffId: string) {
     dickyConversionResult.value = null
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = null
+
+    huaxing360Result.value = null
     importedWorkbookSheets.value = conversion.result.sheets
     importedFileSize.value = `${formatFileSize(handoff.size_bytes)} · 银辉 P4 临时映射 · 输出 6 Sheet`
   } else if (conversion.customerId === 'three-sixty') {
@@ -1044,6 +1069,7 @@ async function importInternalQuoteFile(file: File | undefined) {
 
   importErrorMessage.value = ''
   isImportingInternalQuote.value = true
+  huaxing360Result.value = null
   if (customer.id === 'yinhui') yinhuiConfirmed.value = false
 
   try {
@@ -1064,6 +1090,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
+
+      huaxing360Result.value = null
       yinhuiConversionResult.value = null
       yinhuiConfirmed.value = false
       importedWorkbookSheets.value = conversionResult.sheets
@@ -1083,6 +1111,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
+
+      huaxing360Result.value = null
       yinhuiConversionResult.value = null
       yinhuiConfirmed.value = false
       importedWorkbookSheets.value = conversionResult.sheets
@@ -1102,6 +1132,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = conversionResult
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
+
+      huaxing360Result.value = null
       yinhuiConversionResult.value = null
       yinhuiConfirmed.value = false
       importedWorkbookSheets.value = conversionResult.sheets
@@ -1121,10 +1153,20 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = conversionResult
       threeSixtyConversionResult.value = null
+
+      huaxing360Result.value = null
       yinhuiConversionResult.value = null
       yinhuiConfirmed.value = false
       importedWorkbookSheets.value = conversionResult.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · ${conversionResult.sheets.length} Sheet / ${detailCount} 条`
+    } else if (customer.id === 'three-sixty-huaxing') {
+      if (!file.name.toLowerCase().endsWith('.xlsx')) throw new Error('华兴360临时路线支持 .xlsx 旧版内部成本明细')
+      const buffer = await readFileAsArrayBuffer(file)
+      if (!isCurrentImportRequest()) return
+      const result = convertHuaxing360InternalQuote(buffer, file.name, pricing)
+      huaxing360Result.value = result
+      importedWorkbookSheets.value = huaxing360PreviewSheets(result)
+      importedFileSize.value = `${formatFileSize(file.size)} · 旧版内部明细 · ${result.plastic.length} 塑胶 / ${result.costs.length} 费用，待核对`
     } else if (customer.id === 'yinhui') {
       if (!/\.(xlsx|json)$/i.test(file.name)) throw new Error('银辉支持 .xlsx 原内部报价、P4 最终放行文件或已保存的 .json 内部核对草稿')
       const buffer = await readFileAsArrayBuffer(file)
@@ -1138,6 +1180,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
+
+      huaxing360Result.value = null
       importedWorkbookSheets.value = result.sheets
       importedFileSize.value = `${formatFileSize(file.size)} · 银辉导入草稿 · ${result.quoteData.importIssues?.length || 0} 项原表问题待补正`
     } else if (customer.id === 'three-sixty') {
@@ -1164,6 +1208,8 @@ async function importInternalQuoteFile(file: File | undefined) {
       dickyConversionResult.value = null
       caixingConversionResult.value = null
       threeSixtyConversionResult.value = null
+
+      huaxing360Result.value = null
       yinhuiConversionResult.value = null
       yinhuiConfirmed.value = false
       importedWorkbookSheets.value = createMockWorkbookSheets(customer, file.name)
@@ -1213,6 +1259,8 @@ async function importInternalQuoteFile(file: File | undefined) {
     dickyConversionResult.value = null
     caixingConversionResult.value = null
     threeSixtyConversionResult.value = null
+
+    huaxing360Result.value = null
     yinhuiConversionResult.value = null
     yinhuiConfirmed.value = false
     importErrorMessage.value = error instanceof Error ? `导入失败：${error.message}` : '导入失败：内部报价解析失败'
@@ -1303,7 +1351,7 @@ async function exportCustomerQuoteExcel() {
   isExportingCustomerQuote.value = true
 
   try {
-    const conversionResult = ({ buzzbee: buzzBeeConversionResult.value, disney: disneyConversionResult.value, dicky: dickyConversionResult.value, caixing: caixingConversionResult.value, 'three-sixty': threeSixtyConversionResult.value, yinhui: yinhuiConversionResult.value } as const)[exportCustomerId as 'buzzbee' | 'disney' | 'dicky' | 'caixing' | 'three-sixty' | 'yinhui']
+    const conversionResult = ({ buzzbee: buzzBeeConversionResult.value, disney: disneyConversionResult.value, dicky: dickyConversionResult.value, caixing: caixingConversionResult.value, 'three-sixty': threeSixtyConversionResult.value, 'three-sixty-huaxing': huaxing360Result.value, yinhui: yinhuiConversionResult.value } as const)[exportCustomerId as 'buzzbee' | 'disney' | 'dicky' | 'caixing' | 'three-sixty' | 'three-sixty-huaxing' | 'yinhui']
     const pricing = conversionResult?.pricing
     if (!pricing?.snapshot_id) throw new Error('请重新接收或导入报价，以记录本次使用的客户参数版本')
     const detailRows = activeWorkbookDetailRows.value
@@ -1347,6 +1395,11 @@ async function exportCustomerQuoteExcel() {
       const workbook = createYinhuiCustomerQuoteWorkbook(conversion, templateBuffer, { missingMaterialPricesConfirmed: yinhuiConfirmed.value })
       fileName = sourceVersionFileName(buildYinhuiCustomerQuoteFileName(conversion))
       downloadGeneratedFile(stampPricingReference(workbook, pricing), fileName, XLSX_MIME_TYPE)
+    } else if (selectedCustomer.value.id === 'three-sixty-huaxing' && huaxing360Result.value) {
+      const workbook = createHuaxing360Workbook(huaxing360Result.value)
+      const product = huaxing360Result.value.review.productName.replace(/[\\/:*?"<>|]/g, '-')
+      fileName = `360-华兴-${product}-${huaxing360Result.value.review.quoteDate}-V${versionNumber}.xlsx`
+      downloadGeneratedFile(workbook, fileName, XLSX_MIME_TYPE)
     } else if (selectedCustomer.value.id === 'three-sixty' && threeSixtyConversionResult.value) {
       const templateBuffer = await fetchTemplateBuffer(THREE_SIXTY_CUSTOMER_QUOTE_TEMPLATE_URL, '360 报客')
       if (!isCurrentExportRequest()) return
@@ -1463,8 +1516,8 @@ async function exportCustomerQuoteExcel() {
       @update:customer-id="settingsCustomerId = $event"
     />
     <CustomerPriceArtifactPanel
-      :customers="artifactCustomerOptions"
-      :selected-customer-id="selectedCustomerId"
+      :customers="artifactCustomerOptions.filter(customer => customer.id !== 'three-sixty-huaxing')"
+      :selected-customer-id="selectedCustomerId === 'three-sixty-huaxing' ? '' : selectedCustomerId"
       :prepare-artifact="prepareP4Artifact"
       @select-customer="selectedCustomerId = $event"
       @artifact-consumed="commitP4Artifact"
@@ -1472,7 +1525,7 @@ async function exportCustomerQuoteExcel() {
 
     <SectionPanel
       title="客户报价输出"
-      subtitle="在上方交接池接收内部报价台已输出的报价，核对后直接输出客户文件。"
+      :subtitle="selectedCustomerId === 'three-sixty-huaxing' ? '华兴360临时路线：在下方直接导入旧版内部成本明细，补齐并核对后输出 Breakdown 客表。' : '在上方交接池接收内部报价台已输出的报价，核对后直接输出客户文件。'"
     >
       <template #action>
         <div class="flex flex-wrap items-center justify-end gap-2">
@@ -1616,7 +1669,7 @@ async function exportCustomerQuoteExcel() {
                   ? 'bg-white text-teal-700 ring-teal-200'
                   : 'bg-white text-slate-500 ring-slate-200'"
           >
-            {{ !canImportSelectedCustomer ? '权限限制：不可导入或替换' : isImportingInternalQuote ? '请稍候，正在识别并转换数据' : hasSelectedCustomerImport ? (selectedCustomer.id === 'yinhui' && !yinhuiConfirmed ? '已导入，待下方核对' : '已就绪，可输出报客价') : isImportDragActive ? '松开鼠标导入 Excel' : selectedCustomer?.id === 'yinhui' ? '支持 .xlsx 原内部报价 / P4 · 银辉独立映射' : selectedCustomer?.id === 'three-sixty' ? '支持 .xlsx P4 / 原内部多 Sheet（无需 Breakdown）' : '支持 .xls / .xlsx' }}
+            {{ !canImportSelectedCustomer ? '权限限制：不可导入或替换' : isImportingInternalQuote ? '请稍候，正在识别并转换数据' : hasSelectedCustomerImport ? ((selectedCustomer.id === 'yinhui' && !yinhuiConfirmed) || (selectedCustomer.id === 'three-sixty-huaxing' && !huaxing360Result?.review.confirmed) ? '已导入，待下方核对' : '已就绪，可输出报客价') : isImportDragActive ? '松开鼠标导入 Excel' : selectedCustomer?.id === 'yinhui' ? '支持 .xlsx 原内部报价 / P4 · 银辉独立映射' : selectedCustomer?.id === 'three-sixty-huaxing' ? '支持 .xlsx 旧版内部成本明细 · 华兴360临时路线' : selectedCustomer?.id === 'three-sixty' ? '支持 .xlsx P4 / 原内部多 Sheet（无需 Breakdown）' : '支持 .xls / .xlsx' }}
           </span>
             <input
               data-testid="quote-import-input"
@@ -1634,7 +1687,7 @@ async function exportCustomerQuoteExcel() {
           <article class="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
             <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">报价来源</p>
             <p class="mt-2 truncate text-sm font-semibold text-slate-950">
-              {{ selectedImportFileName || '等待接收内部报价' }}
+              {{ selectedImportFileName || (selectedCustomerId === 'three-sixty-huaxing' ? '等待直接导入旧版内部明细' : '等待接收内部报价') }}
             </p>
             <p class="mt-1 break-words text-xs leading-5 text-slate-500">{{ selectedImportFileDetail }}</p>
           </article>
@@ -1667,6 +1720,12 @@ async function exportCustomerQuoteExcel() {
       </div>
     </SectionPanel>
 
+    <HuaxingThreeSixtyReview
+      v-if="selectedCustomer.id === 'three-sixty-huaxing' && selectedImportMatchesCurrentChoice && huaxing360Result"
+      :result="huaxing360Result" :disabled="isImportingInternalQuote || isExportingCustomerQuote || !canImportSelectedCustomer"
+      @changed="refreshHuaxing360Preview"
+    />
+
     <SectionPanel
       :title="hasActiveDickyConversion && dickyConversionResult?.v2Data ? 'Dickie 报价方案' : '明细对比区'"
       :subtitle="hasActiveDickyConversion && dickyConversionResult?.v2Data ? '按产品、MOQ 及运输方式核对报客单价（HKD）' : '下方整块区域用于承接 Sheet、报客价版本、明细价格差异和利润带对比'"
@@ -1689,6 +1748,9 @@ async function exportCustomerQuoteExcel() {
             <h3 class="text-base font-semibold text-slate-950">{{ hasActiveDickyConversion && dickyConversionResult?.v2Data ? '中英文报价输出预览' : '多 Sheet / 多报客价明细对比区' }}</h3>
             <p class="mt-1 text-sm text-slate-500">
               接收内部报价后，核对产品及各档价格，再输出客户报价文件。
+            </p>
+            <p v-if="selectedCustomerId === 'three-sixty-huaxing'" class="mt-2 text-sm font-medium text-teal-800">
+              360实际报客币种为USD，以上方核对区和输出客表为准；本对比区、下方明细及导出版本金额均按本次冻结汇率折合HKD，仅供与内部成本比较。
             </p>
           </div>
           <div class="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:w-[560px]">
@@ -1794,7 +1856,7 @@ async function exportCustomerQuoteExcel() {
                     <th class="px-4 py-3">项目编号</th>
                     <th class="px-4 py-3">项目名称</th>
                     <th class="px-4 py-3">内部价</th>
-                    <th class="px-4 py-3">报客价</th>
+                    <th class="px-4 py-3">{{ selectedCustomerId === 'three-sixty-huaxing' ? '报客价（折合HKD）' : '报客价' }}</th>
                     <th class="px-4 py-3">上一版</th>
                     <th class="px-4 py-3">差异</th>
                     <th class="px-4 py-3">利润带</th>
