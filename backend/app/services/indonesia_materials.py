@@ -19,6 +19,7 @@ from app.core.time import business_now
 from app.services.transaction_lock import lock_transaction
 from app.services.identity_policy import lock_mutation
 from app.services.indonesia_material_calculations import require, number, decimal_text, ZERO, production_plan, packaging_totals, precise_decimals
+from app.services.indonesia_material_identity import catalog_identity, shipment_material_key
 
 FACTORIES = {'huakang-a', 'huakang-b', 'huakang-c', 'huakang-d', 'huadeng', 'huaxing'}
 TABLES = (Record.__table__, Receipt.__table__, Asset.__table__, Customer.__table__, OptionRecord.__table__, SharedOption.__table__)
@@ -116,6 +117,12 @@ class Ledger:
         return row
 
     def save_material(self, data, row=None):
+        require(not any(other.id != (row.id if row else None) and
+                        (catalog_identity(other.data) == catalog_identity(data) or
+                         (other.data.get('deleted') and (not row or catalog_identity(row.data)[1:] != catalog_identity(data)[1:])
+                          and catalog_identity(other.data)[1:] == catalog_identity(data)[1:]))
+                        for other in self.rows('material', include_deleted=True)),
+                '相同中文名称和规格的物料已存在或已删除，请使用或恢复原物料', 409)
         self.validate_option_values(data, row.data if row else None)
         # One maintained weight. Keep the old key only for frozen snapshots/API compatibility.
         data['billing_weight_kg'] = data['net_weight_kg']
@@ -134,11 +141,12 @@ class Ledger:
         if row and any(data[k] != row.data[k] for k in ('unit', 'specification')):
             used = any(r.data['material_id'] == row.id for r in self.rows('supply')) or any(
                 d['material_id'] == row.id for r in self.rows('order') for d in r.data['demands'])
-            require(not used, '该物料已被合同或供应引用，规格和计数单位不能覆盖修改；新规格请建立独立编码', 422)
+            require(not used, '该物料已被合同或供应引用，规格和计数单位不能覆盖修改；新规格请建立独立物料资料', 422)
         if data['image_data']:
             from app.services.indonesia_material_excel import validate_image
             validate_image(data['image_data'])
-        return self.save('material', data, row, data['code'])
+        # A supplier code can identify several named materials. Keep existing keys/IDs intact.
+        return self.save('material', data, row)
 
     def validate_option_values(self, data, prior=None):
         choices = {option_key(item['group'], item['value']): item for item in option_defaults()}
@@ -266,7 +274,7 @@ class Ledger:
         row = None
         kind = {'option_save': 'option', 'option_delete': 'option', 'option_restore': 'option', 'customer_delete': 'customer', 'customer_restore': 'customer', 'product_delete': 'product', 'product_restore': 'product', 'material_restore': 'material', 'customer_save': 'customer', 'material_save': 'material', 'product_save': 'product', 'order_save': 'order', 'order_plan_save': 'order', 'order_recalculate': 'order',
                 'demand_adjust': 'order', 'supply_save': 'supply', 'supply_reply': 'supply', 'output_material_refresh': 'supply', 'receipt_confirm': 'supply',
-                'reallocate': 'allocation', 'shipment_save': 'shipment', 'shipment_confirm': 'shipment', 'import_confirm': 'import', 'warehouse_import_confirm': 'import'}.get(action)
+                'reallocate': 'allocation', 'shipment_save': 'shipment', 'shipment_confirm': 'shipment', 'import_confirm': 'import', 'warehouse_import_confirm': 'import', 'master_import_confirm': 'import'}.get(action)
         if body.entity_id:
             require(kind is not None, '此操作不接受现有记录编号', 422)
             row = self.get(body.entity_id, kind, include_deleted=action.endswith('_restore'))
@@ -474,14 +482,17 @@ class Ledger:
                                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             data['export_asset_id'] = asset.id
             data['export_layout_version'] = 'material_row_v2'
-            data['export_material_count'] = len({line['material']['code'] for line in lines.values()})
+            data['export_material_count'] = len({shipment_material_key(line) for line in lines.values()})
             data['supplier_summary'] = supplier_summary
             return self.save('shipment', data, row)
         if action == 'warehouse_import_confirm':
             from app.services.indonesia_warehouse_import import confirm
             return confirm(self, row, body.data, actor)
+        if action == 'master_import_confirm':
+            from app.services.indonesia_master_import import confirm
+            return confirm(self, row, body.data, actor)
         if action == 'import_confirm':
-            require(row.data.get('import_type') != 'warehouse_receipt', '仓库实收单须通过实收核对流程确认', 422)
+            require(row.data.get('import_type') not in {'warehouse_receipt', 'material_master'}, '请通过该资料对应的导入流程确认', 422)
             from app.services.indonesia_material_import import reconcile_rows
             selection = s.ImportSelection.model_validate(body.data)
             require(len(selection.indexes) == len(set(selection.indexes)), '不可重复选择同一行', 422)
@@ -643,7 +654,7 @@ def workspace(db, user, factory):
             if row['data'].get('import_type') == 'warehouse_receipt':
                 from app.services.indonesia_warehouse_import import reconcile
                 row['data']['rows'] = reconcile(ledger, ledger.get(row['id'], 'import'))
-            else:
+            elif row['data'].get('import_type') != 'material_master':
                 from app.services.indonesia_material_import import reconcile_rows
                 row['data']['rows'] = reconcile_rows(ledger, row['data']['rows'])
         if row['kind'] == 'allocation':

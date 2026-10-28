@@ -235,9 +235,18 @@ def reconcile(ledger, record):
             row['issues'].append('同一仓库、收料单号和行号重复，请核对原单')
         if identity(record.data['warehouse'], source) in posted and not row.get('imported_supply_id'):
             row['issues'].append('该仓库收料单行已经导入，不能重复计入实收')
-        found = [item for item in materials if (value_key(item.data['code']) == value_key(source['material_code']) if source.get('material_code') else value_key(item.data['name']) == value_key(source.get('material_name')))
+        found = [item for item in materials if (value_key(item.data['name']) == value_key(source['material_name']) if source.get('material_name') else value_key(item.data['code']) == value_key(source.get('material_code')))
                  and (not source.get('unit') or value_key(item.data['unit']) == value_key(source['unit']))
                  and (not source.get('specification') or value_key(item.data['specification']) == value_key(source['specification']))]
+        if len(found) > 1 and source.get('material_code'):
+            by_code = [item for item in found if value_key(item.data['code']) == value_key(source['material_code'])]
+            if by_code:
+                found = by_code
+        if not found and source.get('material_name') and source.get('material_code'):
+            # Keep legacy code/name discrepancies reviewable, never automatically accepted.
+            found = [item for item in materials if value_key(item.data['code']) == value_key(source['material_code'])
+                     and (not source.get('unit') or value_key(item.data['unit']) == value_key(source['unit']))
+                     and (not source.get('specification') or value_key(item.data['specification']) == value_key(source['specification']))]
         if len(found) > 100:
             row['issues'].append('同名物料候选过多，请补齐编码、规格或单位后核对')
             found = []
@@ -261,6 +270,8 @@ def reconcile(ledger, record):
         exact = len(found) == 1 and (bool(source.get('material_code')) or (value_key(found[0].data['specification']) == value_key(source.get('specification')) and bool(source.get('unit'))))
         if exact and source.get('material_name') and value_key(source['material_name']) != value_key(found[0].data['name']):
             exact = False  # A code/name disagreement requires an explicit business choice.
+        if exact and source.get('material_code') and value_key(source['material_code']) != value_key(found[0].data['code']):
+            exact = False
         row['auto_material_id'] = found[0].id if exact else None
         row['blocked'] = bool(row['issues'])
     return rows

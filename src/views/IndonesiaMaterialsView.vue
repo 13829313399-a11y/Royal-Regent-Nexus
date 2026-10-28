@@ -72,7 +72,7 @@ function tabKey(event: KeyboardEvent, index: number) {
         <ul v-if="savedDrafts.length" class="im-draft-list"><li v-for="draft in savedDrafts" :key="draft.id" :data-draft-id="draft.id"><div><strong>{{ draftLabel(draft) }}</strong><small>{{ savedTime(draft.savedAt) }}</small></div><div class="im-actions"><button type="button" :disabled="ws.busy || !!ws.localDrafts.saving" @click="ws.restoreDraft(draft.id)">继续填写</button><button type="button" :disabled="ws.busy || !!ws.pending || !!ws.localDrafts.saving" @click="ws.deleteDraft(draft.id)">删除草稿</button></div></li></ul>
       </section>
       <div v-if="ws.permissions.length" :key="ws.scopeEpoch">
-        <div v-for="tab in tabs" v-show="active === tab.id" :id="`im-panel-${tab.id}`" :key="tab.id" role="tabpanel" :aria-labelledby="`im-tab-${tab.id === 'import' ? 'board' : tab.id}`"><component :is="tab.component" v-bind="tab.id === 'board' ? { search } : {}" @navigate="navigate" @search="search = $event" /></div>
+        <div v-for="tab in tabs" v-show="active === tab.id" :id="`im-panel-${tab.id}`" :key="tab.id" role="tabpanel" :aria-labelledby="`im-tab-${tab.id === 'import' ? 'board' : tab.id}`"><component :is="tab.component" v-bind="tab.id === 'board' ? { search } : {}" @navigate="navigate" @search="tab.id === 'board' && typeof $event === 'string' && (search = $event)" /></div>
       </div>
       <p v-else-if="!ws.loading && !ws.loadError" class="im-message">当前账号暂无此厂区的送印尼物料查看权限。</p>
     </template>
