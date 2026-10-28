@@ -136,6 +136,11 @@ def test_dickie_repairs_wrong_summary_duplicate_columns_and_broken_row_reference
     summary.conditional_formatting.add('N9:N10', FormulaRule(formula=['N9>100']))
     mapping._repair_dickie_duplicate_rules(book)
     formulas = {str(key.sqref): rules[0].formula[0] for key, rules in summary.conditional_formatting._cf_rules.items()}
-    assert 'AND($D9<>"",$G9<>"",COUNTIFS($D$4:' in formulas['D9:G10']
+    assert 'LEFT(UPPER(TRIM($D9)),2)="SC"' in formulas['D9:G10']
+    assert 'COUNTIFS($D$4:' in formulas['D9:G10'] and '$G$4:' in formulas['D9:G10']
+    assert 'SEARCH("MO",$B9)' in formulas['D9:G10']
+    assert 'SEARCH("备料",$B9)' in formulas['D9:G10']
+    assert '"<>*MO*"' in formulas['D9:G10'] and '"<>*备料*"' in formulas['D9:G10']
+    assert '$E' not in formulas['D9:G10'] and '$H' not in formulas['D9:G10']
     assert '$D11' in formulas['D11:G11'] and '#REF!' not in formulas['D11:G11']
     assert formulas['N9:N10'] == 'N9>100'
