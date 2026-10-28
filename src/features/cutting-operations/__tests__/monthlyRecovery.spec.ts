@@ -9,6 +9,37 @@ const retry=()=>wrapper.findAll('button').find(b=>b.text()==='按原月份重试
 beforeEach(()=>{vi.resetAllMocks()})
 afterEach(()=>wrapper?.unmount())
 describe('frozen month list recovery',()=>{
+  it('keeps a keyboard retry available after repeated failure and hands success to the result',async()=>{
+    vi.mocked(workspaceApi.monthly).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline again')).mockResolvedValueOnce(result('2026-09'))
+    wrapper=mount(Monthly,{attachTo:document.body,props:{month:'2026-09',exportsOnly:true}});await flushPromises()
+    retry()!.element.focus();retry()!.element.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:0}));await flushPromises()
+    expect(document.activeElement).toBe(retry()!.element)
+    retry()!.element.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:0}));await flushPromises()
+    expect(document.activeElement).toBe(wrapper.get('[aria-label="冻结报表读取结果"]').element)
+  })
+  it.each([401,403])('does not restore private retry focus after status %i',async status=>{
+    vi.mocked(workspaceApi.monthly).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce({response:{status}})
+    wrapper=mount(Monthly,{attachTo:document.body,props:{month:'2026-09',exportsOnly:true}});await flushPromises()
+    retry()!.element.focus();retry()!.element.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:0}));await flushPromises()
+    expect(retry()).toBeUndefined();expect(document.activeElement).toBe(document.body)
+  })
+  it.each(['input','tab','pointer','month','refresh','unmount','mouse'] as const)('does not reclaim retry focus after user intent or newer read: %s',async action=>{
+    let fail!:(e:Error)=>void
+    vi.mocked(workspaceApi.monthly).mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(()=>new Promise((_r,reject)=>fail=reject)).mockRejectedValueOnce(new Error('new target'))
+    wrapper=mount(Monthly,{attachTo:document.body,props:{month:'2026-09',exportsOnly:true}});await flushPromises()
+    retry()!.element.focus();retry()!.element.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:action==='mouse'?1:0}));await flushPromises()
+    const input=wrapper.get<HTMLInputElement>('input[type=month]').element
+    if(action==='input')input.focus()
+    if(action==='tab')document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}))
+    if(action==='pointer')document.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+    if(action==='month')await wrapper.setProps({month:'2026-08'})
+    if(action==='refresh')await wrapper.get('form').trigger('submit')
+    if(action==='unmount')wrapper.unmount()
+    fail(new Error('late failure'));await flushPromises()
+    if(action!=='unmount'&&retry())expect(document.activeElement).not.toBe(retry()!.element)
+    if(action==='input')expect(document.activeElement).toBe(input)
+    if(action==='month')expect(wrapper.text()).toContain('读取未完成：2026-08')
+  })
   it('retries the captured month after repeated failures and reports its loading target',async()=>{
     let finish!:(v:ReturnType<typeof result>)=>void
     vi.mocked(workspaceApi.monthly).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline again')).mockImplementationOnce(()=>new Promise(r=>finish=r))
