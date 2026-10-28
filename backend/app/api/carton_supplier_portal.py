@@ -255,7 +255,14 @@ def carton_mark_pdf_draft_status(factory_id: str = "", db: Session = Depends(get
         user: AuthContext = Depends(get_current_user)):
     from app.services import carton_supplier_mark_draft as draft
     draft.access(db, user, factory_id)
-    return draft.ai.status()
+    result=draft.ai.status()
+    try:
+        from app.services import carton_mark_customer_template as customer
+        draft.ai.provider_configuration();customer.logo_bytes();customer.reference_image()
+        result['customer_template_available']=True
+    except (draft.ai.pilot.PilotError,OSError,ValueError,KeyError,HTTPException):
+        result['customer_template_available']=False
+    return result
 
 
 @router.post("/carton-mark/generate-pdf-draft")
@@ -317,9 +324,11 @@ def _carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,exp
 @router.post("/carton-mark/read-pdf-draft")
 async def read_carton_mark_draft(request:Request,factory_id:str=Form(""),excel_asset_id:str=Form(""),
         expected_revision:int=Form(0,ge=0),ai_consent:bool=Form(False),worksheets_json:str=Form("[]",max_length=10000),excel:UploadFile|None=File(None),
+        image_consent:bool=Form(False),customer_template_id:str=Form("",max_length=96),
         db:Session=Depends(get_db),user:AuthContext=Depends(get_current_user)):
     from app.services import carton_mark_workbench as workbench
     scope,stored,original,owner=await _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel)
+    original.update(image_consent=image_consent,customer_template_id=customer_template_id)
     try:
         original["worksheets"]=json.loads(worksheets_json)
         if not isinstance(original["worksheets"],list) or len(original["worksheets"])>50 or any(not isinstance(s,str) for s in original["worksheets"]):raise ValueError()
@@ -348,14 +357,15 @@ async def render_reviewed_carton_mark_draft(request:Request,factory_id:str=Form(
         edits_json:str=Form("{}",max_length=50000),reviewed_notes_json:str=Form("[]",max_length=30000),
         additions_json:str=Form("[]",max_length=50000),omissions_json:str=Form("[]",max_length=5000),
         graphics_json:str=Form("[]",max_length=10000),
+        ignored_changes_json:str=Form("[]",max_length=1000),
         include_sources:bool=Form(True),
         paper:Literal["A3","A4"]=Form("A3"),orientation:Literal["portrait","landscape"]=Form("landscape"),
         db:Session=Depends(get_db),user:AuthContext=Depends(get_current_user)):
     from app.services import carton_mark_workbench as workbench
     scope,stored,original,owner=await _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel)
-    try:edits=json.loads(edits_json);reviewed=json.loads(reviewed_notes_json);additions=json.loads(additions_json);omissions=json.loads(omissions_json);graphics=json.loads(graphics_json)
+    try:edits=json.loads(edits_json);reviewed=json.loads(reviewed_notes_json);additions=json.loads(additions_json);omissions=json.loads(omissions_json);graphics=json.loads(graphics_json);ignored_changes=json.loads(ignored_changes_json)
     except (ValueError,TypeError):raise HTTPException(422,"核对内容格式无效") from None
-    pdf,pages,warnings=await run_in_threadpool(workbench.render,original,owner,review_payload,review_signature,edits,reviewed,paper,orientation,additions,omissions,graphics,include_sources)
+    pdf,pages,warnings=await run_in_threadpool(workbench.render,original,owner,review_payload,review_signature,edits,reviewed,paper,orientation,additions,omissions,graphics,include_sources,ignored_changes)
     current=_carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,expected_revision)
     if current.id!=user.id or current.authorization_version!=user.authorization_version:raise HTTPException(409,"账号授权已变化，请重新读取")
     filename=Path(original["excel_file_name"]).stem[:180]+"_审阅稿.pdf"

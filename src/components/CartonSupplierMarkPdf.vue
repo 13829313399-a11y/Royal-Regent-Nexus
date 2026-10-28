@@ -22,6 +22,8 @@ const busy = ref(false), loading = ref(false), error = ref(''), previewUrl = ref
 const layout = ref<SupplierMarkLayout | null>(null), layoutLoading = ref(false), editingLayout = ref(false)
 const engine = ref<'excel_original' | 'customer_layout' | 'deepseek_zumiez'>('deepseek_zumiez')
 const aiStatus = ref<MarkPdfAiStatus | null>(null), aiConsent = ref(false)
+const customerTemplateId = ref('')
+const readerAvailable = computed(() => customerTemplateId.value && !selected.value ? aiStatus.value?.customer_template_available ?? aiStatus.value?.available : aiStatus.value?.available)
 const aiMode = computed(() => engine.value === 'deepseek_zumiez')
 const supplements = ref<MarkPdfSupplements>({})
 const sourceItem = ref('')
@@ -35,12 +37,12 @@ const canWrite = computed(() => auth.can('carton_supplier:read', '*', '*') && (f
   ? auth.can('carton_supplier:edit', factory.value, '*') : props.factoryIds.some(id => auth.can('carton_supplier:edit', id, '*'))))
 const choices = computed(() => stored.value ? orders.value.filter(order => stored.value!.orders.some(link => link.id === order.id && link.issue_id === order.issue_id)) : orders.value)
 const selected = computed(() => choices.value.find(order => order.id === orderId.value))
-const confirmedTemplate = computed(() => !selected.value && sheetInfo.value?.selected.length === worksheets.value.length
+const confirmedTemplate = computed(() => !customerTemplateId.value && !selected.value && sheetInfo.value?.selected.length === worksheets.value.length
   && sheetInfo.value.selected.every(name => worksheets.value.includes(name)) ? sheetInfo.value.confirmed_template : undefined)
 const canGenerate = computed(() => !busy.value && !loading.value && !layoutLoading.value && !editingLayout.value
   && !sheetLoading.value && canWrite.value && !!(file.value || stored.value)
   && (!aiMode.value || !!selected.value || (!!sheetInfo.value && worksheets.value.length > 0))
-  && (aiMode.value ? (!selected.value && !!readResult.value) || !!confirmedTemplate.value || (!!aiStatus.value?.available && aiConsent.value) : selected.value ? !!layout.value : engine.value === 'excel_original'))
+  && (aiMode.value ? (!selected.value && !!readResult.value) || !!confirmedTemplate.value || (!!readerAvailable.value && aiConsent.value) : selected.value ? !!layout.value : engine.value === 'excel_original'))
 let generation = 0, controller = new AbortController()
 let layoutGeneration = 0
 function clearPreview() { if (previewUrl.value) URL.revokeObjectURL(previewUrl.value); previewUrl.value = '' }
@@ -52,6 +54,7 @@ async function reset() {
   sheetInfo.value = null; sheetLoading.value = false; worksheets.value = []
   layoutGeneration++; layout.value = null; layoutLoading.value = false; editingLayout.value = false
   aiStatus.value = null; aiConsent.value = false; engine.value = 'deepseek_zumiez'
+  customerTemplateId.value = ''
   supplements.value = {}
   sourceItem.value = ''
   stored.value = props.source && props.source.factory_id === factory.value && props.factoryIds.includes(factory.value) ? props.source : null
@@ -150,11 +153,11 @@ async function inspectSource() {
   finally { if (token === generation && file.value === original && stored.value === source) sheetLoading.value = false }
 }
 async function readForReview() {
-  if (busy.value || !canWrite.value || (!confirmedTemplate.value && (!aiStatus.value?.available || !aiConsent.value)) || !worksheets.value.length) return
+  if (busy.value || !canWrite.value || (!confirmedTemplate.value && (!readerAvailable.value || !aiConsent.value)) || !worksheets.value.length) return
   const token = generation
   busy.value = true; stage.value = '正在理解原稿与制版要求…'; error.value = ''; draftResult.value = null; readResult.value = null; lastReviewEdits.value = null; renderedReviewEdits.value = null; clearPreview()
   try {
-    const value = await cartonSupplierPortalApi.readMarkPdfDraft({ ...draftSource(), ...(confirmedTemplate.value ? { ai_consent: false } : {}) }, controller.signal)
+    const value = await cartonSupplierPortalApi.readMarkPdfDraft({ ...draftSource(), ...(confirmedTemplate.value ? { ai_consent: false } : { image_consent: true }), ...(customerTemplateId.value ? { customer_template_id: customerTemplateId.value } : {}) }, controller.signal)
     if (token !== generation) return
     readResult.value = value
     const edits: MarkReviewEdits = { edits: {}, reviewed_notes: [], paper: value.paper, orientation: value.orientation, include_sources: false }
@@ -256,6 +259,7 @@ watch(supplements, () => { result.value = null; draftResult.value = null; aiCons
 watch(sourceItem, () => { result.value = null; draftResult.value = null; aiConsent.value = false; clearPreview() })
 watch(engine, () => { result.value = null; draftResult.value = null; readResult.value = null; sheetInfo.value = null; aiConsent.value = false; error.value = ''; clearPreview(); if (aiMode.value && !selected.value) void inspectSource() })
 watch(worksheets, () => { readResult.value = null; draftResult.value = null; aiConsent.value = false; clearPreview() }, { deep: true })
+watch(customerTemplateId, () => { readResult.value = null; draftResult.value = null; lastReviewEdits.value = null; renderedReviewEdits.value = null; aiConsent.value = false; clearPreview() })
 watch(() => selected.value ? `${selected.value.id}:${selected.value.issue_id}` : '', () => void loadLayout())
 onBeforeUnmount(() => { generation++; controller.abort(); clearPreview() })
 </script>
@@ -272,10 +276,12 @@ onBeforeUnmount(() => { generation++; controller.abort(); clearPreview() })
       <p class="mt-3 break-all text-sm">{{ stored?.file_name || file?.name || '支持 .xls / .xlsx，单个文件最多 20 MB；可直接拖入。' }}</p>
     </div>
     <div v-if="aiMode" class="mt-3 space-y-2 text-sm">
+      <label v-if="!selected" class="block font-semibold">客户模板<select v-model="customerTemplateId" aria-label="客户箱唛模板" :disabled="busy || !canWrite" class="mt-1 block w-full rounded-lg border bg-white p-2 sm:max-w-md"><option value="">按原稿识别版式</option><option value="zuru-front-side-v1">4500227434 · 正侧唛通用模板</option></select></label>
+      <p v-if="customerTemplateId && !selected" class="text-xs leading-5 text-slate-500">沿用确认稿的红框、字体、LOGO和正侧唛布局。本单特殊备注单独处理，不覆盖通用模板；复杂要求会列为待确认。</p>
       <p v-if="confirmedTemplate" role="status" class="rounded-lg bg-teal-50 p-3 text-teal-900">已匹配 {{ confirmedTemplate.name }} V{{ confirmedTemplate.version }}，将从本次原稿取值，本地生成左右箱唛，不调用 API。</p>
       <p v-else-if="layoutLoading" role="status" class="text-slate-500">正在检查读稿服务…</p>
-      <p v-else-if="!aiStatus?.available" role="status" class="rounded-lg bg-amber-50 p-3 text-amber-900">{{ aiStatus?.message || '读稿服务暂不可用，可在生成设置中选择原版导出。' }}</p>
-      <label v-else class="flex items-start gap-2 leading-6 text-slate-600"><input v-model="aiConsent" type="checkbox" aria-label="同意发送本单必要文字给 DeepSeek" :disabled="busy" class="mt-1.5 shrink-0"><span>同意将本单文字、备注及本地识别的图片文字交给 DeepSeek 读稿；不发送原文件或图片像素。点击生成时读取一次，修改预览不再调用。</span></label>
+      <p v-else-if="!readerAvailable" role="status" class="rounded-lg bg-amber-50 p-3 text-amber-900">{{ customerTemplateId ? '客户模板图片读稿尚未就绪，请联系管理员检查连接和模板素材。' : aiStatus?.message || '读稿服务暂不可用，可在生成设置中选择原版导出。' }}</p>
+      <label v-else class="flex items-start gap-2 leading-6 text-slate-600"><input v-model="aiConsent" type="checkbox" aria-label="同意发送本单文字备注和图片给 DeepSeek" :disabled="busy" class="mt-1.5 shrink-0"><span>{{ selected ? '同意将本单必要文字和备注交给 DeepSeek 读稿。' : '同意将所选工作表的必要文字、备注及图片交给 DeepSeek 联合理解；选择客户模板时会附上无历史订单数据的模板参考图。' }}点击生成时读取一次，修改预览不再调用。</span></label>
     </div>
     <p v-if="selected" class="mt-3 rounded-lg bg-teal-50 p-3 text-sm text-teal-900">已关联 {{ selected.customer_name }} · 合同 {{ selected.contract_no }} · PO {{ selected.customer_po || '未填写' }} · ITEM {{ selected.item_no }}，生成后按原流程保存到资料库。</p>
     <p v-if="busy && stage" role="status" class="mt-3 text-sm text-teal-800">{{ stage }}</p>
@@ -304,7 +310,7 @@ onBeforeUnmount(() => { generation++; controller.abort(); clearPreview() })
       <p class="text-xs leading-5 text-slate-500">可去掉翻译表、旧示例或条码目录。每次最多读取2500个文字单元格；只读取勾选范围的文字、备注和图片参考。</p>
       <div class="mt-2 flex flex-wrap gap-3"><label v-for="sheet in sheetInfo.worksheets" :key="sheet.name" class="flex min-w-0 items-start gap-2"><input v-model="worksheets" type="checkbox" :value="sheet.name" :disabled="busy" :aria-label="`读取工作表 ${sheet.name}`" class="mt-1 shrink-0"><span class="break-all">{{ sheet.name }} <span class="text-slate-500">({{ sheet.cells }} 项)</span></span></label></div>
     </fieldset>
-      <button v-if="readResult && aiMode && !selected" type="button" :disabled="busy || (!confirmedTemplate && (!aiConsent || !aiStatus?.available)) || !worksheets.length" class="mt-3 rounded-lg border px-3 py-2 disabled:opacity-50" @click="readForReview">{{ confirmedTemplate ? '重新读取原稿（本地套版）' : '重新读稿（再次调用 API）' }}</button>
+      <button v-if="readResult && aiMode && !selected" type="button" :disabled="busy || (!confirmedTemplate && (!aiConsent || !readerAvailable)) || !worksheets.length" class="mt-3 rounded-lg border px-3 py-2 disabled:opacity-50" @click="readForReview">{{ confirmedTemplate ? '重新读取原稿（本地套版）' : '重新读稿（再次调用 API）' }}</button>
       <p v-if="sheetInfo && worksheets.length < sheetInfo.worksheets.length" class="mt-2 text-amber-800">本次选中 {{ worksheets.length }} / {{ sheetInfo.worksheets.length }} 张工作表；请确认未排除本单所需数据。</p>
     </details>
     <p v-if="loading" role="status" class="mt-3 text-sm text-slate-500">正在读取可关联订单…</p>

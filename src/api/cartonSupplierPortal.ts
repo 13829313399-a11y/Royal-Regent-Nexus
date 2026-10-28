@@ -64,15 +64,17 @@ export type MarkPdfSupplements = Partial<Record<'quantity' | 'carton_total' | 'd
 export interface SupplierMarkLayout { id: string; factory_id: string; customer_name: string; name: string; version: number; reference_name: string; created_at: string; config: MarkLayoutConfig }
 export interface MarkLayoutPreview { preview_data_url: string; page_width_mm: number; page_height_mm: number; page_count: number; suggested_side_address: string }
 export interface SupplierMarkPdfResult { asset: SupplierMarkAsset; page_count: number; warnings: string[]; layout_id: string; layout_name: string; layout_version: number }
-export interface MarkPdfAiStatus { available: boolean; template_id: string; name: string; model: string; message: string }
+export interface MarkPdfAiStatus { available: boolean; customer_template_available?: boolean; template_id: string; name: string; model: string; message: string }
 export interface MarkPdfDraftResult { blob: Blob; page_count: number; warnings: string[]; file_name: string }
 export interface MarkConfirmedTemplate { id: string; name: string; version: number; reference_sha256: string }
-export interface MarkDraftSource { factory_id?: string; excel?: File; excel_asset_id?: string; expected_revision?: number; worksheets?: string[]; ai_consent?: boolean }
+export interface MarkDraftSource { factory_id?: string; excel?: File; excel_asset_id?: string; expected_revision?: number; worksheets?: string[]; ai_consent?: boolean; image_consent?: boolean; customer_template_id?: string }
 export interface MarkSourceInspection { worksheets: { name: string; cells: number; chars: number }[]; selected: string[]; confirmed_template?: MarkConfirmedTemplate }
 export interface MarkReadField { id: string; label: string; value: string; sources: string[]; locked: boolean; placeholder: boolean }
 export interface MarkReadResult {
   mode?: 'ai' | 'native_layout' | 'needs_mapping' | 'confirmed_template'
   confirmed_template?: MarkConfirmedTemplate | null
+  customer_template?: MarkConfirmedTemplate | null
+  order_changes?: { record: number; face: 'front' | 'side'; summary: string; note_ids: string[] }[]
   logo_available?: boolean
   payload: string; signature: string; source_cells: number; paper: 'A3' | 'A4'; orientation: 'portrait' | 'landscape'; warnings: string[]
   records: { title?: string; panels: { face: 'front' | 'side'; copies: number; logo?: boolean; symbols?: string[]; fields: MarkReadField[]; barcodes: { value: string; kind: string; width_mm: number; height_mm: number; frame: string }[] }[] }[]
@@ -83,7 +85,7 @@ export interface MarkReadResult {
 }
 export interface MarkReviewAddition { record: number; face: 'front' | 'side'; label?: string; value?: string; source_id?: string; as_barcode?: boolean }
 export interface MarkGraphicSelection { record: number; face: 'front' | 'side'; logo: boolean; symbols: string[] }
-export interface MarkReviewEdits { edits: Record<string, string>; reviewed_notes: string[]; paper: 'A3' | 'A4'; orientation: 'portrait' | 'landscape'; additions?: MarkReviewAddition[]; omissions?: string[]; graphics?: MarkGraphicSelection[]; include_sources?: boolean }
+export interface MarkReviewEdits { edits: Record<string, string>; reviewed_notes: string[]; paper: 'A3' | 'A4'; orientation: 'portrait' | 'landscape'; additions?: MarkReviewAddition[]; omissions?: string[]; graphics?: MarkGraphicSelection[]; include_sources?: boolean; ignored_changes?: number[] }
 export type SupplierMarkUploadOrder = SupplierMarkAsset['orders'][number] & { document_no: string; order_date: string }
 const base = '/carton-supplier'
 export const cartonSupplierPortalApi = {
@@ -156,6 +158,8 @@ export const cartonSupplierPortalApi = {
     for (const key of ['factory_id', 'excel_asset_id', 'expected_revision'] as const) if (request[key] !== undefined) body.append(key, String(request[key]))
     if (request.excel) body.append('excel', request.excel)
     body.append('ai_consent', String(request.ai_consent ?? true))
+    body.append('image_consent', String(request.image_consent ?? false))
+    if (request.customer_template_id) body.append('customer_template_id', request.customer_template_id)
     body.append('worksheets_json', JSON.stringify(request.worksheets ?? []))
     return (await http.post<MarkReadResult>(base + '/carton-mark/read-pdf-draft', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 360000 })).data
   },
@@ -174,6 +178,7 @@ export const cartonSupplierPortalApi = {
     body.append('include_sources', String(edits.include_sources ?? true))
     body.append('additions_json', JSON.stringify(edits.additions ?? [])); body.append('omissions_json', JSON.stringify(edits.omissions ?? []))
     body.append('graphics_json', JSON.stringify(edits.graphics ?? []))
+    body.append('ignored_changes_json', JSON.stringify(edits.ignored_changes ?? []))
     body.append('paper', edits.paper); body.append('orientation', edits.orientation)
     try {
       const response = await http.post<Blob>(base + '/carton-mark/render-reviewed-draft', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, responseType: 'blob', timeout: 180000 })

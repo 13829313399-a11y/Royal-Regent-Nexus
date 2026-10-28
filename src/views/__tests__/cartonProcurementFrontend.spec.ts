@@ -24,9 +24,13 @@ import { orderDraftKey, readOrderDraft, writeOrderDraft } from '@/features/carto
 import { dimensionPreferenceKey } from '@/features/carton-procurement/dimensionPreference'
 import { formatBusinessDateTime } from '@/lib/dateTime'
 import type { SupplierOrderSource } from '@/features/carton-procurement/supplierOrderSource'
+const scheduleMarksApiMock = vi.hoisted(() => ({ get: vi.fn() }))
+vi.mock('@/api/cartonScheduleMarks', () => ({ cartonScheduleMarksApi: scheduleMarksApiMock }))
 
 const movementHistoryApiMock = vi.hoisted(() => ({ list: vi.fn() }))
 vi.mock('@/api/cartonMovementHistory', () => ({ cartonMovementHistoryApi: movementHistoryApiMock }))
+
+vi.mock('@/api/cartonBatchOrders', () => ({ cartonBatchOrdersApi: { append: vi.fn(), template: vi.fn(), preview: vi.fn(), import: vi.fn() } }))
 
 vi.mock('@/api/cartonCustomerResponsibilities', () => ({ emptyResponsibilities: () => ({ can_manage: false, unrestricted: false, own_customer_codes: [], users: [], customers: [] }), cartonCustomerResponsibilitiesApi: { get: vi.fn(async () => ({ can_manage: true, unrestricted: true, own_customer_codes: [], users: [], customers: [] })) } }))
 
@@ -2018,6 +2022,7 @@ it('shows supplier date differences in both the internal ledger and order detail
 
   beforeEach(() => {
     vi.resetAllMocks()
+    scheduleMarksApiMock.get.mockImplementation(async (factory_id: string, batch_id: string) => ({ factory_id, batch_id, rows: [], assets: [] }))
     cartonApiMock.supplierPromiseNotices.mockResolvedValue({ late: [], changes: [], acknowledged: [] })
     deliveryApiMock.list.mockResolvedValue({ items: [] })
     unifiedApiMock.list.mockResolvedValue({ items: [], total: 0, can_create: true })
@@ -3866,6 +3871,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
       pendingScheduleFixture('SC-ACCESSORY', 8, { order_type: '配件' }),
       pendingScheduleFixture('SC-UNTYPED', 9, { order_type: undefined }),
       pendingScheduleFixture('SC-ADDITIONAL', 10, { order_type: '加单' }),
+      pendingScheduleFixture('SC-AMENDED', 11, { order_type: '改单' }),
     ]
     mockWeeklySchedule(rows)
     const wrapper = mountView('weekly-check'); await flushPromises()
@@ -3877,7 +3883,9 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
       .map(row => row.findAll('td')[2]!.find('div').text())
     expect(group.findAll('button').map(button => button.text())).toEqual(['全部类型', '正单', '备料单', '样板单', '正式PO', '未记录类型', '配件'])
     await chooseType('正单')
-    expect(contracts()).toEqual(['SC-FORMAL', 'SC-ADDITIONAL'])
+    expect(contracts()).toEqual(['SC-FORMAL', 'SC-ADDITIONAL', 'SC-AMENDED'])
+    expect(wrapper.get('[aria-label="选择排期 SC-AMENDED ITEM-SCHEDULE"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[aria-label="排期下单 SC-AMENDED ITEM-SCHEDULE"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[aria-label="加单提醒 SC-ADDITIONAL ITEM-SCHEDULE"]').text()).toBe('加单')
     expect(wrapper.find('[aria-label="加单提醒 SC-FORMAL ITEM-SCHEDULE"]').exists()).toBe(false)
     await wrapper.get('[aria-label="选择排期 SC-FORMAL ITEM-SCHEDULE"]').setValue(true)
@@ -4018,7 +4026,63 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     wrapper.unmount()
   })
 
-  it.each(['正单', '加单'])('prefills a %s order from schedule information and reuses the saved draft instead of placing it twice', async (orderType) => {
+  it.each(['MISSING', 'REVIEW', 'ERROR'])('shows %s carton-mark hints without blocking ordering', async status => {
+    mockReceiptWorkspace([])
+    mockWeeklySchedule([pendingScheduleFixture('SC-MARK-HINT', 4)])
+    if (status === 'ERROR') scheduleMarksApiMock.get.mockRejectedValue(new Error('箱唛连接失败'))
+    else scheduleMarksApiMock.get.mockImplementation(async (factory_id: string, batch_id: string) => ({ factory_id, batch_id,
+      rows: [{ source_sheet: 'ITEM表', source_row: 4, status, asset_ids: [] }], assets: [] }))
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    expect(wrapper.get('[aria-label="排期箱唛状态 SC-MARK-HINT ITEM-SCHEDULE"]').text()).toContain(
+      status === 'MISSING' ? '暂无已确认箱唛' : status === 'REVIEW' ? '关联待核' : '读取失败')
+    expect(wrapper.get('[aria-label="排期下单 SC-MARK-HINT ITEM-SCHEDULE"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[aria-label="排期箱唛提示"]').text()).toContain('没有已确认箱唛也可下单')
+    wrapper.unmount()
+  })
+
+  it('opens uploaded pre-order carton marks as exact read-only originals', async () => {
+    mockReceiptWorkspace([])
+    mockWeeklySchedule([pendingScheduleFixture('SC-MARK-HINT', 4)])
+    scheduleMarksApiMock.get.mockImplementation(async (factory_id: string, batch_id: string) => ({ factory_id, batch_id,
+      rows: [{ source_sheet: 'ITEM表', source_row: 4, status: 'UPLOADED', asset_ids: ['FILE-1'] }],
+      assets: [{ id: 'FILE-1', file_name: '箱唛原件.pdf', usage_status: 'READY' }] }))
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    expect(wrapper.get('[aria-label="查看排期箱唛 SC-MARK-HINT ITEM-SCHEDULE"]').text()).toContain('已确认（1）')
+    await wrapper.get('[aria-label="查看排期箱唛 SC-MARK-HINT ITEM-SCHEDULE"]').trigger('click'); await flushPromises()
+    expect(wrapper.findComponent({ name: 'CartonMarkAssetLibrary' }).props()).toMatchObject({ factoryId: 'huaxing', assetIds: ['FILE-1'], readOnly: true })
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not fetch carton-mark data for a schedule reader without mark permission', async () => {
+    mockReceiptWorkspace([])
+    mockWeeklySchedule([pendingScheduleFixture('SC-MARK-HINT', 4)])
+    authStoreMock.can.mockImplementation((permission: string) => permission !== 'carton_mark:read')
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    expect(scheduleMarksApiMock.get).not.toHaveBeenCalled()
+    expect(wrapper.get('[aria-label="排期箱唛状态 SC-MARK-HINT ITEM-SCHEDULE"]').text()).toContain('无查看权限')
+    expect(wrapper.get('[aria-label="排期下单 SC-MARK-HINT ITEM-SCHEDULE"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('refreshes schedule hints after uploading through the existing source uploader', async () => {
+    mockReceiptWorkspace([])
+    mockWeeklySchedule([pendingScheduleFixture('SC-MARK-HINT', 4)])
+    scheduleMarksApiMock.get.mockImplementation(async (factory_id: string, batch_id: string) => ({ factory_id, batch_id,
+      rows: [{ source_sheet: 'ITEM表', source_row: 4, status: 'MISSING', asset_ids: [] }], assets: [] }))
+    const wrapper = mountView('weekly-check'); await flushPromises()
+    await findButton(wrapper, '上传箱唛资料').trigger('click'); await flushPromises()
+    const uploader = wrapper.findComponent({ name: 'CartonMarkAssetLibrary' })
+    expect(uploader.props()).toMatchObject({ factoryId: 'huaxing', uploadOnly: true })
+    scheduleMarksApiMock.get.mockImplementation(async (factory_id: string, batch_id: string) => ({ factory_id, batch_id,
+      rows: [{ source_sheet: 'ITEM表', source_row: 4, status: 'UPLOADED', asset_ids: ['NEW'] }], assets: [] }))
+    uploader.vm.$emit('changed'); await flushPromises()
+    expect(wrapper.get('[aria-label="查看排期箱唛 SC-MARK-HINT ITEM-SCHEDULE"]').text()).toContain('已确认（1）')
+    expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each(['正单', '加单', '改单'])('prefills a %s order from schedule information and reuses the saved draft instead of placing it twice', async (orderType) => {
     mockReceiptWorkspace([])
     const source = pendingScheduleFixture('SC-SCHEDULE-NEW', 4, { order_type: orderType })
     mockWeeklySchedule([source])
@@ -4035,6 +4099,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(form.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value).toContain(source.source_reference)
     expect(form.find('[aria-label="业务排期加单提示"]').exists()).toBe(orderType === '加单')
     expect(form.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value.includes('业务排期订单类型：加单')).toBe(orderType === '加单')
+    expect(form.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value.includes('业务排期订单类型：改单')).toBe(orderType === '改单')
     expect(cartonApiMock.createOrder).not.toHaveBeenCalled()
     await form.get('input[aria-label="纸质 1"]').setValue('A33+B')
     await form.get('input[aria-label="规格 1"]').setValue('18*12.5*17.25')

@@ -198,3 +198,16 @@ def test_append_inside_rounding_slack_stays_completed_then_reopens_for_new_carto
         row = ledger.append_order(db, "O", CartonOrderAppendRequest(factory_id="huaxing", expected_revision=2, additional_quantity=5), USER)
         assert row.status == "PARTIALLY_RECEIVED" and db.get(CartonOrderLine, "l").required_quantity == 11
     engine.dispose()
+
+
+def test_append_can_join_a_transaction_and_rollback(monkeypatch):
+    monkeypatch.setattr(ledger, "ensure_customer_operation", lambda *args: None)
+    engine = create_engine("sqlite:///:memory:")
+    seed_order(engine, "COMPLETED")
+    with Session(engine) as db:
+        ledger.append_order(db, "O", CartonOrderAppendRequest(factory_id="huaxing", expected_revision=1, additional_quantity=5), USER, commit=False)
+        assert db.get(CartonOrder, "o").revision == 2
+        db.rollback()
+        assert db.get(CartonOrder, "o").revision == 1
+        assert not list(db.scalars(select(CartonAuditEvent)))
+    engine.dispose()
