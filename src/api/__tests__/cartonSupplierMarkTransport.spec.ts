@@ -26,7 +26,7 @@ describe('supplier carton-mark request serialization', () => {
       paths.push(config.url!); const body = config.data as FormData
       expect(body).toBeInstanceOf(FormData); expect(body.get('excel')).toBe(file)
       expect(body.has('order_id')).toBe(false)
-      if (config.url?.endsWith('read-pdf-draft')) { expect(body.get('ai_consent')).toBe('true'); expect(body.get('worksheets_json')).toBe('["SM"]') }
+      if (config.url?.endsWith('read-pdf-draft')) { expect(body.get('ai_consent')).toBe('true'); expect(body.get('image_consent')).toBe('false'); expect(body.has('customer_template_id')).toBe(false); expect(body.get('worksheets_json')).toBe('["SM"]') }
       else { expect(body.get('review_payload')).toBe('signed'); expect(body.has('ai_consent')).toBe(false); expect(body.get('edits_json')).toBe('{"r0p0f0":"2.5 KGS"}'); expect(body.get('include_sources')).toBe('false') }
       return { data: new Blob(['pdf']), status: 200, statusText: 'OK', headers: {}, config }
     }
@@ -34,6 +34,14 @@ describe('supplier carton-mark request serialization', () => {
     const review = { payload: 'signed', signature: 'proof' } as Parameters<typeof cartonSupplierPortalApi.renderReviewedMarkDraft>[1]
     await cartonSupplierPortalApi.renderReviewedMarkDraft({ excel: file }, review, { edits: { r0p0f0: '2.5 KGS' }, reviewed_notes: [], paper: 'A3', orientation: 'portrait', include_sources:false })
     expect(paths).toEqual(['/carton-supplier/carton-mark/read-pdf-draft', '/carton-supplier/carton-mark/render-reviewed-draft'])
+  })
+  it('sends explicit image consent and selected template only on read, then declines an exception locally', async () => {
+    const excel = new File(['excel'], 'customer.xlsx')
+    capture({ ai_consent: 'true', image_consent: 'true', customer_template_id: 'zuru-front-side-v1' }, ['customer.xlsx'])
+    await cartonSupplierPortalApi.readMarkPdfDraft({ excel, ai_consent: true, image_consent: true, customer_template_id: 'zuru-front-side-v1' })
+    capture({ review_payload: 'signed', ignored_changes_json: '[0]', include_sources: 'false' }, ['customer.xlsx'])
+    const review = { payload: 'signed', signature: 'proof' } as Parameters<typeof cartonSupplierPortalApi.renderReviewedMarkDraft>[1]
+    await cartonSupplierPortalApi.renderReviewedMarkDraft({ excel }, review, { edits: {}, reviewed_notes: [], paper: 'A4', orientation: 'landscape', ignored_changes: [0], include_sources: false })
   })
   it('exports an upload as a draft without serializing factory or purchase order identifiers', async () => {
     const file = new File(['excel'], 'draft.xlsx')

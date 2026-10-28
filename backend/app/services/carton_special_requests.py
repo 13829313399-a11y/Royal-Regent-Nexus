@@ -435,7 +435,7 @@ def assign_input(db, user, row, payload):
         paper.unit_price = Decimal(0)
 
 
-def create(db, user, payload: schema.Create, *, external=False):
+def create(db, user, payload: schema.Create, *, external=False, commit=True):
     user = locked_actor(db, user, payload.factory_id)
     vendor = supplier(db, user, payload.factory_id, "carton_supplier:edit") if external else portal.fixed_supplier(db, payload.factory_id)
     if not external and not can_submit(user, payload.factory_id): raise HTTPException(403, "没有纸品需求提交权限")
@@ -459,10 +459,10 @@ def create(db, user, payload: schema.Create, *, external=False):
     event = version(db, user, row, "GIFT_CREATED" if external else "SUBMITTED", execution=True)
     if external: row.quote_version_id = event.id; notify(db, row, "GIFT_CREATED", audience="INTERNAL")
     else: notify(db, row, "SUBMITTED", audience="INTERNAL")
-    return finish(db, user, payload, row, "CREATE", digest, external=external)
+    return finish(db, user, payload, row, "CREATE", digest, external=external, commit=commit)
 
 
-def update(db, user, identifier, payload: schema.Create, *, adjusting=False):
+def update(db, user, identifier, payload: schema.Create, *, adjusting=False, commit=True):
     user = locked_actor(db, user, payload.factory_id)
     row = access(db, user, payload.factory_id, identifier)
     if not (allowed(user, row.factory_id, "order_write") or (not adjusting and row.created_by == user.id and can_submit(user, row.factory_id))):
@@ -516,7 +516,7 @@ def update(db, user, identifier, payload: schema.Create, *, adjusting=False):
             audience="INTERNAL", created_at=core.now_text()))
         db.flush()
     if was_sent: notify(db, row, "ADJUSTED" if adjusting else "SENT", audience="SUPPLIER")
-    return finish(db, user, payload, row, action_name, digest)
+    return finish(db, user, payload, row, action_name, digest, commit=commit)
 
 
 def action(db, user, identifier, payload, name, *, external=False, commit=True):

@@ -13,10 +13,10 @@ describe('weekly demand acknowledgements', () => {
     expect(effectiveSchedulePo({ customer_po: ' 00123 ' })).toBe('00123')
     expect(effectiveSchedulePo({ source_reference: ' SO-1 ', customer_po: '00123' })).toBe('so-1')
   })
-  it('preserves the acknowledged demand until a person reviews changes', () => {
+  it.each(['正单', '改单'])('preserves acknowledged %s demand until a person reviews changes', order_type => {
     const frozen = { marked: true, demand_snapshot: scheduleDemandSnapshot(row) }
     expect(scheduleMarkChanges({ ...row, carton_rule: ' 6.0 ' }, frozen)).toEqual([])
-    const changed = { ...row, quantity: 720, carton_rule: '12', customer_due_date: '2026-10-01' }
+    const changed = { ...row, order_type, quantity: 720, carton_rule: '12', customer_due_date: '2026-10-01' }
     expect(scheduleMarkChanges(changed, frozen)).toEqual(['数量', '装箱', '客户交期'])
     const reminder = scheduleOrderReminder(changed, { today: '2026-10-10', leadDays: 3, productionDays: 7,
       marked: true, orderCount: 0, markChanges: scheduleMarkChanges(changed, frozen) })!

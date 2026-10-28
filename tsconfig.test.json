@@ -3,6 +3,7 @@
   "include": [
     "src/vite-env.d.ts",
     "src/env.d.ts",
+    "src/components/__tests__/CartonBatchDemand.spec.ts",
     "src/types/**/*.d.ts",
     "src/lib/__tests__/tailwindSources.spec.ts",
     "src/lib/__tests__/huaxingThreeSixty*.spec.ts",

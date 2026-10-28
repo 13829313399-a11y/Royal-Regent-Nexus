@@ -108,6 +108,26 @@ class CartonMarkAssetBindingRequest(BaseModel):
     revision: int = Field(ge=1)
 
 
+class CartonScheduleMarkRow(BaseModel):
+    source_sheet: str
+    source_row: int
+    status: Literal['UPLOADED', 'MISSING', 'REVIEW', 'RESTRICTED']
+    asset_ids: list[str]
+
+
+class CartonScheduleMarkFile(BaseModel):
+    id: str
+    file_name: str
+    usage_status: AssetUsageStatus
+
+
+class CartonScheduleMarksOut(BaseModel):
+    factory_id: str
+    batch_id: str
+    rows: list[CartonScheduleMarkRow]
+    assets: list[CartonScheduleMarkFile]
+
+
 class CartonMarkAssetUploadResult(BaseModel):
     file_name: str
     status: str
