@@ -90,7 +90,7 @@ def _repair_dickie_duplicate_rules(workbook):
             rf'COUNTIFS\(\${ref}\$\d+:\${ref}\$\d+,(?:\${ref}\d+|#REF!),'
             rf'\${item}\$\d+:\${item}\$\d+,(?:\${item}\d+|#REF!)\)>1\)')
     def guarded(ref, item, row, end):
-        return (f'AND(LEFT(UPPER(TRIM(${ref}{row})),2)="SC",'
+        return (f'AND(LEFT(UPPER(TRIM(${ref}{row})),2)="SC",${item}{row}<>"",'
                 f'ISERROR(SEARCH("MO",$B{row})),ISERROR(SEARCH("备料",$B{row})),'
                 f'COUNTIFS(${ref}$4:${ref}${end},${ref}{row},'
                 f'${item}$4:${item}${end},${item}{row},'

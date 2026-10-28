@@ -137,6 +137,7 @@ def test_dickie_repairs_wrong_summary_duplicate_columns_and_broken_row_reference
     mapping._repair_dickie_duplicate_rules(book)
     formulas = {str(key.sqref): rules[0].formula[0] for key, rules in summary.conditional_formatting._cf_rules.items()}
     assert 'LEFT(UPPER(TRIM($D9)),2)="SC"' in formulas['D9:G10']
+    assert '$G9<>""' in formulas['D9:G10']
     assert 'COUNTIFS($D$4:' in formulas['D9:G10'] and '$G$4:' in formulas['D9:G10']
     assert 'SEARCH("MO",$B9)' in formulas['D9:G10']
     assert 'SEARCH("备料",$B9)' in formulas['D9:G10']

@@ -150,6 +150,7 @@ def test_duplicate_color_rules_exclude_status_text_and_mo_rows_and_are_idempoten
         ref,item,_=columns(s)
         ref_letter,item_letter=map(openpyxl.utils.get_column_letter,(ref,item))
         assert f'LEFT(UPPER(TRIM(${ref_letter}4)),2)="SC"' in formula
+        assert f'${item_letter}4<>""' in formula
         assert 'SEARCH("MO",$B4)' in formula
         assert 'SEARCH("备料",$B4)' in formula
         assert f'${ref_letter}$4:' in formula and f'${item_letter}$4:' in formula
