@@ -11,11 +11,11 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from test_carton_inventory_valuation import db, movement, seed, closing, advance, USER, events_for
+from test_carton_inventory_valuation import db, movement, seed, closing, advance, USER as VALUATION_USER, events_for
 from test_carton_closing_workflow import clock
 from app.models.carton_procurement import (
     CartonOrder, CartonOrderLine, CartonReceipt, CartonReceiptLine, CartonSupplier,
-    CartonAuditEvent, CartonException, CartonInventoryMovement,
+    CartonAuditEvent, CartonException, CartonInventoryMovement, CartonPurchaseOrderIssue,
 )
 from app.schemas.carton_procurement import (
     CartonOrderUpdate, CartonOrderCancelRequest, CartonOrderBulkCancelRequest,
@@ -24,6 +24,20 @@ from app.schemas.carton_procurement import (
 from app.services import carton_procurement as ledger, carton_positions as pos
 from app.services.carton_inventory_valuation import cost_key, load_valuation
 from app.services.carton_inventory_identity import inventory_key, legacy_key
+from app.services.auth import AuthContext, AuthGrantContext
+from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine
+
+
+# Order mutations now check customer responsibility through the real scoped
+# authorization contract. Keep this service fixture restricted to one factory.
+ORDER_PERMISSIONS = frozenset({"carton_procurement:order_write", "carton_procurement:order_adjust"})
+USER = AuthContext(
+    id=VALUATION_USER.id, username=VALUATION_USER.id, display_name=VALUATION_USER.display_name,
+    roles=("纸箱测试操作员",), role_codes=("carton_test_reviewer",), permissions=ORDER_PERMISSIONS,
+    factory_scopes=("huaxing",), department_scopes=("pmc-warehouse",),
+    grants=(AuthGrantContext(role_id="carton_test_reviewer", role_name="纸箱测试操作员",
+                            factory_id="huaxing", department="pmc-warehouse", permissions=ORDER_PERMISSIONS),),
+)
 
 
 def test_backdated_real_excel_import_cannot_change_a_later_locked_closing(db, monkeypatch):
@@ -136,7 +150,7 @@ def test_delimiter_materials_cannot_issue_from_each_others_position(db):
 
 
 def seed_order(engine, status="CONFIRMED"):
-    for cls in (CartonSupplier, CartonOrder, CartonOrderLine, CartonReceipt, CartonReceiptLine, CartonAuditEvent, CartonException, CartonInventoryMovement):
+    for cls in (CartonSupplier, CartonOrder, CartonOrderLine, CartonReceipt, CartonReceiptLine, CartonAuditEvent, CartonException, CartonInventoryMovement, CartonPurchaseOrderIssue, SupplierShipment, SupplierShipmentLine):
         cls.__table__.create(engine)
     payload = dict(factory_id="huaxing", expected_revision=1, reason="核对订单内容", customer_code="C", customer_name="Customer",
         contract_no="SC1", item_no="I1", product_name="P", product_order_quantity=95, order_date="2026-09-01", due_date="2026-09-10",
