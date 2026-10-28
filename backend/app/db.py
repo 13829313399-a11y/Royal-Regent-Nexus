@@ -853,6 +853,21 @@ def ensure_collaborative_sheets_schema_ready() -> None:
             raise RuntimeError("协同填表需要迁移至 20261009_0121；请先备份并迁移。缺少：" + ", ".join(missing))
 
 
+def ensure_online_documents_schema_ready() -> None:
+    if not settings.online_documents_enabled:
+        return
+    from app.models.online_documents import OnlineDocument, OnlineDocumentRevision, OnlineDocumentEvent, OnlineDocumentFolder, OnlineDocumentPlacement
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        names = set(inspector.get_table_names())
+        for model in (OnlineDocument, OnlineDocumentRevision, OnlineDocumentEvent, OnlineDocumentFolder, OnlineDocumentPlacement):
+            table = model.__table__
+            if table.name not in names or set(table.columns.keys()) - {c["name"] for c in inspector.get_columns(table.name)}:
+                raise RuntimeError("在线文档需要显式迁移至 20261026_0183（本地合并 0184）；请先备份并迁移。")
+        from app.services.online_document_management import verify_evidence_guards
+        verify_evidence_guards(connection)
+
+
 def ensure_collaboration_schema_ready() -> None:
     if not settings.collaboration_enabled:
         return
@@ -885,6 +900,7 @@ def init_db() -> None:
         spray_ops,  # noqa: F401
         document_tools,  # noqa: F401
         collaborative_sheets,  # noqa: F401
+        online_documents,  # noqa: F401
         auth,  # noqa: F401
         position_review,  # noqa: F401
         carton_mark,  # noqa: F401
@@ -930,6 +946,7 @@ def init_db() -> None:
         SessionLocal.work_center_hooks_installed = True
     ensure_collaboration_schema_ready()
     ensure_collaborative_sheets_schema_ready()
+    ensure_online_documents_schema_ready()
     ensure_module_feedback_schema_ready()
     ensure_work_center_schema_ready()
     ensure_identity_schema_ready()
@@ -984,6 +1001,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
                             # Cutting and JP intake require explicit migrations.
                             if not name.startswith(("cutting_ops_", "jp_intake_"))
+                            and not name.startswith("online_document")
                             and (not name.startswith("carton_special_") or "auth_users" not in existing_tables)
                             and (name != "carton_price_reviews" or "auth_users" not in existing_tables)
                             and not name.startswith("indonesia_material_")
