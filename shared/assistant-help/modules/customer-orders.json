@@ -60,12 +60,12 @@
       {
         "path": "backend/app/services/cutting_orders.py",
         "symbol": "def submit",
-        "sha256": "04bf1604acfe529c908f52256e90626f0be726e5e1985351fd42686088883580"
+        "sha256": "97ed093cdf9eb172c53f48e9e92999a8105678418e16678a0e079a2e192b0735"
       },
       {
         "path": "backend/app/api/cutting_operations.py",
         "symbol": "def order_command",
-        "sha256": "9c897b9896788292199100bae8e74bddf7f4d7866621c50f262bad77e468ecb0"
+        "sha256": "9b1e242c56f874d0ef357bf9266632bd2ef5f68748b728b4b9bddc715bd26205"
       },
       {
         "path": "backend/app/services/cutting_planning.py",
@@ -100,17 +100,17 @@
       {
         "path": "backend/app/services/cutting_closing.py",
         "symbol": "def read",
-        "sha256": "7b232855a92d171cdadd774979ab1a91fbb6a640956fad91a88688cc109f7175"
+        "sha256": "ebb42282e98de602ac0e2e78f07b2d7fad53e92083c2c91fdbddba110594b825"
       },
       {
         "path": "backend/app/services/cutting_periods.py",
         "symbol": "def execute",
-        "sha256": "a1430c205ec7472a96ccb6e2cc8028f340726b683131f9c7398a76c5ffcd686f"
+        "sha256": "8ba8b7f98fa1574dd0210b850dd63c25f14d48aafc73cd10bb06b7e264984222"
       },
       {
         "path": "backend/app/services/cutting_period_guards.py",
         "symbol": "def guard_days",
-        "sha256": "4b2d3deb533928f94b73b1e9c69b2bb1d36920187ad4c8feba0139e49a965568"
+        "sha256": "837f79357de36f518cb8941213f62f8904fa45812c9a183fddb5dc1d3b7a8bcb"
       },
       {
         "path": "backend/app/services/cutting_period_evidence.py",

@@ -70,6 +70,26 @@ def test_validate_copy_refuses_missing_provenance_and_real_users(frozen):
     with pytest.raises(ValueError,match='manifest changed'):probe.validate_copy(db)
 
 
+def test_new_schema_requires_pinned_migration_and_exact_index(frozen):
+    path,m=frozen;db=probe.OUTPUT/'header/cutting.db';db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as q:
+        q.execute('CREATE TABLE auth_users(username TEXT)');q.executemany('INSERT INTO auth_users VALUES (?)',[(f'p5b-{i}',) for i in range(8)])
+        q.execute('CREATE TABLE alembic_version(version_num TEXT)');q.execute("INSERT INTO alembic_version VALUES ('20261028_0185')")
+        q.execute('CREATE TABLE cutting_ops_period_events(id TEXT,factory_id TEXT,month TEXT,version INT,action TEXT,actor_id TEXT,actor_name TEXT,created_at TEXT,reason TEXT)')
+    m['cutting_migration_revision']='20261028_0185';path.write_text(json.dumps(m))
+    marker=dict(kind='cutting-full-app-synthetic',database=str(db.resolve()),manifest=str(path))
+    def update_marker():
+        marker['manifest_sha256']=sha256(path.read_bytes()).hexdigest();(db.parent/'fixture.json').write_text(json.dumps(marker))
+    update_marker()
+    with pytest.raises(ValueError,match='fingerprinted migration'):probe.validate_copy(db)
+    relative='backend/alembic/versions/20261028_0185_cutting_period_headers.py'
+    migration=Path(m['source'])/relative;migration.parent.mkdir(parents=True);migration.write_text('# pinned migration')
+    m['p5c_source_files'][relative]=sha256(migration.read_bytes()).hexdigest();path.write_text(json.dumps(m));update_marker()
+    with pytest.raises(ValueError,match='exact header index'):probe.validate_copy(db)
+    with sqlite3.connect(db) as q:q.execute('CREATE INDEX ix_cutting_period_headers ON cutting_ops_period_events(id,factory_id,month,version,action,actor_id,actor_name,created_at,reason)')
+    assert probe.validate_copy(db)[0]==db
+
+
 @pytest.mark.parametrize('broken',[False,True])
 def test_fixture_import_preserves_values_normalizes_only_permission_ids_and_rolls_back(frozen,tmp_path,monkeypatch,broken):
     seed=tmp_path/'seed.db';target=probe.OUTPUT/'run/cutting.db';target.parent.mkdir(parents=True)
