@@ -1,6 +1,6 @@
 # 裁床部 P5c：性能、打印与上线准备
 
-对应[实施方案第 16 节](huakang-c-cutting-module-plan.md) P5c。当前已完成SQLite副本扩展验证、0168原数据候选演练及首批筛选／历史分页优化；完整应用500单／100生产链的十分钟HTTP混合验证和有限并发流程见4.15，本机独立副本小时级反复流程见4.21；页面与原生打印补验见4.19～4.20，月结历史定位和新独立副本发布见4.22，原月份重试焦点与取消导航标题见4.23。现有负载检查通过，但集中导出／长历史读取长尾、更高活跃链密度和目标容量仍待验收，**尚未达到正式上线验收条件**。真实员工、业务资料和生产发布后续指定；本批不修改业务原库，不自动授权，不执行生产迁移。
+对应[实施方案第 16 节](huakang-c-cutting-module-plan.md) P5c。当前已完成SQLite副本扩展验证、0168原数据候选演练及首批筛选／历史分页优化；完整应用500单／100生产链的十分钟HTTP混合验证和有限并发流程见4.15，本机独立副本小时级反复流程见4.21；页面与原生打印补验见4.19～4.20，月结历史定位和新独立副本发布见4.22，原月份重试焦点与取消导航标题见4.23，明确最新／所选版本读取及在途浏览器补验见4.24。现有负载检查通过，但集中导出／长历史读取长尾、更高活跃链密度和目标容量仍待验收，**尚未达到正式上线验收条件**。真实员工、业务资料和生产发布后续指定；本批不修改业务原库，不自动授权，不执行生产迁移。
 
 ## 1. 本批交付及复现
 
@@ -818,6 +818,32 @@ Chrome DevTools同页面实际复验：320px键盘Enter连续两次离线失败�
 慢网尝试在读取期间按Tab移焦，但观察时pending已为false，因此不记为在途人工移焦浏览器通过；该边界及拒绝、月份／刷新、卸载、鼠标行为由自动化覆盖。浏览器未制造真实撤权、未知写回执或两次交错导航，不能外推这些场景。320／1440截图只以内联检查，未保存独立截图路径；200%缩放、全部面板及实体打印继续待验收。
 
 复现：`npm run test:unit -- src/features/cutting-operations/__tests__/monthlyRecovery.spec.ts src/features/cutting-operations/__tests__/readTarget.spec.ts src/features/cutting-operations/__tests__/closing.spec.ts src/features/cutting-operations/__tests__/navigation.spec.ts src/router/__tests__/navigationTitle.spec.ts --maxWorkers=1`、`npm run typecheck:test`、`npm run build`。证据位于`.tmp/cutting-month-focus-20261028/`的`tests-before.log`、`tests-after.log`、`scoped-types.log`、`worktree/`、`browser-evidence.json`和`report.md`，最终冻结候选的`router-before.log`、`results.json`和`evidence/closing-location-verification.json`。本批技术验证未执行生产发布，Git集成单独办理。本节收口两项界面恢复问题，不替代集中导出／长历史长尾优化、目标容量、正式岗位／资料、含附件恢复和独立生产放行，`release_ready=false`。
+
+### 4.24 当前最新版与所选版本读取及在途浏览器补验
+
+内部月结新增明确区分的两个按钮：“读取当前最新版”读取输入月份，不传event，允许从历史版本转到当前记录；“刷新所选版本”读取已载入记录的原月份和event，不随当前最新版本变化。无已选event时不能刷新所选版本，读取中／操作结果待确认时防止重复操作；保留未保存填写确认、授权重核及失败后的原目标重试。两者只读，不保存或重算冻结金额。结算／付款读取范围、权限与后端金额契约不变。
+
+工作区和冻结候选各117项定向回归通过（重叠，不相加），覆盖新增按钮、失败保留event、无目标禁用、放弃切换保留原因及原恢复／导航边界；`npm run typecheck:test`与`npm run build`均通过，完整构建164.19／192.82秒。受影响测试专项类型检查和较小70项回归也通过；修复前旧按钮导致的失败日志保留，不修改为通过。未因本轮只读UI改动另行声称后端压力验收。
+
+新发布`20261028T053715Z-selected-refresh`、前端`20261028T053715Z-synthetic`从上一冻结源按组件范围完整重建，后端保持原字节。旧验收库只读备份到新的独立0172副本，411张表数据／结构及重复升级保全；运行后408张受保护表、原库、旧副本、角色及样本摘要一致。仅新副本当前合成reviewer会话被设为过期并重新登录，认证会话／审计／时钟分别记录。恢复正常连接后14项HTTP、三类Excel、源码与所有静态资源指纹检查通过。
+
+Chrome DevTools沿用pageId=1，保持减少动态效果；真实浏览器验收如下：
+
+| 场景 | 操作和观察 |
+| --- | --- |
+| 两个按钮 | 9月历史V3刷新仍为原event；显式读取当前最新版为V10；320×900、1440×900无文档横向溢出，按钮和说明可读 |
+| 在途移焦 | 离线形成原月份重试，联网Enter后响应仍被延迟；捕获pending=true，再按Tab或点击月份输入框，释放响应后不夺回焦点，输入框保持INPUT/name=month |
+| 在途切月 | 延迟9月读取，8月新响应先成功；释放9月后仍是8月、空列表及8月URL，不显示旧9月行 |
+| 在途刷新 | 读取中查询按钮禁用；浏览器刷新产生新document，新页完成读取后才释放旧响应，仍保留原月份／exports及新页结果 |
+| 详情／工作区拒绝 | 受控HTTP403后清除旧私人金额／精确重试；工作区显示受限页，解除夹具后重新核验可恢复；未修改岗位授权，不替代真实员工撤权验收 |
+| 会话过期 | 先延迟转发原月份请求，只令新副本当前合成reviewer会话到期，释放后真实API返回401；旧行／重试消失并转登录，登录后返回原9月exports |
+| 交错导航 | 真实排期JS请求被延迟时仍显示原月结；先点击操作日志，再释放排期资源，地址、H1及标签标题均保持日志，旧导航不覆盖新目标 |
+
+在途证据通过本机临时只读传输层延迟真实API响应／真实资源交付，保留原产品15秒超时、静态资源字节、API授权和读取逻辑。只允许登录／退出和在线心跳等认证类POST，业务写入被挡；代理拒绝自测405是预期拒绝。初次导航夹具误选未加载资源，未产生在途状态，不作为通过；最终`overlap-real`捕获实际资源hold／release及新页面先完成。初次会话夹具路径未命中也不计入通过，最终`expire-session-real`命中真实workspace月份路径。未使用页面脚本改写router、焦点或网络。夹具已撤下，原直连配置摘要完全恢复、18101无监听且故障计划为空；正常页面控制台无消息，检查的API均200。
+
+证据：`.tmp/cutting-selected-refresh-20261028/`中的`browser-evidence.json`、`relay.jsonl`（不含Cookie／密码）、`direct-restored.json`、`probe-transport.json`、`tests-before.log`、`tests-after.log`、`types.log`、`worktree/`，及当前发布目录`results.json`／`evidence/closing-location-verification.json`。截图为工具内联，未保存截图文件。命令：`npm run test:unit -- src/features/cutting-operations/__tests__/periods.spec.ts src/features/cutting-operations/__tests__/monthlyRecovery.spec.ts src/features/cutting-operations/__tests__/readTarget.spec.ts src/features/cutting-operations/__tests__/closing.spec.ts src/features/cutting-operations/__tests__/navigation.spec.ts src/router/__tests__/navigationTitle.spec.ts --maxWorkers=1`、`npm run typecheck:test`、`npm run build`；运行副本HTTP及保全工具见独立验收环境文档。
+
+本节补齐4.23未捕获的在途人工移焦与交错导航证据；不是全状态浏览器矩阵、未知写回执、真实撤权、真实员工签字或正式容量证明。200%缩放／实体打印、集中导出和长历史目标响应、更高活跃链密度、多外厂币种、含附件配置恢复及独立生产放行仍待完成，`release_ready=false`。未修改原库、生产页面、岗位授权或冻结金额；Git集成单独办理，不改变本节技术验收边界。
 
 ## 5. 上线与回退检查清单
 

@@ -41,7 +41,7 @@ describe('P4a monthly reconciliation',()=>{
     const path=router.currentRoute.value.fullPath;wrapper.unmount();const restored=await open(path)
     expect(periodApi.read).toHaveBeenLastCalledWith('2026-09','event-3')
     expect(button('内部月结').attributes('aria-pressed')).toBe('true')
-    await button('读取月结记录').trigger('click');await flushPromises()
+    await button('读取当前最新版').trigger('click');await flushPromises()
     expect(restored.currentRoute.value.query.event_id).toBe('event-10')
     expect(wrapper.text()).toContain('当前有效冻结版本')
   })
@@ -161,7 +161,7 @@ describe('P4a monthly reconciliation',()=>{
     await button(retry).trigger('click');await flushPromises()
     expect(api.read).toHaveBeenLastCalledWith(...expected)
     expect(button(retry)).toBeUndefined()
-    const generic=kind==='period'?'读取月结记录':kind==='settlement'?'读取外发结算':'读取付款登记'
+    const generic=kind==='period'?'读取当前最新版':kind==='settlement'?'读取外发结算':'读取付款登记'
     await button(generic).trigger('click');await flushPromises()
     expect(vi.mocked(api.read).mock.calls.at(-1)).toEqual(kind==='period'?['2026-09',undefined]:['2026-09',undefined,undefined])
   })
