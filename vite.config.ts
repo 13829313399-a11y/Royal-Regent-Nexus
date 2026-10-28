@@ -7,6 +7,9 @@ import { imageTranslationPlugin } from './scripts/vite-image-translation'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   return {
+    // Isolated QA apps may share node_modules, but must not replace this
+    // server's optimized dependency files while it is running.
+    cacheDir: fileURLToPath(new URL('./.local-dev/vite-cache', import.meta.url)),
     plugins: [vue(), tailwindcss(), imageTranslationPlugin()],
     server: {
       // Runtime and test artifacts are not frontend sources. Ignore locked
@@ -25,6 +28,18 @@ export default defineConfig(({ mode }) => {
         ],
       },
       proxy: {
+        ...(env.ONLYOFFICE_DEV_PROXY_TARGET ? {
+          '/office': {
+            target: env.ONLYOFFICE_DEV_PROXY_TARGET,
+            changeOrigin: true,
+            ws: true,
+            rewrite: (path: string) => path.replace(/^\/office/, ''),
+            headers: {
+              'X-Forwarded-Host': env.ONLYOFFICE_DEV_PUBLIC_HOST || '127.0.0.1:5173/office',
+              'X-Forwarded-Proto': 'http',
+            },
+          },
+        } : {}),
         '/api': {
           target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8000',
           changeOrigin: true,

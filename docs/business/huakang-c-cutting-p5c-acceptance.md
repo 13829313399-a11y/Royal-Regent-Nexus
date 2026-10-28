@@ -801,7 +801,7 @@ Microsoft Excel 16.0以新建隐藏实例、禁用宏与链接更新、只读工
 
 **只读导出冒烟**：三客户端、三轮共9份当前V10／失效V3导出，逐文件金额、版本有效性及A3设置通过；下载中位1.695秒、最大2.835秒，历史读取最大0.342秒。五单交互副本、小样本，不作容量或正式P95承诺，不替代4.21小时结果。
 
-证据：`.tmp/cutting-closing-fixes-20261028/`中的`browser-evidence.json`、各轮测试／类型／构建日志、`api-20261028T023724Z-797865/report.json`及`report.md`；发布目录下`tests.log`、`build-result.json`和`evidence/closing-location-verification.json`。真实员工签字、目标容量／响应指标、多外厂币种、200%缩放与实体打印、附件和配置恢复及独立生产放行仍未完成，`release_ready=false`。本轮没有Git提交或生产发布。
+证据：`.tmp/cutting-closing-fixes-20261028/`中的`browser-evidence.json`、各轮测试／类型／构建日志、`api-20261028T023724Z-797865/report.json`及`report.md`；发布目录下`tests.log`、`build-result.json`和`evidence/closing-location-verification.json`。真实员工签字、目标容量／响应指标、多外厂币种、200%缩放与实体打印、附件和配置恢复及独立生产放行仍未完成，`release_ready=false`。本轮技术验证未执行生产发布，Git集成单独办理。
 
 ## 5. 上线与回退检查清单
 

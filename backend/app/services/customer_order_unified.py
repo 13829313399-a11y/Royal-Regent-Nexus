@@ -1727,6 +1727,8 @@ def export_unified_customer_schedule(
                 ensure_360_order_type_dropdowns(workbook, factory_id=factory_id, customer_code=customer_code)
             except OrderTypeValidationError as exc:
                 raise CustomerOrderUnifiedError(str(exc)) from exc
+            from app.services.customer_order_360_carton import ensure_carton_columns
+            ensure_carton_columns(workbook, factory_id=factory_id, customer_code=customer_code)
         workbook.calculation.calcMode = "auto"
         workbook.calculation.fullCalcOnLoad = True
         workbook.calculation.forceFullCalc = True
