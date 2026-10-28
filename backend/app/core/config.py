@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     carton_mark_ai_enabled: bool = False
     carton_mark_ai_connection_file: str = ""
     carton_mark_ai_reference_file: str = ""
+    carton_mark_template_font_file: str = ""
     assistant_enabled: bool = False
     collaboration_enabled: bool = False
     collaboration_storage_dir: str = str(BACKEND_DIR / "data" / "collaboration-assets")

@@ -297,7 +297,7 @@
       {
         "path": "src/views/CartonProcurementView.vue",
         "symbol": "inventoryMoneySummary",
-        "sha256": "d2856f438511b11239b707f193c531ea48a57e247e819b63a7f978bb7d4dbdee"
+        "sha256": "a1cca0290fd4b12a7414b3f55e0f1d753918daf537cc7d2afb6750d54800cf38"
       }
     ],
     "knowledge_version": "2026.10.26-core-workflows-v2",

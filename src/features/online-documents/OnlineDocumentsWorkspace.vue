@@ -11,6 +11,7 @@ import { useAuthStore } from '@/stores/auth'
 import { onlineDocuments as api, type OnlineDocument, type DocumentGrant, type DocumentFolder, type MoveDocuments, type CopyDocument } from '@/api/onlineDocuments'
 import { downloadBlob, loadEditor, type EditorEvent, type EditorInstance } from './editor'
 import DocumentManagement from './DocumentManagement.vue'
+import TrashDocuments from './TrashDocuments.vue'
 import { readRecent, recentKey, rememberDocument } from './recentDocuments'
 import type { DocumentSort } from '@/api/onlineDocuments'
 
@@ -25,7 +26,9 @@ const managed = ref<OnlineDocument | null>(null)
 const documentPending = ref(false)
 const folderPending = ref(false)
 const copyPending = ref(false)
-const managementPending = computed(() => documentPending.value || folderPending.value || copyPending.value)
+const trashing = ref<OnlineDocument[] | null>(null)
+const trashOrigin = ref('')
+const managementPending = computed(() => documentPending.value || folderPending.value || copyPending.value || !!trashing.value)
 const copying = ref<OnlineDocument | null>(null)
 const copyTitle = ref('')
 const copyError = ref('')
@@ -73,6 +76,8 @@ const sort = ref<DocumentSort>('updated')
 const recentScope = computed(() => recentKey(auth.currentUser?.id ?? '', auth.currentUser?.identity?.employment_epoch ?? 1, props.factoryId))
 const recent = ref(readRecent(recentScope.value))
 const visibleDocs = computed(() => docs.value.filter(d => d.title.toLocaleLowerCase().includes(search.value.toLocaleLowerCase())))
+const selectableDocs = computed(() => visibleDocs.value.filter(d => d.access === 'owner'))
+const allChecked = computed(() => selectableDocs.value.length > 0 && selectableDocs.value.every(d => checked.value.includes(d.id)))
 const canEdit = computed(() => selected.value?.access !== 'view')
 const state = computed(() => !ready.value ? '正在连接编辑器…' : saving.value ? '正在保存到系统…' : dirty.value ? '有修改待存入系统' : '已保存到系统')
 let editor: EditorInstance | undefined
@@ -115,6 +120,33 @@ function destroy() {
   managed.value = null; documentPending.value = false; folderPending.value = false
   folderRequest.value = null; folderUncertain.value = false; checked.value = []; showNewFolder.value = false; folderName.value = ''
   renamingFolder.value = null; copying.value = null; copyPending.value = false; copyRequest.value = null; copyError.value = ''
+  trashing.value = null
+}
+
+function toggleChecked() {
+  if (busy.value || loading.value || managementPending.value) return
+  checked.value = allChecked.value ? [] : selectableDocs.value.map(d => d.id)
+}
+function startTrash(doc?: OnlineDocument) {
+  if (busy.value || loading.value || managementPending.value || recycleBin.value) return
+  const items = doc ? [doc] : selectableDocs.value.filter(d => checked.value.includes(d.id))
+  if (!items.length || items.some(d => d.access !== 'owner')) return
+  closeSharing(); managed.value = null; copying.value = null; renaming.value = null
+  error.value = ''; notice.value = ''
+  trashOrigin.value = doc ? `od-trash-${doc.id}` : 'od-trash-checked'
+  trashing.value = items.map(d => ({ ...d }))
+}
+function trashed(doc: OnlineDocument) {
+  if (doc.deleted_at) docs.value = docs.value.filter(d => d.id !== doc.id)
+  else docs.value = docs.value.map(d => d.id === doc.id ? doc : d)
+  checked.value = checked.value.filter(id => id !== doc.id)
+}
+async function closeTrash(count?: number) {
+  trashing.value = null
+  if (count !== undefined) notice.value = `已将 ${count} 份文档移入回收站，可在回收站恢复`
+  await nextTick()
+  const target = document.getElementById(trashOrigin.value) ?? document.getElementById('od-select-all')
+  target?.focus()
 }
 
 async function switchFolder(value: string) {
@@ -456,6 +488,7 @@ async function switchLibrary(bin: boolean) {
   await refresh()
 }
 function sessionBoundary() { destroy(); docs.value = []; folders.value = []; folder.value = ''; shared.value = null; connected.value = false; recent.value = readRecent(recentScope.value) }
+watch(search, () => { if (!managementPending.value) checked.value = [] })
 watch([() => auth.currentUser?.id, () => auth.currentUser?.authorization_version, () => auth.currentUser?.identity?.employment_epoch], () => { sessionBoundary(); void refresh() })
 onBeforeRouteLeave(async () => { if (managementPending.value) { error.value = '文档操作结果尚未确认，请先重试原操作'; return false }; if (!selected.value) return true; return close() })
 onMounted(() => { void refresh(); timer = setInterval(() => void heartbeat(), 20000); window.addEventListener('beforeunload', beforeUnload); window.addEventListener('auth-session-boundary-changed', sessionBoundary) })
@@ -521,9 +554,10 @@ onBeforeUnmount(() => { disposed = true; destroy(); removeFactoryGuard(); if (ti
       </form>
       <DocumentManagement v-if="managed" :key="`${managed.id}:${managed.state_version}`" :factory-id="factoryId" :document="managed" @close="closeManagement" @changed="managedChange" @pending="documentPending = $event" @denied="managed = null; documentPending = false; refresh()" />
       <div class="od-library-tabs" role="group" aria-label="文档范围"><Button variant="ghost" :aria-pressed="!recycleBin" :disabled="busy || loading || managementPending" @click="switchLibrary(false)">文档</Button><Button variant="ghost" :aria-pressed="recycleBin" :disabled="busy || loading || managementPending" @click="switchLibrary(true)">回收站</Button></div>
-      <section v-if="!recycleBin" class="od-folders" aria-label="我的文件夹">
-        <div class="od-folder-heading"><strong><Folder :size="18" aria-hidden="true" />我的文件夹</strong><Button variant="outline" :disabled="busy || managementPending || !connected" @click="showNewFolder = !showNewFolder"><FolderPlus :size="16" />新建文件夹</Button></div>
-        <p>文件夹仅自己可见；文档仍按各自的共享权限供同事访问。</p>
+      <div class="od-browser" :class="{ 'od-browser-bin': recycleBin }">
+      <aside v-if="!recycleBin" class="od-folders" aria-label="我的文件夹">
+        <div class="od-folder-heading"><strong><Folder :size="18" aria-hidden="true" />我的文件夹</strong><Button variant="ghost" size="icon-sm" aria-label="新建文件夹" title="新建文件夹" :disabled="busy || managementPending || !connected" @click="showNewFolder = !showNewFolder"><FolderPlus :size="16" /><span class="sr-only">新建文件夹</span></Button></div>
+        <p>文件夹仅自己可见，文档按各自权限共享。</p>
         <form v-if="showNewFolder" class="od-folder-form" aria-label="新建文件夹" @submit.prevent="newFolder">
           <label for="od-folder-name">文件夹名称</label><input id="od-folder-name" v-model="folderName" maxlength="100" placeholder="例如：成品进出、每月报表" :disabled="busy || managementPending" />
           <Button type="submit" :disabled="busy || managementPending || !folderName.trim()">创建文件夹</Button><Button type="button" variant="ghost" :disabled="busy || managementPending" @click="showNewFolder = false">取消</Button>
@@ -532,34 +566,62 @@ onBeforeUnmount(() => { disposed = true; destroy(); removeFactoryGuard(); if (ti
           <label for="od-folder-rename">新文件夹名称</label><input id="od-folder-rename" ref="folderRenameInput" v-model="folderRenameTitle" maxlength="100" :disabled="busy || managementPending" />
           <Button type="submit" :disabled="busy || managementPending || !folderRenameTitle.trim()">保存文件夹名称</Button><Button type="button" variant="ghost" :disabled="busy || managementPending" @click="renamingFolder = null">取消</Button>
         </form>
-        <div class="od-folder-filter"><label for="od-folder-filter">查看范围</label><select id="od-folder-filter" :value="folder" :disabled="busy || loading || managementPending" @change="switchFolder(($event.target as HTMLSelectElement).value)"><option value="">全部文档（含共享）</option><option value="uncategorized">我的未分类文档</option><option v-for="item in folders" :key="item.id" :value="item.id">{{ item.name }}</option></select><Button v-if="currentFolder" variant="ghost" :disabled="busy || managementPending || loading" @click="startFolderRename">文件夹改名</Button><Button v-if="currentFolder && !docs.length && connected && !loading" variant="ghost" :disabled="busy || managementPending" @click="removeFolder">删除空文件夹</Button></div>
+        <nav class="od-folder-navigation" aria-label="文件夹导航">
+          <Button variant="ghost" class="od-folder-link" :aria-current="folder === '' ? 'page' : undefined" :disabled="busy || loading || managementPending" @click="switchFolder('')"><FileText :size="16" aria-hidden="true" /><span>全部文档（含共享）</span></Button>
+          <Button variant="ghost" class="od-folder-link" :aria-current="folder === 'uncategorized' ? 'page' : undefined" :disabled="busy || loading || managementPending" @click="switchFolder('uncategorized')"><Folder :size="16" aria-hidden="true" /><span>我的未分类文档</span></Button>
+          <div class="od-folder-items">
+            <Button v-for="item in folders" :key="item.id" variant="ghost" class="od-folder-link" :aria-current="folder === item.id ? 'page' : undefined" :disabled="busy || loading || managementPending" @click="switchFolder(item.id)"><Folder :size="16" aria-hidden="true" /><span>{{ item.name }}</span></Button>
+          </div>
+        </nav>
+        <div class="od-folder-filter"><div class="od-folder-mobile"><label for="od-folder-filter">查看范围</label><select id="od-folder-filter" :value="folder" :disabled="busy || loading || managementPending" @change="switchFolder(($event.target as HTMLSelectElement).value)"><option value="">全部文档（含共享）</option><option value="uncategorized">我的未分类文档</option><option v-for="item in folders" :key="item.id" :value="item.id">{{ item.name }}</option></select></div><Button v-if="currentFolder" variant="ghost" :disabled="busy || managementPending || loading" @click="startFolderRename">文件夹改名</Button><Button v-if="currentFolder && !docs.length && connected && !loading" variant="ghost" :disabled="busy || managementPending" @click="removeFolder">删除空文件夹</Button></div>
         <p v-if="currentFolder">当前文件夹：{{ currentFolder.name }}。新建或上传的文档会直接放入这里。</p>
+      </aside>
+      <section class="od-library" aria-label="文档列表">
+        <div class="od-section-heading"><h2>{{ recycleBin ? "回收站（仅自己可见）" : currentFolder ? currentFolder.name : folder === "uncategorized" ? "我的未分类文档" : "我的文档与共享文档" }} <span>{{ docs.length }}</span></h2><div class="od-filter"><select v-if="!recycleBin" aria-label="文档排序" :value="sort" :disabled="busy || loading || managementPending" @change="changeSort(($event.target as HTMLSelectElement).value as DocumentSort)"><option value="updated">更新时间（最新优先）</option><option value="name">名称（升序）</option><option value="name_desc">名称（降序）</option><option value="recent">最近使用（本机）</option></select><input v-model="search" :disabled="busy || managementPending" aria-label="搜索文档" placeholder="搜索文档名称" /><Button variant="ghost" size="sm" :disabled="loading || busy || managementPending" @click="refresh">刷新</Button></div></div>
+        <TrashDocuments v-if="trashing" :factory-id="factoryId" :documents="trashing" @changed="trashed" @close="closeTrash()" @complete="closeTrash" />
+        <div v-if="!recycleBin && selectableDocs.length" class="od-selection" role="group" aria-label="文档批量操作">
+          <Button id="od-select-all" variant="ghost" size="sm" :disabled="busy || loading || managementPending" @click="toggleChecked">{{ allChecked ? '取消全选' : '全选当前结果' }}</Button>
+          <span role="status">已选 {{ checked.length }} 份</span>
+          <Button id="od-trash-checked" variant="destructive" size="sm" :disabled="!checked.length || busy || loading || managementPending" @click="startTrash()">批量移入回收站</Button>
+        </div>
         <form v-if="checked.length" class="od-folder-form od-move" aria-label="文档归类" @submit.prevent="moveChecked">
           <strong>已选 {{ checked.length }} 份</strong><label for="od-move-target">移入</label><select id="od-move-target" v-model="moveTarget" :disabled="busy || managementPending"><option value="">未分类（移出文件夹）</option><option v-for="item in folders" :key="item.id" :value="item.id">{{ item.name }}</option></select>
           <Button type="submit" :disabled="busy || managementPending">确认移动</Button><Button type="button" variant="ghost" :disabled="busy || managementPending" @click="checked = []">取消选择</Button>
         </form>
-      </section>
-      <section class="od-library" aria-label="文档列表">
-        <div class="od-section-heading"><h2>{{ recycleBin ? "回收站（仅自己可见）" : currentFolder ? currentFolder.name : folder === "uncategorized" ? "我的未分类文档" : "我的文档与共享文档" }} <span>{{ docs.length }}</span></h2><div class="od-filter"><select v-if="!recycleBin" aria-label="文档排序" :value="sort" :disabled="busy || loading || managementPending" @change="changeSort(($event.target as HTMLSelectElement).value as DocumentSort)"><option value="updated">更新时间（最新优先）</option><option value="name">名称（升序）</option><option value="name_desc">名称（降序）</option><option value="recent">最近使用（本机）</option></select><input v-model="search" aria-label="搜索文档" placeholder="搜索文档名称" /><Button variant="ghost" size="sm" :disabled="loading || busy || managementPending" @click="refresh">刷新</Button></div></div>
         <p v-if="sort === 'recent' && !recycleBin" class="od-recent-hint">显示此账号在本机最近打开的文档，仅包含当前仍有访问权限的文件。</p>
         <p v-if="loading" class="od-empty" role="status">正在加载文档…</p>
         <div v-else-if="!connected" class="od-empty"><h3>暂时无法打开在线文档</h3><p>请检查上方提示后重试。</p><Button variant="outline" @click="refresh">重试</Button></div>
         <div v-else-if="!visibleDocs.length" class="od-empty"><FileText :size="32" /><h3>{{ search ? '没有匹配的文档' : recycleBin ? '回收站为空' : currentFolder ? '文件夹为空' : sort === 'recent' ? '暂无最近使用的文档' : '从一份文档开始' }}</h3><p>{{ search ? '试试其他名称。' : recycleBin ? '移入回收站的文件和历史版本会保留在这里。' : currentFolder ? '在这里新建或上传文档，也可回到全部文档勾选文件移入。' : sort === 'recent' ? '切换到更新时间排序，打开文档后会记录在这里。' : '新建空白文档，或上传已有 Word / Excel 文件。' }}</p></div>
-        <ul v-else class="od-documents"><li v-for="doc in visibleDocs" :key="doc.id"><input v-if="!recycleBin && doc.access === 'owner'" v-model="checked" type="checkbox" class="od-check" :value="doc.id" :aria-label="`选择 ${doc.title}.${doc.format}`" :disabled="busy || managementPending || loading" /><div class="od-file-icon" :class="doc.format"><Sheet v-if="doc.format === 'xlsx'" :size="23" /><FileText v-else :size="23" /></div><div class="od-file-info"><button :disabled="busy || managementPending" class="od-file-name" @click="recycleBin ? manage(doc) : open(doc)">{{ doc.title }}.{{ doc.format }}</button><p>{{ doc.owner_name }} · {{ doc.access === 'owner' ? (doc.grants?.length ? `已共享给 ${doc.grants.length} 人` : '仅自己可见') : doc.access === 'edit' ? '共享 · 可编辑' : '共享 · 只读' }} · {{ doc.protected ? '公式区域已保护 · ' : '' }}{{ new Date(doc.updated_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) }}</p></div><div class="od-file-actions"><Button v-if="doc.access === 'owner'" :id="`od-manage-${doc.id}`" variant="ghost" size="sm" :disabled="busy || managementPending" @click="manage(doc)">{{ recycleBin ? '恢复 / 记录' : '详情' }}</Button><template v-if="!recycleBin"><Button v-if="doc.access === 'owner'" variant="ghost" size="sm" :disabled="busy || managementPending" @click="startCopy(doc)">复制</Button><Button v-if="doc.access === 'owner'" :id="`od-rename-${doc.id}`" variant="ghost" size="sm" :disabled="busy || managementPending" @click="startRename(doc)">重命名</Button><Button v-if="doc.access === 'owner'" variant="ghost" size="sm" :disabled="busy || managementPending" @click="sharing(doc)"><Users :size="15" />共享</Button><Button variant="ghost" size="sm" :disabled="busy || managementPending" @click="download(doc)"><Download :size="15" />下载</Button><Button variant="outline" size="sm" :disabled="busy || managementPending" @click="open(doc)">打开</Button></template></div></li></ul>
+        <ul v-else class="od-documents"><li v-for="doc in visibleDocs" :key="doc.id"><input v-if="!recycleBin && doc.access === 'owner'" v-model="checked" type="checkbox" class="od-check" :value="doc.id" :aria-label="`选择 ${doc.title}.${doc.format}`" :disabled="busy || managementPending || loading" /><div class="od-file-icon" :class="doc.format"><Sheet v-if="doc.format === 'xlsx'" :size="23" /><FileText v-else :size="23" /></div><div class="od-file-info"><button :disabled="busy || managementPending" class="od-file-name" @click="recycleBin ? manage(doc) : open(doc)">{{ doc.title }}.{{ doc.format }}</button><p>{{ doc.owner_name }} · {{ doc.access === 'owner' ? (doc.grants?.length ? `已共享给 ${doc.grants.length} 人` : '仅自己可见') : doc.access === 'edit' ? '共享 · 可编辑' : '共享 · 只读' }} · {{ doc.protected ? '公式区域已保护 · ' : '' }}{{ new Date(doc.updated_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) }}</p></div><div class="od-file-actions"><Button v-if="doc.access === 'owner'" :id="`od-manage-${doc.id}`" variant="ghost" size="sm" :disabled="busy || managementPending" @click="manage(doc)">{{ recycleBin ? '恢复 / 记录' : '详情' }}</Button><template v-if="!recycleBin"><Button v-if="doc.access === 'owner'" variant="ghost" size="sm" :disabled="busy || managementPending" @click="startCopy(doc)">复制</Button><Button v-if="doc.access === 'owner'" :id="`od-rename-${doc.id}`" variant="ghost" size="sm" :disabled="busy || managementPending" @click="startRename(doc)">重命名</Button><Button v-if="doc.access === 'owner'" variant="ghost" size="sm" :disabled="busy || managementPending" @click="sharing(doc)"><Users :size="15" />共享</Button><Button v-if="doc.access === 'owner'" :id="`od-trash-${doc.id}`" variant="ghost" size="sm" class="od-trash-action" :disabled="busy || loading || managementPending" @click="startTrash(doc)">移入回收站</Button><Button variant="ghost" size="sm" :disabled="busy || managementPending" @click="download(doc)"><Download :size="15" />下载</Button><Button variant="outline" size="sm" :disabled="busy || managementPending" @click="open(doc)">打开</Button></template></div></li></ul>
       </section>
+      </div>
     </template>
   </main>
 </template>
 
 <style scoped>
-.od-folders { margin-top:12px; padding:18px; background:var(--color-card); border:1px solid var(--color-border); border-radius:var(--radius-xl); }
+.od-browser { display:grid; grid-template-columns:minmax(0,1fr); gap:18px; align-items:start; margin-top:18px; }
+.od-folders { padding:16px; background:var(--color-card); border:1px solid var(--color-border); border-radius:var(--radius-xl); min-width:0; }
 .od-folder-heading,.od-folder-heading strong,.od-folder-filter,.od-folder-form { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.od-folder-heading { justify-content:space-between; }.od-folders p { font-size:13px; color:var(--color-muted-foreground); margin:10px 0; overflow-wrap:anywhere; }
+.od-folder-heading { justify-content:space-between; }.od-folder-heading strong { font-size:14px; }.od-folders p { font-size:12px; color:var(--color-muted-foreground); margin:10px 0; overflow-wrap:anywhere; line-height:1.6; }
+.od-folder-navigation { display:none; }.od-folder-mobile { display:flex; flex-wrap:wrap; gap:8px; align-items:center; width:100%; }
 .od-folder-filter select,.od-folder-form select { min-width:0; max-width:100%; width:280px; }.od-folder-form input { min-width:0; flex:1; }
-.od-folder-form { margin:12px 0; }.od-move { padding-top:12px; border-top:1px solid var(--color-border); }.od-folders label { font-size:13px; }
+.od-folder-form { margin:12px 0; }.od-folders .od-folder-form input { flex-basis:100%; }.od-folder-form label,.od-folder-filter label { font-size:13px; }
+.od-library .od-move { margin:0 18px 16px; padding:12px 0; border-top:1px solid var(--color-border); border-bottom:1px solid var(--color-border); }
+.od-browser .od-library { margin-top:0; min-width:0; }.od-browser .od-documents li { flex-wrap:wrap; }.od-browser .od-file-info { flex:1 1 200px; }.od-browser .od-file-actions { margin-left:auto; }
+@media(min-width:1024px) {
+  .od-browser { grid-template-columns:240px minmax(0,1fr); }.od-browser-bin { grid-template-columns:minmax(0,1fr); }
+  .od-folder-mobile { display:none; }.od-folder-navigation { display:flex; flex-direction:column; gap:4px; margin-top:14px; }
+  .od-folder-items { display:flex; flex-direction:column; gap:4px; max-height:55vh; overflow:auto; border-top:1px solid var(--color-border); margin-top:8px; padding-top:10px; }
+  .od-folder-items:empty { display:none; }.od-folder-navigation .od-folder-link { justify-content:flex-start; align-items:flex-start; width:100%; height:auto; min-height:36px; padding:9px 10px; text-align:left; white-space:normal; }
+  .od-folder-link span { min-width:0; overflow-wrap:anywhere; }.od-folder-link svg { margin-top:2px; }
+  .od-folder-navigation .od-folder-link[aria-current=page] { background:var(--color-accent); color:var(--color-primary); }
+  .od-folder-filter { margin-top:14px; }.od-folders .od-folder-form label { width:100%; }
+}
 input.od-check { width:18px; height:18px; min-height:18px; padding:0; accent-color:var(--color-primary); flex-shrink:0; }.od-documents li:has(.od-check:checked) { background:var(--color-muted); }
 @media(max-width:700px) { .od-folder-form label { width:100%; }.od-folder-filter select,.od-folder-form select { width:100%; }.od-folder-form input { flex-basis:100%; }.od-folders { padding:14px 12px; } }
 
+.od-selection { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:0 18px 16px; font-size:13px; }.od-selection span { color:var(--color-muted-foreground); }.od-trash-action { color:var(--color-destructive); }
 .od-workspace { min-height: 100dvh; padding: 16px 24px 28px; color: var(--color-foreground); background: var(--color-background); }
 .od-nav,.od-nav a,.od-section-heading,.od-filter,.od-editor-bar,.od-file-actions { display:flex; align-items:center; gap:12px; }
 .od-file-actions { flex-wrap:wrap; }.od-library-tabs { display:flex; gap:8px; margin-top:18px; }.od-library-tabs [aria-pressed=true] { background:var(--color-card); color:var(--color-primary); }

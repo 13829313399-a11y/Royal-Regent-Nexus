@@ -30,6 +30,16 @@ beforeEach(() => {
 })
 
 describe('carton-mark source repository', () => {
+  it('shows only exact schedule file IDs in the reused read-only viewer', async () => {
+    api.listAssets.mockResolvedValue([asset, { ...asset, id: 'OTHER', file_name: '其他合同.pdf' }])
+    const wrapper = mount(CartonMarkAssetLibrary, { props: { factoryId: 'huaxing', assetIds: [asset.id], readOnly: true } })
+    await flushPromises()
+    expect(wrapper.find(`[data-asset-id="${asset.id}"]`).exists()).toBe(true)
+    expect(wrapper.find('[data-asset-id="OTHER"]').exists()).toBe(false)
+    expect(wrapper.findAll('button').some(button => button.text() === '关联订单')).toBe(false)
+    await wrapper.setProps({ assetIds: [] }); expect(wrapper.find(`[data-asset-id="${asset.id}"]`).exists()).toBe(false)
+    wrapper.unmount()
+  })
   it('uses one association entry for whole photo groups and blocks historical originals', async () => {
     const workflow = { status: 'HISTORY' as const, version: 1, note: '', previous_asset_id: '', superseded_by_asset_id: '', updated_by_name: '', updated_at: '', confirmed_by_name: '', confirmed_at: '', confirmation_note: '' }
     api.listAssets.mockResolvedValue([{ ...asset, id: 'history', workflow }, { ...asset, id: 'photo', kind: 'image', photo_group_id: 'group' }])
@@ -207,6 +217,7 @@ describe('carton-mark source repository', () => {
     ])
     expect(wrapper.find('[aria-label="已确认.pdf 上传分类 1"]').exists()).toBe(false)
     expect(wrapper.get<HTMLSelectElement>('[aria-label="制作中.pdf 上传分类 1"]').element.value).toBe('DRAFT')
+    expect(wrapper.emitted('changed')).toHaveLength(1)
     wrapper.unmount()
   })
 

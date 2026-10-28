@@ -40,6 +40,7 @@ beforeEach(() => {
   vi.spyOn(api, 'share').mockResolvedValue(document())
   vi.spyOn(api, 'rename').mockResolvedValue({ ...document(), title: '十月汇总' })
   vi.spyOn(api, 'history').mockResolvedValue({ items: [], next_before: null })
+  vi.spyOn(api, 'command').mockImplementation(async (_factory, id) => ({ ...document(), id, deleted_at: '2026-10-28' }))
   vi.spyOn(sdk, 'downloadBlob').mockImplementation(() => {})
   vi.spyOn(sdk, 'loadEditor').mockResolvedValue({ DocEditor: class {
     constructor(_id: string, config: Record<string, unknown>) { construct(); events = config.events as typeof events }
@@ -49,6 +50,40 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('在线文档保存边界', () => {
+  it('offers trash directly on owned rows and cancels without changing the file', async () => {
+    await render(); await button('移入回收站').trigger('click'); await flushPromises()
+    expect(wrapper!.text()).toContain('移入回收站 · 1 份文档')
+    expect(canChangeFactory()).toBe(false)
+    expect(api.command).not.toHaveBeenCalled()
+    await button('取消').trigger('click'); await flushPromises()
+    expect(canChangeFactory()).toBe(true)
+    expect(wrapper!.get('.od-file-name').text()).toBe('公式试验.xlsx')
+  })
+  it('selects only owned search results and moves multiple files after confirmation', async () => {
+    const second = { ...document(), id: 'd2', title: '公式试验二' }
+    vi.mocked(api.list).mockResolvedValue([document(), second, { ...document(), id: 'shared', access: 'edit' }])
+    vi.mocked(api.detail).mockImplementation(async (_factory, id) => id === 'd2' ? second : document())
+    await render(); await button('全选当前结果').trigger('click')
+    expect(wrapper!.findAll('input[type="checkbox"]')).toHaveLength(2)
+    expect(wrapper!.findAll('input[type="checkbox"]:checked')).toHaveLength(2)
+    await button('批量移入回收站').trigger('click'); await flushPromises()
+    expect(wrapper!.get('.od-trash-confirmation').text()).toContain('公式试验二.xlsx')
+    await button('确认移入 2 份文档').trigger('click'); await flushPromises()
+    expect(api.command).toHaveBeenCalledTimes(2)
+    expect(wrapper!.findAll('.od-documents > li')).toHaveLength(1)
+    expect(wrapper!.find('.od-trash-confirmation').exists()).toBe(false)
+    expect(wrapper!.text()).toContain('已将 2 份文档移入回收站')
+    expect(canChangeFactory()).toBe(true)
+  })
+  it('clears hidden selections when search changes before selecting all matching files', async () => {
+    vi.mocked(api.list).mockResolvedValue([document(), { ...document(), id: 'd2', title: '其他文件' }])
+    await render(); await button('全选当前结果').trigger('click')
+    await wrapper!.get('input[aria-label="搜索文档"]').setValue('其他')
+    expect(wrapper!.findAll('input[type="checkbox"]:checked')).toHaveLength(0)
+    await button('全选当前结果').trigger('click')
+    expect(wrapper!.findAll('input[type="checkbox"]:checked')).toHaveLength(1)
+    expect(wrapper!.get('input[type="checkbox"]').element).toHaveProperty('value', 'd2')
+  })
   it('records only successfully opened documents and requests server ordering', async () => {
     await render(); await wrapper!.get('select[aria-label="文档排序"]').setValue('name'); await flushPromises()
     expect(api.list).toHaveBeenLastCalledWith('huaxing', undefined, { sort: 'name' })
@@ -101,6 +136,31 @@ describe('在线文档保存边界', () => {
     await wrapper!.get('form[aria-label="重命名文件夹"]').trigger('submit'); await flushPromises()
     expect(api.renameFolder).toHaveBeenCalledWith('huaxing', 'folder-1', '新文件夹', '成品进出', 1)
     expect(wrapper!.get('#od-folder-filter').element).toHaveProperty('value', 'folder-1')
+  })
+  it('switches folders from the sidebar, clears old selections and synchronizes the compact selector', async () => {
+    await render(); await wrapper!.get('input[type="checkbox"]').setValue(true)
+    await button('成品进出').trigger('click'); await flushPromises()
+    expect(api.list).toHaveBeenLastCalledWith('huaxing', 'folder-1')
+    expect(button('成品进出').attributes('aria-current')).toBe('page')
+    expect(wrapper!.get('#od-folder-filter').element).toHaveProperty('value', 'folder-1')
+    expect(wrapper!.findAll('input[type="checkbox"]:checked')).toHaveLength(0)
+    await button('我的未分类文档').trigger('click'); await flushPromises()
+    expect(api.list).toHaveBeenLastCalledWith('huaxing', 'uncategorized')
+    expect(button('我的未分类文档').attributes('aria-current')).toBe('page')
+    expect(button('成品进出').attributes('aria-current')).toBeUndefined()
+    await wrapper!.get('#od-folder-filter').setValue('folder-1'); await flushPromises()
+    expect(button('成品进出').attributes('aria-current')).toBe('page')
+  })
+  it('keeps bulk file operations in the file area and hides the sidebar in the recycle bin', async () => {
+    vi.spyOn(api, 'trash').mockResolvedValue([])
+    await render(); await wrapper!.get('input[type="checkbox"]').setValue(true)
+    expect(wrapper!.get('aside[aria-label="我的文件夹"]').find('form[aria-label="文档归类"]').exists()).toBe(false)
+    expect(wrapper!.get('section[aria-label="文档列表"]').find('form[aria-label="文档归类"]').exists()).toBe(true)
+    await button('回收站').trigger('click'); await flushPromises()
+    expect(api.trash).toHaveBeenCalledWith('huaxing')
+    expect(wrapper!.find('aside[aria-label="我的文件夹"]').exists()).toBe(false)
+    expect(wrapper!.get('.od-browser').classes()).toContain('od-browser-bin')
+    expect(wrapper!.find('form[aria-label="文档归类"]').exists()).toBe(false)
   })
   it('creates a folder over HTTP without randomUUID and sends an atomic versioned move', async () => {
     const secure = globalThis.crypto
@@ -220,6 +280,8 @@ describe('在线文档保存边界', () => {
     expect(button('共享')).toBeUndefined()
     expect(button('重命名')).toBeUndefined()
     expect(button('复制')).toBeUndefined()
+    expect(button('移入回收站')).toBeUndefined()
+    expect(button('批量移入回收站')).toBeUndefined()
     expect(wrapper!.text()).toContain(access === 'view' ? '共享 · 只读' : '共享 · 可编辑')
   })
   it('renames a document with its current title and fixed extension', async () => {

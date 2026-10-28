@@ -634,7 +634,7 @@ def _symbol(canvas,kind,x,y):
 
 
 @serialized_pdf
-def render(plan,source,logo_bytes=None,*,_separate_faces=False,include_sources=True,note_origin='model'):
+def render(plan,source,logo_bytes=None,*,_separate_faces=False,include_sources=True,note_origin='model',sources_only=False):
     cjk="SourceFlowCJK"
     if cjk not in pdfmetrics.getRegisteredFontNames():
         path=Path("C:/Windows/Fonts/simhei.ttf")
@@ -653,6 +653,7 @@ def render(plan,source,logo_bytes=None,*,_separate_faces=False,include_sources=T
         para.drawOn(canvas,x*mm,top*mm-used)
         return used/mm
     page_records=[(i,[p]) for i,r in enumerate(plan.records) for p in r.panels] if _separate_faces else [(i,r.panels) for i,r in enumerate(plan.records)]
+    if sources_only:page_records=[]
     def retry_separate(message):
         if not _separate_faces and any(len(r.panels)>1 for r in plan.records):
             return render(plan,source,logo_bytes,_separate_faces=True,include_sources=include_sources,note_origin=note_origin)
@@ -715,7 +716,7 @@ def render(plan,source,logo_bytes=None,*,_separate_faces=False,include_sources=T
     cursor=height/mm-15
     cursor-=paragraph("制版备注与来源（不属于箱面印刷内容）",12,cursor,width/mm-24,16)+7
     if source["image_count"]:
-        image_method='本地确认版式未复制原图' if note_origin=='template' else '本次文字API未读取图片像素'
+        image_method='本地确认版式未复制原图' if note_origin=='template' else '本次按授权发送了受支持的图片，识别结果仍需核对' if note_origin=='vision' else '本次文字API未读取图片像素'
         cursor-=paragraph(f"原稿包含{source['image_count']}张嵌入图。{image_method}，图内示例、LOGO或额外要求须对照原稿确认。",12,cursor,width/mm-24,11)+6
         warnings.append("原稿嵌入图片未发送给文字API，图内信息仍需人工核实")
     def note_paragraph(text,font_size=11):

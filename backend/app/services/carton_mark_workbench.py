@@ -14,6 +14,7 @@ from app.services import carton_mark_compact_plan as compact
 from app.services import carton_mark_source_cache as source_cache
 from app.services import carton_mark_reading as reading
 from app.services import carton_mark_confirmed_template as confirmed
+from app.services import carton_mark_customer_template as customer
 from app.services import carton_supplier_mark_ai as ai
 
 _KEY=secrets.token_bytes(32)
@@ -53,13 +54,23 @@ def read(original,owner,ai_consent=True):
     if not ai._SLOTS.acquire(blocking=False):raise HTTPException(429,"正在读取其他原稿，请稍后重试")
     try:
         source=_source(original)
-        matched=confirmed.match(source)
+        selected_template=original.get('customer_template_id','')
+        if selected_template:customer.profile(selected_template)
+        matched=None if selected_template else confirmed.match(source)
+        source['_customer_template']=bool(selected_template)
         if matched:
             image_notes,images,warnings=[],[],[]
         else:
             if not ai_consent:raise HTTPException(422,'当前原稿未匹配确认版式；请明确同意后再发送必要文字给DeepSeek')
-            connection,_,_,signature=ai.configuration()
-            image_notes,images,warnings=carton_mark_images.collect(original["excel_file_name"],original["excel_bytes"],worksheets=original.get("worksheets"))
+            if selected_template:connection,signature=ai.provider_configuration()
+            else:connection,_,_,signature=ai.configuration()
+            pixels=bool(original.get('image_consent'))
+            if selected_template and not pixels:raise HTTPException(422,'客户模板联合读稿需要明确同意发送本单图片和备注')
+            image_notes,images,warnings=carton_mark_images.collect(original["excel_file_name"],original["excel_bytes"],worksheets=original.get("worksheets"),include_pixels=pixels)
+            source['_provider_images']=[dict(id=i['id'],location=i['location'],data=i.pop('_pixels')) for i in images if '_pixels' in i]
+            if selected_template:
+                source['_provider_images'].append(customer.reference_image())
+                image_notes.append(ai.pilot.Evidence(id='T1',kind='template_reference',location='客户通用模板',text='空白版式，只供排版；不含本单业务数据。'))
         image_warnings=list(warnings)
         source["notes"]+=image_notes
         from app.services.carton_mark_bound_sources import linked,table_template
@@ -74,12 +85,24 @@ def read(original,owner,ai_consent=True):
             from app.services.carton_mark_native_plan import build
             from app.services.carton_mark_bound_sources import build as bound_sources
             reason=str(exc)[:400] if isinstance(exc,ai.pilot.PilotError) else "返回格式不完整，未采用未经核实的排版内容"
+            warnings.append('云端读稿未完成核验：'+reason+'；特殊备注仍需确认。')
+            source['_template_changes']=[]
             plan=native_layout or bound_sources(source)
             if plan is not None:mode='native_layout'
             else:mode="needs_mapping";plan=build(source,reason)
         warnings+=plan._warnings
+        customer_info=({**customer.metadata(),'signature':customer.signature()} if selected_template else None)
+        order_changes=source.get('_template_changes',[])
+        if selected_template:
+            plan.paper='A4';plan.orientation='landscape'
+            customer.apply_base(plan)
+            change_notes=customer.change_notes(order_changes)
+            source['notes']+=change_notes;image_notes+=change_notes
+            plan.notes += [flow.NoteChoice(source_id=n.id,action='needs_confirmation') for n in change_notes]
+            warnings.append('已选择4500227434客户模板；本单修改不覆盖通用模板。')
         payload=json.dumps(dict(version=VERSION,sha256=hashlib.sha256(original["excel_bytes"]).hexdigest(),
             filename=original["excel_file_name"],worksheets=original.get("worksheets",[]),provider_signature=signature,expires=int(time.time())+3600,
+            customer_template=customer_info,order_changes=order_changes,image_consent=bool(original.get('image_consent')),
             mode=mode,confirmed_bindings=bindings if matched else None,plan=plan.model_dump(),image_notes=[n.model_dump() for n in image_notes],question_notes=[n.model_dump() for n in question_notes],warnings=warnings),ensure_ascii=False,separators=(",",":"))
         cells={c.id:c for c in source["cells"]};po_ids={row["po_id"] for row in source.get("detail_rows",[])}
         records=[]
@@ -91,18 +114,20 @@ def read(original,owner,ai_consent=True):
                     fields.append(dict(id=f"r{r}p{p}f{f}",label=confirmed.TITLES[confirmed.KEYS[f]] if matched else field.label.value if field.label else "印刷文字",
                         value=flow.field_value(field.parts),
                         sources=[cells[part.source_id].location for part in field.parts],
-                        locked=(matched and confirmed.KEYS[f] in {'gtin','vendor_item','item'}) or any(part.source_id in po_ids for part in field.parts) or bool(re.search(r"barcode|gtin|upc|ean",field.label.value if field.label else "",re.I)),placeholder=field.role=="placeholder"))
+                        locked=(matched and confirmed.KEYS[f] in {'gtin','vendor_item','item'}) or (bool(selected_template) and customer.identity(field)) or any(part.source_id in po_ids for part in field.parts) or bool(re.search(r"barcode|gtin|upc|ean",field.label.value if field.label else "",re.I)),placeholder=field.role=="placeholder"))
                 panels.append(dict(face=panel.face,copies=panel.copies,fields=fields,logo=panel.logo,symbols=[s.kind for s in panel.symbols],
                     barcodes=[dict(value=b.source.value,kind=b.kind,width_mm=b.width_mm,height_mm=b.height_mm,frame=b.frame) for b in panel.barcodes]))
             selected_ids={part.source_id for p in record.panels for f in p.fields for part in f.parts}
             row=next((row for row in source.get("detail_rows",[]) if row['id']==record.row_id or row["po_id"] in selected_ids),None)
             records.append(dict(panels=panels,title="PO "+cells[row["po_id"]].text if row else ""))
+        if selected_template:customer.display_changes(records,order_changes)
         return dict(payload=payload,signature=_sign(payload,owner),records=records,mode=mode,
+            customer_template=customer_info,order_changes=order_changes,
             confirmed_template=confirmed.metadata() if matched else None,
-            issues=confirmed.issues(records,bindings) if matched else reading.review_issues(records,source,mode,questions,image_warnings),
+            issues=confirmed.issues(records,bindings) if matched else reading.review_issues(records,source,mode,questions,image_warnings)+(customer.note_issues(source,order_changes) if selected_template else []),
             notes=[dict(id=n.id,location=n.location,text=n.text,status="needs_confirmation") for n in source["notes"]],
             images=images,warnings=warnings,source_cells=len(cells),paper=plan.paper,orientation=plan.orientation,
-            logo_available=flow.constraints(source)["logo"] or any(re.search(r"\bZURU\b",n.text,re.I) for n in source["notes"] if n.kind=="image_reference_text"),
+            logo_available=bool(selected_template) or flow.constraints(source)["logo"] or any(re.search(r"\bZURU\b",n.text,re.I) for n in source["notes"] if n.kind=="image_reference_text"),
             unselected_cells=[dict(id=i.source_id,location=cells[i.source_id].location,text=cells[i.source_id].text,
                 printable=cells[i.source_id].kind!="reference_cell" and cells[i.source_id].location not in {n.location for n in source["notes"]}) for i in plan.ignored_cells])
     except ai.pilot.PilotError as exc:raise HTTPException(422,str(exc)) from None
@@ -111,9 +136,12 @@ def read(original,owner,ai_consent=True):
 
 def _ai_plan(source,connection,native_layout):
     mode='ai'
-    raw,_=ai.pilot.request_plan(reading.provider_evidence(source),flow.TEMPLATE,connection,prompt=compact.PROMPT,max_tokens=16000)
+    kwargs={'images':source['_provider_images']} if source.get('_provider_images') else {}
+    raw,_=ai.pilot.request_plan(reading.provider_evidence(source),flow.TEMPLATE,connection,prompt=compact.PROMPT+(customer.prompt() if source.get('_customer_template') else ''),max_tokens=16000,**kwargs)
     if native_layout is not None:plan=native_layout;mode='native_layout'
     else:plan=flow.validate(compact.expand(raw,source),source,review_mode=True)
+    if source.get('_customer_template'):
+        source['_template_changes']=customer.changes(raw,plan,source)
     questions=reading.model_issues(raw,source)
     question_notes=[ai.pilot.Evidence(id=f'Q{i+1}',kind='model_question',location='AI待确认!'+str(i+1),text=q['message']+'\n引用来源：'+'、'.join(q['sources'])) for i,q in enumerate(questions)]
     source['notes']+=question_notes
@@ -122,7 +150,7 @@ def _ai_plan(source,connection,native_layout):
     return plan,mode,questions,question_notes
 
 
-def render(original,owner,payload,signature,edits,reviewed,paper,orientation,additions=None,omissions=None,graphics=None,include_sources=True):
+def render(original,owner,payload,signature,edits,reviewed,paper,orientation,additions=None,omissions=None,graphics=None,include_sources=True,ignored_changes=None):
     if len(payload)>500_000 or not re.fullmatch(r"[0-9a-f]{64}",signature) or not hmac.compare_digest(_sign(payload,owner),signature):
         raise HTTPException(409,"读取结果不属于当前账号或已失效，请重新读取原稿")
     try:
@@ -131,14 +159,19 @@ def render(original,owner,payload,signature,edits,reviewed,paper,orientation,add
                 or data["sha256"]!=hashlib.sha256(original["excel_bytes"]).hexdigest()
                 or data["filename"]!=original["excel_file_name"]):raise ValueError()
         is_confirmed=data.get('mode')=='confirmed_template'
+        customer_info=data.get('customer_template')
         if is_confirmed:provider_signature=confirmed.signature()
+        elif customer_info:
+            customer.profile(customer_info['id'])
+            if customer_info['signature']!=customer.signature():raise ValueError()
+            _,provider_signature=ai.provider_configuration()
         else:_,template,reference,provider_signature=ai.configuration()
         if provider_signature!=data["provider_signature"]:raise ValueError()
     except (KeyError,ValueError,TypeError):raise HTTPException(409,"读取结果已过期、原稿或连接已变化，请重新读取") from None
     try:
         original={**original,"worksheets":data.get("worksheets",[])}
         source=_source(original);source["notes"] += [ai.pilot.Evidence.model_validate(n) for n in data["image_notes"]+data.get('question_notes',[])]
-        plan=flow.Plan.model_validate(data['plan']) if is_confirmed else flow.validate(json.dumps(data["plan"],ensure_ascii=False),source,review_mode=True,require_destinations=data.get('mode')!='needs_mapping')
+        plan=flow.Plan.model_validate(data['plan']) if is_confirmed or customer_info else flow.validate(json.dumps(data["plan"],ensure_ascii=False),source,review_mode=True,require_destinations=data.get('mode')!='needs_mapping')
         if paper not in {"A3","A4"} or orientation not in {"portrait","landscape"} or type(include_sources) is not bool:raise ValueError()
         if not isinstance(edits,dict) or len(edits)>150:raise ValueError()
         ids={n.id for n in source["notes"]}
@@ -149,13 +182,19 @@ def render(original,owner,payload,signature,edits,reviewed,paper,orientation,add
         if graphics is None:graphics=[]
         if not isinstance(additions,list) or len(additions)>100 or not isinstance(omissions,list) or len(omissions)>150:raise ValueError()
         if not isinstance(graphics,list) or len(graphics)>60:raise ValueError()
+        ignored_changes=[] if ignored_changes is None else ignored_changes
+        changes=data.get('order_changes',[])
+        if not isinstance(ignored_changes,list) or len(ignored_changes)>100 or any(type(i) is not int or not 0<=i<len(changes) for i in ignored_changes):raise ValueError()
+        active_changes=[c for i,c in enumerate(changes) if i not in ignored_changes]
+        if ignored_changes:
+            source['notes']=[n.model_copy(update={'text':'本次未采用此修改。'+n.text}) if n.id in {f'C{i+1}' for i in ignored_changes} else n for n in source['notes']]
         if is_confirmed and (additions or omissions or graphics):
             raise HTTPException(422,'确认版式的箱面结构固定；新增字段、移除字段或图案变化需要另建版式，未忽略修改')
         for key,value in edits.items():
             match=re.fullmatch(r"r(\d+)p(\d+)f(\d+)",key)
             if not match or not isinstance(value,str) or not 1<=len(value.strip())<=2000:raise ValueError()
             r,p,f=map(int,match.groups());field=plan.records[r].panels[p].fields[f]
-            if (is_confirmed and confirmed.KEYS[f] in {'gtin','vendor_item','item'}) or any(part.source_id in po_ids for part in field.parts) or (field.label and re.search(r"barcode|gtin|upc|ean",field.label.value,re.I)):
+            if (is_confirmed and confirmed.KEYS[f] in {'gtin','vendor_item','item'}) or (customer_info and customer.identity(field)) or any(part.source_id in po_ids for part in field.parts) or (field.label and re.search(r"barcode|gtin|upc|ean",field.label.value,re.I)):
                 raise HTTPException(422,"PO身份和条码号码请在原稿中修改后重新读取")
             old=flow.field_value(field.parts)
             if value.strip()==old:continue
@@ -170,7 +209,7 @@ def render(original,owner,payload,signature,edits,reviewed,paper,orientation,add
             if not isinstance(key,str) or not re.fullmatch(r"r\d+p\d+f\d+",key):raise ValueError()
             r,p,f=map(int,re.fullmatch(r"r(\d+)p(\d+)f(\d+)",key).groups())
             field=plan.records[r].panels[p].fields[f]
-            if any(part.source_id in po_ids for part in field.parts):raise HTTPException(422,"不能移除当前PO身份")
+            if (customer_info and customer.identity(field)) or any(part.source_id in po_ids for part in field.parts):raise HTTPException(422,"不能移除当前PO或货号身份")
             remove.add((r,p,f))
         for r,record in enumerate(plan.records):
             for p,panel in enumerate(record.panels):panel.fields=[field for f,field in enumerate(panel.fields) if (r,p,f) not in remove]
@@ -212,7 +251,7 @@ def render(original,owner,payload,signature,edits,reviewed,paper,orientation,add
             if panel is None:
                 panel=flow.Panel(face=face,copies=2,logo=False,fields=[field],barcodes=[],symbols=[]);record.panels.append(panel)
             else:panel.fields.append(field)
-        logo_available=flow.constraints(source)["logo"] or any(re.search(r"\bZURU\b",n.text,re.I) for n in source["notes"] if n.kind=="image_reference_text")
+        logo_available=bool(customer_info) or flow.constraints(source)["logo"] or any(re.search(r"\bZURU\b",n.text,re.I) for n in source["notes"] if n.kind=="image_reference_text")
         names=dict(fragile="易碎",this_side_up="向上",keep_dry="防潮")
         for setting in graphics:
             if not isinstance(setting,dict) or set(setting)!={"record","face","logo","symbols"}:raise ValueError()
@@ -244,14 +283,19 @@ def render(original,owner,payload,signature,edits,reviewed,paper,orientation,add
             pdf,pages,warnings=confirmed.render(plan,source,data['confirmed_bindings'],confirmed.logo_bytes(),include_sources=include_sources)
             if pages>100 or len(pdf)>20*1024*1024:raise HTTPException(422,'结果超过100页/20MB，请拆分原稿')
             return pdf,pages,warnings
+        if customer_info:
+            if data.get('mode')=='needs_mapping':raise HTTPException(422,'原稿字段映射未完成，暂不能套用客户模板；请核对原稿后重新读稿')
+            pdf,pages,warnings=customer.render(plan,source,active_changes,include_sources=include_sources,graphic_overrides=graphics)
+            if pages>100 or len(pdf)>20*1024*1024:raise HTTPException(422,'结果超过100页/20MB，请拆分原稿')
+            return pdf,pages,list(dict.fromkeys(plan._warnings+warnings))
         logo=None
         if any(p.logo for r in plan.records for p in r.panels):
             x,y,w,h=template["logo_crop_mm"]
             logo=flow.crop_reference(reference,template["reference_page"],dict(x=x,y=y,width=w,height=h))
-        try:pdf,pages,warnings=flow.render(plan,source,logo,include_sources=include_sources)
+        try:pdf,pages,warnings=flow.render(plan,source,logo,include_sources=include_sources,note_origin='vision' if data.get('image_consent') else 'model')
         except ai.pilot.PilotError as exc:
             if "无法完整放入版面" not in str(exc) or (paper=="A3" and orientation=="portrait"):raise
-            plan.paper="A3";plan.orientation="portrait";pdf,pages,warnings=flow.render(plan,source,logo,include_sources=include_sources)
+            plan.paper="A3";plan.orientation="portrait";pdf,pages,warnings=flow.render(plan,source,logo,include_sources=include_sources,note_origin='vision' if data.get('image_consent') else 'model')
             warnings.insert(0,"已按内容改为A3竖向；没有缩小条码，也没有再次调用API。")
         if pages>100 or len(pdf)>20*1024*1024:raise HTTPException(422,"结果超过100页/20MB，请拆分原稿")
         return pdf,pages,warnings
