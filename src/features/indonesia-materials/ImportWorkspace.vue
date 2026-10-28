@@ -9,7 +9,7 @@ import { customerProducts, fixedCustomers } from './catalog'
 import { useMaterialDraft } from './useDraft'
 import { newDraftId, recordDraftId, recordRef, restoreRecord } from './draftPersistence'
 const ws = useMaterials()
-const scheduleImports = () => ws.kind('import').filter(row => row.data.import_type !== 'warehouse_receipt')
+const scheduleImports = () => ws.kind('import').filter(row => !['warehouse_receipt', 'material_master'].includes(row.data.import_type))
 const customer = ref('')
 const recipient = ref('RRI')
 const file = ref<File | null>(null)

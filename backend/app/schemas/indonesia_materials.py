@@ -16,7 +16,7 @@ class Input(BaseModel):
 class Command(Input):
     factory_id: Text
     operation_id: Annotated[str, StringConstraints(min_length=16, max_length=64)]
-    action: Literal['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm']
+    action: Literal['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm', 'master_import_confirm']
     entity_id: str | None = Field(None, max_length=64)
     expected_version: int = Field(0, ge=0)
     data: dict = Field(default_factory=dict)
@@ -93,6 +93,36 @@ class Product(Input):
     transport_days: int = Field(25, ge=0, le=3650)
     materials: list[ProductMaterial] = Field(default_factory=list, max_length=100)
     material_deletions: list[MaterialDeletion] = Field(default_factory=list, max_length=100)
+
+
+class MasterSheetMapping(Input):
+    sheet: Text
+    header_row: int = Field(ge=1, le=30)
+    columns: dict[str, int] = Field(max_length=20)
+    enabled: bool = True
+
+
+class MasterImportContext(Input):
+    product_ids: list[Text] = Field(min_length=1, max_length=50)
+    mappings: list[MasterSheetMapping] = Field(default_factory=list, max_length=30)
+
+
+class MasterImportRecipe(Input):
+    product_id: Text
+    decision: Literal['keep', 'import']
+    usage: Positive | None = None
+
+
+class MasterImportChoice(Input):
+    group: int = Field(ge=0)
+    source_index: int = Field(ge=0)
+    decision: Literal['keep', 'import']
+    material: Material | None = None
+    recipes: list[MasterImportRecipe] = Field(min_length=1, max_length=50)
+
+
+class MasterImportSelection(Input):
+    choices: list[MasterImportChoice] = Field(min_length=1, max_length=500)
 
 
 class Order(Input):

@@ -29,7 +29,7 @@ function availableMaterials(item: Data) { return ws.kind('material').filter(row 
             <p class="im-note">每 1 {{ form.unit || '件' }} 成品使用 {{ item.usage || '—' }} {{ item.material?.unit || materialFor(item)?.data.unit || '物料单位' }}；上下调整每次 1。</p>
           </div>
           <template v-if="item.material">
-            <p v-if="item.material_id" class="im-message">此编码共用于货号：{{ productNames(item) || form.code }}。修改物料资料会更新共用基础资料，已建合同及采购快照保持原值。</p>
+            <p v-if="item.material_id" class="im-message">此物料共用于货号：{{ productNames(item) || form.code }}。修改物料资料会更新共用基础资料，已建合同及采购快照保持原值。</p>
             <MaterialDetailsFields :model="item.material" :existing="!!item.material_id" @reading="emit('reading', $event)" />
           </template>
           <template v-else-if="materialFor(item)">

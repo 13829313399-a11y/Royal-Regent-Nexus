@@ -216,7 +216,8 @@ def test_missing_or_mismatching_source_values_are_preserved_for_review(client):
     catalog(client)
     imported = preview(client, source(receipt_line=''), source(receipt_no='WH-002', material_code='UNKNOWN'), source(receipt_no='WH-003', unit='KGM'))
     assert imported['data']['rows'][0]['blocked']
-    assert imported['data']['rows'][1]['materials'] == []
+    assert len(imported['data']['rows'][1]['materials']) == 1  # Name matches; unknown code still needs business confirmation.
+    assert imported['data']['rows'][1]['auto_material_id'] is None
     assert imported['data']['rows'][2]['materials'] == []
 
 
