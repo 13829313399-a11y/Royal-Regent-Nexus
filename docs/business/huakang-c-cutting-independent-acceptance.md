@@ -11,8 +11,8 @@
 | 原有开发前端 | http://127.0.0.1:5173，继续独立运行 |
 | 控制目录 | `D:/RR/.local-dev/cutting-acceptance/` |
 | 当前发布清单 | 控制目录下 `current.json` |
-| 前端构建版本 | `20261027T035144Z-synthetic`；冻结基线叠加导出恢复、月份视图保留、打印指引及月结控件标识后完整重建 |
-| 后端发布版本 | `20261027T035144Z-export-recovery`；后端及打印格式沿用上一版，业务逻辑与0172结构保持 |
+| 前端构建版本 | `20261028T022005Z-synthetic`；冻结基线叠加历史月份／视图／选中版本定位、原月份重试及有效性提示后完整重建 |
+| 后端发布版本 | `20261028T022005Z-closing-location`；纳入与成功小时档指纹相同的六个后端优化文件，保持0172结构及打印金额口径 |
 | 测试账号 | 合成管理员及最小权限岗位账号；账号及密码仅见本机私密凭据文件 |
 | 本机凭据文件 | 控制目录下 `credentials.local.json`；仅供本机验收，不提交 Git |
 
@@ -20,7 +20,11 @@
 
 当前源码快照基于 `6ea9ecea8ea395b3382099c826b1646281e42972`，叠加重试月份协调、选中版本保留、长编号复制及筛选措辞的明确源码覆盖，并纳入导出等待／取消、付款报表说明及库存／费用原条件重试；此前已纳入main的 `1fde98436dbae0690718d2dff8dbbf1f981b99b8` 中三个裁床后端文件（API、操作服务、工作区服务），启用锁外计算和付款幂等重试优化；再叠加本地工作区的 `transaction_lock.py` 和新增 `cutting_sqlite_queue.py`，仅对SQLite裁床新事务公平排队，真实数据库锁和5000ms等待设置保留。后两文件以独立源码覆盖纳入；冻结摘要在清单中单独保留，后续Git操作不改写冻结发布清单。另覆盖已合入main的 `2065b2d8ed9a448b2f58afd28754703fd8823c56` 中 `cutting_closing.py`、`cutting_periods.py`，在同一受保护事务内批量读取月结编制依据；独立实时核对、锁顺序、月末归集、权限和默认5000ms等待不变。帮助说明的这两处源码摘要经复核后在副本内对齐，说明正文不改。相关依赖与原冻结版本一致。保留既有界面和0172结构，不代表部署整个最新main。每个路径及摘要保存在 `current.json` 的 `source_overlay` 中。前轮已纳入看板／每日任务原条件重试、日志查询提示及华康C生产部入口标识；先前覆盖TaskBoard、Activity及对应测试，补页码恢复、日志旧结果／原条件重试和在途目标；此前日志读取时间修复仅覆盖Activity及对应测试，修正无分页依据提示、增加成功读取时间并固化重试中的切换／刷新／拒绝恢复回归，其他冻结源码保持；ModuleCenterView只应用三处入口相关补丁，没有带入工作区其他页面动效。门户说明按各份冻结源码分别对齐。本轮在此冻结基线上叠加独立资源恢复提示和控制器、工作区权限成功焦点及共享TaskBoard字段标识；App和router只加入这项功能所需接线，没有全量替换为工作区最新路由。纸箱路由内容不变，复核后分别更新各份源码的帮助来源摘要，说明正文不改。构建时单独设置 `VITE_CUTTING_ACCEPTANCE_RELEASE`，普通构建不显示验收标识；该标识只解释环境身份，不提供权限或更改数据库连接。
 
-当前发布位于 `releases/20261027T035144Z/`，实际数据库以 `current.json.database` 为准。前端436份静态文件已完整重建，不是复用旧产物；后端打印实现与上一版逐字节一致。旧发布及数据库保留，新副本411张表及0172重复升级不变，408张受保护表、身份权限、凭据、样本和原库保全。导出错误保留原目标并重新预览，冻结报表刷新保留成功读取的月份与视图，打印指引明确A3横向／活动工作表，月结多面板控件补实例唯一id与name；本页地址同步不清空隐藏原因，外部导航仍执行草稿保护。工作区417项回归、测试类型检查及完整构建通过，冻结候选另跑53项定向回归并完整构建；14项接口／报表及实际Chrome复验通过，详见[P5c清单4.19](huakang-c-cutting-p5c-acceptance.md#419-未保存草稿六区非空视口与原生-excel-首批补验)。本批不改变冻结金额或业务状态，文件与配置仍随发布冻结，运行时不跟随工作区热更新。
+当前发布位于 `releases/20261028T022005Z/`，实际数据库以 `current.json.database` 为准。前端436份静态文件由冻结源码完整重建，最终候选75项定向回归和完整构建通过（约86.82秒）。仅叠加本轮7个界面／共享实现文件及3个测试文件；后端6个文件与成功小时档的指纹一致，未复制压力样本或整个最新main。打印格式及冻结金额口径保持。旧发布 `releases/20261027T035144Z/` 和切换前控制文件完整保留。
+
+本轮修复历史详情刷新后的月份、视图及选中事件保留；原月份列表重试；当前／失效／编制版本提示；币种和单位短码不拆行；内部材料锁月与外发加工费分别办理的说明。成功读取后才写回实际位置，失败、过时响应及权限变化不会写入错误位置。单纯位置记账不清空隐藏原因，真正历史切换和外部导航继续保护草稿，原订单`line_id`链接保留。实际Chrome验证2026-09历史V3刷新、当前V10读取、320px连续断网及原月份恢复、跨视图原因保留及离开取消、预览下载和打印指引；无业务保存。详情见[P5c清单4.22](huakang-c-cutting-p5c-acceptance.md#422-月结历史定位与新的独立验收副本)。
+
+411张表只读备份及0172重复升级不变；运行后408张受保护表、结构、账号权限、样本及原库／旧副本摘要保持。14项HTTP／报表检查及三客户端9次只读导出通过，版本和金额一致，最大下载2.835秒；这只是五单交互库冒烟检查。当前保全命令为`backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_closing_location.py`，不可直接沿用假设旧后端文件相同的历史校验器。证据在当前发布`evidence/closing-location-verification.json`及本机`.tmp/cutting-closing-fixes-20261028/`。
 
 上一发布 `releases/20261024T073127Z/`、`releases/20261024T062445Z/`、`releases/20261024T035247Z/`、`releases/20261024T030704Z/`、`releases/20261024T021720Z/`、`releases/20261023T110012Z/` 及更早 `releases/20261023T094004Z/` 的源码、产物和非空样本库完整保留；既有 `releases/20261023T040421Z/` 的恢复证据也保留；原 `releases/20261021T081828Z/` 的空白裁床验收副本也保留。当前发布目录下 `previous-control/` 保存切换前的清单与配置；不要把旧源码／数据库与新产物混用。失败的样本候选也保留，实际选用文件始终以 `current.json.database` 为准。
 
@@ -51,15 +55,15 @@
 
 明细与来源标识见当前发布目录的 `samples.json`；正常及异常样本生成后，重新通过实际运行服务检查读取、筛选、分页和导出。自查前后非认证表摘要一致，验证查询和导出不改业务数据。
 
-冻结目录构建扫描问题已修复，当前前端继续由冻结源码完整重建，不复用旧bundle。本轮仅调整日志重试提示和结果读取时间，沿用已验证的模块入口文案和生产部验收标识，查询及重试不提交业务记录，不改变后端计算、厂区或权限规则。七个后端优化文件及全部覆盖摘要核对一致，当前HTTP复核14项通过；411张表复制和重复升级无变化，启动后408张受保护表、账号凭据、权限、旧验收库与原库保持不变。正常登录会话、审计及身份时钟单列。500单压力样本未导入五单试用库。前一构建修复的57份模块CSS与主题保全证据保留在旧发布，不把该轮对比冒充为本轮浏览器视觉验收。
+冻结目录构建扫描问题保持修复，当前前端由冻结源码完整重建，不复用旧bundle。本轮月结定位／重试修复及六个后端小时候选覆盖的范围和验证见上文及P5c 4.22。此前模块入口、日志焦点、字段和资源恢复功能沿用；正常认证会话、审计及身份时钟仍单列，不视为业务差异。500单压力样本未导入五单试用库。前轮57份模块CSS与主题保全证据保留，不能冒充本轮视觉验收。
 
 ## 已执行的自查
 
 | 项目 | 结果与边界 |
 | --- | --- |
-| 裁床前端回归 | 本轮工作区27个文件393项通过；真正发布的冻结候选另通过70项读取时间／页码恢复／重试／筛选／入口核心回归。裁床及项目测试类型检查、两份完整构建通过，未放宽业务断言。 |
-| 帮助说明校验 | 17条说明、0项问题；既有后端事实及指纹回归2项通过的证据保留，本轮后端源码不变。 |
-| 完整构建 | 本轮工作区和冻结候选的 `npm run build`均通过，包含帮助／样式边界、主站类型、Vite、图片翻译及私有资源检查；工作区140.22秒、冻结候选150.48秒。本轮先补齐两套现有依赖链接，再按真实退出码串行验证；上一轮依赖链接、工具会话及PowerShell警告处理的失败／中断日志继续保留，不改写历史结果。 |
+| 裁床前端回归 | 当前最终冻结候选及工作区定向75项通过，包含历史位置、订单链接、导航和列表失败恢复。完整裁床首轮423通过／1项旧文案失败已保留，修正文案后定向通过，未声称整组重跑。 |
+| 帮助说明校验 | 当前完整构建25篇、0问题；六个后端覆盖与成功小时候选指纹一致，冻结源中的既有帮助指纹按实际源码核对。 |
+| 完整构建 | 工作区构建通过；最终冻结源码在订单链接回归修复后另完整构建86.82秒通过。早期沙箱临时文件及断言失败保留。 |
 | 八区入口 | 看板、排期、填数、库存、月结、基础资料、费用、日志均返回发布的SPA入口。只证明HTTP交付，不代表已渲染操作。 |
 | 发布资源 | 全部385个JS／MJS／CSS文件的HTTP字节摘要与发布目录一致，不误回HTML。 |
 | 登录和隔离 | 正常Cookie登录、匿名401、跨厂422、退出后401；验收Cookie不发往原5173。8个合成V2岗位会话在真实HTTP服务复核；既有后端岗位与任职边界15项回归证据保留，本轮未重复执行。未替换鉴权依赖。 |
@@ -77,7 +81,7 @@ npm run build
 backend/.venv/Scripts/python.exe -m pytest backend/tests/test_cutting_p5b_acceptance.py -q -p no:cacheprovider --basetemp=<全新且位于工作区的专用目录>
 npm run typecheck:test
 backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_samples.py
-backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_month_batch_deployment.py
+backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_closing_location.py
 ```
 
 ## 本轮恢复、样本导航与合成岗位核对
@@ -121,7 +125,7 @@ npm run check:tailwind-sources
 npm run test:unit -- src/lib/__tests__/tailwindSources.spec.ts --maxWorkers=1
 npm run typecheck:test
 backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_samples.py
-backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_month_batch_deployment.py
+backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_closing_location.py
 ```
 
 ## 任务原条件重试、日志提示与生产部入口
@@ -164,7 +168,7 @@ node node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p tsconfig.cutting-tests.json
 npm run typecheck:test
 npm run build
 backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_samples.py
-backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_month_batch_deployment.py
+backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_closing_location.py
 ```
 
 ## P5c 本地副本备份恢复
@@ -185,7 +189,7 @@ backend/.venv/Scripts/python.exe .local-dev/cutting-acceptance/verify_month_batc
 
 40秒冷启动等待超时不代表服务已退出；先查看状态和日志，确认已就绪后再执行Start复用。新发布需新建源码、产物和数据快照，不在现有验收库上重新执行准备脚本。控制目录、数据库及凭据均被Git忽略，临时目录不替代长期备份。
 
-本轮没有Chrome DevTools MCP，因此未做真实浏览器DOM、控制台、交互、截图、视口／高缩放验收，也未用其他浏览器工具替代。组件测试和HTTP检查不能充当这些证据。下一步由用户指定真实账号及业务资料，在副本完成真实岗位和真实订单核对，补浏览器、原生Excel／打印及目标环境恢复验收；P5c高峰等待、小时级负载等未完成项继续见[P5c验收清单](huakang-c-cutting-p5c-acceptance.md)。
+Chrome DevTools已完成本轮指定状态的真实浏览器复验，截图为工具内联证据，未保存独立截图路径；不能推定全部页面／权限／200%缩放已验收。此前“无DevTools”的限制已不适用于当前检查。下一步仍须指定真实员工和资料、接受正式响应目标并在目标环境做容量及含附件恢复验收。小时档技术检查已完成，集中导出和长历史长尾仍需优化，见[P5c验收清单4.21～4.22](huakang-c-cutting-p5c-acceptance.md)。
 
 默认pytest临时目录曾因Windows权限不足未能建立夹具，改用工作区内新专用目录后15项通过；旧错误日志保留。本轮HTTP脚本曾沿用更正前2项有效任务的断言，已按真实业务规则分别核对1项有效任务和1项历史实绩，保留失败报告，未为通过断言重新核定计划。
 
