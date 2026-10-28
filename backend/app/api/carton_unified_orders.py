@@ -1,6 +1,9 @@
 """Authorized combined order ledger; paginate only after merging both source sets."""
 from typing import Literal
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, File, Form, UploadFile, HTTPException
+from fastapi.responses import Response
+from pathlib import Path
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services.auth import AuthContext, get_current_user
@@ -8,7 +11,7 @@ from app.services import carton_order_queries as queries
 
 router = APIRouter(prefix="/api/carton-unified-orders", tags=["carton-procurement"])
 
-from app.schemas.carton_unified_orders import Selection, BatchAction
+from app.schemas.carton_unified_orders import Selection, BatchAction, BatchAppend
 from app.services import carton_unified_order_actions as actions
 
 
@@ -20,6 +23,50 @@ def selected(payload: Selection, db: Session = Depends(get_db), user: AuthContex
 @router.post("/batch-actions")
 def batch_actions(payload: BatchAction, request: Request, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return actions.perform(db, user, payload, refresh_actor=lambda: get_current_user(request, db))
+
+
+@router.post("/batch-append")
+def batch_append(payload: BatchAppend, request: Request, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_batch_append import append
+    return append(db, user, payload, refresh_actor=lambda: get_current_user(request, db))
+
+
+@router.get("/demand-import/template")
+def demand_template(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_demand_import import authorize
+    authorize(db, user, factory_id)
+    path = Path(__file__).resolve().parents[1] / "templates" / "carton-demand-template.xlsx"
+    return Response(path.read_bytes(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="carton-demand-template.xlsx"', "Cache-Control": "private, no-store"})
+
+
+def demand_file(file):
+    from app.services.carton_demand_import import MAX_BYTES
+    from app.services.carton_file_jobs import run_file_job
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(422, "请使用新建需求模板 .xlsx")
+    content = file.file.read(MAX_BYTES + 1)
+    if len(content) > MAX_BYTES: raise HTTPException(422, "文件不能超过 5 MiB")
+    return run_file_job("demand_parse", content)
+
+
+@router.post("/demand-import/preview")
+def demand_preview(factory_id: str = Form(...), file: UploadFile = File(...), db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_demand_import import authorize
+    authorize(db, user, factory_id)
+    return demand_file(file)
+
+
+@router.post("/demand-import/confirm")
+def demand_confirm(request: Request, body: str = Form(..., max_length=2_000_000), file: UploadFile = File(...),
+                   db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_demand_import as demand
+    try: payload = demand.Confirm.model_validate_json(body)
+    except ValidationError as exc:
+        raise HTTPException(422, "导入内容不完整，请核对分组、字段长度和所选行") from exc
+    demand.authorize(db, user, payload.factory_id)
+    original = demand_file(file)
+    return demand.confirm(db, user, payload, original, (file.filename or "")[:255], refresh_actor=lambda: get_current_user(request, db))
 
 
 @router.get("")

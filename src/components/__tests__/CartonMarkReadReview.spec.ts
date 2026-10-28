@@ -15,6 +15,15 @@ const fixture: MarkReadResult = {
 function submit(wrapper: ReturnType<typeof mount>) { return wrapper.findAll('button').find(b => b.text() === '更新预览（不重新读稿）')!.trigger('click') }
 
 describe('source-backed carton mark review', () => {
+  it('can decline a source-linked exception without changing the reusable template', async () => {
+    const review: MarkReadResult = { ...fixture, customer_template: { id:'zuru-front-side-v1',name:'客户模板',version:1,reference_sha256:'reference' }, order_changes:[{record:0,face:'front',summary:'正唛居中',note_ids:['N1']}] }
+    const wrapper=mount(CartonMarkReadReview,{props:{review,busy:false}})
+    expect(wrapper.text()).toContain('不会覆盖通用模板')
+    await wrapper.get('[aria-label="采用本单修改 1"]').setValue(false)
+    await submit(wrapper)
+    expect(wrapper.emitted('render')![0]![0]).toMatchObject({ignored_changes:[0],edits:{}})
+    wrapper.unmount()
+  })
   it('keeps PO identity fixed and submits only explicit corrections and reviewed notes', async () => {
     const wrapper = mount(CartonMarkReadReview, { props: { review: fixture, busy: false } })
     expect(wrapper.get('[aria-label="第1组正唛 PO"]').attributes('disabled')).toBeDefined()

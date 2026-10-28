@@ -4,6 +4,7 @@ import { createRandomUuid } from '@/lib/randomUuid'
 
 export const draftKinds = {
   customer: { label: '固定客人', area: 'master' }, master: { label: '货号与物料', area: 'master' },
+  masterimport: { label: '统一资料导入', area: 'master' },
   options: { label: '基础选项', area: 'master' },
   planning: { label: '合同计划', area: 'board' },
   demand: { label: '合同需求', area: 'board' }, supply: { label: '采购／回料', area: 'supply' },
@@ -39,7 +40,7 @@ export function draftIdentity(kind: DraftKind, state: Data): DraftId | undefined
   }
   if (kind === 'supply') return state.selected?.id ? recordDraftId(kind, state.mode, state.selected.id) : state.editing?.id ? recordDraftId(kind, 'edit', state.editing.id) : undefined
   if (kind === 'shipment') return state.confirming?.id ? recordDraftId(kind, 'confirm', state.confirming.id, String(state.confirming.version)) : state.editing?.id ? recordDraftId(kind, 'edit', state.editing.id) : undefined
-  if (kind === 'import' || kind === 'warehouse') return state.preview?.id ? recordDraftId(kind, 'inspect', state.preview.id) : undefined
+  if (kind === 'import' || kind === 'warehouse' || kind === 'masterimport') return state.preview?.id ? recordDraftId(kind, 'inspect', state.preview.id) : undefined
 }
 export interface SavedDraft { id: DraftId; revision: string; writer: string; savedAt: string; state: Data }
 export interface SavedOperation { command: Command; owner?: DraftId; draftRevision?: string; writer: string }

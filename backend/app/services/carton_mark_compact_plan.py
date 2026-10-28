@@ -110,6 +110,7 @@ def expand(raw,source):
     data=json.loads(raw,object_pairs_hook=flow.pilot._unique_object)
     if not isinstance(data,dict) or not isinstance(data.get("records"),list):raise flow.pilot.PilotError("模型返回格式不完整，原生字段已保留")
     data.pop('uncertainties',None)
+    data.pop('template_changes',None)  # Validated separately against this document's notes.
     _layouts(data,source)
     cells={c.id:c for c in source["cells"]}
     def selected(key):

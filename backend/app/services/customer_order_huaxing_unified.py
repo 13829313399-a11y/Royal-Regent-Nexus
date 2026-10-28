@@ -84,19 +84,39 @@ def _mark_generated_row(sheet, number, *, duplicate=False, blue=False):
 
 def _repair_dickie_duplicate_rules(workbook):
     """Correct only the supplied SO/item duplicate rules, preserving other styles."""
-    pattern = re.compile(r'AND\((?:\$E\d+|#REF!)<>"",(?:\$H\d+|#REF!)<>"",COUNTIFS\(\$E\$\d+:\$E\$\d+,(?:\$E\d+|#REF!),\$H\$\d+:\$H\$\d+,(?:\$H\d+|#REF!)\)>1\)')
+    def legacy_pattern(ref, item):
+        return re.compile(
+            rf'AND\((?:\${ref}\d+|#REF!)<>"",(?:\${item}\d+|#REF!)<>"",'
+            rf'COUNTIFS\(\${ref}\$\d+:\${ref}\$\d+,(?:\${ref}\d+|#REF!),'
+            rf'\${item}\$\d+:\${item}\$\d+,(?:\${item}\d+|#REF!)\)>1\)')
+    def guarded(ref, item, row, end):
+        return (f'AND(LEFT(UPPER(TRIM(${ref}{row})),2)="SC",${item}{row}<>"",'
+                f'ISERROR(SEARCH("MO",$B{row})),ISERROR(SEARCH("备料",$B{row})),'
+                f'COUNTIFS(${ref}$4:${ref}${end},${ref}{row},'
+                f'${item}$4:${item}${end},${item}{row},'
+                f'$B$4:$B${end},"<>*MO*",$B$4:$B${end},"<>*备料*")>1)')
+    # Recognize our own exact formula shape on re-export, not arbitrary rules.
     for name in ('接单表', '正单评审表', 'ITEM表', DICKIE_EXTRA):
         if name not in workbook.sheetnames:
             continue
         sheet = workbook[name]
         ref_col, item_col = ('D', 'G') if name in ('接单表', '正单评审表') else ('E', 'H')
+        patterns = [legacy_pattern('E', 'H')]
+        if name in ('接单表', '正单评审表'):
+            patterns.append(legacy_pattern('D', 'G'))
+        def row_shape(formula):
+            return re.sub(r'(\$?[A-Z]{1,3}\$?)\d+', r'\1#', formula)
+        shape = row_shape(guarded(ref_col, item_col, 4, 100))
         for key, rules in sheet.conditional_formatting._cf_rules.items():
             start = min(cell_range.min_row for cell_range in key.sqref.ranges)
             end = max(sheet.max_row, start)
             for rule in rules:
-                if rule.type != 'expression' or len(rule.formula or []) != 1 or not pattern.fullmatch(rule.formula[0]):
+                if rule.type != 'expression' or len(rule.formula or []) != 1:
                     continue
-                rule.formula = [f'AND(${ref_col}{start}<>"",${item_col}{start}<>"",COUNTIFS(${ref_col}$4:${ref_col}${end},${ref_col}{start},${item_col}$4:${item_col}${end},${item_col}{start})>1)']
+                formula = rule.formula[0]
+                own_shape = row_shape(formula)
+                if any(pattern.fullmatch(formula) for pattern in patterns) or own_shape == shape:
+                    rule.formula = [guarded(ref_col, item_col, start, end)]
 
 
 def enabled(factory_id, customer_code):
@@ -409,14 +429,19 @@ def export_rows(workbook, rows):
     if any(row.get('_huaxing_customer') == 'buzzbee' for row in rows):
         from app.services.customer_order_buzzbee_color_box import prepare_review
         buzzbee_column = prepare_review(workbook)
-    counts = Counter(row['item_sheet_name'] for row in rows)
-    counts.update({'接单表': len(rows), '正单评审表': len(rows)})
-    slots = output_slots(
-        workbook, len(rows), sheet_counts=counts,
-        top_order_area=any(row.get('_huaxing_customer') == 'shushupapa' for row in rows),
-    )
-    if any(row.get('_huaxing_customer') == 'dickie' for row in rows):
+    dickie = bool(rows) and all(row.get('_huaxing_customer') == 'dickie' for row in rows)
+    grouped_handles = None
+    if dickie:
+        from app.services.customer_order_dickie_layout import allocate_rows
+        grouped_handles = allocate_rows(workbook, rows)
         _repair_dickie_duplicate_rules(workbook)
+    else:
+        counts = Counter(row['item_sheet_name'] for row in rows)
+        counts.update({'接单表': len(rows), '正单评审表': len(rows)})
+        slots = output_slots(
+            workbook, len(rows), sheet_counts=counts,
+            top_order_area=any(row.get('_huaxing_customer') == 'shushupapa' for row in rows),
+        )
     used = Counter()
     dickie_columns = {}
     if any(row.get('_huaxing_customer') == 'dickie' for row in rows):
@@ -425,15 +450,16 @@ def export_rows(workbook, rows):
                 for header in ('生产单号', 'PO单价明细', '单价口径')}
     for index, row in enumerate(rows):
         name = row['item_sheet_name']
-        item_row = slots[name][used[name]]
+        item_row = grouped_handles[index][name].row if grouped_handles is not None else slots[name][used[name]]
         used[name] += 1
         unified._write_item_row(workbook[name], item_row, row)
         write_extras(workbook[name], item_row, row)
         for summary in ('接单表', '正单评审表'):
-            unified._write_summary_row(workbook[summary], slots[summary][index], row,
+            summary_row = grouped_handles[index][summary].row if grouped_handles is not None else slots[summary][index]
+            unified._write_summary_row(workbook[summary], summary_row, row,
                                        item_row=item_row, item_sheet=workbook[name])
             if row.get('_huaxing_customer') == 'dickie':
-                sheet, number = workbook[summary], slots[summary][index]
+                sheet, number = workbook[summary], summary_row
                 cols = dickie_columns[summary]
                 ref = f"'{name}'!C{item_row}"
                 sheet.cell(number, cols['生产单号']).value = f'=IF(LEN({ref})=0,"",{ref})'
@@ -461,11 +487,14 @@ def export_rows(workbook, rows):
         blue = row.get('_huaxing_customer') == 'dickie'
         _mark_generated_row(workbook[name], item_row, duplicate=duplicate, blue=blue)
         for summary in ('接单表', '正单评审表'):
-            _mark_generated_row(workbook[summary], slots[summary][index], duplicate=duplicate, blue=blue)
+            summary_row = grouped_handles[index][summary].row if grouped_handles is not None else slots[summary][index]
+            _mark_generated_row(workbook[summary], summary_row, duplicate=duplicate, blue=blue)
         # Some supplied EDU reserved rows have a broken price lookup anchor.
         # New paired summary rows can reference their exact order counterpart;
         # the order sheet's manually maintained price remains authoritative.
-        review_price = workbook['正单评审表'].cell(slots['正单评审表'][index], 14)
+        review_row = grouped_handles[index]['正单评审表'].row if grouped_handles is not None else slots['正单评审表'][index]
+        order_row = grouped_handles[index]['接单表'].row if grouped_handles is not None else slots['接单表'][index]
+        review_price = workbook['正单评审表'].cell(review_row, 14)
         if isinstance(review_price.value, str) and '#REF!' in review_price.value and '接单表!' in review_price.value:
-            ref = f"'接单表'!N{slots['接单表'][index]}"
+            ref = f"'接单表'!N{order_row}"
             review_price.value = f'=IF(LEN({ref})=0,"",{ref})'

@@ -111,7 +111,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     invalidPending.value = false
     if (!saved) { if (!busy.value) { pending.value = null; pendingCompletion = undefined } return }
     const command = saved.command
-    const actions: Action[] = ['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm']
+    const actions: Action[] = ['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm', 'master_import_confirm']
     if (command?.factory_id !== factory.value || !actions.includes(command.action) || typeof command.operation_id !== 'string' || command.operation_id.length < 16 || !command.data || !Number.isInteger(command.expected_version) || (saved.owner !== undefined && !draftKind(saved.owner))) {
       invalidPending.value = true; localDrafts.error.value = '上次提交凭据无法识别，原内容已保留，请联系管理员核对。'; return
     }
@@ -274,6 +274,23 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     }
     finally { if (same(epoch, selected)) busy.value = false }
   }
+  async function masterPreview(customer: string, productIds: string[], file: File, mappings: Data[] = []) {
+    if (locked.value || !canWrite.value) return null
+    const selected = factory.value, epoch = scopeEpoch.value
+    busy.value = true; error.value = ''; notice.value = ''
+    try {
+      const result = await api.masterPreview(selected, customer, productIds, file, mappings)
+      if (!same(epoch, selected)) return null
+      records.value = [result.record, ...records.value.filter(row => row.id !== result.record.id)]
+      return result.record
+    } catch (cause) {
+      if (same(epoch, selected)) {
+        error.value = getApiErrorMessage(cause)
+        if ([401, 403].includes(status(cause) ?? 0)) revokePrivateState()
+      }
+      return null
+    } finally { if (same(epoch, selected)) busy.value = false }
+  }
   async function download(id: string, name: string, type: 'shipment' | 'asset' = 'shipment') {
     if (busy.value || !factory.value || (type === 'shipment' && !has('export'))) return
     const selected = factory.value; const epoch = scopeEpoch.value
@@ -300,7 +317,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     } finally { if (same(epoch, selected)) busy.value = false }
   }
   onBeforeUnmount(() => { scopeEpoch.value++; pendingCompletion = undefined; drafts.clear(); owners.clear(); localDrafts.dispose(); removeFactoryGuard(); window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('auth-session-boundary-changed', boundary) })
-  return reactive({ factory, records, optionDefaults, board, permissions, loading, busy, error, loadError, notice, pending, scopeEpoch, canWrite, locked, has, kind, record, materialName, orderName, reload, run, retry, preview, download, registerDraft, permitLeave, localDrafts, restoreTarget, shipmentTarget, followupTarget, followup, boardStage, supplyStage, wizardStep, restoreDraft, deleteDraft, registerDraftOwner, reloadDrafts, hasUnstoredDrafts })
+  return reactive({ factory, records, optionDefaults, board, permissions, loading, busy, error, loadError, notice, pending, scopeEpoch, canWrite, locked, has, kind, record, materialName, orderName, reload, run, retry, preview, masterPreview, download, registerDraft, permitLeave, localDrafts, restoreTarget, shipmentTarget, followupTarget, followup, boardStage, supplyStage, wizardStep, restoreDraft, deleteDraft, registerDraftOwner, reloadDrafts, hasUnstoredDrafts })
 }
 function status(cause: unknown) { return (cause as { response?: { status?: number } })?.response?.status }
 export type MaterialsWorkspace = ReturnType<typeof createMaterialsWorkspace>

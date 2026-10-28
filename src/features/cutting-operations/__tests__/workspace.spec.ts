@@ -95,7 +95,7 @@ describe('cutting read-only workspaces',()=>{
     await flushPromises()
     expect(document.activeElement).not.toBe(region)
     if(action==='input')expect(document.activeElement).toBe(input)
-    if(action==='newer')expect(wrapper.get('time').exists()).toBe(true)
+    if(action==='newer')expect(wrapper.find('time').exists()).toBe(true)
     if(action==='failure')expect(document.activeElement).toBe(button('按原条件重试（第 1 页）').element)
   })
   it('provides unique named activity filters with explicit labels for embedded instances',async()=>{

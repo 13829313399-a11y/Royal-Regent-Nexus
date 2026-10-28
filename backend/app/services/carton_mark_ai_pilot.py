@@ -199,7 +199,7 @@ def connection_from_file(path):
             "protocol": data.get("DOCUMENT_TOOLS_QWEN_PROTOCOL") or "openai"}
 
 
-def request_plan(evidence, template, connection, *, client=None, prompt=PROMPT, max_tokens=3500):
+def request_plan(evidence, template, connection, *, client=None, prompt=PROMPT, max_tokens=3500, images=None):
     """One bounded paid request, no automatic retry or redirect of credentials."""
     base = connection["base_url"].rstrip("/")
     parsed = urlsplit(base)
@@ -210,6 +210,24 @@ def request_plan(evidence, template, connection, *, client=None, prompt=PROMPT, 
     messages = [{"role": "system", "content": prompt}, {"role": "user", "content": json.dumps({
         "template": {key: template[key] for key in ("id", "fields", "layout_variants")},
         "evidence": [e.model_dump() for e in evidence]}, ensure_ascii=False)}]
+    if images:
+        import base64
+        if connection['protocol'] != 'openai' or parsed.hostname != 'api.deepseek.com' or connection['model'] != 'deepseek-flash':
+            raise PilotError('图片读稿仅支持已配置的 DeepSeek Flash 官方接口')
+        if len(images) > 12 or sum(len(i.get('data', '')) for i in images) > 8_000_000:
+            raise PilotError('图片读稿超过12张或8MB，请缩小工作表范围；未调用API')
+        known = {e.id for e in evidence}
+        parts = [{'type': 'text', 'text': messages[1]['content']}]
+        for entry in images:
+            try:
+                content = base64.b64decode(entry['data'], validate=True)
+                if entry['id'] not in known or not content.startswith(b'\xff\xd8\xff'):
+                    raise ValueError()
+            except (KeyError, ValueError, TypeError):
+                raise PilotError('图片读稿来源或格式无效；未调用API') from None
+            parts.extend([{'type': 'text', 'text': f"图片来源 {entry['id']}：{entry['location']}；只解释图示和制版要求，不能提供当前业务数字。"},
+                          {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + entry['data'], 'detail': 'original'}}])
+        messages[1]['content'] = parts
     body = {"model": connection["model"], "messages": messages, "stream": False,
             "max_tokens": max(1000, min(16000, max_tokens)), "response_format": {"type": "json_object"}}
     if parsed.hostname == "api.deepseek.com":

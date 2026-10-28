@@ -801,7 +801,7 @@ Microsoft Excel 16.0以新建隐藏实例、禁用宏与链接更新、只读工
 
 **只读导出冒烟**：三客户端、三轮共9份当前V10／失效V3导出，逐文件金额、版本有效性及A3设置通过；下载中位1.695秒、最大2.835秒，历史读取最大0.342秒。五单交互副本、小样本，不作容量或正式P95承诺，不替代4.21小时结果。
 
-证据：`.tmp/cutting-closing-fixes-20261028/`中的`browser-evidence.json`、各轮测试／类型／构建日志、`api-20261028T023724Z-797865/report.json`及`report.md`；发布目录下`tests.log`、`build-result.json`和`evidence/closing-location-verification.json`。真实员工签字、目标容量／响应指标、多外厂币种、200%缩放与实体打印、附件和配置恢复及独立生产放行仍未完成，`release_ready=false`。本轮没有Git提交或生产发布。
+证据：`.tmp/cutting-closing-fixes-20261028/`中的`browser-evidence.json`、各轮测试／类型／构建日志、`api-20261028T023724Z-797865/report.json`及`report.md`；发布目录下`tests.log`、`build-result.json`和`evidence/closing-location-verification.json`。真实员工签字、目标容量／响应指标、多外厂币种、200%缩放与实体打印、附件和配置恢复及独立生产放行仍未完成，`release_ready=false`。本轮技术验证未执行生产发布，Git集成单独办理。
 
 ### 4.23 原月份重试焦点与取消导航标题
 
@@ -817,7 +817,7 @@ Chrome DevTools同页面实际复验：320px键盘Enter连续两次离线失败�
 
 慢网尝试在读取期间按Tab移焦，但观察时pending已为false，因此不记为在途人工移焦浏览器通过；该边界及拒绝、月份／刷新、卸载、鼠标行为由自动化覆盖。浏览器未制造真实撤权、未知写回执或两次交错导航，不能外推这些场景。320／1440截图只以内联检查，未保存独立截图路径；200%缩放、全部面板及实体打印继续待验收。
 
-复现：`npm run test:unit -- src/features/cutting-operations/__tests__/monthlyRecovery.spec.ts src/features/cutting-operations/__tests__/readTarget.spec.ts src/features/cutting-operations/__tests__/closing.spec.ts src/features/cutting-operations/__tests__/navigation.spec.ts src/router/__tests__/navigationTitle.spec.ts --maxWorkers=1`、`npm run typecheck:test`、`npm run build`。证据位于`.tmp/cutting-month-focus-20261028/`的`tests-before.log`、`tests-after.log`、`scoped-types.log`、`worktree/`、`browser-evidence.json`和`report.md`，最终冻结候选的`router-before.log`、`results.json`和`evidence/closing-location-verification.json`。未执行Git提交。本节收口两项界面恢复问题，不替代集中导出／长历史长尾优化、目标容量、正式岗位／资料、含附件恢复和独立生产放行，`release_ready=false`。
+复现：`npm run test:unit -- src/features/cutting-operations/__tests__/monthlyRecovery.spec.ts src/features/cutting-operations/__tests__/readTarget.spec.ts src/features/cutting-operations/__tests__/closing.spec.ts src/features/cutting-operations/__tests__/navigation.spec.ts src/router/__tests__/navigationTitle.spec.ts --maxWorkers=1`、`npm run typecheck:test`、`npm run build`。证据位于`.tmp/cutting-month-focus-20261028/`的`tests-before.log`、`tests-after.log`、`scoped-types.log`、`worktree/`、`browser-evidence.json`和`report.md`，最终冻结候选的`router-before.log`、`results.json`和`evidence/closing-location-verification.json`。本批技术验证未执行生产发布，Git集成单独办理。本节收口两项界面恢复问题，不替代集中导出／长历史长尾优化、目标容量、正式岗位／资料、含附件恢复和独立生产放行，`release_ready=false`。
 
 ### 4.24 当前最新版与所选版本读取及在途浏览器补验
 
@@ -843,7 +843,7 @@ Chrome DevTools沿用pageId=1，保持减少动态效果；真实浏览器验收
 
 证据：`.tmp/cutting-selected-refresh-20261028/`中的`browser-evidence.json`、`relay.jsonl`（不含Cookie／密码）、`direct-restored.json`、`probe-transport.json`、`tests-before.log`、`tests-after.log`、`types.log`、`worktree/`，及当前发布目录`results.json`／`evidence/closing-location-verification.json`。截图为工具内联，未保存截图文件。命令：`npm run test:unit -- src/features/cutting-operations/__tests__/periods.spec.ts src/features/cutting-operations/__tests__/monthlyRecovery.spec.ts src/features/cutting-operations/__tests__/readTarget.spec.ts src/features/cutting-operations/__tests__/closing.spec.ts src/features/cutting-operations/__tests__/navigation.spec.ts src/router/__tests__/navigationTitle.spec.ts --maxWorkers=1`、`npm run typecheck:test`、`npm run build`；运行副本HTTP及保全工具见独立验收环境文档。
 
-本节补齐4.23未捕获的在途人工移焦与交错导航证据；不是全状态浏览器矩阵、未知写回执、真实撤权、真实员工签字或正式容量证明。200%缩放／实体打印、集中导出和长历史目标响应、更高活跃链密度、多外厂币种、含附件配置恢复及独立生产放行仍待完成，`release_ready=false`。未修改原库、生产页面、岗位授权或冻结金额；本轮不执行Git提交。
+本节补齐4.23未捕获的在途人工移焦与交错导航证据；不是全状态浏览器矩阵、未知写回执、真实撤权、真实员工签字或正式容量证明。200%缩放／实体打印、集中导出和长历史目标响应、更高活跃链密度、多外厂币种、含附件配置恢复及独立生产放行仍待完成，`release_ready=false`。未修改原库、生产页面、岗位授权或冻结金额；Git集成单独办理，不改变本节技术验收边界。
 
 ### 4.25 长历史头信息读取的副本对照与优化候选
 

@@ -467,13 +467,13 @@ def materials_by_code(rows, code):
     return next(r for r in rows if r['kind'] == 'material' and r['data']['code'] == code)
 
 
-def test_product_rolls_back_earlier_materials_on_duplicate_code(client):
+def test_product_rolls_back_earlier_materials_on_duplicate_material_identity(client):
     customer(client)
     existing = material(client, 'TAKEN')
     before = workspace(client)['records']
     command(client, 'product_save', dict(code='INLINE', customer='合成客户', materials=[
         dict(material=inline_material('WOULD-BE-ORPHAN'), usage='1'),
-        dict(material=inline_material(existing['data']['code']), usage='2')]), status=409)
+        dict(material=inline_material(existing['data']['code'], name=existing['data']['name'], specification=existing['data']['specification']), usage='2')]), status=409)
     assert workspace(client)['records'] == before
 
 

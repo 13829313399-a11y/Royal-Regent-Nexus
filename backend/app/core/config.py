@@ -47,9 +47,15 @@ class Settings(BaseSettings):
     )
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
+    online_documents_enabled: bool = False
+    onlyoffice_jwt_secret: SecretStr = SecretStr("")
+    onlyoffice_internal_url: str = "http://onlyoffice"
+    onlyoffice_public_url: str = ""
+    onlyoffice_callback_base: str = "http://api:8000"
     carton_mark_ai_enabled: bool = False
     carton_mark_ai_connection_file: str = ""
     carton_mark_ai_reference_file: str = ""
+    carton_mark_template_font_file: str = ""
     assistant_enabled: bool = False
     collaboration_enabled: bool = False
     collaboration_storage_dir: str = str(BACKEND_DIR / "data" / "collaboration-assets")

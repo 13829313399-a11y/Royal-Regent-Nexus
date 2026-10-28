@@ -1877,6 +1877,7 @@ def append_order(
     order_no: str,
     payload: CartonOrderAppendRequest,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
@@ -2010,8 +2011,11 @@ def append_order(
         ordinary = [issue for issue in _purchase_order_issues(db, order.id) if not _purchase_order_snapshot(issue).get("replenishment")]
         if ordinary and _purchase_order_pending_change(order, _order_lines(db, order.id), ordinary[0])[0] != "NONE":
             create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
-    db.commit()
-    db.refresh(order)
+    if commit:
+        db.commit()
+        db.refresh(order)
+    else:
+        db.flush()
     return order
 
 
@@ -4260,8 +4264,9 @@ def _project_item_schedule_rows(batch_id: str, summary: dict[str, object]) -> No
     """Expose independent actions for repeated SO rows without rewriting import evidence."""
     rows = [row for row in summary.get("rows", []) if isinstance(row, dict) and row.get("template") == "unified-item"]
     counts = Counter(identity(row) for row in rows if tracked(row) and identity(row))
-    legacy = summary.get("parser_version") not in {SCHEDULE_IMPORT_PARSER_VERSION, "schedule-item-so-identity-v4-complete"}
-    before_po_fallback = summary.get("parser_version") != SCHEDULE_IMPORT_PARSER_VERSION
+    effective_po_versions = {SCHEDULE_IMPORT_PARSER_VERSION, "schedule-item-effective-po-v5"}
+    legacy = summary.get("parser_version") not in effective_po_versions | {"schedule-item-so-identity-v4-complete"}
+    before_po_fallback = summary.get("parser_version") not in effective_po_versions
     for row in rows:
         key = identity(row)
         duplicate = bool(key and counts[key] > 1)
@@ -4759,7 +4764,7 @@ def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrde
     if row.get("schedule_customer_code") and row["schedule_customer_code"] != payload.customer_code:
         raise HTTPException(422, "新订单客户必须与导入排期时选择的基础客户一致")
     if not key or not tracked(row) or row.get("schedule_section") != "PENDING":
-        raise HTTPException(422, "只能使用待下单区的正单、加单或正式 PO 新建订单")
+        raise HTTPException(422, "只能使用待下单区的正单、加单、改单或正式 PO 新建订单")
     if row.get("schedule_change") == "REVIEW_REQUIRED" and not row.get("schedule_identity_duplicate"):
         raise HTTPException(409, "业务订单身份不唯一，请先核对排期")
     if not isinstance(row.get("quantity"), (int, float)) or row["quantity"] <= 0:
@@ -4824,7 +4829,7 @@ def set_schedule_order_marks(
         row = matches[0]
         key = str(row.get("schedule_identity") or "")
         if not key or not tracked(row) or row.get("schedule_section") != "PENDING":
-            raise HTTPException(422, "只有身份完整且位于待下单区的正单、加单或正式 PO 可标记已下单")
+            raise HTTPException(422, "只有身份完整且位于待下单区的正单、加单、改单或正式 PO 可标记已下单")
         if row.get("schedule_change") == "REVIEW_REQUIRED" and not row.get("schedule_identity_duplicate"):
             raise HTTPException(409, "本批次业务订单身份不唯一，请先人工核对，所选记录均未修改")
         if not isinstance(row.get("quantity"), (int, float)) or row["quantity"] <= 0:

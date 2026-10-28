@@ -39,6 +39,7 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/online-documents', name: 'online-documents', component: () => import('@/views/OnlineDocumentsView.vue'), meta: { title: '在线文档', fullPage: true, requiresAuth: true } },
   { path: '/collaborative-sheets', name: 'collaborative-sheets', component: () => import('@/views/CollaborativeSheetsView.vue'), meta: { title: '协同填表工作台', fullPage: true, requiresAuth: true } },
   { path: '/account/position', name: 'account-position', component: () => import('@/features/identity-management/MyPositionPanel.vue'), meta: { title: '我的岗位与权限', requiresAuth: true } },
   { path: '/modules/pmc-warehouse/material-handover', name: 'material-handover', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), meta: { title: '制单与扫码交接', fullPage: true, requiresAuth: true, permissions: ['fabric_operations:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },

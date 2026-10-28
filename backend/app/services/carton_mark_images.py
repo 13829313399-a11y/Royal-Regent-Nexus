@@ -91,7 +91,7 @@ def _ocr(serialized):
     return result
 
 
-def collect(filename,content,worksheets=None):
+def collect(filename,content,worksheets=None,*,include_pixels=False):
     entries,warnings=images(filename,content,worksheets)
     if not entries:return [],[],warnings
     try:
@@ -104,9 +104,11 @@ def collect(filename,content,worksheets=None):
     for entry in entries:
         lines=readings.get(entry["id"],[])
         text="\n".join(line["text"] for line in lines)[:2500]
-        if text:
+        if text or include_pixels:
             notes.append(Evidence(id=entry["id"],kind="image_reference_text",location=entry["location"],
-                text="图片文字候选，仅供制版参考，不能提供当前PO、数量或条码：\n"+text))
+                text="图片参考，仅供解释制版要求，不能提供当前PO、货号、数量、重量或条码：\n"+(text or "本地文字未识别，请结合对应图片核对。")))
         public.append(dict(id=entry["id"],location=entry["location"],preview=entry["preview"],text=text,
                            status="needs_confirmation",sha256=hashlib.sha256(entry["data"].encode()).hexdigest()))
+        if include_pixels:
+            public[-1]['_pixels'] = entry['data']
     return notes,public,warnings

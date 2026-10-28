@@ -7,12 +7,13 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.db import get_db
-from app.schemas.indonesia_materials import Command, ReceiptTemplate
+from app.schemas.indonesia_materials import Command, ReceiptTemplate, MasterImportContext
 from app.services.auth import AuthContext, get_current_user
 from app.services import indonesia_materials as service
 from app.services import indonesia_material_import as imports
 from app.services import indonesia_shared_options as shared_options
 from app.services import indonesia_warehouse_import as warehouse_import
+from app.services import indonesia_master_import as master_import
 from app.services.customer_order_jobs import order_job_request, run_order_job
 
 
@@ -76,6 +77,23 @@ async def preview(db: Db, user: User, request: Request,
 def download(asset):
     return Response(asset.content, media_type=asset.media_type,
                     headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote(asset.filename), 'Cache-Control': 'no-store'})
+
+
+@router.post('/master-imports/preview', dependencies=[Depends(order_job_request)])
+async def master_preview(db: Db, user: User, request: Request,
+                         factory_id: str = Form(...), customer: str = Form(..., min_length=1, max_length=160),
+                         context: str = Form(..., max_length=30000), file: UploadFile = File(...)):
+    service.authorize(user, factory_id, 'write')
+    service.ready(db)
+    form = await request.form()
+    service.require(all(len(form.getlist(key)) == 1 for key in ('factory_id', 'customer', 'context', 'file')), '上传字段不能重复', 422)
+    selection = MasterImportContext.model_validate_json(context)
+    content = await file.read(25 * 1024 * 1024 + 1)
+    service.require(0 < len(content) <= 25 * 1024 * 1024, '文件为空或超过 25 MB', 413)
+    filename = file.filename or '统一资料.xlsx'
+    parsed = await run_order_job(master_import.parse_material_book, content, filename, selection.mappings, db=db)
+    return master_import.preview(db, user, factory_id, customer.strip(), selection.product_ids, filename, content, parsed,
+                                 refresh_user=lambda: refresh_user(request, db))
 
 
 @router.get('/warehouse-imports/template')

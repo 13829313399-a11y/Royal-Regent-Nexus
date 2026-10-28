@@ -10,6 +10,10 @@ const checked = ref<string[]>([]), paper = ref(props.review.paper), orientation 
 const omissions = ref<string[]>([]), additions = ref<MarkReviewAddition[]>([])
 const target = ref('0:front'), newLabel = ref(''), newValue = ref(''), sourceChoice = ref(''), sourceSearch = ref('')
 const sourceAsBarcode = ref(false)
+const ignoredChanges = ref<number[]>([])
+function toggleChange(index: number) {
+  ignoredChanges.value = ignoredChanges.value.includes(index) ? ignoredChanges.value.filter(i => i !== index) : [...ignoredChanges.value, index].sort((a, b) => a - b)
+}
 const graphics = reactive<MarkGraphicSelection[]>(props.review.records.flatMap((r, index) => (['front', 'side'] as const).map(face => {
   const panel = r.panels.find(p => p.face === face)
   return { record: index, face, logo: panel?.logo ?? false, symbols: [...(panel?.symbols ?? [])] }
@@ -24,8 +28,8 @@ const issues = computed(() => props.review.issues ?? fields.filter(f => f.placeh
 const pendingIssues = computed(() => issues.value.filter(i => !i.field_ids.length || !i.field_ids.every(id => props.applied?.edits[id]?.trim())))
 const visibleIssues = computed(() => showAllIssues.value ? pendingIssues.value : pendingIssues.value.slice(0, 6))
 const issueFields = (ids: string[]) => fields.filter(f => ids.includes(f.id) && !omissions.value.includes(f.id))
-const changeSet = computed<MarkReviewEdits>(() => ({ edits: changed.value, reviewed_notes: checked.value, paper: paper.value, orientation: orientation.value, additions: additions.value, omissions: omissions.value, graphics: changedGraphics.value, include_sources: false }))
-const dirty = computed(() => JSON.stringify(changeSet.value) !== JSON.stringify({ edits: props.applied?.edits ?? {}, reviewed_notes: props.applied?.reviewed_notes ?? [], paper: props.applied?.paper ?? props.review.paper, orientation: props.applied?.orientation ?? props.review.orientation, additions: props.applied?.additions ?? [], omissions: props.applied?.omissions ?? [], graphics: props.applied?.graphics ?? [], include_sources: false }))
+const changeSet = computed<MarkReviewEdits>(() => ({ edits: changed.value, reviewed_notes: checked.value, paper: paper.value, orientation: orientation.value, additions: additions.value, omissions: omissions.value, graphics: changedGraphics.value, include_sources: false, ...(props.review.customer_template ? { ignored_changes: ignoredChanges.value } : {}) }))
+const dirty = computed(() => JSON.stringify(changeSet.value) !== JSON.stringify({ edits: props.applied?.edits ?? {}, reviewed_notes: props.applied?.reviewed_notes ?? [], paper: props.applied?.paper ?? props.review.paper, orientation: props.applied?.orientation ?? props.review.orientation, additions: props.applied?.additions ?? [], omissions: props.applied?.omissions ?? [], graphics: props.applied?.graphics ?? [], include_sources: false, ...(props.review.customer_template ? { ignored_changes: props.applied?.ignored_changes ?? [] } : {}) }))
 function add(source = false) {
   const [record, face] = target.value.split(':')
   if (source ? !sourceChoice.value : !newValue.value.trim()) return
@@ -42,6 +46,11 @@ function add(source = false) {
     </div>
     <p v-if="review.mode === 'needs_mapping'" role="status" class="rounded-lg bg-amber-50 p-3 text-sm leading-6 text-amber-900">原稿已读取，但 AI 排版建议未通过核验。下面是按原生单元格整理的待核对内容，可以选择字段、补充内容及调整正侧唛；这不算 AI 自动排版成功。</p>
     <p v-if="review.confirmed_template" role="status" class="rounded-lg bg-teal-50 p-3 text-sm leading-6 text-teal-900">采用 {{ review.confirmed_template.name }} V{{ review.confirmed_template.version }}。正侧唛左右排版；尺寸按宽×长×高（CM）填写，毛重带 KG，补充一次自动同步两面。认证章需按本单纸箱确认。</p>
+    <div v-if="review.customer_template" role="status" class="rounded-lg bg-teal-50 p-3 text-sm leading-6 text-teal-900">
+      <p>采用 {{ review.customer_template.name }} V{{ review.customer_template.version }}。下面的修改仅用于本次原稿，不会覆盖通用模板。</p>
+      <div v-if="review.order_changes?.length" aria-label="本单特殊修改" class="mt-2 space-y-2"><label v-for="(change, index) in review.order_changes" :key="index" class="flex items-start gap-2"><input type="checkbox" :checked="!ignoredChanges.includes(index)" :disabled="busy" :aria-label="`采用本单修改 ${index + 1}`" class="mt-1.5 shrink-0" @change="toggleChange(index)"><span>第 {{ change.record + 1 }} 组{{ change.face === 'front' ? '正唛' : '侧唛' }}：{{ change.summary }}（备注 {{ change.note_ids.join('、') }}）</span></label></div>
+      <p v-else>未自动采用额外版式修改，请查看原稿备注中的待确认项。</p>
+    </div>
     <div v-if="pendingIssues.length" class="space-y-3" aria-label="需要确认的项目">
       <article v-for="(issue, i) in visibleIssues" :key="`${issue.kind}:${i}`" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
         <p class="font-medium leading-6 text-amber-900">{{ issue.message }}</p>
