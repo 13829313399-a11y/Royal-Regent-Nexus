@@ -2,7 +2,7 @@
 import CuttingReportExport from './CuttingReportExport.vue'
 import CuttingReadTarget from './CuttingReadTarget.vue'
 import { computed, inject, onBeforeUnmount, ref, useId, watch } from 'vue'
-import { closingPresentationKey } from './closingPresentation'
+import { closingPresentationKey, type ClosingReadLocation } from './closingPresentation'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,7 @@ import { settlementApi, type FeeAction, type FeeBasis, type FeeBody, type FeeQuo
 const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean;navigationContext?:number}>()
 const presentation=inject(closingPresentationKey,()=>false)
 const formId=`cutting-settlement-${useId()}`
-const emit=defineEmits<{payment:[month:string,id:string];restored:[month:string,context:number|undefined]}>()
+const emit=defineEmits<{payment:[month:string,id:string];restored:[month:string,context:number|undefined];located:[location:ClosingReadLocation,context:number|undefined]}>()
 const currentMonth=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const month=ref(currentMonth),rights=ref<Access>(),record=ref<FeeRecord>(),basis=ref<FeeBasis>()
 const draft=ref<FeeSave>(),quote=ref<FeeQuote>(),quoteName=ref(''),reason=ref(''),error=ref(''),notice=ref(''),busy=ref(false)
@@ -23,6 +23,8 @@ const pending=ref<{action:FeeAction;body:FeeBody}>()
 const preview=ref<{snapshot:FeeSnapshot;confirmation_token:string}>(),vendorConfirmed=ref(false)
 const filterVendor=ref(''),filterCurrency=ref('')
 const failedRead=ref<{month:string;id?:string;eventId?:string}>()
+function getLocation():ClosingReadLocation{return {month:month.value,id:record.value?.document_id??failedRead.value?.id,eventId:record.value?.event_id??failedRead.value?.eventId}}
+function showRecord(value:FeeRecord,context=props.navigationContext){record.value=value;emit('located',{month:month.value,id:value.document_id??undefined,eventId:value.event_id??undefined},context)}
 const visibleRows=computed(()=>basis.value?.rows.filter(r=>(!filterVendor.value||r.context.resource_name.includes(filterVendor.value))&&(!filterCurrency.value||r.price?.currency===filterCurrency.value))??[])
 const visibleStatements=computed(()=>record.value?.statements.filter(r=>(!filterVendor.value||r.resource_name.includes(filterVendor.value))&&(!filterCurrency.value||r.currency===filterCurrency.value))??[])
 function resetConfirmation(){preview.value=undefined;vendorConfirmed.value=false;if(draft.value)draft.value.vendor_confirmation_token=''}
@@ -60,9 +62,9 @@ async function fresh(ticket:number){const value=await cuttingApi.access();if(!al
 async function load(documentId?:string,eventId?:string,targetMonth=month.value,onRead?:()=>void){
   if(busy.value||pending.value)return
   if(dirty.value&&!window.confirm('放弃未保存填写，读取所选外发结算记录？'))return
-  const target={month:targetMonth,id:documentId,eventId}
+  const target={month:targetMonth,id:documentId,eventId},context=props.navigationContext
   month.value=targetMonth;failedRead.value=target;draft.value=undefined;quote.value=undefined;reason.value='';record.value=undefined;basis.value=undefined;error.value='';notice.value='';busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return;const value=await settlementApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){record.value=value;failedRead.value=undefined;onRead?.()}}
+  try{if(!await fresh(ticket))return;const value=await settlementApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){showRecord(value,context);failedRead.value=undefined;onRead?.()}}
   catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}finally{if(alive&&ticket===generation)busy.value=false}
 }
 function retryRead(){const target=failedRead.value,context=props.navigationContext;if(target)void load(target.id,target.eventId,target.month,()=>emit('restored',target.month,context))}
@@ -95,7 +97,7 @@ function activateMonth(target:string){
   if(dirty.value||pending.value||busy.value||failedRead.value){notice.value=`当前 ${month.value} 的填写、读取目标或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。放弃原读取目标时，请在本区明确选择月份。`;return}
   month.value=target;generation++;record.value=undefined;basis.value=undefined;failedRead.value=undefined
 }
-defineExpose({openStatement,activateMonth})
+defineExpose({openStatement,activateMonth,getLocation})
 function newDraft(){if(!basis.value||busy.value||pending.value||quote.value)return;record.value=undefined;draft.value={factory_id:CUTTING_FACTORY,operation_id:crypto.randomUUID(),expected_version:basis.value.revision,reason:'',document_id:crypto.randomUUID(),month:month.value,basis_token:basis.value.basis_token,selections:[],vendor_evidence:''}}
 function quantity(row:FeeRow){return draft.value?.selections.find(s=>s.line_id===row.line_id&&s.acceptance_id===row.acceptance_id)?.sets??0}
 function changeQuantity(row:FeeRow,event:Event){if(!draft.value)return;const value=Number((event.target as HTMLInputElement).value);draft.value.selections=draft.value.selections.filter(s=>!(s.line_id===row.line_id&&s.acceptance_id===row.acceptance_id));if(value!==0)draft.value.selections.push({line_id:row.line_id,acceptance_id:row.acceptance_id,sets:value})}
@@ -122,7 +124,7 @@ async function execute(action:FeeAction){
   let sent=false
   try{if(!await fresh(ticket))return;sent=true;const result=await settlementApi.write(action,pending.value.body);if(!alive||ticket!==generation)return
     pending.value=undefined;draft.value=undefined;quote.value=undefined;basis.value=undefined;record.value=undefined;reason.value='';notice.value='外发结算操作已生效。'
-    const value=await settlementApi.read(month.value,action==='price'?undefined:result.document_id);if(alive&&ticket===generation)record.value=value
+    const value=await settlementApi.read(month.value,action==='price'?undefined:result.document_id);if(alive&&ticket===generation)showRecord(value)
   }catch(e){if(alive&&ticket===generation){const status=failed(e);if(sent&&status&&status>=400&&status<500&&status!==401&&status!==408)pending.value=undefined}}
   finally{if(alive)busy.value=false}
 }
