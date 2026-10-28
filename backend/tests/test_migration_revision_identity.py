@@ -19,7 +19,9 @@ def test_unique_revisions_and_jp_follows_both_cutting_and_carton_branches():
     config = Config(str(backend / 'alembic.ini'))
     config.set_main_option('script_location', str(backend / 'alembic'))
     graph = ScriptDirectory.from_config(config)
-    assert graph.get_heads() == ['20261022_0175']
+    assert graph.get_heads() == ['20261028_0185']
+    assert graph.get_revision('20261028_0185').down_revision == '20261026_0184'
+    assert graph.get_revision('20261023_0176').down_revision == '20261022_0175'
     assert graph.get_revision('20261022_0175').down_revision == '20261022_0174'
     assert graph.get_revision('20261022_0174').down_revision == '20261022_0173'
     assert graph.get_revision('20261022_0173').down_revision == '20261021_0172'
@@ -31,3 +33,11 @@ def test_unique_revisions_and_jp_follows_both_cutting_and_carton_branches():
     ancestry = {node.revision for node in graph.walk_revisions()}
     assert {'20261015_0163', '20261016_0163', '20261016_0165', '20261016_0166'} <= ancestry
     assert 'cutting_internal_periods' in revisions['20261015_0163']
+
+
+def test_newer_revision_numbers_are_not_reused():
+    backend=Path(__file__).resolve().parents[1]
+    config=Config(str(backend/'alembic.ini'));config.set_main_option('script_location',str(backend/'alembic'))
+    numbers=[node.revision.rsplit('_',1)[1] for node in ScriptDirectory.from_config(config).walk_revisions()
+             if node.revision.rsplit('_',1)[-1].isdigit() and int(node.revision.rsplit('_',1)[1])>=177]
+    assert len(numbers)==len(set(numbers)), 'Post-0176 numeric migration suffixes must be unique'

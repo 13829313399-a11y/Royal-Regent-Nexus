@@ -102,6 +102,11 @@ class Diagnostics:
                 (cutting_materials, ['execute'])]:
             for name in names:
                 self.patches.enter_context(patch.object(module, name, self.tracked(getattr(module, name), module.__name__.rsplit('.', 1)[-1]+'.'+name)))
+        # Retained frozen releases may not yet have detached immutable headers.
+        from app.services import cutting_period_guards
+        if hasattr(cutting_period_guards,'frozen_headers'):
+            self.patches.enter_context(patch.object(cutting_period_guards,'frozen_headers',
+                self.tracked(cutting_period_guards.frozen_headers,'cutting_period_guards.frozen_headers')))
         @p.app.middleware('http')
         async def measure(request, call_next):
             stats = dict(sql_count=0, sql_seconds=0., lock_seconds=0., failed_sql=0,

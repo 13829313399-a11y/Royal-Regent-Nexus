@@ -241,7 +241,7 @@ describe('cutting workspace entry', () => {
   it('resets subviews on workspace changes and shows unfinished capabilities explicitly', async () => {
     const router = await open(`${CUTTING_BASE}/closing?factory=huakang-c`)
     expect(wrapper!.text()).toContain('月结前核对尚未启用')
-    expect(wrapper!.text()).toContain('尚未冻结或锁月')
+    expect(wrapper!.text()).toContain('实时核对不代表锁月')
     expect(wrapper!.find('table').exists()).toBe(false)
     await router.push(`${CUTTING_BASE}/planning?factory=huakang-c`)
     await flushPromises()

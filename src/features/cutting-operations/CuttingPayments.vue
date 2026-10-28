@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
-import { closingPresentationKey } from './closingPresentation'
+import { closingPresentationKey, type ClosingReadLocation } from './closingPresentation'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import PaymentComparison from './PaymentComparison.vue'
 import CuttingReportExport from './CuttingReportExport.vue'
@@ -15,7 +15,7 @@ const panel=ref<InstanceType<typeof SectionPanel>>()
 const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean;navigationContext?:number}>()
 const presentation=inject(closingPresentationKey,()=>false)
 const formId=`cutting-payments-${useId()}`
-const emit=defineEmits<{settlement:[month:string,id:string,eventId:string];restored:[month:string,context:number|undefined]}>()
+const emit=defineEmits<{settlement:[month:string,id:string,eventId:string];restored:[month:string,context:number|undefined];located:[location:ClosingReadLocation,context:number|undefined]}>()
 const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
 const month=ref(today.slice(0,7)),rights=ref<Access>(),record=ref<PaymentRecord>(),basis=ref<PaymentBasis>(),draft=ref<PaymentSave>(),preview=ref<PaymentSnapshot>()
 const conflict=ref<NonNullable<PaymentBasis['document']>>()
@@ -45,9 +45,9 @@ function failed(e:unknown){error.value=errorMessage(e);const status=(e as {respo
 async function fresh(ticket:number){const value=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=value;if(!readable.value){clearEvidence();error.value='付款登记未启用或未获付款查询权限。';return false}return true}
 async function load(id?:string,eventId?:string,targetMonth=month.value,onRead?:()=>void){
   if(!leave())return false
-  const target={month:targetMonth,id,eventId}
+  const target={month:targetMonth,id,eventId},context=props.navigationContext
   month.value=targetMonth;failedRead.value=target;conflict.value=undefined;draft.value=undefined;preview.value=undefined;record.value=undefined;basis.value=undefined;reason.value='';error.value='';busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return true;const value=await paymentApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined;failedRead.value=undefined;onRead?.()}}
+  try{if(!await fresh(ticket))return true;const value=await paymentApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){showRecord(value,context);month.value=value.month??month.value;savedTarget.value=undefined;failedRead.value=undefined;onRead?.()}}
   catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}finally{if(alive&&ticket===generation)busy.value=false}
   return true
 }
@@ -97,7 +97,7 @@ async function execute(action:PaymentAction){
   const requestedMonth=action==='save'?(body as PaymentSave).day.slice(0,7):month.value
   try{if(!await fresh(ticket))return;sent=true;const result=await paymentApi.write(action,pending.value.body);if(!alive||ticket!==generation)return
     pending.value=undefined;draft.value=undefined;basis.value=undefined;record.value=undefined;preview.value=undefined;reason.value='';month.value=result.month??requestedMonth;savedTarget.value={month:month.value,id:result.document_id,eventId:result.id};notice.value='付款登记操作已保存。'
-    const value=await paymentApi.read(month.value,result.document_id);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined}
+    const value=await paymentApi.read(month.value,result.document_id);if(alive&&ticket===generation){showRecord(value);month.value=value.month??month.value;savedTarget.value=undefined}
   }catch(e){if(alive&&ticket===generation){const status=failed(e);if(sent&&status&&status>=400&&status<500&&status!==401&&status!==408)pending.value=undefined}}
   finally{if(alive)busy.value=false}
 }
@@ -112,7 +112,7 @@ async function recover(){
       draft.value=undefined;reason.value='';notice.value='原付款操作已成功，正在读取保存记录；无需重复登记。'
       if(!await fresh(ticket))return
       const found=await paymentApi.read(month.value,savedTarget.value.id,savedTarget.value.eventId)
-      if(alive&&ticket===generation){record.value=found;month.value=found.month??month.value;savedTarget.value=undefined;notice.value='原付款操作已成功，已定位保存记录；无需重复登记。'}
+      if(alive&&ticket===generation){showRecord(found);month.value=found.month??month.value;savedTarget.value=undefined;notice.value='原付款操作已成功，已定位保存记录；无需重复登记。'}
     }else{if(draft.value)draft.value.operation_id=crypto.randomUUID();notice.value='已核实原操作未执行并停止，请刷新依据后继续。';await fresh(ticket)}
   }catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
@@ -126,7 +126,9 @@ function activateMonth(target:string){
   if(dirty.value||pending.value||busy.value||failedRead.value){notice.value=`当前 ${month.value} 的填写、读取目标或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。放弃原读取目标时，请在本区明确选择月份。`;return}
   month.value=target;generation++;record.value=undefined;basis.value=undefined;failedRead.value=undefined
 }
-defineExpose({openPayment,activateMonth})
+function getLocation():ClosingReadLocation{return {month:month.value,id:record.value?.document_id??savedTarget.value?.id??failedRead.value?.id,eventId:record.value?.event_id??savedTarget.value?.eventId??failedRead.value?.eventId}}
+function showRecord(value:PaymentRecord,context=props.navigationContext){record.value=value;emit('located',{month:value.month??month.value,id:value.document_id??undefined,eventId:value.event_id??undefined},context)}
+defineExpose({openPayment,activateMonth,getLocation})
 function changeMonth(event:Event){const input=event.target as HTMLInputElement;if(dirty.value||busy.value||pending.value){input.value=month.value;notice.value='请先保存或放弃填写，并核对原操作。';return}month.value=input.value;generation++;record.value=undefined;basis.value=undefined;failedRead.value=undefined}
 function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement',row.month,row.settlement_id,row.settlement_event_id)}
 </script>
