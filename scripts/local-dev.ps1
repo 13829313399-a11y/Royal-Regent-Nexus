@@ -59,6 +59,13 @@ function Test-Frontend {
     } catch { return $false }
 }
 
+function Test-Office {
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri "$($backendConfig.office_url.TrimEnd('/'))/healthcheck" -TimeoutSec 3
+        return $response.StatusCode -eq 200 -and $response.Content.Trim() -eq 'true'
+    } catch { return $false }
+}
+
 function Get-Worker {
     $heartbeatRoot = Join-Path $backendConfig.storage 'heartbeats'
     if (-not (Test-Path -LiteralPath $heartbeatRoot)) { return $null }
@@ -126,7 +133,7 @@ try {
     }
 
     if ($Action -eq 'Stop') {
-        foreach ($name in @('worker', 'api', 'frontend')) {
+        foreach ($name in @('worker', 'api', 'frontend', 'onlyoffice')) {
             if (-not $services.ContainsKey($name)) { continue }
             $record = $services[$name]
             # A reused PID must never allow us to stop an unrelated application.
@@ -164,6 +171,7 @@ from app.core.config import settings
 url = make_url(settings.database_url)
 print(json.dumps(dict(storage=str(Path(settings.document_tools_storage_dir).resolve()),
     enabled=settings.document_tools_enabled, environment=settings.app_env,
+    office_enabled=settings.online_documents_enabled, office_url=settings.onlyoffice_internal_url,
     database_exists=url.get_backend_name() != 'sqlite' or bool(url.database and Path(url.database).is_file()))))
 '@
     Push-Location $backendRoot
@@ -185,6 +193,7 @@ print(json.dumps(dict(storage=str(Path(settings.document_tools_storage_dir).reso
         Write-Host "API: $apiOnline (http://127.0.0.1:$ApiPort/health)"
         Write-Host "Frontend: $frontendOnline (http://127.0.0.1:$FrontendPort)"
         Write-Host "Document worker: $([bool]$worker)"
+        if ($backendConfig.office_enabled) { Write-Host "Online documents: $(Test-Office)" }
         return
     }
 
@@ -196,6 +205,26 @@ print(json.dumps(dict(storage=str(Path(settings.document_tools_storage_dir).reso
     }
     if (-not (Test-Path -LiteralPath $viteScript)) { throw 'Vite is missing; install frontend dependencies in this checkout first.' }
     $node = (Get-Command node.exe -ErrorAction Stop).Source
+
+    # Optional private forwarding for a local checkout using a remote editor.
+    # The ignored config holds paths/ports only; ssh uses a restricted key and
+    # pinned host keys, never a saved server password or an interactive prompt.
+    $officeConfigPath = Join-Path $runtimeRoot 'onlyoffice\connection.json'
+    if ($backendConfig.office_enabled -and (Test-Path -LiteralPath $officeConfigPath) -and -not (Test-Office)) {
+        $office = Get-Content -LiteralPath $officeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($office.ApiPort -ne $ApiPort) { throw 'Online document callback port does not match this local API.' }
+        if ($services.ContainsKey('onlyoffice') -and (Test-TrackedProcess $services['onlyoffice'])) {
+            throw 'The tracked document tunnel is running but unhealthy. Inspect its log before restarting.'
+        }
+        $ssh = (Get-Command ssh.exe -ErrorAction Stop).Source
+        $process = Start-ServiceProcess 'onlyoffice' $ssh @('-N', '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
+            '-o', 'StrictHostKeyChecking=yes', '-o', "UserKnownHostsFile=$($office.KnownHosts)",
+            '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+            '-i', $office.IdentityFile, '-L', "127.0.0.1:$($office.LocalPort):$($office.EditorAddress):80",
+            '-R', "127.0.0.1:$($office.CallbackPort):127.0.0.1:$ApiPort", $office.Destination) $projectRoot
+        Wait-Ready 'onlyoffice' $process { Test-Office } 20
+    }
+    if ($backendConfig.office_enabled -and -not (Test-Office)) { throw 'Online document service is unavailable. Check its configured private connection.' }
 
     if (-not $apiOnline) {
         $process = Start-ServiceProcess 'api' $Python @('-m', 'uvicorn', 'app.main:app', '--app-dir', $backendRoot, '--host', '127.0.0.1', '--port', "$ApiPort") $backendRoot
@@ -217,7 +246,7 @@ print(json.dumps(dict(storage=str(Path(settings.document_tools_storage_dir).reso
     } else { Write-Host "Reusing healthy frontend (PID $($frontendOwner.ProcessId))." }
 
     # Check all three together; never report success for only a healthy API.
-    if (-not (Test-Api) -or -not (Test-Frontend) -or -not (Get-Worker)) {
+    if (-not (Test-Api) -or -not (Test-Frontend) -or -not (Get-Worker) -or ($backendConfig.office_enabled -and -not (Test-Office))) {
         throw 'A local service became unhealthy during startup. Run -Action Status and inspect the logs.'
     }
     Write-Host "Local services ready: http://127.0.0.1:$FrontendPort (API $ApiPort + document worker)."
