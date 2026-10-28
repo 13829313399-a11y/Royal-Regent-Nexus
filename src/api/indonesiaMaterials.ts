@@ -25,6 +25,10 @@ export interface Command {
   factory_id: string; operation_id: string; action: Action; entity_id: string | null
   expected_version: number; data: Data
 }
+export interface ReceiptTemplateRequest {
+  factory_id: string; customer: string; recipient: string; warehouse: string
+  selections: { order_id: string; demand_id: string }[]
+}
 
 export const indonesiaMaterialsApi = {
   async workspace(factory: string): Promise<WorkspaceResponse> {
@@ -45,8 +49,16 @@ export const indonesiaMaterialsApi = {
       headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120_000,
     })).data
   },
-  async warehouseTemplate(factory: string) {
-    return (await http.get('/indonesia-materials/warehouse-imports/template', { params: { factory_id: factory }, responseType: 'blob' })).data as Blob
+  async warehouseTemplate(request: ReceiptTemplateRequest) {
+    try {
+      return (await http.post('/indonesia-materials/warehouse-imports/template', request, { responseType: 'blob', timeout: 120_000 })).data as Blob
+    } catch (cause) {
+      const response = (cause as { response?: { data: unknown } }).response
+      if (response?.data instanceof Blob) {
+        try { response.data = JSON.parse(await response.data.text()) } catch { /* Keep the original download error. */ }
+      }
+      throw cause
+    }
   },
   async download(factory: string, id: string, kind: 'shipment' | 'asset') {
     const path = kind === 'shipment' ? `shipments/${encodeURIComponent(id)}/export` : `assets/${encodeURIComponent(id)}`

@@ -23,6 +23,15 @@ const button=(name:string)=>wrapper.findAll('button').find(b=>b.text()===name)!
 beforeEach(()=>{vi.resetAllMocks()})
 afterEach(()=>{wrapper?.unmount();vi.useRealTimers()})
 describe('cutting read-only workspaces',()=>{
+  it('gives dashboard and daily-reporting filters unique names and explicit labels',async()=>{
+    vi.mocked(workspaceApi.tasks).mockResolvedValue(task)
+    wrapper=mount({components:{TaskBoard},template:'<TaskBoard /><TaskBoard reporting />'},{global:{plugins:[router]}});await flushPromises()
+    const controls=wrapper.findAll<HTMLInputElement|HTMLSelectElement>('form input, form select')
+    expect(controls).toHaveLength(6)
+    expect(new Set(controls.map(c=>c.element.id)).size).toBe(6)
+    expect(controls.map(c=>c.attributes('name'))).toEqual(['day','q','execution','day','q','execution'])
+    for(const control of controls)expect(wrapper.findAll('label').some(label=>label.attributes('for')===control.element.id)).toBe(true)
+  })
   it('keeps keyboard focus on repeated activity failures and then moves to successful results',async()=>{
     vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline again')).mockResolvedValueOnce({...empty,token:'fresh'})
     wrapper=mount(Activity,{attachTo:document.body,global:{plugins:[router]}});await flushPromises()

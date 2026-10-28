@@ -14,7 +14,7 @@ vi.mock('../draftPersistence', async importOriginal => {
 
 const mocks = vi.hoisted(() => ({
   app: {} as Data, auth: {} as Data,
-  api: { workspace: vi.fn(), command: vi.fn(), preview: vi.fn(), download: vi.fn() },
+  api: { workspace: vi.fn(), command: vi.fn(), preview: vi.fn(), download: vi.fn(), warehouseTemplate: vi.fn() },
 }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => mocks.app }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
@@ -81,7 +81,102 @@ beforeEach(() => {
   mocks.api.workspace.mockImplementation(async () => data)
   mocks.api.command.mockImplementation(async request => ({ record: request.action === 'shipment_confirm' ? { ...shipment('confirmed'), version: 4 } : material }))
 })
-afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.restoreAllMocks() })
+afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+describe('order-specific warehouse template', () => {
+  function mockDownload() {
+    const createObjectURL = vi.fn(() => 'blob:receipt-template')
+    vi.stubGlobal('URL', Object.assign(class extends URL {}, { createObjectURL, revokeObjectURL: vi.fn() }))
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    mocks.api.warehouseTemplate.mockResolvedValue(new Blob(['xlsx']))
+    return { createObjectURL, click }
+  }
+  async function openPicker() {
+    const wrapper = await setup('customer')
+    await wrapper.get('#im-tab-supply').trigger('click')
+    const warehouse = wrapper.get('section[aria-label="仓库实收导入"]')
+    await button(warehouse, '下载实收导入模板').trigger('click')
+    return { wrapper, warehouse, picker: wrapper.get('form[aria-label="下载订单实收模板"]') }
+  }
+  it('downloads only selected contract demand references and keeps the existing receipt draft intact', async () => {
+    const downloads = mockDownload()
+    const wrapper = await setup('customer')
+    await wrapper.get('#im-tab-supply').trigger('click')
+    const warehouse = wrapper.get('section[aria-label="仓库实收导入"]')
+    await field(warehouse, '实收客户').setValue('CLIENT')
+    await field(warehouse, '仓库名称（原单无仓库列时填写）').setValue('原实收仓库')
+    await flushPromises()
+    const before = structuredClone(storedDrafts())
+    await button(warehouse, '下载实收导入模板').trigger('click')
+    const picker = wrapper.get('form[aria-label="下载订单实收模板"]')
+    const row = picker.get('[data-template-demand="d"]')
+    expect(row.findAll('td').slice(-3).map(cell => cell.text())).toEqual(['40', '21', '19'])
+    expect(picker.text()).toContain('螺丝')
+    expect(picker.text()).not.toContain('仓库别名')
+    await row.get('input').setValue(true)
+    expect((picker.get('[aria-label="全选当前模板物料"]').element as HTMLInputElement).indeterminate).toBe(true)
+    await field(picker, '回传仓库').setValue('胶件仓')
+    await picker.trigger('submit'); await flushPromises()
+    expect(mocks.api.warehouseTemplate).toHaveBeenCalledExactlyOnceWith({ factory_id: 'huaxing', customer: 'CLIENT', recipient: 'RRI', warehouse: '胶件仓', selections: [{ order_id: 'o', demand_id: 'd' }] })
+    expect(downloads.click).toHaveBeenCalledOnce()
+    expect((downloads.click.mock.instances[0] as HTMLAnchorElement).download).toBe('仓库实收回传模板.xlsx')
+    expect(mocks.api.command).not.toHaveBeenCalled()
+    expect(storedDrafts()).toEqual(before)
+    expect((field(warehouse, '仓库名称（原单无仓库列时填写）').element as HTMLInputElement).value).toBe('原实收仓库')
+  })
+  it('preserves selections across filters, clears them for another recipient and blocks missing material rows', async () => {
+    data.board[1]!.demands[0]!.material_id = 'missing'
+    const { picker } = await openPicker()
+    expect(picker.get('[data-template-demand="d2"] input').attributes('disabled')).toBeDefined()
+    await picker.get('[aria-label="全选当前模板物料"]').setValue(true)
+    await field(picker, '查找合同／PO／物料').setValue('not found')
+    expect(picker.text()).toContain('另有 1 行已选物料')
+    expect(button(picker, '下载所选 1 行 Excel').attributes('disabled')).toBeUndefined()
+    await field(picker, '模板接收方').setValue('RRM')
+    expect(button(picker, '下载所选 0 行 Excel').attributes('disabled')).toBeDefined()
+  })
+  it('retains selected rows after a download error and can retry without posting business data', async () => {
+    mockDownload()
+    mocks.api.warehouseTemplate.mockRejectedValueOnce(new Error('物料资料已更新，请重新核对'))
+    const { picker } = await openPicker()
+    await picker.get('[aria-label="全选当前模板物料"]').setValue(true)
+    await picker.trigger('submit'); await flushPromises()
+    expect(picker.get('[role="alert"]').text()).toContain('物料资料已更新')
+    expect(button(picker, '下载所选 2 行 Excel').attributes('disabled')).toBeUndefined()
+    await picker.trigger('submit'); await flushPromises()
+    expect(mocks.api.warehouseTemplate).toHaveBeenCalledTimes(2)
+    expect(mocks.api.command).not.toHaveBeenCalled()
+    expect(picker.get('[role="status"]').text()).toContain('模板已下载')
+  })
+  it('discards an in-flight template response after changing factory', async () => {
+    const downloads = mockDownload()
+    let complete!: (blob: Blob) => void
+    mocks.api.warehouseTemplate.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    const { wrapper, picker } = await openPicker()
+    await picker.get('[aria-label="全选当前模板物料"]').setValue(true)
+    await picker.trigger('submit'); await flushPromises()
+    mocks.app.activeFactoryId = 'huadeng'; await flushPromises()
+    complete(new Blob(['xlsx'])); await flushPromises()
+    expect(downloads.createObjectURL).not.toHaveBeenCalled()
+    expect(wrapper.get('form[aria-label="下载订单实收模板"]').isVisible()).toBe(false)
+  })
+  it('limits a template to 200 selected rows without silently truncating it', async () => {
+    data.board[0]!.demands = Array.from({ length: 201 }, (_, index) => ({ ...data.board[0]!.demands[0]!, id: `many-${index}` }))
+    data.board = [data.board[0]!]
+    const { picker } = await openPicker()
+    await picker.get('[aria-label="全选当前模板物料"]').setValue(true)
+    expect(picker.get('[role="alert"]').text()).toContain('每次最多下载 200 行')
+    await picker.trigger('submit'); await flushPromises()
+    expect(mocks.api.warehouseTemplate).not.toHaveBeenCalled()
+  })
+  it('does not open the template picker for a read-only account', async () => {
+    data.permissions = ['read']
+    const { warehouse, picker } = await openPicker()
+    expect(button(warehouse, '下载实收导入模板').attributes('disabled')).toBeDefined()
+    expect(picker.isVisible()).toBe(false)
+    expect(mocks.api.warehouseTemplate).not.toHaveBeenCalled()
+  })
+})
 
 describe('warehouse receipt to shipment flow', () => {
   it('combines receipt allocation and Excel output in one primary workspace', async () => {

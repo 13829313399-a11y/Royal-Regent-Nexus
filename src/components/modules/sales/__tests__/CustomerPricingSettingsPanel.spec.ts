@@ -63,4 +63,52 @@ describe('private customer pricing maintenance', () => {
     auth.applySession(user)
     expect(auth.can(read,'huaxing','sales-business')).toBe(false)
   })
+  it('lets a Huaxing 360 follower maintain material prices and allocations only', async () => {
+    const auth = useAuthStore()
+    auth.applySession(session('sales-business', [read, 'customer_price:import_internal_quote']))
+    const data: CustomerPricingSettings = {
+      ...settings('three-sixty-huaxing'),
+      materials: [{ material: 'PP', price: 1.55, currency: 'USD', unit: 'kg' }],
+      rates: { hkd_usd: 7.8, testing_allocation_qty: 100000 },
+      rate_definitions: { hkd_usd: { label: '港元兑美元', kind: 'exchange' }, testing_allocation_qty: { label: '测试费摊分数量', kind: 'price' } },
+      texts: { comments: 'Existing terms' }, text_definitions: { comments: { label: '报客说明' } },
+    }
+    vi.mocked(customerPricingSettingsApi.get).mockResolvedValue(data)
+    const wrapper = panel()
+    await wrapper.setProps({ customerId: 'three-sixty-huaxing', customerName: '360（华兴临时）' })
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[aria-label="港元兑美元"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[aria-label="报客说明"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[aria-label="料价 1"]').setValue(1.6)
+    await wrapper.get('[aria-label="测试费摊分数量"]').setValue(120000)
+    await wrapper.findAll('button').find(b => b.text() === '新增料型')!.trigger('click')
+    await wrapper.get('[aria-label="料型 2"]').setValue('New resin')
+    await wrapper.get('[aria-label="料价 2"]').setValue(3)
+    vi.mocked(customerPricingSettingsApi.save).mockImplementation(async value => ({ ...value, revision: 2 }))
+    await wrapper.findAll('button').find(b => b.text() === '保存基础信息')!.trigger('click'); await flushPromises()
+    expect(customerPricingSettingsApi.save).toHaveBeenCalledWith(expect.objectContaining({
+      customer_id: 'three-sixty-huaxing', rates: { hkd_usd: 7.8, testing_allocation_qty: 120000 },
+      texts: { comments: 'Existing terms' }, materials: [
+        { material: 'PP', price: 1.6, currency: 'USD', unit: 'kg' },
+        { material: 'New resin', price: 3, currency: 'USD', unit: 'kg' },
+      ],
+    }))
+    vi.mocked(customerPricingSettingsApi.get).mockResolvedValue(settings('buzzbee'))
+    await wrapper.setProps({ customerId: 'buzzbee' }); await flushPromises()
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+  it.each(['legacy', 'shadow', 'enforce'] as const)('honors explicit maintenance denies for 360 followers in %s mode', async mode => {
+    const user = session('sales-business', [read, 'customer_price:import_internal_quote'], mode)
+    user.effective_access!.push({ permission_code: manage, factory_id: 'huaxing', department: 'sales-business', effect: 'deny', allowed: false, source_type: 'user_override', source_ids: ['deny'] })
+    useAuthStore().applySession(user)
+    vi.mocked(customerPricingSettingsApi.get).mockResolvedValue(settings('three-sixty-huaxing'))
+    const wrapper = panel()
+    await wrapper.setProps({ customerId: 'three-sixty-huaxing' })
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('当前为只读权限')
+    wrapper.unmount()
+  })
 })
