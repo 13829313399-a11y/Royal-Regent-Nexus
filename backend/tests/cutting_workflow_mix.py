@@ -75,13 +75,16 @@ def verify_commands(db, commands, denied):
     return dict(unique_committed_commands=len(checked),rejected_commands_without_facts=len(denied))
 
 
-def run_workflows(url, database, report, *, line='http-capacity-90', chains=100):
+def run_workflows(url, database, report, *, line='http-capacity-90', chains=100, concentrated_exports=False, minimum_seconds=0):
+    assert 0 <= minimum_seconds <= 60
+    cycle_started=perf_counter()
     import httpx
     from test_cutting_http_capacity import login_http, validate_workbook
     stop, guard = Event(), Lock()
     samples, commands, failures, actors, denied = [], [], [], {}, []
     report.update(status='failed', samples=samples, failures=failures,
-        scope='Finite transition races plus three read/export workers; ten synthetic sessions, not ten simultaneous writers or a sustained capacity pass')
+        concentrated_exports=concentrated_exports,
+        scope='One finite transition cycle plus three read/export workers; ten synthetic sessions, not ten simultaneous writers or independently a sustained capacity pass')
     def request(session, name, method, path, *, expected=200, **kwargs):
         identifier, began = uuid4().hex, perf_counter()
         response = None
@@ -122,11 +125,11 @@ def run_workflows(url, database, report, *, line='http-capacity-90', chains=100)
         def reader(index,session):
             try:
                 while not stop.is_set():
-                    if index==2:
+                    if index==2 or concentrated_exports:
                         preview=request(session,'workflow_export_preview','POST',BASE+'/exports/preview',json=export_body).json()
                         response=request(session,'workflow_export_download','POST',BASE+'/exports/download',json=export_body|{'token':preview['token']})
                         validate_workbook(response,multiplier=chains,expected_delivery=preview['delivery'])
-                    else:
+                    if index!=2:
                         for path in ['/workspace/planning','/workspace/inventory','/workspace/costs']:
                             get(session,path)
                         conserved_payments(get(session,'/payments/2026-12'))
@@ -231,6 +234,10 @@ def run_workflows(url, database, report, *, line='http-capacity-90', chains=100)
                     receipt_race_protected=True,return_correction_preserved=True)
                 report['period']=dict(month='2026-11',frozen_event=locked['event_id'],independent_review=True,
                     locked_write_rejected=True,historical_snapshot_unchanged=True,final_state='reopened')
+                # Keep readers/exporters active between transition cycles. This
+                # bounds fresh task consumption without an idle pressure gap.
+                while not stop.is_set() and perf_counter()-cycle_started < minimum_seconds:
+                    stop.wait(.2)
             finally:
                 stop.set()
                 for future in readers:future.result(timeout=90)
