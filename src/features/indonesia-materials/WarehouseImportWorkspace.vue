@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { lostRecordAccess } from './recordAccess'
+import RecordResponsibility from './RecordResponsibility.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
 import { fixedCustomers } from './catalog'
@@ -30,6 +32,7 @@ const records = computed(() => ws.kind('import').filter(row => row.data.import_t
 const customers = computed(() => fixedCustomers(ws.records))
 const selectedRows = computed<Data[]>(() => (preview.value?.data.rows || []).filter((row: Data) => choices.value[row.index]?.selected && !row.blocked && !row.imported_supply_id))
 const started = () => !!(file.value || preview.value || customer.value || warehouse.value || shipmentDate.value || recipient.value !== 'RRI')
+const accessLost = computed(() => lostRecordAccess(ws, preview.value))
 const draft = useMaterialDraft(() => started() ? { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value, shipmentDate: shipmentDate.value, choices: choices.value, preview: preview.value?.id, file: file.value } : null, {
   id: 'warehouse', multiple: true,
   capture: () => started() ? { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value, shipmentDate: shipmentDate.value,
@@ -45,7 +48,7 @@ const draft = useMaterialDraft(() => started() ? { customer: customer.value, rec
   },
   reset: () => { file.value = null; preview.value = null; choices.value = {}; shipmentDate.value = ''; customer.value = ''; recipient.value = 'RRI'; warehouse.value = ''; context.value = { customer: '', recipient: 'RRI', warehouse: '' } },
 })
-const importBlocked = computed(() => !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
+const importBlocked = computed(() => accessLost.value || !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
 const importHint = computed(() => {
   if (!importRequested.value) return ''
   if (!ws.canWrite) return '当前账号没有实收单导入权限，可查看已有导入记录。'
@@ -152,6 +155,7 @@ async function upload() {
 function inspect(row: MaterialRecord) { return draft.openRecord(recordDraftId('warehouse', 'inspect', row.id), () => { file.value = null; customer.value = row.data.customer; recipient.value = row.data.recipient; warehouse.value = row.data.warehouse; context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }; initialize(row) }) }
 watch(() => preview.value ? ws.record(preview.value.id) : undefined, row => { if (row) preview.value = row })
 async function confirm() {
+  if (accessLost.value) return
   if (!preview.value || !selectedRows.value.length) return
   const rows = selectedRows.value.map(row => {
     const choice = choices.value[row.index]
@@ -164,6 +168,7 @@ async function confirm() {
 </script>
 <template>
   <section aria-label="仓库实收导入" class="im-stack">
+    <p v-if="accessLost" class="im-message" role="alert">此待办已转交其他跟客或不可用，不能继续处理。原本机草稿保留，可新建或打开其他单据。</p>
     <div class="im-toolbar"><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="fresh">新建实收导入</button><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="templatePicker?.open(customer, recipient, warehouse)">下载实收导入模板</button></div>
     <ReceiptTemplatePicker ref="templatePicker" :blocked="draft.switching.value" />
     <form v-show="showUpload || !preview" id="im-warehouse-upload" ref="uploadForm" class="im-upload-form" @submit.prevent="upload"><p v-if="importHint" class="im-note" role="status">{{ importHint }}</p><fieldset class="im-fields" :disabled="importBlocked">
@@ -174,10 +179,10 @@ async function confirm() {
       <button class="im-primary" type="submit" :disabled="!customer || !file">上传实收单并匹配</button>
     </fieldset><p class="im-note">无物料编码时按名称、规格和单位匹配。取消或重新选文件，原草稿仍保留。</p></form>
     <form v-if="preview" v-show="!showUpload" class="im-editor im-stack" @submit.prevent="confirm">
-      <fieldset class="im-stack" :disabled="draft.switching.value || ws.locked || !ws.canWrite">
+      <fieldset class="im-stack" :disabled="accessLost || draft.switching.value || ws.locked || !ws.canWrite">
       <div class="im-inline"><h3>{{ preview.data.filename }} · {{ preview.data.status === 'confirmed' ? '全部已导入' : '实收匹配核对' }}</h3><button type="button" :disabled="ws.busy" @click="ws.download(preview!.data.asset_id, preview!.data.filename, 'asset')">下载原单</button></div>
-      <div class="im-scroll"><table><thead><tr><th>本次导入</th><th>仓库／收料单行</th><th>原单物料／规格</th><th>正常／备品实收</th><th>匹配与问题</th></tr></thead><tbody><tr v-for="row in preview.data.rows" :key="row.index"><td><input v-model="choices[row.index].selected" type="checkbox" :aria-label="`选择实收行 ${row.index + 1}`" :disabled="!ws.canWrite || ws.locked || row.blocked || !!row.imported_supply_id"></td><td>{{ row.source.warehouse || preview.data.warehouse }}<br>{{ row.source.receipt_no }} / {{ row.source.receipt_line }}<small>{{ row.source_sheet }} 第 {{ row.source_row }} 行 · {{ row.source.actual_date }}</small></td><td>{{ row.source.material_code || '无编码' }} · {{ row.source.material_name }}<small>{{ row.source.specification }} / {{ row.source.unit }}</small></td><td>{{ row.source.normal_quantity }} / {{ row.source.spare_quantity }}</td><td><strong>{{ row.imported_supply_id ? '已导入' : row.blocked ? '原单需核对' : !choices[row.index].material_id || choices[row.index].allocations.some((item: Data) => !item.order_id) ? '待业务确认' : '已匹配，待确认导入' }}</strong><p v-for="issue in row.issues" :key="issue" class="im-danger-text">{{ issue }}</p></td></tr></tbody></table></div>
-      <fieldset v-for="row in selectedRows" :key="row.index" class="im-recipe-card im-stack" :disabled="!ws.canWrite || ws.locked || draft.switching.value">
+      <div class="im-scroll"><table><thead><tr><th>本次导入</th><th>仓库／收料单行</th><th>原单物料／规格</th><th>正常／备品实收</th><th>匹配与问题</th></tr></thead><tbody><tr v-for="row in preview.data.rows" :key="row.index"><td><input v-model="choices[row.index].selected" type="checkbox" :aria-label="`选择实收行 ${row.index + 1}`" :disabled="accessLost || !ws.canWrite || ws.locked || row.blocked || !!row.imported_supply_id"></td><td>{{ row.source.warehouse || preview.data.warehouse }}<br>{{ row.source.receipt_no }} / {{ row.source.receipt_line }}<small>{{ row.source_sheet }} 第 {{ row.source_row }} 行 · {{ row.source.actual_date }}</small></td><td>{{ row.source.material_code || '无编码' }} · {{ row.source.material_name }}<small>{{ row.source.specification }} / {{ row.source.unit }}</small></td><td>{{ row.source.normal_quantity }} / {{ row.source.spare_quantity }}</td><td><strong>{{ row.imported_supply_id ? '已导入' : row.blocked ? '原单需核对' : !choices[row.index].material_id || choices[row.index].allocations.some((item: Data) => !item.order_id) ? '待业务确认' : '已匹配，待确认导入' }}</strong><p v-for="issue in row.issues" :key="issue" class="im-danger-text">{{ issue }}</p></td></tr></tbody></table></div>
+      <fieldset v-for="row in selectedRows" :key="row.index" class="im-recipe-card im-stack" :disabled="accessLost || !ws.canWrite || ws.locked || draft.switching.value">
         <h3>第 {{ row.index + 1 }} 行：{{ row.source.material_name || row.source.material_code }} · {{ row.source.receipt_no }}</h3>
         <div class="im-fields"><label class="im-field"><span>确认对应物料 *</span><select v-model="choices[row.index].material_id" required :aria-label="`实收行 ${row.index + 1} 对应物料`" @change="chooseMaterial(row)"><option value="">请选择匹配物料</option><option v-for="item in row.materials" :key="item.id" :value="item.id">{{ item.label }}</option></select><small v-if="!row.materials.length">未找到相同编码或名称／规格的物料，请先补齐基础资料后刷新核对。</small></label><label v-if="choices[row.index].material_id" class="im-field"><span>原采购／待回料批次</span><select v-model="choices[row.index].supply_id" :aria-label="`实收行 ${row.index + 1} 原采购批次`" @change="chooseSupply(row)"><option value="">按以下采购资料登记本次回料</option><option v-for="item in matchingSupplies(row)" :key="item.id" :value="item.id">{{ item.data.purchase_no }} / {{ item.data.purchase_line }} / {{ item.data.batch }} · 正常 {{ item.data.normal_quantity }} / 备品 {{ item.data.spare_quantity }}</option></select></label></div>
         <template v-if="choices[row.index].material_id">
@@ -200,11 +205,11 @@ async function confirm() {
         </template>
       </fieldset>
       <WarehousePackingReview :rows="preview.data.rows" :selected="selectedRows" />
-      <fieldset v-if="selectedRows.length" class="im-stack" :disabled="!ws.canWrite || ws.locked || draft.switching.value"><label class="im-field"><span>本次计划河源出货日期 *</span><input v-model="shipmentDate" type="date" required></label><p class="im-note">确认 {{ selectedRows.length }} 行实收及 PO 分配，并生成出货草稿。正式出货在第 4 步确认。</p><button class="im-primary" type="submit" :disabled="selectedRows.length > 200">确认实收与 PO，去补装箱</button><p v-if="selectedRows.length > 200" class="im-error">每次最多确认 200 行，请分批选择。</p></fieldset>
+      <fieldset v-if="selectedRows.length" class="im-stack" :disabled="accessLost || !ws.canWrite || ws.locked || draft.switching.value"><label class="im-field"><span>本次计划河源出货日期 *</span><input v-model="shipmentDate" type="date" required></label><p class="im-note">确认 {{ selectedRows.length }} 行实收及 PO 分配，并生成出货草稿。正式出货在第 4 步确认。</p><button class="im-primary" type="submit" :disabled="selectedRows.length > 200">确认实收与 PO，去补装箱</button><p v-if="selectedRows.length > 200" class="im-error">每次最多确认 200 行，请分批选择。</p></fieldset>
       </fieldset>
       <div v-if="preview.data.shipment_ids?.length" class="im-message"><strong>已生成出货草稿</strong><p v-for="id in preview.data.shipment_ids" :key="id"><button type="button" :disabled="ws.locked" @click="ws.shipmentTarget = id">打开出货草稿并补装箱</button></p></div>
     </form>
-    <details class="im-history"><summary>历史实收单 · {{ records.length }} 份</summary><h3>仓库实收导入记录</h3><div v-if="records.length" class="im-scroll"><table><thead><tr><th>原单</th><th>客人／接收方</th><th>已收行／总行数</th><th>出货草稿</th><th>操作</th></tr></thead><tbody><tr v-for="row in records" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.rows.filter((item: Data) => item.imported_supply_id).length }} / {{ row.data.rows.length }}</td><td>{{ row.data.shipment_ids.length }}</td><td><button type="button" :disabled="ws.locked || draft.switching.value" @click="inspect(row)">继续核对实收单</button></td></tr></tbody></table></div><p v-else class="im-empty">导入各仓库实际收到单后，在此核对匹配并生成出货草稿。</p>
+    <details class="im-history"><summary>历史实收单 · {{ records.length }} 份</summary><h3>仓库实收导入记录</h3><div v-if="records.length" class="im-scroll"><table><thead><tr><th>原单</th><th>客人／接收方</th><th>已收行／总行数</th><th>出货草稿</th><th>上传人／负责人</th><th>操作</th></tr></thead><tbody><tr v-for="row in records" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.rows.filter((item: Data) => item.imported_supply_id).length }} / {{ row.data.rows.length }}</td><td>{{ row.data.shipment_ids.length }}</td><td><RecordResponsibility :record="row" /></td><td><button type="button" :disabled="ws.locked || draft.switching.value" @click="inspect(row)">继续核对实收单</button></td></tr></tbody></table></div><p v-else class="im-empty">导入各仓库实际收到单后，在此核对匹配并生成出货草稿。</p>
     </details>
   </section>
 </template>

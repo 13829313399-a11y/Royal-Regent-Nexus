@@ -226,7 +226,7 @@ def preview(db, user, factory, customer, product_ids, filename, content, parsed,
         lock_mutation(db)
         lock_transaction(db, 'indonesia-materials', factory)
         current = refresh_user()
-        require(current.id == user.id, '账号身份已变化，请重新上传核对', 401)
+        require(current.id == user.id and (current.identity or {}).get('employment_epoch', 1) == (user.identity or {}).get('employment_epoch', 1), '账号身份已变化，请重新上传核对', 401)
         authorize(current, factory, 'write')
         ledger = Ledger(db, factory)
         ledger.fixed_customer(customer)
@@ -239,16 +239,18 @@ def preview(db, user, factory, customer, product_ids, filename, content, parsed,
                [[p.id, p.version] for p in products], [g['name_matches'] for g in groups],
                [[g['existing']['id'], g['existing']['version'], g['affected_products']] for g in groups if g['existing']]]
         preview_key = digest(key)
-        previous = next((r for r in ledger.rows('import') if r.data.get('preview_key') == preview_key and r.data['status'] == 'preview'), None)
+        from app.services.indonesia_material_ownership import Access, ownership
+        access = Access(db, current, factory)
+        previous = next((r for r in ledger.rows('import') if r.data.get('preview_key') == preview_key and r.data['status'] == 'preview' and access.owns(r)), None)
         if previous:
-            return dict(record=view(previous))
+            return dict(record=access.present(previous))
         asset = ledger.asset(PurePath(filename).name, content, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         record = ledger.save('import', dict(import_type=TYPE, identity_rule=IDENTITY_RULE, format_rule=FORMAT_RULE, status='preview', filename=asset.filename, asset_id=asset.id,
             customer=customer, products=[dict(id=p.id, version=p.version, code=p.data['code']) for p in products],
             sheets=parsed['sheets'], issues=parsed.get('issues', []), groups=groups, matched_rows=sum(len(g['sources']) for g in groups),
-            skipped_rows=len(parsed['rows']) - sum(len(g['sources']) for g in groups), provided_by=user.id, preview_key=preview_key))
+            skipped_rows=len(parsed['rows']) - sum(len(g['sources']) for g in groups), provided_by=current.id, preview_key=preview_key, _ownership=ownership(current)))
         db.commit()
-        return dict(record=view(record))
+        return dict(record=access.present(record))
     except Exception:
         db.rollback()
         raise

@@ -111,7 +111,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     invalidPending.value = false
     if (!saved) { if (!busy.value) { pending.value = null; pendingCompletion = undefined } return }
     const command = saved.command
-    const actions: Action[] = ['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm', 'master_import_confirm']
+    const actions: Action[] = ['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm', 'master_import_confirm', 'draft_transfer']
     if (command?.factory_id !== factory.value || !actions.includes(command.action) || typeof command.operation_id !== 'string' || command.operation_id.length < 16 || !command.data || !Number.isInteger(command.expected_version) || (saved.owner !== undefined && !draftKind(saved.owner))) {
       invalidPending.value = true; localDrafts.error.value = '上次提交凭据无法识别，原内容已保留，请联系管理员核对。'; return
     }
@@ -202,7 +202,10 @@ export function createMaterialsWorkspace(sharedOptions = false) {
       notice.value = '已保存，数据以服务器重新核算结果为准。'
       await reload()
       if (!same(epoch, selected)) return false
-      if (onCommitted) onCommitted(result.record)
+      if (['import', 'shipment'].includes(result.record.kind) && !record(result.record.id)) {
+        if (owner) ownerFor(owner)?.reset(owner)
+        notice.value = '原操作已完成，单据现已转交或不可用，请在当前列表继续。'
+      } else if (onCommitted) onCommitted(result.record)
       else if (owner) {
         ownerFor(owner)?.reset(owner)
         if (command.action === 'warehouse_import_confirm') completedShipment = result.record.data.shipment_ids?.at(-1)
@@ -246,6 +249,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
   }
   async function run(action: Action, data: Data, target?: MaterialRecord, onCommitted?: (record: MaterialRecord) => void, owner?: DraftId) {
     if (locked.value || !(action === 'receipt_confirm' ? has('receipt_confirm') : canWrite.value)) return false
+    if (target && ['import', 'shipment'].includes(target.kind) && !record(target.id)) { error.value = '该待办已转交或不可用，请刷新列表；原本机草稿保留。'; return false }
     const command: Command = JSON.parse(JSON.stringify({
       factory_id: factory.value, operation_id: createRandomUuid(), action,
       entity_id: target?.id ?? null, expected_version: target?.version ?? 0, data,
@@ -264,7 +268,9 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     busy.value = true; error.value = ''; notice.value = ''
     try {
       const result = await api.preview(selected, customer, recipient, file, ...(warehouse === undefined ? [] : [warehouse]))
-      return same(epoch, selected) ? result.record : null
+      if (!same(epoch, selected)) return null
+      records.value = [result.record, ...records.value.filter(row => row.id !== result.record.id)]
+      return result.record
     } catch (cause) {
       if (same(epoch, selected)) {
         error.value = getApiErrorMessage(cause)

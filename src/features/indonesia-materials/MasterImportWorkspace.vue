@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { lostRecordAccess } from './recordAccess'
+import RecordResponsibility from './RecordResponsibility.vue'
 import { computed, ref } from 'vue'
 import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
 import Panel from './MaterialsPanel.vue'
@@ -29,6 +31,7 @@ const capture = () => !confirmed.value && (customer.value || file.value || previ
   label: [customer.value, products.value.filter(row => productIds.value.includes(row.id)).map(row => row.data.code).join('/'),
     file.value?.name || preview.value?.data.filename || '新导入', preview.value ? '核对中' : '待上传'].filter(Boolean).join(' · '),
 } : null
+const accessLost = computed(() => lostRecordAccess(ws, preview.value))
 const draft = useMaterialDraft(capture, {
   id: 'masterimport', multiple: true, capture,
   restore: saved => {
@@ -43,7 +46,7 @@ const draft = useMaterialDraft(capture, {
   },
   reset: () => reset(),
 })
-const locked = computed(() => !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
+const locked = computed(() => accessLost.value || !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
 function reset() { customer.value = ''; productIds.value = []; file.value = null; preview.value = null; choices.value = []; mappings.value = [] }
 function newImport() { return draft.openRecord(newDraftId('masterimport'), reset) }
 async function changeCustomer(event: Event) {
@@ -107,6 +110,7 @@ defineExpose({ permitDiscard: draft.permitDiscard })
 
 <template>
   <Panel title="统一资料导入" subtitle="选择已有货号，核对物料后保存到基础资料库。">
+    <p v-if="accessLost" class="im-message" role="alert">此待办已转交其他跟客或不可用，不能继续处理。原本机草稿保留，可新建或打开其他单据。</p>
     <template #action><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="newImport">新建导入</button></template>
     <ol class="im-import-progress" aria-label="统一资料导入步骤"><li :class="{ active: !preview }">1 选择货号与文件</li><li :class="{ active: preview && !confirmed }">2 对比与补充</li><li :class="{ active: confirmed }">3 确认保存</li></ol>
     <p v-if="draft.recoveryWaiting.value" class="im-message">已有导入草稿，可从“草稿”继续填写，或新建一份。</p>
@@ -164,6 +168,6 @@ defineExpose({ permitDiscard: draft.permitDiscard })
       <p v-if="confirmed" role="status" class="im-message">本次已导入 {{ preview.data.choices?.length || 0 }} 种物料，可到“货号与物料”查看。</p>
       <button type="button" :disabled="ws.busy" @click="ws.download(preview.data.asset_id, preview.data.filename, 'asset')">下载来源原件</button>
     </div>
-    <details v-if="history.length" class="im-master-import-review"><summary>导入记录（{{ history.length }}）</summary><div class="im-scroll"><table><thead><tr><th>来源文件</th><th>货号</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="row in history" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.products.map((p: Data) => p.code).join('、') }}</td><td>{{ row.data.status === 'confirmed' ? '已导入' : '待核对' }}</td><td><button type="button" :disabled="locked" @click="inspect(row)">查看核对</button></td></tr></tbody></table></div></details>
+    <details v-if="history.length" class="im-master-import-review"><summary>导入记录（{{ history.length }}）</summary><div class="im-scroll"><table><thead><tr><th>来源文件</th><th>货号</th><th>状态</th><th>上传人／负责人</th><th>操作</th></tr></thead><tbody><tr v-for="row in history" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.products.map((p: Data) => p.code).join('、') }}</td><td>{{ row.data.status === 'confirmed' ? '已导入' : '待核对' }}</td><td><RecordResponsibility :record="row" /></td><td><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="inspect(row)">查看核对</button></td></tr></tbody></table></div></details>
   </Panel>
 </template>
