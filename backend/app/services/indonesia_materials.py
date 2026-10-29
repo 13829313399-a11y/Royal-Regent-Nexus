@@ -137,7 +137,7 @@ class Ledger:
                 data['customs_rule'] = dict(basis=data['billing_basis'], divisor=data['billing_factor'])
         else:
             data['customs_rule'] = None
-        require(not row or data['code'] == row.data['code'], '物料编码不可覆盖修改；请维护原编码资料', 422)
+        require(not row or not row.data['code'] or data['code'] == row.data['code'], '已有物料编码不可覆盖修改；未填写的编码可补充', 422)
         if row and any(data[k] != row.data[k] for k in ('unit', 'specification')):
             used = any(r.data['material_id'] == row.id for r in self.rows('supply')) or any(
                 d['material_id'] == row.id for r in self.rows('order') for d in r.data['demands'])
@@ -423,7 +423,8 @@ class Ledger:
             reason = s.Reason.model_validate(body.data).reason
             material = self.get(row.data['material_id'], 'material')
             original = row.data['material_snapshot']['data']
-            require(all(material.data[k] == original[k] for k in ('code', 'unit', 'specification')),
+            require((not original['code'] or material.data['code'] == original['code']) and
+                    all(material.data[k] == original[k] for k in ('unit', 'specification')),
                     '出货资料与该批物料身份、规格或单位不一致，不能刷新替换实物', 422)
             data = deepcopy(row.data)
             data.update(output_material_snapshot=view(material), output_refresh_reason=reason, output_refreshed_by=actor)
@@ -466,6 +467,8 @@ class Ledger:
             data['status'] = 'draft'
             if row and row.data.get('warehouse_import_id'):
                 data['warehouse_import_id'] = row.data['warehouse_import_id']
+                # Historical import warnings remain visible after saving/reopening the draft.
+                data['packing_notes'] = deepcopy(row.data.get('packing_notes', []))
             return self.save('shipment', data, row)
         if action == 'shipment_confirm':
             require(not body.data, '确认出货不接受覆盖数据', 422)

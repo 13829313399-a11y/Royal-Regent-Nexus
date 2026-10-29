@@ -5,6 +5,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import { useMaterials } from './workspace'
 import { focusFollowup } from './focusFollowup'
 import { quantity } from './warehouseMatching'
+import { planningMaterials } from './planning'
 
 const props = defineProps<{ blocked?: boolean }>()
 const ws = useMaterials()
@@ -14,11 +15,13 @@ const customer = ref(''), recipient = ref('RRI'), warehouse = ref(''), itemNo = 
 const selection = ref<string[]>([])
 const customers = computed(() => [...new Set(ws.board.map(order => order.customer))].sort())
 const orders = computed(() => ws.board.filter(order => order.customer === customer.value && order.recipient === recipient.value))
+const pendingOrders = computed(() => orders.value.filter(order => (!itemNo.value || order.item_no === itemNo.value) && planningMaterials(order, ws.records).addedIds.length))
 const items = computed(() => [...new Set(orders.value.map(order => order.item_no))].sort())
 const rows = computed(() => orders.value.flatMap(order => order.demands.map(demand => {
   const material = ws.record(demand.material_id)
-  return { key: JSON.stringify([order.id, demand.id]), order, demand, material,
-    available: material?.kind === 'material' && !material.data.deleted }
+  const pendingSync = planningMaterials(order, ws.records).addedIds.length > 0
+  return { key: JSON.stringify([order.id, demand.id]), order, demand, material, pendingSync,
+    available: material?.kind === 'material' && !material.data.deleted && !pendingSync }
 })))
 const filtered = computed(() => {
   const term = search.value.trim().toLocaleLowerCase()
@@ -83,9 +86,13 @@ defineExpose({ open })
         <label class="im-field im-template-search"><span>查找合同／PO／物料</span><input v-model="search" type="search" placeholder="合同、PO 或正式报关名称"></label>
         <label class="im-inline"><input v-model="pendingOnly" type="checkbox"><span>仅看剩余未送货</span></label>
       </div>
+      <div v-if="pendingOrders.length" class="im-stack" role="status" aria-label="回料模板待同步合同">
+        <p>以下合同有新增物料，先更新合同即可下载完整回料清单。</p>
+        <div v-for="order in pendingOrders" :key="order.id" class="im-inline"><strong>{{ order.contract_no }}</strong><span>PO {{ order.po_no || '未填写' }} · {{ order.item_no }} · 新增 {{ planningMaterials(order, ws.records).addedIds.length }} 种</span><button type="button" @click="ws.followup('plan', order.id)">更新本合同物料</button></div>
+      </div>
       <div v-if="filtered.length" class="im-scroll">
         <table><thead><tr><th><input type="checkbox" :checked="allSelected" :indeterminate="someSelected" aria-label="全选当前模板物料" @change="toggleAll"></th><th>合同／PO／货号</th><th>正式报关物料</th><th>单位</th><th>订单需求</th><th>已实收分配</th><th>剩余未送货</th></tr></thead>
-          <tbody><tr v-for="row in filtered" :key="row.key" :data-template-demand="row.demand.id"><td><input v-model="selection" type="checkbox" :value="row.key" :disabled="!row.available" :aria-label="`选择模板物料 ${row.order.contract_no} ${row.order.po_no} ${row.demand.code}`"></td><td><strong>{{ row.order.contract_no }}</strong><small>PO {{ row.order.po_no || '未填写' }} · {{ row.order.item_no }}</small></td><td>{{ row.material?.data.name || row.demand.name }}<small>{{ row.material?.data.code || row.demand.code }} · {{ row.material?.data.specification || '未填写规格' }}</small><small v-if="!row.available" class="im-danger-text">物料资料不可用，请先核对</small></td><td>{{ row.demand.unit }}</td><td>{{ row.demand.quantity }}</td><td>{{ row.demand.coverage }}</td><td><strong>{{ row.demand.shortage }}</strong></td></tr></tbody>
+          <tbody><tr v-for="row in filtered" :key="row.key" :data-template-demand="row.demand.id"><td><input v-model="selection" type="checkbox" :value="row.key" :disabled="!row.available" :aria-label="`选择模板物料 ${row.order.contract_no} ${row.order.po_no} ${row.demand.code}`"></td><td><strong>{{ row.order.contract_no }}</strong><small>PO {{ row.order.po_no || '未填写' }} · {{ row.order.item_no }}</small></td><td>{{ row.material?.data.name || row.demand.name }}<small>{{ row.material?.data.code || row.demand.code }} · {{ row.material?.data.specification || '未填写规格' }}</small><small v-if="row.pendingSync" class="im-danger-text">合同待同步新增物料</small><small v-else-if="!row.available" class="im-danger-text">物料资料不可用，请先核对</small></td><td>{{ row.demand.unit }}</td><td>{{ row.demand.quantity }}</td><td>{{ row.demand.coverage }}</td><td><strong>{{ row.demand.shortage }}</strong></td></tr></tbody>
         </table>
       </div>
       <p v-else class="im-empty">{{ customer ? '没有符合条件的合同物料，请调整筛选或先导入排期。' : '选择客人后显示合同物料。' }}</p>

@@ -91,7 +91,7 @@ function chooseSource(group: Data, choice: Data) {
   choice.material = incomingMaterial(group, choice.source_index)
 }
 function editFields(group: Data, choice: Data) {
-  return choiceFields(materialFields, ws.records, ws.optionDefaults, choice.material).map(field => ({ ...field, readonly: !!group.existing && field.key === 'code' }))
+  return choiceFields(materialFields, ws.records, ws.optionDefaults, choice.material).map(field => ({ ...field, readonly: !!group.existing?.data.code && field.key === 'code' }))
 }
 const ready = computed(() => rulesCurrent.value && !confirmed.value && !mappingChanged.value && activeChoices.value.length > 0 && activeChoices.value.every(choice =>
   choice.source_index >= 0 && ['keep', 'import'].includes(choice.decision) && choice.recipes.every((r: Data) => r.decision === 'keep' || Number(r.usage) > 0)))
@@ -141,7 +141,7 @@ defineExpose({ permitDiscard: draft.permitDiscard })
       <form v-if="!confirmed && choices.length" class="im-stack" @submit.prevent="confirm">
         <fieldset :disabled="locked || mappingChanged" class="im-stack">
           <article v-for="(group, index) in groups" :key="group.index" class="im-import-material" :data-master-import-group="group.index">
-            <div class="im-import-material-heading"><label><input v-model="choices[index].selected" type="checkbox" :disabled="!!group.blocked"> <strong>{{ group.existing?.data.code || group.sources[0].source.code || '待补编码' }} · {{ group.existing?.data.name || group.sources[0].source.name }}</strong></label><span class="im-tag" :class="group.existing ? 'im-tag-amber' : ''">{{ group.existing ? '已有资料 · 需选择' : '新增物料' }}</span></div>
+            <div class="im-import-material-heading"><label><input v-model="choices[index].selected" type="checkbox" :disabled="!!group.blocked"> <strong>{{ group.existing?.data.code || group.sources[0].source.code || '未填编码' }} · {{ group.existing?.data.name || group.sources[0].source.name }}</strong></label><span class="im-tag" :class="group.existing ? 'im-tag-amber' : ''">{{ group.existing ? '已有资料 · 需选择' : '新增物料' }}</span></div>
             <p v-if="group.blocked" role="alert" class="im-error">{{ group.blocked }}</p>
             <p v-for="warning in group.code_warnings || []" :key="warning" class="im-message">{{ warning }}</p>
             <div v-if="choices[index].selected" class="im-stack">

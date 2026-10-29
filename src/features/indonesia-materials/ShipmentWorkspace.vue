@@ -119,6 +119,7 @@ watch([completion, () => ws.locked, draft.submitting], async () => {
     <form v-if="form" ref="editorElement" class="im-editor im-stack" @submit.prevent="save()">
       <h3>{{ readOnly ? '已确认出货明细' : editing ? '编辑出货草稿' : '新建出货草稿' }}</h3>
       <p v-if="editing?.data.warehouse_import_id && !readOnly" class="im-message">实收与 PO 已确认。补齐本次装箱资料后进入出货核对。</p>
+      <details v-if="editing?.data.packing_notes?.length && !readOnly" open class="im-message"><summary>导入时待核对的装箱资料</summary><p v-for="note in editing.data.packing_notes" :key="note">{{ note }}</p></details>
       <ShipmentSummary v-if="readOnly && editing" :shipment="editing.data" /><button v-if="readOnly && editing" type="button" class="im-primary" :disabled="!ws.has('export') || ws.busy" @click="ws.download(editing.id, `${editing.data.shipment_date}_${editing.data.customer}_${editing.data.recipient}_出货明细.xlsx`)">下载出货 Excel</button>
       <template v-if="packingTotals">
         <details><summary>查看合同与采购来源的重量明细</summary>

@@ -67,6 +67,14 @@ function button(scope: { findAll: (selector: string) => DOMWrapper<Element>[] },
   return found
 }
 function storedDrafts() { return [...savedBuckets.values()].flatMap(bucket => Object.values(bucket.drafts)).filter(Boolean) as SavedDraft[] }
+function addRecipeMaterials() {
+  const p = data.records.find(row => row.id === 'p')!
+  const additions = ['绿色拉杆', '蓝色拉杆', '推杆'].map((name, i) => record(`new-m-${i}`, 'material', { ...material.data, name, procurement_days: i + 10 }))
+  data.records.push(...additions)
+  p.version += 1
+  p.data.materials.push(...additions.map(m => ({ material_id: m.id, usage: '2' })))
+  return additions
+}
 function field(scope: { findAll: (selector: string) => DOMWrapper<Element>[] }, text: string) {
   const label = scope.findAll('label').find(item => item.get('span').text().replace(/\s*\*$/, '') === text)
   if (!label) throw new Error(`Missing field: ${text}`)
@@ -262,6 +270,36 @@ describe('order-specific warehouse template', () => {
     await button(warehouse, '下载实收导入模板').trigger('click')
     return { wrapper, warehouse, picker: wrapper.get('form[aria-label="下载订单实收模板"]') }
   }
+  it('blocks stale order templates, opens the contract plan and includes new demands after saving', async () => {
+    mockDownload()
+    const additions = addRecipeMaterials()
+    const { wrapper, picker } = await openPicker()
+    expect(picker.get('[aria-label="回料模板待同步合同"]').text()).toContain('新增 3 种')
+    expect(picker.get('[data-template-demand="d"] input').attributes('disabled')).toBeDefined()
+    await picker.trigger('submit'); await flushPromises()
+    expect(mocks.api.warehouseTemplate).not.toHaveBeenCalled()
+    await button(picker, '更新本合同物料').trigger('click')
+    const editor = wrapper.get('form[aria-label="当前合同计划参数"]')
+    expect(wrapper.get('#im-tab-board').attributes('aria-selected')).toBe('true')
+    expect(editor.findAll('input[aria-label$="采购周期"]')).toHaveLength(4)
+    mocks.api.command.mockImplementationOnce(async () => {
+      const o = data.records.find(row => row.id === 'o')!
+      data.board[0]!.demands.push(...additions.map((m, i) => ({ ...data.board[0]!.demands[0]!, id: `added-d-${i}`, material_id: m.id, name: m.data.name, quantity: '20', coverage: '0', shortage: '20' })))
+      data.board = structuredClone(data.board)
+      return { record: { ...o, version: 4 } }
+    })
+    await editor.trigger('submit'); await flushPromises()
+    expect(mocks.api.command.mock.calls[0]![0].data.sync_materials).toBe(true)
+    expect(wrapper.text()).toContain('本合同计划与物料已更新')
+    await wrapper.get('#im-tab-supply').trigger('click')
+    expect(picker.get('[data-template-demand="added-d-0"] input').attributes('disabled')).toBeUndefined()
+    await picker.get('[aria-label="全选当前模板物料"]').setValue(true)
+    expect(button(picker, '下载所选 4 行 Excel').attributes('disabled')).toBeUndefined()
+    await picker.trigger('submit'); await flushPromises()
+    expect(mocks.api.warehouseTemplate.mock.calls[0]![0].selections).toEqual([
+      { order_id: 'o', demand_id: 'd' }, ...additions.map((_, i) => ({ order_id: 'o', demand_id: `added-d-${i}` })) ])
+    expect(picker.get('[data-template-demand="d"] td:last-child').text()).toBe('19')
+  })
   it('downloads only selected contract demand references and keeps the existing receipt draft intact', async () => {
     const downloads = mockDownload()
     const wrapper = await setup('customer')
@@ -393,6 +431,18 @@ describe('warehouse receipt to shipment flow', () => {
     await panel.get('form.im-upload-form').trigger('submit'); await flushPromises()
     return { wrapper, panel, record }
   }
+  it('preserves newly typed warehouse context when first file selection precedes blur', async () => {
+    const wrapper = await setup('customer'), panel = wrapper.get('section[aria-label="仓库实收导入"]')
+    await field(panel, '实收客户').setValue('CLIENT')
+    const warehouse = field(panel, '仓库名称（原单无仓库列时填写）')
+    ;(warehouse.element as HTMLInputElement).value = '刚填写的胶件仓'
+    await warehouse.trigger('input')
+    await chooseFile(panel, '首份实收.csv')
+    await field(panel, '实收接收方').setValue('RRM'); await flushPromises()
+    const original = storedDrafts().find(item => item.state.customer === 'CLIENT' && item.state.recipient === 'RRI' && item.state.file?.name === '首份实收.csv')
+    expect(original?.state.warehouse).toBe('刚填写的胶件仓')
+    expect((field(panel, '仓库名称（原单无仓库列时填写）').element as HTMLInputElement).value).toBe('刚填写的胶件仓')
+  })
   it('opens the receipt file picker on repeated entry clicks and returns to the upload form without clearing input', async () => {
     const wrapper = await setup('customer')
     await wrapper.get('#im-tab-supply').trigger('click')
@@ -769,12 +819,13 @@ describe('materials business forms', () => {
     expect(mocks.api.command.mock.calls[0]![0]).toMatchObject({ action: 'product_save', entity_id: 'p', expected_version: 3, data: { code: 'ITEM', customer: 'CLIENT', daily_capacity: '5000', transport_days: 25, materials: [{ material_id: 'm', usage: '4.12345678' }] } })
   })
 
-  it('adds complete material data under the chosen product and submits one atomic product command', async () => {
+  it.each(['NEW-SCREW', ''])('adds complete material data with optional code "%s" under the chosen product', async newCode => {
     const panel = (await setup()).get('#im-panel-master')
     expect(panel.get('nav').findAll('button').map(item => item.text())).toEqual(['固定客人', '货号与物料', '统一资料导入', '基础选项'])
     await button(panel, '添加物料').trigger('click')
     const card = panel.findAll('.im-recipe-card')[1]!
-    await field(card, '物料编码').setValue('NEW-SCREW')
+    expect(field(card, '物料编码').attributes('required')).toBeUndefined()
+    await field(card, '物料编码').setValue(newCode)
     await field(card, '物料名称').setValue('新螺丝')
     await field(card, '数量单位').setValue('pcs')
     await field(card, '供应商').setValue('新供应商')
@@ -785,9 +836,32 @@ describe('materials business forms', () => {
     const command = mocks.api.command.mock.calls[0]![0]
     expect(command).toMatchObject({ action: 'product_save', entity_id: 'p', expected_version: 3, data: { materials: [
       { material_id: 'm', usage: '4' },
-      { material_id: null, material_version: 0, usage: '2.12345678', material: { code: 'NEW-SCREW', name: '新螺丝', unit: 'pcs', supplier: '新供应商', net_weight_kg: '0.00012345' } },
+      { material_id: null, material_version: 0, usage: '2.12345678', material: { code: newCode, name: '新螺丝', unit: 'pcs', supplier: '新供应商', net_weight_kg: '0.00012345' } },
     ] } })
     expect(JSON.stringify(command.data)).not.toContain('_key')
+  })
+
+  it('restores an unsaved code addition as editable while protecting already saved codes', async () => {
+    data.records.find(row => row.id === 'm')!.data.code = ''
+    const wrapper = await setup(), panel = wrapper.get('#im-panel-master')
+    await button(panel, '编辑').trigger('click'); await button(panel, '编辑物料资料').trigger('click')
+    expect(field(panel, '物料编码').attributes('readonly')).toBeUndefined()
+    await field(panel, '物料编码').setValue('FIRST-DRAFT'); await flushPromises()
+    const saved = storedDrafts().find(draft => draft.state.form?.materials?.[0]?.material?.code === 'FIRST-DRAFT')!
+    expect(saved).toBeTruthy()
+    wrapper.unmount(); wrappers.splice(wrappers.indexOf(wrapper), 1)
+    const reopened = await setup('customer')
+    await button(reopened.get(`[data-draft-id="${saved.id}"]`), '继续填写').trigger('click')
+    const restored = reopened.get('#im-panel-master')
+    expect(field(restored, '物料编码').element).toHaveProperty('value', 'FIRST-DRAFT')
+    expect(field(restored, '物料编码').attributes('readonly')).toBeUndefined()
+    await field(restored, '物料编码').setValue('FINAL-CODE')
+    await restored.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.api.command.mock.calls[0]![0]).toMatchObject({ action: 'product_save', data: { materials: [{ material_id: 'm', material: { code: 'FINAL-CODE' } }] } })
+    data.records.find(row => row.id === 'm')!.data.code = 'FINAL-CODE'
+    await button(reopened, '刷新工作区').trigger('click')
+    await button(restored, '编辑').trigger('click'); await button(restored, '编辑物料资料').trigger('click')
+    expect(field(restored, '物料编码').attributes('readonly')).toBeDefined()
   })
 
   it('reuses an existing material without cloning it or offering a duplicate recipe choice', async () => {
@@ -1140,6 +1214,56 @@ describe('contract board follow-up entries', () => {
     await button(panel, '明细 ↓').trigger('click')
     return panel
   }
+  it('shows every newly added material even when codes match and defaults are already complete', async () => {
+    addRecipeMaterials()
+    const wrapper = await setup(), board = await details(wrapper)
+    expect(board.text()).toContain('新增 3 种物料待同步')
+    expect(board.findAll('[data-pending-material]')).toHaveLength(3)
+    expect(board.get('.im-contract-detail').text()).toContain('蓝色拉杆')
+    expect(board.get('.im-contract-detail').text()).toContain('新增，待同步')
+    await button(board, '填写／更新本合同计划').trigger('click')
+    const editor = board.get('form[aria-label="当前合同计划参数"]')
+    expect(editor.findAll('input[aria-label$="采购周期"]')).toHaveLength(4)
+    expect(editor.get('input[aria-label="SCREW · 绿色拉杆 采购周期"]').element).toHaveProperty('value', '10')
+    expect(editor.get('input[aria-label="SCREW · 蓝色拉杆 采购周期"]').element).toHaveProperty('value', '11')
+    expect(editor.text()).toContain('本次补入 3 种新物料')
+  })
+  it('allows saving new materials before their procurement cycles are known', async () => {
+    addRecipeMaterials()[2]!.data.procurement_days = null
+    const wrapper = await setup(), board = await details(wrapper)
+    await button(board, '填写／更新本合同计划').trigger('click')
+    const editor = board.get('form[aria-label="当前合同计划参数"]')
+    const cycle = editor.get('input[aria-label="SCREW · 推杆 采购周期"]')
+    expect(cycle.element).toHaveProperty('value', '')
+    expect(cycle.attributes('required')).toBeUndefined()
+    await editor.trigger('submit'); await flushPromises()
+    expect(mocks.api.command.mock.calls[0]![0].data.materials[3]).toMatchObject({ material_id: 'new-m-2', procurement_days: null })
+  })
+  it('refreshes an older planning draft without losing entered parameters or another contract draft', async () => {
+    let wrapper = await setup(), board = await details(wrapper)
+    await button(board, '填写／更新本合同计划').trigger('click')
+    await field(board.get('form'), '日产能').setValue('222')
+    await board.get('input[aria-label="SCREW · 螺丝 采购周期"]').setValue('29'); await flushPromises()
+    await button(board, '明细 ↓').trigger('click')
+    await button(board, '填写／更新本合同计划').trigger('click')
+    await field(board.get('form'), '日产能').setValue('333'); await flushPromises()
+    const otherDraft = structuredClone(storedDrafts().find(d => d.state.editing?.id === 'o2'))
+    wrapper.unmount(); wrappers.splice(wrappers.indexOf(wrapper), 1)
+    addRecipeMaterials()
+    wrapper = await setup(); board = wrapper.get('#im-panel-board')
+    const saved = storedDrafts().find(d => d.state.editing?.id === 'o')!
+    await button(wrapper.get(`[data-draft-id="${saved.id}"]`), '继续填写').trigger('click')
+    let editor = board.get('form[aria-label="当前合同计划参数"]')
+    expect(button(editor, '保存并更新本合同').attributes('disabled')).toBeDefined()
+    await button(editor, '载入最新物料与版本').trigger('click')
+    editor = board.get('form[aria-label="当前合同计划参数"]')
+    expect(field(editor, '日产能').element).toHaveProperty('value', '222')
+    expect(editor.get('input[aria-label="SCREW · 螺丝 采购周期"]').element).toHaveProperty('value', '29')
+    expect(editor.findAll('input[aria-label$="采购周期"]')).toHaveLength(4)
+    expect(button(editor, '保存并更新本合同').attributes('disabled')).toBeUndefined()
+    expect(storedDrafts().find(d => d.state.editing?.id === 'o2')).toEqual(otherDraft)
+    expect(mocks.api.command).not.toHaveBeenCalled()
+  })
   it('edits plan and procurement in this contract, carries existing defaults and updates only its plan', async () => {
     const wrapper = await setup(), board = await details(wrapper)
     await board.get('button[aria-label="维护 SCREW 的采购周期"]').trigger('click'); await flushPromises()

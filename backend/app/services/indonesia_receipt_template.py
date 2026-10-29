@@ -3,12 +3,14 @@ from collections import defaultdict
 from io import BytesIO
 
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from app.services.indonesia_material_calculations import ZERO, decimal_text, number, precise_decimals, require
 from app.services.indonesia_materials import Ledger, authorize, now_text, ready
+from app.services.indonesia_material_planning import missing_recipe_materials
 
 TITLE = '仓库实收回传模板（订单物料）'
 REFERENCE_HEADERS = {'本次订单物料需求数量', '已实收并分配数量', '剩余未送货数量'}
@@ -55,6 +57,8 @@ def selected_rows(db, user, request):
         order = ledger.get(choice.order_id, 'order')
         require(order.data['customer'] == request.customer and order.data['recipient'] == request.recipient,
                 '所选合同不属于本次客人或接收方，请重新选择', 422)
+        missing = missing_recipe_materials(order, ledger.matching_product(order.data))
+        require(not missing, f'合同 {order.data["contract_no"]} 有 {len(missing)} 种新增物料待同步，请先在本合同保存并更新，再下载回料模板', 409)
         demand = next((item for item in order.data['demands'] if item['id'] == choice.demand_id), None)
         require(demand is not None, '合同物料需求已变更，请刷新后重新选择', 409)
         material = ledger.get(demand['material_id'], 'material').data
@@ -79,7 +83,7 @@ def build_template(db, user, request):
     end = get_column_letter(len(HEADERS))
     notes = [TITLE, f'生成时间：{now_text()} · 灰色为系统资料，浅黄色为仓库填写区。',
              '参考数量为下载时快照；剩余未送货＝订单需求－已实收且分配的正常量及备品，最低为 0；后续出货不重复扣减。',
-             '填写收料单号、原单行号、日期及本次正常／备品数量；未填写实收的物料行可留空。装箱资料已知则填，采购资料由业务导入时核对。']
+             '每种物料单独一行，正常／备品量分开填；混箱用相同箱号、不同原单行号，箱数、尺寸及纸箱重各行填相同值，不累加。同箱物料放在同一文件一次导入，详见箱号批注。']
     for index, note in enumerate(notes, 1):
         sheet.merge_cells(start_row=index, start_column=1, end_row=index, end_column=len(HEADERS))
         cell = sheet.cell(index, 1)
@@ -95,6 +99,11 @@ def build_template(db, user, request):
         cell.fill = PatternFill('solid', fgColor='286F66' if column <= 15 else 'F3D98D')
         cell.alignment = Alignment(vertical='center', wrap_text=True)
         cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        if header == '箱号':
+            cell.comment = Comment('混箱示例：A物料100件、B物料50件装在同一箱，两行均填箱号M01、箱数1、相同尺寸和每箱空纸箱重量；数量分别填100和50。系统将其合为一个包装组，箱数及体积只计一次。\n同箱按仓库＋收料单号＋箱号识别，行号必须不同。多箱内容完全相同可使用同一包装组编号，数量填写该组全部箱合计。装量或物料组成不同请分组；同物料分组时复制物料行并使用不同原单行号。\n同箱物料必须在同一文件一起导入；装箱资料未知可留空，由业务补齐。', '填写说明')
+            cell.comment.width, cell.comment.height = 480, 240
+        elif header in {'箱数', '长cm', '宽cm', '高cm', '每箱纸箱重量kg'}:
+            cell.comment = Comment('同箱各物料行填写相同值，不按物料重复累加。每箱纸箱重量只填空纸箱重量，不含物料。', '填写说明')
     widths = [13, 18, 11, 23, 23, 16, 16, 19, 26, 32, 24, 12, 19, 19, 19, 17, 23, 12, 17, 18, 17, 19, 13, 13, 13, 13, 20]
     for column, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(column)].width = width
