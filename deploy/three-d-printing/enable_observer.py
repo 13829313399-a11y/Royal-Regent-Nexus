@@ -52,7 +52,7 @@ def enable(db, machine_no):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--machine", type=int, choices=range(1, 12), required=True)
+    parser.add_argument("--machine", type=int, choices=range(1, 17), required=True)
     args = parser.parse_args()
     with SessionLocal() as db:
         result = enable(db, args.machine)
