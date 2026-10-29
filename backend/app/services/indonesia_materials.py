@@ -289,7 +289,7 @@ class Ledger:
                 self.access.require(row)
             require(row.version == body.expected_version, '记录已被更新，请刷新核对后重试')
         else:
-            require(action in {'option_save', 'option_delete', 'customer_save', 'material_save', 'product_save', 'order_save', 'supply_save', 'allocate', 'shipment_save'} and body.expected_version == 0,
+            require(action in {'option_save', 'option_delete', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_materials_sync', 'supply_save', 'allocate', 'shipment_save'} and body.expected_version == 0,
                     '请选择原记录及其版本', 422)
         if action == 'option_delete' and row is None:
             identity = OptionIdentity.model_validate(body.data).model_dump(mode='json')
@@ -358,6 +358,9 @@ class Ledger:
         if action == 'order_plan_save':
             from app.services.indonesia_material_planning import save_order_plan
             return save_order_plan(self, row, body.data)
+        if action == 'order_materials_sync':
+            from app.services.indonesia_material_planning import sync_order_materials
+            return sync_order_materials(self, body.data)
         if action in {'order_save', 'order_recalculate'}:
             if action == 'order_recalculate':
                 reason = s.Reason.model_validate(body.data).reason

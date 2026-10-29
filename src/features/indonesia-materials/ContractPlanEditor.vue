@@ -16,15 +16,18 @@ const catalog = computed(() => {
   return board ? planningMaterials(board, ws.records) : undefined
 })
 const stale = computed(() => form.value && catalog.value && (!form.value.sync_materials
+  || editing.value?.version !== ws.record(editing.value?.id ?? '')?.version
   || form.value.product_version !== catalog.value.product?.version
   || catalog.value.materials.length !== form.value.materials.length
   || catalog.value.materials.some(m => !m || !form.value!.materials.some((entry: Data) => entry.material_id === m.id && entry.expected_version === m.version))))
 function loadLatest() {
-  if (!form.value || !catalog.value?.product || catalog.value.materials.some(m => !m) || ws.locked || !ws.canWrite) return
+  const order = ws.record(editing.value?.id ?? '')
+  if (!order || !form.value || !catalog.value?.product || catalog.value.materials.some(m => !m) || ws.locked || !ws.canWrite) return
   const previous: Data[] = form.value.materials
-  form.value = { ...form.value, sync_materials: true, product_version: catalog.value.product.version,
+  form.value = { ...form.value, sync_materials: true, product_id: catalog.value.product.id, product_version: catalog.value.product.version,
     materials: catalog.value.materials.map(m => ({ material_id: m!.id, expected_version: m!.version,
       procurement_days: previous.find(entry => entry.material_id === m!.id)?.procurement_days ?? m!.data.procurement_days ?? '' })) }
+  editing.value = order
 }
 const draft = useMaterialDraft(() => form.value, {
   id: 'planning', multiple: true,

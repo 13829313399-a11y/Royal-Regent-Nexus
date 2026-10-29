@@ -39,9 +39,9 @@ def ids(client):
     return {row['id'] for row in workspace(client)['records']}
 
 
-def schedule_preview(client):
+def schedule_preview(client, content=None):
     response = client.post(BASE + '/imports/preview', data=dict(factory_id='huaxing', customer='合成客户', recipient='RRI'),
-                           files={'file': ('schedule.xlsx', schedule_bytes())})
+                           files={'file': ('schedule.xlsx', schedule_bytes() if content is None else content)})
     assert response.status_code == 200, response.text
     return response.json()['record']
 
@@ -80,8 +80,11 @@ def test_replay_resolves_completed_operation_without_leaking_after_handoff_or_de
 @pytest.mark.parametrize('kind', ['schedule', 'master', 'warehouse'])
 def test_two_accounts_have_independent_previews_and_cannot_process_or_download_each_others(client, accounts, kind):
     m = material(client); p = product(client, m, code='00001')
-    create = {'schedule': lambda: schedule_preview(client),
-              'master': lambda: master_preview(client, workbook([master_source(item='00001')]), p),
+    # Re-upload identical bytes: regenerating XLSX files changes their timestamps.
+    schedule_content = schedule_bytes()
+    master_content = workbook([master_source(item='00001')])
+    create = {'schedule': lambda: schedule_preview(client, schedule_content),
+              'master': lambda: master_preview(client, master_content, p),
               'warehouse': lambda: preview(client)}[kind]
     action = {'schedule': 'import_confirm', 'master': 'master_import_confirm', 'warehouse': 'warehouse_import_confirm'}[kind]
     first = create()
@@ -104,7 +107,8 @@ def test_two_accounts_have_independent_previews_and_cannot_process_or_download_e
 
 def test_transfer_changes_responsibility_not_uploader_and_old_versions_cannot_write(client, accounts):
     product(client, material(client), code='00001')
-    first = schedule_preview(client)
+    content = schedule_bytes()
+    first = schedule_preview(client, content)
     command(client, 'draft_transfer', dict(assignee_id='bob', reason='工作交接'), first, status=403)
     login(client, accounts, 'manager')
     key = uuid4().hex
@@ -117,7 +121,7 @@ def test_transfer_changes_responsibility_not_uploader_and_old_versions_cannot_wr
     assert assigned['id'] not in ids(client)
     command(client, 'import_confirm', {'indexes': [0]}, assigned, status=404)
     assert source_file(client, assigned).status_code == 404
-    assert schedule_preview(client)['id'] != assigned['id']  # no reclaim via file deduplication
+    assert schedule_preview(client, content)['id'] != assigned['id']  # no reclaim via file deduplication
     login(client, accounts, 'bob')
     command(client, 'import_confirm', {'indexes': [0]}, first, status=409)
     formal = command(client, 'import_confirm', {'indexes': [0]}, assigned)

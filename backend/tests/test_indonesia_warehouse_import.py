@@ -107,7 +107,9 @@ def test_changed_file_or_case_cannot_reimport_same_warehouse_voucher_line(client
     duplicate = preview(client, source(receipt_no='wh-001', receipt_line='01', normal_quantity='89', spare_quantity='11'))
     assert duplicate['data']['rows'][0]['blocked']
     assert '已经导入' in ' '.join(duplicate['data']['rows'][0]['issues'])
-    confirm(client, duplicate, status=409)
+    assert not duplicate['data']['rows'][0]['targets'][imported['data']['rows'][0]['auto_material_id']]
+    # A forged/stale selection must still be rejected even though the fully covered target is no longer suggested.
+    confirm(client, duplicate, [choose(imported)], status=409)
     assert len([r for r in workspace(client)['records'] if r['kind'] == 'supply']) == 1
 
 
