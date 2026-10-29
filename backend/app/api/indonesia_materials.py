@@ -49,6 +49,13 @@ def command(body: Command, db: Db, user: User, request: Request):
     return service.run_command(db, user, body, refresh_user=lambda: refresh_user(request, db))
 
 
+@router.get('/draft-assignees')
+def draft_assignees(db: Db, user: User, factory_id: str = Query(...), search: str = Query('', max_length=128)):
+    service.authorize(user, factory_id, 'write')
+    from app.services.indonesia_material_ownership import assignees
+    return assignees(db, user, factory_id, search)
+
+
 @router.get('/shared-options')
 def shared_workspace(db: Db, user: User):
     return shared_options.workspace(db, user)
@@ -148,6 +155,11 @@ def asset(entity_id: str, db: Db, user: User, factory_id: str = Query(...)):
     service.ready(db)
     row = db.get(service.Asset, entity_id)
     service.require(row is not None and row.factory_id == factory_id, '原始资料不存在', 404)
+    from app.services.indonesia_material_ownership import Access
+    access = Access(db, user, factory_id)
+    sources = list(db.scalars(select(service.Record).where(service.Record.factory_id == factory_id,
+        service.Record.kind == 'import', service.Record.data['asset_id'].as_string() == entity_id)))
+    service.require(not sources or any(access.visible(source) for source in sources), '原始资料不存在或已转交其他跟客', 404)
     export_owner = db.scalar(select(service.Record.id).where(service.Record.factory_id == factory_id,
                             service.Record.kind == 'shipment', service.Record.data['export_asset_id'].as_string() == entity_id))
     if export_owner:

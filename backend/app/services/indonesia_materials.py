@@ -71,14 +71,18 @@ def matching_orders(orders, data):
 
 def view(row):
     result = dict(id=row.id, kind=row.kind, version=row.version, data=deepcopy(row.data), updated_at=row.updated_at)
+    responsibility = result['data'].pop('_ownership', None)
+    if responsibility:
+        result['responsibility'] = responsibility
     if isinstance(row, SharedOption):
         result['scope'] = 'shared-options'
     return result
 
 
 class Ledger:
-    def __init__(self, db, factory):
+    def __init__(self, db, factory, access=None):
         self.db, self.factory, self.changes = db, factory, []
+        self.access = access
         self._rows = {}
         self._shipped = None
 
@@ -106,7 +110,10 @@ class Ledger:
             self.db.add(row)
         elif key is not None:
             row.business_key = digest(key)
-        row.data = deepcopy(data)
+        data = deepcopy(data)
+        if row.data and '_ownership' in row.data:
+            data.setdefault('_ownership', deepcopy(row.data['_ownership']))
+        row.data = data
         row.version += 1
         row.updated_at = now_text()
         self.db.flush()
@@ -278,6 +285,8 @@ class Ledger:
         if body.entity_id:
             require(kind is not None, '此操作不接受现有记录编号', 422)
             row = self.get(body.entity_id, kind, include_deleted=action.endswith('_restore'))
+            if self.access:
+                self.access.require(row)
             require(row.version == body.expected_version, '记录已被更新，请刷新核对后重试')
         else:
             require(action in {'option_save', 'option_delete', 'customer_save', 'material_save', 'product_save', 'order_save', 'supply_save', 'allocate', 'shipment_save'} and body.expected_version == 0,
@@ -465,6 +474,9 @@ class Ledger:
             data = s.Shipment.model_validate(body.data).model_dump(mode='json')
             self.shipment_lines(data)
             data['status'] = 'draft'
+            if self.access:
+                from app.services.indonesia_material_ownership import ownership
+                data['_ownership'] = self.access.info(row) if row else ownership(self.access.user)
             if row and row.data.get('warehouse_import_id'):
                 data['warehouse_import_id'] = row.data['warehouse_import_id']
                 # Historical import warnings remain visible after saving/reopening the draft.
@@ -587,17 +599,27 @@ def run_command(db, user, body, *, refresh_user):
         lock_transaction(db, 'indonesia-shared-options', 'shared-options')
         lock_transaction(db, 'indonesia-materials', body.factory_id)
         current_user = refresh_user()
-        require(current_user.id == user.id, '账号身份已变化，请重新核对操作', 401)
+        require(current_user.id == user.id and (current_user.identity or {}).get('employment_epoch', 1) == (user.identity or {}).get('employment_epoch', 1), '账号身份已变化，请重新核对操作', 401)
         user = current_user
         authorize(user, body.factory_id, action)
+        from app.services.indonesia_material_ownership import Access
+        access = Access(db, user, body.factory_id)
         previous = db.get(Receipt, body.operation_id)
         if previous:
             require(previous.actor_id == user.id and previous.factory_id == body.factory_id and previous.fingerprint == fingerprint,
                     '操作编号已用于不同请求，请核对原操作结果')
+            require(previous.result.get('_actor_employment_epoch', 1) == (user.identity or {}).get('employment_epoch', 1),
+                    '原操作属于此前任职身份，不能在新身份下恢复', 403)
+            previous_record = previous.result.get('record') or {}
+            if previous_record.get('kind') in {'import', 'shipment'}:
+                current_record = db.get(Record, previous_record.get('id'))
+                require(current_record is not None and current_record.factory_id == body.factory_id and access.visible(current_record),
+                        '原操作已完成，但该单据已转交或当前无权查看。请刷新列表；本机填写内容保留', 404)
             return previous.result
         require(not body.action.startswith('option_'), '基础选项已改为全厂共用；旧请求不会自动改写共用库，请核对后在共用基础选项中重新提交', 409)
-        ledger = Ledger(db, body.factory_id)
-        result = dict(record=view(ledger.execute(body, user.id)))
+        ledger = Ledger(db, body.factory_id, access)
+        saved = access.transfer(ledger, body) if body.action == 'draft_transfer' else ledger.execute(body, user.id)
+        result = dict(record=access.present(saved), _actor_employment_epoch=(user.identity or {}).get('employment_epoch', 1))
         db.add(Receipt(operation_id=body.operation_id, factory_id=body.factory_id, actor_id=user.id,
                        action=body.action, fingerprint=fingerprint, changes=ledger.changes, result=result, created_at=now_text()))
         db.commit()
@@ -614,6 +636,8 @@ def workspace(db, user, factory):
     authorize(user, factory)
     ready(db)
     ledger = Ledger(db, factory)
+    from app.services.indonesia_material_ownership import Access
+    access = Access(db, user, factory)
     rows = list(db.scalars(select(Record).where(Record.factory_id == factory).order_by(Record.updated_at.desc()).limit(5001)))
     rows += list(db.scalars(select(Customer).where(Customer.factory_id == factory).order_by(Customer.updated_at.desc()).limit(5001)))
     rows += list(db.scalars(select(SharedOption).order_by(SharedOption.updated_at.desc()).limit(5001)))
@@ -651,8 +675,11 @@ def workspace(db, user, factory):
         data['planning_status'] = 'ready' if data['plan'] and all(d['procurement_days'] is not None for d in data['demands']) else 'missing_parameters'
         data['status'] = ('missing_master' if not data['demands'] else 'complete' if all(number(d['shortage']) == 0 for d in data['demands']) else 'missing_parameters' if data['planning_status'] != 'ready' else 'shortage')
         board.append(data)
-    result = [view(r) for r in rows]
+    visible_ids = {r.id for r in rows if access.visible(r)}
+    result = [access.present(r) for r in rows if r.id in visible_ids]
     for row in result:
+        if row['kind'] == 'import' and 'shipment_ids' in row['data']:
+            row['data']['shipment_ids'] = [id for id in row['data']['shipment_ids'] if id in visible_ids]
         if row['kind'] == 'import' and row['data']['status'] != 'confirmed':
             if row['data'].get('import_type') == 'warehouse_receipt':
                 from app.services.indonesia_warehouse_import import reconcile
@@ -663,4 +690,4 @@ def workspace(db, user, factory):
         if row['kind'] == 'allocation':
             normal, spare = ledger.shipped(row['id'])
             row['data'].update(shipped_normal=decimal_text(normal), shipped_spare=decimal_text(spare))
-    return dict(records=result, board=board, permissions=[a for a in ACTIONS if allowed(user, factory, a)], option_defaults=option_defaults())
+    return dict(records=result, board=board, permissions=[a for a in ACTIONS if allowed(user, factory, a)] + (['draft_manage'] if access.is_manager else []), option_defaults=option_defaults())

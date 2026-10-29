@@ -15,7 +15,7 @@ vi.mock('../draftPersistence', async importOriginal => {
 
 const mocks = vi.hoisted(() => ({
   app: {} as Data, auth: {} as Data,
-  api: { workspace: vi.fn(), command: vi.fn(), preview: vi.fn(), download: vi.fn(), warehouseTemplate: vi.fn(), masterPreview: vi.fn() },
+  api: { workspace: vi.fn(), command: vi.fn(), preview: vi.fn(), download: vi.fn(), warehouseTemplate: vi.fn(), masterPreview: vi.fn(), assignees: vi.fn() },
 }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => mocks.app }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
@@ -1749,6 +1749,60 @@ function twoSupplyBatches() {
   data.records.push(record('s-expected2', 'supply', { ...data.records.find(row => row.id === 's-expected')!.data, purchase_no: 'P-3', batch: 'SECOND' }))
 }
 function twoShipments() { data.records.push(shipment(), { ...shipment(), id: 'shipment2', data: { ...shipment().data, shipment_date: '2026-10-14' } }) }
+describe('server document responsibility', () => {
+  const person = (id: string, name: string) => ({ id, name, username: id, employment_epoch: 1 })
+  function ownedShipment(canTransfer = false) {
+    const row = shipment()
+    row.responsibility = { uploader: person('user', '跟客甲'), assignee: person('user', '跟客甲'), transfers: [], can_transfer: canTransfer }
+    data.records.push(row)
+    return row
+  }
+  it('shows uploader and assignee, and a staff account has no transfer control', async () => {
+    ownedShipment()
+    const wrapper = await setup('customer'), panel = wrapper.get('#im-panel-shipment')
+    expect(panel.get('[data-shipment-id="shipment"]').text()).toContain('上传人：跟客甲')
+    expect(panel.get('[data-shipment-id="shipment"]').text()).toContain('负责人：跟客甲')
+    expect(panel.findAll('button').some(item => item.text() === '转交')).toBe(false)
+  })
+  it('locks an open shipment after transfer and preserves the account local draft', async () => {
+    ownedShipment()
+    const wrapper = await setup('customer'), panel = wrapper.get('#im-panel-shipment')
+    await rowAction(panel, '[data-shipment-id="shipment"]', '编辑草稿')
+    await field(panel, '出货备注').setValue('转交前尚未提交的装箱备注'); await flushPromises()
+    data.records = data.records.filter(row => row.id !== 'shipment')
+    await button(wrapper, '刷新工作区').trigger('click')
+    expect(panel.text()).toContain('此待办已转交')
+    expect(panel.get('form fieldset').attributes('disabled')).toBeDefined()
+    await panel.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.api.command).not.toHaveBeenCalled()
+    expect(storedDrafts().some(item => item.state.form?.remarks === '转交前尚未提交的装箱备注')).toBe(true)
+    await button(panel, '新建出货草稿').trigger('click')
+    expect(panel.text()).not.toContain('此待办已转交')
+    expect(storedDrafts().some(item => item.state.form?.remarks === '转交前尚未提交的装箱备注')).toBe(true)
+  })
+  it('a supervisor searches eligible people and sends a versioned reasoned transfer', async () => {
+    const row = ownedShipment(true)
+    mocks.api.assignees.mockResolvedValue({ people: [person('bob', '跟客乙')], refine_search: false })
+    mocks.api.command.mockImplementation(async request => {
+      expect(request.action).toBe('draft_transfer')
+      const changed = { ...row, version: 4, responsibility: { ...row.responsibility!, assignee: person('bob', '跟客乙') } }
+      data.records = data.records.map(item => item.id === row.id ? changed : item)
+      return { record: changed }
+    })
+    const wrapper = await setup('customer'), panel = wrapper.get('#im-panel-shipment')
+    await rowAction(panel, '[data-shipment-id="shipment"]', '转交')
+    const editor = panel.get('.im-transfer')
+    await field(editor, '搜索姓名或账号').setValue('跟客乙')
+    await button(editor, '查找负责人').trigger('click')
+    expect(mocks.api.assignees).toHaveBeenLastCalledWith('huaxing', '跟客乙')
+    await field(editor, '接收人').setValue('bob'); await field(editor, '转交原因').setValue('本周跟客工作交接')
+    await button(editor, '确认转交').trigger('click')
+    expect(mocks.api.command).toHaveBeenCalledWith(expect.objectContaining({ entity_id: row.id, expected_version: 3,
+      data: { assignee_id: 'bob', reason: '本周跟客工作交接' } }))
+    expect(panel.get('[data-shipment-id="shipment"]').text()).toContain('上传人：跟客甲')
+    expect(panel.get('[data-shipment-id="shipment"]').text()).toContain('负责人：跟客乙')
+  })
+})
 async function rowAction(panel: FormPanel, selector: string, action: string) { await button(panel.get(selector), action).trigger('click') }
 const recordFormCases: RecordFormCase[] = [
   { name: '固定客人', kind: 'customer', area: 'master', seed: () => { data.records.push(record('client2', 'customer', { name: 'OTHER', status: 'active', notes: '' })) },

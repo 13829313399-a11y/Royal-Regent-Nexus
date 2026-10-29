@@ -299,16 +299,20 @@ def preview(db, user, factory, customer, recipient, warehouse, filename, content
         lock_transaction(db, 'indonesia-shared-options', 'shared-options')
         lock_transaction(db, 'indonesia-materials', factory)
         current = refresh_user()
-        require(current.id == user.id, '账号身份已变化，请重新核对', 401)
+        require(current.id == user.id and (current.identity or {}).get('employment_epoch', 1) == (user.identity or {}).get('employment_epoch', 1), '账号身份已变化，请重新核对', 401)
         authorize(current, factory, 'write')
         ledger.fixed_customer(customer)
         key = [TYPE, hashlib.sha256(content).hexdigest(), customer, recipient, warehouse]
-        existing = next((item for item in ledger.rows('import') if item.business_key == digest(key)), None)
+        from app.services.indonesia_material_ownership import Access, ownership
+        access = Access(db, current, factory)
+        fingerprint = digest(key)
+        existing = next((item for item in ledger.rows('import') if (item.data.get('preview_key') or item.business_key) == fingerprint
+                         and access.owns(item)), None)
         if not existing:
             asset = ledger.asset(PurePath(filename).name, content, 'text/csv' if filename.lower().endswith('.csv') else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             existing = ledger.save('import', dict(import_type=TYPE, status='preview', customer=customer, recipient=recipient, warehouse=warehouse,
-                filename=asset.filename, asset_id=asset.id, provided_by=current.id, rows=rows, shipment_ids=[]), key=key)
-        result = view(existing)
+                filename=asset.filename, asset_id=asset.id, provided_by=current.id, rows=rows, shipment_ids=[], preview_key=fingerprint, _ownership=ownership(current)))
+        result = access.present(existing)
         result['data']['rows'] = reconcile(ledger, existing)
         db.commit()
         return dict(record=result)
@@ -407,6 +411,8 @@ def confirm(ledger, record, payload, actor):
         remarks='由仓库实收单生成，请补齐并核对装箱资料后确认出货。')), actor)
     shipment_data = deepcopy(shipment.data)
     shipment_data.update(warehouse_import_id=record.id, packing_pending=packing_pending, packing_notes=packing_notes)
+    if ledger.access:
+        shipment_data['_ownership'] = ledger.access.info(record)
     ledger.save('shipment', shipment_data, shipment)
     data = deepcopy(record.data)
     data.update(rows=[sources[index] for index in sorted(sources)], status='partial' if any(not item.get('imported_supply_id') for item in sources.values()) else 'confirmed',
