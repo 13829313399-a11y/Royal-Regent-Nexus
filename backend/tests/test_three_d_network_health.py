@@ -36,7 +36,7 @@ def client(monkeypatch):
         yield client
 
 
-def report(**changes):
+def report(machine_count=11, **changes):
     return {
         "factory_id": "huakang-a",
         "site_id": "3dsite-huakang-a-heyuan",
@@ -54,7 +54,7 @@ def report(**changes):
                 "mqtt": "ok",
                 "latency_ms": 1,
             }
-            for n in range(1, 12)
+            for n in range(1, machine_count + 1)
         ],
         **changes,
     }
@@ -64,6 +64,33 @@ def publish(client, value):
     return client.post(
         BASE + "/network/health", json=value, headers={"X-Three-D-Network-Token": TOKEN}
     )
+
+
+def test_expanded_fleet_requires_new_complete_report_and_invalidates_old_health(client):
+    old = report()
+    assert publish(client, old).status_code == 200
+    assert publish(client, report(machine_count=16)).status_code == 409
+    dbm = importlib.import_module('app.db')
+    models = importlib.import_module('app.models.three_d_printing')
+    with dbm.SessionLocal() as db:
+        db.get(models.ThreeDPrintingSetting, 'huakang-a').machine_count = 16
+        db.commit()
+    state = dashboard(client)['network_health']
+    assert state['status'] == 'degraded'
+    assert state['failed_machine_numbers'] == [12, 13, 14, 15, 16]
+    assert publish(client, old).status_code == 409  # Even identical old retries fail closed.
+    assert publish(client, report()).status_code == 409
+    assert publish(client, report(machine_count=15)).status_code == 422
+    value = report(machine_count=16)
+    duplicate = {**value, 'printers': value['printers'][:-1] + [value['printers'][0]]}
+    assert publish(client, duplicate).status_code == 422
+    result = publish(client, value)
+    assert result.status_code == 200 and result.json()['status'] == 'healthy'
+    assert publish(client, value).status_code == 200
+    failed = report(machine_count=16)
+    failed['printers'][-1].update(tls='failed', mqtt='skipped')
+    result = publish(client, failed)
+    assert result.status_code == 200 and result.json()['failed_machine_numbers'] == [16]
 
 
 def dashboard(client):

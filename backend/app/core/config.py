@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -41,6 +42,9 @@ class Settings(BaseSettings):
     # create records. Unset means no guard, so set it deliberately when turning the
     # record switch on for a connection that was already being observed.
     three_d_record_reconcile_since: str = ""
+    # Earlier business dates keep their historical numbers and must not match a
+    # different device after those display numbers are reused.
+    three_d_record_numbering_since: date | None = None
     customer_order_test_duplicate_confirmation_enabled: bool | None = None
     document_translation_model_dir: str = str(
         BACKEND_DIR / "models" / "document-translation"
