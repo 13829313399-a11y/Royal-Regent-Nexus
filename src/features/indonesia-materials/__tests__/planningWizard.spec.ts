@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { checkedBucket, emptyDraftBucket, recordDraftId } from '../draftPersistence'
 import { packingBalance } from '../packingBalance'
-import { planningInfo } from '../planning'
+import { planningInfo, contractDemands } from '../planning'
 import type { BoardOrder, MaterialRecord } from '@/api/indonesiaMaterials'
 
 describe('wizard preservation and calculations', () => {
+  it('previews newly added material quantities exactly without changing stored demands', () => {
+    const order = { id: 'o', customer: 'C', item_no: 'P', quantity: '999999999999.12345678', demands: [] } as unknown as BoardOrder
+    const records = [{ id: 'p', kind: 'product', version: 1, data: { customer: 'C', code: 'P', materials: [{ material_id: 'm', usage: '999999999999.12345678' }] } },
+      { id: 'm', kind: 'material', version: 1, data: { code: '', name: '无编码物料', unit: 'PCS' } }] as MaterialRecord[]
+    const rows = contractDemands(order, records)
+    expect(rows[0]).toMatchObject({ pending: true, quantity: '999999999998246913560000.7683280165279684', allocated: '0', coverage: '0' })
+    expect(order.demands).toEqual([])
+  })
   it('reads old confirmation identities without migrating or discarding existing drafts', () => {
     const id = recordDraftId('shipment', 'confirm', 'shipment-a')
     const bucket = emptyDraftBucket()

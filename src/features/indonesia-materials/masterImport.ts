@@ -20,7 +20,7 @@ export function incomingMaterial(group: Data, sourceIndex: number): Data {
     if (value !== undefined && value !== '') result[field.key] = field.key === 'procurement_days' ? Number(value) : value
   }
   if (source.image_data) result.image_data = source.image_data
-  if (group.existing) result.code = group.existing.data.code
+  if (group.existing?.data.code) result.code = group.existing.data.code
   result.billing_mode = 'automatic'
   return result
 }

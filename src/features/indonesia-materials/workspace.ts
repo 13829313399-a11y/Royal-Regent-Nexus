@@ -8,7 +8,7 @@ import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard'
 import { createDraftPersistence, draftKind, draftLabel, type DraftKind, type DraftId } from './draftPersistence'
 import { indonesiaMaterialsApi as api, type Action, type BoardOrder, type Command, type Data, type MaterialRecord, type RecordKind } from '@/api/indonesiaMaterials'
 
-export type FollowupTarget = { kind: 'master' | 'reply' | 'recalculate' | 'board'; orderId: string; materialId?: string }
+export type FollowupTarget = { kind: 'master' | 'reply' | 'recalculate' | 'board' | 'plan'; orderId: string; materialId?: string }
 
 export function createMaterialsWorkspace(sharedOptions = false) {
   const app = useAppStore()
@@ -103,7 +103,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
   const locked = computed(() => busy.value || !!pending.value || invalidPending.value || !factory.value || !localDrafts.ready.value)
   const kind = (type: RecordKind) => records.value.filter(record => record.kind === type && !record.data.deleted)
   const record = (id: string) => records.value.find(item => item.id === id)
-  const materialName = (id: string) => { const data = record(id)?.data; return data ? `${data.code} · ${data.name}` : '物料资料缺失' }
+  const materialName = (id: string) => { const data = record(id)?.data; return data ? [data.code, data.name].filter(Boolean).join(' · ') : '物料资料缺失' }
   const orderName = (id: string) => { const data = record(id)?.data; return data ? `PO ${data.po_no || '未填写'} · ${data.contract_no} / ${data.item_no} · ${data.delivery_date}${data.batch ? '（历史批次 ' + data.batch + '）' : ''}` : '合同资料缺失' }
   const same = (epoch: number, selected: string) => epoch === scopeEpoch.value && selected === factory.value
   function restoredPending() {

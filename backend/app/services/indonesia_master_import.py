@@ -216,7 +216,7 @@ def build_groups(ledger, rows, products):
             names = sorted(names_by_code[value_key(code)] - {''})
             if len(names) > 1:
                 group['code_warnings'].append(f'编码 {code} 对应 {len(names)} 种中文名称，当前物料独立维护。')
-        if group['existing'] and any(r['source'].get('code') and r['source']['code'] != group['existing']['data']['code'] for r in group['sources']):
+        if group['existing'] and group['existing']['data']['code'] and any(r['source'].get('code') and r['source']['code'] != group['existing']['data']['code'] for r in group['sources']):
             group['code_warnings'].append('中文名称及规格匹配已有物料，来源编码不同；保留已有编码，请核对资料。')
     return list(groups.values())
 
@@ -287,7 +287,7 @@ def confirm(ledger, record, payload, actor):
                                 if any(r['material_id'] == material.id for r in p.data['materials'])}
                 require(current_refs == {p['id'] for p in group['affected_products']}, '共用物料的关联货号已变化，请重新预览影响范围', 409)
             data = choice.material.model_dump(mode='json')
-            require(not material or data['code'] == material.data['code'], '不能用导入改变已有物料编码', 422)
+            require(not material or not material.data['code'] or data['code'] == material.data['code'], '不能用导入改变已有物料编码；未填写的编码可补充', 422)
             source = group['sources'][0]['source']
             same_identity = all(value_key(data.get(key)) == value_key(source.get(key)) for key in ('name', 'specification'))
             original_peers = {(m['id'], m['version']) for m in group['name_matches'] if not material or m['id'] != material.id} if same_identity else set()

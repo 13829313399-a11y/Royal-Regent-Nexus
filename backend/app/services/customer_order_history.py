@@ -17,6 +17,7 @@ from app.models.customer_order_ledger import OrderLedgerLine as Line, OrderLedge
 from app.models.customer_order_ledger import OrderLedgerSource as Source, OrderLedgerLineSource as LineSource
 from app.services import customer_order_ledger as ledger
 from app.services.auth import now_text
+from app.services.order_workbook_bounds import worksheet_bounds
 
 MAX_BYTES = 25 * 1024 * 1024
 MAX_ROWS = 20000
@@ -83,9 +84,11 @@ def parse_workbook(content: bytes) -> tuple[list[dict], list[str]]:
             is_item = "item" in sheet.title.casefold() or "iteam" in sheet.title.casefold()
             if not is_item and sheet.title != "正单评审表":
                 continue
-            if sheet.max_row > MAX_ROWS or sheet.max_column > 200:
-                raise HTTPException(400, f"{sheet.title} 超过迁入范围限制，请整理后重试")
-            header_cells = next(sheet.iter_rows(min_row=3, max_row=3))
+            row_count, column_count = worksheet_bounds(formulas, sheet, MAX_ROWS, 200,
+                f"{sheet.title} 超过迁入范围限制，请整理后重试", 400)
+            if row_count < 4 or not column_count:
+                continue
+            header_cells = next(sheet.iter_rows(min_row=3, max_row=3, max_col=column_count))
             headers = [text(c.value) for c in header_cells]
             fields = [HEADERS.get(key(h)) for h in headers]
             if not all(f in fields for f in ("product_no", "quantity", "reference_no", "po_no")):
@@ -96,7 +99,8 @@ def parse_workbook(content: bytes) -> tuple[list[dict], list[str]]:
             counts = Counter(f for f in fields if f)
             section = "unshipped"
             found_markers = []
-            for r, (cells, caches) in enumerate(zip(sheet.iter_rows(min_row=4), values[sheet.title].iter_rows(min_row=4)), 4):
+            for r, (cells, caches) in enumerate(zip(sheet.iter_rows(min_row=4, max_row=row_count, max_col=column_count),
+                    values[sheet.title].iter_rows(min_row=4, max_row=row_count, max_col=column_count)), 4):
                 raw = [cell_text(c, v) for c, v in zip(cells, caches)]
                 data = {f: raw[i] for i, f in enumerate(fields) if f and counts[f] == 1}
                 # Only a banner without order identity changes the section. A remark mentioning cancellation does not.

@@ -14,10 +14,11 @@ from zipfile import ZipFile
 
 import openpyxl
 from fastapi import HTTPException
-from pydantic import ValidationError
 from app.schemas import indonesia_materials as s
 from app.services.indonesia_material_calculations import ZERO, decimal_text, number, require
 from app.services.indonesia_materials import Ledger, authorize, digest, now_text, view
+from app.services.indonesia_warehouse_packing import packing_groups, packing_key, assemble_packages
+from app.services.order_workbook_bounds import worksheet_bounds
 from app.services.indonesia_material_options import automatic_billing
 from app.services.identity_policy import lock_mutation
 from app.services.transaction_lock import lock_transaction
@@ -108,8 +109,10 @@ def parse_warehouse_receipts(content, filename):
             book = openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=False)
             require(len(book.worksheets) <= 10, '实收单最多包含 10 个工作表，请拆分导入', 422)
             for sheet in book:
-                require(sheet.max_row <= MAX_ROWS + 30 and sheet.max_column <= 80, '实收单超过 2000 行或 80 列，请分批导入', 422)
-                sheets.append((sheet.title, list(sheet.iter_rows())))
+                row_count, column_count = worksheet_bounds(book, sheet, MAX_ROWS + 30, 80,
+                    '实收单超过 2000 行或 80 列，请分批导入')
+                if row_count and column_count:
+                    sheets.append((sheet.title, list(sheet.iter_rows(max_row=row_count, max_col=column_count))))
         from app.services.indonesia_receipt_template import TITLE, REFERENCE_HEADERS, ENTRY_FIELDS
         result, empty_template = [], False
         for sheet, rows in sheets:
@@ -274,7 +277,19 @@ def reconcile(ledger, record):
             exact = False
         row['auto_material_id'] = found[0].id if exact else None
         row['blocked'] = bool(row['issues'])
+    groups = receipt_packing_groups(ledger, record, rows)
+    for group in groups:
+        metadata = {key: value for key, value in group.items() if key not in {'indexes', 'package'}}
+        for index in group['indexes']:
+            rows[index]['packing_group'] = metadata
     return rows
+
+
+def receipt_packing_groups(ledger, record, rows):
+    previous = {packing_key(row['source'], other.data.get('warehouse', ''))
+                for other in ledger.rows('import') if other.id != record.id and other.data.get('import_type') == TYPE
+                for row in other.data.get('rows', []) if row.get('imported_supply_id') and row['source'].get('package_label')}
+    return packing_groups(rows, record.data['warehouse'], previous)
 
 
 def preview(db, user, factory, customer, recipient, warehouse, filename, content, rows, refresh_user):
@@ -308,9 +323,8 @@ def confirm(ledger, record, payload, actor):
     require(len({row.index for row in selected.rows}) == len(selected.rows), '不能重复选择同一来源行', 422)
     ledger.fixed_customer(record.data['customer'])
     sources = {row['index']: row for row in reconcile(ledger, record)}
-    packing_occurrences = Counter((value_key(item['source'].get('warehouse') or record.data['warehouse']), value_key(item['source'].get('receipt_no')),
-                                   value_key(item['source'].get('package_label'))) for item in sources.values() if item['source'].get('package_label'))
-    shipment_lines, packages, all_allocations = [], [], set()
+    groups = receipt_packing_groups(ledger, record, list(sources.values()))
+    shipment_lines, packing_lines, all_allocations = [], {}, set()
     for choice in selected.rows:
         source_row = sources.get(choice.index)
         require(source_row and not source_row['blocked'] and not source_row.get('imported_supply_id'), '来源行有问题或已导入，请刷新核对', 409)
@@ -386,23 +400,13 @@ def confirm(ledger, record, payload, actor):
             shipment_lines.append(line)
             row_lines.append(line)
         source_row['imported_supply_id'] = supply.id
-        # Only complete, single-receipt packing is imported automatically. Mixed boxes are completed explicitly in the shipment editor.
-        packing_keys = ('package_label', 'cartons', 'length_cm', 'width_cm', 'height_cm', 'carton_weight_kg')
-        packing_identity = (value_key(source.get('warehouse') or record.data['warehouse']), value_key(source.get('receipt_no')), value_key(source.get('package_label')))
-        if packing_occurrences[packing_identity] == 1 and all(source.get(key) != '' and source.get(key) is not None for key in packing_keys):
-            try:
-                package = s.Package.model_validate({**{key: source[key] for key in packing_keys if key != 'package_label'}, 'label': source['package_label'], 'items': row_lines}).model_dump(mode='json')
-                packages.append(package)
-            except ValidationError:
-                source_row.setdefault('packing_notes', []).append('原单装箱资料无效，请在出货草稿补填')
-    # Repeated labels may describe a mixed carton, never infer multiple physical boxes from them.
-    counts = Counter(item['label'] for item in packages)
-    packages = [item for item in packages if counts[item['label']] == 1]
+        packing_lines[choice.index] = row_lines
+    packages, packing_notes, packing_pending = assemble_packages(groups, packing_lines)
     shipment = ledger.execute(SimpleNamespace(action='shipment_save', entity_id=None, expected_version=0, data=dict(customer=record.data['customer'],
         recipient=record.data['recipient'], shipment_date=selected.shipment_date.isoformat(), lines=shipment_lines, packages=packages,
         remarks='由仓库实收单生成，请补齐并核对装箱资料后确认出货。')), actor)
     shipment_data = deepcopy(shipment.data)
-    shipment_data.update(warehouse_import_id=record.id, packing_pending=len(packages) < len(selected.rows))
+    shipment_data.update(warehouse_import_id=record.id, packing_pending=packing_pending, packing_notes=packing_notes)
     ledger.save('shipment', shipment_data, shipment)
     data = deepcopy(record.data)
     data.update(rows=[sources[index] for index in sorted(sources)], status='partial' if any(not item.get('imported_supply_id') for item in sources.values()) else 'confirmed',

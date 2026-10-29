@@ -34,7 +34,7 @@ class CustomsRule(Input):
 
 
 class Material(Input):
-    code: Text
+    code: str = Field('', max_length=160)
     name: Text
     english_name: str = Field('', max_length=200)
     specification: str = Field('', max_length=400)
@@ -232,7 +232,7 @@ class Reason(Input):
 class PlanningMaterial(Input):
     material_id: Text
     expected_version: int = Field(gt=0)
-    procurement_days: int = Field(ge=0, le=3650)
+    procurement_days: int | None = Field(default=None, ge=0, le=3650)
 
 
 class OrderPlan(Input):
@@ -240,7 +240,8 @@ class OrderPlan(Input):
     product_version: int = Field(gt=0)
     daily_capacity: Positive
     transport_days: int = Field(ge=0, le=3650)
-    materials: list[PlanningMaterial] = Field(min_length=1, max_length=100)
+    materials: list[PlanningMaterial] = Field(min_length=1, max_length=200)
+    sync_materials: bool = False  # Old durable planning commands keep their original scope.
 
 
 class WarehouseAllocation(Input):

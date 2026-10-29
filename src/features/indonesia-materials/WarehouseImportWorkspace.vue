@@ -11,6 +11,7 @@ import { setNumberText } from './forms'
 import { sameQuantity, purchaseFactsAgree } from './warehouseMatching'
 import { focusFollowup } from './focusFollowup'
 import ReceiptTemplatePicker from './ReceiptTemplatePicker.vue'
+import WarehousePackingReview from './WarehousePackingReview.vue'
 const ws = useMaterials()
 const customer = ref(''), recipient = ref('RRI'), warehouse = ref(''), shipmentDate = ref('')
 const file = ref<File | null>(null), preview = ref<MaterialRecord | null>(null), choices = ref<Data>({})
@@ -134,7 +135,12 @@ async function fileChanged(event: Event) {
   const input = event.target as HTMLInputElement, next = input.files?.[0]; input.value = ''
   if (!next) return
   if (file.value || preview.value) await draft.openRecord(newDraftId('warehouse'), () => { file.value = next; preview.value = null; choices.value = {}; shipmentDate.value = '' })
-  else file.value = next
+  else {
+    // The native file picker may finish before the warehouse input's blur/change.
+    // Freeze the actual upload context, so a later switch preserves all typed fields.
+    context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }
+    file.value = next
+  }
 }
 async function upload() {
   if (!file.value || !customer.value || ws.locked) return
@@ -193,6 +199,7 @@ async function confirm() {
           <button type="button" @click="choices[row.index].allocations.push({ key: '', order_id: '', demand_id: '', order_version: 0, normal_quantity: '', spare_quantity: '0' })">拆分给另一个 PO</button>
         </template>
       </fieldset>
+      <WarehousePackingReview :rows="preview.data.rows" :selected="selectedRows" />
       <fieldset v-if="selectedRows.length" class="im-stack" :disabled="!ws.canWrite || ws.locked || draft.switching.value"><label class="im-field"><span>本次计划河源出货日期 *</span><input v-model="shipmentDate" type="date" required></label><p class="im-note">确认 {{ selectedRows.length }} 行实收及 PO 分配，并生成出货草稿。正式出货在第 4 步确认。</p><button class="im-primary" type="submit" :disabled="selectedRows.length > 200">确认实收与 PO，去补装箱</button><p v-if="selectedRows.length > 200" class="im-error">每次最多确认 200 行，请分批选择。</p></fieldset>
       </fieldset>
       <div v-if="preview.data.shipment_ids?.length" class="im-message"><strong>已生成出货草稿</strong><p v-for="id in preview.data.shipment_ids" :key="id"><button type="button" :disabled="ws.locked" @click="ws.shipmentTarget = id">打开出货草稿并补装箱</button></p></div>

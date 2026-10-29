@@ -39,4 +39,15 @@ describe('master material comparison and per-product usage', () => {
     choice.decision = 'keep'
     expect(importPayload([choice]).choices[0]!.material).toBeNull()
   })
+  it('keeps missing codes blank and offers a source code only for a blank saved code', () => {
+    const g = { ...group, sources: [{ index: 1, source: { name: '无编码物料', unit: 'pcs' } }] }
+    expect(incomingMaterial(g, 1).code).toBe('')
+    const existing = { ...g, existing: { data: { ...materialDefaults, code: '' } }, sources: [{ index: 1, source: { code: 'NEW-CODE' } }] }
+    const choice = importChoices([existing])[0]!
+    expect(choice.decision).toBe('')
+    expect(choice.material.code).toBe('NEW-CODE')
+    choice.decision = 'keep'
+    expect(importPayload([choice]).choices[0]!.material).toBeNull()
+    expect(incomingMaterial({ ...existing, existing: { data: { ...materialDefaults, code: 'ORIGINAL' } } }, 1).code).toBe('ORIGINAL')
+  })
 })
