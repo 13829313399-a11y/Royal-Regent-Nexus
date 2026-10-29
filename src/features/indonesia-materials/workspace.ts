@@ -111,7 +111,7 @@ export function createMaterialsWorkspace(sharedOptions = false) {
     invalidPending.value = false
     if (!saved) { if (!busy.value) { pending.value = null; pendingCompletion = undefined } return }
     const command = saved.command
-    const actions: Action[] = ['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm', 'master_import_confirm', 'draft_transfer']
+    const actions: Action[] = ['option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_materials_sync', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm', 'master_import_confirm', 'draft_transfer']
     if (command?.factory_id !== factory.value || !actions.includes(command.action) || typeof command.operation_id !== 'string' || command.operation_id.length < 16 || !command.data || !Number.isInteger(command.expected_version) || (saved.owner !== undefined && !draftKind(saved.owner))) {
       invalidPending.value = true; localDrafts.error.value = '上次提交凭据无法识别，原内容已保留，请联系管理员核对。'; return
     }
@@ -236,7 +236,9 @@ export function createMaterialsWorkspace(sharedOptions = false) {
         if (!same(epoch, selected)) return false
         pending.value = null
         pendingCompletion = undefined
-        error.value = code === 409 ? `${getApiErrorMessage(cause)}。请刷新并重新打开记录核对；系统不会自动覆盖。` : getApiErrorMessage(cause)
+        error.value = code === 409
+          ? `${getApiErrorMessage(cause)}。${command.action === 'order_materials_sync' ? '请刷新合同清单后重试。' : '请刷新并重新打开记录核对；系统不会自动覆盖。'}`
+          : getApiErrorMessage(cause)
       }
       return false
     } finally {

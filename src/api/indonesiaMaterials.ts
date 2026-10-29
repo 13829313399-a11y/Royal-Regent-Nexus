@@ -20,7 +20,7 @@ export interface BoardOrder {
   planning_status?: 'ready' | 'missing_master' | 'missing_parameters'
 }
 export interface WorkspaceResponse { records: MaterialRecord[]; board: BoardOrder[]; permissions: string[]; option_defaults?: Data[] }
-export type Action = 'option_save' | 'option_delete' | 'option_restore' | 'customer_delete' | 'customer_restore' | 'product_delete' | 'product_restore' | 'material_restore' | 'customer_save' | 'material_save' | 'product_save' | 'order_save' | 'order_plan_save' | 'order_recalculate' | 'demand_adjust'
+export type Action = 'option_save' | 'option_delete' | 'option_restore' | 'customer_delete' | 'customer_restore' | 'product_delete' | 'product_restore' | 'material_restore' | 'customer_save' | 'material_save' | 'product_save' | 'order_save' | 'order_plan_save' | 'order_materials_sync' | 'order_recalculate' | 'demand_adjust'
   | 'supply_save' | 'supply_reply' | 'output_material_refresh' | 'receipt_confirm' | 'allocate' | 'reallocate'
   | 'shipment_save' | 'shipment_confirm' | 'import_confirm' | 'warehouse_import_confirm' | 'master_import_confirm' | 'draft_transfer'
 export interface Command {
@@ -29,7 +29,8 @@ export interface Command {
 }
 export interface ReceiptTemplateRequest {
   factory_id: string; customer: string; recipient: string; warehouse: string
-  selections: { order_id: string; demand_id: string }[]
+  mode?: 'order' | 'summary'; item_no?: string; material_ids?: string[]
+  selections?: { order_id: string; demand_id: string }[]
 }
 
 export const indonesiaMaterialsApi = {

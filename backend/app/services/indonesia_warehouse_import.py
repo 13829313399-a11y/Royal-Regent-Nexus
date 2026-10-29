@@ -113,7 +113,7 @@ def parse_warehouse_receipts(content, filename):
                     '实收单超过 2000 行或 80 列，请分批导入')
                 if row_count and column_count:
                     sheets.append((sheet.title, list(sheet.iter_rows(max_row=row_count, max_col=column_count))))
-        from app.services.indonesia_receipt_template import TITLE, REFERENCE_HEADERS, ENTRY_FIELDS
+        from app.services.indonesia_receipt_template import TITLE, SUMMARY_TITLE, REFERENCE_HEADERS, SUMMARY_REFERENCE_HEADERS, ENTRY_FIELDS
         result, empty_template = [], False
         for sheet, rows in sheets:
             header_index, fields = None, []
@@ -126,8 +126,8 @@ def parse_warehouse_receipts(content, filename):
             if header_index is None:
                 continue
             headers = {text(cell) for cell in rows[header_index]}
-            order_template = REFERENCE_HEADERS <= headers and '正式报关中文名称' in headers and any(
-                text(cells[0]) == TITLE for cells in rows[:header_index] if cells)
+            order_template = (REFERENCE_HEADERS <= headers or SUMMARY_REFERENCE_HEADERS <= headers) and '正式报关中文名称' in headers and any(
+                text(cells[0]) in {TITLE, SUMMARY_TITLE} for cells in rows[:header_index] if cells)
             for position, cells in enumerate(rows[header_index + 1:], header_index + 2):
                 raw = [text(cell) for cell in cells]
                 if not any(raw):
@@ -191,6 +191,17 @@ def identity(warehouse, source):
 
 def candidates(ledger, record, source, material):
     result = []
+    expected_sources = {row.id for row in ledger.rows('supply') if row.data['material_id'] == material.id
+                        and row.data['status'] == 'expected'
+                        and (not source.get('purchase_no') or row.data['purchase_no'] == source['purchase_no'])}
+    assigned, historical = {}, set()
+    for allocation in ledger.rows('allocation'):
+        data = allocation.data
+        key = (data['order_id'], data['demand_id'])
+        amount = number(data['normal_quantity']) + number(data['spare_quantity'])
+        assigned[key] = assigned.get(key, ZERO) + amount
+        if amount > ZERO and data['supply_id'] in expected_sources:
+            historical.add(key)
     for order in ledger.rows('order'):
         if order.data['customer'] != record.data['customer'] or order.data['recipient'] != record.data['recipient']:
             continue
@@ -199,15 +210,20 @@ def candidates(ledger, record, source, material):
         for demand in order.data['demands']:
             if demand['material_id'] != material.id or value_key(demand['unit']) != value_key(material.data['unit']):
                 continue
-            assigned = sum((number(row.data['normal_quantity']) + number(row.data['spare_quantity']) for row in ledger.rows('allocation') if row.data['order_id'] == order.id and row.data['demand_id'] == demand['id']), ZERO)
-            remaining = max(number(demand['quantity']) - assigned, ZERO)
+            key = (order.id, demand['id'])
+            remaining = max(number(demand['quantity']) - assigned.get(key, ZERO), ZERO)
+            if not remaining and key not in historical:
+                continue  # Completed unrelated contracts must not consume the bounded candidate list.
             result.append(dict(order_id=order.id, demand_id=demand['id'], order_version=order.version, remaining=decimal_text(remaining),
+                               required_date=(order.data.get('plan') or {}).get('required_date'), delivery_date=order.data['delivery_date'],
+                               contract_no=order.data['contract_no'], po_no=order.data.get('po_no', ''), item_no=order.data['item_no'],
                                label=f"PO {order.data.get('po_no') or '未填写'} · 合同 {order.data['contract_no']} / {order.data['item_no']} · 走货 {order.data['delivery_date']}" +
                                      (f"（历史批次 {order.data['batch']}）" if order.data.get('batch') else '') +
                                      f" · 待分配 {decimal_text(remaining)} {demand['unit']}"))
             if len(result) > 200:
                 return result  # The caller marks this row for review without failing the factory workspace.
-    return result
+    return sorted(result, key=lambda item: (item['required_date'] or item['delivery_date'] or '9999-12-31',
+                  item['contract_no'], item['po_no'], item['item_no'], item['order_id'], item['demand_id']))
 
 
 def reconcile(ledger, record):
@@ -325,6 +341,7 @@ def confirm(ledger, record, payload, actor):
     require(record.data.get('import_type') == TYPE, '请选择仓库实收导入记录', 422)
     selected = s.WarehouseSelection.model_validate(payload)
     require(len({row.index for row in selected.rows}) == len(selected.rows), '不能重复选择同一来源行', 422)
+    require(sum(len(row.allocations) for row in selected.rows) <= 200, '每次最多确认 200 项合同分配，请减少勾选的实收行后分批确认', 422)
     ledger.fixed_customer(record.data['customer'])
     sources = {row['index']: row for row in reconcile(ledger, record)}
     groups = receipt_packing_groups(ledger, record, list(sources.values()))
