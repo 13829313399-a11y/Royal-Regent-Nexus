@@ -16,8 +16,9 @@ def from_site_report(site):
     for p in site['printers']:
         if p['tcp']!='ok' or p['tls']!='observed' or not re.fullmatch('[a-fA-F0-9]{64}',p['observed_cert_sha256']):
             raise ValueError(f"机台 {p['machine_no']} 尚未完成现场 TLS 检测")
+        reference = p.get('credential_ref') or (f"printer-{int(p['machine_no']):02}" if len(site['printers']) == 11 else '')
         printers.append({'machine_no':p['machine_no'],'ip':p['ip'],
-            'credential_ref':f"printer-{int(p['machine_no']):02}",
+            'credential_ref':reference,
             'cert_sha256':p['observed_cert_sha256']})
     result={'gateway_ip':gateway,'printers':printers}
     validate(result)
@@ -29,9 +30,10 @@ def validate(data):
     if gateway not in ipaddress.ip_network('100.64.0.0/10'):
         raise ValueError('Expected Windows gateway Tailscale IPv4')
     rows=data['printers']
-    if len(rows)!=11 or {int(p['machine_no']) for p in rows}!=set(range(1,12)):
-        raise ValueError('Expected machines 1 to 11')
+    if len(rows) not in (11,16) or {int(p['machine_no']) for p in rows}!=set(range(1,len(rows)+1)):
+        raise ValueError('Expected a complete fleet of machines 1 to 11 or 1 to 16')
     addresses=set()
+    references=set()
     for p in rows:
         ip=ipaddress.IPv4Address(p['ip'])
         if not any(ip in ipaddress.ip_network(n) for n in ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16']) or str(ip) in addresses:
@@ -39,6 +41,9 @@ def validate(data):
         addresses.add(str(ip))
         if not re.fullmatch('[a-fA-F0-9]{64}',p['cert_sha256']):
             raise ValueError('Missing onsite certificate hash')
+        if not re.fullmatch(r'printer-[0-9]{2}',p.get('credential_ref','')) or p['credential_ref'] in references:
+            raise ValueError('Invalid device credential reference')
+        references.add(p['credential_ref'])
 
 
 def probe(data):
@@ -66,7 +71,7 @@ def main():
     if args.site_report:
         data=from_site_report(json.loads(Path(args.site_report).read_text(encoding='utf-8-sig')))
         Path(args.config).write_text(json.dumps(data,indent=2),encoding='utf-8')
-        print('Prepared Windows gateway and eleven printer endpoints. No sessions started.')
+        print(f"Prepared Windows gateway and {len(data['printers'])} printer endpoints. No sessions started.")
         return 0
     result=probe(json.loads(Path(args.config).read_text(encoding='utf-8-sig')))
     if args.report_url: doctor.upload(result,args.report_url,args.token_file)
