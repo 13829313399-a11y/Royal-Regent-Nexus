@@ -10,7 +10,7 @@
 
 业务以 **2026-10-29** 为新编号起点。此前日期记录保留原样；当天 7 条自动记录与 75,657 条遥测按稳定设备身份改号，业务 ID、金额与库存核对保持。`THREE_D_RECORD_NUMBERING_SINCE=2026-10-29` 限制同机号自动匹配、回填与结单，旧设备任务键不会变成新设备重复记录。当前机台运行统计与保养累计同样排除边界前的旧编号记录和遥测，可用率按实际有效统计窗口计算。前端“机台适配与保养”文案为 1～16。切换前有完整 PostgreSQL、资产及私有配置备份；隔离 PostgreSQL 恢复了全部业务表和当天遥测并成功演练，历史原始遥测包含在完整归档中，但未在演练库恢复。
 
-当前 API 镜像为 `royal-regent-api:three-d-fleet16-20261029`，Connector 镜像为 `rr-three-d-connector:fleet16-20261029`。API 发布需沿用原 `.env.production`、`docker-compose.prod.yml`、`.deployment-prod-release.yml` 与 `.deployment-three-d-fleet16.yml`；Connector 使用原 `compose.yml` 与 `compose.fleet16.yml`。后续发布必须包含本次 16 台源码能力及日期边界，不能漏掉覆盖文件而退回旧限制。网络清单、健康脚本已同步到 16 台，定时器正常。证据见 `D:/RR/deliverables/three-d-fleet-16-readiness-20261028/fleet16-acceptance-20261029`，服务器受限备份在 `/opt/royal-regent/three-d/private/fleet16-20261029`。本地开发连接保持关闭，未迁移本地业务库。下方旧 11 台部署资料仅为历史基线。
+当前 API/Web 镜像分别为 `royal-regent-api:three-d-stats16-20261029`、`royal-regent-web:three-d-stats16-20261029`，Connector 镜像为 `rr-three-d-connector:fleet16-20261029`。API 发布需沿用原 `.env.production`、`docker-compose.prod.yml`、`.deployment-prod-release.yml` 与 `.deployment-three-d-fleet16.yml`；Connector 使用原 `compose.yml` 与 `compose.fleet16.yml`。本次源码已合入主分支；后续发布仍须使用包含 16 台能力的已验证镜像，不能漏掉覆盖文件而退回旧限制。即使镜像不再需要临时覆盖，也必须继续配置 `THREE_D_RECORD_NUMBERING_SINCE=2026-10-29`，否则旧编号记录会重新参与自动匹配与当前统计。网络清单、健康脚本已同步到 16 台，定时器正常。证据见 `D:/RR/deliverables/three-d-fleet-16-readiness-20261028/fleet16-acceptance-20261029`，服务器受限备份在 `/opt/royal-regent/three-d/private/fleet16-20261029`。本地开发连接保持关闭，未迁移本地业务库。下方旧 11 台部署资料仅为历史基线。
 
 本次停写切换曾造成约三分钟登录 HTTP 502，API 恢复后已实际登录成功。切换后已有新记录，回退必须先对账新增业务，不能直接用旧备份覆盖活跃库。
 
@@ -32,6 +32,14 @@
 2. 对目标库和受限配置备份，在恢复副本中生成重编号预览。生产记录、排期、维修、遥测、汇总及操作资源都可能按 `machine_no` 关联；必须核对历史编号展示口径、开放任务、旧 Edge 写入端以及按机号配置的控制白名单，不能只改设备表。本次按用户决定保留 2026-10-29 之前的编号，只修正当天自动记录及设备遥测，后续迁移须显式决定自己的业务边界。新设备不得继承旧编号的控制许可。
 3. 在独立切换窗口对账后再应用编号、设备行和机台数量，更新地址、证书、网络清单及必要主机路由。控制权限保持关闭；新设备仅在身份、凭据和网络验证成功后启用观察。自动记账仍受每台独立开关约束。
 4. 验收 16 台完整探测、新鲜遥测、机台卡片与历史归属，确认金额、库存、历史记录 ID 和业务总量保持。失败时停止本次新增采集并按同批备份恢复配置/数据；已有新记录时先对账，不能直接覆盖回旧库。
+
+## 持续验收边界
+
+云端 `rr-three-d-fleet16-soak.timer` 每分钟采样一次，由 PostgreSQL 强制只读事务获取必要状态和记录投影，另检查公共健康接口。采样脚本及脱敏状态位于 `/opt/royal-regent/three-d/private/fleet16-soak`，不读取打印机密码、序列号或原始任务名称。应用中的本聊天定时回查每 30 分钟通过只允许读取单个状态文件的 SSH 密钥拉取证据，状态不变时保持安静。
+
+稳定性以连续 24 小时、完整 16 台、设备观测不超过 30 秒、采样间隔不超过 100 秒为通过条件。设备断线和采样缺口重置连续窗口，自然恢复另行留证，不人为断网。生产周期要求每台稳定设备身份在本轮采样期内出现早期 RUNNING（进度不超过 5%），随后有同一任务的 FINISH、唯一对应且已成功结单的自动记录。只看到原有任务即将结束、开机在线、记录已创建或计时器已启动都不算完整周期通过。
+
+当前 24 小时稳定性和全部 16 台真实周期仍在验证中。证据在 `D:/RR/deliverables/three-d-fleet-16-readiness-20261028/closeout-20261029`；只读拉取入口为 `D:/RR/private-three-d/fleet16-soak/fetch-status.py`。全部条件完成后暂停应用定时回查；云端采样与只读密钥的停用按运维收尾执行。没有执行硬件控制或主动断网测试。
 
 ## 此前 11 台部署基线
 
