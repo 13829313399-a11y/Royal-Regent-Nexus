@@ -4,6 +4,8 @@
     "src/vite-env.d.ts",
     "src/env.d.ts",
     "src/components/__tests__/CartonBatchDemand.spec.ts",
+    "src/components/layout/__tests__/topBarFactories.spec.ts",
+    "src/views/__tests__/toolCenter.spec.ts",
     "src/types/**/*.d.ts",
     "src/lib/__tests__/tailwindSources.spec.ts",
     "src/lib/__tests__/huaxingThreeSixty*.spec.ts",
@@ -11,7 +13,6 @@
     "src/features/module-feedback/__tests__/*.spec.ts",
     "src/features/indonesia-materials/__tests__/*.spec.ts",
     "src/features/assistant/__tests__/*.spec.ts",
-    "src/features/collaborative-sheets/*.spec.ts",
     "src/features/online-documents/*.spec.ts",
     "src/features/spreadsheet-merge/__tests__/*.spec.ts",
     "src/api/__tests__/spreadsheetMerge.spec.ts"
@@ -21,6 +22,6 @@
     "noEmit": true,
     "composite": false,
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
-    "types": ["vitest/globals"]
+    "types": ["vitest/globals", "node"]
   }
 }
