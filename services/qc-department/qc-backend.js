@@ -1,0 +1,244 @@
+/* ══════════════════════════════════════════════════════════════
+   兴信 QMS · 前端 ↔ 后端同步层  (qc-backend.js)
+   ────────────────────────────────────────────────────────────
+   必须在 app.js 之前加载（这样本文件的 DOMContentLoaded 处理器先执行）。
+
+   做两件事：
+     1【开机预加载】app.js 的 init 之前，同步拉取后端全量数据写入 localStorage，
+        使 initData / initUsers / initDefectLib 直接读到服务器数据（多浏览器共享）。
+     2【写穿透】劫持 persist / _saveUsers / _saveDefectLib 三个写入咽喉，
+        本地写完后把全量推回后端落库。
+
+   后端不可用时自动回退到本地 localStorage，离线也能用（只是不共享）。
+══════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+
+  /* ── 多厂区/子公司：当前子公司决定 localStorage 命名空间与 API 目标库 ──
+     每家子公司一套独立数据（服务端 server/data/<companyId>/qc.db）。
+     选择结果存在固定 key（不带公司前缀），切换子公司 = 改这个 key + 刷新页面 */
+  var COMPANY_KEY = 'xingxin_qms_company';
+  var COMPANY = 'dg-xingxin';
+  /* 旧版兼容：早期按厂区名存的值映射到该厂区默认子公司 */
+  var LEGACY = { dongguan: 'dg-xingxin', heyuan: 'hy-huakang-a', hunan: 'sy-huadeng' };
+  try {
+    COMPANY = (window.__QC_NEXUS ? sessionStorage : localStorage).getItem(COMPANY_KEY) || 'dg-xingxin';
+    if (LEGACY[COMPANY]) { COMPANY = LEGACY[COMPANY]; (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(COMPANY_KEY, COMPANY); }
+  } catch (e) {}
+  if (window.__QC_NEXUS) COMPANY = window.__QC_NEXUS.company;
+  window.__QC_COMPANY = COMPANY;
+  window.__QC_COMPANY_KEY = COMPANY_KEY;
+  window.__QC_STORAGE_PREFIX = window.__QC_NEXUS ? 'nexus_qc_' + window.__QC_NEXUS.user.username + '_' + COMPANY + '_' : 'xingxin_qms_' + COMPANY + '_';
+
+  var PREFIX = window.__QC_STORAGE_PREFIX;
+  var KEY = {
+    records:   PREFIX + 'records',
+    users:     PREFIX + 'users',
+    defectLib: PREFIX + 'defect_library',
+    partners:  PREFIX + 'partners',
+  };
+
+  /* API 基址：从当前页面路径推导，兼容根部署(/) 与子路径部署(/qc/)。
+     根: '' → /api/...   子路径: '/qc' → /qc/api/...（nginx 会剥掉 /qc/ 前缀） */
+  var API_BASE = (function () {
+    var p = location.pathname.replace(/[^/]*$/, ''); // 取目录部分 '/qc/' 或 '/'
+    return p.replace(/\/$/, '');                      // → '/qc' 或 ''
+  })();
+
+  window.__QC_BACKEND_OK = false;
+  window.__QC_LAST_SYNC = null;
+  window.__QC_PENDING_WRITES = 0;
+  function trackWrite(promise) {
+    window.__QC_PENDING_WRITES++;
+    return promise.finally(function () { window.__QC_PENDING_WRITES--; });
+  }
+
+  /* 待删除记录 id 队列：app.js 删除记录时标记，下次推送时带给服务端按 id 删除。
+     （服务端已改为按 id 合并写入，不再全量替换，删除必须显式告知） */
+  window.__QC_PENDING_DELETES = [];
+  var deleteRevisions = Object.create(null);
+  var nextDeleteRevision = 0;
+  var recordPushQueue = Promise.resolve();
+  window.__QC_MARK_DELETED = function (ids) {
+    if (!Array.isArray(ids)) return;
+    for (var i = 0; i < ids.length; i++) {
+      var n = Number(ids[i]) || 0;
+      if (!n) continue;
+      deleteRevisions[n] = ++nextDeleteRevision;
+      if (window.__QC_PENDING_DELETES.indexOf(n) === -1) window.__QC_PENDING_DELETES.push(n);
+    }
+  };
+
+  /* ── 开机：同步 XHR 拉全量（必须同步，才能赶在 app.js 的 init 之前写好 localStorage）── */
+  function syncBootstrap() {
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', API_BASE + '/api/bootstrap?company=' + COMPANY, false); // 同步请求
+      xhr.send(null);
+      if (xhr.status !== 200) throw new Error('HTTP ' + xhr.status);
+      var data = JSON.parse(xhr.responseText);
+      window.__QC_TEST_ENTRY_IDS = new Set(data.testEntryIds || []);
+      window.__QC_INSPECTION_PLANS = data.inspectionPlans || {};
+      window.__QC_KNOWN_RECORD_IDS = new Set((data.records || []).map(function(r) { return r.id; }));
+      window.__QC_REFERENCE_DATA = data.referenceData || { count: 0, ids: [] };
+
+      // records → app.js 的 state 形态 { records, nextId }
+      (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(KEY.records, JSON.stringify({
+        records: Array.isArray(data.records) ? data.records : [],
+        nextId:  data.nextId || 31,
+      }));
+      if (Array.isArray(data.users))     (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(KEY.users,     JSON.stringify(data.users));
+      if (Array.isArray(data.defectLib)) (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(KEY.defectLib, JSON.stringify(data.defectLib));
+      if (Array.isArray(data.partners))  (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(KEY.partners,  JSON.stringify(data.partners));
+
+      window.__QC_BACKEND_OK = true;
+      console.log('[QC后端] 预加载成功：公司', COMPANY, '记录', (data.records || []).length,
+        '账号', (data.users || []).length, '不良库', (data.defectLib || []).length);
+    } catch (e) {
+      window.__QC_BACKEND_OK = false;
+      console.warn('[QC后端] 预加载失败：', e.message);
+      if (window.__QC_NEXUS) { Object.keys(KEY).forEach(function(k) { (window.__QC_NEXUS ? sessionStorage : localStorage).removeItem(KEY[k]); }); }
+    }
+  }
+
+  /* ── 写穿透：把本地写入推回后端 ── */
+  function post(url, body) {
+    if (window.__QC_BACKEND_OK !== true) return Promise.resolve(false); // 后端不可用时不尝试，避免拖慢
+    try {
+      return trackWrite(fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(function (r) {
+        window.__QC_LAST_SYNC = { url: url, ok: r.ok, status: r.status, time: new Date().toISOString() };
+        if (!r.ok) {
+          console.warn('[QC后端] 写回非200:', url, r.status);
+          if (window.__QC_NEXUS && window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
+        }
+        return r.ok;
+      }).catch(function (err) {
+        window.__QC_LAST_SYNC = { url: url, ok: false, error: err && err.message, time: new Date().toISOString() };
+        console.warn('[QC后端] 写回失败:', url, err && err.message);
+        if (window.__QC_NEXUS && window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
+        return false;
+      }));
+    } catch (e) {
+      window.__QC_LAST_SYNC = { url: url, ok: false, error: e && e.message, time: new Date().toISOString() };
+      console.warn('[QC后端] 写回异常:', url, e && e.message);
+      if (window.__QC_NEXUS && window.__QC_SYNC_FAILURE) window.__QC_SYNC_FAILURE();
+      return Promise.resolve(false);
+    }
+  }
+
+  function pushRecords() {
+    // Serialize record writes; an earlier replace must finish before a later
+    // ordinary save, and only acknowledge deletion revisions actually sent.
+    recordPushQueue = recordPushQueue.then(sendRecords, sendRecords);
+    return trackWrite(recordPushQueue);
+  }
+  function sendRecords() {
+    try {
+      var st = JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(KEY.records) || '{}');
+      var deleted = window.__QC_PENDING_DELETES.slice();
+      var revisions = deleted.map(function (id) { return deleteRevisions[id]; });
+      function acknowledgeDeletes() {
+        window.__QC_PENDING_DELETES = window.__QC_PENDING_DELETES.filter(function (id) {
+          var index = deleted.indexOf(id);
+          return index === -1 || deleteRevisions[id] !== revisions[index];
+        });
+      }
+      /* 整库替换操作（清空数据/恢复示例/替换模式导入）走 replace 通道 */
+      var replacement = window.__QC_FORCE_REPLACE;
+      if (replacement) {
+        return post(API_BASE + '/api/records/replace?company=' + COMPANY, { records: st.records || [] })
+          .then(function (ok) { if (ok) { if (window.__QC_FORCE_REPLACE === replacement) window.__QC_FORCE_REPLACE = false; acknowledgeDeletes(); } return ok; });
+      }
+      return post(API_BASE + '/api/records?company=' + COMPANY, { records: st.records || [], deletedIds: deleted })
+        .then(function (ok) { if (ok) acknowledgeDeletes(); return ok; });
+    } catch (e) { console.warn('[QC后端] 读本地记录失败', e); }
+    return Promise.resolve(false);
+  }
+  function pushUsers(users) {
+    var u = users;
+    if (!Array.isArray(u)) { try { u = JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(KEY.users) || '[]'); } catch (e) { u = []; } }
+    return post(API_BASE + '/api/users?company=' + COMPANY, { users: u });
+  }
+  function pushPartners(list) {
+    var l = list;
+    if (!Array.isArray(l)) { try { l = JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(KEY.partners) || '[]'); } catch (e) { l = []; } }
+    return post(API_BASE + '/api/partners?company=' + COMPANY, { partners: l });
+  }
+  function pushDefects(lib) {
+    var l = lib;
+    if (!Array.isArray(l)) { try { l = JSON.parse((window.__QC_NEXUS ? sessionStorage : localStorage).getItem(KEY.defectLib) || '[]'); } catch (e) { l = []; } }
+    return post(API_BASE + '/api/defects?company=' + COMPANY, { defectLib: l });
+  }
+
+  /* ── 劫持 app.js 的三个写入函数（此时 app.js 已解析，函数已挂到 window）── */
+  function patchWriters() {
+    var patched = false;
+    if (typeof window.persist === 'function' && !window.persist.__qcPatched) {
+      var origPersist = window.persist;
+      window.persist = function () {
+        var ret = origPersist.apply(this, arguments);
+        pushRecords();
+        return ret;
+      };
+      window.persist.__qcPatched = true;
+      patched = true;
+    }
+    if (typeof window._saveUsers === 'function' && !window._saveUsers.__qcPatched) {
+      var origUsers = window._saveUsers;
+      window._saveUsers = function (users) {
+        var ret = origUsers.apply(this, arguments);
+        pushUsers(users);
+        return ret;
+      };
+      window._saveUsers.__qcPatched = true;
+      patched = true;
+    }
+    if (typeof window._savePartners === 'function' && !window._savePartners.__qcPatched) {
+      var origP = window._savePartners;
+      window._savePartners = function (list) {
+        var ret = origP.apply(this, arguments);
+        pushPartners(list);
+        return ret;
+      };
+      window._savePartners.__qcPatched = true;
+      patched = true;
+    }
+    if (typeof window._saveDefectLib === 'function' && !window._saveDefectLib.__qcPatched) {
+      var origDef = window._saveDefectLib;
+      window._saveDefectLib = function (lib) {
+        var ret = origDef.apply(this, arguments);
+        pushDefects(lib);
+        return ret;
+      };
+      window._saveDefectLib.__qcPatched = true;
+      patched = true;
+    }
+    if (patched) console.log('[QC后端] 写入函数已接管');
+    return patched;
+  }
+
+  function schedulePatchWriters() {
+    patchWriters();
+    setTimeout(patchWriters, 0);
+    setTimeout(patchWriters, 300);
+    setTimeout(patchWriters, 1000);
+    setTimeout(patchWriters, 2500);
+  }
+
+  window.__QC_SYNC_NOW = function () {
+    patchWriters();
+    return pushRecords();
+  };
+
+  /* 本文件早于 app.js 加载：立即预加载，确保 app.js 初始化前 localStorage 已是服务器数据 */
+  syncBootstrap();
+
+  /* app.js 解析完成后反复接管写入函数，避免线上脚本时序导致只改本地不写服务器 */
+  document.addEventListener('DOMContentLoaded', function () {
+    schedulePatchWriters();
+  });
+})();

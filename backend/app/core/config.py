@@ -9,6 +9,10 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
+    qc_department_managed: bool = False
+    qc_department_data_dir: str = str(BACKEND_DIR / "data" / "qc-department" / "companies")
+    qc_department_url: str = "http://127.0.0.1:3411"
+    qc_department_gateway_token: SecretStr = SecretStr("")
     app_name: str = "Royal Regent Nexus API"
     app_env: str = "development"
     database_url: str = f"sqlite:///{BACKEND_DIR / 'data' / 'royal_regent_nexus.db'}"

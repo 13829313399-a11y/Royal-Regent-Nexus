@@ -1,0 +1,1015 @@
+/* ══════════════════════════════════════════════════════════════
+   兴信 QMS 后端服务器  ·  零依赖（Node 内置 http + node:sqlite）
+   ────────────────────────────────────────────────────────────
+   职责：
+     1. 用 SQLite 文件库持久化 验货记录 / 账号 / 不良描述库
+     2. 首次启动从 seed.json 灌入默认账号 + 不良库
+     3. 提供 REST API：/api/bootstrap (拉全量)、/api/records|users|defects (全量写回)
+     4. 同端口静态托管前端（index.html / app.js / ...）
+
+   多厂区（2026-09 新增）：
+     · 每个厂区一套完全独立的数据库文件：server/data/<厂区id>/qc.db
+     · 数据（记录 / 账号 / 不良库）在厂区之间物理隔离、互不流通
+     · 所有数据 API 通过 ?company=<厂区id> 指定目标厂区（缺省默认 dg-xingxin，兼容旧链接）
+     · 旧版单库（生产：DATA_PATH/qc.db；本地：server/qc.db）首次启动自动迁移为东莞兴信库
+   启动：node server.js   （默认端口 8765，可用环境变量 PORT 覆盖）
+══════════════════════════════════════════════════════════════ */
+'use strict';
+const http = require('node:http');
+const fs   = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { DatabaseSync } = require('node:sqlite');
+const { referenceData, clearReferenceData } = require('./reference-data');
+
+/* ── 门户 SSO 票据（HS256 JWT）校验：与门户 SSO_SECRET 一致 ── */
+function verifyPortalTicket(ticket) {
+  const parts = String(ticket || '').split('.');
+  if (parts.length !== 3) throw new Error('票据格式不正确');
+  const secret = process.env.SSO_SECRET || 'dev-sso-secret-change-me';
+  const expected = crypto.createHmac('sha256', secret).update(parts[0] + '.' + parts[1]).digest();
+  const actual = Buffer.from(parts[2].replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) throw new Error('票据校验失败');
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+  } catch (e) { throw new Error('票据无效'); }
+  if (!payload.exp || Date.now() > payload.exp) throw new Error('票据已过期');
+  if (payload.app !== 'xingxin-qms') throw new Error('票据不属于本系统');
+  if (!payload.sub) throw new Error('票据缺少账号');
+  return payload;
+}
+
+const ROOT      = path.join(__dirname, '..');           // 前端静态根目录
+const DATA_DIR  = process.env.DATA_PATH || path.join(__dirname, 'data');
+const LEGACY_DB = path.join(__dirname, 'qc.db');        // 本地开发的旧版单库路径（自动迁移用；生产旧库在 DATA_PATH/qc.db）
+const SEED_PATH = path.join(__dirname, 'seed.json');
+const AI_CONFIG_PATH = path.join(__dirname, 'ai-config.json');
+const PORT      = Number(process.env.PORT) || 3411;
+const GATEWAY_TOKEN = process.env.QC_DEPARTMENT_GATEWAY_TOKEN || '';
+if (GATEWAY_TOKEN.length < 32) throw new Error('QC_DEPARTMENT_GATEWAY_TOKEN must have at least 32 characters');
+
+/* ════════ 厂区 → 子公司清单（数据隔离边界；每家子公司一个独立库 server/data/<id>/qc.db）════════
+   新增子公司：在这里加一行 + 前端 app.js 的 QC_COMPANIES 加一行即可 */
+const COMPANIES = [
+  /* 东莞厂区 */
+  { id: 'dg-xingxin',   site: '东莞', name: '东莞兴信' },
+  { id: 'dg-huadeng-a', site: '东莞', name: '东莞华登A' },
+  { id: 'dg-huadeng-b', site: '东莞', name: '东莞华登B' },
+  { id: 'dg-huajia',    site: '东莞', name: '东莞华嘉' },
+  /* 河源厂区 */
+  { id: 'hy-huakang-a', site: '河源', name: '华康A' },
+  { id: 'hy-huakang-b', site: '河源', name: '华康B' },
+  { id: 'hy-huakang-c', site: '河源', name: '华康C' },
+  { id: 'hy-huakang-d', site: '河源', name: '华康D' },
+  { id: 'hy-huadeng',   site: '河源', name: '河源华登' },
+  { id: 'hy-huaxing',   site: '河源', name: '河源华兴' },
+  /* 湖南厂区 */
+  { id: 'sy-huadeng',   site: '湖南', name: '邵阳华登' },
+  { id: 'sy-xingxin',   site: '湖南', name: '邵阳兴信' },
+  { id: 'xs-huadeng',   site: '湖南', name: '新邵华登' },
+];
+const DEFAULT_COMPANY = 'dg-xingxin';
+/* 旧版兼容：早期按厂区名当 company 的链接/缓存自动映射到该厂区默认子公司 */
+const LEGACY_ALIAS = { dongguan: 'dg-xingxin', heyuan: 'hy-huakang-a', hunan: 'sy-huadeng' };
+
+function resolveCompany(searchParams) {
+  let raw = String((searchParams && searchParams.get('company')) || '').trim().toLowerCase();
+  if (!raw) return DEFAULT_COMPANY;
+  if (LEGACY_ALIAS[raw]) raw = LEGACY_ALIAS[raw];
+  const hit = COMPANIES.find(c => c.id === raw);
+  return hit ? hit.id : null;   // 非法子公司 → null → 路由返回 400
+}
+function companyName(id) {
+  const c = COMPANIES.find(c => c.id === id);
+  return c ? c.name : id;
+}
+function companySite(id) {
+  const c = COMPANIES.find(c => c.id === id);
+  return c ? c.site : id;
+}
+
+/* ════════ AI 配置（阿里百炼 / DashScope OpenAI 兼容，全局共用）════════ */
+function loadAiConfig() {
+  let cfg = {
+    enabled: false,
+    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    apiKey: '',
+    ocrModel: 'qwen3.5-omni-plus',
+    textModel: 'qwen3.5-omni-plus',
+  };
+  try { Object.assign(cfg, JSON.parse(fs.readFileSync(AI_CONFIG_PATH, 'utf8'))); }
+  catch (e) { console.warn('[AI] config not loaded:', e.message); }
+  // 环境变量可覆盖密钥
+  const envApiKey = process.env.DASHSCOPE_API_KEY || process.env.QC_BAILIAN_API_KEY;
+  if (envApiKey) cfg.apiKey = envApiKey;
+  // 仅当密钥已填写真实值（非占位）才算可用
+  const placeholder = !cfg.apiKey || /粘贴|你的|YOUR|xxxx|sk-xxx/i.test(cfg.apiKey) || cfg.apiKey.includes('****');
+  cfg.ready = cfg.enabled !== false && !placeholder;
+  return cfg;
+}
+let AI = loadAiConfig();
+
+/* OCR 识别提示词：qwen3.5-ocr 官方全文识别模式。
+   该模型指令遵循能力差（让它直接输出结构化 JSON 会抄 schema/示例），
+   但它按官方提示词做「全文 OCR」非常准。所以：模型只负责把图变文字，
+   字段提取由下面的 parseDeliveryNote() 确定性完成。 */
+const OCR_READ_PROMPT = 'Read all the text in the image, including the company name, title, serial number, date, customer, and all text outside the table, then the table contents.';
+/* 表格密集型单据（如台聚）全文 OCR 易乱行/复读，解析不出明细时改用此提示词重试 */
+const OCR_TABLE_PROMPT = 'Read all the text in the image. Output the table contents as a markdown table with every column kept (including the quantity column and empty cells), one row per line.';
+
+/* ── 送货单 OCR 文本 → 结构化字段（确定性解析，不依赖模型指令遵循）── */
+function parseDeliveryNote(text) {
+  const fields = { date: '', supplier: '', deliveryNo: '', orderNo: '', type: '来料', items: [] };
+  const lines = [];
+  for (let s of String(text || '').split('\n')) {
+    s = s.trim().replace(/\*\*/g, '');
+    if (!s || /^```/.test(s) || /^-{3,}$/.test(s)) continue;
+    if (/^\|[\s\-:|]+\|$/.test(s)) continue;   // markdown 表格分隔行
+    lines.push(s);
+  }
+  const joined = lines.join('\n');
+
+  /* 来料字段只接受明确标记的来料/来货/收货日期，不推测其它日期的归属。 */
+  let m = joined.match(/(?:来料|来货|收货)日期\s*[：:]?\s*(\d{4})\s*[-年\/.]\s*(\d{1,2})\s*[-月\/.]\s*(\d{1,2})(?!\d)/);
+  if (m) {
+    const date = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    if (+m[1] >= 1000 && date.getUTCFullYear() === +m[1] && date.getUTCMonth() + 1 === +m[2] && date.getUTCDate() === +m[3]) {
+      fields.date = m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
+    }
+  }
+
+  /* 送货单号：送货单号/发货单号/单号/NO. */
+  m = joined.match(/(?:送\s*货\s*单\s*号|发\s*货\s*单\s*号|单\s*号|NO\.?)\s*[：:]\s*([A-Za-z0-9][A-Za-z0-9\-\/]{3,})/i);
+  if (m) fields.deliveryNo = m[1];
+  /* 无标签单号兜底：开头独立成行的 4-8 位流水号（排除年份，进表格即停） */
+  if (!fields.deliveryNo) {
+    for (const ln of lines.slice(0, 12)) {
+      const t = ln.trim();
+      if (t.startsWith('|')) break;
+      if (/^\d{4,8}$/.test(t) && !/^(19|20)\d{2}$/.test(t)) { fields.deliveryNo = t; break; }
+    }
+  }
+
+  /* 供应商：开头几行里含「公司/厂」且不是收货方/标题/地址的 */
+  for (const ln of lines.slice(0, 8)) {
+    const t = ln.replace(/^#+\s*/, '').trim();
+    if (!t || t === '送货单' || /客户|收货|寶號|Messrs|地址|电话| Tel/i.test(t)) continue;
+    if (/公司|工厂|制品厂|纸品厂/.test(t) && t.length >= 6 && t.length <= 40) { fields.supplier = t; break; }
+  }
+  /* 无「公司」字样兜底：开头第一个有意义的行（如「攀登」） */
+  if (!fields.supplier) {
+    for (const ln of lines.slice(0, 6)) {
+      const t = ln.replace(/^#+\s*/, '').trim();
+      if (!t || t === '送货单' || t.startsWith('|')) continue;
+      if (/客户|收货|日期|单号|NO\.?|地址|电话| Tel|^\d/i.test(t)) continue;
+      if (t.length <= 20) { fields.supplier = t; break; }
+    }
+  }
+
+  /* markdown 表格 → items（列按表头关键词映射）*/
+  const tbl = lines.filter(l => l.startsWith('|'));
+  if (tbl.length >= 2) {
+    const splitRow = l => l.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+    const hi = tbl.findIndex(l => /编号|货号|品名|名称|数量|订单/.test(l));
+    if (hi !== -1) {
+      const head = splitRow(tbl[hi]);
+      const find = (re, notRe) => head.findIndex(h => re.test(h) && !(notRe && notRe.test(h)));
+      let   cOrder = find(/合同/, /数量/);
+      if (cOrder === -1) cOrder = find(/订单|PO/i, /数量/);
+      const cNo    = find(/编号|货号|Item/i, /订单|合同/);
+      const cName  = find(/品名|名称|货名|规格|Desc/i, /编号/);
+      let   cQty   = head.findIndex(h => /^数\s*量$/.test(h));
+      if (cQty === -1) cQty = find(/送货数量|实送数量/);
+      if (cQty === -1) cQty = find(/送货|实送/, /欠|总/);
+      if (cQty === -1) cQty = find(/数量/, /欠|总/);
+      if (cQty === -1) cQty = find(/备品/);   /* 台聚：模型偶发丢「数量」表头，数量值落在备品数列 */
+      const cUnit  = find(/单位/, /数量/);
+      let lastNo = '';
+      for (const row of tbl.slice(hi + 1)) {
+        const cells = splitRow(row);
+        const get = i => (i >= 0 && i < cells.length ? cells[i] : '');
+        let no = get(cNo), name = get(cName);
+        if (!no && !name) continue;
+        if (/^序$|^NO\.?$/i.test(no)) continue;
+        if (/[：:]/.test(no) || /[：:]/.test(name)) continue;   /* 表尾标签行（胶箱：/收货人：/Q.C: 等） */
+        /* 货号/品名错位互换：货号格是中文、品名格是编号串时对调 */
+        if (/[一-鿿]/.test(no) && /^[A-Za-z0-9#+\-.]+$/.test(name)) { const tmp = no; no = name; name = tmp; }
+        /* 品名规格开头带编号（如「77772-8#唱片背面贴纸」）：拆出编号当货号 */
+        if (!no && name) {
+          const pm = name.match(/^([A-Za-z0-9][A-Za-z0-9#\-]{2,})[一-鿿]/);
+          if (pm) { no = pm[1]; name = name.slice(pm[1].length); }
+        }
+        if (!no) no = lastNo;   /* 合并单元格：货号向下继承 */
+        if (no) lastNo = no;
+        const qty  = get(cQty).split('/')[0].replace(/[^\d.]/g, '');
+        if (!qty && !name) continue;   /* 无数量又无品名，不是明细行 */
+        let   unit = get(cUnit);
+        /* 表头合并了「送货数量单位」时，单位在数量右边一格 */
+        if (!unit && cQty >= 0 && cells[cQty + 1] && !/\d/.test(cells[cQty + 1]) && cells[cQty + 1].length <= 4) unit = cells[cQty + 1];
+        if (!fields.orderNo) { const o = get(cOrder).replace(/\s+/g, ''); if (o && o !== no && o.length >= 6) fields.orderNo = o; }
+        fields.items.push({ productNo: no, productName: name, qty, unit });
+      }
+    }
+  }
+
+  /* 非 markdown 表格兜底：表头行（品名+数量）之后的行，行尾找「数量+单位」 */
+  if (!fields.items.length) {
+    const hiP = lines.findIndex(l => !l.startsWith('|') && /品名|名称|货名/.test(l) && /数量/.test(l));
+    if (hiP !== -1) {
+      let lastNoP = '';
+      for (const ln of lines.slice(hiP + 1)) {
+        const m2 = ln.match(/^(.*?)\s+(\d{1,3}(?:,\d{3})+|\d{2,})\s+(个|PCS|pcs|件|套|卷|张|桶|KG|kg)(?=\s|$)/);
+        if (!m2) continue;
+        const tokens = m2[1].trim().split(/\s+/);
+        let no = '', name = '';
+        /* 订单号样式 token（字母+数字+横杠，如 BB2026116-BN008），排除出货号候选 */
+        if (!fields.orderNo) {
+          for (const t of tokens) {
+            if (/[A-Za-z]/.test(t) && /\d/.test(t) && t.includes('-') && t.length >= 6) { fields.orderNo = t; break; }
+          }
+        }
+        /* 货号：优先选不含中文、长度≥5、含数字、不以 - 结尾（排除单号碎片）的 token */
+        for (const t of tokens) {
+          if (no) break;
+          if (t.endsWith('-')) continue;
+          if (/^[\w#]{5,}$/.test(t) && /\d/.test(t) && t !== m2[2]) no = t;
+        }
+        if (!no) for (const t of tokens) { if (/[A-Za-z#]/.test(t) && t.length >= 4) { no = t; break; } }
+        /* 品名：中文字符≥2 的最长 token（排除颜色等数字开头的规格串，如「7726黑色」） */
+        const cjk = tokens.filter(t => (t.match(/[\u4e00-\u9fff]/g) || []).length >= 2 && !/^\d/.test(t));
+        if (cjk.length) name = cjk.reduce((a, b) => (a.length >= b.length ? a : b));
+        if (!no) no = lastNoP;   /* 合并单元格：货号向下继承 */
+        if (no) lastNoP = no;
+        if (!no && !name) continue;
+        fields.items.push({ productNo: no, productName: name, qty: m2[2].replace(/,/g, ''), unit: m2[3] });
+      }
+    }
+  }
+
+  /* 表格外订单号兜底 */
+  if (!fields.orderNo) {
+    m = joined.match(/(?:订\s*单\s*(?:号|编号)|PO\s*号?)\s*[：:]\s*([A-Za-z0-9][A-Za-z0-9\-]{3,})/i);
+    if (m) fields.orderNo = m[1];
+  }
+
+  /* 模型偶发「复读」：把同一行明细输出多次，甚至整份单据重复 N 遍。
+     两级去重：完全相同的行只留一条；品名+数量+单位仍重复的行只保留第一次出现
+     （复读时碎片行的货号会不同，如把条码当成货号，第一次出现的完整行最可靠）。 */
+  if (fields.items.length > 1) {
+    const seen = new Set();
+    fields.items = fields.items.filter(it => {
+      const k = [it.productNo, it.productName, it.qty, it.unit].join('|');
+      if (seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+    /* 品名做 OCR 易混字符归一（1/I/l、0/O、5/S）再合并：
+       复读时同一行可能被识别成「1L」和「IL」两个版本 */
+    const normName = n => String(n || '').replace(/[Il|]/g, '1').replace(/[Oo]/g, '0').replace(/[Ss]/g, '5').replace(/\s+/g, '');
+    const seenLoose = new Set();
+    fields.items = fields.items.filter(it => {
+      if (!it.productName || !it.qty) return true;   /* 信息不全的行不参与合并 */
+      const k = [normName(it.productName), it.qty, it.unit].join('|');
+      if (seenLoose.has(k)) return false;
+      seenLoose.add(k); return true;
+    });
+  }
+  return fields;
+}
+
+/* 调用视觉模型（OpenAI 兼容）做全文 OCR，再确定性解析字段 */
+async function aiVisionExtract(dataUrl) {
+  if (!AI.ready) {
+    const err = new Error('AI 未配置：请在 server/ai-config.json 填入阿里百炼 API Key 后调用 /api/ai/reload');
+    err.code = 'NO_AI'; throw err;
+  }
+  const payload = {
+    model: AI.ocrModel || 'qwen3.5-ocr',
+    temperature: 0,
+    max_tokens: 4096,   /* OpenRouter 按 max_tokens 预扣额度，不设上限易触发 402 */
+
+    messages: [
+      { role: 'user', content: [
+        { type: 'text', text: OCR_READ_PROMPT },
+        { type: 'image_url', image_url: { url: dataUrl } },
+      ] },
+    ],
+  };
+  async function callModel(model) {
+    payload.model = model;
+    const resp = await fetch(AI.baseURL.replace(/\/$/, '') + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AI.apiKey },
+      body: JSON.stringify(payload),
+    });
+    return { status: resp.status, raw: await resp.text() };
+  }
+  /* 该密钥的模型权限存在随机抖动（同一请求约 40~60% 概率返回 403 AccessDenied），
+     因此对 403 做同模型重试（最多 6 次，间隔 1.5s）；仍失败再回退 qwen3.5-ocr */
+  const sleep = ms => new Promise(res => setTimeout(res, ms));
+  const isDenied = x => x.status === 403 && /denied|Unpurchased/i.test(x.raw);
+  let r = await callModel(payload.model);
+  for (let i = 0; i < 5 && isDenied(r); i++) {
+    console.warn('[AI] 模型 %s 403（第 %d 次），1.5s 后重试', payload.model, i + 1);
+    await sleep(1500);
+    r = await callModel(payload.model);
+  }
+  if (isDenied(r) && payload.model !== 'qwen3.5-ocr') {
+    console.warn('[AI] 模型 %s 持续无权限，回退 qwen3.5-ocr', payload.model);
+    r = await callModel('qwen3.5-ocr');
+    for (let i = 0; i < 2 && isDenied(r); i++) {
+      await sleep(1500);
+      r = await callModel('qwen3.5-ocr');
+    }
+  }
+  const raw = r.raw;
+  if (r.status >= 400) { const err = new Error('百炼返回 HTTP ' + r.status + '：' + raw.slice(0, 600)); err.code = 'UPSTREAM'; throw err; }
+  let data; try { data = JSON.parse(raw); } catch (e) { throw new Error('百炼响应非 JSON：' + raw.slice(0, 300)); }
+  let content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '';
+  if (Array.isArray(content)) content = content.map(c => (typeof c === 'string' ? c : (c && c.text) || '')).join('');
+  content = String(content).trim();
+  let fields = parseDeliveryNote(content);
+  /* 表格密集型单据（如台聚）全文 OCR 易乱行/复读导致解析不出明细：
+     换「输出 markdown 表格」提示词再识别一次，解析出明细才采用 */
+  if (!fields.items.length) {
+    console.warn('[AI] 首次 OCR 未解析出明细，换表格提示词重试');
+    payload.messages[0].content[0].text = OCR_TABLE_PROMPT;
+    let r2 = await callModel(payload.model);
+    for (let i = 0; i < 3 && isDenied(r2); i++) { await sleep(1500); r2 = await callModel(payload.model); }
+    if (r2.status < 400) {
+      try {
+        const data2 = JSON.parse(r2.raw);
+        let content2 = data2 && data2.choices && data2.choices[0] && data2.choices[0].message && data2.choices[0].message.content || '';
+        if (Array.isArray(content2)) content2 = content2.map(c => (typeof c === 'string' ? c : (c && c.text) || '')).join('');
+        content2 = String(content2).trim();
+        const fields2 = parseDeliveryNote(content2);
+        if (fields2.items.length) {
+          if (!fields2.date && fields.date) fields2.date = fields.date;
+          if (!fields2.supplier && fields.supplier) fields2.supplier = fields.supplier;
+          if (!fields2.deliveryNo && fields.deliveryNo) fields2.deliveryNo = fields.deliveryNo;
+          if (!fields2.orderNo && fields.orderNo) fields2.orderNo = fields.orderNo;
+          fields = fields2; content = content2; data = data2;
+        }
+      } catch (e) { console.warn('[AI] 表格提示词重试响应异常：', e.message); }
+    }
+  }
+  return { fields, usage: data.usage || null, rawText: content };
+}
+
+/* ── 记录表列顺序（写入/读取都按这个顺序）── */
+const RECORD_COLS = [
+  'id', 'date', 'inspDate', 'supplier', 'client', 'processType', 'productNo', 'productName',
+  'deliveryNo', 'orderNo', 'type', 'qty', 'sampleQty', 'pass', 'fail',
+  'defectRate', 'result', 'result2', 'defect', 'defects', 'measurements',
+  'qc', 'confirmBy', 'remark', 'orderQty', 'updatedAt',
+  'status', 'reviewBy', 'reviewAt', 'rejectReason', 'rejectBy', 'rejectAt',
+  'aqlLevel',
+];
+
+const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS records (
+    id INTEGER PRIMARY KEY,
+    date TEXT, inspDate TEXT, supplier TEXT, client TEXT, processType TEXT,
+    productNo TEXT, productName TEXT, deliveryNo TEXT, orderNo TEXT,
+    type TEXT, qty INTEGER, sampleQty INTEGER, pass INTEGER, fail INTEGER,
+    defectRate TEXT, result TEXT, result2 TEXT, defect TEXT,
+    defects TEXT, measurements TEXT,
+    qc TEXT, confirmBy TEXT, remark TEXT, orderQty INTEGER, updatedAt TEXT,
+    status TEXT, reviewBy TEXT, reviewAt TEXT,
+    rejectReason TEXT, rejectBy TEXT, rejectAt TEXT,
+    aqlLevel TEXT
+  );
+  CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY, password TEXT, role TEXT,
+    enabled INTEGER, createdAt TEXT, lastLoginAt TEXT
+  );
+  CREATE TABLE IF NOT EXISTS defect_library (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT, category TEXT, defaultLevel TEXT,
+    keywords TEXT, enabled INTEGER, createdAt TEXT
+  );
+  CREATE TABLE IF NOT EXISTS partners (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT, type TEXT, createdAt TEXT
+  );
+  CREATE TABLE IF NOT EXISTS record_tombstones (
+    id INTEGER PRIMARY KEY, deletedAt TEXT
+  );
+`;
+
+const toNum = (v) => (v === '' || v === null || v === undefined || isNaN(Number(v))) ? null : Number(v);
+const j     = (v) => JSON.stringify(Array.isArray(v) ? v : (v ? [v] : []));
+
+function recordValues(r) {
+  return [
+    toNum(r.id), r.date ?? null, r.inspDate ?? null, r.supplier ?? null, r.client ?? null, r.processType ?? null,
+    r.productNo ?? null, r.productName ?? null, r.deliveryNo ?? null, r.orderNo ?? null,
+    r.type ?? null, toNum(r.qty), toNum(r.sampleQty), toNum(r.pass), toNum(r.fail),
+    r.defectRate ?? null, r.result ?? null, r.result2 ?? null, r.defect ?? null,
+    j(r.defects), j(r.measurements),
+    r.qc ?? null, r.confirmBy ?? null, r.remark ?? null, toNum(r.orderQty),
+    r.updatedAt || new Date().toISOString(),
+    r.status ?? null, r.reviewBy ?? null, r.reviewAt ?? null,
+    r.rejectReason ?? null, r.rejectBy ?? null, r.rejectAt ?? null,
+    r.aqlLevel ?? null,
+  ];
+}
+
+function rowToRecord(row) {
+  const r = Object.assign({}, row);
+  try { r.defects = JSON.parse(row.defects || '[]'); } catch (e) { r.defects = []; }
+  try { r.measurements = JSON.parse(row.measurements || '[]'); } catch (e) { r.measurements = []; }
+  return r;
+}
+
+function nextRecordId(db) {
+  const row = db.prepare('SELECT MAX(id) AS id FROM (SELECT id FROM records UNION ALL SELECT id FROM record_tombstones)').get();
+  return Math.max(30, Number(row.id) || 0) + 1;
+}
+
+/* ── 合并写入（事务）：按 id upsert。
+   多人/多标签页同时使用时，任何一端都可能用「旧状态的全量数组」推回服务端，
+   旧的全量替换会把别人新录的记录整批抹掉（曾发生 74 条变 68 条）。
+   规则：
+   1) 同 id 已存在且服务端 updatedAt 更新 → 跳过这条（旧数据不覆盖新数据）；
+   2) 命中墓碑 → 跳过；仅显式整库替换可以重用已删除编号；
+   3) 其余 INSERT ... ON CONFLICT UPDATE。 ── */
+function upsertRecords(db, records, transaction = true) {
+  const cols = RECORD_COLS.join(',');
+  const ph = RECORD_COLS.map(() => '?').join(',');
+  const upd = RECORD_COLS.filter(c => c !== 'id').map(c => c + '=excluded.' + c).join(',');
+  const ins = db.prepare(`INSERT INTO records(${cols}) VALUES(${ph}) ON CONFLICT(id) DO UPDATE SET ${upd}`);
+  const get = db.prepare('SELECT updatedAt FROM records WHERE id = ?');
+  const getTomb = db.prepare('SELECT deletedAt FROM record_tombstones WHERE id = ?');
+  let accepted = 0, skippedStale = 0, skippedTomb = 0;
+  if (transaction) db.exec('BEGIN');
+  try {
+    for (const r of records) {
+      const id = Number(r.id) || 0;
+      if (!id) continue;
+      const tomb = getTomb.get(id);
+      // Only the explicit replacement channel may reuse a deleted id. A stale
+      // browser's clock may be ahead of the server's deletion timestamp.
+      if (tomb) { skippedTomb++; continue; }
+      const cur = get.get(id);
+      if (cur && cur.updatedAt && (!r.updatedAt || !Number.isFinite(Date.parse(r.updatedAt)) ||
+          Date.parse(cur.updatedAt) >= Date.parse(r.updatedAt))) { skippedStale++; continue; }
+      ins.run(...recordValues(r));
+      accepted++;
+    }
+    if (transaction) db.exec('COMMIT');
+  } catch (e) { if (transaction) db.exec('ROLLBACK'); throw e; }
+  return { accepted, skippedStale, skippedTomb };
+}
+
+/* ── 按 id 删除（写墓碑，防止旧标签页推送复活）── */
+function deleteRecords(db, ids, transaction = true) {
+  const now = new Date().toISOString();
+  const del = db.prepare('DELETE FROM records WHERE id = ?');
+  const tomb = db.prepare('INSERT OR REPLACE INTO record_tombstones(id, deletedAt) VALUES(?, ?)');
+  let count = 0;
+  if (transaction) db.exec('BEGIN');
+  try {
+    for (const id of ids) {
+      const n = Number(id) || 0;
+      if (!n) continue;
+      del.run(n); tomb.run(n, now); count++;
+    }
+    if (transaction) db.exec('COMMIT');
+  } catch (e) { if (transaction) db.exec('ROLLBACK'); throw e; }
+  return count;
+}
+
+function mergeRecordChanges(db, records, ids) {
+  db.exec('BEGIN');
+  try {
+    const deleted = deleteRecords(db, ids, false);
+    const result = upsertRecords(db, records, false);
+    db.exec('COMMIT');
+    return { ...result, deleted };
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+}
+
+/* ── 全量替换（事务）：仅用于「清空数据 / 恢复示例 / 替换模式导入」等显式整库操作 ── */
+function replaceRecords(db, records) {
+  const ph = RECORD_COLS.map(() => '?').join(',');
+  const ins = db.prepare(`INSERT INTO records(${RECORD_COLS.join(',')}) VALUES(${ph})`);
+  db.exec('BEGIN');
+  try {
+    // Keep tombstones for records omitted by a clear/import, so an old tab
+    // cannot undo the explicit replacement on its next ordinary save.
+    db.prepare('INSERT OR REPLACE INTO record_tombstones(id,deletedAt) SELECT id,? FROM records').run(new Date().toISOString());
+    db.prepare('DELETE FROM records').run();
+    const clearTomb = db.prepare('DELETE FROM record_tombstones WHERE id=?');
+    for (const r of records) { ins.run(...recordValues(r)); clearTomb.run(toNum(r.id)); }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+function replaceUsers(db, users) {
+  migrateUsersTable(db);
+  const ins = db.prepare('INSERT INTO users(username,password,role,enabled,createdAt,lastLoginAt,name,dept,perms) VALUES(?,?,?,?,?,?,?,?,?)');
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM users').run();
+    for (const u of users) ins.run(
+      u.username, u.password ?? null, u.role ?? 'viewer', u.enabled ? 1 : 0,
+      u.createdAt ?? null, u.lastLoginAt ?? null,
+      u.name ?? null, u.dept ?? null,
+      u.perms ? (typeof u.perms === 'string' ? u.perms : JSON.stringify(u.perms)) : null,
+    );
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  ensureSuperAdmin(db);
+}
+
+/* 保底：主账号 jc 在任何子公司都不能被删除/停用（确保管理员永远进得去） */
+function ensureSuperAdmin(db) {
+  try {
+    const seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf8'));
+    const jc = (seed.users || []).find(u => u.username === 'jc');
+    if (!jc) return;
+    const cur = db.prepare("SELECT * FROM users WHERE username='jc'").get();
+    if (!cur) {
+      db.prepare('INSERT INTO users(username,password,role,enabled,createdAt,lastLoginAt) VALUES(?,?,?,1,?,NULL)')
+        .run('jc', jc.password ?? null, 'admin', new Date().toISOString());
+      console.log('[保底] jc 主账号被删除，已自动恢复');
+    } else if (!cur.enabled || cur.role !== 'admin') {
+      db.prepare("UPDATE users SET enabled=1, role='admin' WHERE username='jc'").run();
+      console.log('[保底] jc 主账号被停用/降权，已自动恢复');
+    }
+  } catch (e) { console.warn('[保底] jc 主账号检查失败：', e.message); }
+}
+
+/* 供应商&客户名单（全量替换） */
+function replacePartners(db, list) {
+  const ins = db.prepare('INSERT INTO partners(name,type,createdAt) VALUES(?,?,?)');
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM partners').run();
+    for (const p of list) ins.run(p.name ?? null, p.type ?? null, p.createdAt ?? null);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+function replaceDefects(db, lib) {
+  const ins = db.prepare('INSERT INTO defect_library(name,category,defaultLevel,keywords,enabled,createdAt) VALUES(?,?,?,?,?,?)');
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM defect_library').run();
+    for (const d of lib) ins.run(d.name ?? null, d.category ?? null, d.defaultLevel ?? null, JSON.stringify(d.keywords || []), d.enabled ? 1 : 0, d.createdAt ?? null);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+/* ── 首次启动灌种子（仅在对应表为空时）──
+   includeRecords=false 时只灌默认账号 + 不良库（用于新厂区，不带示例验货记录） */
+function seedIfEmpty(db, { includeRecords = true } = {}) {
+  let seed = { records: [], users: [], defectLib: [] };
+  try { seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf8')); }
+  catch (e) { console.warn('[seed] 读取 seed.json 失败，跳过灌种子：', e.message); }
+
+  if (db.prepare('SELECT COUNT(*) c FROM users').get().c === 0 && seed.users?.length) {
+    replaceUsers(db, seed.users);
+    console.log('[seed] 灌入默认账号', seed.users.length, '个');
+  }
+  if (includeRecords && db.prepare('SELECT COUNT(*) c FROM records').get().c === 0 && seed.records?.length) {
+    replaceRecords(db, seed.records);
+    console.log('[seed] 灌入验货记录', seed.records.length, '条');
+  }
+  if (db.prepare('SELECT COUNT(*) c FROM defect_library').get().c === 0 && seed.defectLib?.length) {
+    replaceDefects(db, seed.defectLib);
+    console.log('[seed] 灌入不良描述库', seed.defectLib.length, '条');
+  }
+}
+
+/* 用户表新增字段（姓名/部门/权限矩阵），老库自动补齐 */
+const USER_EXTRA_COLS = [
+  { col: 'name',  ddl: "ALTER TABLE users ADD COLUMN name TEXT" },
+  { col: 'dept',  ddl: "ALTER TABLE users ADD COLUMN dept TEXT" },
+  { col: 'perms', ddl: "ALTER TABLE users ADD COLUMN perms TEXT" },
+];
+function migrateUsersTable(db) {
+  const cols = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
+  for (const c of USER_EXTRA_COLS) {
+    if (!cols.includes(c.col)) { try { db.exec(c.ddl); } catch (e) {} }
+  }
+}
+
+/* 记录表新增字段（加工类型），老库自动补齐 */
+const RECORD_EXTRA_COLS = [
+  { col: 'processType',  ddl: "ALTER TABLE records ADD COLUMN processType TEXT" },
+  { col: 'status',       ddl: "ALTER TABLE records ADD COLUMN status TEXT" },
+  { col: 'reviewBy',     ddl: "ALTER TABLE records ADD COLUMN reviewBy TEXT" },
+  { col: 'reviewAt',     ddl: "ALTER TABLE records ADD COLUMN reviewAt TEXT" },
+  { col: 'rejectReason', ddl: "ALTER TABLE records ADD COLUMN rejectReason TEXT" },
+  { col: 'rejectBy',     ddl: "ALTER TABLE records ADD COLUMN rejectBy TEXT" },
+  { col: 'rejectAt',     ddl: "ALTER TABLE records ADD COLUMN rejectAt TEXT" },
+  { col: 'aqlLevel',     ddl: "ALTER TABLE records ADD COLUMN aqlLevel TEXT" },
+];
+function migrateRecordsTable(db) {
+  const cols = db.prepare("PRAGMA table_info(records)").all().map(c => c.name);
+  for (const c of RECORD_EXTRA_COLS) {
+    if (!cols.includes(c.col)) { try { db.exec(c.ddl); } catch (e) {} }
+  }
+}
+
+/* ════════ 多厂区数据库管理（每厂区一个独立 qc.db，懒加载 + 缓存）════════ */
+const _dbs = new Map();
+
+/* 旧版单库迁移：旧 qc.db → data/dg-xingxin/qc.db（仅首次）。
+   旧库可能的位置：生产容器是 DATA_PATH/qc.db（/app/data/qc.db，bind-mount 持久卷），
+   本地开发是 server/qc.db（server.js 同目录）。两处都要看，漏掉生产路径会导致
+   上线后旧数据"消失"（文件还在 data/qc.db 但没人读）。 */
+function migrateLegacyDb() {
+  try {
+    const dgDir = path.join(DATA_DIR, DEFAULT_COMPANY);
+    const dgDb  = path.join(dgDir, 'qc.db');
+    if (fs.existsSync(dgDb)) return;
+    const candidates = [path.join(DATA_DIR, 'qc.db'), LEGACY_DB];
+    const legacy = candidates.find(p => fs.existsSync(p));
+    if (legacy) {
+      fs.mkdirSync(dgDir, { recursive: true });
+      fs.renameSync(legacy, dgDb);
+      console.log('[迁移] 旧版数据库已迁移为东莞兴信库：' + legacy + ' → ' + dgDb);
+    }
+  } catch (e) {
+    console.error('[迁移] 旧版数据库迁移失败：', e.message);
+  }
+}
+
+function getDb(companyId) {
+  if (_dbs.has(companyId)) return _dbs.get(companyId);
+  const dir = path.join(DATA_DIR, companyId);
+  fs.mkdirSync(dir, { recursive: true });
+  const dbPath = path.join(dir, 'qc.db');
+  const db = new DatabaseSync(dbPath);
+  db.exec(SCHEMA_SQL);
+  migrateUsersTable(db);   /* 老库补齐 姓名/部门/权限 列 */
+  migrateRecordsTable(db); /* 老库补齐 加工类型 列 */
+  // 东莞老库已带数据则无需灌种子；全新厂区只灌账号 + 不良库，不带示例记录
+  seedIfEmpty(db, { includeRecords: companyId === DEFAULT_COMPANY });
+  _dbs.set(companyId, db);
+  console.log('[DB] 厂区「' + companyName(companyId) + '」数据库就绪：' + dbPath);
+  return db;
+}
+
+migrateLegacyDb();
+
+/* ════════ 读取全量（供前端开机预加载）════════ */
+function getBootstrap(db) {
+  const records = db.prepare('SELECT * FROM records ORDER BY id').all().map(rowToRecord);
+  const nextId  = nextRecordId(db);
+  const users   = db.prepare('SELECT * FROM users').all().map(u => Object.assign({}, u, {
+    enabled: !!u.enabled,
+    perms: (() => { try { return u.perms ? JSON.parse(u.perms) : null; } catch (e) { return null; } })(),
+  }));
+  const defectLib = db.prepare('SELECT * FROM defect_library ORDER BY id').all().map(d => ({
+    name: d.name, category: d.category, defaultLevel: d.defaultLevel,
+    keywords: (() => { try { return JSON.parse(d.keywords || '[]'); } catch (e) { return []; } })(),
+    enabled: !!d.enabled, createdAt: d.createdAt,
+  }));
+  const partners = db.prepare('SELECT * FROM partners ORDER BY id').all()
+    .map(p => ({ name: p.name, type: p.type, createdAt: p.createdAt }));
+  return { records, nextId, users, defectLib, partners, referenceData: referenceData(db) };
+}
+
+/* ════════ HTTP 工具 ════════ */
+function sendJson(res, code, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(body);
+}
+
+function sendDownload(req, res, contentType, filename, body) {
+  const safeName = String(filename || 'download').replace(/[\\/:*?"<>|]/g, '_');
+  const fallbackName = safeName.replace(/[^\x20-\x7E]/g, '_') || 'download';
+  const encoded = encodeURIComponent(safeName);
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Disposition': `attachment; filename="${fallbackName}"; filename*=UTF-8''${encoded}`,
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+  });
+  res.end(req.method === 'HEAD' ? undefined : body);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => { data += c; if (data.length > 50 * 1024 * 1024) req.destroy(); });
+    req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
+    req.on('error', reject);
+  });
+}
+
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function formatModifiedDate(value) {
+  if (!value) return '';
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function neutralizeSpreadsheetFormula(v) {
+  const value = String(v == null ? '' : v);
+  return /^[=+\-@\t\r]/.test(value) ? "'" + value : value;
+}
+
+function csvCell(v) {
+  return '"' + neutralizeSpreadsheetFormula(v).replace(/"/g, '""') + '"';
+}
+
+function htmlCell(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function isPassRecord(r) {
+  return String(r.result || '').toUpperCase() === 'PASS';
+}
+
+function isFailRecord(r) {
+  const v = String(r.result || '').toUpperCase();
+  return v === 'REJ' || v === 'FAIL';
+}
+
+function getFilteredExportRecords(db, searchParams, overlay = {}) {
+  const search = String(searchParams.get('search') || '').trim().toLowerCase();
+  const result = String(searchParams.get('result') || '').trim().toUpperCase();
+  const from = String(searchParams.get('dateFrom') || '').trim();
+  const to = String(searchParams.get('dateTo') || '').trim();
+  const referenceIds = new Set(referenceData(db).ids);
+  return getBootstrap(db).records.filter(r => !(overlay.hiddenIds || []).includes(r.id)).concat(overlay.records || []).filter(r => {
+    if (search) {
+      const haystack = [
+        r.supplier, r.productNo, r.productName, r.client, r.processType, r.orderNo, r.deliveryNo,
+        r.defect, r.updatedAt, formatModifiedDate(r.updatedAt),
+      ]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    if (result === 'PASS' && !isPassRecord(r)) return false;
+    if (result === 'REJ' && !isFailRecord(r)) return false;
+    if (searchParams.get('dateBasis') === 'inspection-plan') {
+      const plan=(overlay.inspectionPlans || {})[r.legacyId ?? r.id] || r.inspectionPlan || {};
+      const start=String(plan.from||''),end=String(plan.to||start);
+      if ((from||to) && (!start||!end||start>end||(from&&end<from)||(to&&start>to))) return false;
+    } else {
+      if (from && String(r.date || '') < from) return false;
+      if (to && String(r.date || '') > to) return false;
+    }
+    return true;
+  }).map(r => referenceIds.has(r.id) || r.reference ? { ...r, __reference: true,
+    remark: '[模板参考：东莞兴信原库，非本厂实绩] ' + (r.remark || '') } : r);
+}
+
+function buildRecordsCsv(records) {
+  const hdr = ['ID','来料日期','检验日期','修改日期','供应商','客户','加工类型','送货单号','货号','款式名称','PO号','类型',
+    '来料数量','抽查数量','PASS数','FAIL数','不良率','不良现象','判定结果','检验员','备注'];
+  const rows = records
+    .slice()
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    .map(r => [
+      r.id, r.date, r.inspDate, formatModifiedDate(r.updatedAt), r.supplier, r.client, r.processType, r.deliveryNo, r.productNo, r.productName,
+      r.orderNo, r.type, r.qty, r.sampleQty, r.pass, r.fail, r.defectRate, r.defect, r.result, r.qc, r.remark,
+    ].map(csvCell));
+  return '﻿' + [hdr.map(csvCell), ...rows].map(r => r.join(',')).join('\n'); // 前导 ﻿ = BOM，Excel 正确识别 UTF-8
+}
+
+function buildFactoryExcelHtml(records) {
+  const headers = ['序号','来货日期','供应商','加工类型','客户','送货单号','PO号','货号','产品名称','数量','单数','检验结果','不良描述','检验人','备注'];
+  const rows = records.slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  table { border-collapse: collapse; font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 10pt; }
+  th, td { border: 1px solid #000; padding: 4px 6px; text-align: center; mso-number-format:"\\@"; }
+  .title { font-size: 14pt; font-weight: 700; text-align: center; height: 26px; }
+  .head { background: #d9e1f2; font-weight: 700; }
+  .left { text-align: left; }
+</style>
+</head>
+<body>
+<table>
+  <tr><td class="title" colspan="15">加工厂品质检验明细统计表${records.some(r => r.__reference) ? ' · 含模板参考（非本厂实绩）' : ''}</td></tr>
+  <tr>${headers.map(h => `<th class="head">${htmlCell(h)}</th>`).join('')}</tr>
+  ${rows.map((r, i) => `<tr>
+    <td>${i + 1}</td>
+    <td>${htmlCell(r.date || '')}</td>
+    <td>${htmlCell(r.supplier || '')}</td>
+    <td>${htmlCell(r.processType || r.type || '')}</td>
+    <td>${htmlCell(r.client || '')}</td>
+    <td>${htmlCell(r.deliveryNo || '')}</td>
+    <td>${htmlCell(r.orderNo || '')}</td>
+    <td>${htmlCell(r.productNo || '')}</td>
+    <td class="left">${htmlCell(r.productName || '')}</td>
+    <td>${htmlCell(r.qty != null && r.qty !== '' ? r.qty : '')}</td>
+    <td></td>
+    <td>${htmlCell(r.result || '')}</td>
+    <td class="left">${htmlCell(r.defect || '')}</td>
+    <td>${htmlCell(r.qc || '')}</td>
+    <td>${htmlCell(r.remark || '')}</td>
+  </tr>`).join('')}
+</table>
+</body>
+</html>`;
+}
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
+  '.wasm': 'application/wasm',
+  '.gz': 'application/gzip',
+};
+
+function serveStatic(req, res, pathname) {
+  let rel = decodeURIComponent(pathname);
+  if (rel === '/' || rel === '') rel = '/index.html';
+  const norm = rel.replace(/\\/g, '/').toLowerCase();
+  // 安全：禁止访问后端目录、数据目录(qc.db)、上级目录
+  if (norm.includes('..') || norm.startsWith('/server/') || norm.startsWith('/data/')) {
+    res.writeHead(403); return res.end('forbidden');
+  }
+  const filePath = path.join(ROOT, rel);
+  if (!filePath.startsWith(ROOT)) { res.writeHead(403); return res.end('forbidden'); }
+  fs.readFile(filePath, (err, buf) => {
+    if (err) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('404 not found'); }
+    const ext = path.extname(filePath).toLowerCase();
+    const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+    // 前端代码类资源禁用缓存，避免手机/浏览器缓存旧版（适配、逻辑改了不生效）
+    if (['.html', '.js', '.css', '.json', '.wasm', '.gz'].includes(ext)) {
+      headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0';
+      headers['Pragma'] = 'no-cache';
+      headers['Expires'] = '0';
+    }
+    res.writeHead(200, headers);
+    res.end(buf);
+  });
+}
+
+/* ════════ 路由 ════════ */
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const p = url.pathname;
+
+  if (p === '/api/health' && req.method === 'GET') return sendJson(res, 200, { ok: true });
+  const supplied = Buffer.from(String(req.headers['x-qc-gateway-token'] || ''));
+  const expected = Buffer.from(GATEWAY_TOKEN);
+  if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return sendJson(res, 403, { error: 'Nexus gateway required' });
+  if (!p.startsWith('/api/')) { res.writeHead(404); return res.end(); }
+
+  try {
+    if (p === '/api/health' && req.method === 'GET') {
+      return sendJson(res, 200, { ok: true, time: new Date().toISOString() });
+    }
+    /* ── 厂区清单（登录页用，无需鉴权）── */
+    if (p === '/api/companies' && req.method === 'GET') {
+      return sendJson(res, 200, { companies: COMPANIES });
+    }
+
+    /* ── 门户 SSO 验票（免登，无需鉴权，不分厂区）── */
+    if (p === '/api/sso-verify' && req.method === 'POST') {
+      const body = await readBody(req);
+      try {
+        const claims = verifyPortalTicket(body && body.ticket);
+        return sendJson(res, 200, {
+          ok: true,
+          user: {
+            username: String(claims.sub),
+            name: String(claims.name || claims.sub),
+            dept: String(claims.dept || ''),
+            role: 'admin',
+            perms: claims.perms || null,
+          },
+          companies: Array.isArray(claims.companies) ? claims.companies : null,
+        });
+      } catch (e) {
+        return sendJson(res, 401, { ok: false, error: String(e && e.message || e) });
+      }
+    }
+
+    /* ── 数据类路由：解析目标厂区（缺省东莞，兼容旧链接）── */
+    const companyId = resolveCompany(url.searchParams);
+    if (companyId === null) {
+      return sendJson(res, 400, { ok: false, error: '未知厂区：' + String(url.searchParams.get('company')) });
+    }
+    const db = getDb(companyId);
+
+    if (p === '/api/bootstrap' && req.method === 'GET') {
+      return sendJson(res, 200, Object.assign({ company: companyId }, getBootstrap(db)));
+    }
+    if (p === '/api/export/records.csv' && (req.method === 'GET' || req.method === 'HEAD' || req.method === 'POST')) {
+      const overlay = req.method === 'POST' ? await readBody(req) : {};
+      if (!Array.isArray(overlay.records || []) || !Array.isArray(overlay.hiddenIds || [])) return sendJson(res, 400, {error:'Invalid export overlay'});
+      const records = getFilteredExportRecords(db, url.searchParams, overlay);
+      const body = buildRecordsCsv(records);
+      return sendDownload(req, res, 'text/csv; charset=utf-8', `${companyName(companyId)}${referenceData(db).count ? "_模板参考_非本厂实绩" : ""}验货明细_${todayStr()}.csv`, body);
+    }
+    if (p === '/api/export/factory-excel.xls' && (req.method === 'GET' || req.method === 'HEAD' || req.method === 'POST')) {
+      const overlay = req.method === 'POST' ? await readBody(req) : {};
+      if (!Array.isArray(overlay.records || []) || !Array.isArray(overlay.hiddenIds || [])) return sendJson(res, 400, {error:'Invalid export overlay'});
+      const records = getFilteredExportRecords(db, url.searchParams, overlay);
+      const from = String(url.searchParams.get('dateFrom') || '').trim();
+      const to = String(url.searchParams.get('dateTo') || '').trim();
+      const span = (from || to) ? `_${from || '起始'}至${to || '今'}` : '_全部';
+      const body = '﻿' + buildFactoryExcelHtml(records);
+      return sendDownload(req, res, 'application/vnd.ms-excel; charset=utf-8', `${companyName(companyId)}${referenceData(db).count ? "_模板参考_非本厂实绩" : ""}品质检验明细统计表${span}.xls`, body);
+    }
+    if (p === '/api/reference-data/clear' && req.method === 'POST') {
+      await readBody(req);
+      return sendJson(res, 200, { ok: true, ...clearReferenceData(db, deleteRecords) });
+    }
+    if (p === '/api/records' && req.method === 'POST') {
+      const body = await readBody(req);
+      const r = mergeRecordChanges(db, Array.isArray(body.records) ? body.records : [],
+        Array.isArray(body.deletedIds) ? body.deletedIds : []);
+      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM records').get().c,
+        ...r });
+    }
+    if (p === '/api/records/delete' && req.method === 'POST') {
+      const body = await readBody(req);
+      const n = deleteRecords(db, Array.isArray(body.ids) ? body.ids : []);
+      return sendJson(res, 200, { ok: true, deleted: n });
+    }
+    if (p === '/api/records/replace' && req.method === 'POST') {
+      const body = await readBody(req);
+      replaceRecords(db, Array.isArray(body.records) ? body.records : []);
+      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM records').get().c });
+    }
+    if (p === '/api/users' && req.method === 'POST') {
+      const body = await readBody(req);
+      replaceUsers(db, Array.isArray(body.users) ? body.users : []);
+      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM users').get().c });
+    }
+    if (p === '/api/partners' && req.method === 'POST') {
+      const body = await readBody(req);
+      replacePartners(db, Array.isArray(body.partners) ? body.partners : []);
+      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM partners').get().c });
+    }
+    if (p === '/api/defects' && req.method === 'POST') {
+      const body = await readBody(req);
+      replaceDefects(db, Array.isArray(body.defectLib) ? body.defectLib : []);
+      return sendJson(res, 200, { ok: true, count: db.prepare('SELECT COUNT(*) c FROM defect_library').get().c });
+    }
+    /* ── AI（阿里百炼，全局共用，不分厂区）── */
+    if (p === '/api/ai/status' && req.method === 'GET') {
+      return sendJson(res, 200, { ready: AI.ready, ocrModel: AI.ocrModel, baseURL: AI.baseURL });
+    }
+    if (p === '/api/ai/reload' && req.method === 'POST') {
+      AI = loadAiConfig();
+      return sendJson(res, 200, { ok: true, ready: AI.ready, ocrModel: AI.ocrModel });
+    }
+    if (p === '/api/ai/ocr-extract' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!body || !body.image) return sendJson(res, 400, { ok: false, error: '缺少 image 字段（base64 dataURL）' });
+      try {
+        const r = await aiVisionExtract(body.image);
+        return sendJson(res, 200, { ok: true, fields: r.fields, usage: r.usage, rawText: r.rawText });
+      } catch (e) {
+        const code = e.code === 'NO_AI' ? 503 : 502;
+        return sendJson(res, code, { ok: false, error: String(e && e.message || e), code: e.code || 'ERR' });
+      }
+    }
+    return sendJson(res, 404, { ok: false, error: 'unknown api route' });
+  } catch (e) {
+    console.error('[api error]', p, e);
+    return sendJson(res, 500, { ok: false, error: String(e && e.message || e) });
+  }
+});
+
+server.listen(PORT, process.env.HOST || '127.0.0.1', () => {
+  console.log('════════════════════════════════════════════');
+  console.log('  兴信 QMS 后端已启动（多厂区模式）');
+  console.log('  本机:   http://localhost:' + PORT + '/index.html');
+  console.log('  数据目录: ' + DATA_DIR);
+  for (const c of COMPANIES) {
+    const b = getBootstrap(getDb(c.id));
+    console.log('  厂区「' + c.name + '」: 记录 ' + b.records.length + ' 条 / 账号 ' + b.users.length + ' 个 / 不良库 ' + b.defectLib.length + ' 条');
+  }
+  console.log('  AI(百炼): ' + (AI.ready ? ('已就绪, 模型 ' + AI.ocrModel) : '未配置(填 ai-config.json 后调 /api/ai/reload)'));
+  console.log('════════════════════════════════════════════');
+});
+
+// The owning API keeps this pipe open. Exit even if that parent is killed,
+// so the next ordinary Nexus restart can bind its own private QC service.
+if (process.env.QC_MANAGED_PARENT === '1') {
+  process.stdin.resume();
+  process.stdin.on('end', () => process.exit(0));
+}

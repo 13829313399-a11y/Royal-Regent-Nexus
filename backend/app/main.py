@@ -12,7 +12,6 @@ from app.api.auth import router as auth_router
 from app.api.assistant import router as assistant_router
 from app.api.document_tools import router as document_tools_router
 from app.api.spreadsheet_merge import router as spreadsheet_merge_router
-from app.api.collaborative_sheets import router as collaborative_sheets_router
 from app.api.online_documents import router as online_documents_router
 from app.api.pdf_rename import router as pdf_rename_router
 from app.api.carton_mark import router as carton_mark_router
@@ -55,6 +54,7 @@ from app.api.internal_quote import (
 from app.api.molding_sample import router as molding_sample_router
 from app.api.pricing import router as pricing_router
 from app.api.qc_inspection import router as qc_inspection_router
+from app.api.qc_department import router as qc_department_router
 from app.api.raw_material import router as raw_material_router
 from app.api.system import router as system_router
 from app.api.work_center import router as work_center_router
@@ -119,7 +119,7 @@ async def three_d_sweep_loop() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def application_lifespan(app: FastAPI):
     import asyncio
 
     init_db()
@@ -169,6 +169,14 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         await hub.stop()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.services.qc_department_runtime import managed_qc_department
+    async with managed_qc_department(settings):
+        async with application_lifespan(app):
+            yield
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -274,7 +282,6 @@ app.include_router(auth_router)
 app.include_router(assistant_router)
 app.include_router(document_tools_router)
 app.include_router(spreadsheet_merge_router)
-app.include_router(collaborative_sheets_router)
 app.include_router(online_documents_router)
 app.include_router(pdf_rename_router)
 app.include_router(carton_mark_router)
@@ -319,6 +326,7 @@ app.include_router(molding_sample_router)
 app.include_router(pricing_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
+app.include_router(qc_department_router)
 app.include_router(system_router)
 app.include_router(work_center_router)
 from app.api.three_d_operations import router as three_d_operations_router
