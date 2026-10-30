@@ -119,7 +119,7 @@ describe('durable supplier change tasks', () => {
     await wrapper.get('[aria-label="SP-1承诺交期"]').setValue('2026-10-29')
     await wrapper.get('[aria-label="SP-1异议说明"]').setValue('请核对纸质要求')
     expect(wrapper.text()).not.toContain('REG-B01')
-    expect(wrapper.emitted('pending-state')!.at(-1)![0]).toEqual({ loading: false, error: '', counts: { REGULAR: 1, SPECIAL: 1, REPLENISHMENT: 1 }, stats: { pending: 2, read: 0, cancellation: 0, disputed: 0, overdue: 2 } })
+    expect(wrapper.emitted('pending-state')!.at(-1)![0]).toEqual({ loading: false, error: '', counts: { REGULAR: 1, SPECIAL: 1, REPLENISHMENT: 1, PRINT: 0 }, stats: { pending: 2, read: 0, cancellation: 0, disputed: 0, overdue: 2 } })
     await wrapper.setProps({ sourceKinds: ['REPLENISHMENT'] })
     expect(wrapper.emitted('pending-state')!.at(-1)![0]).toMatchObject({ stats: { pending: 1, overdue: 1 } })
     expect(wrapper.text()).toContain('REG-B01'); expect(wrapper.find('[aria-label="SP-1异议说明"]').exists()).toBe(false)
@@ -157,5 +157,20 @@ describe('durable supplier change tasks', () => {
     expect(wrapper.text()).toContain('SP-1')
     expect(wrapper.text()).toContain('已同意接单')
     expect(wrapper.text()).not.toContain('同意本版本全部纸品并接单')
+  })
+})
+
+
+describe('印刷拆单供应商生产确认', () => {
+  it('requires explicit produced quantity including zero before accepting', async () => {
+    api.list.mockResolvedValue(workspace(task({ source_kind: 'PRINT', print_split: { id: 'P', factory_id: 'huaxing', order_id: 'O', order_no: 'CT1', contract_no: 'OLD', status: 'SENT', revision: 3, reason: '印刷不同', response_reason: '', original_files: [], targets: [], members: [] } })))
+    const wrapper = setup(); await flushPromises()
+    await click(wrapper, '同意本版本全部纸品并接单')
+    expect(api.respond).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('逐纸品填写')
+    const input=wrapper.find('input[type="number"]')
+    await input.setValue('0')
+    await click(wrapper, '同意本版本全部纸品并接单')
+    expect(api.respond.mock.calls[0]![0]).toMatchObject({ source_kind: 'PRINT', produced_quantities: { PAPER: '0' } })
   })
 })

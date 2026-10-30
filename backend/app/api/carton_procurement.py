@@ -238,6 +238,8 @@ def _ensure_order_deletion_permission(db: Session, user: AuthContext, factory_id
 def get_order_splits(order_no: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
     order = get_order_by_no(db, factory_id, order_no)
+    from app.services.carton_customer_assignment import ensure_customer_operation
+    ensure_customer_operation(db, current_user, factory_id, order.customer_code)
     return order_splits.context(db, factory_id, order_no)
 
 
@@ -245,14 +247,14 @@ def get_order_splits(order_no: str, factory_id: str, db: Session = Depends(get_d
 def post_order_split(order_no: str, payload: SplitCreate, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
     _ensure_order_adjustment_permission(db, current_user, payload.factory_id)
-    return order_splits.create(db, order_no, payload, current_user)
+    raise HTTPException(409, "旧数量归属拆单已停用，请刷新页面，通过订单拆分建立独立子订单")
 
 
 @router.post("/order-splits/{split_id}/confirm")
 def confirm_order_split(split_id: str, payload: SplitAction, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     for permission in ("read", "receipt_write", "inventory_write"):
         _ensure_permission(db, current_user, f"carton_procurement:{permission}", payload.factory_id)
-    return order_splits.act(db, split_id, payload, current_user)
+    raise HTTPException(409, "旧库存归属拆单不再新增过账，请核对历史记录并使用独立订单拆分")
 
 
 @router.post("/order-splits/{split_id}/cancel")
@@ -415,8 +417,11 @@ def get_schedule_orders(factory_id: str, offset: int = Query(0, ge=0), limit: in
     for plan in order_splits.plans(db, factory_id):
         if plan["order_id"] in identifiers:
             splits.setdefault(plan["order_id"], []).append(plan)
+    from app.services.carton_order_split_trace import schedule_split_sources
+    split_sources = schedule_split_sources(db, orders)
     return {"items": [{**{key: getattr(order, key) for key in fields},
-                       "split_records": splits.get(order.id, [])} for order in orders], "total": total}
+                       "split_records": splits.get(order.id, []),
+                       "schedule_split_source": split_sources.get(order.id)} for order in orders], "total": total}
 
 
 @router.post("/orders/selection")
@@ -649,7 +654,8 @@ def post_orders_bulk_cancel(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
-    return [order_out(db, order) for order in bulk_cancel_orders(db, payload, current_user)]
+    from app.services.carton_order_projection import order_page_out
+    return order_page_out(db, bulk_cancel_orders(db, payload, current_user))
 
 
 @router.post("/orders/bulk-submit-supplier", response_model=list[CartonOrderOut])
@@ -659,7 +665,8 @@ def post_orders_bulk_submit_supplier(
     current_user: AuthContext = Depends(get_current_user),
 ):
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
-    return [order_out(db, order) for order in bulk_submit_orders_to_supplier(db, payload, current_user)]
+    from app.services.carton_order_projection import order_page_out
+    return order_page_out(db, bulk_submit_orders_to_supplier(db, payload, current_user))
 
 
 @router.post(
@@ -1788,3 +1795,63 @@ def acknowledge_promise_notice_route(payload: PromiseNoticeAck,
     factory_id = _ensure_permission(db, current_user, "carton_procurement:read", payload.factory_id)
     payload.factory_id = factory_id
     return acknowledge_promise_notice(db, current_user, payload)
+
+# Ordinary splits materialize immediately and reuse standard supplier changes.
+from app.schemas.carton_order_division import OrderDivisionCreate
+from app.services import carton_order_division as divisions
+
+
+@router.get('/orders/{order_no}/independent-splits')
+def independent_split_context(order_no: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return divisions.context(db, current_user, factory_id, order_no)
+
+
+@router.post('/orders/{order_no}/independent-splits', status_code=201)
+def divide_order(order_no: str, payload: OrderDivisionCreate, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return divisions.create(db, order_no, payload, current_user)
+
+
+# Retained proposal endpoints allow previously sent print changes to be resolved.
+from app.schemas.carton_print_split import PrintSplitCreate, PrintSplitAction
+from app.services import carton_print_split as print_splits
+
+
+@router.get('/orders/{order_no}/print-splits')
+def get_print_splits(order_no: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, 'carton_procurement:read', factory_id)
+    order = get_order_by_no(db, factory_id, order_no)
+    from app.services.carton_customer_assignment import ensure_customer_operation
+    ensure_customer_operation(db, current_user, factory_id, order.customer_code)
+    from app.services.carton_asset_access import visible
+    from app.models.carton_mark import CartonMarkAsset
+    from sqlalchemy import select
+    files = [dict(id=file.id, revision=file.revision, file_name=file.file_name, sha256=file.sha256)
+        for file in db.scalars(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory_id,
+            CartonMarkAsset.is_archived.is_(False), CartonMarkAsset.asset_purpose == 'MATERIAL'))
+        if visible(db, current_user, file, view_factory=factory_id)]
+    files.extend(print_splits.material_candidates(db, current_user, factory_id, order.customer_code))
+    current_print = print_splits.order_info(db, order)
+    return dict(revision=order.revision, files=files, inherited_original_files=print_splits.source_files(db, current_user, order), fixed_original_files=current_print["files"] if current_print and current_print["status"] == "ACTIVE" else [], plans=[p for p in print_splits.records(db, factory_id)
+        if p.get('workflow') != 'ORDER' and (p['order_id'] == order.id or any(m['order_id'] == order.id for m in p['members']))])
+
+
+@router.post('/orders/{order_no}/print-splits', status_code=201)
+def post_print_split(order_no: str, payload: PrintSplitCreate, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    _ensure_permission(db, current_user, 'carton_procurement:order_write', payload.factory_id)
+    raise HTTPException(409, '拆单已简化为独立订单，请刷新后从订单的拆单入口确认，不再创建印刷拆单提案')
+
+
+@router.post('/print-splits/{identifier}/{action}')
+def act_print_split(identifier: str, action: Literal['send', 'withdraw'], payload: PrintSplitAction,
+        db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    if action == 'send':
+        _ensure_permission(db, current_user, 'carton_procurement:order_write', payload.factory_id)
+        raise HTTPException(409, '旧拆单草稿不能继续发送，请撤销后使用独立订单拆分')
+    return print_splits.act(db, identifier, action, payload, current_user)
+
+
+@router.get('/print-splits/{identifier}/files/{asset_id}')
+def print_split_file(identifier: str, asset_id: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    asset, frozen = print_splits.download(db, current_user, factory_id, identifier, asset_id)
+    return StreamingResponse(BytesIO(asset.content), media_type=frozen['content_type'],
+        headers={'Content-Disposition': "attachment; filename*=UTF-8''" + url_quote(frozen['file_name'])})

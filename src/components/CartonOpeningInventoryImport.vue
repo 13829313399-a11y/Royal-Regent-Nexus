@@ -17,6 +17,17 @@ const options = reactive({ customer_name: '', warehouse: '', dimension_unit: '' 
 const input = ref<HTMLInputElement | null>(null), file = ref<File | null>(null)
 const preview = ref<OpeningInventoryPreview | null>(null), busy = ref(false), saving = ref(false), reviewed = ref(false)
 const error = ref(''), success = ref('')
+const batchesWorkspace = ref<InstanceType<typeof CartonOpeningInventoryBatches> | null>(null)
+const navigationBlocked = computed(() => busy.value || saving.value || Boolean(file.value || preview.value) || Boolean(batchesWorkspace.value?.navigationBlocked))
+defineExpose({ navigationBlocked })
+function close() {
+  if (busy.value || saving.value || batchesWorkspace.value?.navigationBlocked) {
+    error.value = '请先完成当前处理或关闭整批撤销预览，再返回库存台账。'
+    return
+  }
+  if (file.value && !window.confirm('当前期初库存文件尚未完成导入，确定放弃本次预览并返回吗？')) return
+  emit('close')
+}
 let generation = 0
 const warehouses = computed(() => [...new Set(props.locations.filter(row => row.status !== 'INACTIVE').map(row => row.warehouse))])
 const configured = computed(() => !!(options.dimension_unit && options.currency.trim()))
@@ -80,10 +91,10 @@ function batchReversed() { invalidate(); emit('reversed') }
   <article aria-label="期初库存管理" class="overflow-hidden rounded-xl border border-teal-200 bg-white shadow-sm">
     <header class="flex flex-wrap items-start justify-between gap-3 border-b p-5">
       <div><h2 class="text-lg font-bold text-slate-950">期初库存管理</h2><p class="mt-1 text-xs leading-6 text-slate-500">登记系统启用时实际剩余的库存。数量取“结余”，不重放历史入库和出库，不计为本期供应商进货。</p></div>
-      <button type="button" :disabled="saving" class="rounded-lg border px-3 py-2 text-xs disabled:opacity-40" @click="emit('close')">返回库存台账</button>
+      <button type="button" :disabled="saving || busy" class="rounded-lg border px-3 py-2 text-xs disabled:opacity-40" @click="close">返回库存台账</button>
     </header>
     <div class="space-y-5 p-5">
-      <CartonOpeningInventoryBatches :factory-id="factoryId" :viewer-key="viewerKey || ''" :connected="connected" :can-manage="canImport" :refresh-key="batchRefresh" @reversed="batchReversed" />
+      <CartonOpeningInventoryBatches ref="batchesWorkspace" :factory-id="factoryId" :viewer-key="viewerKey || ''" :connected="connected" :can-manage="canImport" :refresh-key="batchRefresh" @reversed="batchReversed" />
       <section class="rounded-xl bg-slate-50 p-4">
         <h3 class="mb-3 text-sm font-bold text-slate-800">1. 选择本批库存的共同资料</h3>
         <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

@@ -287,6 +287,9 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
+    if permission_code in {'carton_asset:read','carton_asset:manage','carton_asset:confirm'}:
+        return ScopePolicy(('sales-business','pmc-warehouse','carton','*'),
+            guidance='部门原件权限；供应商同时校验东康服务范围，确认权限不授予供应商，不等于QC放行')
     if permission_code.startswith('indonesia_material:'):
         action = permission_code.partition(':')[2]
         departments = ('sales-business', 'pmc-warehouse') if action in {'read', 'receipt_confirm'} else ('sales-business',)

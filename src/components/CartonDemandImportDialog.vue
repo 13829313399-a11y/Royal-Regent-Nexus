@@ -64,7 +64,7 @@ async function submit() {
   }
   busy.value = true; frozen.value = true; error.value = ''
   try {
-    const result = await cartonBatchOrdersApi.import(attempt.body as DemandBody, attempt.file!, controller.signal)
+    const result = await cartonBatchOrdersApi.importDemands(attempt.body as DemandBody, attempt.file!, controller.signal)
     pendingCartonBatches.delete(key)
     if (token === generation) { emit('saved', result); emit('update:open', false) }
   } catch (cause) {

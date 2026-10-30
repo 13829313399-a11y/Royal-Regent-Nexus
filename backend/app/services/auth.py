@@ -10,7 +10,7 @@ from io import BytesIO
 
 from fastapi import Depends, HTTPException, Request
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -65,6 +65,8 @@ from app.services.permission_codes import (
     APPLICATION_PERMISSION_CODES,
     CUTTING_OPS_PERMISSION_CODES,
     CARTON_SUPPLIER_PERMISSION_CODES,
+    CARTON_SUPPLIER_MATERIAL_PERMISSIONS,
+    CARTON_ASSET_PERMISSION_CODES,
     UV_OPS_PERMISSION_CODES,
     INTERNAL_QUOTE_PERMISSION_CODES,
     INTERNAL_QUOTE_SELF_REVIEW_PERMISSION_CODE,
@@ -629,6 +631,7 @@ POSITION_DEPARTMENT_ALIAS_GROUPS = (
 )
 POSITION_DEPARTMENT_SENSITIVE_PERMISSION_CODES = frozenset(
     {
+        *CARTON_ASSET_PERMISSION_CODES,
         'indonesia_material:read',
         'indonesia_material:write',
         'indonesia_material:receipt_confirm',
@@ -1889,6 +1892,15 @@ def ensure_authz_startup_safety(db: Session) -> None:
             select(AuthUserPermissionOverride).where(
                 AuthUserPermissionOverride.permission_id.notin_(
                     select(AuthPermission.id).where(AuthPermission.code.in_(CARTON_SUPPLIER_PERMISSION_CODES))
+                ),
+                # Global external material grants are always guarded together
+                # with supplier access, and stripped from internal departments.
+                # A revoked supplier grant leaves these dormant, not a startup failure.
+                ~and_(
+                    AuthUserPermissionOverride.permission_id.in_(select(AuthPermission.id).where(
+                        AuthPermission.code.in_(CARTON_SUPPLIER_MATERIAL_PERMISSIONS))),
+                    AuthUserPermissionOverride.factory_id == "*",
+                    AuthUserPermissionOverride.department == "*",
                 ),
                 AuthUserPermissionOverride.status == "active",
                 AuthUserPermissionOverride.effect.in_({"allow", "deny"}),

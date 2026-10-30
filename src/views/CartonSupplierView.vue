@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import CartonPrintSplitInfo from '@/components/CartonPrintSplitInfo.vue'
 import CartonSupplierPurchaseOrders from '@/components/CartonSupplierPurchaseOrders.vue'
 import CartonOrderDetailContent from '@/components/CartonOrderDetailContent.vue'
 import '@/features/carton-procurement/layout.css'
@@ -136,7 +137,7 @@ async function loadUnifiedDeliveries() {
 }
 const unifiedShipmentRows = computed(() => unifiedDeliveries.value.map(group => ({ ...toPortalShipment(group), factory_id: group.factory_id, group })))
 const matchingUnifiedShipments = computed(() => filterShipments(unifiedShipmentRows.value.filter(row => !factoryFilter.value || row.factory_id === factoryFilter.value), shipmentFilters.value))
-type OrderMarkCount = { current: number; history: number }
+type OrderMarkCount = { current: number; history: number; draft: number; pending: number; ready: number }
 type FactoryMarkState = { loading: boolean; error: string; counts: Record<string, OrderMarkCount> }
 const orderMarks = ref<Record<string, FactoryMarkState>>({})
 let orderMarksController = new AbortController()
@@ -152,8 +153,9 @@ function updateOrderMarks(factoryId: string, assets: SupplierMarkAsset[]) {
   for (const asset of assets) {
     const keys = new Set(asset.orders.map(order => markOrderKey(order.id, order.issue_id)))
     for (const key of keys) {
-      const count = counts[key] ??= { current: 0, history: 0 }
+      const count = counts[key] ??= { current: 0, history: 0, draft: 0, pending: 0, ready: 0 }
       count[asset.workflow?.status === 'HISTORY' ? 'history' : 'current']++
+      if (asset.workflow?.status !== 'HISTORY') count[asset.workflow?.status === 'READY' ? 'ready' : asset.workflow?.status === 'PENDING' ? 'pending' : 'draft']++
     }
   }
   orderMarks.value[factoryId] = { loading: false, error: '', counts }
@@ -172,13 +174,15 @@ async function loadOrderMarks(scopes: string[], token: number) {
   }))
 }
 function orderMarkLabel(order: SupplierOrder) {
+  if (order.print_split?.files.length) return `固定印刷资料 ${order.print_split.files.length} 份`
   const state = orderMarks.value[order.factory_id]
   if (!state || state.loading) return '查询中…'
   if (state.error) return '资料查询失败'
   const count = state.counts[markOrderKey(order.id, order.issue_id)]
-  return count?.current ? `已绑定 ${count.current} 份` : count?.history ? `仅历史资料 ${count.history} 份` : '未绑定'
+  return count?.current ? `有资料 ${count.current} 份 · ${[count.ready ? `已确认 ${count.ready}` : '', count.pending ? `待确认 ${count.pending}` : '', count.draft ? `初稿 ${count.draft}` : ''].filter(Boolean).join(' / ')}` : count?.history ? `仅历史资料 ${count.history} 份` : '暂无资料'
 }
 function orderHasMarks(order: SupplierOrder) {
+  if (order.print_split?.files.length) return true
   const state = orderMarks.value[order.factory_id]
   return !state?.loading && !state?.error && Boolean(state?.counts[markOrderKey(order.id, order.issue_id)]?.current)
 }
@@ -208,11 +212,11 @@ function toggleCollaboration(category: typeof collaborationCategory.value) {
   collaborationExpanded.value = category !== collaborationCategory.value || !collaborationExpanded.value
   collaborationCategory.value = category
 }
-const changeSourceKinds = computed<SupplierChangeTask['source_kind'][]>(() => collaborationCategory.value === 'REPLENISHMENT' ? ['REPLENISHMENT'] : ['REGULAR', 'SPECIAL'])
-const changePendingState = ref({ loading: true, error: '', counts: { REGULAR: 0, SPECIAL: 0, REPLENISHMENT: 0 } })
+const changeSourceKinds = computed<SupplierChangeTask['source_kind'][]>(() => collaborationCategory.value === 'REPLENISHMENT' ? ['REPLENISHMENT'] : ['REGULAR', 'SPECIAL', 'PRINT'])
+const changePendingState = ref({ loading: true, error: '', counts: { REGULAR: 0, SPECIAL: 0, REPLENISHMENT: 0, PRINT: 0 } })
 function changePendingLabel(category: 'ORDERS' | 'REPLENISHMENT') {
   const state = changePendingState.value
-  return discovering.value || state.loading ? '读取中…' : membershipReadError.value || state.error ? '暂不可用' : `${category === 'ORDERS' ? state.counts.REGULAR + state.counts.SPECIAL : state.counts.REPLENISHMENT} 项待确认`
+  return discovering.value || state.loading ? '读取中…' : membershipReadError.value || state.error ? '暂不可用' : `${category === 'ORDERS' ? state.counts.REGULAR + state.counts.SPECIAL + (state.counts.PRINT || 0) : state.counts.REPLENISHMENT} 项待确认`
 }
 const purchaseSelection = ref<{ factoryId: string; orderNo: string } | null>(null)
 const activeTab = ref<'orders' | 'shipments' | 'documents' | 'activity' | 'settlements'>('orders')
@@ -367,7 +371,7 @@ watch(importContext, () => {
   collaborationCategory.value = 'ORDERS'; collaborationExpanded.value = false; materialHistory.value = false; workspaceReadError.value = ''; membershipReadError.value = ''
   acceptSpecialKey.value = ''; specialRetries.clear(); unresolvedSpecialRequests.clear(); completedAcceptances.clear(); bulkVersions.clear()
   for (const key of Object.keys(specialDates)) delete specialDates[key]
-  changePendingState.value = { loading: true, error: '', counts: { REGULAR: 0, SPECIAL: 0, REPLENISHMENT: 0 } }
+  changePendingState.value = { loading: true, error: '', counts: { REGULAR: 0, SPECIAL: 0, REPLENISHMENT: 0, PRINT: 0 } }
   priceCorrectionOpen.value = false; priceCorrectionLineId.value = ''; priceCorrectionFactory.value = ''
   selectedPriceFactory.value = ''
   priceReviewState.value = { factoryId: '', loading: true, readError: '', error: '', pendingCount: null, canRead: true }
@@ -724,7 +728,7 @@ function supplierRow(entry: OrderEntry): SupplierRowPresentation {
     return { orderNo: row.request_no, factory: factoryDisplayName(row.factory_id), kind: specialKinds[row.kind] || row.kind, customer: row.customer_name || '未关联客户', identity: row.request_no, context: '需求人 ' + row.requester_name, items: [...new Set(row.lines.map(line => line.item_no).filter(Boolean))].join(' · ') || '未填写货号', product: row.purpose || '', marks: marks.size ? '已绑定 ' + marks.size + ' 份' : '未绑定', marksTone: marks.size ? 'bg-teal-50 text-teal-800 hover:bg-teal-100' : 'bg-slate-100 text-slate-600', orderDate: row.created_at ? formatBusinessDate(row.created_at) : '历史未记录', plannedDate: row.required_date || '待确认', due: dueReminder(due).label, dueTone: dueReminderClass(due), differences: difference ? [difference] : [], progress: active.length + ' 条有效 · ' + (specialSupplierOrigin(row) ? '供应商原送货来源' : (specialSupplierAccepted(row) ? active.length : 0) + ' 条已接'), lines: active.map((line, index) => ({ id: line.id || String(index), label: line.packaging_type, required: Number(line.quantity), received: Number(line.received_quantity || 0), inTransit: specialTransit(line), unit: line.unit })), status: specialStatus(row), statusTone: stageClass(specialStage(row)), notice: row.supplier_confirmation?.status === 'DISPUTED' ? row.supplier_confirmation.reason : '', noticeTone: 'text-red-700' }
   }
   const row = entry.regular!
-  return { orderNo: row.order_no, factory: factoryDisplayName(row.factory_id), kind: '正单', customer: row.customer_name, identity: row.contract_no, context: '客户 PO ' + (row.customer_po || '纸箱订单未填写'), items: row.item_no, product: row.product_name, marks: orderMarkLabel(row), marksHelp: orderMarks.value[row.factory_id]?.error, marksTone: orderMarks.value[row.factory_id]?.error ? 'bg-red-50 text-red-700' : orderHasMarks(row) ? 'bg-teal-50 text-teal-800 hover:bg-teal-100' : 'bg-slate-100 text-slate-600', orderDate: row.order_date || '历史未记录', plannedDate: row.planned_date || '待确认', due: dueReminder(row).label, dueTone: dueReminderClass(row), differences: orderPromiseDifferences(row), progress: row.lines.filter(line => Number(line.required_quantity) > 0).length + ' 条有效 · ' + row.lines.filter(line => Number(line.required_quantity) > 0 && line.accepted).length + ' 条已接', lines: progressLines(row).map(line => ({ id: line.id, label: line.packaging_type, required: Number(line.required_quantity), received: Number(line.received_quantity), inTransit: Number(line.in_transit_quantity), unit: line.unit })), status: orderStatus(row), statusTone: statusClass(row), notice: row.cancellation_notice ? row.cancellation_notice.acknowledged ? '取消通知已收到' : row.cancellation_notice.issued ? '待确认收到取消通知' : '取消变更待生成' : '', noticeTone: row.cancellation_notice?.acknowledged ? 'text-emerald-700' : 'text-red-700' }
+  return { orderNo: row.order_no, factory: factoryDisplayName(row.factory_id), kind: '正单', customer: row.customer_name, identity: row.contract_no, context: (row.order_split?.source_order_no ? '拆自 ' + row.order_split.source_contract_no + ' · ' : '') + (row.schedule_split_source ? '排期拆自 ' + row.schedule_split_source.source_contract_no + ' · ' : '') + (row.print_split ? (row.print_split.role === 'CHILD' ? '拆自 ' + row.print_split.source_contract_no : '拆单 → ' + row.print_split.targets.join('、')) + ' · ' : '') + '客户 PO ' + (row.customer_po || '纸箱订单未填写'), items: row.item_no, product: row.product_name, marks: orderMarkLabel(row), marksHelp: row.print_split?.files.length ? '查看供应商确认的固定印刷版本' : orderMarks.value[row.factory_id]?.error, marksTone: !row.print_split?.files.length && orderMarks.value[row.factory_id]?.error ? 'bg-red-50 text-red-700' : orderHasMarks(row) ? 'bg-teal-50 text-teal-800 hover:bg-teal-100' : 'bg-slate-100 text-slate-600', orderDate: row.order_date || '历史未记录', plannedDate: row.planned_date || '待确认', due: dueReminder(row).label, dueTone: dueReminderClass(row), differences: orderPromiseDifferences(row), progress: row.lines.filter(line => Number(line.required_quantity) > 0).length + ' 条有效 · ' + row.lines.filter(line => Number(line.required_quantity) > 0 && line.accepted).length + ' 条已接', lines: progressLines(row).map(line => ({ id: line.id, label: line.packaging_type, required: Number(line.required_quantity), received: Number(line.received_quantity), inTransit: Number(line.in_transit_quantity), unit: line.unit })), status: orderStatus(row), statusTone: statusClass(row), notice: row.cancellation_notice ? row.cancellation_notice.acknowledged ? '取消通知已收到' : row.cancellation_notice.issued ? '待确认收到取消通知' : '取消变更待生成' : '', noticeTone: row.cancellation_notice?.acknowledged ? 'text-emerald-700' : 'text-red-700' }
 }
 function showEntryDetail(entry: OrderEntry, pinned = false) {
   if (detailPinned.value && !pinned) return
@@ -1399,6 +1403,9 @@ async function download(id: string, factoryId: string, filename: string) {
           <CartonSupplierPurchaseOrders v-if="purchaseSelection" :key="purchaseSelection.factoryId + purchaseSelection.orderNo" :factory-id="purchaseSelection.factoryId" :order-no="purchaseSelection.orderNo" @close="purchaseSelection = null" />
           <CartonOrderDetailDialog v-if="detailOrder || specialSelection" data-testid="supplier-order-detail-overlay" :pinned="detailPinned" :title="'订单明细 · ' + factoryDisplayName(detailOrder?.factory_id || specialSelection!.factoryId) + ' · ' + (detailOrder?.customer_name || detailSpecial?.customer_name || '未关联客户')" close-label="关闭供应商订单明细" @close="closeOrderDetail">
             <template v-if="detailOrder">
+              <p v-if="detailOrder.schedule_split_source" class="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">排期拆单来源：{{ detailOrder.schedule_split_source.source_contract_no }} → {{ detailOrder.contract_no }}。按本合同及对应资料核对印刷、送货，勿与来源单混合。</p>
+              <p v-if="detailOrder.order_split?.source_order_no" class="rounded-lg bg-sky-50 p-3 text-sm text-sky-900">拆单来源：{{ detailOrder.order_split.source_contract_no }}（{{ detailOrder.order_split.source_order_no }}）。本单独立送货及收料。</p>
+              <CartonPrintSplitInfo v-if="detailOrder.print_split" :info="detailOrder.print_split" :factory="detailOrder.factory_id" supplier />
               <CartonOrderDetailContent :fields="[{ label: '客户', value: detailOrder.customer_name }, { label: '订单类型', value: '正单' }, { label: '合同号', value: detailOrder.contract_no }, { label: '状态', value: orderStatus(detailOrder) }, { label: '货号', value: detailOrder.item_no }, { label: '产品名称', value: detailOrder.product_name }, { label: '客户 PO', value: detailOrder.customer_po || '纸箱订单未填写' }, { label: '下单日期', value: detailOrder.order_date || '历史未记录' }, { label: '计划交期', value: detailOrder.planned_date || '待确认' }, { label: '纸箱采购单据', value: detailOrder.document_no }]" :rows="detailOrder.lines.map(line => ({ id: line.id, label: line.packaging_type + ' · ' + line.child_no, quality: line.paper_quality, specification: line.specification + ' ' + line.dimension_unit, unit: line.unit, rule: '', required: Number(line.required_quantity), received: Number(line.received_quantity), remaining: Math.max(0, Number(line.required_quantity) - Number(line.received_quantity)), progress: 0, note: line.shipping_blocked_reason, inTransit: Number(line.in_transit_quantity), remainingToShip: Number(line.remaining_to_ship), acceptance: Number(line.required_quantity) <= 0 ? '无需接单' : line.accepted ? '已确认' : '待确认', promised: Number(line.required_quantity) <= 0 ? '需求已归零' : line.promised_date || '未承诺' }))" supplier>
 <template #status>
               <p v-if="detailOrder.awaiting_issue" class="text-xs font-semibold text-amber-700">订单有尚未生成的变更，旧承诺暂停执行；请等待新版本生成后重新确认接单。</p><p v-else-if="!open(detailOrder)" class="text-xs text-slate-500">{{ detailOrder.status === 'COMPLETED' ? '订单已收齐' : '订单已取消' }}，不可接单或发货。</p>

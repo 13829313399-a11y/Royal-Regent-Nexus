@@ -10,6 +10,7 @@ from app.services.iam_scope import (
     ScopeMode,
 )
 from app.services.permission_codes import (
+    CARTON_ASSET_PERMISSION_CODES,
     INDONESIA_MATERIAL_PERMISSION_CODES,
     WAREHOUSE_OPERATIONS_PERMISSION_CODES,
     APPLICATION_PERMISSION_CODES,
@@ -207,6 +208,7 @@ GENERAL_MANAGER_EXCLUDED_BUSINESS_PERMISSION_CODES: frozenset[str] = frozenset(
         # Request-only access stays explicit; existing order writers already submit.
         *CARTON_SPECIAL_REQUEST_PERMISSION_CODES,
         # New material-ledger roles are granted explicitly at business cutover.
+        *CARTON_ASSET_PERMISSION_CODES,
         *INDONESIA_MATERIAL_PERMISSION_CODES,
         *WAREHOUSE_OPERATIONS_PERMISSION_CODES,
         *UV_OPS_PERMISSION_CODES,
@@ -247,6 +249,7 @@ ENGINEERING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_SUPERVISOR_PERMISSION_CODES = (
+    *CARTON_ASSET_PERMISSION_CODES,
     "customer_price:settings_read",
     "customer_price:settings_manage",
     "customer_order:write",
@@ -281,6 +284,7 @@ SALES_SUPERVISOR_PERMISSION_CODES = (
 )
 
 SALES_BUSINESS_PERMISSION_CODES = (
+    *CARTON_ASSET_PERMISSION_CODES,
     "customer_price:settings_read",
     "customer_order:write",
     "customer_order:dispatch",
@@ -376,6 +380,7 @@ MOLDING_SUPERVISOR_PERMISSION_CODES = (
 )
 
 WAREHOUSE_PERMISSION_CODES = (
+    *CARTON_ASSET_PERMISSION_CODES,
     'fabric_operations:read', 'fabric_operations:operate',
     'semi_operations:read', 'semi_operations:operate',
     *FABRIC_WAREHOUSE_PERMISSION_CODES,
@@ -406,6 +411,7 @@ QA_CLERK_PERMISSION_CODES = (
     "carton_mark:photo_upload",
 )
 CARTON_WAREHOUSE_PERMISSION_CODES = (
+    *CARTON_ASSET_PERMISSION_CODES,
     "customer_order:inbox_read",
     "customer_order:inbox_receive",
     PRODUCTION_TASK_READ_PERMISSION_CODE,

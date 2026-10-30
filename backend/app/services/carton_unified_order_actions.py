@@ -3,6 +3,7 @@ import hashlib
 from fastapi import HTTPException
 from app.schemas import carton_procurement as regular_schema, carton_special_requests as special_schema
 from app.services import carton_procurement as core, carton_special_requests as special
+from app.services.carton_order_projection import order_page_out
 
 
 def selected(db, user, payload):
@@ -17,7 +18,7 @@ def selected(db, user, payload):
                 if error.status_code == 404: continue
                 raise
             core.ensure_customer_operation(db, user, payload.factory_id, row.customer_code)
-            result.append({"kind": "PURCHASE", "order": core.order_out(db, row)})
+            result.append({"kind": "PURCHASE", "order": row})
         else:
             try:
                 row = special.detail(db, user, payload.factory_id, item.id)
@@ -26,6 +27,10 @@ def selected(db, user, payload):
                 raise
             if row["kind"] != item.kind or row["deleted"]: continue
             result.append({"kind": item.kind, "special": row})
+    projected = iter(order_page_out(db, [item["order"] for item in result if item["kind"] == "PURCHASE"]))
+    for item in result:
+        if item["kind"] == "PURCHASE":
+            item["order"] = next(projected)
     return result
 
 

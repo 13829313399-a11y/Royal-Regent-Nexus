@@ -118,6 +118,7 @@ def test_fixed_system_position_definition_contract():
             *permission_codes.CUTTING_OPS_PERMISSION_CODES,
             *permission_codes.UV_OPS_PERMISSION_CODES,
             *permission_codes.CARTON_SUPPLIER_PERMISSION_CODES,
+            *permission_codes.CARTON_ASSET_PERMISSION_CODES,
             *permission_codes.CARTON_SPECIAL_REQUEST_PERMISSION_CODES,
             *permission_codes.WAREHOUSE_OPERATIONS_PERMISSION_CODES,
         )

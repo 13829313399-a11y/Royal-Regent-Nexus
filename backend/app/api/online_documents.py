@@ -172,6 +172,15 @@ def share(document_id: str, payload: Grants, user: User, db: DB, factory_id: str
     return service.share(db, service.get(db, user, factory_id, document_id, lock=True, owner=True), user, payload.grants, payload.version)
 
 
+@router.post("/{document_id}/prepare-sharing")
+def prepare_sharing(document_id: str, payload: Grants, request: Request, user: User, db: DB, factory_id: str):
+    session = db.scalar(select(AuthSession).where(AuthSession.token_hash == auth.hash_session_token(request.cookies.get(auth.SESSION_COOKIE_NAME, ""))))
+    if not session or session.user_id != user.id or session.status != "active":
+        raise HTTPException(401, "请重新登录")
+    return service.prepare_sharing(db, service.get(db, user, factory_id, document_id, lock=True, owner=True),
+                                   user, payload.grants, payload.version, session.id)
+
+
 @router.patch("/{document_id}/title")
 def rename(document_id: str, payload: RenameDocument, user: User, db: DB, factory_id: str):
     return service.rename(db, service.get(db, user, factory_id, document_id, lock=True, owner=True),

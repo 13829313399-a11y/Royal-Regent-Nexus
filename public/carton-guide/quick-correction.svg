@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="470" viewBox="0 0 1080 470" role="img" aria-labelledby="title desc">
+  <title id="title">加单、退货或录错怎么办</title><desc id="desc">需求增加：在订单“更多”里追加；多张订单用“批量追加”。已发订单需供应商核对新版本。；真实退供应商：走退货流程，核对数量、交接和贷项／退款；补单按页面规则另办。；收料录错：在“收料历史”看明细，按权限冲销后重新登记；价格问题进入现有核价或更正流程。</desc>
+  <rect width="1080" height="470" rx="20" fill="#f1f5f9"/>
+  <g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif">
+    <text x="28" y="43" font-size="27" font-weight="700" fill="#0f172a">加单、退货或录错怎么办</text>
+    <text x="28" y="74" font-size="17" fill="#64748b">操作示意 · 按 1 → 2 → 3 办理，具体按钮以当前页面为准</text>
+    <rect x="28" y="100" width="328" height="266" rx="16" fill="white" stroke="#cbd5e1"/>
+      <circle cx="64" cy="134" r="18" fill="#0f766e"/>
+      <text x="64" y="141" text-anchor="middle" fill="white" font-size="21" font-weight="700">1</text>
+      <text x="94" y="141" fill="#0f766e" font-size="19" font-weight="700">先打开 / 选择</text>
+      <text x="50" y="185" font-size="20" fill="#334155"><tspan x="50" dy="0">需求增加：在订单“更多”里追</tspan><tspan x="50" dy="32">加；多张订单用“批量追加”。</tspan><tspan x="50" dy="32">已发订单需供应商核对新版本。</tspan></text>
+      <path d="M360 227 h10 m-4 -5 5 5 -5 5" stroke="#0f766e" fill="none" stroke-width="2"/><rect x="376" y="100" width="328" height="266" rx="16" fill="white" stroke="#cbd5e1"/>
+      <circle cx="412" cy="134" r="18" fill="#0f766e"/>
+      <text x="412" y="141" text-anchor="middle" fill="white" font-size="21" font-weight="700">2</text>
+      <text x="442" y="141" fill="#0f766e" font-size="19" font-weight="700">再填写 / 核对</text>
+      <text x="398" y="185" font-size="20" fill="#334155"><tspan x="398" dy="0">真实退供应商：走退货流程，核</tspan><tspan x="398" dy="32">对数量、交接和贷项／退款；补</tspan><tspan x="398" dy="32">单按页面规则另办。</tspan></text>
+      <path d="M708 227 h10 m-4 -5 5 5 -5 5" stroke="#0f766e" fill="none" stroke-width="2"/><rect x="724" y="100" width="328" height="266" rx="16" fill="white" stroke="#cbd5e1"/>
+      <circle cx="760" cy="134" r="18" fill="#0f766e"/>
+      <text x="760" y="141" text-anchor="middle" fill="white" font-size="21" font-weight="700">3</text>
+      <text x="790" y="141" fill="#0f766e" font-size="19" font-weight="700">最后处理 / 检查</text>
+      <text x="746" y="185" font-size="20" fill="#334155"><tspan x="746" dy="0">收料录错：在“收料历史”看明</tspan><tspan x="746" dy="32">细，按权限冲销后重新登记；价</tspan><tspan x="746" dy="32">格问题进入现有核价或更正流程。</tspan></text>
+      <rect x="28" y="382" width="1024" height="70" rx="12" fill="#ccfbf1"/><text x="48" y="408" font-size="20" fill="#115e59"><tspan x="48" dy="0">原记录保留，新需求、退货和更正各有依据。</tspan></text>
+  </g></svg>

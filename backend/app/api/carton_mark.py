@@ -83,18 +83,111 @@ from app.schemas.carton_mark import CartonMarkAssetSharing, CartonMarkBindingCon
 from app.services import carton_mark_sharing as sharing
 from app.schemas.carton_mark import CartonScheduleMarksOut
 
+# v1a backend only. v1b will reuse one upload window for these endpoints.
+from app.schemas import carton_asset_quick as quick_schema
+from app.services import carton_asset_quick as quick_assets, carton_asset_access as asset_access
+
+
+@router.post('/api/carton-mark/assets/quick')
+async def quick_upload(request: Request, factory_id: str, metadata: str = Form(...), file: UploadFile | None = File(None),
+    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    try: body=quick_schema.Upload.model_validate_json(metadata)
+    except ValidationError as exc: raise HTTPException(422,'快速资料参数不正确') from exc
+    asset_access.writes()
+    if body.owner_department=='supplier':asset_access.owner(db,user,factory_id,'supplier',supplier=True)
+    else:asset_access.owner(db,user,factory_id,body.owner_department)
+    content=await file.read(20*1024*1024+1) if file else None
+    prepared=await run_in_threadpool(quick_assets.prepare,body,file.filename if file else None,content)
+    return quick_assets.save(db,user,factory_id,body,prepared,lambda:get_current_user(request,db))
+
+
+@router.get('/api/carton-mark/assets/quick/candidates')
+def quick_candidates(factory_id: str, contract_number: str = Query('',max_length=128), owner_department: str | None = None,
+    target_scope: str = Query('ALL',pattern='^(ALL|PENDING_SCHEDULE)$'), asset_id: str = Query('',max_length=96),
+    db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_asset_targets
+    department,_=asset_access.owner(db,user,factory_id,owner_department,supplier=owner_department=='supplier')
+    supplier=quick_assets.supplier_for(db,user,factory_id,department)
+    retained=None
+    if asset_id:
+        from app.models.carton_mark import CartonMarkAsset
+        retained=db.get(CartonMarkAsset,asset_id)
+        if not retained:raise HTTPException(404,'资料不存在')
+        asset_access.ensure(db,user,retained,write=True,supplier=supplier,view_factory=factory_id,collaborate=True)
+    rows=carton_asset_targets.candidates(db,user,factory_id,contract_number,supplier=supplier,scope=target_scope,retain=retained)
+    if supplier:rows=[{k:v for k,v in row.items() if k not in {'customer_code','identity','revision','supplier_id'}} for row in rows]
+    return dict(items=rows,total=len(rows))
+
+
+@router.get('/api/carton-mark/assets/quick')
+def quick_list(factory_id: str,owner_department: str | None = None,history: bool = False,
+    db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
+    return quick_assets.listing(db,user,factory_id,owner_department,history=history)
+
+
+def _quick_source(db,user,factory,identifier,supplier_view):
+    from app.models.carton_mark import CartonMarkAsset
+    asset=db.get(CartonMarkAsset,identifier)
+    if not asset:raise HTTPException(404,'资料不存在')
+    supplier=quick_assets.supplier_for(db,user,factory,'supplier') if supplier_view else None
+    if supplier_view and asset.factory_id!=factory:raise HTTPException(404,'资料不属于当前厂区')
+    asset_access.ensure(db,user,asset,supplier=supplier,view_factory=factory)
+    return asset,supplier
+
+
+@router.get('/api/carton-mark/assets/quick/{identifier}')
+def quick_detail(identifier: str,factory_id: str,supplier_view: bool = False,
+    db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
+    asset,supplier=_quick_source(db,user,factory_id,identifier,supplier_view)
+    return quick_assets.output(db,user,asset,supplier=supplier,view_factory=factory_id)
+
+
+@router.get('/api/carton-mark/assets/quick/{identifier}/document')
+def quick_document(identifier: str,factory_id: str,supplier_view: bool = False,preview: bool = False,
+    db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
+    asset,_=_quick_source(db,user,factory_id,identifier,supplier_view)
+    disposition='inline' if preview and asset.kind in {'text','pdf','image'} else 'attachment'
+    return Response(asset.content,media_type=asset.content_type,headers={
+        'Content-Disposition':disposition+"; filename*=UTF-8''"+url_quote(asset.file_name,safe=''),
+        'X-Content-Type-Options':'nosniff','Cache-Control':'private, no-store','X-Content-SHA256':asset.sha256,
+        'Content-Security-Policy':"sandbox; default-src 'none'"})
+
+
+@router.post('/api/carton-mark/assets/quick/{identifier}/associations')
+def quick_associate(request: Request,identifier: str,body: quick_schema.Associate,factory_id: str,
+    db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
+    return quick_assets.associate(db,user,factory_id,identifier,body,lambda:get_current_user(request,db))
+
+
+@router.post('/api/carton-mark/assets/quick/{identifier}/classification')
+def quick_classify(request: Request,identifier: str,body: quick_schema.Classify,factory_id: str,
+    db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
+    return quick_assets.classify(db,user,factory_id,identifier,body,lambda:get_current_user(request,db))
+
+
+@router.post('/api/carton-mark/assets/quick/{identifier}/sharing')
+def quick_sharing(request: Request,identifier: str,body: quick_schema.Sharing,factory_id: str,
+    db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
+    return quick_assets.share(db,user,factory_id,identifier,body,lambda:get_current_user(request,db))
+
 
 def _asset_scope(db, user, factory, write=False):
+    from app.services import carton_asset_access as ownership
+    if ownership.enabled():return ownership.internal_scope(user,factory,'manage' if write else 'read')
     return ensure_carton_mark_scope(db, user,
         "carton_mark:template_upload" if write else "carton_mark:read", factory,
         CARTON_MARK_WRITE_DEPARTMENTS if write else CARTON_MARK_READ_DEPARTMENTS)
 
 
 @router.get("/api/carton-mark/assets", response_model=list[CartonMarkAssetOut])
-def get_assets(factory_id: str, order_id: str | None = None,
+def get_assets(factory_id: str, order_id: str | None = None, asset_ids: str = Query('',max_length=10000),
                db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     factory = _asset_scope(db, user, factory_id)
-    return sharing.filter_internal(db, user, assets.list_assets(db, factory, order_id))
+    identifiers=set(asset_ids.split(',')) if asset_ids else set()
+    if len(identifiers)>100:raise HTTPException(422,'一次最多读取100份关联原件')
+    values=assets.list_assets(db,factory,order_id)
+    if identifiers:values=[value for value in values if value.id in identifiers]
+    return sharing.filter_internal(db,user,values,target_read=bool(order_id or identifiers))
 
 
 @router.get('/api/carton-mark/assets/schedule', response_model=CartonScheduleMarksOut)
@@ -178,7 +271,7 @@ async def upload_assets(factory_id: str = Form(...), files: list[UploadFile] = F
 @router.put('/api/carton-mark/assets/{asset_id}/classification', response_model=CartonMarkAssetOut)
 def classify_asset(asset_id: str, factory_id: str, payload: CartonMarkAssetClassification,
                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
-    factory = _asset_scope(db, user, factory_id, True)
+    factory = asset_access.internal_scope(user,factory_id,'confirm') if asset_access.enabled() and payload.status=='READY' else _asset_scope(db,user,factory_id,True)
     return asset_workflow.classify(db, user, factory, asset_id, payload)
 
 
@@ -234,7 +327,7 @@ def download_asset(asset_id: str, factory_id: str, preview: bool = False,
     factory = _asset_scope(db, user, factory_id)
     asset = assets.active_asset(db, factory, asset_id)
     sharing.ensure_asset_access(db, user, asset)
-    disposition = "inline" if preview and asset.kind in {"pdf", "image"} else "attachment"
+    disposition = "inline" if preview and asset.kind in {"pdf", "image", "text"} else "attachment"
     return Response(content=asset.content, media_type=asset.content_type, headers={
         "Content-Disposition": f"{disposition}; filename*=UTF-8''{url_quote(asset.file_name, safe='')}",
         "X-Content-SHA256": asset.sha256, "Cache-Control": "private, no-store",
@@ -743,3 +836,8 @@ async def batch_auto_check_carton_mark(
         po=po,
         item=item,
     )
+
+
+# Shared order-material workflow, with its own Sales/Warehouse/Supplier scope.
+from app.api.carton_materials import router as materials_router
+router.include_router(materials_router)

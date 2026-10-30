@@ -1,4 +1,5 @@
 import { http } from '@/lib/http'
+import type { WarehouseScheduleSyncResult } from '@/types/customerOrder'
 
 export interface CustomerOrderLedgerHttpClient {
   get<T = unknown>(url: string, config?: unknown): Promise<{ data: T }>
@@ -103,7 +104,7 @@ export function createCustomerOrderLedgerApi(client: CustomerOrderLedgerHttpClie
       return (await client.post<CustomerOrderLedgerLine>(`${base}/shipments/${encodeURIComponent(id)}/reverse?${query({ factory_id: factoryId })}`, payload)).data
     },
     async importConfirmed(customerCode: string, payload: FormData) {
-      return (await client.post<{ items: CustomerOrderLedgerLine[]; created_count: number; existing_count: number; reconciled_count: number }>(
+      return (await client.post<{ items: CustomerOrderLedgerLine[]; created_count: number; existing_count: number; reconciled_count: number; warehouse_sync?: WarehouseScheduleSyncResult }>(
         `${base}/imports/${encodeURIComponent(customerCode)}`,
         payload,
         { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 240_000 },

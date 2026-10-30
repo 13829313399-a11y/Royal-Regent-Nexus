@@ -297,11 +297,11 @@
       {
         "path": "src/views/CartonProcurementView.vue",
         "symbol": "inventoryMoneySummary",
-        "sha256": "a1cca0290fd4b12a7414b3f55e0f1d753918daf537cc7d2afb6750d54800cf38"
+        "sha256": "c79eefc20d3eeb67ccbbb1c7631d3c73ff7cbdb6eac7982e2e9688044e6e0b73"
       }
     ],
-    "knowledge_version": "2026.10.26-core-workflows-v2",
-    "verified_commit": "2065b2d8ed9a448b2f58afd28754703fd8823c56",
+    "knowledge_version": "2026-10-29-carton-asset-v1b",
+    "verified_commit": "working-tree: v1b source contract reviewed; browser visual QA unavailable",
     "status": "verified"
   },
   {

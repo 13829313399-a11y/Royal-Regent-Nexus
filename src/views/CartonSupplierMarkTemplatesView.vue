@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 import CartonMarkAssetLibrary from '@/components/CartonMarkAssetLibrary.vue'
+import CartonQuickAssetLibrary from '@/components/CartonQuickAssetLibrary.vue'
 import CartonSupplierMarkCheck from '@/components/CartonSupplierMarkCheck.vue'
-import CartonSupplierMarkUpload from '@/components/CartonSupplierMarkUpload.vue'
 import CartonSupplierMarkPdf from '@/components/CartonSupplierMarkPdf.vue'
 import CartonMarkManualReview, { type ManualReviewAsset } from '@/components/CartonMarkManualReview.vue'
 import { cartonSupplierPortalApi, type SupplierMarkAsset } from '@/api/cartonSupplierPortal'
@@ -15,7 +15,13 @@ import { factoryContexts } from '@/data/enterpriseMock'
 const route = useRoute()
 const auth = useAuthStore()
 const librarySearch = ref('')
-const tab = ref<'library' | 'check' | 'review' | 'pdf'>('library')
+const tab = ref<'library' | 'check' | 'review' | 'pdf' | 'originals'>('library')
+const sourceSearch = ref('')
+const sourceReturnTab = ref<'check' | 'review' | 'pdf'>('pdf')
+function chooseOriginals() {
+  if (tab.value === 'check' || tab.value === 'review' || tab.value === 'pdf') sourceReturnTab.value = tab.value
+  tab.value = 'originals'
+}
 const generationSource = ref<(SupplierMarkAsset & { factory_id: string }) | null>(null)
 function chooseGeneration(asset: SupplierMarkAsset & { factory_id: string }) { generationSource.value = asset; tab.value = 'pdf' }
 const reviewSources = ref<ManualReviewAsset[]>([])
@@ -81,7 +87,7 @@ async function refresh(restart = false) {
 }
 
 watch(factory, scope => {
-  librarySearch.value = ''
+  librarySearch.value = ''; sourceSearch.value = ''
   clearSource()
   if ((scope === ALL_FACTORIES && memberships.value.length) || memberships.value.some(member => member.factory_id === scope)) {
     error.value = ''; load()
@@ -108,12 +114,12 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-50 p-4 text-slate-800 md:p-8" data-yl-help="carton-supplier.overview">
+  <main class="supplier-materials-page min-h-screen bg-slate-50 p-4 text-slate-800 md:p-8" data-yl-help="carton-supplier.overview">
     <header class="mx-auto mb-6 flex max-w-[1500px] flex-wrap items-center justify-between gap-4">
       <div>
         <RouterLink :to="{ path: '/carton-supplier', query: factory === ALL_FACTORIES ? {} : { factory } }" class="text-sm font-semibold text-teal-700">← 返回供应商协同</RouterLink>
-        <h1 class="mt-2 text-2xl font-bold">箱唛资料库</h1>
-        <p class="mt-1 text-sm text-slate-500">仓库与本供应商共享的资料上传后即可查看，由经办人直接关联正单、样板或杂单，无需关联审批；资料状态与历史保留，QC 核对仍单独进行。</p>
+        <h1 class="mt-2 text-2xl font-bold">箱唛资料与文档工具</h1>
+        <p class="mt-1 text-sm text-slate-500">上传原文件、生成 PDF 或核对资料。资料进度不影响下单或收发货。</p>
       </div>
       <div class="flex w-full flex-wrap items-center gap-3 sm:w-auto">
         <select v-model="factory" aria-label="箱唛资料厂区" :disabled="discovering" class="min-w-0 max-w-full rounded-lg border bg-white p-2">
@@ -130,13 +136,22 @@ onMounted(async () => {
       <p v-if="discovering" role="status" class="p-4 text-sm text-slate-500">正在查询服务厂区…</p>
       <template v-if="memberships.length && factory && !error && !discovering">
         <nav class="mb-4 flex flex-wrap gap-2" aria-label="供应商箱唛工作区"><button type="button" class="rounded-lg border px-4 py-2" :class="tab === 'library' ? 'bg-teal-700 text-white' : 'bg-white'" @click="tab = 'library'">资料库</button><button type="button" class="rounded-lg border px-4 py-2" :class="tab === 'pdf' ? 'bg-teal-700 text-white' : 'bg-white'" @click="tab = 'pdf'">文档生成 PDF</button><button type="button" class="rounded-lg border px-4 py-2" :class="tab === 'check' ? 'bg-teal-700 text-white' : 'bg-white'" @click="tab = 'check'">核对 / 审核记录</button><button type="button" class="rounded-lg border px-4 py-2" :class="tab === 'review' ? 'bg-amber-700 text-white' : 'bg-white'" @click="tab = 'review'">单 PDF / 图片审核</button></nav>
-        <CartonSupplierMarkUpload v-show="tab === 'library'" :factory-ids="factory === ALL_FACTORIES ? memberFactoryIds : [factory]" @uploaded="load" />
+        <CartonQuickAssetLibrary v-show="tab === 'library'" :factory-id="factory === ALL_FACTORIES ? '' : factory" audience="supplier" :refresh-key="refreshKey" :supplier-factories="memberFactoryIds" :search="librarySearch" class="mb-4" @changed="load" />
         <p v-if="reviewMessage" role="status" class="mb-4 rounded-lg bg-teal-50 p-3 text-sm text-teal-800">{{ reviewMessage }}</p>
-        <CartonMarkAssetLibrary v-model:search="librarySearch" v-show="tab === 'library'" :key="`${factory}:${refreshKey}`" :factory-id="factory === ALL_FACTORIES ? '' : factory" :supplier-factories="factory === ALL_FACTORIES ? memberFactoryIds : undefined" supplier read-only supplier-check-enabled @supplier-excel="chooseExcel" @supplier-sources="chooseSources" @supplier-review="chooseReview" @supplier-generate-pdf="chooseGeneration" />
-        <CartonSupplierMarkPdf v-show="tab === 'pdf'" :factory-ids="factory === ALL_FACTORIES ? memberFactoryIds : [factory]" :source="generationSource" @choose="tab = 'library'" @saved="load" @check="chooseSources" />
-        <CartonMarkManualReview v-show="tab === 'review'" :sources="reviewSources" supplier @choose="tab = 'library'" @saved="reviewSaved" />
-        <CartonSupplierMarkCheck v-show="tab === 'check'" :factory-ids="factory === ALL_FACTORIES ? memberFactoryIds : [factory]" :source="source" :pdf-source="pdfSource" :refresh-key="refreshKey" @choose-source="tab = 'library'" @clear-source="clearSource" @clear-pdf-source="pdfSource = null" />
+        <section v-show="tab === 'originals'" data-testid="supplier-original-materials">
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-3"><p class="text-sm text-slate-600">选择用于生成 PDF、核对或审核的原件。日常上传、状态和订单关联在“资料库”办理。</p><button type="button" class="rounded-lg border bg-white px-3 py-2 text-sm" @click="tab = sourceReturnTab">返回文档工具</button></div>
+          <label class="mb-3 block text-xs text-slate-600">搜索文档原件<input v-model="sourceSearch" aria-label="搜索文档原件" placeholder="客户 / 合同 / 货号 / 文件名" class="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm"></label>
+          <CartonMarkAssetLibrary title="选择文档原件" v-model:search="sourceSearch" :key="`${factory}:${refreshKey}`" :factory-id="factory === ALL_FACTORIES ? '' : factory" :supplier-factories="factory === ALL_FACTORIES ? memberFactoryIds : undefined" supplier read-only supplier-check-enabled @supplier-excel="chooseExcel" @supplier-sources="chooseSources" @supplier-review="chooseReview" @supplier-generate-pdf="chooseGeneration" />
+        </section>
+        <CartonSupplierMarkPdf v-show="tab === 'pdf'" :factory-ids="factory === ALL_FACTORIES ? memberFactoryIds : [factory]" :source="generationSource" @choose="chooseOriginals" @saved="load" @check="chooseSources" />
+        <CartonMarkManualReview v-show="tab === 'review'" :sources="reviewSources" supplier @choose="chooseOriginals" @saved="reviewSaved" />
+        <CartonSupplierMarkCheck v-show="tab === 'check'" :factory-ids="factory === ALL_FACTORIES ? memberFactoryIds : [factory]" :source="source" :pdf-source="pdfSource" :refresh-key="refreshKey" @choose-source="chooseOriginals" @clear-source="clearSource" @clear-pdf-source="pdfSource = null" />
       </template>
     </section>
   </main>
 </template>
+
+<style scoped>
+.supplier-materials-page { min-width:0; overflow-wrap:anywhere; }
+.supplier-materials-page>section,.supplier-materials-page header>div { min-width:0; }
+</style>

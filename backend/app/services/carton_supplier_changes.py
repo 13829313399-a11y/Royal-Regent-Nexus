@@ -299,6 +299,18 @@ def workspace(db, user, factory, *, internal=False):
         except HTTPException as exc:
             if exc.status_code not in {403, 404, 409}:
                 raise
+    from app.services import carton_print_split as prints
+    for plan in prints.records(db, factory):
+        if plan.get("workflow") == "ORDER" or plan["supplier_id"] != vendor.id or plan["status"] == "DRAFT":
+            continue
+        if internal:
+            from app.services.carton_customer_assignment import ensure_customer_operation
+            try:
+                ensure_customer_operation(db, user, factory, plan["customer_code"])
+            except HTTPException as exc:
+                if exc.status_code in {403, 404}: continue
+                raise
+        items.append(prints.task(plan, user, internal=internal))
     items.sort(key=lambda item: (not item["pending"], not item["is_cancellation"], item["created_at"], item["source_id"]))
     return {"items": items, "pending_count": sum(item["pending"] for item in items),
         "overdue_count": sum(item["overdue"] for item in items),
@@ -306,6 +318,9 @@ def workspace(db, user, factory, *, internal=False):
 
 
 def respond(db, user, payload):
+    if payload.source_kind == "PRINT":
+        from app.services.carton_print_split import respond as print_response
+        return print_response(db, user, payload)
     from app.services import carton_special_requests as special
     user = special.locked_actor(db, user, payload.factory_id)
     row, version = _source(db, user, payload.factory_id, payload.source_kind, payload.source_id)
@@ -365,6 +380,8 @@ def respond(db, user, payload):
             portal.accept_lines(db, user, BatchCommitmentSave(factory_id=payload.factory_id, lines=selected),
                 commit=False, resolve_dispute=True)
         record_response(db, user, payload.factory_id, payload.source_kind, version.id, "ACCEPTED", promised_date=promise)
+        if payload.source_kind == "REGULAR" and core._purchase_order_snapshot(version).get("order_division_id"):
+            core._refresh_order_statuses(db, {row.id}, user)
     db.flush()
     result = _task(db, user, row, version, payload.source_kind)
     if replay_id:

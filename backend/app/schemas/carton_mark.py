@@ -40,7 +40,7 @@ class CartonMarkAssociations(BaseModel):
 
 
 class CartonMarkAssetUploadOptions(BaseModel):
-    status: Literal['DRAFT', 'PENDING', 'READY'] = 'DRAFT'
+    status: Literal['DRAFT', 'PENDING', 'READY', 'HISTORY'] = 'DRAFT'
     note: str = Field(default='', max_length=500)
     previous_asset_id: str = Field(default='', max_length=96)
     previous_revision: int | None = Field(default=None, ge=1)
@@ -48,6 +48,7 @@ class CartonMarkAssetUploadOptions(BaseModel):
     supplier_id: str = Field(default='', max_length=96)
     request_id: str = Field(default='', max_length=96, pattern=r'^[A-Za-z0-9_-]*$')
     targets: list[CartonMarkAssociationTarget] | None = Field(default=None, max_length=100)
+    owner_department: str | None = Field(default=None, max_length=64)
 
 
 class CartonMarkAssetSharing(BaseModel):
@@ -76,6 +77,9 @@ class CartonMarkAssetOrderOut(BaseModel):
 class CartonMarkAssetOut(BaseModel):
     id: str
     factory_id: str
+    owner_department: str | None = None
+    owner_supplier_id: str | None = None
+    asset_purpose: str = 'MATERIAL'
     file_name: str
     kind: str
     photo_group_id: str | None = None
@@ -113,6 +117,11 @@ class CartonScheduleMarkRow(BaseModel):
     source_row: int
     status: Literal['UPLOADED', 'MISSING', 'REVIEW', 'RESTRICTED']
     asset_ids: list[str]
+    has_materials: bool = False
+    confirmed_count: int = 0
+    pending_count: int = 0
+    draft_count: int = 0
+    status_label: str = ''
 
 
 class CartonScheduleMarkFile(BaseModel):
@@ -124,6 +133,7 @@ class CartonScheduleMarkFile(BaseModel):
 class CartonScheduleMarksOut(BaseModel):
     factory_id: str
     batch_id: str
+    source_policy: str = 'LEGACY'
     rows: list[CartonScheduleMarkRow]
     assets: list[CartonScheduleMarkFile]
 
