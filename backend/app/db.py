@@ -324,10 +324,14 @@ def ensure_carton_mark_library_schema_ready() -> None:
         ).scalar_one_or_none()
         missing = sorted(CARTON_MARK_LIBRARY_REQUIRED_TABLES - table_names)
         if "carton_mark_assets" in table_names:
+            asset_columns={c['name'] for c in inspector.get_columns('carton_mark_assets')}
+            missing.extend('carton_mark_assets.'+c+' (0186)' for c in ('owner_department','owner_supplier_id','asset_purpose') if c not in asset_columns)
             kind_constraint = next((c["sqltext"] for c in inspector.get_check_constraints("carton_mark_assets")
                 if c["name"] == "ck_carton_mark_asset_kind"), "")
             if "'image'" not in kind_constraint:
                 missing.append("carton_mark_assets 图片格式约束")
+            if "'text'" not in kind_constraint:
+                missing.append('carton_mark_assets 纯文字约束 (0186)')
             if "photo_group_id" not in {c["name"] for c in inspector.get_columns("carton_mark_assets")}:
                 missing.append("carton_mark_assets 照片分组字段")
         if missing:
@@ -906,6 +910,7 @@ def init_db() -> None:
         carton_mark,  # noqa: F401
         carton_feedback,  # noqa: F401
         carton_procurement,  # noqa: F401
+        carton_materials,  # noqa: F401
         fabric_procurement,  # noqa: F401
         fabric_receiving,  # noqa: F401
         fabric_master,  # noqa: F401
@@ -1004,6 +1009,8 @@ def init_db() -> None:
                             and not name.startswith("online_document")
                             and (not name.startswith("carton_special_") or "auth_users" not in existing_tables)
                             and (name != "carton_price_reviews" or "auth_users" not in existing_tables)
+                            # Existing stores add the reference cache only through 0185.
+                            and (name != "carton_material_references" or "auth_users" not in existing_tables)
                             and not name.startswith("indonesia_material_")
                             and (not name.startswith(("collab_", "member_")) or not existing_tables)
                             # An existing business store upgrades this new domain explicitly.

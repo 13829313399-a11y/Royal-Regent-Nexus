@@ -57,6 +57,8 @@ MOLDING_SAMPLE_PERMISSION_CODES = (
     "molding_sample:notification_read",
 )
 
+CARTON_ASSET_PERMISSION_CODES = tuple('carton_asset:' + action for action in ('read','manage','confirm'))
+
 CARTON_MARK_PERMISSION_CODES = (
     "carton_mark:read",
     "carton_mark:template_upload",
@@ -108,6 +110,13 @@ CARTON_SUPPLIER_PERMISSION_CODES = (
     "carton_supplier:edit",
     "carton_supplier:approve",
 )
+
+# External material access additionally requires the corresponding supplier
+# capability. Never include internal material confirmation in this exception.
+CARTON_SUPPLIER_MATERIAL_PERMISSIONS = {
+    "carton_asset:read": "carton_supplier:read",
+    "carton_asset:manage": "carton_supplier:edit",
+}
 
 FABRIC_WAREHOUSE_PERMISSION_CODES = (
     "fabric_warehouse:read",
@@ -207,6 +216,7 @@ BUSINESS_PERMISSION_CODES = (
     *INJECTION_SCHEDULING_PERMISSION_CODES,
     *MOLDING_SAMPLE_PERMISSION_CODES,
     *CARTON_MARK_PERMISSION_CODES,
+    *CARTON_ASSET_PERMISSION_CODES,
     *CARTON_SPECIAL_REQUEST_PERMISSION_CODES,
     *CARTON_PROCUREMENT_PERMISSION_CODES,
     *CARTON_SUPPLIER_PERMISSION_CODES,

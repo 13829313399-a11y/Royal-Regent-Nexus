@@ -20,12 +20,13 @@ import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
 import ModuleFeedbackHub from '@/features/module-feedback/ModuleFeedbackHub.vue'
 import type { FeedbackContext } from '@/api/moduleFeedback'
 import CustomerOrderCenterWorkspace from '@/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue'
+import CartonQuickAssetLibrary from '@/components/CartonQuickAssetLibrary.vue'
 import HuakangBJPIntake from '@/components/modules/sales/customer-order-center/HuakangBJPIntake.vue'
 import { customerOrderUsageGuide } from '@/data/salesUsageGuides'
 import { getFactoryScopedRoute } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
 
-export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule' | 'feedback' | 'jp-intake'
+export type CustomerOrderCenterSection = 'dashboard' | 'import' | 'preview' | 'ledger' | 'customer-schedule' | 'exceptions' | 'schedule' | 'feedback' | 'jp-intake' | 'materials'
 
 const appStore = useAppStore()
 const route = useRoute()
@@ -33,6 +34,7 @@ const router = useRouter()
 appStore.setActiveDepartment('sales-business')
 
 const activeSection = ref<CustomerOrderCenterSection>('ledger')
+const materialsSearch = ref('')
 const orderWorkspace = ref<InstanceType<typeof CustomerOrderCenterWorkspace> | null>(null)
 const feedbackHub = ref<InstanceType<typeof ModuleFeedbackHub> | null>(null)
 const feedbackUnread = ref(0)
@@ -53,12 +55,14 @@ const standardNavigationItems = [
   { id: 'customer-schedule' as const, label: '各客排期', icon: CalendarRange },
   { id: 'exceptions' as const, label: '异常与提醒', icon: CircleAlert },
   { id: 'schedule' as const, label: '厂区总排期', icon: CalendarRange },
+  { id: 'materials' as const, label: '箱唛资料', icon: FileInput },
   { id: 'feedback' as const, label: '反馈与答复', icon: MessagesSquare },
 ]
 const navigationItems = computed(() => activeFactory.value.id === 'huakang-b'
   ? [...standardNavigationItems.slice(0, 2), { id: 'jp-intake' as const, label: 'JP问单录入', icon: FileInput }, ...standardNavigationItems.slice(2)]
   : standardNavigationItems)
 watch(() => activeFactory.value.id, () => { if (activeSection.value === 'jp-intake') activeSection.value = 'ledger' })
+watch(() => activeFactory.value.id, () => { materialsSearch.value = '' })
 
 function reportProblem(context?: FeedbackContext) {
   feedbackHub.value?.openComposer(context ?? {
@@ -76,7 +80,7 @@ function navigate(section: CustomerOrderCenterSection) {
 </script>
 
 <template>
-  <div class="customer-order-center" data-yl-help="customer-orders.overview">
+  <div class="customer-order-center" :class="{ 'customer-order-center--materials': activeSection === 'materials' }" data-yl-help="customer-orders.overview">
     <header class="order-topbar">
       <div class="order-topbar__brand">
         <RouterLink :to="departmentRoute" class="order-back-link" aria-label="返回业务部模块中心">
@@ -87,7 +91,8 @@ function navigate(section: CustomerOrderCenterSection) {
 
       <label class="order-global-search">
         <Search aria-hidden="true" />
-        <input type="search" placeholder="全局搜索 P/O#、合同号或产品编号" aria-label="全局搜索订单">
+        <input v-if="activeSection === 'materials'" v-model="materialsSearch" type="search" placeholder="搜索箱唛文件名、合同 / PO、客户或货号" aria-label="搜索箱唛资料">
+        <input v-else type="search" placeholder="全局搜索 P/O#、合同号或产品编号" aria-label="全局搜索订单">
       </label>
 
       <div class="order-topbar__actions">
@@ -170,7 +175,7 @@ function navigate(section: CustomerOrderCenterSection) {
       </nav>
 
       <CustomerOrderCenterWorkspace
-        v-show="activeSection !== 'feedback' && activeSection !== 'jp-intake'"
+        v-show="activeSection !== 'feedback' && activeSection !== 'jp-intake' && activeSection !== 'materials'"
         ref="orderWorkspace"
         :key="activeFactory.id"
         :active-section="activeSection"
@@ -181,6 +186,10 @@ function navigate(section: CustomerOrderCenterSection) {
         @navigate="navigate"
         @feedback="reportProblem"
       />
+      <div v-if="activeSection === 'materials'" class="space-y-4">
+        <CartonQuickAssetLibrary :key="`quick-${activeFactory.id}`" :factory-id="activeFactory.id" audience="sales" :search="materialsSearch" />
+
+      </div>
       <HuakangBJPIntake v-if="activeSection === 'jp-intake' && activeFactory.id === 'huakang-b'"
         :key="`jp-${activeFactory.id}`" :factory-id="activeFactory.id" />
       <ModuleFeedbackHub
@@ -637,5 +646,21 @@ function navigate(section: CustomerOrderCenterSection) {
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
   }
+}
+/* Materials use the top search at every width; keep it reachable on narrow screens. */
+@media (max-width: 980px) {
+  .customer-order-center--materials .order-topbar {
+    height: 108px;
+    flex-wrap: wrap;
+    align-content: center;
+    row-gap: 6px;
+  }
+  .customer-order-center--materials .order-global-search {
+    display: flex;
+    order: 3;
+    width: 100%;
+    flex-basis: 100%;
+  }
+  .customer-order-center--materials .order-main { padding-top: 126px; }
 }
 </style>

@@ -105,11 +105,15 @@ def related_orders(db, asset, seen=None):
     return orders
 
 
-def filter_internal(db, user, values):
+def filter_internal(db, user, values, *, target_read=False):
     from app.models.carton_procurement import CartonOrder
     from app.services import carton_special_requests as special
     allowed_values = []
     for value in values:
+        from app.services import carton_asset_access as ownership
+        raw = assets.active_asset(db, value.factory_id, value.id)
+        if ownership.managed(raw) and not ownership.visible(db,user,raw,library=not target_read):
+            continue
         if value.sharing_mode != 'ORDER_BOUND' or value.special_orders or value.workflow.previous_asset_id:
             try: ensure_asset_access(db, user, assets.active_asset(db, value.factory_id, value.id))
             except HTTPException: continue
@@ -132,6 +136,12 @@ def filter_internal(db, user, values):
 
 
 def ensure_asset_access(db, user, asset, *, write=False):
+    if asset.recognition_source == 'materials_folder':
+        raise HTTPException(404, '请通过所属订单资料夹查看或处理此版本')
+    from app.services import carton_asset_access as ownership
+    if ownership.managed(asset):
+        ownership.ensure(db,user,asset,write=write,supplier=ownership.external_actor(db,user,asset))
+        return
     state = current(db, asset)
     if not write and state['sharing_mode'] == 'ORDER_BOUND' and not state['special_orders'] and not lifecycle.current(db, asset).previous_asset_id:
         return
@@ -149,6 +159,8 @@ def ensure_asset_access(db, user, asset, *, write=False):
 
 
 def validate_recipient(db, asset, mode, supplier_id):
+    if asset.asset_purpose == 'EVIDENCE' and mode != 'INTERNAL':
+        raise HTTPException(403,'客户凭据禁止共享给供应商')
     if mode != 'SUPPLIER':
         if supplier_id: raise HTTPException(422, '仅内部资料不能同时指定共享供应商')
         return '', ''
@@ -197,6 +209,7 @@ def initialize(db, user, asset, options):
 def change(db, user, factory, identifier, payload):
     user = internal_actor(db, user, factory)
     asset = assets.active_asset(db, factory, identifier)
+    ensure_asset_access(db,user,asset,write=True)
     for order in related_orders(db, asset):
         ensure_customer(db, user, order)
     validate_recipient(db, asset, payload.sharing_mode, payload.supplier_id)
@@ -210,6 +223,11 @@ def internal_actor(db, user, factory):
     from app.services.carton_special_requests import locked_actor
     from app.services.carton_mark_library import ensure_carton_mark_scope, CARTON_MARK_WRITE_DEPARTMENTS
     user = locked_actor(db, user, factory)
+    from app.services import carton_asset_access as ownership
+    if ownership.enabled():
+        ownership.internal_scope(user,factory,'manage')
+        ownership.writes()
+        return user
     ensure_carton_mark_scope(db, user, 'carton_mark:template_upload', factory, CARTON_MARK_WRITE_DEPARTMENTS)
     from app.services.auth import authorization_decision
     if not any(authorization_decision(user, 'carton_mark:template_upload', factory, dep)[0]
@@ -221,7 +239,8 @@ def internal_actor(db, user, factory):
 def validate_binding_change(db, user, asset, payload):
     ensure_asset_access(db, user, asset, write=True)
     state = current(db, asset)
-    if state['sharing_mode'] == 'ORDER_BOUND': return
+    from app.services import carton_asset_access as ownership
+    if state['sharing_mode'] == 'ORDER_BOUND' and not ownership.managed(asset): return
     orders = assets.available_orders(db, asset.factory_id)
     selected = [o for o in orders if o.id in (payload.order_ids or []) or o.id == payload.order_id
         or (not payload.order_ids and not payload.order_id and payload.contract_number
@@ -259,6 +278,7 @@ def confirm(db, user, factory, identifier, binding_id, payload):
     from app.services import carton_supplier_portal as portal
     user = internal_actor(db, user, factory)
     asset = assets.active_asset(db, factory, identifier)
+    ensure_asset_access(db,user,asset,write=True)
     if asset.photo_group_id:
         raise HTTPException(409, '整组照片请由仓库统一关联，或先解除分组')
     request = next((x for x in current(db, asset)['pending_bindings'] if x['id'] == binding_id), None)
@@ -288,6 +308,8 @@ def confirm(db, user, factory, identifier, binding_id, payload):
         factory_id=factory, order_id=x) for x in sorted(identifiers)]
     assets.audit(db, user, asset, DECIDED, dict(id=binding_id, order_id=order.id,
         revision=asset.revision, sha256=asset.sha256))
+    from app.services import carton_asset_targets
+    carton_asset_targets.sync_legacy(db,user,asset)
     db.commit()
     return assets.asset_out(asset, assets.available_orders(db, factory))
 

@@ -15,6 +15,7 @@ let wrapper: VueWrapper | undefined
 let events: Record<string, (e?: sdk.EditorEvent) => void>
 const destroy = vi.fn()
 const construct = vi.fn()
+const nativeFullscreenDescriptors = Object.fromEntries(['fullscreenElement', 'exitFullscreen'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis.document, key)]))
 const button = (label: string) => wrapper!.findAll('button').find(b => b.text() === label)!
 async function render() { wrapper = mount(Workspace, { props: { factoryId: 'huaxing' } }); await flushPromises() }
 async function open() { await button('打开').trigger('click'); await flushPromises(); events.onDocumentReady!(); await flushPromises() }
@@ -38,6 +39,7 @@ beforeEach(() => {
     { id: 'editor', display_name: '同事乙', department: '业务部', organization: '华康A', epoch: 1 },
   ])
   vi.spyOn(api, 'share').mockResolvedValue(document())
+  vi.spyOn(api, 'prepareSharing').mockResolvedValue({ ready: true })
   vi.spyOn(api, 'rename').mockResolvedValue({ ...document(), title: '十月汇总' })
   vi.spyOn(api, 'history').mockResolvedValue({ items: [], next_before: null })
   vi.spyOn(api, 'command').mockImplementation(async (_factory, id) => ({ ...document(), id, deleted_at: '2026-10-28' }))
@@ -47,9 +49,80 @@ beforeEach(() => {
     destroyEditor() { destroy() }
   } })
 })
-afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
+afterEach(() => {
+  wrapper?.unmount(); wrapper = undefined
+  for (const [key, descriptor] of Object.entries(nativeFullscreenDescriptors)) {
+    if (descriptor) Object.defineProperty(globalThis.document, key, descriptor)
+    else Reflect.deleteProperty(globalThis.document, key)
+  }
+  vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers()
+})
 
 describe('在线文档保存边界', () => {
+  it('enters and restores native fullscreen without recreating or saving the editor', async () => {
+    await render(); await open(); events.onDocumentStateChange!({ data: true }); await flushPromises()
+    const root = wrapper!.get('main').element
+    let current: Element | null = null
+    Object.defineProperty(globalThis.document, 'fullscreenElement', { configurable: true, get: () => current })
+    const request = vi.fn(async () => { current = root; globalThis.document.dispatchEvent(new Event('fullscreenchange')) })
+    const exit = vi.fn(async () => { current = null; globalThis.document.dispatchEvent(new Event('fullscreenchange')) })
+    Object.defineProperty(root, 'requestFullscreen', { configurable: true, value: request })
+    Object.defineProperty(globalThis.document, 'exitFullscreen', { configurable: true, value: exit })
+    await button('全屏').trigger('click'); await flushPromises()
+    expect(request).toHaveBeenCalledOnce()
+    expect(wrapper!.get('main').classes()).toContain('od-editor-expanded')
+    expect(button('还原').attributes('aria-pressed')).toBe('true')
+    await button('还原').trigger('click'); await flushPromises()
+    expect(exit).toHaveBeenCalledOnce()
+    expect(wrapper!.get('main').classes()).not.toContain('od-editor-expanded')
+    expect(wrapper!.text()).toContain('有修改待存入系统')
+    expect(construct).toHaveBeenCalledOnce()
+    expect(destroy).not.toHaveBeenCalled()
+    expect(api.save).not.toHaveBeenCalled()
+  })
+  it('reflects native Esc exit without touching unsaved document changes', async () => {
+    await render(); await open(); events.onDocumentStateChange!({ data: true }); await flushPromises()
+    let current: Element | null = wrapper!.get('main').element
+    Object.defineProperty(globalThis.document, 'fullscreenElement', { configurable: true, get: () => current })
+    globalThis.document.dispatchEvent(new Event('fullscreenchange')); await flushPromises()
+    expect(button('还原')).toBeDefined()
+    current = null; globalThis.document.dispatchEvent(new Event('fullscreenchange')); await flushPromises()
+    expect(button('全屏')).toBeDefined()
+    expect(wrapper!.text()).toContain('有修改待存入系统')
+    expect(destroy).not.toHaveBeenCalled()
+  })
+  it('offers restorable focus display when fullscreen is unavailable or denied', async () => {
+    await render(); await open(); events.onDocumentStateChange!({ data: true }); await flushPromises()
+    await button('全屏').trigger('click'); await flushPromises()
+    expect(wrapper!.text()).toContain('当前窗口不支持系统全屏')
+    expect(wrapper!.get('main').classes()).toContain('od-editor-expanded')
+    await button('还原').trigger('click'); await flushPromises()
+    expect(wrapper!.get('main').classes()).not.toContain('od-editor-expanded')
+    const root = wrapper!.get('main').element
+    Object.defineProperty(root, 'requestFullscreen', { configurable: true, value: vi.fn().mockRejectedValue(new Error('NotAllowedError')) })
+    events.onError!(); await flushPromises()
+    await button('全屏').trigger('click'); await flushPromises()
+    expect(wrapper!.text()).toContain('当前窗口未允许系统全屏')
+    expect(wrapper!.get('[role="alert"]').text()).toContain('编辑器连接或保存发生错误')
+    expect(wrapper!.text()).toContain('有修改待存入系统')
+    expect(destroy).not.toHaveBeenCalled()
+  })
+  it('exits a late fullscreen entry after the authentication boundary has closed the editor', async () => {
+    await render(); await open()
+    let current: Element | null = null
+    let resolve!: () => void
+    const root = wrapper!.get('main').element
+    Object.defineProperty(globalThis.document, 'fullscreenElement', { configurable: true, get: () => current })
+    Object.defineProperty(root, 'requestFullscreen', { configurable: true, value: () => new Promise<void>(r => { resolve = r }) })
+    const exit = vi.fn(async () => { current = null })
+    Object.defineProperty(globalThis.document, 'exitFullscreen', { configurable: true, value: exit })
+    await button('全屏').trigger('click'); await flushPromises()
+    authState.currentUser.authorization_version++; await flushPromises()
+    current = root; resolve(); await flushPromises()
+    expect(exit).toHaveBeenCalledOnce()
+    expect(wrapper!.find('#online-document-editor').exists()).toBe(false)
+    expect(wrapper!.get('main').classes()).not.toContain('od-editor-expanded')
+  })
   it('offers trash directly on owned rows and cancels without changing the file', async () => {
     await render(); await button('移入回收站').trigger('click'); await flushPromises()
     expect(wrapper!.text()).toContain('移入回收站 · 1 份文档')
@@ -221,11 +294,11 @@ describe('在线文档保存边界', () => {
     await button('共享').trigger('click'); await flushPromises()
     expect(api.recipients).toHaveBeenCalledWith('group')
     expect(wrapper.get('[aria-label="新增共享权限"]').element).toHaveProperty('value', 'view')
-    await wrapper.get('[aria-label="选择共享同事"]').setValue('viewer')
-    await button('添加').trigger('click')
-    await wrapper.get('[aria-label="选择共享同事"]').setValue('editor')
+    await wrapper.get('.od-people-list input[value="viewer"]').setValue(true)
+    await button('添加已选同事').trigger('click')
+    await wrapper.get('.od-people-list input[value="editor"]').setValue(true)
     await wrapper.get('[aria-label="新增共享权限"]').setValue('edit')
-    await button('添加').trigger('click')
+    await button('添加已选同事').trigger('click')
     expect(api.share).not.toHaveBeenCalled()
     await button('保存共享设置').trigger('click'); await flushPromises()
     expect(api.share).toHaveBeenCalledWith('group', 'd1', [
@@ -235,6 +308,52 @@ describe('在线文档保存边界', () => {
     expect(wrapper.text()).toContain('共享设置已保存')
     expect(wrapper.find('[aria-label="共享设置"]').exists()).toBe(false)
     expect(api.list).toHaveBeenCalledWith('group')
+  })
+  it('keeps checked colleagues across searches and saves all selected identities with their epochs', async () => {
+    vi.mocked(api.recipients).mockResolvedValue([
+      { id: 'owner', display_name: '自己', department: '', epoch: 1 },
+      { id: 'viewer', display_name: '同事甲', organization: '华星', department: '工程部', epoch: 3 },
+      { id: 'editor', display_name: '同事乙', organization: '华康', department: '业务部', epoch: 8 },
+    ])
+    await render(); await button('共享').trigger('click'); await flushPromises()
+    expect(wrapper!.find('.od-people-list input[value="owner"]').exists()).toBe(false)
+    const search = wrapper!.get('.od-share-add input')
+    await search.setValue('工程'); await wrapper!.get('.od-people-list input[value="viewer"]').setValue(true)
+    await search.setValue('业务'); await wrapper!.get('.od-people-list input[value="editor"]').setValue(true)
+    expect(wrapper!.text()).toContain('已勾选 2 位')
+    await wrapper!.get('[aria-label="新增共享权限"]').setValue('edit')
+    await button('保存共享设置').trigger('click'); await flushPromises()
+    expect(api.share).toHaveBeenCalledWith('huaxing', 'd1', [
+      { user_id: 'viewer', name: '同事甲', access: 'edit', epoch: 3 },
+      { user_id: 'editor', name: '同事乙', access: 'edit', epoch: 8 },
+    ], 'acl-v1')
+  })
+  it('selects and deselects only the current recipient search results', async () => {
+    await render(); await button('共享').trigger('click'); await flushPromises()
+    const panel = wrapper!.get('[aria-label="共享设置"]')
+    await panel.get('.od-share-add input').setValue('工程')
+    await panel.findAll('button').find(b => b.text() === '全选当前结果')!.trigger('click')
+    await panel.get('.od-share-add input').setValue('业务')
+    await panel.findAll('button').find(b => b.text() === '全选当前结果')!.trigger('click')
+    expect(panel.text()).toContain('已勾选 2 位')
+    await panel.findAll('button').find(b => b.text() === '取消全选当前结果')!.trigger('click')
+    expect(panel.text()).toContain('已勾选 1 位')
+    await button('添加已选同事').trigger('click'); await flushPromises()
+    expect(wrapper!.get('.od-grants').text()).toContain('同事甲')
+    expect(wrapper!.get('.od-grants').text()).not.toContain('同事乙')
+  })
+  it('does not silently truncate a batch beyond the 50-person sharing limit', async () => {
+    vi.mocked(api.detail).mockResolvedValue({ ...document(), grants: Array.from({ length: 49 }, (_, i) => ({ user_id: `existing-${i}`, name: `原同事${i}`, epoch: 1, access: 'view' as const })) })
+    await render(); await button('共享').trigger('click'); await flushPromises()
+    const panel = wrapper!.get('[aria-label="共享设置"]')
+    await panel.findAll('button').find(b => b.text() === '全选当前结果')!.trigger('click')
+    expect(wrapper!.get('[role="alert"]').text()).toContain('最多共享给 50 位')
+    expect(panel.text()).toContain('已勾选 0 位')
+    await wrapper!.get('.od-people-list input[value="viewer"]').setValue(true)
+    expect(wrapper!.get('.od-people-list input[value="editor"]').attributes('disabled')).toBeDefined()
+    await button('保存共享设置').trigger('click'); await flushPromises()
+    expect(vi.mocked(api.share).mock.calls[0]![2]).toHaveLength(50)
+    expect(vi.mocked(api.share).mock.calls[0]![2].at(-1)).toEqual({ user_id: 'viewer', name: '同事甲', epoch: 1, access: 'view' })
   })
   it('loads existing grants, changes permissions and removes a colleague', async () => {
     const shared = { ...document(), grants: [{ user_id: 'viewer', name: '同事甲', epoch: 1, access: 'view' as const }, { user_id: 'editor', name: '同事乙', epoch: 1, access: 'edit' as const }] }
@@ -247,10 +366,10 @@ describe('在线文档保存边界', () => {
     expect(shared.grants).toHaveLength(2)
     expect(shared.grants[0]?.access).toBe('view')
   })
-  it('keeps failed sharing drafts and locks sharing during active editing', async () => {
+  it('keeps failed sharing drafts and permits changing sharing during active editing', async () => {
     await render(); await button('共享').trigger('click'); await flushPromises()
-    await wrapper!.get('[aria-label="选择共享同事"]').setValue('viewer')
-    await button('添加').trigger('click')
+    await wrapper!.get('.od-people-list input[value="viewer"]').setValue(true)
+    await button('添加已选同事').trigger('click')
     vi.mocked(api.share).mockRejectedValue(new Error('保存失败'))
     await button('保存共享设置').trigger('click'); await flushPromises()
     expect(wrapper!.get('.od-grants').text()).toContain('同事甲')
@@ -258,8 +377,73 @@ describe('在线文档保存边界', () => {
     await button('关闭').trigger('click')
     vi.mocked(api.detail).mockResolvedValue({ ...document(), editing: true })
     await button('共享').trigger('click'); await flushPromises()
-    expect(button('保存共享设置').attributes('disabled')).toBeDefined()
-    expect(wrapper!.text()).toContain('请所有人保存并关闭')
+    expect(button('保存共享设置').attributes('disabled')).toBeUndefined()
+    expect(wrapper!.text()).toContain('只断开对应同事')
+  })
+  it('removes all grants after automatically releasing a stale editor session', async () => {
+    vi.mocked(api.detail).mockResolvedValue({ ...document(), editing: true, grants: [{ user_id: 'viewer', name: '同事甲', epoch: 1, access: 'view' }] })
+    await render(); await button('共享').trigger('click'); await flushPromises()
+    await wrapper!.get('[aria-label="移除同事甲的共享"]').trigger('click')
+    expect(api.share).not.toHaveBeenCalled()
+    await button('保存共享设置').trigger('click'); await flushPromises()
+    expect(api.prepareSharing).toHaveBeenCalledWith('huaxing', 'd1', [], 'acl-v1')
+    expect(api.share).toHaveBeenCalledWith('huaxing', 'd1', [], 'acl-v1')
+    expect(wrapper!.text()).toContain('共享设置已保存')
+  })
+  it('waits for a checkpoint while other editors stay open and blocks leaving while waiting', async () => {
+    vi.mocked(api.prepareSharing).mockResolvedValueOnce({ ready: false }).mockResolvedValue({ ready: true })
+    vi.mocked(api.detail).mockResolvedValue({ ...document(), editing: true })
+    await render(); await button('共享').trigger('click'); await flushPromises()
+    await button('保存共享设置').trigger('click'); await flushPromises()
+    expect(wrapper!.text()).toContain('其他同事可继续编辑')
+    expect(api.share).not.toHaveBeenCalled()
+    expect(await canChangeFactory()).toBe(false)
+    await vi.advanceTimersByTimeAsync(1000); await flushPromises()
+    expect(api.share).toHaveBeenCalledWith('huaxing', 'd1', [], 'acl-v1')
+    expect(api.prepareSharing).toHaveBeenCalledTimes(2)
+  })
+  it.each(['timeout', 'save-error', 'acl-changed'] as const)('retains the sharing draft without revoking on %s', async kind => {
+    vi.mocked(api.prepareSharing).mockResolvedValue({ ready: false })
+    vi.mocked(api.detail).mockResolvedValue({ ...document(), editing: true, grants: [{ user_id: 'viewer', name: '同事甲', epoch: 1, access: 'view' }] })
+    await render(); await button('共享').trigger('click'); await flushPromises()
+    await wrapper!.get('[aria-label="移除同事甲的共享"]').trigger('click')
+    if (kind !== 'timeout') vi.mocked(api.detail).mockResolvedValue({ ...document(), editing: true, ...(kind === 'save-error' ? { save_error: '保存失败' } : { share_version: 'acl-other' }) })
+    await button('保存共享设置').trigger('click'); await flushPromises()
+    if (kind === 'timeout') { await vi.advanceTimersByTimeAsync(31_000); await flushPromises() }
+    expect(api.share).not.toHaveBeenCalled()
+    expect(wrapper!.find('[aria-label="共享设置"]').exists()).toBe(true)
+    expect(wrapper!.findAll('.od-grants li')).toHaveLength(0)
+    expect(wrapper!.get('[role="alert"]').text()).toContain(kind === 'acl-changed' ? '其他窗口变更' : '尚未修改')
+    expect(button('保存共享设置').attributes('disabled')).toBeUndefined()
+  })
+  it('ignores late prepare and polling results after an identity boundary', async () => {
+    let finish!: (value: { ready: boolean }) => void
+    vi.mocked(api.prepareSharing).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    await render(); await button('共享').trigger('click'); await flushPromises()
+    await button('保存共享设置').trigger('click'); await flushPromises()
+    authState.currentUser.authorization_version++; await flushPromises()
+    finish({ ready: true }); await flushPromises()
+    expect(api.share).not.toHaveBeenCalled()
+    expect(wrapper!.find('[aria-label="共享设置"]').exists()).toBe(false)
+  })
+  it('closes only this editor when its access is downgraded to view', async () => {
+    vi.mocked(api.list).mockResolvedValue([{ ...document(), access: 'edit' }])
+    vi.mocked(api.editor).mockResolvedValue({ document: { ...document(), access: 'edit' }, config: {}, script_url: 'http://office/api.js' })
+    await render(); await open()
+    vi.mocked(api.detail).mockResolvedValue({ ...document(), access: 'view' })
+    vi.mocked(api.list).mockResolvedValue([{ ...document(), access: 'view' }])
+    await vi.advanceTimersByTimeAsync(20_000); await flushPromises()
+    expect(destroy).toHaveBeenCalledOnce()
+    expect(api.save).not.toHaveBeenCalled()
+    expect(wrapper!.text()).toContain('您的共享权限已变更')
+  })
+  it('keeps an unaffected editor when another colleague loses sharing', async () => {
+    await render(); await open()
+    vi.mocked(api.detail).mockResolvedValue({ ...document(), editing: true, revision: 2, grants: [] })
+    await vi.advanceTimersByTimeAsync(20_000); await flushPromises()
+    expect(destroy).not.toHaveBeenCalled()
+    expect(construct).toHaveBeenCalledOnce()
+    expect(button('保存到系统')).toBeDefined()
   })
   it('clears shared names and pending recipient responses at identity boundaries', async () => {
     await render(); await button('共享').trigger('click'); await flushPromises()

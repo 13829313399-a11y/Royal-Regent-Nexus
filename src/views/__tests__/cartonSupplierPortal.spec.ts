@@ -5,6 +5,8 @@ import { reactive } from 'vue'
 import CartonSupplierView from '../CartonSupplierView.vue'
 import CartonSupplierReceiving from '@/components/CartonSupplierReceiving.vue'
 import CartonSupplierMarkTemplatesView from '../CartonSupplierMarkTemplatesView.vue'
+import CartonQuickAssetLibrary from '@/components/CartonQuickAssetLibrary.vue'
+vi.mock('@/components/CartonMaterialsWorkspace.vue', () => ({ default: { template: '<section data-testid="order-materials-entry" />' } }))
 import CartonReceiptAllocations from '@/components/CartonReceiptAllocations.vue'
 import CartonActionNotice from '@/components/CartonActionNotice.vue'
 import type { PortalWorkspace, SupplierMarkAsset } from '@/api/cartonSupplierPortal'
@@ -81,6 +83,25 @@ describe('supplier order carton-mark access', () => {
   }
   const badge = (wrapper: ReturnType<typeof mount>, order = 'ORDER-A') => wrapper.get(`[aria-label="查看订单 ${order} 箱唛资料"]`)
 
+  it('shows the fixed printing files even if the live library has no new child binding', async () => {
+    const data = fixture()
+    data.orders[0]!.print_split = { id: 'PRINT1', role: 'CHILD', status: 'ACTIVE', source_order_no: 'CT-OLD', source_contract_no: 'OLD', targets: ['SC-A'], files: [{ id: 'FIXED', file_name: 'fixed-print.pdf', revision: 2, sha256: 'hash' }] }
+    api.workspace.mockResolvedValue(data)
+    api.markAssets.mockResolvedValue([])
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    expect(badge(wrapper).text()).toBe('固定印刷资料 1 份')
+    await badge(wrapper).trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('fixed-print.pdf')
+    wrapper.unmount()
+  })
+
+  it('shows current document states independently of historical files', async () => {
+    api.markAssets.mockResolvedValue(['DRAFT', 'PENDING', 'READY', 'HISTORY'].map(status => mark(status, { workflow: { status, version: 1 } as SupplierMarkAsset['workflow'] })))
+    const wrapper = mount(CartonSupplierView, options); await flushPromises()
+    expect(badge(wrapper).text()).toBe('有资料 3 份 · 已确认 1 / 待确认 1 / 初稿 1')
+    wrapper.unmount()
+  })
+
   it('opens the matching originals from the ledger and existing detail action without loading them on hover', async () => {
     const pdf = mark('print'), excel = mark('source', { file_name: 'source.xlsx', kind: 'excel' })
     const other = mark('other-order', { orders: [{ ...pdf.orders[0]!, id: 'ORDER-B' }] })
@@ -89,7 +110,7 @@ describe('supplier order carton-mark access', () => {
     api.downloadMarkAsset.mockRejectedValueOnce(new Error('请稍后重试'))
     const wrapper = mount(CartonSupplierView, options); await flushPromises()
     expect(wrapper.get('thead').text()).toContain('箱唛资料')
-    expect(badge(wrapper).text()).toBe('已绑定 2 份')
+    expect(badge(wrapper).text()).toBe('有资料 2 份 · 初稿 2')
     expect(api.markAssets).toHaveBeenCalledTimes(1)
     const detail = wrapper.get('[aria-label="查看订单 ORDER-A 明细"]')
     await detail.trigger('mouseenter'); await flushPromises()
@@ -127,7 +148,7 @@ describe('supplier order carton-mark access', () => {
       : [mark('other-factory'), mark('old-version', { orders: [{ ...mark('x').orders[0]!, id: 'ORDER-B', issue_id: 'OLD' }] })])
     const wrapper = mount(CartonSupplierView, options); await flushPromises()
     expect(badge(wrapper).text()).toBe('仅历史资料 1 份')
-    expect(badge(wrapper, 'ORDER-B').text()).toBe('未绑定')
+    expect(badge(wrapper, 'ORDER-B').text()).toBe('暂无资料')
     await badge(wrapper).trigger('click'); await flushPromises()
     const files = wrapper.get('[data-testid="supplier-order-marks"]')
     expect(files.find('[aria-label="下载 history.pdf"]').exists()).toBe(false)
@@ -146,7 +167,7 @@ describe('supplier order carton-mark access', () => {
     expect(badge(wrapper).attributes('title')).toContain('资料服务暂不可用')
     api.markAssets.mockResolvedValue([mark('recovered')])
     await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click'); await flushPromises()
-    expect(badge(wrapper).text()).toBe('已绑定 1 份')
+    expect(badge(wrapper).text()).toBe('有资料 1 份 · 初稿 1')
     wrapper.unmount()
   })
 
@@ -676,7 +697,7 @@ describe('late supplier documents use existing warehouse receipts', () => {
     expect(wrapper.text()).toContain('DN-A')
     expect(wrapper.text()).not.toContain('核实实际收到')
     expect(wrapper.text()).not.toContain('关联已入库记录')
-    await wrapper.findAll('button').find(button => button.text() === '已核实记录')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.attributes('aria-label') === '显示已处理送货单')!.trigger('click')
     expect(wrapper.text()).toContain('DN-POSTED')
     expect(wrapper.find('[aria-label="冲销送货单 DN-POSTED 的收料"]').exists()).toBe(false)
     expect(api.receive).not.toHaveBeenCalled()
@@ -783,11 +804,36 @@ describe('supplier usage guide entry', () => {
 })
 
 describe('supplier carton mark templates', () => {
+  it('opens one shared library and retains its search across document-tool tabs', async () => {
+    const wrapper = mount(CartonSupplierMarkTemplatesView, options); await flushPromises()
+    const choose = (label: string) => wrapper.findAll('button').find(button => button.text() === label)!
+    expect(wrapper.find('[data-testid="supplier-order-materials"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('订单资料待办')
+    expect(wrapper.find('[aria-label="供应商箱唛上传厂区"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="supplier-original-materials"]').attributes('style')).toContain('display: none')
+    expect(wrapper.findAll('h2').filter(x => x.isVisible() && x.text() === '箱唛资料库')).toHaveLength(1)
+    await wrapper.get('[aria-label="顶部搜索"]').setValue('保留原文件搜索')
+    await choose('文档生成 PDF').trigger('click'); await choose('资料库').trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="顶部搜索"]').element.value).toBe('保留原文件搜索')
+    await choose('文档生成 PDF').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="supplier-original-materials"]').attributes('style')).toContain('display: none')
+    await choose('从资料库选择 Excel').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="supplier-original-materials"]').attributes('style') || '').not.toContain('display: none')
+    expect(wrapper.getComponent(CartonQuickAssetLibrary).attributes('style')).toContain('display: none')
+    await wrapper.get('[aria-label="搜索文档原件"]').setValue('工具专用搜索')
+    await choose('返回文档工具').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="supplier-original-materials"]').attributes('style')).toContain('display: none')
+    await choose('资料库').trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[aria-label="顶部搜索"]').element.value).toBe('保留原文件搜索')
+    wrapper.unmount()
+  })
   it('selects a shared Excel into the supplier PDF form without opening the internal warehouse page', async () => {
     routeState.query.factory = 'huaxing'
     api.markAssets.mockResolvedValue([{ id: 'excel-a', revision: 4, file_name: '客人.xlsx', kind: 'excel', size_bytes: 400,
       contract_number: 'SC-A', created_at: '2026-10-05', orders: [{ id: 'ORDER-A', issue_id: 'ISSUE-A', customer_name: 'Dickie', customer_po: 'PO-A', contract_no: 'SC-A', item_no: 'ITEM-A' }] }])
     const wrapper = mount(CartonSupplierMarkTemplatesView, options); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '文档生成 PDF')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '从资料库选择 Excel')!.trigger('click'); await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '选择 Excel 并上传 PDF 核对')!.trigger('click'); await flushPromises()
     expect(wrapper.get('[aria-label="供应商 Excel / PDF 核对"]').isVisible()).toBe(true)
     expect(wrapper.get('[aria-label="核对关联采购订单"]').element).toHaveProperty('value', 'ORDER-A')
@@ -862,6 +908,7 @@ describe('supplier carton mark templates', () => {
     await wrapper.get('select[aria-label="箱唛资料厂区"]').setValue('huaxing'); await flushPromises()
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(api.markAssets).toHaveBeenCalledWith('huaxing', expect.any(AbortSignal))
+    expect(wrapper.getComponent(CartonQuickAssetLibrary).props()).toMatchObject({ factoryId: 'huaxing', audience: 'supplier' })
     wrapper.unmount(); routeState.query.factory = 'huaxing'
   })
   it('discovers a newly ordering service factory when refreshed', async () => {
@@ -876,6 +923,7 @@ describe('supplier carton mark templates', () => {
     await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click'); await flushPromises()
     expect(wrapper.get('select[aria-label="箱唛资料厂区"]').findAll('option').map(option => option.attributes('value'))).toEqual(['ALL', 'huaxing', 'huakang-a'])
     expect(wrapper.get<HTMLSelectElement>('select[aria-label="箱唛资料厂区"]').element.value).toBe('ALL')
+    expect(wrapper.getComponent(CartonQuickAssetLibrary).props()).toMatchObject({ factoryId: '', audience: 'supplier' })
     expect(api.markAssets).toHaveBeenCalledWith('huakang-a', expect.any(AbortSignal))
     wrapper.unmount(); routeState.query.factory = 'huaxing'
   })
@@ -889,7 +937,7 @@ describe('supplier carton mark templates', () => {
     await wrapper.get('button[aria-label="下载 print.pdf"]').trigger('click'); await flushPromises()
     expect(api.downloadMarkAsset).toHaveBeenCalledWith('mark-1', 'huaxing', expect.any(AbortSignal))
     expect(wrapper.get('[role="alert"]').text()).toContain('下载失败')
-    expect(wrapper.find('[aria-label="供应商批量选择箱唛原文件"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="供应商批量选择箱唛原文件"]').exists()).toBe(false)
     expect(wrapper.find('[aria-label="批量选择箱唛原文件"]').exists()).toBe(false)
     wrapper.unmount()
   })
@@ -1637,8 +1685,47 @@ describe('internal supplier collaboration', () => {
     expect(wrapper.find('[aria-label="供应商收货工作区"]').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('订单资料 / PDF')
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('待核实 1')
+    expect(wrapper.text()).toContain('待收货（1 张）')
     wrapper.unmount()
+  })
+
+  it('counts filtered shipment notes across pending processed and all views with explicit receipt states', async () => {
+    const data = fixture(), source = data.shipments[0]!
+    const note = (id: string, status: string, received: string, customer = 'Dickie') => ({ ...source,
+      id, delivery_note_no: id, status, lines: source.lines.map(line => ({ ...line,
+        customer_name: customer, received_quantity: received })) })
+    data.shipments = [note('DN-PENDING', 'SENT', '0'), note('DN-PARTIAL', 'SENT', '4'),
+      note('DN-DONE', 'RECEIVED', '10'), note('DN-CLOSED', 'NOT_RECEIVED', '0', '360'),
+      { ...note('DN-CORRECTION', 'RECEIPT_REVERSED', '0'), requires_correction: true }]
+    api.workspace.mockResolvedValue(data)
+    const wrapper = mount(CartonSupplierReceiving, { ...options, props: { search: '' } }); await flushPromises()
+    const tab = (label: string) => wrapper.get(`[aria-label="显示${label}送货单"]`)
+    try {
+      expect(tab('待收货').text()).toBe('待收货（3 张）')
+      expect(tab('已处理').text()).toBe('已处理（2 张）')
+      expect(tab('全部').text()).toBe('全部（5 张）')
+      expect(wrapper.find('[aria-label="送货单状态"]').exists()).toBe(false)
+      expect(wrapper.text()).toContain('未收货')
+      expect(wrapper.text()).toContain('部分已收')
+      expect(wrapper.text()).toContain('待更正')
+      expect(wrapper.text()).not.toContain('DN-DONE')
+      await tab('已处理').trigger('click')
+      expect(wrapper.text()).toContain('已收齐')
+      expect(wrapper.text()).toContain('零到货关闭')
+      expect(wrapper.text()).not.toContain('DN-PENDING')
+      await tab('全部').trigger('click')
+      expect(wrapper.text()).toContain('显示 5 张送货单')
+      await wrapper.get('[aria-label="送货单客户"]').setValue('Dickie')
+      expect(tab('全部').text()).toBe('全部（4 张）')
+      expect(tab('已处理').text()).toBe('已处理（1 张）')
+      await wrapper.setProps({ search: 'DN-PARTIAL' })
+      expect(tab('待收货').text()).toBe('待收货（1 张）')
+      expect(tab('已处理').text()).toBe('已处理（0 张）')
+      expect(wrapper.text()).toContain('显示 1 张送货单')
+      await tab('已处理').trigger('click')
+      expect(wrapper.text()).toContain('当前条件下没有已处理送货单')
+      expect(api.receive).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
   })
 
   it('offers reversal only for posted receipts and emits the original receipt identifier', async () => {
@@ -1648,14 +1735,14 @@ describe('internal supplier collaboration', () => {
     data.shipments[0]!.receipt_status = 'POSTED'
     api.workspace.mockResolvedValue(data)
     const wrapper = mount(CartonSupplierReceiving, options); await flushPromises()
-    await wrapper.findAll('button').find(button => button.text() === '已核实记录')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.attributes('aria-label') === '显示已处理送货单')!.trigger('click')
     await wrapper.get('[aria-label="冲销送货单 DN-A 的收料"]').trigger('click')
     expect(wrapper.emitted('reverse')).toEqual([['CTR-POSTED']])
     expect(api.receive).not.toHaveBeenCalled()
     wrapper.unmount()
     can.mockImplementation(permission => permission === 'carton_procurement:read')
     const readOnly = mount(CartonSupplierReceiving, options); await flushPromises()
-    await readOnly.findAll('button').find(button => button.text() === '已核实记录')!.trigger('click')
+    await readOnly.findAll('button').find(button => button.attributes('aria-label') === '显示已处理送货单')!.trigger('click')
     expect(readOnly.find('[aria-label="冲销送货单 DN-A 的收料"]').exists()).toBe(false)
     readOnly.unmount()
   })
@@ -1711,7 +1798,7 @@ describe('internal supplier collaboration', () => {
       paper_quality: 'A33', specification: '10*20', unit: '个', quantity: '4', linked_order_line_id: '' }]
     api.workspace.mockResolvedValue(data)
     const wrapper = mount(CartonSupplierReceiving, options); await flushPromises()
-    await wrapper.findAll('button').find(button => button.text() === '已核实记录')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.attributes('aria-label') === '显示已处理送货单')!.trigger('click')
     await wrapper.get('select[aria-label="RL-SAMPLE 关联正式订单"]').setValue('LINE-0')
     await wrapper.get('input[aria-label="RL-SAMPLE 关联原因"]').setValue('样板箱转正式订单')
     await wrapper.findAll('button').find(button => button.text() === '关联后续订单')!.trigger('click'); await flushPromises()
@@ -2315,7 +2402,7 @@ describe('supplier cancellation and correction handoffs', () => {
     const data = fixture(); data.shipments[0]!.status = 'NOT_RECEIVED'; data.shipments[0]!.revision = 2
     api.workspace.mockResolvedValue(data); api.changeNonArrival.mockResolvedValue({ ...data.shipments[0], status: 'SENT', revision: 3 })
     const wrapper = mount(CartonSupplierReceiving, { ...options, props: { factoryId: 'huaxing' } }); await flushPromises()
-    await wrapper.findAll('button').find(button => button.text() === '已核实记录')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.attributes('aria-label') === '显示已处理送货单')!.trigger('click')
     await wrapper.findAll('button').find(button => button.text() === '更正未到货，重新待收')!.trigger('click')
     const dialog = wrapper.get('[aria-label="更正未到货反馈"]')
     await dialog.get('textarea').setValue('原未到货反馈有误')

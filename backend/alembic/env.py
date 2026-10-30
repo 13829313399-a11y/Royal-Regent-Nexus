@@ -36,6 +36,7 @@ from app.models import (
     carton_mark,  # noqa: F401
     carton_feedback,  # noqa: F401
     carton_procurement,  # noqa: F401
+    carton_materials,  # noqa: F401
     fabric_procurement,  # noqa: F401
     fabric_receiving,  # noqa: F401
     fabric_master,  # noqa: F401
@@ -108,7 +109,7 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         inspector = inspect(connection)
         revisions = set(connection.scalars(text('SELECT version_num FROM alembic_version'))) if inspector.has_table('alembic_version') else set()
-        later_successors = {'20261022_0175', '20261023_0176', '20261026_0177', '20261026_0178', '20261026_0179', '20261026_0180', '20261026_0181', '20261026_0182', '20261026_0183', '20261026_0184'}
+        later_successors = {'20261022_0175', '20261023_0176', '20261026_0177', '20261026_0178', '20261026_0179', '20261026_0180', '20261026_0181', '20261026_0182', '20261026_0183', '20261026_0184', '20261028_0185', '20261028_0186'}
         collision_versions = {'20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166',
                               '20261017_0167', '20261019_0167', '20261020_0168',
                               '20261019_0168', '20261019_0169', '20261019_0170', '20261020_0171',

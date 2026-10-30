@@ -68,7 +68,15 @@ export interface CustomerOrderPreviewRow {
   issues: CustomerOrderIssue[]
 }
 
+export interface WarehouseScheduleSyncResult {
+  status: 'SUCCESS' | 'ERROR'
+  message: string
+  batch_id?: string
+  duplicate?: boolean
+}
+
 export interface CustomerOrderImportPreview {
+  warehouse_sync?: WarehouseScheduleSyncResult | null
   preview_schema_version: string
   customer_code: string
   factory_id: string

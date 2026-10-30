@@ -81,7 +81,7 @@ from app.services.permission_scope_policy import (
     role_scope_policy,
     scope_is_applicable,
 )
-from app.services.permission_codes import CARTON_SUPPLIER_PERMISSION_CODES
+from app.services.permission_codes import CARTON_SUPPLIER_PERMISSION_CODES, CARTON_SUPPLIER_MATERIAL_PERMISSIONS
 from app.services.system_positions import (
     SPECIAL_SYSTEM_ROLE_CODES,
     SYSTEM_POSITION_DEFINITIONS,
@@ -242,6 +242,27 @@ def get_user_access(db: Session, current_user: AuthContext, user_id: str) -> Use
     )
 
 
+def _validate_supplier_material_operations(db, user_id, operations, is_super_admin):
+    external = [item for item in operations if item["kind"] == "permission_override"
+                and item["permission_code"] in CARTON_SUPPLIER_MATERIAL_PERMISSIONS
+                and item["factory_id"] == "*" and item["department"] == "*"]
+    if not external:
+        return
+    if not is_super_admin:
+        raise HTTPException(403, "供应商资料跨厂区权限仅集团超级管理员可配置")
+    from app.services.auth import authorization_decision
+    target = build_auth_context(db, _load_user(db, user_id))
+    for item in external:
+        if item["effect"] != "allow":
+            continue
+        required = CARTON_SUPPLIER_MATERIAL_PERMISSIONS[item["permission_code"]]
+        if not authorization_decision(target, required, "*", "*")[0]:
+            raise HTTPException(409, "请先开通对应供应商协同权限，再开通资料权限")
+        if any(op["kind"] == "permission_override" and op["permission_code"] == required
+               and op["effect"] != "allow" for op in operations):
+            raise HTTPException(409, "不能在收回供应商权限时同时开通对应资料权限")
+
+
 def preview_user_access(
     db: Session,
     current_user: AuthContext,
@@ -273,6 +294,7 @@ def preview_user_access(
     )
     actor_scopes = _manager_scopes(db, current_user.id)
     is_super_admin = _is_superadmin(db, current_user.id)
+    _validate_supplier_material_operations(db, user_id, operations, is_super_admin)
     if any(item["kind"] == "permission_override" and item["permission_code"].startswith("carton_supplier:")
            for item in operations) and not is_super_admin:
         raise HTTPException(status_code=403, detail="供应商协同跨厂区权限仅集团超级管理员可配置")
@@ -331,7 +353,7 @@ def commit_user_access(
     operations = preview_payload["operations"]
     supplier_only = bool(operations) and all(
         item["kind"] == "permission_override"
-        and item["permission_code"] in {"carton_supplier:read", "carton_supplier:edit", "carton_supplier:approve"}
+        and item["permission_code"] in {*CARTON_SUPPLIER_PERMISSION_CODES, *CARTON_SUPPLIER_MATERIAL_PERMISSIONS}
         and item["factory_id"] == "*" and item["department"] == "*"
         for item in operations
     )
@@ -342,6 +364,7 @@ def commit_user_access(
         raise HTTPException(status_code=409, detail="用户权限已变化，请重新预览")
 
     current_is_super_admin = _is_superadmin(db, current_user.id)
+    _validate_supplier_material_operations(db, user_id, operations, current_is_super_admin)
     if supplier_only and not current_is_super_admin:
         raise HTTPException(status_code=403, detail="供应商协同跨厂区权限仅集团超级管理员可配置")
     current_scopes = _manager_scopes(db, current_user.id)

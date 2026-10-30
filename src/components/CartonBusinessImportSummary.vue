@@ -26,6 +26,7 @@ const counts = computed(() => {
 })
 const fieldLabels: Record<string, string> = {
   contract_no: '合同号', source_reference: 'SO / Reference', customer_po: '客户 PO',
+  shipping_item_no: '出货货号', split_source: '拆单来源',
   order_type: '订单类型', production_no: '生产单号', customer_name: '业务客名',
   item_no: '货号', product_name: '产品名称', quantity: '产品数量', carton_rule: '装箱',
   carton_count: '箱数', inspection_window: '验货日期', customer_due_date: '客户走货期', note: '备注',

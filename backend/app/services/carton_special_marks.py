@@ -117,12 +117,16 @@ def publish_attachment(db, user, row, paper, attachment, external=False):
         content=attachment.content, contract_number='', recognition_source='manual_orders', candidates_json='[]',
         warning='', revision=1, is_archived=False, created_by=user.id, created_by_name=user.display_name,
         created_at=attachment.created_at, updated_at=attachment.created_at)
+    from app.services import carton_asset_access as ownership
+    ownership.legacy(db,user,asset,department='supplier' if external else None,supplier_id=row.supplier_id if external else None)
     db.add(asset); db.flush()
     lifecycle.initialize(db, user, asset, CartonMarkAssetUploadOptions(status='PENDING'))
     sharing.record(db, user, asset, 'SUPPLIER', row.supplier_id)
     link_event(db, user, asset, row, paper, attachment.id)
     assets.audit(db, user, asset, 'CARTON_MARK_ASSET_CREATED', dict(sha256=asset.sha256,
         source_attachment_id=attachment.id, special_order_id=row.id))
+    from app.services import carton_asset_targets
+    carton_asset_targets.sync_legacy(db,user,asset)
     return asset
 
 
@@ -175,9 +179,14 @@ def _mark_evidence(db, user, identifier, line_id, payload, *, external=False):
         # decision. In particular they cannot erase an old confirmed manifest.
         file = None
     if asset:
+        from app.services import carton_asset_access as ownership,carton_supplier_portal as portal
+        if ownership.managed(asset):
+            ownership.ensure(db,user,asset,write=True,supplier=portal.supplier_access(db,user,row.factory_id,'carton_supplier:edit') if external else None)
         from app.services.carton_mark_asset_workflow import bump
         bump(db, asset, asset.revision)
         link_event(db, user, asset, row, line, file.id)
+        from app.services import carton_asset_targets
+        carton_asset_targets.sync_legacy(db,user,asset)
     # File evidence does not change line marks, execution version, price or promise.
     # The response and replay snapshot must include the evidence just appended.
     db.flush()

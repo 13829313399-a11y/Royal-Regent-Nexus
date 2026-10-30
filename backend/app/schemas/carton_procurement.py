@@ -632,13 +632,24 @@ class CartonPurchaseOrderBatchOut(BaseModel):
     generated_at: str
 
 
+class CartonScheduleSplitSourceOut(BaseModel):
+    source_contract_no: str
+    current_contract_no: str
+    batch_id: str
+    source_sheet: str
+    source_row: int
+
+
 class CartonOrderOut(BaseModel):
+    order_split: dict | None = None
+    print_split: dict | None = None
     material_corrections: list[dict] = Field(default_factory=list)
     net_weight_kg: Decimal | None = None
     gross_weight_kg: Decimal | None = None
     purchase_order_batch: CartonPurchaseOrderBatchOut | None = None
     supplier_acceptance: CartonSupplierAcceptanceOut = Field(default_factory=CartonSupplierAcceptanceOut)
     split_records: list[dict] = Field(default_factory=list)
+    schedule_split_source: CartonScheduleSplitSourceOut | None = None
     can_delete: bool = False
     deletion_block_reason: str = ""
     can_delete_history: bool = False

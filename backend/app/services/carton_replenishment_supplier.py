@@ -17,6 +17,8 @@ def commitment(db, factory, issue_id, line_id):
 
 
 def validate_issue(db, order, issue_id, *, allow_dispute=False):
+    from app.services.carton_print_split import guard
+    guard(db, order)
     issue = db.get(CartonPurchaseOrderIssue, issue_id)
     if not issue or issue.factory_id != order.factory_id or issue.order_id != order.id or not json.loads(issue.snapshot_json).get("replenishment"):
         raise HTTPException(409, "补单版本不属于当前订单，请刷新核对")
@@ -44,6 +46,8 @@ def reservations(db, factory, line_ids):
 
 
 def sources(db, order):
+    from app.services.carton_print_split import held
+    print_hold = held(db, order)
     from app.services import carton_procurement as core
     from app.services.carton_supplier_changes import response_states
     from app.services.carton_replenishment_receipts import options_by_line, receipt_links
@@ -77,7 +81,7 @@ def sources(db, order):
                 "required_quantity": str(required), "remaining_to_ship": str(max(Decimal(0), quota-shipping)) if not order.deleted_at and order.status != "CANCELLED" else "0",
                 "received_quantity": str(posted.get((issue.id, line["id"]), Decimal(0))), "in_transit_quantity": str(shipping),
                 "accepted": bool(promise) and not disputed, "commitment_revision": promise.get("revision", 0), "promised_date": promise.get("promised_date", ""),
-                "shipping_blocked_reason": "供应商有异议，请在变更待办重新确认" if disputed else "", "responsibility": replacement["responsibility"]})
+                "shipping_blocked_reason": "印刷拆单待回应，原单暂停执行" if print_hold else "供应商有异议，请在变更待办重新确认" if disputed else "", "responsibility": replacement["responsibility"]})
         result.append({"issue_id": issue.id, "document_no": issue.document_no, "responsibility": replacement["responsibility"],
             "planned_date": snapshot.get("after_due_date", ""), "lines": papers})
     return result

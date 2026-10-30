@@ -203,7 +203,15 @@ class SupplierMarkAssetOrderOut(BaseModel):
     item_no: str
 
 
+class SupplierMarkAssetClassification(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    revision: int = Field(ge=1)
+    request_id: str = Field(min_length=8, max_length=128)
+    status: Literal['DRAFT', 'PENDING']
+
+
 class SupplierMarkAssetOut(BaseModel):
+    can_classify: bool = False
     id: str
     revision: int
     file_name: str

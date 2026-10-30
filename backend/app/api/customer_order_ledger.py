@@ -5,7 +5,7 @@ import json
 from pydantic import TypeAdapter, ValidationError
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -220,7 +220,7 @@ def source_download(source_id: str, factory_id: str, db: Session = Depends(get_d
 
 
 @router.post("/imports/{customer_code}")
-async def import_orders(customer_code: str, factory_id: str = Form(...), received_date: str = Form(...),
+async def import_orders(customer_code: str, request: Request, factory_id: str = Form(...), received_date: str = Form(...),
     confirmed: bool = Form(...), skipped_issue_keys: str = Form("[]"), manual_overrides: str = Form("[]"),
     preview_fingerprint: str = Form(...), confirmation_reason: str = Form(""),
     source_kind: Literal["formal", "supplementary"] = Form("formal"),
@@ -260,16 +260,18 @@ async def import_orders(customer_code: str, factory_id: str = Form(...), receive
         mapping._actual_manual_overrides(preview, overrides)
         # Validate and apply manual inputs using the exact existing writer. Its source files remain unchanged.
         export = mapping._export_special_batch_schedule if special else mapping._export_mapped_customer_schedule
-        _, _, resolved = await run_order_job(export, db=db, **kwargs, skipped_issue_keys=actual_keys, manual_overrides=overrides)
+        output, file_name, resolved = await run_order_job(export, db=db, **kwargs, skipped_issue_keys=actual_keys, manual_overrides=overrides)
     except (mapping.CustomerOrderWorkbookError, mapping.HuaxingCustomerOrderError,
             mapping.HuadengCustomerOrderError, mapping.HuakangACustomerOrderError, mapping.HuakangCCustomerOrderError) as exc:
         raise HTTPException(400, str(exc)) from exc
     resolved["customer_name"] = mapping.CUSTOMER_NAMES.get(customer_code, customer_code)
-    return transaction(db, lambda: ledger.import_preview(db, preview=resolved,
+    result = transaction(db, lambda: ledger.import_preview(db, preview=resolved,
         files=[(name, content, source_kind) for name, content in files] + [(schedule_file.filename or "schedule.xlsx", schedule_content, "schedule")],
         source_kind=source_kind, actor=ledger.actor_name(current_user), reason=reconciliation_reason.strip() if reconcile_line else reason,
         reconcile_line=reconcile_line, expected_revision=expected_revision,
         controls={"preview_fingerprint": preview_fingerprint, "confirmed_issue_keys": sorted(actual_keys), "manual_overrides": overrides, "reason": reason}))
+    result["warehouse_sync"] = await mapping.sync_report(db, current_user, request, resolved, file_name, output, "GENERATED")
+    return result
 
 
 def mutate(db, user, factory, line_id, action, body, permission):

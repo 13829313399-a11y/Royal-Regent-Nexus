@@ -1696,7 +1696,7 @@ function handleExcelFileChange(event: Event) {
 }
 
 async function useLibraryAsset(asset: CartonMarkAsset) {
-  if (asset.kind === 'image') return
+  if (asset.kind !== 'excel' && asset.kind !== 'pdf') return
   if (!canUploadTemplate.value || isSaving.value || asset.factory_id !== activeFactoryId.value) return
   const requestedFactoryId = activeFactoryId.value
   const requestedGeneration = factoryGeneration

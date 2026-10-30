@@ -1,0 +1,291 @@
+import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import CartonQuickUploadDialog from '../CartonQuickUploadDialog.vue'
+import CartonQuickAssetLibrary from '../CartonQuickAssetLibrary.vue'
+import { useAuthStore } from '@/stores/auth'
+import { quickAsset, quickSession, quickTarget, supplierQuickSession } from './cartonQuickAssetFixtures'
+
+const api = vi.hoisted(() => ({ upload: vi.fn(), candidates: vi.fn(), list: vi.fn(), confirm: vi.fn(), classify: vi.fn(), associate: vi.fn(), share: vi.fn(), document: vi.fn() }))
+const legacy = vi.hoisted(() => ({ listAssets: vi.fn() }))
+vi.mock('@/api/cartonQuickAssets', () => ({ cartonQuickAssetsApi: api }))
+vi.mock('@/api/cartonMark', () => ({ cartonMarkApi: legacy }))
+const wrappers: VueWrapper[] = []
+function button(wrapper: DOMWrapper<Element> | VueWrapper, label: string) { return wrapper.findAll('button').find(x => x.text() === label)! }
+function dialog() { return new DOMWrapper(document.querySelector<HTMLElement>('[role="dialog"]')!) }
+async function open(audience: 'sales' | 'warehouse' | 'supplier' = 'sales') {
+  const wrapper = mount(CartonQuickUploadDialog, { props: { factoryId: 'huaxing', audience }, attachTo: document.body })
+  wrappers.push(wrapper); await button(wrapper, '快速上传').trigger('click'); await flushPromises()
+  return wrapper
+}
+async function typeText(value = '普通说明') {
+  await button(dialog(), '文字').trigger('click')
+  await dialog().get('textarea').setValue(value); await flushPromises()
+}
+async function chooseFile(file: File) {
+  const input = dialog().get('input[aria-label="选择资料文件"]')
+  Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+  await input.trigger('change'); await flushPromises()
+}
+beforeEach(() => {
+  setActivePinia(createPinia()); useAuthStore().applySession(quickSession())
+  vi.clearAllMocks(); api.candidates.mockResolvedValue([]); api.upload.mockResolvedValue(quickAsset())
+  api.list.mockResolvedValue({ items: [], total: 0 }); api.confirm.mockResolvedValue(quickAsset()); api.classify.mockResolvedValue(quickAsset()); api.associate.mockResolvedValue(quickAsset())
+})
+afterEach(async () => {
+  for (const wrapper of wrappers.splice(0)) wrapper.unmount()
+  await flushPromises(); document.body.innerHTML = ''; vi.restoreAllMocks()
+})
+
+describe('one quick-upload modal for all audiences', () => {
+  it.each(['sales', 'warehouse', 'supplier'] as const)('saves one plain text material with PENDING by default (%s)', async audience => {
+    const department = audience === 'supplier' ? 'supplier' : audience === 'warehouse' ? 'pmc-warehouse' : 'sales-business'
+    useAuthStore().applySession(audience === 'supplier' ? supplierQuickSession() : quickSession([department]))
+    api.upload.mockResolvedValue(quickAsset({ owner_department: department }))
+    const wrapper = await open(audience); await typeText('<script>synthetic text</script>')
+    expect(dialog().find('script').exists()).toBe(false)
+    expect(dialog().get('select[aria-label="资料状态"]').element).toHaveProperty('value', 'PENDING')
+    expect(dialog().find('option[value="READY"]').exists()).toBe(true)
+    expect(dialog().find('option[value="HISTORY"]').exists()).toBe(true)
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload).toHaveBeenCalledOnce()
+    expect(api.upload.mock.calls[0]![1]).toMatchObject({ owner_department: department, text: '<script>synthetic text</script>', status: 'PENDING', association: 'NONE', contract_number: '' })
+    expect(api.upload.mock.calls[0]![2]).toBeUndefined()
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+  it('requires an explicit department for a multi-department identity', async () => {
+    useAuthStore().applySession(quickSession(['sales-business', 'pmc-warehouse']))
+    await open(); await typeText()
+    const select = dialog().get('select[aria-label="资料归属部门"]')
+    expect(select.element).toHaveProperty('value', '')
+    expect(button(dialog(), '保存').attributes('disabled')).toBeDefined()
+    await dialog().trigger('submit'); expect(api.upload).not.toHaveBeenCalled()
+    await select.setValue('pmc-warehouse')
+    expect(button(dialog(), '保存').attributes('disabled')).toBeUndefined()
+  })
+  it('preselects an unambiguous filename match and saves exactly the displayed schedule refs', async () => {
+    api.candidates.mockResolvedValue([quickTarget()]); await open(); await typeText('合同号：QUICK-1234')
+    await vi.waitFor(() => expect(dialog().findAll('input[type="checkbox"]')).toHaveLength(1))
+    expect(dialog().get('input[type="checkbox"]').element).toHaveProperty('checked', true)
+    expect(dialog().find('input[capture]').exists()).toBe(false)
+    expect(dialog().find('select[aria-label="关联目标"]').exists()).toBe(false)
+    expect(api.candidates).toHaveBeenCalledWith('huaxing', 'sales-business', '', expect.any(AbortSignal), 'PENDING_SCHEDULE')
+    await dialog().get('select[aria-label="资料状态"]').setValue('READY')
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[0]![1]).toMatchObject({ association: 'MANUAL', target_scope: 'PENDING_SCHEDULE', status: 'READY', targets: [expect.objectContaining({ kind: 'SCHEDULE', id: 'batch-one' })] })
+  })
+  it('searches without discarding checked rows and permits multiple manual selections', async () => {
+    const target = quickTarget(), other = quickTarget({ id: 'batch-two', item_no: 'ITEM-2', row: 10, fingerprint: 'b'.repeat(64) })
+    api.candidates.mockResolvedValue([target, other]); await open(); await typeText()
+    await vi.waitFor(() => expect(dialog().findAll('input[type="checkbox"]')).toHaveLength(2))
+    await dialog().findAll('input[type="checkbox"]')[0]!.setValue(true)
+    await dialog().get('input[aria-label="搜索关联订单"]').setValue('ITEM-2')
+    await dialog().get('input[type="checkbox"]').setValue(true)
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[0]![1].targets).toHaveLength(2)
+  })
+  it('does not auto-select ambiguous duplicate identities, and can explicitly choose one row', async () => {
+    api.candidates.mockResolvedValue([quickTarget(), quickTarget({ row: 10, fingerprint: 'b'.repeat(64) })])
+    await open(); await typeText('合同号：QUICK-1234')
+    await vi.waitFor(() => expect(dialog().findAll('input[type="checkbox"]')).toHaveLength(2))
+    expect(dialog().findAll('input:checked')).toHaveLength(0)
+    await dialog().findAll('input[type="checkbox"]')[1]!.setValue(true)
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[0]![1].targets).toEqual([expect.objectContaining({ row: 10 })])
+  })
+  it('can clear suggested links and upload only the original file without reading its contents', async () => {
+    api.candidates.mockResolvedValue([quickTarget()]); await open()
+    const file = new File(['合同号：HIDDEN-9999'], 'QUICK-1234_正唛.jpg', { type: 'image/jpeg' })
+    await chooseFile(file)
+    await vi.waitFor(() => expect(dialog().findAll('input:checked')).toHaveLength(1))
+    await button(dialog(), '暂不关联').trigger('click'); await flushPromises()
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[0]![1]).toMatchObject({ text: '', association: 'NONE', targets: [] })
+    expect(api.upload.mock.calls[0]![2]).toBe(file)
+  })
+  it('freezes an unknown save and retries the exact original request after closing/reopening', async () => {
+    api.upload.mockRejectedValueOnce(new Error('network timeout')).mockResolvedValueOnce(quickAsset())
+    const wrapper = await open(); await typeText('unknown outcome')
+    await dialog().trigger('submit'); await flushPromises()
+    const original = structuredClone(api.upload.mock.calls[0]![1])
+    expect(dialog().text()).toContain('保存结果尚未确认')
+    expect(dialog().get('fieldset').attributes('disabled')).toBeDefined()
+    await button(dialog(), '取消').trigger('click'); await flushPromises()
+    await button(wrapper, '快速上传').trigger('click'); await flushPromises()
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[1]![1]).toEqual(original)
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+  it('retains content on a definite 403 and distinguishes a target conflict from unknown results', async () => {
+    api.upload.mockRejectedValueOnce({ isAxiosError: true, response: { status: 403, data: { detail: '快速资料写入已关闭' } } })
+    await open(); await typeText('keep this draft'); await dialog().trigger('submit'); await flushPromises()
+    expect(dialog().get('textarea').element).toHaveProperty('value', 'keep this draft')
+    expect(dialog().get('fieldset').attributes('disabled')).toBeUndefined()
+    expect(dialog().text()).toContain('快速资料写入已关闭')
+    api.upload.mockRejectedValueOnce({ response: { status: 409, data: { detail: 'stale' } } })
+    await dialog().trigger('submit'); await flushPromises()
+    expect(dialog().text()).toContain('目标已更新')
+    expect(dialog().text()).not.toContain('原样重试保存')
+  })
+  it('ignores late candidate and upload responses when factory/account scope changes', async () => {
+    let resolveCandidates!: (value: unknown[]) => void
+    api.candidates.mockImplementationOnce(() => new Promise(resolve => { resolveCandidates = resolve }))
+    const wrapper = await open(); await typeText('合同号：QUICK-1234')
+    await vi.waitFor(() => expect(api.candidates).toHaveBeenCalled())
+    await button(dialog(), '暂不关联').trigger('click')
+    resolveCandidates([quickTarget()]); await flushPromises()
+    expect(dialog().findAll('input:checked')).toHaveLength(0)
+    let resolveSave!: (value: unknown) => void
+    api.upload.mockImplementationOnce(() => new Promise(resolve => { resolveSave = resolve }))
+    await dialog().trigger('submit'); await flushPromises()
+    await wrapper.setProps({ factoryId: 'huakang-a' }); resolveSave(quickAsset()); await flushPromises()
+    expect(wrapper.emitted('saved')).toBeUndefined()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+  it('preserves the draft across a normal same-account session refresh and restores trigger focus on Escape', async () => {
+    const wrapper = await open(); await typeText('preserve draft')
+    useAuthStore().applySession(quickSession()); await flushPromises()
+    expect(dialog().get('textarea').element).toHaveProperty('value', 'preserve draft')
+    await dialog().trigger('keydown', { key: 'Escape' }); await flushPromises()
+    await vi.waitFor(() => expect(document.activeElement).toBe(button(wrapper, '快速上传').element))
+  })
+})
+
+describe('shared document library', () => {
+  async function library(audience: 'sales' | 'warehouse' | 'supplier' = 'sales', factoryId = 'huaxing') {
+    const wrapper = mount(CartonQuickAssetLibrary, { props: { audience, factoryId }, attachTo: document.body }); wrappers.push(wrapper); await flushPromises(); return wrapper
+  }
+  it.each(['sales', 'warehouse'] as const)('counts all states independently of the selected button (%s)', async audience => {
+    const items = (['UNCLASSIFIED', 'DRAFT', 'PENDING', 'READY', 'HISTORY'] as const).map(status => quickAsset({
+      id: status, workflow: { ...quickAsset().workflow, status },
+    }))
+    api.list.mockResolvedValue({ items, total: items.length })
+    const wrapper = await library(audience)
+    const counts = () => wrapper.findAll('[data-status-filter]').map(x => x.attributes('aria-label'))
+    expect(counts()).toEqual(['当前资料 4', '全部版本 5', '初稿 2', '待确认 1', '已确认 1', '历史版本 1'])
+    await wrapper.get('[data-status-filter="DRAFT"]').trigger('click')
+    expect(wrapper.findAll('[data-quick-asset]').map(x => x.attributes('data-quick-asset'))).toEqual(['UNCLASSIFIED', 'DRAFT'])
+    expect(wrapper.get('[data-status-filter="DRAFT"]').attributes('aria-pressed')).toBe('true')
+    expect(counts()).toEqual(['当前资料 4', '全部版本 5', '初稿 2', '待确认 1', '已确认 1', '历史版本 1'])
+    expect(wrapper.text()).not.toContain('历史指令资料')
+  })
+  it('combines top search with upload department and restores counts when cleared', async () => {
+    const items = [
+      quickAsset({ id: 'sales', file_name: 'sample.pdf' }),
+      quickAsset({ id: 'warehouse', file_name: 'sample.xlsx', owner_department: 'pmc-warehouse' }),
+      quickAsset({ id: 'other', file_name: 'other.pdf' }),
+    ]
+    api.list.mockResolvedValue({ items, total: 3 })
+    const wrapper = await library()
+    await wrapper.setProps({ search: 'sample' })
+    expect(wrapper.find('input[aria-label="搜索资料"]').exists()).toBe(false)
+    expect(wrapper.get('[data-status-filter="PENDING"]').attributes('aria-label')).toBe('待确认 2')
+    await wrapper.get('input[aria-label="只看业务部上传"]').setValue(true)
+    expect(wrapper.findAll('[data-quick-asset]')).toHaveLength(1)
+    expect(wrapper.get('[data-status-filter="PENDING"]').attributes('aria-label')).toBe('待确认 1')
+    await wrapper.setProps({ search: '' })
+    expect(wrapper.get('[data-status-filter="PENDING"]').attributes('aria-label')).toBe('待确认 2')
+    await wrapper.get('input[aria-label="只看业务部上传"]').setValue(false)
+    expect(wrapper.findAll('[data-quick-asset]')).toHaveLength(3)
+  })
+  it('shows other departments, updates status and keeps historical versions searchable', async () => {
+    const current = quickAsset({ owner_department: 'pmc-warehouse', can_classify: true, text: '<script>safe text</script>' })
+    const history = quickAsset({ id: 'old', file_name: 'old.txt', workflow: { ...current.workflow, status: 'HISTORY' } })
+    api.list.mockResolvedValue({ items: [current, history], total: 2 })
+    const wrapper = await library()
+    expect(wrapper.find('script').exists()).toBe(false)
+    expect(wrapper.text()).toContain('仓库')
+    expect(wrapper.find('[data-quick-asset="old"]').exists()).toBe(false)
+    await wrapper.get('select[aria-label="文字资料.txt 状态"]').setValue('READY')
+    await button(wrapper, '保存状态').trigger('click'); await flushPromises()
+    expect(api.classify.mock.calls[0]!.slice(0, 3)).toEqual(['huaxing', { id: current.id, revision: 1 }, 'READY'])
+    await wrapper.get('[data-status-filter="HISTORY"]').trigger('click')
+    expect(wrapper.find('[data-quick-asset="old"]').exists()).toBe(true)
+  })
+  it('edits several order links and preserves exact unknown-result retries', async () => {
+    api.list.mockResolvedValue({ items: [quickAsset({ can_associate: true })], total: 1 })
+    api.candidates.mockResolvedValue([quickTarget(), quickTarget({ kind: 'REGULAR', id: 'two', fingerprint: 'b'.repeat(64) })])
+    api.associate.mockRejectedValueOnce(new Error('timeout')).mockResolvedValueOnce(quickAsset())
+    const wrapper = await library('warehouse'); await button(wrapper, '关联订单').trigger('click'); await flushPromises()
+    expect(dialog().text()).toContain('业务排期（采购前可关联）')
+    expect(dialog().text()).toContain('采购单（已建单）')
+    expect(dialog().text()).toContain('不代表已向供应商下单')
+    for (const input of dialog().findAll('input[type="checkbox"]')) await input.setValue(true)
+    await button(dialog(), '保存').trigger('click'); await flushPromises()
+    expect(api.associate.mock.calls[0]![2]).toHaveLength(2)
+    const original = api.associate.mock.calls[0]!.slice(0, 4)
+    expect(dialog().text()).toContain('尚未核实')
+    await button(dialog(), '原样重试').trigger('click'); await flushPromises()
+    expect(api.associate.mock.calls[1]!.slice(0, 4)).toEqual(original)
+    expect(wrapper.emitted('changed')).toHaveLength(1)
+  })
+  it('uses pending schedules in sales and preserves an existing ordered association when searching', async () => {
+    const existing = quickTarget({ ordered: true }), pending = quickTarget({ id: 'next', item_no: 'NEXT', fingerprint: 'b'.repeat(64) })
+    api.list.mockResolvedValue({ items: [quickAsset({ can_associate: true, targets: [existing] })], total: 1 })
+    api.candidates.mockResolvedValue([existing, pending]); api.associate.mockResolvedValue(quickAsset())
+    const wrapper = await library(); await button(wrapper, '关联排期订单').trigger('click'); await flushPromises()
+    expect(api.candidates).toHaveBeenCalledWith('huaxing', 'sales-business', '', expect.any(AbortSignal), 'PENDING_SCHEDULE', 'asset-one')
+    expect(dialog().text()).toContain('已下单，保留关联')
+    await dialog().get('input[aria-label="搜索关联订单"]').setValue('NEXT')
+    await dialog().get('input[type="checkbox"]').setValue(true)
+    await button(dialog(), '保存').trigger('click'); await flushPromises()
+    expect(api.associate.mock.calls[0]![2]).toHaveLength(2)
+    expect(api.associate.mock.calls[0]![5]).toBe('PENDING_SCHEDULE')
+  })
+  it('requires an authorized supplier scope and ignores late actions after context changes', async () => {
+    useAuthStore().applySession(supplierQuickSession())
+    const wrapper = await library('supplier', '')
+    expect(wrapper.text()).toContain('先选择一个厂区'); expect(api.list).not.toHaveBeenCalled()
+    api.list.mockResolvedValue({ items: [quickAsset({ owner_department: 'supplier', can_classify: true })], total: 1 })
+    await wrapper.setProps({ factoryId: 'huaxing' }); await flushPromises()
+    let resolve!: (value: unknown) => void
+    api.classify.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    await wrapper.get('select[aria-label="文字资料.txt 状态"]').setValue('READY')
+    await button(wrapper, '保存状态').trigger('click')
+    await wrapper.setProps({ factoryId: '' }); resolve(quickAsset()); await flushPromises()
+    expect(wrapper.emitted('changed')).toBeUndefined()
+  })
+  it('uploads privately from all authorized supplier factories without making the order factory a share', async () => {
+    useAuthStore().applySession(supplierQuickSession())
+    const wrapper = await library('supplier', '')
+    await wrapper.setProps({ supplierFactories: ['huaxing', 'huakang-a'] }); await flushPromises()
+    expect(api.list).toHaveBeenCalledWith('huaxing', 'supplier', expect.any(AbortSignal))
+    expect(api.list).toHaveBeenCalledWith('huakang-a', 'supplier', expect.any(AbortSignal))
+    expect(wrapper.text()).not.toContain('先选择一个厂区')
+    expect(button(wrapper, '快速上传').attributes('disabled')).toBeUndefined()
+    await wrapper.get('select[aria-label="上传关联订单厂区"]').setValue('huakang-a')
+    await button(wrapper, '快速上传').trigger('click'); await flushPromises(); await typeText('供应商私有回稿')
+    expect(dialog().findAll('input[type="checkbox"]').every(x => !(x.element as HTMLInputElement).checked)).toBe(true)
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[0]!.slice(0, 2)).toEqual(['huakang-a', expect.objectContaining({ owner_department: 'supplier', shared_factory_ids: [], association: 'NONE' })])
+  })
+  it('uses each supplier file factory for actions and cancels stale all-factory reads when membership changes', async () => {
+    useAuthStore().applySession(supplierQuickSession())
+    const asset = quickAsset({ id: 'second', factory_id: 'huakang-a', owner_department: 'supplier', can_classify: true, can_associate: true })
+    api.list.mockImplementation(async (factory: string) => ({ items: factory === 'huakang-a' ? [asset] : [], total: factory === 'huakang-a' ? 1 : 0 }))
+    const wrapper = await library('supplier', '')
+    await wrapper.setProps({ supplierFactories: ['huaxing', 'huakang-a'] }); await flushPromises()
+    await wrapper.get('select[aria-label="文字资料.txt 状态"]').setValue('READY')
+    await button(wrapper, '保存状态').trigger('click'); await flushPromises()
+    expect(api.classify.mock.calls[0]![0]).toBe('huakang-a')
+    await button(wrapper, '关联订单').trigger('click'); await flushPromises()
+    expect(api.candidates).toHaveBeenCalledWith('huakang-a', 'supplier', '', expect.any(AbortSignal), 'ALL', 'second')
+    await button(dialog(), '取消').trigger('click'); await flushPromises()
+    let resolve!: (value: unknown) => void
+    api.list.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    await button(wrapper, '刷新资料').trigger('click')
+    await wrapper.setProps({ supplierFactories: [] }); resolve({ items: [asset], total: 1 }); await flushPromises()
+    expect(wrapper.find('[data-quick-asset="second"]').exists()).toBe(false)
+    expect(button(wrapper, '快速上传').attributes('disabled')).toBeDefined()
+  })
+  it('distinguishes errors from empty data and respects server read-only capability', async () => {
+    api.list.mockResolvedValue({ items: [quickAsset({ can_classify: false, can_associate: false })], total: 1 })
+    const wrapper = await library()
+    expect(button(wrapper, '保存状态')).toBeUndefined()
+    api.list.mockRejectedValueOnce(new Error('list unavailable'))
+    await button(wrapper, '刷新资料').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('list unavailable'); expect(wrapper.text()).not.toContain('暂无符合条件')
+    expect(wrapper.get('[data-status-filter="CURRENT"]').attributes('aria-label')).toBe('当前资料 数量未读取')
+  })
+})

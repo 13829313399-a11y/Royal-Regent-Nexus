@@ -143,6 +143,16 @@ def carton_mark_assets(factory_id: str, db: Session = Depends(get_db), user: Aut
     return service.supplier_mark_assets(db, user, factory_id)
 
 
+from app.schemas.carton_supplier_portal import SupplierMarkAssetClassification
+
+
+@router.put('/carton-mark/assets/{asset_id}/classification', response_model=SupplierMarkAssetOut)
+def classify_supplier_mark_asset(asset_id: str, factory_id: str, payload: SupplierMarkAssetClassification,
+                                request: Request, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_supplier_asset_status import classify
+    return classify(db, user, factory_id, asset_id, payload, lambda: get_current_user(request, db))
+
+
 @router.get("/carton-mark/assets/{asset_id}/document")
 def carton_mark_asset_document(asset_id: str, factory_id: str, preview: bool = False,
                               db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
@@ -634,3 +644,10 @@ def supplier_material_corrections(factory_id: str, db: Session = Depends(get_db)
 @router.post("/material-corrections/{identifier}/actions")
 def decide_material_correction(identifier: str, payload: MaterialCorrectionAction, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     return material_corrections.act(db, user, identifier, payload, supplier=True)
+
+@router.get('/print-splits/{identifier}/files/{asset_id}')
+def print_split_file(identifier: str, asset_id: str, factory_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_print_split import download
+    asset, frozen = download(db, current_user, factory_id, identifier, asset_id, supplier=True)
+    return Response(asset.content, media_type=frozen['content_type'],
+        headers={'Content-Disposition': "attachment; filename*=UTF-8''" + quote(frozen['file_name'])})
