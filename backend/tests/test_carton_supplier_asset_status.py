@@ -14,8 +14,9 @@ def isolated(monkeypatch,tmp_path):
     import test_molding_sample_api
     monkeypatch.setattr(test_molding_sample_api,'TEST_TMP_DIR',tmp_path)
     monkeypatch.setenv('ONLINE_DOCUMENTS_ENABLED','false')
-    monkeypatch.delenv('CARTON_ASSET_V1_ENABLED',raising=False)
-    monkeypatch.delenv('CARTON_ASSET_V1_WRITES_ENABLED',raising=False)
+    # Settings also reads backend/.env; absence does not disable a local flag.
+    monkeypatch.setenv('CARTON_ASSET_V1_ENABLED','false')
+    monkeypatch.setenv('CARTON_ASSET_V1_WRITES_ENABLED','false')
 
 def own(client):
     supplier_login(client)
