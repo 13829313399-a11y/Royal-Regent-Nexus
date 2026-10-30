@@ -20,7 +20,7 @@ describe('materials workspace header', () => {
   it('preserves group until explicitly selected and carries route context when changing factory', async () => {
     const store = useAppStore()
     store.setActiveFactory('group')
-    const panel = shallowMount(MaterialsHeader, { props: { search: '', disabled: false } })
+    const panel = shallowMount(MaterialsHeader, { props: { disabled: false } })
     try {
       const select = panel.get('select')
       expect(select.element.value).toBe('group')
@@ -34,7 +34,7 @@ describe('materials workspace header', () => {
     const store = useAppStore()
     store.setActiveFactory('huaxing')
     const unregister = registerFactoryChangeGuard(() => false)
-    const panel = shallowMount(MaterialsHeader, { props: { search: '', disabled: false } })
+    const panel = shallowMount(MaterialsHeader, { props: { disabled: false } })
     try {
       await panel.get('select').setValue('huadeng')
       expect(store.activeFactoryId).toBe('huaxing')
@@ -42,12 +42,11 @@ describe('materials workspace header', () => {
       expect(replace).not.toHaveBeenCalled()
     } finally { unregister(); panel.unmount() }
   })
-  it('disables scope switching during a pending operation and emits the contract search', async () => {
-    const panel = shallowMount(MaterialsHeader, { props: { search: '', disabled: true } })
+  it('disables scope switching during a pending operation without a duplicate search', async () => {
+    const panel = shallowMount(MaterialsHeader, { props: { disabled: true } })
     try {
       expect(panel.get('select').element.disabled).toBe(true)
-      await panel.get('input').setValue('RRI-2026')
-      expect(panel.emitted('search')).toEqual([['RRI-2026']])
+      expect(panel.find('input[type=search]').exists()).toBe(false)
     } finally { panel.unmount() }
   })
 })
