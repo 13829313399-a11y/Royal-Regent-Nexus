@@ -1,0 +1,105 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
+const test = require('node:test');
+const TOKEN = 'qc-export-test-only-token-32-characters';
+const gatewayFetch = (url, options = {}) => fetch(url, { ...options, headers: { ...options.headers, 'X-QC-Gateway-Token': TOKEN } });
+
+async function getFreePort() {
+  const server = net.createServer();
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address();
+  server.close();
+  await once(server, 'close');
+  return port;
+}
+
+async function waitForHealth(baseUrl) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const response = await gatewayFetch(baseUrl + '/api/health');
+      if (response.ok) return;
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error('QC test server did not become healthy');
+}
+
+test('CSV export neutralizes spreadsheet formulas in text fields', async t => {
+  const port = await getFreePort();
+  const dataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'qc-export-test-'));
+  const serverPath = path.join(__dirname, 'server.js');
+  const child = spawn(process.execPath, [serverPath], {
+    env: { ...process.env, QC_DEPARTMENT_GATEWAY_TOKEN: TOKEN, PORT: String(port), DATA_PATH: dataPath },
+    stdio: 'ignore',
+  });
+
+  t.after(async () => {
+    if (child.exitCode == null) {
+      child.kill();
+      await once(child, 'exit');
+    }
+    fs.rmSync(dataPath, { recursive: true, force: true });
+  });
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  await waitForHealth(baseUrl);
+  const records = [{
+    // POST now merges records; do not overwrite the freshly seeded id 1 with
+    // an intentionally historical timestamp used by this export fixture.
+    id: 10001,
+    date: '2026-07-14',
+    supplier: '=HYPERLINK("https://example.invalid","click")',
+    productNo: '+1+1',
+    productName: 'formula test',
+    deliveryNo: 'DN-2026-001',
+    orderNo: 'PO-2026-001',
+    result: 'PASS',
+    updatedAt: '2026-07-16T09:30:00.000Z',
+  }];
+  const saveResponse = await gatewayFetch(baseUrl + '/api/records', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ records }),
+  });
+  assert.equal(saveResponse.status, 200);
+
+  const csvResponse = await gatewayFetch(baseUrl + '/api/export/records.csv');
+  assert.equal(csvResponse.status, 200);
+  const csv = await csvResponse.text();
+  assert.match(csv, /"'=HYPERLINK\(""https:\/\/example\.invalid"",""click""\)"/);
+  assert.match(csv, /"'\+1\+1"/);
+  assert.match(csv, /"PO号"/);
+  assert.match(csv, /"PO-2026-001"/);
+  assert.match(csv, /"修改日期"/);
+  assert.match(csv, /"2026-07-16"/);
+  assert.doesNotMatch(csv, /(?:^|,)"[=+\-@]/m);
+
+  const searchResponse = await gatewayFetch(baseUrl + '/api/export/records.csv?search=2026-07-16');
+  assert.equal(searchResponse.status, 200);
+  assert.match(await searchResponse.text(), /"PO-2026-001"/);
+
+  for (const day of ['2026-10-27','2026-10-28','2026-10-29','2026-10-30']) {
+    const planned = await gatewayFetch(baseUrl + '/api/export/records.csv?dateBasis=inspection-plan&dateFrom='+day+'&dateTo='+day, {
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({records:[],hiddenIds:[],inspectionPlans:{10001:{from:'2026-10-27',to:'2026-10-29'}}})
+    });
+    assert.equal(planned.status,200);
+    const text=await planned.text();
+    if(day==='2026-10-30')assert.doesNotMatch(text,/PO-2026-001/);
+    else {assert.match(text,/PO-2026-001/);assert.match(text,/2026-07-14/);}
+  }
+
+  const excelResponse = await gatewayFetch(baseUrl + '/api/export/factory-excel.xls');
+  assert.equal(excelResponse.status, 200);
+  const excel = await excelResponse.text();
+  assert.match(excel, /<th class="head">PO号<\/th>/);
+  assert.match(excel, /<td>PO-2026-001<\/td>/);
+});

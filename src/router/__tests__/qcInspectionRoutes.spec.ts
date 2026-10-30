@@ -47,18 +47,13 @@ describe('QC inspection full-page routes', () => {
     expect(resolved.meta.permissions).toEqual(['qc_inspection:read'])
   })
 
-  it('keeps the shared workspace provider without rendering a nested RouterView', () => {
-    const source = readFileSync(
-      join(process.cwd(), 'src/views/QcOperationsCenterView.vue'),
-      'utf8',
-    )
-
-    expect(source).toContain('provide(qcInspectionWorkspaceKey')
-    expect(source).toContain('<component :is="activeSectionComponent" v-else')
-    expect(source).not.toContain('RouterView')
+  it('embeds QC_department at the existing authenticated entry', () => {
+    const source = readFileSync(join(process.cwd(), 'src/views/QcOperationsCenterView.vue'), 'utf8')
+    expect(source).toContain('<iframe')
+    expect(source).toContain('/qc-department/')
+    expect(source).not.toContain('activeProductionFactory')
     expect(source).toContain('返回 QC 模块中心')
     expect(source).toContain("path: '/modules/qc'")
-    expect(source).toContain('query: { factory: factoryId }')
   })
 
   it('retires standalone add and renaming pages with safe redirects', () => {

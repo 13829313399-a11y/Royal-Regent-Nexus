@@ -1,7 +1,10 @@
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+os.environ.setdefault("QC_DEPARTMENT_MANAGED", "false")  # Tests must not launch the local persistent service.
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 

@@ -55,7 +55,7 @@
       {
         "path": "src/router/index.ts",
         "symbol": "carton-supplier-management",
-        "sha256": "d334b376748cf174e6142fdff1acd7a4237d9d5e74c1943ac953ab67c558de45"
+        "sha256": "bc772d9b3df6d6935fdc5611ea75219086de11edee3220518115d0f2dfaf921e"
       },
       {
         "path": "backend/app/services/carton_customer_assignment.py",
