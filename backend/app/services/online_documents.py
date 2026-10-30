@@ -16,7 +16,7 @@ from app.models.auth import AuthSession, AuthUser, EmployeeProfile
 from app.models.identity import IamOrgUnit
 from app.models.online_documents import OnlineDocument as Document, OnlineDocumentRevision as Revision
 from app.models.online_documents import OnlineDocumentPlacement as Placement
-from app.services import auth, collaborative_sheets, internal_members
+from app.services import auth, internal_members
 from app.services.document_tools import storage
 from app.services import online_document_protocol as protocol
 from app.services.identity_policy import lock_mutation
@@ -49,7 +49,22 @@ def scope(user, factory_id):
         raise HTTPException(403, "账号不可用")
     if factory_id == "group":
         return  # Ownership does not require an employee profile; sharing is explicit.
-    collaborative_sheets.scope(user, factory_id)
+    if factory_id not in auth.ALLOWED_FACTORY_IDS:
+        raise HTTPException(422, "请选择具体厂区")
+    if not user.profile or user.profile.confirmation_status != "confirmed" or user.profile.primary_factory_id != factory_id:
+        raise HTTPException(403, "在线文档仅限已确认的本厂账号，不能跨厂区共享")
+
+
+def _eligible_factory_accounts(db, factory_id):
+    """Use current resolved identities, including effective transfers/expiry."""
+    current_factory, current_department, _ = identity_columns()
+    query = select(AuthUser.id, AuthUser.display_name, AuthUser.username, current_department.label("primary_department")).join(
+        EmployeeProfile, AuthUser.id == EmployeeProfile.user_id).where(
+        AuthUser.status == "active", EmployeeProfile.employment_status != "left", current_factory == factory_id,
+        EmployeeProfile.confirmation_status == "confirmed")
+    rows = [{"id": row.id, "display_name": row.display_name or row.username, "department": row.primary_department}
+            for row in db.execute(query)]
+    return sorted(rows, key=lambda row: (row["display_name"].casefold(), row["id"]))
 
 
 def access(doc, user):
@@ -241,7 +256,8 @@ def create(db, user, factory_id, title, extension, data=None, *, folder_id=None)
 def recipients(db, user, factory_id):
     scope(user, factory_id)
     if factory_id != "group":
-        result = collaborative_sheets.recipients(db, user, factory_id)
+        rows = _eligible_factory_accounts(db, factory_id)
+        result = {"users": rows, "departments": [{"id": d, "name": d} for d in sorted({r["department"] for r in rows} & auth.ALLOWED_DEPARTMENTS)]}
         epochs = dict(db.execute(select(EmployeeProfile.user_id, EmployeeProfile.employment_epoch)
                                 .where(EmployeeProfile.user_id.in_([p["id"] for p in result["users"]]))).all())
         return {**result, "users": [{**p, "epoch": epochs.get(p["id"], 1)} for p in result["users"]]}
@@ -269,7 +285,7 @@ def share(db, doc, user, grants, version):
     if len(grants) > 50 or len({g.user_id for g in grants}) != len(grants):
         raise HTTPException(422, "最多共享给 50 人，且不能重复")
     allowed = (group_recipient_ids(db) if doc.factory_id == "group" else
-               {item["id"] for item in collaborative_sheets._eligible_accounts(db, doc.factory_id)})
+               {item["id"] for item in _eligible_factory_accounts(db, doc.factory_id)})
     result = []
     for grant in grants:
         if grant.user_id not in allowed or grant.user_id == doc.owner_id:

@@ -2,7 +2,7 @@
 
 ## 实施与界面简报
 
-公共工具的 `/online-documents` 全页工作区支持新建、上传和编辑 DOCX / XLSX，Excel 公式由 ONLYOFFICE 计算。集团入口（factory=group）的有效登录账号无需员工厂区档案即可拥有个人文件；文件默认私有，内部成员可以按公司同事逐人授予整份文件的只读或编辑权限。候选与访问资格复用 internal_members，并要求已确认员工档案、有效内部权限或有效内部任职之一；通讯录兼容的 legacy 未确认空身份不能用于共享。排除纯供应商、离职和停用身份，不因集团浏览或管理员身份自动获得他人文档。具体厂区仍仅供已确认的本厂在职账号使用，共享仍限定本厂。这不等同于协同填表的单元格授权。
+公共工具的 `/online-documents` 全页工作区支持新建、上传和编辑 DOCX / XLSX，Excel 公式由 ONLYOFFICE 计算。集团入口（factory=group）的有效登录账号无需员工厂区档案即可拥有个人文件；文件默认私有，内部成员可以按公司同事逐人授予整份文件的只读或编辑权限。候选与访问资格复用 internal_members，并要求已确认员工档案、有效内部权限或有效内部任职之一；通讯录兼容的 legacy 未确认空身份不能用于共享。排除纯供应商、离职和停用身份，不因集团浏览或管理员身份自动获得他人文档。具体厂区仍仅供已确认的本厂在职账号使用，共享仍限定本厂。原独立协同填表模块已移除，当前在线文档独立保留厂区和成员资格校验。
 
 实施顺序：独立文件/版本模型及显式迁移 → 当前身份和回调校验 → 文档列表与嵌入编辑器 → 权限、保存与迁移回归 → 构建及真实浏览器验收 → 按生产发布门禁部署。历史迁移和其他模块保持原合同。
 
@@ -93,7 +93,7 @@ DevTools 不可用且 Chrome 工具返回不可用后，用户明确允许内置
 | PostgreSQL | 基础 0177 迁移曾在独立无网络的 PostgreSQL 16 容器验收，canary 行保留、历史 UPDATE/DELETE 被拒绝；新增 0179 管理迁移仍需在生产发布恢复副本验收。不是生产完整恢复演练 |
 | 服务引擎与配置 | 合成 DOCX→PDF 与 XLSX→PDF（结果 15）通过，未签名请求被拒绝；独立 Compose、集成 Compose 和 Nginx 配置校验通过 |
 
-命令：`npm run build`、`npm run typecheck:test`、`npm run test:unit -- src/features/online-documents/OnlineDocumentsWorkspace.spec.ts`；后端 `.venv/Scripts/python.exe -m pytest tests/test_online_documents.py tests/test_collaborative_sheets.py -q -p no:cacheprovider --basetemp <独立目录>`。完整构建有既有的大 chunk/第三方注释警告。服务器引擎、配置及迁移证据保存在 `/opt/royal-regent/maintenance/onlyoffice-20261026/`。
+命令：`npm run build`、`npm run typecheck:test`、`npm run test:unit -- src/features/online-documents/OnlineDocumentsWorkspace.spec.ts`；后端 `.venv/Scripts/python.exe -m pytest tests/test_online_documents.py tests/test_tool_center_retired.py -q -p no:cacheprovider --basetemp <独立目录>`。完整构建有既有的大 chunk/第三方注释警告。服务器引擎、配置及迁移证据保存在 `/opt/royal-regent/maintenance/onlyoffice-20261026/`。
 
 文件管理持久化核对证据为 `.tmp/online-management/persistence-proof.json`：已有五份文档保持原状，合成文件六个版本校验通过，保护后的持久版本保留公式 `=SUM(B1:B2)`、输入 10 和缓存结果 18，回收站恢复后无共享、无遗留编辑会话或待确认保存。最终页面证据为 `.tmp/online-management/management-final.png`，最终重启后的页面控制台无 error/warn。
 

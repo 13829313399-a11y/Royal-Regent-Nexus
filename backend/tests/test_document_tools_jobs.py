@@ -193,6 +193,55 @@ def test_path_guard(runtime):
         storage.resolve('../escape')
 
 
+def test_conversion_rejects_missing_office_before_enqueue(runtime, monkeypatch):
+    from app.services.document_tools import office_engine
+    monkeypatch.setattr(office_engine, "office_executable", lambda: None)
+    client, sessions, _ = runtime
+    source = upload(client)
+    pipeline.run_one(sessions)
+    response = client.post('/api/tools/jobs', json={"source_id": source["source_id"], "operation": "word_to_pdf", "options": {}, "client_request_id": jobs.uid()})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "OFFICE_UNAVAILABLE"
+    with sessions() as db:
+        assert not list(db.scalars(select(Job).where(Job.operation == "word_to_pdf")))
+
+
+def test_legacy_password_retry_stays_awaiting_input(runtime, monkeypatch, tmp_path):
+    import msoffcrypto
+    from app.services.document_tools import office_engine
+    from pypdf import PdfWriter
+    client, sessions, _ = runtime
+    native = tmp_path / 'readable.docx'
+    doc = Document()
+    doc.add_paragraph('Decrypted legacy fixture')
+    doc.save(native)
+    def load_key(password):
+        if password != 'correct-fixture-password':
+            raise msoffcrypto.exceptions.InvalidKeyError('wrong')
+    monkeypatch.setattr(msoffcrypto, 'OfficeFile', lambda _: SimpleNamespace(is_encrypted=lambda: True, load_key=load_key))
+    def render(path, output, options, work_dir, cancelled):
+        if output.suffix == '.docx':
+            output.write_bytes(native.read_bytes())
+        else:
+            writer = PdfWriter()
+            writer.add_blank_page(width=595, height=842)
+            writer.write(output)
+        return {}
+    monkeypatch.setattr(office_engine, 'render_office', render)
+    source = upload(client, 'protected.doc', bytes.fromhex('D0CF11E0A1B11AE1') + b'fixture')
+    pipeline.run_one(sessions)
+    endpoint = '/api/tools/sources/' + source['source_id']
+    assert client.get(endpoint).json()['inspection_status'] == 'awaiting_input'
+    response = client.post(endpoint + '/password', json={'password': 'wrong'})
+    assert response.status_code == 202
+    pipeline.run_one(sessions)
+    assert client.get(endpoint).json()['inspection_status'] == 'awaiting_input'
+    assert client.get('/api/tools/jobs/' + response.json()['job_id']).json()['error_code'] == 'INVALID_PASSWORD'
+    assert client.post(endpoint + '/password', json={'password': 'correct-fixture-password'}).status_code == 202
+    pipeline.run_one(sessions)
+    assert client.get(endpoint).json()['inspection_status'] == 'succeeded'
+
+
 def test_manual_numeric_correction_preserves_excel_type(runtime, tmp_path):
     from openpyxl import Workbook, load_workbook
     from app.services.document_tools import office_engine

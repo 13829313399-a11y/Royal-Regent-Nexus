@@ -29,7 +29,6 @@ from app.models import (
     uv_operations,  # noqa: F401
     spray_ops,  # noqa: F401
     document_tools,  # noqa: F401
-    collaborative_sheets,  # noqa: F401
     online_documents,  # noqa: F401
     auth,  # noqa: F401
     position_review,  # noqa: F401
