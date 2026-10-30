@@ -153,6 +153,41 @@ describe('unified material master import', () => {
     expect(next.get('#im-panel-master').text()).toContain('导入名称')
     expect(next.get('#im-panel-master').findAll('[data-master-import-group] select').find(node => node.text().includes('保留已有资料'))!.element).toHaveProperty('value', 'import')
   })
+  it('retains a large selected file after upload failure, cancellation, oversized replacement and reopening', async () => {
+    const { wrapper, panel } = await openImport()
+    await panel.get('select').setValue('CLIENT'); await flushPromises()
+    await panel.get('.im-import-products input').setValue(true)
+    const large = new File(['synthetic'], '128MB资料.xlsx')
+    Object.defineProperty(large, 'size', { value: 128 * 1024 * 1024 })
+    await chooseFile(panel, large)
+    expect(panel.text()).toContain('最大 200 MB')
+    mocks.api.masterPreview.mockRejectedValue(new Error('测试上传失败'))
+    await panel.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.api.masterPreview).toHaveBeenCalledWith('huaxing', 'CLIENT', ['p'], large, [])
+    await chooseFile(panel, null)
+    const oversized = new File(['synthetic'], '超限.xlsx')
+    Object.defineProperty(oversized, 'size', { value: 200 * 1024 * 1024 + 1 })
+    await chooseFile(panel, oversized)
+    expect(wrapper.text()).toContain('超过 200 MB')
+    const saved = storedDrafts().filter(draft => draftKind(draft.id) === 'masterimport')
+    expect(saved).toHaveLength(1)
+    expect(saved[0]!.state.file).toBe(large)
+    wrapper.unmount()
+    const next = await setup('customer')
+    await button(next.get(`[data-draft-id="${saved[0]!.id}"]`), '继续填写').trigger('click')
+    expect(next.get('#im-panel-master').text()).toContain('128MB资料.xlsx（128.0 MB）')
+    expect(next.get('.im-import-products input').element).toHaveProperty('checked', true)
+  })
+  it('retains the original file and comparison when saving before replacement exceeds browser quota', async () => {
+    const { wrapper, panel } = await openImport(); await upload(panel)
+    const before = storedDrafts().filter(draft => draftKind(draft.id) === 'masterimport')
+    vi.spyOn(memoryDatabase, 'update').mockRejectedValueOnce(new DOMException('Quota exceeded', 'QuotaExceededError'))
+    await chooseFile(panel, new File(['new'], '新资料.xlsx'))
+    expect(panel.text()).toContain('导入名称')
+    expect(panel.text()).toContain('已选择：统一.xlsx')
+    expect(wrapper.text()).toContain('尚未安全保存')
+    expect(storedDrafts().filter(draft => draftKind(draft.id) === 'masterimport')).toEqual(before)
+  })
   it('does not let native supplier search events replace the contract filter', async () => {
     const { wrapper, panel } = await openImport(); await upload(panel)
     const board = wrapper.getComponent(BoardWorkspace)
@@ -187,6 +222,25 @@ describe('unified material master import', () => {
     expect(panel.find('.im-import-mapping').exists()).toBe(true)
     expect(panel.findAll('[data-master-import-group] select').find(node => node.text().includes('保留已有资料'))!.element).toHaveProperty('value', 'keep')
     expect(storedDrafts().filter(draft => draftKind(draft.id) === 'masterimport')).toHaveLength(2)
+  })
+  it('automatically rereads missing fields without erasing manual entries or the original draft', async () => {
+    const { panel } = await openImport(); await upload(panel)
+    await panel.findAll('[data-master-import-group] select').find(node => node.text().includes('保留已有资料'))!.setValue('import')
+    const supplier = () => panel.findAll('[data-master-import-group] label.im-field').find(label => label.find('span').text() === '供应商')!.get('input')
+    await supplier().setValue('手工填写供应商')
+    mocks.api.masterPreview.mockImplementation(async () => {
+      const row = staged(); row.data.parser_revision = 'shipment-layout-fields-v2'
+      Object.assign(row.data.groups[0].sources[0].source, { customs_unit: 'KGM', unit: 'PCS', currency: 'USD', price: '20.54', net_weight_kg: '0.00073514' })
+      data.records = data.records.filter(item => item.id !== row.id).concat(row)
+      return { record: row }
+    })
+    await button(panel, '重新读取最新资料并对比').trigger('click'); await flushPromises()
+    expect(mocks.api.masterPreview).toHaveBeenLastCalledWith('huaxing', 'CLIENT', ['p'], expect.any(File), [])
+    expect(supplier().element).toHaveProperty('value', '手工填写供应商')
+    expect(panel.findAll('[data-master-import-group] input').some(input => (input.element as HTMLInputElement).value === '0.00073514')).toBe(true)
+    const saved = storedDrafts().filter(draft => draftKind(draft.id) === 'masterimport')
+    expect(saved).toHaveLength(2)
+    expect(saved.every(item => item.state.choices[0].material.supplier === '手工填写供应商')).toBe(true)
   })
   it('blocks old code-grouped previews until the retained source is read again', async () => {
     const { panel } = await openImport(); await upload(panel)
@@ -230,27 +284,29 @@ describe('unified material master import', () => {
     expect(mocks.api.masterPreview).toHaveBeenLastCalledWith('huaxing', 'CLIENT', ['p'], expect.any(File), [])
     expect(storedDrafts().filter(draft => draftKind(draft.id) === 'masterimport').length).toBeGreaterThan(1)
   })
-  it('compares old and incoming photos and restores the chosen photo from its own draft', async () => {
+  it('compares compressed incoming photos and restores the chosen photo and compression evidence from its own draft', async () => {
     const { wrapper, panel } = await openImport(); await upload(panel)
     mocks.api.masterPreview.mockImplementation(async () => {
       const row = staged()
       row.data.groups[0].existing = { ...material, data: { ...material.data, image_data: 'data:image/png;base64,b2xk' } }
-      row.data.groups[0].sources[0].source.image_data = 'data:image/png;base64,bmV3'
-      row.data.groups[0].sources[0].notes = ['单个净重取自 BD4 已保存的计算结果']
+      row.data.groups[0].sources[0].source.image_data = 'data:image/jpeg;base64,bmV3'
+      row.data.groups[0].sources[0].notes = ['单个净重取自 BD4 已保存的计算结果', '物料图片已自动压缩：9.29 MB → 0.50 MB；原始 Excel 保持不变。']
       data.records = data.records.filter(item => item.id !== row.id).concat(row)
       return { record: row }
     })
     await button(panel, '重新读取最新资料并对比').trigger('click'); await flushPromises()
     expect(panel.get('img[alt="已有物料图片"]').attributes('src')).toBe('data:image/png;base64,b2xk')
-    expect(panel.get('img[alt="本次导入物料图片"]').attributes('src')).toBe('data:image/png;base64,bmV3')
-    expect(panel.text()).toContain('识别来源（1 项）')
+    expect(panel.get('img[alt="本次导入物料图片"]').attributes('src')).toBe('data:image/jpeg;base64,bmV3')
+    expect(panel.text()).toContain('识别来源（2 项）')
+    expect(panel.text()).toContain('物料图片已自动压缩：9.29 MB → 0.50 MB；原始 Excel 保持不变。')
     await panel.findAll('[data-master-import-group] select').find(node => node.text().includes('保留已有资料'))!.setValue('import')
     await flushPromises()
-    const saved = storedDrafts().find(draft => draft.state.choices?.[0]?.material?.image_data === 'data:image/png;base64,bmV3')!
+    const saved = storedDrafts().find(draft => draft.state.choices?.[0]?.material?.image_data === 'data:image/jpeg;base64,bmV3')!
     wrapper.unmount()
     const next = await setup('customer')
     await button(next.get(`[data-draft-id="${saved.id}"]`), '继续填写').trigger('click'); await flushPromises()
-    expect(next.get('img[alt="本次导入物料图片"]').attributes('src')).toBe('data:image/png;base64,bmV3')
+    expect(next.get('img[alt="本次导入物料图片"]').attributes('src')).toBe('data:image/jpeg;base64,bmV3')
+    expect(next.text()).toContain('原始 Excel 保持不变。')
     expect(mocks.api.command).not.toHaveBeenCalled()
   })
 })

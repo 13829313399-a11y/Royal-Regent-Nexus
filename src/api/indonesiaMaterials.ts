@@ -42,7 +42,7 @@ export const indonesiaMaterialsApi = {
     data.append('factory_id', factory); data.append('customer', customer); data.append('file', file)
     data.append('context', JSON.stringify({ product_ids: productIds, mappings }))
     return (await http.post('/indonesia-materials/master-imports/preview', data, {
-      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120_000,
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 270_000,
     })).data
   },
   async workspace(factory: string): Promise<WorkspaceResponse> {
