@@ -38,3 +38,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+.local-dev
+services/qc-department/server/data
+services/qc-department/server/ai-config.json

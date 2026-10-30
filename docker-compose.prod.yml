@@ -21,8 +21,25 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  qc-department:
+    build:
+      context: ./services/qc-department
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3411
+      DATA_PATH: /app/data
+      QC_DEPARTMENT_GATEWAY_TOKEN: "${QC_DEPARTMENT_GATEWAY_TOKEN:?QC gateway token is required}"
+    volumes:
+      - qc-department-data:/app/data
+    restart: unless-stopped
+    logging: *default-logging
+
   api:
     image: royal-regent-nexus-api:local
+    environment:
+      QC_DEPARTMENT_MANAGED: "false"
+      QC_DEPARTMENT_URL: http://qc-department:3411
+      QC_DEPARTMENT_GATEWAY_TOKEN: "${QC_DEPARTMENT_GATEWAY_TOKEN:?QC gateway token is required}"
     build:
       context: .
       dockerfile: Dockerfile.backend
@@ -30,6 +47,8 @@ services:
       - .env.production
     depends_on:
       db:
+        condition: service_healthy
+      qc-department:
         condition: service_healthy
     volumes:
       - three-d-assets:/app/backend/data/three-d-printing-assets
@@ -78,6 +97,7 @@ services:
     logging: *default-logging
 
 volumes:
+  qc-department-data:
   postgres-data:
   three-d-assets:
   document-assets:

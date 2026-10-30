@@ -63,6 +63,7 @@ COPY shinobu-web/LICENSE shinobu-web/THIRD_PARTY_NOTICES.md /app/shinobu-web/
 COPY backend/ ./
 COPY src/ /app/src/
 COPY shared/ /app/shared/
+COPY services/qc-department/ /app/services/qc-department/
 
 # Validate the packaged application syntax without requiring a live database.
 RUN python -m compileall -q app

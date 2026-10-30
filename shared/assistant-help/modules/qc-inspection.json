@@ -2,7 +2,7 @@
   {
     "id": "qc-inspection.overview",
     "module_id": "qc-inspection",
-    "title": "QC 验货工作区",
+    "title": "QC_department 验货工作台",
     "kind": "overview",
     "audience": "internal",
     "route_names": [
@@ -15,50 +15,80 @@
     "factory_ids": [],
     "anchor_id": "qc-inspection.overview",
     "field_keys": [],
-    "summary": "区分验货主单进度、验货结果、问题处理和报告文件。",
-    "content": "主单 status 的 SCHEDULED/IN_PROGRESS/COMPLETED/CANCELLED 表示已排期、进行中、完成、取消；验货结果另含 PENDING/PASS/FAIL/REJECTED/CONDITIONAL_PASS/CANCELLED，主单完成不自动等于检验合格。\n问题状态为 DRAFT/OPEN/IN_PROGRESS/RESOLVED/CLOSED/CANCELLED，问题解决与关闭是不同记录。事件类型可区分客户、第三方、巡线、自检、复验和抽检；缺陷严重度与处置方式分别记录。先核对客户、订单、验货日期和事件，再填写问题或生成相应报告。\n排期导入先预览，再逐项选择 UPDATE/KEEP/CREATE/SKIP 后确认，不能把预览成功当成业务已更新。报告 GENERATED/FAILED 描述生成结果；文档 DRAFT/FINAL/REVISED 描述文档版本状态，生成报告不代替问题关闭或业务审核。\n读取、编辑、导入、报告和集团汇总分别检查权限。集团汇总要求显式全局授权，不能从本厂职位推断跨厂权限。助手不读取真实检验结果，不自动确认导入、改验货结论或关闭问题。",
+    "summary": "验货明细保存判定与备注后，按范围导入累计工作簿；照片留在系统中，可撤销最近导入并导出最新完整 Excel。",
+    "content": "QC 工作台继续使用 Nexus 登录、厂区和原有权限。验货明细自动读取已有正式客排期及验货任务，使用稳定来源 ID，重复货号不合并；本地已授权测试记录仍标明测试。\n在表格行内选择 Pass、Fail 或 Pending（独立待定），未填写时为空；备注防抖自动保存，照片支持拍摄或本地选择、预览和确认删除。保存失败保留当前输入并提示重试；版本冲突需核对服务器记录后重试。\n点击「导入工作簿」会先完成结果和备注保存；照片读取、上传或错误重试不阻塞文字与数值导入，再将范围内全部有效记录累计写入。未选日期时默认本周；明确选择日期时按该范围和其他筛选读取，未填写结果也可导入。测试／参考记录不进入正式累计工作簿。再次导入更新同一笔，无变化时不增行；照片变化本身不产生版本。汇总与客户结果栏使用同一快照的真实判定，不使用推送状态补空；未改判的 REJ/COND/HOLD 保留原值。首张「验货明细」复用原有 Excel 明细格式，使用同批快照，不新增客户小计或冗余详情页。旁边撤销图标恢复最近一次成功导入前的完整工作簿，不回滚页面中的原始编辑。「导出 Excel」只下载最新已导入的完整工作簿，含验货明细首表及原有客户历史，不新增照片列、图片或占位，不会隐式导入新编辑。浅绿色「导入最新表格」支持 XLS/XLSX，归档旧表并切换当前年度底表；不清空源验货记录，失败保持原表。无可靠来源的黑底原样保留并提示核对。单图最多 10 MB，每任务含历史照片最多 50 张和 100 MB。支持 JPG、PNG、WebP，已安装 HEIF 解码器时支持 HEIC/HEIF。\n本页行内记录独立持久化，不自动提交审核或改写既有审核快照、统计口径及旧报表。审核中心和旧完整表单/API继续服务历史流程。日期仍为客排期计划日期，不替代实际检验或来料日期；缺失来源字段保留为空。",
     "steps": [
       {
-        "title": "核对主单和事件",
-        "description": "确认厂区、客户、日期及主单进度，另看本次验货结果。",
+        "title": "核对厂区",
+        "description": "在 Nexus 或 QC 顶部选择厂区，两处会同步；集团提示选择具体厂区，未保存内容会先提示确认。",
         "anchor_id": "qc-inspection.overview",
-        "precondition": "已进入本模块且总览区域可见",
-        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+        "precondition": "已登录 Nexus 并选择具体厂区",
+        "completion": "在实际页面核对结果；业务写入需由用户操作"
       },
       {
-        "title": "复核导入或问题",
-        "description": "导入先逐行决策；问题单独记录严重度、处置与处理状态。",
+        "title": "查看客排期状态",
+        "description": "打开验货明细，自动显示当前正式客排期及已有任务；可按计划日期、客户/PO/货号文字及结果筛选。",
         "anchor_id": "qc-inspection.overview",
-        "precondition": "已进入本模块且总览区域可见",
-        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+        "precondition": "已登录 Nexus 并选择具体厂区",
+        "completion": "在实际页面核对结果；业务写入需由用户操作"
       },
       {
-        "title": "检查报告与闭环",
-        "description": "核对报告生成状态和版本，再回原业务确认问题解决或关闭。",
+        "title": "录入与导出",
+        "description": "结果可选 Pass、Fail、Pending；直接填写结果、备注并添加照片，然后点击「导入工作簿」。换年度时用浅绿色「导入最新表格」上传 .xls/.xlsx，旧表自动归档，验货记录保留。核对栏内日期范围和条数；需要文件时点击「导出 Excel」。撤销图标只撤销最近一次成功导入。",
         "anchor_id": "qc-inspection.overview",
-        "precondition": "已进入本模块且总览区域可见",
-        "completion": "已定位本模块；请在原页面核对本步内容，业务写入由你确认"
+        "precondition": "已登录 Nexus 并选择具体厂区",
+        "completion": "在实际页面核对结果；业务写入需由用户操作"
       }
     ],
     "source_refs": [
       {
-        "path": "backend/app/schemas/qc_inspection.py",
-        "symbol": "QcOrderStatus",
-        "sha256": "4bc7f6d4689bf71e741681fe9d728b906b3c96076856a91ff014ba4de318a378"
+        "path": "backend/app/api/qc_department.py",
+        "symbol": "inspection_sheet_request",
+        "sha256": "58b1c399a1eb9f7153d32446062d9380906dcf306990ba684344f3960673b958"
       },
       {
-        "path": "backend/app/schemas/qc_inspection.py",
-        "symbol": "QcScheduleDecisionAction",
-        "sha256": "4bc7f6d4689bf71e741681fe9d728b906b3c96076856a91ff014ba4de318a378"
+        "path": "src/views/QcOperationsCenterView.vue",
+        "symbol": "frameUrl",
+        "sha256": "7a53e07a0a5713ddbdc18761652741572f2d9110034071eb919bde12fd838f5c"
       },
       {
-        "path": "backend/app/api/qc_inspection.py",
-        "symbol": "_ensure_permission",
-        "sha256": "8ee2ae2642cdebf4b2275782994bd5b4dabc2d721cb2eeb73fdfc8bcb4480378"
+        "path": "backend/app/services/qc_workflow.py",
+        "symbol": "create_tasks",
+        "sha256": "95d5d35524d201c33bef9d257fb2137628e40d6182f2398bed06ad96b898e9f5"
+      },
+      {
+        "path": "backend/app/services/qc_inspection_sheet.py",
+        "symbol": "export_xlsx",
+        "sha256": "de88d2bfe72ab88cc0951865f4b4d1f989070669b8f512b435107530b91abbc6"
+      },
+      {
+        "path": "services/qc-department/qc-inspection-sheet.js",
+        "symbol": "function pump",
+        "sha256": "ceeb22fd21e9eaa290812dcb544723037c650df3ffb594543f01beb7c13cd5ce"
+      },
+      {
+        "path": "backend/app/services/qc_cumulative.py",
+        "symbol": "def operate",
+        "sha256": "4973bd9cb0a99b60c294bb4aca77cbec97da03796b4c893d561f923dcecb6c9a"
+      },
+      {
+        "path": "backend/app/services/qc_workbook_xml.py",
+        "symbol": "def build",
+        "sha256": "c64f235124556e8b23de640906e5117ec5b4f6b6ac1e95c764e572d15255389b"
+      },
+      {
+        "path": "backend/app/services/qc_workbook_upload.py",
+        "symbol": "def prepare",
+        "sha256": "b80543805793e29f3389f03a3b72b5dc4355d5ade5de04131a3e6d6943f9d948"
+      },
+      {
+        "path": "backend/app/services/qc_workbook_style.py",
+        "symbol": "def repair_fills",
+        "sha256": "e3e3d1e36e7cd51ac4bf4284fffb5e8824355b39ab74610d3b2898c9db80052a"
       }
     ],
-    "knowledge_version": "2026.10.08-v2",
-    "verified_commit": "6e83ee62cefa22862b491474e27ee5fb714fd5cd",
+    "knowledge_version": "2026.10.30-qc-fill-v5",
+    "verified_commit": "local-working-tree-source-verified",
     "status": "verified"
   }
 ]

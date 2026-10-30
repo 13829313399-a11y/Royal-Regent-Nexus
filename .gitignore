@@ -148,3 +148,14 @@ outputs/opening-inventory-template-20260909/
 
 # Local frontend/API/document worker process identities and logs
 /.local-dev/
+
+# QC embedded deployment documentation and private runtime data
+!/docs/business/qc-department-integration.md
+!/docs/business/qc-legacy-runtime-contract.md
+!/services/qc-department/README.md
+/services/qc-department/server/data/
+/services/qc-department/server/ai-config.json
+
+# Private QC customer workbooks and source schedules are provisioned locally.
+/backend/app/templates/qc-cumulative/
+/services/qc-department/fixtures/qc-schedule-example.json

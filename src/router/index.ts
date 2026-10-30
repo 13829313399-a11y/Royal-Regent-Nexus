@@ -24,6 +24,7 @@ const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.
 import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
 import { legacyIamAccountTarget, consolidatedIamTarget } from './iamCompatibility'
 const qcInspectionFullPageMeta = {
+  qcFactoryWorkspace: true,
   fullPage: true,
   requiresAuth: true,
   permissions: ['qc_inspection:read'],
@@ -718,6 +719,11 @@ router.beforeEach(async (to, from) => {
   // the global guard updates the factory store and destroys scoped drafts.
   if (from.name === 'indonesia-material-shipment' && to.name === from.name
       && typeof to.query.factory === 'string' && isFactoryContextId(to.query.factory) && to.query.factory !== useAppStore().activeFactoryId
+      && !canChangeFactory()) return false
+  // QC's same-origin frame owns drafts. Check before the global factory context
+  // changes, including query-only navigation and leaving the full-page host.
+  if (from.meta.qcFactoryWorkspace && to.fullPath !== from.fullPath
+      && to.meta.requiresAuth !== false && to.name !== 'forbidden'
       && !canChangeFactory()) return false
   routeLoadingStartedAt = window.performance.now()
   const appStore = useAppStore()
