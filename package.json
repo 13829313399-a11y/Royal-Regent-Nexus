@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev": "node scripts/dev-system.mjs",
     "dev:local": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1",
     "dev:status": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1 -Action Status",
     "dev:stop": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/local-dev.ps1 -Action Stop",
@@ -15,7 +15,8 @@
     "typecheck:app": "vue-tsc --noEmit -p tsconfig.app.json",
     "typecheck:test": "vue-tsc --noEmit -p tsconfig.test.json",
     "check:assistant-help": "node scripts/check-assistant-help.mjs",
-    "check:tailwind-sources": "node scripts/check-tailwind-sources.mjs"
+    "check:tailwind-sources": "node scripts/check-tailwind-sources.mjs",
+    "dev:web": "vite --host 127.0.0.1 --port 5173 --strictPort"
   },
   "dependencies": {
     "@lucide/vue": "^1.21.0",

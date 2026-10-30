@@ -1,0 +1,326 @@
+{
+  "records": [],
+  "defectLib": [
+    {
+      "name": "色差",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "刮花",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "擦花",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "脏污",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "LOGO模糊",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "LOGO偏位",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "印刷不良",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "色不对版",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "混色",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "毛边",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "气纹",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "白化",
+      "category": "外观/质量",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "缩水",
+      "category": "外观/质量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "飞油",
+      "category": "外观/质量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "披锋",
+      "category": "外观/质量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "缺胶",
+      "category": "外观/质量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "变形",
+      "category": "外观/质量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "裂纹",
+      "category": "外观/质量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "功能失效",
+      "category": "功能",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "按键失灵",
+      "category": "功能",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "开关不良",
+      "category": "功能",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "灯不亮",
+      "category": "功能",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "声音异常",
+      "category": "功能",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "装配不良",
+      "category": "功能",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "卡死",
+      "category": "功能",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "松动",
+      "category": "功能",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "漏贴",
+      "category": "包装",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "错贴",
+      "category": "包装",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "贴纸偏位",
+      "category": "包装",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "少配件",
+      "category": "包装",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "错配件",
+      "category": "包装",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "包装破损",
+      "category": "包装",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "条码错误",
+      "category": "包装",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "说明书错误",
+      "category": "包装",
+      "defaultLevel": "MIN 2.5",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "尺寸超差",
+      "category": "尺寸/测量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "重量超差",
+      "category": "尺寸/测量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "长度超差",
+      "category": "尺寸/测量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "宽度超差",
+      "category": "尺寸/测量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "高度超差",
+      "category": "尺寸/测量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    },
+    {
+      "name": "厚度超差",
+      "category": "尺寸/测量",
+      "defaultLevel": "MAJ 1.0",
+      "keywords": [],
+      "enabled": true,
+      "createdAt": "2026-06-22"
+    }
+  ],
+  "users": []
+}

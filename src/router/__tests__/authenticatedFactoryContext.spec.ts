@@ -136,6 +136,28 @@ describe('authenticated factory context with real navigation guards', () => {
     } finally { unregister() }
   })
 
+  it('QC factory navigation asks the frame guard before shared context changes', async () => {
+    useAuthStore().applySession({ ...user('huaxing'), permissions: ['qc_inspection:read'] })
+    const path = '/modules/qc/inspection-operations'
+    await router.replace(path + '?factory=huaxing')
+    const guard = vi.fn().mockReturnValue(false)
+    const unregister = registerFactoryChangeGuard(guard)
+    try {
+      await router.push(path + '?factory=huakang-a')
+      expect(guard).toHaveBeenCalledTimes(1)
+      expect(useAppStore().activeFactoryId).toBe('huaxing')
+      expect(router.currentRoute.value.query.factory).toBe('huaxing')
+      await router.push('/modules/qc?factory=huaxing')
+      expect(router.currentRoute.value.path).toBe(path)
+      guard.mockReturnValue(true)
+      await router.push(path + '?factory=huakang-a')
+      expect(useAppStore().activeFactoryId).toBe('huakang-a')
+      await router.push(path + '?factory=group')
+      expect(useAppStore().activeFactoryId).toBe('group')
+      expect(router.currentRoute.value.query.factory).toBe('group')
+    } finally { unregister() }
+  })
+
   it.each(['not-a-factory', '*', ''])( 'ignores invalid deep link %s', async (factory) => {
     await router.replace({ path: '/modules/pmc-warehouse', query: { factory } })
     expect(useAppStore().activeFactoryId).toBe('huakang-a')
