@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from cutting_probe_io import write_snapshot, control_tick
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL = ROOT/'.local-dev/cutting-acceptance'
@@ -57,8 +58,19 @@ def validate_copy(database):
         names = [r[0] for r in db.execute('SELECT username FROM auth_users')]
         if len(names) != 8 or any(not n.startswith('p5b-') for n in names):
             raise ValueError('Only the eight synthetic fixture users are accepted')
-        if db.execute('SELECT version_num FROM alembic_version').fetchall() != [('20261021_0172',)]:
+        expected=m.get('cutting_migration_revision','20261021_0172')
+        if expected not in {'20261021_0172','20261028_0185'}:
+            raise ValueError('Unsupported frozen schema contract')
+        if expected=='20261028_0185' and 'backend/alembic/versions/20261028_0185_cutting_period_headers.py' not in m['p5c_source_files']:
+            raise ValueError('0185 schema requires the fingerprinted migration contract')
+        if db.execute('SELECT version_num FROM alembic_version').fetchall() != [(expected,)]:
             raise ValueError('Unexpected frozen schema version')
+        if expected=='20261028_0185':
+            row=next((r for r in db.execute('PRAGMA index_list(cutting_ops_period_events)') if r[1]=='ix_cutting_period_headers'),None)
+            keys=[r for r in db.execute('PRAGMA index_xinfo(ix_cutting_period_headers)') if r[5]]
+            columns=('id','factory_id','month','version','action','actor_id','actor_name','created_at','reason')
+            if row is None or row[2] or row[4] or tuple(r[2] for r in keys)!=columns or any(r[1]<0 or r[3] or r[4]!='BINARY' for r in keys):
+                raise ValueError('0185 synthetic fixture is missing its exact header index')
     return database, m
 
 
@@ -132,6 +144,8 @@ def serve(database):
     # Fence even a direct/manual --serve invocation before any app import.
     # Never trust inherited DATABASE_URL or a source tree's .env file.
     os.environ.update(environment(m,database))
+    checkpoint_seconds=float(os.environ.get('CUTTING_PROBE_CHECKPOINT_SECONDS','5'))
+    if not 5<=checkpoint_seconds<=60:raise ValueError('Invalid owned diagnostic checkpoint interval')
     sys.path[:0]=[str(Path(m['source'])/'backend'),str(ROOT/'backend/tests')]
     from datetime import date
     from zoneinfo import ZoneInfo
@@ -145,37 +159,45 @@ def serve(database):
     if app.dependency_overrides:raise ValueError('Full-app probe must not override authentication or database dependencies')
     with engine.connect() as conn:
         timeout=conn.exec_driver_sql('PRAGMA busy_timeout').scalar_one()
-    (database.parent/'runtime.json').write_text(json.dumps(dict(sqlite_busy_timeout_ms=timeout,
+    (database.parent/'runtime.json').write_text(json.dumps(dict(sqlite_busy_timeout_ms=timeout,diagnostic_checkpoint_seconds=checkpoint_seconds,
         dependency_overrides=False,source=m['source'],p5c_source_files=m['p5c_source_files'])),encoding='utf-8')
     warehouse_operations.business_now=lambda:datetime(2026,12,15,12,tzinfo=ZoneInfo('Asia/Shanghai'))
     cutting_exports.business_now=warehouse_operations.business_now
     cutting_planning.business_today=lambda:date(2026,12,15)
     diagnostic=Diagnostics(SimpleNamespace(app=app,engine=engine))
     folder=database.parent;stop=threading.Event();sock=socket.socket()
+    diagnostic_io=dict(sharing_retries=0,fatal_errors=[])
     try:
         sock.bind(('127.0.0.1',0));sock.listen(128)
         server=uvicorn.Server(uvicorn.Config(app,access_log=False,log_level='warning',timeout_graceful_shutdown=10))
         def control():
             last_snapshot = 0
             while not stop.wait(.1):
-                if time.monotonic()-last_snapshot >= 5:
-                    partial=folder/'diagnostics.partial.tmp'
-                    partial.write_text(json.dumps(diagnostic.snapshot(),ensure_ascii=False),encoding='utf-8')
-                    partial.replace(folder/'diagnostics.partial.json')
-                    last_snapshot=time.monotonic()
+                try:
+                    should_stop,last_snapshot,retry=control_tick(folder,diagnostic,last_snapshot,time.monotonic(),interval=checkpoint_seconds)
+                    diagnostic_io['sharing_retries']+=int(retry)
+                except Exception as error:
+                    diagnostic_io['fatal_errors'].append(dict(type=type(error).__name__,detail=str(error)[:500]))
+                    server.should_exit=True
+                    return
+                if should_stop:server.should_exit=True;return
                 if server.started and not (folder/'ready.json').exists():
                     (folder/'ready.json').write_text(json.dumps(dict(port=sock.getsockname()[1],instance=os.environ['CUTTING_FULL_APP_INSTANCE'],full_lifespan=True)),encoding='utf-8')
-                if (folder/'stop').exists():server.should_exit=True;return
         threading.Thread(target=control,daemon=True).start();diagnostic.start();server.run(sockets=[sock])
     finally:
         stop.set();diagnostic.close();sock.close();engine.dispose()
-        (folder/'diagnostics.json').write_text(json.dumps(diagnostic.snapshot(),ensure_ascii=False),encoding='utf-8')
+        if not write_snapshot(folder/'diagnostics.json',diagnostic.snapshot()):
+            raise RuntimeError('Final diagnostic evidence replacement was refused')
+        if not write_snapshot(folder/'diagnostic-io.json',diagnostic_io):
+            raise RuntimeError('Final diagnostic IO evidence replacement was refused')
 
 
 @contextmanager
-def full_http(database):
+def full_http(database, *, checkpoint_seconds=5):
+    if not 5<=checkpoint_seconds<=60:raise ValueError('Invalid owned diagnostic checkpoint interval')
     database,m=validate_copy(database);folder=database.parent;instance=uuid4().hex
     env=environment(m,database);env['CUTTING_FULL_APP_INSTANCE']=instance
+    env['CUTTING_PROBE_CHECKPOINT_SECONDS']=str(checkpoint_seconds)
     if any((folder/n).exists() for n in ['ready.json','stop','diagnostics.json']):raise ValueError('Never reuse a probe directory')
     with (folder/'api.log').open('w',encoding='utf-8') as log:
         proc=subprocess.Popen([sys.executable,str(Path(__file__)), '--serve',str(database)],cwd=Path(m['source'])/'backend',env=env,stdout=log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0)
@@ -209,6 +231,7 @@ def full_http(database):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--seed');parser.add_argument('--seconds',type=int,default=600);parser.add_argument('--serve')
+    parser.add_argument('--manifest',type=Path,help='Fingerprint-checked release manifest; never changes the active or staged release')
     parser.add_argument('--workload',choices=['burst','paced'],default='burst',help='Burst retains the .2s baseline; paced uses a 2s pause per worker cycle. No failed request is automatically retried.')
     parser.add_argument('--production-write-orders',type=int,default=0,
         help='Rotate handover and usage writes over this many separate orders per clerk (0 disables, 1–40); no receipt/return/month-lock writes.')
@@ -221,7 +244,7 @@ def main():
     if not 0<=args.production_write_orders<=40:parser.error('Use 0–40 production-write orders per clerk')
     from verify_cutting_lock_phases import seed_file,run_probe,diagnostics_summary
     from verify_cutting_p5b import source_state
-    seed=seed_file(args.seed);manifest=Path(read(CONTROL/'staged.json')['release'])/'manifest.json';m=release_manifest(manifest)
+    seed=seed_file(args.seed);manifest=args.manifest or Path(read(CONTROL/'staged.json')['release'])/'manifest.json';m=release_manifest(manifest)
     folder=OUTPUT/(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid4().hex[:8]);folder.mkdir(parents=True,exist_ok=False)
     database=folder/'cutting.db';initial=source_state();seed_hash=sha256(seed.read_bytes()).hexdigest()
     pause=2. if args.workload=='paced' else .2

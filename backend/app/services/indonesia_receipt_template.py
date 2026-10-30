@@ -3,14 +3,18 @@ from collections import defaultdict
 from io import BytesIO
 
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from app.services.indonesia_material_calculations import ZERO, decimal_text, number, precise_decimals, require
 from app.services.indonesia_materials import Ledger, authorize, now_text, ready
+from app.services.indonesia_material_planning import missing_recipe_materials
 
 TITLE = '仓库实收回传模板（订单物料）'
+SUMMARY_TITLE = '仓库实收回传模板（未收物料汇总）'
+SUMMARY_REFERENCE_HEADERS = {'物料需求合计', '已实收并分配数量', '剩余未送货数量'}
 REFERENCE_HEADERS = {'本次订单物料需求数量', '已实收并分配数量', '剩余未送货数量'}
 HEADERS = ['厂区', '客户', '接收方', '合同号', '客户PO', '货号', '交付批次', '物料编码',
            '正式报关中文名称', '正式报关英文名称', '规格', '数量单位',
@@ -55,6 +59,8 @@ def selected_rows(db, user, request):
         order = ledger.get(choice.order_id, 'order')
         require(order.data['customer'] == request.customer and order.data['recipient'] == request.recipient,
                 '所选合同不属于本次客人或接收方，请重新选择', 422)
+        missing = missing_recipe_materials(order, ledger.matching_product(order.data))
+        require(not missing, f'合同 {order.data["contract_no"]} 有 {len(missing)} 种新增物料待同步，请先在本合同保存并更新，再下载回料模板', 409)
         demand = next((item for item in order.data['demands'] if item['id'] == choice.demand_id), None)
         require(demand is not None, '合同物料需求已变更，请刷新后重新选择', 409)
         material = ledger.get(demand['material_id'], 'material').data
@@ -70,36 +76,90 @@ def selected_rows(db, user, request):
     return result
 
 
+@precise_decimals
+def summary_rows(db, user, request):
+    authorize(user, request.factory_id, 'write')
+    ready(db)
+    require(len(set(request.material_ids)) == len(request.material_ids), '不能重复选择同一物料', 422)
+    ledger = Ledger(db, request.factory_id)
+    materials = {id: ledger.get(id, 'material').data for id in request.material_ids}
+    orders = [order for order in ledger.rows('order')
+              if (order.data['customer'], order.data['recipient']) == (request.customer, request.recipient)
+              and (not request.item_no or order.data['item_no'] == request.item_no)]
+    selected_keys = {(order.id, demand['id']) for order in orders for demand in order.data['demands'] if demand['material_id'] in materials}
+    supplies = {row.id: row for row in ledger.rows('supply')}
+    coverage = defaultdict(lambda: ZERO)
+    for row in ledger.rows('allocation'):
+        data = row.data
+        if (data['order_id'], data['demand_id']) not in selected_keys:
+            continue
+        source = supplies.get(data['supply_id'])
+        require(source is not None, '分配来源已不可用，请先核对台账', 409)
+        if source.data['status'] == 'received':
+            coverage[(data['order_id'], data['demand_id'])] += number(data['normal_quantity']) + number(data['spare_quantity'])
+    grouped = {}
+    for order in orders:
+        data = order.data
+        require(not missing_recipe_materials(order, ledger.matching_product(data)),
+                '本范围有合同新增物料待同步，请先一键更新全部合同物料', 409)
+        for demand in data['demands']:
+            material = materials.get(demand['material_id'])
+            if material is None:
+                continue
+            received = coverage[(order.id, demand['id'])]
+            remaining = max(number(demand['quantity']) - received, ZERO)
+            if not remaining:
+                continue
+            require(material['unit'].casefold().strip() == demand['unit'].casefold().strip(), '合同与物料数量单位不一致，请核对后下载', 409)
+            total = grouped.setdefault(demand['material_id'], [ZERO, ZERO, ZERO])
+            total[0] += number(demand['quantity']); total[1] += received; total[2] += remaining
+    require(set(grouped) == set(materials), '部分物料已无未收需求或不属于当前范围，请刷新清单', 409)
+    return [[request.factory_id, request.customer, request.recipient, '', '', '', '', materials[id]['code'],
+             materials[id]['name'], materials[id].get('english_name', ''), materials[id].get('specification', ''), materials[id]['unit'],
+             *map(decimal_text, grouped[id]), request.warehouse, *([None] * 11)] for id in request.material_ids]
+
+
 def build_template(db, user, request):
-    rows = selected_rows(db, user, request)
+    summary = request.mode == 'summary'
+    indexes = [0, 1, 2, *range(7, len(HEADERS))] if summary else list(range(len(HEADERS)))
+    headers = [HEADERS[i] for i in indexes]
+    if summary:
+        headers[headers.index('本次订单物料需求数量')] = '物料需求合计'
+    reference_count = 11 if summary else 15
+    rows = [[row[i] for i in indexes] for row in (summary_rows(db, user, request) if summary else selected_rows(db, user, request))]
     book = Workbook()
     sheet = book.active
     sheet.title = SHEET
     sheet.sheet_view.showGridLines = False
-    end = get_column_letter(len(HEADERS))
-    notes = [TITLE, f'生成时间：{now_text()} · 灰色为系统资料，浅黄色为仓库填写区。',
-             '参考数量为下载时快照；剩余未送货＝订单需求－已实收且分配的正常量及备品，最低为 0；后续出货不重复扣减。',
-             '填写收料单号、原单行号、日期及本次正常／备品数量；未填写实收的物料行可留空。装箱资料已知则填，采购资料由业务导入时核对。']
+    end = get_column_letter(len(headers))
+    notes = [SUMMARY_TITLE if summary else TITLE, f'生成时间：{now_text()} · 灰色为系统资料，浅黄色为仓库填写区。',
+             ('同一物料合并未收需求，仓库无需分合同；回传后由业务核对系统按最迟回料日生成的分配建议。' if summary else '参考数量为下载时快照；剩余未送货＝订单需求－已实收且分配的正常量及备品，最低为 0；后续出货不重复扣减。'),
+             '每种物料单独一行，正常／备品量分开填；混箱用相同箱号、不同原单行号，箱数、尺寸及纸箱重各行填相同值，不累加。同箱物料放在同一文件一次导入，详见箱号批注。']
     for index, note in enumerate(notes, 1):
-        sheet.merge_cells(start_row=index, start_column=1, end_row=index, end_column=len(HEADERS))
+        sheet.merge_cells(start_row=index, start_column=1, end_row=index, end_column=len(headers))
         cell = sheet.cell(index, 1)
         literal(cell, note)
         cell.font = Font(name='微软雅黑', size=15 if index == 1 else 11, bold=index == 1, color='123D38' if index == 1 else '526373')
         cell.alignment = Alignment(vertical='center', wrap_text=True)
         sheet.row_dimensions[index].height = 30 if index == 1 else 24
     thin = Side(style='thin', color='D7E1E5')
-    for column, header in enumerate(HEADERS, 1):
+    for column, header in enumerate(headers, 1):
         cell = sheet.cell(HEADER_ROW, column)
         literal(cell, header)
-        cell.font = Font(name='微软雅黑', size=11, bold=True, color='FFFFFF' if column <= 15 else '5B4300')
-        cell.fill = PatternFill('solid', fgColor='286F66' if column <= 15 else 'F3D98D')
+        cell.font = Font(name='微软雅黑', size=11, bold=True, color='FFFFFF' if column <= reference_count else '5B4300')
+        cell.fill = PatternFill('solid', fgColor='286F66' if column <= reference_count else 'F3D98D')
         cell.alignment = Alignment(vertical='center', wrap_text=True)
         cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        if header == '箱号':
+            cell.comment = Comment('混箱示例：A物料100件、B物料50件装在同一箱，两行均填箱号M01、箱数1、相同尺寸和每箱空纸箱重量；数量分别填100和50。系统将其合为一个包装组，箱数及体积只计一次。\n同箱按仓库＋收料单号＋箱号识别，行号必须不同。多箱内容完全相同可使用同一包装组编号，数量填写该组全部箱合计。装量或物料组成不同请分组；同物料分组时复制物料行并使用不同原单行号。\n同箱物料必须在同一文件一起导入；装箱资料未知可留空，由业务补齐。', '填写说明')
+            cell.comment.width, cell.comment.height = 480, 240
+        elif header in {'箱数', '长cm', '宽cm', '高cm', '每箱纸箱重量kg'}:
+            cell.comment = Comment('同箱各物料行填写相同值，不按物料重复累加。每箱纸箱重量只填空纸箱重量，不含物料。', '填写说明')
     widths = [13, 18, 11, 23, 23, 16, 16, 19, 26, 32, 24, 12, 19, 19, 19, 17, 23, 12, 17, 18, 17, 19, 13, 13, 13, 13, 20]
-    for column, width in enumerate(widths, 1):
+    for column, width in enumerate([widths[i] for i in indexes], 1):
         sheet.column_dimensions[get_column_letter(column)].width = width
     # Keep matching context in the file without making warehouse staff handle it.
-    for column in ('D', 'E', 'G'):
+    for column in (() if summary else ('D', 'E', 'G')):
         sheet.column_dimensions[column].hidden = True
     sheet.row_dimensions[HEADER_ROW].height = 38
     for index, values in enumerate(rows, FIRST_ROW):
@@ -107,11 +167,11 @@ def build_template(db, user, request):
             cell = sheet.cell(index, column)
             literal(cell, value)
             cell.font = Font(name='微软雅黑', size=11, color='18333C')
-            cell.fill = PatternFill('solid', fgColor='F0F3F6' if column <= 15 else 'FFF4CC')
+            cell.fill = PatternFill('solid', fgColor='F0F3F6' if column <= reference_count else 'FFF4CC')
             cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
-            cell.alignment = Alignment(vertical='center', wrap_text=True, horizontal='right' if 13 <= column <= 15 else 'left')
+            cell.alignment = Alignment(vertical='center', wrap_text=True, horizontal='right' if reference_count - 2 <= column <= reference_count else 'left')
             cell.number_format = '@'
-            cell.protection = Protection(locked=column <= 15)
+            cell.protection = Protection(locked=column <= reference_count)
         sheet.row_dimensions[index].height = 38
     last_row = FIRST_ROW + len(rows) - 1
     sheet.freeze_panes = f'A{FIRST_ROW}'
@@ -132,7 +192,8 @@ def build_template(db, user, request):
     warehouses.errorTitle = '仓库名称'; warehouses.error = '可选择已有仓库或填写原单仓库名称。'
     warehouses.showErrorMessage = False
     sheet.add_data_validation(warehouses)
-    warehouses.add(f'P{FIRST_ROW}:P{last_row}')
+    warehouse_column = get_column_letter(headers.index('仓库') + 1)
+    warehouses.add(f'{warehouse_column}{FIRST_ROW}:{warehouse_column}{last_row}')
     stream = BytesIO()
     book.save(stream)
     book.close()

@@ -105,6 +105,35 @@ def inline_material(code, **changes):
                 net_weight_kg='0.00123456', supplier='货号内供应商', price='0.12') | changes
 
 
+@pytest.mark.parametrize('code_input', [{}, {'code': ''}, {'code': '   '}])
+def test_material_code_is_optional_but_names_and_product_codes_remain_required(client, code_input):
+    first = command(client, 'material_save', dict(name='无编码拉杆', unit='PCS') | code_input)
+    second = command(client, 'material_save', dict(name='无编码推杆', unit='PCS'))
+    assert first['data']['code'] == second['data']['code'] == ''
+    assert first['id'] != second['id']
+    command(client, 'material_save', dict(name='无编码拉杆', unit='PCS'), status=409)
+    command(client, 'material_save', dict(name='', unit='PCS'), status=422)
+    command(client, 'material_save', dict(code='X' * 161, name='编码过长', unit='PCS'), status=422)
+    command(client, 'product_save', dict(code='', customer='合成客户'), status=422)
+
+
+def test_blank_material_code_can_be_filled_once_without_rewriting_purchase_or_order(client):
+    m = material(client, code=''); product(client, m)
+    o = order(client); batch = supply(client, m)
+    original_order, original_batch = deepcopy(o), deepcopy(batch)
+    updated = command(client, 'material_save', m['data'] | {'code': '53003116'}, m)
+    assert updated['id'] == m['id'] and updated['data']['code'] == '53003116'
+    records = {row['id']: row for row in workspace(client)['records']}
+    assert records[o['id']] == original_order and records[batch['id']] == original_batch
+    command(client, 'material_save', updated['data'] | {'code': ''}, updated, status=422)
+    command(client, 'material_save', updated['data'] | {'code': 'OTHER'}, updated, status=422)
+    command(client, 'material_save', m['data'] | {'code': 'STALE'}, m, status=409)
+    refreshed = command(client, 'output_material_refresh', {'reason': '补充正式物料编码'}, batch)
+    assert refreshed['data']['material_snapshot'] == original_batch['data']['material_snapshot']
+    assert refreshed['data']['output_material_snapshot']['id'] == m['id']
+    assert refreshed['data']['output_material_snapshot']['data']['code'] == '53003116'
+
+
 def test_shared_options_ordinary_sales_create_but_only_active_supervisors_manage(client):
     rule = command(client, 'option_save', dict(group='customs_unit', value='CUSTOM', billing_basis='weight', kg_per_unit='10'))
     client.materials_auth['user'] = actor('read', 'write')
@@ -467,13 +496,13 @@ def materials_by_code(rows, code):
     return next(r for r in rows if r['kind'] == 'material' and r['data']['code'] == code)
 
 
-def test_product_rolls_back_earlier_materials_on_duplicate_code(client):
+def test_product_rolls_back_earlier_materials_on_duplicate_material_identity(client):
     customer(client)
     existing = material(client, 'TAKEN')
     before = workspace(client)['records']
     command(client, 'product_save', dict(code='INLINE', customer='合成客户', materials=[
         dict(material=inline_material('WOULD-BE-ORPHAN'), usage='1'),
-        dict(material=inline_material(existing['data']['code']), usage='2')]), status=409)
+        dict(material=inline_material(existing['data']['code'], name=existing['data']['name'], specification=existing['data']['specification']), usage='2')]), status=409)
     assert workspace(client)['records'] == before
 
 

@@ -25,7 +25,7 @@ OPERATIONS = frozenset({
     "_create_mapped_customer_preview", "_export_mapped_customer_schedule",
     "parse_workbook", "_jp_validate_reference", "_jp_preview", "organize_workbook", "parse_warehouse_receipts",
     "parse_business_schedule",
-    "prepare_file",
+    "prepare_file", "parse_material_book",
 })
 
 

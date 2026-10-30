@@ -107,7 +107,9 @@ def test_changed_file_or_case_cannot_reimport_same_warehouse_voucher_line(client
     duplicate = preview(client, source(receipt_no='wh-001', receipt_line='01', normal_quantity='89', spare_quantity='11'))
     assert duplicate['data']['rows'][0]['blocked']
     assert '已经导入' in ' '.join(duplicate['data']['rows'][0]['issues'])
-    confirm(client, duplicate, status=409)
+    assert not duplicate['data']['rows'][0]['targets'][imported['data']['rows'][0]['auto_material_id']]
+    # A forged/stale selection must still be rejected even though the fully covered target is no longer suggested.
+    confirm(client, duplicate, [choose(imported)], status=409)
     assert len([r for r in workspace(client)['records'] if r['kind'] == 'supply']) == 1
 
 
@@ -216,7 +218,8 @@ def test_missing_or_mismatching_source_values_are_preserved_for_review(client):
     catalog(client)
     imported = preview(client, source(receipt_line=''), source(receipt_no='WH-002', material_code='UNKNOWN'), source(receipt_no='WH-003', unit='KGM'))
     assert imported['data']['rows'][0]['blocked']
-    assert imported['data']['rows'][1]['materials'] == []
+    assert len(imported['data']['rows'][1]['materials']) == 1  # Name matches; unknown code still needs business confirmation.
+    assert imported['data']['rows'][1]['auto_material_id'] is None
     assert imported['data']['rows'][2]['materials'] == []
 
 
@@ -287,6 +290,33 @@ def test_xlsx_preserves_zero_padded_material_codes_and_detects_formulas():
     stream = BytesIO(); book.save(stream); book.close()
     parsed = parse_warehouse_receipts(stream.getvalue(), 'warehouse.xlsx')[0]
     assert parsed['source']['material_code'] == '00001' and parsed['source_issues']
+
+
+@pytest.mark.parametrize('columns', [5, 81])
+def test_xlsx_without_optional_dimensions_still_reads_and_enforces_column_limit(columns):
+    from zipfile import ZipFile
+    from lxml import etree
+    book = openpyxl.Workbook(); sheet = book.active
+    sheet.append(['收料单号', '行号', '实收日期', '物料名称', '实收数量'])
+    sheet.append(['WH-001', 1, '2026-10-22', '合成螺丝', 10])
+    sheet.cell(2, columns, 10)
+    stream = BytesIO(); book.save(stream)
+    output = BytesIO()
+    with ZipFile(BytesIO(stream.getvalue())) as source_zip, ZipFile(output, 'w') as target:
+        for info in source_zip.infolist():
+            data = source_zip.read(info.filename)
+            if info.filename == 'xl/worksheets/sheet1.xml':
+                tree = etree.fromstring(data)
+                for element in tree.findall('{*}dimension'):
+                    tree.remove(element)
+                data = etree.tostring(tree)
+            target.writestr(info, data)
+    if columns == 81:
+        with pytest.raises(HTTPException, match='80 列'):
+            parse_warehouse_receipts(output.getvalue(), 'warehouse.xlsx')
+    else:
+        rows = parse_warehouse_receipts(output.getvalue(), 'warehouse.xlsx')
+        assert len(rows) == 1 and rows[0]['source']['normal_quantity'] == '10'
 
 
 def test_real_bounded_warehouse_worker_preserves_rows_and_returns_known_format_errors(monkeypatch, tmp_path):

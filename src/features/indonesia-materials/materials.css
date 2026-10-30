@@ -5,6 +5,8 @@
   --im-amber-line: #eddda4; --im-red: #bc3546; --im-red-bg: #fff0f2;
   min-height:100svh; background:var(--im-bg); color:var(--im-text); font-size:13px; line-height:1.5;
 }
+.im-workspace .im-responsibility { display:grid; gap:6px; min-width:140px; max-width:320px; justify-items:start; white-space:normal; overflow-wrap:anywhere; }
+.im-workspace .im-transfer { min-width:230px; max-width:320px; padding:12px; border:1px solid var(--im-green-line); border-radius:8px; background:var(--im-mint); }
 .im-workspace * { box-sizing:border-box; }
 .im-workspace .im-wizard-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
 .im-workspace .im-wizard-steps { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
@@ -251,3 +253,15 @@
 .im-workspace .im-draft-list small { display: block; color: #718096; font-size: 11px; margin-top: 4px; }
 .im-workspace .im-draft-list .im-actions { gap: 6px; }
 .im-workspace .im-draft-list button { padding: 6px 9px; font-size: 12px; }
+.im-import-progress { display: flex; flex-wrap: wrap; gap: 12px; padding: 0; margin: 0 0 24px; list-style: none; }
+.im-import-progress li { padding: 8px 12px; border-radius: 8px; background: #f1f5f9; color: #64748b; }
+.im-import-progress li.active { background: #e6f6f3; color: #12746d; font-weight: 700; }
+.im-import-products { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+.im-import-products label, .im-import-material-heading label { display: flex; align-items: center; gap: 8px; }
+.im-master-import-review { margin-top: 24px; }
+.im-import-material { padding: 20px; border: 1px solid #dce5eb; border-radius: 12px; background: #fff; }
+.im-import-material-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.im-import-comparison { min-width: 540px; }
+.im-import-comparison td { overflow-wrap: anywhere; }
+.im-import-mapping summary, .im-import-material summary, .im-master-import-review > summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
+@media (max-width: 767px) { .im-import-material { padding: 12px; } .im-import-material-heading { align-items: start; flex-direction: column; } }

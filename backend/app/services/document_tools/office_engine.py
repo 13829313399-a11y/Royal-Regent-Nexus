@@ -37,6 +37,7 @@ from .document_ir import (Block, Cancelled, Cell, DocumentIR, EngineResult, Issu
                           Page, SourceAnchor, Table, ToolError, result_file)
 
 NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+MAX_EXCEL_SELECTION_CELLS = 250000
 
 
 def _check(cancelled):
@@ -82,6 +83,16 @@ def uno_python() -> str | None:
     return None
 
 
+def require_conversion_runtime(operation, source_type):
+    needs_office = operation in {"word_to_pdf", "excel_to_pdf", "pdf_translate"} or source_type in {"doc", "xls"}
+    if not needs_office:
+        return
+    if not office_executable():
+        raise ToolError("OFFICE_UNAVAILABLE", "服务器的 Office 转换引擎不可用，请联系管理员检查转换服务")
+    if (source_type == "xls" or operation == "excel_to_pdf") and not uno_python():
+        raise ToolError("UNO_UNAVAILABLE", "服务器的 Office 文档读取和打印组件不可用，请联系管理员检查转换服务")
+
+
 def _spawn_kwargs():
     return {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
 
@@ -120,9 +131,16 @@ def _wait(process, cancelled, timeout=None):
 
 
 def render_office(path: Path, output: Path, options: dict, work_dir: Path, cancelled) -> dict:
+    # A normalized/decrypted/corrected OOXML copy is a plain ZIP. Passing the
+    # original opening password to that copy makes LibreOffice reject it on
+    # some versions, even though reading the encrypted original succeeded.
+    if options.get("password") and path.suffix.lower() in (".docx", ".xlsx") and zipfile.is_zipfile(path):
+        options = {key: value for key, value in options.items() if key != "password"}
     # Windows' Office profile contains deeply nested extension/cache paths.
     # Keep this ephemeral profile short even when the artifact job path is long.
-    with tempfile.TemporaryDirectory(prefix="rr-lo-") as profile_dir:
+    # Windows can hold a profile file briefly after its Office process exits.
+    # Cleanup must not replace the conversion result or its actionable error.
+    with tempfile.TemporaryDirectory(prefix="rr-lo-", ignore_cleanup_errors=True) as profile_dir:
         return _render_office_in_profile(path, output, options, work_dir, cancelled, Path(profile_dir))
 
 
@@ -142,7 +160,7 @@ def _render_office_in_profile(path: Path, output: Path, options: dict, work_dir:
     if advanced:
         interpreter = uno_python()
         if not interpreter:
-            raise ToolError("UNO_UNAVAILABLE", "缺少可导入 UNO 的独立 Python 解释器，无法可靠应用工作表和打印设置", "配置 DOCUMENT_TOOLS_UNO_PYTHON 后重试")
+            raise ToolError("UNO_UNAVAILABLE", "服务器的 Office 文档读取和打印组件不可用，请联系管理员检查转换服务", "配置 DOCUMENT_TOOLS_UNO_PYTHON 后重试")
         pipe_name = "rr_document_" + uuid4().hex
         connection = f"uno:pipe,name={pipe_name};urp;StarOffice.ComponentContext"
         request = work_dir / ("office-request-" + uuid4().hex + ".json")
@@ -233,6 +251,13 @@ def _word_style(tc):
 def _extract_docx(path, options, progress, cancelled):
     document = Document(path)
     ir = DocumentIR(source_type="docx", engine_manifest={"native_reader": "python-docx/OOXML"})
+    # Word and LibreOffice can give zero-height paragraphs different effective
+    # heights. Do not delete their text or rewrite spacing to force a page count.
+    zero_spacing = sum(element.get(qn("w:line")) == "0"
+                       for element in document.element.findall(".//w:pPr/w:spacing", NS))
+    if zero_spacing:
+        ir.engine_manifest["zero_line_height_paragraphs"] = zero_spacing
+        _issue(ir, "WORD_ZERO_LINE_HEIGHT", "原文含零行距段落，跨软件转换可能导致内容下移或分页变化；请对照原文检查版面")
     table_index = 0
     last_title = ""
 
@@ -387,7 +412,57 @@ def _range_for_sheet(workbook, sheet, options):
     return [sheet.calculate_dimension()]
 
 
-def _extract_xlsx(path, options, progress, cancelled):
+def _xlsx_visible_style(item):
+    return item.has_style and (
+        item.fill.fill_type not in (None, "none") or any(
+            getattr(item.border, side, None) is not None
+            and getattr(item.border, side).style is not None
+            for side in ("left", "right", "top", "bottom", "diagonal",
+                         "vertical", "horizontal", "start", "end")))
+
+
+def _trim_unused_xlsx_extent(sheet, bounds, cancelled):
+    """Shrink only an oversized implicit range's invisible trailing formatting.
+
+    Iterating the sparse cell store avoids materializing Excel's remembered
+    rectangle. Visible empty template cells and complete merges remain in scope.
+    Explicit selections and print areas must never call this helper.
+    """
+    min_c, min_r, original_max_c, original_max_r = bounds
+    max_c, max_r = min_c, min_r
+    for index, cell in enumerate(sheet._cells.values()):
+        if index % 1024 == 0:
+            _check(cancelled)
+        if isinstance(cell, MergedCell):
+            continue
+        visible = cell.value is not None or cell.comment is not None or cell.hyperlink is not None
+        visible = visible or _xlsx_visible_style(cell)
+        if visible:
+            max_c, max_r = max(max_c, cell.column), max(max_r, cell.row)
+    for merge in sheet.merged_cells.ranges:
+        _check(cancelled)
+        max_c, max_r = max(max_c, merge.max_col), max(max_r, merge.max_row)
+    # Conditional and whole-row/column formats can make otherwise empty cells
+    # visible. Keep their intersection with the original range conservatively.
+    protected = []
+    for formatting in sheet.conditional_formatting:
+        protected.extend((r.min_col, r.min_row, r.max_col, r.max_row)
+                         for r in formatting.sqref.ranges)
+    # A row/column style applies across the whole Excel grid. It can extend its
+    # own axis, but must not make ghost formatting extend the perpendicular one.
+    protected.extend((min_c, r, max_c, r) for r, dimension in sheet.row_dimensions.items()
+                     if _xlsx_visible_style(dimension))
+    protected.extend((dimension.min or range_boundaries(f"{name}1")[0], min_r,
+                      dimension.max or dimension.min or range_boundaries(f"{name}1")[0], max_r)
+                     for name, dimension in sheet.column_dimensions.items() if _xlsx_visible_style(dimension))
+    for left, top, right, bottom in protected:
+        _check(cancelled)
+        if left <= original_max_c and right >= min_c and top <= original_max_r and bottom >= min_r:
+            max_c, max_r = max(max_c, min(right, original_max_c)), max(max_r, min(bottom, original_max_r))
+    return min_c, min_r, max_c, max_r
+
+
+def _extract_xlsx(path, options, progress, cancelled, *, selected_ranges=None):
     workbook = load_workbook(path, data_only=False, keep_links=True)
     cache = load_workbook(path, data_only=True, keep_links=False)
     ir = DocumentIR(source_type="xlsx", engine_manifest={"native_reader": "openpyxl", "formula_results": "cached", "sheets": []})
@@ -402,15 +477,34 @@ def _extract_xlsx(path, options, progress, cancelled):
                                              "print_area": str(sheet.print_area), "orientation": sheet.page_setup.orientation, "paper_size": sheet.page_setup.paperSize})
         if sheet.title not in selected or (sheet.sheet_state != "visible" and not options.get("include_hidden")):
             continue
-        for range_idx, coords in enumerate(_range_for_sheet(workbook, sheet, options)):
+        ranges = (selected_ranges.get(sheet.title, []) if selected_ranges is not None
+                  else _range_for_sheet(workbook, sheet, options))
+        for range_idx, coords in enumerate(ranges):
             try:
                 min_c, min_r, max_c, max_r = range_boundaries(coords)
             except ValueError as exc:
                 raise ToolError("INVALID_RANGE", "选区必须是命名区域或 A1:B20 形式的范围") from exc
             if not all((min_c, min_r, max_c, max_r)) or max_c > 16384 or max_r > 1048576:
                 raise ToolError("INVALID_RANGE", "请输入有限的单元格范围")
-            if (max_c-min_c+1)*(max_r-min_r+1) > 250000:
-                raise ToolError("OFFICE_RANGE_TOO_LARGE", "单个选区超过 250000 个单元格，请缩小范围")
+            count = (max_c-min_c+1)*(max_r-min_r+1)
+            automatic = selected_ranges is None and not options.get("range") and not (
+                options.get("print_mode", "original") == "original" and sheet.print_area)
+            if count > MAX_EXCEL_SELECTION_CELLS and automatic:
+                bounds = _trim_unused_xlsx_extent(sheet, (min_c, min_r, max_c, max_r), cancelled)
+                if bounds != (min_c, min_r, max_c, max_r):
+                    original_coords = coords
+                    min_c, min_r, max_c, max_r = bounds
+                    coords = f"{get_column_letter(min_c)}{min_r}:{get_column_letter(max_c)}{max_r}"
+                    count = (max_c-min_c+1)*(max_r-min_r+1)
+                    _issue(ir, "EXCEL_UNUSED_RANGE_TRIMMED",
+                           f"工作表「{sheet.title}」的自动读取范围由 {original_coords} 收缩为 {coords}；"
+                           "末端没有内容、底色或边框的空白格未提取，原文件和打印设置未修改，请核对版面",
+                           source=SourceAnchor(sheet=sheet.title, cell=coords, anchor_precision="cell"))
+            if count > MAX_EXCEL_SELECTION_CELLS:
+                raise ToolError("OFFICE_RANGE_TOO_LARGE",
+                                f"工作表「{sheet.title}」的选区 {coords} 共 {count} 个单元格，"
+                                f"超过 {MAX_EXCEL_SELECTION_CELLS} 个上限；请缩小读取范围。"
+                                "若上传读取失败，可将所需表格另存后重新上传")
             rows = [r for r in range(min_r, max_r+1) if options.get("include_hidden") or not sheet.row_dimensions[r].hidden]
             cols = [c for c in range(min_c, max_c+1) if options.get("include_hidden") or not any(d.hidden and (d.min or 1) <= c <= (d.max or d.min or 1) for d in sheet.column_dimensions.values())]
             if not rows or not cols:
@@ -496,21 +590,53 @@ def _extract_xlsx(path, options, progress, cancelled):
     return ir
 
 
+def _native_excel_ranges(ir):
+    ranges = {}
+    for table in ir.tables:
+        if table.source.sheet and table.source.cell:
+            ranges.setdefault(table.source.sheet, []).append(table.source.cell)
+    return ranges
+
+
+def _legacy_input(path, options, work_dir, cancelled):
+    """Decrypt supported binary formats without an Office format round trip."""
+    import msoffcrypto
+    _check(cancelled)
+    unlocked = Path(work_dir) / ("unlocked-" + uuid4().hex + path.suffix.lower())
+    try:
+        with path.open("rb") as source:
+            encrypted = msoffcrypto.OfficeFile(source)
+            if not encrypted.is_encrypted():
+                return path, {key: value for key, value in options.items() if key != "password"}
+            if not options.get("password"):
+                raise ToolError("PASSWORD_REQUIRED", "Office 文件已加密，请输入打开密码")
+            encrypted.load_key(password=options["password"])
+            with unlocked.open("wb") as output:
+                encrypted.decrypt(output)
+        with unlocked.open("rb") as output:
+            if msoffcrypto.OfficeFile(output).is_encrypted():
+                raise ValueError("legacy decryption incomplete")
+    except msoffcrypto.exceptions.InvalidKeyError as exc:
+        unlocked.unlink(missing_ok=True)
+        raise ToolError("INVALID_PASSWORD", "打开密码不正确，请重新输入") from exc
+    except ToolError:
+        raise
+    except Exception:
+        unlocked.unlink(missing_ok=True)
+        return path, options  # Unsupported ciphers still use the Office reader.
+    _check(cancelled)
+    return unlocked, {key: value for key, value in options.items() if key != "password"}
+
+
 def _normalize(path, options, work_dir, cancelled):
     path = Path(path)
     if path.suffix.lower() in (".doc", ".xls"):
-        import msoffcrypto
-        try:
-            with path.open("rb") as source:
-                encrypted = msoffcrypto.OfficeFile(source)
-                if encrypted.is_encrypted() and not options.get("password"):
-                    raise ToolError("PASSWORD_REQUIRED", "Office 文件已加密，请输入打开密码")
-        except ToolError:
-            raise
-        except Exception:
-            pass  # The actual Office reader gives the format-specific error.
+        read_path, read_options = _legacy_input(path, options, work_dir, cancelled)
         output = work_dir / ("normalized" + (".docx" if path.suffix.lower() == ".doc" else ".xlsx"))
-        render_office(path, output, options, work_dir, cancelled)
+        # Normalization is for structural extraction only. Applying sheet,
+        # formula or print options here would change the input before the final
+        # export and can lose hidden-sheet state or apply layout changes twice.
+        render_office(read_path, output, {key: read_options[key] for key in ("password", "secure_load") if key in read_options}, work_dir, cancelled)
         return output
     if not zipfile.is_zipfile(path):
         if path.read_bytes()[:8] == bytes.fromhex("D0CF11E0A1B11AE1"):
@@ -545,13 +671,16 @@ def inspect_office(path, options, work_dir, progress, cancelled):
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     normalized, ir = _extract(path, options, work_dir, progress, cancelled)
+    _font_report(normalized, ir)
     files = []
     preview = work_dir / "source-preview.pdf"
     try:
         progress("rebuild", 0, 1)
         ir.engine_manifest.update(render_office(normalized, preview, options, work_dir, cancelled))
+        ir.engine_manifest["render_input"] = "normalized_legacy" if Path(path).suffix.lower() in (".doc", ".xls") else "native_ooxml"
         files.append(result_file(preview, "preview"))
         _load_pages(ir, preview)
+        _legacy_pagination_report(path, ir, options)
         progress("rebuild", 1, 1)
     except Cancelled:
         raise
@@ -567,6 +696,25 @@ def _load_pages(ir, path):
     from pypdf import PdfReader
     ir.pages = [Page(page_index=i, display_page_number=i+1, width_pt=float(p.mediabox.width), height_pt=float(p.mediabox.height))
                 for i, p in enumerate(PdfReader(path).pages)]
+
+
+def _legacy_pagination_report(path, ir, options):
+    if Path(path).suffix.lower() != ".doc" or options.get("page_selection", "all") != "all":
+        return
+    try:
+        import olefile
+        with olefile.OleFileIO(path) as document:
+            recorded = document.get_metadata().num_pages
+    except Exception:
+        return  # Cached metadata is optional; actual rendering remains authoritative.
+    if not isinstance(recorded, int) or recorded <= 0:
+        return
+    actual = len(ir.pages)
+    ir.engine_manifest["source_pagination"] = {"reference": "cached_document_property", "recorded_pages": recorded, "rendered_pages": actual, "reference_may_be_stale": True}
+    if actual != recorded:
+        message = f"源文件记录为 {recorded} 页，本次输出 {actual} 页，请对照原件检查分页；源文件页数记录可能过期"
+        if not any(issue.code == "PAGE_COUNT_CHANGED" and issue.message == message for issue in ir.issues):
+            _issue(ir, "PAGE_COUNT_CHANGED", message)
 
 
 def _validate_pdf_content(ir, output, options):
@@ -784,18 +932,22 @@ def convert_office(path, operation, options, work_dir, progress, cancelled, ir=N
     else:
         normalized = _normalize(Path(path), options, work_dir, cancelled)
     if operation in ("word_to_pdf", "excel_to_pdf"):
+        render_input = "normalized_legacy" if Path(path).suffix.lower() in (".doc", ".xls") else "native_ooxml"
         if supplied_ir and (any(c.source.method == "manual" or c.resolution == "manually_confirmed" for t in ir.tables for c in t.cells) or any(b.source.method == "manual" for b in ir.blocks)):
             normalized = _corrected_copy(normalized, ir, work_dir / ("corrected" + normalized.suffix))
+            render_input = "corrected_ooxml"
             options = {**options, "recalculate": True}
         output = work_dir / "output.pdf"
         _font_report(normalized, ir)
         progress("rebuild", 0, 1)
         metadata = render_office(normalized, output, options, work_dir, cancelled)
+        metadata["render_input"] = render_input
         if operation == "excel_to_pdf":
             _apply_calc_metadata(ir, metadata, formula_mode=options.get("formula_mode", "display"))
         else:
             ir.engine_manifest.update(metadata)
         _load_pages(ir, output)
+        _legacy_pagination_report(path, ir, options)
         _validate_pdf_content(ir, output, options)
         progress("rebuild", 1, 1)
     elif operation == "word_to_excel":
@@ -808,8 +960,13 @@ def convert_office(path, operation, options, work_dir, progress, cancelled, ir=N
                 recalculated = work_dir / "recalculated.xlsx"
                 needs_recalc = any(i.code == "FORMULA_CACHE_MISSING" for i in ir.issues) and options.get("formula_mode", "display") == "display"
                 progress("rebuild", 0, 1)
-                meta = render_office(normalized, recalculated, {**options, "recalculate": needs_recalc}, work_dir, cancelled)
-                fresh = _extract_xlsx(recalculated, options, progress, cancelled)
+                selected_ranges = _native_excel_ranges(ir)
+                meta = render_office(normalized, recalculated,
+                                     {**options, "recalculate": needs_recalc, "_native_ranges": selected_ranges},
+                                     work_dir, cancelled)
+                # Calc can materialize whole-row formatting into new empty cells.
+                # Read the already accepted source selection, not that new extent.
+                fresh = _extract_xlsx(recalculated, options, progress, cancelled, selected_ranges=selected_ranges)
                 _apply_calc_metadata(ir, meta, fresh, options.get("formula_mode", "display"))
                 progress("rebuild", 1, 1)
             except Cancelled:

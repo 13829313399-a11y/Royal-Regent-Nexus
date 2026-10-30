@@ -801,6 +801,8 @@ class InternalQuoteOut(BaseModel):
     module_version: str
     reference_snapshot_id: str
     formula_version: str
+    current_formula_version: str = ""
+    formula_recalculation_required: bool | None = None
     header_revision: int
     cloned_from_quote_id: str
     version_archived: bool = False
@@ -843,6 +845,7 @@ class InternalQuoteProductImageOut(BaseModel):
 
 
 class InternalQuotePackagingCopyStatusOut(BaseModel):
+    formula_recalculation_required: bool = False
     material_count: int
     carton_count: int
     packaging_group_count: int

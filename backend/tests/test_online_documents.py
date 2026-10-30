@@ -82,7 +82,6 @@ def api(tmp_path, monkeypatch):
             db.add(AuthSession(id=who, user_id=who, token_hash=auth.hash_session_token(who), status="active", expires_at=(datetime.now()+timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")))
         db.commit()
     monkeypatch.setattr(auth, "build_auth_context", lambda db, user: contexts[user.id])
-    monkeypatch.setattr(service.collaborative_sheets, "_eligible_accounts", lambda db, factory: [{"id": key} for key, user in contexts.items() if user.profile.primary_factory_id == factory])
     app = FastAPI(); app.include_router(router)
     current = {"user": "owner"}
     app.dependency_overrides[authenticated_user] = lambda: contexts[current["user"]]
@@ -648,11 +647,58 @@ def test_group_recipients_use_internal_roster_and_recheck_target(api):
 def test_group_does_not_relax_concrete_factory_sharing(api):
     client, engine, users, current, monkey = api
     users['editor'] = context('editor', factory='huakang-a')
+    with Session(engine) as db:
+        db.get(EmployeeProfile, 'editor').primary_factory_id = 'huakang-a'
+        db.commit()
     doc = new(client)
     assert put_grants(client, f'{BASE}/{doc}/grants{SCOPE}', json={'grants': [{'user_id': 'editor', 'access': 'edit'}]}).status_code == 422
     current['user'] = 'editor'
     assert client.get(f'{BASE}/{doc}{SCOPE}').status_code == 403
     assert client.get(f'{BASE}/{doc}?factory_id=group').status_code == 404
+
+
+@pytest.mark.parametrize('boundary', ['disabled', 'left', 'unconfirmed', 'other_factory'])
+def test_factory_recipients_and_shares_recheck_current_eligibility(api, boundary):
+    client, engine, users, current, monkey = api
+    doc = new(client)
+    with Session(engine) as db:
+        profile = db.get(EmployeeProfile, 'editor')
+        if boundary == 'disabled': db.get(AuthUser, 'editor').status = 'disabled'
+        if boundary == 'left': profile.employment_status = 'left'
+        if boundary == 'unconfirmed': profile.confirmation_status = 'needs_review'
+        if boundary == 'other_factory': profile.primary_factory_id = 'huakang-a'
+        db.commit()
+    response = client.get(BASE + '/recipients' + SCOPE)
+    assert response.status_code == 200, response.text
+    assert {p['id'] for p in response.json()['users']} == {'owner', 'viewer', 'stranger'}
+    assert response.json()['departments'] == [{'id': 'engineering', 'name': 'engineering'}]
+    assert all(p['epoch'] == 1 for p in response.json()['users'])
+    assert put_grants(client, f'{BASE}/{doc}/grants{SCOPE}', json={
+        'grants': [{'user_id': 'editor', 'access': 'edit'}]}).status_code == 422
+
+
+@pytest.mark.parametrize('boundary', ['current', 'transferred', 'future', 'expired', 'old_epoch'])
+def test_factory_recipients_use_effective_assignment_instead_of_legacy_profile(api, boundary):
+    client, engine, users, current, monkey = api
+    with Session(engine) as db:
+        db.add(IamOrgUnit(id='assigned-factory', name='Assigned factory', kind='factory',
+                         legacy_factory_id='huakang-a' if boundary == 'transferred' else 'huaxing'))
+        db.add(IamOrgDepartment(org_unit_id='assigned-factory', department_code='sales-business'))
+        db.get(EmployeeProfile, 'editor').identity_mode = 'v2'
+        db.add(EmployeeAssignment(id='editor-assignment', user_id='editor', org_unit_id='assigned-factory',
+            department_code='sales-business', official_position_title='test', is_primary=True,
+            valid_from='2099-01-01T00:00:00.000000Z' if boundary == 'future' else '2020-01-01T00:00:00.000000Z',
+            valid_until='2021-01-01T00:00:00.000000Z' if boundary == 'expired' else None,
+            employment_epoch=0 if boundary == 'old_epoch' else 1, created_by='test', confirmed_by='test',
+            created_at='2020-01-01T00:00:00.000000Z', updated_at='2020-01-01T00:00:00.000000Z'))
+        db.commit()
+    response = client.get(BASE + '/recipients' + SCOPE)
+    assert response.status_code == 200, response.text
+    recipients = {person['id']: person for person in response.json()['users']}
+    if boundary == 'current':
+        assert recipients['editor']['department'] == 'sales-business'
+    else:
+        assert 'editor' not in recipients
 
 
 def test_legacy_unconfirmed_empty_identity_cannot_receive_or_manage_group_sharing(api):

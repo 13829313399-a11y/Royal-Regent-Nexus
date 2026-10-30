@@ -107,6 +107,7 @@ QC_INSPECTION_OPERATOR_PERMISSION_CODES = (
 )
 QC_INSPECTION_SUPERVISOR_PERMISSION_CODES = (
     *QC_INSPECTION_OPERATOR_PERMISSION_CODES,
+    "qc_inspection:review",
     "qc_inspection:customer_manage",
     "qc_inspection:audit_read",
     "qc_inspection:factory_summary",

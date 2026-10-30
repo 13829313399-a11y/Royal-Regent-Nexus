@@ -267,14 +267,22 @@ test('a silent subscribed printer reconnects and recovers without refreshing old
   assert.equal(server.commands.length, 0);
 });
 
-test('11 independent simulated printers connect and recover without duplicate local sessions', async t => {
-  const pairs = await Promise.all(Array.from({ length: 11 }, (_, n) => setup(t, {}, {}, config(n + 1))));
+test('16 independent simulated printers connect and recover without duplicate local sessions', async t => {
+  const pairs = await Promise.all(Array.from({ length: 16 }, (_, n) => setup(t, {}, {}, config(n + 1))));
   await Promise.all(pairs.map(({ adapter, server }) => running(adapter, server)));
-  assert.equal(pairs.filter(({ adapter }) => adapter.snapshot().state === 'RUNNING').length, 11);
+  assert.equal(pairs.filter(({ adapter }) => adapter.snapshot().state === 'RUNNING').length, 16);
   const sessions = pairs.map(({ adapter }) => adapter.session);
   for (const { server } of pairs) server.outage();
   await until(() => pairs.every(({ adapter }, n) => adapter.session !== sessions[n] && adapter.ready));
   for (const { server } of pairs) server.report({ gcode_state: 'RUNNING', subtask_id: 'job-1' });
   await until(() => pairs.every(({ adapter }) => adapter.snapshot().state === 'RUNNING'));
   assert.ok(pairs.every(({ server }) => server.stats.maxActive === 1));
+});
+
+test('renumbered printers retain their physical credential reference', () => {
+  const adapter = new BambuAdapter({ ...config(9), credentialRef: 'printer-06', controlVerified: false });
+  assert.equal(adapter.config.machineNo, 9);
+  assert.equal(adapter.config.credentialRef, 'printer-06');
+  assert.equal(adapter.config.controlVerified, false);
+  assert.throws(() => new BambuAdapter(config(17)), /invalid_printer_config/);
 });

@@ -80,6 +80,7 @@ async function load(eventId?:string,targetMonth=month.value,onRead?:()=>void){
   finally{if(alive&&ticket===generation)busy.value=false}
 }
 function retryRead(){const target=failedRead.value,context=props.navigationContext;if(target)void load(target.eventId,target.month,()=>emit('restored',target.month,context))}
+function refreshSelected(){const selected=record.value;if(selected?.event_id)void load(selected.event_id,selected.month)}
 async function openPeriod(targetMonth:string,eventId?:string){
   if(!canLeave())return false
   discardInputs();month.value=targetMonth
@@ -141,7 +142,8 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
     <p v-else-if="!access.permissions.includes('cost_read')">内部月结含材料费用，需单独授予成本查询权限。</p>
     <template v-else>
       <CuttingReadTarget v-if="failedRead" :target="failedRead" label="内部月结" retry-label="重试原月结记录" :disabled="busy||!!pending" :readable="readable" @retry="retryRead" />
-      <div class="order-toolbar"><label :for="`${formId}-month`">月结月份<input :id="`${formId}-month`" name="month" type="month" min="2000-01" :max="lastMonth" :value="month" :disabled="busy||!!pending||!!draft" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取月结记录</Button></div>
+      <div class="order-toolbar"><label :for="`${formId}-month`">月结月份<input :id="`${formId}-month`" name="month" type="month" min="2000-01" :max="lastMonth" :value="month" :disabled="busy||!!pending||!!draft" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取当前最新版</Button><Button variant="outline" :disabled="busy||!!pending||!record?.event_id" @click="refreshSelected">刷新所选版本</Button></div>
+      <p class="cutting-muted">读取当前最新版会切换到输入月份的最新记录；刷新所选版本保留已选月份和版本。两项操作均只读取，不保存或重算冻结金额。</p>
       <template v-if="readable">
         <div v-if="draft&&!basis&&!pending" class="cutting-master-actions"><p>填写数量已保留，请重新读取依据后继续。</p><Button :disabled="busy||!can('period_prepare')" @click="edit">恢复填写并重新核对</Button><Button variant="outline" :disabled="busy" @click="discard">放弃填写</Button></div>
         <p v-if="record">{{month}} · {{labels[record.state]}} <span v-if="historical">· 当前查看历史版本（{{labels[record.selected_state]}}）</span></p>

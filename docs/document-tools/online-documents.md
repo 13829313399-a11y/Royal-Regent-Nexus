@@ -2,7 +2,7 @@
 
 ## 实施与界面简报
 
-公共工具的 `/online-documents` 全页工作区支持新建、上传和编辑 DOCX / XLSX，Excel 公式由 ONLYOFFICE 计算。集团入口（factory=group）的有效登录账号无需员工厂区档案即可拥有个人文件；文件默认私有，内部成员可以按公司同事逐人授予整份文件的只读或编辑权限。候选与访问资格复用 internal_members，并要求已确认员工档案、有效内部权限或有效内部任职之一；通讯录兼容的 legacy 未确认空身份不能用于共享。排除纯供应商、离职和停用身份，不因集团浏览或管理员身份自动获得他人文档。具体厂区仍仅供已确认的本厂在职账号使用，共享仍限定本厂。这不等同于协同填表的单元格授权。
+公共工具的 `/online-documents` 全页工作区支持新建、上传和编辑 DOCX / XLSX，Excel 公式由 ONLYOFFICE 计算。集团入口（factory=group）的有效登录账号无需员工厂区档案即可拥有个人文件；文件默认私有，内部成员可以按公司同事逐人授予整份文件的只读或编辑权限。候选与访问资格复用 internal_members，并要求已确认员工档案、有效内部权限或有效内部任职之一；通讯录兼容的 legacy 未确认空身份不能用于共享。排除纯供应商、离职和停用身份，不因集团浏览或管理员身份自动获得他人文档。具体厂区仍仅供已确认的本厂在职账号使用，共享仍限定本厂。原独立协同填表模块已移除，当前在线文档独立保留厂区和成员资格校验。
 
 实施顺序：独立文件/版本模型及显式迁移 → 当前身份和回调校验 → 文档列表与嵌入编辑器 → 权限、保存与迁移回归 → 构建及真实浏览器验收 → 按生产发布门禁部署。历史迁移和其他模块保持原合同。
 
@@ -52,7 +52,7 @@
 
 采用官方 DocumentServer 10.0 固定摘要镜像，未构建非官方精简版本。页面保留 Word/Excel 编辑和公式，关闭 AI、插件、宏与聊天入口。独立服务目录为 `/opt/royal-regent/onlyoffice`，Compose 项目为 `rr-office`，使用无发布端口的内部网络 `rr-office-private`。镜像摘要和资源上限见 `deploy/onlyoffice/compose.yml`，JWT 密钥保存在权限为 0600 的服务器 `.env.onlyoffice`；本地连接配置中保留相同专用密钥，相关目录仅当前 Windows 用户可访问，不得纳入源码或打印。
 
-独立服务已启动并通过健康与合成文档测试；主系统 API/Web、业务数据库和物理打印连接器仍保持原容器及启动时间。主系统功能尚未发布，生产数据库仍为 0175。应用代码通过独立权限复核；生产恢复演练、正式员工验收与部署切换仍待完成。Git 合并不代表生产发布。验证期间的空闲样本约为 637 MiB 文档服务内存，主机可用内存约 4.7 GiB、磁盘余量约 34 GiB；这不是多人并发容量承诺，发布前需重新测量。
+独立服务已启动并通过健康与合成文档测试；主系统 API/Web、业务数据库和物理打印连接器仍保持原容器及启动时间。原在线文档功能已包含在 PROJECT_MEMORY.md 第 7 节记录的 61b57436 / 0184 生产基线；本次定向共享、连接网关及纸箱迁移尚未因此部署。新增网关的真实员工、DocumentServer 10.0 与生产 Nginx 验收仍待完成。Git 合并不代表生产发布。验证期间的空闲样本约为 637 MiB 文档服务内存，主机可用内存约 4.7 GiB、磁盘余量约 34 GiB；这不是多人并发容量承诺，发布前需重新测量。
 
 发布操作须按 `PROJECT_MEMORY.md` 第 7 节执行：
 
@@ -66,7 +66,7 @@
 
 ## 本地实际系统
 
-`D:/rr` 的 `http://127.0.0.1:5173/online-documents?factory=group` 已启用真实 API、登录会话和私有存储。`backend/data/royal_regent_nexus.db` 已正向迁移到 0184；基础文档迁移证据在 `.local-dev/onlyoffice/database-v3/`，管理迁移的完整备份、复制恢复、重复升级及原表/原行比较在 `.local-dev/onlyoffice/database-management/`。文件夹迁移的备份、复制恢复、重复升级及数据比较在 `.local-dev/onlyoffice/database-folders/`；保留 415 张原表的 9474 行原数据，仅新增文件夹和归类两表，完整性和外键检查通过。0183/0184 文件夹名称版本升级在 `.local-dev/onlyoffice/database-convenience/` 保留完整备份和复制演练证据，417 张原表的 9483 行原数据未变，重复升级及完整性/外键核验通过。Alembic 入口识别文档分支及合法并行头，同时保留历史结构校验和未知版本拒绝，不改历史迁移。
+`D:/rr` 的 `http://127.0.0.1:5173/online-documents?factory=group` 已启用真实 API、登录会话和私有存储。`backend/data/royal_regent_nexus.db` 保留旧纸箱 `20261028_0186` 标签；规范源码现为裁床 0185 → 纸箱 20261030_0186/0187，不能盲目 stamp 或重放迁移，见 `docs/business/carton-migration-identity.md`。早期文档迁移通过 0184；基础文档迁移证据在 `.local-dev/onlyoffice/database-v3/`，管理迁移的完整备份、复制恢复、重复升级及原表/原行比较在 `.local-dev/onlyoffice/database-management/`。文件夹迁移的备份、复制恢复、重复升级及数据比较在 `.local-dev/onlyoffice/database-folders/`；保留 415 张原表的 9474 行原数据，仅新增文件夹和归类两表，完整性和外键检查通过。0183/0184 文件夹名称版本升级在 `.local-dev/onlyoffice/database-convenience/` 保留完整备份和复制演练证据，417 张原表的 9483 行原数据未变，重复升级及完整性/外键核验通过。Alembic 入口识别文档分支及合法并行头，同时保留历史结构校验和未知版本拒绝，不改历史迁移。
 
 本地 `backend/.env` 启用功能，连接 `http://127.0.0.1:18088`；根 `.env.local` 的 `ONLYOFFICE_DEV_PROXY_TARGET` 和 `ONLYOFFICE_DEV_PUBLIC_HOST` 配置 Vite `/office` HTTP/WebSocket 代理。配置、密钥和主机指纹都留在忽略目录；VITE 客户端变量不包含密钥。
 
@@ -97,7 +97,7 @@ DevTools 不可用且 Chrome 工具返回不可用后，用户明确允许内置
 | PostgreSQL | 基础 0177 迁移曾在独立无网络的 PostgreSQL 16 容器验收，canary 行保留、历史 UPDATE/DELETE 被拒绝；新增 0179 管理迁移仍需在生产发布恢复副本验收。不是生产完整恢复演练 |
 | 服务引擎与配置 | 合成 DOCX→PDF 与 XLSX→PDF（结果 15）通过，未签名请求被拒绝；独立 Compose、集成 Compose 和 Nginx 配置校验通过 |
 
-命令：`npm run build`、`npm run typecheck:test`、`npm run test:unit -- src/features/online-documents/OnlineDocumentsWorkspace.spec.ts`；后端 `.venv/Scripts/python.exe -m pytest tests/test_online_documents.py tests/test_collaborative_sheets.py -q -p no:cacheprovider --basetemp <独立目录>`。完整构建有既有的大 chunk/第三方注释警告。服务器引擎、配置及迁移证据保存在 `/opt/royal-regent/maintenance/onlyoffice-20261026/`。
+命令：`npm run build`、`npm run typecheck:test`、`npm run test:unit -- src/features/online-documents/OnlineDocumentsWorkspace.spec.ts`；后端 `.venv/Scripts/python.exe -m pytest tests/test_online_documents.py tests/test_tool_center_retired.py -q -p no:cacheprovider --basetemp <独立目录>`。完整构建有既有的大 chunk/第三方注释警告。服务器引擎、配置及迁移证据保存在 `/opt/royal-regent/maintenance/onlyoffice-20261026/`。
 
 文件管理持久化核对证据为 `.tmp/online-management/persistence-proof.json`：已有五份文档保持原状，合成文件六个版本校验通过，保护后的持久版本保留公式 `=SUM(B1:B2)`、输入 10 和缓存结果 18，回收站恢复后无共享、无遗留编辑会话或待确认保存。最终页面证据为 `.tmp/online-management/management-final.png`，最终重启后的页面控制台无 error/warn。
 

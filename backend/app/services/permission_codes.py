@@ -145,6 +145,7 @@ QC_INSPECTION_PERMISSION_CODES = (
     "qc_inspection:schedule_write",
     "qc_inspection:order_write",
     "qc_inspection:result_write",
+    "qc_inspection:review",
     "qc_inspection:problem_write",
     "qc_inspection:report_export",
     "qc_inspection:report_rename_preview",

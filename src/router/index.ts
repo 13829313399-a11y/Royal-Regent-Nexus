@@ -30,6 +30,7 @@ const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.
 import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
 import { legacyIamAccountTarget, consolidatedIamTarget } from './iamCompatibility'
 const qcInspectionFullPageMeta = {
+  qcFactoryWorkspace: true,
   fullPage: true,
   requiresAuth: true,
   permissions: ['qc_inspection:read'],
@@ -40,7 +41,6 @@ const qcInspectionFullPageMeta = {
 
 const routes: RouteRecordRaw[] = [
   { path: '/online-documents', name: 'online-documents', component: () => import('@/views/OnlineDocumentsView.vue'), meta: { title: '在线文档', fullPage: true, requiresAuth: true } },
-  { path: '/collaborative-sheets', name: 'collaborative-sheets', component: () => import('@/views/CollaborativeSheetsView.vue'), meta: { title: '协同填表工作台', fullPage: true, requiresAuth: true } },
   { path: '/account/position', name: 'account-position', component: () => import('@/features/identity-management/MyPositionPanel.vue'), meta: { title: '我的岗位与权限', requiresAuth: true } },
   { path: '/modules/pmc-warehouse/material-handover', name: 'material-handover', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), meta: { title: '制单与扫码交接', fullPage: true, requiresAuth: true, permissions: ['fabric_operations:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
   { path: '/material-handover/prepare', name: 'material-handover-external', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), props: { external: true }, meta: { title: '物料单据制单', fullPage: true, requiresAuth: false } },
@@ -733,6 +733,11 @@ router.beforeEach(async (to, from) => {
   // the global guard updates the factory store and destroys scoped drafts.
   if (from.name === 'indonesia-material-shipment' && to.name === from.name
       && typeof to.query.factory === 'string' && isFactoryContextId(to.query.factory) && to.query.factory !== useAppStore().activeFactoryId
+      && !canChangeFactory()) return false
+  // QC's same-origin frame owns drafts. Check before the global factory context
+  // changes, including query-only navigation and leaving the full-page host.
+  if (from.meta.qcFactoryWorkspace && to.fullPath !== from.fullPath
+      && to.meta.requiresAuth !== false && to.name !== 'forbidden'
       && !canChangeFactory()) return false
   routeLoadingStartedAt = window.performance.now()
   const appStore = useAppStore()

@@ -30,7 +30,7 @@ def require_schema(db):
     if db.info.get('carton_material_reference_schema_ready'): return
     inspector=inspect(db.connection())
     if not inspector.has_table(TABLE) or {c['name'] for c in inspector.get_columns(TABLE)}!=set(FIELDS):
-        raise HTTPException(503,'资料引用需要先执行 20261028_0185 迁移；未改写资料')
+        raise HTTPException(503,'资料引用需要先执行 20261030_0186 迁移；未改写资料')
     db.info['carton_material_reference_schema_ready']=True
 
 

@@ -1095,7 +1095,7 @@ def test_slice3a_migration_sqlite_postgresql_ddl_and_no_legacy_backfill(tmp_path
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
     from sqlalchemy import create_engine,inspect,text
-    path=Path(__file__).parents[1]/'alembic/versions/20261028_0185_carton_material_references.py'
+    path=Path(__file__).parents[1]/'alembic/versions/20261030_0186_carton_material_references.py'
     spec=importlib.util.spec_from_file_location('reference_migration',path)
     migration=importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
     engine=create_engine('sqlite:///'+str(tmp_path/'migration.sqlite3'))
@@ -1213,7 +1213,7 @@ def test_slice3a_existing_store_requires_explicit_reference_migration(monkeypatc
         before=_audit_total()
         assert client.post(BASE+'/references',params=SCOPE,json=_ref_body(a,version,[b])).status_code==503
         assert _audit_total()==before
-        path=Path(__file__).parents[1]/'alembic/versions/20261028_0185_carton_material_references.py'
+        path=Path(__file__).parents[1]/'alembic/versions/20261030_0186_carton_material_references.py'
         spec=importlib.util.spec_from_file_location('explicit_reference_migration',path)
         migration=importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
         with engine.begin() as connection:
