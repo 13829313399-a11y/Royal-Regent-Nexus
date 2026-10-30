@@ -1,4 +1,5 @@
 from urllib.parse import quote
+from pathlib import Path
 from typing import Literal
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
@@ -239,6 +240,138 @@ def carton_mark_layouts(factory_id: str, order_id: str, issue_id: str,
         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     scope = mark_layout.context(db, user, factory_id, order_id, issue_id)
     return [mark_layout.output(row) for row in mark_layout.rows(db, scope)]
+
+
+@router.get("/carton-mark/pdf-ai-status")
+def carton_mark_pdf_ai_status(factory_id: str, order_id: str, issue_id: str,
+        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    mark_layout.context(db, user, factory_id, order_id, issue_id, write=True)
+    from app.services import carton_supplier_mark_ai
+    return carton_supplier_mark_ai.status()
+
+
+@router.get("/carton-mark/pdf-draft-status")
+def carton_mark_pdf_draft_status(factory_id: str = "", db: Session = Depends(get_db),
+        user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_supplier_mark_draft as draft
+    draft.access(db, user, factory_id)
+    result=draft.ai.status()
+    try:
+        from app.services import carton_mark_customer_template as customer
+        draft.ai.provider_configuration();customer.logo_bytes();customer.reference_image()
+        result['customer_template_available']=True
+    except (draft.ai.pilot.PilotError,OSError,ValueError,KeyError,HTTPException):
+        result['customer_template_available']=False
+    return result
+
+
+@router.post("/carton-mark/generate-pdf-draft")
+async def generate_carton_mark_pdf_draft(request: Request,
+        engine: Literal["excel_original", "deepseek_zumiez"] = Form("excel_original"),
+        factory_id: str = Form(""), excel_asset_id: str = Form(""),
+        expected_revision: int = Form(0, ge=0), ai_consent: bool = Form(False),
+        supplements_json: str = Form("{}", max_length=1024), excel: UploadFile | None = File(None),
+        db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services import carton_supplier_mark_draft as draft
+    scope = draft.access(db, user, factory_id)
+    if bool(excel) == bool(excel_asset_id):
+        raise HTTPException(422, "请选择一个新 Excel 或一份资料库原稿")
+    stored = draft.source(db, user, factory_id, excel_asset_id, expected_revision) if excel_asset_id else None
+    content = stored["content"] if stored else await excel.read(MAX_DOCUMENT_FILE_BYTES + 1)
+    name = stored["name"] if stored else excel.filename or "document.xlsx"
+    try:
+        supplements = json.loads(supplements_json)
+        if not isinstance(supplements, dict):
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise HTTPException(422, "补齐内容格式无效") from None
+    original = draft.original(name, content, engine, ai_consent, supplements)
+    db.rollback()
+    pdf, pages, warnings = await run_in_threadpool(draft.prepare, original, engine)
+    current_user = get_current_user(request, db)
+    if scope != draft.access(db, current_user, factory_id):
+        raise HTTPException(409, "资料权限范围已变化，请刷新后重新生成")
+    if stored and stored != draft.source(db, current_user, factory_id, excel_asset_id, expected_revision):
+        raise HTTPException(409, "Excel 原稿已变化，请刷新后重新生成")
+    filename = Path(original["excel_file_name"]).stem[:180] + "_审阅稿.pdf"
+    return Response(pdf, media_type="application/pdf", headers={"Cache-Control": "private, no-store",
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+        "X-Carton-Pdf-Pages": str(pages), "X-Carton-Pdf-Warnings": quote(json.dumps(warnings, ensure_ascii=False))})
+
+
+async def _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel):
+    from app.services import carton_supplier_mark_draft as draft
+    scope=draft.access(db,user,factory_id)
+    if bool(excel)==bool(excel_asset_id):raise HTTPException(422,"请选择一个新Excel或一份资料库原稿")
+    stored=draft.source(db,user,factory_id,excel_asset_id,expected_revision) if excel_asset_id else None
+    content=stored["content"] if stored else await excel.read(MAX_DOCUMENT_FILE_BYTES+1)
+    name=stored["name"] if stored else excel.filename or "document.xlsx"
+    original=draft.original(name,content,"excel_original",False,{})
+    owner=user.id+json.dumps([user.authorization_version,factory_id,excel_asset_id,expected_revision,scope],ensure_ascii=True)
+    db.rollback()
+    return scope,stored,original,owner
+
+
+def _carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,expected_revision):
+    from app.services import carton_supplier_mark_draft as draft
+    user=get_current_user(request,db)
+    if scope!=draft.access(db,user,factory_id):raise HTTPException(409,"资料权限范围已变化，请重新读取")
+    if stored and stored!=draft.source(db,user,factory_id,excel_asset_id,expected_revision):
+        raise HTTPException(409,"Excel原稿已变化，请重新读取")
+    return user
+
+
+@router.post("/carton-mark/read-pdf-draft")
+async def read_carton_mark_draft(request:Request,factory_id:str=Form(""),excel_asset_id:str=Form(""),
+        expected_revision:int=Form(0,ge=0),ai_consent:bool=Form(False),worksheets_json:str=Form("[]",max_length=10000),excel:UploadFile|None=File(None),
+        image_consent:bool=Form(False),customer_template_id:str=Form("",max_length=96),
+        db:Session=Depends(get_db),user:AuthContext=Depends(get_current_user)):
+    from app.services import carton_mark_workbench as workbench
+    scope,stored,original,owner=await _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel)
+    original.update(image_consent=image_consent,customer_template_id=customer_template_id)
+    try:
+        original["worksheets"]=json.loads(worksheets_json)
+        if not isinstance(original["worksheets"],list) or len(original["worksheets"])>50 or any(not isinstance(s,str) for s in original["worksheets"]):raise ValueError()
+    except (ValueError,TypeError):raise HTTPException(422,"工作表选择无效") from None
+    result=await run_in_threadpool(workbench.read,original,owner,ai_consent)
+    current=_carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,expected_revision)
+    if current.id!=user.id or current.authorization_version!=user.authorization_version:raise HTTPException(409,"账号授权已变化，请重新读取")
+    return Response(json.dumps(result,ensure_ascii=False),media_type="application/json",headers={"Cache-Control":"private, no-store"})
+
+
+@router.post("/carton-mark/inspect-pdf-draft")
+async def inspect_carton_mark_draft(request:Request,factory_id:str=Form(""),excel_asset_id:str=Form(""),
+        expected_revision:int=Form(0,ge=0),excel:UploadFile|None=File(None),
+        db:Session=Depends(get_db),user:AuthContext=Depends(get_current_user)):
+    from app.services import carton_mark_workbench as workbench
+    scope,stored,original,_=await _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel)
+    result=await run_in_threadpool(workbench.inspect,original)
+    _carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,expected_revision)
+    return Response(json.dumps(result,ensure_ascii=False),media_type="application/json",headers={"Cache-Control":"private, no-store"})
+
+
+@router.post("/carton-mark/render-reviewed-draft")
+async def render_reviewed_carton_mark_draft(request:Request,factory_id:str=Form(""),excel_asset_id:str=Form(""),
+        expected_revision:int=Form(0,ge=0),excel:UploadFile|None=File(None),
+        review_payload:str=Form(...,max_length=500000),review_signature:str=Form(...,max_length=64),
+        edits_json:str=Form("{}",max_length=50000),reviewed_notes_json:str=Form("[]",max_length=30000),
+        additions_json:str=Form("[]",max_length=50000),omissions_json:str=Form("[]",max_length=5000),
+        graphics_json:str=Form("[]",max_length=10000),
+        ignored_changes_json:str=Form("[]",max_length=1000),
+        include_sources:bool=Form(True),
+        paper:Literal["A3","A4"]=Form("A3"),orientation:Literal["portrait","landscape"]=Form("landscape"),
+        db:Session=Depends(get_db),user:AuthContext=Depends(get_current_user)):
+    from app.services import carton_mark_workbench as workbench
+    scope,stored,original,owner=await _carton_review_input(db,user,factory_id,excel_asset_id,expected_revision,excel)
+    try:edits=json.loads(edits_json);reviewed=json.loads(reviewed_notes_json);additions=json.loads(additions_json);omissions=json.loads(omissions_json);graphics=json.loads(graphics_json);ignored_changes=json.loads(ignored_changes_json)
+    except (ValueError,TypeError):raise HTTPException(422,"核对内容格式无效") from None
+    pdf,pages,warnings=await run_in_threadpool(workbench.render,original,owner,review_payload,review_signature,edits,reviewed,paper,orientation,additions,omissions,graphics,include_sources,ignored_changes)
+    current=_carton_review_recheck(request,db,scope,stored,factory_id,excel_asset_id,expected_revision)
+    if current.id!=user.id or current.authorization_version!=user.authorization_version:raise HTTPException(409,"账号授权已变化，请重新读取")
+    filename=Path(original["excel_file_name"]).stem[:180]+"_审阅稿.pdf"
+    return Response(pdf,media_type="application/pdf",headers={"Cache-Control":"private, no-store",
+        "Content-Disposition":f"inline; filename*=UTF-8''{quote(filename)}",
+        "X-Carton-Pdf-Pages":str(pages),"X-Carton-Pdf-Warnings":quote(json.dumps(warnings,ensure_ascii=False))})
 
 
 @router.post("/carton-mark/layout-reference-preview")

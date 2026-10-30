@@ -17,6 +17,7 @@ import * as buzzbeeConverter from '@/lib/customerPriceConverters/buzzbee'
 import * as buzzbeeTemplate from '@/lib/customerPriceConverters/buzzbeeTemplate'
 import { createXlsxWorkbook, parseXlsxWorkbook, type XlsxCellInput } from '@/lib/customerPriceConverters/xlsxLite'
 import type { CustomerPricingSettings } from '@/lib/customerPriceConverters/pricingSettings'
+import { huaxing360TestSource } from '@/lib/__tests__/fixtures/huaxing360Source'
 
 vi.mock('@/api/customerPriceArtifact', () => ({
   customerPriceArtifactApi: {
@@ -169,7 +170,7 @@ describe('QuoteCenterPanel customer visibility', () => {
       expect(result.sheets[0]!.quoteData.injectionBeer).toBe(2.4)
       await output().trigger('click'); await flushPromises()
       const selector = wrapper.get('[data-testid="pricing-settings-customer"]')
-      expect(selector.findAll('option').map(option => option.text())).toEqual(['BuzzBee', '迪士尼', 'Dickie', '彩星', '银辉'])
+      expect(selector.findAll('option').map(option => option.text())).toEqual(['BuzzBee', '迪士尼', 'Dickie', '彩星', '银辉', '360（华兴临时）'])
       await wrapper.get('[data-testid="customer-pricing-settings"] button').trigger('click'); await flushPromises()
       for (const customer of ['yinhui', 'disney', 'dicky', 'caixing', 'buzzbee']) {
         await selector.setValue(customer); await flushPromises()
@@ -241,6 +242,7 @@ describe('QuoteCenterPanel customer visibility', () => {
       'Dickie',
       '彩星',
       '银辉',
+      '360（华兴临时）',
     ])
 
     for (const [selectedIndex, customerButton] of customerButtons.entries()) {
@@ -301,6 +303,35 @@ describe('QuoteCenterPanel customer visibility', () => {
     expect(wrapper.get('input[type="file"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).toContain('支持 .xlsx P4 / 原内部多 Sheet（无需 Breakdown）')
     expect(wrapper.text()).not.toMatch(/BuzzBee|迪士尼|Dickie|彩星/)
+  })
+
+  it('imports Huaxing 360 directly, keeps maintenance independent and clears review across factories', async () => {
+    const wrapper = mountPanel('huaxing-360-sales')
+    expect(wrapper.get('[data-testid="customer-tab-buzzbee"]').attributes('aria-pressed')).toBe('true')
+    await wrapper.get('[data-testid="customer-tab-three-sixty-huaxing"]').trigger('click')
+    expect(wrapper.text()).toContain('直接导入旧版内部成本明细')
+    const input = wrapper.get('[data-testid="quote-import-input"]')
+    const file = new File([huaxing360TestSource({ blank: true })], '旧内部报价.xlsx')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+    await input.trigger('change'); await flushPromises()
+    expect(wrapper.find('[data-testid="quote-import-error"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="huaxing-360-review"]').text()).toContain('明确输入0')
+    const amount = wrapper.get('input[aria-label$="补录金额"]')
+    await amount.setValue('0')
+    await wrapper.get('[aria-label="360报价日期"]').setValue('2026-10-26')
+    await wrapper.get('[aria-label="360版本"]').setValue('1')
+    await wrapper.get('[aria-label="360制表人"]').setValue('当前业务')
+    await wrapper.get('[aria-label="确认华兴360核对"]').setValue(true)
+    expect(wrapper.findAll('button').some(b => b.text() === '输出报客价 Excel')).toBe(true)
+    const maintenance = wrapper.get('[data-testid="pricing-settings-customer"]')
+    await maintenance.setValue('yinhui'); await flushPromises()
+    expect(wrapper.get('[data-testid="customer-tab-three-sixty-huaxing"]').attributes('aria-pressed')).toBe('true')
+    expect((wrapper.get('[aria-label="确认华兴360核对"]').element as HTMLInputElement).checked).toBe(true)
+    await wrapper.get('[aria-label="360版本"]').setValue('2')
+    expect((wrapper.get('[aria-label="确认华兴360核对"]').element as HTMLInputElement).checked).toBe(false)
+    useAppStore().setActiveFactory('huakang-a'); await flushPromises()
+    expect(wrapper.find('[data-testid="huaxing-360-review"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="customer-tab-three-sixty-huaxing"]').exists()).toBe(false)
   })
 
   it('shows a complete visible error when a 360 import file is unsupported', async () => {

@@ -47,12 +47,13 @@ def sequence(events):
                 sequence_repair=bool(required and any(month > required for month in locked)))
 
 
-def prepare(db, month):
+def prepare(db, month, *, include_history=True, release_read_lock=False):
+    database=guards.file_read(db,release_read_lock)
     guards.ensure_schema(db)
     start, end, through = preview.period(month, wh.business_now().date())
     c.require(through == end and end < wh.business_now().date().isoformat(), '月份尚未结束，仅可查看 P4a 实时核对，不能编制正式月结')
     lock_transaction(db, 'cutting-master', c.FACTORY)
-    events = guards.history(db)
+    events = guards.history(db,metadata_only=True,state_only=not include_history or database is not None)
     states = guards.latest(events)
     c.require(not states.get(month) or states[month].action != 'lock', '该月已锁定，请查看冻结快照或先反结')
     chain = sequence(events)
@@ -63,8 +64,7 @@ def prepare(db, month):
     previous = locks.get(max(locks)) if locks else None
     # All source rows are locked before fabric, matching linked issue writes.
     items = list(db.scalars(select(CuttingOrder).where(CuttingOrder.factory_id == c.FACTORY).order_by(CuttingOrder.line_id)))
-    for item in items:
-        orders.lock_source(db, item.line_id)
+    orders.lock_sources(db,[item.line_id for item in items])
     wh.ensure_schema(db)
     wh.procurement.lock_factory(db)
     usage.ensure_schema(db)
@@ -131,8 +131,12 @@ def prepare(db, month):
         blockers.append(dict(code='opening_missing', message='上月冻结实发依据缺失，请核对历史数据'))
     basis = dict(month=month, start=start, end=end, previous_lock_id=previous.id if previous else None,
                  previous_month=previous.month if previous else None, orders=reports, rows=rows, blockers=blockers, notices=notices)
-    return dict(basis, basis_token=digest(fingerprint_basis(basis)), revision=events[-1].version if events else 0,
-                state=state(states.get(month)), history=period_history([e for e in events if e.month == month]))
+    own=[e for e in events if e.month==month]
+    result=dict(basis, basis_token=digest(fingerprint_basis(basis)), revision=events[-1].version if events else 0,
+                state=state(states.get(month)), history=[])
+    if include_history:
+        result['history']=guards.frozen_headers(db,own,database) if database else period_history(own)
+    return result
 
 
 def calculate(basis, body):
@@ -189,32 +193,35 @@ def calculate(basis, body):
                 generated_at=captured_at)
 
 
-def read(db, month, event_id=None):
+def read(db, month, event_id=None, *, release_read_lock=False):
+    database=guards.file_read(db,release_read_lock)
     guards.ensure_schema(db)
     preview.period(month, wh.business_now().date())
     lock_transaction(db, 'cutting-master', c.FACTORY)
-    events = guards.history(db)
+    events = guards.history(db,metadata_only=True,state_only=database is not None)
     own = [e for e in events if e.month == month]
     selected = next((e for e in own if e.id == event_id), None) if event_id else (own[-1] if own else None)
     if event_id:
         c.require(selected is not None, '月结历史版本不存在', 404)
-    return dict(month=month, revision=events[-1].version if events else 0, state=state(own[-1] if own else None),
+    result=dict(month=month, revision=events[-1].version if events else 0, state=state(own[-1] if own else None),
                 selected_state=state(selected), event_id=selected.id if selected else None,
-                data=selected.data if selected else None, history=period_history(own),
+                data=selected.data if selected else None, history=[],
                 comparison=comparison(own, selected),
                 **sequence(events))
+    result['history']=guards.frozen_headers(db,own,database) if database else period_history(own)
+    return result
 
 
 def execute(db, user, body, action):
     guards.ensure_schema(db)
-    events = guards.history(db)
+    events = guards.history(db,state_only=True)
     revision = events[-1].version if events else 0
     c.require(body.expected_version == revision, '月结记录已变化，请保留填写并刷新核对')
     current = guards.latest(events).get(body.month)
     current_state = state(current)
     if action == 'save':
         c.require(current_state in {'open', 'draft', 'returned', 'reopened'}, '请先退回或反结，再重新编制')
-        basis = prepare(db, body.month)
+        basis = prepare(db, body.month,include_history=False)
         c.require(body.basis_token == basis['basis_token'], '生产、物料、成本或来源依据已变化，请保留填写并重新核对')
         data = dict(basis_token=basis['basis_token'], input=body.model_dump(mode='json'), snapshot=calculate(basis, body),
                     prepared_by=user.id, submitted_by=None, replaces_id=current.id if current else None)
@@ -230,7 +237,7 @@ def execute(db, user, body, action):
             c.require(current_state == 'submitted', '仅待复核月结可以退回')
         else:
             c.require(current_state in ({'draft', 'returned'} if action == 'submit' else {'submitted'}), '月结状态已变化，请核对后操作')
-            basis = prepare(db, body.month)
+            basis = prepare(db, body.month,include_history=False)
             c.require(data['basis_token'] == basis['basis_token'], '月结依据已变化，须重新编制并提交复核')
             c.require(not data['snapshot']['blockers'], '仍有缺价、期初、归集或未提交更正问题，不能提交或锁月')
             if action == 'submit':

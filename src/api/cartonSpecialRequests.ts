@@ -18,6 +18,7 @@ export interface SpecialShipment {
   receipts: { id: string; receipt_no?: string; acceptance_date?: string; status?: string; lines?: { id?: string; shipment_line_id?: string; packaging_type?: string; paper_quality?: string; specification?: string; unit?: string; received_quantity?: string; damaged_quantity?: string; rejected_quantity?: string; unusable_quantity?: string; effective_quantity?: string; unit_price?: string }[] }[]
 }
 export interface SpecialRequest {
+  updated_at?: string
   replacement?: { parent_request_id: string; parent_request_no: string; responsibility: 'OWN' | 'SUPPLIER'; can_undo: boolean; blockers: string[] } | null
   mark_assets?: { id: string; file_name: string; revision: number; kind: 'pdf' | 'excel' | 'image'; line_id?: string }[]
   supplier_confirmation?: { status: string; version_id: string; promised_date: string; reason: string; responded_at: string; responded_by: string }

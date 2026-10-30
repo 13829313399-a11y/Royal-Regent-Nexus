@@ -41,8 +41,8 @@ def prepared_sheets(filename, content, sheets):
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
 DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v11-unordered"
-SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-effective-po-v5"
-INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v3-complete"
+SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-amendment-v6"
+INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v4-amendment"
 PACKAGING_TYPES = (
     "普通箱",
     "压线卡",
@@ -793,7 +793,7 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
                 row.update(match_status="REVIEW_REQUIRED", suggestion="来源表取消单区：核对是否已经下过纸箱采购单；不会自动取消正式订单")
             elif section == "SHIPPED":
                 row.update(match_status="REVIEW_REQUIRED", suggestion="来源表已走货区：保留记录，不作为当前待下单需求")
-            elif values.get("order_type") != "正单":
+            elif values.get("order_type") not in {"正单", "改单"}:
                 row.update(match_status="REVIEW_REQUIRED", suggestion=f"{values.get('order_type') or '未标订单类型'}：待人工确认，不计入正单下单核对")
             elif not values.get("contract_no") or not values.get("item_no"):
                 row.update(match_status="REVIEW_REQUIRED", suggestion="正单缺少合同号或产品编号，不能按相邻行或单独货号推断订单")
@@ -816,7 +816,7 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
             for row in duplicates:
                 row.update(match_status="REVIEW_REQUIRED", suggestion="合同、货号和 SO#/Reference 相同，待人工确认是否重复或分批；可继续标记或按此下单")
     return {"rows": result, "engine": "unified-item-header-mapping", "field_mappings": mappings,
-            "warnings": ["读取 ITEM 表的待下单、取消单和已走货分区；仅待下单区正单参与下单核对，其他记录保留待确认。接单表不重复导入。",
+            "warnings": ["读取 ITEM 表的待下单、取消单和已走货分区；待下单区正单和改单参与下单核对，其他记录保留待确认。接单表不重复导入。",
                          "Contract No.、SO#/Reference、P/O#: 分别保留；同合同货号优先按 SO#/Reference 区分，SO 空白时用 P/O，空白编号不从相邻行补齐。",
                          "无年份、多阶段或无效日期保留原文并标记待确认，不猜测日期。"],
             "review_count": sum(row.get("match_status") == "REVIEW_REQUIRED" or row.get("date_review_required", False) for row in result)}

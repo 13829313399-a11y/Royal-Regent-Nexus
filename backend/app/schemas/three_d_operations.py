@@ -16,7 +16,7 @@ class Spool(Strict):
     initial_g: float = Field(gt=0, le=100000, allow_inf_nan=False)
     remaining_g: float = Field(ge=0, le=100000, allow_inf_nan=False)
     low_g: float = Field(default=100, ge=0, le=100000, allow_inf_nan=False)
-    machine_no: int | None = Field(default=None, ge=1, le=11)
+    machine_no: int | None = Field(default=None, ge=1, le=16)
     slot: int | None = Field(default=None, ge=0, le=15)
 
     @model_validator(mode="after")
@@ -47,7 +47,7 @@ class FileAlias(Strict):
 
 
 class Profile(Strict):
-    machine_no: int = Field(ge=1, le=11)
+    machine_no: int = Field(ge=1, le=16)
     materials: list[str] = Field(max_length=30)
     product_ids: list[str] = Field(default_factory=list, max_length=100)
     service_interval_hours: float = Field(

@@ -5,6 +5,7 @@ import { ArrowLeft, CircleHelp, Menu, RefreshCw, WifiOff, X } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
 import { UV_BASE, displayTime } from './contracts'
 import { provideUvWorkspace } from './workspace'
+import { useUvAssistantContext } from './assistantContext'
 import { uvNavigation as navigation } from './presentation'
 import { provideUvMotionPreference } from './composables/useUvMotionPreference'
 import { useUvIndicator } from './composables/useUvIndicator'
@@ -18,6 +19,7 @@ import './styles/motion.css'
 import { provideModuleEntryOwnership } from '@/features/route-motion/useModuleEntryMotion'
 provideModuleEntryOwnership()
 const w=provideUvWorkspace(), auth=useAuthStore(), route=useRoute()
+const assistantContext=useUvAssistantContext(w)
 const motion=provideUvMotionPreference(()=>auth.currentUser?.id)
 const active=computed(()=>navigation.find(item=>route.path===UV_BASE+'/'+item.path)?.path??'')
 const nav=ref<HTMLElement|null>(null), indicator=useUvIndicator(nav,()=>active.value)
@@ -38,6 +40,7 @@ onBeforeUnmount(()=>{menuVersion++;menu.value?.close()})
     <header class="uv-topbar"><RouterLink class="uv-brand" :to="{path:'/modules/production',query:{factory:'huakang-a'}}"><UvBrandLogo/><strong>Royal Regent Nexus</strong></RouterLink><span class="uv-topbar-divider"/><span class="uv-factory">华康 A <span>/ 生产部</span></span><h1 data-route-motion-anchor>UV打印管理</h1><div class="uv-topbar-end"><span v-if="w.meta.value?.data_mode==='synthetic'" class="uv-badge synthetic">合成验收 · 非现场数据</span><span class="uv-avatar">{{auth.currentUser?.display_name?.slice(0,1)??'用'}}</span><span class="uv-user-name">{{auth.currentUser?.display_name}}</span></div></header>
     <aside class="uv-nav"><nav ref="nav" class="uv-indicator-host" aria-label="UV 工作区导航"><span class="uv-active-plate" :style="indicator.style" aria-hidden="true"/><RouterLink v-for="item in navigation" :key="item.path" :aria-label="item.title" :title="item.title" :to="{path:UV_BASE+'/'+item.path,query:{factory:'huakang-a'}}" :class="{active:active===item.path}"><component :is="item.icon" :size="20" aria-hidden="true"/><span>{{item.title}}</span></RouterLink></nav><div class="uv-nav-bottom"><RouterLink :to="{path:'/modules/production',query:{factory:'huakang-a'}}"><ArrowLeft :size="18" aria-hidden="true"/>返回生产部</RouterLink><div class="uv-nav-hint"><CircleHelp :size="16" aria-hidden="true"/><span>现场采集只读<br>产量以确认核数为准</span></div></div></aside>
     <main class="uv-main" :class="{'has-passport':w.selectedTaskId.value}" tabindex="-1" data-uv-focus-fallback>
+      <p v-if="assistantContext.sourceError.value" class="uv-error" role="alert">{{assistantContext.sourceError.value}} <button class="uv-link" @click="assistantContext.removeSource">关闭此来源</button></p>
       <div v-if="w.offline.value&&w.ready.value" class="uv-connection-banner" role="status"><WifiOff :size="17" aria-hidden="true"/>连接中断，保留最后一次快照 · {{displayTime(w.meta.value?.as_of)}}<button :disabled="w.refreshing.value" :aria-busy="w.refreshing.value" @click="w.refresh">{{w.refreshing.value?'正在重连…':'重新连接'}}</button></div>
       <div v-if="w.notification.value" class="uv-toast" role="status">{{w.notification.value}}<button class="uv-icon-button" aria-label="关闭提示" @click="w.notification.value=''"><X :size="16" aria-hidden="true"/></button></div>
       <UvState v-if="w.loading.value&&!w.ready.value" kind="loading" title="正在建立 UV 工作区" description="正在核对厂区、授权和数据状态。"/>

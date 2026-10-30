@@ -70,6 +70,8 @@ export interface ApiInternalQuote {
   module_version: string
   reference_snapshot_id: string
   formula_version: string
+  current_formula_version?: string
+  formula_recalculation_required?: boolean | null
   header_revision: number
   cloned_from_quote_id: string
   document_archive?: { quote_id: string; revision: number; reason: string } | null
@@ -602,6 +604,7 @@ export interface ApiInternalQuoteAttachmentContentPreview {
 }
 
 export interface ApiPackagingCopyStatus {
+  formula_recalculation_required?: boolean
   material_count: number
   carton_count: number
   packaging_group_count: number

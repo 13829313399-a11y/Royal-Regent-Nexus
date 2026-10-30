@@ -10,7 +10,7 @@ import { getApiErrorMessage, getApiErrorMessageAsync } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
 import { factoryContexts } from '@/data/enterpriseMock'
 
-const props = defineProps<{ factoryId: string; search?: string; supplierFactories?: string[]; orderId?: string; supplierIssueId?: string; readOnly?: boolean; supplier?: boolean; supplierCheckEnabled?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
+const props = defineProps<{ factoryId: string; search?: string; assetIds?: string[]; supplierFactories?: string[]; orderId?: string; supplierIssueId?: string; readOnly?: boolean; supplier?: boolean; supplierCheckEnabled?: boolean; uploadOnly?: boolean; checkEnabled?: boolean }>()
 const emit = defineEmits<{ changed: []; 'update:search': [value: string]; use: [asset: CartonMarkAsset]; useSources: [assets: CartonMarkAsset[]]; manualReview: [assets: CartonMarkAsset[]]; supplierReview: [assets: (SupplierMarkAsset & { factory_id: string })[]]; supplierExcel: [asset: SupplierMarkAsset & { factory_id: string }]; supplierGeneratePdf: [asset: SupplierMarkAsset & { factory_id: string }]; supplierSources: [assets: (SupplierMarkAsset & { factory_id: string })[]] }>()
 const auth = useAuthStore()
 const canRead = computed(() => props.supplier ? auth.can('carton_supplier:read') : ['pmc-warehouse', 'carton', 'qa', 'qc'].some(d => auth.can('carton_mark:read', props.factoryId, d)))
@@ -263,7 +263,8 @@ const statuses = { BOUND: '已关联订单', NO_ORDER: '等待订单', UNBOUND: 
 function factoryDisplayName(id: string) { return factoryContexts.find(factory => factory.id === id)?.shortName ?? id }
 const visible = computed(() => entries.value.filter(asset => {
   const key = query.value.trim().toLowerCase()
-  return (kindFilter.value === 'ALL' || asset.kind === kindFilter.value) && (!onlyUnbound.value || !assetIsBound(asset))
+  return (!props.assetIds || props.assetIds.includes(asset.id))
+    && (kindFilter.value === 'ALL' || asset.kind === kindFilter.value) && (!onlyUnbound.value || !assetIsBound(asset))
     && (orderTypeFilter.value === 'ALL' || (orderTypeFilter.value === 'REGULAR' ? asset.orders.length > 0 : asset.special_orders?.some(row => row.order_kind === orderTypeFilter.value)))
     && (usageFilter.value === 'ALL' ? usageOf(asset) !== 'HISTORY' : usageOf(asset) === usageFilter.value)
     && (bindingFilter.value === 'ALL' || (assetIsBound(asset) ? 'BOUND' : asset.binding_status) === bindingFilter.value)
@@ -363,6 +364,7 @@ async function upload() {
     pendingFiles.value = files.filter((_, index) => !outcomes[index] || outcomes[index]?.status === 'failed')
     pendingOptions.value = options.filter((_, index) => !outcomes[index] || outcomes[index]?.status === 'failed')
     if (!pendingFiles.value.length) replacement.value = null
+    if (outcomes.some(result => result.asset && result.status !== 'failed')) emit('changed')
     await refresh()
   } catch (cause) {
     if (current === generation) error.value = `上传结果尚未确认：${getApiErrorMessage(cause)}。请先刷新核实结果；保持原文件和选项不变重试会核实原请求，选择新文件才另建副本。`

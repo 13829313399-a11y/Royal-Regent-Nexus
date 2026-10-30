@@ -185,6 +185,22 @@ def lock_source(db, line_id):
     return line, dispatch
 
 
+def lock_sources(db, line_ids):
+    """Same source fences/lock order as lock_source, in bounded sorted batches."""
+    from app.services.cutting_read_batch import batches, dispatches
+    ids=sorted(set(line_ids));lines={}
+    for batch in batches(ids,200):
+        query=select(OrderLedgerLine).where(OrderLedgerLine.factory_id==c.FACTORY,
+            OrderLedgerLine.id.in_(batch)).order_by(OrderLedgerLine.id).with_for_update().execution_options(populate_existing=True)
+        lines.update({line.id:line for line in db.scalars(query)})
+    latest_dispatches=dispatches(db,ids)
+    for identifier in ids:
+        line=lines.get(identifier);dispatch=latest_dispatches.get(identifier)
+        c.require(line is not None,'华康C来源订单不存在',404)
+        c.require(dispatch is not None,'订单尚未向裁床下发',404)
+        c.require(dispatch.version==line.version,'来源订单已有新版本，请等待重新下发')
+
+
 def append(db, user, order, data, reason):
     data['workflow_status'] = workflow_status(data, data['order'].get('status'))
     order.version += 1

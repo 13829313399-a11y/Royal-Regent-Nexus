@@ -1,18 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
 import { CircleAlert, CircleCheck, CircleHelp, Clock3, FileText, Pause, Power, Printer, Thermometer, Timer, WifiOff } from '@lucide/vue';
 import { useWorkspaceContext } from "../context";
-import PrinterDetail from "./PrinterDetail.vue";
 import { isPrinterPreparing, printerPreparationText } from "../printerPresentation";
-const { dashboard, selectedPrinter, stateLabel } = useWorkspaceContext();
-const detailId = ref('');
-const detailOpen = ref(false);
-watch(selectedPrinter, id => {
-  if (id) { detailId.value = id; detailOpen.value = true; }
-  else detailOpen.value = false;
-}, { immediate: true });
-function closeDetail() { selectedPrinter.value = ''; }
-function afterDetailClose() { if (!selectedPrinter.value) detailId.value = ''; }
+const { dashboard, selectedPrinter, stateLabel, openPrinter } = useWorkspaceContext();
 const remaining = (n: number) =>
   n >= 60 ? `${Math.floor(n / 60)}h${n % 60}m` : `${n}m`;
 const tone = (connected: boolean, stale: boolean, state: string) =>
@@ -35,7 +25,7 @@ const filename = (name: string) =>
   name.replace(/(?:\.gcode)?\.3mf$|\.gcode$/i, "");
 </script>
 <template>
-  <div class="legacy-machine-grid">
+  <div class="legacy-machine-grid" data-yl-help="three-d-printing.machines">
     <button
       v-for="p in dashboard?.printers"
       :key="p.id"
@@ -44,7 +34,7 @@ const filename = (name: string) =>
       :class="tone(p.connected, !!p.status_stale, p.state)"
       :aria-expanded="selectedPrinter === p.id"
       aria-haspopup="dialog"
-      @click="selectedPrinter = p.id"
+      @click="openPrinter(p.id)"
     >
       <div class="machine-number">
         <Printer :size="15" aria-hidden="true" />#{{ p.machine_no }}
@@ -91,13 +81,4 @@ const filename = (name: string) =>
       <div v-if="p.error_text" class="machine-error">{{ p.error_text }}</div>
     </button>
   </div>
-  <PrinterDetail
-    v-if="detailId"
-    :key="detailId"
-    :open="detailOpen"
-    :id="detailId"
-    :printer="dashboard?.printers.find(p => p.id === detailId)"
-    @close="closeDetail"
-    @after-close="afterDetailClose"
-  />
 </template>

@@ -37,7 +37,7 @@ export function fixedText(value: unknown, places = 2) {
 }
 
 export interface ShipmentMaterialRow {
-  code: string; name: string; unit: string; items: string[]; contracts: string[]
+  id: string; code: string; name: string; unit: string; items: string[]; contracts: string[]
   normal: string; spare: string; net: string; carton: string; gross: string
   groupLabels: string[]; cartons: number; cbm: string; span: number
 }
@@ -51,7 +51,8 @@ export function confirmedShipmentSummary(data: Data): ShipmentSummary | null {
   const materials = new Map<string, Data[]>()
   const sourceCodes = new Map<string, string>()
   for (const line of sources) {
-    const code = String(line.material.code)
+    const code = String(line.supply?.material_id || line.supply?.material_snapshot?.id ||
+      `legacy:${JSON.stringify([line.material.code, line.material.name, line.material.specification].map(value => String(value || '')))}`)
     materials.set(code, [...(materials.get(code) ?? []), line])
     sourceCodes.set(line.allocation_id, code)
   }
@@ -74,7 +75,7 @@ export function confirmedShipmentSummary(data: Data): ShipmentSummary | null {
       const lines = materials.get(code)!
       const weight = (key: string) => sumText(lines.map(line => data.packing_totals.lines[line.allocation_id]?.[key]))
       rows.push({
-        code, name: lines[0]!.material.name, unit: lines[0]!.material.unit,
+        id: code, code: String(lines[0]!.material.code), name: lines[0]!.material.name, unit: lines[0]!.material.unit,
         items: [...new Set(lines.map(line => String(line.item_no)))], contracts: [...new Set(lines.map(line => String(line.contract_no)))],
         normal: sumText(lines.map(line => line.normal_quantity)), spare: sumText(lines.map(line => line.spare_quantity)),
         net: weight('net_weight_kg'), carton: weight('carton_weight_kg'), gross: weight('gross_weight_kg'),

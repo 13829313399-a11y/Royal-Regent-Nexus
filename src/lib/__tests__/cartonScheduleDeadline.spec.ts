@@ -35,7 +35,7 @@ describe('current schedule order deadline', () => {
     expect(scheduleOrderReminder(source, { ...options, orderStatus: 'CANCELLED', today: '2026-10-09' })).toMatchObject({ state: 'OVERDUE' })
   })
 
-  it.each(['正单', '加单', '正式PO'])('uses the same deadline for %s while preserving the imported type', order_type => {
+  it.each(['正单', '加单', '改单', '正式PO'])('uses the same deadline for %s while preserving the imported type', order_type => {
     const row = { ...source, order_type, match_status: 'REVIEW_REQUIRED' as const }
     expect(scheduleOrderReminder(row, options)).toMatchObject({ state: 'DUE_TODAY' })
     expect(row.order_type).toBe(order_type)

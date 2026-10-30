@@ -137,6 +137,19 @@ def test_completed_append_keeps_receipt_and_versions_and_replays(db, kind):
     assert db.scalar(select(func.count()).select_from(SpecialVersion).where(SpecialVersion.action == "ADJUSTED")) == 1
 
 
+def test_special_adjustment_can_join_a_transaction_and_rollback(db):
+    row, paper, *_ = source(db)
+    identifier, revision, version_id, paper_id = row.id, row.revision, row.current_version_id, paper.id
+    body = schema.Adjust(**command(row, kind=row.kind, required_date="2026-10-25", reason="追加实际纸品需求",
+        lines=[paper_input(id=paper.id, quantity="110")]))
+    special.update(db, USER, identifier, body, adjusting=True, commit=False)
+    assert row.current_version_id != version_id
+    db.rollback()
+    assert db.get(SpecialRequest, identifier).revision == revision
+    assert db.get(SpecialRequest, identifier).current_version_id == version_id
+    assert special.lines(db, db.get(SpecialRequest, identifier))[0].id == paper_id
+
+
 @pytest.mark.parametrize("changes", [{"quantity": "99"}, {"specification": "99*99*99"}, {"quantity": "100"}])
 def test_completed_append_rejects_reduction_material_rewrite_or_noop(db, changes):
     row, paper, *_ = source(db)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { closingPresentationKey, type ClosingReadLocation } from './closingPresentation'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import PaymentComparison from './PaymentComparison.vue'
 import CuttingReportExport from './CuttingReportExport.vue'
@@ -12,7 +13,9 @@ import { paymentApi, type PaymentAction, type PaymentBasis, type PaymentBody, ty
 
 const panel=ref<InstanceType<typeof SectionPanel>>()
 const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean;navigationContext?:number}>()
-const emit=defineEmits<{settlement:[month:string,id:string,eventId:string];restored:[month:string,context:number|undefined]}>()
+const presentation=inject(closingPresentationKey,()=>false)
+const formId=`cutting-payments-${useId()}`
+const emit=defineEmits<{settlement:[month:string,id:string,eventId:string];restored:[month:string,context:number|undefined];located:[location:ClosingReadLocation,context:number|undefined]}>()
 const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
 const month=ref(today.slice(0,7)),rights=ref<Access>(),record=ref<PaymentRecord>(),basis=ref<PaymentBasis>(),draft=ref<PaymentSave>(),preview=ref<PaymentSnapshot>()
 const conflict=ref<NonNullable<PaymentBasis['document']>>()
@@ -34,7 +37,7 @@ function clearEvidence(){failedRead.value=undefined;conflict.value=undefined;rec
 watch([()=>props.access,()=>props.accessLoading,()=>props.accessUnavailable],([value,loading,unavailable])=>{generation++;if(failedRead.value)busy.value=false;rights.value=value;if(!value&&(loading||unavailable))return;if(!readable.value)clearEvidence()},{immediate:true})
 watch(()=>JSON.stringify(draft.value),()=>{preview.value=undefined},{flush:'sync'})
 function leave(){if(pending.value||busy.value){notice.value='请先核对原付款操作结果。';return false}return !dirty.value||window.confirm('付款登记尚未保存，是否放弃填写并离开？')}
-onBeforeRouteLeave(leave);onBeforeRouteUpdate(leave)
+onBeforeRouteLeave(leave);onBeforeRouteUpdate(to=>presentation(to.fullPath)||leave())
 function unload(event:BeforeUnloadEvent){if(dirty.value||pending.value||busy.value){event.preventDefault();event.returnValue=''}}
 window.addEventListener('beforeunload',unload)
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',unload)})
@@ -42,9 +45,9 @@ function failed(e:unknown){error.value=errorMessage(e);const status=(e as {respo
 async function fresh(ticket:number){const value=await cuttingApi.access();if(!alive||ticket!==generation)return false;rights.value=value;if(!readable.value){clearEvidence();error.value='付款登记未启用或未获付款查询权限。';return false}return true}
 async function load(id?:string,eventId?:string,targetMonth=month.value,onRead?:()=>void){
   if(!leave())return false
-  const target={month:targetMonth,id,eventId}
+  const target={month:targetMonth,id,eventId},context=props.navigationContext
   month.value=targetMonth;failedRead.value=target;conflict.value=undefined;draft.value=undefined;preview.value=undefined;record.value=undefined;basis.value=undefined;reason.value='';error.value='';busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return true;const value=await paymentApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined;failedRead.value=undefined;onRead?.()}}
+  try{if(!await fresh(ticket))return true;const value=await paymentApi.read(target.month,target.id,target.eventId);if(alive&&ticket===generation){showRecord(value,context);month.value=value.month??month.value;savedTarget.value=undefined;failedRead.value=undefined;onRead?.()}}
   catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}finally{if(alive&&ticket===generation)busy.value=false}
   return true
 }
@@ -94,7 +97,7 @@ async function execute(action:PaymentAction){
   const requestedMonth=action==='save'?(body as PaymentSave).day.slice(0,7):month.value
   try{if(!await fresh(ticket))return;sent=true;const result=await paymentApi.write(action,pending.value.body);if(!alive||ticket!==generation)return
     pending.value=undefined;draft.value=undefined;basis.value=undefined;record.value=undefined;preview.value=undefined;reason.value='';month.value=result.month??requestedMonth;savedTarget.value={month:month.value,id:result.document_id,eventId:result.id};notice.value='付款登记操作已保存。'
-    const value=await paymentApi.read(month.value,result.document_id);if(alive&&ticket===generation){record.value=value;month.value=value.month??month.value;savedTarget.value=undefined}
+    const value=await paymentApi.read(month.value,result.document_id);if(alive&&ticket===generation){showRecord(value);month.value=value.month??month.value;savedTarget.value=undefined}
   }catch(e){if(alive&&ticket===generation){const status=failed(e);if(sent&&status&&status>=400&&status<500&&status!==401&&status!==408)pending.value=undefined}}
   finally{if(alive)busy.value=false}
 }
@@ -109,7 +112,7 @@ async function recover(){
       draft.value=undefined;reason.value='';notice.value='原付款操作已成功，正在读取保存记录；无需重复登记。'
       if(!await fresh(ticket))return
       const found=await paymentApi.read(month.value,savedTarget.value.id,savedTarget.value.eventId)
-      if(alive&&ticket===generation){record.value=found;month.value=found.month??month.value;savedTarget.value=undefined;notice.value='原付款操作已成功，已定位保存记录；无需重复登记。'}
+      if(alive&&ticket===generation){showRecord(found);month.value=found.month??month.value;savedTarget.value=undefined;notice.value='原付款操作已成功，已定位保存记录；无需重复登记。'}
     }else{if(draft.value)draft.value.operation_id=crypto.randomUUID();notice.value='已核实原操作未执行并停止，请刷新依据后继续。';await fresh(ticket)}
   }catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
@@ -123,7 +126,9 @@ function activateMonth(target:string){
   if(dirty.value||pending.value||busy.value||failedRead.value){notice.value=`当前 ${month.value} 的填写、读取目标或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。放弃原读取目标时，请在本区明确选择月份。`;return}
   month.value=target;generation++;record.value=undefined;basis.value=undefined;failedRead.value=undefined
 }
-defineExpose({openPayment,activateMonth})
+function getLocation():ClosingReadLocation{return {month:month.value,id:record.value?.document_id??savedTarget.value?.id??failedRead.value?.id,eventId:record.value?.event_id??savedTarget.value?.eventId??failedRead.value?.eventId}}
+function showRecord(value:PaymentRecord,context=props.navigationContext){record.value=value;emit('located',{month:value.month??month.value,id:value.document_id??undefined,eventId:value.event_id??undefined},context)}
+defineExpose({openPayment,activateMonth,getLocation})
 function changeMonth(event:Event){const input=event.target as HTMLInputElement;if(dirty.value||busy.value||pending.value){input.value=month.value;notice.value='请先保存或放弃填写，并核对原操作。';return}month.value=input.value;generation++;record.value=undefined;basis.value=undefined;failedRead.value=undefined}
 function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement',row.month,row.settlement_id,row.settlement_event_id)}
 </script>
@@ -138,11 +143,11 @@ function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement'
       <CuttingReadTarget v-if="failedRead" :target="failedRead" label="付款登记" retry-label="重试原付款记录" :disabled="busy||!!pending" :readable="readable" @retry="retryRead" />
       <CuttingReportExport v-if="record&&!draft" :selection="{kind:'payments',month}" :access="rights" :disabled="busy||!!pending" />
       <Button v-if="savedTarget" variant="outline" :disabled="busy||!!pending" @click="load(savedTarget.id,savedTarget.eventId,savedTarget.month)">打开已保存付款记录</Button>
-      <div class="order-toolbar cutting-master-toolbar"><label>付款月份<input type="month" min="2000-01" :max="today.slice(0,7)" :value="month" :disabled="busy||!!pending||dirty" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending" @click="load()">读取付款登记</Button><Button v-if="can('payment_prepare')" :disabled="busy||!!pending||!!draft" @click="start('new')">新建付款登记</Button></div>
+      <div class="order-toolbar cutting-master-toolbar"><label :for="`${formId}-month`">付款月份<input :id="`${formId}-month`" name="month" type="month" min="2000-01" :max="today.slice(0,7)" :value="month" :disabled="busy||!!pending||dirty" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending" @click="load()">读取付款登记</Button><Button v-if="can('payment_prepare')" :disabled="busy||!!pending||!!draft" @click="start('new')">新建付款登记</Button></div>
       <p v-if="draft&&!basis">敏感填写已清除或依据需要刷新。<Button :disabled="busy||!!pending||!can('payment_prepare')" @click="start('refresh')">恢复付款填写</Button></p>
       <div v-if="record?.totals.length" class="cutting-table-scroll"><p>全部已确认结算的当前累计余额（非历史月末余额，不受下方筛选影响）</p><table><thead><tr><th>币种</th><th>有效应付</th><th>已付核销</th><th>未付余额</th><th>待复核占用</th><th>可继续核销</th></tr></thead><tbody><tr v-for="t in record.totals" :key="t.currency"><td>{{t.currency}}</td><td>{{t.payable}}</td><td>{{t.paid}}</td><td>{{t.unpaid}}</td><td>{{t.pending}}</td><td>{{t.available}}</td></tr></tbody></table></div>
       <div v-if="record?.documents.length" class="cutting-table-scroll"><table><thead><tr><th>付款日期／凭证号</th><th>外厂</th><th>登记状态</th><th>登记金额</th><th>操作</th></tr></thead><tbody><tr v-for="d in record.documents" :key="d.document_id"><td>{{d.day}} / {{d.voucher_no}}</td><td>{{d.resource_name}}</td><td>{{labels[d.state]}}</td><td>{{d.amount}} {{d.currency}}</td><td><Button variant="outline" :disabled="busy||!!pending" @click="load(d.document_id)">查看付款登记</Button></td></tr></tbody></table></div><p v-else-if="record">本月暂无付款登记。</p>
-      <template v-if="record||basis"><label>外厂／结算单筛选<input v-model="filter" placeholder="仅筛选显示，不删除分配" /></label><div class="cutting-table-scroll"><table><thead><tr><th>外厂／结算单</th><th>币种</th><th>应付／已付</th><th>未付／待复核</th><th>可核销</th><th>本次分配／来源</th></tr></thead><tbody><tr v-for="r in rows" :key="r.settlement_id"><td>{{r.resource_name}}<br />{{r.month}} / {{r.settlement_id}}</td><td>{{r.currency}}</td><td>{{r.payable}} / {{r.paid}}</td><td>{{r.unpaid}} / {{r.pending}}</td><td>{{r.available}}</td><td><input v-if="draft&&basis" type="text" inputmode="decimal" :aria-label="`核销金额 ${r.settlement_id}`" :value="allocation(r.settlement_id)" :disabled="busy||!!pending" @input="allocate(r.settlement_id,$event)" /><Button v-if="rights?.permissions.includes('settlement_read')" variant="outline" :disabled="busy||!!pending" @click="source(r)">查看原结算版本</Button><p v-for="p in r.payments" :key="p.document_id">{{labels[p.state]}} {{p.amount}} · {{p.voucher_no}} <Button variant="outline" :disabled="busy||!!pending" @click="load(p.document_id,undefined,p.day.slice(0,7))">定位付款记录</Button></p></td></tr></tbody></table></div></template>
+      <template v-if="record||basis"><label :for="`${formId}-settlement_q`">外厂／结算单筛选<input :id="`${formId}-settlement_q`" name="settlement_q" v-model="filter" placeholder="仅筛选显示，不删除分配" /></label><div class="cutting-table-scroll"><table><thead><tr><th>外厂／结算单</th><th>币种</th><th>应付／已付</th><th>未付／待复核</th><th>可核销</th><th>本次分配／来源</th></tr></thead><tbody><tr v-for="r in rows" :key="r.settlement_id"><td>{{r.resource_name}}<br />{{r.month}} / {{r.settlement_id}}</td><td>{{r.currency}}</td><td>{{r.payable}} / {{r.paid}}</td><td>{{r.unpaid}} / {{r.pending}}</td><td>{{r.available}}</td><td><input :id="`${formId}-allocation_amount-${encodeURIComponent(r.settlement_id)}`" name="allocation_amount" v-if="draft&&basis" type="text" inputmode="decimal" :aria-label="`核销金额 ${r.settlement_id}`" :value="allocation(r.settlement_id)" :disabled="busy||!!pending" @input="allocate(r.settlement_id,$event)" /><Button v-if="rights?.permissions.includes('settlement_read')" variant="outline" :disabled="busy||!!pending" @click="source(r)">查看原结算版本</Button><p v-for="p in r.payments" :key="p.document_id">{{labels[p.state]}} {{p.amount}} · {{p.voucher_no}} <Button variant="outline" :disabled="busy||!!pending" @click="load(p.document_id,undefined,p.day.slice(0,7))">定位付款记录</Button></p></td></tr></tbody></table></div></template>
       <section v-if="conflict&&draft" class="cutting-notice" aria-label="付款草稿版本冲突">
         <h3>本付款草稿已被修改，请先比较并选择</h3><p>服务器最新保存：{{conflict.actor}} · {{conflict.date}}。对照版本为服务器最新内容，本次内容为你的保留填写。</p>
         <PaymentComparison :before="conflict.snapshot" :after="draft" />
@@ -152,7 +157,7 @@ function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement'
       <form v-if="draft&&basis" @submit.prevent="execute('save')">
         <p v-if="draft.replaces_document_id">关联原冲销登记：{{draft.replaces_document_id}}</p>
         <p v-if="missing.length" class="cutting-error">{{missing.length}} 笔原分配的结算已失效，系统不会自动删除。<Button type="button" variant="outline" :disabled="busy||!!pending" @click="draft.allocations=draft.allocations.filter(a=>!missing.includes(a))">取消失效分配</Button></p>
-        <fieldset :disabled="busy||!!pending" class="order-toolbar cutting-master-toolbar"><label>实际付款日期<input v-model="draft.day" type="date" min="2000-01-01" :max="today" required /></label><label>付款凭证号（本厂唯一）<input v-model="draft.voucher_no" maxlength="100" required /></label><label>付款方式<select v-model="draft.method"><option v-for="(name,key) in methods" :key="key" :value="key">{{name}}</option></select></label><label>币种<select v-model="draft.currency"><option>CNY</option><option>HKD</option><option>USD</option></select></label><label>实际付款金额<input v-model="draft.amount" inputmode="decimal" required /></label><label>付款凭据／交易流水说明<textarea v-model="draft.evidence" maxlength="1000" required /></label><label>登记／更正依据<textarea v-model="draft.reason" maxlength="500" required /></label></fieldset>
+        <fieldset :disabled="busy||!!pending" class="order-toolbar cutting-master-toolbar"><label :for="`${formId}-day`">实际付款日期<input :id="`${formId}-day`" name="day" v-model="draft.day" type="date" min="2000-01-01" :max="today" required /></label><label :for="`${formId}-voucher_no`">付款凭证号（本厂唯一）<input :id="`${formId}-voucher_no`" name="voucher_no" v-model="draft.voucher_no" maxlength="100" required /></label><label :for="`${formId}-method`">付款方式<select :id="`${formId}-method`" name="method" v-model="draft.method"><option v-for="(name,key) in methods" :key="key" :value="key">{{name}}</option></select></label><label :for="`${formId}-currency`">币种<select :id="`${formId}-currency`" name="currency" v-model="draft.currency"><option>CNY</option><option>HKD</option><option>USD</option></select></label><label :for="`${formId}-amount`">实际付款金额<input :id="`${formId}-amount`" name="amount" v-model="draft.amount" inputmode="decimal" required /></label><label :for="`${formId}-evidence`">付款凭据／交易流水说明<textarea :id="`${formId}-evidence`" name="evidence" v-model="draft.evidence" maxlength="1000" required /></label><label :for="`${formId}-draft_reason`">登记／更正依据<textarea :id="`${formId}-draft_reason`" name="draft_reason" v-model="draft.reason" maxlength="500" required /></label></fieldset>
         <p>已选 {{draft.allocations.length}} 张结算单，分配合计 {{allocationTotal}} {{draft.currency}}。须与实际付款金额完全一致；筛选不减少隐藏的已选分配。</p>
         <p v-if="preview" class="cutting-notice">预览：{{preview.resource_name}} · {{preview.amount}} {{preview.currency}} · 已全额分配 {{preview.allocations.length}} 张结算单</p>
         <div class="cutting-master-actions"><Button type="button" variant="outline" :disabled="busy||!!pending||!!conflict" @click="calculate">预览核销分配</Button><Button type="submit" :disabled="busy||!!pending||!!conflict||!can('payment_prepare')">保存付款草稿</Button><Button type="button" variant="outline" :disabled="busy||!!pending" @click="start('refresh')">保留填写，刷新付款依据</Button><Button type="button" variant="outline" :disabled="busy||!!pending" @click="discard">放弃付款填写</Button></div>
@@ -169,7 +174,7 @@ function source(row:PayableRow){if(!busy.value&&!pending.value)emit('settlement'
         <p v-if="record.data.snapshot.replaces_document_id">重登关联：{{record.data.snapshot.replaces_document_id}} <Button v-if="record.original" variant="outline" :disabled="busy||!!pending" @click="load(record.original.document_id,undefined,record.original.day.slice(0,7))">查看原冲销登记</Button></p>
         <p v-for="r in record.data.snapshot.allocations" :key="r.settlement_id">结算 {{r.month}} / {{r.settlement_id}} · 核销 {{r.amount}} {{r.currency}} <Button v-if="rights?.permissions.includes('settlement_read')" variant="outline" :disabled="busy||!!pending" @click="source(r)">查看原结算版本</Button></p>
         <Button v-if="historical" variant="outline" :disabled="busy||!!pending" @click="load(record.document_id!,undefined,record.current_month??month)">返回当前付款版本</Button>
-        <div v-if="!historical&&!pending" class="cutting-master-actions"><Button v-if="can('payment_prepare')&&['draft','returned'].includes(record.state)" :disabled="busy" @click="start('edit')">修订付款草稿</Button><Button v-if="can('payment_prepare')&&record.state==='reversed'" :disabled="busy" @click="start('replace')">关联原凭证重新登记</Button><label>操作依据<input v-model="reason" maxlength="500" :disabled="busy" /></label><Button v-if="can('payment_prepare')&&['draft','returned'].includes(record.state)" :disabled="busy" @click="execute('submit')">提交付款复核</Button><Button v-if="can('payment_confirm')&&record.state==='submitted'" :disabled="busy" @click="execute('confirm')">独立复核付款生效</Button><Button v-if="can('payment_confirm')&&record.state==='submitted'" variant="outline" :disabled="busy" @click="execute('return')">退回付款登记</Button><Button v-if="can('payment_reverse')&&record.state==='confirmed'" variant="outline" :disabled="busy" @click="execute('reverse')">整笔冲销登记及核销</Button></div>
+        <div v-if="!historical&&!pending" class="cutting-master-actions"><Button v-if="can('payment_prepare')&&['draft','returned'].includes(record.state)" :disabled="busy" @click="start('edit')">修订付款草稿</Button><Button v-if="can('payment_prepare')&&record.state==='reversed'" :disabled="busy" @click="start('replace')">关联原凭证重新登记</Button><label :for="`${formId}-reason`">操作依据<input :id="`${formId}-reason`" name="reason" v-model="reason" maxlength="500" :disabled="busy" /></label><Button v-if="can('payment_prepare')&&['draft','returned'].includes(record.state)" :disabled="busy" @click="execute('submit')">提交付款复核</Button><Button v-if="can('payment_confirm')&&record.state==='submitted'" :disabled="busy" @click="execute('confirm')">独立复核付款生效</Button><Button v-if="can('payment_confirm')&&record.state==='submitted'" variant="outline" :disabled="busy" @click="execute('return')">退回付款登记</Button><Button v-if="can('payment_reverse')&&record.state==='confirmed'" variant="outline" :disabled="busy" @click="execute('reverse')">整笔冲销登记及核销</Button></div>
         <p v-for="r in record.replacements" :key="r.document_id">关联重登：{{r.day}} · {{labels[r.state]}} <Button variant="outline" :disabled="busy||!!pending" @click="load(r.document_id,undefined,r.day.slice(0,7))">查看关联重登</Button></p>
         <details><summary>付款登记历史</summary><p v-for="h in record.history" :key="h.id">{{actions[h.action]}} · {{h.actor}} · {{h.date}} · {{h.reason}} <Button variant="outline" :disabled="busy||!!pending" @click="load(record.document_id!,h.id,h.month??month)">查看付款历史版本</Button></p></details>
       </template>

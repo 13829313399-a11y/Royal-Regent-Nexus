@@ -81,6 +81,7 @@ from app.services import carton_mark_manual_review as manual_review
 router = APIRouter()
 from app.schemas.carton_mark import CartonMarkAssetSharing, CartonMarkBindingConfirmation
 from app.services import carton_mark_sharing as sharing
+from app.schemas.carton_mark import CartonScheduleMarksOut
 
 
 def _asset_scope(db, user, factory, write=False):
@@ -94,6 +95,18 @@ def get_assets(factory_id: str, order_id: str | None = None,
                db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
     factory = _asset_scope(db, user, factory_id)
     return sharing.filter_internal(db, user, assets.list_assets(db, factory, order_id))
+
+
+@router.get('/api/carton-mark/assets/schedule', response_model=CartonScheduleMarksOut)
+def schedule_assets(factory_id: str, batch_id: str,
+                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.auth import has_permission_in_scope, ensure_permission_in_scope
+    from app.services.carton_schedule_marks import workspace
+    factory = _asset_scope(db, user, factory_id)
+    if not any(has_permission_in_scope(user, 'carton_procurement:read', factory, dep)
+               for dep in ('carton', 'pmc-warehouse')):
+        ensure_permission_in_scope(db, user, 'carton_procurement:read', factory, 'pmc-warehouse')
+    return workspace(db, user, factory, batch_id)
 
 
 @router.get('/api/carton-mark/assets/share-recipients')
@@ -140,7 +153,9 @@ async def upload_assets(factory_id: str = Form(...), files: list[UploadFile] = F
         raise HTTPException(422, '请为每个文件选择资料分类')
     if sum(file.size or 0 for file in files) > 100 * 1024 * 1024:
         raise HTTPException(413, "每批文件合计不能超过 100 MB")
-    known = sorted({o.contract_no for o in assets.available_orders(db, factory) if o.contract_no})
+    from app.services.carton_schedule_marks import known_schedule_contracts
+    known = sorted({o.contract_no for o in assets.available_orders(db, factory) if o.contract_no}
+                   | known_schedule_contracts(db, factory, user))
     results = []
     total = 0
     for index, file in enumerate(files):

@@ -59,6 +59,7 @@ export function readYinhuiSource(buffer: ArrayBuffer) {
   // corrections, formula references, drawings, saved drafts and AI evidence must use actual names.
   const preview = parseXlsxWorkbook(buffer, { valuesOnly: true, maxRows: 80 })
   const names = preview.sheets.filter(sheet => mainName(sheet) || mainStructure(sheet) || isYinhuiToolPlanSheet(sheet)
+    || /^(?:电子|電子)报价/.test(yinhuiSheetKey(sheet.name))
     || ['模具报价', 'bom'].includes(yinhuiSheetKey(sheet.name)) || ['结构化数据', '审批与版本'].includes(sheet.name)).map(sheet => sheet.name)
   return parseXlsxWorkbook(buffer, { sheetNames: names, valuesOnly: true, includeFormulas: true })
 }

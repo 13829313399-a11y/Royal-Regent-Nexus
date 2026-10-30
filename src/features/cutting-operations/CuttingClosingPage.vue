@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { routeLocationKey } from 'vue-router'
+import { inject, nextTick, onBeforeUnmount, onMounted, provide, ref, useId, watch } from 'vue'
+import { routeLocationKey, routerKey, type LocationQueryRaw } from 'vue-router'
+import { closingPresentationKey, type ClosingReadLocation } from './closingPresentation'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -19,22 +20,61 @@ import CuttingSubnav from './CuttingSubnav.vue'
 import CuttingMonthlyOverview from './CuttingMonthlyOverview.vue'
 // Editable search text is applied only by an explicit query.
 const appliedQuery=ref('')
+const formId=`cutting-closing-${useId()}`
 const closingView=ref('overview')
 const financialContext=ref(0)
 let financialGeneration=0
 let locationPending=true
 async function changeClosingView(value:string){
  locationPending=false
+ restoringLocation=false
  financialGeneration++
  financialContext.value++
  closingView.value=value;await nextTick()
  if(value==='period')periodPanel.value?.activateMonth(month.value)
  if(value==='settlement')settlementPanel.value?.activateMonth(month.value)
  if(value==='payment')paymentPanel.value?.activateMonth(month.value)
+ void persistOverviewLocation()
 }
 const closingTabs=[{id:'overview',label:'月结总览'},{id:'period',label:'内部月结'},{id:'settlement',label:'外发对账与结算'},{id:'payment',label:'付款与核销'},{id:'exports',label:'冻结报表'},{id:'opening',label:'历史期初'}]
 const periodPanel=ref<InstanceType<typeof CuttingPeriodClosing>>()
 const route=inject(routeLocationKey,undefined)
+const router=inject(routerKey,undefined)
+const presentationPaths=new Set<string>()
+let restoringLocation=true
+const appliedOverviewMonth=ref<string>()
+provide(closingPresentationKey,path=>presentationPaths.has(path))
+async function persistOverviewLocation(){
+  if(!router||!route||restoringLocation)return
+  const simple=['overview','exports'].includes(closingView.value)
+  if(!simple){
+    const target=closingView.value==='period'?periodPanel.value?.getLocation():closingView.value==='settlement'?settlementPanel.value?.getLocation():closingView.value==='payment'?paymentPanel.value?.getLocation():undefined
+    if(target)return persistFinancialLocation(closingView.value,target)
+    return
+  }
+  const query={...route.query}
+  if(!appliedOverviewMonth.value)return
+  query.view=closingView.value;query.month=appliedOverviewMonth.value
+  for(const key of ['document_id','event_id','line_id','focus_kind','focus_id'])delete query[key]
+  await persistQuery(query)
+}
+async function persistFinancialLocation(kind:string,location:ClosingReadLocation){
+  if(!router||!route||restoringLocation||closingView.value!==kind)return
+  const query:LocationQueryRaw={...route.query,view:kind,month:location.month}
+  for(const key of ['document_id','event_id','line_id','focus_kind','focus_id'])delete query[key]
+  if(location.id)query.document_id=location.id
+  if(location.eventId)query.event_id=location.eventId
+  await persistQuery(query)
+}
+async function persistQuery(query:LocationQueryRaw){
+  if(!router||!route)return
+  const target=router.resolve({path:route.path,query,hash:route.hash}).fullPath
+  if(target===route.fullPath||presentationPaths.has(target))return
+  presentationPaths.add(target)
+  try{const failure=await router.replace({path:route.path,query,hash:route.hash});if(failure)presentationPaths.delete(target)}
+  catch{presentationPaths.delete(target)}
+}
+function overviewLoaded(value:string){appliedOverviewMonth.value=value;void persistOverviewLocation()}
 async function openMonthly(kind:'period'|'settlement'|'payment',targetMonth:string,id:string,eventId?:string){
   const ticket=++financialGeneration,context=++financialContext.value,previousView=closingView.value
   closingView.value=kind;await nextTick()
@@ -42,7 +82,11 @@ async function openMonthly(kind:'period'|'settlement'|'payment',targetMonth:stri
     :kind==='settlement'?await settlementPanel.value?.openStatement(targetMonth,id,eventId)
     :await paymentPanel.value?.openPayment(targetMonth,id,eventId)
   if(!alive||ticket!==financialGeneration||context!==financialContext.value)return
-  if(opened)month.value=targetMonth
+  if(opened){
+    const selected=kind==='period'?periodPanel.value?.getLocation():kind==='settlement'?settlementPanel.value?.getLocation():paymentPanel.value?.getLocation()
+    month.value=selected?.month??targetMonth
+    void persistFinancialLocation(kind,selected??{month:targetMonth,id:id||undefined,eventId})
+  }
   else closingView.value=previousView
 }
 async function followFinancialLocation(){
@@ -53,12 +97,17 @@ async function followFinancialLocation(){
 let navigationGeneration=0
 async function loadLocation(){
   locationPending=true
+  restoringLocation=true
   const ticket=++navigationGeneration
+  const view=route?.query.view,targetMonth=route?.query.month
+  closingView.value=closingTabs.some(tab=>tab.id===view)?String(view):'overview'
+  if(route?.query.factory==='huakang-c'&&typeof targetMonth==='string'&&/^\d{4}-(0[1-9]|1[0-2])$/.test(targetMonth)&&targetMonth<=currentMonth)month.value=targetMonth
   await load(1,true)
   if(alive&&ticket===navigationGeneration&&locationPending&&access.value&&!error.value){
     await followFinancialLocation()
     if(alive&&ticket===navigationGeneration)locationPending=false
   }
+  if(alive&&ticket===navigationGeneration){restoringLocation=false;if(!error.value&&access.value?.enabled&&['period','settlement','payment'].includes(closingView.value))void persistOverviewLocation()}
 }
 async function retryWorkspace(){if(locationPending)await loadLocation();else await load(1)}
 
@@ -72,7 +121,7 @@ async function openPayment(targetMonth:string,id:string,eventId?:string){await o
 const settlementPanel=ref<InstanceType<typeof CuttingSettlement>>()
 async function openSettlement(targetMonth:string,id:string,eventId?:string){await openMonthly('settlement',targetMonth,id,eventId)}
 let generation=0,alive=true
-const location=useCuttingLocation(()=>true,()=>{void loadLocation()})
+const location=useCuttingLocation(()=>true,()=>{if(route&&presentationPaths.delete(route.fullPath))return;void loadLocation()})
 onBeforeUnmount(()=>{alive=false;generation++;financialGeneration++})
 function clearPreview(){generation++;result.value=undefined;loading.value=false;error.value=''}
 watch(month,()=>{financialContext.value++;clearPreview()},{flush:'sync'})
@@ -80,6 +129,13 @@ function restoredMonth(kind:'period'|'settlement'|'payment',targetMonth:string,c
   if(!alive||context!==financialContext.value||closingView.value!==kind||loading.value||accessUnavailable.value||!access.value?.enabled)return
   const permission=kind==='period'?'cost_read':kind==='settlement'?'settlement_read':'payment_read'
   if(access.value.permissions.includes(permission))month.value=targetMonth
+}
+function recordLocated(kind:'period'|'settlement'|'payment',target:ClosingReadLocation,context:number|undefined){
+  if(!alive||context!==financialContext.value||closingView.value!==kind||loading.value||!access.value?.enabled||accessUnavailable.value)return
+  const permission=kind==='period'?'cost_read':kind==='settlement'?'settlement_read':'payment_read'
+  if(!access.value.permissions.includes(permission))return
+  month.value=target.month
+  void persistFinancialLocation(kind,target)
 }
 function ready(rights:Access){return rights.enabled&&rights.orders_schema_ready&&rights.reporting_schema_ready&&rights.usage_schema_ready}
 async function load(nextPage=1,followLocation=false,apply=false){
@@ -119,12 +175,12 @@ onMounted(()=>void loadLocation())
   <section class="cutting-page cutting-master">
     <PageHeader :title="workspace.title" description="内部月结、外发加工费与付款分别办理，实时核对和冻结快照分别追溯。" />
     <CuttingSubnav :model-value="closingView" @update:model-value="changeClosingView" :items="closingTabs" label="月结工作视图" />
-    <p class="cutting-notice">内部材料月结与外发加工费结算分别办理；下方订单预览提供实时核对，尚未冻结或锁月。付款登记与核销在下方独立办理，不操作银行。</p>
-    <CuttingMonthlyOverview v-model:month="month" v-if="access?.enabled" v-show="closingView==='overview'||closingView==='exports'" :access="access" :exports-only="closingView==='exports'" @open="openMonthly" />
+    <p class="cutting-notice">内部材料月结与外发加工费结算分别办理。实时核对不代表锁月；冻结报表按所选版本追溯，当前有效状态以版本提示为准。付款登记与核销不操作银行。</p>
+    <CuttingMonthlyOverview v-model:month="month" v-if="access?.enabled" v-show="closingView==='overview'||closingView==='exports'" :access="access" :exports-only="closingView==='exports'" @open="openMonthly" @loaded="overviewLoaded" />
     <div v-show="closingView==='opening'"><CuttingCutover :access="access" :access-loading="loading" @payment="openPayment" @settlement="openSettlement" /></div>
-    <div v-show="closingView==='period'"><CuttingPeriodClosing ref="periodPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @restored="(target,context)=>restoredMonth('period',target,context)" /></div>
-    <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @restored="(target,context)=>restoredMonth('settlement',target,context)" @payment="openPayment" /></div>
-    <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @restored="(target,context)=>restoredMonth('payment',target,context)" @settlement="openSettlement" /></div>
+    <div v-show="closingView==='period'"><CuttingPeriodClosing ref="periodPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @located="(target,context)=>recordLocated('period',target,context)" @restored="(target,context)=>restoredMonth('period',target,context)" /></div>
+    <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @located="(target,context)=>recordLocated('settlement',target,context)" @restored="(target,context)=>restoredMonth('settlement',target,context)" @payment="openPayment" /></div>
+    <div v-show="closingView==='payment'"><CuttingPayments ref="paymentPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @located="(target,context)=>recordLocated('payment',target,context)" @restored="(target,context)=>restoredMonth('payment',target,context)" @settlement="openSettlement" /></div>
     <p v-if="error" role="alert" class="cutting-error">{{error}}</p>
     <Button v-if="error" variant="outline" :disabled="loading" @click="retryWorkspace">重新读取月结工作区</Button>
     <p v-if="loading" role="status">正在读取月度核对…</p>
@@ -134,8 +190,8 @@ onMounted(()=>void loadLocation())
       <div v-show="closingView==='overview'" class="cutting-overview">
       <SectionPanel title="实时核对 · 选择订单与月份" class="cutting-content-panel">
         <form class="order-toolbar" @submit.prevent="load(1,false,true)">
-          <label>核对月份<input v-model="month" aria-label="核对月份" type="month" min="2000-01" :max="currentMonth" required @change="clearPreview" /></label>
-          <label>订单号／货号<input v-model="query" maxlength="80" /></label>
+          <label :for="`${formId}-month`">核对月份<input :id="`${formId}-month`" name="month" v-model="month" aria-label="核对月份" type="month" min="2000-01" :max="currentMonth" required @change="clearPreview" /></label>
+          <label :for="`${formId}-query`">订单号／货号<input :id="`${formId}-query`" name="order_q" v-model="query" maxlength="80" /></label>
           <Button type="submit" variant="outline" :disabled="loading">查询订单</Button>
           <Button v-if="selected" type="button" variant="outline" :disabled="loading||!month" @click="preview()">刷新所选订单核对</Button>
         </form>

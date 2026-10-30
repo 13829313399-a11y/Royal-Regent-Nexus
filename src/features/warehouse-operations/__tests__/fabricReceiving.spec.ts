@@ -3,6 +3,8 @@ import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-uti
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { createPinia } from 'pinia'
 import Dialog from '../FabricReceiptDialog.vue'
+import Detail from '../FabricReceiptDetail.vue'
+import type { FabricReceipt } from '@/api/fabricReceiving'
 import Records from '../FabricReceivingRecords.vue'
 import Workspace from '../FabricProcurementWorkspace.vue'
 import { receiptQuantity, receiptTotal, receiptAmount, receiptAmountTotals } from '../receiptQuantities'
@@ -32,22 +34,31 @@ async function fill() {
   await body().get('[aria-label="送货依据编号"]').setValue('DN-001')
   await body().get('[aria-label="本单到货量"]').setValue('1000')
   await body().get('[aria-label="入库物料分类"]').setValue('FABRIC')
-  await body().get('[aria-label="第1项实收数量"]').setValue('0.1')
+  await body().get('[aria-label="第1项实点数量"]').setValue('0.1')
   await body().get('[aria-label="第1项仓位"]').setValue('一仓／A01')
   await body().get('[aria-label="第1项缸号"]').setValue('0001')
 }
 describe('fabric actual receiving', () => {
+  it.each([
+    [' PＣＳ ', undefined, 'ACCESSORY'], ['米', undefined, 'FABRIC'], ['卷', undefined, 'ACCESSORY'],
+    ['公斤', undefined, ''], ['千克(转算专用)', undefined, ''], ['片', undefined, ''],
+    ['码', 'THREAD', 'THREAD'], ['Pcs', 'FABRIC', 'FABRIC'],
+  ] as const)('suggests from %s while preserving confirmed category %s', async (unit, material_category, expected) => {
+    await open({ ...source, material_category, facts: { ...source.facts, unit } })
+    expect(body().get<HTMLSelectElement>('[aria-label="入库物料分类"]').element.value).toBe(expected)
+    expect(api.receive).not.toHaveBeenCalled()
+  })
   it('blocks split totals above the delivery quantity even with an overage reason', async () => {
     await open(); await fill()
     await body().get('[aria-label="本单到货量"]').setValue('0.3')
     await button('＋ 增加明细').trigger('click')
-    await body().get('[aria-label="第2项实收数量"]').setValue('0.200001')
+    await body().get('[aria-label="第2项实点数量"]').setValue('0.200001')
     await body().get('[aria-label="第2项仓位"]').setValue('一仓／A02')
     await body().get('[aria-label="第2项缸号"]').setValue('0001')
-    expect(body().text()).toContain('分仓实收合计超过本单到货量')
+    expect(body().text()).toContain('实点合计超过本单到货量')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
     expect(api.receive).not.toHaveBeenCalled()
-    await body().get('[aria-label="第2项实收数量"]').setValue('0.2')
+    await body().get('[aria-label="第2项实点数量"]').setValue('0.2')
     expect(button('保存并入库').attributes('disabled')).toBeUndefined()
     api.receive.mockResolvedValue({ id: 'split' })
     await button('保存并入库').trigger('click'); await flushPromises()
@@ -81,12 +92,12 @@ describe('fabric actual receiving', () => {
     expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ unit_price: '0', price_unit: '码', currency: 'CNY' }))
     expect(api.receive.mock.calls[0]![1]).not.toHaveProperty('amount')
   })
-  it('defaults dates to Shanghai today, keeps category manual and closes untouched defaults', async () => {
+  it('defaults dates to Shanghai today, suggests category and closes untouched defaults', async () => {
     await open()
     expect(body().get<HTMLSelectElement>('[aria-label="入库币种"]').element.value).toBe('CNY')
     expect(body().get<HTMLInputElement>('[aria-label="实际收货日期"]').element.value).toBe('2026-10-06')
     expect(body().get<HTMLInputElement>('[aria-label="送货单日期"]').element.value).toBe('2026-10-06')
-    expect(body().get<HTMLSelectElement>('[aria-label="入库物料分类"]').element.value).toBe('')
+    expect(body().get<HTMLSelectElement>('[aria-label="入库物料分类"]').element.value).toBe('FABRIC')
     expect(body().find('[aria-label="记账月份"]').exists()).toBe(false)
     expect(body().find('[aria-label="此前实收基数"]').exists()).toBe(false)
     expect(body().find('[aria-label="此前没收过"]').exists()).toBe(false)
@@ -100,7 +111,7 @@ describe('fabric actual receiving', () => {
     await open()
     await body().get('[aria-label="送货依据编号"]').setValue('DN-001')
   await body().get('[aria-label="本单到货量"]').setValue('1000')
-    await body().get('[aria-label="第1项实收数量"]').setValue('29')
+    await body().get('[aria-label="第1项实点数量"]').setValue('29')
     await body().get('[aria-label="第1项仓位"]').setValue('一仓／A01')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
     await body().get('[aria-label="入库物料分类"]').setValue('FABRIC')
@@ -127,7 +138,7 @@ describe('fabric actual receiving', () => {
   it('shows the remaining quantity after recorded receipts without repeating historical questions', async () => {
     await open({ ...source, receipt_count: 1, warehouse_received_quantity: '20' }); await fill()
     expect(body().get('.fabric-intake-progress').text()).toContain('30 码')
-    await body().get('[aria-label="第1项实收数量"]').setValue('30')
+    await body().get('[aria-label="第1项实点数量"]').setValue('30')
     expect(body().find('[aria-label="超收说明"]').exists()).toBe(false)
     api.receive.mockResolvedValue({ id: 'R2' })
     await button('保存并入库').trigger('click'); await flushPromises()
@@ -144,17 +155,17 @@ describe('fabric actual receiving', () => {
     expect(button('保存并入库').attributes('disabled')).toBeUndefined()
     api.receive.mockResolvedValue({ id: 'R1' })
     await button('保存并入库').trigger('click'); await flushPromises()
-    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ material_category: category, batches: [{ quantity: '0.1', location_id: 'NEW', location: '分类仓／NEW', dye_lot: '', roll_no: '' }] }))
+    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ material_category: category, batches: [{ quantity: '0.1', counted_quantity: '0.1', damaged_quantity: '0', rejected_quantity: '0', other_unusable_quantity: '0', location_id: 'NEW', location: '分类仓／NEW', dye_lot: '', roll_no: '' }] }))
   })
   it('only requires an explanation for exact overage and clears stale explanations for normal partial receipts', async () => {
     await open(); await fill()
     expect(body().find('[aria-label="超收说明"]').exists()).toBe(false)
-    await body().get('[aria-label="第1项实收数量"]').setValue('50.000001')
+    await body().get('[aria-label="第1项实点数量"]').setValue('50.000001')
     expect(body().get('.fabric-receipt-overage').text()).toContain('超出待收数量 0.000001 码')
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
     await body().get('[aria-label="超收说明"]').setValue('实物多到')
     expect(button('保存并入库').attributes('disabled')).toBeUndefined()
-    await body().get('[aria-label="第1项实收数量"]').setValue('30')
+    await body().get('[aria-label="第1项实点数量"]').setValue('30')
     expect(body().find('[aria-label="超收说明"]').exists()).toBe(false)
     api.receive.mockResolvedValue({ id: 'R1' })
     await button('保存并入库').trigger('click'); await flushPromises()
@@ -168,7 +179,7 @@ describe('fabric actual receiving', () => {
     await body().get('[aria-label="第1项卷号"]').setValue('0003')
     api.receive.mockResolvedValue({ id: 'R1' })
     await button('保存并入库').trigger('click'); await flushPromises()
-    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ receipt_date: '2026-09-29', delivery_note_date: '2026-09-28', batches: [{ quantity: '0.1', location_id: 'A01', location: '一仓／A01', dye_lot: '0002', roll_no: '0003' }] }))
+    expect(api.receive.mock.calls[0]![1]).toEqual(expect.objectContaining({ receipt_date: '2026-09-29', delivery_note_date: '2026-09-28', batches: [{ quantity: '0.1', counted_quantity: '0.1', damaged_quantity: '0', rejected_quantity: '0', other_unusable_quantity: '0', location_id: 'A01', location: '一仓／A01', dye_lot: '0002', roll_no: '0003' }] }))
   })
   it('does not turn unknown source quantities into zero', async () => {
     await open({ ...source, prior_received_quantity: null, receipt_quantity_review_required: true, can_receive: true }); await fill()
@@ -198,15 +209,15 @@ describe('fabric actual receiving', () => {
     expect(button('保存并入库').attributes('disabled')).toBeDefined()
     await fill()
     await button('＋ 增加明细').trigger('click')
-    await body().get('[aria-label="第2项实收数量"]').setValue('0.2')
+    await body().get('[aria-label="第2项实点数量"]').setValue('0.2')
     await body().get('[aria-label="第2项仓位"]').setValue('一仓／A02')
     await body().get('[aria-label="第2项缸号"]').setValue('0002')
     await body().get('[aria-label="第1项卷号"]').setValue('00001')
-    expect(body().text()).toContain('本次实收合计：0.3 码')
+    expect(body().text()).toContain('本次入库合计：0.3 码')
     api.receive.mockResolvedValue({ id: 'R1', quantity: '0.3', unit: '码', stock_posted: true })
     await button('保存并入库').trigger('click'); await flushPromises()
     expect(api.receive).toHaveBeenCalledWith('L1', expect.objectContaining({ expected_source_revision: 2, expected_receipt_count: 0, confirmed: true,
-      batches: [{ quantity: '0.1', location_id: 'A01', location: '一仓／A01', dye_lot: '0001', roll_no: '00001' }, { quantity: '0.2', location_id: 'A02', location: '一仓／A02', dye_lot: '0002', roll_no: '' }] }))
+      batches: [{ quantity: '0.1', counted_quantity: '0.1', damaged_quantity: '0', rejected_quantity: '0', other_unusable_quantity: '0', location_id: 'A01', location: '一仓／A01', dye_lot: '0001', roll_no: '00001' }, { quantity: '0.2', counted_quantity: '0.2', damaged_quantity: '0', rejected_quantity: '0', other_unusable_quantity: '0', location_id: 'A02', location: '一仓／A02', dye_lot: '0002', roll_no: '' }] }))
     expect(wrapper!.emitted('saved')?.[0]?.[0]).toEqual(expect.objectContaining({ id: 'R1' }))
   })
   it('freezes the exact payload and reuses its request after an unknown save outcome', async () => {
@@ -267,5 +278,109 @@ describe('fabric actual receiving', () => {
     expect(wrapper!.text()).toContain('无权限')
     await wrapper!.setProps({ mode: 'receipts' }); await flushPromises()
     expect(api.receipts).toHaveBeenCalledWith('', 0, expect.objectContaining({ sort: 'RECEIPT_DESC' }))
+  })
+})
+
+
+describe('purchase receipt v2 differences', () => {
+  it('calculates accepted quantity and keeps shortage and returned quantities separate', async () => {
+    await open({ ...source, warehouse_outstanding_quantity: '1000' }); await fill()
+    await body().get('[aria-label="第1项实点数量"]').setValue('980')
+    await body().get('[aria-label="第1项拒收数量"]').setValue('20')
+    expect(body().get('[aria-label="第1项入库数量"]').text()).toBe('960')
+    expect(body().get('[aria-label="本次数量汇总"]').text()).toContain('送货量1000 码实点合计980 码破损合计0 码拒收合计20 码其他不可用合计0 码入库合计960 码短少20 码退供应商合计20 码')
+    api.receive.mockResolvedValue({ id: 'V2', quantity: '960', stock_posted: true })
+    await button('保存并入库').trigger('click'); await flushPromises()
+    expect(api.receive).toHaveBeenCalledWith('L1', expect.objectContaining({
+      expected_source_revision: 2, expected_receipt_count: 0, delivery_quantity: '1000',
+      batches: [expect.objectContaining({ quantity: '960', counted_quantity: '980', damaged_quantity: '0', rejected_quantity: '20', other_unusable_quantity: '0' })],
+    }))
+  })
+  it.each([
+    ['实点数量', ''], ['实点数量', '-1'], ['实点数量', '1e2'], ['实点数量', '0.0000001'],
+    ['破损数量', '-1'], ['拒收数量', '0.2'], ['其他不可用', ''],
+  ])('blocks invalid %s = %s', async (field, value) => {
+    await open(); await fill()
+    await body().get(`[aria-label="第1项${field}"]`).setValue(value)
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    await body().get('form').trigger('submit'); expect(api.receive).not.toHaveBeenCalled()
+  })
+  it('uses counted for the delivery limit even when accepted is below it', async () => {
+    await open(); await fill()
+    await body().get('[aria-label="本单到货量"]').setValue('10')
+    await body().get('[aria-label="第1项实点数量"]').setValue('11')
+    await body().get('[aria-label="第1项拒收数量"]').setValue('10')
+    expect(body().get('[aria-label="第1项入库数量"]').text()).toBe('1')
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    expect(body().text()).toContain('实点合计超过本单到货量')
+  })
+  it('accepts zero stock with separate damage and other evidence and zero price amount', async () => {
+    await open(); await fill()
+    await body().get('[aria-label="第1项实点数量"]').setValue('10')
+    await body().get('[aria-label="第1项破损数量"]').setValue('2')
+    await body().get('[aria-label="第1项拒收数量"]').setValue('5')
+    await body().get('[aria-label="第1项其他不可用"]').setValue('3')
+    await body().get('[aria-label="入库单价"]').setValue('5')
+    expect(body().text()).toContain('本次全部不可用，只登记差异，不增加库存')
+    expect(body().get('.receipt-price-amount').text()).toContain('0.00 CNY')
+    expect(button('保存并入库').attributes('disabled')).toBeUndefined()
+    api.receive.mockResolvedValue({ id: 'ZERO', quantity: '0', stock_posted: false })
+    await button('保存并入库').trigger('click'); await flushPromises()
+    expect(api.receive.mock.calls[0]![1].batches[0]).toMatchObject({ quantity: '0', counted_quantity: '10', damaged_quantity: '2', rejected_quantity: '5', other_unusable_quantity: '3' })
+  })
+  it('adds a same-dye roll without copying physical quantities and rejects duplicate roll/bin', async () => {
+    await open(); await fill()
+    await body().get('[aria-label="第1项卷号"]').setValue('0002')
+    await body().get('[aria-label="第1项破损数量"]').setValue('0.01')
+    await body().get('[aria-label="第1项同缸新增一卷"]').trigger('click')
+    for (const [field, value] of [['缸号','0001'], ['卷号',''], ['实点数量',''], ['破损数量','0'], ['拒收数量','0'], ['其他不可用','0']]) {
+      expect(body().get<HTMLInputElement>(`[aria-label="第2项${field}"]`).element.value).toBe(value)
+    }
+    expect(body().get<HTMLInputElement>('[aria-label="第2项仓位"]').element.value).toBe('一仓／A01')
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    await body().get('[aria-label="第2项实点数量"]').setValue('1')
+    await body().get('[aria-label="第2项卷号"]').setValue('0002')
+    expect(body().text()).toContain('同缸号、卷号和仓位重复')
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+    await body().get('[aria-label="第2项仓位"]').setValue('一仓／A02')
+    expect(button('保存并入库').attributes('disabled')).toBeUndefined()
+  })
+  it('requires overage reason only for accepted, not counted', async () => {
+    await open(); await fill()
+    await body().get('[aria-label="第1项实点数量"]').setValue('60')
+    await body().get('[aria-label="第1项拒收数量"]').setValue('10')
+    expect(body().find('[aria-label="超收说明"]').exists()).toBe(false)
+    expect(button('保存并入库').attributes('disabled')).toBeUndefined()
+    await body().get('[aria-label="第1项拒收数量"]').setValue('9')
+    expect(button('保存并入库').attributes('disabled')).toBeDefined()
+  })
+  it('shows a zero-stock success notice after saving from the purchase workspace', async () => {
+    wrapper = mount(Workspace, { props: { mode: 'pending' }, attachTo: document.body, global: { plugins: [await router(), createPinia()] } }); await flushPromises()
+    await button('按采购明细').trigger('click'); await flushPromises()
+    await button('登记入库').trigger('click'); await flushPromises(); await fill()
+    await body().get('[aria-label="第1项拒收数量"]').setValue('0.1')
+    api.receive.mockResolvedValue({ id: 'ZERO', quantity: '0', unit: '码', stock_posted: false })
+    await button('保存并入库').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('本次入库 0，全部为差异/退供应商；未增加库存')
+    expect(wrapper.text()).not.toContain('已计入待检库存')
+  })
+  it('renders difference evidence and zero-stock status without an empty stock table', async () => {
+    const record = { id: 'R0', source_line_id: 'L1', source_revision: 2, facts: source.facts, quantity: '0', unit: '码',
+      material_category: 'FABRIC', stock_posted: false, receipt_date: '2026-10-06', accounting_month: '2026-10',
+      occurred_at: '2026-10-06T10:00:00+08:00', batches: [], delivered_quantity: '1000', counted_quantity: '980',
+      accepted_quantity: '0', damaged_quantity: '10', rejected_quantity: '960', other_unusable_quantity: '10', shortage_quantity: '20', returned_to_supplier: '980',
+      receipt_lines: [{ batch_id: null, location: '一仓／A01', dye_lot: '0001', roll_no: '0002', counted_quantity: '980',
+        damaged_quantity: '10', rejected_quantity: '960', other_unusable_quantity: '10', accepted_quantity: '0', returned_to_supplier: '980',
+        shortage_quantity: '20', shortage_scope: 'RECEIPT', disposition: 'RETURNED_TO_SUPPLIER' }],
+    } as FabricReceipt
+    wrapper = mount(Detail, { props: { record }, attachTo: document.body, global: { plugins: [await router()] } }); await flushPromises()
+    expect(body().text()).toContain('本次入库 0，全部为差异/退供应商')
+    expect(body().get('.receipt-differences').text()).toContain('退供应商合计980 码')
+    expect(body().get('[aria-label="逐卷差异"]').text()).toContain('不可用量当场退供应商')
+    expect(body().find('[aria-label="入库批次明细"]').exists()).toBe(false)
+    await wrapper.setProps({ record: { ...record, quantity: '1000', accepted_quantity: '1000', counted_quantity: '1000', shortage_quantity: '0', returned_to_supplier: '0', stock_posted: true } })
+    expect(body().find('.receipt-differences').exists()).toBe(false)
+    await wrapper.setProps({ record: { ...record, quantity: '10', stock_posted: true, receipt_lines: undefined } })
+    expect(body().find('.receipt-differences').exists()).toBe(false)
   })
 })

@@ -1,7 +1,10 @@
 """Period fences run under the existing cutting -> fabric transaction lock order."""
 from calendar import monthrange
-from contextlib import nullcontext
+from contextlib import nullcontext, closing
+from pathlib import Path
+import sqlite3
 from sqlalchemy import inspect, select, text
+from sqlalchemy.orm import defer, load_only
 from app.models.cutting_period import CuttingPeriodEvent as Event
 from app.services import cutting_ops as c
 
@@ -25,19 +28,65 @@ def ensure_schema(db):
     c.require(schema_ready(db.connection()), '内部月结需先完成0163显式迁移及证据保护', 503)
 
 
-def history(db, *, optional=False):
+def history(db, *, optional=False, metadata_only=False, state_only=False):
     if optional and Event.__tablename__ not in inspect(db.connection()).get_table_names():
         return []
     ensure_schema(db)
-    return list(db.scalars(select(Event).where(Event.factory_id == c.FACTORY).order_by(Event.version)))
+    query=select(Event).where(Event.factory_id == c.FACTORY).order_by(Event.version)
+    if state_only:
+        query=query.options(load_only(Event.id,Event.factory_id,Event.month,Event.version,Event.action))
+    elif metadata_only:query=query.options(defer(Event.data))
+    return list(db.scalars(query))
 
 
 def latest(history):
     return {e.month: e for e in history}
 
 
+def file_read(db, enabled):
+    """Only an explicit read-only API may release its captured SQLite writer.
+
+    In-memory test connections and PostgreSQL retain the existing transaction
+    behavior. Mutations and export captures never opt into this path.
+    """
+    bind=db.get_bind()
+    if not enabled or bind.dialect.name!='sqlite' or not hasattr(bind,'url'):
+        return None
+    name=bind.url.database
+    if not name or name==':memory:' or name.startswith('file:'):
+        return None
+    c.require(not db.new and not db.dirty and not db.deleted,'只读月结捕获不能携带未提交写入',500)
+    return Path(name).resolve()
+
+
+def frozen_headers(db, events, database):
+    """Read only captured immutable IDs, without reserving the business writer.
+
+    SQLite stores the actor fields after large snapshot JSON. Reading them one
+    row at a time in read-only autocommit avoids a long shared read transaction
+    as well as holding the cutting writer while traversing overflow pages.
+    """
+    prefixes=[(e.id,e.month,e.version,e.action) for e in events]
+    db.rollback()
+    result=[]
+    with closing(sqlite3.connect(database.as_uri()+'?mode=ro',uri=True,isolation_level=None,timeout=5)) as reader:
+        reader.execute('PRAGMA query_only=ON').close()
+        from app.services.cutting_period_header_index import select_hint
+        hint = select_hint(reader)
+        for identifier,month,version,action in prefixes:
+            cursor=reader.execute('SELECT actor_id,actor_name,created_at,reason FROM cutting_ops_period_events'+hint+' '
+                'WHERE id=? AND factory_id=? AND month=? AND version=? AND action=?',
+                (identifier,c.FACTORY,month,version,action))
+            try:row=cursor.fetchone()
+            finally:cursor.close()
+            c.require(row is not None,'捕获的月结历史版本不存在，请重新读取',409)
+            result.append(dict(id=identifier,month=month,version=version,action=action,
+                actor_id=row[0],actor=row[1],date=row[2],reason=row[3]))
+    return result
+
+
 def locked(db):
-    return {month: e for month, e in latest(history(db, optional=True)).items() if e.action == 'lock'}
+    return {month: e for month, e in latest(history(db, optional=True,state_only=True)).items() if e.action == 'lock'}
 
 
 def end_day(month):

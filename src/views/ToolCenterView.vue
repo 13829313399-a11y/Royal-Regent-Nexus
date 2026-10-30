@@ -908,6 +908,7 @@ onBeforeUnmount(() => {
       title="公共工具栏"
       :description="isHuaxing ? '表格合并、协同填表、文档翻译、转换、精确分页与批量改名 · 华兴厂区' : '表格合并、协同填表、文档翻译、转换与精确分页'"
       ><template #actions
+        ><Button variant="outline" size="sm" @click="router.push({ path: '/online-documents', query: { factory: appStore.activeFactoryId } })"><Files :size="15" aria-hidden="true" />在线文档</Button
         ><Button variant="outline" size="sm" :aria-pressed="mergeActive" @click="selectMerge(!mergeActive)"><Files :size="15" aria-hidden="true" />{{ mergeActive ? '返回文档转换' : '表格转换与合并' }}</Button
         ><Button variant="outline" size="sm" :aria-pressed="sheetsActive" @click="selectSheets"
           ><Files :size="15" aria-hidden="true" />{{ sheetsActive ? '返回文档转换' : '协同填表' }}</Button

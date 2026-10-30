@@ -5,6 +5,8 @@ import type { InventoryReport } from '@/api/cartonInventoryReport'
 import type { CartonCustomerResponse } from '@/api/cartonProcurement'
 
 const api = vi.hoisted(() => ({ get: vi.fn() }))
+const identity = vi.hoisted(() => vi.fn())
+vi.mock('@/features/carton-procurement/assistantContext', () => ({ cartonInventoryIdentity: identity }))
 vi.mock('@/api/cartonInventoryReport', () => ({ cartonInventoryReportApi: api }))
 const customer = { factory_id: 'huaxing', customer_code: 'C1', customer_name: '360' } as CartonCustomerResponse
 function data(): InventoryReport {
@@ -19,8 +21,23 @@ function data(): InventoryReport {
 function open() {
   return mount(CartonInventorySummary, { props: { factoryId: 'huaxing', customers: [customer], search: '', refreshKey: 0, connected: true } })
 }
-beforeEach(() => { vi.clearAllMocks(); api.get.mockResolvedValue(data()) })
+beforeEach(() => { vi.clearAllMocks(); api.get.mockResolvedValue(data()); identity.mockImplementation(async (key: string) => `INVENTORY:${key}`) })
 describe('库存汇总工作台', () => {
+  it('keeps the latest selected paper when identity reads resolve out of order', async () => {
+    let finishFirst!: (id: string) => void
+    identity.mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve }))
+    const wrapper = mount(CartonInventorySummary, {
+      props: { factoryId: 'huaxing', customers: [customer], search: '', refreshKey: 0, connected: true },
+      global: { stubs: { CartonOrderTimeline: true } },
+    })
+    await flushPromises()
+    const buttons = wrapper.findAll('tbody button')
+    await buttons[0]!.trigger('click')
+    await buttons[1]!.trigger('click'); await flushPromises()
+    finishFirst('INVENTORY:LINE-1'); await flushPromises()
+    expect(wrapper.emitted('selected')?.map(event => event[0])).toEqual(['INVENTORY:LINE-2'])
+    wrapper.unmount()
+  })
   it('keeps unlike units separate and preserves contract and negative reversal in detail', async () => {
     const wrapper = open(); await flushPromises()
     expect(api.get).toHaveBeenCalledWith('huaxing', { customer_code: '', date_from: '', date_to: '', search: '' })

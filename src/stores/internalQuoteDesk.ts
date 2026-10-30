@@ -496,7 +496,8 @@ function toQuote(
     referenceSnapshotId: source.reference_snapshot_id,
     referenceSnapshot: extras.reference?.snapshot ?? {},
     formulaVersion: source.formula_version,
-    currentFormulaVersion: extras.summary?.current_formula_version || source.formula_version,
+    currentFormulaVersion: source.current_formula_version || extras.summary?.current_formula_version || source.formula_version,
+    formulaRecalculationRequired: source.formula_recalculation_required ?? extras.summary?.warnings?.some(item => item.code === 'formula_version_stale'),
     moduleVersion: source.module_version,
     headerRevision: source.header_revision,
     versionArchived: source.version_archived,
@@ -624,6 +625,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     livePreviewDrafts: {} as Partial<Record<InternalQuoteSectionCode, { revision: number; payload: Record<string, unknown> }>>,
     placeholderQuote: emptyQuote(),
     listLoading: false,
+    quoteListVerified: false,
     dashboardLoading: false,
     livePreviewLoading: false,
     detailLoading: false,
@@ -662,6 +664,8 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     baselineUpdateRequestSequence: 0,
     quoteMutationRequestSequence: 0,
     quoteDetailRequestSequence: 0,
+    quoteDetailVerifiedId: '',
+    quoteDetailFailedId: '',
     sectionEditingEnabled: true,
     versionCandidates: {} as Record<string, ApiInternalQuoteVersionCandidate[]>,
     versionComparisons: {} as Record<string, ApiInternalQuoteVersionComparison>,
@@ -671,6 +675,17 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     getQuoteById: (state) => (quoteId: string) => state.quotes.find((quote) => quote.id === quoteId),
   },
   actions: {
+    resetPrivateContext() {
+      // Keep counters monotonic: an old request must never match a new request after reset.
+      const counters = Object.fromEntries(Object.entries(this.$state)
+        .filter(([key, value]) => typeof value === 'number' && /(?:Sequence|Generation)$/.test(key))
+        .map(([key, value]) => [key, (value as number) + 1]))
+      this.$reset()
+      this.$patch(counters)
+    },
+    assertContextGeneration(generation: number) {
+      if (generation !== this.factoryContextGeneration) throw new Error('报价账号、权限或厂区已变化，请在当前范围重新读取。')
+    },
     activateFactoryContext(factoryId: string) {
       if (this.factoryContextFactoryId === factoryId) {
         return this.factoryContextGeneration
@@ -680,7 +695,14 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.factoryContextGeneration += 1
       this.currentFactoryId = factoryId
       this.quotes = []
+      this.quoteListVerified = false
       this.batchProductsByQuoteId = {}
+      this.versionCandidates = {}
+      this.versionComparisons = {}
+      this.quoteDetailVerifiedId = ''
+      this.quoteDetailFailedId = ''
+      this.detailLoading = false
+      this.fileBusy = false
       this.refreshWarning = ''
       this.quoteListTotal = 0
       this.quoteListPage = 1
@@ -750,6 +772,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       const factoryContextGeneration = this.activateFactoryContext(factoryId)
       const requestSequence = ++this.quoteListRequestSequence
       this.listLoading = true
+      this.quoteListVerified = false
       this.errorMessage = ''
       this.currentFactoryId = factoryId
       try {
@@ -785,6 +808,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           this.quoteListTotalPages = response.total_pages
           this.quoteListCustomers = response.customers
         }
+        this.quoteListVerified = true
       } catch (error) {
         if (
           requestSequence !== this.quoteListRequestSequence
@@ -1090,10 +1114,15 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       if (!quoteId) return undefined
       const requestSequence = ++this.quoteDetailRequestSequence
       this.detailLoading = true
+      this.quoteDetailVerifiedId = ''
+      this.quoteDetailFailedId = ''
       this.errorMessage = ''
       try {
         const detail = await internalQuoteApi.get(quoteId)
         if (requestSequence !== this.quoteDetailRequestSequence) return undefined
+        if (detail.id !== quoteId || (this.factoryContextFactoryId && detail.factory_id !== this.factoryContextFactoryId)) {
+          throw new Error('此报价不属于当前厂区，请返回报价首页重新选择。')
+        }
         const [timelineResult, referenceResult, summaryResult, attachmentsResult, exportsResult] = await Promise.allSettled([
           internalQuoteApi.getTimeline(quoteId),
           internalQuoteApi.getReferenceSnapshot(quoteId),
@@ -1136,10 +1165,13 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         }
         if (requestSequence !== this.quoteDetailRequestSequence) return undefined
         this.upsertQuote(quote)
+        this.quoteDetailVerifiedId = quoteId
         if (degradedErrors.length) this.errorMessage = degradedErrors.join('；')
         return quote
       } catch (error) {
         if (requestSequence !== this.quoteDetailRequestSequence) return undefined
+        // Keep saved revisions and local editors intact; the page hides unverified amounts.
+        this.quoteDetailFailedId = quoteId
         this.errorMessage = getApiErrorMessage(error)
         return undefined
       } finally {
@@ -1148,7 +1180,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     },
     async loadQuoteForComparison(quoteId: string) {
       if (!quoteId) throw new Error('缺少待对比报价编号。')
+      const generation = this.factoryContextGeneration
       const detail = await internalQuoteApi.get(quoteId)
+      this.assertContextGeneration(generation)
+      if (this.factoryContextFactoryId && detail.factory_id !== this.factoryContextFactoryId) throw new Error('对比报价不属于当前厂区。')
       return toQuote(detail)
     },
     applySavedSections(quoteId: string, sections: ApiInternalQuoteSection[]) {
@@ -1179,12 +1214,14 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       return refreshed
     },
     async executeMutation(quoteId: string, operation: () => Promise<unknown>, refreshQuote = true) {
+      const generation = this.factoryContextGeneration
       this.clearLiveCostPreview(quoteId)
       this.submitting = true
       this.errorMessage = ''
       this.conflictMessage = ''
       try {
         const result = await operation()
+        this.assertContextGeneration(generation)
         const receipt = result as { section?: ApiInternalQuoteSection; department?: string; payload?: Record<string, unknown>; revision?: number; sections?: ApiInternalQuoteSection[] } | undefined
         if (receipt?.section) this.applySavedSections(quoteId, [receipt.section])
         else if (receipt?.department && receipt.payload && typeof receipt.revision === 'number') this.applySavedSections(quoteId, [result as ApiInternalQuoteSection])
@@ -1192,14 +1229,16 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         if (refreshQuote) {
           await this.refreshAfterMutation(quoteId)
         }
+        this.assertContextGeneration(generation)
         return result
       } catch (error) {
+        this.assertContextGeneration(generation)
         const message = mutationMessage(error)
         if (responseStatus(error) === 409 && responseCurrentRevision(error) !== undefined) this.conflictMessage = message
         this.errorMessage = message
         throw new Error(message)
       } finally {
-        this.submitting = false
+        if (generation === this.factoryContextGeneration) this.submitting = false
       }
     },
     async createQuote(payload: InternalQuoteCreatePayload, contextFactoryId?: string) {
@@ -1330,18 +1369,13 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       return this.loadBatchProducts(targetQuoteId)
     },
     async uploadProductImage(quoteId: string, file: File, revision?: number) {
-      this.fileBusy = true
-      try {
+      const generation = this.factoryContextGeneration
+      return this.performFileOperation(async () => {
         const result = await internalQuoteApi.uploadProductImage(quoteId, file, revision ?? this.getQuoteById(quoteId)?.headerRevision)
+        this.assertContextGeneration(generation)
         await this.refreshAfterMutation(quoteId)
         return result
-      } catch (error) {
-        const message = mutationMessage(error)
-        this.errorMessage = message
-        throw new Error(message)
-      } finally {
-        this.fileBusy = false
-      }
+      })
     },
     async cloneQuote(sourceQuoteId: string, payload: InternalQuoteCreatePayload, contextFactoryId?: string) {
       if (!payload.businessOwnerId || !payload.businessOwner.trim()) throw new Error('复制内部报价必须指定业务负责人。')
@@ -1426,6 +1460,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       return result
     },
     async saveWholeProductSections(quoteId: string, drafts: InternalQuoteWholeProductDraft[]) {
+      const generation = this.factoryContextGeneration
       if (!drafts.length) throw new Error('当前没有需要保存的部门修改。')
       const fingerprint = (code: InternalQuoteSectionCode, value: Record<string, unknown>) => (
         sectionPayloadFingerprint(code, value, this.getQuoteById(quoteId)?.referenceSnapshot)
@@ -1442,6 +1477,7 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.conflictMessage = ''
       try {
         const latestBeforeSave = await internalQuoteApi.get(quoteId)
+        this.assertContextGeneration(generation)
         for (const draft of orderedDrafts) {
           const latestSection = latestBeforeSave.sections.find((section) => section.department === draft.sectionCode)
           if (!latestSection) throw new Error(`${definitionFor(draft.sectionCode).label}已不在当前报价中，请重新读取页面后再试。`)
@@ -1466,19 +1502,22 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
           }))
         if (pendingDrafts.length) {
           const result = await internalQuoteApi.saveWholeProduct(quoteId, pendingDrafts)
+          this.assertContextGeneration(generation)
           savedSections.push(...result.sections)
           this.applySavedSections(quoteId, result.sections)
         }
 
         const refreshed = await this.refreshAfterMutation(quoteId)
+        this.assertContextGeneration(generation)
         return { quote: refreshed ?? this.getQuoteById(quoteId), sections: savedSections }
       } catch (error) {
+        this.assertContextGeneration(generation)
         const message = mutationMessage(error)
         if (responseStatus(error) === 409 && responseCurrentRevision(error) !== undefined) this.conflictMessage = message
         this.errorMessage = message
         throw new Error(message)
       } finally {
-        this.submitting = false
+        if (generation === this.factoryContextGeneration) this.submitting = false
       }
     },
     submitSection(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number) {
@@ -1530,35 +1569,32 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         material_prices: materialPrices,
       }))
     },
-    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File, draft?: { revision: number; payload: Record<string, unknown> }) {
+    async performFileOperation<T>(operation: () => Promise<T>): Promise<T> {
+      const generation = this.factoryContextGeneration
       this.fileBusy = true
       this.errorMessage = ''
       try {
-        return await internalQuoteApi.previewImport(quoteId, importType, file, draft)
+        const result = await operation()
+        this.assertContextGeneration(generation)
+        return result
       } catch (error) {
+        this.assertContextGeneration(generation)
         const wrapped = mutationError(error)
         this.errorMessage = wrapped.message
         throw wrapped
       } finally {
-        this.fileBusy = false
+        if (generation === this.factoryContextGeneration) this.fileBusy = false
       }
+    },
+    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File, draft?: { revision: number; payload: Record<string, unknown> }) {
+      return this.performFileOperation(() => internalQuoteApi.previewImport(quoteId, importType, file, draft))
     },
     async downloadImportTemplate(
       quoteId: string,
       importType: ApiInternalQuoteImportPreview['import_type'],
       fileName: string,
     ) {
-      this.fileBusy = true
-      this.errorMessage = ''
-      try {
-        triggerDownload(await internalQuoteApi.downloadImportTemplate(quoteId, importType), fileName)
-      } catch (error) {
-        const message = mutationMessage(error)
-        this.errorMessage = message
-        throw new Error(message)
-      } finally {
-        this.fileBusy = false
-      }
+      triggerDownload(await this.performFileOperation(() => internalQuoteApi.downloadImportTemplate(quoteId, importType)), fileName)
     },
     confirmImport(
       quoteId: string,
@@ -1573,18 +1609,15 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       return this.executeMutation(quoteId, () => internalQuoteApi.uploadAttachment(quoteId, sectionCode, file))
     },
     async downloadAttachment(quoteId: string, attachmentId: string, fileName: string) {
-      this.fileBusy = true
-      try {
-        triggerDownload(await internalQuoteApi.downloadAttachment(quoteId, attachmentId), fileName)
-      } finally {
-        this.fileBusy = false
-      }
+      triggerDownload(await this.performFileOperation(() => internalQuoteApi.downloadAttachment(quoteId, attachmentId)), fileName)
     },
     deleteImportAttachment(quoteId: string, attachmentId: string, revision: number) {
+      const generation = this.factoryContextGeneration
       return this.executeMutation(
         quoteId,
         async () => {
           await internalQuoteApi.deleteImportAttachment(quoteId, attachmentId, revision)
+          this.assertContextGeneration(generation)
           this.removeAttachmentReceipt(quoteId, attachmentId)
         },
       )
@@ -1595,8 +1628,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       })
     },
     deleteSupportingAttachment(quoteId: string, attachmentId: string, revision: number) {
+      const generation = this.factoryContextGeneration
       return this.executeMutation(quoteId, async () => {
         await internalQuoteApi.deleteSupportingAttachment(quoteId, attachmentId, revision)
+        this.assertContextGeneration(generation)
         this.removeAttachmentReceipt(quoteId, attachmentId)
       })
     },
@@ -1615,23 +1650,10 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       return this.executeMutation(quoteId, () => internalQuoteApi.createExport(quoteId))
     },
     async downloadExport(quoteId: string, exportId: string, fileName: string) {
-      this.fileBusy = true
-      try {
-        triggerDownload(await internalQuoteApi.downloadExport(quoteId, exportId), fileName)
-      } finally {
-        this.fileBusy = false
-      }
+      triggerDownload(await this.performFileOperation(() => internalQuoteApi.downloadExport(quoteId, exportId)), fileName)
     },
     async downloadEngineeringWorkbook(quoteId: string, fileName: string) {
-      this.fileBusy = true
-      try {
-        triggerDownload(
-          await internalQuoteApi.downloadEngineeringWorkbook(quoteId),
-          fileName,
-        )
-      } finally {
-        this.fileBusy = false
-      }
+      triggerDownload(await this.performFileOperation(() => internalQuoteApi.downloadEngineeringWorkbook(quoteId)), fileName)
     },
     submitFinal(quoteId: string, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.submitFinal(quoteId, revision))
@@ -1643,11 +1665,16 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       return this.executeMutation(quoteId, () => internalQuoteApi.reviewFinal(quoteId, revision, decision, reason))
     },
     async loadVersionCandidates(quoteId: string) {
-      this.versionCandidates[quoteId] = await internalQuoteApi.listVersionCandidates(quoteId)
-      return this.versionCandidates[quoteId]
+      const generation = this.factoryContextGeneration
+      const candidates = await internalQuoteApi.listVersionCandidates(quoteId)
+      this.assertContextGeneration(generation)
+      this.versionCandidates[quoteId] = candidates
+      return candidates
     },
     async compareVersion(quoteId: string, baseQuoteId: string) {
+      const generation = this.factoryContextGeneration
       const comparison = await internalQuoteApi.compareVersion(quoteId, baseQuoteId)
+      this.assertContextGeneration(generation)
       this.versionComparisons[`${quoteId}:${baseQuoteId}`] = comparison
       return comparison
     },

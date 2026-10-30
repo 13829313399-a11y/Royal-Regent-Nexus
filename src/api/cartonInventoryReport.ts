@@ -58,9 +58,10 @@ export interface InventoryReport {
   movements: InventoryReportMovement[]
 }
 export const cartonInventoryReportApi = {
-  async get(factoryId: string, filters: { customer_code: string; date_from: string; date_to: string; search: string }) {
+  async get(factoryId: string, filters: { customer_code: string; date_from: string; date_to: string; search: string }, signal?: AbortSignal) {
     const response = await http.get<InventoryReport>('/carton-procurement/inventory/report', {
       params: { factory_id: factoryId, ...filters },
+      signal,
     })
     return response.data
   },

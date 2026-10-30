@@ -1,0 +1,23 @@
+{
+  "id": "zumiez-review-v1",
+  "name": "ZUMIEZ 正侧唛审阅模板",
+  "reference_sha256": "d760758a394f124e060a984c73bd317290f6f9dda62e191380d862ac260a952a",
+  "reference_page": 0,
+  "paper_mm": [297, 210],
+  "font_family_contains": "AlternateGothic",
+  "font_size_pt": 15,
+  "leading_pt": 18,
+  "frame_mm": [9.5, 39.5, 286.5, 165.5],
+  "divider_x_mm": 169.5,
+  "header_height_mm": 21.5,
+  "footer_height_mm": 20,
+  "logo_crop_mm": [63, 64.5, 50, 23],
+  "stamp_crop_mm": [81.6, 187.2, 21, 20.5],
+  "stamp_remove_reference_red_rules": true,
+  "logo_boxes_mm": [[63, 65, 50, 20], [210, 65, 50, 20]],
+  "stamp_box_mm": [82, 186, 19.3, 18.8],
+  "text_boxes_mm": [[61.7, 103.5, 99, 73], [193.3, 103.5, 95, 73]],
+  "face_copies": [2, 2],
+  "layout_variants": ["reference", "wrap_description"],
+  "fields": ["contract", "item", "recipient", "customer_po", "article", "product", "quantity", "carton_total", "country"]
+}

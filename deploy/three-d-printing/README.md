@@ -1,8 +1,55 @@
 # 3D 打印离线交付与后续现场执行
 
+## 16 台生产切换与重编号边界
+
+已确认目标清单为 16 台：旧 1～5 号保持编号，旧 6～11 号依次成为新 9～14 号；新设备使用 6、7、8、15、16 号。2 号的地址也有变化。实际地址、现场报告和凭据保留在仓库外的受控目录。
+
+采集 API、Connector Worker、Bambu Adapter、分析与汇总、资源验证、现场 Windows 脚本和连接准备工具支持 1～16 号；完整站点拓扑与报告兼容旧 11 台及新 16 台。报告必须覆盖数据库设置与已初始化设备的完整机台清单。扩容后，旧 11 台报告不能继续显示全站健康，也不能通过幂等重试绕过检查。默认种子仍是原 11 台，避免应用重启自行改变现有业务设备。
+
+**生产 16 台切换已验收。** 当前 16 台均保持 cloud-observer，记录开关开启，硬件控制关闭。当前屏幕码、证书、MQTT 登录及完整状态均已核对；两次持久采集快照间隔约 90 秒，16 台观察时间全部推进，第二次最大延迟 2.58 秒。生产登录、每日记录、机器状态及 16 号机详情已用真实浏览器验证，刷新后无控制台 warning/error；网页出现新 6、7、15 号自动记录。未发送暂停、恢复或打印命令，也未为本次恢复更改打印机模式、固件或重启现场网关。当前结果不等于长期无人值守验收。
+
+业务以 **2026-10-29** 为新编号起点。此前日期记录保留原样；当天 7 条自动记录与 75,657 条遥测按稳定设备身份改号，业务 ID、金额与库存核对保持。`THREE_D_RECORD_NUMBERING_SINCE=2026-10-29` 限制同机号自动匹配、回填与结单，旧设备任务键不会变成新设备重复记录。当前机台运行统计与保养累计同样排除边界前的旧编号记录和遥测，可用率按实际有效统计窗口计算。前端“机台适配与保养”文案为 1～16。切换前有完整 PostgreSQL、资产及私有配置备份；隔离 PostgreSQL 恢复了全部业务表和当天遥测并成功演练，历史原始遥测包含在完整归档中，但未在演练库恢复。
+
+当前 API/Web 镜像分别为 `royal-regent-api:three-d-stats16-20261029`、`royal-regent-web:three-d-stats16-20261029`，Connector 镜像为 `rr-three-d-connector:fleet16-20261029`。API 发布需沿用原 `.env.production`、`docker-compose.prod.yml`、`.deployment-prod-release.yml` 与 `.deployment-three-d-fleet16.yml`；Connector 使用原 `compose.yml` 与 `compose.fleet16.yml`。本次源码已合入主分支；后续发布仍须使用包含 16 台能力的已验证镜像，不能漏掉覆盖文件而退回旧限制。即使镜像不再需要临时覆盖，也必须继续配置 `THREE_D_RECORD_NUMBERING_SINCE=2026-10-29`，否则旧编号记录会重新参与自动匹配与当前统计。网络清单、健康脚本已同步到 16 台，定时器正常。证据见 `D:/RR/deliverables/three-d-fleet-16-readiness-20261028/fleet16-acceptance-20261029`，服务器受限备份在 `/opt/royal-regent/three-d/private/fleet16-20261029`。本地开发连接保持关闭，未迁移本地业务库。下方旧 11 台部署资料仅为历史基线。
+
+本次停写切换曾造成约三分钟登录 HTTP 502，API 恢复后已实际登录成功。切换后已有新记录，回退必须先对账新增业务，不能直接用旧备份覆盖活跃库。
+
+重编号必须保持物理设备的 `printer_id`、任务标识及 `credential_ref` 关联。凭据引用不是机台号：例如新 9 号继续使用原 6 号的引用。16 台现场 CSV 必须提供明确、唯一的 `credential_ref`；Windows 报告与 `tailscale_doctor.py` 保留该值，`prepare_connections.py` 拒绝覆盖既有设备的不同凭据引用。不要将新 CSV 直接套到旧机号数据库，也不要先按编号复制或改名密钥文件。
+
+`network/collect-studio-devices.ps1` 可在现场当前 Windows 用户下定向读取 Bambu Studio 正式版/Beta 的已保存配置。默认只匹配新 6、7、8、15、16 号的 IP，兼容明文与 FNV-1a/MT19937 混淆的 `user_access_dev_ip`，按设备 SN 优先取 `user_access_code`，再取 `access_code`。缺失映射、凭据或存在冲突时报告未知，不按列表顺序猜设备，不提取账号 token、完整配置、日志或其他用户资料。非标准路径可显式传 `-ConfigPath`，不会递归扫描磁盘。
+
+采集器兼容 Windows 版配置 JSON 后的标准 `# MD5 checksum` 行，仅去除格式匹配的末尾校验行，不忽略其他尾部内容，也不宣称验证过校验和。报告通过 `collector_version`、`read_stage`、`issue_code` 和映射计数区分文件不可读、解析失败、没有 IP 映射及目标未匹配；不包含可能泄露原始配置的异常文本。配置未成功解析时，不能把结果解释成“软件没有保存新机资料”。
+
+默认只读当前配置和已存在的目标 TCP 连接。若现场配置没有 IP 映射，可显式加 `-DiscoverCertificates`：只向所选机台 IP 做有超时的 TLS 握手，先用 8883，失败时回退到 990，从证书 CN 取得候选 SN，再精确匹配本用户配置中的访问码。`-ProbeTimeoutMs` 默认为每阶段 3000 毫秒；`-CertificatePorts` 可显式指定最多两个端口。探测不发送应用数据、MQTT 登录、FTP 命令或访问码，不更改防火墙、LAN 模式或 Studio。CSV 可带 `observed_cert_sha256`，与此前现场观察不一致时拒绝导出该机；没有历史指纹的首次观察保留待核对状态。SN 大小写、缓存身份/密码冲突及同一 SN 对应多个目标 IP 都须严格检查。
+
+报告不含 SN/访问码，仅包含处理阶段、各配置访问码条目数量、探测状态和证书指纹；匹配资料使用随包收件公钥加密落盘，解密私钥必须留在维护端仓库外的受限目录。返回 `collection-report.json` 和存在时的 `device-secrets.encrypted.json`，不需要原始 Studio 配置。证书名称、历史指纹匹配或缓存资料都不证明物理身份、密码有效性或 MQTT 登录成功。缺少可读证书或保存的访问码时仍需现场补齐，不会从网络获取密码。源码支持用隔离 Windows PowerShell 配置、混淆 IP 固定向量、真实本地 TLS 端点、冲突与解密回读验证；不能替代现场设备验证。
+
+`network/extend-printer-routes.ps1` 用于在已登录的正确现场网关上补路由，默认 `Plan`；`Apply` 只合并所给 CSV 的私网 IPv4 `/32`，保留原有 IPv4/IPv6 路由，不更改登录、无人值守或防火墙设置。`-ExpectedGatewayIP` 必须与当前 Tailscale 身份一致，写入前再次检查原路由未变化，先保存 `route-change.json` 再执行并回读核对。显式 `Rollback -RestoreFile <该次报告>` 只移除该次新增且属于当前 CSV 的路由，保留后续新增的其他路由。发布路由不等于云端可达；按 [Tailscale Windows 配置说明](https://tailscale.com/docs/features/subnet-routers/how-to/setup?tab=windows) 核对管理台是否启用新增路由及访问规则，再从实际 Connector 网络验证。
+
+执行顺序：
+
+1. 现场按完整 CSV 运行 `windows-site.ps1 -Action Inspect`，逐台核对物理身份，取得新证书并补齐新机凭据。Inspect 只检测 TCP/TLS，不登录 MQTT。
+2. 对目标库和受限配置备份，在恢复副本中生成重编号预览。生产记录、排期、维修、遥测、汇总及操作资源都可能按 `machine_no` 关联；必须核对历史编号展示口径、开放任务、旧 Edge 写入端以及按机号配置的控制白名单，不能只改设备表。本次按用户决定保留 2026-10-29 之前的编号，只修正当天自动记录及设备遥测，后续迁移须显式决定自己的业务边界。新设备不得继承旧编号的控制许可。
+3. 在独立切换窗口对账后再应用编号、设备行和机台数量，更新地址、证书、网络清单及必要主机路由。控制权限保持关闭；新设备仅在身份、凭据和网络验证成功后启用观察。自动记账仍受每台独立开关约束。
+4. 验收 16 台完整探测、新鲜遥测、机台卡片与历史归属，确认金额、库存、历史记录 ID 和业务总量保持。失败时停止本次新增采集并按同批备份恢复配置/数据；已有新记录时先对账，不能直接覆盖回旧库。
+
+## 持续验收边界
+
+云端 `rr-three-d-fleet16-soak.timer` 每分钟采样一次，由 PostgreSQL 强制只读事务获取必要状态和记录投影，另检查公共健康接口。采样脚本及脱敏状态位于 `/opt/royal-regent/three-d/private/fleet16-soak`，不读取打印机密码、序列号或原始任务名称。应用中的本聊天定时回查每 30 分钟通过只允许读取单个状态文件的 SSH 密钥拉取证据，状态不变时保持安静。
+
+稳定性以连续 24 小时、完整 16 台、设备观测不超过 30 秒、采样间隔不超过 100 秒为通过条件。设备断线和采样缺口重置连续窗口，自然恢复另行留证，不人为断网。生产周期要求每台稳定设备身份在本轮采样期内出现早期 RUNNING（进度不超过 5%），随后有同一任务的 FINISH、唯一对应且已成功结单的自动记录。只看到原有任务即将结束、开机在线、记录已创建或计时器已启动都不算完整周期通过。
+
+当前 24 小时稳定性和全部 16 台真实周期仍在验证中。证据在 `D:/RR/deliverables/three-d-fleet-16-readiness-20261028/closeout-20261029`；只读拉取入口为 `D:/RR/private-three-d/fleet16-soak/fetch-status.py`。全部条件完成后暂停应用定时回查；云端采样与只读密钥的停用按运维收尾执行。没有执行硬件控制或主动断网测试。
+
+## 此前 11 台部署基线
+
 云端应用和独立 Connector 已部署，Windows 现场网关已加入同一 Tailscale 网络，11 条打印机主机路由已生效。现场执行包位于本机 `D:/RR/3D现场配置包`。云端服务目录为 `/opt/royal-regent/three-d`；云端实测 11 台 TCP/TLS 均通过，证书与现场报告一致。1～11 号机均已启用 `cloud-observer` 只读接入，持续接收真实 MQTT 状态；本地开发连接仍禁用。旧程序及 Bambu Studio 可以继续运行，打印控制权未移交。
 
 当前 Windows 接入使用 `network/windows-site.ps1`：Install 安装、Login 登录并启用无人值守、Routes 合并发布打印机主机路由、Inspect 读取网卡与 TCP/TLS 结果。Inspect 不登录 MQTT、不发送打印命令。`network/tailscale_doctor.py` 在云端检测真实 Tailscale 路由和设备 TLS，不要求 Windows 提供 Linux nftables 文件；缺少公网暴露证据保持 unknown，不冒充检查通过，也不再当作网络不通。明确 unsafe、实际探测失败或报告过期仍产生异常状态。
+
+当现场 Studio 可访问设备但云端 TCP 超时时，Inspect 可加 `-IncludeGatewayDiagnostics`，在同一个报告中补充 Tailscale 非敏感偏好字段、逐台选路、目标邻居状态、IPv4 接口及防火墙概要。读取失败保留为 unavailable，不按 false 推断；接口 forwarding 状态只是证据，不能单独判定 Windows 用户态子网转发故障。报告使用明确字段白名单，不导出完整 prefs/netmap、私钥、账号凭据、MAC 地址或其他应用规则，也不修改网络设置。
+
+当屏幕确认 IP 已变化时，可用 `network/rediscover-printer-addresses.ps1` 重新定位已知设备。它要求正确的现场 Tailscale 身份、唯一连接中的私网 `/24` 网卡及直接连接路由；绑定该源地址和网卡，最多四个并发，只对该网段的可用主机地址探测 TCP 8883/TLS。完整 SHA-256 证书指纹与仓库外清单精确匹配后才报告当前 IP，并保持原 `machine_no`/`credential_ref`；未知证书只计数，同一指纹出现在多个地址时标记 ambiguous，不按顺序、证书名称或旧 IP 猜身份。工具不读取访问码、不发送 MQTT 或打印命令、不修改路由/防火墙/设备设置。结果仍须审核后才能更新网络清单、批准路由及验证 MQTT；报告匹配完成不等于生产切换完成。
 
 `prepare_connections.py --printers <CSV>` 幂等补齐禁用的设备连接，保留已有配置；`--network-config <JSON>` 用现场报告配置更新禁用设备的地址与证书，不转移设备所有权。`rr-three-d-network.timer` 每 30 秒进行不登录 MQTT 的网络检测并回传 API。Tailscale 探测超时为 10 秒以适应 DERP 中继，systemd 服务总超时为 75 秒；主机 Python 3.10 使用 `timezone.utc`。
 
@@ -32,7 +79,7 @@ backend/.venv/Scripts/python.exe deploy/three-d-printing/record_switch.py off --
 | `recovery.py restore` | 恢复到全新目录并校验 | 拒绝覆盖已有目录；不切换应用 |
 | `cutover.py` | 生成单台打印机归属计划 | `--execute`、停写声明、操作者、原因、30分钟内校验通过的备份 |
 | `retention.py` | 统计90天以前的原始遥测体 | `--execute`；每批最多500条；最短保留30天 |
-| `network/windows-tailscale-plan.ps1` | 生成11条主机路由的审核计划 | 不包含执行网络修改的入口 |
+| `network/windows-tailscale-plan.ps1` | 为完整 11/16 台清单生成逐机主机路由审核计划 | 不包含执行网络修改的入口 |
 
 原始遥测保留策略只清空过期 `raw_payload_json`。标准化状态、温度、错误、任务、命令、库存、文件和审计证据保留。执行前备份，按容量监控决定后续批次；本次未清理实际数据。
 

@@ -56,14 +56,17 @@ def session_out(row):
 def message_out(row, user=None):
     result = {k: getattr(row, k) for k in ("id", "run_id", "seq", "role", "content_parts", "status", "help_citations", "context_descriptor", "created_at")}
     if user and row.help_citations:
-        allowed = {a.id for a in help_registry.visible(user)}
-        if any(c["id"] not in allowed for c in row.help_citations):
-            result.update(content_parts=[{"type": "text", "text": "这段系统说明不再适用于当前身份。"}], help_citations=[], context_descriptor=None, unavailable=True)
+        if not help_registry.references_current(user, row.help_citations):
+            result.update(content_parts=[{"type": "text", "text": "这段系统说明不再适用于当前身份或资料版本，请重新读取已核对的说明。"}], help_citations=[], context_descriptor=None, unavailable=True)
             return result
+        if any(not c.get('source_fingerprint') for c in row.help_citations):
+            result['help_verification'] = 'legacy_version_only'
     if user:
         from . import visibility
-        from .files import owned as file_owned
+        from .files import snapshot as file_snapshot
         refs = visibility.sources(row.content_parts)
+        if any(s.get('kind')=='help' and not s.get('source_fingerprint') for s in refs):
+            result['help_verification'] = 'legacy_version_only'
         with database.SessionLocal() as db:
             if row.role == "user":
                 paired = db.scalar(select(Message).where(Message.run_id == row.run_id, Message.role == "assistant"))
@@ -72,7 +75,7 @@ def message_out(row, user=None):
             try:
                 for part in row.content_parts:
                     if part.get("type") == "document_ref":
-                        file_owned(db, user, part["file_id"], ready=True)
+                        file_snapshot(db, user, part["file_id"], row.session_id, part.get('document_version'))
                     elif part.get("type") == "image_ref":
                         from .storage import validate_attachments
                         validate_attachments(db, user, row.session_id, [part["attachment_id"]])
@@ -116,7 +119,7 @@ def account_usage(db, run):
         session.budget_tokens += max(0, amount)
 
 
-def reserve_budget(db):
+def reserve_budget(db, payload=None):
     budget = settings.assistant_daily_token_budget
     if budget is None:
         return None
@@ -124,7 +127,8 @@ def reserve_budget(db):
         raise AssistantError("budget_parameter_unverified", "日预算需要已核对的输出预算参数。", 503)
     # Deployment-wide UTC-day admission guard. Reserve worst-case UTF-8 text
     # plus output for every allowed tool round; unknown billing keeps reservation.
-    reserve = (settings.assistant_context_character_budget*4 + settings.assistant_max_output_tokens)*(settings.assistant_max_tool_rounds+1)
+    extra_search = int(payload is not None and payload.protocol_version == 2 and payload.web_search != "off")
+    reserve = (settings.assistant_context_character_budget*4 + settings.assistant_max_output_tokens)*(settings.assistant_max_tool_rounds+1+extra_search)
     rows = db.scalars(select(Conversation).where(Conversation.budget_day == day_key(time.time()))).all()
     active = db.scalars(select(Run).where(Run.state.in_(ACTIVE))).all()
     unknown = any(r.budget_unknown for r in rows) or any(not r.context_window.get("reserved_tokens") for r in active)
@@ -223,7 +227,8 @@ def admit(user, sid, payload):
             return dict(reused=True, run_id=old.id, state=old.state)
         capabilities.require_enabled(chat=True)
         capabilities.validate_options(payload)
-        citations = help_registry.context(user, payload.page_context) if payload.page_context else []
+        citations = help_registry.model_context(user, payload.page_context,
+            strict=payload.intent in ('explain_page','explain_element')) if payload.page_context else []
         active = select(Run).join(Conversation).where(Run.state.in_(ACTIVE))
         if db.scalar(select(Run.id).where(Run.session_id == sid, Run.state.in_(ACTIVE))):
             raise AssistantError("session_busy", "这个对话还在回答中，请等待或停止后继续。", 409, True)
@@ -233,10 +238,12 @@ def admit(user, sid, payload):
             raise AssistantError("concurrency_limit", "当前正在回答的请求较多，请稍后再试。", 429, True, 2)
         from .storage import validate_attachments
         validate_attachments(db, user, sid, payload.attachment_ids)
+        document_versions = {}
         if payload.document_ids:
-            from .files import materials
-            materials(db, user, sid, payload.document_ids, "admission")
-        reservation = reserve_budget(db)
+            from .files import search_documents
+            selected = search_documents(db, user, sid, payload.document_ids, payload.text, 'admission')
+            document_versions = selected['report']['versions']
+        reservation = reserve_budget(db, payload)
         rid, mid, lease = uuid4().hex, uuid4().hex, uuid4().hex
         now = time.time()
         seq = (db.scalar(select(func.max(Message.seq)).where(Message.session_id == sid)) or 0) + 1
@@ -246,9 +253,9 @@ def admit(user, sid, payload):
         db.add(run)
         db.flush()
         parts = [{"type": "text", "text": payload.text}] + [{"type": "image_ref", "attachment_id": a} for a in payload.attachment_ids]
-        parts += [{"type": "document_ref", "file_id": ident} for ident in payload.document_ids]
+        parts += [{"type": "document_ref", "file_id": ident, 'document_version': document_versions[ident]} for ident in payload.document_ids]
         ctx = payload.page_context.model_dump() if payload.page_context else None
-        refs = [dict(id=a.id, version=a.knowledge_version) for a in citations]
+        refs = [help_registry.citation(a) for a in citations]
         db.add(Message(id=uuid4().hex, session_id=sid, run_id=rid, seq=seq, role="user", content_parts=parts,
             status="completed", help_citations=refs, context_descriptor=ctx, created_at=now))
         db.add(Message(id=mid, session_id=sid, run_id=rid, seq=seq+1, role="assistant", content_parts=[],
@@ -330,20 +337,42 @@ def snapshot(user, rid=None, sid=None, request_id=None):
 
 
 def last_search_result(user):
+    return recent_execution_status(user)["search"]["last_result"]
+
+
+def recent_execution_status(user):
+    result = {kind: dict(last_result=None, last_success=None, last_failure=None) for kind in ("chat", "search")}
     with database.SessionLocal() as db:
-        runs = db.scalars(select(Run).join(Conversation).where(Conversation.owner_user_id == user.id,
-            Conversation.employment_epoch == epoch(user), Conversation.deletion_state == "active").order_by(Run.started_at.desc()).limit(30)).all()
+        query = select(Run).join(Conversation).where(Conversation.owner_user_id == user.id,
+            Conversation.employment_epoch == epoch(user), Conversation.deletion_state == "active")
+        if settings.assistant_retention_days:
+            query = query.where(Conversation.updated_at >= time.time() - settings.assistant_retention_days * 86400)
+        runs = db.scalars(query.order_by(Run.started_at.desc(), Run.id.desc()).limit(30)).all()
         for run in runs:
-            if run.request_input.get("web_search", "off") == "off":
-                continue
             row = db.scalar(select(Message).where(Message.run_id == run.id, Message.role == "assistant"))
             if not row:
                 continue
             safe = message_out(row, user)
+            if safe.get("unavailable"):
+                continue
             evidence = next((p for p in safe["content_parts"] if p.get("type") == "evidence"), None)
-            if evidence:
-                return dict(run_id=run.id, state=run.state, **evidence["search"], at=datetime.fromtimestamp(run.started_at, timezone.utc).isoformat())
-    return None
+            item = dict(run_id=run.id, state=run.state, code=run.error_code,
+                        at=datetime.fromtimestamp(run.started_at, timezone.utc).isoformat())
+            search = evidence.get("search") if evidence else None
+            kind = "search" if search and search["execution"] not in ("not_requested", "skipped") else "chat"
+            if kind == "search":
+                item.update(search)
+                # Legacy count-only confirmation is not evidence of a successful search.
+                if item["evidence_level"] == "none" and item["execution"] == "confirmed":
+                    item.update(execution="unconfirmed", reason_code="search_evidence_missing")
+            bucket = result[kind]
+            if bucket["last_result"] is None:
+                bucket["last_result"] = item
+            success = run.state == "completed" and (kind == "chat" or item["evidence_level"] != "none")
+            field = "last_success" if success else "last_failure" if run.state in ("failed", "interrupted") or (kind == "search" and run.state == "completed") else None
+            if field and bucket[field] is None:
+                bucket[field] = item
+    return result
 
 
 def cancel(user, rid):

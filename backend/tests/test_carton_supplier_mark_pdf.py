@@ -11,6 +11,62 @@ from test_carton_mark_api import _pdf_bytes
 BASE = "/api/carton-supplier/carton-mark/generate-pdf"
 
 
+def test_ai_generation_uses_builtin_template_and_revalidates_scope_before_saving(monkeypatch):
+    with make_client(monkeypatch) as client:
+        order, payload, _ = prepare(client)
+        from app.services import carton_supplier_mark_ai as ai
+        from app.services import carton_supplier_mark_pdf as service
+        from app.db import SessionLocal
+        from app.models.carton_mark import CartonMarkAsset, CartonMarkTemplate
+        from app.models.carton_procurement import CartonAuditEvent
+        from sqlalchemy import select, func
+        template = dict(id="zumiez-review-v1", name="Zumiez", reference_sha256="confirmed")
+        monkeypatch.setattr(ai, "configuration", lambda: ({}, template, b"reference", "private-signature"))
+        status_url = "/api/carton-supplier/carton-mark/pdf-ai-status"
+        scope = dict(**SCOPE, order_id=order["id"], issue_id=payload["issue_id"])
+        status = client.get(status_url, params=scope)
+        assert status.status_code == 200 and status.json()["available"]
+        assert "private-signature" not in status.text and "reference_sha256" not in status.text
+        assert client.get(status_url, params={**scope, "factory_id": "huakang-b"}).status_code == 403
+        assert client.get(status_url, params={**scope, "order_id": "foreign"}).status_code == 404
+        calls = []
+        def converted(original):
+            calls.append(original)
+            return _pdf_bytes(), 1, [], dict(consent_version=ai.CONSENT_VERSION, field_sources={})
+        monkeypatch.setattr(service, "prepare_pdf", converted)
+        body = dict(**payload, layout_id="zumiez-review-v1", engine="deepseek_zumiez", ai_consent=True)
+        assert client.post(BASE, json={**body, "ai_consent": False}).status_code == 422
+        assert client.post(BASE, json={**body, "layout_id": "old"}).status_code == 409
+        assert not calls
+        response = client.post(BASE, json=body)
+        assert response.status_code == 201, response.text
+        assert response.json()["asset"]["orders"][0]["id"] == order["id"]
+        assert calls[0]["contract_no"] == order["contract_no"]
+        with SessionLocal() as db:
+            assert db.scalar(select(func.count()).select_from(CartonMarkTemplate)) == 0
+            event = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.entity_id == response.json()["asset"]["id"]))
+            conversion = json.loads(event.detail_json)["conversion"]
+            assert conversion["method"] == "deepseek_zumiez"
+            assert conversion["ai"]["consent_version"] == ai.CONSENT_VERSION
+            assert "private-signature" not in event.detail_json
+        def revoked(original):
+            revoke_supplier_permission("carton_supplier:edit")
+            return converted(original)
+        monkeypatch.setattr(service, "prepare_pdf", revoked)
+        assert client.post(BASE, json=body).status_code == 403
+        assert client.get(status_url, params=scope).status_code == 403
+        restore_supplier_permission("carton_supplier:edit")
+        def changed(original):
+            with SessionLocal() as db:
+                db.get(CartonMarkAsset, "excel-source").revision += 1
+                db.commit()
+            return converted(original)
+        monkeypatch.setattr(service, "prepare_pdf", changed)
+        assert client.post(BASE, json=body).status_code == 409
+        with SessionLocal() as db:
+            assert db.scalar(select(func.count()).select_from(CartonMarkAsset)) == 2
+
+
 def test_generation_saves_order_bound_original_and_provenance_without_qc_approval(monkeypatch):
     with make_client(monkeypatch) as client:
         order, payload, excel = prepare_layout(client)

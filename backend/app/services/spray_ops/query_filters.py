@@ -1,7 +1,28 @@
 """Order drill-down uses relational keys, never fuzzy item-name matching."""
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from app.models import spray_ops as m
-from .common import get
+from .common import get, scoped, require
+
+
+def collection_statement(db, factory, collection, model, *, search='', status='', from_date='', to_date='', demand_id='', task_scope='all'):
+    """Native collection filters shared by the API and bounded assistant reads."""
+    stmt = related_order(db, factory, demand_id, collection, scoped(db, model, factory))
+    require(task_scope == 'all' or task_scope == 'active' and collection == 'tasks',
+            'validation_error', '当前任务范围只适用于执行任务列表', 422)
+    if task_scope == 'active':
+        stmt = stmt.where(model.status.in_(('planned', 'started', 'paused')))
+    if search:
+        fields = [getattr(model, key) for key in ('document_no', 'code', 'item_no', 'name', 'label') if hasattr(model, key)]
+        if fields:
+            stmt = stmt.where(or_(*(field.contains(search, autoescape=True) for field in fields)))
+    if status and hasattr(model, 'status'):
+        stmt = stmt.where(model.status == status)
+    if hasattr(model, 'business_date'):
+        if from_date:
+            stmt = stmt.where(model.business_date >= from_date)
+        if to_date:
+            stmt = stmt.where(model.business_date <= to_date)
+    return stmt
 
 
 def related_order(db, factory, demand_id, collection, stmt):

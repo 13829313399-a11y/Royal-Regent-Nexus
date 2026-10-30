@@ -33,6 +33,160 @@ async function fillRequest(body: DOMWrapper<Element>) {
   await body.get('[aria-label="本次数量"]').setValue('0.3')
 }
 describe('warehouse actual operations', () => {
+  it.each([false, true])('prints fabric issues without posting, refreshing or closing details (reversed: %s)', async reversed => {
+    const issue = { id: 'ISSUE-PRINT', kind: 'ISSUE', sequence: 1, business_date: '2026-10-23', actor_name: '仓管', occurred_at: '', reversed,
+      data: { quantity: '12.5', unit: '码', item_name: '白布', allocations: [] } } as unknown as WarehouseDocument
+    const data = { ...empty(), documents: [issue] }
+    data.permissions.operate = false
+    const before = structuredClone(data)
+    const note = { document: { write: vi.fn(), close: vi.fn() }, focus: vi.fn(), print: vi.fn(), closed: false }
+    const popup = vi.spyOn(window, 'open').mockReturnValue(note as unknown as Window)
+    const body = await open('inventory', 'movements', data)
+    await wrapper!.findAll('button').find(button => button.text() === '详情')!.trigger('click')
+    const dialog = body.get('[role="dialog"]')
+    const action = dialog.findAll('button').find(button => button.text() === '打印发料单')!
+    expect(action.attributes('disabled')).toBeUndefined()
+    vi.useFakeTimers()
+    try {
+      await action.trigger('click')
+      await vi.advanceTimersByTimeAsync(300)
+      expect(popup).toHaveBeenCalledWith('', '_blank', 'width=960,height=1280')
+      expect(note.document.write).toHaveBeenCalledWith(expect.stringContaining('ISSUE-PRINT'))
+      expect(note.document.write.mock.calls[0]![0].includes('已冲销，仅供存档')).toBe(reversed)
+      expect(note.document.close).toHaveBeenCalledOnce()
+      expect(note.focus).toHaveBeenCalledOnce()
+      expect(note.print).toHaveBeenCalledOnce()
+      expect(body.find('[role="dialog"]').exists()).toBe(true)
+      expect(api.workspace).toHaveBeenCalledOnce()
+      expect(api.post).not.toHaveBeenCalled()
+      expect(data).toEqual(before)
+    } finally { vi.useRealTimers() }
+  })
+  it('shows a blocked-print message inside the open issue detail', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    const issue = { id: 'ISSUE-PRINT', kind: 'ISSUE', sequence: 1, business_date: '2026-10-23', actor_name: '仓管', occurred_at: '',
+      data: { quantity: '12.5', unit: '码', item_name: '白布', allocations: [] } } as unknown as WarehouseDocument
+    const body = await open('inventory', 'movements', { ...empty(), documents: [issue] })
+    await wrapper!.findAll('button').find(button => button.text() === '详情')!.trigger('click')
+    await body.get('[role="dialog"]').findAll('button').find(button => button.text() === '打印发料单')!.trigger('click')
+    expect(body.get('[role="dialog"] [role="alert"]').text()).toBe('浏览器拦截了打印窗口，请允许本页弹窗后重试。')
+    expect(api.workspace).toHaveBeenCalledOnce()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+  it('clears blocked-print errors when closing a detail and opening another document', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    const issue = { id: 'ISSUE-ONE', kind: 'ISSUE', sequence: 1, business_date: '2026-10-23', actor_name: '仓管', occurred_at: '',
+      data: { quantity: '12.5', unit: '码', item_name: '白布', allocations: [] } } as unknown as WarehouseDocument
+    const body = await open('inventory', 'movements', { ...empty(), documents: [issue, { ...issue, id: 'ISSUE-TWO', sequence: 2 }] })
+    await wrapper!.findAll('tbody button').filter(button => button.text() === '详情')[0]!.trigger('click')
+    await body.get('[role="dialog"]').findAll('button').find(button => button.text() === '打印发料单')!.trigger('click')
+    expect(body.get('[role="dialog"] [role="alert"]').text()).toContain('浏览器拦截了打印窗口')
+    expect(wrapper!.find('.warehouse-operations-live > [role="alert"]').exists()).toBe(false)
+    await body.get('[role="dialog"]').findAll('button').find(button => button.text() === '关闭详情')!.trigger('click')
+    await wrapper!.findAll('tbody button').filter(button => button.text() === '详情')[1]!.trigger('click')
+    expect(body.get('[role="dialog"]').text()).toContain('ISSUE-ONE')
+    expect(body.find('[role="dialog"] [role="alert"]').exists()).toBe(false)
+    expect(api.post).not.toHaveBeenCalled()
+  })
+  it('keeps page load errors outside details and clears only print errors on retry', async () => {
+    const popup = vi.spyOn(window, 'open').mockReturnValue(null)
+    const issue = { id: 'ISSUE-PRINT', kind: 'ISSUE', sequence: 1, business_date: '2026-10-23', actor_name: '仓管', occurred_at: '',
+      data: { quantity: '12.5', unit: '码', item_name: '白布', allocations: [] } } as unknown as WarehouseDocument
+    const body = await open('inventory', 'movements', { ...empty(), documents: [issue] })
+    await wrapper!.findAll('button').find(button => button.text() === '详情')!.trigger('click')
+    api.workspace.mockRejectedValueOnce(new Error('读取失败'))
+    await wrapper!.findAll('button').find(button => button.text() === '刷新')!.trigger('click'); await flushPromises()
+    const loadError = wrapper!.get('.warehouse-operations-live > [role="alert"]').text()
+    expect(body.find('[role="dialog"] [role="alert"]').exists()).toBe(false)
+    const action = body.get('[role="dialog"]').findAll('button').find(button => button.text() === '打印发料单')!
+    await action.trigger('click')
+    expect(body.get('[role="dialog"] [role="alert"]').text()).toContain('浏览器拦截了打印窗口')
+    const note = { document: { write: vi.fn(), close: vi.fn() }, focus: vi.fn(), print: vi.fn(), closed: false }
+    popup.mockReturnValue(note as unknown as Window)
+    vi.useFakeTimers()
+    try {
+      await action.trigger('click')
+      await vi.advanceTimersByTimeAsync(300)
+      expect(body.find('[role="dialog"] [role="alert"]').exists()).toBe(false)
+      expect(wrapper!.get('.warehouse-operations-live > [role="alert"]').text()).toBe(loadError)
+      expect(note.print).toHaveBeenCalledOnce()
+      expect(body.find('[role="dialog"]').exists()).toBe(true)
+      expect(api.post).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+  it('exports all filtered issues in page order with UTF-8 BOM without posting or closing details', async () => {
+    const issue = { id: 'ISSUE-CSV', kind: 'ISSUE', sequence: 1, business_date: '2026-10-23', actor_name: '仓管', occurred_at: '',
+      data: { quantity: '12.5', unit: '码', item_name: '白布', allocations: [] } } as unknown as WarehouseDocument
+    const documents = Array.from({ length: 52 }, (_, index) => ({ ...issue, id: `ISSUE-${index}`, sequence: index + 1 }))
+    const data = { ...empty(), documents: [...documents, { ...issue, id: 'RECEIPT-EXCLUDED', kind: 'RECEIPT' as const },
+      { ...issue, id: 'REVERSED-EXCLUDED', reversed: true }, { ...issue, id: 'DATE-EXCLUDED', business_date: '2026-10-01' },
+      { ...issue, id: 'SEARCH-EXCLUDED', data: { ...issue.data, item_name: '黑布' } }] }
+    const before = structuredClone(data)
+    const createUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:fabric-issues')
+    const revokeUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    let filename = ''
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { filename = this.download })
+    const body = await open('inventory', 'movements', data)
+    await wrapper!.get('[aria-label="查找仓库收发"]').setValue('白布')
+    await wrapper!.get('[aria-label="收发单据状态"]').setValue('ACTIVE')
+    await wrapper!.get('[aria-label="收发业务类型"]').setValue('ISSUE'); await flushPromises()
+    await wrapper!.get('[aria-label="收发记录排序"]').setValue('DATE_ASC')
+    wrapper!.getComponent(DateRangeFilter).vm.$emit('update:modelValue', { start: parseDate('2026-10-23'), end: parseDate('2026-10-23') }); await flushPromises()
+    expect(wrapper!.findAll('tbody tr')).toHaveLength(50)
+    const action = wrapper!.findAll('button').find(button => button.text() === '导出领用记录')!
+    expect(action.attributes('disabled')).toBeUndefined()
+    await wrapper!.findAll('tbody button').find(button => button.text() === '详情')!.trigger('click')
+    vi.useFakeTimers()
+    try {
+      await action.trigger('click')
+      expect(createUrl).toHaveBeenCalledOnce()
+      expect(revokeUrl).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(revokeUrl).toHaveBeenCalledWith('blob:fabric-issues')
+    } finally { vi.useRealTimers() }
+    const blob = createUrl.mock.calls[0]![0] as Blob
+    expect(blob.type).toBe('text/csv;charset=utf-8')
+    const bytes = new Uint8Array(await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as ArrayBuffer)
+      reader.onerror = () => reject(reader.error)
+      reader.readAsArrayBuffer(blob)
+    }))
+    expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
+    const csv = new TextDecoder().decode(bytes)
+    expect(csv).toContain('业务日期,单据编号,放产单号,领用方,物料编码,物料名称/规格,缸号,卷号,仓位,单位,数量,用途/备注,经办人,状态')
+    expect(csv.split('\r\n').slice(1).map(line => line.split(',')[1])).toEqual(documents.map(row => row.id))
+    const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date())
+    expect(filename).toBe(`布料仓领用记录-${today}.csv`)
+    expect(body.get('[role="dialog"]').text()).toContain('ISSUE-0')
+    expect(wrapper!.get<HTMLInputElement>('[aria-label="查找仓库收发"]').element.value).toBe('白布')
+    expect(api.workspace).toHaveBeenCalledOnce()
+    expect(api.post).not.toHaveBeenCalled()
+    expect(data).toEqual(before)
+  })
+  it('disables exporting when the current filters contain no issues', async () => {
+    const issue = { id: 'ISSUE-CSV', kind: 'ISSUE', sequence: 1, business_date: '2026-10-23', actor_name: '仓管', occurred_at: '',
+      data: { quantity: '12.5', unit: '码', item_name: '白布', allocations: [] } } as unknown as WarehouseDocument
+    const createUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:fabric-issues')
+    await open('inventory', 'movements', { ...empty(), documents: [issue] })
+    await wrapper!.get('[aria-label="收发业务类型"]').setValue('RECEIPT'); await flushPromises()
+    const action = wrapper!.findAll('button').find(button => button.text() === '导出领用记录')!
+    expect(action.attributes('disabled')).toBeDefined()
+    await action.trigger('click')
+    expect(createUrl).not.toHaveBeenCalled()
+    expect(api.post).not.toHaveBeenCalled()
+  })
+  it.each([['semi', 'movements'], ['fabric', 'pending-issues']] as const)('hides issue export for %s / %s', async (warehouse, view) => {
+    await open('inventory', view, empty(), warehouse)
+    expect(wrapper!.text()).not.toContain('导出领用记录')
+  })
+  it.each([['fabric', 'RECEIPT'], ['semi', 'ISSUE']] as const)('does not offer fabric issue printing for %s / %s', async (warehouse, kind) => {
+    const row = { id: 'DOC-PRINT', kind, sequence: 1, business_date: '2026-10-23', actor_name: '仓管', occurred_at: '',
+      data: { quantity: '12.5', unit: '码', item_name: '白布', allocations: [] } } as unknown as WarehouseDocument
+    const body = await open('inventory', 'movements', { ...empty(), documents: [row] }, warehouse)
+    await wrapper!.findAll('button').find(button => button.text() === '详情')!.trigger('click')
+    expect(body.get('[role="dialog"]').text()).not.toContain('打印发料单')
+  })
   it('shows frozen cutting identities and closes only the unissued remainder', async () => {
     const data=empty()
     const input={quantity:'6.5',unit:'米',source_no:'CUT-1',item_code:'FAB1',item_name:'蓝布',counterparty:'本厂',allocations:[],

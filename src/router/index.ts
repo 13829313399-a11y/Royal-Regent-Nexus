@@ -8,6 +8,11 @@ import {
 import { getDepartmentModule, isFactoryContextId, isModuleDepartmentId } from '@/data/enterpriseMock'
 import { canChangeFactory } from '@/lib/factoryChangeGuard'
 import { guardSprayNavigation } from '@/features/spray-production/navigationGuard'
+import { guardInjectionNavigation } from '@/features/injection-scheduling/navigationGuard'
+import { guardThreeDNavigation } from '@/features/three-d-printing/navigationGuard'
+import { guardCartonNavigation } from '@/features/carton-procurement/navigationGuard'
+import { guardQuoteNavigation } from '@/features/internal-quote/navigationGuard'
+import { guardUvNavigation } from '@/features/uv-operations/navigationGuard'
 import { sprayProductionRoutes } from '@/features/spray-production/routes'
 import { uvOperationsRoutes } from '@/features/uv-operations/routes'
 import { cuttingOperationsRoutes } from '@/features/cutting-operations/routes'
@@ -19,6 +24,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { collaborationApi, type Capabilities } from '@/api/collaboration'
 import { installRouteMotionNavigation } from '@/features/route-motion/navigation'
+import { installCuttingResourceRecovery } from '@/features/cutting-operations/resourceRecovery'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
 import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
@@ -34,6 +40,7 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
+  { path: '/online-documents', name: 'online-documents', component: () => import('@/views/OnlineDocumentsView.vue'), meta: { title: '在线文档', fullPage: true, requiresAuth: true } },
   { path: '/collaborative-sheets', name: 'collaborative-sheets', component: () => import('@/views/CollaborativeSheetsView.vue'), meta: { title: '协同填表工作台', fullPage: true, requiresAuth: true } },
   { path: '/account/position', name: 'account-position', component: () => import('@/features/identity-management/MyPositionPanel.vue'), meta: { title: '我的岗位与权限', requiresAuth: true } },
   { path: '/modules/pmc-warehouse/material-handover', name: 'material-handover', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), meta: { title: '制单与扫码交接', fullPage: true, requiresAuth: true, permissions: ['fabric_operations:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
@@ -309,7 +316,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/modules/pmc-warehouse/carton-procurement',
     name: 'carton-procurement',
-    component: () => import('@/views/CartonProcurementView.vue'),
+    component: () => import('@/views/CartonProcurementRoute.vue'),
     meta: {
       title: '纸箱采购协同',
       fullPage: true,
@@ -714,6 +721,14 @@ router.beforeEach(async (to, from) => {
     return { path:'/modules/production', query:{factory:String(to.query.factory ?? 'group')}, replace:true }
   }
   if (!await guardSprayNavigation(to, from)) return false
+  if (!guardInjectionNavigation(to, from)) return false
+  if (!guardThreeDNavigation(to, from)) return false
+  if (!guardCartonNavigation(to, from)) return false
+  if (!await guardQuoteNavigation(to, from)) return false
+  if (!guardUvNavigation(to, from)) return false
+  if (to.name === 'three-d-printing-management' && to.query.factory !== 'huakang-a') {
+    return { name: to.name, query: { ...to.query, factory: 'huakang-a', printer: undefined }, replace: true }
+  }
   if (navigationVersion !== latestNavigationVersion) return false
   // A same-route query change does not run component leave guards. Ask before
   // the global guard updates the factory store and destroys scoped drafts.
@@ -849,7 +864,10 @@ router.onError((_error, to) => {
   finishRouteLoading(loadingVersions.get(to))
 })
 
+export const cuttingResourceRecovery = installCuttingResourceRecovery(router)
+
 if (import.meta.hot) import.meta.hot.dispose(() => {
+  cuttingResourceRecovery.dispose()
   routeMotionNavigation.dispose()
   window.removeEventListener('focus', refreshAuthorizationSnapshot)
   if (routeLoadingTimer) window.clearTimeout(routeLoadingTimer)

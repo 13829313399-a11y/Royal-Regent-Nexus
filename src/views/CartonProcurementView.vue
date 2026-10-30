@@ -1,5 +1,10 @@
 <script setup lang="ts">
 import CartonOrderOperations from '@/components/CartonOrderOperations.vue'
+import CartonRecordSource from '@/features/carton-procurement/CartonRecordSource.vue'
+import { cartonSelection, isCartonInventoryIdentity } from '@/features/carton-procurement/assistantContext'
+import { registerCartonNavigationGuard } from '@/features/carton-procurement/navigationGuard'
+import { registerAssistantSelection } from '@/features/assistant/selection'
+import type { ContextSelection } from '@/features/assistant/v2'
 import CartonPurchaseOrderDialog from '@/components/CartonPurchaseOrderDialog.vue'
 import CartonOrderDetailContent from '@/components/CartonOrderDetailContent.vue'
 import CartonOrderMainFields from '@/components/CartonOrderMainFields.vue'
@@ -30,6 +35,7 @@ import CartonQuantityRuleInput from '@/components/CartonQuantityRuleInput.vue'
 import { paperDemands, reusableQuantityRule, referencesAfterRemoval, quantityRuleLabel } from '@/features/carton-procurement/paperQuantity'
 
 import CartonMarkAssetLibrary from '@/components/CartonMarkAssetLibrary.vue'
+import { useScheduleMarks } from '@/features/carton-procurement/useScheduleMarks'
 import CartonSupplierReceiving from '@/components/CartonSupplierReceiving.vue'
 import CartonSupplierChangeTasks from '@/components/CartonSupplierChangeTasks.vue'
 import CartonFeedbackCenter from '@/components/CartonFeedbackCenter.vue'
@@ -39,6 +45,10 @@ import CartonOpeningInventoryImport from '@/components/CartonOpeningInventoryImp
 import CartonOrderSplitDialog from '@/components/CartonOrderSplitDialog.vue'
 import CartonSplitReceiptReview from '@/components/CartonSplitReceiptReview.vue'
 import CartonHistoryImportDialog from '@/components/CartonHistoryImportDialog.vue'
+import CartonBatchAppendDialog from '@/components/CartonBatchAppendDialog.vue'
+import CartonDemandImportDialog from '@/components/CartonDemandImportDialog.vue'
+import { cartonBatchOrdersApi, type BatchResult } from '@/api/cartonBatchOrders'
+import { pendingCartonBatches } from '@/features/carton-procurement/batchOrders'
 import CartonBusinessImportSummary from '@/components/CartonBusinessImportSummary.vue'
 import CartonScheduleImportScope from '@/components/CartonScheduleImportScope.vue'
 import { emptyScheduleImportScope, scheduleScopeErrors, scheduleMissingStatusLabel } from '@/api/cartonScheduleCoverage'
@@ -392,6 +402,8 @@ const specialReceiptId = ref('')
 const specialReceiptOpen = ref(false)
 const specialStockActionTarget = ref<{ id: string; requestNo: string; action: SpecialStockAction } | null>(null)
 const unifiedBatchOpen = ref(false)
+const batchAppendOpen = ref(false), demandImportOpen = ref(false), downloadingDemandTemplate = ref(false)
+const demandImportFile = ref<File | null>(null), demandFileInput = ref<HTMLInputElement>()
 const unifiedBatchAction = ref<'CONFIRM' | 'CANCEL' | 'DELETE'>('CONFIRM')
 const unifiedBatchEntries = ref<UnifiedOrderEntry[]>([])
 function openUnifiedBatch(action: 'CONFIRM' | 'CANCEL' | 'DELETE', entries: UnifiedOrderEntry[]) {
@@ -646,6 +658,7 @@ const scheduleHistoryLoading = ref(false), scheduleHistoryError = ref('')
 const importDetailLoading = ref(false), importDetailError = ref('')
 const activeWeeklyBatch = ref<CartonImportBatchResponse | null>(null)
 const activeInspectionBatch = ref<CartonImportBatchResponse | null>(null)
+const scheduleMarkPreview = ref<{ contract: string; assetIds: string[] } | null>(null)
 let scheduleHistorySequence = 0, importDetailSequence = 0
 async function viewImportResult(batch: CartonImportBatchResponse) {
   const token = ++importDetailSequence, factory = selectedFactoryId.value, viewer = authStore.currentUser?.id, authorization = authStore.authorizationVersion
@@ -1255,6 +1268,7 @@ function previewSpecialDetails(row: SpecialRequest) {
 }
 function closeSpecialDetailsPreview(id: string) { if (specialPreviewRequest.value?.id === id) specialPreviewRequest.value = null }
 function openSpecialDetails(row: SpecialRequest, action?: SpecialOrderAction) {
+  if (!action && row.factory_id === selectedFactoryId.value && !row.deleted) selectAssistantCarton(`${row.kind}:${row.id}`, row.request_no)
   specialPreviewRequest.value = null
   specialReceiptOpen.value = false
   if (action === 'return-stock' || action === 'replenish' || action === 'undo-replenish') {
@@ -1310,6 +1324,37 @@ function openMarkLibrary() {
 }
 
 const specialViewerKey = computed(() => JSON.stringify([authStore.currentUser?.id, authStore.authorizationVersion, authStore.authzMode, authStore.currentUser?.identity?.employment_epoch, authStore.currentUser?.identity?.effective_context_key]))
+const batchIdentityKey = computed(() => JSON.stringify([authStore.currentUser?.id, authStore.currentUser?.identity?.employment_epoch, authStore.currentUser?.identity?.effective_context_key]))
+const pendingAppend = computed(() => pendingCartonBatches.has(`append:${batchIdentityKey.value}:${selectedFactoryId.value}`))
+const pendingDemandImport = computed(() => pendingCartonBatches.has(`import:${batchIdentityKey.value}:${selectedFactoryId.value}`))
+watch([selectedFactoryId, specialViewerKey], () => { batchAppendOpen.value = false; demandImportOpen.value = false; demandImportFile.value = null }, { flush: 'sync' })
+function chooseDemandFile() {
+  if (pendingDemandImport.value) { demandImportOpen.value = true; return }
+  demandFileInput.value?.click()
+}
+function selectedDemandFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  demandImportFile.value = input.files?.[0] || null; input.value = ''
+  if (demandImportFile.value) demandImportOpen.value = true
+}
+async function downloadDemandTemplate() {
+  if (downloadingDemandTemplate.value || !apiConnected.value || !canCreateSpecial.value) return
+  downloadingDemandTemplate.value = true
+  const scope = supplierChangeContext.value
+  try {
+    const blob = await cartonBatchOrdersApi.template(selectedFactoryId.value)
+    if (scope !== supplierChangeContext.value) return
+    const url = URL.createObjectURL(blob), link = document.createElement('a')
+    link.href = url; link.download = '样板杂单新建需求模板.xlsx'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (cause) { if (scope === supplierChangeContext.value) reportActionFailure(getApiErrorMessage(cause)) }
+  finally { downloadingDemandTemplate.value = false }
+}
+async function batchOrderSaved(result: BatchResult, imported = false) {
+  clearUnifiedSelection()
+  actionMessage.value = `${imported ? '已生成' : '已追加'} ${result.count} 张订单${imported ? '草稿，请核对后确认下单' : '，历史收货记录保持不变'}。批次：${result.batch_id}`
+  try { await loadBackendData(selectedFactoryId.value, { supersede: true }) }
+  catch { reportActionFailure('操作已保存，但台账刷新失败，请刷新查看；不要重复提交。') }
+}
 const supplierChangeContext = computed(() => JSON.stringify([selectedFactoryId.value, specialViewerKey.value, customerViewScope.value, canReadRegularCarton.value]))
 const supplierChangePendingHandler = computed(() => {
   const context = supplierChangeContext.value
@@ -1542,19 +1587,42 @@ const activeTab = computed<CartonTab>(() => {
     : 'dashboard'
 })
 
+const scheduleMarks = useScheduleMarks(() => ({ factory: selectedFactoryId.value,
+  batch: selectedWeeklyBatchId.value, viewer: JSON.stringify([specialViewerKey.value, customerViewScope.value]),
+  enabled: activeTab.value === 'weekly-check' && weeklyCheckMode.value === 'ORDER_GAP' && canReadRegularCarton.value && canReadMarks.value && apiConnected.value,
+}))
+watch([selectedFactoryId, selectedWeeklyBatchId, specialViewerKey, customerViewScope, activeTab, weeklyCheckMode,
+  () => canReadMarks.value], () => { scheduleMarkPreview.value = null }, { flush: 'sync' })
+function scheduleMarkLabel(row: WeeklyCheckRow) {
+  if (!canReadMarks.value) return '箱唛：无查看权限'
+  if (scheduleMarks.loading.value) return '箱唛读取中…'
+  if (scheduleMarks.error.value) return '箱唛读取失败'
+  const current = scheduleMarks.find(row)
+  return current?.status === 'UPLOADED' ? `箱唛已确认（${current.asset_ids.length}）`
+    : current?.status === 'MISSING' ? '暂无已确认箱唛' : current?.status === 'RESTRICTED' ? '箱唛：无客户权限'
+      : current?.status === 'REVIEW' ? '箱唛关联待核' : '箱唛未读取'
+}
+function openScheduleMarks(row: WeeklyCheckRow) {
+  const current = scheduleMarks.find(row)
+  if (canReadMarks.value && current?.status === 'UPLOADED') scheduleMarkPreview.value = { contract: row.reference, assetIds: current.asset_ids }
+}
+
 const activeModule = computed<CartonTab>(() => ['weekly-check', 'business-alerts', 'carton-marks'].includes(activeTab.value) ? 'orders'
   : ['inventory', 'inventory-summary', 'inventory-movements'].includes(activeTab.value) ? 'inventory' : activeTab.value)
 const activeTabItem = computed(() => tabs.find(tab => tab.id === activeModule.value) ?? tabs[0])
 watch(activeTab, tab => { if (tab !== 'inventory') showStocktake.value = false })
 function openModule(tab: CartonTab) {
+  if (!canLeaveCarton()) return
   showStocktake.value = false
   showInventoryImport.value = false
   setActiveTab(tab)
 }
-function openInventoryPage(tab: CartonTab, stocktake = false, openingStock = false) {
+async function openInventoryPage(tab: CartonTab, stocktake = false, openingStock = false) {
+  if (!canLeaveCarton()) return
+  const failure = await setActiveTab(tab)
+  if (failure) return
   showStocktake.value = stocktake
   showInventoryImport.value = openingStock
-  setActiveTab(tab)
 }
 const warehouseDepartmentRoute = computed(() => getFactoryScopedRoute(
   '/modules/pmc-warehouse',
@@ -1614,6 +1682,9 @@ const selectedUnifiedEntries = computed<UnifiedOrderEntry[]>(() => [
 ])
 const unifiedSelectionCount = computed(() => selectedOrderNos.value.length + selectedSpecialOrderIds.value.length)
 const selectionComplete = computed(() => selectedUnifiedEntries.value.length === unifiedSelectionCount.value)
+const batchAppendSelection = computed(() => selectedUnifiedEntries.value.map(entry => ({ kind: entry.kind, id: entry.order?.order_no || entry.special!.id, expected_revision: entry.order?.revision ?? entry.special!.revision })))
+const canBatchAppend = computed(() => apiConnected.value && canIssuePurchaseOrders.value && (pendingAppend.value || (selectionComplete.value && unifiedSelectionCount.value > 0 && unifiedSelectionCount.value <= 100
+  && selectedUnifiedEntries.value.every(entry => entry.order ? canAppendOrder(entry.order.order_no) : entry.special?.kind !== 'SUPPLIER_GIFT' && entry.special?.permissions.can_append))))
 const selectedUnifiedSummary = computed(() => selectedUnifiedEntries.value.map(entry => ({
   id: entry.order ? `PURCHASE:${entry.order.order_no}` : `SPECIAL:${entry.special!.id}`,
   label: entry.order ? `${entry.order.customer_name} · ${entry.order.contract_no} · ${entry.order.item_no}` : `${specialKindLabels[entry.kind]} · ${entry.special!.request_no} · ${entry.special!.customer_name || '未关联客户'}`,
@@ -1657,7 +1728,7 @@ const weeklyImportCustomers = computed(() => activeCustomers.value.filter(custom
 const weeklyImportCustomer = computed(() => weeklyImportCustomers.value.find(customer => customer.customer_code === weeklyImportCustomerCode.value))
 function scheduleOrderTypeGroup(type: string | undefined) {
   const value = type?.trim() || ''
-  return value === '加单' ? '正单' : value
+  return ['加单', '改单'].includes(value) ? '正单' : value
 }
 const scheduleOrderTypeOptions = computed(() => {
   const preferredTypes = ['正单', '备料单', '样板单', '正式PO']
@@ -2538,7 +2609,7 @@ watch(selectedOrderNos, () => {
 watch([selectedFactoryId, activeTab, () => JSON.stringify(selectedOrderNos.value)], () => closePurchaseBatchConfirmation())
 
 function setActiveTab(tab: CartonTab) {
-  void router.replace({
+  return router.replace({
     query: {
       ...route.query,
       factory: selectedFactoryId.value,
@@ -3810,7 +3881,7 @@ function scheduleOrderCategory(row: WeeklyCheckRow): ScheduleOrderCategory {
   const reminder = source ? currentScheduleReminder(source) : null
   if (reminder && ['WAIT', 'DUE_SOON', 'DUE_TODAY', 'OVERDUE'].includes(reminder.state)) return 'UNPLACED'
   if (row.dateReviewRequired || row.scheduleChange === 'REVIEW_REQUIRED' || row.procurementState === '待确认') return 'REVIEW'
-  if (!['正单', '正式PO', '加单'].includes(row.orderType || '') && source?.template === 'unified-item') return 'REVIEW'
+  if (!['正单', '正式PO', '加单', '改单'].includes(row.orderType || '') && source?.template === 'unified-item') return 'REVIEW'
   if (row.procurementState === '已下单') return 'ORDERED'
   if (row.procurementState === '已完单') return 'COMPLETED'
   return 'UNPLACED'
@@ -3846,7 +3917,7 @@ function canMarkScheduleRow(row: WeeklyCheckRow, batchId = selectedWeeklyBatchId
     && (activeWeeklyBatch.value?.id === batchId && activeWeeklyBatch.value?.status !== 'REJECTED'
       || weeklyImportHistory.value.some(batch => batch.id === batchId && batch.status !== 'REJECTED'))
     && row.scheduleSection === 'PENDING' && Boolean(row.scheduleIdentity && row.sourceSheet && row.sourceRow)
-    && ['正单', '正式PO', '加单'].includes(row.orderType || '')
+    && ['正单', '正式PO', '加单', '改单'].includes(row.orderType || '')
     && !row.quantityMissing && row.quantity > 0
     && (row.scheduleChange !== 'REVIEW_REQUIRED' || row.identityDuplicate)
 }
@@ -4731,6 +4802,7 @@ function toggleVisibleOrders(selected: boolean) {
 }
 
 function openOrderDetails(orderNo: string) {
+  if (apiConnected.value && orderRecords.value.some(row => row.factory_id === selectedFactoryId.value && row.order_no === orderNo)) selectAssistantCarton(`PURCHASE:${orderNo}`, orderNo)
   specialPreviewRequest.value = null
   orderDetailNo.value = orderNo
   orderDetailPinned.value = true
@@ -5997,7 +6069,7 @@ function scheduleOrderActionLabel(row: WeeklyCheckRow) {
 
 function canUseScheduleSource(source: CartonImportPreviewRow) {
   return source.can_operate_source !== false && (!source.schedule_section || source.schedule_section === 'PENDING')
-    && (source.template !== 'unified-item' || ['正单', '正式PO', '加单'].includes(source.order_type ?? ''))
+    && (source.template !== 'unified-item' || ['正单', '正式PO', '加单', '改单'].includes(source.order_type ?? ''))
     && (source.schedule_change !== 'REVIEW_REQUIRED' || source.schedule_identity_duplicate)
     && source.match_status !== 'AMBIGUOUS'
     && Boolean(source.contract_no || source.reference) && Boolean(source.item_no)
@@ -6050,7 +6122,7 @@ async function openOrderFromSchedule(source: CartonImportPreviewRow, batchId: st
   skipHistoryItemSearchFor = orderForm.itemNo.trim()
   orderForm.orderQuantity = Number(source.quantity) > 0 ? Number(source.quantity) : ''
   orderForm.customerDueDate = /^\d{4}-\d{2}-\d{2}$/.test(source.customer_due_date || '') ? source.customer_due_date! : ''
-  orderForm.note = [note, source.order_type?.trim() === '加单' ? '业务排期订单类型：加单' : '',
+  orderForm.note = [note, ['加单', '改单'].includes(source.order_type?.trim() ?? '') ? `业务排期订单类型：${source.order_type!.trim()}` : '',
     `来源业务排期：${batch.original_filename} · ${source.source_sheet || '来源表'} 第 ${source.source_row ?? ''} 行`,
     source.source_reference ? `业务 SO：${source.source_reference}` : '', source.carton_rule ? `原表装箱：${source.carton_rule}` : '',
     source.source_customer_due_date ? `原表走货期：${source.source_customer_due_date}` : ''].filter(Boolean).join('；')
@@ -6329,7 +6401,7 @@ function canMarkBusinessAlert(alert: BusinessOrderAlert) {
   if (alert.sourceRow?.can_operate_source === false) return false
   if (dashboardActive.value) {
     const row = alert.sourceRow
-    return apiConnected.value && canUndoScheduleImport.value && !dashboardActionBusy.value && Boolean(row?.schedule_section === 'PENDING' && row.schedule_identity && row.source_sheet && row.source_row && ['正单', '正式PO', '加单'].includes(row.order_type || '') && Number(row.quantity) > 0 && (row.schedule_change !== 'REVIEW_REQUIRED' || row.schedule_identity_duplicate)) && ['MISSING_ORDER', 'NEW_ORDER'].includes(alert.kind)
+    return apiConnected.value && canUndoScheduleImport.value && !dashboardActionBusy.value && Boolean(row?.schedule_section === 'PENDING' && row.schedule_identity && row.source_sheet && row.source_row && ['正单', '正式PO', '加单', '改单'].includes(row.order_type || '') && Number(row.quantity) > 0 && (row.schedule_change !== 'REVIEW_REQUIRED' || row.schedule_identity_duplicate)) && ['MISSING_ORDER', 'NEW_ORDER'].includes(alert.kind)
   }
   return ['MISSING_ORDER', 'NEW_ORDER'].includes(alert.kind) && alert.sourceRow !== null
     && canMarkScheduleRow(mapWeeklyPreview(alert.sourceRow, 0), alert.batchId)
@@ -7335,10 +7407,74 @@ watch([
 ], (current, previous) => {
   if (current.some((value, index) => Boolean(value) && !previous[index])) clearActionNotice()
 }, { flush: 'sync' })
+const assistantCarton = ref<{ id: string; label: string; date_from: string; date_to: string } | null>(null)
+const cartonSourceOpener = shallowRef<HTMLElement | null>(null)
+const assistantInventoryScope = ref<ContextSelection['filters'] | null>(null)
+const cartonSourceId = computed(() => typeof route.query.carton_record === 'string' ? route.query.carton_record : '')
+const cartonSourceScopeValid = computed(() => route.query.factory === selectedFactoryId.value && isProductionFactoryContextId(String(route.query.factory)))
+function selectAssistantCarton(id: string, label: string, dates = { date_from: '', date_to: '' }) {
+  assistantCarton.value = { id, label, ...dates }
+}
+function invalidateAssistantCarton(id: string) { if (assistantCarton.value?.id === id) assistantCarton.value = null }
+function closeCartonSource() {
+  void router.replace({ query: { ...route.query, carton_record: undefined, carton_from: undefined, carton_to: undefined } })
+}
+function openAssistantCarton(event: MouseEvent) {
+  const selected = assistantCarton.value
+  if (!selected) return
+  cartonSourceOpener.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  void router.replace({ query: { ...route.query, factory: selectedFactoryId.value, carton_record: selected.id,
+    tab: isCartonInventoryIdentity(selected.id) ? 'inventory-summary' : 'orders',
+    carton_from: selected.date_from || undefined, carton_to: selected.date_to || undefined } })
+}
+const cartonNavigationBlocked = computed(() => Boolean(
+  showOrderModal.value || savingOrder.value || showReceiptDialog.value || savingReceipt.value || confirmingReceipt.value
+  || showCustomerModal.value || savingCustomer.value || showInventoryImport.value || showStocktake.value
+  || showInventoryOperation.value || showInventoryRelocation.value || showLocationManager.value || inventoryOperationBusy.value
+  || priceCorrectionOpen.value || correctionOrderNo.value || mergeOrderNo.value || splitOrder.value || dateAdjustmentOrder.value
+  || rushDialogOrder.value || appendOrderNo.value || reduceOrderNo.value || replenishTarget.value || receiptCorrectionTarget.value
+  || closingDecision.value || deleteOrderTarget.value || deleteOrderTargets.value.length || undoImportTarget.value || pricingTarget.value
+  || unifiedBatchOpen.value || batchAppendOpen.value || demandImportOpen.value || specialCreate.value || specialEditorMode.value || specialDialogBusy.value || specialReceiptOpen.value
+  || specialStockActionTarget.value || showMarkUpload.value
+  || submittingSupplierOrder.value || submitSupplierOrderNo.value || bulkSubmitSupplierOrderNos.value.length || cancelOrderNo.value
+  || importingWeekly.value || importingInspection.value || importingReceipt.value || issuingPurchaseOrder.value
+  || issuingSelectedPurchaseOrders.value || closingBusyId.value || exceptionBusyId.value || pricingBusy.value || relocationBusy.value
+  || replenishing.value || deletingOrders.value || undoingImport.value || receiptCorrectionBusy.value || reversalBusy.value))
+const cartonOwner = specialViewerKey.value
+function canLeaveCarton() {
+  if (cartonOwner !== specialViewerKey.value || !cartonNavigationBlocked.value) return true
+  reportActionFailure('请先保存或关闭当前纸箱编辑操作，再切换页面或打开其他记录。', 'warning')
+  return false
+}
+onBeforeUnmount(registerCartonNavigationGuard(canLeaveCarton))
+onBeforeUnmount(registerAssistantSelection('carton-procurement', () => {
+  if (cartonOwner !== specialViewerKey.value) return null
+  const failed = (reason: string) => cartonSelection(selectedFactoryId.value, [], { scope_error: reason })
+  if (cartonSourceId.value && !assistantCarton.value) return failed('原记录正在读取或已不可用，请完成读取后再带入曜灵。')
+  if (activeTab.value === 'orders' && unifiedSelectionCount.value) {
+    if (!selectionComplete.value) return failed('选中订单尚未完整读取，请刷新后重试。')
+    return cartonSelection(selectedFactoryId.value, selectedUnifiedEntries.value.map(entry => entry.order ? `PURCHASE:${entry.order.order_no}` : `${entry.kind}:${entry.special!.id}`), {})
+  }
+  if (assistantCarton.value) {
+    const selection = assistantCarton.value
+    return cartonSelection(selectedFactoryId.value, [selection.id], isCartonInventoryIdentity(selection.id)
+      ? { view: 'inventory', date_from: selection.date_from, date_to: selection.date_to } : {})
+  }
+  if (activeTab.value === 'inventory-summary') return assistantInventoryScope.value
+    ? cartonSelection(selectedFactoryId.value, [], assistantInventoryScope.value) : failed('库存汇总尚未读取成功，请重试后再查询。')
+  if (activeTab.value !== 'orders') return failed('本子页尚未接入业务读取；请在订单管理或库存汇总中选择范围。')
+  if (!apiConnected.value || backendLoading.value) return failed('订单台账尚未读取成功，请重试后再查询。')
+  return cartonSelection(selectedFactoryId.value, [], { view: 'orders', responsibility_scope: customerViewScope.value,
+    kind: unifiedKind.value, customer_name: selectedCustomer.value === '全部客户' ? '' : selectedCustomer.value,
+    status_filter: orderStatusFilter.value === 'ALL' ? '' : orderStatusFilter.value, collaboration_filter: collaborationFilter.value,
+    due_filter: orderDueFilter.value, sort: orderSort.value, search: globalSearch.value.trim(),
+    date_from: orderDateRange.value.start?.toString() ?? '', date_to: orderDateRange.value.end?.toString() ?? '' })
+}))
+watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = null; assistantInventoryScope.value = null }, { flush: 'sync' })
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-100 text-[13px] leading-relaxed text-slate-900" data-yl-help="carton-procurement.overview">
+  <main tabindex="-1" class="min-h-screen bg-slate-100 text-[13px] leading-relaxed text-slate-900" data-yl-help="carton-procurement.overview">
     <CartonActionNotice :message="actionNoticeMessage" :tone="actionNoticeTone" @dismiss="clearActionNotice" />
     <header class="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
       <div class="mx-auto flex max-w-[1720px] flex-wrap items-center gap-3 px-4 py-2.5 sm:px-5">
@@ -7398,6 +7534,12 @@ watch([
         </button>
       </nav>
     </header>
+    <div v-if="assistantCarton" role="status" class="mx-auto flex max-w-[1720px] flex-wrap items-center gap-3 px-4 py-2 text-xs text-teal-800 sm:px-5">
+      <span class="min-w-0 break-words">曜灵选中范围：{{ assistantCarton.label }}<template v-if="isCartonInventoryIdentity(assistantCarton.id)"> · {{ assistantCarton.date_from || '流水起点' }} 至 {{ assistantCarton.date_to || '本次读取' }}</template></span>
+      <button type="button" data-carton-source-opener class="rounded border border-teal-200 bg-white px-2 py-1" @click="openAssistantCarton">查看原记录</button>
+      <button type="button" class="rounded border border-teal-200 bg-white px-2 py-1" @click="assistantCarton = null">清除选中范围</button>
+    </div>
+    <CartonRecordSource v-if="cartonSourceId" :factory-id="selectedFactoryId" :resource-id="cartonSourceId" :viewer-key="specialViewerKey" :scope-valid="cartonSourceScopeValid" :date-from="route.query.carton_from" :date-to="route.query.carton_to" :return-focus="cartonSourceOpener" @close="closeCartonSource" @selected="selectAssistantCarton" @unavailable="invalidateAssistantCarton" />
 
     <CartonUsageGuide v-if="showUsageGuide" :factory-name="activeFactory.shortName" :can-review-supplier-deliveries="canReviewSupplierDeliveries" @close="closeUsageGuide" @navigate="openUsageGuideDestination" />
 
@@ -7623,6 +7765,9 @@ watch([
               下载历史订单模板
             </a>
             <input ref="historyOrderFileInput" type="file" accept=".xlsx,.xlsm,.xls" class="hidden" aria-label="选择历史订单文件" @change="handleHistoryOrderFile">
+            <button type="button" :disabled="!apiConnected || !canCreateSpecial || downloadingDemandTemplate" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-[12px] font-bold text-slate-700 disabled:opacity-40" @click="downloadDemandTemplate"><Download class="size-4" />{{ downloadingDemandTemplate ? '下载中…' : '新建需求模板' }}</button>
+            <input ref="demandFileInput" type="file" accept=".xlsx" class="hidden" aria-label="选择样板杂单新建需求文件" @change="selectedDemandFile">
+            <button type="button" :disabled="!apiConnected || !canCreateSpecial" class="inline-flex h-9 items-center gap-2 rounded-lg border border-teal-200 bg-white px-3.5 text-[12px] font-bold text-teal-700 disabled:opacity-40" @click="chooseDemandFile"><Upload class="size-4" />{{ pendingDemandImport ? '核对需求导入结果' : '导入样板／杂单需求' }}</button>
             <button v-if="!specialOnlyAccess" type="button" :disabled="!apiConnected || importingHistoryOrders" class="inline-flex h-9 items-center gap-2 rounded-lg border border-teal-200 bg-white px-3.5 text-[12px] font-bold text-teal-700 transition hover:bg-teal-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="triggerHistoryOrderImport">
               <Upload class="size-4" aria-hidden="true" />
               {{ importingHistoryOrders ? '正在导入…' : '导入历史订单' }}
@@ -7672,6 +7817,7 @@ watch([
 <button type="button" :disabled="!apiConnected || !selectedSubmittableOrderCount || submittingSupplierOrder" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-white disabled:text-slate-400" @click="openBulkSubmitSupplierOrders"><ShieldCheck class="size-3.5" />{{ submittingSupplierOrder ? '正在发送…' : `发给供应商（${selectedSubmittableOrderCount}）` }}</button>
 <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || selectedSpecialOrderIds.length > 0 || issuingSelectedPurchaseOrders || !canIssuePurchaseOrders" title="适用于正单；样板和杂单在确认锁定后直接进入供应商协同" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300" @click="issueSelectedPurchaseOrders"><Send class="size-3.5" />{{ issuingSelectedPurchaseOrders ? '生成中…' : `生成供应商采购单（${selectedOrderNos.length}）` }}</button>
 <button type="button" :disabled="!apiConnected || !selectedOrderNos.length || selectedSpecialOrderIds.length > 0 || exportingSelectedOrders" :title="!apiConnected ? '后端未连接，当前演示订单不能导出' : selectedSpecialOrderIds.length ? '累计对账表适用于正单，请单独选择正单' : '累计对账表不代表向供应商新增下单'" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-200 px-3 text-[11px] font-bold text-teal-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400" @click="exportSelectedPurchaseOrders"><Download class="size-3.5" />{{ exportingSelectedOrders ? '合并生成中…' : '导出累计对账表' }}</button>
+<button type="button" :disabled="!canBatchAppend" title="最多 100 张，逐纸品填写追加数量；所选订单须均可追加" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 text-[11px] font-bold text-amber-800 disabled:opacity-40" @click="batchAppendOpen = true"><Plus class="size-3.5" />{{ pendingAppend ? '核对追加结果' : `批量追加（${unifiedSelectionCount}）` }}</button>
 <button type="button" :disabled="!selectedOrdersCanCancel || cancellingOrder" title="取消所选符合条件且无执行记录的订单" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="openBulkCancelOrders"><X class="size-3.5" />批量取消</button>
 <button v-if="canDeleteOrders" type="button" :disabled="!selectedOrdersCanDelete || deletingOrders" title="主管或仓管可删除客户授权范围内的草稿或已完成取消回执的订单。已发布订单须先取消并由供应商确认收到停止通知。最多 100 张，全部校验通过后一次删除" class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-red-200 px-3 text-[11px] font-bold text-red-700 disabled:opacity-40" @click="openBulkDeleteOrders"><Trash2 class="size-3.5" />批量删除订单</button></template>
 <template #footer><p v-if="canDeleteOrders && orderStatusFilter === 'CANCELLED'" aria-label="已取消订单删除说明" class="basis-full text-[11px] text-slate-600">客户授权范围内的已取消订单，须完成供应商停止通知回执后才可删除；未发布的取消订单无需回执。勾选后点击“批量删除订单”，或在“更多”中删除，原订单和业务历史保留。</p>
@@ -7768,7 +7914,7 @@ watch([
 
       <section v-else-if="activeTab === 'carton-marks'" class="space-y-4">
         <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-teal-200 bg-teal-50 p-4"><p class="text-xs leading-5 text-teal-900">资料可先共享给本厂指定供应商，需要时再绑定订单。共享可见不代表本单已确认使用；制作稿和历史版本分别保留。</p><RouterLink :to="{ name: 'carton-mark-template', query: { factory: selectedFactoryId, panel: 'check' } }" class="rounded-lg border border-teal-200 bg-white px-3 py-2 text-xs font-semibold text-teal-800">Excel / PDF 内容核对</RouterLink></div>
-        <CartonMarkAssetLibrary :key="selectedFactoryId" :factory-id="selectedFactoryId" v-model:search="markSearch" />
+        <CartonMarkAssetLibrary :key="selectedFactoryId" :factory-id="selectedFactoryId" v-model:search="markSearch" @changed="scheduleMarks.refresh" />
       </section>
 
       <section v-else-if="activeTab === 'business-alerts'" class="space-y-4">
@@ -7927,6 +8073,12 @@ watch([
           <p v-else-if="activeWeeklyBatch" class="mt-3 text-[11px] text-slate-500">当前批次客户：{{ activeWeeklyBatch.parse_summary.schedule_customer?.customer_name }} · 排期版本 {{ activeWeeklyBatch.parse_summary.schedule_coverage?.as_of_date || '未声明' }} · 导入时间 {{ activeWeeklyBatch.created_at.replace('T', ' ').slice(0, 16) }}</p>
         </article>
         <div v-if="weeklyCheckMode === 'ORDER_GAP'" class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-2 text-[11px] text-slate-500" aria-label="排期箱唛提示">
+            <span>箱唛按合同号关联，仅提示分类为“已确认可用”的资料；没有已确认箱唛也可下单。</span>
+            <button v-if="canUploadMarks" type="button" :disabled="!apiConnected" class="rounded border px-2 py-1 text-teal-700 disabled:opacity-40" @click="showMarkUpload = true">上传箱唛资料</button>
+            <button v-if="canReadMarks" type="button" :disabled="scheduleMarks.loading.value || !selectedWeeklyBatchId" class="rounded border px-2 py-1 text-teal-700 disabled:opacity-40" @click="scheduleMarks.refresh">刷新箱唛状态</button>
+            <p v-if="scheduleMarks.error.value" role="alert" class="basis-full text-red-700">箱唛状态读取失败：{{ scheduleMarks.error.value }}；不影响下单，可刷新重试。</p>
+          </div>
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3" aria-label="排期多选下单标记">
             <div class="flex flex-wrap items-center gap-3 text-[11px]"><span>已选 <strong class="text-teal-700">{{ selectedScheduleRows.length }}</strong> 条<template v-if="hiddenScheduleSelectionCount">（{{ hiddenScheduleSelectionCount }} 条不在当前筛选中）</template></span><button type="button" :disabled="!selectedScheduleRows.length || Boolean(scheduleMarkBusy)" class="text-slate-500 disabled:opacity-40" @click="selectedScheduleRowIds = []">清空排期选择</button><span class="text-slate-400">每次最多 100 条；标记会在后续导入中保留</span></div>
             <button v-if="canUndoScheduleImport" type="button" :disabled="!selectedScheduleRows.length || selectedScheduleRows.length > 100 || Boolean(scheduleMarkBusy) || !selectedScheduleRows.every(row => canMarkScheduleRow(row))" aria-label="批量标记排期已下单" class="h-9 rounded-lg bg-teal-700 px-3 text-[11px] font-bold text-white disabled:opacity-40" @click="markScheduleRows(selectedScheduleRows)">{{ scheduleMarkBusy === 'BULK' ? '正在保存…' : `多选标记已下单（${selectedScheduleRows.length}）` }}</button>
@@ -7959,7 +8111,10 @@ watch([
                 <tr v-for="row in pagedWeeklyChecks" :key="row.id" class="hover:bg-slate-50/80">
                   <td data-label="选择" class="px-3 py-3"><input type="checkbox" :aria-label="`选择排期 ${row.reference} ${row.itemNo}`" :checked="selectedScheduleRowIds.includes(row.id)" :disabled="!canMarkScheduleRow(row) || Boolean(scheduleMarkBusy)" class="size-4 accent-teal-700 disabled:opacity-30" @change="toggleScheduleSelection(row)"></td>
                   <td data-label="客户 / 产品" class="px-4 py-3"><div class="font-semibold">{{ row.customer }}</div><div v-if="row.businessCustomer && row.businessCustomer !== row.customer" class="text-[10px] text-slate-500">业务客名：{{ row.businessCustomer }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.productName }}</div></td>
-                  <td data-label="合同 / 原表 P/O# / SO" class="px-4 py-3"><div class="font-semibold">{{ row.reference || '合同待确认' }}</div><div v-if="row.poNumbers" class="mt-0.5 text-[10px] text-slate-500">P/O#: {{ row.poNumbers }}</div><div v-if="row.sourceReference" class="text-[10px] text-slate-500">SO: {{ row.sourceReference }}</div></td>
+                  <td data-label="合同 / 原表 P/O# / SO" class="px-4 py-3"><div class="font-semibold">{{ row.reference || '合同待确认' }}</div><div v-if="row.poNumbers" class="mt-0.5 text-[10px] text-slate-500">P/O#: {{ row.poNumbers }}</div><div v-if="row.sourceReference" class="text-[10px] text-slate-500">SO: {{ row.sourceReference }}</div>
+                    <button v-if="scheduleMarks.find(row)?.status === 'UPLOADED' && canReadMarks && !scheduleMarks.loading.value" type="button" :aria-label="`查看排期箱唛 ${row.reference} ${row.itemNo}`" class="mt-1 text-left text-[10px] font-semibold text-teal-700 underline underline-offset-2" @click="openScheduleMarks(row)">{{ scheduleMarkLabel(row) }}</button>
+                    <div v-else :aria-label="`排期箱唛状态 ${row.reference} ${row.itemNo}`" class="mt-1 text-[10px] text-slate-500">{{ scheduleMarkLabel(row) }}</div>
+                  </td>
                   <td data-label="货号 / 订单类型" class="px-4 py-3"><div class="font-mono font-semibold">{{ row.itemNo }}</div><span v-if="row.orderType?.trim() === '加单'" :aria-label="`加单提醒 ${row.reference} ${row.itemNo}`" class="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 ring-1 ring-inset ring-amber-200">加单</span><div v-else class="text-[10px] text-slate-500">{{ row.orderType }}</div></td>
                   <td data-label="排期区 变化" class="px-4 py-3 text-[11px]"><div class="font-bold" :class="row.scheduleSection === 'CANCELLED' ? 'text-red-700' : row.scheduleSection === 'SHIPPED' ? 'text-blue-700' : 'text-teal-700'">{{ scheduleSectionLabel(row.scheduleSection) }}</div><div class="mt-1" :class="row.scheduleChange === 'CANCELLED_AFTER_ORDER' ? 'font-bold text-red-700' : row.scheduleChange === 'NEW' ? 'font-bold text-amber-700' : 'text-slate-500'">{{ scheduleChangeLabel(row.scheduleChange) }}</div></td>
                   <td data-label="数量" class="px-4 py-3 text-right font-semibold tabular-nums">{{ row.quantityMissing ? '待确认' : formatNumber(row.quantity) }}</td>
@@ -8194,7 +8349,7 @@ watch([
           <div class="border-b border-slate-200 px-4 py-3">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div><h2 class="flex items-center gap-2 text-lg font-bold text-slate-950"><Boxes class="size-5 text-teal-700" />实时库存结存台账</h2><p class="mt-1 text-[11px] text-slate-500">收、发、存按本仓位累计；结余 = 期初 + 入库 − 出库 + 调仓净额 + 调整。冲销抵减原收发数量。</p></div>
-              <div class="flex flex-wrap items-center gap-2"><label class="mr-2 inline-flex items-center gap-2 text-xs text-slate-600"><input v-model="showInventoryMoney" type="checkbox" class="accent-teal-700">显示金额</label><span aria-label="实时库存数量合计" class="mr-2 text-xs text-slate-500">当前结存 {{ inventoryBalanceSummary }} · 显示 {{ inventoryBalances.length }} / {{ localInventoryBalances.length }} 条</span><button type="button" class="h-9 rounded-lg border border-slate-200 px-3 text-xs font-bold text-slate-600" @click="setActiveTab('closing')">月结对账</button></div>
+              <div class="flex flex-wrap items-center gap-2"><label class="mr-2 inline-flex items-center gap-2 text-xs text-slate-600"><input v-model="showInventoryMoney" type="checkbox" class="accent-teal-700">显示金额</label><span data-yl-help="carton.inventory.scope" aria-label="实时库存数量合计" class="mr-2 text-xs text-slate-500">当前结存 {{ inventoryBalanceSummary }} · 显示 {{ inventoryBalances.length }} / {{ localInventoryBalances.length }} 条</span><button type="button" class="h-9 rounded-lg border border-slate-200 px-3 text-xs font-bold text-slate-600" @click="setActiveTab('closing')">月结对账</button></div>
             </div>
 
           </div>
@@ -8216,7 +8371,7 @@ watch([
 <button type="button" aria-label="清空结存台账筛选" :disabled="!hasInventoryBalanceFilters" class="h-9 rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-bold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40" @click="clearInventoryBalanceFilters">清空筛选</button><button type="button" :disabled="!apiConnected || !selectedInventoryTargetIds.length" class="inline-flex h-9 items-center gap-2 rounded-lg bg-teal-700 px-4 font-bold text-white disabled:opacity-40" @click="openInventoryOperation('OUTBOUND', '', true, $event)"><PackageCheck class="size-4" />登记所选库存出库</button></template>
 <template #footer><CartonSelectionSummary :rows="selectedInventoryBalances.map(row => ({ id: row.id, label: `${row.customer} · ${row.poNumber} · ${row.itemNo} · ${row.packagingType} ${row.paperQuality} · ${row.location}` }))" :visible-ids="inventoryBalances.map(row => row.id)" @clear="selectedInventoryTargetIds = []" @remove="selectedInventoryTargetIds = selectedInventoryTargetIds.filter(id => id !== $event)" /></template>
 </CartonFilterBar>
-          <div v-if="showInventoryMoney" class="flex flex-wrap items-center gap-x-5 gap-y-1 border-b bg-teal-50/50 px-4 py-3 text-xs" aria-label="库存金额汇总">
+          <div v-if="showInventoryMoney" class="flex flex-wrap items-center gap-x-5 gap-y-1 border-b bg-teal-50/50 px-4 py-3 text-xs" aria-label="库存金额汇总" data-yl-help="carton.inventory.valuation">
             <span class="text-slate-600">筛选范围 · {{ inventoryMoneySummary.pending ? '已计价小计' : '库存金额' }}</span><b v-for="amount in inventoryMoneySummary.amounts" :key="amount" class="text-teal-800">{{ amount }}</b><span v-if="inventoryMoneySummary.pending" class="text-amber-700">{{ inventoryMoneySummary.pending }} 条待核价／核算，未计入金额</span><span v-if="!inventoryBalances.length" class="text-slate-500">暂无库存</span>
           </div>
           <p v-if="inventoryBalances.some(row => (row.businessKinds?.length || 0) > 1)" class="px-4 py-2 text-xs text-slate-500">同一库存身份可能包含多种订单来源；类型筛选保留整项结存，不拆分或重复计算库存。</p>
@@ -8233,7 +8388,7 @@ watch([
                   <td data-label="仓位" class="break-words px-2 py-3">{{ row.location }}</td>
                   <td data-label="累计入库" class="px-2 py-3 text-right tabular-nums text-sm whitespace-nowrap">{{ inventoryQuantity(row.money?.inbound_quantity) }} <span class="text-[10px] text-slate-400">{{ row.unit }}</span></td>
                   <td data-label="累计出库" class="px-2 py-3 text-right tabular-nums text-sm whitespace-nowrap">{{ inventoryQuantity(row.money?.outbound_quantity) }} <span class="text-[10px] text-slate-400">{{ row.unit }}</span></td>
-                  <td data-label="当前结余" class="bg-teal-50/40 px-2 py-3 text-right"><div class="whitespace-nowrap text-base font-bold tabular-nums text-teal-800">{{ inventoryQuantity(String(row.balance)) }} <span class="text-xs font-normal">{{ row.unit }}</span></div><div v-if="showInventoryMoney" class="mt-1 break-words text-[11px] text-slate-600" :title="unitCostLabel(row.money)">{{ moneyLabel(row.money) }}</div><div v-for="note in inventoryQuantityNotes(row.money)" :key="note" class="mt-1 text-[11px] leading-4 text-slate-500">{{ note }}</div></td>
+                  <td data-label="当前结余" :data-yl-help="row.id === inventoryBalances[0]?.id ? 'carton.inventory.balance' : undefined" class="bg-teal-50/40 px-2 py-3 text-right"><div class="whitespace-nowrap text-base font-bold tabular-nums text-teal-800">{{ inventoryQuantity(String(row.balance)) }} <span class="text-xs font-normal">{{ row.unit }}</span></div><div v-if="showInventoryMoney" class="mt-1 break-words text-[11px] text-slate-600" :title="unitCostLabel(row.money)">{{ moneyLabel(row.money) }}</div><div v-for="note in inventoryQuantityNotes(row.money)" :key="note" class="mt-1 text-[11px] leading-4 text-slate-500">{{ note }}</div></td>
                   <td data-label="到货情况" class="px-2 py-3"><CartonInventoryProgress :factory-id="selectedFactoryId" :sources="row.sourceRequests" :balance="row.balance" :unit="row.unit" :formal="Boolean(row.orderLineId)" :line="inventoryOrderLines.get(row.orderLineId || '')" /></td>
 <td data-label="操作" class="px-2 py-3"><div class="flex justify-end gap-2"><button type="button" :aria-label="`出库 ${row.id}`" :disabled="!apiConnected || row.balance <= 0" class="h-8 whitespace-nowrap rounded-md bg-teal-700 px-2 text-xs font-bold text-white disabled:opacity-40" @click="openInventoryOperation('OUTBOUND', row.id, false, $event)">出库</button><button type="button" :aria-label="`调仓 ${row.id}`" :disabled="!apiConnected || row.balance <= 0 || !authStore.can('carton_procurement:inventory_write')" class="h-8 whitespace-nowrap rounded-md border border-teal-200 px-2 text-xs font-bold text-teal-700 hover:bg-teal-50 disabled:opacity-40" @click="openInventoryRelocation(row, $event)">调仓</button></div></td>
                 </tr>
@@ -8282,7 +8437,7 @@ watch([
         </template>
       </section>
 
-      <CartonInventorySummary v-else-if="activeTab === 'inventory-summary'" :factory-id="selectedFactoryId" :customers="customerRecords" :search="globalSearch" :refresh-key="inventoryReportRefreshKey" :connected="apiConnected" @clear-search="globalSearch = ''" @inventory="setActiveTab('inventory')" @closing="setActiveTab('closing')" />
+      <CartonInventorySummary v-else-if="activeTab === 'inventory-summary'" @context="assistantInventoryScope = $event" @selected="selectAssistantCarton" :factory-id="selectedFactoryId" :customers="customerRecords" :search="globalSearch" :refresh-key="inventoryReportRefreshKey" :connected="apiConnected" @clear-search="globalSearch = ''" @inventory="setActiveTab('inventory')" @closing="setActiveTab('closing')" />
 
       <section v-else-if="activeTab === 'closing'" class="space-y-4">
         <nav aria-label="月结对账子页面" class="flex flex-wrap gap-2 rounded-xl border bg-white p-2 text-xs"><button type="button" :aria-pressed="closingView === 'OVERVIEW'" class="rounded-lg px-4 py-2" :class="closingView === 'OVERVIEW' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('OVERVIEW')">本月对账</button><button type="button" :aria-pressed="closingView === 'RETURNS'" class="rounded-lg px-4 py-2" :class="closingView === 'RETURNS' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('RETURNS')">退货签收与退款</button><button type="button" :aria-pressed="closingView === 'PAYABLES'" class="rounded-lg px-4 py-2" :class="closingView === 'PAYABLES' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('PAYABLES')">应付与付款</button><button type="button" :aria-pressed="closingView === 'INVENTORY'" class="rounded-lg px-4 py-2" :class="closingView === 'INVENTORY' ? 'bg-teal-700 text-white' : 'text-slate-600'" @click="selectClosingView('INVENTORY')">库存月结记录</button></nav>
@@ -8848,18 +9003,23 @@ watch([
         </form>
       </div>
   </main>
+  <CartonOrderDetailDialog v-if="scheduleMarkPreview && canReadMarks" :title="`排期箱唛资料 · ${scheduleMarkPreview.contract}`" close-label="关闭排期箱唛资料" description="仅列入分类为已确认可用的关联原文件；资料分类不代表 QC 放行，也不影响下单。" @close="scheduleMarkPreview = null">
+    <CartonMarkAssetLibrary :key="`${selectedFactoryId}:${selectedWeeklyBatchId}:${scheduleMarkPreview.contract}`" :factory-id="selectedFactoryId" :asset-ids="scheduleMarkPreview.assetIds" read-only />
+  </CartonOrderDetailDialog>
   <DialogRoot v-model:open="showMarkUpload">
     <DialogOverlay class="fixed inset-0 z-50 bg-slate-950/40" />
     <DialogContent class="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[calc(100%_-_1.5rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl bg-white p-4 shadow-xl" aria-describedby="mark-upload-description">
       <div class="mb-3 flex items-center justify-between gap-3"><DialogTitle class="font-bold">箱唛资料上传</DialogTitle><DialogClose aria-label="关闭箱唛资料上传" class="rounded-lg border p-2"><X class="size-4" /></DialogClose></div>
       <DialogDescription id="mark-upload-description" class="mb-3 text-xs text-slate-500">批量保存 PDF、Excel 或图片，按文件名中的合同号自动关联；未识别的资料可稍后在资料库关联。</DialogDescription>
-      <CartonMarkAssetLibrary :key="selectedFactoryId" :factory-id="selectedFactoryId" upload-only />
+      <CartonMarkAssetLibrary :key="selectedFactoryId" :factory-id="selectedFactoryId" upload-only @changed="scheduleMarks.refresh" />
       <button type="button" class="mt-3 rounded-lg border px-3 py-2 text-xs text-teal-800" @click="showMarkUpload = false; setActiveTab('carton-marks')">打开箱唛资料库</button>
     </DialogContent>
   </DialogRoot>
     <CartonSpecialStockActionDialog v-if="specialStockActionTarget" :key="`${selectedFactoryId}:${specialViewerKey}:${customerViewScope}:${specialStockActionTarget.id}:${specialStockActionTarget.action}`" :factory-id="selectedFactoryId" :request-id="specialStockActionTarget.id" :request-no="specialStockActionTarget.requestNo" :action="specialStockActionTarget.action" :viewer-key="specialViewerKey" @close="specialStockActionTarget = null" @changed="specialStockActionChanged" />
     <CartonOrderReceiptDialog v-model:open="specialReceiptOpen" :factory-id="selectedFactoryId" :request-id="specialReceiptId" :viewer-key="specialViewerKey" :library-enabled="canReadMarks" @saved="loadBackendData(selectedFactoryId, { supersede: true })" @open-delivery="openSpecialDelivery" @open-library="openMarkLibrary" />
     <CartonOrderBatchActionDialog v-model:open="unifiedBatchOpen" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :action="unifiedBatchAction" :entries="unifiedBatchEntries" @saved="unifiedBatchSaved" />
+    <CartonBatchAppendDialog v-model:open="batchAppendOpen" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :identity-key="batchIdentityKey" :selection="batchAppendSelection" @saved="result => batchOrderSaved(result)" />
+    <CartonDemandImportDialog v-model:open="demandImportOpen" :file="demandImportFile" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :identity-key="batchIdentityKey" @saved="result => batchOrderSaved(result, true)" />
     <CartonOrderDetailDialog v-if="specialPreviewRequest" data-testid="special-order-detail-preview" :pinned="false" :title="'订单明细 — ' + specialPreviewRequest.request_no"><CartonSpecialRequests :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" mode="detail" :preview-request="specialPreviewRequest" /></CartonOrderDetailDialog>
     <CartonOrderDetailDialog v-if="specialDialogOpen" :title="specialDialogTitle" :form="Boolean(specialEditorMode)" :compact="specialEditorMode === 'append'" :narrow="['reduce', 'date'].includes(specialEditorMode)" :hide-footer="Boolean(specialEditorMode)" :busy="specialDialogBusy" @close="specialDialogOpen = false"><CartonSpecialRequests @editor-mode="specialEditorMode = $event" @busy="specialDialogBusy = $event" :key="`${selectedFactoryId}:${specialDetailId}:${specialCreate}:${specialOpenSequence}`" :initial-action="specialCreate ? undefined : specialInitialAction" @open-delivery="openSpecialDelivery" @stock-action="openSpecialDetails" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :requester-name="authStore.currentUser?.display_name" mode="detail" :request-id="specialDetailId || undefined" :create-new="specialCreate" :initial-kind="newOrderKind === 'WORKSHOP_MISC' ? 'WORKSHOP_MISC' : 'SAMPLE'" @close="specialDialogOpen = false" @changed="loadBackendData(selectedFactoryId, { supersede: true })" /></CartonOrderDetailDialog>
 

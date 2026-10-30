@@ -33,6 +33,9 @@ import { useThreeDLive } from "@/composables/useThreeDLive";
 import { useAppStore } from "@/stores/app";
 import { useAuthStore } from "@/stores/auth";
 import { isPrinterPreparing } from "../printerPresentation";
+import { registerFactoryChangeGuard } from '@/lib/factoryChangeGuard';
+import { registerAssistantSelection } from '@/features/assistant/selection';
+import { registerThreeDNavigationGuard, threeDEditorBlocks, threeDCanRead, threeDScopeKey } from '../navigationGuard';
 import type {
   ThreeDAuditEvent,
   ThreeDDashboard,
@@ -88,7 +91,17 @@ export function useWorkspace() {
           canReadAudit.value),
     ),
   );
-  const activeTab = ref<TabId>("overview");
+  const ownerScope = threeDScopeKey(authStore);
+  const currentTab = ref<TabId>("overview");
+  const activeTab = computed({
+    get: () => currentTab.value,
+    set: (tab: TabId) => {
+      if (tab === currentTab.value || !canNavigate()) return;
+      currentTab.value = tab;
+      selectedPrinter.value = '';
+      void router.replace({ query: { ...router.currentRoute.value.query, tab, printer: undefined } });
+    },
+  });
   const dashboard = ref<ThreeDDashboard | null>(null);
   const auditEvents = ref<ThreeDAuditEvent[]>([]);
   const deletedRecords = ref<ThreeDProductionRecord[]>([]);
@@ -241,6 +254,27 @@ export function useWorkspace() {
     profit_rate_percent: 40,
     revision: 1,
   });
+  const settingsBaseline = ref(JSON.stringify(settingsForm));
+  const settingsDirty = computed(() => JSON.stringify(settingsForm) !== settingsBaseline.value);
+  const navigationWarning = '当前有未保存输入、打开的编辑窗或请求尚未结束，请先保存或取消本次修改。';
+  function resetSettings() {
+    if (saving.value || !dashboard.value) return;
+    Object.assign(settingsForm, dashboard.value.settings);
+    settingsBaseline.value = JSON.stringify(settingsForm);
+    if (errorMessage.value === navigationWarning) errorMessage.value = '';
+  }
+  function canNavigate() {
+    // Revocation and session replacement must never trap a user in old data.
+    if (ownerScope !== threeDScopeKey(authStore) || !threeDCanRead(authStore)) return true;
+    if (saving.value || settingsDirty.value || threeDEditorBlocks()) {
+      errorMessage.value = navigationWarning;
+      return false;
+    }
+    if (errorMessage.value === navigationWarning) errorMessage.value = '';
+    return true;
+  }
+  onBeforeUnmount(registerThreeDNavigationGuard(canNavigate));
+  onBeforeUnmount(registerFactoryChangeGuard(canNavigate));
 
   const listPages = reactive<
     Record<
@@ -280,8 +314,31 @@ export function useWorkspace() {
     ),
   );
   const selectedPrinter = ref("");
+  const assistantPrinterId = ref('');
+  const assistantPrinter = computed(() => dashboard.value?.printers.find(p => p.id === assistantPrinterId.value));
+  function selectAssistantPrinter(id: string) {
+    if (id === selectedPrinter.value) assistantPrinterId.value = id;
+  }
+  function invalidateAssistantPrinter(id: string) {
+    if (assistantPrinterId.value === id) assistantPrinterId.value = '';
+  }
+  async function openPrinter(id: string) {
+    if (!canNavigate()) return;
+    await router.replace({ query: { ...router.currentRoute.value.query, factory: FACTORY_ID, printer: id } });
+  }
+  async function closePrinter() {
+    await router.replace({ query: { ...router.currentRoute.value.query, printer: undefined } });
+  }
+  onBeforeUnmount(registerAssistantSelection('three-d-printing', () => {
+    if (ownerScope !== threeDScopeKey(authStore) || !threeDCanRead(authStore)) return null;
+    const id = assistantPrinter.value?.id;
+    return { selection_id: id || 'three-d-printers',
+      resources: id ? [{ module_id: 'three-d-printing', resource_type: 'printer', resource_id: id }] : [],
+      filters: { factory_id: FACTORY_ID } };
+  }));
   const recordSearchAllDates = ref(false);
   function showProductRecords(name: string) {
+    if (!canNavigate()) return;
     listPages.records!.q = name;
     listPages.records!.page = 1;
     recordSearchAllDates.value = true;
@@ -397,7 +454,10 @@ export function useWorkspace() {
         next.network_health = dashboard.value.network_health;
       }
       dashboard.value = next;
-      Object.assign(settingsForm, dashboard.value.settings);
+      if (!settingsDirty.value && !saving.value) {
+        Object.assign(settingsForm, dashboard.value.settings);
+        settingsBaseline.value = JSON.stringify(settingsForm);
+      }
       listPages.products!.total = Number(
         dashboard.value.summary.productCount || dashboard.value.products.length,
       );
@@ -878,14 +938,18 @@ export function useWorkspace() {
   }
 
   async function saveSettings() {
-    await mutate(
-      () =>
-        threeDPrintingApi.updateSettings({
+    if (saving.value) return;
+    if (await mutate(
+      async () => {
+        const saved = await threeDPrintingApi.updateSettings({
           factory_id: FACTORY_ID,
           ...settingsForm,
-        }),
+        });
+        // Keep the committed revision even if the following dashboard read fails.
+        if (!disposed && dashboard.value) dashboard.value.settings = saved;
+      },
       "计费设置已更新",
-    );
+    )) resetSettings();
   }
 
   async function restoreRecord(record: ThreeDProductionRecord) {
@@ -974,22 +1038,32 @@ export function useWorkspace() {
     if (tab === "audit") void loadAudit();
     if (["products", "records", "schedules", "maintenance"].includes(tab))
       void loadPage(tab);
-    if (router.currentRoute?.value)
-      void router.replace({
-        query: { ...router.currentRoute.value.query, tab },
-      });
   });
 
+  let navigationReady = false;
+  function applyRoute() {
+    if (!navigationReady || disposed) return;
+    if (router.currentRoute.value.name !== 'three-d-printing-management') {
+      selectedPrinter.value = ''; assistantPrinterId.value = ''; return;
+    }
+    const query = router.currentRoute.value.query;
+    const id = typeof query.printer === 'string' && query.printer.length <= 96 ? query.printer : '';
+    selectedPrinter.value = query.factory === FACTORY_ID ? id : '';
+    const tab = typeof query.tab === 'string' && tabs.value.some(t => t.id === query.tab) ? query.tab as TabId : 'overview';
+    currentTab.value = selectedPrinter.value && !['overview', 'records', 'machines'].includes(tab) ? 'machines' : tab;
+    if (query.factory !== FACTORY_ID) assistantPrinterId.value = '';
+  }
+  watch(() => router.currentRoute.value.fullPath, applyRoute);
+
   onMounted(async () => {
-    if (appStore.activeProductionFactory.id !== FACTORY_ID) {
+    if (appStore.activeProductionFactory.id !== FACTORY_ID || router.currentRoute.value.query.factory !== FACTORY_ID) {
       appStore.setActiveFactory(FACTORY_ID);
       await router.replace({
-        query: { ...router.currentRoute.value.query, factory: FACTORY_ID },
+        query: { ...router.currentRoute.value.query, factory: FACTORY_ID, printer: undefined },
       });
     }
-    const tab = router.currentRoute?.value.query.tab;
-    if (typeof tab === "string" && tabs.value.some((item) => item.id === tab))
-      activeTab.value = tab as TabId;
+    navigationReady = true;
+    applyRoute();
     await loadDashboard();
     if (disposed) return;
     live.start();
@@ -1008,6 +1082,15 @@ export function useWorkspace() {
   });
 
   return {
+    canNavigate,
+    settingsDirty,
+    resetSettings,
+    assistantPrinterId,
+    assistantPrinter,
+    selectAssistantPrinter,
+    invalidateAssistantPrinter,
+    openPrinter,
+    closePrinter,
     recordSearchAllDates,
     showProductRecords,
     editSchedule,

@@ -1,5 +1,6 @@
 import { createRandomUuid } from "@/lib/randomUuid";
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { registerThreeDEditor } from '../navigationGuard';
 import { http, getApiErrorMessage } from "@/lib/http";
 import { threeDPrintingApi } from "@/api/threeDPrinting";
 import type {
@@ -36,7 +37,7 @@ export function useOperations() {
 
   const base = "/three-d-printing/operations";
 
-  const { canOperate, activeTab, editSchedule, authStore } =
+  const { canOperate, activeTab, editSchedule, authStore, canNavigate } =
     useWorkspaceContext();
 
   const kind = ref<Kind>("spool"),
@@ -117,7 +118,7 @@ export function useOperations() {
       },
     ],
     profile: [
-      { name: "machine_no", label: "机号（1–11）", type: "number", default: 1 },
+      { name: "machine_no", label: "机号（1–16）", type: "number", default: 1 },
       { name: "materials", label: "适用材料（逗号分隔）", type: "array" },
       {
         name: "product_ids",
@@ -239,6 +240,11 @@ export function useOperations() {
     value === null ? "数据不足" : `${(value * 100).toFixed(1)}%`;
 
   const editing = computed(() => revision.value > 0);
+  const draftSnapshot = () => JSON.stringify([form, resourceKey.value, reason.value, selectedFiles.value,
+    completionRuns, completionFeedback, matchedProduct.value]);
+  const draftBaseline = ref('');
+  const dirty = computed(() => !!draftBaseline.value && draftSnapshot() !== draftBaseline.value);
+  onBeforeUnmount(registerThreeDEditor(() => canOperate.value && (loading.value || dirty.value)));
 
   function reset() {
     Object.keys(form).forEach((k) => delete form[k]);
@@ -252,6 +258,10 @@ export function useOperations() {
     reason.value = "";
     selectedFiles.value = [];
     requestKey.value = createRandomUuid();
+    Object.keys(completionRuns).forEach(k => delete completionRuns[k]);
+    Object.keys(completionFeedback).forEach(k => delete completionFeedback[k]);
+    matchedProduct.value = '';
+    draftBaseline.value = draftSnapshot();
   }
 
   let listGeneration = 0;
@@ -284,6 +294,7 @@ export function useOperations() {
     selectedFiles.value = (item.data.file_ids as string[]) ?? [];
     resourceKey.value = item.resource_key;
     revision.value = item.revision;
+    draftBaseline.value = draftSnapshot();
   }
 
   async function save() {
@@ -450,6 +461,7 @@ export function useOperations() {
   }
 
   async function prepare(item: (typeof advice.value)[number]) {
+    if (canNavigate && !canNavigate()) return;
     editSchedule({ ...item.schedule, machine_no: item.machine_no ?? 0 });
     activeTab.value = "schedules";
   }
