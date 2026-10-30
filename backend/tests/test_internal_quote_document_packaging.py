@@ -238,6 +238,41 @@ def test_saving_one_department_cannot_relabel_another_stale_or_incomplete_cost(m
         assert section(after, "assembly") == section(before, "assembly")
 
 
+def test_section_only_old_formula_is_actionable_and_recalculation_unblocks_copy(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login(client, "pack-section-formula", "admin", "*", "*")
+        source, target, _ = batch(client)
+        fill_product(client, source)
+        db_module = importlib.import_module("app.db")
+        models = importlib.import_module("app.models.internal_quote")
+        calculator = importlib.import_module("app.services.internal_quote_calculator")
+        with db_module.SessionLocal() as db:
+            row = db.get(models.InternalQuoteSection, section(current(client, source), "assembly")["id"])
+            row.calculation_formula_version = "rr2-2026-v7"
+            db.commit()
+        before = current(client, source)
+        assert before["formula_version"] == before["current_formula_version"] == calculator.FORMULA_VERSION
+        assert before["formula_recalculation_required"] is True
+        readiness = checked(client.get(f"/api/internal-quotes/{source}/batch-products"))[0]["packaging_copy"]
+        assert readiness["formula_recalculation_required"] is True
+        assert "按当前公式重算" in readiness["source_issue"]
+        checked(client.post(f"/api/internal-quotes/{source}/packaging-copy/preview", json=request(client, source, [target], True)), 409)
+        assert section(current(client, source), "assembly")["calculation_formula_version"] == "rr2-2026-v7"
+        frozen = checked(client.get(f"/api/internal-quotes/{source}/reference-snapshot"))["snapshot"]
+        checked(client.post(f"/api/internal-quotes/{source}/formula/recalculate", json={
+            "revision": before["header_revision"], "reason": "复制包装前更新旧部门公式",
+        }))
+        after = current(client, source)
+        assert after["formula_recalculation_required"] is False
+        assert section(after, "assembly")["calculation_formula_version"] == calculator.FORMULA_VERSION
+        assert checked(client.get(f"/api/internal-quotes/{source}/reference-snapshot"))["snapshot"] == frozen
+        readiness = checked(client.get(f"/api/internal-quotes/{source}/batch-products"))[0]["packaging_copy"]
+        assert readiness["formula_recalculation_required"] is False
+        assert readiness["source_issue"] == readiness["assembly_issue"] == ""
+        apply(client, source, preview(client, source, request(client, source, [target], True)))
+        assert section(current(client, target), "sales")["payload"]["packaging_materials"][0]["item"] == "来源彩盒"
+
+
 def test_packaging_scope_stale_preview_and_atomic_rollback(monkeypatch):
     with make_client(monkeypatch) as client:
         login(client, "pack-atomic", "admin", "*", "*")

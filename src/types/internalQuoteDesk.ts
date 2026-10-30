@@ -280,6 +280,7 @@ export interface InternalQuote {
   referenceSnapshot: Record<string, unknown>
   formulaVersion: string
   currentFormulaVersion: string
+  formulaRecalculationRequired?: boolean
   moduleVersion: string
   headerRevision: number
   versionArchived?: boolean
