@@ -201,6 +201,17 @@ describe('internal quote desk real API state', () => {
     apiMock.updateReferenceFx.mockResolvedValue(quote({ header_revision: 3, reference_snapshot_id: 'REF-2' }))
   })
 
+  it('keeps server formula readiness even when the header is current and summary has no formula warning', async () => {
+    const store = useInternalQuoteDeskStore()
+    const source = quote({ current_formula_version: 'rr2-2026-v1', formula_recalculation_required: true })
+    apiMock.get.mockResolvedValue(source)
+    const loaded = await store.loadQuote('quote-1')
+    expect(loaded?.formulaVersion).toBe(loaded?.currentFormulaVersion)
+    expect(loaded?.formulaRecalculationRequired).toBe(true)
+    apiMock.get.mockResolvedValue({ ...source, formula_recalculation_required: false })
+    expect((await store.loadQuote('quote-1'))?.formulaRecalculationRequired).toBe(false)
+  })
+
   it('does not restore an earlier actor response after reset and a newer request', async () => {
     const store = useInternalQuoteDeskStore()
     store.activateFactoryContext('huaxing')

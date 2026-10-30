@@ -2,7 +2,8 @@
 param(
     [ValidateSet('Inspect','Install','Login','Routes')][string]$Action = 'Inspect',
     [string]$PrinterFile,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [switch]$IncludeGatewayDiagnostics
 )
 $ErrorActionPreference = 'Stop'
 $siteDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -18,17 +19,68 @@ function Find-Tailscale {
 }
 function Read-Printers {
     $rows = @(Import-Csv -LiteralPath $PrinterFile)
-    if ($rows.Count -eq 0) { throw 'Fill printers.csv with machine_no and ip first.' }
-    $numbers = @(); $addresses = @()
+    if ($rows.Count -lt 1 -or $rows.Count -gt 16) { throw 'Fill printers.csv with one to sixteen distinct machines.' }
+    $numbers = @(); $addresses = @(); $references = @()
     foreach ($row in $rows) {
         $ip = [Net.IPAddress]::Parse($row.ip)
         $b = $ip.GetAddressBytes()
         if ($b.Length -ne 4 -or -not ($b[0] -eq 10 -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168))) { throw 'Use the printer LAN IPv4 address.' }
         $number = [int]$row.machine_no
-        if ($number -lt 1 -or $number -gt 11 -or $numbers -contains $number -or $addresses -contains $ip.ToString()) { throw 'Duplicate or invalid printer number/address.' }
+        if ($number -lt 1 -or $number -gt 16 -or $numbers -contains $number -or $addresses -contains $ip.ToString()) { throw 'Duplicate or invalid printer number/address.' }
+        if ($rows.Count -gt 11 -and -not $row.credential_ref) { throw 'Expanded fleets require explicit credential_ref values tied to physical devices.' }
+        if ($row.credential_ref) {
+            if ($row.credential_ref -notmatch '^printer-[0-9]{2}$' -or $references -contains $row.credential_ref) { throw 'Duplicate or invalid device credential reference.' }
+            $references += $row.credential_ref
+        }
         $numbers += $number; $addresses += $ip.ToString()
     }
     return $rows
+}
+function Read-GatewayDiagnostics {
+    # Project only non-secret fields. Never export raw prefs/netmap, which can
+    # contain authentication material. These queries do not change networking.
+    $diagnostic = [ordered]@{ mode='read_only'; issue_codes=@(); preferences=$null; interfaces=@(); selected_routes=@(); neighbors=@(); firewall_profiles=@(); tailscale_firewall_rules=@() }
+    if ($tailscale) {
+        try {
+            $raw = & $tailscale debug prefs 2>$null | Out-String
+            if ($LASTEXITCODE -ne 0) { throw 'preferences_unavailable' }
+            $prefs = $raw | ConvertFrom-Json
+            $diagnostic.preferences = [ordered]@{}
+            foreach ($key in @('WantRunning','ShieldsUp','RouteAll','AdvertiseRoutes','NoSNAT','NoStatefulFiltering','ExitNodeIP','ExitNodeAllowLANAccess')) {
+                if ($null -ne $prefs.PSObject.Properties[$key]) { $diagnostic.preferences[$key] = $prefs.$key }
+            }
+        } catch { $diagnostic.issue_codes += 'tailscale_preferences_unavailable' }
+        finally { $raw=$null; $prefs=$null }
+    } else { $diagnostic.issue_codes += 'tailscale_not_installed' }
+    try {
+        $diagnostic.interfaces = @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object {
+            [ordered]@{ interface_index=$_.InterfaceIndex; alias=$_.InterfaceAlias; state=[string]$_.ConnectionState; forwarding=[string]$_.Forwarding; metric=$_.InterfaceMetric }
+        })
+    } catch { $diagnostic.issue_codes += 'interfaces_unavailable' }
+    foreach ($row in $printers) {
+        try {
+            $selected = @(Find-NetRoute -RemoteIPAddress $row.ip -ErrorAction Stop | ForEach-Object {
+                [ordered]@{ source_ip=$_.IPAddress; interface_index=$_.InterfaceIndex; alias=$_.InterfaceAlias; destination_prefix=$_.DestinationPrefix; next_hop=$_.NextHop; route_metric=$_.RouteMetric }
+            })
+            $diagnostic.selected_routes += [ordered]@{ machine_no=[int]$row.machine_no; ip=$row.ip; status='observed'; selected=$selected }
+        } catch { $diagnostic.selected_routes += [ordered]@{ machine_no=[int]$row.machine_no; ip=$row.ip; status='unavailable'; selected=@() } }
+    }
+    try {
+        $diagnostic.neighbors = @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -in @($printers.ip) } | ForEach-Object {
+            [ordered]@{ ip=$_.IPAddress; interface_index=$_.InterfaceIndex; state=[string]$_.State }
+        })
+    } catch { $diagnostic.issue_codes += 'neighbors_unavailable' }
+    try {
+        $diagnostic.firewall_profiles = @(Get-NetFirewallProfile -ErrorAction Stop | ForEach-Object {
+            [ordered]@{ name=$_.Name; enabled=[string]$_.Enabled; inbound=[string]$_.DefaultInboundAction; outbound=[string]$_.DefaultOutboundAction; allow_inbound_rules=[string]$_.AllowInboundRules; allow_local_rules=[string]$_.AllowLocalFirewallRules }
+        })
+    } catch { $diagnostic.issue_codes += 'firewall_profiles_unavailable' }
+    try {
+        $diagnostic.tailscale_firewall_rules = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop | Where-Object { $_.DisplayName -like '*Tailscale*' } | ForEach-Object {
+            [ordered]@{ name=$_.DisplayName; enabled=[string]$_.Enabled; direction=[string]$_.Direction; action=[string]$_.Action; profile=[string]$_.Profile }
+        })
+    } catch { $diagnostic.issue_codes += 'firewall_rules_unavailable' }
+    return $diagnostic
 }
 $tailscale = Find-Tailscale
 if ($Action -eq 'Install') {
@@ -107,7 +159,7 @@ public static class RRPrinterProbe {
 }
 $checks = @($printers | ForEach-Object {
     $result = [RRPrinterProbe]::Read($_.ip)
-    [ordered]@{ machine_no = [int]$_.machine_no; ip = $_.ip; tcp = $result[0]; tls = $result[1]; observed_cert_sha256 = $result[2] }
+    [ordered]@{ machine_no = [int]$_.machine_no; ip = $_.ip; credential_ref = $_.credential_ref; tcp = $result[0]; tls = $result[1]; observed_cert_sha256 = $result[2] }
 })
 $vpn = $null
 if ($tailscale) {
@@ -120,6 +172,7 @@ $report = [ordered]@{
     adapters = @(Get-NetIPConfiguration | ForEach-Object { @{ name = $_.InterfaceAlias; ipv4 = @($_.IPv4Address | Select-Object IPAddress,PrefixLength); gateway = @($_.IPv4DefaultGateway.NextHop) } })
     printers = $checks
 }
+if ($IncludeGatewayDiagnostics) { $report.gateway_diagnostics = Read-GatewayDiagnostics }
 $output = Join-Path $OutputDirectory "site-$stamp.json"
 [IO.File]::WriteAllText($output, ($report | ConvertTo-Json -Depth 8), $utf8)
 $checks | ForEach-Object { [pscustomobject]$_ } | Format-Table machine_no,ip,tcp,tls

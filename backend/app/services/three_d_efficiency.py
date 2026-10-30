@@ -4,11 +4,12 @@ import json
 from collections import Counter
 from datetime import timedelta, timezone
 
-from sqlalchemy import DateTime, Float, and_, case, cast, func, select
+from sqlalchemy import DateTime, Float, and_, case, cast, func, select, true
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.time import business_now, parse_business_timestamp
 from app.models import three_d_printing as m
+from app.services.three_d_fleet import machine_numbers, numbering_start
 
 
 def _postgres_event_counters(db, begin, now, values):
@@ -64,7 +65,8 @@ def _postgres_event_counters(db, begin, now, values):
 
 def counters(db, days):
     now = business_now()
-    begin = now - timedelta(days=days)
+    cutoff = numbering_start()
+    begin = max(now - timedelta(days=days), cutoff) if cutoff else now - timedelta(days=days)
     values = {
         n: {
             "pause_hours": 0.0,
@@ -75,7 +77,7 @@ def counters(db, days):
             "failure_codes": Counter(),
             "lifetime_hours_since_service": 0.0,
         }
-        for n in range(1, 12)
+        for n in machine_numbers(db)
     }
     previous = {}
     # Set streaming BEFORE execute: Result.yield_per() alone still lets psycopg
@@ -86,7 +88,9 @@ def counters(db, days):
     summaries = rollup_counters(db, begin, now)
     if summaries is not None:
         for number, summary in summaries.items():
-            target = values[int(number)]
+            target = values.get(int(number))
+            if target is None:
+                continue
             for name in ("observed", "pause", "waiting"):
                 target[name + "_hours"] = summary[name + "_seconds"] / 3600
             for name in ("error_events", "temperature_alarm_events"):
@@ -153,6 +157,7 @@ def counters(db, days):
             m.ThreeDPrintingProductionRecord.factory_id == "huakang-a",
             m.ThreeDPrintingProductionRecord.deleted_at == "",
             m.ThreeDPrintingProductionRecord.print_end_at != "",
+            run_model.business_date >= cutoff.date().isoformat() if cutoff else true(),
         ).execution_options(yield_per=500)
     )
     for run in runs:

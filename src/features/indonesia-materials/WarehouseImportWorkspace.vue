@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { lostRecordAccess } from './recordAccess'
+import RecordResponsibility from './RecordResponsibility.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
 import { fixedCustomers } from './catalog'
@@ -9,8 +11,10 @@ import Fields from './Fields.vue'
 import type { Field } from './forms'
 import { setNumberText } from './forms'
 import { sameQuantity, purchaseFactsAgree } from './warehouseMatching'
+import { additionalReservations, allocationKey, allocationIssue, sortedTargets, suggestAllocations } from './receiptAllocation'
 import { focusFollowup } from './focusFollowup'
 import ReceiptTemplatePicker from './ReceiptTemplatePicker.vue'
+import WarehousePackingReview from './WarehousePackingReview.vue'
 const ws = useMaterials()
 const customer = ref(''), recipient = ref('RRI'), warehouse = ref(''), shipmentDate = ref('')
 const file = ref<File | null>(null), preview = ref<MaterialRecord | null>(null), choices = ref<Data>({})
@@ -28,7 +32,10 @@ const importRequested = ref(false)
 const records = computed(() => ws.kind('import').filter(row => row.data.import_type === 'warehouse_receipt'))
 const customers = computed(() => fixedCustomers(ws.records))
 const selectedRows = computed<Data[]>(() => (preview.value?.data.rows || []).filter((row: Data) => choices.value[row.index]?.selected && !row.blocked && !row.imported_supply_id))
+const allocationCount = computed(() => selectedRows.value.reduce((total, row) => total + choices.value[row.index].allocations.length, 0))
+const allocationErrors = computed(() => selectedRows.value.some(row => allocationIssue(row.source, choices.value[row.index].allocations)))
 const started = () => !!(file.value || preview.value || customer.value || warehouse.value || shipmentDate.value || recipient.value !== 'RRI')
+const accessLost = computed(() => lostRecordAccess(ws, preview.value))
 const draft = useMaterialDraft(() => started() ? { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value, shipmentDate: shipmentDate.value, choices: choices.value, preview: preview.value?.id, file: file.value } : null, {
   id: 'warehouse', multiple: true,
   capture: () => started() ? { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value, shipmentDate: shipmentDate.value,
@@ -44,7 +51,7 @@ const draft = useMaterialDraft(() => started() ? { customer: customer.value, rec
   },
   reset: () => { file.value = null; preview.value = null; choices.value = {}; shipmentDate.value = ''; customer.value = ''; recipient.value = 'RRI'; warehouse.value = ''; context.value = { customer: '', recipient: 'RRI', warehouse: '' } },
 })
-const importBlocked = computed(() => !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
+const importBlocked = computed(() => accessLost.value || !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
 const importHint = computed(() => {
   if (!importRequested.value) return ''
   if (!ws.canWrite) return '当前账号没有实收单导入权限，可查看已有导入记录。'
@@ -76,9 +83,10 @@ const purchaseFields: Field[] = [
   { key: 'purchase_date', label: '采购日期', type: 'date', required: true }, { key: 'purchase_quantity', label: '采购总量（含各回料批次）', type: 'number', required: true, min: '0.00000001', step: 'any' },
   { key: 'supplier', label: '供应商', required: true }, { key: 'price', label: '采购单价', type: 'number', required: true, min: '0', step: 'any' }, { key: 'currency', label: '币种', required: true },
 ]
-function targets(row: Data): Data[] { return row.targets?.[choices.value[row.index]?.material_id] || [] }
-function targetKey(target: Data) { return JSON.stringify([target.order_id, target.demand_id]) }
+function targets(row: Data): Data[] { return sortedTargets(row.targets?.[choices.value[row.index]?.material_id] || []) }
+const targetKey = allocationKey
 function changeTarget(row: Data, plan: Data, key: string) {
+  choices.value[row.index].allocation_mode = 'manual'
   const target = targets(row).find(item => targetKey(item) === key)
   Object.assign(plan, target ? { key, order_id: target.order_id, demand_id: target.demand_id, order_version: target.order_version } : { key: '', order_id: '', demand_id: '', order_version: 0 })
 }
@@ -97,13 +105,15 @@ function chooseSupply(row: Data) {
   choice.replace_allocations = []; choice.replacement_reason = ''
   if (supply) {
     const allocations = ws.kind('allocation').filter(item => item.data.supply_id === supply.id)
-    if (allocations.length && !choice.allocations.some((plan: Data) => plan.order_id)) choice.allocations = allocations.map(item => {
-      return { key: '', order_id: '', demand_id: '', order_version: 0,
+    if (allocations.length) choice.allocations = allocations.map(item => {
+      const target = targets(row).find(target => target.order_id === item.data.order_id && target.demand_id === item.data.demand_id)
+      choice.allocation_mode = 'historical'
+      return { key: target ? targetKey(target) : '', order_id: target?.order_id || '', demand_id: target?.demand_id || '', order_version: target?.order_version || 0,
         normal_quantity: item.data.normal_quantity, spare_quantity: item.data.spare_quantity }
     })
   }
 }
-function chooseMaterial(row: Data) {
+function chooseMaterial(row: Data, automatic = true) {
   const choice = choices.value[row.index], material = row.materials.find((item: Data) => item.id === choice.material_id)
   choice.material_version = material?.version || 0; choice.supply_id = ''; choice.supply_version = 0
   choice.replace_allocations = []; choice.replacement_reason = ''
@@ -113,13 +123,33 @@ function chooseMaterial(row: Data) {
   choice.allocations.push(plan)
   const supplies = matchingSupplies(row).filter(item => sameQuantity(item.data.normal_quantity, row.source.normal_quantity) && sameQuantity(item.data.spare_quantity, row.source.spare_quantity) && purchaseFactsAgree(row.source, item.data))
   if (supplies.length === 1 && row.source.purchase_no) { choice.supply_id = supplies[0]!.id; chooseSupply(row) }
+  if (automatic) suggestRow(row)
+}
+function suggestRow(row: Data) {
+  const choice = choices.value[row.index]
+  if (!choice?.material_id || originalAllocations(row).length) return
+  const others = selectedRows.value.filter(item => item.index !== row.index)
+  const reserved = others.flatMap(item => additionalReservations(choices.value[item.index].allocations, originalAllocations(item).map(record => record.data)))
+  const count = others.reduce((total, item) => total + choices.value[item.index].allocations.length, 0)
+  choice.allocations = suggestAllocations(row.source, targets(row), reserved, 200 - count)
+  choice.allocation_mode = 'auto'
+}
+function proposeSelected(explicit = true) {
+  if (!ws.canWrite || (explicit && importBlocked.value)) return
+  const rows = selectedRows.value.filter(row => !originalAllocations(row).length)
+  if (explicit && rows.some(row => choices.value[row.index].allocation_mode !== 'auto' && choices.value[row.index].allocations.some((plan: Data) => plan.order_id))
+    && !window.confirm('重新生成已勾选行的合同分配建议会替换这些行的手动分配。采购资料和其他草稿保留，是否继续？')) return
+  for (const row of rows) choices.value[row.index].allocations = []
+  for (const row of rows) suggestRow(row)
 }
 function initialize(record: MaterialRecord) {
   preview.value = record; choices.value = {}; showUpload.value = false
   for (const row of record.data.rows) {
     choices.value[row.index] = { selected: !row.blocked && !row.imported_supply_id, material_id: row.auto_material_id || '', material_version: 0, supply_id: '', supply_version: 0, purchase: {}, allocations: [] }
-    if (row.auto_material_id) chooseMaterial(row)
+    if (row.auto_material_id) chooseMaterial(row, false)
   }
+  // Only initialize a new preview; restoring or refreshing a draft never recalculates its choices.
+  proposeSelected(false)
 }
 function fresh() { return draft.openRecord(newDraftId('warehouse'), () => { showUpload.value = true; file.value = null; preview.value = null; choices.value = {}; shipmentDate.value = ''; context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value } }) }
 async function changeContext() {
@@ -134,7 +164,12 @@ async function fileChanged(event: Event) {
   const input = event.target as HTMLInputElement, next = input.files?.[0]; input.value = ''
   if (!next) return
   if (file.value || preview.value) await draft.openRecord(newDraftId('warehouse'), () => { file.value = next; preview.value = null; choices.value = {}; shipmentDate.value = '' })
-  else file.value = next
+  else {
+    // The native file picker may finish before the warehouse input's blur/change.
+    // Freeze the actual upload context, so a later switch preserves all typed fields.
+    context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }
+    file.value = next
+  }
 }
 async function upload() {
   if (!file.value || !customer.value || ws.locked) return
@@ -146,7 +181,8 @@ async function upload() {
 function inspect(row: MaterialRecord) { return draft.openRecord(recordDraftId('warehouse', 'inspect', row.id), () => { file.value = null; customer.value = row.data.customer; recipient.value = row.data.recipient; warehouse.value = row.data.warehouse; context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }; initialize(row) }) }
 watch(() => preview.value ? ws.record(preview.value.id) : undefined, row => { if (row) preview.value = row })
 async function confirm() {
-  if (!preview.value || !selectedRows.value.length) return
+  if (accessLost.value) return
+  if (!preview.value || !selectedRows.value.length || allocationErrors.value || allocationCount.value > 200) return
   const rows = selectedRows.value.map(row => {
     const choice = choices.value[row.index]
     return { index: row.index, material_id: choice.material_id, material_version: choice.material_version, supply_id: choice.supply_id || null, supply_version: choice.supply_version,
@@ -158,6 +194,7 @@ async function confirm() {
 </script>
 <template>
   <section aria-label="仓库实收导入" class="im-stack">
+    <p v-if="accessLost" class="im-message" role="alert">此待办已转交其他跟客或不可用，不能继续处理。原本机草稿保留，可新建或打开其他单据。</p>
     <div class="im-toolbar"><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="fresh">新建实收导入</button><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="templatePicker?.open(customer, recipient, warehouse)">下载实收导入模板</button></div>
     <ReceiptTemplatePicker ref="templatePicker" :blocked="draft.switching.value" />
     <form v-show="showUpload || !preview" id="im-warehouse-upload" ref="uploadForm" class="im-upload-form" @submit.prevent="upload"><p v-if="importHint" class="im-note" role="status">{{ importHint }}</p><fieldset class="im-fields" :disabled="importBlocked">
@@ -168,16 +205,17 @@ async function confirm() {
       <button class="im-primary" type="submit" :disabled="!customer || !file">上传实收单并匹配</button>
     </fieldset><p class="im-note">无物料编码时按名称、规格和单位匹配。取消或重新选文件，原草稿仍保留。</p></form>
     <form v-if="preview" v-show="!showUpload" class="im-editor im-stack" @submit.prevent="confirm">
-      <fieldset class="im-stack" :disabled="draft.switching.value || ws.locked || !ws.canWrite">
+      <fieldset class="im-stack" :disabled="accessLost || draft.switching.value || ws.locked || !ws.canWrite">
       <div class="im-inline"><h3>{{ preview.data.filename }} · {{ preview.data.status === 'confirmed' ? '全部已导入' : '实收匹配核对' }}</h3><button type="button" :disabled="ws.busy" @click="ws.download(preview!.data.asset_id, preview!.data.filename, 'asset')">下载原单</button></div>
-      <div class="im-scroll"><table><thead><tr><th>本次导入</th><th>仓库／收料单行</th><th>原单物料／规格</th><th>正常／备品实收</th><th>匹配与问题</th></tr></thead><tbody><tr v-for="row in preview.data.rows" :key="row.index"><td><input v-model="choices[row.index].selected" type="checkbox" :aria-label="`选择实收行 ${row.index + 1}`" :disabled="!ws.canWrite || ws.locked || row.blocked || !!row.imported_supply_id"></td><td>{{ row.source.warehouse || preview.data.warehouse }}<br>{{ row.source.receipt_no }} / {{ row.source.receipt_line }}<small>{{ row.source_sheet }} 第 {{ row.source_row }} 行 · {{ row.source.actual_date }}</small></td><td>{{ row.source.material_code || '无编码' }} · {{ row.source.material_name }}<small>{{ row.source.specification }} / {{ row.source.unit }}</small></td><td>{{ row.source.normal_quantity }} / {{ row.source.spare_quantity }}</td><td><strong>{{ row.imported_supply_id ? '已导入' : row.blocked ? '原单需核对' : !choices[row.index].material_id || choices[row.index].allocations.some((item: Data) => !item.order_id) ? '待业务确认' : '已匹配，待确认导入' }}</strong><p v-for="issue in row.issues" :key="issue" class="im-danger-text">{{ issue }}</p></td></tr></tbody></table></div>
-      <fieldset v-for="row in selectedRows" :key="row.index" class="im-recipe-card im-stack" :disabled="!ws.canWrite || ws.locked || draft.switching.value">
+      <div v-if="selectedRows.length" class="im-actions"><button type="button" @click="proposeSelected()">重新按货期建议</button><span class="im-note">最迟回料日优先，缺失时按成品出货日；业务核对后确认。</span></div>
+      <div class="im-scroll"><table><thead><tr><th>本次导入</th><th>仓库／收料单行</th><th>原单物料／规格</th><th>正常／备品实收</th><th>匹配与问题</th></tr></thead><tbody><tr v-for="row in preview.data.rows" :key="row.index"><td><input v-model="choices[row.index].selected" type="checkbox" :aria-label="`选择实收行 ${row.index + 1}`" :disabled="accessLost || !ws.canWrite || ws.locked || row.blocked || !!row.imported_supply_id"></td><td>{{ row.source.warehouse || preview.data.warehouse }}<br>{{ row.source.receipt_no }} / {{ row.source.receipt_line }}<small>{{ row.source_sheet }} 第 {{ row.source_row }} 行 · {{ row.source.actual_date }}</small></td><td>{{ row.source.material_code || '无编码' }} · {{ row.source.material_name }}<small>{{ row.source.specification }} / {{ row.source.unit }}</small></td><td>{{ row.source.normal_quantity }} / {{ row.source.spare_quantity }}</td><td><strong>{{ row.imported_supply_id ? '已导入' : row.blocked ? '原单需核对' : !choices[row.index].material_id || allocationIssue(row.source, choices[row.index].allocations) ? '待业务确认' : '已匹配，待确认导入' }}</strong><p v-for="issue in row.issues" :key="issue" class="im-danger-text">{{ issue }}</p></td></tr></tbody></table></div>
+      <fieldset v-for="row in selectedRows" :key="row.index" class="im-recipe-card im-stack" :disabled="accessLost || !ws.canWrite || ws.locked || draft.switching.value">
         <h3>第 {{ row.index + 1 }} 行：{{ row.source.material_name || row.source.material_code }} · {{ row.source.receipt_no }}</h3>
         <div class="im-fields"><label class="im-field"><span>确认对应物料 *</span><select v-model="choices[row.index].material_id" required :aria-label="`实收行 ${row.index + 1} 对应物料`" @change="chooseMaterial(row)"><option value="">请选择匹配物料</option><option v-for="item in row.materials" :key="item.id" :value="item.id">{{ item.label }}</option></select><small v-if="!row.materials.length">未找到相同编码或名称／规格的物料，请先补齐基础资料后刷新核对。</small></label><label v-if="choices[row.index].material_id" class="im-field"><span>原采购／待回料批次</span><select v-model="choices[row.index].supply_id" :aria-label="`实收行 ${row.index + 1} 原采购批次`" @change="chooseSupply(row)"><option value="">按以下采购资料登记本次回料</option><option v-for="item in matchingSupplies(row)" :key="item.id" :value="item.id">{{ item.data.purchase_no }} / {{ item.data.purchase_line }} / {{ item.data.batch }} · 正常 {{ item.data.normal_quantity }} / 备品 {{ item.data.spare_quantity }}</option></select></label></div>
         <template v-if="choices[row.index].material_id">
           <Fields v-if="!choices[row.index].supply_id" :model="choices[row.index].purchase" :fields="purchaseFields" />
-          <div v-else v-for="item in matchingSupplies(row).filter(item => item.id === choices[row.index].supply_id)" :key="item.id" class="im-message"><p>原批次：采购日期 {{ item.data.purchase_date }} · 采购总量 {{ item.data.purchase_quantity }} · 单价 {{ item.data.price }} {{ item.data.currency }}。保留原采购及换算快照。已有分配也须逐项点选核对客户 PO。</p><p v-if="!purchaseFactsAgree(row.source, item.data)" role="alert" class="im-danger-text">原单采购资料与该批次不一致，请先核对；系统不会覆盖原采购价格或静默忽略冲突。</p></div>
-          <h3>这批实收用于哪些客户 PO</h3>
+          <div v-else v-for="item in matchingSupplies(row).filter(item => item.id === choices[row.index].supply_id)" :key="item.id" class="im-message"><p>原批次：采购日期 {{ item.data.purchase_date }} · 采购总量 {{ item.data.purchase_quantity }} · 单价 {{ item.data.price }} {{ item.data.currency }}。保留原采购及换算快照。历史分配保留，请核对客户 PO。</p><p v-if="!purchaseFactsAgree(row.source, item.data)" role="alert" class="im-danger-text">原单采购资料与该批次不一致，请先核对；系统不会覆盖原采购价格或静默忽略冲突。</p></div>
+          <h3>合同分配建议</h3><p v-if="allocationIssue(row.source, choices[row.index].allocations)" class="im-danger-text" role="alert">{{ allocationIssue(row.source, choices[row.index].allocations) }}</p>
           <div v-if="originalAllocations(row).length" class="im-message">
             <p>此采购批次有历史预分配，请核对后点选本次抵扣的 PO。沿用时保持原数量；实际用途改变时，可明确确认重新指定。</p>
             <p v-for="item in originalAllocations(row)" :key="item.id">{{ ws.record(item.data.order_id)?.data.customer }}／{{ ws.record(item.data.order_id)?.data.recipient }} · {{ ws.orderName(item.data.order_id) }} · 正常 {{ item.data.normal_quantity }}／备品 {{ item.data.spare_quantity }}</p>
@@ -186,18 +224,19 @@ async function confirm() {
           </div>
           <div v-for="(plan, index) in choices[row.index].allocations" :key="index" class="im-fields">
             <label class="im-field"><span>客户 PO／合同／货号 *</span><select :value="plan.key" required :aria-label="`实收行 ${row.index + 1} 合同 ${Number(index) + 1}`" @change="changeTarget(row, plan, ($event.target as HTMLSelectElement).value)"><option value="">请选择本批物料对应的客户 PO</option><option v-for="target in targets(row)" :key="targetKey(target)" :value="targetKey(target)">{{ target.label }}</option></select></label>
-            <label class="im-field"><span>分给此 PO 的正常量 *</span><input :value="plan.normal_quantity" type="number" min="0" step="any" required :aria-label="`实收行 ${row.index + 1} 正常量 ${Number(index) + 1}`" @input="setNumberText(plan, 'normal_quantity', $event)"></label>
-            <label class="im-field"><span>分给此 PO 的备品量 *</span><input :value="plan.spare_quantity" type="number" min="0" step="any" required :aria-label="`实收行 ${row.index + 1} 备品量 ${Number(index) + 1}`" @input="setNumberText(plan, 'spare_quantity', $event)"></label>
-            <button v-if="choices[row.index].allocations.length > 1" type="button" @click="choices[row.index].allocations.splice(Number(index), 1)">移除此 PO 分配</button>
+            <label class="im-field"><span>分给此 PO 的正常量 *</span><input :value="plan.normal_quantity" type="number" min="0" step="any" required :aria-label="`实收行 ${row.index + 1} 正常量 ${Number(index) + 1}`" @input="choices[row.index].allocation_mode = 'manual'; setNumberText(plan, 'normal_quantity', $event)"></label>
+            <label class="im-field"><span>分给此 PO 的备品量 *</span><input :value="plan.spare_quantity" type="number" min="0" step="any" required :aria-label="`实收行 ${row.index + 1} 备品量 ${Number(index) + 1}`" @input="choices[row.index].allocation_mode = 'manual'; setNumberText(plan, 'spare_quantity', $event)"></label>
+            <button v-if="choices[row.index].allocations.length > 1" type="button" @click="choices[row.index].allocation_mode = 'manual'; choices[row.index].allocations.splice(Number(index), 1)">移除此 PO 分配</button>
           </div>
-          <button type="button" @click="choices[row.index].allocations.push({ key: '', order_id: '', demand_id: '', order_version: 0, normal_quantity: '', spare_quantity: '0' })">拆分给另一个 PO</button>
+          <button type="button" :disabled="choices[row.index].allocations.length >= 100" @click="choices[row.index].allocation_mode = 'manual'; choices[row.index].allocations.push({ key: '', order_id: '', demand_id: '', order_version: 0, normal_quantity: '', spare_quantity: '0' })">拆分给另一个 PO</button>
         </template>
       </fieldset>
-      <fieldset v-if="selectedRows.length" class="im-stack" :disabled="!ws.canWrite || ws.locked || draft.switching.value"><label class="im-field"><span>本次计划河源出货日期 *</span><input v-model="shipmentDate" type="date" required></label><p class="im-note">确认 {{ selectedRows.length }} 行实收及 PO 分配，并生成出货草稿。正式出货在第 4 步确认。</p><button class="im-primary" type="submit" :disabled="selectedRows.length > 200">确认实收与 PO，去补装箱</button><p v-if="selectedRows.length > 200" class="im-error">每次最多确认 200 行，请分批选择。</p></fieldset>
+      <WarehousePackingReview :rows="preview.data.rows" :selected="selectedRows" />
+      <fieldset v-if="selectedRows.length" class="im-stack" :disabled="accessLost || !ws.canWrite || ws.locked || draft.switching.value"><label class="im-field"><span>本次计划河源出货日期 *</span><input v-model="shipmentDate" type="date" required></label><p class="im-note">确认 {{ selectedRows.length }} 行实收及 PO 分配，并生成出货草稿。正式出货在第 4 步确认。</p><button class="im-primary" type="submit" :disabled="selectedRows.length > 200 || allocationCount > 200 || allocationErrors">确认实收与 PO，去补装箱</button><p v-if="selectedRows.length > 200 || allocationCount > 200" class="im-error">每次最多确认 200 行实收、200 项合同分配，请减少勾选后分批确认。</p><p v-else-if="allocationErrors" class="im-danger-text">还有未分配或超量的行，请先核对上方提示。</p></fieldset>
       </fieldset>
       <div v-if="preview.data.shipment_ids?.length" class="im-message"><strong>已生成出货草稿</strong><p v-for="id in preview.data.shipment_ids" :key="id"><button type="button" :disabled="ws.locked" @click="ws.shipmentTarget = id">打开出货草稿并补装箱</button></p></div>
     </form>
-    <details class="im-history"><summary>历史实收单 · {{ records.length }} 份</summary><h3>仓库实收导入记录</h3><div v-if="records.length" class="im-scroll"><table><thead><tr><th>原单</th><th>客人／接收方</th><th>已收行／总行数</th><th>出货草稿</th><th>操作</th></tr></thead><tbody><tr v-for="row in records" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.rows.filter((item: Data) => item.imported_supply_id).length }} / {{ row.data.rows.length }}</td><td>{{ row.data.shipment_ids.length }}</td><td><button type="button" :disabled="ws.locked || draft.switching.value" @click="inspect(row)">继续核对实收单</button></td></tr></tbody></table></div><p v-else class="im-empty">导入各仓库实际收到单后，在此核对匹配并生成出货草稿。</p>
+    <details class="im-history"><summary>历史实收单 · {{ records.length }} 份</summary><h3>仓库实收导入记录</h3><div v-if="records.length" class="im-scroll"><table><thead><tr><th>原单</th><th>客人／接收方</th><th>已收行／总行数</th><th>出货草稿</th><th>上传人／负责人</th><th>操作</th></tr></thead><tbody><tr v-for="row in records" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.rows.filter((item: Data) => item.imported_supply_id).length }} / {{ row.data.rows.length }}</td><td>{{ row.data.shipment_ids.length }}</td><td><RecordResponsibility :record="row" /></td><td><button type="button" :disabled="ws.locked || draft.switching.value" @click="inspect(row)">继续核对实收单</button></td></tr></tbody></table></div><p v-else class="im-empty">导入各仓库实际收到单后，在此核对匹配并生成出货草稿。</p>
     </details>
   </section>
 </template>

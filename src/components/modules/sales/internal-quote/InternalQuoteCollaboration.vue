@@ -47,6 +47,9 @@ let active = true
 onBeforeUnmount(() => { active = false; ++quoteContextGeneration })
 const syncPanelOpen = ref(false)
 const syncReason = ref('')
+const referenceBanner = ref<HTMLElement | null>(null)
+const syncReasonInput = ref<HTMLTextAreaElement | null>(null)
+const formulaRecoveryNotice = ref('')
 const participationPanelOpen = ref(false)
 const selectedParticipation = ref<InternalQuoteSectionCode[]>([])
 const initialParticipation = ref<InternalQuoteSectionCode[]>([])
@@ -198,8 +201,8 @@ const canWithdrawWhole = computed(() => !currentAlternativeArchived.value && can
 const canReviewWhole = computed(() => !currentAlternativeArchived.value && canReviewWholeInternalQuote(authStore, quote.value))
 const canSyncReference = computed(() => !currentAlternativeArchived.value && !(isDirectOutput.value && ['exported', 'archived'].includes(quote.value.status)) && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
 const formulaStale = computed(() => Boolean(
-  quote.value.currentFormulaVersion
-  && quote.value.formulaVersion !== quote.value.currentFormulaVersion,
+  quote.value.formulaRecalculationRequired
+  || quote.value.currentFormulaVersion && quote.value.formulaVersion !== quote.value.currentFormulaVersion,
 ))
 const canEditSidebarPricing = computed(() => (
   !currentAlternativeArchived.value &&
@@ -409,12 +412,59 @@ async function switchProduct(product: InternalQuoteBatchProduct) {
 async function loadSwitchedProduct() {
   packagingCopyOpen.value = false
   const scrollTop = consumeInternalQuoteProductScroll()
-  await loadQuote()
+  const requestedId = quoteId.value
+  const generation = quoteContextGeneration
+  const loaded = await loadQuote()
+  if (!active || !loaded || requestedId !== quoteId.value || generation !== quoteContextGeneration) return
+  if (route.query.formulaRecovery === '1') {
+    const query = { ...route.query }
+    delete query.formulaRecovery
+    await router.replace({ query })
+    if (active && requestedId === quoteId.value && generation === quoteContextGeneration) await showFormulaRecovery()
+    return
+  }
   if (scrollTop === null) return
   await nextTick()
   requestAnimationFrame(() => requestAnimationFrame(() => {
     window.scrollTo({ top: scrollTop, behavior: 'auto' })
   }))
+}
+
+async function showFormulaRecovery() {
+  syncPanelOpen.value = false
+  if (currentAlternativeArchived.value) {
+    formulaRecoveryNotice.value = '来源款已归档。请先在“包装方案与版本”中恢复此版本或整单，再处理公式。'
+  } else if (isDirectOutput.value && quote.value.status === 'exported') {
+    formulaRecoveryNotice.value = '来源款已输出并冻结。请先复制新版本，在新版本中重算后将其选作包装来源。'
+  } else if (!canSyncReference.value) {
+    formulaRecoveryNotice.value = '当前账号没有该厂区的公式重算权限，请由有权限的业务部或工程部人员处理。'
+  } else if (!formulaStale.value) {
+    formulaRecoveryNotice.value = '来源款已使用当前公式。请重新打开“仅复制包装”读取最新状态。'
+  } else {
+    formulaRecoveryNotice.value = '当前处理来源款：' + quote.value.productName + '。填写原因并重算后，可重新打开“仅复制包装”。'
+    syncPanelOpen.value = true
+  }
+  await nextTick()
+  referenceBanner.value?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  const focusTarget = syncReasonInput.value ?? referenceBanner.value
+  focusTarget?.focus({ preventScroll: true })
+}
+
+async function openPackagingSourceFormula(sourceQuoteId: string) {
+  if (hasUnsavedDepartmentChanges()) {
+    errorMessage.value = '请先保存当前款，再前往来源款处理公式。'
+    return
+  }
+  packagingCopyOpen.value = false
+  if (sourceQuoteId === quoteId.value) {
+    const generation = quoteContextGeneration
+    const loaded = await loadQuote()
+    if (active && loaded && sourceQuoteId === quoteId.value && generation === quoteContextGeneration) await showFormulaRecovery()
+    return
+  }
+  try {
+    await router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${sourceQuoteId}/collaboration?formulaRecovery=1`))
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '打开来源款失败，请重试。' }
 }
 
 async function copyBaselineToProduct(product: InternalQuoteBatchProduct) {
@@ -445,6 +495,10 @@ async function packagingCopied() {
 }
 
 async function syncReference() {
+  if (hasUnsavedDepartmentChanges()) {
+    errorMessage.value = '请先保存当前款，再同步参考资料。'
+    return
+  }
   if (!canSyncReference.value) {
     syncPanelOpen.value = false
     errorMessage.value = '当前账号没有该厂区的参考资料同步权限。'
@@ -906,6 +960,10 @@ function toggleWholeReject() {
 async function recalculateFormula() {
   errorMessage.value = ''
   message.value = ''
+  if (hasUnsavedDepartmentChanges()) {
+    errorMessage.value = '请先保存当前款，再按当前公式重算。'
+    return
+  }
   if (!canSyncReference.value) {
     errorMessage.value = '当前账号没有该厂区的公式重算权限。'
     return
@@ -917,6 +975,7 @@ async function recalculateFormula() {
   try {
     await quoteStore.recalculateFormula(quote.value.id, quote.value.headerRevision, syncReason.value.trim())
     message.value = `已按当前公式 ${quote.value.currentFormulaVersion} 重算；受影响审批需要重新提交。`
+    formulaRecoveryNotice.value = '重算完成，请重新打开“仅复制包装”读取最新状态。'
     syncReason.value = ''
     syncPanelOpen.value = false
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '按当前公式重算失败。' }
@@ -985,6 +1044,7 @@ watch([quoteId, canSyncReference], () => {
 })
 watch(quoteId, () => {
   markupMessage.value = ''
+  formulaRecoveryNotice.value = ''
   markupError.value = ''
   sectionBlockProgress.value = {}
   wholeRejectOpen.value = false
@@ -1050,7 +1110,7 @@ onBeforeUnmount(() => {
 
     <p v-if="isReadOnly" class="quote-readonly-banner"><Building2 aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；部门编辑、整单审核、参考同步及其他业务操作仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的部门编辑、整单审核或参考同步权限。' }}</p>
 
-    <InternalQuotePackagingCopy v-if="packagingCopyOpen" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="packagingCopyOpen = false" @copied="packagingCopied" />
+    <InternalQuotePackagingCopy v-if="packagingCopyOpen" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="packagingCopyOpen = false" @copied="packagingCopied" @resolve-formula="openPackagingSourceFormula" />
     <InternalQuoteSeriesExport v-if="seriesExportOpen" :key="quote.id" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="seriesExportOpen = false" @completed="seriesExported" />
     <InternalQuoteAlternatives v-if="loadedQuote" :quote="quote" :has-unsaved-changes="hasUnsavedDepartmentChanges" @open="openAlternative" @changed="loadQuote" @archive-state="updateArchiveState" />
 
@@ -1059,8 +1119,9 @@ onBeforeUnmount(() => {
       <div class="quote-whole-review-copy"><span>{{ isDirectOutput ? '方案独立输出' : isMultiProduct ? '整批一次审核' : '整单审核' }}</span><h2>{{ collaborationStatusLabel }}</h2><p>{{ wholeReviewDescription }}</p><div><b>{{ isDirectOutput ? '业务负责人' : '指定审核人' }}：{{ quote.businessOwner }}</b><b v-if="isMultiProduct">产品数量：{{ batchProducts.length }} 款</b><b>当前款部门完成：{{ completedCount }}/{{ participatingSections.length }}</b><b>报价头 r{{ quote.headerRevision }}</b></div></div>
     </section>
 
-    <div class="quote-snapshot-banner"><Layers3 /><span><strong>参考快照已冻结</strong>{{ quote.referenceSnapshotId }} · RMB→HKD {{ quote.fxRmbHkd.toFixed(2) }} · HKD→USD {{ quote.fxHkdUsd.toFixed(2) }}</span><em>{{ formulaStale ? `公式 ${quote.formulaVersion} 已过期，当前为 ${quote.currentFormulaVersion}` : '同步最新参考表将产生新 revision，并使受影响审批失效' }}</em><button v-if="canSyncReference" type="button" @click="syncPanelOpen = !syncPanelOpen">{{ formulaStale ? '处理旧公式' : '同步最新参考表' }}</button></div>
-    <section v-if="syncPanelOpen && canSyncReference" class="quote-sync-panel"><div><strong>{{ formulaStale ? '公式或参考数据更新' : '同步最新参考表' }}</strong><span>将重算已填写分段，并使受影响的审批、最终放行和 artifact 失效。</span></div><textarea v-model="syncReason" rows="2" placeholder="必须填写变更原因" /><button type="button" class="secondary" @click="syncPanelOpen = false">取消</button><button v-if="formulaStale" type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting" @click="recalculateFormula">按当前公式重算</button><button type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting || !canSyncReference" @click="syncReference">同步最新参考表</button></section>
+    <div ref="referenceBanner" class="quote-snapshot-banner" tabindex="-1"><Layers3 /><span><strong>参考快照已冻结</strong>{{ quote.referenceSnapshotId }} · RMB→HKD {{ quote.fxRmbHkd.toFixed(2) }} · HKD→USD {{ quote.fxHkdUsd.toFixed(2) }}</span><em>{{ formulaStale ? `报价或部门核算仍使用旧公式，当前为 ${quote.currentFormulaVersion}` : '同步最新参考表将产生新 revision，并使受影响审批失效' }}</em><button v-if="canSyncReference" type="button" @click="syncPanelOpen = !syncPanelOpen">{{ formulaStale ? '处理旧公式' : '同步最新参考表' }}</button></div>
+    <p v-if="formulaRecoveryNotice" class="quote-page-message" role="status">{{ formulaRecoveryNotice }}</p>
+    <section v-if="syncPanelOpen && canSyncReference" class="quote-sync-panel"><div><strong>{{ formulaStale ? '处理旧公式' : '同步最新参考表' }}</strong><span>按当前公式重算：沿用本报价已冻结的汇率和参考价格。同步最新参考表：同时更新参考资料。两项操作都会重算已填写部门，并使受影响审批和输出失效。</span></div><textarea ref="syncReasonInput" v-model="syncReason" rows="2" placeholder="必须填写变更原因" aria-label="公式或参考资料变更原因" /><button type="button" class="secondary" @click="syncPanelOpen = false">取消</button><button v-if="formulaStale" type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting" @click="recalculateFormula">按当前公式重算</button><button type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting || !canSyncReference" @click="syncReference">同步最新参考表</button></section>
     <section v-if="participationPanelOpen" class="quote-participation-panel">
       <div class="quote-participation-copy"><UserPlus /><span><strong>添加、删除参与部门</strong><small>业务部、工程部和装配部固定参与；勾选可选部门表示参与，取消勾选表示移除。保存后会同步调整连续报价页、协作进度、成本汇总和最终放行。</small></span></div>
       <div class="quote-participation-options">

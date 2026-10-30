@@ -118,7 +118,7 @@ export function useOperations() {
       },
     ],
     profile: [
-      { name: "machine_no", label: "机号（1–11）", type: "number", default: 1 },
+      { name: "machine_no", label: "机号（1–16）", type: "number", default: 1 },
       { name: "materials", label: "适用材料（逗号分隔）", type: "array" },
       {
         name: "product_ids",

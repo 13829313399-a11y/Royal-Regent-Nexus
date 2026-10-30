@@ -246,14 +246,15 @@ def test_imported_recipe_continues_through_demand_receipt_allocation_and_excel(c
     assert len(book.sheetnames) > 1
 
 
-def test_shared_code_four_names_import_receipt_match_and_mixed_export_remain_separate(client):
+@pytest.mark.parametrize('shared_code', ['53003116', ''])
+def test_shared_code_four_names_import_receipt_match_and_mixed_export_remain_separate(client, shared_code):
     from test_indonesia_warehouse_import import preview as receipt_preview, source as receipt_source, choose, confirm as receipt_confirm
     names = ['塑胶件-子弹筒', '塑胶件-绿色拉杆', '塑胶件-蓝色拉杆', '塑胶件-推杆']
-    m = material(client, code='53003116', name=names[0])
+    m = material(client, code=shared_code, name=names[0])
     p = product(client, m, code='40149')
-    staged = preview(client, workbook([source('53003116', name, **{'规格': 'TEST'}) for name in names]), p)
+    staged = preview(client, workbook([source(shared_code, name, **{'规格': 'TEST'}) for name in names]), p)
     assert len(staged['data']['groups']) == 4
-    assert all(g['code_warnings'] for g in staged['data']['groups'])
+    assert all(bool(g['code_warnings']) == bool(shared_code) for g in staged['data']['groups'])
     payload = choices(staged)
     for choice in payload['choices']:
         choice['material'] = m['data'] | choice['material']
@@ -262,12 +263,15 @@ def test_shared_code_four_names_import_receipt_match_and_mixed_export_remain_sep
     assert len(set(ids)) == 4 and ids[0] == m['id']
     o = order(client, item_no='40149', quantity='10')
     assert len(o['data']['demands']) == 4
-    receipts = receipt_preview(client, *[receipt_source(material_code='53003116', material_name=name,
+    receipts = receipt_preview(client, *[receipt_source(material_code=shared_code, material_name=name,
         receipt_line=str(index + 1), purchase_line=str(index + 1), normal_quantity='20', spare_quantity='0') for index, name in enumerate(names)])
     assert [row['auto_material_id'] for row in receipts['data']['rows']] == ids
-    ambiguous = receipt_preview(client, receipt_source(receipt_no='WH-AMB', material_code='53003116', material_name=''))
+    ambiguous = receipt_preview(client, receipt_source(receipt_no='WH-AMB', material_code=shared_code, material_name=''))
     assert ambiguous['data']['rows'][0]['auto_material_id'] is None
-    assert len(ambiguous['data']['rows'][0]['materials']) == 4
+    if shared_code:
+        assert len(ambiguous['data']['rows'][0]['materials']) == 4
+    else:
+        assert ambiguous['data']['rows'][0]['blocked']
     posted = receipt_confirm(client, receipts, selections=[choose(receipts, row=index) for index in range(4)])
     draft = next(r for r in workspace(client)['records'] if r['kind'] == 'shipment')
     package = dict(label='四种共码物料混箱', cartons=1, length_cm='30', width_cm='20', height_cm='10', carton_weight_kg='.1', items=draft['data']['lines'])
@@ -283,7 +287,23 @@ def test_shared_code_four_names_import_receipt_match_and_mixed_export_remain_sep
     exported = [row for row in detail.iter_rows() if row[5].value in names]
     assert len(exported) == 4
     assert {row[5].value for row in exported} == set(names)
-    assert all(str(row[51].value) == '53003116' and row[11].value == 20 for row in exported)
+    assert all(str(row[51].value or '') == shared_code and row[11].value == 20 for row in exported)
+
+
+def test_import_can_fill_blank_code_only_after_explicit_adoption(client):
+    m = material(client, code=''); p = product(client, m, code='40149')
+    content = workbook([source('NEW-CODE', m['data']['name'], **{'规格': 'TEST'})])
+    staged = preview(client, content, p)
+    assert staged['data']['groups'][0]['existing']['id'] == m['id']
+    assert not staged['data']['groups'][0]['code_warnings']
+    command(client, 'master_import_confirm', choices(staged, 'keep'), staged)
+    assert next(r for r in workspace(client)['records'] if r['id'] == m['id'])['data']['code'] == ''
+    fresh = preview(client, content, p)
+    payload = choices(fresh)
+    payload['choices'][0]['material']['code'] = 'NEW-CODE'
+    command(client, 'master_import_confirm', payload, fresh)
+    saved = next(r for r in workspace(client)['records'] if r['id'] == m['id'])
+    assert saved['data']['code'] == 'NEW-CODE'
 
 
 def test_shared_code_new_name_allowed_but_same_named_identity_and_archives_are_protected(client):

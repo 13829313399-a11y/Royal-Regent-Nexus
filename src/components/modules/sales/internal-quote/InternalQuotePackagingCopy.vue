@@ -5,7 +5,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import type { InternalQuote, InternalQuoteBatchProduct } from '@/types/internalQuoteDesk'
 
 const props = defineProps<{ quote: InternalQuote; products: InternalQuoteBatchProduct[]; hasUnsavedChanges?: () => boolean }>()
-const emit = defineEmits<{ close: []; copied: [] }>()
+const emit = defineEmits<{ close: []; copied: []; resolveFormula: [quoteId: string] }>()
 // The currently open product may be the empty receiver: choose the source explicitly.
 const sourceId = ref('')
 const products = ref<ApiInternalQuoteBatchProduct[]>([])
@@ -38,6 +38,14 @@ const canPreview = computed(() => !loading.value && !busy.value && !!source.valu
 function resetPreview() { preview.value = undefined; request.value = undefined }
 function ensureSaved() {
   if (props.hasUnsavedChanges?.()) throw new Error('当前页面还有未保存内容，请先保存当前款，再复制包装。')
+}
+function resolveSourceFormula() {
+  if (loading.value || busy.value || !source.value?.packaging_copy?.formula_recalculation_required) return
+  error.value = ''
+  try {
+    ensureSaved()
+    emit('resolveFormula', source.value.quote_id)
+  } catch (cause) { error.value = getApiErrorMessage(cause) }
 }
 async function refreshProducts() {
   const ticket = ++generation
@@ -113,6 +121,7 @@ async function apply() {
         <div class="packaging-counts"><span>包材 <b>{{ source.packaging_copy.material_count }}</b> 项</span><span>纸箱 <b>{{ source.packaging_copy.carton_count }}</b> 项</span><span>包装工序组 <b>{{ source.packaging_copy.packaging_group_count }}</b> 组</span><span>包装人工 <b>{{ source.packaging_copy.packaging_labor_hkd === null ? '待核算' : 'HKD ' + source.packaging_copy.packaging_labor_hkd }}</b></span></div>
         <p v-if="!sourceIssues.length" class="ready">{{ includeAssembly ? '业务部和装配部已保存，核算有效' : '业务部已保存，核算有效' }}</p>
         <p v-for="issue in sourceIssues" :key="issue" class="error" role="alert">{{ issue }}</p>
+        <div v-if="source.packaging_copy.formula_recalculation_required"><button type="button" :disabled="busy || loading" @click="resolveSourceFormula">前往来源款处理</button><small>打开来源款的公式处理入口；重算需要填写原因并确认。</small></div>
       </div>
       <fieldset :disabled="busy || loading"><legend>复制到哪些款（接收方）</legend>
         <label v-for="product in candidates" :key="product.quote_id" class="packaging-target">

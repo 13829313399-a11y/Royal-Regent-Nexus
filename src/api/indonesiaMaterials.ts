@@ -2,7 +2,9 @@ import { http } from '@/lib/http'
 
 export type Data = Record<string, any>
 export type RecordKind = 'option' | 'customer' | 'material' | 'product' | 'order' | 'supply' | 'allocation' | 'shipment' | 'import'
-export interface MaterialRecord { id: string; kind: RecordKind; version: number; data: Data; scope?: 'shared-options' }
+export interface ResponsiblePerson { id: string; username: string; name: string; employment_epoch: number }
+export interface Responsibility { uploader: ResponsiblePerson | null; assignee: ResponsiblePerson | null; can_transfer?: boolean; transfers: { previous: ResponsiblePerson | null; assignee: ResponsiblePerson; by: ResponsiblePerson; at: string; reason: string }[] }
+export interface MaterialRecord { id: string; kind: RecordKind; version: number; data: Data; scope?: 'shared-options'; responsibility?: Responsibility; updated_at?: string }
 export interface Demand {
   id: string; material_id: string; code: string; name: string; unit: string
   computed_quantity: string; quantity: string; procurement_days: number | null
@@ -18,25 +20,29 @@ export interface BoardOrder {
   planning_status?: 'ready' | 'missing_master' | 'missing_parameters'
 }
 export interface WorkspaceResponse { records: MaterialRecord[]; board: BoardOrder[]; permissions: string[]; option_defaults?: Data[] }
-export type Action = 'option_save' | 'option_delete' | 'option_restore' | 'customer_delete' | 'customer_restore' | 'product_delete' | 'product_restore' | 'material_restore' | 'customer_save' | 'material_save' | 'product_save' | 'order_save' | 'order_plan_save' | 'order_recalculate' | 'demand_adjust'
+export type Action = 'option_save' | 'option_delete' | 'option_restore' | 'customer_delete' | 'customer_restore' | 'product_delete' | 'product_restore' | 'material_restore' | 'customer_save' | 'material_save' | 'product_save' | 'order_save' | 'order_plan_save' | 'order_materials_sync' | 'order_recalculate' | 'demand_adjust'
   | 'supply_save' | 'supply_reply' | 'output_material_refresh' | 'receipt_confirm' | 'allocate' | 'reallocate'
-  | 'shipment_save' | 'shipment_confirm' | 'import_confirm' | 'warehouse_import_confirm' | 'master_import_confirm'
+  | 'shipment_save' | 'shipment_confirm' | 'import_confirm' | 'warehouse_import_confirm' | 'master_import_confirm' | 'draft_transfer'
 export interface Command {
   factory_id: string; operation_id: string; action: Action; entity_id: string | null
   expected_version: number; data: Data
 }
 export interface ReceiptTemplateRequest {
   factory_id: string; customer: string; recipient: string; warehouse: string
-  selections: { order_id: string; demand_id: string }[]
+  mode?: 'order' | 'summary'; item_no?: string; material_ids?: string[]
+  selections?: { order_id: string; demand_id: string }[]
 }
 
 export const indonesiaMaterialsApi = {
+  async assignees(factory: string, search: string): Promise<{ people: ResponsiblePerson[]; refine_search: boolean }> {
+    return (await http.get('/indonesia-materials/draft-assignees', { params: { factory_id: factory, search } })).data
+  },
   async masterPreview(factory: string, customer: string, productIds: string[], file: File, mappings: Data[] = []): Promise<{ record: MaterialRecord }> {
     const data = new FormData()
     data.append('factory_id', factory); data.append('customer', customer); data.append('file', file)
     data.append('context', JSON.stringify({ product_ids: productIds, mappings }))
     return (await http.post('/indonesia-materials/master-imports/preview', data, {
-      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120_000,
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 270_000,
     })).data
   },
   async workspace(factory: string): Promise<WorkspaceResponse> {

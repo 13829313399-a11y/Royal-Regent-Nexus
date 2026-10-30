@@ -14,10 +14,11 @@ from zipfile import ZipFile
 
 import openpyxl
 from fastapi import HTTPException
-from pydantic import ValidationError
 from app.schemas import indonesia_materials as s
 from app.services.indonesia_material_calculations import ZERO, decimal_text, number, require
 from app.services.indonesia_materials import Ledger, authorize, digest, now_text, view
+from app.services.indonesia_warehouse_packing import packing_groups, packing_key, assemble_packages
+from app.services.order_workbook_bounds import worksheet_bounds
 from app.services.indonesia_material_options import automatic_billing
 from app.services.identity_policy import lock_mutation
 from app.services.transaction_lock import lock_transaction
@@ -108,9 +109,11 @@ def parse_warehouse_receipts(content, filename):
             book = openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=False)
             require(len(book.worksheets) <= 10, '实收单最多包含 10 个工作表，请拆分导入', 422)
             for sheet in book:
-                require(sheet.max_row <= MAX_ROWS + 30 and sheet.max_column <= 80, '实收单超过 2000 行或 80 列，请分批导入', 422)
-                sheets.append((sheet.title, list(sheet.iter_rows())))
-        from app.services.indonesia_receipt_template import TITLE, REFERENCE_HEADERS, ENTRY_FIELDS
+                row_count, column_count = worksheet_bounds(book, sheet, MAX_ROWS + 30, 80,
+                    '实收单超过 2000 行或 80 列，请分批导入')
+                if row_count and column_count:
+                    sheets.append((sheet.title, list(sheet.iter_rows(max_row=row_count, max_col=column_count))))
+        from app.services.indonesia_receipt_template import TITLE, SUMMARY_TITLE, REFERENCE_HEADERS, SUMMARY_REFERENCE_HEADERS, ENTRY_FIELDS
         result, empty_template = [], False
         for sheet, rows in sheets:
             header_index, fields = None, []
@@ -123,8 +126,8 @@ def parse_warehouse_receipts(content, filename):
             if header_index is None:
                 continue
             headers = {text(cell) for cell in rows[header_index]}
-            order_template = REFERENCE_HEADERS <= headers and '正式报关中文名称' in headers and any(
-                text(cells[0]) == TITLE for cells in rows[:header_index] if cells)
+            order_template = (REFERENCE_HEADERS <= headers or SUMMARY_REFERENCE_HEADERS <= headers) and '正式报关中文名称' in headers and any(
+                text(cells[0]) in {TITLE, SUMMARY_TITLE} for cells in rows[:header_index] if cells)
             for position, cells in enumerate(rows[header_index + 1:], header_index + 2):
                 raw = [text(cell) for cell in cells]
                 if not any(raw):
@@ -188,6 +191,17 @@ def identity(warehouse, source):
 
 def candidates(ledger, record, source, material):
     result = []
+    expected_sources = {row.id for row in ledger.rows('supply') if row.data['material_id'] == material.id
+                        and row.data['status'] == 'expected'
+                        and (not source.get('purchase_no') or row.data['purchase_no'] == source['purchase_no'])}
+    assigned, historical = {}, set()
+    for allocation in ledger.rows('allocation'):
+        data = allocation.data
+        key = (data['order_id'], data['demand_id'])
+        amount = number(data['normal_quantity']) + number(data['spare_quantity'])
+        assigned[key] = assigned.get(key, ZERO) + amount
+        if amount > ZERO and data['supply_id'] in expected_sources:
+            historical.add(key)
     for order in ledger.rows('order'):
         if order.data['customer'] != record.data['customer'] or order.data['recipient'] != record.data['recipient']:
             continue
@@ -196,15 +210,20 @@ def candidates(ledger, record, source, material):
         for demand in order.data['demands']:
             if demand['material_id'] != material.id or value_key(demand['unit']) != value_key(material.data['unit']):
                 continue
-            assigned = sum((number(row.data['normal_quantity']) + number(row.data['spare_quantity']) for row in ledger.rows('allocation') if row.data['order_id'] == order.id and row.data['demand_id'] == demand['id']), ZERO)
-            remaining = max(number(demand['quantity']) - assigned, ZERO)
+            key = (order.id, demand['id'])
+            remaining = max(number(demand['quantity']) - assigned.get(key, ZERO), ZERO)
+            if not remaining and key not in historical:
+                continue  # Completed unrelated contracts must not consume the bounded candidate list.
             result.append(dict(order_id=order.id, demand_id=demand['id'], order_version=order.version, remaining=decimal_text(remaining),
+                               required_date=(order.data.get('plan') or {}).get('required_date'), delivery_date=order.data['delivery_date'],
+                               contract_no=order.data['contract_no'], po_no=order.data.get('po_no', ''), item_no=order.data['item_no'],
                                label=f"PO {order.data.get('po_no') or '未填写'} · 合同 {order.data['contract_no']} / {order.data['item_no']} · 走货 {order.data['delivery_date']}" +
                                      (f"（历史批次 {order.data['batch']}）" if order.data.get('batch') else '') +
                                      f" · 待分配 {decimal_text(remaining)} {demand['unit']}"))
             if len(result) > 200:
                 return result  # The caller marks this row for review without failing the factory workspace.
-    return result
+    return sorted(result, key=lambda item: (item['required_date'] or item['delivery_date'] or '9999-12-31',
+                  item['contract_no'], item['po_no'], item['item_no'], item['order_id'], item['demand_id']))
 
 
 def reconcile(ledger, record):
@@ -274,7 +293,19 @@ def reconcile(ledger, record):
             exact = False
         row['auto_material_id'] = found[0].id if exact else None
         row['blocked'] = bool(row['issues'])
+    groups = receipt_packing_groups(ledger, record, rows)
+    for group in groups:
+        metadata = {key: value for key, value in group.items() if key not in {'indexes', 'package'}}
+        for index in group['indexes']:
+            rows[index]['packing_group'] = metadata
     return rows
+
+
+def receipt_packing_groups(ledger, record, rows):
+    previous = {packing_key(row['source'], other.data.get('warehouse', ''))
+                for other in ledger.rows('import') if other.id != record.id and other.data.get('import_type') == TYPE
+                for row in other.data.get('rows', []) if row.get('imported_supply_id') and row['source'].get('package_label')}
+    return packing_groups(rows, record.data['warehouse'], previous)
 
 
 def preview(db, user, factory, customer, recipient, warehouse, filename, content, rows, refresh_user):
@@ -284,16 +315,20 @@ def preview(db, user, factory, customer, recipient, warehouse, filename, content
         lock_transaction(db, 'indonesia-shared-options', 'shared-options')
         lock_transaction(db, 'indonesia-materials', factory)
         current = refresh_user()
-        require(current.id == user.id, '账号身份已变化，请重新核对', 401)
+        require(current.id == user.id and (current.identity or {}).get('employment_epoch', 1) == (user.identity or {}).get('employment_epoch', 1), '账号身份已变化，请重新核对', 401)
         authorize(current, factory, 'write')
         ledger.fixed_customer(customer)
         key = [TYPE, hashlib.sha256(content).hexdigest(), customer, recipient, warehouse]
-        existing = next((item for item in ledger.rows('import') if item.business_key == digest(key)), None)
+        from app.services.indonesia_material_ownership import Access, ownership
+        access = Access(db, current, factory)
+        fingerprint = digest(key)
+        existing = next((item for item in ledger.rows('import') if (item.data.get('preview_key') or item.business_key) == fingerprint
+                         and access.owns(item)), None)
         if not existing:
             asset = ledger.asset(PurePath(filename).name, content, 'text/csv' if filename.lower().endswith('.csv') else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             existing = ledger.save('import', dict(import_type=TYPE, status='preview', customer=customer, recipient=recipient, warehouse=warehouse,
-                filename=asset.filename, asset_id=asset.id, provided_by=current.id, rows=rows, shipment_ids=[]), key=key)
-        result = view(existing)
+                filename=asset.filename, asset_id=asset.id, provided_by=current.id, rows=rows, shipment_ids=[], preview_key=fingerprint, _ownership=ownership(current)))
+        result = access.present(existing)
         result['data']['rows'] = reconcile(ledger, existing)
         db.commit()
         return dict(record=result)
@@ -306,11 +341,11 @@ def confirm(ledger, record, payload, actor):
     require(record.data.get('import_type') == TYPE, '请选择仓库实收导入记录', 422)
     selected = s.WarehouseSelection.model_validate(payload)
     require(len({row.index for row in selected.rows}) == len(selected.rows), '不能重复选择同一来源行', 422)
+    require(sum(len(row.allocations) for row in selected.rows) <= 200, '每次最多确认 200 项合同分配，请减少勾选的实收行后分批确认', 422)
     ledger.fixed_customer(record.data['customer'])
     sources = {row['index']: row for row in reconcile(ledger, record)}
-    packing_occurrences = Counter((value_key(item['source'].get('warehouse') or record.data['warehouse']), value_key(item['source'].get('receipt_no')),
-                                   value_key(item['source'].get('package_label'))) for item in sources.values() if item['source'].get('package_label'))
-    shipment_lines, packages, all_allocations = [], [], set()
+    groups = receipt_packing_groups(ledger, record, list(sources.values()))
+    shipment_lines, packing_lines, all_allocations = [], {}, set()
     for choice in selected.rows:
         source_row = sources.get(choice.index)
         require(source_row and not source_row['blocked'] and not source_row.get('imported_supply_id'), '来源行有问题或已导入，请刷新核对', 409)
@@ -386,23 +421,15 @@ def confirm(ledger, record, payload, actor):
             shipment_lines.append(line)
             row_lines.append(line)
         source_row['imported_supply_id'] = supply.id
-        # Only complete, single-receipt packing is imported automatically. Mixed boxes are completed explicitly in the shipment editor.
-        packing_keys = ('package_label', 'cartons', 'length_cm', 'width_cm', 'height_cm', 'carton_weight_kg')
-        packing_identity = (value_key(source.get('warehouse') or record.data['warehouse']), value_key(source.get('receipt_no')), value_key(source.get('package_label')))
-        if packing_occurrences[packing_identity] == 1 and all(source.get(key) != '' and source.get(key) is not None for key in packing_keys):
-            try:
-                package = s.Package.model_validate({**{key: source[key] for key in packing_keys if key != 'package_label'}, 'label': source['package_label'], 'items': row_lines}).model_dump(mode='json')
-                packages.append(package)
-            except ValidationError:
-                source_row.setdefault('packing_notes', []).append('原单装箱资料无效，请在出货草稿补填')
-    # Repeated labels may describe a mixed carton, never infer multiple physical boxes from them.
-    counts = Counter(item['label'] for item in packages)
-    packages = [item for item in packages if counts[item['label']] == 1]
+        packing_lines[choice.index] = row_lines
+    packages, packing_notes, packing_pending = assemble_packages(groups, packing_lines)
     shipment = ledger.execute(SimpleNamespace(action='shipment_save', entity_id=None, expected_version=0, data=dict(customer=record.data['customer'],
         recipient=record.data['recipient'], shipment_date=selected.shipment_date.isoformat(), lines=shipment_lines, packages=packages,
         remarks='由仓库实收单生成，请补齐并核对装箱资料后确认出货。')), actor)
     shipment_data = deepcopy(shipment.data)
-    shipment_data.update(warehouse_import_id=record.id, packing_pending=len(packages) < len(selected.rows))
+    shipment_data.update(warehouse_import_id=record.id, packing_pending=packing_pending, packing_notes=packing_notes)
+    if ledger.access:
+        shipment_data['_ownership'] = ledger.access.info(record)
     ledger.save('shipment', shipment_data, shipment)
     data = deepcopy(record.data)
     data.update(rows=[sources[index] for index in sorted(sources)], status='partial' if any(not item.get('imported_supply_id') for item in sources.values()) else 'confirmed',

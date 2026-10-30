@@ -93,9 +93,9 @@ def validate(config):
         ):
             raise ValueError("invalid_public_key")
     printers = config["printers"]
-    if not isinstance(printers, list) or len(printers) != 11:
-        raise ValueError("exactly_11_printers_required")
-    ips, numbers = set(), set()
+    if not isinstance(printers, list) or len(printers) not in (11, 16):
+        raise ValueError("complete_11_or_16_printer_fleet_required")
+    ips, numbers, references = set(), set(), set()
     for printer in printers:
         if set(printer) != {"machine_no", "ip", "credential_ref", "cert_sha256"}:
             raise ValueError("printer_secrets_must_use_references")
@@ -108,12 +108,12 @@ def validate(config):
             raise ValueError("invalid_printer_address")
         if (
             type(printer["machine_no"]) is not int
-            or not 1 <= printer["machine_no"] <= 11
+            or not 1 <= printer["machine_no"] <= len(printers)
         ):
             raise ValueError("invalid_machine_no")
         if printer["ip"] in ips or printer["machine_no"] in numbers:
             raise ValueError("duplicate_printer")
-        if not re.fullmatch(r"printer-[0-9]{2}", printer["credential_ref"]):
+        if not re.fullmatch(r"printer-[0-9]{2}", printer["credential_ref"]) or printer["credential_ref"] in references:
             raise ValueError("invalid_credential_reference")
         if (
             not re.fullmatch(r"[a-fA-F0-9]{64}", printer["cert_sha256"])
@@ -122,4 +122,5 @@ def validate(config):
             raise ValueError("verified_certificate_pin_required")
         ips.add(printer["ip"])
         numbers.add(printer["machine_no"])
+        references.add(printer['credential_ref'])
     return config

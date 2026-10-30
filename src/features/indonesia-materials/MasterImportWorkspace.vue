@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { lostRecordAccess } from './recordAccess'
+import RecordResponsibility from './RecordResponsibility.vue'
 import { computed, ref } from 'vue'
 import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
 import Panel from './MaterialsPanel.vue'
@@ -9,7 +11,7 @@ import { useMaterialDraft } from './useDraft'
 import { clone, materialFields } from './forms'
 import { choiceFields } from './options'
 import { newDraftId, recordDraftId, recordRef, restoreRecord } from './draftPersistence'
-import { importChoices, incomingMaterial, importFields, importPayload, sourceUsages } from './masterImport'
+import { importChoices, incomingMaterial, importFields, importPayload, sourceUsages, masterParserRevision, restoreImportEdits } from './masterImport'
 
 const ws = useMaterials()
 const customer = ref(''), productIds = ref<string[]>([]), file = ref<File | null>(null)
@@ -23,12 +25,14 @@ const groups = computed<Data[]>(() => preview.value?.data.groups || [])
 const headers = (index: number): string[] => preview.value?.data.sheets[index]?.headers || []
 const confirmed = computed(() => preview.value?.data.status === 'confirmed')
 const rulesCurrent = computed(() => preview.value?.data.identity_rule === 'name-spec-v2' && preview.value?.data.format_rule === 'unified-template-v1')
+const parserCurrent = computed(() => preview.value?.data.parser_revision === masterParserRevision)
 const activeChoices = computed(() => choices.value.filter(choice => choice.selected))
 const capture = () => !confirmed.value && (customer.value || file.value || preview.value) ? {
   customer: customer.value, productIds: productIds.value, file: file.value, preview: recordRef(preview.value), choices: choices.value, mappings: mappings.value,
   label: [customer.value, products.value.filter(row => productIds.value.includes(row.id)).map(row => row.data.code).join('/'),
     file.value?.name || preview.value?.data.filename || '新导入', preview.value ? '核对中' : '待上传'].filter(Boolean).join(' · '),
 } : null
+const accessLost = computed(() => lostRecordAccess(ws, preview.value))
 const draft = useMaterialDraft(capture, {
   id: 'masterimport', multiple: true, capture,
   restore: saved => {
@@ -43,7 +47,7 @@ const draft = useMaterialDraft(capture, {
   },
   reset: () => reset(),
 })
-const locked = computed(() => !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
+const locked = computed(() => accessLost.value || !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
 function reset() { customer.value = ''; productIds.value = []; file.value = null; preview.value = null; choices.value = []; mappings.value = [] }
 function newImport() { return draft.openRecord(newDraftId('masterimport'), reset) }
 async function changeCustomer(event: Event) {
@@ -57,6 +61,8 @@ async function fileChanged(event: Event) {
   const input = event.target as HTMLInputElement, next = input.files?.[0]
   input.value = ''
   if (!next) return
+  if (!next.size || next.size > 200 * 1024 * 1024) { ws.error = '文件为空或超过 200 MB，请重新选择；已有草稿保留。'; return }
+  ws.error = ''
   if (file.value || preview.value) {
     const selectedCustomer = customer.value, selectedProducts = [...productIds.value]
     await draft.openRecord(newDraftId('masterimport'), () => { reset(); customer.value = selectedCustomer; productIds.value = selectedProducts; file.value = next })
@@ -64,6 +70,7 @@ async function fileChanged(event: Event) {
 }
 async function upload(remap = false) {
   if (!file.value || !productIds.value.length || locked.value) return
+  const previousGroups = clone(groups.value), previousChoices = clone(choices.value)
   // Preserve the previous comparison and any manual entries when producing a new preview.
   if (preview.value) {
     const selected = { customer: customer.value, ids: [...productIds.value], file: file.value, mappings: remap ? clone(mappings.value) : [], preview: preview.value, choices: clone(choices.value) }
@@ -74,7 +81,7 @@ async function upload(remap = false) {
   }
   const owner = draft.activeId.value
   const result = await ws.masterPreview(customer.value, productIds.value, file.value!, mappings.value)
-  if (result && draft.activeId.value === owner) { preview.value = result; mappings.value = clone(originalMappings()); choices.value = importChoices(result.data.groups); draft.accept() }
+  if (result && draft.activeId.value === owner) { preview.value = result; mappings.value = clone(originalMappings()); choices.value = restoreImportEdits(previousGroups, previousChoices, result.data.groups); draft.accept() }
 }
 function inspect(row: MaterialRecord) {
   return draft.openRecord(recordDraftId('masterimport', 'inspect', row.id), () => {
@@ -91,7 +98,7 @@ function chooseSource(group: Data, choice: Data) {
   choice.material = incomingMaterial(group, choice.source_index)
 }
 function editFields(group: Data, choice: Data) {
-  return choiceFields(materialFields, ws.records, ws.optionDefaults, choice.material).map(field => ({ ...field, readonly: !!group.existing && field.key === 'code' }))
+  return choiceFields(materialFields, ws.records, ws.optionDefaults, choice.material).map(field => ({ ...field, readonly: !!group.existing?.data.code && field.key === 'code' }))
 }
 const ready = computed(() => rulesCurrent.value && !confirmed.value && !mappingChanged.value && activeChoices.value.length > 0 && activeChoices.value.every(choice =>
   choice.source_index >= 0 && ['keep', 'import'].includes(choice.decision) && choice.recipes.every((r: Data) => r.decision === 'keep' || Number(r.usage) > 0)))
@@ -107,6 +114,7 @@ defineExpose({ permitDiscard: draft.permitDiscard })
 
 <template>
   <Panel title="统一资料导入" subtitle="选择已有货号，核对物料后保存到基础资料库。">
+    <p v-if="accessLost" class="im-message" role="alert">此待办已转交其他跟客或不可用，不能继续处理。原本机草稿保留，可新建或打开其他单据。</p>
     <template #action><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="newImport">新建导入</button></template>
     <ol class="im-import-progress" aria-label="统一资料导入步骤"><li :class="{ active: !preview }">1 选择货号与文件</li><li :class="{ active: preview && !confirmed }">2 对比与补充</li><li :class="{ active: confirmed }">3 确认保存</li></ol>
     <p v-if="draft.recoveryWaiting.value" class="im-message">已有导入草稿，可从“草稿”继续填写，或新建一份。</p>
@@ -115,15 +123,16 @@ defineExpose({ permitDiscard: draft.permitDiscard })
         <label class="im-field"><span>固定客人 *</span><select :value="customer" required @change="changeCustomer"><option value="">请选择固定客人</option><option v-for="row in customers" :key="row.id">{{ row.data.name }}</option></select></label>
         <div v-if="customer" class="im-stack"><strong>导入到哪些货号 *</strong><div class="im-import-products"><label v-for="row in products" :key="row.id"><input v-model="productIds" type="checkbox" :value="row.id"> {{ row.data.code }} · {{ row.data.name || '未填名称' }}</label></div><p v-if="!products.length" class="im-note">请先在“货号与物料”新增该客人的货号。</p></div>
       </fieldset>
-      <label class="im-field"><span>统一资料文件（.xlsx） *</span><input type="file" accept=".xlsx" :disabled="locked" @change="fileChanged"><small v-if="file">已保留：{{ file.name }}</small></label>
-      <div v-if="!preview" class="im-actions"><button type="submit" class="im-primary" :disabled="locked || !file || !customer || !productIds.length">上传并核对</button></div>
+      <label class="im-field"><span>统一资料文件（.xlsx） *</span><input type="file" accept=".xlsx" :disabled="locked" @change="fileChanged"><small>支持含图片的 Excel，最大 200 MB；超限物料图自动压缩，原文件不变。</small><small v-if="file">已选择：{{ file.name }}（{{ (file.size / 1024 / 1024).toFixed(1) }} MB）</small></label>
+      <div v-if="!preview" class="im-actions"><button type="submit" class="im-primary" :disabled="locked || !file || !customer || !productIds.length">{{ ws.busy ? '正在读取并核对…' : '上传并核对' }}</button></div>
     </form>
     <div v-if="preview" class="im-stack im-master-import-review">
       <div class="im-inline"><strong>{{ preview.data.filename }}</strong><span class="im-tag">{{ confirmed ? '已导入' : '待核对' }}</span></div>
       <p class="im-note">匹配 {{ preview.data.matched_rows }} 行 · {{ preview.data.groups.length }} 种物料；其他货号 {{ preview.data.skipped_rows }} 行未选入。</p>
       <p v-if="preview.data.issues?.length" class="im-message" role="alert">{{ preview.data.issues.join('；') }}</p>
       <p v-if="!confirmed && !rulesCurrent" class="im-message" role="alert">模板识别规则已更新，请重新读取以识别单位、合并资料、净重和图片；原草稿保留。</p>
-      <button v-if="!confirmed && file" type="button" :disabled="locked" @click="upload(rulesCurrent)">重新读取最新资料并对比</button>
+      <p v-if="!confirmed && rulesCurrent && !parserCurrent" class="im-note">识别规则已更新，重新读取可补齐来源资料；已填写内容保留。</p>
+      <button v-if="!confirmed && file" type="button" :disabled="locked" @click="upload()">重新读取最新资料并对比</button>
       <details v-if="!confirmed" class="im-import-mapping" :open="!preview.data.groups.length">
         <summary>核对表头对应关系（单位或字段未识别时调整）</summary>
         <fieldset :disabled="locked" class="im-stack">
@@ -141,7 +150,7 @@ defineExpose({ permitDiscard: draft.permitDiscard })
       <form v-if="!confirmed && choices.length" class="im-stack" @submit.prevent="confirm">
         <fieldset :disabled="locked || mappingChanged" class="im-stack">
           <article v-for="(group, index) in groups" :key="group.index" class="im-import-material" :data-master-import-group="group.index">
-            <div class="im-import-material-heading"><label><input v-model="choices[index].selected" type="checkbox" :disabled="!!group.blocked"> <strong>{{ group.existing?.data.code || group.sources[0].source.code || '待补编码' }} · {{ group.existing?.data.name || group.sources[0].source.name }}</strong></label><span class="im-tag" :class="group.existing ? 'im-tag-amber' : ''">{{ group.existing ? '已有资料 · 需选择' : '新增物料' }}</span></div>
+            <div class="im-import-material-heading"><label><input v-model="choices[index].selected" type="checkbox" :disabled="!!group.blocked"> <strong>{{ [group.existing?.data.code || group.sources[0].source.code, group.existing?.data.name || group.sources[0].source.name].filter(Boolean).join(' · ') }}</strong></label><span class="im-tag" :class="group.existing ? 'im-tag-amber' : ''">{{ group.existing ? '已有资料 · 需选择' : '新增物料' }}</span></div>
             <p v-if="group.blocked" role="alert" class="im-error">{{ group.blocked }}</p>
             <p v-for="warning in group.code_warnings || []" :key="warning" class="im-message">{{ warning }}</p>
             <div v-if="choices[index].selected" class="im-stack">
@@ -164,6 +173,6 @@ defineExpose({ permitDiscard: draft.permitDiscard })
       <p v-if="confirmed" role="status" class="im-message">本次已导入 {{ preview.data.choices?.length || 0 }} 种物料，可到“货号与物料”查看。</p>
       <button type="button" :disabled="ws.busy" @click="ws.download(preview.data.asset_id, preview.data.filename, 'asset')">下载来源原件</button>
     </div>
-    <details v-if="history.length" class="im-master-import-review"><summary>导入记录（{{ history.length }}）</summary><div class="im-scroll"><table><thead><tr><th>来源文件</th><th>货号</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="row in history" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.products.map((p: Data) => p.code).join('、') }}</td><td>{{ row.data.status === 'confirmed' ? '已导入' : '待核对' }}</td><td><button type="button" :disabled="locked" @click="inspect(row)">查看核对</button></td></tr></tbody></table></div></details>
+    <details v-if="history.length" class="im-master-import-review"><summary>导入记录（{{ history.length }}）</summary><div class="im-scroll"><table><thead><tr><th>来源文件</th><th>货号</th><th>状态</th><th>上传人／负责人</th><th>操作</th></tr></thead><tbody><tr v-for="row in history" :key="row.id"><td>{{ row.data.filename }}</td><td>{{ row.data.products.map((p: Data) => p.code).join('、') }}</td><td>{{ row.data.status === 'confirmed' ? '已导入' : '待核对' }}</td><td><RecordResponsibility :record="row" /></td><td><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="inspect(row)">查看核对</button></td></tr></tbody></table></div></details>
   </Panel>
 </template>

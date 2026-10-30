@@ -49,6 +49,13 @@ def command(body: Command, db: Db, user: User, request: Request):
     return service.run_command(db, user, body, refresh_user=lambda: refresh_user(request, db))
 
 
+@router.get('/draft-assignees')
+def draft_assignees(db: Db, user: User, factory_id: str = Query(...), search: str = Query('', max_length=128)):
+    service.authorize(user, factory_id, 'write')
+    from app.services.indonesia_material_ownership import assignees
+    return assignees(db, user, factory_id, search)
+
+
 @router.get('/shared-options')
 def shared_workspace(db: Db, user: User):
     return shared_options.workspace(db, user)
@@ -88,12 +95,17 @@ async def master_preview(db: Db, user: User, request: Request,
     form = await request.form()
     service.require(all(len(form.getlist(key)) == 1 for key in ('factory_id', 'customer', 'context', 'file')), '上传字段不能重复', 422)
     selection = MasterImportContext.model_validate_json(context)
-    content = await file.read(25 * 1024 * 1024 + 1)
-    service.require(0 < len(content) <= 25 * 1024 * 1024, '文件为空或超过 25 MB', 413)
-    filename = file.filename or '统一资料.xlsx'
-    parsed = await run_order_job(master_import.parse_material_book, content, filename, selection.mappings, db=db)
-    return master_import.preview(db, user, factory_id, customer.strip(), selection.product_ids, filename, content, parsed,
-                                 refresh_user=lambda: refresh_user(request, db))
+    products = master_import.selected_products(service.Ledger(db, factory_id), customer.strip(), selection.product_ids)
+    product_codes = [product.data['code'] for product in products]
+    from app.services.indonesia_master_archive import MAX_FILE_BYTES, upload_slot
+    service.require(file.size is None or 0 < file.size <= MAX_FILE_BYTES, '文件为空或超过 200 MB', 413)
+    with upload_slot():
+        content = await file.read(MAX_FILE_BYTES + 1)
+        service.require(0 < len(content) <= MAX_FILE_BYTES, '文件为空或超过 200 MB', 413)
+        filename = file.filename or '统一资料.xlsx'
+        parsed = await run_order_job(master_import.parse_material_book, content, filename, selection.mappings, product_codes, db=db)
+        return master_import.preview(db, user, factory_id, customer.strip(), selection.product_ids, filename, content, parsed,
+                                     refresh_user=lambda: refresh_user(request, db))
 
 
 @router.get('/warehouse-imports/template')
@@ -148,6 +160,11 @@ def asset(entity_id: str, db: Db, user: User, factory_id: str = Query(...)):
     service.ready(db)
     row = db.get(service.Asset, entity_id)
     service.require(row is not None and row.factory_id == factory_id, '原始资料不存在', 404)
+    from app.services.indonesia_material_ownership import Access
+    access = Access(db, user, factory_id)
+    sources = list(db.scalars(select(service.Record).where(service.Record.factory_id == factory_id,
+        service.Record.kind == 'import', service.Record.data['asset_id'].as_string() == entity_id)))
+    service.require(not sources or any(access.visible(source) for source in sources), '原始资料不存在或已转交其他跟客', 404)
     export_owner = db.scalar(select(service.Record.id).where(service.Record.factory_id == factory_id,
                             service.Record.kind == 'shipment', service.Record.data['export_asset_id'].as_string() == entity_id))
     if export_owner:
