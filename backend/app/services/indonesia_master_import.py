@@ -5,7 +5,6 @@ from io import BytesIO
 from pathlib import PurePath
 import hashlib
 import re
-from xml.etree import ElementTree
 from zipfile import ZipFile
 
 import openpyxl
@@ -15,13 +14,16 @@ from app.schemas import indonesia_materials as s
 from app.services.indonesia_material_calculations import require
 from app.services.indonesia_materials import Ledger, authorize, digest, view
 from app.services.indonesia_warehouse_import import normalized, text, value_key
-from app.services.indonesia_master_workbook import template_units, formula_cache, sheet_photos, NUMERIC_LABELS
+from app.services.indonesia_master_workbook import (template_units, named_piece_usage, shipment_weight_columns,
+    derived_net_weight, price_currency, formula_cache, sheet_photos, NUMERIC_LABELS)
+from app.services.indonesia_master_archive import MAX_FILE_BYTES, validate_archive, worksheet_evidence, sparse_row_pairs
 from app.services.identity_policy import lock_mutation
 from app.services.transaction_lock import lock_transaction
 
 TYPE = 'material_master'
 IDENTITY_RULE = 'name-spec-v2'
 FORMAT_RULE = 'unified-template-v1'
+PARSER_REVISION = 'shipment-layout-images-v3'
 MAX_ROWS = 2000
 FIELDS = {
     'item_no': ['货号', '成品货号', '产品货号', 'Item No.', 'Item No'],
@@ -48,16 +50,15 @@ def header_field(value):
     return ALIASES.get(normalized(value)) or ALIASES.get(normalized(first))
 
 
-def parse_material_book(content, filename, mappings=None):
+def parse_material_book(content, filename, mappings=None, product_codes=None):
     """Runs in the existing bounded document worker, without access to the ledger."""
     require(filename.lower().endswith('.xlsx'), '请上传统一资料 .xlsx 文件', 422)
-    require(0 < len(content) <= 25 * 1024 * 1024, '文件为空或超过 25 MB', 413)
-    book = cached_book = None
+    require(0 < len(content) <= MAX_FILE_BYTES, '文件为空或超过 200 MB', 413)
+    book = None
     try:
         with ZipFile(BytesIO(content)) as archive:
-            require(sum(item.file_size for item in archive.infolist()) <= 150 * 1024 * 1024, '文件解压后过大，请分批导入', 422)
+            validate_archive(archive)
             book = openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=False)
-            cached_book = openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=True)
             require(len(book.worksheets) <= 30, '工作表超过 30 张，请分批导入', 422)
             overrides = {item.sheet: item for item in mappings or []}
             require(len(overrides) == len(mappings or []), '工作表映射不能重复', 422)
@@ -66,8 +67,8 @@ def parse_material_book(content, filename, mappings=None):
             image_budget = {'bytes': 0}
             for sheet in book:
                 # Irrelevant invoice sheets can have inflated formatting dimensions.
-                heads = list(sheet.iter_rows(min_row=1, max_row=min(sheet.max_row or 1, 30), max_col=120))
-                index, columns = None, {}
+                heads = list(sheet.iter_rows(min_row=1, max_row=30, max_col=120))
+                index, columns, detected_fields, ambiguous_fields = None, {}, set(), set()
                 override = overrides.get(sheet.title)
                 if override:
                     index, columns = override.header_row - 1, dict(override.columns)
@@ -81,8 +82,11 @@ def parse_material_book(content, filename, mappings=None):
                                 found[field].append(col)
                         if 'item_no' in found and ('name' in found or 'code' in found):
                             index = position
+                            detected_fields = set(found)
+                            ambiguous_fields = {field for field, indexes in found.items() if len(indexes) > 1}
                             columns = {field: indexes[0] for field, indexes in found.items() if len(indexes) == 1}
-                            columns.update(template_units([text(cell) for cell in cells], normalized))
+                            columns.update({key: col for key, col in template_units([text(cell) for cell in cells], normalized).items()
+                                            if key not in found})
                             break
                 if index is None:
                     continue
@@ -98,21 +102,26 @@ def parse_material_book(content, filename, mappings=None):
                     continue
                 if not columns.get('item_no') or not (columns.get('name') or columns.get('code')):
                     continue
-                require((sheet.max_row or 0) <= MAX_ROWS + 30, f'{sheet.title} 超过 2000 行，请分批导入', 422)
                 # Inherit only real, single-column merged ranges, never arbitrary blanks.
                 merged_cells = {}
-                xml = ElementTree.fromstring(archive.read(sheet._worksheet_path))
+                weight_columns = shipment_weight_columns(headers, columns, normalized) if not override and 'net_weight_kg' not in detected_fields else None
+                shared_weight_rows = set()
+                xml, occupied = worksheet_evidence(archive, sheet._worksheet_path)
                 for node in xml.iter('{http://schemas.openxmlformats.org/spreadsheetml/2006/main}mergeCell'):
                     left, top, right, bottom = range_boundaries(node.attrib['ref'])
-                    if left == right and left in columns.values() and index + 2 <= top <= bottom <= MAX_ROWS + 30:
-                        for row_number in range(top + 1, bottom + 1):
+                    if weight_columns and bottom > top and any(left <= col <= right for col in weight_columns):
+                        shared_weight_rows.update(row for row in occupied if top <= row <= bottom)
+                    if left == right and left in columns.values() and index + 2 <= top <= bottom <= 1048576:
+                        for row_number in occupied:
+                            if not top < row_number <= bottom:
+                                continue
                             merged_cells[(row_number, left)] = (top, left)
                 merged_values = {}
                 sheet_rows = []
-                raw_rows = sheet.iter_rows(min_row=index + 2, max_col=120)
-                cached_rows = cached_book[sheet.title].iter_rows(min_row=index + 2, max_col=120)
-                for position, (cells, cached_cells) in enumerate(zip(raw_rows, cached_rows), index + 2):
+                cell_images = {}
+                for position, cells, cached_cells in sparse_row_pairs(sheet, index + 2, occupied):
                     source, warnings, notes, evidence = {}, [], [], {}
+                    warnings.extend(f'{FIELDS[field][0]}存在多个同名列，请在表头对应关系中选择来源列。' for field in sorted(ambiguous_fields))
                     for field, col in columns.items():
                         if field == 'image_data':
                             continue
@@ -144,16 +153,53 @@ def parse_material_book(content, filename, mappings=None):
                         continue
                     if normalized(source.get('name')) in {'合计', '总计'}:
                         continue
+                    if not override and source.get('price') and 'currency' not in detected_fields:
+                        price_cell = cells[columns['price'] - 1]
+                        currency = price_currency(price_cell.number_format)
+                        if currency:
+                            source['currency'] = currency
+                            evidence['currency'] = dict(cell=price_cell.coordinate, number_format=price_cell.number_format, value=currency)
+                            notes.append(f'币种 {currency} 取自单价 {price_cell.coordinate} 的明确货币格式，请核对。')
+                    if not override and 'piece_usage' not in detected_fields:
+                        usage = named_piece_usage(source.get('name'))
+                        # Shared product cells require a per-product usage decision.
+                        single_product = bool(re.fullmatch(r'[\w-]+', source['item_no'].strip(), flags=re.ASCII))
+                        if usage and single_product:
+                            coordinate = cells[columns['name'] - 1].coordinate
+                            source['piece_usage'] = usage
+                            evidence['piece_usage'] = dict(cell=coordinate, name=source['name'], value=usage, method='name_suffix')
+                            notes.append(f'单件用量 {usage} 取自 {coordinate} 中文名称末尾的数量标记；名称保留原文。')
+                        elif usage:
+                            warnings.append('本行共用多个货号，名称中的用量需逐个货号确认。')
+                    if weight_columns and position not in shared_weight_rows:
+                        weight = derived_net_weight(cells, cached_cells, *weight_columns, source.get('unit'))
+                        if weight:
+                            source['net_weight_kg'] = weight['value']
+                            evidence['net_weight_kg'] = weight
+                            total, quantity = weight['inputs']
+                            notes.append(f"单个净重按 {total['cell']}（{total['value']} kg）÷ {quantity['cell']}（{quantity['value']} {source['unit']}）预填为 {weight['value']} kg，请核对。")
+                        else:
+                            warnings.append('单个净重未换算：请核对本行总净重、有效送货数量及单位。')
+                    elif weight_columns:
+                        warnings.append('总净重或数量为跨行合并值，未拆算到本行；请核对单个净重。')
                     require(len(result) < MAX_ROWS, '本次物料行超过 2000 行，请分批导入', 422)
                     row = dict(index=len(result), source_sheet=sheet.title, source_row=position, source=source, warnings=warnings, notes=notes, evidence=evidence)
                     result.append(row)
                     sheet_rows.append(row)
-                photos, photo_warnings = sheet_photos(archive, sheet._worksheet_path, xml, columns.get('image_data'),
-                                                      {row['source_row'] for row in sheet_rows}, image_budget)
+                    image_col = columns.get('image_data')
+                    if image_col and cells[image_col - 1].data_type == 'f':
+                        cell_images[position] = text(cells[image_col - 1])
+                photos, photo_warnings, photo_evidence = sheet_photos(archive, sheet._worksheet_path, xml, columns.get('image_data'),
+                    {row['source_row'] for row in sheet_rows if product_codes is None or
+                     any(product_matches(row['source']['item_no'], code) for code in product_codes)}, image_budget, cell_images)
                 for row in sheet_rows:
                     if row['source_row'] in photos:
                         row['source']['image_data'] = photos[row['source_row']]
                         row['notes'].append('图片取自本行图片列中的内嵌图片。')
+                        photo = photo_evidence[row['source_row']]
+                        row['evidence']['image_data'] = photo
+                        if photo['compressed']:
+                            row['notes'].append(f"物料图片已自动压缩：{photo['source_bytes'] / 1_000_000:.2f} MB → {photo['stored_bytes'] / 1_000_000:.2f} MB；原始 Excel 保持不变。")
                     row['warnings'].extend(photo_warnings.get(row['source_row'], []))
             require(sheets, '未找到货号及物料名称表头，请使用含“货号”和“物料名称／产品中文名称”的统一资料', 422)
             return dict(sheets=sheets, rows=result, issues=issues)
@@ -164,8 +210,6 @@ def parse_material_book(content, filename, mappings=None):
     finally:
         if book:
             book.close()
-        if cached_book:
-            cached_book.close()
 
 
 def product_matches(value, code):
@@ -221,6 +265,14 @@ def build_groups(ledger, rows, products):
     return list(groups.values())
 
 
+def selected_products(ledger, customer, product_ids):
+    ledger.fixed_customer(customer)
+    require(0 < len(product_ids) <= 50 and len(set(product_ids)) == len(product_ids), '请选择 1 至 50 个不同货号', 422)
+    products = [ledger.get(id, 'product') for id in product_ids]
+    require(all(p.data['customer'] == customer for p in products), '所选货号不属于当前固定客人', 422)
+    return products
+
+
 def preview(db, user, factory, customer, product_ids, filename, content, parsed, refresh_user):
     try:
         lock_mutation(db)
@@ -229,13 +281,11 @@ def preview(db, user, factory, customer, product_ids, filename, content, parsed,
         require(current.id == user.id and (current.identity or {}).get('employment_epoch', 1) == (user.identity or {}).get('employment_epoch', 1), '账号身份已变化，请重新上传核对', 401)
         authorize(current, factory, 'write')
         ledger = Ledger(db, factory)
-        ledger.fixed_customer(customer)
-        require(0 < len(product_ids) <= 50 and len(set(product_ids)) == len(product_ids), '请选择 1 至 50 个不同货号', 422)
-        products = [ledger.get(id, 'product') for id in product_ids]
-        require(all(p.data['customer'] == customer for p in products), '所选货号不属于当前固定客人', 422)
+        products = selected_products(ledger, customer, product_ids)
         groups = build_groups(ledger, parsed['rows'], products)
-        # A fresh version snapshot is needed after a concurrent edit; reuploading must not reuse stale comparisons.
-        key = [TYPE, IDENTITY_RULE, FORMAT_RULE, hashlib.sha256(content).hexdigest(), customer, sorted(product_ids), parsed['sheets'],
+        # Re-reading uses the current decoder; valid existing comparisons remain confirmable.
+        # A concurrent master edit also requires a fresh version snapshot.
+        key = [TYPE, IDENTITY_RULE, FORMAT_RULE, PARSER_REVISION, hashlib.sha256(content).hexdigest(), customer, sorted(product_ids), parsed['sheets'],
                [[p.id, p.version] for p in products], [g['name_matches'] for g in groups],
                [[g['existing']['id'], g['existing']['version'], g['affected_products']] for g in groups if g['existing']]]
         preview_key = digest(key)
@@ -245,7 +295,7 @@ def preview(db, user, factory, customer, product_ids, filename, content, parsed,
         if previous:
             return dict(record=access.present(previous))
         asset = ledger.asset(PurePath(filename).name, content, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        record = ledger.save('import', dict(import_type=TYPE, identity_rule=IDENTITY_RULE, format_rule=FORMAT_RULE, status='preview', filename=asset.filename, asset_id=asset.id,
+        record = ledger.save('import', dict(import_type=TYPE, identity_rule=IDENTITY_RULE, format_rule=FORMAT_RULE, parser_revision=PARSER_REVISION, status='preview', filename=asset.filename, asset_id=asset.id,
             customer=customer, products=[dict(id=p.id, version=p.version, code=p.data['code']) for p in products],
             sheets=parsed['sheets'], issues=parsed.get('issues', []), groups=groups, matched_rows=sum(len(g['sources']) for g in groups),
             skipped_rows=len(parsed['rows']) - sum(len(g['sources']) for g in groups), provided_by=current.id, preview_key=preview_key, _ownership=ownership(current)))

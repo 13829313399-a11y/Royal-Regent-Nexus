@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { importChoices, incomingMaterial, importPayload, sourceUsages } from '../masterImport'
+import { importChoices, incomingMaterial, importPayload, sourceUsages, restoreImportEdits } from '../masterImport'
 import { materialDefaults } from '../forms'
 
 describe('master material comparison and per-product usage', () => {
@@ -49,5 +49,58 @@ describe('master material comparison and per-product usage', () => {
     choice.decision = 'keep'
     expect(importPayload([choice]).choices[0]!.material).toBeNull()
     expect(incomingMaterial({ ...existing, existing: { data: { ...materialDefaults, code: 'ORIGINAL' } } }, 1).code).toBe('ORIGINAL')
+  })
+  it('does not combine new price, currency or pricing unit with an incompatible old set', () => {
+    const old = { data: { ...materialDefaults, customs_unit: 'PCE', price: '2', currency: 'USD' } }
+    const incoming = (source: object) => incomingMaterial({ ...group, existing: old, sources: [{ index: 1, source }] }, 1)
+    expect(incoming({ price: '12.75', customs_unit: 'KGM' })).toMatchObject({ price: '12.75', customs_unit: 'KGM', currency: '' })
+    expect(incoming({ price: '12.75', currency: 'USD' }).customs_unit).toBe('')
+    expect(incoming({ customs_unit: 'KGM' })).toMatchObject({ price: '', currency: '', customs_unit: 'KGM' })
+    expect(incoming({ currency: 'HKD' }).price).toBe('')
+    expect(incoming({ customs_unit: 'pce' })).toMatchObject({ price: '2', currency: 'USD' })
+    expect(incoming({ price: '0', customs_unit: 'KGM', currency: 'HKD' })).toMatchObject({ price: '0', currency: 'HKD' })
+    expect(incoming({ name: '只更名称' })).toMatchObject({ price: '2', currency: 'USD', customs_unit: 'PCE' })
+  })
+  it('rereads new fields while retaining typed values, exclusions and independent usages', () => {
+    const before = { ...group, products: [{ id: 'p1' }], sources: [{ index: 1, source_sheet: '明细', source_row: 3,
+      product_ids: ['p1'], source: { item_no: 'ITEM', name: '袖子*2', price: '12.75' } }] }
+    const edits = importChoices([before]); edits[0]!.material.supplier = '已填供应商'; edits[0]!.recipes[0].usage = '3'; edits[0]!.selected = false
+    const after = { ...before, sources: [{ ...before.sources[0]!, index: 8, source: { ...before.sources[0]!.source, customs_unit: 'KGM', unit: 'PCS', piece_usage: '2' } }] }
+    const [restored] = restoreImportEdits([before], edits, [after])
+    expect(restored!.material).toMatchObject({ supplier: '已填供应商', customs_unit: 'KGM', unit: 'PCS' })
+    expect(restored!.recipes[0].usage).toBe('3'); expect(restored!.selected).toBe(false); expect(restored!.source_index).toBe(8)
+    expect(edits[0]!.material.customs_unit).toBe('')
+    expect(restoreImportEdits([before], importChoices([before]), [after])[0]!.recipes[0].usage).toBe('2')
+  })
+  it('adds a newly compressed source photo while preserving manually chosen photos and the old draft', () => {
+    const before = { ...group, sources: [{ index: 1, source_sheet: '明细', source_row: 3, source: { name: '线材' } }] }
+    const after = { ...before, sources: [{ ...before.sources[0]!, source: { name: '线材', image_data: 'compressed-photo' } }] }
+    const edits = importChoices([before])
+    expect(restoreImportEdits([before], edits, [after])[0]!.material.image_data).toBe('compressed-photo')
+    expect(edits[0]!.material.image_data).toBe('')
+    edits[0]!.material.image_data = 'manual-photo'
+    expect(restoreImportEdits([before], edits, [after])[0]!.material.image_data).toBe('manual-photo')
+    expect(edits[0]!.material.image_data).toBe('manual-photo')
+  })
+  it('requires a new decision on changed master versions and does not carry inherited old pricing', () => {
+    const old = { ...group, existing: { id: 'm', version: 1, data: { ...materialDefaults, customs_unit: 'PCE', price: '2', currency: 'USD' } },
+      sources: [{ index: 1, source_sheet: '明细', source_row: 3, source: { name: '袖子*2', customs_unit: 'KGM' } }] }
+    const edits = importChoices([old]); edits[0]!.decision = 'import'
+    Object.assign(edits[0]!.material, { price: '2', currency: 'USD' }) // old UI inherited these implicitly
+    const changed = { ...old, existing: { ...old.existing, version: 2 } }
+    const [restored] = restoreImportEdits([old], edits, [changed])
+    expect(restored!.decision).toBe(''); expect(restored!.material).toMatchObject({ price: '', currency: '' })
+  })
+  it('does not mistake legacy automatic zero for an edit or overwrite a newly fixed business code', () => {
+    const old = { ...group, sources: [{ index: 1, source_sheet: '明细', source_row: 3, source: { name: '袖子*2' } }] }
+    const edits = importChoices([old]); delete edits[0]!.defaultsRevision; edits[0]!.material.price = '0'; edits[0]!.material.code = 'USER-CODE'
+    const next = { ...old, existing: { id: 'newly-created', version: 1, data: { ...materialDefaults, code: 'SAVED-CODE' } },
+      sources: [{ ...old.sources[0]!, source: { name: '袖子*2', price: '12.75', currency: 'USD', customs_unit: 'KGM' } }] }
+    const [restored] = restoreImportEdits([old], edits, [next])
+    expect(restored!.material).toMatchObject({ price: '12.75', code: 'SAVED-CODE' })
+    expect(restored!.decision).toBe('')
+    expect(edits[0]!.material.code).toBe('USER-CODE')
+    const currentEdits = importChoices([old]); currentEdits[0]!.material.price = '0'
+    expect(restoreImportEdits([old], currentEdits, [next])[0]!.material.price).toBe('0')
   })
 })
