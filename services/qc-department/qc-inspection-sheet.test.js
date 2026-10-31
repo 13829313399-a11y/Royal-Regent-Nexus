@@ -202,3 +202,26 @@ test('PENDING persists independently and latest workbook upload uses selected by
   assert.equal(q.workbook.busy,false);assert.equal(p.d.getElementById('qisLatest').disabled,false);
  }finally{p.dom.window.close();}
 });
+
+test('planned date default groups customers within each day, keeps missing dates last and modification sort independent',async()=>{
+ const p=await page();try{
+  assert.equal(p.d.getElementById('filterSort').value,'date-asc');
+  const seed=p.w.QcInspectionSheet.model.items[0];
+  const rows=[
+   {id:'e',dateFrom:'2026-10-29',customer:'EDU',updatedAt:'6'},
+   {id:'b',dateFrom:'2026-10-27',dateTo:'2026-10-29',customer:'Dickie',updatedAt:'5'},
+   {id:'c',dateFrom:'2026-10-27',customer:'BUZZBEE',updatedAt:'4'},
+   {id:'a',dateFrom:'2026-10-27',customer:'Dickie',updatedAt:'3'},
+   {id:'d',dateFrom:'2026-10-28',customer:'EDU',updatedAt:'2'},
+   {id:'z',dateFrom:'',customer:'BUZZBEE',updatedAt:'1'}
+  ].map(row=>({...seed,...row}));
+  p.w.QcInspectionSheet.model.items=rows;
+  const ids=()=>Array.from(p.w.QcInspectionSheet.filtered(),r=>r.id);
+  assert.deepEqual(ids(),['c','a','b','d','e','z']);
+  p.d.getElementById('filterSort').value='date-desc';
+  assert.deepEqual(ids(),['e','d','c','a','b','z']);
+  p.d.getElementById('filterSort').value='mod-desc';
+  assert.deepEqual(ids(),['e','b','c','a','d','z']);
+  assert.deepEqual(rows.map(r=>r.id),['e','b','c','a','d','z']);
+ }finally{p.dom.window.close();}
+});

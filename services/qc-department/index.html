@@ -304,7 +304,7 @@
           </details>
           <input type="hidden" id="filterDateFrom" /><input type="hidden" id="filterDateTo" />
           <select id="filterResult" aria-label="判定结果" onchange="filterRecords()"><option value="">全部判定</option><option value="PASS">Pass</option><option value="REJ">Fail</option><option value="PENDING">Pending</option></select>
-          <select id="filterSort" aria-label="排序方式" onchange="filterRecords()" title="验货日期按客排期计划排序；修改日期按最近修改时间排序"><option value="date-desc">验货日期 ↓</option><option value="date-asc">验货日期 ↑</option><option value="mod-desc" selected>修改日期 ↓</option><option value="mod-asc">修改日期 ↑</option></select>
+          <select id="filterSort" aria-label="排序方式" onchange="filterRecords()" title="验货日期按计划开始日期排序，同日按客户归拢；修改日期按最近修改时间排序"><option value="date-desc">验货日期 ↓</option><option value="date-asc" selected>验货日期 ↑</option><option value="mod-desc">修改日期 ↓</option><option value="mod-asc">修改日期 ↑</option></select>
           <button type="button" class="records-reset records-text-btn" onclick="resetRecordsFilters()">重置筛选</button>
         </div>
         <div class="records-status-row">

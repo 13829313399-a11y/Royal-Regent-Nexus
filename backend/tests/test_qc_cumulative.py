@@ -689,3 +689,40 @@ def test_new_date_headers_have_space_without_changing_historical_columns():
     c.operate('huaxing','test',{'requestKey':uuid4().hex,'expectedVersion':1},[],'undo')
     restored=load_workbook(BytesIO(c.download('huaxing')[0]))
     for name in before.sheetnames:assert before[name].merged_cells==restored[name].merged_cells
+
+
+@pytest.mark.parametrize('undo_target',[False,True])
+@pytest.mark.parametrize('known',[False,True])
+def test_initial_legacy_template_without_metadata_requires_exact_hash_repair(monkeypatch,tmp_path,undo_target,known):
+    from hashlib import sha256
+    baseline=c.template('huaxing');legacy=b'legacy-initial-template'
+    folder=tmp_path/'templates'/'huaxing';folder.mkdir(parents=True)
+    (folder/'manifest.json').write_text(json.dumps({'legacyStyleHashes':[sha256(legacy).hexdigest()] if known else []}))
+    monkeypatch.setattr(c,'TEMPLATES',folder.parent)
+    monkeypatch.setattr(c,'template',lambda factory:baseline)
+    with c.store(True) as conn:
+        head=c.initialize(conn,'huaxing')
+        old_id=head['current_id']
+        conn.execute('UPDATE versions SET content=? WHERE id=?',(legacy,old_id))
+        if undo_target:
+            current=conn.execute('INSERT INTO versions(factory,content,snapshot,metadata,created_at,actor) VALUES(?,?,?,?,?,?)',('huaxing',baseline,'{}','{}',c.stamp(),'fixture')).lastrowid
+            conn.execute('UPDATE heads SET current_id=?,undo_id=?',(current,old_id))
+    before=c.download('huaxing')[0]
+    assert c.state('huaxing',[],SCOPE)['repairRequired'] is known
+    assert c.download('huaxing')[0]==before
+    def upgrade(conn,factory,row):
+        assert row['snapshot']=='{}'
+        if bytes(row['content'])==legacy:return baseline,{'styleRepair':{'count':1}},row['snapshot']
+        return bytes(row['content']),json.loads(row['metadata']),row['snapshot']
+    monkeypatch.setattr(c,'upgrade_version',upgrade)
+    result=c.repair('huaxing','fixture',0)
+    assert result['status']==('repaired' if known else 'unchanged')
+    assert not c.state('huaxing',[],SCOPE)['repairRequired']
+    if known:
+        assert c.download('huaxing')[0]==baseline
+        with c.store() as conn:
+            assert bytes(conn.execute('SELECT content FROM versions WHERE id=?',(old_id,)).fetchone()[0])==legacy
+        assert c.repair('huaxing','fixture',1)['status']=='unchanged'
+        c.rollback_repair('huaxing',result['repairId'],1)
+        assert c.download('huaxing')[0]==before
+        assert c.state('huaxing',[],SCOPE)['repairRequired']

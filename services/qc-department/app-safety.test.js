@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
+const { JSDOM } = require('jsdom');
 
 const appSource = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
 const aiOcrSource = fs.readFileSync(path.join(__dirname, 'ai-ocr.js'), 'utf8');
@@ -36,6 +37,14 @@ function loadConstArray(source, name) {
     if (depth === 0) return vm.runInNewContext(source.slice(bodyStart, index + 1));
   }
   throw new Error(`Could not parse ${name}`);
+}
+
+function dateHelpers(document) {
+  const context = { document };
+  for (const name of ['_pad', '_checkedDate', '_parseDate', '_dateDisplay', '_markRecordDateInput', '_setRecordDateInput']) {
+    context[name] = loadFunction(appSource, name, context);
+  }
+  return context;
 }
 
 test('record snapshot comparison detects data that refresh would overwrite', () => {
@@ -72,7 +81,8 @@ test('OCR keeps an order number out of the delivery number field', () => {
 
 test('AI OCR carries the PO number through single and queued entry', () => {
   const previewValues = {};
-  const aiWindow = {};
+  const dateInputs = new JSDOM('<input id="f_date"><input id="f_inspDate">');
+  const aiWindow = dateHelpers(dateInputs.window.document);
   const applyFields = loadFunction(aiOcrSource, 'applyFields', {
     setV: (id, value) => { previewValues[id] = value; },
     document: { getElementById: () => null },
@@ -85,6 +95,8 @@ test('AI OCR carries the PO number through single and queued entry', () => {
   });
 
   assert.equal(previewValues.ocrOrderNo, 'PO-AI-001');
+  assert.equal(previewValues.ocrDate, '');
+  assert.equal(previewValues.ocrInspDate, '');
   assert.equal(aiWindow.__qcAiResult.common.orderNo, 'PO-AI-001');
 
   const formValues = {};
@@ -92,6 +104,7 @@ test('AI OCR carries the PO number through single and queued entry', () => {
     setV: (id, value) => { formValues[id] = value; },
     setT: () => {},
     window: {
+      ...aiWindow,
       openAddModal: () => {},
       onQtyChange: () => {},
       onProductNoChange: () => {},
@@ -100,11 +113,14 @@ test('AI OCR carries the PO number through single and queued entry', () => {
 
   loadQueueItem({
     idx: 0,
-    common: { orderNo: 'PO-AI-002' },
+    common: { orderNo: 'PO-AI-002', date: '2026/10/30' },
     items: [{ productNo: '15785', productName: '队列款', qty: 200 }],
   });
 
   assert.equal(formValues.f_orderNo, 'PO-AI-002');
+  assert.equal(dateInputs.window.document.getElementById('f_date').value, '2026-10-30');
+  assert.equal(dateInputs.window.document.getElementById('f_inspDate').value, '');
+  dateInputs.window.close();
 });
 
 test('clearing OCR also clears the PO number', () => {
@@ -181,8 +197,10 @@ test('IQC report renders the PO label and value', () => {
     min25: 1, func_sample: 20, m065: 0,
   };
   const buildIQCCanvas = loadFunction(reportSource, '_buildIQCCanvas', {
+    ...dateHelpers(),
     document: { createElement: () => ({ id: '', innerHTML: '' }) },
     _todayStr: () => '2026-07-16',
+    getReportCompanyLabel: () => '测试工厂',
     _iqcGetRow: () => aqlRow,
     IQC_AQL_TABLE: [aqlRow],
   });
@@ -259,6 +277,18 @@ test('account editor clearly exposes password reset fields', () => {
 });
 
 test('mobile modal controls keep a 16px font to avoid iOS focus zoom', () => {
-  assert.match(mobileCss, /html\.qc-mobile \.modal textarea\s*\{[^}]*font-size:\s*16px\s*!important/s);
-  assert.match(mobileCss, /html\.qc-narrow \.modal textarea\s*\{[^}]*font-size:\s*16px\s*!important/s);
+  const dom = new JSDOM(`<style>${mobileCss}</style><div class="modal">
+    <input class="form-input"><select><option>Test</option></select><textarea></textarea>
+    <div id="defectsRows"><input><select><option>Test</option></select></div>
+  </div>`);
+  try {
+    for (const classes of ['qc-mobile', 'qc-mobile qc-narrow']) {
+      dom.window.document.documentElement.className = classes;
+      for (const input of dom.window.document.querySelectorAll('input, select, textarea')) {
+        assert.equal(dom.window.getComputedStyle(input).fontSize, '16px', `${classes}: ${input.outerHTML}`);
+      }
+    }
+  } finally {
+    dom.window.close();
+  }
 });
