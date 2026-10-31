@@ -2229,7 +2229,7 @@ function clearRecordsDates() {
 }
 function resetRecordsFilters() {
   ['searchInput','filterResult','filterDateFrom','filterDateTo'].forEach(id => { document.getElementById(id).value = ''; });
-  document.getElementById('filterSort').value = 'mod-desc';
+  document.getElementById('filterSort').value = window.QcInspectionSheet ? 'date-asc' : 'mod-desc';
   document.getElementById('recordsDateFilter').open = false;
   filterRecords();
 }
