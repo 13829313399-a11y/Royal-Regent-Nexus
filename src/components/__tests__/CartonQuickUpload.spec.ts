@@ -37,6 +37,22 @@ afterEach(async () => {
   await flushPromises(); document.body.innerHTML = ''; vi.restoreAllMocks()
 })
 
+it('lists issued-order shared files without granting supplier asset management', async () => {
+  const session = supplierQuickSession()
+  session.permissions = session.permissions.filter(code => !code.startsWith('carton_asset:'))
+  session.effective_access = session.effective_access.filter(row => !row.permission_code.startsWith('carton_asset:'))
+  useAuthStore().applySession(session)
+  api.list.mockResolvedValue({ items: [quickAsset()], total: 1 })
+  const wrapper = mount(CartonQuickAssetLibrary, { props: { factoryId: 'huaxing', audience: 'supplier' } })
+  wrappers.push(wrapper); await flushPromises()
+  expect(api.list).toHaveBeenCalledWith('huaxing', 'supplier', expect.any(AbortSignal))
+  expect(wrapper.text()).toContain('文字资料.txt')
+  expect(button(wrapper, '快速上传').attributes('disabled')).toBeDefined()
+  expect(wrapper.find('select[aria-label="资料状态"]').exists()).toBe(false)
+  useAuthStore().applySession(structuredClone(session)); await flushPromises()
+  expect(api.list).toHaveBeenCalledTimes(1)
+})
+
 describe('one quick-upload modal for all audiences', () => {
   it.each(['sales', 'warehouse', 'supplier'] as const)('saves one plain text material with PENDING by default (%s)', async audience => {
     const department = audience === 'supplier' ? 'supplier' : audience === 'warehouse' ? 'pmc-warehouse' : 'sales-business'

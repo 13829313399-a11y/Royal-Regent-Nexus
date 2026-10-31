@@ -936,6 +936,7 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes, *, strict_rows: b
                     "specification": _text(_cell(row, mapping, "specification")) if dongkang_format else _specification(row, mapping),
                     "delivered_quantity": _json_number(amount),
                     "unit_price": _json_number(_number(_cell(row, mapping, "unit_price"))) or 0,
+                    "unit_price_provided": _number(_cell(row, mapping, "unit_price")) is not None,
                     "location": _text(_cell(row, mapping, "location")),
                 }
             if dongkang_format:
@@ -1350,7 +1351,10 @@ def match_carton_import(db, factory_id, import_type, parsed, options):
                        customer_code=options["customer_code"], customer_name=options["customer_name"])
         # The selected master customer is authoritative; workbook buyer names
         # and filenames must never activate another customer's item convention.
-        if any(_text(options.get(key)) == "360" for key in ("customer_code", "customer_name")):
+        business_code = options.get("business_customer_code")
+        is_360 = business_code == "360" if business_code else any(
+            _text(options.get(key)) == "360" for key in ("customer_code", "customer_name"))
+        if is_360:
             for row in rows:
                 row.setdefault("source_item_no", row.get("item_no") or "")
                 row["item_no"] = _text(row.get("shipping_item_no"))

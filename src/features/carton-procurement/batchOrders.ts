@@ -54,4 +54,4 @@ export function appendItems(drafts: AppendDraft[], commonReason: string): Append
 
 // Retain uncertain commands across dialog close and authorization refresh. Keys
 // are bound to actor/employment/factory, not to the mutable selection or authz revision.
-export const pendingCartonBatches = shallowReactive(new Map<string, { body: unknown; file?: File; uncertain: boolean; appendPreview?: AppendDraft[]; commonReason?: string }>())
+export const pendingCartonBatches = shallowReactive(new Map<string, { body: unknown; file?: File; uncertain: boolean; appendPreview?: AppendDraft[]; commonReason?: string; orderImportPreview?: unknown }>())

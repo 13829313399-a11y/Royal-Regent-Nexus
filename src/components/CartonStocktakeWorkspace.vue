@@ -5,7 +5,7 @@ import CartonSelectionSummary from './CartonSelectionSummary.vue'
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { cartonProcurementApi, type CartonInventoryBalanceResponse } from '@/api/cartonProcurement'
-import { cartonStocktakeApi, type StocktakeDetail, type StocktakeHeader, type StocktakeAction, type StocktakeStatus } from '@/api/cartonStocktake'
+import { cartonStocktakeApi, type StocktakeDetail, type StocktakeHeader, type StocktakeAction, type StocktakeStatus, type StocktakePolicy } from '@/api/cartonStocktake'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
 
@@ -29,15 +29,27 @@ const counts = ref<Record<string, { actual: string; reason: string }>>({})
 const reviewReason = ref(''), offset = ref(0)
 const cancelReason = ref('取消本次盘点')
 const serviceReady = ref(false)
+const policy = ref<StocktakePolicy | null>(null), policyAmount = ref(''), policyPercent = ref(''), policyReason = ref('')
+const canManagePolicy = computed(() => supervisor.value && ['carton', 'pmc-warehouse'].some(dept => auth.can('carton_procurement:master_manage', props.factoryId, dept)))
+function acceptPolicy(value: StocktakePolicy) { policy.value = value; policyAmount.value = value.amount_threshold; policyPercent.value = String(Number(value.ratio_threshold) * 100) }
+async function savePolicy() {
+  const current = policy.value
+  if (!current || !canManagePolicy.value) return
+  await run(async () => {
+    acceptPolicy(await cartonStocktakeApi.updatePolicy({ factory_id: props.factoryId, expected_revision: current.revision,
+      amount_threshold: policyAmount.value, ratio_threshold: String(Number(policyPercent.value) / 100), reason: policyReason.value.trim() }))
+    policyReason.value = ''; message.value = '本厂区盘点门槛已更新，入账时按最新规则校验。'
+  })
+}
 const openingSelection = ref(Boolean(props.initialPositionKeys?.length))
 let active = true
 const statusNames = { DRAFT: '待盘点', SUBMITTED: '待确认入账', POSTED: '已入账', CANCELLED: '已取消' }
-const actionNames: Record<string, string> = { STOCKTAKE_CREATED: '生成盘点单', STOCKTAKE_SAVE: '保存草稿', STOCKTAKE_CONFIRM: '确认提交并入账', STOCKTAKE_SUBMIT: '提交复核（旧流程）', STOCKTAKE_APPROVE: '复核入账', STOCKTAKE_RETURN: '退回重盘', STOCKTAKE_CANCEL: '取消盘点' }
+const actionNames: Record<string, string> = { STOCKTAKE_CREATED: '生成盘点单', STOCKTAKE_SAVE: '保存草稿', STOCKTAKE_CONFIRM: '确认提交并入账', STOCKTAKE_SUBMIT: '提交主管确认', STOCKTAKE_APPROVE: '复核入账', STOCKTAKE_RETURN: '退回重盘', STOCKTAKE_CANCEL: '取消盘点' }
 const canWrite = computed(() => ['carton', 'pmc-warehouse'].some(dept => auth.can('carton_procurement:inventory_write', props.factoryId, dept)))
 const supervisor = computed(() => canWrite.value && ['carton', 'pmc-warehouse'].some(dept => auth.can('carton_procurement:order_adjust', props.factoryId, dept)))
 const own = computed(() => doc.value?.created_by === auth.currentUser?.id)
 const editable = computed(() => doc.value?.status === 'DRAFT' && own.value && canWrite.value && !doc.value?.reconciliation_error)
-const canApprove = computed(() => canWrite.value && !doc.value?.reconciliation_error)
+const canApprove = computed(() => canWrite.value && !doc.value?.reconciliation_error && (!doc.value?.review_assessment?.requires_supervisor || supervisor.value))
 const customers = computed(() => [...new Map(balances.value.map(row => [row.customer_code, row.customer_name])).entries()])
 const locations = computed(() => [...new Set(balances.value.map(row => row.latest_location))].sort())
 const filtered = computed(() => balances.value.filter(row => (!paper.value || row.packaging_type === paper.value) && (!unit.value || row.unit === unit.value) && (!customer.value || row.customer_code === customer.value) && (!location.value || (row.latest_location || '__empty') === location.value) && [row.customer_name, row.contract_no, row.item_no, row.packaging_type, row.paper_quality, row.specification].join(' ').toLowerCase().includes(inventoryQuery.value.trim().toLowerCase())))
@@ -98,6 +110,8 @@ async function create() {
 async function initialize() {
   await load()
   if (!active) return
+  if (!error.value) await run(async () => acceptPolicy(await cartonStocktakeApi.policy(props.factoryId)))
+  if (!active) return
   const initial = [...new Set(props.initialPositionKeys ?? [])]
   if (initial.length) {
     chosen.value = initial
@@ -115,7 +129,7 @@ function difference(id: string, book: string | null) {
 async function act(action: StocktakeAction) {
   const current = doc.value
   if (!current || busy.value) return
-  if (action === 'CONFIRM' && current.status === 'DRAFT' && !acknowledged.value) return
+  if (['CONFIRM', 'SUBMIT'].includes(action) && current.status === 'DRAFT' && !acknowledged.value) return
   if (action === 'CONFIRM' && !window.confirm('确认实盘数量和差异原因无误并提交入账？系统将按本单差额调整库存，入账后不能修改盘点单。')) return
   await run(async () => {
     const result = await cartonStocktakeApi.act(current.id, {
@@ -150,6 +164,12 @@ onBeforeUnmount(() => { active = false; window.removeEventListener('beforeunload
     <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}<button v-if="doc" :disabled="busy" class="ml-3 underline" @click="refresh">刷新并重新核对</button></p>
     <p v-if="message" role="status" class="rounded-lg bg-teal-50 p-3 text-sm text-teal-800">{{ message }}</p>
     <p v-if="busy" role="status" class="text-sm text-slate-500">正在处理…</p>
+    <div v-if="policy" class="rounded-lg bg-slate-50 p-3 text-xs leading-6 text-slate-600">
+      零差异可直接确认；非零差异入账后保留待抽查记录。差异绝对金额合计达到 {{ policy.amount_threshold }} 元，或任一仓位差异达到账面数量的 {{ Number(policy.ratio_threshold) * 100 }}%，须有主管调整权限；缺成本、非人民币或零账面盘盈也须主管核对。
+      <details v-if="canManagePolicy && !doc" class="mt-2"><summary class="cursor-pointer">本厂区盘点门槛设置</summary>
+        <div class="mt-2 flex flex-wrap items-end gap-3"><label>金额门槛（元）<input v-model="policyAmount" :disabled="busy" inputmode="decimal" aria-label="盘点金额门槛" class="ml-2 w-28"></label><label>数量比例（%）<input v-model="policyPercent" :disabled="busy" inputmode="decimal" aria-label="盘点比例门槛" class="ml-2 w-24"></label><label>修改原因<input v-model="policyReason" :disabled="busy" aria-label="盘点规则修改原因" class="ml-2 w-64" maxlength="1000"></label><button class="secondary" :disabled="busy || policyReason.trim().length < 4" @click="savePolicy">保存门槛</button></div>
+      </details>
+    </div>
     <template v-if="!doc && !openingSelection">
       <CartonFilterBar label="盘点库存筛选" >
 <label>客户 <select v-model="customer" aria-label="盘点客户"><option value="">全部客户</option><option v-for="[code, name] in customers" :key="code" :value="code">{{ name }}</option></select></label>
@@ -184,6 +204,8 @@ onBeforeUnmount(() => { active = false; window.removeEventListener('beforeunload
       <div class="rounded-lg bg-slate-50 p-3 text-xs leading-6 text-slate-600"><div class="font-mono">{{ doc.id }}</div><div>创建人 {{ doc.created_by_name }} · {{ doc.created_at.replace('T', ' ').slice(0, 19) }}</div><div v-if="doc.submitted_at">提交人 {{ doc.submitted_by_name }} · 盘点截止 {{ doc.submitted_at.replace('T', ' ').slice(0, 19) }}</div><div v-if="doc.reviewed_at">确认人 {{ doc.reviewed_by_name }} · {{ doc.reviewed_at.replace('T', ' ').slice(0, 19) }}</div><div v-if="doc.note" class="text-amber-700">退回 / 取消说明：{{ doc.note }}</div></div>
       <div v-if="doc.status === 'DRAFT'" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">账面截止：{{ doc.cutoff_at.replace('T', ' ').slice(0, 19) }}。请以此时点核对实物；期间有收发货或调仓，先刷新并重新核对。空白表示未盘，实际没有库存请填 0。<button class="ml-2 underline" :disabled="busy" @click="refresh">刷新账面</button></div>
       <p v-if="doc.reconciliation_error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ doc.reconciliation_error }}</p>
+      <p v-if="doc.pending_review_count" role="status" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">本单有 {{ doc.pending_review_count }} 条差异待抽查 / 复核，请到“异常处理”填写主管处理结论。</p>
+      <p v-if="doc.review_assessment?.requires_supervisor && doc.status !== 'POSTED'" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">已保存结果需要主管确认：{{ doc.review_assessment.triggers.join('；') }}。{{ dirty ? '当前有未保存填写，最终以入账时校验为准。' : '可提交主管确认，由具备调整权限的账号入账。' }}</p>
       <p v-if="doc.status === 'DRAFT' && doc.basis_changed" role="alert" class="rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-800">上次填写后有收发货或仓位变化，原实盘数字仅供参考。请对照上次账面重新核对，不能直接沿用旧数字提交。</p>
       <p v-if="doc.status !== 'DRAFT'" class="text-sm text-slate-600">按已确认的盘点差额入账；旧待确认单保留提交后的正常收发货。盘盈按当前平均库存成本计价；无可用成本时标记缺价，核价后才能关账。</p>
       <div class="overflow-auto carton-table-wrap"><table class="min-w-[1080px] carton-table-fit"><thead><tr><th>客户 / 合同</th><th>货号 / 纸品</th><th>纸质 / 规格</th><th>仓位</th><th>建单账面</th><th>{{ doc.status === 'DRAFT' ? '当前账面' : '盘点账面' }}</th><th>实盘数量</th><th>差异</th><th>差异原因</th></tr></thead><tbody>
@@ -194,9 +216,9 @@ onBeforeUnmount(() => { active = false; window.removeEventListener('beforeunload
       </tbody></table></div>
       <footer class="space-y-3 rounded-lg bg-slate-50 p-4">
         <label v-if="editable" class="flex items-start gap-2 text-sm"><input v-model="acknowledged" :disabled="busy" type="checkbox" class="mt-1">我已逐项核对实盘数量与上方账面截止时点一致，并核对期间收发货。</label>
-        <div class="flex flex-wrap items-center gap-2"><template v-if="editable"><button class="secondary" :disabled="busy" @click="act('SAVE')">保存草稿</button><button class="primary" :disabled="busy || !acknowledged" @click="act('CONFIRM')">确认提交并入账</button></template>
+        <div class="flex flex-wrap items-center gap-2"><template v-if="editable"><button class="secondary" :disabled="busy" @click="act('SAVE')">保存草稿</button><button class="secondary" :disabled="busy || !acknowledged" @click="act('SUBMIT')">提交主管确认</button><button class="primary" :disabled="busy || !acknowledged" @click="act('CONFIRM')">确认提交并入账</button></template>
           <template v-if="doc.status === 'SUBMITTED' && canApprove"><button class="primary" :disabled="busy" @click="act('CONFIRM')">确认差额入账</button></template>
-          <p v-if="doc.status === 'SUBMITTED' && !canApprove" class="text-sm text-slate-500">{{ !canWrite ? '当前账号没有库存操作权限，请主管或仓管员登录处理。' : '请先处理上方库存核对错误，再确认入账。' }}</p>
+          <p v-if="doc.status === 'SUBMITTED' && !canApprove" class="text-sm text-slate-500">{{ !canWrite ? '当前账号没有库存操作权限，请主管或仓管员登录处理。' : doc.review_assessment?.requires_supervisor && !supervisor ? '本单差异需由具备主管调整权限的账号确认入账。' : '请先处理上方库存核对错误，再确认入账。' }}</p>
           <template v-if="['DRAFT', 'SUBMITTED'].includes(doc.status) && canWrite && (own || supervisor)">
             <template v-if="doc.status === 'SUBMITTED' && supervisor"><input v-model="reviewReason" :disabled="busy" aria-label="盘点退回原因" placeholder="请说明哪些项目需要重盘" class="w-64" maxlength="1000"><button class="secondary" :disabled="busy || !reviewReason.trim()" @click="act('RETURN')">退回重盘</button></template>
             <label class="ml-auto text-xs">取消原因（可修改）<input v-model="cancelReason" :disabled="busy" aria-label="盘点取消原因" class="ml-2 w-48" maxlength="1000"></label><button class="secondary" :disabled="busy || !cancelReason.trim()" @click="act('CANCEL')">取消盘点</button>

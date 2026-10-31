@@ -391,7 +391,7 @@ async function saveWarehouse() {
     </div>
     <p v-if="error && !editing && !locationRow" role="alert" class="text-sm text-red-700">{{ error }}</p>
     <p v-if="configActionMessage && tab === 'SETTINGS'" role="status" class="rounded-lg bg-teal-50 px-3 py-2 text-xs text-teal-800">{{ configActionMessage }}</p>
-    <CartonCustomerResponsibilities v-if="tab === 'SETTINGS'" :factory-id="factoryId" :search="props.search" @changed="emit('changed')" />
+    <CartonCustomerResponsibilities v-if="tab === 'SETTINGS'" :key="customers.map(c => c.id).join('|')" :factory-id="factoryId" :search="props.search" @changed="emit('changed')" />
     <div v-if="loading" class="p-10 text-center text-slate-500">正在整理历史与基础资料…</div>
     <CartonMasterSettings v-else-if="tab === 'SETTINGS'" :key="factoryId" :workspace="workspace" :customers="customers" :busy="busy" :search="props.search" @update:search="emit('update:search', $event)" @remove="configToRemove = $event; error = ''" @restore="changeConfigAvailability($event, 'ACTIVE')" @rule="editRule" @paper="editPaperOptions" @paper-template="downloadTemplate('paper-options')" @paper-import="openImport('paper-options')" @location-template="downloadTemplate('locations')" @location-import="openImport('locations')" @edit="edit($event)" @create="createRecord" @location="editLocation" @warehouse="editWarehouse" @customer="emit('customers', $event)" @source="sourceRow = $event" />
     <article v-else class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-label="货号与包装资料">

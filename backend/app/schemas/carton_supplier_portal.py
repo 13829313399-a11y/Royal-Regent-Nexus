@@ -170,6 +170,17 @@ class DeliveryRowSelection(BaseModel):
     order_line_id: str = Field(min_length=1, max_length=96)
     issue_id: str = Field(min_length=1, max_length=96)
     order_revision: int = Field(ge=1)
+    source_kind: Literal['REGULAR', 'SPECIAL'] = 'REGULAR'
+    special_request_id: str = Field(default='', max_length=96)
+    free_confirmed: bool = False
+
+    @model_validator(mode='after')
+    def typed_source(self):
+        if (self.source_kind == 'SPECIAL') != bool(self.special_request_id):
+            raise ValueError('样板或杂单须保留原需求身份，正单不能携带特殊需求身份')
+        if self.free_confirmed and self.source_kind != 'SPECIAL':
+            raise ValueError('此确认仅用于原表中的样板或杂单免费纸品')
+        return self
 
 
 class ShipmentReceiptLink(Payload):

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import CartonStocktakeWorkspace from '../CartonStocktakeWorkspace.vue'
 
-const mocks = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn(), create: vi.fn(), act: vi.fn(), balances: vi.fn(), user: { id: 'counter' }, can: vi.fn(() => true) }))
+const mocks = vi.hoisted(() => ({ policy: vi.fn(), updatePolicy: vi.fn(), list: vi.fn(), detail: vi.fn(), create: vi.fn(), act: vi.fn(), balances: vi.fn(), user: { id: 'counter' }, can: vi.fn(() => true) }))
 vi.mock('@/api/cartonStocktake', () => ({ cartonStocktakeApi: mocks }))
 vi.mock('@/api/cartonProcurement', () => ({ cartonProcurementApi: { listInventoryBalances: mocks.balances } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: mocks.user, can: mocks.can }) }))
@@ -27,11 +27,31 @@ async function open() {
   return wrapper
 }
 beforeEach(() => {
+  mocks.policy.mockResolvedValue({ factory_id: 'huaxing', revision: 0, amount_threshold: '500', ratio_threshold: '0.05' })
   vi.clearAllMocks(); vi.spyOn(window, 'confirm').mockReturnValue(true); mocks.user.id = 'counter'; mocks.can.mockReturnValue(true)
   mocks.balances.mockResolvedValue([balance]); mocks.list.mockResolvedValue([detail()])
   mocks.detail.mockResolvedValue(detail()); mocks.create.mockResolvedValue(detail()); mocks.act.mockResolvedValue(detail())
 })
 describe('库存盘点工作台', () => {
+  it('allows a warehouse count to be submitted for supervisor confirmation', async () => {
+    mocks.can.mockImplementation((...args: unknown[]) => args[0] === 'carton_procurement:inventory_write')
+    const wrapper = await open()
+    await wrapper.get('[aria-label="实盘数量 L1"]').setValue('0')
+    await wrapper.get('[aria-label="差异原因 L1"]').setValue('仓位全部短少，提交主管核对')
+    await wrapper.get('footer input[type=checkbox]').setValue(true)
+    await button(wrapper, '提交主管确认').trigger('click'); await flushPromises()
+    expect(mocks.act).toHaveBeenCalledWith('PD-1', expect.objectContaining({ action: 'SUBMIT', posting_confirmed: false }))
+    wrapper.unmount()
+  })
+
+  it('shows a pending count needing supervisor permission without a warehouse posting button', async () => {
+    mocks.can.mockImplementation((...args: unknown[]) => args[0] === 'carton_procurement:inventory_write')
+    mocks.detail.mockResolvedValue({ ...detail('SUBMITTED'), review_assessment: { requires_supervisor: true, triggers: ['仓位数量差异达到门槛'] } })
+    const wrapper = await open()
+    expect(wrapper.text()).toContain('本单差异需由具备主管调整权限的账号确认入账')
+    expect(wrapper.findAll('button').some(row => row.text() === '确认差额入账')).toBe(false)
+    wrapper.unmount()
+  })
   it('protects changed counts and in-flight saves without locking clean document browsing', async () => {
     const wrapper = await open()
     expect(wrapper.vm.navigationBlocked).toBe(false)

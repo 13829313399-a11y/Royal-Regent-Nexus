@@ -8,13 +8,14 @@ from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovement, CartonSupplier
+from app.models.carton_procurement import CartonAuditEvent, CartonInventoryMovement, CartonSupplier, CartonException
 from app.models.carton_stocktake import CartonStocktake, CartonStocktakeLine
 from app.schemas.carton_stocktake import StocktakeAction, StocktakeCreate
 from app.services import carton_procurement as ledger
 from app.services import carton_positions as positions
 from app.services.carton_inventory_valuation import cost_key, load_valuation
 from app.services.carton_inventory_identity import aliases_for, resolve_key
+from app.services import carton_stocktake_policy as review_policy
 
 
 def _fail(message: str, status: int = 409):
@@ -122,13 +123,23 @@ def stocktake_detail(db: Session, factory: str, identifier: str):
     doc, lines = _get(db, factory, identifier)
     reconciliation_error = ""
     try:
-        quantities, locations, token, _, basis = _state(db, doc, lines)
+        quantities, locations, token, rows, basis = _state(db, doc, lines)
     except HTTPException as error:
         if not str(error.detail).startswith("旧库存身份"):
             raise
         reconciliation_error = str(error.detail)
         quantities, locations, token, basis = {line.inventory_key: None for line in lines}, {}, "", "unresolved"
+    events = list(db.scalars(select(CartonAuditEvent).where(
+        CartonAuditEvent.factory_id == factory, CartonAuditEvent.entity_id == doc.id).order_by(CartonAuditEvent.sequence)))
+    assessment = next((json.loads(event.detail_json).get("review_assessment") for event in reversed(events)
+                       if json.loads(event.detail_json).get("review_assessment")), None) if doc.status == "POSTED" else None
+    if doc.status != "POSTED" and not reconciliation_error:
+        assessment = review_policy.assess(lines, {row.id: row for row in rows}, load_valuation(db, factory), review_policy.policy(db, factory))
+    reviews = list(db.scalars(select(CartonException).where(CartonException.factory_id == factory,
+        CartonException.source_type == "STOCKTAKE", CartonException.source_id == doc.id,
+        CartonException.status.in_(["OPEN", "IN_PROGRESS"]))))
     return {**_header(doc), "ledger_token": token, "basis_changed": basis != doc.basis_token,
+            "review_assessment": assessment, "pending_review_count": len(reviews),
             "reconciliation_error": reconciliation_error,
             "cutoff_at": ledger.now_text(), "lines": [
         {"id": line.id, **json.loads(line.snapshot_json),
@@ -140,9 +151,7 @@ def stocktake_detail(db: Session, factory: str, identifier: str):
         for line in lines], "events": [
             {"action": event.event_type, "actor": event.actor_name, "at": event.created_at,
              "detail": json.loads(event.detail_json)}
-            for event in db.scalars(select(CartonAuditEvent).where(
-                CartonAuditEvent.factory_id == factory, CartonAuditEvent.entity_id == doc.id)
-                .order_by(CartonAuditEvent.sequence))]}
+            for event in events]}
 
 
 def create_stocktake(db: Session, payload: StocktakeCreate, user):
@@ -196,9 +205,17 @@ def create_stocktake(db: Session, payload: StocktakeCreate, user):
     return stocktake_detail(db, doc.factory_id, doc.id)
 
 
-def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
+def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user, *, refresh_user=None):
+    if refresh_user:
+        from app.services.identity_policy import lock_mutation
+        lock_mutation(db)
     _lock(db, payload.factory_id)
+    if refresh_user:
+        user = refresh_user()
+    review_policy.require(user, "carton_procurement:inventory_write", payload.factory_id)
     doc, lines = _get(db, payload.factory_id, identifier)
+    if payload.action in ("APPROVE", "RETURN") or (payload.action == "CANCEL" and doc.created_by != user.id):
+        review_policy.require(user, "carton_procurement:order_adjust", payload.factory_id)
     if doc.revision != payload.expected_revision:
         _fail("盘点单已更新，请刷新后操作")
     if doc.status in ("POSTED", "CANCELLED"):
@@ -242,6 +259,7 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
             doc.submitted_by, doc.submitted_by_name, doc.submitted_at = user.id, user.display_name, ledger.now_text()
         if accept_basis:
             doc.basis_token = basis
+    assessment = None
     if action in ("APPROVE", "CONFIRM"):
         if doc.status != "SUBMITTED":
             _fail("只能复核已提交的盘点单")
@@ -250,6 +268,11 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
         valuation = load_valuation(db, doc.factory_id)
         posting_at = ledger.now_text()
         references = {row.id: row for row in rows}
+        assessment = review_policy.assess(lines, references, valuation, review_policy.policy(db, doc.factory_id))
+        if assessment["requires_supervisor"]:
+            review_policy.require(user, "carton_procurement:order_adjust", doc.factory_id)
+        assessment["same_actor_confirmation"] = user.id == doc.created_by
+        assessment["supervisor_authorized"] = review_policy.allowed(user, "carton_procurement:order_adjust", doc.factory_id)
         for line in lines:
             if locations.get(line.inventory_key, ("", 0)) != (json.loads(line.snapshot_json)["latest_location"], line.location_revision):
                 _fail("提交后仓位发生变化，请退回并重新盘点")
@@ -282,6 +305,7 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
                           {"stocktake_id": doc.id, "quantity": line.difference, "movement_type": "ADJUSTMENT"})
         doc.status = "POSTED"
         doc.reviewed_by, doc.reviewed_by_name, doc.reviewed_at = user.id, user.display_name, posting_at
+        review_policy.flag_differences(db, doc, lines, user, assessment)
     elif action in ("RETURN", "CANCEL"):
         if action == "RETURN" and doc.status != "SUBMITTED":
             _fail("只能退回待复核的盘点单")
@@ -293,6 +317,8 @@ def act_stocktake(db: Session, identifier: str, payload: StocktakeAction, user):
             doc.submitted_by = doc.submitted_by_name = doc.submitted_at = ""
     doc.revision += 1
     evidence = {"reason": payload.reason, "revision": doc.revision, "status": doc.status}
+    if assessment is not None:
+        evidence["review_assessment"] = assessment
     if action in ("SUBMIT", "CONFIRM"):
         evidence.update({"posting_confirmed": payload.posting_confirmed, "cutoff_at": doc.submitted_at, "lines": [
             {"id": line.id, "book_quantity": str(line.count_book_quantity),

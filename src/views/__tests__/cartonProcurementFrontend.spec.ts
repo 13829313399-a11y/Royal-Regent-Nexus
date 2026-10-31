@@ -71,6 +71,7 @@ vi.mock('@/api/cartonSupplierPortal', () => ({ cartonSupplierPortalApi: supplier
 const workCenterStoreState = reactive<{ bell: { context: { viewer_key: string }; health: { as_of: string } } | null }>({ bell: null })
 vi.mock('@/stores/workCenter', () => ({ useWorkCenterStore: () => workCenterStoreState }))
 const cartonApiMock = vi.hoisted(() => ({
+  synchronizeBusinessCustomers: vi.fn(),
   listCustomers: vi.fn(),
   createCustomer: vi.fn(),
   updateCustomer: vi.fn(),
@@ -533,6 +534,11 @@ describe('CartonProcurementView frontend workspace', () => {
     try {
       expect(wrapper.find('a[download="纸箱历史订单导入模板.xlsx"]').exists()).toBe(false)
       expect(wrapper.find('[aria-label="新建订单类型"]').exists()).toBe(false)
+      await wrapper.get('[aria-label="订单导入入口"]').trigger('click'); await flushPromises()
+      await findButton(wrapper, '导入正单').trigger('click'); await flushPromises()
+      expect(findButton(wrapper, '下载正单参考模板').exists()).toBe(true)
+      expect(wrapper.text()).toContain('可使用自己的 Excel')
+      await wrapper.get('[aria-label="关闭订单导入"]').trigger('click'); await flushPromises()
       await wrapper.get('[aria-label="订单导入入口"]').trigger('click'); await flushPromises()
       await findButton(wrapper, '导入历史订单').trigger('click'); await flushPromises()
       expect(wrapper.get('a[download="纸箱历史订单导入模板.xlsx"]').exists()).toBe(true)
@@ -1540,6 +1546,25 @@ it('shows supplier date differences in both the internal ledger and order detail
     const wrapper = mountView('exceptions'); await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '标记已解决')!.trigger('click'); await flushPromises()
     expect(cartonApiMock.updateException).toHaveBeenCalledWith('huaxing', expect.objectContaining({ id: row.id }), 'RESOLVED', '')
+    wrapper.unmount()
+  })
+
+  it('keeps historical stocktake differences visible in monthly records and requires a review conclusion', async () => {
+    mockReceiptWorkspace([])
+    const row = { id: 'COUNT-ID', exception_no: 'COUNT-REVIEW', factory_id: 'huaxing', source_type: 'STOCKTAKE', source_id: 'PD-1', category: 'STOCKTAKE_REVIEW', severity: 'HIGH', customer_name: 'Dickie', customer_code: 'DICKIE', contract_no: 'COUNT-C', item_no: 'ITEM', title: '盘点差异待复核', description: '历史盘点差异证据', owner_department: '纸箱仓', status: 'IN_PROGRESS', resolution_note: '', revision: 1, created_at: '2026-08-16T10:00:00', updated_at: '2026-08-16T10:00:00' }
+    cartonApiMock.listExceptions.mockResolvedValue([row]); cartonApiMock.updateException.mockResolvedValue({ ...row, status: 'RESOLVED', revision: 2 })
+    const wrapper = mountView('closing'); await flushPromises()
+    await wrapper.get('[aria-label="月结查询月份"]').setValue('2026-08')
+    expect(wrapper.text()).toContain('历史盘点差异证据')
+    await wrapper.get('[aria-label="月结查询月份"]').setValue('2026-09')
+    expect(wrapper.text()).not.toContain('历史盘点差异证据')
+    routeState.query.tab = 'exceptions'; await flushPromises()
+    const resolve = wrapper.findAll('button').find(button => button.text() === '标记已解决')!
+    expect(resolve.attributes('disabled')).toBeDefined()
+    await wrapper.get('[aria-label="COUNT-REVIEW 处理说明"]').setValue('主管核对凭证与实物，确认差异原因')
+    expect(resolve.attributes('disabled')).toBeUndefined()
+    await resolve.trigger('click'); await flushPromises()
+    expect(cartonApiMock.updateException).toHaveBeenCalledWith('huaxing', expect.objectContaining({ id: row.id }), 'RESOLVED', '主管核对凭证与实物，确认差异原因')
     wrapper.unmount()
   })
 
@@ -6811,6 +6836,30 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(wrapper.text()).toContain('客户 新客户 已加入 华兴 客户主数据')
     expect(wrapper.text()).not.toContain('NEW-CUSTOMER')
     masterGet.mockRestore()
+  })
+
+  it('marks business customers and requires a second click before deleting one', async () => {
+    const masterGet = vi.spyOn(cartonMasterApi, 'get').mockResolvedValue({ ...emptyMaster(), can_manage: true })
+    const customer = { id: 'BIZ1', factory_id: 'huaxing', customer_code: 'BIZ-1', customer_name: '仓库简称',
+      business_customer_code: 'dickie', business_customer_name: 'Dickie', status: 'ACTIVE', revision: 1,
+      contact_name: '', contact_phone: '', country_region: '', note: '' }
+    cartonApiMock.listCustomers.mockResolvedValue([customer])
+    cartonApiMock.deleteCustomer.mockResolvedValue(undefined)
+    const wrapper = mountView('master-data'); await flushPromises()
+    expect(cartonApiMock.synchronizeBusinessCustomers).toHaveBeenCalledWith('huaxing')
+    expect(wrapper.text()).toContain('来自业务')
+    await wrapper.get('[aria-label="编辑客户 仓库简称"]').trigger('click')
+    expect(wrapper.get('[aria-label="编辑客户资料"]').text()).toContain('业务原名：Dickie')
+    await findButton(wrapper, '删除客户').trigger('click')
+    expect(cartonApiMock.deleteCustomer).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('不会自动重新带入')
+    await findButton(wrapper, '取消删除').trigger('click')
+    expect(cartonApiMock.deleteCustomer).not.toHaveBeenCalled()
+    await findButton(wrapper, '删除客户').trigger('click')
+    await findButton(wrapper, '确认删除客户').trigger('click'); await flushPromises()
+    expect(cartonApiMock.deleteCustomer).toHaveBeenCalledWith('huaxing', 'BIZ1')
+    expect(wrapper.find('[aria-label="编辑客户资料"]').exists()).toBe(false)
+    wrapper.unmount(); masterGet.mockRestore()
   })
 
   it('discards old-factory customer responses while starting the new-factory load immediately', async () => {

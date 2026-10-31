@@ -2433,3 +2433,28 @@ it('requires explicit ambiguous order selection and a fresh preview before dispa
   expect(api.confirmDeliveryImport).toHaveBeenCalledWith(file, ready, [{ factory_id: 'huaxing', delivery_note_no: 'DN-CHOOSE' }], choices)
   wrapper.unmount()
 })
+
+it('pins the special request version and requires explicit free confirmation on imported originals', async () => {
+  const row = { source_kind: 'SPECIAL', special_request_id: 'SP-ID', order_kind: 'SAMPLE',
+    source_sheet: '送货明细', source_row: 2, contract_no: 'SP-001', item_no: '', packaging_type: '外箱',
+    paper_quality: 'A33', specification: '10*20', delivered_quantity: 5, unit_price: 0, unit_price_provided: true,
+    order_no: 'SP-001', child_no: 'SP-001/01', order_line_id: 'SPECIAL-LINE', issue_id: 'VERSION-1',
+    order_revision: 4, status: 'BLOCKED', reason: '请确认免费', free_confirmation_required: true }
+  const blocked = { filename: '送货.xlsx', sha256: 'abc', row_count: 1, groups: [{ factory_id: 'huaxing',
+    destination: '华兴', delivery_note_no: 'DN-FREE', delivery_date: '2026-10-18', ready: false, issues: [], rows: [row] }] }
+  const ready = { ...blocked, groups: [{ ...blocked.groups[0], ready: true, rows: [{ ...row, status: 'READY', free_confirmed: true }] }] }
+  api.previewDeliveryImport.mockResolvedValueOnce(blocked).mockResolvedValueOnce(ready)
+  const wrapper = mount(CartonSupplierView, options); await flushPromises()
+  await wrapper.findAll('button').find(button => button.text() === '导入送货单')!.trigger('click')
+  const file = new File(['excel'], '送货.xlsx'); const input = wrapper.get('input[type="file"]')
+  Object.defineProperty(input.element, 'files', { configurable: true, value: [file] }); await input.trigger('change'); await flushPromises()
+  await wrapper.get('[aria-label="送货明细 第2行确认免费"]').setValue(true)
+  expect(wrapper.findAll('button').find(button => button.text() === '确认 0 张送货单发货')!.attributes('disabled')).toBeDefined()
+  await wrapper.findAll('button').find(button => button.text() === '重新校验订单选择')!.trigger('click'); await flushPromises()
+  const selected = [{ source_sheet: '送货明细', source_row: 2, source_kind: 'SPECIAL', special_request_id: 'SP-ID',
+    order_line_id: 'SPECIAL-LINE', issue_id: 'VERSION-1', order_revision: 4, free_confirmed: true }]
+  expect(api.previewDeliveryImport).toHaveBeenLastCalledWith(file, selected)
+  await wrapper.findAll('button').find(button => button.text() === '确认 1 张送货单发货')!.trigger('click'); await flushPromises()
+  expect(api.confirmDeliveryImport).toHaveBeenCalledWith(file, ready, [{ factory_id: 'huaxing', delivery_note_no: 'DN-FREE' }], selected)
+  wrapper.unmount()
+})

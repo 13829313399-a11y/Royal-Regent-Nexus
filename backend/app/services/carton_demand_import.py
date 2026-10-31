@@ -26,7 +26,7 @@ MAX_BYTES = 5 * 1024 * 1024
 
 class ImportRow(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    source_row: int = Field(ge=2, le=501)
+    source_row: int = Field(ge=2, le=551)
     group: str = Field(min_length=1, max_length=64)
     kind: str = Field(max_length=32)
     item_no: str = Field(default="", max_length=128)
@@ -124,7 +124,6 @@ def confirm(db, user, payload, original, filename, *, refresh_actor):
     selected_ids = [row.source_row for row in payload.rows]
     if len(set(selected_ids)) != len(selected_ids) or set(selected_ids) - source_ids:
         raise HTTPException(422, "导入行重复或不属于此文件，请重新预览")
-    groups = grouped(payload.rows)
     user = special.locked_actor(db, user, payload.factory_id)
     user = refresh_actor()
     authorize(db, user, payload.factory_id)
@@ -132,6 +131,17 @@ def confirm(db, user, payload, original, filename, *, refresh_actor):
     if saved:
         for row in saved["orders"]: special.access(db, user, payload.factory_id, row["id"])
         return saved
+    source_groups = {}
+    for row in original["rows"]:
+        source_groups.setdefault(row.get("group", "").strip(), set()).add(row["source_row"])
+    selected = set(selected_ids)
+    confirmed_groups = {row.source_row: row.group for row in payload.rows}
+    for group, members in source_groups.items():
+        if not group and selected != source_ids:
+            raise HTTPException(422, "原表有未明确分组的纸品，请补齐全部订单归属后导入")
+        if members & selected and (not members <= selected or (group and len({confirmed_groups[n] for n in members}) != 1)):
+            raise HTTPException(422, "同一订单全部纸品须一起导入，不能只选择部分原表行")
+    groups = grouped(payload.rows)
     try:
         # One immutable source-row claim prevents repeat files and changed group labels
         # from re-importing a row, including under another authorized operator.

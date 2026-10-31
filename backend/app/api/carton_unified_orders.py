@@ -69,6 +69,65 @@ def demand_confirm(request: Request, body: str = Form(..., max_length=2_000_000)
     return demand.confirm(db, user, payload, original, (file.filename or "")[:255], refresh_actor=lambda: get_current_user(request, db))
 
 
+@router.get("/order-import/template")
+def order_import_template(factory_id: str, mode: Literal["REGULAR", "SPECIAL"], db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_order_import import authorize
+    from app.services.carton_order_import_file import template
+    authorize(db, user, factory_id, mode)
+    return Response(template(mode), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="carton-new-order-template.xlsx"', "Cache-Control": "private, no-store"})
+
+
+def new_order_file(request, body, file, db, user, model):
+    from app.services.carton_order_import import authorize
+    from app.services.carton_order_import_file import MAX_BYTES
+    from app.services.carton_file_jobs import run_file_job
+    try:
+        payload = model.model_validate_json(body)
+    except ValidationError as exc:
+        raise HTTPException(422, "导入字段不完整或过长，请重新读取文件并核对") from exc
+    authorize(db, user, payload.factory_id, payload.mode)
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(422, "请选择 Excel .xlsx 文件")
+    content = file.file.read(MAX_BYTES + 1)
+    if len(content) > MAX_BYTES:
+        raise HTTPException(422, "文件不能超过 5 MiB")
+    db.rollback()  # Never hold a database transaction during untrusted file work.
+    original = run_file_job("order_import_read", content, payload.mode, payload.sheet, payload.header_row, payload.mapping)
+    db.expire_all()
+    actor = get_current_user(request, db)
+    if actor.id != user.id:
+        raise HTTPException(401, "账号身份已变化")
+    authorize(db, actor, payload.factory_id, payload.mode)
+    return payload, original, actor
+
+
+@router.post("/order-import/read")
+def read_new_orders(request: Request, body: str = Form(..., max_length=100_000), file: UploadFile = File(...),
+                    db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.schemas.carton_order_import import FileOptions
+    _, original, _ = new_order_file(request, body, file, db, user, FileOptions)
+    return original
+
+
+@router.post("/order-import/preview")
+def preview_new_orders(request: Request, body: str = Form(..., max_length=2_000_000), file: UploadFile = File(...),
+                       db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.schemas.carton_order_import import Preview
+    from app.services.carton_order_import import assessment
+    payload, original, actor = new_order_file(request, body, file, db, user, Preview)
+    return assessment(db, actor, payload, original)[0]
+
+
+@router.post("/order-import/confirm")
+def confirm_new_orders(request: Request, body: str = Form(..., max_length=2_000_000), file: UploadFile = File(...),
+                       db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.schemas.carton_order_import import Confirm
+    from app.services.carton_order_import import confirm
+    payload, original, actor = new_order_file(request, body, file, db, user, Confirm)
+    return confirm(db, actor, payload, original, (file.filename or "")[:255], refresh_actor=lambda: get_current_user(request, db))
+
+
 @router.get("")
 def ledger(factory_id: str, responsibility_scope: Literal["OWN", "ALL"] = "OWN",
            kind: Literal["ALL", "PURCHASE", "SAMPLE", "WORKSHOP_MISC", "SUPPLIER_GIFT"] = "ALL",

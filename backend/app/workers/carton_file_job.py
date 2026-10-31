@@ -43,6 +43,9 @@ def main():
             elif operation == "demand_parse":
                 from app.services.carton_demand_import import parse
                 value = parse(*args)
+            elif operation == "order_import_read":
+                from app.services.carton_order_import_file import read
+                value = read(*args)
             elif operation == "combined_export":
                 from app.services.carton_procurement_export import build_combined_purchase_order_workbook
                 value = build_combined_purchase_order_workbook(args[0], generated_at=args[1])

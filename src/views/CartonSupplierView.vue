@@ -337,13 +337,19 @@ const importPreview = ref<DeliveryImportPreview | null>(null)
 const selectedImportNotes = ref<string[]>([])
 const importModes = ref<Record<string, DeliveryRegistrationMode>>({})
 const importChoices = ref<Record<string, string>>({})
+const importFreeConfirmations = ref<Record<string, boolean>>({})
 const reviewedImportChoices = ref<DeliveryRowSelection[]>([])
 const importChoicesDirty = ref(false)
 const importRowKey = (row: DeliveryImportRow) => `${row.source_sheet}:${row.source_row}`
 function importChoiceSelections(): DeliveryRowSelection[] {
-  return (importPreview.value?.groups ?? []).flatMap(group => group.rows.flatMap(row => {
+  return (importPreview.value?.groups ?? []).flatMap(group => group.manual_delivery_id ? [] : group.rows.flatMap(row => {
     const candidate = row.candidates?.find(item => `${item.order_line_id}|${item.issue_id}` === importChoices.value[importRowKey(row)] || item.order_line_id === importChoices.value[importRowKey(row)])
-    return candidate ? [{ source_sheet: row.source_sheet, source_row: row.source_row, order_line_id: candidate.order_line_id, issue_id: candidate.issue_id, order_revision: candidate.order_revision }] : []
+      ?? (row.source_kind === 'SPECIAL' && row.order_line_id ? row : undefined)
+    if (!candidate || !candidate.order_revision) return []
+    return [{ source_sheet: row.source_sheet, source_row: row.source_row, order_line_id: candidate.order_line_id,
+      issue_id: candidate.issue_id, order_revision: candidate.order_revision,
+      ...(candidate.source_kind === 'SPECIAL' ? { source_kind: 'SPECIAL' as const,
+        special_request_id: candidate.special_request_id, free_confirmed: Boolean(importFreeConfirmations.value[importRowKey(row)]) } : {}) }]
   }))
 }
 async function recheckImportChoices() {
@@ -384,7 +390,7 @@ watch(importContext, () => {
   ++extraGeneration.documents; ++extraGeneration.activity; extraLoaded.documents = extraLoaded.activity = false; extraLoadingState.documents = extraLoadingState.activity = false
   closeDocumentDetail(); closeMergedDocuments(); bulkAcceptOpen.value = false; loading.value = false; discovering.value = false
   dirtyDates.clear(); for (const key of Object.keys(dates)) delete dates[key]; for (const key of Object.keys(dateIssueIds)) delete dateIssueIds[key]
-  selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false; busy.value = false
+  selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; importFreeConfirmations.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false; busy.value = false
   search.value = ''; documentSearch.value = ''; activitySearch.value = ''
   shipmentFilters.value = { ...shipmentFilters.value, search: '' }
   activityTotal.value = 0
@@ -476,7 +482,7 @@ function openDeliveryImport() {
   error.value = ''
   importFile.value = null
   importPreview.value = null
-  selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false
+  selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; importFreeConfirmations.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false
   importOpen.value = true
 }
 function closeDeliveryImport() {
@@ -485,7 +491,7 @@ function closeDeliveryImport() {
   importOpen.value = false
   importFile.value = null
   importPreview.value = null
-  selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false
+  selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; importFreeConfirmations.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false
 }
 function documentKey(row: Pick<SupplierDocument, 'factory_id' | 'kind' | 'id'>) {
   return [row.factory_id, row.kind, row.id].join('|')
@@ -1226,7 +1232,7 @@ async function onDeliveryFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
   importFile.value = file ?? null
   importPreview.value = null
-  selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false
+  selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; importFreeConfirmations.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false
   error.value = ''
   if (!file) return
   busy.value = true
@@ -1234,6 +1240,7 @@ async function onDeliveryFile(event: Event) {
     const preview = await api.previewDeliveryImport(file)
     if (token !== importGeneration || context !== importContext.value || !canEdit.value) return
     importPreview.value = preview
+    reviewedImportChoices.value = importChoiceSelections()
     importModes.value = Object.fromEntries(preview.groups.map(group => [importNoteKey(group), !group.ready && group.receipt_link_ready ? 'EXISTING_RECEIPT' : 'SHIPMENT']))
     selectedImportNotes.value = preview.groups.filter(importGroupReady).map(importNoteKey)
   } catch (reason) { if (token === importGeneration && context === importContext.value) failure(reason) } finally { if (token === importGeneration && context === importContext.value) busy.value = false }
@@ -1257,7 +1264,7 @@ async function confirmDeliveryImport() {
     importOpen.value = false
     importFile.value = null
     importPreview.value = null
-    selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false
+    selectedImportNotes.value = []; importModes.value = {}; importChoices.value = {}; importFreeConfirmations.value = {}; reviewedImportChoices.value = []; importChoicesDirty.value = false
     extraLoaded.documents = false
     extraLoaded.activity = false
     activeTab.value = 'shipments'
@@ -1467,11 +1474,11 @@ async function download(id: string, factoryId: string, filename: string) {
                 <label class="block text-sm font-semibold">选择送货明细表（.xls / .xlsx）<input type="file" accept=".xls,.xlsx" :disabled="busy" class="mt-2 block w-full rounded-lg border border-slate-200 p-2 text-xs" @change="onDeliveryFile"></label>
                 <p v-if="busy" role="status" class="text-sm text-teal-700">正在处理送货单…</p>
                 <p v-if="error" role="alert" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
-                <button v-if="importPreview?.groups.some(group => group.rows.some(row => row.candidates?.length))" type="button" :disabled="busy" class="rounded-lg border border-teal-300 px-3 py-2 text-xs text-teal-800" @click="recheckImportChoices">重新校验订单选择</button><p v-if="importChoicesDirty" class="text-xs text-amber-700">订单选择已改变，请重新校验后提交。</p><p v-if="importPreview" class="text-xs text-slate-600">{{ importPreview.filename }} · 共 {{ importPreview.row_count }} 行 · {{ importPreview.groups.length }} 张送货单；无单候选将送仓库逐条核实，确认发货不等于入库。</p>
+                <button v-if="importPreview?.groups.some(group => group.rows.some(row => row.candidates?.length || row.source_kind === 'SPECIAL' && row.unit_price_provided && Number(row.unit_price) === 0))" type="button" :disabled="busy" class="rounded-lg border border-teal-300 px-3 py-2 text-xs text-teal-800" @click="recheckImportChoices">重新校验订单选择</button><p v-if="importChoicesDirty" class="text-xs text-amber-700">订单选择已改变，请重新校验后提交。</p><p v-if="importPreview" class="text-xs text-slate-600">{{ importPreview.filename }} · 共 {{ importPreview.row_count }} 行 · {{ importPreview.groups.length }} 张送货单；无单候选将送仓库逐条核实，确认发货不等于入库。</p>
                 <section v-for="group in importPreview?.groups ?? []" :key="importNoteKey(group)" class="rounded-xl border p-3" :class="importGroupReady(group) ? 'border-teal-200' : 'border-amber-200 bg-amber-50/40'">
                   <div class="flex flex-wrap items-center gap-3 text-sm"><input v-model="selectedImportNotes" :value="importNoteKey(group)" type="checkbox" :disabled="!importGroupReady(group) || busy" :aria-label="`确认送货单 ${group.delivery_note_no || '未填单号'}`" class="size-4 accent-teal-700"><b>{{ group.delivery_note_no || '未填送货单号' }}</b><span>{{ factoryDisplayName(group.factory_id) }} · {{ group.delivery_date || '未填日期' }}</span><span :class="importGroupReady(group) ? 'text-teal-700' : 'text-amber-700'" class="font-semibold">{{ importModes[importNoteKey(group)] === 'EXISTING_RECEIPT' && group.receipt_link_ready ? '后补凭证 · 仅关联已有入库' : group.ready ? group.rows.some(row => row.status === 'AD_HOC_REVIEW') ? '可发货 · 含仓库待核实无单纸品' : '可确认发货' : '需核对' }}</span></div>
                   <div v-if="group.receipt_link_ready" class="mt-3 rounded-lg bg-teal-50 p-3 text-xs text-teal-900"><p>发现 {{ group.existing_receipt_count }} 张可匹配的已入库记录。若本单是已手动收料的后补凭证，请选择仅关联；确为新一批到货才选择新发货。</p><label class="mt-2 flex items-center gap-2">提交方式<select v-model="importModes[importNoteKey(group)]" :aria-label="`送货单 ${group.delivery_note_no} 提交方式`" :disabled="busy" class="rounded border bg-white p-2"><option value="SHIPMENT" :disabled="!group.ready">新发货，等待仓库验收</option><option value="EXISTING_RECEIPT">后补凭证，仅关联已有入库</option></select></label><p class="mt-2">{{ group.manual_delivery_id ? '已匹配原手工收料，确认后补入供应商原价；价格变化通知仓库，数量和验收日期保留。' : '由仓库确认关联原收料；采用供应商原价并通知仓库，数量和验收日期保留。' }}</p></div><p v-for="issue in group.issues" :key="issue" class="mt-2 text-xs text-amber-700">{{ issue }}</p>
-                  <div class="mt-2 overflow-x-auto carton-table-wrap"><table class="w-full min-w-[960px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 text-slate-600"><tr><th class="p-2">原表位置</th><th class="p-2">客户单号 / 客户料号</th><th class="whitespace-nowrap p-2">纸品类型</th><th class="p-2">纸质 / 规格</th><th class="p-2">发货量</th><th class="p-2">送货单价</th><th class="p-2">匹配订单 / 纸品</th><th class="p-2">校验</th></tr></thead><tbody><tr v-for="row in group.rows" :key="`${row.source_sheet}-${row.source_row}`" class="border-t border-slate-100"><td data-label="原表位置" class="p-2">{{ row.source_sheet }} · {{ row.source_row }}</td><td data-label="客户单号 / 客户料号" class="p-2">{{ row.contract_no || '—' }} / {{ row.item_no || '—' }}</td><td data-label="纸品类型" class="whitespace-nowrap p-2">{{ row.packaging_type || '未填写' }}</td><td data-label="纸质 / 规格" class="p-2">{{ row.paper_quality || '未填写' }} · {{ row.specification || '未填写' }}</td><td data-label="发货量" class="p-2">{{ row.delivered_quantity }}</td><td data-label="送货单价" class="p-2">{{ Number(row.unit_price) > 0 ? row.unit_price : '未填写' }}</td><td data-label="匹配订单 / 纸品" class="p-2">{{ row.order_no || (row.status === 'AD_HOC_REVIEW' ? '无单待仓库核实' : '未匹配') }} {{ row.child_no }}<label v-if="row.candidates?.length" class="mt-2 block">对应订单<select v-model="importChoices[importRowKey(row)]" :disabled="busy" :aria-label="`${row.source_sheet} 第${row.source_row}行对应订单`" class="mt-1 w-full rounded border bg-white p-2" @change="importChoicesDirty = true; selectedImportNotes = []"><option value="">请选择对应订单</option><option v-for="candidate in row.candidates" :key="`${candidate.order_line_id}|${candidate.issue_id}`" :value="`${candidate.order_line_id}|${candidate.issue_id}`">{{ candidate.document_no || candidate.order_no }} · {{ candidate.replenishment ? candidate.responsibility === 'SUPPLIER' ? '补单 · 供应商责任免费' : '补单 · 我方责任计费' : '普通采购' }} · PO {{ candidate.customer_po || '未填写' }} · 交期 {{ candidate.planned_date }} · 未送 {{ candidate.remaining_to_ship }} {{ candidate.unit }}</option></select></label></td><td data-label="校验" class="p-2" :class="importModes[importNoteKey(group)] === 'EXISTING_RECEIPT' && group.receipt_link_ready ? 'text-teal-700' : row.status === 'READY' ? 'text-teal-700' : row.status === 'AD_HOC_REVIEW' ? 'text-amber-700' : 'text-red-700'"><CartonImportDifference :message="importModes[importNoteKey(group)] === 'EXISTING_RECEIPT' && group.receipt_link_ready ? '已匹配原入库凭证，等待仓库选择并关联' : row.reason" /></td></tr></tbody></table></div>
+                  <div class="mt-2 overflow-x-auto carton-table-wrap"><table class="w-full min-w-[960px] text-left text-xs carton-table-fit"><thead class="bg-slate-50 text-slate-600"><tr><th class="p-2">原表位置</th><th class="p-2">客户单号 / 客户料号</th><th class="whitespace-nowrap p-2">纸品类型</th><th class="p-2">纸质 / 规格</th><th class="p-2">发货量</th><th class="p-2">送货单价</th><th class="p-2">匹配订单 / 纸品</th><th class="p-2">校验</th></tr></thead><tbody><tr v-for="row in group.rows" :key="`${row.source_sheet}-${row.source_row}`" class="border-t border-slate-100"><td data-label="原表位置" class="p-2">{{ row.source_sheet }} · {{ row.source_row }}</td><td data-label="客户单号 / 客户料号" class="p-2">{{ row.contract_no || '—' }} / {{ row.item_no || '—' }}</td><td data-label="纸品类型" class="whitespace-nowrap p-2">{{ row.packaging_type || '未填写' }}</td><td data-label="纸质 / 规格" class="p-2">{{ row.paper_quality || '未填写' }} · {{ row.specification || '未填写' }}</td><td data-label="发货量" class="p-2">{{ row.delivered_quantity }}</td><td data-label="送货单价" class="p-2">{{ row.unit_price_provided === false || row.unit_price == null ? '未填写' : row.unit_price }}<label v-if="row.source_kind === 'SPECIAL' && row.unit_price_provided && Number(row.unit_price) === 0" class="mt-2 flex items-center gap-1"><input v-model="importFreeConfirmations[importRowKey(row)]" type="checkbox" :disabled="busy" :aria-label="`${row.source_sheet} 第${row.source_row}行确认免费`" @change="importChoicesDirty = true; selectedImportNotes = []" />确认本行免费</label></td><td data-label="匹配订单 / 纸品" class="p-2"><span v-if="row.source_kind === 'SPECIAL'">{{ row.order_kind === 'SAMPLE' ? '样板' : '杂单' }} · </span>{{ row.order_no || (row.status === 'AD_HOC_REVIEW' ? '无单待仓库核实' : '未匹配') }} {{ row.child_no }}<label v-if="row.candidates?.length" class="mt-2 block">对应订单<select v-model="importChoices[importRowKey(row)]" :disabled="busy" :aria-label="`${row.source_sheet} 第${row.source_row}行对应订单`" class="mt-1 w-full rounded border bg-white p-2" @change="importChoicesDirty = true; selectedImportNotes = []"><option value="">请选择对应订单</option><option v-for="candidate in row.candidates" :key="`${candidate.order_line_id}|${candidate.issue_id}`" :value="`${candidate.order_line_id}|${candidate.issue_id}`">{{ candidate.document_no || candidate.order_no }} · {{ candidate.replenishment ? candidate.responsibility === 'SUPPLIER' ? '补单 · 供应商责任免费' : '补单 · 我方责任计费' : candidate.order_kind === 'SAMPLE' ? '样板' : candidate.order_kind === 'MISC' ? '杂单' : '普通采购' }} · PO {{ candidate.customer_po || '未填写' }} · 交期 {{ candidate.planned_date }} · 未送 {{ candidate.remaining_to_ship }} {{ candidate.unit }}</option></select></label></td><td data-label="校验" class="p-2" :class="importModes[importNoteKey(group)] === 'EXISTING_RECEIPT' && group.receipt_link_ready ? 'text-teal-700' : row.status === 'READY' ? 'text-teal-700' : row.status === 'AD_HOC_REVIEW' ? 'text-amber-700' : 'text-red-700'"><CartonImportDifference :message="importModes[importNoteKey(group)] === 'EXISTING_RECEIPT' && group.receipt_link_ready ? '已匹配原入库凭证，等待仓库选择并关联' : row.reason" /></td></tr></tbody></table></div>
                 </section>
               </div>
               <div class="flex justify-end gap-2 border-t border-slate-200 p-4"><button type="button" :disabled="busy" class="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold" @click="closeDeliveryImport">取消</button><button type="button" :disabled="busy || importChoicesDirty || !selectedImportNotes.length" class="rounded-lg bg-teal-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-40" @click="confirmDeliveryImport">确认 {{ selectedImportNotes.length }} 张送货单{{ selectedImportNotes.some(key => importModes[key] === 'EXISTING_RECEIPT') ? '（含后补凭证）' : '发货' }}</button></div>
