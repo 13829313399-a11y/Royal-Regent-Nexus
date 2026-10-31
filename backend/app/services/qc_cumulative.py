@@ -128,6 +128,16 @@ def needs_repair(conn,head):
         meta=json.loads(row['metadata'])
         if json.loads(row['snapshot']) and meta.get('formatVersion',0)<writer.FORMAT_VERSION:return True
         if meta.get('conversionReceipt',{}).get('format')=='.xls' and meta.get('conversionReceipt',{}).get('version',0)<2:return True
+        # Initial persisted templates predate snapshots and conversion receipts.
+        # Only exact registered legacy bytes establish repairable style damage.
+        if not meta.get('styleRepair'):
+            manifest_path=TEMPLATES/head['factory']/'manifest.json'
+            if manifest_path.is_file():
+                manifest=json.loads(manifest_path.read_text())
+                hashes=manifest.get('legacyStyleHashes',[])
+                if hashes:
+                    content=conn.execute('SELECT content FROM versions WHERE id=?',(identity,)).fetchone()[0]
+                    if sha256(bytes(content)).hexdigest() in hashes:return True
     return False
 
 def validate(content):

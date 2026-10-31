@@ -161,7 +161,11 @@
         (!result||d.result===(result==='REJ'?'FAIL':result))&&
         (!(from||to)||(row.dateFrom&&(!from||(row.dateTo||row.dateFrom)>=from)&&(!to||row.dateFrom<=to)));
     }).sort((a,b)=>{
-      if(sort.startsWith('date')){if(!a.dateFrom||!b.dateFrom)return a.dateFrom?-1:b.dateFrom?1:a.id.localeCompare(b.id);}
+      if(sort.startsWith('date')){
+        if(!a.dateFrom||!b.dateFrom){if(a.dateFrom||b.dateFrom)return a.dateFrom?-1:1;}
+        const dateOrder=String(a.dateFrom||'').localeCompare(String(b.dateFrom||''))*(sort.endsWith('asc')?1:-1);
+        return dateOrder||String(a.customer||'').trim().localeCompare(String(b.customer||'').trim(),'zh-CN',{numeric:true,sensitivity:'base'})||a.id.localeCompare(b.id);
+      }
       const key=sort.startsWith('date')?'dateFrom':'updatedAt',direction=sort.endsWith('asc')?1:-1;
       return String(a[key]||'').localeCompare(String(b[key]||''))*direction||a.id.localeCompare(b.id);
     });
