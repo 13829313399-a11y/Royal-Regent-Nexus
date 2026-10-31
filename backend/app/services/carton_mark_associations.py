@@ -10,6 +10,16 @@ from app.services import carton_mark_asset_workflow as lifecycle
 
 
 def freeze_files(db, user, order, *, order_kind='REGULAR'):
+    if order_kind == 'REGULAR':
+        from app.services.carton_print_split import order_info, download
+        info = order_info(db, order)
+        if info and info['status'] == 'ACTIVE' and (info.get('print_changed', True) or info['files']):
+            result = []
+            for file in info['files']:
+                download(db, user, order.factory_id, info['id'], file['id'], supplier=True)
+                result.append(dict(asset_id=file.get('asset_id', file['id']), print_file_id=file['id'], asset_revision=file['revision'], sha256=file['sha256'],
+                    filename=file['file_name'], line_id='', print_split_id=info['id']))
+            return result
     """Freeze current shared originals without certifying printing or QC readiness."""
     from app.models.carton_mark import CartonMarkAsset
     from app.models.carton_special_requests import SpecialAttachment
@@ -139,6 +149,9 @@ def target_rows(db, user, factory, targets, *, external=False):
 
 
 def apply(db, user, asset, targets, *, external=False, bump_revision=None):
+    from app.services import carton_asset_access as ownership,carton_supplier_portal as portal
+    if external and ownership.managed(asset):
+        ownership.ensure(db,user,asset,write=True,supplier=portal.supplier_access(db,user,asset.factory_id,'carton_supplier:edit'))
     rows = target_rows(db, user, asset.factory_id, targets, external=external)
     audience = sharing.current(db, asset)
     previous = sharing.related_orders(db, asset)
@@ -162,6 +175,8 @@ def apply(db, user, asset, targets, *, external=False, bump_revision=None):
     resolved = [x['id'] for x in audience['pending_bindings'] if x['order_id'] in identifiers]
     assets.audit(db, user, asset, sharing.ASSOCIATED,
         {'revision': asset.revision, 'targets': rows, 'resolved_pending_ids': resolved, 'sha256': asset.sha256})
+    from app.services import carton_asset_targets
+    carton_asset_targets.sync_legacy(db,user,asset)
     db.flush()
     return rows
 
@@ -172,6 +187,9 @@ def save(db, user, factory, identifier, payload, *, external=False):
     if external:
         portal.supplier_access(db, user, factory, 'carton_supplier:edit')
         asset = portal.supplier_mark_asset_document(db, user, factory, identifier)
+        from app.services import carton_asset_access as ownership
+        if ownership.managed(asset):
+            ownership.ensure(db,user,asset,write=True,supplier=portal.supplier_access(db,user,factory,'carton_supplier:edit'))
     else:
         asset = assets.active_asset(db, factory, identifier)
         sharing.ensure_asset_access(db, user, asset, write=True)

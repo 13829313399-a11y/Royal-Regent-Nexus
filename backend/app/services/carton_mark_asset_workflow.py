@@ -55,8 +55,10 @@ def binding_key(asset):
     session = object_session(asset)
     special_targets = tuple(sorted({(x['order_id'], x.get('line_id', ''))
         for x in audience(session, asset)['special_orders']})) if session else ()
+    from app.services import carton_asset_targets as quick_targets
+    quick=tuple(sorted((row['kind'],tuple(row['identity'])) for row in quick_targets.current(session,asset))) if session and asset.owner_department else ()
     return (asset.contract_number, asset.bound_order_id, asset.recognition_source,
-        tuple(sorted(link.order_id for link in asset.order_bindings)), special_targets)
+        tuple(sorted(link.order_id for link in asset.order_bindings)), special_targets,quick)
 
 
 def initialize(db, user, asset, options):
@@ -96,14 +98,19 @@ def initialize(db, user, asset, options):
     record(db, user, asset, state)
 
 
-def classify(db, user, factory, asset_id, payload, *, commit=True, material_confirmation=False):
+def classify(db, user, factory, asset_id, payload, *, commit=True, material_confirmation=False, view_factory=None):
     from app.services.carton_mark_assets import active_asset, asset_out, available_orders
     from app.services.carton_procurement import _lock_receipt_factory
     _lock_receipt_factory(db, factory)
     try:
         asset = active_asset(db, factory, asset_id)
+        from app.services import carton_asset_access as ownership
+        if ownership.managed(asset):
+            ownership.ensure(db,user,asset,write=True,confirm=payload.status=='READY',supplier=ownership.external_actor(db,user,asset) if view_factory in (None,asset.factory_id) else None,view_factory=view_factory,collaborate=True)
+            if payload.status=='READY' and asset.asset_purpose!='MATERIAL':raise HTTPException(422,'客户凭据不能确认为制作资料')
         from app.services.carton_mark_sharing import ensure_asset_access
-        ensure_asset_access(db, user, asset, write=not material_confirmation)
+        if not ownership.managed(asset):
+            ensure_asset_access(db, user, asset, write=not material_confirmation)
         before = current(db, asset)
         if before.superseded_by_asset_id and payload.status != 'HISTORY':
             raise HTTPException(409, '历史稿仅供追溯，请从当前版本上传修改稿')

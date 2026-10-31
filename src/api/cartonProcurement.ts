@@ -1,3 +1,4 @@
+import type { PrintSplitInfo } from './cartonPrintSplits'
 import type { PaperQuantityRule } from '@/features/carton-procurement/paperQuantity'
 import type { MaterialCorrection } from './cartonMaterialCorrection'
 import { http } from '@/lib/http'
@@ -104,15 +105,26 @@ export interface CartonPurchaseOrderBatchResponse {
   generated_at: string
 }
 
-export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records'>
+export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records' | 'schedule_split_source'>
+
+export interface CartonScheduleSplitSource {
+  source_contract_no: string
+  current_contract_no: string
+  batch_id: string
+  source_sheet: string
+  source_row: number
+}
 
 export interface CartonOrderResponse {
+  order_split?: import('./cartonOrderDivisions').OrderDivisionInfo | null
   material_corrections?: MaterialCorrection[]
   net_weight_kg?: string | null
   gross_weight_kg?: string | null
   purchase_order_batch?: CartonPurchaseOrderBatchResponse | null
   supplier_acceptance?: CartonSupplierAcceptanceResponse
   split_records?: SplitRecord[]
+  print_split?: PrintSplitInfo | null
+  schedule_split_source?: CartonScheduleSplitSource | null
   can_delete?: boolean
   deletion_block_reason?: string
   can_delete_history?: boolean
@@ -549,6 +561,9 @@ export interface CartonImportPreviewRow {
   template?: string
   order_type?: string
   source_reference?: string
+  source_item_no?: string
+  shipping_item_no?: string
+  split_source?: string
   source_customer_name?: string
   schedule_section?: 'PENDING' | 'CANCELLED' | 'SHIPPED'
   schedule_change?: 'BASELINE' | 'UNCHANGED' | 'NEW' | 'MODIFIED' | 'CANCELLED' | 'CANCELLED_AFTER_ORDER' | 'SHIPPED' | 'REOPENED' | 'REVIEW_REQUIRED' | 'NOT_TRACKED'

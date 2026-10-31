@@ -10,6 +10,21 @@ const locations = [{ id: 'A', factory_id: 'huaxing', warehouse: '一仓', bin_co
   { id: 'B', factory_id: 'huaxing', warehouse: '二仓', bin_code: '02', label: '二仓／02' }]
 
 describe('收料分仓分配', () => {
+  it('keeps single-bin quantities synchronized while only location lookup is unavailable', async () => {
+    const Host = defineComponent({
+      components: { CartonReceiptAllocations },
+      setup: () => ({ rows: ref<LocationAllocation[]>([{ location_id: 'A', quantity: 10 }]), effective: ref(10), locationsDisabled: ref(true), locations }),
+      template: '<CartonReceiptAllocations v-model="rows" :effective="effective" :locations="locations" factory-id="huaxing" :locations-disabled="locationsDisabled" />',
+    })
+    const wrapper = mount(Host)
+    expect(wrapper.get('input[aria-label="仓库及仓位"]').attributes('disabled')).toBeDefined()
+    wrapper.vm.effective = 15; await flushPromises()
+    expect(wrapper.vm.rows).toEqual([{ location_id: 'A', quantity: 15 }])
+    wrapper.vm.locationsDisabled = false; await flushPromises()
+    expect(wrapper.get('input[aria-label="仓库及仓位"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.vm.rows).toEqual([{ location_id: 'A', quantity: 15 }])
+    wrapper.unmount()
+  })
   it('keeps a single allocation in sync, preserves split quantities for review, and freezes saved input', async () => {
     const Host = defineComponent({
       components: { CartonReceiptAllocations },

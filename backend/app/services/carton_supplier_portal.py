@@ -76,6 +76,8 @@ def supplier_factories(db, user):
     from app.models.carton_special_requests import SpecialRequest
     from app.services import carton_mark_sharing as sharing
     def has_shared_sources(supplier):
+        from app.services.carton_materials import has_supplier_folders
+        if has_supplier_folders(db, supplier.factory_id, supplier.id): return True
         audiences = sharing.states(db, supplier.factory_id)
         shared_ids = [identifier for identifier, state in audiences.items()
             if state['sharing_mode'] == 'SUPPLIER' and state['shared_supplier_id'] == supplier.id]
@@ -271,9 +273,13 @@ def _supplier_mark_assets(db, user, factory, *, asset_ids=None):
     from app.services import carton_mark_sharing as sharing
     audiences = sharing.states(db, factory)
     result = []
-    query = select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory, CartonMarkAsset.is_archived.is_(False))
+    query = select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory, CartonMarkAsset.is_archived.is_(False),
+        CartonMarkAsset.recognition_source != 'materials_folder')
     if asset_ids is not None: query = query.where(CartonMarkAsset.id.in_(asset_ids))
     for asset in db.scalars(query.order_by(CartonMarkAsset.created_at.desc(), CartonMarkAsset.id.desc())):
+        from app.services import carton_asset_access as ownership
+        if asset.asset_purpose=='EVIDENCE':continue
+        if ownership.managed(asset) and not ownership.visible(db,user,asset,supplier=supplier):continue
         audience = audiences.get(asset.id, {})
         if audience.get('sharing_mode') == 'INTERNAL':
             continue
@@ -282,6 +288,11 @@ def _supplier_mark_assets(db, user, factory, *, asset_ids=None):
             continue
         projected = mark_assets.asset_out(asset, projections, CartonMarkAssetWorkflow(), {})
         orders = [eligible[o.id] for o in projected.orders if o.id in eligible]
+        if asset.owner_department:
+            from app.services.carton_asset_targets import identity
+            current_orders={o.id:o for o in mark_assets.available_orders(db,factory)}
+            orders=[o for o in orders if identity(_purchase_order_snapshot(latest_issue(db,current_orders[o['id']])).get('order',{}))==identity(dict(customer_code=current_orders[o['id']].customer_code,
+                contract_no=current_orders[o['id']].contract_no,item_no=current_orders[o['id']].item_no,customer_po=current_orders[o['id']].customer_po))]
         from app.models.carton_special_requests import SpecialRequest, SpecialVersion
         special_visible = any((row := db.get(SpecialRequest, link['order_id'])) and row.factory_id == factory
             and row.supplier_id == supplier.id and row.status not in {'SUBMITTED', 'CANCELLED'}
@@ -300,6 +311,8 @@ def supplier_mark_assets(db, user, factory, *, asset_ids=None):
     from app.services import carton_mark_sharing as sharing
     audiences = sharing.states(db, factory, [asset.id for asset, _ in visible])
     supplier, _, eligible = _supplier_mark_orders(db, user, factory)
+    from app.services.carton_supplier_asset_status import can_classify, legacy_origins
+    origins = legacy_origins(db, [asset for asset, _ in visible])
     revisions = dict(db.execute(select(CartonOrder.id, CartonOrder.revision).where(
         CartonOrder.factory_id == factory, CartonOrder.id.in_(eligible))).all())
     def audience(asset, orders):
@@ -327,7 +340,9 @@ def supplier_mark_assets(db, user, factory, *, asset_ids=None):
             photo_group_id=asset.photo_group_id,
             size_bytes=asset.size_bytes, contract_number="、".join(sorted({order["contract_no"] for order in orders})),
             created_at=asset.created_at, orders=orders, binding_status='BOUND' if orders or state.get('special_orders') else 'UNBOUND', **state,
-            workflow=workflows.get(asset.id, CartonMarkAssetWorkflow()).model_dump()))
+            workflow=workflows.get(asset.id, CartonMarkAssetWorkflow()).model_dump(),
+            can_classify=can_classify(db, user, asset, supplier,
+                workflow=workflows.get(asset.id, CartonMarkAssetWorkflow()), origins=origins)))
     return result
 
 
@@ -412,6 +427,9 @@ def supplier_mark_document(db, user, factory, template_id, kind):
 
 
 def executable(db, order, issue_id, *, allow_dispute=False):
+    from app.services.carton_print_split import guard, guard_legacy
+    guard(db, order)
+    guard_legacy(db, order)
     if order.deleted_at:
         raise HTTPException(409, "订单已归档删除，不能继续接单或发货")
     if order.status not in OPEN_STATES:
@@ -513,6 +531,15 @@ def order_out(db, order, *, internal=False):
         from app.services.carton_order_split import plans
         result["customer_code"] = order.customer_code
         result["split_records"] = plans(db, order.factory_id, order.id)
+    from app.services.carton_print_split import order_info as print_info, held as print_held
+    result["print_split"] = print_info(db, order)
+    from app.services.carton_order_division import order_info as division_info
+    result["order_split"] = division_info(db, order)
+    from app.services.carton_order_split_trace import schedule_split_sources
+    result["schedule_split_source"] = schedule_split_sources(db, [order]).get(order.id)
+    print_hold = bool(print_held(db, order))
+    from app.services.carton_order_split import live_plans
+    legacy_hold = bool(live_plans(db, order.factory_id, order.id))
     for item in snapshot.get("lines", []):
         line_id = str(item["id"])
         required = Decimal(str(item["after_required_quantity"]))
@@ -523,7 +550,7 @@ def order_out(db, order, *, internal=False):
         line.update(line_no=line_no, child_no=f"{order.order_no}/{line_no:02d}", required_quantity=str(required),
             received_quantity=str(fulfilled.get(line_id, 0)), in_transit_quantity=str(shipped.get(line_id, 0)),
             remaining_to_ship=str(replacement.ordinary_capacity(db, order, line_id)),
-            shipping_blocked_reason="供应商有异议，暂停执行，请沿变更待办核实" if disputed else "纸品资料更正待双方确认，暂停发货和正式入库" if line_id in material_holds else "此纸品有补单待核对，请联系内部仓库按原补单流程处理" if line_id in blocked else "",
+            shipping_blocked_reason="旧拆分记录待转为独立订单，请联系仓库先处理拆单" if legacy_hold else "印刷拆单待回应，请先处理拆单变更待办" if print_hold else "供应商有异议，暂停执行，请沿变更待办核实" if disputed else "纸品资料更正待双方确认，暂停发货和正式入库" if line_id in material_holds else "此纸品有补单待核对，请联系内部仓库按原补单流程处理" if line_id in blocked else "",
             accepted=accepted, commitment_revision=commitment.revision if commitment else 0,
             promised_date=commitment.promised_date if commitment else "")
         if internal:

@@ -63,6 +63,8 @@ def live_plans(db, factory, order_id=None):
 
 
 def guard_order_change(db, order):
+    from app.services.carton_print_split import guard
+    guard(db, order)
     if live_plans(db, order.factory_id, order.id):
         raise HTTPException(409, "订单已有拆分归属，请先撤销可撤销的拆单并核对已领用记录，再减单、取消或修改订单信息")
 
@@ -115,6 +117,8 @@ def create(db, number, payload: SplitCreate, user):
     factory = core.require_carton_factory(payload.factory_id)
     core._lock_receipt_factory(db, factory)
     source = _get_order(db, factory, number)
+    from app.services.carton_print_split import guard
+    guard(db, source)
     ensure_customer_operation(db, user, factory, source.customer_code)
     request_key = "CAE-SPLIT-" + hashlib.sha256(json.dumps([factory, user.id, payload.request_id]).encode()).hexdigest()
     fingerprint = hashlib.sha256(json.dumps([number, payload.model_dump(mode="json", exclude={"request_id"})], sort_keys=True).encode()).hexdigest()
@@ -334,30 +338,15 @@ def _reverse_pairs(db, plan, reason, user):
 
 
 def receipt_preview(db, factory, lines):
-    supplied = {line["order_line_id"]: Decimal(str(line["effective_quantity"])) for line in lines if line.get("order_line_id")}
-    remaining = dict(supplied)
-    distribution, blocked = [], []
-    for plan in live_plans(db, factory):
-        for target in plan["targets"]:
-            for line in target["lines"]:
-                identifier = line["order_line_id"]
-                if supplied.get(identifier, Decimal(0)) <= 0:
-                    continue
-                if plan["status"] == "PENDING_WAREHOUSE":
-                    blocked.append(plan["id"])
-                    continue
-                amount = min(remaining[identifier], Decimal(line["pending_remaining"]))
-                if amount <= 0:
-                    continue
-                remaining[identifier] -= amount
-                distribution.append({"plan_id": plan["id"], "target_line_id": line["target_line_id"], "order_line_id": identifier,
-                    "contract_no": target["contract_no"], "customer_po": target["customer_po"], "item_no": plan["item_no"],
-                    "packaging_type": line["packaging_type"], "quantity": format(amount.quantize(Decimal(".0001")), "f"), "unit": line["unit"]})
-    token = hashlib.sha256(json.dumps(distribution, sort_keys=True).encode()).hexdigest() if distribution else ""
-    return {"allocations": distribution, "confirmation": token, "blocked_plans": sorted(set(blocked))}
+    identifiers = {line["order_line_id"] for line in lines if line.get("order_line_id")}
+    blocked = [p["id"] for p in live_plans(db, factory) if any(l["order_line_id"] in identifiers for t in p["targets"] for l in t["lines"])]
+    return {"allocations": [], "confirmation": "", "blocked_plans": blocked}
+
 
 
 def validate_receipt_confirmation(db, factory, lines, confirmation):
+    from app.services.carton_print_split import guard_receipts
+    guard_receipts(db, factory, [line["order_line_id"] for line in lines])
     preview = receipt_preview(db, factory, lines)
     if preview["blocked_plans"]:
         raise HTTPException(409, "原订单有拆单待仓库确认，请先确认或撤销拆单方案，再确认收货")

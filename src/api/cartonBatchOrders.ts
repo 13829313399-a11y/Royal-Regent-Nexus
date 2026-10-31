@@ -19,7 +19,7 @@ export const cartonBatchOrdersApi = {
     const data = new FormData(); data.append('factory_id', factory); data.append('file', file)
     return (await http.post<DemandPreview>('/carton-unified-orders/demand-import/preview', data, { signal, timeout: 300000 })).data
   },
-  async import(body: DemandBody, file: File, signal?: AbortSignal) {
+  async importDemands(body: DemandBody, file: File, signal?: AbortSignal) {
     const data = new FormData(); data.append('body', JSON.stringify(body)); data.append('file', file)
     return (await http.post<BatchResult>('/carton-unified-orders/demand-import/confirm', data, { signal, timeout: 300000 })).data
   },

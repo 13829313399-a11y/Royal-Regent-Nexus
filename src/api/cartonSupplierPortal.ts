@@ -1,3 +1,4 @@
+import type { PrintSplitInfo } from './cartonPrintSplits'
 import type { MaterialCorrection } from './cartonMaterialCorrection'
 import { http } from '@/lib/http'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
@@ -9,7 +10,7 @@ export interface PortalAttachment { id: string; filename: string; version: numbe
 export interface PortalPaper { id: string; line_no: number; child_no: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit: string; unit: string; required_quantity: string; received_quantity: string; in_transit_quantity: string; remaining_to_ship: string; accepted: boolean; shipping_blocked_reason?: string; commitment_revision: number; promised_date: string; unit_price?: string; currency?: string }
 export interface CancellationNotice { issue_id: string; order_revision: number; issued: boolean; acknowledged: boolean; acknowledged_at: string }
 export interface ReplenishmentSource { issue_id: string; document_no: string; responsibility: 'OWN' | 'SUPPLIER'; planned_date: string; lines: PortalPaper[] }
-export interface PortalOrder { rush_version?: string; rush?: boolean; rush_reason?: string; rush_at?: string | null; rush_acknowledged?: boolean; rush_ack_at?: string | null; replenishment_sources?: ReplenishmentSource[]; material_corrections?: MaterialCorrection[]; cancellation_notice?: CancellationNotice | null; split_records?: SplitRecord[]; id: string; order_no: string; customer_code?: string; revision?: number; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; status: string; issue_id: string; document_no: string; order_date: string; planned_date: string; awaiting_issue: boolean; lines: PortalPaper[]; attachments: PortalAttachment[] }
+export interface PortalOrder { order_split?: import('./cartonOrderDivisions').OrderDivisionInfo | null; schedule_split_source?: { source_contract_no: string; current_contract_no: string } | null; print_split?: PrintSplitInfo | null; rush_version?: string; rush?: boolean; rush_reason?: string; rush_at?: string | null; rush_acknowledged?: boolean; rush_ack_at?: string | null; replenishment_sources?: ReplenishmentSource[]; material_corrections?: MaterialCorrection[]; cancellation_notice?: CancellationNotice | null; split_records?: SplitRecord[]; id: string; order_no: string; customer_code?: string; revision?: number; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; status: string; issue_id: string; document_no: string; order_date: string; planned_date: string; awaiting_issue: boolean; lines: PortalPaper[]; attachments: PortalAttachment[] }
 export interface ShipmentLine { rejected_quantity?: string; damaged_quantity?: string; unusable_quantity?: string; receipt_classification?: Pick<ReceiveLine, 'no_order_decision' | 'customer_code' | 'requested_by' | 'sample_purpose' | 'workshop_id'>; closed_source_linkable?: boolean; replenishment_issue_id?: string | null; replenishment_document_no?: string; responsibility?: 'OWN' | 'SUPPLIER'; business_kind?: SupplierDocumentBusinessKind; free_confirmed?: boolean; received_quantity?: string; effective_quantity?: string; remaining_quantity?: string; receivable_quantity?: string; closed_quantity?: string; material_correction_pending?: boolean; material_correction_note?: string; original_unmatched_line_id?: string; dimension_unit?: string; id: string; order_line_id: string | null; source_type?: 'FORMAL_ORDER' | 'AD_HOC_REVIEW'; order_no: string; contract_no: string; customer_po: string; item_no: string; customer_name: string; child_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; unit_price?: string; delivery_unit_price?: string | null; currency?: string }
 export interface ReceiveLine { close_remaining?: boolean; price_action?: 'MATCH' | 'PENDING' | 'PROPOSE' | 'FREE'; price_reason?: string; zero_price_kind?: 'FREE' | 'PENDING'; shipment_line_id: string; received_quantity: number; damaged_quantity: number; rejected_quantity: number; unusable_quantity: number; unit_price: number; paper_quality: string; specification: string; location_allocations: LocationAllocation[]; difference_reason: string; dimension_unit?: 'cm' | 'in'; no_order_decision?: '' | 'SAMPLE' | 'GIFT' | 'WRONG_DELIVERY' | 'MISC' | 'UNORDERED'; customer_code?: string; sample_purpose?: string; requested_by?: string; workshop_id?: string; unit?: string }
 export interface SampleReceipt { receipt_line_id: string; customer_code: string; customer_name: string; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; linked_order_line_id: string }
@@ -32,11 +33,12 @@ export interface SupplierDocumentLine { rejected_quantity?: string; effective_qu
 export interface SupplierDocument { is_cancellation?: boolean; supplier_acceptance?: Omit<CartonSupplierAcceptanceResponse, 'status' | 'issue_id' | 'document_no' | 'accepted_at'> & { status: string }; id: string; kind: 'PURCHASE' | 'DELIVERY'; factory_id: string; document_no: string; document_type: string; date: string; created_at: string; status: string; replenishment: boolean; export_count: number; is_batch?: boolean; source_documents?: { id: string; document_no: string; order_no: string }[]; unmatched_line_count?: number; source_filename?: string; source_sha256?: string; orders: SupplierDocumentOrder[]; lines: SupplierDocumentLine[] }
 export interface SupplierActivity { id: string; created_at: string; action: string; reference_no: string; actor_name: string; factory_id: string }
 export interface SupplierMarkAsset extends CartonMarkSharing {
+  can_classify?: boolean
   binding_status?: 'BOUND' | 'NO_ORDER' | 'UNBOUND' | 'AMBIGUOUS'
   workflow?: CartonMarkAssetWorkflow
   photo_group_id?: string | null
   revision: number
-  id: string; file_name: string; kind: 'pdf' | 'excel' | 'image'; size_bytes: number; contract_number: string; created_at: string
+  id: string; file_name: string; kind: 'pdf' | 'excel' | 'image' | 'text'; size_bytes: number; contract_number: string; created_at: string
   orders: { id: string; issue_id: string; customer_name: string; contract_no: string; customer_po: string; item_no: string }[]
 }
 export interface SupplierMarkCheck extends SupplierMarkTemplate {
@@ -117,6 +119,11 @@ export const cartonSupplierPortalApi = {
   },
   async markTemplates(factory_id: string) { return (await http.get<SupplierMarkTemplate[]>(base + '/carton-mark/templates', { params: { factory_id } })).data },
   async markAssets(factory_id: string, signal?: AbortSignal) { return (await http.get<SupplierMarkAsset[]>(base + '/carton-mark/assets', { params: { factory_id }, signal })).data },
+  async classifyMarkAsset(factory_id: string, asset: { id: string; revision: number }, status: 'DRAFT' | 'PENDING', request_id: string, signal?: AbortSignal) {
+    const { data } = await http.put<SupplierMarkAsset>(`${base}/carton-mark/assets/${encodeURIComponent(asset.id)}/classification`, { revision: asset.revision, status, request_id }, { params: { factory_id }, signal })
+    if (data.id !== asset.id) throw new Error('状态保存结果与当前文件不一致，请原样重试核实。')
+    return data
+  },
   async markUploadOrders(factory_id: string, signal?: AbortSignal) { return (await http.get<SupplierMarkUploadOrder[]>(base + '/carton-mark/upload-orders', { params: { factory_id }, signal })).data },
   async uploadMarkAssets(factory_id: string, files: File[], order?: SupplierMarkAsset['orders'][number], signal?: AbortSignal, sharedUnbound = false, association?: { request_id: string; targets: CartonMarkAssociationTarget[] }) {
     const body = new FormData(); body.append('factory_id', factory_id)

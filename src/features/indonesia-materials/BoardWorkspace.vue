@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { BellRing, CalendarClock, ClipboardList, Database, FileInput, PackageCheck, RotateCcw } from '@lucide/vue'
+import { ArrowLeft, BellRing, CalendarClock, ClipboardList, Database, FileInput, PackageCheck, RotateCcw } from '@lucide/vue'
 import MaterialsPanel from './MaterialsPanel.vue'
 import ContractPlanEditor from './ContractPlanEditor.vue'
 import { planningInfo, contractDemands } from './planning'
@@ -10,13 +10,10 @@ import { showStatus } from './forms'
 import { hasReceiptRisk, readyMaterials } from './presentation'
 import { useMaterials } from './workspace'
 import { focusFollowup } from './focusFollowup'
-const props = withDefaults(defineProps<{ search?: string }>(), { search: '' })
-const emit = defineEmits<{ navigate: [id: string]; search: [value: string] }>()
+const emit = defineEmits<{ navigate: [id: string] }>()
 const ws = useMaterials()
 watch(() => ws.restoreTarget, id => { if (id && draftKind(id) === 'demand') ws.boardStage = 'demand' })
-const query = ref(props.search)
-watch(() => props.search, value => { query.value = value })
-watch(query, value => { emit('search', value) })
+const query = ref('')
 const state = ref('')
 const customer = ref('')
 const recipient = ref('')
@@ -32,6 +29,11 @@ function openPlan(id: string) {
 }
 watch(() => ws.restoreTarget, id => { if (id && draftKind(id) === 'planning') ws.boardStage = 'board' })
 const root = ref<HTMLElement | null>(null)
+async function changeStage(stage: 'board' | 'demand') {
+  ws.boardStage = stage
+  await nextTick()
+  root.value?.querySelector<HTMLButtonElement>(stage === 'board' ? '#im-tab-demand' : '[data-return-contracts]')?.focus()
+}
 function toggleDetail(id: string) { planEditor.value?.hide(); expanded.value = expanded.value === id ? '' : id }
 watch([query, state, customer, recipient], () => planEditor.value?.hide(), { flush: 'sync' })
 watch(() => ws.followupTarget, async target => {
@@ -56,15 +58,15 @@ const shortDate = (value?: string | null) => value ? value.replaceAll('-', '/') 
 </script>
 <template>
   <div ref="root" class="im-stack">
-    <div class="im-toolbar" aria-label="合同查看方式"><button type="button" :aria-pressed="ws.boardStage === 'board'" @click="ws.boardStage = 'board'">查看回料期限与缺口</button><button id="im-tab-demand" type="button" :aria-selected="ws.boardStage === 'demand'" @click="ws.boardStage = 'demand'">维护合同需求</button></div>
+    <div v-if="ws.boardStage === 'demand'" class="im-inline"><button type="button" data-return-contracts @click="changeStage('board')"><ArrowLeft :size="15" />返回合同计划</button></div>
     <div v-show="ws.boardStage === 'board'" class="im-stack">
     <details class="im-priority-details"><summary>待办提醒 · 回料风险 {{ risks.length }} · 待补资料 {{ missing.length }}</summary><section class="im-priorities" aria-label="合同待办提醒">
       <div class="im-priority-heading"><div class="im-page-title"><span class="im-alert-icon"><BellRing :size="19" /></span><div><h2>今日待办 · 先看这里</h2><p>先处理回料风险，再补齐影响需求与倒排的基础资料</p></div></div><div class="im-inline"><span class="im-tag im-tag-red">回料风险 {{ risks.length }}</span><span class="im-tag im-tag-amber">资料待补 {{ missing.length }}</span></div></div>
       <div class="im-priority-grid"><div><h3>供应商回料风险</h3><template v-if="risks.length"><article v-for="row in risks.slice(0, 2)" :key="row.id"><div><strong>{{ row.customer }} · {{ row.contract_no }}</strong><small>{{ row.item_no }} · PO {{ row.po_no || '未填写' }} · 要求回料 {{ shortDate(row.plan?.required_date) }}</small></div><button type="button" class="im-text-button" @click="inspect(row.id)">查看合同 →</button></article></template><p v-else class="im-note">{{ ws.board.length ? '当前没有供应商回复延期的合同。' : '导入合同后，自动提示供应商回复延期风险。' }}</p></div><div><h3>基础资料与计划参数</h3><template v-if="missing.length"><article v-for="row in missing.slice(0, 2)" :key="row.id"><div><strong>{{ row.item_no }} · {{ planInfo(row).label }}</strong><small>{{ row.customer }} / {{ row.contract_no }} · PO {{ row.po_no || '未填写' }}</small></div><button type="button" class="im-text-button" :disabled="!ws.canWrite || ws.locked" @click="openPlan(row.id)">补充计划资料 →</button></article></template><p v-else class="im-note">{{ ws.board.length ? '当前合同暂无待补的基础资料或计划参数。' : '维护货号用量与日产能，供合同自动计算需求。' }}</p></div></div>
     </section></details>
     <MaterialsPanel title="合同需求台账" subtitle="按印尼成品出货日期排序；点击明细查看倒排与每项物料的缺口。">
-      <template #action><button id="im-tab-import" type="button" :disabled="!ws.canWrite || ws.locked" @click="emit('navigate', 'import')"><FileInput :size="15" />统一排期导入</button><button type="button" class="im-primary" @click="emit('navigate', 'demand')">维护合同需求</button></template>
-      <div class="im-filter-bar"><label class="im-field"><span>客户</span><select v-model="customer"><option value="">全部客户</option><option v-for="name in customers" :key="name">{{ name }}</option></select></label><label class="im-field"><span>接收方</span><select v-model="recipient"><option value="">全部接收方</option><option>RRI</option><option>RRM</option></select></label><label class="im-field"><span>齐料与跟进状态</span><select v-model="state"><option value="">全部状态</option><option value="risk">回料风险</option><option value="missing">待补资料</option><option value="shortage">尚未齐料</option><option value="complete">河源已齐料</option></select></label><label class="im-field im-search-field"><span>客户／合同／PO／货号</span><input v-model="query" type="search" placeholder="筛选当前厂区合同"></label><button type="button" @click="reset"><RotateCcw :size="14" />重置</button></div>
+      <template #action><button id="im-tab-import" type="button" :disabled="!ws.canWrite || ws.locked" @click="emit('navigate', 'import')"><FileInput :size="15" />统一排期导入</button><button id="im-tab-demand" type="button" class="im-primary" @click="changeStage('demand')">维护合同需求</button></template>
+      <div class="im-filter-bar"><label class="im-field"><span>客户</span><select v-model="customer"><option value="">全部客户</option><option v-for="name in customers" :key="name">{{ name }}</option></select></label><label class="im-field"><span>接收方</span><select v-model="recipient"><option value="">全部接收方</option><option>RRI</option><option>RRM</option></select></label><label class="im-field"><span>齐料与跟进状态</span><select v-model="state"><option value="">全部状态</option><option value="risk">回料风险</option><option value="missing">待补资料</option><option value="shortage">尚未齐料</option><option value="complete">河源已齐料</option></select></label><label class="im-field im-search-field"><span>客户／合同／PO／货号</span><input v-model="query" type="search" placeholder="搜索客户／合同／PO／货号"></label><button type="button" @click="reset"><RotateCcw :size="14" />重置</button></div>
       <div v-if="!ws.board.length" class="im-onboarding"><span class="im-empty-icon"><ClipboardList :size="28" /></span><h3>从第一张合同开始跟进</h3><p>先维护物料和货号用量，再导入统一排期或新增合同需求。</p><div class="im-toolbar"><button type="button" @click="emit('navigate', 'master')"><Database :size="15" />维护基础资料</button><button type="button" class="im-primary" :disabled="!ws.canWrite || ws.locked" @click="emit('navigate', 'import')"><FileInput :size="15" />导入统一排期</button></div></div>
       <p v-else-if="!rows.length" class="im-empty">没有符合筛选条件的合同。</p>
       <div v-else class="im-scroll im-board-table"><table><thead><tr><th>客户 / 合同</th><th>货号 / 合同数量</th><th>接收方</th><th>河源最迟回料</th><th>印尼成品出货</th><th>物料齐套进度</th><th>状态</th><th>操作</th></tr></thead><tbody>

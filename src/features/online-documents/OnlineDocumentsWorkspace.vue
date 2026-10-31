@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, onBeforeRouteLeave } from 'vue-router'
-import { FileText, Sheet, Upload, ArrowLeft, Download, Save, Users, Folder, FolderPlus } from '@lucide/vue'
+import { FileText, Sheet, Upload, ArrowLeft, Download, Save, Users, Folder, FolderPlus, Maximize2, Minimize2 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { getApiErrorMessage } from '@/lib/http'
@@ -21,14 +21,20 @@ const props = defineProps<{ factoryId: string }>()
 const auth = useAuthStore()
 const docs = ref<OnlineDocument[]>([])
 const selected = ref<OnlineDocument | null>(null)
+const workspace = ref<HTMLElement>()
+const expanded = ref(false)
+const browserFullscreen = ref(false)
+const fullscreenBusy = ref(false)
+const fullscreenNotice = ref('')
 const shared = ref<OnlineDocument | null>(null)
+const sharingStatus = ref('')
 const managed = ref<OnlineDocument | null>(null)
 const documentPending = ref(false)
 const folderPending = ref(false)
 const copyPending = ref(false)
 const trashing = ref<OnlineDocument[] | null>(null)
 const trashOrigin = ref('')
-const managementPending = computed(() => documentPending.value || folderPending.value || copyPending.value || !!trashing.value)
+const managementPending = computed(() => documentPending.value || folderPending.value || copyPending.value || !!trashing.value || !!sharingStatus.value)
 const copying = ref<OnlineDocument | null>(null)
 const copyTitle = ref('')
 const copyError = ref('')
@@ -66,11 +72,14 @@ const connected = ref(false)
 const fileInput = ref<HTMLInputElement>()
 const grants = ref<DocumentGrant[]>([])
 const people = ref<Awaited<ReturnType<typeof api.recipients>>>([])
-const person = ref('')
+const selectedPeople = ref<string[]>([])
 const grantAccess = ref<'view' | 'edit'>('view')
 const peopleSearch = ref('')
-const availablePeople = computed(() => people.value.filter(p => p.id !== auth.currentUser?.id && !grants.value.some(g => g.user_id === p.id) &&
+const eligiblePeople = computed(() => people.value.filter(p => p.id !== auth.currentUser?.id && !grants.value.some(g => g.user_id === p.id)))
+const availablePeople = computed(() => eligiblePeople.value.filter(p =>
   [p.display_name, p.organization, p.department].filter(Boolean).join(' ').toLocaleLowerCase().includes(peopleSearch.value.trim().toLocaleLowerCase())))
+const allPeopleChecked = computed(() => availablePeople.value.length > 0 && availablePeople.value.every(p => selectedPeople.value.includes(p.id)))
+const shareSlots = computed(() => Math.max(0, 50 - grants.value.length))
 const search = ref('')
 const sort = ref<DocumentSort>('updated')
 const recentScope = computed(() => recentKey(auth.currentUser?.id ?? '', auth.currentUser?.identity?.employment_epoch ?? 1, props.factoryId))
@@ -112,6 +121,7 @@ async function refresh() {
 }
 
 function destroy() {
+  resetFullscreen()
   generation++; editor?.destroyEditor(); editor = undefined
   ready.value = false; selected.value = null; dirty.value = false
   busy.value = false; saving.value = false; savePromise = undefined
@@ -121,6 +131,48 @@ function destroy() {
   folderRequest.value = null; folderUncertain.value = false; checked.value = []; showNewFolder.value = false; folderName.value = ''
   renamingFolder.value = null; copying.value = null; copyPending.value = false; copyRequest.value = null; copyError.value = ''
   trashing.value = null
+}
+
+function fullscreenChanged() {
+  if (disposed) return
+  if (document.fullscreenElement === workspace.value && selected.value) {
+    browserFullscreen.value = true; expanded.value = true
+  } else if (browserFullscreen.value) {
+    browserFullscreen.value = false; expanded.value = false; fullscreenNotice.value = ''
+  }
+}
+function resetFullscreen() {
+  expanded.value = false; browserFullscreen.value = false; fullscreenBusy.value = false; fullscreenNotice.value = ''
+  if (workspace.value && document.fullscreenElement === workspace.value && typeof document.exitFullscreen === 'function') {
+    void document.exitFullscreen().catch(() => { /* Browser also exits when its fullscreen element is removed. */ })
+  }
+}
+async function toggleFullscreen() {
+  const element = workspace.value
+  if (!element || !selected.value || fullscreenBusy.value) return
+  const run = generation
+  fullscreenBusy.value = true; fullscreenNotice.value = ''
+  try {
+    if (expanded.value) {
+      if (document.fullscreenElement === element) await document.exitFullscreen()
+      if (active(run)) { expanded.value = false; browserFullscreen.value = false }
+    } else if (typeof element.requestFullscreen === 'function' && document.fullscreenEnabled !== false) {
+      await element.requestFullscreen()
+      if (!active(run) || !selected.value) {
+        if (document.fullscreenElement === element) await document.exitFullscreen()
+        return
+      }
+      fullscreenChanged()
+    } else {
+      expanded.value = true
+      fullscreenNotice.value = '当前窗口不支持系统全屏，已切换为专注显示，可点“还原”恢复。'
+    }
+  } catch {
+    if (active(run) && selected.value) {
+      if (expanded.value) fullscreenNotice.value = '暂时无法退出系统全屏，请按 Esc 重试。'
+      else { expanded.value = true; fullscreenNotice.value = '当前窗口未允许系统全屏，已切换为专注显示，可点“还原”恢复。' }
+    }
+  } finally { if (active(run)) fullscreenBusy.value = false }
 }
 
 function toggleChecked() {
@@ -384,7 +436,7 @@ async function sharing(doc: OnlineDocument) {
   try {
     const [current, recipients] = await Promise.all([api.detail(props.factoryId, doc.id), api.recipients(props.factoryId)])
     if (!active(run)) return
-    shared.value = current; grants.value = (current.grants ?? []).map(g => ({ ...g })); people.value = recipients; person.value = ''
+    shared.value = current; grants.value = (current.grants ?? []).map(g => ({ ...g })); people.value = recipients; selectedPeople.value = []
     grantAccess.value = 'view'
   } catch (e) { if (active(run)) error.value = message(e) }
   finally { if (active(run)) busy.value = false }
@@ -427,23 +479,61 @@ async function saveName() {
 }
 
 function closeSharing() {
-  shared.value = null; grants.value = []; people.value = []; person.value = ''; peopleSearch.value = ''
+  shared.value = null; grants.value = []; people.value = []; selectedPeople.value = []; peopleSearch.value = ''; sharingStatus.value = ''
 }
 
-function addGrant() {
-  if (busy.value || shared.value?.editing || grants.value.length >= 50) return
-  const recipient = people.value.find(p => p.id === person.value)
-  if (!recipient || grants.value.some(g => g.user_id === recipient.id)) return
-  grants.value.push({ user_id: recipient.id, name: recipient.display_name, access: grantAccess.value, epoch: recipient.epoch }); person.value = ''
+function togglePeople() {
+  if (busy.value || !shared.value) return
+  if (allPeopleChecked.value) { selectedPeople.value = selectedPeople.value.filter(id => !availablePeople.value.some(p => p.id === id)); return }
+  const next = [...new Set([...selectedPeople.value, ...availablePeople.value.map(p => p.id)])]
+  if (next.length > shareSlots.value) { error.value = `每份文档最多共享给 50 位同事，当前还能添加 ${shareSlots.value} 位，请减少勾选。`; return }
+  selectedPeople.value = next; error.value = ''
+}
+function addGrants() {
+  if (busy.value || !shared.value || !selectedPeople.value.length) return
+  const recipients = eligiblePeople.value.filter(p => selectedPeople.value.includes(p.id))
+  if (recipients.length !== selectedPeople.value.length) { error.value = '同事候选已变化，请重新勾选后添加'; return }
+  if (recipients.length > shareSlots.value) { error.value = `每份文档最多共享给 50 位同事，当前还能添加 ${shareSlots.value} 位，请减少勾选。`; return }
+  grants.value.push(...recipients.map(p => ({ user_id: p.id, name: p.display_name, access: grantAccess.value, epoch: p.epoch })))
+  selectedPeople.value = []; error.value = ''
 }
 
 async function saveGrants() {
-  if (!shared.value || busy.value || shared.value.editing) return
+  if (!shared.value || busy.value) return
+  if (selectedPeople.value.length) { addGrants(); if (selectedPeople.value.length) return }
   busy.value = true; error.value = ''
   const run = generation
-  try { await api.share(props.factoryId, shared.value.id, grants.value, shared.value.share_version ?? ''); if (active(run)) { closeSharing(); notice.value = '共享设置已保存'; await refresh() } }
+  const factory = props.factoryId, id = shared.value.id, version = shared.value.share_version ?? ''
+  const intended = grants.value.map(g => ({ ...g }))
+  sharingStatus.value = '正在核实编辑连接…'
+  try {
+    let prepared = await api.prepareSharing(factory, id, intended, version)
+    if (!active(run)) return
+    if (!prepared.ready) {
+      sharingStatus.value = '正在处理目标同事的连接并确认保存，其他同事可继续编辑…'
+      const deadline = Date.now() + 30_000
+      let closed = false
+      do {
+        const current = await api.detail(factory, id)
+        if (!active(run)) return
+        if (current.share_version !== version) throw new Error('共享设置已在其他窗口变更，请关闭并重新打开共享设置')
+        if (current.save_error) throw new Error('文档内容尚未保存成功，共享设置尚未修改。' + current.save_error)
+        if (!current.editing) { closed = true; break }
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        if (!active(run)) return
+        if (Date.now() >= deadline) break
+        prepared = await api.prepareSharing(factory, id, intended, version)
+        if (!active(run)) return
+        if (prepared.ready) { closed = true; break }
+      } while (Date.now() < deadline)
+      if (!closed) throw new Error('内容保存仍未确认，共享设置尚未修改。已保留名单，请稍后重试保存共享设置。')
+    }
+    sharingStatus.value = '正在保存共享设置…'
+    await api.share(factory, id, intended, version)
+    if (active(run)) { closeSharing(); notice.value = '共享设置已保存'; await refresh() }
+  }
   catch (e) { if (active(run)) error.value = message(e) }
-  finally { if (active(run)) busy.value = false }
+  finally { if (active(run)) { busy.value = false; sharingStatus.value = '' } }
 }
 
 async function heartbeat() {
@@ -453,6 +543,9 @@ async function heartbeat() {
   try {
     const current = await api.detail(props.factoryId, selected.value.id)
     if (!active(run)) return
+    if (current.access !== selected.value?.access) {
+      destroy(); notice.value = '您的共享权限已变更，请重新打开文档'; await refresh(); return
+    }
     if (current.save_error) error.value = current.save_error
     if (dirty.value && canEdit.value && ready.value) await save()
   } catch (e) {
@@ -491,12 +584,12 @@ function sessionBoundary() { destroy(); docs.value = []; folders.value = []; fol
 watch(search, () => { if (!managementPending.value) checked.value = [] })
 watch([() => auth.currentUser?.id, () => auth.currentUser?.authorization_version, () => auth.currentUser?.identity?.employment_epoch], () => { sessionBoundary(); void refresh() })
 onBeforeRouteLeave(async () => { if (managementPending.value) { error.value = '文档操作结果尚未确认，请先重试原操作'; return false }; if (!selected.value) return true; return close() })
-onMounted(() => { void refresh(); timer = setInterval(() => void heartbeat(), 20000); window.addEventListener('beforeunload', beforeUnload); window.addEventListener('auth-session-boundary-changed', sessionBoundary) })
-onBeforeUnmount(() => { disposed = true; destroy(); removeFactoryGuard(); if (timer) clearInterval(timer); window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('auth-session-boundary-changed', sessionBoundary) })
+onMounted(() => { void refresh(); timer = setInterval(() => void heartbeat(), 20000); window.addEventListener('beforeunload', beforeUnload); window.addEventListener('auth-session-boundary-changed', sessionBoundary); document.addEventListener('fullscreenchange', fullscreenChanged) })
+onBeforeUnmount(() => { disposed = true; destroy(); removeFactoryGuard(); if (timer) clearInterval(timer); window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('auth-session-boundary-changed', sessionBoundary); document.removeEventListener('fullscreenchange', fullscreenChanged) })
 </script>
 
 <template>
-  <main class="od-workspace" :class="{ 'od-editing': selected }">
+  <main ref="workspace" class="od-workspace" :class="{ 'od-editing': selected, 'od-editor-expanded': selected && expanded }">
     <nav class="od-nav"><RouterLink :to="{ path: '/tools', query: { factory: factoryId } }"><ArrowLeft :size="15" />公共工具</RouterLink><span>{{ auth.currentUser?.display_name }}</span></nav>
     <div v-if="error" class="od-error" role="alert">{{ error }}</div>
     <div v-if="notice" class="od-notice" role="status">{{ notice }}</div>
@@ -516,7 +609,9 @@ onBeforeUnmount(() => { disposed = true; destroy(); removeFactoryGuard(); if (ti
         <Button v-if="selected.access === 'owner'" :id="`od-rename-${selected.id}`" variant="ghost" size="sm" :disabled="busy || saving || !ready" @click="startRename(selected)">重命名</Button>
         <Button v-if="canEdit" size="sm" :disabled="!ready || saving" @click="save"><Save :size="15" />{{ saving ? '保存中…' : '保存到系统' }}</Button>
         <Button variant="outline" size="sm" :disabled="saving || !ready" @click="download(selected)"><Download :size="15" />下载</Button>
+        <Button variant="outline" size="sm" :aria-pressed="expanded" :disabled="fullscreenBusy" @click="toggleFullscreen"><Minimize2 v-if="expanded" :size="15" /><Maximize2 v-else :size="15" />{{ expanded ? '还原' : '全屏' }}</Button>
       </header>
+      <p v-if="fullscreenNotice" class="od-fullscreen-notice" role="status">{{ fullscreenNotice }}</p>
       <div v-if="!ready" class="od-loading" role="status">正在连接文档编辑服务…</div>
       <div class="od-editor"><div id="online-document-editor" /></div>
     </template>
@@ -535,15 +630,24 @@ onBeforeUnmount(() => { disposed = true; destroy(); removeFactoryGuard(); if (ti
         <div class="od-section-heading"><h2>共享「{{ shared.title }}」</h2><Button variant="ghost" size="sm" :disabled="busy" @click="closeSharing">关闭</Button></div>
         <p>只读：查看和下载；可编辑：修改内容并保存。仅拥有者能管理共享，保存设置后生效。</p>
         <div class="od-share-add">
-          <label>查找同事<input v-model="peopleSearch" placeholder="姓名、组织或部门" :disabled="busy || shared.editing" @input="person = ''" /></label>
-          <label>{{ factoryId === 'group' ? '公司同事' : '本厂同事' }}<select v-model="person" aria-label="选择共享同事" :disabled="busy || shared.editing"><option value="">选择同事</option><option v-for="p in availablePeople" :key="p.id" :value="p.id">{{ [p.display_name, p.organization, p.department].filter(Boolean).join(' · ') }}</option></select></label>
-          <label>权限<select v-model="grantAccess" aria-label="新增共享权限" :disabled="busy || shared.editing"><option value="view">只读</option><option value="edit">可编辑</option></select></label>
-          <Button variant="outline" :disabled="busy || !person || shared.editing || grants.length >= 50" @click="addGrant">添加</Button>
+          <label>查找同事<input v-model="peopleSearch" placeholder="姓名、组织或部门" :disabled="busy" /></label>
+          <label>权限<select v-model="grantAccess" aria-label="新增共享权限" :disabled="busy"><option value="view">只读</option><option value="edit">可编辑</option></select></label>
+          <Button variant="outline" :disabled="busy || !selectedPeople.length || selectedPeople.length > shareSlots" @click="addGrants">添加已选同事</Button>
         </div>
-        <p v-if="!availablePeople.length" class="od-share-hint">{{ peopleSearch ? '没有匹配的同事，请换个关键词。' : '暂无其他可添加的同事。' }}</p>
-        <ul class="od-grants"><li v-for="g in grants" :key="g.user_id"><span>{{ g.name }}</span><label><span class="sr-only">{{ g.name }}的权限</span><select v-model="g.access" :disabled="busy || shared.editing"><option value="view">只读</option><option value="edit">可编辑</option></select></label><Button variant="ghost" size="sm" :aria-label="`移除${g.name}的共享`" :disabled="busy || shared.editing" @click="grants = grants.filter(item => item.user_id !== g.user_id)">移除</Button></li></ul>
-        <p v-if="!grants.length">未选择共享同事；保存后仅自己可见。</p><p v-if="shared.editing" role="status">还有编辑窗口未关闭，请所有人保存并关闭后稍等约 10 秒，再重新打开共享设置。</p>
-        <Button :disabled="busy || shared.editing" @click="saveGrants">保存共享设置</Button>
+        <fieldset class="od-people-picker" :disabled="busy" aria-describedby="od-people-selection">
+          <legend>{{ factoryId === 'group' ? '公司同事' : '本厂同事' }}（可多选）</legend>
+          <div class="od-people-toolbar"><Button type="button" variant="ghost" size="sm" :disabled="busy || !availablePeople.length" @click="togglePeople">{{ allPeopleChecked ? '取消全选当前结果' : '全选当前结果' }}</Button><Button type="button" variant="ghost" size="sm" :disabled="busy || !selectedPeople.length" @click="selectedPeople = []">清空勾选</Button></div>
+          <ul v-if="availablePeople.length" class="od-people-list" aria-label="选择共享同事">
+            <li v-for="p in availablePeople" :key="`${p.id}:${p.epoch}`"><label><input v-model="selectedPeople" type="checkbox" :value="p.id" :aria-label="`选择共享同事：${p.display_name}`" :disabled="busy || (!selectedPeople.includes(p.id) && selectedPeople.length >= shareSlots)" /><span><strong>{{ p.display_name }}</strong><small>{{ [p.organization, p.department].filter(Boolean).join(' · ') }}</small></span></label></li>
+          </ul>
+          <p v-else class="od-share-hint">{{ peopleSearch ? '没有匹配的可添加同事，请换个关键词。' : '暂无其他可添加的同事。' }}</p>
+          <p id="od-people-selection">已勾选 {{ selectedPeople.length }} 位（含其他搜索结果）；当前最多还能添加 {{ shareSlots }} 位。可先添加后核对名单，也可直接保存共享设置生效。</p>
+        </fieldset>
+        <ul class="od-grants"><li v-for="g in grants" :key="g.user_id"><span>{{ g.name }}</span><label><span class="sr-only">{{ g.name }}的权限</span><select v-model="g.access" :disabled="busy"><option value="view">只读</option><option value="edit">可编辑</option></select></label><Button variant="ghost" size="sm" :aria-label="`移除${g.name}的共享`" :disabled="busy" @click="grants = grants.filter(item => item.user_id !== g.user_id)">移除</Button></li></ul>
+        <p v-if="!grants.length && !selectedPeople.length">未选择共享同事；保存后仅自己可见。</p>
+        <p>取消共享或降为只读时，只断开对应同事，其他人可继续编辑。系统会确认已同步内容的保存；未联网的输入请先同步。</p>
+        <p v-if="sharingStatus" role="status">{{ sharingStatus }}</p>
+        <Button :disabled="busy" @click="saveGrants">保存共享设置</Button>
       </section>
       <form v-if="copying" class="od-sharing od-rename" aria-label="复制文档" @submit.prevent="copyDocument">
         <div class="od-section-heading"><h2>复制「{{ copying.title }}.{{ copying.format }}」</h2></div>
@@ -635,6 +739,16 @@ input,select { min-height:36px; border:1px solid var(--color-input); border-radi
 .od-recent-hint { padding:0 18px 12px; color:var(--color-muted-foreground); font-size:13px; }.od-filter select { max-width:100%; min-width:0; }.od-empty { min-height:250px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; text-align:center; padding:24px; color:var(--color-muted-foreground); }.od-empty h3 { font-size:17px; color:var(--color-foreground); }.od-empty p { font-size:14px; }
 .od-documents li { display:flex; gap:16px; align-items:center; border-top:1px solid var(--color-border); padding:16px 18px; }.od-file-icon { flex-shrink:0; padding:12px; border-radius:var(--radius-lg); background:var(--color-muted); color:var(--color-primary); }.od-file-info { flex:1; min-width:0; }.od-file-name { display:block; max-width:100%; text-align:left; font-weight:600; overflow-wrap:anywhere; }.od-file-name:hover { color:var(--color-primary); text-decoration:underline; }.od-file-info p { font-size:12px; color:var(--color-muted-foreground); margin-top:6px; }
 .od-sharing { padding:0 18px 18px; }.od-sharing .od-section-heading { padding-left:0; padding-right:0; }.od-sharing p { font-size:13px; color:var(--color-muted-foreground); margin-bottom:12px; }.od-share-add { display:flex; gap:12px; flex-wrap:wrap; align-items:end; }.od-share-add label { display:flex; flex-direction:column; gap:6px; font-size:13px; }.od-share-hint { margin-top:10px; }.od-share-add label { min-width:0; }.od-grants { margin:12px 0; }.od-grants li { display:flex; align-items:center; gap:12px; padding:8px 0; }.od-grants li>span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.od-people-picker { margin:16px 0; padding:12px; border:1px solid var(--color-border); border-radius:var(--radius-lg); min-width:0; }
+.od-people-picker legend { padding:0 6px; font-size:13px; font-weight:600; }.od-people-toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+.od-people-list { max-height:240px; overflow:auto; display:grid; grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr)); gap:8px; }
+.od-people-list label { display:flex; align-items:center; gap:10px; padding:10px; min-width:0; border:1px solid var(--color-border); border-radius:var(--radius-md); cursor:pointer; }
+.od-people-list label:has(input:checked) { background:var(--color-accent); border-color:var(--color-primary); }.od-people-list label:has(input:disabled) { cursor:default; opacity:.6; }
+.od-people-list input { width:18px; height:18px; min-height:18px; padding:0; flex-shrink:0; accent-color:var(--color-primary); }.od-people-list span { min-width:0; overflow-wrap:anywhere; }
+.od-people-list strong { display:block; font-size:13px; }.od-people-list small { display:block; color:var(--color-muted-foreground); font-size:12px; margin-top:3px; }.od-people-picker #od-people-selection { margin:10px 0 0; line-height:1.6; }
+.od-grants { max-height:260px; overflow:auto; }
+.od-editing.od-editor-expanded { padding:8px; }.od-editor-expanded .od-nav { display:none; }.od-editing:fullscreen { width:100%; height:100dvh; max-width:none; overflow:auto; }
+.od-fullscreen-notice { flex-shrink:0; color:var(--color-muted-foreground); font-size:12px; margin-bottom:8px; }
 .od-rename>label { display:block; font-size:13px; margin-bottom:6px; }.od-rename-input { display:flex; align-items:center; gap:8px; max-width:560px; margin-bottom:10px; }.od-rename-input input { flex:1; min-width:0; }.od-rename-input span { color:var(--color-muted-foreground); font-size:13px; }.od-rename .od-rename-error { color:var(--color-destructive); }
 .od-editing { height:100dvh; display:flex; flex-direction:column; padding-bottom:12px; }.od-editing .od-rename { flex-shrink:0; margin:0 0 12px; }.od-editing .od-nav { margin-bottom:10px; }.od-editor-bar { flex-wrap:wrap; margin-bottom:10px; }.od-editor-title { flex:1; min-width:120px; }.od-editor-title strong { display:block; overflow-wrap:anywhere; font-size:15px; }.od-editor-title span { display:block; font-size:12px; color:var(--color-muted-foreground); margin-top:3px; }.od-editor { flex:1; min-height:350px; background:var(--color-card); border:1px solid var(--color-border); }.od-editor>div { height:100%; }.od-loading { font-size:13px; padding:10px; color:var(--color-muted-foreground); }
 @media(max-width:700px) { .od-workspace { padding:12px 10px; }.od-create { align-items:stretch; }.od-create input { flex:1; min-width:150px; }.od-create span { margin-left:0; width:100%; }.od-documents li { flex-wrap:wrap; gap:10px; padding:14px 12px; }.od-file-actions { width:100%; justify-content:flex-end; }.od-filter { width:100%; flex-wrap:wrap; }.od-filter select { width:100%; }.od-filter input { flex:1; min-width:0; }.od-editor-title { order:-1; width:100%; flex-basis:100%; }.od-share-add label { max-width:100%; } }

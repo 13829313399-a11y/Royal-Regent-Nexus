@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     onlyoffice_public_url: str = ""
     onlyoffice_callback_base: str = "http://api:8000"
     carton_mark_ai_enabled: bool = False
+    carton_asset_v1_enabled: bool = False
+    carton_asset_v1_writes_enabled: bool = False
     carton_mark_ai_connection_file: str = ""
     carton_mark_ai_reference_file: str = ""
     carton_mark_template_font_file: str = ""

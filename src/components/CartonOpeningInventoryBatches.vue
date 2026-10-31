@@ -16,6 +16,8 @@ const preview = ref<OpeningBatchReversalPreview | null>(null), pending = ref<Pen
 const reason = ref('期初库存导入有误，整批撤销后更正重导'), reviewed = ref(false)
 const enabled = computed(() => props.connected && props.canManage && Boolean(props.viewerKey))
 const busy = computed(() => loading.value || previewing.value || saving.value)
+const navigationBlocked = computed(() => previewing.value || saving.value || Boolean(preview.value || pending.value))
+defineExpose({ navigationBlocked })
 let generation = 0, listGeneration = 0, previewGeneration = 0
 const statuses = { ACTIVE: '已入账', PARTIAL: '已有逐笔冲销，须核实', REVERSED: '已整批撤销' }
 const dateText = (value: string) => value ? value.replace('T', ' ').slice(0, 19) : '未记录'

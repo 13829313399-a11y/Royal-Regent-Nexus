@@ -16,7 +16,7 @@ from app.models.auth import AuthSession, AuthUser, EmployeeProfile
 from app.models.identity import IamOrgUnit
 from app.models.online_documents import OnlineDocument as Document, OnlineDocumentRevision as Revision
 from app.models.online_documents import OnlineDocumentPlacement as Placement
-from app.services import auth, collaborative_sheets, internal_members
+from app.services import auth, internal_members
 from app.services.document_tools import storage
 from app.services import online_document_protocol as protocol
 from app.services.identity_policy import lock_mutation
@@ -49,7 +49,22 @@ def scope(user, factory_id):
         raise HTTPException(403, "账号不可用")
     if factory_id == "group":
         return  # Ownership does not require an employee profile; sharing is explicit.
-    collaborative_sheets.scope(user, factory_id)
+    if factory_id not in auth.ALLOWED_FACTORY_IDS:
+        raise HTTPException(422, "请选择具体厂区")
+    if not user.profile or user.profile.confirmation_status != "confirmed" or user.profile.primary_factory_id != factory_id:
+        raise HTTPException(403, "在线文档仅限已确认的本厂账号，不能跨厂区共享")
+
+
+def _eligible_factory_accounts(db, factory_id):
+    """Use current resolved identities, including effective transfers/expiry."""
+    current_factory, current_department, _ = identity_columns()
+    query = select(AuthUser.id, AuthUser.display_name, AuthUser.username, current_department.label("primary_department")).join(
+        EmployeeProfile, AuthUser.id == EmployeeProfile.user_id).where(
+        AuthUser.status == "active", EmployeeProfile.employment_status != "left", current_factory == factory_id,
+        EmployeeProfile.confirmation_status == "confirmed")
+    rows = [{"id": row.id, "display_name": row.display_name or row.username, "department": row.primary_department}
+            for row in db.execute(query)]
+    return sorted(rows, key=lambda row: (row["display_name"].casefold(), row["id"]))
 
 
 def access(doc, user):
@@ -241,7 +256,8 @@ def create(db, user, factory_id, title, extension, data=None, *, folder_id=None)
 def recipients(db, user, factory_id):
     scope(user, factory_id)
     if factory_id != "group":
-        result = collaborative_sheets.recipients(db, user, factory_id)
+        rows = _eligible_factory_accounts(db, factory_id)
+        result = {"users": rows, "departments": [{"id": d, "name": d} for d in sorted({r["department"] for r in rows} & auth.ALLOWED_DEPARTMENTS)]}
         epochs = dict(db.execute(select(EmployeeProfile.user_id, EmployeeProfile.employment_epoch)
                                 .where(EmployeeProfile.user_id.in_([p["id"] for p in result["users"]]))).all())
         return {**result, "users": [{**p, "epoch": epochs.get(p["id"], 1)} for p in result["users"]]}
@@ -259,17 +275,15 @@ def recipients(db, user, factory_id):
                       for row in rows], "departments": []}
 
 
-def share(db, doc, user, grants, version):
+def validate_sharing(db, doc, user, grants, version):
     if doc.factory_id == "group":
         require_group_member(user)
-    if doc.editor_key:
-        raise HTTPException(409, "请所有人保存并关闭文档后再修改共享权限")
     if version != share_version(doc):
         raise HTTPException(409, "共享设置已在其他窗口变更，请关闭并重新打开共享设置")
     if len(grants) > 50 or len({g.user_id for g in grants}) != len(grants):
         raise HTTPException(422, "最多共享给 50 人，且不能重复")
     allowed = (group_recipient_ids(db) if doc.factory_id == "group" else
-               {item["id"] for item in collaborative_sheets._eligible_accounts(db, doc.factory_id)})
+               {item["id"] for item in _eligible_factory_accounts(db, doc.factory_id)})
     result = []
     for grant in grants:
         if grant.user_id not in allowed or grant.user_id == doc.owner_id:
@@ -281,11 +295,157 @@ def share(db, doc, user, grants, version):
         if grant.epoch != epoch(target):
             raise HTTPException(409, "同事的任职身份已变化，请关闭并重新打开共享设置，再移除该同事并重新添加")
         result.append({"user_id": target.id, "name": target.display_name, "epoch": epoch(target), "access": grant.access})
+    return result
+
+
+SHARING_STATE = "__sharing__"
+
+
+def sharing_fingerprint(grants):
+    fields = [{k: g[k] for k in ("user_id", "epoch", "access")} for g in grants]
+    return hashlib.sha256(json.dumps(sorted(fields, key=lambda g: g["user_id"]), sort_keys=True).encode()).hexdigest()
+
+
+def sharing_state(doc, result, version):
+    state = doc.participants.get(SHARING_STATE, {})
+    if (state.get("expires", 0) > time.time() and state.get("key") == doc.editor_key and state.get("version") == version and
+            state.get("fingerprint") == sharing_fingerprint(result)):
+        return state
+    return {}
+
+
+def set_sharing_state(doc, state):
+    doc.participants = {**doc.participants, SHARING_STATE: state}
+
+
+def prepare_sharing(db, doc, user, grants, version, session_id):
+    """Disconnect only reduced grants; checkpoint without closing other editors."""
+    result = validate_sharing(db, doc, user, grants, version)
+    document_id, factory, key = doc.id, doc.factory_id, doc.editor_key
+    actor_id, actor_epoch = user.id, epoch(user)
+    if not key:
+        return {"ready": True}
+
+    def current_owner():
+        lock_mutation(db)
+        account = db.get(AuthUser, actor_id, populate_existing=True)
+        session = db.get(AuthSession, session_id, populate_existing=True)
+        expiry = auth.parse_time(session.expires_at) if session else None
+        if (not account or account.status != "active" or account.force_password_change or
+                not session or session.status != "active" or session.user_id != actor_id or
+                not expiry or expiry <= datetime.now()):
+            raise HTTPException(401, "登录状态已变化，请重新登录")
+        actor = auth.build_auth_context(db, account)
+        if epoch(actor) != actor_epoch:
+            raise HTTPException(403, "任职身份已变化，请重新打开文档")
+        current = get(db, actor, factory, document_id, owner=True, lock=True)
+        validate_sharing(db, current, actor, grants, version)
+        return current
+
+    state = sharing_state(doc, result, version)
+    if state.get("phase") == "ready":
+        return {"ready": True}
+    if state.get("phase") in {"waiting", "saving"}:
+        if doc.save_error:
+            raise HTTPException(409, "内容保存尚未确认，共享设置尚未修改，请恢复文档保存后重试")
+        if doc.pending_save:
+            return {"ready": False}
+        if state.get("phase") == "saving":
+            if doc.saved_request != state["request_id"]:
+                raise HTTPException(409, "共享前的保存尚未确认，请重试原共享设置")
+            set_sharing_state(doc, {**state, "phase": "ready"})
+            db.commit()
+            return {"ready": True}
+        request_id = uid()
+        set_sharing_state(doc, {**state, "phase": "saving", "request_id": request_id})
+        # start_save commits the receipt and nonce before the remote command.
+        start_save(db, doc, request_id=request_id)
+        doc = current_owner()
+        if doc.editor_key != key:
+            return {"ready": not bool(doc.editor_key)}
+        latest = sharing_state(doc, result, version)
+        if latest.get("operation") != state["operation"]:
+            raise HTTPException(409, "共享准备已过期或被替换，请重试原设置")
+        state = latest
+        if doc.saved_request == request_id and not doc.pending_save and not doc.save_error:
+            set_sharing_state(doc, {**state, "phase": "ready"})
+            db.commit()
+            return {"ready": True}
+        return {"ready": state.get("phase") == "ready"}
+
+    old_state = doc.participants.get(SHARING_STATE, {})
+    if old_state.get("expires", 0) > time.time() and not state and old_state.get("phase") != "ready":
+        raise HTTPException(409, "另一组共享修改尚未完成，请先重试原共享设置")
+    desired = {(g["user_id"], g["epoch"]): g["access"] for g in result}
+    targets = [f'{g["user_id"]}_{g["epoch"]}' for g in doc.grants
+               if (g["user_id"], g["epoch"]) not in desired or
+               (g["access"] == "edit" and desired[(g["user_id"], g["epoch"])] != "edit")]
+    state = state or {"key": key, "version": version, "fingerprint": sharing_fingerprint(result),
+                     "targets": targets, "phase": "drop", "operation": uid(), "expires": time.time() + 120}
+    set_sharing_state(doc, state)
+    db.commit()  # Callbacks must be free to acquire IAM/document locks.
+    try:
+        response = protocol.command({"c": "info", "key": key})
+    except Exception:
+        raise HTTPException(502, "暂时无法核实编辑连接，共享设置尚未修改，请稍后重试") from None
+    doc = current_owner()
+    if doc.editor_key != key:
+        return {"ready": not bool(doc.editor_key)}
+    latest = sharing_state(doc, result, version)
+    if latest.get("operation") != state["operation"]:
+        raise HTTPException(409, "共享准备已过期或被替换，请重试原设置")
+    if latest.get("phase") != "drop":
+        return {"ready": latest.get("phase") == "ready"}
+    if response.get("error") == 1:
+        if doc.pending_save or doc.save_error:
+            raise HTTPException(409, "编辑连接已离线，但还有未确认的保存，共享设置尚未修改，请先恢复文档保存")
+        doc.editor_key, doc.participants = "", {}
+        db.commit()
+        return {"ready": True}
+    if response.get("error") != 0:
+        raise HTTPException(502, "暂时无法核实编辑连接，共享设置尚未修改，请稍后重试")
+    if not targets:
+        set_sharing_state(doc, {**state, "phase": "ready"})
+        db.commit()
+        return {"ready": True}
+    db.commit()
+    try:
+        # Never omit users or send an empty target list: that would drop everyone.
+        response = protocol.command({"c": "drop", "key": key, "users": targets})
+    except Exception:
+        raise HTTPException(502, "目标同事连接的处理结果尚未确认，共享设置尚未修改，请重试原设置") from None
+    doc = current_owner()
+    if response.get("error") != 0:
+        raise HTTPException(502, "目标同事连接尚未结束，共享设置尚未修改，请稍后重试")
+    if doc.editor_key != key:
+        return {"ready": not bool(doc.editor_key)}
+    latest = sharing_state(doc, result, version)
+    if latest.get("operation") != state["operation"]:
+        raise HTTPException(409, "共享准备已过期或被替换，请重试原设置")
+    if latest.get("phase") != "drop":
+        return {"ready": latest.get("phase") == "ready"}
+    set_sharing_state(doc, {**state, "phase": "waiting"})
+    db.commit()
+    # One non-closing checkpoint preserves edits already received from targets.
+    doc = current_owner()
+    return prepare_sharing(db, doc, user, grants, version, session_id)
+
+
+def share(db, doc, user, grants, version):
+    result = validate_sharing(db, doc, user, grants, version)
+    prepared = sharing_state(doc, result, version)
+    if doc.editor_key and prepared.get("phase") != "ready":
+        raise HTTPException(409, "请先完成目标同事连接处理和保存确认，再保存共享设置")
     previous = doc.grants
+    if doc.editor_key:
+        targets = set(prepared.get("targets", []))
+        doc.participants = {pid: ({**p, "revoked": True} if pid in targets else p)
+                            for pid, p in doc.participants.items() if pid != SHARING_STATE}
     doc.grants = result
     doc.updated_at = now()
     doc.state_version += 1
-    doc.access_generation += 1
+    if not doc.editor_key:
+        doc.access_generation += 1
     from app.services.online_document_management import audit
     audit(db, doc, user, "share", {"before": previous, "after": result})
     db.commit()
@@ -294,6 +454,10 @@ def share(db, doc, user, grants, version):
 
 def editor(db, doc, user, session_id):
     mode = access(doc, user)
+    editor_id = f"{user.id}_{epoch(user)}"
+    state = doc.participants.get(SHARING_STATE, {})
+    if state.get("expires", 0) > time.time() and editor_id in state.get("targets", []):
+        raise HTTPException(409, "拥有者正在调整您的共享权限，请稍后重新打开")
     if mode == "view":
         source = protocol.sign({"purpose": "source-view", "document": doc.id, "revision": doc.revision,
                                 "generation": doc.access_generation,
@@ -341,7 +505,7 @@ def editor(db, doc, user, session_id):
     return {"config": config, "script_url": settings.onlyoffice_public_url.rstrip("/") + "/web-apps/apps/api/documents/api.js", "document": summary(doc, user)}
 
 
-def start_save(db, doc):
+def start_save(db, doc, *, request_id=None):
     if not doc.editor_key:
         return {"request_id": "", "revision": doc.revision}
     if doc.pending_save and not doc.save_error and time.time() - doc.pending_since < 90:
@@ -349,7 +513,7 @@ def start_save(db, doc):
     uncertain = bool(doc.pending_save or doc.save_error)
     # Preserve an unacknowledged request across retries: the document server may
     # have assembled the file even when its callback or command response failed.
-    request_id, key = doc.pending_save or uid(), doc.editor_key
+    request_id, key = doc.pending_save or request_id or uid(), doc.editor_key
     doc.pending_save, doc.pending_since, doc.save_error = request_id, int(time.time()), ""
     db.commit()  # The callback can arrive before the command HTTP response.
     try:
@@ -389,7 +553,7 @@ def release_unopened(db, doc):
     return {"released": False}
 
 
-def callback_actor(db, doc, payload):
+def callback_actor(db, doc, payload, *, duplicate_only=False):
     if doc.deleted_at:
         raise HTTPException(403, "文档已移入回收站")
     users = payload.get("users")
@@ -407,7 +571,11 @@ def callback_actor(db, doc, payload):
         raise HTTPException(403, "编辑会话已失效")
     user = auth.build_auth_context(db, account)
     scope(user, doc.factory_id)
-    if epoch(user) != participant["epoch"] or access(doc, user) not in {"owner", "edit"}:
+    if epoch(user) != participant["epoch"]:
+        raise HTTPException(403, "编辑权限已失效")
+    if access(doc, user) not in {"owner", "edit"}:
+        if duplicate_only and participant.get("revoked"):
+            return None  # May acknowledge identical bytes, never write a revision.
         raise HTTPException(403, "编辑权限已失效")
     return user.id
 
@@ -423,7 +591,7 @@ def callback(db, document_id, payload):
         if status == 6 and (payload.get("forcesavetype") != 0 or not preliminary.pending_save or payload.get("userdata") != preliminary.pending_save):
             db.rollback()
             return {"error": 0}
-        callback_actor(db, preliminary, payload)
+        callback_actor(db, preliminary, payload, duplicate_only=True)
         extension = preliminary.format
         protection_state = preliminary.protection
         baseline = None
@@ -478,14 +646,16 @@ def callback(db, document_id, payload):
     if status == 6 and (payload.get("forcesavetype") != 0 or not doc.pending_save or payload.get("userdata") != doc.pending_save):
         db.rollback()
         return {"error": 0}
-    actor = callback_actor(db, doc, payload)
+    actor = callback_actor(db, doc, payload, duplicate_only=True)
+    digest = hashlib.sha256(data).hexdigest()
+    if actor is None and digest != doc.sha256:
+        raise HTTPException(403, "已撤销权限的旧编辑人不能写入新内容")
     if doc.protection != protection_state:
         raise HTTPException(409, "公式保护设置已变化，已停止旧会话保存")
     if protection_error:
         doc.save_error = protection_error
         db.commit()
         return {"error": 1}
-    digest = hashlib.sha256(data).hexdigest()
     if digest != doc.sha256:
         doc.storage_key, doc.sha256 = write_blob(doc.id, data)
         doc.byte_size, doc.revision, doc.updated_at = len(data), doc.revision + 1, now()
@@ -494,7 +664,10 @@ def callback(db, document_id, payload):
         from app.services.online_document_management import audit
         account = db.get(AuthUser, actor)
         user = auth.build_auth_context(db, account)
-        audit(db, doc, user, "save", {"attribution": "last_editor", "participants": list(doc.participants)})
+        audit(db, doc, user, "save", {"attribution": "last_editor", "participants": [pid for pid in doc.participants if pid != SHARING_STATE]})
+    state = doc.participants.get(SHARING_STATE, {})
+    if status == 6 and state.get("phase") == "saving" and state.get("request_id") == doc.pending_save:
+        set_sharing_state(doc, {**state, "phase": "ready"})
     doc.saved_request, doc.pending_save, doc.save_error = doc.pending_save, "", ""
     if status == 2:
         doc.editor_key, doc.participants = "", {}

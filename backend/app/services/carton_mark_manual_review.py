@@ -165,7 +165,7 @@ async def create_review(request, db, user, payload, supplier=False):
 def original_source(db, factory, source_assets, asset_id):
     expected = next((row for row in source_assets if row["id"] == asset_id), None)
     asset = db.scalar(select(CartonMarkAsset).where(CartonMarkAsset.id == asset_id, CartonMarkAsset.factory_id == factory))
-    if not expected or asset is None:
+    if not expected or asset is None or asset.recognition_source == 'materials_folder':
         raise HTTPException(404, "未找到此审核版本的原文件")
     content = bytes(asset.content)
     if asset.sha256 != expected["sha256"] or hashlib.sha256(content).hexdigest() != expected["sha256"]:

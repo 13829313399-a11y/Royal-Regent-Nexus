@@ -695,7 +695,6 @@ def test_legacy_sqlite_molding_sample_audit_columns_are_added_on_startup(monkeyp
     legacy_client = make_client_with_database(monkeypatch, database_path)
     db_module = importlib.import_module("app.db")
     importlib.import_module("app.models.module_feedback")
-    importlib.import_module("app.models.collaborative_sheets")
     # Prepare the other current modules before startup so their migration guards
     # do not turn this focused legacy-molding test into a whole-app migration test.
     # All legacy molding tables stay untouched until the application's startup.

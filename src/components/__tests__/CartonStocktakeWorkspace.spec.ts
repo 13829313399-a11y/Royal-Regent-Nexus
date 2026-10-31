@@ -32,6 +32,21 @@ beforeEach(() => {
   mocks.detail.mockResolvedValue(detail()); mocks.create.mockResolvedValue(detail()); mocks.act.mockResolvedValue(detail())
 })
 describe('库存盘点工作台', () => {
+  it('protects changed counts and in-flight saves without locking clean document browsing', async () => {
+    const wrapper = await open()
+    expect(wrapper.vm.navigationBlocked).toBe(false)
+    await wrapper.get('[aria-label="实盘数量 L1"]').setValue('98')
+    expect(wrapper.vm.navigationBlocked).toBe(true)
+    let finish!: (value: ReturnType<typeof detail>) => void
+    mocks.act.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await button(wrapper, '保存草稿').trigger('click')
+    expect(wrapper.vm.navigationBlocked).toBe(true)
+    finish(detail()); await flushPromises()
+    expect(wrapper.vm.navigationBlocked).toBe(false)
+    await button(wrapper, '盘点单列表').trigger('click'); await flushPromises()
+    expect(wrapper.vm.navigationBlocked).toBe(false)
+    wrapper.unmount()
+  })
   it('opens the ledger selection directly for counting without selecting again', async () => {
     const wrapper = mount(CartonStocktakeWorkspace, { props: { factoryId: 'huaxing', initialPositionKeys: ['M1'] } })
     await flushPromises()

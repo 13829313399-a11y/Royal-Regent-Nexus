@@ -5,7 +5,7 @@ import ImportDialog from '../CartonDemandImportDialog.vue'
 import { appendDraft, appendItems, pendingCartonBatches, sumQuantity } from '@/features/carton-procurement/batchOrders'
 import type { UnifiedOrderEntry } from '@/api/cartonSpecialRequests'
 
-const api = vi.hoisted(() => ({ selected: vi.fn(), append: vi.fn(), preview: vi.fn(), import: vi.fn() }))
+const api = vi.hoisted(() => ({ selected: vi.fn(), append: vi.fn(), preview: vi.fn(), importDemands: vi.fn() }))
 vi.mock('@/api/cartonSpecialRequests', () => ({ cartonSpecialRequestsApi: api }))
 vi.mock('@/api/cartonBatchOrders', () => ({ cartonBatchOrdersApi: api }))
 const stubs = Object.fromEntries(['DialogRoot', 'DialogPortal', 'DialogOverlay', 'DialogContent', 'DialogTitle', 'DialogDescription'].map(name => [name, { template: '<div><slot /></div>' }]))
@@ -52,19 +52,19 @@ it('restores the original frozen quantities and replays only the original comman
 it('fills only missing import fields and retains edited rows and file on unknown-result retry', async () => {
   const file = new File(['source'], '需求.xlsx')
   api.preview.mockResolvedValue({ fingerprint: 'a'.repeat(64), rows: [{ source_row: 2, group: 'A', kind: '', item_no: '001', packaging_type: '外箱', paper_quality: 'A33', specification: '20*10*8', dimension_unit: 'inch', quantity: '12', unit: '个', required_date: '', note: '' }] })
-  api.import.mockRejectedValueOnce(new Error('断网')).mockResolvedValueOnce({ count: 1, batch_id: 'I1' })
+  api.importDemands.mockRejectedValueOnce(new Error('断网')).mockResolvedValueOnce({ count: 1, batch_id: 'I1' })
   const wrapper = mount(ImportDialog, { props: { ...props, file }, global: { stubs } }); await flushPromises()
   await wrapper.get('[aria-label="导入统一需用日期"]').setValue('2026-11-02')
   await wrapper.findAll('button').find(b => b.text() === '填入所选空白项')!.trigger('click')
   await wrapper.get('[aria-label="第 2 行数量"]').setValue('12.25')
   await wrapper.get('form').trigger('submit'); await flushPromises()
-  const original = api.import.mock.calls[0]![0]
+  const original = api.importDemands.mock.calls[0]![0]
   expect(original.rows[0]).toMatchObject({ kind: '样板单', required_date: '2026-11-02', quantity: '12.25', dimension_unit: 'in' })
   expect(original.rows[0]).not.toHaveProperty('selected')
   await wrapper.setProps({ open: false }); await wrapper.setProps({ open: true, file: null }); await flushPromises()
   await wrapper.get('form').trigger('submit'); await flushPromises()
-  expect(api.import.mock.calls[1]![0]).toEqual(original)
-  expect(api.import.mock.calls[1]![1]).toBe(file)
+  expect(api.importDemands.mock.calls[1]![0]).toEqual(original)
+  expect(api.importDemands.mock.calls[1]![1]).toBe(file)
   expect(wrapper.emitted('saved')).toHaveLength(1)
   wrapper.unmount()
 })

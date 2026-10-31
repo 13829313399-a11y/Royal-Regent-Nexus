@@ -3,6 +3,36 @@ import { createCustomerOrderApi } from '@/api/customerOrder'
 
 
 describe('customer order api', () => {
+  it.each(['SUCCESS', 'ERROR'] as const)('reads the server completed warehouse handoff result (%s) from export headers', async (status) => {
+    const sync = { status, message: status === 'SUCCESS' ? '最终排期已同步' : '客户对应不唯一', batch_id: 'warehouse-1' }
+    const post = vi.fn().mockResolvedValue({ data: new Blob(['schedule']), headers: {
+      'x-warehouse-sync': encodeURIComponent(JSON.stringify(sync)),
+    } })
+    const result = await createCustomerOrderApi({ post }).exportMappedBatch('360', [new File(['po'], 'po.pdf')],
+      new File(['old'], 'old.xlsx'), '2026-10-28', 'new.xlsx', 'huakang-a')
+    expect(result.warehouseSync).toEqual(sync)
+  })
+
+  it('does not claim warehouse success when an older server omits the handoff result', async () => {
+    const post = vi.fn().mockResolvedValue({ data: new Blob(['schedule']) })
+    const result = await createCustomerOrderApi({ post }).exportMappedBatch('360', [], new File(['old'], 'old.xlsx'),
+      '2026-10-28', 'new.xlsx', 'huakang-a')
+    expect(result.warehouseSync.status).toBe('ERROR')
+  })
+
+  it('retries only the chosen factory/customer schedule without invoking procurement APIs', async () => {
+    const post = vi.fn().mockResolvedValue({ data: { batch_id: 'retry-1', duplicate: true, message: '已同步' } })
+    const file = new File(['schedule'], 'new.xlsx')
+    const controller = new AbortController()
+    const result = await createCustomerOrderApi({ post }).synchronizeWarehouseSchedule('360', file, 'huakang-a', 'GENERATED', controller.signal)
+    expect(result.duplicate).toBe(true)
+    const [url, payload, config] = post.mock.calls[0]!
+    expect(url).toBe('/customer-orders/360/warehouse-schedule')
+    expect((payload as FormData).get('factory_id')).toBe('huakang-a')
+    expect((payload as FormData).get('schedule_file')).toBe(file)
+    expect((payload as FormData).get('source_kind')).toBe('GENERATED')
+    expect(config.signal).toBe(controller.signal)
+  })
   it('uploads both source files for preview and returns the mapped batch', async () => {
     const post = vi.fn().mockResolvedValue({
       data: { preview_schema_version: 'customer-order-buzzbee-preview-v1', rows: [] },
