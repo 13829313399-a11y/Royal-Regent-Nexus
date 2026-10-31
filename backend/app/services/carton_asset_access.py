@@ -73,7 +73,11 @@ def ensure(db,user,asset,*,write=False,confirm=False,library=False,supplier=None
         if own and allowed(user,asset.factory_id,'supplier','manage' if write or confirm else 'read'):
             if write: writes()
             return
-        if not write and not confirm and allowed(user,asset.factory_id,'supplier','read'):
+        # Published order readers inherit only the explicitly shared original.
+        # This is not an own-library/management grant; explicit IAM denies and
+        # disabled accounts/permission codes still override the order relation.
+        decision=authorization_decision(user,'carton_asset:read',asset.factory_id,'supplier')
+        if not write and not confirm and (decision[0] or decision[1]=='default'):
             from app.services.carton_asset_targets import shared_with_supplier
             if shared_with_supplier(db,asset,current): return
         raise HTTPException(404,'资料不可访问')

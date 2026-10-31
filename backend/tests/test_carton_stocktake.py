@@ -14,13 +14,28 @@ from app.schemas.carton_procurement import CartonInventoryMovementCreate, Carton
 from app.services.carton_procurement import create_inventory_movement, relocate_inventory, inventory_balances
 from app.services.carton_stocktake import create_stocktake, act_stocktake, stocktake_detail
 from app.services.carton_inventory_valuation import load_valuation
+from app.services.auth import AuthContext, AuthGrantContext, AuthOverrideContext
+from dataclasses import replace
 
-CREATOR = SimpleNamespace(id="counter", display_name="盘点员")
-REVIEWER = SimpleNamespace(id="supervisor", display_name="主管")
+def actor(identifier, supervisor=False):
+    permissions = frozenset({"carton_procurement:inventory_write"} | ({"carton_procurement:order_adjust"} if supervisor else set()))
+    return AuthContext(id=identifier, username=identifier, display_name=identifier, roles=(), role_codes=(),
+        permissions=permissions, factory_scopes=("huaxing",), department_scopes=("carton",),
+        grants=(AuthGrantContext(role_id="r", role_name="岗位", factory_id="huaxing", department="carton", permissions=permissions),))
+
+CREATOR = actor("counter")
+REVIEWER = actor("supervisor", True)
 
 
 @pytest.fixture
 def stockdb(db):
+    from app.models.carton_master import CartonMasterRecord
+    from app.models.carton_procurement import CartonException
+    CartonMasterRecord.__table__.create(db.get_bind())
+    CartonException.__table__.create(db.get_bind())
+    from app.models.carton_special_requests import SpecialReceiptLink, SpecialShipmentLine, SpecialShipment, SpecialRequest
+    for model in (SpecialRequest, SpecialShipment, SpecialShipmentLine, SpecialReceiptLink):
+        model.__table__.create(db.get_bind(), checkfirst=True)
     from app.services.carton_positions import create_location
     for code in ("A", "B"):
         create_location(db, "huaxing", "默认仓", code)
@@ -54,7 +69,7 @@ def change(db, qty):
         reference_movement_id="a", movement_type="ADJUSTMENT", quantity=qty, document_no="CHANGE", reason="盘点期间正常交易"), CREATOR)
 
 
-@pytest.mark.parametrize("actual", ["98", "100", "105", "0"])
+@pytest.mark.parametrize("actual", ["98", "100"])
 def test_confirm_directly_posts_creator_count_once(stockdb, actual):
     doc = create(stockdb)
     posted = action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True)
@@ -68,6 +83,48 @@ def test_confirm_directly_posts_creator_count_once(stockdb, actual):
     with pytest.raises(HTTPException): action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True)
     stockdb.rollback()
     assert len(list(stockdb.scalars(select(Movement).where(Movement.source_type == "STOCKTAKE")))) == (0 if actual == "100" else 1)
+    assert posted["pending_review_count"] == (0 if actual == "100" else 1)
+
+
+@pytest.mark.parametrize("actual", ["105", "95", "0"])
+def test_threshold_cannot_bypass_via_confirm_and_supports_handoff(stockdb, actual):
+    doc = create(stockdb)
+    with pytest.raises(HTTPException) as error:
+        action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True)
+    assert error.value.status_code == 403
+    stockdb.rollback()
+    assert stocktake_detail(stockdb, "huaxing", doc["id"])["status"] == "DRAFT"
+    submitted = action(stockdb, doc, "SUBMIT", actual=actual)
+    assert submitted["review_assessment"]["requires_supervisor"]
+    denied = replace(REVIEWER, overrides=(AuthOverrideContext("deny", "carton_procurement:order_adjust", "deny", "huaxing", "*"),))
+    for name in ("APPROVE", "CONFIRM"):
+        with pytest.raises(HTTPException) as error:
+            action(stockdb, submitted, name, user=denied, posting_confirmed=True)
+        assert error.value.status_code == 403
+        stockdb.rollback()
+    posted = action(stockdb, submitted, "CONFIRM", user=REVIEWER, posting_confirmed=True)
+    assert posted["status"] == "POSTED" and posted["pending_review_count"] == 1
+    assert posted["review_assessment"]["supervisor_authorized"]
+
+
+def test_supervisor_creator_can_confirm_own_large_difference(stockdb):
+    result = action(stockdb, create(stockdb), "CONFIRM", actual="0", user=actor("counter", True), posting_confirmed=True)
+    assert result["review_assessment"]["same_actor_confirmation"] is True
+
+
+def test_amount_threshold_sums_absolute_amounts_without_netting(stockdb):
+    from app.services.carton_stocktake_policy import assess
+    from app.services.carton_inventory_valuation import cost_key
+    a, b = movement("a1", "10000", "25"), movement("b1", "10000", "25", item_no="other")
+    lines = [SimpleNamespace(id="a", difference=D("10"), count_book_quantity=D("10000"), reference_movement_id="a1"),
+             SimpleNamespace(id="b", difference=D("-10"), count_book_quantity=D("10000"), reference_movement_id="b1")]
+    valuation = SimpleNamespace(balances={cost_key(row): SimpleNamespace(amount=D("250000"), quantity=D("10000")) for row in (a, b)}, unpriced_pools=set(), errors=[])
+    rules = {"amount_threshold": "500", "ratio_threshold": "0.05", "revision": 0}
+    result = assess(lines, {"a1": a, "b1": b}, valuation, rules)
+    assert result["absolute_amount_cny"] == "500" and result["requires_supervisor"]
+    assert not assess(lines, {"a1": a, "b1": b}, valuation, {**rules, "amount_threshold": "501"})["requires_supervisor"]
+    valuation.unpriced_pools.add(cost_key(a))
+    assert "差异成本尚未确定" in assess(lines, {"a1": a, "b1": b}, valuation, rules)["triggers"]
 
 
 @pytest.mark.parametrize("override", [{"posting_confirmed": False}, {"cutoff_acknowledged": False},
@@ -103,7 +160,7 @@ def test_direct_confirmation_period_failure_rolls_back_all_lines(stockdb, monkey
         if len(checked) == 2: raise HTTPException(409, "月份已锁账")
     monkeypatch.setattr("app.services.carton_procurement._ensure_period_open", guard)
     with pytest.raises(HTTPException):
-        action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True)
+        action(stockdb, doc, "CONFIRM", actual=actual, posting_confirmed=True, user=actor("counter", True))
     stockdb.rollback()
     assert len(checked) == 2
     fresh = stocktake_detail(stockdb, "huaxing", doc["id"])

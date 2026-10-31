@@ -240,11 +240,12 @@ def list_customers(
                 CartonCustomer.contact_name.ilike(term),
             )
         )
-    return list(
+    from app.services.carton_business_customers import decorate
+    return decorate(db, factory_id, list(
         db.scalars(
             statement.order_by(CartonCustomer.status, CartonCustomer.customer_name, CartonCustomer.customer_code)
         ).all()
-    )
+    ))
 
 
 def get_active_customer(db: Session, factory_id: str, customer_code: str) -> CartonCustomer:
@@ -362,7 +363,7 @@ def update_customer(
     if customer.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="客户资料已被其他人更新，请刷新后重试")
     changes = payload.model_dump(exclude={"factory_id", "expected_revision"}, exclude_none=True)
-    if "customer_name" in changes:
+    if "customer_name" in changes and changes["customer_name"] != customer.customer_name:
         normalized_name = " ".join(changes["customer_name"].strip().split()).casefold()
         duplicate_name = next(
             (
@@ -381,6 +382,9 @@ def update_customer(
             raise HTTPException(status_code=409, detail="当前厂区已存在相同客户名称")
     if "customer_code" in changes:
         changes["customer_code"] = changes["customer_code"].upper()
+        from app.services.carton_business_customers import source_code
+        if changes["customer_code"] != customer.customer_code and source_code(db, factory_id, customer.id):
+            raise HTTPException(409, "来自业务的客户可以改名，内部编号须保留以延续排期关联")
         if changes["customer_code"] != customer.customer_code and db.scalar(select(CartonOrder.id).where(
                 CartonOrder.factory_id == factory_id,
                 CartonOrder.customer_code.in_([customer.customer_code, changes["customer_code"]])).limit(1)):
@@ -402,7 +406,8 @@ def update_customer(
         db.rollback()
         raise HTTPException(status_code=409, detail="当前厂区已存在相同客户名称或内部编号") from exc
     db.refresh(customer)
-    return customer
+    from app.services.carton_business_customers import decorate
+    return decorate(db, factory_id, [customer])[0]
 
 
 def delete_customer(db: Session, factory_id: str, customer_id: str, user: AuthContext) -> None:
@@ -422,6 +427,8 @@ def delete_customer(db: Session, factory_id: str, customer_id: str, user: AuthCo
         "customer_code": customer.customer_code,
         "customer_name": customer.customer_name,
     })
+    from app.services.carton_business_customers import remember_deletion
+    remember_deletion(db, factory_id, customer)
     db.delete(customer)
     db.commit()
 
@@ -4534,7 +4541,15 @@ def create_import_batch(
         if not customer_code:
             raise HTTPException(422, "请选择当前厂区基础资料中的排期客户")
         customer = get_active_customer(db, factory_id, customer_code)
+        from app.services.carton_business_customers import source_code
         effective_profile.update(customer_code=customer.customer_code)
+        # Keep old manual-import replay keys unchanged. The source code is a
+        # server-derived parsing option; only the existing business handoff
+        # profile has historically included it in the durable identity.
+        if effective_profile.get("source_system") == "CUSTOMER_ORDER_CENTER":
+            effective_profile["business_customer_code"] = source_code(db, factory_id, customer.id)
+        else:
+            effective_profile.pop("business_customer_code", None)
     effective_profile["matching_version"] = "item-so-v2" if import_type == "WEEKLY_SCHEDULE" else "customer-po-v1"
     if import_type == "DELIVERY_NOTE":
         effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
@@ -4573,6 +4588,7 @@ def create_import_batch(
     parse_options["reference_date"] = business_now().date().isoformat()
     if import_type == "WEEKLY_SCHEDULE":
         parse_options["customer_name"] = customer.customer_name
+        parse_options["business_customer_code"] = source_code(db, factory_id, customer.id)
         parse_options["schedule_order_links"] = _schedule_order_links(db, factory_id)
     parse_summary = parse_carton_import(
         db,
@@ -5227,6 +5243,11 @@ def update_exception(
     exception = db.get(CartonException, exception_id)
     if exception is None or exception.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="异常记录不存在")
+    if exception.category == "STOCKTAKE_REVIEW":
+        from app.services.carton_stocktake_policy import require
+        require(user, "carton_procurement:order_adjust", factory_id)
+        if payload.status in {"RESOLVED", "CLOSED"} and not payload.resolution_note.strip():
+            raise HTTPException(422, "请填写盘点抽查或复核结论，不能直接清除差异标记")
     if exception.source_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
         batch = db.get(CartonImportBatch, exception.source_id)
         if batch is not None and batch.factory_id == factory_id and batch.status == "REJECTED":

@@ -135,6 +135,8 @@ class CartonCustomerUpdate(BaseModel):
 class CartonCustomerOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    business_customer_code: str = ""
+    business_customer_name: str = ""
     id: str
     factory_id: str
     customer_code: str

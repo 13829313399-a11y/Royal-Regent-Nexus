@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 
-from app.models.carton_procurement import CartonCustomer, CartonAuditEvent
+from app.models.carton_procurement import CartonAuditEvent
 from app.services import carton_procurement as carton, carton_schedule_coverage as coverage
 from app.services.business_authz import ensure_permission_for_departments, has_permission_for_departments
 from app.services.customer_order_jobs import run_order_job, order_request_started_at
@@ -30,17 +30,6 @@ def authorize_sales(db, user, factory):
     ensure_permission_for_departments(db, user, permission, factory, departments)
 
 
-def resolve_customer(db, factory, code, name):
-    """Only exact same-factory codes/names; conflicting matches require repair."""
-    key = lambda value: " ".join(value.split()).casefold()
-    matches = [row for row in db.scalars(select(CartonCustomer).where(
-        CartonCustomer.factory_id == factory, CartonCustomer.status == "ACTIVE"))
-        if key(row.customer_code) == key(code) or key(row.customer_name) == key(name)]
-    if len(matches) != 1:
-        raise HTTPException(422, "纸箱仓库客户未建立或对应不唯一，请由纸箱主管核对同厂区客户资料后重试同步")
-    return matches[0]
-
-
 def parse_business_schedule(filename, content):
     # Decryption, Excel expansion and parsing stay inside the bounded worker.
     from app.services.customer_order_buzzbee import _decrypt_schedule
@@ -58,7 +47,6 @@ async def synchronize(db, user, factory, customer_code, customer_name, filename,
     received_at = order_request_started_at()
     factory = carton.require_carton_factory(factory)
     authorize_sales(db, user, factory)
-    resolve_customer(db, factory, customer_code, customer_name)
     parsed = await run_order_job(parse_business_schedule, filename, content, db=db)
     from app.services.carton_procurement_imports import SCHEDULE_IMPORT_PARSER_VERSION
     semantic_sha256 = sha256(json.dumps([SCHEDULE_IMPORT_PARSER_VERSION, parsed],
@@ -72,7 +60,8 @@ async def synchronize(db, user, factory, customer_code, customer_name, filename,
         locked_actor(db, original, locked_factory)
         actor = refresh_actor()  # Original session, current identity and explicit denies under lock.
         authorize_sales(db, actor, locked_factory)
-        customer = resolve_customer(db, locked_factory, customer_code, customer_name)
+        from app.services.carton_business_customers import resolve
+        customer = resolve(db, locked_factory, customer_code, actor)
         # Choose the warehouse master again under the factory lock, after CPU work.
         profile.update(customer_code=customer.customer_code, source_system="CUSTOMER_ORDER_CENTER",
             business_customer_code=customer_code)

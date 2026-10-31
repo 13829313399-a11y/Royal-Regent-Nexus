@@ -46,7 +46,7 @@ function membersResponse() {
 describe('member directory experience', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    useAuthStore().applySession({ id: 'viewer', username: 'viewer', display_name: '查看者', roles: [], permissions: [], grants: [], factory_scopes: [], department_scopes: [], force_password_change: false, profile: { primary_factory_id: 'huakang-a', primary_department: 'engineering', position: '工程师', confirmation_status: 'confirmed' } })
+    useAuthStore().applySession({ id: 'viewer', username: 'viewer', display_name: '查看者', roles: [], permissions: [], grants: [], factory_scopes: [], department_scopes: [], force_password_change: false, internal_member: true, profile: { primary_factory_id: 'huakang-a', primary_department: 'engineering', position: '工程师', confirmation_status: 'confirmed' } })
     vi.useFakeTimers()
     apiMocks.getSummary.mockReset().mockResolvedValue({
       total_members: 2,

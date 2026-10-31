@@ -19,7 +19,10 @@ const statusDrafts = ref<Record<string, QuickAssetStatus>>({})
 const allSupplierFactories = computed(() => props.audience === 'supplier' && (!props.factoryId || props.factoryId === 'ALL'))
 const requestedFactories = computed(() => allSupplierFactories.value ? [...new Set(props.supplierFactories || [])] : props.factoryId && props.factoryId !== 'ALL' ? [props.factoryId] : [])
 function readableDepartments(factory: string): AssetDepartment[] {
-  return (props.audience === 'supplier' ? ['supplier' as const] : internalDepartments).filter(d => canQuickAsset(auth, factory, d, 'read'))
+  // The server filters shared files by currently issued orders and explicit
+  // denies. Listing that subset does not grant own-library maintenance.
+  if (props.audience === 'supplier') return auth.can('carton_supplier:read', factory, '*') ? ['supplier'] : []
+  return internalDepartments.filter(d => canQuickAsset(auth, factory, d, 'read'))
 }
 const scopes = computed(() => requestedFactories.value.flatMap(factory => {
   const department = readableDepartments(factory)[0]
@@ -78,7 +81,7 @@ function cancelContext() {
   pending.value = null; editor.value = null; busy.value = false; downloading.value = ''; actionError.value = ''; notice.value = ''; filter.value = 'CURRENT'; keyword.value = ''; mine.value = false
 }
 watch(context, cancelContext, { flush: 'sync' })
-watch([context, scopes, () => props.refreshKey], load, { immediate: true, flush: 'sync' })
+watch([context, () => JSON.stringify(scopes.value), () => props.refreshKey], load, { immediate: true, flush: 'sync' })
 function saved() { void load(); emit('changed') }
 function canClassify(asset: QuickAsset) {
   return !props.readOnly && asset.purpose === 'MATERIAL' && !asset.workflow.superseded_by_asset_id && (asset.can_classify ?? readableDepartments(assetFactory(asset)).some(d => canQuickAsset(auth, assetFactory(asset), d, 'manage')))
@@ -158,7 +161,7 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelContext() })
       </div>
       <div v-if="allSupplierFactories" class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
         <label v-if="!readOnly && uploadFactories.length > 1" class="flex items-center gap-2 text-xs">关联订单厂区<select v-model="selectedUploadFactory" aria-label="上传关联订单厂区" class="h-9 rounded-lg border border-input bg-card px-3 text-sm"><option v-for="id in uploadFactories" :key="id" :value="id">{{ factoryName(id) }}</option></select></label>
-        <p class="text-xs text-muted-foreground">可直接上传。关联订单厂区只用于查找订单；共享厂区在上传窗口另选，默认无。</p>
+        <p class="text-xs text-muted-foreground">{{ uploadFactories.length ? '可直接上传。关联订单厂区只用于查找订单；共享厂区在上传窗口另选，默认无。' : '可读取已发送订单的共享资料；上传与维护需要独立授权。' }}</p>
       </div>
       <p v-if="loading" role="status" class="py-6 text-sm text-muted-foreground">正在读取资料…</p>
       <p v-else-if="error" role="alert" class="mt-3 text-sm text-destructive">{{ error }} <button type="button" class="underline" @click="load">重试读取</button></p>

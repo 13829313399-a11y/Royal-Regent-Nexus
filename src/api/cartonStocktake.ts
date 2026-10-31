@@ -14,12 +14,21 @@ export interface StocktakeLine extends CartonInventoryBalanceResponse {
   location_changed: boolean; movement_id: string
 }
 export interface StocktakeDetail extends StocktakeHeader {
+  review_assessment?: { policy: StocktakePolicy; requires_supervisor: boolean; triggers: string[]; absolute_amount_cny: string; has_difference: boolean; complete: boolean } | null
+  pending_review_count?: number
   reconciliation_error?: string
   ledger_token: string; cutoff_at: string; basis_changed: boolean; lines: StocktakeLine[]
   events: { action: string; actor: string; at: string; detail: { reason?: string } }[]
 }
 export type StocktakeAction = 'SAVE' | 'SUBMIT' | 'APPROVE' | 'CONFIRM' | 'RETURN' | 'CANCEL'
+export interface StocktakePolicy { factory_id: string; revision: number; amount_threshold: string; ratio_threshold: string }
 export const cartonStocktakeApi = {
+  async policy(factory_id: string) {
+    return (await http.get<StocktakePolicy>('/carton-procurement/stocktake-policy', { params: { factory_id } })).data
+  },
+  async updatePolicy(payload: { factory_id: string; expected_revision: number; amount_threshold: string; ratio_threshold: string; reason: string }) {
+    return (await http.put<StocktakePolicy>('/carton-procurement/stocktake-policy', payload)).data
+  },
   async list(factory_id: string, offset = 0, status: StocktakeStatus | '' = '', filters: Record<string, string> = {}) {
     return (await http.get<StocktakeHeader[]>('/carton-procurement/stocktakes', { params: { factory_id, offset, limit: 100, status, ...filters } })).data
   },

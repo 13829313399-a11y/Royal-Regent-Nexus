@@ -49,11 +49,11 @@ const routes: RouteRecordRaw[] = [
   { path: '/notifications', name: 'notification-center', component: () => import('@/views/NotificationCenterView.vue'), meta: { title: '事项工作台', requiresAuth: true } },
   {
     path: '/carton-supplier', name: 'carton-supplier', component: () => import('@/views/CartonSupplierView.vue'),
-    meta: { title: '纸箱供应商协同', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
+    meta: { title: '纸箱供应商协同', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryContext: true, permissionDepartment: '*' },
   },
   {
     path: '/carton-supplier/carton-mark', name: 'carton-supplier-carton-mark', component: () => import('@/views/CartonSupplierMarkTemplatesView.vue'),
-    meta: { title: '供应商箱唛资料库', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
+    meta: { title: '供应商箱唛资料库', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryContext: true, permissionDepartment: '*' },
   },
   {
     path: '/carton-supplier-management', name: 'carton-supplier-management', redirect: to => ({ path: '/modules/pmc-warehouse/carton-procurement', query: { ...to.query, tab: 'receipts', receipt_page: 'supplier' } }),

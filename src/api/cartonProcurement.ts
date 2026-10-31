@@ -8,6 +8,8 @@ import type { SplitRecord } from './cartonOrderSplits'
 import type { CartonScheduleImportScope, ScheduleCoverageEvidence } from './cartonScheduleCoverage'
 
 export interface CartonCustomerResponse {
+  business_customer_code?: string
+  business_customer_name?: string
   id: string
   factory_id: string
   customer_code: string
@@ -781,6 +783,9 @@ export const cartonProcurementApi = {
     factory_id: string; unit_price: string; zero_price_confirmed: boolean; reason: string
   }) {
     await http.post(`/carton-procurement/inventory/movements/${encodeURIComponent(movementId)}/price-confirmation`, payload)
+  },
+  async synchronizeBusinessCustomers(factoryId: string) {
+    await http.post('/carton-procurement/customers/business-sync', null, { params: { factory_id: factoryId } })
   },
   async listCustomers(factoryId: string, includeInactive = true) {
     const response = await http.get<{ items: CartonCustomerResponse[] }>('/carton-procurement/customers', {

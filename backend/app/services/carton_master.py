@@ -244,7 +244,8 @@ def workspace(db, factory, user):
     provenance = {}
     for source in db.scalars(select(Source).where(Source.factory_id == factory).order_by(Source.occurred_at.desc())):
         provenance.setdefault(source.record_id, []).append(source)
-    rows = list(db.scalars(select(Record).where(Record.factory_id == factory).order_by(Record.preferred.desc(), Record.updated_at.desc())))
+    rows = list(db.scalars(select(Record).where(Record.factory_id == factory,
+        Record.kind != "BUSINESS_CUSTOMER").order_by(Record.preferred.desc(), Record.updated_at.desc())))
     admin = can_manage(user, factory)
     # The ACCESS editor is retired (save_record rejects it). Keep its response
     # field for compatibility without resolving every employee's IAM context

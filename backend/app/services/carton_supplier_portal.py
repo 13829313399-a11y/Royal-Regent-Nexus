@@ -725,7 +725,9 @@ def shipment_out(db, row, *, internal=False):
                 material_correction_note='已按双方确认的资料更正；原送货资料保留')
         if internal:
             item.update(unit_price=snapshot.get("unit_price", "0"),
-                delivery_unit_price=snapshot.get("delivery_unit_price"), currency=snapshot.get("currency", "CNY"))
+                delivery_unit_price=snapshot.get("delivery_unit_price"),
+                free_confirmed=snapshot.get("free_confirmed") is True or snapshot.get("pricing_kind") == "FREE",
+                currency=snapshot.get("currency", "CNY"))
             if snapshot.get("original_unmatched_line_id"):
                 item["original_unmatched_line_id"] = snapshot["original_unmatched_line_id"]
             original = snapshot.get("original_source_material")
@@ -925,7 +927,8 @@ def documents(db, user, factory):
             "document_no": group["delivery_note_no"], "document_type": "DELIVERY",
             "date": group["delivery_date"], "created_at": group["created_at"],
             "status": group["status"], "replenishment": False,
-            "source_filename": visible.get("source_filename", ""), "source_sha256": visible.get("source_sha256", ""),
+            "source_filename": group.get("source_filename") or visible.get("source_filename", ""),
+            "source_sha256": group.get("source_sha256") or visible.get("source_sha256", ""),
             "orders": list(orders_by_no.values()),
             "unmatched_line_count": sum(line.get("source_type") == "AD_HOC_REVIEW" for line in group["lines"]),
             "lines": [{

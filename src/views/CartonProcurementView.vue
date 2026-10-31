@@ -50,8 +50,9 @@ import CartonOrderSplitDialog from '@/components/CartonOrderSplitDialog.vue'
 import CartonSplitReceiptReview from '@/components/CartonSplitReceiptReview.vue'
 import CartonHistoryImportDialog from '@/components/CartonHistoryImportDialog.vue'
 import CartonBatchAppendDialog from '@/components/CartonBatchAppendDialog.vue'
-import CartonDemandImportDialog from '@/components/CartonDemandImportDialog.vue'
-import { cartonBatchOrdersApi, type BatchResult } from '@/api/cartonBatchOrders'
+import CartonOrderImportDialog from '@/components/CartonOrderImportDialog.vue'
+import { cartonOrderImportApi, type ImportMode } from '@/api/cartonOrderImport'
+import type { BatchResult } from '@/api/cartonBatchOrders'
 import { pendingCartonBatches } from '@/features/carton-procurement/batchOrders'
 import CartonBusinessImportSummary from '@/components/CartonBusinessImportSummary.vue'
 import CartonScheduleImportScope from '@/components/CartonScheduleImportScope.vue'
@@ -1184,6 +1185,9 @@ const orderForm = reactive<OrderDraftForm>({
   ] as OrderFormMaterialLine[],
 })
 
+const confirmCustomerDelete = ref(false)
+watch(showCustomerModal, () => { confirmCustomerDelete.value = false })
+const editingBusinessCustomer = computed(() => customerRecords.value.find(c => c.id === editingCustomerId.value && c.factory_id === selectedFactoryId.value))
 const customerForm = reactive<CartonCustomerSaveRequest>({
   factory_id: '',
   customer_code: '',
@@ -1244,16 +1248,20 @@ const newOrderKind = ref<'PURCHASE' | 'SAMPLE' | 'WORKSHOP_MISC'>('PURCHASE')
 const newOrderEntryOpen = ref(false)
 const orderImportMenuOpen = ref(false)
 const orderImportTrigger = ref<HTMLButtonElement | null>(null)
-const orderImportKind = ref<'' | 'HISTORY' | 'DEMAND'>('')
+const orderImportKind = ref<'' | 'HISTORY' | 'DEMAND' | 'REGULAR'>('')
+const newImportMode = ref<ImportMode>('SPECIAL')
 function restoreOrderImportFocus(event: Event) {
   event.preventDefault()
-  if (!historyImportFile.value && !demandImportOpen.value) orderImportTrigger.value?.focus()
+  void nextTick(() => {
+    if (!historyImportFile.value && !demandImportOpen.value) orderImportTrigger.value?.focus()
+  })
 }
 watch([selectedFactoryId, () => authStore.currentUser?.id, () => authStore.authorizationVersion, () => route.query.tab], () => {
   newOrderEntryOpen.value = false; orderImportMenuOpen.value = false; orderImportKind.value = ''
 })
-function openOrderImport(kind: 'HISTORY' | 'DEMAND') {
+function openOrderImport(kind: 'HISTORY' | 'DEMAND' | 'REGULAR') {
   orderImportMenuOpen.value = false
+  if (kind !== 'HISTORY') newImportMode.value = kind === 'REGULAR' ? 'REGULAR' : 'SPECIAL'
   orderImportKind.value = kind
 }
 function startNewOrder(kind: 'PURCHASE' | 'SAMPLE' | 'WORKSHOP_MISC') {
@@ -1359,10 +1367,12 @@ function openMarkLibrary() {
 const specialViewerKey = computed(() => JSON.stringify([authStore.currentUser?.id, authStore.authorizationVersion, authStore.authzMode, authStore.currentUser?.identity?.employment_epoch, authStore.currentUser?.identity?.effective_context_key]))
 const batchIdentityKey = computed(() => JSON.stringify([authStore.currentUser?.id, authStore.currentUser?.identity?.employment_epoch, authStore.currentUser?.identity?.effective_context_key]))
 const pendingAppend = computed(() => pendingCartonBatches.has(`append:${batchIdentityKey.value}:${selectedFactoryId.value}`))
-const pendingDemandImport = computed(() => pendingCartonBatches.has(`import:${batchIdentityKey.value}:${selectedFactoryId.value}`))
+const pendingDemandImport = computed(() => pendingCartonBatches.has(`order-import:SPECIAL:${batchIdentityKey.value}:${selectedFactoryId.value}`) || pendingCartonBatches.has(`import:${batchIdentityKey.value}:${selectedFactoryId.value}`))
+const pendingRegularImport = computed(() => pendingCartonBatches.has(`order-import:REGULAR:${batchIdentityKey.value}:${selectedFactoryId.value}`))
+const pendingNewImport = computed(() => newImportMode.value === 'REGULAR' ? pendingRegularImport.value : pendingDemandImport.value)
 watch([selectedFactoryId, specialViewerKey], () => { batchAppendOpen.value = false; demandImportOpen.value = false; demandImportFile.value = null }, { flush: 'sync' })
 function chooseDemandFile() {
-  if (pendingDemandImport.value) { orderImportKind.value = ''; demandImportOpen.value = true; return }
+  if (pendingNewImport.value) { orderImportKind.value = ''; demandImportOpen.value = true; return }
   demandFileInput.value?.click()
 }
 function selectedDemandFile(event: Event) {
@@ -1371,20 +1381,21 @@ function selectedDemandFile(event: Event) {
   if (demandImportFile.value) { orderImportKind.value = ''; demandImportOpen.value = true }
 }
 async function downloadDemandTemplate() {
-  if (downloadingDemandTemplate.value || !apiConnected.value || !canCreateSpecial.value) return
+  if (downloadingDemandTemplate.value || !apiConnected.value || !(newImportMode.value === 'REGULAR' ? canIssuePurchaseOrders.value : canCreateSpecial.value)) return
   downloadingDemandTemplate.value = true
   const scope = supplierChangeContext.value
   try {
-    const blob = await cartonBatchOrdersApi.template(selectedFactoryId.value)
+    const mode = newImportMode.value
+    const blob = await cartonOrderImportApi.template(selectedFactoryId.value, mode)
     if (scope !== supplierChangeContext.value) return
     const url = URL.createObjectURL(blob), link = document.createElement('a')
-    link.href = url; link.download = '样板杂单新建需求模板.xlsx'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+    link.href = url; link.download = mode === 'REGULAR' ? '正单导入参考模板.xlsx' : '样板杂单新建需求模板.xlsx'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (cause) { if (scope === supplierChangeContext.value) reportActionFailure(getApiErrorMessage(cause)) }
   finally { downloadingDemandTemplate.value = false }
 }
 async function batchOrderSaved(result: BatchResult, imported = false) {
   clearUnifiedSelection()
-  actionMessage.value = `${imported ? '已生成' : '已追加'} ${result.count} 张订单${imported ? '草稿，请核对后确认下单' : '，历史收货记录保持不变'}。批次：${result.batch_id}`
+  actionMessage.value = `${imported ? '已生成' : '已追加'} ${result.count} 张订单${imported ? (newImportMode.value === 'REGULAR' ? '，请核对后发送供应商' : '草稿，请核对后确认下单') : '，历史收货记录保持不变'}。批次：${result.batch_id}`
   try { await loadBackendData(selectedFactoryId.value, { supersede: true }) }
   catch { reportActionFailure('操作已保存，但台账刷新失败，请刷新查看；不要重复提交。') }
 }
@@ -4295,7 +4306,10 @@ async function loadBackendData(factoryId = selectedFactoryId.value, options: { s
     })())
   }
   const needsCustomers = !['audit', 'carton-marks', 'inventory-movements'].includes(tab)
-  if (needsCustomers) read('客户资料', () => cartonProcurementApi.listCustomers(factoryId), data => { customerRecords.value = data })
+  if (needsCustomers) read('客户资料', async () => {
+    await cartonProcurementApi.synchronizeBusinessCustomers(factoryId)
+    return cartonProcurementApi.listCustomers(factoryId)
+  }, data => { customerRecords.value = data })
   if (usesDashboardWorkspace.value) {
     const isDashboard = tab === 'dashboard'
     read(isDashboard ? '工作看板' : '业务提醒', () => cartonDashboardApi.workspace(factoryId, {
@@ -4326,6 +4340,7 @@ async function loadBackendData(factoryId = selectedFactoryId.value, options: { s
       localInventoryBalances.splice(0, localInventoryBalances.length, ...data.map(mapInventoryBalance))
     }, true)
   } else if (tab === 'closing') {
+    read('盘点差异', () => cartonProcurementApi.listExceptions(factoryId), data => { exceptionRecords.value = data })
     read('月结对账', () => cartonProcurementApi.listClosings(factoryId), data => {
       closingRecords.value = data; localClosings.splice(0, localClosings.length, ...data.map(mapClosing))
     }, true)
@@ -5878,6 +5893,22 @@ function editCustomer(customer: CartonCustomerResponse) {
   } satisfies CartonCustomerSaveRequest)
 }
 
+async function deleteEditingCustomer() {
+  const customer = editingBusinessCustomer.value
+  if (!customer || savingCustomer.value || !confirmCustomerDelete.value) return
+  const factory = selectedFactoryId.value, generation = customerEditGeneration
+  savingCustomer.value = true; customerEditError.value = ''
+  try {
+    await cartonProcurementApi.deleteCustomer(factory, customer.id)
+    if (factory !== selectedFactoryId.value || generation !== customerEditGeneration) return
+    customerRecords.value = customerRecords.value.filter(c => c.id !== customer.id)
+    showCustomerModal.value = false
+    await refreshResponsibilities()
+  } catch (error) {
+    if (factory === selectedFactoryId.value && generation === customerEditGeneration) customerEditError.value = `客户未删除：${getApiErrorMessage(error)}`
+  } finally { savingCustomer.value = false }
+}
+
 async function saveCustomer() {
   if (savingCustomer.value) return
   customerEditError.value = ''
@@ -7370,6 +7401,15 @@ function canBulkAdvanceExceptions(status: CartonExceptionResponse['status']) {
   return apiConnected.value && !exceptionBusyId.value && selectedExceptionNos.value.length > 0
     && selectedExceptionNos.value.length <= 500 && authStore.can('carton_procurement:exception_manage', selectedFactoryId.value)
     && selectedExceptionNos.value.every(id => exceptionRecord(id)?.status === status)
+    && selectedExceptionNos.value.every(id => {
+      const row = exceptionRecord(id)
+      return row?.category !== 'STOCKTAKE_REVIEW' || (canReviewStocktakeException()
+        && (!['RESOLVED', 'CLOSED'].includes(nextExceptionStatus(status)) || Boolean(bulkExceptionNote.value.trim())))
+    })
+}
+
+function canReviewStocktakeException() {
+  return ['carton', 'pmc-warehouse'].some(dept => authStore.can('carton_procurement:order_adjust', selectedFactoryId.value, dept))
 }
 
 async function bulkAdvanceExceptions(status: CartonExceptionResponse['status']) {
@@ -7416,12 +7456,14 @@ function exceptionButtonLabel(displayId: string) {
 
 function exceptionButtonDisabled(displayId: string) {
   const exception = exceptionRecord(displayId)
-  return !exception || Boolean(exceptionBusyId.value)
+  return !exception || Boolean(exceptionBusyId.value) || (exception.category === 'STOCKTAKE_REVIEW'
+    && (!canReviewStocktakeException() || (['RESOLVED', 'CLOSED'].includes(nextExceptionStatus(exception.status))
+      && !(resolutionNotes[exception.id]?.trim() || exception.resolution_note.trim()))))
 }
 
 async function advanceException(displayId: string) {
   const exception = exceptionRecords.value.find((row) => row.exception_no === displayId)
-  if (!exception) return
+  if (!exception || exceptionButtonDisabled(displayId)) return
   const nextStatus = nextExceptionStatus(exception.status)
   const note = resolutionNotes[exception.id]?.trim() || exception.resolution_note
   const factoryId = selectedFactoryId.value
@@ -7970,10 +8012,11 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
             <input ref="historyOrderFileInput" type="file" accept=".xlsx,.xlsm,.xls" class="hidden" aria-label="选择历史订单文件" @change="handleHistoryOrderFile">
             <input ref="demandFileInput" type="file" accept=".xlsx" class="hidden" aria-label="选择样板杂单新建需求文件" @change="selectedDemandFile">
             <PopoverRoot v-model:open="orderImportMenuOpen">
-              <PopoverTrigger as-child><button ref="orderImportTrigger" type="button" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold" aria-label="订单导入入口"><Upload class="size-4" />导入 / 模板<ChevronDown class="size-3" /></button></PopoverTrigger>
+              <PopoverTrigger as-child><button type="button" class="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold" aria-label="订单导入入口" @click="orderImportTrigger = $event.currentTarget as HTMLButtonElement"><Upload class="size-4" />导入 / 模板<ChevronDown class="size-3" /></button></PopoverTrigger>
               <PopoverPortal><PopoverContent @close-auto-focus="event => { if (orderImportKind) event.preventDefault() }" align="end" :side-offset="6" :collision-padding="8" class="z-[75] w-60 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                <button v-if="canIssuePurchaseOrders" type="button" :disabled="!apiConnected" class="w-full rounded-lg px-3 py-2.5 text-left text-xs font-semibold hover:bg-teal-50 disabled:opacity-40" @click="openOrderImport('REGULAR')">{{ pendingRegularImport ? '核对正单导入结果' : '导入正单' }}<span class="mt-1 block text-[11px] font-normal text-slate-500">新下正单 / 支持自有 Excel</span></button>
+                <button type="button" :disabled="!apiConnected || !canCreateSpecial" class="w-full rounded-lg px-3 py-2.5 text-left text-xs font-semibold hover:bg-teal-50 disabled:opacity-40" @click="openOrderImport('DEMAND')">{{ pendingDemandImport ? '核对需求导入结果' : '导入样板／杂单需求' }}<span class="mt-1 block text-[11px] font-normal text-slate-500">支持自有 Excel / 下载参考模板</span></button>
                 <button v-if="!specialOnlyAccess" type="button" :disabled="!apiConnected || importingHistoryOrders" class="w-full rounded-lg px-3 py-2.5 text-left text-xs font-semibold hover:bg-teal-50 disabled:opacity-40" @click="openOrderImport('HISTORY')">导入历史订单<span class="mt-1 block text-[11px] font-normal text-slate-500">下载历史订单模板 / 选择文件</span></button>
-                <button type="button" :disabled="!apiConnected || !canCreateSpecial" class="w-full rounded-lg px-3 py-2.5 text-left text-xs font-semibold hover:bg-teal-50 disabled:opacity-40" @click="openOrderImport('DEMAND')">{{ pendingDemandImport ? '核对需求导入结果' : '导入样板／杂单需求' }}<span class="mt-1 block text-[11px] font-normal text-slate-500">下载新建需求模板 / 选择文件</span></button>
               </PopoverContent></PopoverPortal>
             </PopoverRoot>
             <PopoverRoot v-model:open="newOrderEntryOpen">
@@ -8645,6 +8688,10 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
         <CartonSupplierReturns v-if="closingView === 'RETURNS'" :factory-id="selectedFactoryId" internal :viewer-key="specialViewerKey" v-model:search="returnSearch" />
         <CartonPayables ref="payablesRef" v-if="closingView === 'PAYABLES'" :factory-id="selectedFactoryId" internal :viewer-key="specialViewerKey" v-model:search="payablesSearch" />
         <template v-if="closingView === 'INVENTORY'">
+        <div v-if="exceptionRecords.some(row => row.category === 'STOCKTAKE_REVIEW' && ['OPEN', 'IN_PROGRESS'].includes(row.status) && (!closingQueryPeriod || row.created_at.startsWith(closingQueryPeriod)))" class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <div class="flex flex-wrap items-center justify-between gap-2"><strong>{{ closingQueryPeriod || '全部月份' }}盘点差异待抽查 / 复核</strong><button type="button" class="underline" @click="setActiveTab('exceptions')">去异常处理填写结论</button></div>
+          <p v-for="row in exceptionRecords.filter(item => item.category === 'STOCKTAKE_REVIEW' && ['OPEN', 'IN_PROGRESS'].includes(item.status) && (!closingQueryPeriod || item.created_at.startsWith(closingQueryPeriod)))" :key="row.id" class="mt-2 text-xs">{{ row.created_at.slice(0, 10) }} · {{ row.customer_name }} · {{ row.contract_no }} · {{ row.item_no }} · {{ row.description }}</p>
+        </div>
         <CartonFilterBar label="月结记录筛选"><label>客户<select v-model="selectedCustomer" aria-label="客户筛选" class="h-9 rounded-lg border bg-white px-3 text-xs"><option v-for="customer in customerFilterOptions" :key="customer" :value="customer">{{ customer }}</option></select></label>
 <label>查询月份 <input v-model="closingQueryPeriod" aria-label="月结查询月份" type="month" class="h-9 rounded-lg border px-3"></label>
 <label >状态<select v-model="closingStatusFilter" aria-label="月结状态筛选" class="h-9 rounded-lg border px-3"><option value="ALL">全部状态</option><option value="OPEN">待处理</option><option value="LOCKED">已锁账</option></select></label>
@@ -8703,7 +8750,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
         <div class="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
           <label class="flex items-center gap-2 text-xs font-semibold"><input type="checkbox" aria-label="全选当前筛选异常" :checked="allVisibleExceptionsSelected" :indeterminate="someVisibleExceptionsSelected && !allVisibleExceptionsSelected" :disabled="!visibleExceptions.length" class="size-4 accent-teal-600" @change="selectVisibleExceptions(($event.target as HTMLInputElement).checked)">全选当前筛选异常（{{ visibleExceptions.length }} 条）</label>
           <div class="flex flex-wrap items-center gap-2">
-            <input v-model="bulkExceptionNote" aria-label="批量异常处理说明" placeholder="批量处理说明（选填）" maxlength="4000" class="h-9 min-w-60 flex-1 rounded-lg border px-3 text-xs" :disabled="Boolean(exceptionBusyId)">
+            <input v-model="bulkExceptionNote" aria-label="批量异常处理说明" placeholder="处理说明（盘点差异结论必填）" maxlength="4000" class="h-9 min-w-60 flex-1 rounded-lg border px-3 text-xs" :disabled="Boolean(exceptionBusyId)">
             <button v-for="status in (['OPEN', 'IN_PROGRESS', 'RESOLVED'] as const)" :key="status" type="button" :disabled="!canBulkAdvanceExceptions(status)" class="h-9 rounded-lg border border-teal-200 px-3 text-xs font-semibold text-teal-700 disabled:opacity-40" @click="bulkAdvanceExceptions(status)">批量{{ exceptionActionLabel(status) }}</button>
           </div>
           <p v-if="selectedExceptionNos.length > 500" class="text-xs text-amber-700">单次最多处理 500 条，请在“查看已选”中减少选择。</p>
@@ -8711,7 +8758,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
         </div>
         <div class="grid gap-3 xl:grid-cols-2">
           <article v-for="row in visibleExceptions" :key="row.id" class="rounded-xl border p-4 shadow-sm" :class="[toneClass(row.tone, 'surface'), selectedExceptionNos.includes(row.id) ? 'ring-2 ring-teal-500' : '']">
-            <div class="flex items-start gap-3"><input v-model="selectedExceptionNos" type="checkbox" :value="row.id" :aria-label="`选择异常 ${row.id}`" class="mt-2 size-4 shrink-0 accent-teal-600"><span class="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-white/80"><AlertTriangle class="size-4" /></span><div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><span class="text-[10px] font-bold">{{ row.id }}</span><span class="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.type }}</span><span class="ml-auto rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.status }}</span></div><h2 class="mt-2 text-[14px] font-bold">{{ row.title }}</h2><p class="mt-1 text-[11px] opacity-80">{{ row.detail }}</p><div class="mt-3 flex flex-wrap gap-4 text-[10px] font-semibold"><span>客户：{{ row.customer }}</span><span>责任部门：{{ row.owner }}</span><span>{{ row.deadline }}</span></div><div v-if="exceptionRecord(row.id)" class="mt-3 flex flex-col gap-2 border-t border-current/10 pt-3 sm:flex-row"><input v-model="resolutionNotes[exceptionRecordId(row.id)]" :aria-label="`${row.id} 处理说明`" placeholder="处理说明（选填）" class="h-9 min-w-0 flex-1 rounded-lg border border-white/80 bg-white/80 px-3 text-[11px] text-slate-800 outline-none focus:border-teal-500"><button type="button" :disabled="exceptionButtonDisabled(row.id)" class="h-9 rounded-lg bg-white px-3 text-[11px] font-bold text-teal-700 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400" @click="advanceException(row.id)">{{ exceptionBusyId === exceptionRecord(row.id)?.id ? '处理中…' : exceptionButtonLabel(row.id) }}</button></div></div></div>
+            <div class="flex items-start gap-3"><input v-model="selectedExceptionNos" type="checkbox" :value="row.id" :aria-label="`选择异常 ${row.id}`" class="mt-2 size-4 shrink-0 accent-teal-600"><span class="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-white/80"><AlertTriangle class="size-4" /></span><div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><span class="text-[10px] font-bold">{{ row.id }}</span><span class="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.type }}</span><span class="ml-auto rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold">{{ row.status }}</span></div><h2 class="mt-2 text-[14px] font-bold">{{ row.title }}</h2><p class="mt-1 text-[11px] opacity-80">{{ row.detail }}</p><div class="mt-3 flex flex-wrap gap-4 text-[10px] font-semibold"><span>客户：{{ row.customer }}</span><span>责任部门：{{ row.owner }}</span><span>{{ row.deadline }}</span></div><div v-if="exceptionRecord(row.id)" class="mt-3 flex flex-col gap-2 border-t border-current/10 pt-3 sm:flex-row"><input v-model="resolutionNotes[exceptionRecordId(row.id)]" :aria-label="`${row.id} 处理说明`" :placeholder="exceptionRecord(row.id)?.category === 'STOCKTAKE_REVIEW' ? '主管抽查 / 复核结论（解决时必填）' : '处理说明（选填）'" class="h-9 min-w-0 flex-1 rounded-lg border border-white/80 bg-white/80 px-3 text-[11px] text-slate-800 outline-none focus:border-teal-500"><button type="button" :disabled="exceptionButtonDisabled(row.id)" class="h-9 rounded-lg bg-white px-3 text-[11px] font-bold text-teal-700 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400" @click="advanceException(row.id)">{{ exceptionBusyId === exceptionRecord(row.id)?.id ? '处理中…' : exceptionButtonLabel(row.id) }}</button></div></div></div>
           </article>
           <div v-if="visibleExceptions.length === 0" class="col-span-full rounded-xl border border-slate-200 bg-white py-16 text-center text-slate-400">没有符合当前筛选条件的异常</div>
         </div>
@@ -8736,16 +8783,17 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
       </section>
     </div>
 
-    <CartonOrderDetailDialog v-if="orderImportKind" :title="orderImportKind === 'HISTORY' ? '导入历史订单' : '导入样板／杂单需求'" description="先下载对应模板填写，再选择文件核对。" close-label="关闭订单导入" narrow @close="orderImportKind = ''" @close-auto-focus="restoreOrderImportFocus">
+    <CartonOrderDetailDialog v-if="orderImportKind" :title="orderImportKind === 'HISTORY' ? '导入历史订单' : orderImportKind === 'REGULAR' ? '导入正单' : '导入样板／杂单需求'" :description="orderImportKind === 'HISTORY' ? '先下载对应模板填写，再选择文件核对。' : '可使用自己的 Excel，列顺序不限；选择文件后匹配字段、补齐资料并按整单导入。'" close-label="关闭订单导入" narrow @close="orderImportKind = ''" @close-auto-focus="restoreOrderImportFocus">
       <template v-if="orderImportKind === 'HISTORY'">
         <p class="text-sm leading-6 text-slate-600">适用于已下单的历史正单。导入后进入待收料，无需再次发送供应商。</p>
         <a href="/templates/carton-history-order-import-template.xlsx?v=carton-history-po-v3" download="纸箱历史订单导入模板.xlsx" class="inline-flex min-h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold text-teal-700"><Download class="size-4" />下载历史订单模板</a>
         <button type="button" :disabled="!apiConnected || importingHistoryOrders" class="ml-2 inline-flex min-h-9 items-center gap-2 rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white disabled:opacity-40" @click="triggerHistoryOrderImport"><Upload class="size-4" />选择历史订单文件</button>
       </template>
       <template v-else>
-        <p class="text-sm leading-6 text-slate-600">按模板填写样板或杂单需求，选择文件后核对，确认导入后再办理下单。</p>
-        <button type="button" :disabled="!apiConnected || !canCreateSpecial || downloadingDemandTemplate" class="inline-flex min-h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold text-teal-700 disabled:opacity-40" @click="downloadDemandTemplate"><Download class="size-4" />{{ downloadingDemandTemplate ? '下载中…' : '新建需求模板' }}</button>
-        <button type="button" :disabled="!apiConnected || !canCreateSpecial" class="ml-2 inline-flex min-h-9 items-center gap-2 rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white disabled:opacity-40" @click="chooseDemandFile"><Upload class="size-4" />{{ pendingDemandImport ? '核对需求导入结果' : '选择样板杂单需求文件' }}</button>
+        <p class="text-sm leading-6 text-slate-600">{{ newImportMode === 'REGULAR' ? '适用于新下的正单。导入后生成独立订单，再由仓库发送供应商。' : '适用于样板或杂单需求。导入后生成待确认订单，再沿现有流程办理下单。' }}缺资料的整单可留待补充，先导入其他完整订单。</p>
+        <p class="text-xs leading-5 text-slate-500">参考模板已标明必填、选填及按条件必填。灰色演示行导入时自动跳过，不计入订单或数量；实际订单请从下一行填写。</p>
+        <button type="button" :disabled="!apiConnected || !(newImportMode === 'REGULAR' ? canIssuePurchaseOrders : canCreateSpecial) || downloadingDemandTemplate" class="inline-flex min-h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold text-teal-700 disabled:opacity-40" @click="downloadDemandTemplate"><Download class="size-4" />{{ downloadingDemandTemplate ? '下载中…' : newImportMode === 'REGULAR' ? '下载正单参考模板' : '新建需求模板' }}</button>
+        <button type="button" :disabled="!apiConnected || !(newImportMode === 'REGULAR' ? canIssuePurchaseOrders : canCreateSpecial)" class="ml-2 inline-flex min-h-9 items-center gap-2 rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white disabled:opacity-40" @click="chooseDemandFile"><Upload class="size-4" />{{ pendingNewImport ? '核对原导入结果' : '选择 Excel 文件' }}</button>
       </template>
     </CartonOrderDetailDialog>
 
@@ -9014,6 +9062,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
       <form role="dialog" aria-modal="true" aria-label="编辑客户资料" class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl" @submit.prevent="saveCustomer">
         <div class="flex items-center justify-between border-b p-4"><div><h2 class="font-bold">{{ editingCustomerId ? '修改客户' : '新增客户' }}</h2><p class="mt-1 text-xs text-slate-500">仅维护 {{ activeFactory.shortName }} 客户；停用保留历史订单。</p></div><button type="button" :disabled="savingCustomer" aria-label="关闭客户资料维护" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="showCustomerModal = false"><X class="size-4" /></button></div>
         <div class="min-h-0 space-y-3 overflow-y-auto p-5 text-xs"><div class="grid gap-3 sm:grid-cols-2">
+          <p v-if="editingBusinessCustomer?.business_customer_code" class="rounded-lg border border-teal-200 bg-teal-50 p-3 leading-5 text-teal-800 sm:col-span-2"><b>来自业务</b> · 业务原名：{{ editingBusinessCustomer.business_customer_name }}。这里只带入名称，仓库可以改名，排期仍关联此客户。</p>
           <label>客户名称 *<input v-model="customerForm.customer_name" required aria-label="客户名称" placeholder="客户正式名称" class="mt-1 h-9 w-full rounded-lg border px-3"></label>
           <label>状态<select v-model="customerForm.status" aria-label="客户状态" class="mt-1 h-9 w-full rounded-lg border px-3"><option value="ACTIVE">启用</option><option value="INACTIVE">停用</option></select></label>
           <label>联系人<input v-model="customerForm.contact_name" aria-label="客户联系人" class="mt-1 h-9 w-full rounded-lg border px-3"></label>
@@ -9021,7 +9070,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
           <label>国家 / 地区<input v-model="customerForm.country_region" aria-label="客户国家地区" placeholder="例如 德国" class="mt-1 h-9 w-full rounded-lg border px-3"></label>
           <label>备注<textarea v-model="customerForm.note" aria-label="客户备注" rows="1" class="mt-1 min-h-9 w-full rounded-lg border px-3 py-2" /></label>
         </div><p class="text-slate-500">编号格式和默认交期可在客户列表的“规则”中设置。</p><p v-if="customerEditError" role="alert" class="text-red-700">{{ customerEditError }}</p></div>
-        <div class="flex justify-end border-t p-4"><button type="submit" :disabled="savingCustomer" class="h-9 rounded-lg bg-teal-700 px-5 text-xs font-bold text-white disabled:opacity-60">{{ savingCustomer ? '正在保存…' : editingCustomerId ? '保存客户修改' : '新增客户' }}</button></div>
+        <div class="flex flex-wrap items-center justify-end gap-2 border-t p-4"><p v-if="confirmCustomerDelete" class="basis-full text-xs leading-5 text-red-700">确认删除“{{ editingBusinessCustomer?.customer_name }}”？已有订单的客户只能停用；来自业务的客户删除后不会自动重新带入，也不再接收后续排期。</p><button v-if="editingCustomerId" type="button" :disabled="savingCustomer" class="mr-auto h-9 rounded-lg border border-red-200 px-3 text-xs text-red-700 disabled:opacity-60" @click="confirmCustomerDelete ? deleteEditingCustomer() : (confirmCustomerDelete = true)">{{ confirmCustomerDelete ? '确认删除客户' : '删除客户' }}</button><button v-if="confirmCustomerDelete" type="button" :disabled="savingCustomer" class="h-9 rounded-lg border px-3 text-xs" @click="confirmCustomerDelete = false">取消删除</button><button v-else type="submit" :disabled="savingCustomer" class="h-9 rounded-lg bg-teal-700 px-5 text-xs font-bold text-white disabled:opacity-60">{{ savingCustomer ? '正在保存…' : editingCustomerId ? '保存客户修改' : '新增客户' }}</button></div>
       </form>
     </div>
 
@@ -9230,7 +9279,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
     <CartonOrderReceiptDialog v-model:open="specialReceiptOpen" :factory-id="selectedFactoryId" :request-id="specialReceiptId" :viewer-key="specialViewerKey" :library-enabled="canReadMarks" @saved="loadBackendData(selectedFactoryId, { supersede: true })" @open-delivery="openSpecialDelivery" @open-library="openMarkLibrary" />
     <CartonOrderBatchActionDialog v-model:open="unifiedBatchOpen" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :action="unifiedBatchAction" :entries="unifiedBatchEntries" @saved="unifiedBatchSaved" />
     <CartonBatchAppendDialog v-model:open="batchAppendOpen" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :identity-key="batchIdentityKey" :selection="batchAppendSelection" @saved="result => batchOrderSaved(result)" />
-    <CartonDemandImportDialog v-model:open="demandImportOpen" :file="demandImportFile" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :identity-key="batchIdentityKey" @saved="result => batchOrderSaved(result, true)" />
+    <CartonOrderImportDialog v-model:open="demandImportOpen" :file="demandImportFile" :mode="newImportMode" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :identity-key="batchIdentityKey" @saved="result => batchOrderSaved(result, true)" @close-auto-focus="restoreOrderImportFocus" />
     <CartonOrderDetailDialog v-if="specialPreviewRequest" data-testid="special-order-detail-preview" :pinned="false" :title="'订单明细 — ' + specialPreviewRequest.request_no"><CartonSpecialRequests :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" mode="detail" :preview-request="specialPreviewRequest" /></CartonOrderDetailDialog>
     <CartonOrderDetailDialog v-if="specialDialogOpen" :title="specialDialogTitle" :form="Boolean(specialEditorMode)" :compact="specialEditorMode === 'append'" :narrow="['reduce', 'date'].includes(specialEditorMode)" :hide-footer="Boolean(specialEditorMode)" :busy="specialDialogBusy" @close="specialDialogOpen = false"><CartonSpecialRequests @editor-mode="specialEditorMode = $event" @busy="specialDialogBusy = $event" :key="`${selectedFactoryId}:${specialDetailId}:${specialCreate}:${specialOpenSequence}`" :initial-action="specialCreate ? undefined : specialInitialAction" @open-delivery="openSpecialDelivery" @stock-action="openSpecialDetails" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :requester-name="authStore.currentUser?.display_name" mode="detail" :request-id="specialDetailId || undefined" :create-new="specialCreate" :initial-kind="newOrderKind === 'WORKSHOP_MISC' ? 'WORKSHOP_MISC' : 'SAMPLE'" @close="specialDialogOpen = false" @changed="loadBackendData(selectedFactoryId, { supersede: true })" /></CartonOrderDetailDialog>
 

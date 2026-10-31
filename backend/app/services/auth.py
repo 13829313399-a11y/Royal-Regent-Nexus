@@ -3251,7 +3251,9 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> AuthCon
 
 
 def to_auth_response(context: AuthContext) -> AuthMeResponse:
+    from app.services.internal_members import is_internal
     return AuthMeResponse(
+        internal_member=is_internal(context),
         id=context.id,
         username=context.username,
         display_name=context.display_name,

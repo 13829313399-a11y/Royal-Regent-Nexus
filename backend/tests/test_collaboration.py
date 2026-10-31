@@ -189,11 +189,15 @@ def test_bulk_eligibility_matches_runtime_for_supplier_mixed_v2_and_functional_u
     auth = importlib.import_module("app.services.auth")
     iam = importlib.import_module("app.models.identity")
     rule = importlib.import_module("app.services.internal_members")
-    for name in ["supplier", "mixed", "v2-empty", "group-staff"]:
+    for name in ["supplier", "mixed", "v2-empty", "group-staff", "asset-employee"]:
         add_member(user_id=name, username=name, display_name=name)
     with dbm.SessionLocal() as db:
         supplier_permission = db.scalar(select(authm.AuthPermission).where(authm.AuthPermission.code == "carton_supplier:read"))
         internal_permission = db.scalar(select(authm.AuthPermission).where(authm.AuthPermission.code == "molding_sample:read"))
+        asset_permission = db.scalar(select(authm.AuthPermission).where(authm.AuthPermission.code == "carton_asset:read"))
+        db.add(authm.AuthUserPermissionOverride(id="supplier-asset", user_id="supplier", permission_id=asset_permission.id, effect="allow", factory_id="*", department="*", source_type="manual"))
+        db.add(authm.AuthUserPermissionOverride(id="employee-asset", user_id="asset-employee", permission_id=asset_permission.id, effect="allow", factory_id="huaxing", department="pmc-warehouse", source_type="manual"))
+        db.add(authm.AuthUserPermissionOverride(id="formal-supplier", user_id="group-staff", permission_id=supplier_permission.id, effect="allow", factory_id="*", department="*", source_type="manual"))
         for uid in ["supplier", "mixed"]:
             db.add(authm.AuthUserPermissionOverride(id=f"{uid}-supplier", user_id=uid, permission_id=supplier_permission.id, effect="allow", factory_id="*", department="*", source_type="manual"))
         db.add(authm.AuthUserPermissionOverride(id="mixed-internal", user_id="mixed", permission_id=internal_permission.id, effect="allow", factory_id="huakang-a", department="engineering", source_type="manual"))
@@ -204,7 +208,7 @@ def test_bulk_eligibility_matches_runtime_for_supplier_mixed_v2_and_functional_u
         expected = {u.id for u in db.scalars(select(authm.AuthUser)) if rule.is_internal(auth.build_auth_context(db, u))}
         actual = set(rule.eligible_member_ids(db))
         assert actual == expected
-        assert {"mixed", "group-staff", "alice"} <= actual
+        assert {"mixed", "group-staff", "alice", "asset-employee"} <= actual
         assert not {"supplier", "v2-empty"} & actual
     data = collab("alice").get("/api/directory/members?org_unit_id=group-management").json()
     assert data["items"][0]["org_name"] == "集团总务"

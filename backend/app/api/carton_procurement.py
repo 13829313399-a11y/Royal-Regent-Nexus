@@ -24,7 +24,7 @@ from app.schemas.carton_inventory_report import CartonInventoryReportOut
 from app.services.carton_inventory_report import inventory_report
 from app.schemas.carton_order_timeline import CartonOrderTimelineOut
 from app.services.carton_order_timeline import order_timeline
-from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction
+from app.schemas.carton_stocktake import StocktakeCreate, StocktakeAction, StocktakePolicyUpdate
 from app.services.carton_stocktake import create_stocktake, stocktake_detail, list_stocktakes, act_stocktake
 from app.services.carton_procurement import audit_query_options, supplier_promise_changes, supplier_promise_notices, promise_notice_acks, acknowledge_promise_notice
 from app.schemas.carton_procurement import (
@@ -275,6 +275,26 @@ def preview_receipt_split(payload: SplitReceiptPreview, db: Session = Depends(ge
     from app.services.carton_procurement import _lock_receipt_factory
     _lock_receipt_factory(db, payload.factory_id)
     return order_splits.receipt_preview(db, payload.factory_id, [line.model_dump() for line in payload.lines])
+
+
+@router.post("/customers/business-sync")
+def sync_business_customers(factory_id: str, request: Request, db: Session = Depends(get_db),
+                            current_user: AuthContext = Depends(get_current_user)):
+    # Narrow derived-data operation: only server-owned names for this factory.
+    # Free-form creation/edit/delete still requires customer_manage.
+    from app.services.carton_special_requests import locked_actor
+    from app.services.carton_business_customers import synchronize
+    factory_id = _ensure_permission(db, current_user, "carton_procurement:read", factory_id)
+    locked_actor(db, current_user, factory_id)
+    actor = get_current_user(request, db)
+    _ensure_permission(db, actor, "carton_procurement:read", factory_id)
+    try:
+        added = synchronize(db, factory_id, actor)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return {"factory_id": factory_id, "added": added}
 
 
 @router.get("/customers", response_model=CartonCustomerListOut)
@@ -1259,12 +1279,17 @@ def get_exceptions(
 @router.post("/exceptions/bulk-update", response_model=list[CartonExceptionOut])
 def post_exceptions_bulk_update(
     payload: "CartonExceptionBulkUpdate",
+    request: Request,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
     from app.services.carton_procurement import _lock_receipt_factory
-    _ensure_permission(db, current_user, "carton_procurement:exception_manage", payload.factory_id)
+    from app.services.identity_policy import lock_mutation
+    from app.services.carton_stocktake_policy import require
+    lock_mutation(db)
     _lock_receipt_factory(db, require_carton_factory(payload.factory_id))
+    current_user = get_current_user(request=request, db=db)
+    require(current_user, "carton_procurement:exception_manage", payload.factory_id)
     if len({item.id for item in payload.items}) != len(payload.items):
         raise HTTPException(422, "异常选择不能重复")
     rows = [update_exception(db, item.id, CartonExceptionUpdate(
@@ -1279,10 +1304,17 @@ def post_exceptions_bulk_update(
 def patch_exception(
     exception_id: str,
     payload: CartonExceptionUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
-    _ensure_permission(db, current_user, "carton_procurement:exception_manage", payload.factory_id)
+    from app.services.identity_policy import lock_mutation
+    from app.services.carton_procurement import _lock_receipt_factory
+    from app.services.carton_stocktake_policy import require
+    lock_mutation(db)
+    _lock_receipt_factory(db, require_carton_factory(payload.factory_id))
+    current_user = get_current_user(request=request, db=db)
+    require(current_user, "carton_procurement:exception_manage", payload.factory_id)
     return update_exception(db, exception_id, payload, current_user)
 
 
@@ -1409,6 +1441,20 @@ def stocktakes_list(factory_id: str, limit: int = Query(100, ge=1, le=100), offs
     return list_stocktakes(db, factory_id, limit, offset, status, date_from, date_to, sort)
 
 
+@router.get("/stocktake-policy")
+def stocktake_policy_get(factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_stocktake_policy import policy
+    _ensure_permission(db, user, "carton_procurement:read", factory_id)
+    return policy(db, factory_id)
+
+
+@router.put("/stocktake-policy")
+def stocktake_policy_put(payload: StocktakePolicyUpdate, request: Request,
+                         db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_stocktake_policy import update_policy
+    return update_policy(db, payload, user, refresh_user=lambda: get_current_user(request=request, db=db))
+
+
 @router.get("/stocktakes/{identifier}")
 def stocktakes_detail(identifier: str, factory_id: str, db: Session = Depends(get_db),
                       user: AuthContext = Depends(get_current_user)):
@@ -1424,14 +1470,15 @@ def stocktakes_create(payload: StocktakeCreate, db: Session = Depends(get_db),
 
 
 @router.post("/stocktakes/{identifier}/actions")
-def stocktakes_action(identifier: str, payload: StocktakeAction, db: Session = Depends(get_db),
+def stocktakes_action(identifier: str, payload: StocktakeAction, request: Request, db: Session = Depends(get_db),
                       user: AuthContext = Depends(get_current_user)):
     _ensure_permission(db, user, "carton_procurement:inventory_write", payload.factory_id)
     if payload.action in ("APPROVE", "RETURN", "CANCEL"):
         doc = stocktake_detail(db, payload.factory_id, identifier)
         if payload.action != "CANCEL" or doc["created_by"] != user.id:
             _ensure_permission(db, user, "carton_procurement:order_adjust", payload.factory_id)
-    return jsonable_encoder(act_stocktake(db, identifier, payload, user), custom_encoder={Decimal: str})
+    return jsonable_encoder(act_stocktake(db, identifier, payload, user,
+        refresh_user=lambda: get_current_user(request=request, db=db)), custom_encoder={Decimal: str})
 
 
 @router.get("/inventory/balances", response_model=list[CartonInventoryBalanceOut])

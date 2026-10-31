@@ -94,6 +94,8 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     "result": "送货单进入本厂待验收列表。",
     "reminders": [
       "仓库已经手工入库的同一批货，使用后补凭证关联已有入库，不能再形成一次实收。",
+      "样板、杂单在原表客户单号填写真实 SP 订单编号；系统按当前已接单版本匹配纸品，保留样板、杂单来源。",
+      "正单、样板和杂单可放在同一张真实送货单中；任何一行需核对时，整张单不能提交。",
       "缺价需补价；零价只有明确免费才作为免费处理。"
     ],
     "image": {
@@ -167,6 +169,7 @@ export const cartonSupplierGuideSections: CartonGuideSection<CartonSupplierGuide
     ],
     "result": "双方查看正确的原文件和对应 PDF。",
     "reminders": [
+      "已发送给自己的订单所共享的箱唛随订单可读；上传、改状态和维护关联仍需独立资料权限。",
       "转换成功不代表内容正确，使用前仍需核对。"
     ],
     "image": {
