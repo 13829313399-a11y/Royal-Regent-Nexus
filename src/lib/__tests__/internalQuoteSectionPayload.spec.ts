@@ -684,9 +684,9 @@ describe('internal quote section payload normalization', () => {
     })
     const summary = calculateElectronicSummary(electronic, .85)
     expect(summary.componentCostRmb).toBe(15)
-    expect(summary.deductibleInputTaxRmb).toBeCloseTo(10 / 1.13 * .13)
-    expect(summary.quoteRmb).toBeCloseTo(17.5940133)
-    expect(summary.quoteHkd).toBeCloseTo(20.6988392)
+    expect(summary.deductibleInputTaxRmb).toBe(0)
+    expect(summary.quoteRmb).toBe(15)
+    expect(summary.quoteHkd).toBeCloseTo(15 / .85)
   })
 
   it('preserves independent electronic quote groups, source lineage and their combined total', () => {
@@ -707,6 +707,17 @@ describe('internal quote section payload normalization', () => {
       calculateElectronicSummary(payload.quote_groups[0] as ElectronicPayload, .85).quoteRmb
       + calculateElectronicSummary(payload.quote_groups[1] as ElectronicPayload, .85).quoteRmb,
     )
+  })
+
+  it('treats 0.4 RMB quick input as a final price despite preserved detail expenses and margin', () => {
+    const quick = normalizeInternalQuotePayload('electronic', {
+      quote_mode: 'quick', quick_quotes: [{ item: '电子', unit_price_rmb: .4 }],
+      profit_rate_percent: 10, bonding_rmb: 200, labor_rmb: 100,
+    }) as unknown as ElectronicPayload
+    const summary = calculateElectronicSummary(quick, .85)
+    expect(summary.quoteHkd).toBeCloseTo(.4705882353)
+    expect(summary.quoteRmb).toBe(.4)
+    expect(summary.taxDifferenceRmb).toBe(0)
   })
 
   it('normalizes the complete mold sheet and production allocation contract', () => {

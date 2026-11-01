@@ -3,6 +3,7 @@ import { http } from '@/lib/http'
 export type FeedbackStatus = 'submitted' | 'needs_info' | 'in_progress' | 'awaiting_verification' | 'resolved'
 export type FeedbackAction = 'reply' | 'start' | 'request_info' | 'ready' | 'resolve' | 'reopen'
 export type FeedbackView = 'mine' | 'manage'
+export type FeedbackModule = 'customer-order-center' | 'internal-quote'
 export interface FeedbackContext {
   page?: string
   section?: string
@@ -14,11 +15,16 @@ export interface FeedbackContext {
   error_message?: string
   file_names?: string[]
   app_version?: string
+  quote_id?: string
+  quote_no?: string
+  quote_product?: string
+  quote_version?: string
 }
 export interface FeedbackCapabilities {
   can_submit: boolean
   can_manage: boolean
   can_link_order: boolean
+  can_link_quote?: boolean
   max_files: number
   max_file_bytes: number
   max_total_bytes: number
@@ -93,7 +99,7 @@ export const moduleFeedbackApi = {
   async capabilities(factoryId: string, module = 'customer-order-center') {
     return (await http.get<FeedbackCapabilities>(`${base}/capabilities`, { params: { factory_id: factoryId, module } })).data
   },
-  async list(factoryId: string, view: FeedbackView, options: { status?: FeedbackStatus | ''; q?: string; page?: number; page_size?: number } = {}) {
+  async list(factoryId: string, view: FeedbackView, options: { status?: FeedbackStatus | ''; q?: string; page?: number; page_size?: number; module?: FeedbackModule } = {}) {
     return (await http.get<FeedbackList>(base, { params: { factory_id: factoryId, module: 'customer-order-center', view, ...options, status: options.status || undefined } })).data
   },
   async create(payload: FeedbackCreate, files: File[]) {

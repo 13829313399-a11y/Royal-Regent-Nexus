@@ -11,6 +11,7 @@ from zipfile import BadZipFile
 from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
 from openpyxl.formula.translate import Translator
+from openpyxl.formula.tokenizer import Tokenizer, TokenizerError
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -34,7 +35,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v39"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v40"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v2"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -4851,7 +4852,7 @@ def _build_electronic_sheet(
                 unit_price_rmb,
                 unit_price_hkd,
                 amount_hkd,
-                _number(row.get("tax_rate_percent")),
+                "" if payload.get("quote_mode") == "quick" else _number(row.get("tax_rate_percent")),
                 _safe_text(row.get("remark", row.get("note", ""))),
                 _safe_text(f"{row.get('source_currency', '')} row {row.get('source_row', '')}"),
             ),
@@ -4861,8 +4862,14 @@ def _build_electronic_sheet(
     calculation = _json_object(section.calculation_json) if section else {}
     totals = calculation.get("totals", {}) if isinstance(calculation.get("totals", {}), dict) else {}
     row_index += 1
-    _header_row(sheet, row_index, ("电子成本汇总", "RMB", "HKD", "公式口径"))
+    quick = payload.get("quote_mode") == "quick"
+    _header_row(sheet, row_index, ("电子快捷报价汇总" if quick else "电子成本汇总", "RMB", "HKD", "公式口径"))
     row_index += 1
+    if quick:
+        _body_row(sheet, row_index, ("最终报价", _number(totals.get("total_rmb")),
+                  _number(totals.get("total_hkd")), "最终报价 RMB ÷ 冻结 RMB/HKD 汇率"), amount_columns={2, 3})
+        _finish_sheet(sheet, (20, 28, 28, 12, 15, 15, 15, 12, 28, 20))
+        return
     for label, rmb_key, hkd_key, formula in (
         ("零件成本", "component_rmb", "component_hkd", "用量 × 单价"),
         ("成本合计（不含税）", "pre_tax_rmb", "pre_tax_hkd", "零件 + 邦定/贴片/人工/测试/包装"),
@@ -5257,6 +5264,33 @@ def _build_approval_sheet(
     _finish_sheet(sheet, (24, 24, 20, 16, 18, 18, 20, 22))
 
 
+def _build_mold_quote_sheet(workbook: Workbook, section: InternalQuoteSection | None) -> None:
+    payload = _section_payload(section)
+    molds = _list_of_dicts(payload.get("molds", []))
+    fees = _list_of_dicts(payload.get("production_mold_costs", []))
+    if not molds and not fees:
+        return
+    sheet = workbook.create_sheet("工模报价")
+    _style_title(sheet, "工模报价明细", 7)
+    _body_row(sheet, 2, ("模具费用分摊", "已启用" if payload.get("mold_allocation_enabled", True) else "未启用",
+                        "模价为整副模具人民币金额，套数仅作记录；本页不重复计入产品单价。"))
+    _header_row(sheet, 4, ("序号", "模号", "名称", "料型", "套数（记录）", "整模报价 RMB", "备注"))
+    for index, mold in enumerate(molds, 1):
+        _body_row(sheet, index + 4, (index, _safe_text(mold.get("mold_no")),
+                  _safe_text(mold.get("item") or mold.get("chinese_name")), _safe_text(mold.get("material")),
+                  _number(mold.get("quantity", 1)), _number(mold.get("cost_rmb")),
+                  _safe_text(mold.get("remark"))), amount_columns={6})
+    row = len(molds) + 5
+    _body_row(sheet, row, ("", "", "模具报价合计", "", "", f"=SUM(F5:F{row-1})" if molds else 0), amount_columns={6})
+    if fees:
+        row += 2
+        _header_row(sheet, row, ("序号", "费用项目", "生产费用 RMB"))
+        for index, fee in enumerate(fees, 1):
+            _body_row(sheet, row + index, (index, _safe_text(fee.get("item")), _number(fee.get("cost_rmb"))), amount_columns={3})
+        _body_row(sheet, row + len(fees) + 1, ("", "生产费用合计", f"=SUM(C{row+1}:C{row+len(fees)})"), amount_columns={3})
+    _finish_sheet(sheet, (10, 22, 48, 18, 18, 22, 48))
+
+
 def _unique_sheet_title(raw_title: str, used_titles: set[str]) -> str:
     cleaned = re.sub(r"[\[\]:*?/\\\x00-\x1f]", " ", raw_title).strip().strip("'")
     cleaned = re.sub(r"\s+", " ", cleaned) or "上传表格"
@@ -5277,15 +5311,19 @@ def _rewrite_attachment_formula(
 ) -> object:
     if not isinstance(formula, str) or not formula.startswith("="):
         return formula
-    rendered = formula
-    for old_name, new_name in sheet_names.items():
-        if old_name == new_name:
+    try:
+        tokens = Tokenizer(formula).items
+    except TokenizerError:
+        return formula
+    names = {name.casefold(): renamed for name, renamed in sheet_names.items()}
+    for token in tokens:
+        if token.type != "OPERAND" or token.subtype != "RANGE" or "!" not in token.value:
             continue
-        old_quoted = f"{quote_sheetname(old_name)}!"
-        new_quoted = f"{quote_sheetname(new_name)}!"
-        rendered = rendered.replace(old_quoted, new_quoted)
-        rendered = rendered.replace(f"{old_name}!", new_quoted)
-    return rendered
+        sheet_ref, address = token.value.rsplit("!", 1)
+        name = sheet_ref.strip("'").replace("''", "'")
+        if name.casefold() in names:
+            token.value = f"{quote_sheetname(names[name.casefold()])}!{address}"
+    return "=" + "".join(token.value for token in tokens)
 
 
 def _copy_attachment_worksheet(
@@ -5299,7 +5337,8 @@ def _copy_attachment_worksheet(
             target_cell.value = _rewrite_attachment_formula(
                 source_cell.value,
                 sheet_names,
-            )
+            ) if source_cell.data_type == "f" else source_cell.value
+            target_cell.data_type = source_cell.data_type
             if source_cell.has_style:
                 # Style-array indexes are workbook-local.  Copy the concrete
                 # objects so openpyxl registers them in the destination book.
@@ -5338,6 +5377,9 @@ def _copy_attachment_worksheet(
     target.page_margins = copy(source.page_margins)
     target.page_setup = copy(source.page_setup)
     target.print_options = copy(source.print_options)
+    target.print_area = str(source.print_area).split("!", 1)[-1] if source.print_area else None
+    target.print_title_rows = source.print_title_rows
+    target.print_title_cols = source.print_title_cols
     target.sheet_properties = copy(source.sheet_properties)
     target.auto_filter.ref = source.auto_filter.ref
     target.data_validations = copy(source.data_validations)
@@ -5367,7 +5409,7 @@ def _append_spreadsheet_attachment_sheets(
 ) -> list[str]:
     appended_titles: list[str] = []
     used_titles = {sheet.title.casefold() for sheet in workbook.worksheets}
-    supported_suffixes = {".xlsx", ".xlsm"}
+    supported_suffixes = {".xlsx", ".xlsm", ".xls"}
     seen_hashes: set[str] = set()
     for attachment in attachments:
         suffix = Path(attachment.file_name).suffix.lower()
@@ -5375,7 +5417,7 @@ def _append_spreadsheet_attachment_sheets(
             continue
         seen_hashes.add(attachment.sha256)
         try:
-            source_workbook = load_workbook(
+            source_workbook = _legacy_attachment_workbook(attachment.content) if suffix == ".xls" else load_workbook(
                 BytesIO(attachment.content),
                 data_only=False,
                 read_only=False,
@@ -5431,6 +5473,55 @@ def _append_spreadsheet_attachment_sheets(
     return appended_titles
 
 
+def _legacy_attachment_workbook(content: bytes) -> Workbook:
+    """Carry BIFF source values (including saved formula results) without executing them."""
+    import xlrd
+
+    try:
+        source = xlrd.open_workbook(file_contents=content, formatting_info=True)
+    except xlrd.XLRDError as error:
+        raise ValueError("无效的 XLS 附件") from error
+    target = Workbook()
+    target.remove(target.active)
+    try:
+        for original in source.sheets():
+            sheet = target.create_sheet(original.name)
+            for row in range(original.nrows):
+                for column in range(original.ncols):
+                    cell = original.cell(row, column)
+                    value = cell.value
+                    if cell.ctype == xlrd.XL_CELL_DATE:
+                        value = xlrd.xldate_as_datetime(value, source.datemode)
+                    elif cell.ctype == xlrd.XL_CELL_BOOLEAN:
+                        value = bool(value)
+                    elif cell.ctype == xlrd.XL_CELL_ERROR:
+                        value = xlrd.error_text_from_code.get(value, "#VALUE!")
+                    elif cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+                        value = None
+                    dest = sheet.cell(row + 1, column + 1, value)
+                    if cell.ctype == xlrd.XL_CELL_TEXT:
+                        dest.data_type = "s"
+                    xf = source.xf_list[cell.xf_index]
+                    dest.number_format = source.format_map[xf.format_key].format_str
+                    font = source.font_list[xf.font_index]
+                    dest.font = Font(name=font.name, size=font.height / 20, bold=bool(font.bold), italic=bool(font.italic))
+                    dest.alignment = Alignment(wrap_text=bool(xf.alignment.text_wrapped))
+            for index, info in original.rowinfo_map.items():
+                sheet.row_dimensions[index + 1].height = info.height / 20
+                sheet.row_dimensions[index + 1].hidden = bool(info.hidden)
+            for index, info in original.colinfo_map.items():
+                sheet.column_dimensions[get_column_letter(index + 1)].width = info.width / 256
+                sheet.column_dimensions[get_column_letter(index + 1)].hidden = bool(info.hidden)
+            for first_row, last_row, first_col, last_col in original.merged_cells:
+                sheet.merge_cells(start_row=first_row + 1, end_row=last_row, start_column=first_col + 1, end_column=last_col)
+    except Exception:
+        target.close()
+        raise
+    finally:
+        source.release_resources()
+    return target
+
+
 def build_internal_quote_workbook_model(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
@@ -5480,6 +5571,7 @@ def build_internal_quote_workbook_model(
     if "quote_groups" in electronic_payload:
         for index in range(1, len(electronic_payload["quote_groups"]) + 1):
             workbook[f"电子明细{index}"].sheet_state = "visible"
+    _build_mold_quote_sheet(workbook, by_code.get("engineering"))
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True
@@ -5499,6 +5591,9 @@ def build_internal_quote_workbook(
     workbook = build_internal_quote_workbook_model(
         quote, sections, manifest, reference_snapshot, rr2_cost_summary, cost_context, attachments,
     )
+    # Source workbooks accompany downloads only. The editable output view must
+    # never evaluate uploaded formulas or expose source cells as editable inputs.
+    _append_spreadsheet_attachment_sheets(workbook, attachments or [])
     buffer = BytesIO()
     workbook.save(buffer)
     workbook.close()

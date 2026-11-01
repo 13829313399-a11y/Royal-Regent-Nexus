@@ -35,7 +35,7 @@ def _formula(value, names):
 
 
 def combine_series_workbooks(products, *, summary_builder=None):
-    """Retain frozen formula dependencies privately; expose one sheet per product."""
+    """Retain each product's visible detail/source sheets and private dependencies."""
     target = Workbook()
     target.remove(target.active)
     used = {"方案汇总"} if summary_builder else set()
@@ -60,7 +60,7 @@ def combine_series_workbooks(products, *, summary_builder=None):
                 copied.print_title_cols = sheet.print_title_cols
                 copied.row_breaks = deepcopy(sheet.row_breaks)
                 copied.col_breaks = deepcopy(sheet.col_breaks)
-                copied.sheet_state = "visible" if offset == 0 else "veryHidden"
+                copied.sheet_state = "visible" if offset == 0 else sheet.sheet_state
                 if offset == 0:
                     visible.append(copied)
             if summary_builder:
