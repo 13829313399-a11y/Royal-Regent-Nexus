@@ -116,7 +116,8 @@ class RunContent:
             step_id = self.part_steps.get(part_id)
             for ref in markers(part["text"]):
                 sources = [s["source_id"] for s in self.evidence["sources"]
-                           if str(s.get("citation_aliases", {}).get(step_id, s.get("provider_ref", "") if s.get("step_id") == step_id else "")) == ref]
+                           if s.get("citation_eligible", True)
+                           and str(s.get("citation_aliases", {}).get(step_id, s.get("provider_ref", "") if s.get("step_id") == step_id else "")) == ref]
                 bindings.append(dict(binding_id=stable_id(self.run_id, part_id, ref), part_id=part_id,
                     marker=f"[ref_{ref}]", source_ids=sources, resolution="resolved" if sources else "unresolved" if terminal else "pending"))
         if bindings != self.evidence["citations"]:

@@ -455,7 +455,9 @@ def test_buzzbee_preview_requires_sales_permission_and_maps_seventeen_fields(mon
             "customer_q": "2026-09-17",
             "requested_ship_date": "2026-09-17",
         }
-        assert len(row["lineage"]) == 17
+        assert len(row["lineage"]) == 18
+        assert row["order_type"] == "正单"
+        assert row["lineage"]["order_type"]
         assert row["item_sheet_name"] == "子弹枪ITEM表"
 
 
@@ -888,10 +890,204 @@ def test_ordinary_xlsx_contract_uses_labels_instead_of_aafes_or_wmc_gate():
         "standard": "欧洲标准",
         "packaging": "45803-04-26-EN",
         "inspection_raw": "TBA",
+        "order_type": "",
     }
     assert parsed.lineage["contract_no"] == "Sheet1!O8"
     assert parsed.lineage["customer_name"] == "Sheet1!Q7 / Sheet1!Q8"
     assert parsed.lineage["standard"] == "合同条款 · European Standard"
+
+
+@pytest.mark.parametrize("title", [None, "SAMPLE ORDER"], ids=["labels-only", "sample"])
+def test_unproven_order_type_requires_source_correction(title):
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.load_workbook(BytesIO(build_tottus_po()))
+    if title:
+        workbook.active["A1"] = title
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+
+    parsed = service.parse_po("regular-order.xlsx", output.getvalue())
+    rows = service._build_preview_rows(parsed, {}, "2026-07-27")
+
+    assert rows[0].get("order_type", "") != "正单"
+    if not rows[0].get("order_type"):
+        issue = next(issue for issue in rows[0]["issues"] if issue["code"] == "order_type_unresolved")
+        assert issue["field"] == "order_type"
+        assert issue["severity"] == "blocked"
+        assert not issue["can_skip"]
+        assert issue["requires_source_correction"]
+
+
+def test_wmu_order_type_is_independent_of_filename():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    content = build_wmu_po()
+    results = []
+    for filename in ("source.xlsx", "sample-regular-WMC.xlsx"):
+        lines = service.parse_po(filename, content)
+        rows = service._build_preview_rows(lines, {}, "2026-08-19")
+        results.append([(row.get("order_type", ""),
+                         any(issue["code"] == "order_type_unresolved" for issue in row["issues"]))
+                        for row in rows])
+    assert len(results[0]) == 7
+    assert results[0] == results[1]
+
+
+@pytest.mark.parametrize("source_type", ["正单", "改单", "样板单", "备料单", "杂单"])
+def test_explicit_order_type_is_preserved(source_type):
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.load_workbook(BytesIO(build_tottus_po()))
+    workbook.active["A1"] = "Sales Contract"
+    workbook.active["A2"] = "Order Type:"
+    workbook.active["B2"] = source_type
+    stream = BytesIO()
+    workbook.save(stream)
+    workbook.close()
+
+    lines = service.parse_po("regular.xlsx", stream.getvalue())
+    rows = service._build_preview_rows(lines, {}, "2026-08-19")
+    assert rows[0]["order_type"] == source_type
+    assert rows[0]["lineage"].get("order_type")
+
+
+def test_unrecognized_explicit_order_type_overrides_formal_title():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.load_workbook(BytesIO(build_tottus_po()))
+    workbook.active["A1"] = "Sales Contract"
+    workbook.active["A2"] = "Order Type:"
+    workbook.active["B2"] = "Unclassified"
+    stream = BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    rows = service._build_preview_rows(service.parse_po("regular.xlsx", stream.getvalue()), {}, "2026-08-19")
+    assert not rows[0].get("order_type")
+    assert any(issue["code"] == "order_type_unresolved" and issue["requires_source_correction"]
+               and not issue["can_skip"] for issue in rows[0]["issues"])
+
+
+@pytest.mark.parametrize("title,explicit,expected", [
+    ("SAMPLE ORDER", "正单", ""),
+    ("Sales Contract", "样板单", "样板单"),
+])
+def test_document_title_and_explicit_type_are_reconciled(title, explicit, expected):
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.load_workbook(BytesIO(build_tottus_po()))
+    workbook.active["A1"] = title
+    workbook.active["A2"] = "Order Type:"
+    workbook.active["B2"] = explicit
+    stream = BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    row = service._build_preview_rows(service.parse_po("order.xlsx", stream.getvalue()), {}, "2026-08-19")[0]
+    assert row.get("order_type", "") == expected
+    if not expected:
+        assert any(issue["code"] == "order_type_unresolved" and issue["requires_source_correction"]
+                   and not issue["can_skip"] for issue in row["issues"])
+
+
+def test_wmc_sample_reference_in_shipping_note_does_not_change_order_type():
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.load_workbook(BytesIO(build_wmc_po()))
+    workbook.active["A50"] = "发货前寄样板确认"
+    stream = BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    row = service._build_preview_rows(service.parse_po("order.xlsx", stream.getvalue()), {}, "2026-08-19")[0]
+    assert row["order_type"] == "正单"
+    assert not any(issue["code"] == "order_type_unresolved" for issue in row["issues"])
+
+
+@pytest.mark.parametrize("title,expected", [
+    ("Sample Purchase Order (Revision 2)", ""),
+    ("Prototype Purchase Order", ""),
+    ("Purchase Order (Sample)", ""),
+    ("Purchase Order (Revision 2)", "正单"),
+])
+def test_wmc_purchase_order_title_variants(title, expected):
+    service = importlib.import_module("app.services.customer_order_buzzbee")
+    workbook = openpyxl.load_workbook(BytesIO(build_wmc_po()))
+    workbook.active["A1"] = title
+    stream = BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    row = service._build_preview_rows(service.parse_po("order.xlsx", stream.getvalue()), {}, "2026-08-19")[0]
+    assert row.get("order_type", "") == expected
+    if not expected:
+        assert any(issue["code"] == "order_type_unresolved" and issue["requires_source_correction"]
+                   and not issue["can_skip"] for issue in row["issues"])
+
+
+@pytest.mark.parametrize("unified_schedule", [False, True], ids=["buzzbee", "unified"])
+def test_order_type_schema_invalidates_old_preview_fingerprint(monkeypatch, unified_schedule):
+    service_name = "customer_order_unified" if unified_schedule else "customer_order_buzzbee"
+    service = importlib.import_module(f"app.services.{service_name}")
+    api = importlib.import_module("app.api.customer_order")
+    assert service.PREVIEW_SCHEMA_VERSION.endswith("-v2")
+    args = dict(factory_id="huaxing", received_date="2026-08-19",
+                po_files=[("po.xlsx", build_wmc_po())], schedule_file_name="schedule.xlsx",
+                schedule_content=_unified_order_type_template() if unified_schedule else build_schedule())
+    if unified_schedule:
+        args["customer_code"] = "buzzbee"
+        create = service.create_unified_customer_preview
+    else:
+        create = service.create_buzzbee_batch_preview
+    current = create(**args)
+    current_fingerprint = api._preview_fingerprint(current, "2026-08-19")
+    monkeypatch.setattr(service, "PREVIEW_SCHEMA_VERSION", service.PREVIEW_SCHEMA_VERSION[:-1] + "1")
+    old = create(**args)
+    old_fingerprint = api._preview_fingerprint(old, "2026-08-19")
+    assert old_fingerprint != current_fingerprint
+    with pytest.raises(api.HTTPException) as error:
+        api._ensure_preview_fingerprint(current, "2026-08-19", old_fingerprint)
+    assert error.value.status_code == 409
+    assert api._ensure_preview_fingerprint(current, "2026-08-19", current_fingerprint) == current_fingerprint
+
+
+def _unified_order_type_template():
+    unified = importlib.import_module("app.services.customer_order_unified")
+    workbook = openpyxl.Workbook()
+    workbook.remove(workbook.active)
+    for name, headers in ((unified.ORDER_SHEET, unified.ORDER_HEADERS),
+                          (unified.REVIEW_SHEET, unified.ORDER_HEADERS),
+                          (unified.ITEM_SHEET, unified.ITEM_HEADERS)):
+        sheet = workbook.create_sheet(name)
+        for column, header in enumerate(headers, 1):
+            sheet.cell(3, column, header)
+        sheet.cell(7, 1, "取消单")
+    workbook[unified.ITEM_SHEET]["D4"] = "HIST"
+    workbook[unified.ITEM_SHEET]["H4"] = "HIST-ITEM"
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("builder,formal_title", [
+    (build_wmc_po, False), (build_wmu_po, False), (build_tottus_po, True),
+], ids=["wmc", "wmu", "ordinary"])
+def test_proven_contract_order_type_survives_unified_preview_and_export(builder, formal_title):
+    unified = importlib.import_module("app.services.customer_order_unified")
+    content = builder()
+    if formal_title:
+        source = openpyxl.load_workbook(BytesIO(content))
+        source.active["A1"] = "Sales Contract"
+        stream = BytesIO()
+        source.save(stream)
+        source.close()
+        content = stream.getvalue()
+    output, _, preview = unified.export_unified_customer_schedule(
+        factory_id="huaxing", customer_code="buzzbee", received_date="2026-08-19",
+        po_files=[("sample-name.xlsx", content)], schedule_file_name="schedule.xlsx",
+        schedule_content=_unified_order_type_template(),
+    )
+    assert all(row["order_type"] == "正单" and row["lineage"].get("order_type") for row in preview["rows"])
+    book = openpyxl.load_workbook(BytesIO(output))
+    try:
+        item = book[unified.ITEM_SHEET]
+        assert item["D4"].value == "HIST"
+        assert [item.cell(row, 2).value for row in range(5, 5 + len(preview["rows"]))] == ["正单"] * len(preview["rows"])
+    finally:
+        book.close()
 
 
 def test_aafe_filename_typo_still_uses_aafes_customer_profile():
@@ -954,6 +1150,7 @@ def test_wmu_mainland_xlsx_contract_expands_po_attached_suborders():
         "standard": "美国标准",
         "packaging": "11019-08-26-WMU",
         "inspection_raw": "2026-09-29 00:00:00",
+        "order_type": "正单",
     }
     assert first.lineage["contract_no"] == "PO Attached!A7"
     assert first.lineage["po_no"] == "PO Attached!B7"
@@ -1024,6 +1221,7 @@ def test_explicit_indonesia_xlsx_contract_remains_out_of_scope(marker):
 def test_po_number_is_optional_for_standard_customer_but_required_for_walmart():
     service = importlib.import_module("app.services.customer_order_buzzbee")
     base_values = {
+        "order_type": "正单",
         "po_no": "",
         "contract_no": "52496",
         "customer_name": "AAFES",

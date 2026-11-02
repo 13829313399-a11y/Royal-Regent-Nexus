@@ -67,6 +67,24 @@ it.each([true, false])('restores keyboard focus at the real dialog cleanup bound
   }
 })
 
+it('returns to the visible native source banner when the original assistant action is now hidden', async () => {
+  const assistant = document.createElement('section'), sourceAction = document.createElement('button')
+  sourceAction.textContent = '助手原记录入口'; assistant.append(sourceAction); document.body.append(assistant); sourceAction.focus()
+  const main = document.createElement('main'), nativeAction = document.createElement('button')
+  main.tabIndex = 0; main.dataset.ylHelp = 'carton-procurement.overview'; nativeAction.dataset.cartonSourceOpener = ''
+  nativeAction.textContent = '查看原记录'; main.append(nativeAction); document.body.append(main)
+  const wrapper = mount(CartonRecordSource,{props:{...props,returnFocus:null},attachTo:main,global:{stubs:{CartonOrderTimeline:true}}})
+  try {
+    await flushPromises()
+    assistant.style.display = 'none'
+    wrapper.unmount()
+    await vi.waitFor(()=>expect(document.activeElement).toBe(nativeAction))
+  } finally {
+    if(wrapper.exists()) wrapper.unmount()
+    main.remove(); assistant.remove()
+  }
+})
+
 it('clears facts on failed refresh, supports retry, and never trusts another factory response', async () => {
   const wrapper = open(); await flushPromises()
   api.selected.mockResolvedValueOnce([purchase('huakang-b')])

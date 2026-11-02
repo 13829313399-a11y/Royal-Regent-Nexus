@@ -24,7 +24,7 @@ from app.services.customer_order_manual import (
 
 
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-PREVIEW_SCHEMA_VERSION = "customer-order-buzzbee-preview-v1"
+PREVIEW_SCHEMA_VERSION = "customer-order-buzzbee-preview-v2"
 STANDARD_TEMPLATE = "BUZZBEE_STANDARD_CONTRACT_V1"
 WMC_TEMPLATE = "BUZZBEE_WALMART_WMC_INLINE_V1"
 WMU_TEMPLATE = "BUZZBEE_WALMART_WMU_ATTACHED_V1"
@@ -323,6 +323,57 @@ def _ordinary_customer_metadata(
     return customer_name, country, standard, customer_source, standard_source
 
 
+def _set_order_type(values, lineage, rows, sheet_name, *, structured_source=""):
+    """Classify from original cells, never the filename or historical schedule."""
+    cells = [(row_number, column, _clean_text(value), coordinate)
+             for row_number, row in rows for column, value, coordinate in row if _clean_text(value)]
+    explicit = []
+    for row_number, column, text, coordinate in cells:
+        match = re.fullmatch(r"(?:订单类型|訂單類型|Order\s+Type|Document\s+Type)\s*[:：]?\s*(.*)", text, re.I)
+        if match:
+            value = match[1].strip() or next((value for number, col, value, _ in cells
+                if number == row_number and col > column), "")
+            explicit.append((value, f"{sheet_name}!{coordinate} · 订单类型"))
+    values["order_type"] = ""
+    lineage["order_type"] = ""
+    heading_patterns = {
+        "样板单": r"(?:SAMPLE\s+(?:PURCHASE\s+)?(?:ORDER|CONTRACT)|样板单|樣板單|样品单)",
+        "备料单": r"(?:(?:STOCK|MATERIAL)\s+(?:PURCHASE\s+)?(?:ORDER|CONTRACT)|备料单|備料單)",
+        "杂单": r"(?:杂单|雜單)",
+        "UNKNOWN": r"PRO\s*FORMA\s+(?:PURCHASE\s+)?(?:ORDER|CONTRACT)",
+    }
+    heading_suffix = r"(?:\s*\((?:REV(?:ISION)?\.?|NO\.?|#)\s*[A-Z0-9][A-Z0-9 ._/-]*\)|\s+(?:REV(?:ISION)?\.?|NO\.?|#)\s*[A-Z0-9][A-Z0-9 ._/-]*)?"
+    # Only standalone document headings describe its type; ordinary notes may mention samples.
+    heading_kinds = {kind for kind, pattern in heading_patterns.items()
+        if any(re.fullmatch(pattern + heading_suffix, text, re.I) for _, _, text, _ in cells)}
+    document_title = r"(?:[A-Z]+\s+){0,3}(?:PURCHASE\s+ORDER|SALES\s+CONTRACT)(?:\s*\([^\n()]*\)|\s+(?:REV(?:ISION)?\.?|NO\.?|#)\s*[^\n]*)?"
+    regular_title = r"(?:SALES\s+CONTRACT|PURCHASE\s+ORDER|销售合同|銷售合同|正式订单|正式訂單)" + heading_suffix
+    if any(re.fullmatch(document_title, text, re.I)
+            and not re.fullmatch(regular_title, text, re.I)
+            and not any(re.fullmatch(pattern + heading_suffix, text, re.I) for pattern in heading_patterns.values())
+            for _, _, text, _ in cells):
+        heading_kinds.add("UNKNOWN")
+    if explicit:
+        kinds = {value for value, _ in explicit}
+        if (len(kinds) == 1 and next(iter(kinds)) in {"正单", "改单", "样板单", "备料单", "杂单"}
+                and (not heading_kinds or heading_kinds == kinds)):
+            values["order_type"], lineage["order_type"] = explicit[0]
+        return
+    # Non-regular headings override any generic Purchase Order/contract marker.
+    if heading_kinds:
+        return
+    title = next((f"{sheet_name}!{coordinate} · {text}" for _, _, text, coordinate in cells
+        if re.fullmatch(regular_title, text, re.I)), "")
+    labelled_contract = any(re.fullmatch(r"(?:Contract\s*No\.?|S/C\s*No\.?)\s*[:：]?", text, re.I)
+        for _, _, text, _ in cells)
+    quantity = _decimal(values.get("quantity"))
+    if (labelled_contract and values.get("contract_no") and values.get("product_no")
+            and quantity is not None and quantity.is_finite() and quantity > 0
+            and (title or structured_source and values.get("po_no"))):
+        values["order_type"] = "正单"
+        lineage["order_type"] = title or structured_source
+
+
 def _parse_ordinary_po_rows(
     file_name: str,
     sheet_name: str,
@@ -409,6 +460,7 @@ def _parse_ordinary_po_rows(
             "packaging": packaging_source,
         }
     )
+    _set_order_type(values, lineage, rows, sheet_name)
     return [ParsedPoLine(values=values, lineage=lineage, input_template=STANDARD_TEMPLATE)]
 
 
@@ -514,6 +566,8 @@ def _parse_wmc_xlsx_sheet(
             "inspection_date": inspection_source,
         }
     )
+    _set_order_type(values, lineage, list(_iter_xlsx_rows(sheet)), sheet.title,
+        structured_source=f"{sheet.title}!P4=WMC · 原单合同编号、PO及纸品数量")
     return [ParsedPoLine(values=values, lineage=lineage, input_template=WMC_TEMPLATE)]
 
 
@@ -657,6 +711,11 @@ def _parse_wmu_xlsx_workbook(
                 f"{_cell_name(row_number, columns['quantity'])} ÷ "
                 f"{attachment_sheet.title}!{_cell_name(row_number, columns['declared_carton_count'])}"
             )
+        source_has_wmu = any(re.search(r"\bWMU\b|\bWALMART\s+USA\b", _clean_text(value), re.I)
+            for _, source_row in main_rows for _, value, _ in source_row)
+        _set_order_type(values, lineage, main_rows, main_sheet.title,
+            structured_source=(f"{main_sheet.title} · WMU正文 + {attachment_sheet.title}!"
+                f"{_cell_name(row_number, columns['contract_no'])} · 原单S/C、PO及纸品数量") if source_has_wmu else "")
         parsed_lines.append(
             ParsedPoLine(values=values, lineage=lineage, input_template=WMU_TEMPLATE)
         )
@@ -1309,6 +1368,10 @@ def _build_preview_rows(
         line_q = inspection_date or requested_ship_date
         customer_q = inspection_date or inspection_raw
         issues: list[dict[str, Any]] = []
+        if not values.get("order_type"):
+            issues.append(dict(_make_issue("blocked", "order_type_unresolved", "order_type",
+                "无法从原单可靠确定订单类型，请补齐原单的订单类型后重新导入；不能默认正单"),
+                requires_source_correction=True))
 
         required_fields = {
             "contract_no": "Contract No.",
@@ -1433,6 +1496,7 @@ def _build_preview_rows(
             else "valid"
         )
         lineage = {
+            "order_type": parsed.lineage.get("order_type", ""),
             "received_date": "业务登记 · 来单日期",
             "po_no": parsed.lineage.get("po_no", ""),
             "contract_no": parsed.lineage.get("contract_no", ""),
@@ -1457,6 +1521,7 @@ def _build_preview_rows(
                 "status": status,
                 "status_label": {"valid": "有效", "warning": "警告", "blocked": "阻断"}[status],
                 "received_date": received_date,
+                "order_type": _clean_text(values.get("order_type")),
                 "po_no": po_no,
                 "contract_no": contract_no,
                 "customer_country": f"{values.get('customer_name', '')} / {values.get('country', '')}".strip(" /"),

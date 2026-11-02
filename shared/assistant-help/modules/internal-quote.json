@@ -69,7 +69,7 @@
       {
         "path": "src/components/modules/sales/internal-quote/InternalQuoteCollaboration.vue",
         "symbol": "openPackagingSourceFormula",
-        "sha256": "67a4a1e0a01563280595e1855f6d71cda4164031ee45afb75767366838a5e987"
+        "sha256": "88b799ea5129c050c5e3c5ef1da45baa423fbd5e29489edeab30b584cb62afe9"
       },
       {
         "path": "src/components/modules/sales/internal-quote/InternalQuotePackagingCopy.vue",
@@ -98,7 +98,7 @@
       }
     ],
     "knowledge_version": "2026.11.02-v3-all-customer-feedback",
-    "verified_commit": "working-tree:all-customer-feedback-20261102",
+    "verified_commit": "working-tree:all-customer-feedback-20261102; 2026-11-02 merge review: retain main quote layout and manually confirmed assistant remark handoff; browser acceptance pending",
     "status": "verified"
   }
 ]

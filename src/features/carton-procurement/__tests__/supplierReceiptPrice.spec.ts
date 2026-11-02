@@ -15,6 +15,8 @@ describe('supplier original receipt price', () => {
   it('preserves explicit missing original price and prefers an explicit supplier price', () => {
     expect(supplierReceiptPrice({ source_type: 'AD_HOC_REVIEW', unit_price: '1.69', delivery_unit_price: null }).price_action).toBe('PENDING')
     expect(supplierReceiptPrice({ source_type: 'AD_HOC_REVIEW', unit_price: '1.69', delivery_unit_price: '2.03' }).unit_price).toBe(2.03)
+    expect(originalSupplierReceiptPrice({ source_type: 'FORMAL_ORDER', unit_price: '9.99', delivery_unit_price: null })).toBeNull()
+    expect(supplierReceiptPrice({ source_type: 'FORMAL_ORDER', unit_price: '9.99', delivery_unit_price: null })).toMatchObject({ unit_price: 0, price_action: 'PENDING', zero_price_kind: 'PENDING' })
   })
 
   it('keeps legacy zero price pending unless the supplier explicitly confirms free', () => {

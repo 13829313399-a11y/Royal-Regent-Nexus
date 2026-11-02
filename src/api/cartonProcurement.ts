@@ -78,7 +78,15 @@ export interface CartonSupplierAcceptanceResponse {
   delivery_differences?: { order_line_id: string; packaging_type: string; planned_date: string; promised_date: string; difference_days: number }[]
 }
 
-export interface CartonSupplierPromiseLate {
+interface CartonSupplierPromiseSource {
+  source_kind?: 'REGULAR' | 'REPLENISHMENT'
+  issue_id?: string
+  document_no?: string
+  order_line_id?: string
+  planned_date?: string
+}
+
+export interface CartonSupplierPromiseLate extends CartonSupplierPromiseSource {
   key: string
   order_no: string
   customer_name: string
@@ -87,7 +95,7 @@ export interface CartonSupplierPromiseLate {
   difference_days: number
 }
 
-export interface CartonSupplierPromiseChange {
+export interface CartonSupplierPromiseChange extends CartonSupplierPromiseSource {
   id: string
   order_id: string
   order_no: string

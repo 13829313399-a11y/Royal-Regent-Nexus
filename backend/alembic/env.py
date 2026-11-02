@@ -110,7 +110,16 @@ def run_migrations_online() -> None:
         revisions = set(connection.scalars(text('SELECT version_num FROM alembic_version'))) if inspector.has_table('alembic_version') else set()
         if '20261028_0186' in revisions:
             raise RuntimeError('Legacy local carton 20261028_0186 is not the canonical migration head. Preserve a full backup and reconcile its archived 0185/0186 schema before upgrade; never stamp or replay it blindly. See docs/business/carton-migration-identity.md')
-        later_successors = {'20261022_0175', '20261023_0176', '20261026_0177', '20261026_0178', '20261026_0179', '20261026_0180', '20261026_0181', '20261026_0182', '20261026_0183', '20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187'}
+        # The local assistant branch reused the published online-document 0177.
+        # Retain its archived DDL; refuse an ambiguous label before any writes.
+        assistant_legacy = '20261026_0176' in revisions or (
+            '20261026_0177' in revisions and any(inspector.has_table(name) for name in (
+                'nexus_assistant_executions', 'nexus_assistant_run_events',
+                'nexus_assistant_provider_steps', 'nexus_assistant_run_metrics',
+                'nexus_assistant_subscriptions', 'nexus_assistant_feedback')))
+        if assistant_legacy:
+            raise RuntimeError('Legacy local assistant 0176/0177 identity requires backup and isolated schema reconciliation; never stamp or replay it blindly. See docs/assistant/MIGRATION_IDENTITY.md')
+        later_successors = {'20261022_0175', '20261023_0176', '20261026_0177', '20261026_0178', '20261026_0179', '20261026_0180', '20261026_0181', '20261026_0182', '20261026_0183', '20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189'}
         collision_versions = {'20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166',
                               '20261017_0167', '20261019_0167', '20261020_0168',
                               '20261019_0168', '20261019_0169', '20261019_0170', '20261020_0171',
@@ -122,10 +131,10 @@ def run_migrations_online() -> None:
             # Extend successor recognition without rewriting the applied migration.
             if revisions in [{head} for head in later_successors] + [{'20261023_0176', '20261026_0177'}, {'20261023_0176', '20261026_0179'}, {'20261026_0178', '20261026_0179'}, {'20261023_0176', '20261026_0181'}, {'20261026_0178', '20261026_0181'}, {'20261026_0180', '20261026_0181'}, {'20261023_0176', '20261026_0183'}, {'20261026_0178', '20261026_0183'}, {'20261026_0180', '20261026_0183'}, {'20261026_0182', '20261026_0183'}]:
                 preflight.__globals__['VALID_VERSIONS'].append(revisions)
-            if connection.dialect.name == 'sqlite' and revisions & {'20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187'}:
+            if connection.dialect.name == 'sqlite' and revisions & {'20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189'}:
                 header = runpy.run_path(str(Path(__file__).parent / 'versions/20261028_0185_cutting_period_headers.py'))
                 present = header['index_state'](connection)
-                if revisions & {'20261028_0185', '20261030_0186', '20261030_0187'} and not present:
+                if revisions & {'20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189'} and not present:
                     raise RuntimeError('0185 cutting header index is missing; preserve database before repair')
                 if present:
                     original_expected = preflight.__globals__['_sqlite_expected']

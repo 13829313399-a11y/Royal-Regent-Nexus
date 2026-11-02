@@ -98,6 +98,33 @@ def test_unified_template_validation_and_demo_history_ignored():
     assert unified.read_unified_history(content) == []
 
 
+def test_export_accepts_workbook_without_optional_calculation_properties(monkeypatch):
+    source = openpyxl.load_workbook(BytesIO(_template_bytes()))
+    source.calculation = None
+    stream = BytesIO()
+    source.save(stream)
+    source.close()
+    monkeypatch.setattr(unified, "_create_customer_rows", lambda *_args: ([_parsed_row()], [], "TEST_PO_V1"))
+
+    output, _name, _preview = unified.export_unified_customer_schedule(
+        customer_code="buzzbee", factory_id="huaxing", received_date="2026-09-04",
+        po_files=[("order.xlsx", b"po")], schedule_file_name="schedule.xlsx",
+        schedule_content=stream.getvalue(),
+    )
+    workbook = openpyxl.load_workbook(BytesIO(output), data_only=False)
+    try:
+        assert workbook.calculation.calcMode == "auto"
+        assert workbook.calculation.fullCalcOnLoad is True
+        assert workbook.calculation.forceFullCalc is True
+        item = workbook[unified.ITEM_SHEET]
+        assert item["D7"].value == "CTR-1"
+        assert item["K7"].value == 240
+        assert item["M7"].value == "=K7/L7"
+        assert item["B13"].value == "用户维护内容"
+    finally:
+        workbook.close()
+
+
 def test_optional_common_item_fields_stay_blank_without_blocking(monkeypatch):
     row = _parsed_row()
     for field in (
@@ -151,6 +178,25 @@ def test_optional_common_item_fields_stay_blank_without_blocking(monkeypatch):
         assert item["Z7"].value is None
     finally:
         workbook.close()
+
+
+def test_source_correction_for_unknown_order_type_survives_unified_enrichment():
+    row = _parsed_row()
+    row['order_type'] = ''
+    row['issues'] = [{
+        'severity': 'blocked', 'code': 'order_type_unresolved',
+        'field': 'order_type', 'message': '请更正原订单中的订单类型',
+        'can_skip': False, 'skip_key': '', 'skip_label': '', 'requires_source_correction': True,
+    }]
+
+    enriched = unified._enrich_row(row, [], 'BuzzBee')
+
+    assert enriched['order_type'] == ''
+    issue = next(issue for issue in enriched['issues'] if issue['code'] == 'order_type_unresolved')
+    assert issue['severity'] == 'blocked'
+    assert issue['field'] == 'order_type'
+    assert not issue['can_skip']
+    assert issue['requires_source_correction']
 
 
 def test_export_only_uses_rows_above_cancel_and_leaves_ac_ad_for_user(monkeypatch):

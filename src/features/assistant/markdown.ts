@@ -37,8 +37,11 @@ markdown.renderer.rules.text = (tokens, index, options, env, self) => {
   return value.split(/(\[ref_\d+\])/g).map(piece => {
     const binding = evidence.citations.find(c => c.part_id === env?.partId && c.marker === piece)
     if (!binding) return markdown.utils.escapeHtml(piece)
-    const title = binding.source_ids.map(id => evidence.sources.find(s => s.source_id === id)?.title || '').join('、')
-    return binding.resolution === 'resolved' && title
+    const sources = binding.source_ids.map(id => evidence.sources.find(source => source.source_id === id &&
+      (source.kind !== 'file' || source.citation_eligible !== false)))
+    const complete = sources.length > 0 && sources.every(source => !!source)
+    const title = sources.map(source => source?.title || '').join('、')
+    return binding.resolution === 'resolved' && complete && title
       ? `<button type="button" class="yl-source-marker" data-yl-source="${markdown.utils.escapeHtml(binding.binding_id)}" aria-label="查看来源：${markdown.utils.escapeHtml(title)}">${piece.replace(/\D/g, '')}</button>`
       : `<span class="yl-pending-source" title="${binding.resolution === 'pending' ? '来源尚在返回' : '来源不可核验'}">${markdown.utils.escapeHtml(piece)}</span>`
   }).join('')

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { Pencil, X } from '@lucide/vue'
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import type { InternalQuoteHeaderUpdateRequest } from '@/api/internalQuote'
 import type { InternalQuote, InternalQuoteBusinessOwner } from '@/types/internalQuoteDesk'
+import type { QuoteSuggestion } from '@/features/assistant/quotePrefill'
 
 const props = withDefaults(defineProps<{
   open: boolean
@@ -10,8 +11,10 @@ const props = withDefaults(defineProps<{
   businessOwners: InternalQuoteBusinessOwner[]
   customers: string[]
   busy?: boolean
+  editable?: boolean
   externalError?: string
-}>(), { busy: false, externalError: '' })
+  assistantSuggestion?: QuoteSuggestion
+}>(), { busy: false, editable: true, externalError: '' })
 
 const emit = defineEmits<{
   close: []
@@ -19,6 +22,8 @@ const emit = defineEmits<{
 }>()
 
 const localError = ref('')
+const suggestionApplied = ref(false)
+const suggestionMatches = computed(()=>props.assistantSuggestion?.quoteId===props.quote.id && props.assistantSuggestion.factoryId===props.quote.factoryId && props.assistantSuggestion.headerRevision===props.quote.headerRevision)
 const form = reactive({
   productName: '', customer: '', quantity: 1, businessOwnerId: '', businessOwnerName: '',
   targetCustomerPrice: '无', targetDate: '', remark: '',
@@ -27,6 +32,7 @@ const form = reactive({
 watch(() => [props.open, props.quote.headerRevision] as const, ([open]) => {
   if (!open) return
   localError.value = ''
+  suggestionApplied.value = false
   Object.assign(form, {
     productName: props.quote.productName,
     customer: props.quote.customer,
@@ -43,7 +49,16 @@ function selectOwner() {
   form.businessOwnerName = props.businessOwners.find((owner) => owner.id === form.businessOwnerId)?.displayName ?? ''
 }
 
+function appendSuggestion() {
+  const suggestion=props.assistantSuggestion
+  if(!suggestion || props.busy || !props.editable || suggestionApplied.value || suggestion.quoteId!==props.quote.id || suggestion.factoryId!==props.quote.factoryId || suggestion.headerRevision!==props.quote.headerRevision) return
+  const next=[form.remark.trimEnd(),suggestion.text].filter(Boolean).join('\n\n')
+  if(next.length>4000) {localError.value='追加后超过备注4000字上限，请先精简原备注或建议。';return}
+  form.remark=next; suggestionApplied.value=true; localError.value=''
+}
+
 function submit() {
+  if(props.busy || !props.editable) return
   localError.value = ''
   if (!form.productName.trim() || !form.customer.trim()) {
     localError.value = '产品名称和客户不能为空。'
@@ -86,6 +101,7 @@ function submit() {
     <div v-if="open" class="quote-header-backdrop" @mousedown.self="emit('close')">
       <section class="quote-header-dialog" role="dialog" aria-modal="true" aria-labelledby="quote-header-title">
         <header><span><Pencil aria-hidden="true" /></span><div><h2 id="quote-header-title">修改报价资料</h2><p>{{ quote.quoteNo }} · {{ quote.versionLabel }} · revision {{ quote.headerRevision }}</p></div><button type="button" aria-label="关闭" @click="emit('close')"><X aria-hidden="true" /></button></header>
+        <div v-if="assistantSuggestion" class="quote-header-suggestion"><p>曜灵备注建议 · {{ suggestionApplied ? '已追加到本地表单，尚未保存' : '请核对后明确追加；原备注会保留' }}</p><p class="quote-header-suggestion-text">{{ assistantSuggestion.text }}</p><p v-if="!suggestionMatches || !editable">版本、状态或权限已改变，请重新核对原页面。</p><button type="button" :disabled="busy || !editable || suggestionApplied || !suggestionMatches" @click="appendSuggestion">追加到备注（未保存）</button></div>
         <div class="quote-header-grid">
           <label class="wide"><span>产品名称</span><input v-model="form.productName" type="text"></label>
           <label><span>客户</span><select v-model="form.customer"><option v-for="customer in customers" :key="customer" :value="customer">{{ customer }}</option></select></label>
@@ -96,7 +112,7 @@ function submit() {
           <label class="wide"><span>备注</span><textarea v-model="form.remark" rows="3" /></label>
         </div>
         <p v-if="localError || externalError" class="quote-header-error" role="alert">{{ localError || externalError }}</p>
-        <footer><button type="button" :disabled="busy" @click="emit('close')">取消</button><button type="button" class="primary" :disabled="busy" @click="submit">{{ busy ? '保存中…' : '保存报价资料' }}</button></footer>
+        <footer><button type="button" :disabled="busy" @click="emit('close')">取消</button><button type="button" class="primary" :disabled="busy || !editable" @click="submit">{{ busy ? '保存中…' : '保存报价资料' }}</button></footer>
       </section>
     </div>
   </Teleport>
@@ -104,4 +120,7 @@ function submit() {
 
 <style scoped>
 .quote-header-backdrop{position:fixed;z-index:1300;display:grid;inset:0;place-items:center;background:rgb(15 23 42/.52);padding:20px;backdrop-filter:blur(3px)}.quote-header-dialog{width:min(720px,100%);overflow:hidden;border:1px solid #cbd5e1;border-radius:16px;background:#fff;box-shadow:0 26px 80px rgb(15 23 42/.3)}.quote-header-dialog>header{display:grid;grid-template-columns:42px 1fr 34px;align-items:center;gap:11px;border-bottom:1px solid #e2e8f0;background:#f8fafc;padding:15px 17px}.quote-header-dialog>header>span{display:grid;width:40px;height:40px;place-items:center;border-radius:11px;background:#ccfbf1;color:#0f766e}.quote-header-dialog>header svg{width:19px}.quote-header-dialog h2{margin:0;color:#0f172a;font-size:17px}.quote-header-dialog header p{margin:3px 0 0;color:#64748b;font-size:10px}.quote-header-dialog header button{display:grid;width:32px;height:32px;place-items:center;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#64748b}.quote-header-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:17px}.quote-header-grid label{display:grid;gap:6px}.quote-header-grid label.wide{grid-column:1/-1}.quote-header-grid span{color:#475569;font-size:10px;font-weight:900}.quote-header-grid input,.quote-header-grid select,.quote-header-grid textarea{width:100%;box-sizing:border-box;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:9px 10px;color:#0f172a;font-size:12px;outline:none}.quote-header-grid input,.quote-header-grid select{height:38px}.quote-header-grid input:focus,.quote-header-grid select:focus,.quote-header-grid textarea:focus{border-color:#14b8a6;box-shadow:0 0 0 3px rgb(20 184 166/.1)}.quote-header-error{margin:0 17px;border:1px solid #fecaca;border-radius:8px;background:#fef2f2;padding:9px 11px;color:#b91c1c;font-size:11px}.quote-header-dialog>footer{display:flex;justify-content:flex-end;gap:8px;padding:15px 17px}.quote-header-dialog footer button{height:37px;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 15px;color:#475569;font-size:11px;font-weight:900}.quote-header-dialog footer button.primary{border-color:#0f766e;background:#0f766e;color:#fff}.quote-header-dialog footer button:disabled{cursor:wait;opacity:.55}@media(max-width:620px){.quote-header-grid{grid-template-columns:1fr}.quote-header-grid label.wide{grid-column:auto}}
+</style>
+<style scoped>
+.quote-header-dialog{max-height:calc(100dvh - 40px);overflow:auto}.quote-header-suggestion{margin:14px 17px 0;padding:12px;border:1px solid #b9d9cf;border-radius:10px;background:#f1f8f5;font-size:12px;line-height:1.7;color:#254e43}.quote-header-suggestion p{margin:0 0 8px}.quote-header-suggestion-text{white-space:pre-wrap;max-height:120px;overflow:auto;overflow-wrap:anywhere}.quote-header-suggestion button{min-height:44px;border:1px solid #b9d9cf;border-radius:8px;padding:8px 12px;background:white;color:#145c4b}
 </style>

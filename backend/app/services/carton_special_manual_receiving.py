@@ -30,7 +30,7 @@ def pending_deliveries(db, row):
 def receive(db, user, identifier, payload: schema.ManualReceive):
     try:
         user = special.locked_actor(db, user, payload.factory_id)
-        row = special.access(db, user, payload.factory_id, identifier)
+        row = special.access(db, user, payload.factory_id, identifier, receiving=True)
         if not special.can_receive(user, row.factory_id):
             raise HTTPException(403, "手动收料须同时具备本厂收料及库存权限")
         if special.portal.fixed_supplier(db, row.factory_id).id != row.supplier_id:
@@ -78,7 +78,7 @@ def receive(db, user, identifier, payload: schema.ManualReceive):
             request_id=child_key(payload.request_id, "MANUAL_RECEIVE"), expected_revision=row.revision,
             acceptance_date=payload.acceptance_date, lines=receipt_lines), commit=False)
         response = special.finish(db, user, payload, row, "MANUAL_RECEIVE", digest, commit=False,
-            response_extra={"manual_delivery_id": group.id})
+            response_extra={"manual_delivery_id": group.id}, receiving=True)
         db.commit()
         return response
     except Exception:

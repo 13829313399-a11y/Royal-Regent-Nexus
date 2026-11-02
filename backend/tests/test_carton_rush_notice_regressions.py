@@ -90,6 +90,8 @@ def test_pending_promise_paging_skips_acks_without_history_cutoffs(monkeypatch):
 
 def test_late_promises_filter_acknowledged_before_paging(monkeypatch):
     from app.services import carton_procurement as core, carton_supplier_portal as portal
+    from app.services import carton_replenishment_promises
+    monkeypatch.setattr(carton_replenishment_promises, 'notices', lambda *args: ([], []))
     orders = [SimpleNamespace(id=str(i), order_no=str(i), customer_name='customer') for i in range(23)]
     acknowledged = [f'LATE:{i}:2026-10-30' for i in range(20)]
     monkeypatch.setattr(core, 'promise_notice_acks', lambda db, factory: acknowledged)
