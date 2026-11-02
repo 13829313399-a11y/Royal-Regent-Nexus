@@ -716,6 +716,109 @@ describe('warehouse receipt to shipment flow', () => {
     await panel.get('form.im-upload-form').trigger('submit'); await flushPromises()
     return { wrapper, panel, record }
   }
+  function correctedReceipt(original: MaterialRecord, request: Data) {
+    const updated = structuredClone(original)
+    updated.version += 1
+    const row = updated.data.rows.find((item: Data) => item.index === request.data.index)
+    Object.assign(row.source, request.data.values)
+    if (row.source.actual_date === '2026-11-2') row.source.actual_date = '2026-11-02'
+    row.blocked = false; row.issues = []; row.correction_count = 1
+    data.records = data.records.map(item => item.id === updated.id ? updated : item)
+    return { record: updated }
+  }
+  it('edits a blocked receipt row inline and rematches only that row, preserving other PO choices and edits', async () => {
+    const original = receipt()
+    original.data.rows.push({ ...structuredClone(original.data.rows[0]), index: 1, source_row: 3 })
+    original.data.rows[0].blocked = true; original.data.rows[0].issues = ['实收日期无效']
+    original.data.rows[0].source.actual_date = 'bad-date'; original.data.rows[0].source.receipt_no = ''
+    const { panel } = await prepareWarehouse(original)
+    await panel.get('[aria-label="实收行 2 正常量 1"]').setValue('12.12345678')
+    await panel.get('[aria-label="修改实收行 2 资料"]').trigger('click')
+    const second = panel.get('[aria-label="修改实收行 2"]')
+    await field(second, '规格').setValue('第二行未保存规格')
+    const before = structuredClone(storedDrafts().find(item => draftKind(item.id) === 'warehouse')!.state.choices[1])
+    await panel.get('[aria-label="修改实收行 1 资料"]').trigger('click')
+    const editor = panel.get('[aria-label="修改实收行 1"]')
+    expect(field(editor, '收料单号（选填）').attributes('required')).toBeUndefined()
+    await field(editor, '实收日期（年-月-日）').setValue('2026-11-2')
+    mocks.api.command.mockImplementation(async request => correctedReceipt(original, request))
+    await button(editor, '保存并重新匹配').trigger('click')
+    expect(mocks.api.command).toHaveBeenCalledOnce()
+    expect(mocks.api.command.mock.calls[0]![0]).toMatchObject({ action: 'warehouse_import_correct', entity_id: original.id, expected_version: 3,
+      data: { index: 0, values: { actual_date: '2026-11-2' } } })
+    expect(panel.find('[aria-label="修改实收行 1"]').exists()).toBe(false)
+    expect(panel.text()).toContain('2026-11-02')
+    expect((field(second, '规格').element as HTMLInputElement).value).toBe('第二行未保存规格')
+    const saved = storedDrafts().find(item => draftKind(item.id) === 'warehouse')!
+    expect(saved.state.choices[1]).toEqual(before)
+    expect(saved.state.corrections[1].values.specification).toBe('第二行未保存规格')
+    expect(button(panel, '确认实收与 PO，去补装箱').attributes('disabled')).toBeDefined()
+  })
+  it('restores inline source edits after reopening and does not post stock when cancelled', async () => {
+    const { wrapper, panel } = await prepareWarehouse()
+    await panel.get('[aria-label="修改实收行 1 资料"]').trigger('click')
+    await field(panel.get('[aria-label="修改实收行 1"]'), '正常实收数量').setValue('123456789.12345678')
+    await flushPromises()
+    const saved = storedDrafts().find(item => draftKind(item.id) === 'warehouse')!
+    wrapper.unmount(); wrappers.splice(wrappers.indexOf(wrapper), 1)
+    const reopened = await setup('customer')
+    await button(reopened.get(`[data-draft-id="${saved.id}"]`), '继续填写').trigger('click')
+    const editor = reopened.get('[aria-label="修改实收行 1"]')
+    expect((field(editor, '正常实收数量').element as HTMLInputElement).value).toBe('123456789.12345678')
+    await button(editor, '取消修改').trigger('click')
+    expect(reopened.find('[aria-label="修改实收行 1"]').exists()).toBe(false)
+    expect(mocks.api.command).not.toHaveBeenCalled()
+  })
+  it('retains rejected corrections and keeps imported rows immutable', async () => {
+    const original = receipt()
+    original.data.rows.push({ ...structuredClone(original.data.rows[0]), index: 1, imported_supply_id: 'posted' })
+    const { panel } = await prepareWarehouse(original)
+    expect(panel.find('[aria-label="修改实收行 2 资料"]').exists()).toBe(false)
+    await panel.get('[aria-label="修改实收行 1 资料"]').trigger('click')
+    const editor = panel.get('[aria-label="修改实收行 1"]')
+    await field(editor, '仓库').setValue('尚未提交的仓库')
+    mocks.api.command.mockRejectedValueOnce({ response: { status: 409, data: { detail: '记录已更新' } } })
+    await button(editor, '保存并重新匹配').trigger('click')
+    expect((field(editor, '仓库').element as HTMLInputElement).value).toBe('尚未提交的仓库')
+    expect(storedDrafts().find(item => draftKind(item.id) === 'warehouse')!.state.corrections[0].values.warehouse).toBe('尚未提交的仓库')
+  })
+  it('does not send a partial correction while the surrounding receipt draft cannot be saved', async () => {
+    const { wrapper, panel, record: original } = await prepareWarehouse()
+    await panel.get('[aria-label="修改实收行 1 资料"]').trigger('click')
+    const editor = panel.get('[aria-label="修改实收行 1"]')
+    const update = memoryDatabase.update.bind(memoryDatabase)
+    vi.spyOn(memoryDatabase, 'update').mockImplementation(async (key, change) => {
+      const next = await memoryDatabase.read(key); change(next)
+      if (!next.pending) throw new DOMException('Quota exceeded', 'QuotaExceededError')
+      return update(key, change)
+    })
+    await field(editor, '仓库').setValue('保留在当前页面的输入')
+    mocks.api.command.mockImplementation(async request => correctedReceipt(original, request))
+    await button(editor, '保存并重新匹配').trigger('click')
+    expect(mocks.api.command).not.toHaveBeenCalled()
+    expect((field(editor, '仓库').element as HTMLInputElement).value).toBe('保留在当前页面的输入')
+    expect(wrapper.text()).toContain('草稿尚未安全保存，请保留当前页面')
+  })
+  it('retries a correction after a lost response without removing the receipt draft or other PO inputs', async () => {
+    const { wrapper, panel, record: original } = await prepareWarehouse()
+    await panel.get('[aria-label="修改实收行 1 资料"]').trigger('click')
+    const editor = panel.get('[aria-label="修改实收行 1"]')
+    await field(editor, '实收日期（年-月-日）').setValue('2026-11-2')
+    let completed: ReturnType<typeof correctedReceipt>
+    mocks.api.command.mockImplementationOnce(async request => { completed = correctedReceipt(original, request); throw new Error('响应丢失') })
+    await button(editor, '保存并重新匹配').trigger('click')
+    const sent = structuredClone(mocks.api.command.mock.calls[0]![0])
+    const saved = storedDrafts().find(item => draftKind(item.id) === 'warehouse')!
+    wrapper.unmount(); wrappers.splice(wrappers.indexOf(wrapper), 1)
+    mocks.api.command.mockImplementationOnce(async () => completed)
+    const reopened = await setup('customer')
+    await button(reopened, '重试原操作').trigger('click')
+    expect(mocks.api.command.mock.calls[1]![0]).toEqual(sent)
+    expect(storedDrafts().some(item => item.id === saved.id)).toBe(true)
+    await button(reopened.get(`[data-draft-id="${saved.id}"]`), '继续填写').trigger('click')
+    expect(reopened.find('[aria-label="修改实收行 1"]').exists()).toBe(false)
+    expect(reopened.text()).toContain('2026-11-02')
+  })
   it('preserves newly typed warehouse context when first file selection precedes blur', async () => {
     const wrapper = await setup('customer'), panel = wrapper.get('section[aria-label="仓库实收导入"]')
     await field(panel, '实收客户').setValue('CLIENT')
@@ -966,6 +1069,7 @@ describe('warehouse receipt to shipment flow', () => {
     await panel.get('[aria-label="实收行 1 正常量 1"]').setValue(source.data.rows[0].source.normal_quantity)
     await panel.get('[aria-label="实收行 1 备品量 1"]').setValue(source.data.rows[0].source.spare_quantity)
     await field(panel, '本次计划河源出货日期').setValue('2026-10-23')
+    mocks.api.command.mockImplementationOnce(async () => postResult(source))
     await panel.get('form.im-editor').trigger('submit'); await flushPromises()
     expect(mocks.api.command.mock.calls[0]![0]).toMatchObject({ action: 'warehouse_import_confirm', data: { rows: [{
       replace_allocations: [{ allocation_id: 'a-expected', version: 3 }], replacement_reason: '按实际用途改供客户 PO',
