@@ -164,6 +164,7 @@ def preview_client(monkeypatch):
     # isolating auth/DB dependencies; no business database is started or changed.
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+    from unittest.mock import AsyncMock
     from app.api import customer_order as api
     app=FastAPI()
     app.include_router(api.router)
@@ -171,6 +172,10 @@ def preview_client(monkeypatch):
     app.dependency_overrides[api.get_current_user]=lambda: object()
     monkeypatch.setattr(api,'_ensure_customer_order_permission',lambda *a: None)
     monkeypatch.setattr(api,'_has_duplicate_confirmation_permission',lambda *a: False)
+    # The real handoff needs authentication and a database, both intentionally
+    # absent in this parser/response-serialization fixture.
+    monkeypatch.setattr(api, 'sync_report', AsyncMock(return_value={
+        'status': 'SUCCESS', 'batch_id': 'synthetic-handoff', 'duplicate': False}))
     with TestClient(app) as client:
         yield client
 
@@ -183,6 +188,8 @@ def test_preview_endpoint_serializes_warnings_without_500(preview_client, docume
                ('schedule_file',('latest.xlsx',template(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))])
     assert response.status_code==200,response.text
     data=response.json()
+    assert data['warehouse_sync'] == {
+        'status': 'SUCCESS', 'batch_id': 'synthetic-handoff', 'duplicate': False}
     assert data['preview_fingerprint']
     assert data['summary']['total']==1
     assert data['summary']['blocked']==0
