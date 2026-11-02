@@ -1,0 +1,5 @@
+server/data
+server/ai-config.json
+**/*.db*
+.env*
+node_modules

@@ -105,8 +105,16 @@ def save_pdf(db, user, payload, original, prepared):
         recognition_source="manual_order", candidates_json="[]",
         warning="由 Excel 生成，尚未核对或审核", revision=1, is_archived=False,
         created_by=user.id, created_by_name=user.display_name, created_at=timestamp, updated_at=timestamp)
+    from app.services import carton_asset_access as ownership
+    ownership.legacy(db,user,asset,department='supplier',supplier_id=original['supplier_id'])
     db.add(asset)
     db.flush()
+    if ownership.enabled():
+        from app.services import carton_mark_asset_workflow as lifecycle,carton_mark_sharing as sharing,carton_asset_targets
+        from app.schemas.carton_mark import CartonMarkAssetUploadOptions
+        lifecycle.initialize(db,user,asset,CartonMarkAssetUploadOptions(status='PENDING'))
+        sharing.record(db,user,asset,'SUPPLIER',original['supplier_id'])
+        carton_asset_targets.sync_legacy(db,user,asset)
     assets.audit(db, user, asset, "CARTON_MARK_ASSET_CREATED", dict(sha256=asset.sha256,
         contract_number=asset.contract_number, conversion=dict(method=original.get("engine", "customer_layout"),
             source_asset_id=original["excel_asset_id"], source_revision=original["asset_revision"],

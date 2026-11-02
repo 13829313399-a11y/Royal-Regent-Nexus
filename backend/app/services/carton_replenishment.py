@@ -103,6 +103,8 @@ def replenish_order(db, order_no, payload, user):
         return CartonReplenishmentOut.model_validate(evidence["result"])
 
     order = core.get_order_by_no(db, factory, order_no)
+    from app.services.carton_print_split import guard
+    guard(db, order)
     from app.services.carton_customer_assignment import ensure_customer_operation
     ensure_customer_operation(db, user, factory, order.customer_code)
     if order.revision != payload.expected_revision:

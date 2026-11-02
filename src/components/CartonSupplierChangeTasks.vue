@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { cartonSupplierChangesApi as api, type SupplierChangeAction, type SupplierChangeTask, type SupplierChangeLine } from '@/api/cartonSupplierChanges'
 import { getApiErrorMessage } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
+import { cartonPrintSplitsApi, type PrintFile } from '@/api/cartonPrintSplits'
 import { factoryContexts } from '@/data/enterpriseMock'
 
 const props = withDefaults(defineProps<{ factoryId?: string; factories?: { factory_id: string }[]; viewerKey?: string; internal?: boolean; readOnly?: boolean; sourceId?: string; sourceKinds?: SupplierChangeTask['source_kind'][]; embedded?: boolean; showClosed?: boolean }>(), { factoryId: '', internal: false, embedded: false, showClosed: undefined })
@@ -12,6 +13,11 @@ const localShowClosed = ref(false)
 const showClosed = computed({ get: () => props.showClosed ?? localShowClosed.value, set: value => { localShowClosed.value = value; emit('update:showClosed', value) } })
 const readError = ref('')
 const dates = reactive<Record<string, string>>({}), reasons = reactive<Record<string, string>>({}), requests = new Map<string, string>()
+const produced = reactive<Record<string, Record<string, string>>>({})
+async function downloadPrint(row: SupplierChangeTask, file: PrintFile) {
+  try { await cartonPrintSplitsApi.download(row.factory_id, row.source_id, file, !props.internal) }
+  catch (cause) { error.value = getApiErrorMessage(cause) }
+}
 const factories = computed(() => [...new Set(props.factories?.map(row => row.factory_id) ?? (props.factoryId ? [props.factoryId] : []))].sort())
 const context = computed(() => JSON.stringify([factories.value, props.viewerKey, props.internal, props.sourceId]))
 const scoped = computed(() => tasks.value.filter(row => !props.sourceId || row.source_id === props.sourceId))
@@ -21,6 +27,7 @@ const pending = computed(() => selected.value.filter(row => row.pending))
 const visible = computed(() => showClosed.value ? selected.value : pending.value)
 const pendingLabel = computed(() => loading.value ? '读取中…' : readError.value ? '暂不可用' : `${pending.value.length} 项待确认`)
 watch(() => ({ loading: loading.value, error: readError.value, counts: {
+  PRINT: scoped.value.filter(row => row.pending && row.source_kind === 'PRINT').length,
   REGULAR: scoped.value.filter(row => row.pending && row.source_kind === 'REGULAR').length,
   SPECIAL: scoped.value.filter(row => row.pending && row.source_kind === 'SPECIAL').length,
   REPLENISHMENT: scoped.value.filter(row => row.pending && row.source_kind === 'REPLENISHMENT').length,
@@ -40,6 +47,7 @@ watch(context, () => {
   generation++; readSequence++; controller.abort(); controller = new AbortController(); tasks.value = []; error.value = ''; readError.value = ''; success.value = ''; busy.value = false; loading.value = false; requests.clear()
   for (const name of Object.keys(dates)) delete dates[name]
   for (const name of Object.keys(reasons)) delete reasons[name]
+  for (const name of Object.keys(produced)) delete produced[name]
   void load()
 }, { immediate: true })
 async function load() {
@@ -53,6 +61,7 @@ async function load() {
     for (const row of tasks.value) {
       if (!(key(row) in dates)) dates[key(row)] = row.promised_date || row.planned_date
       if (!(key(row) in reasons)) reasons[key(row)] = ''
+      if (!produced[key(row)]) produced[key(row)] = {}
     }
     error.value = ''
     readError.value = ''
@@ -63,8 +72,10 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
   if (busy.value || props.internal || props.readOnly) return
   if (action === 'ACCEPT' && !dates[key(row)]) { error.value = '请填写承诺交期。'; return }
   if (action === 'DISPUTE' && !reasons[key(row)]?.trim()) { error.value = '请填写具体异议。'; return }
+  if (action === 'ACCEPT' && row.source_kind === 'PRINT' && row.lines.some(line => !String(produced[key(row)]?.[line.id] ?? '').trim())) { error.value = '请逐纸品填写已按原印刷生产的累计数量，无生产填 0。'; return }
   const token = generation
   const body = { factory_id: row.factory_id, source_kind: row.source_kind, source_id: row.source_id, expected_revision: row.expected_revision, action,
+    ...(action === 'ACCEPT' && row.source_kind === 'PRINT' ? { produced_quantities: Object.fromEntries(Object.entries(produced[key(row)] ?? {}).map(([id, value]) => [id, String(value)])) } : {}),
     ...(action === 'ACCEPT' ? { promised_date: dates[key(row)] } : {}), ...(action === 'DISPUTE' ? { reason: reasons[key(row)]?.trim() } : {}) }
   const signature = JSON.stringify(body)
   if (!requests.has(signature)) requests.set(signature, createRandomUuid())
@@ -99,7 +110,7 @@ onBeforeUnmount(() => { generation++; controller.abort(); if (timer) clearInterv
     <p v-else-if="!visible.length && !error" class="mt-3 text-xs text-slate-600">{{ showClosed ? '暂无可查看的版本回执。' : '当前没有待明确确认的版本。' }}</p>
     <div class="mt-3 divide-y" :class="embedded ? 'divide-slate-200' : 'divide-amber-200'">
       <details v-for="row in visible" :key="key(row)" class="py-3">
-        <summary class="cursor-pointer break-words text-xs leading-6 [overflow-wrap:anywhere]"><b>{{ factoryName(row.factory_id) }} · {{ row.document_no }}</b><span class="ml-2">{{ row.source_kind === 'SPECIAL' ? '样板 / 杂单' : row.source_kind === 'REPLENISHMENT' ? `补单 · ${row.responsibility === 'SUPPLIER' ? '供应商责任' : '我方责任'}` : '正式订单' }}</span><span class="ml-2 font-semibold" :class="row.is_cancellation || row.status === 'DISPUTED' ? 'text-red-800' : 'text-amber-900'">{{ row.is_cancellation && row.pending ? '待确认收到停止通知' : labels[row.status] || row.status }}</span><span class="ml-2 text-slate-500">{{ row.read ? '已读，回执单独记录' : '未记录查看' }}<template v-if="row.overdue"> · 已隔 {{ row.age_days }} 天</template></span></summary>
+        <summary class="cursor-pointer break-words text-xs leading-6 [overflow-wrap:anywhere]"><b>{{ factoryName(row.factory_id) }} · {{ row.document_no }}</b><span class="ml-2">{{ row.source_kind === 'PRINT' ? (row.print_split?.print_changed === false ? '拆单 · 沿用原印刷' : '拆单 · 印刷不同') : row.source_kind === 'SPECIAL' ? '样板 / 杂单' : row.source_kind === 'REPLENISHMENT' ? `补单 · ${row.responsibility === 'SUPPLIER' ? '供应商责任' : '我方责任'}` : '正式订单' }}</span><span class="ml-2 font-semibold" :class="row.is_cancellation || row.status === 'DISPUTED' ? 'text-red-800' : 'text-amber-900'">{{ row.is_cancellation && row.pending ? '待确认收到停止通知' : labels[row.status] || row.status }}</span><span class="ml-2 text-slate-500">{{ row.read ? '已读，回执单独记录' : '未记录查看' }}<template v-if="row.overdue"> · 已隔 {{ row.age_days }} 天</template></span></summary>
         <div class="mt-3 space-y-3 text-xs">
           <p class="break-all text-slate-600">来源 {{ row.order_no }} · 生成 {{ row.created_at.slice(0, 16).replace('T', ' ') }}</p>
           <p class="text-slate-600">以下对比上次发布的版本；上次发布不代表供应商已经同意。</p>
@@ -107,6 +118,14 @@ onBeforeUnmount(() => { generation++; controller.abort(); if (timer) clearInterv
           <p v-if="row.customer_due_date && row.customer_due_date !== row.before_customer_due_date">客户交期：{{ row.before_customer_due_date || '首次记录' }} → <b>{{ row.customer_due_date }}</b></p>
           <p v-if="row.change_reason" class="whitespace-pre-wrap break-words text-slate-700">内部变更说明：{{ row.change_reason }}</p>
           <div v-for="line in row.lines" :key="line.id" class="grid gap-1 border-l-2 border-amber-200 pl-3 sm:grid-cols-2"><div class="min-w-0 break-words"><b>{{ material(line) }}</b><p v-if="line.before_material && material(line.before_material) && material(line.before_material) !== material(line)" class="text-amber-900">原资料：{{ material(line.before_material) }}</p></div><p class="tabular-nums sm:text-right">数量 {{ line.before_quantity }} → <b>{{ line.quantity }} {{ line.unit }}</b></p></div>
+          <section v-if="row.print_split" class="space-y-3 rounded-lg border border-sky-200 bg-sky-50 p-3" aria-label="供应商印刷拆单对照">
+            <strong>{{ row.print_split.contract_no }} → {{ row.print_split.targets.map(t => t.contract_no).join('、') }}</strong>
+            <p>上方数量是原单保留量；以下是拆出量，两者合计仍为原采购需求。确认前请核对已生产部分，旧印刷不能直接作为新印刷交货。</p>
+            <div class="flex flex-wrap gap-2"><span>原单继续使用：</span><button v-for="file in row.print_split.original_files" :key="file.id" type="button" class="rounded border bg-white px-2 py-1" @click="downloadPrint(row,file)">{{ file.file_name }} · 固定版本 {{ file.revision }}</button></div>
+            <div v-for="target in row.print_split.targets" :key="target.contract_no" class="space-y-2 border-t border-sky-200 pt-2"><b>{{ target.contract_no }} · PO {{ target.customer_po || '未填写' }} · 产品 {{ target.product_quantity ?? '未记录' }}</b><p>交期 {{ target.due_date }}</p><p v-for="line in target.lines" :key="line.order_line_id">{{ row.lines.find(p => p.id === line.order_line_id)?.packaging_type }} · {{ line.quantity }} {{ row.lines.find(p => p.id === line.order_line_id)?.unit }}</p><div class="flex flex-wrap gap-2"><button v-for="file in target.files" :key="file.id" type="button" class="rounded border bg-white px-2 py-1" @click="downloadPrint(row,file)">下载子单印刷：{{ file.file_name }} · 固定版本 {{ file.revision }}</button></div></div>
+            <p>确认后子单可导出新增订单模板；原单减量按本拆单回执执行，不要把原数量再次导入。</p>
+            <div v-if="!internal && !readOnly && row.pending && !row.is_cancellation" class="space-y-2"><strong>原印刷已生产累计（包含已送、已收；无生产填 0）</strong><label v-for="line in row.lines" :key="line.id" class="flex flex-wrap items-center gap-2">{{ line.packaging_type }}<input v-model="produced[key(row)]![line.id]" type="number" min="0" step="0.0001" :aria-label="`${row.document_no} ${line.packaging_type}原印刷已生产数量`" :disabled="busy" class="h-9 w-32 rounded border bg-white px-2">{{ line.unit }} · 已生产最多 {{ row.print_split.print_changed === false ? line.before_quantity : line.quantity }}</label></div>
+          </section>
           <p v-if="row.reason" class="whitespace-pre-wrap break-words text-red-800">供应商异议：{{ row.reason }}</p>
           <p v-if="row.responded_at" class="text-slate-600">回应 {{ row.responded_by }} · {{ row.responded_at }}<span v-if="row.promised_date"> · 承诺 {{ row.promised_date }}</span></p>
           <details v-if="row.publication_history?.length" class="rounded-lg border border-slate-200 bg-white/70 p-3">

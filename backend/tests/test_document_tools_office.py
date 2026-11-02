@@ -358,6 +358,157 @@ def test_encrypted_office_real_password_handling(tmp_path, case):
     assert source.read_bytes() == decrypted.read_bytes()
 
 
+@pytest.mark.parametrize("case,suffix,operation", [("word-basic", ".doc", "word_to_pdf"), ("excel-basic", ".xls", "excel_to_pdf")])
+@pytest.mark.parametrize("corrected", [False, True])
+def test_legacy_normalization_keeps_print_options_for_final_export(tmp_path, monkeypatch, case, suffix, operation, corrected):
+    from pypdf import PdfWriter
+    native, _ = generate_sample(tmp_path / "native", case)
+    source = tmp_path / ("legacy" + suffix)
+    source.write_bytes(b"legacy-reader-test")
+    original_bytes = source.read_bytes()
+    calls = []
+
+    def render(path, output, options, work_dir, cancelled):
+        calls.append((Path(path), dict(options)))
+        if output.suffix in (".docx", ".xlsx"):
+            # Model the format reader without requiring an installed renderer.
+            output.write_bytes(native.read_bytes())
+        else:
+            if corrected:
+                assert Path(path).name == "corrected" + native.suffix
+                _, fresh = office._extract(path, {}, work_dir, lambda *_: None, cancelled)
+                assert any(c.display_text == "CORRECTED9988" for t in fresh.tables for c in t.cells)
+            else:
+                assert Path(path).name == "normalized" + native.suffix
+            writer = PdfWriter()
+            writer.add_blank_page(width=595, height=842)
+            writer.write(output)
+        return {}
+
+    monkeypatch.setattr(office, "render_office", render)
+    options = {"page_selection": "1", "sheets": ["订单明细"], "orientation": "landscape", "formula_mode": "formula"}
+    _, ir = office._extract(source, options, tmp_path, lambda *_: None, lambda: False)
+    if corrected:
+        cell = ir.tables[0].cells[0]
+        cell.value = cell.display_text = "CORRECTED9988"
+        cell.source.method, cell.resolution = "manual", "manually_confirmed"
+    result = office.convert_office(source, operation, options, tmp_path / "convert", lambda *_: None, lambda: False, ir=ir)
+    normalization_options = [opts for path, opts in calls[:-1]]
+    assert all(opts == {} for opts in normalization_options)
+    assert calls[-1][1]["page_selection"] == "1"
+    assert result.ir.engine_manifest["render_input"] == ("corrected_ooxml" if corrected else "normalized_legacy")
+    assert source.read_bytes() == original_bytes
+    if not corrected:
+        office.inspect_office(source, options, tmp_path / "inspect", lambda *_: None, lambda: False)
+        assert calls[-1][0].name == "normalized" + native.suffix
+
+
+@pytest.mark.parametrize("suffix", [".doc", ".xls"])
+def test_legacy_wrong_password_is_recoverable(tmp_path, monkeypatch, suffix):
+    import msoffcrypto
+    from types import SimpleNamespace
+    source = tmp_path / ("encrypted" + suffix)
+    source.write_bytes(b"legacy-encrypted-reader-test")
+    def wrong_key(**kwargs):
+        raise msoffcrypto.exceptions.InvalidKeyError("wrong password")
+    monkeypatch.setattr(msoffcrypto, "OfficeFile", lambda _: SimpleNamespace(is_encrypted=lambda: True, load_key=wrong_key))
+    with pytest.raises(ToolError) as missing:
+        office._normalize(source, {}, tmp_path, lambda: False)
+    assert missing.value.code == "PASSWORD_REQUIRED"
+    with pytest.raises(ToolError) as wrong:
+        office._normalize(source, {"password": "wrong"}, tmp_path, lambda: False)
+    assert wrong.value.code == "INVALID_PASSWORD"
+
+
+def test_runtime_requirements_allow_native_readers_without_office(monkeypatch):
+    monkeypatch.setattr(office, "office_executable", lambda: None)
+    office.require_conversion_runtime("word_to_excel", "docx")
+    office.require_conversion_runtime("excel_to_word", "xlsx")
+    office.require_conversion_runtime("pdf_to_word", "pdf")
+    with pytest.raises(ToolError) as missing:
+        office.require_conversion_runtime("word_to_pdf", "docx")
+    assert missing.value.code == "OFFICE_UNAVAILABLE"
+    monkeypatch.setattr(office, "office_executable", lambda: "office")
+    monkeypatch.setattr(office, "uno_python", lambda: None)
+    office.require_conversion_runtime("word_to_pdf", "docx")
+    office.require_conversion_runtime("word_to_pdf", "doc")
+    for operation, source_type in [("excel_to_pdf", "xlsx"), ("excel_to_word", "xls")]:
+        with pytest.raises(ToolError) as missing:
+            office.require_conversion_runtime(operation, source_type)
+        assert missing.value.code == "UNO_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("case", ["word-basic", "excel-basic"])
+def test_plain_working_copy_does_not_receive_original_password(tmp_path, monkeypatch, case):
+    from msoffcrypto.format.ooxml import OOXMLFile
+    source, _ = generate_sample(tmp_path, case)
+    encrypted = tmp_path / ("encrypted" + source.suffix)
+    with source.open("rb") as original, encrypted.open("wb") as output:
+        OOXMLFile(original).encrypt("fixture-password", output)
+    seen = []
+    def capture(path, output, options, *args):
+        seen.append(dict(options))
+        return {}
+    monkeypatch.setattr(office, "_render_office_in_profile", capture)
+    options = {"password": "fixture-password", "page_selection": "1", "secure_load": True}
+    office.render_office(encrypted, tmp_path / "encrypted.pdf", options, tmp_path, lambda: False)
+    plain = office._normalize(encrypted, options, tmp_path, lambda: False)
+    office.render_office(plain, tmp_path / "plain.pdf", options, tmp_path, lambda: False)
+    assert seen[0]["password"] == "fixture-password"
+    assert "password" not in seen[1]
+    assert seen[1]["page_selection"] == "1" and seen[1]["secure_load"] is True
+    assert options["password"] == "fixture-password"  # caller's options remain intact
+
+
+def test_cached_legacy_page_count_is_only_a_review_hint(tmp_path, monkeypatch):
+    import olefile
+    from types import SimpleNamespace
+    from contextlib import nullcontext
+    monkeypatch.setattr(olefile, "OleFileIO", lambda _: nullcontext(SimpleNamespace(get_metadata=lambda: SimpleNamespace(num_pages=33))))
+    ir = DocumentIR(source_type="docx", pages=[Page(page_index=i, display_page_number=i+1, width_pt=595, height_pt=842) for i in range(47)])
+    source = tmp_path / "legacy.doc"
+    office._legacy_pagination_report(source, ir, {"page_selection": "1-2"})
+    assert not ir.issues
+    office._legacy_pagination_report(source, ir, {})
+    assert ir.issues[0].code == "PAGE_COUNT_CHANGED"
+    assert "可能过期" in ir.issues[0].message
+    assert ir.engine_manifest["source_pagination"]["reference_may_be_stale"] is True
+    office._legacy_pagination_report(source, ir, {})
+    assert len(ir.issues) == 1
+
+
+def test_zero_line_height_keeps_source_and_text_but_requires_layout_review(tmp_path):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    source = tmp_path / "zero-spacing.docx"
+    document = Document()
+    for text in ("原文中的文字应保留", ""):
+        paragraph = document.add_paragraph(text)
+        spacing = OxmlElement("w:spacing")
+        spacing.set(qn("w:line"), "0")
+        spacing.set(qn("w:lineRule"), "auto")
+        paragraph._p.get_or_add_pPr().append(spacing)
+    document.add_paragraph("正常正文")
+    document.save(source)
+    before = source.read_bytes()
+
+    ir = office._extract_docx(source, {}, lambda *args: None, lambda: False)
+
+    assert source.read_bytes() == before
+    assert [block.text for block in ir.blocks] == ["原文中的文字应保留", "正常正文"]
+    assert ir.engine_manifest["zero_line_height_paragraphs"] == 2
+    assert [issue.code for issue in ir.issues] == ["WORD_ZERO_LINE_HEIGHT"]
+    assert ir.issues[0].severity == "warning"
+
+    ordinary = tmp_path / "ordinary.docx"
+    clean = Document()
+    clean.add_paragraph("正常正文").paragraph_format.line_spacing = 1
+    clean.save(ordinary)
+    ordinary_ir = office._extract_docx(ordinary, {}, lambda *args: None, lambda: False)
+    assert not any(issue.code == "WORD_ZERO_LINE_HEIGHT" for issue in ordinary_ir.issues)
+
+
 def run_legacy_smoke(folder):
     import json
     from pypdf import PdfReader

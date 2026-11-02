@@ -560,7 +560,7 @@ def action(db, user, identifier, payload, name, *, external=False, commit=True):
     return finish(db, user, payload, row, name, digest, external=external, commit=commit)
 
 
-def ship(db, user, identifier, payload: schema.Ship, *, commit=True, allow_shared_note=False):
+def ship(db, user, identifier, payload: schema.Ship, *, commit=True, allow_shared_note=False, source=None):
     user = locked_actor(db, user, payload.factory_id)
     row = access(db, user, payload.factory_id, identifier, external=True)
     supplier(db, user, row.factory_id, "carton_supplier:edit")
@@ -615,6 +615,8 @@ def ship(db, user, identifier, payload: schema.Ship, *, commit=True, allow_share
             request_line_id=paper.id, quantity=item.quantity, snapshot_json=pack(line_out(paper) | {
                 "pricing_kind": "FREE" if price == 0 else "CHARGEABLE", "customer_code": row.customer_code, "customer_name": row.customer_name,
                 "kind": row.kind, "request_no": row.request_no,
+                **({'source_file': {key: source[key] for key in ('filename', 'sha256', 'rows') if key in source},
+                    'original_source_material': source.get('delivery_materials', {}).get(paper.id, {})} if source else {}),
                 "file_manifest": [file for file in file_manifest if not file['line_id'] or file['line_id'] == paper.id],
                 "material_manifest": [file for file in snapshot(db, row)["material_manifest"] if file["line_id"] == paper.id]})))
     row.pricing_kind = "CHARGEABLE" if any(paper.unit_price > 0 for paper in papers.values()) else "FREE"

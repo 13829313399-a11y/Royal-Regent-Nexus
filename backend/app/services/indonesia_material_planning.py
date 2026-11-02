@@ -14,9 +14,10 @@ def missing_recipe_materials(order, product):
 
 @precise_decimals
 def sync_order_materials(ledger, payload):
-    """Append all pending recipe materials in one versioned, factory-locked command."""
+    """Synchronize selected scope, preserving old commands' append-only meaning."""
     change = OrderMaterialsSync.model_validate(payload)
     products = {(p.data['customer'], p.data['code']): p for p in ledger.rows('product')}
+    catalog = {m.id: m for m in ledger.rows('material')} if change.sync_procurement else {}
     pending, used_products, used_materials = [], {}, {}
     for order in ledger.rows('order'):
         data = order.data
@@ -24,13 +25,23 @@ def sync_order_materials(ledger, payload):
             continue
         product = products.get((data['customer'], data['item_no']))
         additions = missing_recipe_materials(order, product)
-        if not additions:
+        updates = {}
+        if product and change.sync_procurement:
+            for demand in data['demands']:
+                material = catalog.get(demand['material_id'])
+                days = material.data.get('procurement_days') if material else None
+                # A missing default must never clear a previously saved contract cycle.
+                if days is not None and (days != demand.get('procurement_days') or
+                        ((data.get('plan') or {}).get('required_date') and not demand.get('purchase_start'))):
+                    updates[material.id] = material
+        if not additions and not updates:
             continue
         require(product.data['unit'] == data['unit'], '货号单位与合同不一致，请先核对', 422)
         used_products[product.id] = product
         for recipe in additions:
             used_materials[recipe['material_id']] = ledger.get(recipe['material_id'], 'material')
-        pending.append((order, product, additions))
+        used_materials.update(updates)
+        pending.append((order, product, additions, updates))
     require(bool(pending), '当前范围已无待更新物料，请刷新清单', 409)
 
     def check_versions(refs, expected, label):
@@ -38,28 +49,40 @@ def sync_order_materials(ledger, payload):
         require(len(ids) == len(set(ids)) and set(ids) == set(expected), f'{label}范围已变化，请刷新后重试；本次未保存', 409)
         require(all(expected[ref.id].version == ref.expected_version for ref in refs), f'{label}已被更新，请刷新后重试；本次未保存', 409)
 
-    check_versions(change.orders, {order.id: order for order, _, _ in pending}, '合同')
+    check_versions(change.orders, {order.id: order for order, _, _, _ in pending}, '合同')
     check_versions(change.products, used_products, '货号')
-    check_versions(change.materials, used_materials, '新增物料')
+    check_versions(change.materials, used_materials, '待同步物料')
     prepared = []
     from app.services.indonesia_materials import view
-    for order, product, additions in pending:
+    for order, product, additions, updates in pending:
         data = deepcopy(order.data)
         required_date = (data.get('plan') or {}).get('required_date')
+        def purchase_date(days):
+            try:
+                return (date.fromisoformat(required_date) - timedelta(days=days)).isoformat() if required_date and days is not None else None
+            except (OverflowError, ValueError):
+                require(False, f"合同 {data['contract_no']} 的采购日期超出范围，请先核对周期；本次未保存", 422)
+        for demand in data['demands']:
+            if demand['material_id'] in updates:
+                days = updates[demand['material_id']].data['procurement_days']
+                demand.update(procurement_days=days, purchase_start=purchase_date(days))
         for recipe in additions:
             material = used_materials[recipe['material_id']]
             days = material.data.get('procurement_days')
-            try:
-                purchase_start = (date.fromisoformat(required_date) - timedelta(days=days)).isoformat() if required_date and days is not None else None
-            except (OverflowError, ValueError):
-                require(False, f"合同 {data['contract_no']} 的采购日期超出范围，请先核对周期；本次未保存", 422)
             computed = decimal_text(number(data['quantity']) * number(recipe['usage']))
             data['demands'].append(dict(id=str(uuid4()), material_id=material.id,
                 code=material.data['code'], name=material.data['name'], unit=material.data['unit'],
                 quantity=computed, computed_quantity=computed, override_reason='',
-                procurement_days=days, purchase_start=purchase_start, material_snapshot=view(material),
+                procurement_days=days, purchase_start=purchase_date(days), material_snapshot=view(material),
                 recipe_snapshot=dict(product_id=product.id, product_version=product.version, usage=recipe['usage'])))
         data['material_sync_reason'] = f'批量补入 {len(additions)} 种新增物料'
+        if change.sync_procurement:
+            data['material_sync_reason'] += f'；同步 {len(updates)} 项已有物料采购周期'
+            if data.get('planning_snapshot'):
+                snapshot = data['planning_snapshot'].setdefault('materials', {})
+                for material_id in set(updates) | {r['material_id'] for r in additions}:
+                    material = used_materials[material_id]
+                    snapshot[material_id] = dict(version=material.version, procurement_days=material.data.get('procurement_days'))
         prepared.append((order, data))
     # All versions/calculations validate before the first write. The command owns rollback/replay.
     for order, data in prepared:

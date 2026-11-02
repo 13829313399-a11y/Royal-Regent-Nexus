@@ -8,6 +8,19 @@ const customers = [
   { id: 'B', customer_code: 'OLD', customer_name: '旧客户', status: 'INACTIVE' },
 ] as CartonCustomerResponse[]
 describe('customer selection', () => {
+  it('marks business names without merging same-name warehouse customers', async () => {
+    const business = { ...customers[0]!, id: 'BIZ', customer_code: 'BIZ-1', business_customer_code: 'dickie', business_customer_name: 'Dickie' }
+    const wrapper = mount(Picker, { props: { modelValue: '', customers: [customers[0]!, business], canCreate: true } })
+    await wrapper.get('input').setValue('迪奇')
+    const choices = wrapper.findAll('[aria-label="选择客户 迪奇"]')
+    expect(choices).toHaveLength(2)
+    expect(choices[0]!.text()).not.toContain('来自业务')
+    expect(choices[1]!.text()).toContain('来自业务')
+    await wrapper.get('input').trigger('keydown', { key: 'Enter' })
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([''])
+    await choices[1]!.trigger('click')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual(['BIZ-1'])
+  })
   it('restores unfinished search text independently of the selected customer identity', async () => {
     const wrapper = mount(Picker, { props: { modelValue: '', searchText: '客户资料待核对', customers, canCreate: false } })
     expect(wrapper.get<HTMLInputElement>('input').element.value).toBe('客户资料待核对')

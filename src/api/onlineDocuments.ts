@@ -49,5 +49,6 @@ export const onlineDocuments = {
   releaseUnopened: async (factory: string, id: string) => (await http.post(`${root}/${id}/release-unopened`, {}, { params: params(factory) })).data,
   recipients: async (factory: string) => (await http.get<{ users: { id: string; display_name: string; department: string; organization?: string; epoch: number }[] }>(`${root}/recipients`, { params: params(factory) })).data.users,
   share: async (factory: string, id: string, grants: DocumentGrant[], version: string) => (await http.put<OnlineDocument>(`${root}/${id}/grants`, { grants, version }, { params: params(factory) })).data,
+  prepareSharing: async (factory: string, id: string, grants: DocumentGrant[], version: string) => (await http.post<{ ready: boolean }>(`${root}/${id}/prepare-sharing`, { grants, version }, { params: params(factory), timeout: 45_000 })).data,
   download: async (factory: string, id: string) => (await http.get<Blob>(`${root}/${id}/download`, { params: params(factory), responseType: 'blob', timeout: 300_000 })).data,
 }

@@ -179,6 +179,7 @@ QC_INSPECTION_PERMISSION_SCOPE_POLICIES: dict[str, ScopePolicy] = {
         "qc_inspection:schedule_write",
         "qc_inspection:order_write",
         "qc_inspection:result_write",
+        "qc_inspection:review",
         "qc_inspection:problem_write",
         "qc_inspection:report_export",
         "qc_inspection:report_rename_preview",
@@ -286,6 +287,9 @@ ROLE_SCOPE_POLICIES.update(
 
 
 def permission_scope_policy(permission_code: str) -> ScopePolicy:
+    if permission_code in {'carton_asset:read','carton_asset:manage','carton_asset:confirm'}:
+        return ScopePolicy(('sales-business','pmc-warehouse','carton','*'),
+            guidance='部门原件权限；供应商同时校验东康服务范围，确认权限不授予供应商，不等于QC放行')
     if permission_code.startswith('indonesia_material:'):
         action = permission_code.partition(':')[2]
         departments = ('sales-business', 'pmc-warehouse') if action in {'read', 'receipt_confirm'} else ('sales-business',)

@@ -29,10 +29,41 @@ function currentUser() {
     department_scopes: [],
     grants: [],
     force_password_change: false,
+    internal_member: true,
   }
 }
 
 describe('presence heartbeat lifecycle', () => {
+  it('ignores suppliers and unchanged session refreshes, but handles eligibility changes', async () => {
+    const pinia = createPinia(); setActivePinia(pinia)
+    const auth = useAuthStore()
+    auth.applySession({ ...currentUser(), internal_member: false, permissions: ['carton_supplier:read', 'carton_asset:read'] })
+    const wrapper = mount(Host, { global: { plugins: [pinia] } })
+    await flushPromises(); window.dispatchEvent(new Event('focus'))
+    expect(sendHeartbeat).not.toHaveBeenCalled()
+    auth.applySession(currentUser()); await flushPromises()
+    expect(sendHeartbeat).toHaveBeenCalledTimes(1)
+    for (let i = 0; i < 4; i++) { auth.applySession(currentUser()); await flushPromises() }
+    expect(sendHeartbeat).toHaveBeenCalledTimes(1)
+    auth.applySession({ ...currentUser(), internal_member: false }); await flushPromises()
+    vi.advanceTimersByTime(120_000); await flushPromises()
+    expect(sendHeartbeat).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('does not let an old identity request schedule a new timer', async () => {
+    let finish!: () => void
+    sendHeartbeat.mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve }))
+    const pinia = createPinia(); setActivePinia(pinia)
+    const auth = useAuthStore(); auth.applySession(currentUser())
+    const wrapper = mount(Host, { global: { plugins: [pinia] } })
+    auth.clearSession(); auth.applySession(currentUser()); await flushPromises()
+    vi.advanceTimersByTime(30_000)
+    finish(); await flushPromises()
+    vi.advanceTimersByTime(30_000); await flushPromises()
+    expect(sendHeartbeat).toHaveBeenCalledTimes(3)
+    wrapper.unmount()
+  })
   beforeEach(() => {
     vi.useFakeTimers()
     vi.spyOn(Math, 'random').mockReturnValue(0)

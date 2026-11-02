@@ -25,6 +25,35 @@ vi.mock('@/lib/http', () => ({
 }))
 
 describe('installUnauthorizedSessionHandler', () => {
+  it('skips explicit collaboration ineligibility and coalesces other concurrent forbidden responses', async () => {
+    const { installUnauthorizedSessionHandler } = await import('../sessionExpiryHandler')
+    const pinia = createPinia(), auth = useAuthStore(pinia)
+    auth.applySession(user)
+    let finish!: (value: boolean) => void
+    const refresh = vi.spyOn(auth, 'refreshSession').mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    installUnauthorizedSessionHandler({} as never, pinia)
+    httpMock.state.forbiddenHandler?.({ response: { data: { detail: { code: 'COLLABORATION_INELIGIBLE' } } } })
+    expect(refresh).not.toHaveBeenCalled()
+    for (let i = 0; i < 5; i++) httpMock.state.forbiddenHandler?.({ config: { url: '/protected' } })
+    expect(refresh).toHaveBeenCalledTimes(1)
+    finish(true); await Promise.resolve(); await Promise.resolve()
+    httpMock.state.forbiddenHandler?.({ config: { url: '/protected' } })
+    expect(refresh).toHaveBeenCalledTimes(2)
+    finish(true)
+  })
+  it('starts a new refresh after logout and login of the same account', async () => {
+    const { installUnauthorizedSessionHandler } = await import('../sessionExpiryHandler')
+    const pinia = createPinia(), auth = useAuthStore(pinia)
+    auth.applySession(user)
+    const completions: ((value: boolean) => void)[] = []
+    const refresh = vi.spyOn(auth, 'refreshSession').mockImplementation(() => new Promise(resolve => { completions.push(resolve) }))
+    installUnauthorizedSessionHandler({} as never, pinia)
+    httpMock.state.forbiddenHandler?.({ config: { url: '/protected' } })
+    auth.clearSession(); auth.applySession(user)
+    httpMock.state.forbiddenHandler?.({ config: { url: '/protected' } })
+    expect(refresh).toHaveBeenCalledTimes(2)
+    completions.forEach(finish => finish(true))
+  })
   const user = {
     id: 'user-engineer',
     username: 'engineer',

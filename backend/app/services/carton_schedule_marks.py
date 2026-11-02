@@ -3,7 +3,7 @@ import json
 from collections import defaultdict
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, or_
 
 from app.models.carton_procurement import CartonImportBatch
 from app.services import carton_mark_assets as assets, carton_mark_sharing as sharing
@@ -104,7 +104,57 @@ def workspace(db, user, factory, batch_id):
         except HTTPException:
             restricted.append(dict(source_sheet=row.get('source_sheet') or '', source_row=row.get('source_row') or 0,
                                    status='RESTRICTED', asset_ids=[]))
+    from app.services import carton_asset_access as ownership
+    if ownership.enabled():
+        return quick_workspace(db,user,factory,batch_id,permitted,restricted)
     files = sharing.filter_internal(db, user, assets.list_assets(db, factory))
     result, files = project(permitted, [row for rows in sources.values() for row in rows],
                             assets.available_orders(db, factory), files)
+    from app.services.carton_materials import folders, folder_id, output, resolve_target, authorize
+    from app.schemas.carton_materials import Target
+    material_folders = folders(db, factory)
+    indexed = {(row.get('source_sheet'), row.get('source_row')): row for row in permitted}
+    for item in result:
+        row = indexed.get((item['source_sheet'], item['source_row']))
+        if not row or not row.get('schedule_customer_code'): continue
+        try:
+            target = resolve_target(db, factory, 'warehouse', Target(kind='SCHEDULE', id=batch_id,
+                sheet=item['source_sheet'], row=item['source_row']))
+            identifier = folder_id(factory, target)
+            if identifier in material_folders: authorize(db, user, factory, 'warehouse', material_folders[identifier])
+        except HTTPException: continue
+        if identifier in material_folders:
+            item.update(materials_folder_id=identifier, materials_status=output(material_folders[identifier], 'warehouse')['status_label'])
     return dict(factory_id=factory, batch_id=batch_id, rows=result + restricted, assets=files)
+
+
+def quick_workspace(db,user,factory,batch_id,rows,restricted):
+    """One old-library projection; never count order-materials originals."""
+    from app.models.carton_mark import CartonMarkAsset
+    from app.services import carton_asset_access as access,carton_asset_targets as targets,carton_mark_asset_workflow as lifecycle
+    selected={};matches=defaultdict(dict)
+    for asset in db.scalars(select(CartonMarkAsset).where(or_(CartonMarkAsset.factory_id==factory,CartonMarkAsset.owner_department=='supplier'),
+            CartonMarkAsset.is_archived.is_(False),CartonMarkAsset.recognition_source!='materials_folder',
+            CartonMarkAsset.asset_purpose=='MATERIAL',CartonMarkAsset.owner_department.is_not(None))):
+        state=lifecycle.current(db,asset)
+        if state.status not in {'DRAFT','PENDING','READY'} or not access.visible(db,user,asset,view_factory=factory):continue
+        linked=targets.valid(db,asset,factory)
+        for row in rows:
+            row_key=(row.get('source_sheet',''),row.get('source_row',0))
+            value=dict(customer_code=row.get('schedule_customer_code',''),contract_no=row.get('contract_no',''),
+                item_no=row.get('item_no',''),customer_po=effective_po(row))
+            if any((target['kind']=='SCHEDULE' and target['id']==batch_id and target['sheet']==row_key[0] and target['row']==row_key[1])
+                    or (target['kind']=='REGULAR' and target['identity']==targets.identity(value)
+                        and sum(targets.identity(dict(customer_code=r.get('schedule_customer_code',''),contract_no=r.get('contract_no',''),
+                            item_no=r.get('item_no',''),customer_po=effective_po(r)))==target['identity'] for r in rows)==1) for target in linked):
+                matches[row_key][asset.id]=state.status
+                selected[asset.id]=dict(id=asset.id,file_name=asset.file_name,usage_status=state.status)
+    result=[]
+    for row in rows:
+        values=matches[(row.get('source_sheet',''),row.get('source_row',0))]
+        count=len(values);ready=sum(x=='READY' for x in values.values());pending=sum(x=='PENDING' for x in values.values())
+        result.append(dict(source_sheet=row.get('source_sheet',''),source_row=row.get('source_row',0),
+            status='UPLOADED' if count else 'MISSING',asset_ids=list(values),has_materials=bool(count),
+            confirmed_count=ready,pending_count=pending,draft_count=count-ready-pending,
+            status_label=('有资料 · 已确认' if ready==count else '有资料 · 部分已确认' if ready else '有资料 · 待确认' if pending else '有资料 · 待处理') if count else '暂无资料'))
+    return dict(factory_id=factory,batch_id=batch_id,source_policy='ASSET_V1',rows=result+restricted,assets=list(selected.values()))

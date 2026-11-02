@@ -23,14 +23,8 @@ let timer: ReturnType<typeof setTimeout> | null = null
 let inFlight = false
 let disposed = false, controller = new AbortController(), generation = 0
 const auth = useAuthStore()
-const eligible = computed(() => {
-  const user = auth.currentUser; if (!user || user.identity?.employment_status === 'left') return false
-  const formal = user.identity?.active_assignments_summary.some(a => a.org_unit_id !== 'group')
-  if (formal) return true
-  if (user.permissions.length && user.permissions.every(p => p.startsWith('carton_supplier:'))) return false
-  return user.identity?.identity_mode !== 'v2' || !!user.permissions.length
-})
-const owner = computed(() => `${auth.currentUser?.id ?? ''}:${auth.currentUser?.identity?.employment_epoch ?? 0}:${auth.currentUser?.identity?.effective_context_key ?? ''}`)
+const eligible = computed(() => auth.currentUser?.internal_member === true)
+const owner = computed(() => `${auth.currentUser?.id ?? ''}:${auth.currentUser?.identity?.employment_epoch ?? 0}:${auth.currentUser?.identity?.effective_context_key ?? ''}:${eligible.value}`)
 watch(owner, () => { generation++; controller.abort(); controller = new AbortController(); inFlight = false; summary.value = null; drawerOpen.value = false; resume() })
 
 const onlineCount = computed(() => summary.value?.state_counts.online ?? null)

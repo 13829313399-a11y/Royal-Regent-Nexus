@@ -39,6 +39,8 @@ export interface WeeklyCheckRow {
   manualOrdered?: boolean
   orderType?: string
   sourceReference?: string
+  sourceItemNo?: string
+  splitSource?: string
   sourceLocation?: string
   customerDueDate?: string
   dateReviewRequired?: boolean

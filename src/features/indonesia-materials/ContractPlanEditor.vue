@@ -6,7 +6,7 @@ import { useMaterialDraft } from './useDraft'
 import { recordDraftId, recordRef, restoreRecord } from './draftPersistence'
 import { setNumberText } from './forms'
 import { focusFollowup } from './focusFollowup'
-import { planningMaterials } from './planning'
+import { planningMaterials, procurementDefault } from './planning'
 const emit = defineEmits<{ select: [id: string] }>()
 const ws = useMaterials()
 const targetReady = ref(false)
@@ -24,9 +24,10 @@ function loadLatest() {
   const order = ws.record(editing.value?.id ?? '')
   if (!order || !form.value || !catalog.value?.product || catalog.value.materials.some(m => !m) || ws.locked || !ws.canWrite) return
   const previous: Data[] = form.value.materials
+  const board = ws.board.find(row => row.id === order.id)
   form.value = { ...form.value, sync_materials: true, product_id: catalog.value.product.id, product_version: catalog.value.product.version,
     materials: catalog.value.materials.map(m => ({ material_id: m!.id, expected_version: m!.version,
-      procurement_days: previous.find(entry => entry.material_id === m!.id)?.procurement_days ?? m!.data.procurement_days ?? '' })) }
+      procurement_days: previous.find(entry => entry.material_id === m!.id)?.procurement_days ?? (board ? procurementDefault(board, m!) : m!.data.procurement_days ?? '') })) }
   editing.value = order
 }
 const draft = useMaterialDraft(() => form.value, {
@@ -50,7 +51,7 @@ async function open(id: string) {
   const opened = await draft.openRecord(recordDraftId('planning', 'edit', id), () => {
     editing.value = order
     form.value = { product_id: product.id, product_version: product.version, sync_materials: true, daily_capacity: product.data.daily_capacity ?? '', transport_days: product.data.transport_days ?? 25,
-      materials: materials.map(material => ({ material_id: material!.id, expected_version: material!.version, procurement_days: material!.data.procurement_days ?? '' })) }
+      materials: materials.map(material => ({ material_id: material!.id, expected_version: material!.version, procurement_days: procurementDefault(board, material!) })) }
   })
   await nextTick()
   if (opened) { emit('select', id); await nextTick(); targetReady.value = true; await nextTick(); focusFollowup(host.value) }

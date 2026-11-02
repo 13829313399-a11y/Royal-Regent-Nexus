@@ -169,13 +169,19 @@ def main(request):
             display = {}
             for name in included:
                 sheet = sheets.getByName(name)
-                cursor = sheet.createCursor()
-                cursor.gotoEndOfUsedArea(True)
-                used = cursor.getRangeAddress()
-                if (used.EndColumn+1)*(used.EndRow+1) <= 250000:
-                    values = {}
-                    for row in range(used.EndRow+1):
-                        for column in range(used.EndColumn+1):
+                native_ranges = options.get("_native_ranges", {}).get(name)
+                if native_ranges:
+                    regions = [sheet.getCellRangeByName(coords).getRangeAddress() for coords in native_ranges]
+                else:
+                    cursor = sheet.createCursor()
+                    cursor.gotoEndOfUsedArea(True)
+                    regions = [cursor.getRangeAddress()]
+                values = {}
+                for used in regions:
+                    if (used.EndColumn-used.StartColumn+1)*(used.EndRow-used.StartRow+1) > 250000:
+                        continue
+                    for row in range(used.StartRow, used.EndRow+1):
+                        for column in range(used.StartColumn, used.EndColumn+1):
                             cell = sheet.getCellByPosition(column, row)
                             if cell.getFormula():
                                 kind = cell.getType().value
@@ -183,6 +189,7 @@ def main(request):
                                 values[f"{row+1}:{column+1}"] = {"display": cell.getString(), "formula": cell.getFormula(), "error": cell.getError(),
                                                                 "value_kind": "number" if numeric_result else "text",
                                                                 "value": cell.getValue() if numeric_result else cell.getString()}
+                if values:
                     display[name] = values
             result["display_cells"] = display
             graphics = []

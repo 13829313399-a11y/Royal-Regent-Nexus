@@ -84,7 +84,7 @@ function imageFailed(id: string) {
           <aside class="carton-guide-sidebar flex shrink-0 flex-col border-b border-slate-200 bg-slate-50/70 lg:w-60 lg:border-b-0 lg:border-r">
             <label class="relative m-3 block">
               <Search class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
-              <input v-model="query" type="search" aria-label="查找教程步骤" :placeholder="isSupplier ? '查找：接单、送货、月结…' : '查找：排期、入库、月结…'" class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs outline-none focus:border-teal-500">
+              <input v-model="query" type="search" aria-label="查找教程步骤" :placeholder="isSupplier ? '查找：接单、送货、月结…' : '查找：导入、追加、入库…'" class="h-9 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs outline-none focus:border-teal-500">
             </label>
             <nav aria-label="使用教程目录" class="flex gap-1 overflow-x-auto px-3 pb-3 lg:min-h-0 lg:flex-1 lg:flex-col lg:gap-3 lg:overflow-y-auto">
               <div v-for="group in groups" :key="group" class="flex shrink-0 gap-1 lg:block">
@@ -101,8 +101,8 @@ function imageFailed(id: string) {
             <section v-if="!query.trim()" class="rounded-xl border border-teal-200 bg-white p-4 sm:p-5">
               <p class="text-[11px] font-bold text-teal-700">先看完整顺序</p>
               <h2 class="mt-1 text-base font-bold text-slate-950">{{ isSupplier ? '先接单，再发货，按仓库反馈核对月结' : '上线只做一次，日常按实际业务走' }}</h2>
-              <p class="mt-2 text-sm leading-6 text-slate-600">{{ isSupplier ? '先确认目的厂区和已生成采购版本，再确认接单及交期。实际发货登记原送货单；仓库反馈实收后，双方在同一份月结版本上核对与确认。' : '首次启用：基础资料 → 期初库存 → 按需要衔接历史订单。之后每天先看工作看板；有新排期就核对，有采购就落单，有到货就验收，有领料就登记出库。' }}</p>
-              <figure class="mt-4"><img :src="isSupplier ? '/carton-guide/supplier-workflow.svg' : '/carton-guide/workflow.svg'" :alt="isSupplier ? '供应商操作顺序：查看采购、确认接单、登记真实发货、查看仓库反馈、核对同一月结版本' : '纸箱操作顺序：首次维护基础资料、期初库存与可选历史订单；日常看板、排期、落单、供应商接单送货、验收入库和领料出库'" width="1080" height="545" class="h-auto w-full rounded-lg border border-slate-100" @error="imageFailed('workflow')"><figcaption class="mt-2 text-[11px] leading-5 text-slate-500">配图为操作示意及演示数据；每个步骤只有在真实业务发生时才办理。</figcaption></figure>
+              <p class="mt-2 text-sm leading-6 text-slate-600">{{ isSupplier ? '先选厂区，再接单和登记真实发货；查看仓库验收结果，月底核对送货、退货和应结金额。本月对账只读，无需系统内确认。' : '首次启用：基础资料 → 期初库存 → 按需要衔接历史订单。之后每天先看工作看板；有新排期就核对，有采购就落单，有到货就验收，有领料就登记出库。' }}</p>
+              <figure class="mt-4"><img :src="isSupplier ? '/carton-guide/supplier-workflow.svg' : '/carton-guide/workflow.svg'" :alt="isSupplier ? '供应商操作顺序：查看采购、确认接单、登记真实发货、查看仓库反馈、核对本月送货、退货和应结' : '纸箱操作顺序：首次维护基础资料、期初库存与可选历史订单；日常看板、排期、落单、供应商接单送货、验收入库和领料出库'" width="1080" height="470" class="h-auto w-full rounded-lg border border-slate-100" @error="imageFailed('workflow')"><figcaption class="mt-2 text-[11px] leading-5 text-slate-500">配图为操作示意及演示数据；每个步骤只有在真实业务发生时才办理。</figcaption></figure>
               <div v-if="!isSupplier" class="mt-4 grid gap-2 text-xs leading-6 sm:grid-cols-3">
                 <p class="rounded-lg bg-teal-50 px-3 py-2"><b class="text-teal-900">仓库落单</b><br>确认订单并锁定，自动生成首次采购。</p>
                 <p class="rounded-lg bg-sky-50 px-3 py-2"><b class="text-sky-900">供应商送货</b><br>接单并登记送货，形成仓库待核实。</p>
@@ -120,7 +120,7 @@ function imageFailed(id: string) {
               </header>
               <div class="space-y-4 p-4 sm:p-5">
                 <figure v-if="section.image">
-                  <img :src="section.image.src" :alt="section.image.alt" width="1080" height="510" class="h-auto w-full rounded-lg border border-slate-100" @error="imageFailed(section.id)">
+                  <img :src="section.image.src" :alt="section.image.alt" width="1080" height="470" class="h-auto w-full rounded-lg border border-slate-100" @error="imageFailed(section.id)">
                   <figcaption class="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] leading-5 text-slate-500"><span>{{ section.image.caption }}</span><a :href="section.image.src" target="_blank" rel="noopener" class="carton-guide-tools inline-flex items-center gap-1 font-semibold text-teal-700 hover:underline" :aria-label="`查看大图：${section.title}`">查看大图<ExternalLink class="size-3" aria-hidden="true" /></a></figcaption>
                   <p v-if="failedImages.includes(section.id)" role="alert" class="mt-2 text-xs text-amber-800">这张示意图未能加载，可刷新页面重试；下面的操作说明仍可阅读。</p>
                 </figure>
@@ -147,7 +147,7 @@ function imageFailed(id: string) {
         </div>
 
         <footer class="carton-guide-tools flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-white px-4 py-3 text-[11px] text-slate-500 sm:px-6">
-          <span>共 {{ sections.length }} 个步骤 · 有错误先查原因，结果不确定先查台账</span>
+          <span>共 {{ sections.length }} 个主题 · 有错误先查原因，结果不确定先查台账</span>
           <button type="button" class="inline-flex items-center gap-1 font-semibold text-teal-700 sm:hidden" @click="printGuide"><Printer class="size-3.5" aria-hidden="true" />打印 / 保存 PDF</button>
           <button type="button" class="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold text-slate-600" @click="emit('close')">返回当前工作</button>
         </footer>

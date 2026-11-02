@@ -15,6 +15,7 @@ const customerOrderApiMock = vi.hoisted(() => ({
   exportHuaxingMappedBatch: vi.fn(),
   previewMappedBatch: vi.fn(),
   exportMappedBatch: vi.fn(),
+  synchronizeWarehouseSchedule: vi.fn(),
 }))
 const customerOrderLedgerApiMock = vi.hoisted(() => ({
   capabilities: vi.fn(),
@@ -51,6 +52,43 @@ describe('customer order center static frontend', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetLedgerApi()
+    customerOrderApiMock.synchronizeWarehouseSchedule.mockResolvedValue({ batch_id: 'warehouse-retry', duplicate: false, message: '排期已自动同步到纸箱仓库' })
+  })
+  it('keeps a failed automatic handoff visible and retries its exact schedule, discarding results after a factory change', async () => {
+    customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce({
+      customer_code: '360', factory_id: 'huakang-a', preview_fingerprint: 'sync-retry',
+      po_file_count: 1, po_file_names: ['po.pdf'], po_file_name: 'po.pdf',
+      schedule_file_name: 'schedule.xlsx', output_file_name: 'new.xlsx',
+      input_template: '360', target_template: 'unified',
+      summary: { total: 0, valid: 0, warning: 0, blocked: 0 }, rows: [], warnings: [],
+      warehouse_sync: { status: 'ERROR', message: '纸箱客户尚未维护' },
+    })
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: { activeSection: 'import', factoryId: 'huakang-a', factoryName: '华康A' },
+    })
+    await wrapper.get('[data-testid="customer-choice-360"]').trigger('click')
+    const inputs = wrapper.findAll('input[type="file"]')
+    const po = new File(['po'], 'po.pdf')
+    const schedule = new File(['schedule'], 'schedule.xlsx')
+    for (const [index, file] of [po, schedule].entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await wrapper.findAll('button').find(b => b.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="warehouse-schedule-sync"]').text()).toContain('纸箱客户尚未维护')
+    expect(customerOrderApiMock.synchronizeWarehouseSchedule).not.toHaveBeenCalled()
+    let finish!: (value: unknown) => void
+    customerOrderApiMock.synchronizeWarehouseSchedule.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    await wrapper.get('[data-testid="warehouse-schedule-sync"] button').trigger('click')
+    expect(customerOrderApiMock.synchronizeWarehouseSchedule).toHaveBeenLastCalledWith('360', schedule, 'huakang-a', 'UPLOADED', expect.any(AbortSignal))
+    const signal = customerOrderApiMock.synchronizeWarehouseSchedule.mock.calls.at(-1)![4] as AbortSignal
+    await wrapper.setProps({ factoryId: 'huakang-d', factoryName: '华康D' })
+    expect(signal.aborted).toBe(true)
+    finish({ batch_id: 'old-scope', duplicate: false, message: '旧厂区已同步' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="warehouse-schedule-sync"]').exists()).toBe(false)
+    wrapper.unmount()
   })
   it('registers the dedicated full-page route before the generic module route', () => {
     const orderRouteIndex = routerSource.indexOf("path: '/modules/sales-business/po-schedule-intake'")
@@ -404,6 +442,7 @@ describe('customer order center static frontend', () => {
         : factoryId === 'huakang-d'
           ? 'HEYUAN_BUSINESS_UNIFIED_HUAKANG_D_DISNEY_V1' : 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
     const preview = {
+      warehouse_sync: { status: 'SUCCESS', batch_id: 'warehouse-source', message: '上传排期已同步' },
       customer_code: customerCode, factory_id: factoryId, preview_fingerprint: `${factoryId}-fingerprint`,
       po_file_count: 1, po_file_names: ['Disney.pdf'], po_file_name: 'Disney.pdf',
       schedule_file_name: 'schedule.xlsx', output_file_name: 'disney-new.xlsx',
@@ -428,6 +467,7 @@ describe('customer order center static frontend', () => {
     }
     customerOrderApiMock.previewMappedBatch.mockResolvedValueOnce(preview)
     customerOrderApiMock.exportMappedBatch.mockResolvedValueOnce({
+      warehouseSync: { status: 'SUCCESS', batch_id: 'warehouse-final', message: '最终排期已同步' },
       blob: new Blob(['xlsx']), fileName: 'disney-new.xlsx', passwordRequired: false,
     })
     const wrapper = mount(CustomerOrderCenterWorkspace, {
@@ -446,6 +486,8 @@ describe('customer order center static frontend', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('解析并进入预览'))!.trigger('click')
     await flushPromises()
     expect(customerOrderApiMock.previewMappedBatch).toHaveBeenLastCalledWith(customerCode, [po], schedule, expect.any(String), factoryId)
+    expect(wrapper.get('[data-testid="warehouse-schedule-sync"]').text()).toContain('上传排期已同步')
+    expect(customerOrderApiMock.synchronizeWarehouseSchedule).not.toHaveBeenCalled()
     await wrapper.setProps({ activeSection: 'preview' })
     if (customerCode === 'ubtech') {
       await wrapper.get('[data-testid="open-field-resolution"]').trigger('click')
@@ -461,6 +503,8 @@ describe('customer order center static frontend', () => {
       customerCode, [po], schedule, expect.any(String), 'disney-new.xlsx', factoryId,
       [], `${factoryId}-fingerprint`, '', [],
     )
+    expect(wrapper.get('[data-testid="warehouse-schedule-sync"]').text()).toContain('最终排期已同步')
+    expect(customerOrderApiMock.synchronizeWarehouseSchedule).not.toHaveBeenCalled()
     await wrapper.setProps({ activeSection: 'schedule' })
     await flushPromises()
     expect(wrapper.get('[data-testid="customer-order-ledger"]').text()).toContain('当前筛选范围没有订单记录。')

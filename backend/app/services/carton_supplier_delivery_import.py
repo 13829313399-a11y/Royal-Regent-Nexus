@@ -14,6 +14,7 @@ from app.schemas.carton_supplier_portal import ShipmentCreate, DeliveryRowSelect
 from app.services import carton_supplier_portal as portal
 from app.services import carton_supplier_receipt_link as receipt_link
 from app.services import carton_supplier_manual_evidence as manual_evidence
+from app.services import carton_delivery_import_special as special_import
 from app.services.carton_material_identity import dimension_unit, material_conflicts
 from app.services.carton_procurement_imports import _dongkang_identity, _parse_delivery_spreadsheet
 
@@ -62,7 +63,8 @@ def _row_selections(raw):
     try:
         if not isinstance(raw, list) or len(raw) > MAX_IMPORT_ROWS:
             raise ValueError()
-        values = [DeliveryRowSelection.model_validate(item).model_dump() for item in raw]
+        # New optional typed fields must not change legacy retry fingerprints.
+        values = [DeliveryRowSelection.model_validate(item).model_dump(exclude_defaults=True) for item in raw]
         if len({(item["source_sheet"], item["source_row"]) for item in values}) != len(values):
             raise ValueError()
         return sorted(values, key=lambda item: (item["source_sheet"], item["source_row"]))
@@ -96,6 +98,8 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
     # Candidate identities and demand are still read freshly under its locks.
     rows = _parse_source_rows(filename, content, selections) if _parsed_rows is None else _parsed_rows
     workspaces = {factory: portal.workspace(db, user, factory) for factory in factories}
+    from app.services import carton_special_requests as special
+    special_orders = {factory: special.workspace(db, user, factory, external=True)['items'] for factory in factories}
     # One paper can have ordinary and B demand. Preserve both explicit source
     # identities; never merge their quotas or infer a replacement responsibility.
     for workspace in workspaces.values():
@@ -116,6 +120,7 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
             "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "delivered_quantity")}
         item["unit"] = "个"
         item["unit_price"] = source_row.get("unit_price")
+        item["unit_price_provided"] = bool(source_row.get("unit_price_provided"))
         item.update(order_no="", child_no="", order_line_id="", issue_id="", order_revision=0, candidates=[], status="BLOCKED", reason="")
         group["rows"].append(item)
         if factory not in factories:
@@ -138,6 +143,14 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
         orders = [order for order in workspaces[factory]["orders"]
             if _same_text(order["contract_no"], source_row["contract_no"])
             and _same_text(order["item_no"], source_row["item_no"])] if source_row.get("contract_no") else []
+        selected = chosen.get((item['source_sheet'], item['source_row']))
+        typed = special_import.matches(source_row, special_orders[factory])
+        if typed or (not orders and str(source_row.get('contract_no') or '').strip().upper().startswith('SP-')):
+            if orders and typed:
+                item['reason'] = '原单号同时对应正式合同与样板或杂单，请核对供应商原单'
+            else:
+                special_import.match_row(item, source_row, typed, selected)
+            continue
         if not orders:
             if all(source_row.get(key) not in (None, "", "待复核")
                    for key in ("packaging_type", "paper_quality", "specification")):
@@ -158,6 +171,9 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
             "responsibility": order.get("responsibility")} for order, line in candidates] if len(candidates) > 1 else []
         selected = chosen.get((item["source_sheet"], item["source_row"]))
         if selected:
+            if selected.get('source_kind', 'REGULAR') != 'REGULAR':
+                item['reason'] = '所选订单类型与当前原单不一致'
+                continue
             candidates = [(order, line) for order, line in candidates if line["id"] == selected["order_line_id"] and order["issue_id"] == selected["issue_id"]]
             if len(candidates) != 1:
                 item["reason"] = "所选订单不在同厂区、同合同货号及纸品的有效候选中"
@@ -225,6 +241,10 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
                 continue
             shipment_exists = bool(db.scalar(select(SupplierShipment.id).where(SupplierShipment.factory_id == factory,
                 SupplierShipment.delivery_note_no == note_no).limit(1)))
+            from app.models.carton_special_requests import SpecialShipment, UnifiedDelivery
+            shipment_exists = shipment_exists or any(db.scalar(select(model.id).where(
+                model.factory_id == factory, model.supplier_id == supplier.id,
+                model.delivery_note_no == note_no).limit(1)) for model in (SpecialShipment, UnifiedDelivery))
             receipt_exists = bool(db.scalar(select(CartonReceipt.id).where(CartonReceipt.factory_id == factory,
                 CartonReceipt.delivery_note_no == note_no).limit(1)))
             if shipment_exists:
@@ -251,7 +271,7 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
     return {"filename": filename, "sha256": digest, "row_count": len(rows), "groups": list(groups.values())}
 
 
-def confirm(db, user, filename, content, expected_sha256, selections, row_selections=None):
+def confirm(db, user, filename, content, expected_sha256, selections, row_selections=None, *, refresh_actor=None):
     if _source(filename, content) != expected_sha256:
         raise HTTPException(409, "送货单文件与预览时不同，请重新预览")
     selections = [(item[0], item[1], item[2] if len(item) == 3 else "SHIPMENT") for item in selections]
@@ -264,8 +284,11 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
     rows = _parse_source_rows(filename, content, row_selections)
     sent = []
     try:
+        from app.services.identity_policy import lock_mutation, fresh_actor
+        lock_mutation(db)
         for factory in sorted({key[0] for key in keys}):
             portal._lock_receipt_factory(db, factory)
+        user = refresh_actor() if refresh_actor else fresh_actor(db, user.id)
         result = preview(db, user, filename, content, row_selections, _parsed_rows=rows)
         groups = {(group["factory_id"], group["delivery_note_no"]): group for group in result["groups"]}
         if any(key not in groups for key in keys):
@@ -283,6 +306,25 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
                     {"filename": filename, "sha256": expected_sha256}))
                 continue
             request_id = _request_id(expected_sha256, factory, note_no)
+            from app.models.carton_special_requests import UnifiedDelivery
+            from app.services import carton_unified_deliveries as unified
+            from app.models.carton_procurement import CartonAuditEvent
+            import json
+            selected_rows = [item for item in row_selections if (item['source_sheet'], item['source_row']) in
+                {(row['source_sheet'], row['source_row']) for row in group['rows']}]
+            old_group = db.scalar(select(UnifiedDelivery).where(UnifiedDelivery.factory_id == factory,
+                UnifiedDelivery.created_by == user.id, UnifiedDelivery.request_key == request_id))
+            if old_group:
+                supplier = portal.supplier_access(db, user, factory, 'carton_supplier:edit')
+                if old_group.supplier_id != supplier.id:
+                    raise HTTPException(403, '账号无权访问此供应商的原送货单')
+                event = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.entity_id == old_group.id,
+                    CartonAuditEvent.factory_id == factory, CartonAuditEvent.event_type == 'SUPPLIER_DELIVERY_IMPORTED'))
+                saved = json.loads(event.detail_json) if event else {}
+                if mode != 'SHIPMENT' or not event or saved.get('source_file', {}).get('row_selections', []) != selected_rows:
+                    raise HTTPException(409, '此原文件已按另一订单选择或方式登记，请核对原送货单')
+                sent.append(unified.project(db, user, factory, old_group.id, external=True))
+                continue
             existing = db.scalar(select(SupplierShipment).where(SupplierShipment.factory_id == factory,
                 SupplierShipment.created_by == user.id, SupplierShipment.request_id == request_id))
             if existing:
@@ -305,6 +347,28 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
             if not group["receipt_link_ready" if mode == "EXISTING_RECEIPT" else "ready"]:
                 problem = next((row["reason"] for row in group["rows"] if row["status"] == "BLOCKED"), "")
                 raise HTTPException(409, f"送货单 {note_no} 无法确认：{problem or '；'.join(group['issues'])}")
+            source = {"filename": filename, "sha256": expected_sha256, "row_selections": selected_rows,
+                "rows": [row['source_row'] for row in group['rows']],
+                "delivery_materials": {row['order_line_id']: {key: row.get(key) for key in (
+                    'packaging_type', 'packaging_type_explicit', 'paper_quality', 'specification', 'source_sheet', 'source_row')}
+                    for row in group['rows'] if row['order_line_id']},
+                "delivery_unit_prices": {row['order_line_id']: row['unit_price']
+                    for row in group['rows'] if row['order_line_id'] and row['unit_price'] is not None}}
+            if any(row.get('source_kind') == 'SPECIAL' for row in group['rows']):
+                if mode != 'SHIPMENT':
+                    raise HTTPException(409, '样板或杂单原表请使用当前送货流程，不能套用正单后补入库关联')
+                chosen = {(item['source_sheet'], item['source_row']) for item in selected_rows}
+                if any((row['source_sheet'], row['source_row']) not in chosen for row in group['rows']
+                       if row.get('source_kind') == 'SPECIAL'):
+                    raise HTTPException(409, '请重新预览并核对样板或杂单的当前需求版本')
+                from app.schemas.carton_supplier_portal import UnmatchedShipLine
+                extra = [UnmatchedShipLine(**{key: row.get(key) for key in (
+                    'source_sheet', 'source_row', 'contract_no', 'item_no', 'packaging_type',
+                    'paper_quality', 'specification', 'unit')}, quantity=row['delivered_quantity'],
+                    unit_price=row['unit_price'] or 0) for row in group['rows'] if row['status'] == 'AD_HOC_REVIEW']
+                sent.append(unified.dispatch(db, user, special_import.dispatch_payload(factory, request_id, group),
+                    commit=False, source=source, unmatched_lines=extra))
+                continue
             payload = ShipmentCreate(factory_id=factory, request_id=request_id, delivery_note_no=note_no,
                 registration_mode=mode,
                 delivery_date=date.fromisoformat(group["delivery_date"]), lines=[{
@@ -316,16 +380,7 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
                     "specification": row["specification"], "quantity": row["delivered_quantity"], "unit": row["unit"],
                     "unit_price": row["unit_price"] or 0}
                     for row in group["rows"] if row["status"] == "AD_HOC_REVIEW"])
-            sent.append(portal.create_shipment(db, user, payload, commit=False,
-                source={"filename": filename, "sha256": expected_sha256,
-                    "row_selections": [item for item in row_selections if (item["source_sheet"], item["source_row"]) in
-                        {(row["source_sheet"], row["source_row"]) for row in group["rows"]}],
-                    "rows": [row["source_row"] for row in group["rows"]],
-                    "delivery_materials": {row["order_line_id"]: {key: row.get(key) for key in (
-                        "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "source_sheet", "source_row")}
-                        for row in group["rows"] if row["order_line_id"]},
-                    "delivery_unit_prices": {row["order_line_id"]: row["unit_price"]
-                        for row in group["rows"] if row["order_line_id"] and row["unit_price"] is not None}}))
+            sent.append(portal.create_shipment(db, user, payload, commit=False, source=source))
         db.commit()
     except Exception:
         db.rollback()

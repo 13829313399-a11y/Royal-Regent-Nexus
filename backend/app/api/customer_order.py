@@ -4,10 +4,12 @@ import json
 from urllib.parse import quote as url_quote
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.services.customer_order_jobs import run_order_job, order_job_request
+from app.services.customer_order_carton_schedule import sync_report
 
 from app.core.config import settings
 from app.db import get_db
@@ -150,6 +152,27 @@ FACTORY_NAMES = {
     "huakang-c": "华康C",
     "huakang-d": "华康D",
 }
+
+
+@router.post("/{customer_code}/warehouse-schedule")
+async def synchronize_warehouse_schedule(
+    customer_code: str, request: Request, factory_id: str = Form(...),
+    source_kind: Literal["UPLOADED", "GENERATED"] = Form("UPLOADED"),
+    schedule_file: UploadFile = File(...), db: Session = Depends(get_db),
+    current_user: AuthContext = Depends(get_current_user),
+):
+    from app.services.customer_order_carton_schedule import synchronize, authorize_sales
+    factory_id = factory_id.strip()
+    _ensure_customer_factory(customer_code, factory_id)
+    authorize_sales(db, current_user, factory_id)
+    _validate_upload(schedule_file, kind="客户排期", supported=(".xlsx", ".xls"))
+    from app.services.carton_procurement import MAX_IMPORT_BYTES
+    content = await schedule_file.read(MAX_IMPORT_BYTES + 1)
+    if not content or len(content) > MAX_IMPORT_BYTES:
+        raise HTTPException(422, "仓库排期须为非空文件，且不超过 20 MB")
+    return await synchronize(db, current_user, factory_id, customer_code, CUSTOMER_NAMES[customer_code],
+        schedule_file.filename or "schedule.xlsx", content, source_kind,
+        refresh_actor=lambda: get_current_user(request, db))
 
 
 def _ensure_customer_order_permission(
@@ -722,6 +745,7 @@ async def _read_po_uploads(
     response_model=CustomerOrderImportPreviewOut,
 )
 async def preview_buzzbee_customer_order(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     po_file: UploadFile = File(...),
@@ -755,12 +779,15 @@ async def preview_buzzbee_customer_order(
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
         )
-        return _finalize_preview(
+        _finalize_preview(
             preview,
             received_date=received_date,
             current_user=current_user,
             factory_id=normalized_factory_id,
         )
+        preview["warehouse_sync"] = await sync_report(db, current_user, request, preview,
+            schedule_file.filename or "schedule.xlsx", schedule_content, "UPLOADED")
+        return preview
     except CustomerOrderWorkbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -770,6 +797,7 @@ async def preview_buzzbee_customer_order(
     response_model=CustomerOrderImportPreviewOut,
 )
 async def preview_buzzbee_customer_order_batch(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     po_files: list[UploadFile] = File(...),
@@ -801,18 +829,22 @@ async def preview_buzzbee_customer_order_batch(
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
         )
-        return _finalize_preview(
+        _finalize_preview(
             preview,
             received_date=received_date,
             current_user=current_user,
             factory_id=normalized_factory_id,
         )
+        preview["warehouse_sync"] = await sync_report(db, current_user, request, preview,
+            schedule_file.filename or "schedule.xlsx", schedule_content, "UPLOADED")
+        return preview
     except CustomerOrderWorkbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/buzzbee/export")
 async def export_buzzbee_customer_schedule(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     confirmed: bool = Form(...),
@@ -881,6 +913,7 @@ async def export_buzzbee_customer_schedule(
         output=output,
         file_name=file_name,
     )
+    warehouse_sync = await sync_report(db, current_user, request, preview, file_name, output, "GENERATED")
     return Response(
         content=output,
         media_type=XLSX_CONTENT_TYPE,
@@ -894,12 +927,14 @@ async def export_buzzbee_customer_schedule(
             "X-Content-SHA256": audit.output_sha256,
             "X-Preview-Fingerprint": audit.preview_fingerprint,
             "X-Export-Audit-ID": audit.id,
+            "X-Warehouse-Sync": url_quote(json.dumps(warehouse_sync, ensure_ascii=False)),
         },
     )
 
 
 @router.post("/buzzbee/export-batch")
 async def export_buzzbee_customer_schedule_batch(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     confirmed: bool = Form(...),
@@ -966,6 +1001,7 @@ async def export_buzzbee_customer_schedule_batch(
         output=output,
         file_name=file_name,
     )
+    warehouse_sync = await sync_report(db, current_user, request, preview, file_name, output, "GENERATED")
     return Response(
         content=output,
         media_type=XLSX_CONTENT_TYPE,
@@ -980,6 +1016,7 @@ async def export_buzzbee_customer_schedule_batch(
             "X-Content-SHA256": audit.output_sha256,
             "X-Preview-Fingerprint": audit.preview_fingerprint,
             "X-Export-Audit-ID": audit.id,
+            "X-Warehouse-Sync": url_quote(json.dumps(warehouse_sync, ensure_ascii=False)),
         },
     )
 
@@ -989,6 +1026,7 @@ async def export_buzzbee_customer_schedule_batch(
     response_model=CustomerOrderImportPreviewOut,
 )
 async def preview_dickie_customer_order_batch(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     po_files: list[UploadFile] = File(...),
@@ -1020,18 +1058,22 @@ async def preview_dickie_customer_order_batch(
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
         )
-        return _finalize_preview(
+        _finalize_preview(
             preview,
             received_date=received_date,
             current_user=current_user,
             factory_id=normalized_factory_id,
         )
+        preview["warehouse_sync"] = await sync_report(db, current_user, request, preview,
+            schedule_file.filename or "schedule.xlsx", schedule_content, "UPLOADED")
+        return preview
     except CustomerOrderWorkbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/dickie/export-batch")
 async def export_dickie_customer_schedule_batch(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     confirmed: bool = Form(...),
@@ -1098,6 +1140,7 @@ async def export_dickie_customer_schedule_batch(
         output=output,
         file_name=file_name,
     )
+    warehouse_sync = await sync_report(db, current_user, request, preview, file_name, output, "GENERATED")
     return Response(
         content=output,
         media_type=XLSX_CONTENT_TYPE,
@@ -1112,6 +1155,7 @@ async def export_dickie_customer_schedule_batch(
             "X-Content-SHA256": audit.output_sha256,
             "X-Preview-Fingerprint": audit.preview_fingerprint,
             "X-Export-Audit-ID": audit.id,
+            "X-Warehouse-Sync": url_quote(json.dumps(warehouse_sync, ensure_ascii=False)),
         },
     )
 
@@ -1121,6 +1165,7 @@ async def export_dickie_customer_schedule_batch(
     response_model=CustomerOrderImportPreviewOut,
 )
 async def preview_caixing_customer_order_batch(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     po_files: list[UploadFile] = File(...),
@@ -1156,18 +1201,22 @@ async def preview_caixing_customer_order_batch(
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
         )
-        return _finalize_preview(
+        _finalize_preview(
             preview,
             received_date=received_date,
             current_user=current_user,
             factory_id=normalized_factory_id,
         )
+        preview["warehouse_sync"] = await sync_report(db, current_user, request, preview,
+            schedule_file.filename or "schedule.xlsx", schedule_content, "UPLOADED")
+        return preview
     except CustomerOrderWorkbookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/caixing/export-batch")
 async def export_caixing_customer_schedule_batch(
+    request: Request,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
     confirmed: bool = Form(...),
@@ -1238,6 +1287,7 @@ async def export_caixing_customer_schedule_batch(
         output=output,
         file_name=file_name,
     )
+    warehouse_sync = await sync_report(db, current_user, request, preview, file_name, output, "GENERATED")
     return Response(
         content=output,
         media_type=(
@@ -1256,6 +1306,7 @@ async def export_caixing_customer_schedule_batch(
             "X-Content-SHA256": audit.output_sha256,
             "X-Preview-Fingerprint": audit.preview_fingerprint,
             "X-Export-Audit-ID": audit.id,
+            "X-Warehouse-Sync": url_quote(json.dumps(warehouse_sync, ensure_ascii=False)),
         },
     )
 
@@ -1297,6 +1348,7 @@ def list_customer_order_export_audits(
     response_model=CustomerOrderImportPreviewOut,
 )
 async def preview_mapped_customer_order_batch(
+    request: Request,
     customer_code: str,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
@@ -1339,12 +1391,15 @@ async def preview_mapped_customer_order_batch(
             schedule_file_name=schedule_file.filename or "",
             schedule_content=schedule_content,
         )
-        return _finalize_preview(
+        _finalize_preview(
             preview,
             received_date=received_date,
             current_user=current_user,
             factory_id=normalized_factory_id,
         )
+        preview["warehouse_sync"] = await sync_report(db, current_user, request, preview,
+            schedule_file.filename or "schedule.xlsx", schedule_content, "UPLOADED")
+        return preview
     except (
         HuaxingCustomerOrderError,
         HuadengCustomerOrderError,
@@ -1357,6 +1412,7 @@ async def preview_mapped_customer_order_batch(
 
 @router.post("/{customer_code}/export-batch")
 async def export_mapped_customer_order_batch(
+    request: Request,
     customer_code: str,
     factory_id: str = Form("huaxing"),
     received_date: str = Form(...),
@@ -1440,6 +1496,7 @@ async def export_mapped_customer_order_batch(
         output=output,
         file_name=file_name,
     )
+    warehouse_sync = await sync_report(db, current_user, request, preview, file_name, output, "GENERATED")
     return Response(
         content=output,
         media_type=XLSX_CONTENT_TYPE,
@@ -1454,5 +1511,6 @@ async def export_mapped_customer_order_batch(
             "X-Content-SHA256": audit.output_sha256,
             "X-Preview-Fingerprint": audit.preview_fingerprint,
             "X-Export-Audit-ID": audit.id,
+            "X-Warehouse-Sync": url_quote(json.dumps(warehouse_sync, ensure_ascii=False)),
         },
     )

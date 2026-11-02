@@ -51,9 +51,11 @@ describe('opening inventory import', () => {
   })
   it('previews batch conditions and remaining quantities before explicit posting', async () => {
     const wrapper = mount(Component, { props })
+    expect(wrapper.vm.navigationBlocked).toBe(false)
     expect(button(wrapper, '导入期初库存').attributes('disabled')).toBeUndefined()
     expect(wrapper.find('[aria-label="期初基准日期"]').exists()).toBe(false)
     await configure(wrapper); await choose(wrapper)
+    expect(wrapper.vm.navigationBlocked).toBe(true)
     expect(api.previewHistoryInventory).toHaveBeenCalledWith('huaxing', file, options)
     expect(wrapper.text()).toContain('待核价')
     expect(wrapper.text()).toContain('零结余，跳过')
@@ -66,6 +68,7 @@ describe('opening inventory import', () => {
     expect(wrapper.emitted('imported')).toHaveLength(1)
     expect(wrapper.find('[aria-label="期初库存导入预览"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('已入账 1 行')
+    expect(wrapper.vm.navigationBlocked).toBe(false)
   })
   it('invalidates review when dimension unit changes and ignores its late preview', async () => {
     let finish!: (value: ReturnType<typeof preview>) => void
@@ -94,6 +97,7 @@ describe('opening inventory import', () => {
     expect(wrapper.find('[aria-label="期初库存导入预览"]').exists()).toBe(false)
     expect(button(wrapper, '重新预览').exists()).toBe(true)
     expect(wrapper.emitted('imported')).toBeUndefined()
+    expect(wrapper.vm.navigationBlocked).toBe(true)
   })
   it('discards a confirmation response after changing factory', async () => {
     let finish!: (value: unknown) => void

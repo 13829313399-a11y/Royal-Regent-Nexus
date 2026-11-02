@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CustomerOrderLedger from '../CustomerOrderLedger.vue'
 import CustomerOrderHistoryImport from '../CustomerOrderHistoryImport.vue'
 
+vi.mock('@/components/CartonMaterialsSourceButton.vue', () => ({ default: { template: '<span>订单资料</span>' } }))
+
 const api = vi.hoisted(() => ({
   capabilities: vi.fn(), list: vi.fn(), detail: vi.fn(), amend: vi.fn(), cancel: vi.fn(), restore: vi.fn(), dispatch: vi.fn(), confirmShipment: vi.fn(), reverseShipment: vi.fn(),
 }))

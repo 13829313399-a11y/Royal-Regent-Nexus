@@ -4,7 +4,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import PdfBatchRenameWorkspace from '@/features/pdf-rename/PdfBatchRenameWorkspace.vue'
 import SpreadsheetMergeWorkspace from '@/features/spreadsheet-merge/SpreadsheetMergeWorkspace.vue'
-import CollaborativeSheetsWorkspace from '@/features/collaborative-sheets/CollaborativeSheetsWorkspace.vue'
 import {
   ArrowRight,
   FileText,
@@ -58,7 +57,6 @@ watch(() => route.query.tool, (tool) => {
 const isHuaxing = computed(() => appStore.activeFactoryId === 'huaxing'
   && (!route.query.factory || route.query.factory === 'huaxing'))
 const renameActive = computed(() => isHuaxing.value && route.query.tool === 'pdf-batch-rename')
-const sheetsActive = computed(() => route.query.tool === 'collaborative-sheets')
 const mergeActive = computed(() => route.query.tool === 'spreadsheet-merge')
 function selectMerge(active: boolean) {
   const query = { ...route.query }
@@ -67,10 +65,6 @@ function selectMerge(active: boolean) {
   focused.value = false
   void router.replace({ query })
 }
-function selectSheets() {
-  void router.push({ path: '/collaborative-sheets', query: { factory: appStore.activeFactoryId } })
-}
-watch(sheetsActive, active => { if (active) void router.replace({ path: '/collaborative-sheets', query: { factory: appStore.activeFactoryId } }) }, { immediate: true })
 function selectRename(active: boolean) {
   const query = { ...route.query }
   if (active && isHuaxing.value) query.tool = 'pdf-batch-rename'
@@ -195,6 +189,25 @@ const sourceReady = computed(
       currentSource.value.inspection_status,
     ),
 )
+const sourcePreviewState = computed(() => {
+  const status = currentSource.value?.inspection_status
+  if (status === 'failed') return {
+    title: '文档读取失败',
+    description: '请查看下方失败原因。问题处理后可重试任务，原文件仍可下载。',
+  }
+  if (status === 'cancelled') return {
+    title: '文档读取已取消',
+    description: '可重试任务继续读取，原文件仍可下载。',
+  }
+  if (status === 'awaiting_input') return {
+    title: '等待输入文档密码',
+    description: '请在下方输入打开密码后继续读取。',
+  }
+  return {
+    title: sourceReady.value ? '原文版式校样尚未生成' : '正在读取文档',
+    description: 'Office 文档使用服务器 PDF 校样预览，生成后可核对结构化结果。',
+  }
+})
 const compatible = computed(() => {
   const type = currentSource.value?.detected_type?.toLowerCase() ?? ''
   if (!type) return true
@@ -906,19 +919,17 @@ onBeforeUnmount(() => {
       class="tools-hero rrn-portal-region"
       data-portal-region="tools-header"
       title="公共工具栏"
-      :description="isHuaxing ? '表格合并、协同填表、文档翻译、转换、精确分页与批量改名 · 华兴厂区' : '表格合并、协同填表、文档翻译、转换与精确分页'"
+      :description="isHuaxing ? '在线文档、表格合并、文档翻译、转换、精确分页与批量改名 · 华兴厂区' : '在线文档、表格合并、文档翻译、转换与精确分页'"
       ><template #actions
         ><Button variant="outline" size="sm" @click="router.push({ path: '/online-documents', query: { factory: appStore.activeFactoryId } })"><Files :size="15" aria-hidden="true" />在线文档</Button
         ><Button variant="outline" size="sm" :aria-pressed="mergeActive" @click="selectMerge(!mergeActive)"><Files :size="15" aria-hidden="true" />{{ mergeActive ? '返回文档转换' : '表格转换与合并' }}</Button
-        ><Button variant="outline" size="sm" :aria-pressed="sheetsActive" @click="selectSheets"
-          ><Files :size="15" aria-hidden="true" />{{ sheetsActive ? '返回文档转换' : '协同填表' }}</Button
         ><Button as-child variant="outline" size="sm"><a :href="imageTranslationUrl"><Languages :size="15" aria-hidden="true" />图片 / PDF 翻译</a></Button
         ><Button v-if="isHuaxing" variant="outline" size="sm" :aria-pressed="renameActive" @click="selectRename(!renameActive)"
           ><Files :size="15" aria-hidden="true" />{{ renameActive ? '返回文档转换' : '批量改名' }}</Button
-        ><Button v-if="!renameActive && !sheetsActive && !mergeActive" variant="outline" size="sm" @click="openDialog(tasksDialog)"
+        ><Button v-if="!renameActive && !mergeActive" variant="outline" size="sm" @click="openDialog(tasksDialog)"
           ><Files :size="15" aria-hidden="true" />我的任务</Button
         ><Button
-          v-if="!renameActive && !sheetsActive && !mergeActive"
+          v-if="!renameActive && !mergeActive"
           variant="outline"
           size="sm"
           :aria-pressed="focused"
@@ -939,12 +950,12 @@ onBeforeUnmount(() => {
       aria-label="上传文档"
       @change="picked"
     />
-    <div v-if="error && !renameActive && !sheetsActive && !mergeActive" class="dt-alert" role="alert">
+    <div v-if="error && !renameActive && !mergeActive" class="dt-alert" role="alert">
       <AlertCircle :size="16" aria-hidden="true" /><span>{{ error }}</span
       ><Button variant="ghost" size="sm" @click="initialize">重新连接</Button>
     </div>
-    <p v-if="notice && !renameActive && !sheetsActive && !mergeActive" class="dt-notice" role="status">{{ notice }}</p>
-    <details v-if="capabilities?.engines && !renameActive && !sheetsActive && !mergeActive" class="dt-engine-status">
+    <p v-if="notice && !renameActive && !mergeActive" class="dt-notice" role="status">{{ notice }}</p>
+    <details v-if="capabilities?.engines && !renameActive && !mergeActive" class="dt-engine-status">
       <summary>处理引擎状态</summary>
       <Button
         variant="ghost"
@@ -964,18 +975,13 @@ onBeforeUnmount(() => {
       >
     </details>
     <div
-      v-if="capabilities && !capabilities.worker.online && !renameActive && !sheetsActive && !mergeActive"
+      v-if="capabilities && !capabilities.worker.online && !renameActive && !mergeActive"
       class="dt-warning"
       role="status"
     >
       后台处理服务暂未在线，文件和任务会保留；服务恢复后继续处理。
     </div>
     <SpreadsheetMergeWorkspace v-if="mergeActive" :key="appStore.activeFactoryId" :factory-id="appStore.activeFactoryId" />
-    <CollaborativeSheetsWorkspace
-      v-if="sheetsActive"
-      :key="appStore.activeFactoryId"
-      :factory-id="appStore.activeFactoryId"
-    />
     <PdfBatchRenameWorkspace
       v-if="renameActive"
       :key="appStore.activeFactoryId"
@@ -983,7 +989,7 @@ onBeforeUnmount(() => {
       context-label="华兴厂区（仅华兴可用）"
     />
     <div
-      v-show="!renameActive && !sheetsActive && !mergeActive"
+      v-show="!renameActive && !mergeActive"
       class="dt-desk"
       :class="{ dragging }"
       @dragover.prevent="dragging = true"
@@ -1237,10 +1243,10 @@ onBeforeUnmount(() => {
               <div v-else class="dt-preview-empty">
                 <FolderOpen :size="30" aria-hidden="true" />
                 <h3>
-                  {{ sourceReady ? '原文版式校样尚未生成' : '正在读取文档' }}
+                  {{ sourcePreviewState.title }}
                 </h3>
                 <p>
-                  Office 文档使用服务器 PDF 校样预览，生成后可核对结构化结果。
+                  {{ sourcePreviewState.description }}
                 </p>
                 <a
                   v-for="artifact in currentSource?.artifacts.filter(
@@ -1401,7 +1407,7 @@ onBeforeUnmount(() => {
         </section>
       </aside>
     </div>
-    <div v-if="hasResult && (narrow || focused) && !renameActive && !sheetsActive && !mergeActive" class="dt-mobile-results">
+    <div v-if="hasResult && (narrow || focused) && !renameActive && !mergeActive" class="dt-mobile-results">
       <a
         v-for="artifact in results"
         :key="artifact.id"

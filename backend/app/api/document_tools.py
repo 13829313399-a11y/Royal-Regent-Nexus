@@ -110,6 +110,12 @@ def create_job(payload: CreateJob, user: User, db: DB):
         service.fail("SOURCE_NOT_READY", "文件检查尚未完成，请先处理文件提示", 409)
     if source.detected_type not in service.OPERATIONS[payload.operation][1]:
         service.fail("TYPE_MISMATCH", "所选转换方向与源文件类型不符", 422)
+    from app.services.document_tools.office_engine import require_conversion_runtime
+    from app.services.document_tools.document_ir import ToolError
+    try:
+        require_conversion_runtime(payload.operation, source.detected_type)
+    except ToolError as exc:
+        service.fail(exc.code, exc.message, 422)
     options = payload.options.model_dump(include=OPTION_KEYS[payload.operation])
     if payload.operation == "image_translate":
         from app.services.document_tools.image_translation import require_runtime

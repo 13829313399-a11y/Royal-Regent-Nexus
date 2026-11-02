@@ -3,12 +3,14 @@ from copy import deepcopy
 from io import BytesIO
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from openpyxl import Workbook, load_workbook
 from openpyxl.formula.tokenizer import Tokenizer
 from openpyxl.utils import quote_sheetname
 
-from app.models.internal_quote import InternalQuoteExportFile
-from app.services.internal_quote import _get_quote, _check_revision, _add_audit, ensure_quote_read
+from app.models.internal_quote import InternalQuoteExportFile, InternalQuoteSection
+from app.services.internal_quote import (_get_quote, _check_revision, _add_audit, ensure_quote_read,
+    _pricing_completeness, ensure_quote_formula_current, ensure_molding_projection_current)
 from app.services.internal_quote_alternatives import issue_alternative
 from app.services.internal_quote_artifacts import (
     _ensure_export_permission, create_controlled_export, safe_file_name, digest,
@@ -108,13 +110,28 @@ def export_series(db, quote_id, payload, user, request=None):
         revisions = {row.quote_id: row.revision for row in payload.products}
         by_root = dict(zip(selected, quotes))
         ordered = [by_root[row.id] for row in members]
+        problems = []
         for quote in ordered:
-            ensure_not_archived(db, quote)
-            if quote.module_version != "v4" and not (
-                quote.status in {"fully_approved", "exported"}
-                and quote.final_release_status == "approved" and quote.final_release_revision > 0
-            ):
-                raise HTTPException(409, f"{quote.product_name}：历史报价须通过最终审核后才能系列输出")
+            try:
+                ensure_not_archived(db, quote)
+                if quote.module_version != "v4":
+                    if not (quote.status in {"fully_approved", "exported"}
+                            and quote.final_release_status == "approved" and quote.final_release_revision > 0):
+                        raise HTTPException(409, "历史报价须通过最终审核后才能系列输出")
+                elif quote.final_release_status != "issued":
+                    sections = list(db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)))
+                    for issue in _pricing_completeness(quote, sections):
+                        problems.append({"quote_id": quote.id, "product_name": quote.product_name, **issue})
+                    ensure_molding_projection_current(db, quote, sections)
+                    ensure_quote_formula_current(quote, sections)
+            except HTTPException as error:
+                message = error.detail.get("message", "请核对报价状态") if isinstance(error.detail, dict) else str(error.detail)
+                problems.append({"quote_id": quote.id, "product_name": quote.product_name,
+                                 "section_code": "", "section_name": "报价", "reason": message})
+        if problems:
+            raise HTTPException(409, {"message": "以下产品尚不能输出：\n" + "\n".join(
+                f"{item['product_name']} · {item['section_name']}：{item['reason']}" for item in problems),
+                "products": problems})
         records = []
         for quote in ordered:
             if quote.factory_id != source.factory_id or quote.customer != source.customer:
@@ -127,7 +144,8 @@ def export_series(db, quote_id, payload, user, request=None):
                 else:
                     out = create_controlled_export(db, quote.id, user, request, commit=False)
             except HTTPException as error:
-                raise HTTPException(error.status_code, f"{quote.product_name}：{error.detail}") from error
+                message = error.detail.get("message", "请核对报价状态") if isinstance(error.detail, dict) else str(error.detail)
+                raise HTTPException(error.status_code, f"{quote.product_name}：{message}") from error
             records.append(db.get(InternalQuoteExportFile, out.id))
         content = combine_series_workbooks([(quote.product_name, record.content) for quote, record in zip(ordered, records)])
         sha256 = digest(content)
