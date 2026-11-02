@@ -11,6 +11,7 @@ const props = defineProps<{ blocked?: boolean }>()
 const ws = useMaterials()
 const root = ref<HTMLElement | null>(null)
 const visible = ref(false), downloading = ref(false), error = ref(''), notice = ref('')
+const sourceContext = ref<string | null>(null)
 const syncing = ref(false)
 const syncErrorOperation = ref('')
 const customer = ref(''), recipient = ref('RRI'), warehouse = ref(''), itemNo = ref(''), search = ref('')
@@ -18,10 +19,28 @@ const selection = ref<string[]>([])
 const customers = computed(() => [...new Set(ws.board.map(order => order.customer))].sort())
 const orders = computed(() => ws.board.filter(order => order.customer === customer.value && order.recipient === recipient.value))
 const pendingOrders = computed(() => orders.value.filter(order => (!itemNo.value || order.item_no === itemNo.value) && planningMaterials(order, ws.records).addedIds.length))
+const syncOrders = computed(() => orders.value.filter(order => {
+  const changes = planningMaterials(order, ws.records)
+  return (!itemNo.value || order.item_no === itemNo.value) && (changes.addedIds.length || changes.cycleIds.length)
+}))
 const pendingMaterials = computed(() => pendingOrders.value.reduce((total, order) => total + planningMaterials(order, ws.records).addedIds.length, 0))
+const pendingCycles = computed(() => syncOrders.value.reduce((total, order) => total + planningMaterials(order, ws.records).cycleIds.length, 0))
 const items = computed(() => [...new Set(orders.value.map(order => order.item_no))].sort())
 const rows = computed(() => receiptSummary(orders.value.filter(order => !itemNo.value || order.item_no === itemNo.value), ws.records)
   .map(row => ({ ...row, available: row.valid && !pendingOrders.value.length })))
+const otherRecipients = computed(() => ['RRI', 'RRM'].filter(value => value !== recipient.value).filter(value => {
+  const candidates = ws.board.filter(order => order.customer === customer.value && order.recipient === value)
+  return receiptSummary(candidates, ws.records).length > 0 || candidates.some(order => planningMaterials(order, ws.records).addedIds.length)
+}))
+const emptyMessage = computed(() => {
+  if (ws.loadError) return '合同清单未能刷新，请刷新后重试。'
+  if (!customer.value) return '请选择客人和接收方，再下载对应物料模板。'
+  if (!orders.value.length) return `${customer.value} · ${recipient.value} 暂无合同，无法生成实收模板。`
+  if (search.value.trim() && rows.value.length) return '没有匹配的物料，请清除搜索后查看。'
+  if (pendingOrders.value.length) return '请先更新上方合同物料，再选择下载。'
+  if (!orders.value.some(order => (!itemNo.value || order.item_no === itemNo.value) && order.demands.length)) return '当前合同尚无物料需求，请先在合同计划中更新物料。'
+  return `${customer.value} · ${recipient.value}${itemNo.value ? ` · ${itemNo.value}` : ''} 的物料已全部实收分配，无需回传。`
+})
 const filtered = computed(() => {
   const term = search.value.trim().toLocaleLowerCase()
   return rows.value.filter(row => !term || [row.material?.data.code, row.material?.data.name, row.material?.data.english_name, row.material?.data.specification, ...row.items].join(' ').toLocaleLowerCase().includes(term))
@@ -40,30 +59,36 @@ watch(() => ws.pending, (pending, previous) => {
     error.value = ''; syncErrorOperation.value = ''
   }
 })
-watch(() => ws.scopeEpoch, () => { visible.value = false; selection.value = []; customer.value = ''; warehouse.value = ''; search.value = ''; error.value = ''; notice.value = ''; syncing.value = false })
+watch(() => ws.scopeEpoch, () => { visible.value = false; sourceContext.value = null; selection.value = []; customer.value = ''; recipient.value = 'RRI'; itemNo.value = ''; warehouse.value = ''; search.value = ''; error.value = ''; notice.value = ''; syncing.value = false })
 async function open(initialCustomer: string, initialRecipient: string, initialWarehouse: string) {
-  if (props.blocked || ws.locked || !ws.canWrite) return
-  customer.value = customers.value.includes(initialCustomer) ? initialCustomer : customer.value || (customers.value.length === 1 ? customers.value[0]! : '')
-  recipient.value = initialRecipient
-  warehouse.value = initialWarehouse
+  if (locked.value) return
+  const context = JSON.stringify([initialCustomer, initialRecipient, initialWarehouse])
+  if (sourceContext.value !== context) {
+    customer.value = customers.value.includes(initialCustomer) ? initialCustomer : (customers.value.length === 1 ? customers.value[0]! : '')
+    recipient.value = initialRecipient
+    warehouse.value = initialWarehouse
+    itemNo.value = ''; search.value = ''; error.value = ''; notice.value = ''
+    selection.value = rows.value.filter(row => row.available).map(row => row.key)
+    sourceContext.value = context
+  }
   visible.value = true
-  selection.value = rows.value.filter(row => row.available).map(row => row.key)
   await nextTick()
-  focusFollowup(root.value)
+  focusFollowup(root.value, '模板接收方')
 }
+function viewRecipient(value: string) { recipient.value = value; search.value = '' }
 function toggleAll(event: Event) {
   const checked = (event.target as HTMLInputElement).checked
   selection.value = checked ? [...new Set([...selection.value, ...selectable.value.map(row => row.key)])]
     : selection.value.filter(key => !selectable.value.some(row => row.key === key))
 }
 async function syncAll() {
-  if (locked.value || !pendingOrders.value.length) return
-  const epoch = ws.scopeEpoch, count = pendingOrders.value.length, additions = pendingMaterials.value
+  if (locked.value || !syncOrders.value.length) return
+  const epoch = ws.scopeEpoch, count = syncOrders.value.length, additions = pendingMaterials.value, cycles = pendingCycles.value
   const contracts: MaterialRecord[] = [], products = new Map<string, MaterialRecord>(), materials = new Map<string, MaterialRecord>()
   error.value = ''; notice.value = ''
-  for (const order of pendingOrders.value) {
+  for (const order of syncOrders.value) {
     const contract = ws.record(order.id), catalog = planningMaterials(order, ws.records)
-    const added = catalog.addedIds.map(id => ws.record(id))
+    const added = [...catalog.addedIds, ...catalog.cycleIds].map(id => ws.record(id))
     if (!contract || !catalog.product || added.some(material => !material || material.data.deleted)) {
       error.value = '货号或物料资料不完整，请刷新清单后核对。'; return
     }
@@ -71,16 +96,16 @@ async function syncAll() {
     added.forEach(material => materials.set(material!.id, material!))
   }
   const versions = (records: MaterialRecord[]) => records.map(row => ({ id: row.id, expected_version: row.version }))
-  const payload = { customer: customer.value, recipient: recipient.value, item_no: itemNo.value,
+  const payload = { customer: customer.value, recipient: recipient.value, item_no: itemNo.value, sync_procurement: true,
     orders: versions(contracts), products: versions([...products.values()]), materials: versions([...materials.values()]) }
   syncing.value = true
   try {
     const saved = await ws.run('order_materials_sync', payload)
     if (epoch !== ws.scopeEpoch) return
     if (!saved) { error.value = ws.error; syncErrorOperation.value = ws.pending?.action === 'order_materials_sync' ? ws.pending.operation_id : ''; return }
-    notice.value = ws.loadError || pendingOrders.value.length
+    notice.value = ws.loadError || syncOrders.value.length
       ? '更新已提交，请刷新清单并核对剩余待同步合同后下载。'
-      : `已更新 ${count} 张合同，补入 ${additions} 项物料，可直接勾选下载。`
+      : `已更新 ${count} 张合同，补入 ${additions} 项物料，同步 ${cycles} 项采购周期，可直接勾选下载。`
     if (!ws.loadError && !pendingOrders.value.length) selection.value = rows.value.filter(row => row.available).map(row => row.key)
   } finally { if (epoch === ws.scopeEpoch) syncing.value = false }
 }
@@ -113,6 +138,7 @@ defineExpose({ open })
 <template>
   <form v-show="visible" ref="root" class="im-stack im-receipt-template" aria-label="下载订单实收模板" @submit.prevent="download">
     <div class="im-inline"><h3>汇总未收物料</h3><button type="button" :disabled="locked" @click="visible = false">收起模板选择</button></div>
+    <p class="im-note">选择客人和接收方，勾选物料后点击下方“下载所选 Excel”。</p>
     <fieldset class="im-stack" :disabled="locked">
       <div class="im-fields">
         <label class="im-field"><span>模板客人 *</span><select v-model="customer" required><option value="">请选择客人</option><option v-for="name in customers" :key="name">{{ name }}</option></select></label>
@@ -123,17 +149,24 @@ defineExpose({ open })
       <div class="im-inline">
         <label class="im-field im-template-search"><span>查找物料</span><input v-model="search" type="search" placeholder="正式报关名称、规格或编码"></label>
       </div>
-      <div v-if="pendingOrders.length" class="im-stack" role="status" aria-label="回料模板待同步合同">
-        <div class="im-actions"><button type="button" class="im-primary" @click="syncAll">{{ syncing ? '正在更新合同物料…' : `更新全部合同物料（${pendingOrders.length} 张）` }}</button><span>待补入 {{ pendingMaterials }} 项物料</span></div>
+      <div v-if="syncOrders.length" class="im-stack" role="status" aria-label="回料模板待同步合同">
+        <div class="im-actions"><button type="button" class="im-primary" @click="syncAll">{{ syncing ? '正在更新合同物料…' : `更新全部合同物料（${syncOrders.length} 张）` }}</button><span>待补入 {{ pendingMaterials }} 项物料 · 待同步 {{ pendingCycles }} 项采购周期</span></div>
         <p class="im-note">更新范围：{{ customer }} · {{ recipient }} · {{ itemNo || '全部货号' }}。物料搜索不缩小合同更新范围。</p>
-        <details><summary>查看待更新合同</summary><div v-for="order in pendingOrders" :key="order.id" class="im-inline"><strong>{{ order.contract_no }}</strong><span>PO {{ order.po_no || '未填写' }} · {{ order.item_no }} · 新增 {{ planningMaterials(order, ws.records).addedIds.length }} 种</span></div></details>
+        <details><summary>查看待更新合同</summary><div v-for="order in syncOrders" :key="order.id" class="im-inline"><strong>{{ order.contract_no }}</strong><span>PO {{ order.po_no || '未填写' }} · {{ order.item_no }} · 新增 {{ planningMaterials(order, ws.records).addedIds.length }} 种 · 周期待同步 {{ planningMaterials(order, ws.records).cycleIds.length }} 项</span></div></details>
       </div>
       <div v-if="filtered.length" class="im-scroll">
         <table><thead><tr><th><input type="checkbox" :checked="allSelected" :indeterminate="someSelected" aria-label="全选当前模板物料" @change="toggleAll"></th><th>正式报关物料</th><th>涉及合同</th><th>单位</th><th>需求合计</th><th>已实收分配</th><th>剩余未送货</th></tr></thead>
           <tbody><tr v-for="row in filtered" :key="row.key" :data-template-material="row.key"><td><input v-model="selection" type="checkbox" :value="row.key" :disabled="!row.available" :aria-label="`选择模板物料 ${row.material?.data.name || '资料需核对'} ${row.material?.data.specification || ''}`"></td><td>{{ row.material?.data.name || '物料资料需核对' }}<small>{{ row.material?.data.code || '无物料编码' }} · {{ row.material?.data.specification || '未填写规格' }}</small><small v-if="!row.valid" class="im-danger-text">物料资料或单位需核对</small></td><td>{{ row.orders.size }} 张<small>{{ [...row.items].join('、') }}</small></td><td>{{ row.material?.data.unit }}</td><td>{{ row.quantity }}</td><td>{{ row.coverage }}</td><td><strong>{{ row.remaining }}</strong></td></tr></tbody>
         </table>
       </div>
-      <p v-else class="im-empty">{{ customer ? '没有符合条件的未收物料。' : '选择客人后汇总未收物料。' }}</p>
+      <div v-else-if="visible" class="im-template-empty" role="status">
+        <p>{{ emptyMessage }}</p>
+        <div class="im-actions">
+          <button v-if="search.trim() && rows.length" type="button" @click="search = ''">清除物料搜索</button>
+          <button v-if="itemNo" type="button" @click="itemNo = ''; search = ''">查看全部货号</button>
+          <template v-if="!ws.loadError"><button v-for="value in otherRecipients" :key="value" type="button" @click="viewRecipient(value)">查看 {{ value }} 未收物料</button></template>
+        </div>
+      </div>
       <p class="im-note">同一物料合并未收需求，仓库无需分合同。回传后按最迟回料日建议分配，由业务确认。已实收分配（含备品）只扣一次。</p>
       <div class="im-actions"><button class="im-primary" type="submit" :disabled="!selected.length || selected.length > 200">{{ downloading ? '正在生成模板…' : `下载所选 ${selected.length} 行 Excel` }}</button><span>灰色为系统资料，黄色为仓库填写；本次实收数量留空。</span><button v-if="selection.length" type="button" @click="selection = []">清空选择</button></div>
       <p v-if="hiddenSelected" class="im-note">另有 {{ hiddenSelected }} 行已选物料不在当前筛选结果中，仍会下载。</p>

@@ -210,6 +210,7 @@
 .im-workspace .im-receipt-template thead { position:sticky; top:0; z-index:1; background:var(--im-soft); }
 .im-workspace .im-receipt-template td:nth-child(n+5),.im-workspace .im-receipt-template th:nth-child(n+5) { text-align:right; font-variant-numeric:tabular-nums; }
 .im-workspace .im-template-search { flex:1 1 260px; }
+.im-workspace .im-template-empty { display:grid; gap:12px; padding:24px 16px; background:var(--im-soft); border-radius:8px; color:var(--im-muted); }
 .im-workspace .im-spinning { animation:im-spin 1s linear infinite; }
 @keyframes im-spin { to { transform:rotate(360deg); } }
 @media(prefers-reduced-motion:reduce) { .im-workspace .im-spinning { animation:none; } }
