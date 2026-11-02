@@ -4,6 +4,7 @@ import { readYinhuiSource, selectYinhuiMainSheet, selectYinhuiToolPlan, yinhuiMa
 export { selectYinhuiMainSheet } from './yinhuiSource'
 import { parseP4InternalQuoteArtifact, type P4InternalQuoteArtifact, type P4SectionCode } from './p4Artifact'
 import { extractYinhuiProductImage, type YinhuiProductImage } from './yinhuiTemplate'
+import { isYinhuiIc, splitYinhuiElectronicRow, splitYinhuiLegacyElectronics, yinhuiIcCost } from './yinhuiElectronic'
 import { YINHUI_PROFILES, YINHUI_MATERIAL_PRICES_HKD_KG, YINHUI_MAX_MECHANICAL_ROWS, yinhuiProfileForModel, type YinhuiProfileId } from './yinhuiProfiles'
 
 export const YINHUI_CUSTOMER_QUOTE_TEMPLATE_URL = '/templates/yinhui-customer-quote-template.bin'
@@ -216,7 +217,7 @@ export function yinhuiTotals(data: YinhuiQuoteData) {
     domesticRmb: data.domesticPriceRmb ?? null,
     tooling: sum(data.tools.map((r) => r.toolingHkd)) }
 }
-function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[], manualReviewReasons: string[] = [], pricing?: CustomerPricingSettings): YinhuiConversionResult {
+function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[], manualReviewReasons: string[] = [], pricing?: CustomerPricingSettings, splitElectronics?: () => void): YinhuiConversionResult {
   assertPricingCustomer(pricing, 'yinhui')
   data.pricing = pricing
   const detail = pricingRate(pricing, 'detail_multiplier', 1)
@@ -225,6 +226,7 @@ function finish(data: YinhuiQuoteData, sourceFileName: string, warnings: string[
   }
   data.assemblyHkd *= detail; data.sprayingHkd *= detail; data.packagingLaborHkd *= detail
   data.tools.forEach(row => { row.laborHkd *= pricingRate(pricing, 'injection_multiplier', 1) })
+  splitElectronics?.()
   // Only the first packaging detail row has the customer's three dimension input cells.
   const colorBox = data.packagingRows.findIndex((r) => /彩盒|color box/i.test(r.description))
   if (colorBox > 0) data.packagingRows.unshift(data.packagingRows.splice(colorBox, 1)[0]!)
@@ -659,7 +661,11 @@ function legacyConversion(buffer: ArrayBuffer, sourceFileName: string, workbook 
   data.image = extractYinhuiProductImage(buffer, main.name)
   if (!data.image) warnings.push('未读取到主产品图，请在报客前补充确认。')
   if (manualReviewReasons.length) warnings.push('Tool Plan 版式或对应关系存在不确定项，已允许进入人工核对；金额可能受影响，确认放行前必须逐项核对。')
-  return finish(data, sourceFileName, warnings, manualReviewReasons, options.pricing)
+  return finish(data, sourceFileName, warnings, manualReviewReasons, options.pricing, () => {
+    attempt('电子报价 · IC 拆分', () => {
+      data.electronic = splitYinhuiLegacyElectronics(data.electronic, workbook.sheets, main, data.model)
+    })
+  })
 }
 
 export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, sourceFileName: string, pricing?: CustomerPricingSettings): YinhuiConversionResult {
@@ -709,12 +715,58 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   }
   const electronic = lines('electronic').filter((r) => !r.reference_only && hasValue(r.amount_hkd))
   const electronicTotal = numeric(totals('electronic').total_hkd, '电子总计', true)
-  const rawElectronic = sum(electronic.map((r) => numeric(r.amount_hkd, '电子明细')))
-  if (electronicTotal > 0 && rawElectronic <= 0) throw new Error('银辉 P4 电子合计缺少可拆分明细')
-  for (const line of electronic) {
-    const amount = numeric(line.amount_hkd, '电子明细') * (rawElectronic ? electronicTotal / rawElectronic : 1)
-    internalQuotedTotal += quoted(line, amount)
-    addCost(data, /电池|battery/i.test(text(line.item)) ? '电池' : '电子', text(line.item), positive(line.quantity ?? 1, '电子用量'), quoted(line, amount), amount, `电子/${text(line.item)}`)
+  const electronicGroups = records(artifact.sections.electronic.calculation.quote_groups)
+  const electronicChips = new Map<YinhuiCostRow, YinhuiCostRow[]>()
+  const icLine = (line: Record<string, unknown>) => isYinhuiIc(line.item) || isYinhuiIc(line.specification)
+  const allElectronic = lines('electronic').filter(r => !r.reference_only)
+  if (allElectronic.some(icLine) || electronicGroups.some(group => records(group.line_breakdown).some(icLine))) {
+    // Each approved supplier quotation owns its expenses and profit. Never
+    // redistribute one TX/RX group's fees across another group's components.
+    const groups = electronicGroups.length ? electronicGroups : [{ id: 'legacy', name: '电子',
+      totals: totals('electronic'), line_breakdown: allElectronic }]
+    const groupTotal = sum(groups.map(group => numeric(obj(group.totals).total_hkd, '电子分组总价')))
+    if (Math.abs(groupTotal - electronicTotal) > .005) throw new Error('银辉 P4 电子分组总价与审批电子总计不一致')
+    const seen = new Set<string>()
+    for (const group of groups) {
+      const id = text(group.id); const name = text(group.name)
+      if (!id || seen.has(id) || !name) throw new Error('银辉 P4 电子报价分组编号或名称缺失/重复')
+      seen.add(id)
+      const parts = records(group.line_breakdown).filter(r => !r.reference_only)
+      const amountOf = (r: Record<string, unknown>) => numeric(r.amount_hkd ?? r.line_hkd, '电子明细金额')
+      const raw = sum(parts.map(amountOf))
+      const total = numeric(obj(group.totals).total_hkd, '电子分组总价')
+      const customerAmount = raw ? sum(parts.map(r => quoted(r, amountOf(r) * total / raw))) : quoted({}, total)
+      const parent: YinhuiCostRow = { description: name, originalDescription: name, source: `电子/${id}`,
+        quantity: 1, internalHkd: total, amountHkd: customerAmount }
+      const chips = parts.filter(icLine).map((part, i) => {
+        const quantity = numeric(part.quantity ?? 1, 'IC 用量')
+        const amount = amountOf(part)
+        const rmb = hasValue(part.unit_price_rmb)
+        const unitPrice = numeric(rmb ? part.unit_price_rmb : part.unit_price_hkd, 'IC 已审批单价')
+        const fx = rmb ? positive(obj(artifact.referenceSnapshot.fx).rmb_hkd, 'IC 冻结人民币/港币汇率') : 1
+        if ((quantity === 0 && amount !== 0) || Math.abs(unitPrice / fx * quantity - amount) > .005) throw new Error('银辉 P4 IC 单价×用量与已审批金额不一致')
+        const description = isYinhuiIc(part.specification) ? text(part.specification) : [text(part.item), text(part.specification)].filter(Boolean).join(' ')
+        // Prefer original RMB precision; legacy HKD inputs are already converted.
+        return yinhuiIcCost({ description, quantity, unitPrice, amount, currency: rmb ? 'RMB' : 'HKD', source: `电子/${id}/IC${i + 1}` }, fx)
+      }).filter(chip => chip.quantity > 0)
+      for (const part of parts.filter(part => !icLine(part) && /电池|電池|battery/i.test(text(part.item)))) {
+        const amount = raw ? amountOf(part) * total / raw : 0
+        const description = [text(part.item), text(part.specification)].filter(Boolean).join(' ')
+        chips.push({ description, originalDescription: description, source: `电子/${id}/${text(part.item)}`,
+          quantity: positive(part.quantity ?? 1, '电池用量'), internalHkd: amount, amountHkd: quoted(part, amount), isBattery: true })
+        data.battery = [data.battery, description].filter(Boolean).join('; ')
+      }
+      data.electronic.push(parent); electronicChips.set(parent, chips)
+      internalQuotedTotal += customerAmount
+    }
+  } else {
+    const rawElectronic = sum(electronic.map((r) => numeric(r.amount_hkd, '电子明细')))
+    if (electronicTotal > 0 && rawElectronic <= 0) throw new Error('银辉 P4 电子合计缺少可拆分明细')
+    for (const line of electronic) {
+      const amount = numeric(line.amount_hkd, '电子明细') * (rawElectronic ? electronicTotal / rawElectronic : 1)
+      internalQuotedTotal += quoted(line, amount)
+      addCost(data, /电池|battery/i.test(text(line.item)) ? '电池' : '电子', text(line.item), positive(line.quantity ?? 1, '电子用量'), quoted(line, amount), amount, `电子/${text(line.item)}`)
+    }
   }
   for (const line of lines('assembly')) {
     if (line.reference_only) continue
@@ -760,7 +812,11 @@ export function convertYinhuiP4InternalQuote(artifact: P4InternalQuoteArtifact, 
   if (numeric(totals('engineering').mold_total_rmb, '模具总计', true) > 0) throw new Error('银辉 P4 有新开模费用，但尚无已确认的逐模港币价映射，请使用含匹配模具报价页的银辉原表')
   data.internalTotalHkd = internalQuotedTotal
   warnings.push('P4 主产品图未随结构化资料传入时，需在输出前核对图片；未填写的适配器、Try me 和阶段保持空白。')
-  return finish(data, sourceFileName, warnings, [], pricing)
+  return finish(data, sourceFileName, warnings, [], pricing, () => {
+    data.electronic = data.electronic.flatMap(parent => electronicChips.has(parent)
+      ? splitYinhuiElectronicRow(parent, electronicChips.get(parent)!.map(row => row.isBattery
+        ? { ...row, amountHkd: row.amountHkd * pricingRate(pricing, 'detail_multiplier', 1) } : row)) : [parent])
+  })
 }
 
 export function convertYinhuiInternalQuote(buffer: ArrayBuffer, sourceFileName: string, options: YinhuiImportOptions = {}): YinhuiConversionResult {

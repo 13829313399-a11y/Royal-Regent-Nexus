@@ -6,6 +6,7 @@ import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
 import CustomerWorkspace from './CustomerWorkspace.vue'
 import MasterEditor from './MasterEditor.vue'
 import OptionsWorkspace from './SharedOptionsWorkspace.vue'
+import MasterImportWorkspace from './MasterImportWorkspace.vue'
 import { customerOptions, fixedCustomers } from './catalog'
 import { clone, inputData, materialDefaults, productDefaults, productFields } from './forms'
 import { createRandomUuid } from '@/lib/randomUuid'
@@ -14,12 +15,13 @@ import { useMaterialDraft } from './useDraft'
 import { draftKind, productDraftId, recordRef, restoreRecord, type DraftId } from './draftPersistence'
 import { focusFollowup } from './focusFollowup'
 const ws = useMaterials()
-const category = ref<'customer' | 'material' | 'product' | 'options'>('customer')
+const category = ref<'customer' | 'material' | 'product' | 'options' | 'masterimport'>('customer')
 const customerFilter = ref('')
 const editing = ref<MaterialRecord>()
 const form = ref<Data | null>(null)
 const imageReaders = ref(0)
 const optionsEditor = ref<InstanceType<typeof OptionsWorkspace>>()
+const importEditor = ref<InstanceType<typeof MasterImportWorkspace>>()
 const customerEditor = ref<InstanceType<typeof CustomerWorkspace>>()
 const root = ref<HTMLElement | null>(null)
 const followupOrderId = ref('')
@@ -30,17 +32,17 @@ const draft = useMaterialDraft(() => form.value, {
     if (!['material', 'product'].includes(saved.category)) throw new Error('草稿资料分类无法识别，原内容仍保留。')
     const row = restoreRecord(ws.records, saved.editing, saved.category)
     const data = inputData(saved.category === 'material' ? materialDefaults : productDefaults, saved.form)
-    if (customerEditor.value?.permitDiscard() === false || optionsEditor.value?.permitDiscard() === false) throw new Error('请先处理当前客人表单；原草稿仍保留。')
+    if (customerEditor.value?.permitDiscard() === false || optionsEditor.value?.permitDiscard() === false || importEditor.value?.permitDiscard() === false) throw new Error('请先处理当前客人表单；原草稿仍保留。')
     if (saved.category === 'product') prepareMaterials(data)
     category.value = saved.category; customerFilter.value = saved.customerFilter || ''; editing.value = row; form.value = data
   },
   reset: () => { form.value = null; editing.value = undefined },
 })
-watch(() => ws.restoreTarget, id => { const kind = id ? draftKind(id) : undefined; if (kind === 'customer' || kind === 'options') changeCategory(kind) })
+watch(() => ws.restoreTarget, id => { const kind = id ? draftKind(id) : undefined; if (kind === 'customer' || kind === 'options' || kind === 'masterimport') changeCategory(kind) })
 watch(() => ws.followupTarget, async target => {
   if (target?.kind !== 'master' || !ws.canWrite || ws.locked) return
   if (imageReaders.value || draft.switching.value) { ws.error = '物料图片或草稿正在处理，请稍候再打开计划资料。'; return }
-  if (customerEditor.value?.permitDiscard() === false || optionsEditor.value?.permitDiscard() === false) return
+  if (customerEditor.value?.permitDiscard() === false || optionsEditor.value?.permitDiscard() === false || importEditor.value?.permitDiscard() === false) return
   const order = ws.record(target.orderId)
   const product = ws.kind('product').find(row => row.data.customer === order?.data.customer && row.data.code === order?.data.item_no)
   if (!product) { ws.error = '该合同对应的客人货号资料已不可用，请先核对基础资料。'; return }
@@ -58,13 +60,13 @@ watch(() => ws.followupTarget, async target => {
   const editor = target.materialId ? [...(root.value?.querySelectorAll<HTMLElement>('[data-material-id]') ?? [])].find(node => node.dataset.materialId === target.materialId) : root.value?.querySelector<HTMLElement>('form')
   focusFollowup(editor, target.materialId ? '采购备料自然日' : '日产能')
 })
-function changeCategory(next: 'customer' | 'material' | 'product' | 'options') {
+function changeCategory(next: 'customer' | 'material' | 'product' | 'options' | 'masterimport') {
   if (next === category.value) return
-  if (draft.switching.value || imageReaders.value || !draft.permitDiscard() || customerEditor.value?.permitDiscard() === false || optionsEditor.value?.permitDiscard() === false) return
+  if (draft.switching.value || imageReaders.value || !draft.permitDiscard() || customerEditor.value?.permitDiscard() === false || optionsEditor.value?.permitDiscard() === false || importEditor.value?.permitDiscard() === false) return
   form.value = null; category.value = next
 }
 function close() { if (!draft.switching.value && !imageReaders.value && draft.permitDiscard()) form.value = null }
-const rows = computed(() => ws.kind(category.value === 'options' ? 'option' : category.value).filter(row => category.value !== 'product' || !customerFilter.value || row.data.customer === customerFilter.value))
+const rows = computed(() => ws.kind(category.value === 'options' ? 'option' : category.value === 'masterimport' ? 'import' : category.value).filter(row => category.value !== 'product' || !customerFilter.value || row.data.customer === customerFilter.value))
 const customers = computed(() => fixedCustomers(ws.records, false))
 const fields = computed(() => productFields.map(field => field.key === 'customer'
   ? { ...field, type: 'select' as const, options: customerOptions(ws.records, editing.value?.data.customer), readonly: !!editing.value }
@@ -107,7 +109,7 @@ function removeMaterial(item: Data) {
   if (index < 0) return
   const row = materialFor(item)
   if (item.material_id && !row) { ws.error = '该物料资料已变化，请核对后再删除；当前填写内容仍保留。'; return }
-  const name = item.material?.code || row?.data.code || item.material?.name || '这条新物料'
+  const name = [item.material?.name || row?.data.name, item.material?.code || row?.data.code].filter(Boolean).join(' · ') || '这条新物料'
   if (!window.confirm(item.material_id
     ? `删除物料资料 ${name}？点击“保存资料”后删除该物料及本货号关联，货号本身保留。有其他货号或合同、采购引用时不能删除；仅解除用量请选“移除关联”。删除后可在“已删除物料”恢复。`
     : `删除 ${name} 的本次物料资料？货号和其他物料保持不变，保存前可撤销删除。`)) return
@@ -139,8 +141,9 @@ async function save() {
 </script>
 <template>
   <div ref="root" class="im-master-layout">
-    <nav class="im-master-nav" aria-label="基础资料分类"><p class="im-note">本厂区资料</p><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'customer'" @click="changeCategory('customer')"><Users :size="16" />固定客人</button><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'product'" @click="changeCategory('product')"><Boxes :size="16" />货号与物料</button><p class="im-note">全厂共用资料</p><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'options'" @click="changeCategory('options')"><SlidersHorizontal :size="16" />基础选项</button></nav>
+    <nav class="im-master-nav" aria-label="基础资料分类"><p class="im-note">本厂区资料</p><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'customer'" @click="changeCategory('customer')"><Users :size="16" />固定客人</button><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'product'" @click="changeCategory('product')"><Boxes :size="16" />货号与物料</button><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'masterimport'" @click="changeCategory('masterimport')"><Boxes :size="16" />统一资料导入</button><p class="im-note">全厂共用资料</p><button type="button" :disabled="ws.locked || !!imageReaders || draft.switching.value" :aria-pressed="category === 'options'" @click="changeCategory('options')"><SlidersHorizontal :size="16" />基础选项</button></nav>
     <CustomerWorkspace ref="customerEditor" v-if="category === 'customer'" @products="showCustomerProducts" />
+    <MasterImportWorkspace ref="importEditor" v-else-if="category === 'masterimport'" />
     <OptionsWorkspace ref="optionsEditor" v-else-if="category === 'options'" />
   <SectionPanel v-else :title="category === 'material' ? '恢复历史物料草稿' : '货号与物料'" :subtitle="category === 'material' ? '原草稿可继续保存；新增物料请从所属货号内维护。' : '选择固定客人，在每个货号下直接维护物料资料及单件用量。'">
     <div v-if="followupOrderId" class="im-message im-stack" aria-label="合同计划补充指引">

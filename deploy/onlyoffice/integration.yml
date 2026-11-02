@@ -1,0 +1,16 @@
+# Merge after existing production Compose and release pins, only at cutover.
+services:
+  api:
+    environment:
+      ONLINE_DOCUMENTS_ENABLED: "true"
+      ONLYOFFICE_JWT_SECRET: "${ONLYOFFICE_JWT_SECRET:?ONLYOFFICE_JWT_SECRET is required}"
+      ONLYOFFICE_INTERNAL_URL: http://onlyoffice
+      ONLYOFFICE_PUBLIC_URL: "${ONLYOFFICE_PUBLIC_URL:?ONLYOFFICE_PUBLIC_URL is required}"
+      ONLYOFFICE_CALLBACK_BASE: http://api:8000
+    networks: [default, office-private]
+  web:
+    networks: [default, office-private]
+networks:
+  office-private:
+    external: true
+    name: rr-office-private

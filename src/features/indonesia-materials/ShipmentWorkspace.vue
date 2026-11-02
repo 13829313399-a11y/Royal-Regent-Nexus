@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { lostRecordAccess } from './recordAccess'
+import RecordResponsibility from './RecordResponsibility.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 import SectionPanel from './MaterialsPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -32,6 +34,7 @@ async function goStep(step: number) { if (step === 4 && form.value && !readOnly.
 defineExpose({ goStep, hasActive, canReview, sourceId, canPack: computed(() => hasActive.value && !readOnly.value) })
 const readOnly = computed(() => editing.value?.data.status === 'confirmed')
 const context = ref({ customer: '', recipient: 'RRI' })
+const accessLost = computed(() => lostRecordAccess(ws, confirming.value || editing.value))
 const draft = useMaterialDraft(() => readOnly.value ? null : form.value ?? (confirming.value ? { confirming: confirming.value.id } : null), {
   id: 'shipment', multiple: true, capture: () => readOnly.value || (!form.value && !confirming.value) ? null : { form: form.value, editing: recordRef(editing.value), confirming: recordRef(confirming.value), context: context.value,
     label: confirming.value ? `${confirming.value.data.customer} · ${confirming.value.data.recipient} · ${confirming.value.data.shipment_date} · 确认出货` : '' },
@@ -92,13 +95,13 @@ function toggle(row: MaterialRecord, event: Event) {
 function addPackage() { form.value?.packages.push({ label: '', cartons: 1, length_cm: '', width_cm: '', height_cm: '', carton_weight_kg: '0', pallet: '', items: [] }) }
 const confirmationCartons = computed(() => confirming.value?.data.packages.reduce((total: number, group: Data) => total + Number(group.cartons), 0) ?? 0)
 async function save(advance = false) {
-  if (!form.value) return
+  if (accessLost.value || !form.value) return
   if (advance && (balances.value.length || !form.value.packages.length)) { ws.error = '请先核平下方装箱数量并填写包装组。'; return }
   if (advance && editorElement.value && !editorElement.value.reportValidity()) return
   await draft.run('shipment_save', form.value, editing.value, result => { form.value = null; if (advance) completion.value = { record: result, confirmed: false } })
 }
 async function confirm() {
-  if (!confirming.value || !reviewed.value) { ws.error = '请先勾选已核对数量与装箱资料。'; return }
+  if (accessLost.value || !confirming.value || !reviewed.value) { ws.error = '请先勾选已核对数量与装箱资料。'; return }
   await draft.run('shipment_confirm', {}, confirming.value, result => { confirming.value = undefined; completion.value = { record: result, confirmed: true } })
 }
 watch([completion, () => ws.locked, draft.submitting], async () => {
@@ -111,14 +114,16 @@ watch([completion, () => ws.locked, draft.submitting], async () => {
 </script>
 <template>
   <SectionPanel title="本次出货资料">
+    <p v-if="accessLost" class="im-message" role="alert">此待办已转交其他跟客或不可用，不能继续处理。原本机草稿保留，可新建或打开其他单据。</p>
     <template #action><button type="button" class="im-primary" :disabled="!ws.canWrite || (ws.locked || draft.switching.value)" @click="edit()"><Plus :size="15" />新建出货草稿</button></template>
     <details :open="!hasActive" class="im-history"><summary>出货记录 · {{ ws.kind('shipment').length }} 单</summary>
-    <div v-if="ws.kind('shipment').length" class="im-scroll"><table><thead><tr><th>客户／接收方</th><th>出货日期</th><th>分配行／包装组</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="row in ws.kind('shipment')" :key="row.id" :data-shipment-id="row.id"><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.shipment_date }}</td><td>{{ row.data.lines.length }} / {{ row.data.packages.length }}</td><td><StatusPill :label="showStatus(row.data.status)" :tone="row.data.status === 'confirmed' ? 'green' : 'slate'" /></td><td><div class="flex flex-wrap gap-2"><button type="button" :disabled="(ws.locked || draft.switching.value)" @click="edit(row)">{{ row.data.status === 'draft' && ws.canWrite ? '编辑草稿' : '查看明细' }}</button><button v-if="row.data.status === 'draft'" type="button" :disabled="!ws.canWrite || (ws.locked || draft.switching.value)" @click="beginConfirm(row)">核对并确认出货</button><button v-else type="button" :disabled="!ws.has('export') || ws.busy" @click="ws.download(row.id, `${row.data.shipment_date}_${row.data.customer}_${row.data.recipient}_出货明细.xlsx`)">下载原版出货明细</button></div></td></tr></tbody></table></div>
+    <div v-if="ws.kind('shipment').length" class="im-scroll"><table><thead><tr><th>客户／接收方</th><th>出货日期</th><th>分配行／包装组</th><th>状态</th><th>上传人／负责人</th><th>操作</th></tr></thead><tbody><tr v-for="row in ws.kind('shipment')" :key="row.id" :data-shipment-id="row.id"><td>{{ row.data.customer }} / {{ row.data.recipient }}</td><td>{{ row.data.shipment_date }}</td><td>{{ row.data.lines.length }} / {{ row.data.packages.length }}</td><td><StatusPill :label="showStatus(row.data.status)" :tone="row.data.status === 'confirmed' ? 'green' : 'slate'" /></td><td><RecordResponsibility :record="row" /></td><td><div class="flex flex-wrap gap-2"><button type="button" :disabled="(ws.locked || draft.switching.value)" @click="edit(row)">{{ row.data.status === 'draft' && ws.canWrite ? '编辑草稿' : '查看明细' }}</button><button v-if="row.data.status === 'draft'" type="button" :disabled="!ws.canWrite || (ws.locked || draft.switching.value)" @click="beginConfirm(row)">核对并确认出货</button><button v-else type="button" :disabled="!ws.has('export') || ws.busy" @click="ws.download(row.id, `${row.data.shipment_date}_${row.data.customer}_${row.data.recipient}_出货明细.xlsx`)">下载原版出货明细</button></div></td></tr></tbody></table></div>
     <div v-else-if="!form" class="im-onboarding"><span class="im-empty-icon"><FileSpreadsheet :size="28" /></span><h3>整理一份客户出货明细</h3><p>暂无出货记录。先完成物料分配及船务入库确认，再建立出货草稿。</p><p>支持整箱、尾箱与混箱；同一物料在导出表中归为一行。</p></div>
     </details>
     <form v-if="form" ref="editorElement" class="im-editor im-stack" @submit.prevent="save()">
       <h3>{{ readOnly ? '已确认出货明细' : editing ? '编辑出货草稿' : '新建出货草稿' }}</h3>
       <p v-if="editing?.data.warehouse_import_id && !readOnly" class="im-message">实收与 PO 已确认。补齐本次装箱资料后进入出货核对。</p>
+      <details v-if="editing?.data.packing_notes?.length && !readOnly" open class="im-message"><summary>导入时待核对的装箱资料</summary><p v-for="note in editing.data.packing_notes" :key="note">{{ note }}</p></details>
       <ShipmentSummary v-if="readOnly && editing" :shipment="editing.data" /><button v-if="readOnly && editing" type="button" class="im-primary" :disabled="!ws.has('export') || ws.busy" @click="ws.download(editing.id, `${editing.data.shipment_date}_${editing.data.customer}_${editing.data.recipient}_出货明细.xlsx`)">下载出货 Excel</button>
       <template v-if="packingTotals">
         <details><summary>查看合同与采购来源的重量明细</summary>
@@ -128,7 +133,7 @@ watch([completion, () => ws.locked, draft.submitting], async () => {
       </template>
 
       <button v-if="readOnly" type="button" :aria-expanded="showOriginal" @click="showOriginal = !showOriginal">{{ showOriginal ? '收起原始装箱资料' : '查看原始装箱资料' }}</button>
-      <fieldset v-show="!readOnly || showOriginal" :disabled="readOnly || !ws.canWrite || (ws.locked || draft.switching.value)" class="im-stack">
+      <fieldset v-show="!readOnly || showOriginal" :disabled="accessLost || readOnly || !ws.canWrite || (ws.locked || draft.switching.value)" class="im-stack">
         <div class="im-fields"><label class="im-field"><span>客户 *</span><select v-model="form.customer" required @change="resetLines('customer', $event)"><option value="">请选择客户</option><option v-for="customer in customers" :key="customer" :value="customer">{{ customer }}</option></select></label><label class="im-field"><span>本次唯一接收方 *</span><select v-model="form.recipient" @change="resetLines('recipient', $event)"><option>RRI</option><option>RRM</option></select></label><label class="im-field"><span>实际出货日期 *</span><input v-model="form.shipment_date" type="date" required></label></div>
         <details><summary>调整客户或出货来源</summary><p class="im-note">更换客户保留原单草稿；只可选择已实收且已分配的物料。</p>
         <div v-if="candidates.length && !readOnly" class="im-scroll"><table><thead><tr><th>选择</th><th>合同物料／来源</th><th>已分配正常／备品</th><th>已发正常／备品</th></tr></thead><tbody><tr v-for="row in candidates" :key="row.id"><td><input type="checkbox" :checked="selected(row.id)" :aria-label="`选择出货 ${label(row.id)}`" @change="toggle(row, $event)"></td><td>{{ label(row.id) }}</td><td>{{ row.data.normal_quantity }} / {{ row.data.spare_quantity }}</td><td>{{ row.data.shipped_normal ?? '0' }} / {{ row.data.shipped_spare ?? '0' }}</td></tr></tbody></table></div>
@@ -153,8 +158,8 @@ watch([completion, () => ws.locked, draft.submitting], async () => {
       <div class="im-scroll"><table><thead><tr><th>出货物料</th><th>正常量</th><th>免费备品量</th></tr></thead><tbody><tr v-for="line in confirming.data.lines" :key="line.allocation_id"><td>{{ label(line.allocation_id) }}</td><td>{{ line.normal_quantity }}</td><td>{{ line.spare_quantity }}</td></tr></tbody></table></div>
       <div v-if="confirming.data.packages.length" class="im-scroll"><table><thead><tr><th>包装组／箱号</th><th>箱数</th><th>长 × 宽 × 高（cm）</th><th>每箱纸箱重（kg）</th><th>箱内物料与正常／备品量</th><th>卡板标记</th></tr></thead><tbody><tr v-for="(group, index) in confirming.data.packages" :key="index"><td>{{ group.label }}</td><td>{{ group.cartons }}</td><td>{{ group.length_cm }} × {{ group.width_cm }} × {{ group.height_cm }}</td><td>{{ group.carton_weight_kg }}</td><td><p v-for="item in group.items" :key="item.allocation_id">{{ label(item.allocation_id) }} · {{ item.normal_quantity }} / {{ item.spare_quantity }}</p></td><td>{{ group.pallet || '—' }}</td></tr></tbody></table></div>
       <p class="im-note">{{ confirmationCartons }} 箱 · 确认后正式记录出货，生成 Excel。重复下载不会再次记账。</p>
-      <label class="im-inline"><input v-model="reviewed" type="checkbox" required :disabled="ws.locked"><span>已核对本次数量、装箱与实际出货日期</span></label>
-      <div class="im-actions"><button type="submit" class="im-primary" :disabled="!ws.canWrite || (ws.locked || draft.switching.value)">{{ ws.has('export') ? '确认出货并导出 Excel' : '确认出货' }}</button><button type="button" :disabled="ws.busy || !!ws.pending || draft.switching.value" @click="confirming = undefined">取消</button></div>
+      <label class="im-inline"><input v-model="reviewed" type="checkbox" required :disabled="accessLost || ws.locked"><span>已核对本次数量、装箱与实际出货日期</span></label>
+      <div class="im-actions"><button type="submit" class="im-primary" :disabled="accessLost || !ws.canWrite || (ws.locked || draft.switching.value)">{{ ws.has('export') ? '确认出货并导出 Excel' : '确认出货' }}</button><button type="button" :disabled="ws.busy || !!ws.pending || draft.switching.value" @click="confirming = undefined">取消</button></div>
     </form>
   </SectionPanel>
 </template>

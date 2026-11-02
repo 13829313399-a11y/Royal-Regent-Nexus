@@ -1,3 +1,4 @@
+import type { PrintSplitInfo } from './cartonPrintSplits'
 import type { MaterialCorrection } from './cartonMaterialCorrection'
 import { http } from '@/lib/http'
 import { postCartonInventoryRequest } from './cartonInventoryRequest'
@@ -9,7 +10,7 @@ export interface PortalAttachment { id: string; filename: string; version: numbe
 export interface PortalPaper { id: string; line_no: number; child_no: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit: string; unit: string; required_quantity: string; received_quantity: string; in_transit_quantity: string; remaining_to_ship: string; accepted: boolean; shipping_blocked_reason?: string; commitment_revision: number; promised_date: string; unit_price?: string; currency?: string }
 export interface CancellationNotice { issue_id: string; order_revision: number; issued: boolean; acknowledged: boolean; acknowledged_at: string }
 export interface ReplenishmentSource { issue_id: string; document_no: string; responsibility: 'OWN' | 'SUPPLIER'; planned_date: string; lines: PortalPaper[] }
-export interface PortalOrder { rush_version?: string; rush?: boolean; rush_reason?: string; rush_at?: string | null; rush_acknowledged?: boolean; rush_ack_at?: string | null; replenishment_sources?: ReplenishmentSource[]; material_corrections?: MaterialCorrection[]; cancellation_notice?: CancellationNotice | null; split_records?: SplitRecord[]; id: string; order_no: string; customer_code?: string; revision?: number; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; status: string; issue_id: string; document_no: string; order_date: string; planned_date: string; awaiting_issue: boolean; lines: PortalPaper[]; attachments: PortalAttachment[] }
+export interface PortalOrder { order_split?: import('./cartonOrderDivisions').OrderDivisionInfo | null; schedule_split_source?: { source_contract_no: string; current_contract_no: string } | null; print_split?: PrintSplitInfo | null; rush_version?: string; rush?: boolean; rush_reason?: string; rush_at?: string | null; rush_acknowledged?: boolean; rush_ack_at?: string | null; replenishment_sources?: ReplenishmentSource[]; material_corrections?: MaterialCorrection[]; cancellation_notice?: CancellationNotice | null; split_records?: SplitRecord[]; id: string; order_no: string; customer_code?: string; revision?: number; customer_name: string; contract_no: string; customer_po: string; item_no: string; product_name: string; status: string; issue_id: string; document_no: string; order_date: string; planned_date: string; awaiting_issue: boolean; lines: PortalPaper[]; attachments: PortalAttachment[] }
 export interface ShipmentLine { rejected_quantity?: string; damaged_quantity?: string; unusable_quantity?: string; receipt_classification?: Pick<ReceiveLine, 'no_order_decision' | 'customer_code' | 'requested_by' | 'sample_purpose' | 'workshop_id'>; closed_source_linkable?: boolean; replenishment_issue_id?: string | null; replenishment_document_no?: string; responsibility?: 'OWN' | 'SUPPLIER'; business_kind?: SupplierDocumentBusinessKind; free_confirmed?: boolean; received_quantity?: string; effective_quantity?: string; remaining_quantity?: string; receivable_quantity?: string; closed_quantity?: string; material_correction_pending?: boolean; material_correction_note?: string; original_unmatched_line_id?: string; dimension_unit?: string; id: string; order_line_id: string | null; source_type?: 'FORMAL_ORDER' | 'AD_HOC_REVIEW'; order_no: string; contract_no: string; customer_po: string; item_no: string; customer_name: string; child_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; unit_price?: string; delivery_unit_price?: string | null; currency?: string }
 export interface ReceiveLine { close_remaining?: boolean; price_action?: 'MATCH' | 'PENDING' | 'PROPOSE' | 'FREE'; price_reason?: string; zero_price_kind?: 'FREE' | 'PENDING'; shipment_line_id: string; received_quantity: number; damaged_quantity: number; rejected_quantity: number; unusable_quantity: number; unit_price: number; paper_quality: string; specification: string; location_allocations: LocationAllocation[]; difference_reason: string; dimension_unit?: 'cm' | 'in'; no_order_decision?: '' | 'SAMPLE' | 'GIFT' | 'WRONG_DELIVERY' | 'MISC' | 'UNORDERED'; customer_code?: string; sample_purpose?: string; requested_by?: string; workshop_id?: string; unit?: string }
 export interface SampleReceipt { receipt_line_id: string; customer_code: string; customer_name: string; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; unit: string; quantity: string; linked_order_line_id: string }
@@ -17,9 +18,10 @@ export interface PortalShipment { legacy_correction_lines?: ReceiveLine[]; parti
 export interface PortalWorkspace { factory_id: string; supplier_name: string; orders: PortalOrder[]; shipments: PortalShipment[] }
 export interface PendingSupplierShipment { id: string; delivery_note_no: string; delivery_date: string; requires_correction: boolean }
 export interface PendingSupplierShipments { factory_id: string; total: number; items: PendingSupplierShipment[] }
-export interface DeliveryRowSelection { source_sheet: string; source_row: number; order_line_id: string; issue_id: string; order_revision: number }
-export interface DeliveryCandidate { replenishment?: boolean; responsibility?: 'OWN' | 'SUPPLIER'; order_line_id: string; issue_id: string; order_revision: number; order_no: string; customer_po: string; document_no: string; planned_date: string; status: string; required_quantity: string; remaining_to_ship: string; child_no: string; unit: string }
-export interface DeliveryImportRow { candidates?: DeliveryCandidate[]; order_revision?: number; source_sheet: string; source_row: number; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; delivered_quantity: number; unit_price?: number; order_no: string; child_no: string; order_line_id: string; issue_id: string; status: 'READY' | 'AD_HOC_REVIEW' | 'BLOCKED'; reason: string }
+export interface DeliverySource { source_kind?: 'REGULAR' | 'SPECIAL'; special_request_id?: string; order_kind?: 'REGULAR' | 'SAMPLE' | 'MISC' }
+export interface DeliveryRowSelection extends DeliverySource { source_sheet: string; source_row: number; order_line_id: string; issue_id: string; order_revision: number; free_confirmed?: boolean }
+export interface DeliveryCandidate extends DeliverySource { replenishment?: boolean; responsibility?: 'OWN' | 'SUPPLIER'; order_line_id: string; issue_id: string; order_revision: number; order_no: string; customer_po: string; document_no: string; planned_date: string; status: string; required_quantity: string; remaining_to_ship: string; child_no: string; unit: string }
+export interface DeliveryImportRow extends DeliverySource { candidates?: DeliveryCandidate[]; order_revision?: number; source_sheet: string; source_row: number; contract_no: string; item_no: string; packaging_type: string; paper_quality: string; specification: string; delivered_quantity: number; unit_price?: number; unit_price_provided?: boolean; free_confirmation_required?: boolean; free_confirmed?: boolean; order_no: string; child_no: string; order_line_id: string; issue_id: string; status: 'READY' | 'AD_HOC_REVIEW' | 'BLOCKED'; reason: string }
 export interface DeliveryImportGroup {
   manual_delivery_id?: string; factory_id: string; destination: string; delivery_note_no: string; delivery_date: string; ready: boolean; receipt_link_ready?: boolean; existing_receipt_count?: number; issues: string[]; rows: DeliveryImportRow[] }
 export type DeliveryRegistrationMode = 'SHIPMENT' | 'EXISTING_RECEIPT'
@@ -32,11 +34,12 @@ export interface SupplierDocumentLine { rejected_quantity?: string; effective_qu
 export interface SupplierDocument { is_cancellation?: boolean; supplier_acceptance?: Omit<CartonSupplierAcceptanceResponse, 'status' | 'issue_id' | 'document_no' | 'accepted_at'> & { status: string }; id: string; kind: 'PURCHASE' | 'DELIVERY'; factory_id: string; document_no: string; document_type: string; date: string; created_at: string; status: string; replenishment: boolean; export_count: number; is_batch?: boolean; source_documents?: { id: string; document_no: string; order_no: string }[]; unmatched_line_count?: number; source_filename?: string; source_sha256?: string; orders: SupplierDocumentOrder[]; lines: SupplierDocumentLine[] }
 export interface SupplierActivity { id: string; created_at: string; action: string; reference_no: string; actor_name: string; factory_id: string }
 export interface SupplierMarkAsset extends CartonMarkSharing {
+  can_classify?: boolean
   binding_status?: 'BOUND' | 'NO_ORDER' | 'UNBOUND' | 'AMBIGUOUS'
   workflow?: CartonMarkAssetWorkflow
   photo_group_id?: string | null
   revision: number
-  id: string; file_name: string; kind: 'pdf' | 'excel' | 'image'; size_bytes: number; contract_number: string; created_at: string
+  id: string; file_name: string; kind: 'pdf' | 'excel' | 'image' | 'text'; size_bytes: number; contract_number: string; created_at: string
   orders: { id: string; issue_id: string; customer_name: string; contract_no: string; customer_po: string; item_no: string }[]
 }
 export interface SupplierMarkCheck extends SupplierMarkTemplate {
@@ -64,6 +67,28 @@ export type MarkPdfSupplements = Partial<Record<'quantity' | 'carton_total' | 'd
 export interface SupplierMarkLayout { id: string; factory_id: string; customer_name: string; name: string; version: number; reference_name: string; created_at: string; config: MarkLayoutConfig }
 export interface MarkLayoutPreview { preview_data_url: string; page_width_mm: number; page_height_mm: number; page_count: number; suggested_side_address: string }
 export interface SupplierMarkPdfResult { asset: SupplierMarkAsset; page_count: number; warnings: string[]; layout_id: string; layout_name: string; layout_version: number }
+export interface MarkPdfAiStatus { available: boolean; customer_template_available?: boolean; template_id: string; name: string; model: string; message: string }
+export interface MarkPdfDraftResult { blob: Blob; page_count: number; warnings: string[]; file_name: string }
+export interface MarkConfirmedTemplate { id: string; name: string; version: number; reference_sha256: string }
+export interface MarkDraftSource { factory_id?: string; excel?: File; excel_asset_id?: string; expected_revision?: number; worksheets?: string[]; ai_consent?: boolean; image_consent?: boolean; customer_template_id?: string }
+export interface MarkSourceInspection { worksheets: { name: string; cells: number; chars: number }[]; selected: string[]; confirmed_template?: MarkConfirmedTemplate }
+export interface MarkReadField { id: string; label: string; value: string; sources: string[]; locked: boolean; placeholder: boolean }
+export interface MarkReadResult {
+  mode?: 'ai' | 'native_layout' | 'needs_mapping' | 'confirmed_template'
+  confirmed_template?: MarkConfirmedTemplate | null
+  customer_template?: MarkConfirmedTemplate | null
+  order_changes?: { record: number; face: 'front' | 'side'; summary: string; note_ids: string[] }[]
+  logo_available?: boolean
+  payload: string; signature: string; source_cells: number; paper: 'A3' | 'A4'; orientation: 'portrait' | 'landscape'; warnings: string[]
+  records: { title?: string; panels: { face: 'front' | 'side'; copies: number; logo?: boolean; symbols?: string[]; fields: MarkReadField[]; barcodes: { value: string; kind: string; width_mm: number; height_mm: number; frame: string }[] }[] }[]
+  notes: { id: string; location: string; text: string; status: string }[]
+  images: { id: string; location: string; preview: string; text: string; status: string }[]
+  unselected_cells: { id: string; location: string; text: string; printable: boolean }[]
+  issues?: { kind: string; message: string; field_ids: string[]; sources: string[] }[]
+}
+export interface MarkReviewAddition { record: number; face: 'front' | 'side'; label?: string; value?: string; source_id?: string; as_barcode?: boolean }
+export interface MarkGraphicSelection { record: number; face: 'front' | 'side'; logo: boolean; symbols: string[] }
+export interface MarkReviewEdits { edits: Record<string, string>; reviewed_notes: string[]; paper: 'A3' | 'A4'; orientation: 'portrait' | 'landscape'; additions?: MarkReviewAddition[]; omissions?: string[]; graphics?: MarkGraphicSelection[]; include_sources?: boolean; ignored_changes?: number[] }
 export type SupplierMarkUploadOrder = SupplierMarkAsset['orders'][number] & { document_no: string; order_date: string }
 const base = '/carton-supplier'
 export const cartonSupplierPortalApi = {
@@ -95,6 +120,11 @@ export const cartonSupplierPortalApi = {
   },
   async markTemplates(factory_id: string) { return (await http.get<SupplierMarkTemplate[]>(base + '/carton-mark/templates', { params: { factory_id } })).data },
   async markAssets(factory_id: string, signal?: AbortSignal) { return (await http.get<SupplierMarkAsset[]>(base + '/carton-mark/assets', { params: { factory_id }, signal })).data },
+  async classifyMarkAsset(factory_id: string, asset: { id: string; revision: number }, status: 'DRAFT' | 'PENDING', request_id: string, signal?: AbortSignal) {
+    const { data } = await http.put<SupplierMarkAsset>(`${base}/carton-mark/assets/${encodeURIComponent(asset.id)}/classification`, { revision: asset.revision, status, request_id }, { params: { factory_id }, signal })
+    if (data.id !== asset.id) throw new Error('状态保存结果与当前文件不一致，请原样重试核实。')
+    return data
+  },
   async markUploadOrders(factory_id: string, signal?: AbortSignal) { return (await http.get<SupplierMarkUploadOrder[]>(base + '/carton-mark/upload-orders', { params: { factory_id }, signal })).data },
   async uploadMarkAssets(factory_id: string, files: File[], order?: SupplierMarkAsset['orders'][number], signal?: AbortSignal, sharedUnbound = false, association?: { request_id: string; targets: CartonMarkAssociationTarget[] }) {
     const body = new FormData(); body.append('factory_id', factory_id)
@@ -125,7 +155,72 @@ export const cartonSupplierPortalApi = {
     if (file) body.append('reference_pdf', file)
     return (await http.post<SupplierMarkLayout>(base + '/carton-mark/layouts', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 120000 })).data
   },
-  async generateMarkPdf(request: { factory_id: string; order_id: string; issue_id: string; excel_asset_id: string; expected_revision: number; layout_id: string; supplements?: MarkPdfSupplements; source_item?: string }, signal?: AbortSignal) {
+  async markPdfAiStatus(factory_id: string, order: Pick<SupplierMarkAsset['orders'][number], 'id' | 'issue_id'>, signal?: AbortSignal) {
+    return (await http.get<MarkPdfAiStatus>(base + '/carton-mark/pdf-ai-status', { params: { factory_id, order_id: order.id, issue_id: order.issue_id }, signal })).data
+  },
+  async markPdfDraftStatus(factory_id = '', signal?: AbortSignal) {
+    return (await http.get<MarkPdfAiStatus>(base + '/carton-mark/pdf-draft-status', { params: { factory_id }, signal })).data
+  },
+  async readMarkPdfDraft(request: MarkDraftSource, signal?: AbortSignal): Promise<MarkReadResult> {
+    const body = new FormData()
+    for (const key of ['factory_id', 'excel_asset_id', 'expected_revision'] as const) if (request[key] !== undefined) body.append(key, String(request[key]))
+    if (request.excel) body.append('excel', request.excel)
+    body.append('ai_consent', String(request.ai_consent ?? true))
+    body.append('image_consent', String(request.image_consent ?? false))
+    if (request.customer_template_id) body.append('customer_template_id', request.customer_template_id)
+    body.append('worksheets_json', JSON.stringify(request.worksheets ?? []))
+    return (await http.post<MarkReadResult>(base + '/carton-mark/read-pdf-draft', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 360000 })).data
+  },
+  async inspectMarkPdfDraft(request: MarkDraftSource, signal?: AbortSignal): Promise<MarkSourceInspection> {
+    const body = new FormData()
+    for (const key of ['factory_id', 'excel_asset_id', 'expected_revision'] as const) if (request[key] !== undefined) body.append(key, String(request[key]))
+    if (request.excel) body.append('excel', request.excel)
+    return (await http.post<MarkSourceInspection>(base + '/carton-mark/inspect-pdf-draft', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, timeout: 120000 })).data
+  },
+  async renderReviewedMarkDraft(request: MarkDraftSource, review: MarkReadResult, edits: MarkReviewEdits, signal?: AbortSignal): Promise<MarkPdfDraftResult> {
+    const body = new FormData()
+    for (const key of ['factory_id', 'excel_asset_id', 'expected_revision'] as const) if (request[key] !== undefined) body.append(key, String(request[key]))
+    if (request.excel) body.append('excel', request.excel)
+    body.append('review_payload', review.payload); body.append('review_signature', review.signature)
+    body.append('edits_json', JSON.stringify(edits.edits)); body.append('reviewed_notes_json', JSON.stringify(edits.reviewed_notes))
+    body.append('include_sources', String(edits.include_sources ?? true))
+    body.append('additions_json', JSON.stringify(edits.additions ?? [])); body.append('omissions_json', JSON.stringify(edits.omissions ?? []))
+    body.append('graphics_json', JSON.stringify(edits.graphics ?? []))
+    body.append('ignored_changes_json', JSON.stringify(edits.ignored_changes ?? []))
+    body.append('paper', edits.paper); body.append('orientation', edits.orientation)
+    try {
+      const response = await http.post<Blob>(base + '/carton-mark/render-reviewed-draft', body, { headers: { 'Content-Type': 'multipart/form-data' }, signal, responseType: 'blob', timeout: 180000 })
+      return { blob: response.data, page_count: Number(response.headers['x-carton-pdf-pages'] ?? 1), warnings: JSON.parse(decodeURIComponent(String(response.headers['x-carton-pdf-warnings'] ?? '%5B%5D'))) as string[], file_name: '箱唛_审阅稿.pdf' }
+    } catch (cause) {
+      const response = (cause as { response?: { data: unknown } })?.response
+      if (response?.data instanceof Blob) { try { response.data = JSON.parse(await response.data.text()) } catch { /* Retain transport error. */ } }
+      throw cause
+    }
+  },
+  async generateMarkPdfDraft(request: { factory_id?: string; excel?: File; excel_asset_id?: string; expected_revision?: number; engine: 'excel_original' | 'deepseek_zumiez'; ai_consent?: boolean; supplements?: MarkPdfSupplements }, signal?: AbortSignal): Promise<MarkPdfDraftResult> {
+    const body = new FormData()
+    for (const key of ['factory_id', 'excel_asset_id', 'expected_revision', 'engine', 'ai_consent'] as const) {
+      if (request[key] !== undefined) body.append(key, String(request[key]))
+    }
+    if (request.excel) body.append('excel', request.excel)
+    body.append('supplements_json', JSON.stringify(request.supplements ?? {}))
+    try {
+      const response = await http.post<Blob>(base + '/carton-mark/generate-pdf-draft', body, {
+        headers: { 'Content-Type': 'multipart/form-data' }, signal, responseType: 'blob', timeout: 360000,
+      })
+      const name = request.excel?.name ?? '箱唛'
+      return { blob: response.data, page_count: Number(response.headers['x-carton-pdf-pages'] ?? 1),
+        warnings: JSON.parse(decodeURIComponent(String(response.headers['x-carton-pdf-warnings'] ?? '%5B%5D'))) as string[],
+        file_name: name.replace(/\.(xls|xlsx)$/i, '') + '_审阅稿.pdf' }
+    } catch (cause) {
+      const response = (cause as { response?: { data: unknown } })?.response
+      if (response?.data instanceof Blob) {
+        try { response.data = JSON.parse(await response.data.text()) } catch { /* Keep the original HTTP error. */ }
+      }
+      throw cause
+    }
+  },
+  async generateMarkPdf(request: { factory_id: string; order_id: string; issue_id: string; excel_asset_id: string; expected_revision: number; layout_id: string; engine?: 'customer_layout' | 'deepseek_zumiez'; ai_consent?: boolean; supplements?: MarkPdfSupplements; source_item?: string }, signal?: AbortSignal) {
     return (await http.post<SupplierMarkPdfResult>(base + '/carton-mark/generate-pdf', request, { signal, timeout: 360000 })).data
   },
   async createMarkCheck(request: SupplierMarkCheckRequest) {

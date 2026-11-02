@@ -75,6 +75,111 @@ function p4(): P4InternalQuoteArtifact {
 }
 
 describe('Silverlit temporary independent mapping', () => {
+  function icLegacy() {
+    return changedLegacy(sheets => {
+      sheets[0]!.rows[0] = ['汇率']; sheets[0]!.rows[1] = [.84]
+      Object.assign(sheets[0]!.rows[37]!, { 1: '电子', 2: 'TX 遥控器*2pcs' })
+      sheets.push({ name: '电子报价', cellFillIds: [], rows: [
+        ['产品编号：00012-TX'], ['零件名称', '规格', '用量', '单价RMB', '合计RMB'],
+        ['IC', 'IC,OTP,BURN,PMS152', 1, .5, .5],
+      ] })
+    })
+  }
+  it('splits source IC at its fixed price, keeps totals and exports formula-backed quantity/unit price', () => {
+    const result = convertYinhuiInternalQuote(icLegacy(), '银辉00012.xlsx')
+    const d = result.quoteData
+    expect(d.electronic).toHaveLength(2)
+    expect(d.electronic[1]!.quantity).toBe(2)
+    expect(d.electronic[1]!.amountHkd).toBeCloseTo(.5 / .84 * 1.08 / .96 * 2, 12)
+    expect(yinhuiTotals(d).electronic).toBeCloseTo(5.25, 12)
+    const out = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template)))
+    const bom = out.sheets[2]!
+    const index = bom.rows.findIndex(row => row[1] === 'IC,OTP,BURN,PMS152')
+    expect(bom.rows[index]![7]).toBe(2)
+    expect(bom.rows[index]![8]).toBeCloseTo(.5 / .84 * 1.08 / .96, 12)
+    expect(bom.rows[index]![9]).toBeCloseTo(.5 / .84 * 1.08 / .96 * 2, 12)
+    expect(out.sheets[0]!.rows[31]![9]).toBeCloseTo(yinhuiTotals(d).exFactory, 8)
+  }, 15000)
+  it('retains full parent cost in a blocked draft when IC FX is missing', () => {
+    const sheets = parseXlsxWorkbook(icLegacy()).sheets
+    sheets[0]!.rows[1]![0] = ''
+    const bytes = buffer(createXlsxWorkbook(sheets))
+    const result = convertYinhuiInternalQuote(bytes, '银辉00012.xlsx', { draft: true })
+    expect(result.quoteData.electronic).toHaveLength(1)
+    expect(result.quoteData.electronic[0]!.amountHkd).toBe(5.25)
+    expect(result.quoteData.importIssues?.some(issue => /IC.*汇率|汇率/.test(issue.message))).toBe(true)
+    expect(() => createYinhuiCustomerQuoteWorkbook(result, template)).toThrow(/汇率/)
+  })
+  function icP4() {
+    const artifact = p4()
+    const tx = [{ kind: 'electronic_component', item: 'IC', specification: 'IC,OTP,TX', quantity: 2,
+      unit_price_hkd: .5 / .84, amount_hkd: 1 / .84 }, { kind: 'electronic_component', item: 'PCB', quantity: 1, amount_hkd: 1 }]
+    const rx = [{ kind: 'electronic_component', item: 'IC', specification: 'IC,DRIVER,RX', quantity: 4,
+      unit_price_hkd: .2 / .84, amount_hkd: .8 / .84 }]
+    artifact.sections.electronic.calculation = { totals: { total_hkd: 12 }, line_breakdown: [...tx, ...rx], quote_groups: [
+      { id: 'tx', name: 'TX 遥控器', totals: { total_hkd: 4 }, line_breakdown: tx },
+      { id: 'rx', name: 'RX 主机电子', totals: { total_hkd: 8 }, line_breakdown: rx },
+    ] }
+    return artifact
+  }
+  it('splits approved P4 IC parts from their own group, preserving different group margins and total', () => {
+    const result = convertYinhuiP4InternalQuote(icP4(), 'approved.xlsx')
+    const rows = result.quoteData.electronic
+    expect(rows.map(row => row.description)).toEqual(['TX 遥控器', 'IC,OTP,TX', 'RX 主机电子', 'IC,DRIVER,RX'])
+    expect(rows[1]!.amountHkd).toBeCloseTo(.5 / .84 * 1.08 / .96 * 2, 12)
+    expect(rows[3]!.amountHkd).toBeCloseTo(.2 / .84 * 1.08 / .96 * 4, 12)
+    expect(rows[0]!.amountHkd + rows[1]!.amountHkd).toBeCloseTo(4 * 1.1, 10)
+    expect(rows[2]!.amountHkd + rows[3]!.amountHkd).toBeCloseTo(8 * 1.1, 10)
+    expect(yinhuiTotals(result.quoteData).electronic).toBeCloseTo(12 * 1.1, 10)
+  })
+  it('rejects inconsistent approved IC unit prices and group totals', () => {
+    const artifact = icP4()
+    const groups = artifact.sections.electronic.calculation.quote_groups as Array<{totals:{total_hkd:number};line_breakdown:Array<Record<string,unknown>>}>
+    groups[0]!.line_breakdown[0]!.unit_price_hkd = 99
+    expect(() => convertYinhuiP4InternalQuote(artifact, 'approved.xlsx')).toThrow(/IC 单价/)
+    groups[0]!.totals.total_hkd = 5
+    expect(() => convertYinhuiP4InternalQuote(artifact, 'approved.xlsx')).toThrow(/分组总价/)
+  })
+  it('uses frozen RMB FX before rounding approved IC HKD unit prices', () => {
+    const artifact = icP4(); artifact.referenceSnapshot.fx = { rmb_hkd: .84 }
+    const groups = artifact.sections.electronic.calculation.quote_groups as Array<{line_breakdown:Array<Record<string,unknown>>}>
+    Object.assign(groups[0]!.line_breakdown[0]!, { unit_price_rmb: .5, unit_price_hkd: .5952, amount_hkd: 1.1905 })
+    expect(convertYinhuiP4InternalQuote(artifact, 'approved.xlsx').quoteData.electronic[1]!.amountHkd)
+      .toBeCloseTo(.5 / .84 * 1.08 / .96 * 2, 12)
+    artifact.referenceSnapshot.fx = {}
+    expect(() => convertYinhuiP4InternalQuote(artifact, 'approved.xlsx')).toThrow(/汇率/)
+  })
+  it('does not mark up IC again when customer detail rates change in either import path', () => {
+    const definition = JSON.parse(readFileSync('shared/customerPriceDefaults.json', 'utf8')).yinhui
+    const pricing: CustomerPricingSettings = { factory_id: 'huaxing', customer_id: 'yinhui', revision: 1,
+      snapshot_id: 'ic', materials: definition.materials,
+      rates: { ...Object.fromEntries(Object.entries(definition.rates).map(([key, v]) => [key, (v as { value: number }).value])), detail_multiplier: 1.2 },
+      texts: {}, updated_at: '', updated_by_name: '' }
+    const legacyData = convertYinhuiInternalQuote(icLegacy(), '银辉00012.xlsx', { pricing }).quoteData
+    expect(legacyData.electronic[1]!.amountHkd).toBeCloseTo(.5 / .84 * 1.08 / .96 * 2, 12)
+    expect(yinhuiTotals(legacyData).electronic).toBeCloseTo(5.25 * 1.2, 10)
+    const controlled = convertYinhuiP4InternalQuote(icP4(), 'approved.xlsx', pricing).quoteData
+    expect(controlled.electronic[1]!.amountHkd).toBeCloseTo(.5 / .84 * 1.08 / .96 * 2, 12)
+    expect(yinhuiTotals(controlled).electronic).toBeCloseTo(12 * 1.1 * 1.2, 10)
+  })
+  it('preserves battery detail and quantity when an approved IC group also includes batteries', () => {
+    const artifact = icP4()
+    const groups = artifact.sections.electronic.calculation.quote_groups as Array<{line_breakdown:Array<Record<string,unknown>>}>
+    groups[0]!.line_breakdown.push({ item: 'AAA Battery', quantity: 2, amount_hkd: .5 })
+    const result = convertYinhuiP4InternalQuote(artifact, 'approved.xlsx')
+    expect(result.quoteData.electronic.find(row => row.isBattery)).toMatchObject({ description: 'AAA Battery', quantity: 2 })
+    expect(result.quoteData.battery).toContain('AAA Battery')
+    expect(yinhuiTotals(result.quoteData).electronic).toBeCloseTo(12 * 1.1, 10)
+  })
+  it('exports approved IC rows with their specifications and preserved group total', () => {
+    const artifact = icP4(); artifact.productName = '#00012 Sample Robot'
+    const result = convertYinhuiP4InternalQuote(artifact, 'approved.xlsx')
+    const out = parseXlsxWorkbook(buffer(createYinhuiCustomerQuoteWorkbook(result, template)))
+    const row = out.sheets[2]!.rows.find(row => row[1] === 'IC,DRIVER,RX')!
+    expect(row[7]).toBe(4)
+    expect(row[8]).toBeCloseTo(.2 / .84 * 1.08 / .96, 12)
+    expect(out.sheets[0]!.rows[14]![7]).toBeCloseTo(12 * 1.1, 10)
+  }, 15000)
   it.each(['吹气', '吹氣', '吹塑'])('maps priced %s components as purchased plastic and keeps price cross-checks', category => {
     const source = changedLegacy(sheets => {
       Object.assign(sheets[0]!.rows[28]!, { 1: category, 2: '吹塑圓球 HDPE (2PCS)', 3: .26, 4: .286 })

@@ -3,6 +3,7 @@ import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, shallow
 import WarehouseLocationPicker from '../warehouse-operations/WarehouseLocationPicker.vue'
 import MaterialHandoverMonthly from './MaterialHandoverMonthly.vue'
 import { handoverReviewIssues } from './handoverReview'
+import { suggestMaterialCategory } from '../warehouse-operations/materialCategorySuggestion'
 const HandoverOriginalPrint = defineAsyncComponent(() => import('./HandoverOriginalPrint.vue').then(module => module.default))
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, RouterLink } from 'vue-router'
 import axios from 'axios'
@@ -11,6 +12,7 @@ import { useAuthStore } from '@/stores/auth'
 import { handoverApi, HANDOVER_FACTORY, type HandoverAction, type HandoverData, type HandoverDocument, type HandoverIssuer, type HandoverLine, type HandoverPosting, type HandoverSave, type HandoverSummary, type HandoverWorkspace, type HandoverLinkInput, type HandoverLinkAction, type HandoverPurchaseSources, type HandoverListFilters } from '@/api/materialHandover'
 
 const props = defineProps<{ external?: boolean }>()
+const supplierTemplateUrl = `${import.meta.env.BASE_URL}templates/material-handover/supplier-delivery-v1.xlsx`
 const route = useRoute(), auth = useAuthStore()
 const key = computed(() => props.external ? new URLSearchParams(route.hash.replace(/^#/, '')).get('key') || '' : '')
 const api = computed(() => handoverApi(key.value))
@@ -23,6 +25,7 @@ const filters = ref(emptyFilters()), appliedFilters = ref(emptyFilters()), total
 const hasFilters = computed(() => Object.entries(appliedFilters.value).some(([key, value]) => value !== emptyFilters()[key as keyof HandoverListFilters]))
 const pendingDeliveriesOnly = computed(() => !props.external && route.query.deliveries === 'pending')
 const selected = ref<HandoverDocument | null>(null), draft = ref<HandoverData | null>(null)
+const manualCategories = new Set<string>()
 const error = ref(''), notice = ref(''), busy = ref(false), loading = ref(false)
 const showOptional = ref(false)
 const reviewIssues = computed(() => draft.value ? handoverReviewIssues(draft.value) : [])
@@ -96,8 +99,15 @@ async function initialize() {
   } catch (e) { if (epoch === generation) showError(e) }
   finally { if (epoch === generation) loading.value = false }
 }
-watch(() => [props.external, key.value, route.query.factory, route.query.document, route.query.deliveries, route.query.tab, auth.currentUser?.id, auth.authorizationVersion], initialize, { immediate: true })
+// Compare scope values, so replacing the same user's session does not discard work.
+watch([
+  () => props.external, () => key.value, () => route.query.factory,
+  () => route.query.document, () => route.query.deliveries, () => route.query.tab,
+  () => auth.currentUser?.id, () => auth.authorizationVersion,
+], initialize, { immediate: true })
 function accept(row: HandoverDocument) {
+  manualCategories.clear()
+  row.data.lines.filter(line => line.material_category).forEach(line => manualCategories.add(line.id))
   purchaseSequence++; purchaseSources.value = null; purchaseLoading.value = false; purchaseReady.value = false; purchaseError.value = ''
   selected.value = row; draft.value = clone(row.data); showOptional.value = false
   posting.value = Object.fromEntries(row.data.lines.map(line => [line.id, { selected: false, quantity: row.progress[line.id]?.remaining || line.quantity, batch_id: '', location_id: '', lot: line.lot, roll_no: line.roll_no, purchase_source_id: '', difference_reason: '' }]))
@@ -157,7 +167,22 @@ async function upload(files: File[]) {
 }
 function picked(event: Event) { const input = event.target as HTMLInputElement; const files = Array.from(input.files || []); input.value = ''; void upload(files) }
 function dropped(event: DragEvent) { void upload(Array.from(event.dataTransfer?.files || [])) }
-function addLine() { if (!draft.value) return; draft.value.lines.push({ id: 'L-' + uuid(), source_line: '', item_code: '', item_name: '', specification: '', color: '', quantity: '', unit: '', material_category: 'FABRIC', lot: '', roll_no: '', roll_quantities: '', contract_no: '', production_no: '', product_no: '', note: '' }) }
+function addLine() { if (!draft.value) return; draft.value.lines.push({ id: 'L-' + uuid(), source_line: '', item_code: '', item_name: '', specification: '', color: '', quantity: '', unit: '', material_category: '', currency: draft.value.kind === 'DELIVERY' ? 'CNY' : '', lot: '', roll_no: '', roll_quantities: '', contract_no: '', production_no: '', product_no: '', note: '' }) }
+function lineCurrency(line: HandoverLine) {
+  return line.currency || (selected.value?.status === 'DRAFT' && draft.value?.kind === 'DELIVERY' ? 'CNY' : '')
+}
+function currencyChanged(line: HandoverLine, event: Event) {
+  line.currency = (event.target as HTMLSelectElement).value as HandoverLine['currency']
+}
+function linePriceUnit(line: HandoverLine) {
+  return line.price_unit || (selected.value?.status === 'DRAFT' && draft.value?.kind === 'DELIVERY' ? line.unit : '')
+}
+function unitChanged(line: HandoverLine, event: Event) {
+  const previous = line.unit
+  line.unit = (event.target as HTMLInputElement).value
+  if (line.price_unit && line.price_unit === previous) line.price_unit = line.unit
+  if (!manualCategories.has(line.id)) line.material_category = suggestMaterialCategory(line.unit)
+}
 function unsure(e: unknown) { return axios.isAxiosError(e) && (!e.response || [408, 500, 502, 503, 504].includes(e.response.status)) }
 async function mutate(value: Pending) {
   if (busy.value) return
@@ -177,7 +202,16 @@ async function mutate(value: Pending) {
   } catch (e) { if (epoch === generation) { if (!unsure(e)) pending.value = null; showError(e) } }
   finally { if (epoch === generation) busy.value = false }
 }
-function draftSnapshot() { const data = clone(draft.value!); data.document_date = data.document_date || null; return data }
+function draftSnapshot() {
+  const data = clone(draft.value!)
+  data.document_date = data.document_date || null
+  // Apply the entry default on an explicit save/confirm; opening history is read-only.
+  if (data.kind === 'DELIVERY') data.lines.forEach(line => {
+    line.currency ||= 'CNY'
+    if (line.unit_price?.trim() && !line.price_unit) line.price_unit = line.unit
+  })
+  return data
+}
 function save() { if (selected.value && draft.value) void mutate({ kind: 'save', id: selected.value.id, body: { request_id: uuid(), expected_revision: selected.value.revision, data: draftSnapshot() } }) }
 function confirm() { if (!selected.value || !draft.value || locked.value || reviewIssues.value.length) return; void mutate({ kind: 'confirm', id: selected.value.id, print_after: true, body: { request_id: uuid(), expected_revision: selected.value.revision, acknowledge_warnings: true, reason: '', data: draftSnapshot() } }) }
 const voidReason = ref(''), showVoid = ref(false)
@@ -292,7 +326,16 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
       </section>
       <div class="handover-layout">
         <aside class="card document-list">
-          <div v-if="tab === 'documents' && canEdit" class="upload-box" @dragover.prevent @drop.prevent="dropped"><strong>{{ external ? '上传自己的原单' : '上传送货单 / 领料单' }}</strong><p>支持拖入 Excel、Word、PDF 或照片<br />每份 ≤ 20 MB，PDF ≤ 20 页</p><input ref="fileInput" type="file" multiple accept=".xls,.xlsx,.docx,.pdf,.png,.jpg,.jpeg,.webp" class="sr-only" @change="picked" /><button :disabled="locked || dirty" @click="fileInput?.click()">选择文件并识别</button></div>
+          <div v-if="tab === 'documents' && canEdit" class="upload-box" @dragover.prevent @drop.prevent="dropped">
+            <strong>{{ external ? '上传自己的原单' : '上传送货单 / 领料单' }}</strong>
+            <p>支持拖入 Excel、Word、PDF 或照片<br />每份 ≤ 20 MB，PDF ≤ 20 页</p>
+            <input ref="fileInput" type="file" multiple accept=".xls,.xlsx,.docx,.pdf,.png,.jpg,.jpeg,.webp" class="sr-only" @change="picked" />
+            <div class="upload-actions">
+              <button :disabled="locked || dirty" @click="fileInput?.click()">选择文件并识别</button>
+              <a v-if="external && issuer?.kind === 'SUPPLIER'" class="template-download" :href="supplierTemplateUrl" download="供应商统一送货单模板.xlsx">下载统一模板</a>
+            </div>
+            <p v-if="external && issuer?.kind === 'SUPPLIER'" class="template-help">布料、辅料、线共用。填好后上传，核对并确认后打印带二维码的送货单。</p>
+          </div>
           <div v-if="failedFiles.length" class="handover-message error"><p>{{ failedFiles.length }} 份文件未完成，原文件已保留。</p><button :disabled="locked" @click="upload([...failedFiles])">重试未完成文件</button></div>
           <div class="list-heading"><h2>单据列表 <span class="list-count">{{ total }}</span></h2><button :disabled="locked || dirty" @click="searchDocuments()">刷新</button></div>
           <small class="list-order">最近更新在前 · 已显示 {{ summaries.length }} 张</small>
@@ -317,7 +360,8 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
             <fieldset class="fields document-fields" :class="{ compact: compactSupplierForm }" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><label>单据用途<select v-model="draft.kind" :disabled="external || Boolean(selected.issuer_id)"><option value="DELIVERY">送货单</option><option value="ISSUE">领料申请 / 发料依据</option></select></label><label>原单号<input v-model="draft.source_no" maxlength="128" aria-label="原单号" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('原单号')" /></label><label>单据日期<input v-model="draft.document_date" type="date" aria-label="单据日期" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('单据日期')" /></label><label v-if="!external && !selected.issuer_id && draft.kind==='DELIVERY'">供应商基础资料<select v-model="draft.supplier_id" @change="chooseSupplier" aria-label="制单供应商" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('制单供应商')"><option value="">请选择已启用供应商</option><option v-for="party in activeSuppliers" :key="party.id" :value="party.id">{{ party.code }} · {{ party.name }}</option></select></label><label>供应商 / 领用方<input v-model="draft.counterparty" :readonly="external || Boolean(selected.issuer_id) || draft.kind==='DELIVERY'" maxlength="255" aria-label="制单方" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has('制单方')" /></label><label class="optional-field">合同号<input v-model="draft.contract_no" maxlength="128" /></label><label class="optional-field">放产 / 生产单号<input v-model="draft.production_no" maxlength="128" /></label><label class="optional-field">货号<input v-model="draft.product_no" maxlength="128" /></label><label class="optional-field">说明<input v-model="draft.note" maxlength="1000" /></label></fieldset>
             <div class="line-heading"><h3 id="handover-lines-title">物料明细</h3><div class="actions"><button v-if="external" :aria-expanded="showOptional" @click="showOptional = !showOptional">{{ showOptional ? '收起选填信息' : '展开选填信息' }}</button><button v-if="selected.status === 'DRAFT'" :disabled="!canEdit || locked || draft.lines.length >= 200" @click="addLine">添加明细</button></div></div>
             <p v-if="external && selected.status === 'DRAFT'" class="line-help">按原单核对名称、数量和单位。物料编码不清楚可留空，由仓库补全；规格、缸号和价格等可展开选填。</p>
-            <div class="table-scroll lines-scroll" role="region" aria-labelledby="handover-lines-title" tabindex="0"><table class="lines" :class="{ compact: compactSupplierForm }"><thead><tr><th>物料编码 / 名称</th><th>规格 / 颜色</th><th>单据数量 / 单位</th><th>类别</th><th>单价依据（选填）</th><th>缸号 / 卷号</th><th>关联 / 说明</th><th>进度 / 操作</th></tr></thead><tbody><tr v-for="(line, index) in draft.lines" :key="line.id"><td data-label="物料编码 / 名称"><input v-model="line.item_code" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行物料编码`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料编码`)" placeholder="物料编码" /><input v-model="line.item_name" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行物料名称`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料名称`)" placeholder="物料名称" /><small class="line-source">{{ line.source_line || `补录第 ${index + 1} 行` }}</small></td><td data-label="规格 / 颜色"><input v-model="line.specification" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="规格" /><input v-model="line.color" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="颜色" /></td><td data-label="单据数量 / 单位"><input v-model="line.quantity" inputmode="decimal" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行单据数量`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单据数量`)" /><input v-model="line.unit" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行单位`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单位`)" placeholder="单位" /></td><td data-label="类别"><select v-model="line.material_category" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><option value="FABRIC">布料</option><option value="ACCESSORY">辅料</option><option value="THREAD">线</option></select></td><td data-label="单价依据（选填）"><input v-model="line.unit_price" inputmode="decimal" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行参考单价`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行参考单价`)" placeholder="单价，空白为未记录" /><input v-model="line.price_unit" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="计价单位" /><select v-model="line.currency" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><option value="">币种未注明</option><option value="CNY">CNY 人民币</option><option value="HKD">HKD 港币</option><option value="USD">USD 美元</option><option value="EUR">EUR 欧元</option></select><input v-model="line.price_note" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="报价 / 含税口径等原单依据" /></td><td data-label="缸号 / 卷号"><input v-model="line.lot" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="缸号" /><input v-model="line.roll_no" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="卷号" /><small v-if="line.roll_quantities">逐卷：{{ line.roll_quantities }}</small></td><td data-label="关联 / 说明"><input v-model="line.production_no" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="放产 / 生产单号" /><input v-model="line.note" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="说明" /></td><td data-label="进度 / 操作"><template v-if="selected.status === 'CONFIRMED'"><p>已{{ selected.data.kind === 'DELIVERY' ? '收' : '发' }} {{ selected.progress[line.id]?.processed }} {{ line.unit }}</p><small>未完成 {{ selected.progress[line.id]?.remaining }} {{ line.unit }}</small></template><button v-else-if="selected.status === 'DRAFT'" :disabled="!canEdit || locked" @click="draft.lines.splice(index, 1)">移除此行</button></td></tr></tbody></table></div>
+            <p v-if="selected.status === 'DRAFT'" class="line-help">分类按单位默认建议，可手动修改；无法判断时请自行选择。</p>
+            <div class="table-scroll lines-scroll" role="region" aria-labelledby="handover-lines-title" tabindex="0"><table class="lines" :class="{ compact: compactSupplierForm }"><thead><tr><th>物料编码 / 名称</th><th>规格 / 颜色</th><th>单据数量 / 单位</th><th>类别</th><th>单价依据（选填）</th><th>缸号 / 卷号</th><th>关联 / 说明</th><th>进度 / 操作</th></tr></thead><tbody><tr v-for="(line, index) in draft.lines" :key="line.id"><td data-label="物料编码 / 名称"><input v-model="line.item_code" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行物料编码`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料编码`)" placeholder="物料编码" /><input v-model="line.item_name" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行物料名称`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料名称`)" placeholder="物料名称" /><small class="line-source">{{ line.source_line || `补录第 ${index + 1} 行` }}</small></td><td data-label="规格 / 颜色"><input v-model="line.specification" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="规格" /><input v-model="line.color" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="颜色" /></td><td data-label="单据数量 / 单位"><input v-model="line.quantity" inputmode="decimal" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行单据数量`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单据数量`)" /><input :value="line.unit" @input="unitChanged(line, $event)" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行单位`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行单位`)" placeholder="单位" /></td><td data-label="类别"><select v-model="line.material_category" @change="manualCategories.add(line.id)" :aria-label="`第${index+1}行物料分类`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行物料分类`)" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><option value="">待分类</option><option value="FABRIC">布料</option><option value="ACCESSORY">辅料</option><option value="THREAD">线</option></select></td><td data-label="单价依据（选填）"><input v-model="line.unit_price" inputmode="decimal" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" :aria-label="`第${index+1}行参考单价`" :aria-invalid="selected.status === 'DRAFT' && invalidFields.has(`第${index+1}行参考单价`)" placeholder="单价，空白为未记录" /><small class="price-unit-hint" v-if="linePriceUnit(line)">{{ line.price_unit && line.price_unit !== line.unit ? '原单按' : '单价按' }}{{ linePriceUnit(line) }}计价</small><small v-else-if="line.unit_price" class="price-unit-hint">计价单位未注明</small><select :value="lineCurrency(line)" @change="currencyChanged(line, $event)" :aria-label="`第${index+1}行币种`" :disabled="selected.status !== 'DRAFT' || !canEdit || locked"><option v-if="selected.status !== 'DRAFT' || draft.kind !== 'DELIVERY'" value="">币种未注明</option><option value="CNY">CNY 人民币</option><option value="HKD">HKD 港币</option><option value="USD">USD 美元</option><option value="EUR">EUR 欧元</option></select><input v-model="line.price_note" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="报价 / 含税口径等原单依据" /></td><td data-label="缸号 / 卷号"><input v-model="line.lot" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="缸号" /><input v-model="line.roll_no" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="卷号" /><small v-if="line.roll_quantities">逐卷：{{ line.roll_quantities }}</small></td><td data-label="关联 / 说明"><input v-model="line.production_no" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="放产 / 生产单号" /><input v-model="line.note" :disabled="selected.status !== 'DRAFT' || !canEdit || locked" placeholder="说明" /></td><td data-label="进度 / 操作"><template v-if="selected.status === 'CONFIRMED'"><p>已{{ selected.data.kind === 'DELIVERY' ? '收' : '发' }} {{ selected.progress[line.id]?.processed }} {{ line.unit }}</p><small>未完成 {{ selected.progress[line.id]?.remaining }} {{ line.unit }}</small></template><button v-else-if="selected.status === 'DRAFT'" :disabled="!canEdit || locked" @click="draft.lines.splice(index, 1)">移除此行</button></td></tr></tbody></table></div>
             <footer v-if="selected.status === 'DRAFT'" class="actions document-confirmation">
               <button :class="{ primary: external && reviewIssues.length > 0 }" :disabled="!canEdit || locked || (!external && !dirty)" @click="save">{{ external ? '保存，交仓库补全' : '保存核对内容' }}</button>
               <label>原单二维码位置<select v-model="printCorner" :disabled="locked" aria-label="原单二维码位置"><option value="right">右上角</option><option value="left">左上角</option></select></label>
@@ -400,6 +444,12 @@ onBeforeUnmount(() => { generation++; releaseUrls(); window.removeEventListener(
 .upload-box{padding:16px 12px;margin-bottom:18px;background:#f0fdfa;border-color:#99d5ce}
 .upload-box p{font-size:12px;color:#64748b;margin:7px 0 12px}
 .upload-box button{color:#0f766e;border-color:#99d5ce;font-weight:600}
+.upload-actions{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px}
+.upload-actions button,.template-download{font-size:12px;padding:8px 9px;min-height:36px}
+.template-download{display:inline-flex;align-items:center;justify-content:center;border:1px solid #99d5ce;border-radius:8px;background:white;color:#0f766e;font-weight:600;text-decoration:none}
+.template-download:hover{background:#e6f4f1;border-color:#0f766e}
+.template-download:focus-visible{outline:2px solid #0f766e;outline-offset:3px}
+.upload-box .template-help{margin:10px 0 0;line-height:1.6}
 .list-heading{gap:10px}
 .list-heading h2{font-size:16px}
 .list-heading button{font-size:12px;padding:5px 10px}

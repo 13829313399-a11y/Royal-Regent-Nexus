@@ -45,7 +45,8 @@ def test_context_measurement_preserves_release_and_exceptions(fail_at):
     finally:request_stats.reset(token)
 
 
-def test_real_cookie_material_finance_and_period_races(role_flow,tmp_path):
+@pytest.mark.parametrize('concentrated_exports',[False,True])
+def test_real_cookie_material_finance_and_period_races(role_flow,tmp_path,concentrated_exports):
     p=role_flow
     prepare_closed_order(p)
     add_dispatched_orders(p,6)
@@ -57,7 +58,8 @@ def test_real_cookie_material_finance_and_period_races(role_flow,tmp_path):
     try:
         with awake_system(),isolated_http(p,tmp_path) as url:
             diagnostic.start()
-            run_workflows(url, Path(p.engine.url.database).resolve(),report,line='http-capacity-2',chains=3)
+            run_workflows(url, Path(p.engine.url.database).resolve(),report,line='http-capacity-2',chains=3,
+                concentrated_exports=concentrated_exports)
         assert report['status']=='passed'
         assert report['finance']['same_balance_protected']
         assert report['period']['locked_write_rejected']

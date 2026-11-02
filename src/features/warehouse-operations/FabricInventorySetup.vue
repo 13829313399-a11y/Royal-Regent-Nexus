@@ -13,9 +13,12 @@ import { getApiErrorMessage } from '@/lib/http'
 import { warehouseRequestId } from './requestIdentity'
 import { inventorySearchKey } from './inventorySearch'
 import { remaining } from './operations'
+import LegacyStockPreviewDialog from './LegacyStockPreviewDialog.vue'
 
 const props = defineProps<{ mode: 'opening' | 'stocktake' }>()
 const auth = useAuthStore()
+const legacyPreviewOpen = ref(false)
+watch([() => props.mode, () => auth.currentUser?.id, () => auth.authorizationVersion], () => { legacyPreviewOpen.value = false })
 const header = inject(inventorySearchKey, undefined)
 const query = computed(() => header?.search.value.trim().toLocaleLowerCase() ?? '')
 const data = ref<SetupWorkspace>(), stock = ref<WarehouseOperationsWorkspace>()
@@ -141,7 +144,8 @@ function closeCount(){if(leave())doc.value=undefined}
 
 <template>
   <div class="inventory-setup">
-    <header class="setup-heading"><div><h2>{{ mode==='opening'?'期初库存':'库存盘点' }}</h2><p>{{ mode==='opening'?'导入尚未登记的历史实物结余，先预览核对，再确认入账。':'按仓位和批次清点实物，保存实盘数量，核对差异后入账。' }}</p></div><div class="setup-actions"><button v-if="mode==='opening'" :disabled="busy||frozen||loading" @click="download"><Download :size="16"/>下载期初模板</button><button :disabled="busy||frozen||loading" @click="load()"><RefreshCw :size="15"/>刷新</button></div></header>
+    <LegacyStockPreviewDialog v-if="legacyPreviewOpen" @close="legacyPreviewOpen=false" />
+    <header class="setup-heading"><div><h2>{{ mode==='opening'?'期初库存':'库存盘点' }}</h2><p>{{ mode==='opening'?'导入尚未登记的历史实物结余，先预览核对，再确认入账。':'按仓位和批次清点实物，保存实盘数量，核对差异后入账。' }}</p></div><div class="setup-actions"><button v-if="mode==='opening'" :disabled="busy||frozen||loading||!data?.permissions.read" @click="legacyPreviewOpen=true">旧库存表预检</button><button v-if="mode==='opening'" :disabled="busy||frozen||loading" @click="download"><Download :size="16"/>下载期初模板</button><button :disabled="busy||frozen||loading" @click="load()"><RefreshCw :size="15"/>刷新</button></div></header>
     <p v-if="error" class="setup-error" role="alert">{{ error }}</p><p v-if="success" class="setup-success" role="status">{{ success }}</p>
     <div v-if="frozen" class="setup-warning"><button :disabled="busy" @click="retry?.()">{{busy?'正在核对…':'用原请求重试'}}</button><span>确认结果前不能更换文件、修改内容或离开。</span></div>
     <p v-if="loading&&!data" class="setup-empty">正在加载库存资料…</p>

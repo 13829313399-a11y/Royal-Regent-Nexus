@@ -6,7 +6,7 @@ import type { MasterRecord } from './fabricMaster'
 export const HANDOVER_FACTORY = 'huakang-c' as const
 export interface HandoverLine {
   id: string; source_line: string; item_code: string; item_name: string; specification: string; color: string
-  quantity: string; unit: string; material_category: 'FABRIC' | 'ACCESSORY' | 'THREAD'; lot: string; roll_no: string
+  quantity: string; unit: string; material_category: '' | 'FABRIC' | 'ACCESSORY' | 'THREAD'; lot: string; roll_no: string
   roll_quantities: string; contract_no: string; production_no: string; product_no: string; note: string
   unit_price?: string; price_unit?: string; currency?: '' | 'CNY' | 'HKD' | 'USD' | 'EUR'; price_note?: string
 }

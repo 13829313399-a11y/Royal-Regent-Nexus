@@ -85,7 +85,11 @@ def source_pdf(name, content, folder, cancelled):
         path = folder / ('original' + suffix)
         path.write_bytes(content)
         output = folder / 'original.pdf'
-        render_office(path, output, {'secure_load': True, 'print_mode': 'original', 'recalculate': False}, folder, cancelled)
+        options = {'secure_load': True, 'print_mode': 'original', 'recalculate': False}
+        if suffix == '.xlsx':
+            from app.services.material_handover_template import print_options
+            options.update(print_options(content))
+        render_office(path, output, options, folder, cancelled)
         if output.stat().st_size > MAX_PDF_BYTES:
             raise ToolError('PRINT_SIZE', '原单打印文件过大，请调整打印区域或拆分文档')
         return pdfium.PdfDocument(str(output))

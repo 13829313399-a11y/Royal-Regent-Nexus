@@ -2,7 +2,7 @@
 import { watch } from 'vue'
 import CartonLocationPicker from './CartonLocationPicker.vue'
 import type { CartonLocation, LocationAllocation } from '@/api/cartonPositions'
-const props = defineProps<{ modelValue?: LocationAllocation[]; effective: number; locations: CartonLocation[]; factoryId: string; disabled?: boolean }>()
+const props = defineProps<{ modelValue?: LocationAllocation[]; effective: number; locations: CartonLocation[]; factoryId: string; disabled?: boolean; locationsDisabled?: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [LocationAllocation[]]; created: [] }>()
 function change(index: number, values: Partial<LocationAllocation>) {
   const rows = (props.modelValue?.length ? props.modelValue : [{ location_id: '', quantity: props.effective }]).map(row => ({ ...row }))
@@ -24,7 +24,7 @@ watch(() => props.effective, value => {
 <template>
   <div v-if="effective > 0" class="min-w-64 space-y-2 text-left">
     <div v-for="(part, index) in modelValue?.length ? modelValue : [{ location_id: '', quantity: effective }]" :key="index" class="flex items-start gap-2">
-      <CartonLocationPicker :model-value="part.location_id" :locations="locations" :factory-id="factoryId" :disabled="disabled" @update:model-value="change(index, { location_id: $event })" @created="emit('created')" />
+      <CartonLocationPicker :model-value="part.location_id" :locations="locations" :factory-id="factoryId" :disabled="disabled || locationsDisabled" @update:model-value="change(index, { location_id: $event })" @created="emit('created')" />
       <input v-if="(modelValue?.length || 0) > 1" :value="part.quantity" :disabled="disabled" type="number" min="0" step="0.0001" aria-label="分仓入库数量" class="h-9 w-20 rounded-lg border px-2 text-right text-xs" @input="change(index, { quantity: ($event.target as HTMLInputElement).value })">
       <button v-if="!disabled && (modelValue?.length || 0) > 1" type="button" aria-label="移除分仓" class="pt-2 text-red-600" @click="remove(index)">×</button>
     </div>

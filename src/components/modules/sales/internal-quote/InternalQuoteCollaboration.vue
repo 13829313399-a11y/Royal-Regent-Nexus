@@ -7,6 +7,7 @@ import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigati
 import { quoteSelection, useQuoteAssistantSelection } from '@/features/internal-quote/assistantContext'
 import { clearQuotePrefill, consumeQuotePrefill, prefillIdentityKey, quotePrefillFor, type QuoteSuggestion } from '@/features/assistant/quotePrefill'
 import InternalQuoteAlternatives from './InternalQuoteAlternatives.vue'
+import InternalQuoteOutputProblems from './InternalQuoteOutputProblems.vue'
 import InternalQuoteActivityPanel from './InternalQuoteActivityPanel.vue'
 import InternalQuoteComponentScopePicker from './InternalQuoteComponentScopePicker.vue'
 import InternalQuoteComponentImage from './InternalQuoteComponentImage.vue'
@@ -30,7 +31,7 @@ import { internalQuoteApi, internalQuoteAttachmentPreviewUrl, type InternalQuote
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
-import type { InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
+import type { InternalQuote, InternalQuoteAttachmentRecord, InternalQuoteBatchProduct, InternalQuoteSection, InternalQuoteSectionCode, InternalQuoteSidebarPricingDraft } from '@/types/internalQuoteDesk'
 
 const route = useRoute()
 const router = useRouter()
@@ -48,6 +49,10 @@ let active = true
 onBeforeUnmount(() => { active = false; ++quoteContextGeneration })
 const syncPanelOpen = ref(false)
 const syncReason = ref('')
+const referenceBanner = ref<HTMLElement | null>(null)
+const syncReasonInput = ref<HTMLTextAreaElement | null>(null)
+const formulaRecoveryNotice = ref('')
+const savedReadinessQuoteId = ref('')
 const participationPanelOpen = ref(false)
 const selectedParticipation = ref<InternalQuoteSectionCode[]>([])
 const initialParticipation = ref<InternalQuoteSectionCode[]>([])
@@ -96,6 +101,15 @@ const activePricingComponentId = ref('')
 const quoteId = computed(() => String(route.params.quoteId ?? ''))
 const loadedQuote = computed(() => quoteStore.getQuoteById(quoteId.value))
 const quote = computed(() => loadedQuote.value ?? quoteStore.placeholderQuote)
+function outputProblems(current: InternalQuote | undefined) {
+  const problems: Array<{ section_code: string; section_name: string; reason: string }> = [...(current?.readiness?.blockers ?? [])]
+  if (current?.formulaRecalculationRequired && current.finalReleaseStatus !== 'issued') {
+    problems.push({ section_code: 'formula', section_name: '报价公式', reason: '仍使用旧公式，请按当前公式重算后再输出。' })
+  }
+  return problems
+}
+const savedOutputProblems = computed(() => outputProblems(quote.value))
+
 const batchProducts = computed(() => quoteStore.batchProductsByQuoteId[quoteId.value] ?? [])
 const currentBatchProduct = computed(() => batchProducts.value.find((product) => product.quoteId === quoteId.value))
 const baselineDifferentSections = computed(() => currentBatchProduct.value?.differentSections ?? [])
@@ -201,8 +215,8 @@ const canWithdrawWhole = computed(() => !currentAlternativeArchived.value && can
 const canReviewWhole = computed(() => !currentAlternativeArchived.value && canReviewWholeInternalQuote(authStore, quote.value))
 const canSyncReference = computed(() => !currentAlternativeArchived.value && !(isDirectOutput.value && ['exported', 'archived'].includes(quote.value.status)) && ['sales-business', 'engineering'].some((department) => authStore.can('internal_quote:reference_manage', quote.value.factoryId, department)))
 const formulaStale = computed(() => Boolean(
-  quote.value.currentFormulaVersion
-  && quote.value.formulaVersion !== quote.value.currentFormulaVersion,
+  quote.value.formulaRecalculationRequired
+  || quote.value.currentFormulaVersion && quote.value.formulaVersion !== quote.value.currentFormulaVersion,
 ))
 const canEditSidebarPricing = computed(() => (
   !currentAlternativeArchived.value &&
@@ -428,12 +442,68 @@ async function switchProduct(product: InternalQuoteBatchProduct) {
 async function loadSwitchedProduct() {
   packagingCopyOpen.value = false
   const scrollTop = consumeInternalQuoteProductScroll()
-  await loadQuote()
+  const requestedId = quoteId.value
+  const generation = quoteContextGeneration
+  const loaded = await loadQuote()
+  if (!active || !loaded || requestedId !== quoteId.value || generation !== quoteContextGeneration) return
+  if (route.query.formulaRecovery === '1') {
+    const query = { ...route.query }
+    delete query.formulaRecovery
+    await router.replace({ query })
+    if (active && requestedId === quoteId.value && generation === quoteContextGeneration) await showFormulaRecovery()
+    return
+  }
+  if (typeof route.query.outputSection === 'string') {
+    const code = route.query.outputSection as InternalQuoteSectionCode
+    const query = { ...route.query }; delete query.outputSection
+    await router.replace({ query })
+    if (active && requestedId === quoteId.value && generation === quoteContextGeneration && participatingSections.value.some(s => s.code === code)) {
+      await nextTick(); selectSection(code)
+    }
+    return
+  }
   if (scrollTop === null) return
   await nextTick()
   requestAnimationFrame(() => requestAnimationFrame(() => {
     window.scrollTo({ top: scrollTop, behavior: 'auto' })
   }))
+}
+
+async function showFormulaRecovery() {
+  syncPanelOpen.value = false
+  if (currentAlternativeArchived.value) {
+    formulaRecoveryNotice.value = '本款已归档。请先在“包装方案与版本”中恢复此版本或整单，再处理公式。'
+  } else if (isDirectOutput.value && quote.value.status === 'exported') {
+    formulaRecoveryNotice.value = '本款已输出并冻结。需要调整时请先复制新版本，再重算和输出。'
+  } else if (!canSyncReference.value) {
+    formulaRecoveryNotice.value = '当前账号没有该厂区的公式重算权限，请由有权限的业务部或工程部人员处理。'
+  } else if (!formulaStale.value) {
+    formulaRecoveryNotice.value = '本款已使用当前公式。请重新打开复制或输出窗口读取最新状态。'
+  } else {
+    formulaRecoveryNotice.value = '当前处理产品：' + quote.value.productName + '。填写原因并重算后，请重新打开复制或输出窗口。'
+    syncPanelOpen.value = true
+  }
+  await nextTick()
+  referenceBanner.value?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  const focusTarget = syncReasonInput.value ?? referenceBanner.value
+  focusTarget?.focus({ preventScroll: true })
+}
+
+async function openPackagingSourceFormula(sourceQuoteId: string) {
+  if (hasUnsavedDepartmentChanges()) {
+    errorMessage.value = '请先保存当前款，再前往来源款处理公式。'
+    return
+  }
+  packagingCopyOpen.value = false
+  if (sourceQuoteId === quoteId.value) {
+    const generation = quoteContextGeneration
+    const loaded = await loadQuote()
+    if (active && loaded && sourceQuoteId === quoteId.value && generation === quoteContextGeneration) await showFormulaRecovery()
+    return
+  }
+  try {
+    await router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${sourceQuoteId}/collaboration?formulaRecovery=1`))
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '打开来源款失败，请重试。' }
 }
 
 async function copyBaselineToProduct(product: InternalQuoteBatchProduct) {
@@ -464,6 +534,10 @@ async function packagingCopied() {
 }
 
 async function syncReference() {
+  if (hasUnsavedDepartmentChanges()) {
+    errorMessage.value = '请先保存当前款，再同步参考资料。'
+    return
+  }
   if (!canSyncReference.value) {
     syncPanelOpen.value = false
     errorMessage.value = '当前账号没有该厂区的参考资料同步权限。'
@@ -843,7 +917,13 @@ async function saveWholeProductDraft() {
       if (saved) sectionEditors.value[draft.sectionCode]?.acceptSavedPayload(saved.payload, draft.payload, saved.revision, draft.localPayload)
     }
     if (pricingDraft) pricingPanel.value?.acceptSavedPricing?.(pricingDraft)
-    message.value = `“${quote.value.productName}”当前全部现有内容已保存：${savableSections.map((section) => section.label).join('、')}。`
+    savedReadinessQuoteId.value = savedQuoteId
+    const blockers = outputProblems(result.quote)
+    message.value = quoteStore.refreshWarningQuoteId === savedQuoteId && quoteStore.refreshWarning
+      ? '内容已保存，最新核价状态暂未读到，请重新读取后确认能否输出。'
+      : blockers.length
+        ? `“${quote.value.productName}”内容已保存，仍有 ${blockers.length} 项待补齐或重算，请按下方提示处理。`
+        : `“${quote.value.productName}”当前全部现有内容已保存：${savableSections.map((section) => section.label).join('、')}。`
   } catch (error) {
     errorMessage.value = `${error instanceof Error ? error.message : '统一保存当前款失败'} 页面输入已保留，请按提示处理后再试。`
   } finally {
@@ -873,6 +953,19 @@ function openSeriesExport() {
   if (currentAlternativeArchived.value) { errorMessage.value = '请先恢复归档报价，再输出系列报价。'; return }
   seriesExportOpen.value = true
 }
+async function resolveSeriesProblem(id: string, code: string) {
+  if (hasUnsavedDepartmentChanges()) { errorMessage.value = '请先保存当前款，再前往处理。'; return }
+  seriesExportOpen.value = false
+  if (id === quote.value.id) {
+    if (code === 'formula') await showFormulaRecovery()
+    else if (code && participatingSections.value.some(section => section.code === code)) selectSection(code as InternalQuoteSectionCode)
+    else document.getElementById('quote-alternatives')?.scrollIntoView({ block: 'start' })
+    return
+  }
+  const suffix = code === 'formula' ? '?formulaRecovery=1' : code ? `?outputSection=${encodeURIComponent(code)}` : '#quote-alternatives'
+  await router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${id}/collaboration${suffix}`))
+}
+
 function seriesExported() {
   seriesExportOpen.value = false
   message.value = '系列报价已输出到一个 Excel，每款一个工作表。'
@@ -927,6 +1020,10 @@ function toggleWholeReject() {
 async function recalculateFormula() {
   errorMessage.value = ''
   message.value = ''
+  if (hasUnsavedDepartmentChanges()) {
+    errorMessage.value = '请先保存当前款，再按当前公式重算。'
+    return
+  }
   if (!canSyncReference.value) {
     errorMessage.value = '当前账号没有该厂区的公式重算权限。'
     return
@@ -938,6 +1035,7 @@ async function recalculateFormula() {
   try {
     await quoteStore.recalculateFormula(quote.value.id, quote.value.headerRevision, syncReason.value.trim())
     message.value = `已按当前公式 ${quote.value.currentFormulaVersion} 重算；受影响审批需要重新提交。`
+    formulaRecoveryNotice.value = '重算完成，请重新打开复制或输出窗口读取最新状态。'
     syncReason.value = ''
     syncPanelOpen.value = false
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '按当前公式重算失败。' }
@@ -1006,6 +1104,7 @@ watch([quoteId, canSyncReference], () => {
 })
 watch(quoteId, () => {
   markupMessage.value = ''
+  formulaRecoveryNotice.value = ''
   markupError.value = ''
   sectionBlockProgress.value = {}
   wholeRejectOpen.value = false
@@ -1065,24 +1164,6 @@ onBeforeUnmount(() => {
     </header>
 
     <div v-if="pendingAssistantRemark" class="quote-assistant-prefill" role="status"><p>有一条曜灵备注建议待你核对。{{ canEditHeader ? '打开原表单后可明确追加到备注；尚未保存。' : '当前原报价不可修改资料，建议不会写入。' }}</p><button type="button" :disabled="remarkPrefillBusy || !canEditHeader || headerDialogBusy || headerDialogOpen" @click="openAssistantRemark">{{ remarkPrefillBusy ? '正在核对来源与原版本…' : '打开原表单核对备注' }}</button><button type="button" @click="clearQuotePrefill">丢弃建议</button></div>
-    <details v-if="quote.historySources?.length" class="quote-history-evidence">
-      <summary>历史引用来源 · {{ quote.historySources.length }} 条（新单独立核价）</summary>
-      <p v-for="(source, index) in quote.historySources" :key="index">{{ source.target_component_id ? '分项' : '整款' }}：{{ source.quote_no }} / {{ source.version_label }} / {{ source.region_code === 'mainland' ? '大陆价' : source.region_code === 'indonesia' ? '印尼价' : '未分地区' }} / {{ source.product_name }}{{ source.component_name ? ` / ${source.component_name}` : '' }}</p>
-    </details>
-
-    <p v-if="isReadOnly" class="quote-readonly-banner"><Building2 aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；部门编辑、整单审核、参考同步及其他业务操作仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的部门编辑、整单审核或参考同步权限。' }}</p>
-
-    <InternalQuotePackagingCopy v-if="packagingCopyOpen" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="packagingCopyOpen = false" @copied="packagingCopied" />
-    <InternalQuoteSeriesExport v-if="seriesExportOpen" :key="quote.id" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="seriesExportOpen = false" @completed="seriesExported" />
-    <InternalQuoteAlternatives v-if="loadedQuote" :quote="quote" :has-unsaved-changes="hasUnsavedDepartmentChanges" @open="openAlternative" @changed="loadQuote" @archive-state="updateArchiveState" />
-
-    <section v-if="isContinuousQuote" class="quote-whole-review-panel" :class="quote.status">
-      <div class="quote-whole-review-icon"><ShieldCheck v-if="['released', 'exported'].includes(quote.status)" /><AlertTriangle v-else-if="quote.status === 'rejected'" /><LockKeyhole v-else-if="quote.status === 'final_pending'" /><Send v-else /></div>
-      <div class="quote-whole-review-copy"><span>{{ isDirectOutput ? '方案独立输出' : isMultiProduct ? '整批一次审核' : '整单审核' }}</span><h2>{{ collaborationStatusLabel }}</h2><p>{{ wholeReviewDescription }}</p><div><b>{{ isDirectOutput ? '业务负责人' : '指定审核人' }}：{{ quote.businessOwner }}</b><b v-if="isMultiProduct">产品数量：{{ batchProducts.length }} 款</b><b>当前款部门完成：{{ completedCount }}/{{ participatingSections.length }}</b><b>报价头 r{{ quote.headerRevision }}</b></div></div>
-    </section>
-
-    <div class="quote-snapshot-banner"><Layers3 /><span><strong>参考快照已冻结</strong>{{ quote.referenceSnapshotId }} · RMB→HKD {{ quote.fxRmbHkd.toFixed(2) }} · HKD→USD {{ quote.fxHkdUsd.toFixed(2) }}</span><em>{{ formulaStale ? `公式 ${quote.formulaVersion} 已过期，当前为 ${quote.currentFormulaVersion}` : '同步最新参考表将产生新 revision，并使受影响审批失效' }}</em><button v-if="canSyncReference" type="button" @click="syncPanelOpen = !syncPanelOpen">{{ formulaStale ? '处理旧公式' : '同步最新参考表' }}</button></div>
-    <section v-if="syncPanelOpen && canSyncReference" class="quote-sync-panel"><div><strong>{{ formulaStale ? '公式或参考数据更新' : '同步最新参考表' }}</strong><span>将重算已填写分段，并使受影响的审批、最终放行和 artifact 失效。</span></div><textarea v-model="syncReason" rows="2" placeholder="必须填写变更原因" /><button type="button" class="secondary" @click="syncPanelOpen = false">取消</button><button v-if="formulaStale" type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting" @click="recalculateFormula">按当前公式重算</button><button type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting || !canSyncReference" @click="syncReference">同步最新参考表</button></section>
     <section v-if="participationPanelOpen" class="quote-participation-panel">
       <div class="quote-participation-copy"><UserPlus /><span><strong>添加、删除参与部门</strong><small>业务部、工程部和装配部固定参与；勾选可选部门表示参与，取消勾选表示移除。保存后会同步调整连续报价页、协作进度、成本汇总和最终放行。</small></span></div>
       <div class="quote-participation-options">
@@ -1101,6 +1182,25 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <details v-if="quote.historySources?.length" class="quote-history-evidence">
+      <summary>历史引用来源 · {{ quote.historySources.length }} 条（新单独立核价）</summary>
+      <p v-for="(source, index) in quote.historySources" :key="index">{{ source.target_component_id ? '分项' : '整款' }}：{{ source.quote_no }} / {{ source.version_label }} / {{ source.region_code === 'mainland' ? '大陆价' : source.region_code === 'indonesia' ? '印尼价' : '未分地区' }} / {{ source.product_name }}{{ source.component_name ? ` / ${source.component_name}` : '' }}</p>
+    </details>
+
+    <p v-if="isReadOnly" class="quote-readonly-banner"><Building2 aria-hidden="true" />{{ isForeignReadOnly ? '当前为跨厂只读视图；部门编辑、整单审核、参考同步及其他业务操作仅允许在所属厂区执行。' : '当前账号仅可查看该报价，没有可用的部门编辑、整单审核或参考同步权限。' }}</p>
+
+    <InternalQuotePackagingCopy v-if="packagingCopyOpen" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="packagingCopyOpen = false" @copied="packagingCopied" @resolve-formula="openPackagingSourceFormula" />
+    <InternalQuoteSeriesExport v-if="seriesExportOpen" :key="quote.id" :quote="quote" :products="batchProducts" :has-unsaved-changes="hasUnsavedDepartmentChanges" @close="seriesExportOpen = false" @completed="seriesExported" @resolve="resolveSeriesProblem" />
+    <InternalQuoteAlternatives v-if="loadedQuote" :quote="quote" :has-unsaved-changes="hasUnsavedDepartmentChanges" @open="openAlternative" @changed="loadQuote" @archive-state="updateArchiveState" />
+
+    <section v-if="isContinuousQuote" class="quote-whole-review-panel" :class="quote.status">
+      <div class="quote-whole-review-icon"><ShieldCheck v-if="['released', 'exported'].includes(quote.status)" /><AlertTriangle v-else-if="quote.status === 'rejected'" /><LockKeyhole v-else-if="quote.status === 'final_pending'" /><Send v-else /></div>
+      <div class="quote-whole-review-copy"><span>{{ isDirectOutput ? '方案独立输出' : isMultiProduct ? '整批一次审核' : '整单审核' }}</span><h2>{{ collaborationStatusLabel }}</h2><p>{{ wholeReviewDescription }}</p><div><b>{{ isDirectOutput ? '业务负责人' : '指定审核人' }}：{{ quote.businessOwner }}</b><b v-if="isMultiProduct">产品数量：{{ batchProducts.length }} 款</b><b>当前款部门完成：{{ completedCount }}/{{ participatingSections.length }}</b><b>报价头 r{{ quote.headerRevision }}</b></div></div>
+    </section>
+
+    <div ref="referenceBanner" class="quote-snapshot-banner" tabindex="-1"><Layers3 /><span><strong>参考快照已冻结</strong>{{ quote.referenceSnapshotId }} · RMB→HKD {{ quote.fxRmbHkd.toFixed(2) }} · HKD→USD {{ quote.fxHkdUsd.toFixed(2) }}</span><em>{{ formulaStale ? `报价或部门核算仍使用旧公式，当前为 ${quote.currentFormulaVersion}` : '同步最新参考表将产生新 revision，并使受影响审批失效' }}</em><button v-if="canSyncReference" type="button" @click="syncPanelOpen = !syncPanelOpen">{{ formulaStale ? '处理旧公式' : '同步最新参考表' }}</button></div>
+    <p v-if="formulaRecoveryNotice" class="quote-page-message" role="status">{{ formulaRecoveryNotice }}</p>
+    <section v-if="syncPanelOpen && canSyncReference" class="quote-sync-panel"><div><strong>{{ formulaStale ? '处理旧公式' : '同步最新参考表' }}</strong><span>按当前公式重算：沿用本报价已冻结的汇率和参考价格。同步最新参考表：同时更新参考资料。两项操作都会重算已填写部门，并使受影响审批和输出失效。</span></div><textarea ref="syncReasonInput" v-model="syncReason" rows="2" placeholder="必须填写变更原因" aria-label="公式或参考资料变更原因" /><button type="button" class="secondary" @click="syncPanelOpen = false">取消</button><button v-if="formulaStale" type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting" @click="recalculateFormula">按当前公式重算</button><button type="button" class="primary" :disabled="!syncReason.trim() || quoteStore.submitting || !canSyncReference" @click="syncReference">同步最新参考表</button></section>
     <p v-if="message" class="quote-page-message success">{{ message }}</p><p v-if="errorMessage" class="quote-page-message error">{{ errorMessage }}</p><p v-if="quoteStore.refreshWarning && quoteStore.refreshWarningQuoteId === quote.id" class="quote-page-message error" role="status">{{ quoteStore.refreshWarning }} <button type="button" :disabled="quoteStore.detailLoading || quoteStore.submitting" @click="quoteStore.refreshAfterMutation(quote.id)">重新读取</button></p><p v-if="quoteStore.errorMessage" class="quote-page-message error">{{ quoteStore.errorMessage }}</p>
     <p v-if="quoteStore.conflictMessage && !isContinuousQuote" class="quote-page-message conflict"><span>{{ quoteStore.conflictMessage }}</span><button type="button" @click="discardAndReload">放弃本地表单并重新读取</button></p>
 
@@ -1123,12 +1223,13 @@ onBeforeUnmount(() => {
         </article>
         <footer id="quote-page-actions" class="quote-whole-product-actions" aria-label="整单操作">
           <div class="quote-action-feedback" aria-live="polite">
+            <InternalQuoteOutputProblems v-if="savedReadinessQuoteId === quote.id && !hasUnsavedDepartmentChanges() && !(quoteStore.refreshWarningQuoteId === quote.id && quoteStore.refreshWarning)" :problems="savedOutputProblems" @locate="code => resolveSeriesProblem(quote.id, code)" />
             <p v-if="currentAlternativeArchived" class="quote-page-message conflict">{{ wholeDocumentArchived ? '整单报价已归档' : '此版本已归档' }}，数据和历史记录保留。请先到 <a href="#quote-alternatives">包装方案与版本</a> 点击{{ wholeDocumentArchived ? '“恢复整单报价”' : '“恢复显示”' }}，填写说明并确认恢复，再保存或输出。</p>
             <p v-if="message" class="quote-page-message success" role="status">{{ message }}</p>
             <p v-if="errorMessage || quoteStore.errorMessage" class="quote-page-message error" role="alert">{{ errorMessage || quoteStore.errorMessage }}</p>
             <p v-if="quoteStore.conflictMessage" class="quote-page-message conflict"><span>本地输入已保留。核对后可继续编辑，或放弃本地修改重新读取。</span><button type="button" :disabled="quoteStore.detailLoading || quoteStore.submitting" @click="discardAndReload">放弃本地表单并重新读取</button></p>
           </div>
-          <div class="quote-whole-product-actions-copy"><strong>整单操作</strong><span>{{ currentAlternativeArchived ? '当前报价已归档，请先在上方方案面板恢复后继续保存或输出。' : isDirectOutput ? '保存当前款后可直接输出；包装或结构调整时，在上方复制新方案或新版本。' : '在这里查看汇总、保存当前款、切换款号、复制基准款，以及提交或审核整单。' }}</span><small>当前款：{{ quote.productName }} · 最后更新 {{ quote.updatedAt }}</small></div>
+          <div class="quote-whole-product-actions-copy"><strong>整单操作</strong><span>{{ currentAlternativeArchived ? '当前报价已归档，请先在上方方案面板恢复后继续保存或输出。' : isDirectOutput ? '保存并补齐全部待处理项目后即可输出；包装或结构调整时，在上方复制新方案或新版本。' : '在这里查看汇总、保存当前款、切换款号、复制基准款，以及提交或审核整单。' }}</span><small>当前款：{{ quote.productName }} · 最后更新 {{ quote.updatedAt }}</small></div>
           <div class="quote-whole-product-actions-controls">
             <button type="button" class="quote-whole-product-save" title="保存当前款全部现有内容" :disabled="currentAlternativeArchived || wholeProductSaving || quoteStore.submitting" @click="saveWholeProductDraft"><Save />{{ wholeProductSaving ? '保存中…' : '保存' }}</button>
             <div class="quote-whole-review-actions quote-whole-product-workflow">

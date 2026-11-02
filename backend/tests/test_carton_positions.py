@@ -170,20 +170,25 @@ def test_count_is_scoped_to_one_position_and_other_positions_can_count(db):
     from app.models.carton_stocktake import CartonStocktake, CartonStocktakeLine
     from app.schemas.carton_stocktake import StocktakeCreate
     from app.services.carton_stocktake import create_stocktake
-    from test_carton_stocktake import action, REVIEWER
+    from test_carton_stocktake import action, REVIEWER, actor
+    from app.models.carton_master import CartonMasterRecord
+    from app.models.carton_procurement import CartonException
+    CartonMasterRecord.__table__.create(db.get_bind(), checkfirst=True)
+    CartonException.__table__.create(db.get_bind(), checkfirst=True)
+    counter = actor(USER.id)
     CartonStocktake.__table__.create(db.get_bind())
     CartonStocktakeLine.__table__.create(db.get_bind())
     row, a, b = setup(db)
     balances = {r.location_id: r for r in pos.position_balances(db, "huaxing")}
     def create(loc):
-        return create_stocktake(db, StocktakeCreate(factory_id="huaxing", position_keys=[balances[loc.id].position_key]), USER)
+        return create_stocktake(db, StocktakeCreate(factory_id="huaxing", position_keys=[balances[loc.id].position_key]), counter)
     first, second = create(a), create(b)
     assert first["lines"][0]["initial_quantity"] == 70
     assert second["lines"][0]["initial_quantity"] == 30
     with pytest.raises(HTTPException, match="进行中的盘点"):
         create(a)
     db.rollback()
-    submitted = action(db, first, "SUBMIT", actual="68", user=USER)
+    submitted = action(db, first, "SUBMIT", actual="68", user=counter)
     out(db, a, 5)
     posted = action(db, submitted, "APPROVE", user=REVIEWER)
     assert posted["status"] == "POSTED"

@@ -1,0 +1,46 @@
+# Standalone service. Start with project name rr-office and a mode-0600
+# .env.onlyoffice. The application joins its network through integration.yml.
+services:
+  onlyoffice:
+    image: onlyoffice/documentserver:10.0@sha256:ca17889f10b11141cc6441836aebdd2835cf3e1b49681b2fd6e155c94b7850b3
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: "${ONLYOFFICE_JWT_SECRET:?ONLYOFFICE_JWT_SECRET is required}"
+      JWT_HEADER: AuthorizationJwt
+      JWT_IN_BODY: "true"
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
+      ALLOW_META_IP_ADDRESS: "false"
+      WOPI_ENABLED: "false"
+      GENERATE_FONTS: "true"
+    networks: [office-private]
+    volumes:
+      - onlyoffice-data:/var/www/onlyoffice/Data
+      - onlyoffice-cache:/var/lib/onlyoffice
+      - onlyoffice-db:/var/lib/postgresql
+      - onlyoffice-logs:/var/log/onlyoffice
+      - ./local-production-linux.json:/etc/onlyoffice/documentserver/local-production-linux.json:ro
+    mem_limit: 4g
+    mem_reservation: 1g
+    memswap_limit: 6g
+    cpus: 2.0
+    shm_size: 256m
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1/healthcheck | grep -qx true"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+networks:
+  office-private:
+    name: rr-office-private
+    internal: true
+
+volumes:
+  onlyoffice-data:
+  onlyoffice-cache:
+  onlyoffice-db:
+  onlyoffice-logs:

@@ -41,8 +41,8 @@ def prepared_sheets(filename, content, sheets):
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
 DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v11-unordered"
-SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-effective-po-v5"
-INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v3-complete"
+SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-shipping-split-source-v7"
+INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v4-amendment"
 PACKAGING_TYPES = (
     "普通箱",
     "压线卡",
@@ -69,6 +69,8 @@ WEEKLY_ALIASES = {
     "po_numbers": {"pono", "po", "po号", "客户po", "订单号"},
     "customer_name": {"客名国家", "客名", "客户", "国家", "customer"},
     "item_no": {"产品编号", "货号", "客货号", "itemno", "item"},
+    "shipping_item_no": {"出货货号"},
+    "split_source": {"拆单来源"},
     "product_name": {"产品名称", "品名", "description", "productname"},
     "quantity": {"数量", "订单数量", "qty", "quantity"},
     "carton_rule": {"装箱", "包装", "装箱方式", "pack", "packing"},
@@ -738,6 +740,8 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
         "production_no": {"生产单号"},
         "customer_name": {"客名"},
         "item_no": {"产品编号"},
+        "shipping_item_no": {"出货货号"},
+        "split_source": {"拆单来源"},
         "product_name": {"产品中文名称"},
         "quantity": {"數量", "数量"},
         "carton_rule": {"装箱"},
@@ -793,7 +797,7 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
                 row.update(match_status="REVIEW_REQUIRED", suggestion="来源表取消单区：核对是否已经下过纸箱采购单；不会自动取消正式订单")
             elif section == "SHIPPED":
                 row.update(match_status="REVIEW_REQUIRED", suggestion="来源表已走货区：保留记录，不作为当前待下单需求")
-            elif values.get("order_type") != "正单":
+            elif values.get("order_type") not in {"正单", "改单"}:
                 row.update(match_status="REVIEW_REQUIRED", suggestion=f"{values.get('order_type') or '未标订单类型'}：待人工确认，不计入正单下单核对")
             elif not values.get("contract_no") or not values.get("item_no"):
                 row.update(match_status="REVIEW_REQUIRED", suggestion="正单缺少合同号或产品编号，不能按相邻行或单独货号推断订单")
@@ -816,7 +820,7 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
             for row in duplicates:
                 row.update(match_status="REVIEW_REQUIRED", suggestion="合同、货号和 SO#/Reference 相同，待人工确认是否重复或分批；可继续标记或按此下单")
     return {"rows": result, "engine": "unified-item-header-mapping", "field_mappings": mappings,
-            "warnings": ["读取 ITEM 表的待下单、取消单和已走货分区；仅待下单区正单参与下单核对，其他记录保留待确认。接单表不重复导入。",
+            "warnings": ["读取 ITEM 表的待下单、取消单和已走货分区；待下单区正单和改单参与下单核对，其他记录保留待确认。接单表不重复导入。",
                          "Contract No.、SO#/Reference、P/O#: 分别保留；同合同货号优先按 SO#/Reference 区分，SO 空白时用 P/O，空白编号不从相邻行补齐。",
                          "无年份、多阶段或无效日期保留原文并标记待确认，不猜测日期。"],
             "review_count": sum(row.get("match_status") == "REVIEW_REQUIRED" or row.get("date_review_required", False) for row in result)}
@@ -868,6 +872,8 @@ def _parse_weekly(filename: str, content: bytes) -> dict[str, Any]:
                     "po_numbers": _text(_cell(row, mapping, "po_numbers")),
                     "customer_name": _text(_cell(row, mapping, "customer_name")),
                     "item_no": item_no,
+                    "shipping_item_no": _text(_cell(row, mapping, "shipping_item_no")),
+                    "split_source": _text(_cell(row, mapping, "split_source")),
                     "product_name": _text(_cell(row, mapping, "product_name")),
                     "quantity": _json_number(amount),
                     "carton_rule": _text(_cell(row, mapping, "carton_rule")),
@@ -930,6 +936,7 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes, *, strict_rows: b
                     "specification": _text(_cell(row, mapping, "specification")) if dongkang_format else _specification(row, mapping),
                     "delivered_quantity": _json_number(amount),
                     "unit_price": _json_number(_number(_cell(row, mapping, "unit_price"))) or 0,
+                    "unit_price_provided": _number(_cell(row, mapping, "unit_price")) is not None,
                     "location": _text(_cell(row, mapping, "location")),
                 }
             if dongkang_format:
@@ -1342,7 +1349,23 @@ def match_carton_import(db, factory_id, import_type, parsed, options):
             row.setdefault("source_customer_name", row.get("customer_name") or "")
             row.update(schedule_customer_code=options["customer_code"], schedule_customer_name=options["customer_name"],
                        customer_code=options["customer_code"], customer_name=options["customer_name"])
+        # The selected master customer is authoritative; workbook buyer names
+        # and filenames must never activate another customer's item convention.
+        business_code = options.get("business_customer_code")
+        is_360 = business_code == "360" if business_code else any(
+            _text(options.get(key)) == "360" for key in ("customer_code", "customer_name"))
+        if is_360:
+            for row in rows:
+                row.setdefault("source_item_no", row.get("item_no") or "")
+                row["item_no"] = _text(row.get("shipping_item_no"))
+                if not row["item_no"]:
+                    row.update(match_status="REVIEW_REQUIRED", suggestion="360 的货号使用出货货号；请补齐原表“出货货号”后重新导入")
+            parsed.setdefault("warnings", []).append("360 按出货货号核对和下单；完整产品编号保留为原表信息，缺少出货货号的行待补齐。")
+        if any(row.get("split_source") for row in rows):
+            parsed.setdefault("warnings", []).append("拆单来源仅保留原单来历；原单、新单分别按表内数量核对，不自动拆分或扣减采购单。订单类型仍填写正单。")
     _match_rows(db, factory_id, import_type, rows, options.get("schedule_order_links"))
+    if import_type == "WEEKLY_SCHEDULE":
+        parsed["review_count"] = sum(row.get("match_status") == "REVIEW_REQUIRED" or bool(row.get("date_review_required")) for row in rows)
     if import_type == "INSPECTION_SCHEDULE":
         advance_days = max(0, min(30, int(options.get("advance_days", 3))))
         try:

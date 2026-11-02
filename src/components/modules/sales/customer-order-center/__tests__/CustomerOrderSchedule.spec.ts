@@ -2,6 +2,8 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CustomerOrderSchedule from '../CustomerOrderSchedule.vue'
 
+vi.mock('@/components/CartonMaterialsSourceButton.vue', () => ({ default: { template: '<span>订单资料</span>' } }))
+
 const api = vi.hoisted(() => ({ customers: vi.fn(), get: vi.fn(), organize360: vi.fn() }))
 enableAutoUnmount(afterEach)
 beforeEach(() => { vi.resetAllMocks() })

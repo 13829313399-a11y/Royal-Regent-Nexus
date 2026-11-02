@@ -3,7 +3,13 @@ import type { PurchaseFacts } from './fabricProcurement'
 
 export type MaterialCategory = 'FABRIC' | 'ACCESSORY' | 'THREAD'
 export interface ReceiptPriceInput { unit_price?: string; price_unit?: string; currency?: '' | 'CNY' | 'HKD' | 'USD' | 'EUR' }
-export interface ReceiptBatchInput { location_id?: string; quantity: string; location: string; dye_lot: string; roll_no: string }
+export interface ReceiptBatchInput { location_id?: string; quantity: string; location: string; dye_lot: string; roll_no: string
+  counted_quantity?: string; damaged_quantity?: string; rejected_quantity?: string; other_unusable_quantity?: string }
+export interface ReceiptLineEvidence extends Omit<ReceiptBatchInput, 'quantity'> {
+  batch_id: string | null; counted_quantity: string; damaged_quantity: string; rejected_quantity: string
+  other_unusable_quantity: string; accepted_quantity: string; returned_to_supplier: string
+  shortage_quantity: string; shortage_scope: 'RECEIPT'; disposition: 'RETURNED_TO_SUPPLIER' | 'ACCEPTED'
+}
 export interface ReceiveRequest extends ReceiptPriceInput {
   delivery_quantity?: string
   factory_id: 'huakang-c'; request_id: string; expected_source_revision: number; expected_receipt_count: number
@@ -12,6 +18,8 @@ export interface ReceiveRequest extends ReceiptPriceInput {
   batches: ReceiptBatchInput[]; confirmed: boolean
 }
 export interface FabricReceipt {
+  receipt_lines?: ReceiptLineEvidence[]; delivered_quantity?: string; counted_quantity?: string; accepted_quantity?: string
+  damaged_quantity?: string; rejected_quantity?: string; other_unusable_quantity?: string; shortage_quantity?: string; returned_to_supplier?: string
   delivery_quantity?: string
   history_key?: string; receipt_origin?: 'PROCUREMENT' | 'HANDOVER' | 'MANUAL'; operation_id?: string
   handover_document_id?: string; source_version?: string
@@ -19,7 +27,7 @@ export interface FabricReceipt {
   unit_price?: string; price_unit?: string; currency?: string; amount?: string; price_basis?: string
   id: string; source_line_id: string; source_revision: number; facts: PurchaseFacts; quantity: string; unit: string
   prior_received_quantity: string | null; receipt_date: string; accounting_month: string; delivery_reference: string
-  material_category: MaterialCategory; difference_reason: string; note: string; actor_name: string; occurred_at: string; stock_posted: true
+  material_category: MaterialCategory; difference_reason: string; note: string; actor_name: string; occurred_at: string; stock_posted: boolean
   batches: (ReceiptBatchInput & { id: string; quality_status: 'PENDING_INSPECTION' })[]
 }
 export interface FabricReceiptReversalPreview { receipt_id: string; expected_revision: number; quantity: string; unit: string; delivery_reference: string; can_reverse: boolean; blocked_reason: string }

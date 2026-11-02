@@ -36,6 +36,9 @@ def organize_workbook(file_name: str, content: bytes):
                 workbook, factory_id="huakang-a", customer_code="360")
         except OrderTypeValidationError as exc:
             raise unified.CustomerOrderUnifiedError(str(exc)) from exc
+        from app.services.customer_order_360_carton import ensure_carton_columns
+        report["carton_columns"] = ensure_carton_columns(
+            workbook, factory_id="huakang-a", customer_code="360")
         workbook.calculation.calcMode = "auto"
         workbook.calculation.fullCalcOnLoad = True
         workbook.calculation.forceFullCalc = True

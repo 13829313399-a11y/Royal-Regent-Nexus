@@ -22,7 +22,7 @@ from test_assistant_v2 import migrate
 
 
 def migration():
-    path = Path(__file__).parents[1] / 'alembic/versions/20261026_0176_assistant_durable_runs.py'
+    path = Path(__file__).parents[1] / 'alembic/versions/20261102_0188_assistant_durable_runs.py'
     spec = importlib.util.spec_from_file_location('durable_migration', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

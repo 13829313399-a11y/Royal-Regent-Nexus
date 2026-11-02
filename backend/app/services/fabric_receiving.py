@@ -2,6 +2,7 @@
 from decimal import Decimal
 from uuid import uuid4, uuid5
 import json
+import re
 
 from fastapi import HTTPException
 from sqlalchemy import inspect, select, literal, or_
@@ -23,13 +24,19 @@ def receipt_request_body(payload):
         # Old committed requests must retain their exact canonical hash.
         if not item.get('delivery_quantity'):
             item.pop('delivery_quantity', None)
+        for part in item.get('batches', []):
+            # Omitted defaults must not change a pre-v2 committed request hash.
+            for field, default in (('counted_quantity', ''), ('damaged_quantity', '0'),
+                                   ('rejected_quantity', '0'), ('other_unusable_quantity', '0')):
+                if part.get(field) == default:
+                    part.pop(field, None)
     return body
 
 
 def validate_delivery_quantity(total, declared):
     limit = quantity(declared, '本单该采购明细到货量')
     if total > limit:
-        raise HTTPException(422, '分仓实收合计超过本单该采购明细到货量，请核对数量；填写超收说明不能放行')
+        raise HTTPException(422, '实点合计超过本单该采购明细到货量，请核对数量；填写超收说明不能放行')
     return limit
 
 
@@ -160,11 +167,33 @@ def receipt_data(db, receipt, *, reversals=None):
     reversal = (reversal_rows(db) if reversals is None else reversals).get(receipt.id)
     return {"id": receipt.id, "source_line_id": receipt.source_line_id, "source_revision": receipt.source_revision,
         "facts": json.loads(receipt.source_json), **json.loads(receipt.payload_json), "quantity": receipt.quantity,
-        "unit": receipt.unit, "actor_name": receipt.actor_name, "occurred_at": receipt.occurred_at, "stock_posted": True,
+        "unit": receipt.unit, "actor_name": receipt.actor_name, "occurred_at": receipt.occurred_at, "stock_posted": Decimal(receipt.quantity) > 0,
         'reversed': reversal is not None, 'reversal': {'id': reversal.id, 'date': reversal.business_date,
             'reason': json.loads(reversal.payload_json)['reason'], 'actor_name': reversal.actor_name} if reversal else None,
         "batches": [{"id": batch.id, "location": batch.location, "dye_lot": batch.dye_lot, "roll_no": batch.roll_no,
                      "quality_status": batch.quality_status, "quantity": movement.quantity} for batch, movement in rows]}
+
+
+def receipt_line_quantities(batch):
+    def parse(value, label):
+        if not re.fullmatch(r'[0-9]{1,12}(?:\.[0-9]{1,6})?', value.strip()):
+            raise HTTPException(422, f'{label}须为非负普通数字，最多六位小数')
+        return quantity(value, label, True)
+
+    accepted = parse(batch.quantity, '入库量')
+    damaged = parse(batch.damaged_quantity, '破损量')
+    rejected = parse(batch.rejected_quantity, '拒收量')
+    other = parse(batch.other_unusable_quantity, '其他不可用量')
+    returned = damaged + rejected + other
+    counted = parse(batch.counted_quantity, '实点量') if batch.counted_quantity.strip() else accepted + returned
+    quantity(decimal_text(counted), '实点量', True)
+    if returned > counted:
+        raise HTTPException(422, '破损、拒收和其他不可用合计不能超过实点量')
+    if counted - returned != accepted:
+        raise HTTPException(422, '入库量须等于实点量减去破损、拒收和其他不可用量')
+    return {key: decimal_text(value) for key, value in dict(counted_quantity=counted,
+        damaged_quantity=damaged, rejected_quantity=rejected, other_unusable_quantity=other,
+        accepted_quantity=accepted, returned_to_supplier=returned).items()}
 
 
 def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _commit=True):
@@ -230,7 +259,7 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
     location_records = {row["id"]: row for row in master_references["locations"]}
     batches, roll_keys = [], set()
     for batch in payload.batches:
-        amount = quantity(batch.quantity, "批次数量")
+        amounts = receipt_line_quantities(batch)
         if not batch.location.strip():
             raise HTTPException(422, "请填写每项实物的仓位")
         if payload.material_category == "FABRIC" and not batch.dye_lot.strip():
@@ -240,13 +269,19 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
         # A roll can split across bins, but the same roll/bin cannot be entered twice.
         entered_location = batch.location.strip()
         key = (batch.dye_lot.strip(), batch.roll_no.strip(), location_records[batch.location_id]["label"])
-        if batch.roll_no.strip() and key in roll_keys:
+        if payload.material_category == 'FABRIC' and key in roll_keys:
             raise HTTPException(422, "同缸号、卷号和仓位重复，请合并核对")
         roll_keys.add(key)
-        batches.append({"quantity": decimal_text(amount), "location": key[2], "dye_lot": key[0], "roll_no": key[1], "location_record": location_records[batch.location_id]})
+        batches.append({**amounts, "quantity": amounts['accepted_quantity'], "location": key[2], "dye_lot": key[0], "roll_no": key[1], "location_record": location_records[batch.location_id]})
     total = sum((Decimal(batch["quantity"]) for batch in batches), Decimal(0))
-    quantity(decimal_text(total), "本次实收总数")
-    validate_delivery_quantity(total, payload.delivery_quantity)
+    quantity(decimal_text(total), "本次入库总数", True)
+    totals = {field: sum((Decimal(batch[field]) for batch in batches), Decimal(0)) for field in
+        ('counted_quantity', 'damaged_quantity', 'rejected_quantity', 'other_unusable_quantity', 'accepted_quantity', 'returned_to_supplier')}
+    delivered = validate_delivery_quantity(totals['counted_quantity'], payload.delivery_quantity)
+    shortage = decimal_text(delivered - totals['counted_quantity'])
+    if total == 0 and not any(check['name'] == 'ck_fabric_receipt_quantity' and '>=' in check['sqltext']
+            for check in inspect(db.connection()).get_check_constraints('fabric_receipts')):
+        raise HTTPException(503, '零入库差异单需要数据库迁移 20261023_0176，请先备份并升级')
     pricing = price_evidence(total, facts['unit'], body)
     remaining = valid_reference(progress["warehouse_outstanding_quantity"])
     if remaining is not None and total > remaining and not payload.difference_reason.strip():
@@ -260,6 +295,8 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
     if same_notes:
         frozen_body['replaces_receipt_ids'] = [receipt.id for receipt in same_notes]
     frozen_body.update(pricing)
+    frozen_body.update({field: decimal_text(value) for field, value in totals.items()})
+    frozen_body.update(delivered_quantity=decimal_text(delivered), shortage_quantity=shortage, receipt_lines=[])
     if context and context.get("chase_reference"):
         frozen_body["chase_reference"] = context["chase_reference"]
     receipt = FabricReceipt(id=uuid4().hex, factory_id=source.FACTORY, source_line_id=line_id, source_revision=line.revision,
@@ -273,8 +310,18 @@ def receive(db, actor, line_id, payload, *, _state=None, _batch_metadata=None, _
     movements = []
     frozen_body["batch_locations"] = {}
     for item in batches:
+        line_evidence = {key: value for key, value in item.items() if key not in {'quantity', 'location_record'}}
+        line_evidence.update(batch_id=None, location_id=item['location_record']['id'],
+            material_category=payload.material_category, unit=facts['unit'],
+            # Delivery is declared at header level; never allocate a guessed per-roll shortage.
+            shortage_quantity=shortage, shortage_scope='RECEIPT',
+            disposition='RETURNED_TO_SUPPLIER' if Decimal(item['returned_to_supplier']) > 0 else 'ACCEPTED')
+        frozen_body['receipt_lines'].append(line_evidence)
+        if Decimal(item['quantity']) == 0:
+            continue
         batch = FabricStockBatch(id=uuid4().hex, factory_id=source.FACTORY, receipt_id=receipt.id,
-            material_category=payload.material_category, quality_status="PENDING_INSPECTION", **{k: v for k, v in item.items() if k not in {"quantity", "location_record"}})
+            material_category=payload.material_category, quality_status="PENDING_INSPECTION", **{k: item[k] for k in ('location', 'dye_lot', 'roll_no')})
+        line_evidence['batch_id'] = batch.id
         frozen_body["batch_locations"][batch.id] = item["location_record"]
         db.add(batch)
         movements.append(FabricInventoryMovement(id=uuid4().hex, factory_id=source.FACTORY, receipt_id=receipt.id,

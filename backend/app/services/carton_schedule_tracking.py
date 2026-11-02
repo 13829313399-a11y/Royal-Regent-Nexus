@@ -11,7 +11,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
-TRACKED_TYPES = {"正单", "正式PO", "加单"}
+TRACKED_TYPES = {"正单", "正式PO", "加单", "改单"}
 
 
 def customer_key(row: dict[str, Any]) -> str:

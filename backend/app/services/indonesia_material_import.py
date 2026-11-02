@@ -105,22 +105,27 @@ def preview(db, user, factory, customer, recipient, filename, content, workbook=
         lock_mutation(db)
         lock_transaction(db, 'indonesia-materials', factory)
         if refresh_user:
-            original_actor = user.id
+            original_actor = (user.id, (user.identity or {}).get('employment_epoch', 1))
             user = refresh_user()
-            require(user.id == original_actor, '账号身份已变化，请重新上传核对', 401)
+            require((user.id, (user.identity or {}).get('employment_epoch', 1)) == original_actor, '账号身份已变化，请重新上传核对', 401)
         from app.services.indonesia_materials import authorize
         authorize(user, factory, 'write')
         ledger.fixed_customer(customer)
-        previous = db.scalar(select(Record).where(Record.factory_id == factory, Record.kind == 'import', Record.business_key == digest(key_value)))
+        from app.services.indonesia_material_ownership import Access, ownership
+        access = Access(db, user, factory)
+        fingerprint = digest(key_value)
+        previous = next((r for r in ledger.rows('import') if (r.data.get('preview_key') or r.business_key) == fingerprint
+                         and access.owns(r)), None)
         if previous:
-            result = view(previous)
+            result = access.present(previous)
             result['data']['rows'] = reconcile_rows(ledger, result['data']['rows'])
             return dict(record=result)
         asset = ledger.asset(PurePath(filename).name, content, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         record = ledger.save('import', dict(status='preview', filename=asset.filename, asset_id=asset.id, customer=customer,
-                                           recipient=recipient, rows=reconcile_rows(ledger, rows), issues=warnings, provided_by=user.id), key=key_value)
+                                           recipient=recipient, rows=reconcile_rows(ledger, rows), issues=warnings, provided_by=user.id,
+                                           preview_key=fingerprint, _ownership=ownership(user)))
         db.commit()
-        return dict(record=view(record))
+        return dict(record=access.present(record))
     except Exception:
         db.rollback()
         raise

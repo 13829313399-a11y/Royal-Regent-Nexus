@@ -121,6 +121,7 @@ export interface AuthEffectiveAccess {
 export type AuthzMode = 'legacy' | 'shadow' | 'enforce'
 
 export interface AuthMeResponse {
+  internal_member?: boolean
   identity?: import('./identity').IdentityContext | null
   id: string
   username: string

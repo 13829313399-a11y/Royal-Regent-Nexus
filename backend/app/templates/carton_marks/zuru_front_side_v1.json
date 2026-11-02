@@ -1,0 +1,40 @@
+{
+  "id": "zuru-front-side-v1",
+  "name": "4500227434 正侧唛客户模板",
+  "version": 1,
+  "reference_sha256": "a07d78dfa9b95f55183849a8823d443e5d78c56f7b4913b84cbc17988263707f",
+  "logo_sha256": "58e8b1276965594920e4701a8197a9121b847992c377f37410d35cfae5a1d5a1",
+  "paper": "A4",
+  "orientation": "landscape",
+  "front_percent": 56,
+  "front_font_pt": 10,
+  "side_font_pt": 15,
+  "logo_width_mm": 45,
+  "front_copies": 2,
+  "side_copies": 2,
+  "handling_symbols": [
+    "this_side_up"
+  ],
+  "logo_rules": [
+    {
+      "width_min_cm": 30,
+      "width_max_cm": 40,
+      "height_min_cm": 23,
+      "logo_width_cm": 18
+    },
+    {
+      "width_min_exclusive_cm": 40,
+      "width_max_cm": 50,
+      "height_min_cm": 33,
+      "logo_width_cm": 25
+    },
+    {
+      "width_min_exclusive_cm": 50,
+      "height_min_cm": 42,
+      "logo_width_cm": 32
+    }
+  ],
+  "notes": "按实际箱宽和箱高确定LOGO实际印刷宽度；箱宽小于30cm需确认比例。A4/A3为缩放审阅稿。历史PO、货号、地址、数量、条码和尺寸示例均不是模板数据。",
+  "change_scope": "current_document_only",
+  "preview_sha256": "dbc9a0842389fa3e0c02f6dcd04ea68f87367f905a6fb71812928c07566558d0"
+}

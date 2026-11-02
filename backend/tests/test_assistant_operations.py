@@ -16,7 +16,7 @@ from test_assistant_durable_runs import durable_env, post, wait_snapshot, frames
 
 
 def migration():
-    path=Path(__file__).parents[1]/'alembic/versions/20261026_0177_assistant_operations.py'
+    path=Path(__file__).parents[1]/'alembic/versions/20261102_0189_assistant_operations.py'
     spec=importlib.util.spec_from_file_location('assistant_operations_migration',path)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     return module

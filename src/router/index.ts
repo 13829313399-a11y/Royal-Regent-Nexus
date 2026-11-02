@@ -24,11 +24,13 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { collaborationApi, type Capabilities } from '@/api/collaboration'
 import { installRouteMotionNavigation } from '@/features/route-motion/navigation'
+import { installCuttingResourceRecovery } from '@/features/cutting-operations/resourceRecovery'
 
 const qcInspectionOperationsView = () => import('@/views/QcOperationsCenterView.vue')
 import { identityUiEnabled, positionWorkbenchEnabled, consolidatedIamEnabled } from '@/components/iam/workspace/iam-navigation'
 import { legacyIamAccountTarget, consolidatedIamTarget } from './iamCompatibility'
 const qcInspectionFullPageMeta = {
+  qcFactoryWorkspace: true,
   fullPage: true,
   requiresAuth: true,
   permissions: ['qc_inspection:read'],
@@ -38,7 +40,7 @@ const qcInspectionFullPageMeta = {
 }
 
 const routes: RouteRecordRaw[] = [
-  { path: '/collaborative-sheets', name: 'collaborative-sheets', component: () => import('@/views/CollaborativeSheetsView.vue'), meta: { title: '协同填表工作台', fullPage: true, requiresAuth: true } },
+  { path: '/online-documents', name: 'online-documents', component: () => import('@/views/OnlineDocumentsView.vue'), meta: { title: '在线文档', fullPage: true, requiresAuth: true } },
   { path: '/account/position', name: 'account-position', component: () => import('@/features/identity-management/MyPositionPanel.vue'), meta: { title: '我的岗位与权限', requiresAuth: true } },
   { path: '/modules/pmc-warehouse/material-handover', name: 'material-handover', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), meta: { title: '制单与扫码交接', fullPage: true, requiresAuth: true, permissions: ['fabric_operations:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryId: 'huakang-c', permissionDepartment: 'pmc-warehouse' } },
   { path: '/material-handover/prepare', name: 'material-handover-external', component: () => import('@/features/material-handover/MaterialHandoverView.vue'), props: { external: true }, meta: { title: '物料单据制单', fullPage: true, requiresAuth: false } },
@@ -47,11 +49,11 @@ const routes: RouteRecordRaw[] = [
   { path: '/notifications', name: 'notification-center', component: () => import('@/views/NotificationCenterView.vue'), meta: { title: '事项工作台', requiresAuth: true } },
   {
     path: '/carton-supplier', name: 'carton-supplier', component: () => import('@/views/CartonSupplierView.vue'),
-    meta: { title: '纸箱供应商协同', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
+    meta: { title: '纸箱供应商协同', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryContext: true, permissionDepartment: '*' },
   },
   {
     path: '/carton-supplier/carton-mark', name: 'carton-supplier-carton-mark', component: () => import('@/views/CartonSupplierMarkTemplatesView.vue'),
-    meta: { title: '供应商箱唛资料库', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true },
+    meta: { title: '供应商箱唛资料库', fullPage: true, requiresAuth: true, permissions: ['carton_supplier:read'], enforcePermissions: true, strictPermissions: true, permissionFactoryContext: true, permissionDepartment: '*' },
   },
   {
     path: '/carton-supplier-management', name: 'carton-supplier-management', redirect: to => ({ path: '/modules/pmc-warehouse/carton-procurement', query: { ...to.query, tab: 'receipts', receipt_page: 'supplier' } }),
@@ -732,6 +734,11 @@ router.beforeEach(async (to, from) => {
   if (from.name === 'indonesia-material-shipment' && to.name === from.name
       && typeof to.query.factory === 'string' && isFactoryContextId(to.query.factory) && to.query.factory !== useAppStore().activeFactoryId
       && !canChangeFactory()) return false
+  // QC's same-origin frame owns drafts. Check before the global factory context
+  // changes, including query-only navigation and leaving the full-page host.
+  if (from.meta.qcFactoryWorkspace && to.fullPath !== from.fullPath
+      && to.meta.requiresAuth !== false && to.name !== 'forbidden'
+      && !canChangeFactory()) return false
   routeLoadingStartedAt = window.performance.now()
   const appStore = useAppStore()
   appStore.startRouteLoading()
@@ -856,7 +863,10 @@ router.onError((_error, to) => {
   finishRouteLoading(loadingVersions.get(to))
 })
 
+export const cuttingResourceRecovery = installCuttingResourceRecovery(router)
+
 if (import.meta.hot) import.meta.hot.dispose(() => {
+  cuttingResourceRecovery.dispose()
   routeMotionNavigation.dispose()
   window.removeEventListener('focus', refreshAuthorizationSnapshot)
   if (routeLoadingTimer) window.clearTimeout(routeLoadingTimer)

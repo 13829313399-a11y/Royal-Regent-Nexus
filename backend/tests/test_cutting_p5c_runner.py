@@ -108,6 +108,10 @@ def test_sqlite_only_ignores_inherited_connection_and_preserves_incomplete_failu
         captured.update(env)
         assert any(name == 'http-capacity' and 'tests/test_cutting_http_capacity.py' in command
                    for name, command, _ in steps)
+        assert any(name == 'baseline' and all('tests/'+file in command for file in
+                   ['test_cutting_print_summary.py','test_cutting_print_boundaries.py','test_cutting_history_profile.py',
+                    'test_cutting_header_index.py','test_cutting_recovery_bundle.py'])
+                   for name, command, _ in steps)
         assert any(name == 'http-capacity' and all('tests/'+file in command for file in
                    ['test_cutting_http_process.py', 'test_cutting_lock_phases.py',
                     'test_cutting_production_mix.py']) for name, command, _ in steps)

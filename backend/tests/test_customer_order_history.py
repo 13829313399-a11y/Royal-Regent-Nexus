@@ -73,6 +73,30 @@ def test_parser_preserves_identifiers_custom_fields_and_section(db):
     assert r['data']['lineage']['quantity'].endswith('第 4 行')
 
 
+@pytest.mark.parametrize('bounded', [False, True])
+def test_parser_accepts_optional_missing_dimensions_and_still_enforces_limits(monkeypatch, bounded):
+    from zipfile import ZipFile
+    from lxml import etree
+    output = BytesIO()
+    with ZipFile(BytesIO(workbook())) as source, ZipFile(output, 'w') as target:
+        for info in source.infolist():
+            content = source.read(info.filename)
+            if info.filename == 'xl/worksheets/sheet1.xml':
+                tree = etree.fromstring(content)
+                for element in tree.findall('{*}dimension'):
+                    tree.remove(element)
+                content = etree.tostring(tree)
+            target.writestr(info, content)
+    if bounded:
+        monkeypatch.setattr(history, 'MAX_ROWS', 5)
+        with pytest.raises(HTTPException, match='超过迁入范围限制'):
+            history.parse_workbook(output.getvalue())
+    else:
+        actual, _ = history.parse_workbook(output.getvalue())
+        expected, _ = history.parse_workbook(workbook())
+        assert actual == expected
+
+
 def test_opening_is_audited_without_fake_shipments_or_auto_dispatch(db):
     p = parsed(db)
     result = confirm(db, p)

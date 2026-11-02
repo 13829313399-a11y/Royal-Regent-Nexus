@@ -19,18 +19,52 @@ beforeEach(()=>{vi.clearAllMocks();vi.spyOn(window,'confirm').mockReturnValue(tr
 afterEach(()=>{wrapper?.unmount();wrapper=undefined;vi.restoreAllMocks()})
 async function open(rights=access){const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingPeriodClosing},{path:'/next',component:{template:'<div />'}}]});await router.push('/');await router.isReady();const root=defineComponent({props:['access','accessLoading'],components:{RouterView},template:'<RouterView v-slot="{Component}"><component :is="Component" :access="access" :access-loading="accessLoading" /></RouterView>'});wrapper=mount(root,{props:{access:rights},global:{plugins:[router]}});return router}
 async function click(label:string){const target=wrapper!.findAll('button').find(b=>b.text()===label);expect(target,label).toBeDefined();await target!.trigger('click');await flushPromises()}
-async function edit(){await click('读取月结记录');await click('编制／重新核对月结')}
+async function edit(){await click('读取当前最新版');await click('编制／重新核对月结')}
 
 describe('internal monthly closing',()=>{
+  it('distinguishes reading the latest record from refreshing the selected historical event',async()=>{
+    const history=[{id:'v3',month:'2026-09',version:3,action:'lock' as const,actor:'复核',actor_id:'reviewer',date:'2026-10-01',reason:'原版'},{id:'v10',month:'2026-09',version:10,action:'lock' as const,actor:'复核',actor_id:'reviewer',date:'2026-10-02',reason:'重结'}]
+    vi.mocked(periodApi.read).mockImplementation(async(month,event)=>({...record,month,revision:10,state:'locked',selected_state:'locked',event_id:event??'v10',history}))
+    await open();const panel=wrapper!.findComponent(CuttingPeriodClosing)
+    await panel.vm.openPeriod('2026-09','v3');await flushPromises()
+    await click('刷新所选版本');expect(periodApi.read).toHaveBeenLastCalledWith('2026-09','v3')
+    expect(wrapper!.text()).toContain('所选版本 V3')
+    await click('读取当前最新版');expect(periodApi.read).toHaveBeenLastCalledWith('2026-09',undefined)
+    expect(wrapper!.text()).toContain('所选版本 V10')
+    expect(periodApi.write).not.toHaveBeenCalled()
+  })
+  it('disables selected-version refresh without a selected event and after an explicit month change',async()=>{
+    await open();await click('读取当前最新版')
+    const selected=()=>wrapper!.findAll('button').find(b=>b.text()==='刷新所选版本')!
+    expect(selected().attributes('disabled')).toBeDefined()
+    vi.mocked(periodApi.read).mockResolvedValue({...record,event_id:'old',month:'2026-09'})
+    await wrapper!.findComponent(CuttingPeriodClosing).vm.openPeriod('2026-09','old');await flushPromises()
+    expect(selected().attributes('disabled')).toBeUndefined()
+    await wrapper!.get('input[type=month]').setValue('2026-08')
+    expect(selected().attributes('disabled')).toBeDefined()
+  })
+  it('keeps the exact selected event as the retry target when refresh fails',async()=>{
+    vi.mocked(periodApi.read).mockResolvedValueOnce({...record,event_id:'old-v3',month:'2026-09'}).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({...record,event_id:'old-v3',month:'2026-09'})
+    await open();await wrapper!.findComponent(CuttingPeriodClosing).vm.openPeriod('2026-09','old-v3');await flushPromises()
+    await click('刷新所选版本');expect(wrapper!.text()).toContain('old-v3')
+    await click('重试原月结记录');expect(periodApi.read).toHaveBeenLastCalledWith('2026-09','old-v3')
+  })
+  it('preserves unsaved reasons when selected refresh is cancelled',async()=>{
+    vi.mocked(periodApi.read).mockResolvedValue({...record,event_id:'current'})
+    await open();await click('读取当前最新版');await wrapper!.get('input[maxlength="500"]').setValue('保留复核依据')
+    vi.mocked(window.confirm).mockReturnValue(false);vi.mocked(periodApi.read).mockClear()
+    await click('刷新所选版本');expect(periodApi.read).not.toHaveBeenCalled()
+    expect((wrapper!.get('input[maxlength="500"]').element as HTMLInputElement).value).toBe('保留复核依据')
+  })
   it('protects reasons on direct period links, historical reads, month input and route exit',async()=>{
-    const router=await open();await click('读取月结记录')
+    const router=await open();await click('读取当前最新版')
     const panel=wrapper!.findComponent(CuttingPeriodClosing),oldMonth=(wrapper!.get('input[type=month]').element as HTMLInputElement).value
     await wrapper!.get('input[maxlength="500"]').setValue('仅属于原月的复核依据')
     vi.mocked(window.confirm).mockReturnValue(false)
     vi.mocked(periodApi.read).mockClear()
     await panel.vm.openPeriod('2025-01');await flushPromises()
     expect(periodApi.read).not.toHaveBeenCalled()
-    await click('读取月结记录')
+    await click('读取当前最新版')
     await wrapper!.get('input[type=month]').setValue('2025-01')
     expect((wrapper!.get('input[type=month]').element as HTMLInputElement).value).toBe(oldMonth)
     await router.push('/next');expect(router.currentRoute.value.path).toBe('/')
@@ -44,7 +78,7 @@ describe('internal monthly closing',()=>{
   })
 
   it('keeps the active month and unsaved reason when overview requests another month',async()=>{
-    await open();await click('读取月结记录')
+    await open();await click('读取当前最新版')
     const field=wrapper!.get('input[type=month]'),original=(field.element as HTMLInputElement).value
     await wrapper!.get('input[maxlength="500"]').setValue('当前月的独立复核依据')
     wrapper!.findComponent(CuttingPeriodClosing).vm.activateMonth('2025-01')
@@ -94,6 +128,6 @@ describe('internal monthly closing',()=>{
   it('saves explicit month-end allocations and completeness declarations',async()=>{await open();await edit();await wrapper!.get('textarea').setValue('月末实物和在制逐项核对');const quantity=wrapper!.findAll('input[type=number]');await quantity[1]!.setValue('1.2');await wrapper!.get('form').trigger('submit');await flushPromises();expect(periodApi.write).toHaveBeenCalledWith('save',expect.objectContaining({basis_token:'basis-1',reason:'月末实物和在制逐项核对',public_material_pending:true,unrecorded_opening:true,allocations:[expect.objectContaining({issue_id:'issue-1',completed_quantity:1.2})]}))})
   it('refreshes evidence while preserving quantities and resetting declarations',async()=>{await open();await edit();await wrapper!.findAll('input[type=number]')[1]!.setValue('1.2');await wrapper!.findAll('input[type=checkbox]')[0]!.setValue(true);await click('保留数量，刷新依据');expect((wrapper!.findAll('input[type=number]')[1]!.element as HTMLInputElement).value).toBe('1.2');expect((wrapper!.findAll('input[type=checkbox]')[0]!.element as HTMLInputElement).checked).toBe(false)})
   it('retains an unknown command and fences it before another operation or navigation',async()=>{const router=await open();await edit();await wrapper!.get('textarea').setValue('核对依据');vi.mocked(periodApi.write).mockRejectedValueOnce(new Error('offline'));await wrapper!.get('form').trigger('submit');await flushPromises();const original=vi.mocked(periodApi.write).mock.calls[0]![1];expect(wrapper!.text()).toContain('核对原操作结果');await router.push('/next');expect(router.currentRoute.value.path).toBe('/');await click('核对原操作结果');expect(periodApi.recover).toHaveBeenCalledWith('save',original);expect(wrapper!.text()).toContain('填写保留');expect(wrapper!.get('textarea').element.value).toBe('核对依据')})
-  it('clears denied costs and ignores a late response after access changes',async()=>{await open();let resolve!:(value:PeriodRecord)=>void;vi.mocked(periodApi.read).mockImplementationOnce(()=>new Promise(r=>{resolve=r}));await click('读取月结记录');await wrapper!.setProps({access:{...access,permissions:['read']}});resolve({...record,state:'locked',locked_months:['2026-10']});await flushPromises();expect(wrapper!.text()).not.toContain('已锁月份');expect(wrapper!.text()).toContain('单独授予成本查询')})
-  it('shows lock controls only for a submitted current version with lock rights',async()=>{vi.mocked(periodApi.read).mockResolvedValue({...record,state:'submitted',selected_state:'submitted'});await open({...access,permissions:['read','cost_read','period_lock']});vi.mocked(cuttingApi.access).mockResolvedValue({...access,permissions:['read','cost_read','period_lock']});await click('读取月结记录');expect(wrapper!.text()).toContain('复核并锁月');expect(wrapper!.text()).not.toContain('提交会计复核');await wrapper!.get('input[maxlength="500"]').setValue('会计独立复核');await click('复核并锁月');expect(window.confirm).toHaveBeenCalled();expect(periodApi.write).toHaveBeenCalledWith('lock',expect.objectContaining({reason:'会计独立复核'}))})
+  it('clears denied costs and ignores a late response after access changes',async()=>{await open();let resolve!:(value:PeriodRecord)=>void;vi.mocked(periodApi.read).mockImplementationOnce(()=>new Promise(r=>{resolve=r}));await click('读取当前最新版');await wrapper!.setProps({access:{...access,permissions:['read']}});resolve({...record,state:'locked',locked_months:['2026-10']});await flushPromises();expect(wrapper!.text()).not.toContain('已锁月份');expect(wrapper!.text()).toContain('单独授予成本查询')})
+  it('shows lock controls only for a submitted current version with lock rights',async()=>{vi.mocked(periodApi.read).mockResolvedValue({...record,state:'submitted',selected_state:'submitted'});await open({...access,permissions:['read','cost_read','period_lock']});vi.mocked(cuttingApi.access).mockResolvedValue({...access,permissions:['read','cost_read','period_lock']});await click('读取当前最新版');expect(wrapper!.text()).toContain('复核并锁月');expect(wrapper!.text()).not.toContain('提交会计复核');await wrapper!.get('input[maxlength="500"]').setValue('会计独立复核');await click('复核并锁月');expect(window.confirm).toHaveBeenCalled();expect(periodApi.write).toHaveBeenCalledWith('lock',expect.objectContaining({reason:'会计独立复核'}))})
 })

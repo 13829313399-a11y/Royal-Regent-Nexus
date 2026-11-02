@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from 'reka-ui'
+import { ChevronDown, ClipboardList, FileInput, FileSpreadsheet, ListChecks } from '@lucide/vue'
 import SectionPanel from './MaterialsPanel.vue'
 import type { Data, MaterialRecord } from '@/api/indonesiaMaterials'
 import Fields from './Fields.vue'
@@ -13,6 +15,13 @@ import DemandWorkspace from './DemandWorkspace.vue'
 import ShipmentWorkspace from './ShipmentWorkspace.vue'
 import { focusFollowup } from './focusFollowup'
 const ws = useMaterials()
+const moreOpen = ref(false)
+const importFromMenu = ref(false)
+function selectImport() { importFromMenu.value = true; openWarehouseImport() }
+function closeMenuFocus(event: Event) {
+  if (importFromMenu.value) event.preventDefault()
+  importFromMenu.value = false
+}
 const shipmentEditor = ref<InstanceType<typeof ShipmentWorkspace> | null>(null)
 function stepTo(step: number) {
   if (step < 3) { workflow.value = 'warehouse'; warehouseImport.value?.goStep(step) }
@@ -99,7 +108,20 @@ watch([repliedOrder, () => ws.locked, draft.submitting], () => { if (repliedOrde
 </script>
 <template>
   <section class="im-stack" aria-label="回料分配与出货">
-    <div class="im-wizard-heading"><h2>{{ workflow === 'manual' ? '采购与回料台账' : workflow === 'allocation' ? '已回料分配 PO' : '办理本次回料' }}</h2><details class="im-more"><summary>其他操作</summary><div class="im-toolbar" aria-label="回料处理方式"><button type="button" @click="openWarehouseImport">导入仓库实收单</button><button type="button" @click="workflow = 'manual'">采购与回料台账</button><button type="button" @click="workflow = 'allocation'">已回料分配 PO</button><button id="im-tab-shipment" type="button" @click="workflow = 'shipment'">本次出货资料／Excel</button></div></details></div>
+    <div class="im-wizard-heading">
+      <h2>{{ workflow === 'manual' ? '采购与回料台账' : workflow === 'allocation' ? '已回料分配 PO' : '办理本次回料' }}</h2>
+      <div class="im-wizard-actions" aria-label="回料出货操作">
+        <button id="im-tab-shipment" type="button" @click="workflow = 'shipment'"><FileSpreadsheet :size="15" aria-hidden="true" />出货明细／Excel</button>
+        <DropdownMenuRoot v-model:open="moreOpen" :modal="false">
+          <DropdownMenuTrigger as-child><button type="button" class="im-more-trigger">其他操作<ChevronDown :size="14" aria-hidden="true" /></button></DropdownMenuTrigger>
+          <DropdownMenuContent class="im-supply-menu" align="end" :side-offset="8" :collision-padding="12" aria-label="回料处理方式" @close-auto-focus="closeMenuFocus">
+            <DropdownMenuItem as-child @select="selectImport"><button type="button"><FileInput :size="16" aria-hidden="true" />导入仓库实收单</button></DropdownMenuItem>
+            <DropdownMenuItem as-child @select="workflow = 'manual'"><button type="button"><ClipboardList :size="16" aria-hidden="true" />采购与回料台账</button></DropdownMenuItem>
+            <DropdownMenuItem as-child @select="workflow = 'allocation'"><button type="button"><ListChecks :size="16" aria-hidden="true" />已回料分配 PO</button></DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenuRoot>
+      </div>
+    </div>
     <nav class="im-wizard-steps" aria-label="本次回料办理步骤"><button v-for="(label, index) in ['导入回料', '核对并分配 PO', '补装箱', '确认导出']" :key="label" type="button" :aria-current="['warehouse', 'shipment'].includes(workflow) && ws.wizardStep === index + 1 ? 'step' : undefined" :disabled="ws.locked || (index === 1 && !canOpenMatching) || (index > 1 && !canOpenPacking) || (index === 2 && !shipmentEditor?.canPack) || (index === 3 && !shipmentEditor?.canReview)" @click="stepTo(index + 1)"><b>{{ index + 1 }}</b>{{ label }}</button></nav>
     <div v-show="workflow === 'manual'" data-manual-supply><SectionPanel title="采购与回料台账" subtitle="采购预计日期用于跟进，实际回料确认后再分配客户 PO。"><template #action><button type="button" class="im-primary" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="edit()">登记采购／回料批次</button></template>
     <div v-if="materialFilter" ref="followupPanel" class="im-message im-stack" aria-label="供应商回复填写指引">

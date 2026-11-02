@@ -1,8 +1,101 @@
 import importlib
+import re
 from io import BytesIO
 from decimal import Decimal
+from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 from test_material_handover import workbook
+
+
+def test_recognition_suggests_editable_categories_without_changing_original_units():
+    parser = importlib.import_module('app.services.material_handover_parser')
+    units = ['码', '米', 'Pcs', '卷', '千克(转算专用)', '片', ' PＣＳ ']
+    result = parser.parse('分类建议.xlsx', workbook(rows=[
+        [str(index), '同名物料', '2', unit, ''] for index, unit in enumerate(units, 1)]))
+    lines = result['data']['lines']
+    assert [line['material_category'] for line in lines] == ['FABRIC', 'FABRIC', 'ACCESSORY', 'ACCESSORY', '', '', 'ACCESSORY']
+    assert [line['unit'] for line in lines] == [unit.strip() for unit in units]
+    assert [line['quantity'] for line in lines] == ['2'] * len(units)
+
+
+def test_merged_delivery_footers_are_not_materials_and_keep_original_evidence():
+    from openpyxl import Workbook
+    parser = importlib.import_module('app.services.material_handover_parser')
+    book = Workbook(); sheet = book.active; sheet.title = '销售出货单'
+    sheet.append(['订单 / 货号', '布料名称-色号', '1', '2', '合计数量'])
+    quantities = [2000, 152, 448, 2000, 830, 2000, 490]
+    for index, quantity in enumerate(quantities):
+        sheet.append([f'订单1 缸号：{index // 3 + 1}#', '01-01-10-00002 黑布', quantity, None, f'{quantity}Y'])
+    sheet.append(['合计数量', None, None, None, sum(quantities)])
+    sheet.merge_cells('A9:D9')
+    footers = ['备注：请核对布种、色号、缸号及各卷数量。', '送货人：____________', '测试样本：资料为模拟数据，仅用于测试。']
+    for text in footers:
+        sheet.append([text]); sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=5)
+    output = BytesIO(); book.save(output)
+    result = parser.parse('供应商原单.xlsx', output.getvalue())
+    lines = result['data']['lines']
+    assert [line['quantity'] for line in lines] == [str(value) for value in quantities]
+    assert len(lines) == 7
+    assert sum(Decimal(line['quantity']) for line in lines) == Decimal('7920')
+    assert [line['source_line'] for line in lines] == [f'销售出货单:{index}' for index in range(2, 9)]
+    assert set(result['evidence']) == {line['id'] for line in lines}
+    assert all(text in result['raw_text'] for text in ['合计数量', *footers])
+    assert not any('缺少' in warning for warning in result['warnings'])
+
+
+@pytest.mark.parametrize('label', ['合计', '合计数量', '数量合计', '本页小计', '总计数量', 'Grand Total', 'Subtotal', 'Total Quantity'])
+@pytest.mark.parametrize('identity_field', ['item_code', 'item_name'])
+def test_summary_labels_in_either_identity_column_are_not_materials(label, identity_field):
+    parser = importlib.import_module('app.services.material_handover_parser')
+    footer = [label, '', '40', '码', ''] if identity_field == 'item_code' else ['', label, '40', '码', '']
+    result = parser.parse('自由布局.xlsx', workbook(rows=[['A', '布料', '40', '码', ''], footer]))
+    assert [(line['item_code'], line['quantity']) for line in result['data']['lines']] == [('A', '40')]
+
+
+def test_footer_filter_keeps_incomplete_materials_names_and_later_sections():
+    parser = importlib.import_module('app.services.material_handover_parser')
+    rows = [['A', '备注：特殊布料', '2', '码', ''], ['MAT-TOTAL', '合计数量', '3', '码', ''],
+            ['', '备注布', '4', '米', ''], ['C', '正常物料', '', '', ''],
+            ['', '小计', '9', '码', ''], ['', '审核人：张三', '', '', ''], ['D', '下一部分布料', '1', '码', '']]
+    result = parser.parse('多段物料.xlsx', workbook(rows=rows))
+    assert [line['item_code'] for line in result['data']['lines']] == ['A', 'MAT-TOTAL', '', 'C', 'D']
+    assert result['data']['lines'][2]['item_name'] == '备注布'
+    assert result['data']['lines'][3]['quantity'] == ''
+    assert any('缺少' in warning for warning in result['warnings'])
+
+
+def test_populated_standard_template_signature_area_is_not_material():
+    from openpyxl import Workbook
+    parser = importlib.import_module('app.services.material_handover_parser')
+    book = Workbook(); sheet = book.active
+    sheet.append(['物料分类', '物料编码', '物料名称', '规格', '颜色', '数量', '单位', '缸号', '卷号', '生产单号', '单价', '币种', '备注'])
+    sheet.append(['布料', 'F001', '浅蓝色布', '', '', 100.5, '码'])
+    sheet.append(['辅料', 'A001', '开单员：特殊辅料', '', '', 2, 'Pcs'])
+    for label_cell, label_range, label, value_cell, value in [
+        ('A5', 'A5:C5', '开单员：', 'D5', '张三'),
+        ('F5', 'F5:G5', '送货人：', 'H5', '李四'),
+        ('J5', None, '收货人：', 'K5', '王五'),
+        ('A7', 'A7:C7', '签收日期：', 'D7', '2026-10-26'),
+        ('F7', 'F7:G7', '签收备注：', 'H7', '外包装完好'),
+    ]:
+        sheet[label_cell] = label
+        if label_range:
+            sheet.merge_cells(label_range)
+        sheet[value_cell] = value
+    output = BytesIO(); book.save(output)
+    result = parser.parse('统一送货单.xlsx', output.getvalue())
+    assert [(line['item_code'], line['quantity']) for line in result['data']['lines']] == [('F001', '100.5'), ('A001', '2')]
+    assert all(text in result['raw_text'] for text in ['开单员：', '送货人：', '收货人：', '签收日期：', '签收备注：', '张三', '李四', '王五', '2026-10-26', '外包装完好'])
+    assert len(result['evidence']) == 2
+
+
+@pytest.mark.parametrize('label', ['开单员', '開單員', '签收日期', '簽收日期', '签收备注', '簽收備註'])
+def test_signature_labels_in_name_column_remain_original_evidence(label):
+    parser = importlib.import_module('app.services.material_handover_parser')
+    text = f'{label}：现场填写信息'
+    result = parser.parse('签收原单.xlsx', workbook(rows=[['F001', '布料', '2', '码', ''], ['', text, '', '', '']]))
+    assert [line['item_code'] for line in result['data']['lines']] == ['F001']
+    assert text in result['raw_text']
 
 
 def test_merged_material_and_dye_lots_keep_independent_rows_and_numbered_rolls():
@@ -79,6 +172,55 @@ def test_disposable_worker_extracts_office_without_business_database():
     files = importlib.import_module('app.services.material_handover_files')
     result=files.extract('任意.xlsx', workbook())
     assert result['engine'] == 'xlsx' and result['data']['lines'][0]['quantity'] == '40'
+
+
+def without_sheet_dimensions(source):
+    output = BytesIO()
+    with ZipFile(BytesIO(source)) as source_zip, ZipFile(output, 'w', ZIP_DEFLATED) as target_zip:
+        for entry in source_zip.infolist():
+            data = source_zip.read(entry.filename)
+            if entry.filename.startswith('xl/worksheets/') and entry.filename.endswith('.xml'):
+                data = re.sub(rb'<dimension[^>]*/>', b'', data)
+            target_zip.writestr(entry, data)
+    return output.getvalue()
+
+
+def test_xlsx_without_sheet_dimension_preserves_delivery_details():
+    parser = importlib.import_module('app.services.material_handover_parser')
+    result = parser.parse('unsized.xlsx', without_sheet_dimensions(workbook()))
+    assert result['data']['lines'][0]['item_code'] == '01-01-00001'
+    assert result['data']['lines'][0]['quantity'] == '40'
+    assert result['data']['source_no'] == 'DOC-001'
+
+
+def test_xlsx_without_dimensions_can_include_empty_worksheets():
+    from openpyxl import load_workbook
+    parser = importlib.import_module('app.services.material_handover_parser')
+    book = load_workbook(BytesIO(workbook()))
+    book.create_sheet('空白页')
+    output = BytesIO()
+    book.save(output)
+    result = parser.parse('empty-sheet.xlsx', without_sheet_dimensions(output.getvalue()))
+    assert [(row['item_code'], row['quantity'], row['unit']) for row in result['data']['lines']] == [
+        ('01-01-00001', '40', '码')]
+
+
+@pytest.mark.parametrize('unsized', [False, True])
+@pytest.mark.parametrize('sheet_count,last_row', [(1, 50001), (2, 25001)])
+def test_xlsx_size_limit_applies_to_known_and_missing_dimensions(unsized, sheet_count, last_row):
+    from openpyxl import Workbook
+    parser = importlib.import_module('app.services.material_handover_parser')
+    error = importlib.import_module('app.services.document_tools.document_ir').ToolError
+    book = Workbook()
+    for index in range(sheet_count):
+        sheet = book.active if index == 0 else book.create_sheet()
+        sheet.cell(last_row, 1, 'end')
+    output = BytesIO()
+    book.save(output)
+    content = without_sheet_dimensions(output.getvalue()) if unsized else output.getvalue()
+    with pytest.raises(error) as caught:
+        parser.parse('too-large.xlsx', content)
+    assert caught.value.code == 'TABLE_SIZE'
 
 
 def test_file_and_numeric_boundaries():

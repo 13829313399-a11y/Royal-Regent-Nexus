@@ -5,13 +5,13 @@ import Fields from './Fields.vue'
 import { clone, materialFields } from './forms'
 import { choiceFields, maintainedOptions } from './options'
 import { useMaterials } from './workspace'
-const props = defineProps<{ model: Data; existing?: boolean }>()
+const props = defineProps<{ model: Data; existing?: boolean; originalCode?: string }>()
 const emit = defineEmits<{ reading: [value: boolean] }>()
 const error = ref('')
 const reading = ref(false)
 const ws = useMaterials()
 const historical = props.existing ? clone(props.model) : {}
-const fields = computed(() => choiceFields(materialFields, ws.records, ws.optionDefaults, historical).map(field => ({ ...field, readonly: field.key === 'code' && props.existing })))
+const fields = computed(() => choiceFields(materialFields, ws.records, ws.optionDefaults, historical).map(field => ({ ...field, readonly: field.key === 'code' && !!props.existing && !!props.originalCode })))
 watch(() => props.model.customs_unit, () => {
   if (props.model.billing_mode !== 'automatic') return
   const rule = maintainedOptions(ws.records, ws.optionDefaults, 'customs_unit').find(item => item.data.value === props.model.customs_unit)?.data

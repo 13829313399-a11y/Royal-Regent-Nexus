@@ -23,6 +23,24 @@ const button=(name:string)=>wrapper.findAll('button').find(b=>b.text()===name)!
 beforeEach(()=>{vi.resetAllMocks()})
 afterEach(()=>{wrapper?.unmount();vi.useRealTimers()})
 describe('cutting read-only workspaces',()=>{
+  it('gives embedded inventory filters unique IDs, names and explicit labels',async()=>{
+    vi.mocked(workspaceApi.inventory).mockResolvedValue({...empty,units:{}})
+    wrapper=mount({components:{Inventory},template:'<Inventory /><Inventory summary />'})
+    await flushPromises()
+    const controls=wrapper.findAll('form input,form select')
+    expect(controls).toHaveLength(4)
+    expect(new Set(controls.map(c=>c.attributes('id'))).size).toBe(4)
+    for(const control of controls){expect(control.attributes('name')).toBeTruthy();expect(wrapper.findAll('label').some(l=>l.attributes('for')===control.attributes('id'))).toBe(true)}
+  })
+  it('gives dashboard and daily-reporting filters unique names and explicit labels',async()=>{
+    vi.mocked(workspaceApi.tasks).mockResolvedValue(task)
+    wrapper=mount({components:{TaskBoard},template:'<TaskBoard /><TaskBoard reporting />'},{global:{plugins:[router]}});await flushPromises()
+    const controls=wrapper.findAll<HTMLInputElement|HTMLSelectElement>('form input, form select')
+    expect(controls).toHaveLength(6)
+    expect(new Set(controls.map(c=>c.element.id)).size).toBe(6)
+    expect(controls.map(c=>c.attributes('name'))).toEqual(['day','q','execution','day','q','execution'])
+    for(const control of controls)expect(wrapper.findAll('label').some(label=>label.attributes('for')===control.element.id)).toBe(true)
+  })
   it('keeps keyboard focus on repeated activity failures and then moves to successful results',async()=>{
     vi.mocked(workspaceApi.activity).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline again')).mockResolvedValueOnce({...empty,token:'fresh'})
     wrapper=mount(Activity,{attachTo:document.body,global:{plugins:[router]}});await flushPromises()
@@ -86,7 +104,7 @@ describe('cutting read-only workspaces',()=>{
     await flushPromises()
     expect(document.activeElement).not.toBe(region)
     if(action==='input')expect(document.activeElement).toBe(input)
-    if(action==='newer')expect(wrapper.get('time').exists()).toBe(true)
+    if(action==='newer')expect(wrapper.find('time').exists()).toBe(true)
     if(action==='failure')expect(document.activeElement).toBe(button('按原条件重试（第 1 页）').element)
   })
   it('provides unique named activity filters with explicit labels for embedded instances',async()=>{

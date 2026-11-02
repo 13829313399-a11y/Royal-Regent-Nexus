@@ -138,6 +138,8 @@ def reversal_preview(receipt_id: str, factory_id: str, db: Session = Depends(get
 @router.post('/receipts/{receipt_id}/reverse')
 def reverse_receipt(receipt_id: str, payload: ReverseReceiptRequest, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     authorize_receipt_reversal(db, actor, payload.factory_id)
+    from app.services.fabric_receipt_corrections import ensure_stock_reversible
+    ensure_stock_reversible(db, receipt_id)
     from app.schemas.warehouse_operations import WarehouseDocumentRequest
     from app.services.warehouse_operations import post
     request = WarehouseDocumentRequest(factory_id=payload.factory_id, request_id=payload.request_id,

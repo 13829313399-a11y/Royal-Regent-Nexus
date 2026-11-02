@@ -29,12 +29,13 @@ from app.models import (
     uv_operations,  # noqa: F401
     spray_ops,  # noqa: F401
     document_tools,  # noqa: F401
-    collaborative_sheets,  # noqa: F401
+    online_documents,  # noqa: F401
     auth,  # noqa: F401
     position_review,  # noqa: F401
     carton_mark,  # noqa: F401
     carton_feedback,  # noqa: F401
     carton_procurement,  # noqa: F401
+    carton_materials,  # noqa: F401
     fabric_procurement,  # noqa: F401
     fabric_receiving,  # noqa: F401
     fabric_master,  # noqa: F401
@@ -107,30 +108,56 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         inspector = inspect(connection)
         revisions = set(connection.scalars(text('SELECT version_num FROM alembic_version'))) if inspector.has_table('alembic_version') else set()
+        if '20261028_0186' in revisions:
+            raise RuntimeError('Legacy local carton 20261028_0186 is not the canonical migration head. Preserve a full backup and reconcile its archived 0185/0186 schema before upgrade; never stamp or replay it blindly. See docs/business/carton-migration-identity.md')
+        # The local assistant branch reused the published online-document 0177.
+        # Retain its archived DDL; refuse an ambiguous label before any writes.
+        assistant_legacy = '20261026_0176' in revisions or (
+            '20261026_0177' in revisions and any(inspector.has_table(name) for name in (
+                'nexus_assistant_executions', 'nexus_assistant_run_events',
+                'nexus_assistant_provider_steps', 'nexus_assistant_run_metrics',
+                'nexus_assistant_subscriptions', 'nexus_assistant_feedback')))
+        if assistant_legacy:
+            raise RuntimeError('Legacy local assistant 0176/0177 identity requires backup and isolated schema reconciliation; never stamp or replay it blindly. See docs/assistant/MIGRATION_IDENTITY.md')
+        later_successors = {'20261022_0175', '20261023_0176', '20261026_0177', '20261026_0178', '20261026_0179', '20261026_0180', '20261026_0181', '20261026_0182', '20261026_0183', '20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189'}
         collision_versions = {'20261015_0163', '20261016_0164', '20261016_0165', '20261016_0166',
                               '20261017_0167', '20261019_0167', '20261020_0168',
                               '20261019_0168', '20261019_0169', '20261019_0170', '20261020_0171',
-                              '20261021_0169', '20261021_0172', '20261022_0173', '20261022_0174', '20261022_0175', '20261026_0176', '20261026_0177'}
-        if revisions & collision_versions or any(inspector.has_table(name) for name in (
+                              '20261021_0169', '20261021_0172', '20261022_0173', '20261022_0174', '20261022_0175', '20261023_0176'}
+        if revisions & (collision_versions | later_successors) or any(inspector.has_table(name) for name in (
             'cutting_ops_period_events', 'jp_intake_references', 'jp_intake_reference_events',
             'jp_intake_counters', 'jp_intake_exports', 'jp_intake_export_identities')):
             preflight = runpy.run_path(str(Path(__file__).parent / 'versions/20261017_0167_reconcile_cutting_jp_collision.py'))['preflight']
             # Extend successor recognition without rewriting the applied migration.
-            if revisions in ({'20261022_0175'}, {'20261026_0176'}, {'20261026_0177'}):
-                preflight.__globals__['VALID_VERSIONS'].append(set(revisions))
+            if revisions in [{head} for head in later_successors] + [{'20261023_0176', '20261026_0177'}, {'20261023_0176', '20261026_0179'}, {'20261026_0178', '20261026_0179'}, {'20261023_0176', '20261026_0181'}, {'20261026_0178', '20261026_0181'}, {'20261026_0180', '20261026_0181'}, {'20261023_0176', '20261026_0183'}, {'20261026_0178', '20261026_0183'}, {'20261026_0180', '20261026_0183'}, {'20261026_0182', '20261026_0183'}]:
+                preflight.__globals__['VALID_VERSIONS'].append(revisions)
+            if connection.dialect.name == 'sqlite' and revisions & {'20261026_0184', '20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189'}:
+                header = runpy.run_path(str(Path(__file__).parent / 'versions/20261028_0185_cutting_period_headers.py'))
+                present = header['index_state'](connection)
+                if revisions & {'20261028_0185', '20261030_0186', '20261030_0187', '20261102_0188', '20261102_0189'} and not present:
+                    raise RuntimeError('0185 cutting header index is missing; preserve database before repair')
+                if present:
+                    original_expected = preflight.__globals__['_sqlite_expected']
+                    header_sql = connection.scalar(text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:name"), {'name':header['NAME']})
+                    def expected_with_header():
+                        expected = original_expected()
+                        table = header['TABLE']
+                        expected[table] = sorted(expected[table] + [('index', header['NAME'], header_sql)], key=lambda row:(row[0],row[1]))
+                        return expected
+                    preflight.__globals__['_sqlite_expected'] = expected_with_header
             missing_groups = preflight(connection)
-            if revisions & {'20261022_0175', '20261026_0176', '20261026_0177'} and any(missing_groups.values()):
+            if revisions & later_successors and any(missing_groups.values()):
                 raise RuntimeError('Reconciled 0167 schema is incomplete; refusing automatic repair')
-        if revisions & {'20261021_0169', '20261021_0172', '20261022_0173', '20261022_0174', '20261022_0175', '20261026_0176', '20261026_0177'}:
+        if revisions & ({'20261021_0169', '20261021_0172', '20261022_0173', '20261022_0174'} | later_successors):
             validate_customer = runpy.run_path(str(Path(__file__).parent / 'versions/20261021_0172_merge_indonesia_customer_head.py'))['validate_customer_schema']
             validate_customer(connection)
-        if revisions & {'20261022_0173', '20261022_0174', '20261022_0175', '20261026_0176', '20261026_0177'}:
+        if revisions & ({'20261022_0173', '20261022_0174'} | later_successors):
             validate_options = runpy.run_path(str(Path(__file__).parent / 'versions/20261022_0173_indonesia_options.py'))['validate_options_schema']
             validate_options(connection)
-        if revisions & {'20261022_0174', '20261022_0175', '20261026_0176', '20261026_0177'}:
+        if revisions & ({'20261022_0174'} | later_successors):
             validate_shared = runpy.run_path(str(Path(__file__).parent / 'versions/20261022_0174_indonesia_shared_options.py'))['validate_shared_options_schema']
             validate_shared(connection)
-        if revisions & {'20261022_0175', '20261026_0176', '20261026_0177'}:
+        if revisions & later_successors:
             validate_rush = runpy.run_path(str(Path(__file__).parent / 'versions/20261022_0175_carton_order_rush_manual.py'))['validate_rush_schema']
             validate_rush(connection)
         if inspector.has_table('alembic_version') and inspector.has_table('warehouse_operations_documents'):

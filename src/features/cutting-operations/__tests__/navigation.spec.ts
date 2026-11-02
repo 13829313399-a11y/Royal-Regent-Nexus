@@ -40,6 +40,36 @@ async function openAccessShell() {
 const recheckButton = () => wrapper!.get<HTMLButtonElement>('[role="alert"] button')
 
 describe('cutting workspace entry', () => {
+  it('hands keyboard focus to the stable main region after authorization recovery and preserves input',async()=>{
+    accessMock.mockResolvedValue({enabled:true,schema_ready:true,permissions:['read']});await openAccessShell()
+    await wrapper!.get('input').setValue('保留草稿')
+    accessMock.mockRejectedValueOnce(new Error('offline'))
+    window.dispatchEvent(new Event('authorization-context-changed'));await flushPromises()
+    accessMock.mockResolvedValueOnce({enabled:true,schema_ready:true,permissions:['read']})
+    const button=recheckButton();button.element.focus()
+    button.element.dispatchEvent(new MouseEvent('click',{detail:0,bubbles:true}));await flushPromises()
+    expect(document.activeElement).toBe(wrapper!.get('#cutting-main').element)
+    expect(wrapper!.get('input').element.value).toBe('保留草稿')
+  })
+  it.each(['nav','tab','pointer','newer','boundary','unmount','mouse'] as const)('does not steal successful permission focus after %s',async action=>{
+    accessMock.mockRejectedValueOnce(new Error('offline'));await openAccessShell()
+    let resolve!:(value:{enabled:boolean;schema_ready:boolean;permissions:string[]})=>void
+    accessMock.mockImplementationOnce(()=>new Promise(res=>{resolve=res}))
+    const button=recheckButton();button.element.focus()
+    button.element.dispatchEvent(new MouseEvent('click',{detail:action==='mouse'?1:0,bubbles:true}));await flushPromises()
+    const main=wrapper!.get<HTMLElement>('#cutting-main').element,nav=wrapper!.get<HTMLAnchorElement>('nav a').element
+    if(action==='nav')nav.focus()
+    if(action==='tab')document.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}))
+    if(action==='pointer')document.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+    if(action==='newer'||action==='boundary'){
+      accessMock.mockRejectedValueOnce(new Error('still unavailable'))
+      window.dispatchEvent(new Event(action==='newer'?'authorization-context-changed':'auth-session-boundary-changed'));await flushPromises()
+    }
+    if(action==='unmount'){wrapper!.unmount();wrapper=undefined}
+    resolve({enabled:true,schema_ready:true,permissions:['read']});await flushPromises()
+    expect(document.activeElement).not.toBe(main)
+    if(action==='nav')expect(document.activeElement).toBe(nav)
+  })
   it.each([401,403])('keeps cleared-workspace wording after denial %s followed by an offline recheck',async status=>{
     accessMock.mockRejectedValueOnce({response:{status}})
     await openAccessShell()
@@ -211,7 +241,7 @@ describe('cutting workspace entry', () => {
   it('resets subviews on workspace changes and shows unfinished capabilities explicitly', async () => {
     const router = await open(`${CUTTING_BASE}/closing?factory=huakang-c`)
     expect(wrapper!.text()).toContain('月结前核对尚未启用')
-    expect(wrapper!.text()).toContain('尚未冻结或锁月')
+    expect(wrapper!.text()).toContain('实时核对不代表锁月')
     expect(wrapper!.find('table').exists()).toBe(false)
     await router.push(`${CUTTING_BASE}/planning?factory=huakang-c`)
     await flushPromises()

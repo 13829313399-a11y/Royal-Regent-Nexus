@@ -16,8 +16,8 @@ const amountFields=[['opening_completed','期初完工'],['opening_wip','期初�
     <h3>原实发归集与费用明细</h3>
     <p>显示 {{rows.length}} / {{snapshot.allocations.length}} 笔实发。金额按各自币种列示，数量保留原单位；缺价显示待计价。</p>
     <div class="cutting-table-scroll" role="region" aria-label="原实发完工与在制费用" tabindex="0"><table>
-      <thead><tr><th>客户／订单／货号／货名</th><th>任务／物料／原实发</th><th>原单位</th><th>期初完工／在制数量</th><th>期末完工／在制数量</th><th>币种</th><th v-for="[key,label] in amountFields" :key="key">{{label}}金额</th></tr></thead>
-      <tbody><tr v-for="row in rows" :key="row.issue_id"><td>{{periodOrderLabel(snapshot.orders,row.line_id)}}</td><td>{{row.context.task_name}} · {{row.context.resource_name}}<br />{{row.context.item_name}}<br /><RouterLink :to="cuttingDestination(row.line_id,snapshot.month,'costs','issue',row.issue_id)">{{row.issue_id}}</RouterLink></td><td>{{row.context.unit}}</td><td>{{row.opening_completed_quantity}} / {{row.opening_wip_quantity}}</td><td>{{row.completed_quantity}} / {{row.ending_wip_quantity}}</td><td>{{row.currency??'待计价'}}</td><td v-for="[key] in amountFields" :key="key">{{row.amounts?.[key]??'待计价'}}</td></tr></tbody>
+      <thead><tr><th>客户／订单／货号／货名</th><th>任务／物料／原实发</th><th class="period-code">原单位</th><th>期初完工／在制数量</th><th>期末完工／在制数量</th><th class="period-code">币种</th><th v-for="[key,label] in amountFields" :key="key">{{label}}金额</th></tr></thead>
+      <tbody><tr v-for="row in rows" :key="row.issue_id"><td>{{periodOrderLabel(snapshot.orders,row.line_id)}}</td><td>{{row.context.task_name}} · {{row.context.resource_name}}<br />{{row.context.item_name}}<br /><RouterLink :to="cuttingDestination(row.line_id,snapshot.month,'costs','issue',row.issue_id)">{{row.issue_id}}</RouterLink></td><td class="period-code">{{row.context.unit}}</td><td>{{row.opening_completed_quantity}} / {{row.opening_wip_quantity}}</td><td>{{row.completed_quantity}} / {{row.ending_wip_quantity}}</td><td class="period-code">{{row.currency??'待计价'}}</td><td v-for="[key] in amountFields" :key="key">{{row.amounts?.[key]??'待计价'}}</td></tr></tbody>
     </table></div>
     <p v-if="!rows.length">当前筛选范围暂无实发明细。</p>
     <details v-for="row in rows" :key="`price-${row.issue_id}`"><summary>{{row.context.item_name}} · {{row.issue_id}} · 原批次成本凭据</summary>
@@ -28,7 +28,7 @@ const amountFields=[['opening_completed','期初完工'],['opening_wip','期初�
       <p>上一编制人：{{comparison.previous_actor}} · {{comparison.previous_date}} · {{comparison.previous_reason}}</p>
       <p>以下差额为所查看版本减上一编制版本；提交、锁月等沿用同一编制依据的操作不单独作为比较基准。{{comparison.evidence_changed?'生产、物料或成本依据发生变化，请结合来源追溯核对。':'取数依据相同，可重点核对人工归属和声明。'}}</p>
       <p v-if="comparison.partial_pricing" class="cutting-notice">比较版本存在缺价，下列汇总仅为已计价部分的差额，不代表完整费用变化。</p>
-      <div class="cutting-table-scroll" role="region" aria-label="整月版本金额差异" tabindex="0"><table><thead><tr><th>币种</th><th>本期正常费用差额</th><th>本期转完工差额</th><th>期末在制差额</th><th>本期损耗差额</th></tr></thead><tbody><tr v-for="(cost,currency) in comparison.costs" :key="currency"><td>{{currency}}</td><td>{{cost.period_normal}}</td><td>{{cost.period_completed}}</td><td>{{cost.ending_wip}}</td><td>{{cost.period_loss}}</td></tr></tbody></table></div>
+      <div class="cutting-table-scroll" role="region" aria-label="整月版本金额差异" tabindex="0"><table><thead><tr><th class="period-code">币种</th><th>本期正常费用差额</th><th>本期转完工差额</th><th>期末在制差额</th><th>本期损耗差额</th></tr></thead><tbody><tr v-for="(cost,currency) in comparison.costs" :key="currency"><td class="period-code">{{currency}}</td><td>{{cost.period_normal}}</td><td>{{cost.period_completed}}</td><td>{{cost.ending_wip}}</td><td>{{cost.period_loss}}</td></tr></tbody></table></div>
       <p v-if="!comparison.rows.length">原实发数量与金额未变化；请结合本版本声明、说明和历史操作记录复核。</p>
       <article v-for="row in changes" :key="row.issue_id" class="cutting-master-line">
         <p>{{row.after?.context.item_name??row.before?.context.item_name}} · {{row.issue_id}} · {{!row.before?'新增实发':!row.after?'移除实发':'实发依据或归属变更'}}</p>
@@ -41,4 +41,4 @@ const amountFields=[['opening_completed','期初完工'],['opening_wip','期初�
     <details v-for="order in orders" :key="order.line_id"><summary>{{periodOrderLabel(snapshot.orders,order.line_id)}} · 生产、领退耗存及来源依据</summary><CuttingClosingReport :value="order" stored-snapshot /></details>
   </div>
 </template>
-<style scoped>.period-review{display:grid;gap:16px;margin-top:20px;min-width:0}.period-review p,.period-review summary{line-height:1.8;overflow-wrap:anywhere}.period-review h3{font-weight:600}</style>
+<style scoped>.period-review{display:grid;gap:16px;margin-top:20px;min-width:0}.period-review p,.period-review summary{line-height:1.8;overflow-wrap:anywhere}.period-review h3{font-weight:600}.period-review .cutting-table-scroll .period-code{min-width:5rem;white-space:nowrap;overflow-wrap:normal;word-break:normal}</style>

@@ -31,6 +31,119 @@ beforeEach(() => { vi.resetAllMocks(); auth.currentUser.id = 'warehouse'; auth.a
 afterEach(() => { wrapper?.unmount(); wrapper = undefined;vi.restoreAllMocks();vi.unstubAllGlobals() })
 
 describe('material handover workflow', () => {
+  it.each([false, true])('uses the receiving unit for a price without a second unit input (external=%s)', async (external) => {
+    const row = fixture(); row.status = 'DRAFT'; row.data.lines[1]!.unit_price = '0'; row.data.lines[1]!.price_unit = '码'
+    api.detail.mockResolvedValue(row)
+    api.save.mockImplementation((_id, body) => Promise.resolve({ ...row, revision: 4, data: body.data }))
+    await open(external, external ? '/#key=public-test-key' : '/?factory=huakang-c'); await select()
+    expect(wrapper!.find('input[placeholder="计价单位"]').exists()).toBe(false)
+    await wrapper!.get('[aria-label="第1行参考单价"]').setValue('8')
+    await wrapper!.get('[aria-label="第1行单位"]').setValue('米')
+    await wrapper!.get('[aria-label="第2行单位"]').setValue('Pcs')
+    expect(wrapper!.findAll('.price-unit-hint').map(node => node.text())).toEqual(['单价按米计价', '单价按Pcs计价'])
+    await click(external ? '保存，交仓库补全' : '保存核对内容')
+    expect(api.save.mock.calls[0]![1].data.lines).toEqual([
+      expect.objectContaining({ unit: '米', unit_price: '8', price_unit: '米' }),
+      expect.objectContaining({ unit: 'Pcs', unit_price: '0', price_unit: 'Pcs' }),
+    ])
+  })
+  it('preserves a different original pricing unit and shows it as reference', async () => {
+    const row = fixture(); row.status = 'DRAFT'; row.data.lines[0]!.unit_price = '8'; row.data.lines[0]!.price_unit = '米'
+    api.detail.mockResolvedValue(row)
+    api.save.mockImplementation((_id, body) => Promise.resolve({ ...row, revision: 4, data: body.data }))
+    await open(); await select()
+    expect(wrapper!.get('.price-unit-hint').text()).toBe('原单按米计价')
+    await wrapper!.get('[aria-label="第1行单位"]').setValue('卷')
+    await click('保存核对内容')
+    expect(api.save.mock.calls[0]![1].data.lines[0]).toMatchObject({ unit: '卷', unit_price: '8', price_unit: '米' })
+  })
+  it.each([false, true])('defaults delivery entry to CNY and saves staff currency choices (external=%s)', async (external) => {
+    const row = fixture(); row.status = 'DRAFT'; row.data.lines[0]!.currency = ''; row.data.lines[1]!.currency = 'HKD'
+    api.detail.mockResolvedValue(row)
+    api.save.mockImplementation((_id, body) => Promise.resolve({ ...row, revision: 4, data: body.data }))
+    const router = await open(external, external ? '/#key=public-test-key' : '/?factory=huakang-c'); await select()
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="第1行币种"]').element.value).toBe('CNY')
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="第2行币种"]').element.value).toBe('HKD')
+    await click('添加明细')
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="第3行币种"]').element.value).toBe('CNY')
+    await wrapper!.get('[aria-label="第2行币种"]').setValue('USD')
+    await click(external ? '保存，交仓库补全' : '保存核对内容')
+    const lines = api.save.mock.calls[0]![1].data.lines
+    expect(lines.map((line: { currency: string }) => line.currency)).toEqual(['CNY', 'USD', 'CNY'])
+    expect(lines[0].unit_price).toBeUndefined(); expect(lines[0].price_unit).toBeUndefined()
+    await router.push('/other'); expect(router.currentRoute.value.path).toBe('/other')
+  })
+  it('does not dirty a draft just by displaying its default or rewrite historical unknown currency', async () => {
+    const row = fixture(); row.status = 'DRAFT'; api.detail.mockResolvedValue(row)
+    const router = await open(); await select()
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="第1行币种"]').element.value).toBe('CNY')
+    await router.push('/other'); expect(router.currentRoute.value.path).toBe('/other')
+    wrapper!.unmount(); wrapper = undefined
+    api.detail.mockResolvedValue(fixture()); await open(); await select()
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="第1行币种"]').element.value).toBe('')
+    expect(api.save).not.toHaveBeenCalled(); expect(api.action).not.toHaveBeenCalled()
+  })
+  it('preserves edited drafts and navigation guards on a same-account session refresh', async () => {
+    const row = fixture(); row.status = 'DRAFT'; api.detail.mockResolvedValue(row)
+    const router = await open(); await select()
+    await wrapper!.get('[aria-label="第1行单据数量"]').setValue('19')
+    api.workspace.mockClear(); api.list.mockClear()
+    auth.currentUser = { id: 'warehouse' }; await flushPromises()
+    expect(wrapper!.get<HTMLInputElement>('[aria-label="第1行单据数量"]').element.value).toBe('19')
+    expect(api.workspace).not.toHaveBeenCalled(); expect(api.list).not.toHaveBeenCalled()
+    await router.push('/other'); expect(router.currentRoute.value.path).toBe('/')
+  })
+  it('preserves receiving inputs and an uncertain submission on a same-account session refresh', async () => {
+    api.post.mockRejectedValueOnce(new AxiosError('网络断开')).mockResolvedValueOnce(fixture())
+    await open(); await select()
+    await wrapper!.get('.posting-row input[type=checkbox]').setValue(true)
+    await wrapper!.get('[aria-label="本次A数量"]').setValue('7.5')
+    auth.currentUser = { id: 'warehouse' }; await flushPromises()
+    expect(wrapper!.get<HTMLInputElement>('[aria-label="本次A数量"]').element.value).toBe('7.5')
+    expect(wrapper!.get<HTMLInputElement>('.posting-row input[type=checkbox]').element.checked).toBe(true)
+    await click('确认本次实物收发'); const frozen = clone(api.post.mock.calls[0]![1])
+    auth.currentUser = { id: 'warehouse' }; await flushPromises()
+    expect(wrapper!.get('.posting-card fieldset').attributes('disabled')).toBeDefined()
+    await click('重试原提交'); expect(api.post.mock.calls[1]![1]).toEqual(frozen)
+  })
+  it('still clears private selection when the account actually changes', async () => {
+    await open(); await select(); expect(wrapper!.find('.posting-card').exists()).toBe(true)
+    api.list.mockResolvedValue({ items: [], limit: 50, offset: 0 })
+    auth.currentUser = { id: 'another-user' }; await flushPromises()
+    expect(wrapper!.find('.posting-card').exists()).toBe(false)
+    expect(wrapper!.text()).not.toContain('物料A')
+  })
+  it('suggests a new delivery line from its unit and submits the staff correction', async () => {
+    const row = fixture(); row.status = 'DRAFT'; api.detail.mockResolvedValue(row)
+    api.save.mockImplementation((_id, body) => Promise.resolve({ ...row, revision: 4, data: body.data }))
+    await open(); await select(); await click('添加明细')
+    const category = () => wrapper!.get<HTMLSelectElement>('[aria-label="第3行物料分类"]').element.value
+    expect(category()).toBe('')
+    await wrapper!.get('[aria-label="第3行单位"]').setValue(' PＣＳ ')
+    expect(category()).toBe('ACCESSORY')
+    await wrapper!.get('[aria-label="第3行单位"]').setValue('码')
+    expect(category()).toBe('FABRIC')
+    await wrapper!.get('[aria-label="第3行物料分类"]').setValue('THREAD')
+    await wrapper!.get('[aria-label="第3行单位"]').setValue('卷')
+    expect(category()).toBe('THREAD')
+    await click('保存核对内容')
+    expect(api.save.mock.calls[0]![1].data.lines[2]).toMatchObject({ unit: '卷', material_category: 'THREAD' })
+    expect(api.action).not.toHaveBeenCalled(); expect(api.post).not.toHaveBeenCalled()
+  })
+  it('keeps an existing category and requires a category before confirming an ambiguous unit', async () => {
+    const row = fixture(); row.status = 'DRAFT'
+    row.data.lines[0]!.material_category = 'ACCESSORY'
+    row.data.lines[1]!.unit = '公斤'; row.data.lines[1]!.material_category = ''
+    api.detail.mockResolvedValue(row)
+    await open(); await select()
+    await wrapper!.get('[aria-label="第1行单位"]').setValue('米')
+    expect(wrapper!.get<HTMLSelectElement>('[aria-label="第1行物料分类"]').element.value).toBe('ACCESSORY')
+    expect(wrapper!.get('[aria-label="第2行物料分类"]').attributes('aria-invalid')).toBe('true')
+    expect(wrapper!.get('.draft-review').text()).toContain('缺少物料分类')
+    expect(wrapper!.findAll('button').find(b => b.text() === '确认并打印原单')!.attributes('disabled')).toBeDefined()
+    await wrapper!.get('[aria-label="第2行物料分类"]').setValue('FABRIC')
+    expect(wrapper!.get('.draft-review').text()).not.toContain('缺少物料分类')
+  })
   it('lists exact missing fields while allowing an unchanged incomplete supplier draft to be handed to the warehouse', async () => {
     const row = fixture(); row.status = 'DRAFT'; row.code = ''; row.code_version = 0
     row.data.lines[0]!.item_code = ''; row.data.lines[0]!.quantity = ''; row.data.lines[1]!.unit = ''
@@ -230,22 +343,39 @@ describe('material handover workflow', () => {
     api.list.mockResolvedValue({ items: [], limit: 50, offset: 0 }); auth.authorizationVersion++; await flushPromises()
     resolve(fixture()); await flushPromises(); expect(wrapper!.find('.posting-card').exists()).toBe(false)
   })
-  it('public preparation never requests stock or exposes posting controls', async () => {
+  it.each(['SUPPLIER', 'REQUESTOR'])('public %s preparation keeps stock private and offers the delivery template only to suppliers', async (kind) => {
+    api.context.mockResolvedValue({ name: '制单方', kind, supplier_id: kind === 'SUPPLIER' ? 'SUP' : '' })
     await open(true, '/#key=public-test-key'); await select()
     expect(api.workspace).not.toHaveBeenCalled(); expect(wrapper!.find('.posting-card').exists()).toBe(false)
     expect(api.purchaseSources).not.toHaveBeenCalled()
     expect(wrapper!.text()).not.toContain('制单方与链接')
     expect(wrapper!.find('[aria-label="筛选供应商"]').exists()).toBe(false)
     expect(wrapper!.find('.handover-back').exists()).toBe(false)
+    const download = wrapper!.find('.upload-actions a[download]')
+    expect(download.exists()).toBe(kind === 'SUPPLIER')
+    if (kind === 'SUPPLIER') {
+      expect(download.text()).toBe('下载统一模板')
+      expect(download.attributes('href')).toBe('/templates/material-handover/supplier-delivery-v1.xlsx')
+      expect(download.attributes('download')).toBe('供应商统一送货单模板.xlsx')
+      expect(wrapper!.get('.upload-actions button').text()).toBe('选择文件并识别')
+    }
   })
-  it('confirms edited supplier data and prepares printing in a single submission',async()=>{
-    const row=fixture();row.status='DRAFT';api.detail.mockResolvedValue(row)
+  it('uploads a filled supplier template, confirms reviewed data and prepares printing in a single submission',async()=>{
+    const row=fixture();row.status='DRAFT';api.upload.mockResolvedValue(row)
     api.action.mockImplementation((_id,_kind,body)=>Promise.resolve({...fixture(),data:body.data}))
-    await open(true,'/#key=public-test-key');await select();await wrapper!.get('[aria-label="第1行单据数量"]').setValue('9')
+    await open(true,'/#key=public-test-key')
+    const file = new File(['filled template'], '供应商统一送货单模板.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const input = wrapper!.get('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { value: [file] })
+    await input.trigger('change'); await flushPromises()
+    expect(api.upload).toHaveBeenCalledWith(file, expect.any(String))
+    expect(api.action).not.toHaveBeenCalled(); expect(window.print).not.toHaveBeenCalled()
+    await wrapper!.get('[aria-label="第1行单据数量"]').setValue('9')
     api.printFile.mockResolvedValue(new Blob(['pdf'],{type:'application/pdf'}))
     await wrapper!.get('[aria-label="第1行参考单价"]').setValue('2.3');await click('确认并打印原单')
     expect(api.save).not.toHaveBeenCalled();expect(api.action.mock.calls[0]![2].data.lines[0].quantity).toBe('9')
     expect(api.action.mock.calls[0]![2].data.lines[0].unit_price).toBe('2.3');expect(window.print).toHaveBeenCalledOnce()
+    expect(api.action.mock.calls[0]![2].data.lines[0].price_unit).toBe('码')
     expect(api.printFile).toHaveBeenCalledWith('D1',3,'right')
     expect(wrapper!.get('.original-print-preview').text()).toContain('原单加码打印预览')
     expect(api.post).not.toHaveBeenCalled()

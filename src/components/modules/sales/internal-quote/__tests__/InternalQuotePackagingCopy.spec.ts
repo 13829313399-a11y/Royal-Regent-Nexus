@@ -42,6 +42,33 @@ beforeEach(() => setActivePinia(createPinia()))
 afterEach(() => vi.restoreAllMocks())
 
 describe('copy only packaging inside a quotation', () => {
+  it('opens the selected stale source without copying or recalculating it', async () => {
+    const rows = apiProducts()
+    rows[1]!.packaging_copy!.formula_recalculation_required = true
+    rows[1]!.packaging_copy!.source_issue = '来源部门仍使用旧公式'
+    const { wrapper, preview, apply, list } = await setup(false, rows)
+    expect(button(wrapper, '前往来源款处理')).toBeUndefined()
+    await wrapper.get('select').setValue('q2')
+    await button(wrapper, '前往来源款处理').trigger('click')
+    expect(wrapper.emitted('resolveFormula')).toEqual([['q2']])
+    expect(preview).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+    list.mockResolvedValue(apiProducts())
+    await button(wrapper, '刷新状态').trigger('click'); await flushPromises()
+    expect(button(wrapper, '前往来源款处理')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('does not leave unsaved edits to resolve a source formula', async () => {
+    const rows = apiProducts()
+    rows[0]!.packaging_copy!.formula_recalculation_required = true
+    const { wrapper } = await setup(true, rows)
+    await button(wrapper, '前往来源款处理').trigger('click')
+    expect(wrapper.emitted('resolveFormula')).toBeUndefined()
+    expect(wrapper.text()).toContain('请先保存当前款')
+    wrapper.unmount()
+  })
+
   it('previews selected products and confirms with the returned token; issued targets are disabled', async () => {
     const { wrapper, preview, apply } = await setup()
     const boxes = wrapper.findAll('fieldset input')

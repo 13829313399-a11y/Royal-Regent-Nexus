@@ -1,0 +1,9 @@
+{
+  "aiSettings": { "enable": false, "allowBrowserProxy": false },
+  "externalRequest": { "action": { "allow": false } },
+  "services": {
+    "CoAuthoring": {
+      "autoAssembly": { "enable": false }
+    }
+  }
+}

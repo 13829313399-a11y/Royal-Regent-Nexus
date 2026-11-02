@@ -69,8 +69,8 @@ describe('TopBar factory switcher', () => {
     setActivePinia(pinia)
     const store = useAppStore()
     store.setActiveFactory('huaxing')
-    routeState.path = '/tools'
-    routeState.query = hasQuery ? { tool: 'collaborative-sheets', factory: 'huaxing' } : { tool: 'collaborative-sheets' }
+    routeState.path = '/online-documents'
+    routeState.query = hasQuery ? { factory: 'huaxing' } : {}
     const unregister = registerFactoryChangeGuard(() => false)
     const wrapper = shallowMount(TopBar, { global: { plugins: [pinia] } })
     try {
@@ -99,7 +99,7 @@ describe('TopBar factory switcher', () => {
     })
 
     const entry = wrapper.getComponent(MemberDirectoryEntry)
-    expect(wrapper.get('[data-testid="topbar-member-directory-slot"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="topbar-member-directory-slot"]').exists()).toBe(true)
     expect(entry.props('currentFactoryId')).toBe('huakang-b')
     expect(entry.props('currentDepartment')).toBe('qc')
   })

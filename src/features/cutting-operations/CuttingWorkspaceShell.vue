@@ -69,8 +69,9 @@ async function revalidate(event?: Event) {
   } finally {
     if (alive && ticket === accessGeneration) { verifying.value = false; await nextTick() }
     cleanupFocus()
-    if (restoreFocus && alive && ticket === accessGeneration && authorizationError.value && document.activeElement === document.body) {
-      authorizationAlert.value?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
+    if (restoreFocus && alive && ticket === accessGeneration && document.activeElement === document.body) {
+      const target = authorizationError.value ? authorizationAlert.value?.querySelector<HTMLButtonElement>('button') : main.value
+      target?.focus({ preventScroll: true })
     }
   }
 }

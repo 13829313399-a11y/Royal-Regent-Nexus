@@ -470,6 +470,8 @@ def quote_to_out(
         module_version=quote.module_version,
         reference_snapshot_id=quote.reference_snapshot_id,
         formula_version=quote.formula_version,
+        current_formula_version=FORMULA_VERSION,
+        formula_recalculation_required=bool(quote_formula_mismatches(quote, rows)) if include_sections else None,
         header_revision=quote.header_revision,
         cloned_from_quote_id=quote.cloned_from_quote_id,
         history_sources=_json_list(history.detail) if history else [],
@@ -1048,6 +1050,14 @@ def _pricing_completeness(quote, sections, *, draft_codes=()) -> list[dict[str, 
             reason = "尚未填写并保存"
         elif section.calculation_status != "valid":
             reason = {"stale": "计算已失效", "blocked": "计算待补全", "pending": "尚未计算"}.get(section.calculation_status, "计算未完成")
+            if section.calculation_status == "blocked":
+                calculation = _json_object(section.calculation_json)
+                messages = [str(item["message"]) for item in calculation.get("warnings", [])
+                            if isinstance(item, dict) and item.get("severity") == "blocking" and item.get("message")]
+                messages += [str(item["message"]) for item in calculation.get("validation_errors", [])
+                             if isinstance(item, dict) and item.get("message")]
+                if messages:
+                    reason = "；".join(dict.fromkeys(messages))
         elif section.dependency_status != "current":
             reason = "上游资料已变更，待重新计算"
         elif section.calculation_formula_version != FORMULA_VERSION:
@@ -1077,7 +1087,7 @@ def quote_readiness(db, quote, sections):
     if frozen:
         return dict(ready_sections=len(participating), required_sections=len(participating), state="issued", blockers=[])
     # Avoid copying SQLAlchemy's shared instrumentation state into a read model.
-    fields = ("department", "department_name", "is_required", "status", "payload_json", "filled_at",
+    fields = ("department", "department_name", "is_required", "status", "payload_json", "calculation_json", "filled_at",
               "calculation_status", "dependency_status", "calculation_formula_version", "calculation_reference_snapshot_id")
     projected = [SimpleNamespace(**{key: getattr(s, key) for key in fields}) for s in participating]
     molding = next((s for s in projected if s.department == "molding"), None)
@@ -3261,7 +3271,8 @@ def _packaging_copy_status(quote, sections, archive_reason):
     sales_payload = _json_object(sales.payload_json) if sales else {}
     assembly_payload = _json_object(assembly.payload_json) if assembly else {}
     label = f"{quote.product_name}（{quote.version_label}）"
-    formula_issue = "请先执行“按当前公式重算”，再复制包装" if quote_formula_mismatches(quote, sections) else ""
+    formula_recalculation_required = bool(quote_formula_mismatches(quote, sections))
+    formula_issue = "请先执行“按当前公式重算”，再复制包装" if formula_recalculation_required else ""
     source_issue = archive_reason or formula_issue
     target_issue = archive_reason
     if not target_issue and (quote.status not in {"drafting", "rejected"} or quote.final_release_status in {"issued", "approved", "pending"}):
@@ -3279,6 +3290,7 @@ def _packaging_copy_status(quote, sections, archive_reason):
 
     return {
         "material_count": len(rows(sales_payload, "packaging_materials")),
+        "formula_recalculation_required": formula_recalculation_required,
         "carton_count": len(rows(sales_payload, "cartons")),
         "packaging_group_count": sum(1 for row in rows(assembly_payload, "groups") if isinstance(row, dict) and row.get("category") == "packaging"),
         "packaging_labor_hkd": str(_section_totals(assembly).get("packaging_hkd", "0.0000")) if assembly and assembly.calculation_status == "valid" and assembly.dependency_status == "current" else None,

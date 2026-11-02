@@ -4,6 +4,7 @@ import { reactive, ref } from 'vue'
 import { parseDate } from '@internationalized/date'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import Workspace from '../FabricInventorySetup.vue'
+import LegacyStockPreviewDialog from '../LegacyStockPreviewDialog.vue'
 import { inventorySearchKey } from '../inventorySearch'
 import type { CountDocument } from '@/api/fabricInventorySetup'
 
@@ -25,6 +26,18 @@ function button(name:string){return wrapper.findAll('button').find(item=>item.te
 async function inspect(){await wrapper.get('[aria-label="原始清单编号"]').setValue('OLD-1');const input=wrapper.get('[aria-label="期初库存文件"]');Object.defineProperty(input.element,'files',{value:[new File(['sample'],'opening.xlsx')],configurable:true});await input.trigger('change');await button('预览导入').trigger('click');await flushPromises()}
 
 describe('fabric opening and stocktaking',()=>{
+  it('opens the independent legacy preview with read permission and closes it on context changes',async()=>{
+    api.workspace.mockResolvedValue({openings:[],counts:[],permissions:{read:true,operate:false,correct:false}})
+    await open('opening')
+    expect(button('旧库存表预检').attributes('disabled')).toBeUndefined()
+    await button('旧库存表预检').trigger('click');await flushPromises()
+    expect(wrapper.findComponent(LegacyStockPreviewDialog).exists()).toBe(true)
+    expect(api.preview).not.toHaveBeenCalled();expect(api.apply).not.toHaveBeenCalled()
+    session.authorizationVersion++;await flushPromises()
+    expect(wrapper.findComponent(LegacyStockPreviewDialog).exists()).toBe(false)
+    await wrapper.setProps({mode:'stocktake'})
+    expect(button('旧库存表预检')).toBeUndefined()
+  })
   it('shows opening source identity fields and keeps table columns aligned',async()=>{
     await open('opening');await inspect()
     expect(wrapper.text()).toContain('0007');expect(wrapper.text()).toContain('测试客户');expect(wrapper.text()).toContain('白色棉布58寸')

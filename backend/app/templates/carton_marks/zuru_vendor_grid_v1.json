@@ -1,0 +1,42 @@
+{
+  "id": "zuru-vendor-grid-v1",
+  "name": "4500222793 确认版式 · 厂商信息表格",
+  "version": 1,
+  "reference_sha256": "35b58494288ae7f20b3fe1acf8eebf835c02dee980ab5c12a7fc3b6170f9143b",
+  "paper": "A4",
+  "orientation": "landscape",
+  "front_ratio": 0.55,
+  "font": "ArialNarrowBold",
+  "body_pt": 15,
+  "minimum_body_pt": 12,
+  "barcode_kind": "ITF14",
+  "barcode_width_mm": 45,
+  "barcode_height_mm": 15,
+  "france_address": "ZURU FRANCE. 33 rue Paul Meurice 75020 Paris, France.\ncare@zuru.com",
+  "dimension_order": "width_length_height",
+  "logo_rules": [
+    {
+      "width_min_cm": 30,
+      "width_min_inclusive": true,
+      "width_max_cm": 40,
+      "height_min_cm": 23,
+      "logo_width_cm": 18
+    },
+    {
+      "width_min_cm": 40,
+      "width_min_inclusive": false,
+      "width_max_cm": 50,
+      "height_min_cm": 33,
+      "logo_width_cm": 25
+    },
+    {
+      "width_min_cm": 50,
+      "width_min_inclusive": false,
+      "width_max_cm": null,
+      "height_min_cm": 42,
+      "logo_width_cm": 32
+    }
+  ],
+  "stamp_policy": "never_inherit_carton_strength_certification",
+  "logo_sha256": "d3188f064ede6c9cc452f09356e16a3d27259e52714f650a16a9b48cd1dd31e7"
+}

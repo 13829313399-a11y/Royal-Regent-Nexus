@@ -14,7 +14,7 @@ export const materialFields: Field[] = [
   text('name', '物料名称', true), text('english_name', '英文名称'), text('specification', '规格'), text('category', '类别'),
   text('customs_unit', '报关单位', true), text('unit', '数量单位', true), text('usage', '产品用途'),
   text('supplier', '供应商'), number('price', '单价', true), text('currency', '币种', true), text('export_company', '出口公司'),
-  text('code', '物料编码', true), text('department', '使用部门'), number('net_weight_kg', '单个净重（kg）', false, true),
+  text('code', '物料编码'), text('department', '使用部门'), number('net_weight_kg', '单个净重（kg）', false, true),
   { ...number('procurement_days', '采购备料自然日', false, true), step: '1' },
 ]
 export const materialDefaults: Data = { code: '', name: '', english_name: '', specification: '', category: '', unit: '', customs_unit: 'KGM', net_weight_kg: null, billing_mode: 'automatic', billing_basis: 'weight', billing_unit: 'KGM', billing_factor: '1', price: '0', currency: 'USD', procurement_days: null, supplier: '', usage: '', department: '', export_company: '', image_data: '' }

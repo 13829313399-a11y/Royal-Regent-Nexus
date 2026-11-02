@@ -17,6 +17,19 @@ function shipment(): Data {
   } }
 }
 describe('confirmed shipment presentation', () => {
+  it('keeps shared codes on distinct material IDs and names in separate export rows', () => {
+    const data = shipment()
+    data.snapshot_lines.forEach((row: Data, index: number) => {
+      row.material.code = '53003116'; row.material.name = ['子弹筒', '绿拉杆', '蓝拉杆', '推杆'][index]
+      row.supply.material_id = `material-${index}`
+    })
+    const result = confirmedShipmentSummary(data)!
+    expect(result.rows).toHaveLength(4)
+    expect(new Set(result.rows.map(row => row.id)).size).toBe(4)
+    expect(result.rows.every(row => row.code === '53003116' && row.normal === '1')).toBe(true)
+    data.snapshot_lines.forEach((row: Data) => { delete row.supply.material_id })
+    expect(confirmedShipmentSummary(data)!.rows).toHaveLength(4)
+  })
   it('adds decimal strings exactly and uses half-up display rounding', () => {
     expect(sumText(['999999999999999999.99999999', '0.1'])).toBe('1000000000000000000.09999999')
     expect(fixedText('12.345')).toBe('12.35')

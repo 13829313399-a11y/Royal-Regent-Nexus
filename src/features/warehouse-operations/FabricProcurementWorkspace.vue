@@ -218,7 +218,7 @@ async function startReceive(id: string) {
 }
 async function receiptSaved(receipt: FabricReceipt) {
   receiptSource.value = undefined
-  notice.value = receipt.reversed ? `原请求已保存的入库单 ${receipt.id} 后来已冲销，本次重试没有再次增加库存；请核对当前待收量。` : `已保存入库单 ${receipt.id}，本次实收 ${receipt.quantity} ${receipt.unit} 已计入待检库存。`
+  notice.value = receipt.reversed ? `原请求已保存的入库单 ${receipt.id} 后来已冲销，本次重试没有再次增加库存；请核对当前待收量。` : receipt.stock_posted === false ? `已保存差异单 ${receipt.id}，本次入库 0，全部为差异/退供应商；未增加库存。` : `已保存入库单 ${receipt.id}，本次实收 ${receipt.quantity} ${receipt.unit} 已计入待检库存。`
   await load()
 }
 async function startBatchReceive() {

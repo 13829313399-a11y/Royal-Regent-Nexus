@@ -1,5 +1,7 @@
 # 曜灵 V3 代码回退与数据保留
 
+当前规范迁移身份为 `20261102_0188` / `20261102_0189`，见[迁移身份与旧库保护](MIGRATION_IDENTITY.md)。下文 `0176` / `0177` 及固定回退候选属于历史隔离验收记录；旧助手数据库不能直接按新图升级。
+
 当前可审查候选以 `537b784f516b14210b3a02126d4d661bd4bf9423` 的完整已跟踪源码，加上 [兼容补丁](../../deploy/assistant/rollback-537b784f-v3-reader.patch) 为界。补丁及原/新文件哈希见 [清单](../../deploy/assistant/rollback-537b784f-v3-reader.json)。隔离 SQLite 和真实 PostgreSQL 17.11 的迁移、兼容读取与前进恢复已通过；兼容旧版及当前版本的完整原生应用 lifespan 也已在 PostgreSQL 上通过。该启动使用 TestClient，没有启动 HTTP QA 后端，不代表容器、启用态浏览器或生产验收。
 
 ## 为什么不能直接换回旧代码

@@ -508,5 +508,116 @@
     ],
     "rates": {},
     "texts": {}
+  },
+  "three-sixty-huaxing": {
+    "name": "360（华兴临时）",
+    "factoryId": "huaxing",
+    "materials": [
+      {
+        "material": "ABS",
+        "price": 1.84,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "C-ABS",
+        "price": 2.69,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "PP",
+        "price": 1.55,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "POM",
+        "price": 3.72,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "C-PC",
+        "price": 3.25,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "TPR",
+        "price": 3.9,
+        "currency": "USD",
+        "unit": "kg"
+      },
+      {
+        "material": "尼龙",
+        "price": 4.622,
+        "currency": "USD",
+        "unit": "kg"
+      }
+    ],
+    "rates": {
+      "scrap_rate": {
+        "label": "损耗比例",
+        "value": 0.02,
+        "kind": "rate"
+      },
+      "scrap_include_labor": {
+        "label": "损耗包括人工（1=材料+人工，0=仅材料）",
+        "value": 1,
+        "kind": "rate",
+        "description": "所附客表 L35=L34*M35，默认按材料+人工"
+      },
+      "markup_rate": {
+        "label": "基本成本加价比例",
+        "value": 0.12,
+        "kind": "rate"
+      },
+      "hkd_usd": {
+        "label": "港元兑美元",
+        "value": 7.8,
+        "kind": "exchange"
+      },
+      "testing_allocation_qty": {
+        "label": "测试费摊分数量（件）",
+        "value": 100000,
+        "kind": "price",
+        "description": "正整数；转换时冻结，切换运输路线不变"
+      },
+      "tooling_allocation_qty": {
+        "label": "模具费摊分数量（件）",
+        "value": 150000,
+        "kind": "price",
+        "description": "正整数；转换时冻结，切换运输路线不变"
+      },
+      "sample_allocation_qty": {
+        "label": "手办/画图费摊分数量（件）",
+        "value": 150000,
+        "kind": "price",
+        "description": "正整数；转换时冻结，切换运输路线不变"
+      }
+    },
+    "texts": {
+      "material_aliases": {
+        "label": "明确料型对应（每行 原料型=报客料型）",
+        "value": "ABS GP22=ABS"
+      },
+      "vendor_name": {
+        "label": "报客供应商名称",
+        "value": "Royal Regent Products(H.K.)Limited"
+      },
+      "prepared_by": {
+        "label": "默认制表人（可留空，逐单补填）",
+        "value": ""
+      },
+      "brand": {
+        "label": "默认品牌系列（可留空）",
+        "value": ""
+      },
+      "comments": {
+        "label": "报客条款/备注（不沿用样表产品条款）",
+        "value": ""
+      }
+    }
   }
 }

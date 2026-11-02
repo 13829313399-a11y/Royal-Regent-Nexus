@@ -43,14 +43,21 @@ def compute(source):
     if operation.startswith("_jp_"):
         from app.services.huakang_b_jp import intake
         function = getattr(intake, operation)
+    elif operation == "prepare_file":
+        from app.services.carton_materials import prepare_file
+        function = prepare_file
+    elif operation == "parse_business_schedule":
+        from app.services.customer_order_carton_schedule import parse_business_schedule
+        function = parse_business_schedule
     elif operation == "parse_workbook":
         from app.services.customer_order_history import parse_workbook
         function = parse_workbook
-    elif operation == "parse_warehouse_receipts":
+    elif operation in {"parse_warehouse_receipts", "parse_material_book"}:
         from app.services.indonesia_warehouse_import import parse_warehouse_receipts
+        from app.services.indonesia_master_import import parse_material_book
         from fastapi import HTTPException
         try:
-            return parse_warehouse_receipts(*args, **kwargs)
+            return (parse_material_book if operation == 'parse_material_book' else parse_warehouse_receipts)(*args, **kwargs)
         except HTTPException as error:
             # Use the worker's bounded user-error channel; never hide a known format issue as an unknown commit.
             raise ValueError(str(error.detail)) from error

@@ -83,7 +83,7 @@ def complete_date(value):
 def reminder(source, *, today, lead_days, production_days, marked=False, orders=(), review_changes=()):
     if source.get("schedule_section") and source["schedule_section"] != "PENDING":
         return None
-    if source.get("template") == "unified-item" and (source.get("order_type") or "").strip() not in ("正单", "加单", "正式PO"):
+    if source.get("template") == "unified-item" and (source.get("order_type") or "").strip() not in ("正单", "加单", "改单", "正式PO"):
         return None
     def result(state, label, tone, detail):
         return dict(state=state, label=label, tone=tone, detail=detail, attention=state not in ("WAIT", "ORDERED"), deadline="", arrivalDate="", days=None)

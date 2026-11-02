@@ -135,13 +135,16 @@ def month_reader(db, line_ids, entries, history, uses):
     Caller already holds cutting -> source -> fabric locks. Keep every date,
     correction and immutable plan revision; month filtering remains in read().
     """
-    from app.services.cutting_read_batch import production as batch_production
+    from app.services.cutting_read_batch import production as batch_production, current_revisions, dispatches, planning_references
     transaction = db.get_transaction()
     if transaction is None:
         raise RuntimeError('Monthly evidence requires the owning transaction')
     reports, versions = batch_production(db, line_ids, revisions=True)
+    current=current_revisions(db,line_ids)
     shared = dict(session=db, transaction=transaction, entries=entries, history=history,
-                  uses=uses, prices=usage.prices(history), reports=reports)
+                  uses=uses, prices=usage.prices(history), reports=reports,
+                  current_revisions=current, dispatches=dispatches(db,line_ids),
+                  planning_references=planning_references(db,current.values()))
     def read_month(line_id, month):
         return read(db, line_id, month, show_costs=True, _monthly=shared)
     return read_month, reports, versions
@@ -161,7 +164,12 @@ def read(db, line_id, month, *, show_costs=False, _monthly=None):
         raise RuntimeError('Monthly evidence cannot cross sessions, transactions or scope')
     order = db.get(CuttingOrder, line_id)
     c.require(order is not None and order.factory_id == c.FACTORY, '请先签收当前裁床订单，再进行月度核对', 404)
-    data = orders.revision(db, order)['data']
+    if _monthly is None:
+        data = orders.revision(db, order)['data']
+    else:
+        revision=_monthly['current_revisions'].get(line_id)
+        c.require(revision is not None,'裁床订单版本不存在',404)
+        data=revision.data
     published = data.get('planning', {}).get('published')
     # These cooperating locks fence reports, allocations and all linked warehouse writes.
     if _monthly is None:
@@ -179,7 +187,8 @@ def read(db, line_id, month, *, show_costs=False, _monthly=None):
     def flag(code, message, workspace, document_id='', *, task_id='', issue_id=''):
         issues.append(dict(code=code, message=message, workspace=workspace, document_id=document_id,
                            task_id=task_id, issue_id=issue_id))
-    source_changed = order.dispatch_id != getattr(orders.latest(db, line_id), 'id', None)
+    source_dispatch=orders.latest(db,line_id) if _monthly is None else _monthly['dispatches'].get(line_id)
+    source_changed = order.dispatch_id != getattr(source_dispatch, 'id', None)
     plan_state = planning.summary(db, data, source_changed, **({'receipt_entries': lambda: entries} if _monthly is not None else {}))
     if source_changed:
         flag('source_changed', '来源订单已变化，当前核对保留已签收及历史证据，请先核对新下发', 'planning')

@@ -71,6 +71,7 @@ backend/models/image-translation/
 !/docs/business/纸箱模块-基础资料建设方案.md
 !/docs/business/纸箱月结与供应商对账方案.md
 !/docs/business/纸箱全流程核查报告.md
+!/docs/business/纸箱仓与布料仓复用对照分析.md
 !/edge/three-d-printing-agent/README.md
 !/edge/uv-printing-agent/README.md
 !/docs/uv-operations/*.md
@@ -148,3 +149,14 @@ outputs/opening-inventory-template-20260909/
 
 # Local frontend/API/document worker process identities and logs
 /.local-dev/
+
+# QC embedded deployment documentation and private runtime data
+!/docs/business/qc-department-integration.md
+!/docs/business/qc-legacy-runtime-contract.md
+!/services/qc-department/README.md
+/services/qc-department/server/data/
+/services/qc-department/server/ai-config.json
+
+# Private QC customer workbooks and source schedules are provisioned locally.
+/backend/app/templates/qc-cumulative/
+/services/qc-department/fixtures/qc-schedule-example.json

@@ -324,10 +324,14 @@ def ensure_carton_mark_library_schema_ready() -> None:
         ).scalar_one_or_none()
         missing = sorted(CARTON_MARK_LIBRARY_REQUIRED_TABLES - table_names)
         if "carton_mark_assets" in table_names:
+            asset_columns={c['name'] for c in inspector.get_columns('carton_mark_assets')}
+            missing.extend('carton_mark_assets.'+c+' (0187)' for c in ('owner_department','owner_supplier_id','asset_purpose') if c not in asset_columns)
             kind_constraint = next((c["sqltext"] for c in inspector.get_check_constraints("carton_mark_assets")
                 if c["name"] == "ck_carton_mark_asset_kind"), "")
             if "'image'" not in kind_constraint:
                 missing.append("carton_mark_assets 图片格式约束")
+            if "'text'" not in kind_constraint:
+                missing.append('carton_mark_assets 纯文字约束 (0187)')
             if "photo_group_id" not in {c["name"] for c in inspector.get_columns("carton_mark_assets")}:
                 missing.append("carton_mark_assets 照片分组字段")
         if missing:
@@ -832,25 +836,19 @@ def ensure_carton_feedback_schema_ready() -> None:
         raise RuntimeError("纸箱反馈结构未就绪，请先备份数据库并执行 Alembic upgrade head 再启动应用。")
 
 
-def ensure_collaborative_sheets_schema_ready() -> None:
-    """Never create a new collaboration schema implicitly in an existing DB."""
-    from app.models import collaborative_sheets  # noqa: F401
+def ensure_online_documents_schema_ready() -> None:
+    if not settings.online_documents_enabled:
+        return
+    from app.models.online_documents import OnlineDocument, OnlineDocumentRevision, OnlineDocumentEvent, OnlineDocumentFolder, OnlineDocumentPlacement
     with engine.connect() as connection:
         inspector = inspect(connection)
         names = set(inspector.get_table_names())
-        if not names:
-            return
-        missing = []
-        for name, table in Base.metadata.tables.items():
-            if not name.startswith("collaborative_sheet"):
-                continue
-            if name not in names:
-                missing.append(name)
-            else:
-                columns = {column["name"] for column in inspector.get_columns(name)}
-                missing.extend(name + "." + column.name for column in table.columns if column.name not in columns)
-        if missing:
-            raise RuntimeError("协同填表需要迁移至 20261009_0121；请先备份并迁移。缺少：" + ", ".join(missing))
+        for model in (OnlineDocument, OnlineDocumentRevision, OnlineDocumentEvent, OnlineDocumentFolder, OnlineDocumentPlacement):
+            table = model.__table__
+            if table.name not in names or set(table.columns.keys()) - {c["name"] for c in inspector.get_columns(table.name)}:
+                raise RuntimeError("在线文档需要显式迁移至 20261026_0183（本地合并 0184）；请先备份并迁移。")
+        from app.services.online_document_management import verify_evidence_guards
+        verify_evidence_guards(connection)
 
 
 def ensure_collaboration_schema_ready() -> None:
@@ -884,12 +882,13 @@ def init_db() -> None:
         uv_operations,  # noqa: F401
         spray_ops,  # noqa: F401
         document_tools,  # noqa: F401
-        collaborative_sheets,  # noqa: F401
+        online_documents,  # noqa: F401
         auth,  # noqa: F401
         position_review,  # noqa: F401
         carton_mark,  # noqa: F401
         carton_feedback,  # noqa: F401
         carton_procurement,  # noqa: F401
+        carton_materials,  # noqa: F401
         fabric_procurement,  # noqa: F401
         fabric_receiving,  # noqa: F401
         fabric_master,  # noqa: F401
@@ -929,7 +928,7 @@ def init_db() -> None:
         install_projection_hooks(SessionLocal)
         SessionLocal.work_center_hooks_installed = True
     ensure_collaboration_schema_ready()
-    ensure_collaborative_sheets_schema_ready()
+    ensure_online_documents_schema_ready()
     ensure_module_feedback_schema_ready()
     ensure_work_center_schema_ready()
     ensure_identity_schema_ready()
@@ -984,8 +983,11 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine, tables=[table for name, table in Base.metadata.tables.items()
                             # Cutting and JP intake require explicit migrations.
                             if not name.startswith(("cutting_ops_", "jp_intake_"))
+                            and not name.startswith("online_document")
                             and (not name.startswith("carton_special_") or "auth_users" not in existing_tables)
                             and (name != "carton_price_reviews" or "auth_users" not in existing_tables)
+                            # Existing stores add the reference cache only through canonical 0186.
+                            and (name != "carton_material_references" or "auth_users" not in existing_tables)
                             and not name.startswith("indonesia_material_")
                             and (not name.startswith(("collab_", "member_")) or not existing_tables)
                             # An existing business store upgrades this new domain explicitly.

@@ -9,6 +9,16 @@ from app.models.warehouse_operations import WarehouseOperation
 
 FACTORY = 'huakang-c'
 PREFIX = 'FR-'
+ZERO_RECEIPT_MESSAGE = '零入库差异单没有库存可冲销，请走差异处理'
+
+
+def ensure_stock_reversible(db, receipt_id):
+    receipt = db.scalar(select(FabricReceipt).where(FabricReceipt.factory_id == FACTORY, FabricReceipt.id == receipt_id))
+    if receipt is None:
+        raise HTTPException(404, '找不到本仓入库记录')
+    if Decimal(receipt.quantity) == 0:
+        raise HTTPException(422, ZERO_RECEIPT_MESSAGE)
+    return receipt
 
 
 def reversal_rows(db):
@@ -89,6 +99,7 @@ def preview(db, receipt_id):
         data=dict(original_id=PREFIX + receipt_id, reason='preview', confirmed=True))
     blocked = ''
     try:
+        ensure_stock_reversible(db, receipt_id)
         apply_original_reversal(copy.deepcopy(stock), copy.deepcopy(entries), probe)
     except HTTPException as error:
         blocked = error.detail

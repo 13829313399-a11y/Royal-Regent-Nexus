@@ -2,6 +2,7 @@ import type { Pinia } from 'pinia'
 import type { Router } from 'vue-router'
 import { setForbiddenHandler, setUnauthorizedHandler } from '@/lib/http'
 import { useAuthStore } from '@/stores/auth'
+import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
 
 function isSessionProbeRequest(error: { config?: { url?: unknown } }) {
   const requestUrl = error.config?.url
@@ -16,6 +17,8 @@ function isSessionProbeRequest(error: { config?: { url?: unknown } }) {
 
 export function installUnauthorizedSessionHandler(router: Router, pinia: Pinia) {
   let redirectingToLogin = false
+  let refreshing: Promise<unknown> | null = null
+  let refreshingOwner = ''
 
   setUnauthorizedHandler((error) => {
     const currentRoute = router.currentRoute.value
@@ -46,9 +49,16 @@ export function installUnauthorizedSessionHandler(router: Router, pinia: Pinia) 
 
   setForbiddenHandler((error) => {
     if (isSessionProbeRequest(error)) return
+    const detail = (error as { response?: { data?: { detail?: { code?: string } } } }).response?.data?.detail
+    if (detail?.code === 'COLLABORATION_INELIGIBLE') return
     const authStore = useAuthStore(pinia)
     if (authStore.isAuthenticated) {
-      void authStore.refreshSession()
+      const owner = `${getAuthenticationGeneration()}:${authStore.currentUser?.id ?? ''}:${authStore.currentUser?.identity?.employment_epoch ?? 0}`
+      if (refreshing && refreshingOwner === owner) return
+      refreshingOwner = owner
+      const request = authStore.refreshSession()
+      refreshing = request
+      void request.finally(() => { if (refreshing === request) refreshing = null })
     }
   })
 }

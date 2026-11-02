@@ -496,7 +496,8 @@ function toQuote(
     referenceSnapshotId: source.reference_snapshot_id,
     referenceSnapshot: extras.reference?.snapshot ?? {},
     formulaVersion: source.formula_version,
-    currentFormulaVersion: extras.summary?.current_formula_version || source.formula_version,
+    currentFormulaVersion: source.current_formula_version || extras.summary?.current_formula_version || source.formula_version,
+    formulaRecalculationRequired: source.formula_recalculation_required ?? extras.summary?.warnings?.some(item => item.code === 'formula_version_stale'),
     moduleVersion: source.module_version,
     headerRevision: source.header_revision,
     versionArchived: source.version_archived,
@@ -1390,12 +1391,17 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       const requestSequence = ++this.quoteMutationRequestSequence
       this.submitting = true
       try {
-        const cloned = await internalQuoteApi.clone(sourceQuoteId, {
+        const cloned = await internalQuoteApi.cloneDocument(sourceQuoteId, {
           quote_no: payload.quoteNo.trim(), version_label: payload.versionLabel.trim(), business_owner_id: payload.businessOwnerId,
           business_owner_name: payload.businessOwner.trim(), target_customer_price: payload.targetCustomerPrice.trim(),
           target_date: payload.targetDate, remark: payload.remark,
           participating_sections: orderedParticipatingSections(payload.participatingSections),
           workflow_mode: 'direct_output',
+          products: (payload.products ?? []).map(product => ({
+            source_quote_id: product.cloneSourceQuoteId, revision: product.cloneSourceRevision,
+            product_name: product.productName, qty: product.quantity,
+            pricing_components: product.pricingComponents,
+          })),
         })
         const quote = toQuote(cloned)
         if (

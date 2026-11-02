@@ -10,7 +10,8 @@ import { factoryContexts } from '@/data/enterpriseMock'
 const props = defineProps<{ factoryIds: string[] }>()
 const emit = defineEmits<{ uploaded: [] }>()
 const auth = useAuthStore()
-const factory = ref(''), orderId = ref(''), lineId = ref(''), search = ref('')
+const factory = computed(() => props.factoryIds.length === 1 ? props.factoryIds[0]! : '')
+const orderId = ref(''), lineId = ref(''), search = ref('')
 const canUpload = computed(() => auth.can('carton_supplier:read', '*', '*') && auth.can('carton_supplier:edit', factory.value || '*', '*'))
 const orders = ref<CartonMarkBindingTarget[]>([])
 const orderKinds = { REGULAR: '正单', SAMPLE: '样板', MISC: '杂单' }
@@ -23,7 +24,7 @@ let generation = 0, controller = new AbortController()
 const attempts = new Map<string, string>()
 function factoryName(id: string) { return factoryContexts.find(row => row.id === id)?.shortName ?? id }
 function chooseFiles(selected: File[]) {
-  if (!canUpload.value || busy.value) return
+  if (!canUpload.value || !factory.value || busy.value) return
   error.value = ''; outcomes.value = []
   if (selected.length > 50 || selected.some(file => file.size > 20 * 1024 * 1024) || selected.reduce((sum, file) => sum + file.size, 0) > 100 * 1024 * 1024) {
     error.value = '每批最多 50 个文件、合计 100 MB，单个文件最多 20 MB。'; return
@@ -74,10 +75,9 @@ async function upload() {
   } finally { if (token === generation) busy.value = false }
 }
 watch([() => props.factoryIds.join('\0'), () => auth.currentUser?.id, () => auth.authorizationVersion], () => {
-  factory.value = props.factoryIds.length === 1 ? props.factoryIds[0]! : ''
   void loadOrders()
 }, { immediate: true })
-watch([factory, canUpload], () => void loadOrders())
+watch(canUpload, () => void loadOrders())
 watch(orderId, () => { lineId.value = '' })
 onBeforeUnmount(() => { generation++; controller.abort() })
 </script>
@@ -85,9 +85,10 @@ onBeforeUnmount(() => { generation++; controller.abort() })
 <template>
   <section v-if="canUpload" class="mb-4 rounded-xl border border-teal-200 bg-white p-4 sm:p-5" aria-label="供应商批量上传箱唛">
     <h2 class="font-bold">批量上传箱唛资料</h2>
-    <p class="mt-1 text-sm leading-6 text-slate-500">Excel、PDF、图片可以一起上传。选择厂区后即与该厂区仓库共享，不必先关联订单；需要使用时，由本次经办人直接关联正单、样板或杂单，无需另行关联审批。资料状态与历史保留，内容核对与 QC 沿原流程。</p>
+    <p class="mt-1 text-sm leading-6 text-slate-500">Excel、PDF、图片可以一起上传，沿用页面顶部所选厂区，与该厂区仓库共享，不必先关联订单。内容核对与 QC 沿原流程。</p>
+    <p v-if="factory" class="mt-2 text-sm font-semibold text-teal-800">上传到：{{ factoryName(factory) }}</p>
+    <p v-else role="status" class="mt-2 text-sm text-amber-700">当前查看全部厂区，请先在页面顶部选择一个厂区，再上传资料。</p>
     <div class="mt-3 flex flex-wrap gap-3">
-      <label class="min-w-0 text-sm">上传厂区<select v-model="factory" aria-label="供应商箱唛上传厂区" :disabled="busy" class="mt-1 block w-full rounded-lg border bg-white p-2"><option value="">请选择上传厂区</option><option v-for="id in factoryIds" :key="id" :value="id">{{ factoryName(id) }}</option></select></label>
       <label class="min-w-0 text-sm">搜索关联订单<input v-model="search" aria-label="搜索供应商箱唛上传订单" :disabled="busy || !factory" placeholder="合同 / 客户 / 货号" class="mt-1 block w-full rounded-lg border p-2"></label>
       <label class="min-w-0 flex-1 text-sm">关联订单（选填）<select v-model="orderId" aria-label="供应商箱唛上传订单" :disabled="busy || loading || !factory" class="mt-1 block w-full rounded-lg border bg-white p-2"><option value="">先保存共享资料，稍后关联订单</option><option v-for="order in matchingOrders" :key="order.order_id" :value="order.order_id">{{ orderKinds[order.order_kind] }} · {{ order.customer_name || '未关联客户' }} · {{ order.contract_no || '未填合同' }} · {{ order.order_no }} · {{ order.item_no }}</option></select></label>
       <button type="button" :disabled="busy || loading || !factory" class="self-end rounded-lg border px-3 py-2 text-sm disabled:opacity-50" @click="refreshTargets">刷新可关联订单</button>
@@ -103,10 +104,10 @@ onBeforeUnmount(() => { generation++; controller.abort() })
     <p v-if="orderId" class="mt-2 text-xs text-amber-700">本批文件由本次经办人直接关联所选订单；不改变采购数量、价格或接单状态，也不代表审核通过。</p>
     <p v-if="loading" role="status" class="mt-3 text-sm text-slate-500">正在读取可关联的正单、样板与杂单…</p>
     <div class="mt-4 rounded-lg border-2 border-dashed border-teal-200 bg-teal-50/50 p-4" @dragover.prevent @drop.prevent="chooseFiles(Array.from($event.dataTransfer?.files ?? []))">
-      <input ref="input" type="file" multiple accept=".xls,.xlsx,.xlsm,.pdf,.jpg,.jpeg,.png,.webp" class="sr-only" aria-label="供应商批量选择箱唛原文件" :disabled="busy" @change="chooseFiles(Array.from(($event.target as HTMLInputElement).files ?? []))">
-      <div class="flex flex-wrap items-center gap-3"><button type="button" :disabled="busy" class="rounded-lg border bg-white px-4 py-2 font-semibold disabled:opacity-50" @click="input?.click()">选择 Excel / PDF / 图片</button><span class="text-xs text-slate-500">支持多选或拖入 · 单个 20 MB · 每批 50 个 / 100 MB</span><button type="button" :disabled="busy || loading || !factory || !files.length" class="rounded-lg bg-teal-700 px-4 py-2 font-semibold text-white disabled:opacity-50" @click="upload">{{ busy ? '正在上传…' : `上传共享资料${files.length ? `（${files.length}）` : ''}` }}</button></div>
+      <input ref="input" type="file" multiple accept=".xls,.xlsx,.xlsm,.pdf,.jpg,.jpeg,.png,.webp" class="sr-only" aria-label="供应商批量选择箱唛原文件" :disabled="busy || !factory" @change="chooseFiles(Array.from(($event.target as HTMLInputElement).files ?? []))">
+      <div class="flex flex-wrap items-center gap-3"><button type="button" :disabled="busy || !factory" class="rounded-lg border bg-white px-4 py-2 font-semibold disabled:opacity-50" @click="input?.click()">选择 Excel / PDF / 图片</button><span class="text-xs text-slate-500">支持多选或拖入 · 单个 20 MB · 每批 50 个 / 100 MB</span><button type="button" :disabled="busy || loading || !factory || !files.length" class="rounded-lg bg-teal-700 px-4 py-2 font-semibold text-white disabled:opacity-50" @click="upload">{{ busy ? '正在上传…' : `上传共享资料${files.length ? `（${files.length}）` : ''}` }}</button></div>
       <p v-if="files.length" class="mt-3 break-all text-xs">{{ files.map(file => file.name).join('、') }}</p>
-      <p v-if="!factory" class="mt-3 text-xs text-amber-700">请选择文件对应的收货厂区。</p>
+      <p v-if="!factory" class="mt-3 text-xs text-amber-700">上传厂区沿用页面顶部选择，不在这里重复选择。</p>
       <p v-else-if="!loading && !orders.length && !error" class="mt-3 text-xs text-amber-700">当前厂区暂无可选订单，仍可先保存共享资料，之后再关联。</p>
     </div>
     <p v-if="error" role="alert" class="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-800">{{ error }}</p>

@@ -13,6 +13,7 @@ from app.models.carton_supplier_portal import SupplierAttachment, SupplierCommit
 def order_page_out(db, orders, *, usage=None):
     from app.services import carton_procurement as core
     from app.services.carton_order_split import plans
+    from app.services.carton_order_split_trace import schedule_split_sources
     from app.services.carton_replenishment_receipts import options_by_line, legacy_review_lines
     from app.services.carton_usage import usage_by_key
 
@@ -22,6 +23,7 @@ def order_page_out(db, orders, *, usage=None):
     if any(order.factory_id != factory for order in orders):
         raise ValueError("A projection must belong to one factory")
     order_ids = [order.id for order in orders]
+    split_sources = schedule_split_sources(db, orders)
     lines = list(db.scalars(select(CartonOrderLine).where(
         CartonOrderLine.order_id.in_(order_ids)).order_by(CartonOrderLine.line_no)))
     by_order = defaultdict(list)
@@ -76,6 +78,7 @@ def order_page_out(db, orders, *, usage=None):
         projection = {**shared, "lines": own_lines, "issues": by_issue_order[order.id],
             "supplier_change_states": supplier_change_states,
             "plans": split_by_order[order.id], "history_imported": order.id in history,
+            "schedule_split_source": split_sources.get(order.id),
             "append_details": append_details[order.id],
             "business_activity": bool(own_ids & business_lines),
             "supplier_evidence": bool(own_ids & supplier_lines) or order.id in attachments,

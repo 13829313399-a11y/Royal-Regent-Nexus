@@ -170,6 +170,17 @@ class DeliveryRowSelection(BaseModel):
     order_line_id: str = Field(min_length=1, max_length=96)
     issue_id: str = Field(min_length=1, max_length=96)
     order_revision: int = Field(ge=1)
+    source_kind: Literal['REGULAR', 'SPECIAL'] = 'REGULAR'
+    special_request_id: str = Field(default='', max_length=96)
+    free_confirmed: bool = False
+
+    @model_validator(mode='after')
+    def typed_source(self):
+        if (self.source_kind == 'SPECIAL') != bool(self.special_request_id):
+            raise ValueError('样板或杂单须保留原需求身份，正单不能携带特殊需求身份')
+        if self.free_confirmed and self.source_kind != 'SPECIAL':
+            raise ValueError('此确认仅用于原表中的样板或杂单免费纸品')
+        return self
 
 
 class ShipmentReceiptLink(Payload):
@@ -203,7 +214,15 @@ class SupplierMarkAssetOrderOut(BaseModel):
     item_no: str
 
 
+class SupplierMarkAssetClassification(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    revision: int = Field(ge=1)
+    request_id: str = Field(min_length=8, max_length=128)
+    status: Literal['DRAFT', 'PENDING']
+
+
 class SupplierMarkAssetOut(BaseModel):
+    can_classify: bool = False
     id: str
     revision: int
     file_name: str
@@ -250,12 +269,16 @@ class SupplierMarkPdfRequest(Payload):
     excel_asset_id: str = Field(min_length=1, max_length=96)
     expected_revision: int = Field(ge=1)
     layout_id: str = Field(min_length=1, max_length=96)
+    engine: Literal["customer_layout", "deepseek_zumiez"] = "customer_layout"
+    ai_consent: bool = False
     supplements: dict[Literal["quantity", "carton_total", "dimensions", "gross_weight", "net_weight"], str] = Field(default_factory=dict)
     source_item: str = Field(default="", max_length=128)
 
     @model_validator(mode="after")
     def valid_supplements(self):
         import re
+        if self.engine == "deepseek_zumiez" and not self.ai_consent:
+            raise ValueError("使用DeepSeek须明确同意发送本单必要文字")
         if any(len(value) > 100 or not re.search(r"\d", value) for value in self.supplements.values()):
             raise ValueError("本单补齐内容须包含数值，最多100字符")
         return self

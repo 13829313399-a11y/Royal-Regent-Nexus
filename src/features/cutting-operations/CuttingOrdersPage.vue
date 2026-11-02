@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import PageHeader from '@/components/common/PageHeader.vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { onBeforeRouteLeave, RouterLink } from 'vue-router'
 import { ChevronLeft, ChevronRight, ClipboardList, Search } from '@lucide/vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
@@ -25,6 +25,7 @@ import CuttingActivityPage from './CuttingActivityPage.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
 
 const props=defineProps<{ workspace: CuttingWorkspace }>()
+const filterId=`cutting-orders-${useId()}`
 const materialsView=ref('inventory')
 const manualLocation=ref<CuttingLocation>()
 const appliedQuery=ref(''),appliedStatus=ref(''),appliedPlanStatus=ref(''),summaryRefresh=ref(0)
@@ -268,20 +269,20 @@ function status(row: CuttingOrder) {
       <div v-show="workspace.path!=='materials'||!['inventory','orders','movements'].includes(materialsView)" class="cutting-overview">
       <SectionPanel class="order-ledger min-w-0" :title="workspace.path === 'materials' ? materialsView==='eta'?'采购交期':'选择领用订单' : '订单总台账'">
         <form class="order-toolbar order-filters" @submit.prevent="load(1,false,false,true)">
-          <label class="order-filter-field">
+          <label class="order-filter-field" :for="`${filterId}-query`">
             <span>订单号／货号</span>
-            <input v-model="query" class="order-filter-control" maxlength="80" placeholder="输入订单号或货号" />
+            <input :id="`${filterId}-query`" name="order_q" v-model="query" class="order-filter-control" maxlength="80" placeholder="输入订单号或货号" />
           </label>
-          <label class="order-filter-field">
+          <label class="order-filter-field" :for="`${filterId}-status`">
             <span>办理状态</span>
-            <select v-model="statusFilter" class="order-filter-control" aria-label="办理状态筛选">
+            <select :id="`${filterId}-status`" name="status" v-model="statusFilter" class="order-filter-control" aria-label="办理状态筛选">
               <option value="">全部状态</option>
               <option v-for="(label, value) in statusLabels" :key="value" :value="value">{{ label }}</option>
             </select>
           </label>
-          <label v-if="workspace.path === 'planning'" class="order-filter-field">
+          <label v-if="workspace.path === 'planning'" class="order-filter-field" :for="`${filterId}-plan-status`">
             <span>排期状态</span>
-            <select v-model="planStatusFilter" class="order-filter-control" aria-label="排期状态筛选">
+            <select :id="`${filterId}-plan-status`" name="plan_status" v-model="planStatusFilter" class="order-filter-control" aria-label="排期状态筛选">
               <option value="">全部排期</option>
               <option v-for="(label,value) in planStatusLabels" :key="value" :value="value">{{ label }}</option>
             </select>

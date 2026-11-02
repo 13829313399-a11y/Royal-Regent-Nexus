@@ -122,6 +122,15 @@ def recognize_asset(file_name, content, known_contracts):
 
 
 def matching_asset_orders(asset, orders):
+    if getattr(asset,'owner_department',None):
+        session=object_session(asset)
+        if session:
+            from app.services.carton_asset_targets import purchase_order_ids
+            identifiers=purchase_order_ids(session,asset)
+            return [order for order in orders if order.id in identifiers]
+        identifiers={link.order_id for link in asset.order_bindings}
+        if asset.bound_order_id:identifiers.add(asset.bound_order_id)
+        return [order for order in orders if order.id in identifiers]
     if asset.recognition_source == "manual_orders":
         identifiers = {link.order_id for link in asset.order_bindings}
         # An empty/deleted explicit selection never falls back to a contract match.
@@ -152,6 +161,7 @@ def asset_out(asset, orders, workflow=None, sharing=None):
     ambiguous = not explicit and len({identity(o.customer_code) for o in matches}) > 1
     status = "AMBIGUOUS" if ambiguous else "BOUND" if matches else "NO_ORDER" if asset.contract_number else "UNBOUND"
     return CartonMarkAssetOut(id=asset.id, factory_id=asset.factory_id, file_name=asset.file_name,
+        owner_department=asset.owner_department,owner_supplier_id=asset.owner_supplier_id,asset_purpose=asset.asset_purpose,
         kind=asset.kind, photo_group_id=asset.photo_group_id, size_bytes=asset.size_bytes, sha256=asset.sha256,
         contract_number=asset.contract_number, bound_order_id=asset.bound_order_id,
         bound_order_ids=[link.order_id for link in asset.order_bindings] if asset.recognition_source == "manual_orders" else ([asset.bound_order_id] if asset.bound_order_id else []),
@@ -165,7 +175,7 @@ def asset_out(asset, orders, workflow=None, sharing=None):
 def active_asset(db, factory, asset_id):
     asset = db.scalar(select(CartonMarkAsset).where(CartonMarkAsset.id == asset_id,
         CartonMarkAsset.factory_id == factory, CartonMarkAsset.is_archived.is_(False)))
-    if asset is None:
+    if asset is None or asset.recognition_source == 'materials_folder':
         raise HTTPException(404, "未找到箱唛原文件")
     return asset
 
@@ -177,7 +187,7 @@ def list_assets(db, factory, order_id=None):
     if order_id and not any(o.id == order_id for o in orders):
         raise HTTPException(404, "未找到本厂订单")
     assets = list(db.scalars(select(CartonMarkAsset).where(CartonMarkAsset.factory_id == factory,
-        CartonMarkAsset.is_archived.is_(False)).order_by(CartonMarkAsset.created_at.desc(), CartonMarkAsset.id)))
+        CartonMarkAsset.is_archived.is_(False), CartonMarkAsset.recognition_source != 'materials_folder').order_by(CartonMarkAsset.created_at.desc(), CartonMarkAsset.id)))
     workflows = lifecycle.states(db, factory, [asset.id for asset in assets])
     from app.services import carton_mark_sharing
     sharing = carton_mark_sharing.states(db, factory, [asset.id for asset in assets])
@@ -219,12 +229,30 @@ def save_asset(db, user, factory, content, recognition, options=None):
         recognition_source=recognition["recognition_source"], candidates_json=json.dumps(recognition["candidates"]),
         warning=recognition["warning"], created_by=user.id, created_by_name=user.display_name,
         created_at=timestamp, updated_at=timestamp, revision=1, is_archived=False)
+    from app.services import carton_asset_access as ownership
+    ownership.legacy(db,user,asset,department=options.owner_department)
+    if ownership.enabled() and options.previous_asset_id:
+        parent=active_asset(db,factory,options.previous_asset_id)
+        ownership.ensure(db,user,parent,write=True)
+        if (parent.owner_department,parent.owner_supplier_id)!=(asset.owner_department,asset.owner_supplier_id):
+            raise HTTPException(422,'修改稿必须保留原部门和供应商归属')
+        asset.asset_purpose=parent.asset_purpose
+    if ownership.enabled() and options.status=='READY':
+        if asset.asset_purpose!='MATERIAL':raise HTTPException(422,'内部凭据不是制作资料')
+        ownership.ensure(db,user,asset,write=True,confirm=True)
     db.add(asset)
     lifecycle.initialize(db, user, asset, options or CartonMarkAssetUploadOptions())
     from app.services import carton_mark_sharing
     carton_mark_sharing.initialize(db, user, asset, options or CartonMarkAssetUploadOptions())
     if options.targets is not None:
         associations.apply(db, user, asset, options.targets)
+    elif ownership.enabled():
+        from app.services import carton_asset_targets as quick_targets
+        if options.previous_asset_id:
+            quick_targets.record(db,user,asset,quick_targets.valid(db,parent))
+        else:
+            rows=quick_targets.candidates(db,user,factory,recognition['contract_number']) if recognition['contract_number'] else []
+            quick_targets.record(db,user,asset,rows if len(rows)==1 else [])
     audit(db, user, asset, "CARTON_MARK_ASSET_CREATED", {"sha256": sha, "contract_number": asset.contract_number})
     associations.record_request(db, user, asset, request_id, saved, {'asset_id': asset.id})
     db.commit()
@@ -294,6 +322,8 @@ def change_binding(db, user, factory, asset_id, payload):
             db.rollback()
             raise HTTPException(409, "资料已被修改，请刷新后重试")
         replace_order_bindings(asset, payload)
+        from app.services import carton_asset_targets
+        carton_asset_targets.sync_legacy(db,user,asset)
         audit(db, user, asset, "CARTON_MARK_ASSET_BOUND", {"contract_number": values["contract_number"], "order_id": payload.order_id,
               "before_order_ids": before_ids, "order_ids": payload.order_ids})
         db.commit()
@@ -352,6 +382,8 @@ def change_photo_group(db, user, factory, payload, *, group_id=None, ungroup=Fal
                 raise HTTPException(409, "照片已被修改，整组未保存，请刷新后重试")
             if not ungroup:
                 replace_order_bindings(asset, payload)
+                from app.services import carton_asset_targets
+                carton_asset_targets.sync_legacy(db,user,asset)
             audit(db, user, asset, "CARTON_MARK_PHOTO_UNGROUPED" if ungroup else "CARTON_MARK_PHOTO_GROUP_SAVED",
                 {"photo_group_id": target, "previous_groups": sorted(previous_groups),
                  "contract_number": values.get("contract_number", asset.contract_number),

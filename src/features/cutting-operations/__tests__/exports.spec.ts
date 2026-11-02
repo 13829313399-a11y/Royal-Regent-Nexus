@@ -16,6 +16,51 @@ afterEach(()=>{wrapper?.unmount();vi.useRealTimers()})
 async function open(props={}){wrapper=mount(CuttingReportExport,{props:{selection,access,...props}});await flushPromises()}
 async function click(label:string){await wrapper.findAll('button').find(b=>b.text()===label)!.trigger('click');await flushPromises()}
 describe('P4e controlled exports',()=>{
+  it('explains offline download failure and re-previews the original event with a fresh token',async()=>{
+    await open();await click('预览 Excel 导出')
+    vi.mocked(exportApi.download).mockRejectedValueOnce(Object.assign(new Error('Network Error'),{code:'ERR_NETWORK'}))
+    await click('确认下载 Excel')
+    expect(wrapper.text()).toContain('网络连接不可用，本次未发起文件下载')
+    expect(wrapper.text()).toContain('内部月结 · 2026-09 · 版本编号 locked-1')
+    expect(wrapper.text()).not.toContain('确认下载 Excel')
+    expect(saveReport).not.toHaveBeenCalled()
+    vi.mocked(exportApi.preview).mockResolvedValueOnce({...info,token:'newly-checked'})
+    await click('按原目标重新预览')
+    expect(exportApi.preview).toHaveBeenLastCalledWith(selection,expect.any(AbortSignal))
+    expect(exportApi.download).toHaveBeenCalledTimes(1)
+    await click('确认下载 Excel')
+    expect(exportApi.download).toHaveBeenLastCalledWith(selection,'newly-checked',expect.any(AbortSignal))
+  })
+  it('retains the exact target through access-read failures and clears it on version changes',async()=>{
+    await open({selection:{kind:'settlement',month:'2026-09',document_id:'fee-original',event_id:'event-original'}})
+    vi.mocked(cuttingApi.access).mockRejectedValue(new Error('Network Error'))
+    await click('预览 Excel 导出');await click('按原目标重新预览')
+    expect(wrapper.text()).toContain('单据 fee-original · 版本编号 event-original')
+    expect(exportApi.preview).not.toHaveBeenCalled()
+    await wrapper.setProps({selection:{kind:'settlement',month:'2026-10',document_id:'other'}})
+    expect(wrapper.text()).not.toContain('按原目标重新预览')
+    expect(wrapper.text()).not.toContain('fee-original')
+  })
+  it.each([401,403])('does not offer a private retry target after authorization rejection %s',async status=>{
+    vi.mocked(cuttingApi.access).mockRejectedValue({response:{status}})
+    await open();await click('预览 Excel 导出')
+    expect(wrapper.text()).not.toContain('待重试目标')
+    expect(wrapper.text()).not.toContain('按原目标重新预览')
+  })
+  it('shows timeout recovery and removes private retry context at a session boundary',async()=>{
+    vi.mocked(exportApi.preview).mockRejectedValue(Object.assign(new Error('timeout'),{code:'ECONNABORTED'}))
+    await open();await click('预览 Excel 导出')
+    expect(wrapper.text()).toContain('报表读取超时')
+    advanceAuthenticationGeneration();announceSessionBoundary();await flushPromises()
+    expect(wrapper.text()).not.toContain('locked-1')
+    expect(wrapper.text()).not.toContain('按原目标重新预览')
+  })
+  it('explains active-sheet printing without shrinking full evidence or auto printing',async()=>{
+    await open();await click('预览 Excel 导出')
+    expect(wrapper.text()).toContain('选择首卷“打印摘要”工作表 → A3 纸张、横向 → 打印活动工作表')
+    expect(wrapper.text()).toContain('文件默认打开“报表说明”')
+    expect(wrapper.text()).toContain('不强行缩成一页')
+  })
   it('shows elapsed preview waiting, cancels it and ignores the late response',async()=>{
     vi.useFakeTimers()
     let resolve!:(value:ReportPreview)=>void

@@ -120,3 +120,24 @@ describe('series quote export', () => {
     wrapper.unmount()
   })
 })
+
+
+it('shows all product blockers and resolves the selected product without issuing', async () => {
+  const { pinia, store, quote } = setup()
+  const products = ['q1', 'q2', 'q3'].map((id, index) => ({ quoteId: id, productName: `产品${index + 1}` })) as InternalQuoteBatchProduct[]
+  vi.spyOn(internalQuoteApi, 'listAlternatives').mockImplementation(async id => ({ items: [{ quote_id: id, scenario_name: '原方案', version_label: 'V1.0' }] } as never))
+  vi.spyOn(internalQuoteApi, 'get').mockImplementation(async id => ({ header_revision: 4, module_version: 'v4',
+    final_release_status: id === 'q1' ? 'issued' : '', formula_recalculation_required: id === 'q1',
+    readiness: { blockers: [{ section_code: 'painting', section_name: '喷油部', reason: '油漆、人工待填写' }] } } as never))
+  const output = vi.spyOn(store, 'exportSeries').mockResolvedValue(undefined)
+  const wrapper = mount(InternalQuoteSeriesExport, { props: { quote, products, hasUnsavedChanges: () => false }, global: { plugins: [pinia] } })
+  try {
+    await flushPromises()
+    expect(wrapper.findAll('.series-problems')).toHaveLength(2)
+    expect(wrapper.findAll('.series-product')[0]!.text()).toContain('已就绪')
+    await wrapper.findAll('button').find(b => b.text() === '确认输出全部 3 款')!.trigger('click')
+    expect(output).not.toHaveBeenCalled()
+    await wrapper.findAll('.series-problems button')[1]!.trigger('click')
+    expect(wrapper.emitted('resolve')).toEqual([['q3', 'painting']])
+  } finally { wrapper.unmount() }
+})

@@ -1,12 +1,22 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
 import { ArrowUpRight, Check, X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { formatBusinessDateTime } from '@/lib/dateTime'
 import { materialCategoryLabels, type FabricReceipt } from '@/api/fabricReceiving'
+import { receiptQuantity } from './receiptQuantities'
 
-defineProps<{ record: FabricReceipt }>()
+const props = defineProps<{ record: FabricReceipt }>()
+const zeroReceipt = computed(() => !props.record.operation_id && props.record.stock_posted === false && receiptQuantity(props.record.quantity) === 0n)
+const hasDifference = computed(() => !!props.record.receipt_lines?.length &&
+  [props.record.shortage_quantity, props.record.returned_to_supplier].some(value => (receiptQuantity(value ?? '') ?? 0n) > 0n))
+const summary = computed(() => [
+  ['送货量', props.record.delivered_quantity], ['实点合计', props.record.counted_quantity], ['破损合计', props.record.damaged_quantity],
+  ['拒收合计', props.record.rejected_quantity], ['其他不可用合计', props.record.other_unusable_quantity],
+  ['入库合计', props.record.accepted_quantity], ['短少', props.record.shortage_quantity], ['退供应商合计', props.record.returned_to_supplier],
+])
 const emit = defineEmits<{ close: [] }>()
 </script>
 
@@ -15,10 +25,16 @@ const emit = defineEmits<{ close: [] }>()
     <DialogPortal>
       <DialogOverlay class="receipt-detail-overlay" />
       <DialogContent class="receipt-detail-panel">
-        <header class="receipt-detail-header"><div><div class="receipt-detail-title"><DialogTitle>入库单详情</DialogTitle><span><Check :size="13" aria-hidden="true" /> {{ record.reversed ? '已冲销 · 原单保留' : '已入库' }}</span></div><DialogDescription>{{ record.operation_id ? (record.handover_document_id ? '送货单 / 扫码入库' : '手工入库') : '采购订单入库' }} · {{ record.receipt_date }}</DialogDescription></div><button type="button" class="receipt-detail-close" aria-label="关闭入库详情" @click="emit('close')"><X :size="20" aria-hidden="true" /></button></header>
+        <header class="receipt-detail-header"><div><div class="receipt-detail-title"><DialogTitle>入库单详情</DialogTitle><span :class="{ 'receipt-zero-status': zeroReceipt }"><Check v-if="!zeroReceipt" :size="13" aria-hidden="true" /> {{ record.reversed ? '已冲销 · 原单保留' : zeroReceipt ? '零入库差异单' : '已入库' }}</span></div><DialogDescription>{{ record.operation_id ? (record.handover_document_id ? '送货单 / 扫码入库' : '手工入库') : '采购订单入库' }} · {{ record.receipt_date }}</DialogDescription></div><button type="button" class="receipt-detail-close" aria-label="关闭入库详情" @click="emit('close')"><X :size="20" aria-hidden="true" /></button></header>
         <div class="receipt-detail-body">
-          <section class="receipt-detail-material"><span>{{ materialCategoryLabels[record.material_category] }} · {{ record.facts.material_code || '未填编码' }}</span><h3>{{ record.facts.material_name || '未填物料名称' }}</h3><div><p>本次实收<strong>{{ record.quantity }} <small>{{ record.unit }}</small></strong></p><p>实物明细<strong>{{ record.batches.length }} <small>项</small></strong></p></div></section>
-          <section class="receipt-detail-section"><div class="receipt-detail-section-title"><h3>实物批次明细</h3><span>保留收货时的分仓信息</span></div><div class="receipt-detail-table-scroll" tabindex="0" role="region" aria-label="入库批次明细"><table><thead><tr><th scope="col">仓位</th><th v-if="record.material_category === 'FABRIC'" scope="col">缸号 / 卷号</th><th scope="col" class="numeric">实收数量</th><th scope="col">入库时质量</th></tr></thead><tbody><tr v-for="batch in record.batches" :key="batch.id"><td><strong>{{ batch.location }}</strong></td><td v-if="record.material_category === 'FABRIC'">{{ batch.dye_lot || '—' }}<small>卷号 {{ batch.roll_no || '—' }}</small></td><td class="numeric"><strong>{{ batch.quantity }}</strong> {{ record.unit }}</td><td><span class="receipt-detail-quality">待检</span></td></tr></tbody></table></div><p class="receipt-detail-hint">这里显示入库当时的记录，后续质检与收发请在库存台账中查看。</p></section>
+          <section class="receipt-detail-material"><span>{{ materialCategoryLabels[record.material_category] }} · {{ record.facts.material_code || '未填编码' }}</span><h3>{{ record.facts.material_name || '未填物料名称' }}</h3><div><p>本次入库<strong>{{ record.quantity }} <small>{{ record.unit }}</small></strong></p><p>实物明细<strong>{{ record.receipt_lines?.length ?? record.batches.length }} <small>项</small></strong></p></div></section>
+          <p v-if="zeroReceipt" class="receipt-detail-zero" role="status">本次入库 0，全部为差异/退供应商。零入库差异单没有库存可冲销，请走差异处理。</p>
+          <section v-if="record.batches.length" class="receipt-detail-section"><div class="receipt-detail-section-title"><h3>实物批次明细</h3><span>保留收货时的分仓信息</span></div><div class="receipt-detail-table-scroll" tabindex="0" role="region" aria-label="入库批次明细"><table><thead><tr><th scope="col">仓位</th><th v-if="record.material_category === 'FABRIC'" scope="col">缸号 / 卷号</th><th scope="col" class="numeric">入库数量</th><th scope="col">入库时质量</th></tr></thead><tbody><tr v-for="batch in record.batches" :key="batch.id"><td><strong>{{ batch.location }}</strong></td><td v-if="record.material_category === 'FABRIC'">{{ batch.dye_lot || '—' }}<small>卷号 {{ batch.roll_no || '—' }}</small></td><td class="numeric"><strong>{{ batch.quantity }}</strong> {{ record.unit }}</td><td><span class="receipt-detail-quality">待检</span></td></tr></tbody></table></div><p class="receipt-detail-hint">这里显示入库当时的记录，后续质检与收发请在库存台账中查看。</p></section>
+          <section v-if="hasDifference" class="receipt-detail-section receipt-differences"><h3>本次差异</h3>
+            <dl><div v-for="[label, value] in summary" :key="label"><dt>{{ label }}</dt><dd>{{ value ?? '—' }} {{ record.unit }}</dd></div></dl>
+            <p class="receipt-detail-hint">短少按整张收货单记录；下表不可用量均已当场退供应商，不进入库存。</p>
+            <div class="receipt-detail-table-scroll" tabindex="0" role="region" aria-label="逐卷差异"><table><thead><tr><th>仓位 / 缸号 / 卷号</th><th class="numeric">实点</th><th class="numeric">破损</th><th class="numeric">拒收</th><th class="numeric">其他</th><th class="numeric">入库</th><th class="numeric">退供应商</th><th>去向</th></tr></thead><tbody><tr v-for="(line, index) in record.receipt_lines" :key="index"><td>{{ line.location }}<small v-if="record.material_category === 'FABRIC'">{{ line.dye_lot || '—' }} / {{ line.roll_no || '—' }}</small></td><td class="numeric">{{ line.counted_quantity }}</td><td class="numeric">{{ line.damaged_quantity }}</td><td class="numeric">{{ line.rejected_quantity }}</td><td class="numeric">{{ line.other_unusable_quantity }}</td><td class="numeric">{{ line.accepted_quantity }}</td><td class="numeric">{{ line.returned_to_supplier }}</td><td>{{ line.disposition === 'RETURNED_TO_SUPPLIER' ? '不可用量当场退供应商' : '可用量入库' }}</td></tr></tbody></table></div>
+          </section>
           <section class="receipt-detail-section"><h3>收货与采购来源</h3><dl><div><dt>采购单号</dt><dd>{{ record.facts.order_no || '—' }}</dd></div><div v-if="record.facts.source_category"><dt>采购类型</dt><dd>{{ record.facts.source_category === 'SUPPLEMENT' ? '补数追货' : '正常采购' }}</dd></div><div class="wide"><dt>供应商</dt><dd>{{ record.facts.supplier || '—' }}</dd></div><div><dt>送货依据</dt><dd>{{ record.delivery_reference || '—' }}</dd></div><div v-if="record.delivery_quantity"><dt>本单该采购明细到货量</dt><dd>{{ record.delivery_quantity }} {{ record.unit }}</dd></div><div><dt>记账月份</dt><dd>{{ record.accounting_month }}</dd></div><div v-if="record.facts.production_no"><dt>生产 / 放产单号</dt><dd>{{ record.facts.production_no }}</dd></div><div v-if="record.facts.contract_no"><dt>合同号</dt><dd>{{ record.facts.contract_no }}</dd></div></dl></section>
           <section class="receipt-detail-section"><h3>本次单价与金额</h3><dl><div><dt>入库单价 / 计价单位</dt><dd>{{ record.unit_price || '未记录' }} / {{ record.price_unit || '未注明' }}</dd></div><div><dt>币种</dt><dd>{{ record.currency || '未注明' }}</dd></div><div><dt>本次金额合计</dt><dd>{{ record.amount || '未记录' }} {{ record.amount ? record.currency : '' }}</dd></div><div class="wide"><dt>计算依据</dt><dd>{{ record.price_basis || '旧记录未录入本次价格，不按采购参考价补算金额' }}</dd></div></dl></section>
           <section v-if="record.difference_reason || record.note" class="receipt-detail-section"><h3>补充说明</h3><dl><div v-if="record.difference_reason" class="wide"><dt>超收说明</dt><dd>{{ record.difference_reason }}</dd></div><div v-if="record.note" class="wide"><dt>备注</dt><dd>{{ record.note }}</dd></div></dl></section>
@@ -40,4 +56,6 @@ const emit = defineEmits<{ close: [] }>()
 .receipt-detail-footer{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:16px;padding:16px 28px;border-top:1px solid #e2e8f0;background:#fff}.receipt-detail-footer a{display:flex;align-items:center;gap:5px;font-size:13px;color:#0f766e}
 .receipt-detail-panel :is(a,button,[tabindex]):focus-visible{outline:2px solid #14b8a6;outline-offset:3px}
 @media(max-width:600px){.receipt-detail-table-scroll table{min-width:0;table-layout:fixed}.receipt-detail-table-scroll th,.receipt-detail-table-scroll td{padding:10px 8px}.receipt-detail-table-scroll .numeric{white-space:normal}.receipt-detail-header{padding:20px 16px 16px}.receipt-detail-body{padding:16px}.receipt-detail-material{padding:16px}.receipt-detail-footer{padding:14px 16px}.receipt-detail-section dl{gap:14px 16px}.receipt-detail-section-title{display:block}.receipt-detail-section-title>span{display:block;margin-top:-8px;margin-bottom:12px}.receipt-detail-title h2{font-size:19px}}
+.receipt-detail-zero{padding:14px;border:1px solid #fcd34d;border-radius:8px;background:#fffbeb;color:#92400e;font-size:13px;line-height:1.8}.receipt-differences .receipt-detail-table-scroll{margin-top:12px}.receipt-differences .receipt-detail-table-scroll table{min-width:780px;table-layout:auto}
+.receipt-detail-title>.receipt-zero-status{background:#fffbeb;border-color:#fcd34d;color:#92400e}
 </style>

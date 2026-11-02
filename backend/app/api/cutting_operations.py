@@ -303,7 +303,7 @@ def payment_recover(body: pay.Recover, db: Db, user: User):
 def period_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', event_id: str | None = None):
     c.authorize(user, factory_id, 'cost_read')
     orders_ready(db)
-    result = periods.read(db, month, event_id)
+    result = periods.read(db, month, event_id, release_read_lock=True)
     db.rollback()
     return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
@@ -312,7 +312,7 @@ def period_read(month: pcs.Month, db: Db, user: User, factory_id: str = '', even
 def period_basis(month: pcs.Month, db: Db, user: User, factory_id: str = ''):
     c.authorize(user, factory_id, 'cost_read')
     orders_ready(db)
-    result = periods.prepare(db, month)
+    result = periods.prepare(db, month, release_read_lock=True)
     db.rollback()
     return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 

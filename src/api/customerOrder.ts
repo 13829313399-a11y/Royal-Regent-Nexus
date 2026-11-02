@@ -3,6 +3,7 @@ import { http } from '@/lib/http'
 import type {
   CustomerOrderImportPreview,
   CustomerOrderManualOverride,
+  WarehouseScheduleSyncResult,
 } from '@/types/customerOrder'
 
 export interface CustomerOrderHttpClient {
@@ -107,6 +108,14 @@ function responsePasswordRequired(headers: Record<string, unknown> | undefined) 
   return String(headers?.['x-workbook-password-required'] ?? '').toLowerCase() === 'true'
 }
 
+function responseWarehouseSync(headers: Record<string, unknown> | undefined): WarehouseScheduleSyncResult {
+  try {
+    const result = JSON.parse(decodeURIComponent(String(headers?.['x-warehouse-sync'] ?? ''))) as WarehouseScheduleSyncResult
+    if (['SUCCESS', 'ERROR'].includes(result.status) && typeof result.message === 'string') return result
+  } catch { /* Older servers must not be presented as a successful handoff. */ }
+  return { status: 'ERROR', message: '服务端未返回仓库同步结果，请重试同步并核对仓库排期' }
+}
+
 async function postCustomerOrderBlob(
   client: CustomerOrderHttpClient,
   url: string,
@@ -142,6 +151,20 @@ async function postCustomerOrderBlob(
 
 export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
   return {
+    async synchronizeWarehouseSchedule(
+      customerCode: string, scheduleFile: File, factoryId: string,
+      sourceKind: 'UPLOADED' | 'GENERATED', signal?: AbortSignal,
+    ) {
+      const payload = new FormData()
+      payload.append('factory_id', factoryId)
+      payload.append('source_kind', sourceKind)
+      payload.append('schedule_file', scheduleFile)
+      const response = await client.post<{ batch_id: string; duplicate: boolean; message: string }>(
+        `/customer-orders/${customerCode}/warehouse-schedule`, payload,
+        { timeout: 270_000, signal },
+      )
+      return response.data
+    },
     async previewBuzzbee(
       poFile: File,
       scheduleFile: File,
@@ -175,6 +198,7 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
         blob: response.data,
         fileName: responseFileName(response.headers, fallbackFileName),
         passwordRequired: responsePasswordRequired(response.headers),
+        warehouseSync: responseWarehouseSync(response.headers),
       }
     },
     async previewBuzzbeeBatch(
@@ -210,6 +234,7 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
         blob: response.data,
         fileName: responseFileName(response.headers, fallbackFileName),
         passwordRequired: responsePasswordRequired(response.headers),
+        warehouseSync: responseWarehouseSync(response.headers),
       }
     },
     async previewDickieBatch(
@@ -245,6 +270,7 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
         blob: response.data,
         fileName: responseFileName(response.headers, fallbackFileName),
         passwordRequired: responsePasswordRequired(response.headers),
+        warehouseSync: responseWarehouseSync(response.headers),
       }
     },
     async previewCaixingBatch(
@@ -280,6 +306,7 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
         blob: response.data,
         fileName: responseFileName(response.headers, fallbackFileName),
         passwordRequired: responsePasswordRequired(response.headers),
+        warehouseSync: responseWarehouseSync(response.headers),
       }
     },
     async previewHuaxingMappedBatch(
@@ -317,6 +344,7 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
         blob: response.data,
         fileName: responseFileName(response.headers, fallbackFileName),
         passwordRequired: responsePasswordRequired(response.headers),
+        warehouseSync: responseWarehouseSync(response.headers),
       }
     },
     async previewMappedBatch(
@@ -354,6 +382,7 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
         blob: response.data,
         fileName: responseFileName(response.headers, fallbackFileName),
         passwordRequired: responsePasswordRequired(response.headers),
+        warehouseSync: responseWarehouseSync(response.headers),
       }
     },
   }

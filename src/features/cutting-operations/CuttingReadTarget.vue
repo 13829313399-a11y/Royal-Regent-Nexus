@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Button } from '@/components/ui/button'
 const props=defineProps<{target:{month:string;id?:string;eventId?:string};label:string;retryLabel:string;disabled?:boolean;readable:boolean}>()
-const emit=defineEmits<{retry:[]}>()
+const emit=defineEmits<{retry:[event:MouseEvent]}>()
 const copying=ref(false),message=ref('')
 const identity=computed(()=>JSON.stringify([props.target.month,props.target.id,props.target.eventId,props.readable,!!props.disabled]))
 let generation=0,alive=true
@@ -37,7 +37,7 @@ async function copy(kind:'id'|'eventId'){
     <Button v-if="target.id" type="button" size="sm" variant="outline" :disabled="disabled||!readable||copying" @click="copy('id')">复制单据编号</Button>
     <span>{{target.eventId?`历史版本：${target.eventId}`:target.id?'原当前版本':'原月份记录'}}</span>
     <Button v-if="target.eventId" type="button" size="sm" variant="outline" :disabled="disabled||!readable||copying" @click="copy('eventId')">复制历史版本编号</Button>
-    <Button type="button" variant="outline" :disabled="disabled||!readable" @click="emit('retry')">{{retryLabel}}</Button>
+    <Button type="button" variant="outline" :disabled="disabled||!readable" @click="emit('retry',$event)">{{retryLabel}}</Button>
     <p v-if="message" role="status">{{message}}</p>
   </div>
 </template>

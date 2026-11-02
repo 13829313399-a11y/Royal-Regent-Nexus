@@ -103,7 +103,8 @@ def print_summary(report):
     else:
         for values in source['rows']:
             # Full vendor evidence stays in the electronic settlement summary; do not shrink it onto a cover.
-            rows.extend([[label, values[4], value] for label, value in zip(source['headers'][:-1], values[:-1])])
+            rows.extend([[label, values[4] if label == '含税应付金额' else '', value]
+                         for label, value in zip(source['headers'][:-1], values[:-1])])
     return dict(name='打印摘要', headers=['项目（引用汇总，不另累计）', '币种', '冻结值／当前余额值'], rows=rows)
 
 

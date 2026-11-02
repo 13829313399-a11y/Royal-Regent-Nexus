@@ -280,6 +280,7 @@ export interface InternalQuote {
   referenceSnapshot: Record<string, unknown>
   formulaVersion: string
   currentFormulaVersion: string
+  formulaRecalculationRequired?: boolean
   moduleVersion: string
   headerRevision: number
   versionArchived?: boolean
@@ -324,6 +325,9 @@ export interface InternalQuoteCreatePayload {
 }
 
 export interface InternalQuoteCreateProduct {
+  cloneSourceQuoteId?: string
+  cloneSourceRevision?: number
+  cloneSourceVersion?: string
   historySource?: InternalQuoteHistorySelection
   historyReferenceMode?: 'source' | 'current'
   componentSources?: Array<InternalQuoteHistorySelection | null>

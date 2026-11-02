@@ -150,6 +150,12 @@ def test_declared_free_delivery_requires_no_second_price_approval(monkeypatch):
         data = payload(client, shipment, 6)
         for line in data["lines"]:
             line.update(unit_price=0, price_action="FREE", zero_price_kind="FREE", difference_reason="")
+        response = client.get('/api/carton-supplier/internal/workspace', params={'factory_id': 'huaxing'})
+        assert response.status_code == 200, response.text
+        projected = response.json()['shipments']
+        assert projected and all(line['free_confirmed'] is True for row in projected for line in row['lines'])
+        unified = client.get('/api/carton-unified-deliveries', params={'factory_id': 'huaxing'}).json()
+        assert unified['items'] and all(line['free_confirmed'] is True for row in unified['items'] for line in row['lines'])
         post(client, shipment, data)
         assert all(row["status"] == "CONFIRMED" for row in rows(client))
         login_as(client, "carton_supervisor")

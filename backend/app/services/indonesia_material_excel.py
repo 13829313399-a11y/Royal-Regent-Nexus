@@ -14,6 +14,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 from lxml import etree as ET
 from PIL import Image
 from app.services.indonesia_material_calculations import number, decimal_text, require, precise_decimals
+from app.services.indonesia_material_identity import shipment_material_key
 
 NS = dict(s='http://schemas.openxmlformats.org/spreadsheetml/2006/main',
           r='http://schemas.openxmlformats.org/officeDocument/2006/relationships',
@@ -273,7 +274,7 @@ def build_rows(shipment):
     identity = ('specification', 'unit', 'customs_unit', 'net_weight_kg', 'export_company')
     for line in snapshots.values():
         material, supply = line['material'], line['supply']
-        code = material['code']
+        code = shipment_material_key(line)
         currency = supply['currency'].upper()
         require(supplier_currencies.setdefault(supply['supplier'], currency) == currency,
                 f'供应商 {supply["supplier"]} 本次采购币种不一致，请核对采购资料；同供应商本次只能使用一种币种', 422)
@@ -282,12 +283,12 @@ def build_rows(shipment):
         if code not in materials:
             materials[code] = dict(material=material, lines=[], packs=[], amounts={}, currency=currency)
         target = materials[code]
-        require(customs_conversion(material) == customs_conversion(target['material']), f'物料 {code} 的报关换算快照不一致，不能合并', 422)
+        require(customs_conversion(material) == customs_conversion(target['material']), f'物料 {target["material"]["name"]} 的报关换算快照不一致，不能合并', 422)
         require(all((number(material[f]) == number(target['material'][f]) if f == 'net_weight_kg'
                      else material[f] == target['material'][f]) for f in identity),
-                f'物料 {code} 的规格、单位、单重或出口公司快照不一致，请核对出货资料后再汇总', 422)
+                f'物料 {target["material"]["name"]} 的规格、单位、单重或出口公司快照不一致，请核对出货资料后再汇总', 422)
         require(target['currency'] == currency,
-                f'物料 {code} 的采购来源币种不一致，不能把不同币种合计为一行金额，请核对采购资料或本次出货范围', 422)
+                f'物料 {target["material"]["name"]} 的采购来源币种不一致，不能把不同币种合计为一行金额，请核对采购资料或本次出货范围', 422)
         normal, spare = number(line['normal_quantity']), number(line['spare_quantity'])
         basis = normal
         weight_field = 'net_weight_kg' if supply.get('billing_weight_source') == 'net_weight_kg' else 'billing_weight_kg'
@@ -299,7 +300,7 @@ def build_rows(shipment):
             basis *= weight
             expression = f'E{index}*I{index}*G{index}/H{index}'
         amount = basis * number(supply['price']) / number(supply['billing_factor'])
-        source = calc.add(dict(A='采购来源', B=code, C=supply['supplier'], D=currency, E=normal, F=spare,
+        source = calc.add(dict(A='采购来源', B=material['code'], C=supply['supplier'], D=currency, E=normal, F=spare,
                               G=number(supply['price']), H=number(supply['billing_factor']), I=weight, J=amount,
                               X=supply['purchase_date'], Z=supply['purchase_no'], AA=line['contract_no'], AB=line['item_no']), {'J': expression})
         sources[line['allocation_id']] = code
@@ -311,7 +312,7 @@ def build_rows(shipment):
         amounts = {}
         for supplier, entries in target['amounts'].items():
             amount = sum((amount for _, amount in entries), Decimal(0)).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
-            row = calc.add(dict(A='供应商物料分项', B=code, C=supplier, D=target['currency'], J=amount),
+            row = calc.add(dict(A='供应商物料分项', B=target['material']['code'], C=supplier, D=target['currency'], J=amount),
                            {'J': 'ROUND('+sum_refs([f'J{r}' for r, _ in entries])+',2)'})
             amounts[supplier] = (row, amount)
             supplier_totals.setdefault(supplier, []).append((row, amount))
@@ -344,13 +345,13 @@ def build_rows(shipment):
             target = materials[code]
             dimensions = tuple(number(group[f]) for f in ('length_cm', 'width_cm', 'height_cm'))
             require(target.setdefault('dimensions', dimensions) == dimensions,
-                    f'物料 {code} 本次纸箱长宽高不一致，请核对包装资料；同物料本次纸箱尺寸须相同', 422)
+                    f'物料 {target["material"]["name"]} 本次纸箱长宽高不一致，请核对包装资料；同物料本次纸箱尺寸须相同', 422)
             physical = entry['normal'] + entry['spare']
             net = physical * number(target['material']['net_weight_kg'])
             carton = number(group['carton_weight_kg']) * group['cartons'] * net / weight_sum
             index = len(calc.data) + 1
             per_box = (net+carton)/group['cartons']
-            detail = calc.add(dict(A='箱内物料', B=code, C=group['label'], E=entry['normal'], F=entry['spare'],
+            detail = calc.add(dict(A='箱内物料', B=target['material']['code'], C=group['label'], E=entry['normal'], F=entry['spare'],
                                    K=group['cartons'], L=net, M=carton, N=(net+carton)/group['cartons'], T=physical,
                                    U=number(target['material']['net_weight_kg']),
                                    Y=f'{group["cartons"]}箱×{format(per_box.quantize(Decimal(".000001"), rounding=ROUND_HALF_UP), ".6f")} kg'),
@@ -371,7 +372,7 @@ def build_rows(shipment):
         first = len(result)
         for code in component['codes']:
             target = materials[code]; material = target['material']; packs = target['packs']; lines = target['lines']
-            require(packs, f'物料 {code} 没有包装明细', 422)
+            require(packs, f'物料 {target["material"]["name"]} 没有包装明细', 422)
             normal = sum((number(line['normal_quantity']) for line in lines), Decimal(0))
             spare = sum((number(line['spare_quantity']) for line in lines), Decimal(0))
             physical = normal + spare
@@ -394,7 +395,7 @@ def build_rows(shipment):
                           AR=material['export_company'], AS='華登製品實業有限公司' if shipment['recipient'] == 'RRI' else '華登(全球)有限公司',
                           AU='＋'.join(f'{count}箱×{decimal_text(loading.normalize())}' for loading, count in loadings.items()),
                           AV=unique_text(p['group']['pallet'] for p in packs),
-                          AW=target['dimensions'][0], AX=target['dimensions'][1], AY=target['dimensions'][2], AZ=code,
+                          AW=target['dimensions'][0], AX=target['dimensions'][1], AY=target['dimensions'][2], AZ=material['code'],
                           BA=material['department'], BC=(net+carton)/physical, BD=number(material['net_weight_kg']),
                           BE='；'.join(value for value in [f'备品 {decimal_text(spare)} {material["unit"]}，免费' if spare else '',
                               f'采购币种 {target["currency"]}', '合同 '+unique_text(line['contract_no'] for line in lines),

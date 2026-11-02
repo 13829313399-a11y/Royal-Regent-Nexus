@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from app.models.carton_procurement import CartonAuditEvent, CartonOrder
 from app.services import carton_procurement as core
+from app.services.carton_order_projection import order_page_out
 from app.services.identity_policy import lock_mutation
 from app.services.carton_customer_assignment import ensure_customer_operation
 
@@ -48,12 +49,13 @@ def create(db, payload, user, *, refresh_user, authorize):
             row.order.due_date = core.derive_carton_plan_due_date(row.order.order_date, row.order.customer_due_date, rules["lead_days"])
             order = core.create_order(db, row.order, user, commit=False)
             core._require_order_complete(db, order)
-            results.append(core.order_out(db, order).model_dump(mode="json"))
+            results.append(order)
             # Written within the same transaction, retaining each PO/style/source.
             core._audit(db, user, payload.factory_id, "ORDER_GROUP_SOURCE_LINKED", "carton_order", order.id,
                 {"group_request_id": payload.request_id, "group_name": payload.name,
                  "row_id": row.row_id, "source": row.source, "customer_po": order.customer_po})
             db.flush()
+        results = [result.model_dump(mode="json") for result in order_page_out(db, results)]
         event = core._audit(db, user, payload.factory_id, "ORDER_GROUP_CREATED", "carton_order_group",
             payload.request_id, {"fingerprint": fingerprint, "name": payload.name, "orders": results,
                 "sources": [{"row_id": row.row_id, "source": row.source} for row in payload.rows]})

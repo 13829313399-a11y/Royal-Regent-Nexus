@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { closingPresentationKey, type ClosingReadLocation } from './closingPresentation'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink, useRoute } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
+import StatusPill from '@/components/common/StatusPill.vue'
 import { Button } from '@/components/ui/button'
 import { cuttingApi, errorMessage, type Access } from './api'
 import { CUTTING_FACTORY } from './navigation'
@@ -13,7 +15,9 @@ import { periodMatches, periodOrderLabel } from './periodDisplay'
 import { cuttingDestination } from './location'
 
 const props=defineProps<{access?:Access;accessLoading?:boolean;accessUnavailable?:boolean;navigationContext?:number}>()
-const emit=defineEmits<{restored:[month:string,context:number|undefined]}>()
+const presentation=inject(closingPresentationKey,()=>false)
+const formId=`cutting-period-${useId()}`
+const emit=defineEmits<{restored:[month:string,context:number|undefined];located:[location:ClosingReadLocation,context:number|undefined]}>()
 const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit'}).format(new Date())
 const [year,number]=today.split('-').map(Number)
 const lastMonth=`${number===1?year!-1:year}-${String(number===1?12:number!-1).padStart(2,'0')}`
@@ -26,6 +30,10 @@ const labels:Record<PeriodState,string>={open:'未编制',draft:'草稿',submitt
 let generation=0,alive=true
 const readable=computed(()=>!!rights.value?.enabled&&!!rights.value?.periods_schema_ready&&rights.value.permissions.includes('cost_read'))
 const historical=computed(()=>!!record.value?.history.length&&record.value.event_id!==record.value.history.at(-1)?.id)
+const selectedVersion=computed(()=>record.value?.history.find(e=>e.id===record.value?.event_id)?.version)
+const validity=computed(()=>record.value?.selected_state==='locked'?(historical.value||record.value.state!=='locked'?'历史已失效冻结版本，仅供追溯':'当前有效冻结版本'):historical.value?'历史编制版本，仅供追溯':'当前编制版本，尚未锁月')
+function getLocation():ClosingReadLocation{return {month:month.value,eventId:record.value?.event_id??failedRead.value?.eventId}}
+function showRecord(value:PeriodRecord,context=props.navigationContext){record.value=value;emit('located',{month:month.value,eventId:value.event_id??undefined},context)}
 const can=(action:string)=>readable.value&&!!rights.value?.permissions.includes(action)
 function issueLink(item:PeriodIssue){return cuttingDestination(item.line_id!,month.value,item.workspace??(item.code==='price'?'costs':'materials'),item.document_id?'report':item.issue_id?'issue':item.task_id?'task':undefined,item.document_id||item.issue_id||item.task_id)}
 function clearEvidence(){record.value=undefined;basis.value=undefined;failedRead.value=undefined}
@@ -48,6 +56,7 @@ const inputFingerprint=()=>JSON.stringify([month.value,draft.value,reason.value]
 let approvedNavigation:{path:string;inputs:string}|undefined
 onBeforeRouteUpdate(to=>{
   approvedNavigation=undefined
+  if(presentation(to.fullPath))return true
   if(!canLeave())return false
   approvedNavigation={path:to.fullPath,inputs:inputFingerprint()}
   return true
@@ -64,13 +73,14 @@ async function fresh(ticket=generation){const access=await cuttingApi.access();i
 function failed(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status?:number}}).response?.status;if(status===401||status===403){rights.value=undefined;clearEvidence()}return status}
 async function load(eventId?:string,targetMonth=month.value,onRead?:()=>void){
   if(!canLeave())return
-  const target={month:targetMonth,eventId}
+  const target={month:targetMonth,eventId},context=props.navigationContext
   discardInputs();clearEvidence();month.value=targetMonth;error.value='';notice.value='';failedRead.value=target;busy.value=true;const ticket=++generation
-  try{if(!await fresh(ticket))return;const result=await periodApi.read(target.month,target.eventId);if(alive&&ticket===generation){record.value=result;failedRead.value=undefined;onRead?.()}}
+  try{if(!await fresh(ticket))return;const result=await periodApi.read(target.month,target.eventId);if(alive&&ticket===generation){showRecord(result,context);failedRead.value=undefined;onRead?.()}}
   catch(e){if(alive&&ticket===generation){const status=failed(e);if(status!==401&&status!==403)failedRead.value=target}}
   finally{if(alive&&ticket===generation)busy.value=false}
 }
 function retryRead(){const target=failedRead.value,context=props.navigationContext;if(target)void load(target.eventId,target.month,()=>emit('restored',target.month,context))}
+function refreshSelected(){const selected=record.value;if(selected?.event_id)void load(selected.event_id,selected.month)}
 async function openPeriod(targetMonth:string,eventId?:string){
   if(!canLeave())return false
   discardInputs();month.value=targetMonth
@@ -82,7 +92,7 @@ function activateMonth(target:string){
   if(draft.value||pending.value||busy.value||failedRead.value||reason.value.trim()){notice.value=`当前 ${month.value} 的填写、读取目标或操作结果已保留；总览月份为 ${target}，请先处理当前内容再切换期间。放弃原读取目标时，请在本区明确选择月份。`;return}
   month.value=target;generation++;clearEvidence()
 }
-defineExpose({openPeriod,activateMonth})
+defineExpose({openPeriod,activateMonth,getLocation})
 async function edit(){
   if(busy.value||pending.value||historical.value)return
   failedRead.value=undefined
@@ -108,7 +118,7 @@ async function execute(action:PeriodAction){
     pending.value={action,body:JSON.parse(JSON.stringify(body))}
   }
   busy.value=true;error.value='';const ticket=++generation
-  try{if(!await fresh(ticket))return;await periodApi.write(pending.value.action,pending.value.body);if(!alive||ticket!==generation)return;pending.value=undefined;draft.value=undefined;basis.value=undefined;reason.value='';clearEvidence();const value=await periodApi.read(month.value);if(alive&&ticket===generation){record.value=value;notice.value='月结操作已生效。'}}
+  try{if(!await fresh(ticket))return;await periodApi.write(pending.value.action,pending.value.body);if(!alive||ticket!==generation)return;pending.value=undefined;draft.value=undefined;basis.value=undefined;reason.value='';clearEvidence();const value=await periodApi.read(month.value);if(alive&&ticket===generation){showRecord(value);notice.value='月结操作已生效。'}}
   catch(e){if(alive&&ticket===generation){const status=failed(e);if(status&&status>=400&&status<500&&status!==401&&status!==408)pending.value=undefined}}
   finally{if(alive)busy.value=false}
 }
@@ -116,7 +126,7 @@ async function recover(){
   if(!pending.value||busy.value)return;busy.value=true;error.value='';const ticket=++generation
   try{const result=await periodApi.recover(pending.value.action,pending.value.body);if(!alive||ticket!==generation)return;pending.value=undefined
     if(result.state==='committed'){discardInputs();notice.value='原操作已成功，已读取结果。'}else{if(draft.value)draft.value.operation_id=crypto.randomUUID();notice.value='原操作已确认未执行并停止，填写保留。'}
-    if(await fresh(ticket)){const value=await periodApi.read(month.value);if(alive&&ticket===generation)record.value=value}
+    if(await fresh(ticket)){const value=await periodApi.read(month.value);if(alive&&ticket===generation)showRecord(value)}
   }catch(e){if(alive&&ticket===generation)failed(e)}finally{if(alive)busy.value=false}
 }
 function changeMonth(event:Event){const input=event.target as HTMLInputElement;if(input.value===month.value)return;if(!canLeave()){input.value=month.value;return}discardInputs();month.value=input.value;generation++;clearEvidence()}
@@ -132,18 +142,20 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
     <p v-else-if="!access.permissions.includes('cost_read')">内部月结含材料费用，需单独授予成本查询权限。</p>
     <template v-else>
       <CuttingReadTarget v-if="failedRead" :target="failedRead" label="内部月结" retry-label="重试原月结记录" :disabled="busy||!!pending" :readable="readable" @retry="retryRead" />
-      <div class="order-toolbar"><label>月结月份<input type="month" min="2000-01" :max="lastMonth" :value="month" :disabled="busy||!!pending||!!draft" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取月结记录</Button></div>
+      <div class="order-toolbar"><label :for="`${formId}-month`">月结月份<input :id="`${formId}-month`" name="month" type="month" min="2000-01" :max="lastMonth" :value="month" :disabled="busy||!!pending||!!draft" @change="changeMonth" /></label><Button variant="outline" :disabled="busy||!!pending||!month" @click="load()">读取当前最新版</Button><Button variant="outline" :disabled="busy||!!pending||!record?.event_id" @click="refreshSelected">刷新所选版本</Button></div>
+      <p class="cutting-muted">读取当前最新版会切换到输入月份的最新记录；刷新所选版本保留已选月份和版本。两项操作均只读取，不保存或重算冻结金额。</p>
       <template v-if="readable">
         <div v-if="draft&&!basis&&!pending" class="cutting-master-actions"><p>填写数量已保留，请重新读取依据后继续。</p><Button :disabled="busy||!can('period_prepare')" @click="edit">恢复填写并重新核对</Button><Button variant="outline" :disabled="busy" @click="discard">放弃填写</Button></div>
         <p v-if="record">{{month}} · {{labels[record.state]}} <span v-if="historical">· 当前查看历史版本（{{labels[record.selected_state]}}）</span></p>
+        <p v-if="record&&selectedVersion!==undefined">所选版本 V{{selectedVersion}} · 当前最新版本 V{{record.history.at(-1)?.version}} <StatusPill :label="validity" compact /></p>
         <p v-if="record?.locked_months.length">已锁月份：{{record.locked_months.join('、')}}</p>
         <p v-if="record?.first_month">首次月结：{{record.first_month}} · 下个应办理月份：{{record.next_month}}</p>
         <p v-if="record?.pending_reclose?.length">待重结月份：{{record.pending_reclose.join('、')}}</p>
         <p v-if="record?.sequence_repair" class="cutting-error">历史锁月顺序存在缺口，请先从最近已锁月逐月反结，再顺序重结。</p>
-        <div v-if="basis||record?.data" class="order-toolbar"><label>明细筛选：客户／订单号／货号／货名<input v-model="detailQuery" type="search" placeholder="输入关键字筛选明细" /></label><p>筛选仅影响明细显示；整月汇总、版本金额差异和保存范围均不缩减。</p></div>
+        <div v-if="basis||record?.data" class="order-toolbar"><label :for="`${formId}-detail_q`">明细筛选：客户／订单号／货号／货名<input :id="`${formId}-detail_q`" name="detail_q" v-model="detailQuery" type="search" placeholder="输入关键字筛选明细" /></label><p>筛选仅影响明细显示；整月汇总、版本金额差异和保存范围均不缩减。</p></div>
         <div v-if="record&&!historical&&!pending&&!draft" class="cutting-master-actions">
           <Button v-if="can('period_prepare')&&['open','draft','returned','reopened'].includes(record.state)" :disabled="busy" @click="edit">编制／重新核对月结</Button>
-          <label>操作原因／复核依据<input v-model="reason" maxlength="500" :disabled="busy" /></label>
+          <label :for="`${formId}-reason`">操作原因／复核依据<input :id="`${formId}-reason`" name="reason" v-model="reason" maxlength="500" :disabled="busy" /></label>
           <Button v-if="can('period_prepare')&&['draft','returned'].includes(record.state)" :disabled="busy" @click="execute('submit')">提交会计复核</Button>
           <Button v-if="can('period_lock')&&record.state==='submitted'" :disabled="busy" @click="execute('lock')">复核并锁月</Button>
           <Button v-if="can('period_lock')&&record.state==='submitted'" variant="outline" :disabled="busy" @click="execute('return')">退回主管</Button>
@@ -154,15 +166,15 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
           <p v-for="(item,index) in basis.blockers" :key="index" class="cutting-error">{{item.message}} <RouterLink v-if="item.line_id" :to="issueLink(item)">定位当前处理记录</RouterLink></p>
           <p v-for="(item,index) in basis.notices" :key="`notice-${index}`">待核对：{{item.message}} <RouterLink v-if="item.line_id" :to="issueLink(item)">定位当前处理记录</RouterLink></p>
           <div class="cutting-table-scroll" role="region" aria-label="月末耗用归集" tabindex="0"><table><thead><tr><th>原实发／任务／物料</th><th>单位</th><th>期初／期末正常耗用</th><th>期初／期末合格套数</th><th>期初完工耗用归属</th><th>期末累计完工耗用归属</th></tr></thead><tbody>
-            <tr v-for="(row,index) in basis.rows" v-show="periodMatches(basis.orders??[],row.line_id,detailQuery)" :key="row.issue_id"><td>{{periodOrderLabel(basis.orders??[],row.line_id)}}<br />{{row.issue_id}}<br />{{row.context.task_name}} · {{row.context.resource_name}}<br />{{row.context.item_name}}</td><td>{{row.context.unit}}</td><td>{{row.opening_normal_quantity}} / {{row.ending_normal_quantity}}</td><td>{{row.opening_sets??'待核对'}} / {{row.ending_sets??'待核对'}}</td><td><input v-model="draft.allocations[index]!.opening_completed_quantity" type="number" min="0" step="0.000001" required :disabled="busy||!!pending||row.carried_completed_quantity!==null" /></td><td><input v-model="draft.allocations[index]!.completed_quantity" type="number" min="0" step="0.000001" required :disabled="busy||!!pending" /></td></tr>
+            <tr v-for="(row,index) in basis.rows" v-show="periodMatches(basis.orders??[],row.line_id,detailQuery)" :key="row.issue_id"><td>{{periodOrderLabel(basis.orders??[],row.line_id)}}<br />{{row.issue_id}}<br />{{row.context.task_name}} · {{row.context.resource_name}}<br />{{row.context.item_name}}</td><td>{{row.context.unit}}</td><td>{{row.opening_normal_quantity}} / {{row.ending_normal_quantity}}</td><td>{{row.opening_sets??'待核对'}} / {{row.ending_sets??'待核对'}}</td><td><input :id="`${formId}-opening_completed_quantity-${encodeURIComponent(row.issue_id)}`" name="opening_completed_quantity" v-model="draft.allocations[index]!.opening_completed_quantity" :aria-label="`期初归属完工量 ${row.issue_id}`" type="number" min="0" step="0.000001" required :disabled="busy||!!pending||row.carried_completed_quantity!==null" /></td><td><input :id="`${formId}-completed_quantity-${encodeURIComponent(row.issue_id)}`" name="completed_quantity" v-model="draft.allocations[index]!.completed_quantity" :aria-label="`月末归属完工量 ${row.issue_id}`" type="number" min="0" step="0.000001" required :disabled="busy||!!pending" /></td></tr>
           </tbody></table></div>
           <fieldset :disabled="busy||!!pending" class="period-declarations">
-            <label><input v-model="draft.materials_complete" type="checkbox" />全部物料耗用已核对完整</label>
-            <label><input v-model="draft.public_material_pending" type="checkbox" />仍有公共耗料待分配核对</label>
-            <label><input v-model="draft.opening_verified" type="checkbox" />期初数量、完工／在制归属及依据已核实</label>
-            <label><input v-model="draft.unrecorded_opening" type="checkbox" />仍有系统外期初库存或在制未补齐依据</label>
-            <label><input v-model="draft.exceptions_reviewed" type="checkbox" />已核对本期异常与跨月未完成事项</label>
-            <label>编制依据／异常处理说明<textarea v-model="draft.reason" required maxlength="500" /></label>
+            <label :for="`${formId}-materials_complete`"><input :id="`${formId}-materials_complete`" name="materials_complete" v-model="draft.materials_complete" type="checkbox" />全部物料耗用已核对完整</label>
+            <label :for="`${formId}-public_material_pending`"><input :id="`${formId}-public_material_pending`" name="public_material_pending" v-model="draft.public_material_pending" type="checkbox" />仍有公共耗料待分配核对</label>
+            <label :for="`${formId}-opening_verified`"><input :id="`${formId}-opening_verified`" name="opening_verified" v-model="draft.opening_verified" type="checkbox" />期初数量、完工／在制归属及依据已核实</label>
+            <label :for="`${formId}-unrecorded_opening`"><input :id="`${formId}-unrecorded_opening`" name="unrecorded_opening" v-model="draft.unrecorded_opening" type="checkbox" />仍有系统外期初库存或在制未补齐依据</label>
+            <label :for="`${formId}-exceptions_reviewed`"><input :id="`${formId}-exceptions_reviewed`" name="exceptions_reviewed" v-model="draft.exceptions_reviewed" type="checkbox" />已核对本期异常与跨月未完成事项</label>
+            <label :for="`${formId}-draft_reason`">编制依据／异常处理说明<textarea :id="`${formId}-draft_reason`" name="draft_reason" v-model="draft.reason" required maxlength="500" /></label>
           </fieldset>
           <div class="cutting-master-actions"><Button type="submit" :disabled="busy||!!pending">保存月结草稿</Button><Button type="button" variant="outline" :disabled="busy||!!pending" @click="edit">保留数量，刷新依据</Button><Button type="button" variant="outline" :disabled="busy||!!pending" @click="discard">放弃填写</Button></div>
         </form>
@@ -173,7 +185,7 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
           <p v-for="(item,index) in record.data.snapshot.blockers" :key="index" class="cutting-error">待处理：{{item.message}}</p>
           <p v-for="(item,index) in record.data.snapshot.notices.filter(item=>item.code!=='period_wip_unconfirmed')" :key="`stored-notice-${index}`">本版本核对事项：{{item.message}} <RouterLink v-if="item.line_id" :to="issueLink(item)">查看当前处理记录</RouterLink></p>
           <details><summary>本版本编制声明与复核依据</summary><p>物料已核全：{{record.data.input.materials_complete?'是':'否'}}；公共耗料待核：{{record.data.input.public_material_pending?'是':'否'}}；期初已核实：{{record.data.input.opening_verified?'是':'否'}}；系统外期初未补齐：{{record.data.input.unrecorded_opening?'是':'否'}}；异常已核对：{{record.data.input.exceptions_reviewed?'是':'否'}}</p><p>编制依据：{{record.data.input.reason}}</p></details>
-          <div class="cutting-table-scroll" role="region" aria-label="内部月结材料费用" tabindex="0"><table><thead><tr><th>币种</th><th>期初在制</th><th>本期正常费用</th><th>本期转完工费用</th><th>期末在制</th><th>本期损耗</th><th>期末现场余料金额</th></tr></thead><tbody><tr v-for="(cost,currency) in record.data.snapshot.costs" :key="currency"><td>{{currency}}</td><td>{{cost.opening_wip}}</td><td>{{cost.period_normal}}</td><td>{{cost.period_completed}}</td><td>{{cost.ending_wip}}</td><td>{{cost.period_loss}}</td><td>{{cost.ending_custody}}</td></tr></tbody></table></div>
+          <div class="cutting-table-scroll" role="region" aria-label="内部月结材料费用" tabindex="0"><table><thead><tr><th>币种</th><th>期初在制</th><th>本期正常费用</th><th>本期转完工费用</th><th>期末在制</th><th>本期损耗</th><th>期末现场余料金额</th></tr></thead><tbody><tr v-for="(cost,currency) in record.data.snapshot.costs" :key="currency"><td class="period-code">{{currency}}</td><td>{{cost.opening_wip}}</td><td>{{cost.period_normal}}</td><td>{{cost.period_completed}}</td><td>{{cost.ending_wip}}</td><td>{{cost.period_loss}}</td><td>{{cost.ending_custody}}</td></tr></tbody></table></div>
           <CuttingPeriodReview :snapshot="record.data.snapshot" :comparison="record.comparison" :query="detailQuery" />
         </template>
         <details v-if="record?.history.length"><summary>编制、提交、锁月与反结历史</summary><p v-for="event in record.history" :key="event.id">V{{event.version}} · {{actionLabels[event.action]}} · {{event.actor}} · {{event.date}} · {{event.reason}} <Button variant="outline" size="sm" :disabled="busy||!!pending" @click="load(event.id)">查看此版本</Button></p><Button variant="outline" :disabled="busy||!!pending" @click="load()">返回当前版本</Button></details>
@@ -182,4 +194,4 @@ function discard(){if(pending.value||busy.value)return;if(window.confirm('放弃
   </SectionPanel>
 </template>
 
-<style scoped>.period-declarations{display:grid;gap:12px;margin:16px 0;border:0;padding:0}.period-declarations label{display:flex;align-items:center;gap:8px}.period-declarations input[type=checkbox]{width:auto}</style>
+<style scoped>.period-declarations{display:grid;gap:12px;margin:16px 0;border:0;padding:0}.period-declarations label{display:flex;align-items:center;gap:8px}.period-declarations input[type=checkbox]{width:auto}.cutting-table-scroll td.period-code{min-width:5rem;white-space:nowrap;overflow-wrap:normal;word-break:normal}</style>

@@ -34,7 +34,7 @@ export function scheduleOrderReminder(source: CartonImportPreviewRow, options: {
   identityReview?: boolean
 }): ScheduleOrderReminder | null {
   if (source.schedule_section && source.schedule_section !== 'PENDING') return null
-  if (source.template === 'unified-item' && !['正单', '加单', '正式PO'].includes(source.order_type?.trim() ?? '')) return null
+  if (source.template === 'unified-item' && !['正单', '加单', '改单', '正式PO'].includes(source.order_type?.trim() ?? '')) return null
   const result = (state: ScheduleOrderReminder['state'], label: string, tone: CartonTone, detail: string): ScheduleOrderReminder =>
     ({ state, label, tone, detail, attention: state !== 'WAIT' && state !== 'ORDERED', deadline: '', arrivalDate: '', days: null })
   if (options.orderCount > 1 || options.identityReview || source.match_status === 'AMBIGUOUS')

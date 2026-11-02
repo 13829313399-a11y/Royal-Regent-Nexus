@@ -1,0 +1,4 @@
+{
+  "FABRIC": ["码", "米", "yd", "yds", "yard", "yards", "m", "meter", "meters", "metre", "metres"],
+  "ACCESSORY": ["pcs", "pc", "piece", "pieces", "个", "件", "只", "粒", "套", "卷", "roll", "rolls"]
+}

@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from zipfile import ZipFile, BadZipFile
 
 from app.schemas.material_handover import HandoverData, HandoverLine
+from app.services.material_category_suggestion import suggest_material_category
 from app.services.document_tools.document_ir import DocumentIR, Cell, Table, SourceAnchor, Block, ToolError
 
 MAX_BYTES = 20 * 1024 * 1024
@@ -32,10 +33,28 @@ ALIASES = {
     'price_note': ('单价依据', '价格说明', 'pricenote'),
 }
 UNIT_ALIASES = {'y': '码', 'yd': '码', 'yds': '码', 'yard': '码', 'yards': '码', 'kg': '千克', 'kgs': '千克', 'pcs': 'Pcs', 'pc': 'Pcs', 'm': '米'}
+SUMMARY_LABELS = {
+    '合计', '总计', '小计', '合计数量', '总计数量', '小计数量', '数量合计', '数量总计', '数量小计',
+    '本页合计', '本页小计', '累计数量', 'total', 'subtotal', 'grandtotal', 'totalquantity', 'totalqty',
+}
+FOOTER_LABEL = re.compile(
+    r'^(?:备注|備註|说明|說明|送货人|送貨人|收货人|收貨人|主管|制单人|製單人|开单员|開單員|'
+    r'审核人|審核人|签收人|簽收人|签收日期|簽收日期|签收备注|簽收備註|'
+    r'测试样本|測試樣本|remarks?|notes?|delivered\s+by|received\s+by|prepared\s+by|checked\s+by)\s*:', re.I)
 
 
 def normalized(value):
     return re.sub(r'[^A-Za-z0-9\u4e00-\u9fff]', '', unicodedata.normalize('NFKC', str(value or ''))).lower()
+
+
+def non_material_row(raw):
+    # Only exclude explicit labels across all populated identity fields. A real
+    # code/name or an incomplete material row must still be kept for review.
+    identities = [raw[field] for field in ('item_code', 'item_name') if raw.get(field)]
+    return bool(identities) and all(
+        normalized(value) in SUMMARY_LABELS or FOOTER_LABEL.match(unicodedata.normalize('NFKC', value).strip())
+        for value in identities
+    )
 
 
 def numeric(value):
@@ -133,11 +152,26 @@ def extract_ir(name, content, folder):
     from app.services.document_tools.office_engine import _extract_xlsx, _extract_docx
     if suffix == '.xlsx':
         from openpyxl import load_workbook
+        def _sheet_cell_count(sheet):
+            if sheet.max_row is not None and sheet.max_column is not None:
+                return sheet.max_row * sheet.max_column
+            # Some producers omit the sheet dimension; read-only sheets then
+            # report None. Measure rows without assuming even one cell exists,
+            # stopping as soon as the original worksheet limit is exceeded.
+            max_row = max_col = 0
+            for max_row, row in enumerate(sheet.iter_rows(), 1):
+                max_col = max(max_col, len(row))
+                if max_row * max_col > 50000:
+                    raise ToolError('TABLE_SIZE', '工作表太大，请拆分后上传')
+            return max_row * max_col
+
         with path.open('rb') as stream:
             book = load_workbook(stream, read_only=True, keep_links=False)
-            if sum(s.max_row * s.max_column for s in book) > 50000:
-                raise ToolError('TABLE_SIZE', '工作表太大，请拆分后上传')
-            book.close()
+            try:
+                if sum(_sheet_cell_count(sheet) for sheet in book.worksheets) > 50000:
+                    raise ToolError('TABLE_SIZE', '工作表太大，请拆分后上传')
+            finally:
+                book.close()
         return _extract_xlsx(path, {}, lambda *args: None, lambda: False)
     return _extract_docx(path, {}, lambda *args: None, lambda: False)
 
@@ -221,7 +255,10 @@ def map_ir(ir):
                     anchors[field] = {'raw': cell.raw_text[:2000], 'display': cell.display_text[:2000], 'source': cell.source.model_dump(), 'resolution': cell.resolution}
             if not raw.get('item_code') and not raw.get('item_name'):
                 continue
-            if normalized(raw.get('item_name')) in {'合计', '总计', '小计', '物料名称', '材料名称'}:
+            if non_material_row(raw):
+                warnings.append('合计、备注或签收等非物料行已保留在识别原文，未计入物料明细。')
+                continue
+            if normalized(raw.get('item_name')) in {'物料名称', '材料名称'}:
                 continue
             if not raw.get('item_code'):
                 found = re.search(r'(?<!\d)\d{2}(?:-\d{2}){1,3}-\d{4,6}(?!\d)', raw.get('item_name', ''))
@@ -274,6 +311,7 @@ def map_ir(ir):
                 warnings.append(f'第 {len(lines)+1} 行逐卷数量合计与单据总数不同，请核对原件和未辨认的卷数。')
             if not row.item_code or not row.item_name or not row.quantity or not row.unit:
                 warnings.append(f'第 {len(lines)+1} 行缺少清楚的物料编码、名称、数量或单位，请补充核对。')
+            row.material_category = suggest_material_category(row.unit)
             lines.append(row); evidence[identifier] = anchors
             if len(lines) > 200:
                 raise ToolError('TOO_MANY_LINES', '单据超过 200 行，请拆分后上传')

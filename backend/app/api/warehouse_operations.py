@@ -11,6 +11,7 @@ from app.services import warehouse_locations
 from app.services import warehouse_operations as service
 from app.schemas.fabric_inventory_setup import CountCreate, CountAction
 from app.services import fabric_inventory_setup as setup
+from app.services import fabric_legacy_stock
 
 router = APIRouter(prefix='/api/warehouse-operations', tags=['warehouse-operations'])
 Warehouse = Literal['fabric', 'semi']
@@ -64,6 +65,16 @@ def setup_access(actor, factory_id, action='read'):
     if not permissions['read'] or not permissions[action]:
         raise HTTPException(403, '无布料仓本项权限；期初和盘点入账需要库存更正权限')
     return permissions
+
+
+@router.post('/fabric/legacy-stock/preview')
+def legacy_stock_preview(factory_id: str = Form(...), file: UploadFile = File(...),
+                         db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    if not capabilities(actor, 'fabric', factory_id)['read']:
+        raise HTTPException(403, '无布料仓收发查询权限，无法预检旧库存表')
+    from fastapi.responses import JSONResponse
+    return JSONResponse(fabric_legacy_stock.preview(db, file.filename or '', file.file.read(fabric_legacy_stock.MAX_BYTES + 1)),
+                        headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/fabric/inventory-setup')

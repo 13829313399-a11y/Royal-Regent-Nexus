@@ -70,7 +70,7 @@ def project(db, user, factory, identifier, *, external=False, read_only_all=Fals
             original = original_by_id.get(line["id"])
             if original is not None:
                 line.update(delivery_unit_price=original.get("delivery_unit_price"),
-                    free_confirmed=bool(original.get("free_confirmed")), currency=original.get("currency", "CNY"),
+                    free_confirmed=original.get("free_confirmed") is True or original.get("pricing_kind") == "FREE", currency=original.get("currency", "CNY"),
                     source_origin=original.get("source_origin"), warehouse_unit_price=original.get("warehouse_unit_price"))
             papers.append(dict(line, source_kind="FORMAL", formal_shipment_id=formal.id))
         receipts.extend(batch for batch in formal_out.get("acceptance_history", []) if batch.get("receipt_id"))
@@ -124,7 +124,11 @@ def project(db, user, factory, identifier, *, external=False, read_only_all=Fals
     reopen_history = [dict(json.loads(event.detail_json), created_at=event.created_at) for kind, ids in [
         ("supplier_shipment", [formal.id] if formal else []), ("carton_special_shipment", [item.id for item in shipments])]
         for event in reopen_events(db, factory, kind, ids)]
+    imported = db.scalar(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
+        CartonAuditEvent.entity_id == identifier, CartonAuditEvent.event_type == 'SUPPLIER_DELIVERY_IMPORTED'))
+    source_file = json.loads(imported.detail_json).get('source_file', {}) if imported else {}
     return {"id": identifier, "factory_id": factory, "delivery_note_no": note, "delivery_date": day, "created_at": created,
+        "source_filename": source_file.get('filename', ''), "source_sha256": source_file.get('sha256', ''),
         "formal": formal_out, "special": output, "lines": papers, "receipts": receipts,
         "requires_correction": correction, "can_operate": external or not formal or portal.visible_shipment(db, user, formal),
         "status": status, "shortfall_reopen_history": reopen_history,
@@ -225,11 +229,14 @@ def extra_request(db, user, factory, supplier_id, item, date):
     return row, line
 
 
-def dispatch(db, user, payload):
+def dispatch(db, user, payload, *, commit=True, source=None, unmatched_lines=None):
     try:
         user = special.locked_actor(db, user, payload.factory_id)
         vendor = special.supplier(db, user, payload.factory_id, "carton_supplier:edit")
         digest = portal.fingerprint(payload)
+        if source:
+            digest = hashlib.sha256((digest + special.pack(dict(source_file=source,
+                unmatched_lines=[line.model_dump(mode='json') for line in unmatched_lines or []]))).encode()).hexdigest()
         old = db.scalar(select(UnifiedDelivery).where(UnifiedDelivery.factory_id == payload.factory_id,
             UnifiedDelivery.created_by == user.id, UnifiedDelivery.request_key == payload.request_id))
         if old:
@@ -242,10 +249,11 @@ def dispatch(db, user, payload):
                 model.delivery_note_no == payload.delivery_note_no)):
                 raise HTTPException(409, "供应商原送货单号已登记，请核对原单")
         formal_id, special_ids = "", []
-        if payload.formal_lines:
+        if payload.formal_lines or unmatched_lines:
             result = portal.create_shipment(db, user, ps.ShipmentCreate(factory_id=payload.factory_id,
                 request_id=child_key(payload.request_id, "FORMAL"), delivery_note_no=payload.delivery_note_no,
-                delivery_date=payload.delivery_date, lines=payload.formal_lines), commit=False)
+                delivery_date=payload.delivery_date, lines=payload.formal_lines,
+                unmatched_lines=unmatched_lines or []), commit=False, source=source)
             formal_id = result["id"]
         entries = [(item.id, item.expected_revision, item.version_id, item.lines) for item in payload.special_requests]
         for item in payload.extra_lines:
@@ -256,15 +264,19 @@ def dispatch(db, user, payload):
             result = special.ship(db, user, identifier, ss.Ship(factory_id=payload.factory_id,
                 request_id=child_key(payload.request_id, identifier), expected_revision=revision, version_id=version,
                 delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date, lines=lines),
-                commit=False, allow_shared_note=True)
+                commit=False, allow_shared_note=True, source=source)
             special_ids.append(next(item["id"] for item in result["shipments"] if item["delivery_note_no"] == payload.delivery_note_no))
         group = UnifiedDelivery(id=special.uid("CUD-"), factory_id=payload.factory_id, supplier_id=vendor.id,
             delivery_note_no=payload.delivery_note_no, delivery_date=payload.delivery_date.isoformat(),
             children_json=special.pack({"formal_id": formal_id, "special_ids": special_ids}), request_key=payload.request_id,
             fingerprint=digest, created_by=user.id, created_at=special.core.now_text())
         db.add(group); db.flush()
+        if source:
+            special.core._audit(db, user, payload.factory_id, 'SUPPLIER_DELIVERY_IMPORTED',
+                'carton_unified_delivery', group.id, dict(source_file=source, registration_mode='SHIPMENT'))
+            db.flush()
         result = project(db, user, payload.factory_id, group.id, external=True)
-        db.commit()
+        if commit: db.commit()
         return result
     except Exception:
         db.rollback(); raise
