@@ -22,6 +22,21 @@ it('a failed replacement search cannot reuse the previous history or artifact cu
  expect(artifacts).toHaveBeenCalledTimes(2);expect(wrapper.text()).not.toContain('更多成果');expect(wrapper.text()).toContain('offline');wrapper.unmount()
 })
 
+it('a failed history read keeps the selected answer and draft, and a retry clears only its own error',async()=>{
+ const store=useAssistantStore();store.bindIdentity('viewer');store.selectedId='current'
+ store.draftFor().text='尚未发送的草稿'
+ store.messagesBySession.current=[{id:'answer',run_id:'run',seq:2,role:'assistant',status:'completed',content_parts:[{type:'text',text:'已保存的回答'}],help_citations:[],context_descriptor:null,created_at:1}]
+ store.error='原会话的独立状态'
+ vi.spyOn(assistantApi,'sessions').mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValueOnce({items:[],next_cursor:null})
+ await store.history()
+ expect(store.historyError).toBe('暂时无法读取历史，请检查网络后重试。')
+ expect(store.error).toBe('原会话的独立状态');expect(store.draftFor().text).toBe('尚未发送的草稿')
+ expect(store.messages[0]?.content_parts[0]?.text).toBe('已保存的回答')
+ await store.history()
+ expect(store.historyError).toBe('');expect(store.error).toBe('原会话的独立状态')
+ expect(store.selectedId).toBe('current');expect(store.messages).toHaveLength(1)
+})
+
 it('older history searches cannot replace newer results or mix late pages',async()=>{
  const store=useAssistantStore();store.bindIdentity('viewer')
  const old=deferred<Awaited<ReturnType<typeof assistantApi.sessions>>>(), page=deferred<Awaited<ReturnType<typeof assistantApi.sessions>>>()

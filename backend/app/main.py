@@ -124,6 +124,8 @@ async def lifespan(app: FastAPI):
     init_db()
     from app.services.assistant import files as assistant_files
     await asyncio.to_thread(assistant_files.recover_jobs)
+    from app.services.assistant.durable import worker as assistant_run_worker
+    await assistant_run_worker.start()
     from app.services.three_d_live import hub
     hub.start()
     sweep_task = asyncio.create_task(three_d_sweep_loop())
@@ -138,6 +140,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await assistant_run_worker.stop()
         await asyncio.to_thread(assistant_files.shutdown)
         if collaboration_task:
             collaboration_task.cancel()

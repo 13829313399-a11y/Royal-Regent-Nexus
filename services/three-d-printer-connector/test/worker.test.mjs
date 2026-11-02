@@ -100,6 +100,58 @@ test('observation-only grants upload telemetry and renew without polling hardwar
   } finally { await f.worker.stop() }
 });
 
+test('all sixteen observers acquire, report and renew while retaining physical identities', async () => {
+  let now = 0;
+  const messages = [], adapters = new Map();
+  // Old 6-11 move to 9-14; credential references remain attached to each device.
+  const numbers = [1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14, 6, 7, 8, 15, 16];
+  const devices = numbers.map((machineNo, i) => ({ printerId: `physical-${i + 1}`,
+    machineNo, credentialRef: `printer-${String(i + 1).padStart(2, '0')}` }));
+  const iso = value => new Date(value).toISOString();
+  const client = { async post(path, payload) {
+    messages.push([path, payload]);
+    if (path === '/printers') return { printers: devices.map(d => ({ printer_id: d.printerId })) };
+    if (path === '/leases/acquire' || path === '/leases/renew') {
+      const device = devices.find(d => d.printerId === payload.printer_id);
+      assert.ok(device);
+      return { acquired: true, server_time: iso(now), leased_until: iso(now + 30000),
+        port: 8883, leader_lease_id: `lease-${device.printerId}`, machine_no: device.machineNo,
+        credential_ref: device.credentialRef, connection_revision: 1, control_verified: false };
+    }
+    assert.notEqual(path, '/commands/claim');
+    return {};
+  } };
+  const worker = new ConnectorWorker({ client, secretStore: {}, clock: () => now,
+    adapterFactory: config => {
+      const device = devices.find(d => d.printerId === config.printerId);
+      assert.equal(config.machineNo, device.machineNo);
+      assert.equal(config.credentialRef, device.credentialRef);
+      const adapter = new EventEmitter();
+      Object.assign(adapter, { ready: true, start() {}, stop() { this.closed = true; },
+        execute() { assert.fail('observers must never control a printer'); } });
+      adapters.set(config.printerId, adapter); return adapter;
+    } });
+  try {
+    await worker.start(); clearInterval(worker.timer);
+    assert.equal(adapters.size, 16);
+    for (const device of devices) {
+      adapters.get(device.printerId).emit('state', { connection_session_id: `session-${device.printerId}`,
+        event_id: `event-${device.printerId}`, sequence: 1, observed_at: iso(now),
+        connected: true, state: device.machineNo === 2 ? 'PAUSE' : 'RUNNING',
+        progress_percent: 42, remaining_minutes: 12 });
+    }
+    await Promise.all([...worker.slots.values()].map(slot => slot.queue));
+    now = 9000; await worker.tick();
+    assert.equal(messages.filter(([path]) => path === '/leases/renew').length, 16);
+    const events = messages.filter(([path]) => path === '/events').map(([, body]) => body);
+    assert.deepEqual(new Set(events.map(e => e.printer_id)), new Set(devices.map(d => d.printerId)));
+    assert.equal(events.find(e => e.printer_id === 'physical-2').state, 'PAUSE');
+    assert.equal(messages.filter(([path]) => path.startsWith('/commands/')).length, 0);
+    assert.ok([...adapters.values()].every(a => !a.closed));
+  } finally { await worker.stop(); }
+  assert.ok([...adapters.values()].every(a => a.closed));
+});
+
 test('shared API outage closes leases immediately then backs off and recovers with sanitized diagnostics', async () => {
   const f = fixture(); await f.prepare();
   const logs = []; f.worker.log = entry => logs.push(entry);

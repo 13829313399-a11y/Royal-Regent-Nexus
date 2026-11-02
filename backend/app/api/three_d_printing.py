@@ -269,7 +269,7 @@ def get_dashboard(
 @router.get("/collections/{kind}")
 def collection(kind: str, factory_id: str, db: MigrationDb, current_user: MigrationUser,
                page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100),
-               q: str = Query("", max_length=100), machine_no: int = Query(0, ge=0, le=11),
+               q: str = Query("", max_length=100), machine_no: int = Query(0, ge=0, le=16),
                state: str = Query("", max_length=32), source: str = Query("", max_length=64),
                date_from: str = Query("", max_length=10), date_to: str = Query("", max_length=10),
                quality: str = Query("", max_length=32), customer: str = Query("", max_length=100), material: str = Query("", max_length=100),

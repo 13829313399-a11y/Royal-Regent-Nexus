@@ -336,7 +336,7 @@ def test_budget_unknown_is_not_zero_and_retention_is_opt_in(env, tmp_path):
     model=importlib.import_module("app.models.assistant")
     user=viewer_for(dbm); sid=session(client)
     first=svc.admit(user,sid,schema.SendMessage(**payload()))
-    svc.control(first["run_id"],first["lease"],terminal="interrupted",usage=None)
+    svc.control(first["run_id"],first["lease"],terminal="interrupted",usage=None,window={'provider_attempt_state':'started'})
     assert client.delete(f"/api/assistant/sessions/{sid}").status_code==200
     denied=client.post(f"/api/assistant/sessions/{session(client)}/messages",json=payload())
     assert denied.status_code==429 and denied.json()["detail"]["code"]=="daily_budget_exhausted"

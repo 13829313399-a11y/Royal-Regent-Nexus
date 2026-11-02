@@ -412,6 +412,35 @@ def test_financial_history_export_artifacts_and_tampered_actions_fail_closed(env
     assert client.post('/api/assistant/actions/resolve',json=action_request).status_code==410
 
 
+def test_operational_quote_runtime_never_sends_or_exports_financial_source_fields(env, caplog):
+    from app.services import auth
+    from app.services.assistant import runtime
+    client, _, calls, user = runtime_setup(env)
+    reader=actor(user.id,factory=F,department='sales-business',permissions=('internal_quote:read',))
+    client.app.dependency_overrides[auth.get_current_user]=lambda:reader
+    env[3].setattr(runtime,'authenticate',lambda request:reader)
+    sid=session(client)
+    response=client.post(f'/api/assistant/sessions/{sid}/messages',json=payload(protocol_version=2,intent='my_work',web_search='off',
+        page_context=dict(module_id='internal-quote',route_name='internal-quote-collaboration',factory_id=F),
+        context_selection=dict(selection_id='operational-selected-quote',resources=[dict(module_id='internal-quote',resource_type='quote',resource_id='Q0')],filters={})))
+    assert 'event: run.completed' in response.text,response.text[-2000:]
+    answer=client.get(f'/api/assistant/sessions/{sid}/messages').json()['items'][-1]
+    result=next(p['result'] for p in answer['content_parts'] if p['type']=='business_snapshot')
+    money=result['rows'][0]['financial']
+    assert money['state']=='forbidden'
+    for key in ['quote_hkd','base_cost_hkd','cost_hkd','gross_hkd','profit_hkd','invoice_net','invoice_tax','invoice_gross']:
+        assert money[key] is None
+    assert len(calls)==1
+    exported=client.get(f"/api/assistant/runs/{answer['run_id']}/export")
+    assert exported.status_code==200
+    history,_=runtime.history(reader,sid,'later-run',[])
+    for value in [calls,answer,history,exported.text,caplog.text]:
+        assert 'SECRET_' not in json.dumps(value,ensure_ascii=False)
+    evidence=next(p for p in answer['content_parts'] if p['type']=='evidence')
+    source=next(s for s in evidence['sources'] if s['kind']=='business')
+    assert source['title'] in exported.text
+
+
 def test_quote_scope_failure_and_invalid_compare_stop_before_provider(env):
     client,_,calls,_=runtime_setup(env)
     sid=session(client)

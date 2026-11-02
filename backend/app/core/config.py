@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -41,6 +42,9 @@ class Settings(BaseSettings):
     # create records. Unset means no guard, so set it deliberately when turning the
     # record switch on for a connection that was already being observed.
     three_d_record_reconcile_since: str = ""
+    # Earlier business dates keep their historical numbers and must not match a
+    # different device after those display numbers are reused.
+    three_d_record_numbering_since: date | None = None
     customer_order_test_duplicate_confirmation_enabled: bool | None = None
     document_translation_model_dir: str = str(
         BACKEND_DIR / "models" / "document-translation"
@@ -48,6 +52,9 @@ class Settings(BaseSettings):
     document_translation_device: Literal["cpu", "cuda", "auto"] = "cpu"
     document_tools_enabled: bool = True
     assistant_enabled: bool = False
+    assistant_durable_runs_enabled: bool = False
+    assistant_step_timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    assistant_operations_query_timeout_ms: int = Field(default=1500, ge=100, le=10000)
     collaboration_enabled: bool = False
     collaboration_storage_dir: str = str(BACKEND_DIR / "data" / "collaboration-assets")
     assistant_provider: Literal["qwen_openai_compatible"] = "qwen_openai_compatible"
@@ -74,7 +81,7 @@ class Settings(BaseSettings):
     assistant_storage_dir: str = str(BACKEND_DIR / "data" / "assistant")
     assistant_trusted_origins: list[str] = []
     assistant_max_file_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
-    assistant_max_tool_rounds: int = Field(default=5, ge=1, le=16)
+    assistant_max_tool_rounds: int = Field(default=5, ge=0, le=16)
     assistant_daily_token_budget: int | None = Field(default=None, ge=1)
     assistant_retention_days: int | None = Field(default=None, ge=1)
 

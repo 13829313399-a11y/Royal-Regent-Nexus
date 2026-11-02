@@ -16,7 +16,7 @@ Windows 方案的云端采集使用 `tailscale_doctor.py`：用 `--site-report <
 
 `config.example.json` 全部为蓝图示例地址，不是现场配置。复制到仓库外受限目录后修改：
 
-- 固定 `factory_id=huakang-a`、`site_id=3dsite-huakang-a-heyuan`；11 个独立机器编号和 IP。
+- 固定 `factory_id=huakang-a`、`site_id=3dsite-huakang-a-heyuan`；完整 11 或 16 台清单，编号、IP 与凭据引用各自唯一。扩容与重编号前置条件见 [执行手册](../README.md#16-台扩容准备与重编号边界)。
 - `lan.cidr/interface/gateway_ip` 必须是经确认的专用打印机 VLAN、网关网卡和该网卡地址。
 - `vpn.type/interface/connector_ip/gateway_ip` 分别选 `wireguard/wg-3d`、`tailscale/tailscale0` 或 `ipsec/xfrm-3d`，填写对应实际隧道 IP，不能与 VLAN 重叠。
 - WireGuard 公钥和云端 UDP 入口填入 `cloud_public_key/gateway_public_key/cloud_endpoint`。其它模式可保留未使用的公钥占位符；IPsec 使用证书身份和云端域名，不使用 endpoint 的 WireGuard 端口。
@@ -82,7 +82,7 @@ MQTT 验收读取 `/run/secrets/three-d-printers/printer-NN.json`，仅包含 `s
 
 **预验收先不加 `--report-url`。** 首次成功上报会启用站点网络门禁，后续采集停止超过 90 秒将阻止新远程指令及旧 Edge 领取指令；上报需在前后端加载匹配代码、0098 站点初始化完成及切换窗口明确后开启。复制 `.service.example/.timer.example` 到仓库外、替换 HTTPS 域名、安装路径、文件权限后再安装并启用；模板不自动启用。先单次运行验证，再开启 30 秒定时采集。不应每次采集做 MQTT 登录。
 
-报告固定华康 A/河源站点、11 台设备，拒绝乱序、冲突和过期/超前时间；相同报告重试幂等。站点不可达、检测不完整或报告过期时，页面显示 STALE/提示，远程控制关闭，自动运行任务不结算。设备自身状态超过 30 秒同样显示陈旧；报告正常不代表设备业务事件已同步。恢复后等待可信设备状态，旧任务不凭网络恢复自动生成结束记录。连续采集为审计证据，需要纳入后续容量与保留周期运维。
+报告固定华康 A/河源站点，兼容完整 11/16 台清单，并与数据库当前机台清单比对，拒绝缺机、重复编号、乱序、冲突和过期/超前时间；相同报告重试幂等，但扩容后旧报告的重试仍会被拒绝。历史 11 台报告保留可读，不能在扩容后继续给出健康状态。站点不可达、检测不完整或报告过期时，页面显示 STALE/提示，远程控制关闭，自动运行任务不结算。设备自身状态超过 30 秒同样显示陈旧；报告正常不代表设备业务事件已同步。恢复后等待可信设备状态，旧任务不凭网络恢复自动生成结束记录。连续采集为审计证据，需要纳入后续容量与保留周期运维。
 
 ## 现场签收与回滚
 

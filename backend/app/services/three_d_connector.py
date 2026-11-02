@@ -121,7 +121,7 @@ def connection(db, printer_id):
         or not printer.enabled
         or printer.factory_id != FACTORY
         or printer.site_id not in (None, SITE)
-        or not 1 <= printer.machine_no <= 11
+        or not 1 <= printer.machine_no <= 16
     ):
         raise HTTPException(409, "打印机未启用")
     return row, printer
@@ -270,7 +270,7 @@ def list_printers(db, payload):
             m.ThreeDPrintingPrinterConnection.connection_enabled.is_(True),
         )
         .order_by(m.ThreeDPrintingPrinterConnection.printer_id)
-        .limit(11)
+        .limit(16)
     )
     return {"printers": [{"printer_id": row.printer_id} for row in rows]}
 

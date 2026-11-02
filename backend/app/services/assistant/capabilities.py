@@ -61,6 +61,42 @@ def schema_ready():
         return False
 
 
+def durable_schema_ready():
+    try:
+        inspector = inspect(database.engine)
+        for cls in (models.AssistantExecution, models.AssistantRunEvent, models.AssistantProviderStep):
+            table = cls.__table__
+            if not inspector.has_table(table.name):
+                return False
+            if not set(table.columns.keys()) <= {c['name'] for c in inspector.get_columns(table.name)}:
+                return False
+            if set(inspector.get_pk_constraint(table.name)['constrained_columns']) != set(table.primary_key.columns.keys()):
+                return False
+            if len(inspector.get_foreign_keys(table.name)) < len(table.foreign_key_constraints):
+                return False
+            indexes = {tuple(i['column_names']) for i in inspector.get_indexes(table.name)}
+            if any(tuple(c.name for c in idx.columns) not in indexes for idx in table.indexes):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def durable_status():
+    if not settings.assistant_durable_runs_enabled:
+        return dict(available=False, reason='disabled')
+    if not durable_schema_ready():
+        return dict(available=False, reason='schema_pending')
+    from .durable import worker
+    return dict(available=worker.running, reason=None if worker.running else 'worker_unavailable')
+
+
+def require_durable():
+    value = durable_status()
+    if not value['available']:
+        raise AssistantError('durable_' + value['reason'], '后台生成尚未准备完成，请刷新连接状态后再发送。', 503)
+
+
 def configuration_status():
     if not (settings.assistant_qwen_api_key.get_secret_value() and settings.assistant_qwen_base_url and settings.assistant_model):
         return "unconfigured"
@@ -91,7 +127,13 @@ def capabilities():
     labels = {"disabled": "曜灵暂未启用。", "schema_pending": "助手数据准备尚未完成。",
               "model_unconfigured": "模型连接待配置；仍可查看页面说明。",
               "model_configuration_invalid": "模型配置或能力记录不匹配，请管理员核对。"}
+    durable = durable_status() if ready else dict(available=False, reason='schema_pending')
+    from . import operations
+    ops_ready = ready and operations.schema_ready()
     return dict(enabled=settings.assistant_enabled, configuration_status=config,
+        run_protocols=[1, 2, 3] if durable['available'] else [1, 2], durable_runs=durable,
+        feedback=dict(available=ops_ready,reason=None if ops_ready else 'schema_pending'),
+        operational_metrics=dict(available=ops_ready,reason=None if ops_ready else 'schema_pending'),
         reason_code=reason, status_label=labels.get(reason, "模型已配置；能力验证记录不代表当前服务健康。"),
         schema_status="ready" if ready else "schema_pending", connection_status="verified" if verified else "unverified",
         verified_at=p.verified_at if verified else None, provider=settings.assistant_provider, model=settings.assistant_model or None,

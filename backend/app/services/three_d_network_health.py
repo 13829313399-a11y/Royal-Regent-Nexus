@@ -12,6 +12,8 @@ from sqlalchemy import select
 from app.models.three_d_printing import (
     ThreeDPrintingAuditEvent,
     ThreeDPrintingNetworkGateway,
+    ThreeDPrintingPrinter,
+    ThreeDPrintingSetting,
     ThreeDPrintingSite,
 )
 from app.services.three_d_consistency import atomic_write
@@ -23,7 +25,7 @@ Check = Literal["ok", "failed", "skipped"]
 
 class PrinterProbe(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    machine_no: int = Field(ge=1, le=11)
+    machine_no: int = Field(ge=1, le=16)
     route: Check
     tcp: Check
     tls: Check
@@ -50,7 +52,7 @@ class NetworkHealthReport(BaseModel):
     observed_at: datetime
     tunnel: Literal["ok", "failed", "unknown"]
     exposure: Literal["ok", "unsafe", "unknown"]
-    printers: list[PrinterProbe] = Field(min_length=11, max_length=11)
+    printers: list[PrinterProbe] = Field(min_length=11, max_length=16)
 
     @field_validator("observed_at")
     @classmethod
@@ -62,9 +64,21 @@ class NetworkHealthReport(BaseModel):
     @field_validator("printers")
     @classmethod
     def all_printers(cls, value):
-        if {p.machine_no for p in value} != set(range(1, 12)):
-            raise ValueError("unique_11_printers_required")
+        if len(value) not in (11, 16) or {p.machine_no for p in value} != set(range(1, len(value) + 1)):
+            raise ValueError("complete_11_or_16_printer_fleet_required")
         return sorted(value, key=lambda p: p.machine_no)
+
+
+def _expected_machine_numbers(db):
+    # Keep old reports readable, but never treat an eleven-device report as
+    # healthy after the fleet grows. Include both settings and initialized rows
+    # so an incomplete rollout cannot silently omit a device from the checks.
+    setting = db.get(ThreeDPrintingSetting, "huakang-a")
+    numbers = set(range(1, setting.machine_count + 1)) if setting else set()
+    numbers.update(db.scalars(select(ThreeDPrintingPrinter.machine_no).where(
+        ThreeDPrintingPrinter.factory_id == "huakang-a",
+    )))
+    return numbers
 
 
 def _status(payload):
@@ -103,6 +117,8 @@ def store_network_health(db, payload: NetworkHealthReport):
         raise HTTPException(409, "网络探测时间已过期或超前，请检查NTP")
     if db.get(ThreeDPrintingSite, payload.site_id) is None:
         raise HTTPException(409, "请先完成0098站点初始化")
+    if {p.machine_no for p in payload.printers} != _expected_machine_numbers(db):
+        raise HTTPException(409, "网络报告必须覆盖当前配置的完整机台清单")
     # One selected active path per site in PR-05; HA ownership is a later cutover gate.
     latest = _latest(db)
     encoded = json.dumps(
@@ -175,16 +191,19 @@ def network_health_snapshot(db):
     payload = NetworkHealthReport.model_validate_json(latest.detail_json)
     age = (datetime.now(UTC) - payload.observed_at).total_seconds()
     status = _status(payload) if -5 <= age <= FRESH_SECONDS else "stale"
+    fleet_difference = _expected_machine_numbers(db) ^ {p.machine_no for p in payload.printers}
+    if fleet_difference and status == "healthy":
+        status = "degraded"
     return {
         "configured": True,
         "status": status,
         "observed_at": payload.observed_at.isoformat(),
-        "failed_machine_numbers": [
+        "failed_machine_numbers": sorted(fleet_difference | {
             p.machine_no
             for p in payload.printers
             if getattr(p, "mqtt" if payload.probe_level == "mqtt" else "tls") != "ok"
-        ],
-        "message": {
+        }),
+        "message": "机台清单已变更，请重新采集完整站点网络报告" if fleet_difference else {
             "healthy": "站点探测正常；设备实时状态仍按各自时间判断",
             "degraded": "站点探测不完整或存在公网映射风险，请检查诊断结果",
             "unreachable": "站点VPN不可达，暂停远程指令，开放任务等待对账",

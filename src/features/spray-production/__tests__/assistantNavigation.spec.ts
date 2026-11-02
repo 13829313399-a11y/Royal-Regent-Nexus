@@ -24,6 +24,7 @@ const task=(id:string)=>({id,factory_id:'huaxing',version:1,updated_at:'2026-10-
   allocations:[],reports:[{id:'R1',document_no:'SYN-日报',business_date:'2026-10-25',processed:'160',good:'150',hold:'0',scrap:'10'}],reports_total:1})
 const demand=(id:string)=>({id,factory_id:'huaxing',version:1,document_no:'原喷油需求',counterparty:'合成委托方',lines:[],journey:[],updated_at:'2026-10-25T01:00:00Z'})
 beforeEach(()=>{
+  vi.spyOn(HTMLElement.prototype,'getClientRects').mockReturnValue([{width:10,height:10}] as unknown as DOMRectList)
   w.factory.value='huaxing';w.ready.value=true;w.contextVersion.value=1;w.passportId.value=null;w.taskPassportId.value=null
   w.verifiedDemandId.value=null;w.verifiedTaskId.value=null;w.assistantView.value=null;w.relatedDemand.value=''
   w.assistantRecord.value=null
@@ -74,6 +75,19 @@ it('resolves native overview task links and returns focus to the original native
   expect(w.verifiedTaskId.value).toBe('SYN-T2')
   await view.get('[aria-label="喷油任务档案"]').trigger('cancel');await flushPromises()
   expect(document.activeElement).toBe(button.element)
+})
+
+it.each(['task','demand'] as const)('returns to the native main when an assistant opener is hidden on %s close',async kind=>{
+  const{view,router}=await open('/spray?factory=huaxing')
+  const assistant=document.createElement('div'),opener=document.createElement('button')
+  opener.textContent='助手原记录入口';assistant.append(opener);document.body.append(assistant);opener.focus()
+  await router.push('/spray?factory=huaxing&spray_'+kind+'=SYN-ORIGINAL');await flushPromises()
+  assistant.style.display='none'
+  const selector=kind==='task'?'喷油任务档案':'订单追踪'
+  await view.get(`[aria-label="${selector}"]`).trigger('cancel');await flushPromises()
+  expect(document.activeElement).toBe(view.get('[data-spray-focus-fallback]').element)
+  expect(router.currentRoute.value.query['spray_'+kind]).toBeUndefined()
+  assistant.remove()
 })
 
 it('retries original failures, refuses wrong records, and never exposes a late A→B→A response',async()=>{

@@ -27,7 +27,7 @@ export class BambuAdapter extends EventEmitter {
     reconnectBaseMs = 1000, reconnectMaxMs = 30000, heartbeatMs = 10000, freshMs = 30000,
     leaseCheckMs = 250 } = {}) {
     super();
-    if (config.factoryId !== 'huakang-a' || !Number.isInteger(config.machineNo) || config.machineNo < 1 || config.machineNo > 11 ||
+    if (config.factoryId !== 'huakang-a' || !Number.isInteger(config.machineNo) || config.machineNo < 1 || config.machineNo > 16 ||
         !privateAddress(config.host) || !/^[a-fA-F0-9]{64}$/.test(config.certificateFingerprint) ||
         !/^printer-\d{2}$/.test(config.credentialRef) || !/^[a-zA-Z0-9_-]{1,96}$/.test(config.printerId) ||
         Object.keys(config).some(key => !['factoryId', 'machineNo', 'host', 'printerId', 'credentialRef', 'certificateFingerprint', 'controlVerified'].includes(key)) ||

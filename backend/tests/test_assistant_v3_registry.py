@@ -55,3 +55,45 @@ def test_unbound_spray_page_stops_before_business_or_model(env):
     answer = client.get(f"/api/assistant/sessions/{sid}/messages").json()["items"][-1]
     evidence = next(p for p in answer["content_parts"] if p["type"] == "evidence")
     assert not any(s["kind"] == "business" for s in evidence["sources"])
+
+
+def test_supplier_cannot_reach_any_internal_connector_via_registered_selection_or_batch(env,tmp_path):
+    from app.services import auth
+    from app.services.assistant import business,registry,runtime,help_registry
+    from app.services.assistant.errors import AssistantError
+    from test_work_center_api import actor
+    client,dbm,calls,patch=env
+    supplier=actor('alice',factory='huakang-a',department='pmc-warehouse',permissions=('carton_supplier:read',))
+    assert help_registry.supplier_only(supplier)
+    assert all(article.audience in ('all','supplier') for article in help_registry.visible(supplier))
+    resources=[('injection-scheduling','demand'),('internal-quote','quote')]
+    assert business.permitted_tools(supplier,'huakang-a')==[]
+    with dbm.SessionLocal() as db:
+        for name in business.NAMES:
+            with pytest.raises(AssistantError) as failure:business.authorize(db,supplier,name,'huakang-a')
+            assert failure.value.status_code==403
+        for module,kind in resources:
+            name=registry.resolve(module,kind)
+            with pytest.raises(AssistantError) as failure:business.query(supplier,name,dict(factory_id='huakang-a',resource_id='PRIVATE-INTERNAL-RECORD'),'supplier-denial')
+            assert failure.value.status_code==403
+    client.app.dependency_overrides[auth.get_current_user]=lambda:supplier
+    patch.setattr(runtime,'authenticate',lambda request:supplier)
+    sid=session(client)
+    response=client.post(f'/api/assistant/sessions/{sid}/messages',json=payload(protocol_version=2,web_search='off',
+        context_selection=dict(selection_id='supplier-internal-combination',filters=dict(factory_id='huakang-a'),resources=[
+            dict(module_id=module,resource_type=kind,resource_id='PRIVATE-INTERNAL-RECORD') for module,kind in resources])))
+    assert 'business_queries_unavailable' in response.text and not calls
+    answer=client.get(f'/api/assistant/sessions/{sid}/messages').json()['items'][-1]
+    failures=[p['result'] for p in answer['content_parts'] if p['type']=='business_failure']
+    assert len(failures)==len(resources)
+    assert all(f['status']=='forbidden' and not f['source_refs'] and not f['rows'] and not f['allowed_actions'] for f in failures)
+    assert 'PRIVATE-INTERNAL-RECORD' not in str(answer)
+    evidence=next(p for p in answer['content_parts'] if p['type']=='evidence')
+    assert not evidence['sources']
+    from test_assistant_api import verified_profile
+    verified_profile(tmp_path)
+    sid=session(client)
+    response=client.post(f'/api/assistant/sessions/{sid}/messages',json=payload(protocol_version=2,web_search='off'))
+    assert 'event: run.completed' in response.text and len(calls)==1
+    names={tool['function']['name'] for tool in calls[0]['tools']}
+    assert names and not names.intersection(business.NAMES)

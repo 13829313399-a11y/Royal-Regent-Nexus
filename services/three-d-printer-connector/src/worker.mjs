@@ -70,7 +70,7 @@ export class ConnectorWorker {
         const { printers } = await this.client.post('/printers');
         const ids = new Set(printers.map(printer => printer.printer_id));
         for (const slot of this.slots.values()) if (!ids.has(slot.id)) this.close(slot);
-        this.ids = [...ids].slice(0, 11); this.heartbeatAt = this.clock();
+        this.ids = [...ids].slice(0, 16); this.heartbeatAt = this.clock();
         if (this.apiFailures) this.log({ code: 'connector_api_recovered' });
         this.apiFailures = 0; this.apiRetryAt = 0;
       }
@@ -123,7 +123,7 @@ export class ConnectorWorker {
       }
       if (this.valid(slot) && slot.controlVerified && slot.adapter.ready && slot.session && !slot.queued && !slot.commanding) {
         slot.commanding = true;
-        // Commands never block leader renewal or the other ten printers.
+        // Commands never block leader renewal or the other printers.
         void this.command(slot).catch(error => {
           this.log({ code: 'printer_api_failed', printer_id: id, operation: 'command', reason: apiFailure(error) });
           this.close(slot, 'command_api_failed');

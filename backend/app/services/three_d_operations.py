@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, true
 
 from app.core.time import business_now, parse_business_timestamp
 from app.models import three_d_printing as m
@@ -22,6 +22,7 @@ from app.services.auth import has_permission_in_scope, time_window_is_active
 from app.services.three_d_connector import notify
 from app.services.three_d_consistency import atomic_write, encode
 from app.services.three_d_network_health import network_health_snapshot
+from app.services.three_d_fleet import numbering_start
 
 MODEL = m.ThreeDPrintingOperationsItem
 SCHEMAS = {
@@ -352,7 +353,8 @@ def act(db, *, item_id, payload, user):
 
 def analytics(db, days=30):
     now = business_now()
-    begin = now - timedelta(days=days)
+    cutoff = numbering_start()
+    begin = max(now - timedelta(days=days), cutoff) if cutoff else now - timedelta(days=days)
     record = m.ThreeDPrintingProductionRecord
     records = list(
         db.execute(
@@ -361,6 +363,7 @@ def analytics(db, days=30):
                    record.run_status).where(
                 m.ThreeDPrintingProductionRecord.factory_id == "huakang-a",
                 m.ThreeDPrintingProductionRecord.deleted_at == "",
+                record.business_date >= cutoff.date().isoformat() if cutoff else true(),
                 or_(
                     m.ThreeDPrintingProductionRecord.business_date
                     >= begin.date().isoformat(),
@@ -382,7 +385,7 @@ def analytics(db, days=30):
         MODEL.factory_id == "huakang-a", MODEL.kind == "profile", MODEL.status == "active",
     )).all())
     result = []
-    for number in range(1, 12):
+    for number in sorted(measured):
         rows = [r for r in records if r.machine_no == number]
         occupied = expected = 0.0
         timed_records = 0
@@ -407,7 +410,8 @@ def analytics(db, days=30):
             if completed
             else None
         )
-        availability = min(1, occupied / (days * 24)) if timed_records else None
+        window_hours = max(0, (now - begin).total_seconds() / 3600)
+        availability = min(1, occupied / window_hours) if timed_records and window_hours else None
         performance = min(1, expected / occupied) if occupied and expected else None
         maintenance = maintained.get(number)
         profile = profiles.get(str(number))
@@ -450,6 +454,7 @@ def analytics(db, days=30):
         )
     return {
         "days": days,
+        "effective_from": begin.isoformat(),
         "basis": "24h calendar window; completed task elapsed time includes pauses; unknown timing excluded; maintenance hours are lower bounds within window",
         "machines": result,
     }

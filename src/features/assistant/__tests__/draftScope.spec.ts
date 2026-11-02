@@ -35,6 +35,8 @@ describe('draft scope and explicit search choices',()=>{
     try {
       const binding=useDraftScope(()=>draft,()=>page.value,()=>page.value?.factory_id || '')
       binding.freeze(); draft.text='原问题'
+      draft.scope!.page = {...draft.scope!.page!,help_id:null}
+      expect(binding.changed.value).toBe(false)
       binding.removeSelection(0)
       expect(source.resources).toHaveLength(2)
       expect(binding.scope.value.selection?.resources.map(r=>r.resource_id)).toEqual(['b'])

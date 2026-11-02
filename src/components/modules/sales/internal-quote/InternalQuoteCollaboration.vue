@@ -5,6 +5,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
 import { quoteSelection, useQuoteAssistantSelection } from '@/features/internal-quote/assistantContext'
+import { clearQuotePrefill, consumeQuotePrefill, prefillIdentityKey, quotePrefillFor, type QuoteSuggestion } from '@/features/assistant/quotePrefill'
 import InternalQuoteAlternatives from './InternalQuoteAlternatives.vue'
 import InternalQuoteActivityPanel from './InternalQuoteActivityPanel.vue'
 import InternalQuoteComponentScopePicker from './InternalQuoteComponentScopePicker.vue'
@@ -78,6 +79,8 @@ const previewMainMarkup = ref<number>()
 const headerDialogOpen = ref(false)
 const headerDialogBusy = ref(false)
 const headerDialogError = ref('')
+const headerSuggestion = ref<QuoteSuggestion>()
+const remarkPrefillBusy = ref(false)
 const headerBusinessOwners = ref<Array<{ id: string; username: string; displayName: string }>>([])
 const headerCustomers = ref<string[]>([])
 const copyBusyQuoteId = ref('')
@@ -256,6 +259,22 @@ const canEditHeader = computed(() => (
   && authStore.can('internal_quote:header_edit', quote.value.factoryId, 'sales-business')
 ))
 const canRemoveActive = computed(() => canRemoveSection(activeSectionCode.value))
+const pendingAssistantRemark = computed(() => quotePrefillFor(quote.value.id,quote.value.factoryId))
+watch([()=>quote.value.id,()=>quote.value.factoryId,prefillIdentityKey],()=>{
+  if(headerSuggestion.value) {headerSuggestion.value=undefined;headerDialogOpen.value=false;headerDialogError.value=''}
+})
+async function openAssistantRemark() {
+  if(remarkPrefillBusy.value || headerDialogOpen.value || headerDialogBusy.value || !canEditHeader.value) return
+  remarkPrefillBusy.value=true
+  const context=quoteContextGeneration, requested=quote.value.id
+  try {
+    const suggestion=await consumeQuotePrefill(requested,quote.value.factoryId,quote.value.headerRevision,
+      ()=>active && context===quoteContextGeneration && quote.value.id===requested && canEditHeader.value && !headerDialogOpen.value)
+    if(!active || context!==quoteContextGeneration || quote.value.id!==requested) return
+    await openHeaderDialog(suggestion)
+  } catch(error) {errorMessage.value=error instanceof Error ? error.message : '原备注来源已失效。'}
+  finally {remarkPrefillBusy.value=false}
+}
 const isReadOnly = computed(() => isInternalQuoteReadOnly(authStore, quote.value.factoryId))
 const isForeignReadOnly = computed(() => isReadOnly.value && isForeignFactory(authStore, quote.value.factoryId))
 const getQuoteRoute = (path: string) => getFactoryScopedRoute(
@@ -656,8 +675,9 @@ async function removeParticipation(sectionCode: InternalQuoteSectionCode) {
   }
 }
 
-async function openHeaderDialog() {
+async function openHeaderDialog(suggestion?: QuoteSuggestion | Event) {
   if (!canEditHeader.value || !quote.value.id) return
+  headerSuggestion.value=suggestion && 'runId' in suggestion ? suggestion : undefined
   const requestedQuoteId = quote.value.id
   const requestedFactoryId = quote.value.factoryId
   headerDialogOpen.value = true
@@ -684,6 +704,7 @@ function closeHeaderDialog() {
   if (headerDialogBusy.value) return
   headerDialogOpen.value = false
   headerDialogError.value = ''
+  headerSuggestion.value = undefined
 }
 
 function openMaterialsDialog() {
@@ -1043,6 +1064,7 @@ onBeforeUnmount(() => {
       <div class="quote-head-progress"><div><span>{{ isContinuousQuote ? '部门填写进度' : '参与分段进度' }}</span><strong>{{ completedCount }}/{{ participatingSections.length }}</strong></div><div class="quote-progress-bar"><span :style="{ width: `${progressPercent}%` }" /></div><button v-if="canEditHeader" type="button" @click="openHeaderDialog"><Pencil />修改报价资料</button><button v-if="canManageParticipation && manageableOptionalSections.length && (!isContinuousQuote || ['drafting', 'rejected'].includes(quote.status))" type="button" @click="toggleParticipationPanel"><UserPlus />添加、删除参与部门</button><button type="button" :disabled="quoteStore.detailLoading" @click="loadQuote"><RefreshCw />重新读取最新 revision</button></div>
     </header>
 
+    <div v-if="pendingAssistantRemark" class="quote-assistant-prefill" role="status"><p>有一条曜灵备注建议待你核对。{{ canEditHeader ? '打开原表单后可明确追加到备注；尚未保存。' : '当前原报价不可修改资料，建议不会写入。' }}</p><button type="button" :disabled="remarkPrefillBusy || !canEditHeader || headerDialogBusy || headerDialogOpen" @click="openAssistantRemark">{{ remarkPrefillBusy ? '正在核对来源与原版本…' : '打开原表单核对备注' }}</button><button type="button" @click="clearQuotePrefill">丢弃建议</button></div>
     <details v-if="quote.historySources?.length" class="quote-history-evidence">
       <summary>历史引用来源 · {{ quote.historySources.length }} 条（新单独立核价）</summary>
       <p v-for="(source, index) in quote.historySources" :key="index">{{ source.target_component_id ? '分项' : '整款' }}：{{ source.quote_no }} / {{ source.version_label }} / {{ source.region_code === 'mainland' ? '大陆价' : source.region_code === 'indonesia' ? '印尼价' : '未分地区' }} / {{ source.product_name }}{{ source.component_name ? ` / ${source.component_name}` : '' }}</p>
@@ -1157,6 +1179,8 @@ onBeforeUnmount(() => {
       :customers="headerCustomers"
       :busy="headerDialogBusy"
       :external-error="headerDialogError"
+      :editable="canEditHeader"
+      :assistant-suggestion="headerSuggestion"
       @close="closeHeaderDialog"
       @confirm="saveHeader"
     />
@@ -1233,4 +1257,7 @@ onBeforeUnmount(() => {
 .quote-whole-product-reject{width:100%;flex:1 0 100%;box-sizing:border-box}
 #quote-page-overview{scroll-margin-top:82px}
 @media(max-width:600px){.quote-edge-panel{top:64px;bottom:10px}.quote-edge-panel-left{width:min(260px,calc(100vw - 20px))}.quote-edge-panel-right{width:min(340px,calc(100vw - 20px))}}
+</style>
+<style scoped>
+.quote-assistant-prefill{margin:16px 0;padding:14px 16px;border:1px solid #b9d9cf;border-radius:12px;background:#f1f8f5;color:#254e43;font-size:13px;line-height:1.7}.quote-assistant-prefill p{margin:0 0 8px}.quote-assistant-prefill button{min-height:44px;margin:4px 8px 0 0;padding:8px 12px;border:1px solid #b9d9cf;border-radius:8px;background:white;color:#145c4b}.quote-assistant-prefill button:disabled{opacity:.5}
 </style>

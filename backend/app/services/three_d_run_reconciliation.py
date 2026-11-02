@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from hashlib import sha256
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 
 from app.core.config import settings
 from app.core.time import parse_business_timestamp
@@ -14,6 +14,14 @@ from app.models import three_d_printing as m
 # observed every printer itself; here the same conclusion is drawn from the
 # printer row, which only the owner-marked Connector session may advance.
 SETTLEABLE_DEVICE_STATES = {"FINISH", "FAILED", "ERROR", "IDLE", "STOPPED", "CANCELLED"}
+
+
+def _numbering_period():
+    cutoff = settings.three_d_record_numbering_since
+    return (
+        m.ThreeDPrintingProductionRecord.business_date >= cutoff.isoformat()
+        if cutoff else true()
+    )
 
 
 def _load_json(value, fallback):
@@ -70,6 +78,7 @@ def reconcile_event(db, printer, event, actor, now, *, connected):
             .where(
                 m.ThreeDPrintingProductionRecord.factory_id == FACTORY,
                 m.ThreeDPrintingProductionRecord.machine_no == printer.machine_no,
+                _numbering_period(),
                 m.ThreeDPrintingProductionRecord.auto_record.is_(True),
                 m.ThreeDPrintingProductionRecord.print_end_at == "",
                 m.ThreeDPrintingProductionRecord.deleted_at == "",
@@ -124,6 +133,11 @@ def reconcile_event(db, printer, event, actor, now, *, connected):
         if key
         else next((item for item in records if item.device_job_key is None), None)
     )
+    # A known historical job remains owned by its existing record. Do not attach
+    # it to a reused number or create a second record and consume stock again.
+    cutoff = settings.three_d_record_numbering_since
+    if record and cutoff and record.business_date < cutoff.isoformat():
+        return
     for other in records:
         if other is not record:
             mark(other, "device_job_changed_without_end")
@@ -393,6 +407,7 @@ def _resumable_same_file_record(db, printer, event, now, exclude=None):
             .where(
                 m.ThreeDPrintingProductionRecord.factory_id == FACTORY,
                 m.ThreeDPrintingProductionRecord.machine_no == printer.machine_no,
+                _numbering_period(),
                 m.ThreeDPrintingProductionRecord.gcode_file == gcode,
                 m.ThreeDPrintingProductionRecord.auto_record.is_(True),
                 m.ThreeDPrintingProductionRecord.deleted_at == "",
@@ -449,6 +464,7 @@ def _already_recorded_same_product(db, printer, event, product, observed, exclud
             .where(
                 m.ThreeDPrintingProductionRecord.factory_id == FACTORY,
                 m.ThreeDPrintingProductionRecord.machine_no == printer.machine_no,
+                _numbering_period(),
                 m.ThreeDPrintingProductionRecord.business_date == business_date,
                 m.ThreeDPrintingProductionRecord.print_end_at == "",
                 m.ThreeDPrintingProductionRecord.deleted_at == "",
@@ -482,6 +498,7 @@ def apply_telemetry_backfill(db, printer, event, actor, now):
             select(m.ThreeDPrintingProductionRecord).where(
                 m.ThreeDPrintingProductionRecord.factory_id == FACTORY,
                 m.ThreeDPrintingProductionRecord.machine_no == printer.machine_no,
+                _numbering_period(),
                 m.ThreeDPrintingProductionRecord.auto_record.is_(True),
                 m.ThreeDPrintingProductionRecord.deleted_at == "",
                 m.ThreeDPrintingProductionRecord.print_end_at == "",
@@ -693,6 +710,7 @@ def sweep_open_runs(
                 .where(
                     m.ThreeDPrintingProductionRecord.factory_id == FACTORY,
                     m.ThreeDPrintingProductionRecord.machine_no == printer.machine_no,
+                    _numbering_period(),
                     m.ThreeDPrintingProductionRecord.auto_record.is_(True),
                     m.ThreeDPrintingProductionRecord.print_end_at == "",
                     m.ThreeDPrintingProductionRecord.deleted_at == "",

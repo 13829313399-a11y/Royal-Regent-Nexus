@@ -29,6 +29,32 @@ def test_windows_report_builds_cloud_config_without_linux_interfaces():
     with pytest.raises(ValueError): tailscale_doctor.from_site_report(bad)
 
 
+def expanded_report():
+    site = site_report()
+    site['printers'] = [
+        {**site['printers'][0], 'machine_no':n, 'ip':f'192.168.110.{n}',
+         'credential_ref':f'printer-{n:02}'} for n in range(1,17)
+    ]
+    site['printers'][5]['credential_ref']='printer-12'
+    site['printers'][11]['credential_ref']='printer-06'
+    return site
+
+
+def test_expanded_report_keeps_device_references_and_requires_complete_fleet():
+    site = expanded_report()
+    value = tailscale_doctor.from_site_report(site)
+    assert len(value['printers']) == 16
+    assert value['printers'][5]['credential_ref'] == 'printer-12'
+    assert value['printers'][11]['credential_ref'] == 'printer-06'
+    for mutation in ('missing_machine', 'duplicate_machine', 'missing_reference', 'duplicate_reference'):
+        bad = expanded_report()
+        if mutation == 'missing_machine': bad['printers'].pop()
+        elif mutation == 'duplicate_machine': bad['printers'][-1]['machine_no'] = 1
+        elif mutation == 'duplicate_reference': bad['printers'][-1]['credential_ref'] = bad['printers'][0]['credential_ref']
+        else: bad['printers'][-1].pop('credential_ref')
+        with pytest.raises(ValueError): tailscale_doctor.from_site_report(bad)
+
+
 def test_cloud_probe_uses_tailscale_source_and_preserves_failed_checks(monkeypatch):
     monkeypatch.setattr(doctor,'run_json',lambda _: {'BackendState':'Running','TailscaleIPs':['100.80.0.1']})
     captured=[]

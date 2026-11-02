@@ -100,6 +100,15 @@ it('opens a factory-bound native printer, preserves its observation time and ret
   await escape(); expect(document.activeElement).toBe(card.element)
 })
 
+it('returns to the matching native card when the original assistant trigger is hidden after navigation', async () => {
+  const assistantPanel = document.createElement('section'), trigger = document.createElement('button');
+  trigger.textContent = '助手中的原机台入口'; assistantPanel.append(trigger); document.body.append(assistantPanel); trigger.focus();
+  const { wrapper } = await open();
+  assistantPanel.style.display = 'none';
+  await escape();
+  expect(document.activeElement).toBe(wrapper.findAll('.legacy-machine')[0]!.element);
+})
+
 it('never carries a printer identifier from a different factory into the forced Huakang A route', async () => {
   const { router } = await open('/printers?factory=huakang-b&tab=machines&printer=SYN-1')
   expect(router.currentRoute.value.query.factory).toBe('huakang-a')

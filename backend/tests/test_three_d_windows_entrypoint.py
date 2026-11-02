@@ -1,5 +1,6 @@
 """Exercise the actual Windows menu and child PowerShell process, without networking."""
 import json
+import csv
 import os
 from pathlib import Path
 import shutil
@@ -56,3 +57,59 @@ def test_login_from_system32_and_chinese_package_path(launch_environment,via_men
     assert calls[1]==('set --unattended=true' if vpn_state=='Running' else
         'up --unattended --accept-dns=false --timeout=60s')
     assert calls[2]=='ip -4'
+
+
+@pytest.mark.parametrize('count', [11, 16])
+def test_printer_inventory_and_host_route_plan_support_complete_fleet(tmp_path, count):
+    rows = [{'machine_no':n, 'ip':f'192.168.110.{100+n}', 'credential_ref':f'printer-{n:02}'} for n in range(1,count+1)]
+    if count == 16:
+        rows[5]['credential_ref'], rows[11]['credential_ref'] = rows[11]['credential_ref'], rows[5]['credential_ref']
+    inventory = tmp_path/'printers.csv'
+    with inventory.open('w', encoding='utf-8', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader(); writer.writerows(rows)
+    runner = tmp_path/'validate.ps1'
+    runner.write_text('''param([string]$Source,[string]$PrinterFile,[string]$OutputPath)
+$ErrorActionPreference='Stop'
+$tokens=$null; $parseErrors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $Source 'windows-site.ps1'),[ref]$tokens,[ref]$parseErrors)
+if ($parseErrors.Count) { throw 'Parse error' }
+$reader=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Read-Printers'},$true)
+. ([scriptblock]::Create($reader.Extent.Text))
+$printers=@(Read-Printers)
+& (Join-Path $Source 'windows-tailscale-plan.ps1') -PrinterIPs @($printers | ForEach-Object { $_.ip }) -OutputPath $OutputPath | Out-Null
+ConvertTo-Json -InputObject $printers -Compress
+''', encoding='utf-8-sig')
+    output = tmp_path/'plan.json'
+    command=['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(runner),str(SOURCE),str(inventory),str(output)]
+    result=subprocess.run(command,capture_output=True,timeout=30)
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    observed=json.loads(result.stdout)
+    assert [p['credential_ref'] for p in observed] == [p['credential_ref'] for p in rows]
+    plan=json.loads(output.read_text(encoding='utf-8'))
+    assert plan['mode'] == 'plan_only_no_network_changes'
+    assert plan['reviewed_command'].count('/32') == count
+    assert '/24' not in plan['reviewed_command']
+
+
+@pytest.mark.parametrize('fault', ['missing_reference','duplicate_reference','duplicate_address','out_of_range'])
+def test_expanded_inventory_rejects_ambiguous_identity_without_networking(tmp_path, fault):
+    rows = [{'machine_no':n, 'ip':f'192.168.110.{100+n}', 'credential_ref':f'printer-{n:02}'} for n in range(1,17)]
+    if fault == 'missing_reference': rows[-1]['credential_ref']=''
+    elif fault == 'duplicate_reference': rows[-1]['credential_ref']=rows[0]['credential_ref']
+    elif fault == 'duplicate_address': rows[-1]['ip']=rows[0]['ip']
+    else: rows[-1]['machine_no']=17
+    inventory=tmp_path/'printers.csv'
+    with inventory.open('w',encoding='utf-8',newline='') as f:
+        writer=csv.DictWriter(f,fieldnames=rows[0].keys()); writer.writeheader(); writer.writerows(rows)
+    runner=tmp_path/'validate.ps1'
+    runner.write_text('''param([string]$Source,[string]$PrinterFile)
+$ErrorActionPreference='Stop'
+$tokens=$null; $parseErrors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $Source 'windows-site.ps1'),[ref]$tokens,[ref]$parseErrors)
+$reader=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Read-Printers'},$true)
+. ([scriptblock]::Create($reader.Extent.Text))
+Read-Printers | Out-Null
+''',encoding='utf-8-sig')
+    result=subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(runner),str(SOURCE),str(inventory)],capture_output=True,timeout=30)
+    assert result.returncode != 0

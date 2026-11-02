@@ -555,7 +555,7 @@ font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
 
 ### 15.6 曜灵局部设计例外
 
-`src/features/assistant/assistant.css` 使用独立 `.yl-assistant` 根与 `yl-` 类名：深翡翠舱头、香槟轨道 SVG、小面积紫罗兰折射和白色阅读区。侧舱默认宽 432px，可在 360–600px 之间调整；专注态限宽 768px，窄屏根据 visualViewport 处理键盘与安全区。装饰在后台或减少动效模式暂停。贴边入口的定位 transform 不参与按钮按下位移，避免点击目标跳动。侧舱保持页面可操作；专注/手机模式复用共享滚动锁、恢复 inert 并圈定焦点。业务模态优先，助手定位仅使用注册锚点及业务组件 reveal 接口。截图和本地浏览器证据见 `docs/assistant/IMPLEMENTATION.md`。
+`src/features/assistant/assistant.css` 使用独立 `.yl-assistant` 根与 `yl-` 类名：深翡翠舱头、香槟轨道 SVG、小面积紫罗兰折射和白色阅读区。侧舱默认 460×720px，宽度可在 360–600px、高度在 360–820px 之间调整；专注态最大宽 1360px，普通正文阅读宽度不超过 760px。窄屏侧舱与专注态均使用可见视口全屏规则，面板在自身遮罩之上，按 visualViewport 处理键盘与安全区。成果区表格/图表共用原查询快照，宽内容局部横滚、明细分页，长内容保留固定关闭入口。装饰在后台或减少动效模式暂停。贴边入口的定位 transform 不参与按钮按下位移，避免点击目标跳动。侧舱与专注态切换时同步过渡位置与尺寸，保留正在编辑的输入焦点与光标；布局断点与 CSS 一致，不以扣除滚动条后的可视宽度判断手机模式。手机全屏几何直接跟随可视视口。侧舱保持页面可操作；专注/手机模式复用共享滚动锁、恢复 inert 并圈定焦点。业务模态优先，助手定位仅使用注册锚点及业务组件 reveal 接口。截图和本地浏览器证据见 `docs/assistant/IMPLEMENTATION.md`。
 
 ### 15.7 成员协作局部设计例外
 

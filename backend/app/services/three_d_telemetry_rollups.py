@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.time import business_now, parse_business_timestamp
 from app.models import three_d_printing as m
+from app.services.three_d_fleet import machine_numbers
 
 FACTORY = "huakang-a"
 HOUR = timedelta(hours=1)
@@ -73,7 +74,7 @@ def bridge(target, previous, current):
 def scan(db, begin, end, *, include_end=False):
     """At most one hour, narrow columns, indexed seeks for each known machine."""
     values = {}
-    for number in range(1, 12):
+    for number in machine_numbers(db):
         # Millisecond upper bound includes the possible partial last millisecond;
         # exact Python comparisons below retain the original time-window contract.
         query = select(Event.observed_at, Event.state, Event.error_code, Event.temperatures_json).where(

@@ -52,7 +52,40 @@ def authorize(db, user, name, factory):
         raise AssistantError("tool_invalid", "此业务查询未注册。")
 
 
-def query(user, name, arguments, run_id, *, tool_call_id=None, step_id=None):
+def permitted_tools(user, factory=None):
+    """Advertise only a native-authorized read surface; calls still reauthorize."""
+    if user is None or supplier_only(user):
+        return []
+    from fastapi import HTTPException
+    from sqlalchemy.exc import SQLAlchemyError
+    from app import db as database
+    from app.services.auth import ALLOWED_FACTORY_IDS
+    factories = sorted(ALLOWED_FACTORY_IDS) if factory in (None, '', 'authorized', 'group') else [factory]
+    allowed = []
+    for tool in TOOLS:
+        name = tool['function']['name']
+        permitted = False
+        for candidate in factories:
+            # The carton tool has independently authorized order/inventory views.
+            for view in (('orders', 'inventory') if name == cartons.NAME else (None,)):
+                try:
+                    with database.SessionLocal() as db:
+                        if view == 'inventory':
+                            cartons.authorize(db, user, candidate, view='inventory')
+                        else:
+                            authorize(db, user, name, candidate)
+                    permitted = True
+                    break
+                except (HTTPException, SQLAlchemyError):
+                    continue
+            if permitted:
+                break
+        if permitted:
+            allowed.append(tool)
+    return allowed
+
+
+def query(user, name, arguments, run_id, *, tool_call_id=None, step_id=None, reuse_recent=False):
     if name == spray.NAME:
         return spray.query(user, arguments, run_id, tool_call_id=tool_call_id, step_id=step_id)
     if name == uv.NAME:
@@ -70,7 +103,7 @@ def query(user, name, arguments, run_id, *, tool_call_id=None, step_id=None):
     if name == orders.NAME:
         if user is None or supplier_only(user):
             raise AssistantError("business_forbidden", "当前身份不可使用内部业务查询。", 403)
-        return orders.query(user, arguments, run_id, tool_call_id=tool_call_id, step_id=step_id)
+        return orders.query(user, arguments, run_id, tool_call_id=tool_call_id, step_id=step_id,reuse_recent=reuse_recent)
     raise AssistantError("tool_invalid", "此业务查询未注册。")
 
 
