@@ -132,7 +132,7 @@ def build_template(db, user, request):
     sheet.title = SHEET
     sheet.sheet_view.showGridLines = False
     end = get_column_letter(len(headers))
-    notes = [SUMMARY_TITLE if summary else TITLE, f'生成时间：{now_text()} · 灰色为系统资料，浅黄色为仓库填写区。',
+    notes = [SUMMARY_TITLE if summary else TITLE, f'生成时间：{now_text()} · 灰色为系统资料，浅黄色为仓库填写区；收料单号可留空。',
              ('同一物料合并未收需求，仓库无需分合同；回传后由业务核对系统按最迟回料日生成的分配建议。' if summary else '参考数量为下载时快照；剩余未送货＝订单需求－已实收且分配的正常量及备品，最低为 0；后续出货不重复扣减。'),
              '每种物料单独一行，正常／备品量分开填；混箱用相同箱号、不同原单行号，箱数、尺寸及纸箱重各行填相同值，不累加。同箱物料放在同一文件一次导入，详见箱号批注。']
     for index, note in enumerate(notes, 1):
@@ -150,8 +150,10 @@ def build_template(db, user, request):
         cell.fill = PatternFill('solid', fgColor='286F66' if column <= reference_count else 'F3D98D')
         cell.alignment = Alignment(vertical='center', wrap_text=True)
         cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        if header == '收料单号':
+            cell.comment = Comment('可留空，不需要仓库编制单号。系统按原文件及来源行防止同一文件重复导入；有原单号时也会核对原单号及行号。', '填写说明')
         if header == '箱号':
-            cell.comment = Comment('混箱示例：A物料100件、B物料50件装在同一箱，两行均填箱号M01、箱数1、相同尺寸和每箱空纸箱重量；数量分别填100和50。系统将其合为一个包装组，箱数及体积只计一次。\n同箱按仓库＋收料单号＋箱号识别，行号必须不同。多箱内容完全相同可使用同一包装组编号，数量填写该组全部箱合计。装量或物料组成不同请分组；同物料分组时复制物料行并使用不同原单行号。\n同箱物料必须在同一文件一起导入；装箱资料未知可留空，由业务补齐。', '填写说明')
+            cell.comment = Comment('混箱示例：A物料100件、B物料50件装在同一箱，两行均填箱号M01、箱数1、相同尺寸和每箱空纸箱重量；数量分别填100和50。系统将其合为一个包装组，箱数及体积只计一次。\n同箱按仓库＋收料单号（无单号时按本次原文件）＋箱号识别，行号必须不同。多箱内容完全相同可使用同一包装组编号，数量填写该组全部箱合计。装量或物料组成不同请分组；同物料分组时复制物料行并使用不同原单行号。\n同箱物料必须在同一文件一起导入；装箱资料未知可留空，由业务补齐。', '填写说明')
             cell.comment.width, cell.comment.height = 480, 240
         elif header in {'箱数', '长cm', '宽cm', '高cm', '每箱纸箱重量kg'}:
             cell.comment = Comment('同箱各物料行填写相同值，不按物料重复累加。每箱纸箱重量只填空纸箱重量，不含物料。', '填写说明')
@@ -161,6 +163,7 @@ def build_template(db, user, request):
     # Keep matching context in the file without making warehouse staff handle it.
     for column in (() if summary else ('D', 'E', 'G')):
         sheet.column_dimensions[column].hidden = True
+    sheet.column_dimensions[get_column_letter(headers.index('收料单号') + 1)].hidden = True
     sheet.row_dimensions[HEADER_ROW].height = 38
     for index, values in enumerate(rows, FIRST_ROW):
         for column, value in enumerate(values, 1):

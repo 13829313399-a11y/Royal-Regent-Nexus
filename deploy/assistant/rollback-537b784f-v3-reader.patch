@@ -1,0 +1,72 @@
+--- a/backend/app/core/config.py
++++ b/backend/app/core/config.py
+@@ -74,7 +74,7 @@
+     assistant_storage_dir: str = str(BACKEND_DIR / "data" / "assistant")
+     assistant_trusted_origins: list[str] = []
+     assistant_max_file_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
+-    assistant_max_tool_rounds: int = Field(default=5, ge=1, le=16)
++    assistant_max_tool_rounds: int = Field(default=5, ge=0, le=16)
+     assistant_daily_token_budget: int | None = Field(default=None, ge=1)
+     assistant_retention_days: int | None = Field(default=None, ge=1)
+ 
+--- a/backend/app/services/assistant/service.py
++++ b/backend/app/services/assistant/service.py
+@@ -68,6 +68,14 @@
+         if any(s.get('kind')=='help' and not s.get('source_fingerprint') for s in refs):
+             result['help_verification'] = 'legacy_version_only'
+         with database.SessionLocal() as db:
++            from . import rollback_compat
++            run = db.get(Run, row.run_id)
++            dependencies = rollback_compat.source_refs(db, run)
++            if dependencies is None:
++                result.update(content_parts=[{"type": "text", "text": "这段内容的来源依赖无法安全读取，当前不可查看。"}],
++                              help_citations=[], context_descriptor=None, unavailable=True)
++                return result
++            refs += dependencies
+             if row.role == "user":
+                 paired = db.scalar(select(Message).where(Message.run_id == row.run_id, Message.role == "assistant"))
+                 refs += visibility.sources(paired.content_parts) if paired else []
+--- /dev/null
++++ b/backend/app/services/assistant/rollback_compat.py
+@@ -0,0 +1,41 @@
++"""Read V3 security dependencies without requiring V3 ORM models.
++
++This small reader is also shipped in the reviewed prior-code rollback patch.
++None means the newer run cannot be safely projected by this reader.
++"""
++from copy import deepcopy
++import json
++from sqlalchemy import inspect, text
++from sqlalchemy.exc import SQLAlchemyError
++
++TABLE='nexus_assistant_executions'
++KINDS=frozenset(('business','file','help','web'))
++
++
++def decode_refs(raw):
++    try:
++        value=json.loads(raw) if isinstance(raw,str) else raw
++    except (ValueError,TypeError):
++        return None
++    if not isinstance(value,list):return None
++    if any(not isinstance(s,dict) or not isinstance(s.get('source_id'),str) or not s['source_id']
++           or not isinstance(s.get('kind'),str) or s['kind'] not in KINDS for s in value):
++        return None
++    return deepcopy(value)
++
++
++def source_refs(db,run):
++    if run is None or not isinstance(run.request_input,dict):return None
++    version=run.request_input.get('protocol_version',1)
++    if type(version) is not int or version<1:return None
++    if version<=2:return []
++    if version!=3:return None
++    try:
++        inspector=inspect(db.connection())
++        if not inspector.has_table(TABLE):return None
++        if not {'run_id','source_refs'} <= {c['name'] for c in inspector.get_columns(TABLE)}:return None
++        raw=db.execute(text('SELECT source_refs FROM nexus_assistant_executions WHERE run_id=:rid'),{'rid':run.id}).scalar_one_or_none()
++    except SQLAlchemyError:
++        # No SQL parameters, source values or response content enter a log.
++        return None
++    return decode_refs(raw)

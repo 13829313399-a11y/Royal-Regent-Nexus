@@ -18,7 +18,7 @@ def normalized(value):
 
 def packing_key(source, warehouse=''):
     return tuple(normalized(value) for value in
-                 (source.get('warehouse') or warehouse, source.get('receipt_no'), source.get('package_label')))
+                 (source.get('warehouse') or warehouse, source.get('receipt_no') or ('file:' + source['_document_key'] if source.get('_document_key') else ''), source.get('package_label')))
 
 
 def packing_groups(rows, warehouse='', previously_received=()):
@@ -36,7 +36,7 @@ def packing_groups(rows, warehouse='', previously_received=()):
         output_label = label if labels[key[-1]] == 1 else f'{label[:140]}（来源 {position}）'
         issues, values, invalid_rows = [], [], []
         if not all(key):
-            issues.append('缺少仓库或收料单号')
+            issues.append('缺少仓库或原始文件来源')
         if key in previously_received or any(row.get('imported_supply_id') for row in members):
             issues.append('同箱已有导入记录，请核对原出货草稿，避免重复计箱')
         if any(row.get('blocked') for row in members):

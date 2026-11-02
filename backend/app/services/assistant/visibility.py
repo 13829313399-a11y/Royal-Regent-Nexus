@@ -4,7 +4,7 @@ from app import db as database
 
 
 def sources(parts):
-    return [s for p in parts if p.get("type") == "evidence" for s in p.get("sources", [])]
+    return [s for p in parts if p.get("type") in ("evidence", "source_dependencies") for s in p.get("sources", [])]
 
 
 def allowed(user, refs, db=None):

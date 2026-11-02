@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,7 @@ import CuttingCostSummary from './CuttingCostSummary.vue'
 import CuttingCostAllocation from './CuttingCostAllocation.vue'
 const props=defineProps<{lineId:string;permissions:string[];withCosts?:boolean;blocked?:boolean;view?:string}>()
 const emit=defineEmits<{editing:[value:boolean]}>()
+const fieldId=`cutting-usage-${useId()}`
 const ledger=ref<UsageLedger>(),draft=ref<UsageCommand>(),mode=ref<UsageAction>(),pending=ref<{id:string;action:UsageAction;body:UsageCommand}>()
 const loading=ref(false),saving=ref(false),error=ref(''),notice=ref(''),needsLogin=ref(false),uncertain=ref(false),baseline=ref('')
 const readAllowed=ref(false)
@@ -101,16 +102,16 @@ function hasBalance(issue:UsageIssue){return !issue.reversed&&Number(issue.remai
         <h3>{{labels[mode]}}</h3><Button type="button" variant="outline" :disabled="saving||loading||!!pending||blocked" @click="refreshDraft">保留填写并刷新耗用版本</Button>
         <fieldset :disabled="saving||loading||!!pending||blocked" class="usage-fields">
           <p v-if="selectedIssue">{{selectedIssue.context.task_name}} · {{selectedIssue.context.item_name}} · 缸号 {{selectedIssue.context.lot}} / 卷号 {{selectedIssue.context.roll_no}} · 原单位 {{selectedIssue.context.unit}}；账面余料 {{selectedIssue.remaining_quantity}}</p>
-          <label>{{mode==='allocate'?'确认日期':'业务日期'}}<input v-model="draft.day" type="date" :max="today()" :readonly="mode==='correct'||mode==='allocate'" required /></label>
+          <label :for="`${fieldId}-day`">{{mode==='allocate'?'确认日期':'业务日期'}}<input :id="`${fieldId}-day`" v-model="draft.day" name="day" type="date" :max="today()" :readonly="mode==='correct'||mode==='allocate'" required /></label>
           <template v-if="mode==='allocate'">
             <p>按当前累计实绩确认，不能倒签历史月结。合格完成 {{allocationGroup?.completed_sets??'待核对'}} 套；耗用或实绩变更后须重新确认。</p>
-            <label v-for="row in draft.allocations" :key="row.issue_id">完工归属量 · {{ledger?.issues.find(i=>i.issue_id===row.issue_id)?.context.item_name}}（{{ledger?.issues.find(i=>i.issue_id===row.issue_id)?.context.unit}}）· 原实发 {{row.issue_id}}
-              <input v-model.trim="row.completed_quantity" inputmode="decimal" required />
+            <label v-for="row in draft.allocations" :key="row.issue_id" :for="`${fieldId}-completed-${row.issue_id}`">完工归属量 · {{ledger?.issues.find(i=>i.issue_id===row.issue_id)?.context.item_name}}（{{ledger?.issues.find(i=>i.issue_id===row.issue_id)?.context.unit}}）· 原实发 {{row.issue_id}}
+              <input :id="`${fieldId}-completed-${row.issue_id}`" v-model.trim="row.completed_quantity" :name="`allocations[${row.issue_id}].completed_quantity`" inputmode="decimal" required />
               <span>正常耗用 {{ledger?.issues.find(i=>i.issue_id===row.issue_id)?.consumed_quantity}}；剩余在制 {{subtractQuantities(ledger?.issues.find(i=>i.issue_id===row.issue_id)?.consumed_quantity??'',row.completed_quantity)??'待填写'}}（原单位）</span>
             </label>
-            <label><input v-model="draft.materials_complete" type="checkbox" />已核对本任务全部物料耗用已登记完整</label>
-            <label><input v-model="draft.public_material_pending" type="checkbox" />仍有公共耗料待分配核对</label>
-            <label><input v-model="allocationChecked" type="checkbox" required />已按当前合格完成套数和全部实发清单逐笔核对</label>
+            <label :for="`${fieldId}-materials-complete`"><input :id="`${fieldId}-materials-complete`" v-model="draft.materials_complete" name="materials_complete" type="checkbox" />已核对本任务全部物料耗用已登记完整</label>
+            <label :for="`${fieldId}-public-material-pending`"><input :id="`${fieldId}-public-material-pending`" v-model="draft.public_material_pending" name="public_material_pending" type="checkbox" />仍有公共耗料待分配核对</label>
+            <label :for="`${fieldId}-allocation-checked`"><input :id="`${fieldId}-allocation-checked`" v-model="allocationChecked" name="allocation_checked" type="checkbox" required />已按当前合格完成套数和全部实发清单逐笔核对</label>
           </template>
           <template v-if="isUsage">
             <p v-if="mode==='correct'">更正原单 {{draft.document_id}}；保存将原子撤销原单并生成关联替代单，失败则原单保持生效。</p>
@@ -121,18 +122,18 @@ function hasBalance(issue:UsageIssue){return !issue.reversed&&Number(issue.remai
               <p v-if="balance.same_day_document_ids.length">当日已有有效耗用单 {{balance.same_day_document_ids.join('、')}}，请使用更正原单。</p>
               <p v-if="balance.later_documents.length">后续依赖：<span v-for="item in balance.later_documents" :key="item.document_id">{{item.day}} · {{item.document_id}}；</span>更正如影响后续盘余，须先核对后续单据。</p>
             </div>
-            <label>本次实际正常耗用<input v-model.trim="draft.consumed_quantity" inputmode="decimal" required /></label>
-            <label>本次裁剪损耗／报废<input v-model.trim="draft.loss_quantity" inputmode="decimal" required /></label>
-            <label>本次盘余核对数量<input v-model.trim="draft.counted_remaining" inputmode="decimal" required /></label>
+            <label :for="`${fieldId}-consumed`">本次实际正常耗用<input :id="`${fieldId}-consumed`" v-model.trim="draft.consumed_quantity" name="consumed_quantity" inputmode="decimal" required /></label>
+            <label :for="`${fieldId}-loss`">本次裁剪损耗／报废<input :id="`${fieldId}-loss`" v-model.trim="draft.loss_quantity" name="loss_quantity" inputmode="decimal" required /></label>
+            <label :for="`${fieldId}-remaining`">本次盘余核对数量<input :id="`${fieldId}-remaining`" v-model.trim="draft.counted_remaining" name="counted_remaining" inputmode="decimal" required /></label>
             <p>盘余须等于所选业务日期、登记截止时点的净签收扣除累计耗用及损耗。差异请核对原单和实际损耗，不自动填补差额。同一实发批次同一天仅保留一张有效耗用单；更正请使用原单上的关联更正入口。</p>
           </template>
           <template v-if="mode==='price'">
-            <label>原批次实际单位成本<input v-model.trim="draft.unit_cost" inputmode="decimal" required /></label>
-            <label>币种<select v-model="draft.currency" required><option value="">请选择币种</option><option>CNY</option><option>HKD</option><option>USD</option></select></label>
-            <label>成本凭据与原单位口径<textarea v-model.trim="draft.price_reference" minlength="4" maxlength="500" required /></label>
+            <label :for="`${fieldId}-unit-cost`">原批次实际单位成本<input :id="`${fieldId}-unit-cost`" v-model.trim="draft.unit_cost" name="unit_cost" inputmode="decimal" required /></label>
+            <label :for="`${fieldId}-currency`">币种<select :id="`${fieldId}-currency`" v-model="draft.currency" name="currency" required><option value="">请选择币种</option><option>CNY</option><option>HKD</option><option>USD</option></select></label>
+            <label :for="`${fieldId}-price-reference`">成本凭据与原单位口径<textarea :id="`${fieldId}-price-reference`" v-model.trim="draft.price_reference" name="price_reference" minlength="4" maxlength="500" required /></label>
             <p>零成本也须明确凭据。本次确认适用于同一原批次的全部关联任务；修订保存为新版本，历史价格保留，不从采购导入单价自动取值。</p>
           </template>
-          <label>{{mode==='post'?'耗用、损耗及盘余依据':'操作原因'}}<textarea v-model.trim="draft.reason" maxlength="500" required /></label>
+          <label :for="`${fieldId}-reason`">{{mode==='post'?'耗用、损耗及盘余依据':'操作原因'}}<textarea :id="`${fieldId}-reason`" v-model.trim="draft.reason" name="reason" maxlength="500" required /></label>
           <div class="cutting-master-actions"><Button type="submit" :disabled="isUsage&&(balanceLoading||!balance||!!balanceError)">确认耗用／成本操作</Button><Button type="button" variant="outline" @click="discard">取消耗用／成本编辑</Button></div>
         </fieldset>
       </form>

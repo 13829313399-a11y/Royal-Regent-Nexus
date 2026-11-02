@@ -22,7 +22,7 @@ export interface BoardOrder {
 export interface WorkspaceResponse { records: MaterialRecord[]; board: BoardOrder[]; permissions: string[]; option_defaults?: Data[] }
 export type Action = 'option_save' | 'option_delete' | 'option_restore' | 'customer_delete' | 'customer_restore' | 'product_delete' | 'product_restore' | 'material_restore' | 'customer_save' | 'material_save' | 'product_save' | 'order_save' | 'order_plan_save' | 'order_materials_sync' | 'order_recalculate' | 'demand_adjust'
   | 'supply_save' | 'supply_reply' | 'output_material_refresh' | 'receipt_confirm' | 'allocate' | 'reallocate'
-  | 'shipment_save' | 'shipment_confirm' | 'import_confirm' | 'warehouse_import_confirm' | 'master_import_confirm' | 'draft_transfer'
+  | 'shipment_save' | 'shipment_confirm' | 'import_confirm' | 'warehouse_import_correct' | 'warehouse_import_confirm' | 'master_import_confirm' | 'draft_transfer'
 export interface Command {
   factory_id: string; operation_id: string; action: Action; entity_id: string | null
   expected_version: number; data: Data

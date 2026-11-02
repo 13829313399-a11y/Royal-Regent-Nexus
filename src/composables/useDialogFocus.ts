@@ -2,6 +2,23 @@ import { nextTick, onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
 const modalInertOwners = new WeakMap<HTMLElement, { count: number; previous: boolean }>()
 
+export function acquireDialogInert(element: HTMLElement) {
+  const entry = modalInertOwners.get(element) ?? { count: 0, previous: !!element.inert }
+  entry.count++
+  modalInertOwners.set(element, entry)
+  element.inert = true
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    const current = modalInertOwners.get(element)
+    if (current && --current.count === 0) {
+      element.inert = current.previous
+      modalInertOwners.delete(element)
+    }
+  }
+}
+
 const focusableSelector = [
   'a[href]',
   'button:not([disabled])',
@@ -31,7 +48,7 @@ export function useDialogFocus(
   let activeRoot: HTMLElement | null = null
   let lastRoot: HTMLElement | null = null
   let generation = 0
-  let inerted: HTMLElement[] = []
+  let inerted: Array<() => void> = []
 
   function focusables() {
     return activeRoot
@@ -75,7 +92,7 @@ export function useDialogFocus(
   function detach() {
     activeRoot?.removeEventListener('keydown', handleKeydown)
     activeRoot = null
-    for (const element of inerted) { const entry = modalInertOwners.get(element); if (entry && --entry.count === 0) { element.inert = entry.previous; modalInertOwners.delete(element) } }
+    for (const release of inerted) release()
     inerted = []
   }
 
@@ -101,7 +118,7 @@ export function useDialogFocus(
       lastRoot = activeRoot
       if (options.inertBackground && activeRoot) {
         for (const element of Array.from(document.body.children)) {
-          if (element instanceof HTMLElement && !element.contains(activeRoot) && !['SCRIPT', 'STYLE'].includes(element.tagName)) { const entry = modalInertOwners.get(element) ?? { count: 0, previous: element.inert }; entry.count++; modalInertOwners.set(element, entry); inerted.push(element); element.inert = true }
+          if (element instanceof HTMLElement && !element.contains(activeRoot) && !['SCRIPT', 'STYLE'].includes(element.tagName)) inerted.push(acquireDialogInert(element))
         }
       }
       activeRoot?.addEventListener('keydown', handleKeydown)

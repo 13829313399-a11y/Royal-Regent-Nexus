@@ -26,7 +26,7 @@ const internalQuoteApiMock = vi.hoisted(() => ({
   archiveQuote: vi.fn(),
   restoreQuote: vi.fn(),
   create: vi.fn(),
-  clone: vi.fn(),
+  cloneDocument: vi.fn(),
   getPricingBaseline: vi.fn(),
   updatePricingBaseline: vi.fn(),
 }))
@@ -248,7 +248,7 @@ describe('InternalQuoteHome factory permission boundary', () => {
     internalQuoteApiMock.deleteQuote.mockReset()
     internalQuoteApiMock.archiveQuote.mockReset()
     internalQuoteApiMock.create.mockReset()
-    internalQuoteApiMock.clone.mockReset()
+    internalQuoteApiMock.cloneDocument.mockReset()
     internalQuoteApiMock.getPricingBaseline.mockReset()
     internalQuoteApiMock.updatePricingBaseline.mockReset()
   })
@@ -603,7 +603,7 @@ describe('InternalQuoteHome factory permission boundary', () => {
           : [],
       ))
       internalQuoteApiMock.create.mockReturnValue(operation.promise)
-      internalQuoteApiMock.clone.mockReturnValue(operation.promise)
+      internalQuoteApiMock.cloneDocument.mockReturnValue(operation.promise)
 
       const pinia = createPinia()
       setActivePinia(pinia)
@@ -621,7 +621,7 @@ describe('InternalQuoteHome factory permission boundary', () => {
       }
       wrapper.findComponent(InternalQuoteCreateDialog).vm.$emit('confirm', createPayload)
       await Promise.resolve()
-      expect(mode === 'create' ? internalQuoteApiMock.create : internalQuoteApiMock.clone).toHaveBeenCalledTimes(1)
+      expect(mode === 'create' ? internalQuoteApiMock.create : internalQuoteApiMock.cloneDocument).toHaveBeenCalledTimes(1)
 
       appStore.setActiveFactory('huakang-d')
       await flushPromises()

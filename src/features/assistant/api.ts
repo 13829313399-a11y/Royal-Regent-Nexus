@@ -1,6 +1,6 @@
 import { dispatchAccessFailure } from '@/lib/http'
 import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
-import type { Artifact, DocumentFile, Capabilities, Conversation, HelpArticle, MessagePage, ModuleCoverage, PageContext, SendPayload, Snapshot } from './types'
+import type { Artifact, DocumentFile, Capabilities, Conversation, HelpArticle, MessagePage, ModuleCoverage, PageContext, SendPayload, Snapshot, FeedbackData, FeedbackRecord, FeedbackSave, OperationalSummary } from './types'
 
 export function assistantUrl(path: string, base = import.meta.env.VITE_API_BASE_URL || '/api') {
   return `${base.replace(/\/$/, '')}/assistant${path}`
@@ -25,6 +25,8 @@ async function json<T>(path: string, init: RequestInit = {}): Promise<T> { retur
 export const assistantApi = {
   capabilities: () => json<Capabilities>('/capabilities'),
   diagnostics: () => json<Record<string, unknown>>('/diagnostics'),
+  operations: (days:number,signal:AbortSignal) => json<OperationalSummary>(`/diagnostics/operations?days=${days}`,{signal}),
+  operationsTrace: (id:string,signal:AbortSignal) => json<Record<string,unknown>>(`/diagnostics/runs/${encodeURIComponent(id)}`,{signal}),
   coverage: (factory: string, module: string | undefined, signal: AbortSignal) => json<ModuleCoverage>(`/coverage?${new URLSearchParams({factory_id: factory, ...(module ? {module_id: module} : {})})}`, {signal}),
   help: (page: PageContext) => json<{ items: HelpArticle[]; status: string }>(`/help/context?${new URLSearchParams({ module_id: page.module_id, route_name: page.route_name, ...(page.factory_id ? { factory_id: page.factory_id } : {}) })}`),
   article: (id: string) => json<HelpArticle>(`/help/articles/${encodeURIComponent(id)}`),
@@ -36,6 +38,11 @@ export const assistantApi = {
   send: (id: string, payload: SendPayload, signal: AbortSignal) => request(`/sessions/${id}/messages`, { method: 'POST', body: JSON.stringify(payload), signal }),
   lookup: (id: string, key: string) => json<Snapshot>(`/sessions/${id}/runs/lookup?client_request_id=${encodeURIComponent(key)}`),
   snapshot: (id: string) => json<Snapshot>(`/runs/${id}`),
+  events: (id: string, after_seq: number, signal: AbortSignal, subscriberId?:string) => request(`/runs/${id}/events?after_seq=${after_seq}${subscriberId ? `&subscriber_id=${encodeURIComponent(subscriberId)}` : ''}`, { signal }),
+  receipt: (id:string,subscriberId:string,applied_seq:number,signal:AbortSignal) => json<{applied_seq:number}>(`/runs/${id}/subscriptions/${encodeURIComponent(subscriberId)}/receipt`,{method:'POST',body:JSON.stringify({applied_seq}),signal}),
+  feedback: (id:string,signal:AbortSignal) => json<FeedbackData>(`/runs/${id}/feedback`,{signal}),
+  saveFeedback: (id:string,payload:FeedbackSave,signal:AbortSignal) => json<FeedbackRecord>(`/runs/${id}/feedback`,{method:'PUT',body:JSON.stringify(payload),signal}),
+  question: (id: string) => json<{run_id: string; session_id: string; payload: Omit<SendPayload, 'client_request_id'>}>(`/runs/${id}/question`),
   cancel: (id: string) => json<{ state: string }>(`/runs/${id}/cancel`, { method: 'POST' }),
   export: async (id: string) => (await request(`/sessions/${id}/export`)).blob(),
   upload: async (id: string, file: File) => { const body = new FormData(); body.append('file', file); return json<{ id: string }>(`/sessions/${id}/attachments`, { method: 'POST', body }) },

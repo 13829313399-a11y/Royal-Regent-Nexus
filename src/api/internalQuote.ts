@@ -732,6 +732,9 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       const response = await client.post<ApiInternalQuote>('/internal-quotes', payload)
       return response.data
     },
+    async cloneDocument(quoteId: string, payload: InternalQuoteCloneRequest & { products: Array<{ source_quote_id?: string; revision?: number; product_name: string; qty: number; pricing_components?: string[] }> }) {
+      return (await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/clone-document`, payload)).data
+    },
     async clone(quoteId: string, payload: InternalQuoteCloneRequest) {
       const response = await client.post<ApiInternalQuote>(`/internal-quotes/${quoteId}/clone`, payload)
       return response.data

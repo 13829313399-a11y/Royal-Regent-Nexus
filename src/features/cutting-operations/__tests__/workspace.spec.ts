@@ -23,6 +23,15 @@ const button=(name:string)=>wrapper.findAll('button').find(b=>b.text()===name)!
 beforeEach(()=>{vi.resetAllMocks()})
 afterEach(()=>{wrapper?.unmount();vi.useRealTimers()})
 describe('cutting read-only workspaces',()=>{
+  it('gives embedded inventory filters unique IDs, names and explicit labels',async()=>{
+    vi.mocked(workspaceApi.inventory).mockResolvedValue({...empty,units:{}})
+    wrapper=mount({components:{Inventory},template:'<Inventory /><Inventory summary />'})
+    await flushPromises()
+    const controls=wrapper.findAll('form input,form select')
+    expect(controls).toHaveLength(4)
+    expect(new Set(controls.map(c=>c.attributes('id'))).size).toBe(4)
+    for(const control of controls){expect(control.attributes('name')).toBeTruthy();expect(wrapper.findAll('label').some(l=>l.attributes('for')===control.attributes('id'))).toBe(true)}
+  })
   it('gives dashboard and daily-reporting filters unique names and explicit labels',async()=>{
     vi.mocked(workspaceApi.tasks).mockResolvedValue(task)
     wrapper=mount({components:{TaskBoard},template:'<TaskBoard /><TaskBoard reporting />'},{global:{plugins:[router]}});await flushPromises()
