@@ -10,7 +10,7 @@ const apiMock = vi.hoisted(() => ({
   list: vi.fn(),
   get: vi.fn(),
   create: vi.fn(),
-  clone: vi.fn(),
+  cloneDocument: vi.fn(),
   addParticipation: vi.fn(),
   removeParticipation: vi.fn(),
   updateHeader: vi.fn(),
@@ -193,7 +193,7 @@ describe('internal quote desk real API state', () => {
     apiMock.listAttachments.mockResolvedValue([{ id: 'attachment-1', quote_id: 'quote-1', department: 'sales', file_name: '核价依据.xlsx', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size_bytes: 128, sha256: 'attachment-sha', uploaded_by: 'u1', uploaded_by_name: '业务经办', uploaded_at: '2026-07-16 10:30' }])
     apiMock.listExports.mockResolvedValue([{ id: 'export-1', file_name: '最终放行.xlsx', template_version: 'internal-quote-p4-v1', release_stage: 'p4_final_approved', exported_by: 'u3', exported_by_name: '终审主管', exported_at: '2026-07-16 11:00', sha256: 'abc', status: 'current' }])
     apiMock.create.mockResolvedValue(quote({ id: 'created-1', quote_no: 'IQ-CREATED' }))
-    apiMock.clone.mockResolvedValue(quote({ id: 'clone-1', quote_no: 'IQ-CLONE', status: 'drafting', sections: sectionCodes.map((code, index) => ({ ...section(code, index), status: 'draft', revision: 1 })) }))
+    apiMock.cloneDocument.mockResolvedValue(quote({ id: 'clone-1', quote_no: 'IQ-CLONE', status: 'drafting', sections: sectionCodes.map((code, index) => ({ ...section(code, index), status: 'draft', revision: 1 })) }))
     apiMock.saveSection.mockResolvedValue({ ...section('engineering', 1), revision: 2, payload: { molds: [{ item: '模具A' }] } })
     apiMock.saveWholeProduct.mockResolvedValue({ quote: quote(), sections: [] })
     apiMock.addParticipation.mockResolvedValue(quote())
@@ -593,10 +593,10 @@ describe('internal quote desk real API state', () => {
       participatingSections: ['sales', 'engineering', 'electronic', 'assembly'] as InternalQuoteSectionCode[],
     }
     const created = await store.createQuote(payload)
-    const cloned = await store.cloneQuote(created.id, { ...payload, quoteNo: 'IQ-CLONE' })
+    const cloned = await store.cloneQuote(created.id, { ...payload, quoteNo: 'IQ-CLONE', products: [{ productName: '产品', quantity: 1000, regionCode: '', cloneSourceQuoteId: created.id, cloneSourceRevision: created.headerRevision }] })
 
     expect(apiMock.create.mock.calls[0][0]).toMatchObject({ factory_id: 'huaxing', business_owner_id: 'owner-1', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'direct_output' })
-    expect(apiMock.clone).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'direct_output' }))
+    expect(apiMock.cloneDocument).toHaveBeenCalledWith('created-1', expect.objectContaining({ quote_no: 'IQ-CLONE', products: [{ source_quote_id: created.id, revision: created.headerRevision, product_name: '产品', qty: 1000 }], business_owner_name: '业务负责人', target_customer_price: 'USD 3.50', participating_sections: ['engineering', 'assembly', 'electronic', 'sales'], workflow_mode: 'direct_output' }))
     expect(cloned.id).toBe('clone-1')
   })
 
