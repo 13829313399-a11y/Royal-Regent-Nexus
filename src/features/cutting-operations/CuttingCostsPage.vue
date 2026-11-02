@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
@@ -13,6 +13,7 @@ import { useCuttingLocation } from './location'
 import CuttingLocationNotice from './CuttingLocationNotice.vue'
 import CuttingCostOverview from './CuttingCostOverview.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
+const filterId=`cutting-cost-orders-${useId()}`
 // Editable search text is applied only by an explicit query.
 const appliedQuery=ref('')
 const costView=ref('orders')
@@ -58,7 +59,7 @@ onMounted(()=>void load(1,false,true))
     <template v-else-if="access?.enabled&&access.usage_schema_ready">
       <CuttingCostOverview v-show="costView==='orders'" @open="openCost" />
       <SectionPanel v-show="costView!=='orders'" title="选择费用核对订单" class="cutting-content-panel">
-        <form class="order-toolbar" @submit.prevent="load(1,false,false,true)"><label>订单号／货号<input v-model="query" maxlength="80" /></label><Button type="submit" variant="outline" :disabled="loading">查询／刷新</Button></form>
+        <form class="order-toolbar" @submit.prevent="load(1,false,false,true)"><label :for="`${filterId}-query`">订单号／货号<input :id="`${filterId}-query`" v-model="query" name="order_q" maxlength="80" /></label><Button type="submit" variant="outline" :disabled="loading">查询／刷新</Button></form>
         <div class="cutting-table-scroll" role="region" aria-label="费用订单，可横向滚动" tabindex="0"><table><thead><tr><th>客户</th><th>生产／订单号</th><th>货号</th><th>货名</th><th>款式分类</th><th>操作</th></tr></thead><tbody><tr v-for="order in rows" :key="order.line_id"><td>{{order.snapshot.customer_name}}</td><td>{{order.snapshot.reference_no}}</td><td>{{order.snapshot.product_no}}</td><td class="cutting-order-product-name">{{ orderProductName(order.snapshot) }}</td><td :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</td><td><Button size="sm" variant="outline" :disabled="loading" @click="select(order)">查看耗用与费用</Button></td></tr></tbody></table></div>
         <p v-if="!rows.length&&!loading&&!error" class="cutting-no-records">{{appliedQuery?'当前筛选无匹配订单，请清除筛选后查看。':'暂无已下发裁床订单。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(1,false,false,true)">清除筛选</Button></p>
         <nav class="order-pagination" aria-label="费用订单分页"><span>第 {{page}} 页 · 共 {{total}} 条</span><Button variant="outline" :disabled="loading||page<=1" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="loading||page*50>=total" @click="load(page+1)">下一页</Button></nav>

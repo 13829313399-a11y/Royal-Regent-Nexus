@@ -1,12 +1,13 @@
 """P3a cross-domain acceptance. Temporary SQLite only; no real inventory writes."""
 import json
+from copy import deepcopy
 from dataclasses import replace
 from uuid import uuid4
 import pytest
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
-from test_cutting_ops import client, user, command, BASE
-from test_cutting_orders import flow, read as order_read, amend
+from test_cutting_ops import client, user, command, create, state, BASE
+from test_cutting_orders import flow, read as order_read, post as order_post, amend
 from test_cutting_planning import planned, resource, task, save, publish
 from app.api import warehouse_operations as warehouse_api
 from app.models.fabric_master import FabricMasterRecord
@@ -150,6 +151,70 @@ def test_catalog_is_whitelisted_and_unit_or_material_changes_block(bridge):
     send(p,'request',request_body(p)|{'material_revision':2},422)
     frozen=ledger(p)['requests'][0]['context']['warehouse_material']
     assert frozen['unit']=='米' and frozen['spec']=='规格A' and frozen['color']=='蓝' and frozen['revision']==1
+
+
+def test_bom_unit_revision_preserves_original_signatures_and_separate_stock(bridge):
+    p = bridge
+    original = send(p, 'request', request_body(p))
+    issued = issue(p, original)
+    send(p, 'receive', decision(p, issued, quantity='1'))
+    original_context = deepcopy(ledger(p)['requests'][0]['context'])
+    p.cutting_auth['user'] = actor('master_write', 'bom_write', 'bom_publish', 'requisition_submit',
+        'requisition_reconcile', 'plan_write', 'plan_publish', 'material_request', 'material_receive')
+    kg = create(p, command(kind='material', code='CUT-KG', data=dict(name='公斤验收物料',
+        category='fabric', unit='公斤', color='蓝', specification='规格A', source_reference='合成单位验收')))
+    old_bom = order_read(p)['current']['data']['bom']
+    data = deepcopy(old_bom['data'])
+    data['requirements'][0].update(material_id=kg['id'], material_version=kg['version'], unit='公斤')
+    draft = p.put(BASE + '/masters/' + old_bom['id'], json=command(kind='bom', code=old_bom['code'],
+        expected_version=old_bom['version'], data=data))
+    assert draft.status_code == 200, draft.text
+    published = state(p, draft.json(), 'published')
+    assert published.status_code == 200, published.text
+    new_bom = published.json()
+
+    def change(action, **kw):
+        result = order_post(p, action, expected_version=order_read(p)['current']['version'], **kw)
+        assert result.status_code == 200, result.text
+        return result.json()
+
+    req_version = order_read(p)['current']['data']['requisition']['version']
+    change('withdraw', requisition_version=req_version)
+    change('reconcile', requisition_version=req_version, disposition='cancelled_or_reallocated',
+        evidence='合成采购承诺已逐项核对处置，非真实采购', all_handled=True)
+    change('bom', bom_id=new_bom['id'], bom_version=new_bom['version'], target_sets=50,
+        quantity_basis='订单100件按50套，单位变更单独核对')
+    change('requisition', lines=[dict(row=i, quantity='0', purchase_mode='no_purchase',
+        no_purchase_reason='合成库存供料') for i in range(len(data['requirements']))])
+    prior_task = order_read(p)['current']['data']['planning']['published']['tasks'][0]
+    ref = dict(id=prior_task['resource_id'], version=prior_task['resource_version'])
+    assert save(p, [task(ref)]).status_code == 200
+    assert publish(p).status_code == 200
+
+    before = warehouse_view(p)
+    issue(p, original, quantity='1', status=409)
+    assert warehouse_view(p)['revision'] == before['revision']
+    send(p, 'receive', decision(p, issued, quantity='3'))
+    with Session(p.engine) as db:
+        db.add(FabricMasterRecord(id='fabric-kg', factory_id='huakang-c', kind='MATERIAL', code='FAB-KG',
+            name='公斤验收物料', status='ACTIVE', revision=1,
+            data_json=json.dumps(dict(category='FABRIC', unit='公斤', spec='规格A', color='蓝')),
+            updated_at='2026-10-10'))
+        db.commit()
+    kg_stock = warehouse_post(p, 'RECEIPT', quantity='20', source_no='kg-stock', source_line='1',
+        item_code='FAB-KG', item_name='公斤验收物料', unit='公斤', location_id='bin', lot='KG-1', counterparty='测试供方')
+    new_request = send(p, 'request', request_body(p) | dict(material_id='fabric-kg', quantity='2'))
+    kg_issue = warehouse_post(p, 'ISSUE', original_id=new_request['id'], batch_id=kg_stock['id'],
+        quantity='2', counterparty='R01')
+    send(p, 'receive', decision(p, kg_issue, quantity='2'))
+    rows = {r['id']: r for r in ledger(p)['requests']}
+    old, new = rows[original['id']], rows[new_request['id']]
+    assert old['context'] == original_context and old['unit'] == '米'
+    assert old['issues'][0]['received_quantity'] == '4'
+    assert len(old['receipts']) == 2
+    assert new['unit'] == '公斤' and new['context']['bom_version'] == new_bom['version']
+    assert new['issues'][0]['received_quantity'] == '2'
+    assert {r['unit']: r['quantity'] for r in warehouse_view(p)['stock']} == {'米': '16', '公斤': '18'}
 
 
 def test_issue_retry_survives_unreleased_source_change(bridge):

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watchCuttingWorkspace } from './workspaceRefresh'
-import { computed,onBeforeUnmount,ref,watch } from 'vue'
+import { computed,onBeforeUnmount,ref,useId,watch } from 'vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
 import CuttingMetrics from './CuttingMetrics.vue'
@@ -8,6 +8,7 @@ import { workspaceApi,type InventoryView } from './workspaceApi'
 import { errorMessage } from './api'
 defineEmits<{open:[lineId:string,issueId:string]}>()
 const props=defineProps<{summary?:boolean}>()
+const filterId=`cutting-inventory-${useId()}`
 const result=ref<InventoryView>(),query=ref(''),execution=ref(''),busy=ref(false),error=ref('')
 const applied=ref({q:'',execution:''})
 type Query={q:string;execution:string;page:number;view:string}
@@ -31,7 +32,7 @@ watchCuttingWorkspace(()=>void load())
   <div class="cutting-overview">
     <CuttingMetrics :items="[{label:summary?'订单任务物料汇总':'关联实发记录',value:result?.total??'—',unit:summary?'组':'笔',hint:'已冲销实发不计入当前台账'},...Object.entries(result?.units??{}).map(([unit,v])=>({label:`账面余料（${unit}）`,value:v.remaining_quantity??'—',unit,hint:`待签收 ${v.unsigned_quantity}；已退仓 ${v.returned_quantity}`}))]" />
     <SectionPanel :title="summary?'订单领用汇总':'本厂现场与外发在外物料台账'" class="cutting-content-panel">
-      <form class="order-toolbar" @submit.prevent="load(1,true)"><label>订单号／货号<input v-model="query" maxlength="80" /></label><label>保管范围<select v-model="execution"><option value="">本厂与外发</option><option value="internal">本厂现场</option><option value="outsourced">外发在外</option></select></label><Button :disabled="busy">查询／刷新</Button></form>
+      <form class="order-toolbar" @submit.prevent="load(1,true)"><label :for="`${filterId}-query`">订单号／货号<input :id="`${filterId}-query`" name="order_q" v-model="query" maxlength="80" /></label><label :for="`${filterId}-execution`">保管范围<select :id="`${filterId}-execution`" name="execution" v-model="execution"><option value="">本厂与外发</option><option value="internal">本厂现场</option><option value="outsourced">外发在外</option></select></label><Button :disabled="busy">查询／刷新</Button></form>
       <p class="cutting-muted">当前查询条件：订单号／货号 {{applied.q||'全部'}}；保管范围 {{applied.execution==='internal'?'本厂现场':applied.execution==='outsourced'?'外发在外':'本厂与外发'}}。</p>
       <p v-if="unapplied" role="status" class="cutting-muted">筛选有未查询的修改；当前仍按上次查询条件显示。点击“查询／刷新”后应用，翻页和原条件重试不会提交新输入。</p>
       <p v-if="busy" role="status">正在读取真实签收与耗用余额…</p><p v-if="error" role="alert">{{error}}</p>
