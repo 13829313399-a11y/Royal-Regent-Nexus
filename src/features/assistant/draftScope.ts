@@ -7,7 +7,10 @@ export function useDraftScope(draft: () => Draft, page: () => PageContext | null
   const current = (): DraftScope => ({ page: page(), title: title(), selection: assistantSelection(page()?.module_id) })
   const scope = computed(() => draft().scope ?? current())
   const freeze = () => draft().scope ??= JSON.parse(JSON.stringify(current())) as DraftScope
-  const changed = computed(() => !!draft().scope?.page && JSON.stringify(draft().scope?.page) !== JSON.stringify(page()))
+  const changed = computed(() => {
+    const bound=draft().scope?.page, live=page()
+    return !!bound && (!live || ['module_id','route_name','factory_id','help_id'].some(key => (bound[key as keyof PageContext] ?? null) !== (live[key as keyof PageContext] ?? null)))
+  })
   function adopt() { draft().scope = JSON.parse(JSON.stringify(current())) as DraftScope }
   function includeCurrent() {
     const next = JSON.parse(JSON.stringify(current())) as DraftScope

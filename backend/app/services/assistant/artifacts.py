@@ -6,7 +6,7 @@ import time
 from uuid import uuid4
 from sqlalchemy import select, or_, and_
 from app.models.assistant import AssistantArtifact as Artifact, AssistantArtifactVersion as Version, AssistantMessage as Message, AssistantRun as Run, AssistantFavorite as Favorite
-from . import service, visibility, files, help_registry
+from . import service, visibility, files, help_registry, artifact_data
 from .errors import AssistantError
 from app import db as database
 
@@ -82,7 +82,7 @@ def evidence_summary(evidence):
 
 
 def formats(kind):
-    return ["md", "txt", "csv"] if kind in ("checklist", "table") else ["md", "txt"]
+    return ["md", "txt", "csv", "pdf", "xlsx"] if kind in ("checklist", "table", "chart") else ["md", "txt", "pdf", "xlsx"]
 
 
 def out(db, row, revision=None):
@@ -91,7 +91,9 @@ def out(db, row, revision=None):
         raise AssistantError("not_found", "成果版本不存在。", 404)
     return dict(id=row.id, title=row.title, kind=row.kind, current_revision=row.current_revision, revision=version.revision,
                 content=version.content, source_refs=row.source_refs, source_run_id=row.source_run_id,
-                export_formats=formats(row.kind), updated_at=row.updated_at)
+                export_formats=formats(row.kind), updated_at=row.updated_at,
+                edit_origin="initial_save" if version.revision == 1 else "manual_edit",
+                datasets=artifact_data.for_run(db, row.source_run_id))
 
 
 def create(user, sid, payload):
@@ -105,6 +107,8 @@ def create(user, sid, payload):
         safe = service.message_out(message, user)
         if safe.get("unavailable"):
             raise AssistantError("source_unavailable", "回答所依赖的来源已失效。", 410)
+        if payload.kind == 'chart' and not any(d['charts'] for d in artifact_data.datasets(safe['content_parts'])):
+            raise AssistantError('chart_unavailable', '该回答没有可绘图的授权结构化数据，请保存为报告或清单。', 422)
         now = time.time()
         refs = visibility.sources(safe['content_parts'])
         existing_help = {(s['help_id'],s.get('source_fingerprint')) for s in refs if s['kind']=='help'}
@@ -209,9 +213,16 @@ def table_rows(content):
     return rows
 
 
-def render(content, kind, title, refs, format):
+def render(content, kind, title, refs, format, datasets=()):
     if format not in formats(kind):
-        raise AssistantError("format_unavailable", "这类成果只支持Markdown和纯文本。")
+        raise AssistantError("format_unavailable", "这类成果不支持所选导出格式。")
+    if format in ('pdf', 'xlsx'):
+        from . import artifact_exports
+        return artifact_exports.render(content, kind, title, refs, format, datasets)
+    if datasets:
+        # All structured exports use the same persisted data as the table/chart.
+        # The editable prose remains a separate, explicitly human-edited section.
+        content = content + '\n\n' + artifact_data.markdown(datasets)
     sources = source_lines(refs)
     if format == "csv":
         out = StringIO(newline="")
@@ -222,9 +233,20 @@ def render(content, kind, title, refs, format):
                 match = re.match(r"^\s*[-*]\s+\[([ xX])\]\s*(.*)", line)
                 if match:
                     writer.writerow(["是" if match[1].lower() == "x" else "否", csv_cell(match[2])])
+            if datasets:
+                writer.writerow([])
+                writer.writerow(['原查询数据（与成果表格和图表相同）'])
+                for row in table_rows(artifact_data.markdown(datasets)):
+                    writer.writerow([csv_cell(c) for c in row])
         else:
             for row in table_rows(content):
                 writer.writerow([csv_cell(c) for c in row])
+        for dataset in datasets:
+            writer.writerow([])
+            for line in artifact_data.scope_lines(dataset):
+                writer.writerow([csv_cell(line)])
+            for unknown in dataset['unknown_fields']:
+                writer.writerow(['待核对', csv_cell(unknown['field']), csv_cell(unknown['reason'])])
         writer.writerow([])
         writer.writerow(["来源"])
         for line in sources.splitlines():
@@ -235,7 +257,11 @@ def render(content, kind, title, refs, format):
 
 def export(user, ident, format, revision=None):
     value = get(user, ident, revision)
-    return render(value["content"], value["kind"], value["title"], value["source_refs"], format)
+    rendered = render(value["content"], value["kind"], value["title"], value["source_refs"], format, value['datasets'])
+    # PDF/font and workbook layout can take time. Recheck deletion/revocation
+    # after rendering so a slow export cannot release newly revoked content.
+    get(user, ident, value['revision'])
+    return rendered
 
 
 def favorite(user, sid, enabled):

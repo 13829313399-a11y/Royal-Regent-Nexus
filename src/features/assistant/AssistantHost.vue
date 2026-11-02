@@ -10,8 +10,10 @@ import { activeStates, stateLabels, type PanelMode, type RunState } from './type
 import { defaultPanelHeight, type PanelPosition } from './layout'
 import './assistant.css'
 import { registerSurface, requestSurface, releaseSurface } from '@/features/collaboration/panelCoordinator'
+import { prefillIdentityKey, invalidateQuotePrefill } from './quotePrefill'
 const Panel = defineAsyncComponent(() => import('./AssistantPanel.vue'))
 const auth = useAuthStore(), app = useAppStore(), assistant = useAssistantStore(), route = useRoute()
+watch(prefillIdentityKey,invalidateQuotePrefill,{flush:'sync'})
 const mode = ref<PanelMode>('edge'), opened = ref(false), side = ref<'left' | 'right'>('right'), position = ref(.7), width = ref(460)
 const unregisterSurface = registerSurface('assistant', () => changeMode('edge', false))
 const panelPosition = ref<PanelPosition | null>(null), height = ref(defaultPanelHeight)
@@ -96,7 +98,8 @@ watch([() => app.activeFactoryId, () => page.value?.factory_id, () => auth.curre
   const changed = nextFactory !== contextFactory || factory !== oldFactory || key !== oldKey || version !== oldVersion
   contextFactory = nextFactory
   if (!changed) return
-  for (const run of Object.values(assistant.runs)) {
+  if (key !== oldKey || version !== oldVersion) assistant.invalidateAuthorization()
+  else for (const run of Object.values(assistant.runs)) {
     if (run.payload.page_context && activeStates.includes(run.state)) void assistant.stop(run.sessionId)
   }
 })

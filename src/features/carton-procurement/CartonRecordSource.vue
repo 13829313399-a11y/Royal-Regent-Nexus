@@ -102,8 +102,15 @@ function restoreFocus(event: Event) {
   event.preventDefault()
   // Reloading the selected record briefly clears its old selection, so the
   // originating banner button can be replaced while this dialog is open.
-  const currentOpener = props.returnFocus ? document.querySelector<HTMLElement>('[data-carton-source-opener]') : null
-  const target = opener?.isConnected ? opener : currentOpener ?? document.querySelector<HTMLElement>('[data-yl-help="carton-procurement.overview"]')
+  const currentOpener = opener || props.returnFocus ? document.querySelector<HTMLElement>('[data-carton-source-opener]') : null
+  const target = [opener, currentOpener, document.querySelector<HTMLElement>('[data-yl-help="carton-procurement.overview"]')].find(candidate => {
+    if (!candidate?.isConnected || candidate.matches(':disabled')) return false
+    for (let node: HTMLElement | null = candidate; node; node = node.parentElement) {
+      const style = getComputedStyle(node)
+      if (node.hidden || node.inert || style.display === 'none' || style.visibility === 'hidden') return false
+    }
+    return true
+  })
   target?.focus({ preventScroll: true })
 }
 watch(() => [props.resourceId, props.factoryId, props.viewerKey, props.scopeValid, props.dateFrom, props.dateTo], () => { void load() }, { immediate: true, flush: 'sync' })
