@@ -195,7 +195,7 @@ async function confirm() {
 <template>
   <section aria-label="仓库实收导入" class="im-stack">
     <p v-if="accessLost" class="im-message" role="alert">此待办已转交其他跟客或不可用，不能继续处理。原本机草稿保留，可新建或打开其他单据。</p>
-    <div class="im-toolbar"><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="fresh">新建实收导入</button><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="templatePicker?.open(customer, recipient, warehouse)">下载实收导入模板</button></div>
+    <div class="im-toolbar"><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="fresh">新建实收导入</button><button type="button" :disabled="!ws.canWrite || ws.locked || draft.switching.value" @click="templatePicker?.open(customer, recipient, warehouse)">选择物料并下载模板</button></div>
     <ReceiptTemplatePicker ref="templatePicker" :blocked="draft.switching.value" />
     <form v-show="showUpload || !preview" id="im-warehouse-upload" ref="uploadForm" class="im-upload-form" @submit.prevent="upload"><p v-if="importHint" class="im-note" role="status">{{ importHint }}</p><fieldset class="im-fields" :disabled="importBlocked">
       <label class="im-field"><span>实收客户 *</span><select v-model="customer" required @change="changeContext"><option value="">请选择本厂区固定客人</option><option v-for="row in customers" :key="row.id" :value="row.data.name">{{ row.data.name }}</option></select></label>

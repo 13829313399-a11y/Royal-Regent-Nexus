@@ -258,6 +258,7 @@ class OrderMaterialsSync(Input):
     customer: Text
     recipient: Literal['RRI', 'RRM']
     item_no: str = Field('', max_length=160)
+    sync_procurement: bool = False  # Retained commands keep their original append-only scope.
     # The workspace itself is bounded to 5,000 records. References are deduplicated.
     orders: list[MaterialSyncVersion] = Field(min_length=1, max_length=5000)
     products: list[MaterialSyncVersion] = Field(min_length=1, max_length=5000)
