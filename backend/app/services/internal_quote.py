@@ -1050,6 +1050,14 @@ def _pricing_completeness(quote, sections, *, draft_codes=()) -> list[dict[str, 
             reason = "尚未填写并保存"
         elif section.calculation_status != "valid":
             reason = {"stale": "计算已失效", "blocked": "计算待补全", "pending": "尚未计算"}.get(section.calculation_status, "计算未完成")
+            if section.calculation_status == "blocked":
+                calculation = _json_object(section.calculation_json)
+                messages = [str(item["message"]) for item in calculation.get("warnings", [])
+                            if isinstance(item, dict) and item.get("severity") == "blocking" and item.get("message")]
+                messages += [str(item["message"]) for item in calculation.get("validation_errors", [])
+                             if isinstance(item, dict) and item.get("message")]
+                if messages:
+                    reason = "；".join(dict.fromkeys(messages))
         elif section.dependency_status != "current":
             reason = "上游资料已变更，待重新计算"
         elif section.calculation_formula_version != FORMULA_VERSION:
@@ -1079,7 +1087,7 @@ def quote_readiness(db, quote, sections):
     if frozen:
         return dict(ready_sections=len(participating), required_sections=len(participating), state="issued", blockers=[])
     # Avoid copying SQLAlchemy's shared instrumentation state into a read model.
-    fields = ("department", "department_name", "is_required", "status", "payload_json", "filled_at",
+    fields = ("department", "department_name", "is_required", "status", "payload_json", "calculation_json", "filled_at",
               "calculation_status", "dependency_status", "calculation_formula_version", "calculation_reference_snapshot_id")
     projected = [SimpleNamespace(**{key: getattr(s, key) for key in fields}) for s in participating]
     molding = next((s for s in projected if s.department == "molding"), None)
