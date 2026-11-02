@@ -10,14 +10,17 @@ import { useMaterials } from './workspace'
 import Fields from './Fields.vue'
 import type { Field } from './forms'
 import { setNumberText } from './forms'
-import { sameQuantity, purchaseFactsAgree } from './warehouseMatching'
+import { quantity, sameQuantity, purchaseFactsAgree } from './warehouseMatching'
 import { additionalReservations, allocationKey, allocationIssue, sortedTargets, suggestAllocations } from './receiptAllocation'
 import { focusFollowup } from './focusFollowup'
 import ReceiptTemplatePicker from './ReceiptTemplatePicker.vue'
 import WarehousePackingReview from './WarehousePackingReview.vue'
+import WarehouseSourceEditor from './WarehouseSourceEditor.vue'
+import { receiptSourceKeys, receiptSourceFields, receiptOtherFields } from './warehouseSourceFields'
 const ws = useMaterials()
 const customer = ref(''), recipient = ref('RRI'), warehouse = ref(''), shipmentDate = ref('')
 const file = ref<File | null>(null), preview = ref<MaterialRecord | null>(null), choices = ref<Data>({})
+const corrections = ref<Data>({})
 const context = ref({ customer: '', recipient: 'RRI', warehouse: '' })
 const showUpload = ref(true)
 const templatePicker = ref<InstanceType<typeof ReceiptTemplatePicker>>()
@@ -36,10 +39,10 @@ const allocationCount = computed(() => selectedRows.value.reduce((total, row) =>
 const allocationErrors = computed(() => selectedRows.value.some(row => allocationIssue(row.source, choices.value[row.index].allocations)))
 const started = () => !!(file.value || preview.value || customer.value || warehouse.value || shipmentDate.value || recipient.value !== 'RRI')
 const accessLost = computed(() => lostRecordAccess(ws, preview.value))
-const draft = useMaterialDraft(() => started() ? { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value, shipmentDate: shipmentDate.value, choices: choices.value, preview: preview.value?.id, file: file.value } : null, {
+const draft = useMaterialDraft(() => started() ? { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value, shipmentDate: shipmentDate.value, choices: choices.value, corrections: corrections.value, preview: preview.value?.id, file: file.value } : null, {
   id: 'warehouse', multiple: true,
   capture: () => started() ? { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value, shipmentDate: shipmentDate.value,
-    showUpload: showUpload.value, choices: choices.value, preview: recordRef(preview.value), file: file.value, context: context.value,
+    showUpload: showUpload.value, choices: choices.value, corrections: corrections.value, preview: recordRef(preview.value), file: file.value, context: context.value,
     label: `${customer.value} · ${warehouse.value || '多仓库'} · ${file.value?.name || preview.value?.data.filename || '新实收单'}` } : null,
   restore: saved => {
     const source = restoreRecord(ws.records, saved.preview, 'import')
@@ -47,9 +50,10 @@ const draft = useMaterialDraft(() => started() ? { customer: customer.value, rec
     if (saved.file && !(saved.file instanceof File)) throw new Error('原实收文件草稿无法读取。')
     customer.value = saved.customer || ''; recipient.value = saved.recipient || 'RRI'; warehouse.value = saved.warehouse || ''; shipmentDate.value = saved.shipmentDate || ''
     showUpload.value = saved.showUpload ?? !source
-    file.value = saved.file || null; preview.value = source || null; choices.value = saved.choices || {}; context.value = saved.context || { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }
+    corrections.value = saved.corrections || {}; file.value = saved.file || null; preview.value = source || null; choices.value = saved.choices || {}; context.value = saved.context || { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }
+    if (source) applyPreview(source)
   },
-  reset: () => { file.value = null; preview.value = null; choices.value = {}; shipmentDate.value = ''; customer.value = ''; recipient.value = 'RRI'; warehouse.value = ''; context.value = { customer: '', recipient: 'RRI', warehouse: '' } },
+  reset: () => { file.value = null; preview.value = null; choices.value = {}; corrections.value = {}; shipmentDate.value = ''; customer.value = ''; recipient.value = 'RRI'; warehouse.value = ''; context.value = { customer: '', recipient: 'RRI', warehouse: '' } },
 })
 const importBlocked = computed(() => accessLost.value || !ws.canWrite || ws.locked || draft.switching.value || draft.recoveryWaiting.value)
 const importHint = computed(() => {
@@ -143,7 +147,7 @@ function proposeSelected(explicit = true) {
   for (const row of rows) suggestRow(row)
 }
 function initialize(record: MaterialRecord) {
-  preview.value = record; choices.value = {}; showUpload.value = false
+  preview.value = record; choices.value = {}; corrections.value = {}; showUpload.value = false
   for (const row of record.data.rows) {
     choices.value[row.index] = { selected: !row.blocked && !row.imported_supply_id, material_id: row.auto_material_id || '', material_version: 0, supply_id: '', supply_version: 0, purchase: {}, allocations: [] }
     if (row.auto_material_id) chooseMaterial(row, false)
@@ -151,19 +155,19 @@ function initialize(record: MaterialRecord) {
   // Only initialize a new preview; restoring or refreshing a draft never recalculates its choices.
   proposeSelected(false)
 }
-function fresh() { return draft.openRecord(newDraftId('warehouse'), () => { showUpload.value = true; file.value = null; preview.value = null; choices.value = {}; shipmentDate.value = ''; context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value } }) }
+function fresh() { return draft.openRecord(newDraftId('warehouse'), () => { showUpload.value = true; file.value = null; preview.value = null; choices.value = {}; corrections.value = {}; shipmentDate.value = ''; context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value } }) }
 async function changeContext() {
   const next = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }
   if (file.value || preview.value) {
     const original = file.value
     customer.value = context.value.customer; recipient.value = context.value.recipient; warehouse.value = context.value.warehouse
-    await draft.openRecord(newDraftId('warehouse'), () => { customer.value = next.customer; recipient.value = next.recipient; warehouse.value = next.warehouse; context.value = next; file.value = original; preview.value = null; choices.value = {}; shipmentDate.value = '' })
+    await draft.openRecord(newDraftId('warehouse'), () => { customer.value = next.customer; recipient.value = next.recipient; warehouse.value = next.warehouse; context.value = next; file.value = original; preview.value = null; choices.value = {}; corrections.value = {}; shipmentDate.value = '' })
   } else context.value = next
 }
 async function fileChanged(event: Event) {
   const input = event.target as HTMLInputElement, next = input.files?.[0]; input.value = ''
   if (!next) return
-  if (file.value || preview.value) await draft.openRecord(newDraftId('warehouse'), () => { file.value = next; preview.value = null; choices.value = {}; shipmentDate.value = '' })
+  if (file.value || preview.value) await draft.openRecord(newDraftId('warehouse'), () => { file.value = next; preview.value = null; choices.value = {}; corrections.value = {}; shipmentDate.value = '' })
   else {
     // The native file picker may finish before the warehouse input's blur/change.
     // Freeze the actual upload context, so a later switch preserves all typed fields.
@@ -179,9 +183,63 @@ async function upload() {
   if (result && owner === draft.activeId.value) { initialize(result); draft.accept(); await ws.reload() }
 }
 function inspect(row: MaterialRecord) { return draft.openRecord(recordDraftId('warehouse', 'inspect', row.id), () => { file.value = null; customer.value = row.data.customer; recipient.value = row.data.recipient; warehouse.value = row.data.warehouse; context.value = { customer: customer.value, recipient: recipient.value, warehouse: warehouse.value }; initialize(row) }) }
-watch(() => preview.value ? ws.record(preview.value.id) : undefined, row => { if (row) preview.value = row })
+const numericSourceKeys = new Set([...receiptSourceFields, ...receiptOtherFields].filter(field => field.type === 'number').map(field => field.key))
+function sourceStamp(source: Data) {
+  return JSON.stringify(receiptSourceKeys.map(key => {
+    const value = String(source[key] ?? '').trim()
+    if (numericSourceKeys.has(key)) return quantity(value)?.toString() ?? value
+    if (key === 'actual_date') return value.replace(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/, (_match, year, month, day) => `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`)
+    return value
+  }))
+}
+function applyPreview(record: MaterialRecord) {
+  const previous = preview.value
+  preview.value = record
+  for (const row of record.data.rows) {
+    const old = previous?.data.rows.find((item: Data) => item.index === row.index)
+    const edit = corrections.value[row.index]
+    const applied = edit?.submitted && sourceStamp(edit.values) === sourceStamp(row.source)
+    if ((old && sourceStamp(old.source) !== sourceStamp(row.source)) || (applied && edit.base !== sourceStamp(row.source))) {
+      choices.value[row.index] = { selected: !row.blocked && !row.imported_supply_id, material_id: row.auto_material_id || '', material_version: 0,
+        supply_id: '', supply_version: 0, purchase: {}, allocations: [] }
+      if (row.auto_material_id) chooseMaterial(row)
+    }
+    if (applied) delete corrections.value[row.index]
+    if (row.blocked || row.imported_supply_id) {
+      if (choices.value[row.index]) choices.value[row.index].selected = false
+    }
+  }
+}
+watch(() => preview.value ? ws.record(preview.value.id) : undefined, row => { if (row) applyPreview(row) })
+function editSource(row: Data) {
+  if (importBlocked.value || row.imported_supply_id) return
+  corrections.value[row.index] ||= { values: Object.fromEntries(receiptSourceKeys.map(key => [key, String(row.source[key] ?? '')])), base: sourceStamp(row.source) }
+}
+const hasCorrections = computed(() => Object.keys(corrections.value).length > 0)
+async function saveSource(row: Data) {
+  if (importBlocked.value || !preview.value || row.imported_supply_id) return
+  const edit = corrections.value[row.index]
+  if (!edit) return
+  if (edit.base !== sourceStamp(row.source)) { ws.error = '本行已被更新，原输入已保留。请核对最新资料，取消修改后重新打开本行。'; return }
+  const values = Object.fromEntries(receiptSourceKeys.filter(key => String(edit.values[key] ?? '') !== String(row.source[key] ?? '')).map(key => [key, String(edit.values[key] ?? '')]))
+  if (!Object.keys(values).length) { delete corrections.value[row.index]; return }
+  const id = preview.value.id, owner = draft.activeId.value
+  edit.submitted = true
+  await nextTick()
+  if (!await draft.persist()) return
+  await ws.localDrafts.flush()
+  if (preview.value?.id !== id || draft.activeId.value !== owner || importBlocked.value) return
+  if (!draft.permitDiscard()) return // Verify all current row/PO inputs are durable before sending a partial save.
+  // This saves one source row, not the entire intake draft: never clear other PO choices or unsaved row edits.
+  await ws.run('warehouse_import_correct', { index: row.index, values }, preview.value, result => {
+    if (preview.value?.id !== id || draft.activeId.value !== owner) return
+    const latest = ws.record(id)
+    applyPreview(latest && latest.version >= result.version ? latest : result); delete corrections.value[row.index]
+    ws.notice = '本行已保存并重新匹配，请核对物料与 PO 分配。'
+  })
+}
 async function confirm() {
-  if (accessLost.value) return
+  if (accessLost.value || hasCorrections.value) return
   if (!preview.value || !selectedRows.value.length || allocationErrors.value || allocationCount.value > 200) return
   const rows = selectedRows.value.map(row => {
     const choice = choices.value[row.index]
@@ -208,7 +266,10 @@ async function confirm() {
       <fieldset class="im-stack" :disabled="accessLost || draft.switching.value || ws.locked || !ws.canWrite">
       <div class="im-inline"><h3>{{ preview.data.filename }} · {{ preview.data.status === 'confirmed' ? '全部已导入' : '实收匹配核对' }}</h3><button type="button" :disabled="ws.busy" @click="ws.download(preview!.data.asset_id, preview!.data.filename, 'asset')">下载原单</button></div>
       <div v-if="selectedRows.length" class="im-actions"><button type="button" @click="proposeSelected()">重新按货期建议</button><span class="im-note">最迟回料日优先，缺失时按成品出货日；业务核对后确认。</span></div>
-      <div class="im-scroll"><table><thead><tr><th>本次导入</th><th>仓库／收料单行</th><th>原单物料／规格</th><th>正常／备品实收</th><th>匹配与问题</th></tr></thead><tbody><tr v-for="row in preview.data.rows" :key="row.index"><td><input v-model="choices[row.index].selected" type="checkbox" :aria-label="`选择实收行 ${row.index + 1}`" :disabled="accessLost || !ws.canWrite || ws.locked || row.blocked || !!row.imported_supply_id"></td><td>{{ row.source.warehouse || preview.data.warehouse }}<br>{{ row.source.receipt_no }} / {{ row.source.receipt_line }}<small>{{ row.source_sheet }} 第 {{ row.source_row }} 行 · {{ row.source.actual_date }}</small></td><td>{{ row.source.material_code || '无编码' }} · {{ row.source.material_name }}<small>{{ row.source.specification }} / {{ row.source.unit }}</small></td><td>{{ row.source.normal_quantity }} / {{ row.source.spare_quantity }}</td><td><strong>{{ row.imported_supply_id ? '已导入' : row.blocked ? '原单需核对' : !choices[row.index].material_id || allocationIssue(row.source, choices[row.index].allocations) ? '待业务确认' : '已匹配，待确认导入' }}</strong><p v-for="issue in row.issues" :key="issue" class="im-danger-text">{{ issue }}</p></td></tr></tbody></table></div>
+      <div class="im-scroll"><table><thead><tr><th>本次导入</th><th>仓库／收料单行</th><th>原单物料／规格</th><th>正常／备品实收</th><th>匹配与问题</th><th>操作</th></tr></thead><tbody><template v-for="row in preview.data.rows" :key="row.index"><tr><td><input v-model="choices[row.index].selected" type="checkbox" :aria-label="`选择实收行 ${row.index + 1}`" :disabled="accessLost || !ws.canWrite || ws.locked || row.blocked || !!row.imported_supply_id"></td><td>{{ row.source.warehouse || preview.data.warehouse }}<br>{{ row.source.receipt_no || '无单号' }} / {{ row.source.receipt_line }}<small>{{ row.source_sheet }} 第 {{ row.source_row }} 行 · {{ row.source.actual_date }}</small></td><td>{{ row.source.material_code || '无编码' }} · {{ row.source.material_name }}<small>{{ row.source.specification }} / {{ row.source.unit }}</small></td><td>{{ row.source.normal_quantity }} / {{ row.source.spare_quantity }}</td><td><strong>{{ row.imported_supply_id ? '已导入' : row.blocked ? '原单需核对' : !choices[row.index].material_id || allocationIssue(row.source, choices[row.index].allocations) ? '待业务确认' : '已匹配，待确认导入' }}</strong><p v-for="issue in row.issues" :key="issue" class="im-danger-text">{{ issue }}</p><small v-if="row.correction_count">已修改 {{ row.correction_count }} 次</small></td><td><button v-if="!row.imported_supply_id" type="button" :aria-label="`修改实收行 ${row.index + 1} 资料`" @click="editSource(row)">修改资料</button><span v-else>已确认</span></td></tr>
+        <tr v-if="corrections[row.index] && !row.imported_supply_id"><td colspan="6" class="im-inline-editor-cell"><WarehouseSourceEditor :model="corrections[row.index].values" :index="row.index" :issues="row.issues" @save="saveSource(row)" @cancel="delete corrections[row.index]" /></td></tr>
+      </template></tbody></table></div>
+      <p v-if="hasCorrections" class="im-note" role="status">有原单资料正在修改，请先保存并重新匹配，或取消修改后再确认实收。</p>
       <fieldset v-for="row in selectedRows" :key="row.index" class="im-recipe-card im-stack" :disabled="accessLost || !ws.canWrite || ws.locked || draft.switching.value">
         <h3>第 {{ row.index + 1 }} 行：{{ row.source.material_name || row.source.material_code }} · {{ row.source.receipt_no }}</h3>
         <div class="im-fields"><label class="im-field"><span>确认对应物料 *</span><select v-model="choices[row.index].material_id" required :aria-label="`实收行 ${row.index + 1} 对应物料`" @change="chooseMaterial(row)"><option value="">请选择匹配物料</option><option v-for="item in row.materials" :key="item.id" :value="item.id">{{ item.label }}</option></select><small v-if="!row.materials.length">未找到相同编码或名称／规格的物料，请先补齐基础资料后刷新核对。</small></label><label v-if="choices[row.index].material_id" class="im-field"><span>原采购／待回料批次</span><select v-model="choices[row.index].supply_id" :aria-label="`实收行 ${row.index + 1} 原采购批次`" @change="chooseSupply(row)"><option value="">按以下采购资料登记本次回料</option><option v-for="item in matchingSupplies(row)" :key="item.id" :value="item.id">{{ item.data.purchase_no }} / {{ item.data.purchase_line }} / {{ item.data.batch }} · 正常 {{ item.data.normal_quantity }} / 备品 {{ item.data.spare_quantity }}</option></select></label></div>
@@ -232,7 +293,7 @@ async function confirm() {
         </template>
       </fieldset>
       <WarehousePackingReview :rows="preview.data.rows" :selected="selectedRows" />
-      <fieldset v-if="selectedRows.length" class="im-stack" :disabled="accessLost || !ws.canWrite || ws.locked || draft.switching.value"><label class="im-field"><span>本次计划河源出货日期 *</span><input v-model="shipmentDate" type="date" required></label><p class="im-note">确认 {{ selectedRows.length }} 行实收及 PO 分配，并生成出货草稿。正式出货在第 4 步确认。</p><button class="im-primary" type="submit" :disabled="selectedRows.length > 200 || allocationCount > 200 || allocationErrors">确认实收与 PO，去补装箱</button><p v-if="selectedRows.length > 200 || allocationCount > 200" class="im-error">每次最多确认 200 行实收、200 项合同分配，请减少勾选后分批确认。</p><p v-else-if="allocationErrors" class="im-danger-text">还有未分配或超量的行，请先核对上方提示。</p></fieldset>
+      <fieldset v-if="selectedRows.length" class="im-stack" :disabled="accessLost || !ws.canWrite || ws.locked || draft.switching.value"><label class="im-field"><span>本次计划河源出货日期 *</span><input v-model="shipmentDate" type="date" required></label><p class="im-note">确认 {{ selectedRows.length }} 行实收及 PO 分配，并生成出货草稿。正式出货在第 4 步确认。</p><button class="im-primary" type="submit" :disabled="hasCorrections || selectedRows.length > 200 || allocationCount > 200 || allocationErrors">确认实收与 PO，去补装箱</button><p v-if="selectedRows.length > 200 || allocationCount > 200" class="im-error">每次最多确认 200 行实收、200 项合同分配，请减少勾选后分批确认。</p><p v-else-if="allocationErrors" class="im-danger-text">还有未分配或超量的行，请先核对上方提示。</p></fieldset>
       </fieldset>
       <div v-if="preview.data.shipment_ids?.length" class="im-message"><strong>已生成出货草稿</strong><p v-for="id in preview.data.shipment_ids" :key="id"><button type="button" :disabled="ws.locked" @click="ws.shipmentTarget = id">打开出货草稿并补装箱</button></p></div>
     </form>
