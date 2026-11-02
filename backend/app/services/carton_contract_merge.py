@@ -10,6 +10,7 @@ from app.services import carton_procurement as core, carton_master as master
 from app.services.carton_customer_assignment import ensure_customer_operation
 from app.services.identity_policy import lock_mutation
 from app.services.carton_order_split import plans
+from app.services.carton_order_projection import order_page_out
 
 
 def merge(db, payload, user, *, refresh_user, authorize):
@@ -69,10 +70,8 @@ def merge(db, payload, user, *, refresh_user, authorize):
             data_json=master.encoded(contract_data), status="ACTIVE", revision=1, maintained=0, updated_at=timestamp)
         db.add(contract)
         db.flush()
-        originals = []
-        for order in orders:
-            before = core.order_out(db, order).model_dump(mode="json")
-            originals.append(before)
+        originals = [result.model_dump(mode="json") for result in order_page_out(db, orders)]
+        for order, before in zip(orders, originals):
             order.contract_no = payload.contract_no
             order.revision += 1
             order.updated_at = timestamp
@@ -90,7 +89,7 @@ def merge(db, payload, user, *, refresh_user, authorize):
                 {"reason": payload.reason, "request_id": payload.request_id, "contract_id": contract.id,
                  "before": before, "new_contract_no": payload.contract_no})
         db.flush()
-        results = [core.order_out(db, order).model_dump(mode="json") for order in orders]
+        results = [result.model_dump(mode="json") for result in order_page_out(db, orders)]
         event = core._audit(db, user, factory, "CONTRACT_MERGE_CREATED", "carton_master", contract.id,
             {"fingerprint": fingerprint, "contract_no": payload.contract_no, "reason": payload.reason,
              "originals": originals, "orders": results})

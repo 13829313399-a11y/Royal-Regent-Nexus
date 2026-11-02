@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from typing import Literal
+from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas import carton_special_requests as special, carton_supplier_portal as portal
 from app.schemas.carton_procurement import CartonReceiptLineCreate
@@ -53,6 +53,7 @@ class ExtraLine(special.Line):
 
 
 class Dispatch(special.Command):
+    require_formal_prices: ClassVar[bool] = True
     delivery_note_no: str = Field(min_length=1, max_length=128)
     delivery_date: date
     formal_lines: list[portal.ShipLine] = Field(default_factory=list, max_length=200)
@@ -67,10 +68,16 @@ class Dispatch(special.Command):
             raise ValueError("同一送货单不能重复引用需求")
         if len(self.formal_lines) + sum(len(item.lines) for item in self.special_requests) + len(self.extra_lines) > 200:
             raise ValueError("送货单不能超过 200 行")
-        supplied_lines = [*self.formal_lines, *(line for request in self.special_requests for line in request.lines)]
+        supplied_lines = [*(self.formal_lines if self.require_formal_prices else []),
+                          *(line for request in self.special_requests for line in request.lines)]
         if any(line.unit_price is None for line in supplied_lines):
             raise ValueError("请逐行填写供应商原送货单价，不能留空")
         return self
+
+
+class OriginalFileDispatch(Dispatch):
+    """Private adapter: ordinary imported prices retain existing receipt review."""
+    require_formal_prices: ClassVar[bool] = False
 
 
 class FormalAcceptance(BaseModel):

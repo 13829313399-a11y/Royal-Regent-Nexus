@@ -2,7 +2,7 @@
 
 ## 目标与范围
 
-目标路由为 `/tools?factory=<id>&tool=spreadsheet-merge`，面向已登录员工。厂区沿用公共工具栏的上下文元数据规则；此工作区仅处理用户提供的表格并下载文件，不写入业务库。源码限定于 `src/features/spreadsheet-merge`、`src/api/spreadsheetMerge.ts` 和工具栏入口。保留既有转换、协同填表、改名的流程与权限。
+目标路由为 `/tools?factory=<id>&tool=spreadsheet-merge`，面向已登录员工。厂区沿用公共工具栏的上下文元数据规则；此工作区仅处理用户提供的表格并下载文件，不写入业务库。源码限定于 `src/features/spreadsheet-merge`、`src/api/spreadsheetMerge.ts` 和工具栏入口。保留既有转换、在线文档、改名的流程与权限。
 
 采用先预览后导出流程：上传主表或选择系统包装模板，上传副表，指定工作表与表头行，确认字段对应、组合匹配字段和备注，预览新增/补齐/冲突/问题，再明确解决冲突并下载。名称缺失保留空白；不会把货号代作产品名称。包装模板有未完成资料时只提供明确标注的待补版。
 

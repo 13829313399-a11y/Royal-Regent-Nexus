@@ -66,6 +66,8 @@ def _visible_duplicate(db, user, factory, existing, order_id):
 
 def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id="", *, shared_unbound=False, targets=None, request_id=''):
     supplier = portal.supplier_access(db, user, factory, "carton_supplier:edit")
+    from app.services import carton_asset_access as ownership
+    if ownership.enabled():ownership.owner(db,user,factory,'supplier',supplier=True);ownership.writes()
     current_orders = upload_orders(db, user, factory)
     if targets is None and not request_id and current_orders != original_orders:
         raise HTTPException(409, "采购订单或服务范围已变更，请刷新后重新上传")
@@ -105,6 +107,7 @@ def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id
                     created_by=user.id, created_by_name=user.display_name,
                     created_at=timestamp, updated_at=timestamp, revision=1, is_archived=False)
                 try:
+                    ownership.legacy(db,user,asset,department='supplier',supplier_id=supplier.id)
                     # A malformed file must not roll back other files in this batch.
                     with db.begin_nested():
                         db.add(asset)
@@ -112,6 +115,12 @@ def save_batch(db, user, factory, parsed, original_orders, order_id="", issue_id
                         assets.audit(db, user, asset, "CARTON_MARK_ASSET_CREATED", dict(sha256=sha,
                             contract_number=asset.contract_number, supplier_context=dict(supplier_id=supplier.id,
                                 order_id=order["id"], issue_id=order["issue_id"], source="supplier_upload")))
+                        if ownership.enabled():
+                            from app.services import carton_mark_asset_workflow as lifecycle,carton_mark_sharing as sharing,carton_asset_targets
+                            from app.schemas.carton_mark import CartonMarkAssetUploadOptions
+                            lifecycle.initialize(db,user,asset,CartonMarkAssetUploadOptions(status='PENDING'))
+                            sharing.record(db,user,asset,'SUPPLIER',supplier.id)
+                            carton_asset_targets.sync_legacy(db,user,asset)
                     row = next(row for row in portal.supplier_mark_assets(db, user, factory) if row["id"] == asset.id)
                     outcome.update(status="created", message=recognition["warning"], asset=row)
                 except IntegrityError:
@@ -177,6 +186,8 @@ def save_shared_batch(db, user, factory, supplier, parsed, selected, *, targets=
                 warning=recognition['warning'], created_by=user.id, created_by_name=user.display_name,
                 created_at=timestamp, updated_at=timestamp, revision=1, is_archived=False)
             with db.begin_nested():
+                from app.services import carton_asset_access as ownership
+                ownership.legacy(db,user,asset,department='supplier',supplier_id=supplier.id)
                 db.add(asset); db.flush()
                 lifecycle.initialize(db, user, asset, CartonMarkAssetUploadOptions(status='PENDING'))
                 sharing.record(db, user, asset, 'SUPPLIER', supplier.id)

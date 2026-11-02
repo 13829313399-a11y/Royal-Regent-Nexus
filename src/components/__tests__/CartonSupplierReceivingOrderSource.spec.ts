@@ -56,7 +56,7 @@ describe('supplier-origin ordinary order entry', () => {
       closed_source_linkable: true, received_quantity: '0', effective_quantity: '0', remaining_quantity: '0', closed_quantity: '836' })] }]
     api.workspace.mockResolvedValue(data)
     const wrapper = mount(Component, options); await flushPromises()
-    await wrapper.findAll('button').find(row => row.text() === '已核实记录')!.trigger('click')
+    await wrapper.findAll('button').find(row => row.attributes('aria-label') === '显示已处理送货单')!.trigger('click')
     expect(wrapper.text()).toContain('关联不恢复待收、不增加库存')
     await wrapper.get('[aria-label="SOURCE 关闭后关联客户"]').setValue('CUSTOMER')
     await wrapper.get('[aria-label="SOURCE 关闭后关联订单"]').setValue('PAPER')
@@ -91,7 +91,7 @@ describe('supplier-origin ordinary order entry', () => {
     const data = fixture(); data.shipments = [{ ...data.shipments[0]!, status: 'NOT_RECEIVED', lines: [sourceLine()] }]
     api.workspace.mockResolvedValue(data)
     const wrapper = mount(Component, options); await flushPromises()
-    await wrapper.findAll('button').find(row => row.text() === '已核实记录')!.trigger('click')
+    await wrapper.findAll('button').find(row => row.attributes('aria-label') === '显示已处理送货单')!.trigger('click')
     expect(wrapper.find('[aria-label="SOURCE 关闭后关联客户"]').exists()).toBe(false)
     data.shipments[0]!.lines[0]!.closed_source_linkable = true; data.shipments[0]!.can_operate = false
     await wrapper.findAll('button').find(row => row.text() === '刷新')!.trigger('click'); await flushPromises()

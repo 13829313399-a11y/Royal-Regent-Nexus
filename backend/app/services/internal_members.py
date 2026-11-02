@@ -21,12 +21,27 @@ from app.services.system_positions import get_system_position
 from app.services.iam_scope import default_permission_access_kind
 
 
+def external_only(permissions, overrides=(), *, at=None) -> bool:
+    """External material grants never establish employment or membership.
+
+    Concrete-department legacy asset-only employees remain compatible; the
+    global asset exception is specifically an external supplier authority.
+    """
+    external_assets = {"carton_asset:read", "carton_asset:manage"}
+    external_source = any(code.startswith("carton_supplier:") for code in permissions) or any(
+        item.permission_code in external_assets and item.effect == "allow"
+        and item.factory_id == item.department == "*"
+        and time_window_is_active(item.valid_from, item.valid_until, at) for item in overrides)
+    return external_source and all(code.startswith("carton_supplier:") or code in external_assets
+                                   for code in permissions)
+
+
 def is_internal(context: AuthContext) -> bool:
     identity = context.identity or {}
     if not context.account_available or identity.get("employment_status") == "left":
         return False
     formal = any(a.get("org_unit_id") and a["org_unit_id"] != "group" for a in identity.get("active_assignments_summary", []))
-    supplier_only = bool(context.permissions) and all(p.startswith("carton_supplier:") for p in context.permissions)
+    supplier_only = external_only(context.permissions, context.overrides)
     if supplier_only and not formal:
         return False
     if identity.get("identity_mode") == "v2" and not formal and not context.permissions:
@@ -122,7 +137,7 @@ def eligible_member_ids(db, *, at=None) -> list[str]:
         cross_codes = {code for g in gs if g.unrestricted_department for code in g.permissions
                        if g.scope_mode != "own_factory" or code in SYSTEM_POSITION_CROSS_FACTORY_READ_PERMISSION_CODES}
         allowed.update(code for code in cross_codes - allowed if any(authorization_decision(ctx, code, f, "*", at=at)[0] for f in ALLOWED_FACTORY_IDS))
-        if allowed and all(code.startswith("carton_supplier:") for code in allowed):
+        if external_only(allowed, os, at=at):
             continue
         if p and p.identity_mode == "v2" and not allowed:
             continue

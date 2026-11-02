@@ -8,6 +8,7 @@ import tempfile
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import BoundedSemaphore, Event
 
@@ -22,12 +23,15 @@ OPERATIONS = frozenset({
     "_create_unified_single_preview", "_export_unified_single_schedule",
     "_create_special_batch_preview", "_export_special_batch_schedule",
     "_create_mapped_customer_preview", "_export_mapped_customer_schedule",
-    "parse_workbook", "_jp_validate_reference", "_jp_preview", "organize_workbook", "parse_warehouse_receipts", "parse_material_book",
+    "parse_workbook", "_jp_validate_reference", "_jp_preview", "organize_workbook", "parse_warehouse_receipts",
+    "parse_business_schedule",
+    "prepare_file", "parse_material_book",
 })
 
 
 @dataclass
 class JobBudget:
+    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="microseconds"))
     deadline: float = field(default_factory=lambda: time.monotonic() + JOB_SECONDS)
     cancelled: Event = field(default_factory=Event)
 
@@ -39,6 +43,11 @@ class JobBudget:
 
 
 _budget: ContextVar[JobBudget | None] = ContextVar("customer_order_job_budget", default=None)
+
+
+def order_request_started_at():
+    budget = _budget.get()
+    return budget.started_at if budget else datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 async def order_job_request(request: Request):

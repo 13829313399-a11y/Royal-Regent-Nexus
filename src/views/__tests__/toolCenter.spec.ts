@@ -20,9 +20,10 @@ vi.mock('@/features/document-tools/PdfCanvas.vue', () => ({
   default: { template: '<div data-pdf-preview />', props: ['url'] },
 }))
 const routeState = reactive<{ query: Record<string, string> }>({ query: { factory: 'group' } })
+const routerPush = vi.hoisted(() => vi.fn())
 vi.mock('vue-router', () => ({
   useRoute: () => routeState,
-  useRouter: () => ({ replace: async ({ query }: { query: Record<string, string> }) => { routeState.query = query } }),
+  useRouter: () => ({ push: routerPush, replace: async ({ query }: { query: Record<string, string> }) => { routeState.query = query } }),
 }))
 const job: Job = {
   id: 'inspect-1',
@@ -85,6 +86,7 @@ async function upload(wrapper: VueWrapper, files: File[]) {
   await flushPromises()
 }
 beforeEach(() => {
+  routerPush.mockReset()
   setActivePinia(createPinia())
   routeState.query = { factory: 'group' }
   vi.spyOn(spreadsheetMergeApi, 'templates').mockResolvedValue([])
@@ -126,6 +128,37 @@ afterEach(() => {
 })
 
 describe('public tool center', () => {
+  it.each([
+    ['failed', '文档读取失败'],
+    ['cancelled', '文档读取已取消'],
+    ['awaiting_input', '等待输入文档密码'],
+  ] as const)('shows the actual inspection state for %s Office files', async (status, title) => {
+    vi.mocked(documentTools.source).mockResolvedValue({
+      ...source, detected_type: 'xlsx', original_name: 'orders.xlsx',
+      inspection_status: status, manifest: {},
+      artifacts: [{ ...source.artifacts[0]!, format: 'xlsx', filename: 'orders.xlsx' }],
+    })
+    vi.mocked(documentTools.job).mockResolvedValue({ ...job, execution_status: status })
+    const wrapper = render()
+    await flushPromises()
+    await upload(wrapper, [new File(['test'], 'orders.xlsx')])
+    expect(wrapper.get('.dt-preview-empty h3').text()).toBe(title)
+    expect(wrapper.get('.dt-preview-empty').text()).not.toContain('正在读取文档')
+    expect(wrapper.get('.dt-preview-empty a').text()).toContain('下载原文')
+  })
+
+  it.each(['group', 'huaxing'] as const)('retires collaborative filling while retaining online documents in %s', async (factory) => {
+    useAppStore().setActiveFactory(factory)
+    routeState.query = { factory, tool: 'collaborative-sheets' }
+    const wrapper = render()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('协同填表')
+    expect(wrapper.get('.dt-desk').isVisible()).toBe(true)
+    expect(wrapper.findAll('button').some(button => button.text() === '我的任务')).toBe(true)
+    await wrapper.findAll('button').find(button => button.text() === '在线文档')!.trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ path: '/online-documents', query: { factory } })
+  })
+
   it('opens spreadsheet merging for every factory and preserves factory context on return', async () => {
     useAppStore().setActiveFactory('huakang-c')
     routeState.query = { factory: 'huakang-c', tool: 'spreadsheet-merge' }
@@ -325,7 +358,7 @@ describe('public tool center', () => {
     await wrapper.findAll('.dt-tools button')[1]!.trigger('click')
     await vi.advanceTimersByTimeAsync(65000)
     await flushPromises()
-    expect(documentTools.capabilities.mock.calls.length).toBeGreaterThanOrEqual(
+    expect(vi.mocked(documentTools.capabilities).mock.calls.length).toBeGreaterThanOrEqual(
       4,
     )
     expect(wrapper.find('.dt-document-bar').text()).toContain('source.pdf')

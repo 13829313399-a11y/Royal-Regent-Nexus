@@ -1,6 +1,7 @@
-import { onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { directoryApi } from '@/api/directory'
 import { useAuthStore } from '@/stores/auth'
+import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
 
 export const HEARTBEAT_BASE_INTERVAL_MS = 60_000
 export const HEARTBEAT_MAX_JITTER_MS = 10_000
@@ -10,6 +11,8 @@ export function usePresenceHeartbeat() {
   let timer: ReturnType<typeof setTimeout> | null = null
   let inFlight = false
   let disposed = false
+  let generation = 0
+  const identity = computed(() => `${getAuthenticationGeneration()}:${authStore.isAuthenticated}:${authStore.currentUser?.id ?? ''}:${authStore.currentUser?.identity?.employment_epoch ?? 0}:${authStore.currentUser?.internal_member === true}:${authStore.currentUser?.force_password_change === true}`)
 
   function clearTimer() {
     if (timer !== null) {
@@ -21,6 +24,7 @@ export function usePresenceHeartbeat() {
   function canSend() {
     return !disposed
       && authStore.isAuthenticated
+      && authStore.currentUser?.internal_member === true
       && !authStore.currentUser?.force_password_change
       && typeof document !== 'undefined'
       && document.visibilityState === 'visible'
@@ -36,14 +40,17 @@ export function usePresenceHeartbeat() {
 
   async function sendHeartbeat() {
     if (!canSend() || inFlight) return
+    const requestGeneration = generation
     inFlight = true
     try {
       await directoryApi.sendHeartbeat()
     } catch {
       // Presence is non-critical and must never interrupt normal page work.
     } finally {
-      inFlight = false
-      scheduleNext()
+      if (requestGeneration === generation) {
+        inFlight = false
+        scheduleNext()
+      }
     }
   }
 
@@ -70,15 +77,18 @@ export function usePresenceHeartbeat() {
   })
 
   watch(
-    () => authStore.sessionVersion,
+    identity,
     () => {
-      if (authStore.isAuthenticated) resumeImmediately()
+      generation++
+      inFlight = false
+      if (canSend()) resumeImmediately()
       else pause()
     },
   )
 
   onBeforeUnmount(() => {
     disposed = true
+    generation++
     clearTimer()
     document.removeEventListener('visibilitychange', handleVisibilityChange)
     window.removeEventListener('online', resumeImmediately)

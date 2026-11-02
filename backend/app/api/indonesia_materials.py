@@ -95,12 +95,17 @@ async def master_preview(db: Db, user: User, request: Request,
     form = await request.form()
     service.require(all(len(form.getlist(key)) == 1 for key in ('factory_id', 'customer', 'context', 'file')), '上传字段不能重复', 422)
     selection = MasterImportContext.model_validate_json(context)
-    content = await file.read(25 * 1024 * 1024 + 1)
-    service.require(0 < len(content) <= 25 * 1024 * 1024, '文件为空或超过 25 MB', 413)
-    filename = file.filename or '统一资料.xlsx'
-    parsed = await run_order_job(master_import.parse_material_book, content, filename, selection.mappings, db=db)
-    return master_import.preview(db, user, factory_id, customer.strip(), selection.product_ids, filename, content, parsed,
-                                 refresh_user=lambda: refresh_user(request, db))
+    products = master_import.selected_products(service.Ledger(db, factory_id), customer.strip(), selection.product_ids)
+    product_codes = [product.data['code'] for product in products]
+    from app.services.indonesia_master_archive import MAX_FILE_BYTES, upload_slot
+    service.require(file.size is None or 0 < file.size <= MAX_FILE_BYTES, '文件为空或超过 200 MB', 413)
+    with upload_slot():
+        content = await file.read(MAX_FILE_BYTES + 1)
+        service.require(0 < len(content) <= MAX_FILE_BYTES, '文件为空或超过 200 MB', 413)
+        filename = file.filename or '统一资料.xlsx'
+        parsed = await run_order_job(master_import.parse_material_book, content, filename, selection.mappings, product_codes, db=db)
+        return master_import.preview(db, user, factory_id, customer.strip(), selection.product_ids, filename, content, parsed,
+                                     refresh_user=lambda: refresh_user(request, db))
 
 
 @router.get('/warehouse-imports/template')

@@ -303,10 +303,11 @@ export interface CartonMarkAssociation extends CartonMarkAssociationTarget {
   order_no?: string; contract_no: string; customer_name: string; item_no: string
 }
 export interface CartonMarkAsset extends CartonMarkSharing {
+  can_classify?: boolean
   id: string
   factory_id: string
   file_name: string
-  kind: 'excel' | 'pdf' | 'image'
+  kind: 'excel' | 'pdf' | 'image' | 'text'
   photo_group_id?: string | null
   size_bytes: number
   sha256: string
@@ -364,9 +365,9 @@ export function createCartonMarkApi(client = http) {
     async downloadQcReviewSource(recordId: string, assetId: string, factoryId: string) {
       return (await client.get<Blob>(`/carton-mark/qc-records/${recordId}/sources/${assetId}`, { params: { factory_id: factoryId }, responseType: 'blob' })).data
     },
-    async listAssets(factoryId: string, orderId?: string, signal?: AbortSignal) {
+    async listAssets(factoryId: string, orderId?: string, signal?: AbortSignal, assetIds?: string[]) {
       const response = await client.get<CartonMarkAsset[]>('/carton-mark/assets', {
-        params: { factory_id: factoryId, order_id: orderId }, signal,
+        params: { factory_id: factoryId, order_id: orderId, ...(assetIds?.length ? { asset_ids: assetIds.join(',') } : {}) }, signal,
       })
       return response.data
     },

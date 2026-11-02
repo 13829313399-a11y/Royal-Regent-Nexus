@@ -43,6 +43,7 @@ import type {
   CustomerOrderIssue,
   CustomerOrderManualOverride,
   CustomerOrderPreviewRow,
+  WarehouseScheduleSyncResult,
 } from '@/types/customerOrder'
 import type { CustomerOrderCenterSection } from '@/views/CustomerOrderCenterView.vue'
 
@@ -555,6 +556,34 @@ const receivedDate = ref(formatLocalDate(new Date()))
 const previewBatch = ref<CustomerOrderImportPreview | null>(null)
 const parseFailureMessage = ref('')
 const exportFailureMessage = ref('')
+const warehouseSync = ref<{ state: 'idle' | 'pending' | 'success' | 'error'; message: string }>({ state: 'idle', message: '' })
+let warehouseSyncSequence = 0
+let warehouseSyncController: AbortController | null = null
+let warehouseUpload: { file: File; kind: 'UPLOADED' | 'GENERATED'; customer: string; factory: string } | null = null
+
+function showWarehouseSync(result: WarehouseScheduleSyncResult | null | undefined, kind: 'UPLOADED' | 'GENERATED') {
+  warehouseSync.value = result?.status === 'SUCCESS'
+    ? { state: 'success', message: `${result.message}。${kind === 'UPLOADED' ? '本次新增 PO 将在生成客户排期后自动更新。' : '仓库可查看最新排期并下单。'}` }
+    : { state: 'error', message: `纸箱仓库同步未完成：${result?.message || '服务端未返回同步结果'}。业务解析及排期下载仍可继续。` }
+}
+
+async function retryWarehouseSync() {
+  if (!warehouseUpload || warehouseSync.value.state === 'pending' || parsingFiles.value || exportingSchedule.value || savingOrder.value) return
+  const { file, kind, customer, factory } = warehouseUpload
+  const sequence = ++warehouseSyncSequence
+  const controller = new AbortController()
+  warehouseSyncController = controller
+  warehouseSync.value = { state: 'pending', message: '正在重试同步到纸箱仓库…' }
+  try {
+    const result = await customerOrderApi.synchronizeWarehouseSchedule(customer, file, factory, kind, controller.signal)
+    if (sequence !== warehouseSyncSequence || factory !== props.factoryId) return
+    showWarehouseSync({ status: 'SUCCESS', ...result }, kind)
+  } catch (error) {
+    if (sequence !== warehouseSyncSequence || controller.signal.aborted || factory !== props.factoryId) return
+    showWarehouseSync({ status: 'ERROR', message: getApiErrorMessage(error) }, kind)
+  }
+}
+
 const parsingFiles = ref(false)
 const exportingSchedule = ref(false)
 const generatedScheduleBlob = ref<Blob | null>(null)
@@ -1097,6 +1126,7 @@ const canParseFiles = computed(() => Boolean(
   && scheduleFile.value
   && receivedDate.value
   && !parsingFiles.value
+  && warehouseSync.value.state !== 'pending'
   && !exportingSchedule.value,
 ))
 
@@ -1170,6 +1200,10 @@ function getCustomerScheduleLabel(row: OrderRow) {
 }
 
 function clearPreviewState() {
+  warehouseSyncSequence += 1
+  warehouseSyncController?.abort()
+  warehouseSync.value = { state: 'idle', message: '' }
+  warehouseUpload = null
   parseRequestSequence += 1
   exportRequestSequence += 1
   saveRequestSequence += 1
@@ -1432,6 +1466,8 @@ async function parseSelectedFiles() {
     orderRows.value = preview.rows.map((row) => mapPreviewRow(row, requestedFactoryId))
     skippedIssueKeys.value = []
     manualOverrideValues.value = {}
+    warehouseUpload = { file: requestedScheduleFile, kind: 'UPLOADED', customer: customerCode, factory: requestedFactoryId }
+    showWarehouseSync(preview.warehouse_sync, 'UPLOADED')
     notify(`批量解析完成：${preview.po_file_count} 份PO、${preview.summary.total} 条明细，待确认 ${preview.confirmation_count ?? 0} 条，警告 ${preview.summary.warning} 条，阻断 ${preview.summary.blocked} 条。`)
     navigate('preview')
   } catch (error) {
@@ -1601,6 +1637,8 @@ async function confirmAndGenerateSchedule() {
     generatedScheduleFileName.value = result.fileName
     generatedPasswordRequired.value = result.passwordRequired
     scheduleGenerated.value = true
+    warehouseUpload = { file: new File([result.blob], result.fileName), kind: 'GENERATED', customer: customerCode, factory: requestedFactoryId }
+    showWarehouseSync(result.warehouseSync, 'GENERATED')
     downloadGeneratedSchedule()
     notify(
       result.passwordRequired
@@ -1731,6 +1769,8 @@ async function confirmAndSaveOrder() {
   try {
     const result = await customerOrderLedgerApi.importConfirmed(requestedPreview.customer_code, payload)
     if (requestId !== saveRequestSequence || requestedFactoryId !== props.factoryId) return
+    warehouseUpload = null
+    showWarehouseSync(result.warehouse_sync, 'GENERATED')
     notify(result.reconciled_count > 0
       ? '订单已关联并更新原订单，原走货与版本记录已保留。'
       : `订单已确认并保存：新增 ${result.created_count} 条，已存在 ${result.existing_count} 条。`)
@@ -1812,12 +1852,19 @@ watch(receivedDate, (currentDate, previousDate) => {
 })
 
 onBeforeUnmount(() => {
+  warehouseSyncSequence += 1
+  warehouseSyncController?.abort()
   if (noticeTimer) window.clearTimeout(noticeTimer)
 })
 </script>
 
 <template>
   <div class="order-workspace" data-testid="customer-order-center-workspace">
+    <p v-if="warehouseSync.state !== 'idle'" class="panel-card" role="status" aria-live="polite" data-testid="warehouse-schedule-sync">
+      <strong>{{ warehouseSync.state === 'error' ? '仓库同步未完成' : '纸箱仓库排期' }}</strong> · {{ warehouseSync.message }}
+      <button v-if="warehouseSync.state === 'error' && warehouseUpload" type="button" class="button button--secondary" :disabled="parsingFiles || exportingSchedule || savingOrder" @click="retryWarehouseSync">重试仓库同步</button>
+      <span v-else-if="warehouseSync.state === 'error' && !warehouseUpload">可再次保存订单或生成客户排期，系统会自动重试。</span>
+    </p>
     <Transition name="order-panel" mode="out-in">
       <section v-if="activeSection === 'dashboard'" key="dashboard" class="order-view" data-testid="order-dashboard">
         <header class="view-heading">
@@ -2026,6 +2073,7 @@ onBeforeUnmount(() => {
                 <h3>导入客户现有排期</h3>
                 <p>{{ selectedCustomer ? `目标：${selectedCustomer.templateDescription}；${selectedCustomer.code === 'edu' ? '按货号归组到绿色备料行上方，并同步三张排期与PO订单。' : '仅在“取消单”上方追加，写入可取得的映射字段。'}` : '请先选择客户，再导入河源业务统一排期。' }}</p>
                 <strong>{{ selectedScheduleFile }}</strong>
+                <small>解析后自动同步到纸箱仓库；保存订单或生成新排期后自动更新。</small>
                 <button type="button" class="button button--secondary" :disabled="!selectedCustomer" @click="selectUpload('schedule')"><UploadCloud aria-hidden="true" /> 选择排期文件</button>
                 <input ref="scheduleInput" class="visually-hidden" type="file" :accept="selectedCustomer?.scheduleAccept || '.xlsx'" @change="handleSelectedFile('schedule', $event)">
               </article>
@@ -2137,7 +2185,7 @@ onBeforeUnmount(() => {
               {{ blockingIssueDetails.length ? '打开待确认/阻断处理' : blockingResolutionItems.some(({ issue }) => issue.severity === 'warning' && issue.can_edit) ? '更正日期/补录字段' : '查看已处理阻断项' }}
             </button>
             <button type="button" class="button button--secondary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || savingOrder" @click="confirmAndSaveOrder">{{ savingOrder ? '正在保存…' : '确认并保存订单' }}</button>
-            <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
+            <button type="button" class="button button--primary" :disabled="!previewBatch || unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule || warehouseSync.state === 'pending'" @click="confirmAndGenerateSchedule"><Download aria-hidden="true" /> {{ exportingSchedule ? '正在生成…' : unconfirmedDuplicateIssueCount > 0 ? '确认重复订单后生成' : orderSummary.blocked > 0 ? '处理阻断后生成' : confirmationReasonMissing ? '填写确认原因后生成' : orderSummary.warning > 0 ? '确认警告并生成客户排期' : '确认并生成客户排期' }}</button>
           </div>
         </header>
 
@@ -2261,7 +2309,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="button button--primary"
-            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule"
+            :disabled="unconfirmedDuplicateIssueCount > 0 || orderSummary.blocked > 0 || confirmationReasonMissing || exportingSchedule || warehouseSync.state === 'pending'"
             @click="confirmAndGenerateSchedule"
           >
             <Download aria-hidden="true" />

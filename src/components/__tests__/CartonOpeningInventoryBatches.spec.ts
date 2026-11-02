@@ -30,6 +30,7 @@ describe('opening batch cancellation', () => {
   })
   it('shows original file and dates, previews every row, then requires explicit review and reason', async () => {
     const wrapper = await opened()
+    expect(wrapper.vm.navigationBlocked).toBe(true)
     expect(wrapper.text()).toContain('2026-03-01 ～ 2026-05-01')
     expect(wrapper.text()).toContain('12*10*5 inch')
     expect(api.reverseOpeningBatch).not.toHaveBeenCalled()
@@ -43,6 +44,7 @@ describe('opening batch cancellation', () => {
     expect(wrapper.emitted('reversed')).toHaveLength(1)
     expect(wrapper.text()).toContain('共 2 笔')
     expect(wrapper.find('[aria-label="整批撤销预览"]').exists()).toBe(false)
+    expect(wrapper.vm.navigationBlocked).toBe(false)
     wrapper.unmount()
   })
   it('blocks the complete operation when one original row has a downstream dependency', async () => {

@@ -82,7 +82,6 @@ def api(tmp_path, monkeypatch):
             db.add(AuthSession(id=who, user_id=who, token_hash=auth.hash_session_token(who), status="active", expires_at=(datetime.now()+timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")))
         db.commit()
     monkeypatch.setattr(auth, "build_auth_context", lambda db, user: contexts[user.id])
-    monkeypatch.setattr(service.collaborative_sheets, "_eligible_accounts", lambda db, factory: [{"id": key} for key, user in contexts.items() if user.profile.primary_factory_id == factory])
     app = FastAPI(); app.include_router(router)
     current = {"user": "owner"}
     app.dependency_overrides[authenticated_user] = lambda: contexts[current["user"]]
@@ -270,6 +269,159 @@ def test_release_unopened_checks_info_without_forcing_save(api):
     assert client.post(f"{BASE}/{doc}/release-unopened{SCOPE}").json() == {"released": False}
     assert client.post(f"{BASE}/{doc}/release-unopened{SCOPE}").json() == {"released": True}
     assert calls == [{"c": "info", "key": key}] * 2
+
+
+@pytest.mark.parametrize('factory', ['group', 'huaxing'])
+def test_prepare_sharing_releases_confirmed_orphan_before_revoke(api, factory):
+    client, engine, users, current, monkey = api
+    suffix = '?factory_id=' + factory
+    doc = client.post(BASE + suffix, json={'format': 'xlsx'}).json()['id']
+    path = f'{BASE}/{doc}'
+    shared = put_grants(client, path + '/grants' + suffix, json={'grants': [{'user_id': 'viewer', 'access': 'view'}]}).json()
+    client.post(path + '/editor' + suffix)
+    before = client.get(path + '/download' + suffix).content
+    calls = []
+    monkey.setattr(protocol, 'command', lambda p: calls.append(p) or {'error': 1})
+    payload = {'grants': [], 'version': shared['share_version']}
+    assert client.post(path + '/prepare-sharing' + suffix, json=payload).json() == {'ready': True}
+    detail = client.get(path + suffix).json()
+    assert not detail['editing'] and detail['grants'] == shared['grants']
+    assert client.get(path + '/download' + suffix).content == before
+    assert len(calls) == 1 and calls[0]['c'] == 'info'
+    assert client.put(path + '/grants' + suffix, json=payload).status_code == 200
+    current['user'] = 'viewer'
+    assert client.get(path + '/download' + suffix).status_code == 404
+
+
+def test_prepare_sharing_retains_last_editor_authority_until_final_save(api):
+    client, engine, users, current, monkey = api
+    doc = new(client); path = f'{BASE}/{doc}'
+    shared = put_grants(client, path + '/grants' + SCOPE, json={'grants': [{'user_id': 'editor', 'access': 'edit'}]}).json()
+    current['user'] = 'editor'; client.cookies.set('rr_session', 'editor')
+    key = open_editor(client, doc)['document']['key']
+    current['user'] = 'owner'; client.cookies.set('rr_session', 'owner')
+    calls = []
+    monkey.setattr(protocol, 'command', lambda p: calls.append(p) or {'error': 0, 'users': []})
+    payload = {'grants': [], 'version': shared['share_version']}
+    assert client.post(path + '/prepare-sharing' + SCOPE, json=payload).json() == {'ready': False}
+    assert calls[:2] == [{'c': 'info', 'key': key}, {'c': 'drop', 'key': key, 'users': ['editor_1']}]
+    assert calls[2]['c'] == 'forcesave' and calls[2]['key'] == key
+    assert client.put(path + '/grants' + SCOPE, json=payload).status_code == 409
+    assert client.get(path + SCOPE).json()['grants'] == shared['grants']
+    saved = workbook('=SUM(100,200)')
+    monkey.setattr(protocol, 'fetch_saved', lambda url: saved)
+    final = {'key': key, 'status': 2, 'users': ['editor_1'], 'url': 'http://onlyoffice/cache/files/final'}
+    assert callback(client, doc, final).json() == {'error': 0}
+    assert client.get(path + '/download' + SCOPE).content == saved
+    assert client.put(path + '/grants' + SCOPE, json=payload).status_code == 200
+    current['user'] = 'editor'; client.cookies.set('rr_session', 'editor')
+    assert client.post(path + '/editor' + SCOPE).status_code == 404
+    assert callback(client, doc, final).json() == {'error': 0}
+
+
+@pytest.mark.parametrize('status', [2, 4])
+def test_prepare_sharing_handles_final_callback_before_drop_response(api, status):
+    client, engine, users, current, monkey = api
+    doc = new(client); path = f'{BASE}/{doc}'
+    put_grants(client, path + '/grants' + SCOPE, json={'grants': [{'user_id': 'viewer', 'access': 'view'}]})
+    key = open_editor(client, doc)['document']['key']
+    version = client.get(path + SCOPE).json()['share_version']
+    saved = workbook('=SUM(9,9)')
+    monkey.setattr(protocol, 'fetch_saved', lambda url: saved)
+    def command(payload):
+        if payload['c'] == 'drop':
+            assert callback(client, doc, {'key': key, 'status': status, 'users': ['owner_1'], 'url': 'http://onlyoffice/cache/files/final'}).json() == {'error': 0}
+        return {'error': 0}
+    monkey.setattr(protocol, 'command', command)
+    assert client.post(path + '/prepare-sharing' + SCOPE, json={'grants': [], 'version': version}).json() == {'ready': True}
+    assert not client.get(path + SCOPE).json()['editing']
+    if status == 2:
+        assert client.get(path + '/download' + SCOPE).content == saved
+
+
+@pytest.mark.parametrize('failure', ['info-timeout', 'info-error', 'drop-timeout', 'drop-error', 'pending', 'save-error'])
+def test_prepare_sharing_never_discards_uncertain_content(api, failure):
+    client, engine, users, current, monkey = api
+    doc = new(client); path = f'{BASE}/{doc}'
+    original = put_grants(client, path + '/grants' + SCOPE, json={'grants': [{'user_id': 'viewer', 'access': 'view'}]}).json()['grants']
+    key = open_editor(client, doc)['document']['key']
+    version = client.get(path + SCOPE).json()['share_version']
+    def command(payload):
+        stage = payload['c']
+        if failure == stage + '-timeout':
+            raise TimeoutError()
+        if failure == stage + '-error':
+            return {'error': 2}
+        if failure in {'pending', 'save-error'}:
+            # Save state can change while info is in flight, after the first check.
+            with Session(engine) as db:
+                record = db.get(Document, doc)
+                if failure == 'pending': record.pending_save = 'unacknowledged'
+                else: record.save_error = 'unconfirmed'
+                db.commit()
+            return {'error': 1}
+        return {'error': 0}
+    monkey.setattr(protocol, 'command', command)
+    response = client.post(path + '/prepare-sharing' + SCOPE, json={'grants': [], 'version': version})
+    assert response.status_code == (409 if failure in {'pending', 'save-error'} else 502)
+    with Session(engine) as db:
+        record = db.get(Document, doc)
+        assert record.editor_key == key and record.participants
+        assert record.grants == original
+        if failure == 'pending': assert record.pending_save == 'unacknowledged'
+        if failure == 'save-error': assert record.save_error == 'unconfirmed'
+
+
+@pytest.mark.parametrize('boundary, expected', [('epoch', 403), ('session', 401), ('account', 401), ('acl', 409), ('key', 200), ('recipient', 409)])
+def test_prepare_sharing_rechecks_owner_and_session_before_drop(api, boundary, expected):
+    client, engine, users, current, monkey = api
+    doc = new(client); path = f'{BASE}/{doc}'
+    key = open_editor(client, doc)['document']['key']
+    version = client.get(path + SCOPE).json()['share_version']
+    calls = []
+    def command(payload):
+        calls.append(payload)
+        if boundary == 'epoch': users['owner'] = context('owner', epoch=2)
+        if boundary == 'recipient': users['viewer'] = context('viewer', epoch=2)
+        with Session(engine) as db:
+            if boundary == 'session': db.get(AuthSession, 'owner').status = 'revoked'
+            if boundary == 'account': db.get(AuthUser, 'owner').status = 'disabled'
+            if boundary == 'acl': db.get(Document, doc).grants = [{'user_id': 'viewer', 'name': 'viewer', 'epoch': 1, 'access': 'view'}]
+            if boundary == 'key': db.get(Document, doc).editor_key = 'replacement-key'
+            db.commit()
+        return {'error': 0}
+    monkey.setattr(protocol, 'command', command)
+    intended = [{'user_id': 'viewer', 'epoch': 1, 'access': 'view'}] if boundary == 'recipient' else []
+    response = client.post(path + '/prepare-sharing' + SCOPE, json={'grants': intended, 'version': version})
+    assert response.status_code == expected, response.text
+    assert calls == [{'c': 'info', 'key': key}]
+    if boundary == 'key': assert response.json() == {'ready': False}
+
+
+def test_prepare_sharing_validates_recipient_and_acl_before_disconnecting(api):
+    client, engine, users, current, monkey = api
+    doc = new(client); path = f'{BASE}/{doc}'
+    open_editor(client, doc)
+    version = client.get(path + SCOPE).json()['share_version']
+    calls = []
+    monkey.setattr(protocol, 'command', lambda p: calls.append(p) or {'error': 0})
+    assert client.post(path + '/prepare-sharing' + SCOPE, json={'grants': [], 'version': 'old'}).status_code == 409
+    assert client.post(path + '/prepare-sharing' + SCOPE, json={'grants': [{'user_id': 'viewer', 'epoch': 2, 'access': 'view'}], 'version': version}).status_code == 409
+    current['user'] = 'stranger'; client.cookies.set('rr_session', 'stranger')
+    assert client.post(path + '/prepare-sharing' + SCOPE, json={'grants': [], 'version': version}).status_code == 404
+    assert calls == []
+
+
+def test_shared_editor_cannot_end_connections_for_sharing(api):
+    client, engine, users, current, monkey = api
+    doc = new(client); path = f'{BASE}/{doc}'
+    shared = put_grants(client, path + '/grants' + SCOPE, json={'grants': [{'user_id': 'editor', 'access': 'edit'}]}).json()
+    current['user'] = 'editor'; client.cookies.set('rr_session', 'editor')
+    open_editor(client, doc)
+    calls = []
+    monkey.setattr(protocol, 'command', lambda p: calls.append(p) or {'error': 0})
+    assert client.post(path + '/prepare-sharing' + SCOPE, json={'grants': [], 'version': shared['share_version']}).status_code == 403
+    assert calls == []
 
 
 def test_startup_requires_explicit_migration_even_for_a_new_store(api):
@@ -495,11 +647,58 @@ def test_group_recipients_use_internal_roster_and_recheck_target(api):
 def test_group_does_not_relax_concrete_factory_sharing(api):
     client, engine, users, current, monkey = api
     users['editor'] = context('editor', factory='huakang-a')
+    with Session(engine) as db:
+        db.get(EmployeeProfile, 'editor').primary_factory_id = 'huakang-a'
+        db.commit()
     doc = new(client)
     assert put_grants(client, f'{BASE}/{doc}/grants{SCOPE}', json={'grants': [{'user_id': 'editor', 'access': 'edit'}]}).status_code == 422
     current['user'] = 'editor'
     assert client.get(f'{BASE}/{doc}{SCOPE}').status_code == 403
     assert client.get(f'{BASE}/{doc}?factory_id=group').status_code == 404
+
+
+@pytest.mark.parametrize('boundary', ['disabled', 'left', 'unconfirmed', 'other_factory'])
+def test_factory_recipients_and_shares_recheck_current_eligibility(api, boundary):
+    client, engine, users, current, monkey = api
+    doc = new(client)
+    with Session(engine) as db:
+        profile = db.get(EmployeeProfile, 'editor')
+        if boundary == 'disabled': db.get(AuthUser, 'editor').status = 'disabled'
+        if boundary == 'left': profile.employment_status = 'left'
+        if boundary == 'unconfirmed': profile.confirmation_status = 'needs_review'
+        if boundary == 'other_factory': profile.primary_factory_id = 'huakang-a'
+        db.commit()
+    response = client.get(BASE + '/recipients' + SCOPE)
+    assert response.status_code == 200, response.text
+    assert {p['id'] for p in response.json()['users']} == {'owner', 'viewer', 'stranger'}
+    assert response.json()['departments'] == [{'id': 'engineering', 'name': 'engineering'}]
+    assert all(p['epoch'] == 1 for p in response.json()['users'])
+    assert put_grants(client, f'{BASE}/{doc}/grants{SCOPE}', json={
+        'grants': [{'user_id': 'editor', 'access': 'edit'}]}).status_code == 422
+
+
+@pytest.mark.parametrize('boundary', ['current', 'transferred', 'future', 'expired', 'old_epoch'])
+def test_factory_recipients_use_effective_assignment_instead_of_legacy_profile(api, boundary):
+    client, engine, users, current, monkey = api
+    with Session(engine) as db:
+        db.add(IamOrgUnit(id='assigned-factory', name='Assigned factory', kind='factory',
+                         legacy_factory_id='huakang-a' if boundary == 'transferred' else 'huaxing'))
+        db.add(IamOrgDepartment(org_unit_id='assigned-factory', department_code='sales-business'))
+        db.get(EmployeeProfile, 'editor').identity_mode = 'v2'
+        db.add(EmployeeAssignment(id='editor-assignment', user_id='editor', org_unit_id='assigned-factory',
+            department_code='sales-business', official_position_title='test', is_primary=True,
+            valid_from='2099-01-01T00:00:00.000000Z' if boundary == 'future' else '2020-01-01T00:00:00.000000Z',
+            valid_until='2021-01-01T00:00:00.000000Z' if boundary == 'expired' else None,
+            employment_epoch=0 if boundary == 'old_epoch' else 1, created_by='test', confirmed_by='test',
+            created_at='2020-01-01T00:00:00.000000Z', updated_at='2020-01-01T00:00:00.000000Z'))
+        db.commit()
+    response = client.get(BASE + '/recipients' + SCOPE)
+    assert response.status_code == 200, response.text
+    recipients = {person['id']: person for person in response.json()['users']}
+    if boundary == 'current':
+        assert recipients['editor']['department'] == 'sales-business'
+    else:
+        assert 'editor' not in recipients
 
 
 def test_legacy_unconfirmed_empty_identity_cannot_receive_or_manage_group_sharing(api):

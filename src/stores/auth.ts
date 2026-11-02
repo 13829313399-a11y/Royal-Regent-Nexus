@@ -34,6 +34,9 @@ const positionDepartmentAliasGroups = [
 ]
 
 const positionDepartmentSensitivePermissions = new Set([
+  'carton_asset:read',
+  'carton_asset:manage',
+  'carton_asset:confirm',
   'molding_sample:dispatch',
   'molding_sample:notification_read',
   'internal_quote:create',

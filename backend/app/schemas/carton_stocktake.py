@@ -28,3 +28,12 @@ class StocktakeAction(BaseModel):
     cutoff_acknowledged: bool = False
     lines: list[StocktakeCount] = Field(default_factory=list, max_length=500)
     reason: str = Field(default="", max_length=1000)
+
+
+class StocktakePolicyUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    factory_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=0)
+    amount_threshold: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    ratio_threshold: Decimal = Field(gt=0, le=1, max_digits=7, decimal_places=6)
+    reason: str = Field(min_length=4, max_length=1000)

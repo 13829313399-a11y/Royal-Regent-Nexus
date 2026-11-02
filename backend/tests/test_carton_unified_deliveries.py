@@ -91,7 +91,8 @@ def test_mixed_dispatch_and_partial_receipt_are_one_atomic_operation(monkeypatch
         assert delivery["id"] == group["id"] and len(delivery["lines"]) == len(group["lines"])
         assert {line["order_kind"] for line in delivery["lines"]} == {"REGULAR", "SAMPLE"}
         assert {order["order_kind"] for order in delivery["orders"]} == {"REGULAR", "SAMPLE"}
-        purchase = next(item for item in documents if item["kind"] == "PURCHASE")
+        purchase = next(item for item in documents if item["kind"] == "PURCHASE"
+                        and any(order['order_no'] == formal['order_no'] for order in item['orders']))
         assert all(line["order_kind"] == "REGULAR" for line in purchase["lines"])
         from io import BytesIO
         from openpyxl import load_workbook

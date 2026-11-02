@@ -4,6 +4,32 @@ import re
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_online_document_connections_and_dynamic_files_cannot_use_static_proxy():
+    config = (REPOSITORY_ROOT / 'nginx.prod.conf').read_text(encoding='utf-8')
+    guarded = config.index('location ~ ^/office/(?:[^/]+/)?(?:doc|cache|downloadas|savefile|printfile|downloadfile|upload)/')
+    static = config.index('location /office/')
+    assert guarded < static
+    assert 'location ^~ /office/' not in config
+    block = config[guarded:static]
+    assert 'proxy_pass $api_upstream$request_uri;' in block
+    assert 'proxy_set_header Upgrade $http_upgrade;' in block
+    static_block = config[static:config.index('\n  }', static)]
+    assert 'proxy_set_header Upgrade "";' in static_block
+    assert 'proxy_set_header Connection "";' in static_block
+    assert 'if ($uri !~' in static_block and 'return 403;' in static_block
+    assert '(EIO|transport)' in static_block
+
+
+def test_indonesia_master_upload_budget_is_scoped_to_preview_only():
+    config = (REPOSITORY_ROOT / 'nginx.prod.conf').read_text(encoding='utf-8')
+    start = config.index('location = /api/indonesia-materials/master-imports/preview {')
+    block = config[start:config.index('\n  }', start)]
+    assert 'client_max_body_size 205m;' in block
+    assert 'proxy_send_timeout 270s;' in block
+    assert 'proxy_read_timeout 270s;' in block
+    assert 'proxy_read_timeout 30s;' in config[config.index('location /api/'):]
+
+
 def test_huakang_b_jp_file_routes_have_scoped_budget_without_relaxing_other_reads():
     config = (REPOSITORY_ROOT / "nginx.prod.conf").read_text(encoding="utf-8")
     pattern = r"^/api/huakang-b-jp/(?:references/(?:schedule|price|confirmed)(?:/clear)?|preview|export)$"

@@ -6,6 +6,7 @@ export interface SplitLineInput { order_line_id: string; pending_quantity: strin
 export interface SplitTargetInput { contract_no: string; customer_po: string; product_quantity: string | number | null; lines: SplitLineInput[] }
 export interface SplitRecord {
   id: string; factory_id: string; order_id: string; order_no: string; item_no: string; customer_code: string
+  original_contract_no?: string
   status: 'ACTIVE' | 'PENDING_WAREHOUSE' | 'CANCELLED'; revision: number; reason: string; created_at: string; created_by_name: string
   targets: Array<Omit<SplitTargetInput, 'lines'> & { lines: Array<SplitLineInput & {
     target_line_id: string; packaging_type: string; paper_quality: string; specification: string; unit: string
