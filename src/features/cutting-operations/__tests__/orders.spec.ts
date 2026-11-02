@@ -443,3 +443,12 @@ describe('P2a preplan editor and protection', () => {
   })
 
 })
+
+
+it('names and explicitly labels every order filter control',async()=>{
+  await open()
+  const controls=wrapper.findAll('form.order-filters input,form.order-filters select')
+  expect(controls).toHaveLength(3)
+  expect(new Set(controls.map(c=>c.attributes('id'))).size).toBe(3)
+  for(const control of controls){expect(control.attributes('name')).toBeTruthy();expect(wrapper.findAll('label').some(l=>l.attributes('for')===control.attributes('id'))).toBe(true)}
+})
