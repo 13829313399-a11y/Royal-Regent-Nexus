@@ -4,7 +4,7 @@ from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import select, func
 from test_molding_sample_api import make_client, login_as
-from test_carton_special_requests import setup, created, create_body, command, ok, BASE, SUP, FACTORY, ship
+from test_carton_special_requests import setup, created, create_body, command, ok, accept, BASE, SUP, FACTORY, ship, isolated_database_directory
 from test_carton_supplier_portal import supplier_login
 
 
@@ -112,7 +112,12 @@ def test_locked_adjustment_and_pending_original_note_block_parallel_receipts(mon
 def test_manual_receipt_accepts_pending_marks_but_rejects_scope_overreceipt_and_reversed_original(monkeypatch):
     with make_client(monkeypatch) as client:
         place = setup(client)
-        row = created(client)
+        body = create_body(); body['lines'][0]['mark_mode'] = 'PENDING'
+        row = ok(client.post(BASE, json=body), 201)
+        row = ok(client.post(BASE + f"/{row['id']}/send", json=command(row)))
+        accept(client, row)
+        login_as(client, 'admin')
+        row = ok(client.get(BASE + f"/{row['id']}", params={"factory_id": FACTORY}))
         path = BASE + f"/{row['id']}/manual-receive"
         assert client.post(path, json=manual_body(row, place, quantity="101")).status_code == 409
         payload = manual_body(row, place)
@@ -121,8 +126,7 @@ def test_manual_receipt_accepts_pending_marks_but_rejects_scope_overreceipt_and_
         assert client.post(path, json=payload).status_code == 403
         login_as(client, "admin")
         # Warehouse accepts the physical goods without inventing confirmed marks.
-        row = ok(client.post(BASE + f"/{row['id']}/lines/{row['lines'][0]['id']}/mark",
-            json=command(row, mark_mode="PENDING")))
+        assert row['lines'][0]['mark_mode'] == 'PENDING' and not row['lines'][0]['mark_ready']
         row = ok(client.post(path, json=manual_body(row, place)))
         assert row['lines'][0]['mark_mode'] == 'PENDING' and not row['lines'][0]['mark_ready']
         assert row['shipments'][0]['lines'][0]['snapshot']['mark_mode'] == 'PENDING'
@@ -163,7 +167,7 @@ def test_warehouse_can_reject_unconfirmed_miscellaneous_goods_without_stock(monk
                 CartonInventoryMovement.movement_type == 'INBOUND')) or Decimal(0)) == 0
 
 
-def test_manual_receipt_requires_inventory_and_customer_responsibility(monkeypatch):
+def test_manual_receipt_requires_inventory_and_does_not_grant_customer_order_access(monkeypatch):
     monkeypatch.setenv("AUTHZ_MODE", "enforce")
     with make_client(monkeypatch) as client:
         place = setup(client)
@@ -191,7 +195,10 @@ def test_manual_receipt_requires_inventory_and_customer_responsibility(monkeypat
         with SessionLocal() as db:
             db.add(CartonCustomerAssignment(factory_id=FACTORY, customer_id=customer_id, user_id=admin_id))
             db.commit()
-        assert client.post(path, json=payload).status_code == 403
+        received = ok(client.post(path, json=payload))
+        assert received['shipments'][0]['receipts'][0]['status'] == 'POSTED'
+        assert ok(client.post(path, json=payload)) == received
+        assert client.post(BASE + f"/{row['id']}/cancel", json=command(received)).status_code == 403
         for scope in ("OWN", "ALL"):
             workspace = ok(client.get(BASE, params={"factory_id": FACTORY, "responsibility_scope": scope}))
             assert not any(value["id"] == row["id"] for value in workspace["items"])

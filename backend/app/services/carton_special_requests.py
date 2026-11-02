@@ -61,7 +61,7 @@ def supplier(db, user, factory, permission="carton_supplier:read"):
     return portal.fixed_supplier(db, factory)
 
 
-def access(db, user, factory, identifier=None, *, external=False):
+def access(db, user, factory, identifier=None, *, external=False, receiving=False):
     core.require_carton_factory(factory)
     if external:
         vendor = supplier(db, user, factory)
@@ -74,7 +74,9 @@ def access(db, user, factory, identifier=None, *, external=False):
         if not external:
             if not (allowed(user, factory, "order_write") or can_receive(user, factory)) and row.created_by != user.id:
                 raise HTTPException(403, "只可查看自己提交的纸品需求")
-            customer_access(db, user, row)
+            from app.services.carton_customer_assignment import can_receive_all_customers
+            if not (receiving and can_receive_all_customers(user, factory)):
+                customer_access(db, user, row)
     return row
 
 
@@ -177,8 +179,8 @@ def replay(db, user, payload, action, identifier="", extra=None):
     return digest, None
 
 
-def finish(db, user, payload, row, action, digest, *, external=False, commit=True, response_extra=None):
-    response = detail(db, user, row.factory_id, row.id, external=external)
+def finish(db, user, payload, row, action, digest, *, external=False, commit=True, response_extra=None, receiving=False):
+    response = detail(db, user, row.factory_id, row.id, external=external, receiving=receiving)
     response.update(response_extra or {})
     event = core._audit(db, user, row.factory_id, "SPECIAL_" + action, "carton_special_request", row.id,
         {"fingerprint": digest, "request_id": payload.request_id, "response": response})
@@ -233,7 +235,7 @@ def deletion_allowed(db, user, row):
         and not db.scalar(select(SpecialAttachment.id).where(SpecialAttachment.request_id == row.id).limit(1))
 
 
-def flags(db, user, row, external):
+def flags(db, user, row, external, *, receiving=False):
     from app.services.carton_supplier_changes import special_confirmation
     confirmation = special_confirmation(db, row)
     manager = not external and allowed(user, row.factory_id, "order_write")
@@ -260,7 +262,8 @@ def flags(db, user, row, external):
             (external and portal.supplier_permission(user, "carton_supplier:edit", row.factory_id))),
         can_message=not external or portal.supplier_permission(user, "carton_supplier:edit", row.factory_id),
         can_confirm_material=manager and active,
-        can_delete=not external and deletion_allowed(db, user, row))
+        can_delete=not external and deletion_allowed(db, user, row),
+        can_view_order_resources=True)
     from app.services import carton_special_stock
     stock_writer = manager and allowed(user, row.factory_id, "inventory_write")
     result.update(can_return_stock=stock_writer and carton_special_stock.eligible(db, row),
@@ -270,7 +273,15 @@ def flags(db, user, row, external):
         for key in ("can_edit", "can_confirm", "can_adjust", "can_append", "can_send", "can_cancel", "can_delete", "can_confirm_material"):
             result[key] = False
     if db.scalar(select(SpecialVersion.id).where(SpecialVersion.request_id == row.id, SpecialVersion.action == "DELETED").limit(1)):
-        return dict.fromkeys(result, False)
+        result = {key: key == "can_view_order_resources" for key in result}
+    if receiving and not external:
+        try:
+            customer_access(db, user, row)
+        except HTTPException as error:
+            if error.status_code != 403: raise
+            # A receipt projection must not advertise order or asset write rights.
+            result = {key: value if key in {"can_receive", "can_manual_receive"} else False
+                      for key, value in result.items()}
     return result
 
 
@@ -291,8 +302,8 @@ def delete_request(db, user, identifier, payload, *, commit=True):
     return finish(db, user, payload, row, "DELETED", digest, response_extra={"deleted": True}, commit=commit)
 
 
-def detail(db, user, factory, identifier, *, external=False, mark_assets_by_order=None):
-    row = access(db, user, factory, identifier, external=external)
+def detail(db, user, factory, identifier, *, external=False, mark_assets_by_order=None, receiving=False):
+    row = access(db, user, factory, identifier, external=external, receiving=receiving)
     from app.services.carton_replenishment_receipts import receipt_links
     receipt_price_links = receipt_links(db, factory) if external else {}
     shipped, received, consumed, received_by_request, receipt_rows = state_counts(db, row)
@@ -334,7 +345,7 @@ def detail(db, user, factory, identifier, *, external=False, mark_assets_by_orde
              "closures": [dict(detail, created_at=event.created_at) for event, detail in closures(db, factory, [shipment.id])],
              "receipts": [{key: getattr(receipt_rows[rid], key) for key in ("id", "receipt_no", "status", "revision", "acceptance_date")} |
                 {"lines": [receipt_line_out(paper, external=external, replacement_link=receipt_price_links.get(paper.id)) for paper in core._receipt_lines(db, rid)]} for rid in sorted(linked_ids)]})
-    response["permissions"] = flags(db, user, row, external)
+    response["permissions"] = flags(db, user, row, external, receiving=receiving)
     return response
 
 
@@ -349,19 +360,21 @@ def receipt_line_out(paper, *, external=False, replacement_link=None):
     return result
 
 
-def workspace(db, user, factory, *, external=False, responsibility_scope="OWN"):
+def workspace(db, user, factory, *, external=False, responsibility_scope="OWN", receiving=False):
     access(db, user, factory, external=external)
+    from app.services.carton_customer_assignment import can_receive_all_customers
+    receiving = not external and receiving and can_receive_all_customers(user, factory)
     if responsibility_scope not in {"OWN", "ALL"}: raise HTTPException(422, "客户范围无效")
     items = []
     from app.services.carton_special_marks import associated_files
     mark_assets_by_order = associated_files(db, user, factory, external=external)
     query = select(SpecialRequest).where(SpecialRequest.factory_id == factory, ~deleted_predicate())
-    if not external and responsibility_scope == "OWN":
+    if not external and responsibility_scope == "OWN" and not receiving:
         from app.services.carton_customer_assignment import customer_predicate
         query = query.where(customer_predicate(user, factory, SpecialRequest.customer_code))
     for row in db.scalars(query.order_by(SpecialRequest.updated_at.desc())):
         try:
-            items.append(detail(db, user, factory, row.id, external=external, mark_assets_by_order=mark_assets_by_order))
+            items.append(detail(db, user, factory, row.id, external=external, mark_assets_by_order=mark_assets_by_order, receiving=receiving))
         except HTTPException as error:
             if error.status_code not in {403, 404}: raise
     options = {"customers": [], "workshops": [], "locations": []}
@@ -628,7 +641,7 @@ def ship(db, user, identifier, payload: schema.Ship, *, commit=True, allow_share
 
 def receive(db, user, identifier, shipment_id, payload: schema.Receive, *, commit=True):
     user = locked_actor(db, user, payload.factory_id)
-    row = access(db, user, payload.factory_id, identifier)
+    row = access(db, user, payload.factory_id, identifier, receiving=True)
     if not can_receive(user, row.factory_id): raise HTTPException(403, "验收须同时具备本厂收料及库存权限")
     digest, saved = replay(db, user, payload, "RECEIVE", identifier, shipment_id)
     if saved: return saved
@@ -706,7 +719,7 @@ def receive(db, user, identifier, shipment_id, payload: schema.Receive, *, commi
     receive_action = "RECEIVED" if receipt else "DELIVERY_CLOSED" if closed else "DELIVERY_DEFERRED"
     version(db, user, row, receive_action)
     notify(db, row, receive_action, audience="SUPPLIER")
-    return finish(db, user, payload, row, "RECEIVE", digest, commit=commit)
+    return finish(db, user, payload, row, "RECEIVE", digest, commit=commit, receiving=True)
 
 
 def attachment(db, user, identifier, payload, role, filename, content, *, external=False, line_id=""):

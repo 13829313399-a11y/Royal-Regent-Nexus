@@ -90,7 +90,7 @@ from app.schemas.carton_procurement import (
 )
 from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine, SupplierCommitment, SupplierAttachment
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext, can
-from app.services.carton_customer_assignment import ensure_customer_operation, ensure_receipt_operation, customer_predicate, unrestricted as unrestricted_customer
+from app.services.carton_customer_assignment import ensure_customer_operation, ensure_receipt_operation, ensure_receipt_customer, can_receive_all_customers, customer_predicate, unrestricted as unrestricted_customer
 from app.schemas.carton_procurement import CartonLocationAllocation
 from app.services import carton_positions as positions
 from app.services.carton_inventory_valuation import cost_key, load_valuation, value_movements, Valuation
@@ -1434,6 +1434,7 @@ def set_order_rush(
 
 def update_order_dates(
     db: Session, order_no: str, payload: CartonOrderDatesRequest, user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
 
@@ -1485,7 +1486,7 @@ def update_order_dates(
         ordinary = [issue for issue in _purchase_order_issues(db, order.id) if not _purchase_order_snapshot(issue).get("replenishment")]
         if ordinary and _purchase_order_pending_change(order, _order_lines(db, order.id), ordinary[0])[0] != "NONE":
             create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
-    db.commit()
+    db.commit() if commit else db.flush()
     db.refresh(order)
     return order
 
@@ -1495,6 +1496,7 @@ def update_order(
     order_no: str,
     payload: CartonOrderUpdate,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
@@ -1719,9 +1721,10 @@ def update_order(
         },
     )
     try:
-        db.commit()
+        db.commit() if commit else db.flush()
     except IntegrityError as exc:
-        db.rollback()
+        if commit:
+            db.rollback()
         raise HTTPException(status_code=409, detail="订单修改与现有业务数据冲突，请刷新后重试") from exc
     db.refresh(order)
     return order
@@ -1856,6 +1859,7 @@ def cancel_order(
     order_no: str,
     payload: CartonOrderCancelRequest,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
@@ -1890,7 +1894,7 @@ def cancel_order(
         },
     )
     _issue_order_cancellation(db, order, user)
-    db.commit()
+    db.commit() if commit else db.flush()
     db.refresh(order)
     return order
 
@@ -2049,6 +2053,7 @@ def reduce_order(
     order_no: str,
     payload: CartonOrderReduceRequest,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
@@ -2182,7 +2187,7 @@ def reduce_order(
         ordinary = [issue for issue in _purchase_order_issues(db, order.id) if not _purchase_order_snapshot(issue).get("replenishment")]
         if ordinary and _purchase_order_pending_change(order, _order_lines(db, order.id), ordinary[0])[0] != "NONE":
             create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
-    db.commit()
+    db.commit() if commit else db.flush()
     db.refresh(order)
     return order
 
@@ -3089,10 +3094,10 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         ).all()
     }
     for order in orders.values():
-        ensure_customer_operation(db, user, factory_id, order.customer_code)
+        ensure_receipt_customer(db, user, factory_id, order.customer_code)
     for line in payload.lines:
         if line.source_type != "FORMAL_ORDER":
-            ensure_customer_operation(db, user, factory_id, line.customer_code)
+            ensure_receipt_customer(db, user, factory_id, line.customer_code)
     ineligible_orders = [
         order.order_no
         for order in orders.values()
@@ -3391,7 +3396,7 @@ def list_receipts(
         query = query.where(selected_date >= date_from)
     if date_to:
         query = query.where(selected_date <= date_to)
-    if user is not None:
+    if user is not None and not can_receive_all_customers(user, factory_id):
         hidden = select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory_id,
             ~customer_predicate(user, factory_id, CartonReceiptLine.customer_code)) if not unrestricted_customer(user, factory_id) else None
         if hidden is not None:
@@ -5985,6 +5990,10 @@ def supplier_promise_notices(db: Session, factory_id: str, limit: int = 20, offs
         })
     changes = [{**item, "key": f"CHANGE:{item['id']}"} for item in supplier_promise_changes(
         db, factory_id, None, acknowledged=acknowledged_keys)]
+    from app.services.carton_replenishment_promises import notices as replacement_notices
+    replacement_late, replacement_changes = replacement_notices(db, factory_id, acknowledged_keys)
+    late.extend(replacement_late)
+    changes.extend(replacement_changes)
     return {"late": late[offset:offset + limit], "changes": changes[offset:offset + limit],
             "acknowledged": acknowledged, "total": len(late) + len(changes),
             "late_total": len(late), "change_total": len(changes),

@@ -21,6 +21,35 @@ def _decimal(text, field):
     except InvalidOperation as exc:raise ValueError(f'Goliath {field}无法识别：{text}') from exc
 
 
+def _order_type(text):
+    explicit = re.findall(r'(?:\bOrder[ \t]+Type|\bDocument[ \t]+Type|订单类型|訂單類型)[ \t]*[:：]?[ \t]*([^\n]*)', text, re.I)
+    kinds = {value.strip() for value in explicit}
+    headings = {
+        '样板单': r'(?:SAMPLE\s+(?:PURCHASE\s+)?(?:ORDER|CONTRACT)|样板单|樣板單|样品单)',
+        '备料单': r'(?:(?:STOCK|MATERIAL)\s+(?:PURCHASE\s+)?(?:ORDER|CONTRACT)|备料单|備料單)',
+        '杂单': r'(?:杂单|雜單)',
+        'UNKNOWN': r'PRO\s*FORMA\s+(?:PURCHASE\s+)?(?:ORDER|CONTRACT)',
+    }
+    suffix = r'(?:\s*\((?:REV(?:ISION)?\.?|NO\.?|#)\s*[A-Z0-9][A-Z0-9 ._/-]*\)|\s+(?:REV(?:ISION)?\.?|NO\.?|#)\s*[A-Z0-9][A-Z0-9 ._/-]*)?'
+    lines = [line.strip() for line in text.splitlines()]
+    heading_kinds = {kind for kind, pattern in headings.items()
+        if any(re.fullmatch(pattern + suffix, line, re.I) for line in lines)}
+    regular_title = r'PURCHASE\s+ORDER' + suffix
+    if any(re.fullmatch(r'(?:[A-Z]+\s+){0,3}PURCHASE\s+ORDER(?:\s*\([^\n()]*\)|\s+(?:REV(?:ISION)?\.?|NO\.?|#)\s*[^\n]*)?', line, re.I)
+            and not re.fullmatch(regular_title, line, re.I)
+            and not any(re.fullmatch(pattern + suffix, line, re.I) for pattern in headings.values())
+            for line in lines):
+        heading_kinds.add('UNKNOWN')
+    if explicit:
+        if (len(kinds) == 1 and next(iter(kinds)) in {'正单', '改单', '样板单', '备料单', '杂单'}
+                and (not heading_kinds or heading_kinds == kinds)):
+            return next(iter(kinds)), 'PDF正文 · 明确订单类型字段'
+        return '', ''
+    if heading_kinds or not any(re.fullmatch(regular_title, line, re.I) for line in lines):
+        return '', ''
+    return '正单', 'PDF正文 · Goliath正式Purchase Order、唯一订单号及明细总额校验'
+
+
 def parse_po(content: bytes, filename: str):
     records=[]
     with pdfplumber.open(BytesIO(content)) as pdf:
@@ -32,6 +61,7 @@ def parse_po(content: bytes, filename: str):
         orders={re.sub(r'\s+','',v) for v in orders}
         if len(orders)!=1:raise ValueError('Goliath PO 订单号缺失或存在多个不同订单号')
         order=orders.pop()
+        order_type, order_type_source = _order_type(text)
         order_date=re.search(r'Order date\s+(\d{1,2}\s+\w+\s+\d{4})',text,re.I)
         cargo=re.findall(r'CARGO READY DATE:\s*(\d{1,2}[ -]+[A-Z]+[ -]+\d{4})',text,re.I)
         po_refs=set(re.findall(r'(?:US|UK|EU)\s+PO\s+NO\.?\s*:?\s*(P[A-Z]{2}\d+_\d+)',text,re.I))
@@ -113,6 +143,8 @@ def parse_po(content: bytes, filename: str):
                 if abs(qty*price-amount)>Decimal('0.01'):
                     flags.append({'level':'high','code':'price_amount_conflict','field':'unit_price_usd','text':'Goliath 数量×单价与 PO 金额不一致，请核对单价末位及换行'})
                 records.append({'contract_no':order,'customer_po':customer_po,
+                    'order_type':order_type,
+                    'order_type_source':order_type_source,
                     'customer':customer,
                     'item_no':item['text'],'english_name':' '.join(column(1).split()),
                     'quantity':str(qty),'unit_price_usd':str(price),'amount_usd':str(amount),

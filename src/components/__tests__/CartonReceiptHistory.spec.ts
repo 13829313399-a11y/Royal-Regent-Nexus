@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import CartonReceiptHistory from '../CartonReceiptHistory.vue'
 const api = vi.hoisted(() => ({ receiptHistory: vi.fn(), receiptDetail: vi.fn() }))
 vi.mock('@/api/cartonProcurement', () => ({ cartonProcurementApi: api }))
@@ -8,6 +9,15 @@ const row = { id: 'R1', receipt_no: 'CR1', delivery_note_no: 'DN1', delivery_dat
 function view() { return mount(CartonReceiptHistory, { props: { factoryId: 'huaxing', responsibilityScope: 'OWN', customers: [], search: '', customer: '全部客户', refreshKey: 1, canCorrect: true } }) }
 describe('receipt history summaries', () => {
   beforeEach(() => { vi.resetAllMocks(); api.receiptHistory.mockResolvedValue({ items: [row], total: 26 }) })
+  it('opens a source request from receipt history in receiving context', async () => {
+    api.receiptHistory.mockResolvedValue({ items: [{ ...row, source_requests: [{ id: 'CSR-HISTORY', request_no: 'SP-HISTORY', kind: 'SAMPLE' }] }], total: 1 })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
+    await router.push('/'); await router.isReady()
+    const wrapper = mount(CartonReceiptHistory, { props: { factoryId: 'huaxing', responsibilityScope: 'ALL', customers: [], search: '', customer: '全部客户', refreshKey: 1, canCorrect: true }, global: { plugins: [router] } }); await flushPromises()
+    const href = wrapper.get('a').attributes('href')!
+    expect(href).toContain('factory=huaxing'); expect(href).toContain('tab=receipts&receipt_page=supplier&special_request=CSR-HISTORY')
+    wrapper.unmount()
+  })
   it('loads a bounded summary page, fetching full evidence only after an explicit action', async () => {
     const wrapper = view(); await flushPromises()
     expect(api.receiptHistory).toHaveBeenCalledWith('huaxing', expect.objectContaining({ limit: 25, offset: 0, responsibility_scope: 'OWN' }))

@@ -161,7 +161,7 @@ export function createCustomerOrderApi(client: CustomerOrderHttpClient = http) {
       payload.append('schedule_file', scheduleFile)
       const response = await client.post<{ batch_id: string; duplicate: boolean; message: string }>(
         `/customer-orders/${customerCode}/warehouse-schedule`, payload,
-        { timeout: 270_000, signal },
+        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 270_000, signal },
       )
       return response.data
     },

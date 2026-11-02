@@ -50,6 +50,23 @@ beforeEach(() => {
 })
 
 describe('supplier-origin ordinary order entry', () => {
+  it.each([
+    { price: null, free: false, shown: '', hint: '原单未填写单价', action: 'PENDING' },
+    { price: '0', free: false, shown: '0', hint: '原单单价为0，未确认免费', action: 'PENDING' },
+    { price: '0', free: true, shown: '0', hint: '供应商已明确确认免费', action: 'FREE' },
+  ])('shows and submits the actual ordinary original price: $hint', async ({ price, free, shown, hint, action }) => {
+    const data = fixture(); data.shipments = [data.shipments[0]!]
+    data.shipments[0]!.lines = [sourceLine('SOURCE', { source_type: 'FORMAL_ORDER', order_line_id: 'PAPER', quantity: '10', delivery_unit_price: price, free_confirmed: free })]
+    api.workspace.mockResolvedValue(data); api.receive.mockResolvedValue({ ...data.shipments[0]!, status: 'RECEIVED' })
+    const wrapper = mount(Component, options); await flushPromises()
+    await button(wrapper, '核实实际收到').trigger('click'); await flushPromises()
+    const input = wrapper.get<HTMLInputElement>('[aria-label="SOURCE 入库单价"]')
+    expect(input.element.value).toBe(shown); expect(input.attributes('readonly')).toBeDefined(); expect(wrapper.text()).toContain(hint)
+    wrapper.findComponent({ name: 'CartonReceiptAllocations' }).vm.$emit('update:modelValue', [{ location_id: 'BIN', quantity: 10 }])
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.receive).toHaveBeenCalledWith('SHIPMENT', expect.objectContaining({ lines: [expect.objectContaining({ unit_price: 0, price_action: action })] }))
+    wrapper.unmount()
+  })
   it('links an audited zero-arrival closed source without opening acceptance or restoring quantity', async () => {
     const data = fixture()
     data.shipments = [{ ...data.shipments[0]!, status: 'NOT_RECEIVED', lines: [sourceLine('SOURCE', {

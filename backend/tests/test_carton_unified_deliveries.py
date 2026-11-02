@@ -3,8 +3,8 @@ from uuid import uuid4
 from decimal import Decimal
 import pytest
 from test_molding_sample_api import make_client, login_as
-from test_carton_special_requests import command, create_body, created, setup, ok, accept, BASE, SUP, FACTORY
-from test_carton_supplier_portal import supplier_login, accept_all
+from test_carton_special_requests import command, create_body, created, setup, ok, accept, BASE, SUP, FACTORY, isolated_database_directory
+from test_carton_supplier_portal import supplier_login, accept_all, grant_supplier_permissions
 
 INTERNAL = "/api/carton-unified-deliveries"
 EXTERNAL = "/api/carton-supplier/unified-deliveries"
@@ -152,6 +152,7 @@ def test_marks_pending_never_gate_accepted_dispatch_and_file_evidence_is_frozen(
         payload = create_body(); payload["lines"][0]["mark_mode"] = "PENDING"
         row = ok(client.post(BASE, json=payload), 201)
         row = ok(client.post(BASE + f"/{row['id']}/send", json=command(row)))
+        grant_supplier_permissions(permissions=('carton_asset:read', 'carton_asset:manage'))
         supplier_login(client)
         assert client.post(EXTERNAL, json=dispatch_body(row)).status_code == 409
         draft = ok(client.post(SUP + f"/{row['id']}/attachments", data={**command(row), "role": "DRAFT", "line_id": row["lines"][0]["id"]},
@@ -160,10 +161,15 @@ def test_marks_pending_never_gate_accepted_dispatch_and_file_evidence_is_frozen(
         supplier_try = client.post(BASE + f"/{row['id']}/lines/{row['lines'][0]['id']}/mark", json=command(draft,
             mark_mode="UPLOAD", attachment_id=file["id"]))
         assert supplier_try.status_code == 403
+        asset = draft['mark_assets'][0]
+        ok(client.post(f"/api/carton-mark/assets/quick/{asset['id']}/sharing", params={'factory_id': FACTORY},
+            json={'revision': asset['revision'], 'request_id': uuid4().hex, 'shared_factory_ids': [FACTORY]}))
         login_as(client, "admin")
-        row = ok(client.post(BASE + f"/{row['id']}/lines/{row['lines'][0]['id']}/mark", json=command(draft,
-            mark_mode="UPLOAD", attachment_id=file["id"])))
-        assert not row["lines"][0]["mark_ready"]
+        # Shared supplier originals are readable but remain supplier-owned.
+        denied = client.post(BASE + f"/{row['id']}/lines/{row['lines'][0]['id']}/mark", json=command(draft,
+            mark_mode="UPLOAD", attachment_id=file["id"]))
+        assert denied.status_code == 403, denied.text
+        row = ok(client.get(BASE + f"/{row['id']}", params={'factory_id': FACTORY}))
         assert row['current_version_id'] == draft['current_version_id']
         row = accept(client, row)
         supplier_login(client)

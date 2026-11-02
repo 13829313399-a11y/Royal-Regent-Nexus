@@ -2,7 +2,7 @@ from copy import deepcopy
 from uuid import uuid4
 from decimal import Decimal
 from sqlalchemy import select, func
-from test_molding_sample_api import make_client, login_as
+from test_molding_sample_api import make_client, login_as, ensure_test_user
 from test_carton_special_requests import setup, created, create_body, command, ok, BASE, FACTORY, isolated_database_directory
 
 
@@ -32,6 +32,8 @@ def test_atomic_mixed_note_sources_retry_history_and_original_group_correction(m
         place = setup(client)
         payload, sample, misc = batch(client, place)
         path = '/api/carton-unified-deliveries/warehouse-receive'
+        ensure_test_user('warehouse_keeper')
+        login_as(client, 'warehouse_keeper')
         result = ok(client.post(path, json=payload))
         assert len(result['receipts']) == 3
         assert all(row['status'] == 'POSTED' for row in result['receipts'])
@@ -61,6 +63,7 @@ def test_atomic_mixed_note_sources_retry_history_and_original_group_correction(m
         duplicate = deepcopy(payload); duplicate['request_id'] = uuid4().hex
         assert client.post(path, json=duplicate).status_code == 409
         receipt = next(row for row in result['receipts'] if row.get('special_request_id') == sample['id'])
+        login_as(client, 'admin')
         ok(client.post(f"/api/carton-procurement/receipts/{receipt['id']}/reverse", json={'factory_id': FACTORY, 'expected_revision': receipt['revision'], 'reason': '更正原单验收记录'}))
         group = ok(client.get('/api/carton-unified-deliveries/' + result['delivery_id'], params={'factory_id': FACTORY}))
         assert group['requires_correction']
@@ -69,12 +72,16 @@ def test_atomic_mixed_note_sources_retry_history_and_original_group_correction(m
         correction = command(acceptance_date='2026-10-18', special=[dict(request_id=sample['id'], shipment_id=shipment['id'], expected_revision=request['revision'], lines=[dict(shipment_line_id=shipment['lines'][0]['id'], received_quantity='10', price_action='PENDING', location_allocations=[{'location_id': place['id'], 'quantity': '10'}])])])
         updated = ok(client.post('/api/carton-unified-deliveries/' + group['id'] + '/receive', json=correction))
         assert not updated['requires_correction']
-        from fastapi import HTTPException
-        from app.services import carton_special_requests as service
-        with monkeypatch.context() as scoped:
-            def denied(*args, **kwargs): raise HTTPException(403, '当前客户责任已撤销')
-            scoped.setattr(service, 'ensure_customer_operation', denied)
-            assert client.post(path, json=payload).status_code == 403
+        login_as(client, 'warehouse_keeper')
+        assert ok(client.post(path, json=payload)) == result
+        from app.models.auth import AuthUser, AuthPermission, AuthUserPermissionOverride
+        with SessionLocal() as db:
+            actor = db.scalar(select(AuthUser).where(AuthUser.username == 'warehouse_keeper'))
+            permission = db.scalar(select(AuthPermission).where(AuthPermission.code == 'carton_procurement:receipt_write'))
+            db.add(AuthUserPermissionOverride(id='deny-replay-receipt', user_id=actor.id, permission_id=permission.id,
+                effect='deny', factory_id=FACTORY, department='*', status='active', reason='测试重放前撤销收料权限'))
+            db.commit()
+        assert client.post(path, json=payload).status_code == 403
         from test_carton_supplier_portal import supplier_login
         supplier_login(client)
         assert client.post(path, json=payload).status_code == 403
@@ -130,6 +137,7 @@ def test_pre_bridge_direct_and_unified_receipt_request_fingerprints_remain_repla
     normalized.pop('new_delivery_confirmation')
     normalized.pop('remaining_action')
     for line in normalized['lines']:
+        line.pop('workshop_id')
         line.pop('price_action'); line.pop('price_reason')
     expected = hashlib.sha256(json.dumps(normalized, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
     assert portal.fingerprint(direct) == expected

@@ -49,7 +49,7 @@ def descriptors(db, user, factory, identifier, *, external=False, read_only_all=
         shipment = db.get(SpecialShipment, shipment_id)
         if not shipment or shipment.factory_id != factory or shipment.supplier_id != vendor:
             raise HTTPException(409, "送货来源关联异常，请核对原单")
-        special.access(db, user, factory, shipment.request_id, external=external)
+        special.access(db, user, factory, shipment.request_id, external=external, receiving=not external)
         specials.append(shipment)
     return formal, specials, note, day, created
 
@@ -86,7 +86,7 @@ def project(db, user, factory, identifier, *, external=False, read_only_all=Fals
                 CartonReceipt.status == "POSTED").group_by(SpecialReceiptLink.shipment_line_id))}
     correction = bool(formal_out and formal_out["requires_correction"])
     for shipment in shipments:
-        detail = special.detail(db, user, factory, shipment.request_id, external=external)
+        detail = special.detail(db, user, factory, shipment.request_id, external=external, receiving=not external)
         chosen = next(value for value in detail["shipments"] if value["id"] == shipment.id)
         detail["shipments"] = [chosen]
         output.append(detail)

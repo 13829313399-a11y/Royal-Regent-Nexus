@@ -17,6 +17,7 @@ import openpyxl
 from app.services.sparse_worksheet import insert_rows as insert_sparse_rows
 from openpyxl.formula.translate import Translator
 from openpyxl.utils import get_column_letter
+from openpyxl.workbook.properties import CalcProperties
 from openpyxl.worksheet.formula import ArrayFormula
 from app.services.huakang_a_order_legacy import unified_schedule as huakang_unified
 from app.services import customer_order_regional as regional
@@ -35,7 +36,7 @@ from app.services.customer_order_manual import (
 )
 
 
-PREVIEW_SCHEMA_VERSION = "customer-order-heyuan-unified-preview-v1"
+PREVIEW_SCHEMA_VERSION = "customer-order-heyuan-unified-preview-v2"
 TARGET_TEMPLATE = "HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1"
 ITEM_SHEET = "ITEM表"
 ORDER_SHEET = "接单表"
@@ -1045,6 +1046,12 @@ def _parse_huadeng_rows(
             default_source_file=po_files[0][0],
             sheet_name=ITEM_SHEET,
         )
+        if customer_code == 'goliath':
+            row.setdefault('lineage', {})['order_type'] = record.get('order_type_source', '')
+            if not record.get('order_type'):
+                row.setdefault('issues', []).append(dict(_issue('blocked', 'order_type_unresolved', 'order_type',
+                    '无法从原单可靠确定订单类型，请补齐原单的订单类型后重新导入；不能默认正单'),
+                    requires_source_correction=True))
         rows.append(regional.map_huadeng(_attach_available_fields(row, record), record, customer_code))
     return rows, warnings, spec.input_template
 
@@ -1729,6 +1736,8 @@ def export_unified_customer_schedule(
                 raise CustomerOrderUnifiedError(str(exc)) from exc
             from app.services.customer_order_360_carton import ensure_carton_columns
             ensure_carton_columns(workbook, factory_id=factory_id, customer_code=customer_code)
+        if workbook.calculation is None:
+            workbook.calculation = CalcProperties()
         workbook.calculation.calcMode = "auto"
         workbook.calculation.fullCalcOnLoad = True
         workbook.calculation.forceFullCalc = True

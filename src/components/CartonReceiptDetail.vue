@@ -28,7 +28,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', escape))
         <button type="button" aria-label="关闭收料明细" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100" @click="emit('close')"><X class="size-4" /></button>
       </div>
       <div class="min-h-0 overflow-auto carton-table-wrap">
-        <CartonSourceLinks class="border-b px-5 py-3" :factory-id="receipt.factory_id" :sources="receipt.source_requests" :delivery-id="receipt.delivery_id" marks />
+        <CartonSourceLinks class="border-b px-5 py-3" :factory-id="receipt.factory_id" :sources="receipt.source_requests" :delivery-id="receipt.delivery_id" receiving marks />
         <p v-if="receipt.status === 'POSTED'" class="border-b px-5 py-3 text-xs text-slate-500">本明细保留原入库凭证价格；当前生效价与更正进度见“单价更正”，原凭证不会随更正被改写。</p>
         <div class="flex flex-wrap gap-x-8 gap-y-3 border-b border-slate-100 bg-slate-50/60 px-5 py-4 text-xs text-slate-600">
           <span>收料单 <b class="ml-2 text-slate-900">{{ receipt.receipt_no }}</b></span><span>送货日期 <b class="ml-2 text-slate-900">{{ receipt.delivery_date }}</b></span><span>实际验收日期 <b class="ml-2 text-slate-900">{{ receipt.acceptance_date || '历史未记录' }}</b></span><span>状态 <b class="ml-2 text-teal-700">{{ status }}</b></span>
