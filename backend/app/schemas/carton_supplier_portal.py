@@ -84,7 +84,9 @@ class UnmatchedShipLine(BaseModel):
     specification: str = Field(min_length=1, max_length=255)
     quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
     unit: str = Field(default="个", min_length=1, max_length=32)
-    unit_price: Decimal = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=6)
+    # Retain the omitted-field default for saved legacy request fingerprints;
+    # original-file imports always pass an explicit price, including null.
+    unit_price: Decimal | None = Field(default=Decimal(0), ge=0, max_digits=18, decimal_places=6)
 
 class ShipmentCreate(Payload):
     registration_mode: Literal["SHIPMENT", "EXISTING_RECEIPT"] = "SHIPMENT"

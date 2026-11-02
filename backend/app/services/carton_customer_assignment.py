@@ -5,7 +5,7 @@ from sqlalchemy import delete, select, or_
 from app.models.auth import AuthUser
 from app.models.carton_customer_assignment import CartonCustomerAssignment as Assignment, CartonCustomerOwner as Owner
 from app.models.carton_procurement import CartonCustomer
-from app.services.auth import build_auth_context, has_permission_in_scope
+from app.services.auth import build_auth_context, has_permission_in_scope, authorization_decision
 
 
 def allowed(user, factory, permission):
@@ -47,9 +47,21 @@ def ensure_customer_operation(db, user, factory, customer_code):
     raise HTTPException(403, "该客户已由其他人员负责，你未获授权；请联系客户负责人或主管")
 
 
+def can_receive_all_customers(user, factory):
+    """Receipt scope is factory-wide; it never grants order/customer management."""
+    return all(any(authorization_decision(user, f"carton_procurement:{permission}", factory, department)[0]
+                   for department in ("carton", "pmc-warehouse"))
+               for permission in ("read", "receipt_write", "inventory_write"))
+
+
+def ensure_receipt_customer(db, user, factory, customer_code):
+    if not can_receive_all_customers(user, factory):
+        ensure_customer_operation(db, user, factory, customer_code)
+
+
 def ensure_receipt_operation(db, user, factory, lines):
     for code in {line.customer_code for line in lines}:
-        ensure_customer_operation(db, user, factory, code)
+        ensure_receipt_customer(db, user, factory, code)
 
 
 def workspace(db, user, factory, *, summary=False):

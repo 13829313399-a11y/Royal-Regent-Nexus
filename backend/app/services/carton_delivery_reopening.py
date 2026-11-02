@@ -107,10 +107,10 @@ def special(db, user, shipment, command, reason):
     from app.services.carton_special_receiving import closures
     from app.services.carton_supplier_changes import special_confirmation
     from app.services.carton_supplier_evidence_guard import ensure_evidence_open
-    row = service.access(db, user, shipment.factory_id, shipment.request_id)
+    row = service.access(db, user, shipment.factory_id, shipment.request_id, receiving=True)
     service.require_revision(row, command)
     if (row.status not in {"SENT", "QUOTED", "READY", "PARTIALLY_RECEIVED"}
-        or shipment.version_id != row.current_version_id or service.detail(db, user, row.factory_id, row.id)["deleted"]
+        or shipment.version_id != row.current_version_id or service.detail(db, user, row.factory_id, row.id, receiving=True)["deleted"]
         or special_confirmation(db, row)["status"] not in {"ACCEPTED", "SUPPLIER_ORIGIN"}):
         raise HTTPException(409, "原样板或杂单已结束、取消、资料版本改变或存在接单异议，请先核实来源")
     shipped, _, consumed, received_by_request, _ = service.state_counts(db, row)

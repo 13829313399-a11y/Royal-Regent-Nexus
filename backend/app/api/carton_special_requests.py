@@ -26,9 +26,9 @@ def make_router(external=False):
         return Response(content, media_type=XLSX_MEDIA_TYPE, headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(filename)})
 
     @router.get("")
-    def workspace(factory_id: str, responsibility_scope: Literal["OWN", "ALL"] = "OWN",
+    def workspace(factory_id: str, responsibility_scope: Literal["OWN", "ALL"] = "OWN", receiving: bool = False,
                   db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
-        return service.workspace(db, user, factory_id, external=external, responsibility_scope=responsibility_scope)
+        return service.workspace(db, user, factory_id, external=external, responsibility_scope=responsibility_scope, receiving=receiving)
 
     if external:
         @router.get('/mark-options')
@@ -133,8 +133,8 @@ def make_router(external=False):
             return service.receive(db, user, identifier, shipment_id, payload)
 
     @router.get("/{identifier}")
-    def detail(identifier: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
-        return service.detail(db, user, factory_id, identifier, external=external)
+    def detail(identifier: str, factory_id: str, receiving: bool = False, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):
+        return service.detail(db, user, factory_id, identifier, external=external, receiving=receiving and not external)
 
     @router.post("/{identifier}/attachments", status_code=201)
     async def attachment(identifier: str, factory_id: str = Form(...), request_id: str = Form(...), expected_revision: int = Form(...),

@@ -7,13 +7,14 @@ from app.services.huadeng_order_legacy.goliath_po_parser import parse_po
 from app.services import customer_order_unified as service
 
 
-def po(*,price_tail='3',total='66436.80',brand='Goliath Far East Ltd',with_total=True):
+def po(*,price_tail='3',total='66436.80',brand='Goliath Far East Ltd',with_total=True, title='Purchase Order', extra=''):
     commands=[]
     def text(x,y,v):
         escaped=v.replace('\\','\\\\').replace('(','\\(').replace(')','\\)')
         commands.append(f'BT /F1 8 Tf {x} {842-y} Td ({escaped}) Tj ET')
-    for x,y,v in [(50,50,'Purchase Order'),(300,70,brand),(300,175,'Deliver to :'),(300,190,'Pressman Toy Corp. c/o Regal Logistics'),(50,260,'Order # T_10130 - PHK26_00694'),(50,275,'Order date 24 April 2026'),(50,348,'Item'),(106,348,'Description'),(282,348,'ITF14'),(306,348,'Barcode'),(385,348,'No.'),(432,348,'Qty'),(463,348,'price'),(509,348,'Amount'),(55,368,'935373.002'),(112,368,'Butt Face - Chester Cheeks'),(271,368,'18720077353739'),(355,368,'935373.002'),(409,368,'16,000'),(456,368,'4.152'),(472,379,price_tail),(497,368,total),(55,391,'USDOMPO0'),(112,415,'CARGO READY DATE:'),(112,430,'15-AUG-2026'),(112,460,'US PO NO.: PUS26_00435'),(320,575,'Total USD Excl. VAT '+total)]:text(x,y,v)
+    for x,y,v in [(50,50,title),(300,70,brand),(300,175,'Deliver to :'),(300,190,'Pressman Toy Corp. c/o Regal Logistics'),(50,260,'Order # T_10130 - PHK26_00694'),(50,275,'Order date 24 April 2026'),(50,348,'Item'),(106,348,'Description'),(282,348,'ITF14'),(306,348,'Barcode'),(385,348,'No.'),(432,348,'Qty'),(463,348,'price'),(509,348,'Amount'),(55,368,'935373.002'),(112,368,'Butt Face - Chester Cheeks'),(271,368,'18720077353739'),(355,368,'935373.002'),(409,368,'16,000'),(456,368,'4.152'),(472,379,price_tail),(497,368,total),(55,391,'USDOMPO0'),(112,415,'CARGO READY DATE:'),(112,430,'15-AUG-2026'),(112,460,'US PO NO.: PUS26_00435'),(320,575,'Total USD Excl. VAT '+total)]:text(x,y,v)
     if not with_total:commands.pop()
+    if extra:text(50,620,extra)
     return _pdf_document(commands)
 
 
@@ -212,3 +213,67 @@ def test_european_export_three_sheets_preserves_history():
         assert book[name]['G4'].value=='934811.024'
     repeated=service.create_unified_customer_preview(**{**args,'schedule_content':output})
     assert any(i['code']=='duplicate_existing_order' for i in repeated['rows'][0]['issues'])
+
+
+@pytest.mark.parametrize('document', [po, european_po], ids=['far-east', 'european'])
+def test_formal_purchase_order_type_survives_preview_and_item_export(document):
+    args = dict(factory_id='huadeng', customer_code='goliath', received_date='2026-09-11',
+        po_files=[('misleading-sample-name.pdf', document())],
+        schedule_file_name='latest.xlsx', schedule_content=template())
+    output, _, preview = service.export_unified_customer_schedule(**args)
+    row = preview['rows'][0]
+    assert row['order_type'] == '正单'
+    assert row['lineage'].get('order_type')
+    book = openpyxl.load_workbook(BytesIO(output))
+    try:
+        item = book[service.ITEM_SHEET]
+        assert item['B5'].value == '正单'
+        assert item['D4'].value == 'HIST'
+    finally:
+        book.close()
+
+
+def test_sample_purchase_order_is_not_assumed_regular():
+    try:
+        preview = service.create_unified_customer_preview(
+            factory_id='huadeng', customer_code='goliath', received_date='2026-09-11',
+            po_files=[('regular.pdf', po(title='Sample Purchase Order'))],
+            schedule_file_name='latest.xlsx', schedule_content=template())
+    except (ValueError, service.CustomerOrderUnifiedError):
+        return  # Rejecting the unrecognized source is also safe.
+    for row in preview['rows']:
+        assert row.get('order_type', '') != '正单'
+        if not row.get('order_type'):
+            assert any(issue['code'] == 'order_type_unresolved' and not issue['can_skip']
+                       and issue['requires_source_correction']
+                       for issue in row['issues'])
+
+
+@pytest.mark.parametrize('label', ['Order Type: Unclassified', 'Document Type: Prototype'])
+def test_unknown_explicit_document_type_requires_source_correction(label):
+    preview = service.create_unified_customer_preview(
+        factory_id='huadeng', customer_code='goliath', received_date='2026-09-11',
+        po_files=[('regular.pdf', po(extra=label))],
+        schedule_file_name='latest.xlsx', schedule_content=template())
+    row = preview['rows'][0]
+    assert not row.get('order_type')
+    assert any(issue['code'] == 'order_type_unresolved' and issue['requires_source_correction']
+               and not issue['can_skip'] for issue in row['issues'])
+
+
+@pytest.mark.parametrize('title,expected', [
+    ('Sample Purchase Order (Revision 2)', ''),
+    ('Prototype Purchase Order', ''),
+    ('Purchase Order (Sample)', ''),
+    ('Purchase Order (Revision 2)', '正单'),
+])
+def test_purchase_order_title_variants(title, expected):
+    preview = service.create_unified_customer_preview(
+        factory_id='huadeng', customer_code='goliath', received_date='2026-09-11',
+        po_files=[('regular.pdf', po(title=title))],
+        schedule_file_name='latest.xlsx', schedule_content=template())
+    row = preview['rows'][0]
+    assert row.get('order_type', '') == expected
+    if not expected:
+        assert any(issue['code'] == 'order_type_unresolved' and issue['requires_source_correction']
+                   and not issue['can_skip'] for issue in row['issues'])

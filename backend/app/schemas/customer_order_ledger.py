@@ -40,6 +40,12 @@ class DispatchIn(RevisionIn):
     recipients: list[Literal["pmc", "warehouse", "injection", "cutting"]] = Field(min_length=1, max_length=4)
 
 
+class CartonChangeConfirmIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmed: StrictBool
+    fingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+
+
 class ShipmentIn(RevisionIn):
     idempotency_key: str = Field(min_length=8, max_length=96)
     quantity: str = Field(max_length=32)

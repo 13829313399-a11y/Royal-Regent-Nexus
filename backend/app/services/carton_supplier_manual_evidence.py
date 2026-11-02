@@ -95,6 +95,8 @@ def match(db, user, group, rows, day):
     from app.services.carton_material_identity import material_conflicts
     from app.services.carton_procurement_imports import _dongkang_identity
     from app.services.carton_supplier_settlement import receipt_guard
+    if any(row.get("requires_source_correction") for row in rows):
+        raise HTTPException(409, "缺少货号，请补齐原送货单货号后重新导入；已填正式合同不能直接归入无单待核")
     data = project(db, user, group.factory_id, group.id, external=True)
     if day != group.delivery_date or len(rows) != len(data["lines"]) or not rows:
         raise HTTPException(409, "后补原单的日期、纸品行数与原手工收料不一致，请核对原单")

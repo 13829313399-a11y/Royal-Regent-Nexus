@@ -31,7 +31,7 @@ export interface SpecialRequest {
   attachments: { id: string; role: AttachmentRole; filename: string; created_at?: string; version_id?: string; line_id?: string; sha256?: string; version?: number }[]
   messages: { id: string; body: string; author_name?: string; actor_name?: string; created_at: string }[]
   history: { id?: string; action: string; actor_name?: string; created_at: string; note?: string }[]
-  permissions: Partial<Record<'can_edit' | 'can_send' | 'can_confirm' | 'can_adjust' | 'can_append' | 'can_return_stock' | 'can_replenish' | 'can_undo_replenish' | 'can_manual_receive' | 'can_approve' | 'can_cancel' | 'can_delete' | 'can_quote' | 'can_ship' | 'can_receive' | 'can_attach' | 'can_message' | 'can_confirm_material', boolean>>
+  permissions: Partial<Record<'can_edit' | 'can_send' | 'can_confirm' | 'can_adjust' | 'can_append' | 'can_return_stock' | 'can_replenish' | 'can_undo_replenish' | 'can_manual_receive' | 'can_approve' | 'can_cancel' | 'can_delete' | 'can_quote' | 'can_ship' | 'can_receive' | 'can_attach' | 'can_message' | 'can_confirm_material' | 'can_view_order_resources', boolean>>
 }
 export interface SpecialWorkspace {
   items: SpecialRequest[]; total: number; can_create: boolean
@@ -59,8 +59,8 @@ export const cartonSpecialRequestsApi = {
   async ledger(factory: string, filters: Record<string, string | number>, signal?: AbortSignal) { return (await http.get<UnifiedOrderPage>('/carton-unified-orders', { params: { factory_id: factory, ...filters }, signal })).data },
   async markOptions(factory: string, signal?: AbortSignal, supplier = false, requestId?: string) { return (await http.get<MarkOption[]>(`${prefix(supplier)}/mark-options`, { params: { factory_id: factory, request_id: requestId }, signal })).data },
   async factories(signal?: AbortSignal) { return (await http.get<{ factory_id: string; supplier_name: string }[]>('/carton-supplier/special-requests/factories', { signal })).data },
-  async list(factory: string, supplier = false, signal?: AbortSignal, responsibilityScope?: string) { return (await http.get<SpecialWorkspace>(prefix(supplier), { params: { factory_id: factory, ...(responsibilityScope ? { responsibility_scope: responsibilityScope } : {}) }, signal })).data },
-  async detail(factory: string, id: string, supplier = false, signal?: AbortSignal) { return (await http.get<SpecialRequest>(`${prefix(supplier)}/${encodeURIComponent(id)}`, { params: { factory_id: factory }, signal })).data },
+  async list(factory: string, supplier = false, signal?: AbortSignal, responsibilityScope?: string, receiving = false) { return (await http.get<SpecialWorkspace>(prefix(supplier), { params: { factory_id: factory, ...(responsibilityScope ? { responsibility_scope: responsibilityScope } : {}), ...(receiving ? { receiving: true } : {}) }, signal })).data },
+  async detail(factory: string, id: string, supplier = false, signal?: AbortSignal, receiving = false) { return (await http.get<SpecialRequest>(`${prefix(supplier)}/${encodeURIComponent(id)}`, { params: { factory_id: factory, ...(receiving ? { receiving: true } : {}) }, signal })).data },
   async save(body: SpecialSave, supplier = false, id = '', signal?: AbortSignal) {
     const url = `${prefix(supplier)}${id ? `/${encodeURIComponent(id)}` : supplier ? '/gifts' : ''}`
     return (await (id ? http.put<SpecialRequest>(url, body, { signal }) : http.post<SpecialRequest>(url, body, { signal }))).data

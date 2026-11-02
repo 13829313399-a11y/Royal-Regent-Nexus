@@ -119,7 +119,9 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
         item = {field: source_row.get(field) for field in ("source_sheet", "source_row", "contract_no", "item_no",
             "packaging_type", "packaging_type_explicit", "paper_quality", "specification", "delivered_quantity")}
         item["unit"] = "个"
-        item["unit_price"] = source_row.get("unit_price")
+        # The generic spreadsheet reader uses zero for empty numeric cells.
+        # At the supplier-original boundary, preserve whether a price existed.
+        item["unit_price"] = source_row.get("unit_price") if source_row.get("unit_price_provided") else None
         item["unit_price_provided"] = bool(source_row.get("unit_price_provided"))
         item.update(order_no="", child_no="", order_line_id="", issue_id="", order_revision=0, candidates=[], status="BLOCKED", reason="")
         group["rows"].append(item)
@@ -140,13 +142,19 @@ def preview(db, user, filename, content, row_selections=None, *, _parsed_rows=No
         except (ValueError, TypeError, InvalidOperation):
             item["reason"] = "发货数量或送货日期无效"
             continue
-        orders = [order for order in workspaces[factory]["orders"]
-            if _same_text(order["contract_no"], source_row["contract_no"])
-            and _same_text(order["item_no"], source_row["item_no"])] if source_row.get("contract_no") else []
+        contract_orders = [order for order in workspaces[factory]["orders"]
+            if _same_text(order["contract_no"], source_row["contract_no"])] if source_row.get("contract_no") else []
+        orders = [order for order in contract_orders if _same_text(order["item_no"], source_row["item_no"])]
         selected = chosen.get((item['source_sheet'], item['source_row']))
         typed = special_import.matches(source_row, special_orders[factory])
-        if typed or (not orders and str(source_row.get('contract_no') or '').strip().upper().startswith('SP-')):
-            if orders and typed:
+        if (_dongkang_identity(source_row.get("contract_no")) and not _dongkang_identity(source_row.get("item_no"))
+                and not (len(typed) == 1 and not contract_orders)):
+            item["requires_source_correction"] = True
+            item["reason"] = "缺少货号，请补齐原送货单货号后重新导入；已填正式合同不能直接归入无单待核"
+            if not typed:
+                continue
+        if typed or (not contract_orders and str(source_row.get('contract_no') or '').strip().upper().startswith('SP-')):
+            if contract_orders and typed:
                 item['reason'] = '原单号同时对应正式合同与样板或杂单，请核对供应商原单'
             else:
                 special_import.match_row(item, source_row, typed, selected)
@@ -353,7 +361,7 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
                     'packaging_type', 'packaging_type_explicit', 'paper_quality', 'specification', 'source_sheet', 'source_row')}
                     for row in group['rows'] if row['order_line_id']},
                 "delivery_unit_prices": {row['order_line_id']: row['unit_price']
-                    for row in group['rows'] if row['order_line_id'] and row['unit_price'] is not None}}
+                    for row in group['rows'] if row['order_line_id']}}
             if any(row.get('source_kind') == 'SPECIAL' for row in group['rows']):
                 if mode != 'SHIPMENT':
                     raise HTTPException(409, '样板或杂单原表请使用当前送货流程，不能套用正单后补入库关联')
@@ -365,7 +373,7 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
                 extra = [UnmatchedShipLine(**{key: row.get(key) for key in (
                     'source_sheet', 'source_row', 'contract_no', 'item_no', 'packaging_type',
                     'paper_quality', 'specification', 'unit')}, quantity=row['delivered_quantity'],
-                    unit_price=row['unit_price'] or 0) for row in group['rows'] if row['status'] == 'AD_HOC_REVIEW']
+                    unit_price=row['unit_price']) for row in group['rows'] if row['status'] == 'AD_HOC_REVIEW']
                 sent.append(unified.dispatch(db, user, special_import.dispatch_payload(factory, request_id, group),
                     commit=False, source=source, unmatched_lines=extra))
                 continue
@@ -378,7 +386,7 @@ def confirm(db, user, filename, content, expected_sha256, selections, row_select
                     "contract_no": row["contract_no"] or "", "item_no": row["item_no"],
                     "packaging_type": row["packaging_type"], "paper_quality": row["paper_quality"],
                     "specification": row["specification"], "quantity": row["delivered_quantity"], "unit": row["unit"],
-                    "unit_price": row["unit_price"] or 0}
+                    "unit_price": row["unit_price"]}
                     for row in group["rows"] if row["status"] == "AD_HOC_REVIEW"])
             sent.append(portal.create_shipment(db, user, payload, commit=False, source=source))
         db.commit()

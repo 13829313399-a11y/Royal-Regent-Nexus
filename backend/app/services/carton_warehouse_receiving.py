@@ -22,10 +22,11 @@ def receive(db, user, payload, *, refresh_actor):
             order = db.get(CartonOrder, line.order_id) if line else None
             if not order or line.factory_id != payload.factory_id or order.factory_id != payload.factory_id or order.supplier_id != vendor or order.deleted_at:
                 raise HTTPException(404, '未找到本厂可收料纸品')
-            special.ensure_customer_operation(db, user, payload.factory_id, order.customer_code)
+            from app.services.carton_customer_assignment import ensure_receipt_customer
+            ensure_receipt_customer(db, user, payload.factory_id, order.customer_code)
             regular.append((item, line, order))
         for item in payload.special_requests:
-            row = special.access(db, user, payload.factory_id, item.id)
+            row = special.access(db, user, payload.factory_id, item.id, receiving=True)
             if row.supplier_id != vendor:
                 raise HTTPException(409, '所选订单供应商不一致')
             specials.append((item, row))
