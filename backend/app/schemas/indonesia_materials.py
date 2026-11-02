@@ -16,7 +16,7 @@ class Input(BaseModel):
 class Command(Input):
     factory_id: Text
     operation_id: Annotated[str, StringConstraints(min_length=16, max_length=64)]
-    action: Literal['draft_transfer', 'option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_materials_sync', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_confirm', 'master_import_confirm']
+    action: Literal['draft_transfer', 'option_save', 'option_delete', 'option_restore', 'customer_delete', 'customer_restore', 'product_delete', 'product_restore', 'material_restore', 'customer_save', 'material_save', 'product_save', 'order_save', 'order_plan_save', 'order_materials_sync', 'order_recalculate', 'demand_adjust', 'supply_save', 'supply_reply', 'output_material_refresh', 'receipt_confirm', 'allocate', 'reallocate', 'shipment_save', 'shipment_confirm', 'import_confirm', 'warehouse_import_correct', 'warehouse_import_confirm', 'master_import_confirm']
     entity_id: str | None = Field(None, max_length=64)
     expected_version: int = Field(0, ge=0)
     data: dict = Field(default_factory=dict)
@@ -293,6 +293,11 @@ class WarehouseRowSelection(Input):
 class WarehouseSelection(Input):
     shipment_date: date
     rows: list[WarehouseRowSelection] = Field(min_length=1, max_length=200)
+
+
+class WarehouseSourceCorrection(Input):
+    index: int = Field(ge=0, le=1999)
+    values: dict[str, Annotated[str, StringConstraints(max_length=500)]] = Field(min_length=1, max_length=40)
 
 
 class ReceiptTemplateRow(Input):

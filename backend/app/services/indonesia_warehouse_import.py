@@ -83,6 +83,64 @@ def text(cell):
     return result
 
 
+def validate_source(values, formula_fields=()):
+    """Revalidate both new files and pending rows without altering original evidence."""
+    source, issues = deepcopy(values), []
+    source.setdefault('receipt_no', '')
+    if formula_fields or any(str(v).startswith('=') for k, v in source.items() if k in FIELDS):
+        issues.append('来源含公式或错误值，请修改为实际数值后重新核对')
+    for field, label in (('receipt_line', '稳定单据行号'), ('actual_date', '实收日期')):
+        if not source.get(field):
+            issues.append('缺少' + label)
+    if not source.get('material_code') and not source.get('material_name'):
+        issues.append('缺少物料编码和名称')
+    try:
+        raw_date = source.get('actual_date', '').replace('/', '-')
+        parts = re.fullmatch(r'(\d{4})-(\d{1,2})-(\d{1,2})', raw_date)
+        source['actual_date'] = (date(*map(int, parts.groups())) if parts else date.fromisoformat(raw_date)).isoformat()
+    except ValueError:
+        issues.append('实收日期须为明确的年月日，例如 2026-11-2 或 2026-11-02')
+    try:
+        spare = source_number(source.get('spare_quantity') or '0', '备品数量')
+        normal = source_number(source['normal_quantity'], '正常数量') if source.get('normal_quantity') else source_number(source.get('quantity', ''), '实收合计') - spare
+        require(normal >= 0 and normal + spare > 0, '数量无效', 422)
+        require(not source.get('quantity') or source_number(source['quantity'], '实收合计') == normal + spare, '实收合计须等于正常量加备品量', 422)
+        source.update(normal_quantity=decimal_text(normal), spare_quantity=decimal_text(spare))
+    except Exception:
+        issues.append('实收数量须为非负数、最多八位小数且合计大于零；实收合计包含备品')
+    for key in ('price', 'purchase_quantity'):
+        if source.get(key):
+            try:
+                value = source_number(source[key], '采购单价' if key == 'price' else '采购总量')
+                require(key != 'purchase_quantity' or value > 0, '采购总量必须大于零', 422)
+                source[key] = decimal_text(value)
+            except HTTPException as error:
+                issues.append(str(error.detail))
+    return source, issues
+
+
+def prepare_source_rows(ledger, record):
+    from sqlalchemy import select
+    from app.models.indonesia_materials import IndonesiaMaterialAsset
+    # Select only the digest, never repeatedly load a large original workbook.
+    document = record.data.get('source_sha256') or ledger.db.scalar(select(IndonesiaMaterialAsset.sha256).where(
+        IndonesiaMaterialAsset.id == record.data['asset_id'], IndonesiaMaterialAsset.factory_id == ledger.factory))
+    require(document, '原始实收文件不可用，请核对来源', 409)
+    rows = deepcopy(record.data['rows'])
+    for row in rows:
+        source = row['source']
+        source['_document_key'] = document
+        source['_file_row_identity'] = digest([TYPE, 'file-row', document, row['source_sheet'], row['source_row']])
+        if not row.get('imported_supply_id'):
+            formulas = row.get('formula_fields')
+            if formulas is None:
+                formulas = [HEADERS.get(normalized(h)) for h, v in zip(row.get('raw_headers', []), row.get('raw_values', []))
+                            if str(v).startswith('=') or str(v) in openpyxl.cell.cell.ERROR_CODES]
+            row['formula_fields'] = [key for key in formulas if key]
+            row['source'], row['source_issues'] = validate_source(source, row['formula_fields'])
+    return rows
+
+
 def parse_warehouse_receipts(content, filename):
     require(0 < len(content) <= 25 * 1024 * 1024, '实收单为空或超过 25 MB', 413)
     sheets, book = [], None
@@ -139,39 +197,13 @@ def parse_warehouse_receipts(content, filename):
                     continue
                 if normalized(source.get('material_name')) in {'合计', '总计'} and not source.get('receipt_no'):
                     continue
-                issues = []
-                if any(getattr(cell, 'data_type', '') in {'f', 'e'} or (isinstance(cell, str) and cell.startswith('=')) for i, cell in enumerate(cells) if i < len(fields) and fields[i]):
-                    issues.append('来源含公式或错误值，请在原单粘贴为数值后导入')
-                for field in ('receipt_no', 'receipt_line', 'actual_date'):
-                    if not source.get(field):
-                        issues.append({'receipt_no': '缺少收料单号', 'receipt_line': '缺少稳定单据行号', 'actual_date': '缺少实收日期'}[field])
-                if not source.get('material_code') and not source.get('material_name'):
-                    issues.append('缺少物料编码和名称')
-                try:
-                    source['actual_date'] = date.fromisoformat(source.get('actual_date', '').replace('/', '-')).isoformat()
-                except ValueError:
-                    issues.append('实收日期须为明确的年月日，例如 2026-10-22')
-                try:
-                    spare = number(source.get('spare_quantity') or '0')
-                    normal = number(source['normal_quantity']) if source.get('normal_quantity') else number(source['quantity']) - spare
-                    require(normal.is_finite() and spare.is_finite() and normal >= 0 and spare >= 0 and normal + spare > 0, '数量无效', 422)
-                    require(max(normal, spare) <= Decimal('1000000000000') and min(normal.as_tuple().exponent, spare.as_tuple().exponent) >= -8, '数量超限', 422)
-                    require(not source.get('quantity') or number(source['quantity']) == normal + spare, '实收合计须等于正常量加备品量', 422)
-                    source.update(normal_quantity=decimal_text(normal), spare_quantity=decimal_text(spare))
-                except Exception:
-                    issues.append('实收数量须为非负数、最多八位小数且合计大于零；实收合计包含备品')
-                for key in ('price', 'purchase_quantity'):
-                    if source.get(key):
-                        try:
-                            value = source_number(source[key], '采购单价' if key == 'price' else '采购总量')
-                            require(key != 'purchase_quantity' or value > 0, '采购总量必须大于零', 422)
-                            source[key] = decimal_text(value)
-                        except HTTPException as error:
-                            issues.append(str(error.detail))
+                formula_fields = [fields[i] for i, cell in enumerate(cells) if i < len(fields) and fields[i] and
+                    (getattr(cell, 'data_type', '') in {'f', 'e'} or (isinstance(cell, str) and cell.startswith('=')))]
+                source, issues = validate_source(source, formula_fields)
                 require(len(result) < MAX_ROWS, '单次最多导入 2000 行实收记录', 422)
                 require(all(len(value) <= 500 for value in source.values()), '实收字段过长，请整理原表', 422)
                 result.append(dict(index=len(result), source_sheet=sheet, source_row=position, source=source,
-                                   source_issues=issues, raw_headers=[text(c) for c in rows[header_index]], raw_values=raw))
+                                   source_issues=issues, formula_fields=formula_fields, raw_headers=[text(c) for c in rows[header_index]], raw_values=raw))
         require(result, '模板尚未填写本次实收数量，请填写后再导入。' if empty_template else
                 '未找到实收表头；请使用导入模板或包含物料、实收数量的常见表头', 422)
         return result
@@ -185,6 +217,8 @@ def parse_warehouse_receipts(content, filename):
 
 
 def identity(warehouse, source):
+    if not source.get('receipt_no') and source.get('_file_row_identity'):
+        return source['_file_row_identity']
     line = value_key(source.get('receipt_line'))
     return digest([TYPE, value_key(source.get('warehouse') or warehouse), value_key(source.get('receipt_no')), str(int(line)) if line.isdigit() else line])
 
@@ -227,10 +261,11 @@ def candidates(ledger, record, source, material):
 
 
 def reconcile(ledger, record):
-    rows = deepcopy(record.data['rows'])
+    rows = prepare_source_rows(ledger, record)
     materials = ledger.rows('material')
     seen = Counter(identity(record.data['warehouse'], row['source']) for row in rows)
-    posted = {row.data['warehouse_source']['identity'] for row in ledger.rows('supply') if row.data.get('warehouse_source')}
+    posted = {value for row in ledger.rows('supply') for key in ('identity', 'file_row_identity')
+              if (value := row.data.get('warehouse_source', {}).get(key))}
     candidate_count = 0
     for row in rows:
         source = row['source']
@@ -252,7 +287,7 @@ def reconcile(ledger, record):
             row['issues'].append('缺少仓库名称')
         if seen[identity(record.data['warehouse'], source)] > 1:
             row['issues'].append('同一仓库、收料单号和行号重复，请核对原单')
-        if identity(record.data['warehouse'], source) in posted and not row.get('imported_supply_id'):
+        if (identity(record.data['warehouse'], source) in posted or source.get('_file_row_identity') in posted) and not row.get('imported_supply_id'):
             row['issues'].append('该仓库收料单行已经导入，不能重复计入实收')
         found = [item for item in materials if (value_key(item.data['name']) == value_key(source['material_name']) if source.get('material_name') else value_key(item.data['code']) == value_key(source.get('material_code')))
                  and (not source.get('unit') or value_key(item.data['unit']) == value_key(source['unit']))
@@ -308,6 +343,32 @@ def receipt_packing_groups(ledger, record, rows):
     return packing_groups(rows, record.data['warehouse'], previous)
 
 
+def correct_source(ledger, record, payload, actor):
+    require(record.data.get('import_type') == TYPE, '请选择仓库实收导入记录', 422)
+    correction = s.WarehouseSourceCorrection.model_validate(payload)
+    allowed = set(FIELDS) - {'factory', 'customer', 'recipient'}
+    require(set(correction.values) <= allowed, '包含不支持修改的实收字段', 422)
+    rows = prepare_source_rows(ledger, record)
+    row = next((item for item in rows if item['index'] == correction.index), None)
+    require(row is not None and not row.get('imported_supply_id'), '只能修改尚未确认导入的实收行', 409)
+    changes = {key: dict(before=row['source'].get(key, ''), after=value)
+               for key, value in correction.values.items() if row['source'].get(key, '') != value}
+    require(changes, '没有需要保存的修改', 422)
+    history = list(record.data.get('source_corrections', []))
+    require(len(history) < 1000, '本单修改记录已达上限，请联系主管核对', 422)
+    row.setdefault('original_source', deepcopy(next(item for item in record.data['rows'] if item['index'] == correction.index)['source']))
+    row['source'].update(correction.values)
+    row['formula_fields'] = [key for key in row['formula_fields'] if key not in correction.values]
+    row['source'], row['source_issues'] = validate_source(row['source'], row['formula_fields'])
+    row['correction_count'] = row.get('correction_count', 0) + 1
+    history.append(dict(index=correction.index, actor=actor, at=now_text(), changes=changes))
+    data = deepcopy(record.data)
+    # Preserve untouched rows and original workbook bytes; no receipt/allocation is posted here.
+    data['rows'] = [row if item['index'] == correction.index else item for item in data['rows']]
+    data['source_corrections'] = history
+    return ledger.save('import', data, record)
+
+
 def preview(db, user, factory, customer, recipient, warehouse, filename, content, rows, refresh_user):
     ledger = Ledger(db, factory)
     try:
@@ -327,7 +388,7 @@ def preview(db, user, factory, customer, recipient, warehouse, filename, content
         if not existing:
             asset = ledger.asset(PurePath(filename).name, content, 'text/csv' if filename.lower().endswith('.csv') else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             existing = ledger.save('import', dict(import_type=TYPE, status='preview', customer=customer, recipient=recipient, warehouse=warehouse,
-                filename=asset.filename, asset_id=asset.id, provided_by=current.id, rows=rows, shipment_ids=[], preview_key=fingerprint, _ownership=ownership(current)))
+                filename=asset.filename, asset_id=asset.id, source_sha256=asset.sha256, provided_by=current.id, rows=rows, shipment_ids=[], preview_key=fingerprint, _ownership=ownership(current)))
         result = access.present(existing)
         result['data']['rows'] = reconcile(ledger, existing)
         db.commit()
@@ -380,7 +441,8 @@ def confirm(ledger, record, payload, actor):
             require(not any(item.data['status'] == 'expected' for item in existing_purchase), '该采购单行已有待回料批次，请选择原批次，避免重复登记', 409)
             supply = ledger.execute(SimpleNamespace(action='supply_save', entity_id=None, expected_version=0, data=data), actor)
         evidence = dict(identity=identity(record.data['warehouse'], source), warehouse=source.get('warehouse') or record.data['warehouse'],
-                        receipt_no=source['receipt_no'], receipt_line=source['receipt_line'], import_id=record.id,
+                        receipt_no=source.get('receipt_no', ''), receipt_line=source['receipt_line'], import_id=record.id,
+                        file_row_identity=source.get('_file_row_identity'),
                         asset_id=record.data['asset_id'], sheet=source_row['source_sheet'], row=source_row['source_row'])
         require(not any(item.data.get('warehouse_source', {}).get('identity') == evidence['identity'] for item in ledger.rows('supply')), '该仓库实收单行已导入', 409)
         supply_data = deepcopy(supply.data)
