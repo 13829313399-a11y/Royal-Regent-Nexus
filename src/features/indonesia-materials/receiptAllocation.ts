@@ -3,6 +3,26 @@ import { quantity } from './warehouseMatching'
 import { referenceNumber } from './receiptSummary'
 
 export const allocationKey = (plan: Data) => JSON.stringify([plan.order_id, plan.demand_id])
+export const isZeroAllocation = (plan: Data) => quantity(plan.normal_quantity) === 0n && quantity(plan.spare_quantity) === 0n
+export const activeAllocations = (plans: Data[]): Data[] => plans.filter(plan => !isZeroAllocation(plan))
+/** An explicit edit takes priority; only trim excess from sibling POs in the same quantity column. */
+export function editAllocationQuantity(source: Data, plans: Data[], index: number, field: 'normal_quantity' | 'spare_quantity', value: string) {
+  const edited = plans[index]
+  if (!edited) return
+  edited[field] = value
+  const total = quantity(source[field]), amount = quantity(value)
+  // Preserve incomplete/invalid input for correction instead of interpreting it as zero.
+  if (total === null || amount === null) return
+  let remaining = total > amount ? total - amount : 0n
+  plans.forEach((plan, position) => {
+    if (position === index) return
+    const current = quantity(plan[field])
+    if (current === null) return
+    const kept = current < remaining ? current : remaining
+    if (kept !== current) plan[field] = quantityText(kept)
+    remaining -= kept
+  })
+}
 export function quantityText(value: bigint) {
   const text = value.toString().padStart(9, '0')
   return `${text.slice(0, -8)}.${text.slice(-8)}`.replace(/\.?0+$/, '') || '0'
@@ -61,7 +81,7 @@ export function allocationIssue(source: Data, plans: Data[]) {
   const normal = quantity(source.normal_quantity), spare = quantity(source.spare_quantity)
   if (normal === null || spare === null) return '实收数量需核对'
   let n = 0n, s = 0n
-  for (const plan of plans) {
+  for (const plan of activeAllocations(plans)) {
     const pn = quantity(plan.normal_quantity), ps = quantity(plan.spare_quantity)
     if (pn === null || ps === null) return '分配数量需填写完整'
     if (!plan.order_id || !plan.demand_id) return '请选择对应合同／PO'

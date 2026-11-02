@@ -726,6 +726,64 @@ describe('warehouse receipt to shipment flow', () => {
     data.records = data.records.map(item => item.id === updated.id ? updated : item)
     return { record: updated }
   }
+  function splitReceipt(id = 'linked-quantities') {
+    const result = receipt(id), row = result.data.rows[0]
+    row.source.normal_quantity = '10000'; row.source.spare_quantity = '500'
+    row.targets.m = ['2982', '4200', '3318', '20000'].map((remaining, i) => ({
+      order_id: `linked-o${i}`, demand_id: `linked-d${i}`, order_version: 3, remaining,
+      required_date: `2026-11-0${i + 1}`, label: `LINKED-PO-${i}`,
+    }))
+    return result
+  }
+  it('reduces sibling PO quantities as a value is typed and submits only nonzero allocations', async () => {
+    const source = splitReceipt(), { panel } = await prepareWarehouse(source)
+    const normal = (i: number) => panel.get(`[aria-label="实收行 1 正常量 ${i}"]`)
+    const spare = (i: number) => panel.get(`[aria-label="实收行 1 备品量 ${i}"]`)
+    const values = () => [1, 2, 3].map(i => (normal(i).element as HTMLInputElement).value)
+    expect(values()).toEqual(['2982', '4200', '2818'])
+    // Select a PO with enough remaining demand before assigning it the entire receipt.
+    await panel.get('[aria-label="实收行 1 合同 1"]').setValue(JSON.stringify(['linked-o3', 'linked-d3']))
+    await normal(1).setValue('6000'); expect(values()).toEqual(['6000', '4000', '0'])
+    await normal(1).setValue('10000'); expect(values()).toEqual(['10000', '0', '0'])
+    expect((spare(3).element as HTMLInputElement).value).toBe('500')
+    await spare(1).setValue('500')
+    expect([1, 2, 3].map(i => (spare(i).element as HTMLInputElement).value)).toEqual(['500', '0', '0'])
+    const emptyTarget = panel.get('[aria-label="实收行 1 合同 2"]')
+    await emptyTarget.setValue('')
+    expect(emptyTarget.attributes('required')).toBeUndefined()
+    expect(button(panel, '确认实收与 PO，去补装箱').attributes('disabled')).toBeUndefined()
+    expect(mocks.api.command).not.toHaveBeenCalled()
+    await field(panel, '本次计划河源出货日期').setValue('2026-11-03')
+    mocks.api.command.mockImplementationOnce(async () => postResult(source))
+    await panel.get('form.im-editor').trigger('submit'); await flushPromises()
+    expect(mocks.api.command.mock.calls[0]![0].data.rows[0].allocations).toEqual([
+      { order_id: 'linked-o3', demand_id: 'linked-d3', order_version: 3, normal_quantity: '10000', spare_quantity: '500' },
+    ])
+  })
+  it('keeps linked quantities in their own receipt draft across refresh, document switches and reopening', async () => {
+    const source = splitReceipt(), second = structuredClone(source.data.rows[0])
+    second.index = 1; second.source.receipt_line = '2'; second.source.normal_quantity = '10'; second.source.spare_quantity = '0'
+    source.data.rows.push(second)
+    const { wrapper, panel } = await prepareWarehouse(source)
+    const otherRow = (panel.get('[aria-label="实收行 2 正常量 1"]').element as HTMLInputElement).value
+    await panel.get('[aria-label="实收行 1 正常量 1"]').setValue('8000')
+    await flushPromises()
+    const saved = storedDrafts().find(item => draftKind(item.id) === 'warehouse' && item.state.preview?.id === source.id)!
+    expect(saved.state.choices[0].allocations.map((p: Data) => p.normal_quantity)).toEqual(['8000', '2000', '0'])
+    expect((panel.get('[aria-label="实收行 2 正常量 1"]').element as HTMLInputElement).value).toBe(otherRow)
+    await button(wrapper, '刷新工作区').trigger('click'); await flushPromises()
+    expect((panel.get('[aria-label="实收行 1 正常量 2"]').element as HTMLInputElement).value).toBe('2000')
+    await button(panel, '新建实收导入').trigger('click'); await flushPromises()
+    await field(panel, '仓库名称（原单无仓库列时填写）').setValue('另一份草稿'); await flushPromises()
+    wrapper.unmount(); wrappers.splice(wrappers.indexOf(wrapper), 1)
+    const reopened = await setup('customer')
+    await button(reopened.get(`[data-draft-id="${saved.id}"]`), '继续填写').trigger('click'); await flushPromises()
+    const restored = reopened.get('section[aria-label="仓库实收导入"]')
+    expect([1, 2, 3].map(i => (restored.get(`[aria-label="实收行 1 正常量 ${i}"]`).element as HTMLInputElement).value)).toEqual(['8000', '2000', '0'])
+    expect((restored.get('[aria-label="实收行 1 备品量 3"]').element as HTMLInputElement).value).toBe('500')
+    expect((restored.get('[aria-label="实收行 2 正常量 1"]').element as HTMLInputElement).value).toBe(otherRow)
+    expect(mocks.api.command).not.toHaveBeenCalled()
+  })
   it('edits a blocked receipt row inline and rematches only that row, preserving other PO choices and edits', async () => {
     const original = receipt()
     original.data.rows.push({ ...structuredClone(original.data.rows[0]), index: 1, source_row: 3 })
