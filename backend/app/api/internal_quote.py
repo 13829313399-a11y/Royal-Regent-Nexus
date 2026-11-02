@@ -64,6 +64,7 @@ from app.services.internal_quote_sync import sync_options, preview_sync, apply_s
 from app.schemas.internal_quote_alternatives import SeriesExportRequest, AlternativeExportRequest
 from app.services.internal_quote_alternative_export import export_alternatives
 from app.services.internal_quote_series_export import export_series
+from app.services.internal_quote_document_clone import DocumentCloneRequest, clone_document
 from app.services.internal_quote_alternatives import (
     list_alternatives, copy_alternative, select_alternative, archive_alternative, report_alternative, issue_alternative,
 )
@@ -552,6 +553,12 @@ def put_internal_quote_reference_snapshot_materials(
     current_user: AuthContext = Depends(get_current_user),
 ):
     return update_quote_reference_materials(db, quote_id, payload, current_user, request)
+
+
+@router.post("/{quote_id}/clone-document", response_model=InternalQuoteOut, status_code=status.HTTP_201_CREATED)
+def post_internal_quote_document_clone(quote_id: str, payload: DocumentCloneRequest, request: Request,
+                                       db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return clone_document(db, quote_id, payload, current_user, request)
 
 
 @router.post("/{quote_id}/clone", response_model=InternalQuoteOut, status_code=status.HTTP_201_CREATED)

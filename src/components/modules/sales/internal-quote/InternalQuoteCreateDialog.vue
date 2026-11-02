@@ -3,7 +3,7 @@ import { Building2, CheckCircle2, Copy, Eye, FileImage, FilePlus2, FileText, Plu
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { internalQuoteSectionDefinitions } from '@/data/internalQuoteDeskConfig'
 import InternalQuoteHistoryPicker from './InternalQuoteHistoryPicker.vue'
-import type { ApiInternalQuoteHistoryProduct } from '@/api/internalQuote'
+import { internalQuoteApi, type ApiInternalQuote, type ApiInternalQuoteAlternative, type ApiInternalQuoteHistoryProduct } from '@/api/internalQuote'
 import type {
   InternalQuote,
   InternalQuoteBusinessOwner,
@@ -45,6 +45,49 @@ const emit = defineEmits<{
 }>()
 
 const errorMessage = ref('')
+const cloneLoading = ref(false)
+const cloneReady = ref(false)
+const cloneOptions = ref<ApiInternalQuoteAlternative[][]>([])
+let cloneGeneration = 0
+function cloneProduct(source: ApiInternalQuote, version: string): InternalQuoteCreateProduct {
+  const components = source.sections.find(section => section.department === 'sales')?.payload.pricing_components
+  return { productName: source.product_name, quantity: source.qty, regionCode: source.region_code as InternalQuoteCreateProduct['regionCode'],
+    cloneSourceQuoteId: source.id, cloneSourceRevision: source.header_revision, cloneSourceVersion: version,
+    pricingComponents: Array.isArray(components) ? components.map(part => String((part as { name: string }).name)) : undefined,
+    imageFile: null, documentFiles: [] }
+}
+async function loadCloneProducts(sourceId: string, generation: number) {
+  cloneLoading.value = true; cloneReady.value = false; cloneOptions.value = []
+  try {
+    const products = await internalQuoteApi.listBatchProducts(sourceId)
+    const result = await Promise.all(products.map(async product => {
+      const [source, family] = await Promise.all([internalQuoteApi.get(product.quote_id), internalQuoteApi.listAlternatives(product.quote_id)])
+      return { product: cloneProduct(source, `${product.scenario_name} · ${product.version_label}`), options: family.items }
+    }))
+    if (generation !== cloneGeneration || !props.open) return
+    if (!result.length) throw new Error('原报价产品清单为空，请重新打开复制窗口。')
+    form.products = result.map(row => row.product)
+    form.quoteType = products[0]!.quote_type as QuoteCreateForm['quoteType']
+    cloneOptions.value = result.map(row => row.options)
+    cloneReady.value = true
+  } catch (cause) { if (generation === cloneGeneration) errorMessage.value = cause instanceof Error ? cause.message : '读取整单产品失败，请重新打开复制窗口。' }
+  finally { if (generation === cloneGeneration) cloneLoading.value = false }
+}
+async function selectCloneVersion(index: number) {
+  const product = form.products[index]!
+  const id = product.cloneSourceQuoteId!
+  const generation = cloneGeneration
+  cloneLoading.value = true; cloneReady.value = false; errorMessage.value = ''
+  try {
+    const source = await internalQuoteApi.get(id)
+    if (generation !== cloneGeneration || product.cloneSourceQuoteId !== id) return
+    const option = cloneOptions.value[index]?.find(row => row.quote_id === id)
+    form.products[index] = cloneProduct(source, `${option?.scenario_name ?? '原方案'} · ${source.version_label}`)
+    cloneReady.value = true
+  } catch (cause) { if (generation === cloneGeneration) errorMessage.value = cause instanceof Error ? cause.message : '读取来源版本失败，请重新选择。' }
+  finally { if (generation === cloneGeneration) cloneLoading.value = false }
+}
+
 const historyTarget = ref<{ kind: 'product' | 'component'; productIndex?: number; componentIndex?: number } | null>(null)
 const documentPreview = ref<{ file: File; url: string; kind: 'image' | 'pdf' | 'file' } | null>(null)
 type QuoteCreateForm = InternalQuoteCreatePayload & {
@@ -78,8 +121,7 @@ const customerOptions = computed(() => Array.from(new Set([
   ...props.customers,
 ])))
 const isJustPlay = computed(() => (
-  props.mode === 'create'
-  && String(props.factoryId).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'huakangb'
+  String(props.factoryId).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'huakangb'
   && String(form.customer).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'justplay'
 ))
 
@@ -102,6 +144,8 @@ watch(() => form.customer, () => {
 })
 
 watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners[0]?.id, props.customers[0]] as const, ([open]) => {
+  const generation = ++cloneGeneration
+  cloneLoading.value = false; cloneReady.value = false
   closeDocumentPreview()
   historyTarget.value = null
   if (!open) return
@@ -133,6 +177,7 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
         documentFiles: [],
       }],
     })
+    void loadCloneProducts(props.sourceQuote.id, generation)
     return
   }
   Object.assign(form, {
@@ -156,6 +201,7 @@ watch(() => [props.open, props.mode, props.sourceQuote?.id, props.businessOwners
 
 function submit() {
   errorMessage.value = ''
+  if (props.busy || (props.mode === 'clone' && (cloneLoading.value || !cloneReady.value))) return
   if (props.mode === 'create' && !props.allowedInitiatorDepartments.includes(form.initiatorDepartment)) {
     errorMessage.value = '当前账号不能以所选部门发起内部报价。'
     return
@@ -192,6 +238,7 @@ function submit() {
   if (isJustPlay.value) {
     for (const [index, product] of form.products.entries()) {
       const componentNames = (product.pricingComponents ?? []).map((name) => name.trim())
+      if (product.cloneSourceQuoteId) continue
       if (!componentNames.length || componentNames.length > 50 || componentNames.some((name) => !name || name.length > 64)) {
         errorMessage.value = `第 ${index + 1} 款必须填写主体及配件名称；最多 49 个配件，每个名称不超过 64 个字符。`
         return
@@ -252,13 +299,14 @@ function changeQuoteType() {
 }
 
 function addProduct() {
-  if (form.products.length >= 20 || form.quoteType !== 'series') return
+  if (form.products.length >= 20 || (props.mode !== 'clone' && form.quoteType !== 'series')) return
+  form.quoteType = 'series'
   form.products.push({ productName: '', quantity: form.products[0]?.quantity ?? 10000, regionCode: '', imageFile: null, documentFiles: [],
     pricingComponents: isJustPlay.value ? [...(form.products[0]?.pricingComponents ?? ['主体', '配件1'])] : undefined })
 }
 
 function removeProduct(index: number) {
-  if (form.products.length <= 1 || form.quoteType !== 'series') return
+  if (form.products.length <= 1 || form.quoteType !== 'series' || form.products[index]?.cloneSourceQuoteId) return
   form.products.splice(index, 1)
 }
 
@@ -398,7 +446,7 @@ function openDocumentPreview(file: File) {
   }
 }
 
-onBeforeUnmount(closeDocumentPreview)
+onBeforeUnmount(() => { cloneGeneration += 1; closeDocumentPreview() })
 </script>
 
 <template>
@@ -425,7 +473,7 @@ onBeforeUnmount(closeDocumentPreview)
           <div class="quote-dialog-body">
             <div v-if="mode === 'clone' && sourceQuote" class="quote-copy-note">
               <Copy aria-hidden="true" />
-              <span>整单复制 {{ sourceQuote.quoteNo }} {{ sourceQuote.versionLabel }} 的报价头、全部部门明细和参考快照；审核及导出状态会清零。</span>
+              <span>复制报价 {{ sourceQuote.batchQuoteNo || sourceQuote.quoteNo }} 的全部产品。每款分别保留所选版本的部门明细、图片和参考价格；新单重新核价，原单及已输出文件保持不变。可在下方追加空白产品。</span>
             </div>
 
             <fieldset class="quote-department-choice">
@@ -471,7 +519,7 @@ onBeforeUnmount(closeDocumentPreview)
               </label>
               <label>
                 <span>客户 <b>*</b></span>
-                <select v-model="form.customer">
+                <select v-model="form.customer" :disabled="mode === 'clone'">
                   <option value="" disabled>{{ customerOptions.length ? '选择客户' : '当前厂区暂无客户' }}</option>
                   <option v-for="customer in customerOptions" :key="customer" :value="customer">{{ customer }}</option>
                 </select>
@@ -500,19 +548,21 @@ onBeforeUnmount(closeDocumentPreview)
             </div>
 
             <section class="quote-product-list">
+              <p v-if="cloneLoading" role="status">正在读取全部产品与来源版本…</p>
               <div class="quote-product-list-head">
-                <div><strong>产品清单</strong><span>{{ isJustPlay ? '每款独立设置配件；新增产品默认复制当前第 1 款的配件个数和名称，之后互不影响。' : '第 1 款为基准款；创建后可把整份部门报价复制到其他款。' }}</span></div>
+                <div><strong>产品清单</strong><span>{{ mode === 'clone' ? '确认每款来源版本、名称及数量；已有产品保留原部门配置，新增产品从空白开始。' : isJustPlay ? '每款独立设置配件；新增产品默认复制当前第 1 款的配件个数和名称，之后互不影响。' : '第 1 款为基准款；创建后可把整份部门报价复制到其他款。' }}</span></div>
                 <div class="quote-component-actions">
                   <button v-if="mode === 'create' && form.quoteType !== 'multi_region'" type="button" :disabled="busy" @click="historyTarget = { kind: 'product' }"><Copy />引用历史产品</button>
-                  <button v-if="form.quoteType === 'series'" type="button" :disabled="form.products.length >= 20" @click="addProduct"><Plus />新增产品</button>
+                  <button v-if="form.quoteType === 'series' || mode === 'clone'" type="button" :disabled="busy || cloneLoading || (mode === 'clone' && !cloneReady) || form.products.length >= 20" @click="addProduct"><Plus />{{ mode === 'clone' ? '新增空白产品' : '新增产品' }}</button>
                 </div>
               </div>
               <div class="quote-product-rows">
                 <article v-for="(product, index) in form.products" :key="index" class="quote-product-row">
                   <span class="quote-product-number">{{ String(index + 1).padStart(2, '0') }}</span>
-                  <label class="quote-product-name"><span>产品名称 <b>*</b></span><input v-model="product.productName" type="text" :placeholder="index === 0 ? '填写基准款名称' : `填写第 ${index + 1} 款名称`"></label>
-                  <label><span>出货数量 <b>*</b></span><input v-model.number="product.quantity" type="number" min="1" step="1"></label>
-                  <div class="quote-product-assets">
+                  <label v-if="product.cloneSourceQuoteId" class="quote-clone-source"><span>复制来源版本</span><select v-model="product.cloneSourceQuoteId" :disabled="busy || cloneLoading" :aria-label="`第 ${index + 1} 款复制来源版本`" @change="selectCloneVersion(index)"><option v-for="option in cloneOptions[index]" :key="option.quote_id" :value="option.quote_id">{{ option.scenario_name }} · {{ option.version_label }}{{ option.status === 'exported' ? '（已输出）' : '' }}</option></select><small>该款部门、明细、图片和配件分别保留。</small></label>
+                  <label class="quote-product-name"><span>产品名称 <b>*</b></span><input v-model="product.productName" :disabled="busy || cloneLoading" type="text" :placeholder="index === 0 ? '填写基准款名称' : `填写第 ${index + 1} 款名称`"></label>
+                  <label><span>出货数量 <b>*</b></span><input v-model.number="product.quantity" :disabled="busy || cloneLoading" type="number" min="1" step="1"></label>
+                  <div v-if="mode === 'create'" class="quote-product-assets">
                     <div class="quote-product-asset-pickers">
                       <label v-if="!isJustPlay" class="quote-product-image"><span>产品主图</span><input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" @change="selectProductImage(index, $event)"><small><FileImage />{{ product.imageFile?.name || '选择图片' }}</small></label>
                       <button v-if="!isJustPlay && product.imageFile" type="button" class="quote-asset-preview" @click="openDocumentPreview(product.imageFile)"><Eye />预览主图</button>
@@ -529,14 +579,14 @@ onBeforeUnmount(closeDocumentPreview)
                     </div>
                   </div>
                   <span v-if="product.regionCode" class="quote-region-badge">{{ product.regionCode === 'mainland' ? '大陆价' : '印尼价' }}</span>
-                  <button v-if="form.quoteType === 'series' && form.products.length > 1" type="button" class="quote-remove-product" aria-label="移除产品" @click="removeProduct(index)"><Trash2 /></button>
+                  <button v-if="form.quoteType === 'series' && form.products.length > 1 && !product.cloneSourceQuoteId" type="button" class="quote-remove-product" aria-label="移除产品" @click="removeProduct(index)"><Trash2 /></button>
                   <b v-if="index === 0" class="quote-baseline-badge">基准款</b>
                   <div v-if="mode === 'create'" class="quote-history-source">
                     <button type="button" @click="historyTarget = { kind: 'product', productIndex: index }">{{ product.historySource ? '更换整款来源' : '引用整款到本产品' }}</button>
                     <template v-if="product.historySource"><span>整款来源：{{ product.historySource.label }}（含图片及包装资料）</span><button type="button" @click="clearHistory(product)">取消本款引用</button></template>
                     <label v-if="product.historySource || product.componentSources?.some(Boolean)">材料 / 机型参考价<select :value="product.historyReferenceMode ?? 'source'" @change="product.historyReferenceMode = ($event.target as HTMLSelectElement).value as 'source' | 'current'"><option value="source">沿用历史参考价（冲突时提示）</option><option value="current">使用当前参考表重新核价</option></select></label>
                   </div>
-                  <section v-if="isJustPlay" class="quote-product-list quote-pricing-component-list quote-product-components">
+                  <section v-if="isJustPlay && !product.cloneSourceQuoteId" class="quote-product-list quote-pricing-component-list quote-product-components">
                     <div class="quote-product-list-head">
                       <div><strong>本款 JustPlay 报价分项</strong><span>1 个主体 + {{ Math.max(0, (product.pricingComponents?.length ?? 1) - 1) }} 个配件；名称可分别修改。</span></div>
                       <div class="quote-component-actions">
@@ -569,7 +619,7 @@ onBeforeUnmount(closeDocumentPreview)
               <p>{{ isJustPlay ? '图片在各分项内提供；' : '产品主图与资料在同一区域维护；' }}资料必须分配给参与部门，支持 Excel、Word、PDF 和 JPG/JPEG，创建后继续在对应部门资料栏预览。</p>
             </section>
 
-            <section class="quote-create-baseline">
+            <section v-if="mode === 'create'" class="quote-create-baseline">
               <p v-if="form.products.some(p => p.historySource || p.componentSources?.some(Boolean))" class="quote-history-notice">历史明细独立复制，不影响原单。材料/机型参考价按每款的选择冻结，汇率、倍率及地区运费按新单重新核价；配件重组不复制共享包装。请建单后核对包装、人工及电子公共费用，再直接输出。</p>
               <div class="quote-baseline-title">
                 <Building2 aria-hidden="true" />
@@ -607,7 +657,7 @@ onBeforeUnmount(closeDocumentPreview)
 
           <footer class="quote-dialog-actions">
             <button type="button" class="quote-secondary-button" :disabled="busy" @click="emit('close')">取消</button>
-            <button type="button" class="quote-primary-button" :disabled="busy || !businessOwners.length || !customerOptions.length" @click="submit">
+            <button type="button" class="quote-primary-button" :disabled="busy || cloneLoading || (mode === 'clone' && !cloneReady) || !businessOwners.length || !customerOptions.length" @click="submit">
               <Copy v-if="mode === 'clone'" aria-hidden="true" />
               <FilePlus2 v-else aria-hidden="true" />
               {{ busy ? '正在提交…' : mode === 'clone' ? '确认复制并进入协作' : '创建并进入协作' }}
@@ -661,4 +711,5 @@ onBeforeUnmount(closeDocumentPreview)
 @media(max-width:760px){.quote-product-components{grid-column:1/-1}.quote-product-components .quote-product-list-head{align-items:flex-start;flex-direction:column}.quote-product-components .quote-pricing-component-rows{grid-template-columns:1fr}}
 .quote-component-asset{grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.quote-component-asset label{display:flex;max-width:100%;color:#0f766e;cursor:pointer;font-size:12px}.quote-component-asset label span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.quote-component-asset input{position:absolute;width:1px;height:1px;opacity:0}.quote-component-asset button{font-size:12px;color:#0f766e;border:1px solid #99f6e4;border-radius:6px;padding:4px 8px}
 .quote-component-asset .quote-component-image-picker{display:flex;align-items:center;gap:6px;border:1px dashed #99f6e4;border-radius:7px;background:#f0fdfa;padding:7px 9px;min-height:32px}.quote-component-image-picker svg{width:15px;height:15px;flex-shrink:0}
+.quote-clone-source{grid-column:1/-1}.quote-clone-source small{color:#64748b}
 </style>
