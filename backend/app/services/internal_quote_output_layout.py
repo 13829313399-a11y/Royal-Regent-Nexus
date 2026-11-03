@@ -215,7 +215,7 @@ def _render(db, loaded, preview=None, drafts=()):
     for group in groups:
         group["editable"] = group["section"] in editable
     # Only product/component images are needed by the generated layout. Source
-    # workbooks remain stored on the original form and never become output tabs.
+    # workbooks are appended to downloads only, outside the formula evaluator.
     attachments = list(db.scalars(select(InternalQuoteAttachment).where(
         InternalQuoteAttachment.quote_id == quote.id,
         InternalQuoteAttachment.content_type.like("image/%"),

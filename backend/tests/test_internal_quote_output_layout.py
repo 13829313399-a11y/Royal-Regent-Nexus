@@ -39,7 +39,7 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         quote = fill(client, create(client, "TABLE"))
         root = f"/api/internal-quotes/{quote['id']}"
         source_book = Workbook()
-        source_book.active.title = "原始附件不附带"
+        source_book.active.title = "原始附件"
         buffer = BytesIO()
         source_book.save(buffer)
         uploaded = client.post(root + "/attachments", data={"department": "engineering"},
@@ -77,11 +77,11 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         assert client.put(root + "/output-layout", json=bad).status_code == 400
         issued = client.post(root + "/direct-issue", json={"revision": current["header_revision"]})
         assert issued.status_code == 200, issued.text
-        assert issued.json()["export_manifest"]["spreadsheet_attachments"] == []
+        assert issued.json()["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "original.xlsx"
         assert issued.json()["export_manifest"]["source_spreadsheet_attachments"][0]["file_name"] == "original.xlsx"
         exported = client.get(root + f"/exports/{issued.json()['id']}/download")
         book = load_workbook(BytesIO(exported.content))
-        assert "原始附件不附带" not in book.sheetnames
+        assert book["original"].sheet_state == "visible"
         assert any("螺丝改名" in str(c.value) for row in book["报价明细"] for c in row)
         assert len(client.get(root + "/attachments").json()) == 1
         frozen = client.get(root + "/output-layout").json()
@@ -132,7 +132,7 @@ def test_multiple_groups_currencies_atomic_failure_and_molding_dependency(monkey
         response = client.get(root + '/output-layout')
         assert response.status_code == 200, response.text
         layout = response.json()
-        assert [s['name'] for s in layout['sheets']] == ['报价明细', '电子明细1', '电子明细2']
+        assert [s['name'] for s in layout['sheets']] == ['报价明细', '电子明细1', '电子明细2', '工模报价']
         second_sheet = layout['sheets'][2]
         second_price = next(c for row in second_sheet['rows'] for c in row['cells'] if c['address'] == 'E4')
         assert second_price['binding']['group'] == 'electronic:quote_groups/1/components/0'

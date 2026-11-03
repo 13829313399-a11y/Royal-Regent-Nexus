@@ -286,6 +286,12 @@ def _select_electronic_groups(original, source, source_component, target_compone
         picked = _rebind(_clean(normalized), target_component)
         picked.update(id="history-" + content_hash({"source": prefix, "group": group["id"]})[:32], components=[{**_rebind(_clean(row), target_component), "pricing_component_id": target_component} for row in rows])
         picked.pop("quick_quotes", None)
+        if group.get("quote_mode") == "quick":
+            picked["quote_mode"] = "quick"
+            picked["quick_quotes"] = picked.pop("components")
+            if rows:
+                selected.append(picked)
+            continue
         has_expenses = False
         for stem in ("bonding", "smt", "labor", "testing", "packaging", "tax_credit_difference"):
             for suffix in ("_rmb", "_hkd"):
@@ -329,6 +335,7 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
                                (a.department != "product-image" or not _justplay(quote)))
     if _justplay(quote):
         grouped_electronic = any("quote_groups" in sources[ref.quote_id].payloads.get("electronic", {})
+                                 or sources[ref.quote_id].payloads.get("electronic", {}).get("quote_mode") == "quick"
                                  for ref in (product.component_sources or []) if ref)
         # Shared packaging belongs only to the complete-product source, never to each accessory.
         for code, fields in ROW_FIELDS.items():
@@ -368,7 +375,8 @@ def seed_history_product(db, quote, product, sources, initial_payloads, snapshot
                         if existing is None:
                             electronic["quote_groups"].append(deepcopy(group))
                         else:
-                            existing["components"].extend(group["components"])
+                            row_key = "quick_quotes" if group.get("quote_mode") == "quick" else "components"
+                            existing[row_key].extend(group[row_key])
                             for stem in ("bonding", "smt", "labor", "testing", "packaging", "tax_credit_difference"):
                                 for suffix in ("_rmb", "_hkd"):
                                     key = stem + suffix

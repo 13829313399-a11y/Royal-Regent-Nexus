@@ -13,7 +13,7 @@ from app.services.internal_quote_prefill import material_family, _match_token
 from app.services.internal_quote_sewing import is_sewing_labor, uses_sewing_quoted_price
 
 
-FORMULA_VERSION = "rr2-2026-v11"
+FORMULA_VERSION = "rr2-2026-v12"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -943,6 +943,7 @@ def _electronic_calculation_rows(payload: dict[str, Any]) -> Any:
             "specification": "",
             "quantity": "1",
             "children": [],
+            "tax_rate_percent": "0",
         }
         if isinstance(row, dict) else row
         for row in quick_rows
@@ -995,6 +996,22 @@ def _electronic(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[
             fx,
             result["line_breakdown"],
         )
+        if payload.get("quote_mode") == "quick":
+            # Quick input is the electronic department's final RMB quote.
+            # Preserved detail expenses/profit/tax must not be charged again.
+            hkd = decimal_text(component_rmb / fx)
+            rmb = decimal_text(component_rmb)
+            result["currency_totals"] = {"HKD": hkd, "RMB": rmb, "USD": "0.0000"}
+            result["totals"] = {
+                "component_rmb": rmb, "component_hkd": hkd,
+                "pre_tax_rmb": rmb, "pre_tax_hkd": hkd,
+                "with_profit_rmb": rmb, "with_profit_hkd": hkd,
+                "extras_rmb": "0.0000", "deductible_input_tax_rmb": "0.0000",
+                "output_tax_rmb": "0.0000", "tax_credit_difference_rmb": "0.0000",
+                "tax_credit_difference_hkd": "0.0000", "tax_payable_rmb": "0.0000",
+                "tax_payable_hkd": "0.0000", "total_rmb": rmb, "total_hkd": hkd,
+            }
+            return
         extras_rmb = sum(
             (
                 decimal_value(payload.get(rmb_field), label)

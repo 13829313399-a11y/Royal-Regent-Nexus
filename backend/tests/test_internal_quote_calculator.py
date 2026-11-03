@@ -490,7 +490,7 @@ def test_electronic_quick_quote_uses_requested_fields_and_ignores_detail_rows():
     )
 
     assert electronic["status"] == "valid"
-    assert electronic["currency_totals"] == {"HKD": "20.6988", "RMB": "17.5940", "USD": "0.0000"}
+    assert electronic["currency_totals"] == {"HKD": "17.6471", "RMB": "15.0000", "USD": "0.0000"}
     assert electronic["totals"]["component_rmb"] == "15.0000"
     assert [row["item"] for row in electronic["line_breakdown"]] == ["主控板", "喇叭"]
     assert electronic["line_breakdown"][0]["unit_price_hkd"] == "11.7647"
