@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderMarkdown } from '../markdown'
+import type { EvidencePart, FileSource } from '../v2'
 describe('safe rich answers', () => {
   it('binds record links only to server actions and leaves unknown protocols inert', () => {
     const source='[原单](customer-orders:order:SYN-O-A001) [外厂](customer-orders:order:SYN-O-B001) [应用](custom:launch)'
@@ -19,5 +20,19 @@ describe('safe rich answers', () => {
     expect(renderMarkdown('| A | B |\n|---|---|\n| 1 | 2 |')).toContain('yl-table')
     const value = renderMarkdown('```ts\nconst value = "<tag>"')
     expect(value).toContain('复制代码'); expect(value).toContain('&lt;tag&gt;')
+  })
+  it('keeps unknown and plain numeric references inert, including old ineligible bindings', () => {
+    const source: FileSource={kind:'file',source_id:'file',run_id:'run',title:'资料范围',file_ref:{kind:'document',id:'file'},locator:{kind:'document'},extracted_at:'2026-10-26T00:00:00Z',citation_eligible:false}
+    const evidence: EvidencePart={type:'evidence',schema_version:2,run_id:'run',revision:1,search:{requested_mode:'off',execution:'not_requested',evidence_level:'none',search_count:0,reason_code:null},sources:[source],citations:[{binding_id:'binding',part_id:'chat-0:text',marker:'[ref_1]',source_ids:['file'],resolution:'resolved'}],activities:[]}
+    const original='未核验数字 999 [ref_1]、未知 [ref_999]、普通 [1]。'
+    expect(renderMarkdown(original,evidence,'chat-0:text')).not.toContain('data-yl-source')
+    expect(renderMarkdown(original,evidence,'chat-0:text')).toContain('来源不可核验')
+    evidence.sources=[{...source,citation_eligible:true}]
+    expect(renderMarkdown(original,evidence,'chat-0:text')).toContain('data-yl-source="binding"')
+    expect(renderMarkdown(original,evidence,'chat-0:text')).toContain('未核验数字 999')
+    expect(renderMarkdown(original,evidence,'chat-0:text')).toContain('未知 [ref_999]、普通 [1]')
+    evidence.citations[0]!.source_ids=['file','missing']
+    expect(renderMarkdown(original,evidence,'chat-0:text')).not.toContain('data-yl-source')
+    expect(renderMarkdown(original,evidence,'chat-1:text')).not.toContain('data-yl-source')
   })
 })

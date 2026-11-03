@@ -13,6 +13,7 @@ from app.services.business_authz import has_permission_for_departments
 from .errors import AssistantError
 from .evidence import now_iso, stable_id
 from .tool_result import validate_result
+from .recent_reads import RecentReads
 
 NAME = "list_customer_orders"
 FACTORIES = {"huaxing", "huadeng", "huakang-a", "huakang-b", "huakang-c", "huakang-d"}
@@ -34,6 +35,7 @@ DEFINITIONS = {
     "orders.unknown_due.v1": "未发完记录中数量或客户要求交期未知，无法判断是否逾期的行数。",
     "orders.cancelled.v1": "同一范围内status=cancelled的订单台账行数。",
 }
+_recent=RecentReads()
 
 
 def business_now():
@@ -105,12 +107,7 @@ def row_out(db, row, today, detail=False):
     return item
 
 
-def query(user, arguments, run_id, *, tool_call_id=None, step_id=None):
-    try:
-        args = Arguments.model_validate(arguments)
-    except (ValidationError, ValueError):
-        raise AssistantError("tool_invalid", "订单查询参数无效；请核对厂区、筛选、日期或分页。", 422) from None
-    authorize(user, args.factory_id)
+def _snapshot(user, args, run_id, *, tool_call_id=None, step_id=None):
     requested_at = business_now()
     with database.SessionLocal() as db:
         # Keep count, rows, metrics and evidence on one read snapshot.
@@ -191,3 +188,45 @@ def query(user, arguments, run_id, *, tool_call_id=None, step_id=None):
             allowed_actions=[dict(action_id=stable_id(source_id, ref), kind="navigate", label=action["label"], resource_ref=ref) for ref, action in zip(refs, actions)],
             diagnostic_code=None)
         return validate_result(result, registered_sources=[source_id], registered_resources=refs, row_fields=ROW_FIELDS), source, actions
+
+
+def query(user, arguments, run_id, *, tool_call_id=None, step_id=None, reuse_recent=False):
+    try:
+        args=Arguments.model_validate(arguments)
+    except (ValidationError,ValueError):
+        raise AssistantError('tool_invalid','订单查询参数无效；请核对厂区、筛选、日期或分页。',422) from None
+    owner=(id(database.engine),user.id)
+    try:authorize(user,args.factory_id)
+    except AssistantError:
+        _recent.clear_owner(owner)
+        raise
+    from .business import fingerprint
+    from .visibility import allowed
+    argument_key=json.dumps(args.model_dump(),sort_keys=True,separators=(',',':'))
+    with database.SessionLocal() as db:
+        key=(owner,fingerprint(db,user),argument_key)
+        _recent.retain_scope(owner,key[1])
+        cached=_recent.get(key) if reuse_recent and not args.resource_id else None
+        if cached:
+            result,source,actions=cached
+            now=business_now()
+            age=(datetime.fromisoformat(now)-datetime.fromisoformat(result['as_of'])).total_seconds()
+            created=result['freshness']['cache_created_at'] or result['retrieved_at']
+            created_age=(datetime.fromisoformat(now)-datetime.fromisoformat(created)).total_seconds()
+            if 0<=age<=30 and 0<=created_age<=30 and allowed(user,[source],db):
+                source_id=stable_id(run_id,NAME,source['source_id'],result['as_of'])
+                source.update(source_id=source_id,run_id=run_id,retrieved_at=now)
+                result.update(run_id=run_id,tool_call_id=tool_call_id or stable_id(run_id,argument_key),
+                    step_id=step_id or NAME,requested_at=now,retrieved_at=now,source_refs=[source_id])
+                result['freshness'].update(cache_hit=True,cache_created_at=created,policy_id='orders-recent-v1')
+                for action in result['allowed_actions']:
+                    action['action_id']=stable_id(source_id,action['resource_ref'])
+                refs=[row['resource_ref'] for row in result['rows']]
+                return validate_result(result,registered_sources=[source_id],registered_resources=refs,row_fields=ROW_FIELDS),source,actions
+    # An explicit fresh read cannot leave its older same-scope entry available
+    # after an upstream error, nor overwrite any previously saved answer.
+    _recent.discard(key)
+    fresh=_snapshot(user,args,run_id,tool_call_id=tool_call_id,step_id=step_id)
+    if not args.resource_id:
+        _recent.put((owner,fresh[1]['authorization_fingerprint'],argument_key),fresh)
+    return fresh

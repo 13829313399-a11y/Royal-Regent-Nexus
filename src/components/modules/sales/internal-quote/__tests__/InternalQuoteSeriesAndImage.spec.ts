@@ -10,6 +10,7 @@ import InternalQuoteSeriesExport from '../InternalQuoteSeriesExport.vue'
 
 afterEach(() => vi.restoreAllMocks())
 function setup() {
+  vi.spyOn(internalQuoteApi, 'getAlternativeGroup').mockResolvedValue(null)
   const pinia = createPinia(); setActivePinia(pinia)
   const auth = useAuthStore(); vi.spyOn(auth, 'can').mockReturnValue(true)
   const store = useInternalQuoteDeskStore()

@@ -1,6 +1,9 @@
 """Server-only, audience-filtered source-backed help. Never scrapes business DOM."""
 import hashlib
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -11,6 +14,31 @@ ROOT = BACKEND_DIR.parent
 HELP_DIR = ROOT / "shared" / "assistant-help"
 if not HELP_DIR.exists():
     HELP_DIR = BACKEND_DIR / "shared" / "assistant-help"
+
+# One bounded service read shares a verified source snapshot. This is neither a
+# process cache nor an SSE-lifetime cache: each later read/guard/export check
+# starts again, so source edits cannot linger behind a TTL.
+_read_snapshot = ContextVar('assistant_help_read_snapshot', default=None)
+
+
+@contextmanager
+def read_scope():
+    if _read_snapshot.get() is not None:
+        yield
+        return
+    token = _read_snapshot.set({})
+    try:
+        yield
+    finally:
+        _read_snapshot.reset(token)
+
+
+def scoped_read(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with read_scope():
+            return function(*args, **kwargs)
+    return wrapped
 
 
 class Source(BaseModel):
@@ -56,7 +84,12 @@ def supplier_only(user):
 
 
 def articles():
+    snapshot = _read_snapshot.get()
+    if snapshot is not None and 'articles' in snapshot:
+        return snapshot['articles']
     result = []
+    source_files = {}
+    root = ROOT.resolve()
     for path in sorted((HELP_DIR / "modules").glob("*.json")):
         for item in json.loads(path.read_text(encoding="utf-8")):
             article = Article.model_validate(item)
@@ -67,9 +100,11 @@ def articles():
                 symbol_found = False
                 try:
                     target = (ROOT / source.path).resolve()
-                    if target.is_relative_to(ROOT.resolve()) and target.is_file():
-                        content = target.read_bytes().replace(b"\r\n", b"\n")
-                        current_hash = hashlib.sha256(content).hexdigest()
+                    if target.is_relative_to(root) and target.is_file():
+                        if target not in source_files:
+                            content = target.read_bytes().replace(b"\r\n", b"\n")
+                            source_files[target] = content, hashlib.sha256(content).hexdigest()
+                        content, current_hash = source_files[target]
                         symbol_found = source.symbol.encode("utf-8") in content
                 except OSError:
                     pass  # Unreadable source cannot establish a verified guide.
@@ -81,6 +116,8 @@ def articles():
             result.append(article)
     if len({a.id for a in result}) != len(result):
         raise AssistantError("help_invalid", "本页说明需要维护。", 503)
+    if snapshot is not None:
+        snapshot['articles'] = result
     return result
 
 

@@ -439,8 +439,11 @@ def get_schedule_orders(factory_id: str, offset: int = Query(0, ge=0), limit: in
             splits.setdefault(plan["order_id"], []).append(plan)
     from app.services.carton_order_split_trace import schedule_split_sources
     split_sources = schedule_split_sources(db, orders)
+    from app.services.carton_schedule_quantity_matching import read_matches
+    quantity_matches = read_matches(db, factory_id)
     return {"items": [{**{key: getattr(order, key) for key in fields},
                        "split_records": splits.get(order.id, []),
+                       "schedule_quantity_matches": quantity_matches.get(order.id, []),
                        "schedule_split_source": split_sources.get(order.id)} for order in orders], "total": total}
 
 

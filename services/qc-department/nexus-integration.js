@@ -20,6 +20,7 @@
   // storage key here: changing factory must recreate the authorized frame.
   var factoryBridge = null;
   var factorySwitching = false;
+  window.__QC_PAGE_CHANGED = function (page) { factoryBridge?.navigate?.(page); };
   window.__QC_INITIAL_PAGE = function () {
     var page = factoryBridge?.page;
     return page && document.getElementById('page-' + page) ? page : 'dashboard';
@@ -62,6 +63,7 @@
         && window.__QC_CURRENT_PAGE() !== bridge.page) window.showPage(bridge.page);
   };
   window.__QC_CONFIRM_FACTORY_LEAVE = function () {
+    if (window.QcInspectionSummary?.busy) { window.showToast?.('历史导入正在保存，请稍候', 'warning'); return false; }
     var workflow = window.QcWorkflow?.navigationState?.() || {};
     var schedule = window.QcSchedule?.navigationState?.() || {};
     if (workflow.busy || schedule.busy || referenceClearInProgress || window.__QC_PENDING_WRITES > 0) {

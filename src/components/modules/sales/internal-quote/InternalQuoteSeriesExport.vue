@@ -3,11 +3,14 @@ import { onBeforeUnmount, ref, watch } from 'vue'
 import { internalQuoteApi, type ApiInternalQuote, type ApiInternalQuoteAlternative } from '@/api/internalQuote'
 import { getApiErrorMessage } from '@/lib/http'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
+import { useAuthStore } from '@/stores/auth'
+import { chooseWorkingVersion, readWorkingVersions } from '@/lib/internalQuoteWorkingVersions'
 import type { InternalQuote, InternalQuoteBatchProduct } from '@/types/internalQuoteDesk'
 
 const props = defineProps<{ quote: InternalQuote; products: InternalQuoteBatchProduct[]; hasUnsavedChanges: () => boolean }>()
 const emit = defineEmits<{ close: []; completed: []; resolve: [quoteId: string, sectionCode: string] }>()
 const store = useInternalQuoteDeskStore()
+const auth = useAuthStore()
 const rows = ref<Array<{ name: string; selected: string; revision: number; options: ApiInternalQuoteAlternative[]; loading: boolean; problems: Array<{ section_code: string; section_name: string; reason: string }> }>>([])
 const busy = ref(false)
 const loading = ref(true)
@@ -32,9 +35,13 @@ async function loadRows() {
   const current = ++generation
   loading.value = true; error.value = ''; rows.value = []
   try {
+    const group = await internalQuoteApi.getAlternativeGroup(id)
+    const remembered = readWorkingVersions(auth.currentUser?.id || '', props.quote.factoryId, props.quote.documentQuoteId || id)
     const result = await Promise.all(props.products.map(async product => {
-      const [family, quote] = await Promise.all([internalQuoteApi.listAlternatives(product.quoteId), internalQuoteApi.get(product.quoteId)])
-      return { name: product.productName, selected: product.quoteId, revision: quote.header_revision, loading: false, problems: problemsFor(quote),
+      const family = await internalQuoteApi.listAlternatives(product.quoteId)
+      const selected = chooseWorkingVersion(family.items, id, group?.products.find(p => p.product_root_id === family.family_id)?.quote_id, remembered.products[family.family_id], product.quoteId)
+      const quote = selected ? await internalQuoteApi.get(selected) : undefined
+      return { name: product.productName, selected, revision: quote?.header_revision ?? 0, loading: false, problems: quote ? problemsFor(quote) : [{ section_code: '', section_name: '版本选择', reason: '原工作版本已归档或不可用，请明确选择本次输出版本。' }],
         options: family.items.filter(item => !item.archived) }
     }))
     if (props.quote.id === id && generation === current) rows.value = result
@@ -76,10 +83,10 @@ async function output() {
   <div class="series-export-backdrop">
     <section role="dialog" aria-modal="true" aria-labelledby="series-export-title" class="series-export-dialog">
       <h2 id="series-export-title">系列报价一起输出</h2>
-      <p>生成一个 Excel，每款一个工作表。请选择各款需要输出的方案版本。</p>
+      <p>生成一个 Excel，每款一个工作表。已优先选择当前方案组或本人上次工作版本，请逐款核对方案、版本及状态后确认。</p>
       <p>未输出的版本会在资料完整后一起输出并冻结；已输出的版本沿用原文件内容。</p>
       <p v-if="loading" role="status">正在读取系列报价…</p>
-      <div v-for="(row, index) in rows" :key="index" class="series-product"><label><span>{{ index + 1 }}. {{ row.name }}</span><select v-model="row.selected" :aria-label="`${row.name} 输出版本`" :disabled="busy || row.loading" @change="selectVersion(index)"><option v-for="option in row.options" :key="option.quote_id" :value="option.quote_id">{{ option.scenario_name }} · {{ option.version_label }}{{ option.status === 'exported' ? '（已输出）' : '' }}</option></select></label>
+      <div v-for="(row, index) in rows" :key="index" class="series-product"><label><span>{{ index + 1 }}. {{ row.name }}</span><select v-model="row.selected" :aria-label="`${row.name} 输出版本`" :disabled="busy || row.loading" @change="selectVersion(index)"><option disabled value="">请选择输出版本</option><option v-for="option in row.options" :key="option.quote_id" :value="option.quote_id">{{ option.scenario_name }} · {{ option.version_label }}{{ option.status === 'exported' ? '（已输出）' : '' }}</option></select></label>
         <ul v-if="row.problems.length" class="series-problems"><li v-for="(problem, pi) in row.problems" :key="pi"><span>{{ problem.section_name }}：{{ problem.reason }}</span><button type="button" :disabled="busy || row.loading" @click="resolve(row.selected, problem.section_code)">前往处理</button></li></ul>
         <p v-else-if="!row.loading && row.revision > 0" class="series-ready">已就绪；已输出版本沿用原文件。</p>
         <p v-else-if="!row.loading">状态未能读取，请重新读取状态。</p>

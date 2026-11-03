@@ -4,6 +4,7 @@ import { http } from '@/lib/http'
 export interface SupplierChangeLine {
   id: string; packaging_type: string; paper_quality: string; specification: string; dimension_unit?: string; unit: string
   quantity: string; before_quantity: string
+  promised_date?: string
   before_material?: Partial<Record<'packaging_type' | 'paper_quality' | 'specification' | 'dimension_unit', string>>
 }
 export interface SupplierChangeTask {

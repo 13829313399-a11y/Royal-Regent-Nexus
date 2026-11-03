@@ -1,6 +1,7 @@
 """Shared, bounded Excel reader for new regular and special orders (no database)."""
 import hashlib
 import re
+from copy import copy
 from datetime import date, datetime
 from io import BytesIO
 from zipfile import ZipFile, BadZipFile
@@ -39,10 +40,20 @@ REGULAR = [
     ("gross_weight_kg", "每箱毛重kg", ["每箱毛重"]),
 ]
 SPECIAL = [("kind", "订单类型", ["类型"]), ("required_date", "需用日期", ["需求日期", "需要日期"])]
+GUIDE_SHEETS = {"填写说明", "填写示例"}
+FIELD_ORDER = {
+    "REGULAR": ["customer", "contract_no", "item_no", "order_date", "customer_due_date",
+                "packaging_type", "paper_quality", "specification", "unit",
+                "quantity", "product_quantity", "usage_quantity", "carton_source_row", "per_carton_quantity", "customer_po",
+                "dimension_unit", "due_date", "group", "product_name", "net_weight_kg", "gross_weight_kg", "note"],
+    "SPECIAL": ["group", "kind", "required_date", "packaging_type", "paper_quality", "specification", "quantity", "unit",
+                "dimension_unit", "item_no", "note"],
+}
 
 
 def fields(mode):
-    return COMMON + (REGULAR if mode == "REGULAR" else SPECIAL)
+    available = {field[0]: field for field in COMMON + (REGULAR if mode == "REGULAR" else SPECIAL)}
+    return [available[key] for key in FIELD_ORDER[mode]]
 
 
 def field_specs(mode):
@@ -122,7 +133,8 @@ def read(content, mode, sheet_name="", header_row=None, mapping=None):
     try:
         if len(book.sheetnames) > 20:
             raise HTTPException(422, "每次最多 20 个工作表，请拆分文件")
-        available = [s.title for s in book if s.sheet_state == "visible"]
+        # Guide rows must never become orders, including an explicit sheet selection.
+        available = [s.title for s in book if s.sheet_state == "visible" and s.title not in GUIDE_SHEETS]
         if not available or (sheet_name and sheet_name not in available):
             raise HTTPException(422, "请选择有效的可见工作表")
         aliases = {normalized(label): key for key, label, names in fields(mode) for label in [label, *names]}
@@ -196,6 +208,8 @@ def read(content, mode, sheet_name="", header_row=None, mapping=None):
 def template(mode):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from app.services.carton_order_import_examples import examples
     from openpyxl.utils import get_column_letter
     book = Workbook()
     sheet = book.active
@@ -208,7 +222,8 @@ def template(mode):
         sheet.column_dimensions[get_column_letter(i)].width = 22
         cell = sheet.cell(1, i)
         cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="0F766E")
+        requirement = columns[i - 2]["requirement"] if i > 1 else "optional"
+        cell.fill = PatternFill("solid", fgColor={"required": "0F766E", "conditional": "92400E", "optional": "475569"}[requirement])
         cell.alignment = Alignment(wrap_text=True, vertical="center")
         demo = sheet.cell(2, i)
         demo.font = Font(color="64748B", italic=True)
@@ -219,11 +234,27 @@ def template(mode):
     sheet.row_dimensions[1].height = 42
     sheet.row_dimensions[2].height = 54
     sheet.freeze_panes = "B3"
+    sheet.sheet_view.showGridLines = False
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_setup.orientation = "landscape"
+    for key, options in {"dimension_unit": '"cm,mm,inch"' if mode == "REGULAR" else '"cm,inch"',
+                         "unit": '"个,箱,张,片,套"', "kind": '"样板单,杂单"'}.items():
+        if key not in FIELD_ORDER[mode]:
+            continue
+        col = get_column_letter(FIELD_ORDER[mode].index(key) + 2)
+        validation = DataValidation(type="list", formula1=options, allow_blank=True)
+        # Suggestions only: the server remains authoritative and permits existing custom units.
+        validation.showErrorMessage = False
+        sheet.add_data_validation(validation)
+        validation.add(f"{col}3:{col}502")
     instructions = book.create_sheet("填写说明")
     notes = ["必填须补齐；选填可留空；按条件必填请按下方说明选择数量算法或遵循客户规则。",
              "灰色演示行自动跳过，不计入订单、纸品或数量。实际订单从下一行填；复制演示行时须清空“模板行标记”。",
              "支持自有 Excel 和任意列顺序；一行一种纸品，同一订单全部纸品一起导入。不得漏行或用分组编号代替正单身份。",
-             "最多 500 行实际数据及 1 行演示；公式请转为实际值，合并单元格不会自动向下填充。"]
+             "最多 500 行实际数据及 1 行演示；公式请转为实际值，合并单元格不会自动向下填充。",
+             "从左向右：绿色必填项 → 棕色按条件必填项 → 灰色选填项。更多场景见“填写示例”，该页不会导入。",
+             "正单从排期行发起下单才记录排期来源并承接资料；单独手动建单或导入后的身份匹配不等于来源关联。" if mode == "REGULAR" else
+             "样板单与杂单可以放在同一文件。不同订单使用不同分组编号；同一组的类型与需用日期保持一致。"]
     for index, note in enumerate(notes, 1):
         instructions.append([note])
         instructions.merge_cells(start_row=index, start_column=1, end_row=index, end_column=3)
@@ -232,16 +263,42 @@ def template(mode):
     instructions.append(["字段", "填写要求", "填写说明"])
     for field in columns:
         instructions.append([field["label"], REQUIREMENT_LABELS[field["requirement"]], field["hint"]])
-    for cell in instructions[5]:
+    heading_row = len(notes) + 1
+    for cell in instructions[heading_row]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="0F766E")
-    for row in instructions.iter_rows(min_row=6):
+    for row in instructions.iter_rows(min_row=heading_row + 1):
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical="center")
         instructions.row_dimensions[row[0].row].height = 36
     for col, width in {"A": 24, "B": 18, "C": 86}.items():
         instructions.column_dimensions[col].width = width
-    instructions.freeze_panes = "A6"
+    instructions.freeze_panes = f"A{heading_row + 1}"
+    instructions.sheet_view.showGridLines = False
+    guide = book.create_sheet("填写示例")
+    guide.append(["填写示例（本页不导入）"])
+    guide.append(["先看场景，再参考对应行填写实际订单；复制时只复制字段数据，勿复制“场景”列。"])
+    guide.append(["配套纸箱原表行号须改为正式数据表中纸箱的实际行号，不能照抄示例行号。" if mode == "REGULAR" else
+                  "样板和杂单均须填写纸品、数量、单位及需用日期；不需要编造客户或合同。"])
+    guide.append(["场景"] + [f"{field['label']}（{REQUIREMENT_LABELS[field['requirement']]}）" for field in columns])
+    for label, data in examples(mode):
+        guide.append([label] + [data.get(field["key"], "") for field in columns])
+    for col in range(1, len(columns) + 2):
+        guide.column_dimensions[get_column_letter(col)].width = 24 if col == 1 else 22
+        guide.cell(4, col).font = Font(bold=True, color="FFFFFF")
+        guide.cell(4, col).fill = copy(sheet.cell(1, col).fill)
+    for row in guide.iter_rows(min_row=4):
+        guide.row_dimensions[row[0].row].height = 54
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="center")
+            if cell.row > 4:
+                cell.number_format = "yyyy-mm-dd" if isinstance(cell.value, date) else "General" if isinstance(cell.value, (int, float)) else "@"
+    for n in range(1, 4):
+        guide.merge_cells(start_row=n, start_column=1, end_row=n, end_column=9)
+        guide.row_dimensions[n].height = 30
+        guide.cell(n, 1).alignment = Alignment(wrap_text=True, vertical="center")
+    guide.freeze_panes = "B5"
+    guide.sheet_view.showGridLines = False
     output = BytesIO()
     book.save(output)
     book.close()

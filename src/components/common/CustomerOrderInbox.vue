@@ -9,7 +9,7 @@ import {
   RefreshCw,
 } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { getApiErrorMessage, http } from '@/lib/http'
 import {
   factoryContexts,
@@ -18,6 +18,7 @@ import {
   type ProductionFactoryContextId,
 } from '@/data/enterpriseMock'
 import { useAppStore } from '@/stores/app'
+import CartonBusinessChangeDialog from './CartonBusinessChangeDialog.vue'
 
 export type CustomerOrderInboxRecipient = 'pmc' | 'warehouse' | 'injection'
 
@@ -77,6 +78,7 @@ interface CustomerOrderInboxItem {
   received_at: string | null
   received_by: string | null
   status: 'sent' | 'received'
+  carton_processed?: { processed_by: string; processed_at: string } | null
 }
 
 interface CustomerOrderInboxResponse {
@@ -119,6 +121,16 @@ const errorMessage = ref('')
 const capabilityMessage = ref('')
 const successMessage = ref('')
 const expandedItemIds = ref<Set<string>>(new Set())
+const changingItem = ref<CustomerOrderInboxItem | null>(null)
+let changeTrigger: HTMLElement | undefined
+function openChange(item: CustomerOrderInboxItem, event: Event) {
+  changeTrigger = event.currentTarget as HTMLElement
+  changingItem.value = item
+}
+async function changeApplied() {
+  successMessage.value = '已收到业务通知并处理纸箱采购单；已下单的变更已发布给供应商。'
+  await loadInbox()
+}
 let requestGeneration = 0
 
 const routeFactoryState = computed(() => {
@@ -297,6 +309,7 @@ async function loadInbox() {
 async function selectRecipient(recipient: CustomerOrderInboxRecipient) {
   if (recipient === selectedRecipient.value) return
   selectedRecipient.value = recipient
+  changingItem.value = null
   page.value = 1
   successMessage.value = ''
   await syncRouteQuery(recipient)
@@ -338,6 +351,7 @@ watch(
   async ([nextFactory, nextRecipient], [previousFactory, previousRecipient]) => {
     if (nextFactory === previousFactory && nextRecipient === previousRecipient) return
     selectedRecipient.value = nextRecipient
+    changingItem.value = null
     page.value = 1
     successMessage.value = ''
     await syncRouteQuery(nextRecipient)
@@ -351,9 +365,10 @@ watch(
   <section class="customer-order-inbox" data-testid="customer-order-inbox">
     <header class="inbox-heading">
       <div>
+        <RouterLink v-if="capabilities?.carton_change" :to="{ path: '/modules/pmc-warehouse/carton-procurement', query: { factory: factoryId } }" class="mb-3 inline-block text-sm font-medium text-teal-700">返回纸箱采购协同</RouterLink>
         <p class="eyebrow"><Inbox aria-hidden="true" />订单事实收件箱</p>
         <h1>下游订单收件箱</h1>
-        <p>{{ currentFactoryName }} · 只接收客户订单事实，不在此生成物料或注塑任务。</p>
+        <p>{{ currentFactoryName }} · 接收客户订单事实；纸箱变更须核对后单独确认，不在此生成注塑任务。</p>
       </div>
       <button type="button" class="refresh-button" :disabled="loading" @click="loadInbox">
         <RefreshCw :class="{ spinning: loading }" aria-hidden="true" />刷新
@@ -437,8 +452,13 @@ watch(
               <small>{{ formatDate(item.created_at) }}</small>
               <small v-if="item.status === 'received'" class="received-label">已签收 · {{ displayValue(item.received_by) }} · {{ formatDate(item.received_at) }}</small>
               <small v-else class="sent-label">待签收</small>
+              <small v-if="item.carton_processed" class="received-label">纸箱已改单 · {{ item.carton_processed.processed_by }}</small>
             </td>
             <td>
+              <button v-if="capabilities?.carton_change && item.version > 1 && !isHistorical(item)" type="button" class="receive-button"
+                :data-carton-change="item.id" :disabled="!!receivingId" @click="openChange(item, $event)">
+                {{ item.carton_processed ? '查看改单结果' : '收到并改单' }}
+              </button>
               <button type="button" class="requirement-button" @click="toggleDetails(item.id)">
                 {{ isExpanded(item.id) ? '收起客户要求' : '客户要求' }}
               </button>
@@ -451,7 +471,7 @@ watch(
               >
                 <LoaderCircle v-if="receivingId === item.id" class="spinning" aria-hidden="true" />
                 <Check v-else-if="item.status === 'received'" aria-hidden="true" />
-                {{ item.status === 'received' ? '已签收' : '签收' }}
+                {{ item.status === 'received' ? '已签收' : capabilities?.carton_change && item.version > 1 && !isHistorical(item) ? '仅签收' : '签收' }}
               </button>
             </td>
           </tr>
@@ -480,6 +500,8 @@ watch(
         <button type="button" :disabled="page >= totalPages" aria-label="下一页" @click="changePage(page + 1)"><ChevronRight aria-hidden="true" /></button>
       </div>
     </footer>
+    <CartonBusinessChangeDialog v-if="changingItem" :key="changingItem.id" :factory-id="changingItem.factory_id" :recipient="changingItem.recipient"
+      :dispatch-id="changingItem.id" :return-focus="changeTrigger" @close="changingItem = null" @applied="changeApplied" />
   </section>
 </template>
 

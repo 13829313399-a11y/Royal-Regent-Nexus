@@ -120,7 +120,7 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
             item for item in detail_before["sections"] if item["department"] == "engineering"
         )
         assert engineering_before["revision"] == 1
-        assert engineering_before["payload"] == {}
+        assert engineering_before["payload"] == {"mold_allocation_enabled": False}
 
         confirm_response = client.post(
             f"/api/internal-quotes/{quote_id}/imports/{preview['batch_id']}/confirm",
@@ -135,7 +135,8 @@ def test_p3_import_preview_is_non_mutating_and_confirm_is_revision_locked(monkey
         assert confirmed["section"]["payload"]["molds"][0]["mold_no"] == "M-300"
         attachment_ids = confirmed["section"]["payload"]["molds"][0]["image_attachment_ids"]
         assert len(attachment_ids) == 1
-        assert confirmed["section"]["calculation"]["totals"]["mold_total_rmb"] == "7750.0000"
+        assert confirmed["section"]["calculation"]["totals"]["mold_total_rmb"] == "0.0000"
+        assert confirmed["section"]["payload"]["molds"][0]["cost_rmb"] == "7750.0000"
 
         attachments = client.get(
             f"/api/internal-quotes/{quote_id}/attachments?department=engineering"
@@ -897,7 +898,7 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         assert first["file_name"] == (
             f"{quote['quote_no']}_{quote['product_name']}_{first['exported_at'][:10]}.xlsx"
         )
-        assert first["export_manifest"]["spreadsheet_attachments"] == []
+        assert first["export_manifest"]["spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
         assert first["export_manifest"]["source_spreadsheet_attachments"][0]["file_name"] == "工程核价依据.xlsx"
 
         download = client.get(
@@ -914,6 +915,9 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
             "车发明细",
             "装配明细",
             "审批与版本",
+            "工模报价",
+            "工程核价依据-报价明细",
+            "工程核价依据-参数",
         ]
         quote_sheet = workbook["报价明细"]
         assert quote_sheet.sheet_state == "visible"
@@ -1025,7 +1029,9 @@ def test_p3_controlled_export_is_retained_reproducible_and_superseded(monkeypatc
         )
         assert "排摸表" not in workbook.sheetnames
         assert "外购清单" not in workbook.sheetnames
-        assert not any(name.startswith("工程核价依据-") for name in workbook.sheetnames)
+        assert workbook["工程核价依据-报价明细"].sheet_state == "visible"
+        assert workbook["工程核价依据-参数"]["A1"].value == "='工程核价依据-报价明细'!A1"
+        assert workbook["工模报价"].sheet_state == "visible"
         electronic_sheet = workbook["电子明细"]
         assert [electronic_sheet.cell(3, column).value for column in range(1, 11)] == [
             "父项", "零件名称", "规格", "用量", "单价RMB", "单价HKD", "金额HKD", "税点%", "备注", "来源",

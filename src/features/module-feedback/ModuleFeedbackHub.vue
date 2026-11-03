@@ -9,9 +9,11 @@ import { getApiErrorMessage } from '@/lib/http'
 import { createRandomUuid } from '@/lib/randomUuid'
 import { useAuthStore } from '@/stores/auth'
 import FeedbackAttachments from './FeedbackAttachments.vue'
-import { feedbackEmojis, feedbackMaterials, feedbackStatuses } from './feedbackLabels'
+import { feedbackEmojis, feedbackMaterials as sharedFeedbackMaterials, feedbackStatuses } from './feedbackLabels'
 
-const props = defineProps<{ factoryId: string; factoryName: string; active: boolean }>()
+const props = withDefaults(defineProps<{ factoryId: string; factoryName: string; active: boolean; module?: 'customer-order-center' | 'internal-quote' }>(), { module: 'customer-order-center' })
+const moduleName = computed(() => props.module === 'internal-quote' ? '内部报价台' : '客户订单中心')
+const feedbackMaterials = computed(() => props.module === 'internal-quote' ? { ...sharedFeedbackMaterials, original_file: '原始报价资料' } : sharedFeedbackMaterials)
 const emit = defineEmits<{ unread: [count: number]; navigate: [] }>()
 const auth = useAuthStore()
 const capabilities = ref<FeedbackCapabilities | null>(null)
@@ -79,6 +81,7 @@ function contextRows(context: FeedbackContext) {
     ['所在页面', context.page], ['客户', context.customer_code], ['订单参考号', context.order_reference],
     ['产品编号', context.product_no], ['导入批次', context.batch_id], ['关联文件名', context.file_names?.join('、')],
     ['页面提示', context.error_message],
+    ['报价号', context.quote_no], ['报价产品', context.quote_product], ['方案版本', context.quote_version],
   ].filter((row): row is [string, string] => !!row[1])
 }
 function requestKey(previous: { fingerprint: string; id: string }, payload: unknown, files: File[]) {
@@ -101,7 +104,10 @@ function openComposer(context: FeedbackContext = {}) {
   composing.value = true
 }
 function permittedContext(context: FeedbackContext): FeedbackContext {
-  if (capabilities.value?.can_link_order) return structuredClone(toRaw(context))
+  if (props.module === 'customer-order-center' && capabilities.value?.can_link_order) return structuredClone(toRaw(context))
+  if (props.module === 'internal-quote' && capabilities.value?.can_link_quote) {
+    return { page: context.page, section: context.section, app_version: context.app_version, quote_id: context.quote_id }
+  }
   return { page: context.page, section: context.section, app_version: context.app_version }
 }
 defineExpose({ openComposer })
@@ -111,20 +117,21 @@ async function refresh(background = false) {
   const token = ++listSequence, scope = generation, factory = props.factoryId, selectedView = view.value
   if (!background) { loading.value = true; error.value = '' }
   try {
-    const caps = await moduleFeedbackApi.capabilities(factory)
+    const caps = await moduleFeedbackApi.capabilities(factory, props.module)
     if (scope !== generation || token !== listSequence) return
     capabilities.value = caps
     if (!caps.can_link_order && !caps.can_manage && selected.value?.context.order_id) selected.value.context = permittedContext(selected.value.context)
+    if (!caps.can_link_quote && !caps.can_manage && selected.value?.context.quote_id) selected.value.context = permittedContext(selected.value.context)
     if (!caps.can_manage && selectedView === 'manage') { view.value = 'mine'; items.value = []; selected.value = null; await refresh(background); return }
     if (!caps.can_submit && !caps.can_manage) { items.value = []; selected.value = null; total.value = 0; unreadMine.value = unreadManage.value = 0; notifyUnread(); return }
-    const result = await moduleFeedbackApi.list(factory, selectedView, { status: status.value, q: appliedKeyword.value, page: page.value, page_size: props.active ? 20 : 1 })
+    const result = await moduleFeedbackApi.list(factory, selectedView, { module: props.module, status: status.value, q: appliedKeyword.value, page: page.value, page_size: props.active ? 20 : 1 })
     if (scope !== generation || token !== listSequence || selectedView !== view.value) return
     if (props.active) { items.value = result.items; total.value = result.total }
     if (selectedView === 'mine') unreadMine.value = result.unread_count
     else unreadManage.value = result.unread_count
     if (caps.can_manage) {
       const otherView = selectedView === 'mine' ? 'manage' : 'mine'
-      const other = await moduleFeedbackApi.list(factory, otherView, { page_size: 1 })
+      const other = await moduleFeedbackApi.list(factory, otherView, { module: props.module, page_size: 1 })
       if (scope !== generation || token !== listSequence) return
       if (otherView === 'mine') unreadMine.value = other.unread_count
       else unreadManage.value = other.unread_count
@@ -167,7 +174,7 @@ async function selectTicket(id: string, preserveReply = false) {
 async function createFeedback() {
   if (!canCreate.value || creating.value) return
   const scope = generation, factory = props.factoryId
-  const intent = { factory_id: factory, module: 'customer-order-center', title: createTitle.value.trim(), body: createBody.value.trim(), category: createCategory.value, emoji: createEmoji.value }
+  const intent = { factory_id: factory, module: props.module, title: createTitle.value.trim(), body: createBody.value.trim(), category: createCategory.value, emoji: createEmoji.value }
   const key = requestKey(createRequest ?? { fingerprint: '', id: '' }, intent, createFiles.value)
   // Permission changes affect displayed context, but never replace an unknown-outcome request.
   if (createRequest?.id !== key.id) createRequest = { ...key, payload: { ...intent, context: permittedContext(createContext.value), client_request_id: key.id } }
@@ -231,7 +238,7 @@ watch(() => props.active, active => {
   if (active) { if (selected.value) void selectTicket(selected.value.id, true); else void refresh() }
   else { detailSequence++; loadingDetail.value = false }
 })
-watch(() => props.factoryId, () => {
+watch(() => [props.factoryId, props.module], () => {
   generation++; detailSequence++; listSequence++; capabilities.value = null; items.value = []; selected.value = null
   composing.value = false; creating.value = false; sending.value = false; loadingDetail.value = false
   resetDraft(); resetReply(); view.value = 'mine'; page.value = 1; keyword.value = appliedKeyword.value = ''; status.value = ''
@@ -245,7 +252,7 @@ onBeforeUnmount(() => { generation++; if (poll) clearInterval(poll) })
 <template>
   <section v-if="active" class="feedback-hub" aria-label="反馈与答复">
     <header class="feedback-hub__header">
-      <div><p class="feedback-hub__eyebrow">{{ factoryName }} · 客户订单中心</p><h2>反馈与答复</h2><p>把问题、截图和资料放在一起，持续跟进每一次回复。</p></div>
+      <div><p class="feedback-hub__eyebrow">{{ factoryName }} · {{ moduleName }}</p><h2>反馈与答复</h2><p>把问题、截图和资料放在一起，持续跟进每一次回复。</p></div>
       <Button type="button" :disabled="!capabilities?.can_submit" @click="openComposer({ page: '反馈与答复', section: 'feedback' })"><MessageSquarePlus class="size-4" /> 新建反馈</Button>
     </header>
     <p v-if="notice" class="feedback-hub__notice" role="status">{{ notice }}<button type="button" aria-label="关闭反馈提示" @click="notice = ''">×</button></p>
@@ -320,7 +327,7 @@ onBeforeUnmount(() => { generation++; if (poll) clearInterval(poll) })
           <p v-if="!capabilities?.can_submit" class="feedback-hub__error">{{ capabilities ? '当前账号暂不能提交本厂区反馈，请确认员工厂区归属已审核，或联系管理员核对反馈权限。' : '正在确认权限；若长时间未完成，请进入反馈与答复重新加载。' }}</p>
           <p v-else-if="!capabilities.can_link_order" class="text-sm leading-6 text-slate-500">可直接描述问题或添加资料，系统不会自动关联订单数据。</p>
           <fieldset class="feedback-emojis"><legend>这次使用感觉如何？</legend><button v-for="item in feedbackEmojis" :key="item.emoji" type="button" :disabled="creating" :aria-pressed="createEmoji === item.emoji" @click="createEmoji = item.emoji; createCategory = item.category"><span>{{ item.emoji }}</span>{{ item.label }}</button></fieldset>
-          <div class="feedback-compose__row"><label class="feedback-field">反馈标题<input v-model="createTitle" :disabled="creating" minlength="2" maxlength="120" placeholder="例如：BuzzBee 订单装箱数识别不正确" required /></label><label class="feedback-field">类型<select v-model="createCategory" :disabled="creating"><option value="bug">功能问题</option><option value="question">使用咨询</option><option value="suggestion">改进建议</option></select></label></div>
+          <div class="feedback-compose__row"><label class="feedback-field">反馈标题<input v-model="createTitle" :disabled="creating" minlength="2" maxlength="120" :placeholder="module === 'internal-quote' ? '例如：电子快捷报价换汇结果不正确' : '例如：BuzzBee 订单装箱数识别不正确'" required /></label><label class="feedback-field">类型<select v-model="createCategory" :disabled="creating"><option value="bug">功能问题</option><option value="question">使用咨询</option><option value="suggestion">改进建议</option></select></label></div>
           <label class="feedback-field">问题描述<textarea v-model="createBody" :disabled="creating" rows="4" maxlength="5000" placeholder="你做了什么？哪里不对？希望得到什么结果？也可以直接粘贴截图。" /></label>
           <FeedbackAttachments ref="createAttachments" v-model="createFiles" :disabled="creating" @editing="createEditing = $event" @capturing="capturing = $event" />
           <details v-if="contextRows(displayedCreateContext).length" class="feedback-context" open><summary>随反馈发送的关联资料</summary><dl><template v-for="[label, value] in contextRows(displayedCreateContext)" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></template></dl><p>这里只关联页面、订单及文件名；原始文件需要你在上方主动添加。</p></details>

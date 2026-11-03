@@ -19,6 +19,7 @@ const sectionEditorSource = read('src/components/modules/sales/internal-quote/In
 const sectionFormSource = read('src/components/modules/sales/internal-quote/InternalQuoteSectionForm.vue')
 const summarySource = read('src/components/modules/sales/internal-quote/InternalQuoteSummary.vue')
 const exportSource = read('src/components/modules/sales/internal-quote/InternalQuoteExportSummary.vue')
+const engineeringExportSource = read('src/components/modules/sales/internal-quote/InternalQuoteEngineeringExportDialog.vue')
 const apiSource = read('src/api/internalQuote.ts')
 const storeSource = read('src/stores/internalQuoteDesk.ts')
 const payloadSource = read('src/lib/internalQuoteSectionPayload.ts')
@@ -135,7 +136,7 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['自动识别', '预览不会修改正式数据', '申请不适用', '合法重开', '分段附件']) expect(sectionEditorSource).toContain(text)
     for (const text of ['移除该部门报价', 'v-if="props.canRemove"', '当前分段数据和未保存修改将不再生效', '历史 revision 和审计记录仍会保留', '以后可再次添加该部门']) expect(sectionEditorSource).toContain(text)
     for (const text of ['五金部分', '辅助材料/外购件部分', '五金报价单', '电子零件部分', '电子报价单', '注塑部分', '喷油/移印/UV部分', '喷油报价单', '搪胶部分', '搪胶报价单', '车缝部分', '车缝报价单', '总表部分', '组装部分', '包装部分']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
-    for (const text of ['电子快捷报价部分', '电子快捷报价零件名称', '电子快捷报价单价 RMB', '电子快捷报价税点', '电子快捷报价备注']) expect(sectionFormSource).toContain(text)
+    for (const text of ['电子快捷报价部分', '电子快捷报价零件名称', '电子快捷报价单价 RMB', '最终报价 RMB', '电子快捷报价备注']) expect(sectionFormSource).toContain(text)
     expect(sectionEditorSource).toContain("['electronic', 'painting', 'sewing']")
     for (const title of ['五金部分', '辅助材料/外购件部分', '模具部分', '生产模具费用与分摊部分', '电子零件部分', '电子成本汇总部分', '注塑部分', '吹气部分', '喷油/移印/UV部分', '搪胶部分', '车缝部分', '总表部分', '组装部分', '包装部分', '包装材料部分', '纸箱计算与包装尺寸部分', '运费计算部分']) expect(sectionFormSource).toContain(`<strong>${title}</strong>`)
       expect(sectionFormSource).toContain('.electronicSummaryTable th,.electronicSummaryTable td')
@@ -166,7 +167,8 @@ describe('internal quote desk frontend layout', () => {
     }
     expect(sectionEditorSource).toContain('handleUploadFile')
     expect(sectionEditorSource).toContain('detectImportPreview')
-    expect(sectionEditorSource).toContain('for (const option of importOptions.value)')
+    expect(sectionEditorSource).toContain('for (const option of options)')
+    expect(sectionEditorSource).toContain("{ type: 'auxiliary', label: '辅助材料/外购件报价单'")
     expect(sectionEditorSource).not.toContain('value="append">追加')
     expect(sectionEditorSource).not.toContain('value="replace">替换')
     expect(sectionEditorSource).toContain('确认后替换本模板对应区域，其他已填写内容一并保留；取消不修改表单')
@@ -316,7 +318,7 @@ describe('internal quote desk frontend layout', () => {
 
     expect(homeSource).toMatch(/function getQuoteRoute\(path: string, factoryId: string = activeFactory\.value\.id\)[\s\S]{0,100}getFactoryScopedRoute\(path, factoryId as FactoryContextId\)/)
     expect(homeSource).toMatch(/router\.push\(getQuoteRoute\([\s\S]{0,120}`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/collaboration`,[\s\S]{0,80}quote\.factoryId/)
-    expect(homeSource).toMatch(/router\.push\(getQuoteRoute\(`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/\$\{target\}`\)\)/)
+    expect(homeSource).toMatch(/router\.push\(getQuoteRoute\(`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/\$\{target\}`, factoryId\)\)/)
 
     for (const detailSource of [collaborationSource, summarySource, exportSource]) {
       expect(detailSource).toMatch(/const getQuoteRoute = \(path: string\) => getFactoryScopedRoute\([\s\S]{0,180}loadedQuote\.value\.factoryId : selectedFactoryId\.value/)
@@ -353,7 +355,9 @@ describe('internal quote desk frontend layout', () => {
     expect(exportSource).toContain('生成内部报价 XLSX')
     expect(exportSource).toContain('生成工程资料 XLSX')
     expect(exportSource).toContain('confirmEngineeringExport')
-    expect(exportSource).toContain('quoteStore.downloadEngineeringWorkbook')
+    expect(exportSource).toContain('InternalQuoteEngineeringExportDialog')
+    expect(engineeringExportSource).toContain('store.downloadEngineeringWorkbook')
+    expect(engineeringExportSource).toContain('electronic_selection: [...selected.value]')
     expect(exportSource).toContain("const engineeringWorkbookSheets = ['排摸表', '外购清单']")
     expect(exportSource).toContain('工程资料单独按原模板即时生成，不进入客价转换和内部报价历史')
     expect(apiSource).toContain('/engineering-data/export')

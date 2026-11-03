@@ -21,6 +21,7 @@ from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext, authorization_de
 
 
 MODULE = "customer-order-center"
+MODULES = {MODULE, "internal-quote"}
 MANAGE = "module_feedback:manage"
 SUBMIT = "module_feedback:submit"
 MAX_FILES = 5
@@ -71,20 +72,22 @@ def _can_link_order(user, factory_id):
 
 
 def capabilities(user: AuthContext, factory_id: str, module: str):
-    if factory_id not in ALLOWED_FACTORY_IDS or module != MODULE:
+    if factory_id not in ALLOWED_FACTORY_IDS or module not in MODULES:
         raise HTTPException(422, "请选择支持的厂区及功能模块")
     scoped = _local_scope(user)
     return {"can_submit": _can_submit(scoped, factory_id),
-            "can_link_order": _can_link_order(user, factory_id),
+            "can_link_order": module == MODULE and _can_link_order(user, factory_id),
+            "can_link_quote": module == "internal-quote" and _can_link_quote(user, factory_id),
             "can_manage": can(scoped, MANAGE, factory_id, "system"),
             "max_files": MAX_FILES, "max_file_bytes": MAX_FILE_BYTES, "max_total_bytes": MAX_TOTAL_BYTES,
-            "allowed_extensions": list(MIME), "material_options": MATERIALS}
+            "allowed_extensions": list(MIME),
+            "material_options": ["screenshot", "steps", "expected_result", "original_file", "quote_reference"] if module == "internal-quote" else MATERIALS}
 
 
 def require_submit(user, factory_id, module=MODULE):
     caps = capabilities(user, factory_id, module)
     if not caps["can_submit"]:
-        raise HTTPException(403, "未获本厂客户订单反馈权限")
+        raise HTTPException(403, "未获本厂反馈权限")
     return caps
 
 
@@ -93,13 +96,22 @@ def ticket_for_user(db, user, ticket_id, factory_id):
     if not (caps["can_submit"] or caps["can_manage"]):
         raise HTTPException(403, "未获本厂反馈权限")
     stmt = select(FeedbackTicket).where(FeedbackTicket.id == ticket_id, FeedbackTicket.factory_id == factory_id,
-                                        FeedbackTicket.module == MODULE)
+                                        FeedbackTicket.module.in_(MODULES))
     if not caps["can_manage"]:
         stmt = stmt.where(FeedbackTicket.author_id == user.id)
     ticket = db.scalar(stmt)
     if ticket is None:
         raise HTTPException(404, "反馈不存在或无权查看")
-    return ticket, caps
+    return ticket, capabilities(user, factory_id, ticket.module)
+
+
+def _can_link_quote(user, factory_id):
+    from app.services.internal_quote import ALL_QUOTE_DEPARTMENTS
+    local = replace(user, grants=tuple(
+        replace(grant, scope_mode="own_factory", read_permissions=frozenset())
+        for grant in user.grants if grant.factory_id in {factory_id, "*"}
+    ))
+    return any(can(local, "internal_quote:read", factory_id, department) for department in ALL_QUOTE_DEPARTMENTS)
 
 
 @dataclass(frozen=True)
@@ -218,6 +230,8 @@ def _summary(db, user, ticket, unread=None):
         # Retain immutable stored evidence, but do not return a previously
         # derived order snapshot after the author's order access is revoked.
         result["context"] = {**ticket.context, "order_id": "", "order_reference": "", "product_no": "", "customer_code": ""}
+    if ticket.context.get("quote_id") and not (caps["can_link_quote"] or caps["can_manage"]):
+        result["context"] = {**result["context"], "quote_id": "", "quote_no": "", "quote_product": "", "quote_version": ""}
     return result
 
 
@@ -271,6 +285,20 @@ def create_ticket(db: Session, user, payload, uploads):
     if not payload.body and not uploads:
         raise HTTPException(422, "请输入问题说明或添加附件")
     context = payload.context.model_dump()
+    if payload.module == "internal-quote" and any(context[key] for key in ("order_id", "order_reference", "product_no", "customer_code")):
+        raise HTTPException(422, "内部报价反馈不能关联客户订单")
+    if payload.module != "internal-quote" and any(context[key] for key in ("quote_id", "quote_no", "quote_product", "quote_version")):
+        raise HTTPException(422, "此模块不支持报价关联")
+    if context["quote_id"]:
+        if not caps["can_link_quote"]:
+            raise HTTPException(403, "未获报价查看权限，请移除报价关联后反馈")
+        from app.models.internal_quote import InternalQuote
+        quote = db.scalar(select(InternalQuote).where(InternalQuote.id == context["quote_id"], InternalQuote.factory_id == payload.factory_id))
+        if quote is None:
+            raise HTTPException(404, "关联报价不存在或不属于当前厂区")
+        context.update(quote_no=quote.quote_no, quote_product=quote.product_name, quote_version=quote.version_label)
+    else:
+        context.update(quote_no="", quote_product="", quote_version="")
     if context["order_id"]:
         line = db.scalar(select(OrderLedgerLine).where(OrderLedgerLine.id == context["order_id"], OrderLedgerLine.factory_id == payload.factory_id))
         if line is None:

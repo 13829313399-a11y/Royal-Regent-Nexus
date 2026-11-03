@@ -18,6 +18,7 @@ from app.services.internal_quote_sewing import sewing_formula_multiplier, sewing
 IMPORT_TYPE_DEPARTMENTS = {
     "mold": "engineering",
     "hardware": "engineering",
+    "auxiliary": "engineering",
     "electronic": "electronic",
     "molding": "molding",
     "painting": "painting",
@@ -300,6 +301,7 @@ def find_header(
             "名称|模价|总价|材质|材料|AMOUNT|MOULDPRICES",
         ),
         "hardware": ("零件名称", "规格", "用量", "单价"),
+        "auxiliary": ("零件名称", "规格", "用量", "单价"),
         "electronic": ("零件名称", "规格", "用量"),
         "molding": ("模具名称|货名", "啤净重|日产量|预估料重", "材质|用料"),
         "sewing": ("物料名称|布料名称", "裁片部位|部位", "用量|用量/码", "价钱|总价钱"),
@@ -316,6 +318,7 @@ def find_header(
         {
             "mold": "未找到模具编号/名称/价格表头，请使用展兴模具--工模报价表.xlsx格式",
             "hardware": "未找到零件名称/规格/用量/单价表头，请使用五金1.xlsx格式",
+            "auxiliary": "未找到零件名称/规格/用量/单价表头，请使用辅助材料外购件报价单（与五金模板同格式）",
             "electronic": "未找到零件名称/规格/用量表头",
             "molding": "未找到注塑的模具名称/啤净重表头或吹气的货名/日产量表头",
             "sewing": "未找到布料名称/部位/用量/价钱表头",
@@ -736,6 +739,16 @@ def _parse_hardware(
     warnings.append("五金导入仅映射零件名称、规格、用量、单价 RMB 和备注；类别固定为五金、税点固定为 13%，模板其他列不写入报价字段")
     warnings.append("模板内嵌图片不自动写入明细；如需保留，请在工程部分段上传原表或图片附件")
     return {"materials": output}, len(output), warnings
+
+
+def _parse_auxiliary(rows, header_index, **kwargs):
+    fragment, count, warnings = _parse_hardware(rows, header_index, **kwargs)
+    for row in fragment["materials"]:
+        row.update(category="auxiliary", auxiliary_category="其他外购", tax_rate_percent="0.0000",
+                   unit_price_source_currency="RMB", loss_rate="1.0000")
+    warnings = [warning for warning in warnings if "类别固定为五金" not in warning]
+    warnings.append("导入辅助材料/外购件区域；默认类别为其他外购、税点为0，请按实际类别、税点及损耗核对。")
+    return fragment, count, warnings
 
 
 def _parse_electronic(
@@ -1627,6 +1640,7 @@ def _parse_hair(
 PARSERS: dict[str, Callable[..., tuple[dict[str, Any], int, list[str]]]] = {
     "mold": _parse_mold,
     "hardware": _parse_hardware,
+    "auxiliary": _parse_auxiliary,
     "electronic": _parse_electronic,
     "molding": _parse_molding,
     "painting": _parse_painting,

@@ -35,7 +35,7 @@ w.realShowPage=w.showPage;w.showToast=()=>{};w.confirm=()=>true;w.prompt=()=> '�
   else throw Error('unexpected '+url);
   return {ok:true,json:async()=>data};
  };
- w.eval(schedule);w.eval(script);await tick();await w.QcWorkflow.load();return {dom,w,d:w.document,calls,get rows(){return rows;}};
+ w.eval(fs.readFileSync(path.join(__dirname,'qc-photo-paste.js'),'utf8'));w.eval(schedule);w.eval(script);await tick();await w.QcWorkflow.load();return {dom,w,d:w.document,calls,get rows(){return rows;}};
 }
 test('formal schedule selection directly pushes only checked sources without a confirmation dialog',async()=>{
  const p=await page();try{
@@ -49,8 +49,8 @@ test('formal schedule selection directly pushes only checked sources without a c
 test('draft editing and submit lock are distinct; no approval buttons in inspector workbench',async()=>{
  const p=await page({items:[task()]});try{
   await p.w.QcWorkflow.openTask('task-1','records');assert.equal(p.d.querySelector('[data-execution="result"]').value,'');
-  for(const [key,value] of Object.entries({actualDate:'2026-10-26',actualQuantity:'100',sampleQuantity:'10',inspector:'张 QC',result:'REJ',remark:'划痕 <script>'})){const el=p.d.querySelector('[data-execution="'+key+'"]');el.value=value;el.dispatchEvent(new p.w.Event('input',{bubbles:true}));}
-  p.d.querySelector('[data-save]').click();await tick();await tick();assert.equal(p.rows[0].state,'draft');assert.equal(p.rows[0].execution.result,'REJ');
+  for(const [key,value] of Object.entries({actualDate:'2026-10-26',actualQuantity:'100',sampleQuantity:'10',inspector:'张 QC',result:'FAIL',remark:'划痕 <script>'})){const el=p.d.querySelector('[data-execution="'+key+'"]');el.value=value;el.dispatchEvent(new p.w.Event('input',{bubbles:true}));}
+  p.d.querySelector('[data-save]').click();await tick();await tick();assert.equal(p.rows[0].state,'draft');assert.equal(p.rows[0].execution.result,'FAIL');
   assert.equal(p.calls.filter(c=>c.url.endsWith('/submit')).length,0);
   p.d.querySelector('[data-submit]').click();await tick();await tick();assert.equal(p.rows[0].state,'pending');
   assert.equal(p.d.querySelector('[data-save]'),null);assert.equal(p.d.querySelector('[data-execution="result"]').disabled,true);assert.equal(p.d.querySelector('[data-upload]'),null);assert.equal(p.d.querySelector('[data-review]'),null);
@@ -138,11 +138,11 @@ test('native new record saves draft without conclusion, submits manual result, s
   assert.ok(p.d.querySelector('.qwf-dialog #panelBatch'));assert.ok(p.d.querySelector('.qwf-dialog #tabBatch'));
   p.d.getElementById('f_supplier').value='名发';p.d.getElementById('f_client').value='ZURU';p.d.getElementById('f_productNo').value='00123';
   p.d.querySelector('[data-save]').click();await settled(p);assert.equal(p.rows[0].execution.result,'');assert.equal(p.rows[0].state,'draft');
-  for(const [key,value] of Object.entries({inspDate:'2026-10-26',qty:'100',sampleQty:'10',qc:'张 QC',result:'REJ',remark:'照片见附件'})){const node=p.d.getElementById('f_'+key);node.value=value;node.dispatchEvent(new p.w.Event('input',{bubbles:true}));}
+  for(const [key,value] of Object.entries({inspDate:'2026-10-26',qty:'100',sampleQty:'10',qc:'张 QC',result:'FAIL',remark:'照片见附件'})){const node=p.d.getElementById('f_'+key);node.value=value;node.dispatchEvent(new p.w.Event('input',{bubbles:true}));}
   p.d.querySelector('[data-submit]').click();await settled(p);assert.equal(p.rows[0].state,'pending');assert.equal(p.d.getElementById('f_result').disabled,true);assert.equal(p.d.querySelector('[data-save]'),null);
   await p.w.QcWorkflow.openTask('task-1','review');assert.equal(p.d.getElementById('f_remark').value,'照片见附件');
   p.d.querySelector('[data-review="return"]').click();await settled(p);
-  await p.w.QcWorkflow.openTask('task-1','records');assert.equal(p.d.getElementById('f_result').disabled,false);assert.equal(p.d.getElementById('f_result').value,'REJ');
+  await p.w.QcWorkflow.openTask('task-1','records');assert.equal(p.d.getElementById('f_result').disabled,false);assert.equal(p.d.getElementById('f_result').value,'FAIL');
   assert.equal(p.d.querySelectorAll('#f_result').length,1);
  }finally{p.dom.window.close();}
 });
@@ -344,8 +344,8 @@ test('saved test actual quantity survives reopening; source summary escapes mark
  const t=task('draft');t.testEntry=true;t.history=[{action:'save',snapshot:{attachments:[]}}];t.execution.actualQuantity=55;t.execution.record={productName:'<img src=x onerror=alert(1)>'};
  const p=await page({native:true,items:[t]});try{
   await p.w.QcWorkflow.openTask(t.id,'records');assert.equal(p.d.querySelector('#f_qty').value,'55');assert.equal(p.d.querySelector('.qwf-carried img'),null);
-  p.d.querySelector('input[name="drawer-result"][value="REJ"]').click();assert.equal(p.w.QcWorkflow.readForm().result,'REJ');
-  p.d.querySelector('#f_qty').value='23';p.d.querySelector('#f_qty').dispatchEvent(new p.w.Event('input',{bubbles:true}));assert.equal(p.w.QcWorkflow.readForm().result,'REJ');
+  p.d.querySelector('input[name="drawer-result"][value="FAIL"]').click();assert.equal(p.w.QcWorkflow.readForm().result,'FAIL');
+  p.d.querySelector('#f_qty').value='23';p.d.querySelector('#f_qty').dispatchEvent(new p.w.Event('input',{bubbles:true}));assert.equal(p.w.QcWorkflow.readForm().result,'FAIL');
  }finally{p.dom.window.close();}
 });
 
@@ -521,5 +521,20 @@ test('missing-date-only selection reports exclusion without creating any task',a
  const p=await page();try{
   const messages=[];p.w.showToast=text=>messages.push(text);await p.w.QcWorkflow.preparePush([{...source,dateFrom:''}]);
   assert.equal(p.calls.filter(c=>c.url==='api/workflow/tasks'&&c.body).length,0);assert.match(messages[0],/缺少计划日期/);assert.equal(p.d.querySelector('.qwf-dialog'),null);
+ }finally{p.dom.window.close();}
+});
+function pasteImage(p,target){const event=new p.w.Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(event,'clipboardData',{value:{files:[new p.w.File(['image'],'pasted.png',{type:'image/png'})]}});target.dispatchEvent(event);return event;}
+test('photo form pastes into its own task, keeps typed draft and never submits',async()=>{
+ const p=await page({items:[task()]});try{
+  await p.w.QcWorkflow.openTask('task-1','records');const remark=p.d.querySelector('[data-execution="remark"]');remark.value='保留现场备注';remark.dispatchEvent(new p.w.Event('input',{bubbles:true}));
+  assert.ok(pasteImage(p,remark).defaultPrevented);await settled(p);assert.equal(p.rows[0].attachments.length,1);assert.equal(p.rows[0].execution.remark,'保留现场备注');assert.equal(p.rows[0].state,'draft');assert.equal(p.calls.filter(c=>c.url.endsWith('/submit')).length,0);assert.ok(p.d.querySelector('.qwf-files img'));
+ }finally{p.dom.window.close();}
+});
+test('failed form paste remains pending, retry does not lose the image, and readonly form blocks it',async()=>{
+ const p=await page({items:[task()],failUpload:true});try{
+  await p.w.QcWorkflow.openTask('task-1','records');pasteImage(p,p.d.querySelector('.qwf-dialog'));await settled(p);assert.equal(p.w.QcWorkflow.navigationState().dirty,true);assert.equal(p.w.QcWorkflow.model.dialog._pastedPhotos.length,1);assert.match(p.d.querySelector('[data-error]').textContent,/照片上传失败/);
+  const original=p.w.fetch;p.w.fetch=(url,options)=>url.endsWith('/attach')?Promise.resolve({ok:true,json:async()=>{p.rows[0].revision++;p.rows[0].attachments.push({id:'retry',name:'pasted.png',mime:'image/png',caption:''});return copy(p.rows[0]);}}):original(url,options);
+  p.d.querySelector('[data-save]').click();await settled(p);assert.equal(p.rows[0].attachments.length,1);assert.equal(p.w.QcWorkflow.navigationState().dirty,false);
+  p.rows[0].state='pending';p.w.QcWorkflow.close();await p.w.QcWorkflow.openTask('task-1','records');pasteImage(p,p.d.querySelector('.qwf-dialog'));await settled(p);assert.equal(p.rows[0].attachments.length,1);assert.equal(p.d.querySelector('[data-files]'),null);
  }finally{p.dom.window.close();}
 });

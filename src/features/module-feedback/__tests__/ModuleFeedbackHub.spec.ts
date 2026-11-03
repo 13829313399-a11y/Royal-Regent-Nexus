@@ -33,6 +33,32 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); document.body.innerHTML = ''; vi.unstubAllGlobals() })
 
 describe('module feedback pilot', () => {
+  it('isolates internal quote lists and submits quote feedback with its captured context', async () => {
+    api.capabilities.mockResolvedValue({ ...caps, can_link_order: false, can_link_quote: true })
+    wrapper = mount(ModuleFeedbackHub, { props: { factoryId: 'huaxing', factoryName: '华兴', active: true, module: 'internal-quote' }, attachTo: document.body })
+    await flushPromises()
+    expect(api.capabilities).toHaveBeenCalledWith('huaxing', 'internal-quote')
+    expect(api.list).toHaveBeenCalledWith('huaxing', 'mine', expect.objectContaining({ module: 'internal-quote' }))
+    expect(wrapper.text()).toContain('华兴 · 内部报价台')
+    wrapper.vm.openComposer({ page: '内部报价台', quote_id: 'quote-one', order_id: 'wrong-module' })
+    await flushPromises()
+    await body().get('input[placeholder^="例如：电子"]').setValue('换汇结果需要核对')
+    await body().get('textarea[placeholder^="你做了什么"]').setValue('最终人民币报价只需换汇')
+    await button('提交反馈').trigger('click'); await flushPromises()
+    expect(api.create.mock.calls[0]![0]).toMatchObject({ module: 'internal-quote', context: { page: '内部报价台', quote_id: 'quote-one' } })
+    expect(api.create.mock.calls[0]![0].context.order_id).toBeUndefined()
+  })
+  it('removes quote context when quote read access is revoked', async () => {
+    api.capabilities.mockResolvedValue({ ...caps, can_link_order: false, can_link_quote: true })
+    api.detail.mockResolvedValue(ticket({ module: 'internal-quote', context: { page: '内部报价台', quote_id: 'quote-one', quote_no: 'PRIVATE-QUOTE' } }))
+    wrapper = mount(ModuleFeedbackHub, { props: { factoryId: 'huaxing', factoryName: '华兴', active: true, module: 'internal-quote' }, attachTo: document.body })
+    await flushPromises(); await wrapper.get('.feedback-hub__ticket').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('PRIVATE-QUOTE')
+    api.capabilities.mockResolvedValue({ ...caps, can_link_order: false, can_link_quote: false })
+    api.detail.mockRejectedValueOnce(new Error('network'))
+    await wrapper.get('button[aria-label="刷新反馈"]').trigger('click'); await flushPromises()
+    expect(wrapper.text()).not.toContain('PRIVATE-QUOTE')
+  })
   it('lets a confirmed employee without order read access report their own problem without automatic order data', async () => {
     api.capabilities.mockResolvedValue({ ...caps, can_link_order: false })
     await start()

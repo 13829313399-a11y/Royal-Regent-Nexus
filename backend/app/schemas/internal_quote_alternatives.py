@@ -29,6 +29,22 @@ class SeriesExportProduct(BaseModel):
     revision: int = Field(ge=1)
 
 
+class AlternativeGroupProduct(SeriesExportProduct):
+    family_revision: int = Field(ge=0)
+
+
+class AlternativeGroupCopyRequest(BaseModel):
+    products: list[AlternativeGroupProduct] = Field(min_length=2, max_length=20)
+    kind: Literal["scenario", "version"]
+    name: str = Field(default="", max_length=128)
+    change_note: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("name", "change_note")
+    @classmethod
+    def trim(cls, value):
+        return value.strip()
+
+
 class SeriesExportRequest(BaseModel):
     products: list[SeriesExportProduct] = Field(min_length=2, max_length=20)
 

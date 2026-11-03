@@ -25,7 +25,7 @@ import { createRandomUuid } from '@/lib/randomUuid'
 import { cartonMarkApi } from '@/api/cartonMark'
 import { cartonSupplierPortalApi } from '@/api/cartonSupplierPortal'
 
-const props = withDefaults(defineProps<{ factoryId: string; viewerKey?: string; supplier?: boolean; supplierReadOnly?: boolean; mode?: 'requests' | 'receiving' | 'detail' | 'marks'; requestId?: string; lineId?: string; previewRequest?: SpecialRequest; requesterName?: string; createNew?: boolean; initialKind?: 'SAMPLE' | 'WORKSHOP_MISC'; initialAction?: SpecialOrderAction; search?: string }>(), { mode: 'requests' })
+const props = withDefaults(defineProps<{ factoryId: string; viewerKey?: string; supplier?: boolean; supplierReadOnly?: boolean; receiving?: boolean; mode?: 'requests' | 'receiving' | 'detail' | 'marks'; requestId?: string; lineId?: string; previewRequest?: SpecialRequest; requesterName?: string; createNew?: boolean; initialKind?: 'SAMPLE' | 'WORKSHOP_MISC'; initialAction?: SpecialOrderAction; search?: string }>(), { mode: 'requests' })
 const emit = defineEmits<{ changed: []; close: []; 'editor-mode': [mode: '' | 'editor' | 'append' | 'reduce' | 'date']; busy: [value: boolean]; dispatch: []; 'open-delivery': [deliveryNoteNo: string]; 'stock-action': [request: SpecialRequest, action: 'return-stock' | 'replenish' | 'undo-replenish'] }>()
 const workspace = ref<SpecialWorkspace>({ items: [], total: 0, can_create: false })
 const selected = ref<SpecialRequest | null>(null), loading = ref(false), detailLoading = ref(false), busy = ref(false)
@@ -71,6 +71,7 @@ const pricing: Record<string, string> = { PENDING_QUOTE: '以送货单为准', F
 const actions: Record<string, string> = { SEND: '确认并锁单', QUOTE: '供应商报价或免费确认', APPROVE: '内部确认收费报价', CANCEL: '取消需求', SUBMITTED: '提交需求', CREATED: '建立需求', UPDATED: '修改需求', SENT: '确认并锁单', QUOTED: '供应商报价', APPROVED: '内部确认报价', CANCELLED: '取消需求', SHIPPED: '登记送货', RECEIVED: '仓库验收', ATTACHMENT_UPLOADED: '上传资料', MATERIAL_CONFIRMED: '更新确认稿', MESSAGE_ADDED: '发送协作消息', MESSAGE: '发送协作消息', MATERIAL_CHANGED: '更新确认稿', ATTACHMENT_ADDED: '上传资料', RECEIPT_REVERSED: '仓库冲销验收', GIFT_CREATED: '供应商声明赠送', FREE_CONFIRMED: '供应商免费确认' }
 const rows = computed(() => workspace.value.items.filter(row => (!kindFilter.value || row.kind === kindFilter.value) && (!statusFilter.value || row.status === statusFilter.value) && (!(props.search ?? search.value).trim() || [row.request_no, row.title, row.requester_name, row.customer_name, row.purpose, ...row.lines.flatMap(line => [line.packaging_type, line.paper_quality, line.specification, line.item_no])].join(' ').toLocaleLowerCase().includes((props.search ?? search.value).trim().toLocaleLowerCase())) && (props.mode !== 'receiving' || row.shipments?.some(ship => ship.lines.some(line => Number(line.remaining_quantity) > 0)))))
 const can = (flag: keyof SpecialRequest['permissions']) => selected.value?.permissions?.[flag] === true
+const canViewOrderResources = computed(() => selected.value?.permissions?.can_view_order_resources !== false)
 const remaining = (line: SpecialLine) => Math.max(0, Number(line.quantity) - Number(line.received_quantity || 0))
 const progress = (line: SpecialLine) => Number(line.quantity) > 0 ? Math.min(100, Math.round(Number(line.received_quantity || 0) / Number(line.quantity) * 100)) : 0
 const options = computed(() => workspace.value.options ?? {})
@@ -83,7 +84,7 @@ function reset() {
   loading.value = false; detailLoading.value = false; busy.value = false; error.value = ''; success.value = ''; search.value = ''; kindFilter.value = ''; statusFilter.value = ''
   messageBody.value = ''; attachmentFile.value = null; cancelConfirm.value = false; deleteConfirm.value = false; deleteReason.value = ''; attempts.clear(); markChoices.value = []; markPickerLine.value = ''; markUploadLine.value = ''; markFiles.value = {}; closePreview()
 }
-watch(() => [props.factoryId, props.viewerKey, props.supplier, props.mode], () => { reset(); void load() }, { immediate: true, flush: 'sync' })
+watch(() => [props.factoryId, props.viewerKey, props.supplier, props.mode, props.receiving], () => { reset(); void load() }, { immediate: true, flush: 'sync' })
 watch(() => [props.requestId, busy.value] as const, ([id, pending]) => { if (!pending && id && props.factoryId && selected.value?.id !== id) void select(id) })
 watch(() => props.previewRequest, row => { if (props.mode === 'detail' && row?.factory_id === props.factoryId) initDetail(row) })
 watch(() => props.initialAction, () => applyInitialAction())
@@ -92,7 +93,10 @@ async function load() {
   if (!props.factoryId) return
   if (props.mode === 'detail' && props.previewRequest) { if (props.previewRequest.factory_id === props.factoryId) initDetail(props.previewRequest); return }
   const token = generation, sequence = ++listSequence; loading.value = true; error.value = ''
-  try { const result = await api.list(props.factoryId, props.supplier, controller.signal); if (token === generation && sequence === listSequence) { workspace.value = result; if (props.createNew && !selected.value && !editing.value) openForm(); else if (props.requestId && !selected.value && !editing.value) void select(props.requestId) } }
+  try { const result = props.receiving || props.mode === 'receiving'
+    ? await api.list(props.factoryId, props.supplier, controller.signal, 'ALL', true)
+    : await api.list(props.factoryId, props.supplier, controller.signal)
+    if (token === generation && sequence === listSequence) { workspace.value = result; if (props.createNew && !selected.value && !editing.value) openForm(); else if (props.requestId && !selected.value && !editing.value) void select(props.requestId) } }
   catch (cause) { if (token === generation && sequence === listSequence) { workspace.value = { items: [], total: 0, can_create: false }; error.value = getApiErrorMessage(cause) } }
   finally { if (token === generation && sequence === listSequence) loading.value = false }
 }
@@ -104,7 +108,10 @@ function initDetail(row: SpecialRequest) {
 async function select(id: string) {
   if (busy.value) return
   const token = generation, sequence = ++detailSequence; selected.value = null; editing.value = false; detailLoading.value = true; error.value = ''
-  try { const row = await api.detail(props.factoryId, id, props.supplier, controller.signal); if (token === generation && sequence === detailSequence) { initDetail(row); applyInitialAction() } }
+  try { const row = props.receiving || props.mode === 'receiving'
+    ? await api.detail(props.factoryId, id, props.supplier, controller.signal, true)
+    : await api.detail(props.factoryId, id, props.supplier, controller.signal)
+    if (token === generation && sequence === detailSequence) { initDetail(row); applyInitialAction() } }
   catch (cause) { if (token === generation && sequence === detailSequence) error.value = getApiErrorMessage(cause) }
   finally { if (token === generation && sequence === detailSequence) detailLoading.value = false }
 }
@@ -122,7 +129,7 @@ function detailAction(action?: SpecialOrderAction) {
   else if (isSpecialAdjustmentAction(action)) openFocusedAdjustment(action)
   else if (action === 'edit') openForm(true)
   else if (action === 'copy') copyOrder()
-  else if (action === 'purchase') purchaseOpen.value = true
+  else if (action === 'purchase' && canViewOrderResources.value) purchaseOpen.value = true
   else if (action === 'return-stock' || action === 'replenish' || action === 'undo-replenish') {
     const permission = { 'return-stock': 'can_return_stock', replenish: 'can_replenish', 'undo-replenish': 'can_undo_replenish' } as const
     if (selected.value && can(permission[action])) emit('stock-action', selected.value, action)
@@ -266,7 +273,7 @@ defineExpose({ refresh })
 </script>
 
 <template>
-  <CartonSpecialPurchaseOrders v-if="purchaseOpen && selected" :factory-id="factoryId" :request-id="selected.id" :order-no="selected.request_no" :supplier="supplier" @close="purchaseOpen = false" />
+  <CartonSpecialPurchaseOrders v-if="purchaseOpen && selected && canViewOrderResources" :factory-id="factoryId" :request-id="selected.id" :order-no="selected.request_no" :supplier="supplier" @close="purchaseOpen = false" />
   <section class="carton-special space-y-3" :aria-label="mode === 'marks' ? '订单箱唛资料' : '订单工作面板'" :aria-busy="loading || busy">
     <div v-if="mode !== 'detail'" class="border border-slate-200 bg-white flex flex-wrap items-center justify-between gap-3 rounded-xl p-4">
       <div><h2 class="text-base font-bold">{{ mode === 'marks' ? '订单箱唛资料' : mode === 'receiving' ? '样板与杂单 · 送货验收' : '样板与杂单订单' }}</h2><p class="mt-1 text-xs text-muted-foreground">{{ mode === 'marks' ? '查看样板或杂单已关联资料，也可由经办人直接上传或关联。正单、样板和杂单统一从资料库关联订单。' : '创建订单 → 确认并锁单 → 供应商送货 → 仓库验收。' }}</p></div>
@@ -309,7 +316,7 @@ defineExpose({ refresh })
 <template #status>
         <CartonSupplierChangeTasks v-if="supplier && !previewRequest && selected.supplier_confirmation && selected.supplier_confirmation.status !== 'SUPPLIER_ORIGIN'" :factory-id="factoryId" :viewer-key="viewerKey" :source-id="selected.current_version_id" :read-only="supplierReadOnly" @changed="select(selected!.id); emit('changed')" />
         </template>
-</CartonOrderDetailContent><div v-if="!previewRequest" class="flex justify-end"><Button type="button" size="sm" @click="purchaseOpen = true">查看采购单</Button></div>
+</CartonOrderDetailContent><div v-if="!previewRequest && canViewOrderResources" class="flex justify-end"><Button type="button" size="sm" @click="purchaseOpen = true">查看采购单</Button></div>
         </template>
         <template v-if="supplier || mode === 'requests' || mode === 'receiving'">
         <div v-if="!supplier" class="flex justify-end"><div class="w-fit"><CartonSpecialOrderActions :can-copy="workspace.can_create" :request="selected" detail :disabled="busy" @action="detailAction" /></div></div>
@@ -319,7 +326,7 @@ defineExpose({ refresh })
 
         </template>
         <CartonMarkAssetLibrary v-if="supplier && supplierReadOnly && !previewRequest" :factory-id="factoryId" :order-id="selected.id" :supplier-issue-id="selected.current_version_id" supplier read-only />
-        <section class="space-y-3 border-t border-slate-200 pt-4" aria-label="逐纸品箱唛" v-if="!previewRequest && (!supplier || !supplierReadOnly) && (supplier || mode === 'marks' || selected.mark_assets?.length || selected.attachments.some(file => file.role !== 'REFERENCE'))">
+        <section class="space-y-3 border-t border-slate-200 pt-4" aria-label="逐纸品箱唛" v-if="canViewOrderResources && !previewRequest && (!supplier || !supplierReadOnly) && (supplier || mode === 'marks' || selected.mark_assets?.length || selected.attachments.some(file => file.role !== 'REFERENCE'))">
           <h4 class="text-sm font-bold text-slate-950">箱唛资料</h4><p class="text-xs text-slate-500">箱唛可选，不必声明是否需要。经办人可直接上传或关联资料，无需关联审批；资料不改变采购数量、价格、接单或送货资格，历史送货保留当时版本。</p>
           <div v-if="selected.mark_assets?.length" class="space-y-2 rounded-lg border bg-slate-50 p-3" aria-label="本单关联箱唛原件"><div v-for="file in selected.mark_assets" :key="`${file.id}:${file.line_id || ''}`" class="flex flex-wrap items-center gap-2 text-xs"><span class="min-w-0 flex-1 break-all">{{ file.file_name }} · 版本 {{ file.revision }} · {{ file.line_id ? selected.lines.find(line => line.id === file.line_id)?.packaging_type || '指定纸品' : '整单资料' }}</span><Button v-if="file.kind !== 'excel'" size="sm" variant="outline" :disabled="busy" @click="openAssociatedMark(file, true)">预览原件</Button><Button size="sm" variant="outline" :disabled="busy" @click="openAssociatedMark(file)">下载原件</Button></div></div>
           <div v-for="line in (lineId ? selected.lines.filter(row => row.id === lineId) : selected.lines)" :key="line.id" :data-mark-line="line.id" class="space-y-3 rounded-xl border border-slate-200 p-4 text-sm">
@@ -340,7 +347,7 @@ defineExpose({ refresh })
           <div v-for="shipment in selected.shipments" :key="shipment.id" class="space-y-3 rounded-lg border p-3 text-xs">
             <div class="flex flex-wrap items-center justify-between gap-2"><b>{{ shipment.delivery_note_no }} · {{ shipment.delivery_date }}</b><Button v-if="can('can_receive') && shipment.lines.some(line => Number(line.remaining_quantity) > 0)" size="sm" variant="outline" :disabled="busy" @click="openReceive(shipment)">登记仓库验收</Button></div>
             <p v-if="shipment.source_origin === 'WAREHOUSE_MANUAL'" class="text-amber-800">仓库代录实际收料 · 价格以双方核对结果为准</p>
-            <details class="text-muted-foreground"><summary class="cursor-pointer">发货时资料 · 版本记录</summary><p class="mt-2 break-all">{{ shipment.version_id }}</p><div v-for="line in shipment.lines" :key="line.id" class="mt-2"><span>{{ line.snapshot?.packaging_type }} · {{ markModes[line.snapshot?.mark_mode || 'PENDING'] }}</span><Button v-if="line.snapshot?.mark_attachment_id" size="sm" variant="ghost" @click="download(line.snapshot.mark_attachment_id, selected.attachments.find(file => file.id === line.snapshot?.mark_attachment_id)?.filename || '发货箱唛')">下载本批箱唛</Button></div></details>
+            <details class="text-muted-foreground"><summary class="cursor-pointer">发货时资料 · 版本记录</summary><p class="mt-2 break-all">{{ shipment.version_id }}</p><div v-for="line in shipment.lines" :key="line.id" class="mt-2"><span>{{ line.snapshot?.packaging_type }} · {{ markModes[line.snapshot?.mark_mode || 'PENDING'] }}</span><Button v-if="canViewOrderResources && line.snapshot?.mark_attachment_id" size="sm" variant="ghost" @click="download(line.snapshot.mark_attachment_id, selected.attachments.find(file => file.id === line.snapshot?.mark_attachment_id)?.filename || '发货箱唛')">下载本批箱唛</Button></div></details>
             <div v-for="line in shipment.lines" :key="line.id" class="space-y-1 rounded-lg bg-muted/30 p-2">
               <p>{{ line.snapshot?.packaging_type || '原发货纸品' }} · {{ line.snapshot?.paper_quality || '原记录未提供纸质' }} · {{ line.snapshot?.specification || '原记录未提供规格' }} {{ line.snapshot?.dimension_unit }}</p>
               <p>发货 {{ line.quantity }} {{ line.snapshot?.unit }} · 累计实收 {{ line.gross_received_quantity ?? line.received_quantity }} · 有效入库 {{ line.effective_received_quantity ?? line.received_quantity }} · 待验收 {{ line.remaining_quantity }}</p>
@@ -351,7 +358,7 @@ defineExpose({ refresh })
           </div>
         </details>
 
-        <details :open="!supplier" class="space-y-3 border-t border-slate-200 pt-4" aria-label="备注附件"><summary role="button" class="text-sm font-bold">备注附件</summary><p class="text-xs text-slate-500">说明、参考图片等放在这里；印刷箱唛统一在箱唛资料库维护。</p><p v-if="!selected.attachments.some(file => file.role === 'REFERENCE')" class="text-xs text-slate-500">暂无备注附件。</p><div v-for="attachment in selected.attachments.filter(file => file.role === 'REFERENCE')" :key="attachment.id" class="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs"><span class="min-w-0 break-all">{{ attachment.filename }}</span><Button variant="ghost" size="sm" :disabled="busy" @click="download(attachment.id, attachment.filename)">下载附件</Button></div><form v-if="can('can_attach') && (supplier || mode === 'requests' || mode === 'receiving')" class="space-y-2" aria-label="备注附件上传" @submit.prevent="upload()"><div class="grid gap-3 sm:grid-cols-2"><label>对应纸品<select v-model="attachmentLine" aria-label="附件对应纸品" :disabled="busy"><option v-for="line in selected.lines" :key="line.id" :value="line.id">{{ line.packaging_type }} · {{ line.specification }}</option></select></label><label>选择文件<input type="file" aria-label="备注附件文件" :disabled="busy" @change="chooseFile"></label></div><Button variant="outline" :disabled="busy || !attachmentFile">上传备注附件</Button></form></details>
+        <details :open="!supplier" class="space-y-3 border-t border-slate-200 pt-4" aria-label="备注附件"><summary role="button" class="text-sm font-bold">备注附件</summary><p class="text-xs text-slate-500">说明、参考图片等放在这里；印刷箱唛统一在箱唛资料库维护。</p><p v-if="!selected.attachments.some(file => file.role === 'REFERENCE')" class="text-xs text-slate-500">暂无备注附件。</p><div v-for="attachment in selected.attachments.filter(file => file.role === 'REFERENCE')" :key="attachment.id" class="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs"><span class="min-w-0 break-all">{{ attachment.filename }}</span><Button v-if="canViewOrderResources" variant="ghost" size="sm" :disabled="busy" @click="download(attachment.id, attachment.filename)">下载附件</Button></div><form v-if="can('can_attach') && (supplier || mode === 'requests' || mode === 'receiving')" class="space-y-2" aria-label="备注附件上传" @submit.prevent="upload()"><div class="grid gap-3 sm:grid-cols-2"><label>对应纸品<select v-model="attachmentLine" aria-label="附件对应纸品" :disabled="busy"><option v-for="line in selected.lines" :key="line.id" :value="line.id">{{ line.packaging_type }} · {{ line.specification }}</option></select></label><label>选择文件<input type="file" aria-label="备注附件文件" :disabled="busy" @change="chooseFile"></label></div><Button variant="outline" :disabled="busy || !attachmentFile">上传备注附件</Button></form></details>
         <details :open="!supplier" class="space-y-3 border-t pt-4"><summary role="button" class="text-sm font-bold">协作消息</summary><p v-if="!selected.messages?.length" class="text-xs text-muted-foreground">暂无消息。</p><div v-for="message in selected.messages" :key="message.id" class="rounded-lg bg-muted/40 p-3 text-xs"><p class="text-muted-foreground">{{ message.actor_name || message.author_name }} · {{ message.created_at }}</p><p class="mt-1 whitespace-pre-wrap break-words">{{ message.body }}</p></div><form v-if="can('can_message') && (supplier || mode === 'requests' || mode === 'receiving')" class="space-y-2" @submit.prevent="messageBody.trim() && act('messages', 'can_message', { body: messageBody.trim() })"><label>消息<textarea v-model="messageBody" aria-label="特殊申请消息" rows="2" maxlength="4000" required :disabled="busy" /></label><Button variant="outline" :disabled="busy || !messageBody.trim()">发送消息</Button></form></details>
         <details class="border-t pt-3 text-xs" aria-label="操作历史"><summary class="cursor-pointer font-semibold">操作历史（{{ selected.history?.length || 0 }}）</summary><p v-for="(history, index) in selected.history" :key="history.id || index" class="mt-2 break-words text-muted-foreground">{{ history.created_at }} · {{ history.actor_name }} · {{ history.action === 'ADJUSTED' ? '调整订单' : history.action === 'MANUAL_RECEIVED' ? '仓库登记收料' : actions[history.action] || '单据变更' }}<template v-if="history.note"> · {{ history.note }}</template></p></details>
         </template>

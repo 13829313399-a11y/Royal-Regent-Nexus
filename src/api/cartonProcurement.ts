@@ -78,7 +78,15 @@ export interface CartonSupplierAcceptanceResponse {
   delivery_differences?: { order_line_id: string; packaging_type: string; planned_date: string; promised_date: string; difference_days: number }[]
 }
 
-export interface CartonSupplierPromiseLate {
+interface CartonSupplierPromiseSource {
+  source_kind?: 'REGULAR' | 'REPLENISHMENT'
+  issue_id?: string
+  document_no?: string
+  order_line_id?: string
+  planned_date?: string
+}
+
+export interface CartonSupplierPromiseLate extends CartonSupplierPromiseSource {
   key: string
   order_no: string
   customer_name: string
@@ -87,7 +95,7 @@ export interface CartonSupplierPromiseLate {
   difference_days: number
 }
 
-export interface CartonSupplierPromiseChange {
+export interface CartonSupplierPromiseChange extends CartonSupplierPromiseSource {
   id: string
   order_id: string
   order_no: string
@@ -107,7 +115,24 @@ export interface CartonPurchaseOrderBatchResponse {
   generated_at: string
 }
 
-export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records' | 'schedule_split_source'>
+export interface CartonScheduleQuantityMatch {
+  version: 1
+  basis: 'CONTRACT_ITEM_QUANTITY_PACKING'
+  factory_id: string
+  customer_code: string
+  contract_no: string
+  item_no: string
+  schedule_identity: string
+  source_identity: string
+  source_batch_id: string
+  source_sheet: string
+  source_row: number | null
+  quantity: string
+  carton_rule: string
+  ambiguous: boolean
+  reason: string
+}
+export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records' | 'schedule_split_source'> & { schedule_quantity_matches?: CartonScheduleQuantityMatch[] }
 
 export interface CartonScheduleSplitSource {
   source_contract_no: string

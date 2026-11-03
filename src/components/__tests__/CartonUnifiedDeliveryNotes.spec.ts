@@ -11,7 +11,7 @@ vi.mock('@/api/cartonSpecialRequests', () => ({ cartonSpecialRequestsApi: { down
 const allocations = defineComponent({ props: ['effective', 'modelValue'], emits: ['update:modelValue'], template: `<button type="button" aria-label="选择测试仓位" @click="$emit('update:modelValue', [{ location_id: 'B1', quantity: effective }])">测试仓位</button>` })
 function group(): UnifiedDelivery {
   return { id: 'U1', factory_id: 'huaxing', delivery_note_no: 'DN-1', delivery_date: '2026-10-20', created_at: '2026-10-20', status: 'SENT', revision: 1, can_operate: true, requires_correction: false, formal: null, receipts: [],
-    special: [{ id: 'R1', kind: 'SAMPLE', revision: 2, shipments: [{ id: 'S1' }], attachments: [] }] as unknown as UnifiedDelivery['special'],
+    special: [{ id: 'R1', kind: 'SAMPLE', revision: 2, shipments: [{ id: 'S1' }], attachments: [], permissions: {} }] as unknown as UnifiedDelivery['special'],
     lines: [{ id: 'L1', source_kind: 'SPECIAL', source_type: 'SPECIAL_REQUEST', special_request_id: 'R1', special_shipment_id: 'S1', special_request_revision: 2, original_special_line_id: 'RL1', origin: 'INTERNAL', order_no: 'SP-1', order_line_id: null, contract_no: '', customer_po: '', item_no: '', customer_name: '', child_no: '1', packaging_type: '外箱', paper_quality: 'A=B', specification: '10*20*30', dimension_unit: 'cm', unit: '个', quantity: '10', received_quantity: '0', remaining_quantity: '10', delivery_unit_price: '0', free_confirmed: false, mark_mode: 'NONE' }] }
 }
 function setup(source = group(), props = {}) { return mount(Component, { props: { group: source, canReceive: true, locations: [{ id: 'B1', factory_id: 'huaxing', label: 'A01', warehouse: '仓库', bin_code: 'A01', status: 'ACTIVE' }], ...props }, global: { stubs: { CartonReceiptAllocations: allocations, CartonSplitReceiptReview: true, CartonSourceLinks: true } } }) }
@@ -19,6 +19,42 @@ async function open(wrapper: ReturnType<typeof setup>) { await wrapper.findAll('
 beforeEach(() => { vi.clearAllMocks(); api.receive.mockResolvedValue(group()); api.reopenShortfall.mockResolvedValue(group()); portal.receiptOptions.mockResolvedValue([]) })
 afterEach(() => { vi.unstubAllGlobals() })
 describe('unified delivery receipt', () => {
+  it.each([
+    { price: null, free: false, shown: '', hint: '原单未填写单价', action: 'PENDING' },
+    { price: '0', free: false, shown: '0', hint: '原单单价为0，未确认免费', action: 'PENDING' },
+    { price: '0', free: true, shown: '0', hint: '供应商已明确确认免费', action: 'FREE' },
+  ])('shows and submits the actual unified original price: $hint', async ({ price, free, shown, hint, action }) => {
+    const source = group(); source.lines[0]!.delivery_unit_price = price; source.lines[0]!.free_confirmed = free
+    const wrapper = setup(source); await open(wrapper)
+    const input = wrapper.get<HTMLInputElement>('[aria-label="L1供应商单价"]')
+    expect(input.element.value).toBe(shown); expect(input.attributes('readonly')).toBeDefined(); expect(wrapper.text()).toContain(hint)
+    await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.receive.mock.calls[0]![1].special[0].lines[0]).toMatchObject({ unit_price: '0', price_action: action })
+    wrapper.unmount()
+  })
+  it('displays an absent original price and submits pending instead of treating it as free', async () => {
+    const source = group(); source.lines[0]!.delivery_unit_price = null; source.lines[0]!.free_confirmed = false
+    const wrapper = setup(source)
+    expect(wrapper.text()).toContain('供应商原价 未填写（待核价）')
+    expect(wrapper.text()).not.toContain('供应商已明确本行免费')
+    await open(wrapper)
+    expect(wrapper.get<HTMLInputElement>('[aria-label="L1供应商单价"]').element.value).toBe('')
+    await wrapper.get('[aria-label="选择测试仓位"]').trigger('click')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.receive.mock.calls[0]![1].special[0].lines[0]).toMatchObject({ price_action: 'PENDING', unit_price: '0' })
+    wrapper.unmount()
+  })
+  it.each([false, true])('routes sources and exposes files according to resource access (allowed=%s)', allowed => {
+    const source = group(); source.special[0]!.permissions.can_view_order_resources = allowed
+    source.lines[0]!.mark_attachment_id = 'A1'
+    const wrapper = setup(source)
+    const link = wrapper.getComponent({ name: 'CartonSourceLinks' })
+    expect(link.attributes('receiving')).toBe('true')
+    expect(link.attributes('marks')).toBe(allowed ? 'true' : 'false')
+    expect(wrapper.findAll('button').some(row => row.text() === '查看本批箱唛')).toBe(allowed)
+    wrapper.unmount()
+  })
   it('shows all rejected deliveries as zero inbound instead of received stock on both sides', () => {
     const source = group(); source.lines[0] = { ...source.lines[0]!, quantity: '2600', received_quantity: '2600',
       rejected_quantity: '2600', effective_quantity: '0', remaining_quantity: '0', receivable_quantity: '0' }

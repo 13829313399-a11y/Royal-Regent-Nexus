@@ -9,12 +9,24 @@ from app.services import carton_asset_access as access,carton_asset_targets as t
 from app.services import carton_mark_assets as assets,carton_mark_asset_workflow as lifecycle
 from app.services import carton_mark_associations as requests,carton_mark_sharing as sharing
 from app.schemas.carton_mark import CartonMarkAssetUploadOptions,CartonMarkAssetClassification
+from app.services import carton_asset_supplier_collaboration as collaboration
 
 
-def locked(db,user,factory):
+def locked(db,user,factory,extra_factories=()):
     from app.services.carton_special_requests import locked_actor
     from app.services.carton_procurement import require_carton_factory
     db.expire_all()
+    if extra_factories:
+        from app.services.identity_policy import lock_mutation
+        from app.services.carton_procurement import _lock_receipt_factory
+        from app.models.auth import AuthUser
+        from app.services.auth import build_auth_context
+        lock_mutation(db)
+        for identifier in sorted({factory,*extra_factories}):
+            _lock_receipt_factory(db,require_carton_factory(identifier))
+        actor=db.get(AuthUser,user.id)
+        if actor is None or actor.status!='active':raise HTTPException(403,'账号已停用')
+        return build_auth_context(db,actor)
     return locked_actor(db,user,require_carton_factory(factory))
 
 
@@ -125,11 +137,14 @@ def output(db,user,asset,*,supplier=None,view_factory=None):
     access.ensure(db,user,asset,supplier=supplier,view_factory=view_factory)
     state=lifecycle.current(db,asset)
     from app.services.carton_asset_visibility import factories
-    can_manage=access.visible(db,user,asset,write=True,supplier=supplier,view_factory=view_factory,collaborate=True)
-    can_confirm=access.visible(db,user,asset,write=True,confirm=True,supplier=supplier,view_factory=view_factory,collaborate=True)
-    statuses=(['DRAFT','PENDING','HISTORY'] if can_manage else []) + (['READY'] if can_confirm and asset.asset_purpose=='MATERIAL' else [])
+    can_manage=access.visible(db,user,asset,write=True,supplier=supplier,view_factory=view_factory,collaborate=True,collaboration_action='associate')
+    can_share=bool(supplier) and access.visible(db,user,asset,write=True,supplier=supplier,view_factory=view_factory,collaboration_action='share')
+    can_classify=access.visible(db,user,asset,write=True,supplier=supplier,view_factory=view_factory,collaborate=True,classification=True)
+    can_confirm=access.visible(db,user,asset,write=True,confirm=True,supplier=supplier,view_factory=view_factory,collaborate=True,classification=True)
+    statuses=(['DRAFT','PENDING','HISTORY'] if can_classify else []) + (['READY'] if can_confirm and asset.asset_purpose=='MATERIAL' else [])
     if state.superseded_by_asset_id:statuses=[]
     visible_targets=targets.valid(db,asset,view_factory)
+    if view_factory in (None,asset.factory_id):visible_targets=collaboration.display_targets(db,asset,visible_targets)
     if supplier:
         purchase_ids=targets.purchase_order_ids(db,asset)
         special_ids={(x['kind'],x['id']) for x in visible_targets if x.get('supplier_id')==supplier.id}
@@ -137,7 +152,8 @@ def output(db,user,asset,*,supplier=None,view_factory=None):
             if x['kind']=='REGULAR' and x['id'] in purchase_ids or (x['kind'],x['id']) in special_ids]
     return dict(id=asset.id,factory_id=asset.factory_id,owner_department=asset.owner_department,
         view_factory_id=view_factory or asset.factory_id,shared_factory_ids=factories(db,asset),
-        can_classify=bool(statuses),allowed_statuses=statuses,can_associate=can_manage,
+        can_classify=bool(statuses),allowed_statuses=statuses,can_associate=can_manage,can_share=can_share,
+        required_shared_factory_ids=[asset.factory_id] if collaboration.internal(asset) else [],
         created_by_name=asset.created_by_name,created_at=asset.created_at,
         owner_supplier_id=asset.owner_supplier_id,purpose=asset.asset_purpose,kind=asset.kind,file_name=asset.file_name,
         content_type=asset.content_type,sha256=asset.sha256,revision=asset.revision,contract_number=asset.contract_number,
@@ -154,7 +170,7 @@ def listing(db,user,factory,department=None,*,history=False):
     if department and department not in permitted:raise HTTPException(403,'没有该部门资料读取权限')
     if not permitted:raise HTTPException(403,'没有部门资料读取权限')
     query=select(CartonMarkAsset).where(CartonMarkAsset.is_archived.is_(False),CartonMarkAsset.recognition_source!='materials_folder',
-        or_(CartonMarkAsset.factory_id==factory,CartonMarkAsset.owner_department=='supplier'))
+        or_(CartonMarkAsset.factory_id==factory,CartonMarkAsset.owner_department=='supplier',CartonMarkAsset.id.in_(collaboration.shared_asset_ids(db))))
     if supplier:query=query.where(CartonMarkAsset.factory_id==factory)
     if history:query=query.where(CartonMarkAsset.owner_department.is_(None))
     result=[]
@@ -173,14 +189,18 @@ def associate(db,user,factory,identifier,body,refresh_actor=None):
             from app.services.carton_procurement import _lock_receipt_factory
             _lock_receipt_factory(db,factory)
         supplier=access.external_actor(db,user,asset) if factory==asset.factory_id else None
-        access.ensure(db,user,asset,write=True,supplier=supplier,view_factory=factory,collaborate=True)
+        access.ensure(db,user,asset,write=True,supplier=supplier,view_factory=factory,collaborate=True,collaboration_action='associate')
         rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_ASSOCIATE',dict(id=identifier,body=body.model_dump()))
         if not saved or 'result' not in saved:
             if body.targets and body.target:raise HTTPException(422,'不能同时提交两组关联目标')
             rows=resolve_many(db,user,factory,body.targets or ([body.target] if body.target else []),supplier,scope=body.target_scope,retain=asset)
-            lifecycle.bump(db,asset,body.revision);targets.record(db,user,asset,rows,factory)
-            if factory==asset.factory_id:
-                recipient=receiver(db,asset,rows);sharing.record(db,user,asset,'SUPPLIER' if recipient else 'INTERNAL',recipient)
+            lifecycle.bump(db,asset,body.revision)
+            if supplier and collaboration.internal(asset):
+                collaboration.record(db,user,asset,supplier,collaboration.TARGETS,targets=rows)
+            else:
+                targets.record(db,user,asset,rows,factory)
+                if factory==asset.factory_id:
+                    recipient=receiver(db,asset,rows);sharing.record(db,user,asset,'SUPPLIER' if recipient else 'INTERNAL',recipient)
             requests.record_request(db,user,asset,rid,saved,dict(asset_id=asset.id))
             result=output(db,user,asset,supplier=supplier,view_factory=factory);db.commit();return result
         else:db.rollback()
@@ -195,7 +215,7 @@ def classify(db,user,factory,identifier,body,refresh_actor=None):
         user=locked(db,user,asset.factory_id)
         if refresh_actor:user=refresh_actor()
         supplier=access.external_actor(db,user,asset) if factory==asset.factory_id else None
-        access.ensure(db,user,asset,write=True,confirm=body.status=='READY',supplier=supplier,view_factory=factory,collaborate=True)
+        access.ensure(db,user,asset,write=True,confirm=body.status=='READY',supplier=supplier,view_factory=factory,collaborate=True,classification=True)
         if body.status=='READY' and asset.asset_purpose!='MATERIAL':raise HTTPException(422,'内部凭据不是制作资料')
         rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_CLASSIFY',dict(id=identifier,body=body.model_dump()))
         if not saved or 'result' not in saved:
@@ -217,13 +237,17 @@ def resolve_many(db,user,factory,selected,supplier,*,scope='ALL',retain=None):
 def share(db,user,factory,identifier,body,refresh_actor=None):
     from app.services.carton_asset_visibility import record
     try:
-        access.writes();user=locked(db,user,factory);asset=assets.active_asset(db,factory,identifier)
+        access.writes();user=locked(db,user,factory,body.shared_factory_ids);asset=assets.active_asset(db,factory,identifier)
         if refresh_actor:user=refresh_actor()
         supplier=supplier_for(db,user,factory,'supplier',write=True)
-        access.ensure(db,user,asset,write=True,supplier=supplier)
+        access.ensure(db,user,asset,write=True,supplier=supplier,collaboration_action='share')
+        recipients=collaboration.share_recipients(db,user,body.shared_factory_ids)
         rid,saved=requests.request_event(db,user,factory,body.request_id,'QUICK_SHARE',dict(id=identifier,body=body.model_dump()))
         if not saved or 'result' not in saved:
-            lifecycle.bump(db,asset,body.revision);record(db,user,asset,body.shared_factory_ids)
+            lifecycle.bump(db,asset,body.revision)
+            if collaboration.internal(asset):
+                collaboration.record(db,user,asset,supplier,collaboration.FACTORIES,recipients=recipients)
+            else:record(db,user,asset,body.shared_factory_ids)
             requests.record_request(db,user,asset,rid,saved,dict(asset_id=asset.id))
         result=output(db,user,asset,supplier=supplier);db.commit();return result
     except BaseException:db.rollback();raise

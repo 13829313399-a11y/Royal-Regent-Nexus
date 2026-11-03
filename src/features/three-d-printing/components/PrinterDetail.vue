@@ -31,7 +31,24 @@ import {
 const props = defineProps<{ id: string; printer?: ThreeDPrinter; open: boolean; returnFocus?: () => HTMLElement | null }>();
 const emit = defineEmits<{ close: []; 'after-close': []; ready: []; unavailable: [] }>();
 const root = ref<HTMLElement | null>(null);
-useDialogFocus(() => true, root, { onEscape: () => emit("close"), returnFocus: () => props.returnFocus?.() ?? null });
+function returnTarget() {
+  // A source link may still be connected inside the now-hidden assistant.
+  // Factory machine numbers are unique; use the corresponding native card as
+  // the focus fallback, without changing the source selection or querying data.
+  const nativeCard = [...document.querySelectorAll<HTMLElement>('#tdp-main .legacy-machine')].find(card =>
+    card.querySelector('.machine-number')?.textContent?.match(/#\s*(\d+)\b/)?.[1] === String(props.printer?.machine_no));
+  for (const target of [props.returnFocus?.(), nativeCard, document.querySelector<HTMLElement>('#tdp-main')]) {
+    if (!target?.isConnected || target.matches(':disabled')) continue;
+    let visible = true;
+    for (let node: HTMLElement | null = target; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (node.hidden || node.inert || style.display === 'none' || style.visibility === 'hidden') { visible = false; break; }
+    }
+    if (visible) return target;
+  }
+  return null;
+}
+useDialogFocus(() => true, root, { onEscape: () => emit("close"), returnFocus: returnTarget });
 const data = ref<{
   printer: ThreeDPrinter;
   events: PrinterEvent[];

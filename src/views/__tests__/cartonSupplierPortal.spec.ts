@@ -69,7 +69,7 @@ it('confirms the rush version displayed on the supplier row', async () => {
   api.acknowledgeRush.mockResolvedValue({})
   const wrapper = mount(CartonSupplierView, options); await flushPromises()
   try {
-    await wrapper.findAll('button').find(button => button.text() === '确认收到急单')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '确认收到催货')!.trigger('click')
     await flushPromises()
     expect(api.acknowledgeRush).toHaveBeenCalledWith(expect.objectContaining({ id: 'ORDER-A', rush_version: 'b'.repeat(64) }), 'huaxing')
   } finally { wrapper.unmount() }

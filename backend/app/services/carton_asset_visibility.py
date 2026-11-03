@@ -8,6 +8,9 @@ EVENT = 'CARTON_ASSET_SHARED_FACTORIES'
 
 
 def factories(db, asset):
+    from app.services import carton_asset_supplier_collaboration as collaboration
+    if collaboration.internal(asset):
+        return collaboration.shared_factories(db,asset)
     event = db.scalar(select(CartonAuditEvent).where(
         CartonAuditEvent.entity_type == 'carton_mark_asset',
         CartonAuditEvent.entity_id == asset.id,
@@ -44,5 +47,5 @@ def internal_read(db, user, asset, factory):
     if asset.owner_department == 'supplier':
         if factory not in factories(db, asset):
             raise HTTPException(404, '供应商未向此厂区共享资料')
-    elif asset.factory_id != factory:
+    elif asset.factory_id != factory and factory not in factories(db,asset):
         raise HTTPException(404, '资料不属于当前厂区')

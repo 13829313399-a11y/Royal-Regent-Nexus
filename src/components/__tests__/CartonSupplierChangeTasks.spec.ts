@@ -20,6 +20,16 @@ beforeEach(() => { vi.clearAllMocks(); api.list.mockResolvedValue(workspace()); 
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('durable supplier change tasks', () => {
+  it('shows each replenishment paper current promise instead of the earlier version response date', async () => {
+    api.list.mockResolvedValue(workspace(task({ source_kind: 'REPLENISHMENT', document_no: 'PO-B01',
+      pending: false, status: 'ACCEPTED', responded_at: '2026-10-20T09:00', promised_date: '2026-10-26',
+      lines: [{ ...task().lines[0]!, promised_date: '2026-10-28' },
+        { ...task().lines[0]!, id: 'PAPER-2', packaging_type: '刀卡', promised_date: '2026-10-29' }] })))
+    const wrapper = setup({ internal: true, showClosed: true }); await flushPromises()
+    expect(wrapper.text()).toContain('当前承诺交期：2026-10-28')
+    expect(wrapper.text()).toContain('当前承诺交期：2026-10-29')
+    expect(wrapper.text()).not.toContain('承诺 2026-10-26')
+  })
   it('submits a durable request on HTTP origins without crypto.randomUUID', async () => {
     vi.stubGlobal('crypto', { getRandomValues: (bytes: Uint8Array) => { bytes.fill(7); return bytes } })
     const wrapper = setup(); await flushPromises(); await click(wrapper, '记录已读（不代表同意）')

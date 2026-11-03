@@ -70,6 +70,7 @@ from app.services.internal_quote_excel import (
     P4_TEMPLATE_VERSION,
     WORKBOOK_LAYOUT_VERSION,
     build_internal_quote_engineering_workbook,
+    engineering_electronic_options,
     build_internal_quote_workbook,
 )
 from app.services.internal_quote_components import (
@@ -105,6 +106,7 @@ EXPORT_FILE_NAME_VERSION = "quote-product-date-v1"
 IMPORT_LIST_FIELDS = {
     "mold": ("molds",),
     "hardware": ("materials",),
+    "auxiliary": ("materials",),
     "electronic": ("components",),
     "molding": ("injection_lines", "blow_lines"),
     "painting": ("rows",),
@@ -248,6 +250,7 @@ def create_import_preview(
     *,
     draft_payload: dict[str, Any] | None = None,
     draft_revision: int | None = None,
+    replace_attachment_id: str | None = None,
 ) -> InternalQuoteImportPreviewOut:
     if import_type not in IMPORT_TYPE_DEPARTMENTS:
         raise HTTPException(status_code=404, detail="不支持的内部报价导入类型")
@@ -257,6 +260,9 @@ def create_import_preview(
     ensure_section_permission(db, user, quote.factory_id, target_department, "edit")
     section = _get_section(db, quote.id, target_department)
     _ensure_section_participates(section)
+    if section.status not in MUTABLE_SECTION_STATUSES:
+        raise HTTPException(409, "目标分段当前不可编辑，请先返回修改")
+    replacement = _replacement_source(db, quote.id, target_department, import_type, replace_attachment_id) if replace_attachment_id else None
     if draft_payload is not None:
         if draft_revision is None:
             raise HTTPException(400, "导入预览缺少表单版本号")
@@ -296,6 +302,7 @@ def create_import_preview(
         list_field = {
             "mold": "molds",
             "hardware": "materials",
+            "auxiliary": "materials",
             "electronic": "components",
             "painting": "rows",
             "slush": "lines",
@@ -306,10 +313,10 @@ def create_import_preview(
         existing_list = existing_payload.get(list_field, [])
     if not isinstance(existing_list, list):
         existing_list = []
-    if import_type == "hardware":
+    if import_type in {"hardware", "auxiliary"}:
         existing_list = [
             row for row in existing_list
-            if isinstance(row, dict) and row.get("category") == "hardware"
+            if isinstance(row, dict) and row.get("category") == import_type
         ]
 
     preview = {
@@ -344,6 +351,16 @@ def create_import_preview(
         # Bind the user's unsaved form to this preview. Confirmation replaces
         # only the template-owned region, atomically retaining other inputs.
         preview["draft_payload"] = draft_payload
+    if replacement:
+        attachment, old_batches, _ = replacement
+        preview["replace_attachment_id"] = attachment.id
+        preview["replace_batch_ids"] = [item.id for item in old_batches]
+        preview["diff_summary"]["replaced_file_name"] = attachment.file_name
+        ids = {item.id for item in old_batches}
+        owned = sum(1 for row in existing_list if isinstance(row, dict) and row.get(IMPORT_BATCH_FIELD) in ids)
+        preview["diff_summary"]["existing_rows"] = owned
+        preview["diff_summary"]["retained_rows"] = len(existing_list) - owned
+        preview["warnings"].append("确认后清除所选旧报价单及其生成的明细、批注和截图引用，改用新报价；其他来源及手动新增明细保留。")
     components = quote_components(db, quote)
     if components and import_type in {"mold", "painting"}:
         preview["assignment_rows"] = import_assignment_rows(import_type, parsed.payload_fragment)
@@ -415,6 +432,32 @@ def list_import_batches(
     return [_import_out(batch) for batch in batches]
 
 
+def _replacement_source(db, quote_id, department, import_type, attachment_id):
+    attachment = db.scalar(select(InternalQuoteAttachment).where(
+        InternalQuoteAttachment.id == attachment_id, InternalQuoteAttachment.quote_id == quote_id,
+        InternalQuoteAttachment.department == department))
+    if attachment is None:
+        raise HTTPException(409, "要更换的报价单已不存在，请重新读取")
+    candidates = list(db.scalars(select(InternalQuoteImportBatch).where(
+        InternalQuoteImportBatch.quote_id == quote_id, InternalQuoteImportBatch.target_department == department,
+        InternalQuoteImportBatch.status == "confirmed")).all())
+    batches = [item for item in candidates if _json_object(item.preview_json).get("source_workbook_attachment_id") == attachment.id
+               or (not _json_object(item.preview_json).get("source_workbook_attachment_id") and item.source_sha256 == attachment.sha256)]
+    if not batches or any(item.import_type != import_type for item in batches):
+        raise HTTPException(409, "原报价单类型不匹配，请选择该文件对应的报价模板")
+    if import_type == "electronic" and len(batches) != 1:
+        raise HTTPException(409, "此文件关联多份电子报价，请在协作页逐份核对后重新导入")
+    batch_ids = {item.id for item in batches}
+    def owns(value):
+        if isinstance(value, dict):
+            return value.get(IMPORT_BATCH_FIELD) in batch_ids or any(owns(child) for child in value.values())
+        return isinstance(value, list) and any(owns(child) for child in value)
+    section = _get_section(db, quote_id, department)
+    if not owns(_json_object(section.payload_json)):
+        raise HTTPException(409, "所选旧报价单已没有在用明细，请选择当前使用的报价单；历史附件可在协作页删除")
+    return attachment, batches, candidates
+
+
 def _add_decimal_values(left: object, right: object) -> str:
     try:
         result = Decimal(str(left or 0)) + Decimal(str(right or 0))
@@ -457,6 +500,7 @@ def _merge_import_payload(
     list_field = {
         "mold": "molds",
         "hardware": "materials",
+        "auxiliary": "materials",
         "electronic": "components",
         "painting": "rows",
         "slush": "lines",
@@ -470,10 +514,10 @@ def _merge_import_payload(
     existing_rows = merged.get(list_field, [])
     if not isinstance(existing_rows, list):
         existing_rows = []
-    if import_type == "hardware" and mode == "replace":
+    if import_type in {"hardware", "auxiliary"} and mode == "replace":
         retained_rows = [
             row for row in existing_rows
-            if not isinstance(row, dict) or row.get("category") != "hardware"
+            if not isinstance(row, dict) or row.get("category") != import_type
         ]
         merged[list_field] = [*retained_rows, *imported_rows]
     else:
@@ -905,16 +949,46 @@ def confirm_import_batch(
         raise HTTPException(status_code=400, detail="当前导入不支持分项分配")
     fragment = _tag_import_fragment(batch.import_type, fragment, batch.id)
     preview["payload_fragment"] = fragment
+    replacement = None
+    removed_images = set()
+    electronic_target = payload.electronic_quote_target
+    if preview.get("replace_attachment_id"):
+        replacement = _replacement_source(db, quote.id, section.department, batch.import_type, preview["replace_attachment_id"])
+        _, old_batches, candidates = replacement
+        if sorted(item.id for item in old_batches) != sorted(preview.get("replace_batch_ids", [])):
+            raise HTTPException(409, "原报价单关联资料已变化，请重新预览")
+        if batch.import_type == "electronic":
+            electronic_target = _json_object(old_batches[0].preview_json).get("electronic_quote_id")
+            if electronic_target is None and "quote_groups" in merge_base:
+                electronic_target = "legacy"
+            if electronic_target is None:
+                removed_images.update(_collect_attachment_ids(merge_base))
+            else:
+                removed_images.update(_collect_attachment_ids(next((g for g in merge_base.get("quote_groups", []) if g.get("id") == electronic_target), {})))
+        else:
+            merge_base, removed_images = _clear_import_generated_payload(merge_base, old_batches, all_batches=candidates)
+        for old in old_batches:
+            removed_images.update(_json_object(old.preview_json).get("embedded_image_attachment_ids", []))
     if payload.electronic_quote_target is not None and batch.import_type != "electronic":
         raise HTTPException(status_code=400, detail="只有电子报价支持选择独立报价")
     if batch.import_type == "electronic":
-        merged_payload = _merge_electronic_quote(merge_base, fragment, payload.electronic_quote_target, batch, preview.get("rmb_hkd_rate", "0.85"))
-        if payload.electronic_quote_target is not None:
+        merged_payload = _merge_electronic_quote(merge_base, fragment, electronic_target, batch, preview.get("rmb_hkd_rate", "0.85"))
+        if electronic_target is not None:
             imported_group = next(group for group in merged_payload["quote_groups"] if group.get("import_batch_id") == batch.id)
             preview["electronic_quote_id"] = imported_group["id"]
             effective_mode = "new_quote" if payload.electronic_quote_target == "new" else "replace_quote"
     else:
         merged_payload = _merge_import_payload(batch.import_type, merge_base, fragment, effective_mode, preview.get("rmb_hkd_rate", "0.85"))
+        if replacement:
+            # Selected-source replacement preserves other imported/manual rows.
+            for key in IMPORT_LIST_FIELDS.get(batch.import_type, ()):
+                merged_payload[key] = [*(merge_base.get(key) or []), *(fragment.get(key) or [])]
+            if batch.import_type == "mold":
+                for fee in merged_payload.get("production_mold_costs", []):
+                    if fee.get(IMPORT_BATCH_FIELD) == batch.id and "mold_import_default_rmb" in fee:
+                        fee["cost_rmb"] = fee["mold_import_default_rmb"] = _imported_mold_total(merged_payload["molds"])
+    if replacement:
+        effective_mode = "replace_source"
     source_workbook_attachment_id = _materialize_imported_source_workbook(
         db,
         quote,
@@ -946,6 +1020,23 @@ def confirm_import_batch(
     from app.services.internal_quote import _normalize_mutable_section_payload
     merged_payload = _normalize_mutable_section_payload(db, quote, section.department, merged_payload)
     section.payload_json = canonical_json(merged_payload)
+    if replacement:
+        old_attachment, old_batches, _ = replacement
+        for old in old_batches:
+            old_preview = _json_object(old.preview_json)
+            old_preview.update({"replaced_by_batch_id": batch.id, "replaced_by": user.id, "replaced_at": now_text()})
+            old.preview_json = canonical_json(old_preview)
+            old.status = "replaced"
+        if old_attachment.id != source_workbook_attachment_id:
+            db.delete(old_attachment)
+        else:
+            old_attachment.file_name = batch.source_file_name
+        remaining = [_json_object(item.payload_json) for item in db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)).all()]
+        referenced = set().union(*(_collect_attachment_ids(item) for item in remaining))
+        for image_id in removed_images - referenced:
+            image = db.scalar(select(InternalQuoteAttachment).where(InternalQuoteAttachment.id == image_id, InternalQuoteAttachment.quote_id == quote.id))
+            if image is not None:
+                db.delete(image)
     if quote.module_version == "v4":
         quote.header_revision += 1
     section.status = "draft"
@@ -2008,7 +2099,12 @@ def create_controlled_export(
         "final_reviewed_by": quote.final_reviewed_by if is_final_release else "",
         "final_reviewed_by_name": quote.final_reviewed_by_name if is_final_release else "",
         "final_reviewed_at": quote.final_reviewed_at if is_final_release else "",
-        "spreadsheet_attachments": [],
+        "spreadsheet_attachments": [
+            {"id": attachment.id, "department": attachment.department,
+             "file_name": attachment.file_name, "sha256": attachment.sha256}
+            for attachment in attachments
+            if Path(attachment.file_name).suffix.lower() in IMPORT_EXTENSIONS
+        ],
         "source_spreadsheet_attachments": [
             {
                 "id": attachment.id,
@@ -2141,12 +2237,26 @@ def create_controlled_export(
     return _export_out(record)
 
 
+def get_engineering_export_options(db: Session, quote_id: str, user: AuthContext) -> dict[str, Any]:
+    quote = _get_quote(db, quote_id)
+    _ensure_active(quote)
+    _ensure_export_permission(db, quote, user)
+    sections = _export_sections(db, quote)
+    electronic = next((section for section in sections if section.department == "electronic"), None)
+    return {"header_revision": quote.header_revision, "electronic_revision": electronic.revision if electronic else 0,
+            "items": engineering_electronic_options(electronic)}
+
+
 @quote_write
 def create_engineering_workbook_export(
     db: Session,
     quote_id: str,
     user: AuthContext,
     request: Request | None = None,
+    *,
+    electronic_selection: list[str] | None = None,
+    header_revision: int | None = None,
+    electronic_revision: int | None = None,
 ) -> EngineeringWorkbookDownload:
     quote = _get_quote(db, quote_id)
     _ensure_active(quote)
@@ -2154,7 +2264,16 @@ def create_engineering_workbook_export(
     sections = _export_sections(db, quote)
     ensure_molding_projection_current(db, quote, sections)
     _ensure_export_sections_ready(sections)
-    content = build_internal_quote_engineering_workbook(quote, sections)
+    if electronic_selection is not None:
+        electronic = next((section for section in sections if section.department == "electronic"), None)
+        if header_revision is None or electronic_revision is None:
+            raise HTTPException(400, "电子筛选缺少报价版本，请重新打开导出筛选")
+        _check_revision(quote.header_revision, header_revision)
+        _check_revision(electronic.revision if electronic else 0, electronic_revision)
+        choices = {item["id"] for item in engineering_electronic_options(electronic)}
+        if len(set(electronic_selection)) != len(electronic_selection) or not set(electronic_selection) <= choices:
+            raise HTTPException(400, "电子筛选包含无效或重复的明细，请重新选择")
+    content = build_internal_quote_engineering_workbook(quote, sections, set(electronic_selection) if electronic_selection is not None else None)
     download = EngineeringWorkbookDownload(
         file_name=safe_file_name(
             f"{quote.quote_no}_{quote.version_label}_工程资料.xlsx"
@@ -2174,6 +2293,7 @@ def create_engineering_workbook_export(
                 "file_name": download.file_name,
                 "sha256": download.sha256,
                 "template_version": download.template_version,
+                "electronic_selection": electronic_selection,
                 "section_revisions": {
                     section.department: section.revision for section in sections
                 },

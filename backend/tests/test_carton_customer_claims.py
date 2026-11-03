@@ -1,5 +1,6 @@
 """Claim authority, receipt isolation and preservation of independent originals."""
 import importlib.util
+import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from pathlib import Path
@@ -11,7 +12,7 @@ from sqlalchemy import create_engine, select
 from test_molding_sample_api import make_client, login_as, ensure_test_user
 from test_carton_customer_packaging import customer, assign, BASE, SCOPE
 from test_carton_procurement_api import _order_payload, _submit_order
-from test_carton_mark_assets import upload
+from test_carton_special_requests import isolated_database_directory
 from test_carton_mark_api import _workbook_bytes
 
 
@@ -94,13 +95,15 @@ def test_delegated_colleague_summary_and_order_write_change_without_relogin(monk
         assert client.post(BASE + "/orders", json={**_order_payload(), "contract_no": "REVOKED"}).status_code == 403
 
 
-def test_others_orders_and_receipts_are_readable_but_writes_require_authorization(monkeypatch):
+def test_others_orders_remain_restricted_but_factory_receipts_are_operable(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin"); entry = customer(client)
         response = client.post(BASE + "/orders", json=_order_payload())
         order = _submit_order(client, response.json())
-        payload = {**SCOPE, "delivery_note_no": "CLAIM-RECEIPT-1", "delivery_date": "2026-08-05",
-            "lines": [{"order_line_id": order["lines"][0]["id"], "delivered_quantity": "1", "received_quantity": "1"}]}
+        location = client.post(BASE + "/inventory/locations", json={**SCOPE, "warehouse": "客户混合收料仓", "bin_code": "A"}).json()
+        payload = {**SCOPE, "delivery_note_no": "CLAIM-RECEIPT-1", "delivery_date": "2026-08-05", "acceptance_date": "2026-08-05",
+            "lines": [{"order_line_id": order["lines"][0]["id"], "delivered_quantity": "1", "received_quantity": "1", "unit_price": "1",
+                "location_allocations": [{"location_id": location["id"], "quantity": "1"}]}]}
         receipt = client.post(BASE + "/receipts", json=payload)
         assert receipt.status_code == 201, receipt.text
         ensure_test_user("warehouse_keeper"); ensure_test_user("carton_warehouse")
@@ -108,15 +111,17 @@ def test_others_orders_and_receipts_are_readable_but_writes_require_authorizatio
         claimed = client.post(f"{BASE}/customers/{entry['id']}/claim", json={**SCOPE, "expected_revision": 1})
         assert claimed.status_code == 200, claimed.text
         login_as(client, "warehouse_keeper")
-        assert client.get(BASE + "/receipts", params=SCOPE).json()["total"] == 0
-        assert client.post(BASE + f"/receipts/{receipt.json()['id']}/confirm", json={**SCOPE, "expected_revision": 1}).status_code == 403
-        assert client.post(BASE + "/receipts", json={**payload, "delivery_note_no": "UNAUTHORIZED-NOTE"}).status_code == 403
+        assert client.get(BASE + "/receipts", params=SCOPE).json()["total"] == 1
+        confirmed = client.post(BASE + f"/receipts/{receipt.json()['id']}/confirm", json={**SCOPE, "expected_revision": 1})
+        assert confirmed.status_code == 200, confirmed.text
+        assert client.post(BASE + "/receipts", json={**payload, "delivery_note_no": "FACTORY-WIDE-NOTE"}).status_code == 201
+        assert client.post(BASE + "/orders", json=_order_payload()).status_code == 403
         assert client.get(BASE + f"/orders/{order['order_no']}/purchase-order-context", params=SCOPE).status_code == 200
         assert client.get(BASE + "/orders", params={**SCOPE, "responsibility_scope": "ALL"}).json()["total"] == 1
-        assert client.get(BASE + "/receipts", params={**SCOPE, "responsibility_scope": "ALL"}).json()["total"] == 1
+        assert client.get(BASE + "/receipts", params={**SCOPE, "responsibility_scope": "ALL"}).json()["total"] == 2
         assert client.get(BASE + "/inventory/balances", params=SCOPE).status_code == 200
         login_as(client, "carton_supervisor")
-        assert client.get(BASE + "/receipts", params=SCOPE).json()["total"] == 1
+        assert client.get(BASE + "/receipts", params=SCOPE).json()["total"] == 2
 
 
 def test_simultaneous_claims_choose_exactly_one_owner(monkeypatch):
@@ -161,6 +166,12 @@ def test_same_filename_and_identical_bytes_are_independent_and_archive_does_not_
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
         content = _workbook_bytes("No contract")
+        def upload(client, files):
+            response = client.post('/api/carton-mark/assets/batch',
+                data={'factory_id': 'huaxing', 'options_json': json.dumps([{'owner_department': 'pmc-warehouse'} for _ in files])},
+                files=[('files', file) for file in files])
+            assert response.status_code == 200, response.text
+            return response.json()
         first, second = upload(client, [("箱唛格式参考.xlsx", content), ("箱唛格式参考.xlsx", content)])
         assert first["status"] == second["status"] == "created"
         a, b = first["asset"], second["asset"]

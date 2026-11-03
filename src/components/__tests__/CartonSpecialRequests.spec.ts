@@ -30,6 +30,24 @@ async function fillForm(wrapper: ReturnType<typeof setup>) {
 beforeEach(() => { vi.clearAllMocks(); api.list.mockResolvedValue(workspace()); api.detail.mockResolvedValue(fixture()); api.save.mockResolvedValue(fixture()); api.action.mockResolvedValue(fixture()); api.attach.mockResolvedValue(fixture()) })
 
 describe('special carton request work surface', () => {
+  it('uses receiving scope for a receiving detail and keeps ordinary requests on ordinary scope', async () => {
+    const receiving = setup({ receiving: true }); await openDetail(receiving)
+    expect(api.list).toHaveBeenCalledWith('huaxing', false, expect.any(AbortSignal), 'ALL', true)
+    expect(api.detail).toHaveBeenCalledWith('huaxing', 'REQ', false, expect.any(AbortSignal), true)
+    receiving.unmount(); vi.clearAllMocks()
+    const ordinary = setup(); await openDetail(ordinary)
+    expect(api.list).toHaveBeenCalledWith('huaxing', false, expect.any(AbortSignal))
+    expect(api.detail).toHaveBeenCalledWith('huaxing', 'REQ', false, expect.any(AbortSignal))
+    ordinary.unmount()
+  })
+  it.each([false, true])('shows order resources only with the server flag (allowed=%s)', async allowed => {
+    api.detail.mockResolvedValue(fixture({ permissions: { can_view_order_resources: allowed },
+      attachments: [{ id: 'A1', role: 'REFERENCE', filename: '参考.pdf' }] }))
+    const wrapper = setup({ receiving: true }); await openDetail(wrapper)
+    expect(wrapper.findAll('button').some(row => row.text() === '查看采购单')).toBe(allowed)
+    expect(wrapper.findAll('button').some(row => row.text() === '下载附件')).toBe(allowed)
+    wrapper.unmount()
+  })
   it.each([false, true])('shows whole-order and per-paper associated originals without approval (supplier=%s)', async supplier => {
     const files: NonNullable<SpecialRequest['mark_assets']> = [
       { id: 'SHARED', file_name: '整单原件.pdf', kind: 'pdf', revision: 4, line_id: '' },
