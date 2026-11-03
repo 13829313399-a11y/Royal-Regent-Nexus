@@ -18,7 +18,7 @@ describe('carton usage guide interaction', () => {
   it('finds the new demand and batch append guides and keeps supplier chapter anchors unique', async () => {
     const wrapper = mountGuide()
     await wrapper.get('input[aria-label="查找教程步骤"]').setValue('Excel 批量新建')
-    expect(wrapper.get('#carton-guide-demand-import').text()).toContain('确认生成订单草稿')
+    expect(wrapper.get('#carton-guide-demand-import').text()).toContain('导入所选')
     expect(wrapper.get('#carton-guide-demand-import img').attributes('src')).toContain('quick-demand-import.svg')
     await wrapper.get('input[aria-label="查找教程步骤"]').setValue('多选订单')
     expect(wrapper.get('#carton-guide-batch-append').text()).toContain('原单号、已收数量和历史记录保留')

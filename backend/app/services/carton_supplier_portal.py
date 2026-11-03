@@ -632,13 +632,13 @@ def acknowledge_rush(db, user, order_id, payload: RushAcknowledge, *, commit=Tru
 
 
 def ensure_shipment_customers(db, user, shipment):
-    from app.services.carton_customer_assignment import ensure_customer_operation
+    from app.services.carton_customer_assignment import ensure_receipt_customer
     formal, unmatched = _shipment_sources(db, shipment)
     codes = set(db.scalars(select(CartonOrder.customer_code).join(CartonOrderLine, CartonOrderLine.order_id == CartonOrder.id)
         .where(CartonOrder.factory_id == shipment.factory_id, CartonOrderLine.id.in_([line.order_line_id for line in formal]))))
     codes.update(json.loads(line.snapshot_json).get("customer_code", "") for line in unmatched)
     for code in codes:
-        ensure_customer_operation(db, user, shipment.factory_id, code)
+        ensure_receipt_customer(db, user, shipment.factory_id, code)
 
 
 def visible_shipment(db, user, shipment):
@@ -658,6 +658,7 @@ def pending_shipments(db, user, factory, *, limit=3):
 
 
 def workspace(db, user, factory, *, internal=False, responsibility_scope="OWN"):
+    from app.services.carton_customer_assignment import can_receive_all_customers
     if internal:
         internal_permission(user, factory, "carton_procurement:read")
         supplier_id = fixed_supplier(db, factory).id
@@ -666,7 +667,7 @@ def workspace(db, user, factory, *, internal=False, responsibility_scope="OWN"):
     orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory, CartonOrder.supplier_id == supplier_id,
         CartonOrder.deleted_at.is_(None),
         CartonOrder.status.in_(VISIBLE_STATES | {"DRAFT", "CONFIRMED"} if internal else VISIBLE_STATES)).order_by(CartonOrder.due_date, CartonOrder.order_no)).all()
-    if internal and responsibility_scope == "OWN":
+    if internal and responsibility_scope == "OWN" and not can_receive_all_customers(user, factory):
         from app.services.carton_customer_assignment import customer_predicate
         visible_order_ids = set(db.scalars(select(CartonOrder.id).where(CartonOrder.factory_id == factory,
             customer_predicate(user, factory, CartonOrder.customer_code))))
@@ -725,7 +726,9 @@ def shipment_out(db, row, *, internal=False):
                 material_correction_note='已按双方确认的资料更正；原送货资料保留')
         if internal:
             item.update(unit_price=snapshot.get("unit_price", "0"),
-                delivery_unit_price=snapshot.get("delivery_unit_price"), currency=snapshot.get("currency", "CNY"))
+                delivery_unit_price=snapshot.get("delivery_unit_price"),
+                free_confirmed=snapshot.get("free_confirmed") is True or snapshot.get("pricing_kind") == "FREE",
+                currency=snapshot.get("currency", "CNY"))
             if snapshot.get("original_unmatched_line_id"):
                 item["original_unmatched_line_id"] = snapshot["original_unmatched_line_id"]
             original = snapshot.get("original_source_material")
@@ -742,7 +745,8 @@ def shipment_out(db, row, *, internal=False):
         item = {key: snapshot.get(key, "") for key in ("order_no", "contract_no", "customer_po", "item_no", "customer_name", "child_no", "packaging_type", "paper_quality", "specification", "unit")}
         item.update(id=line.id, order_line_id=None, quantity=str(line.quantity), source_type="AD_HOC_REVIEW")
         if internal:
-            item.update(unit_price=str(snapshot.get("unit_price") or "0"), delivery_unit_price=snapshot.get("unit_price"),
+            item.update(unit_price=str(snapshot["unit_price"]) if snapshot.get("unit_price") is not None else None,
+                delivery_unit_price=snapshot.get("unit_price"),
                 free_confirmed=snapshot.get("free_confirmed") is True or snapshot.get("pricing_kind") == "FREE", currency="CNY",
                 closed_source_linkable=_closed_source_linkable(row, line, batches, progress))
         classified = next((receiving.entry(batch, line) for batch in reversed(batches)
@@ -925,7 +929,8 @@ def documents(db, user, factory):
             "document_no": group["delivery_note_no"], "document_type": "DELIVERY",
             "date": group["delivery_date"], "created_at": group["created_at"],
             "status": group["status"], "replenishment": False,
-            "source_filename": visible.get("source_filename", ""), "source_sha256": visible.get("source_sha256", ""),
+            "source_filename": group.get("source_filename") or visible.get("source_filename", ""),
+            "source_sha256": group.get("source_sha256") or visible.get("source_sha256", ""),
             "orders": list(orders_by_no.values()),
             "unmatched_line_count": sum(line.get("source_type") == "AD_HOC_REVIEW" for line in group["lines"]),
             "lines": [{
@@ -1422,7 +1427,7 @@ def create_shipment(db, user, payload: ShipmentCreate, *, commit=True, source=No
         snapshots.append({"order_no": order.order_no, "contract_no": order.contract_no, "customer_po": order.customer_po,
             "item_no": order.item_no, "customer_name": order.customer_name, "child_no": f"{order.order_no}/{line.line_no:02d}",
             **{key: str(getattr(line, key)) for key in ("packaging_type", "paper_quality", "specification", "dimension_unit", "unit", "unit_price", "currency")},
-            **({"delivery_unit_price": str(source["delivery_unit_prices"][line.id])}
+            **({"delivery_unit_price": str(source["delivery_unit_prices"][line.id]) if source["delivery_unit_prices"][line.id] is not None else None}
                 if source and line.id in source.get("delivery_unit_prices", {}) else {}),
             **({"delivery_unit_price": str(item.unit_price), "free_confirmed": item.free_confirmed}
                 if item.unit_price is not None else {}),
@@ -1479,10 +1484,10 @@ def receive_shipment(db, user, shipment_id, payload: ShipmentReceive, *, commit=
     if not row:
         raise HTTPException(404, "未找到此厂区的发货单")
     ensure_shipment_customers(db, user, row)
-    from app.services.carton_customer_assignment import ensure_customer_operation
+    from app.services.carton_customer_assignment import ensure_receipt_customer
     for item in payload.lines:
         if item.customer_code:
-            ensure_customer_operation(db, user, payload.factory_id, item.customer_code)
+            ensure_receipt_customer(db, user, payload.factory_id, item.customer_code)
     digest = fingerprint(payload)
     for event in db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == payload.factory_id,
         CartonAuditEvent.entity_type == "supplier_shipment", CartonAuditEvent.entity_id == row.id,
@@ -1826,8 +1831,8 @@ def link_shipment_line(db, user, shipment_id, line_id, payload: ShipmentLineLink
     target = db.get(CartonOrderLine, payload.order_line_id)
     order = db.get(CartonOrder, target.order_id) if target else None
     if order is not None:
-        from app.services.carton_customer_assignment import ensure_customer_operation
-        ensure_customer_operation(db, user, payload.factory_id, order.customer_code)
+        from app.services.carton_customer_assignment import ensure_receipt_customer
+        ensure_receipt_customer(db, user, payload.factory_id, order.customer_code)
     if not target or target.factory_id != payload.factory_id or not order or order.factory_id != payload.factory_id or order.supplier_id != shipment.supplier_id:
         raise HTTPException(404, "目标纸品不属于此厂区与供应商")
     from app.services.carton_procurement import get_active_customer

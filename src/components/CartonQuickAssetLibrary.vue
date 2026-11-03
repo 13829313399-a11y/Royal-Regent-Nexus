@@ -19,7 +19,10 @@ const statusDrafts = ref<Record<string, QuickAssetStatus>>({})
 const allSupplierFactories = computed(() => props.audience === 'supplier' && (!props.factoryId || props.factoryId === 'ALL'))
 const requestedFactories = computed(() => allSupplierFactories.value ? [...new Set(props.supplierFactories || [])] : props.factoryId && props.factoryId !== 'ALL' ? [props.factoryId] : [])
 function readableDepartments(factory: string): AssetDepartment[] {
-  return (props.audience === 'supplier' ? ['supplier' as const] : internalDepartments).filter(d => canQuickAsset(auth, factory, d, 'read'))
+  // The server filters shared files by currently issued orders and explicit
+  // denies. Listing that subset does not grant own-library maintenance.
+  if (props.audience === 'supplier') return auth.can('carton_supplier:read', factory, '*') ? ['supplier'] : []
+  return internalDepartments.filter(d => canQuickAsset(auth, factory, d, 'read'))
 }
 const scopes = computed(() => requestedFactories.value.flatMap(factory => {
   const department = readableDepartments(factory)[0]
@@ -54,6 +57,10 @@ const targetScope = computed(() => props.audience === 'sales' ? 'PENDING_SCHEDUL
 const associationLabel = computed(() => props.audience === 'sales' ? '关联排期订单' : '关联订单')
 const visibleCandidates = computed(() => candidates.value.filter(x => !orderSearch.value.trim() || [x.customer_name, x.contract_no, x.customer_po, x.item_no].join(' ').toLowerCase().includes(orderSearch.value.trim().toLowerCase())))
 const shareOptions = computed(() => factoryContexts.filter(x => (props.supplierFactories || [props.factoryId]).includes(x.id)))
+const requiredSharedFactories = computed(() => editor.value?.asset.required_shared_factory_ids || [])
+const shareDescription = computed(() => requiredSharedFactories.value.length
+  ? '来源厂区保留可见；可选择其他有权限的厂区共享给业务和仓库。'
+  : '默认无；选择后该厂业务和仓库可见。')
 type Command = { factory: string; asset: Pick<QuickAsset, 'id' | 'revision'>; requestId: string } & ({ kind: 'classify'; status: QuickAssetStatus } | { kind: 'associate'; targets: QuickTargetRef[] } | { kind: 'share'; factories: string[] })
 const pending = shallowRef<Command | null>(null)
 let generation = 0, actionGeneration = 0, editorGeneration = 0, downloadGeneration = 0
@@ -78,7 +85,7 @@ function cancelContext() {
   pending.value = null; editor.value = null; busy.value = false; downloading.value = ''; actionError.value = ''; notice.value = ''; filter.value = 'CURRENT'; keyword.value = ''; mine.value = false
 }
 watch(context, cancelContext, { flush: 'sync' })
-watch([context, scopes, () => props.refreshKey], load, { immediate: true, flush: 'sync' })
+watch([context, () => JSON.stringify(scopes.value), () => props.refreshKey], load, { immediate: true, flush: 'sync' })
 function saved() { void load(); emit('changed') }
 function canClassify(asset: QuickAsset) {
   return !props.readOnly && asset.purpose === 'MATERIAL' && !asset.workflow.superseded_by_asset_id && (asset.can_classify ?? readableDepartments(assetFactory(asset)).some(d => canQuickAsset(auth, assetFactory(asset), d, 'manage')))
@@ -158,20 +165,20 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelContext() })
       </div>
       <div v-if="allSupplierFactories" class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
         <label v-if="!readOnly && uploadFactories.length > 1" class="flex items-center gap-2 text-xs">关联订单厂区<select v-model="selectedUploadFactory" aria-label="上传关联订单厂区" class="h-9 rounded-lg border border-input bg-card px-3 text-sm"><option v-for="id in uploadFactories" :key="id" :value="id">{{ factoryName(id) }}</option></select></label>
-        <p class="text-xs text-muted-foreground">可直接上传。关联订单厂区只用于查找订单；共享厂区在上传窗口另选，默认无。</p>
+        <p class="text-xs text-muted-foreground">{{ uploadFactories.length ? '可直接上传。关联订单厂区只用于查找订单；共享厂区在上传窗口另选，默认无。' : '可读取已发送订单的共享资料；上传与维护需要独立授权。' }}</p>
       </div>
       <p v-if="loading" role="status" class="py-6 text-sm text-muted-foreground">正在读取资料…</p>
       <p v-else-if="error" role="alert" class="mt-3 text-sm text-destructive">{{ error }} <button type="button" class="underline" @click="load">重试读取</button></p>
       <p v-else-if="!visible.length" class="py-6 text-sm text-muted-foreground">暂无符合条件的资料。可上传文件、照片或文字。</p>
       <ul v-else class="mt-3 divide-y divide-border">
         <li v-for="asset in visible" :key="asset.id" class="min-w-0 py-4" :data-quick-asset="asset.id">
-          <div class="flex min-w-0 flex-wrap items-start justify-between gap-3">
-            <div class="min-w-0 flex-1 basis-56"><p class="break-all text-sm font-semibold">{{ asset.file_name }}</p><p v-if="allSupplierFactories" class="mt-1 text-xs text-muted-foreground">订单厂区：{{ factoryName(asset.factory_id) }}</p><p class="mt-1 text-xs text-muted-foreground">{{ departmentLabel[asset.owner_department] || '历史资料' }} · {{ asset.created_by_name || '原上传人' }} · {{ asset.workflow.updated_by_name ? `${asset.workflow.updated_by_name} 更新状态` : '' }}</p><p class="mt-1 break-all text-xs text-muted-foreground">{{ asset.contract_number ? `合同 ${asset.contract_number} · ` : '' }}{{ asset.targets.length ? asset.targets.map(targetLabel).join('；') : '未关联订单' }}</p><p v-if="asset.owner_department === 'supplier' && audience === 'supplier'" class="mt-1 text-xs text-muted-foreground">共享：{{ asset.shared_factory_ids?.length ? asset.shared_factory_ids.map(id => factoryContexts.find(x => x.id === id)?.shortName || id).join('、') : '无，仅供应商可见' }}</p></div>
-            <div class="flex flex-wrap items-center gap-2">
-              <template v-if="canClassify(asset)"><select v-model="statusDrafts[asset.id]" :aria-label="`${asset.file_name} 状态`" :disabled="busy || !!pending" class="h-9 rounded-lg border border-input bg-card px-2 text-sm"><option v-for="state in statusChoices(asset)" :key="state" :value="state">{{ quickStatusLabel[state] }}</option></select><Button type="button" size="sm" :disabled="busy || !!pending || statusDrafts[asset.id] === asset.workflow.status" @click="execute({ ...commandBase(asset), kind: 'classify', status: statusDrafts[asset.id]! })">保存状态</Button></template>
+          <div class="grid min-w-0 grid-cols-1 items-start gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
+            <div class="min-w-0 flex-1 basis-56"><p class="break-all text-sm font-semibold">{{ asset.file_name }}</p><p v-if="allSupplierFactories" class="mt-1 text-xs text-muted-foreground">订单厂区：{{ factoryName(asset.factory_id) }}</p><p class="mt-1 text-xs text-muted-foreground">{{ departmentLabel[asset.owner_department] || '历史资料' }} · {{ asset.created_by_name || '原上传人' }} · {{ asset.workflow.updated_by_name ? `${asset.workflow.updated_by_name} 更新状态` : '' }}</p><p class="mt-1 break-all text-xs text-muted-foreground">{{ asset.contract_number ? `合同 ${asset.contract_number} · ` : '' }}{{ asset.targets.length ? asset.targets.map(targetLabel).join('；') : '未关联订单' }}</p><p v-if="audience === 'supplier'" class="mt-1 text-xs text-muted-foreground">共享：{{ asset.shared_factory_ids?.length ? asset.shared_factory_ids.map(id => factoryContexts.find(x => x.id === id)?.shortName || id).join('、') : '无，仅供应商可见' }}</p></div>
+            <div class="flex min-w-0 flex-wrap items-center gap-2" data-asset-actions>
+              <template v-if="canClassify(asset)"><select v-model="statusDrafts[asset.id]" :aria-label="`${asset.file_name} 状态`" :disabled="busy || !!pending" class="h-9 w-24 rounded-lg border border-input bg-card px-2 text-sm"><option v-for="state in statusChoices(asset)" :key="state" :value="state">{{ quickStatusLabel[state] }}</option></select><Button type="button" size="sm" :disabled="busy || !!pending || statusDrafts[asset.id] === asset.workflow.status" @click="execute({ ...commandBase(asset), kind: 'classify', status: statusDrafts[asset.id]! })">保存状态</Button></template>
               <span v-else class="rounded-md bg-muted px-2 py-1 text-xs">{{ quickStatusLabel[asset.workflow.status] }}</span>
               <Button v-if="!readOnly && asset.can_associate" type="button" variant="outline" size="sm" :disabled="busy || !!pending" @click="edit(asset, 'associate')">{{ associationLabel }}</Button>
-              <Button v-if="!readOnly && audience === 'supplier' && asset.owner_department === 'supplier' && asset.can_classify" type="button" variant="outline" size="sm" :disabled="busy || !!pending" @click="edit(asset, 'share')">共享厂区</Button>
+              <Button v-if="!readOnly && audience === 'supplier' && asset.can_share" type="button" variant="outline" size="sm" :disabled="busy || !!pending" @click="edit(asset, 'share')">共享厂区</Button>
               <Button type="button" variant="outline" size="sm" :disabled="!!downloading" @click="download(asset)">{{ downloading === asset.id ? '下载中…' : '下载' }}</Button>
             </div>
           </div>
@@ -182,9 +189,10 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelContext() })
       <p v-if="notice" role="status" class="mt-3 text-sm text-primary">{{ notice }}</p>
     </template>
     <DialogRoot :open="!!editor" @update:open="closeEditor"><DialogPortal><DialogOverlay class="fixed inset-0 z-50 bg-slate-950/45" /><DialogContent class="fixed left-1/2 top-1/2 z-50 flex max-h-[85dvh] overflow-hidden w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-border bg-card p-5 shadow-xl" @escape-key-down="(busy || pending) && $event.preventDefault()" @interact-outside="(busy || pending) && $event.preventDefault()">
-      <DialogTitle class="text-lg font-bold">{{ editor?.mode === 'share' ? '共享厂区' : associationLabel }}</DialogTitle><DialogDescription class="mt-1 break-all text-sm text-muted-foreground">{{ editor?.asset.file_name }} · {{ editor?.mode === 'share' ? '默认无；选择后该厂业务和仓库可见。' : '可选择多个订单；取消全部选择可解除关联。' }}</DialogDescription>
+      <DialogTitle class="text-lg font-bold">{{ editor?.mode === 'share' ? '共享厂区' : associationLabel }}</DialogTitle><DialogDescription class="mt-1 break-all text-sm text-muted-foreground">{{ editor?.asset.file_name }} · {{ editor?.mode === 'share' ? shareDescription : '可选择多个订单；取消全部选择可解除本次可维护的订单关联。' }}</DialogDescription>
+      <p v-if="editor?.mode === 'associate' && audience === 'supplier' && requiredSharedFactories.length" class="mt-2 text-xs text-muted-foreground">业务原有的排期关联保留；这里调整本供应商已收到的同客户订单。</p>
       <p v-if="editor?.mode === 'associate'" class="mt-2 text-xs text-muted-foreground">{{ audience === 'supplier' ? '可关联当前厂区已向本供应商开放的采购单、样板或杂单。关联不会提交采购。' : audience === 'sales' ? '新增关联选择未下单排期；已关联的排期下单后继续保留。仓库能在排期中查看资料。' : '业务排期可在采购前关联；采购单是已创建的纸箱采购记录。关联只绑定资料，不代表已向供应商下单。' }}</p>
-      <div class="my-4 min-h-0 flex-1 overflow-y-auto overscroll-contain" data-testid="asset-association-scroll"><fieldset :disabled="busy || !!pending" class="min-w-0 space-y-3 disabled:opacity-60"><template v-if="editor?.mode === 'share'"><label v-for="option in shareOptions" :key="option.id" class="flex items-center gap-2 text-sm"><input v-model="sharedFactories" type="checkbox" :value="option.id">{{ option.shortName }}</label></template><template v-else><p v-if="candidateLoading" role="status">正在读取可关联订单…</p><p v-else-if="candidateError" role="alert">{{ candidateError }}</p><input v-model="orderSearch" aria-label="搜索关联订单" placeholder="搜索客户、合同 / PO、货号" class="h-10 w-full rounded-lg border border-input bg-card px-3 text-sm"><p class="text-xs text-muted-foreground">已选择 {{ selected.length }} 条</p><label v-for="target in visibleCandidates" :key="target.fingerprint" class="flex items-start gap-2 text-sm"><input v-model="selected" type="checkbox" :value="target.fingerprint" class="mt-1 shrink-0">{{ targetLabel(target) }}{{ target.customer_po ? ` · PO ${target.customer_po}` : '' }}{{ target.kind === 'SCHEDULE' ? target.ordered ? ' · 已下单，保留关联' : ' · 未下单' : '' }}</label><p v-if="!candidateLoading && !candidateError && !candidates.length" class="text-sm text-muted-foreground">暂无可关联订单</p></template></fieldset></div>
+      <div class="my-4 min-h-0 flex-1 overflow-y-auto overscroll-contain" data-testid="asset-association-scroll"><fieldset :disabled="busy || !!pending" class="min-w-0 space-y-3 disabled:opacity-60"><template v-if="editor?.mode === 'share'"><label v-for="option in shareOptions" :key="option.id" class="flex items-center gap-2 text-sm"><input v-model="sharedFactories" type="checkbox" :value="option.id" :disabled="requiredSharedFactories.includes(option.id)">{{ option.shortName }}<span v-if="requiredSharedFactories.includes(option.id)" class="text-xs text-muted-foreground">来源厂区，保留可见</span></label></template><template v-else><p v-if="candidateLoading" role="status">正在读取可关联订单…</p><p v-else-if="candidateError" role="alert">{{ candidateError }}</p><input v-model="orderSearch" aria-label="搜索关联订单" placeholder="搜索客户、合同 / PO、货号" class="h-10 w-full rounded-lg border border-input bg-card px-3 text-sm"><p class="text-xs text-muted-foreground">已选择 {{ selected.length }} 条</p><label v-for="target in visibleCandidates" :key="target.fingerprint" class="flex items-start gap-2 text-sm"><input v-model="selected" type="checkbox" :value="target.fingerprint" class="mt-1 shrink-0">{{ targetLabel(target) }}{{ target.customer_po ? ` · PO ${target.customer_po}` : '' }}{{ target.kind === 'SCHEDULE' ? target.ordered ? ' · 已下单，保留关联' : ' · 未下单' : '' }}</label><p v-if="!candidateLoading && !candidateError && !candidates.length" class="text-sm text-muted-foreground">暂无可关联订单</p></template></fieldset></div>
       <p v-if="actionError" role="alert" class="mb-3 text-sm text-destructive">{{ actionError }}</p><footer class="flex shrink-0 justify-end gap-2 border-t border-border pt-4"><Button type="button" variant="outline" :disabled="busy || !!pending" @click="closeEditor(false)">取消</Button><Button type="button" :disabled="busy || candidateLoading || !!candidateError" @click="pending ? execute() : saveEditor()">{{ busy ? '保存中…' : pending ? '原样重试' : '保存' }}</Button></footer>
     </DialogContent></DialogPortal></DialogRoot>
   </section>

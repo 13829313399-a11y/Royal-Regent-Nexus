@@ -15,7 +15,8 @@
     "src/features/assistant/__tests__/*.spec.ts",
     "src/features/online-documents/*.spec.ts",
     "src/features/spreadsheet-merge/__tests__/*.spec.ts",
-    "src/api/__tests__/spreadsheetMerge.spec.ts"
+    "src/api/__tests__/spreadsheetMerge.spec.ts",
+    "src/api/__tests__/customerOrderTransport.spec.ts"
   ],
   "exclude": [],
   "compilerOptions": {

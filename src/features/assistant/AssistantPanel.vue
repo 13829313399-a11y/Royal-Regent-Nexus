@@ -3,11 +3,13 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Minus, Maximize2, Minimize2, Plus, X, MapPin, ArrowDown, Download, Trash2, Pencil, PanelLeftClose, GripVertical, RotateCcw, Globe, BriefcaseBusiness, FileText, BookOpen, Bookmark, Star } from '@lucide/vue'
 import { useAssistantStore } from '@/stores/assistant'
 import { acquireBodyScrollLock } from '@/lib/bodyScrollLock'
-import { assistantApi } from './api'
+import { acquireDialogInert } from '@/composables/useDialogFocus'
+import { assistantApi, newRequestId } from './api'
 import { availableTargetIds, revealTarget } from './anchors'
 import { guidanceProblem, verifyHelpTarget } from './helpGuidance'
 import { placeGuide } from './guidePlacement'
-import { activeStates, stateLabels, type Conversation, type HelpArticle, type PageContext, type PanelMode, type SendPayload } from './types'
+import { activeStates, stateLabels, type Conversation, type Draft, type HelpArticle, type PageContext, type PanelMode, type RunRelation, type SendPayload } from './types'
+import { relatedDraft, releaseDraftImages, relationLabels } from './relatedDraft'
 import AssistantCore from './AssistantCore.vue'
 import AssistantConnection from './AssistantConnection.vue'
 import AssistantCoverage from './AssistantCoverage.vue'
@@ -25,7 +27,7 @@ import AssistantArtifacts from './AssistantArtifacts.vue'
 import type { EvidencePart } from './v2'
 import { clamp, defaultPanelHeight, panelBounds, panelMargin, type PanelPosition } from './layout'
 const props = withDefaults(defineProps<{ mode: PanelMode; side: 'left' | 'right'; width: number; height?: number; position?: PanelPosition | null; focusOnOpen?: boolean; page: PageContext | null; pageTitle: string; suspended?: boolean }>(), { focusOnOpen: true })
-const emit = defineEmits<{ mode: [PanelMode]; side: ['left' | 'right']; width: [number]; height: [number]; position: [PanelPosition | null]; 'layout-end': []; 'pointer-enter': [PointerEvent]; 'pointer-leave': [PointerEvent]; 'focus-change': [boolean] }>()
+const emit = defineEmits<{ mode: [PanelMode, boolean?]; side: ['left' | 'right']; width: [number]; height: [number]; position: [PanelPosition | null]; 'layout-end': []; 'pointer-enter': [PointerEvent]; 'pointer-leave': [PointerEvent]; 'focus-change': [boolean] }>()
 const store = useAssistantStore(), panel = ref<HTMLElement>(), scroller = ref<HTMLElement>(), composer = ref<HTMLTextAreaElement>()
 const { scope, freeze, changed: scopeChanged, adopt: adoptScope, includeCurrent, removePage, removeSelection } = useDraftScope(() => store.draftFor(), () => props.page, () => props.pageTitle)
 const draft = computed({get: () => store.draftFor().text, set: value => { freeze(); store.draftFor().text = value }}), tab = ref<'chat' | 'help' | 'pick'>('chat')
@@ -34,15 +36,21 @@ const historyOpen = computed({get:()=>layer.value==='history',set:v=>{ if(v) lay
 const aboutOpen = computed({get:()=>layer.value==='about',set:v=>{ if(v) layer.value='about'; else if(layer.value==='about') layer.value=null }})
 const materialTab = ref<'materials'|'sources'|'artifacts'>('materials')
 const menuOpen = ref(false)
+const openMenus=new Set<string>()
 const moreItems = [{id:'history',label:'历史会话'},{id:'sources',label:'资料与来源'},{id:'artifacts',label:'我的私有成果'},{id:'coverage',label:'模块覆盖'},{id:'about',label:'关于与连接状态'}]
 function menuSelected(id: string) { layerTrigger=panel.value?.querySelector<HTMLElement>('[aria-label="更多操作"]') || null; layer.value=id as typeof layer.value; if(id==='sources') materialTab.value='sources'; if(id==='history') void store.history() }
-function menuChanged(value: boolean) { menuOpen.value=value; emit('focus-change',value || !!layer.value || !!panel.value?.contains(document.activeElement)) }
+function menuChanged(value: boolean,key='panel') { if(value)openMenus.add(key);else openMenus.delete(key);menuOpen.value=!!openMenus.size;emit('focus-change',menuOpen.value || !!layer.value || !!panel.value?.contains(document.activeElement)) }
 function includeSelection() { localError.value=includeCurrent() }
 function chooseFile(kind: 'document' | 'image') {
   // Return from the native picker to the editor, keeping the hover panel open.
   composer.value?.focus()
   ;(kind === 'document' ? documentInput.value : fileInput.value)?.click()
   void nextTick(() => { if (props.mode !== 'edge' && !props.suspended) composer.value?.focus() })
+}
+function preserveModeEditor(event: PointerEvent) {
+  // Keep an active edit and its selection while the layout control moves.
+  // Keyboard activation retains the mode button's ordinary focus behavior.
+  if (event.button === 0 && document.activeElement === composer.value) event.preventDefault()
 }
 function modeSwitch() { emit('mode',props.mode==='focus'?'side':'focus') }
 const help = ref<HelpArticle[]>([]), helpError = ref(''), selectedArticle = ref<HelpArticle | null>(null)
@@ -59,15 +67,44 @@ async function endGuidance() {
   else composer.value?.focus()
 }
 const localError = ref(''), showNew = ref(false)
+const relationLoading = ref(false), relationPending = ref<Draft | null>(null)
+let relationGeneration = 0
+function cancelPreparedRelation() { if(relationPending.value) releaseDraftImages(relationPending.value); relationPending.value=null }
+function usePreparedRelation(value: Draft) {
+  releaseDraftImages(store.draftFor())
+  Object.assign(store.draftFor(), value)
+  relationPending.value=null; tab.value='chat'; selectedArticle.value=null
+  void nextTick(() => composer.value?.focus())
+}
+async function prepareRelated(runId: string, kind: RunRelation['kind'], excerpt='') {
+  if(store.busy || !runId) return
+  const request=++relationGeneration, generation=store.identityGeneration, sid=store.selectedId
+  relationLoading.value=true; localError.value=''; cancelPreparedRelation()
+  try {
+    const prepared=await relatedDraft(runId,kind,excerpt)
+    if(request!==relationGeneration || generation!==store.identityGeneration || sid!==store.selectedId) { releaseDraftImages(prepared.draft); return }
+    if(prepared.sessionId!==sid) { releaseDraftImages(prepared.draft); throw new Error('原提问已不属于当前会话。') }
+    const current=store.draftFor()
+    if(current.text.trim() || current.attachments.length || current.documents.length || current.relation) relationPending.value=prepared.draft
+    else usePreparedRelation(prepared.draft)
+  } catch(e) { if(request===relationGeneration && generation===store.identityGeneration) localError.value=e instanceof Error ? e.message : '原提问读取失败。' }
+  finally { if(request===relationGeneration) relationLoading.value=false }
+}
+function clearRelatedDraft() { releaseDraftImages(store.draftFor()); Object.assign(store.draftFor(),{text:'',attachments:[],documents:[],relation:undefined,scope:undefined,intent:'chat'});void nextTick(()=>{if(props.mode!=='edge'&&!props.suspended)composer.value?.focus()}) }
+function inspectParent(runId: string) {
+  const target=scroller.value?.querySelector<HTMLElement>(`.yl-message-assistant[data-run-id="${CSS.escape(runId)}"]`)
+  if(target) { target.scrollIntoView({block:'start',behavior:'instant'}); target.tabIndex=-1; target.focus({preventScroll:true}) }
+  else localError.value='原回答在较早的记录中，请先加载更早的消息。'
+}
 const thinking = computed({get:()=>store.draftFor().thinking || 'auto',set:value=>{ store.draftFor().thinking=value }})
 const selection = computed(() => scope.value.selection)
 const attachments = computed({ get: () => store.draftFor().attachments, set: value => { store.draftFor().attachments = value } }), uploading = ref(false), fileInput = ref<HTMLInputElement>()
 const documents = computed(() => store.draftFor().documents), documentInput = ref<HTMLInputElement>()
 const search = computed({get:()=>store.draftFor().search ?? (store.capabilities?.search?.supported_modes.includes('auto') ? 'auto' : 'off'),set:value=>{ store.draftFor().search=value }})
 const publicQuery = computed({get:()=>store.draftFor().publicQuery || '',set:value=>{ store.draftFor().publicQuery=value }})
-const intent = ref<SendPayload['intent']>('chat')
+const intent = computed({get:()=>store.draftFor().intent || 'chat',set:value=>{store.draftFor().intent=value}})
 const searchReason = computed(() => searchUnavailable(store.capabilities,search.value,thinking.value,!!attachments.value.length))
-const sendReason = computed(() => !canChat.value ? (store.capabilities?.status_label || '模型连接尚未就绪，可先查看页面说明。') : uploading.value ? '正在上传资料，请稍候。' : documents.value.some(d=>d.parse_status!=='ready') ? '本轮资料尚未就绪，请刷新状态或移出本轮。' : searchReason.value || (store.creating ? '正在建立会话…' : ''))
+const sendReason = computed(() => relationLoading.value ? '正在读取原提问及资料…' : relationPending.value ? '请先选择保留原草稿或使用关联提问。' : !canChat.value ? (store.capabilities?.status_label || '模型连接尚未就绪，可先查看页面说明。') : uploading.value ? '正在上传资料，请稍候。' : documents.value.some(d=>d.parse_status!=='ready') ? '本轮资料尚未就绪，请刷新状态或移出本轮。' : searchReason.value || (store.creating ? '正在建立会话…' : ''))
 const acceptedDocuments = computed(() => store.capabilities?.materials?.extensions.map(e=>e.startsWith('.')?e:`.${e}`).join(',') || '')
 const privateQuery = computed(() => !!(selection.value || documents.value.length || attachments.value.length || store.messages.length))
 const sourcesOpen = computed({get:()=>layer.value==='sources',set:v=>{ if(v) layer.value='sources'; else if(layer.value==='sources') layer.value=null }})
@@ -80,7 +117,10 @@ function showSources(value?: EvidencePart) { layerTrigger=document.activeElement
 function showArtifacts(id='') { layerTrigger=document.activeElement as HTMLElement; artifactId.value=id; artifactsOpen.value=true }
 watch(layer, async value => { if(value) { if (!layerTrigger?.isConnected && !(document.activeElement as HTMLElement)?.closest('.yl-inner-layer')) layerTrigger=document.activeElement as HTMLElement; await nextTick(); panel.value?.querySelector<HTMLElement>('.yl-inner-layer button')?.focus() } })
 watch(draft, async () => { await nextTick(); if(composer.value) { composer.value.style.height='auto'; composer.value.style.height=Math.min(168,composer.value.scrollHeight)+'px' } })
-const viewport = ref({ width: innerWidth, height: innerHeight, top: 0, left: 0 }), reducedMotion = ref(false)
+const viewport = ref({ width: innerWidth, height: innerHeight, top: 0, left: 0, layoutWidth: innerWidth }), reducedMotion = ref(false)
+// CSS breakpoints use the layout viewport, including its scrollbar. The visual
+// viewport still bounds geometry and follows the on-screen keyboard separately.
+const mobile = computed(() => viewport.value.layoutWidth < 768)
 const pickTargets = ref<{ id: string; label: string }[]>([]), highlight = ref<DOMRect | null>(null), guideIndex = ref(-1)
 const guideCard = ref<HTMLElement>(), guideHeight = ref(185)
 const guideOccluders = ref<HTMLElement[]>([])
@@ -110,7 +150,7 @@ onUnmounted(() => guideObserver?.disconnect())
 const renameId = ref(''), renameText = ref(''), deleteId = ref('')
 let nearBottom = true, helpGeneration = 0, highlightElement: HTMLElement | null = null
 let highlightResizeFrame = 0
-let releaseLock: (() => void) | undefined, originalInert: boolean | undefined, oldFocus: HTMLElement | null = null
+let releaseLock: (() => void) | undefined, releaseInert: (() => void) | undefined, oldFocus: HTMLElement | null = null
 let pointer: { kind: 'drag' | 'resize' | 'corner'; id: number; target: HTMLElement; x: number; y: number; bounds: ReturnType<typeof panelBounds>; moved: boolean } | null = null
 const manipulating = ref(false)
 let previewing = false, connectorTimer: ReturnType<typeof setTimeout> | undefined
@@ -123,7 +163,7 @@ const connectionPath = computed(() => {
   const tx = Math.max(8, Math.min(viewport.value.width-8, props.side === 'right' ? h.right : h.left)), ty = Math.max(8, Math.min(viewport.value.height-8,h.top+Math.min(h.height/2,80)))
   return `M ${x} ${y} C ${(x+tx)/2} ${y}, ${(x+tx)/2} ${ty}, ${tx} ${ty}`
 })
-const modal = computed(() => props.mode === 'focus' || (props.mode !== 'edge' && viewport.value.width < 768))
+const modal = computed(() => props.mode === 'focus' || (props.mode !== 'edge' && mobile.value))
 const bounds = computed(() => panelBounds(viewport.value, props.width, props.height ?? defaultPanelHeight, props.position, props.side))
 const sizeStyle = computed(() => ({ '--yl-width': `${bounds.value.width}px`, '--yl-height': `${bounds.value.height}px`, '--yl-vh': `${viewport.value.height}px`, '--yl-vtop': `${viewport.value.top}px`,
   ...(!modal.value ? { left: `${bounds.value.x}px`, top: `${bounds.value.y}px`, right: 'auto' } : {}) }))
@@ -139,7 +179,7 @@ const guide = computed(() => locating.value ? undefined : selectedArticle.value?
 function resizeViewport() {
   pointerEnd()
   const previous = viewport.value
-  viewport.value = { width: window.visualViewport?.width || innerWidth, height: window.visualViewport?.height || innerHeight, top: window.visualViewport?.offsetTop || 0, left: window.visualViewport?.offsetLeft || 0 }
+  viewport.value = { width: window.visualViewport?.width || innerWidth, height: window.visualViewport?.height || innerHeight, top: window.visualViewport?.offsetTop || 0, left: window.visualViewport?.offsetLeft || 0, layoutWidth: innerWidth }
   updateHighlight()
   if (!highlightElement || (previous.width === viewport.value.width && previous.height === viewport.value.height)) return
   cancelAnimationFrame(highlightResizeFrame)
@@ -156,18 +196,17 @@ function resizeViewport() {
 }
 function unlock() {
   releaseLock?.(); releaseLock = undefined
-  const root = document.getElementById('app')
-  if (root && originalInert !== undefined) root.inert = originalInert
-  originalInert = undefined
+  releaseInert?.(); releaseInert = undefined
 }
 watch(modal, async value => {
   unlock()
   if (value) {
     releaseLock = acquireBodyScrollLock()
-    const root = document.getElementById('app'); if (root) { originalInert = root.inert; root.inert = true }
+    const root = document.getElementById('app'); if (root) releaseInert = acquireDialogInert(root)
     const focused=document.activeElement as HTMLElement; await nextTick(); if(modal.value && !panel.value?.contains(focused)) panel.value?.focus()
   }
 }, { immediate: true })
+function yieldToNative() { oldFocus = null; emit('mode','edge',false) }
 watch(() => props.mode, async (value, previous) => {
   pointerEnd()
   if (value !== 'edge' && previous === 'edge') {
@@ -189,6 +228,13 @@ watch(() => props.suspended, value => { if (value) { cancelGuidance(); previewin
 watch(reducedMotion, value => { try { localStorage.setItem('yl-assistant-reduced-motion', String(value)) } catch { /* optional preference */ } })
 watch(() => props.page, () => { helpGeneration++; cancelGuidance(); help.value = []; selectedArticle.value = null; if (tab.value !== 'chat') void loadHelp() }, { deep: true })
 watch(() => store.identityGeneration, () => { helpGeneration++; cancelGuidance(); help.value = []; selectedArticle.value = null; pickTargets.value = []; tab.value = 'chat' })
+watch(() => store.visibilityGeneration, async () => {
+  helpGeneration++;cancelGuidance();help.value=[];selectedArticle.value=null;selectedEvidence.value=null;pickTargets.value=[];layer.value=null;tab.value='chat'
+  await nextTick()
+  if(props.mode!=='edge'&&!props.suspended&&document.activeElement===document.body)composer.value?.focus()
+})
+watch([() => store.identityGeneration, () => store.selectedId], () => { relationGeneration++; relationLoading.value=false; cancelPreparedRelation() })
+onUnmounted(() => { relationGeneration++; cancelPreparedRelation() })
 watch(() => store.selectedId, () => { selectedEvidence.value=null; showNew.value = false; nearBottom = true; void bottom() })
 watch(() => store.messages.map(m => m.content_parts.map(p => p.text || '').join('')).join('').length, () => { if (nearBottom) void bottom(); else showNew.value = true })
 async function bottom() { await nextTick(); if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight; showNew.value = false; nearBottom = true }
@@ -225,7 +271,7 @@ async function locate(id: string) {
     if (!article) throw new Error('这个目标没有当前可用的说明。')
     // Close the hover surface before the HTTP check so leaving it cannot cancel
     // a walkthrough while its current source fingerprint is being verified.
-    previewing = viewport.value.width < 768 || guideIndex.value >= 0
+    previewing = mobile.value || guideIndex.value >= 0
     if (modal.value || (previewing && props.mode !== 'edge')) { emit('mode', previewing ? 'edge' : 'side'); await nextTick() }
     const current = await assistantApi.article(article.id)
     if (!isCurrent()) return
@@ -300,14 +346,14 @@ async function send() {
   if (!draft.value.trim() || store.busy || sendReason.value) return
   freeze()
   if(documents.value.some(d => d.parse_status !== 'ready')) { localError.value='资料还未解析完成，请刷新资料状态或移除失败文件。'; return }
-  const savedDraft=store.draftFor(), originalText=draft.value, savedImages=[...attachments.value], savedDocuments=[...documents.value], generation=store.identityGeneration
+  const savedDraft=store.draftFor(), originalText=draft.value, savedImages=[...attachments.value], savedDocuments=[...documents.value], originalRelation=savedDraft.relation, generation=store.identityGeneration
   const selected = selection.value
   const context = selected || publicQuery.value.trim() ? {selection_id:selected?.selection_id || 'public-query',resources:selected?.resources || [],filters:{...selected?.filters,...(publicQuery.value.trim() ? {public_query:publicQuery.value} : {})}} : null
   const input: Omit<SendPayload,'client_request_id'> = { protocol_version:2, text: draft.value, document_ids:documents.value.map(d => d.id), attachment_ids: attachments.value.map(a => a.id), profile_id: 'default', thinking: thinking.value, web_search: search.value,
-    context_selection:context,
+    context_selection:context, ...(originalRelation ? {relation:{...originalRelation}} : {}),
     intent: selectedArticle.value ? 'explain_element' : tab.value === 'help' ? 'explain_page' : intent.value,
     page_context: scope.value.page ? { ...scope.value.page, ...(selectedArticle.value ? { help_id: selectedArticle.value.id } : {}) } : null }
-  savedDraft.text=''; savedDraft.attachments=[]; savedDraft.documents=[]; tab.value = 'chat'; nearBottom = true
+  savedDraft.text=''; savedDraft.attachments=[]; savedDraft.documents=[]; savedDraft.relation=undefined; tab.value = 'chat'; nearBottom = true
   const submitted=store.submit(input)
   // Sending replaces the focused send button with Stop; keep keyboard focus in
   // the dialog so Escape and Tab continue to work during streaming.
@@ -315,7 +361,7 @@ async function send() {
   if(generation===store.identityGeneration && props.mode!=='edge') composer.value?.focus()
   await submitted
   if(generation!==store.identityGeneration) return
-  if(store.currentRun?.state==='failed' && !store.currentRun.runId) { const target=store.draftFor(); if(!target.text) { target.text=originalText; target.attachments=savedImages; target.documents=savedDocuments } }
+  if(store.currentRun?.state==='failed' && !store.currentRun.runId) { const target=store.draftFor(); if(target===savedDraft && !target.text && !target.relation) { target.text=originalText; target.attachments=savedImages; target.documents=savedDocuments; target.relation=originalRelation } }
   else savedImages.forEach(a=>URL.revokeObjectURL(a.url))
   if(search.value==='on') search.value=store.capabilities?.search?.supported_modes.includes('auto') ? 'auto' : 'off'
   intent.value='chat'
@@ -323,16 +369,31 @@ async function send() {
 function enter(event: KeyboardEvent) { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); void send() } }
 async function retry() {
   const run = store.currentRun
-  if (!run?.payload.text) return
+  const generation = store.identityGeneration
+  if (!run) return
   await store.recover()
-  if (activeStates.includes(run.state)) return
-  await store.submit(run.payload, run.runId ? undefined : run.payload)
+  if(generation!==store.identityGeneration || store.currentRun!==run) return
+  if (activeStates.includes(run.state) || run.state==='completed') return
+  if (!run.payload.text && run.runId) {
+    try {
+      const original=await assistantApi.question(run.runId)
+      if(generation!==store.identityGeneration || store.currentRun!==run) return
+      run.payload={...original.payload,client_request_id:newRequestId()}
+    } catch(e) { localError.value=e instanceof Error ? e.message : '原提问当前不可读取'; return }
+  }
+  if(!run.payload.text) return
+  await store.submit(run.runId ? {...run.payload,protocol_version:2,relation:{parent_run_id:run.runId,kind:'retry'}} : run.payload, run.runId ? undefined : run.payload)
 }
 async function newChat() { await store.newSession(); historyOpen.value = false; tab.value = 'chat'; intent.value='chat'; composer.value?.focus() }
+async function selectHistory(id: string) {
+  const generation = store.identityGeneration
+  historyOpen.value = false; tab.value = 'chat'
+  await store.selectSession(id); await nextTick()
+  if (generation === store.identityGeneration && store.selectedId === id && props.mode !== 'edge' && !props.suspended && !layer.value) composer.value?.focus()
+}
 async function older() { const el=scroller.value; if(!el) return; const top=el.scrollTop, height=el.scrollHeight; const follow=nearBottom; nearBottom=false; await store.selectSession(store.selectedId,true); await nextTick(); el.scrollTop=top+el.scrollHeight-height; nearBottom=follow }
 function suggestion(kind: SendPayload['intent']) { intent.value=kind; if(kind==='explain_page') { void showHelp(); return }; if(kind==='analyze_files') { documentInput.value?.click(); return }; if(kind==='research' && store.capabilities?.search?.supported_modes.includes('auto')) search.value='auto'; draft.value=kind==='my_work' ? '请查询当前范围的工作，说明已确认事实、未知信息和下一步。' : '请查一下千问官方联网搜索如何返回来源。'; composer.value?.focus() }
 async function favorite(row: Conversation) { try { await assistantApi.favorite(row.id,!row.favorite); row.favorite=!row.favorite } catch(e) { localError.value=e instanceof Error ? e.message : '收藏失败' } }
-function reviseLast() { const question=[...store.messages].reverse().find(m=>m.role==='user'); if(question) { draft.value=question.content_parts.filter(p=>p.type==='text').map(p=>p.text||'').join(''); composer.value?.focus() } }
 async function exportChat() {
   const id = store.selectedId
   try {
@@ -505,12 +566,12 @@ onUnmounted(() => { pointerEnd(); helpGeneration++; cancelGuidance(); clearTimeo
 <template>
   <div :class="{ 'yl-reduced': reducedMotion }">
     <div v-if="modal" class="yl-backdrop" @click="emit('mode', 'side')" />
-    <section v-show="mode !== 'edge'" ref="panel" class="yl-panel" :class="{ 'yl-focus': mode === 'focus', 'yl-mobile': viewport.width < 768, 'yl-manipulating': manipulating }" :style="sizeStyle" role="dialog" :aria-modal="modal || undefined" aria-label="曜灵 · Nexus AI" tabindex="-1" @keydown="keydown" @pointerdown.capture="pointerFocus" @pointerenter="emit('pointer-enter', $event)" @pointerleave="emit('pointer-leave', $event)" @focusin="updateFocus($event.target)" @focusout="updateFocus($event.relatedTarget)">
+    <section v-show="mode !== 'edge'" ref="panel" class="yl-panel" :class="{ 'yl-focus': mode === 'focus', 'yl-mobile': mobile, 'yl-manipulating': manipulating }" :style="sizeStyle" role="dialog" :aria-modal="modal || undefined" aria-label="曜灵 · Nexus AI" tabindex="-1" @keydown="keydown" @pointerdown.capture="pointerFocus" @pointerenter="emit('pointer-enter', $event)" @pointerleave="emit('pointer-leave', $event)" @focusin="updateFocus($event.target)" @focusout="updateFocus($event.relatedTarget)">
       <aside class="yl-session-rail" :inert="layer ? true : undefined"><div class="yl-rail-brand"><AssistantCore/><div><strong>曜灵</strong><small>NEXUS AI</small></div></div><button class="yl-rail-new" @click="newChat"><Plus :size="18"/>开启新会话</button><small>会话记录</small><div class="yl-rail-list"><button v-for="row in store.sessions" :key="row.id" :class="{active:row.id===store.selectedId}" @click="store.selectSession(row.id); tab='chat'"><BookOpen :size="14"/><span>{{ row.title }}</span><Star v-if="row.favorite" :size="13"/></button></div><button @click="historyOpen=true">检索与管理历史</button><button @click="showArtifacts()"><Bookmark :size="15"/>我的成果</button><p>一点灵感，一次协作。<br>让每个问题都有下一步。</p></aside>
       <main class="yl-conversation" :inert="layer ? true : undefined">
       <header class="yl-header" :class="{ 'yl-movable': !modal }" @pointerdown="pointerDown($event, 'drag')" @pointermove="pointerMove" @pointerup="pointerEnd" @pointercancel="pointerEnd" @lostpointercapture="pointerEnd">
         <div class="yl-header-top"><AssistantCore :active="store.anyBusy" /><div class="yl-brand"><strong>曜灵</strong><span>Nexus AI</span></div>
-          <div class="yl-header-actions"><button aria-label="新建对话" title="新建对话" :disabled="store.creating || store.capabilities?.schema_status !== 'ready'" @click="newChat"><Plus :size="19"/></button><button :aria-label="mode === 'focus' ? '退出专注阅读' : '专注阅读'" @click="modeSwitch"><Minimize2 v-if="mode==='focus'" :size="18"/><Maximize2 v-else :size="18"/></button><AssistantMenu label="更多操作" :items="moreItems" @select="menuSelected" @open="menuChanged"><MoreHorizontal :size="20"/></AssistantMenu><button aria-label="收起曜灵" @click="emit('mode','edge')"><Minus :size="20"/></button></div>
+          <div class="yl-header-actions"><button aria-label="新建对话" title="新建对话" :disabled="store.creating || store.capabilities?.schema_status !== 'ready'" @click="newChat"><Plus :size="19"/></button><button :aria-label="mode === 'focus' ? '退出专注阅读' : '专注阅读'" @pointerdown="preserveModeEditor" @click="modeSwitch"><Minimize2 v-if="mode==='focus'" :size="18"/><Maximize2 v-else :size="18"/></button><AssistantMenu label="更多操作" :items="moreItems" :active="mode!=='edge'&&!suspended" @select="menuSelected" @open="menuChanged($event,'header')"><MoreHorizontal :size="20"/></AssistantMenu><button aria-label="收起曜灵" @click="emit('mode','edge')"><Minus :size="20"/></button></div>
         </div>
         <span v-if="store.busy" class="yl-sr-only" role="status">{{ stateLabels[store.currentRun!.state] }}</span>
       </header>
@@ -526,10 +587,9 @@ onUnmounted(() => { pointerEnd(); helpGeneration++; cancelGuidance(); clearTimeo
         <template v-if="tab === 'chat'">
           <button v-if="store.cursors[store.selectedId]" class="yl-load-more" @click="older">加载更早的消息</button>
           <p v-if="store.loading" class="yl-muted">正在读取对话…</p>
-          <AssistantMessage v-for="message in store.messages" :key="message.id" :message="message" @citation="citation" @sources="showSources" @saved="showArtifacts" @file-deleted="historicalDocumentDeleted"/>
-          <div v-if="store.messages.length && !store.busy" class="yl-tail-actions"><button @click="reviseLast"><Pencil :size="14"/>修订末尾问题</button><button v-if="store.currentRun?.payload.text" @click="store.submit(store.currentRun.payload)"><RotateCcw :size="14"/>重新生成新回答</button></div>
+          <AssistantMessage v-for="message in store.messages" :key="message.id" :message="message" :feedback-available="!!store.capabilities?.feedback?.available" :menus-active="mode!=='edge'&&!suspended" :related-disabled="relationLoading || !!store.currentRun && activeStates.includes(store.currentRun.state) && store.currentRun.runId===message.run_id" @menu="menuChanged($event,message.id)" @citation="citation" @sources="showSources" @saved="showArtifacts" @file-deleted="historicalDocumentDeleted" @excerpt="(id,text)=>prepareRelated(id,'excerpt',text)" @related="(id,kind)=>prepareRelated(id,kind)" @unavailable="store.invalidateRun" @parent="inspectParent" @native-form="yieldToNative"/>
           <p v-if="store.currentRun?.omittedTurns" class="yl-notice">本轮使用近期完整对话，{{ store.currentRun.omittedTurns }} 轮较早内容未发送给模型；完整记录仍可导出。</p>
-          <div v-if="store.currentRun?.error" class="yl-run-notice" role="status"><strong>{{ stateLabels[store.currentRun.state] }}</strong><p>{{ store.currentRun.error }}</p><div><button @click="store.recover()">查询保存结果</button><button v-if="!store.busy && store.currentRun.payload.text && store.currentRun.retryable" @click="retry">重试生成</button></div></div>
+          <div v-if="store.currentRun?.error" class="yl-run-notice" role="status"><strong>{{ stateLabels[store.currentRun.state] }}</strong><p>{{ store.currentRun.error }}</p><div><button @click="store.recover()">查询保存结果</button><button v-if="!store.busy && (store.currentRun.payload.text || store.currentRun.runId) && store.currentRun.retryable" @click="retry">重试生成</button></div></div>
         </template>
         <section v-else class="yl-help">
           <h2>{{ tab === 'pick' ? '指一个地方，我来解释' : '把这一页，讲清楚' }}</h2><p class="yl-muted">说明来自维护过的系统规则，不包含实际订单、价格或产量。</p>
@@ -551,27 +611,30 @@ onUnmounted(() => { pointerEnd(); helpGeneration++; cancelGuidance(); clearTimeo
       <button v-if="showNew && tab === 'chat'" class="yl-new-content" @click="bottom">有新内容 <ArrowDown :size="14" /></button>
       <div v-if="localError || store.error" role="status" class="yl-error"><span>{{ localError || store.error }}</span><button aria-label="关闭提示" @click="localError = ''; store.error = ''"><X :size="14" /></button></div>
       <form class="yl-composer" @submit.prevent="send">
+        <div v-if="relationPending" class="yl-relation-confirm" role="status"><p>输入区已有未发送的内容。替换后会沿用原提问范围，并保留明确的{{ relationLabels[relationPending.relation!.kind] }}关系。</p><button type="button" @click="cancelPreparedRelation">保留原草稿</button><button type="button" @click="usePreparedRelation(relationPending!)">替换并关联</button></div>
+        <div v-if="store.draftFor().relation" class="yl-relation"><span>{{ relationLabels[store.draftFor().relation!.kind] }} · 发送后创建新回答</span><button type="button" @click="inspectParent(store.draftFor().relation!.parent_run_id)">定位原回答</button><button type="button" @click="clearRelatedDraft">清除此草稿</button></div>
+        <p v-if="store.draftFor().relation?.kind==='excerpt'" class="yl-muted">基于原回答摘录继续讨论；本次不会自动刷新业务或重新读取原文件。联网默认关闭，可手动开启查证。</p>
         <div v-if="documents.length" class="yl-document-chips"><div v-for="doc in documents" :key="doc.id"><FileText :size="14"/><span>{{ doc.name }} · {{ {queued:'排队中',parsing:'解析中',ready:'可分析',failed:'解析失败'}[doc.parse_status] || doc.parse_status }}{{ doc.error_code ? ` (${documentParseMessage(doc.error_code)})` : '' }}</span><button type="button" aria-label="移出本轮文件" @click="store.draftFor().documents=documents.filter(d=>d.id!==doc.id)"><X :size="14"/></button></div><button type="button" @click="refreshDocuments">刷新资料状态</button></div>
         <div v-if="attachments.length" class="yl-attachments"><figure v-for="(image,index) in attachments" :key="image.id"><img :src="image.url" :alt="image.name" /><button type="button" aria-label="移除图片" @click="removeImage(index)"><X :size="13" /></button></figure></div>
         <textarea ref="composer" v-model="draft" :disabled="store.creating" rows="2" aria-label="给曜灵的问题" placeholder="问一个问题，或把工作交给曜灵…" @keydown="enter" @paste="paste" />
         <details v-if="search!=='off'" class="yl-public-editor"><summary>{{ privateQuery ? '公开检索词 · 私有资料混合时请填写' : '查看或编辑公开检索词（可选）' }}</summary><p>只填写可以发送到公开搜索的内容，不包含内部记录、人员或客户资料。</p><input v-model="publicQuery" class="yl-public-query" aria-label="单独的公开检索词" placeholder="本轮可公开的问题" maxlength="4000"/></details>
         <input ref="documentInput" hidden type="file" :accept="acceptedDocuments" multiple @change="uploadDocuments(Array.from(($event.target as HTMLInputElement).files || []))"/>
         <input ref="fileInput" hidden type="file" accept="image/png,image/jpeg,image/webp" multiple @change="upload(Array.from(($event.target as HTMLInputElement).files || []))"/>
-        <AssistantComposerActions :capabilities="store.capabilities" v-model:search="search" v-model:thinking="thinking" :busy="store.busy" :disabled="!draft.trim() || !!sendReason" :uploading="uploading || store.creating" :has-page="!!page" @files="chooseFile('document')" @images="chooseFile('image')" @context="includeSelection" @stop="store.stop()" @open="menuChanged" @focus="composer?.focus()"/>
+        <AssistantComposerActions :capabilities="store.capabilities" v-model:search="search" v-model:thinking="thinking" :busy="store.busy" :stopping="store.currentRun?.stopping" :menus-active="mode!=='edge'&&!suspended" :disabled="!draft.trim() || !!sendReason" :uploading="uploading || store.creating" :has-page="!!page" @files="chooseFile('document')" @images="chooseFile('image')" @context="includeSelection" @stop="store.stop()" @open="menuChanged($event,'composer')" @focus="composer?.focus()"/>
         <p v-if="sendReason" id="yl-send-reason" class="yl-send-reason" role="status">{{ sendReason }}</p>
         <p class="yl-disclosure">选用的资料会交给配置的模型服务；公开检索独立取词。</p>
       </form>
       </main>
       <aside class="yl-context-rail" :inert="layer ? true : undefined">
         <div class="yl-rail-tabs" role="group" aria-label="资料工作区"><button v-for="entry in [{id:'materials',label:'资料'},{id:'sources',label:'来源'},{id:'artifacts',label:'成果'}]" :key="entry.id" :aria-pressed="materialTab===entry.id" @click="materialTab=entry.id as typeof materialTab">{{ entry.label }}</button></div>
-        <div v-if="materialTab==='materials'" class="yl-materials-pane"><div class="yl-page-card"><small>当前页面 · 可讲解</small><strong>{{ pageTitle || '自由交流' }}</strong><button v-if="page" @click="showHelp">讲解本页</button><button v-if="page" @click="pick">指给我看</button></div><p v-if="!documents.length" class="yl-muted">从输入区添加文件；解析完成后可以带入本轮提问。</p><template v-if="mode === 'focus' && viewport.width >= 1120"><AssistantDocument v-for="doc in documents" :key="doc.id" :id="doc.id" :status="doc.parse_status" @deleted="historicalDocumentDeleted"/></template></div>
+        <div v-if="materialTab==='materials'" class="yl-materials-pane"><div class="yl-page-card"><small>当前页面 · 可讲解</small><strong>{{ pageTitle || '自由交流' }}</strong><button v-if="page" @click="showHelp">讲解本页</button><button v-if="page" @click="pick">指给我看</button></div><p v-if="!documents.length" class="yl-muted">从输入区添加文件；解析完成后可以带入本轮提问。</p><template v-if="mode === 'focus' && viewport.layoutWidth >= 1120"><AssistantDocument v-for="doc in documents" :key="doc.id" :id="doc.id" :status="doc.parse_status" @deleted="historicalDocumentDeleted"/></template></div>
         <AssistantSources v-else-if="materialTab==='sources'" :evidence="latestEvidence || null"/>
         <AssistantArtifacts v-else :selected="artifactId"/>
       </aside>
       <div v-if="sourcesOpen" class="yl-inner-layer yl-source-layer" role="dialog" aria-label="资料与来源"><header><h2>资料与来源</h2><button aria-label="关闭来源" @click="closeLayers"><X :size="18"/></button></header><div class="yl-rail-tabs"><button :aria-pressed="materialTab==='materials'" @click="materialTab='materials'">资料</button><button :aria-pressed="materialTab==='sources'" @click="materialTab='sources'">来源</button><button @click="showArtifacts()">成果</button></div><template v-if="materialTab==='materials'"><p v-if="!documents.length">本轮尚未选择文件，可从输入区添加资料。</p><AssistantDocument v-for="doc in documents" :key="doc.id" :id="doc.id" :status="doc.parse_status" @deleted="historicalDocumentDeleted"/></template><AssistantSources v-else :evidence="latestEvidence || null"/></div>
-      <div v-if="artifactsOpen" class="yl-inner-layer"><header><h2>我的私有成果</h2><button aria-label="关闭成果" @click="closeLayers"><X :size="18"/></button></header><AssistantArtifacts :selected="artifactId"/></div>
+      <div v-if="artifactsOpen" class="yl-inner-layer yl-artifact-layer"><header><h2>我的私有成果</h2><button aria-label="关闭成果" @click="closeLayers"><X :size="18"/></button></header><AssistantArtifacts :selected="artifactId"/></div>
       <div v-if="layer === 'coverage'" class="yl-inner-layer" role="dialog" aria-label="模块覆盖"><header><h2>模块覆盖</h2><button aria-label="关闭模块覆盖" @click="closeLayers"><X :size="18"/></button></header><AssistantCoverage :page="page"/></div>
-      <div v-if="historyOpen" class="yl-inner-layer"><header><h2>你的对话</h2><button aria-label="关闭历史" @click="closeLayers"><X :size="18" /></button></header><div class="yl-history-search"><input v-model="store.historyQuery" aria-label="检索会话" placeholder="搜索标题或当前可见正文" @keydown.enter="store.history()"/><button @click="store.history()">搜索</button><label><input v-model="store.favoritesOnly" type="checkbox" @change="store.history()"/>只看收藏</label></div><button class="yl-primary" @click="newChat">开启新对话 <Plus :size="17" /></button><div class="yl-history-list"><article v-for="row in store.sessions" :key="row.id"><template v-if="renameId === row.id"><input v-model="renameText" aria-label="对话名称" maxlength="160" @keydown.enter="rename(row)" /><button @click="rename(row)">保存</button><button @click="renameId = ''">取消</button></template><template v-else><button class="yl-history-title" :disabled="row.deletion_state !== 'active'" @click="store.selectSession(row.id); historyOpen = false; tab = 'chat'"><strong>{{ row.title }}</strong><small>{{ row.deletion_state === 'pending' ? '正在删除，稍后刷新重试清理' : new Date(row.updated_at*1000).toLocaleString('zh-CN') }}</small></button><button :aria-label="row.favorite ? '取消收藏' : '收藏会话'" @click="favorite(row)"><Star :size="15" :fill="row.favorite ? 'currentColor' : 'none'"/></button><button aria-label="重命名对话" @click="renameId = row.id; renameText = row.title"><Pencil :size="15" /></button><button aria-label="删除对话" @click="deleteId = row.id"><Trash2 :size="15" /></button></template><div v-if="deleteId === row.id" class="yl-delete-confirm"><p>删除此对话和附件？生成会同时停止。</p><button @click="remove(row)">确认删除</button><button @click="deleteId = ''">保留</button></div></article><p v-if="store.historyBusy" class="yl-muted" role="status">正在读取对话…</p><p v-else-if="store.error" class="yl-muted" role="status">{{ store.error }}</p><p v-else-if="!store.sessions.length" class="yl-muted">{{ store.historyQuery || store.favoritesOnly ? "没有符合条件的对话，可调整搜索或收藏筛选。" : "还没有对话，从一个问题开始。" }}</p></div><button v-if="store.historyCursor" :disabled="store.historyBusy" @click="store.history(true)">更多历史</button><button v-if="store.selectedId" class="yl-export" @click="exportChat"><Download :size="16" />导出当前完整会话 Markdown</button></div>
+      <div v-if="historyOpen" class="yl-inner-layer"><header><h2>你的对话</h2><button aria-label="关闭历史" @click="closeLayers"><X :size="18" /></button></header><div class="yl-history-search"><input v-model="store.historyQuery" aria-label="检索会话" placeholder="搜索标题或当前可见正文" @keydown.enter="store.history()"/><button @click="store.history()">搜索</button><label><input v-model="store.favoritesOnly" type="checkbox" @change="store.history()"/>只看收藏</label></div><button class="yl-primary" @click="newChat">开启新对话 <Plus :size="17" /></button><div class="yl-history-list"><article v-for="row in store.sessions" :key="row.id"><template v-if="renameId === row.id"><input v-model="renameText" aria-label="对话名称" maxlength="160" @keydown.enter="rename(row)" /><button @click="rename(row)">保存</button><button @click="renameId = ''">取消</button></template><template v-else><button class="yl-history-title" :disabled="row.deletion_state !== 'active'" @click="selectHistory(row.id)"><strong>{{ row.title }}</strong><small>{{ row.deletion_state === 'pending' ? '正在删除，稍后刷新重试清理' : new Date(row.updated_at*1000).toLocaleString('zh-CN') }}</small></button><button :aria-label="row.favorite ? '取消收藏' : '收藏会话'" @click="favorite(row)"><Star :size="15" :fill="row.favorite ? 'currentColor' : 'none'"/></button><button aria-label="重命名对话" @click="renameId = row.id; renameText = row.title"><Pencil :size="15" /></button><button aria-label="删除对话" @click="deleteId = row.id"><Trash2 :size="15" /></button></template><div v-if="deleteId === row.id" class="yl-delete-confirm"><p>删除此对话和附件？生成会同时停止。</p><button @click="remove(row)">确认删除</button><button @click="deleteId = ''">保留</button></div></article><p v-if="store.historyBusy" class="yl-muted" role="status">正在读取对话…</p><div v-else-if="store.historyError" class="yl-muted" role="status"><p>{{ store.historyError }}</p><button @click="store.history()">重试读取历史</button></div><p v-else-if="!store.sessions.length" class="yl-muted">{{ store.historyQuery || store.favoritesOnly ? "没有符合条件的对话，可调整搜索或收藏筛选。" : "还没有对话，从一个问题开始。" }}</p></div><button v-if="store.historyCursor" :disabled="store.historyBusy" @click="store.history(true)">更多历史</button><button v-if="store.selectedId" class="yl-export" @click="exportChat"><Download :size="16" />导出当前完整会话 Markdown</button></div>
       <div v-if="aboutOpen" class="yl-inner-layer"><header><h2>关于曜灵</h2><button aria-label="关闭关于" @click="closeLayers"><X :size="18" /></button></header><AssistantCore /><h3>曜灵 · Nexus AI</h3><p>可以自由交流，也可以讲解有依据的系统规则。</p><dl><dt>模型服务</dt><dd>千问 · OpenAI 兼容协议</dd><dt>实际模型</dt><dd>{{ store.capabilities?.model || '尚未配置' }}</dd><dt>连接</dt><dd>{{ connectionLabel }}</dd><dt>联网与图片</dt><dd>{{ store.capabilities?.search?.verification === 'verified' ? '联网已有精确组合验证记录' : '联网组合尚未验证，普通问答可继续' }}</dd></dl><AssistantConnection :capabilities="store.capabilities" /><p>只读业务查询按当前身份和厂区取数；公开检索与私有资料分开处理。文件支持 TXT、MD、CSV、PDF、DOCX、XLSX、PNG 和 JPEG。扫描页使用本机图像识别，识别候选需核对原页。Office 只读取已保存文字与公式缓存，不执行公式或更新外部链接。能力验证记录不是实时健康状态。</p><label><input v-model="reducedMotion" type="checkbox" /> 减少装饰动效</label><button @click="switchSide"><PanelLeftClose :size="16" />移到{{ side === 'right' ? '左' : '右' }}侧</button><button @click="store.refreshCapabilities()">刷新能力状态</button><button v-if="!modal" class="yl-drag" aria-label="移动曜灵浮窗" @keydown="layoutKey($event)"><GripVertical :size="14"/>方向键移动浮窗</button><button v-if="!modal" aria-label="恢复浮窗位置和大小" @click="resetLayout"><RotateCcw :size="14"/>恢复位置和大小</button><button @click="showArtifacts(); aboutOpen=false">我的私有成果</button></div>
       <div v-if="!modal && !layer" class="yl-resize" role="separator" aria-label="调整曜灵宽度" aria-orientation="vertical" :aria-valuenow="width" aria-valuemin="360" aria-valuemax="600" tabindex="0" @pointerdown="pointerDown($event,'resize')" @pointermove="pointerMove" @pointerup="pointerEnd" @pointercancel="pointerEnd" @lostpointercapture="pointerEnd" @keydown.left.prevent="emit('width',Math.max(360,width-20)); emit('layout-end')" @keydown.right.prevent="emit('width',Math.min(600,width+20)); emit('layout-end')" />
       <button v-if="!modal && !layer" class="yl-resize-corner" aria-label="调整曜灵大小" title="拖动调整宽高；方向键微调，Home 恢复" @pointerdown="pointerDown($event,'corner')" @pointermove="pointerMove" @pointerup="pointerEnd" @pointercancel="pointerEnd" @lostpointercapture="pointerEnd" @keydown="layoutKey($event, true)"><span aria-hidden="true">◢</span></button>

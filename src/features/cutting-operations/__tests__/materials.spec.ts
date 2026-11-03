@@ -7,7 +7,7 @@ import { materialApi, type MaterialLedger, type WarehouseMaterial } from '../mat
 import { ordersApi } from '../ordersApi'
 import { multiplyQuantity } from '../quantityMath'
 import type { CuttingOrder } from '../ordersApi'
-import type { MasterRecord } from '../api'
+import type { BomData, MasterRecord } from '../api'
 import type { ProductionPlan, PlanTask } from '../planning'
 vi.mock('../materialsApi',()=>({materialApi:{read:vi.fn(),catalog:vi.fn(),post:vi.fn(),recover:vi.fn()}}))
 vi.mock('../ordersApi',()=>({ordersApi:{read:vi.fn()}}))
@@ -22,8 +22,8 @@ const clone=<T,>(v:T):T=>JSON.parse(JSON.stringify(v))
 let wrapper:VueWrapper,router:Router
 function button(text:string){const b=wrapper.findAll('button').find(b=>b.text()===text);if(!b)throw Error('Missing '+text);return b}
 function field(text:string){const l=wrapper.findAll('label').find(l=>l.text().startsWith(text));if(!l)throw Error('Missing '+text);return l.find('input,select,textarea')}
-async function open(permissions=['read','material_request','material_receive']){
-  router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingMaterialRequests,props:{order:clone(order),permissions}},{path:'/away',component:{template:'<div>离开</div>'}}]})
+async function open(permissions=['read','material_request','material_receive'], sourceOrder=order){
+  router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingMaterialRequests,props:{order:clone(sourceOrder),permissions}},{path:'/away',component:{template:'<div>离开</div>'}}]})
   await router.push('/');await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
 }
 async function receipt(){await button('分批签收').trigger('click');await field('本次签收数量').setValue('2.5');await field('收妥凭据').setValue('签收人A，实际收到2.5米')}
@@ -142,5 +142,86 @@ describe('material bridge recovery and audit',()=>{
     await button('核对计划续用').trigger('click');await field('操作原因').setValue('纯日期调整，物料与数量不变')
     await wrapper.get('form').trigger('submit');await flushPromises()
     expect(materialApi.post).toHaveBeenCalledWith('line-1','reuse',expect.objectContaining({original_id:'req1',plan_version:8,expected_version:7,reason:'纯日期调整，物料与数量不变'}))
+  })
+})
+
+describe('material request form and BOM units',()=>{
+  async function requestForm(quantity='1',sourceOrder=order){
+    await open(undefined,sourceOrder);await button('新建领料申请').trigger('click')
+    await button('查询物料映射').trigger('click');await flushPromises()
+    await field('仓库物料版本').setValue('wm1')
+    await field('物料对应依据').setValue('核对规格、颜色与原单位一致')
+    await field('本次申请数量').setValue(quantity)
+    await field('申请数量').setValue('按任务分批申请')
+  }
+  it.each(['0','-1','NaN','0.0000001','1000000000000'])('rejects invalid quantity %s locally in Chinese without losing input',async value=>{
+    await requestForm(value);await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(materialApi.post).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('数量须大于 0，整数最多 12 位，小数最多 6 位')
+    expect(field('本次申请数量').element).toHaveProperty('value',value)
+    expect(field('本次申请数量').attributes('aria-invalid')).toBe('true')
+  })
+  it('localizes server-side quantity errors while preserving the signature draft',async()=>{
+    await open();await receipt()
+    vi.mocked(materialApi.post).mockRejectedValueOnce({response:{status:422,data:{detail:[{loc:['body','quantity'],type:'greater_than',msg:'Input should be greater than 0'}]}}})
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(wrapper.text()).toContain('数量须大于 0')
+    expect(wrapper.text()).not.toContain('Input should be')
+    expect(field('本次签收数量').element).toHaveProperty('value','2.5')
+  })
+  it('uses the BOM row unit automatically and clears quantities when that unit changes',async()=>{
+    const updated=clone(order);(updated.current!.data.bom!.data as BomData).requirements.push({...clone((bom.data as BomData).requirements[0]!),unit:'公斤'})
+    await requestForm('2.500',updated)
+    expect(field('物料单位（自动取 BOM）').element).toHaveProperty('value','米')
+    expect(field('物料单位（自动取 BOM）').attributes('readonly')).toBeDefined()
+    await field('BOM 物料行').setValue('1')
+    expect(field('物料单位（自动取 BOM）').element).toHaveProperty('value','公斤')
+    expect(field('本次申请数量').element).toHaveProperty('value','')
+    expect(wrapper.text()).toContain('原数量已清空')
+    expect(wrapper.text()).toContain('仓库物料单位为“米”，与 BOM 单位“公斤”不一致')
+  })
+  it('refreshes a changed BOM unit without relabeling the old quantity or warehouse master',async()=>{
+    await requestForm('1.25')
+    const latest=clone(order);latest.current!.version=12;latest.current!.data.bom!.version=3
+    ;(latest.current!.data.bom!.data as BomData).requirements[0]!.unit='公斤'
+    vi.mocked(ordersApi.read).mockResolvedValue(latest)
+    await button('保留填写并刷新订单／计划').trigger('click');await flushPromises()
+    expect(field('物料单位（自动取 BOM）').element).toHaveProperty('value','公斤')
+    expect(field('本次申请数量').element).toHaveProperty('value','')
+    expect(field('仓库物料版本').element).toHaveProperty('value','')
+    expect(material.unit).toBe('米');expect(materialApi.post).not.toHaveBeenCalled()
+  })
+  it('blocks a mismatched warehouse unit while keeping BOM as the request unit',async()=>{
+    vi.mocked(materialApi.catalog).mockResolvedValue({items:[{...material,unit:'公斤'}],total:1,page:1})
+    await requestForm('1');await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(field('物料单位（自动取 BOM）').element).toHaveProperty('value','米')
+    expect(wrapper.text()).toContain('与 BOM 单位“米”不一致')
+    expect(button('确认领料操作').attributes('disabled')).toBeDefined()
+    expect(materialApi.post).not.toHaveBeenCalled()
+  })
+  it('keeps historical signatures in the original issue unit after the current BOM changes',async()=>{
+    const updated=clone(order)
+    ;(updated.current!.data.bom!.data as BomData).requirements[0]!.unit='公斤'
+    await open(undefined,updated)
+    await receipt()
+    expect(field('物料单位（原实发单）').element).toHaveProperty('value','米')
+    await wrapper.get('form').trigger('submit');await flushPromises()
+    expect(materialApi.post).toHaveBeenCalledWith('line-1','receive',expect.objectContaining({quantity:'2.5',original_id:'i1'}))
+  })
+  it.each(['request','receive'] as const)('labels every %s control with unique IDs and stable names',async action=>{
+    if(action==='request')await requestForm();else{await open();await receipt()}
+    const controls=wrapper.get('form').findAll('input,select,textarea')
+    const ids=controls.map(c=>c.attributes('id'))
+    expect(new Set(ids).size).toBe(controls.length)
+    for(const control of controls){
+      expect(control.attributes('id')).toBeTruthy();expect(control.attributes('name')).toBeTruthy()
+      expect(wrapper.findAll('label').some(l=>l.attributes('for')===control.attributes('id'))).toBe(true)
+    }
+  })
+  it.each([{closed:false,issued:'6.5',visible:false},{closed:true,issued:'2',visible:false},{closed:false,issued:'2',visible:true}])('only offers reuse for an open positive remainder ($closed/$issued)',async({closed,issued,visible})=>{
+    const updated=clone(ledger);updated.requests[0]!.accepted_plan_version=6;updated.requests[0]!.closed=closed;updated.requests[0]!.issued_quantity=issued
+    vi.mocked(materialApi.read).mockResolvedValue(updated);await open()
+    expect(wrapper.text().includes('发布计划已变化')).toBe(visible)
+    expect(wrapper.findAll('button').some(b=>b.text()==='核对计划续用')).toBe(visible)
   })
 })

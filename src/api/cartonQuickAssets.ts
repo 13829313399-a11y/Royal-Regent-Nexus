@@ -22,6 +22,8 @@ export interface QuickAsset {
   can_classify?: boolean
   allowed_statuses?: QuickAssetStatus[]
   can_associate?: boolean
+  can_share?: boolean
+  required_shared_factory_ids?: string[]
   view_factory_id?: string
   shared_factory_ids?: string[]
   created_by_name?: string

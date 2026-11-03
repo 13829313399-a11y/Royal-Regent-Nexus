@@ -10,7 +10,8 @@ from test_carton_procurement_api import _order_payload,_submit_order
 def test_schedule_asset_follows_explicit_purchase_and_current_supplier_issue(monkeypatch):
     with make_client(monkeypatch) as client:
         unrelated=setup_portal(client)
-        grant_supplier_permissions(permissions=('carton_asset:read','carton_asset:manage'))
+        # Order readers can read explicitly shared files after issuance without
+        # receiving independent library management permissions.
         login_as(client,'admin');enable(monkeypatch)
         batch=schedule(client,[source_row(),source_row(contract='UNORDERED',item='ITEM-2')])
         def candidates(asset=''):
@@ -50,6 +51,29 @@ def test_schedule_asset_follows_explicit_purchase_and_current_supplier_issue(mon
         assert unrelated['id'] not in [o['id'] for o in shown['orders']]
         assert shown['workflow']['status']=='PENDING'
         assert client.get('/api/carton-supplier/carton-mark/assets/'+asset['id']+'/document',params=F).status_code==200
+        assert upload(client,owner_department='supplier').status_code==403
+        assert action(client,asset,'READY').status_code==403
+        # Explicit denial overrides the inherited read; restoring the current
+        # order permission must not leave stale file access after revocation.
+        from app.db import SessionLocal
+        from app.models.auth import AuthPermission, AuthUserPermissionOverride
+        from sqlalchemy import select
+        with SessionLocal() as db:
+            permission=db.scalar(select(AuthPermission).where(AuthPermission.code=='carton_asset:read'))
+            db.add(AuthUserPermissionOverride(id='deny-shared-file',user_id='supplier-test',
+                permission_id=permission.id,effect='deny',factory_id='huaxing',department='*',
+                status='active',reason='测试显式拒绝优先'));db.commit()
+        supplier_login(client)
+        assert client.get('/api/carton-supplier/carton-mark/assets/'+asset['id']+'/document',params=F).status_code==404
+        assert asset['id'] not in {x['id'] for x in supplier_assets()}
+        with SessionLocal() as db:
+            db.get(AuthUserPermissionOverride,'deny-shared-file').status='revoked';db.commit()
+        supplier_login(client)
+        assert client.get('/api/carton-supplier/carton-mark/assets/'+asset['id']+'/document',params=F).status_code==200
+        from test_carton_supplier_portal import revoke_supplier_permission,restore_supplier_permission
+        revoke_supplier_permission();supplier_login(client,expect_read=False)
+        assert client.get('/api/carton-supplier/carton-mark/assets/'+asset['id']+'/document',params=F).status_code==403
+        restore_supplier_permission('carton_supplier:read')
         login_as(client,'admin');asset=ok(action(client,asset,'READY'))
         # Removing a row from a later schedule does not erase explicit purchase provenance.
         schedule(client,[source_row(contract='UNORDERED',item='ITEM-2')])

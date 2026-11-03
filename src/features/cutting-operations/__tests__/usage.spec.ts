@@ -10,6 +10,18 @@ let wrapper:VueWrapper,router:Router
 const clone=<T,>(value:T):T=>JSON.parse(JSON.stringify(value))
 function button(name:string){const element=wrapper.findAll('button').find(b=>b.text()===name);if(!element)throw new Error('Missing '+name);return element}
 function field(name:string){return wrapper.findAll('label').find(l=>l.text().startsWith(name))!.get('input,select,textarea')}
+function expectIdentifiedFields(scope:VueWrapper){
+  const controls=scope.findAll('form input,form select,form textarea')
+  const ids=controls.map(c=>c.attributes('id'))
+  expect(controls.length).toBeGreaterThan(0)
+  expect(new Set(ids).size).toBe(ids.length)
+  for(const control of controls){
+    expect(control.attributes('id')).toBeTruthy()
+    expect(control.attributes('name')).toBeTruthy()
+    expect(scope.findAll('label').filter(l=>l.attributes('for')===control.attributes('id'))).toHaveLength(1)
+  }
+  return ids
+}
 async function open(withCosts=false,permissions=['read','usage_write','usage_review','cost_read','cost_write'],view?:string){
   router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:CuttingMaterialUsage,props:{lineId:'l1',permissions,withCosts,view}},{path:'/away',component:{template:'<div>离开</div>'}}]})
   await router.push('/');await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
@@ -196,5 +208,46 @@ describe('P3b custody and cost editor',()=>{
     await button('重试耗用／成本原操作').trigger('click');await flushPromises()
     expect(vi.mocked(usageApi.post).mock.calls[1]).toEqual(original)
     await router.push('/away');expect(router.currentRoute.value.path).toBe('/')
+  })
+})
+
+
+describe('usage field identities',()=>{
+  it.each(['登记耗用','确认批次成本','更正原耗用单','撤销耗用单','主管抽查'])('labels every control in %s with a stable name',async action=>{
+    const value=clone(ledger)
+    value.documents.push({id:'u1',voided:false,reviewed:false,entry:{day:'2026-10-10',issue_id:'i1',consumed_quantity:'1',loss_quantity:'0.2',counted_remaining:'2.8'},context:clone(value.issues[0]!.context),actor:'合成文员',created_at:'2026-10-10T00:00:00Z',reason:'原始凭据',history:[]})
+    vi.mocked(usageApi.read).mockResolvedValue(value)
+    await open(true);await button(action).trigger('click');await flushPromises()
+    const ids=expectIdentifiedFields(wrapper)
+    expect(wrapper.get('input[name="day"]').exists()).toBe(true)
+    expect(wrapper.get('textarea[name="reason"]').exists()).toBe(true)
+    await button('保留填写并刷新耗用版本').trigger('click');await flushPromises()
+    expect(expectIdentifiedFields(wrapper)).toEqual(ids)
+    expect(usageApi.post).not.toHaveBeenCalled()
+  })
+  it('keeps dynamic allocation identities associated with their original issues after refresh',async()=>{
+    const value=clone(ledger),kg=clone(value.issues[0]!)
+    kg.issue_id='i2';kg.context.unit='公斤';kg.context.item_name='公斤布料';value.issues.push(kg)
+    const groups=allocation();groups.groups[0]!.rows.push({issue_id:'i2',item_name:'公斤布料',root_batch_id:'b2',unit:'公斤',consumed_quantity:'2',completed_quantity:null,wip_quantity:null})
+    value.cost_allocation=groups;vi.mocked(usageApi.read).mockResolvedValue(value)
+    await open(true,['read','cost_read','allocation_confirm']);await button('确认完工耗用归属').trigger('click');await flushPromises()
+    const ids=expectIdentifiedFields(wrapper)
+    expect(wrapper.findAll('input').map(c=>c.attributes('name'))).toEqual(expect.arrayContaining(['allocations[i1].completed_quantity','allocations[i2].completed_quantity','materials_complete','public_material_pending','allocation_checked']))
+    const next=clone(value);next.revision=8;next.cost_allocation!.groups[0]!.rows.reverse()
+    vi.mocked(usageApi.read).mockResolvedValue(next)
+    await button('保留填写并刷新耗用版本').trigger('click');await flushPromises()
+    expect(new Set(expectIdentifiedFields(wrapper))).toEqual(new Set(ids))
+    expect(wrapper.get('input[name="allocations[i1].completed_quantity"]').attributes('id')).toContain('i1')
+    expect(wrapper.get('input[name="allocations[i2].completed_quantity"]').attributes('id')).toContain('i2')
+  })
+  it('isolates field IDs when two usage editors share one app',async()=>{
+    const page={components:{CuttingMaterialUsage},data:()=>({permissions:['read','usage_write']}),template:'<div><CuttingMaterialUsage line-id="l1" :permissions="permissions"/><CuttingMaterialUsage line-id="l2" :permissions="permissions"/></div>'}
+    router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:page}]})
+    await router.push('/');await router.isReady();wrapper=mount(RouterView,{global:{plugins:[router]}});await flushPromises()
+    for(const editor of wrapper.findAllComponents(CuttingMaterialUsage)){
+      await editor.findAll('button').find(b=>b.text()==='登记耗用')!.trigger('click')
+    }
+    await flushPromises();expectIdentifiedFields(wrapper)
+    expect(wrapper.findAll('input[name="consumed_quantity"]')).toHaveLength(2)
   })
 })

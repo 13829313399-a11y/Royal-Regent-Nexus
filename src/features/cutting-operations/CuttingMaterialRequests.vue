@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
@@ -13,6 +13,8 @@ import type { WarehouseOperationKind } from '@/api/warehouseOperations'
 import { multiplyQuantity } from './quantityMath'
 const props = defineProps<{ order: CuttingOrder; permissions: string[]; blocked?: boolean }>()
 const emit = defineEmits<{ refreshed: [order: CuttingOrder]; editing:[value:boolean] }>()
+const instanceId = useId()
+const fieldId = (name: string) => `cutting-material-${instanceId}-${name}`
 const refreshedOrder = ref<CuttingOrder>()
 const currentOrder = computed(() => refreshedOrder.value ?? props.order)
 const refreshComparison = ref(''), refreshConfirmed = ref(true)
@@ -23,6 +25,20 @@ const query=ref(''), materials=ref<WarehouseMaterial[]>([]), materialId=ref(''),
 let alive=true, generation=0, searchGeneration=0
 const plan=computed(()=>currentOrder.value.current?.data.planning?.published)
 const bom=computed(()=>currentOrder.value.current?.data.bom?.data as BomData|undefined)
+const quantityUnit=computed(()=>{
+  if(mode.value==='request')return bom.value?.requirements[draft.value?.row??0]?.unit??''
+  if(mode.value==='receive')return ledger.value?.requests.find(r=>r.issues.some(i=>i.id===draft.value?.original_id))?.unit??''
+  return ''
+})
+const selectedMaterial=computed(()=>materials.value.find(m=>m.id===materialId.value))
+const unitMismatch=computed(()=>mode.value==='request'&&selectedMaterial.value&&quantityUnit.value&&selectedMaterial.value.unit!==quantityUnit.value
+  ?`仓库物料单位为“${selectedMaterial.value.unit}”，与 BOM 单位“${quantityUnit.value}”不一致。请重新选择同单位物料；不会自动换算或修改仓库库存单位。`:'')
+watch(()=>[mode.value,quantityUnit.value] as const,([action,unit],[previousAction,previousUnit])=>{
+  if(action==='request'&&previousAction==='request'&&unit!==previousUnit&&draft.value?.quantity){
+    draft.value.quantity=''
+    notice.value=`BOM 单位已由“${previousUnit||'未提供'}”更新为“${unit||'未提供'}”，原数量已清空，请按新单位重新填写。`
+  }
+})
 const can=(permission:string)=>props.permissions.includes(permission)
 const canRequest=computed(()=>can('material_request')&&!!plan.value&&!currentOrder.value.needs_receipt&&currentOrder.value.snapshot.status==='active'&&!currentOrder.value.planning_summary?.published_stale)
 const dirty=computed(()=>!!draft.value&&JSON.stringify([draft.value,materialId.value])!==baseline.value)
@@ -35,7 +51,16 @@ function beforeUnload(e:BeforeUnloadEvent){if(dirty.value||pending.value||saving
 window.addEventListener('beforeunload',beforeUnload)
 onBeforeUnmount(()=>{alive=false;generation++;searchGeneration++;window.removeEventListener('beforeunload',beforeUnload);emit('editing',false)})
 const today=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
-function fail(e:unknown){error.value=errorMessage(e);const status=(e as {response?:{status:number}}).response?.status;if(status===401)needsLogin.value=true;else if(status&&status>=400&&status<500)needsLogin.value=false;if(status===403)window.dispatchEvent(new Event('cutting-authorization-recheck'))}
+function fail(e:unknown){
+  const response=(e as {response?:{status:number;data?:{detail?:unknown}}}).response
+  const detail=response?.data?.detail
+  error.value=response?.status===422&&Array.isArray(detail)
+    ?detail.map((issue:{loc?:unknown[];msg?:string})=>Array.isArray(issue.loc)&&issue.loc.at(-1)==='quantity'
+      ?'数量须大于 0，整数最多 12 位，小数最多 6 位。'
+      :`${issue.loc?.join('.')??''}：${issue.msg??'请核对填写内容'}`).join('；')
+    :errorMessage(e)
+  const status=response?.status;if(status===401)needsLogin.value=true;else if(status&&status>=400&&status<500)needsLogin.value=false;if(status===403)window.dispatchEvent(new Event('cutting-authorization-recheck'))
+}
 async function load(){const ticket=++generation;loading.value=true;error.value='';try{const value=await materialApi.read(props.order.line_id);if(alive&&ticket===generation){ledger.value=value;needsLogin.value=false;return true}}catch(e){if(alive&&ticket===generation)fail(e)}finally{if(alive&&ticket===generation)loading.value=false}}
 watch(()=>props.order.line_id,()=>{refreshedOrder.value=undefined;ledger.value=undefined;draft.value=undefined;mode.value=undefined;materials.value=[];refreshComparison.value='';void load()},{immediate:true})
 watch(()=>props.order,()=>{refreshedOrder.value=undefined})
@@ -45,7 +70,7 @@ function begin(action:MaterialAction,originalId=''){if(!ledger.value||!canLeave(
 function cancel(){discard()}
 async function resumeLogin(){if(saving.value||pending.value)return;if(await load()){notice.value='已恢复读取，填写内容保留；请核对当前权限、订单及仓库版本后再提交。'}}
 function reuse(id:string){if(begin('reuse',id)&&draft.value)draft.value.plan_version=plan.value?.version}
-const needsReuse=(r:MaterialLedger['requests'][number])=>!!plan.value&&(r.accepted_plan_version??r.context.plan_version)!==plan.value.version
+const needsReuse=(r:MaterialLedger['requests'][number])=>!r.closed&&/^[\d.]+$/.test(remaining(r.quantity,r.issued_quantity))&&/[1-9]/.test(remaining(r.quantity,r.issued_quantity))&&!!plan.value&&(r.accepted_plan_version??r.context.plan_version)!==plan.value.version
 const projectedRequest = computed(()=>{
   if(mode.value!=='request'||!draft.value||!/^\d+(\.\d{1,6})?$/.test(draft.value.quantity??''))return null
   const task=plan.value?.tasks.find(t=>t.task_id===draft.value?.task_id), row=draft.value.row
@@ -85,7 +110,14 @@ async function refreshDraft(){
   } catch(e){if(alive&&ticket===generation&&draft.value===original)fail(e)}
   finally{if(alive&&ticket===generation)loading.value=false}
 }
-async function save(){if(saving.value||loading.value||props.blocked)return;if(!pending.value){if(!draft.value||!mode.value)return;if(mode.value==='request'&&(!refreshConfirmed.value||!canRequest.value)){error.value='请先核对最新订单、计划及物料对应，并确认刷新后的内容。';return}const body=JSON.parse(JSON.stringify(draft.value)) as MaterialCommand;if(body.due_date==='')body.due_date=null;if(mode.value==='request'){const material=materials.value.find(m=>m.id===materialId.value);if(!material){error.value='请选择经核对的仓库物料';return}body.material_id=material.id;body.material_revision=material.revision}uncertain.value=false;pending.value={id:props.order.line_id,action:mode.value,body}}
+async function save(){if(saving.value||loading.value||props.blocked)return;if(!pending.value){if(!draft.value||!mode.value)return;if(mode.value==='request'&&(!refreshConfirmed.value||!canRequest.value)){error.value='请先核对最新订单、计划及物料对应，并确认刷新后的内容。';return}
+    if(mode.value==='request'||mode.value==='receive'){
+      const value=draft.value.quantity??'',match=/^(\d+)(?:\.(\d{1,6}))?$/.exec(value)
+      if(!match||!/[1-9]/.test(value)||match[1]!.replace(/^0+/,'').length>12){error.value='数量须大于 0，整数最多 12 位，小数最多 6 位。';return}
+      if(!quantityUnit.value){error.value='物料单位缺失，请刷新并核对 BOM 或原实发记录。';return}
+      if(unitMismatch.value){error.value=unitMismatch.value;return}
+    }
+    const body=JSON.parse(JSON.stringify(draft.value)) as MaterialCommand;if(body.due_date==='')body.due_date=null;if(mode.value==='request'){const material=selectedMaterial.value;if(!material){error.value='请选择经核对的仓库物料';return}body.material_id=material.id;body.material_revision=material.revision}uncertain.value=false;pending.value={id:props.order.line_id,action:mode.value,body}}
   saving.value=true;error.value=''
   try{await materialApi.post(pending.value.id,pending.value.action,pending.value.body);if(!alive)return;pending.value=undefined;draft.value=undefined;mode.value=undefined;notice.value='操作已保存。申请不扣库存，签收不重复入库；请按物料实际情况核定排期。';await load()}
   catch(e){if(!alive)return;fail(e);const status=(e as {response?:{status:number}}).response?.status;if(!status||status>=500||status===408)uncertain.value=true;if(!uncertain.value&&status&&status>=400&&status<500&&status!==401&&status!==408)pending.value=undefined}
@@ -97,7 +129,7 @@ const titles:Record<MaterialAction,string>={request:'新建领料申请',receive
 <template>
   <SectionPanel title="领料申请与布料仓回传" class="cutting-content-panel">
     <p class="cutting-notice">按已发布任务及 BOM 逐行申请，提交后直接交布料仓核对发料。申请不预占库存；实际领料日以本厂／外发实际收妥的签收日为准，外发由裁床人员据回执登记。部分签收不代表全部必需物料齐备，主管核对后再调整排期。</p>
-    <p v-if="error" role="alert">{{error}}</p><p v-if="notice" role="status">{{notice}}</p><p v-if="loading" role="status">正在读取仓库回传…</p>
+    <p v-if="error" :id="fieldId('error')" role="alert">{{error}}</p><p v-if="notice" role="status">{{notice}}</p><p v-if="loading" role="status">正在读取仓库回传…</p>
     <p v-if="needsLogin" role="alert">登录已失效，表单暂时隐藏。请重新登录后核对原操作。<a href="/login" target="_blank" rel="noopener">重新登录</a><Button v-if="!pending" variant="outline" :disabled="loading||saving||blocked" @click="resumeLogin">重新登录后继续／刷新</Button></p>
     <div v-if="pending" class="cutting-master-actions"><Button :disabled="saving||blocked" @click="save">重试领料原操作</Button><Button variant="outline" :disabled="saving" @click="recover">核对领料保存结果／停止未执行操作</Button></div>
     <template v-if="!needsLogin">
@@ -107,19 +139,22 @@ const titles:Record<MaterialAction,string>={request:'新建领料申请',receive
         <h3>{{titles[mode]}}</h3><Button type="button" variant="outline" :disabled="loading||saving||!!pending||blocked" @click="refreshDraft">{{mode==='request'?'保留填写并刷新订单／计划':'保留填写并刷新仓库版本'}}</Button>
         <p v-if="mode==='request'&&refreshComparison" role="status">{{refreshComparison}}</p>
         <fieldset :disabled="loading||saving||!!pending||blocked" class="material-fields">
-          <label v-if="mode==='request'&&refreshComparison"><input v-model="refreshConfirmed" type="checkbox" required />已核对刷新后的订单、计划、物料映射与累计领料</label>
+          <label v-if="mode==='request'&&refreshComparison" :for="fieldId('refresh-confirm')"><input :id="fieldId('refresh-confirm')" name="refresh_confirmed" v-model="refreshConfirmed" type="checkbox" required />已核对刷新后的订单、计划、物料映射与累计领料</label>
           <template v-if="mode==='request'">
-            <div class="cutting-master-fields"><label>执行任务<select v-model="draft.task_id" required><option value="">请选择当前任务</option><option v-for="t in plan?.tasks" :key="t.task_id" :value="t.task_id">{{t.name}} · {{t.resource.data.name}} · {{t.target_sets}}套</option></select></label><label>BOM 物料行<select v-model.number="draft.row" required><option v-for="(r,i) in bom?.requirements" :key="i" :value="i">{{i+1}} · {{currentOrder.current?.data.bom?.material_references?.[`${r.material_id}:${r.material_version}`]?.name}} · {{r.stage}} / {{r.unit}}</option></select></label></div>
-            <div class="cutting-master-toolbar"><label>查询仓库物料<input v-model="query" maxlength="80" /></label><Button type="button" variant="outline" :disabled="searching" @click="search()">查询物料映射</Button><Button type="button" variant="outline" :disabled="searching||materialPage<=1" @click="search(materialPage-1)">物料上一页</Button><Button type="button" variant="outline" :disabled="searching||materialPage*50>=materialTotal" @click="search(materialPage+1)">物料下一页</Button></div>
-            <label>仓库物料版本<select v-model="materialId" required><option value="">请选择并核对编码、规格、颜色和单位</option><option v-for="m in materials" :key="m.id" :value="m.id">{{m.code}} · {{m.name}} · {{m.spec}} / {{m.color}} / {{m.unit}} · V{{m.revision}}</option></select></label>
-            <label>物料对应依据<textarea v-model="draft.mapping_basis" minlength="4" maxlength="500" required placeholder="核对 BOM 物料与仓库编码、规格、颜色及原单位；不自动换算" /></label>
-            <label>需料日期（选填）<input v-model="draft.due_date" type="date" /></label>
+            <div class="cutting-master-fields"><label :for="fieldId('task')">执行任务<select :id="fieldId('task')" name="task_id" v-model="draft.task_id" required><option value="">请选择当前任务</option><option v-for="t in plan?.tasks" :key="t.task_id" :value="t.task_id">{{t.name}} · {{t.resource.data.name}} · {{t.target_sets}}套</option></select></label><label :for="fieldId('row')">BOM 物料行<select :id="fieldId('row')" name="bom_row" v-model.number="draft.row" required><option v-for="(r,i) in bom?.requirements" :key="i" :value="i">{{i+1}} · {{currentOrder.current?.data.bom?.material_references?.[`${r.material_id}:${r.material_version}`]?.name}} · {{r.stage}} / {{r.unit}}</option></select></label></div>
+            <div class="cutting-master-toolbar"><label :for="fieldId('query')">查询仓库物料<input :id="fieldId('query')" name="warehouse_material_query" v-model="query" maxlength="80" /></label><Button type="button" variant="outline" :disabled="searching" @click="search()">查询物料映射</Button><Button type="button" variant="outline" :disabled="searching||materialPage<=1" @click="search(materialPage-1)">物料上一页</Button><Button type="button" variant="outline" :disabled="searching||materialPage*50>=materialTotal" @click="search(materialPage+1)">物料下一页</Button></div>
+            <label :for="fieldId('warehouse-material')">仓库物料版本<select :id="fieldId('warehouse-material')" name="warehouse_material_id" :aria-invalid="!!unitMismatch" :aria-describedby="unitMismatch?fieldId('unit-mismatch'):undefined" v-model="materialId" required><option value="">请选择并核对编码、规格、颜色和单位</option><option v-for="m in materials" :key="m.id" :value="m.id">{{m.code}} · {{m.name}} · {{m.spec}} / {{m.color}} / {{m.unit}} · V{{m.revision}}</option></select></label>
+            <p v-if="unitMismatch" :id="fieldId('unit-mismatch')" role="alert">{{unitMismatch}}</p>
+            <label :for="fieldId('mapping-basis')">物料对应依据<textarea :id="fieldId('mapping-basis')" name="mapping_basis" v-model="draft.mapping_basis" minlength="4" maxlength="500" required placeholder="核对 BOM 物料与仓库编码、规格、颜色及原单位；不自动换算" /></label>
+            <label :for="fieldId('due-date')">需料日期（选填）<input :id="fieldId('due-date')" name="due_date" v-model="draft.due_date" type="date" /></label>
             <p v-if="projectedRequest" :role="projectedRequest.exceeds?'alert':'status'">包含本次后的有效申请合计 {{projectedRequest.total}} {{projectedRequest.unit}}；当前任务 BOM 理论量 {{projectedRequest.theoretical}} {{projectedRequest.unit}}。{{projectedRequest.exceeds?'超过理论用量，请在申请依据中说明补领或批次差异；不自动阻止有依据的申请。':'理论量仅供核对，不代表实际耗用或可用库存。'}}</p>
           </template>
-          <div class="cutting-master-fields"><label>{{mode==='receive'?'实际签收日期':'业务日期'}}<input v-model="draft.business_date" type="date" :max="today()" required /></label><label v-if="mode==='request'||mode==='receive'">{{mode==='request'?'本次申请数量（BOM原单位）':'本次签收数量（原出库单位）'}}<input v-model="draft.quantity" inputmode="decimal" required /></label></div>
+          <label v-if="mode==='request'||mode==='receive'" :for="fieldId('unit')">{{mode==='request'?'物料单位（自动取 BOM）':'物料单位（原实发单）'}}<input :id="fieldId('unit')" name="material_unit" :value="quantityUnit" readonly :aria-describedby="fieldId('unit-help')" /></label>
+          <p v-if="mode==='request'||mode==='receive'" :id="fieldId('unit-help')">{{mode==='request'?'申请单位随所选 BOM 物料行更新；单位变化后需重新填写数量，不自动换算或修改仓库单位。':'签收按原实发单单位登记，不随当前 BOM 变化。'}}</p>
+          <div class="cutting-master-fields"><label :for="fieldId('business-date')">{{mode==='receive'?'实际签收日期':'业务日期'}}<input :id="fieldId('business-date')" name="business_date" v-model="draft.business_date" type="date" :max="today()" required /></label><label v-if="mode==='request'||mode==='receive'" :for="fieldId('quantity')">{{mode==='request'?'本次申请数量':'本次签收数量'}}（{{quantityUnit||'待核对单位'}}）<input :id="fieldId('quantity')" name="quantity" :aria-invalid="error.startsWith('数量须')||undefined" :aria-describedby="error.startsWith('数量须')?fieldId('error'):undefined" v-model="draft.quantity" inputmode="decimal" required /></label></div>
           <p v-if="mode==='reuse'">核对后续用至发布计划 V{{draft.plan_version}}。仅日期等非实质调整可续用；原申请及历次确认均保留，BOM、执行方或任务总量变化须重新申请。</p><p v-if="mode==='close'">仅关闭尚未发出的余量，已出库、签收及退料记录保留。补领需重新申请。</p><p v-if="mode==='void'">撤销保留原签收记录；原出库有有效退料时须先核对或冲销退料，才能撤销。请同步复核已经据此调整的生产计划。</p>
-          <label>{{mode==='request'?'申请数量／批次用途依据':mode==='receive'?'收妥凭据／实际签收人':'操作原因'}}<textarea v-model="draft.reason" required maxlength="500" /></label>
-          <div class="cutting-master-actions"><Button type="submit">确认领料操作</Button><Button type="button" variant="outline" @click="cancel">取消领料编辑</Button></div>
+          <label :for="fieldId('reason')">{{mode==='request'?'申请数量／批次用途依据':mode==='receive'?'收妥凭据／实际签收人':'操作原因'}}<textarea :id="fieldId('reason')" name="reason" v-model="draft.reason" required maxlength="500" /></label>
+          <div class="cutting-master-actions"><Button type="submit" :disabled="!!unitMismatch">确认领料操作</Button><Button type="button" variant="outline" @click="cancel">取消领料编辑</Button></div>
         </fieldset>
       </form>
       <p v-if="ledger&&!ledger.requests.length&&!loading" class="cutting-no-records">暂无领料申请。仓库未接通时将显示具体原因，不以零库存代替未知。</p>

@@ -30,3 +30,20 @@ describe('P3b cost workspace access and asynchronous navigation',()=>{
     await open();expect(wrapper.text()).toContain('0156');expect(ordersApi.list).not.toHaveBeenCalled()
   })
 })
+
+
+it('separates summary and order-search IDs while preserving stable query names',async()=>{
+  await open()
+  const fields=wrapper.findAll('input[name="order_q"]')
+  expect(fields).toHaveLength(2)
+  const ids=fields.map(f=>f.attributes('id'))
+  expect(new Set(ids).size).toBe(2)
+  for(const field of fields){
+    expect(field.attributes('id')).toBeTruthy()
+    expect(wrapper.findAll('label').filter(l=>l.attributes('for')===field.attributes('id'))).toHaveLength(1)
+  }
+  await wrapper.findAll('button').find(b=>b.text()==='耗用与原批次')!.trigger('click');await flushPromises()
+  await fields[1]!.setValue('ORDER-1');await wrapper.findAll('form').at(-1)!.trigger('submit');await flushPromises()
+  expect(ordersApi.list).toHaveBeenLastCalledWith(1,'ORDER-1')
+  expect(wrapper.findAll('input[name="order_q"]').map(f=>f.attributes('id'))).toEqual(ids)
+})

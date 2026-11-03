@@ -2,6 +2,7 @@ import type { CartonImportPreviewRow } from '@/api/cartonProcurement'
 import type { CartonTone } from '@/features/carton-procurement/demoData'
 
 export interface ScheduleOrderReminder {
+  quantityMatchReview?: boolean
   state: 'WAIT' | 'DUE_SOON' | 'DUE_TODAY' | 'OVERDUE' | 'ORDERED' | 'REVIEW' | 'DATE_REVIEW' | 'RULE_REVIEW' | 'CHANGE_REVIEW'
   label: string
   tone: CartonTone

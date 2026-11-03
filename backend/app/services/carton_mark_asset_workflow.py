@@ -106,7 +106,7 @@ def classify(db, user, factory, asset_id, payload, *, commit=True, material_conf
         asset = active_asset(db, factory, asset_id)
         from app.services import carton_asset_access as ownership
         if ownership.managed(asset):
-            ownership.ensure(db,user,asset,write=True,confirm=payload.status=='READY',supplier=ownership.external_actor(db,user,asset) if view_factory in (None,asset.factory_id) else None,view_factory=view_factory,collaborate=True)
+            ownership.ensure(db,user,asset,write=True,confirm=payload.status=='READY',supplier=ownership.external_actor(db,user,asset) if view_factory in (None,asset.factory_id) else None,view_factory=view_factory,collaborate=True,classification=True)
             if payload.status=='READY' and asset.asset_purpose!='MATERIAL':raise HTTPException(422,'客户凭据不能确认为制作资料')
         from app.services.carton_mark_sharing import ensure_asset_access
         if not ownership.managed(asset):
@@ -128,6 +128,10 @@ def classify(db, user, factory, asset_id, payload, *, commit=True, material_conf
                     raise HTTPException(409, '版本关系异常，请核实原稿')
                 seen.add(parent_id)
                 parent = active_asset(db, factory, parent_id)
+                if ownership.managed(parent):
+                    ownership.ensure(db,user,parent,write=True,confirm=True,
+                        supplier=ownership.external_actor(db,user,parent) if view_factory in (None,parent.factory_id) else None,
+                        view_factory=view_factory,collaborate=True,classification=True)
                 parent_state = current(db, parent)
                 if binding_key(parent) != binding_key(asset):
                     raise HTTPException(409, '新旧版本的关联范围已变化，请核实并保持一致后确认')

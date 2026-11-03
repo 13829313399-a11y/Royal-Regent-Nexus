@@ -325,6 +325,9 @@ export interface InternalQuoteCreatePayload {
 }
 
 export interface InternalQuoteCreateProduct {
+  cloneSourceQuoteId?: string
+  cloneSourceRevision?: number
+  cloneSourceVersion?: string
   historySource?: InternalQuoteHistorySelection
   historyReferenceMode?: 'source' | 'current'
   componentSources?: Array<InternalQuoteHistorySelection | null>
@@ -359,6 +362,9 @@ export interface InternalQuoteCreateDocument {
 }
 
 export interface InternalQuoteBatchProduct {
+  versionLabel?: string
+  scenarioName?: string
+  workingVersionWarning?: string
   quoteId: string
   quoteNo: string
   productName: string

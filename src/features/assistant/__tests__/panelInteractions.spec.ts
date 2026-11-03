@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import { useAssistantStore } from '@/stores/assistant'
 import { acquireBodyScrollLock } from '@/lib/bodyScrollLock'
+import { acquireDialogInert } from '@/composables/useDialogFocus'
 import AssistantPanel from '../AssistantPanel.vue'
 import AssistantDocument from '../AssistantDocument.vue'
 import { assistantApi } from '../api'
@@ -286,6 +287,21 @@ describe('assistant panel boundaries',()=>{
   ;(button.element as HTMLElement).focus();await nextTick()
   expect(w.emitted('focus-change')?.at(-1)).toEqual([true])
  })
+ it('holds a mouse-opened message menu and removes the portal when the panel collapses',async()=>{
+  const store=useAssistantStore();store.selectedId='saved-menu';store.messagesBySession['saved-menu']=[{id:'saved-answer',run_id:'saved-run',seq:2,role:'assistant',content_parts:[{type:'text',text:'原回答'}],status:'completed',help_citations:[],context_descriptor:null,created_at:1}]
+  const w=panel();await flushPromises();const trigger=w.get('[aria-label="更多回答操作"]')
+  await pointerEvent(trigger,'pointerdown',{button:0,pointerType:'mouse',pointerId:1})
+  await trigger.trigger('click')
+  await flushPromises()
+  expect(document.querySelector('[role="menu"]')).toBeTruthy()
+  // Portal focus and leaving the ordinary panel must retain the open surface.
+  await w.get('.yl-panel').trigger('focusout',{relatedTarget:document.querySelector('[role="menuitem"]')})
+  expect(w.emitted('focus-change')?.at(-1)).toEqual([true])
+  await w.setProps({mode:'edge'});await flushPromises()
+  expect(document.querySelector('[role="menu"]')).toBeNull()
+  await w.setProps({mode:'side'});await flushPromises()
+  expect(document.querySelector('[role="menu"]')).toBeNull()
+ })
  it('moves from the whole title bar in both axes without requiring a dock-side change',async()=>{
   const w=panel();await flushPromises()
   const header=w.get('.yl-header')
@@ -429,6 +445,72 @@ describe('assistant panel boundaries',()=>{
   const w=panel('focus');await flushPromises();expect(root.inert).toBe(true)
   await w.setProps({mode:'side'});expect(root.inert).toBe(false);expect(document.body.style.overflow).toBe('hidden')
   release();expect(document.body.style.overflow).not.toBe('hidden')
+ })
+ it.each([false,true])('returns focus after a history title disappears unless the panel closed (%s)',async closed=>{
+  const store=useAssistantStore()
+  store.sessions=[{id:'saved-history',title:'原历史会话',created_at:1,updated_at:1,revision:1,favorite:false,deletion_state:'active'}]
+  vi.mocked(assistantApi.sessions).mockResolvedValue({items:store.sessions,next_cursor:null})
+  let finish!:()=>void
+  vi.spyOn(store,'selectSession').mockImplementation(async id=>{store.selectedId=id;await new Promise<void>(resolve=>{finish=resolve})})
+  const w=panel('focus');await flushPromises();await chooseMore(w,'历史会话')
+  const title=w.get<HTMLButtonElement>('.yl-history-title');title.element.focus()
+  await title.trigger('click');await nextTick()
+  expect(w.find('.yl-history-title').exists()).toBe(false)
+  if(closed) await w.setProps({mode:'edge'})
+  finish();await flushPromises()
+  if(!closed) expect(document.activeElement).toBe(w.get('textarea').element)
+  else expect(document.activeElement).not.toBe(w.get('textarea').element)
+ })
+ it.each(['assistant-first','native-first'] as const)('keeps the background isolated until both modal owners leave (%s)',async order=>{
+  const root=document.getElementById('app')!;root.inert=false
+  const w=panel('focus');await flushPromises()
+  const releaseNative=acquireDialogInert(root)
+  try {
+   if(order==='assistant-first') {await w.setProps({mode:'edge'});expect(root.inert).toBe(true);releaseNative()}
+   else {releaseNative();expect(root.inert).toBe(true);await w.setProps({mode:'edge'})}
+   expect(root.inert).toBe(false)
+   releaseNative();expect(root.inert).toBe(false)
+   await w.setProps({mode:'focus'});expect(root.inert).toBe(true)
+   await w.setProps({mode:'side'});expect(root.inert).toBe(false)
+  } finally {releaseNative()}
+ })
+ it('preserves a pre-existing inert background after all assistant and native owners leave',async()=>{
+  const root=document.getElementById('app')!;root.inert=true
+  const w=panel('focus');await flushPromises();const releaseNative=acquireDialogInert(root)
+  try {await w.setProps({mode:'edge'});releaseNative();expect(root.inert).toBe(true)}
+  finally {releaseNative()}
+ })
+ it('preserves an active editor and caret when the pointer switches layout',async()=>{
+  const w=panel();await flushPromises()
+  const input=w.get<HTMLTextAreaElement>('textarea');await input.setValue('保留这段未发送的草稿')
+  input.element.focus();input.element.setSelectionRange(2,5)
+  const mode=w.get('[aria-label="专注阅读"]')
+  const pointer=new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0})
+  mode.element.dispatchEvent(pointer);expect(pointer.defaultPrevented).toBe(true)
+  await mode.trigger('click');await w.setProps({mode:'focus'});await flushPromises()
+  expect(document.activeElement).toBe(input.element)
+  expect([input.element.selectionStart,input.element.selectionEnd]).toEqual([2,5])
+  expect(w.get('textarea').element).toBe(input.element)
+  await w.get('[aria-label="退出专注阅读"]').trigger('click');await w.setProps({mode:'side'});await flushPromises()
+  expect(document.activeElement).toBe(input.element);expect(input.element.value).toBe('保留这段未发送的草稿')
+  const keyboardButton=w.get<HTMLButtonElement>('[aria-label="专注阅读"]');keyboardButton.element.focus()
+  const ordinaryPointer=new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0})
+  keyboardButton.element.dispatchEvent(ordinaryPointer);expect(ordinaryPointer.defaultPrevented).toBe(false)
+  await keyboardButton.trigger('click');await w.setProps({mode:'focus'});await flushPromises()
+  expect(document.activeElement).toBe(keyboardButton.element)
+ })
+ it('matches the CSS breakpoint when a desktop scrollbar narrows the visual viewport',async()=>{
+  Object.defineProperty(window,'innerWidth',{value:768,writable:true,configurable:true})
+  vi.stubGlobal('visualViewport',{width:752.8,height:900,offsetLeft:0,offsetTop:0,addEventListener:vi.fn(),removeEventListener:vi.fn()})
+  const w=panel();await flushPromises()
+  expect(w.get('.yl-panel').classes()).not.toContain('yl-mobile')
+  expect(w.get('.yl-panel').attributes('aria-modal')).toBeUndefined()
+  expect(w.find('.yl-backdrop').exists()).toBe(false)
+  expect(document.getElementById('app')!.inert).not.toBe(true)
+  Object.defineProperty(window,'innerWidth',{value:767,writable:true,configurable:true})
+  window.dispatchEvent(new Event('resize'));await flushPromises()
+  expect(w.get('.yl-panel').classes()).toContain('yl-mobile')
+  expect(w.get('.yl-panel').attributes('aria-modal')).toBe('true')
  })
  it('does not send IME confirmation or Shift+Enter, and Enter sends original text',async()=>{
   const store=useAssistantStore();store.capabilities={...caps,configuration_status:'configured'}

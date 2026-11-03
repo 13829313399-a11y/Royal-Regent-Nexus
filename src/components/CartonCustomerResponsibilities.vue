@@ -61,7 +61,7 @@ onBeforeUnmount(() => { epoch++; controller.abort() })
 
 <template>
   <article class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="客户责任范围">
-    <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-bold">客户认领与协作</h3><p class="mt-1 text-xs leading-5 text-slate-500">未认领客户对本厂有岗位权限的人员开放；认领后，负责人和获授权同事可操作订单及入库登记；默认显示自己客户，需要时可切换查看其他客户。负责人可授权同事；主管、经理、管理员在原有厂区权限内统筹，库存和 QC 仍按岗位共享。</p></div><button type="button" :disabled="saving" class="rounded-lg border px-3 py-2 text-xs" @click="refresh">刷新责任范围</button></div>
+    <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-bold">客户认领与协作</h3><p class="mt-1 text-xs leading-5 text-slate-500">未认领客户对本厂有岗位权限的人员开放；认领后，负责人和获授权同事可操作订单；订单默认显示自己客户，需要时可切换查看其他客户。有本厂收料岗位权限的仓管可收全部客户来货，同一送货单可含多个客户，无须另行认领。负责人可授权订单协作；统筹、库存和 QC 仍按原岗位权限。</p></div><button type="button" :disabled="saving" class="rounded-lg border px-3 py-2 text-xs" @click="refresh">刷新责任范围</button></div>
     <p v-if="error" role="alert" class="mt-3 text-sm text-red-700">{{ error }}</p>
     <p v-if="loading" class="mt-3 text-sm text-slate-500">正在读取责任范围…</p>
     <template v-else-if="!error">

@@ -10,6 +10,7 @@ import type { InternalQuote, InternalQuoteBatchProduct } from '@/types/internalQ
 import InternalQuoteCollaboration from '../InternalQuoteCollaboration.vue'
 import InternalQuotePackagingCopy from '../InternalQuotePackagingCopy.vue'
 import InternalQuoteProductActions from '../InternalQuoteProductActions.vue'
+import InternalQuoteOutputProblems from '../InternalQuoteOutputProblems.vue'
 
 let dirty = false
 const wrappers: ReturnType<typeof shallowMount>[] = []
@@ -47,7 +48,7 @@ async function setup(overrides: Partial<InternalQuote> = {}, permission = true, 
   await router.isReady()
   const wrapper = shallowMount(InternalQuoteCollaboration, { global: { plugins: [pinia, router], stubs: {
     RouterLink: true,
-    InternalQuoteSectionEditor: defineComponent({ name: 'InternalQuoteSectionEditor', setup(_, { expose }) { expose({ hasUnsavedChanges: () => dirty }); return () => null } }),
+    InternalQuoteSectionEditor: defineComponent({ name: 'InternalQuoteSectionEditor', props: ['section'], setup(props, { expose }) { expose({ hasUnsavedChanges: () => dirty, canSaveWholeQuoteDraft: () => true, getWholeQuoteDraft: () => ({ sectionCode: props.section.code, revision: 1, payload: {} }), acceptSavedPayload: () => {} }); return () => null } }),
   } } })
   wrappers.push(wrapper)
   await flushPromises()
@@ -75,7 +76,7 @@ describe('packaging source formula recovery', () => {
     await button(wrapper, '按当前公式重算').trigger('click'); await flushPromises()
     expect(recalculate).toHaveBeenCalledWith('source', 4, '复制包装前更新公式')
     expect(sync).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('重算完成，请重新打开“仅复制包装”')
+    expect(wrapper.text()).toContain('重算完成，请重新打开复制或输出窗口')
   })
 
   it('navigates from the receiver to the selected source and opens its formula panel without a write', async () => {
@@ -86,7 +87,7 @@ describe('packaging source formula recovery', () => {
     expect(router.currentRoute.value.params.quoteId).toBe('source')
     expect(router.currentRoute.value.query).toEqual({ factory: 'huaxing' })
     expect(wrapper.find('.quote-sync-panel').exists()).toBe(true)
-    expect(wrapper.text()).toContain('当前处理来源款：来源款')
+    expect(wrapper.text()).toContain('当前处理产品：来源款')
     expect(recalculate).not.toHaveBeenCalled()
     expect(sync).not.toHaveBeenCalled()
   })
@@ -105,10 +106,10 @@ describe('packaging source formula recovery', () => {
   })
 
   it.each([
-    [{ versionArchived: true }, true, '来源款已归档'],
-    [{ status: 'exported' }, true, '来源款已输出并冻结'],
+    [{ versionArchived: true }, true, '本款已归档'],
+    [{ status: 'exported' }, true, '本款已输出并冻结'],
     [{}, false, '没有该厂区的公式重算权限'],
-    [{ formulaRecalculationRequired: false }, true, '来源款已使用当前公式'],
+    [{ formulaRecalculationRequired: false }, true, '本款已使用当前公式'],
   ] as const)('explains why the source cannot be recalculated: %s', async (overrides, permission, text) => {
     const { wrapper, recalculate, sync } = await setup(overrides, permission, true)
     expect(wrapper.text()).toContain(text)
@@ -129,4 +130,24 @@ describe('packaging source formula recovery', () => {
     expect(recalculate).not.toHaveBeenCalled()
     expect(sync).not.toHaveBeenCalled()
   })
+})
+
+
+it('reports saved but incomplete pricing with the specific painting blocker and navigation', async () => {
+  const blockers = [{ section_code: 'painting', section_name: '喷油部', state: 'blocked', reason: '喷油第 1 行：油漆、人工待填写' }]
+  const { wrapper, store } = await setup({ formulaRecalculationRequired: false, readiness: { state: 'incomplete', ready_sections: 3, required_sections: 4, blockers } })
+  vi.spyOn(store, 'saveWholeProductSections').mockResolvedValue({ sections: [], quote: store.getQuoteById('source') } as never)
+  await button(wrapper, '保存').trigger('click'); await flushPromises()
+  expect(wrapper.text()).toContain('内容已保存，仍有 1 项待补齐或重算')
+  expect(wrapper.text()).not.toContain('当前全部现有内容已保存')
+  expect(wrapper.findComponent(InternalQuoteOutputProblems).props('problems')).toEqual(blockers)
+})
+
+
+it('keeps the formula blocker visible after saving otherwise ready content', async () => {
+  const { wrapper, store } = await setup({ readiness: { state: 'ready', ready_sections: 3, required_sections: 3, blockers: [] } })
+  vi.spyOn(store, 'saveWholeProductSections').mockResolvedValue({ sections: [], quote: store.getQuoteById('source') } as never)
+  await button(wrapper, '保存').trigger('click'); await flushPromises()
+  expect(wrapper.findComponent(InternalQuoteOutputProblems).props('problems')).toEqual([expect.objectContaining({ section_code: 'formula' })])
+  expect(wrapper.text()).toContain('内容已保存，仍有 1 项待补齐或重算')
 })

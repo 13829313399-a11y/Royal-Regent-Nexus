@@ -1,0 +1,39 @@
+{
+  "format_version": 1,
+  "baseline_head": "537b784f516b14210b3a02126d4d661bd4bf9423",
+  "patch_file": "rollback-537b784f-v3-reader.patch",
+  "patch_sha256": "7619d82690d663aa52d2b050473d40cf0d19c8000ced11b8b6ca8174a923b6d4",
+  "full_tracked_archive_sha256": "357486f1479400159c7ea2536e5aa62407e1b753e358beb5059bed1816f72dd8",
+  "original_backend_hashes": {
+    "backend/app/api/assistant.py": "0249051411d85927f600b5f7c96845f3e9d6891a93824db65dbde789fa9e22ac",
+    "backend/app/services/assistant/service.py": "76e3abb02ec422bad27c592fe700937df110cf0837a53310a6539af0197ddb87",
+    "backend/app/services/assistant/artifacts.py": "4305045843e20ded1a0140c3fdd8c61629cc55e8bc609ed0dd0d8101fbcc1539",
+    "backend/app/services/assistant/visibility.py": "c952d0047483a718a97de3e3e937308c2154ed6fb98369d23530e621792c619c",
+    "backend/app/services/assistant/capabilities.py": "e778c8b844c2dedb49039ccbafc92e60b5bc078d24ccb2cd511cd5219c0f19c4",
+    "backend/app/services/assistant/files.py": "6918b53d6c05fca927d8885a54c6444154050a6b8ad2673696c1ad21a35dae7d",
+    "backend/app/db.py": "c236e5c1216e2d4d3958a74bec435bc6d62da73fcc85f5bb419fa992640537a6",
+    "backend/app/main.py": "1c7e06dd7a4d84644103f6330a1d4d96acb87172efc6a99af30e926cbe35992e",
+    "backend/app/core/config.py": "6c8fbeb5b95eb8ee1f67aad93529098f5c6ccc7bb87ec6d74ae6f35ce3c541d5"
+  },
+  "patched_files": {
+    "backend/app/core/config.py": "9fdcabc782913ef094c3582492ef9e6123d01ccf67ffc29f01fe6487e66a1dd0",
+    "backend/app/services/assistant/service.py": "5d1ebb7d464a48a01f236a0ba34d0d7660af70098914a7c4f315253ad38f0796",
+    "backend/app/services/assistant/rollback_compat.py": "d23252caf7ce8b608bfc75914c5e53d836ca48686f402d0f32e2376a80e3ba02"
+  },
+  "required_source_roots": [
+    "backend",
+    "src",
+    "shared"
+  ],
+  "verified_database_revision": "20261026_0177",
+  "old_alembic_head": "20261022_0175",
+  "startup_requires_skip_old_alembic": true,
+  "tool_round_zero_supported": true,
+  "evidence": "assistant-v3/P6-rollback-evidence.md",
+  "sqlite_offline_verified": true,
+  "postgresql_executed": false,
+  "full_application_lifespan_verified": false,
+  "qa_activated": false,
+  "production_deployed": false,
+  "review_only": true
+}

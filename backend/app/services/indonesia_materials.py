@@ -281,7 +281,7 @@ class Ledger:
         row = None
         kind = {'option_save': 'option', 'option_delete': 'option', 'option_restore': 'option', 'customer_delete': 'customer', 'customer_restore': 'customer', 'product_delete': 'product', 'product_restore': 'product', 'material_restore': 'material', 'customer_save': 'customer', 'material_save': 'material', 'product_save': 'product', 'order_save': 'order', 'order_plan_save': 'order', 'order_recalculate': 'order',
                 'demand_adjust': 'order', 'supply_save': 'supply', 'supply_reply': 'supply', 'output_material_refresh': 'supply', 'receipt_confirm': 'supply',
-                'reallocate': 'allocation', 'shipment_save': 'shipment', 'shipment_confirm': 'shipment', 'import_confirm': 'import', 'warehouse_import_confirm': 'import', 'master_import_confirm': 'import'}.get(action)
+                'reallocate': 'allocation', 'shipment_save': 'shipment', 'shipment_confirm': 'shipment', 'import_confirm': 'import', 'warehouse_import_correct': 'import', 'warehouse_import_confirm': 'import', 'master_import_confirm': 'import'}.get(action)
         if body.entity_id:
             require(kind is not None, '此操作不接受现有记录编号', 422)
             row = self.get(body.entity_id, kind, include_deleted=action.endswith('_restore'))
@@ -503,6 +503,9 @@ class Ledger:
             data['export_material_count'] = len({shipment_material_key(line) for line in lines.values()})
             data['supplier_summary'] = supplier_summary
             return self.save('shipment', data, row)
+        if action == 'warehouse_import_correct':
+            from app.services.indonesia_warehouse_import import correct_source
+            return correct_source(self, row, body.data, actor)
         if action == 'warehouse_import_confirm':
             from app.services.indonesia_warehouse_import import confirm
             return confirm(self, row, body.data, actor)
@@ -623,6 +626,9 @@ def run_command(db, user, body, *, refresh_user):
         ledger = Ledger(db, body.factory_id, access)
         saved = access.transfer(ledger, body) if body.action == 'draft_transfer' else ledger.execute(body, user.id)
         result = dict(record=access.present(saved), _actor_employment_epoch=(user.identity or {}).get('employment_epoch', 1))
+        if body.action == 'warehouse_import_correct':
+            from app.services.indonesia_warehouse_import import reconcile
+            result['record']['data']['rows'] = reconcile(ledger, saved)
         db.add(Receipt(operation_id=body.operation_id, factory_id=body.factory_id, actor_id=user.id,
                        action=body.action, fingerprint=fingerprint, changes=ledger.changes, result=result, created_at=now_text()))
         db.commit()

@@ -72,6 +72,14 @@ def test_duplicate_formal_rows_and_missing_keys_require_review():
     assert result['review_count'] == 5
 
 
+def test_blank_order_type_still_requires_warehouse_review():
+    result = _parse_weekly('schedule.xlsx', workbook([source_row(kind='')]))
+    row = result['rows'][0]
+    assert row['order_type'] == ''
+    assert row['match_status'] == 'REVIEW_REQUIRED'
+    assert '未标订单类型' in row['suggestion']
+
+
 def test_same_contract_item_and_source_po_are_distinct_when_so_differs():
     first = source_row(contract='RL232607816', item='1020264069')
     second = list(first)

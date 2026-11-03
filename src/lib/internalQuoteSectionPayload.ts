@@ -1199,6 +1199,15 @@ export function electronicExtraRmb(
 export function calculateElectronicSummary(payload: ElectronicPayload, rmbHkdRate: unknown): ElectronicSummary {
   const rate = positivePreviewNumber(rmbHkdRate)
   const component = electronicRowsSummary(electronicCalculationRows(payload), rate)
+  if (payload.quote_mode === 'quick') {
+    const quoteRmb = component.componentCostRmb
+    return {
+      componentCostRmb: quoteRmb, deductibleInputTaxRmb: 0,
+      preTaxCostRmb: quoteRmb, withProfitRmb: quoteRmb,
+      taxDifferenceRmb: 0, taxPayableRmb: 0, quoteRmb,
+      quoteHkd: rate ? quoteRmb / rate : 0,
+    }
+  }
   const extras = electronicExtraRmb(payload, 'bonding_rmb', 'bonding_hkd', rate)
     + electronicExtraRmb(payload, 'smt_rmb', 'smt_hkd', rate)
     + electronicExtraRmb(payload, 'labor_rmb', 'labor_hkd', rate)

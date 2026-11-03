@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { checkedBucket, emptyDraftBucket, recordDraftId } from '../draftPersistence'
 import { packingBalance } from '../packingBalance'
-import { planningInfo, contractDemands } from '../planning'
+import { planningInfo, contractDemands, planningMaterials, procurementDefault } from '../planning'
 import type { BoardOrder, MaterialRecord } from '@/api/indonesiaMaterials'
 
 describe('wizard preservation and calculations', () => {
@@ -49,6 +49,31 @@ describe('wizard preservation and calculations', () => {
     records[0]!.data.daily_capacity = '200'
     expect(planningInfo(order, records).label).toBe('资料已更新，待同步')
     records[1]!.data.procurement_days = null
+    order.demands[0]!.procurement_days = null
     expect(planningInfo(order, records).label).toContain('采购周期')
+  })
+  it.each([0, 16])('labels an existing %s-day default as pending sync and preserves the saved demand until submission', days => {
+    const order = { id: 'o', customer: 'C', item_no: 'P', plan: { required_date: '2026-11-30', transport_days: 25 },
+      demands: [{ material_id: 'm', procurement_days: null, purchase_start: null }] } as unknown as BoardOrder
+    const records = [
+      { id: 'p', kind: 'product', version: 1, data: { customer: 'C', code: 'P', daily_capacity: '100', transport_days: 25, materials: [{ material_id: 'm', usage: '1' }] } },
+      { id: 'm', kind: 'material', version: 1, data: { procurement_days: days } },
+      { id: 'o', kind: 'order', version: 1, data: { product_snapshot: { data: { daily_capacity: '100' } } } },
+    ] as MaterialRecord[]
+    expect(contractDemands(order, records)[0]).toMatchObject({ procurementLabel: '周期已填，待同步', procurementNote: `资料库 ${days} 天 · 本合同尚未同步`, procurement_days: null, purchase_start: null })
+    expect(planningMaterials(order, records).cycleIds).toEqual(['m'])
+    expect(planningInfo(order, records).label).toBe('资料已更新，待同步')
+    expect(order.demands[0]!.procurement_days).toBeNull()
+    expect(procurementDefault(order, records[1]!)).toBe(days)
+    order.demands[0]!.procurement_days = days
+    order.demands[0]!.purchase_start = '2026-11-14'
+    expect(planningMaterials(order, records).cycleIds).toEqual([])
+    expect(contractDemands(order, records)[0]!.procurementLabel).toBe('2026-11-14')
+    records[1]!.data.procurement_days = null
+    expect(procurementDefault(order, records[1]!)).toBe(days)
+    expect(planningInfo(order, records).label).toBe('计划齐全')
+    order.demands[0]!.procurement_days = null
+    order.demands[0]!.purchase_start = null
+    expect(contractDemands(order, records)[0]!.procurementLabel).toBe('待补采购周期')
   })
 })

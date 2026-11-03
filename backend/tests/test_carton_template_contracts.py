@@ -28,8 +28,8 @@ def test_history_template_preserves_positions_and_exposes_customer_po_without_gu
     main = book["历史订单导入"]
     headers = [cell.value for cell in main[2]]
     assert headers[:8] == ["客户名称", "合同号", "货号", "下单日期", "计划交期", "外箱需求数量", "内箱需求数量", "卡纸需求数量"]
-    assert headers[8:10] == ["外箱每箱净重kg", "外箱每箱毛重kg"]
-    assert headers[-1] == "客户PO"
+    assert headers[8:10] == ["客户PO", "历史订单号"]
+    assert "外箱每箱净重kg" in headers and "外箱每箱毛重kg" in headers
     assert not any(cell.value is not None for row in main.iter_rows(min_row=3) for cell in row)
     for target, po in [(3, "0001"), (4, "0002")]:
         for column, cell in enumerate(book["填写示例"][6], 1):
@@ -41,17 +41,17 @@ def test_history_template_preserves_positions_and_exposes_customer_po_without_gu
     assert all(row["product_name"] == "" for row in rows)
     assert all(row["product_order_quantity"] is None for row in rows)
     assert all(row["line"].net_weight_kg == Decimal("8.125") for row in rows)
-    assert book["字段说明"]["C16"].value == "保留原计划交期；缺客户交期时按计划交期加有效采购安全天数补齐，预览显示实际规则。"
+    assert any("缺客户交期" in str(cell.value or "") for row in book["字段说明"] for cell in row)
 
 
 def test_history_supplement_example_has_the_same_weight_headers_as_its_input_sheet():
     book = load_workbook(TEMPLATES / "carton-history-order-import-template.xlsx")
     expected = [cell.value for cell in book["附加纸品明细"][2]]
-    actual = [cell.value for cell in book["填写示例"][14]][:len(expected)]
+    actual = [cell.value for cell in book["填写示例"][15]][:len(expected)]
     assert actual == expected
     for column, cell in enumerate(book["填写示例"][8], 1):
         book["历史订单导入"].cell(3, column, cell.value)
-    for target, source in [(3, 15), (4, 16)]:
+    for target, source in [(3, 16), (4, 17)]:
         for column in range(1, len(expected) + 1):
             book["附加纸品明细"].cell(target, column, book["填写示例"].cell(source, column).value)
     rows, _ = _parse_rows("history.xlsx", saved(book))
@@ -159,3 +159,46 @@ def test_missing_dimensions_still_enforces_existing_physical_row_limits(monkeypa
     monkeypatch.setattr(imports, "MAX_IMPORT_ROWS", 3)
     with pytest.raises(HTTPException, match="超过"):
         imports._sheet_rows("source.xlsx", output.getvalue(), strict_item_limit=strict)
+
+
+def test_all_history_examples_with_extra_papers_preview_and_import(monkeypatch, tmp_path):
+    from test_molding_sample_api import make_client, login_as
+    from test_carton_history_identity_api import _customer
+    from test_carton_history_preview_api import upload
+    import test_molding_sample_api
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path)
+    monkeypatch.setenv('ONLINE_DOCUMENTS_ENABLED', 'false')
+    book = load_workbook(TEMPLATES / 'carton-history-order-import-template.xlsx')
+    for target, source in enumerate(range(6, 13), 3):
+        for column in range(1, book['历史订单导入'].max_column + 1):
+            book['历史订单导入'].cell(target, column, book['填写示例'].cell(source, column).value)
+    for target, source in [(3, 16), (4, 17)]:
+        for column in range(1, book['附加纸品明细'].max_column + 1):
+            book['附加纸品明细'].cell(target, column, book['填写示例'].cell(source, column).value)
+    content = saved(book)
+    with make_client(monkeypatch) as client:
+        login_as(client, 'admin'); _customer(client, '迪奇')
+        response = upload(client, content)
+        assert response.status_code == 200, response.text
+        preview = response.json()
+        assert preview['errors'] == [], preview
+        assert preview['group_count'] == 7
+        response = upload(client, content, preview=False, fingerprint=preview['source_fingerprint'])
+        assert response.status_code == 201, response.text
+        assert response.json()['imported_count'] == 7
+
+
+def test_history_prior_column_order_and_leading_zero_values_still_parse():
+    from openpyxl import Workbook
+    book = load_workbook(TEMPLATES / 'carton-history-order-import-template.xlsx')
+    headers = [cell.value for cell in book['历史订单导入'][2]]
+    assert book['填写示例']['C9'].value == '000203307004'
+    assert book['填写示例']['I9'].value == '0001'
+    assert book['填写示例']['I10'].value == '0002'
+    weights = ['外箱每箱净重kg', '外箱每箱毛重kg']
+    old = headers[:8] + weights + [h for h in headers[8:] if h not in {*weights, '客户PO'}] + ['客户PO']
+    values = {header: book['填写示例'].cell(9, i + 1).value for i, header in enumerate(headers)}
+    previous = Workbook(); sheet = previous.active; sheet.title = '历史订单导入'
+    sheet.append(['历史模板']); sheet.append(old); sheet.append([values.get(h) for h in old])
+    rows, _ = _parse_rows('old.xlsx', saved(previous))
+    assert len(rows) == 1 and rows[0]['item_no'] == '000203307004' and rows[0]['customer_po'] == '0001'

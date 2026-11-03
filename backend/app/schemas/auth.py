@@ -127,6 +127,7 @@ class AuthEffectiveAccess(BaseModel):
 
 
 class AuthMeResponse(BaseModel):
+    internal_member: bool = False
     id: str
     username: str
     display_name: str

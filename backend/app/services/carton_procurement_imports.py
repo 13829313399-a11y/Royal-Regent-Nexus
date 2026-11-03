@@ -936,6 +936,7 @@ def _parse_delivery_spreadsheet(filename: str, content: bytes, *, strict_rows: b
                     "specification": _text(_cell(row, mapping, "specification")) if dongkang_format else _specification(row, mapping),
                     "delivered_quantity": _json_number(amount),
                     "unit_price": _json_number(_number(_cell(row, mapping, "unit_price"))) or 0,
+                    "unit_price_provided": _number(_cell(row, mapping, "unit_price")) is not None,
                     "location": _text(_cell(row, mapping, "location")),
                 }
             if dongkang_format:
@@ -1058,6 +1059,7 @@ def _parse_delivery_document(filename: str, content: bytes) -> dict[str, Any]:
 def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[str, Any]],
                 schedule_order_links: dict[str, list[str]] | None = None) -> None:
     from app.services.carton_order_split import live_plans, annotate_schedule, remaining_products
+    from app.services.carton_schedule_quantity_matching import read_matches, candidates as quantity_candidates, BASIS
     split_plans = live_plans(db, factory_id) if import_type == "WEEKLY_SCHEDULE" else []
     joined = list(
         db.execute(
@@ -1085,6 +1087,11 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
         indexes[mode] = (exact_index, contract_index, item_index)
     for line, order in joined:
         by_id[order.id].append((line, order))
+    quantity_matches = read_matches(db, factory_id, incoming_rows=rows) if import_type == "WEEKLY_SCHEDULE" else {}
+    quantity_orders = [dict(id=order.id, factory_id=order.factory_id, customer_code=order.customer_code,
+        contract_no=order.contract_no, item_no=order.item_no, customer_po=order.customer_po, status=order.status,
+        product_order_quantity=order.product_order_quantity, schedule_quantity_matches=quantity_matches.get(order.id, []))
+        for order in {order.id: order for _, order in joined}.values()]
     counts = Counter(schedule_identity(row) for row in rows if tracked(row))
     for row in rows:
         linked_ids = (schedule_order_links or {}).get(schedule_identity(row), []) if (
@@ -1109,6 +1116,12 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
                 if needs_review:
                     row["match_status"] = "REVIEW_REQUIRED"
                 continue
+        fallback = quantity_candidates(row, quantity_orders) if import_type == "WEEKLY_SCHEDULE" else []
+        fallback_review = quantity_candidates(row, quantity_orders, ambiguous=True) if import_type == "WEEKLY_SCHEDULE" else []
+        if not linked_pairs and fallback_review:
+            row.update(match_status="AMBIGUOUS", procurement_state="REVIEW", match_basis=BASIS,
+                       suggestion="合同、货号、产品数量及装箱存在多个候选或来源待核实；请核对原订单，勿重复下单")
+            continue
         if needs_review:
             continue
         if row.get("template") == "dongkang-delivery":
@@ -1134,8 +1147,10 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
         mode = "item" if row.get("template") == "unified-item" else "delivery" if row.get("template") == "dongkang-delivery" else "plain"
         exact_index, contract_index, item_index = indexes[mode]
         exact = scoped(exact_index.get((contract_key, item_key), ())) if contract_key and item_key else []
+        if not exact and fallback:
+            exact = [pair for candidate in fallback for pair in by_id[candidate["id"]]]
         candidates = exact
-        basis = "合同号 + 货号" if exact else ""
+        basis = BASIS if exact and fallback else "合同号 + 货号" if exact else ""
         if not candidates and contract_key and row.get("template") not in {"unified-item", "dongkang-delivery"}:
             by_contract = scoped(contract_index.get(contract_key, ()))
             if len({order.id for _, order in by_contract}) == 1:
@@ -1350,7 +1365,10 @@ def match_carton_import(db, factory_id, import_type, parsed, options):
                        customer_code=options["customer_code"], customer_name=options["customer_name"])
         # The selected master customer is authoritative; workbook buyer names
         # and filenames must never activate another customer's item convention.
-        if any(_text(options.get(key)) == "360" for key in ("customer_code", "customer_name")):
+        business_code = options.get("business_customer_code")
+        is_360 = business_code == "360" if business_code else any(
+            _text(options.get(key)) == "360" for key in ("customer_code", "customer_name"))
+        if is_360:
             for row in rows:
                 row.setdefault("source_item_no", row.get("item_no") or "")
                 row["item_no"] = _text(row.get("shipping_item_no"))

@@ -1,5 +1,5 @@
 from urllib.parse import urlsplit
-from fastapi import APIRouter, Depends, Request, Query, UploadFile, File
+from fastapi import APIRouter, Depends, Request, Query, UploadFile, File, Path as PathParam
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from fastapi.routing import APIRoute
 from fastapi.exceptions import RequestValidationError
@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app import db as database
 from app.models.assistant import AssistantMessage
-from app.schemas.assistant import CreateSession, RenameSession, SendMessage, PageContext, ArtifactCreate, ArtifactVersion, FavoritePatch, ActionRequest, DocumentSearch, DocumentReplacement
+from app.schemas.assistant import CreateSession, RenameSession, SendMessage, PageContext, ArtifactCreate, ArtifactVersion, FavoritePatch, ActionRequest, DocumentSearch, DocumentReplacement, FeedbackPut, SubscriptionReceipt
 from app.services.assistant import service, runtime, capabilities, help_registry, storage, files, artifacts, visibility
 from app.services.assistant.errors import AssistantError
 
@@ -64,6 +64,18 @@ def get_diagnostics(user=Depends(viewer)):
     return diagnostics.details(user)
 
 
+@router.get('/diagnostics/operations')
+def operations_diagnostics(days: int = Query(7,ge=1,le=31),user=Depends(viewer)):
+    from app.services.assistant import operations
+    return JSONResponse(operations.summary(user,days),headers={'Cache-Control':'private, no-store'})
+
+
+@router.get('/diagnostics/runs/{rid}')
+def admin_run_diagnostics(rid:str = PathParam(...,min_length=8,max_length=64,pattern=r'^[A-Za-z0-9_-]+$'),user=Depends(viewer)):
+    from app.services.assistant import operations
+    return JSONResponse(operations.admin_trace(user,rid),headers={'Cache-Control':'private, no-store'})
+
+
 @router.get("/coverage")
 def get_coverage(factory_id: str = Query(..., min_length=1, max_length=32),
                  module_id: str | None = Query(None, min_length=1, max_length=64), user=Depends(viewer)):
@@ -118,7 +130,10 @@ def messages(sid: str, cursor: int = Query(0, ge=0), limit: int = Query(50, ge=1
 
 @router.post("/sessions/{sid}/messages")
 def send(sid: str, payload: SendMessage, request: Request, user=Depends(viewer)):
-    admitted = service.admit(user, sid, payload)
+    admitted = service.admit(user, sid, payload, auth_session_id=getattr(request.state, 'auth_session_id', None))
+    if payload.protocol_version >= 3:
+        return JSONResponse({k: admitted[k] for k in ('run_id', 'reused')}, status_code=200 if admitted['reused'] else 202,
+            headers={'Cache-Control': 'private, no-store'})
     if admitted["reused"]:
         return JSONResponse(admitted)
     admitted["session_id"] = sid
@@ -138,12 +153,65 @@ def run(rid: str, user=Depends(viewer)):
     return service.snapshot(user, rid=rid)
 
 
+@router.get('/runs/{rid}/events')
+def run_events(rid: str, request: Request, after_seq: int = Query(0, ge=0), subscriber_id: str | None = Query(None,min_length=8,max_length=64), user=Depends(viewer)):
+    capabilities.require_enabled()
+    from app.services.assistant import durable
+    if not capabilities.durable_schema_ready():
+        raise AssistantError('durable_schema_pending', '运行事件尚未准备完成。', 503)
+    # Fail before response headers when the initial private read is unavailable.
+    durable.replay(user, rid, after_seq)
+    instrumented_id=None
+    if subscriber_id:
+        from app.services.assistant import operations
+        from sqlalchemy.exc import SQLAlchemyError
+        if operations.schema_ready():
+            try:
+                operations.subscription_open(user,rid,subscriber_id,after_seq,_authorized=True)
+                instrumented_id=subscriber_id
+            except SQLAlchemyError:
+                # A failed metadata write cannot discard an authorized replay.
+                pass
+    return StreamingResponse(durable.subscription(request, rid, after_seq, instrumented_id), media_type='text/event-stream',
+        headers={'Cache-Control': 'private, no-store', 'X-Accel-Buffering': 'no'})
+
+
+@router.post('/runs/{rid}/subscriptions/{subscriber_id}/receipt')
+def subscription_receipt(rid: str,payload: SubscriptionReceipt,subscriber_id: str = PathParam(...,min_length=8,max_length=64),user=Depends(viewer)):
+    from app.services.assistant import operations
+    return JSONResponse(operations.receipt(user,rid,subscriber_id,payload.applied_seq),headers={'Cache-Control':'private, no-store'})
+
+
+@router.get('/runs/{rid}/diagnostics')
+def run_diagnostics(rid: str,user=Depends(viewer)):
+    from app.services.assistant import operations
+    return JSONResponse(operations.own_diagnostics(user,rid),headers={'Cache-Control':'private, no-store'})
+
+
+@router.get('/runs/{rid}/feedback')
+def get_feedback(rid: str,user=Depends(viewer)):
+    from app.services.assistant import operations
+    return JSONResponse(operations.feedback_get(user,rid),headers={'Cache-Control':'private, no-store'})
+
+
+@router.put('/runs/{rid}/feedback')
+def put_feedback(rid: str,payload: FeedbackPut,user=Depends(viewer)):
+    from app.services.assistant import operations
+    return JSONResponse(operations.feedback_put(user,rid,payload),headers={'Cache-Control':'private, no-store'})
+
+
 @router.post("/runs/{rid}/cancel")
 def cancel(rid: str, user=Depends(viewer)):
     # A just-disabled feature must still allow stopping its outstanding runs.
     if not capabilities.schema_ready():
         raise AssistantError("schema_pending", "助手数据尚未准备完成。", 503)
     return service.cancel(user, rid)
+
+
+@router.get("/runs/{rid}/question")
+def question(rid: str, user=Depends(viewer)):
+    capabilities.require_enabled()
+    return JSONResponse(service.question(user, rid), headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/sessions/{sid}/export")
@@ -156,7 +224,7 @@ def export(sid: str, user=Depends(viewer)):
             safe = service.message_out(m, user)
             chunks.append("\n## " + ("你" if m.role == "user" else "曜灵") + f" ({m.status})\n")
             for part in safe["content_parts"]:
-                if part["type"] in ("text", "reasoning"):
+                if part["type"] in ("text", "reasoning", "run_notice"):
                     chunks.append(part["text"] + "\n")
                 elif part["type"] == "image_ref":
                     chunks.append("![主动上传的图片](" + storage.data_url(db, user, sid, part["attachment_id"]) + ")\n")
@@ -164,6 +232,9 @@ def export(sid: str, user=Depends(viewer)):
                     chunks.append("\n工具记录：\n\n~~~~json\n" + json_safe(part) + "\n~~~~\n")
                 elif part["type"] == "evidence":
                     chunks.append("\n资料状态：\n" + artifacts.evidence_summary(part) + "\n依据：\n" + artifacts.source_lines(part["sources"]) + "\n检索诊断：" + json_safe(part["search"]))
+                elif part["type"] == "run_relation":
+                    labels = dict(revise='修订提问', regenerate='重新生成', excerpt='摘录追问', retry='显式重试')
+                    chunks.append("\n提问关系：" + labels.get(part['kind'], part['kind']) + "，原轮次 " + part['parent_run_id'] + "\n")
             if safe["context_descriptor"]:
                 chunks.append("\n页面上下文：" + json_safe(safe["context_descriptor"]) + "\n")
             for c in safe["help_citations"]:
@@ -296,6 +367,9 @@ def answer_export(rid: str, format: str = "md", user=Depends(viewer)):
     if answer.get("unavailable"):
         raise AssistantError("source_unavailable", "来源已失效，无法导出。", 410)
     content = "".join(p["text"] for p in answer["content_parts"] if p["type"] == "text")
+    for part in answer['content_parts']:
+        if part['type'] == 'run_notice':
+            content += '\n\n' + part['text']
     evidence = next((p for p in answer["content_parts"] if p["type"] == "evidence"), {})
     if summary := artifacts.evidence_summary(evidence):
         content += "\n\n资料状态：\n" + summary

@@ -23,6 +23,9 @@ def make_client(monkeypatch, **env_overrides):
     database_url = f"sqlite:///{TEST_TMP_DIR / f'auth_{uuid4().hex}.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("SEED_ADMIN_PASSWORD", ADMIN_TEST_PASSWORD)
+    # Synthetic-account fixtures must not inherit a workstation's seeding policy.
+    # Callers can still explicitly disable seeding through env_overrides below.
+    monkeypatch.setenv("SEED_DEFAULT_ACCOUNTS", "true")
     # Keep lifecycle regressions independent of a developer workstation .env.
     monkeypatch.setenv("SPRAY_OPS_ENABLED", "false")
     monkeypatch.setenv("UV_OPS_ENABLED", "false")
@@ -130,6 +133,7 @@ def test_login_sets_http_only_session_cookie_and_me_returns_admin_rbac_scope(mon
                         "fabric_operations:read",
                         "fabric_warehouse:read",
                         "injection_scheduling:read",
+                        "indonesia_material:read",
                         "internal_quote:baseline_read",
                         "internal_quote:read",
                         "internal_quote:summary_read",

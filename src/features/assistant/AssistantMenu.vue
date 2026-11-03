@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onUnmounted, ref, watch } from 'vue'
 import { DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuPortal, DropdownMenuContent, DropdownMenuItem } from 'reka-ui'
-defineProps<{ label: string; items: { id: string; label: string; disabled?: boolean }[] }>()
+const props=withDefaults(defineProps<{ label: string; items: { id: string; label: string; disabled?: boolean }[]; active?:boolean }>(),{active:true})
 const emit = defineEmits<{ select: [id: string]; open: [value: boolean] }>()
 const open = ref(false), trigger = ref<InstanceType<typeof DropdownMenuTrigger>>()
 const content = ref<InstanceType<typeof DropdownMenuContent>>()
@@ -12,6 +12,8 @@ watch([open,content], async ([value]) => {
 }, {flush:'post'})
 let selected = false
 function changed(value: boolean) { open.value = value; if (value) selected = false; emit('open', value) }
+watch(()=>props.active,value=>{if(!value&&open.value)changed(false)})
+onUnmounted(()=>{if(open.value)emit('open',false)})
 function choose(id: string) { selected = true; emit('select', id) }
 function closeFocus(event: Event) { if (selected) event.preventDefault() }
 </script>

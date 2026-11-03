@@ -17,10 +17,10 @@ export const cartonBatchOrdersApi = {
   async template(factory: string) { return (await http.get<Blob>('/carton-unified-orders/demand-import/template', { params: { factory_id: factory }, responseType: 'blob' })).data },
   async preview(factory: string, file: File, signal?: AbortSignal) {
     const data = new FormData(); data.append('factory_id', factory); data.append('file', file)
-    return (await http.post<DemandPreview>('/carton-unified-orders/demand-import/preview', data, { signal, timeout: 300000 })).data
+    return (await http.post<DemandPreview>('/carton-unified-orders/demand-import/preview', data, { signal, timeout: 300000, headers: { 'Content-Type': 'multipart/form-data' } })).data
   },
   async importDemands(body: DemandBody, file: File, signal?: AbortSignal) {
     const data = new FormData(); data.append('body', JSON.stringify(body)); data.append('file', file)
-    return (await http.post<BatchResult>('/carton-unified-orders/demand-import/confirm', data, { signal, timeout: 300000 })).data
+    return (await http.post<BatchResult>('/carton-unified-orders/demand-import/confirm', data, { signal, timeout: 300000, headers: { 'Content-Type': 'multipart/form-data' } })).data
   },
 }

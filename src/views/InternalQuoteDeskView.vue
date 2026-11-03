@@ -1,20 +1,29 @@
 <script setup lang="ts">
-import { BookOpen, Calculator } from '@lucide/vue'
+import { BookOpen, Calculator, MessageSquarePlus, MessagesSquare } from '@lucide/vue'
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import SalesModuleWorkbench from '@/components/modules/sales/SalesModuleWorkbench.vue'
 import { useAppStore } from '@/stores/app'
+import { factoryContexts } from '@/data/enterpriseMock'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
+import { rememberWorkingVersion } from '@/lib/internalQuoteWorkingVersions'
 import { clearQuoteNavigationGuards, registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
 import { quoteDepartments } from '@/features/internal-quote/assistantContext'
 import QuoteRecordReadOnly from '@/features/internal-quote/QuoteRecordReadOnly.vue'
+import ModuleFeedbackHub from '@/features/module-feedback/ModuleFeedbackHub.vue'
 
 const appStore = useAppStore()
 const route = useRoute()
 const router = useRouter(), auth = useAuthStore(), quoteStore = useInternalQuoteDeskStore()
 const boundary = ref(0), resetting = ref(false), navigationError = ref('')
+const feedbackHub = ref<InstanceType<typeof ModuleFeedbackHub> | null>(null)
+const showFeedback = ref(false), feedbackUnread = ref(0)
+function reportProblem() {
+  feedbackHub.value?.openComposer({ page: '内部报价台', section: route.params.quoteId ? '报价协作与输出' : '报价首页',
+    quote_id: allowed.value ? String(route.params.quoteId ?? '') : '' })
+}
 const actorKey = computed(() => JSON.stringify([auth.currentUser?.id,auth.currentUser?.identity?.employment_epoch,
   auth.authorizationVersion,auth.authzMode,getAuthenticationGeneration(),boundary.value]))
 const factory = computed(() => typeof route.query.factory === 'string' && route.query.factory !== 'group'
@@ -22,6 +31,12 @@ const factory = computed(() => typeof route.query.factory === 'string' && route.
 const allowed = computed(() => quoteDepartments.some(dept => auth.can('internal_quote:read',factory.value,dept)))
 const financial = computed(() => quoteDepartments.some(dept => auth.can('internal_quote:summary_read',factory.value,dept)))
 const readOnlyRecord = computed(() => Boolean(route.params.quoteId) && !financial.value)
+watch(() => [quoteStore.quoteDetailVerifiedId, route.params.quoteId, auth.currentUser?.id], () => {
+  const id = String(route.params.quoteId || '')
+  if (!allowed.value || quoteStore.quoteDetailVerifiedId !== id) return
+  const quote = quoteStore.getQuoteById(id)
+  if (quote && quote.factoryId === factory.value) rememberWorkingVersion(auth.currentUser?.id || '', quote)
+})
 let resetSequence = 0
 function pendingWriteGuard() {
   if (quoteStore.submitting || quoteStore.fileBusy || quoteStore.customerSaving || quoteStore.baselineSaving) {
@@ -44,6 +59,8 @@ async function resetWorkspace(clearRecord: boolean) {
   const resettingPath = route.fullPath
   resetting.value = true
   showUsageGuide.value = false
+  showFeedback.value = false
+  feedbackUnread.value = 0
   navigationError.value = ''
   clearQuoteNavigationGuards()
   registerQuoteNavigationGuard(pendingWriteGuard)
@@ -125,10 +142,15 @@ watch(() => route.fullPath, async () => {
     <div class="internal-quote-desk" data-yl-help="internal-quote.overview">
       <div class="quote-guide-entry">
         <span>建单 · 部门核价 · 汇总与输出</span>
-        <button ref="usageGuideTrigger" type="button" aria-label="打开内部报价使用教程" @click="openUsageGuide"><BookOpen aria-hidden="true" />使用教程</button>
+        <div class="quote-guide-actions">
+          <button type="button" @click="reportProblem"><MessageSquarePlus aria-hidden="true" />反馈问题</button>
+          <button type="button" :aria-pressed="showFeedback" @click="showFeedback = !showFeedback"><MessagesSquare aria-hidden="true" />{{ showFeedback ? '返回报价' : '反馈与答复' }}<b v-if="feedbackUnread">{{ feedbackUnread > 99 ? '99+' : feedbackUnread }}</b></button>
+          <button ref="usageGuideTrigger" type="button" aria-label="打开内部报价使用教程" @click="openUsageGuide"><BookOpen aria-hidden="true" />使用教程</button>
+        </div>
       </div>
       <p v-if="usageGuideError" role="alert" class="quote-guide-error">{{ usageGuideError }}</p>
       <p v-if="navigationError" role="alert" class="quote-guide-error">{{ navigationError }}</p>
+      <div v-show="!showFeedback">
       <p v-if="!allowed || resetting" role="status" class="p-5">{{ resetting ? '正在更新当前账号与厂区的报价工作区…' : '当前账号无此厂区的报价读取权限。' }}</p>
       <RouterView v-else v-slot="{ Component, route: childRoute }">
         <Transition name="quote-route" mode="out-in" appear>
@@ -138,6 +160,10 @@ watch(() => route.fullPath, async () => {
           </div>
         </Transition>
       </RouterView>
+      </div>
+      <ModuleFeedbackHub :key="`quote-feedback:${actorKey}:${factory}`" ref="feedbackHub" module="internal-quote"
+        :factory-id="factory" :factory-name="factoryContexts.find(item => item.id === factory)?.shortName ?? factory" :active="showFeedback"
+        @navigate="showFeedback = true" @unread="feedbackUnread = $event" />
     </div>
     <InternalQuoteUsageGuide v-if="showUsageGuide" :factory-name="appStore.activeFactory.shortName" @close="closeUsageGuide" />
   </SalesModuleWorkbench>
@@ -146,9 +172,12 @@ watch(() => route.fullPath, async () => {
 <style scoped>
 .quote-guide-entry { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .quote-guide-entry > span { font-size: 11px; color: #64748b; }
-.quote-guide-entry > button { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; border: 1px solid #99f6e4; border-radius: 8px; padding: 7px 11px; background: #f0fdfa; color: #115e59; font-weight: 700; }
-.quote-guide-entry > button:hover { background: #ccfbf1; }
-.quote-guide-entry > button:focus-visible { outline: 2px solid #0d9488; outline-offset: 3px; }
+.quote-guide-entry { flex-wrap: wrap; }
+.quote-guide-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.quote-guide-actions button { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; border: 1px solid #99f6e4; border-radius: 8px; padding: 7px 11px; background: #f0fdfa; color: #115e59; font-weight: 700; }
+.quote-guide-actions button:hover { background: #ccfbf1; }
+.quote-guide-actions button:focus-visible { outline: 2px solid #0d9488; outline-offset: 3px; }
+.quote-guide-actions b { border-radius: 8px; padding: 0 5px; background: #b45309; color: white; }
 .quote-guide-entry svg { width: 16px; height: 16px; }
 .quote-guide-error { margin: 0 0 12px; padding: 10px; border-radius: 8px; background: #fff7ed; color: #9a3412; font-size: 12px; }
 .internal-quote-desk {

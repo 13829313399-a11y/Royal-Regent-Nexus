@@ -1,5 +1,6 @@
-"""Bulk material synchronization is append-only, versioned and atomic."""
+"""Bulk material/cycle synchronization is versioned, atomic and preserves history."""
 from copy import deepcopy
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -124,3 +125,118 @@ def test_batch_requires_factory_write_and_rechecks_identity(client):
     client.materials_auth['user'] = actor('read', 'write', factory='huadeng')
     command(client, 'order_materials_sync', request, status=403)
     command(client, 'order_materials_sync', request, factory='huadeng', status=409)
+
+
+@pytest.mark.parametrize('days', [0, 16])
+def test_sync_existing_cycles_without_new_materials_and_replay(client, days):
+    m = material(client, procurement_days=None); p = product(client, m)
+    orders = [order(client, contract=f'CYCLE-{i}') for i in range(2)]
+    m = command(client, 'material_save', m['data'] | {'procurement_days': days}, m)
+    request = payload(orders, [p], [m], sync_procurement=True)
+    operation = uuid4().hex
+    updated = command(client, 'order_materials_sync', request, operation_id=operation)
+    assert command(client, 'order_materials_sync', request, operation_id=operation) == updated
+    after = {r['id']: r for r in workspace(client)['records']}
+    for original in orders:
+        saved = after[original['id']]
+        expected = deepcopy(original['data']['demands'])
+        start = (date.fromisoformat(original['data']['plan']['required_date']) - timedelta(days=days)).isoformat()
+        expected[0].update(procurement_days=days, purchase_start=start)
+        assert saved['data']['demands'] == expected
+        assert saved['data']['plan'] == original['data']['plan']
+    assert all(row['planning_status'] == 'ready' for row in workspace(client)['board'])
+    command(client, 'order_materials_sync', request, status=409)
+    assert {r['id']: r for r in workspace(client)['records']} == after
+
+
+def test_mixed_sync_updates_ten_contract_cycles_but_preserves_quantities_allocations_and_exports(client):
+    m, p, first, sup = received_flow(client)
+    first = command(client, 'demand_adjust', dict(demand_id=first['data']['demands'][0]['id'], quantity='123', reason='保留人工需求'), first)
+    orders = [first, *[order(client, contract=f'CYCLE-{i}') for i in range(9)]]
+    excluded = order(client, contract='RRM-ONLY', recipient='RRM')
+    a = allocation(client, sup, first, normal='18', spare='0')
+    confirmed = command(client, 'shipment_confirm', {}, shipment(client, a, normal='18', spare='0'))
+    m = command(client, 'material_save', m['data'] | {'procurement_days': 16, 'price': '2'}, m)
+    new = material(client, code=m['data']['code'], name='同编码新物料', procurement_days=3)
+    p = command(client, 'product_save', p['data'] | {'daily_capacity': '555', 'transport_days': 55,
+        'materials': [*p['data']['materials'], dict(material_id=new['id'], usage='2')]}, p)
+    before = {r['id']: r for r in workspace(client)['records']}
+    command(client, 'order_materials_sync', payload(orders, [p], [m, new], sync_procurement=True))
+    after = {r['id']: r for r in workspace(client)['records']}
+    for original in orders:
+        saved = after[original['id']]
+        expected = deepcopy(original['data']['demands'][0])
+        required = date.fromisoformat(original['data']['plan']['required_date'])
+        expected.update(procurement_days=16, purchase_start=(required - timedelta(days=16)).isoformat())
+        assert saved['data']['demands'][0] == expected
+        assert saved['data']['demands'][1]['procurement_days'] == 3
+        for key in original['data']:
+            if key != 'demands': assert saved['data'][key] == original['data'][key]
+        assert values(download(client, saved).content, FIRST_ROW + 1)['正式报关中文名称'] == '同编码新物料'
+    for id, record in before.items():
+        if id not in {o['id'] for o in orders}: assert after[id] == record
+    assert after[confirmed['id']] == confirmed and after[excluded['id']] == excluded
+
+
+@pytest.mark.parametrize('fault', ['old_material_version', 'missing_material', 'missing_order', 'duplicate_material'])
+def test_cycle_sync_checks_existing_material_and_complete_scope_versions_atomically(client, fault):
+    m = material(client, procurement_days=None); p = product(client, m)
+    orders = [order(client, contract=f'CONFLICT-{i}') for i in range(2)]
+    m = command(client, 'material_save', m['data'] | {'procurement_days': 16}, m)
+    request = payload(orders, [p], [m], sync_procurement=True)
+    if fault == 'old_material_version': request['materials'][0]['expected_version'] -= 1
+    if fault == 'missing_order': request['orders'].pop()
+    if fault == 'duplicate_material': request['materials'].append(request['materials'][0])
+    if fault == 'missing_material': request['materials'] = [dict(id=p['id'], expected_version=p['version'])]
+    before = workspace(client)['records']
+    command(client, 'order_materials_sync', request, status=409)
+    assert workspace(client)['records'] == before
+
+
+def test_unknown_default_does_not_clear_saved_cycle_and_legacy_requests_do_not_update_it(client):
+    orders, p, new, request = pending(client)
+    m = next(r for r in workspace(client)['records'] if r['id'] == p['data']['materials'][0]['material_id'])
+    m = command(client, 'material_save', m['data'] | {'procurement_days': None}, m)
+    command(client, 'order_materials_sync', request | {'sync_procurement': True})
+    current = {r['id']: r for r in workspace(client)['records']}
+    for original in orders: assert current[original['id']]['data']['demands'][0] == original['data']['demands'][0]
+    m = command(client, 'material_save', m['data'] | {'procurement_days': 16}, m)
+    later = material(client, name='后补物料')
+    p = command(client, 'product_save', p['data'] | {'materials': [*p['data']['materials'], dict(material_id=later['id'], usage='1')]}, p)
+    command(client, 'order_materials_sync', payload([current[o['id']] for o in orders], [p], [later]))
+    after = {r['id']: r for r in workspace(client)['records']}
+    for original in orders: assert after[original['id']]['data']['demands'][0] == original['data']['demands'][0]
+
+
+def test_cycle_sync_preserves_plan_parameters_and_updates_only_cycle_snapshot(client):
+    m = material(client); p = product(client, m); o = order(client)
+    o = command(client, 'order_plan_save', dict(product_id=p['id'], product_version=p['version'],
+        daily_capacity=p['data']['daily_capacity'], transport_days=p['data']['transport_days'],
+        materials=[dict(material_id=m['id'], expected_version=m['version'], procurement_days=18)]), o)
+    m = command(client, 'material_save', m['data'] | {'procurement_days': 0}, m)
+    updated = command(client, 'order_materials_sync', payload([o], [p], [m], sync_procurement=True))
+    snapshot = deepcopy(o['data']['planning_snapshot'])
+    snapshot['materials'][m['id']] = dict(version=m['version'], procurement_days=0)
+    assert updated['data']['planning_snapshot'] == snapshot
+    assert updated['data']['plan'] == o['data']['plan']
+    assert updated['data']['demands'][0]['purchase_start'] == o['data']['plan']['required_date']
+
+
+def test_cycle_date_overflow_rejects_whole_batch_and_missing_plan_stays_missing(client):
+    m = material(client, procurement_days=0); p = product(client, m)
+    orders = [order(client, contract=f'DATES-{i}') for i in range(2)]
+    m = command(client, 'material_save', m['data'] | {'procurement_days': 16}, m)
+    request = payload(orders, [p], [m], sync_procurement=True)
+    with Session(client.engine) as db:
+        row = db.get(Record, orders[1]['id'])
+        row.data = row.data | {'plan': row.data['plan'] | {'required_date': '0001-01-01'}}; db.commit()
+    before = workspace(client)['records']
+    command(client, 'order_materials_sync', request, status=422)
+    assert workspace(client)['records'] == before
+    with Session(client.engine) as db:
+        row = db.get(Record, orders[1]['id']); row.data = row.data | {'plan': None}; db.commit()
+    command(client, 'order_materials_sync', request)
+    saved = next(r for r in workspace(client)['records'] if r['id'] == orders[1]['id'])
+    assert saved['data']['plan'] is None
+    assert saved['data']['demands'][0]['procurement_days'] == 16
+    assert saved['data']['demands'][0]['purchase_start'] is None

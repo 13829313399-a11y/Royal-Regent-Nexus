@@ -16,6 +16,7 @@ BASE = "/api/carton-procurement"
 def isolated(monkeypatch, tmp_path):
     import test_molding_sample_api
     monkeypatch.setattr(test_molding_sample_api, "TEST_TMP_DIR", tmp_path)
+    monkeypatch.setenv("ONLINE_DOCUMENTS_ENABLED", "false")
 
 
 def upload(client, content, factory="huaxing", kind="UPLOADED"):
@@ -49,7 +50,9 @@ def test_real_upload_retry_change_and_existing_purchase_are_preserved(monkeypatc
         assert stale.status_code == 409, stale.text
         batch = client.get(BASE + f"/imports/{changed.json()['batch_id']}", params={"factory_id": "huaxing"}).json()
         assert batch["parse_summary"]["business_source"]["source_kind"] == "GENERATED"
-        assert batch["parse_summary"]["schedule_customer"]["customer_code"] == "DICKIE"
+        customer = next(row for row in client.get(BASE + "/customers", params={"factory_id": "huaxing"}).json()["items"]
+                        if row["business_customer_code"] == "dickie")
+        assert batch["parse_summary"]["schedule_customer"]["customer_code"] == customer["customer_code"]
         assert batch["parse_summary"]["rows"][0]["schedule_change"] not in {"NEW", "UNCHANGED"}
         orders = client.get(BASE + "/orders", params={"factory_id": "huaxing"}).json()
         assert orders["total"] == 1
@@ -79,10 +82,9 @@ def test_sales_only_permission_can_sync_without_procurement_write(monkeypatch):
         assert upload(client, workbook([source_row()])).status_code == 403
 
 
-def test_missing_conflicting_and_foreign_customer_never_guessed(monkeypatch):
+def test_only_exact_unique_name_is_reused_instead_of_a_conflicting_code(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "admin")
-        assert upload(client, workbook([source_row()])).status_code == 422
         _prepare_schedule_customer(client)
         login_as(client, "admin")
         from app.db import SessionLocal
@@ -93,8 +95,10 @@ def test_missing_conflicting_and_foreign_customer_never_guessed(monkeypatch):
             db.commit()
         other = client.post(BASE + "/customers", json=dict(factory_id="huaxing", customer_code="OTHER", customer_name="Dickie"))
         assert other.status_code == 201, other.text
-        assert upload(client, workbook([source_row()])).status_code == 422
-        assert client.get(BASE + "/imports", params={"factory_id": "huaxing"}).json()["total"] == 0
+        assert upload(client, workbook([source_row()])).status_code == 200
+        rows = client.get(BASE + "/customers", params={"factory_id": "huaxing"}).json()["items"]
+        business = next(row for row in rows if row["business_customer_code"] == "dickie")
+        assert business["customer_code"] == "OTHER"
 
 
 def test_revoked_original_session_after_parsing_writes_nothing(monkeypatch):
@@ -121,8 +125,11 @@ def test_declared_coverage_remains_incremental_and_absence_does_not_cancel(monke
     with make_client(monkeypatch) as client:
         _prepare_schedule_customer(client)
         login_as(client, "admin")
+        assert client.post(BASE + "/customers/business-sync", params={"factory_id": "huaxing"}).status_code == 200
+        business = next(row for row in client.get(BASE + "/customers", params={"factory_id": "huaxing"}).json()["items"]
+                        if row["business_customer_code"] == "dickie")
         baseline = client.post(BASE + "/weekly-imports", params={"factory_id": "huaxing"},
-            data=dict(customer_code="DICKIE", scope_mode="FULL", as_of_date="2026-07-01",
+            data=dict(customer_code=business["customer_code"], scope_mode="FULL", as_of_date="2026-07-01",
                 coverage_start="2026-09-01", coverage_end="2026-09-30", full_scope_confirmed="true"),
             files={"file": ("full.xlsx", workbook([source_row(contract="A"), source_row(contract="B")]))})
         assert baseline.status_code == 201, baseline.text
@@ -155,9 +162,9 @@ def test_normal_preview_and_export_await_warehouse_handoff(monkeypatch):
         data = dict(factory_id="huadeng", received_date="2026-09-07")
         missing = client.post("/api/customer-orders/goliath/preview-batch", data=data, files=files)
         assert missing.status_code == 200, missing.text
-        assert missing.json()["warehouse_sync"]["status"] == "ERROR"
-        customer = client.post(BASE + "/customers", json=dict(factory_id="huadeng", customer_code="GOLIATH", customer_name="Goliath"))
-        assert customer.status_code == 201, customer.text
+        assert missing.json()["warehouse_sync"]["status"] == "SUCCESS"
+        assert any(row["business_customer_code"] == "goliath" for row in client.get(
+            BASE + "/customers", params={"factory_id": "huadeng"}).json()["items"])
         preview = client.post("/api/customer-orders/goliath/preview-batch", data=data, files=files)
         assert preview.status_code == 200, preview.text
         result = preview.json()

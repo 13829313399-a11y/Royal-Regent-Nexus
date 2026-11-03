@@ -8,6 +8,7 @@ import { getApiErrorMessage } from '@/lib/http'
 import InternalQuoteComparison from './InternalQuoteComparison.vue'
 import InternalQuoteAlternativeSync from './InternalQuoteAlternativeSync.vue'
 import InternalQuoteAlternativeExport from './InternalQuoteAlternativeExport.vue'
+import InternalQuoteGroupCopy from './InternalQuoteGroupCopy.vue'
 import type { InternalQuote, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
 
 const props = defineProps<{ quote: InternalQuote; hasUnsavedChanges?: () => boolean }>()
@@ -33,6 +34,7 @@ async function exported() {
 const showArchived = ref(false)
 const kind = ref<'scenario' | 'version'>('scenario')
 const copyOpen = ref(false)
+const groupCopyKind = ref<'scenario' | 'version' | null>(null)
 const copyDepartments = ref<InternalQuoteSectionCode[]>([])
 const departmentOptions = computed(() => props.quote.sections.filter(section => section.isRequired))
 function selectAllDepartments() { copyDepartments.value = departmentOptions.value.map(section => section.code) }
@@ -58,7 +60,7 @@ const restoreReason = ref('')
 const restoreError = ref('')
 onBeforeUnmount(() => { ++quoteGeneration; ++loadSequence })
 onBeforeUnmount(registerQuoteNavigationGuard(() => {
-  if (busy.value || copyOpen.value || archiveTarget.value || restoreOpen.value || exportOpen.value || deleteId.value) {
+  if (busy.value || copyOpen.value || groupCopyKind.value || archiveTarget.value || restoreOpen.value || exportOpen.value || deleteId.value) {
     error.value = '请先完成或关闭当前方案操作，再切换页面或厂区。'
     return false
   }
@@ -121,6 +123,12 @@ function startCopy(nextKind: 'scenario' | 'version') {
   try { ensureSaved() } catch (cause) { error.value = (cause as Error).message; return }
   kind.value = nextKind; copyOpen.value = true; name.value = ''; note.value = ''; selectAllDepartments()
 }
+function startGroupCopy(nextKind: 'scenario' | 'version') {
+  error.value = ''
+  try { ensureSaved(); groupCopyKind.value = nextKind } catch (cause) { error.value = (cause as Error).message }
+}
+function groupCopied(id: string) { groupCopyKind.value = null; emit('open', id) }
+watch(() => props.quote.id, () => { groupCopyKind.value = null })
 async function copy() {
   await run(async () => {
     ensureSaved()
@@ -244,6 +252,12 @@ async function compare() {
 <template>
   <section id="quote-alternatives" class="alternatives" aria-label="包装方案与版本">
     <header><div><h2>包装方案与版本</h2><p>不同包装或结构建立不同方案；同一方案的后续修改复制新版本。在本报价单内切换和编辑，各份独立保存，已输出版本保留原样。</p></div><div class="actions"><button v-if="canClone" :disabled="busy || !family" @click="startCopy('scenario')">复制为新方案</button><button v-if="canClone" :disabled="busy || !family" @click="startCopy('version')">复制新版本</button><button :disabled="busy" @click="load">刷新方案</button></div></header>
+    <div v-if="canClone && (quote.documentProductCount ?? quote.batchSize) > 1" class="actions">
+      <button type="button" :disabled="busy || !family || copyOpen" @click="startGroupCopy('scenario')">整组复制为新方案</button>
+      <button type="button" :disabled="busy || !family || copyOpen" @click="startGroupCopy('version')">整组复制新版本</button>
+      <span>一次复制本报价全部产品，逐款确认来源版本。</span>
+    </div>
+    <InternalQuoteGroupCopy v-if="groupCopyKind" :key="quote.id" :quote="quote" :kind="groupCopyKind" :has-unsaved-changes="hasUnsavedChanges" @close="groupCopyKind = null" @open="groupCopied" />
     <p v-if="error" role="alert" class="error">{{ error }}</p><p v-if="message" role="status" class="success">{{ message }}</p>
     <div v-if="documentArchive" class="copy-form" role="status">
       <strong>整单报价已归档</strong><p>整单归档暂停全部产品和方案版本的编辑、输出。恢复整单后，各版本回到原流程状态；单独归档的版本仍需单独恢复。</p>

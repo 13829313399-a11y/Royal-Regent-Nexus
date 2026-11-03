@@ -3224,6 +3224,17 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> AuthCon
         raise HTTPException(status_code=401, detail="请先登录")
 
     session = db.scalar(select(AuthSession).where(AuthSession.token_hash == hash_session_token(token)))
+    context = authenticated_session_user(db, session, method=request.method, path=request.url.path)
+    request.state.auth_session_id = session.id
+    return context
+
+
+def authenticated_session_user(db: Session, session: AuthSession | None, *, method: str, path: str) -> AuthContext:
+    """Shared native validation for HTTP and an already bound internal job.
+
+    This accepts a database row, not an HTTP-provided session reference. Only
+    cookie authentication establishes that reference for a durable admission.
+    """
     if session is None or session.status != "active":
         raise HTTPException(status_code=401, detail="登录已失效")
 
@@ -3239,7 +3250,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> AuthCon
         raise HTTPException(status_code=401, detail="账号不可用")
 
     if user.force_password_change:
-        allowed_request = (request.method, request.url.path) in {
+        allowed_request = (method, path) in {
             ("GET", "/api/auth/me"),
             ("POST", "/api/auth/change-password"),
             ("POST", "/api/auth/logout"),
@@ -3251,7 +3262,9 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> AuthCon
 
 
 def to_auth_response(context: AuthContext) -> AuthMeResponse:
+    from app.services.internal_members import is_internal
     return AuthMeResponse(
+        internal_member=is_internal(context),
         id=context.id,
         username=context.username,
         display_name=context.display_name,

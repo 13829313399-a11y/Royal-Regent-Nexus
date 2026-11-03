@@ -90,7 +90,7 @@ from app.schemas.carton_procurement import (
 )
 from app.models.carton_supplier_portal import SupplierShipment, SupplierShipmentLine, SupplierCommitment, SupplierAttachment
 from app.services.auth import ALLOWED_FACTORY_IDS, AuthContext, can
-from app.services.carton_customer_assignment import ensure_customer_operation, ensure_receipt_operation, customer_predicate, unrestricted as unrestricted_customer
+from app.services.carton_customer_assignment import ensure_customer_operation, ensure_receipt_operation, ensure_receipt_customer, can_receive_all_customers, customer_predicate, unrestricted as unrestricted_customer
 from app.schemas.carton_procurement import CartonLocationAllocation
 from app.services import carton_positions as positions
 from app.services.carton_inventory_valuation import cost_key, load_valuation, value_movements, Valuation
@@ -240,11 +240,12 @@ def list_customers(
                 CartonCustomer.contact_name.ilike(term),
             )
         )
-    return list(
+    from app.services.carton_business_customers import decorate
+    return decorate(db, factory_id, list(
         db.scalars(
             statement.order_by(CartonCustomer.status, CartonCustomer.customer_name, CartonCustomer.customer_code)
         ).all()
-    )
+    ))
 
 
 def get_active_customer(db: Session, factory_id: str, customer_code: str) -> CartonCustomer:
@@ -362,7 +363,7 @@ def update_customer(
     if customer.revision != payload.expected_revision:
         raise HTTPException(status_code=409, detail="客户资料已被其他人更新，请刷新后重试")
     changes = payload.model_dump(exclude={"factory_id", "expected_revision"}, exclude_none=True)
-    if "customer_name" in changes:
+    if "customer_name" in changes and changes["customer_name"] != customer.customer_name:
         normalized_name = " ".join(changes["customer_name"].strip().split()).casefold()
         duplicate_name = next(
             (
@@ -381,6 +382,9 @@ def update_customer(
             raise HTTPException(status_code=409, detail="当前厂区已存在相同客户名称")
     if "customer_code" in changes:
         changes["customer_code"] = changes["customer_code"].upper()
+        from app.services.carton_business_customers import source_code
+        if changes["customer_code"] != customer.customer_code and source_code(db, factory_id, customer.id):
+            raise HTTPException(409, "来自业务的客户可以改名，内部编号须保留以延续排期关联")
         if changes["customer_code"] != customer.customer_code and db.scalar(select(CartonOrder.id).where(
                 CartonOrder.factory_id == factory_id,
                 CartonOrder.customer_code.in_([customer.customer_code, changes["customer_code"]])).limit(1)):
@@ -402,7 +406,8 @@ def update_customer(
         db.rollback()
         raise HTTPException(status_code=409, detail="当前厂区已存在相同客户名称或内部编号") from exc
     db.refresh(customer)
-    return customer
+    from app.services.carton_business_customers import decorate
+    return decorate(db, factory_id, [customer])[0]
 
 
 def delete_customer(db: Session, factory_id: str, customer_id: str, user: AuthContext) -> None:
@@ -422,6 +427,8 @@ def delete_customer(db: Session, factory_id: str, customer_id: str, user: AuthCo
         "customer_code": customer.customer_code,
         "customer_name": customer.customer_name,
     })
+    from app.services.carton_business_customers import remember_deletion
+    remember_deletion(db, factory_id, customer)
     db.delete(customer)
     db.commit()
 
@@ -1427,6 +1434,7 @@ def set_order_rush(
 
 def update_order_dates(
     db: Session, order_no: str, payload: CartonOrderDatesRequest, user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
 
@@ -1478,7 +1486,7 @@ def update_order_dates(
         ordinary = [issue for issue in _purchase_order_issues(db, order.id) if not _purchase_order_snapshot(issue).get("replenishment")]
         if ordinary and _purchase_order_pending_change(order, _order_lines(db, order.id), ordinary[0])[0] != "NONE":
             create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
-    db.commit()
+    db.commit() if commit else db.flush()
     db.refresh(order)
     return order
 
@@ -1488,6 +1496,7 @@ def update_order(
     order_no: str,
     payload: CartonOrderUpdate,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
@@ -1712,9 +1721,10 @@ def update_order(
         },
     )
     try:
-        db.commit()
+        db.commit() if commit else db.flush()
     except IntegrityError as exc:
-        db.rollback()
+        if commit:
+            db.rollback()
         raise HTTPException(status_code=409, detail="订单修改与现有业务数据冲突，请刷新后重试") from exc
     db.refresh(order)
     return order
@@ -1849,6 +1859,7 @@ def cancel_order(
     order_no: str,
     payload: CartonOrderCancelRequest,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
@@ -1883,7 +1894,7 @@ def cancel_order(
         },
     )
     _issue_order_cancellation(db, order, user)
-    db.commit()
+    db.commit() if commit else db.flush()
     db.refresh(order)
     return order
 
@@ -2042,6 +2053,7 @@ def reduce_order(
     order_no: str,
     payload: CartonOrderReduceRequest,
     user: AuthContext,
+    *, commit: bool = True,
 ) -> CartonOrder:
     factory_id = require_carton_factory(payload.factory_id)
     _lock_receipt_factory(db, factory_id)
@@ -2175,7 +2187,7 @@ def reduce_order(
         ordinary = [issue for issue in _purchase_order_issues(db, order.id) if not _purchase_order_snapshot(issue).get("replenishment")]
         if ordinary and _purchase_order_pending_change(order, _order_lines(db, order.id), ordinary[0])[0] != "NONE":
             create_purchase_order_issue(db, order, order.revision, user, commit=False, already_locked=True)
-    db.commit()
+    db.commit() if commit else db.flush()
     db.refresh(order)
     return order
 
@@ -3082,10 +3094,10 @@ def _create_receipt(db: Session, payload: CartonReceiptCreate, user: AuthContext
         ).all()
     }
     for order in orders.values():
-        ensure_customer_operation(db, user, factory_id, order.customer_code)
+        ensure_receipt_customer(db, user, factory_id, order.customer_code)
     for line in payload.lines:
         if line.source_type != "FORMAL_ORDER":
-            ensure_customer_operation(db, user, factory_id, line.customer_code)
+            ensure_receipt_customer(db, user, factory_id, line.customer_code)
     ineligible_orders = [
         order.order_no
         for order in orders.values()
@@ -3384,7 +3396,7 @@ def list_receipts(
         query = query.where(selected_date >= date_from)
     if date_to:
         query = query.where(selected_date <= date_to)
-    if user is not None:
+    if user is not None and not can_receive_all_customers(user, factory_id):
         hidden = select(CartonReceiptLine.receipt_id).where(CartonReceiptLine.factory_id == factory_id,
             ~customer_predicate(user, factory_id, CartonReceiptLine.customer_code)) if not unrestricted_customer(user, factory_id) else None
         if hidden is not None:
@@ -4350,6 +4362,10 @@ def import_batch_out(batch: CartonImportBatch, *, duplicate: bool = False, summa
         return CartonImportBatchOut.model_validate(batch).model_copy(update={"parse_summary": parse_summary, "detail_loaded": False})
     if batch.import_type == "WEEKLY_SCHEDULE" and isinstance(parse_summary, dict):
         _project_item_schedule_rows(batch.id, parse_summary)
+        for row in parse_summary.get("rows", []):
+            if isinstance(row, dict) and row.get("match_basis") == "CONTRACT_ITEM_QUANTITY_PACKING":
+                for field in ("order_id", "order_no", "order_status"):
+                    row.pop(field, None)
     if batch.import_type == "DELIVERY_NOTE" and parse_summary.get("parser_version") != DELIVERY_IMPORT_PARSER_VERSION:
         parse_summary["material_review_required"] = True
         for row in parse_summary.get("rows", []):
@@ -4534,7 +4550,15 @@ def create_import_batch(
         if not customer_code:
             raise HTTPException(422, "请选择当前厂区基础资料中的排期客户")
         customer = get_active_customer(db, factory_id, customer_code)
+        from app.services.carton_business_customers import source_code
         effective_profile.update(customer_code=customer.customer_code)
+        # Keep old manual-import replay keys unchanged. The source code is a
+        # server-derived parsing option; only the existing business handoff
+        # profile has historically included it in the durable identity.
+        if effective_profile.get("source_system") == "CUSTOMER_ORDER_CENTER":
+            effective_profile["business_customer_code"] = source_code(db, factory_id, customer.id)
+        else:
+            effective_profile.pop("business_customer_code", None)
     effective_profile["matching_version"] = "item-so-v2" if import_type == "WEEKLY_SCHEDULE" else "customer-po-v1"
     if import_type == "DELIVERY_NOTE":
         effective_profile["parser_version"] = DELIVERY_IMPORT_PARSER_VERSION
@@ -4566,13 +4590,17 @@ def create_import_batch(
         if import_type == "DELIVERY_NOTE":
             _require_delivery_destination(factory_id, json.loads(existing.parse_summary_json))
         result = import_batch_out(existing, duplicate=True)
-        return coverage.decorate(db, result) if import_type == "WEEKLY_SCHEDULE" else result
+        if import_type == "WEEKLY_SCHEDULE":
+            from app.services.carton_schedule_quantity_matching import refresh_snapshot_matches
+            return refresh_snapshot_matches(db, coverage.decorate(db, result))
+        return result
     if import_type == "WEEKLY_SCHEDULE":
         coverage.require_current_version(db, factory_id, effective_profile)
     parse_options = dict(effective_profile)
     parse_options["reference_date"] = business_now().date().isoformat()
     if import_type == "WEEKLY_SCHEDULE":
         parse_options["customer_name"] = customer.customer_name
+        parse_options["business_customer_code"] = source_code(db, factory_id, customer.id)
         parse_options["schedule_order_links"] = _schedule_order_links(db, factory_id)
     parse_summary = parse_carton_import(
         db,
@@ -4644,7 +4672,10 @@ def create_import_batch(
     db.commit()
     db.refresh(batch)
     result = import_batch_out(batch)
-    return coverage.decorate(db, result) if import_type == "WEEKLY_SCHEDULE" else result
+    if import_type == "WEEKLY_SCHEDULE":
+        from app.services.carton_schedule_quantity_matching import refresh_snapshot_matches
+        return refresh_snapshot_matches(db, coverage.decorate(db, result))
+    return result
 
 
 def _schedule_event_key(db: Session, factory_id: str, event_key: str, detail: dict[str, object], cache: dict[str, list[dict[str, object]]]) -> str:
@@ -4821,7 +4852,18 @@ def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrde
     from app.services.carton_order_split import schedule_matches
     if not row.get("schedule_identity_duplicate") and schedule_matches(db, factory_id, row):
         raise HTTPException(409, "该业务排期已关联拆分采购，请查看原订单拆单记录，勿重复下单")
-    existing = db.get(CartonOrder, row.get("order_id")) if row.get("order_id") else None
+    from app.services.carton_schedule_quantity_matching import read_matches, proof_matches, BASIS
+    if any(proof_matches(row, proof) for proofs in read_matches(db, factory_id).values() for proof in proofs):
+        raise HTTPException(409, "该排期已有数量及装箱一致的手动订单或待核对候选，请查看原订单，勿重复下单")
+    if not row.get("schedule_identity_duplicate"):
+        from app.services.carton_schedule_tracking import normalized
+        current_orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory_id,
+            CartonOrder.customer_code == payload.customer_code, CartonOrder.status != "CANCELLED", CartonOrder.deleted_at.is_(None)))
+        if any(normalized(order.contract_no) == normalized(row.get("contract_no"))
+               and normalized(order.item_no) == normalized(row.get("item_no"))
+               and (not effective_po(row) or normalized(order.customer_po) == effective_po(row)) for order in current_orders):
+            raise HTTPException(409, "该业务排期已有当前客户 PO 匹配的正式订单，请查看原订单，勿重复下单")
+    existing = db.get(CartonOrder, row.get("order_id")) if row.get("order_id") and row.get("match_basis") != BASIS else None
     if existing and existing.factory_id == factory_id and existing.status != "CANCELLED" and existing.deleted_at is None:
         raise HTTPException(409, "该业务排期已关联订单，请查看原订单，勿重复下单")
     return row
@@ -4954,7 +4996,9 @@ def get_import_batch(
     if batch is None or batch.factory_id != require_carton_factory(factory_id):
         raise HTTPException(status_code=404, detail="导入批次不存在")
     from app.services.carton_schedule_coverage import decorate
-    return decorate(db, import_batch_out(batch))
+    result = decorate(db, import_batch_out(batch))
+    from app.services.carton_schedule_quantity_matching import refresh_snapshot_matches
+    return refresh_snapshot_matches(db, result)
 
 
 def undo_schedule_import(db: Session, batch_id: str, payload: CartonImportBatchUndoRequest, user: AuthContext) -> CartonImportBatchOut:
@@ -5179,7 +5223,14 @@ def list_import_batches(
             query.limit(limit).offset(offset)
         ).all()
     )
-    return int(total), [import_batch_out(row, summary_only=summary_only) for row in rows]
+    results = [import_batch_out(row, summary_only=summary_only) for row in rows]
+    if not summary_only and any(result.import_type == "WEEKLY_SCHEDULE" and any(
+            isinstance(row, dict) and row.get("match_basis") == "CONTRACT_ITEM_QUANTITY_PACKING"
+            for row in result.parse_summary.get("rows", [])) for result in results):
+        from app.services.carton_schedule_quantity_matching import read_matches, refresh_snapshot_matches
+        current_matches = read_matches(db, factory_id)
+        results = [refresh_snapshot_matches(db, result, matches=current_matches) for result in results]
+    return int(total), results
 
 
 def list_exceptions(
@@ -5227,6 +5278,11 @@ def update_exception(
     exception = db.get(CartonException, exception_id)
     if exception is None or exception.factory_id != factory_id:
         raise HTTPException(status_code=404, detail="异常记录不存在")
+    if exception.category == "STOCKTAKE_REVIEW":
+        from app.services.carton_stocktake_policy import require
+        require(user, "carton_procurement:order_adjust", factory_id)
+        if payload.status in {"RESOLVED", "CLOSED"} and not payload.resolution_note.strip():
+            raise HTTPException(422, "请填写盘点抽查或复核结论，不能直接清除差异标记")
     if exception.source_type in {"WEEKLY_SCHEDULE", "INSPECTION_SCHEDULE"}:
         batch = db.get(CartonImportBatch, exception.source_id)
         if batch is not None and batch.factory_id == factory_id and batch.status == "REJECTED":
@@ -5964,6 +6020,10 @@ def supplier_promise_notices(db: Session, factory_id: str, limit: int = 20, offs
         })
     changes = [{**item, "key": f"CHANGE:{item['id']}"} for item in supplier_promise_changes(
         db, factory_id, None, acknowledged=acknowledged_keys)]
+    from app.services.carton_replenishment_promises import notices as replacement_notices
+    replacement_late, replacement_changes = replacement_notices(db, factory_id, acknowledged_keys)
+    late.extend(replacement_late)
+    changes.extend(replacement_changes)
     return {"late": late[offset:offset + limit], "changes": changes[offset:offset + limit],
             "acknowledged": acknowledged, "total": len(late) + len(changes),
             "late_total": len(late), "change_total": len(changes),

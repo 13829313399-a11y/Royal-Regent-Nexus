@@ -4,6 +4,14 @@ import { ref, watch, nextTick, onBeforeUnmount, type Ref } from 'vue'
 export function usePassportPanel(selected: Ref<string|null>) {
   const panel = ref<HTMLDialogElement|null>(null), wide = window.matchMedia('(min-width:1680px)')
   let trigger: HTMLElement|null = null, generation = 0, disposed = false
+  function canReturnTo(element: HTMLElement|null): element is HTMLElement {
+    if (!element?.isConnected || element === document.body || element.closest('[hidden], [inert]') || element.matches(':disabled')) return false
+    for (let parent: HTMLElement|null = element; parent; parent = parent.parentElement) {
+      const style=getComputedStyle(parent)
+      if (style.display === 'none' || style.visibility === 'hidden') return false
+    }
+    return !!element.getClientRects().length
+  }
   async function syncPanel() {
     const current = ++generation
     await nextTick()
@@ -14,7 +22,8 @@ export function usePassportPanel(selected: Ref<string|null>) {
       if (wide.matches) element.show(); else element.showModal()
       element.focus()
     } else if (!document.querySelector('dialog[open]')) {
-      const target = trigger?.isConnected && trigger !== document.body ? trigger : document.querySelector<HTMLElement>('[data-spray-focus-fallback]')
+      const fallback=document.querySelector<HTMLElement>('[data-spray-focus-fallback]')
+      const target=canReturnTo(trigger)?trigger:canReturnTo(fallback)?fallback:null
       target?.focus(); trigger=null
     }
   }

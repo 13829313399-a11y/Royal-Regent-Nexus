@@ -40,6 +40,12 @@ const confirmChecked = ref(false)
 const message = ref('')
 const errorMessage = ref('')
 const seriesExportOpen = ref(false)
+async function resolveSeriesProblem(id: string, code: string) {
+  seriesExportOpen.value = false
+  const suffix = code === 'formula' ? '?formulaRecovery=1' : code ? `?outputSection=${encodeURIComponent(code)}` : '#quote-alternatives'
+  await router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${id}/collaboration${suffix}`))
+}
+
 onBeforeUnmount(registerQuoteNavigationGuard(() => {
   if (seriesExportOpen.value) { errorMessage.value = '请先完成或关闭系列输出，再切换页面或厂区。'; return false }
   return true
@@ -173,7 +179,7 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
 
     <nav v-if="batchProducts.length > 1" class="quote-export-products" aria-label="批次产品正式输出切换">
       <div><strong>本批 {{ batchProducts.length }} 款，逐款独立输出</strong><small>{{ isDirectOutput ? '每款独立输出，不影响其他款；当前已有' : '整批共用一次审核结果；当前已有' }} {{ batchOutputReadyCount }}/{{ batchProducts.length }} 款可生成正式文件</small></div>
-      <button v-for="product in batchProducts" :key="product.quoteId" type="button" :class="{ active: product.quoteId === quote.id }" :aria-current="product.quoteId === quote.id ? 'page' : undefined" @click="switchOutputProduct(product.quoteId)"><b>{{ String(product.position).padStart(2, '0') }}</b><span>{{ product.productName }}<small>{{ product.isBaseline ? '基准款' : product.differsFromBaseline ? '有差异' : '同基准' }}</small></span><em :class="product.status">{{ statusLabels[product.status] }}</em></button>
+      <button v-for="product in batchProducts" :key="product.quoteId" type="button" :class="{ active: product.quoteId === quote.id }" :aria-current="product.quoteId === quote.id ? 'page' : undefined" @click="switchOutputProduct(product.quoteId)"><b>{{ String(product.position).padStart(2, '0') }}</b><span>{{ product.productName }}<small>{{ product.workingVersionWarning || [product.scenarioName, product.versionLabel].filter(Boolean).join(' · ') || (product.isBaseline ? '基准款' : product.differsFromBaseline ? '有差异' : '同基准') }}</small></span><em :class="product.status">{{ statusLabels[product.status] }}</em></button>
     </nav>
 
     <p v-if="message" class="quote-page-message success">{{ message }}</p>
@@ -215,7 +221,7 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
       <header><History aria-hidden="true" /><div><strong>内部报价历史导出文件</strong><span>工程资料不进入本记录；重开后保留旧内部报价，并标记为“已取代”</span></div></header>
       <div v-if="quote.exports.length"><article v-for="record in quote.exports" :key="record.id"><FileSpreadsheet aria-hidden="true" /><span><strong>{{ record.fileName }}</strong><small>{{ record.templateName }} · {{ record.exportedBy }} · {{ record.exportedAt }}</small><code>{{ record.sha256 }}</code></span><em :class="record.status">{{ record.status === 'current' ? '当前版本' : '已取代' }}</em><button type="button" :disabled="!canExport" :title="canExport ? '下载受控文件' : isForeignQuote ? '跨厂只读，不能下载' : '当前账号没有下载权限'" @click="downloadRecord(record.id, record.fileName)"><Download />下载</button></article></div><p v-else>尚无历史导出记录。</p>
     </section>
-    <InternalQuoteSeriesExport v-if="seriesExportOpen" :key="quote.id" :quote="quote" :products="batchProducts" :has-unsaved-changes="() => false" @close="seriesExportOpen = false" @completed="seriesExportOpen = false; message = '系列报价已输出到一个 Excel，每款一个工作表。'" />
+    <InternalQuoteSeriesExport v-if="seriesExportOpen" :key="quote.id" :quote="quote" :products="batchProducts" :has-unsaved-changes="() => false" @close="seriesExportOpen = false" @resolve="resolveSeriesProblem" @completed="seriesExportOpen = false; message = '系列报价已输出到一个 Excel，每款一个工作表。'" />
     </div>
   </div>
 </template>

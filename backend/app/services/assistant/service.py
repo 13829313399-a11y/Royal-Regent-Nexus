@@ -53,6 +53,7 @@ def session_out(row):
     return {k: getattr(row, k) for k in ("id", "title", "revision", "deletion_state", "created_at", "updated_at")}
 
 
+@help_registry.scoped_read
 def message_out(row, user=None):
     result = {k: getattr(row, k) for k in ("id", "run_id", "seq", "role", "content_parts", "status", "help_citations", "context_descriptor", "created_at")}
     if user and row.help_citations:
@@ -68,6 +69,14 @@ def message_out(row, user=None):
         if any(s.get('kind')=='help' and not s.get('source_fingerprint') for s in refs):
             result['help_verification'] = 'legacy_version_only'
         with database.SessionLocal() as db:
+            from . import rollback_compat
+            run = db.get(Run, row.run_id)
+            dependencies = rollback_compat.source_refs(db, run)
+            if dependencies is None:
+                result.update(content_parts=[{"type": "text", "text": "这段内容的来源依赖无法安全读取，当前不可查看。"}],
+                              help_citations=[], context_descriptor=None, unavailable=True)
+                return result
+            refs += dependencies
             if row.role == "user":
                 paired = db.scalar(select(Message).where(Message.run_id == row.run_id, Message.role == "assistant"))
                 refs += visibility.sources(paired.content_parts) if paired else []
@@ -98,6 +107,11 @@ def settle_expired(db):
         account_usage(db, row)
         for m in db.scalars(select(Message).where(Message.run_id == row.id, Message.role == "assistant")):
             m.status = row.state
+            if row.request_input.get('protocol_version', 1) >= 3:
+                from .durable import checkpoint
+                checkpoint(db, row, m, terminal=True)
+            from . import operations
+            operations.optional(db,operations.finished,row,m)
     db.flush()
 
 
@@ -111,6 +125,8 @@ def account_usage(db, run):
     if session.budget_day != day:
         session.budget_day, session.budget_tokens, session.budget_unknown = day, 0, False
     amount = (run.usage or {}).get("total_tokens")
+    if amount is None and (run.context_window or {}).get('provider_attempt_state') == 'not_started':
+        amount = 0
     if amount is None:
         amount = (run.context_window or {}).get("reserved_tokens")
     if amount is None:
@@ -127,7 +143,7 @@ def reserve_budget(db, payload=None):
         raise AssistantError("budget_parameter_unverified", "日预算需要已核对的输出预算参数。", 503)
     # Deployment-wide UTC-day admission guard. Reserve worst-case UTF-8 text
     # plus output for every allowed tool round; unknown billing keeps reservation.
-    extra_search = int(payload is not None and payload.protocol_version == 2 and payload.web_search != "off")
+    extra_search = int(payload is not None and payload.protocol_version >= 2 and payload.web_search != "off")
     reserve = (settings.assistant_context_character_budget*4 + settings.assistant_max_output_tokens)*(settings.assistant_max_tool_rounds+1+extra_search)
     rows = db.scalars(select(Conversation).where(Conversation.budget_day == day_key(time.time()))).all()
     active = db.scalars(select(Run).where(Run.state.in_(ACTIVE))).all()
@@ -154,6 +170,7 @@ def create(user, key):
         return session_out(row)
 
 
+@help_registry.scoped_read
 def sessions(user, cursor="", limit=30, q="", favorites=False):
     expire_retention(user)
     cleanup_pending(user)
@@ -198,6 +215,7 @@ def rename(user, sid, payload):
         return session_out(row)
 
 
+@help_registry.scoped_read
 def messages(user, sid, cursor=0, limit=50):
     with transaction() as db:
         row = owned(db, user, sid)
@@ -209,10 +227,42 @@ def messages(user, sid, cursor=0, limit=50):
         result = dict(session=session_out(row),
             next_cursor=rows[limit-1].seq if len(rows) > limit else None,
             active_run_id=db.scalar(select(Run.id).where(Run.session_id == sid, Run.state.in_(ACTIVE))))
+        active = db.get(Run, result['active_run_id']) if result['active_run_id'] else None
+        if active and active.request_input.get('protocol_version', 1) >= 3:
+            from app.models.assistant import AssistantExecution
+            execution = db.get(AssistantExecution, active.id)
+            result.update(active_run_protocol_version=3, active_run_state=active.state,
+                active_event_seq=execution.last_seq if execution else 0)
     return dict(**result, items=[message_out(m, user) for m in reversed(rows[:limit])])
 
 
-def admit(user, sid, payload):
+def related_question(db, user, rid, sid=None):
+    """Return only currently visible frozen input; relations never grant access."""
+    run = db.get(Run, rid)
+    if run is None or (sid is not None and run.session_id != sid):
+        raise AssistantError("not_found", "原提问不存在或不属于这个会话。", 404)
+    owned(db, user, run.session_id)
+    if run.state in ACTIVE:
+        raise AssistantError("parent_running", "请等待原回答结束或停止后再追问。", 409)
+    rows = db.scalars(select(Message).where(Message.run_id == rid).order_by(Message.seq)).all()
+    safe = [message_out(row, user) for row in rows]
+    if not safe or any(m.get("unavailable") or m.get("help_verification") == "legacy_version_only" for m in safe):
+        raise AssistantError("source_unavailable", "原提问所依赖的资料已失效，请重新选择当前资料。", 410)
+    if not run.request_input or not any(m["role"] == "user" for m in safe):
+        raise AssistantError("question_unavailable", "这个历史提问未保存完整输入，请重新填写。", 409)
+    return run, safe
+
+
+@help_registry.scoped_read
+def question(user, rid):
+    with database.SessionLocal() as db:
+        run, safe = related_question(db, user, rid)
+        frozen = {k: v for k, v in run.request_input.items() if k not in ("client_request_id", "relation")}
+        return dict(run_id=rid, session_id=run.session_id, payload=frozen)
+
+
+@help_registry.scoped_read
+def admit(user, sid, payload, *, auth_session_id=None):
     from app.schemas.assistant import canonical_request
     capabilities.require_enabled()
     frozen = canonical_request(payload)
@@ -225,8 +275,21 @@ def admit(user, sid, payload):
             if old.request_hash != digest:
                 raise AssistantError("idempotency_conflict", "相同请求编号不能用于不同内容。", 409)
             return dict(reused=True, run_id=old.id, state=old.state)
+        if payload.protocol_version >= 3:
+            capabilities.require_durable()
+            from .durable import validate_binding
+            validate_binding(db, user, auth_session_id)
         capabilities.require_enabled(chat=True)
         capabilities.validate_options(payload)
+        dependencies = []
+        if payload.relation:
+            _, parent_messages = related_question(db, user, payload.relation.parent_run_id, sid)
+            from .runtime import capture_sources
+            for message in parent_messages:
+                dependencies.extend(capture_sources(db, user, sid, payload.relation.parent_run_id, message))
+            dependencies = list({s['source_id']: s for s in dependencies}.values())
+            if len(dependencies) > 256:
+                raise AssistantError('context_too_large', '原回答关联的资料过多，请缩小追问范围。')
         citations = help_registry.model_context(user, payload.page_context,
             strict=payload.intent in ('explain_page','explain_element')) if payload.page_context else []
         active = select(Run).join(Conversation).where(Run.state.in_(ACTIVE))
@@ -249,17 +312,26 @@ def admit(user, sid, payload):
         seq = (db.scalar(select(func.max(Message.seq)).where(Message.session_id == sid)) or 0) + 1
         run = Run(id=rid, session_id=sid, client_request_id=payload.client_request_id, request_hash=digest,
             model=settings.assistant_model, state="connecting", lease_owner=lease, lease_expires_at=now+LEASE_SECONDS,
-            cancel_requested=False, started_at=now, request_input=frozen, context_window={"reserved_tokens": reservation})
+            cancel_requested=False, started_at=now, request_input=frozen, context_window={"reserved_tokens": reservation, "provider_attempt_state": "not_started"})
         db.add(run)
         db.flush()
         parts = [{"type": "text", "text": payload.text}] + [{"type": "image_ref", "attachment_id": a} for a in payload.attachment_ids]
         parts += [{"type": "document_ref", "file_id": ident, 'document_version': document_versions[ident]} for ident in payload.document_ids]
+        if payload.relation:
+            parts.append(dict(type="run_relation", **payload.relation.model_dump()))
+            if dependencies:
+                parts.append(dict(type="source_dependencies", sources=dependencies))
         ctx = payload.page_context.model_dump() if payload.page_context else None
         refs = [help_registry.citation(a) for a in citations]
         db.add(Message(id=uuid4().hex, session_id=sid, run_id=rid, seq=seq, role="user", content_parts=parts,
             status="completed", help_citations=refs, context_descriptor=ctx, created_at=now))
         db.add(Message(id=mid, session_id=sid, run_id=rid, seq=seq+1, role="assistant", content_parts=[],
             status="connecting", help_citations=refs, context_descriptor=ctx, created_at=now))
+        if payload.protocol_version >= 3:
+            from .durable import enqueue
+            enqueue(db, run, user, auth_session_id, dependencies)
+        from . import operations
+        operations.optional(db,operations.admitted,run,payload)
         session.updated_at = now
         if seq == 1 and session.title == "新对话":
             session.title = payload.text.strip()[:60] or "新对话"
@@ -267,62 +339,74 @@ def admit(user, sid, payload):
         return dict(reused=False, run_id=rid, message_id=mid, lease=lease, citations=[help_registry.public(a) for a in citations])
 
 
-def control(rid, lease, *, parts=None, state=None, terminal=None, error=None, usage=UNSET, provider_id=None, window=None, citations=None):
+def control(rid, lease, **values):
     with transaction() as db:
         run = db.get(Run, rid)
-        if not run or run.lease_owner != lease or run.state not in ACTIVE or run.lease_expires_at < time.time():
-            raise AssistantError("lease_lost", "生成已中断，请查看保存的回答。", 409)
-        session = db.get(Conversation, run.session_id)
-        stop = run.cancel_requested or session.deletion_state != "active"
-        if stop:
-            terminal = "cancelled"
-        elif not settings.assistant_enabled:
-            terminal, error = "interrupted", "disabled"
-        if parts is not None and session.deletion_state == "active":
-            if terminal:
-                # DB cancellation/kill-switch can win after the runtime's snapshot.
-                # Finalize the exact saved evidence inside this terminal transaction.
-                from copy import deepcopy
-                from .evidence import now_iso
-                parts = deepcopy(parts)
-                for part in parts:
-                    if part.get("type") != "evidence":
-                        continue
-                    changed = False
-                    for activity in part["activities"]:
-                        if activity["status"] == "running" or (stop and activity["status"] == "completed" and activity.get("finished_at") is None):
-                            activity.update(status="completed" if terminal == "completed" else "cancelled" if terminal == "cancelled" else "failed", finished_at=now_iso())
-                            changed = True
-                    for citation in part["citations"]:
-                        if citation["resolution"] == "pending":
-                            citation["resolution"] = "unresolved"; changed = True
-                    if part["search"]["execution"] == "pending":
-                        part["search"].update(execution="unconfirmed" if terminal == "completed" else "failed", reason_code=error or terminal)
+        return _control(db, run, lease, **values)
+
+
+def _control(db, run, lease, *, parts=None, state=None, terminal=None, error=None, usage=UNSET, provider_id=None, window=None, citations=None, durable_event=None, terminal_data=None):
+    if not run or run.lease_owner != lease or run.state not in ACTIVE or run.lease_expires_at < time.time():
+        raise AssistantError("lease_lost", "生成已中断，请查看保存的回答。", 409)
+    rid = run.id
+    session = db.get(Conversation, run.session_id)
+    stop = run.cancel_requested or session.deletion_state != "active"
+    if stop:
+        terminal = "cancelled"
+    elif not settings.assistant_enabled or (run.request_input.get('protocol_version', 1) >= 3 and not settings.assistant_durable_runs_enabled):
+        terminal, error = "interrupted", "disabled"
+    if parts is not None and session.deletion_state == "active":
+        if terminal:
+            # DB cancellation/kill-switch can win after the runtime's snapshot.
+            # Finalize the exact saved evidence inside this terminal transaction.
+            from copy import deepcopy
+            from .evidence import now_iso
+            parts = deepcopy(parts)
+            for part in parts:
+                if part.get("type") != "evidence":
+                    continue
+                changed = False
+                for activity in part["activities"]:
+                    if activity["status"] == "running" or (stop and activity["status"] == "completed" and activity.get("finished_at") is None):
+                        activity.update(status="completed" if terminal == "completed" else "cancelled" if terminal == "cancelled" else "failed", finished_at=now_iso())
                         changed = True
-                    if changed: part["revision"] += 1
-            msg = db.scalar(select(Message).where(Message.run_id == rid, Message.role == "assistant"))
-            msg.content_parts = list(parts)
-        if terminal:
-            run.state, run.finished_at, run.error_code = terminal, time.time(), error
-        else:
-            run.state = state or run.state
-            run.lease_expires_at = time.time()+LEASE_SECONDS
-        if usage is not UNSET:
-            run.usage = usage
-        if provider_id:
-            run.provider_request_id = provider_id
-        if window is not None:
-            run.context_window = {**run.context_window, **window}
-        if terminal:
-            account_usage(db, run)
+                for citation in part["citations"]:
+                    if citation["resolution"] == "pending":
+                        citation["resolution"] = "unresolved"; changed = True
+                if part["search"]["execution"] == "pending":
+                    part["search"].update(execution="unconfirmed" if terminal == "completed" else "failed", reason_code=error or terminal)
+                    changed = True
+                if changed: part["revision"] += 1
         msg = db.scalar(select(Message).where(Message.run_id == rid, Message.role == "assistant"))
-        if msg:
-            msg.status = run.state
-            if citations is not None:
-                msg.help_citations = citations
-        return run.state
+        msg.content_parts = list(parts)
+    if terminal:
+        run.state, run.finished_at, run.error_code = terminal, time.time(), error
+    else:
+        run.state = state or run.state
+        run.lease_expires_at = time.time()+LEASE_SECONDS
+    if usage is not UNSET:
+        run.usage = usage
+    if provider_id:
+        run.provider_request_id = provider_id
+    if window is not None:
+        run.context_window = {**run.context_window, **window}
+    if terminal:
+        account_usage(db, run)
+    msg = db.scalar(select(Message).where(Message.run_id == rid, Message.role == "assistant"))
+    if msg:
+        msg.status = run.state
+        if citations is not None:
+            msg.help_citations = citations
+        if run.request_input.get('protocol_version', 1) >= 3:
+            from .durable import checkpoint
+            checkpoint(db, run, msg, event=durable_event, terminal=bool(terminal), terminal_data=terminal_data)
+        if terminal:
+            from . import operations
+            operations.optional(db,operations.finished,run,msg)
+    return run.state
 
 
+@help_registry.scoped_read
 def snapshot(user, rid=None, sid=None, request_id=None):
     with transaction() as db:
         settle_expired(db)
@@ -333,6 +417,10 @@ def snapshot(user, rid=None, sid=None, request_id=None):
         rows = db.scalars(select(Message).where(Message.run_id == run.id).order_by(Message.seq)).all()
         result = dict(run_id=run.id, session_id=run.session_id, state=run.state, usage=run.usage, error_code=run.error_code,
             context_window=run.context_window)
+        if run.request_input.get('protocol_version', 1) >= 3:
+            from app.models.assistant import AssistantExecution
+            execution = db.get(AssistantExecution, run.id)
+            result.update(protocol_version=3, event_seq=execution.last_seq if execution else 0)
     return dict(**result, items=[message_out(r, user) for r in rows])
 
 
@@ -383,7 +471,11 @@ def cancel(user, rid):
             raise AssistantError("not_found", "没有找到这个请求。", 404)
         owned(db, user, run.session_id)
         if run.state in ACTIVE:
+            from . import operations
+            operations.optional(db,operations.cancel_requested,run)
             run.cancel_requested = True
+            if run.request_input.get('protocol_version', 1) >= 3:
+                _control(db, run, run.lease_owner, terminal='cancelled', error='cancelled')
         return dict(run_id=rid, state=run.state, cancel_requested=run.cancel_requested)
 
 

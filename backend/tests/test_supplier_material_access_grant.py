@@ -50,6 +50,14 @@ def test_supplier_material_grant_is_audited_scoped_and_restart_safe(monkeypatch)
             assert db.query(AuthAuthorizationEvent).filter_by(
                 target_user_id='supplier-test', event_type='permission_override_set').count() == 2
             ensure_authz_startup_safety(db)
+            from app.services.internal_members import is_internal, eligible_member_ids
+            assert not is_internal(user)
+            assert user.id not in eligible_member_ids(db)
+        supplier_login(client)
+        assert client.get('/api/auth/me').json()['internal_member'] is False
+        assert client.get('/api/directory/summary').status_code == 403
+        assert client.get('/api/directory/members').status_code == 403
+        assert client.post('/api/directory/presence/heartbeat').status_code == 403
         # Revoking the supplier gate disables access; dormant asset grants must
         # not make the next application startup fail.
         revoke_supplier_permission('carton_supplier:read')

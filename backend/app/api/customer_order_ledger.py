@@ -14,7 +14,7 @@ from app.services.customer_order_jobs import run_order_job, order_job_request
 from app.api import customer_order as mapping
 from app.db import get_db
 from app.models.customer_order_ledger import OrderLedgerLine as Line, OrderLedgerSource as Source, OrderLedgerDispatch as Dispatch, OrderLedgerShipment as Shipment
-from app.schemas.customer_order_ledger import AmendIn, DispatchIn, ReasonIn, RestoreIn, ShipmentIn, HistorySelection, HistoryOpeningIn
+from app.schemas.customer_order_ledger import AmendIn, DispatchIn, ReasonIn, RestoreIn, ShipmentIn, HistorySelection, HistoryOpeningIn, CartonChangeConfirmIn
 from app.services.auth import AuthContext, get_current_user, now_text
 from app.services.business_authz import ensure_permission_for_departments, has_permission_for_departments
 from app.services import customer_order_ledger as ledger
@@ -64,6 +64,8 @@ def capabilities(factory_id: str, recipient: Literal["pmc", "warehouse", "inject
             for action in ("read", "write", "dispatch", "shipment_confirm", "inbox_read", "inbox_receive")}
     result['cutting_dispatch_enabled'] = bool(factory_id == 'huakang-c' and result['dispatch'] and
         settings.cutting_ops_enabled and cutting_orders.schema_ready(db.connection()))
+    from app.services.carton_business_changes import capable
+    result['carton_change'] = capable(current_user, factory_id, recipient)
     return result
 
 
@@ -348,7 +350,13 @@ def inbox(factory_id: str, recipient: Literal["pmc", "warehouse", "injection"], 
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     items = db.scalars(query.order_by(Dispatch.created_at.desc(), Dispatch.id).offset((page - 1) * page_size).limit(page_size)).all()
     latest = dict(db.execute(select(Line.id, Line.version).where(Line.factory_id == factory_id, Line.id.in_([item.line_id for item in items]))).all())
-    return {"items": [ledger.dispatch_out(item) | {"latest_version": latest[item.line_id]} for item in items], "total": total, "page": page, "page_size": page_size}
+    from app.services.carton_business_changes import capable, processing
+    processed = processing(db, factory_id, list(latest)) if capable(current_user, factory_id, recipient) else {}
+    def result(item):
+        saved = processed.get((item.line_id, item.version))
+        return ledger.dispatch_out(item) | {"latest_version": latest[item.line_id],
+            "carton_processed": {key: saved[key] for key in ("processed_by", "processed_at")} if saved else None}
+    return {"items": [result(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("/inbox/{dispatch_id}/receive")
@@ -363,4 +371,38 @@ def receive(dispatch_id: str, factory_id: str, recipient: Literal["pmc", "wareho
             received_at=now_text(), received_by=ledger.actor_name(current_user)), execution_options={"synchronize_session": False})
         db.refresh(item)
         return ledger.dispatch_out(item) | {"latest_version": ledger.get_line(db, factory_id, item.line_id).version}
+    return transaction(db, perform)
+
+
+def carton_change_context(db, request, user, factory, recipient, dispatch_id):
+    from app.services import carton_business_changes as changes
+    from app.services.carton_special_requests import locked_actor
+    valid_factory(factory)
+    # Reject before taking mutable-domain locks, then recheck the fresh identity
+    # and session under IAM/factory locks before touching business state.
+    if not changes.capable(user, factory, recipient):
+        raise HTTPException(403, "需要本厂收件箱签收及纸箱订单维护权限")
+    locked_actor(db, user, factory)
+    fresh_user = get_current_user(request, db)
+    item, line = changes.context(db, fresh_user, factory, recipient, dispatch_id)
+    return changes, fresh_user, item, line
+
+
+@router.post("/inbox/{dispatch_id}/carton-change-preview")
+def carton_change_preview(dispatch_id: str, factory_id: str, recipient: Literal["pmc", "warehouse", "injection"],
+                          request: Request, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    try:
+        changes, user, item, line = carton_change_context(db, request, current_user, factory_id, recipient, dispatch_id)
+        return changes.preview(db, user, item, line)
+    finally:
+        db.rollback()
+
+
+@router.post("/inbox/{dispatch_id}/carton-change-confirm")
+def carton_change_confirm(dispatch_id: str, factory_id: str, recipient: Literal["pmc", "warehouse", "injection"],
+                          body: CartonChangeConfirmIn, request: Request, db: Session = Depends(get_db),
+                          current_user: AuthContext = Depends(get_current_user)):
+    def perform():
+        changes, user, item, line = carton_change_context(db, request, current_user, factory_id, recipient, dispatch_id)
+        return changes.confirm(db, user, item, line, body)
     return transaction(db, perform)

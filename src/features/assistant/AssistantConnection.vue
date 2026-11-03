@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { assistantApi } from './api'
 import type { Capabilities } from './types'
+import AssistantOperations from './AssistantOperations.vue'
 const props = defineProps<{ capabilities: Capabilities | null }>()
 const details = ref<Record<string, unknown> | null>(null), error = ref(''), loading = ref(false)
 let generation = 0
@@ -33,6 +34,7 @@ async function inspect() {
     <button v-if="capabilities?.diagnostics_available" type="button" :aria-disabled="loading" :aria-busy="loading" @click="inspect">{{ loading ? '读取诊断中…' : '管理员连接诊断' }}</button>
     <p v-if="error" role="alert">{{ error }}</p>
     <pre v-if="details" tabindex="0" aria-label="脱敏连接诊断">{{ JSON.stringify(details, null, 2) }}</pre>
+    <AssistantOperations v-if="capabilities?.diagnostics_available" :available="!!capabilities.operational_metrics?.available"/>
   </section>
 </template>
 

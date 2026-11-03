@@ -550,7 +550,7 @@ async def preview_shipment_import(file: UploadFile = File(...), row_selections: 
 
 
 @router.post("/shipments/import-confirm")
-async def confirm_shipment_import(file: UploadFile = File(...), sha256: str = Form(...),
+async def confirm_shipment_import(request: Request, file: UploadFile = File(...), sha256: str = Form(...),
                                   selections: str = Form(...), row_selections: str = Form("[]"), db: Session = Depends(get_db),
                                   user: AuthContext = Depends(get_current_user)):
     try:
@@ -564,7 +564,8 @@ async def confirm_shipment_import(file: UploadFile = File(...), sha256: str = Fo
             raise ValueError()
     except (ValueError, TypeError, KeyError):
         raise HTTPException(422, "所选送货单格式无效") from None
-    return delivery_import.confirm(db, user, file.filename or "", await file.read(service.MAX_FILE + 1), sha256, keys, choices)
+    return delivery_import.confirm(db, user, file.filename or "", await file.read(service.MAX_FILE + 1), sha256, keys, choices,
+        refresh_actor=lambda: get_current_user(request, db))
 
 @router.get("/attachments/{attachment_id}")
 def download(attachment_id: str, factory_id: str, db: Session = Depends(get_db), user: AuthContext = Depends(get_current_user)):

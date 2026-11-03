@@ -120,5 +120,5 @@ export function useMaterialDraft(value: () => unknown, editor: DraftEditor) {
     } finally { await nextTick(); paused = false; submitting.value = false }
   }
   onBeforeUnmount(() => { alive = false; unregister(); unregisterOwner() })
-  return { accept, permitDiscard, openRecord, activeId, switching, submitting, run, recoveryWaiting }
+  return { accept, permitDiscard, openRecord, activeId, switching, submitting, run, recoveryWaiting, persist }
 }

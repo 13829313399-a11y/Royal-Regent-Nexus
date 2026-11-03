@@ -40,6 +40,10 @@
 
 ## 当前配置
 
+The V3 local implementation accepts `ASSISTANT_MAX_TOOL_ROUNDS` from 0 through 16; the default remains 5. Zero disables model-requested function tools and permits one final synthesis when search is off. Explicit deterministic native prequeries still execute through their existing read authorization. Search auto/on reserves one additional upstream step. Admission is `(context_character_budget * 4 + max_output_tokens) * (max_tool_rounds + 1 + search_step)`. This is a conservative admission bound, separate from known returned usage. A durable not_started marker proves zero dispatch; a started or legacy unmarked attempt cannot be treated as free. No automatic paid retry is introduced and historical accounting is retained. The disposable V3 harness may tighten its existing one-round ceiling to zero for an explicit synthetic request; this does not change the private production environment or raise daily/output limits.
+
+
+
 2026-10-08，用户授权在已登录的阿里云百炼控制台创建专用密钥、配置本地曜灵，并执行一次最多512个输出token的合成消息测试。
 
 - 地域：华北2（北京），默认业务空间。

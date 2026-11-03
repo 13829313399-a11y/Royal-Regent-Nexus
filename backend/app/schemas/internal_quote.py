@@ -862,6 +862,7 @@ class InternalQuoteBatchProductOut(BaseModel):
     product_name: str
     version_label: str = ""
     scenario_name: str = ""
+    working_version_warning: str = ""
     archived: bool = False
     packaging_copy: InternalQuotePackagingCopyStatusOut | None = None
     qty: int
