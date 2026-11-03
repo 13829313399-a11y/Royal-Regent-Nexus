@@ -990,6 +990,14 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
       this.livePreviewQuoteId = ''
       this.livePreviewSectionCode = ''
     },
+    stageLiveCostPreview(quoteId: string, sectionCode: InternalQuoteSectionCode, revision: number, payload: Record<string, unknown>) {
+      if (this.livePreviewQuoteId && this.livePreviewQuoteId !== quoteId) this.clearLiveCostPreview()
+      this.livePreviewQuoteId = quoteId
+      this.livePreviewDrafts[sectionCode] = { revision, payload }
+      this.livePreviewRequestSequence += 1
+      this.livePreviewLoading = true
+      this.livePreviewErrorMessage = ''
+    },
     async refreshLiveCostPreview(quoteId: string) {
       const drafts = (Object.entries(this.livePreviewDrafts) as Array<[
         InternalQuoteSectionCode,
@@ -1594,8 +1602,8 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
         if (generation === this.factoryContextGeneration) this.fileBusy = false
       }
     },
-    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File, draft?: { revision: number; payload: Record<string, unknown> }) {
-      return this.performFileOperation(() => internalQuoteApi.previewImport(quoteId, importType, file, draft))
+    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File, draft?: { revision: number; payload: Record<string, unknown> }, replaceAttachmentId?: string) {
+      return this.performFileOperation(() => internalQuoteApi.previewImport(quoteId, importType, file, draft, replaceAttachmentId))
     },
     async downloadImportTemplate(
       quoteId: string,
@@ -1660,8 +1668,8 @@ export const useInternalQuoteDeskStore = defineStore('internal-quote-desk', {
     async downloadExport(quoteId: string, exportId: string, fileName: string) {
       triggerDownload(await this.performFileOperation(() => internalQuoteApi.downloadExport(quoteId, exportId)), fileName)
     },
-    async downloadEngineeringWorkbook(quoteId: string, fileName: string) {
-      triggerDownload(await this.performFileOperation(() => internalQuoteApi.downloadEngineeringWorkbook(quoteId)), fileName)
+    async downloadEngineeringWorkbook(quoteId: string, fileName: string, selection?: Parameters<typeof internalQuoteApi.downloadEngineeringWorkbook>[1]) {
+      triggerDownload(await this.performFileOperation(() => internalQuoteApi.downloadEngineeringWorkbook(quoteId, selection)), fileName)
     },
     submitFinal(quoteId: string, revision: number) {
       return this.executeMutation(quoteId, () => internalQuoteApi.submitFinal(quoteId, revision))

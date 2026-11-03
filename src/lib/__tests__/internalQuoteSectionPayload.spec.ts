@@ -1,4 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import { normalizeInternalQuotePayload as normalizeAnnotated } from '@/lib/internalQuoteSectionPayload'
+
+it('keeps price notes with their material when rows are moved and normalized again', () => {
+  const note = { unit_price_rmb: { text: '电话改价', image_attachment_ids: ['img-1'] } }
+  const first = normalizeAnnotated('engineering', { materials: [
+    { item: '胶水', category: 'auxiliary', quantity: 1, unit_price_rmb: 2, price_annotations: note },
+    { item: '螺丝', category: 'hardware', quantity: 1, unit_price_rmb: 1 },
+  ] })
+  const materials = first.materials as Array<Record<string, unknown>>
+  const second = normalizeAnnotated('engineering', { ...first, materials: [...materials].reverse() })
+  const reordered = second.materials as Array<Record<string, unknown>>
+  expect(reordered[0]!.price_annotations).toBeUndefined()
+  expect(reordered[1]!.price_annotations).toEqual(note)
+})
 import { isReactive, reactive } from 'vue'
 import type { MoldingPayload } from '@/lib/internalQuoteSectionPayload'
 import { calculateJustPlayCartonsPerPallet, justPlayPackagingInputsValid, normalizeJustPlayPackagingInputs } from '@/lib/internalQuoteSectionPayload'

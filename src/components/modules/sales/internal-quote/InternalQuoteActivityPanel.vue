@@ -441,7 +441,12 @@ function getPricingBaseline() {
   return JSON.parse(JSON.stringify(pricingBaseline.value)) as typeof pricingBaseline.value
 }
 
-defineExpose({ hasUnsavedChanges, getPricingDraft, getPricingBaseline, acceptSavedPricing })
+const liveTotals = computed(() => ({
+  complete: pricingComplete.value && !previewBusy.value && !previewError.value,
+  costHkd: costHkd.value, quoteHkd: quoteHkd.value, quoteRmb: quoteRmb.value, quoteUsd: quoteUsd.value,
+  status: previewError.value || previewStatus.value, target: targetComparison.value,
+}))
+defineExpose({ hasUnsavedChanges, getPricingDraft, getPricingBaseline, acceptSavedPricing, liveTotals })
 
 watch(() => JSON.stringify([quoteMarkupTiers.value, selectedMarkupTierIndex.value, quoteMiscPercent.value, componentMarkupRows.value, pricingDirty.value, pricingValidationMessage.value]), () => {
   emit('pricingDraft', pricingDirty.value && !pricingValidationMessage.value ? pricingDraftSnapshot() : undefined)

@@ -211,6 +211,7 @@ def serialize_workbook(workbook):
     for sheet in workbook:
         if sheet.sheet_state != "visible":
             continue
+        source = getattr(sheet, "_quote_source", None)
         merged, covered = {}, set()
         for area in sheet.merged_cells.ranges:
             merged[(area.min_row, area.min_col)] = (area.max_row - area.min_row + 1, area.max_col - area.min_col + 1)
@@ -223,7 +224,12 @@ def serialize_workbook(workbook):
                     continue
                 failed = False
                 try:
-                    value = evaluator.cell(sheet.title, cell.coordinate)
+                    if source is not None:
+                        # Uploaded formulas (even supported ones) are never evaluated.
+                        failed = cell.data_type in {"f", "e"} or cell.coordinate in getattr(sheet, "_quote_missing_formula_cache", ())
+                        value = "原表公式未缓存" if cell.data_type == "f" or cell.coordinate in getattr(sheet, "_quote_missing_formula_cache", ()) else cell.value
+                    else:
+                        value = evaluator.cell(sheet.title, cell.coordinate)
                 except (ValueError, ZeroDivisionError, OverflowError, KeyError, TypeError):
                     value, failed = "待核算", True
                     errors.append(f"{sheet.title}!{cell.coordinate}")
@@ -237,8 +243,9 @@ def serialize_workbook(workbook):
                         style[f"border{side.title()}"] = f"{2 if edge.style in {'medium', 'thick', 'double'} else 1}px solid {color(edge.color, '#839994')}"
                 rowspan, colspan = merged.get((cell.row, cell.column), (1, 1))
                 cells.append({"address": cell.coordinate, "column": cell.column, "text": display_value(value, cell.number_format),
+                              **({"comment": cell.comment.text} if cell.comment else {}),
                               "rowspan": rowspan, "colspan": colspan, "style": style, "unavailable": failed,
-                              "binding": getattr(sheet, "_quote_bindings", {}).get(cell.coordinate)})
+                              "binding": None if source is not None else getattr(sheet, "_quote_bindings", {}).get(cell.coordinate)})
             rows.append({"index": row[0].row, "height": max(20, (sheet.row_dimensions[row[0].row].height or 15) * 4 / 3), "cells": cells})
         widths = [round((sheet.column_dimensions[get_column_letter(c)].width or 13) * 7 + 5) for c in range(1, sheet.max_column + 1)]
         images = []
@@ -251,5 +258,6 @@ def serialize_workbook(workbook):
                                "top": sum(row["height"] for row in rows[:marker.row]) + marker.rowOff / 9525,
                                "width": anchor.ext.cx / 9525 if hasattr(anchor, "ext") else picture.width,
                                "height": anchor.ext.cy / 9525 if hasattr(anchor, "ext") else picture.height})
-        sheets.append({"name": sheet.title, "widths": widths, "rows": rows, "images": images})
+        sheets.append({"name": sheet.title, "widths": widths, "rows": rows, "images": images,
+                       **({"source": source} if source is not None else {})})
     return sheets, errors

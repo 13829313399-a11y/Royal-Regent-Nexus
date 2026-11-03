@@ -39,13 +39,13 @@ def test_downloadable_import_template_uses_a_header_recognized_by_its_parser(imp
         assert content.startswith(b"PK")
         assert file_name.endswith(".xlsx")
     if import_type in FIXED_TEMPLATE_FILE_NAMES:
-        assert file_name == FIXED_TEMPLATE_FILE_NAMES[import_type]
+        assert file_name == ("辅助材料外购件报价单.xlsx" if import_type == "auxiliary" else FIXED_TEMPLATE_FILE_NAMES[import_type])
         expected_path = (
             Path(__file__).resolve().parents[1]
             / "app"
             / "data"
             / "internal_quote_import_templates"
-            / file_name
+            / FIXED_TEMPLATE_FILE_NAMES[import_type]
         )
         assert content == expected_path.read_bytes()
         parsed = parse_internal_quote_workbook(content, import_type)

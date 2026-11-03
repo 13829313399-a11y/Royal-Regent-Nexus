@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { AlertCircle, CheckCircle2, Download, Eye, FileSpreadsheet, Info, LockKeyhole, Paperclip, RefreshCw, Save, Send, Trash2, Undo2, XCircle, Zap } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
 import type { ApiInternalQuoteImportPreview, ApiInternalQuoteSection, ApiInternalQuoteAttachment } from '@/api/internalQuote'
 import InternalQuoteAttachmentPreview from './InternalQuoteAttachmentPreview.vue'
@@ -51,11 +51,22 @@ const emit = defineEmits<{
 
 const quoteStore = useInternalQuoteDeskStore()
 const authStore = useAuthStore()
+const editorElement = ref<HTMLElement>()
 const draftPayload = ref<Record<string, unknown>>({})
 const baselinePayload = ref('')
 const draftRevision = ref(props.section.revision)
 const sidebarPricingDraft = ref<InternalQuoteSidebarPricingDraft>()
 const importPreview = ref<ApiInternalQuoteImportPreview>()
+const departmentSubtotal = computed(() => {
+  const preview = quoteStore.livePreviewQuoteId === props.quote.id ? quoteStore.liveCostPreview?.calculations?.[props.section.code] : undefined
+  if (quoteStore.livePreviewQuoteId === props.quote.id && (quoteStore.livePreviewLoading || quoteStore.livePreviewErrorMessage)) return '正在核算 / 待核对'
+  const calculation = preview ?? props.section.calculation
+  if (calculation?.status !== 'valid' || (!preview && props.section.dependencyStatus !== 'current')) return '待核算'
+  const totals = calculation.totals as Record<string, unknown> | undefined
+  const value = Number(totals?.total_hkd ?? totals?.shipping_floor_hkd)
+  return Number.isFinite(value) ? `HKD ${value.toFixed(4)}` : '待核算'
+})
+const replacementSource = ref<InternalQuoteAttachmentRecord>()
 const importAssignments = ref<Record<string, string>>({})
 const electronicImportTarget = ref<string>()
 const activeElectronicGroupId = ref('legacy')
@@ -342,6 +353,7 @@ type ImportOption = {
 const importOptions = computed<ImportOption[]>(() => ({
   engineering: [
     { type: 'hardware', label: '五金报价单', fileName: '五金1.xlsx' },
+    { type: 'auxiliary', label: '辅助材料/外购件报价单', fileName: '辅助材料外购件报价单.xlsx' },
     { type: 'mold', label: '模具报价单 / 合同', fileName: '展兴模具--工模报价表.xlsx' },
   ],
   electronic: [{ type: 'electronic', label: '电子报价单', fileName: '电子报价单.xlsx' }],
@@ -376,6 +388,8 @@ function scheduleLivePreview() {
     quoteStore.clearLiveCostPreview(props.quote.id, props.section.code)
     return
   }
+  quoteStore.stageLiveCostPreview?.(props.quote.id, props.section.code, draftRevision.value,
+    cloneInternalQuotePayload(props.section.code, props.section.code === 'sales' && sidebarPricingDraft.value ? salesPayloadWithPricing(draftPayload.value, sidebarPricingDraft.value) : draftPayload.value))
   livePreviewTimer = setTimeout(() => {
     void quoteStore.previewSectionCost(
       props.quote.id,
@@ -739,10 +753,27 @@ async function withdrawSection() {
 }
 
 let importDraft: { revision: number; payload: Record<string, unknown> } | undefined
+let importWorkbookFile: File | undefined
+
+async function retargetMaterialImport(event: Event) {
+  const type = (event.target as HTMLSelectElement).value
+  if (!['hardware', 'auxiliary'].includes(type) || !importDraft || !importWorkbookFile || !editable.value) return
+  const quoteId = props.quote.id
+  const draft = importDraft
+  resetFeedback()
+  try {
+    const preview = await quoteStore.previewImport(quoteId, type as 'hardware' | 'auxiliary', importWorkbookFile, draft)
+    if (props.quote.id === quoteId && importDraft === draft) importPreview.value = preview
+  } catch (error) { importPreview.value = undefined; localError.value = errorText(error) }
+}
 
 async function detectImportPreview(file: File, draft: { revision: number; payload: Record<string, unknown> }) {
   if (!editable.value || !isImportWorkbook(file)) return undefined
-  for (const option of importOptions.value) {
+  const options = [...importOptions.value]
+  if (props.section.code === 'engineering' && /辅助|外购件/.test(file.name)) {
+    options.sort((a, b) => Number(b.type === 'auxiliary') - Number(a.type === 'auxiliary'))
+  }
+  for (const option of options) {
     try {
       return await quoteStore.previewImport(props.quote.id, option.type, file, draft)
     } catch (error) {
@@ -771,10 +802,15 @@ async function handleUploadFile(event: Event) {
     }
     importPreview.value = undefined
     importDraft = undefined
+    importWorkbookFile = file
     const quoteId = props.quote.id
     const sectionCode = props.section.code
     const draft = { revision: draftRevision.value, payload: cloneInternalQuotePayload(sectionCode, draftPayload.value) }
-    const detected = await detectImportPreview(file, draft)
+    const replacing = replacementSource.value
+    replacementSource.value = undefined
+    const detected = replacing
+      ? await quoteStore.previewImport(quoteId, replacing.importType as ApiInternalQuoteImportPreview['import_type'], file, draft, replacing.id)
+      : await detectImportPreview(file, draft)
     if (props.quote.id !== quoteId || props.section.code !== sectionCode) return
     if (detected) {
       importDraft = draft
@@ -843,7 +879,9 @@ async function confirmImport() {
     const quoteId = props.quote.id
     const sectionCode = props.section.code
     const submitted = importDraft.payload
-    const target = props.section.code === 'electronic' ? electronicImportTarget.value : undefined
+    const element = editorElement.value
+    const originalTop = element?.getBoundingClientRect().top
+    const target = props.section.code === 'electronic' && !importPreview.value.diff_summary.replaced_file_name ? electronicImportTarget.value : undefined
     const result = await quoteStore.confirmImport(
       props.quote.id,
       importPreview.value.batch_id,
@@ -867,6 +905,17 @@ async function confirmImport() {
       ? '电子报价已作为独立报价导入；每份报价金额都会合计到电子部总价。'
       : '报价单已导入并按模板负责区域更新，分段已重新计算。'
     importPreview.value = undefined
+    await nextTick()
+    if (props.quote.id !== quoteId || props.section.code !== sectionCode
+      || !element?.isConnected || editorElement.value !== element || originalTop === undefined
+      || quoteStore.detailLoading || quoteStore.quoteDetailFailedId === quoteId) return
+    const bounds = element.getBoundingClientRect()
+    // The removed preview may have been taller than the imported department.
+    // Preserve the viewport offset when possible, otherwise show this department's heading.
+    const targetTop = originalTop + bounds.height > 92 ? originalTop : 92
+    if (bounds.height > 0 && Math.abs(bounds.top - targetTop) > 1) {
+      window.scrollBy({ top: bounds.top - targetTop, behavior: 'instant' })
+    }
   } catch (error) { localError.value = errorText(error) }
 }
 
@@ -929,11 +978,11 @@ function confirmRemoveParticipation() {
 </script>
 
 <template>
-  <section class="quote-section-editor" :class="{ 'baseline-different': differsFromBaseline }">
+  <section ref="editorElement" class="quote-section-editor" :class="{ 'baseline-different': differsFromBaseline }">
     <header class="quote-editor-head">
       <div><div class="quote-editor-title-row"><h2>{{ section.label }}核价明细</h2><span v-if="differsFromBaseline" class="baseline-difference"><AlertCircle />与基准款不同</span><span class="quote-editor-status" :class="`tone-${activeStatusMeta.tone}`"><i />{{ wholeQuoteReview && section.filledAt && section.calculationStatus === 'blocked' ? '草稿已保存，待补全' : activeStatusMeta.label }}</span><span class="quote-revision">revision {{ section.revision }}</span><span v-if="isDirty" class="dirty">本部门有未保存修改</span></div><p v-if="isDirty && section.code === 'engineering'">此状态包含五金、辅助材料及模具的修改；可直接选择报价单预览，无需先保存。</p></div>
       <div class="quote-editor-tools">
-        <button v-if="section.code !== 'sales'" class="primary-upload" type="button" title="Excel 自动识别导入内容；其他文件按普通附件保存" :disabled="!editable || quoteStore.fileBusy || quoteStore.submitting" @click="uploadInput?.click()"><Paperclip />上传附件</button>
+        <button v-if="section.code !== 'sales'" class="primary-upload" type="button" title="Excel 自动识别导入内容；其他文件按普通附件保存" :disabled="!editable || quoteStore.fileBusy || quoteStore.submitting" @click="replacementSource = undefined; uploadInput?.click()"><Paperclip />上传附件</button>
         <div v-if="importOptions.length" class="template-download-control">
           <button
             class="template-download"
@@ -966,11 +1015,12 @@ function confirmRemoveParticipation() {
     <section v-if="importPreview && editable" class="quote-import-preview">
       <header><div><FileSpreadsheet /><span><strong>{{ importOption(importPreview.import_type)?.label }} · {{ importPreview.source_file_name }}</strong><small>{{ importPreview.sheet_name }} · 表头第 {{ importPreview.header_row }} 行 · 识别 {{ importPreview.row_count }} 行 · 预览不会修改正式数据</small></span></div><button type="button" aria-label="关闭导入预览" @click="importPreview = undefined"><XCircle /></button></header>
       <div class="preview-metrics"><span>{{ section.code === 'electronic' ? electronicImportExistingLabel : `当前 ${Number(importPreview.diff_summary.existing_rows ?? 0)} 行` }}</span><span>本次识别 {{ Number(importPreview.diff_summary.imported_rows ?? 0) }} 行</span><span>{{ section.code === 'electronic' ? `导入后该报价 ${electronicImportResultRows} 行` : `导入后 ${Number(importPreview.diff_summary.replace_result_rows ?? 0)} 行` }}</span></div>
-      <label v-if="section.code === 'electronic'" class="electronic-import-target"><span>导入方式</span><select v-model="electronicImportTarget" :disabled="quoteStore.submitting"><option value="new">新增独立电子报价（全部金额会合计）</option><option v-for="target in electronicImportTargets" :key="target.id" :value="target.id">替换“{{ target.name }}”</option></select><small>新增会保留现有各份报价；替换只更新所选报价。若同一源文件已导入，请选择该报价替换。</small></label>
+      <label v-if="!importPreview.diff_summary.replaced_file_name && section.code === 'engineering' && ['hardware', 'auxiliary'].includes(importPreview.import_type)" class="electronic-import-target"><span>导入区域</span><select :value="importPreview.import_type" :disabled="quoteStore.fileBusy || quoteStore.submitting" aria-label="工程报价导入区域" @change="retargetMaterialImport"><option value="hardware">五金</option><option value="auxiliary">辅助材料 / 外购件</option></select><small>两个区域沿用相同表格格式，请确认本次报价的归属；导入只替换所选区域。</small></label>
+      <p v-if="importPreview.diff_summary.replaced_file_name" class="replace-only-note">更换报价单：{{ importPreview.diff_summary.replaced_file_name }} → {{ importPreview.source_file_name }}。确认后删除旧来源及其明细，其他来源和手动新增明细保留。</p><label v-if="section.code === 'electronic' && !importPreview.diff_summary.replaced_file_name" class="electronic-import-target"><span>导入方式</span><select v-model="electronicImportTarget" :disabled="quoteStore.submitting"><option value="new">新增独立电子报价（全部金额会合计）</option><option v-for="target in electronicImportTargets" :key="target.id" :value="target.id">替换“{{ target.name }}”</option></select><small>新增会保留现有各份报价；替换只更新所选报价。若同一源文件已导入，请选择该报价替换。</small></label>
       <div v-if="importPreview.warnings.length" class="preview-warnings"><p v-for="warning in importPreview.warnings" :key="warning"><AlertCircle />{{ warning }}</p></div>
       <div v-if="importPreview.embedded_images?.length" class="import-image-preview" aria-label="导入图片预览"><strong>识别 {{ importPreview.embedded_images.length }} 张图片 · 按原表行关联</strong><figure v-for="(image,imageIndex) in importPreview.embedded_images" :key="`${image.source_row}-${imageIndex}`"><img v-if="['image/png','image/jpeg','image/webp'].includes(image.content_type)" :src="`data:${image.content_type};base64,${image.data_base64}`" :alt="image.file_name"><figcaption>原表第 {{ image.source_row }} 行 · {{ image.file_name }}</figcaption></figure></div>
       <InternalQuoteImportAssignment v-if="importPreview.assignment_rows?.length" :key="importPreview.batch_id" v-model="importAssignments" :rows="importPreview.assignment_rows" :components="importPreview.assignment_components ?? []" :disabled="quoteStore.submitting" />
-      <footer><strong class="replace-only-note">{{ section.code === 'electronic' ? '确认后仅更新目标报价；各份电子报价金额均计入电子部总价' : importPreview.import_type === 'mold' ? '确认后替换模具明细，并将模具总价填入“模具费用”，导入后可手动修改；其他费用和已填内容保留，取消不修改表单' : '确认后替换本模板对应区域，其他已填写内容一并保留；取消不修改表单' }}</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable || !assignmentComplete" @click="confirmImport">确认导入</button></footer>
+      <footer><strong class="replace-only-note">{{ importPreview.diff_summary.replaced_file_name ? '确认后清除所选旧报价单及其生成资料，并换用新报价；其他来源和手动新增明细保留' : section.code === 'electronic' ? '确认后仅更新目标报价；各份电子报价金额均计入电子部总价' : importPreview.import_type === 'mold' ? '确认后替换模具明细，并将模具总价填入“模具费用”，导入后可手动修改；其他费用和已填内容保留，取消不修改表单' : '确认后替换本模板对应区域，其他已填写内容一并保留；取消不修改表单' }}</strong><span /><button type="button" class="secondary" @click="importPreview = undefined">取消</button><button type="button" class="primary" :disabled="quoteStore.submitting || !editable || !assignmentComplete" @click="confirmImport">确认导入</button></footer>
     </section>
 
     <InternalQuoteMappedAssignment v-if="pricingMode === 'component' && ['engineering', 'painting'].includes(section.code)" v-model="draftPayload" :code="section.code" :components="pricingComponents" :disabled="!editable" />
@@ -991,7 +1041,8 @@ function confirmRemoveParticipation() {
     />
 
 
-    <section class="quote-attachments"><header><strong>本部门资料 / 分段附件</strong><span>仅显示分配给当前部门的资料；导入源文件可连同其生成的报价数据一起删除</span></header><div><span v-for="attachment in section.attachments" :key="attachment.id" class="attachment-pill"><button type="button" class="attachment-download" :title="`${attachment.uploadedBy} · ${attachment.uploadedAt} · ${attachment.sha256}`" @click="downloadAttachment(attachment.id, attachment.fileName)"><Paperclip />{{ attachment.fileName }}<Download /></button><button type="button" class="attachment-preview" :title="`在右侧预览 ${attachment.fileName}`" :aria-label="`预览 ${attachment.fileName}`" @click="emit('preview-file', section.code, attachment)"><Eye />预览</button><button type="button" class="attachment-delete" :disabled="!editable || quoteStore.submitting" :title="`删除 ${attachment.fileName}${attachment.isImportSource ? ' 及其导入数据' : ''}`" :aria-label="`删除 ${attachment.fileName}${attachment.isImportSource ? ' 及其导入数据' : ''}`" @click="requestDeleteImportAttachment(attachment)"><Trash2 /></button></span><em v-if="!section.attachments.length">暂无分配给本部门的资料</em></div></section>
+    <p class="department-live-subtotal" aria-live="polite">本部门成本小计 <strong>{{ departmentSubtotal }}</strong></p>
+    <section class="quote-attachments"><header><strong>本部门资料 / 分段附件</strong><span>仅显示分配给当前部门的资料；导入源文件可连同其生成的报价数据一起删除</span></header><div><span v-for="attachment in section.attachments" :key="attachment.id" class="attachment-pill"><button type="button" class="attachment-download" :title="`${attachment.uploadedBy} · ${attachment.uploadedAt} · ${attachment.sha256}`" @click="downloadAttachment(attachment.id, attachment.fileName)"><Paperclip />{{ attachment.fileName }}<Download /></button><button type="button" class="attachment-preview" :title="`在右侧预览 ${attachment.fileName}`" :aria-label="`预览 ${attachment.fileName}`" @click="emit('preview-file', section.code, attachment)"><Eye />预览</button><button v-if="attachment.isImportSource" type="button" class="attachment-preview" :disabled="!editable || quoteStore.submitting || quoteStore.fileBusy" @click="replacementSource = attachment; uploadInput?.click()">更换报价单</button><button type="button" class="attachment-delete" :disabled="!editable || quoteStore.submitting" :title="`删除 ${attachment.fileName}${attachment.isImportSource ? ' 及其导入数据' : ''}`" :aria-label="`删除 ${attachment.fileName}${attachment.isImportSource ? ' 及其导入数据' : ''}`" @click="requestDeleteImportAttachment(attachment)"><Trash2 /></button></span><em v-if="!section.attachments.length">暂无分配给本部门的资料</em></div></section>
 
     <p v-if="localMessage" class="quote-local-message"><CheckCircle2 />{{ localMessage }}</p>
     <p v-if="localError" class="quote-local-error"><AlertCircle />{{ localError }}</p>
@@ -1049,6 +1100,8 @@ function confirmRemoveParticipation() {
 </template>
 
 <style scoped>
+.department-live-subtotal{display:flex;justify-content:flex-end;gap:20px;align-items:center;background:#e9f8f0;border:1px solid #c9e6d9;padding:14px 18px;color:#236b52}.department-live-subtotal strong{font-size:19px}
+
 .import-image-preview{display:flex;flex-wrap:wrap;gap:10px;padding:12px;background:#fff}.import-image-preview>strong{width:100%;font-size:12px;color:#1e3a8a}.import-image-preview figure{margin:0;max-width:150px}.import-image-preview img{height:72px;width:100px;object-fit:contain;border:1px solid #bfdbfe;border-radius:6px}.import-image-preview figcaption{font-size:11px;color:#475569;overflow-wrap:anywhere}
 .quote-section-editor{position:relative;min-width:0;overflow:clip;border:1px solid #dbe5ea;border-radius:13px;background:#fff;box-shadow:0 12px 28px rgb(15 23 42/.05)}.quote-editor-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:16px;border-bottom:1px solid #e2e8f0}.quote-editor-title-row{display:flex;flex-wrap:wrap;align-items:center;gap:7px}.quote-editor-title-row h2{margin:0;color:#0f172a;font-size:17px;font-weight:900}.quote-editor-head p{margin:6px 0 0;color:#64748b;font-size:12px;line-height:1.55}.quote-editor-status,.quote-revision,.dirty{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:4px 7px;font-size:11px;font-weight:900}.quote-editor-status{background:color-mix(in srgb,var(--tone) 10%,white);color:var(--tone)}.quote-editor-status i{width:5px;height:5px;border-radius:99px;background:currentColor}.quote-revision{background:#f1f5f9;color:#64748b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.dirty{background:#fff7ed;color:#c2410c}.tone-slate{--tone:#64748b}.tone-amber{--tone:#d97706}.tone-green{--tone:#059669}.tone-red{--tone:#dc2626}.quote-editor-tools{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}.quote-editor-tools button{display:inline-flex;height:34px;align-items:center;gap:5px;border:1px solid #dbe5ea;border-radius:8px;background:#fff;padding:0 10px;color:#475569;font-size:12px;font-weight:800}.quote-editor-tools button.primary-upload{border-color:#0f766e;background:#0f766e;color:#fff;box-shadow:0 5px 14px rgb(15 118 110/.2)}.quote-editor-tools button.primary-upload:hover:not(:disabled){border-color:#115e59;background:#115e59;transform:translateY(-1px)}.quote-editor-tools button.quick-entry{border-color:#f59e0b;background:#fffbeb;color:#b45309}.quote-editor-tools button.quick-entry.active{border-color:#0d9488;background:#ccfbf1;color:#0f766e}.quote-editor-tools button.quick-entry:hover:not(:disabled){transform:translateY(-1px)}.quote-editor-tools button:disabled{cursor:not-allowed;opacity:.4}.quote-editor-tools svg{width:14px;height:14px}.quote-lock-banner,.quote-dependency-strip{display:flex;align-items:center;gap:7px;border-bottom:1px solid #e2e8f0;padding:10px 13px;font-size:11px}.quote-lock-banner{background:#fffbeb;color:#92400e}.quote-lock-banner svg{width:14px}.quote-dependency-strip{flex-wrap:wrap;background:#f8fafc;color:#64748b}.quote-dependency-strip>span{display:inline-flex;align-items:center;gap:5px;color:#0f766e;font-weight:900}.quote-dependency-strip svg{width:13px}.quote-dependency-strip b{border:1px solid #dbe5ea;border-radius:999px;background:#fff;padding:3px 6px;color:#475569;font-size:11px}.quote-dependency-strip em{margin-left:auto;color:#94a3b8;font-size:11px;font-style:normal}.quote-warning-list{display:grid;gap:5px;padding:10px 13px;background:#fef2f2}.quote-warning-list p,.preview-warnings p{display:flex;align-items:flex-start;gap:5px;margin:0;color:#b91c1c;font-size:11px}.quote-warning-list svg,.preview-warnings svg{width:13px;flex:0 0 auto}
 .quote-section-editor.baseline-different{border-color:#fdba74;box-shadow:0 12px 28px rgb(194 65 12/.1)}.baseline-difference{display:inline-flex;align-items:center;gap:4px;border-radius:999px;background:#ffedd5;padding:4px 7px;color:#c2410c;font-size:10px;font-weight:950}.baseline-difference svg{width:12px;height:12px}.baseline-difference-details{position:absolute;z-index:18;top:52px;left:16px;display:grid;width:min(440px,calc(100% - 32px));max-height:280px;overflow:auto;border:1px solid #fdba74;border-radius:10px;background:#fff7ed;padding:10px 12px;box-shadow:0 14px 32px rgb(124 45 18/.2);opacity:0;visibility:hidden;transform:translateY(-5px);transition:opacity .16s ease,transform .16s ease,visibility .16s}.quote-section-editor.baseline-different:hover>.baseline-difference-details,.quote-section-editor.baseline-different:focus-within>.baseline-difference-details{opacity:1;visibility:visible;transform:translateY(0)}.baseline-difference-details strong{color:#9a3412;font-size:11px}.baseline-difference-details>span{margin-top:2px;color:#c2410c;font-size:9px}.baseline-difference-details ul{display:grid;gap:4px;margin:8px 0 0;padding-left:18px;color:#7c2d12;font-size:10px}.baseline-difference-details em{margin-top:7px;color:#c2410c;font-size:9px;font-style:normal;font-weight:800}

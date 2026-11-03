@@ -19,6 +19,7 @@ const sectionEditorSource = read('src/components/modules/sales/internal-quote/In
 const sectionFormSource = read('src/components/modules/sales/internal-quote/InternalQuoteSectionForm.vue')
 const summarySource = read('src/components/modules/sales/internal-quote/InternalQuoteSummary.vue')
 const exportSource = read('src/components/modules/sales/internal-quote/InternalQuoteExportSummary.vue')
+const engineeringExportSource = read('src/components/modules/sales/internal-quote/InternalQuoteEngineeringExportDialog.vue')
 const apiSource = read('src/api/internalQuote.ts')
 const storeSource = read('src/stores/internalQuoteDesk.ts')
 const payloadSource = read('src/lib/internalQuoteSectionPayload.ts')
@@ -166,7 +167,8 @@ describe('internal quote desk frontend layout', () => {
     }
     expect(sectionEditorSource).toContain('handleUploadFile')
     expect(sectionEditorSource).toContain('detectImportPreview')
-    expect(sectionEditorSource).toContain('for (const option of importOptions.value)')
+    expect(sectionEditorSource).toContain('for (const option of options)')
+    expect(sectionEditorSource).toContain("{ type: 'auxiliary', label: '辅助材料/外购件报价单'")
     expect(sectionEditorSource).not.toContain('value="append">追加')
     expect(sectionEditorSource).not.toContain('value="replace">替换')
     expect(sectionEditorSource).toContain('确认后替换本模板对应区域，其他已填写内容一并保留；取消不修改表单')
@@ -316,7 +318,7 @@ describe('internal quote desk frontend layout', () => {
 
     expect(homeSource).toMatch(/function getQuoteRoute\(path: string, factoryId: string = activeFactory\.value\.id\)[\s\S]{0,100}getFactoryScopedRoute\(path, factoryId as FactoryContextId\)/)
     expect(homeSource).toMatch(/router\.push\(getQuoteRoute\([\s\S]{0,120}`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/collaboration`,[\s\S]{0,80}quote\.factoryId/)
-    expect(homeSource).toMatch(/router\.push\(getQuoteRoute\(`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/\$\{target\}`\)\)/)
+    expect(homeSource).toMatch(/router\.push\(getQuoteRoute\(`\/modules\/sales-business\/internal-quote-desk\/\$\{quote\.id\}\/\$\{target\}`, factoryId\)\)/)
 
     for (const detailSource of [collaborationSource, summarySource, exportSource]) {
       expect(detailSource).toMatch(/const getQuoteRoute = \(path: string\) => getFactoryScopedRoute\([\s\S]{0,180}loadedQuote\.value\.factoryId : selectedFactoryId\.value/)
@@ -353,7 +355,9 @@ describe('internal quote desk frontend layout', () => {
     expect(exportSource).toContain('生成内部报价 XLSX')
     expect(exportSource).toContain('生成工程资料 XLSX')
     expect(exportSource).toContain('confirmEngineeringExport')
-    expect(exportSource).toContain('quoteStore.downloadEngineeringWorkbook')
+    expect(exportSource).toContain('InternalQuoteEngineeringExportDialog')
+    expect(engineeringExportSource).toContain('store.downloadEngineeringWorkbook')
+    expect(engineeringExportSource).toContain('electronic_selection: [...selected.value]')
     expect(exportSource).toContain("const engineeringWorkbookSheets = ['排摸表', '外购清单']")
     expect(exportSource).toContain('工程资料单独按原模板即时生成，不进入客价转换和内部报价历史')
     expect(apiSource).toContain('/engineering-data/export')

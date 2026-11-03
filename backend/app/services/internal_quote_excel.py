@@ -35,7 +35,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v41"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v42"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v2"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -1342,6 +1342,7 @@ def _purchase_list_rows(
     engineering_payload: dict[str, Any],
     sales_payload: dict[str, Any],
     electronic_payload: dict[str, Any],
+    electronic_selection: set[str] | None = None,
 ) -> list[tuple[object, ...]]:
     result: list[tuple[object, ...]] = []
     for material in _list_of_dicts(engineering_payload.get("materials", [])):
@@ -1415,7 +1416,9 @@ def _purchase_list_rows(
                 _list_of_dicts(electronic_payload.get("components", []))
             )
         )
-    for parent, component in electronic_rows:
+    for index, (parent, component) in enumerate(electronic_rows):
+        if electronic_selection is not None and str(index) not in electronic_selection:
+            continue
         result.append(
             (
                 component.get("item") or component.get("name") or parent,
@@ -1430,6 +1433,12 @@ def _purchase_list_rows(
             )
         )
     return result
+
+
+def engineering_electronic_options(section: InternalQuoteSection | None) -> list[dict[str, Any]]:
+    rows = _purchase_list_rows({}, {}, _section_payload(section))
+    return [{"id": str(index), "name": str(row[0]), "specification": str(row[1]),
+             "quantity": row[4], "supplier": str(row[5])} for index, row in enumerate(rows)]
 
 
 def _capture_template_row(sheet, row: int, end_column: int) -> tuple[list[Any], float | None]:
@@ -1621,11 +1630,13 @@ def _populate_engineering_purchase_template(
     engineering_section: InternalQuoteSection | None,
     sales_section: InternalQuoteSection | None,
     electronic_section: InternalQuoteSection | None,
+    electronic_selection: set[str] | None = None,
 ) -> None:
     rows = _purchase_list_rows(
         _section_payload(engineering_section),
         _section_payload(sales_section),
         _section_payload(electronic_section),
+        electronic_selection,
     )
     # Sample materials in the template carry row-specific fonts and heights.
     # Use the first detail row for every output row, including inserted rows.
@@ -1665,6 +1676,7 @@ def _populate_engineering_purchase_template(
 def build_internal_quote_engineering_workbook(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
+    electronic_selection: set[str] | None = None,
 ) -> bytes:
     if not ENGINEERING_WORKBOOK_TEMPLATE_PATH.is_file():
         raise FileNotFoundError(
@@ -1698,6 +1710,7 @@ def build_internal_quote_engineering_workbook(
             by_code.get("engineering"),
             by_code.get("sales"),
             by_code.get("electronic"),
+            electronic_selection,
         )
         workbook.properties.creator = "Royal Regent Nexus"
         workbook.properties.title = f"{quote.quote_no} 工程资料"
@@ -5332,6 +5345,7 @@ def _copy_attachment_worksheet(
     source,
     target,
     sheet_names: dict[str, str],
+    cached_source=None,
 ) -> None:
     for row in source.iter_rows():
         for source_cell in row:
@@ -5341,6 +5355,12 @@ def _copy_attachment_worksheet(
                 sheet_names,
             ) if source_cell.data_type == "f" else source_cell.value
             target_cell.data_type = source_cell.data_type
+            if cached_source is not None and source_cell.data_type == "f":
+                cached_cell = cached_source.cell(source_cell.row, source_cell.column)
+                target_cell.value = cached_cell.value
+                target_cell.data_type = cached_cell.data_type
+                if cached_cell.value is None:
+                    target._quote_missing_formula_cache.add(target_cell.coordinate)
             if source_cell.has_style:
                 # Style-array indexes are workbook-local.  Copy the concrete
                 # objects so openpyxl registers them in the destination book.
@@ -5408,6 +5428,8 @@ def _copy_attachment_worksheet(
 def _append_spreadsheet_attachment_sheets(
     workbook: Workbook,
     attachments: list[InternalQuoteAttachment],
+    *,
+    cached_values_only: bool = False,
 ) -> list[str]:
     appended_titles: list[str] = []
     used_titles = {sheet.title.casefold() for sheet in workbook.worksheets}
@@ -5418,6 +5440,8 @@ def _append_spreadsheet_attachment_sheets(
         if suffix not in supported_suffixes or attachment.sha256 in seen_hashes:
             continue
         seen_hashes.add(attachment.sha256)
+        source_workbook = None
+        cached_workbook = None
         try:
             source_workbook = _legacy_attachment_workbook(attachment.content) if suffix == ".xls" else load_workbook(
                 BytesIO(attachment.content),
@@ -5425,12 +5449,17 @@ def _append_spreadsheet_attachment_sheets(
                 read_only=False,
                 keep_links=False,
             )
+            if cached_values_only and suffix != ".xls":
+                cached_workbook = load_workbook(BytesIO(attachment.content), data_only=True, keep_links=False)
         except (BadZipFile, InvalidFileException, OSError, ValueError, KeyError):
+            if source_workbook is not None:
+                source_workbook.close()
             title = _unique_sheet_title(
                 f"{Path(attachment.file_name).stem}-附件异常",
                 used_titles,
             )
             sheet = workbook.create_sheet(title)
+            sheet._quote_source = {"file_name": attachment.file_name, "department": attachment.department}
             _style_title(sheet, "上传表格未能嵌入", 4)
             _body_row(
                 sheet,
@@ -5467,11 +5496,18 @@ def _append_spreadsheet_attachment_sheets(
                 )
             for source_sheet in source_sheets:
                 target = workbook.create_sheet(sheet_names[source_sheet.title])
-                _copy_attachment_worksheet(source_sheet, target, sheet_names)
+                target._quote_source = {"file_name": attachment.file_name, "department": attachment.department}
+                target._quote_missing_formula_cache = set()
+                _copy_attachment_worksheet(
+                    source_sheet, target, sheet_names,
+                    cached_workbook[source_sheet.title] if cached_workbook is not None else None,
+                )
                 target.sheet_state = "visible"
                 appended_titles.append(target.title)
         finally:
             source_workbook.close()
+            if cached_workbook is not None:
+                cached_workbook.close()
     return appended_titles
 
 
@@ -5574,6 +5610,8 @@ def build_internal_quote_workbook_model(
         for index in range(1, len(electronic_payload["quote_groups"]) + 1):
             workbook[f"电子明细{index}"].sheet_state = "visible"
     _build_mold_quote_sheet(workbook, by_code.get("engineering"))
+    from app.services.internal_quote_price_notes import append_price_notes
+    append_price_notes(workbook, sections, attachments, quote.region_code)
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True
@@ -5593,8 +5631,8 @@ def build_internal_quote_workbook(
     workbook = build_internal_quote_workbook_model(
         quote, sections, manifest, reference_snapshot, rr2_cost_summary, cost_context, attachments,
     )
-    # Source workbooks accompany downloads only. The editable output view must
-    # never evaluate uploaded formulas or expose source cells as editable inputs.
+    # Downloads retain source formulas; the output view uses saved values only
+    # and never exposes source cells as editable quote inputs.
     _append_spreadsheet_attachment_sheets(workbook, attachments or [])
     buffer = BytesIO()
     workbook.save(buffer)

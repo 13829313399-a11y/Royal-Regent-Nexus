@@ -1625,6 +1625,24 @@ export function calculateAssemblyCategoryLaborHkd(payload: AssemblyPayload, cate
 }
 
 export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, value: Record<string, unknown>): Record<string, unknown> {
+  const result = normalizeSectionInputs(code, value)
+  // Notes belong to their input row. Preserve them through the rebuilding
+  // normalizer so moving a row carries its evidence instead of its old index.
+  function carry(source: unknown, target: unknown) {
+    if (!source || !target || typeof source !== 'object' || typeof target !== 'object') return
+    if (Array.isArray(source) && Array.isArray(target)) {
+      source.forEach((row, index) => carry(row, target[index]))
+    } else if (!Array.isArray(source) && !Array.isArray(target)) {
+      const from = source as Record<string, unknown>, to = target as Record<string, unknown>
+      if (from.price_annotations && typeof from.price_annotations === 'object') to.price_annotations = JSON.parse(JSON.stringify(from.price_annotations))
+      for (const key of Object.keys(to)) if (key !== 'price_annotations') carry(from[key], to[key])
+    }
+  }
+  carry(value, result)
+  return result
+}
+
+function normalizeSectionInputs(code: InternalQuoteSectionCode, value: Record<string, unknown>): Record<string, unknown> {
   const source = objectValue(value)
   if (code === 'engineering') {
     const hasLegacyCartons = Object.prototype.hasOwnProperty.call(source, 'cartons')
