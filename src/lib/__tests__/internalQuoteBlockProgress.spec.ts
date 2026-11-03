@@ -175,7 +175,8 @@ describe('internal quote form block progress', () => {
 
   it('tracks electronic, painting and sewing quick quotes with their dedicated required fields', () => {
     expect(statuses('electronic', { quote_mode: 'quick', quick_quotes: [{ item: '', unit_price_rmb: 10, tax_rate_percent: 13 }] }).components).toBe('partial')
-    expect(statuses('electronic', { quote_mode: 'quick', quick_quotes: [{ item: '主控板', unit_price_rmb: 10, tax_rate_percent: 101 }] }).components).toBe('partial')
+    expect(statuses('electronic', { quote_mode: 'quick', quick_quotes: [{ item: '主控板', unit_price_rmb: 10, tax_rate_percent: 101 }] }).components).toBe('complete')
+    expect(statuses('electronic', { quote_mode: 'quick', quick_quotes: [{ item: '主控板', unit_price_rmb: .4 }] })).not.toHaveProperty('electronic-summary')
     expect(statuses('electronic', { quote_mode: 'quick', quick_quotes: [{ item: '主控板', unit_price_rmb: 10, tax_rate_percent: 13 }] }).components).toBe('complete')
 
     expect(statuses('painting', { quote_mode: 'quick', quick_quote: {} }).painting).toBe('missing')

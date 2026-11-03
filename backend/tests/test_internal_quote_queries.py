@@ -113,7 +113,7 @@ def test_summary_and_version_comparison_reuse_native_calculations_and_never_init
     finally:stop()
     no_writes(statements)
     assert summary['pricing_complete'] is False and summary['authoritative_factory_quote_hkd'] is None
-    assert summary['current_formula_version']=='rr2-2026-v11' and not calls
+    assert summary['current_formula_version']=='rr2-2026-v12' and not calls
 
 
 def test_scope_and_financial_permissions_are_independent_and_checked_before_read(env):

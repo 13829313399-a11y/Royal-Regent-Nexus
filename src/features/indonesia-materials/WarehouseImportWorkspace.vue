@@ -9,9 +9,8 @@ import { useMaterialDraft } from './useDraft'
 import { useMaterials } from './workspace'
 import Fields from './Fields.vue'
 import type { Field } from './forms'
-import { setNumberText } from './forms'
 import { quantity, sameQuantity, purchaseFactsAgree } from './warehouseMatching'
-import { additionalReservations, allocationKey, allocationIssue, sortedTargets, suggestAllocations } from './receiptAllocation'
+import { activeAllocations, additionalReservations, allocationKey, allocationIssue, editAllocationQuantity, isZeroAllocation, sortedTargets, suggestAllocations } from './receiptAllocation'
 import { focusFollowup } from './focusFollowup'
 import ReceiptTemplatePicker from './ReceiptTemplatePicker.vue'
 import WarehousePackingReview from './WarehousePackingReview.vue'
@@ -35,7 +34,7 @@ const importRequested = ref(false)
 const records = computed(() => ws.kind('import').filter(row => row.data.import_type === 'warehouse_receipt'))
 const customers = computed(() => fixedCustomers(ws.records))
 const selectedRows = computed<Data[]>(() => (preview.value?.data.rows || []).filter((row: Data) => choices.value[row.index]?.selected && !row.blocked && !row.imported_supply_id))
-const allocationCount = computed(() => selectedRows.value.reduce((total, row) => total + choices.value[row.index].allocations.length, 0))
+const allocationCount = computed(() => selectedRows.value.reduce((total, row) => total + activeAllocations(choices.value[row.index].allocations).length, 0))
 const allocationErrors = computed(() => selectedRows.value.some(row => allocationIssue(row.source, choices.value[row.index].allocations)))
 const started = () => !!(file.value || preview.value || customer.value || warehouse.value || shipmentDate.value || recipient.value !== 'RRI')
 const accessLost = computed(() => lostRecordAccess(ws, preview.value))
@@ -89,6 +88,12 @@ const purchaseFields: Field[] = [
 ]
 function targets(row: Data): Data[] { return sortedTargets(row.targets?.[choices.value[row.index]?.material_id] || []) }
 const targetKey = allocationKey
+function changeQuantity(row: Data, index: number, field: 'normal_quantity' | 'spare_quantity', event: Event) {
+  if (accessLost.value || ws.locked || !ws.canWrite || draft.switching.value) return
+  const choice = choices.value[row.index]
+  choice.allocation_mode = 'manual'
+  editAllocationQuantity(row.source, choice.allocations, index, field, (event.target as HTMLInputElement).value)
+}
 function changeTarget(row: Data, plan: Data, key: string) {
   choices.value[row.index].allocation_mode = 'manual'
   const target = targets(row).find(item => targetKey(item) === key)
@@ -134,7 +139,7 @@ function suggestRow(row: Data) {
   if (!choice?.material_id || originalAllocations(row).length) return
   const others = selectedRows.value.filter(item => item.index !== row.index)
   const reserved = others.flatMap(item => additionalReservations(choices.value[item.index].allocations, originalAllocations(item).map(record => record.data)))
-  const count = others.reduce((total, item) => total + choices.value[item.index].allocations.length, 0)
+  const count = others.reduce((total, item) => total + activeAllocations(choices.value[item.index].allocations).length, 0)
   choice.allocations = suggestAllocations(row.source, targets(row), reserved, 200 - count)
   choice.allocation_mode = 'auto'
 }
@@ -244,7 +249,7 @@ async function confirm() {
   const rows = selectedRows.value.map(row => {
     const choice = choices.value[row.index]
     return { index: row.index, material_id: choice.material_id, material_version: choice.material_version, supply_id: choice.supply_id || null, supply_version: choice.supply_version,
-      purchase: choice.supply_id ? {} : choice.purchase, allocations: choice.allocations.map(({ key: _key, ...plan }: Data) => plan),
+      purchase: choice.supply_id ? {} : choice.purchase, allocations: activeAllocations(choice.allocations).map(({ key: _key, ...plan }: Data) => plan),
       ...(choice.replace_allocations?.length ? { replace_allocations: choice.replace_allocations, replacement_reason: choice.replacement_reason } : {}) }
   })
   await draft.run('warehouse_import_confirm', { shipment_date: shipmentDate.value, rows }, preview.value, result => { preview.value = result; for (const choice of Object.values(choices.value) as Data[]) choice.selected = false; completedShipment.value = result.data.shipment_ids?.at(-1) || '' })
@@ -276,7 +281,7 @@ async function confirm() {
         <template v-if="choices[row.index].material_id">
           <Fields v-if="!choices[row.index].supply_id" :model="choices[row.index].purchase" :fields="purchaseFields" />
           <div v-else v-for="item in matchingSupplies(row).filter(item => item.id === choices[row.index].supply_id)" :key="item.id" class="im-message"><p>原批次：采购日期 {{ item.data.purchase_date }} · 采购总量 {{ item.data.purchase_quantity }} · 单价 {{ item.data.price }} {{ item.data.currency }}。保留原采购及换算快照。历史分配保留，请核对客户 PO。</p><p v-if="!purchaseFactsAgree(row.source, item.data)" role="alert" class="im-danger-text">原单采购资料与该批次不一致，请先核对；系统不会覆盖原采购价格或静默忽略冲突。</p></div>
-          <h3>合同分配建议</h3><p v-if="allocationIssue(row.source, choices[row.index].allocations)" class="im-danger-text" role="alert">{{ allocationIssue(row.source, choices[row.index].allocations) }}</p>
+          <h3>合同分配建议</h3><p class="im-note">本行实收：正常 {{ row.source.normal_quantity }}／备品 {{ row.source.spare_quantity }}。修改数量后，其余 PO 的同类数量自动扣减。</p><p v-if="allocationIssue(row.source, choices[row.index].allocations)" class="im-danger-text" role="alert">{{ allocationIssue(row.source, choices[row.index].allocations) }}</p>
           <div v-if="originalAllocations(row).length" class="im-message">
             <p>此采购批次有历史预分配，请核对后点选本次抵扣的 PO。沿用时保持原数量；实际用途改变时，可明确确认重新指定。</p>
             <p v-for="item in originalAllocations(row)" :key="item.id">{{ ws.record(item.data.order_id)?.data.customer }}／{{ ws.record(item.data.order_id)?.data.recipient }} · {{ ws.orderName(item.data.order_id) }} · 正常 {{ item.data.normal_quantity }}／备品 {{ item.data.spare_quantity }}</p>
@@ -284,9 +289,9 @@ async function confirm() {
             <label v-if="choices[row.index].replace_allocations?.length" class="im-field"><span>重新分配原因 *</span><input v-model="choices[row.index].replacement_reason" required maxlength="500"></label>
           </div>
           <div v-for="(plan, index) in choices[row.index].allocations" :key="index" class="im-fields">
-            <label class="im-field"><span>客户 PO／合同／货号 *</span><select :value="plan.key" required :aria-label="`实收行 ${row.index + 1} 合同 ${Number(index) + 1}`" @change="changeTarget(row, plan, ($event.target as HTMLSelectElement).value)"><option value="">请选择本批物料对应的客户 PO</option><option v-for="target in targets(row)" :key="targetKey(target)" :value="targetKey(target)">{{ target.label }}</option></select></label>
-            <label class="im-field"><span>分给此 PO 的正常量 *</span><input :value="plan.normal_quantity" type="number" min="0" step="any" required :aria-label="`实收行 ${row.index + 1} 正常量 ${Number(index) + 1}`" @input="choices[row.index].allocation_mode = 'manual'; setNumberText(plan, 'normal_quantity', $event)"></label>
-            <label class="im-field"><span>分给此 PO 的备品量 *</span><input :value="plan.spare_quantity" type="number" min="0" step="any" required :aria-label="`实收行 ${row.index + 1} 备品量 ${Number(index) + 1}`" @input="choices[row.index].allocation_mode = 'manual'; setNumberText(plan, 'spare_quantity', $event)"></label>
+            <label class="im-field"><span>客户 PO／合同／货号 *</span><select :value="plan.key" :required="!isZeroAllocation(plan)" :aria-label="`实收行 ${row.index + 1} 合同 ${Number(index) + 1}`" @change="changeTarget(row, plan, ($event.target as HTMLSelectElement).value)"><option value="">请选择本批物料对应的客户 PO</option><option v-for="target in targets(row)" :key="targetKey(target)" :value="targetKey(target)">{{ target.label }}</option></select></label>
+            <label class="im-field"><span>分给此 PO 的正常量 *</span><input :value="plan.normal_quantity" type="number" min="0" step="any" required :aria-label="`实收行 ${row.index + 1} 正常量 ${Number(index) + 1}`" @input="changeQuantity(row, Number(index), 'normal_quantity', $event)"></label>
+            <label class="im-field"><span>分给此 PO 的备品量 *</span><input :value="plan.spare_quantity" type="number" min="0" step="any" required :aria-label="`实收行 ${row.index + 1} 备品量 ${Number(index) + 1}`" @input="changeQuantity(row, Number(index), 'spare_quantity', $event)"></label>
             <button v-if="choices[row.index].allocations.length > 1" type="button" @click="choices[row.index].allocation_mode = 'manual'; choices[row.index].allocations.splice(Number(index), 1)">移除此 PO 分配</button>
           </div>
           <button type="button" :disabled="choices[row.index].allocations.length >= 100" @click="choices[row.index].allocation_mode = 'manual'; choices[row.index].allocations.push({ key: '', order_id: '', demand_id: '', order_version: 0, normal_quantity: '', spare_quantity: '0' })">拆分给另一个 PO</button>

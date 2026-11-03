@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.db import get_db
 from app.models.auth import AuthPermission
 from app.models.customer_order_ledger import OrderLedgerLine
+from app.models.internal_quote import InternalQuote
 from app.models.module_feedback import FeedbackAttachment, FeedbackMessage, FeedbackReadReceipt, FeedbackTicket
 from app.schemas.module_feedback import FeedbackCreate, FeedbackReply
 from app.services import module_feedback as service
@@ -57,7 +58,7 @@ def png():
 @pytest.fixture
 def api():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    for model in (AuthPermission, OrderLedgerLine, *MODELS):
+    for model in (AuthPermission, OrderLedgerLine, InternalQuote, *MODELS):
         model.__table__.create(engine)
     app = FastAPI()
     app.include_router(router)
@@ -92,6 +93,71 @@ def created(api, files=()):
 def action(client, ticket, name="reply", **kwargs):
     payload = {"expected_revision": ticket["revision"], "client_request_id": str(uuid4()), "action": name, **kwargs}
     return multipart(client, BASE + "/" + ticket["id"] + "/messages" + SCOPE, payload)
+
+
+def test_quote_feedback_module_isolation_and_developer_reply(api):
+    client, context, _ = api
+    order = created(api)
+    response = multipart(client, BASE, create_payload(module="internal-quote"))
+    assert response.status_code == 200, response.text
+    quote = response.json()
+    assert [row["id"] for row in client.get(BASE + SCOPE).json()["items"]] == [order["id"]]
+    assert [row["id"] for row in client.get(BASE + SCOPE + "&module=internal-quote").json()["items"]] == [quote["id"]]
+    context["user"] = user("another")
+    assert client.get(BASE + "/" + quote["id"] + SCOPE).status_code == 404
+    context["user"] = developer("huadeng")
+    assert client.get(BASE + "/" + quote["id"] + "?factory_id=huadeng").status_code == 404
+    context["user"] = developer()
+    assert action(client, quote, body="待确认的解决建议").status_code == 200
+    context["user"] = user()
+    assert client.get(BASE + SCOPE + "&module=internal-quote").json()["unread_count"] == 1
+    assert client.get(BASE + SCOPE).json()["unread_count"] == 0
+
+
+def test_quote_link_permission_factory_and_revocation(api):
+    client, context, engine = api
+    payload = create_payload(module="internal-quote", context={"quote_id": "quote-one", "quote_no": "forged"})
+    assert multipart(client, BASE, payload).status_code == 403
+    context["user"] = user(permissions={"internal_quote:read"})
+    with Session(engine) as db:
+        db.add(InternalQuote(id="quote-one", factory_id="huadeng", workshop_code="A", workshop_name="A",
+            quote_no="Q-001", product_name="测试产品", customer="客户", qty=1000, version_label="v1", status="draft",
+            created_by="owner", created_by_name="owner", created_at="", updated_at=""))
+        db.commit()
+    assert multipart(client, BASE, payload).status_code == 404
+    with Session(engine) as db:
+        db.get(InternalQuote, "quote-one").factory_id = "huaxing"
+        db.commit()
+    response = multipart(client, BASE, payload)
+    assert response.status_code == 200, response.text
+    ticket = response.json()
+    assert ticket["context"]["quote_no"] == "Q-001"
+    assert ticket["context"]["quote_product"] == "测试产品"
+    context["user"] = user(permissions=set())
+    detail = client.get(BASE + "/" + ticket["id"] + SCOPE).json()
+    assert detail["context"]["quote_id"] == detail["context"]["quote_no"] == detail["context"]["quote_product"] == ""
+    context["user"] = developer()
+    assert client.get(BASE + "/" + ticket["id"] + SCOPE).json()["context"]["quote_no"] == "Q-001"
+
+
+def test_quote_report_is_read_only_scoped_and_paginated(api):
+    from app.services.module_feedback_report import collect_report
+    client, context, engine = api
+    created(api)
+    for _ in range(2):
+        assert multipart(client, BASE, create_payload(module="internal-quote"), [("screenshot.png", png(), "image/png")]).status_code == 200
+    with Session(engine) as db:
+        receipts = db.scalar(select(func.count()).select_from(FeedbackReadReceipt))
+        before = list(db.execute(select(FeedbackTicket.id, FeedbackTicket.revision, FeedbackTicket.status)))
+        first = collect_report(db, limit=1)
+        second = collect_report(db, offset=first["next_offset"], limit=1)
+        assert first["total"] == 2 and second["next_offset"] is None
+        assert first["items"][0]["id"] != second["items"][0]["id"]
+        attachment = first["items"][0]["messages"][0]["attachments"][0]
+        assert attachment["file_name"] == "screenshot.png" and "content" not in attachment
+        assert list(db.execute(select(FeedbackTicket.id, FeedbackTicket.revision, FeedbackTicket.status))) == before
+        assert db.scalar(select(func.count()).select_from(FeedbackReadReceipt)) == receipts
+        assert not db.dirty and not db.new
 
 
 def test_lifecycle_owner_verifies_and_reopens_preserving_history(api):
@@ -277,7 +343,7 @@ def test_context_is_whitelisted_and_linked_order_verified(api):
     linked = response.json()["context"]
     assert linked["order_reference"] == "PO123" and linked["product_no"] == "P1" and linked["customer_code"] == "buzzbee"
     assert client.get(BASE + "/capabilities?factory_id=group").status_code == 422
-    assert client.get(BASE + "/capabilities" + SCOPE + "&module=internal-quote").status_code == 422
+    assert client.get(BASE + "/capabilities" + SCOPE + "&module=unknown-module").status_code == 422
 
 
 def migration():

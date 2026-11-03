@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BoardOrder, Data, MaterialRecord } from '@/api/indonesiaMaterials'
-import { additionalReservations, allocationIssue, sortedTargets, suggestAllocations } from '../receiptAllocation'
+import { activeAllocations, additionalReservations, allocationIssue, editAllocationQuantity, sortedTargets, suggestAllocations } from '../receiptAllocation'
 import { receiptSummary } from '../receiptSummary'
 
 const source = (normal = '150', spare = '10') => ({ normal_quantity: normal, spare_quantity: spare })
@@ -49,6 +49,71 @@ describe('received material allocation proposals', () => {
     expect(additionalReservations([{ ...old[0], order_id: 'b', demand_id: 'd-b' }], old)[0]!.normal_quantity).toBe('25')
   })
 })
+describe('manual receipt allocation quantities', () => {
+  const split = () => ['2982', '4200', '2818'].map((normal, i) => ({ order_id: `o-${i}`, demand_id: `d-${i}`, normal_quantity: normal, spare_quantity: i === 2 ? '500' : '0' }))
+  it('gives the edited PO all 10000 normal pieces and zeros sibling normal quantities without moving spares', () => {
+    const plans = split()
+    editAllocationQuantity(source('10000', '500'), plans, 0, 'normal_quantity', '10000')
+    expect(plans.map(p => p.normal_quantity)).toEqual(['10000', '0', '0'])
+    expect(plans.map(p => p.spare_quantity)).toEqual(['0', '0', '500'])
+    expect(allocationIssue(source('10000', '500'), plans)).toBe('')
+  })
+  it('trims siblings in displayed order even when the edited PO is in the middle', () => {
+    const plans = split()
+    editAllocationQuantity(source('10000', '500'), plans, 1, 'normal_quantity', '8000')
+    expect(plans.map(p => p.normal_quantity)).toEqual(['2000', '8000', '0'])
+    expect(plans.map(p => p.order_id)).toEqual(['o-0', 'o-1', 'o-2'])
+  })
+  it('links spare quantities independently and omits only fully zero allocations', () => {
+    const plans = split()
+    editAllocationQuantity(source('10000', '500'), plans, 0, 'spare_quantity', '500')
+    expect(plans.map(p => p.spare_quantity)).toEqual(['500', '0', '0'])
+    expect(plans.map(p => p.normal_quantity)).toEqual(['2982', '4200', '2818'])
+    editAllocationQuantity(source('10000', '500'), plans, 0, 'normal_quantity', '10000')
+    expect(activeAllocations(plans)).toEqual([plans[0]])
+    expect(plans).toHaveLength(3)
+  })
+  it('preserves eight-place precision and the entered decimal text', () => {
+    const plans = split(); plans[0]!.normal_quantity = '0.1'; plans[1]!.normal_quantity = '0.2'; plans[2]!.normal_quantity = '0.00000001'
+    editAllocationQuantity(source('0.30000001', '500'), plans, 0, 'normal_quantity', '0.20000001')
+    expect(plans.map(p => p.normal_quantity)).toEqual(['0.20000001', '0.1', '0'])
+    expect(allocationIssue(source('0.30000001', '500'), plans)).toBe('')
+  })
+  it('leaves a reduction unallocated for explicit PO selection instead of increasing other manual choices', () => {
+    const plans = split()
+    editAllocationQuantity(source('10000', '500'), plans, 0, 'normal_quantity', '10000')
+    editAllocationQuantity(source('10000', '500'), plans, 0, 'normal_quantity', '6000')
+    expect(plans.map(p => p.normal_quantity)).toEqual(['6000', '0', '0'])
+    expect(allocationIssue(source('10000', '500'), plans)).toContain('正常 4000')
+  })
+  it.each(['', '-1', '1e4', '0.000000001', 'NaN'])('keeps invalid or incomplete edit %s visible without changing siblings', value => {
+    const plans = split()
+    editAllocationQuantity(source('10000', '500'), plans, 0, 'normal_quantity', value)
+    expect(plans.map(p => p.normal_quantity)).toEqual([value, '4200', '2818'])
+    expect(allocationIssue(source('10000', '500'), plans)).toContain('填写完整')
+  })
+  it('retains an over-total edited value and blocks confirmation rather than silently clipping it', () => {
+    const plans = split()
+    editAllocationQuantity(source('10000', '500'), plans, 0, 'normal_quantity', '10001')
+    expect(plans.map(p => p.normal_quantity)).toEqual(['10001', '0', '0'])
+    expect(allocationIssue(source('10000', '500'), plans)).toContain('超过')
+  })
+  it('does not hide unfinished sibling input or positive spare-only allocations', () => {
+    const plans = split(); plans[1]!.normal_quantity = ''
+    editAllocationQuantity(source('10000', '500'), plans, 0, 'normal_quantity', '10000')
+    expect(plans[1]!.normal_quantity).toBe('')
+    expect(activeAllocations(plans)).toHaveLength(3)
+    expect(allocationIssue(source('10000', '500'), plans)).toContain('填写完整')
+  })
+  it('allows an unassigned zero placeholder but still requires all real quantity to be assigned', () => {
+    const zero = { order_id: '', demand_id: '', normal_quantity: '0.00000000', spare_quantity: '0' }
+    const assigned = { order_id: 'o', demand_id: 'd', normal_quantity: '10', spare_quantity: '0' }
+    expect(activeAllocations([zero, assigned])).toEqual([assigned])
+    expect(allocationIssue(source('10', '0'), [zero, assigned])).toBe('')
+    expect(allocationIssue(source('10', '0'), [zero])).toContain('正常 10')
+  })
+})
+
 describe('outstanding material summaries', () => {
   const material = (id: string, name: string): MaterialRecord => ({ id, kind: 'material', version: 1, data: { code: 'SAME', name, unit: 'pcs' } } as MaterialRecord)
   const order = (id: string, material_id: string, quantity: string, coverage: string): BoardOrder => ({ id, item_no: '40149', demands: [{ id: `d-${id}`, material_id, quantity, coverage, unit: 'PCS' }] } as BoardOrder)
