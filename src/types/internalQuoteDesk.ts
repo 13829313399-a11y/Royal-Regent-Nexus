@@ -362,6 +362,9 @@ export interface InternalQuoteCreateDocument {
 }
 
 export interface InternalQuoteBatchProduct {
+  versionLabel?: string
+  scenarioName?: string
+  workingVersionWarning?: string
   quoteId: string
   quoteNo: string
   productName: string

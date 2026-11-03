@@ -1066,6 +1066,10 @@ def _pricing_completeness(quote, sections, *, draft_codes=()) -> list[dict[str, 
             reason = "参考价格快照待更新"
         if reason:
             incomplete.append({"section_code": section.department, "section_name": section.department_name, "reason": reason})
+    from app.services.internal_quote_molding_costs import missing_molding_cost_reason
+    missing_molding = missing_molding_cost_reason(sections)
+    if missing_molding and not any(row["section_code"] == "molding" for row in incomplete):
+        incomplete.append({"section_code": "molding", "section_name": "啤机部", "reason": missing_molding})
     return incomplete
 
 
@@ -1097,23 +1101,30 @@ def quote_readiness(db, quote, sections):
     by_code = {s.department: s for s in projected}
     blockers = []
     for item in incomplete:
-        section = by_code[item["section_code"]]
-        if not section.filled_at:
+        section = by_code.get(item["section_code"])
+        if section is None:
+            state = "incomplete"
+        elif not section.filled_at:
             state = "empty"
         elif section.calculation_status == "stale" or section.dependency_status != "current" or "更新" in item["reason"]:
             state = "stale"
         else:
             state = "incomplete"
         blockers.append({**item, "state": state})
-    ready = len(participating) - len(blockers)
+    missing_departments = sum(item["section_code"] not in by_code for item in blockers)
+    required_count = len(participating) + missing_departments
+    ready = required_count - len(blockers)
     state = "ready" if participating and not blockers else "incomplete" if any(b["state"] != "empty" for b in blockers) else "empty"
-    return dict(ready_sections=ready, required_sections=len(participating), state=state, blockers=blockers)
+    return dict(ready_sections=ready, required_sections=required_count, state=state, blockers=blockers)
 
 
 def ensure_current_molding_pricing(db: Session, quote: InternalQuote, sections: list[InternalQuoteSection]) -> None:
     """Revalidate mutable release inputs without rewriting historical evidence."""
     if quote.module_version == "v4" and quote.final_release_status == "issued":
         return
+    from app.services.internal_quote_molding_costs import missing_molding_cost_reason
+    if reason := missing_molding_cost_reason(sections):
+        raise HTTPException(409, {"message": reason, "section_code": "molding"})
     by_code = {section.department: section for section in sections}
     molding = by_code.get("molding")
     if molding is None or not molding.is_required or molding.status == "not_applicable":
@@ -2290,6 +2301,9 @@ def molding_projection_pending(db, quote, sections=None):
 def ensure_molding_projection_current(db, quote, sections=None):
     if sections is None:
         sections = list(db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == quote.id)))
+    from app.services.internal_quote_molding_costs import missing_molding_cost_reason
+    if quote.final_release_status != "issued" and (reason := missing_molding_cost_reason(sections)):
+        raise HTTPException(409, {"message": reason, "section_code": "molding"})
     molding = next((row for row in sections if row.department == "molding"), None)
     if molding is not None and molding.calculation_status == "valid":
         # Diagnose an invalid frozen material/grade before the general unsaved
@@ -3311,6 +3325,21 @@ def list_quote_batch_products(
     root = product_root(db, quote)
     roots = document_products(db, quote)
     rows = [quote if item.id == root.id else item for item in roots]
+    from app.services.internal_quote_alternative_groups import get_alternative_group
+    group = get_alternative_group(db, quote.id, user)
+    group_warnings = {}
+    if group:
+        selected = {p["product_root_id"]: p["quote_id"] for p in group["products"]}
+        grouped_rows = []
+        for product in roots:
+            item = quote if product.id == root.id else db.get(InternalQuote, selected.get(product.id, ""))
+            if item is None:
+                item = product
+                group_warnings[item.id] = "组内版本已删除；此项为原版，请重新选择方案"
+            elif item.factory_id != quote.factory_id or product_root(db, item).id != product.id:
+                raise HTTPException(409, "方案组产品归属不一致，请重新选择来源")
+            grouped_rows.append(item)
+        rows = grouped_rows
     quote_ids = [item.id for item in rows]
     sections_by_quote = _list_quote_sections(db, rows)
     alternatives = {row.quote_id: row for row in db.scalars(
@@ -3365,6 +3394,7 @@ def list_quote_batch_products(
             product_name=item.product_name,
             version_label=item.version_label,
             scenario_name=alternative.scenario_name if alternative else "原方案",
+            working_version_warning=group_warnings.get(item.id, ""),
             archived=bool(archive_reason),
             packaging_copy=_packaging_copy_status(item, sections_by_quote.get(item.id, []), archive_reason),
             qty=item.qty,

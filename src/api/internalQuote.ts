@@ -376,6 +376,14 @@ export interface ApiInternalQuoteAlternativeFamily {
   items: ApiInternalQuoteAlternative[]
 }
 
+export interface ApiInternalQuoteAlternativeGroup {
+  group_id: string
+  document_quote_id: string
+  kind: 'scenario' | 'version'
+  name: string
+  products: Array<{ product_root_id: string; source_quote_id: string; quote_id: string }>
+}
+
 export interface ApiInternalQuoteBusinessOwner {
   id: string
   username: string
@@ -616,6 +624,7 @@ export interface ApiPackagingCopyStatus {
 }
 
 export interface ApiInternalQuoteBatchProduct {
+  working_version_warning?: string
   quote_id: string
   quote_no: string
   product_name: string
@@ -1079,6 +1088,15 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     async downloadExport(quoteId: string, exportId: string) {
       const response = await client.get<Blob>(`/internal-quotes/${quoteId}/exports/${exportId}/download`, { responseType: 'blob' })
       return response.data
+    },
+    async getAlternativeGroup(quoteId: string) {
+      return (await client.get<ApiInternalQuoteAlternativeGroup | null>(`/internal-quotes/${quoteId}/alternative-group`)).data
+    },
+    async copyAlternativeGroup(quoteId: string, payload: {
+      kind: 'scenario' | 'version'; name: string; change_note: string
+      products: Array<{ quote_id: string; revision: number; family_revision: number }>
+    }) {
+      return (await client.post<{ group: ApiInternalQuoteAlternativeGroup; quotes: ApiInternalQuote[] }>(`/internal-quotes/${quoteId}/alternative-groups`, payload)).data
     },
     async downloadEngineeringWorkbook(quoteId: string) {
       const response = await client.post<Blob>(

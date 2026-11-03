@@ -35,7 +35,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v40"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v41"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v2"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -149,6 +149,16 @@ def _section_calculation(section: InternalQuoteSection | None) -> dict[str, Any]
 def _calculation_lines(section: InternalQuoteSection | None, kind: str | None = None) -> list[dict[str, Any]]:
     rows = _list_of_dicts(_section_calculation(section).get("line_breakdown", []))
     return [row for row in rows if row.get("kind") == kind] if kind else rows
+
+
+def _molding_cost_lines(section: InternalQuoteSection | None) -> list[dict[str, Any]]:
+    # Engineering quantity means mold sets, not finished-product usage. Only
+    # the authoritative calculator supplies usage, loss and monetary inputs.
+    if section is None or not getattr(section, "is_required", True) or getattr(section, "calculation_status", "valid") != "valid":
+        return []
+    if getattr(section, "status", "") == "not_applicable":
+        return []
+    return _calculation_lines(section, "injection")
 
 
 def _rr2_values(summary: dict[str, Any], table: str) -> dict[str, float]:
@@ -2033,11 +2043,7 @@ def _build_summary_sheet(
             color=TEMPLATE_RED if column not in {1, 2} else TEMPLATE_BLACK,
             wrap_text=False,
         )
-    mold_lines = _calculation_lines(by_code.get("molding"), "injection")
-    if not mold_lines:
-        mold_lines = _list_of_dicts(
-            _section_payload(by_code.get("engineering")).get("molds", [])
-        )
+    mold_lines = _molding_cost_lines(by_code.get("molding"))
     mold_slots = max(6, len(mold_lines))
     mold_start_row = 9
     mold_end_row = mold_start_row + mold_slots - 1
@@ -3719,11 +3725,7 @@ def _replace_with_component_summary_sheet(
         "料金额",
         "报价啤工",
     )
-    mold_lines = _calculation_lines(by_code.get("molding"), "injection")
-    if not mold_lines:
-        mold_lines = _list_of_dicts(
-            _section_payload(by_code.get("engineering")).get("molds", [])
-        )
+    mold_lines = _molding_cost_lines(by_code.get("molding"))
     component_ids = {str(group.get("id") or "") for group in pricing_groups}
     default_component_id = str(pricing_groups[0].get("id") or "")
 

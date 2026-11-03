@@ -261,7 +261,7 @@ watch([quoteId, canFinalApprove], () => {
 
     <nav v-if="batchProducts.length > 1" class="quote-summary-products" aria-label="批次产品汇总切换">
       <span>本批 {{ batchProducts.length }} 款，每款独立汇总与输出</span>
-      <button v-for="product in batchProducts" :key="product.quoteId" type="button" :class="{ active: product.quoteId === quote.id }" @click="switchSummaryProduct(product.quoteId)"><b>{{ String(product.position).padStart(2, '0') }}</b>{{ product.productName }}<small>{{ product.isBaseline ? '基准款' : product.differsFromBaseline ? '有差异' : '同基准' }}</small></button>
+      <button v-for="product in batchProducts" :key="product.quoteId" type="button" :class="{ active: product.quoteId === quote.id }" @click="switchSummaryProduct(product.quoteId)"><b>{{ String(product.position).padStart(2, '0') }}</b>{{ product.productName }}<small>{{ product.workingVersionWarning || [product.scenarioName, product.versionLabel].filter(Boolean).join(' · ') || (product.isBaseline ? '基准款' : product.differsFromBaseline ? '有差异' : '同基准') }}</small></button>
     </nav>
 
     <p v-if="message" class="quote-page-message success">{{ message }}</p>
