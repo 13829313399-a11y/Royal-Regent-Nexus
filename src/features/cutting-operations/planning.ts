@@ -19,6 +19,7 @@ export interface PlanTask extends PlanTaskInput {
   first_supply_date: string | null; completion_date: string | null; earliest_supply_date?: string | null
 }
 export interface ProductionPlan {
+  publication_kind?: 'task_only'
   version: number; tasks: PlanTask[]; allocated_sets: number; unallocated_sets: number
   actor_id: string; created_at: string; reason: string; adjustment_reason?: string | null
   removed_task_reasons?: Record<string, string>

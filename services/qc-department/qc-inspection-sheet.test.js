@@ -18,7 +18,7 @@ async function page(){
   const body=options.body?JSON.parse(options.body):null;calls.push({url,body});
   if(url.endsWith('/entries'))return {ok:true,json:async()=>({items:copy(rows),columns})};
   if(fail)return {ok:false,status:503,json:async()=>({detail:'网络断开，未保存'})};
-  if(url.includes('/workbook/status'))return {ok:true,json:async()=>({version:bookVersion,undoAvailable:undo,count:rows.length,excluded:0,scope:{dateFrom:'2026-10-26',dateTo:'2026-11-01'}})};
+  if(url.includes('/workbook/status'))return {ok:true,json:async()=>({version:bookVersion,undoAvailable:undo,count:rows.length,excluded:0,revisions:Object.fromEntries(rows.map(r=>[r.id,r.revision])),scope:{dateFrom:'2026-10-26',dateTo:'2026-11-01'}})};
   if(url.endsWith('/workbook/download'))return {ok:true,blob:async()=>new w.Blob(['saved-workbook'])};
   if(url.endsWith('/workbook/import')||url.endsWith('/workbook/undo')||url.endsWith('/workbook/replace')){assert.equal(body.expectedVersion,bookVersion);bookVersion++;undo=url.endsWith('/import');return {ok:true,json:async()=>({version:bookVersion,undoAvailable:undo,status:url.endsWith('/replace')?'replaced':undo?'imported':'undone',count:rows.length})};}
   if(url.endsWith('/photos')&&body.name==='corrupt.jpg')return {ok:false,status:422,json:async()=>({detail:'图片损坏或格式不支持'})};
@@ -34,13 +34,14 @@ async function page(){
   row.revision++;active--;
   return {ok:true,json:async()=>copy(row)};
  };
- w.eval(script);await tick();if(!w.QcInspectionSheet.model.loaded)await w.QcInspectionSheet.load();
+ w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-inspection-audit.js'),'utf8'));w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-photo-paste.js'),'utf8'));w.eval(script);await tick();if(!w.QcInspectionSheet.model.loaded)await w.QcInspectionSheet.load();
  return {dom,w,d:w.document,calls,get rows(){return rows;},set fail(value){fail=value;},set delay(value){delay=value;},get maxActive(){return maxActive;}};
 }
-test('16 template columns, inline three-result controls, reused remarks, real camera/file inputs and no drawer',async()=>{
+test('17 display columns, inline four-result controls, reused remarks, real camera/file inputs and no drawer',async()=>{
  const p=await page();try{
-  assert.equal(p.d.querySelectorAll('.qis-table thead th').length,16);
-  assert.deepEqual([...p.d.querySelector('[data-result]').options].filter(x=>!x.disabled).map(x=>x.value),['PASS','FAIL','PENDING']);
+  assert.equal(p.d.querySelectorAll('.qis-table thead th').length,17);
+  assert.deepEqual([...p.d.querySelector('[data-result]').options].map(x=>x.value),['','PASS','FAIL','PENDING','LG']);
+  assert.equal(p.d.querySelector('[data-result] option[value=""]').disabled,false);
   assert.equal(p.d.querySelector('[data-result]').value,'');assert.equal(p.d.querySelectorAll('[data-remark]').length,3);
   assert.equal(p.d.querySelector('[data-camera]').getAttribute('capture'),'environment');assert.ok(p.d.querySelector('[data-files]').multiple);
   assert.equal(p.d.querySelector('.qwf-dialog'),null);assert.ok(p.d.getElementById('page-review'));
@@ -162,7 +163,8 @@ test('actual download uses the authenticated persisted-file URL, with no Blob re
 });
 test('unavailable historical photo warning stays visible while text remains editable',async()=>{
  const p=await page();try{
-  p.w.QcInspectionSheet.model.items[0].photoWarning='来源照片暂不可用；刷新重试';p.w.QcInspectionSheet.render();
+  p.rows[0].photoWarning='来源照片暂不可用；刷新重试';
+  p.w.QcInspectionSheet.model.items[0].photoWarning=p.rows[0].photoWarning;p.w.QcInspectionSheet.render();
   assert.match(p.d.querySelector('[data-photo-list="a"]').textContent,/来源照片暂不可用/);
   p.w.QcInspectionSheet.edit('a','remark','仍可录入');await p.w.QcInspectionSheet.changeWorkbook('import');
   assert.equal(p.rows[0].remark,'仍可录入');assert.match(p.d.querySelector('[data-photo-list="a"]').textContent,/来源照片暂不可用/);
@@ -203,6 +205,19 @@ test('PENDING persists independently and latest workbook upload uses selected by
  }finally{p.dom.window.close();}
 });
 
+test('dates keep their year and a filled result clears the historical blank warning',async()=>{
+ const p=await page();try{
+  const row=p.w.QcInspectionSheet.model.items[0];
+  row.dateFrom='2025-12-30';row.dateTo='2026-01-03';row.historicalResult='COND';row.result='PASS';
+  p.w.QcInspectionSheet.model.drafts.delete('a');p.w.QcInspectionSheet.render();
+  assert.match(p.d.querySelector('[data-entry="a"] td[data-column="date"]').textContent,/2025-12-30 至 2026-01-03/);
+  assert.equal(p.d.querySelector('[data-entry="a"] .qis-error'),null);
+  row.dateTo='2025-12-30';row.result='';
+  p.w.QcInspectionSheet.model.drafts.delete('a');p.w.QcInspectionSheet.render();
+  assert.match(p.d.querySelector('[data-entry="a"] td[data-column="date"]').textContent,/2025年12月30日/);
+  assert.match(p.d.querySelector('[data-entry="a"]').textContent,/原历史结论：COND/);
+ }finally{p.dom.window.close();}
+});
 test('planned date default groups customers within each day, keeps missing dates last and modification sort independent',async()=>{
  const p=await page();try{
   assert.equal(p.d.getElementById('filterSort').value,'date-asc');
@@ -223,5 +238,111 @@ test('planned date default groups customers within each day, keeps missing dates
   p.d.getElementById('filterSort').value='mod-desc';
   assert.deepEqual(ids(),['e','b','c','a','d','z']);
   assert.deepEqual(rows.map(r=>r.id),['e','b','c','a','d','z']);
+ }finally{p.dom.window.close();}
+});
+
+
+test('successful merge reloads pending rows while failed merge keeps them and export remains available',async()=>{
+ const p=await page();try{
+  const q=p.w.QcInspectionSheet,original=p.w.fetch;let merged=false;
+  p.w.fetch=async(url,options)=>{
+   const response=await original(url,options);
+   if(url.endsWith('/workbook/import')&&response.ok)merged=true;
+   if(url.endsWith('/entries')&&merged)return {ok:true,json:async()=>({items:[],columns})};
+   return response;
+  };
+  p.fail=true;await q.changeWorkbook('import');
+  assert.equal(q.model.items.length,3);assert.equal(merged,false);
+  p.fail=false;await q.changeWorkbook('import');
+  assert.equal(q.model.items.length,0);assert.equal(p.d.querySelectorAll('[data-entry]').length,0);
+  assert.equal(p.d.getElementById('btnExportInspectionExcel').disabled,false);
+  assert.equal(p.rows.length,3,'source data is retained');
+  await q.load();assert.equal(q.model.items.length,0,'reload does not restore merged rows');
+ }finally{p.dom.window.close();}
+});
+test('input events debounce independently and stable row selection survives rerender and sort',async()=>{
+ const p=await page();try{
+  const row=p.d.querySelector('[data-entry="b"]');row.click();assert.equal(p.d.querySelectorAll('.qis-selected').length,1);assert.equal(row.getAttribute('aria-selected'),'true');
+  const input=row.querySelector('[data-remark]');input.focus();assert.equal(p.w.QcInspectionSheet.model.selectedId,'b');input.value='真实输入事件自动保存';input.dispatchEvent(new p.w.Event('input'));
+  assert.equal(p.rows[1].remark,'');await new Promise(r=>setTimeout(r,720));assert.equal(p.rows[1].remark,'真实输入事件自动保存');
+  p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('.qis-selected').dataset.entry,'b');
+  p.d.getElementById('filterSort').value='date-desc';p.w.QcInspectionSheet.render();assert.equal(p.d.querySelector('.qis-selected').dataset.entry,'b');
+  assert.deepEqual([...p.d.querySelectorAll('#recordsTableWrap thead th')].map(e=>e.dataset.column).slice(0,3),['date','customer','poNo']);
+ }finally{p.dom.window.close();}
+});
+test('timed out autosave retains input and retry uses CAS without pretending success',async()=>{
+ const p=await page();try{
+  const fetch=p.w.fetch,timer=p.w.setTimeout.bind(p.w);
+  p.w.setTimeout=(fn,ms,...args)=>timer(fn,ms===20000?5:ms,...args);
+  p.w.fetch=(url,options={})=>url.endsWith('/save')?new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(new p.w.DOMException('aborted','AbortError')))):fetch(url,options);
+  p.w.QcInspectionSheet.edit('a','remark','超时保留输入',true);
+  await new Promise(resolve=>setTimeout(resolve,25));
+  assert.match(p.d.querySelector('[data-save-status="a"]').textContent,/保存失败.*请求超时/);
+  assert.equal(p.rows[0].remark,'');assert.equal(p.w.QcInspectionSheet.model.drafts.get('a').remark,'超时保留输入');
+  p.w.fetch=fetch;await p.w.QcInspectionSheet.retry('a');assert.equal(p.rows[0].remark,'超时保留输入');
+ }finally{p.dom.window.close();}
+});
+
+test('empty result has contextual closable notification and focus, without submitting or dropping the row',async()=>{
+ const p=await page();try{
+  p.d.querySelector('[data-submit="a"]').click();await tick();
+  const notice=p.d.querySelector('.qis-notice[role=alert]');assert.match(notice.textContent,/无法提交审核.*客户中文.*00000.*验货结果/s);
+  assert.equal(p.calls.filter(c=>c.url?.endsWith('/submit')).length,0);assert.ok(p.d.querySelector('[data-entry=a]'));
+  notice.querySelector('[data-locate]').click();assert.equal(p.d.activeElement.dataset.result,'a');
+  notice.querySelector('button[aria-label="关闭提交失败通知"]').click();assert.equal(notice.dataset.noticeState,'closing');await new Promise(resolve=>setTimeout(resolve,150));assert.equal(p.d.querySelector('.qis-notice'),null);
+ }finally{p.dom.window.close();}
+});
+
+test('backend rejection and failed save keep drafts and expose actual causes',async()=>{
+ const p=await page();try{
+  p.w.QcInspectionSheet.edit('a','result','PASS',true);await p.w.QcInspectionSheet.flush();
+  const original=p.w.fetch;p.w.fetch=async(url,opts)=>url.endsWith('/submit')?{ok:false,status:409,json:async()=>({detail:'记录状态已变化，请刷新核对'})}:original(url,opts);
+  p.d.querySelector('[data-submit=a]').click();await tick();assert.match(p.d.querySelector('.qis-notice').textContent,/记录状态已变化/);assert.ok(p.d.querySelector('[data-entry=a]'));
+  p.fail=true;p.w.QcInspectionSheet.edit('a','remark','保留备注');p.d.querySelector('[data-submit=a]').click();await tick();await tick();
+  assert.match(p.d.querySelector('.qis-notice').textContent,/网络断开，未保存/);assert.equal(p.w.QcInspectionSheet.model.drafts.get('a').remark,'保留备注');
+ }finally{p.dom.window.close();}
+});
+
+test('network failure is explicit and rapid submit clicks create only one in-flight request',async()=>{
+ const p=await page();try{
+  p.w.QcInspectionSheet.edit('a','result','PASS',true);await p.w.QcInspectionSheet.flush();
+  const original=p.w.fetch;let submissions=0,release;
+  p.w.fetch=async(url,opts)=>{if(url.endsWith('/submit')){submissions++;await new Promise(r=>release=r);throw new p.w.TypeError('Failed to fetch');}return original(url,opts);};
+  const button=p.d.querySelector('[data-submit=a]');button.click();button.click();await tick();assert.equal(submissions,1);release();await tick();
+  assert.match(p.d.querySelector('.qis-notice').textContent,/网络连接异常/);assert.equal(button.disabled,false);assert.ok(p.d.querySelector('[data-entry=a]'));
+ }finally{p.dom.window.close();}
+});
+function pasteEvent(p,target,files=[],items=null){const event=new p.w.Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(event,'clipboardData',{value:{files,items:items||files.map(file=>({kind:'file',type:file.type,getAsFile:()=>file}))}});target.dispatchEvent(event);return event;}
+test('native image paste follows the highlighted row, keeps burst order and survives reload',async()=>{
+ const p=await page();try{
+  p.d.getElementById('page-records').classList.add('active');const image=name=>new p.w.File([name],name,{type:'image/png'});
+  assert.equal(pasteEvent(p,p.d.body,[image('unselected.png')]).defaultPrevented,false);assert.equal(p.calls.filter(c=>c.url?.endsWith('/photos')).length,0);
+  const row=p.d.querySelector('[data-entry="b"]');row.click();
+  assert.ok(pasteEvent(p,row,[image('first.png'),image('second.png')]).defaultPrevented);
+  pasteEvent(p,row,[image('third.png')]);p.d.querySelector('[data-entry="c"]').click();pasteEvent(p,p.d.body,[image('other.png')]);
+  assert.equal(p.w.QcInspectionSheet.navigationState().busy,true);await p.w.QcInspectionSheet.flush();
+  assert.deepEqual(p.rows[1].photos.map(f=>f.name),['first.png','second.png','third.png']);assert.deepEqual(p.rows[2].photos.map(f=>f.name),['other.png']);assert.equal(p.rows[0].photos.length,0);
+  await p.w.QcInspectionSheet.load();assert.equal(p.d.querySelectorAll('[data-photo-list="b"] img').length,3);
+  const text=p.d.querySelector('[data-remark="b"]');assert.equal(pasteEvent(p,text).defaultPrevented,false);
+ }finally{p.dom.window.close();}
+});
+test('paste ignores hidden rows, other pages, unrelated dialogs and image URLs; locked rows stay readonly',async()=>{
+ const p=await page();try{
+  const image=new p.w.File(['x'],'file.png',{type:'image/png'});p.d.getElementById('page-records').classList.add('active');p.d.querySelector('[data-entry="b"]').click();
+  p.d.getElementById('searchInput').value='00000';p.w.QcInspectionSheet.render();pasteEvent(p,p.d.body,[image]);assert.equal(p.calls.filter(c=>c.url?.endsWith('/photos')).length,0);
+  p.d.getElementById('searchInput').value='';p.w.QcInspectionSheet.render();p.d.querySelector('[data-entry="b"]').click();
+  const dialog=p.d.createElement('dialog');dialog.open=true;p.d.body.append(dialog);assert.equal(pasteEvent(p,dialog,[image]).defaultPrevented,false);dialog.remove();
+  p.d.getElementById('page-records').classList.remove('active');pasteEvent(p,p.d.body,[image]);p.d.getElementById('page-records').classList.add('active');
+  pasteEvent(p,p.d.body,[],[{kind:'string',type:'text/html',getAsString:cb=>cb('<img src="https://example.com/private.png">')}]);
+  p.w.QcInspectionSheet.model.items.find(r=>r.id==='b').submittedAt='2026-11-03T00:00:00Z';assert.ok(pasteEvent(p,p.d.body,[image]).defaultPrevented);await tick();
+  assert.equal(p.calls.filter(c=>c.url?.endsWith('/photos')).length,0);
+ }finally{p.dom.window.close();}
+});
+test('pasted upload failure retains the same retry job; fallback files and oversize validation reuse normal path',async()=>{
+ const p=await page();try{
+  p.d.getElementById('page-records').classList.add('active');const row=p.d.querySelector('[data-entry="a"]');row.click();const file=new p.w.File(['x'],'retry.png',{type:'image/png'});
+  p.fail=true;pasteEvent(p,row,[file],[]);await assert.rejects(p.w.QcInspectionSheet.flush());const first=p.calls.find(c=>c.url?.endsWith('/photos'));
+  p.fail=false;await p.w.QcInspectionSheet.retry('a');const sent=p.calls.filter(c=>c.url?.endsWith('/photos'));assert.equal(sent.length,2);assert.equal(sent[1].body.requestKey,first.body.requestKey);assert.equal(p.rows[0].photos.length,1);
+  const big=new p.w.File(['x'],'oversize.png',{type:'image/png'});Object.defineProperty(big,'size',{value:11*1024*1024});pasteEvent(p,row,[big]);await assert.rejects(p.w.QcInspectionSheet.flush());assert.match(p.d.querySelector('[data-save-status="a"]').textContent,/10 MB/);assert.equal(p.calls.filter(c=>c.url?.endsWith('/photos')).length,2);
  }finally{p.dom.window.close();}
 });

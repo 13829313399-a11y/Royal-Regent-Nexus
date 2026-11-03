@@ -23,6 +23,7 @@ import CuttingPlanningMetrics from './CuttingPlanningMetrics.vue'
 import CuttingInventory from './CuttingInventory.vue'
 import CuttingActivityPage from './CuttingActivityPage.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
+import CuttingScheduleImport from './CuttingScheduleImport.vue'
 
 const props=defineProps<{ workspace: CuttingWorkspace }>()
 const filterId=`cutting-orders-${useId()}`
@@ -41,6 +42,7 @@ async function openMaterial(lineId:string,issueId:string){
   finally{if(alive&&ticket===generation)loading.value=false}
 }
 const materialEditor = ref<InstanceType<typeof CuttingMaterialRequests>>()
+const scheduleImporter = ref<InstanceType<typeof CuttingScheduleImport>>()
 const usageEditor = ref<InstanceType<typeof CuttingMaterialUsage>>()
 const materialEditing=ref(false),usageEditing=ref(false)
 const access = ref<Access | null>(null), loading = ref(true), saving = ref(false), needsLogin = ref(false)
@@ -66,6 +68,7 @@ const dirty = computed(() => !!action.value && snapshot() !== baseline.value)
 const available = computed(() => access.value?.enabled && access.value?.orders_schema_ready)
 const data = computed(() => selected.value?.current?.data)
 const adjustingPlan = computed(() => (action.value === 'plan' || action.value === 'plan-publish') && !!data.value?.planning?.published)
+const publishLabel = computed(() => selected.value?.snapshot.intake_kind==='cutting-schedule-v1'&&!data.value?.planning?.draft?.tasks.some(t=>t.days.length) ? '发布领料任务（暂不排日计划）' : '发布生产预排')
 const requirements = computed(() => (data.value?.bom?.data as BomData | undefined)?.requirements ?? [])
 const writable = computed(() => selected.value && !selected.value.needs_receipt && selected.value.snapshot.status === 'active')
 const can = (permission: string) => access.value?.permissions.includes(permission) ?? false
@@ -73,6 +76,7 @@ const labels: Record<OrderAction, string> = { receive: '签收订单版本', bom
 const statusLabels: Record<string, string> = { awaiting_receipt: '待签收新版本', cancelled_receipt: '取消待签收', cancelled: '已取消', reconciliation: '旧需求待采购核对', awaiting_bom: '待关联 BOM', awaiting_submission: '待工程提交需求', awaiting_reply: '待采购回复', partial_reply: '采购部分回复', complete_reply: '采购全部回复', no_purchase: '本次无需采购' }
 let alive = true, generation = 0, searchGeneration = 0, historyGeneration = 0
 function discard() {
+  if (scheduleImporter.value && !scheduleImporter.value.discard()) return false
   if (usageEditor.value && !usageEditor.value.discard()) return false
   if (materialEditor.value && !materialEditor.value.discard()) return false
   if (saving.value || pending.value) { error.value = '保存结果尚未确认，请先重试原操作。'; return false }
@@ -231,6 +235,13 @@ function materialName(index: number) {
   return r ? data.value?.bom?.material_references?.[`${r.material_id}:${r.material_version}`]?.name ?? r.material_id : ''
 }
 function status(row: CuttingOrder) {
+  const current=row.current?.data
+  if(row.snapshot.intake_kind==='cutting-schedule-v1'&&!row.needs_receipt&&row.snapshot.status==='active'&&
+    (!row.workflow_status||row.workflow_status==='awaiting_submission')&&current?.bom&&!current.requisition&&!current.purchase_reconciliation_required){
+    if(row.planning_summary?.published_stale) return '已关联 BOM（计划待复核）'
+    if(current.planning?.published?.publication_kind==='task_only') return '领料任务已发布'
+    return current.planning?.published?'计划已发布（采购未办理）':'已关联 BOM（采购未办理）'
+  }
   if (row.workflow_status) return statusLabels[row.workflow_status] ?? row.workflow_status
   if (row.needs_receipt) return row.snapshot.status === 'cancelled' ? '取消待签收' : '待签收新版本'
   if (row.snapshot.status === 'cancelled') return '已取消'
@@ -256,6 +267,12 @@ function status(row: CuttingOrder) {
   <section v-else class="cutting-page orders-page">
     <CuttingLocationNotice :location="manualLocation??location" :selected-id="selected?.line_id" />
     <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '本厂现场、外发在外物料与订单领用，按原实发追溯。' : '订单、工程需求与生产预排'"/>
+    <CuttingScheduleImport v-if="workspace.path==='planning'&&can('order_receive')" ref="scheduleImporter" @imported="load(1,false,false)" />
+    <SectionPanel v-if="selected?.snapshot.intake_kind==='cutting-schedule-v1'" title="业务排期来源" class="cutting-content-panel">
+      <p>排期直接导入：{{selected.snapshot.intake_file_name}} · {{selected.snapshot.intake_sheet}} 第 {{selected.snapshot.intake_row}} 行 · 来源 V{{selected.source_version}}</p>
+      <p>原订单单位：{{selected.snapshot.order_unit}}；目标套数仍由工程按 BOM 明确核定。</p>
+      <details><summary>批次与原文件指纹</summary><p style="overflow-wrap:anywhere">{{selected.snapshot.intake_batch}}<br>{{selected.snapshot.intake_sha256}}</p></details>
+    </SectionPanel>
     <CuttingPlanningMetrics v-if="workspace.path==='planning'" :query="appliedQuery" :status="appliedStatus" :plan-status="appliedPlanStatus" :refresh="summaryRefresh" />
     <CuttingSubnav v-if="workspace.path==='materials'" v-model="materialsView" :items="materialTabs" label="物料库存工作视图" />
     <p class="cutting-notice">采购预计交期仅支持预排，不代表实收或库存可用；领料申请与实发签收已对接布料仓。按原实发登记耗用、损耗和盘余核对，材料费用按已确认批次成本计算，缺价显示待计价。</p>
@@ -347,7 +364,7 @@ function status(row: CuttingOrder) {
         <div class="order-toolbar" v-if="!action">
           <template v-if="workspace.path === 'planning' && writable && data?.bom && !data.purchase_reconciliation_required">
             <Button variant="outline" v-if="can('plan_write')" @click="edit('plan')">编制任务与日计划</Button>
-            <Button variant="outline" v-if="can('plan_publish') && data.planning?.draft" :disabled="selected.planning_summary?.draft_stale" @click="edit('plan-publish')">发布生产预排</Button>
+            <Button variant="outline" v-if="can('plan_publish') && data.planning?.draft" :disabled="selected.planning_summary?.draft_stale" @click="edit('plan-publish')">{{publishLabel}}</Button>
           </template>
           <Button variant="outline" v-if="selected.needs_receipt && can('order_receive')" @click="edit('receive')">签收订单版本</Button>
           <Button variant="outline" v-if="writable && !data?.requisition && can('bom_write')" @click="edit('bom')">工程关联 BOM</Button>
@@ -366,11 +383,12 @@ function status(row: CuttingOrder) {
           <details v-if="data.planning.baseline"><summary>首次基准计划</summary><CuttingPlanSummary :plan="data.planning.baseline" title="首次基准" /></details>
         </template>
         <form v-if="action" class="order-form" @submit.prevent="save">
-          <h3>{{ labels[action] }}</h3>
+          <h3>{{ action==='plan-publish'?publishLabel:labels[action] }}</h3>
           <fieldset :disabled="saving || !!pending">
             <CuttingPlanEditor v-if="action === 'plan' && data" v-model="planTasks" v-model:removed-task-reasons="removedTaskReasons" :data="data" :line-id="selected.line_id" />
             <CuttingPlanDiff v-if="adjustingPlan && data?.planning?.published" :previous="data.planning.published" :tasks="action === 'plan' ? planTasks : data.planning.draft?.tasks ?? []" :removed-reasons="action === 'plan' ? removedTaskReasons : data.planning.draft?.removed_task_reasons" />
             <p v-if="action === 'plan-publish'">发布当前草稿后形成新计划版本，首次基准和历史调整仍保留。预排不代表物料已可用或允许实际开工。</p>
+            <p v-if="action==='plan-publish'&&publishLabel!=='发布生产预排'" class="cutting-notice">本次仅发布任务供领料使用，不增加已排期订单数，不生成日计划或完成数量。领料后调整已发布任务仍须填写原因。</p>
             <template v-if="action === 'bom'">
               <div class="order-toolbar"><label>BOM 编码／货号／名称／款式／颜色 <input v-model="bomQuery" maxlength="80" /></label><Button variant="outline" type="button" @click="searchBoms()">查找 BOM</Button></div>
               <ul><li v-for="b in bomRows" :key="b.id">{{ b.code }} · {{ b.data.name }} <Button variant="outline" type="button" @click="loadVersions(b.id)">查看发布版本</Button></li></ul>

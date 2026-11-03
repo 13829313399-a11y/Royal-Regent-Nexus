@@ -12,11 +12,13 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import type { InternalQuoteCreatePayload } from '@/types/internalQuoteDesk'
+import { rememberWorkingVersion } from '@/lib/internalQuoteWorkingVersions'
 
 const routerPushMock = vi.hoisted(() => vi.fn())
 const internalQuoteApiMock = vi.hoisted(() => ({
   list: vi.fn(),
   get: vi.fn(),
+  listAlternatives: vi.fn(),
   listBusinessOwners: vi.fn(),
   listCustomers: vi.fn(),
   createCustomer: vi.fn(),
@@ -236,10 +238,12 @@ const createPayload: InternalQuoteCreatePayload = {
 
 describe('InternalQuoteHome factory permission boundary', () => {
   beforeEach(() => {
+    localStorage.clear()
     setActivePinia(createPinia())
     routerPushMock.mockReset()
     internalQuoteApiMock.list.mockReset().mockResolvedValue([])
     internalQuoteApiMock.get.mockReset()
+    internalQuoteApiMock.listAlternatives.mockReset()
     internalQuoteApiMock.listBusinessOwners.mockReset().mockResolvedValue([])
     internalQuoteApiMock.listCustomers.mockReset().mockImplementation((factoryId: string) => Promise.resolve([apiCustomer(factoryId)]))
     internalQuoteApiMock.createCustomer.mockReset()
@@ -251,6 +255,33 @@ describe('InternalQuoteHome factory permission boundary', () => {
     internalQuoteApiMock.cloneDocument.mockReset()
     internalQuoteApiMock.getPricingBaseline.mockReset()
     internalQuoteApiMock.updatePricingBaseline.mockReset()
+  })
+
+  it.each([false, true])('restores the last working version, or asks when it is archived (%s)', async (archived) => {
+    const pinia = createPinia(); setActivePinia(pinia)
+    useAuthStore().applySession(salesSession())
+    useAppStore().setActiveFactory('huaxing')
+    const original = { ...apiQuote('huaxing', 'root'), document_quote_id: 'root', product_root_id: 'root' }
+    internalQuoteApiMock.list.mockResolvedValue([original])
+    internalQuoteApiMock.get.mockResolvedValue({ ...original, id: 'last-version', version_archived: archived, status: 'drafting' })
+    internalQuoteApiMock.listAlternatives.mockResolvedValue({ family_id: 'root', items: [
+      { quote_id: 'root', product_name: '原产品', scenario_name: '原方案', version_label: 'V1', status: 'drafting', archived: false },
+    ] })
+    rememberWorkingVersion('sales-user', { id: 'last-version', factoryId: 'huaxing', documentQuoteId: 'root', productRootId: 'root', status: 'drafting' })
+    const wrapper = mount(InternalQuoteHome, { global: { plugins: [pinia] } })
+    try {
+      await flushPromises()
+      // Exercise the actual row open action; no route redirect is installed on explicit links.
+      await wrapper.get('.quote-number').trigger('click'); await flushPromises()
+      if (archived) {
+        expect(routerPushMock).not.toHaveBeenCalled()
+        expect(wrapper.get('[aria-label="重新选择工作版本"]').text()).toContain('已归档或不可用')
+        await wrapper.get('[aria-label="重新选择工作版本"] button').trigger('click')
+        expect(routerPushMock.mock.calls.at(-1)?.[0]).toContain('/root/collaboration')
+      } else {
+        expect(routerPushMock.mock.calls.at(-1)?.[0]).toContain('/last-version/collaboration')
+      }
+    } finally { wrapper.unmount() }
   })
 
   it('shows foreign factories as read-only and restores operations only in the home factory', async () => {

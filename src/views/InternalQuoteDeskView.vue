@@ -8,6 +8,7 @@ import { factoryContexts } from '@/data/enterpriseMock'
 import { useAuthStore } from '@/stores/auth'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
+import { rememberWorkingVersion } from '@/lib/internalQuoteWorkingVersions'
 import { clearQuoteNavigationGuards, registerQuoteNavigationGuard } from '@/features/internal-quote/navigationGuard'
 import { quoteDepartments } from '@/features/internal-quote/assistantContext'
 import QuoteRecordReadOnly from '@/features/internal-quote/QuoteRecordReadOnly.vue'
@@ -30,6 +31,12 @@ const factory = computed(() => typeof route.query.factory === 'string' && route.
 const allowed = computed(() => quoteDepartments.some(dept => auth.can('internal_quote:read',factory.value,dept)))
 const financial = computed(() => quoteDepartments.some(dept => auth.can('internal_quote:summary_read',factory.value,dept)))
 const readOnlyRecord = computed(() => Boolean(route.params.quoteId) && !financial.value)
+watch(() => [quoteStore.quoteDetailVerifiedId, route.params.quoteId, auth.currentUser?.id], () => {
+  const id = String(route.params.quoteId || '')
+  if (!allowed.value || quoteStore.quoteDetailVerifiedId !== id) return
+  const quote = quoteStore.getQuoteById(id)
+  if (quote && quote.factoryId === factory.value) rememberWorkingVersion(auth.currentUser?.id || '', quote)
+})
 let resetSequence = 0
 function pendingWriteGuard() {
   if (quoteStore.submitting || quoteStore.fileBusy || quoteStore.customerSaving || quoteStore.baselineSaving) {

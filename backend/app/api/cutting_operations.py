@@ -1,9 +1,11 @@
 from typing import Annotated, Literal
-from fastapi import APIRouter, Depends, Query, Request
+from hashlib import sha256
+from fastapi import APIRouter, Depends, Query, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from pydantic import ValidationError
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
@@ -20,6 +22,7 @@ from app.services import cutting_payments as payments, cutting_payment_schemas a
 from app.services import cutting_exports as exports
 from app.services import cutting_cutover as cutover
 from app.services import cutting_workspace as workspace
+from app.services import cutting_schedule_import as schedule_import
 from app.services.cutting_export_gate import gate as export_gate
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
@@ -380,6 +383,52 @@ def change_state(entity_id: str, body: s.StateChange, db: Db, user: User):
 def orders_ready(db):
     ready(db)
     c.require(orders.schema_ready(db.connection()), '裁床订单与交期需先完成显式数据库迁移', 503)
+
+
+def schedule_import_ready(db, user, factory_id):
+    c.authorize(user, factory_id, 'order_receive')
+    orders_ready(db)
+
+
+@router.get('/schedule-import/template')
+def schedule_import_template(db: Db, user: User, factory_id: str = ''):
+    schedule_import_ready(db, user, factory_id)
+    return Response(schedule_import.template(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition':'attachment; filename="cutting-schedule.xlsx"', 'Cache-Control':'no-store'})
+
+
+@router.post('/schedule-import/preview')
+def schedule_import_preview(db: Db, user: User, factory_id: str = Form(...), schedule_file: UploadFile = File(...)):
+    schedule_import_ready(db,user,factory_id)
+    content=schedule_file.file.read(schedule_import.MAX_BYTES+1)
+    result=schedule_import.preview(db,content,schedule_file.filename or '')
+    db.rollback()
+    return JSONResponse(result,headers={'Cache-Control':'no-store'})
+
+
+@router.post('/schedule-import/confirm')
+def schedule_import_confirm(db: Db, user: User, factory_id: str = Form(...), operation_id: str = Form(...),
+    reason: str = Form(...), fingerprint: str = Form(...), file_sha256: str = Form(...),
+    confirmed: bool = Form(...), schedule_file: UploadFile = File(...)):
+    schedule_import_ready(db,user,factory_id)
+    content=schedule_file.file.read(schedule_import.MAX_BYTES+1)
+    name=schedule_import.filename(schedule_file.filename)
+    body=schedule_import.Confirm(factory_id=factory_id,operation_id=operation_id,expected_version=0,
+        reason=reason,fingerprint=fingerprint,file_sha256=file_sha256,file_name=name,confirmed=confirmed)
+    c.require(sha256(content).hexdigest()==body.file_sha256,'上传文件已变化，请重新预览',409)
+    parsed=schedule_import.parse(content,name)
+    try:
+        return c.command(db,user,body,schedule_import.ACTION,lambda:schedule_import.confirm(db,user,body,content,parsed))
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409,'订单来源发生约束冲突，本批未写入，请重新预览并核对原订单') from exc
+
+
+@router.post('/schedule-import/recover')
+def schedule_import_recover(body:schedule_import.Recover,db:Db,user:User):
+    c.authorize(user,body.command.factory_id)
+    c.require(c.schema_ready(db.connection()),'裁床操作回执需先完成迁移',503)
+    return orders.recover_operation(db,user,body.command,schedule_import.ACTION)
 
 
 @router.get('/orders')

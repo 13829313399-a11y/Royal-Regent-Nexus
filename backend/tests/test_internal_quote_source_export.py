@@ -2,6 +2,8 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from xml.etree import ElementTree as ET
+from zipfile import ZipFile
 
 import pytest
 from openpyxl import Workbook, load_workbook
@@ -15,8 +17,8 @@ from app.services.internal_quote_workbook_view import WorkbookValues
 from test_internal_quote_excel_formula_links import _section
 
 
-def attachment(content, name):
-    return SimpleNamespace(file_name=name, content=content, sha256=hashlib.sha256(content).hexdigest())
+def attachment(content, name, department="engineering"):
+    return SimpleNamespace(file_name=name, content=content, department=department, sha256=hashlib.sha256(content).hexdigest())
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -106,6 +108,72 @@ def test_invalid_source_leaves_visible_failure_note_instead_of_disappearing():
     assert titles == ["broken-附件异常"]
     assert book[titles[0]]["A1"].value == "上传表格未能嵌入"
     book.close()
+
+
+def test_all_department_sources_match_download_tabs_and_preview_only_saved_values(monkeypatch):
+    from app.services.internal_quote_workbook_view import serialize_workbook
+
+    sources = []
+    for name, department in [("工模", "engineering"), ("五金", "engineering"), ("啤机", "molding"),
+                             ("装工", "assembly"), ("喷油", "painting"), ("电子", "electronic"),
+                             ("搪胶", "slush"), ("车缝", "sewing")]:
+        source = Workbook()
+        source.active.title = "报价明细"
+        source.active["A1"] = name
+        source.active["B1"] = "=99+1"
+        source.active["C1"] = '=WEBSERVICE("https://example.invalid")'
+        source.active["D1"] = "=1+2"
+        source.active["D1"].data_type = "s"
+        source.create_sheet("参数")["A1"] = "='报价明细'!B1"
+        raw = BytesIO()
+        source.save(raw)
+        source.close()
+        cached = BytesIO()
+        with ZipFile(raw) as archive, ZipFile(cached, "w") as output:
+            for info in archive.infolist():
+                data = archive.read(info.filename)
+                if info.filename == "xl/worksheets/sheet1.xml":
+                    xml = ET.fromstring(data)
+                    ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+                    xml.find('.//s:c[@r="B1"]/s:v', ns).text = "5"
+                    data = ET.tostring(xml)
+                output.writestr(info, data)
+        sources.append(attachment(cached.getvalue(), f"{name}.xlsx", department))
+    hair = (Path(__file__).resolve().parents[1] / "app/data/internal_quote_import_templates/车发部报价单.xls").read_bytes()
+    sources.append(attachment(hair, "车发.xls", "hair"))
+    preview, download = Workbook(), Workbook()
+    for book in (preview, download):
+        book.active.title = "报价明细"
+        book.active["A1"] = "=2+3"
+    visible = _append_spreadsheet_attachment_sheets(download, sources)
+    assert _append_spreadsheet_attachment_sheets(preview, sources, cached_values_only=True) == visible
+    original_cell = WorkbookValues.cell
+
+    def generated_only(self, sheet, address):
+        assert not hasattr(self.workbook[sheet], "_quote_source")
+        return original_cell(self, sheet, address)
+
+    monkeypatch.setattr(WorkbookValues, "cell", generated_only)
+    sheets, errors = serialize_workbook(preview)
+    assert not errors
+    assert {sheet["source"]["file_name"] for sheet in sheets if "source" in sheet} == {item.file_name for item in sources}
+    assert [sheet["name"] for sheet in sheets] == ["报价明细", *visible]
+    for name in ["工模", "五金", "啤机", "装工", "喷油", "电子", "搪胶", "车缝"]:
+        sheet = next(item for item in sheets if item["name"] == f"{name}-报价明细")
+        cells = {cell["address"]: cell for row in sheet["rows"] for cell in row["cells"]}
+        assert cells["B1"]["text"] == "5"  # Saved value, deliberately different from evaluating the formula.
+        assert cells["C1"]["text"] == "原表公式未缓存" and cells["C1"]["unavailable"]
+        assert cells["D1"]["text"] == "=1+2" and not cells["D1"]["unavailable"]
+        assert all(cell["binding"] is None for cell in cells.values())
+        assert download[f"{name}-报价明细"]["B1"].value == "=99+1"
+        assert download[f"{name}-参数"]["A1"].value == f"='{name}-报价明细'!B1"
+    result = BytesIO()
+    download.save(result)
+    reopened = load_workbook(BytesIO(result.getvalue()))
+    assert [sheet.title for sheet in reopened if sheet.sheet_state == "visible"] == ["报价明细", *visible]
+    reopened.close()
+    preview.close()
+    download.close()
 
 
 @pytest.mark.parametrize("grouped", [False, True])

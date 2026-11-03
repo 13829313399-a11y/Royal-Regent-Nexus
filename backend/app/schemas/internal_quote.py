@@ -9,7 +9,7 @@ ReviewDecision = Literal["approve", "reject"]
 InternalQuoteWorkflowMode = Literal["section_review", "whole_quote_review", "direct_output"]
 InternalQuoteType = Literal["single", "series", "multi_region"]
 InternalQuoteRegionCode = Literal["", "mainland", "indonesia"]
-InternalQuoteImportType = Literal["mold", "hardware", "electronic", "molding", "painting", "slush", "sewing", "hair", "assembly"]
+InternalQuoteImportType = Literal["mold", "hardware", "auxiliary", "electronic", "molding", "painting", "slush", "sewing", "hair", "assembly"]
 InternalQuoteSectionCode = Literal[
     "sales",
     "engineering",
@@ -862,6 +862,7 @@ class InternalQuoteBatchProductOut(BaseModel):
     product_name: str
     version_label: str = ""
     scenario_name: str = ""
+    working_version_warning: str = ""
     archived: bool = False
     packaging_copy: InternalQuotePackagingCopyStatusOut | None = None
     qty: int
@@ -947,6 +948,12 @@ class InternalQuoteImportConfirmRequest(BaseModel):
     # Kept for backward compatibility with older clients. Internal quote
     # imports now always replace the data region owned by their template.
     mode: Literal["append", "replace"] = "replace"
+
+
+class InternalQuoteEngineeringExportRequest(BaseModel):
+    header_revision: int | None = Field(default=None, ge=1)
+    electronic_revision: int | None = Field(default=None, ge=0)
+    electronic_selection: list[str] | None = Field(default=None, max_length=2000)
 
 
 class InternalQuoteImportPreviewOut(BaseModel):

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, Stric
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.internal_quote import InternalQuoteAlternative, InternalQuoteAttachment, InternalQuoteSection
+from app.models.internal_quote import InternalQuoteAlternative, InternalQuoteAttachment, InternalQuoteSection, InternalQuoteImportBatch
 from app.schemas.internal_quote import InternalQuoteCostPreviewRequest, InternalQuoteWholeProductSaveRequest
 from app.services.auth import AuthContext
 from app.services.internal_quote import (
@@ -16,19 +16,28 @@ from app.services.internal_quote import (
     _get_quote, _json_object, _rr2_cost_summary, ensure_quote_permission,
     ensure_section_permission, preview_quote_costs, quote_write, save_whole_product_sections,
     _can_project_molding_read, _project_molding_parts, _molding_projection_warning,
-    molding_projection_pending,
+    molding_projection_pending, _authoritative_factory_quote, _pricing_completeness,
 )
 from app.services.internal_quote_calculator import canonical_json
+from app.services.internal_quote_artifacts import _can_access_attachment_department
 from app.services.internal_quote_document import document_archive
-from app.services.internal_quote_excel import build_internal_quote_workbook_model
-from app.services.internal_quote_output_fields import source_groups
+from app.services.internal_quote_excel import build_internal_quote_workbook_model, _append_spreadsheet_attachment_sheets
+from app.services.internal_quote_output_fields import source_groups, _bind_aggregate_cells
 from app.services.internal_quote_workbook_view import serialize_workbook
+
+
+class PriceAnnotationEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(default="", max_length=3000)
+    image_attachment_ids: list[str] = Field(default_factory=list, max_length=4)
+    new_images: list[str] = Field(default_factory=list, max_length=4)
 
 
 class OutputCellEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     field_id: str = Field(min_length=1, max_length=512)
     value: StrictStr | StrictInt | StrictFloat | None
+    annotation: PriceAnnotationEdit | None = None
 
 
 class OutputLayoutEdits(BaseModel):
@@ -74,7 +83,7 @@ def _projection_pending(db, quote, sections):
                 and molding_projection_pending(db, quote, sections))
 
 
-def _prepare(db, quote_id, request, user):
+def _prepare(db, quote_id, request, user, *, persist_images=False):
     quote, sections, reference, token, editable = _load(db, quote_id, user)
     if token != request.base_token:
         raise HTTPException(409, "报价已发生变化，当前表格修改尚未保存。请重新读取并核对后再修改")
@@ -83,6 +92,8 @@ def _prepare(db, quote_id, request, user):
     fields = {field["id"]: (group, field) for group in source_groups(sections, quote.region_code) for field in group["fields"]}
     by_code = {s.department: s for s in sections}
     payloads, seen = {}, set()
+    if sum(len(image) for edit in request.edits if edit.annotation for image in edit.annotation.new_images) > 14_000_000:
+        raise HTTPException(400, "本次调价截图合计过大，请分批保存（总计不超过 10 MB）")
     for edit in request.edits:
         if edit.field_id in seen or edit.field_id not in fields:
             raise HTTPException(400, "只允许修改现有名称和原始单价；新增、删除请返回填写页")
@@ -112,6 +123,19 @@ def _prepare(db, quote_id, request, user):
         for key in field["path"][:-1]:
             parent = parent[key]
         parent[field["path"][-1]] = value
+        if edit.annotation is not None:
+            if field["kind"] != "price":
+                raise HTTPException(400, "只能为单价添加调价批注")
+            from app.services.internal_quote_price_notes import make_annotation
+            owner = payloads[code]
+            for key in field["owner_path"]:
+                owner = owner[key]
+            note = make_annotation(db, quote, code, {**field, "value": value}, edit.annotation, user, persist_images)
+            notes = owner.setdefault("price_annotations", {})
+            if note["text"] or note["image_attachment_ids"] or edit.annotation.new_images:
+                notes[field["note_key"]] = note
+            else:
+                notes.pop(field["note_key"], None)
 
     # Engineering can invalidate molding's saved dependency snapshot. Include
     # the unchanged downstream inputs in the same transaction and revision check.
@@ -140,52 +164,8 @@ def _prepare(db, quote_id, request, user):
     return (quote, sections, reference, token, editable), drafts, preview
 
 
-def _bind_aggregate_cells(workbook, groups):
-    """Aggregates open explicit source rows; never treat an HKD total as a price."""
-    ids = {g["id"] for g in groups}
-    section_groups = {}
-    for group in groups:
-        section_groups.setdefault(group["section"], []).append(group["id"])
-    departments = {"装配工": ["assembly"], "喷油工": ["painting"], "油漆": ["painting"],
-                   "搪胶": ["slush"], "车发": ["hair"], "车衣": ["sewing"], "啤工": ["molding"],
-                   "料价": ["engineering", "molding"], "纸箱": ["sales"], "印尼运费": ["sales"],
-                   "电子": ["electronic"]}
-    for sheet in workbook:
-        if sheet.sheet_state != "visible":
-            continue
-        bindings = getattr(sheet, "_quote_bindings", {})
-        sheet._quote_bindings = bindings
-        for address, binding in list(bindings.items()):
-            if binding.get("group") not in ids:
-                del bindings[address]
-        if sheet.title.startswith("电子明细"):
-            suffix = sheet.title.removeprefix("电子明细")
-            prefix = f"electronic:quote_groups/{int(suffix) - 1}/" if suffix.isdigit() else "electronic:"
-            row_groups = [g for g in groups if g["id"].startswith(prefix) and any(f["kind"] == "price" for f in g["fields"])]
-            for index, group in enumerate(row_groups, 4):
-                bindings[f"B{index}"] = {"group": group["id"], "kind": "name"}
-                price = next(f for f in group["fields"] if f["kind"] == "price")
-                bindings[f"{'E' if price['currency'] == 'RMB' else 'F'}{index}"] = {"group": group["id"], "kind": "price"}
-            continue
-        if sheet.title != "报价明细":
-            continue
-        for row in sheet:
-            if len(row) < 4:
-                continue
-            category = str(row[1].value or "")
-            group_ids = [key for code in departments.get(category, []) for key in section_groups.get(code, [])]
-            if group_ids:
-                for cell in row[2:4]:
-                    bindings.setdefault(cell.coordinate, {"groups": group_ids, "kind": "source"})
-            if isinstance(row[0].value, int) and row[0].value > 0 and row[2].value:
-                # The generated mold schedule uses numbered rows; source names
-                # may be composite, so show the explicitly labelled source list.
-                molds = [g["id"] for g in groups if g["category"] in {"模具", "模具零件", "注塑"}]
-                if molds:
-                    bindings.setdefault(row[2].coordinate, {"groups": molds, "kind": "source"})
 
-
-def _render(db, loaded, preview=None, drafts=()):
+def _render(db, loaded, preview=None, drafts=(), *, user):
     quote, sections, reference, token, editable = loaded
     snapshot = _json_object(reference.snapshot_json)
     projection_pending = _projection_pending(db, quote, sections)
@@ -214,46 +194,63 @@ def _render(db, loaded, preview=None, drafts=()):
     groups = source_groups(sections, quote.region_code)
     for group in groups:
         group["editable"] = group["section"] in editable
-    # Only product/component images are needed by the generated layout. Source
-    # workbooks are appended to downloads only, outside the formula evaluator.
+    # Match download ordering and include every retained workbook as read-only
+    # evidence. Source sheets use saved values outside the formula evaluator.
     attachments = list(db.scalars(select(InternalQuoteAttachment).where(
         InternalQuoteAttachment.quote_id == quote.id,
-        InternalQuoteAttachment.content_type.like("image/%"),
-    )).all())
-    workbook = build_internal_quote_workbook_model(quote, sections, {}, snapshot, summary, context, attachments, allow_incomplete=True)
+    ).order_by(InternalQuoteAttachment.uploaded_at, InternalQuoteAttachment.id)).all())
+    source_attachments = [attachment for attachment in attachments
+                          if _can_access_attachment_department(user, quote, attachment.department)]
+    workbook = build_internal_quote_workbook_model(quote, sections, {}, snapshot, summary, context, source_attachments, allow_incomplete=True)
     try:
         _bind_aggregate_cells(workbook, groups)
+        _append_spreadsheet_attachment_sheets(workbook, source_attachments, cached_values_only=True)
         sheets, errors = serialize_workbook(workbook)
     finally:
         workbook.close()
     for group in groups:
         for field in group["fields"]:
             field.pop("path")
-    warnings = [{"message": f"{s.department_name}资料尚未完成或需要重新计算，当前合计不完整。"}
-                for s in sections if s.is_required and (s.calculation_status != "valid" or s.dependency_status != "current")]
+            field.pop("owner_path")
+            field.pop("note_key")
+    incomplete = preview.incomplete_sections if preview is not None else _pricing_completeness(quote, sections)
+    warnings = [{"message": f"{item['section_name']}：{item['reason']}"} for item in incomplete]
     warnings.extend(warning for section in sections if section.is_required and section.department == "sewing"
                     for warning in _json_object(section.calculation_json).get("warnings", [])
                     if warning.get("code") == "sewing_quoted_price_pending")
+    batches = list(db.scalars(select(InternalQuoteImportBatch).where(
+        InternalQuoteImportBatch.quote_id == quote.id, InternalQuoteImportBatch.status == "confirmed")).all())
+    sources = []
+    for attachment in source_attachments:
+        matches = [b for b in batches if b.target_department == attachment.department and (
+            _json_object(b.preview_json).get("source_workbook_attachment_id") == attachment.id or
+            (not _json_object(b.preview_json).get("source_workbook_attachment_id") and b.source_sha256 == attachment.sha256))]
+        if matches:
+            sources.append({"id": attachment.id, "file_name": attachment.file_name, "department": attachment.department,
+                            "import_type": matches[0].import_type, "editable": attachment.department in editable,
+                            "revision": next(s.revision for s in sections if s.department == attachment.department)})
     if projection_pending:
         warnings.append(_molding_projection_warning())
     return {"quote_id": quote.id, "version_label": quote.version_label, "base_token": token,
             "sheets": sheets, "groups": groups, "formula_errors": errors,
             "factory_price_hkd": str(context["factory_price_hkd"]), "preview": preview is not None,
+            "quote_price_hkd": _authoritative_factory_quote(summary, warnings or errors),
+            "import_sources": sources,
             "read_only": not editable, "warnings": [*warnings, *(preview.warnings if preview is not None else [])]}
 
 
 def get_output_layout(db: Session, quote_id: str, user: AuthContext):
-    return _render(db, _load(db, quote_id, user))
+    return _render(db, _load(db, quote_id, user), user=user)
 
 
 def preview_output_layout(db: Session, quote_id: str, payload: OutputLayoutEdits, user: AuthContext):
     loaded, drafts, preview = _prepare(db, quote_id, payload, user)
-    return _render(db, loaded, preview, drafts)
+    return _render(db, loaded, preview, drafts, user=user)
 
 
 @quote_write
 def save_output_layout(db: Session, quote_id: str, payload: OutputLayoutEdits, user: AuthContext, request: Request | None = None):
-    _, drafts, _ = _prepare(db, quote_id, payload, user)
+    _, drafts, _ = _prepare(db, quote_id, payload, user, persist_images=True)
     # Already under quote_write's lock; ordinary section saving retains audit,
     # permission checks, dependency invalidation and one all-or-nothing commit.
     return save_whole_product_sections.__wrapped__(
