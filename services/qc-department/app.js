@@ -53,8 +53,9 @@ const PERM_GROUPS = [
   { group: '检验', menus: [
     { k: 'dashboard', label: '质量仪表板' },
     { k: 'sales-schedule', label: '客排期' },
-    { k: 'records',   label: '验货明细' },
+    { k: 'records',   label: '验货台' },
     { k: 'review',    label: '审核中心' },
+    { k: 'inspection-summary', label: '验货汇总' },
     { k: 'analysis',  label: '统计分析' },
     { k: 'suppliers', label: '供应商&客户管理' },
   ]},
@@ -1001,8 +1002,9 @@ setInterval(tickClock, 1000);
 const PAGE_TITLES = {
   'sales-schedule': '客排期',
   dashboard:        '质量仪表板',
-  records:          '验货明细',
+  records:          '验货台',
   review:           '审核中心',
+  'inspection-summary': '验货汇总',
   analysis:         '统计分析',
   suppliers:        '供应商&客户管理',
   daily:            '品质日报',
@@ -1016,6 +1018,8 @@ const PAGE_TITLES = {
 };
 
 function showPage(name) {
+  if(window.QcInspectionSheet?.navigationState().dirty){showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
+  if (window.QcInspectionSummary?.busy) { showToast('历史导入正在保存，请稍候', 'warning'); return; }
   if (window.QcWorkflow?.navigationState().busy) { showToast('正在处理验货记录，请稍候再切换页面', 'error'); return; }
   /* 越权防护：按权限矩阵「查看」列判断，无权访问则强制返回仪表板 */
   if (!canView(name)) {
@@ -1025,7 +1029,9 @@ function showPage(name) {
   // Hide the inspection drawer synchronously; destination rendering can fail
   // or be delayed, and must never control whether it leaks across pages.
   window.QcWorkflow?.beforePageChange(name);
+  if(currentPage!==name)window.QcInspectionAudit?.dismissNotices();
   currentPage = name;
+  window.__QC_PAGE_CHANGED?.(name);
   /* 切换 active page */
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1049,6 +1055,7 @@ function showPage(name) {
         if (name === 'records')          renderRecordsTable();
         if (window.QcWorkflow) window.QcWorkflow.onPage(name);
         if (name === 'review')           renderReviewPage();
+        if (name === 'inspection-summary') window.QcInspectionSummary?.load();
         if (name === 'analysis')         renderAnalysis();
         if (name === 'suppliers')        renderSuppliers();
         if (name === 'daily')            renderDailyReport();
@@ -2156,7 +2163,7 @@ async function refreshRecordsPage() {
     await window.QcWorkflow?.load();
     filterRecords();
     updateTopKpis();
-    showToast('✓ 验货明细已刷新，共 ' + state.records.length + ' 条', 'success');
+    showToast('✓ 验货台已刷新，共 ' + state.records.length + ' 条', 'success');
   } catch (err) {
     console.error('[refreshRecordsPage]', err);
     showToast('刷新失败：' + err.message, 'error');
@@ -5135,6 +5142,7 @@ function _esc(s) {
 }
 
 function setReviewTab(tab) {
+  if(window.QcInspectionSheet)return window.QcInspectionSheet.loadReview(tab);
   _reviewTab = tab;
   renderReviewPage();
 }
@@ -5146,6 +5154,7 @@ function _reviewCounts() {
 }
 
 function renderReviewPage() {
+  if(window.QcInspectionSheet){if(currentPage==='review')return window.QcInspectionSheet.loadReview();return;}
   const wrap = document.getElementById('reviewTableWrap');
   if (!wrap) return;
   const counts = _reviewCounts();
@@ -5235,7 +5244,7 @@ function approveRecord(id) {
   r.rejectReason = ''; r.rejectBy = ''; r.rejectAt = '';
   delete r.resubmitted;
   persist();
-  showToast(`记录 #${id} 已审核通过，进入验货明细 ✓`, 'success');
+  showToast(`记录 #${id} 已审核通过，进入验货台 ✓`, 'success');
   renderReviewPage();
   if (currentPage === 'records') renderRecordsTable();
   updateTopKpis();
@@ -7050,14 +7059,23 @@ window.addEventListener('resize', () => {
 ════════════════════════════════════════ */
 
 /* ── 主题切换 ── */
+function toggleTheme() {
+  applyTheme(document.body.classList.contains('theme-light') ? 'dark' : 'light');
+}
+
 function applyTheme(theme) {
   const t = theme === 'dark' ? 'dark' : 'light';
   document.body.classList.remove('theme-dark', 'theme-light');
   document.body.classList.add('theme-' + t);
   (window.__QC_NEXUS ? sessionStorage : localStorage).setItem(STORAGE_KEYS.theme, t);
-  /* 同步下拉框选中状态 */
-  const sel = document.getElementById('themeSelect');
-  if (sel) sel.value = t;
+  /* 同步开关、当前主题文案和辅助技术状态。 */
+  const toggle = document.getElementById('themeToggle');
+  if (toggle) {
+    toggle.setAttribute('aria-checked', String(t === 'dark'));
+    toggle.title = t === 'dark' ? '切换为浅色' : '切换为深色';
+  }
+  const label = document.getElementById('themeLabel');
+  if (label) label.textContent = t === 'dark' ? '深色' : '浅色';
   /* 主题切换后重绘所有已初始化的图表 */
   try {
     const data = recs();
@@ -8550,7 +8568,7 @@ async function exportMonthlyReportPDF() {
   <!-- PAGE 3: 明细 -->
   <div class="rpt-pdf-page" style="width:1480px;height:1046px;background:#ffffff;color:#111827;padding:28px 36px;box-sizing:border-box;overflow:hidden;font-family:Arial,'Microsoft YaHei',sans-serif">
     ${hdr(monthStr+' · 本月验货明细'+(hasMore?`（前50条 / 共${data.length}条）`:''))}
-    ${hasMore?`<div style="font-size:10px;color:#9ca3af;text-align:right;margin-bottom:4px">* 完整数据请查看系统验货明细页面</div>`:''}
+    ${hasMore?`<div style="font-size:10px;color:#9ca3af;text-align:right;margin-bottom:4px">* 完整数据请查看系统验货台页面</div>`:''}
     <table style="width:100%;border-collapse:collapse;font-size:11.5px">
       <thead>
         <tr style="background:#f1f5f9">

@@ -181,20 +181,36 @@ def test_actual_http_import_download_undo_and_permissions(db,monkeypatch):
         pushed=client.post(base.replace('inspection-sheet/','workflow/tasks'),json={'requestKey':uuid4().hex,'items':[{'sourceId':line.id,'sourceRevision':line.revision,'method':'internal','plannedDate':'2026-10-29','plannedQuantity':str(line.quantity),'batch':'首验'}]})
         assert pushed.status_code==200,pushed.text
         items=client.get(base+'entries').json()['items'];assert len(items)==1
+        pending_draft=items[0]
+        assert client.get(base+'workbook/status').json()['count']==0
+        saved=client.post(base+'entries/'+pending_draft['id']+'/save',json={'revision':pending_draft['revision'],'result':'PASS','remark':'审核后合并'}).json()
+        pending=client.post(base+'entries/'+saved['id']+'/submit',json={'revision':saved['revision']}).json()
+        approved=client.post(base+'review/confirm',json={'entries':[dict(id=pending['id'],revision=pending['revision'])],'requestKey':uuid4().hex})
+        assert approved.status_code==200 and approved.json()['succeeded']==1
+        items=[approved.json()['results'][0]['item']]
         before=client.get(base+'workbook/download').content
         body=request(items)
         result=client.post(base+'workbook/import',json=body);assert result.status_code==200,result.text
+        assert client.get(base+'entries').json()['items']==[]
+        assert client.get(base+'workbook/status').json()['count']==0
         assert len(load_workbook(BytesIO(client.get(base+'workbook/download').content)).sheetnames)==17
         assert client.get(base+'workbook/jobs/'+body['requestKey']).json()['status']=='succeeded'
         assert client.post(base+'workbook/undo',json={'requestKey':uuid4().hex,'expectedVersion':1}).status_code==200
+        assert client.get(base+'entries').json()['items']==[]
+        assert len(client.get(base+'review/entries').json()['items'])==len(items)
+        assert client.get(base+'workbook/status').json()['count']==1
         assert client.get(base+'workbook/download').content==before
         assert client.post(base+'workbook/import',json=request(items,2),headers={'Sec-Fetch-Site':'cross-site'}).status_code==403
         assert client.get(base+'workbook/download?company=hy-huadeng').status_code==403
-        row=items[0];with_photo,_=photo(row)
+        row=items[0]
         mapped_body={'revision':row['revision'],'result':'FAIL','remark':'mapped HTTP save'}
-        saved=client.post(base+'workbook/entries/'+row['id']+'/save',json=mapped_body)
-        assert saved.status_code==200 and saved.json()['result']=='FAIL' and len(saved.json()['photos'])==1
         assert client.post(base+'workbook/entries/'+row['id']+'/save',json=mapped_body).status_code==409
+        revoked=client.post(base+'review/revoke',json={'entries':[dict(id=row['id'],revision=row['revision'])],'requestKey':uuid4().hex,'reason':''})
+        assert revoked.json()['succeeded']==1
+        pending=revoked.json()['results'][0]['item'];mapped_body['revision']=pending['revision']
+        saved=client.post(base+'review/entries/'+row['id']+'/save',json=mapped_body)
+        assert saved.status_code==200 and saved.json()['result']=='FAIL'
+        assert client.post(base+'review/entries/'+row['id']+'/save',json=mapped_body).status_code==409
         response=client.head(base+'workbook/download');assert response.status_code==200 and not response.content
         assert int(response.headers['content-length'])==len(before)
         replacement_body=replacement(fresh_base(),version=2)
@@ -205,7 +221,7 @@ def test_actual_http_import_download_undo_and_permissions(db,monkeypatch):
         assert client.get(base+'workbook/archives/'+str(archive_id)).content==before
         assert client.get(base+'workbook/archives/'+str(archive_id)+'?company=hy-huadeng').status_code==403
         assert client.post(base+'workbook/replace',json=replacement_body,headers={'Sec-Fetch-Site':'cross-site'}).status_code==403
-        assert client.get(base+'entries').json()['items'][0]['result']=='FAIL'
+        assert client.get(base+'review/entries').json()['items'][0]['result']=='FAIL'
         user=current[0];permissions=frozenset({'qc_inspection:read'})
         current[0]=replace(user,permissions=permissions,grants=tuple(replace(g,permissions=permissions) for g in user.grants))
         assert client.get(base+'workbook/archives').status_code==403
@@ -218,8 +234,10 @@ def test_actual_http_import_download_undo_and_permissions(db,monkeypatch):
 
 def test_all_actual_judgments_use_one_snapshot_and_never_workflow_progress(monkeypatch):
     from app.services import qc_workflow as wf
-    supported=['','PASS','FAIL','REJ','COND','HOLD']
-    assert {'','PASS','REJ','COND','HOLD'}==wf.RESULTS
+    supported=['','PASS','FAIL','REJ','COND','HOLD','PENDING','LG']
+    from app.services.qc_inspection_results import RESULTS
+    assert set(supported)=={'',*RESULTS}
+    assert wf.RESULTS=={'','PASS','FAIL','PENDING','LG'}
     candidates=[]
     for i,result in enumerate(supported):
         src=source('judgment-'+str(i),'000QA-CUM-'+str(i).zfill(4));src['customer']='ZURU'
@@ -227,7 +245,7 @@ def test_all_actual_judgments_use_one_snapshot_and_never_workflow_progress(monke
             'attachments':[{'id':'expired','mime':'image/jpeg','url':'https://invalid.example/expired'}]}
         candidates.extend(sheet.candidates('huaxing',[],[task],[src]))
     monkeypatch.setattr(wf,'read_file',lambda *args:pytest.fail('cumulative synchronization read photo bytes'))
-    items=sheet.sync('huaxing',candidates,False)['items'];assert len(items)==6
+    items=sheet.sync('huaxing',candidates,False)['items'];assert len(items)==len(supported)
     for item in items:item['completion']='未推送'
     run(items);w=book();_,snapshot,meta=latest()
     for item,expected in zip(items,supported):
@@ -235,11 +253,13 @@ def test_all_actual_judgments_use_one_snapshot_and_never_workflow_progress(monke
         assert snapshot[identity]['result']==expected
         assert (w[binding['sheet']].cell(binding['row'],9).value or '')==expected
         assert (w[summary['sheet']].cell(summary['row'],14).value or '')==expected
-    reject=items[3];reject=save(reject,reject['result'],'仅改备注');assert reject['cumulativeResult']=='REJ'
+    reject=items[3]
+    with pytest.raises(HTTPException):save(reject,reject['result'],'不能新写入历史结果')
+    assert reject['cumulativeResult']=='REJ'
     hold=items[5];hold=save(hold,'PASS','本人已判定');assert hold['cumulativeResult']=='PASS'
     blank=items[0];blank=save(blank,'FAIL','新结论');run([blank],1)
     blank=save(blank,'PASS','复核');run([blank],2)
-    assert len(latest()[1])==6
+    assert len(latest()[1])==len(supported)
     _,_,meta=latest();r=meta['summaryRows'][blank['id']];assert book()[r['sheet']].cell(r['row'],14).value=='PASS'
 
 
@@ -256,7 +276,7 @@ def test_detail_reuses_original_export_and_customer_mapping_without_subtotals():
     run(items[:11]);run(items[11:],1);assert book()['验货明细'].max_row==len(items[11:])+1
     run(items,2);w=book();_,snap,meta=latest();ordered=[snap[i] for i in meta['detailIds']]
     reference=load_workbook(BytesIO(sheet.export_records(ordered,include_photos=False))).active
-    actual=w.worksheets[0];assert actual.title=='验货明细' and actual.max_column==15 and actual.max_row==25
+    actual=w.worksheets[0];assert actual.title=='验货明细' and actual.max_column==16 and actual.max_row==25
     assert actual.freeze_panes==reference.freeze_panes and actual.auto_filter.ref==reference.auto_filter.ref
     assert actual.print_title_rows==reference.print_title_rows and actual.page_setup==reference.page_setup
     for row in reference:
@@ -726,3 +746,72 @@ def test_initial_legacy_template_without_metadata_requires_exact_hash_repair(mon
         c.rollback_repair('huaxing',result['repairId'],1)
         assert c.download('huaxing')[0]==before
         assert c.state('huaxing',[],SCOPE)['repairRequired']
+
+
+def test_unlimited_scope_status_and_import_include_all_visible_dates():
+    items=seed(4)
+    for index,result in enumerate(('PASS','FAIL','PENDING','PASS')):
+        items[index]=save(items[index],result,'scope regression')
+    status=c.state('huaxing',items,{})
+    assert status['scope']['dateFrom']==status['scope']['dateTo']==''
+    assert status['count']==4 and status['pending']==4
+    body=request(items);body['scope']={}
+    result=c.operate('huaxing','tester',body,items)
+    assert result['count']==4
+    assert set(latest()[1])=={row['id'] for row in items}
+    assert c.state('huaxing',items,{'dateFrom':'','dateTo':''})['pending']==0
+
+
+@pytest.mark.parametrize(('scope','count'),[
+    ({'dateFrom':'2026-11-02','dateTo':'2026-11-03'},4),
+    ({'dateFrom':'2026-11-04','dateTo':'2026-11-09'},0),
+    ({'dateFrom':'2026-11-04'},0),
+    ({'dateTo':'2026-10-30'},2),
+    ({'search':'ZURU'},2),
+    ({'result':'PENDING'},1),
+])
+def test_unlimited_scope_keeps_explicit_date_search_and_result_filters(scope,count):
+    items=seed(4)
+    items[0]=save(items[0],'PENDING','pending confirmation')
+    status=c.state('huaxing',items,scope)
+    assert status['count']==count
+    assert status['scope']['dateFrom']==scope.get('dateFrom','')
+    assert status['scope']['dateTo']==scope.get('dateTo','')
+
+
+def test_committed_workbook_clears_only_merged_pending_rows_and_undo_restores():
+    items=seed(3)
+    assert c.pending_items('huaxing',items)==items
+    run(items[:2])
+    persisted=c.download('huaxing')[0]
+    assert [r['id'] for r in c.pending_items('huaxing',items)]==[items[2]['id']]
+    with sheet.store() as conn:assert conn.execute('SELECT COUNT(*) FROM entries').fetchone()[0]==3
+    assert c.pending_items('huadeng',items)==items
+    # Identical retry has no duplicate rows, new version or changed download bytes.
+    assert run(items[:2],1)['status']=='unchanged'
+    assert c.download('huaxing')[0]==persisted
+    modified=save(items[0],'FAIL','changed after merge')
+    assert {r['id'] for r in c.pending_items('huaxing',[modified,*items[1:]])}=={modified['id'],items[2]['id']}
+    c.operate('huaxing','tester',{'requestKey':uuid4().hex,'expectedVersion':1},[],'undo')
+    assert len(c.pending_items('huaxing',items))==3
+
+
+def test_failed_mapping_or_writer_never_clears_unmerged_batch(monkeypatch):
+    items=seed(2)
+    bad=deepcopy(items);bad[1]['customer']=''
+    with pytest.raises(HTTPException):run(bad)
+    assert c.pending_items('huaxing',items)==items
+    def fail(*args):raise RuntimeError('disk failure before commit')
+    monkeypatch.setattr(writer,'build',fail)
+    with pytest.raises(HTTPException):run(items)
+    assert c.pending_items('huaxing',items)==items
+    assert latest()[1]=={}
+
+def test_improvement_only_change_creates_version_and_undo_keeps_history():
+ items=seed(1);run(items);before=c.download('huaxing')[0]
+ r=items[0];items[0]=sheet.save('huaxing',r['id'],dict(revision=r['revision'],result=r['result'],remark=r['remark'],improvement='加固包装'),{'id':'test','name':'test'})
+ result=run(items,1);assert result['version']==2
+ assert '加固包装' in [cell.value for row in book()['验货明细'] for cell in row]
+ same=run(items,2);assert same['status']=='unchanged'
+ c.operate('huaxing','test',{'requestKey':uuid4().hex,'expectedVersion':2},[],'undo')
+ assert c.download('huaxing')[0]==before

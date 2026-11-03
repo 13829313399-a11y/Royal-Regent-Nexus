@@ -235,6 +235,8 @@ def test_returned_legacy_keeps_original_snapshot_and_new_revision_attachments(db
     assert record==original and t['legacyOriginal']==original and t['reference']
     assert wf.legacy_links('huaxing')=={22:t['id']} and wf.legacy_links('huadeng')=={}
     e=deepcopy(t['execution']);e['remark']='补充备注';e['record']['remark']='补充备注'
+    with pytest.raises(HTTPException):wf.act(db,'huaxing',t['id'],'save',{'revision':t['revision'],'execution':e,'method':'internal'},ACTOR)
+    e['result']='FAIL' # Explicit new judgment; legacyOriginal remains REJ.
     t=wf.act(db,'huaxing',t['id'],'save',{'revision':t['revision'],'execution':e,'method':'internal'},ACTOR)
     t=attach(t);t=command(db,t,'submit');t=command(db,t,'approve')
     assert t['legacyOriginal']==original and t['execution']['record']['date']=='未知日期'
@@ -265,15 +267,13 @@ def test_schedule_feedback_keeps_sales_notes_separate_from_inspection_issues(db)
     assert wf.sources(db,'huadeng')['items']==[]
 
 
-def test_example_source_notes_survive_saved_feedback():
-    from app.services.qc_schedule_example_feedback import read_feedback, save_feedback
-    payload={'factory_id':'huaxing','source':{'sha256':'example-source'},
-             'items':[{'id':'example-1','completion':'','remark':'原排期备注\n保留原文'}]}
-    save_feedback(deepcopy(payload),{'id':'example-1','sourceSha256':'example-source',
-        'completion':'已完成','remark':'验货备注','revision':0},'test')
-    row=read_feedback(deepcopy(payload))['items'][0]
-    assert row['sourceRemark']=='原排期备注\n保留原文'
-    assert row['remark']=='验货备注' and row['feedbackRevision']==1
+def test_legacy_source_notes_remain_independent_of_inspection_feedback():
+    from app.services import qc_inspection_sheet as sheet
+    source={'customer':'ZURU','productNo':'legacy-item','sourceRemark':'原排期备注\n保留原文','remark':'历史验货回填'}
+    before=deepcopy(source)
+    item=sheet.base_fields(source)
+    assert item['sourceNote']=='原排期备注\n保留原文'
+    assert source==before
 
 
 def test_inspector_is_bound_to_authenticated_writer_and_review_preserves_it(db):
