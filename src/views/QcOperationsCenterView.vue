@@ -15,6 +15,7 @@ interface QcFrame extends Window {
   __QC_SET_FACTORY_BRIDGE?: (bridge: {
     factory: string; options: FactoryOption[]; page: string
     select: (factory: string) => Promise<void>
+    navigate?: (page: string) => void
   }) => void
 }
 const route = useRoute()
@@ -39,7 +40,7 @@ const ready = ref(false)
 const error = ref('')
 const switching = ref(false)
 const frameVersion = ref(0)
-let page = 'dashboard'
+let page = typeof route.query.qcPage === 'string' ? route.query.qcPage : 'dashboard'
 let sequence = 0
 function child() { return frame.value?.contentWindow as QcFrame | null }
 function permitLeave() {
@@ -70,6 +71,11 @@ function connectFrame(restorePage = true) {
   if (!target || !ready.value) return
   const identity = `${contextId.value}:${auth.currentUser?.id}:${auth.authorizationVersion}`
   target.__QC_SET_FACTORY_BRIDGE?.({ factory: contextId.value, options: options.value, page: restorePage ? page : (target.__QC_CURRENT_PAGE?.() || page),
+    navigate: value => {
+      if (target !== child() || identity !== `${contextId.value}:${auth.currentUser?.id}:${auth.authorizationVersion}`) return
+      page = value
+      if (route.query.qcPage !== value) void router.replace({ path: route.path, query: { ...route.query, qcPage: value }, hash: route.hash })
+    },
     select: async value => {
       if (target !== child() || identity !== `${contextId.value}:${auth.currentUser?.id}:${auth.authorizationVersion}`) return
       await selectFactory(value)
@@ -103,7 +109,7 @@ watch(options, () => connectFrame(false))
 
 <template>
   <main class="qc-department-host">
-    <header class="flex flex-wrap items-center justify-between gap-2 border-b bg-white px-4 py-2 text-slate-900">
+    <header class="qc-host-header flex flex-wrap items-center justify-between gap-2 border-b bg-white px-4 py-2 text-slate-900">
       <RouterLink :to="{ path: '/modules/qc', query: { factory: contextId } }" class="text-sm font-semibold text-teal-700">返回 QC 模块中心</RouterLink>
       <h1 class="text-sm font-semibold">{{ factoryName }} · QC 验货工作台</h1>
       <div class="flex flex-wrap items-center gap-2">
@@ -127,4 +133,14 @@ watch(options, () => connectFrame(false))
 .qc-department-host { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100dvh; min-width: 320px; background: var(--background, #f8fafc); }
 .qc-host-factory { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 .qc-host-factory select { min-height: 36px; max-width: 180px; border: 1px solid var(--input); border-radius: 10px; padding: 4px 10px; background: var(--card, white); font: inherit; }
+/* Scoped QC frame chrome; Nexus theme and authorization/factory bridge are unchanged. */
+.qc-department-host { background: #edf3f9; }
+.qc-host-header { background: rgba(241,247,253,.94); border-color: #dae5f0; color: #23354e; padding: 8px 18px; min-height: 46px; font-family: -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif; }
+.qc-host-header a { color: #255faa; text-decoration: none; }
+.qc-host-header h1 { font-family: inherit; font-weight: 600; letter-spacing: .2px; }
+.qc-host-factory { color: #586d86; font-size: 12px; }
+.qc-host-factory select { min-height: 32px; background: rgba(255,255,255,.8); color:#253b57; border-color:#c8d6e7; border-radius:8px; }
+.qc-host-header :deep(button) { border-radius:8px; border-color:#c8d6e7; background:rgba(255,255,255,.85); }
+@media (max-width:640px) { .qc-host-header { padding:7px 12px; gap:6px; } .qc-host-header h1 { font-size:12px; } .qc-host-header>div { justify-content:flex-end; flex:1; } }
+@media (prefers-reduced-motion:reduce) { .qc-host-header * { transition:none!important; } }
 </style>
