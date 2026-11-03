@@ -541,6 +541,9 @@ function emptyQuote(): InternalQuote {
 
 function toBatchProduct(source: ApiInternalQuoteBatchProduct): InternalQuoteBatchProduct {
   return {
+    versionLabel: source.version_label,
+    scenarioName: source.scenario_name,
+    workingVersionWarning: source.working_version_warning,
     quoteId: source.quote_id,
     quoteNo: source.quote_no,
     productName: source.product_name,
@@ -549,7 +552,7 @@ function toBatchProduct(source: ApiInternalQuoteBatchProduct): InternalQuoteBatc
     batchSize: source.batch_size,
     quoteType: source.quote_type,
     regionCode: source.region_code,
-    status: uiStatus(source.status),
+    status: source.archived ? 'archived' : uiStatus(source.status),
     headerRevision: source.header_revision,
     isBaseline: source.is_baseline,
     differsFromBaseline: source.differs_from_baseline,

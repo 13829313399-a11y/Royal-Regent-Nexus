@@ -37,6 +37,7 @@ import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { getApiErrorMessage } from '@/lib/http'
+import { readWorkingVersions } from '@/lib/internalQuoteWorkingVersions'
 import { getFactoryScopedRoute, type FactoryContextId } from '@/data/enterpriseMock'
 import { internalQuoteApi, type ApiInternalQuoteCustomer, type InternalQuoteDashboardPeriod, type InternalQuotePricingBaselineUpdateRequest } from '@/api/internalQuote'
 import { isForeignFactory, isInternalQuoteReadOnly } from '@/lib/internalQuoteAccess'
@@ -66,6 +67,9 @@ const customerDialogFactoryGeneration = ref(0)
 const deleteTarget = ref<InternalQuote>()
 const deleteDialogError = ref('')
 const deletingQuoteId = ref('')
+const resumeChoice = ref<{ factory: string; options: Array<{ id: string; label: string; status: string }> }>()
+let openSequence = 0
+onBeforeUnmount(() => { openSequence++ })
 const archiveTarget = ref<InternalQuote>()
 const archiveReason = ref('')
 const archiveDialogError = ref('')
@@ -326,10 +330,42 @@ async function handleConfirm(payload: InternalQuoteCreatePayload) {
   }
 }
 
-function openQuote(quote: InternalQuote) {
+function openExactQuote(quote: { id: string; status: string }, factoryId: string) {
+  resumeChoice.value = undefined
   const target = ['fully_approved', 'final_pending', 'released', 'exported'].includes(quote.status) ? 'summary' : 'collaboration'
-  void router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/${target}`))
+  void router.push(getQuoteRoute(`/modules/sales-business/internal-quote-desk/${quote.id}/${target}`, factoryId))
 }
+async function openQuote(quote: InternalQuote) {
+  if (quote.factoryId !== activeFactoryId.value) return
+  const userId = authStore.currentUser?.id || '', generation = quoteStore.factoryContextGeneration, sequence = ++openSequence
+  const documentId = quote.documentQuoteId || quote.id
+  const saved = readWorkingVersions(userId, quote.factoryId, documentId)
+  const current = () => sequence === openSequence && authStore.currentUser?.id === userId && quoteStore.isFactoryContextCurrent(quote.factoryId, generation)
+  quoteStore.errorMessage = ''; resumeChoice.value = undefined
+  if (!saved.lastQuoteId || saved.lastQuoteId === quote.id) { openExactQuote(quote, quote.factoryId); return }
+  try {
+    let previous
+    try { previous = await internalQuoteApi.get(saved.lastQuoteId) }
+    catch (cause) { if ((cause as { response?: { status?: number } }).response?.status !== 404) throw cause }
+    if (!current()) return
+    if (previous && (previous.factory_id !== quote.factoryId || previous.document_quote_id !== documentId)) throw new Error('上次工作版本不属于当前报价，请重新选择报价。')
+    if (previous && !previous.version_archived && !previous.document_archive && previous.status !== 'archived') {
+      openExactQuote(previous, quote.factoryId); return
+    }
+    let family
+    try { family = await internalQuoteApi.listAlternatives(saved.lastRootId || quote.id) }
+    catch (cause) {
+      if ((cause as { response?: { status?: number } }).response?.status !== 404) throw cause
+      family = await internalQuoteApi.listAlternatives(quote.id)
+    }
+    if (!current()) return
+    resumeChoice.value = { factory: quote.factoryId, options: family.items.filter(item => !item.archived).map(item => ({
+      id: item.quote_id, label: `${item.product_name} · ${item.scenario_name} · ${item.version_label}`, status: item.status,
+    })) }
+    if (!resumeChoice.value.options.length) quoteStore.errorMessage = '上次工作版本已归档，当前产品没有可继续的版本；请先恢复报价或从明确的历史版本链接查看。'
+  } catch (cause) { if (current()) quoteStore.errorMessage = `工作版本读取失败：${getApiErrorMessage(cause)}` }
+}
+watch(() => [activeFactoryId.value, authStore.currentUser?.id], () => { openSequence++; resumeChoice.value = undefined })
 
 function isQuoteSelectedForComparison(quote: InternalQuote) {
   return comparisonQuoteIds.value.has(quote.id)
@@ -713,6 +749,11 @@ onBeforeUnmount(() => {
     </div>
 
     <p v-if="quoteStore.errorMessage" class="quote-page-message error" role="alert">{{ quoteStore.errorMessage }}</p>
+    <section v-if="resumeChoice" class="quote-page-message" aria-label="重新选择工作版本">
+      <p>上次工作版本已归档或不可用，请明确选择要继续的版本：</p>
+      <button v-for="option in resumeChoice.options" :key="option.id" type="button" @click="openExactQuote(option, resumeChoice.factory)">{{ option.label }}</button>
+      <button type="button" @click="resumeChoice = undefined">取消</button>
+    </section>
     <p v-if="quoteStore.dashboardErrorMessage" class="quote-page-message error" role="alert">统计数据读取失败：{{ quoteStore.dashboardErrorMessage }}</p>
     <p v-if="comparisonError" class="quote-page-message error" role="alert">{{ comparisonError }}</p>
 

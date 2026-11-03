@@ -179,7 +179,7 @@ watch([selectedFactoryId, () => loadedQuote.value?.factoryId], ([factoryId, quot
 
     <nav v-if="batchProducts.length > 1" class="quote-export-products" aria-label="批次产品正式输出切换">
       <div><strong>本批 {{ batchProducts.length }} 款，逐款独立输出</strong><small>{{ isDirectOutput ? '每款独立输出，不影响其他款；当前已有' : '整批共用一次审核结果；当前已有' }} {{ batchOutputReadyCount }}/{{ batchProducts.length }} 款可生成正式文件</small></div>
-      <button v-for="product in batchProducts" :key="product.quoteId" type="button" :class="{ active: product.quoteId === quote.id }" :aria-current="product.quoteId === quote.id ? 'page' : undefined" @click="switchOutputProduct(product.quoteId)"><b>{{ String(product.position).padStart(2, '0') }}</b><span>{{ product.productName }}<small>{{ product.isBaseline ? '基准款' : product.differsFromBaseline ? '有差异' : '同基准' }}</small></span><em :class="product.status">{{ statusLabels[product.status] }}</em></button>
+      <button v-for="product in batchProducts" :key="product.quoteId" type="button" :class="{ active: product.quoteId === quote.id }" :aria-current="product.quoteId === quote.id ? 'page' : undefined" @click="switchOutputProduct(product.quoteId)"><b>{{ String(product.position).padStart(2, '0') }}</b><span>{{ product.productName }}<small>{{ product.workingVersionWarning || [product.scenarioName, product.versionLabel].filter(Boolean).join(' · ') || (product.isBaseline ? '基准款' : product.differsFromBaseline ? '有差异' : '同基准') }}</small></span><em :class="product.status">{{ statusLabels[product.status] }}</em></button>
     </nav>
 
     <p v-if="message" class="quote-page-message success">{{ message }}</p>

@@ -61,7 +61,8 @@ from app.services.auth import AuthContext, get_current_user
 from app.schemas.internal_quote_alternatives import AlternativeCopyRequest, AlternativeSelectionRequest, AlternativeArchiveRequest, AlternativeSyncRequest
 from app.services.internal_quote_packaging_copy import PackagingCopyRequest, preview_packaging_copy, apply_packaging_copy
 from app.services.internal_quote_sync import sync_options, preview_sync, apply_sync
-from app.schemas.internal_quote_alternatives import SeriesExportRequest, AlternativeExportRequest
+from app.schemas.internal_quote_alternatives import SeriesExportRequest, AlternativeExportRequest, AlternativeGroupCopyRequest
+from app.services.internal_quote_alternative_groups import copy_alternative_group, get_alternative_group
 from app.services.internal_quote_alternative_export import export_alternatives
 from app.services.internal_quote_series_export import export_series
 from app.services.internal_quote_document_clone import DocumentCloneRequest, clone_document
@@ -192,6 +193,17 @@ def post_sync_apply(quote_id: str, payload: AlternativeSyncRequest, request: Req
 def post_alternative(quote_id: str, payload: AlternativeCopyRequest, request: Request,
                      db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
     return copy_alternative(db, quote_id, payload, current_user, request)
+
+
+@router.get("/{quote_id}/alternative-group")
+def read_alternative_group(quote_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return get_alternative_group(db, quote_id, current_user)
+
+
+@router.post("/{quote_id}/alternative-groups")
+def post_alternative_group(quote_id: str, payload: AlternativeGroupCopyRequest, request: Request,
+                           db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return copy_alternative_group(db, quote_id, payload, current_user, request)
 
 
 @router.patch("/{quote_id}/alternative-selection")
