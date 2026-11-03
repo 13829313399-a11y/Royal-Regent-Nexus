@@ -6730,9 +6730,9 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
 
   it.each([['库存盘点', 'CartonStocktakeWorkspace'], ['期初库存', 'CartonOpeningInventoryImport']])('allows leaving the clean %s page but protects its active work', async (label, name) => {
     mockReceiptWorkspace([])
-    const state = reactive({ blocked: false })
+    const state = reactive({ blocked: false, reason: `${label}有未完成的操作，请先处理。` })
     const workspace = defineComponent({ name, setup(_, { expose }) {
-      expose({ get navigationBlocked() { return state.blocked } }); return () => null
+      expose({ get navigationBlocked() { return state.blocked }, get navigationBlockMessage() { return state.reason } }); return () => null
     } })
     const wrapper = mountView('inventory', { [name]: workspace })
     try {
@@ -6740,10 +6740,20 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
       const from = { fullPath: '/carton?tab=inventory' }, to = { fullPath: '/carton?tab=orders' }
       expect(guardCartonNavigation(to, from)).toBe(true)
       state.blocked = true; await flushPromises(); routerReplaceMock.mockClear()
+      await findButton(wrapper, label!).trigger('click'); await flushPromises()
+      expect(wrapper.getComponent(CartonActionNotice).props('message')).toBe('')
       await findButton(wrapper, '实时库存').trigger('click')
       expect(routerReplaceMock).not.toHaveBeenCalled()
       expect(guardCartonNavigation(to, from)).toBe(false)
+      await flushPromises()
+      expect(wrapper.getComponent(CartonActionNotice).props('message')).toBe(state.reason)
+      const firstReason = state.reason
+      state.reason = `${label}正在保存，请等待完成。`; await flushPromises()
+      expect(wrapper.getComponent(CartonActionNotice).props('message')).toBe(state.reason)
+      expect(wrapper.text()).not.toContain(firstReason)
       state.blocked = false; await flushPromises()
+      expect(wrapper.getComponent(CartonActionNotice).props('message')).toBe('')
+      expect(wrapper.text()).not.toContain(state.reason)
       await findButton(wrapper, '实时库存').trigger('click'); await flushPromises()
       expect(wrapper.findComponent({ name }).exists()).toBe(false)
       expect(guardCartonNavigation(to, from)).toBe(true)

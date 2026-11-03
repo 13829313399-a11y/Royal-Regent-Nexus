@@ -17,7 +17,11 @@ const reason = ref('期初库存导入有误，整批撤销后更正重导'), re
 const enabled = computed(() => props.connected && props.canManage && Boolean(props.viewerKey))
 const busy = computed(() => loading.value || previewing.value || saving.value)
 const navigationBlocked = computed(() => previewing.value || saving.value || Boolean(preview.value || pending.value))
-defineExpose({ navigationBlocked })
+const navigationBlockMessage = computed(() => saving.value ? '正在撤销期初库存批次，请等待完成后再切换页面。'
+  : pending.value ? '期初库存整批撤销结果尚待核实，请先在原预览中核对或重试。'
+    : previewing.value ? '正在核对期初库存整批撤销范围，请等待预览完成。'
+      : preview.value ? '已打开期初库存整批撤销预览，请先完成或关闭预览，再切换页面。' : '')
+defineExpose({ navigationBlocked, navigationBlockMessage })
 let generation = 0, listGeneration = 0, previewGeneration = 0
 const statuses = { ACTIVE: '已入账', PARTIAL: '已有逐笔冲销，须核实', REVERSED: '已整批撤销' }
 const dateText = (value: string) => value ? value.replace('T', ' ').slice(0, 19) : '未记录'
