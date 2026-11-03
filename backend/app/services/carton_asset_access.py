@@ -54,11 +54,13 @@ def managed(asset):
     return bool(asset.owner_department) or asset.asset_purpose=='EVIDENCE' or asset.kind=='text' or enabled()
 
 
-def ensure(db,user,asset,*,write=False,confirm=False,library=False,supplier=None,view_factory=None,collaborate=False):
+def ensure(db,user,asset,*,write=False,confirm=False,library=False,supplier=None,view_factory=None,collaborate=False,classification=False,collaboration_action=None):
     if asset.recognition_source=='materials_folder': raise HTTPException(404,'请从原订单资料记录查阅')
     if asset.is_archived: raise HTTPException(404,'资料已归档')
     if view_factory and view_factory!=asset.factory_id and asset.owner_department!='supplier':
-        raise HTTPException(404,'资料不属于当前厂区')
+        from app.services.carton_asset_visibility import factories
+        if asset.asset_purpose!='MATERIAL' or view_factory not in factories(db,asset):
+            raise HTTPException(404,'资料不属于当前厂区')
     if not managed(asset): return
     if supplier is None and view_factory in (None,asset.factory_id):supplier=external_actor(db,user,asset)
     action='confirm' if confirm else 'manage' if write else 'read'
@@ -68,8 +70,19 @@ def ensure(db,user,asset,*,write=False,confirm=False,library=False,supplier=None
         current=supplier_access(db,user,asset.factory_id,'carton_supplier:edit' if write else 'carton_supplier:read')
         if current.id!=supplier.id or asset.asset_purpose=='EVIDENCE': raise HTTPException(404,'资料不可访问')
         if department is None: raise HTTPException(404,'历史资料缺少可信归属')
+        if classification and confirm and not can_confirm(user,asset.factory_id,'supplier'):
+            raise HTTPException(403,'没有资料状态确认权限')
         own=department=='supplier' and asset.owner_supplier_id==current.id
-        if write and not own: raise HTTPException(403,'不能修改其他部门原件')
+        if write and not own:
+            # Only explicit collaboration actions may edit shared internal material.
+            # Raw source replacement remains restricted to its owning department.
+            if (classification or collaboration_action in {'associate','share'}) and department in DEPARTMENTS and asset.asset_purpose=='MATERIAL':
+                ensure(db,user,asset,supplier=supplier,view_factory=view_factory)
+                if not allowed(user,asset.factory_id,'supplier','manage'):
+                    raise HTTPException(403,'没有资料状态维护权限')
+                writes()
+                return
+            raise HTTPException(403,'不能修改其他部门原件')
         if own and allowed(user,asset.factory_id,'supplier','manage' if write or confirm else 'read'):
             if write: writes()
             return

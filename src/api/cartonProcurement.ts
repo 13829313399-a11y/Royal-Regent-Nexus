@@ -115,7 +115,24 @@ export interface CartonPurchaseOrderBatchResponse {
   generated_at: string
 }
 
-export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records' | 'schedule_split_source'>
+export interface CartonScheduleQuantityMatch {
+  version: 1
+  basis: 'CONTRACT_ITEM_QUANTITY_PACKING'
+  factory_id: string
+  customer_code: string
+  contract_no: string
+  item_no: string
+  schedule_identity: string
+  source_identity: string
+  source_batch_id: string
+  source_sheet: string
+  source_row: number | null
+  quantity: string
+  carton_rule: string
+  ambiguous: boolean
+  reason: string
+}
+export type CartonScheduleOrder = Pick<CartonOrderResponse, 'id' | 'factory_id' | 'order_no' | 'customer_code' | 'customer_name' | 'contract_no' | 'item_no' | 'customer_po' | 'status' | 'product_order_quantity' | 'product_name' | 'customer_due_date' | 'split_records' | 'schedule_split_source'> & { schedule_quantity_matches?: CartonScheduleQuantityMatch[] }
 
 export interface CartonScheduleSplitSource {
   source_contract_no: string

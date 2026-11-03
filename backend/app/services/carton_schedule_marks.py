@@ -78,7 +78,8 @@ def project(rows, sources, orders, files):
                 order = order_index.get(link.id)
                 if order and normalize(order.customer_code) == code and normalize(order.contract_no) == contract \
                         and normalize(order.item_no) == normalize(row.get('item_no')) \
-                        and (row.get('order_id') == order.id or effective_po(row) == effective_po({'customer_po': order.customer_po})):
+                        and ((row.get('match_basis') != 'CONTRACT_ITEM_QUANTITY_PACKING' and row.get('order_id') == order.id)
+                             or effective_po(row) == effective_po({'customer_po': order.customer_po})):
                     matched.append(file)
                     break
         identifiers = list(dict.fromkeys(file.id for file in matched))

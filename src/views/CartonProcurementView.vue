@@ -66,7 +66,7 @@ import { useMoneyPreference } from '@/features/carton-procurement/moneyPreferenc
 import { estimateMoney, moneyLabel, unitCostLabel, moneyTotals, type InventoryMoney } from '@/lib/cartonInventoryMoney'
 import { formatBusinessDate } from '@/lib/dateTime'
 import { scheduleOrderReminder, type ScheduleOrderReminder } from '@/lib/cartonScheduleDeadline'
-import { scheduleMarkChanges, effectiveSchedulePo, scheduleDemandSnapshot, scheduleMarkState } from '@/features/carton-procurement/scheduleDemand'
+import { scheduleMarkChanges, effectiveSchedulePo, scheduleDemandSnapshot, scheduleMarkState, scheduleQuantityCandidates, scheduleQuantityMatchBasis } from '@/features/carton-procurement/scheduleDemand'
 import { buildBusinessOrderAlerts, type BusinessOrderAlert, type BusinessOrderAlertKind } from '@/features/carton-procurement/businessAlerts'
 import { orderDraftKey, orderDraftFormFingerprint, readOrderDraft, writeOrderDraft, removeOrderDraft, type OrderDraftContext, type OrderDraftForm, type OrderDraftMaterial } from '@/features/carton-procurement/orderDraft'
 import CartonDimensionInput from '@/components/CartonDimensionInput.vue'
@@ -1081,6 +1081,9 @@ function heldMaterialCorrection(number: string) {
   return orderRecords.value.find(row => row.order_no === number)?.material_corrections?.find(row => ['PENDING', 'RETURNED'].includes(row.status))
 }
 const scheduleOrderRecords = shallowRef<CartonScheduleOrder[]>([])
+const scheduleEvidenceLoading = ref(false)
+const scheduleEvidenceError = ref(false)
+let scheduleEvidenceGeneration = 0
 let scheduleDetailGeneration = 0
 const scheduleMatchingOrders = computed(() => ['weekly-check', 'dashboard', 'business-alerts'].includes(activeTab.value) ? scheduleOrderRecords.value : orderRecords.value)
 const inventoryOrderLines = computed(() => {
@@ -1946,6 +1949,17 @@ const scheduleOrderIndex = computed(() => {
   return index
 })
 const scheduleOrdersById = computed(() => new Map(scheduleMatchingOrders.value.map(order => [order.id, order])))
+const scheduleQuantityIndex = computed(() => {
+  const index = new Map<string, CartonScheduleOrder[]>()
+  for (const order of scheduleMatchingOrders.value as CartonScheduleOrder[]) {
+    for (const proof of order.schedule_quantity_matches ?? []) {
+      const orders = index.get(proof.schedule_identity) ?? []
+      if (!orders.some(candidate => candidate.id === order.id)) orders.push(order)
+      index.set(proof.schedule_identity, orders)
+    }
+  }
+  return index
+})
 const scheduleSplitIndex = computed(() => {
   const pairs = scheduleMatchingOrders.value.filter(order => order.factory_id === selectedFactoryId.value)
     .flatMap(order => (order.split_records ?? []).filter(plan => plan.status !== 'CANCELLED')
@@ -1980,20 +1994,27 @@ function currentScheduleReminder(source: CartonImportPreviewRow) {
   const customerCode = source.schedule_customer_code || scheduleCustomerForSource(source)?.customer_code
   const rules = scheduleDueRulesByCustomer.value.get(customerCode || '') ?? masterDueRules(masterWorkspace.value.records, customerCode || '')
   const orders = scheduleOrdersForSource(source)
-  return scheduleOrderReminder(source, {
+  const review = !orders.length && scheduleQuantityReview(source).length > 0
+  const current = source.match_basis === scheduleQuantityMatchBasis
+    ? { ...source, match_status: orders.length ? 'MATCHED' as const : 'MISSING_ORDER' as const } : source
+  const reminder = scheduleOrderReminder(review ? { ...current, match_status: 'AMBIGUOUS' } : current, {
     today: scheduleToday.value, leadDays: rules.lead_days,
     productionDays: masterLoaded.value ? rules.production_days : null,
     marked: scheduleSourceIsMarked(source), orderStatus: orders[0]?.status, orderCount: orders.length,
     markChanges: scheduleMarkChanges(source, scheduleMarkState(source, scheduleMarkRecords.value)),
-    identityReview: Boolean(source.schedule_customer_code && !customerCode),
+    identityReview: Boolean(source.schedule_customer_code && !customerCode) || scheduleEvidenceLoading.value || scheduleEvidenceError.value,
   })
+  return review && reminder ? { ...reminder, quantityMatchReview: true, label: '数量及装箱匹配待核对',
+    detail: '合同、货号、产品数量及装箱存在多个候选或来源待核实；请核对原订单，勿重复下单。' } : reminder
 }
 
 function calculateScheduleAssessment(row: WeeklyCheckRow) {
   const source = scheduleSourceRow(row)
   const reminder = source ? currentScheduleReminder(source) : null
   // Quantity/date matching evidence is independent of the current ordering deadline.
-  const preserveMatch = source && !source.schedule_identity_duplicate && (['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'].includes(source.match_status || '')
+  const quantityReview = source && scheduleQuantityReview(source).length > 0 && !scheduleOrdersForSource(source).length
+  const staleAmbiguity = source?.match_basis === scheduleQuantityMatchBasis && source.match_status === 'AMBIGUOUS'
+  const preserveMatch = !quantityReview && !staleAmbiguity && source && !source.schedule_identity_duplicate && (['QUANTITY_MISMATCH', 'DATE_MISMATCH', 'AMBIGUOUS'].includes(source.match_status || '')
     || (source.match_status === 'REVIEW_REQUIRED' && reminder?.state === 'ORDERED'))
   return { result: preserveMatch || !reminder ? row.result : reminder.label,
     tone: preserveMatch || !reminder ? row.tone : reminder.tone, reminder,
@@ -2061,7 +2082,7 @@ const businessAlertSummary = computed(() => {
     && (!alert.reminder || alert.reminder.attention))
   return {
     total: actionable.length,
-    missing: actionable.filter(alert => alert.reminder?.attention).length,
+    missing: actionable.filter(alert => alert.reminder?.attention && !['CHANGE_REVIEW', 'REVIEW'].includes(alert.reminder.state)).length,
     increase: actionable.filter((alert) => alert.kind === 'QUANTITY_INCREASE').length,
     decrease: actionable.filter((alert) => ['QUANTITY_DECREASE', 'SCHEDULE_CANCELLED', 'CANCELLED_AFTER_ORDER'].includes(alert.kind)).length,
   }
@@ -4048,6 +4069,7 @@ function scheduleOrderCategory(row: WeeklyCheckRow): ScheduleOrderCategory {
   const source = scheduleSourceRow(row)
   const orders = source ? scheduleOrdersForSource(source) : []
   if (orders.length > 1) return 'REVIEW'
+  if (source && !orders.length && scheduleQuantityReview(source).length) return 'REVIEW'
   if (orders[0]?.status === 'COMPLETED') return 'COMPLETED'
   if (orders[0] && ['DRAFT', 'CONFIRMED'].includes(orders[0].status)) return 'CREATED'
   if (orders.length || scheduleIsMarked(row)) return 'ORDERED'
@@ -4329,7 +4351,13 @@ async function loadBackendData(factoryId = selectedFactoryId.value, options: { s
       orderRecords.value = data; localOrders.splice(0, localOrders.length, ...data.map(mapOrder))
     }, true)
   } else if (tab === 'weekly-check') {
-    read('排期关联订单', () => cartonProcurementApi.scheduleOrders(factoryId), data => { scheduleOrderRecords.value = data }, true)
+    read('排期关联订单', async () => {
+      const evidenceGeneration = scheduleEvidenceGeneration
+      return { orders: await cartonProcurementApi.scheduleOrders(factoryId), evidenceGeneration }
+    }, ({ orders, evidenceGeneration }) => {
+      if (evidenceGeneration !== scheduleEvidenceGeneration) return
+      scheduleOrderRecords.value = orders; scheduleEvidenceGeneration++; scheduleEvidenceLoading.value = false; scheduleEvidenceError.value = false
+    }, true)
     read('排期处理标记', () => cartonProcurementApi.listScheduleOrderMarks(factoryId), data => { scheduleMarkRecords.value = data }, true)
     read('排期异常', () => cartonProcurementApi.listExceptions(factoryId), data => { exceptionRecords.value = data })
     if (weeklyCheckMode.value === 'HISTORY') read('核对历史', () => loadHistory(), () => {}, true)
@@ -4382,6 +4410,28 @@ async function refreshAfterSavedAction(message: string, factoryId = selectedFact
   return result
 }
 
+watch([selectedFactoryId, specialViewerKey], () => {
+  scheduleEvidenceGeneration++; scheduleEvidenceLoading.value = false; scheduleEvidenceError.value = false
+}, { flush: 'sync' })
+function refreshScheduleEvidence() {
+  if (!['weekly-check', 'dashboard', 'business-alerts'].includes(activeTab.value)) return
+  const factory = selectedFactoryId.value, viewer = specialViewerKey.value, generation = ++scheduleEvidenceGeneration
+  scheduleEvidenceLoading.value = true; scheduleEvidenceError.value = false
+  scheduleOrderRecords.value = scheduleOrderRecords.value.map(order => ({ ...order, schedule_quantity_matches: [] }))
+  return cartonProcurementApi.scheduleOrders(factory).then(orders => {
+    if (factory === selectedFactoryId.value && viewer === specialViewerKey.value && generation === scheduleEvidenceGeneration)
+      scheduleOrderRecords.value = orders
+  }).catch(error => {
+    if (factory === selectedFactoryId.value && viewer === specialViewerKey.value && generation === scheduleEvidenceGeneration) {
+      scheduleEvidenceError.value = true
+      reportActionFailure(`排期关联订单刷新失败：${getApiErrorMessage(error)}；请刷新后核对。`, 'warning')
+    }
+  }).finally(() => {
+    if (factory === selectedFactoryId.value && viewer === specialViewerKey.value && generation === scheduleEvidenceGeneration)
+      scheduleEvidenceLoading.value = false
+  })
+}
+
 function replaceOrderState(order: CartonOrderResponse) {
   if (activeTab.value === 'orders') {
     const index = unifiedEntries.value.findIndex(entry => entry.order?.order_no === order.order_no)
@@ -4401,6 +4451,7 @@ function replaceOrderState(order: CartonOrderResponse) {
   const rowIndex = localOrders.findIndex((item) => item.id === order.order_no)
   if (rowIndex >= 0) localOrders.splice(rowIndex, 1, mapOrder(order))
   else localOrders.unshift(mapOrder(order))
+  refreshScheduleEvidence()
 }
 
 async function createLocalOrder() {
@@ -6202,7 +6253,7 @@ function scheduleSplitsForSource(source: CartonImportPreviewRow) {
 
 function scheduleOrdersForSource(source: CartonImportPreviewRow) {
   const linkedIds = new Set([...(scheduleMarkRecords.value[source.schedule_identity ?? '']?.order_ids ?? []),
-    ...(source.order_id ? [source.order_id] : [])])
+    ...(source.order_id && source.match_basis !== scheduleQuantityMatchBasis ? [source.order_id] : [])])
   const linked = [...linkedIds].map(id => scheduleOrdersById.value.get(id)).filter((order): order is CartonScheduleOrder => Boolean(order))
     .filter(order => order.factory_id === selectedFactoryId.value
     && (!source.schedule_customer_code || order.customer_code === source.schedule_customer_code)
@@ -6217,8 +6268,13 @@ function scheduleOrdersForSource(source: CartonImportPreviewRow) {
   if (!customer) return []
   const key = JSON.stringify([customer.customer_code, scheduleIdentifier(source.contract_no || source.reference), scheduleIdentifier(source.item_no)])
   const po = source.source_reference || source.customer_po
-  return (scheduleOrderIndex.value.get(key) ?? []).filter(order => !po
+  const exact = (scheduleOrderIndex.value.get(key) ?? []).filter(order => !po
     || scheduleIdentifier(order.customer_po) === scheduleIdentifier(po))
+  return exact.length ? exact : scheduleQuantityCandidates(source, scheduleQuantityIndex.value.get(source.schedule_identity || '') ?? [], selectedFactoryId.value)
+}
+
+function scheduleQuantityReview(source: CartonImportPreviewRow) {
+  return scheduleQuantityCandidates(source, scheduleQuantityIndex.value.get(source.schedule_identity || '') ?? [], selectedFactoryId.value, true)
 }
 
 function scheduleDuplicateCandidates(source: CartonImportPreviewRow) {
@@ -6232,16 +6288,18 @@ function scheduleDuplicateCandidates(source: CartonImportPreviewRow) {
 
 function scheduleOtherPoCandidates(source: CartonImportPreviewRow) {
   if (!effectiveSchedulePo(source)) return []
+  const shown = new Set([...scheduleOrdersForSource(source), ...scheduleQuantityReview(source)].map(order => order.id))
   return scheduleMatchingOrders.value.filter(order => order.factory_id === selectedFactoryId.value
     && order.status !== 'CANCELLED' && order.customer_code === source.schedule_customer_code
     && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no)
     && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no)
-    && scheduleIdentifier(order.customer_po) !== effectiveSchedulePo(source))
+    && !shown.has(order.id) && scheduleIdentifier(order.customer_po) !== effectiveSchedulePo(source))
 }
 
 function scheduleLinkedOrderLabel(row: WeeklyCheckRow) {
   const source = scheduleSourceRow(row)
-  return (source ? scheduleOrdersForSource(source).map(order => order.order_no).join('、') : '') || row.linkedOrder
+  return (source ? scheduleOrdersForSource(source).map(order => order.order_no).join('、') : '')
+    || (source?.match_basis === scheduleQuantityMatchBasis ? '' : row.linkedOrder)
 }
 
 function scheduleProcurementLabel(row: WeeklyCheckRow) {
@@ -6251,6 +6309,7 @@ function scheduleProcurementLabel(row: WeeklyCheckRow) {
   if (splits[0]) return splits[0].plan.status === 'PENDING_WAREHOUSE' ? '拆单待仓库确认'
     : splits[0].target.lines.every(line => Number(line.pending_remaining) === 0) ? '拆单已齐' : '已下单 · 拆分'
   const orders = source ? scheduleOrdersForSource(source) : []
+  if (source && !orders.length && scheduleQuantityReview(source).length) return '数量及装箱匹配待核对'
   if (orders.length > 1) return '多个订单，待核对'
   if (orders[0]) return ['DRAFT', 'CONFIRMED'].includes(orders[0].status) ? '已建单 · 待确认' : orders[0].status === 'COMPLETED' ? '已完单' : '已下单'
   if (scheduleIsMarked(row)) return '人工已下单'
@@ -6266,7 +6325,7 @@ watch([selectedFactoryId, specialViewerKey, selectedWeeklyBatchId, activeTab, we
   scheduleSendBusy.value = ''
 }, { flush: 'sync' })
 function scheduleSendOrder(row: WeeklyCheckRow) {
-  if (!canIssuePurchaseOrders.value || row.scheduleSection && row.scheduleSection !== 'PENDING') return null
+  if (scheduleEvidenceLoading.value || scheduleEvidenceError.value || !canIssuePurchaseOrders.value || row.scheduleSection && row.scheduleSection !== 'PENDING') return null
   const source = scheduleSourceRow(row)
   const orders = source ? scheduleOrdersForSource(source) : []
   const order = orders.length === 1 ? orders[0] : null
@@ -6297,29 +6356,36 @@ function scheduleOrderActionLabel(row: WeeklyCheckRow) {
   const source = scheduleSourceRow(row)
   if (source && scheduleSplitsForSource(source).length && scheduleOrdersForSource(source).length === 1) return '查看拆单'
   if (source && scheduleOrdersForSource(source).length === 1) return '查看订单'
+  if (source && scheduleQuantityReview(source).length) return '先核对候选订单'
   if (scheduleMarkNeedsReview(row)) return '先复核已下单'
   return scheduleIsMarked(row) ? '已标记下单' : '按此下单'
 }
 
 function canUseScheduleSource(source: CartonImportPreviewRow) {
-  return source.can_operate_source !== false && (!source.schedule_section || source.schedule_section === 'PENDING')
+  return !scheduleEvidenceLoading.value && !scheduleEvidenceError.value
+    && source.can_operate_source !== false && (!source.schedule_section || source.schedule_section === 'PENDING')
     && (source.template !== 'unified-item' || ['正单', '正式PO', '加单', '改单'].includes(source.order_type ?? ''))
     && (source.schedule_change !== 'REVIEW_REQUIRED' || source.schedule_identity_duplicate)
-    && source.match_status !== 'AMBIGUOUS'
+    && (source.match_status !== 'AMBIGUOUS' || source.match_basis === scheduleQuantityMatchBasis)
+    && !scheduleQuantityReview(source).length
     && Boolean(source.contract_no || source.reference) && Boolean(source.item_no)
     && Number(source.quantity ?? 0) > 0
 }
 
 function scheduleOrderActionDisabled(row: WeeklyCheckRow) {
   const source = scheduleSourceRow(row)
-  if (!apiConnected.value || !source) return true
+  if (!apiConnected.value || !source || scheduleEvidenceLoading.value || scheduleEvidenceError.value) return true
   const orders = scheduleOrdersForSource(source)
   if (orders.length === 1) return false
+  if (scheduleQuantityReview(source).length) return true
   return orders.length > 1 || !canIssuePurchaseOrders.value || importDetailLoading.value || Boolean(importDetailError.value) || scheduleIsMarked(row) || scheduleMarkNeedsReview(row) || !canUseScheduleSource(source) || savingOrder.value
 }
 
 async function openOrderFromSchedule(source: CartonImportPreviewRow, batchId: string, note = '') {
   if (!apiConnected.value || savingOrder.value || importDetailError.value || importDetailLoading.value) return
+  if (scheduleQuantityReview(source).length && !scheduleOrdersForSource(source).length) {
+    reportActionFailure('数量及装箱匹配存在多个候选或来源待核实，请先核对原订单，勿重复下单。'); return
+  }
   const detailGeneration = ++scheduleDetailGeneration
   const loadGeneration = backendLoadGeneration
   const tab = activeTab.value
@@ -6545,7 +6611,8 @@ function businessAlertActionDisabled(alert: BusinessOrderAlert) {
 }
 
 function openBusinessAlertException(alert: BusinessOrderAlert) {
-  if (!alert.exception || alert.reminder?.state === 'CHANGE_REVIEW') {
+  if (!alert.exception || alert.reminder?.state === 'CHANGE_REVIEW'
+    || alert.reminder?.state === 'REVIEW' && alert.kind === 'QUANTITY_REVIEW') {
     clearWeeklyFilters()
     pendingScheduleNavigation.value = { batchId: alert.batchId, customerCode: alert.sourceRow?.schedule_customer_code || '__UNBOUND__' }
     weeklyCheckMode.value = 'ORDER_GAP'
@@ -6566,7 +6633,8 @@ async function openBusinessAlertOrder(alert: BusinessOrderAlert) {
     alert = current
   }
   if (businessAlertActionDisabled(alert)) return
-  if (alert.reminder?.state === 'CHANGE_REVIEW') {
+  if (alert.reminder?.state === 'CHANGE_REVIEW'
+    || alert.reminder?.state === 'REVIEW' && alert.kind === 'QUANTITY_REVIEW') {
     openBusinessAlertException(alert)
     return
   }
@@ -6666,6 +6734,7 @@ async function loadDashboardAlertContext(alert: BusinessOrderAlert) {
     scheduleMarkRecords.value = result.marks
     orderRecords.value = result.orders
     scheduleOrderRecords.value = result.matching_orders
+    scheduleEvidenceGeneration++; scheduleEvidenceLoading.value = false; scheduleEvidenceError.value = false
     localOrders.splice(0, localOrders.length, ...result.orders.map(mapOrder))
     return result.alert
   } catch (error) {
@@ -6906,6 +6975,8 @@ async function handleWeeklyFile(event: Event) {
     rememberImportBatch(weeklyImportHistory.value, batch)
     scheduleCustomer.value = customerCode; selectedCustomer.value = '全部客户'
     restoreWeeklyImport(batch)
+    await refreshScheduleEvidence()
+    if (factoryId !== selectedFactoryId.value || generation !== weeklyImportGeneration) return
     apiConnected.value = true
     actionMessage.value = batch.duplicate
       ? `排期“${file.name}”已导入过，已恢复原核对结果；没有重复生成异常。`
@@ -8404,7 +8475,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
                   <td data-label="核对结果" class="px-4 py-3"><span class="rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset" :class="toneClass(scheduleAssessment(row).tone)">{{ scheduleAssessment(row).result }}</span><div v-if="scheduleAssessment(row).reminder?.deadline" class="mt-1 text-[10px] text-slate-500" :title="scheduleAssessment(row).reminder?.detail">最迟下单 {{ scheduleAssessment(row).reminder?.deadline }}</div></td>
                   <td data-label="关联订单 下单状态" class="px-4 py-3 text-[11px]"><div class="font-mono">{{ scheduleLinkedOrderLabel(row) }}</div><div class="mt-1 font-semibold" :class="scheduleProcurementLabel(row) === '需要下单' ? 'text-amber-800' : 'text-teal-800'">{{ scheduleProcurementLabel(row) }}</div></td>
                   <td data-label="人工已下单" class="px-4 py-3"><button v-if="row.scheduleSection === 'PENDING' && row.scheduleIdentity && ['正单', '正式PO', '加单'].includes(row.orderType || '')" type="button" :disabled="!canMarkScheduleRow(row, selectedWeeklyBatchId, scheduleMarkNeedsReview(row) || !scheduleIsMarked(row)) || Boolean(scheduleMarkBusy)" :aria-label="`${scheduleMarkNeedsReview(row) ? '重新确认已下单' : scheduleIsMarked(row) ? '取消已下单标记' : '标记已下单'} ${row.reference} ${row.itemNo}`" class="whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-[10px] font-bold disabled:opacity-40" :class="scheduleMarkNeedsReview(row) ? 'border-amber-300 bg-amber-50 text-amber-800' : scheduleIsMarked(row) ? 'border-teal-300 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'" @click="toggleScheduleMark(row)">{{ scheduleMarkNeedsReview(row) ? '待复核 · 重新确认' : scheduleIsMarked(row) ? '✓ 已下单' : '标记已下单' }}</button><span v-else class="text-[10px] text-slate-400">{{ scheduleIsMarked(row) ? '✓ 已下单' : '—' }}</span></td>
-                  <td data-label="下单 / 提示" class="px-4 py-3 text-[11px] text-slate-500"><button v-if="!row.scheduleSection || row.scheduleSection === 'PENDING'" type="button" :aria-label="`排期下单 ${row.reference} ${row.itemNo}`" :disabled="scheduleOrderActionDisabled(row)" class="mb-2 whitespace-nowrap rounded-lg bg-teal-700 px-3 py-1.5 text-[10px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500" @click="openScheduleOrder(row)">{{ scheduleOrderActionLabel(row) }}</button><button v-if="scheduleSendOrder(row)" type="button" :aria-label="`发送排期订单 ${row.reference} 给供应商`" :disabled="!apiConnected || Boolean(scheduleSendBusy) || submittingSupplierOrder" class="mb-2 block whitespace-nowrap rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-[10px] font-bold text-teal-800 disabled:opacity-40" @click="openScheduleSend(row)">{{ scheduleSendBusy === row.id ? '正在读取…' : '发给供应商' }}</button><div>{{ scheduleAssessment(row).suggestion }}</div><div v-if="scheduleSourceRow(row)?.missing_review" class="mt-2 rounded bg-amber-50 p-2 text-amber-900">缺行核实：{{ scheduleMissingStatusLabel(scheduleSourceRow(row)!.missing_review!.status) }}<p v-if="scheduleSourceRow(row)?.missing_review?.reason">{{ scheduleSourceRow(row)!.missing_review!.reason }}</p><p class="mt-1 text-[10px]">缺行核实清单入口已关闭；如需从该来源下单，请先联系主管核对原批次。</p></div><div v-if="scheduleSourceRow(row)?.legacy_match_stale" class="mt-1 text-amber-700">此旧批次的下单匹配需按 SO 重新核对；重新导入原文件可刷新结果。</div><div v-if="row.identityDuplicate && scheduleSourceRow(row) && scheduleDuplicateCandidates(scheduleSourceRow(row)!).length" class="mt-1 text-amber-700">已有同 SO 候选订单：{{ scheduleDuplicateCandidates(scheduleSourceRow(row)!).map(order => order.order_no).join('、') }}；请核实后操作。</div><div v-if="scheduleSourceRow(row) && scheduleOtherPoCandidates(scheduleSourceRow(row)!).length" class="mt-1 text-amber-700">同合同货号已有其他 PO 订单：{{ scheduleOtherPoCandidates(scheduleSourceRow(row)!).map(order => order.order_no).join('、') }}；请确认不是同一需求。</div><div class="mt-1 text-[10px]">{{ row.sourceLocation }}</div></td>
+                  <td data-label="下单 / 提示" class="px-4 py-3 text-[11px] text-slate-500"><button v-if="!row.scheduleSection || row.scheduleSection === 'PENDING'" type="button" :aria-label="`${scheduleOrderActionLabel(row)} ${row.reference} ${row.itemNo}`" :data-schedule-action="`${row.reference} ${row.itemNo}`" :disabled="scheduleOrderActionDisabled(row)" class="mb-2 whitespace-nowrap rounded-lg bg-teal-700 px-3 py-1.5 text-[10px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500" @click="openScheduleOrder(row)">{{ scheduleOrderActionLabel(row) }}</button><button v-if="scheduleSendOrder(row)" type="button" :aria-label="`发送排期订单 ${row.reference} 给供应商`" :disabled="!apiConnected || Boolean(scheduleSendBusy) || submittingSupplierOrder" class="mb-2 block whitespace-nowrap rounded-lg border border-teal-300 bg-teal-50 px-3 py-1.5 text-[10px] font-bold text-teal-800 disabled:opacity-40" @click="openScheduleSend(row)">{{ scheduleSendBusy === row.id ? '正在读取…' : '发给供应商' }}</button><div>{{ scheduleAssessment(row).suggestion }}</div><div v-if="scheduleSourceRow(row)?.missing_review" class="mt-2 rounded bg-amber-50 p-2 text-amber-900">缺行核实：{{ scheduleMissingStatusLabel(scheduleSourceRow(row)!.missing_review!.status) }}<p v-if="scheduleSourceRow(row)?.missing_review?.reason">{{ scheduleSourceRow(row)!.missing_review!.reason }}</p><p class="mt-1 text-[10px]">缺行核实清单入口已关闭；如需从该来源下单，请先联系主管核对原批次。</p></div><div v-if="scheduleSourceRow(row)?.legacy_match_stale" class="mt-1 text-amber-700">此旧批次的下单匹配需按 SO 重新核对；重新导入原文件可刷新结果。</div><div v-if="row.identityDuplicate && scheduleSourceRow(row) && scheduleDuplicateCandidates(scheduleSourceRow(row)!).length" class="mt-1 text-amber-700">已有同 SO 候选订单：{{ scheduleDuplicateCandidates(scheduleSourceRow(row)!).map(order => order.order_no).join('、') }}；请核实后操作。</div><div v-if="scheduleSourceRow(row) && scheduleOtherPoCandidates(scheduleSourceRow(row)!).length" class="mt-1 text-amber-700">同合同货号已有其他 PO 或未填 PO 的订单：{{ scheduleOtherPoCandidates(scheduleSourceRow(row)!).map(order => order.order_no).join('、') }}；请确认不是同一需求。</div><div class="mt-1 text-[10px]">{{ row.sourceLocation }}</div></td>
                 </tr>
                 <tr v-if="visibleWeeklyChecks.length === 0"><td colspan="12" class="px-4 py-12 text-center text-slate-400">没有符合当前筛选条件的核对记录</td></tr>
               </tbody>
@@ -8820,10 +8891,12 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
     <CartonOrderDetailDialog v-if="orderImportKind" :title="orderImportKind === 'HISTORY' ? '导入历史订单' : orderImportKind === 'REGULAR' ? '导入正单' : '导入样板／杂单需求'" :description="orderImportKind === 'HISTORY' ? '先下载对应模板填写，再选择文件核对。' : '可使用自己的 Excel，列顺序不限；选择文件后匹配字段、补齐资料并按整单导入。'" close-label="关闭订单导入" narrow @close="orderImportKind = ''" @close-auto-focus="restoreOrderImportFocus">
       <template v-if="orderImportKind === 'HISTORY'">
         <p class="text-sm leading-6 text-slate-600">适用于已下单的历史正单。导入后进入待收料，无需再次发送供应商。</p>
-        <a href="/templates/carton-history-order-import-template.xlsx?v=carton-history-po-v3" download="纸箱历史订单导入模板.xlsx" class="inline-flex min-h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold text-teal-700"><Download class="size-4" />下载历史订单模板</a>
+        <p class="text-xs leading-5 text-slate-500">模板按必填、按条件填写、选填排列；“填写示例”含多纸品、不同 PO 和不同历史批次，仅供参考，不会导入。</p>
+        <a href="/templates/carton-history-order-import-template.xlsx?v=carton-history-guide-v4" download="纸箱历史订单导入模板.xlsx" class="inline-flex min-h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold text-teal-700"><Download class="size-4" />下载历史订单模板</a>
         <button type="button" :disabled="!apiConnected || importingHistoryOrders" class="ml-2 inline-flex min-h-9 items-center gap-2 rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white disabled:opacity-40" @click="triggerHistoryOrderImport"><Upload class="size-4" />选择历史订单文件</button>
       </template>
       <template v-else>
+        <p class="text-xs leading-5 text-slate-500">模板必填项在前，按从左到右的顺序填写；“填写示例”提供{{ newImportMode === 'REGULAR' ? '直接填数量、装箱计算和配套纸卡' : '样板单、杂单和多纸品分组' }}示范，仅供参考，不会导入。</p>
         <p class="text-sm leading-6 text-slate-600">{{ newImportMode === 'REGULAR' ? '适用于新下的正单。导入后生成独立订单，再由仓库发送供应商。' : '适用于样板或杂单需求。导入后生成待确认订单，再沿现有流程办理下单。' }}缺资料的整单可留待补充，先导入其他完整订单。</p>
         <p class="text-xs leading-5 text-slate-500">参考模板已标明必填、选填及按条件必填。灰色演示行导入时自动跳过，不计入订单或数量；实际订单请从下一行填写。</p>
         <button type="button" :disabled="!apiConnected || !(newImportMode === 'REGULAR' ? canIssuePurchaseOrders : canCreateSpecial) || downloadingDemandTemplate" class="inline-flex min-h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold text-teal-700 disabled:opacity-40" @click="downloadDemandTemplate"><Download class="size-4" />{{ downloadingDemandTemplate ? '下载中…' : newImportMode === 'REGULAR' ? '下载正单参考模板' : '新建需求模板' }}</button>
@@ -9156,7 +9229,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
             <button v-if="hasStoredOrderDraft && !editingOrderNo && !supplierOrderSource?.createdOrderNo" type="button" :disabled="savingOrder" aria-label="继续上次新建订单草稿" class="shrink-0 rounded border border-teal-200 bg-white px-2 py-1 font-semibold text-teal-700 disabled:opacity-40" @click="resumeNewOrderDraft">继续上次草稿</button>
             <button type="button" :disabled="savingOrder" aria-label="清空新建订单草稿" class="shrink-0 rounded border border-blue-200 bg-white px-2 py-1 font-semibold disabled:opacity-40" @click="clearNewOrderDraft">清空草稿</button>
           </div>
-          <div v-if="scheduleOrderSource" class="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-[11px] leading-5 text-teal-800"><p>来自业务排期 {{ scheduleOrderSource.filename }} · {{ scheduleOrderSource.row.source_sheet }} 第 {{ scheduleOrderSource.row.source_row }} 行。已带入下单资料，请补齐纸质、规格并核对后保存。</p><p v-if="scheduleOrderSource.row.schedule_identity_duplicate" class="font-bold text-amber-800">合同、货号和 SO#/Reference 在本批次重复，请确认是否为分批需求；可继续保存本行订单。</p><p v-if="scheduleOrderSource.row.legacy_match_stale" class="font-bold text-amber-800">此旧批次的历史匹配不能直接证明该 SO 已下单，请核对原订单；重新导入原文件可刷新结果。</p><p v-if="scheduleDuplicateCandidates(scheduleOrderSource.row).length" class="font-bold text-amber-800">已有同 SO 候选订单：{{ scheduleDuplicateCandidates(scheduleOrderSource.row).map(order => order.order_no).join('、') }}。请核实是否需要再建一张订单。</p><p v-if="scheduleOtherPoCandidates(scheduleOrderSource.row).length" class="font-bold text-amber-800">同合同货号已有其他 PO 订单：{{ scheduleOtherPoCandidates(scheduleOrderSource.row).map(order => order.order_no).join('、') }}。请确认不是同一需求。</p><p v-if="scheduleOrderSource.row.order_type?.trim() === '加单'" aria-label="业务排期加单提示" class="font-bold text-amber-800">加单提示：本次下单来源于业务加单。</p><p v-if="!orderForm.customerCode" class="font-bold text-amber-800">原表客户尚未匹配本厂客户资料，请先选择正确客户。</p><p v-if="scheduleOrderSource.row.date_review_required" class="font-bold text-amber-800">原表日期需要人工确认：{{ scheduleOrderSource.row.source_customer_due_date || scheduleOrderSource.row.source_inspection_window }}，请填写完整交期。</p></div>
+          <div v-if="scheduleOrderSource" class="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-[11px] leading-5 text-teal-800"><p>来自业务排期 {{ scheduleOrderSource.filename }} · {{ scheduleOrderSource.row.source_sheet }} 第 {{ scheduleOrderSource.row.source_row }} 行。已带入下单资料，请补齐纸质、规格并核对后保存。</p><p v-if="scheduleOrderSource.row.schedule_identity_duplicate" class="font-bold text-amber-800">合同、货号和 SO#/Reference 在本批次重复，请确认是否为分批需求；可继续保存本行订单。</p><p v-if="scheduleOrderSource.row.legacy_match_stale" class="font-bold text-amber-800">此旧批次的历史匹配不能直接证明该 SO 已下单，请核对原订单；重新导入原文件可刷新结果。</p><p v-if="scheduleDuplicateCandidates(scheduleOrderSource.row).length" class="font-bold text-amber-800">已有同 SO 候选订单：{{ scheduleDuplicateCandidates(scheduleOrderSource.row).map(order => order.order_no).join('、') }}。请核实是否需要再建一张订单。</p><p v-if="scheduleOtherPoCandidates(scheduleOrderSource.row).length" class="font-bold text-amber-800">同合同货号已有其他 PO 或未填 PO 的订单：{{ scheduleOtherPoCandidates(scheduleOrderSource.row).map(order => order.order_no).join('、') }}。请确认不是同一需求。</p><p v-if="scheduleOrderSource.row.order_type?.trim() === '加单'" aria-label="业务排期加单提示" class="font-bold text-amber-800">加单提示：本次下单来源于业务加单。</p><p v-if="!orderForm.customerCode" class="font-bold text-amber-800">原表客户尚未匹配本厂客户资料，请先选择正确客户。</p><p v-if="scheduleOrderSource.row.date_review_required" class="font-bold text-amber-800">原表日期需要人工确认：{{ scheduleOrderSource.row.source_customer_due_date || scheduleOrderSource.row.source_inspection_window }}，请填写完整交期。</p></div>
           <p v-if="copiedOrderNo" class="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-[11px] leading-5 text-teal-800">复制自订单 {{ copiedOrderNo }}，已带入 {{ orderForm.materials.length }} 条纸品资料。请核对本次合同、客户 PO、数量和纸品信息，并重新选择交期；保存后生成新的待发送订单。</p>
           <div v-if="editingOrderStructureLocked" class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800">该订单已确认锁定或发生正式收料，不能再保存修改。</div>
 <CartonOrderMainFields kind="PURCHASE"><template #display><label class="flex flex-wrap items-center gap-2 text-slate-600"><span class="font-bold">尺寸显示</span><select :value="orderDimensionDisplayUnit" aria-label="订单尺寸显示" class="h-8 rounded-lg border border-teal-200 bg-white px-2" @change="changeOrderDimensionDisplay(($event.target as HTMLSelectElement).value)"><option value="cm">cm</option><option value="inch">inch</option><option value="mm">mm</option></select><span class="text-slate-400">默认基础资料，本次可改</span></label></template><template #customer><CartonCustomerPicker v-model="orderForm.customerCode" v-model:search-text="orderDraftCustomerQuery" :customers="orderCustomers" :known-customers="customerRecords" :can-create="masterLoaded && masterWorkspace.can_manage && !responsibilityLoading && !responsibilityError" :disabled="editingOrderStructureLocked" @create="createOrderCustomer" @refresh="refreshResponsibilities" /></template>

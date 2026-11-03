@@ -102,14 +102,14 @@ export function buildBusinessOrderAlerts(context: {
       if (seen.has(key)) continue
       seen.add(key)
       const reminder = context.reminder(sourceRow)
-      if (!reminder || reminder.state === 'ORDERED' || reminder.state === 'REVIEW') continue
+      if (!reminder || reminder.state === 'ORDERED' || reminder.state === 'REVIEW' && !reminder.quantityMatchReview) continue
       const exception = timingExceptions.get(sourceRow) ?? null
       const orders = context.ordersForSource(sourceRow)
       const order = orders.length === 1 ? orders[0] || null : null
       const alertNo = exception?.exception_no || `排期-${sourceRow.source_sheet || 'ITEM'}-${sourceRow.source_row || 1}`
       alerts.set(`TIMING:${key}`, {
         id: `TIMING:${batch.id}:${key}`, alertNo,
-        kind: reminder.state === 'CHANGE_REVIEW' ? 'QUANTITY_REVIEW' : sourceRow.schedule_change === 'NEW' ? 'NEW_ORDER' : 'MISSING_ORDER',
+        kind: reminder.state === 'CHANGE_REVIEW' || reminder.quantityMatchReview ? 'QUANTITY_REVIEW' : sourceRow.schedule_change === 'NEW' ? 'NEW_ORDER' : 'MISSING_ORDER',
         customerCode: sourceRow.schedule_customer_code || sourceRow.customer_code || '',
         customerName: sourceRow.schedule_customer_name || sourceRow.customer_name || '未绑定客户',
         contractNo: sourceRow.contract_no || sourceRow.reference || '', itemNo: sourceRow.item_no || '',

@@ -73,7 +73,8 @@ def test_same_factory_unbound_sharing_history_and_original_session(monkeypatch):
         assert asset['workflow']['status']=='HISTORY'
         grant_supplier_permissions(permissions=('carton_asset:read','carton_asset:manage'));supplier_login(client)
         assert client.get(BASE+'/'+asset['id']+'/document',params={**F,'supplier_view':True}).status_code==404
-        assert action(client,asset,'PENDING').status_code==403
+        # An unshared source is not visible to the supplier, including on writes.
+        assert action(client,asset,'PENDING').status_code==404
         login_as(client,'admin')
         assert client.post('/api/carton-materials/old/actions',params={**F,'audience':'sales'},json={}).status_code==410
         from app.services import carton_asset_quick as service

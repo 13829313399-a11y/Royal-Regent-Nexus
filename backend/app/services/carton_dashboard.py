@@ -127,8 +127,11 @@ class Context:
             self.by_code[customer["customer_code"]].append(customer)
             self.by_name[norm(customer["customer_name"])].append(customer)
         self.index, self.splits = defaultdict(list), defaultdict(list)
+        self.quantity_index = defaultdict(list)
         for o in self.orders.values():
             self.index[(o["customer_code"], norm(o["contract_no"]), norm(o["item_no"]))].append(o)
+            for proof in o.get("schedule_quantity_matches", []):
+                self.quantity_index[proof["schedule_identity"]].append(o)
             for plan in o.get("split_records", []):
                 if plan["status"] == "CANCELLED":
                     continue
@@ -147,7 +150,9 @@ class Context:
         return mark_changes(row, mark_for_row(row, self.marks))
 
     def matching(self, row):
-        linked_ids = list(dict.fromkeys(self.marks.get(row.get("schedule_identity"), {}).get("order_ids", []) + ([row["order_id"]] if row.get("order_id") else [])))
+        from app.services.carton_schedule_quantity_matching import BASIS, candidates
+        linked_ids = list(dict.fromkeys(self.marks.get(row.get("schedule_identity"), {}).get("order_ids", []) + (
+            [row["order_id"]] if row.get("order_id") and row.get("match_basis") != BASIS else [])))
         linked = [self.orders[i] for i in linked_ids if i in self.orders and (not row.get("schedule_customer_code") or self.orders[i]["customer_code"] == row["schedule_customer_code"])
                   and norm(self.orders[i]["contract_no"]) == norm(row.get("contract_no") or row.get("reference")) and norm(self.orders[i]["item_no"]) == norm(row.get("item_no"))
                   and (not (row.get("source_reference") or row.get("customer_po")) or norm(self.orders[i].get("customer_po")) == norm(row.get("source_reference") or row.get("customer_po")))]
@@ -163,14 +168,27 @@ class Context:
         customer = self.customer(row)
         if not customer:
             return []
-        return [o for o in self.index.get((customer["customer_code"], norm(row.get("contract_no") or row.get("reference")), norm(row.get("item_no"))), []) if not po or norm(o.get("customer_po")) == norm(po)]
+        exact = [o for o in self.index.get((customer["customer_code"], norm(row.get("contract_no") or row.get("reference")), norm(row.get("item_no"))), []) if not po or norm(o.get("customer_po")) == norm(po)]
+        return exact or candidates(row, self.quantity_index.get(row.get("schedule_identity"), []))
+
+    def quantity_review(self, row):
+        from app.services.carton_schedule_quantity_matching import candidates
+        return candidates(row, self.quantity_index.get(row.get("schedule_identity"), []), ambiguous=True)
 
     def reminder(self, row):
         customer = row.get("schedule_customer_code") or (self.customer(row) or {}).get("customer_code", "")
         rules = {"lead_days": 3, "production_days": 7}
         for code in dict.fromkeys(["", customer]):
             rules.update({k: v for k, v in self.rules.get(code, {}).items() if k in rules and v is not None})
-        return reminder(row, today=self.today, **rules, marked=self.marked(row), orders=self.matching(row), review_changes=self.mark_changes(row))
+        matches = self.matching(row)
+        review = not matches and self.quantity_review(row)
+        from app.services.carton_schedule_quantity_matching import BASIS
+        current = dict(row, match_status="MATCHED" if matches else "MISSING_ORDER") if row.get("match_basis") == BASIS else row
+        result = reminder(dict(current, match_status="AMBIGUOUS") if review else current,
+            today=self.today, **rules, marked=self.marked(row), orders=matches, review_changes=self.mark_changes(row))
+        if result and review:
+            result.update(label="数量及装箱匹配待核对", detail="合同、货号、产品数量及装箱存在多个候选或来源待核实；请核对原订单，勿重复下单。")
+        return result
 
 
 def source_key(row):
@@ -223,7 +241,8 @@ def build_alerts(context, batches, exceptions):
                 continue
             seen.add(key)
             r = context.reminder(row)
-            if not r or r["state"] in ("ORDERED", "REVIEW"):
+            quantity_review = bool(context.quantity_review(row)) and not context.matching(row)
+            if not r or r["state"] == "ORDERED" or r["state"] == "REVIEW" and not quantity_review:
                 continue
             e = timing_exceptions.get(id(row))
             orders = context.matching(row)
@@ -233,7 +252,7 @@ def build_alerts(context, batches, exceptions):
             previous_quantity = float(frozen.get("quantity") or 0) if is_review else float((order or {}).get("product_order_quantity") or 0)
             difference = float(row.get("quantity") or 0) - previous_quantity if is_review and frozen.get("quantity") else 0
             timing[key] = dict(id=f"TIMING:{batch['id']}:{key}", alertNo=e["exception_no"] if e else f"排期-{row.get('source_sheet') or 'ITEM'}-{row.get('source_row') or 1}",
-                kind=("QUANTITY_INCREASE" if difference > 0 else "QUANTITY_DECREASE" if difference < 0 else "QUANTITY_REVIEW") if is_review else "NEW_ORDER" if row.get("schedule_change") == "NEW" else "MISSING_ORDER",
+                kind="QUANTITY_REVIEW" if quantity_review else ("QUANTITY_INCREASE" if difference > 0 else "QUANTITY_DECREASE" if difference < 0 else "QUANTITY_REVIEW") if is_review else "NEW_ORDER" if row.get("schedule_change") == "NEW" else "MISSING_ORDER",
                 customerCode=row.get("schedule_customer_code") or row.get("customer_code") or "", customerName=row.get("schedule_customer_name") or row.get("customer_name") or "未绑定客户",
                 contractNo=row.get("contract_no") or row.get("reference") or "", itemNo=row.get("item_no") or "", productName=row.get("product_name") or "",
                 scheduleQuantity=float(row.get("quantity") or 0), orderQuantity=previous_quantity, differenceQuantity=difference,
@@ -256,6 +275,10 @@ def read_context(db, factory):
         splits[plan["order_id"]].append(plan)
     for o in orders:
         o["split_records"] = splits[o["id"]]
+    from app.services.carton_schedule_quantity_matching import read_matches
+    quantity_matches = read_matches(db, factory)
+    for o in orders:
+        o["schedule_quantity_matches"] = quantity_matches.get(o["id"], [])
     customers = [dict(row) for row in db.execute(select(CartonCustomer.factory_id, CartonCustomer.customer_code, CartonCustomer.customer_name, CartonCustomer.status).where(CartonCustomer.factory_id == factory)).mappings()]
     rules = {row.customer_code: json.loads(row.data_json) for row in db.scalars(select(CartonMasterRecord).where(CartonMasterRecord.factory_id == factory, CartonMasterRecord.kind == "RULE", CartonMasterRecord.status == "ACTIVE"))}
     return Context(factory, orders, customers, core.schedule_order_state(db, factory), rules, core.business_now().date()), orders
@@ -293,7 +316,7 @@ REDUCTION_KINDS = ("QUANTITY_DECREASE", "SCHEDULE_CANCELLED", "CANCELLED_AFTER_O
 
 
 def alert_summary(actionable):
-    return dict(total=len(actionable), missing=sum(bool(a["reminder"] and a["reminder"]["attention"] and a["reminder"]["state"] != "CHANGE_REVIEW") for a in actionable),
+    return dict(total=len(actionable), missing=sum(bool(a["reminder"] and a["reminder"]["attention"] and a["reminder"]["state"] not in ("CHANGE_REVIEW", "REVIEW")) for a in actionable),
                 increase=sum(a["kind"] == "QUANTITY_INCREASE" for a in actionable),
                 decrease=sum(a["kind"] in REDUCTION_KINDS for a in actionable))
 
@@ -302,7 +325,7 @@ def alert_kind_matches(alert, kind):
     if kind == "ACTIONABLE":
         return alert["status"] in ("OPEN", "IN_PROGRESS") and (not alert["reminder"] or bool(alert["reminder"]["attention"]))
     if kind == "TIMING":
-        return bool(alert["reminder"] and alert["reminder"]["attention"] and alert["reminder"]["state"] != "CHANGE_REVIEW")
+        return bool(alert["reminder"] and alert["reminder"]["attention"] and alert["reminder"]["state"] not in ("CHANGE_REVIEW", "REVIEW"))
     if kind == "REDUCTION":
         return alert["kind"] in REDUCTION_KINDS
     return kind == "ALL" or alert["kind"] == kind
@@ -330,6 +353,8 @@ def alert_context(db, factory, identifier):
     # Only one action's source evidence and full current orders; nothing is written.
     row = alert["sourceRow"]
     matches = context.matching(row) if row else ([alert["order"]] if alert["order"] else [])
+    if row and not matches:
+        matches = context.quantity_review(row)
     from app.services.carton_order_projection import order_page_out
     models = list(db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory, CartonOrder.deleted_at.is_(None), CartonOrder.id.in_([o["id"] for o in matches])))) if len(matches) == 1 else []
     batch_out = core.import_batch_out(batch).model_dump(mode="json")
@@ -347,6 +372,8 @@ def weekly_attention(db, context, customer, search):
         r = context.reminder(row)
         preserve = not row.get("schedule_identity_duplicate") and (row.get("match_status") in ("QUANTITY_MISMATCH", "DATE_MISMATCH", "AMBIGUOUS")
             or (row.get("match_status") == "REVIEW_REQUIRED" and r and r["state"] == "ORDERED"))
+        if row.get("match_basis") == "CONTRACT_ITEM_QUANTITY_PACKING" and row.get("match_status") == "AMBIGUOUS":
+            preserve = False
         result = match_labels.get(row.get("match_status"), "待核对") if preserve or not r else r["label"]
         attention = bool((r and r["attention"]) or row.get("date_review_required") or row.get("schedule_change") in ("CANCELLED", "CANCELLED_AFTER_ORDER", "REOPENED")
             or result in ("数量差异", "交期差异", "待人工选择", "待人工确认") or (not r and not context.marked(row) and row.get("match_status") != "MATCHED"))
