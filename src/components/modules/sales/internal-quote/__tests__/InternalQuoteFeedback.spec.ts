@@ -99,6 +99,47 @@ describe('internal quote feedback regressions', () => {
     wrapper.unmount()
   })
 
+  it.each([
+    { label: 'unchanged position', top: -650, height: 1800, correction: undefined },
+    { label: 'content above the department changes height', top: -850, height: 1800, correction: -200 },
+    { label: 'the closed preview exceeds the remaining department height', top: -650, height: 300, correction: -742 },
+  ])('keeps the imported department visible: $label', async ({ top, height, correction }) => {
+    const { wrapper, store } = setup('engineering', {})
+    vi.spyOn(store, 'previewImport').mockResolvedValue(moldPreview)
+    vi.spyOn(store, 'confirmImport').mockResolvedValue({ section: { revision: 6, payload: { molds: [{ item: '新模具' }] } } })
+    await chooseMoldFile(wrapper)
+    const bounds = vi.spyOn(wrapper.element, 'getBoundingClientRect')
+      .mockReturnValueOnce(new DOMRect(0, -650, 1000, 1800))
+      .mockImplementation(() => {
+        expect(wrapper.find('.quote-import-preview').exists()).toBe(false)
+        return new DOMRect(0, top, 1000, height)
+      })
+    const scroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+    await wrapper.get('.quote-import-preview button.primary').trigger('click')
+    await flushPromises()
+    expect(bounds).toHaveBeenCalledTimes(2)
+    if (correction === undefined) expect(scroll).not.toHaveBeenCalled()
+    else expect(scroll).toHaveBeenCalledExactlyOnceWith({ top: correction, behavior: 'instant' })
+    wrapper.unmount()
+  })
+
+  it.each(['failed-refresh', 'unmounted'] as const)('does not restore the import position after %s', async outcome => {
+    const { wrapper, store } = setup('engineering', {})
+    vi.spyOn(store, 'previewImport').mockResolvedValue(moldPreview)
+    let complete!: (result: unknown) => void
+    vi.spyOn(store, 'confirmImport').mockImplementation(() => new Promise(resolve => { complete = resolve }))
+    await chooseMoldFile(wrapper)
+    vi.spyOn(wrapper.element, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, -650, 1000, 1800))
+    const scroll = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+    await wrapper.get('.quote-import-preview button.primary').trigger('click')
+    if (outcome === 'unmounted') wrapper.unmount()
+    else store.quoteDetailFailedId = 'feedback-quote'
+    complete({ section: { revision: 6, payload: { molds: [{ item: '新模具' }] } } })
+    await flushPromises()
+    expect(scroll).not.toHaveBeenCalled()
+    if (outcome !== 'unmounted') wrapper.unmount()
+  })
+
   it('retains the legacy association when editable Engineering receives its first stable ID', async () => {
     const engineering = setup('engineering', { molds: [{ mold_no: 'M1', item: '原外壳', parts: [] }] })
     const molding = setup('molding', { injection_lines: [{

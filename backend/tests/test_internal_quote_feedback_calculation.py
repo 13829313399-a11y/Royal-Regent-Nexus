@@ -76,6 +76,17 @@ def test_missing_molding_blocks_new_output_and_summary_without_mutating_inputs(m
         summary = client.get(f"/api/internal-quotes/{quote['id']}/summary")
         assert summary.status_code == 200, summary.text
         assert summary.json()["pricing_complete"] is False
+        layout = client.get(f"/api/internal-quotes/{quote['id']}/output-layout")
+        assert layout.status_code == 200, layout.text
+        assert layout.json()["quote_price_hkd"] is None
+        assert any("未参与啤机核价" in item["message"] for item in layout.json()["warnings"])
+        price = next(field for group in layout.json()["groups"] if group["label"] == "螺丝"
+                     for field in group["fields"] if field["kind"] == "price")
+        preview = client.post(f"/api/internal-quotes/{quote['id']}/output-layout/preview", json={
+            "base_token": layout.json()["base_token"], "edits": [{"field_id": price["id"], "value": "0.2"}],
+        })
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["quote_price_hkd"] is None
         before = deepcopy(quote["sections"])
         issued = client.post(f"/api/internal-quotes/{quote['id']}/direct-issue", json={"revision": quote["header_revision"]})
         assert issued.status_code == 409, issued.text

@@ -245,7 +245,7 @@ export interface ApiInternalQuoteImportPreview {
   assignment_components?: Array<{ id: string; name: string }>
   batch_id: string
   quote_id: string
-  import_type: 'mold' | 'hardware' | 'electronic' | 'molding' | 'painting' | 'slush' | 'sewing' | 'hair' | 'assembly'
+  import_type: 'mold' | 'hardware' | 'auxiliary' | 'electronic' | 'molding' | 'painting' | 'slush' | 'sewing' | 'hair' | 'assembly'
   target_department: string
   source_file_name: string
   source_sha256: string
@@ -934,9 +934,10 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
       })
       return response.data
     },
-    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File, draft?: { revision: number; payload: Record<string, unknown> }) {
+    async previewImport(quoteId: string, importType: ApiInternalQuoteImportPreview['import_type'], file: File, draft?: { revision: number; payload: Record<string, unknown> }, replaceAttachmentId?: string) {
       const form = new FormData()
       form.append('file', file)
+      if (replaceAttachmentId) form.append('replace_attachment_id', replaceAttachmentId)
       if (draft) {
         form.append('draft_payload', JSON.stringify(draft.payload))
         form.append('draft_revision', String(draft.revision))
@@ -1098,10 +1099,13 @@ export function createInternalQuoteApi(client: InternalQuoteHttpClient = http) {
     }) {
       return (await client.post<{ group: ApiInternalQuoteAlternativeGroup; quotes: ApiInternalQuote[] }>(`/internal-quotes/${quoteId}/alternative-groups`, payload)).data
     },
-    async downloadEngineeringWorkbook(quoteId: string) {
+    async getEngineeringExportOptions(quoteId: string) {
+      return (await client.get<{ header_revision: number; electronic_revision: number; items: Array<{ id: string; name: string; specification: string; quantity: string | number; supplier: string }> }>(`/internal-quotes/${quoteId}/engineering-data/options`)).data
+    },
+    async downloadEngineeringWorkbook(quoteId: string, selection?: { header_revision: number; electronic_revision: number; electronic_selection: string[] }) {
       const response = await client.post<Blob>(
         `/internal-quotes/${quoteId}/engineering-data/export`,
-        undefined,
+        selection,
         { responseType: 'blob' },
       )
       return response.data

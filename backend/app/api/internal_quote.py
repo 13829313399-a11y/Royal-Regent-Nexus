@@ -8,6 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.db import get_db
 from app.schemas.internal_quote import (
+    InternalQuoteEngineeringExportRequest,
     InternalQuoteArchiveRequest,
     InternalQuoteArtifactConsumeRequest,
     InternalQuoteArtifactHandoffOut,
@@ -118,6 +119,7 @@ from app.services.internal_quote_artifacts import (
     confirm_import_batch,
     create_controlled_export,
     create_engineering_workbook_export,
+    get_engineering_export_options,
     create_import_preview,
     get_attachment_download,
     get_attachment_content_preview,
@@ -827,6 +829,7 @@ async def post_internal_quote_import_preview(
     file: UploadFile = File(...),
     draft_payload: str | None = Form(default=None, max_length=2_000_000),
     draft_revision: int | None = Form(default=None, ge=1),
+    replace_attachment_id: str | None = Form(default=None, max_length=100),
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -850,6 +853,7 @@ async def post_internal_quote_import_preview(
         request,
         draft_payload=draft,
         draft_revision=draft_revision,
+        replace_attachment_id=replace_attachment_id,
     )
 
 
@@ -1085,10 +1089,16 @@ def post_internal_quote_export(
     return create_controlled_export(db, quote_id, current_user, request)
 
 
+@router.get("/{quote_id}/engineering-data/options")
+def get_internal_quote_engineering_options(quote_id: str, db: Session = Depends(get_db), current_user: AuthContext = Depends(get_current_user)):
+    return get_engineering_export_options(db, quote_id, current_user)
+
+
 @router.post("/{quote_id}/engineering-data/export")
 def post_internal_quote_engineering_data_export(
     quote_id: str,
     request: Request,
+    payload: InternalQuoteEngineeringExportRequest | None = None,
     db: Session = Depends(get_db),
     current_user: AuthContext = Depends(get_current_user),
 ):
@@ -1097,6 +1107,7 @@ def post_internal_quote_engineering_data_export(
         quote_id,
         current_user,
         request,
+        **(payload.model_dump() if payload else {}),
     )
     return Response(
         content=download.content,

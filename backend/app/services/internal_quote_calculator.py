@@ -2625,6 +2625,7 @@ def calculate_section(
         "engineering": ("materials", "molds", "cartons"),
         "electronic": (
             "quote_groups",
+            "quick_quotes",
             "components",
             "bonding_rmb",
             "smt_rmb",

@@ -901,6 +901,8 @@ def _validate_customer_supplied_scope(quote, section_code, payload):
 
 
 def _normalize_mutable_section_payload(db, quote, department, payload):
+    from app.services.internal_quote_price_notes import validate_note_images
+    validate_note_images(db, quote, department, payload)
     if quote.factory_id != "huadeng" and any(
         isinstance(row, dict) and (row.get("molding_profile") == "huadeng_parts_v1" or row.get("cost_scope") == "huadeng_part")
         for field in ("molds", "injection_lines") for row in payload.get(field, []) or []

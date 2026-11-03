@@ -40,6 +40,9 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         root = f"/api/internal-quotes/{quote['id']}"
         source_book = Workbook()
         source_book.active.title = "原始附件"
+        source_book.active["A1"] = "=1+2"
+        source_book.active["B1"] = "=1+2"
+        source_book.active["B1"].data_type = "s"
         buffer = BytesIO()
         source_book.save(buffer)
         uploaded = client.post(root + "/attachments", data={"department": "engineering"},
@@ -49,7 +52,20 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         assert response.status_code == 200, response.text
         layout = response.json()
         assert layout["formula_errors"] == []
-        assert [s["name"] for s in layout["sheets"]] == ["报价明细"]
+        assert [s["name"] for s in layout["sheets"]] == ["报价明细", "original"]
+        source_sheet = layout["sheets"][1]
+        assert source_sheet["source"] == {"file_name": "original.xlsx", "department": "engineering"}
+        source_cells = {c["address"]: c for row in source_sheet["rows"] for c in row["cells"]}
+        assert source_cells["A1"]["text"] == "原表公式未缓存"
+        assert source_cells["A1"]["unavailable"]
+        assert source_cells["B1"]["text"] == "=1+2"
+        assert all(cell["binding"] is None for cell in source_cells.values())
+        import app.services.internal_quote_output_layout as layout_service
+        with monkeypatch.context() as restricted:
+            restricted.setattr(layout_service, "_can_access_attachment_department", lambda user, quote, department: False)
+            restricted_view = client.get(root + "/output-layout")
+            assert restricted_view.status_code == 200
+            assert all("source" not in sheet for sheet in restricted_view.json()["sheets"])
         group = next(g for g in layout["groups"] if g["label"] == "螺丝")
         assert group["editable"]
         cells = [c for row in layout["sheets"][0]["rows"] for c in row["cells"]]
@@ -61,6 +77,12 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         preview = client.post(root + "/output-layout/preview", json=body)
         assert preview.status_code == 200, preview.text
         assert preview.json()["formula_errors"] == []
+        assert preview.json()["sheets"][1] == source_sheet
+        with monkeypatch.context() as restricted:
+            restricted.setattr(layout_service, "_can_access_attachment_department", lambda user, quote, department: False)
+            restricted_preview = client.post(root + "/output-layout/preview", json=body)
+            assert restricted_preview.status_code == 200
+            assert all("source" not in sheet for sheet in restricted_preview.json()["sheets"])
         unchanged = client.get(root).json()
         assert next(s for s in unchanged["sections"] if s["department"] == "engineering")["payload"]["materials"][0]["item"] == "螺丝"
         saved = client.put(root + "/output-layout", json=body)
@@ -82,6 +104,8 @@ def test_output_table_roundtrip_preview_export_and_stale_freeze(monkeypatch):
         exported = client.get(root + f"/exports/{issued.json()['id']}/download")
         book = load_workbook(BytesIO(exported.content))
         assert book["original"].sheet_state == "visible"
+        assert book["original"]["A1"].value == "=1+2"
+        assert book["original"]["B1"].data_type == "s"
         assert any("螺丝改名" in str(c.value) for row in book["报价明细"] for c in row)
         assert len(client.get(root + "/attachments").json()) == 1
         frozen = client.get(root + "/output-layout").json()

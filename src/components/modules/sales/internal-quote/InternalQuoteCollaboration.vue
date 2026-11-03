@@ -1136,13 +1136,17 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="quote-collaboration-page">
-    <section v-if="!loadedQuote || quoteStore.detailLoading || quoteStore.quoteDetailFailedId === quoteId" class="rounded-xl border border-border bg-card p-5" aria-live="polite">
+    <section v-if="!loadedQuote || quoteStore.quoteDetailFailedId === quoteId" class="rounded-xl border border-border bg-card p-5" aria-live="polite">
       <h1 class="text-lg font-semibold">{{ quoteStore.detailLoading ? '正在读取原报价…' : '原报价暂不可用' }}</h1>
       <p v-if="quoteStore.errorMessage" role="alert" class="my-3 text-destructive">{{ quoteStore.errorMessage }}</p>
       <button type="button" class="my-3 rounded-md border border-input px-4 py-2 focus-visible:outline-2 focus-visible:outline-ring" :disabled="quoteStore.detailLoading" @click="loadQuote">重新读取</button>
       <RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')" class="ml-4 text-primary underline">返回报价首页</RouterLink>
     </section>
-    <div v-if="loadedQuote" v-show="!quoteStore.detailLoading && quoteStore.quoteDetailFailedId !== quoteId" class="quote-verified-content">
+    <p v-if="loadedQuote && quoteStore.detailLoading" class="quote-refresh-status" role="status">正在更新报价，请稍候…</p>
+    <!-- Keep the layout during refresh without exposing unverified amounts or editable controls. -->
+    <div v-if="loadedQuote" v-show="quoteStore.quoteDetailFailedId !== quoteId" class="quote-verified-content"
+      :style="{ visibility: quoteStore.detailLoading ? 'hidden' : undefined }"
+      :inert="quoteStore.detailLoading || undefined" :aria-busy="quoteStore.detailLoading" :aria-hidden="quoteStore.detailLoading || undefined">
     <BusinessShareButton v-if="loadedQuote" :reference="{ resource_type: 'internal_quote', resource_id: quote.id, factory_id: quote.factoryId }" />
     <nav class="quote-breadcrumb" aria-label="内部报价导航"><RouterLink :to="getQuoteRoute('/modules/sales-business/internal-quote-desk')"><ArrowLeft />报价首页</RouterLink><ChevronRight /><span>{{ quote.quoteNo }}</span><ChevronRight /><strong>{{ isContinuousQuote ? '整单协作' : '部门协作' }}</strong></nav>
 
@@ -1265,6 +1269,11 @@ onBeforeUnmount(() => {
         </div>
       </aside>
     </div>
+    <section v-if="pricingPanel?.liveTotals" class="quote-live-totals" aria-label="当前报价总价" aria-live="polite">
+      <div><span>当前总价</span><strong>{{ pricingPanel.liveTotals.complete ? `HKD ${pricingPanel.liveTotals.quoteHkd.toFixed(4)}` : '待核算' }}</strong><small>{{ pricingPanel.liveTotals.status }}</small></div>
+      <div v-if="pricingPanel.liveTotals.complete"><span>成本 HKD {{ pricingPanel.liveTotals.costHkd.toFixed(4) }}</span><b>USD {{ pricingPanel.liveTotals.quoteUsd.toFixed(4) }} · RMB {{ pricingPanel.liveTotals.quoteRmb.toFixed(4) }}</b></div>
+      <div v-if="pricingPanel.liveTotals.complete && pricingPanel.liveTotals.target" :class="{ 'over-target': pricingPanel.liveTotals.target.difference < 0 }"><span>客人目标 {{ pricingPanel.liveTotals.target.currency }} {{ pricingPanel.liveTotals.target.targetAmount.toFixed(4) }}</span><b>{{ pricingPanel.liveTotals.target.label }}</b></div>
+    </section>
     <Teleport to="body">
       <div v-if="productImagePreviewOpen && currentProductImageUrl" class="quote-product-preview-backdrop" role="presentation" @click.self="productImagePreviewOpen = false">
         <section class="quote-product-preview-dialog" role="dialog" aria-modal="true" :aria-label="`${quote.productName} 产品主图预览`">
@@ -1301,6 +1310,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .quote-verified-content { display: contents; }
+.quote-live-totals{position:sticky;bottom:0;z-index:25;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px 24px;border:1px solid #99f6e4;border-radius:12px;background:#f0fdfa;padding:12px 20px;color:#115e59;box-shadow:0 -4px 18px rgb(15 118 110/.10)}.quote-live-totals>div{display:grid;gap:3px}.quote-live-totals span,.quote-live-totals small{font-size:12px}.quote-live-totals strong{font-size:22px;font-variant-numeric:tabular-nums}.quote-live-totals b{font-size:13px}.quote-live-totals .over-target{color:#b45309}@media print{.quote-live-totals{display:none}}
+.quote-refresh-status { position: fixed; top: 100px; right: 24px; z-index: 60; max-width: calc(100vw - 48px); margin: 0; border: 1px solid #99f6e4; border-radius: 9px; background: #f0fdfa; padding: 12px 16px; color: #0f766e; font-size: 13px; }
 .quote-action-feedback { width: 100%; flex-basis: 100%; }
 .quote-action-feedback:empty { display: none; }
 @media (max-width: 1280px) { .quote-action-feedback { flex-basis: auto; } }

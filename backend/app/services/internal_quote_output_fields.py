@@ -43,7 +43,10 @@ def source_groups(sections, region_code=""):
                      "category": category, "fields": []}
 
             def field(key_path, value, label, kind, currency="", nullable=False):
+                note_key = "/".join(map(str, key_path))
                 group["fields"].append({"id": row_key(code, path + key_path), "path": path + key_path,
+                                        "owner_path": path, "note_key": note_key,
+                                        "annotation": row.get("price_annotations", {}).get(note_key),
                                         "label": label, "kind": kind, "currency": currency, "value": value, "nullable": nullable})
             if name_key:
                 field([name_key], row[name_key], "名称", "name")
@@ -136,3 +139,56 @@ def source_groups(sections, region_code=""):
                     continue
                 add(row, path, category="注塑")
     return groups
+
+
+def _bind_aggregate_cells(workbook, groups):
+    """Aggregates open explicit source rows; never treat an HKD total as a price."""
+    ids = {g["id"] for g in groups}
+    section_groups = {}
+    for group in groups:
+        section_groups.setdefault(group["section"], []).append(group["id"])
+    departments = {"装配工": ["assembly"], "喷油工": ["painting"], "油漆": ["painting"],
+                   "搪胶": ["slush"], "车发": ["hair"], "车衣": ["sewing"], "啤工": ["molding"],
+                   "料价": ["engineering", "molding"], "纸箱": ["sales"], "印尼运费": ["sales"],
+                   "电子": ["electronic"]}
+    for sheet in workbook:
+        if sheet.sheet_state != "visible":
+            continue
+        bindings = getattr(sheet, "_quote_bindings", {})
+        sheet._quote_bindings = bindings
+        for address, binding in list(bindings.items()):
+            if binding.get("group") not in ids:
+                del bindings[address]
+        if sheet.title == "工模报价":
+            for group in groups:
+                parts = group["id"].split("/")
+                if group["category"] == "模具" and len(parts) == 2 and parts[0] == "engineering:molds" and parts[1].isdigit():
+                    row = int(parts[1]) + 5
+                    bindings[f"C{row}"] = {"group": group["id"], "kind": "name"}
+                    bindings[f"F{row}"] = {"group": group["id"], "kind": "price"}
+            continue
+        if sheet.title.startswith("电子明细"):
+            suffix = sheet.title.removeprefix("电子明细")
+            prefix = f"electronic:quote_groups/{int(suffix) - 1}/" if suffix.isdigit() else "electronic:"
+            row_groups = [g for g in groups if g["id"].startswith(prefix) and any(f["kind"] == "price" for f in g["fields"])]
+            for index, group in enumerate(row_groups, 4):
+                bindings[f"B{index}"] = {"group": group["id"], "kind": "name"}
+                price = next(f for f in group["fields"] if f["kind"] == "price")
+                bindings[f"{'E' if price['currency'] == 'RMB' else 'F'}{index}"] = {"group": group["id"], "kind": "price"}
+            continue
+        if sheet.title != "报价明细":
+            continue
+        for row in sheet:
+            if len(row) < 4:
+                continue
+            category = str(row[1].value or "")
+            group_ids = [key for code in departments.get(category, []) for key in section_groups.get(code, [])]
+            if group_ids:
+                for cell in row[2:4]:
+                    bindings.setdefault(cell.coordinate, {"groups": group_ids, "kind": "source"})
+            if isinstance(row[0].value, int) and row[0].value > 0 and row[2].value:
+                # The generated mold schedule uses numbered rows; source names
+                # may be composite, so show the explicitly labelled source list.
+                molds = [g["id"] for g in groups if g["category"] in {"模具", "模具零件", "注塑"}]
+                if molds:
+                    bindings.setdefault(row[2].coordinate, {"groups": molds, "kind": "source"})
