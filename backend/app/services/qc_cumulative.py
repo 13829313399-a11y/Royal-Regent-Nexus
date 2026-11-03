@@ -73,9 +73,8 @@ def filters(body):
     if not isinstance(body,dict) or set(body)-{'dateFrom','dateTo','search','result'}:raise HTTPException(422,'导入筛选无效')
     f={k:body.get(k,'') for k in ('dateFrom','dateTo','search','result')}
     if any(not isinstance(v,str) or len(v)>500 for v in f.values()):raise HTTPException(422,'导入筛选无效')
-    if f['result'] not in ('','PASS','FAIL','PENDING','REJ'):raise HTTPException(422,'结果筛选无效')
-    today=datetime.now(ZoneInfo('Asia/Shanghai')).date();monday=today-timedelta(days=today.weekday())
-    if not f['dateFrom'] and not f['dateTo']:f.update(dateFrom=monday.isoformat(),dateTo=(monday+timedelta(days=6)).isoformat())
+    if f['result'] not in sheet.EDITABLE_RESULTS:raise HTTPException(422,'结果筛选无效')
+    # An unlimited page date filter must stay unlimited for status and import.
     for k in ('dateFrom','dateTo'):
         if f[k]:
             try:
@@ -94,7 +93,7 @@ def select(items,f):
         else:warning=''
         q=f['search'].strip().lower()
         if q and q not in ' '.join(text(item.get(k)) for k in ('customer','poNo','customerPo','productNo','productName','remark')).lower():continue
-        if f['result'] and item['result']!=('FAIL' if f['result']=='REJ' else f['result']):continue
+        if f['result'] and item.get('cumulativeResult',item['result'])!=f['result']:continue
         archive=item.get('actualDate') or item.get('dateFrom')
         try:day=date.fromisoformat(archive)
         except (TypeError,ValueError):missing.append(item['id']);continue
@@ -111,7 +110,7 @@ def text(value):return '' if value is None else str(value)
 # Only cells written to this workbook determine whether an import has changed.
 # Photo URLs/counts and source revisions are not cells; completion is part of the reused detail export.
 MAPPED_FIELDS={'id','archiveDate','week','actualDate','dateFrom','dateTo','customer','poNo','country',
-    'productNo','productName','quantity','unitsPerCarton','cartonCount','result','remark',
+    'productNo','productName','quantity','unitsPerCarton','cartonCount','result','remark','improvement',
     'inspectionProblem','otherRemark','firstResponsible','secondResponsible','responsible',
     'inspectionFactory','reportStatus','production','agency','customerPo','completion'}
 def business(value):return {k:v for k,v in value.items() if k in MAPPED_FIELDS}
@@ -145,6 +144,30 @@ def validate(content):
     with ZipFile(BytesIO(content)) as z:
         if z.testzip() is not None:raise HTTPException(500,'工作簿生成校验失败')
     checked=load_workbook(BytesIO(content),read_only=True);checked.close()
+
+def pending_items(factory,items):
+    """Project the pending queue from an atomically committed workbook snapshot.
+
+    Keep source rows/history intact. Undo or a later source/text change restores
+    the row; a failed build cannot hide anything because no new head commits.
+    """
+    path=Path(settings.qc_department_data_dir).resolve()/'_cumulative'/'workbooks.sqlite3'
+    if not path.exists():return items
+    with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as conn:
+        row=conn.execute('SELECT v.snapshot,v.metadata FROM heads h JOIN versions v ON v.id=h.current_id AND v.factory=h.factory WHERE h.factory=?',(factory,)).fetchone()
+    if row is None:return items
+    saved=json.loads(row[0]);metadata=json.loads(row[1]);pending=[]
+    for item in items:
+        prior=saved.get(item['id'])
+        if (not prior or item['id'] not in metadata.get('bindings',{}) or
+                any(prior.get(k)!=item.get(k) for k in ('sourceId','sourceKey','workflowId','sourceRevision'))):
+            pending.append(item);continue
+        try:selected,_=select([item],filters({}))
+        except HTTPException:
+            pending.append(item);continue
+        if not selected or business(snapshot(selected[0]))!=business(prior):pending.append(item)
+    return pending
+
 
 def state(factory,items,scope):
     f=filters(scope)

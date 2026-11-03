@@ -20,12 +20,19 @@ from app.core.config import settings
 from app.models.customer_order_ledger import OrderLedgerLine
 
 EDITABLE = {'waiting', 'draft', 'returned'}
-STATES = {'waiting': '待验货', 'draft': '验货中', 'pending': '待审核', 'returned': '退回修改', 'approved': '已审核'}
+STATES = {'completed':'已完成','merged':'已合并工作簿','waiting': '待验货', 'draft': '验货中', 'pending': '待审核', 'returned': '退回修改', 'approved': '已审核'}
 METHODS = {'internal': '行验', 'external': '客验'}
-RESULTS = {'', 'PASS', 'REJ', 'COND', 'HOLD'}
+from app.services.qc_inspection_results import EDITABLE_RESULTS, ALLOWED_INSPECTION_RESULTS
+RESULTS = set(EDITABLE_RESULTS)
 MAX_FILE = 10 * 1024 * 1024
 MAX_TASK_FILES = 100 * 1024 * 1024
 SCHEMA = '''
+CREATE TABLE IF NOT EXISTS retired_test_sources (
+ factory TEXT NOT NULL, source_id TEXT NOT NULL, retired_at TEXT NOT NULL, reason TEXT NOT NULL,
+ PRIMARY KEY(factory,source_id));
+CREATE TABLE IF NOT EXISTS manual_schedules (
+ id TEXT PRIMARY KEY, factory TEXT NOT NULL, actor TEXT NOT NULL, request_key TEXT NOT NULL,
+ payload TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(factory,actor,request_key));
 CREATE TABLE IF NOT EXISTS tasks (
  id TEXT PRIMARY KEY, factory TEXT NOT NULL, source_id TEXT NOT NULL,
  method TEXT NOT NULL, batch TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -139,11 +146,25 @@ def sources(db, factory):
         OrderLedgerLine.factory_id == factory).order_by(OrderLedgerLine.id))]
     with store() as conn:
         tasks = [unpack(conn, r, history=False) for r in conn.execute('SELECT * FROM tasks WHERE factory=?', (factory,))]
+    with store() as conn:
+        retired={r[0] for r in conn.execute('SELECT source_id FROM retired_test_sources WHERE factory=?',(factory,))}
+        rows=[r for r in rows if r['id'] not in retired]
+        rows.extend(json.loads(r['payload']) for r in conn.execute('SELECT payload FROM manual_schedules WHERE factory=? ORDER BY id', (factory,)))
+    journal=Path(settings.qc_department_data_dir)/'_inspection_sheet/inspections.sqlite3'
+    completed={};inline_states={}
+    if journal.exists():
+        with sqlite3.connect(journal.as_uri()+'?mode=ro',uri=True) as saved:
+            if saved.execute("SELECT 1 FROM sqlite_master WHERE name='entry_details'").fetchone():
+                has_review='review_state' in {r[1] for r in saved.execute('PRAGMA table_info(entry_details)')}
+                field="d.review_state" if has_review else "''"
+                for base,result,state in saved.execute("SELECT e.base,e.result,"+field+" FROM entries e JOIN entry_details d ON e.id=d.entry_id WHERE e.factory=? AND d.submitted_at<>''",(factory,)):
+                    task_id=json.loads(base).get('workflowId');completed[task_id]=result
+                    inline_states[task_id]='returned' if state=='returned_to_inspection' else state if state in {'pending','approved'} else 'completed'
     by_source = {}
     for task in tasks:
         by_source.setdefault(task['sourceId'], []).append({'id': task['id'], 'method': task['method'],
-            'batch': task['batch'], 'state': task['state'], 'revision': task['revision'],
-            'result': task['execution'].get('result', '')})
+            'batch': task['batch'], 'state': inline_states.get(task['id'],task['state']), 'revision': task['revision'],
+            'result': completed.get(task['id'],task['execution'].get('result', ''))})
     for row in rows:
         row['tasks'] = by_source.get(row['id'], [])
         row['completion'] = '；'.join(f"{METHODS[t['method']]} {t['batch']}：{'已退回' if t['state'] == 'returned' else STATES[t['state']]}" for t in row['tasks']) or '未推送'
@@ -151,6 +172,25 @@ def sources(db, factory):
     return {'contract_version': '2', 'factory_id': factory, 'status': 'ready', 'mapping_version': 'qc-task-v1',
             'source': 'sales.customer-order-ledger.schedule', 'source_available': True, 'import_enabled': False,
             'items': rows, 'message': '读取业务部已保存订单；无明确验货日期的订单在推送时确认，不使用走货日期代替。'}
+
+
+
+def automatic_schedule_candidates(db, factory, *, today=None):
+    """Future intake entry point; not the existing historical schedule/read API."""
+    from app.services.qc_schedule_candidates import filter_new_candidates
+    rows = []
+    for line in db.scalars(select(OrderLedgerLine).where(OrderLedgerLine.factory_id == factory).order_by(OrderLedgerLine.id)):
+        row = source_row(line)
+        data = line.data or {}
+        row['dateFrom'] = data.get('planned_inspection_date') or data.get('inspection_date')
+        row['dateTo'] = data.get('planned_inspection_date_to')
+        rows.append(row)
+    with store() as conn:
+        existing = {r[0] for r in conn.execute('SELECT source_id FROM tasks WHERE factory=?', (factory,))}
+        retired = {r[0] for r in conn.execute('SELECT source_id FROM retired_test_sources WHERE factory=?', (factory,))}
+    report = filter_new_candidates([r for r in rows if r['id'] not in existing | retired and r.get('sourceStatus') != 'cancelled'], today=today)
+    report['factory'] = factory
+    return report
 
 
 def get(conn, factory, task_id):
@@ -195,7 +235,7 @@ def update(conn, row, payload, state=None):
 
 
 def source_check(db, factory, snapshot):
-    if snapshot.get('kind') in {'manual', 'legacy'}:
+    if snapshot.get('kind') in {'manual', 'legacy'} or snapshot.get('sourceKind') == 'manual-schedule':
         return snapshot, False
     line = db.scalar(select(OrderLedgerLine).where(OrderLedgerLine.factory_id == factory, OrderLedgerLine.id == snapshot['id']))
     current = source_row(line) if line else None
@@ -245,10 +285,13 @@ def create_tasks(db, factory, body, actor):
             if identity in seen:
                 raise HTTPException(422, '同一订单、方式和批次重复选择')
             seen.add(identity)
+            if conn.execute('SELECT 1 FROM retired_test_sources WHERE factory=? AND source_id=?',(factory,item_id)).fetchone():
+                raise HTTPException(409, '此测试排期已清理，不能再次推送')
             line = db.scalar(select(OrderLedgerLine).where(OrderLedgerLine.factory_id == factory, OrderLedgerLine.id == item['sourceId']))
-            if not line:
-                raise HTTPException(404, '正式订单不存在；示例不能推送为真实验货')
-            src = source_row(line)
+            manual = conn.execute('SELECT payload FROM manual_schedules WHERE factory=? AND id=?', (factory,item_id)).fetchone()
+            if not line and not manual:
+                raise HTTPException(404, '排期不存在或不属于当前厂区')
+            src = source_row(line) if line else json.loads(manual['payload'])
             if type(item['sourceRevision']) is not int or src['sourceRevision'] != item['sourceRevision'] or src['sourceStatus'] != 'active':
                 raise HTTPException(409, '订单已变更或取消，请重新读取排期')
             plan_date, qty = day(item['plannedDate'], True), number(item['plannedQuantity'], positive=True, optional=False)
@@ -300,7 +343,7 @@ def record_execution(record):
         'aqlLevel','defect','qc','remark','defects','measurements'}
     return {'actualDate': source_date(record.get('inspDate')), 'actualQuantity': number(record.get('qty')),
         'sampleQuantity': number(record.get('sampleQty')), 'inspector': record.get('qc') or '',
-        'institution':'','reportNo':'','reportMissingReason':'','result':('REJ' if record.get('result')=='FAIL' else record.get('result') or ''),
+        'institution':'','reportNo':'','reportMissingReason':'','result':(record.get('result') or ''),
         'remark':record.get('remark') or '', 'resultExplanation':'',
         'defects':[{'desc':d.get('desc',''),'qty':number(d.get('qty',0)), 'level':d.get('level',''),'remark':d.get('remark','')} for d in record.get('defects',[])],
         'measurements':[{'item':m.get('item',''),'standard':m.get('standard',''),
@@ -446,7 +489,7 @@ def act(db, factory, task_id, action, body, actor):
             bind_inspector(payload, actor)
             e=payload['execution']
             if payload.get('methodConfirmed') is False: raise HTTPException(422,'请确认本条历史记录是行验还是客验')
-            if not e['actualDate'] or not e['inspector'] or not e['result'] or e['actualQuantity'] is None or Decimal(e['actualQuantity'])<=0:
+            if not e['actualDate'] or not e['inspector'] or e['result'] not in ALLOWED_INSPECTION_RESULTS or e['actualQuantity'] is None or Decimal(e['actualQuantity'])<=0:
                 raise HTTPException(422,'请填写实际检验日期、实际验货数量、检验人员和最终判定')
             _,changed=source_check(db,factory,payload['source'])
             if changed:
@@ -464,6 +507,7 @@ def act(db, factory, task_id, action, body, actor):
             if action!='approve' and not reason:
                 raise HTTPException(422,'请填写退回原因')
             if action=='approve':
+                if payload['execution']['result'] not in ALLOWED_INSPECTION_RESULTS:raise HTTPException(422,'请选择 PASS、FAIL、PENDING 或 LG 后重新审核')
                 _,changed=source_check(db,factory,payload['source'])
                 if changed:
                     raise HTTPException(409,'提交后来源订单已变化，请退回核对')
@@ -632,3 +676,33 @@ def download_export(factory, actor, token):
         if row['expires']<int(time.time()):
             raise HTTPException(410,'下载已过期，请重新导出')
         return row['content']
+
+
+def create_schedule(factory, body, actor):
+    fields = {'dateFrom','dateTo','customer','poNo','country','productNo','productName','quantity',
+              'unitsPerCarton','cartonCount','production','agency','customerPo','remark'}
+    if set(body) != {'requestKey','row'} or not isinstance(body['row'],dict) or set(body['row']) != fields:
+        raise HTTPException(422,'排期字段不正确')
+    key=text(body['requestKey'],100)
+    if len(key)<8: raise HTTPException(422,'缺少操作编号')
+    row={k:text(v,20000 if k=='remark' else 300) for k,v in body['row'].items()}
+    for k in ('customer','productNo'):
+        if not row[k]:raise HTTPException(422,'请填写客户及货号')
+    start=day(row['dateFrom'],True);end=day(row['dateTo'] or start,True)
+    if end<start:raise HTTPException(422,'结束日期不能早于开始日期')
+    qty=number(row['quantity'],positive=True,optional=False)
+    for k in ('cartonCount',):
+        value=number(row[k])
+        if value is not None and Decimal(value)<0:raise HTTPException(422,'装箱和箱数不能为负数')
+    if row['agency'] not in ('行验','客验'):raise HTTPException(422,'机构请选择行验或客验，供推送匹配')
+    with store(True) as conn:
+        old=conn.execute('SELECT payload FROM manual_schedules WHERE factory=? AND actor=? AND request_key=?',(factory,actor['id'],key)).fetchone()
+        if old:
+            prior=json.loads(old['payload'])
+            if prior['input']!=row:raise HTTPException(409,'请求编号已用于其他排期')
+            return prior
+        item={**row,'id':'manual-'+uuid4().hex,'factory':factory,'sourceRevision':1,'sourceVersion':1,
+              'sourceStatus':'active','sourceNote':row['remark'],'dateFrom':start,'dateTo':end,
+              'quantity':qty,'sourceKind':'manual-schedule','input':row,'completion':'未推送','tasks':[]}
+        conn.execute('INSERT INTO manual_schedules VALUES(?,?,?,?,?,?)',(item['id'],factory,actor['id'],key,dump(item),now()))
+        return item

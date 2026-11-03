@@ -80,7 +80,7 @@ def test_optimistic_conflicts_invalid_results_and_factory_isolation():
     a,b,c=seed();saved=save(a,'PASS')
     with pytest.raises(HTTPException) as error:save(a,'FAIL')
     assert error.value.status_code==409
-    for value in ['Pending','Approved','REJ','COND',None]:
+    for value in ['Pending','Approved','unknown',None]:
         with pytest.raises(HTTPException) as error:save(saved,value)
         assert error.value.status_code==422
     with pytest.raises(HTTPException) as error:sheet.save('huadeng',a['id'],{'revision':saved['revision'],'result':'FAIL','remark':''},ACTOR)
@@ -120,8 +120,8 @@ def test_export_three_states_actual_embedded_images_text_ids_and_revision_gate()
     body={'entries':[{'id':r['id'],'revision':r['revision']} for r in (a,b,c)]}
     content=sheet.export_xlsx('huaxing',body)
     book=load_workbook(BytesIO(content));ws=book['验货明细']
-    assert [c.value for c in ws[1]]==[label for _,label in sheet.COLUMNS]
-    assert [c.value for c in ws[1]][-3:]==['验货结果','备注','照片']
+    assert [c.value for c in ws[1]]==[label for key,label in sheet.COLUMNS if key!='submit']
+    assert [c.value for c in ws[1]][-4:]==['验货结果','备注','照片','改进措施']
     assert ws.max_row==4 and ws['N2'].value=='PASS' and ws['N3'].value=='FAIL' and ws['N4'].value in ('',None)
     assert ws['O2'].value==a['remark'] and ws['O3'].value==b['remark'] and ws['O3'].data_type=='s'
     assert ws['C2'].value=='000001' and ws['E3'].value=='00042' and ws['L2'].value=='001019'
@@ -159,7 +159,7 @@ def test_existing_workflow_and_legacy_snapshots_preserved(db):
     before=deepcopy(legacy)
     entries=sheet.sync('huaxing',sheet.candidates('huaxing',[legacy],[],[]))['items']
     old=next(r for r in entries if r['sourceKey']=='legacy:7')
-    assert old['result']=='' and old['historicalResult']=='COND' and legacy==before
+    assert old['result']=='COND' and old['historicalResult']=='' and legacy==before
 
 
 def test_http_actual_save_read_photo_export_permissions_and_source_unchanged(db,monkeypatch):

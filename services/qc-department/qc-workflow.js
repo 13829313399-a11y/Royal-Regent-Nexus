@@ -67,7 +67,7 @@
     try{return await work();}catch(error){if(hasPendingFiles())model.dirty=true;errorMessage(error.message+'。填写内容仍保留；若提示版本变化，请先复制未保存内容，再关闭并刷新核对。');}
     finally{model.busy=false;controls.forEach(([el,disabled])=>{if(el.isConnected&&model.dialog===startDialog)el.disabled=disabled;});}
   }
-  function hasPendingFiles(){return [...(model.dialog?.querySelectorAll('[data-files],[data-camera]')||[])].some(n=>n.files?.length);}
+  function hasPendingFiles(){return Boolean(model.dialog?._pastedPhotos?.length)||[...(model.dialog?.querySelectorAll('[data-files],[data-camera]')||[])].some(n=>n.files?.length);}
   function requireUploaded(){if(hasPendingFiles())throw Error('还有选中但未上传的附件，请先点击上传并确认成功');}
   function close(){
     if(model.busy||model.opening)return;
@@ -116,8 +116,8 @@
       model.busy=false;controls.forEach(([el,disabled])=>{if(el.isConnected)el.disabled=disabled;});if(button)button.textContent=label;
     }
     if(result){
-      await root.renderSalesSchedule?.();await root.showPage?.('records');
-      toast('已推送 '+result.items.length+' 条到验货明细'+(skippedText?'；已跳过 '+skippedText:''));
+      await root.QcSchedule?.afterPush(result.items.map(t=>t.sourceId));await root.showPage?.('sales-schedule');
+      toast('已确认 '+result.items.length+' 条验货任务；重复来源沿用原任务，已合并任务不重复入台'+(skippedText?'；已跳过 '+skippedText:''));
     }
   }
   function collapse(restoreFocus=true){
@@ -132,6 +132,7 @@
   }
   function mayOpen(){return !model.busy&&!model.opening&&(!(model.dirty||hasPendingFiles())||root.confirm('放弃当前未保存的填写并打开其他记录？'));}
   async function openTask(id,page){
+    if(page==='review'&&root.QcInspectionSheet){await root.QcInspectionSheet.loadReview();return;}
     if(page==='records'&&root.QcInspectionSheet)return root.QcInspectionSheet.focus(id);
     if(model.task?.id===id&&model.page===page&&resume())return true;
     if(!mayOpen())return false;
@@ -153,7 +154,7 @@
       (t.sourceChanged?'<section class="qwf-warning"><strong>业务来源已变更，提交前需核对</strong>'+(t.currentSource?sourceFields(t.currentSource):'<p>来源已不存在</p>')+(canEdit&&t.currentSource?.sourceStatus==='active'?'<button data-ack-source>确认已核对来源变更</button>':'<p>取消或删除的来源不能继续提交，请联系业务部。</p>')+'</section>':'')+
       (t.reviewReason?'<p class="qwf-warning">主管意见：'+esc(t.reviewReason)+'</p>':'')+
       '<div class="qwf-form">'+field('实际检验日期 *','actualDate',e.actualDate,'date',!canEdit)+field('实际验货数量 *','actualQuantity',e.actualQuantity,'number',!canEdit)+field('实际抽查数量','sampleQuantity',e.sampleQuantity,'number',!canEdit)+field('实际检验人员 *','inspector',inspectorName,'text',true)+field('第三方机构（客验）','institution',e.institution,'text',!canEdit)+field('报告编号','reportNo',e.reportNo,'text',!canEdit)+
-      '<label>最终判定 *<select data-execution="result" '+(!canEdit?'disabled':'')+'>'+options({'':'未填写',PASS:'PASS',REJ:'REJ',COND:'有条件接收',HOLD:'待定'},e.result)+'</select></label>'+field('判定／数量差异说明','resultExplanation',e.resultExplanation,'textarea',!canEdit)+field('验货备注','remark',e.remark,'textarea',!canEdit)+field('原报告暂缺说明（如适用）','reportMissingReason',e.reportMissingReason,'textarea',!canEdit)+'</div>'+
+      '<label>最终判定 *<select data-execution="result" '+(!canEdit?'disabled':'')+'>'+options({'':'未填写',PASS:'PASS',FAIL:'FAIL',PENDING:'PENDING',LG:'LG'},e.result)+'</select></label>'+field('判定／数量差异说明','resultExplanation',e.resultExplanation,'textarea',!canEdit)+field('验货备注','remark',e.remark,'textarea',!canEdit)+field('原报告暂缺说明（如适用）','reportMissingReason',e.reportMissingReason,'textarea',!canEdit)+'</div>'+
       '<section><h3>不良明细</h3>'+detailRows('defects',e.defects,!canEdit)+'</section><section><h3>尺寸／测量明细</h3>'+detailRows('measurements',e.measurements,!canEdit)+'</section><p class="qwf-notice" data-calculation></p>'+
       '<section><h3>照片与原报告</h3><div class="qwf-files">'+(files||'<p>尚未添加附件</p>')+'</div>'+(canEdit?'<div class="qwf-upload"><label>选择图片或 PDF 报告<input type="file" data-files accept="image/jpeg,image/png,image/webp,application/pdf" multiple></label><label>现场拍照<input type="file" data-camera accept="image/jpeg,image/png,image/webp" capture="environment"></label><label>附件说明<input data-caption maxlength="1000"></label><button data-upload>保存草稿并上传所选附件</button><small>支持 JPG、PNG、WebP、PDF；单文件 10 MB，每次验货含历史文件最多 50 个／100 MB。</small><p data-upload-status role="status"></p></div>':'')+'</section>'+
       '<section><h3>操作及提交历史</h3>'+t.history.map(h=>'<details><summary>'+esc(actionNames[h.action]||h.action)+' · '+esc(h.actor_name)+' · '+esc(h.created_at)+(h.reason?' · '+esc(h.reason):'')+'</summary><pre>'+esc(JSON.stringify(h.snapshot,null,2))+'</pre><div>'+(h.snapshot.attachments||[]).map(f=>'<a target="_blank" rel="noopener" href="'+apiBase+'tasks/'+t.id+'/files/'+f.id+'">'+esc(f.name)+'</a> ').join('')+'</div></details>').join('')+'</section>';
@@ -162,6 +163,15 @@
     const footer=(t.id&&root.__QC_NEXUS?.workflow?.export?'<button data-packet>导出完整资料</button>':'')+(native?'<span class="qwf-lock-note">提交后锁定；主管退回后可修改</span>':'')+(canEdit?'<button data-save>保存草稿</button><button class="qwf-primary" data-submit>确认提交</button>':'<span>记录已锁定或当前账号仅可查看</span>')+(review&&t.state==='pending'?'<button class="qwf-primary" data-review="approve">审核通过</button><button data-review="return">退回修改</button>':'')+(review&&t.state==='approved'?'<button data-review="reopen">反审核退回</button>':'');
     const el=dialog((canEdit?'填写验货记录':'查看验货记录')+(t.source.productNo?' · '+t.source.productNo:''),body,footer,native&&model.page==='records');
     if(native)mountNative(t,canEdit);
+    el.addEventListener('paste',event=>{
+      if(event.defaultPrevented)return;
+      const files=root.QcPhotoPaste?.images(event)||[];if(!files.length)return;
+      event.preventDefault();
+      if(!canEdit){toast('当前记录只读，不能添加照片',true);return;}
+      if(model.busy){toast('附件正在保存，请完成后再粘贴',true);return;}
+      (el._pastedPhotos ||= []).push(...files);model.dirty=true;
+      busy(async()=>{await uploadPending();renderDetail();await load();toast('粘贴照片已保存');});
+    });
     el.addEventListener('input',ev=>{if(ev.target.matches('[data-execution],[data-cell],[data-method],[data-caption]')){model.dirty=true;calculate();}});
     el.addEventListener('change',ev=>{if(ev.target.matches('input[type=file]'))model.dirty=true;if(ev.target.matches('[data-execution],[data-cell],[data-method],[data-caption]')){model.dirty=true;calculate();}});
     el.querySelector('[data-save]')?.addEventListener('click',()=>busy(async()=>{await uploadPending();await saveDraft();return true;}).then(saved=>{if(saved)root.advanceQcOcrQueue?.();}));
@@ -207,7 +217,7 @@
   async function uploadPending(){
     const el=model.dialog;
     const inputs=[...el.querySelectorAll('[data-files],[data-camera]')];
-    const files=inputs.flatMap(input=>[...(input.files||[])]);
+    const files=[...inputs.flatMap(input=>[...(input.files||[])]),...(el._pastedPhotos||[])];
     if(!files.length)return;
     if(files.some(f=>f.size>10*1024*1024))throw Error('单个附件不能超过 10 MB');
     model.dirty=true;
@@ -222,7 +232,7 @@
       model.task=await api('tasks/'+model.task.id+'/attach',{revision:model.task.revision,name:file.name,caption,content});
       model.uploaded.add(file);
     }
-    inputs.forEach(n=>n.value='');model.uploaded.clear();model.dirty=false;
+    inputs.forEach(n=>n.value='');el._pastedPhotos=[];model.uploaded.clear();model.dirty=false;
   }
   function restoreNative(){
     if(!model.native)return;
@@ -349,7 +359,7 @@
     content.before(source);
     const result=doc.getElementById('f_result');move(group('f_result'),content.querySelector('.qwf-conclusion'));
     const choices=doc.createElement('div');choices.dataset.entryOnly='';choices.className='qwf-result-choices';choices.setAttribute('role','radiogroup');choices.setAttribute('aria-label','判定结果');
-    for(const [value,label] of Object.entries({PASS:'PASS 合格',REJ:'FAIL 不合格',COND:'有条件接收',HOLD:'待定'})){
+    for(const [value,label] of Object.entries({PASS:'PASS 合格',FAIL:'FAIL 不合格',PENDING:'PENDING 待确认',LG:'LG'})){
       const labelNode=doc.createElement('label');labelNode.innerHTML='<input type="radio" name="drawer-result" value="'+value+'"><span>'+label+'</span>';const radio=labelNode.querySelector('input');radio.checked=result.value===value;radio.disabled=!canEdit;radio.onchange=()=>{result.value=value;result.dispatchEvent(new root.Event('change',{bubbles:true}));};choices.append(labelNode);
     }
     result.after(choices);const oldDisplay=result.style.display;result.style.display='none';n.cleanup.push(()=>result.style.display=oldDisplay);
@@ -407,7 +417,7 @@
     if(!root.__QC_NEXUS?.workflow?.review)return toast('只有主管可以审核或退回',true);
     if(action==='return'&&!reason.trim())return toast('请填写退回原因',true);
     if(action==='approve'&&!root.confirm('确认审核通过这条记录？'))return;
-    try{const saved=await api('legacy-review',{recordId:record.id,updatedAt:record.updatedAt||'',action,reason});root.acceptQcLegacyReview(saved);await load();toast(action==='approve'?'审核通过':'已退回，可从验货明细点击编辑');}catch(e){toast(e.message,true);}
+    try{const saved=await api('legacy-review',{recordId:record.id,updatedAt:record.updatedAt||'',action,reason});root.acceptQcLegacyReview(saved);await load();toast(action==='approve'?'审核通过':'已退回，可从验货台点击编辑');}catch(e){toast(e.message,true);}
   }
   async function openRecord(record){
     if(model.task?.legacyId===record.id&&model.page==='records'&&resume())return true;
@@ -466,6 +476,7 @@
   }
   async function onPage(page){
     beforePageChange(page);
+    if(page==='review'&&root.QcInspectionSheet){await root.QcInspectionSheet.loadReview();return;}
     if(page==='records'&&root.QcInspectionSheet){await root.QcInspectionSheet.load();return;}
     if(['records','review','dashboard','analysis','daily','weekly','monthly','yearly','supplier-report'].includes(page)){
       await load();

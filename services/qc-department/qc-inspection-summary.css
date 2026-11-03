@@ -1,0 +1,49 @@
+/* Only the new archive module; existing QC typography/layout/theme stay unchanged. */
+#qsum-root {display:flex;flex-direction:column;gap:16px;min-width:0}
+.qsum-heading,.qsum-actions,.qsum-footer,.qsum-footer>div{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.qsum-heading{justify-content:flex-end}
+.qsum-heading h2{color:var(--text-hi);font-size:22px;margin:0 0 4px}.qsum-heading p{color:var(--text-main);margin:0}
+.qsum-note{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px;color:var(--text-main);line-height:1.7}
+.qsum-filters{display:flex;align-items:end;gap:10px;flex-wrap:wrap;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius)}
+.qsum-filters label{display:flex;flex-direction:column;gap:5px;min-width:88px;color:var(--text-main)}
+.qsum-filters .qsum-search{flex:1;min-width:180px}.qsum-filters input,.qsum-filters select{width:100%;height:36px;min-width:0;padding:6px 9px;border:1px solid var(--border-hi);border-radius:var(--radius);background:var(--bg-input);color:var(--text-hi);font:inherit}
+.qsum-filters select:disabled{opacity:.55}.qsum-table-wrap{max-width:100%;overflow:auto;border:1px solid var(--border);border-radius:var(--radius)}
+.qsum-table{width:100%;min-width:660px;border-collapse:collapse;background:var(--bg-card);color:var(--text-main);font-size:13px}.qsum-table th{position:sticky;top:0;background:var(--bg-panel);color:var(--text-hi);font-weight:600;text-align:left;white-space:nowrap}.qsum-table th,.qsum-table td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle}.qsum-table tr:last-child td{border-bottom:0}.qsum-table tbody tr:hover{background:var(--bg-hover)}.qsum-table .btn{padding:6px 10px;white-space:nowrap}.qsum-empty{text-align:center!important;padding:42px 16px!important}
+.qsum-result{font-weight:600}.qsum-pass{color:var(--green-dim)}.qsum-fail,.qsum-rej,.qsum-error{color:var(--red)}.qsum-state{white-space:nowrap}.qsum-footer{font-size:12px;color:var(--text-main)}#qsum-message{min-height:20px;margin:0}.qsum-dialog{max-width:980px;width:min(980px,calc(100vw - 24px))}.qsum-dialog .qwf-dialog-body{display:flex;flex-direction:column;gap:14px;overflow:auto}.qsum-dialog header{gap:12px}.qsum-detail{display:grid;grid-template-columns:150px minmax(0,1fr);gap:0;margin:0}.qsum-detail dt,.qsum-detail dd{padding:9px 12px;border-bottom:1px solid var(--border);margin:0;overflow-wrap:anywhere;white-space:pre-wrap}.qsum-detail dt{color:var(--text-main);background:var(--bg-panel)}.qsum-detail dd{color:var(--text-hi)}.qsum-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;font-size:12px}.qsum-batch{padding:12px;border:1px solid var(--border);border-radius:var(--radius)}.qsum-dialog summary{cursor:pointer;padding:8px 0}.qsum-dialog p{line-height:1.6}
+#qsum-root :focus-visible,.qsum-dialog :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+@media(max-width:640px){.qsum-filters label{flex:1;min-width:75px}.qsum-filters .qsum-search{flex-basis:100%}.qsum-filters input,.qsum-filters select{font-size:16px}.qsum-actions{width:100%;justify-content:flex-start}.qsum-detail{grid-template-columns:110px minmax(0,1fr)}.qsum-detail dt,.qsum-detail dd{padding:8px}.qsum-heading h2{font-size:20px}.qsum-dialog .btn{min-height:36px}}
+
+.qsum-detail dd{white-space:pre-wrap;overflow-wrap:anywhere}.qsum-photos{display:flex;gap:12px;flex-wrap:wrap}.qsum-photos img{max-width:180px;max-height:160px;object-fit:contain}
+
+/* Stable authenticated photo URLs, an explicit empty/error state and a contained preview. */
+.qsum-photo-thumb{display:flex;flex-direction:column;gap:6px;align-items:center;justify-content:center;max-width:200px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);color:var(--text-main);cursor:pointer;overflow-wrap:anywhere}
+.qsum-photo-thumb img{width:180px;height:150px;object-fit:contain}.qsum-photo-thumb [data-photo-error],.qsum-photo-full [data-photo-error]{color:var(--red,#b42318)}
+.qsum-photo-empty{padding:16px;border:1px dashed var(--border);width:100%;margin:0}
+.qsum-photo-preview .qwf-dialog-body{overflow:auto}.qsum-photo-full img{display:block;width:100%;max-height:70vh;object-fit:contain}.qsum-photo-preview{z-index:10001}
+
+/* A separate image viewport; no transform/zoom on html, body or the detail drawer. */
+.qsum-lightbox{box-sizing:border-box;width:min(1100px,calc(100vw - 32px));height:min(820px,calc(100dvh - 32px));max-width:none;max-height:none;padding:0;margin:auto;border:1px solid var(--border-hi);border-radius:16px;background:var(--bg-panel);color:var(--text-hi);overflow:hidden}
+.qsum-lightbox[open]{display:flex;flex-direction:column}.qsum-lightbox::backdrop{background:rgba(10,18,30,.52)}
+.qsum-lightbox header,.qsum-lightbox footer,.qsum-lightbox-tools{display:flex;align-items:center;gap:10px;padding:12px 16px;flex-shrink:0;flex-wrap:wrap}.qsum-lightbox header,.qsum-lightbox footer{justify-content:space-between}.qsum-lightbox footer span{overflow-wrap:anywhere;min-width:0}
+.qsum-lightbox button{font:inherit;min-height:34px;padding:5px 12px;border:1px solid var(--border-hi);border-radius:8px;background:var(--bg-card);color:var(--text-hi);cursor:pointer}.qsum-lightbox button:disabled{opacity:.45;cursor:default}.qsum-lightbox :focus-visible{outline:2px solid var(--glass-primary);outline-offset:2px}
+.qsum-lightbox-viewport{flex:1;min-height:0;overflow:hidden;overscroll-behavior:contain;background:var(--bg-base);position:relative;touch-action:none;cursor:grab}
+.qsum-lightbox-canvas{position:absolute;inset:0;overflow:hidden;contain:strict}.qsum-lightbox-viewport.is-dragging{cursor:grabbing}
+.qsum-lightbox img{display:block;position:absolute;top:0;left:0;max-width:none;max-height:none;transform-origin:0 0;transition:none;user-select:none;pointer-events:none;will-change:transform}.qsum-lightbox [data-photo-error]{color:var(--red);position:absolute;inset:40% 16px auto;text-align:center}.qsum-lightbox output{min-width:48px;text-align:center;font-variant-numeric:tabular-nums}
+@media(max-width:640px){.qsum-lightbox{width:calc(100vw - 12px);height:calc(100dvh - 12px)}.qsum-lightbox-tools{gap:6px;padding:8px}.qsum-lightbox button{padding:6px 9px}}
+
+/* Round five polish stays within summary details and the independent photo viewport. */
+body.qc-liquid-glass .qsum-dialog h3{font-size:14px;margin:12px 0 0;color:var(--text-hi)}
+body.qc-liquid-glass .qsum-detail{flex-shrink:0;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+body.qc-liquid-glass .qsum-detail :is(dt,dd):nth-last-child(-n+2){border-bottom:0}
+body.qc-liquid-glass .qsum-photo-thumb{border-radius:12px;transition:border-color .18s ease,box-shadow .18s ease}
+body.qc-liquid-glass .qsum-photo-thumb:hover{border-color:var(--glass-primary);box-shadow:0 4px 14px #16335318}
+body.qc-liquid-glass .qsum-photo-thumb span{font-size:12px;line-height:1.5}
+body.qc-liquid-glass .qsum-lightbox{border-radius:20px;box-shadow:0 24px 90px #0b192b4d,inset 0 1px 0 #ffffff4d;animation:qsum-photo-in .2s ease-out}
+body.qc-liquid-glass .qsum-lightbox header{border-bottom:1px solid var(--border);background:var(--bg-panel)}
+body.qc-liquid-glass .qsum-lightbox footer{border-top:1px solid var(--border);font-size:12px;color:var(--text-dim)}
+body.qc-liquid-glass .qsum-lightbox button{transition:background .16s ease,border-color .16s ease}
+body.qc-liquid-glass .qsum-lightbox button:hover:not(:disabled){background:var(--bg-hover);border-color:var(--glass-primary)}
+body.theme-dark.qc-liquid-glass .qsum-lightbox{box-shadow:0 24px 90px #0009,inset 0 1px 0 #ffffff12}
+@supports(backdrop-filter:blur(20px)){body.qc-liquid-glass .qsum-lightbox{background:color-mix(in srgb,var(--bg-panel) 94%,transparent);backdrop-filter:blur(20px) saturate(120%)}}
+@keyframes qsum-photo-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){body.qc-liquid-glass .qsum-lightbox{animation:none}body.qc-liquid-glass .qsum-lightbox button,body.qc-liquid-glass .qsum-photo-thumb{transition:none}}

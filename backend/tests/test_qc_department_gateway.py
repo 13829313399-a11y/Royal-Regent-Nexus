@@ -208,85 +208,21 @@ def test_real_node_service_roundtrip_and_private_port(monkeypatch, tmp_path):
         child.wait(timeout=10)
 
 
-def test_schedule_example_is_readonly_authorized_and_huaxing_only(monkeypatch):
+def test_removed_examples_return_gone_without_loading_or_writing_data(monkeypatch):
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)
         assert client.get('/api/qc-department/huaxing/api/schedule-example').status_code == 401
         login_as(client, 'qc_inspector')
         base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
         calls.clear()
-        response = client.get(base + 'api/schedule-example')
-        assert response.status_code == 200
-        data = response.json()
-        assert data['example'] is True and data['factory_id'] == 'huaxing'
-        assert data['source']['sheet'] == '各客验货排期 (3)'
-        assert len(data['items']) == 47
-        assert sum(row['quantity'] for row in data['items']) == 53826
-        assert response.headers['cache-control'] == 'no-store'
-        assert client.post(base + 'api/schedule-example', json={}).status_code == 404
-        assert client.get(base + 'fixtures/qc-schedule-example.json').status_code == 404
+        assert client.get(base+'api/schedule-example').status_code == 410
+        assert client.post(base+'api/schedule-example/feedback',json={}).status_code == 410
+        assert client.get(base+'fixtures/qc-schedule-example.json').status_code == 404
         assert client.get('/api/qc-department/huakang-a/api/schedule-example').status_code == 403
+        assert 'scheduleExampleWriteAllowed' not in client.get(base+'nexus-context.js').text
         assert calls == []
-        login_as(client, 'admin')
-        other = client.get('/api/qc-department/huakang-a/api/health').json()['frame_url']
-        calls.clear()
-        assert client.get(other + 'api/schedule-example').status_code == 404
-        assert calls == []
-
-
-def test_example_feedback_persists_separately_and_checks_revision(monkeypatch):
-    with make_client(monkeypatch) as client:
-        calls = install_upstream(monkeypatch)
-        login_as(client, 'qc_inspector')
-        base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
-        original = client.get(base + 'api/schedule-example').json()
-        row = original['items'][0]
-        body = dict(id=row['id'], sourceSha256=original['source']['sha256'], completion='已完成', remark='划痕3件', revision=0)
-        calls.clear()
-        endpoint = base + 'api/schedule-example/feedback'
-        response = client.post(endpoint, json=body)
-        assert response.status_code == 200, response.text
-        assert response.json()['feedbackRevision'] == 1
-        updated = client.get(base + 'api/schedule-example').json()
-        assert updated['items'][0]['completion'] == '已完成'
-        assert updated['items'][0]['remark'] == '划痕3件'
-        assert updated['items'][1:] == original['items'][1:]
-        assert client.post(endpoint, json=body).status_code == 409
-        assert client.post(endpoint, json={**body, 'revision':1,'completion':'','remark':''}).status_code == 200
-        assert client.get(base + 'api/schedule-example').json()['items'][0]['completion'] == ''
-        service = importlib.import_module('app.services.qc_schedule_example_feedback')
-        assert service.store_path().name == 'feedback.sqlite3'
-        assert service.store_path().parent.name == '_schedule_examples'
         gateway = importlib.import_module('app.api.qc_department')
-        assert gateway.schedule_example('huaxing')['items'][0]['completion'] == ''
-        for bad in [{**body,'id':'inspection-1'}, {**body,'sourceSha256':'old'}, {**body,'quantity':99},
-                    {**body,'revision':True}, {**body,'completion':123}, {**body,'remark':'x'*4001}]:
-            assert client.post(endpoint,json=bad).status_code in {404,409,422}
-        assert client.post(endpoint,content='{}',headers={'Content-Type':'text/plain'}).status_code == 415
-        assert client.post(endpoint,json=body,headers={'Sec-Fetch-Site':'cross-site'}).status_code == 403
-        assert calls == []
-        login_as(client,'admin')
-        other=client.get('/api/qc-department/huakang-a/api/health').json()['frame_url']
-        calls.clear()
-        assert client.post(other+'api/schedule-example/feedback',json=body).status_code == 404
-        assert client.post(endpoint,json=body).status_code == 409  # previous actor
-        assert calls == []
-
-
-def test_example_feedback_enforces_write_permission(monkeypatch):
-    monkeypatch.setenv('AUTHZ_MODE','enforce')
-    with make_client(monkeypatch) as client:
-        calls=install_upstream(monkeypatch)
-        login_as(client,'qc_inspector')
-        grant_permission_override('qc_inspector','qc_inspection:order_write',effect='deny',factory_id='huaxing',department='qc')
-        base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
-        calls.clear()
-        assert client.get(base+'api/schedule-example').status_code == 200
-        assert client.post(base+'api/schedule-example/feedback',json={}).status_code == 403
-        assert '"scheduleExampleWriteAllowed": false' in client.get(base+'nexus-context.js').text
-        assert calls == []
-        service=importlib.import_module('app.services.qc_schedule_example_feedback')
-        assert not service.store_path().exists()
+        assert len(gateway.schedule_example('huaxing')['items']) == 47  # Legacy provenance only.
 
 
 def workbook_bytes():
@@ -403,7 +339,7 @@ def test_real_sessions_inspector_submit_supervisor_review_complete_workflow(monk
             "plannedDate":"2026-10-26", "plannedQuantity":"100"}]}).json()["items"][0]
         path=base+"api/workflow/tasks/"+t["id"]
         e=t["execution"];e.update(actualDate="2026-10-26",actualQuantity="100",sampleQuantity="10",inspector="机构验货员",
-            institution="测试第三方",reportNo="TEST-001",result="REJ",remark="依据机构原报告")
+            institution="测试第三方",reportNo="TEST-001",result="FAIL",remark="依据机构原报告")
         t=client.post(path+"/save",json={"revision":t["revision"],"execution":e}).json()
         t=client.post(path+"/attach",json={"revision":t["revision"],"name":"第三方报告.pdf","caption":"机构原件",
             "content":base64.b64encode(b"%PDF-1.4 isolated-test").decode()}).json()
@@ -429,7 +365,7 @@ def test_real_sessions_inspector_submit_supervisor_review_complete_workflow(monk
         base=client.get("/api/qc-department/huaxing/api/health").json()["frame_url"];path=base+"api/workflow/tasks/"+t["id"]
         response=client.post(path+"/approve",json={"revision":t["revision"],"reason":"已核对原报告"})
         assert response.status_code==200 and response.json()["state"]=="approved"
-        assert response.json()["execution"]["result"]=="REJ"
+        assert response.json()["execution"]["result"]=="FAIL"
         assert len(client.get(base+"api/workflow/projections").json()["items"])==1
         exported=client.post(base+"api/workflow/export",json={"ids":[t["id"]],"formal":True})
         assert exported.status_code==200
@@ -466,7 +402,7 @@ def test_historical_return_uses_new_form_with_full_permission_lock_and_attachmen
         baseline=deepcopy(rows[0]);assert baseline['status']=='rejected'
         login_as(client,'qc_inspector');base=client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
         response=client.post(base+'api/workflow/legacy',json={'recordId':22});assert response.status_code==200,response.text
-        t=response.json();path=base+'api/workflow/tasks/'+t['id'];e=t['execution'];e['remark']='补充现场照片'
+        t=response.json();path=base+'api/workflow/tasks/'+t['id'];e=t['execution'];e['remark']='补充现场照片';e['result']='FAIL'
         t=client.post(path+'/save',json={'revision':t['revision'],'execution':e,'method':'internal'}).json()
         photo=BytesIO();Image.new('RGB',(2,2),'red').save(photo,format='PNG')
         t=client.post(path+'/attach',json={'revision':t['revision'],'name':'验货照片.png','caption':'问题位置','content':base64.b64encode(photo.getvalue()).decode()}).json()
@@ -478,7 +414,7 @@ def test_historical_return_uses_new_form_with_full_permission_lock_and_attachmen
         t=client.post(path+'/approve',json={'revision':full['revision'],'reason':''}).json();assert t['state']=='approved'
         assert rows[0]==baseline and t['legacyOriginal']==baseline
         projected=client.get(base+'api/workflow/projections').json()['items'][0]
-        assert projected['deliveryNo']=='0005501' and projected['reference'] and projected['result']=='REJ'
+        assert projected['deliveryNo']=='0005501' and projected['reference'] and projected['result']=='FAIL'
 
 
 def test_inspection_plan_join_is_readonly_scoped_and_requires_verified_origin(monkeypatch):

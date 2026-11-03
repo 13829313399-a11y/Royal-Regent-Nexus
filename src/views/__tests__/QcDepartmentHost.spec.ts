@@ -171,3 +171,20 @@ it('authorization refresh reconnects options without resetting the current QC pa
   expect(bridge.page).toBe('sales-schedule')
   wrapper.unmount()
 })
+
+
+it('restores the QC module from the URL and preserves factory on navigation', async () => {
+  state.route.query = { factory: 'huaxing', qcPage: 'inspection-summary' }
+  state.get.mockResolvedValue({ data: { frame_url: '/api/qc-department/huaxing/u-one/' } })
+  const wrapper = mount(Host)
+  await flushPromises()
+  const bridge = vi.fn()
+  const { iframe } = bridgeFor(wrapper)
+  Object.assign(iframe.contentWindow!, { __QC_SET_FACTORY_BRIDGE: bridge })
+  await wrapper.get('iframe').trigger('load')
+  expect(bridge.mock.calls[0]?.[0].page).toBe('inspection-summary')
+  bridge.mock.calls[0]?.[0].navigate('review')
+  await flushPromises()
+  expect(state.route.query).toEqual({ factory: 'huaxing', qcPage: 'review' })
+  wrapper.unmount()
+})
