@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { onBeforeRouteLeave } from 'vue-router'
 import CartonStocktakeWorkspace from '../CartonStocktakeWorkspace.vue'
 
 const mocks = vi.hoisted(() => ({ policy: vi.fn(), updatePolicy: vi.fn(), list: vi.fn(), detail: vi.fn(), create: vi.fn(), act: vi.fn(), balances: vi.fn(), user: { id: 'counter' }, can: vi.fn(() => true) }))
@@ -57,14 +58,76 @@ describe('库存盘点工作台', () => {
     expect(wrapper.vm.navigationBlocked).toBe(false)
     await wrapper.get('[aria-label="实盘数量 L1"]').setValue('98')
     expect(wrapper.vm.navigationBlocked).toBe(true)
+    expect(wrapper.vm.navigationBlockMessage).toContain('未保存的实盘数量或差异原因')
+    vi.mocked(window.confirm).mockReturnValueOnce(false)
+    await button(wrapper, '返回库存台账').trigger('click')
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(wrapper.get<HTMLInputElement>('[aria-label="实盘数量 L1"]').element.value).toBe('98')
     let finish!: (value: ReturnType<typeof detail>) => void
     mocks.act.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     await button(wrapper, '保存草稿').trigger('click')
     expect(wrapper.vm.navigationBlocked).toBe(true)
+    expect(wrapper.vm.navigationBlockMessage).toContain('正在保存盘点草稿')
+    expect(button(wrapper, '返回库存台账').attributes('disabled')).toBeDefined()
     finish(detail()); await flushPromises()
     expect(wrapper.vm.navigationBlocked).toBe(false)
+    expect(wrapper.vm.navigationBlockMessage).toBe('')
     await button(wrapper, '盘点单列表').trigger('click'); await flushPromises()
     expect(wrapper.vm.navigationBlocked).toBe(false)
+    wrapper.unmount()
+  })
+  it('allows leaving a read-only load and ignores its late result', async () => {
+    let finish!: (value: typeof balance[]) => void
+    mocks.balances.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = mount(CartonStocktakeWorkspace, { props: { factoryId: 'huaxing' } })
+    await flushPromises()
+    expect(wrapper.vm.navigationBlocked).toBe(false)
+    expect(wrapper.vm.navigationBlockMessage).toBe('')
+    expect((vi.mocked(onBeforeRouteLeave).mock.lastCall![0] as () => boolean)()).toBe(true)
+    await button(wrapper, '返回库存台账').trigger('click')
+    expect(wrapper.emitted('close')).toHaveLength(1)
+    wrapper.unmount()
+    finish([balance]); await flushPromises()
+    expect(mocks.policy).not.toHaveBeenCalled()
+    expect(mocks.create).not.toHaveBeenCalled()
+  })
+  it('does not treat opening or refreshing a clean saved draft as an edit', async () => {
+    const wrapper = mount(CartonStocktakeWorkspace, { props: { factoryId: 'huaxing' } })
+    await flushPromises()
+    let finish!: (value: ReturnType<typeof detail>) => void
+    mocks.detail.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await button(wrapper, '查看 / 处理').trigger('click')
+    expect(wrapper.vm.navigationBlocked).toBe(false)
+    finish(detail()); await flushPromises()
+    await button(wrapper, '刷新账面').trigger('click'); await flushPromises()
+    expect(wrapper.vm.navigationBlocked).toBe(false)
+    expect(wrapper.vm.navigationBlockMessage).toBe('')
+    wrapper.unmount()
+  })
+  it('protects automatic draft creation from the selected ledger positions', async () => {
+    let finishLoad!: (value: typeof balance[]) => void
+    let finishCreate!: (value: ReturnType<typeof detail>) => void
+    mocks.balances.mockImplementationOnce(() => new Promise(resolve => { finishLoad = resolve }))
+    mocks.create.mockImplementationOnce(() => new Promise(resolve => { finishCreate = resolve }))
+    const wrapper = mount(CartonStocktakeWorkspace, { props: { factoryId: 'huaxing', initialPositionKeys: ['M1'] } })
+    await flushPromises()
+    expect(wrapper.vm.navigationBlockMessage).toContain('正在根据已选库存生成盘点单')
+    expect((vi.mocked(onBeforeRouteLeave).mock.lastCall![0] as () => boolean)()).toBe(false)
+    finishLoad([balance]); await flushPromises()
+    expect(wrapper.vm.navigationBlockMessage).toContain('正在生成盘点单')
+    finishCreate(detail()); await flushPromises()
+    expect(wrapper.vm.navigationBlocked).toBe(false)
+    wrapper.unmount()
+  })
+  it('keeps unsaved counts protected after a failed save without claiming it is still saving', async () => {
+    const wrapper = await open()
+    await wrapper.get('[aria-label="实盘数量 L1"]').setValue('98')
+    mocks.act.mockRejectedValueOnce(new Error('保存失败'))
+    await button(wrapper, '保存草稿').trigger('click'); await flushPromises()
+    expect(wrapper.vm.navigationBlockMessage).toContain('未保存的实盘数量或差异原因')
+    expect(wrapper.vm.navigationBlockMessage).not.toContain('正在保存')
+    expect(button(wrapper, '返回库存台账').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get<HTMLInputElement>('[aria-label="实盘数量 L1"]').element.value).toBe('98')
     wrapper.unmount()
   })
   it('opens the ledger selection directly for counting without selecting again', async () => {

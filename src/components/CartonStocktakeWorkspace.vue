@@ -23,8 +23,14 @@ const paper = ref(''), unit = ref('')
 const papers = computed(() => [...new Set(balances.value.map(row => row.packaging_type))].sort())
 const units = computed(() => [...new Set(balances.value.map(row => row.unit))].sort())
 const busy = ref(false), error = ref(''), message = ref(''), dirty = ref(false), acknowledged = ref(false)
-const navigationBlocked = computed(() => busy.value || dirty.value)
-defineExpose({ navigationBlocked })
+const pendingWrite = ref('')
+const openingSelection = ref(Boolean(props.initialPositionKeys?.length))
+const navigationBlockMessage = computed(() => pendingWrite.value
+  ? `${pendingWrite.value}，请等待完成后再切换页面。`
+  : openingSelection.value ? '正在根据已选库存生成盘点单，请等待完成后再切换页面。'
+    : dirty.value ? '库存盘点单有未保存的实盘数量或差异原因，请先“保存草稿”，或点“返回库存台账”确认放弃填写。' : '')
+const navigationBlocked = computed(() => Boolean(navigationBlockMessage.value))
+defineExpose({ navigationBlocked, navigationBlockMessage })
 const counts = ref<Record<string, { actual: string; reason: string }>>({})
 const reviewReason = ref(''), offset = ref(0)
 const cancelReason = ref('取消本次盘点')
@@ -39,9 +45,8 @@ async function savePolicy() {
     acceptPolicy(await cartonStocktakeApi.updatePolicy({ factory_id: props.factoryId, expected_revision: current.revision,
       amount_threshold: policyAmount.value, ratio_threshold: String(Number(policyPercent.value) / 100), reason: policyReason.value.trim() }))
     policyReason.value = ''; message.value = '本厂区盘点门槛已更新，入账时按最新规则校验。'
-  })
+  }, '正在保存盘点门槛设置')
 }
-const openingSelection = ref(Boolean(props.initialPositionKeys?.length))
 let active = true
 const statusNames = { DRAFT: '待盘点', SUBMITTED: '待确认入账', POSTED: '已入账', CANCELLED: '已取消' }
 const actionNames: Record<string, string> = { STOCKTAKE_CREATED: '生成盘点单', STOCKTAKE_SAVE: '保存草稿', STOCKTAKE_CONFIRM: '确认提交并入账', STOCKTAKE_SUBMIT: '提交主管确认', STOCKTAKE_APPROVE: '复核入账', STOCKTAKE_RETURN: '退回重盘', STOCKTAKE_CANCEL: '取消盘点' }
@@ -68,15 +73,16 @@ function accept(result: StocktakeDetail, preserve = false) {
   reviewReason.value = ''
   cancelReason.value = '取消本次盘点'
 }
-async function run(action: () => Promise<void>) {
+async function run(action: () => Promise<void>, writing = '') {
   if (busy.value) return
-  busy.value = true; error.value = ''; message.value = ''
-  try { await action() } catch (err) { error.value = getApiErrorMessage(err); acknowledged.value = false }
-  finally { busy.value = false }
+  busy.value = true; pendingWrite.value = writing; error.value = ''; message.value = ''
+  try { await action() } catch (err) { if (active) { error.value = getApiErrorMessage(err); acknowledged.value = false } }
+  finally { busy.value = false; pendingWrite.value = '' }
 }
 async function load() {
   await run(async () => {
     const result = await Promise.allSettled([cartonProcurementApi.listInventoryBalances(props.factoryId), cartonStocktakeApi.list(props.factoryId, offset.value, documentStatus.value, { date_from: documentFrom.value, date_to: documentTo.value, sort: documentSort.value })])
+    if (!active) return
     if (result[0].status === 'fulfilled') balances.value = result[0].value
     serviceReady.value = result[1].status === 'fulfilled'
     if (result[1].status === 'fulfilled') documents.value = result[1].value
@@ -89,28 +95,38 @@ async function load() {
     if (result[0].status === 'rejected') throw result[0].reason
   })
 }
-function leave() { return !dirty.value || window.confirm('当前实盘填写尚未保存，确定离开吗？') }
+function leave() {
+  if (pendingWrite.value || openingSelection.value) return false
+  return !dirty.value || window.confirm('当前实盘填写尚未保存，确定放弃填写并离开吗？')
+}
 async function open(id: string) {
   if (!leave()) return
-  await run(async () => accept(await cartonStocktakeApi.detail(props.factoryId, id)))
+  await run(async () => {
+    const result = await cartonStocktakeApi.detail(props.factoryId, id)
+    if (active) accept(result)
+  })
 }
 async function refresh() {
   if (!doc.value) return
   const id = doc.value.id
   await run(async () => {
     const result = await cartonStocktakeApi.detail(props.factoryId, id)
-    accept(result, result.status === 'DRAFT')
+    if (!active) return
+    accept(result, result.status === 'DRAFT' && dirty.value)
     message.value = '账面已刷新，填写值已保留供比较。请重新核对实盘、仓位和差异原因，再确认截止口径。'
   })
 }
 async function create() {
   if (!serviceReady.value || !canWrite.value || !chosen.value.length || chosen.value.length > 500) return
-  await run(async () => accept(await cartonStocktakeApi.create(props.factoryId, chosen.value)))
+  await run(async () => accept(await cartonStocktakeApi.create(props.factoryId, chosen.value)), '正在生成盘点单')
 }
 async function initialize() {
   await load()
   if (!active) return
-  if (!error.value) await run(async () => acceptPolicy(await cartonStocktakeApi.policy(props.factoryId)))
+  if (!error.value) await run(async () => {
+    const result = await cartonStocktakeApi.policy(props.factoryId)
+    if (active) acceptPolicy(result)
+  })
   if (!active) return
   const initial = [...new Set(props.initialPositionKeys ?? [])]
   if (initial.length) {
@@ -140,16 +156,17 @@ async function act(action: StocktakeAction) {
     accept(result)
     message.value = action === 'SAVE' ? '草稿已保存。' : `盘点单${statusNames[result.status]}。`
     if (result.status === 'POSTED') emit('posted')
-  })
+  }, ({ SAVE: '正在保存盘点草稿', CONFIRM: '正在确认盘点并入账', SUBMIT: '正在提交盘点单',
+    APPROVE: '正在复核盘点并入账', RETURN: '正在退回盘点单', CANCEL: '正在取消盘点单' } as const)[action])
 }
 async function back() { if (leave()) { doc.value = null; dirty.value = false; chosen.value = []; await load() } }
 async function page(step: number) { offset.value = Math.max(0, offset.value + step * 100); await load() }
 function beforeUnload(event: BeforeUnloadEvent) {
-  if (dirty.value) { event.preventDefault(); event.returnValue = '' }
+  if (navigationBlocked.value) { event.preventDefault(); event.returnValue = '' }
 }
-onBeforeRouteLeave(() => !busy.value && leave())
+onBeforeRouteLeave(leave)
 onBeforeRouteUpdate((to, from) => {
-  if (to.query.tab !== from.query.tab || to.query.factory !== from.query.factory) return !busy.value && leave()
+  if (to.query.tab !== from.query.tab || to.query.factory !== from.query.factory) return leave()
 })
 onMounted(() => { void initialize(); window.addEventListener('beforeunload', beforeUnload) })
 onBeforeUnmount(() => { active = false; window.removeEventListener('beforeunload', beforeUnload) })
@@ -159,11 +176,11 @@ onBeforeUnmount(() => { active = false; window.removeEventListener('beforeunload
   <section class="space-y-4 rounded-xl border border-teal-200 bg-white p-5 shadow-sm" aria-label="库存盘点工作台">
     <header class="flex flex-wrap items-center justify-between gap-3">
       <div><h2 class="text-lg font-bold text-slate-950">库存盘点<span v-if="doc" class="ml-3 rounded-full bg-teal-50 px-3 py-1 text-xs text-teal-700">{{ statusNames[doc.status] }}</span></h2><p class="mt-1 text-xs text-slate-500">选择库存 → 填写实盘 → 确认提交 → 差额入账</p></div>
-      <div class="flex gap-2"><button v-if="doc" :disabled="busy" class="secondary" @click="back">盘点单列表</button><button :disabled="busy" class="secondary" @click="leave() && emit('close')">返回库存台账</button></div>
+      <div class="flex gap-2"><button v-if="doc" :disabled="busy" class="secondary" @click="back">盘点单列表</button><button :disabled="!!pendingWrite || openingSelection" class="secondary" @click="leave() && emit('close')">返回库存台账</button></div>
     </header>
     <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}<button v-if="doc" :disabled="busy" class="ml-3 underline" @click="refresh">刷新并重新核对</button></p>
     <p v-if="message" role="status" class="rounded-lg bg-teal-50 p-3 text-sm text-teal-800">{{ message }}</p>
-    <p v-if="busy" role="status" class="text-sm text-slate-500">正在处理…</p>
+    <p v-if="busy" role="status" class="text-sm text-slate-500">{{ pendingWrite ? `${pendingWrite}…` : openingSelection ? '正在核对所选库存并生成盘点单…' : '正在读取盘点资料…' }}</p>
     <div v-if="policy" class="rounded-lg bg-slate-50 p-3 text-xs leading-6 text-slate-600">
       零差异可直接确认；非零差异入账后保留待抽查记录。差异绝对金额合计达到 {{ policy.amount_threshold }} 元，或任一仓位差异达到账面数量的 {{ Number(policy.ratio_threshold) * 100 }}%，须有主管调整权限；缺成本、非人民币或零账面盘盈也须主管核对。
       <details v-if="canManagePolicy && !doc" class="mt-2"><summary class="cursor-pointer">本厂区盘点门槛设置</summary>

@@ -1679,6 +1679,7 @@ function openModule(tab: CartonTab) {
   setActiveTab(tab)
 }
 async function openInventoryPage(tab: CartonTab, stocktake = false, openingStock = false) {
+  if (activeTab.value === tab && showStocktake.value === stocktake && showInventoryImport.value === openingStock) return
   if (!canLeaveCarton()) return
   // These workspaces share the inventory route. Replacing that same URL returns
   // a duplicated-navigation failure, even though switching the local page is valid.
@@ -7683,26 +7684,51 @@ function openAssistantCarton(event: MouseEvent) {
     tab: isCartonInventoryIdentity(selected.id) ? 'inventory-summary' : 'orders',
     carton_from: selected.date_from || undefined, carton_to: selected.date_to || undefined } })
 }
-const cartonNavigationBlocked = computed(() => Boolean(
-  showOrderModal.value || savingOrder.value || showReceiptDialog.value || savingReceipt.value || confirmingReceipt.value
-  || showCustomerModal.value || savingCustomer.value
-  || (showInventoryImport.value && openingInventoryWorkspace.value?.navigationBlocked)
-  || (showStocktake.value && stocktakeWorkspace.value?.navigationBlocked)
-  || showInventoryOperation.value || showInventoryRelocation.value || inventoryOperationBusy.value
-  || priceCorrectionOpen.value || correctionOrderNo.value || mergeOrderNo.value || splitOrder.value || dateAdjustmentOrder.value
-  || rushDialogOrder.value || appendOrderNo.value || reduceOrderNo.value || replenishTarget.value || receiptCorrectionTarget.value
-  || closingDecision.value || deleteOrderTarget.value || deleteOrderTargets.value.length || undoImportTarget.value || pricingTarget.value
-  || unifiedBatchOpen.value || batchAppendOpen.value || demandImportOpen.value
-  || (specialDialogOpen.value && (specialCreate.value || specialEditorMode.value || specialDialogBusy.value)) || specialReceiptOpen.value
-  || specialStockActionTarget.value
-  || submittingSupplierOrder.value || submitSupplierOrderNo.value || bulkSubmitSupplierOrderNos.value.length || cancelOrderNo.value
-  || importingWeekly.value || importingInspection.value || importingReceipt.value || issuingPurchaseOrder.value
-  || issuingSelectedPurchaseOrders.value || closingBusyId.value || exceptionBusyId.value || pricingBusy.value || relocationBusy.value
-  || replenishing.value || deletingOrders.value || undoingImport.value || receiptCorrectionBusy.value || reversalBusy.value))
+const cartonNavigationMessage = computed(() => {
+  const pending: Array<[unknown, string]> = [
+    [savingOrder.value, '保存纸箱订单'], [savingReceipt.value || confirmingReceipt.value, '保存收料并确认入库'],
+    [savingCustomer.value, '保存客户资料'], [inventoryOperationBusy.value, '提交库存操作'],
+    [submittingSupplierOrder.value, '发送采购单给供应商'],
+    [importingWeekly.value, '导入客户排期'], [importingInspection.value, '导入验货排期'], [importingReceipt.value, '导入收料资料'],
+    [issuingPurchaseOrder.value || issuingSelectedPurchaseOrders.value, '生成采购单版本'],
+    [closingBusyId.value, '处理月结'], [exceptionBusyId.value, '处理异常'], [pricingBusy.value, '保存核价结果'],
+    [relocationBusy.value, '提交调仓'], [replenishing.value, '提交补单'], [deletingOrders.value, '删除订单'],
+    [undoingImport.value, '撤销导入'], [receiptCorrectionBusy.value || reversalBusy.value, '处理收料冲销或更正'],
+    [specialDialogOpen.value && specialDialogBusy.value, '提交样板／杂单操作'],
+  ]
+  const running = pending.find(([enabled]) => enabled)
+  if (running) return `正在${running[1]}，请等待完成后再切换页面。`
+  if (showStocktake.value && stocktakeWorkspace.value?.navigationBlocked)
+    return stocktakeWorkspace.value.navigationBlockMessage || '库存盘点尚未处理完成，请先保存草稿或返回库存台账。'
+  if (showInventoryImport.value && openingInventoryWorkspace.value?.navigationBlocked)
+    return openingInventoryWorkspace.value.navigationBlockMessage || '期初库存尚未处理完成，请先完成或关闭当前预览。'
+  const editors: Array<[unknown, string]> = [
+    [showOrderModal.value, '纸箱订单编辑'], [showReceiptDialog.value, '收料登记'], [showCustomerModal.value, '客户资料编辑'],
+    [showInventoryOperation.value, '库存出入库／调整'], [showInventoryRelocation.value, '库存调仓'],
+    [priceCorrectionOpen.value || pricingTarget.value, '收料核价'], [correctionOrderNo.value, '订单资料更正'],
+    [mergeOrderNo.value, '订单合并'], [splitOrder.value, '订单拆单'], [dateAdjustmentOrder.value, '订单交期调整'],
+    [rushDialogOrder.value, '催货'], [appendOrderNo.value, '追加订单'], [reduceOrderNo.value, '订单减量'],
+    [replenishTarget.value, '补单'], [receiptCorrectionTarget.value, '收料更正'], [closingDecision.value, '月结确认'],
+    [deleteOrderTarget.value || deleteOrderTargets.value.length, '删除订单确认'], [undoImportTarget.value, '撤销导入确认'],
+    [unifiedBatchOpen.value, '订单批量处理'], [batchAppendOpen.value, '批量追加'], [demandImportOpen.value, '订单导入'],
+    [specialDialogOpen.value && (specialCreate.value || specialEditorMode.value), '样板／杂单编辑'],
+    [specialReceiptOpen.value, '样板／杂单收料'], [specialStockActionTarget.value, '样板／杂单库存操作'],
+    [submitSupplierOrderNo.value || bulkSubmitSupplierOrderNos.value.length, '发送采购单确认'], [cancelOrderNo.value, '取消订单确认'],
+  ]
+  const editor = editors.find(([enabled]) => enabled)
+  return editor ? `已打开“${editor[1]}”，请先完成或关闭该操作，再切换页面或打开其他记录。` : ''
+})
+watch(cartonNavigationMessage, (message, previous) => {
+  // Clear/update only this guard's warning; unrelated operation failures stay visible.
+  if (previous && actionMessage.value === previous) actionMessage.value = message
+  if (previous && actionNoticeTone.value === 'warning' && actionNoticeMessage.value === previous) {
+    actionNoticeMessage.value = message
+  }
+}, { flush: 'sync' })
 const cartonOwner = specialViewerKey.value
 function canLeaveCarton() {
-  if (cartonOwner !== specialViewerKey.value || !cartonNavigationBlocked.value) return true
-  reportActionFailure('请先保存或关闭当前纸箱编辑操作，再切换页面或打开其他记录。', 'warning')
+  if (cartonOwner !== specialViewerKey.value || !cartonNavigationMessage.value) return true
+  reportActionFailure(cartonNavigationMessage.value, 'warning')
   return false
 }
 onBeforeUnmount(registerCartonNavigationGuard(canLeaveCarton))

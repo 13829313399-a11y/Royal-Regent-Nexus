@@ -19,7 +19,11 @@ const preview = ref<OpeningInventoryPreview | null>(null), busy = ref(false), sa
 const error = ref(''), success = ref('')
 const batchesWorkspace = ref<InstanceType<typeof CartonOpeningInventoryBatches> | null>(null)
 const navigationBlocked = computed(() => busy.value || saving.value || Boolean(file.value || preview.value) || Boolean(batchesWorkspace.value?.navigationBlocked))
-defineExpose({ navigationBlocked })
+const navigationBlockMessage = computed(() => saving.value ? '期初库存正在入账，请等待完成后再切换页面。'
+  : busy.value ? '正在核对期初库存文件，请等待预览完成后再处理。'
+    : batchesWorkspace.value?.navigationBlockMessage || (file.value || preview.value
+      ? '期初库存文件尚未完成导入，请先核对入账，或点“返回库存台账”确认放弃本次预览。' : ''))
+defineExpose({ navigationBlocked, navigationBlockMessage })
 function close() {
   if (busy.value || saving.value || batchesWorkspace.value?.navigationBlocked) {
     error.value = '请先完成当前处理或关闭整批撤销预览，再返回库存台账。'
