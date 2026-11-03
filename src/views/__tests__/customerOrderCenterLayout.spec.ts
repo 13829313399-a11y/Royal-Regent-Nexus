@@ -1,8 +1,11 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CustomerOrderCenterWorkspace from '@/components/modules/sales/customer-order-center/CustomerOrderCenterWorkspace.vue'
+import { isCuttingPoTestBridgeEnabled } from '@/features/cutting-operations/poTestBridge'
+
+afterEach(() => vi.unstubAllEnvs())
 
 const customerOrderApiMock = vi.hoisted(() => ({
   previewBuzzbeeBatch: vi.fn(),
@@ -404,6 +407,36 @@ describe('customer order center static frontend', () => {
     })
 
     expect(wrapper.findAll('[data-testid^="customer-choice-"]')).toHaveLength(0)
+  })
+
+  it.each([['', ''], ['true', ''], ['', 'test-copy']])('keeps the PO bridge disabled without both build flags (%s, %s)', (enabled, release) => {
+    vi.stubEnv('VITE_CUTTING_PO_TEST_BRIDGE', enabled)
+    vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE', release)
+    expect(isCuttingPoTestBridgeEnabled()).toBe(false)
+    const view = mount(CustomerOrderCenterWorkspace, { props: { activeSection: 'import', factoryId: 'huakang-c', factoryName: '华康C' } })
+    expect(view.findAll('[data-testid^="customer-choice-"]')).toHaveLength(0)
+    view.unmount()
+  })
+
+  it('offers four legacy customers only in the opted-in C copy and previews with C scope', async () => {
+    vi.stubEnv('VITE_CUTTING_PO_TEST_BRIDGE', 'true')
+    vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE', 'test-copy')
+    const view = mount(CustomerOrderCenterWorkspace, { props: { activeSection: 'import', factoryId: 'huakang-c', factoryName: '华康C' } })
+    expect(view.findAll('[data-testid^="customer-choice-"]')).toHaveLength(4)
+    expect(view.find('[data-testid="customer-choice-ubtech"]').exists()).toBe(false)
+    await view.get('[data-testid="customer-choice-index"]').trigger('click')
+    const files = [new File(['synthetic'], 'TEST-PO.pdf'), new File(['synthetic'], 'TEST-SCHEDULE.xlsx')]
+    const inputs = view.findAll('input[type="file"]')
+    for (const [index, file] of files.entries()) {
+      Object.defineProperty(inputs[index]!.element, 'files', { configurable: true, value: [file] })
+      await inputs[index]!.trigger('change')
+    }
+    await view.findAll('button').find(button => button.text().includes('解析并进入预览'))!.trigger('click')
+    await flushPromises()
+    expect(customerOrderApiMock.previewMappedBatch).toHaveBeenLastCalledWith('index', [files[0]], files[1], expect.any(String), 'huakang-c')
+    const d = mount(CustomerOrderCenterWorkspace, { props: { activeSection: 'import', factoryId: 'huakang-d', factoryName: '华康D' } })
+    expect(d.findAll('[data-testid^="customer-choice-"]')).toHaveLength(7)
+    d.unmount(); view.unmount()
   })
 
   it.each([

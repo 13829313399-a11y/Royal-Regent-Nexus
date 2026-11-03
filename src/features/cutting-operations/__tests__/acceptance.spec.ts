@@ -6,6 +6,14 @@ import { acceptanceSamples } from '../acceptanceSamples'
 afterEach(()=>{vi.unstubAllEnvs();vi.unstubAllGlobals();vi.useRealTimers()})
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/:pathMatch(.*)*',component:{template:'<div />'}}]})
 describe('isolated acceptance navigation',()=>{
+  it('links the temporary PO path only in explicitly opted-in cutting sample navigation',async()=>{
+    vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE','test-copy')
+    vi.stubEnv('VITE_CUTTING_PO_TEST_BRIDGE','true')
+    vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,json:async()=>({release:'test-copy',links:[]})}))
+    const view=mount(Notice,{props:{showSamples:true},global:{plugins:[router]}});await flushPromises()
+    expect(view.get('a').attributes('href')).toBe('/modules/sales-business/po-schedule-intake?factory=huakang-c')
+    await view.setProps({showSamples:false});expect(view.find('a').exists()).toBe(false);view.unmount()
+  })
   it('does not fetch or display local metadata in a normal build or on the login notice',async()=>{
     const fetch=vi.fn();vi.stubGlobal('fetch',fetch);vi.stubEnv('VITE_CUTTING_ACCEPTANCE_RELEASE','')
     const normal=mount(Notice,{props:{showSamples:true}});await flushPromises()

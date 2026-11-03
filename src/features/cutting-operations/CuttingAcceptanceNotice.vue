@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import { isCuttingPoTestBridgeEnabled } from './poTestBridge'
 import { ACCEPTANCE_GROUPS, acceptancePermissionLabels, acceptanceSamples } from './acceptanceSamples'
 const props = defineProps<{ showSamples?: boolean; permissions?: string[] }>()
 const release = import.meta.env.VITE_CUTTING_ACCEPTANCE_RELEASE?.trim()
+const poTestBridge = isCuttingPoTestBridgeEnabled()
 const links = ref<ReturnType<typeof acceptanceSamples>>([]), error = ref(''), busy = ref(false)
 let controller: AbortController | undefined, generation = 0
 let timeout: ReturnType<typeof setTimeout> | undefined
@@ -38,6 +40,7 @@ onBeforeUnmount(() => { generation++; clearTimeout(timeout); controller?.abort()
     <strong>独立验收环境 · 数据库副本</strong>
     <span>合成业务样本仅供验收，不代表真实订单或正式岗位验收。</span>
     <small>发布版本 {{ release }}</small>
+    <RouterLink v-if="poTestBridge && showSamples" to="/modules/sales-business/po-schedule-intake?factory=huakang-c">客户 PO 临时导入 → 下发裁床</RouterLink>
     <details v-if="showSamples"><summary>验收样本导航</summary>
       <p>样本采用固定业务日期。默认页面仍显示当天；入口按样本日期定位，不提交未查询的筛选。若已有筛选遮住样本，可在任务列表点击“清除订单／执行方筛选”；日期仍需明确查询。</p>
       <p>具备查看条件不代表可以办理。参考岗位和办理分工不提供授权；登记、验收、复核及冲销仍按各自权限执行。</p>

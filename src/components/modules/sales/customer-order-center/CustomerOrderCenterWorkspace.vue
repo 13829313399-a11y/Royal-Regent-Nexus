@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isCuttingPoTestBridgeEnabled } from '@/features/cutting-operations/poTestBridge'
 import {
   AlertTriangle,
   ArrowRight,
@@ -409,10 +410,15 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
 })
 
 // External customer orders are now owned by Huakang D.  Keep the backend's
-// Huakang C route compatible for saved historical previews, but do not offer
-// those external profiles from the Huakang C customer-order workspace.
+// Huakang C route compatible for saved historical previews. Only an explicit
+// database-copy acceptance build offers the temporary C test profiles below.
 CUSTOMER_PROFILES_BY_FACTORY['huakang-d'] = CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] ?? []
-CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] = []
+if (isCuttingPoTestBridgeEnabled()) {
+  // Clone before D modifies profiles or appends customers. Requests retain C scope.
+  CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] = CUSTOMER_PROFILES_BY_FACTORY['huakang-d'].map(profile => ({ ...profile }))
+} else {
+  CUSTOMER_PROFILES_BY_FACTORY['huakang-c'] = []
+}
 for (const factoryId of ['huadeng', 'huakang-d']) {
   for (const profile of CUSTOMER_PROFILES_BY_FACTORY[factoryId] ?? []) {
     profile.targetTemplate = 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3'

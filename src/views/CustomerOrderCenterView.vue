@@ -16,6 +16,8 @@ import {
 import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
+import { isCuttingPoTestBridgeEnabled } from '@/features/cutting-operations/poTestBridge'
+import CuttingAcceptanceNotice from '@/features/cutting-operations/CuttingAcceptanceNotice.vue'
 import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
 import ModuleFeedbackHub from '@/features/module-feedback/ModuleFeedbackHub.vue'
 import type { FeedbackContext } from '@/api/moduleFeedback'
@@ -39,6 +41,7 @@ const orderWorkspace = ref<InstanceType<typeof CustomerOrderCenterWorkspace> | n
 const feedbackHub = ref<InstanceType<typeof ModuleFeedbackHub> | null>(null)
 const feedbackUnread = ref(0)
 const activeFactory = computed(() => appStore.activeProductionFactory)
+const poTestBridge = computed(() => activeFactory.value.id === 'huakang-c' && isCuttingPoTestBridgeEnabled())
 const focusedOrderId = computed(() => route.query.factory === activeFactory.value.id
   && typeof route.query.order === 'string' && route.query.order.length <= 64 ? route.query.order : '')
 watch(focusedOrderId, id => { if (id) activeSection.value = 'ledger' }, { immediate: true })
@@ -160,6 +163,15 @@ function navigate(section: CustomerOrderCenterSection) {
     </aside>
 
     <main class="order-main">
+      <template v-if="poTestBridge">
+        <CuttingAcceptanceNotice />
+        <aside class="po-test-bridge" role="note" aria-label="客户PO临时测试线路">
+          <strong>客户 PO → 裁床临时测试线路</strong>
+          <p>仅写入本独立验收副本。新建导入 → 选择客户并上传 PO 和排期 → 核对预览并保存台账 → 下发时选择裁床部 → 裁床签收。仍需具备各环节权限。</p>
+          <button type="button" @click="navigate('import')">新建 PO 导入</button>
+          <RouterLink to="/modules/production/cutting/planning?factory=huakang-c">前往裁床接单／排期</RouterLink>
+        </aside>
+      </template>
       <nav class="order-mobile-nav" aria-label="客户订单中心移动端页面">
         <button
           v-for="item in navigationItems"
@@ -206,6 +218,8 @@ function navigate(section: CustomerOrderCenterSection) {
 </template>
 
 <style scoped>
+.po-test-bridge { margin-bottom: 16px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--accent); color: var(--foreground); line-height: 1.6; overflow-wrap: anywhere; }
+.po-test-bridge button, .po-test-bridge a { display: inline-flex; align-items: center; min-height: 36px; margin-right: 16px; color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
 .customer-order-center {
   --order-primary: #003d9b;
   --order-primary-strong: #002c72;
