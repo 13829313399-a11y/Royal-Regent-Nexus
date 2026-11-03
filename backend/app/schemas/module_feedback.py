@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-Material = Literal["screenshot", "steps", "expected_result", "original_file", "order_reference"]
+Material = Literal["screenshot", "steps", "expected_result", "original_file", "order_reference", "quote_reference"]
 Status = Literal["submitted", "needs_info", "in_progress", "awaiting_verification", "resolved"]
 
 
@@ -22,6 +22,10 @@ class FeedbackContext(StrictModel):
     error_message: str = Field(default="", max_length=1000)
     file_names: list[str] = Field(default_factory=list, max_length=10)
     app_version: str = Field(default="", max_length=80)
+    quote_id: str = Field(default="", max_length=64)
+    quote_no: str = Field(default="", max_length=128)
+    quote_product: str = Field(default="", max_length=255)
+    quote_version: str = Field(default="", max_length=80)
 
     @field_validator("file_names")
     @classmethod
@@ -33,7 +37,7 @@ class FeedbackContext(StrictModel):
 
 class FeedbackCreate(StrictModel):
     factory_id: str = Field(min_length=1, max_length=64)
-    module: Literal["customer-order-center"] = "customer-order-center"
+    module: Literal["customer-order-center", "internal-quote"] = "customer-order-center"
     title: str = Field(min_length=2, max_length=160)
     category: Literal["bug", "suggestion", "question"] = "bug"
     emoji: Literal["", "😕", "🐢", "🐞", "💡", "👍"] = ""

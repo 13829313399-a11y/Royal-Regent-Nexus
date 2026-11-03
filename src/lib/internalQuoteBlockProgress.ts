@@ -84,14 +84,10 @@ function electronicBlocks(payload: ElectronicPayload): InternalQuoteFormBlock[] 
     const quickRows = payload.quick_quotes ?? []
     const complete = quickRows.length > 0 && quickRows.every((row) => Boolean(
       text(row.item)
-      && positive(row.unit_price_rmb)
-      && Number.isFinite(Number(row.tax_rate_percent))
-      && Number(row.tax_rate_percent) >= 0
-      && Number(row.tax_rate_percent) <= 100,
+      && positive(row.unit_price_rmb),
     ))
     return [
-      block('components', '电子快捷报价部分', 'required', quickRows.length > 0, complete, '必须；至少一项，零件名称、RMB 单价和 0–100% 税点必填'),
-      block('electronic-summary', '电子成本汇总部分', 'automatic', true, true, '自动计算；快捷行按每件用量 1 计价，邦定、贴片、人工、测试、包装费用按实际选填'),
+      block('components', '电子快捷报价部分', 'required', quickRows.length > 0, complete, '必须；至少一项，填写零件名称和最终报价 RMB，按冻结汇率换算港币'),
     ]
   }
   const complete = payload.components.length > 0 && payload.components.every(electronicRowComplete)

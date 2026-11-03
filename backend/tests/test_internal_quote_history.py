@@ -235,8 +235,11 @@ def test_mixed_quick_and_detail_sources_keep_costs_and_paint_tax_split(monkeypat
         assert parts(new, "painting")["rows"][0]["cost_allocation"] == "direct"
         sewing = next(s for s in new["sections"] if s["department"] == "sewing")["calculation"]
         assert float(sewing["totals"]["total_hkd"]) == 5
-        assert parts(new, "electronic")["components"][0]["quantity"] == 1
-        assert parts(new, "electronic")["components"][0]["unit_price_rmb"] == 4
+        quick = parts(new, "electronic")["quote_groups"][0]
+        assert quick["quote_mode"] == "quick"
+        assert quick["quick_quotes"][0]["unit_price_rmb"] == 4
+        electronic = next(s for s in new["sections"] if s["department"] == "electronic")["calculation"]
+        assert float(electronic["totals"]["total_rmb"]) == 4
         excel = importlib.import_module("app.services.internal_quote_excel")
         assert excel._pricing_entry_tax_tag({"section": "painting", "kind": "painting_quick_labor"}) == ""
         assert excel._pricing_entry_tax_tag({"section": "painting", "kind": "painting_quick_paint"}) == "¥13%"

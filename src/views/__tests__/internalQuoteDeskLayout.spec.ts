@@ -135,7 +135,7 @@ describe('internal quote desk frontend layout', () => {
     for (const text of ['自动识别', '预览不会修改正式数据', '申请不适用', '合法重开', '分段附件']) expect(sectionEditorSource).toContain(text)
     for (const text of ['移除该部门报价', 'v-if="props.canRemove"', '当前分段数据和未保存修改将不再生效', '历史 revision 和审计记录仍会保留', '以后可再次添加该部门']) expect(sectionEditorSource).toContain(text)
     for (const text of ['五金部分', '辅助材料/外购件部分', '五金报价单', '电子零件部分', '电子报价单', '注塑部分', '喷油/移印/UV部分', '喷油报价单', '搪胶部分', '搪胶报价单', '车缝部分', '车缝报价单', '总表部分', '组装部分', '包装部分']) expect(`${sectionFormSource}\n${sectionEditorSource}`).toContain(text)
-    for (const text of ['电子快捷报价部分', '电子快捷报价零件名称', '电子快捷报价单价 RMB', '电子快捷报价税点', '电子快捷报价备注']) expect(sectionFormSource).toContain(text)
+    for (const text of ['电子快捷报价部分', '电子快捷报价零件名称', '电子快捷报价单价 RMB', '最终报价 RMB', '电子快捷报价备注']) expect(sectionFormSource).toContain(text)
     expect(sectionEditorSource).toContain("['electronic', 'painting', 'sewing']")
     for (const title of ['五金部分', '辅助材料/外购件部分', '模具部分', '生产模具费用与分摊部分', '电子零件部分', '电子成本汇总部分', '注塑部分', '吹气部分', '喷油/移印/UV部分', '搪胶部分', '车缝部分', '总表部分', '组装部分', '包装部分', '包装材料部分', '纸箱计算与包装尺寸部分', '运费计算部分']) expect(sectionFormSource).toContain(`<strong>${title}</strong>`)
       expect(sectionFormSource).toContain('.electronicSummaryTable th,.electronicSummaryTable td')

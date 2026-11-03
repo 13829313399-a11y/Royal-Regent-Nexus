@@ -20,7 +20,8 @@ describe('InternalQuoteSectionForm electronic quick quote', () => {
 
     expect(wrapper.get('input[aria-label="电子快捷报价零件名称"]').element).toHaveProperty('value', '主控板')
     expect(wrapper.get('input[aria-label="电子快捷报价单价 RMB"]').element).toHaveProperty('value', '10')
-    expect(wrapper.get('input[aria-label="电子快捷报价税点"]').element).toHaveProperty('value', '13')
+    expect(wrapper.find('input[aria-label="电子快捷报价税点"]').exists()).toBe(false)
+    expect(wrapper.find('.electronic-summary-block').exists()).toBe(false)
     expect(wrapper.get('input[aria-label="电子快捷报价备注"]').element).toHaveProperty('value', '含税')
     expect(wrapper.get('.electronicQuickTable .calculated-cell').text()).toBe('11.765')
 

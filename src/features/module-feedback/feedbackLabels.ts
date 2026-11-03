@@ -4,6 +4,7 @@ export const feedbackStatuses: Record<FeedbackStatus, string> = {
 }
 export const feedbackMaterials: Record<string, string> = {
   screenshot: '问题截图', steps: '操作步骤', expected_result: '期望结果', original_file: '原始 PO / 排期文件', order_reference: '订单参考号',
+  quote_reference: '报价参考号',
 }
 export const feedbackEmojis = [
   { emoji: '🐞', label: '有问题', category: 'bug' }, { emoji: '🐢', label: '太慢', category: 'bug' },
