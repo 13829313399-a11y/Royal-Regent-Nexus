@@ -94,7 +94,7 @@ onBeforeUnmount(() => { generation++; clearInterval(timer); window.removeEventLi
         </article>
         <article class="todo-panel request-panel" aria-labelledby="fabric-request-heading">
           <div class="request-copy">
-            <header><h3 id="fabric-request-heading"><ClipboardList :size="16" />领料申请</h3><span class="request-status">裁床接口待接入</span></header>
+            <header><h3 id="fabric-request-heading"><ClipboardList :size="16" />领料申请</h3><span class="request-status">已接入裁床领料</span></header>
             <p class="panel-note">查看已登记的领料需求与发料进度，按申请核对并办理出库。</p>
           </div>
           <RouterLink class="todo-action" :to="warehouseLink('inventory', 'pending-issues')">查看领料申请<ArrowUpRight :size="14" /></RouterLink>

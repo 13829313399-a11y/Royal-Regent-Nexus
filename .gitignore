@@ -132,6 +132,7 @@ outputs/opening-inventory-template-20260909/
 !/.agents/skills/enterprise-ui-art-director/SKILL.md
 !/.agents/skills/visual-qa-loop/SKILL.md
 !/docs/frontend/WORKFLOWS.md
+!/docs/cutting/customer-po-test-bridge.md
 !/docs/frontend/UI_BRIEF_TEMPLATE.md
 !/docs/spray-production/*.md
 /.codex/*

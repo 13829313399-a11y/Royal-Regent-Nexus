@@ -42,6 +42,18 @@ beforeEach(() => { vi.resetAllMocks(); vi.mocked(materialApi.read).mockResolvedV
 afterEach(() => { wrapper?.unmount(); vi.restoreAllMocks() })
 
 describe('cutting order workflow and save protection', () => {
+  it.each([false,true])('labels task-only intake without masking normal workflow (direct=%s)',async direct=>{
+    const record:CuttingOrder={...received,workflow_status:'awaiting_submission',snapshot:{...received.snapshot,...(direct?{intake_kind:'cutting-schedule-v1'}:{})},current:{...received.current!,data:{...received.current!.data,bom,planning:{published:{publication_kind:'task_only',version:2,tasks:[],allocated_sets:50,unallocated_sets:0,actor_id:'synthetic',created_at:'2026-11-03',reason:'测试领料任务'}}}}}
+    await open(record)
+    expect(wrapper.find('.order-ledger-table tbody').text()).toContain(direct?'领料任务已发布':'待工程提交需求')
+  })
+  it.each(['awaiting_receipt','cancelled','reconciliation'] as const)('does not hide %s behind intake progress',async workflow=>{
+    const record:CuttingOrder={...received,workflow_status:workflow,needs_receipt:workflow==='awaiting_receipt',snapshot:{...received.snapshot,intake_kind:'cutting-schedule-v1',status:workflow==='cancelled'?'cancelled':'active'},current:{...received.current!,data:{...received.current!.data,bom,purchase_reconciliation_required:workflow==='reconciliation',planning:{published:{publication_kind:'task_only',version:2,tasks:[],allocated_sets:50,unallocated_sets:0,actor_id:'synthetic',created_at:'2026-11-03',reason:'测试领料任务'}}}}}
+    await open(record)
+    const table=wrapper.find('.order-ledger-table tbody').text()
+    expect(table).toContain({awaiting_receipt:'待签收新版本',cancelled:'已取消',reconciliation:'旧需求待采购核对'}[workflow])
+    expect(table).not.toContain('领料任务已发布')
+  })
   it.each([401,403])('keeps an authorization failure explicit and rechecks before retrying (%s)',async status=>{
     await open()
     vi.mocked(ordersApi.list).mockRejectedValueOnce({response:{status,data:{detail:'验收授权边界'}}})

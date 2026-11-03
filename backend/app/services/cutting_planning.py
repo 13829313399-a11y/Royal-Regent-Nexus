@@ -256,12 +256,18 @@ def publish(db, user, line_id, body):
     validated = validate_tasks(db, data, checked.tasks)
     c.require(all(t.get('material_receipts', []) == old.get('material_receipts', []) for t, old in zip(validated, draft['tasks'])),
               '签收或退仓依据已变化，请重新核对并保存计划草稿')
-    c.require(any(t['days'] for t in draft['tasks']), '至少编制一个任务的日计划后再发布', 422)
+    has_days = any(t['days'] for t in draft['tasks'])
+    # Schedule-only intake may release BOM-bound tasks for requesting existing
+    # stock before dated planning. It does not establish readiness or production.
+    task_only = not has_days and data['order'].get('intake_kind') == 'cutting-schedule-v1'
+    c.require(has_days or task_only, '至少编制一个任务的日计划后再发布', 422)
     publication = deepcopy(draft)
     publication.update(version=order.version+1, actor_id=user.id, created_at=datetime.now(UTC).isoformat(),
                        reason=publication_reason, adjustment_reason=adjustment_reason if adjusting else None)
+    if task_only: publication['publication_kind'] = 'task_only'
+    else: publication.pop('publication_kind', None)
     planning['published'] = publication
-    if not planning.get('baseline'):
+    if has_days and not planning.get('baseline'):
         planning['baseline'] = deepcopy(publication)
     planning['draft'] = None
     return orders.append(db, user, order, data, publication_reason)

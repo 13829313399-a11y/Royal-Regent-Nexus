@@ -5,6 +5,7 @@ defineProps<{ plan: ProductionPlan; title: string; stale?: boolean }>()
 <template>
   <section class="plan-summary">
     <h3>{{ title }} · V{{ plan.version }}</h3>
+    <p v-if="plan.publication_kind==='task_only'" class="cutting-notice">已发布领料任务，尚未编排日计划；可按有效 BOM 申请领料，不代表已排期、物料齐备或已完成生产。领料后仍须核定并发布实际日计划。</p>
     <p v-if="stale" role="alert">依据已变更，此计划待复核；请重新编制并发布，不作为当前执行依据。</p>
     <p>已分配 {{ plan.allocated_sets }} 套 · 未分配 {{ plan.unallocated_sets }} 套</p>
     <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>任务</th><th>执行方</th><th>目标套数</th><th>已排／未排</th><th>预计最早供数</th><th>实际核定最早供数</th><th>日期依据</th><th>首次计划供数</th><th>计划完成期</th></tr></thead><tbody>
