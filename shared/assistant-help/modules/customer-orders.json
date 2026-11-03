@@ -210,7 +210,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "1158d7120298ae4691b5f7f84fd104f862e11850a55fc0a25f2f6e6161e6b7ff"
+        "sha256": "fb17ee0b33f24233c4e63e2e8b9a71f8cc9999a32401576e9312947a755fb315"
       },
       {
         "path": "src/components/CartonQuickUploadDialog.vue",
@@ -220,7 +220,7 @@
       {
         "path": "src/components/CartonQuickAssetLibrary.vue",
         "symbol": "quick-department-library",
-        "sha256": "1158d7120298ae4691b5f7f84fd104f862e11850a55fc0a25f2f6e6161e6b7ff"
+        "sha256": "fb17ee0b33f24233c4e63e2e8b9a71f8cc9999a32401576e9312947a755fb315"
       },
       {
         "path": "backend/app/services/carton_business_changes.py",

@@ -4362,6 +4362,10 @@ def import_batch_out(batch: CartonImportBatch, *, duplicate: bool = False, summa
         return CartonImportBatchOut.model_validate(batch).model_copy(update={"parse_summary": parse_summary, "detail_loaded": False})
     if batch.import_type == "WEEKLY_SCHEDULE" and isinstance(parse_summary, dict):
         _project_item_schedule_rows(batch.id, parse_summary)
+        for row in parse_summary.get("rows", []):
+            if isinstance(row, dict) and row.get("match_basis") == "CONTRACT_ITEM_QUANTITY_PACKING":
+                for field in ("order_id", "order_no", "order_status"):
+                    row.pop(field, None)
     if batch.import_type == "DELIVERY_NOTE" and parse_summary.get("parser_version") != DELIVERY_IMPORT_PARSER_VERSION:
         parse_summary["material_review_required"] = True
         for row in parse_summary.get("rows", []):
@@ -4586,7 +4590,10 @@ def create_import_batch(
         if import_type == "DELIVERY_NOTE":
             _require_delivery_destination(factory_id, json.loads(existing.parse_summary_json))
         result = import_batch_out(existing, duplicate=True)
-        return coverage.decorate(db, result) if import_type == "WEEKLY_SCHEDULE" else result
+        if import_type == "WEEKLY_SCHEDULE":
+            from app.services.carton_schedule_quantity_matching import refresh_snapshot_matches
+            return refresh_snapshot_matches(db, coverage.decorate(db, result))
+        return result
     if import_type == "WEEKLY_SCHEDULE":
         coverage.require_current_version(db, factory_id, effective_profile)
     parse_options = dict(effective_profile)
@@ -4665,7 +4672,10 @@ def create_import_batch(
     db.commit()
     db.refresh(batch)
     result = import_batch_out(batch)
-    return coverage.decorate(db, result) if import_type == "WEEKLY_SCHEDULE" else result
+    if import_type == "WEEKLY_SCHEDULE":
+        from app.services.carton_schedule_quantity_matching import refresh_snapshot_matches
+        return refresh_snapshot_matches(db, coverage.decorate(db, result))
+    return result
 
 
 def _schedule_event_key(db: Session, factory_id: str, event_key: str, detail: dict[str, object], cache: dict[str, list[dict[str, object]]]) -> str:
@@ -4842,7 +4852,18 @@ def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrde
     from app.services.carton_order_split import schedule_matches
     if not row.get("schedule_identity_duplicate") and schedule_matches(db, factory_id, row):
         raise HTTPException(409, "该业务排期已关联拆分采购，请查看原订单拆单记录，勿重复下单")
-    existing = db.get(CartonOrder, row.get("order_id")) if row.get("order_id") else None
+    from app.services.carton_schedule_quantity_matching import read_matches, proof_matches, BASIS
+    if any(proof_matches(row, proof) for proofs in read_matches(db, factory_id).values() for proof in proofs):
+        raise HTTPException(409, "该排期已有数量及装箱一致的手动订单或待核对候选，请查看原订单，勿重复下单")
+    if not row.get("schedule_identity_duplicate"):
+        from app.services.carton_schedule_tracking import normalized
+        current_orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory_id,
+            CartonOrder.customer_code == payload.customer_code, CartonOrder.status != "CANCELLED", CartonOrder.deleted_at.is_(None)))
+        if any(normalized(order.contract_no) == normalized(row.get("contract_no"))
+               and normalized(order.item_no) == normalized(row.get("item_no"))
+               and (not effective_po(row) or normalized(order.customer_po) == effective_po(row)) for order in current_orders):
+            raise HTTPException(409, "该业务排期已有当前客户 PO 匹配的正式订单，请查看原订单，勿重复下单")
+    existing = db.get(CartonOrder, row.get("order_id")) if row.get("order_id") and row.get("match_basis") != BASIS else None
     if existing and existing.factory_id == factory_id and existing.status != "CANCELLED" and existing.deleted_at is None:
         raise HTTPException(409, "该业务排期已关联订单，请查看原订单，勿重复下单")
     return row
@@ -4975,7 +4996,9 @@ def get_import_batch(
     if batch is None or batch.factory_id != require_carton_factory(factory_id):
         raise HTTPException(status_code=404, detail="导入批次不存在")
     from app.services.carton_schedule_coverage import decorate
-    return decorate(db, import_batch_out(batch))
+    result = decorate(db, import_batch_out(batch))
+    from app.services.carton_schedule_quantity_matching import refresh_snapshot_matches
+    return refresh_snapshot_matches(db, result)
 
 
 def undo_schedule_import(db: Session, batch_id: str, payload: CartonImportBatchUndoRequest, user: AuthContext) -> CartonImportBatchOut:
@@ -5200,7 +5223,14 @@ def list_import_batches(
             query.limit(limit).offset(offset)
         ).all()
     )
-    return int(total), [import_batch_out(row, summary_only=summary_only) for row in rows]
+    results = [import_batch_out(row, summary_only=summary_only) for row in rows]
+    if not summary_only and any(result.import_type == "WEEKLY_SCHEDULE" and any(
+            isinstance(row, dict) and row.get("match_basis") == "CONTRACT_ITEM_QUANTITY_PACKING"
+            for row in result.parse_summary.get("rows", [])) for result in results):
+        from app.services.carton_schedule_quantity_matching import read_matches, refresh_snapshot_matches
+        current_matches = read_matches(db, factory_id)
+        results = [refresh_snapshot_matches(db, result, matches=current_matches) for result in results]
+    return int(total), results
 
 
 def list_exceptions(

@@ -364,4 +364,5 @@ def completed_batch(db, user, factory, identifier):
     batch = db.get(CartonImportBatch, identifier)
     if not batch or batch.factory_id != factory: raise HTTPException(404, "导入批次不存在")
     authorize(db, user, factory, customer_of(summary(batch)), write=True)
-    return decorate(db, core.import_batch_out(batch))
+    from app.services.carton_schedule_quantity_matching import refresh_snapshot_matches
+    return refresh_snapshot_matches(db, decorate(db, core.import_batch_out(batch)))

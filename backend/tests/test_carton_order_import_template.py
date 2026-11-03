@@ -114,3 +114,74 @@ def test_api_creates_only_actual_order_and_rejects_reinserting_demo_source(monke
         result = ok(post(client, 'confirm', content, command))
         assert result['count'] == 1
         assert ok(post(client, 'confirm', content, command)) == result
+
+
+@pytest.mark.parametrize('mode', ['REGULAR', 'SPECIAL'])
+def test_examples_are_separate_read_only_guides_and_fields_follow_required_order(mode):
+    from app.services.carton_order_import_file import template, read, field_specs, REQUIREMENT_LABELS
+    content = template(mode)
+    book = load_workbook(BytesIO(content))
+    assert book.sheetnames == [('正单需求' if mode == 'REGULAR' else '新建需求'), '填写说明', '填写示例']
+    guide = book['填写示例']
+    assert guide.max_row == (10 if mode == 'REGULAR' else 9)
+    specs = field_specs(mode)
+    ranks = {'required': 0, 'conditional': 1, 'optional': 2}
+    assert [ranks[field['requirement']] for field in specs] == sorted(ranks[field['requirement']] for field in specs)
+    assert [cell.value for cell in guide[4]][1:] == [f"{field['label']}（{REQUIREMENT_LABELS[field['requirement']]}）" for field in specs]
+    assert read(content, mode)['rows'] == []
+    for sheet in ('填写说明', '填写示例'):
+        with pytest.raises(HTTPException, match='请选择有效的可见工作表'):
+            read(content, mode, sheet_name=sheet)
+
+
+def examples_to_input(mode):
+    from app.services.carton_order_import_file import template, fields
+    book = load_workbook(BytesIO(template(mode)))
+    main, guide = book.active, book['填写示例']
+    keys = [key for key, _, _ in fields(mode)]
+    for guide_row in range(5, guide.max_row + 1):
+        destination = guide_row - 2
+        for column in range(2, len(keys) + 2):
+            main.cell(destination, column, guide.cell(guide_row, column).value)
+        if mode == 'REGULAR':
+            main.cell(destination, keys.index('customer') + 2, 'Dickie')
+    if mode == 'REGULAR':
+        # Example row 7 becomes data row 5; references must use the data sheet.
+        main.cell(6, keys.index('carton_source_row') + 2, 5)
+    return saved(book)
+
+
+@pytest.mark.parametrize('mode,expected_groups', [('REGULAR', 5), ('SPECIAL', 4)])
+def test_every_published_example_can_be_copied_previewed_and_imported(monkeypatch, mode, expected_groups):
+    with make_client(monkeypatch) as client:
+        setup(client, monkeypatch)
+        content = examples_to_input(mode)
+        body = read_body(client, content, mode)
+        assert len(body['rows']) == (6 if mode == 'REGULAR' else 5)
+        if mode == 'REGULAR':
+            assert all(row['data']['item_no'] == '000123' for row in body['rows'])
+            assert [row['data']['customer_po'] for row in body['rows'][-2:]] == ['0001', '0002']
+        command, preview = checked(client, content, body)
+        assert len(preview['groups']) == expected_groups
+        assert all(row['status'] == 'READY' for row in preview['groups']), preview['groups']
+        if mode == 'REGULAR':
+            paired = next(group for group in preview['groups'] if len(group['quantities']) == 2)
+            assert [float(value) for value in paired['quantities']] == [100, 200]
+        result = ok(post(client, 'confirm', content, command))
+        assert result['count'] == expected_groups
+
+
+@pytest.mark.parametrize('mode', ['REGULAR', 'SPECIAL'])
+def test_old_template_column_order_still_reads_unchanged_demo_and_real_data(mode):
+    from app.services.carton_order_import_file import COMMON, REGULAR, SPECIAL, DEMO_COLUMN, DEMO_MARKER, demo_values, read
+    columns = COMMON + (REGULAR if mode == 'REGULAR' else SPECIAL)
+    keys = [key for key, _, _ in columns]
+    example = demo_values(mode)
+    real = regular() if mode == 'REGULAR' else special_row()
+    book = Workbook(); sheet = book.active
+    sheet.append([DEMO_COLUMN] + [label for _, label, _ in columns])
+    sheet.append([DEMO_MARKER] + [example.get(key, '') for key in keys])
+    sheet.append([''] + [real.get(key, '') for key in keys])
+    result = read(saved(book), mode)
+    assert result['ignored_demo_rows'] == [2]
+    assert len(result['rows']) == 1 and result['rows'][0]['data']['paper_quality'] == 'A33'

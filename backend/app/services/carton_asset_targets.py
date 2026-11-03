@@ -104,6 +104,11 @@ def candidates(db,user,factory,contract='',*,supplier=None,scope='ALL',retain=No
         row['identity']=identity(row);row['fingerprint']=digest(row);result.append(row)
     # Do not collapse an unproven order/schedule match into a fictitious singleton.
     if contract:result=[x for x in result if assets.identity(x['contract_no'])==assets.identity(contract)]
+    if supplier and retain is not None:
+        from app.services.carton_asset_supplier_collaboration import internal
+        if internal(retain):
+            codes={row['customer_code'] for row in current(db,retain)}
+            result=[row for row in result if row['customer_code'] in codes]
     if scope=='PENDING_SCHEDULE':
         retained_rows=valid(db,retain,factory) if retain else []
         retained={(x['kind'],x['id'],x['sheet'],x['row']) for x in retained_rows}
@@ -205,7 +210,7 @@ def valid(db,asset,factory=None):
             exact=[x for x in latest if (x['id'],x['sheet'],x['row'],x['identity'])==(target['id'],target['sheet'],target['row'],target['identity'])]
             matches=exact or [x for x in latest if x['identity']==target['identity']]
             if len(matches)==1:result.append(matches[0])
-            elif factory==asset.factory_id and purchase_order_ids(db,asset,schedule_target=target):result.append(dict(target,ordered=True))
+            elif factory==asset.factory_id and source_purchase_order_ids(db,asset,schedule_target=target):result.append(dict(target,ordered=True))
         elif target['kind']=='REGULAR':
             order=db.get(CartonOrder,target['id'])
             if order and order.factory_id==factory and not order.deleted_at and order.status!='CANCELLED':
@@ -236,7 +241,7 @@ def record(db,user,asset,rows,factory=None):
     db.flush()
 
 
-def purchase_order_ids(db,asset,*,schedule_target=None):
+def source_purchase_order_ids(db,asset,*,schedule_target=None):
     """Follow explicit schedule creation evidence, never a contract-wide guess.
 
     Read the saved source batch so later schedule removal cannot erase a purchase
@@ -266,6 +271,12 @@ def purchase_order_ids(db,asset,*,schedule_target=None):
     return result
 
 
+def purchase_order_ids(db,asset,*,schedule_target=None):
+    from app.services.carton_asset_supplier_collaboration import purchase_ids
+    source_ids=source_purchase_order_ids(db,asset,schedule_target=schedule_target)
+    return source_ids if schedule_target is not None else purchase_ids(db,asset,source_ids)
+
+
 def shared_with_internal(db,user,asset):
     for target in valid(db,asset):
         try:
@@ -285,7 +296,7 @@ def shared_with_supplier(db,asset,supplier):
         rows=valid(db,asset)
         from app.services import carton_supplier_portal as portal
         from app.models.carton_procurement import CartonOrder
-        for identifier in purchase_order_ids(db,asset):
+        for identifier in source_purchase_order_ids(db,asset):
             order=db.get(CartonOrder,identifier)
             issue=portal.latest_issue(db,order)
             header=portal._purchase_order_snapshot(issue).get('order',{}) if issue else {}

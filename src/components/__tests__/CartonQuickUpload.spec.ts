@@ -236,6 +236,52 @@ describe('shared document library', () => {
     expect(api.associate.mock.calls[1]!.slice(0, 4)).toEqual(original)
     expect(wrapper.emitted('changed')).toHaveLength(1)
   })
+  it('gives authorized internal and supplier files the same operation row', async () => {
+    useAuthStore().applySession(supplierQuickSession())
+    const shared = quickAsset({ id: 'shared', file_name: '业务原稿.pdf', owner_department: 'sales-business',
+      can_classify: true, can_associate: true, can_share: true, allowed_statuses: ['DRAFT', 'PENDING', 'READY', 'HISTORY'] })
+    const own = quickAsset({ id: 'own', file_name: '供应商制作稿.pdf', owner_department: 'supplier',
+      can_classify: true, can_associate: true, can_share: true, allowed_statuses: ['DRAFT', 'PENDING', 'READY', 'HISTORY'] })
+    api.list.mockResolvedValueOnce({ items: [shared, own], total: 2 }).mockResolvedValue({
+      items: [{ ...shared, revision: 2, workflow: { ...shared.workflow, status: 'READY', updated_by_name: '供应商经办人' } }, own], total: 2,
+    })
+    const wrapper = await library('supplier')
+    for (const file of [shared, own]) {
+      const control = wrapper.get(`select[aria-label="${file.file_name} 状态"]`)
+      expect((control.element as HTMLSelectElement).value).toBe('PENDING')
+      expect(control.findAll('option').map(option => option.text())).toEqual(['初稿', '待确认', '已确认', '历史版本'])
+      expect(wrapper.get(`[data-quick-asset="${file.id}"] [data-asset-actions]`).findAll('button').map(x => x.text()))
+        .toEqual(['保存状态', '关联订单', '共享厂区', '下载'])
+    }
+    const internalRow = wrapper.get('[data-quick-asset="shared"]')
+    await internalRow.get('select').setValue('READY')
+    await button(internalRow, '保存状态').trigger('click'); await flushPromises()
+    expect(api.classify).toHaveBeenCalledWith('huaxing', { id: 'shared', revision: 1 }, 'READY', expect.any(String), expect.any(AbortSignal))
+    expect(wrapper.get('[data-quick-asset="shared"]').text()).toContain('供应商经办人 更新状态')
+    expect(wrapper.get('[data-status-filter="READY"]').attributes('aria-label')).toBe('已确认 1')
+    expect(api.associate).not.toHaveBeenCalled()
+    expect(api.share).not.toHaveBeenCalled()
+  })
+  it('shares a business original through the common dialog while retaining the source factory', async () => {
+    useAuthStore().applySession(supplierQuickSession())
+    const asset = quickAsset({ owner_department: 'sales-business', can_classify: true, can_associate: true,
+      can_share: true, shared_factory_ids: ['huaxing'], required_shared_factory_ids: ['huaxing'] })
+    api.list.mockResolvedValue({ items: [asset], total: 1 })
+    api.share.mockResolvedValue({ ...asset, revision: 2, shared_factory_ids: ['huaxing', 'huakang-a'] })
+    const wrapper = mount(CartonQuickAssetLibrary, { props: { factoryId: 'huaxing', audience: 'supplier',
+      supplierFactories: ['huaxing', 'huakang-a'] }, attachTo: document.body })
+    wrappers.push(wrapper); await flushPromises()
+    await button(wrapper, '共享厂区').trigger('click'); await flushPromises()
+    expect(dialog().text()).toContain('来源厂区保留可见')
+    const source = dialog().get('input[value="huaxing"]')
+    expect((source.element as HTMLInputElement).checked).toBe(true)
+    expect(source.attributes('disabled')).toBeDefined()
+    await dialog().get('input[value="huakang-a"]').setValue(true)
+    await button(dialog(), '保存').trigger('click'); await flushPromises()
+    expect(api.share).toHaveBeenCalledWith('huaxing', { id: asset.id, revision: 1 },
+      ['huaxing', 'huakang-a'], expect.any(String), expect.any(AbortSignal))
+    expect(api.associate).not.toHaveBeenCalled()
+  })
   it('uses pending schedules in sales and preserves an existing ordered association when searching', async () => {
     const existing = quickTarget({ ordered: true }), pending = quickTarget({ id: 'next', item_no: 'NEXT', fingerprint: 'b'.repeat(64) })
     api.list.mockResolvedValue({ items: [quickAsset({ can_associate: true, targets: [existing] })], total: 1 })

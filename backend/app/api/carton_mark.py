@@ -113,7 +113,7 @@ def quick_candidates(factory_id: str, contract_number: str = Query('',max_length
         from app.models.carton_mark import CartonMarkAsset
         retained=db.get(CartonMarkAsset,asset_id)
         if not retained:raise HTTPException(404,'资料不存在')
-        asset_access.ensure(db,user,retained,write=True,supplier=supplier,view_factory=factory_id,collaborate=True)
+        asset_access.ensure(db,user,retained,write=True,supplier=supplier,view_factory=factory_id,collaborate=True,collaboration_action='associate')
     rows=carton_asset_targets.candidates(db,user,factory_id,contract_number,supplier=supplier,scope=target_scope,retain=retained)
     if supplier:rows=[{k:v for k,v in row.items() if k not in {'customer_code','identity','revision','supplier_id'}} for row in rows]
     return dict(items=rows,total=len(rows))
