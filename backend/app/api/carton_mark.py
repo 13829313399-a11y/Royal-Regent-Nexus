@@ -97,7 +97,12 @@ async def quick_upload(request: Request, factory_id: str, metadata: str = Form(.
     if body.owner_department=='supplier':asset_access.owner(db,user,factory_id,'supplier',supplier=True)
     else:asset_access.owner(db,user,factory_id,body.owner_department)
     content=await file.read(20*1024*1024+1) if file else None
-    prepared=await run_in_threadpool(quick_assets.prepare,body,file.filename if file else None,content)
+    try:
+        prepared=await run_in_threadpool(quick_assets.prepare,body,file.filename if file else None,content)
+    except CartonMarkDocumentConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except CartonMarkDocumentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return quick_assets.save(db,user,factory_id,body,prepared,lambda:get_current_user(request,db))
 
 

@@ -123,7 +123,12 @@ def test_only_target_websocket_closes_and_other_connection_keeps_frames(api):
                 with proxy.websocket_connect(url, headers={'cookie': 'rr_session=editor'}): pass
 
 
-def test_http_exports_and_cache_recheck_current_access_and_strip_cookie(api):
+@pytest.mark.parametrize('cache_prefix', [
+    'cache/files',
+    'cache/files/data',
+    '10.0.0-d083b26a92aabad7309339c3ca290788/cache/files/data',
+])
+def test_http_exports_and_cache_recheck_current_access_and_strip_cookie(api, cache_prefix):
     client, engine, users, current, monkey = api
     doc, owner, editor, viewer = setup(api)
     calls = []
@@ -137,7 +142,15 @@ def test_http_exports_and_cache_recheck_current_access_and_strip_cookie(api):
     key = editor['document']['key']
     with TestClient(app) as proxy:
         proxy.cookies.set('rr_session', 'editor')
-        assert proxy.get(f'/office/cache/files/{key}_changes/output.xlsx').content == b'document-bytes'
+        cache_path = f'/office/{cache_prefix}/{key}/Editor.bin/Editor.bin'
+        response = proxy.get(cache_path, params={'md5': 'engine-signature', 'expires': '1999999999'})
+        assert response.status_code == 200, response.text
+        assert response.content == b'document-bytes'
+        assert calls[-1].url.path == cache_path.removeprefix('/office')
+        assert calls[-1].url.params['md5'] == 'engine-signature'
+        assert calls[-1].url.params['expires'] == '1999999999'
+        assert response.headers['cache-control'] == 'private, no-store'
+        assert proxy.get(f'/office/{cache_prefix}/{key}_changes/output.xlsx').content == b'document-bytes'
         assert proxy.post(f'/office/downloadas/{key}', json={'token': owner['token']}).status_code == 403
         assert proxy.post(f'/office/downloadas/{key}', params={'cmd': json.dumps({'id': 'another-key', 'tokenSession': editor['token']})}).status_code == 403
         assert proxy.post(f'/office/downloadas/{key}', params={'cmd': json.dumps({'id': key, 'tokenSession': owner['token']})}).status_code == 403
@@ -147,12 +160,40 @@ def test_http_exports_and_cache_recheck_current_access_and_strip_cookie(api):
         assert proxy.post(f'/office/savefile/{key}', params={'cmd': json.dumps({'id': key, 'tokenSession': editor['token']})}, content=b'bytes').status_code == 200
         with Session(engine) as db:
             record = db.get(Document, doc); record.grants = [g for g in record.grants if g['user_id'] != 'editor']; db.commit()
-        for path in (f'cache/files/{key}/output.xlsx', f'downloadas/{key}', f'printfile/{key}/print.pdf'):
+        for path in (f'{cache_prefix}/{key}/Editor.bin/Editor.bin', f'{cache_prefix}/{key}_changes/output.xlsx', f'downloadas/{key}', f'printfile/{key}/print.pdf'):
             assert proxy.get('/office/' + path).status_code in {403, 404}
+        proxy.cookies.set('rr_session', 'stranger')
+        assert proxy.get(cache_path).status_code in {403, 404}
+        proxy.cookies.clear()
+        assert proxy.get(cache_path).status_code == 401
         proxy.cookies.set('rr_session', 'viewer')
-        assert proxy.get(f'/office/cache/files/{viewer["document"]["key"]}/output.xlsx').status_code == 200
+        view_key = viewer['document']['key']
+        assert proxy.get(f'/office/{cache_prefix}/{view_key}/Editor.bin/Editor.bin').status_code == 200
+        assert proxy.get(cache_path).status_code == 403
+        assert proxy.post(f'/office/upload/{view_key}', content=b'bytes').status_code == 403
+        with Session(engine) as db:
+            record = db.get(Document, doc); record.grants = []; db.commit()
+        assert proxy.get(f'/office/{cache_prefix}/{view_key}/Editor.bin/Editor.bin').status_code in {403, 404}
         assert proxy.get(f'/office/doc/{key}/c/?EIO=4&transport=polling').status_code == 403
-    assert len(calls) == 3
+    assert len(calls) == 4
+
+
+@pytest.mark.parametrize('path', [
+    'cache/files/data/data/{key}/Editor.bin',
+    'cache/files/datax/{key}/Editor.bin',
+    'cache/files/other/{key}/Editor.bin',
+    'downloadas/data/{key}',
+    'cache/files/data/{key}/%2e%2e/another/Editor.bin',
+    'cache/files/data/{key}/%5canother/Editor.bin',
+])
+def test_invalid_cache_directories_cannot_reach_authorization_or_upstream(monkeypatch, path):
+    def unexpected(*_args, **_kwargs):
+        pytest.fail('Invalid cache address reached authorization or upstream')
+    monkeypatch.setattr(gateway, 'connection_policy', unexpected)
+    monkeypatch.setattr(gateway.httpx, 'AsyncClient', unexpected)
+    app = FastAPI(); app.include_router(gateway.router)
+    with TestClient(app) as proxy:
+        assert proxy.get('/office/' + path.format(key='a' * 32)).status_code == 403
 
 
 @pytest.mark.parametrize('path', ['doc/key/c/extra', 'doc/key/../c', '10.0.0/doc/key/c/extra'])

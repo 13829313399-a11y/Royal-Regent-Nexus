@@ -149,7 +149,17 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
               <input v-model="orderSearch" aria-label="搜索关联订单" placeholder="搜索客户、合同 / PO、货号" class="h-10 w-full min-w-0 rounded-lg border border-input bg-card px-3 text-sm">
               <p v-if="contract && !associationTouched" class="text-xs text-muted-foreground">识别到合同 {{ contract }}；{{ chosenTargets.length ? '已勾选匹配订单，请核对下方选项。' : '请核对并勾选对应订单。' }}</p>
               <p v-if="loading" role="status" class="text-sm text-muted-foreground">正在读取可关联订单…</p>
-              <p v-else-if="candidateError" role="alert" class="text-sm text-destructive">{{ candidateError }} <button type="button" class="underline" @click="search">重新查询</button></p>
+              <div v-else-if="candidateError" role="alert" class="space-y-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm" data-testid="association-load-error">
+                <p class="font-semibold text-destructive">未能读取可关联订单。</p>
+                <p class="break-words text-muted-foreground">具体提示：{{ candidateError }}</p>
+                <p v-if="frozen">保存结果尚未确认，请按下方提示原样重试核实。</p>
+                <p v-else-if="associationTouched && !chosenTargets.length">已选择暂不关联。点击下方“保存”可先保存资料，之后在资料库补充关联。</p>
+                <p v-else>可重新查询；也可选择暂不关联，再点击下方“保存”。暂不关联的资料不会自动挂到订单上。</p>
+                <div class="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" size="sm" @click="search">重新查询</Button>
+                  <Button v-if="!associationTouched || chosenTargets.length" type="button" variant="outline" size="sm" @click="clearLinks">暂不关联，继续保存</Button>
+                </div>
+              </div>
               <div v-else class="max-h-56 space-y-1 overflow-y-auto">
                 <label v-for="target in visibleTargets" :key="target.fingerprint" class="flex cursor-pointer items-start gap-3 rounded-lg border border-border p-3 text-sm has-[:checked]:border-primary has-[:checked]:bg-primary/5"><input v-model="chosenTargets" type="checkbox" :value="target.fingerprint" class="mt-1 shrink-0" @change="associationTouched = true"><span class="min-w-0"><span class="block break-words font-semibold">{{ target.contract_no || '未填合同' }} · {{ target.item_no || '未填货号' }}</span><span class="mt-1 block break-words text-xs text-muted-foreground">{{ target.customer_name }} · PO {{ target.customer_po || '未填写' }} · {{ target.kind === 'SCHEDULE' ? '未下单排期' : targetLabel(target) }}</span><span v-if="target.kind === 'SCHEDULE'" class="block text-xs text-muted-foreground">{{ target.sheet }} 第{{ target.row }}行</span></span></label>
                 <p v-if="loaded && !visibleTargets.length" class="py-3 text-sm text-muted-foreground">{{ orderSearch ? '没有匹配结果，请换个关键词；也可以暂不关联。' : audience === 'sales' ? '暂无未下单排期。可先保存资料，再补充关联。' : '暂无可关联订单，可先保存资料。' }}</p>

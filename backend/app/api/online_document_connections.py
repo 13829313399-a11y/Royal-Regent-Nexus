@@ -20,7 +20,9 @@ from app.services import auth, online_documents as service, online_document_prot
 router = APIRouter()
 SOCKET_PATH = re.compile(r"(?:(?:[0-9][\w.-]*)/)?doc/(?P<key>[\w.=-]{1,128})/c/?$")
 VIEW_KEY = re.compile(r"view-([a-f0-9]{32})-([1-9][0-9]*)$")
-DYNAMIC_PATH = re.compile(r"(?:(?:[0-9][\w.-]*)/)?(?P<kind>cache/files|downloadas|savefile|printfile|downloadfile|upload)/(?P<key>[\w.=-]+)(?:/[\w.\-/=]*)?$")
+# DocumentServer 10 stores converted files below cache/files/data/<document-key>.
+# Keep that storage directory separate from the key used for current ACL checks.
+DYNAMIC_PATH = re.compile(r"(?:(?:[0-9][\w.-]*)/)?(?P<kind>cache/files(?:/data)?|downloadas|savefile|printfile|downloadfile|upload)/(?P<key>[\w.=-]+)(?:/[\w.\-/=]*)?$")
 FRAME_LIMIT = 16 * 1024 * 1024
 
 
