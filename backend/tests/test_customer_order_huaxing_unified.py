@@ -197,3 +197,90 @@ def test_missing_reference_manual_contract_fallback_is_checked_before_export(mon
         current.export_unified_customer_schedule(factory_id='huaxing',customer_code='maxx',received_date='2026-09-08',
             po_files=[('po.pdf',b'po')],schedule_file_name='new.xlsx',schedule_content=data(wb),
             manual_overrides=[dict(row_id='1',field='contract_no',value='EXISTING',reason='人工更正')])
+
+
+@pytest.mark.parametrize('name', ['ITEM表-水枪', 'Iteam表-水枪', '接单表'])
+def test_buzzbee_amount_footer_requires_sum_and_no_order_identity(name):
+    from app.services.customer_order_top_area import boundary
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = name
+    # A note alone is not a footer, nor is a total-looking cell on an order.
+    ws['P4'] = '接单金额合计'
+    ws['P5'], ws['Q5'] = '接单金额合计', '=SUM(Q4:Q4)'
+    ws.cell(5, 8 if name.lower().startswith(('item', 'iteam')) else 7, 'SYNTH-ITEM')
+    # A calculation of a different column is not evidence for an amount footer.
+    ws['P6'], ws['Q6'] = '接单金额合计', '=SUM(J4:J5)'
+    ws['P7'], ws['Q7'] = ' 接单金额合计： ', '=SUM($Q$4:$Q$6)'
+    ws['A9'] = '取消单'
+    assert boundary(ws) == (7, True)
+
+
+def test_buzzbee_new_orders_precede_amount_footer_and_keep_detail_styles():
+    from copy import copy
+    from openpyxl.styles import Alignment, Border, Font, Side
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    names = (*mapping.BUZZBEE_SHEETS, '接单表', '正单评审表')
+    footer_rows = dict(zip(names, (7, 5, 8, 8, 7, 6)))
+    source_styles = {}
+    for name in names:
+        ws = wb.create_sheet(name)
+        item = name in mapping.BUZZBEE_SHEETS
+        for column, header in enumerate(service.ITEM_HEADERS if item else service.ORDER_HEADERS, 1):
+            ws.cell(3, column, header)
+        last = 5 if name == '接单表' else 4
+        line = Side(style='thin', color='183D5C')
+        for number in range(4, last + 1):
+            ws.cell(number, 5 if item else 4, f'SYNTH-OLD-{name}-{number}')
+            ws.cell(number, 8 if item else 7, 'SYNTH-OLD-ITEM')
+            ws.cell(number, 2, '正式PO')
+            ws.cell(number, 13, f'=IFERROR(K{number}/L{number},"")')
+            ws.row_dimensions[number].height = 31
+            for cell in ws[number]:
+                cell.font = Font(name='Arial', size=11)
+                cell.border = Border(left=line, right=line, top=line, bottom=line)
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        source_styles[name] = copy(ws.cell(last, 5 if item else 4)._style)
+        footer = footer_rows[name]
+        ws.cell(footer, 16, '接单金额合计')
+        ws.cell(footer, 17, f'=SUM($Q$4:$Q${last})')
+        ws.cell(footer + 2, 1, '取消单')
+        ws.cell(footer + 3, 4, f'SYNTH-CANCELLED-{name}')
+
+    first, second = mapping.BUZZBEE_SHEETS[:2]
+    rows = [dict(id=str(index), item_sheet_name=lane, product_no=f'SYNTH-NEW-{index}',
+                 reference_no=f'SYNTH-SO-{index}', contract_no=f'SYNTH-SO-{index}',
+                 quantity='12', units_per_carton='6', order_type='正单',
+                 customer_name='SYNTH-CUSTOMER', _huaxing_customer='buzzbee', issues=[])
+            for index, lane in enumerate((first, first, second), 1)]
+    mapping.export_rows(wb, rows)
+    wb = openpyxl.load_workbook(BytesIO(data(wb)))
+    expected = {first: [5, 6], second: [5], '接单表': [6, 7, 8], '正单评审表': [5, 6, 7]}
+    for name, numbers in expected.items():
+        ws = wb[name]
+        item = name in mapping.BUZZBEE_SHEETS
+        reference_column = 5 if item else 4
+        actual = [cell.row for cell in ws._cells.values()
+                  if cell.column == reference_column and isinstance(cell.value, str)
+                  and cell.value.startswith('SYNTH-SO-')]
+        assert sorted(actual) == numbers
+        footer = numbers[-1] + 1
+        assert ws.cell(footer, 16).value == '接单金额合计'
+        assert ws.cell(footer, 17).value == f'=SUM($Q$4:$Q${numbers[-1]})'
+        assert ws.cell(footer + 2, 1).value == '取消单'
+        assert ws.cell(footer + 3, 4).value == f'SYNTH-CANCELLED-{name}'
+        for number in numbers:
+            if item:
+                assert ws.cell(number, 2).value == '正式PO'
+            assert ws.cell(number, reference_column)._style == source_styles[name]
+            assert ws.row_dimensions[number].height >= 31
+        assert ws.cell(4, reference_column).value == f'SYNTH-OLD-{name}-4'
+    for index, (lane, item_number) in enumerate(((first, 5), (first, 6), (second, 5))):
+        ref = f"'{lane}'!K{item_number}"
+        for name, number in (('接单表', 6 + index), ('正单评审表', 5 + index)):
+            assert wb[name].cell(number, 10).value == f'=IF(LEN({ref})=0,"",{ref})'
+            type_ref = f"'{lane}'!B{item_number}"
+            assert wb[name].cell(number, 2).value == f'=IF(LEN({type_ref})=0,"",{type_ref})'

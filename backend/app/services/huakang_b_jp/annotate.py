@@ -51,6 +51,9 @@ def annotate(result, schedule_ref, price_table):
             cat = _price_category(o.get('customer'))
             ctn = case_pack or o.get('carton_t') or ''
             long_hit = False
+            factory_long_hit = False
+            factory_conf_hit = ''
+            factory_fallback = False
             conf_hit = ''
             cat_sub = False
             lg = {'price': '', 'found': False, 'cat_fallback': False,
@@ -63,6 +66,7 @@ def annotate(result, schedule_ref, price_table):
                 fhit = price_table.lookup_long(long_code, '出厂价')
                 if fhit['found']:
                     o['factory_price_t'] = fhit['price']
+                    factory_long_hit = True
             if not long_hit:
                 conf_hit = price_table.lookup_confirmed(baby, cat, ctn, long_code)
                 if conf_hit:
@@ -75,28 +79,30 @@ def annotate(result, schedule_ref, price_table):
                         if lg2['found'] and not lg2['cat_fallback']:
                             lg, cat_sub = lg2, True
             if not o.get('factory_price_t'):
-                o['factory_price_t'] = (
-                    price_table.lookup_confirmed(baby, '出厂价', ctn, long_code)
-                    or price_table.latest_price(baby, '出厂价', ctn))
+                factory_conf_hit = price_table.lookup_confirmed(baby, '出厂价', ctn, long_code)
+                factory_lookup = price_table.lookup(baby, '出厂价', ctn)
+                o['factory_price_t'] = factory_conf_hit or factory_lookup['price']
+                factory_fallback = not factory_conf_hit and factory_lookup['found'] and (
+                    (price_table.has_long() and not factory_long_hit)
+                    or factory_lookup['cat_fallback'] or factory_lookup['carton_fallback'])
             o['price_t'] = lg['price']
             o['price_missing'] = not lg['found']
-            if cat == '柜货':
-                # 柜货沿用文员口径：长货号未精确命中即待确认
-                o['price_confirm'] = (price_table.has_long() and not long_hit
-                                      and not conf_hit)
-            else:
-                # 客派车价在长货号表里稀少，按货号拿到对应类别价即算有效；
-                # 只有完全没拿到该类别价（退回其他类别）才待确认
-                o['price_confirm'] = (price_table.has_long() and not long_hit
-                                      and not conf_hit
-                                      and (not lg['found'] or lg['cat_fallback']))
+            # Any category uses the same variant rule. An Amazon order's
+            # 客派车→柜货 fallback is still a fallback after lookup resets flags.
+            o['price_confirm'] = bool(cat_sub or (price_table.has_long() and not long_hit and not conf_hit))
+            if not conf_hit and (lg['cat_fallback'] or lg['carton_fallback']):
+                o['price_confirm'] = True
+            if factory_fallback:
+                o['price_confirm'] = True
             notes = []
             if cat != '柜货':
                 notes.append('亚马逊订单按客派车取价')
             if conf_hit:
                 notes.append('货价文员已确认')
-            elif o['price_confirm'] and lg['found']:
+            elif o['price_confirm'] and lg['found'] and not long_hit:
                 notes.append('长货号未匹配到货价，暂按货号+装箱数取价，待文员确认')
+            if factory_fallback:
+                notes.append('出厂价未按本单长货号/类别/装箱数匹配，候选价待文员确认')
             if cat_sub:
                 notes.append('无%s价，按柜货取价' % cat)
             elif lg['found'] and lg['cat_fallback']:
@@ -131,12 +137,8 @@ def annotate(result, schedule_ref, price_table):
                     result['warnings'].append(
                         f'货号 {baby} 最新回复包装 {cur_pkg} 与排期历史 {version} 不同，保留最新回复，请人工核对')
                 else:
-                    # Preserve the established current-table/history mapping;
-                    # explicit quoted-reply updates above are a separate case.
                     result['warnings'].append(
-                        f'货号 {baby} 版本按排期表历史映射：客人表格 {cur_pkg} → {version}，请确认')
-                    o['pkg'] = version
-                    o['pkg_from_ref'] = True
+                        f'货号 {baby} 当前邮件包装 {cur_pkg} 与排期历史 {version} 不同，保留当前邮件，请人工核对')
         if exists:
             n_exists += 1
     if n_exists:

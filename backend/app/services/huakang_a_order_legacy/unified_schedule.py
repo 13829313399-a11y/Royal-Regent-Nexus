@@ -328,6 +328,7 @@ def _insert_rows(workbook, target, start, amount):
 
 
 def output_slots(workbook, count, *, sheet_counts=None, top_order_area=False):
+    from app.services.customer_order_360_manual_column import manual_value_columns
     from app.services.customer_order_unified import (
         SHEETS, _marker_row, _copy_template_row, CustomerOrderUnifiedError,
     )
@@ -363,6 +364,7 @@ def output_slots(workbook, count, *, sheet_counts=None, top_order_area=False):
             else:
                 _insert_rows(workbook, sheet, marker, inserted)
         slots = list(range(start, start + count))
+        manual_columns = manual_value_columns(sheet)
         # Existing reserved formulas are authoritative. Only new rows need a copy.
         for row in slots:
             if row >= marker:
@@ -371,7 +373,7 @@ def output_slots(workbook, count, *, sheet_counts=None, top_order_area=False):
             # Fill only missing formulas, retaining every existing template formula.
             for source in list(sheet[template_row]):
                 target = sheet.cell(row, source.column)
-                if target.value is None and source.data_type == "f":
+                if target.value is None and source.data_type == "f" and source.column not in manual_columns:
                     target._style = copy(source._style)
                     target.value = (
                         copy_array_formula(source.value, source.coordinate, target.coordinate)

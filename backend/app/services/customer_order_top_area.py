@@ -1,4 +1,4 @@
-"""Bound Shushupapa imports to the first order section of each sheet."""
+"""Bound opted-in imports to the first order section of each sheet."""
 from copy import deepcopy
 import re
 
@@ -6,6 +6,7 @@ from openpyxl.utils import get_column_letter
 
 
 _TOTALS = {"合计", "总计", "總計", "小计", "小計"}
+_AMOUNT_TOTALS = {"接单金额合计"}
 _SECTIONS = {"备料", "备料单", "备料订单", "已走货", "已走货订单", "取消单"}
 _SUM = re.compile(
     r"^=\s*SUM\s*\(\s*(?P<start>\$?[A-Z]{1,3}\$?)(?P<first>\d+)"
@@ -20,15 +21,33 @@ def _label(cell):
     return re.sub(r"[\s:：]+", "", cell.value)
 
 
+def _local_detail_sum(cell):
+    """Prove a subtotal of this column's active detail rows, not a lookup."""
+    if cell.data_type != "f" or not isinstance(cell.value, str):
+        return None
+    match = _SUM.fullmatch(cell.value)
+    if not match:
+        return None
+    column = get_column_letter(cell.column)
+    if any(match.group(part).replace("$", "").upper() != column for part in ("start", "end")):
+        return None
+    return match if int(match.group("first")) <= 4 <= int(match.group("last")) < cell.row else None
+
+
 def boundary(sheet):
     """Return the first structural footer, excluding order types and remarks."""
-    identity_columns = (4, 5, 6, 8) if sheet.title == "ITEM表" else (3, 4, 5, 7)
+    item_sheet = re.match(r"^(?:ITEM|ITEAM)", sheet.title, re.I)
+    identity_columns = (4, 5, 6, 8) if item_sheet else (3, 4, 5, 7)
     candidates = {}
-    for (number, column), cell in sheet._cells.items():
+    for (number, column), cell in list(sheet._cells.items()):
         if number < 4:
             continue
         label = _label(cell)
         if column <= 10 and label in _TOTALS:
+            candidates[number] = True
+        elif label in _TOTALS | _AMOUNT_TOTALS and any(_local_detail_sum(c) for c in sheet[number]):
+            # BuzzBee places its amount subtotal label in P, beyond the order
+            # keys. A label alone could be an ordinary user-owned remark.
             candidates[number] = True
         elif column <= 2 and label in _SECTIONS:
             candidates.setdefault(number, False)
@@ -37,7 +56,7 @@ def boundary(sheet):
         if any(
             sheet.cell(number, column).value not in (None, "")
             and sheet.cell(number, column).data_type != "f"
-            and _label(sheet.cell(number, column)) not in _TOTALS | _SECTIONS
+            and _label(sheet.cell(number, column)) not in _TOTALS | _AMOUNT_TOTALS | _SECTIONS
             for column in identity_columns
         ):
             continue

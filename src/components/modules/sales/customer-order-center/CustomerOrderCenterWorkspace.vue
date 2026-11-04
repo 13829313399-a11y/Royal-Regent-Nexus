@@ -74,6 +74,15 @@ interface CustomerOrderCustomerProfile {
 const CUSTOMER_PROFILES_BY_FACTORY: Record<string, CustomerOrderCustomerProfile[]> = {
   huaxing: [
     {
+      code: 'zuru', name: 'ZURU', version: 'V2',
+      poAccept: '.pdf,.xlsx', poExtensions: ['.pdf', '.xlsx'],
+      scheduleAccept: '.xlsx', scheduleExtensions: ['.xlsx'],
+      poDescription: 'ZURU PDF 正单或已转换并核对的 Excel 正单',
+      templateDescription: '华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）',
+      targetTemplate: 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2',
+      ruleDescription: 'PO号＋原单Line作为SO/Reference，SKU-SPEC保留完整货号，Customer PO按本行读取；统一三表追加，USD单独保留，不换算HKD。原周排期仅作映射参考，不导入MA/库存记录。',
+    },
+    {
       code: 'buzzbee',
       name: 'BuzzBee',
       version: 'V1',
@@ -402,6 +411,13 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
       profile.targetTemplate = 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
       profile.templateDescription = `华兴 ${profile.name} 最新统一排期（含 ITEM 分类页）`
       profile.ruleDescription = '按主要公共字段匹配最新排期，BuzzBee 和迪奇按产品对应 ITEM 分类页。各表在自己的取消单前追加，接单表、正单评审表关联实际明细页和行；合同、SO、客户 PO 分别映射，保留历史订单、公式和人工字段。'
+      if (profile.code === 'zuru') {
+        profile.templateDescription = '华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）'
+        profile.ruleDescription += ' ZURU 按 PO号＋原单Line及完整SKU-SPEC识别，Customer PO逐行读取；USD单独保留，不换算HKD。不导入原周排期的MA/库存记录。'
+      }
+      if (profile.code === 'buzzbee') {
+        profile.ruleDescription = '按货号对应 ITEM 分类页，新正单在合计或取消区域之前追加并显示“正式PO”，沿用原明细格式。彩盒编号保留完整包装 REF 和版本，后接人工维护的系列、备注；原单、历史内容和人工字段保留。'
+      }
       if (profile.code === 'edu') {
         profile.ruleDescription = 'EDU 每条新明细续编 EDUHX，并同步三张排期与 PO订单。按去尾码货号归组到绿色备料行上方；先匹配扣数PO，否则扣同货号最后一条绿色行，余额允许负数。装箱可补录，重复单保留原号、不再次扣料，历史与走货资料保留。'
       }
@@ -461,6 +477,7 @@ if (seasonsProfile) {
 }
 
 const MAPPED_CUSTOMERS = new Set<MappedCustomerCode>([
+  'zuru',
   'disney', 'edu', '360', 'green-toys', 'headstart', 'yinhui', 'seasons', 'maxx', 'shushupapa', 'barter',
   'casdon', 'jakks', 'simba', 'spin', 'goliath',
   'index', 'jazwares', 'strottman', 'ubtech',
