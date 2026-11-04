@@ -4,7 +4,7 @@ import json
 from sqlalchemy import JSON, case, cast, func, select, type_coerce
 
 from app.models.carton_procurement import CartonAuditEvent, CartonImportBatch
-from app.services.carton_schedule_tracking import customer_key, effective_po, normalized
+from app.services.carton_schedule_tracking import customer_key, linked_po_matches, normalized
 
 
 def _object(value):
@@ -73,7 +73,8 @@ def schedule_split_sources(db, orders):
             continue
         if any(normalized(row.get(key)) != normalized(getattr(order, key)) for key in ("contract_no", "item_no")):
             continue
-        if effective_po(row) and effective_po(row) != effective_po({"customer_po": order.customer_po}):
+        if (detail.get("po_semantics") == "SOURCE_PO" and normalized(detail.get("customer_po")) != normalized(order.customer_po)
+                or not linked_po_matches(row, order.customer_po)):
             continue
         source_contract = str(row.get("split_source") or "").strip()
         if not source_contract:

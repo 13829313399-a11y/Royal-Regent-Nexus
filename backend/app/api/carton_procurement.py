@@ -1,5 +1,6 @@
 from app.schemas.carton_order_groups import OrderGroupCreate
 from app.schemas.carton_contract_merge import ContractMerge
+from app.schemas.carton_schedule_batch import ScheduleBatchCreate
 from typing import Literal
 from datetime import date, datetime
 from decimal import Decimal
@@ -501,6 +502,16 @@ def merge_order_contract(payload: ContractMerge, request: Request, db: Session =
     from app.services.carton_contract_merge import merge
     _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
     return merge(db, payload, current_user,
+        refresh_user=lambda: get_current_user(request=request, db=db),
+        authorize=lambda user: _ensure_permission(db, user, "carton_procurement:order_write", payload.factory_id))
+
+
+@router.post("/orders/from-schedule-batch", response_model=list[CartonOrderOut], status_code=201)
+def post_schedule_batch(payload: ScheduleBatchCreate, request: Request, db: Session = Depends(get_db),
+                        current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_schedule_batch import create
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return create(db, payload, current_user,
         refresh_user=lambda: get_current_user(request=request, db=db),
         authorize=lambda user: _ensure_permission(db, user, "carton_procurement:order_write", payload.factory_id))
 

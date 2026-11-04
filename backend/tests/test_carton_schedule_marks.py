@@ -62,6 +62,16 @@ def test_historical_versions_are_not_counted_and_ambiguous_sources_are_not_guess
     assert [row['status'] for row in result] == ['REVIEW', 'REVIEW']
 
 
+def test_actual_po_orders_only_inherit_explicitly_linked_schedule_materials():
+    rows = [source(source_reference='SO-A', schedule_identity='A'),
+            source(source_reference='SO-B', schedule_identity='B', source_row=5)]
+    asset = file(recognition_source='manual_orders', contract_number='', orders=[NS(id='ORDER')])
+    result, _ = project(rows, rows, [order()], [asset])
+    assert [item['status'] for item in result] == ['MISSING', 'MISSING']
+    result, _ = project(rows, rows, [order()], [asset], {'A': ['ORDER']})
+    assert [item['status'] for item in result] == ['UPLOADED', 'MISSING']
+
+
 @pytest.mark.parametrize('status', ['UNCLASSIFIED', 'DRAFT', 'PENDING', 'HISTORY'])
 @pytest.mark.parametrize('manual', [False, True])
 def test_only_ready_classification_is_counted_for_contract_and_explicit_order_links(status, manual):

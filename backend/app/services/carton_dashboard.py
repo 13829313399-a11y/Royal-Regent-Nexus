@@ -151,6 +151,16 @@ class Context:
 
     def matching(self, row):
         from app.services.carton_schedule_quantity_matching import BASIS, candidates
+        state = self.marks.get(row.get('schedule_identity'), {})
+        if row.get('template') == 'unified-item' and row.get('schedule_customer_code') and 'matching_order_ids' in state:
+            if state['matching_order_ids'] or state.get('ambiguous_order_ids'):
+                return [self.orders[identifier] for identifier in state['matching_order_ids'] if identifier in self.orders]
+            if row.get('schedule_identity_duplicate'):
+                return []
+            po = row.get('source_reference') or row.get('customer_po')
+            split = {o['id']: o for o, target in self.splits.get((row.get('schedule_customer_code'), norm(row.get('item_no')), norm(row.get('contract_no'))), [])
+                     if not po or norm(target.get('customer_po')) == norm(po)}
+            return list(split.values()) or candidates(row, self.quantity_index.get(row.get('schedule_identity'), []))
         linked_ids = list(dict.fromkeys(self.marks.get(row.get("schedule_identity"), {}).get("order_ids", []) + (
             [row["order_id"]] if row.get("order_id") and row.get("match_basis") != BASIS else [])))
         linked = [self.orders[i] for i in linked_ids if i in self.orders and (not row.get("schedule_customer_code") or self.orders[i]["customer_code"] == row["schedule_customer_code"])
@@ -181,13 +191,14 @@ class Context:
         for code in dict.fromkeys(["", customer]):
             rules.update({k: v for k, v in self.rules.get(code, {}).items() if k in rules and v is not None})
         matches = self.matching(row)
+        po_review = bool(self.marks.get(row.get('schedule_identity'), {}).get('ambiguous_order_ids'))
         review = not matches and self.quantity_review(row)
         from app.services.carton_schedule_quantity_matching import BASIS
         current = dict(row, match_status="MATCHED" if matches else "MISSING_ORDER") if row.get("match_basis") == BASIS else row
-        result = reminder(dict(current, match_status="AMBIGUOUS") if review else current,
+        result = reminder(dict(current, match_status="AMBIGUOUS") if review or po_review else current,
             today=self.today, **rules, marked=self.marked(row), orders=matches, review_changes=self.mark_changes(row))
         if result and review:
-            result.update(label="数量及装箱匹配待核对", detail="合同、货号、产品数量及装箱存在多个候选或来源待核实；请核对原订单，勿重复下单。")
+            result.update(label="订单匹配待核对", detail="客户 PO、来源或数量装箱存在多个候选或待核实；请核对原订单，勿重复下单。")
         return result
 
 

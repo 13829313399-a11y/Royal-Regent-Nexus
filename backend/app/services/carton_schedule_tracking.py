@@ -25,7 +25,15 @@ def normalized(value: Any) -> str:
 
 
 def effective_po(row: dict[str, Any]) -> str:
+    # Stable schedule/material identity, not the purchase order's customer PO.
     return normalized(row.get("source_reference")) or normalized(row.get("customer_po"))
+
+
+def linked_po_matches(row: dict[str, Any], customer_po: Any) -> bool:
+    """Validate explicit provenance, including historical orders that stored SO as PO."""
+    value = normalized(customer_po)
+    return not effective_po(row) or value == normalized(row.get("customer_po")) or bool(
+        normalized(row.get("source_reference")) and value == normalized(row.get("source_reference")))
 
 
 def identity(row: dict[str, Any]) -> str:

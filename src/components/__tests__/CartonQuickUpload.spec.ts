@@ -23,8 +23,11 @@ async function typeText(value = '普通说明') {
   await dialog().get('textarea').setValue(value); await flushPromises()
 }
 async function chooseFile(file: File) {
+  await chooseFiles([file])
+}
+async function chooseFiles(files: File[]) {
   const input = dialog().get('input[aria-label="选择资料文件"]')
-  Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+  Object.defineProperty(input.element, 'files', { value: files, configurable: true })
   await input.trigger('change'); await flushPromises()
 }
 beforeEach(() => {
@@ -136,6 +139,7 @@ describe('one quick-upload modal for all audiences', () => {
     await vi.waitFor(() => expect(dialog().findAll('input[type="checkbox"]')).toHaveLength(2))
     await dialog().findAll('input[type="checkbox"]')[0]!.setValue(true)
     const replacement = new File(['blue product'], 'QUICK-1234.pdf', { type: 'application/pdf' })
+    await button(dialog(), '移除').trigger('click')
     await chooseFile(replacement)
     expect(dialog().findAll('input:checked')).toHaveLength(0)
     await dialog().findAll('input[type="checkbox"]')[1]!.setValue(true)
@@ -149,6 +153,7 @@ describe('one quick-upload modal for all audiences', () => {
     await vi.waitFor(() => expect(dialog().findAll('input:checked')).toHaveLength(1))
     await dialog().get('input[type="checkbox"]').setValue(false)
     await dialog().get('input[type="checkbox"]').setValue(true)
+    await button(dialog(), '移除').trigger('click')
     await chooseFile(new File(['second source'], 'OTHER-5678.pdf', { type: 'application/pdf' }))
     expect(dialog().get('input[aria-label="搜索关联订单"]').element).toHaveProperty('value', 'OTHER-5678')
     await dialog().trigger('submit'); await flushPromises()
@@ -200,6 +205,7 @@ describe('one quick-upload modal for all audiences', () => {
     await open(); await chooseFile(new File(['synthetic file'], '资料.pdf', { type: 'application/pdf' }))
     await vi.waitFor(() => expect(dialog().find('[data-testid="association-load-error"]').exists()).toBe(true))
     expect(button(dialog(), '保存').attributes('disabled')).toBeUndefined()
+    await button(dialog(), '移除').trigger('click')
     await chooseFile(new File(['synthetic file'], 'QUICK-1234_正唛.pdf', { type: 'application/pdf' }))
     expect(button(dialog(), '保存').attributes('disabled')).toBeDefined()
     await button(dialog(), '重新查询').trigger('click')
@@ -216,6 +222,7 @@ describe('one quick-upload modal for all audiences', () => {
     expect(dialog().text()).not.toContain('保存结果尚未确认')
     expect(dialog().get('fieldset').attributes('disabled')).toBeUndefined()
     const replacement = new File(['replacement'], '新资料.pdf', { type: 'application/pdf' })
+    await button(dialog(), '移除').trigger('click')
     await chooseFile(replacement); await dialog().trigger('submit'); await flushPromises()
     expect(api.upload.mock.calls[1]![2]).toBe(replacement)
     expect(document.querySelector('[role="dialog"]')).toBeNull()
@@ -265,6 +272,154 @@ describe('one quick-upload modal for all audiences', () => {
     expect(dialog().get('textarea').element).toHaveProperty('value', 'preserve draft')
     await dialog().trigger('keydown', { key: 'Escape' }); await flushPromises()
     await vi.waitFor(() => expect(document.activeElement).toBe(button(wrapper, '快速上传').element))
+  })
+})
+
+describe('multiple quick-upload files', () => {
+  it.each(['sales', 'warehouse', 'supplier'] as const)('saves separate files and independent contract suggestions (%s)', async audience => {
+    const department = audience === 'supplier' ? 'supplier' : audience === 'warehouse' ? 'pmc-warehouse' : 'sales-business'
+    useAuthStore().applySession(audience === 'supplier' ? supplierQuickSession() : quickSession([department]))
+    api.candidates.mockResolvedValue([quickTarget(), quickTarget({ contract_no: 'OTHER-5678', row: 10, fingerprint: 'b'.repeat(64) })])
+    const wrapper = await open(audience)
+    const files = [new File(['a'], 'QUICK-1234.pdf'), new File(['b'], 'OTHER-5678.xlsx')]
+    await chooseFiles(files)
+    expect(dialog().get('input[type="file"]').attributes('multiple')).toBeDefined()
+    await vi.waitFor(() => expect(button(dialog(), '保存 2 个文件').attributes('disabled')).toBeUndefined())
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload).toHaveBeenCalledTimes(2)
+    expect(api.upload.mock.calls.map(call => call[2])).toEqual(files)
+    expect(api.upload.mock.calls.map(call => call[1].targets[0]?.row)).toEqual([9, 10])
+    expect(api.upload.mock.calls.map(call => call[1].owner_department)).toEqual([department, department])
+    expect(api.upload.mock.calls[0]![1].request_id).not.toBe(api.upload.mock.calls[1]![1].request_id)
+    if (audience === 'supplier') expect(api.upload.mock.calls.every(call => call[1].shared_factory_ids.length === 0)).toBe(true)
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+
+  it('continues adding files without changing manually checked links on an earlier file', async () => {
+    api.candidates.mockResolvedValue([quickTarget(), quickTarget({ row: 10, fingerprint: 'b'.repeat(64) })])
+    await open(); await chooseFile(new File(['a'], 'QUICK-1234.pdf'))
+    await vi.waitFor(() => expect(dialog().findAll('input[type="checkbox"]')).toHaveLength(2))
+    await dialog().findAll('input[type="checkbox"]')[1]!.setValue(true)
+    await chooseFile(new File(['b'], 'QUICK-1234.png'))
+    expect(dialog().findAll('input:checked')).toHaveLength(0)
+    await dialog().findAll('input[type="checkbox"]')[0]!.setValue(true)
+    await dialog().get('button[aria-label="查看文件 1 QUICK-1234.pdf"]').trigger('click')
+    expect(dialog().findAll('input[type="checkbox"]')[1]!.element).toHaveProperty('checked', true)
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls.map(call => call[1].targets[0]?.row)).toEqual([10, 9])
+  })
+
+  it('skips successful files and replays only an uncertain file after reopening', async () => {
+    api.upload.mockResolvedValueOnce(quickAsset()).mockRejectedValueOnce(new Error('timeout')).mockResolvedValueOnce(quickAsset())
+    const wrapper = await open()
+    const files = [new File(['a'], 'first.pdf'), new File(['b'], 'second.pdf')]
+    await chooseFiles(files); await dialog().trigger('submit'); await flushPromises()
+    expect(dialog().text()).toContain('已保存 1 个')
+    const uncertain = api.upload.mock.calls[1]![1]
+    await button(dialog(), '取消').trigger('click'); await button(wrapper, '快速上传').trigger('click'); await flushPromises()
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload).toHaveBeenCalledTimes(3)
+    expect(api.upload.mock.calls[2]![1]).toEqual(uncertain)
+    expect(api.upload.mock.calls[2]![2]).toBe(files[1])
+    await button(wrapper, '快速上传').trigger('click'); await flushPromises()
+    expect(dialog().get('fieldset').attributes('disabled')).toBeUndefined()
+    expect(dialog().text()).not.toContain('second.pdf')
+  })
+
+  it('keeps failed-file manual associations when closing and reopening a partial batch', async () => {
+    api.candidates.mockResolvedValue([quickTarget(), quickTarget({ row: 10, fingerprint: 'b'.repeat(64) })])
+    api.upload.mockResolvedValueOnce(quickAsset()).mockRejectedValueOnce({ response: { status: 422 } }).mockResolvedValueOnce(quickAsset())
+    const wrapper = await open()
+    await chooseFiles([new File(['a'], 'first.pdf'), new File(['b'], 'QUICK-1234.pdf')])
+    await vi.waitFor(() => expect(dialog().findAll('input[type="checkbox"]')).toHaveLength(2))
+    await dialog().get('button[aria-label="查看文件 2 QUICK-1234.pdf"]').trigger('click')
+    await dialog().findAll('input[type="checkbox"]')[1]!.setValue(true)
+    await dialog().trigger('submit'); await flushPromises()
+    await button(dialog(), '取消').trigger('click'); await button(wrapper, '快速上传').trigger('click'); await flushPromises()
+    await vi.waitFor(() => expect(dialog().findAll('input[type="checkbox"]')).toHaveLength(2))
+    expect(button(dialog(), '文字').attributes('disabled')).toBeDefined()
+    expect(dialog().findAll('input[type="checkbox"]')[1]!.element).toHaveProperty('checked', true)
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[2]![1].targets).toEqual([expect.objectContaining({ row: 10 })])
+  })
+
+  it('requires an explicit new association after a target conflict', async () => {
+    api.candidates.mockResolvedValue([quickTarget()])
+    api.upload.mockRejectedValueOnce({ response: { status: 409 } }).mockResolvedValueOnce(quickAsset())
+    await open(); await chooseFile(new File(['a'], 'QUICK-1234.pdf'))
+    await vi.waitFor(() => expect(dialog().findAll('input:checked')).toHaveLength(1))
+    api.candidates.mockResolvedValue([quickTarget({ fingerprint: 'b'.repeat(64) })])
+    await dialog().trigger('submit'); await flushPromises()
+    await vi.waitFor(() => expect(api.candidates).toHaveBeenCalledTimes(2))
+    expect(button(dialog(), '保存').attributes('disabled')).toBeDefined()
+    await dialog().get('input[type="checkbox"]').setValue(true)
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls[1]![1].targets[0].fingerprint).toBe('b'.repeat(64))
+  })
+
+  it('can upload another batch immediately after one file succeeds', async () => {
+    const wrapper = await open()
+    await chooseFile(new File(['a'], 'first.pdf')); await dialog().trigger('submit'); await flushPromises()
+    await button(wrapper, '快速上传').trigger('click'); await flushPromises()
+    await chooseFile(new File(['b'], 'second.pdf')); await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls.map(call => call[2]?.name)).toEqual(['first.pdf', 'second.pdf'])
+  })
+
+  it('does not silently replace a previously displayed single-match suggestion on reopen', async () => {
+    api.candidates.mockResolvedValue([quickTarget()])
+    api.upload.mockRejectedValueOnce({ response: { status: 422 } })
+    const wrapper = await open()
+    await chooseFiles([new File(['a'], 'QUICK-1234.pdf'), new File(['b'], 'other.pdf')])
+    await vi.waitFor(() => expect(dialog().findAll('input:checked')).toHaveLength(1))
+    api.upload.mockRejectedValue({ response: { status: 422 } })
+    await dialog().trigger('submit'); await flushPromises()
+    await button(dialog(), '取消').trigger('click')
+    api.candidates.mockResolvedValue([quickTarget({ fingerprint: 'b'.repeat(64) })])
+    await button(wrapper, '快速上传').trigger('click'); await flushPromises()
+    await vi.waitFor(() => expect(api.candidates).toHaveBeenCalledTimes(2))
+    expect(dialog().findAll('input:checked')).toHaveLength(0)
+    expect(button(dialog(), '保存 2 个文件').attributes('disabled')).toBeDefined()
+    expect(button(dialog(), '将当前关联应用到其他未保存文件').attributes('disabled')).toBeDefined()
+  })
+
+  it('applies a checked association to other files only on an explicit action', async () => {
+    api.candidates.mockResolvedValue([quickTarget(), quickTarget({ row: 10, fingerprint: 'b'.repeat(64) })])
+    await open(); await chooseFiles([new File(['a'], 'first.pdf'), new File(['b'], 'second.pdf')])
+    await vi.waitFor(() => expect(dialog().findAll('input[type="checkbox"]')).toHaveLength(2))
+    await dialog().findAll('input[type="checkbox"]')[1]!.setValue(true)
+    await button(dialog(), '将当前关联应用到其他未保存文件').trigger('click')
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload.mock.calls.map(call => call[1].targets)).toEqual([
+      [expect.objectContaining({ row: 10 })], [expect.objectContaining({ row: 10 })],
+    ])
+  })
+
+  it('supports dropping several files, rejects an over-limit addition, and removes a queued file', async () => {
+    await open()
+    const input = dialog().get('input[type="file"]')
+    const dropArea = input.element.closest('div')!
+    await new DOMWrapper(dropArea).trigger('drop', { dataTransfer: { files: [new File(['a'], 'first.pdf'), new File(['b'], 'second.pdf')] } })
+    expect(dialog().text()).toContain('共 2 个文件')
+    await chooseFiles(Array.from({ length: 49 }, (_, i) => new File(['x'], `${i}.pdf`)))
+    expect(dialog().text()).toContain('每批最多50个')
+    expect(dialog().text()).toContain('共 2 个文件')
+    await dialog().get('button[aria-label="移除文件 1 first.pdf"]').trigger('click')
+    await dialog().trigger('submit'); await flushPromises()
+    expect(api.upload).toHaveBeenCalledOnce()
+    expect(api.upload.mock.calls[0]![2].name).toBe('second.pdf')
+  })
+
+  it('stops a file queue when the factory changes during the first upload', async () => {
+    let finish!: (value: unknown) => void
+    api.upload.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = await open()
+    await chooseFiles([new File(['a'], 'first.pdf'), new File(['b'], 'second.pdf')])
+    await dialog().trigger('submit'); await flushPromises()
+    await wrapper.setProps({ factoryId: 'huakang-a' })
+    finish(quickAsset()); await flushPromises()
+    expect(api.upload).toHaveBeenCalledOnce()
+    expect(wrapper.emitted('saved')).toBeUndefined()
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
   })
 })
 
