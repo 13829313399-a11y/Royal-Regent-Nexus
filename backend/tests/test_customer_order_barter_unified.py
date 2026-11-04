@@ -119,7 +119,11 @@ def test_plain_and_encrypted_unified_sources_export_red_duplicates_preserving_hi
                      if sheet.cell(r, identity_column).value in {f"TNT/F{n}" for n in CONTRACTS}]
             assert len(added) == 4
             for number in added:
-                assert all(c.font.color.type == "rgb" and c.font.color.rgb == "FFFF0000" for c in sheet[number])
+                assert all(c.font.color.type == "rgb" and c.font.color.rgb == "FFFF0000"
+                           for c in sheet[number] if c.value not in (None, ""))
+                for header in ('纸箱', '拆单来源'):
+                    column, = [c.column for c in sheet[3] if c.value == header]
+                    assert sheet.cell(number, column).value is None
                 if name == "ITEM表":
                     assert sheet.cell(number, 21).value == "WM88111RR-1026"
                 else:

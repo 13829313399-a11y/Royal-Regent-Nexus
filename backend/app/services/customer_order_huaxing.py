@@ -62,6 +62,11 @@ class PreparedBatch:
 
 
 HUAXING_CUSTOMER_MAPPINGS: dict[str, HuaxingCustomerMappingSpec] = {
+    "zuru": HuaxingCustomerMappingSpec(
+        "zuru", "ZURU", (".pdf", ".xlsx"), (".xlsx",),
+        "HUAXING_ZURU_PO_V2", "HEYUAN_BUSINESS_UNIFIED_HUAXING_V2",
+        "读取 ZURU 正单 PDF 或已核对的转换 Excel，保留 PO号＋原单Line、完整SKU-SPEC及本行Customer PO；写入统一三表，USD单独保留，不自动换算HKD。",
+    ),
     "edu": HuaxingCustomerMappingSpec(
         "edu", "EDU", (".xls", ".xlsx", ".xlsm"), (".xls", ".xlsx", ".xlsm"),
         "HUAXING_EDU_ORDER_V1", "HUAXING_EDU_SCHEDULE_APPEND_V2",
@@ -878,6 +883,11 @@ def create_huaxing_customer_preview(
     _schedule_encrypted: bool | None = None,
 ) -> dict[str, Any]:
     spec = get_huaxing_customer_mapping(customer_code)
+    if customer_code == 'zuru':
+        from .customer_order_unified import create_unified_customer_preview
+        return create_unified_customer_preview(customer_code=customer_code, factory_id=factory_id,
+            received_date=received_date, po_files=po_files, schedule_file_name=schedule_file_name,
+            schedule_content=schedule_content)
     if factory_id != "huaxing":
         raise HuaxingCustomerOrderError(f"{spec.name} 只属于华兴厂区，不能导入其他厂区")
     if not po_files:
@@ -1177,6 +1187,11 @@ def export_huaxing_customer_schedule(
     skipped_issue_keys: set[str] | None = None,
     manual_overrides: list[dict[str, str]] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
+    if customer_code == 'zuru':
+        from .customer_order_unified import export_unified_customer_schedule
+        return export_unified_customer_schedule(customer_code=customer_code, factory_id=factory_id,
+            received_date=received_date, po_files=po_files, schedule_file_name=schedule_file_name,
+            schedule_content=schedule_content, skipped_issue_keys=skipped_issue_keys, manual_overrides=manual_overrides)
     plain_schedule, schedule_encrypted = _plain_schedule_content(customer_code, schedule_content)
     prepared = _prepare_batch(customer_code, po_files, schedule_file_name, plain_schedule)
     preview = create_huaxing_customer_preview(

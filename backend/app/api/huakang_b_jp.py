@@ -151,7 +151,7 @@ async def export(request: Request, factory_id: str = Form(...), received_date: d
     user = refresh_user(request, db)
     guard(db, user, factory_id)
     if fingerprint != result["fingerprint"]:
-        raise HTTPException(409, "原件、参照或数量列选择已变化，请重新预览核对")
+        raise HTTPException(409, "解析规则、原件、参照或数量列选择已变化，请重新预览核对")
     guard(db, user, factory_id, "export")
     record = transaction(db, lambda: intake.save_export(db, result, json_values(selected, str),
         changes, refs, uploads, html, reason.strip(), actor_name(user), user.display_name or user.username))

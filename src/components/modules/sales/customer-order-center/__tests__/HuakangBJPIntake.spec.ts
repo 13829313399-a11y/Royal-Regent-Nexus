@@ -121,6 +121,23 @@ describe('HuakangBJPIntake', () => {
     expect(wrapper.find('input[aria-label="客PO"]').exists()).toBe(false)
     wrapper.unmount()
   })
+  it('submits both candidate prices after explicit review even when their values stay unchanged', async () => {
+    api.preview.mockResolvedValue({ ...preview, rows: [{ ...row, price_confirm: true, price_note: '长货号未匹配，候选价格待确认' }] })
+    const wrapper = await open()
+    await button(wrapper, '解析并核对').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('货价待确认')
+    expect(button(wrapper, '确认并生成问单 Excel').attributes('disabled')).toBeDefined()
+    await wrapper.findAll('textarea').at(-1)!.setValue('已按实际长货号确认两价')
+    await wrapper.findAll('input[type=checkbox]').at(-1)!.setValue(true)
+    api.export.mockResolvedValue({ id: 'reviewed', row_count: 1 })
+    await button(wrapper, '确认并生成问单 Excel').trigger('click'); await flushPromises()
+    const changes = JSON.parse(String((api.export.mock.calls[0]![0] as FormData).get('overrides')))
+    expect(changes).toEqual([
+      { id: row.id, field: 'price_t', value: '12.5' },
+      { id: row.id, field: 'factory_price_t', value: '10' },
+    ])
+    wrapper.unmount()
+  })
   it('ignores an obsolete preview and clears protected results when factory changes', async () => {
     let finish: ((v: typeof preview) => void) | undefined
     api.preview.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
