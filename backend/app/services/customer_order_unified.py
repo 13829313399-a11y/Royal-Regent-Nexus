@@ -36,7 +36,7 @@ from app.services.customer_order_manual import (
 )
 
 
-PREVIEW_SCHEMA_VERSION = "customer-order-heyuan-unified-preview-v2"
+PREVIEW_SCHEMA_VERSION = "customer-order-heyuan-unified-preview-v3"
 TARGET_TEMPLATE = "HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1"
 ITEM_SHEET = "ITEM表"
 ORDER_SHEET = "接单表"
@@ -395,12 +395,15 @@ def _enrich_row(
         "unit_price_hkd": "unit_price_hkd",
     }
     for target, source in inherited.items():
-        if (row.get('_regional_customer') == 'ubtech' or row.get('_jakks_supplementary') or row.get('price_basis') == 'incomplete' or row.get('_huaxing_customer') == 'shushupapa') and target == 'unit_price_hkd':
+        if (row.get('_regional_customer') == 'ubtech' or row.get('_zuru_customer') or row.get('_jakks_supplementary') or row.get('price_basis') == 'incomplete' or row.get('_huaxing_customer') == 'shushupapa') and target == 'unit_price_hkd':
             continue
         if not _text(row.get(target)):
             candidates = history
-            if row.get('_huaxing_customer') == 'shushupapa' and target in {'units_per_carton', 'standard', 'packaging'}:
-                candidates = [item for item in history if _key(item.customer_name) == _key(row['customer_name'])]
+            if row.get('_zuru_customer'):
+                from .zuru_original import key as zuru_key
+                candidates = [item for item in candidates if zuru_key(item.product_no) == zuru_key(product_no)]
+            if (row.get('_huaxing_customer') == 'shushupapa' or row.get('_zuru_customer')) and target in {'units_per_carton', 'standard', 'packaging'}:
+                candidates = [item for item in candidates if _key(item.customer_name) == _key(row['customer_name'])]
             value = _unique_history_value(candidates, product_no, source, row["customer_name"])
             if value:
                 row[target] = value
@@ -454,12 +457,11 @@ def _enrich_row(
         if not value and field not in existing_fields:
             row["issues"].append(_issue("blocked", f"missing_{field}", field, message))
 
-    huakang_customer = row.get("_huakang_customer", "")
-    identity = huakang_unified.identity(huakang_customer, reference_no, product_no)
+    identity = _order_identity(row, reference_no, product_no)
     matches = [
         item for item in history
         if identity[0] and identity[1]
-        and huakang_unified.identity(huakang_customer, item.reference_no, item.product_no) == identity
+        and _order_identity(row, item.reference_no, item.product_no) == identity
     ]
     if row.get('_huaxing_customer') == 'edu':
         reference_matches = matches
@@ -492,13 +494,20 @@ def _enrich_row(
     return row
 
 
+def _order_identity(row, reference, product):
+    if row.get('_zuru_customer'):
+        from .zuru_original import key
+        return key(reference), key(product)
+    return huakang_unified.identity(row.get('_huakang_customer', ''), reference, product)
+
+
 def _mark_batch_duplicates(rows: list[dict[str, Any]]) -> None:
     seen: dict[tuple[str, ...], dict[str, Any]] = {}
     edu_references: dict[tuple[str, str], tuple[str, ...]] = {}
     for row in rows:
         if row.get("row_role") == "parent":
             continue
-        identity = huakang_unified.identity(row.get("_huakang_customer", ""), row.get("reference_no"), row.get("product_no"))
+        identity = _order_identity(row, row.get("reference_no"), row.get("product_no"))
         is_edu = row.get('_huaxing_customer') == 'edu'
         if is_edu:
             reference_identity = identity
@@ -514,7 +523,7 @@ def _mark_batch_duplicates(rows: list[dict[str, Any]]) -> None:
         if previous is None:
             seen[identity] = row
             continue
-        conflict = (is_edu or row.get('_huaxing_review_customer') in huaxing.ADVISORY_CUSTOMERS) and _number(row.get('quantity')) != _number(previous.get('quantity'))
+        conflict = (is_edu or row.get('_zuru_customer') or row.get('_huaxing_review_customer') in huaxing.ADVISORY_CUSTOMERS) and _number(row.get('quantity')) != _number(previous.get('quantity'))
         code = 'existing_quantity_conflict' if conflict else 'duplicate_batch_order_line'
         field = 'quantity' if conflict else 'contract_no'
         label = '客户合同/PO 与产品' if is_edu else 'SO#/Reference 与产品'
@@ -525,6 +534,8 @@ def _mark_batch_duplicates(rows: list[dict[str, Any]]) -> None:
         )
         if not conflict:
             issue["skip_key"] = f"{row['id']}|{code}|{field}"
+        elif row.get('_zuru_customer'):
+            issue['requires_source_correction'] = True
         row["issues"].append(issue)
         _refresh_status(row)
 
@@ -544,6 +555,8 @@ def _validate_po_batch(po_files: list[tuple[str, bytes]]) -> None:
 def _factory_allowed(customer_code: str, factory_id: str) -> bool:
     if customer_code == 'ubtech':
         return factory_id == 'huakang-d'
+    if customer_code == 'zuru':
+        return factory_id == 'huaxing'
     if customer_code in {'disney', 'seasons'}:
         return factory_id in {'huaxing', 'huakang-d'}
     if customer_code == 'spin-master' or (customer_code == 'jp' and factory_id == 'huakang-d'):
@@ -562,6 +575,9 @@ def _factory_allowed(customer_code: str, factory_id: str) -> bool:
 def _customer_name(customer_code: str, factory_id: str) -> str:
     if customer_code == 'ubtech':
         return '优必选'
+    if customer_code == 'zuru':
+        from .customer_order_huaxing import get_huaxing_customer_mapping
+        return get_huaxing_customer_mapping(customer_code).name
     if customer_code == "360" and factory_id == "huakang-a":
         from app.services.customer_order_huakang_a import get_huakang_a_customer_mapping
         return get_huakang_a_customer_mapping(customer_code).name
@@ -1187,6 +1203,9 @@ def _create_customer_rows(
     received_date: str,
     history: list[UnifiedHistoryRow],
 ) -> tuple[list[dict[str, Any]], list[str], str]:
+    if customer_code == 'zuru':
+        from app.services.customer_order_zuru import create_rows
+        return create_rows(po_files, received_date, history)
     if customer_code == 'ubtech':
         from app.services.customer_order_ubtech import create_rows
         return create_rows(po_files, received_date, history)
@@ -1278,6 +1297,8 @@ def create_unified_customer_preview(
         if regional.enabled(factory_id, customer_code):
             regional.reconcile_product(row, history, factory_id, customer_code)
         _enrich_row(row, history, customer_name)
+        if row.get('_zuru_customer'):
+            huakang_unified.round_cartons(row)
         if huaxing.enabled(factory_id, customer_code):
             row['target_template'] = huaxing.target_template(factory_id)
         if huakang_unified.enabled(factory_id, customer_code):
@@ -1299,6 +1320,14 @@ def create_unified_customer_preview(
             from app.services.customer_order_ubtech import finish_row
             finish_row(row)
     _mark_batch_duplicates(detail_rows)
+    if customer_code == 'zuru':
+        for row in detail_rows:
+            for issue in row['issues']:
+                if issue.get('code') in huaxing.DUPLICATE_CODES:
+                    issue.update(severity='warning', can_skip=False, skip_key='', skip_label='')
+                elif issue.get('code') == 'existing_quantity_conflict':
+                    issue.update(requires_source_correction=True, can_skip=False)
+            _refresh_status(row)
     if factory_id == 'huaxing' and customer_code == 'edu':
         from app.services.customer_order_edu import prepare_controls
         workbook = _load_workbook(schedule_content)
@@ -1341,7 +1370,7 @@ def create_unified_customer_preview(
                 'EDU 每条新订单明细独立续编 EDUHX，重复单保留原编号并避免再次写入及扣备料；同步更新 PO订单。',
                 '绿色行是备料：优先匹配扣数PO，否则扣同货号最后一条绿色行；余额可为负数。浅绿色为公式，浅黄色为人工填写区。',
             ])
-    return {
+    preview = {
         "preview_schema_version": PREVIEW_SCHEMA_VERSION,
         "customer_code": customer_code,
         "factory_id": factory_id,
@@ -1364,9 +1393,12 @@ def create_unified_customer_preview(
         "rows": detail_rows,
         "warnings": warnings,
     }
+    return decorate_manual_resolution_policy(preview) if customer_code == 'zuru' else preview
 
 
 def _copy_template_row(worksheet, source_row: int, target_row: int) -> None:
+    from app.services.customer_order_360_manual_column import manual_value_columns
+    manual_columns = manual_value_columns(worksheet)
     worksheet.row_dimensions[target_row].height = worksheet.row_dimensions[source_row].height
     for column in range(1, worksheet.max_column + 1):
         source = worksheet.cell(source_row, column)
@@ -1377,7 +1409,9 @@ def _copy_template_row(worksheet, source_row: int, target_row: int) -> None:
             target.number_format = source.number_format
         target.protection = copy(source.protection)
         target.alignment = copy(source.alignment)
-        if isinstance(source.value, ArrayFormula):
+        if column in manual_columns:
+            target.value = None
+        elif isinstance(source.value, ArrayFormula):
             target.value = huakang_unified.copy_array_formula(source.value, source.coordinate, target.coordinate)
         elif isinstance(source.value, str) and source.value.startswith("="):
             try:
@@ -1489,11 +1523,13 @@ def _write_item_row(worksheet, row_number: int, row: dict[str, Any]) -> None:
     }
     for column, value in values.items():
         worksheet.cell(row_number, column).value = _excel_value(value) if value not in ("", None) else None
+        if row.get('_zuru_customer') and isinstance(value, str):
+            worksheet.cell(row_number, column).data_type = 's'
     quantity_cell = worksheet.cell(row_number, 11)
     units_cell = worksheet.cell(row_number, 12)
     if quantity_cell.value is not None and units_cell.value not in (None, 0):
         worksheet.cell(row_number, 13).value = (
-            f"=CEILING(K{row_number}/L{row_number},1)" if row.get("_huakang_customer") or row.get('_regional_customer') == 'ubtech'
+            f"=CEILING(K{row_number}/L{row_number},1)" if row.get("_huakang_customer") or row.get("_zuru_customer") or row.get('_regional_customer') == 'ubtech'
             else f"=K{row_number}/L{row_number}"
         )
     else:
@@ -1554,13 +1590,16 @@ def _recalculate_preview_row(row: dict[str, Any]) -> None:
         row["carton_count"] = _number_text(quantity / units)
     if quantity is not None and price is not None:
         row["amount_hkd"] = _number_text(quantity * price, 2)
-    if row.get("_huakang_customer"):
+    if row.get("_huakang_customer") or row.get('_zuru_customer'):
         huakang_unified.round_cartons(row)
     if row.get('_regional_customer') == 'ubtech':
         from app.services.customer_order_ubtech import finish_row
         finish_row(row)
     if row.get('_huaxing_customer') == 'shushupapa':
         from app.services.customer_order_shushupapa import finish_row
+        finish_row(row)
+    if row.get('_zuru_customer'):
+        from app.services.customer_order_zuru import finish_row
         finish_row(row)
 
 
@@ -1607,6 +1646,12 @@ def export_unified_customer_schedule(
     decorate_manual_resolution_policy(preview)
     original_identities = {row['id']: tuple(_text(row.get(k)) for k in ('product_no', 'reference_no', 'contract_no', 'po_no')) for row in preview['rows']}
     apply_overrides_to_preview(preview, manual_overrides or [])
+    if customer_code == 'zuru':
+        for override in manual_overrides or []:
+            if override['field'] == 'unit_price_usd':
+                row = next((r for r in preview['rows'] if r['id'] == override['row_id']), None)
+                if row is not None:
+                    row['unit_price_usd'] = override['value']
     if factory_id == 'huaxing' and customer_code == 'shushupapa':
         for row in preview['rows']:
             row['_shushupapa_inspection_manual'] = any(
@@ -1734,8 +1779,10 @@ def export_unified_customer_schedule(
                 ensure_360_order_type_dropdowns(workbook, factory_id=factory_id, customer_code=customer_code)
             except OrderTypeValidationError as exc:
                 raise CustomerOrderUnifiedError(str(exc)) from exc
-            from app.services.customer_order_360_carton import ensure_carton_columns
-            ensure_carton_columns(workbook, factory_id=factory_id, customer_code=customer_code)
+        from app.services.customer_order_360_carton import ensure_carton_columns
+        ensure_carton_columns(workbook, factory_id=factory_id, customer_code=customer_code)
+        from app.services.customer_order_360_split_source import ensure_split_source_columns
+        ensure_split_source_columns(workbook, factory_id=factory_id, customer_code=customer_code)
         if workbook.calculation is None:
             workbook.calculation = CalcProperties()
         workbook.calculation.calcMode = "auto"

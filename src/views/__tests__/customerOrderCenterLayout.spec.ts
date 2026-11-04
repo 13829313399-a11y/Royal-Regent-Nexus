@@ -156,6 +156,20 @@ describe('customer order center static frontend', () => {
     expect(workspaceSource).not.toContain("code: 'spin-master'")
   })
 
+  it('offers ZURU PDF and Excel unified intake only in Huaxing', async () => {
+    const wrapper = mount(CustomerOrderCenterWorkspace, {
+      props: { activeSection: 'import', factoryId: 'huaxing', factoryName: '华兴' },
+    })
+    await wrapper.get('[data-testid="customer-choice-zuru"]').trigger('click')
+    expect(wrapper.findAll('input[type="file"]').map((input) => input.attributes('accept'))).toEqual(['.pdf,.xlsx', '.xlsx'])
+    expect(wrapper.text()).toContain('华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）')
+    for (const factoryId of ['huakang-a', 'huakang-d', 'huadeng']) {
+      await wrapper.setProps({ factoryId })
+      expect(wrapper.find('[data-testid="customer-choice-zuru"]').exists()).toBe(false)
+    }
+    wrapper.unmount()
+  })
+
   it('registers independent 360, Green Toys and HeadStart mappings under Huakang A', () => {
     expect(workspaceSource).toContain("'huakang-a': [")
     expect(workspaceSource).toContain('HUAKANG_A_360_SCHEDULE_APPEND_V3')
@@ -467,7 +481,7 @@ describe('customer order center static frontend', () => {
     wrapper.unmount()
   })
 
-  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech'], ['huakang-d', 'seasons'], ['huaxing', 'seasons']])('keeps mapped preview/export isolated while the persisted schedule remains an empty real ledger', async (factoryId, customerCode) => {
+  it.each([['huakang-d', 'disney'], ['huaxing', 'disney'], ['huakang-d', 'ubtech'], ['huakang-d', 'seasons'], ['huaxing', 'seasons'], ['huaxing', 'zuru']])('keeps mapped preview/export isolated while the persisted schedule remains an empty real ledger', async (factoryId, customerCode) => {
     const targetTemplate = customerCode === 'seasons'
       ? (factoryId === 'huakang-d' ? 'HEYUAN_BUSINESS_UNIFIED_REGIONAL_V3' : 'HEYUAN_BUSINESS_UNIFIED_SCHEDULE_V1')
       : customerCode === 'ubtech'
@@ -509,7 +523,7 @@ describe('customer order center static frontend', () => {
     expect(wrapper.findAll(`[data-testid="customer-choice-${customerCode}"]`)).toHaveLength(1)
     await wrapper.get(`[data-testid="customer-choice-${customerCode}"]`).trigger('click')
     const inputs = wrapper.findAll('input[type="file"]')
-    expect(inputs[0]!.attributes('accept')).toBe(customerCode === 'seasons' ? '.pdf,.xls,.xlsx,.xlsm' : '.pdf')
+    expect(inputs[0]!.attributes('accept')).toBe(customerCode === 'zuru' ? '.pdf,.xlsx' : customerCode === 'seasons' ? '.pdf,.xls,.xlsx,.xlsm' : '.pdf')
     const po = new File(['po'], 'Disney.pdf')
     const schedule = new File(['schedule'], 'schedule.xlsx')
     for (const [index, file] of [po, schedule].entries()) {

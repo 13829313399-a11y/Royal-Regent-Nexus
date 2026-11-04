@@ -28,6 +28,7 @@ from .prices import PriceTable
 
 FACTORY = "huakang-b"
 CUSTOMER = "jp-huakang-b"
+PREVIEW_SCHEMA_VERSION = "huakang-b-jp-preview-v2"
 KINDS = {"schedule", "price", "confirmed"}
 MAX_FILE = 20 * 1024 * 1024
 MAX_TOTAL = 50 * 1024 * 1024
@@ -308,11 +309,13 @@ def _jp_preview(files, html, subject, received_date, references, quantity_select
                 rows.append(row)
         if len(rows) > MAX_ROWS:
             raise ValueError("每批最多 250 条问单明细，请拆分批次")
-        fingerprint = digest({"files": [(n, sha256(c).hexdigest()) for n, c in files],
+        fingerprint = digest({"schema": PREVIEW_SCHEMA_VERSION,
+            "files": [(n, sha256(c).hexdigest()) for n, c in files],
             "html": html, "subject": subject, "received": received_date, "choices": quantity_selections,
             "references": [(k, m["id"], m["revision"]) for k, m, _ in references], "actor": actor_id,
             "merchandiser": merchandiser})
-        return {"factory_id": FACTORY, "fingerprint": fingerprint, "rows": rows,
+        return {"factory_id": FACTORY, "preview_schema_version": PREVIEW_SCHEMA_VERSION,
+            "fingerprint": fingerprint, "rows": rows,
             "inputs": {"received_date": received_date, "subject": subject, "quantity_selections": quantity_selections,
                        "merchandiser": merchandiser},
             "warnings": warnings, "failed_sources": failed, "quantity_selections": needs,
@@ -343,6 +346,11 @@ def resolve_rows(preview, selected, overrides):
             if any((id, field) not in seen for field in ('price_t', 'factory_price_t')):
                 raise HTTPException(400, '更改客名或装箱数后，必须重新填写核对货价与出厂价，不能沿用旧价格')
             row['price_note'] = '客名或装箱数已更正，货价与出厂价由人工重新核对'
+            row['manual_price_review'] = True
+        elif source.get('price_confirm'):
+            if any((id, field) not in seen for field in ('price_t', 'factory_price_t')):
+                raise HTTPException(400, f'{row.get("baby_item")}：货价未精确匹配，须核对货价与出厂价后再导出')
+            row['price_note'] = '候选货价与出厂价由人工逐项核对；' + str(source.get('price_note') or '')
             row['manual_price_review'] = True
         if row.get("exists") or row.get("reference_duplicate"):
             raise HTTPException(409, "排期已有该明细，请在原问单上转确认单，不重复导出")

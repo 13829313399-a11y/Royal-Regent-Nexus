@@ -24,7 +24,7 @@ from app.services.customer_order_manual import (
 
 
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-PREVIEW_SCHEMA_VERSION = "customer-order-buzzbee-preview-v2"
+PREVIEW_SCHEMA_VERSION = "customer-order-buzzbee-preview-v3"
 STANDARD_TEMPLATE = "BUZZBEE_STANDARD_CONTRACT_V1"
 WMC_TEMPLATE = "BUZZBEE_WALMART_WMC_INLINE_V1"
 WMU_TEMPLATE = "BUZZBEE_WALMART_WMU_ATTACHED_V1"
@@ -53,7 +53,8 @@ FORMULA_RANGE_PATTERN = re.compile(
     r"(?<![A-Z0-9_])(\$?[A-Z]{1,3})(\$?)(\d+):(\$?[A-Z]{1,3})(\$?)(\d+)"
 )
 PACKAGING_PATTERN = re.compile(
-    r"\b(\d{5}-\d{2}-\d{2}-[A-Za-z0-9]+(?:-[A-Za-z][A-Za-z0-9]*)*\b(?:\([rR]\d+\))?)"
+    r"(?<![A-Za-z0-9-])(\d{5}-\d{2}-\d{2}-[A-Za-z0-9]+"
+    r"(?:-[A-Za-z][A-Za-z0-9]*)*\b(?:\s*[（(]\s*[rR]\s*\d+\s*[）)])?)(?![A-Za-z0-9-])"
 )
 PO_PATTERN = re.compile(r"(?:P\s*/?\s*O|PO)\s*(?:NUMBER|NO\.?|/[^:]+)?\s*:\s*([0-9]{7,})", re.I)
 
@@ -75,6 +76,30 @@ LABEL_FIELDS = (
 
 class CustomerOrderWorkbookError(ValueError):
     pass
+
+
+def packaging_references(value: Any, *, codes_only: bool = False) -> str:
+    """Keep every complete REF and revision in a single source field.
+
+    PO instruction text may surround references; history backfill instead
+    accepts only a list of complete codes, never arbitrary prose.
+    """
+    text = str(value or "").strip()
+    matches = list(PACKAGING_PATTERN.finditer(text))
+    if not matches:
+        return ""
+    remainder = PACKAGING_PATTERN.sub("", text)
+    if codes_only and re.sub(r"[\s、,，;；/]+", "", remainder):
+        return ""
+    codes = []
+    for match in matches:
+        # An unrecognised revision must not silently become an older base REF.
+        if re.match(r"\s*[（(]", text[match.end():]):
+            return ""
+        code = re.sub(r"\s*[（(]\s*([rR])\s*(\d+)\s*[）)]", r"(\1\2)", match.group(1))
+        if code not in codes:
+            codes.append(code)
+    return "、".join(codes)
 
 
 @dataclass
@@ -405,9 +430,9 @@ def _parse_ordinary_po_rows(
                     lineage[field] = f"{sheet_name}!{_cell_name(row_number, value_column)}"
                     field_locations[field] = (row_number, value_column)
             if not packaging:
-                match = PACKAGING_PATTERN.search(text)
-                if match:
-                    packaging = match.group(1)
+                code = packaging_references(text)
+                if code:
+                    packaging = code
                     packaging_source = f"{sheet_name}!{coordinate}"
             if not po_no and "PO NUMBER" in text.upper():
                 found = _next_non_empty(simple_row, column)
@@ -527,9 +552,9 @@ def _parse_wmc_xlsx_sheet(
                     values[field] = value
                     lineage[field] = f"{sheet.title}!{_cell_name(row_number, value_column)}"
             if not packaging:
-                match = PACKAGING_PATTERN.search(text)
-                if match:
-                    packaging = match.group(1)
+                code = packaging_references(text)
+                if code:
+                    packaging = code
                     packaging_source = f"{sheet.title}!{coordinate}"
             if not po_no:
                 match = PO_PATTERN.search(text)
@@ -618,9 +643,9 @@ def _first_workbook_packaging(
     for sheet in workbook.worksheets:
         for _, row in _iter_xlsx_rows(sheet):
             for _, raw_value, coordinate in row:
-                match = PACKAGING_PATTERN.search(_clean_text(raw_value))
-                if match:
-                    return match.group(1), f"{sheet.title}!{coordinate}"
+                code = packaging_references(_clean_text(raw_value))
+                if code:
+                    return code, f"{sheet.title}!{coordinate}"
     return "", ""
 
 
