@@ -573,6 +573,8 @@ export interface CartonScheduleOrderMark {
   actor: string
   updated_at: string
   order_ids?: string[]
+  matching_order_ids?: string[]
+  ambiguous_order_ids?: string[]
   demand_snapshot?: CartonScheduleDemandSnapshot | null
   review_required?: boolean
 }

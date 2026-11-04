@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="470" viewBox="0 0 1080 470" role="img" aria-labelledby="title desc">
-  <title id="title">上传箱唛资料</title><desc id="desc">打开“箱唛资料库”，上传原文件。；核对合同、货号和纸品关联，按需要预览或生成 PDF。；打开订单明细检查资料是否绑定正确，再交给供应商使用。</desc>
+  <title id="title">上传箱唛资料</title><desc id="desc">到“箱唛资料库”快速上传，核对文件名匹配或手工关联的订单。；选清初稿、待确认、已确认或历史版本，核对原文件及 PDF。；在排期查看资料；业务确认打板回稿后，再改为“已确认”。</desc>
   <rect width="1080" height="470" rx="20" fill="#f1f5f9"/>
   <g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif">
     <text x="28" y="43" font-size="27" font-weight="700" fill="#0f172a">上传箱唛资料</text>
@@ -8,16 +8,16 @@
       <circle cx="64" cy="134" r="18" fill="#0f766e"/>
       <text x="64" y="141" text-anchor="middle" fill="white" font-size="21" font-weight="700">1</text>
       <text x="94" y="141" fill="#0f766e" font-size="19" font-weight="700">先打开 / 选择</text>
-      <text x="50" y="185" font-size="20" fill="#334155"><tspan x="50" dy="0">打开“箱唛资料库”，上传原文</tspan><tspan x="50" dy="32">件。</tspan></text>
+      <text x="50" y="185" font-size="20" fill="#334155"><tspan x="50" dy="0">到“箱唛资料库”快速上传，核</tspan><tspan x="50" dy="32">对文件名匹配或手工关联的订单。</tspan></text>
       <path d="M360 227 h10 m-4 -5 5 5 -5 5" stroke="#0f766e" fill="none" stroke-width="2"/><rect x="376" y="100" width="328" height="266" rx="16" fill="white" stroke="#cbd5e1"/>
       <circle cx="412" cy="134" r="18" fill="#0f766e"/>
       <text x="412" y="141" text-anchor="middle" fill="white" font-size="21" font-weight="700">2</text>
       <text x="442" y="141" fill="#0f766e" font-size="19" font-weight="700">再填写 / 核对</text>
-      <text x="398" y="185" font-size="20" fill="#334155"><tspan x="398" dy="0">核对合同、货号和纸品关联，按</tspan><tspan x="398" dy="32">需要预览或生成 PDF。</tspan></text>
+      <text x="398" y="185" font-size="20" fill="#334155"><tspan x="398" dy="0">选清初稿、待确认、已确认或历</tspan><tspan x="398" dy="32">史版本，核对原文件及 PDF。</tspan></text>
       <path d="M708 227 h10 m-4 -5 5 5 -5 5" stroke="#0f766e" fill="none" stroke-width="2"/><rect x="724" y="100" width="328" height="266" rx="16" fill="white" stroke="#cbd5e1"/>
       <circle cx="760" cy="134" r="18" fill="#0f766e"/>
       <text x="760" y="141" text-anchor="middle" fill="white" font-size="21" font-weight="700">3</text>
       <text x="790" y="141" fill="#0f766e" font-size="19" font-weight="700">最后处理 / 检查</text>
-      <text x="746" y="185" font-size="20" fill="#334155"><tspan x="746" dy="0">打开订单明细检查资料是否绑定</tspan><tspan x="746" dy="32">正确，再交给供应商使用。</tspan></text>
+      <text x="746" y="185" font-size="20" fill="#334155"><tspan x="746" dy="0">在排期查看资料；业务确认打板</tspan><tspan x="746" dy="32">回稿后，再改为“已确认”。</tspan></text>
       <rect x="28" y="382" width="1024" height="70" rx="12" fill="#ccfbf1"/><text x="48" y="408" font-size="20" fill="#115e59"><tspan x="48" dy="0">双方能查到同一份相关资料。</tspan></text>
   </g></svg>

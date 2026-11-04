@@ -16,6 +16,9 @@ import CartonOrderNoteField from '@/components/CartonOrderNoteField.vue'
 import '@/features/carton-procurement/layout.css'
 import CartonOrderDetailDialog from '@/components/CartonOrderDetailDialog.vue'
 import CartonOrderPaperEditor from '@/components/CartonOrderPaperEditor.vue'
+import CartonScheduleBatchDialog from '@/components/CartonScheduleBatchDialog.vue'
+import CartonPaperWeightFields from '@/components/CartonPaperWeightFields.vue'
+import { batchSourceError, sameScheduleItem, pendingScheduleBatches, readScheduleBatchDraft, scheduleBatchDraftVersion, type ScheduleBatchPreview } from '@/features/carton-procurement/scheduleBatch'
 import CartonOrderLedgerRow, { type LedgerOrderPresentation } from '@/components/CartonOrderLedgerRow.vue'
 import CartonOrderEditorForm from '@/components/CartonOrderEditorForm.vue'
 import CartonOrderActionDialog from '@/components/CartonOrderActionDialog.vue'
@@ -32,7 +35,7 @@ import type { SpecialStockAction } from '@/api/cartonSpecialStockActions'
 import { isSpecialAdjustmentAction, specialAdjustmentCopy, type SpecialOrderAction } from '@/features/carton-procurement/specialOrderActions'
 import { cartonSpecialRequestsApi, type UnifiedOrderEntry, type SpecialRequest } from '@/api/cartonSpecialRequests'
 import { cartonDimensionParts, formatCartonSpecification, UNORDERED_CUSTOMER_CODE } from '@/lib/cartonDimensions'
-import { paperStandard } from '@/features/carton-procurement/paperCatalog'
+import { paperStandard, showPaperWeightInputs } from '@/features/carton-procurement/paperCatalog'
 import CartonQuantityRuleInput from '@/components/CartonQuantityRuleInput.vue'
 import { paperDemands, reusableQuantityRule, referencesAfterRemoval, quantityRuleLabel } from '@/features/carton-procurement/paperQuantity'
 
@@ -66,7 +69,7 @@ import { useMoneyPreference } from '@/features/carton-procurement/moneyPreferenc
 import { estimateMoney, moneyLabel, unitCostLabel, moneyTotals, type InventoryMoney } from '@/lib/cartonInventoryMoney'
 import { formatBusinessDate } from '@/lib/dateTime'
 import { scheduleOrderReminder, type ScheduleOrderReminder } from '@/lib/cartonScheduleDeadline'
-import { scheduleMarkChanges, effectiveSchedulePo, scheduleDemandSnapshot, scheduleMarkState, scheduleQuantityCandidates, scheduleQuantityMatchBasis } from '@/features/carton-procurement/scheduleDemand'
+import { scheduleMarkChanges, effectiveSchedulePo, scheduleCustomerPo, scheduleLinkedPoMatches, scheduleDemandSnapshot, scheduleMarkState, scheduleQuantityCandidates, scheduleQuantityMatchBasis } from '@/features/carton-procurement/scheduleDemand'
 import { buildBusinessOrderAlerts, type BusinessOrderAlert, type BusinessOrderAlertKind } from '@/features/carton-procurement/businessAlerts'
 import { orderDraftKey, orderDraftFormFingerprint, readOrderDraft, writeOrderDraft, removeOrderDraft, type OrderDraftContext, type OrderDraftForm, type OrderDraftMaterial } from '@/features/carton-procurement/orderDraft'
 import CartonDimensionInput from '@/components/CartonDimensionInput.vue'
@@ -285,6 +288,10 @@ const scheduleMarkReason = ref('')
 const scheduleMarkBusy = ref('')
 let scheduleMarkGeneration = 0
 const selectedScheduleRowIds = ref<string[]>([])
+const scheduleItemGroupKey = ref('')
+const scheduleSelectionMode = ref<'MARK' | 'CREATE'>('MARK')
+const scheduleBatchOpen = ref(false)
+const scheduleBatchSelection = ref<ScheduleBatchPreview[]>([])
 const payablesSearch = ref('')
 const closingView = ref(route.query.closing_view === 'inventory' ? 'INVENTORY' : route.query.closing_view === 'returns' ? 'RETURNS' : route.query.closing_view === 'payables' ? 'PAYABLES' : 'OVERVIEW')
 watch(() => route.query.closing_view, value => { closingView.value = value === 'inventory' ? 'INVENTORY' : value === 'returns' ? 'RETURNS' : value === 'payables' ? 'PAYABLES' : 'OVERVIEW' })
@@ -1378,6 +1385,11 @@ const batchIdentityKey = computed(() => JSON.stringify([authStore.currentUser?.i
 const pendingAppend = computed(() => pendingCartonBatches.has(`append:${batchIdentityKey.value}:${selectedFactoryId.value}`))
 const pendingDemandImport = computed(() => pendingCartonBatches.has(`order-import:SPECIAL:${batchIdentityKey.value}:${selectedFactoryId.value}`) || pendingCartonBatches.has(`import:${batchIdentityKey.value}:${selectedFactoryId.value}`))
 const pendingRegularImport = computed(() => pendingCartonBatches.has(`order-import:REGULAR:${batchIdentityKey.value}:${selectedFactoryId.value}`))
+const pendingScheduleCreate = computed(() => pendingScheduleBatches.has(`schedule:${batchIdentityKey.value}:${selectedFactoryId.value}`))
+const savedScheduleDraft = computed(() => {
+  void scheduleBatchDraftVersion.value
+  try { return readScheduleBatchDraft(window.localStorage, batchIdentityKey.value, selectedFactoryId.value) } catch { return null }
+})
 const pendingNewImport = computed(() => newImportMode.value === 'REGULAR' ? pendingRegularImport.value : pendingDemandImport.value)
 watch([selectedFactoryId, specialViewerKey], () => { batchAppendOpen.value = false; demandImportOpen.value = false; demandImportFile.value = null }, { flush: 'sync' })
 function chooseDemandFile() {
@@ -1650,6 +1662,9 @@ const scheduleMarks = useScheduleMarks(() => ({ factory: selectedFactoryId.value
 }))
 watch([selectedFactoryId, selectedWeeklyBatchId, specialViewerKey, customerViewScope, activeTab, weeklyCheckMode,
   () => canReadAnyMarks.value], () => { scheduleMarkPreview.value = null }, { flush: 'sync' })
+watch([selectedFactoryId, selectedWeeklyBatchId, specialViewerKey, customerViewScope, activeTab, scheduleCustomer, scheduleSelectionMode, canIssuePurchaseOrders], () => {
+  selectedScheduleRowIds.value = []; scheduleItemGroupKey.value = ''; scheduleBatchOpen.value = false; scheduleBatchSelection.value = []
+}, { flush: 'sync' })
 function scheduleMarkLabel(row: WeeklyCheckRow) {
   if (!canReadAnyMarks.value) return '箱唛：无查看权限'
   if (scheduleMarks.loading.value) return '箱唛读取中…'
@@ -1923,11 +1938,38 @@ const visibleWeeklyChecks = computed(() => filteredWeeklyChecks.value.filter(row
   return !a ? (!b ? 0 : 1) : !b ? -1 : a.localeCompare(b) * (scheduleSort.value === 'DATE_DESC' ? -1 : 1)
 }))
 const selectedScheduleRows = computed(() => localWeeklyChecks.filter(row => selectedScheduleRowIds.value.includes(row.id)))
+const scheduleItemGroups = computed(() => {
+  const groups = new Map<string, { key: string; item: string; rows: WeeklyCheckRow[]; eligible: number; blocked: number }>()
+  for (const row of localWeeklyChecks) {
+    const source = scheduleBatchSource(row)
+    if (!source || !source.customer_code || (scheduleCustomer.value !== '全部客户' && source.customer_code !== scheduleCustomer.value)) continue
+    const key = JSON.stringify([source.customer_code, (source.item_no || '').normalize('NFKC').trim().toLocaleLowerCase()])
+    const group = groups.get(key) ?? { key, item: source.item_no || '未填写货号', rows: [], eligible: 0, blocked: 0 }
+    group.rows.push(row)
+    if (scheduleBatchBlockedReason(row, false)) group.blocked++; else group.eligible++
+    groups.set(key, group)
+  }
+  return [...groups.values()]
+})
+const activeScheduleItemGroup = computed(() => scheduleItemGroups.value.find(group => group.key === scheduleItemGroupKey.value))
+function chooseScheduleItemGroup(key: string) {
+  if (scheduleItemGroupKey.value !== key) selectedScheduleRowIds.value = []
+  scheduleItemGroupKey.value = key
+}
+function selectScheduleItemGroup() {
+  const rows = activeScheduleItemGroup.value?.rows.filter(row => !scheduleBatchBlockedReason(row, false)) ?? []
+  if (rows.length <= 100) selectedScheduleRowIds.value = rows.map(row => row.id)
+}
 const schedulePage = ref(1)
 const schedulePageSize = 50
 const schedulePageCount = computed(() => Math.max(1, Math.ceil(visibleWeeklyChecks.value.length / schedulePageSize)))
 const pagedWeeklyChecks = computed(() => visibleWeeklyChecks.value.slice((schedulePage.value - 1) * schedulePageSize, schedulePage.value * schedulePageSize))
-const selectableVisibleScheduleRows = computed(() => pagedWeeklyChecks.value.filter(row => canMarkScheduleRow(row)))
+const selectableVisibleScheduleRows = computed(() => {
+  const rows = pagedWeeklyChecks.value.filter(row => canSelectScheduleRow(row))
+  if (scheduleSelectionMode.value !== 'CREATE' || selectedScheduleRows.value.length || !rows.length) return rows
+  const first = scheduleBatchSource(rows[0]!)
+  return rows.filter(row => sameScheduleItem(first!, scheduleBatchSource(row)!))
+})
 const allVisibleScheduleRowsSelected = computed(() => selectableVisibleScheduleRows.value.length > 0
   && selectableVisibleScheduleRows.value.every(row => selectedScheduleRowIds.value.includes(row.id)))
 const hiddenScheduleSelectionCount = computed(() => selectedScheduleRows.value.filter(row => !pagedWeeklyChecks.value.includes(row)).length)
@@ -3383,6 +3425,13 @@ function restoreNewOrderDraft() {
   chosenMaster.value = draft.master
   selectedHistoryItemSource.value = draft.history
   scheduleOrderSource.value = draft.schedule
+  if (!draft.submission && draft.schedule
+    && scheduleIdentifier(orderForm.contractNo) === scheduleIdentifier(draft.schedule.row.contract_no)
+    && scheduleIdentifier(orderForm.itemNo) === scheduleIdentifier(draft.schedule.row.item_no)
+    && scheduleIdentifier(orderForm.customerPo) === scheduleIdentifier(draft.schedule.row.source_reference)
+    && scheduleIdentifier(orderForm.customerPo) !== scheduleIdentifier(draft.schedule.row.customer_po)) {
+    orderForm.customerPo = scheduleCustomerPo(draft.schedule.row)
+  }
   supplierOrderSource.value = draft.supplierDelivery ?? null
   pendingOrderSubmission = draft.submission ?? null
   // Do not automatically replace a restored product name with a history guess.
@@ -4118,16 +4167,54 @@ function canMarkScheduleRow(row: WeeklyCheckRow, batchId = selectedWeeklyBatchId
 }
 
 function toggleScheduleSelection(row: WeeklyCheckRow) {
-  if (!canMarkScheduleRow(row) || scheduleMarkBusy.value) return
-  selectedScheduleRowIds.value = selectedScheduleRowIds.value.includes(row.id)
-    ? selectedScheduleRowIds.value.filter(id => id !== row.id) : [...selectedScheduleRowIds.value, row.id]
+  if (scheduleMarkBusy.value) return
+  if (selectedScheduleRowIds.value.includes(row.id)) {
+    selectedScheduleRowIds.value = selectedScheduleRowIds.value.filter(id => id !== row.id)
+    return
+  }
+  if (!canSelectScheduleRow(row)) return
+  if (scheduleSelectionMode.value === 'CREATE' && selectedScheduleRowIds.value.length >= 100 && !selectedScheduleRowIds.value.includes(row.id)) return
+  selectedScheduleRowIds.value = [...selectedScheduleRowIds.value, row.id]
+}
+
+function scheduleBatchSource(row: WeeklyCheckRow) {
+  const source = scheduleSourceRow(row)
+  if (!source) return undefined
+  const customer = activeWeeklyBatch.value?.parse_summary.schedule_customer
+  return { ...source, customer_code: source.customer_code || customer?.customer_code || '', customer_name: source.customer_name || customer?.customer_name || '' }
+}
+function scheduleBatchBlockedReason(row: WeeklyCheckRow, enforceSelection = true) {
+  const source = scheduleBatchSource(row)
+  if (!source || scheduleOrderActionDisabled(row)) return '此排期暂不可批量下单，请先核对提示'
+  if (scheduleOrdersForSource(source).length) return '已有关联订单，请从原订单办理'
+  const reason = batchSourceError(source)
+  if (reason) return reason
+  const first = enforceSelection && selectedScheduleRows.value[0] && scheduleBatchSource(selectedScheduleRows.value[0])
+  return first && !sameScheduleItem(first, source) ? '本次只能勾选同客户、同货号的排期' : ''
+}
+function canSelectScheduleRow(row: WeeklyCheckRow) {
+  return scheduleSelectionMode.value === 'MARK' ? canMarkScheduleRow(row) : !scheduleBatchBlockedReason(row)
+}
+function openScheduleBatch() {
+  if (!canIssuePurchaseOrders.value || !apiConnected.value) return
+  if (!pendingScheduleCreate.value && !savedScheduleDraft.value) {
+    if (!selectedScheduleRows.value.length || selectedScheduleRows.value.length > 100 || selectedScheduleRows.value.some(row => !!scheduleBatchBlockedReason(row))) return
+    scheduleBatchSelection.value = selectedScheduleRows.value.map(row => ({ batchId: selectedWeeklyBatchId.value, source: scheduleBatchSource(row)! }))
+  }
+  scheduleBatchOpen.value = true
+}
+async function scheduleBatchSaved(orders: CartonOrderResponse[]) {
+  selectedScheduleRowIds.value = []
+  orders.forEach(replaceOrderState)
+  actionMessage.value = `已分别创建 ${orders.length} 张待发送订单；请核对后从订单台账发送供应商。`
+  await refreshScheduleEvidence()
 }
 
 function toggleVisibleScheduleSelection() {
   if (scheduleMarkBusy.value) return
   const ids = new Set(selectableVisibleScheduleRows.value.map(row => row.id))
   selectedScheduleRowIds.value = allVisibleScheduleRowsSelected.value
-    ? selectedScheduleRowIds.value.filter(id => !ids.has(id)) : [...new Set([...selectedScheduleRowIds.value, ...ids])]
+    ? selectedScheduleRowIds.value.filter(id => !ids.has(id)) : [...new Set([...selectedScheduleRowIds.value, ...ids])].slice(0, scheduleSelectionMode.value === 'CREATE' ? 100 : undefined)
 }
 
 async function markScheduleRows(rows: WeeklyCheckRow[], batchId = selectedWeeklyBatchId.value, reason?: string, marked = true) {
@@ -4655,6 +4742,7 @@ async function createLocalOrder() {
       scheduleMarkRecords.value = { ...scheduleMarkRecords.value, [key]: {
         ...(scheduleMarkRecords.value[key] ?? { marked: false, actor: '', updated_at: '' }),
         order_ids: [...new Set([...(scheduleMarkRecords.value[key]?.order_ids ?? []), saved.id])],
+        matching_order_ids: [saved.id], ambiguous_order_ids: [],
       } }
     }
     void refreshMaster()
@@ -6252,6 +6340,18 @@ function scheduleSplitsForSource(source: CartonImportPreviewRow) {
 }
 
 function scheduleOrdersForSource(source: CartonImportPreviewRow) {
+  const current = scheduleMarkRecords.value[source.schedule_identity ?? '']
+  if (current?.matching_order_ids !== undefined) {
+    const exact = current.matching_order_ids.map(id => scheduleOrdersById.value.get(id))
+      .filter((order): order is CartonScheduleOrder => Boolean(order && order.factory_id === selectedFactoryId.value
+        && order.status !== 'CANCELLED' && (!source.schedule_customer_code || order.customer_code === source.schedule_customer_code)
+        && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no)
+        && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no)
+        && scheduleLinkedPoMatches(source, order.customer_po)))
+    if (exact.length || current.ambiguous_order_ids?.length) return exact
+    const splits = [...new Map(scheduleSplitsForSource(source).map(match => [match.order.id, match.order])).values()]
+    return splits.length ? splits : scheduleQuantityCandidates(source, scheduleQuantityIndex.value.get(source.schedule_identity || '') ?? [], selectedFactoryId.value)
+  }
   const linkedIds = new Set([...(scheduleMarkRecords.value[source.schedule_identity ?? '']?.order_ids ?? []),
     ...(source.order_id && source.match_basis !== scheduleQuantityMatchBasis ? [source.order_id] : [])])
   const linked = [...linkedIds].map(id => scheduleOrdersById.value.get(id)).filter((order): order is CartonScheduleOrder => Boolean(order))
@@ -6259,7 +6359,7 @@ function scheduleOrdersForSource(source: CartonImportPreviewRow) {
     && (!source.schedule_customer_code || order.customer_code === source.schedule_customer_code)
     && order.status !== 'CANCELLED' && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no || source.reference)
     && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no)
-    && (!effectiveSchedulePo(source) || scheduleIdentifier(order.customer_po) === effectiveSchedulePo(source)))
+    && scheduleLinkedPoMatches(source, order.customer_po))
   if (linked.length) return linked
   if (source.schedule_identity_duplicate) return []
   const splitLinked = [...new Map(scheduleSplitsForSource(source).map(match => [match.order.id, match.order])).values()]
@@ -6274,6 +6374,8 @@ function scheduleOrdersForSource(source: CartonImportPreviewRow) {
 }
 
 function scheduleQuantityReview(source: CartonImportPreviewRow) {
+  const ids = scheduleMarkRecords.value[source.schedule_identity ?? '']?.ambiguous_order_ids
+  if (ids?.length) return ids.map(id => scheduleOrdersById.value.get(id)).filter((order): order is CartonScheduleOrder => Boolean(order))
   return scheduleQuantityCandidates(source, scheduleQuantityIndex.value.get(source.schedule_identity || '') ?? [], selectedFactoryId.value, true)
 }
 
@@ -6283,7 +6385,7 @@ function scheduleDuplicateCandidates(source: CartonImportPreviewRow) {
     && order.status !== 'CANCELLED' && order.customer_code === source.schedule_customer_code
     && scheduleIdentifier(order.contract_no) === scheduleIdentifier(source.contract_no)
     && scheduleIdentifier(order.item_no) === scheduleIdentifier(source.item_no)
-    && scheduleIdentifier(order.customer_po) === scheduleIdentifier(source.source_reference || source.customer_po))
+    && scheduleLinkedPoMatches(source, order.customer_po))
 }
 
 function scheduleOtherPoCandidates(source: CartonImportPreviewRow) {
@@ -6298,12 +6400,15 @@ function scheduleOtherPoCandidates(source: CartonImportPreviewRow) {
 
 function scheduleLinkedOrderLabel(row: WeeklyCheckRow) {
   const source = scheduleSourceRow(row)
+  if (source && scheduleMarkRecords.value[source.schedule_identity ?? '']?.matching_order_ids !== undefined)
+    return scheduleOrdersForSource(source).map(order => order.order_no).join('、')
   return (source ? scheduleOrdersForSource(source).map(order => order.order_no).join('、') : '')
     || (source?.match_basis === scheduleQuantityMatchBasis ? '' : row.linkedOrder)
 }
 
 function scheduleProcurementLabel(row: WeeklyCheckRow) {
   const source = scheduleSourceRow(row)
+  if (source && scheduleMarkRecords.value[source.schedule_identity ?? '']?.ambiguous_order_ids?.length) return '客户 PO / SO 匹配待核对'
   const splits = source ? scheduleSplitsForSource(source) : []
   if (splits.length > 1) return '多个拆分，待核对'
   if (splits[0]) return splits[0].plan.status === 'PENDING_WAREHOUSE' ? '拆单待仓库确认'
@@ -6384,7 +6489,7 @@ function scheduleOrderActionDisabled(row: WeeklyCheckRow) {
 async function openOrderFromSchedule(source: CartonImportPreviewRow, batchId: string, note = '') {
   if (!apiConnected.value || savingOrder.value || importDetailError.value || importDetailLoading.value) return
   if (scheduleQuantityReview(source).length && !scheduleOrdersForSource(source).length) {
-    reportActionFailure('数量及装箱匹配存在多个候选或来源待核实，请先核对原订单，勿重复下单。'); return
+    reportActionFailure('客户 PO、SO 或数量及装箱存在多个候选或来源待核实，请先核对原订单，勿重复下单。'); return
   }
   const detailGeneration = ++scheduleDetailGeneration
   const loadGeneration = backendLoadGeneration
@@ -6414,7 +6519,7 @@ async function openOrderFromSchedule(source: CartonImportPreviewRow, batchId: st
   if (!prepareOrderFromSource()) return
   scheduleOrderSource.value = { batchId, filename: batch.original_filename, row: { ...source } }
   orderForm.customerCode = scheduleCustomerForSource(source)?.customer_code ?? ''
-  orderForm.customerPo = source.source_reference || source.customer_po || ''
+  orderForm.customerPo = scheduleCustomerPo(source)
   orderForm.contractNo = source.contract_no || source.reference || ''
   orderForm.itemNo = source.item_no || ''
   orderForm.productName = source.product_name || ''
@@ -7774,6 +7879,7 @@ const cartonNavigationMessage = computed(() => {
   if (showInventoryImport.value && openingInventoryWorkspace.value?.navigationBlocked)
     return openingInventoryWorkspace.value.navigationBlockMessage || '期初库存尚未处理完成，请先完成或关闭当前预览。'
   const editors: Array<[unknown, string]> = [
+    [scheduleBatchOpen.value, '同货号批量下单'],
     [showOrderModal.value, '纸箱订单编辑'], [showReceiptDialog.value, '收料登记'], [showCustomerModal.value, '客户资料编辑'],
     [showInventoryOperation.value, '库存出入库／调整'], [showInventoryRelocation.value, '库存调仓'],
     [priceCorrectionOpen.value || pricingTarget.value, '收料核价'], [correctionOrderNo.value, '订单资料更正'],
@@ -8376,7 +8482,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
           <article class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 shadow-sm">
             <div class="flex gap-2 font-bold"><ShieldCheck class="size-4 shrink-0" />{{ weeklyCheckMode === 'ORDER_GAP' ? '防误建规则' : '提醒计算规则' }}</div>
             <div v-if="weeklyCheckMode === 'ORDER_GAP'" class="mt-2 space-y-1.5 text-[11px] leading-5">
-              <p>读取全部 <strong>ITEM 表</strong>及其分区，按所选基础客户、合同号、货号和<strong>有效客户 PO</strong>跟踪变化：优先用 SO#/Reference，SO 空白时用 P/O#:。相同身份的多行提示人工确认，可分别操作；人工已下单后数量、装箱或日期变化须重新复核。</p>
+              <p>读取全部 <strong>ITEM 表</strong>及其分区，按所选基础客户、合同号、货号和<strong>SO#/Reference</strong>跟踪变化，SO 空白时用 P/O#: 保持排期身份。下单的客户 PO 只取原表 P/O#:，不以 SO 代替。相同身份的多行提示人工确认，可分别操作；人工已下单后数量、装箱或日期变化须重新复核。</p>
               <p>唯一匹配后，将模板“数量”与正式订单的<strong>产品订单数量</strong>直接比较，不按装箱数换算。</p>
               <p>已在外部下单的可多选标记；未下单的点击<strong>按此下单</strong>，带入资料、补齐纸品并确认保存。文件缺少某行不代表退单；明确转入退单区才提醒核实，原采购单仍需人工决定。</p>
             </div>
@@ -8429,10 +8535,27 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
             <p v-if="scheduleMarks.error.value" role="alert" class="basis-full text-red-700">箱唛状态读取失败：{{ scheduleMarks.error.value }}；不影响下单，可刷新重试。</p>
           </div>
           <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3" aria-label="排期多选下单标记">
-            <div class="flex flex-wrap items-center gap-3 text-[11px]"><span>已选 <strong class="text-teal-700">{{ selectedScheduleRows.length }}</strong> 条<template v-if="hiddenScheduleSelectionCount">（{{ hiddenScheduleSelectionCount }} 条不在当前筛选中）</template></span><button type="button" :disabled="!selectedScheduleRows.length || Boolean(scheduleMarkBusy)" class="text-slate-500 disabled:opacity-40" @click="selectedScheduleRowIds = []">清空排期选择</button><span class="text-slate-400">每次最多 100 条；标记会在后续导入中保留</span></div>
-            <button v-if="canUndoScheduleImport" type="button" :disabled="!selectedScheduleRows.length || selectedScheduleRows.length > 100 || Boolean(scheduleMarkBusy) || !selectedScheduleRows.every(row => canMarkScheduleRow(row))" aria-label="批量标记排期已下单" class="h-9 rounded-lg bg-teal-700 px-3 text-[11px] font-bold text-white disabled:opacity-40" @click="markScheduleRows(selectedScheduleRows)">{{ scheduleMarkBusy === 'BULK' ? '正在保存…' : `多选标记已下单（${selectedScheduleRows.length}）` }}</button>
-            <p v-if="selectedScheduleRows.length > 100" role="alert" class="basis-full text-xs text-red-700">一次最多标记 100 条，请减少选择后再保存。</p>
+            <div class="flex basis-full flex-wrap items-center gap-3 text-xs" aria-label="排期多选用途"><label v-if="canIssuePurchaseOrders" class="flex items-center gap-2"><input v-model="scheduleSelectionMode" type="radio" value="CREATE" name="schedule-selection-mode" class="accent-teal-700">同货号批量下单</label><label v-if="canUndoScheduleImport" class="flex items-center gap-2"><input v-model="scheduleSelectionMode" type="radio" value="MARK" name="schedule-selection-mode" class="accent-teal-700">标记外部已下单</label><span v-if="scheduleSelectionMode === 'CREATE'" class="text-[11px] text-slate-500">按货号查看当前排期全部页，选择同客户同货号需求。</span></div>
+            <div class="flex flex-wrap items-center gap-3 text-[11px]"><span>已选 <strong class="text-teal-700">{{ selectedScheduleRows.length }}</strong> 条<template v-if="hiddenScheduleSelectionCount">（{{ hiddenScheduleSelectionCount }} 条不在当前筛选中）</template></span><button type="button" :disabled="!selectedScheduleRows.length || Boolean(scheduleMarkBusy)" class="text-slate-500 disabled:opacity-40" @click="selectedScheduleRowIds = []">清空排期选择</button><span class="text-slate-400">{{ scheduleSelectionMode === 'CREATE' ? '每次最多 100 条，每条生成独立订单' : '每次最多 100 条；标记会在后续导入中保留' }}</span></div>
+            <button v-if="canUndoScheduleImport && scheduleSelectionMode === 'MARK'" type="button" :disabled="!selectedScheduleRows.length || selectedScheduleRows.length > 100 || Boolean(scheduleMarkBusy) || !selectedScheduleRows.every(row => canMarkScheduleRow(row))" aria-label="批量标记排期已下单" class="h-9 rounded-lg bg-teal-700 px-3 text-[11px] font-bold text-white disabled:opacity-40" @click="markScheduleRows(selectedScheduleRows)">{{ scheduleMarkBusy === 'BULK' ? '正在保存…' : `多选标记已下单（${selectedScheduleRows.length}）` }}</button>
+            <button v-if="canIssuePurchaseOrders && (scheduleSelectionMode === 'CREATE' || pendingScheduleCreate || savedScheduleDraft)" type="button" :disabled="!apiConnected || !pendingScheduleCreate && !savedScheduleDraft && (!selectedScheduleRows.length || selectedScheduleRows.length > 100 || selectedScheduleRows.some(row => !!scheduleBatchBlockedReason(row)))" aria-label="批量创建排期订单" class="h-9 rounded-lg bg-teal-700 px-3 text-[11px] font-bold text-white disabled:opacity-40" @click="openScheduleBatch">{{ pendingScheduleCreate || savedScheduleDraft?.attempt ? '核对原提交结果' : savedScheduleDraft ? '继续批量下单草稿' : `批量下单（${selectedScheduleRows.length}）` }}</button>
+            <p v-if="selectedScheduleRows.length > 100" role="alert" class="basis-full text-xs text-red-700">一次最多{{ scheduleSelectionMode === 'CREATE' ? '下单' : '标记' }} 100 条，请减少选择后再保存。</p>
           </div>
+          <section v-if="scheduleSelectionMode === 'CREATE' && canIssuePurchaseOrders && activeWeeklyBatch" aria-label="按货号查同类需求" class="border-b border-slate-200 bg-slate-50 px-4 py-3">
+            <h3 class="text-xs font-bold text-slate-800">按货号查同类需求</h3>
+            <p class="mt-1 text-[11px] text-slate-500">范围：当前客户的当前排期全部页，包含筛选以外的行；不包含其他历史批次。</p>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button v-for="group in scheduleItemGroups" :key="group.key" type="button" :aria-pressed="scheduleItemGroupKey === group.key" class="rounded-lg border bg-white px-3 py-2 text-left text-xs" :class="scheduleItemGroupKey === group.key ? 'border-teal-500 text-teal-800' : 'border-slate-200 text-slate-700'" @click="chooseScheduleItemGroup(group.key)"><b>{{ group.item }}</b> · 可下单 {{ group.eligible }} · 待核对或已下单 {{ group.blocked }}</button>
+              <span v-if="!scheduleItemGroups.length" class="text-xs text-slate-500">当前排期暂无可分组的客户货号。</span>
+            </div>
+            <div v-if="activeScheduleItemGroup" class="mt-3 rounded-lg border border-slate-200 bg-white p-3" aria-label="同货号需求列表">
+              <div class="flex flex-wrap items-center justify-between gap-2"><b class="text-xs">{{ activeScheduleItemGroup.item }} · {{ activeScheduleItemGroup.rows.length }} 条</b><button type="button" class="rounded border px-3 py-1.5 text-xs disabled:opacity-40" :disabled="!activeScheduleItemGroup.eligible || activeScheduleItemGroup.eligible > 100 || Boolean(scheduleMarkBusy)" @click="selectScheduleItemGroup">选择本货号全部可下单需求</button></div>
+              <p v-if="activeScheduleItemGroup.eligible > 100" class="mt-2 text-xs text-amber-800">可下单需求超过 100 条，请逐条选择，每批最多 100 条。</p>
+              <div class="mt-2 max-h-64 space-y-1 overflow-y-auto">
+                <label v-for="row in activeScheduleItemGroup.rows" :key="row.id" class="flex items-start gap-2 rounded px-2 py-1.5 text-xs text-slate-700"><input type="checkbox" :aria-label="`同货号选择 ${row.reference} ${row.itemNo}`" :checked="selectedScheduleRowIds.includes(row.id)" :disabled="Boolean(scheduleMarkBusy) || (!selectedScheduleRowIds.includes(row.id) && (!canSelectScheduleRow(row) || selectedScheduleRowIds.length >= 100))" class="mt-0.5 accent-teal-700 disabled:opacity-40" @change="toggleScheduleSelection(row)"><span class="min-w-0 break-words"><b>{{ row.reference }}</b> · {{ row.poNumbers || row.sourceReference || '未填 PO' }} · 数量 {{ row.quantity }}<span v-if="scheduleBatchBlockedReason(row, false)" class="ml-2 text-amber-800">{{ scheduleBatchBlockedReason(row, false) }}</span></span></label>
+              </div>
+            </div>
+          </section>
           <div class="overflow-x-auto carton-table-wrap">
             <table aria-label="业务排期明细" class="weekly-schedule-table min-w-[1200px] w-full table-fixed text-left text-[12px] carton-table-fit">
               <colgroup>
@@ -8442,7 +8565,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
               </colgroup>
               <thead class="bg-slate-50 text-[10px] font-bold text-slate-500">
                 <tr>
-                  <th class="w-10 px-3 py-3"><input type="checkbox" aria-label="全选当前可标记排期" :checked="allVisibleScheduleRowsSelected" :disabled="!selectableVisibleScheduleRows.length || Boolean(scheduleMarkBusy)" class="size-4 accent-teal-700" @change="toggleVisibleScheduleSelection"></th>
+                  <th class="w-10 px-3 py-3"><input type="checkbox" :aria-label="scheduleSelectionMode === 'CREATE' ? '全选本页同货号可下单排期' : '全选当前可标记排期'" :checked="allVisibleScheduleRowsSelected" :disabled="!selectableVisibleScheduleRows.length || Boolean(scheduleMarkBusy)" class="size-4 accent-teal-700" @change="toggleVisibleScheduleSelection"></th>
                   <th class="px-4 py-3">客户 / 产品</th>
                   <th class="px-4 py-3">合同</th>
                   <th class="px-4 py-3">货号 / 订单类型</th>
@@ -8458,7 +8581,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
               </thead>
               <tbody class="divide-y divide-slate-100">
                 <tr v-for="row in pagedWeeklyChecks" :key="row.id" class="hover:bg-slate-50/80">
-                  <td data-label="选择" class="px-3 py-3"><input type="checkbox" :aria-label="`选择排期 ${row.reference} ${row.itemNo}`" :checked="selectedScheduleRowIds.includes(row.id)" :disabled="!canMarkScheduleRow(row) || Boolean(scheduleMarkBusy)" class="size-4 accent-teal-700 disabled:opacity-30" @change="toggleScheduleSelection(row)"></td>
+                  <td data-label="选择" class="px-3 py-3" :title="scheduleSelectionMode === 'CREATE' ? scheduleBatchBlockedReason(row) : ''"><input type="checkbox" :aria-label="`选择排期 ${row.reference} ${row.itemNo}`" :checked="selectedScheduleRowIds.includes(row.id)" :disabled="!canSelectScheduleRow(row) || Boolean(scheduleMarkBusy)" class="size-4 accent-teal-700 disabled:opacity-30" @change="toggleScheduleSelection(row)"></td>
                   <td data-label="客户 / 产品" class="px-4 py-3"><div class="font-semibold">{{ row.customer }}</div><div v-if="row.businessCustomer && row.businessCustomer !== row.customer" class="text-[10px] text-slate-500">业务客名：{{ row.businessCustomer }}</div><div class="mt-0.5 text-[10px] text-slate-500">{{ row.productName }}</div></td>
                   <td data-label="合同" class="px-4 py-3"><div class="break-words font-semibold">{{ row.reference || '合同待确认' }}</div>
                     <div v-if="row.splitSource" class="mt-2 rounded-md border border-sky-200 bg-sky-50 p-2 text-[11px] text-sky-800"><strong class="block">排期拆单 · 来源</strong><span class="break-words">{{ row.splitSource }}</span><span class="mt-1 block">→ 本合同</span></div>
@@ -9279,12 +9402,9 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
 </template>
                 <template #quantity><CartonOrderQuantityField :index="index" :disabled="editingOrderStructureLocked" :calculated="orderForm.quantityBasis !== 'EXPLICIT'" :manual="material.quantityRule?.manual_quantity != null" :model-value="orderForm.quantityBasis === 'EXPLICIT' ? material.requiredQuantity : material.quantityRule?.manual_quantity ?? orderFormDemands[index]?.actual" @update:model-value="value => orderForm.quantityBasis === 'EXPLICIT' ? material.requiredQuantity = Number(value) : manualOrderQuantity(material, value)" @restore="restoreOrderQuantity(material)" /></template>
                 <div v-if="orderForm.quantityBasis !== 'EXPLICIT'" class="space-y-2 border-t border-slate-200/70 pt-3"><CartonQuantityRuleInput v-model="material.quantityRule" :lines="orderFormQuantityLines" :index="index" :disabled="editingOrderStructureLocked" /><p v-if="orderFormDemands[index]?.error" role="alert" class="text-xs text-red-700">{{ orderFormDemands[index]?.error }}</p><p v-else-if="material.quantityRule?.manual_quantity != null" class="text-xs text-slate-500">自动参考 {{ orderFormDemands[index]?.automatic }} {{ material.unit }}，本次按手动数量下单。</p></div>
-                <div class="grid gap-3 sm:grid-cols-2">
-                  <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">每箱净重（kg，选填）</span><input v-model="material.netWeight" :aria-label="`纸品每箱净重 ${index + 1}`" :disabled="editingOrderStructureLocked" type="number" min="0" step="0.0001" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 disabled:bg-slate-100"></label>
-                  <label class="space-y-1.5"><span class="text-[10px] font-bold text-slate-500">每箱毛重（kg，选填）</span><input v-model="material.grossWeight" :aria-label="`纸品每箱毛重 ${index + 1}`" :disabled="editingOrderStructureLocked" type="number" min="0" step="0.0001" class="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 disabled:bg-slate-100"></label>
-                </div>
+                <CartonPaperWeightFields v-if="showPaperWeightInputs(material.packagingType, material.quantityRule?.mode)" :net="material.netWeight" :gross="material.grossWeight" :index="index" :disabled="editingOrderStructureLocked" @update:net="material.netWeight = $event ?? ''" @update:gross="material.grossWeight = $event ?? ''" />
               </CartonOrderPaperEditor>
-              <p class="text-xs text-slate-500">净重为每箱货物不含纸箱、配卡等包装的重量；毛重为含这些包装的整箱货物总重量。两项按对应纸品的装箱方式记录，单位 kg，毛重不得小于净重；选择货号包装资料可带入，保存后不随基础资料修改。</p>
+              <p class="text-xs text-slate-500">纸箱净重为每箱货物不含包装的重量，毛重为含包装的整箱重量，单位 kg；两项选填，毛重不得小于净重。卡类及按箱配套纸品无需填写重量；选择货号包装资料可带入，保存后不随基础资料修改。</p>
             </CartonOrderPaperSection>
           <datalist id="carton-paper-quality-history"><option v-for="value in paperQualitySuggestions" :key="value" :value="value" /></datalist>
           <datalist id="carton-specification-history"><option v-for="value in specificationSuggestions" :key="value" :value="value" /></datalist>
@@ -9385,6 +9505,7 @@ watch([selectedFactoryId, specialViewerKey], () => { assistantCarton.value = nul
     <CartonSpecialStockActionDialog v-if="specialStockActionTarget" :key="`${selectedFactoryId}:${specialViewerKey}:${customerViewScope}:${specialStockActionTarget.id}:${specialStockActionTarget.action}`" :factory-id="selectedFactoryId" :request-id="specialStockActionTarget.id" :request-no="specialStockActionTarget.requestNo" :action="specialStockActionTarget.action" :viewer-key="specialViewerKey" @close="specialStockActionTarget = null" @changed="specialStockActionChanged" />
     <CartonOrderReceiptDialog v-model:open="specialReceiptOpen" :factory-id="selectedFactoryId" :request-id="specialReceiptId" :viewer-key="specialViewerKey" :library-enabled="canReadMarks" @saved="loadBackendData(selectedFactoryId, { supersede: true })" @open-delivery="openSpecialDelivery" @open-library="openMarkLibrary" />
     <CartonOrderBatchActionDialog v-model:open="unifiedBatchOpen" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :action="unifiedBatchAction" :entries="unifiedBatchEntries" @saved="unifiedBatchSaved" />
+    <CartonScheduleBatchDialog v-model:open="scheduleBatchOpen" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :identity-key="batchIdentityKey" :selection="scheduleBatchSelection" :default-dimension="newPaperDimensionUnit" @saved="scheduleBatchSaved" />
     <CartonBatchAppendDialog v-model:open="batchAppendOpen" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :identity-key="batchIdentityKey" :selection="batchAppendSelection" @saved="result => batchOrderSaved(result)" />
     <CartonOrderImportDialog v-model:open="demandImportOpen" :file="demandImportFile" :mode="newImportMode" :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" :identity-key="batchIdentityKey" @saved="result => batchOrderSaved(result, true)" @close-auto-focus="restoreOrderImportFocus" />
     <CartonOrderDetailDialog v-if="specialPreviewRequest" data-testid="special-order-detail-preview" :pinned="false" :title="'订单明细 — ' + specialPreviewRequest.request_no"><CartonSpecialRequests :factory-id="selectedFactoryId" :viewer-key="specialViewerKey" mode="detail" :preview-request="specialPreviewRequest" /></CartonOrderDetailDialog>

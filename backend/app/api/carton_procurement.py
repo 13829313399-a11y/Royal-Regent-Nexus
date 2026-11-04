@@ -1,5 +1,6 @@
 from app.schemas.carton_order_groups import OrderGroupCreate
 from app.schemas.carton_contract_merge import ContractMerge
+from app.schemas.carton_schedule_batch import ScheduleBatchCreate
 from typing import Literal
 from datetime import date, datetime
 from decimal import Decimal
@@ -505,6 +506,16 @@ def merge_order_contract(payload: ContractMerge, request: Request, db: Session =
         authorize=lambda user: _ensure_permission(db, user, "carton_procurement:order_write", payload.factory_id))
 
 
+@router.post("/orders/from-schedule-batch", response_model=list[CartonOrderOut], status_code=201)
+def post_schedule_batch(payload: ScheduleBatchCreate, request: Request, db: Session = Depends(get_db),
+                        current_user: AuthContext = Depends(get_current_user)):
+    from app.services.carton_schedule_batch import create
+    _ensure_permission(db, current_user, "carton_procurement:order_write", payload.factory_id)
+    return create(db, payload, current_user,
+        refresh_user=lambda: get_current_user(request=request, db=db),
+        authorize=lambda user: _ensure_permission(db, user, "carton_procurement:order_write", payload.factory_id))
+
+
 @router.post("/orders", response_model=CartonOrderOut, status_code=201)
 def post_order(
     payload: CartonOrderCreate,
@@ -999,15 +1010,16 @@ def post_receipt_reversal(
     return receipt_out(db, reverse_receipt(db, receipt_id, payload, current_user))
 
 
-def _read_carton_upload(file):
-    from app.services.carton_procurement import MAX_IMPORT_BYTES, ALLOWED_IMPORT_SUFFIXES
+def _read_carton_upload(file, import_type=None):
+    from app.services.carton_procurement import import_byte_limit, ALLOWED_IMPORT_SUFFIXES
     if Path(file.filename or "").suffix.lower() not in ALLOWED_IMPORT_SUFFIXES | {".xlsm"}:
         raise HTTPException(422, "仅支持 Excel、PDF、PNG、JPG 或 HEIC 文件")
-    content = file.file.read(MAX_IMPORT_BYTES + 1)
+    byte_limit = import_byte_limit(import_type)
+    content = file.file.read(byte_limit + 1)
     if not content:
         raise HTTPException(422, "导入文件不能为空")
-    if len(content) > MAX_IMPORT_BYTES:
-        raise HTTPException(413, "导入文件不能超过 20 MB")
+    if len(content) > byte_limit:
+        raise HTTPException(413, f"导入文件不能超过 {byte_limit // (1024 * 1024)} MB")
     return content
 
 
@@ -1025,7 +1037,7 @@ def _isolated_sheet_upload(db, file, factory, user, permission):
 
 
 def _isolated_import(db, factory, kind, file, user, profile=None):
-    content = _read_carton_upload(file)
+    content = _read_carton_upload(file, kind)
     db.rollback()  # Release the read-only authorization connection before CPU work.
     parsed = file_jobs.run_file_job("parse", kind, file.filename or "", content)
     # Permission is checked again after a possibly long file operation.
@@ -1051,7 +1063,7 @@ def start_import_job(
     if import_type == "WEEKLY_SCHEDULE":
         from app.services.carton_procurement import get_active_customer
         customer_code = get_active_customer(db, factory_id, customer_code).customer_code
-    content = _read_carton_upload(file)
+    content = _read_carton_upload(file, import_type)
     profile = {"customer_code": customer_code} if import_type == "WEEKLY_SCHEDULE" else {"advance_days": advance_days} if import_type == "INSPECTION_SCHEDULE" else {}
     if import_type == "WEEKLY_SCHEDULE":
         from app.services.carton_schedule_coverage import normalize_scope

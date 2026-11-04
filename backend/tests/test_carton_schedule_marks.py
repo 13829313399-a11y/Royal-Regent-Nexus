@@ -62,6 +62,16 @@ def test_historical_versions_are_not_counted_and_ambiguous_sources_are_not_guess
     assert [row['status'] for row in result] == ['REVIEW', 'REVIEW']
 
 
+def test_actual_po_orders_only_inherit_explicitly_linked_schedule_materials():
+    rows = [source(source_reference='SO-A', schedule_identity='A'),
+            source(source_reference='SO-B', schedule_identity='B', source_row=5)]
+    asset = file(recognition_source='manual_orders', contract_number='', orders=[NS(id='ORDER')])
+    result, _ = project(rows, rows, [order()], [asset])
+    assert [item['status'] for item in result] == ['MISSING', 'MISSING']
+    result, _ = project(rows, rows, [order()], [asset], {'A': ['ORDER']})
+    assert [item['status'] for item in result] == ['UPLOADED', 'MISSING']
+
+
 @pytest.mark.parametrize('status', ['UNCLASSIFIED', 'DRAFT', 'PENDING', 'HISTORY'])
 @pytest.mark.parametrize('manual', [False, True])
 def test_only_ready_classification_is_counted_for_contract_and_explicit_order_links(status, manual):
@@ -86,6 +96,8 @@ def test_schedule_api_recognizes_preorder_files_and_rechecks_archive_factory_and
     import json
     from test_molding_sample_api import make_client, login_as
     from test_carton_mark_api import _workbook_bytes
+    # This regression exercises legacy contract hints, independently of local rollout flags.
+    monkeypatch.setenv('CARTON_ASSET_V1_ENABLED', 'false')
     with make_client(monkeypatch) as client:
         login_as(client, 'admin')
         db_module = importlib.import_module('app.db')
@@ -104,7 +116,7 @@ def test_schedule_api_recognizes_preorder_files_and_rechecks_archive_factory_and
             files=[('files', ('资料.xlsx', _workbook_bytes('SC-001')))])
         assert response.status_code == 200, response.text
         asset = response.json()[0]['asset']
-        assert asset and asset['contract_number'] == 'SC-001'
+        assert asset and asset['contract_number'] == 'SC-001', response.text
         assert client.get(url, params=params).json()['rows'][0]['status'] == 'MISSING'
         classification_url = f"/api/carton-mark/assets/{asset['id']}/classification"
         for classification, expected in [('READY', 'UPLOADED'), ('PENDING', 'MISSING'), ('READY', 'UPLOADED')]:

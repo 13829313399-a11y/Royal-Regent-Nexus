@@ -19,5 +19,5 @@
       <text x="760" y="141" text-anchor="middle" fill="white" font-size="21" font-weight="700">3</text>
       <text x="790" y="141" fill="#0f766e" font-size="19" font-weight="700">最后处理 / 检查</text>
       <text x="746" y="185" font-size="20" fill="#334155"><tspan x="746" dy="0">对账：月底看送货、退货和应结</tspan><tspan x="746" dy="32">金额；有差异回原单处理。</tspan></text>
-      <rect x="28" y="382" width="1024" height="70" rx="12" fill="#ccfbf1"/><text x="48" y="408" font-size="20" fill="#115e59"><tspan x="48" dy="0">首次启用先准备基础资料和期初库存。一批货只入库一次。</tspan></text>
+      <rect x="28" y="382" width="1024" height="70" rx="12" fill="#ccfbf1"/><text x="48" y="408" font-size="20" fill="#115e59"><tspan x="48" dy="0">首次启用先备基础资料和期初库存。同一次到货不重复入库，分批到货分别验收。</tspan></text>
   </g></svg>

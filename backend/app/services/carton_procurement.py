@@ -110,6 +110,7 @@ CARTON_DEFAULT_SUPPLIER_NAME = "河源东康纸品有限公司"
 QUANTITY_QUANTUM = Decimal("0.0001")
 MONEY_QUANTUM = Decimal("0.0001")
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
+MAX_SCHEDULE_IMPORT_BYTES = 35 * 1024 * 1024
 ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".xlsm", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".heic", ".heif"}
 CURRENCY_ALIASES = {
     "RMB": "CNY",
@@ -121,6 +122,10 @@ CURRENCY_ALIASES = {
     "港元": "HKD",
     "HK$": "HKD",
 }
+
+
+def import_byte_limit(import_type: str | None = None) -> int:
+    return MAX_SCHEDULE_IMPORT_BYTES if import_type == "WEEKLY_SCHEDULE" else MAX_IMPORT_BYTES
 
 
 def now_text() -> str:
@@ -568,11 +573,9 @@ def create_order(
     ensure_customer_operation(db, user, factory_id, payload.customer_code)
     schedule_source = _schedule_source_for_order(db, factory_id, payload)
     rules = master_data.validate_order(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, customer_po=payload.customer_po, config_id=payload.master_config_id, config_revision=payload.master_config_revision)
-    duplicate_schedule_source = bool(schedule_source and schedule_source.get("schedule_identity_duplicate")
-                                     and payload.customer_po.strip().casefold() == str(
-                                         schedule_source.get("source_reference") or schedule_source.get("customer_po") or ""
-                                     ).strip().casefold())
-    if not duplicate_schedule_source:
+    # Source validation holds the factory lock and checks current ownership. Distinct
+    # SO demands may legitimately share the same actual P/O#.
+    if not schedule_source:
         _validate_customer_po_identity(db, factory_id, payload.customer_code, payload.contract_no, payload.item_no, payload.customer_po)
     planned = (derive_carton_plan_due_date(payload.order_date, payload.customer_due_date, rules["lead_days"])
                if payload.customer_due_date and payload.quantity_basis == "CALCULATED" and not payload.plan_date_manual
@@ -583,7 +586,7 @@ def create_order(
         payload.lines = _merge_paper_weights(payload.lines, config.get("lines", []))
     customer = get_active_customer(db, factory_id, payload.customer_code)
     from app.services.carton_order_split import schedule_matches
-    if not duplicate_schedule_source and schedule_matches(db, factory_id, {"schedule_customer_code": customer.customer_code,
+    if not schedule_source and schedule_matches(db, factory_id, {"schedule_customer_code": customer.customer_code,
             "contract_no": payload.contract_no, "item_no": payload.item_no, "customer_po": payload.customer_po}):
         raise HTTPException(409, "该合同货号已关联拆分采购，请核对原单拆分记录；增加需求请另行追加，勿重复下单")
     supplier = get_active_supplier(db, factory_id, payload.supplier_id)
@@ -705,6 +708,7 @@ def create_order(
             "customer": customer_key(schedule_source), "customer_code": order.customer_code,
             "contract_no": order.contract_no, "item_no": order.item_no,
             "source_reference": schedule_source.get("source_reference"),
+            "customer_po": order.customer_po, "po_semantics": "SOURCE_PO",
         })
     try:
         if commit:
@@ -4303,7 +4307,7 @@ def _project_item_schedule_rows(batch_id: str, summary: dict[str, object]) -> No
     """Expose independent actions for repeated SO rows without rewriting import evidence."""
     rows = [row for row in summary.get("rows", []) if isinstance(row, dict) and row.get("template") == "unified-item"]
     counts = Counter(identity(row) for row in rows if tracked(row) and identity(row))
-    effective_po_versions = {SCHEDULE_IMPORT_PARSER_VERSION, "schedule-item-amendment-v6", "schedule-item-effective-po-v5"}
+    effective_po_versions = {SCHEDULE_IMPORT_PARSER_VERSION, "schedule-item-shipping-split-source-v7", "schedule-item-amendment-v6", "schedule-item-effective-po-v5"}
     legacy = summary.get("parser_version") not in effective_po_versions | {"schedule-item-so-identity-v4-complete"}
     before_po_fallback = summary.get("parser_version") not in effective_po_versions
     for row in rows:
@@ -4529,8 +4533,9 @@ def create_import_batch(
         raise HTTPException(status_code=422, detail="仅支持 Excel、PDF、PNG、JPG 或 HEIC 文件")
     if not content:
         raise HTTPException(status_code=422, detail="导入文件不能为空")
-    if len(content) > MAX_IMPORT_BYTES:
-        raise HTTPException(status_code=413, detail="导入文件不能超过 20 MB")
+    byte_limit = import_byte_limit(import_type)
+    if len(content) > byte_limit:
+        raise HTTPException(status_code=413, detail=f"导入文件不能超过 {byte_limit // (1024 * 1024)} MB")
     if parsed_source is None:
         from app.services.carton_procurement_imports import parse_carton_file
         parsed_source = parse_carton_file(import_type, filename, content)
@@ -4781,8 +4786,13 @@ def _schedule_order_links(db: Session, factory_id: str) -> dict[str, list[str]]:
         key = _schedule_event_key(db, factory_id, event.entity_id, detail, cache)
         original = [row for row in cache.get(str(detail.get("batch_id") or ""), [])
                     if row.get("source_sheet") == detail.get("source_sheet") and row.get("source_row") == detail.get("source_row")]
-        source_po = effective_po(original[0]) if len(original) == 1 else effective_po(detail)
-        if source_po and source_po != effective_po({"customer_po": order.customer_po}):
+        from app.services.carton_schedule_tracking import linked_po_matches, normalized
+        source_row = original[0] if len(original) == 1 else detail
+        if detail.get("po_semantics") == "SOURCE_PO":
+            valid_po = normalized(detail.get("customer_po")) == normalized(order.customer_po) == normalized(source_row.get("customer_po"))
+        else:
+            valid_po = linked_po_matches(source_row, order.customer_po)
+        if not valid_po or (detail.get("customer_code") and normalized(detail["customer_code"]) != normalized(order.customer_code)):
             continue
         ids = links.setdefault(key, [])
         if order.id not in ids:
@@ -4795,6 +4805,13 @@ def schedule_order_state(db: Session, factory_id: str) -> dict[str, dict[str, ob
     state = schedule_order_marks(db, factory_id)
     for key, order_ids in _schedule_order_links(db, factory_id).items():
         state.setdefault(key, {"marked": False, "actor": "", "updated_at": ""})["order_ids"] = order_ids
+    from app.services.carton_schedule_order_matching import read_matches
+    current = read_matches(db, factory_id)
+    for row in current["rows"]:
+        key = str(row.get("schedule_identity") or identity(row))
+        entry = state.setdefault(key, {"marked": False, "actor": "", "updated_at": ""})
+        entry.update(matching_order_ids=current["matches"].get(key, []),
+                     ambiguous_order_ids=current["ambiguous"].get(key, []))
     from app.services.carton_order_split import live_plans
     for plan in live_plans(db, factory_id):
         for target in plan["targets"]:
@@ -4833,8 +4850,9 @@ def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrde
     if any(str(row.get(field) or "").strip().casefold() != getattr(payload, field).strip().casefold()
            for field in ("contract_no", "item_no")):
         raise HTTPException(422, "来源排期的合同和货号与新订单不一致，请重新核对")
-    if effective_po(row) and effective_po(row) != effective_po({"customer_po": payload.customer_po}):
-        raise HTTPException(422, "来源排期的客户 PO 与新订单不一致，请重新核对 SO 或备用 P/O")
+    from app.services.carton_schedule_tracking import normalized
+    if normalized(row.get("customer_po")) != normalized(payload.customer_po):
+        raise HTTPException(422, "来源排期的客户 PO 与新订单不一致，请核对原表 P/O#；SO 不能代替客户 PO")
     latest = [item for item in _previous_schedule_by_customer(db, factory_id, {customer_key(row)}).get(customer_key(row), [])
               if identity(item) == key and tracked(item)]
     if not latest or (len(latest) != 1 and not row.get("schedule_identity_duplicate")) or any(
@@ -4843,6 +4861,8 @@ def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrde
         raise HTTPException(409, "最新排期已退单、走货或身份不唯一，请刷新后核对")
     if row.get("schedule_identity_duplicate") and any(item.get("_batch_id") != batch.id for item in latest):
         raise HTTPException(409, "该重复 SO 来源不是最新有效批次，请在最新排期中核对后操作")
+    if any(normalized(item.get("customer_po")) != normalized(row.get("customer_po")) for item in latest):
+        raise HTTPException(409, "最新排期的客户 PO 已变化，请刷新最新来源后重新核对")
     if not row.get("schedule_identity_duplicate") and any(demand_snapshot(item) != demand_snapshot(row) for item in latest):
         raise HTTPException(409, "最新排期的数量、装箱或交期已变化，请刷新最新来源后重新核对")
     operation_key = str(row["schedule_identity"])
@@ -4855,14 +4875,18 @@ def _schedule_source_for_order(db: Session, factory_id: str, payload: CartonOrde
     from app.services.carton_schedule_quantity_matching import read_matches, proof_matches, BASIS
     if any(proof_matches(row, proof) for proofs in read_matches(db, factory_id).values() for proof in proofs):
         raise HTTPException(409, "该排期已有数量及装箱一致的手动订单或待核对候选，请查看原订单，勿重复下单")
-    if not row.get("schedule_identity_duplicate"):
-        from app.services.carton_schedule_tracking import normalized
+    from app.services.carton_schedule_order_matching import read_matches as read_po_matches
+    current = read_po_matches(db, factory_id)
+    if current["matches"].get(operation_key) or current["ambiguous"].get(operation_key):
+        raise HTTPException(409, "该业务排期已有客户 PO / SO 匹配订单或待核对候选，请查看原订单，勿重复下单")
+    if not row.get("schedule_customer_code") and not row.get("schedule_identity_duplicate"):
         current_orders = db.scalars(select(CartonOrder).where(CartonOrder.factory_id == factory_id,
             CartonOrder.customer_code == payload.customer_code, CartonOrder.status != "CANCELLED", CartonOrder.deleted_at.is_(None)))
         if any(normalized(order.contract_no) == normalized(row.get("contract_no"))
                and normalized(order.item_no) == normalized(row.get("item_no"))
-               and (not effective_po(row) or normalized(order.customer_po) == effective_po(row)) for order in current_orders):
-            raise HTTPException(409, "该业务排期已有当前客户 PO 匹配的正式订单，请查看原订单，勿重复下单")
+               and (not effective_po(row) or normalized(order.customer_po) in {
+                   normalized(row.get("customer_po")), effective_po(row)}) for order in current_orders):
+            raise HTTPException(409, "该旧排期已有客户 PO / SO 匹配订单，请核对原订单，勿重复下单")
     existing = db.get(CartonOrder, row.get("order_id")) if row.get("order_id") and row.get("match_basis") != BASIS else None
     if existing and existing.factory_id == factory_id and existing.status != "CANCELLED" and existing.deleted_at is None:
         raise HTTPException(409, "该业务排期已关联订单，请查看原订单，勿重复下单")

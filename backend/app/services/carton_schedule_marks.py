@@ -1,6 +1,6 @@
 """Read-only contract hints for schedule rows, including demand before purchase creation."""
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from fastapi import HTTPException
 from sqlalchemy import select, or_
@@ -44,7 +44,7 @@ def known_schedule_contracts(db, factory, user):
     return result
 
 
-def project(rows, sources, orders, files):
+def project(rows, sources, orders, files, links=None):
     """Explicit order bindings never widen into automatic contract bindings."""
     normalize = lambda value: assets.identity(str(value or ''))
     owners = defaultdict(set)
@@ -79,6 +79,7 @@ def project(rows, sources, orders, files):
                 if order and normalize(order.customer_code) == code and normalize(order.contract_no) == contract \
                         and normalize(order.item_no) == normalize(row.get('item_no')) \
                         and ((row.get('match_basis') != 'CONTRACT_ITEM_QUANTITY_PACKING' and row.get('order_id') == order.id)
+                             or order.id in (links or {}).get(row.get('schedule_identity'), [])
                              or effective_po(row) == effective_po({'customer_po': order.customer_po})):
                     matched.append(file)
                     break
@@ -96,37 +97,96 @@ def workspace(db, user, factory, batch_id):
         raise HTTPException(404, '有效的本厂业务排期不存在')
     from app.services.carton_customer_assignment import ensure_customer_operation
     rows = sources[batch_id]
-    permitted, restricted = [], []
+    permitted, restricted, customer_access = [], [], {}
     for row in rows:
-        try:
-            if row.get('schedule_customer_code'):
-                ensure_customer_operation(db, user, factory, row['schedule_customer_code'])
+        code = row.get('schedule_customer_code')
+        if code not in customer_access:
+            try:
+                if code:
+                    ensure_customer_operation(db, user, factory, code)
+                customer_access[code] = True
+            except HTTPException:
+                customer_access[code] = False
+        if customer_access[code]:
             permitted.append(row)
-        except HTTPException:
+        else:
             restricted.append(dict(source_sheet=row.get('source_sheet') or '', source_row=row.get('source_row') or 0,
                                    status='RESTRICTED', asset_ids=[]))
     from app.services import carton_asset_access as ownership
     if ownership.enabled():
         return quick_workspace(db,user,factory,batch_id,permitted,restricted)
     files = sharing.filter_internal(db, user, assets.list_assets(db, factory))
+    from app.services import carton_procurement as core
     result, files = project(permitted, [row for rows in sources.values() for row in rows],
-                            assets.available_orders(db, factory), files)
-    from app.services.carton_materials import folders, folder_id, output, resolve_target, authorize
-    from app.schemas.carton_materials import Target
-    material_folders = folders(db, factory)
-    indexed = {(row.get('source_sheet'), row.get('source_row')): row for row in permitted}
+                            assets.available_orders(db, factory), files, core._schedule_order_links(db, factory))
+    material_hints = legacy_material_hints(db, user, factory, batch_id, permitted)
     for item in result:
-        row = indexed.get((item['source_sheet'], item['source_row']))
-        if not row or not row.get('schedule_customer_code'): continue
-        try:
-            target = resolve_target(db, factory, 'warehouse', Target(kind='SCHEDULE', id=batch_id,
-                sheet=item['source_sheet'], row=item['source_row']))
-            identifier = folder_id(factory, target)
-            if identifier in material_folders: authorize(db, user, factory, 'warehouse', material_folders[identifier])
-        except HTTPException: continue
-        if identifier in material_folders:
-            item.update(materials_folder_id=identifier, materials_status=output(material_folders[identifier], 'warehouse')['status_label'])
+        item.update(material_hints.get((item['source_sheet'], item['source_row']), {}))
     return dict(factory_id=factory, batch_id=batch_id, rows=result + restricted, assets=files)
+
+
+def legacy_material_hints(db, user, factory, batch_id, rows):
+    """Prefetch exact authority keys; resolve only rows with stored materials.
+
+    Absence is cached for this read only. Existing authorities still pass through
+    the canonical resolver, including explicit bindings, conflicts and ambiguity.
+    """
+    from app.services import carton_materials as materials, carton_procurement as core
+    from app.services.carton_materials_resolver import Resolver, BINDINGS, CONTRACTS, context_id, contract_id, target_key
+    from app.schemas.carton_materials import Target
+    if not rows:
+        return {}
+    batch = db.get(CartonImportBatch, batch_id)
+    if not batch or batch.factory_id != factory or batch.import_type != 'WEEKLY_SCHEDULE' or batch.status == 'REJECTED':
+        return {}
+    summary = json.loads(batch.parse_summary_json or '{}')
+    try:
+        # Match _resolve_target: the persisted batch customer is authoritative.
+        customer = core.get_active_customer(db, factory, (summary.get('schedule_customer') or {}).get('customer_code') or '')
+    except HTTPException:
+        return {}
+    counts = Counter((row.get('source_sheet'), row.get('source_row')) for row in summary.get('rows', []))
+    current_rows = {(row.get('source_sheet'), row.get('source_row')): row for row in summary.get('rows', [])}
+    resolver = Resolver(db, factory, 'warehouse')
+    facts, keys, owners = [], [], []
+    for row in rows:
+        key = (row.get('source_sheet') or '', row.get('source_row') or 0)
+        if not row.get('schedule_customer_code') or counts[key] != 1:
+            continue
+        current_row = current_rows[key]
+        data = dict(customer_id=customer.id, customer_code=customer.customer_code, customer_name=customer.customer_name,
+                    contract_no=str(current_row.get('contract_no') or ''), item_no=str(current_row.get('item_no') or ''),
+                    po=effective_po(current_row), supplier_id='')
+        try:
+            root = contract_id(factory, customer.id, data['contract_no'])
+        except HTTPException:
+            continue
+        target = Target(kind='SCHEDULE', id=batch_id, sheet=key[0], row=key[1])
+        binding_key = target_key(factory, target)
+        owner_keys = [materials.legacy_folder_id(factory, data), context_id(root, data)]
+        facts.append((key, target, data, root, binding_key, owner_keys))
+        keys.append(binding_key)
+        owners.extend(owner_keys)
+    resolver.prefetch(BINDINGS, keys)
+    owners.extend(value['authority_id'] for (entity, _), value in list(resolver.cache.items())
+                  if entity == BINDINGS and value and value.get('authority_id'))
+    resolver.prefetch(materials.ENTITY, owners)
+    candidates = [fact for fact in facts if resolver.read(BINDINGS, fact[4])
+                  or any(resolver.read(materials.ENTITY, key) for key in fact[5])]
+    resolver.prefetch(CONTRACTS, [fact[3] for fact in candidates])
+    hints = {}
+    for key, target, data, _, _, _ in candidates:
+        try:
+            entry = resolver.resolve(target=target, data=data)
+            state = entry['state']
+            if entry['ambiguous'] or not state:
+                continue
+            materials.authorize(db, user, factory, 'warehouse', state)
+            hints[key] = dict(materials_folder_id=state['id'],
+                              materials_status=materials.output(state, 'warehouse')['status_label'])
+        except HTTPException:
+            continue
+    return hints
 
 
 def quick_workspace(db,user,factory,batch_id,rows,restricted):
