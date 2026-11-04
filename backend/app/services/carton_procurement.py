@@ -110,6 +110,7 @@ CARTON_DEFAULT_SUPPLIER_NAME = "河源东康纸品有限公司"
 QUANTITY_QUANTUM = Decimal("0.0001")
 MONEY_QUANTUM = Decimal("0.0001")
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
+MAX_SCHEDULE_IMPORT_BYTES = 35 * 1024 * 1024
 ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".xlsm", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".heic", ".heif"}
 CURRENCY_ALIASES = {
     "RMB": "CNY",
@@ -121,6 +122,10 @@ CURRENCY_ALIASES = {
     "港元": "HKD",
     "HK$": "HKD",
 }
+
+
+def import_byte_limit(import_type: str | None = None) -> int:
+    return MAX_SCHEDULE_IMPORT_BYTES if import_type == "WEEKLY_SCHEDULE" else MAX_IMPORT_BYTES
 
 
 def now_text() -> str:
@@ -4529,8 +4534,9 @@ def create_import_batch(
         raise HTTPException(status_code=422, detail="仅支持 Excel、PDF、PNG、JPG 或 HEIC 文件")
     if not content:
         raise HTTPException(status_code=422, detail="导入文件不能为空")
-    if len(content) > MAX_IMPORT_BYTES:
-        raise HTTPException(status_code=413, detail="导入文件不能超过 20 MB")
+    byte_limit = import_byte_limit(import_type)
+    if len(content) > byte_limit:
+        raise HTTPException(status_code=413, detail=f"导入文件不能超过 {byte_limit // (1024 * 1024)} MB")
     if parsed_source is None:
         from app.services.carton_procurement_imports import parse_carton_file
         parsed_source = parse_carton_file(import_type, filename, content)

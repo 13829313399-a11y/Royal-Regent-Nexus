@@ -166,10 +166,9 @@ async def synchronize_warehouse_schedule(
     _ensure_customer_factory(customer_code, factory_id)
     authorize_sales(db, current_user, factory_id)
     _validate_upload(schedule_file, kind="客户排期", supported=(".xlsx", ".xls"))
-    from app.services.carton_procurement import MAX_IMPORT_BYTES
-    content = await schedule_file.read(MAX_IMPORT_BYTES + 1)
-    if not content or len(content) > MAX_IMPORT_BYTES:
-        raise HTTPException(422, "仓库排期须为非空文件，且不超过 20 MB")
+    content = await schedule_file.read(MAX_SCHEDULE_BYTES + 1)
+    if not content or len(content) > MAX_SCHEDULE_BYTES:
+        raise HTTPException(422, f"仓库排期须为非空文件，且不超过 {MAX_SCHEDULE_BYTES // (1024 * 1024)} MB")
     return await synchronize(db, current_user, factory_id, customer_code, CUSTOMER_NAMES[customer_code],
         schedule_file.filename or "schedule.xlsx", content, source_kind,
         refresh_actor=lambda: get_current_user(request, db))

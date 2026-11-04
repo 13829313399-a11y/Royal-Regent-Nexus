@@ -151,6 +151,62 @@ def test_isolated_parser_supports_encrypted_output_and_rejects_invalid_sources()
         asyncio.run(run_order_job(parse_business_schedule, "empty.xlsx", stream.getvalue()))
 
 
+def test_large_schedule_manual_background_retry_and_automatic_handoff(monkeypatch):
+    from zipfile import ZipFile, ZIP_STORED
+    from types import SimpleNamespace
+    import json
+    stream = BytesIO(workbook([source_row()]))
+    # A real ZIP member keeps the workbook valid while exceeding the old 20 MiB limit.
+    with ZipFile(stream, "a") as archive:
+        archive.writestr("large-test-resource.bin", b"x" * (20 * 1024 * 1024), compress_type=ZIP_STORED)
+    content = stream.getvalue()
+    with make_client(monkeypatch) as client:
+        _prepare_schedule_customer(client)
+        login_as(client, "admin")
+        client.post(BASE + "/customers/business-sync", params={"factory_id": "huaxing"}).raise_for_status()
+        customer = next(r for r in client.get(BASE + "/customers", params={"factory_id": "huaxing"}).json()["items"]
+                        if r["business_customer_code"] == "dickie")
+        manual = client.post(BASE + "/weekly-imports", params={"factory_id": "huaxing"},
+            data={"customer_code": customer["customer_code"]}, files={"file": ("large.xlsx", content)})
+        assert manual.status_code == 201, manual.text
+        assert manual.json()["source_size_bytes"] == len(content)
+        retry = upload(client, content)
+        assert retry.status_code == 200, retry.text
+        again = upload(client, content)
+        assert again.status_code == 200 and again.json()["duplicate"], again.text
+        # Exercise the background-entry transport; completion uses the same persistence guard.
+        from app.api import carton_procurement as api
+        captured = {}
+        def start(owner, factory, operation, args, metadata):
+            captured.update(kind=args[0], size=len(args[2]))
+            return {"id": "test-job", "status": "PROCESSING"}
+        monkeypatch.setattr(api.file_jobs, "start_job", start)
+        job = client.post(BASE + "/file-jobs/imports", params={"factory_id": "huaxing", "import_type": "WEEKLY_SCHEDULE"},
+            data={"customer_code": customer["customer_code"]}, files={"file": ("large.xlsx", content)})
+        assert job.status_code == 202, job.text
+        assert captured == {"kind": "WEEKLY_SCHEDULE", "size": len(content)}
+        from app.db import SessionLocal
+        from app.services import customer_order_carton_schedule as handoff
+        from app.services import auth
+        from app.models.auth import AuthUser
+        from sqlalchemy import select
+        from app.models.carton_procurement import CartonImportBatch
+        with SessionLocal() as db:
+            user = auth.build_auth_context(db, db.scalar(select(AuthUser).where(AuthUser.username == "admin")))
+            monkeypatch.setattr(auth, "get_current_user", lambda request, session: user)
+            result = asyncio.run(handoff.sync_report(db, user, SimpleNamespace(),
+                {"factory_id": "huaxing", "customer_code": "dickie"}, "large.xlsx", content, "GENERATED"))
+            assert result["status"] == "SUCCESS", result
+            batch = db.get(CartonImportBatch, result["batch_id"])
+            assert batch.source_size_bytes == len(content)
+            assert json.loads(batch.parse_summary_json)["rows"][0]["contract_no"] == "53135"
+        rejected = client.post(BASE + "/receipt-imports", params={"factory_id": "huaxing"},
+            files={"file": ("large.xlsx", content)})
+        assert rejected.status_code == 413 and "20 MB" in rejected.text
+        too_large = upload(client, b"x" * (35 * 1024 * 1024 + 1))
+        assert too_large.status_code == 422 and "35 MB" in too_large.text
+
+
 def test_normal_preview_and_export_await_warehouse_handoff(monkeypatch):
     from urllib.parse import unquote
     import json

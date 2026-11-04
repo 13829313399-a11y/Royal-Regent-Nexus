@@ -25,6 +25,7 @@ const context = computed(() => JSON.stringify([props.factoryId, props.audience, 
 const chosenTargets = ref<string[]>([]), sharedFactories = ref<string[]>([])
 const targetScope = computed(() => props.audience === 'sales' ? 'PENDING_SCHEDULE' as const : 'ALL' as const)
 const visibleTargets = computed(() => candidates.value.filter(x => !orderSearch.value.trim() || [x.contract_no, x.customer_po, x.item_no, x.customer_name].join(' ').toLowerCase().includes(orderSearch.value.trim().toLowerCase())))
+const contractMatches = computed(() => contract.value ? candidates.value.filter(x => x.contract_no.trim().toUpperCase() === contract.value.trim().toUpperCase()) : [])
 const shareOptions = computed(() => factoryContexts.filter(x => (props.supplierFactories || [props.factoryId]).includes(x.id)))
 const validContent = computed(() => mode.value === 'file' ? !!file.value && !fileError.value : !!text.value.trim() && text.value.length <= 20000)
 const canSave = computed(() => canWrite.value && !busy.value && chosenTargets.value.length <= 100 && (frozen.value || validContent.value && (
@@ -54,15 +55,17 @@ function selectFile(event: Event) {
   fileError.value = ''; file.value = chosen
 }
 watch([mode, file, text], () => {
+  // A different source needs its own applicability check, even with the same filename.
+  associationTouched.value = false; chosenTargets.value = []
   contract.value = suggestedContract(mode.value === 'file' ? file.value?.name || '' : text.value, mode.value === 'file')
-  if (!associationTouched.value) orderSearch.value = contract.value
+  orderSearch.value = contract.value
+  suggestSingleTarget()
 })
-watch([contract, candidates], () => {
+function suggestSingleTarget() {
   if (associationTouched.value) return
-  const matches = contract.value ? candidates.value.filter(x => x.contract_no.toUpperCase() === contract.value.toUpperCase()) : []
-  const identities = matches.map(x => [x.kind, x.customer_code || x.customer_name, x.contract_no, x.item_no, x.customer_po].join('|'))
-  chosenTargets.value = matches.length <= 100 && new Set(matches.map(x => x.customer_code || x.customer_name)).size === 1 && new Set(identities).size === matches.length ? matches.map(x => x.fingerprint) : []
-})
+  chosenTargets.value = contractMatches.value.length === 1 ? [contractMatches.value[0]!.fingerprint] : []
+}
+watch([contract, candidates], suggestSingleTarget)
 function clearLinks() { associationTouched.value = true; chosenTargets.value = []; orderSearch.value = '' }
 watch(canConfirm, value => { if (!value && status.value === 'READY') status.value = 'PENDING' })
 
@@ -145,9 +148,10 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
             <label v-else class="block text-sm font-semibold">文字资料<textarea v-model="text" maxlength="20000" rows="6" aria-label="文字资料" class="mt-1 block w-full rounded-lg border border-input bg-card p-3 font-normal" placeholder="输入需要留存的文字，可包含“合同号：…”" /><span class="mt-1 block text-right text-xs font-normal text-muted-foreground">{{ text.length }}/20000</span></label>
             <section class="space-y-3 rounded-xl border border-border p-3" aria-label="选择关联订单">
               <div class="flex flex-wrap items-center justify-between gap-2"><h3 class="text-sm font-semibold">{{ audience === 'sales' ? '关联排期订单（未下单）' : '关联订单' }} <span class="font-normal text-muted-foreground">可多选</span></h3><button type="button" class="text-xs text-primary underline" @click="clearLinks">暂不关联</button></div>
+              <p class="text-xs text-muted-foreground">选择这份资料适用的订单，货号和 PO 从订单带出，不用重复填写。同合同的资料不一定通用。</p>
               <p class="text-xs text-muted-foreground">{{ audience === 'sales' ? '勾选后，仓库能在对应排期看到资料，下单时会沿用关联。' : '勾选这份资料对应的订单，关联不会提交采购。' }}</p>
               <input v-model="orderSearch" aria-label="搜索关联订单" placeholder="搜索客户、合同 / PO、货号" class="h-10 w-full min-w-0 rounded-lg border border-input bg-card px-3 text-sm">
-              <p v-if="contract && !associationTouched" class="text-xs text-muted-foreground">识别到合同 {{ contract }}；{{ chosenTargets.length ? '已勾选匹配订单，请核对下方选项。' : '请核对并勾选对应订单。' }}</p>
+              <p v-if="contract && loaded && !associationTouched" class="text-xs text-muted-foreground">识别到合同 {{ contract }}；{{ contractMatches.length > 1 ? `找到 ${contractMatches.length} 条订单，请按货号、PO 勾选适用订单，不会自动全选。` : chosenTargets.length ? '仅找到一条匹配订单，已推荐勾选，请核对后保存。' : '请核对并勾选对应订单，也可暂不关联。' }}</p>
               <p v-if="loading" role="status" class="text-sm text-muted-foreground">正在读取可关联订单…</p>
               <div v-else-if="candidateError" role="alert" class="space-y-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm" data-testid="association-load-error">
                 <p class="font-semibold text-destructive">未能读取可关联订单。</p>
