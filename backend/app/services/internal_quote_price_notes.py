@@ -73,12 +73,12 @@ def make_annotation(db, quote, code, field, annotation, user, persist=False):
             "author": user.display_name, "updated_at": now_text(), "price_at_note": str(field.get("value", ""))}
 
 
-def append_price_notes(workbook, sections, attachments, region_code=""):
+def append_price_notes(workbook, sections, attachments, region_code="", snapshot=None):
     from openpyxl.comments import Comment
     from openpyxl.drawing.image import Image as ExcelImage
     from openpyxl.styles import Font, PatternFill, Alignment
     from app.services.internal_quote_output_fields import source_groups, _bind_aggregate_cells
-    groups = source_groups(sections, region_code)
+    groups = source_groups(sections, region_code, snapshot)
     annotated = [(g, f) for g in groups for f in g["fields"] if f.get("annotation")]
     if not annotated:
         return
@@ -101,6 +101,16 @@ def append_price_notes(workbook, sections, attachments, region_code=""):
                      for target in workbook if target.sheet_state == "visible"
                      for binding in getattr(target, "_quote_bindings", {}).values())
         body = f"{group['label']} · {field['label']} {field['currency']}\n{note.get('text', '')}\n{note.get('author', '')} {note.get('updated_at', '')}\n截图及明细见“调价说明”第 {index} 行"
+        adjustment = field.get("adjustment")
+        calculation_note = ""
+        if adjustment:
+            from decimal import Decimal
+            original = Decimal(adjustment["original_per_piece_hkd"])
+            adopted = Decimal(adjustment["effective_per_piece_hkd"])
+            unit = "HKD/箱（含该平卡用量）" if adjustment["mode"] == "per_carton" and "flat_cards" in field["id"] else "HKD/箱" if adjustment["mode"] == "per_carton" else "HKD/件"
+            calculation_note = (f"原核算 {original:.4f} HKD/件；采用 {adopted:.4f} HKD/件；差额 {adopted-original:+.4f} HKD/件。"
+                                f"输入 {adjustment['amount_hkd']} {unit}，均为倍率前成本。")
+            body += "\n" + calculation_note
         for target in workbook:
             if target.title == "调价说明" or target.sheet_state != "visible":
                 continue
@@ -115,7 +125,7 @@ def append_price_notes(workbook, sections, attachments, region_code=""):
                     text = f"{cell.comment.text}\n\n{body}" if cell.comment else body
                     cell.comment = Comment(text, str(note.get("author") or "内部报价"))
         values = [group["label"], group["section_name"], f"{field['label']} {field['currency']}", str(field.get("value", "")),
-                  note.get("price_at_note", ""), note.get("text", ""), f"{note.get('author', '')} {note.get('updated_at', '')}", "、".join(targets) or "报价明细（部门汇总）"]
+                  note.get("price_at_note", ""), note.get("text", "") + ("\n" + calculation_note if calculation_note else ""), f"{note.get('author', '')} {note.get('updated_at', '')}", "、".join(targets) or "报价明细（部门汇总）"]
         for column, value in enumerate(values, 1):
             cell = sheet.cell(index, column, str(value)); cell.data_type = "s"
             cell.alignment = Alignment(wrap_text=True, vertical="top")

@@ -57,6 +57,13 @@ const baselinePayload = ref('')
 const draftRevision = ref(props.section.revision)
 const sidebarPricingDraft = ref<InternalQuoteSidebarPricingDraft>()
 const importPreview = ref<ApiInternalQuoteImportPreview>()
+const currentCalculation = computed(() => {
+  if (quoteStore.livePreviewQuoteId === props.quote.id) {
+    if (quoteStore.livePreviewLoading || quoteStore.livePreviewErrorMessage) return undefined
+    return quoteStore.liveCostPreview?.calculations?.[props.section.code] ?? props.section.calculation
+  }
+  return props.section.calculation
+})
 const departmentSubtotal = computed(() => {
   const preview = quoteStore.livePreviewQuoteId === props.quote.id ? quoteStore.liveCostPreview?.calculations?.[props.section.code] : undefined
   if (quoteStore.livePreviewQuoteId === props.quote.id && (quoteStore.livePreviewLoading || quoteStore.livePreviewErrorMessage)) return '正在核算 / 待核对'
@@ -1031,7 +1038,7 @@ function confirmRemoveParticipation() {
     </section>
     <div v-if="section.code === 'electronic' && !showElectronicForm" class="electronic-empty-state"><FileSpreadsheet /><strong>暂无电子报价</strong><span>可新增空白电子报价，或上传报价单后选择“新增独立电子报价”。</span></div>
     <div v-if="section.code === 'molding' && draftPayload.engineering_prefill_paused === true" class="section-note" role="status"><p>复制时未选择啤机部，当前保留为空待填写。可手工填写，或从本方案工程资料生成胶件。</p><button type="button" :disabled="!editable || quoteStore.submitting || !engineeringPayload" @click="resumeEngineeringPrefill">从工程生成胶件</button></div>
-    <InternalQuoteSectionForm v-if="showElectronicForm" :key="`${quote.id}:${section.code}`" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :can-edit-material-prices="canEditMaterialPrices" :calculation="section.calculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable || quoteStore.submitting" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" @upload-painting-image="uploadPaintingRowImage" @request-material-prices="emit('request-material-prices')" @mold-parts-split="saveMoldPartSplit" @mold-split-open="moldSplitPending = $event" />
+    <InternalQuoteSectionForm v-if="showElectronicForm" :key="`${quote.id}:${section.code}`" v-model="formPayload" :code="section.code" :quote-id="quote.id" :factory-id="quote.factoryId" :attachments="section.attachments" :customer="quote.customer" :rmb-hkd-rate="quote.fxRmbHkd" :reference-snapshot="quote.referenceSnapshot" :can-edit-material-prices="canEditMaterialPrices" :calculation="currentCalculation" :pricing-mode="pricingMode" :pricing-components="pricingComponents" :active-pricing-component-id="activePricingComponentId" :main-markup="mainMarkup" :disabled="!editable || quoteStore.submitting" @block-progress="handleBlockProgress" @preview-attachment="previewAttachment" @upload-painting-image="uploadPaintingRowImage" @request-material-prices="emit('request-material-prices')" @mold-parts-split="saveMoldPartSplit" @mold-split-open="moldSplitPending = $event" />
 
     <InternalQuoteAttachmentPreview
       :quote-id="quote.id"
