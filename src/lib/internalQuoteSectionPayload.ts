@@ -1634,8 +1634,9 @@ export function normalizeInternalQuotePayload(code: InternalQuoteSectionCode, va
       source.forEach((row, index) => carry(row, target[index]))
     } else if (!Array.isArray(source) && !Array.isArray(target)) {
       const from = source as Record<string, unknown>, to = target as Record<string, unknown>
-      if (from.price_annotations && typeof from.price_annotations === 'object') to.price_annotations = JSON.parse(JSON.stringify(from.price_annotations))
-      for (const key of Object.keys(to)) if (key !== 'price_annotations') carry(from[key], to[key])
+      const retained = ['price_annotations', 'quote_amount_adjustment', 'quote_amount_history', 'removed_amount_adjustments']
+      for (const key of retained) if (from[key] && typeof from[key] === 'object') to[key] = JSON.parse(JSON.stringify(from[key]))
+      for (const key of Object.keys(to)) if (!retained.includes(key)) carry(from[key], to[key])
     }
   }
   carry(value, result)

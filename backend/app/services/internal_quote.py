@@ -1563,17 +1563,17 @@ def _rr2_cost_summary(
     pricing_entries: list[dict[str, object]] = []
     for section_code in section_labels:
         target = section_pricing_target(section_code)
-        if target <= 0:
+        if target <= 0 and not any(line.get("quote_amount_adopted") for line in pricing_lines(section_code)):
             continue
         candidates: list[tuple[dict[str, object], Decimal]] = []
         for line in pricing_lines(section_code):
             if not pricing_line_allowed(section_code, line):
                 continue
             amount = _summary_decimal(line.get("quote_pricing_hkd") if section_code == "electronic" and "quote_pricing_hkd" in line else line.get(amount_fields[str(line.get("kind"))]))
-            if amount > 0:
+            if amount > 0 or (amount == 0 and line.get("quote_amount_adopted")):
                 candidates.append((line, amount))
         candidate_total = sum((amount for _line, amount in candidates), Decimal("0"))
-        if candidate_total <= 0:
+        if not candidates:
             pricing_entries.append({
                 "section": section_code,
                 "label": section_labels[section_code],
@@ -1585,7 +1585,7 @@ def _rr2_cost_summary(
                 "markup_override": None,
             })
             continue
-        allocation_factor = target / candidate_total
+        allocation_factor = target / candidate_total if candidate_total else Decimal("1")
         for line, amount in candidates:
             label = str(line.get("group") or line.get("item") or line.get("process") or section_labels[section_code]).strip()
             entry: dict[str, object] = {
@@ -1609,6 +1609,9 @@ def _rr2_cost_summary(
                 ),
             }
             for field in (
+                "quote_amount_adopted",
+                "source_path",
+                "original_amount_hkd_pcs",
                 "process",
                 "persons",
                 "total_persons",
@@ -2216,6 +2219,10 @@ def _calculate_and_apply(
     cost_context = _cost_context(db, quote)
     dependencies = _calculation_dependencies(db, quote, section.department)
     section_payload = _json_object(section.payload_json)
+    if section.department in {"assembly", "sales"}:
+        from app.services.internal_quote_amount_adjustments import mark_stale_adjustments
+        mark_stale_adjustments(section.department, section_payload, snapshot)
+        section.payload_json = canonical_json(section_payload)
     _validate_customer_supplied_scope(quote, section.department, section_payload)
     factory_price_hkd = cost_context["factory_price_hkd"]
     if section.department == "sales":

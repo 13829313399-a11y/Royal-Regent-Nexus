@@ -35,7 +35,7 @@ from app.services.internal_quote_calculator import resolve_justplay_carton_basis
 
 P3_TEMPLATE_VERSION = "internal-quote-p3-v1"
 P4_TEMPLATE_VERSION = "internal-quote-p4-v2"
-WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v42"
+WORKBOOK_LAYOUT_VERSION = "internal-quote-unified-desk-v43"
 ENGINEERING_WORKBOOK_TEMPLATE_VERSION = "internal-quote-engineering-template-v2"
 ENGINEERING_WORKBOOK_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -708,7 +708,8 @@ def _purchase_pricing_entries(entries, sections) -> list[dict[str, Any]]:
 def _purchase_detail_label(entry: dict[str, Any], fallback: str = "") -> str:
     name = _plain_text(entry.get("label") or entry.get("item")) or fallback
     if entry.get("kind") not in {"material", "packaging_material", "electronic_component"}:
-        return _safe_text(name)
+        result = _safe_text(name)
+        return SourceLabel(result, entry["section"], entry["source_path"]) if entry.get("source_path") is not None and entry.get("section") else result
     specification = _plain_text(entry.get("specification") or entry.get("spec"))
     if specification and specification not in name:
         name = f"{specification} {name}".strip()
@@ -723,6 +724,8 @@ def _purchase_detail_label(entry: dict[str, Any], fallback: str = "") -> str:
 
 
 def _pricing_entry_amount(entry: dict[str, Any]) -> object:
+    if entry.get("quote_amount_adopted"):
+        return _float_value(entry.get("amount_hkd"))
     if entry.get("source_unit_price") not in (None, "") and entry.get("quantity") not in (None, ""):
         price = _float_value(entry["source_unit_price"])
         formula = f"={format(price, '.15g')}"
@@ -912,7 +915,10 @@ def _assembly_group_detail_rows(
         if abs(teams - 1.0) >= 0.0000001:
             formula += f"*{_compact_number_label(teams)}"
         formula += f"/{_compact_number_label(production_qty)}"
-        rows.append(("", "装配工", description, formula))
+        if summary.get("quote_amount_adopted"):
+            formula = amount
+        from app.services.internal_quote_output_fields import SourceLabel
+        rows.append(("", "装配工", SourceLabel(description, "assembly", summary.get("source_path", ["groups", index - 1])), formula))
 
     expected = _float_value(expected_total)
     tolerance = max(0.001, 0.0001 * len(rows))
@@ -2410,7 +2416,7 @@ def _build_summary_sheet(
     carton_price_offsets: list[int] = []
     for index in range(max(1, len(cartons))):
         carton_price_offsets.append(len(packaging_rows))
-        packaging_rows.append([_carton_price_label(index, max(1, len(cartons))), "", "", ""])
+        packaging_rows.append([SourceLabel(_carton_price_label(index, max(1, len(cartons))), "sales", ["cartons", index]), "", "", ""])
     packing_qty_offset = len(packaging_rows)
     packing_qty: object = (
         "/".join(format(_float_value(cartons[index].get("qty_per_carton")), ".10g") for index in carton_order)
@@ -2453,13 +2459,27 @@ def _build_summary_sheet(
         _carton_quantity_reference(packing_qty_reference, index, len(cartons))
         for index in range(max(1, len(cartons)))
     ]
-    flat_card_formulas = [
-        f"{dimension_letters[0]}{packaging_start_row + row_offset}/2.54"
-        f"*{dimension_letters[1]}{packaging_start_row + row_offset}/2.54"
-        f"*{dimension_letters[2]}{packaging_start_row + row_offset}*$P$6/1000"
-        + (f"/{quantity_references[carton_index]}" if len(cartons) > 1 else "")
-        for row_offset, carton_index in flat_card_row_offsets
-    ]
+    from app.services.internal_quote_amount_adjustments import adjustment_catalog
+    adopted = adjustment_catalog("sales", sales_payload, reference_snapshot)
+
+    def adopted_box_formula(path, original_formula, quantity_reference):
+        from decimal import Decimal
+        item = adopted.get(tuple(path), {})
+        if item.get("status") != "adopted":
+            return original_formula
+        amount = format(Decimal(item["amount_hkd"]), "f")
+        return f"({amount}*{quantity_reference})" if item["mode"] == "per_piece" else amount
+
+    flat_card_formulas = []
+    flat_indices = {}
+    for row_offset, carton_index in flat_card_row_offsets:
+        flat_index = flat_indices.get(carton_index, 0)
+        flat_indices[carton_index] = flat_index + 1
+        expression = (f"{dimension_letters[0]}{packaging_start_row + row_offset}/2.54"
+                      f"*{dimension_letters[1]}{packaging_start_row + row_offset}/2.54"
+                      f"*{dimension_letters[2]}{packaging_start_row + row_offset}*$P$6/1000")
+        expression = adopted_box_formula(["cartons", carton_index, "flat_cards", flat_index], expression, quantity_references[carton_index])
+        flat_card_formulas.append(expression + (f"/{quantity_references[carton_index]}" if len(cartons) > 1 else ""))
     packaging_rows[paperboard_offset][1] = (
         "=" + "+".join(flat_card_formulas) if flat_card_formulas else "=0"
     )
@@ -2473,6 +2493,7 @@ def _build_summary_sheet(
 
     for index, (row_offset, unit) in enumerate(carton_row_metadata):
         formula = carton_price_formula(row_offset, unit, "$N$6" if index == 0 else "$O$6")
+        formula = adopted_box_formula(["cartons", index], formula, quantity_references[index])
         packaging_rows[carton_price_offsets[index]][1] = "=" + formula + (
             f"/{quantity_references[index]}" if len(cartons) > 1 else ""
         )
@@ -2486,6 +2507,11 @@ def _build_summary_sheet(
     for index, detail_offset in carton_detail_offsets.items():
         reference = carton_price_references[index] if len(cartons) > 1 else f"{dimension_letters[0]}{packaging_start_row + total_offset}"
         sheet.cell(detail_start_row + detail_offset, 4).value = f"={reference}"
+        if not hasattr(sheet, "_quote_bindings"):
+            sheet._quote_bindings = {}
+        sheet._quote_bindings[f"D{detail_start_row + detail_offset}"] = (
+            {"group": f"sales:cartons/{index}", "kind": "price"} if len(cartons) > 1 else
+            {"groups": ["sales:" + "/".join(map(str, path)) for path in adopted], "kind": "source"})
     if paperboard_detail_offset is not None:
         sheet.cell(detail_start_row + paperboard_detail_offset, 4).value = f"={paperboard_reference}"
 
@@ -4205,6 +4231,7 @@ def _replace_with_component_summary_sheet(
             ordered_global_entries.append({
                 "section": "sales", "kind": "carton", "label": _carton_detail_label(index, len(cartons)),
                 "carton_price_label": _carton_price_label(index, len(cartons)),
+                "source_path": ["cartons", index],
             })
         if any(row.get("flat_cards") for row in cartons):
             ordered_global_entries.append({"section": "sales", "kind": "carton", "label": "平卡", "carton_price_label": "纸板价"})
@@ -4281,14 +4308,10 @@ def _replace_with_component_summary_sheet(
                 if source_detail_row is not None and entry.get("source_unit_price") is None
                 else _pricing_entry_amount(entry)
             )
+        if entry.get("source_path") and (not is_carton or entry.get("carton_price_label")):
+            description = SourceLabel(description, entry["section"], entry["source_path"])
         for column, value in enumerate(
-            (
-                _pricing_entry_tax_tag(entry),
-                category,
-                description,
-                amount,
-            ),
-            start=1,
+            (_pricing_entry_tax_tag(entry), category, description, amount), start=1,
         ):
             _template_cell(
                 target,
@@ -5611,7 +5634,7 @@ def build_internal_quote_workbook_model(
             workbook[f"电子明细{index}"].sheet_state = "visible"
     _build_mold_quote_sheet(workbook, by_code.get("engineering"))
     from app.services.internal_quote_price_notes import append_price_notes
-    append_price_notes(workbook, sections, attachments, quote.region_code)
+    append_price_notes(workbook, sections, attachments, quote.region_code, reference_snapshot)
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True

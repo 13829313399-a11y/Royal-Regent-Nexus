@@ -19,6 +19,17 @@ import { calculateJustPlayCartonsPerPallet, justPlayPackagingInputsValid, normal
 import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicSectionSummary, calculateElectronicSummary, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingTotalHkd, calculatePaintingRowAmount, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingBasePriceRmb, calculateSewingExchangeRate, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, cloneInternalQuotePayload, createDefaultSalesMarkupTiers, defaultSalesFreightCalculation, dimensionValueFromInches, dimensionValueToInches, normalizeInternalQuotePayload, salesFreightReferenceRoutesFromSnapshot, salesMarkupTierForQuantity, salesMiscRatioForSettlementDivisor, salesSettlementDivisorForMiscRatio, sewingGroupHasLaborLine, splitEngineeringMoldPartNames, type AssemblyPayload, type ElectronicPayload, type ElectronicQuoteGroup, type EngineeringPayload, type HairPayload, type PaintingPayload, type SalesPayload, type SewingPayload, type SlushPayload } from '@/lib/internalQuoteSectionPayload'
 
 describe('internal quote section payload normalization', () => {
+  it('keeps adopted amounts, pending state and history attached to their rows after normalization and reorder', () => {
+    const record = { mode: 'per_piece', amount_hkd: '1.1', basis_hash: 'basis', requires_confirmation: true }
+    const history = [{ action: 'per_piece', amount_hkd: '1.2' }]
+    const result = normalizeInternalQuotePayload('assembly', { groups: [{ name: '第一组', production_qty: 3000, teams: 1, processes: [], total_persons: 14, quote_amount_adjustment: record, quote_amount_history: history }, { name: '第二组', production_qty: 2000, teams: 1, total_persons: 2, processes: [] }] })
+    const groups = result.groups as Array<Record<string, unknown>>
+    const reordered = normalizeInternalQuotePayload('assembly', { ...result, groups: [...groups].reverse() }).groups as Array<Record<string, unknown>>
+    expect(reordered[0]!.quote_amount_adjustment).toBeUndefined()
+    expect(reordered[1]!.quote_amount_adjustment).toEqual(record)
+    expect(reordered[1]!.quote_amount_history).toEqual(history)
+    expect(reordered[1]!.production_qty).toBe(3000)
+  })
   const defaultPallet = { pallet_length_mm: 1000, pallet_width_mm: 1150, pallet_height_mm: 1300 }
   it('retains explicit manual pallet counts in saved payloads and uses them for preview costs', () => {
     const carton = { length_in: 18, width_in: 12, height_in: 10, qty_per_carton: 24 }

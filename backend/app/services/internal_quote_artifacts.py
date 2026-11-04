@@ -989,6 +989,9 @@ def confirm_import_batch(
                         fee["cost_rmb"] = fee["mold_import_default_rmb"] = _imported_mold_total(merged_payload["molds"])
     if replacement:
         effective_mode = "replace_source"
+    if batch.import_type == "assembly":
+        from app.services.internal_quote_amount_adjustments import retain_replaced_adjustments
+        merged_payload = retain_replaced_adjustments(_json_object(section.payload_json), merged_payload)
     source_workbook_attachment_id = _materialize_imported_source_workbook(
         db,
         quote,

@@ -28,12 +28,14 @@ beforeEach(()=>{
   vi.mocked(reportingApi.read).mockResolvedValue(view)
 })
 afterEach(()=>wrapper?.unmount())
-async function open(workspace:string){
+async function open(workspace:string, showProductionSummary = false){
   const path='/modules/production/cutting/'+workspace
   const component=workspace==='reporting'?CuttingReportingPage:workspace==='costs'?CuttingCostsPage:CuttingOrdersPage
-  const router=createRouter({history:createMemoryHistory(),routes:[{path,component,props:{workspace:CUTTING_WORKSPACES.find(w=>w.path===workspace)}}]})
+  const routes = [{path, component, props:{workspace:CUTTING_WORKSPACES.find(w=>w.path===workspace)}}]
+  if (showProductionSummary) routes.push({path:'/modules/production/cutting/reporting', component:CuttingReportingPage, props:{workspace:undefined}})
+  const router=createRouter({history:createMemoryHistory(),routes})
   await router.push(cuttingDestination(order.line_id,'2026-09',workspace));await router.isReady()
-  wrapper=mount(RouterView,{global:{plugins:[router],stubs:{CuttingMaterialRequests:editorStub,CuttingMaterialUsage:editorStub,CuttingProductionSummary:true}}})
+  wrapper=mount(RouterView,{global:{plugins:[router],stubs:{CuttingMaterialRequests:editorStub,CuttingMaterialUsage:editorStub,CuttingProductionSummary:!showProductionSummary}}})
   await flushPromises();return router
 }
 describe('monthly reconciliation destinations',()=>{
@@ -54,6 +56,63 @@ describe('monthly reconciliation destinations',()=>{
     const destination=cuttingDestination(order.line_id,'2026-09','reporting','task','task-1')
     await router.push({...destination,query:{...destination.query,day:'2026-09-18'}});await flushPromises()
     expect(reportingApi.read).toHaveBeenLastCalledWith(order.line_id,'2026-09-18',1,undefined,undefined)
+  })
+  it('opens the same order and summary date from the planning production summary',async()=>{
+    vi.mocked(ordersApi.read).mockResolvedValue({ ...order, current: { ...order.current!, data: { ...order.current!.data, planning: {} } } })
+    const router = await open('planning', true)
+    const link = wrapper.findAll('a').find(a => a.text() === '进入每日填数查看明细')!
+    await link.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/modules/production/cutting/reporting')
+    expect(ordersApi.read).toHaveBeenLastCalledWith(order.line_id)
+    expect(reportingApi.read).toHaveBeenLastCalledWith(order.line_id, view.as_of, 1, undefined, undefined)
+    expect(ordersApi.list).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('TARGET-ORDER')
+    await wrapper.findAll('a').find(a=>a.text()==='返回该订单排期')!.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/modules/production/cutting/planning')
+    expect(router.currentRoute.value.query.line_id).toBe(order.line_id)
+    expect(wrapper.text()).toContain('TARGET-ORDER')
+    expect(ordersApi.list).not.toHaveBeenCalled()
+  })
+  it('updates the linked cutoff only after a successful refresh without reloading the order',async()=>{
+    const router = await open('reporting')
+    const target = cuttingDestination(order.line_id, '2026-09', 'reporting', 'report', 'linked-report')
+    await router.push({...target, query:{...target.query, day:view.as_of}})
+    await flushPromises()
+    vi.mocked(ordersApi.read).mockClear()
+    vi.mocked(reportingApi.read).mockClear()
+    const form = wrapper.get('.report-detail form')
+    await form.get('input[type=date]').setValue('2026-10-14')
+    expect(router.currentRoute.value.query.day).toBe(view.as_of)
+    vi.mocked(reportingApi.read).mockRejectedValueOnce(new Error('offline'))
+    await form.trigger('submit')
+    await flushPromises()
+    expect(router.currentRoute.value.query.day).toBe(view.as_of)
+    expect(wrapper.text()).toContain(`截至 ${view.as_of}`)
+    vi.mocked(reportingApi.read).mockResolvedValueOnce({...view, as_of:'2026-10-14'})
+    await form.trigger('submit')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({line_id:order.line_id, day:'2026-10-14', month:'2026-09', focus_kind:'report', focus_id:'linked-report'})
+    expect(reportingApi.read).toHaveBeenLastCalledWith(order.line_id, '2026-10-14', 1, undefined, 'linked-report')
+    expect(reportingApi.read).toHaveBeenCalledTimes(2)
+    expect(ordersApi.read).not.toHaveBeenCalled()
+  })
+  it.each([403,404])('separates reporting order lookup failure (%i) from module availability and recovers to the list',async status=>{
+    const router = await open('reporting')
+    vi.mocked(ordersApi.read).mockRejectedValueOnce({response:{status,data:{detail:'关联订单无法查看'}}})
+    await router.push(cuttingDestination('missing','', 'reporting'))
+    await flushPromises()
+    expect(wrapper.text()).toContain('无法定位关联订单')
+    expect(wrapper.text()).toContain('关联订单无法查看')
+    expect(wrapper.text()).not.toContain('每日填数尚未启用')
+    expect(wrapper.text()).not.toContain('TARGET-ORDER')
+    await wrapper.findAll('a').find(a=>a.text()==='返回订单列表')!.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({factory:'huakang-c'})
+    expect(ordersApi.list).toHaveBeenCalledWith(1, '')
+    expect(wrapper.text()).toContain('已签收订单')
+    expect(wrapper.text()).not.toContain('无法定位关联订单')
   })
   it('ignores an earlier order response after query navigation',async()=>{
     let resolve!:(v:CuttingOrder)=>void
