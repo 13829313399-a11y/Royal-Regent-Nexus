@@ -13,7 +13,7 @@ from app.services.internal_quote_prefill import material_family, _match_token
 from app.services.internal_quote_sewing import is_sewing_labor, uses_sewing_quoted_price
 
 
-FORMULA_VERSION = "rr2-2026-v12"
+FORMULA_VERSION = "rr2-2026-v13"
 FOUR_PLACES = Decimal("0.0001")
 ZERO = Decimal("0")
 
@@ -1801,6 +1801,7 @@ def _pricing_metadata(
 
 
 def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[str, Any]) -> None:
+    from app.services.internal_quote_amount_adjustments import adopt_amount
     labor_base = decimal_value(
         payload.get("labor_base_hkd"),
         "装配人工基数",
@@ -1830,6 +1831,7 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
         )
         group_total = ZERO
         total_persons = ZERO
+        first_line = len(result["line_breakdown"])
         for process_index, process in enumerate(processes):
             if not isinstance(process, dict):
                 raise CalculationInputError(f"装配第 {group_index + 1} 组工序 {process_index + 1} 格式无效")
@@ -1893,7 +1895,31 @@ def _assembly(payload: dict[str, Any], snapshot: dict[str, Any], result: dict[st
                     f"{str(group.get('name', '')).strip() or f'第 {group_index + 1} 组'}的工序人数合计必须大于 0",
                 )
             )
+        original_group_total = group_total
+        basis = {"labor_base": labor_base, "standard_hours": standard_work_hours,
+                 "category": category, "teams": group_teams, "production_qty": group_production_qty,
+                 "total_persons": total_persons, "import_batch_id": group.get("import_batch_id"),
+                 "processes": [{key: line.get(key) for key in ("persons", "teams", "production_qty")}
+                               for line in result["line_breakdown"][first_line:]]}
+        group_total = adopt_amount(group, ["groups", group_index], group_total, 1, basis, result)
+        adjusted = result["amount_adjustments"][-1]["status"] == "adopted"
+        if adjusted:
+            original_lines = result["line_breakdown"][first_line:]
+            result["line_breakdown"][first_line:] = [{
+                **pricing, "kind": "assembly_manual_total", "category": category,
+                "group": str(group.get("name", "")), "persons": decimal_text(total_persons),
+                "teams": decimal_text(group_teams), "production_qty": decimal_text(group_production_qty),
+                "amount_hkd_pcs": decimal_text(group_total), "original_amount_hkd_pcs": decimal_text(original_group_total),
+                "original_lines": original_lines, "quote_amount_adopted": True,
+                "source_path": ["groups", group_index], "formula": "本报价采用金额（倍率前 HKD/件）",
+            }]
+        else:
+            for line in result["line_breakdown"][first_line:]:
+                line["source_path"] = ["groups", group_index]
         result["group_summaries"].append({
+            "source_path": ["groups", group_index],
+            "quote_amount_adopted": adjusted,
+            "original_amount_hkd_pcs": decimal_text(original_group_total),
             "category": category,
             "group": str(group.get("name", "")),
             "standard_work_hours": decimal_text(standard_work_hours),
@@ -1964,6 +1990,7 @@ def _sales_packaging(
     snapshot: dict[str, Any],
     result: dict[str, Any],
 ) -> tuple[Decimal, Decimal]:
+    from app.services.internal_quote_amount_adjustments import adopt_amount
     cartons = payload.get("cartons", []) or []
     if not cartons:
         return ZERO, ZERO
@@ -2019,6 +2046,10 @@ def _sales_packaging(
         qty_per_carton = positive_value(row.get("qty_per_carton"), f"纸箱第 {index + 1} 行每箱数量")
         carton_paper_factor = paper_factor if index == 0 else inner_paper_factor
         carton_price = (length + width + 2) * (width + height + 1) * 2 * carton_paper_factor / 1000
+        original_carton_price = carton_price
+        carton_price = adopt_amount(row, ["cartons", index], carton_price / qty_per_carton, qty_per_carton,
+            {"length": length, "width": width, "height": height, "quantity": qty_per_carton,
+             "factor": carton_paper_factor, "import_batch_id": row.get("import_batch_id")}, result, per_carton=True) * qty_per_carton
         flat_total = ZERO
         for flat_index, flat in enumerate(row.get("flat_cards", []) or []):
             if not isinstance(flat, dict):
@@ -2026,7 +2057,10 @@ def _sales_packaging(
             flat_length = positive_value(flat.get("length_in"), f"平卡第 {flat_index + 1} 行长度")
             flat_width = positive_value(flat.get("width_in"), f"平卡第 {flat_index + 1} 行宽度")
             flat_qty = positive_value(flat.get("quantity"), f"平卡第 {flat_index + 1} 行用量", "1")
-            flat_total += flat_length * flat_width * flat_card_factor * flat_qty / 1000
+            flat_original = flat_length * flat_width * flat_card_factor * flat_qty / 1000
+            flat_total += adopt_amount(flat, ["cartons", index, "flat_cards", flat_index], flat_original / qty_per_carton, qty_per_carton,
+                {"length": flat_length, "width": flat_width, "flat_quantity": flat_qty, "quantity": qty_per_carton,
+                 "factor": flat_card_factor, "import_batch_id": row.get("import_batch_id")}, result, per_carton=True) * qty_per_carton
         per_piece = (carton_price + flat_total) / qty_per_carton
         cuft = length * width * height / 1728
         carton_total_hkd += per_piece
@@ -2039,6 +2073,8 @@ def _sales_packaging(
             "paper_price_factor": decimal_text(carton_paper_factor),
             "flat_card_price_factor": decimal_text(flat_card_factor),
             "carton_price_hkd": decimal_text(carton_price),
+            "original_carton_price_hkd": decimal_text(original_carton_price),
+            "source_path": ["cartons", index],
             "flat_card_price_hkd": decimal_text(flat_total),
             "per_piece_hkd": decimal_text(per_piece),
             "cuft": decimal_text(cuft),

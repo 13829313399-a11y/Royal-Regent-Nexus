@@ -2,6 +2,13 @@ import { http } from '@/lib/http'
 import type { ApiInternalQuoteWholeProductSave, InternalQuoteHttpClient } from './internalQuote'
 
 export interface OutputField {
+  adjustment?: {
+    mode: 'formula' | 'per_piece' | 'per_carton'; status: 'formula' | 'adopted' | 'pending'
+    original_per_piece_hkd: string; original_per_carton_hkd: string | null
+    qty_per_carton: string | null; effective_per_piece_hkd: string; amount_hkd: string
+    allowed_modes: Array<'per_piece' | 'per_carton'>; history_count: number
+  }
+  adjustment_history?: Array<{ action: string; amount_hkd: string | null; author: string; updated_at: string; original_per_piece_hkd: string }>
   annotation?: { text: string; image_attachment_ids: string[]; author?: string; updated_at?: string; price_at_note?: string } | null
   id: string
   label: string
@@ -40,13 +47,16 @@ export interface OutputLayout {
   formula_errors: string[]
   factory_price_hkd: string
   quote_price_hkd?: string | null
+  target_customer_price?: string
+  exchange_rates?: { rmb_hkd?: string; hkd_usd?: string }
+  removed_adjustments?: Array<{ name: string; section_name: string; amount_hkd: string; reason: string }>
   preview: boolean
   read_only: boolean
   warnings: Array<{ message?: string }>
 }
 export interface OutputEdits {
   base_token: string
-  edits: Array<{ field_id: string; value: string | number | null; annotation?: { text: string; image_attachment_ids: string[]; new_images: string[] } }>
+  edits: Array<{ field_id: string; value: string | number | null; adjustment_mode?: 'formula' | 'per_piece' | 'per_carton'; annotation?: { text: string; image_attachment_ids: string[]; new_images: string[] } }>
 }
 
 export function createInternalQuoteOutputApi(client: InternalQuoteHttpClient = http) {

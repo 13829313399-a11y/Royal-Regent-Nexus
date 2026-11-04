@@ -13,7 +13,7 @@ import { huadengLaborJob, injectionLaborOwner } from '@/lib/internalQuoteMoldLin
 import InternalQuotePricingFields from './InternalQuotePricingFields.vue'
 import InternalQuoteDickieSales from './InternalQuoteDickieSales.vue'
 import InternalQuoteDickieMolds from './InternalQuoteDickieMolds.vue'
-import { calculateAssemblyCategoryLaborHkd, calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingRowSplit, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
+import { calculateAssemblyGroupLaborHkd, calculateAssemblyGroupPeople, calculateCartonCuft, calculateCartonPriceHkd, calculateCartonUnitCostHkd, calculateElectronicAmountHkd, calculateElectronicQuickSubtotalRmb, calculateElectronicQuickUnitPriceHkd, calculateElectronicSummary, calculateElectronicUnitPriceHkd, calculateElectronicUnitPriceRmb, calculateEngineeringMaterialAmountHkd, calculateEngineeringMaterialEffectiveUnitHkd, calculateEngineeringMaterialUnitHkd, calculateEngineeringMaterialUnitRmb, calculateEngineeringMoldAllocation, calculateEngineeringMoldPriceHkd, calculateFlatCardPriceHkd, calculateHairRowAmountHkd, calculateHairTotalHkd, calculateJustPlayAdhesivePackagingCostHkd, calculateJustPlayPaperPalletCostHkd, calculatePackagingMaterialAmountHkd, calculatePackagingMaterialEffectiveUnitHkd, calculatePackagingMaterialUnitHkd, calculatePackagingMaterialUnitRmb, calculatePaintingOperationTotals, calculatePaintingQuickPaintTaxHkd, calculatePaintingQuickTotalHkd, calculatePaintingRowAmount, calculatePaintingRowSplit, calculatePaintingTotalHkd, calculateSalesFreightOptions, calculateSalesTestingFeeUnitUsd, calculateSewingBasePriceHkd, calculateSewingGroupTotalHkd, calculateSewingQuickTotalHkd, calculateSewingRowTotalHkd, calculateSewingTotalHkd, calculateSlushRowAmount, calculateSlushTotalHkd, calculateSlushTotalRmb, createDefaultSalesCarton, dimensionValueFromInches, dimensionValueToInches, electronicExtraRmb, normalizeSalesDimensionUnit, paintingOperationLabels, salesFreightCalculationModes, salesFreightCapacityDefinitions, salesFreightReferenceRoutesFromSnapshot, sewingGroupHasLaborLine, type AssemblyGroup, type AssemblyPayload, type ElectronicComponentRow, type ElectronicPayload, type ElectronicQuickQuoteRow, type EngineeringMaterialRow, type EngineeringMoldRow, type EngineeringPayload, type HairPayload, type MoldingPayload, type PaintingOperationCode, type PaintingPayload, type SalesCartonRow, type SalesDimensionUnit, type SalesDimensions, type SalesPackagingMaterialRow, type SalesPayload, type SewingGroup, type SewingPayload, type SlushPayload, type UnitPriceSourceCurrency } from '@/lib/internalQuoteSectionPayload'
 import { getInternalQuoteFormBlocks, type InternalQuoteFormBlock } from '@/lib/internalQuoteBlockProgress'
 import { calculateJustPlayMainCartonDimensions, justPlayCartonState, normalizeJustPlayCartonInputs, calculateJustPlayCartonsPerPallet, normalizeJustPlayPackagingInputs, justPlayPackagingInputsValid, type JustPlayPackagingInputs, type JustPlayCartonInputs } from '@/lib/internalQuoteSectionPayload'
 import type { InternalQuoteAttachmentRecord, InternalQuoteSectionCode } from '@/types/internalQuoteDesk'
@@ -201,8 +201,8 @@ function previewImportSource(importType: string) {
   const attachment = importSourceAttachment(importType)
   if (attachment) emit('preview-attachment', attachment)
 }
-const assemblyLaborTotal = computed(() => assemblyGroups.value.reduce((total, group) => total + calculateAssemblyGroupLaborHkd(group, assembly.value.labor_base_hkd), 0))
-const packagingLaborTotal = computed(() => calculateAssemblyCategoryLaborHkd(assembly.value, 'packaging'))
+const assemblyLaborTotal = computed(() => assemblyGroups.value.reduce((total, group) => total + assemblyAdoptedAmount(group), 0))
+const packagingLaborTotal = computed(() => packagingGroups.value.reduce((total, group) => total + assemblyAdoptedAmount(group), 0))
 const allAssemblyLaborTotal = computed(() => assemblyLaborTotal.value + packagingLaborTotal.value)
 // 所有客户共用内部核价字段；仅在对应客户单据上显示报客模板专属字段。
 // 这些字段不参与内部成本公式，也不改变统一工作簿基础布局。
@@ -484,6 +484,21 @@ function removeSalesCarton(index: number) {
   if (!hasInnerCarton.value) delete sales.value.inner_paper_price_factor
 }
 function addSalesFlatCard(cartonIndex: number) { sales.value.cartons[cartonIndex].flat_cards.push({ name: `平卡${sales.value.cartons[cartonIndex].flat_cards.length + 1}`, length_in: 0, width_in: 0, quantity: 1 }) }
+type AdoptedRecord = { path: Array<string | number>; status: string; effective_per_piece_hkd: string }
+function adoptedAmount(row: unknown, path: Array<string | number>, original: number) {
+  if (!(row as Record<string, unknown>)?.quote_amount_adjustment) return original
+  const records = props.calculation?.amount_adjustments as AdoptedRecord[] | undefined
+  const record = records?.find(item => JSON.stringify(item.path) === JSON.stringify(path))
+  return record?.status === 'adopted' ? Number(record.effective_per_piece_hkd) : Number.NaN
+}
+function assemblyAdoptedAmount(group: AssemblyGroup) {
+  return adoptedAmount(group, ['groups', assembly.value.groups.indexOf(group)], calculateAssemblyGroupLaborHkd(group, assembly.value.labor_base_hkd))
+}
+function cartonAdoptedAmount(index: number) {
+  const carton = sales.value.cartons[index]!
+  return adoptedAmount(carton, ['cartons', index], calculateCartonPriceHkd(carton, cartonPaperPriceFactor(index)) / Number(carton.qty_per_carton))
+    + carton.flat_cards.reduce((sum, flat, flatIndex) => sum + adoptedAmount(flat, ['cartons', index, 'flat_cards', flatIndex], calculateFlatCardPriceHkd(flat, flatCardPriceFactor.value) / Number(carton.qty_per_carton)), 0)
+}
 function flatCardTotal(index: number) { return sales.value.cartons[index].flat_cards.reduce((total, row) => total + calculateFlatCardPriceHkd(row, flatCardPriceFactor.value), 0) }
 function cartonPaperPriceFactor(index: number) { return index === 0 ? sales.value.paper_price_factor : innerPaperPriceFactor.value }
 type SalesDimensionKey = keyof SalesDimensions
@@ -618,7 +633,7 @@ function setFreightRouteIncluded(routeKey: string, event: Event) {
     .filter((key) => next.has(key))
 }
 const freightSourceCuft = computed(() => primaryCarton.value ? calculateCartonCuft(primaryCarton.value) : 0)
-function calculated(value: number) { return fixedDecimal(value, 3) }
+function calculated(value: number) { return Number.isFinite(value) ? fixedDecimal(value, 3) : '待确认 / 待核算' }
 function measured(value: unknown) {
   if (value === '' || value == null) return '—'
   const numeric = Number(value)
@@ -1319,7 +1334,7 @@ function addBuzzBeeColorBoxTier() {
           <table class="assemblySummaryTable">
             <thead><tr><th>类型</th><th>产品</th><th>标准工时</th><th>基数 HKD</th><th>生产量</th><th>小组</th><th>总人数</th><th>合计 人工/PCS HKD</th></tr></thead>
             <tbody>
-              <tr v-for="(group,index) in visibleAssemblySummaryGroups" :key="index"><td>{{ group.category === 'assembly' ? '组装' : '包装/混装' }}</td><td>{{ group.name || '未命名' }}</td><td>{{ Number(assembly.standard_work_hours || 0).toFixed(2) }}</td><td>{{ Number(assembly.labor_base_hkd || 0).toFixed(2) }}</td><td>{{ whole(group.production_qty) }}</td><td>{{ whole(group.teams) }}</td><td>{{ whole(calculateAssemblyGroupPeople(group)) }}</td><td class="calculated-cell">{{ calculated(calculateAssemblyGroupLaborHkd(group, assembly.labor_base_hkd)) }}</td></tr>
+              <tr v-for="(group,index) in visibleAssemblySummaryGroups" :key="index"><td>{{ group.category === 'assembly' ? '组装' : '包装/混装' }}</td><td>{{ group.name || '未命名' }}</td><td>{{ Number(assembly.standard_work_hours || 0).toFixed(2) }}</td><td>{{ Number(assembly.labor_base_hkd || 0).toFixed(2) }}</td><td>{{ whole(group.production_qty) }}</td><td>{{ whole(group.teams) }}</td><td>{{ whole(calculateAssemblyGroupPeople(group)) }}</td><td class="calculated-cell">{{ calculated(assemblyAdoptedAmount(group)) }}</td></tr>
               <tr v-if="!visibleAssemblySummaryGroups.length"><td colspan="8" class="empty">当前配件暂无组装产品；包装/混装共用项也尚未新增</td></tr>
             </tbody>
             <tfoot><tr><td colspan="7">组装人工合计</td><td>HKD {{ calculated(assemblyLaborTotal) }}</td></tr><tr><td colspan="7">包装/混装人工合计</td><td>HKD {{ calculated(packagingLaborTotal) }}</td></tr><tr class="assembly-grand-total"><td colspan="7">所有产品总合计 人工/PCS</td><td>HKD {{ calculated(allAssemblyLaborTotal) }}</td></tr></tfoot>
@@ -1337,9 +1352,9 @@ function addBuzzBeeColorBoxTier() {
             <label><span>小组数</span><input v-model.number="group.teams" :disabled="disabled" type="number" min="0" step="1" aria-label="组装小组数"></label>
             <label v-if="!group.processes.length"><span>总人数</span><input :value="group.total_persons ?? ''" :disabled="disabled" type="number" min="0" step="1" placeholder="无工序时手工填写" aria-label="组装总人数" @input="setAssemblyManualPeople(group, $event)"></label>
             <label v-else class="assembly-readonly"><span>总人数（工序汇总）</span><output>{{ whole(calculateAssemblyGroupPeople(group)) }}</output></label>
-            <label class="assembly-readonly"><span>合计 人工/PCS HKD（自动）</span><output>{{ calculated(calculateAssemblyGroupLaborHkd(group, assembly.labor_base_hkd)) }}</output></label>
+            <label class="assembly-readonly"><span>报价采用 人工/PCS HKD</span><output>{{ calculated(assemblyAdoptedAmount(group)) }}</output></label>
           </div>
-          <div class="subhead"><span>工序明细（{{ group.processes.length }} 步）</span><button type="button" :disabled="disabled" @click="addAssemblyProcess(group)"><Plus />新增工序</button></div>
+          <div class="subhead"><span>原核算 HKD {{ calculated(calculateAssemblyGroupLaborHkd(group, assembly.labor_base_hkd)) }} / 件 · 工序明细（{{ group.processes.length }} 步）</span><button type="button" :disabled="disabled" @click="addAssemblyProcess(group)"><Plus />新增工序</button></div>
           <div class="payload-table-scroll"><table class="assemblyProcessTable"><thead><tr><th>#</th><th>工序名称</th><th>人数</th><th>备注</th><th /></tr></thead><tbody><tr v-for="(row,rowIndex) in group.processes" :key="rowIndex"><td class="row-number">{{ rowIndex + 1 }}</td><td><input v-model="row.name" :disabled="disabled" aria-label="组装工序名称"></td><td><input :value="row.persons" :disabled="disabled" type="number" min="0" step="1" aria-label="组装工序人数" @input="setAssemblyProcessPeople(row, $event)"></td><td><input v-model="row.remark" :disabled="disabled" aria-label="组装工序备注"></td><td><button type="button" class="icon" :disabled="disabled" aria-label="删除组装工序" @click="removeAssemblyProcess(group,rowIndex)"><Trash2 /></button></td></tr><tr v-if="!group.processes.length"><td colspan="5" class="empty">暂无组装工序，可直接填写总人数或新增工序</td></tr></tbody></table></div>
         </article>
         <div v-if="!assemblyGroups.length" class="empty">暂无组装产品，可新增产品或上传排拉工序表自动导入</div>
@@ -1356,9 +1371,9 @@ function addBuzzBeeColorBoxTier() {
             <label><span>小组数</span><input v-model.number="group.teams" :disabled="disabled" type="number" min="0" step="1" aria-label="包装小组数"></label>
             <label v-if="!group.processes.length"><span>总人数</span><input :value="group.total_persons ?? ''" :disabled="disabled" type="number" min="0" step="1" placeholder="无工序时手工填写" aria-label="包装总人数" @input="setAssemblyManualPeople(group, $event)"></label>
             <label v-else class="assembly-readonly"><span>总人数（工序汇总）</span><output>{{ whole(calculateAssemblyGroupPeople(group)) }}</output></label>
-            <label class="assembly-readonly"><span>合计 人工/PCS HKD（自动）</span><output>{{ calculated(calculateAssemblyGroupLaborHkd(group, assembly.labor_base_hkd)) }}</output></label>
+            <label class="assembly-readonly"><span>报价采用 人工/PCS HKD</span><output>{{ calculated(assemblyAdoptedAmount(group)) }}</output></label>
           </div>
-          <div class="subhead"><span>工序明细（{{ group.processes.length }} 步）</span><button type="button" :disabled="disabled" @click="addAssemblyProcess(group)"><Plus />新增工序</button></div>
+          <div class="subhead"><span>原核算 HKD {{ calculated(calculateAssemblyGroupLaborHkd(group, assembly.labor_base_hkd)) }} / 件 · 工序明细（{{ group.processes.length }} 步）</span><button type="button" :disabled="disabled" @click="addAssemblyProcess(group)"><Plus />新增工序</button></div>
           <div class="payload-table-scroll"><table class="assemblyProcessTable"><thead><tr><th>#</th><th>工序名称</th><th>人数</th><th>备注</th><th /></tr></thead><tbody><tr v-for="(row,rowIndex) in group.processes" :key="rowIndex"><td class="row-number">{{ rowIndex + 1 }}</td><td><input v-model="row.name" :disabled="disabled" aria-label="包装工序名称"></td><td><input :value="row.persons" :disabled="disabled" type="number" min="0" step="1" aria-label="包装工序人数" @input="setAssemblyProcessPeople(row, $event)"></td><td><input v-model="row.remark" :disabled="disabled" aria-label="包装工序备注"></td><td><button type="button" class="icon" :disabled="disabled" aria-label="删除包装工序" @click="removeAssemblyProcess(group,rowIndex)"><Trash2 /></button></td></tr><tr v-if="!group.processes.length"><td colspan="5" class="empty">暂无包装工序，可直接填写总人数或新增工序</td></tr></tbody></table></div>
         </article>
         <div v-if="!packagingGroups.length" class="empty">暂无包装/混装产品，可新增产品或上传排拉工序表自动导入</div>
@@ -1550,14 +1565,14 @@ function addBuzzBeeColorBoxTier() {
           <div class="calculation-strip">
             <span><b>CU.FT</b> {{ measured(calculateCartonCuft(carton)) }}</span>
             <span><b>纸价系数</b> {{ measured(cartonPaperPriceFactor(index)) }}</span>
-            <span><b>箱价 HKD</b> {{ calculated(calculateCartonPriceHkd(carton, cartonPaperPriceFactor(index))) }}</span>
-            <span><b>平卡合计 HKD</b> {{ calculated(flatCardTotal(index)) }}</span>
-            <span><b>单件纸箱成本 HKD</b> {{ calculated(calculateCartonUnitCostHkd(carton, cartonPaperPriceFactor(index), flatCardPriceFactor)) }}</span>
-            <span><b>每箱数量</b> {{ carton.qty_per_carton || 0 }}</span>
+            <span><b>原核算箱价 HKD</b> {{ calculated(calculateCartonPriceHkd(carton, cartonPaperPriceFactor(index))) }}</span>
+            <span><b>原核算平卡合计 HKD</b> {{ calculated(flatCardTotal(index)) }}</span>
+            <span><b>原核算单件纸箱成本 HKD</b> {{ calculated(calculateCartonUnitCostHkd(carton, cartonPaperPriceFactor(index), flatCardPriceFactor)) }}</span>
+            <span><b>报价采用 HKD/件（含平卡）</b> {{ calculated(cartonAdoptedAmount(index)) }}</span><span><b>每箱数量</b> {{ carton.qty_per_carton || 0 }}</span><span>调价及待确认项目请在汇总与输出页核对。</span>
           </div>
           <div v-if="isDisney" class="inline-fields four disney-carton-fields"><label><span>迪士尼 Carton Unit Cost USD</span><input v-model.number="carton.disney_unit_price_usd" :disabled="disabled" type="number" min="0" step="0.001" aria-label="迪士尼纸箱单价 USD"></label></div>
           <div class="subhead"><span>配的平卡 (inch)</span><button type="button" :disabled="disabled" @click="addSalesFlatCard(index)"><Plus />新增平卡</button></div>
-          <div class="payload-table-scroll"><table><thead><tr><th>名称</th><th>长 L (in)</th><th>宽 W (in)</th><th>用量</th><th>平卡价 HKD（自动）</th><th /></tr></thead><tbody><tr v-for="(flat,flatIndex) in carton.flat_cards" :key="flatIndex"><td><input v-model="flat.name" :disabled="disabled" aria-label="平卡名称"></td><td><input v-model.number="flat.length_in" :disabled="disabled" type="number" min="0" step="0.01" aria-label="平卡长度 IN"></td><td><input v-model.number="flat.width_in" :disabled="disabled" type="number" min="0" step="0.01" aria-label="平卡宽度 IN"></td><td><input v-model.number="flat.quantity" :disabled="disabled" type="number" min="0" step="1" :aria-label="`平卡 ${flatIndex + 1} 用量`"></td><td class="calculated-cell">{{ calculated(calculateFlatCardPriceHkd(flat, flatCardPriceFactor)) }}</td><td><button type="button" class="icon" :disabled="disabled" @click="remove(carton.flat_cards,flatIndex)"><Trash2 /></button></td></tr><tr v-if="!carton.flat_cards.length"><td colspan="6" class="empty">暂无平卡，可按需要新增</td></tr></tbody></table></div>
+          <div class="payload-table-scroll"><table><thead><tr><th>名称</th><th>长 L (in)</th><th>宽 W (in)</th><th>用量</th><th>原核算平卡价 HKD</th><th /></tr></thead><tbody><tr v-for="(flat,flatIndex) in carton.flat_cards" :key="flatIndex"><td><input v-model="flat.name" :disabled="disabled" aria-label="平卡名称"></td><td><input v-model.number="flat.length_in" :disabled="disabled" type="number" min="0" step="0.01" aria-label="平卡长度 IN"></td><td><input v-model.number="flat.width_in" :disabled="disabled" type="number" min="0" step="0.01" aria-label="平卡宽度 IN"></td><td><input v-model.number="flat.quantity" :disabled="disabled" type="number" min="0" step="1" :aria-label="`平卡 ${flatIndex + 1} 用量`"></td><td class="calculated-cell">{{ calculated(calculateFlatCardPriceHkd(flat, flatCardPriceFactor)) }}</td><td><button type="button" class="icon" :disabled="disabled" @click="remove(carton.flat_cards,flatIndex)"><Trash2 /></button></td></tr><tr v-if="!carton.flat_cards.length"><td colspan="6" class="empty">暂无平卡，可按需要新增</td></tr></tbody></table></div>
         </article>
       </section>
       <section :id="blockDomId('freight')" class="payload-block sales-freight" data-form-block>

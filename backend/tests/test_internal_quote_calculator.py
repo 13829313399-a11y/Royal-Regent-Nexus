@@ -646,6 +646,9 @@ def test_painting_slush_sewing_and_assembly_decimal_vectors():
         "total_hkd": "4.5500",
     }
     assert assembly["group_summaries"][0] == {
+        "source_path": ["groups", 0],
+        "quote_amount_adopted": False,
+        "original_amount_hkd_pcs": "2.6000",
         "category": "assembly",
         "group": "组装",
         "standard_work_hours": "11.0000",
@@ -1048,6 +1051,8 @@ def test_sales_owns_carton_flat_card_and_cuft_calculation():
         "formula": "用量 × 原单价 RMB × 损耗率 ÷ 冻结 RMB→HKD 汇率（税点仅记录，不重复加价）",
     }
     assert sales["line_breakdown"][1] == {
+        "source_path": ["cartons", 0],
+        "original_carton_price_hkd": "0.9350",
         "kind": "carton",
         "owner": "sales",
         "item": "主纸箱",

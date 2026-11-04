@@ -24,7 +24,7 @@ def bind_source_label(sheet, cell, value):
 OPERATIONS = {"clamp": "夹模", "pad_print": "移印", "uv": "UV", "spray": "散枪", "edge": "边模", "paint": "油色", "dip": "浸油", "wipe": "抹油", "pp_water": "擦 PP 水"}
 
 
-def source_groups(sections, region_code=""):
+def source_groups(sections, region_code="", snapshot=None):
     """No client-supplied paths: only these business inputs can be patched."""
     groups = []
     for section in sections:
@@ -32,6 +32,8 @@ def source_groups(sections, region_code=""):
             continue
         code = section.department
         payload = json.loads(section.payload_json or "{}")
+        from app.services.internal_quote_amount_adjustments import adjustment_catalog, KEY
+        adjustments = adjustment_catalog(code, payload, snapshot or {}) if code in {"assembly", "sales"} else {}
 
         def add(row, path, price_keys=(), category="", extra_prices=()):
             if not isinstance(row, dict):
@@ -57,6 +59,11 @@ def source_groups(sections, region_code=""):
                 for key in key_path[:-1]:
                     parent = parent.get(key, {})
                 field(key_path, parent.get(key_path[-1]), label, "price", "HKD", nullable)
+            adjustment = adjustments.get(tuple(path))
+            if adjustment:
+                field([KEY], adjustment["amount_hkd"], "报价采用金额", "price", "HKD", True)
+                group["fields"][-1]["adjustment"] = adjustment
+                group["fields"][-1]["adjustment_history"] = row.get("quote_amount_history", [])
             if group["fields"]:
                 groups.append(group)
 
@@ -84,6 +91,8 @@ def source_groups(sections, region_code=""):
                 add(row, path, ["unit_price_hkd"], "客供物料")
             for row, path in rows("cartons"):
                 add(row, path, category="纸箱")
+                for flat, child in rows("flat_cards", row, path):
+                    add(flat, child, category=f"{row.get('item', '纸箱')} · 平卡")
             if region_code == "indonesia":
                 add(payload, [], category="印尼运费", extra_prices=[(["indonesia_freight_hkd"], "印尼运费", False)])
         elif code == "electronic":
@@ -157,7 +166,7 @@ def _bind_aggregate_cells(workbook, groups):
         bindings = getattr(sheet, "_quote_bindings", {})
         sheet._quote_bindings = bindings
         for address, binding in list(bindings.items()):
-            if binding.get("group") not in ids:
+            if binding.get("group") not in ids and not (binding.get("groups") and all(key in ids for key in binding["groups"])):
                 del bindings[address]
         if sheet.title == "工模报价":
             for group in groups:
@@ -182,7 +191,16 @@ def _bind_aggregate_cells(workbook, groups):
             if len(row) < 4:
                 continue
             category = str(row[1].value or "")
+            if len(row) > 14:
+                from app.services.internal_quote_excel import _carton_price_label
+                cartons = [g for g in groups if g["section"] == "sales" and g["category"] == "纸箱"]
+                for index, group in enumerate(cartons):
+                    if row[13].value == _carton_price_label(index, len(cartons)):
+                        bindings[row[14].coordinate] = {"group": group["id"], "kind": "price"}
             group_ids = [key for code in departments.get(category, []) for key in section_groups.get(code, [])]
+            if category in {"装配工", "纸箱"}:
+                group_ids = [g["id"] for g in groups if g["id"] in group_ids
+                             and any(f.get("adjustment") for f in g["fields"])]
             if group_ids:
                 for cell in row[2:4]:
                     bindings.setdefault(cell.coordinate, {"groups": group_ids, "kind": "source"})
