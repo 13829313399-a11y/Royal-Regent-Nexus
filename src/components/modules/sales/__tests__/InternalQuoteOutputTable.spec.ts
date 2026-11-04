@@ -33,6 +33,29 @@ async function start() {
 }
 
 describe('output table source editing', () => {
+  it('opens adopted cost controls, sends a single pricing mode and refreshes the target gap', async () => {
+    const current = layout()
+    current.target_customer_price = 'HKD 1.2'
+    current.groups[0]!.fields[1] = { id: 'sales:cartons/0/quote_amount_adjustment', label: '报价采用金额', kind: 'price', value: '.5', currency: 'HKD', nullable: true,
+      adjustment: { mode: 'formula', status: 'formula', original_per_piece_hkd: '.5', original_per_carton_hkd: '6', qty_per_carton: '12', effective_per_piece_hkd: '.5', amount_hkd: '.5', allowed_modes: ['per_piece', 'per_carton'], history_count: 0 } }
+    mocks.get.mockResolvedValue(current)
+    const wrapper = await start()
+    expect(wrapper.text()).toContain('还需降低 HKD 0.3000')
+    await wrapper.get('[data-cell="D20"] button').trigger('click')
+    expect(wrapper.find('.output-cell-input').exists()).toBe(false)
+    await wrapper.get('select[aria-label="计价方式"]').setValue('per_carton')
+    expect((wrapper.get('input[aria-label="报价采用金额"]').element as HTMLInputElement).value).toBe('6')
+    await wrapper.get('input[aria-label="报价采用金额"]').setValue('3')
+    await wrapper.get('textarea[aria-label="报价采用金额 调价批注"]').setValue('供应商已口头确认')
+    mocks.preview.mockResolvedValue({ ...current, preview: true, quote_price_hkd: '1.1' })
+    await vi.advanceTimersByTimeAsync(700)
+    expect(mocks.preview).toHaveBeenLastCalledWith('quote-1', expect.objectContaining({ edits: [expect.objectContaining({ value: '3', adjustment_mode: 'per_carton', annotation: expect.objectContaining({ text: '供应商已口头确认' }) })] }))
+    expect(wrapper.text()).toContain('已达到目标价')
+    await wrapper.findAll('button').find(button => button.text() === '恢复公式核算')!.trigger('click')
+    await vi.advanceTimersByTimeAsync(700)
+    expect(mocks.preview).toHaveBeenLastCalledWith('quote-1', expect.objectContaining({ edits: [expect.objectContaining({ value: null, adjustment_mode: 'formula' })] }))
+  })
+
   it('keeps the total visible and hides an outdated price while a new preview is pending', async () => {
     const wrapper = await start()
     expect(wrapper.get('.output-total-bar').text()).toContain('HKD 1.5000')

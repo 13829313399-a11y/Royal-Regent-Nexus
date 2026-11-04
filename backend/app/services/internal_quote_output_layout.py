@@ -2,6 +2,8 @@
 import hashlib
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
+from copy import deepcopy
+from typing import Literal
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr
@@ -16,7 +18,7 @@ from app.services.internal_quote import (
     _get_quote, _json_object, _rr2_cost_summary, ensure_quote_permission,
     ensure_section_permission, preview_quote_costs, quote_write, save_whole_product_sections,
     _can_project_molding_read, _project_molding_parts, _molding_projection_warning,
-    molding_projection_pending, _authoritative_factory_quote, _pricing_completeness,
+    molding_projection_pending, _authoritative_factory_quote,
 )
 from app.services.internal_quote_calculator import canonical_json
 from app.services.internal_quote_artifacts import _can_access_attachment_department
@@ -38,6 +40,7 @@ class OutputCellEdit(BaseModel):
     field_id: str = Field(min_length=1, max_length=512)
     value: StrictStr | StrictInt | StrictFloat | None
     annotation: PriceAnnotationEdit | None = None
+    adjustment_mode: Literal["formula", "per_piece", "per_carton"] | None = None
 
 
 class OutputLayoutEdits(BaseModel):
@@ -89,9 +92,11 @@ def _prepare(db, quote_id, request, user, *, persist_images=False):
         raise HTTPException(409, "报价已发生变化，当前表格修改尚未保存。请重新读取并核对后再修改")
     if _projection_pending(db, quote, sections):
         raise HTTPException(409, _molding_projection_warning()["message"] + "请先返回填写页同步，再修改输出表格。")
-    fields = {field["id"]: (group, field) for group in source_groups(sections, quote.region_code) for field in group["fields"]}
+    snapshot = _json_object(reference.snapshot_json)
+    fields = {field["id"]: (group, field) for group in source_groups(sections, quote.region_code, snapshot) for field in group["fields"]}
     by_code = {s.department: s for s in sections}
     payloads, seen = {}, set()
+    adjustments = []
     if sum(len(image) for edit in request.edits if edit.annotation for image in edit.annotation.new_images) > 14_000_000:
         raise HTTPException(400, "本次调价截图合计过大，请分批保存（总计不超过 10 MB）")
     for edit in request.edits:
@@ -122,8 +127,15 @@ def _prepare(db, quote_id, request, user, *, persist_images=False):
         parent = payloads[code]
         for key in field["path"][:-1]:
             parent = parent[key]
-        parent[field["path"][-1]] = value
-        if edit.annotation is not None:
+        if field.get("adjustment"):
+            if edit.adjustment_mode is None:
+                raise HTTPException(400, "请选择公式核算、每件金额或每箱金额")
+            adjustments.append((code, field, edit, value, deepcopy(parent)))
+        else:
+            if edit.adjustment_mode is not None:
+                raise HTTPException(400, "当前单元格不支持采用金额模式")
+            parent[field["path"][-1]] = value
+        if edit.annotation is not None and not (field.get("adjustment") and edit.adjustment_mode == "formula"):
             if field["kind"] != "price":
                 raise HTTPException(400, "只能为单价添加调价批注")
             from app.services.internal_quote_price_notes import make_annotation
@@ -136,6 +148,31 @@ def _prepare(db, quote_id, request, user, *, persist_images=False):
                 notes[field["note_key"]] = note
             else:
                 notes.pop(field["note_key"], None)
+
+    from app.services.internal_quote_amount_adjustments import KEY, HISTORY, adjustment_catalog
+    from app.services.internal_quote import now_text
+    for code, field, edit, value, previous in adjustments:
+        owner = payloads[code]
+        for key in field["owner_path"]:
+            owner = owner[key]
+        spec = adjustment_catalog(code, payloads[code], snapshot).get(tuple(field["owner_path"]))
+        if spec is None:
+            raise HTTPException(400, "请先补全原核算所需资料，再调整采用金额")
+        if edit.adjustment_mode != "formula":
+            if edit.adjustment_mode not in spec["allowed_modes"] or value is None:
+                raise HTTPException(400, "调价方式或金额无效")
+            if not owner.get("price_annotations", {}).get(KEY, {}).get("text", "").strip():
+                raise HTTPException(400, "请填写调价原因")
+        history = owner.setdefault(HISTORY, [])
+        history.append({"previous": previous.get(KEY), "price_annotations": previous.get("price_annotations", {}),
+                        "action": edit.adjustment_mode, "amount_hkd": value, "author": user.id, "updated_at": now_text(),
+                        "original_per_piece_hkd": spec["original_per_piece_hkd"]})
+        if edit.adjustment_mode == "formula":
+            owner.pop(KEY, None)
+            owner.get("price_annotations", {}).pop(KEY, None)
+        else:
+            owner[KEY] = {"mode": edit.adjustment_mode, "amount_hkd": value, "basis_hash": spec["basis_hash"],
+                          "original_per_piece_hkd": spec["original_per_piece_hkd"], "author": user.id, "updated_at": now_text()}
 
     # Engineering can invalidate molding's saved dependency snapshot. Include
     # the unchanged downstream inputs in the same transaction and revision check.
@@ -191,7 +228,7 @@ def _render(db, loaded, preview=None, drafts=(), *, user):
                 section.dependency_status = "current"
         context = {**context, **preview.components_hkd, "factory_price_hkd": preview.preview_factory_price_hkd}
         summary = preview.rr2_cost_summary
-    groups = source_groups(sections, quote.region_code)
+    groups = source_groups(sections, quote.region_code, snapshot)
     for group in groups:
         group["editable"] = group["section"] in editable
     # Match download ordering and include every retained workbook as read-only
@@ -213,8 +250,8 @@ def _render(db, loaded, preview=None, drafts=(), *, user):
             field.pop("path")
             field.pop("owner_path")
             field.pop("note_key")
-    incomplete = preview.incomplete_sections if preview is not None else _pricing_completeness(quote, sections)
-    warnings = [{"message": f"{item['section_name']}：{item['reason']}"} for item in incomplete]
+    warnings = [{"message": f"{s.department_name}资料尚未完成或需要重新计算，当前合计不完整。"}
+                for s in sections if s.is_required and (s.calculation_status != "valid" or s.dependency_status != "current")]
     warnings.extend(warning for section in sections if section.is_required and section.department == "sewing"
                     for warning in _json_object(section.calculation_json).get("warnings", [])
                     if warning.get("code") == "sewing_quoted_price_pending")
@@ -235,6 +272,13 @@ def _render(db, loaded, preview=None, drafts=(), *, user):
             "sheets": sheets, "groups": groups, "formula_errors": errors,
             "factory_price_hkd": str(context["factory_price_hkd"]), "preview": preview is not None,
             "quote_price_hkd": _authoritative_factory_quote(summary, warnings or errors),
+            "target_customer_price": quote.target_customer_price,
+            "exchange_rates": snapshot.get("fx", {}),
+            "removed_adjustments": [{"name": item.get("name", "旧装工组"), "section_name": section.department_name,
+                                      "amount_hkd": (item.get("adjustment") or {}).get("amount_hkd", ""),
+                                      "reason": item.get("price_annotations", {}).get("quote_amount_adjustment", {}).get("text", "")}
+                                     for section in sections if section.is_required
+                                     for item in _json_object(section.payload_json).get("removed_amount_adjustments", [])],
             "import_sources": sources,
             "read_only": not editable, "warnings": [*warnings, *(preview.warnings if preview is not None else [])]}
 

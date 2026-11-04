@@ -5,6 +5,7 @@ import { ArrowLeft, Check, FileSpreadsheet, LoaderCircle, RotateCcw, Save, Searc
 import { internalQuoteOutputApi, type OutputCell, type OutputEdits, type OutputField, type OutputLayout } from '@/api/internalQuoteOutput'
 import InternalQuoteReplaceSourceDialog from './InternalQuoteReplaceSourceDialog.vue'
 import InternalQuotePriceAnnotationEditor from './InternalQuotePriceAnnotationEditor.vue'
+import InternalQuoteAmountAdjustment from './InternalQuoteAmountAdjustment.vue'
 import { useInternalQuoteDeskStore } from '@/stores/internalQuoteDesk'
 import { getApiErrorMessage } from '@/lib/http'
 import { columnLabel } from '@/features/spreadsheet-merge/mergeHelpers'
@@ -15,6 +16,8 @@ const store = useInternalQuoteDeskStore()
 const base = ref<OutputLayout>()
 const display = ref<OutputLayout>()
 const edits = ref<Record<string, string | number | null>>({})
+type AdjustmentMode = 'formula' | 'per_piece' | 'per_carton'
+const adjustmentModes = ref<Record<string, AdjustmentMode>>({})
 const annotations = ref<Record<string, NonNullable<OutputEdits['edits'][number]['annotation']>>>({})
 const replaceOpen = ref(false)
 const previewPending = ref(false)
@@ -34,7 +37,7 @@ const search = ref('')
 let generation = 0
 let previewSequence = 0
 let timer: ReturnType<typeof setTimeout> | undefined
-const changedIds = computed(() => [...new Set([...Object.keys(edits.value), ...Object.keys(annotations.value)])])
+const changedIds = computed(() => [...new Set([...Object.keys(edits.value), ...Object.keys(annotations.value), ...Object.keys(adjustmentModes.value)])])
 const changedCount = computed(() => changedIds.value.length)
 const dirty = computed(() => changedCount.value > 0)
 const sheet = computed(() => display.value?.sheets.find(s => s.name === sheetName.value) ?? display.value?.sheets[0])
@@ -45,15 +48,37 @@ const visibleGroups = computed(() => (base.value?.groups ?? []).filter(g =>
 ))
 const width = computed(() => (sheet.value?.widths ?? []).reduce((sum, w) => sum + w, 0))
 watch(dirty, value => emit('dirty', value))
+const targetComparison = computed(() => {
+  if (previewPending.value || previewing.value || error.value || display.value?.quote_price_hkd == null) return ''
+  const target = display.value.target_customer_price?.trim().toUpperCase() ?? ''
+  const prefix = target.match(/^(HKD|HK\$|USD|US\$|RMB|CNY|¥|￥)\s*(\d+(?:\.\d+)?)$/)
+  const suffix = target.match(/^(\d+(?:\.\d+)?)\s*(HKD|HK\$|USD|US\$|RMB|CNY|¥|￥)$/)
+  const token = prefix?.[1] ?? suffix?.[2]
+  if (!token) return target && target !== '无' ? `客人目标价：${target}（需注明币种和金额才能比较）` : '未设置客人目标价'
+  const currency = ['USD', 'US$'].includes(token) ? 'USD' : ['RMB', 'CNY', '¥', '￥'].includes(token) ? 'RMB' : 'HKD'
+  const fx = display.value.exchange_rates
+  const rate = currency === 'RMB' ? Number(fx?.rmb_hkd) : currency === 'USD' ? 1 / Number(fx?.hkd_usd) : 1
+  if (!Number.isFinite(rate) || rate <= 0) return '目标价换算汇率待完善'
+  const delta = Number(display.value.quote_price_hkd) * rate - Number(prefix?.[2] ?? suffix?.[1])
+  return delta > 0 ? `还需降低 ${currency} ${delta.toFixed(4)} 达到目标价` : `已达到目标价 · 余量 ${currency} ${Math.abs(delta).toFixed(4)}`
+})
 
 function messageOf(cause: unknown) {
   const response = cause as { response?: { data?: { detail?: unknown } } }
   return typeof response.response?.data?.detail === 'string' ? response.response.data.detail : getApiErrorMessage(cause)
 }
 function valueOf(field: OutputField) { return edits.value[field.id] !== undefined ? edits.value[field.id] : field.value }
+function modeOf(field: OutputField): AdjustmentMode { return adjustmentModes.value[field.id] ?? field.adjustment?.mode ?? 'formula' }
+function setAdjustment(field: OutputField, mode: AdjustmentMode, value: string | number | null) {
+  if (saving.value || loading.value) return
+  adjustmentModes.value[field.id] = mode
+  edits.value[field.id] = value
+  if (mode === 'formula') delete annotations.value[field.id]
+  schedulePreview()
+}
 function payload() {
   const fields = new Map(base.value!.groups.flatMap(g => g.fields).map(f => [f.id, f]))
-  return { base_token: base.value!.base_token, edits: changedIds.value.map(field_id => ({ field_id, value: valueOf(fields.get(field_id)!), ...(annotations.value[field_id] ? { annotation: annotations.value[field_id] } : {}) })) }
+  return { base_token: base.value!.base_token, edits: changedIds.value.map(field_id => ({ field_id, value: valueOf(fields.get(field_id)!), ...(fields.get(field_id)?.adjustment ? { adjustment_mode: modeOf(fields.get(field_id)!) } : {}), ...(annotations.value[field_id] ? { annotation: annotations.value[field_id] } : {}) })) }
 }
 function schedulePreview() {
   notice.value = ''; error.value = ''; ++previewSequence; clearTimeout(timer)
@@ -85,12 +110,12 @@ function canEditCell(cell: OutputCell) {
   return [binding.group, ...(binding.groups ?? [])].some(id => id && groupMap.value.get(id)?.editable)
 }
 function isInline(cell: OutputCell) {
-  return selectedCell.value === cell.address && canEditCell(cell) && fieldsForCell(cell).length === 1
+  return selectedCell.value === cell.address && canEditCell(cell) && fieldsForCell(cell).length === 1 && !fieldsForCell(cell)[0]?.adjustment
 }
 async function selectCell(cell: OutputCell) {
   if (!canEditCell(cell)) return
   selectedCell.value = cell.address
-  if (fieldsForCell(cell).length !== 1) {
+  if (fieldsForCell(cell).length !== 1 || fieldsForCell(cell)[0]?.adjustment) {
     selectedGroups.value = cell.binding?.group ? [cell.binding.group] : cell.binding?.groups ?? []
     search.value = ''
     drawer.value = true
@@ -116,6 +141,7 @@ async function load() {
     base.value = result
     display.value = result
     edits.value = {}
+    adjustmentModes.value = {}
     annotations.value = {}; previewPending.value = false
     selectedCell.value = ''
     if (!result.sheets.some(s => s.name === sheetName.value)) sheetName.value = result.sheets[0]?.name ?? ''
@@ -157,6 +183,7 @@ async function save() {
     store.applySavedSections(id, receipt.sections)
     if (context !== generation) return
     edits.value = {}
+    adjustmentModes.value = {}
     annotations.value = {}
     selectedCell.value = ''
     notice.value = '已保存到当前报价，原填写页已同步。'
@@ -185,7 +212,7 @@ onBeforeUnmount(registerQuoteNavigationGuard(canLeave))
 window.addEventListener('beforeunload', beforeUnload)
 onBeforeUnmount(() => { ++generation; ++previewSequence; clearTimeout(timer); window.removeEventListener('beforeunload', beforeUnload) })
 watch(() => props.quoteId, () => {
-  base.value = undefined; display.value = undefined; edits.value = {}; annotations.value = {}; drawer.value = false; notice.value = ''; replaceOpen.value = false
+  base.value = undefined; display.value = undefined; edits.value = {}; adjustmentModes.value = {}; annotations.value = {}; drawer.value = false; notice.value = ''; replaceOpen.value = false
   void load()
 }, { immediate: true })
 defineExpose({ save, dirty, canLeave })
@@ -194,7 +221,7 @@ defineExpose({ save, dirty, canLeave })
 <template>
   <section class="output-table" data-testid="output-table" aria-label="输出表格编辑">
     <header class="output-toolbar">
-      <div class="output-title"><FileSpreadsheet :size="22" /><span><strong>报价表格</strong><small>与输出表格相同版式 · 名称、原始单价可直接修改</small></span></div>
+      <div class="output-title"><FileSpreadsheet :size="22" /><span><strong>报价表格</strong><small>与输出表格相同版式 · 名称、单价及装工 / 纸箱采用金额可修改</small></span></div>
       <div class="output-actions"><button :disabled="loading || saving || dirty || base?.read_only || !base?.import_sources?.some(s => s.editable)" :title="dirty ? '请先保存或放弃表格修改，再更换报价单' : '选择新报价单替换旧文件及相关明细'" @click="replaceOpen = true">更换报价单</button>
         <RouterLink :to="collaborationRoute"><ArrowLeft :size="15" />返回填写 / 新增内容</RouterLink>
         <button :disabled="loading || saving" @click="reset"><RotateCcw :size="15" />重新读取</button>
@@ -210,13 +237,14 @@ defineExpose({ save, dirty, canLeave })
       <span v-else-if="notice"><Check :size="14" />{{ notice }}</span>
     </div>
     <div class="output-view-tools">
-      <button @click="selectedGroups = null; search = ''; drawer = true"><Search :size="14" />查找名称 / 单价</button>
+      <button @click="selectedGroups = null; search = ''; drawer = true"><Search :size="14" />查找项目 / 调价</button>
       <span>仅当前方案 {{ base?.version_label }}</span>
       <label>缩放 <select v-model.number="zoom" aria-label="表格缩放"><option v-for="size in [60, 70, 85, 100, 120]" :key="size" :value="size">{{ size }}%</option></select></label>
     </div>
     <p v-if="error" class="output-error" role="alert">{{ error }}<span v-if="dirty"> · 修改仍保留在本页，尚未确认保存。</span></p>
     <p v-if="display?.formula_errors.length" class="output-error">部分表格结果暂未算出，已标记“待核算”。请核对后再输出。</p>
     <p v-if="display?.warnings.length" class="output-error">{{ display.warnings.map(w => w.message).filter(Boolean).join(' ') }}</p>
+    <details v-if="base?.removed_adjustments?.length" class="output-status"><summary>旧报价单有 {{ base.removed_adjustments.length }} 项调价未匹配新项目，需核对（均未计入新报价）</summary><p v-for="(item,index) in base.removed_adjustments" :key="index">{{ item.section_name }} · {{ item.name }} · 原采用 HKD {{ item.amount_hkd }} / 件 · {{ item.reason }}。请在对应新项目重新确认调价。</p></details>
     <div v-if="loading && !display" class="output-empty"><LoaderCircle class="spinning" />正在生成报价表格…</div>
     <div v-else-if="sheet" class="output-grid-scroll" :aria-busy="previewing || loading">
       <div :style="{ zoom: zoom / 100, width: `${width + 38}px`, position: 'relative' }" class="output-paper">
@@ -241,19 +269,19 @@ defineExpose({ save, dirty, canLeave })
         <img v-for="(picture, i) in sheet.images" :key="i" :src="picture.src" alt="报价产品图片" :style="{ position: 'absolute', left: `${picture.left + 38}px`, top: `${picture.top + 23}px`, width: `${picture.width}px`, height: `${picture.height}px`, objectFit: 'contain', pointerEvents: 'none' }">
       </div>
     </div>
-    <div class="output-total-bar" aria-live="polite"><span>当前总价 <strong>{{ previewPending || previewing || error || display?.quote_price_hkd == null ? '待核算' : `HKD ${Number(display.quote_price_hkd).toFixed(4)}` }}</strong></span><span>{{ previewPending || previewing ? '正在重算…' : dirty ? '未保存试算' : '已保存金额' }}</span><small v-if="!previewPending && !previewing && !error && display?.quote_price_hkd != null">成本 HKD {{ Number(display.factory_price_hkd).toFixed(4) }}</small></div><footer class="output-tabs"><button v-for="s in display?.sheets" :key="s.name" :class="{ active: s.name === sheet?.name }" @click="sheetName = s.name; selectedCell = ''"><FileSpreadsheet :size="14" />{{ s.name }}</button><span>已上传的 Excel 原表随报价一起导出</span></footer>
+    <div class="output-total-bar" aria-live="polite"><span>当前总价 <strong>{{ previewPending || previewing || error || display?.quote_price_hkd == null ? '待核算' : `HKD ${Number(display.quote_price_hkd).toFixed(4)}` }}</strong></span><span>{{ previewPending || previewing ? '正在重算…' : dirty ? '未保存试算' : '已保存金额' }}</span><small v-if="!previewPending && !previewing && !error && display?.quote_price_hkd != null">成本 HKD {{ Number(display.factory_price_hkd).toFixed(4) }} · {{ targetComparison }}</small></div><footer class="output-tabs"><button v-for="s in display?.sheets" :key="s.name" :class="{ active: s.name === sheet?.name }" @click="sheetName = s.name; selectedCell = ''"><FileSpreadsheet :size="14" />{{ s.name }}</button><span>已上传的 Excel 原表随报价一起导出</span></footer>
     <div v-if="drawer" class="output-drawer-backdrop" @click.self="drawer = false">
       <aside class="output-drawer" role="dialog" aria-modal="true" aria-label="修改原始名称与单价" @keydown.esc="drawer = false">
-        <header><div><strong>名称与原始单价</strong><p>修改现有明细，保存到同一张报价。</p></div><button aria-label="关闭明细" @click="drawer = false"><X :size="20" /></button></header>
+        <header><div><strong>名称与报价调价</strong><p>修改现有明细，保存到同一张报价。</p></div><button aria-label="关闭明细" @click="drawer = false"><X :size="20" /></button></header>
         <input v-model="search" class="output-search" placeholder="查找物料、部门或工序" aria-label="查找原始明细">
         <div class="output-source-list">
           <article v-for="group in visibleGroups" :key="group.id"><header><strong>{{ group.label }}</strong><small>{{ group.section_name }} · {{ group.category }}</small></header>
-            <template v-for="field in group.fields" :key="field.id"><label><span>{{ field.label }} <b>{{ field.currency }}</b></span><input :aria-label="`${group.label} ${field.label} ${field.currency}`.trim()" :value="valueOf(field) ?? ''" :type="field.kind === 'price' ? 'number' : 'text'" min="0" step="any" :placeholder="field.nullable ? '留空时按原规则自动计算' : ''" :disabled="!group.editable || saving || loading" @input="update(field, $event)"></label><InternalQuotePriceAnnotationEditor v-if="field.kind === 'price'" :quote-id="quoteId" :field="field" :value="annotations[field.id]" :disabled="!group.editable || saving || loading" @change="setAnnotation(field, $event)" @busy="setImageReading(field.id, $event)" /></template>
+            <template v-for="field in group.fields" :key="field.id"><InternalQuoteAmountAdjustment v-if="field.adjustment" :field="field" :mode="modeOf(field)" :value="valueOf(field)" :disabled="!group.editable || saving || loading" @change="(mode, value) => setAdjustment(field, mode, value)" /><label v-else><span>{{ field.label }} <b>{{ field.currency }}</b></span><input :aria-label="`${group.label} ${field.label} ${field.currency}`.trim()" :value="valueOf(field) ?? ''" :type="field.kind === 'price' ? 'number' : 'text'" min="0" step="any" :placeholder="field.nullable ? '留空时按原规则自动计算' : ''" :disabled="!group.editable || saving || loading" @input="update(field, $event)"></label><InternalQuotePriceAnnotationEditor v-if="field.kind === 'price' && (!field.adjustment || modeOf(field) !== 'formula')" :quote-id="quoteId" :field="field" :value="annotations[field.id]" :disabled="!group.editable || saving || loading" @change="setAnnotation(field, $event)" @busy="setImageReading(field.id, $event)" /></template>
           </article>
           <p v-if="!visibleGroups.length" class="output-empty">没有对应明细。新增内容请返回填写页。</p>
         </div>
         <p v-if="error" class="output-error" role="alert">{{ error }}</p>
-        <p class="output-total-bar" aria-live="polite">当前总价 <strong>{{ previewPending || previewing || error || display?.quote_price_hkd == null ? '待核算' : `HKD ${Number(display.quote_price_hkd).toFixed(4)}` }}</strong></p><footer><button @click="drawer = false">返回表格</button><button class="primary" :disabled="!dirty || saving || loading || imageReading.size > 0" @click="save">{{ saving ? '保存中…' : '保存修改' }}</button></footer>
+        <p class="output-total-bar" aria-live="polite">当前总价 <strong>{{ previewPending || previewing || error || display?.quote_price_hkd == null ? '待核算' : `HKD ${Number(display.quote_price_hkd).toFixed(4)}` }}</strong><small v-if="targetComparison">{{ targetComparison }}</small></p><footer><button @click="drawer = false">返回表格</button><button class="primary" :disabled="!dirty || saving || loading || imageReading.size > 0" @click="save">{{ saving ? '保存中…' : '保存修改' }}</button></footer>
       </aside>
     </div>
     <InternalQuoteReplaceSourceDialog v-if="replaceOpen && base" :key="quoteId" :quote-id="quoteId" :sources="base.import_sources ?? []" @close="replaceOpen = false" @replaced="replaceOpen = false; emit('saved'); load()" />
