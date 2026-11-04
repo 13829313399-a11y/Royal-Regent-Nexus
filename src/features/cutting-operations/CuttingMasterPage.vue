@@ -7,6 +7,7 @@ import { computed, inject, nextTick, onMounted, onBeforeUnmount, reactive, ref, 
 import { onBeforeRouteLeave, onBeforeRouteUpdate, routeLocationKey } from 'vue-router'
 import { cuttingApi, errorMessage, type Access, type Kind, type MasterRecord, type MaterialData, type ResourceData, type BomData, type SaveCommand, type StateCommand } from './api'
 import CuttingCalendarEditor from './CuttingCalendarEditor.vue'
+import CuttingBomImport from './CuttingBomImport.vue'
 import { CUTTING_FACTORY } from './navigation'
 import CuttingMetrics from './CuttingMetrics.vue'
 import { workspaceApi } from './workspaceApi'
@@ -62,6 +63,7 @@ const transition = ref<MasterRecord | null>(null), transitionReason = ref('')
 type Pending = { type: 'save'; body: SaveCommand; id?: string } | { type: 'state'; body: StateCommand; id: string }
 const pending = ref<Pending | null>(null)
 const pendingUncertain = ref(false), needsLogin = ref(false)
+const bomImport = ref<InstanceType<typeof CuttingBomImport>>()
 const editorBaseline = ref('')
 const editorSnapshot = () => JSON.stringify({ code: code.value, reason: reason.value, data: kind.value === 'material' ? material : kind.value === 'resource' ? resource : bom })
 const dirty = computed(() => (editor.value && editorSnapshot() !== editorBaseline.value) || (!!transition.value && !!transitionReason.value))
@@ -77,7 +79,8 @@ function permitDiscard() {
     error.value = saving.value ? '正在保存，请等待结果后再离开。' : '保存结果尚未确认，请先“重试原操作”确认结果后再离开。'
     return false
   }
-  return !dirty.value || window.confirm('有尚未保存的内容，离开将放弃这些内容。确定继续？')
+  return (!dirty.value || window.confirm('有尚未保存的内容，离开将放弃这些内容。确定继续？'))
+    && (bomImport.value?.discard() ?? true)
 }
 onBeforeRouteLeave(permitDiscard)
 if(route){
@@ -104,6 +107,7 @@ const valueLabels: Record<string, string> = { fabric: '布料', accessory: '辅�
 const businessTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(value))
 
 async function load(apply=false) {
+  if (bomImport.value?.unsettled) return
   linkedGeneration++
   if(apply){appliedQuery.value=query.value;page.value=1}
   const request = ++generation
@@ -119,6 +123,10 @@ async function load(apply=false) {
     void loadStats()
   } catch (e) { if (alive && request === generation) { access.value = null; error.value = errorMessage(e) } }
   finally { if (alive && request === generation) loading.value = false }
+}
+function showImportedBom(record: MasterRecord) {
+  query.value = record.code
+  void load(true)
 }
 onMounted(async()=>{await load();await openLinkedMaster()})
 function switchKind(next: Kind) {
@@ -243,6 +251,8 @@ function requirements(data: MasterRecord['data']) { return (data as BomData).req
     <a v-if="pending && needsLogin" href="/login" target="_blank" rel="noopener noreferrer">在新标签页重新登录</a>
     <CuttingMetrics v-if="available" :items="[{label:'产品 BOM',value:masterStats?.bom??'—',unit:'项'},{label:'待发布草稿',value:masterStats?.draft??'—',unit:'项'},{label:'有效物料',value:masterStats?.material??'—',unit:'项'},{label:'有效执行方',value:masterStats?.resource??'—',unit:'个'}]" />
     <p v-if="statsError" role="alert">统计暂不可用：{{statsError}}</p>
+    <CuttingBomImport v-if="available && kind === 'bom' && canEdit && !editor && !transition && !pending"
+      ref="bomImport" @imported="showImportedBom" />
     <SectionPanel class="cutting-content-panel" :title="calendarView?'工作日历':labels[kind]">
       <nav class="cutting-section-nav" aria-label="基础资料分类"><Button variant="outline" v-for="(label, key) in labels" :key="key" :disabled="saving || !!pending" :aria-pressed="kind === key&&!calendarView" @click="switchKind(key)">{{ label }}</Button><Button variant="outline" :disabled="saving||!!pending" :aria-pressed="calendarView" @click="showCalendar">工作日历</Button></nav>
       <p v-if="calendarView" class="cutting-notice">未配置日历时按周一至周六工作、周日休息。休息、调休或加班需登记例外及依据；日历修订会提示关联计划复核，不自动改写已发布日期。</p><p v-if="loading" role="status" class="cutting-master-message">正在读取基础资料…</p>

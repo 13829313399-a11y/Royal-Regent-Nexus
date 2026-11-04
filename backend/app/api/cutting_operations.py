@@ -23,6 +23,7 @@ from app.services import cutting_exports as exports
 from app.services import cutting_cutover as cutover
 from app.services import cutting_workspace as workspace
 from app.services import cutting_schedule_import as schedule_import
+from app.services import cutting_bom_import as bom_import
 from app.services.cutting_export_gate import gate as export_gate
 from app.services.permission_codes import CUTTING_OPS_PERMISSION_CODES
 
@@ -378,6 +379,53 @@ def change_state(entity_id: str, body: s.StateChange, db: Db, user: User):
     c.authorize(user, body.factory_id, 'bom_publish' if body.status == 'published' else 'master_write')
     ready(db)
     return c.command(db, user, body, 'state:' + entity_id, lambda: c.state(db, user, body, entity_id))
+
+
+def bom_import_ready(db, user, factory_id):
+    c.authorize(user, factory_id, 'bom_write')
+    ready(db)
+
+
+@router.get('/bom-import/template')
+def bom_import_template(db: Db, user: User, factory_id: str = ''):
+    bom_import_ready(db, user, factory_id)
+    return Response(bom_import.template(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': 'attachment; filename="cutting-bom.xlsx"', 'Cache-Control': 'no-store'})
+
+
+@router.post('/bom-import/preview')
+def bom_import_preview(db: Db, user: User, factory_id: str = Form(...), bom_file: UploadFile = File(...)):
+    bom_import_ready(db, user, factory_id)
+    content = bom_file.file.read(bom_import.MAX_BYTES + 1)
+    name = bom_import.filename(bom_file.filename)
+    result = bom_import.preview(db, user, content, name, bom_import.parse(content, name))
+    db.rollback()
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/bom-import/confirm')
+def bom_import_confirm(db: Db, user: User, factory_id: str = Form(...), operation_id: str = Form(...),
+                       expected_version: int = Form(...), reason: str = Form(...), fingerprint: str = Form(...),
+                       file_sha256: str = Form(...), bom_file: UploadFile = File(...)):
+    bom_import_ready(db, user, factory_id)
+    content = bom_file.file.read(bom_import.MAX_BYTES + 1)
+    name = bom_import.filename(bom_file.filename)
+    body = bom_import.Confirm(factory_id=factory_id, operation_id=operation_id, expected_version=expected_version,
+                             reason=reason, fingerprint=fingerprint, file_sha256=file_sha256, file_name=name)
+    c.require(sha256(content).hexdigest() == body.file_sha256, '上传文件已变化，请重新预览')
+    parsed = bom_import.parse(content, name)
+    try:
+        return c.command(db, user, body, bom_import.ACTION, lambda: bom_import.confirm(db, user, body, content, parsed))
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, 'BOM 编码或版本已变化，请重新预览') from exc
+
+
+@router.post('/bom-import/recover')
+def bom_import_recover(body: bom_import.Recover, db: Db, user: User):
+    c.authorize(user, body.command.factory_id, 'bom_write')
+    c.require(c.schema_ready(db.connection()), 'BOM 导入回执需先完成迁移', 503)
+    return orders.recover_operation(db, user, body.command, bom_import.ACTION)
 
 
 def orders_ready(db):
