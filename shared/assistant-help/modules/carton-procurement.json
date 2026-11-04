@@ -40,17 +40,17 @@
       {
         "path": "backend/app/services/carton_procurement.py",
         "symbol": "required_carton_quantity",
-        "sha256": "38e591fc4e8005e9fbfbf47b0d60b271f3fd959c1f603d58b6c3fac188d59dd3"
+        "sha256": "e7309606437627d92155e068597ea10da8f7429b4b8a72a2715555d9118e45ce"
       },
       {
         "path": "backend/app/services/carton_procurement.py",
         "symbol": "confirm_receipt",
-        "sha256": "38e591fc4e8005e9fbfbf47b0d60b271f3fd959c1f603d58b6c3fac188d59dd3"
+        "sha256": "e7309606437627d92155e068597ea10da8f7429b4b8a72a2715555d9118e45ce"
       },
       {
         "path": "backend/app/api/carton_procurement.py",
         "symbol": "receipt-preview",
-        "sha256": "c6f26a2eb2cfd74d7daa15a83525f68ccc50dbfddf7dc83708c1db88d261f30e"
+        "sha256": "b6ebc3b122bb41711a60a0de84df2eaad0fe37200054b374def257232ae8ebea"
       },
       {
         "path": "src/router/index.ts",
