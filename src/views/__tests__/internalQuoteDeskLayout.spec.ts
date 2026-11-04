@@ -123,7 +123,7 @@ describe('internal quote desk frontend layout', () => {
     expect(collaborationSource).not.toContain('removals.length && !window.confirm')
     for (const text of ['quote-edge-panel-left', 'quote-edge-panel-right', 'quote-edge-handle', '鼠标移入展开页面导航', '鼠标移入展开报价与资料侧栏', '.quote-edge-panel-left:hover,.quote-edge-panel-left:focus-within', 'table-layout:fixed', '.quote-edge-panel-left .quote-edge-panel-body{overflow:visible']) expect(collaborationSource).toContain(text)
     for (const text of ['focusEntryMode', '显示导航与侧栏', '切换为专注填报', 'class="focus-entry-float"']) expect(collaborationSource).not.toContain(text)
-    for (const text of ['业务部、工程部、装配部固定参与', '可选参与部门', '创建后仍可在协作页添加回来', '客人目标价', '没有请填无']) expect(createDialogSource).toContain(text)
+    for (const text of ['业务部、装配部固定参与', '可选参与部门', '创建后仍可在协作页添加回来', '客人目标价', '没有请填无']) expect(createDialogSource).toContain(text)
     expect(homeSource).toContain('跨厂只读')
     expect(homeSource).toContain('canCreateCurrentFactory')
     expect(homeSource).toContain('canCloneQuote')
