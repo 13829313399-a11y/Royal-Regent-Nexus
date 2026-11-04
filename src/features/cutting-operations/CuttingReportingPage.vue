@@ -3,14 +3,14 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { Button } from '@/components/ui/button'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { RouterLink, onBeforeRouteLeave, routerKey, type LocationQueryRaw } from 'vue-router'
 import { cuttingApi, errorMessage, type Access } from './api'
 import { ordersApi, type CuttingOrder } from './ordersApi'
 import { reportingApi, reportLabels, reportPermission, type ProductionInput, type ProductionView, type ReportAction, type ReportCommand, type ReportDocument, type ReportTask, type ReportKind } from './reportingApi'
-import { CUTTING_FACTORY } from './navigation'
+import { CUTTING_BASE, CUTTING_FACTORY } from './navigation'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
-import { useCuttingLocation } from './location'
+import { cuttingDestination, useCuttingLocation } from './location'
 import CuttingLocationNotice from './CuttingLocationNotice.vue'
 import CuttingHistoryPager from './CuttingHistoryPager.vue'
 import CuttingTaskBoard from './CuttingTaskBoard.vue'
@@ -26,6 +26,8 @@ function changeReportingView(value:string){
 
 const access=ref<Access|null>(null), rows=ref<CuttingOrder[]>([]), selected=ref<CuttingOrder|null>(null), result=ref<ProductionView|null>(null)
 const loading=ref(false), saving=ref(false), error=ref(''), notice=ref(''), needsLogin=ref(false)
+const locationError = ref('')
+const ordersDestination = { path: `${CUTTING_BASE}/reporting`, query: { factory: CUTTING_FACTORY } }
 const page=ref(1), total=ref(0), query=ref(''), asOf=ref('')
 const entry=ref<ProductionInput|null>(null), documentId=ref(''), reason=ref(''), editingExisting=ref(false)
 const decision=ref<ReportAction|null>(null), baseline=ref(''), frozenParts=ref<ReportTask['parts']>([])
@@ -46,7 +48,36 @@ function discard() {
   return !dirty.value||window.confirm('有未保存的填数或更正内容，确定放弃？')
 }
 onBeforeRouteLeave(discard)
-const location = useCuttingLocation(discard, () => { void load(1, true, true) })
+const router = inject(routerKey, undefined)
+const presentationPaths = new Set<string>()
+const location = useCuttingLocation(discard, () => {
+  if (router && presentationPaths.delete(router.currentRoute.value.fullPath)) return
+  void load(1, true, true)
+})
+const planningDestination = computed(() => {
+  const lineId = selected.value?.line_id ?? ''
+  const month = location.value?.lineId === lineId ? location.value.month : undefined
+  return cuttingDestination(lineId, month ?? '', 'planning')
+})
+
+async function persistStatisticsDate(lineId: string, day: string) {
+  if (!router) return
+  const route = router.currentRoute.value
+  const query: LocationQueryRaw = { ...route.query, line_id: lineId, day }
+  if (location.value?.lineId !== lineId) {
+    for (const key of ['month', 'focus_kind', 'focus_id', 'reporting_view']) delete query[key]
+  }
+  const destination = { path: route.path, query, hash: route.hash }
+  const target = router.resolve(destination).fullPath
+  if (target === route.fullPath || presentationPaths.has(target)) return
+  presentationPaths.add(target)
+  try {
+    const failure = await router.replace(destination)
+    if (failure) presentationPaths.delete(target)
+  } catch {
+    presentationPaths.delete(target)
+  }
+}
 function beforeUnload(e:BeforeUnloadEvent){if(dirty.value||pending.value||saving.value){e.preventDefault();e.returnValue=''}}
 onMounted(()=>{window.addEventListener('beforeunload',beforeUnload);void load(1,false,true)})
 onBeforeUnmount(()=>{alive=false;generation++;window.removeEventListener('beforeunload',beforeUnload)})
@@ -54,27 +85,61 @@ function fail(e:unknown){error.value=errorMessage(e);if((e as {response?:{status
 async function load(nextPage=1,navigation=false,followLocation=false,apply=false){
   if(!navigation&&!discard())return
   if(apply){appliedQuery.value=query.value;nextPage=1}
-  const request=++generation;loading.value=true;error.value='';selected.value=null;result.value=null;entry.value=null;rows.value=[]
+  const request=++generation;loading.value=true;error.value='';locationError.value='';selected.value=null;result.value=null;entry.value=null;rows.value=[]
+  let locatingOrder = false
   try{
     const rights=await cuttingApi.access();if(!alive||request!==generation)return
     access.value=rights;needsLogin.value=false;if(!available.value)return
     const target=followLocation?location.value:undefined
     if(target){
+      locatingOrder = true
+      reportingView.value = target.reportingView ?? 'records'
       const order=await ordersApi.read(target.lineId);if(!alive||request!==generation)return
-      if(!order.current)throw new Error('关联订单尚未签收，请先在排期区核对。')
-      rows.value=[order];total.value=1;page.value=1;asOf.value=target.day??'';reportingView.value=target.reportingView??'records'
+      if (!order.current) {
+        locationError.value = '关联订单尚未签收，请先在排期区核对。'
+        return
+      }
+      rows.value=[order];total.value=1;page.value=1;asOf.value=target.day??''
       await select(order);return
     }
     const response=await ordersApi.list(nextPage,appliedQuery.value);if(!alive||request!==generation)return
     rows.value=response.data.filter(r=>r.current);total.value=response.total;page.value=nextPage
-  }catch(e){if(alive&&request===generation){access.value=null;fail(e)}}
+  }catch(e){
+    if (alive && request === generation) {
+      if (locatingOrder && (e as { response?: { status?: number } }).response?.status !== 401) {
+        locationError.value = errorMessage(e)
+      } else {
+        access.value = null
+        fail(e)
+      }
+    }
+  }
   finally{if(alive&&request===generation)loading.value=false}
 }
-async function select(row:CuttingOrder){
+async function select(row: CuttingOrder, refreshStatistics = false) {
   if(!discard())return
-  const request=++generation;selected.value=row;result.value=null;entry.value=null;error.value='';notice.value='';loading.value=true
-  try{const response=await reportingApi.read(row.line_id,asOf.value||undefined,1,undefined,location.value?.kind==='report'?location.value.id:undefined);if(alive&&request===generation){result.value=response;needsLogin.value=false}}
-  catch(e){if(alive&&request===generation)fail(e)}finally{if(alive&&request===generation)loading.value=false}
+  const request=++generation;selected.value=row;entry.value=null;error.value='';notice.value='';loading.value=true
+  if (!refreshStatistics) result.value = null
+  const target = location.value
+  try {
+    const documentId = target?.lineId === row.line_id && target.kind === 'report' ? target.id : undefined
+    const response = await reportingApi.read(row.line_id, asOf.value || undefined, 1, undefined, documentId)
+    if (!alive || request !== generation) return
+    result.value = response
+    needsLogin.value = false
+    if (refreshStatistics) {
+      asOf.value = response.as_of
+      await persistStatisticsDate(row.line_id, response.as_of)
+    }
+  } catch (e) {
+    if (alive && request === generation) {
+      fail(e)
+      const status = (e as { response?: { status?: number } }).response?.status
+      if (status === 401 || status === 403 || status === 404) result.value = null
+    }
+  } finally {
+    if (alive && request === generation) loading.value = false
+  }
 }
 async function historyPage(next:number){
   if(!selected.value||!result.value||loading.value||saving.value||pending.value)return
@@ -168,8 +233,12 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
     <p v-if="loading" role="status">正在读取生产记录…</p>
     <div v-if="needsLogin"><p>登录已失效，填报内容暂时隐藏。请在新标签页重新登录，再重试或核对原操作。</p><a href="/login" target="_blank" rel="noopener">重新登录</a></div>
     <div v-if="pending" class="cutting-master-actions"><Button variant="outline" :disabled="saving" @click="submit(pending.action)">重试原操作</Button><Button variant="outline" :disabled="saving" @click="recover">核对保存结果／停止未执行操作</Button></div>
-    <p v-if="!loading&&!available&&!needsLogin">每日填数尚未启用。需完成 0155 迁移，并为生产岗位分别授予填报、抽查、外发收回、外发验收或交接权限。</p>
-    <template v-if="available&&!needsLogin">
+    <p v-if="!loading&&access&&!available&&!needsLogin">每日填数尚未启用。需完成 0155 迁移，并为生产岗位分别授予填报、抽查、外发收回、外发验收或交接权限。</p>
+    <SectionPanel v-if="locationError" title="无法定位关联订单" class="cutting-content-panel">
+      <p role="alert" class="cutting-error">{{ locationError }}</p>
+      <template #action><Button as-child variant="outline"><RouterLink :to="ordersDestination">返回订单列表</RouterLink></Button></template>
+    </SectionPanel>
+    <template v-else-if="available&&!needsLogin">
       <CuttingTaskBoard v-show="reportingView==='tasks'" reporting />
       <div v-show="reportingView!=='tasks'||!!entry||!!pending" class="cutting-overview">
       <p class="cutting-notice">采购交期和预排不代表实际完成。每个任务固定一种报数方式；外发收回由文员登记，验收由主管确认，验收合格后才计入完成数。“实际交数”按已交接套数统计。</p>
@@ -179,9 +248,11 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
       </tbody></table></div><p v-if="!rows.length&&!loading&&!error" class="cutting-no-records">{{appliedQuery?'当前筛选范围本页暂无已签收订单，可清除筛选或翻页查看。':total?'本页来源订单尚未签收，可翻页查看或到排期页核对接单。':'暂无已下发订单，请先由业务下发至裁床部。'}}<Button v-if="appliedQuery" variant="outline" @click="query='';load(1,false,false,true)">清除筛选</Button></p>
       <nav class="cutting-pagination" aria-label="生产填数订单分页"><span>第 {{ page }} 页 · 共 {{ total }} 条</span><div class="cutting-master-actions"><Button variant="outline" :disabled="page<=1||loading" @click="load(page-1)">上一页</Button><Button variant="outline" :disabled="page*50>=total||loading" @click="load(page+1)">下一页</Button></div></nav>
       </SectionPanel>
-      <SectionPanel v-if="selected&&result&&summary" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`"><div class="report-detail">
+      <SectionPanel v-if="selected&&result&&summary" class="cutting-content-panel" :title="`${selected.snapshot.reference_no} · ${selected.snapshot.product_no}`">
+        <template #action><Button as-child variant="outline"><RouterLink :to="planningDestination">返回该订单排期</RouterLink></Button></template>
+        <div class="report-detail">
         <p>货名：{{ orderProductName(selected.snapshot) }} · 款式分类：<span :title="unclassifiedStyleHint">{{ unclassifiedStyle }}</span></p>
-        <form class="cutting-master-toolbar" @submit.prevent="select(selected!)"><label>统计截至日期<input v-model="asOf" type="date" :max="today()" /></label><Button variant="outline" :disabled="saving||!!pending">刷新统计</Button></form>
+        <form class="cutting-master-toolbar" @submit.prevent="select(selected!, true)"><label>统计截至日期<input v-model="asOf" type="date" :max="today()" :disabled="loading||saving||!!pending" /></label><Button variant="outline" :disabled="loading||saving||!!pending">刷新统计</Button></form>
         <dl class="report-totals"><div><dt>订单总套数（工程核定）</dt><dd>{{ summary.order_sets ?? '待核定' }}</dd></div><div><dt>合格完成套数</dt><dd>{{ summary.completed }}</dd></div><div><dt>实际交数／已交接</dt><dd>{{ summary.actual_delivery }}</dd></div><div><dt>未完成套数</dt><dd>{{ summary.remaining ?? '待核定' }}</dd></div><div><dt>累计计划差额（交接−计划）</dt><dd>{{ summary.plan_difference }}</dd></div><div><dt>当日完成／交接</dt><dd>{{ summary.day_completed }} / {{ summary.day_handed }}</dd></div></dl>
         <p>截至 {{ result.as_of }}；未完成＝订单总套数−合格完成，允许保留超产后的负数。待交接 {{ summary.completed_unhanded }} 套。</p>
         <details><summary>月度汇总（截至所选日期）</summary><div class="cutting-table-scroll" tabindex="0" role="region" aria-label="业务明细，可横向滚动"><table><thead><tr><th>月份</th><th>计划</th><th>完成</th><th>交接</th></tr></thead><tbody><tr v-for="(m,month) in summary.months" :key="month"><td>{{ month }}</td><td>{{ m.planned }}</td><td>{{ m.completed }}</td><td>{{ m.handed }}</td></tr></tbody></table></div></details>
@@ -195,7 +266,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           <p>合格完成 {{ t.balance?.completed ?? 0 }} · 已交接 {{ t.balance?.handed ?? 0 }} · 可新增核套 {{ t.balance?.matchable ?? 0 }}</p>
           <p v-if="(t.settlement_context?.execution??t.execution)==='outsourced'">外厂报称 {{ t.balance?.claimed ?? 0 }} · 实收 {{ t.balance?.returned ?? 0 }} · 验收合格 {{ t.balance?.accepted ?? 0 }} · 不合格 {{ t.balance?.rejected ?? 0 }} · 待验 {{ (t.balance?.returned??0)-(t.balance?.accepted??0)-(t.balance?.rejected??0) }}</p>
           <p v-if="t.mode==='parts'">散片：<span v-for="p in (t.settlement_context?.parts??t.parts)" :key="p.code">{{ p.name }} {{ t.balance?.loose[p.code]??0 }} 片（不良 {{ t.balance?.part_rejected[p.code]??0 }}／报废 {{ t.balance?.part_scrap[p.code]??0 }}）；</span></p>
-          <Button variant="outline" v-if="(!t.historical||t.settlement_context)&&kindsFor(t,t.mode||'sets').length" :disabled="saving||!!pending" @click="start(t)">{{ t.historical?'办理历史余额':'填报此任务' }}</Button>
+          <Button variant="outline" v-if="(!t.historical||t.settlement_context)&&kindsFor(t,t.mode||'sets').length" :disabled="loading||saving||!!pending" @click="start(t)">{{ t.historical?'办理历史余额':'填报此任务' }}</Button>
         </div>
         <p v-if="!result.tasks.length">暂无已发布任务，请先在排期页发布任务与日计划。</p>
         <form v-if="entry" class="cutting-master-form report-form" @submit.prevent="submit(decision||'post')">
@@ -219,7 +290,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
         <div v-for="doc in result.documents" :key="doc.document_id" :data-cutting-report="doc.document_id" class="cutting-master-line">
           <h4>{{ effectiveEntry(doc).day }} · {{ reportLabels[effectiveEntry(doc).kind] }} · {{ (doc.posted||doc.draft||doc.history[0])?.data.context.task_name }}</h4>
           <p>{{ doc.voided?'已作废':doc.posted?'已生效':'未生效' }}{{ doc.draft?' · 有草稿':'' }} · {{ doc.review?'主管已抽查':'尚未抽查' }} · {{ effectiveEntry(doc).mode==='parts'&&effectiveEntry(doc).kind==='daily'?'裁片明细见历史':effectiveEntry(doc).sets+' 套' }}</p>
-          <div class="cutting-master-actions" v-if="!doc.voided"><template v-if="can(reportPermission(effectiveEntry(doc).kind))"><Button variant="outline" :disabled="saving||!!pending" @click="edit(doc)">编辑／更正</Button><Button variant="outline" v-if="doc.draft" :disabled="saving||!!pending" @click="edit(doc,'discard')">放弃草稿</Button><Button variant="outline" v-if="doc.posted" :disabled="saving||!!pending" @click="edit(doc,'void')">作废</Button></template><Button variant="outline" v-if="doc.posted&&can('report_review')" :disabled="saving||!!pending" @click="edit(doc,'review')">主管抽查</Button></div>
+          <div class="cutting-master-actions" v-if="!doc.voided"><template v-if="can(reportPermission(effectiveEntry(doc).kind))"><Button variant="outline" :disabled="loading||saving||!!pending" @click="edit(doc)">编辑／更正</Button><Button variant="outline" v-if="doc.draft" :disabled="loading||saving||!!pending" @click="edit(doc,'discard')">放弃草稿</Button><Button variant="outline" v-if="doc.posted" :disabled="loading||saving||!!pending" @click="edit(doc,'void')">作废</Button></template><Button variant="outline" v-if="doc.posted&&can('report_review')" :disabled="loading||saving||!!pending" @click="edit(doc,'review')">主管抽查</Button></div>
           <details><summary>版本与操作依据</summary><article v-for="event in doc.history" :key="event.id"><p>V{{ event.version }} · {{ {save:'保存草稿',post:'提交生效',void:'作废',review:'主管抽查',discard:'放弃草稿'}[event.action] }} · {{ event.actor_id }} · {{ event.created_at }}</p><p>{{ event.reason }}；{{ event.data.entry.evidence }}；{{ event.data.entry.exception_reason }}</p><p>{{ event.data.entry.day }} · {{ event.data.entry.sets }} 套／不良 {{ event.data.entry.rejected }}／报废 {{ event.data.entry.scrap }} · BOM V{{ event.data.context.bom_version }} · {{ event.data.context.resource_name }}</p><p v-for="p in event.data.entry.parts" :key="p.code">{{ p.code }}：合格 {{ p.good }}／不良 {{ p.rejected }}／报废 {{ p.scrap }} 片</p></article></details>
         </div>
       </div></SectionPanel>
