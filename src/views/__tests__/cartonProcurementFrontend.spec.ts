@@ -3835,9 +3835,10 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
       ['货号', source.item_no], ['产品名称', '消防车'], ['订单数量', '240'],
       ['下单日期', businessDateOffset(0)], ['客户交期', ''], ['计划交期', ''],
       ['纸品每箱净重 1', '8.125'], ['纸品每箱毛重 1', '9.25'],
-      ['纸品每箱净重 2', '0.4'], ['纸品每箱毛重 2', '0.5'],
       ['纸质 2', 'A9A'], ['规格 2', '29*19'], ['每箱个数 2', '2'],
     ]) expect(form.get<HTMLInputElement>(`input[aria-label="${label}"]`).element.value).toBe(value)
+    expect(form.find('input[aria-label="纸品每箱净重 2"]').exists()).toBe(false)
+    expect(form.find('input[aria-label="纸品每箱毛重 2"]').exists()).toBe(false)
     expect(form.get('input[aria-label="合同号"]').attributes('disabled')).toBeUndefined()
     expect(form.get('input[aria-label="每箱个数 2"]').attributes('disabled')).toBeUndefined()
     expect(form.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value).toBe(source.note)
