@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.models.internal_quote import InternalQuote, InternalQuoteAttachment, InternalQuoteSection
-from app.schemas.internal_quote import InternalQuoteCloneRequest
+from app.schemas.internal_quote import DEFAULT_SECTION_CODES, InternalQuoteCloneRequest
 from app.services.internal_quote import (
     _get_quote, _initiator_department, ensure_quote_read, ensure_permission_in_scope,
     validate_quote_business_owner, _check_revision, _find_reference_set, _json_object,
@@ -115,7 +115,8 @@ def clone_document(db, quote_id, payload, user, request=None):
             db.add(target); db.flush()
             _create_reference_set(db, target, user, source_type='document_clone', snapshot=_json_object(reference.snapshot_json))
             sections = list(db.scalars(select(InternalQuoteSection).where(InternalQuoteSection.quote_id == item.id))) if item else []
-            participating = {s.department for s in sections if s.is_required} | set(MANDATORY_SECTION_CODES)
+            participating = ({s.department for s in sections if s.is_required} | set(MANDATORY_SECTION_CODES)
+                             if item else set(DEFAULT_SECTION_CODES))
             if item:
                 attachments = list(db.scalars(select(InternalQuoteAttachment).where(InternalQuoteAttachment.quote_id == item.id)))
                 mapping = {attachment.id: f'IQATT-{uuid4().hex}' for attachment in attachments}

@@ -21,8 +21,9 @@ InternalQuoteSectionCode = Literal[
     "hair",
     "assembly",
 ]
-MANDATORY_SECTION_CODES = ("sales", "engineering", "assembly")
-OPTIONAL_SECTION_CODES = ("electronic", "molding", "painting", "slush", "sewing", "hair")
+MANDATORY_SECTION_CODES = ("sales", "assembly")
+DEFAULT_SECTION_CODES = ("sales", "engineering", "assembly")
+OPTIONAL_SECTION_CODES = ("engineering", "electronic", "molding", "painting", "slush", "sewing", "hair")
 SECTION_CODE_ORDER = (
     "engineering",
     "molding",
@@ -46,7 +47,7 @@ def _validate_participating_sections(
 ) -> list[InternalQuoteSectionCode]:
     missing = [code for code in MANDATORY_SECTION_CODES if code not in values]
     if missing:
-        raise ValueError("业务部、工程部、装配部必须参与内部报价")
+        raise ValueError("业务部、装配部必须参与内部报价")
     return _normalize_section_codes(values)
 
 
@@ -114,7 +115,7 @@ class InternalQuoteCreateRequest(BaseModel):
     pricing_components: list[str] = Field(default_factory=list, max_length=50)
     participating_sections: list[InternalQuoteSectionCode] = Field(
         default_factory=lambda: [
-            code for code in SECTION_CODE_ORDER if code in MANDATORY_SECTION_CODES
+            code for code in SECTION_CODE_ORDER if code in DEFAULT_SECTION_CODES
         ]
     )
 
@@ -511,7 +512,7 @@ class InternalQuoteParticipationUpdateRequest(BaseModel):
     ) -> list[InternalQuoteSectionCode]:
         invalid = [code for code in values if code not in OPTIONAL_SECTION_CODES]
         if invalid:
-            raise ValueError("只能追加电子部、啤机部、喷油部、搪胶部或车缝部")
+            raise ValueError("只能追加工程部、电子部、啤机部、喷油部、搪胶部、车缝部或车发部")
         return _normalize_section_codes(values)
 
 
@@ -526,7 +527,7 @@ class InternalQuoteParticipationRemoveRequest(BaseModel):
     ) -> list[InternalQuoteSectionCode]:
         invalid = [code for code in values if code not in OPTIONAL_SECTION_CODES]
         if invalid:
-            raise ValueError("业务部、工程部和装配部为固定参与部门，不能移除")
+            raise ValueError("业务部和装配部为固定参与部门，不能移除")
         return _normalize_section_codes(values)
 
 
