@@ -47,24 +47,27 @@ def reservations(db, factory, line_ids):
 
 def sources(db, order, *, projection=None):
     from app.services import carton_procurement as core
-    if projection is not None and not any(core._purchase_order_snapshot(issue).get('replenishment') for issue in projection['issues']):
+    if projection is not None and not any(core._purchase_order_snapshot(issue).get("replenishment") for issue in projection["issues"]):
         return []
     from app.services.carton_print_split import held
     print_hold = held(db, order)
     from app.services.carton_supplier_changes import response_states
     from app.services.carton_replenishment_receipts import options_by_line, receipt_links
-    ids = [line.id for line in (projection['lines'] if projection is not None else core.get_order_lines(db, order.id))]
-    options = projection['options'] if projection is not None else options_by_line(db, order.factory_id, ids)
-    reserved = projection['reserved'] if projection is not None else reservations(db, order.factory_id, ids)
-    links, posted = receipt_links(db, order.factory_id), {}
-    for paper in db.scalars(select(CartonReceiptLine).join(CartonReceipt, CartonReceipt.id == CartonReceiptLine.receipt_id)
-        .where(CartonReceipt.factory_id == order.factory_id, CartonReceipt.status == "POSTED", CartonReceiptLine.order_line_id.in_(ids))):
-        if paper.id in links:
-            key = (links[paper.id]["replenishment_issue_id"], paper.order_line_id)
-            posted[key] = posted.get(key, Decimal(0)) + paper.effective_quantity
+    ids = [line.id for line in (projection["lines"] if projection is not None else core.get_order_lines(db, order.id))]
+    options = projection["options"] if projection is not None else options_by_line(db, order.factory_id, ids)
+    reserved = projection["reserved"] if projection is not None else reservations(db, order.factory_id, ids)
+    if projection is not None:
+        posted = projection["replacement_posted"]
+    else:
+        links, posted = receipt_links(db, order.factory_id), {}
+        for paper in db.scalars(select(CartonReceiptLine).join(CartonReceipt, CartonReceipt.id == CartonReceiptLine.receipt_id)
+            .where(CartonReceipt.factory_id == order.factory_id, CartonReceipt.status == "POSTED", CartonReceiptLine.order_line_id.in_(ids))):
+            if paper.id in links:
+                key = (links[paper.id]["replenishment_issue_id"], paper.order_line_id)
+                posted[key] = posted.get(key, Decimal(0)) + paper.effective_quantity
     result = []
-    issues = projection['issues'] if projection is not None else list(core._purchase_order_issues(db, order.id))
-    states = response_states(db, order.factory_id, "REPLENISHMENT", [issue.id for issue in issues
+    issues = projection["issues"] if projection is not None else list(core._purchase_order_issues(db, order.id))
+    states = projection["replacement_states"] if projection is not None else response_states(db, order.factory_id, "REPLENISHMENT", [issue.id for issue in issues
         if core._purchase_order_snapshot(issue).get("replenishment")])
     for issue in issues:
         snapshot = core._purchase_order_snapshot(issue)
@@ -92,15 +95,15 @@ def sources(db, order, *, projection=None):
 def ordinary_capacity(db, order, line_id, *, projection=None):
     from app.services import carton_procurement as core, carton_supplier_portal as portal
     from app.services.carton_replenishment_receipts import options_by_line, legacy_review_lines
-    blocked = projection['legacy'] if projection is not None else legacy_review_lines(db, order.factory_id, [line_id])
+    blocked = projection["legacy_review"] if projection is not None else legacy_review_lines(db, order.factory_id, [line_id])
     if line_id in blocked: return Decimal(0)
-    line = next(line for line in (projection['lines'] if projection is not None else core.get_order_lines(db, order.id)) if line.id == line_id)
-    options = (projection['options'] if projection is not None else options_by_line(db, order.factory_id, [line_id])).get(line_id, [])
+    line = next(line for line in (projection["lines"] if projection is not None else core.get_order_lines(db, order.id)) if line.id == line_id)
+    options = (projection["options"] if projection is not None else options_by_line(db, order.factory_id, [line_id])).get(line_id, [])
     replacement_ids = {item["replenishment_issue_id"] for item in options}
-    reserved = projection['reserved'] if projection is not None else reservations(db, order.factory_id, [line_id])
-    ordinary_reserved = sum((value for (issue_id, paper_id), value in reserved.items() if paper_id == line_id and issue_id not in replacement_ids), Decimal(0))
-    fulfilled = projection['fulfilled'] if projection is not None else portal.fulfilled_by_line(db, [line_id])
-    pending = projection['pending'] if projection is not None else core._pending_received_by_line(db, [line_id])
+    reserved = {key: value for key, value in projection["reserved"].items() if key[1] == line_id} if projection is not None else reservations(db, order.factory_id, [line_id])
+    ordinary_reserved = sum((value for (issue_id, _), value in reserved.items() if issue_id not in replacement_ids), Decimal(0))
+    fulfilled = projection["fulfilled"] if projection is not None else portal.fulfilled_by_line(db, [line_id])
+    pending = projection["pending"] if projection is not None else core._pending_received_by_line(db, [line_id])
     return max(Decimal(0), line.required_quantity - fulfilled.get(line_id, 0)
         - pending.get(line_id, 0)
         - sum((Decimal(item["remaining_quantity"]) for item in options), Decimal(0)) - ordinary_reserved)

@@ -34,6 +34,7 @@ describe('durable supplier change tasks', () => {
       let finish!: (value: ReturnType<typeof workspace>) => void
       api.list.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
       state = 'visible'; document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus'))
+      await flushPromises()
       expect(api.list).toHaveBeenCalledTimes(2)
       finish(workspace()); await flushPromises()
       expect(wrapper.get<HTMLTextAreaElement>('[aria-label="SP-1异议说明"]').element.value).toBe('保留未提交的核对内容')
@@ -172,7 +173,7 @@ describe('durable supplier change tasks', () => {
     expect(wrapper.text()).toContain('暂不可用')
     expect(wrapper.text()).not.toContain('0 项待确认')
     expect(wrapper.text()).not.toContain('当前没有待明确确认的版本')
-    expect(wrapper.emitted('pending-state')!.at(-1)![0]).toMatchObject({ loading: false, error: '无权读取该厂区' })
+    expect(wrapper.emitted('pending-state')!.at(-1)![0]).toMatchObject({ loading: false, error: expect.stringMatching(/华兴.*无权读取该厂区/) })
   })
   it('keeps replacement stop acknowledgements and read-only history in their selected category', async () => {
     api.list.mockResolvedValue({ items: [task({ source_kind: 'REPLENISHMENT', is_cancellation: true }), task({ source_kind: 'REGULAR', document_no: 'OTHER' })] })

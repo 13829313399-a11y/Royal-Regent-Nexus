@@ -56,7 +56,7 @@ const PERM_GROUPS = [
     { k: 'records',   label: '验货台' },
     { k: 'review',    label: '审核中心' },
     { k: 'inspection-summary', label: '验货汇总' },
-    { k: 'analysis',  label: '统计分析' },
+    { k: 'analysis',  label: '统计中心' },
     { k: 'suppliers', label: '供应商&客户管理' },
   ]},
   { group: '报告', menus: [
@@ -1005,7 +1005,7 @@ const PAGE_TITLES = {
   records:          '验货台',
   review:           '审核中心',
   'inspection-summary': '验货汇总',
-  analysis:         '统计分析',
+  analysis:         '统计中心',
   suppliers:        '供应商&客户管理',
   daily:            '品质日报',
   weekly:           '品质周报',

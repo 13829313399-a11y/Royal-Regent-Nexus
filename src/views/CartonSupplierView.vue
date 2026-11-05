@@ -26,7 +26,8 @@ import CartonSupplierReturns from '@/components/CartonSupplierReturns.vue'
 import CartonPayables from '@/components/CartonPayables.vue'
 import CartonPriceCorrectionDialog from '@/components/CartonPriceCorrectionDialog.vue'
 import CartonMarkAssetLibrary from '@/components/CartonMarkAssetLibrary.vue'
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
+import { createSupplierReadQueue, supplierReadQueueKey } from '@/features/carton-procurement/supplierReadQueue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { DialogRoot, DialogOverlay, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
 import { ArrowLeft, BookOpen, ClipboardList, FileText, History, PackageCheck, Search, Truck, X } from '@lucide/vue'
@@ -52,6 +53,16 @@ const selectionKey = (kind: SupplierSelection['kind'], order: { factory_id: stri
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
+const readQueue = createSupplierReadQueue()
+provide(supplierReadQueueKey, readQueue)
+let workspaceController = new AbortController()
+let auxiliaryController = new AbortController(), auxiliaryGeneration = 0
+let auxiliaryLoading = false
+const workspaceStates = ref<Record<string, { loading: boolean; error: string }>>({})
+const lastOrderReadAt = ref('')
+let lastReadStarted = 0
+const orderCountsUnknown = computed(() => discovering.value || loading.value || specialLoading.value || Boolean(workspaceReadError.value || membershipReadError.value || specialError.value))
+function orderCount(value: number) { return orderCountsUnknown.value ? '待核实' : value }
 const orderKind = ref('ALL')
 const specialRequests = ref<SpecialRequest[]>([])
 const specialError = ref('')
@@ -65,16 +76,18 @@ async function loadSpecialRequests() {
   const token = ++specialGeneration, context = importContext.value
   specialLoading.value = true
   specialError.value = ''
-  const results = await Promise.allSettled(specialMemberships.value.map(row => cartonSpecialRequestsApi.list(row.factory_id, true)))
-  if (token !== specialGeneration || context !== importContext.value) return
+  const scopes = specialMemberships.value.map(row => row.factory_id)
+  const signal = auxiliaryController.signal
+  const results = await Promise.allSettled(scopes.map(factory => readQueue.run(() => cartonSpecialRequestsApi.list(factory, true), signal)))
+  if (token !== specialGeneration || context !== importContext.value || signal.aborted) return
   specialLoading.value = false
-  const failedFactories = new Set(results.flatMap((result, index) => result.status === 'rejected' ? [specialMemberships.value[index]!.factory_id] : []))
+  const failedFactories = new Set(results.flatMap((result, index) => result.status === 'rejected' ? [scopes[index]!] : []))
   specialReadFailures.value = failedFactories
   specialRequests.value = [...results.flatMap(result => result.status === 'fulfilled' ? result.value.items : []), ...specialRequests.value.filter(row => failedFactories.has(row.factory_id))]
   syncSpecialDrafts()
   const validKeys = new Set(specialRequests.value.filter(row => failedFactories.has(row.factory_id) || canSelectSpecial(row)).map(row => selectionKey('SPECIAL', row)))
   selectedOrderIds.value = selectedOrderIds.value.filter(key => !key.startsWith('["SPECIAL",') || validKeys.has(key))
-  const failures = results.flatMap((result, index) => result.status === 'rejected' ? [`${factoryDisplayName(specialMemberships.value[index]!.factory_id)}：${getApiErrorMessage(result.reason)}`] : [])
+  const failures = results.flatMap((result, index) => result.status === 'rejected' ? [`${factoryDisplayName(scopes[index]!)}：${getApiErrorMessage(result.reason)}`] : [])
   specialError.value = failures.length ? `样板与杂单读取失败：${failures.join('；')}` : ''
 }
 function closeSpecial() { detailPinned.value = false; specialSelection.value = null; void router.replace({ query: { ...route.query, special_request: undefined } }) }
@@ -126,12 +139,17 @@ const returnSearch = ref('')
 const payablesSearch = ref('')
 const unifiedDeliveries = ref<UnifiedDelivery[]>([])
 const deliveryError = ref('')
+const deliveryLoading = ref(false)
+const deliveryCountsUnknown = computed(() => discovering.value || deliveryLoading.value || specialLoading.value || Boolean(deliveryError.value || membershipReadError.value || specialError.value))
 let deliveryGeneration = 0
 async function loadUnifiedDeliveries() {
   const token = ++deliveryGeneration, context = importContext.value
+  deliveryLoading.value = true
   const scopes = serviceFactories.value.map(item => item.factory_id)
-  const results = await Promise.allSettled(scopes.map(scope => cartonUnifiedDeliveriesApi.list(scope, true)))
-  if (token !== deliveryGeneration || context !== importContext.value) return
+  const signal = auxiliaryController.signal
+  const results = await Promise.allSettled(scopes.map(scope => readQueue.run(() => cartonUnifiedDeliveriesApi.list(scope, true), signal)))
+  if (token !== deliveryGeneration || context !== importContext.value || signal.aborted) return
+  deliveryLoading.value = false
   unifiedDeliveries.value = results.flatMap(result => result.status === 'fulfilled' ? result.value.items : [])
   deliveryError.value = results.flatMap((result, index) => result.status === 'rejected' ? [`${factoryDisplayName(scopes[index]!)}：${getApiErrorMessage(result.reason)}`] : []).join('；')
 }
@@ -141,8 +159,10 @@ type OrderMarkCount = { current: number; history: number; draft: number; pending
 type FactoryMarkState = { loading: boolean; error: string; counts: Record<string, OrderMarkCount> }
 const orderMarks = ref<Record<string, FactoryMarkState>>({})
 let orderMarksController = new AbortController()
+let orderMarksGeneration = 0
 const markOrderKey = (id: string, issueId: string) => JSON.stringify([id, issueId])
 function clearOrderMarks() {
+  orderMarksGeneration++
   orderMarksController.abort()
   orderMarksController = new AbortController()
   orderMarks.value = {}
@@ -160,16 +180,17 @@ function updateOrderMarks(factoryId: string, assets: SupplierMarkAsset[]) {
   }
   orderMarks.value[factoryId] = { loading: false, error: '', counts }
 }
-async function loadOrderMarks(scopes: string[], token: number) {
+async function loadOrderMarks(scopes: string[]) {
   clearOrderMarks()
+  const token = orderMarksGeneration
   const signal = orderMarksController.signal
   orderMarks.value = Object.fromEntries(scopes.map(scope => [scope, { loading: true, error: '', counts: {} }]))
   await Promise.all(scopes.map(async scope => {
     try {
-      const assets = await api.markAssets(scope, signal)
-      if (token === generation && !signal.aborted) updateOrderMarks(scope, assets)
+      const assets = await readQueue.run(() => api.markAssets(scope, signal), signal)
+      if (token === orderMarksGeneration && !signal.aborted) updateOrderMarks(scope, assets)
     } catch (reason) {
-      if (token === generation && !signal.aborted) orderMarks.value[scope] = { loading: false, error: getApiErrorMessage(reason), counts: {} }
+      if (token === orderMarksGeneration && !signal.aborted) orderMarks.value[scope] = { loading: false, error: getApiErrorMessage(reason), counts: {} }
     }
   }))
 }
@@ -374,6 +395,8 @@ const importContext = computed(() => JSON.stringify([
   canEdit.value, canApprove.value, auth.can('carton_supplier:read', '*', '*'),
 ]))
 watch(importContext, () => {
+  workspaceController.abort(); workspaceController = new AbortController(); workspaceStates.value = {}; lastOrderReadAt.value = ''; lastReadStarted = 0
+  auxiliaryController.abort(); auxiliaryController = new AbortController(); auxiliaryGeneration++; auxiliaryLoading = false
   collaborationCategory.value = 'ORDERS'; collaborationExpanded.value = false; materialHistory.value = false; workspaceReadError.value = ''; membershipReadError.value = ''
   acceptSpecialKey.value = ''; specialRetries.clear(); unresolvedSpecialRequests.clear(); completedAcceptances.clear(); bulkVersions.clear()
   for (const key of Object.keys(specialDates)) delete specialDates[key]
@@ -381,7 +404,7 @@ watch(importContext, () => {
   priceCorrectionOpen.value = false; priceCorrectionLineId.value = ''; priceCorrectionFactory.value = ''
   selectedPriceFactory.value = ''
   priceReviewState.value = { factoryId: '', loading: true, readError: '', error: '', pendingCount: null, canRead: true }
-  deliveryGeneration++; unifiedDeliveries.value = []; deliveryError.value = ''; monthlySearch.value = ''; returnSearch.value = ''; payablesSearch.value = ''
+  deliveryGeneration++; unifiedDeliveries.value = []; deliveryError.value = ''; deliveryLoading.value = false; monthlySearch.value = ''; returnSearch.value = ''; payablesSearch.value = ''
   specialGeneration++; specialRequests.value = []; specialReadFailures.value = new Set(); specialSelection.value = null; specialError.value = ''; specialLoading.value = false; orderKind.value = 'ALL'
   specialMemberships.value = []
   importGeneration++; ++generation; importOpen.value = false; importFile.value = null; importPreview.value = null
@@ -396,7 +419,7 @@ watch(importContext, () => {
   activityTotal.value = 0
   if (activityTimer) clearTimeout(activityTimer)
 })
-onBeforeUnmount(() => { importGeneration++; generation++; specialGeneration++; deliveryGeneration++; clearOrderMarks() })
+onBeforeUnmount(() => { workspaceController.abort(); auxiliaryController.abort(); auxiliaryGeneration++; importGeneration++; generation++; specialGeneration++; deliveryGeneration++; clearOrderMarks() })
 function importGroupReady(group: DeliveryImportGroup) { return importModes.value[importNoteKey(group)] === 'EXISTING_RECEIPT' ? Boolean(group.receipt_link_ready) : group.ready }
 const dates = reactive<Record<string, string>>({})
 const dateIssueIds: Record<string, string> = {}
@@ -1093,30 +1116,66 @@ function orderPromiseDifferences(order: SupplierOrder) {
   return order.lines.filter(line => line.accepted && Number(line.required_quantity) > 0)
     .flatMap(line => { const text = promiseDifference(order.planned_date, line.promised_date); return text ? [`${line.packaging_type}：${text}`] : [] })
 }
-async function load(quiet = false, includeSpecial = true) {
-  if (includeSpecial) void loadSpecialRequests()
-  void loadUnifiedDeliveries()
+async function load(quiet = false, includeSpecial = true, onlyFactory = '') {
+  workspaceController.abort(); workspaceController = new AbortController()
+  const signal = workspaceController.signal
   const token = ++generation
-  const scopes = memberships.value.map(member => member.factory_id)
-  if (!scopes.length) return
-  void loadOrderMarks(scopes, token)
+  const scopes = memberships.value.map(member => member.factory_id).filter(scope => !onlyFactory || scope === onlyFactory)
+  lastReadStarted = Date.now()
+  const loadAuxiliary = () => {
+    auxiliaryController.abort(); auxiliaryController = new AbortController()
+    const auxiliaryToken = ++auxiliaryGeneration
+    auxiliaryLoading = true
+    return Promise.allSettled([...(includeSpecial ? [loadSpecialRequests()] : []), loadUnifiedDeliveries(), loadOrderMarks(scopes)])
+      .finally(() => { if (auxiliaryToken === auxiliaryGeneration) auxiliaryLoading = false })
+  }
+  if (!scopes.length) { if (!onlyFactory) await loadAuxiliary(); return }
   loading.value = true
   if (!quiet) error.value = ''
-  try {
-    const workspaces = await Promise.all(scopes.map(scope => api.workspace(scope)))
-    if (token !== generation) return
-    const data: SupplierWorkspace = {
-      supplier_name: workspaces[0]?.supplier_name ?? '',
-      orders: workspaces.flatMap(item => item.orders.map(order => ({ ...order, factory_id: item.factory_id })))
-        .sort((a, b) => (stagePriority[orderStage(a)] ?? 9) - (stagePriority[orderStage(b)] ?? 9)
-          || a.planned_date.localeCompare(b.planned_date) || a.order_no.localeCompare(b.order_no)),
-      shipments: workspaces.flatMap(item => item.shipments.map(shipment => ({ ...shipment, factory_id: item.factory_id })))
-        .sort((a, b) => b.created_at.localeCompare(a.created_at)),
+  for (const scope of scopes) workspaceStates.value[scope] = { loading: true, error: '' }
+  const workspaces = new Map(memberships.value.map(member => [member.factory_id, {
+    factory_id: member.factory_id, supplier_name: workspace.value?.supplier_name || member.supplier_name,
+    orders: (workspace.value?.orders || []).filter(row => row.factory_id === member.factory_id),
+    shipments: (workspace.value?.shipments || []).filter(row => row.factory_id === member.factory_id),
+  }]))
+  function publish() {
+    if (token !== generation || signal.aborted) return
+    workspace.value = {
+      supplier_name: memberships.value[0]?.supplier_name || '',
+      orders: [...workspaces.values()].flatMap(item => item.orders.map(order => ({ ...order, factory_id: item.factory_id })))
+        .sort((a, b) => (stagePriority[orderStage(a)] ?? 9) - (stagePriority[orderStage(b)] ?? 9) || a.planned_date.localeCompare(b.planned_date) || a.order_no.localeCompare(b.order_no)),
+      shipments: [...workspaces.values()].flatMap(item => item.shipments.map(row => ({ ...row, factory_id: item.factory_id }))).sort((a, b) => b.created_at.localeCompare(a.created_at)),
     }
-    const versionKey = (value: SupplierWorkspace | null) => JSON.stringify(value?.orders.map(order => [order.id, order.issue_id, order.revision, order.cancellation_notice?.acknowledged, order.lines.map(line => line.commitment_revision)]))
-    if (versionKey(workspace.value) !== versionKey(data)) { extraLoaded.documents = false; extraLoaded.activity = false }
-    workspace.value = data
-    workspaceReadError.value = ''
+    workspaceReadError.value = Object.entries(workspaceStates.value).flatMap(([factory, state]) => state.error ? [`${factoryDisplayName(factory)}：${state.error}`] : []).join('；')
+  }
+  const priorVersion = JSON.stringify(workspace.value?.orders)
+  try {
+    const requests = Promise.allSettled(scopes.map(async scope => {
+      try {
+        const data = await readQueue.run(() => api.workspace(scope, false, 'OWN', signal), signal)
+        if (token !== generation || signal.aborted) return
+        if (data.factory_id !== scope) throw new Error('返回厂区与请求不一致，请重新读取')
+        for (const order of data.orders) for (const line of order.lines) {
+          if (dateIssueIds[line.id] !== order.issue_id) { dirtyDates.delete(line.id); dateIssueIds[line.id] = order.issue_id }
+          if (!dirtyDates.has(line.id)) dates[line.id] = line.promised_date || order.planned_date
+        }
+        workspaces.set(scope, { ...data, orders: data.orders.map(row => ({ ...row, factory_id: scope })), shipments: data.shipments.map(row => ({ ...row, factory_id: scope })) })
+        workspaceStates.value[scope] = { loading: false, error: '' }
+      } catch (reason) {
+        if (token !== generation || signal.aborted) return
+        workspaces.delete(scope)
+        workspaceStates.value[scope] = { loading: false, error: getApiErrorMessage(reason) }
+      }
+      publish()
+    }))
+    // Queue the primary ledger first; auxiliary readers share the same two slots.
+    if (!onlyFactory) {
+      void loadAuxiliary()
+    }
+    await requests
+    if (token !== generation) return
+    const data = workspace.value!
+    if (priorVersion !== JSON.stringify(data.orders)) { extraLoaded.documents = false; extraLoaded.activity = false }
     const orderIds = new Set(data.orders.map(order => order.id))
     const selectableOrderIds = new Set(data.orders.filter(canSelectOrder).map(order => selectionKey('REGULAR', order)))
     selectedOrderIds.value = selectedOrderIds.value.filter(key => !key.startsWith('["REGULAR",') || selectableOrderIds.has(key))
@@ -1130,18 +1189,19 @@ async function load(quiet = false, includeSpecial = true) {
       if (!dirtyDates.has(line.id)) dates[line.id] = line.promised_date || order.planned_date
     }
     if (quiet && (activeTab.value === 'documents' || activeTab.value === 'activity')) await loadExtra(activeTab.value)
-    return ''
+    if (!workspaceReadError.value) lastOrderReadAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    if (workspaceReadError.value && !quiet) failure(new Error(workspaceReadError.value))
+    return workspaceReadError.value
   } catch (reason) {
-    if (token === generation) { workspaceReadError.value = getApiErrorMessage(reason); if (!quiet) workspace.value = null; failure(reason); return error.value }
+    if (token === generation) { workspaceReadError.value = getApiErrorMessage(reason); if (!quiet) failure(reason); return workspaceReadError.value }
   } finally {
     if (token === generation) loading.value = false
   }
 }
 async function refresh() {
-  if (busy.value || discovering.value) return
+  if (busy.value || discovering.value || loading.value) return
   discovering.value = true
   error.value = ''
-  workspace.value = null
   clearOrderMarks()
   documents.value = []
   activity.value = []
@@ -1164,13 +1224,15 @@ async function refresh() {
     workspaceReadError.value = membershipReadError.value
     specialMemberships.value = specialResult.status === 'fulfilled' ? specialResult.value : []
     memberships.value = available
+    workspaceStates.value = Object.fromEntries(Object.entries(workspaceStates.value).filter(([factory]) => available.some(row => row.factory_id === factory)))
+    if (workspace.value) workspace.value = { ...workspace.value, orders: workspace.value.orders.filter(row => available.some(member => member.factory_id === row.factory_id)), shipments: workspace.value.shipments.filter(row => available.some(member => member.factory_id === row.factory_id)) }
     if (factoryFilter.value && ![...available, ...specialMemberships.value].some(item => item.factory_id === factoryFilter.value)) factoryFilter.value = ''
     if (available.length) {
       await load()
       if (context !== importContext.value) return
       if (activeTab.value === 'documents' || activeTab.value === 'activity') await loadExtra(activeTab.value)
     }
-    else if (specialMemberships.value.length) { workspace.value = { supplier_name: specialMemberships.value[0]?.supplier_name || '', orders: [], shipments: [] }; await Promise.all([loadSpecialRequests(), loadUnifiedDeliveries()]) }
+    else if (specialMemberships.value.length) { workspace.value = { supplier_name: specialMemberships.value[0]?.supplier_name || '', orders: [], shipments: [] }; await load() }
     else error.value = regularResult.status === 'rejected' ? getApiErrorMessage(regularResult.reason) : specialResult.status === 'rejected' ? getApiErrorMessage(specialResult.reason) : '暂无可查看的服务厂区，请确认供应商协同权限。'
     if (regularResult.status === 'rejected') error.value = `采购订单服务厂区读取失败：${getApiErrorMessage(regularResult.reason)}`
     if (specialResult.status === 'rejected') specialError.value = `样板与杂单服务厂区读取失败：${getApiErrorMessage(specialResult.reason)}`
@@ -1179,7 +1241,8 @@ async function refresh() {
 }
 let automaticRefresh: ReturnType<typeof setInterval> | undefined
 function refreshOnFocus() {
-  if (document.visibilityState !== 'hidden' && !busy.value && !loading.value && !discovering.value && !importOpen.value && auth.can('carton_supplier:read', '*', '*') && serviceFactories.value.length) void load(true)
+  if (document.visibilityState === 'hidden' || Date.now() - lastReadStarted < 45000) return
+  if (!busy.value && !loading.value && !auxiliaryLoading && !specialLoading.value && !discovering.value && !importOpen.value && auth.can('carton_supplier:read', '*', '*') && serviceFactories.value.length) void load(true)
 }
 onMounted(() => { automaticRefresh = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus); void refresh(); window.addEventListener('keydown', onDetailKeydown) })
 onBeforeUnmount(() => { if (automaticRefresh) clearInterval(automaticRefresh); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus); window.removeEventListener('keydown', onDetailKeydown) })
@@ -1302,8 +1365,8 @@ async function download(id: string, factoryId: string, filename: string) {
         <label class="relative block w-full"><Search class="pointer-events-none absolute left-3 top-2.5 size-4 text-slate-400" aria-hidden="true" /><input v-model="headerSearch" aria-label="顶部搜索" :placeholder="headerSearchPlaceholder" class="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 text-sm outline-none focus:border-teal-500 focus:bg-white"></label>
       </div>
       <nav class="mx-auto flex max-w-[1720px] flex-wrap items-center gap-1 px-4 sm:px-6" aria-label="供应商协同功能">
-        <button type="button" :aria-current="activeTab === 'orders' ? 'page' : undefined" :class="activeTab === 'orders' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('orders')"><ClipboardList class="size-4" />订单管理 <span class="rounded-full bg-white px-2 py-0.5 text-[10px]">{{ orders.length + specialRequests.length }}</span></button>
-        <button type="button" :aria-current="activeTab === 'shipments' ? 'page' : undefined" :class="activeTab === 'shipments' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('shipments')"><Truck class="size-4" />发货与仓库反馈 <span class="rounded-full bg-white px-2 py-0.5 text-[10px]">{{ unifiedDeliveries.length }}</span></button>
+        <button type="button" :aria-current="activeTab === 'orders' ? 'page' : undefined" :class="activeTab === 'orders' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('orders')"><ClipboardList class="size-4" />订单管理 <span class="rounded-full bg-white px-2 py-0.5 text-[10px]">{{ orderCount(orders.length + specialRequests.length) }}</span></button>
+        <button type="button" :aria-current="activeTab === 'shipments' ? 'page' : undefined" :class="activeTab === 'shipments' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('shipments')"><Truck class="size-4" />发货与仓库反馈 <span class="rounded-full bg-white px-2 py-0.5 text-[10px]">{{ deliveryCountsUnknown ? '待核实' : unifiedDeliveries.length }}</span></button>
         <button type="button" :aria-current="activeTab === 'documents' ? 'page' : undefined" :class="activeTab === 'documents' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('documents')"><FileText class="size-4" />采购单与送货单</button>
         <button type="button" :aria-current="activeTab === 'activity' ? 'page' : undefined" :class="activeTab === 'activity' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('activity')"><History class="size-4" />操作日志</button>
         <button type="button" :aria-current="activeTab === 'settlements' ? 'page' : undefined" :class="activeTab === 'settlements' ? 'border-teal-700 bg-teal-50 text-teal-800' : 'border-transparent text-slate-500 hover:text-teal-700'" class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-semibold" @click="openTab('settlements')"><FileText class="size-4" />月结对账</button>
@@ -1314,14 +1377,21 @@ async function download(id: string, factoryId: string, filename: string) {
 
     <div class="mx-auto max-w-[1720px] space-y-3 px-4 py-3 sm:px-6">
       <p v-if="error" role="alert" class="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
+      <section v-if="memberships.length" aria-label="订单厂区读取状态" class="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3 text-xs">
+        <span class="text-slate-600">{{ loading ? '正在更新，已读取厂区可先查看' : workspaceReadError ? '部分厂区未能读取，订单总数待核实' : '各厂区订单已读取' }}<template v-if="lastOrderReadAt && !loading && !workspaceReadError"> · {{ lastOrderReadAt }}</template></span>
+        <span v-for="item in memberships" :key="item.factory_id" class="flex flex-wrap items-center gap-2 rounded-lg border px-2 py-1.5" :class="workspaceStates[item.factory_id]?.error ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 text-slate-600'">
+          {{ factoryDisplayName(item.factory_id) }} · {{ workspaceStates[item.factory_id]?.loading ? '读取中…' : workspaceStates[item.factory_id]?.error ? '读取失败' : '已读取' }}
+          <button v-if="workspaceStates[item.factory_id]?.error" type="button" :aria-label="`重新读取${factoryDisplayName(item.factory_id)}订单`" :disabled="loading || discovering || busy" class="font-semibold underline disabled:opacity-40" @click="load(false, false, item.factory_id)">重新读取</button>
+        </span>
+      </section>
       <p v-if="message" role="status" class="rounded-xl border border-teal-200 bg-teal-50 p-3 text-sm text-teal-800">{{ message }}</p>
       <p v-if="loading && !workspace" class="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">正在读取供应商订单…</p>
       <section v-if="workspace || serviceFactories.length" class="space-y-4">
         <div :inert="detailDocumentPinned || mergedDocumentsOpen ? true : undefined" class="grid grid-cols-2 gap-2 lg:grid-cols-4" aria-label="供应商工作统计">
-          <div class="rounded-xl border bg-white px-4 py-2"><p class="text-xs text-slate-500">已发送订单</p><p class="text-xl font-bold">{{ orders.length + specialRequests.length }} <span class="text-xs font-normal">张</span></p></div>
-          <div class="rounded-xl border bg-white px-4 py-2"><p class="text-xs text-slate-500">待接单</p><p class="text-xl font-bold text-teal-700">{{ workCounts.acceptance }} <span class="text-xs font-normal">张订单</span></p></div>
-          <div class="rounded-xl border bg-white px-4 py-2"><p class="text-xs text-slate-500">待发货</p><p class="text-xl font-bold text-teal-700">{{ workCounts.shipment }} <span class="text-xs font-normal">张订单</span></p></div>
-          <button type="button" class="rounded-xl border bg-white px-4 py-2 text-left hover:border-teal-400" @click="openPendingReceipts"><p class="text-xs text-slate-500">待仓库验收</p><p class="text-xl font-bold text-amber-700">{{ workCounts.receipt }} <span class="text-xs font-normal">张送货单</span></p></button>
+          <div class="rounded-xl border bg-white px-4 py-2"><p class="text-xs text-slate-500">已发送订单</p><p class="text-xl font-bold">{{ orderCount(orders.length + specialRequests.length) }} <span class="text-xs font-normal">张</span></p></div>
+          <div class="rounded-xl border bg-white px-4 py-2"><p class="text-xs text-slate-500">待接单</p><p class="text-xl font-bold text-teal-700">{{ orderCount(workCounts.acceptance) }} <span class="text-xs font-normal">张订单</span></p></div>
+          <div class="rounded-xl border bg-white px-4 py-2"><p class="text-xs text-slate-500">待发货</p><p class="text-xl font-bold text-teal-700">{{ orderCount(workCounts.shipment) }} <span class="text-xs font-normal">张订单</span></p></div>
+          <button type="button" class="rounded-xl border bg-white px-4 py-2 text-left hover:border-teal-400" @click="openPendingReceipts"><p class="text-xs text-slate-500">待仓库验收</p><p class="text-xl font-bold text-amber-700">{{ deliveryCountsUnknown ? '待核实' : workCounts.receipt }} <span class="text-xs font-normal">张送货单</span></p></button>
         </div>
 
           <section v-show="activeTab === 'orders' || activeTab === 'shipments'" class="enterprise-panel min-w-0 rounded-xl" aria-label="供应商协同工作台">
@@ -1351,7 +1421,7 @@ async function download(id: string, factoryId: string, filename: string) {
                 <p v-if="materialReadLoading" role="status" class="mt-3 text-xs text-slate-500">正在读取纸品资料更正…</p>
                 <div v-else-if="workspaceReadError" role="alert" class="mt-3 flex flex-wrap items-center gap-2 text-sm text-red-700">纸品资料更正读取失败：{{ workspaceReadError }}<button type="button" :disabled="loading || discovering" class="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold disabled:opacity-40" @click="membershipReadError ? refresh() : load()">重新读取</button></div>
                 <p v-else-if="!visibleMaterialCorrections.length" class="mt-3 text-xs text-slate-500">{{ materialHistory ? '暂无已处理的资料更正记录。' : '当前没有待处理的资料更正。' }}</p>
-                <div v-if="!materialReadLoading && !workspaceReadError" class="divide-y divide-slate-100">
+                <div v-if="visibleMaterialCorrections.length" class="divide-y divide-slate-100">
                   <div v-for="row in visibleMaterialCorrections" :key="row.id" class="flex flex-wrap items-center justify-between gap-3 py-3 text-xs">
                     <span class="min-w-0 flex-1 basis-56 break-words leading-5 [overflow-wrap:anywhere]">{{ factoryDisplayName(row.factory_id) }} · {{ row.contract_no }} · {{ row.item_no }} · {{ row.before.packaging_type }}<span class="ml-2 font-semibold" :class="['PENDING', 'RETURNED'].includes(row.status) ? 'text-amber-800' : 'text-slate-600'">{{ materialStatus[row.status] }}</span></span>
                     <button type="button" class="rounded-lg border border-slate-200 bg-white px-3 py-2 font-semibold text-teal-800 hover:border-teal-300" @click="materialCorrection = row">{{ materialHistory ? '查看更正记录' : '查看并核对' }}</button>
@@ -1392,7 +1462,7 @@ async function download(id: string, factoryId: string, filename: string) {
 
 </CartonFilterBar>
             <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5 text-xs">
-              <div class="flex flex-wrap items-center gap-3"><span class="font-semibold text-slate-700">订单台账 {{ visibleOrderRows.length }} / {{ orders.length + specialRequests.length }} 张</span><span class="text-slate-500">已选 <b class="text-teal-700">{{ selectedOrderIds.length }}</b> 张订单（筛选外 {{ hiddenSelectedCount }} 张）</span><button type="button" class="font-semibold text-teal-700 hover:text-teal-900" @click="selectedOnly = !selectedOnly">{{ selectedOnly ? '查看全部' : '查看已选' }}</button><button type="button" :disabled="!selectedOrderIds.length" class="text-slate-500 hover:text-slate-800 disabled:opacity-40" @click="selectedOrderIds = []; selectedOnly = false">清空选择</button></div>
+              <div class="flex flex-wrap items-center gap-3"><span class="font-semibold text-slate-700">订单台账 {{ visibleOrderRows.length }} / {{ orderCount(orders.length + specialRequests.length) }} 张</span><span class="text-slate-500">已选 <b class="text-teal-700">{{ selectedOrderIds.length }}</b> 张订单（筛选外 {{ hiddenSelectedCount }} 张）</span><button type="button" class="font-semibold text-teal-700 hover:text-teal-900" @click="selectedOnly = !selectedOnly">{{ selectedOnly ? '查看全部' : '查看已选' }}</button><button type="button" :disabled="!selectedOrderIds.length" class="text-slate-500 hover:text-slate-800 disabled:opacity-40" @click="selectedOrderIds = []; selectedOnly = false">清空选择</button></div>
               <div class="flex flex-wrap gap-2"><button v-if="canApprove" type="button" :disabled="!selectedOrderIds.length || busy" class="h-9 rounded-lg border border-teal-300 bg-teal-50 px-3 font-semibold text-teal-800 disabled:opacity-40" @click="openBulkAccept">批量确认接单</button><button v-if="canApprove" type="button" :disabled="!selectedOrderIds.length || busy" class="h-9 rounded-lg border border-teal-200 bg-white px-3 font-semibold text-teal-800 disabled:opacity-40" @click="openBulkPromise">批量改承诺交期</button><button v-if="canEdit" type="button" :disabled="busy" class="h-9 rounded-lg bg-teal-700 px-3 font-semibold text-white hover:bg-teal-800 disabled:opacity-40" @click="openDeliveryImport">导入送货单</button></div>
             </div>
             <div class="supplier-order-surface carton-table-wrap">
@@ -1401,7 +1471,7 @@ async function download(id: string, factoryId: string, filename: string) {
                 <thead class="bg-slate-50 text-slate-600"><tr><th><input type="checkbox" aria-label="全选当前筛选订单" :checked="allVisibleSelected" :indeterminate="someVisibleSelected && !allVisibleSelected" :disabled="!selectableVisibleOrders.length" class="size-4 accent-teal-700" @change="toggleVisibleOrders(($event.target as HTMLInputElement).checked)"></th><th>厂区 / 类型</th><th>客户 / 合同 / 单号</th><th>货号 / 产品</th><th>箱唛资料</th><th>下单日期 / 交期提醒</th><th>纸品 / 送货进度</th><th>订单状态</th><th class="text-right">操作</th></tr></thead>
                 <tbody class="divide-y divide-slate-100">
                   <CartonSupplierOrderRow v-for="entry in visibleOrderRows" :key="entry.key" :data-testid="entry.special ? 'supplier-special-order-row' : 'supplier-regular-order-row'" :row="supplierRow(entry)" :selected="selectedOrderIds.includes(entry.key)" :selectable="entry.special ? canSelectSpecial(entry.special) : !!entry.regular && canSelectOrder(entry.regular)" @select="toggleOrderSelection(entry.key, $event)" @marks="showEntryDetail(entry, true)" @preview="showEntryDetail(entry)" @leave="closeOrderDetailPreview" @detail="showEntryDetail(entry, true)"><template #actions><span v-if="entry.regular?.rush" class="inline-flex items-center rounded-md bg-red-600 px-2 py-1 text-[10px] font-bold text-white" :title="entry.regular.rush_reason || '本厂要求优先处理这一单'">急单</span><button v-if="entry.regular?.rush && !entry.regular.rush_acknowledged && canApprove" type="button" :disabled="busy" class="rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 font-semibold text-red-700 disabled:opacity-40" @click="acknowledgeRush(entry.regular)">确认收到催货</button><span v-else-if="entry.regular?.rush && entry.regular.rush_acknowledged" class="px-1 text-[10px] font-semibold text-red-700">催货已收到</span><template v-if="entry.special"><button v-if="specialApprovalAllowed(entry.special) && specialSupplierCanPromise(entry.special)" type="button" :aria-label="specialSupplierAccepted(entry.special) ? `更新订单 ${entry.special.request_no} 承诺交期` : `确认订单 ${entry.special.request_no} 接单`" :disabled="busy" class="rounded-lg border px-2 py-1.5 font-semibold text-teal-800 disabled:opacity-40" :class="specialSupplierAccepted(entry.special) ? 'border-slate-200 bg-white hover:border-teal-300' : 'border-teal-200 bg-teal-50'" @click="showSpecialAccept(entry.special, $event)">{{ specialSupplierAccepted(entry.special) ? '更新承诺交期' : '确认接单' }}</button></template><template v-for="order in entry.regular ? [entry.regular] : []" :key="order.id"><button v-if="canApprove && open(order) && order.lines.some(needsAcceptance)" type="button" :aria-label="`确认订单 ${order.order_no} 接单`" class="rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 font-semibold text-teal-800" @click="showAccept(order)">确认接单</button><button v-if="canApprove && order.cancellation_notice?.issued && !order.cancellation_notice.acknowledged" type="button" :disabled="busy" class="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 font-semibold text-red-700" @click="acknowledgeCancellation(order)">确认收到取消通知</button><button v-if="canApprove && open(order) && !order.lines.some(needsAcceptance) && order.lines.some(line => Number(line.required_quantity) > 0)" type="button" :aria-label="`更新订单 ${order.order_no} 承诺交期`" class="rounded-lg border border-slate-200 bg-white px-2 py-1.5 font-semibold text-teal-800 hover:border-teal-300" @click="showAccept(order)">更新承诺交期</button></template></template></CartonSupplierOrderRow>
-                  <tr v-if="!visibleOrderRows.length"><td colspan="9" class="px-4 py-10 text-center text-slate-500">{{ loading || specialLoading ? '正在读取订单…' : specialError ? '部分订单未能读取，请刷新重试。' : orders.length + specialRequests.length ? '没有符合当前筛选条件的订单' : '暂无已发送的订单。' }}</td></tr>
+                  <tr v-if="!visibleOrderRows.length"><td colspan="9" class="px-4 py-10 text-center text-slate-500">{{ loading || specialLoading ? '正在读取订单…' : workspaceReadError || membershipReadError || specialError ? '部分订单未能读取，请按厂区重新读取。' : orders.length + specialRequests.length ? '没有符合当前筛选条件的订单' : '暂无已发送的订单。' }}</td></tr>
                 </tbody>
               </table>
             </div>

@@ -137,7 +137,7 @@ const selectedFactoryId = computed(() => appStore.activeFactory.id === 'group'
   ? appStore.activeProductionFactory.id
   : appStore.activeFactory.id)
 const participatingSections = computed(() => quote.value.sections.filter((section) => section.isRequired))
-const optionalSectionCodes: InternalQuoteSectionCode[] = ['electronic', 'molding', 'painting', 'slush', 'sewing', 'hair']
+const optionalSectionCodes: InternalQuoteSectionCode[] = ['engineering', 'electronic', 'molding', 'painting', 'slush', 'sewing', 'hair']
 const manageableOptionalSections = computed(() => quote.value.sections.filter((section) => optionalSectionCodes.includes(section.code)))
 const participationChanges = computed(() => {
   const initial = new Set(initialParticipation.value)
@@ -1169,7 +1169,7 @@ onBeforeUnmount(() => {
 
     <div v-if="pendingAssistantRemark" class="quote-assistant-prefill" role="status"><p>有一条曜灵备注建议待你核对。{{ canEditHeader ? '打开原表单后可明确追加到备注；尚未保存。' : '当前原报价不可修改资料，建议不会写入。' }}</p><button type="button" :disabled="remarkPrefillBusy || !canEditHeader || headerDialogBusy || headerDialogOpen" @click="openAssistantRemark">{{ remarkPrefillBusy ? '正在核对来源与原版本…' : '打开原表单核对备注' }}</button><button type="button" @click="clearQuotePrefill">丢弃建议</button></div>
     <section v-if="participationPanelOpen" class="quote-participation-panel">
-      <div class="quote-participation-copy"><UserPlus /><span><strong>添加、删除参与部门</strong><small>业务部、工程部和装配部固定参与；勾选可选部门表示参与，取消勾选表示移除。保存后会同步调整连续报价页、协作进度、成本汇总和最终放行。</small></span></div>
+      <div class="quote-participation-copy"><UserPlus /><span><strong>添加、删除参与部门</strong><small>业务部和装配部固定参与；工程部及其他部门按产品需要选择。勾选表示参与，取消勾选表示移除。保存后会同步调整连续报价页、协作进度、成本汇总和最终放行。</small></span></div>
       <div class="quote-participation-options">
         <label v-for="section in manageableOptionalSections" :key="section.code" :class="{ active: selectedParticipation.includes(section.code) }">
           <input v-model="selectedParticipation" type="checkbox" :value="section.code" @change="participationRemovalConfirmOpen = false">
@@ -1181,6 +1181,7 @@ onBeforeUnmount(() => {
       <div v-if="participationRemovalConfirmOpen" class="quote-participation-confirm" role="alert">
         <AlertTriangle />
         <span><strong>确认移除 {{ participationChanges.removals.map((section) => section.label).join('、') }}？</strong><small>这些部门当前填写内容和未保存修改将不再计入本报价；历史 revision 和审计记录仍会保留，以后仍可重新添加。</small></span>
+        <span v-if="participationChanges.removals.some(section => section.code === 'engineering')"><small>移除工程部后，仍关联工程模具的啤机明细需重新核对或解除联动，完成核价后再输出。</small></span>
         <button type="button" class="secondary" @click="participationRemovalConfirmOpen = false">返回选择</button>
         <button type="button" class="danger" :disabled="quoteStore.submitting" @click="saveParticipationChanges(true)">{{ quoteStore.submitting ? '保存中…' : '确认移除并保存' }}</button>
       </div>

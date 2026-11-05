@@ -724,7 +724,7 @@ onBeforeUnmount(() => {
       <div>
         <div class="quote-eyebrow"><span />业务部 · 内部成本协作</div>
         <h1>内部报价台</h1>
-        <p>业务部与工程部均可新建或复制报价，业务部、工程部、装配部固定参与，其余部门按项目需要选择。</p>
+        <p>业务部与工程部均可新建或复制报价，业务部、装配部固定参与，工程部及其他部门按产品需要选择。</p>
       </div>
       <div class="quote-heading-actions">
         <button v-if="canViewPricingBaseline" type="button" class="quote-baseline-button" :disabled="quoteStore.baselineLoading" @click="openPricingBaseline">

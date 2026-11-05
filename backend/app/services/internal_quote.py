@@ -932,6 +932,10 @@ def _normalize_mutable_section_payload(db, quote, department, payload):
         existing = _get_section(db, quote.id, "engineering")
         return normalize_engineering_mold_identities(payload, _json_object(existing.payload_json))
     if department != "painting":
+        if department == "molding" and not _get_section(db, quote.id, "engineering").is_required:
+            # Removing Engineering must not silently adopt rows still linked to
+            # its old molds. Manual and explicitly detached rows remain usable.
+            return _project_molding_parts({}, payload, synchronize_parts=False, factory_id=quote.factory_id)
         return payload
     from io import BytesIO
     from PIL import Image
@@ -2258,9 +2262,9 @@ def _remove_missing_molding_sources(
     db: Session, quote: InternalQuote, payload: dict[str, object], *, synchronize_parts: bool = False,
 ) -> dict[str, object]:
     engineering = _get_section(db, quote.id, "engineering")
-    if not engineering.is_required or engineering.status == "not_applicable":
+    if engineering.status == "not_applicable":
         return payload
-    engineering_payload = _json_object(engineering.payload_json)
+    engineering_payload = _json_object(engineering.payload_json) if engineering.is_required else {}
     return _project_molding_parts(engineering_payload, payload, synchronize_parts=synchronize_parts, factory_id=quote.factory_id)
 
 

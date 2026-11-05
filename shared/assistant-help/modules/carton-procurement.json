@@ -85,7 +85,7 @@
       {
         "path": "backend/app/services/carton_supplier_portal.py",
         "symbol": "link_shipment_line",
-        "sha256": "9d78904b1284ef8f5a0f9d28d1807426f75fca2f5ec3b2b2cd6395f0761ad358"
+        "sha256": "29105799e5ca05a66d63ca4bf5d3a1be48bd53017fc1ddb9428ab4945022e467"
       },
       {
         "path": "backend/app/services/carton_contract_merge.py",
@@ -195,17 +195,17 @@
       {
         "path": "backend/app/services/carton_supplier_changes.py",
         "symbol": "def respond(",
-        "sha256": "762e54f3e9ef6650d3746b8554b631329e584d8c8b0b768915463633ab1d4bb6"
+        "sha256": "c541883a8cb7ad43d302e5a7db17201bb370126a81f0b0ba49004903d7cd9abc"
       },
       {
         "path": "src/components/CartonSupplierChangeTasks.vue",
         "symbol": "async function respond(",
-        "sha256": "0f43877d2f4a7649c64c94602614e538e04b828a24c4f82afa7dcee0f91fcf84"
+        "sha256": "cddf96ff72b23f841fb568186b91f3493cc1200dbf927c2b45da9fcef2f923a5"
       },
       {
         "path": "backend/app/services/carton_replenishment_supplier.py",
         "symbol": "def sources(",
-        "sha256": "605ab63f9dd47aa398f24822770af983d1a3af70102af683a2e0e0ae7b6710a8"
+        "sha256": "9c6e3ec89fa440db0eaeb94eb176d110e5797b2c670bdcfd34dde85a19e8ad25"
       },
       {
         "path": "backend/app/services/carton_special_receiving.py",
@@ -533,8 +533,8 @@
         "sha256": "4c34b5e121584d382e7ab461c0d9d3b1b7ad02a01b30653cfd646a2aebe8fb8e"
       }
     ],
-    "knowledge_version": "2026-11-04-carton-independent-audience",
-    "verified_commit": "working-tree: explicit supplier audience and independent order projection reviewed; browser acceptance pending",
+    "knowledge_version": "2026-11-04-carton-audience-and-staff-reads",
+    "verified_commit": "Source review: explicit supplier audience, receiving read guards and independent factory reads",
     "status": "verified"
   }
 ]
