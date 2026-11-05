@@ -27,6 +27,39 @@ def context(client, row):
     return client.get(f"{BASE}/orders/{row['order_no']}/purchase-order-context", params={"factory_id": "huaxing"}).json()
 
 
+def test_order_unit_correction_preserves_size_numbers_and_remains_locked_after_issuance(monkeypatch):
+    monkeypatch.setenv("ONLINE_DOCUMENTS_ENABLED", "false")
+    with make_client(monkeypatch) as client:
+        login_as(client, "warehouse_keeper")
+        _ensure_dickie_customer(client)
+        _freeze_carton_time(monkeypatch)
+        payload = _order_payload()
+        payload["lines"][0].update(specification="11.875*9*12.625", dimension_unit="cm")
+        response = client.post(BASE + "/orders", json=payload)
+        assert response.status_code == 201, response.text
+        original = response.json()
+        payload["lines"][0]["dimension_unit"] = "in"
+        update = {**payload, "expected_revision": original["revision"], "reason": "原资料单位核实为inch，规格数字不变"}
+        response = client.patch(f"{BASE}/orders/{original['order_no']}", json=update)
+        assert response.status_code == 200, response.text
+        corrected = response.json()
+        assert corrected["revision"] == original["revision"] + 1
+        assert corrected["lines"][0]["id"] == original["lines"][0]["id"]
+        assert corrected["lines"][0]["specification"] == "11.875*9*12.625"
+        assert corrected["lines"][0]["dimension_unit"] == "in"
+        assert corrected["lines"][0]["required_quantity"] == original["lines"][0]["required_quantity"]
+        assert corrected["lines"][1] == original["lines"][1]
+        stale = client.patch(f"{BASE}/orders/{original['order_no']}", json=update)
+        assert stale.status_code == 409
+        issued = _submit_order(client, corrected)
+        payload["lines"][0]["dimension_unit"] = "cm"
+        blocked = client.patch(f"{BASE}/orders/{issued['order_no']}", json={
+            **payload, "expected_revision": issued["revision"], "reason": "尝试修改已锁定订单单位",
+        })
+        assert blocked.status_code == 409, blocked.text
+        assert issued["lines"][0]["dimension_unit"] == "in"
+
+
 def test_new_order_request_replays_original_result_survives_changes_and_allows_intentional_blank_po_orders(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client, "warehouse_keeper")

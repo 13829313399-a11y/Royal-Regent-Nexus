@@ -1179,10 +1179,10 @@ async function refresh() {
 }
 let automaticRefresh: ReturnType<typeof setInterval> | undefined
 function refreshOnFocus() {
-  if (!busy.value && !loading.value && !discovering.value && !importOpen.value && auth.can('carton_supplier:read', '*', '*') && serviceFactories.value.length) void load(true)
+  if (document.visibilityState !== 'hidden' && !busy.value && !loading.value && !discovering.value && !importOpen.value && auth.can('carton_supplier:read', '*', '*') && serviceFactories.value.length) void load(true)
 }
-onMounted(() => { automaticRefresh = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); void refresh(); window.addEventListener('keydown', onDetailKeydown) })
-onBeforeUnmount(() => { if (automaticRefresh) clearInterval(automaticRefresh); window.removeEventListener('focus', refreshOnFocus); window.removeEventListener('keydown', onDetailKeydown) })
+onMounted(() => { automaticRefresh = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus); void refresh(); window.addEventListener('keydown', onDetailKeydown) })
+onBeforeUnmount(() => { if (automaticRefresh) clearInterval(automaticRefresh); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus); window.removeEventListener('keydown', onDetailKeydown) })
 async function acknowledgeCancellation(order: SupplierOrder) {
   if (busy.value || !canApprove.value) return
   const context = importContext.value

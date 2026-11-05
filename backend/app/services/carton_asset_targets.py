@@ -201,12 +201,21 @@ def legacy_targets(db,asset,*,current_authorized=False):
     return result
 
 
-def valid(db,asset,factory=None):
+def valid(db,asset,factory=None,*,schedule_rows_by_factory=None):
     factory=factory or asset.factory_id
     from app.models.carton_procurement import CartonOrder
-    latest=schedules(db,factory);result=[]
+    latest=None;result=[]
     for target in current(db,asset,factory):
         if target['kind']=='SCHEDULE':
+            # Unassociated/ordinary-order sources do not need a factory schedule
+            # scan. A library read may reuse rows within this one response only.
+            if latest is None:
+                if schedule_rows_by_factory is None:
+                    latest=schedules(db,factory)
+                else:
+                    if factory not in schedule_rows_by_factory:
+                        schedule_rows_by_factory[factory]=schedules(db,factory)
+                    latest=schedule_rows_by_factory[factory]
             exact=[x for x in latest if (x['id'],x['sheet'],x['row'],x['identity'])==(target['id'],target['sheet'],target['row'],target['identity'])]
             matches=exact or [x for x in latest if x['identity']==target['identity']]
             if len(matches)==1:result.append(matches[0])
@@ -293,6 +302,11 @@ def shared_with_supplier(db,asset,supplier):
     state=sharing.current(db,asset)
     if asset.asset_purpose!='MATERIAL' or state['sharing_mode']=='INTERNAL':return False
     if state['sharing_mode']=='SUPPLIER' and state['shared_supplier_id']==supplier.id:
+        from app.services.carton_asset_access import DEPARTMENTS
+        # A named, same-factory supplier audience grants source access independently
+        # of purchasing. Order projections still require their own explicit links.
+        if asset.owner_department in DEPARTMENTS and asset.factory_id == supplier.factory_id:
+            return True
         rows=valid(db,asset)
         from app.services import carton_supplier_portal as portal
         from app.models.carton_procurement import CartonOrder

@@ -91,10 +91,10 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
   } catch (cause) { if (token === generation) error.value = getApiErrorMessage(cause) }
   finally { if (token === generation) busy.value = false }
 }
-function refreshOnFocus() { if (!busy.value && !loading.value) void load() }
+function refreshOnFocus() { if (document.visibilityState !== 'hidden' && !busy.value && !loading.value) void load() }
 defineExpose({ refresh: load })
-onMounted(() => { timer = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus) })
-onBeforeUnmount(() => { generation++; controller.abort(); if (timer) clearInterval(timer); window.removeEventListener('focus', refreshOnFocus) })
+onMounted(() => { timer = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus) })
+onBeforeUnmount(() => { generation++; controller.abort(); if (timer) clearInterval(timer); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus) })
 </script>
 
 <template>

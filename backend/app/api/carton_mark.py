@@ -176,6 +176,12 @@ def quick_sharing(request: Request,identifier: str,body: quick_schema.Sharing,fa
     return quick_assets.share(db,user,factory_id,identifier,body,lambda:get_current_user(request,db))
 
 
+@router.post('/api/carton-mark/assets/quick/{identifier}/audience')
+def quick_audience(request: Request,identifier: str,body: quick_schema.Audience,factory_id: str,
+    db: Session = Depends(get_db),user: AuthContext = Depends(get_current_user)):
+    return quick_assets.audience(db,user,factory_id,identifier,body,lambda:get_current_user(request,db))
+
+
 def _asset_scope(db, user, factory, write=False):
     from app.services import carton_asset_access as ownership
     if ownership.enabled():return ownership.internal_scope(user,factory,'manage' if write else 'read')
