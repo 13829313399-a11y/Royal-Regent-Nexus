@@ -97,7 +97,8 @@ def test_summary_schedule_date_is_read_only_filter_sort_detail_and_export(db):
     before=summary.listing('huaxing',{})['items'][0]
     result=summary.listing('huaxing',{'dateBasis':'schedule','year':r['dateFrom'][:4]})
     assert result['total']==1 and result['items'][0]['scheduleDate']==r['dateFrom']
-    assert result['items'][0]['inspectionDate']==''
+    assert result['items'][0]['inspectionDate']==r['dateFrom']
+    assert result['items'][0]['inspectionDateSource']=='schedule'
     assert summary.detail('huaxing',before['id'])['scheduleDate']==r['dateFrom']
     assert summary.listing('huaxing',{'dateBasis':'schedule','year':'2040'})['total']==0
     assert summary.listing('huadeng',{'dateBasis':'schedule'})['total']==0
@@ -107,7 +108,7 @@ def test_summary_schedule_date_is_read_only_filter_sort_detail_and_export(db):
     content=summary.export_excel('huaxing',{'dateBasis':'schedule','year':r['dateFrom'][:4]})
     book=load_workbook(BytesIO(content[0] if isinstance(content,tuple) else content))
     assert book.active.cell(1,1).value=='实际验货日期'
-    assert book.active.cell(2,1).value is None
+    assert book.active.cell(2,1).value==r['dateFrom']
     book.close()
 
 def test_automatic_intake_keeps_historical_schedule_and_existing_task(db):
