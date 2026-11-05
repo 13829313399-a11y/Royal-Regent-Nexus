@@ -254,6 +254,12 @@ def unpack(conn, row, include_photos=True):
         base['inspectionExecution']={**(base.get('inspectionExecution') or {}),**json.loads(extension['review_execution'])}
         for key in ('actualDate','actualQuantity','inspector'):
             if key in json.loads(extension['review_execution']):base[key]=base['inspectionExecution'][key]
+    if extension and base['reviewState']=='approved' and extension['approved_snapshot']:
+        confirmed=json.loads(extension['approved_snapshot'])
+        if 'inspectionDateSource' in confirmed:
+            # Only expose the already-confirmed decision; reads never resolve a date.
+            from app.services.qc_inspection_summary import confirmed_date
+            base.update(inspectionDate=confirmed_date(confirmed),inspectionDateSource=confirmed['inspectionDateSource'])
     if not extension or extension['ship_date'] is None:base['shipDate']=(base.get('sourceRecord') or {}).get('shipDate','')
     if not extension or extension['customer_requirements'] is None:base['customerRequirements']=(base.get('sourceRecord') or {}).get('customerRequirements','')
     # Review supplements never rewrite the captured upstream order identity.
@@ -382,7 +388,7 @@ def photo_revision_matches(conn,entry,expected):
     return len(changes)==entry['revision']-expected and all(r['revision']==expected+i+1 and r['action'] in {'upload','remove-photo'} for i,r in enumerate(changes))
 
 def save(factory, entry_id, body, actor, allow_photo_changes=False, review=False):
-    allowed={'revision','result','remark','improvement','inspectionProblem'} | (set(REVIEW_FIELDS)|{'inspectionExecution'} if review else set())
+    allowed={'revision','result','remark','improvement','inspectionProblem','inspectionExecution'} | (set(REVIEW_FIELDS) if review else set())
     if not {'revision','result','remark'} <= set(body) or set(body)-allowed or body['result'] not in EDITABLE_RESULTS:
         raise HTTPException(422,'验货结果只接受空草稿、PASS、FAIL、PENDING、LG')
     for key in ('remark','improvement','inspectionProblem',*REVIEW_FIELDS):
@@ -392,6 +398,8 @@ def save(factory, entry_id, body, actor, allow_photo_changes=False, review=False
             raise HTTPException(422,'此字段请填写单行文字')
     if 'shipDate' in body:wf.day(body['shipDate'])
     if 'shippedQuantity' in body:wf.number(body['shippedQuantity'])
+    if not review and 'inspectionExecution' in body and (not isinstance(body['inspectionExecution'],dict) or set(body['inspectionExecution'])-{'actualDate'}):
+        raise HTTPException(422,'验货台只允许补充实际验货日期')
     execution_patch=clean_review_execution(body['inspectionExecution']) if 'inspectionExecution' in body else {}
     with store(True) as conn:
         row=get(conn,factory,entry_id);ensure_editable(conn,row,review)
@@ -690,6 +698,9 @@ def review_batch(factory, action, body, actor):
                     item=changed(conn,row,action,actor,before=before,
                         location='审核中心 · 待审核' if action=='confirm' else '审核中心 · 已审核',request_key=body['requestKey'],extra={'reason':reason,'expectedRevision':wanted['revision'],**({'legacyCompleted':True} if legacy_revoke else {})})
                     if action=='confirm':
+                        # Decide once in this confirmation transaction. Never fill the QC input.
+                        item.update(summary.resolve_inspection_date(item))
+                        conn.execute("UPDATE changes SET snapshot=? WHERE entry_id=? AND revision=? AND action='confirm'",(wf.dump(item),row['id'],item['revision']))
                         conn.execute('UPDATE entry_details SET approved_snapshot=? WHERE entry_id=?',(wf.dump(item),row['id']))
                         summary.upsert(conn,factory,'entry:'+row['id'],summary.review_item(item),schema='qsum.')
                     else:
