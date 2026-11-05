@@ -5,7 +5,7 @@ import { selectYinhuiMainSheet, readYinhuiSource, isYinhuiToolPlanSheet, yinhuiT
 export interface RecognitionEvidence { sheet: string; cell: string; text: string }
 export interface RecognitionChoice { id: string; label: string; evidence: RecognitionEvidence[] }
 export interface RecognitionTask {
-  id: string; kind: 'tool_match' | 'header' | 'cost_category'; target: string
+  id: string; kind: 'tool_match' | 'header' | 'cost_category' | 'missing_amount'; target: string
   source: RecognitionEvidence; context: RecognitionEvidence[]; choices: RecognitionChoice[]
 }
 export interface RecognitionItem { task_id: string; choice_id: string | null; reason: string }
@@ -42,6 +42,20 @@ export function buildYinhuiRecognitionTasks(draft: YinhuiDraft): { tasks: Recogn
     }
   }
   const main = selectYinhuiMainSheet(sheets)
+  for (const issue of draft.result.quoteData.importIssues || []) {
+    if (issue.code !== 'blank_amount') continue
+    const name = issue.cells.find(c => c.label === '名称/用量')
+    const category = issue.cells.find(c => c.label === '成本类别')
+    if (!name || !category) continue
+    add({ id: `blank:${issue.source}`, kind: 'missing_amount', target: '空白金额的原文费用归属',
+      source: { sheet: name.sheet, cell: name.cell, text: str(name.value) },
+      context: [{ sheet: category.sheet, cell: category.cell, text: str(category.value) }],
+      choices: [
+        { id: 'pending', label: '未能确认费用已包含：保留物料、金额留空，标注待补价', evidence: [] },
+        { id: 'included', label: '原文明确费用已含在其他项目：经用户确认后按 0 元保留', evidence: [] },
+      ],
+    })
+  }
   const candidates = draft.candidates.map(candidate => {
     const split = candidate.source.lastIndexOf('!')
     const sheet = sheets.find(s => s.name === candidate.source.slice(0, split))
@@ -85,6 +99,13 @@ export function applyYinhuiRecognition(draft: YinhuiDraft, task: RecognitionTask
     return applyYinhuiHeaderMapping(draft, { sheet: mold!.sheet, row: Number(mold!.cell.replace(/[A-Z]/g, '')), moldCell: mold!.cell, descriptionCell: name!.cell })
   }
   if (task.kind === 'cost_category') return correctYinhuiDraft(draft, [{ sheet: task.source.sheet, cell: task.source.cell, value: choice.id }])
+  if (task.kind === 'missing_amount') {
+    if (choice.id === 'pending') return draft
+    const issue = draft.result.quoteData.importIssues?.find(i => i.code === 'blank_amount' && `blank:${i.source}` === task.id)
+    const amount = issue?.cells.find(c => c.label === '内部金额')
+    if (!amount || choice.id !== 'included') throw new Error('待补价来源已变化，请重新识别')
+    return correctYinhuiDraft(draft, [{ sheet: amount.sheet, cell: amount.cell, value: 0 }])
+  }
   selectYinhuiToolCandidate(draft, Number(task.id.split(':')[1]), choice.id)
   return draft
 }

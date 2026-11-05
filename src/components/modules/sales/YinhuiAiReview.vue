@@ -30,7 +30,7 @@ async function recognize() {
     const status = await getQuoteRecognitionStatus(signal)
     if (ticket !== generation) return
     if (!status.available) { message.value = status.message; return }
-    message.value = '正在识别表头、部件对应和成本类别，请稍候…'
+    message.value = '正在核对缺价处理、表头、部件对应和成本类别，请稍候…'
     const response = await recognizeQuoteFields(tasks, signal)
     if (ticket !== generation) return
     suggestions.value = validateYinhuiRecognition(response, tasks).map((item, i) => ({ item, task: tasks[i]! }))
@@ -46,7 +46,7 @@ function apply(task: RecognitionTask, item: RecognitionItem) {
     const next = applyYinhuiRecognition(props.draft, task, item)
     emit('invalidate')
     if (task.kind === 'tool_match') applied.value.push(task.id)
-    else { cancel(); message.value = task.kind === 'header' ? '已应用表头对应，可再次识别部件。' : '已应用类别并重新核对金额，下方手工资料已重置。' }
+    else { cancel(); message.value = task.kind === 'missing_amount' ? (item.choice_id === 'included' ? '已按你的确认将该项补为 0，保留物料并重新核对。' : '保留该项为空白金额、标注待补价，知悉处理说明后可输出。') : task.kind === 'header' ? '已应用表头对应，可再次识别部件。' : '已应用类别并重新核对金额，下方手工资料已重置。' }
     emit('update:draft', next)
   } catch (error) { message.value = error instanceof Error ? error.message : '建议未应用，请重新识别' }
   finally { applying = false }
@@ -59,7 +59,7 @@ function apply(task: RecognitionTask, item: RecognitionItem) {
       <h4 class="text-sm font-semibold">AI 辅助识别</h4>
       <button type="button" data-testid="yinhui-ai-recognize" :disabled="disabled || busy || !plan.tasks.length" class="rounded bg-teal-700 px-3 py-2 text-sm text-white disabled:opacity-50" @click="recognize">{{ busy ? '识别中…' : '获取 AI 建议' }}</button>
     </div>
-    <p class="mt-2 text-xs text-slate-600">点击后会将相关表头、部件名称及候选编号发送至已配置的千问服务。AI 建议只用于模具表头、模具对应和未知成本分类；单价、用量、金额仍按原表及现有规则核对。</p>
+    <p class="mt-2 text-xs text-slate-600">点击后会将相关表头、部件名称及候选编号发送至已配置的千问服务。AI 可建议缺价物料是否已有文字说明费用归属，并辅助模具表头、模具对应和成本分类；不发送报价金额，也不猜测缺失价格。每项建议由你确认后应用，AI 不可用时仍可手工确认并输出待补价文件。</p>
     <p class="mt-1 text-xs text-slate-600">确认模具对应只补入模号和零件号；确认成本类别会重新读取原表并重置下方手工资料。已确认的表头对应随草稿保存。</p>
     <p v-if="!plan.tasks.length" class="mt-2 text-sm">当前没有可供 AI 判断的候选，请继续处理草稿提示。</p>
     <p v-if="plan.notice" class="mt-2 text-sm">{{ plan.notice }}</p>
