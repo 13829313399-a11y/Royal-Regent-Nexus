@@ -19,6 +19,22 @@ async function open(wrapper: ReturnType<typeof setup>) { await wrapper.findAll('
 beforeEach(() => { vi.clearAllMocks(); api.receive.mockResolvedValue(group()); api.reopenShortfall.mockResolvedValue(group()); portal.receiptOptions.mockResolvedValue([]) })
 afterEach(() => { vi.unstubAllGlobals() })
 describe('unified delivery receipt', () => {
+  it('preserves the receipt draft through identical list refreshes and blocks writes while fresh inputs are unavailable', async () => {
+    const wrapper = setup(group(), { autoOpen: true })
+    try {
+      await flushPromises()
+      await wrapper.get('[aria-label="L1实收"]').setValue('7')
+      await wrapper.setProps({ readBlocked: true, group: group() }); await flushPromises()
+      expect(wrapper.get<HTMLInputElement>('[aria-label="L1实收"]').element.value).toBe('7')
+      await wrapper.get('form').trigger('submit'); await flushPromises()
+      expect(api.receive).not.toHaveBeenCalled()
+      await wrapper.setProps({ readBlocked: false }); await flushPromises()
+      expect(wrapper.get<HTMLInputElement>('[aria-label="L1实收"]').element.value).toBe('7')
+      const changed = group(); changed.revision++
+      await wrapper.setProps({ group: changed }); await flushPromises()
+      expect(wrapper.find('[aria-label="L1实收"]').exists()).toBe(false)
+    } finally { wrapper.unmount() }
+  })
   it.each([
     { price: null, free: false, shown: '', hint: '原单未填写单价', action: 'PENDING' },
     { price: '0', free: false, shown: '0', hint: '原单单价为0，未确认免费', action: 'PENDING' },

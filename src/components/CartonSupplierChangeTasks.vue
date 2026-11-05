@@ -116,8 +116,8 @@ async function respond(row: SupplierChangeTask, action: SupplierChangeAction) {
 }
 function refreshOnFocus() { if (document.visibilityState !== 'hidden' && Date.now() - lastReadStarted >= 45000 && !busy.value && !loading.value) void load() }
 defineExpose({ refresh: load })
-onMounted(() => { timer = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus) })
-onBeforeUnmount(() => { generation++; controller.abort(); readController.abort(); if (timer) clearInterval(timer); window.removeEventListener('focus', refreshOnFocus) })
+onMounted(() => { timer = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus) })
+onBeforeUnmount(() => { generation++; controller.abort(); readController.abort(); if (timer) clearInterval(timer); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus) })
 </script>
 
 <template>

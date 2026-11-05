@@ -4,6 +4,7 @@ No GET writes, notification delivery assumptions, or inventory/price side effect
 """
 import hashlib
 import json
+from collections import defaultdict
 from copy import deepcopy
 from datetime import date
 from decimal import Decimal
@@ -114,6 +115,14 @@ def _source(db, user, factory, kind, identifier, *, internal=False, authorized_v
     return row, issue
 
 
+def _publication_events(db, factory, entity_type, identifiers):
+    return db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == factory,
+        CartonAuditEvent.entity_id.in_(identifiers),
+        CartonAuditEvent.entity_type == entity_type,
+        CartonAuditEvent.event_type.in_(["SUPPLIER_PAPER_ACCEPTED", "SUPPLIER_CANCELLATION_ACKNOWLEDGED", "SUPPLIER_REPLENISHMENT_ACCEPTED"]))
+        .order_by(CartonAuditEvent.sequence))
+
+
 def _publication_history(db, row, current, kind, *, projection=None):
     """Superseded publication is not evidence that either party agreed to it."""
     if kind == "SPECIAL":
@@ -152,11 +161,13 @@ def _publication_history(db, row, current, kind, *, projection=None):
     states = {version.id: deepcopy(projection["replacement_states" if kind == "REPLENISHMENT" else "supplier_change_states"][version.id]) for version in versions} if projection is not None else response_states(db, row.factory_id, kind, [version.id for version in versions])
     accepted, cancel_acks, last_at = {}, set(), {}
     identifiers = [version.id for version in versions] if kind == "REPLENISHMENT" else [row.id]
-    events = db.scalars(select(CartonAuditEvent).where(CartonAuditEvent.factory_id == row.factory_id,
-        CartonAuditEvent.entity_id.in_(identifiers),
-        CartonAuditEvent.entity_type == ("carton_purchase_order_issue" if kind == "REPLENISHMENT" else "carton_order"),
-        CartonAuditEvent.event_type.in_(["SUPPLIER_PAPER_ACCEPTED", "SUPPLIER_CANCELLATION_ACKNOWLEDGED", "SUPPLIER_REPLENISHMENT_ACCEPTED"]))
-        .order_by(CartonAuditEvent.sequence))
+    entity_type = "carton_purchase_order_issue" if kind == "REPLENISHMENT" else "carton_order"
+    if projection is not None and "publication_events" in projection:
+        by_entity = projection["publication_events"]
+        events = sorted((event for identifier in identifiers for event in by_entity.get((entity_type, identifier), ())),
+                        key=lambda event: event.sequence)
+    else:
+        events = _publication_events(db, row.factory_id, entity_type, identifiers)
     for event in events:
         saved = json.loads(event.detail_json)
         identifier = saved.get("issue_id")
@@ -287,8 +298,17 @@ def workspace(db, user, factory, *, internal=False):
     for start in range(0, len(orders), CHUNK):
         batch = orders[start:start + CHUNK]
         projections = evidence(db, batch)
+        publication_events = defaultdict(list)
+        replenishments = [version.id for data in projections.values() for version in data["issues"]
+                          if core._purchase_order_snapshot(version).get("replenishment")]
+        for entity_type, identifiers in (("carton_order", [row.id for row in batch]),
+                                         ("carton_purchase_order_issue", replenishments)):
+            for offset in range(0, len(identifiers), CHUNK):
+                for event in _publication_events(db, factory, entity_type, identifiers[offset:offset + CHUNK]):
+                    publication_events[(event.entity_type, event.entity_id)].append(event)
         for row in batch:
             projection = projections[row.id]
+            projection["publication_events"] = publication_events
             ordinary = portal.latest_issue(db, row, projection=projection)
             for version in projection["issues"]:
                 replacement = bool(core._purchase_order_snapshot(version).get("replenishment"))

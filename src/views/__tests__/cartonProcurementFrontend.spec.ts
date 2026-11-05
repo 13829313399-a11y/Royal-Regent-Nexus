@@ -507,7 +507,7 @@ describe('CartonProcurementView frontend workspace', () => {
       expect(filters.get('[aria-label="订单状态筛选"]').element.closest('details')).toBeNull()
       expect(wrapper.find('[aria-label="所选订单批量操作"]').exists()).toBe(false)
       await wrapper.get('[aria-label="按交期查看：逾期"]').trigger('click'); await flushPromises()
-      expect(unifiedApiMock.ledger).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ due_filter: 'OVERDUE', offset: 0 }))
+      expect(unifiedApiMock.ledger).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ due_filter: 'OVERDUE', offset: 0 }), expect.any(AbortSignal))
       expect(wrapper.get('[aria-label="按交期查看：逾期"]').attributes('aria-pressed')).toBe('true')
       expect(wrapper.get('[aria-label="已设置的更多筛选"]').text()).toContain('交期：已逾期')
       expect(wrapper.find('[data-order-no="CT-NEXT"]').exists()).toBe(false)
@@ -1127,6 +1127,12 @@ it('shows supplier date differences in both the internal ledger and order detail
       emits: ['pending-state', 'update:showClosed'], template: '<div data-testid="supplier-change-source">版本回执内容</div>' })
     const wrapper = mountView('dashboard', { CartonSupplierChangeTasks: Changes }); await flushPromises()
     const panel = wrapper.get('[aria-label="供应商变更通知"]')
+    const supplierColumn = wrapper.get('[aria-label="供应商待办"]')
+    expect(supplierColumn.find('[aria-label="供应商变更通知"]').exists()).toBe(true)
+    expect(supplierColumn.find('[aria-label="供应商送货待核实"]').exists()).toBe(true)
+    expect(wrapper.get('[aria-label="业务排期提醒"]').element.parentElement).toBe(supplierColumn.element.parentElement)
+    expect(supplierColumn.element.firstElementChild).toBe(panel.element)
+    expect(panel.classes()).not.toContain('lg:col-span-2')
     const toggle = panel.get('button[aria-controls="dashboard-supplier-change-content"]')
     expect(toggle.attributes('aria-expanded')).toBe('false')
     const child = wrapper.getComponent(Changes), element = child.element
@@ -3488,7 +3494,8 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(wrapper.get<HTMLInputElement>('input[aria-label="纸品类型 2"]').element.value).toBe('')
     await wrapper.get('input[aria-label="纸品类型 2"]').setValue('滑板纸')
     await wrapper.get('input[aria-label="纸质 2"]').setValue('A9A')
-    await wrapper.get('input[aria-label="规格 2"]').setValue('29 × 19 cm')
+    await wrapper.get('input[aria-label="规格 2"]').setValue('29 × 19')
+    await wrapper.get('[aria-label="纸品尺寸单位 2"]').setValue('mm')
     await wrapper.get('input[aria-label="每箱个数 2"]').setValue('2')
     expect((wrapper.get('input[aria-label=\"纸箱数量 2\"]').element as HTMLInputElement).value).toBe('1800')
     await wrapper.get('select[aria-label="数量计算 2"]').setValue('PER_CARTON')
@@ -3515,7 +3522,11 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(wrapper.text()).toContain('共 2 项纸品')
     expect(wrapper.text()).toContain('A9A')
     await wrapper.get('button[aria-label="关闭订单明细"]').trigger('click')
-    expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({ status: 'CONFIRMED', customer_po: 'PO-CUSTOMER-001' }))
+    expect(cartonApiMock.createOrder).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'CONFIRMED', customer_po: 'PO-CUSTOMER-001',
+      lines: [expect.objectContaining({ dimension_unit: 'cm' }),
+        expect.objectContaining({ specification: '29 × 19', dimension_unit: 'mm' })],
+    }))
     expect(wrapper.text()).toContain('已进入待发送')
     expect(wrapper.text()).toContain('含 2 条纸品明细')
     expect(wrapper.text()).toContain('发送给供应商前仍可修改、追加或取消')
@@ -5300,6 +5311,69 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     )
     expect(wrapper.text()).toContain('已取消并保留审计记录')
     expect(wrapper.get('[data-order-no="CT-CONTROLLED"]').text()).toContain('已取消')
+  })
+
+  it('corrects an editable order paper unit without converting its specification or another paper', async () => {
+    const seed = orderFixture('CT-UNIT-CORRECTION', businessDateOffset(5))
+    const order = { ...seed, product_name: '粉色机械手', lines: [
+      { ...seed.lines[0]!, specification: '11.875*9*12.625', dimension_unit: 'cm' },
+      { ...seed.lines[0]!, id: 'UNIT-CARD', line_no: 2, packaging_type: '平卡', specification: '10*20', dimension_unit: 'mm' },
+    ] }
+    const original = JSON.stringify(order)
+    mockReceiptWorkspace([order])
+    cartonApiMock.updateOrder.mockResolvedValue({ ...order, revision: 2 })
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises()
+      await openOrderMoreActions(wrapper.get('[data-order-no="CT-UNIT-CORRECTION"]'), order.order_no)
+      await wrapper.get(`[aria-label="修改 ${order.order_no} 订单"]`).trigger('click')
+      const form = wrapper.get('[data-testid="order-form-overlay"] form')
+      expect(form.find('[aria-label="订单尺寸显示"]').exists()).toBe(false)
+      expect(form.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 1"]').element.value).toBe('cm')
+      await form.get('[aria-label="纸品尺寸单位 1"]').setValue('in')
+      expect(form.get<HTMLInputElement>('[aria-label="规格 1"]').element.value).toBe('11.875*9*12.625')
+      expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('inch')
+      expect(form.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 1"]').element.value).toBe('in')
+      expect(form.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 2"]').element.value).toBe('mm')
+      await form.get('[aria-label="订单修改原因"]').setValue('核对原资料，规格实际单位为inch')
+      await form.trigger('submit'); await flushPromises()
+      expect(cartonApiMock.updateOrder).toHaveBeenCalledWith(expect.objectContaining({ revision: 1 }), expect.objectContaining({
+        reason: '核对原资料，规格实际单位为inch',
+        lines: [expect.objectContaining({ specification: '11.875*9*12.625', dimension_unit: 'in' }),
+          expect.objectContaining({ specification: '10*20', dimension_unit: 'mm' })],
+      }))
+      expect(JSON.stringify(order)).toBe(original)
+    } finally { wrapper.unmount() }
+  })
+
+  it.each(['in', 'inch', 'mm'])('preserves an existing %s paper unit without the removed header selector', async unit => {
+    const seed = orderFixture('CT-ORIGINAL-UNIT', businessDateOffset(5))
+    const order = { ...seed, lines: [{ ...seed.lines[0]!, dimension_unit: unit }] }
+    mockReceiptWorkspace([order])
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises()
+      await openOrderMoreActions(wrapper.get(`[data-order-no="${order.order_no}"]`), order.order_no)
+      await wrapper.get(`[aria-label="修改 ${order.order_no} 订单"]`).trigger('click')
+      const form = wrapper.get('[data-testid="order-form-overlay"] form')
+      expect(form.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 1"]').element.value).toBe(unit)
+      expect(form.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 1"]').element.value).toBe(unit)
+      expect(form.get<HTMLInputElement>('[aria-label="规格 1"]').element.value).toBe(seed.lines[0]!.specification)
+      expect(cartonApiMock.updateOrder).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+
+  it('keeps paper unit correction disabled when an editable order has posted receipts', async () => {
+    const seed = orderFixture('CT-UNIT-LOCKED', businessDateOffset(5))
+    mockReceiptWorkspace([{ ...seed, lines: [{ ...seed.lines[0]!, received_quantity: '1' }] }])
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises()
+      await openOrderMoreActions(wrapper.get(`[data-order-no="${seed.order_no}"]`), seed.order_no)
+      await wrapper.get(`[aria-label="修改 ${seed.order_no} 订单"]`).trigger('click')
+      expect(wrapper.get('[aria-label="纸品尺寸单位 1"]').attributes('disabled')).toBeDefined()
+      expect(cartonApiMock.updateOrder).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
   })
 
   it('submits a confirmed order to the supplier, locks actions, and opens receipt entry', async () => {
@@ -7616,6 +7690,8 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     const wrapper = mountView('dashboard')
     await flushPromises()
     expect(wrapper.get('[aria-label="工作待办提醒"]').text()).toContain('业务排期提醒')
+    expect(wrapper.find('[aria-label="供应商待办"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="供应商变更通知"]').exists()).toBe(true)
     expect(wrapper.get('[aria-label="工作待办提醒"]').text()).not.toContain('供应商送货待核实')
     expect(workCenterApiMock.snapshot).not.toHaveBeenCalled()
     expect(supplierPortalApiMock.pendingShipments).not.toHaveBeenCalled()
@@ -8168,7 +8244,7 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     expect(wrapper.findAll('[data-order-no]')).toHaveLength(1)
     expect(wrapper.find('[data-order-no="PAGE-50"]').exists()).toBe(true)
     expect(wrapper.get('[aria-label="批量已选范围"]').text()).toContain('已选 1')
-    expect(cartonApiMock.selectedOrders).toHaveBeenCalledWith('huaxing', ['PAGE-0'])
+    expect(cartonApiMock.selectedOrders).toHaveBeenCalledWith('huaxing', ['PAGE-0'], expect.any(AbortSignal))
     await wrapper.get('[aria-label="订单分页"]').findAll('button')[0]!.trigger('click'); await flushPromises()
     expect(wrapper.get<HTMLInputElement>('[aria-label="选择订单 PAGE-0"]').element.checked).toBe(true)
     wrapper.unmount()
@@ -8188,6 +8264,47 @@ it('switches receipt ledgers without stacking them or discarding manual entry', 
     await findButton(wrapper, '清空选择').trigger('click')
     expect(wrapper.find('[aria-label="所选订单批量操作"]').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  it('debounces order searches, cancels superseded reads, and leaves customer synchronization to full refreshes', async () => {
+    mockReceiptWorkspace([orderFixture('SEARCH-A', businessDateOffset(3))])
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises(); vi.useFakeTimers()
+      const syncs = cartonApiMock.synchronizeBusinessCustomers.mock.calls.length
+      const calls = unifiedApiMock.ledger.mock.calls.length
+      const previousSignal = unifiedApiMock.ledger.mock.calls.at(-1)![2] as AbortSignal
+      await wrapper.get('[aria-label="顶部搜索"]').setValue('S')
+      await wrapper.get('[aria-label="顶部搜索"]').setValue('SEA')
+      await wrapper.get('[aria-label="顶部搜索"]').setValue('SEARCH-A')
+      expect(unifiedApiMock.ledger).toHaveBeenCalledTimes(calls)
+      await vi.advanceTimersByTimeAsync(251); await flushPromises()
+      expect(unifiedApiMock.ledger).toHaveBeenCalledTimes(calls + 1)
+      expect(previousSignal.aborted).toBe(true)
+      expect(unifiedApiMock.ledger).toHaveBeenLastCalledWith('huaxing', expect.objectContaining({ search: 'SEARCH-A' }), expect.any(AbortSignal))
+      expect(cartonApiMock.synchronizeBusinessCustomers).toHaveBeenCalledTimes(syncs)
+      await findButton(wrapper, '刷新').trigger('click'); await flushPromises()
+      expect(cartonApiMock.synchronizeBusinessCustomers).toHaveBeenCalledTimes(syncs + 1)
+      const activeSignal = unifiedApiMock.ledger.mock.calls.at(-1)![2] as AbortSignal
+      wrapper.unmount(); expect(activeSignal.aborted).toBe(true)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('retains customer results from page entry when an order filter completes first', async () => {
+    mockReceiptWorkspace([orderFixture('LATE-CUSTOMERS', businessDateOffset(3))])
+    const customers = await cartonApiMock.listCustomers('huaxing')
+    let finish!: (value: typeof customers) => void
+    cartonApiMock.listCustomers.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = mountView('orders')
+    try {
+      await flushPromises(); vi.useFakeTimers()
+      const syncs = cartonApiMock.synchronizeBusinessCustomers.mock.calls.length
+      await wrapper.get('[aria-label="顶部搜索"]').setValue('LATE')
+      await vi.advanceTimersByTimeAsync(251); await flushPromises()
+      finish(customers); await flushPromises()
+      expect(cartonApiMock.synchronizeBusinessCustomers).toHaveBeenCalledTimes(syncs)
+      expect(wrapper.findAll('option').some(option => option.text().includes('Dickie'))).toBe(true)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
   })
 
   it('includes the full ending day in movement filters and clears them together', async () => {
@@ -8335,7 +8452,7 @@ it('adds paper rows without randomUUID on an HTTP origin and preserves entered d
   } finally { wrapper.unmount(); vi.unstubAllGlobals() }
 })
 
-it('adds paper through the common entry and preserves personal units without relabeling source dimensions', async () => {
+it('prefers master paper units and allows per-order overrides without changing master data or personal defaults', async () => {
   authStoreMock.can.mockReturnValue(true)
   const previousUser = authStoreState.currentUser
   authStoreState.currentUser = { id: 'dimension-user', identity: { employment_epoch: 1 } }
@@ -8353,39 +8470,38 @@ it('adds paper through the common entry and preserves personal units without rel
     expect(wrapper.findAll('button').some(button => button.text() === '配卡下单')).toBe(false)
     await openNewRegularOrder(wrapper); await flushPromises()
     const form = wrapper.get('[data-testid="order-form-overlay"] form')
-    expect(form.get<HTMLSelectElement>('[aria-label="订单尺寸显示"]').element.value).toBe('inch')
+    expect(form.find('[aria-label="订单尺寸显示"]').exists()).toBe(false)
     expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('inch')
     await wrapper.get('input[aria-label="货号"]').setValue('DIM-ITEM')
     await wrapper.get('[aria-label="带出基础资料 DIM-ITEM DIMENSIONS"]').trigger('click')
     expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('cm')
     expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('10 × 20 inch（换算参考）')
     expect(form.get('[aria-label="纸品尺寸显示 1"]').get('span').attributes('title')).toBe('10 × 20 inch（换算参考）')
-    await form.get('[aria-label="订单尺寸显示"]').setValue('mm')
-    expect(form.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('254 × 508 mm（换算参考）')
     expect(form.get<HTMLInputElement>('[aria-label="规格 1"]').element.value).toBe('25.4*50.8')
+    expect(window.localStorage.getItem(dimensionPreferenceKey(context))).toBe('inch')
+    expect(form.get<HTMLSelectElement>('[aria-label="纸品尺寸单位 1"]').element.value).toBe('cm')
+    await form.get('[aria-label="纸品尺寸单位 1"]').setValue('mm')
+    expect(form.get<HTMLInputElement>('[aria-label="规格 1"]').element.value).toBe('25.4*50.8')
+    expect(master.data.lines[0]!.dimension_unit).toBe('cm')
     expect(window.localStorage.getItem(dimensionPreferenceKey(context))).toBe('inch')
     await wrapper.get('[aria-label="订单备注"]').setValue('保留合同来源')
     expect(form.find('[aria-label="纸品尺寸显示 2"]').exists()).toBe(false)
     await findButton(wrapper, '新增纸品明细').trigger('click')
     expect(form.find('[aria-label="配卡备注"]').exists()).toBe(false)
-    expect(form.get('[aria-label="纸品尺寸显示 2"]').text()).toBe('mm')
-    await form.get('[aria-label="订单尺寸显示"]').setValue('cm')
-    expect(form.get('[aria-label="纸品尺寸显示 2"]').text()).toBe('cm')
+    expect(form.get('[aria-label="纸品尺寸显示 2"]').text()).toBe('inch')
     await form.get<HTMLInputElement>('[aria-label="规格 2"]').setValue('10*20')
-    await form.get('[aria-label="订单尺寸显示"]').setValue('mm')
-    expect(form.get('[aria-label="纸品尺寸显示 2"]').text()).toContain('100 × 200 mm（换算参考）')
+    expect(form.get('[aria-label="纸品尺寸显示 2"]').text()).toBe('inch')
     expect(form.get<HTMLInputElement>('[aria-label="规格 2"]').element.value).toBe('10*20')
-    expect(form.find('[aria-label="纸品尺寸单位 1"]').exists()).toBe(false)
     await wrapper.get('[aria-label="关闭新建订单"]').trigger('click'); await flushPromises()
     const draft = readOrderDraft(window.localStorage, context)!
-    expect(draft.form.materials.map(line => [line.packagingType, line.dimensionUnit])).toEqual([['普通箱', 'cm'], ['', 'cm']])
+    expect(draft.form.materials.map(line => [line.packagingType, line.dimensionUnit])).toEqual([['普通箱', 'mm'], ['', 'inch']])
     expect(draft.form.note).toBe('保留合同来源')
     draft.form.materials[0]!.dimensionUnit = ''
     draft.form.materials[0]!.specification = ''
     writeOrderDraft(window.localStorage, context, draft)
     await openNewRegularOrder(wrapper); await flushPromises()
     await wrapper.get('[aria-label="继续上次新建订单草稿"]').trigger('click'); await flushPromises()
-    expect(wrapper.get<HTMLSelectElement>('[aria-label="订单尺寸显示"]').element.value).toBe('inch')
+    expect(wrapper.find('[aria-label="订单尺寸显示"]').exists()).toBe(false)
     expect(wrapper.get('[aria-label="纸品尺寸显示 1"]').text()).toContain('inch')
     expect(wrapper.get<HTMLTextAreaElement>('[aria-label="订单备注"]').element.value).toBe('保留合同来源')
   } finally {
