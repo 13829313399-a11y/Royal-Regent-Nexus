@@ -3,6 +3,7 @@ import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv, type ViteDevServer } from 'vite'
 import { imageTranslationPlugin } from './scripts/vite-image-translation'
+import { mainlandInvoicePlugin } from './scripts/vite-mainland-invoice'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -10,7 +11,7 @@ export default defineConfig(({ mode }) => {
     // Isolated QA apps may share node_modules, but must not replace this
     // server's optimized dependency files while it is running.
     cacheDir: fileURLToPath(new URL('./.local-dev/vite-cache', import.meta.url)),
-    plugins: [vue(), tailwindcss(), imageTranslationPlugin(), {
+    plugins: [vue(), tailwindcss(), imageTranslationPlugin(), mainlandInvoicePlugin(), {
       name: 'office-connection-boundary',
       configureServer(server: ViteDevServer) {
         server.middlewares.use((req, res, next) => {

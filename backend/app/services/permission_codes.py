@@ -233,6 +233,9 @@ BUSINESS_PERMISSION_CODES = (
 # catalog entry supports independent disabling and explicit IAM denies.
 MODULE_FEEDBACK_PERMISSION_CODES = ("module_feedback:submit", "module_feedback:manage")
 
+# Explicit per-factory/department grants; never expand built-in business roles.
+MAINLAND_INVOICE_PERMISSION_CODES = ("mainland_invoice:generate",)
+
 APPLICATION_PERMISSION_CODES = tuple(
-    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES, *MODULE_FEEDBACK_PERMISSION_CODES))
+    dict.fromkeys((*BUSINESS_PERMISSION_CODES, *SYSTEM_MANAGEMENT_PERMISSION_CODES, *MODULE_FEEDBACK_PERMISSION_CODES, *MAINLAND_INVOICE_PERMISSION_CODES))
 )

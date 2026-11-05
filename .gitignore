@@ -32,6 +32,9 @@ backend/data/qa/
 backend/data/*.sqlite
 backend/data/*.sqlite3
 backend/data/document-tools/
+backend/data/mainland-invoice-templates/
+services/mainland-invoice/private/
+services/mainland-invoice/public/
 backend/models/document-translation/
 backend/models/image-translation/
 .env
@@ -61,6 +64,7 @@ backend/models/image-translation/
 !/docs/document-studio/evaluation.md
 !/docs/document-studio-runtime-diagnostics.md
 !/docs/business/internal-quote-collaboration-design.md
+!/docs/business/mainland-invoice-deployment.md
 !/docs/business/indonesia-materials-implementation.md
 !/docs/business/qc-complete-business-process.md
 !/docs/business/injection-scheduling-v3.md
@@ -151,6 +155,7 @@ outputs/opening-inventory-template-20260909/
 
 # Local frontend/API/document worker process identities and logs
 /.local-dev/
+/services/mainland-invoice/.local-dev/
 
 # QC embedded deployment documentation and private runtime data
 !/docs/business/qc-department-integration.md

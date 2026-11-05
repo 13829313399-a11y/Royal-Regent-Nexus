@@ -54,6 +54,7 @@ from app.api.internal_quote import (
 )
 from app.api.molding_sample import router as molding_sample_router
 from app.api.pricing import router as pricing_router
+from app.api.mainland_invoice import router as mainland_invoice_router
 from app.api.qc_inspection import router as qc_inspection_router
 from app.api.qc_department import router as qc_department_router
 from app.api.raw_material import router as raw_material_router
@@ -329,6 +330,7 @@ from app.api.iam_workspace import router as iam_workspace_router
 app.include_router(iam_workspace_router)
 app.include_router(molding_sample_router)
 app.include_router(pricing_router)
+app.include_router(mainland_invoice_router)
 app.include_router(raw_material_router)
 app.include_router(qc_inspection_router)
 app.include_router(qc_department_router)

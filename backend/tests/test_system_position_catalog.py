@@ -52,10 +52,13 @@ def test_fixed_system_position_definition_contract():
     # partition contract rather than freezing unrelated module counts here.
     groups = [set(permission_codes.BUSINESS_PERMISSION_CODES),
               set(permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES),
-              set(permission_codes.MODULE_FEEDBACK_PERMISSION_CODES)]
+              set(permission_codes.MODULE_FEEDBACK_PERMISSION_CODES),
+              set(permission_codes.MAINLAND_INVOICE_PERMISSION_CODES)]
     assert registered_codes == set.union(*groups)
     assert sum(map(len, groups)) == len(registered_codes)
     assert len(permission_codes.APPLICATION_PERMISSION_CODES) == len(registered_codes)
+    assert permission_codes.MAINLAND_INVOICE_PERMISSION_CODES == ("mainland_invoice:generate",)
+    assert all("mainland_invoice:generate" not in definition.permission_codes for definition in definitions)
     assert all(not (set(definition.permission_codes) & set(permission_codes.CUTTING_OPS_PERMISSION_CODES)) for definition in definitions)
     assert "system:feedback_manage" in permission_codes.SYSTEM_MANAGEMENT_PERMISSION_CODES
     assert "system:feedback_manage" not in permission_codes.BUSINESS_PERMISSION_CODES
