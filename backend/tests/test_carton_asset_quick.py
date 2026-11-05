@@ -69,6 +69,62 @@ def test_text_scope_idempotency_and_safe_rollback(monkeypatch):
             json=dict(revision=b['revision'],status='READY')).status_code==403
 
 
+@pytest.mark.parametrize('extension,broken,message',[
+    ('pdf',b'%PDF-1.4\nbroken','PDF 无法读取，请检查是否损坏或加密'),
+    ('xlsx',b'not a workbook','客户 Excel 内容与 OOXML 扩展名不符'),
+])
+def test_file_validation_message_no_persistence_and_corrected_retry(monkeypatch,extension,broken,message):
+    from sqlalchemy import func,select
+    from test_carton_mark_api import _pdf_bytes,_workbook_bytes
+    with make_client(monkeypatch) as client:
+        login_as(client,'admin');enable(monkeypatch)
+        from app.db import SessionLocal
+        from app.models.carton_mark import CartonMarkAsset
+        from app.models.carton_procurement import CartonAuditEvent
+        def counts():
+            with SessionLocal() as db:
+                return tuple(db.scalar(select(func.count()).select_from(model))
+                    for model in (CartonMarkAsset,CartonAuditEvent))
+        metadata=json.dumps(dict(request_id=uuid4().hex,owner_department='sales-business'))
+        name=f'SC-RECOVERY123.{extension}'
+        def send(content):
+            return client.post(BASE,params=F,data={'metadata':metadata},files={'file':(name,content)})
+        before=counts()
+        response=send(broken)
+        assert response.status_code==422,response.text
+        assert response.json()['detail']==message
+        assert counts()==before
+        assert ok(client.get(BASE,params=F))['items']==[]
+        # A rejected file never claims the request identity. Correcting the bytes
+        # can save once, and an exact retry returns that same original.
+        content=_pdf_bytes() if extension=='pdf' else _workbook_bytes('CONTRACT NO: SC-RECOVERY123')
+        asset=ok(send(content))
+        assert asset['contract_number']=='SC-RECOVERY123'
+        assert asset['workflow']['status']=='PENDING' and not asset['targets']
+        assert ok(send(content))['id']==asset['id']
+        assert counts()[0]==before[0]+1
+        assert client.get(BASE+f"/{asset['id']}/document",params=F).content==content
+
+
+def test_prepare_service_failure_is_not_reported_as_bad_file(monkeypatch):
+    with make_client(monkeypatch) as client:
+        login_as(client,'admin');enable(monkeypatch)
+        from app.services import carton_asset_quick
+        from app.services.carton_mark import CartonMarkDocumentConfigurationError
+        def unavailable(*args):
+            raise CartonMarkDocumentConfigurationError('服务器读取组件不可用')
+        monkeypatch.setattr(carton_asset_quick,'prepare',unavailable)
+        response=upload(client)
+        assert response.status_code==503,response.text
+        assert response.json()['detail']=='服务器读取组件不可用'
+        def unexpected(*args):
+            raise RuntimeError('unexpected parser failure')
+        monkeypatch.setattr(carton_asset_quick,'prepare',unexpected)
+        with pytest.raises(RuntimeError,match='unexpected parser failure'):
+            upload(client)
+        assert ok(client.get(BASE,params=F))['items']==[]
+
+
 def test_department_download_guard_legacy_routes_and_historical_sources(monkeypatch):
     with make_client(monkeypatch) as client:
         login_as(client,'admin');enable(monkeypatch)

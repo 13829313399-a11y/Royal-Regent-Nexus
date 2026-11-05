@@ -27,7 +27,7 @@ COUNTRY_MAP = {
     'sweden': '瑞典', 'norway': '挪威', 'denmark': '丹麦', 'finland': '芬兰',
     'austria': '奥地利', 'switzerland': '瑞士', 'portugal': '葡萄牙',
     'greece': '希腊', 'czech': '捷克', 'hungary': '匈牙利', 'romania': '罗马尼亚',
-    'south africa': '南非', 'new zealand': '新西兰', 'singapore': '新加坡',
+    'south africa': '南非', 'new zealand': '新西兰', 'nz': '新西兰', 'singapore': '新加坡',
     'malaysia': '马来西亚', 'thailand': '泰国', 'philippines': '菲律宾',
     'indonesia': '印尼', 'vietnam': '越南', 'india': '印度',
 }
@@ -123,9 +123,18 @@ def parse_eml(data):
     except Exception:
         pass
     html_part, text_part = None, None
-    for part in msg.walk():
-        if part.get_filename():
-            continue
+    def body_parts(part):
+        # An attached .eml is supporting history, never this enquiry's body.
+        if part.get_filename() or part.get_content_disposition() == 'attachment' \
+                or part.get_content_type() == 'message/rfc822':
+            return
+        if part.is_multipart():
+            for child in part.get_payload():
+                yield from body_parts(child)
+        else:
+            yield part
+
+    for part in body_parts(msg):
         ct = part.get_content_type()
         if ct == 'text/html' and html_part is None:
             payload = part.get_payload(decode=True)
@@ -337,7 +346,11 @@ SUBJECT_SKIP = ('just play', 'royal regent', 'order enquiry', 'new order', 'enqu
 
 
 def customer_from_subject(subject):
-    s = re.sub(r'^(fw|re|fwd)\s*[:：]\s*', '', subject or '', flags=re.I)
+    s = re.sub(r'^\s*((fw|re|fwd|回复|转发)\s*[:：]\s*)+', '', subject or '', flags=re.I)
+    # "Minnie new order for Imexporta / Chile" names the customer after "for".
+    named = re.search(r'\b(?:new\s+)?order\s+for\s+(.+)', s, re.I)
+    if named:
+        s = named.group(1)
     for token in re.split(r'[/\-_–—]', s):
         token = token.split(',')[0].strip()
         if not token:
@@ -347,7 +360,7 @@ def customer_from_subject(subject):
         if low in SUBJECT_SKIP or low.startswith(('just play', 'royal regent', 'order enq',
                                                   'new order', 'rr')):
             continue
-        if re.match(r'^\d{5}', token) or re.search(r'schk|\d{6,}', token, re.I):
+        if re.match(r'^\d', token) or re.search(r'schk|\d{6,}', token, re.I):
             continue
         token = re.sub(r'#.*$', '', token)
         # 去掉 "order enquiry/inquiry" 及之后的部分（JP/WMUS 客的主题习惯）
@@ -355,13 +368,18 @@ def customer_from_subject(subject):
         token = re.sub(r'\s+f\d{4}$', '', token, flags=re.I).strip()
         token = re.sub(r'\s+wk\s*\d+$', '', token, flags=re.I).strip()  # "WMUS wk36" → WMUS
         token = re.sub(r'\s*\((import order|import)\)\s*$', '', token, flags=re.I)
+        country = re.search(r'\s*\(([^)]+)\)\s*$', token)
+        if country and pick_country(country.group(1)):
+            token = token[:country.start()].strip()
+        if token.lower() in COUNTRY_MAP:
+            continue
         if re.match(r'^[A-Za-z0-9 &().+]{2,40}$', token):
             return token
     return ''
 
 
 def normalize_note(note):
-    """备注按文员习惯清洗：散件翻译、去掉无信息量的 'no MOQ issue' 类废话。"""
+    """清理排版噪音，保留当前回复的 MOQ、拼单及 MA/MO 等业务条件。"""
     note = (note or '').strip()
     if not note:
         return ''
@@ -369,19 +387,10 @@ def normalize_note(note):
     if re.match(r'(?i)extra shipment surcharge', note):
         return ''
     # All component要在12/22送到 → 散件12/22送到
-    note = re.sub(r'(?i)all\s+compon\w*\s*要在\s*([\d/]+)\s*送到', r'散件\1送到', note)
+    note = re.sub(r'(?i)all\s+compon\w*\s*(?:要)?在\s*([\d/]+)\s*送到', r'散件\1送到', note)
     # 8L pkg. / 8L pkg 这种包装说明不进备注（版本列已有）
     note = re.sub(r'(?i)\b\d+L\b\s*pkg\.?\s*', '', note)
-    # no MOQ issue 无信息量
-    note = re.sub(r'(?i)([,.，;；]?\s*(no\s+)?mo\s*moq\s+issue[.!]?)+', '', note)
-    note = re.sub(r'(?i)^\s*no\s+moq\s+issue[.!]?\s*$', '', note)
-    note = note.strip(' ,，;；.')
-    # 文员不把议价性备注录进订单备注：纯 MOQ 数字、can tag on 拼单说明
-    if re.fullmatch(r'(?i)(production\s*/?\s*(pkg\s*)?)?moq\s*[\d,.]+\s*k?\.?', note):
-        return ''
-    if re.match(r'(?i)can tag on\b', note):
-        return ''
-    return note
+    return note.strip(' /,，;；.')
 
 
 def clean_item_code(raw):
@@ -403,7 +412,7 @@ def is_order_table(table):
         return False
     header = table[0]
     joined = ' '.join(header)
-    if not LONG_CODE_RE.search(' '.join(' '.join(r) for r in table[1:])):
+    if not any(_has_long_code(c) for row in table[1:] for c in row):
         return False
     if find_col(header, ['qty']) is None and find_col(header, ['quantity']) is None \
             and find_col(header, ['order qty']) is None:
@@ -419,6 +428,65 @@ def _has_long_code(v):
     return True
 
 
+def _reply_without_order_tables(html_text):
+    """Remove item tables, keeping current instructions in layout tables."""
+    line_starts = [0, *(match.end() for match in re.finditer('\n', html_text))]
+    removed = []
+
+    class TableSpans(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.stack = []
+
+        def absolute_position(self):
+            line, column = self.getpos()
+            return line_starts[line - 1] + column
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'table':
+                self.stack.append({'start': self.absolute_position(), 'children': [], 'nested_item': False})
+
+        def finish_table(self, end):
+            node = self.stack.pop()
+            cursor, pieces = node['start'], []
+            for start, stop in node['children']:
+                pieces.append(html_text[cursor:start])
+                cursor = stop
+            pieces.append(html_text[cursor:end])
+            direct_html = ' '.join(pieces)
+            direct_item = _has_long_code(html_to_text(direct_html))
+            # A layout wrapper inherits no facts from a nested order table.
+            # An actual Qty-header table with a nested item cell is still an
+            # order table, so its sibling packaging cells must also be removed.
+            direct_tables = html_to_tables(direct_html)
+            header = direct_tables[0][0] if direct_tables and direct_tables[0] else []
+            qty_header = any(find_col(header, [label]) is not None for label in ('qty', 'quantity'))
+            if direct_item or (node['nested_item'] and qty_header):
+                removed.append((node['start'], end))
+            if self.stack:
+                parent = self.stack[-1]
+                parent['children'].append((node['start'], end))
+                parent['nested_item'] |= direct_item or node['nested_item']
+
+        def handle_endtag(self, tag):
+            if tag == 'table' and self.stack:
+                self.finish_table(html_text.find('>', self.absolute_position()) + 1)
+
+    parser = TableSpans()
+    parser.feed(html_text)
+    parser.close()
+    # The current-reply boundary can cut through an enclosing layout table.
+    while parser.stack:
+        parser.finish_table(len(html_text))
+    cursor, kept = 0, []
+    for start, end in sorted(removed):
+        if start >= cursor:
+            kept.append(html_text[cursor:start])
+        cursor = max(cursor, end)
+    kept.append(html_text[cursor:])
+    return ' '.join(kept)
+
+
 PO_CELL_RE = re.compile(r'^\d{8,12}$')
 SCHK_CELL_RE = re.compile(r'(?i)^SCHK[-\s]?[\d-]')
 NUM_CELL_RE = re.compile(r'^[\d,]+(\.\d+)?$')
@@ -428,6 +496,42 @@ NUM_CELL_RE = re.compile(r'^[\d,]+(\.\d+)?$')
 _QUOTED_MARK_RE = re.compile(
     r'(replied message|original message|原始邮件|转发的邮件|发件人[:：]|发送时间[:：]'
     r'|on .{0,80}wrote)', re.I)
+
+_FORWARD_HEADER_BLOCK = re.compile(
+    r'<(?P<tag>div|p)\b[^>]*>\s*(?:<[^>]+>\s*)*'
+    r'(?P<label>发件人|发送时间|主题|收件人|抄送)\s*[:：].*?</(?P=tag)\s*>', re.I | re.S)
+_CANCEL_RE = re.compile(
+    r'no\s+new\s+orders?|cancel(?:led|ed)?|do\s+not\s+(?:proceed|place)|取消|勿录|不要录|不下单', re.I)
+
+
+def _unwrap_forwarded_enquiry(html_text):
+    """An explicit forwarding cover may introduce one current enquiry.
+
+    Remove only its complete contiguous mail header, then keep the ordinary
+    current-reply/history boundary. A generic FYI or cancellation cannot revive
+    quoted orders, and a second older header is never unwrapped recursively.
+    """
+    blocks = list(_FORWARD_HEADER_BLOCK.finditer(html_text))
+    if not blocks or blocks[0]['label'] != '发件人':
+        return html_text, False
+    first = blocks[0]
+    cover = html_to_text(html_text[:first.start()])
+    if not re.search(r'请(?:查看|查收|处理|录入)[^。\n]{0,20}(?:问单|订单)', cover) \
+            or _CANCEL_RE.search(cover) or any(is_order_table(t) for t in html_to_tables(html_text[:first.start()])):
+        return html_text, False
+    cover_info = extract_reply_info(cover, None)
+    if any(cover_info.values()):
+        # A cover with its own current shipping/package/item instructions is
+        # itself the newest reply; ordinary explicit-update handling must win.
+        return html_text, False
+    header = [first]
+    for block in blocks[1:]:
+        if html_to_text(html_text[header[-1].end():block.start()]):
+            break
+        header.append(block)
+    if not {'发件人', '发送时间', '主题', '收件人'} <= {b['label'] for b in header}:
+        return html_text, False
+    return html_text[header[-1].end():], True
 
 
 class QuantityColumnRequired(ValueError):
@@ -583,20 +687,26 @@ def parse_order_email(html_text, subject='', ref_date=None, source='', quantity_
     if ref_date is None:
         ref_date = date.today()
     full_text = html_to_text(html_text)
+    thread_dt = extract_thread_date(full_text)
     if not subject:
         m_sub = re.search(r'\bSubject\s*[|：:]?\s*([^\n|]+)', full_text)
         if m_sub:
             subject = m_sub.group(1).strip()
-    reply = newest_reply_text(full_text)
+    html_text, forwarded = _unwrap_forwarded_enquiry(html_text)
+    if forwarded:
+        warnings.append(f'【{source}】已识别“请查看问单”转发封面，仅使用最近一封问单回复；旧历史和邮件附件未作为新增订单')
+    # Table cells are row-specific facts, not a global reply confirmation.
+    # E.g. one item's "8L pkg + sound only IC" must not update another's 3L.
+    quote = _QUOTED_MARK_RE.search(html_text)
+    reply_html = html_text[:quote.start()] if quote else html_text
+    reply_html = _reply_without_order_tables(reply_html)
+    reply = newest_reply_text(html_to_text(reply_html))
     reply_info = extract_reply_info(reply, ref_date)
-    thread_dt = extract_thread_date(full_text)
     tables = html_to_tables(html_text)
     positioned, offsets = html_to_tables_pos(html_text)
-    quote = _QUOTED_MARK_RE.search(html_text)
     candidates = [t for t, offset in zip(positioned, offsets)
                   if is_order_table(t) and (not quote or offset < quote.start())]
-    reuse_quoted = bool(reply_info['sd'] or reply_info['pkg']) and not re.search(
-        r'no\s+new\s+orders?|cancel(?:led|ed)?|do\s+not\s+(?:proceed|place)|取消|勿录|不要录|不下单', reply, re.I)
+    reuse_quoted = bool(reply_info['sd'] or reply_info['pkg']) and not _CANCEL_RE.search(reply)
     reused_quoted_table = False
     if not candidates and quote and reuse_quoted:
         quoted = [t for t, offset in zip(positioned, offsets) if offset > quote.start() and is_order_table(t)]
@@ -694,6 +804,7 @@ def parse_order_email(html_text, subject='', ref_date=None, source='', quantity_
         'global_note': '，'.join(global_notes),
         'sd': fmt_date(reply_info['sd']),
         'table_count': table_count,
+        'forwarded_enquiry': forwarded,
     }
     return {'orders': orders, 'warnings': warnings, 'meta': meta}
 
@@ -704,7 +815,7 @@ def _parse_headered_table(table, source, warnings, reply_info, ref_date):
     col_item = None
     best = 0
     for i in range(len(header)):
-        n = sum(1 for r in table[1:] if i < len(r) and LONG_CODE_RE.search(r[i] or ''))
+        n = sum(1 for r in table[1:] if i < len(r) and _has_long_code(r[i]))
         if n > best:
             best, col_item = n, i
     col_baby = find_col(header, ['baby item'])
@@ -729,6 +840,8 @@ def _parse_headered_table(table, source, warnings, reply_info, ref_date):
         col_cust = find_col(header, ['customer'], excludes=('po', 'item'))
     col_port = find_col(header, ['port of discharge'])
     col_sd = find_col(header, ['fty sd'])
+    if col_sd is None:
+        col_sd = find_col(header, ['factory ship date'])
     col_promised = find_col(header, ['promised crd'])
     if col_promised is not None:
         col_sd = col_promised
@@ -762,7 +875,7 @@ def _parse_headered_table(table, source, warnings, reply_info, ref_date):
                 warnings.append(f'【{source}】货号 {baby} 缺少长货号/规格，请人工核对')
         qty_raw = cell(row, col_qty)
         qty = qty_raw.replace(',', '')
-        if not baby and qty is None:
+        if not baby and not qty:
             continue
 
         po = cell(row, col_po) or last_po

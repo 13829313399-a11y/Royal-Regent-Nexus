@@ -106,7 +106,7 @@ def source(batch, contract):
 def order_body(batch, contract):
     value = next(item for item in batch['parse_summary']['rows'] if item.get('contract_no') == contract)
     return {**_order_payload(), 'request_id': uuid4().hex, 'contract_no': contract,
-        'item_no': value['item_no'], 'customer_po': value['source_reference'],
+        'item_no': value['item_no'], 'customer_po': value['customer_po'],
         'product_order_quantity': value['quantity'], 'customer_due_date': value['customer_due_date'],
         'schedule_source': source(batch, contract)}
 

@@ -43,6 +43,7 @@ from app.services.huaxing_order_legacy import (
 
 def test_huaxing_customer_order_center_exposes_all_mapped_customers():
     assert set(HUAXING_CUSTOMER_MAPPINGS) == {
+        "zuru",
         "disney",
         "edu",
         "360",
@@ -53,7 +54,11 @@ def test_huaxing_customer_order_center_exposes_all_mapped_customers():
         "barter",
         "disney",
     }
-    assert all(spec.target_template.endswith("_SCHEDULE_APPEND_V2") for spec in HUAXING_CUSTOMER_MAPPINGS.values())
+    assert all(spec.target_template.endswith("_SCHEDULE_APPEND_V2")
+               for code, spec in HUAXING_CUSTOMER_MAPPINGS.items() if code != 'zuru')
+    assert HUAXING_CUSTOMER_MAPPINGS['zuru'].target_template == 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
+    assert HUAXING_CUSTOMER_MAPPINGS['zuru'].input_template == 'HUAXING_ZURU_PO_V2'
+    assert HUAXING_CUSTOMER_MAPPINGS['zuru'].po_extensions == ('.pdf', '.xlsx')
 
 
 def test_edu_inspection_date_is_seven_days_before_ship_date_and_avoids_weekend():

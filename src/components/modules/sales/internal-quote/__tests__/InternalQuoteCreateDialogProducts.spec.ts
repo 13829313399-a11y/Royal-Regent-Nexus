@@ -27,6 +27,30 @@ async function addProduct() {
 }
 
 describe('JustPlay per-product component creation', () => {
+  it.each(['JustPlay', '普通客'])('lets %s omit engineering without adding it back on submit', async (customer) => {
+    await createDialog()
+    await wrapper.findAll('.quote-form-grid select')[0]!.setValue(customer)
+    const engineering = wrapper.get('.quote-optional-segments input[value="engineering"]')
+    expect((engineering.element as HTMLInputElement).checked).toBe(true)
+    expect(wrapper.get('.quote-segment-pills.mandatory').text()).not.toContain('工程部')
+    await engineering.setValue(false)
+    await wrapper.get('.quote-optional-segments input[value="slush"]').setValue(true)
+    await wrapper.get('.quote-primary-button').trigger('click')
+    const payload = wrapper.emitted('confirm')![0]![0] as InternalQuoteCreatePayload
+    expect(payload.participatingSections).toEqual(['assembly', 'slush', 'sales'])
+    expect(wrapper.text()).toContain('无需工程资料即可输出')
+  })
+
+  it('allows engineering to be selected again before creating a quote', async () => {
+    await createDialog()
+    const engineering = wrapper.get('.quote-optional-segments input[value="engineering"]')
+    await engineering.setValue(false)
+    await engineering.setValue(true)
+    await wrapper.get('.quote-primary-button').trigger('click')
+    const payload = wrapper.emitted('confirm')![0]![0] as InternalQuoteCreatePayload
+    expect(payload.participatingSections).toEqual(['engineering', 'assembly', 'sales'])
+  })
+
   it('binds images to the selected component and does not copy them to B', async () => {
     await createDialog()
     await wrapper.get('input[value="series"]').setValue(true)

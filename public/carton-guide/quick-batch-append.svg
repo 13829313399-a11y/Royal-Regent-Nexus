@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="470" viewBox="0 0 1080 470" role="img" aria-labelledby="title desc">
-  <title id="title">多选订单，一次追加</title><desc id="desc">勾选需要追加的订单，点击“批量追加”。正单、样板和杂单都可按当前状态选择。；逐单填写“本次追加”和原因，核对“追加后总需求”。例如原 100、本次加 20，结果是 120。；检查每张单后“确认批量追加”。回原订单看新总量和版本；已发给供应商的单要重新核对。</desc>
+  <title id="title">多选订单，一次追加</title><desc id="desc">勾选要加量的原订单，点“批量追加”；正单、样板、杂单均按当前状态办理。；逐单填“本次追加”和原因。例如原来 100，本次加 20，追加后是 120。；核对每张单后确认。已发给供应商的单，还需供应商核对新版本。</desc>
   <rect width="1080" height="470" rx="20" fill="#f1f5f9"/>
   <g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif">
     <text x="28" y="43" font-size="27" font-weight="700" fill="#0f172a">多选订单，一次追加</text>

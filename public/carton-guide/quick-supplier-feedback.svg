@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="470" viewBox="0 0 1080 470" role="img" aria-labelledby="title desc">
-  <title id="title">看仓库实际验收结果</title><desc id="desc">打开“发货与仓库反馈”，找到原送货单。；展开明细，看累计到货、破损、拒收和有效入库数量。；有短送、拒收或冲销时先核对原单和验收历史，再处理后续送货。</desc>
+  <title id="title">看仓库实际验收结果</title><desc id="desc">打开“发货与仓库反馈”，找到原送货单。；展开明细，看累计到货、破损、拒收和有效入库数量。；有短送、拒收或冲销时，先对照原单和验收历史，再安排后续送货。</desc>
   <rect width="1080" height="470" rx="20" fill="#f1f5f9"/>
   <g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif">
     <text x="28" y="43" font-size="27" font-weight="700" fill="#0f172a">看仓库实际验收结果</text>
@@ -18,6 +18,6 @@
       <circle cx="760" cy="134" r="18" fill="#0f766e"/>
       <text x="760" y="141" text-anchor="middle" fill="white" font-size="21" font-weight="700">3</text>
       <text x="790" y="141" fill="#0f766e" font-size="19" font-weight="700">最后处理 / 检查</text>
-      <text x="746" y="185" font-size="20" fill="#334155"><tspan x="746" dy="0">有短送、拒收或冲销时先核对原</tspan><tspan x="746" dy="32">单和验收历史，再处理后续送货。</tspan></text>
+      <text x="746" y="185" font-size="20" fill="#334155"><tspan x="746" dy="0">有短送、拒收或冲销时，先对照</tspan><tspan x="746" dy="32">原单和验收历史，再安排后续送</tspan><tspan x="746" dy="32">货。</tspan></text>
       <rect x="28" y="382" width="1024" height="70" rx="12" fill="#ccfbf1"/><text x="48" y="408" font-size="20" fill="#115e59"><tspan x="48" dy="0">例如到货 100、拒收 100，有效入库为 0。</tspan></text>
   </g></svg>

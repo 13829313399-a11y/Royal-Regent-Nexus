@@ -41,7 +41,7 @@ def prepared_sheets(filename, content, sheets):
 # This value is also part of the delivery-import deduplication identity. Bump it
 # whenever an OCR/parser change must reprocess files imported by an older build.
 DELIVERY_IMPORT_PARSER_VERSION = "delivery-note-local-v11-unordered"
-SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-shipping-split-source-v7"
+SCHEDULE_IMPORT_PARSER_VERSION = "schedule-item-source-customer-po-v8"
 INSPECTION_IMPORT_PARSER_VERSION = "schedule-item-sections-v4-amendment"
 PACKAGING_TYPES = (
     "普通箱",
@@ -821,7 +821,7 @@ def _parse_item_schedule(sheets: list[tuple[str, list[list[Any]], int]]) -> dict
                 row.update(match_status="REVIEW_REQUIRED", suggestion="合同、货号和 SO#/Reference 相同，待人工确认是否重复或分批；可继续标记或按此下单")
     return {"rows": result, "engine": "unified-item-header-mapping", "field_mappings": mappings,
             "warnings": ["读取 ITEM 表的待下单、取消单和已走货分区；待下单区正单和改单参与下单核对，其他记录保留待确认。接单表不重复导入。",
-                         "Contract No.、SO#/Reference、P/O#: 分别保留；同合同货号优先按 SO#/Reference 区分，SO 空白时用 P/O，空白编号不从相邻行补齐。",
+                         "Contract No.、SO#/Reference、P/O#: 分别保留；SO 用于排期身份，下单客户 PO 只取原表 P/O#:，空白不以 SO 或相邻行补齐。",
                          "无年份、多阶段或无效日期保留原文并标记待确认，不猜测日期。"],
             "review_count": sum(row.get("match_status") == "REVIEW_REQUIRED" or row.get("date_review_required", False) for row in result)}
 
@@ -1092,16 +1092,25 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
         contract_no=order.contract_no, item_no=order.item_no, customer_po=order.customer_po, status=order.status,
         product_order_quantity=order.product_order_quantity, schedule_quantity_matches=quantity_matches.get(order.id, []))
         for order in {order.id: order for _, order in joined}.values()]
+    from app.services.carton_schedule_order_matching import read_matches as read_po_matches
+    po_matches = read_po_matches(db, factory_id, incoming_rows=rows) if import_type == 'WEEKLY_SCHEDULE' else {'matches': {}, 'ambiguous': {}}
     counts = Counter(schedule_identity(row) for row in rows if tracked(row))
     for row in rows:
+        bound_unified = import_type == 'WEEKLY_SCHEDULE' and row.get('template') == 'unified-item' and bool(row.get('schedule_customer_code'))
+        key = row.get('schedule_identity') or schedule_identity(row)
+        if bound_unified and po_matches['ambiguous'].get(key):
+            row.update(match_status='AMBIGUOUS', procurement_state='REVIEW', suggestion='客户 PO 或来源订单存在多个候选或来源已变更，请核对原订单，勿重复下单')
+            continue
         linked_ids = (schedule_order_links or {}).get(schedule_identity(row), []) if (
             import_type == "WEEKLY_SCHEDULE" and tracked(row) and counts[schedule_identity(row)] == 1
         ) else []
+        if bound_unified:
+            linked_ids = po_matches['matches'].get(key, [])
         linked_pairs = [(line, order) for identifier in linked_ids for line, order in by_id[identifier]
                         if (not row.get("schedule_customer_code") or order.customer_code == row["schedule_customer_code"])
                         and order.contract_no.strip().casefold() == str(row.get("contract_no") or "").strip().casefold()
                         and order.item_no.strip().casefold() == str(row.get("item_no") or "").strip().casefold()
-                        and (not effective_po(row) or effective_po({"customer_po": order.customer_po}) == effective_po(row))]
+                        and (bound_unified or not effective_po(row) or effective_po({"customer_po": order.customer_po}) == effective_po(row))]
         linked_ids = list({order.id for _, order in linked_pairs})
         linked_orders = {order.id: order for _, order in linked_pairs}
         if len(linked_orders) == 1:
@@ -1134,7 +1143,8 @@ def _match_rows(db: Session, factory_id: str, import_type: str, rows: list[dict[
         def scoped(pairs):
             return [(line, order) for line, order in pairs
                     if (not row.get("schedule_customer_code") or order.customer_code == row["schedule_customer_code"])
-                    and (not po_key or effective_po({"customer_po": order.customer_po}) == po_key)
+                    and (not bound_unified or order.id in linked_ids)
+                    and (bound_unified or not po_key or effective_po({"customer_po": order.customer_po}) == po_key)
                     and (not linked_ids or order.id in linked_ids)]
         if row.get("template") == "unified-item":
             identity = lambda value: _text(value).casefold()

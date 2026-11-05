@@ -103,7 +103,7 @@ def test_append_skips_uninstantiated_validation_and_table_ranges():
     assert rule.formula1 == '"是,否"' and str(rule.sqref) == "AZ4:AZ12"
 
 
-@pytest.mark.parametrize("factory,customer", [("huaxing", "360"), ("huakang-a", "green-toys"), ("huakang-d", "360")])
+@pytest.mark.parametrize("factory,customer", [("huaxing", "headstart"), ("huakang-a", "maxx"), ("huakang-d", "360")])
 def test_other_factory_or_customer_is_noop(factory, customer):
     workbook = openpyxl.load_workbook(BytesIO(template("360")))
     before = snapshot(workbook)

@@ -297,7 +297,7 @@
       {
         "path": "src/views/CartonProcurementView.vue",
         "symbol": "inventoryMoneySummary",
-        "sha256": "f541075cb6c9f062859e55350860a58cc49004de99061ee0d8751901aab2ad0f"
+        "sha256": "b3b630badac941e773120ef1fe44e9b4f18043548b0d746d1ee7f915a086eb68"
       }
     ],
     "knowledge_version": "2026-10-29-carton-asset-v1b",
@@ -454,7 +454,7 @@
       {
         "path": "src/components/modules/sales/internal-quote/InternalQuoteHome.vue",
         "symbol": "quote-list-toolbar",
-        "sha256": "43ec017697173ae91a346b418443477298b0bea15c3de73f7a1a3b3b7e32638c"
+        "sha256": "a127d3ccb164c96e67c82926bdab60e32c0a7cf373a0a5e534d0c7145b8952b5"
       },
       {
         "path": "src/components/modules/sales/internal-quote/InternalQuoteReadiness.vue",

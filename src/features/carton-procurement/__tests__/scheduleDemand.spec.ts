@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { effectiveSchedulePo, scheduleDemandSnapshot, scheduleMarkChanges, scheduleMarkState, scheduleQuantityCandidates } from '../scheduleDemand'
+import { effectiveSchedulePo, scheduleCustomerPo, scheduleDemandSnapshot, scheduleMarkChanges, scheduleMarkState, scheduleQuantityCandidates } from '../scheduleDemand'
 import { scheduleOrderReminder } from '@/lib/cartonScheduleDeadline'
 import { scheduleWorkItem } from '../scheduleWorkViews'
 import { buildBusinessOrderAlerts } from '../businessAlerts'
@@ -9,6 +9,12 @@ const row: CartonImportPreviewRow = { template: 'unified-item', order_type: '正
   schedule_section: 'PENDING', quantity: 360, carton_rule: '6', customer_due_date: '2026-10-20', manual_ordered: true }
 
 describe('weekly demand acknowledgements', () => {
+  it('keeps the source PO separate from the stable SO identity without losing zeroes', () => {
+    const source = { source_reference: 'RL-452547-8', customer_po: '0004685' }
+    expect(scheduleCustomerPo(source)).toBe('0004685')
+    expect(effectiveSchedulePo(source)).toBe('rl-452547-8')
+    expect(scheduleCustomerPo({ source_reference: 'SO-ONLY' })).toBe('')
+  })
   it('uses SO first and preserves leading zeroes in fallback PO', () => {
     expect(effectiveSchedulePo({ customer_po: ' 00123 ' })).toBe('00123')
     expect(effectiveSchedulePo({ source_reference: ' SO-1 ', customer_po: '00123' })).toBe('so-1')

@@ -2,6 +2,10 @@ import type { CartonImportPreviewRow, CartonScheduleDemandSnapshot, CartonSchedu
 
 const normalized = (value?: string) => (value || '').normalize('NFKC').trim().toLowerCase()
 export const effectiveSchedulePo = (row: CartonImportPreviewRow) => normalized(row.source_reference) || normalized(row.customer_po)
+// SO identifies the schedule; only the source P/O# fills the order's PO field.
+export const scheduleCustomerPo = (row: CartonImportPreviewRow) => row.customer_po || ''
+export const scheduleLinkedPoMatches = (row: CartonImportPreviewRow, po?: string) =>
+  !effectiveSchedulePo(row) || normalized(po) === normalized(row.customer_po) || Boolean(normalized(row.source_reference) && normalized(po) === normalized(row.source_reference))
 export const scheduleQuantityMatchBasis = 'CONTRACT_ITEM_QUANTITY_PACKING'
 
 function packingKey(value?: string) {

@@ -154,7 +154,8 @@ async function exportRows() {
   const changes = preview.value.rows.filter(row => selected.value.includes(row.id)).flatMap(row => {
     const before = original.value.find(item => item.id === row.id)!
     const contextChanged = row.customer !== before.customer || row.carton_t !== before.carton_t
-    return editable.flatMap(([field]) => !((field === 'price_t' || field === 'factory_price_t') && contextChanged)
+    const priceReviewRequired = contextChanged || before.price_confirm
+    return editable.flatMap(([field]) => !((field === 'price_t' || field === 'factory_price_t') && priceReviewRequired)
       && String(row[field] ?? '') === String(before[field] ?? '') ? [] : [{ id: row.id, field, value: String(row[field] ?? '') }])
   })
   body.append('fingerprint', preview.value.fingerprint); body.append('selected', JSON.stringify(selected.value))

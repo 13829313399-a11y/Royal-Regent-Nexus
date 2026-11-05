@@ -141,12 +141,11 @@ def test_competing_candidates_remain_ambiguous_and_cannot_create_again(monkeypat
         rows = ([row(), row(po='ANOTHER-PO')] if side == 'schedule' else
                 [row(), row(po='')] if side == 'schedule_blank_po' else [row()])
         batch = import_schedule(client, rows)
-        considered = batch['parse_summary']['rows'][:1] if side == 'schedule_blank_po' else batch['parse_summary']['rows']
-        for actual in considered:
+        # A blank PO is not a wildcard that can consume a purchase competing
+        # with another current demand; both sources require review.
+        for actual in batch['parse_summary']['rows']:
             assert actual['match_status'] == 'AMBIGUOUS'
             assert not actual.get('order_id')
-        if side == 'schedule_blank_po':
-            assert batch['parse_summary']['rows'][1]['match_status'] == 'MATCHED'
         payload = _order_payload()
         payload.update(contract_no='0053135', item_no='0040220-1', customer_po='0989551378',
                        product_order_quantity=360, schedule_source={'batch_id': batch['id'],

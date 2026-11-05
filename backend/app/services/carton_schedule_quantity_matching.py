@@ -77,14 +77,15 @@ def solve(rows, orders, *, factory_id):
         if (order.get("status") != "CANCELLED" and not order.get("deleted_at")
                 and (factory_id is None or order.get("factory_id") == factory_id)):
             by_scope[scope(order)].append(order)
-    reserved = {identifier for row in rows for identifier in row.get("explicit_order_ids", [])}
+    from app.services.carton_schedule_order_matching import solve as solve_po
+    links = {(row.get('schedule_identity') or identity(row)): row.get('explicit_order_ids', []) for row in rows}
+    po = solve_po(rows, orders, links, factory_id=factory_id)
+    reserved = {identifier for values in (*po['matches'].values(), *po['ambiguous'].values()) for identifier in values}
+    reserved.update(identifier for row in rows for identifier in row.get('explicit_order_ids', []))
     blank_source_orders = set()
     for row in rows:
-        for order in by_scope[scope(row, source=True)]:
-            if not effective_po(row) and row.get("schedule_section") == "PENDING":
-                blank_source_orders.add(order["id"])
-            elif effective_po(row) and effective_po(row) == normalized(order.get("customer_po")):
-                reserved.add(order["id"])
+        if not effective_po(row) and row.get('schedule_section') == 'PENDING':
+            blank_source_orders.update(order['id'] for order in by_scope[scope(row, source=True)])
     counts = Counter(identity(row) for row in rows)
     edges = []
     for row in rows:
@@ -92,11 +93,11 @@ def solve(rows, orders, *, factory_id):
                 or row.get("schedule_section") != "PENDING"
                 or row.get("order_type") not in {"正单", "加单", "改单", "正式PO"}
                 or factory_id is not None and row.get("factory_id", factory_id) != factory_id
-                or not effective_po(row) or positive(row.get("quantity")) is None or packing(row.get("carton_rule")) is None):
+                or positive(row.get("quantity")) is None or packing(row.get("carton_rule")) is None):
             continue
         scoped = by_scope[scope(row, source=True)]
-        if row.get("explicit_order_ids") or row.get("has_split") or any(
-                normalized(order.get("customer_po")) == effective_po(row) for order in scoped):
+        po_key = row.get('schedule_identity') or identity(row)
+        if row.get('explicit_order_ids') or row.get('has_split') or po_key in po['matches'] or po_key in po['ambiguous']:
             continue
         for order in scoped:
             if (normalized(order.get("customer_po")) or order["id"] in reserved
@@ -219,18 +220,20 @@ def refresh_snapshot_matches(db, result, *, matches=None):
     from app.services.carton_order_split import live_plans, annotate_schedule
     links = core._schedule_order_links(db, result.factory_id)
     plans = live_plans(db, result.factory_id)
+    from app.services.carton_schedule_order_matching import read_matches as read_po_matches
+    po = read_po_matches(db, result.factory_id)
     for row in rows:
         current = [(identifier, proof) for identifier, proof in proofs if proof_matches(row, proof)]
         for key in ("order_id", "order_no", "order_status"):
             row.pop(key, None)
-        scoped = [order for order in by_scope[scope(row, source=True)] if not effective_po(row)
-                  or normalized(order.customer_po) == effective_po(row)]
-        explicit = [order for order in scoped if order.id in links.get(row.get("schedule_identity"), [])]
-        if not explicit and not row.get("schedule_identity_duplicate") and annotate_schedule(db, result.factory_id, row, plans):
-            # Retain the comparison provenance marker, even when a current split now wins.
-            row["match_basis"] = BASIS
+        key = row.get('schedule_identity') or identity(row)
+        if po['ambiguous'].get(key):
+            row.update(match_status='AMBIGUOUS', procurement_state='REVIEW', suggestion='客户 PO 或来源订单不唯一，请核对原订单')
             continue
-        exact = explicit or ([] if row.get("schedule_identity_duplicate") else scoped)
+        exact = [orders[identifier] for identifier in po['matches'].get(key, []) if identifier in orders]
+        if not exact and not row.get('schedule_identity_duplicate') and annotate_schedule(db, result.factory_id, row, plans):
+            row['match_basis'] = BASIS
+            continue
         if exact:
             if len(exact) > 1:
                 row.update(match_status="AMBIGUOUS", procurement_state="REVIEW", suggestion="当前匹配多个正式订单，请按客户 PO 核对")

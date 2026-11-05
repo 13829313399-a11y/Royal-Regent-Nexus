@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import Counter
 import re
 
-CUSTOMERS = {'buzzbee', 'dickie', 'caixing', 'edu', '360', 'yinhui', 'disney', 'maxx', 'shushupapa', 'barter'}
+CUSTOMERS = {'zuru', 'buzzbee', 'dickie', 'caixing', 'edu', '360', 'yinhui', 'disney', 'maxx', 'shushupapa', 'barter'}
 TARGET_TEMPLATE = 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
 BUZZBEE_SHEETS = ('ITEM表-子弹枪', 'ITEM表-水枪', 'ITEM表-套装', 'ITEM表-公仔')
 DICKIE_EXTRA = '恐龙蛋口水车Iteam表'
@@ -268,7 +268,10 @@ def prepare_row(row, history, customer_code, available_sheets, factory_id='huaxi
         row['reference_no'], row['contract_no'] = row.get('contract_no', ''), ''
     if customer_code == 'dickie':
         row['production_no'], row['contract_no'] = row.get('contract_no', ''), ''
-    matches = [h for h in history if _key(h.product_no) == _key(row.get('product_no'))]
+    product_key = _key
+    if row.get('_zuru_customer'):
+        from .zuru_original import key as product_key
+    matches = [h for h in history if product_key(h.product_no) == product_key(row.get('product_no'))]
     if customer_code in {'barter', 'maxx', 'shushupapa'} and not _text(row.get('date_code')):
         same_order = [h for h in matches if h.reference_no and _key(h.reference_no) == _key(row.get('reference_no'))]
         codes = {h.date_code for h in same_order if h.date_code}
@@ -347,7 +350,7 @@ def prepare_row(row, history, customer_code, available_sheets, factory_id='huaxi
     row['units_per_carton'] = outer_pack(row.get('units_per_carton'))
     factory_name = '华康D' if factory_id == 'huakang-d' else '华兴'
     row.setdefault('lineage', {})['mapping_rule'] = f'{factory_name}最新统一排期：按实际 ITEM 分类页及公共字段写入，摘要关联对应明细行。'
-    for field in ('contact', 'pdq'):
+    for field in (() if row.get('_zuru_customer') else ('contact', 'pdq')):
         values = {h.extras[field] for h in matches if h.source_sheet == lane and h.extras.get(field)}
         if not _text(row.get(field)) and len(values) == 1:
             row[field] = next(iter(values))
@@ -365,13 +368,23 @@ def validate_edited_identities(preview, original, history, available_sheets, ove
         if current == original[row['id']]:
             continue
         explicit = {o['field'] for o in overrides if o['row_id'] == row['id']}
+        identity_key = unified._key
+        if row.get('_zuru_customer'):
+            from .zuru_original import key as identity_key
         if current[0] != original[row['id']][0]:
             for field in ('product_name_zh', 'product_name_en', 'units_per_carton', 'standard', 'packaging', 'unit_price_hkd'):
                 lineage = str(row.get('lineage', {}).get(field, ''))
                 if field not in explicit and ('历史' in lineage or '当前' in lineage and '排期' in lineage):
-                    row[field] = unified._unique_history_value(history, row.get('product_no'), field, row.get('customer_name', ''))
+                    candidates = history
+                    if row.get('_zuru_customer'):
+                        candidates = [h for h in candidates if identity_key(h.product_no) == identity_key(row.get('product_no'))]
+                        if field in {'units_per_carton', 'standard', 'packaging'}:
+                            candidates = [h for h in candidates if unified._key(h.customer_name) == unified._key(row.get('customer_name'))]
+                        if field == 'unit_price_hkd':
+                            candidates = []
+                    row[field] = unified._unique_history_value(candidates, row.get('product_no'), field, row.get('customer_name', ''))
                     row['lineage'][field] = '人工更正货号后重新核对最新排期唯一历史值'
-        matches = [h for h in history if unified._key(h.product_no) == unified._key(row.get('product_no'))]
+        matches = [h for h in history if identity_key(h.product_no) == identity_key(row.get('product_no'))]
         lanes = {h.source_sheet for h in matches}
         if len(available_sheets) == 1:
             row['item_sheet_name'] = available_sheets[0]
@@ -379,10 +392,10 @@ def validate_edited_identities(preview, original, history, available_sheets, ove
             row['item_sheet_name'] = next(iter(lanes))
         else:
             raise unified.CustomerOrderUnifiedError('修改后的货号无法唯一确定 ITEM 分类页，请修订 PO 后重新预览')
-        same_order = [h for h in matches if h.reference_no and unified._key(h.reference_no) == unified._key(row.get('reference_no'))]
+        same_order = [h for h in matches if h.reference_no and identity_key(h.reference_no) == identity_key(row.get('reference_no'))]
         batch_matches = [other for other in preview['rows'] if other is not row and
-                         unified._key(other.get('product_no')) == unified._key(row.get('product_no')) and
-                         unified._key(other.get('reference_no')) == unified._key(row.get('reference_no'))]
+                         identity_key(other.get('product_no')) == identity_key(row.get('product_no')) and
+                         identity_key(other.get('reference_no')) == identity_key(row.get('reference_no'))]
         if row.get('_huaxing_customer') == 'edu':
             if not any(edu_order_key(row.get('contract_no'), row.get('po_no'))):
                 raise unified.CustomerOrderUnifiedError('EDU 修改后缺少客户合同号或客户 PO，请重新核对')
@@ -440,7 +453,7 @@ def export_rows(workbook, rows):
         counts.update({'接单表': len(rows), '正单评审表': len(rows)})
         slots = output_slots(
             workbook, len(rows), sheet_counts=counts,
-            top_order_area=any(row.get('_huaxing_customer') == 'shushupapa' for row in rows),
+            top_order_area=any(row.get('_huaxing_customer') in {'shushupapa', 'buzzbee'} for row in rows),
         )
     used = Counter()
     dickie_columns = {}
@@ -458,6 +471,9 @@ def export_rows(workbook, rows):
             summary_row = grouped_handles[index][summary].row if grouped_handles is not None else slots[summary][index]
             unified._write_summary_row(workbook[summary], summary_row, row,
                                        item_row=item_row, item_sheet=workbook[name])
+            if row.get('_zuru_customer'):
+                from .customer_order_zuru import write_summary
+                write_summary(workbook[summary], summary_row, row)
             if row.get('_huaxing_customer') == 'dickie':
                 sheet, number = workbook[summary], summary_row
                 cols = dickie_columns[summary]
@@ -478,7 +494,10 @@ def export_rows(workbook, rows):
                     unified._fit_generated_text(sheet, number)
         if row.get('_huaxing_customer') == 'buzzbee':
             from app.services.customer_order_buzzbee_color_box import write_new_row
-            write_new_row(workbook, buzzbee_column, slots['正单评审表'][index], workbook[name], item_row)
+            write_new_row(
+                workbook, buzzbee_column, slots['正单评审表'][index], workbook[name], item_row,
+                order_row=slots['接单表'][index], row=row,
+            )
         if row.get('_huaxing_customer') == 'shushupapa':
             _repair_shushupapa_summary_amounts(
                 workbook, slots['接单表'][index], slots['正单评审表'][index], row,
