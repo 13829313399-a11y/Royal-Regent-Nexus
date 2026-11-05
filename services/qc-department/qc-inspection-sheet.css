@@ -73,7 +73,7 @@
 body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{background:#23405e!important}
 :is(#page-records,#page-review) .qis-table tr:focus-visible{outline:2px solid #5189d6;outline-offset:-2px}
 @media(max-width:640px){:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:84px;--qis-po-text:108px}:is(#page-records,#page-review) .qis-table [data-column=customer],:is(#page-records,#page-review) .qis-table [data-column=poNo]{min-width:0}}
-.qis-review-filters,.qis-review-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:12px 0}.qis-review-filters label{display:flex;flex-direction:column;gap:5px;font-size:12px}.qis-review-filters input,.qis-review-filters select{min-height:34px;border:1px solid var(--border,#cbd5e1);border-radius:8px;padding:6px;background:var(--surface,#fff);color:inherit}.qis-review-actions button,.qia-dialog button{padding:8px 14px;border:1px solid var(--border,#cbd5e1);border-radius:8px;background:var(--surface,#fff);color:inherit}.qia-badge{display:block;font-size:11px;border:0;border-bottom:1px dotted currentColor;background:transparent;color:var(--text-dim,#52657d);padding:0;cursor:pointer}.qia-dialog{max-height:88vh;max-width:min(760px,95vw);overflow:auto}.qia-dialog textarea{display:block;box-sizing:border-box;width:100%;font:inherit;padding:10px}.qia-event{padding:12px 0;border-bottom:1px solid var(--border,#cbd5e1);white-space:pre-wrap;overflow-wrap:anywhere}.qia-event p{margin:6px 0}.qia-badge:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+.qis-review-actions button,.qia-dialog button{padding:8px 14px;border:1px solid var(--border,#cbd5e1);border-radius:8px;background:var(--surface,#fff);color:inherit}.qia-badge{display:block;font-size:11px;border:0;border-bottom:1px dotted currentColor;background:transparent;color:var(--text-dim,#52657d);padding:0;cursor:pointer}.qia-dialog{max-height:88vh;max-width:min(760px,95vw);overflow:auto}.qia-dialog textarea{display:block;box-sizing:border-box;width:100%;font:inherit;padding:10px}.qia-event{padding:12px 0;border-bottom:1px solid var(--border,#cbd5e1);white-space:pre-wrap;overflow-wrap:anywhere}.qia-event p{margin:6px 0}.qia-badge:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
 
 #page-review .page-inner{display:flex;flex-direction:column}#page-review .toolbar,#page-review .review-hint,#qis-review-controls{flex:none}#page-review .review-hint{margin:6px 0;font-size:12px}:is(#page-records,#page-review) .qis-table input,:is(#page-records,#page-review) .qis-table textarea,:is(#page-records,#page-review) .qis-table select{scroll-margin-inline-start:calc(var(--qis-frozen-width,330px) + 12px)}
 @media(max-width:420px){:is(#page-records,#page-review) .qis-wrap{--qis-customer-text:62px;--qis-po-text:80px}:is(#page-records,#page-review) .qis-table textarea{min-width:max(100px,calc(100vw - 220px));width:max(100px,calc(100vw - 220px))}:is(#page-records,#page-review) .qis-table [data-column=improvement]{min-width:0;width:auto}}
@@ -100,13 +100,103 @@ body.theme-dark :is(#page-records,#page-review) .qis-table tr.qis-selected>td{ba
 #page-review .toolbar{flex-direction:row;align-items:center;padding:8px 10px;margin:0;gap:8px}
 #page-review .toolbar-left,#page-review .toolbar-right{width:auto;flex:0 1 auto}
 #page-review .toolbar .btn-secondary{flex:0 0 auto;width:auto}
-#page-review .qis-review-filters,#page-review .qis-review-actions{margin:6px 0;gap:8px}
-@media(min-width:641px) and (max-width:1024px){#page-review .qis-review-filters{display:grid;grid-template-columns:minmax(120px,1.4fr) repeat(4,minmax(94px,1fr))}#page-review .qis-review-filters input,#page-review .qis-review-filters select{width:100%;min-width:0;box-sizing:border-box}}
-@media(max-width:640px){#page-review .qis-review-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#page-review .qis-review-filters input,#page-review .qis-review-filters select{width:100%;min-width:0;box-sizing:border-box}}
-
-/* Keep review actions inside a narrow first viewport without hiding KPIs. */
-#page-review #qis-review-batch:disabled{background:#e2e8f0;color:#64748b;border-color:#cbd5e1;opacity:1;cursor:default}
-body.theme-dark #page-review #qis-review-batch:disabled{background:#334155;color:#a5b4c7;border-color:#475569}
+#qis-review-controls {
+  container-type:inline-size;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:var(--bg-panel);
+  color:var(--text-main);
+}
+#qis-review-controls:has(.qis-review-date[open]) {position:relative;z-index:20}
+#page-review #qis-review-controls .qis-review-filterbar {
+  display:grid;
+  grid-template-columns:minmax(125px,2fr) minmax(145px,1.45fr) minmax(85px,1fr) minmax(105px,1fr) auto;
+  align-items:center;
+  gap:8px;
+  padding:11px;
+}
+#qis-review-controls :is(.qis-review-search,.qis-review-date summary,.qis-review-filterbar select) {
+  min-width:0;
+  width:100%;
+  min-height:36px;
+  padding:0 9px;
+  border:1px solid var(--border);
+  border-radius:7px;
+  background:var(--bg-input);
+  color:var(--text-hi);
+  font:inherit;
+  font-size:13px;
+}
+#qis-review-controls :is(.qis-review-search,.qis-review-date summary) {display:flex;align-items:center;gap:8px}
+#qis-review-controls .qis-review-search input {
+  min-width:0;
+  width:100%;
+  min-height:34px;
+  padding:0;
+  border:0;
+  background:transparent;
+  color:inherit;
+  font:inherit;
+}
+#qis-review-controls svg {width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.qis-review-date {position:relative;min-width:0}
+.qis-review-date summary {list-style:none;cursor:pointer}
+.qis-review-date summary::-webkit-details-marker {display:none}
+.qis-review-date summary span:last-child {margin-inline-start:auto}
+#qis-review-date-label {overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qis-review-date-panel {
+  position:absolute;
+  z-index:50;
+  inset-block-start:calc(100% + 6px);
+  inset-inline-start:0;
+  width:min(320px,calc(100cqi - 22px));
+  padding:12px;
+  border:1px solid var(--border);
+  border-radius:9px;
+  background:var(--bg-card);
+  color:var(--text-main);
+  box-shadow:0 8px 22px #0002;
+}
+.qis-review-date-fields {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.qis-review-date-fields label {display:grid;gap:5px;min-width:0;font-size:12px}
+.qis-review-date-fields input {
+  min-width:0;
+  min-height:34px;
+  border:1px solid var(--border);
+  border-radius:6px;
+  padding:4px 6px;
+  background:var(--bg-input);
+  color:inherit;
+  font:inherit;
+}
+body.theme-dark .qis-review-date-fields input {color-scheme:dark}
+.qis-review-date-panel p {margin:8px 0 0;color:var(--red);font-size:12px}
+.qis-review-date-actions {display:flex;justify-content:space-between;gap:8px;margin-top:10px}
+.qis-review-reset {border:0;background:none;color:var(--accent);padding:6px 2px;white-space:nowrap;font:inherit;font-size:12px;cursor:pointer}
+.qis-review-date-apply {border:1px solid var(--border);border-radius:7px;background:var(--bg-input);color:var(--text-hi);padding:5px 12px;cursor:pointer}
+#qis-review-controls :is(.qis-review-actions,.qis-review-context,.qis-review-batch-actions,.qis-review-batch-actions label) {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px;
+}
+#qis-review-controls .qis-review-actions {justify-content:space-between;padding:7px 11px;border-top:1px solid var(--border);font-size:12px}
+.qis-review-context {color:var(--text-dim)}
+#qis-review-selected {color:var(--text-hi);font-weight:600}
+.qis-review-batch-actions label {white-space:nowrap}
+.qis-review-batch-actions input {margin:0;accent-color:var(--accent)}
+#qis-review-controls #qis-review-batch {min-height:32px;padding:5px 10px;white-space:nowrap;font-size:13px}
+#page-review #qis-review-batch:disabled {background:var(--bg-hover);color:var(--text-dim);border-color:var(--border);opacity:1;cursor:default}
+@container (max-width:590px) {
+  #page-review #qis-review-controls .qis-review-filterbar {grid-template-columns:repeat(2,minmax(0,1fr))}
+  #qis-review-controls .qis-review-search {grid-column:1/-1}
+  #qis-review-controls [data-reset-review] {justify-self:end}
+}
+@media (pointer:coarse) {
+  #qis-review-controls :is(.qis-review-search,.qis-review-search input,.qis-review-date summary,.qis-review-filterbar select,.qis-review-date-fields input,.qis-review-reset,.qis-review-date-apply,.qis-review-batch-actions label),
+  #qis-review-controls #qis-review-batch {min-height:44px}
+  #qis-review-controls :is(.qis-review-search input,.qis-review-filterbar select,.qis-review-date-fields input) {font-size:16px}
+}
 #page-review #qis-review-batch.qis-confirm-ready{background:#15803d;color:#fff;border-color:#15803d;cursor:pointer;box-shadow:0 2px 5px #15803d22}
 #page-review #qis-review-batch:focus-visible{outline:2px solid var(--glass-primary);outline-offset:3px}
 #qis-notifications{position:fixed;top:16px;right:16px;z-index:10050;width:min(370px,calc(100vw - 32px));max-height:75vh;overflow:auto;display:grid;gap:10px}
@@ -171,8 +261,6 @@ body.theme-dark .qis-reversal-badge{background:#263853;color:#d7e6ff;border-colo
 @media(max-width:640px){body.qc-liquid-glass .qia-event summary{flex-wrap:wrap;gap:5px 10px}body.qc-liquid-glass .qia-event summary span{margin-left:0}body.qc-liquid-glass .qis-table input.qis-review-input{font-size:16px}}
 @media(prefers-reduced-motion:reduce){body.qc-liquid-glass .qis-notice button,body.qc-liquid-glass .qia-event summary,body.qc-liquid-glass .qis-table .qis-review-input{transition:none}}
 /* Visual QA: review used fallback white controls and pale headers in dark mode. */
-body.qc-liquid-glass #page-review .qis-review-filters :is(input,select){background:var(--bg-input);color:var(--text-hi);border-color:var(--border-hi);color-scheme:light}
-body.theme-dark.qc-liquid-glass #page-review .qis-review-filters :is(input,select){color-scheme:dark}
 body.qc-liquid-glass :is(#page-records,#page-review) .qis-table th{background:var(--glass-header);color:var(--text-hi);border-color:var(--border)}
 body.qc-liquid-glass #page-review .qis-table :is(textarea,select){background:var(--bg-input);color:var(--text-hi);border-color:var(--border-hi)}
 body.theme-dark.qc-liquid-glass :is(#page-records,#page-review) .qis-table :is(th,td){border-color:var(--border-hi)}
