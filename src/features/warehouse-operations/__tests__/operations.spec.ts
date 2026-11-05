@@ -7,7 +7,7 @@ import Workspace from '../WarehouseOperationsWorkspace.vue'
 import { documentProgress, remaining, sumQuantities } from '../operations'
 import type { WarehouseDocument, WarehouseDocumentInput, WarehouseDomain, WarehouseOperationsWorkspace } from '@/api/warehouseOperations'
 
-const api = vi.hoisted(() => ({ workspace: vi.fn(), post: vi.fn(), recover: vi.fn(), bulkIssue: vi.fn() }))
+const api = vi.hoisted(() => ({ workspace: vi.fn(), post: vi.fn(), recover: vi.fn(), bulkIssue: vi.fn(), cuttingReturnLimit: vi.fn() }))
 vi.mock('@/api/warehouseOperations', () => ({ warehouseOperationsApi: api }))
 let wrapper: VueWrapper | undefined
 const empty = (): WarehouseOperationsWorkspace => ({ revision: 3, locations: ['A01', 'A02', 'B03'].map(code => ({ id: code, warehouse: '一仓', code, label: `一仓／${code}`, status: 'ACTIVE', revision: 1, category: 'FABRIC' })), stock: [], documents: [], permissions: { read: true, operate: true, quality: false, correct: false } })
@@ -223,6 +223,32 @@ describe('warehouse actual operations', () => {
       expect(body.get('[role="dialog"]').text()).toContain('冲销')
       expect(api.post).not.toHaveBeenCalled()
     }
+  })
+  it('opens the exact issue and blocks a dated cutting return while the balance is unknown or zero', async () => {
+    const row = { id: 'CUT-ISSUE', kind: 'ISSUE', sequence: 1, business_date: '2026-10-10', actor_name: '仓管', occurred_at: '',
+      returned_quantity: '0.05', cutting_return_limit: { day: '2026-10-11', quantity: '0', reason: '没有可退余料' },
+      data: { quantity: '1.375019', unit: '米', item_code: 'FAB-01', item_name: '蓝布', allocations: [] } } as WarehouseDocument
+    api.cuttingReturnLimit.mockImplementation(async (_id, day: string) => ({ day, quantity: '0', reason: '没有可退余料' }))
+    const body = await open('inventory', 'movements', { ...empty(), documents: [row] })
+    expect(wrapper!.get('tbody').text()).toContain('2026-10-11 可退 0 米')
+    await wrapper!.vm.$router.push('/?record=CUT-ISSUE'); await flushPromises()
+    expect(body.get('[aria-label="业务单据详情"]').text()).toContain('CUT-ISSUE')
+    await body.findAll('button').find(button => button.text() === '关闭详情')!.trigger('click')
+    await wrapper!.findAll('button').find(button => button.text() === '退料')!.trigger('click'); await flushPromises()
+    const dialog = body.get('[aria-label="登记退料"]')
+    expect(dialog.text()).toContain('没有可退余料')
+    expect(dialog.get('[type="submit"]').attributes('disabled')).toBeDefined()
+    let resolveBalance!: (value: { day: string; quantity: string; reason: string }) => void
+    api.cuttingReturnLimit.mockReturnValueOnce(new Promise(resolve => { resolveBalance = resolve }))
+    await dialog.get('[aria-label="业务日期"]').setValue('2026-10-10')
+    expect(api.cuttingReturnLimit).toHaveBeenLastCalledWith('CUT-ISSUE', '2026-10-10')
+    expect(dialog.get('[type="submit"]').attributes('disabled')).toBeDefined()
+    resolveBalance({ day: '2026-10-10', quantity: '0.000001', reason: '' }); await flushPromises()
+    expect(dialog.get('[type="submit"]').attributes('disabled')).toBeUndefined()
+    await dialog.get('[aria-label="本次数量"]').setValue('0.000002')
+    expect(dialog.get('[type="submit"]').attributes('disabled')).toBeDefined()
+    await dialog.trigger('submit')
+    expect(api.post).not.toHaveBeenCalled()
   })
   it('shows only completed corrections in fabric exceptions and combines original business, actor, date and ordering filters', async () => {
     const correction = { id: 'C1', kind: 'CORRECTION', sequence: 3, business_date: '2026-10-10', actor_name: '仓管甲', occurred_at: '',

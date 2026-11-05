@@ -157,12 +157,27 @@ def order_summary(factory_id: str, date_from: str = '', date_to: str = '', searc
     return JSONResponse(report(db, date_from, date_to, search, supplier), headers={'Cache-Control': 'no-store'})
 
 
+@router.get('/fabric/return-limit')
+def return_limit(factory_id: str, issue_id: str, day: date,
+                 db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+    if not capabilities(actor, 'fabric', factory_id)['read']:
+        raise HTTPException(403, '无布料仓收发查询权限')
+    service.ensure_schema(db)
+    service.lock_cutting_returns(db)
+    _, entries = service.projection(db, 'fabric')
+    limit = service.warehouse_return_limits(db, entries, day, issue_id).get(issue_id)
+    if limit is None:
+        raise HTTPException(404, '原裁床发料单不存在或已冲销')
+    return limit
+
+
 @router.get('/{warehouse}')
-def workspace(warehouse: Warehouse, factory_id: str, db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
+def workspace(warehouse: Warehouse, factory_id: str, include_cutting_returns: bool = False,
+              db: Session = Depends(get_db), actor: AuthContext = Depends(get_current_user)):
     permissions = capabilities(actor, warehouse, factory_id)
     if not permissions['read']:
         raise HTTPException(403, '无当前仓库收发查询权限')
-    return {**service.workspace(db, warehouse), 'permissions': permissions}
+    return {**service.workspace(db, warehouse, include_cutting_returns=include_cutting_returns), 'permissions': permissions}
 
 
 @router.post('/{warehouse}/documents')
