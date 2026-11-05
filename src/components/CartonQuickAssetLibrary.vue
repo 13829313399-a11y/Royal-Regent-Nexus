@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogTitle, DialogDescription } from 'reka-ui'
 import { Button } from '@/components/ui/button'
 import CartonQuickUploadDialog from './CartonQuickUploadDialog.vue'
-import { cartonQuickAssetsApi, type AssetDepartment, type QuickAsset, type QuickAssetStatus, type QuickTarget, type QuickTargetRef } from '@/api/cartonQuickAssets'
+import { cartonQuickAssetsApi, type AssetDepartment, type QuickAsset, type QuickAssetAudience, type QuickAssetStatus, type QuickTarget, type QuickTargetRef } from '@/api/cartonQuickAssets'
 import { useAuthStore } from '@/stores/auth'
 import { canQuickAsset, departmentLabel, internalDepartments, quickStatusLabel, responseStatus, targetLabel, targetRef, viewerKey, type QuickAudience } from '@/features/carton-procurement/quickAssets'
 import { getApiErrorMessage } from '@/lib/http'
@@ -16,11 +16,14 @@ const auth = useAuthStore()
 const entries = ref<QuickAsset[]>([]), loading = ref(false), error = ref(''), actionError = ref(''), notice = ref('')
 const filter = ref('CURRENT'), keyword = ref(''), mine = ref(false), busy = ref(false), downloading = ref('')
 const statusDrafts = ref<Record<string, QuickAssetStatus>>({})
+const audienceDrafts = ref<Record<string, QuickAssetAudience>>({})
+const audienceLabel = (asset: QuickAsset) => asset.purpose === 'EVIDENCE' || asset.sharing_mode === 'INTERNAL' ? '仅内部可见'
+  : !asset.owner_department ? '历史资料，归属待核实' : asset.sharing_mode === 'SUPPLIER' ? `内部与${asset.shared_supplier_name || '对应供应商'}共享` : '沿用原订单共享规则'
 const allSupplierFactories = computed(() => props.audience === 'supplier' && (!props.factoryId || props.factoryId === 'ALL'))
 const requestedFactories = computed(() => allSupplierFactories.value ? [...new Set(props.supplierFactories || [])] : props.factoryId && props.factoryId !== 'ALL' ? [props.factoryId] : [])
 function readableDepartments(factory: string): AssetDepartment[] {
-  // The server filters shared files by currently issued orders and explicit
-  // denies. Listing that subset does not grant own-library maintenance.
+  // The server checks the named supplier audience and explicit denies.
+  // Reading a shared source does not grant own-source replacement rights.
   if (props.audience === 'supplier') return auth.can('carton_supplier:read', factory, '*') ? ['supplier'] : []
   return internalDepartments.filter(d => canQuickAsset(auth, factory, d, 'read'))
 }
@@ -61,7 +64,7 @@ const requiredSharedFactories = computed(() => editor.value?.asset.required_shar
 const shareDescription = computed(() => requiredSharedFactories.value.length
   ? '来源厂区保留可见；可选择其他有权限的厂区共享给业务和仓库。'
   : '默认无；选择后该厂业务和仓库可见。')
-type Command = { factory: string; asset: Pick<QuickAsset, 'id' | 'revision'>; requestId: string } & ({ kind: 'classify'; status: QuickAssetStatus } | { kind: 'associate'; targets: QuickTargetRef[] } | { kind: 'share'; factories: string[] })
+type Command = { factory: string; asset: Pick<QuickAsset, 'id' | 'revision'>; requestId: string } & ({ kind: 'classify'; status: QuickAssetStatus } | { kind: 'associate'; targets: QuickTargetRef[] } | { kind: 'share'; factories: string[] } | { kind: 'audience'; mode: QuickAssetAudience })
 const pending = shallowRef<Command | null>(null)
 let generation = 0, actionGeneration = 0, editorGeneration = 0, downloadGeneration = 0
 let controller = new AbortController(), actionController = new AbortController(), editorController = new AbortController(), downloadController = new AbortController()
@@ -76,6 +79,7 @@ async function load() {
     if (token !== generation || original !== context.value) return
     entries.value = props.assetIds ? data.items.filter(x => props.assetIds!.includes(x.id)) : data.items
     statusDrafts.value = Object.fromEntries(data.items.map(x => [x.id, x.workflow.status === 'UNCLASSIFIED' ? 'DRAFT' : x.workflow.status]))
+    audienceDrafts.value = Object.fromEntries(data.items.map(x => [x.id, x.sharing_mode === 'INTERNAL' ? 'INTERNAL' : 'SUPPLIER']))
   } catch (cause) { if (token === generation && original === context.value) error.value = getApiErrorMessage(cause) }
   finally { if (token === generation) loading.value = false }
 }
@@ -97,17 +101,19 @@ function commandBase(asset: QuickAsset) { return { factory: assetFactory(asset),
 async function execute(command?: Command) {
   if (busy.value || (!command && !pending.value)) return
   const request = pending.value || command!, original = context.value, token = ++actionGeneration
+  const retryingUnknown = Boolean(pending.value)
   busy.value = true; actionError.value = ''; actionController = new AbortController()
   try {
     if (request.kind === 'classify') await cartonQuickAssetsApi.classify(request.factory, request.asset, request.status, request.requestId, actionController.signal)
     else if (request.kind === 'associate') await cartonQuickAssetsApi.associate(request.factory, request.asset, request.targets, request.requestId, actionController.signal, targetScope.value)
+    else if (request.kind === 'audience') await cartonQuickAssetsApi.audience(request.factory, request.asset, request.mode, request.requestId, actionController.signal)
     else await cartonQuickAssetsApi.share(request.factory, request.asset, request.factories, request.requestId, actionController.signal)
     if (context.value !== original || token !== actionGeneration) return
     pending.value = null; editor.value = null; notice.value = '资料已更新'; saved()
   } catch (cause) {
     if (context.value !== original || token !== actionGeneration) return
     const code = responseStatus(cause)
-    if (code === undefined || code >= 500) { pending.value = request; actionError.value = '保存结果尚未核实，请沿用原请求重试。' }
+    if (retryingUnknown || code === undefined || code >= 500) { pending.value = request; actionError.value = '保存结果尚未核实，请沿用原请求重试。' }
     else { pending.value = null; actionError.value = code === 409 ? '资料已更新，请刷新后重新核对。' : getApiErrorMessage(cause); if (code === 409) { editor.value = null; void load() } }
   } finally { if (context.value === original && token === actionGeneration) busy.value = false }
 }
@@ -173,10 +179,11 @@ onBeforeUnmount(() => { generation++; controller.abort(); cancelContext() })
       <ul v-else class="mt-3 divide-y divide-border">
         <li v-for="asset in visible" :key="asset.id" class="min-w-0 py-4" :data-quick-asset="asset.id">
           <div class="grid min-w-0 grid-cols-1 items-start gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
-            <div class="min-w-0 flex-1 basis-56"><p class="break-all text-sm font-semibold">{{ asset.file_name }}</p><p v-if="allSupplierFactories" class="mt-1 text-xs text-muted-foreground">订单厂区：{{ factoryName(asset.factory_id) }}</p><p class="mt-1 text-xs text-muted-foreground">{{ departmentLabel[asset.owner_department] || '历史资料' }} · {{ asset.created_by_name || '原上传人' }} · {{ asset.workflow.updated_by_name ? `${asset.workflow.updated_by_name} 更新状态` : '' }}</p><p class="mt-1 break-all text-xs text-muted-foreground">{{ asset.contract_number ? `合同 ${asset.contract_number} · ` : '' }}{{ asset.targets.length ? asset.targets.map(targetLabel).join('；') : '未关联订单' }}</p><p v-if="audience === 'supplier'" class="mt-1 text-xs text-muted-foreground">共享：{{ asset.shared_factory_ids?.length ? asset.shared_factory_ids.map(id => factoryContexts.find(x => x.id === id)?.shortName || id).join('、') : '无，仅供应商可见' }}</p></div>
+            <div class="min-w-0 flex-1 basis-56"><p class="break-all text-sm font-semibold">{{ asset.file_name }}</p><p v-if="allSupplierFactories" class="mt-1 text-xs text-muted-foreground">订单厂区：{{ factoryName(asset.factory_id) }}</p><p class="mt-1 text-xs text-muted-foreground">{{ departmentLabel[asset.owner_department] || '历史资料' }} · {{ asset.created_by_name || '原上传人' }} · {{ asset.workflow.updated_by_name ? `${asset.workflow.updated_by_name} 更新状态` : '' }}</p><p class="mt-1 break-all text-xs text-muted-foreground">{{ asset.contract_number ? `合同 ${asset.contract_number} · ` : '' }}{{ asset.targets.length ? asset.targets.map(targetLabel).join('；') : '未关联订单' }}</p><p v-if="asset.owner_department !== 'supplier'" class="mt-1 text-xs text-muted-foreground">可见范围：{{ audienceLabel(asset) }}</p><p v-if="audience === 'supplier'" class="mt-1 text-xs text-muted-foreground">共享：{{ asset.shared_factory_ids?.length ? asset.shared_factory_ids.map(id => factoryContexts.find(x => x.id === id)?.shortName || id).join('、') : '无，仅供应商可见' }}</p></div>
             <div class="flex min-w-0 flex-wrap items-center gap-2" data-asset-actions>
               <template v-if="canClassify(asset)"><select v-model="statusDrafts[asset.id]" :aria-label="`${asset.file_name} 状态`" :disabled="busy || !!pending" class="h-9 w-24 rounded-lg border border-input bg-card px-2 text-sm"><option v-for="state in statusChoices(asset)" :key="state" :value="state">{{ quickStatusLabel[state] }}</option></select><Button type="button" size="sm" :disabled="busy || !!pending || statusDrafts[asset.id] === asset.workflow.status" @click="execute({ ...commandBase(asset), kind: 'classify', status: statusDrafts[asset.id]! })">保存状态</Button></template>
               <span v-else class="rounded-md bg-muted px-2 py-1 text-xs">{{ quickStatusLabel[asset.workflow.status] }}</span>
+              <template v-if="!readOnly && audience !== 'supplier' && asset.can_change_audience"><select v-model="audienceDrafts[asset.id]" :aria-label="`${asset.file_name} 共享范围`" :disabled="busy || !!pending" class="h-9 max-w-full rounded-lg border border-input bg-card px-2 text-xs"><option value="SUPPLIER">内部与对应供应商共享</option><option value="INTERNAL">仅内部可见</option></select><Button type="button" size="sm" :disabled="busy || !!pending || audienceDrafts[asset.id] === asset.sharing_mode" @click="execute({ ...commandBase(asset), kind: 'audience', mode: audienceDrafts[asset.id]! })">保存范围</Button></template>
               <Button v-if="!readOnly && asset.can_associate" type="button" variant="outline" size="sm" :disabled="busy || !!pending" @click="edit(asset, 'associate')">{{ associationLabel }}</Button>
               <Button v-if="!readOnly && audience === 'supplier' && asset.can_share" type="button" variant="outline" size="sm" :disabled="busy || !!pending" @click="edit(asset, 'share')">共享厂区</Button>
               <Button type="button" variant="outline" size="sm" :disabled="!!downloading" @click="download(asset)">{{ downloading === asset.id ? '下载中…' : '下载' }}</Button>

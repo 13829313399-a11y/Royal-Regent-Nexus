@@ -46,9 +46,11 @@ def reservations(db, factory, line_ids):
 
 
 def sources(db, order, *, projection=None):
+    from app.services import carton_procurement as core
+    if projection is not None and not any(core._purchase_order_snapshot(issue).get("replenishment") for issue in projection["issues"]):
+        return []
     from app.services.carton_print_split import held
     print_hold = held(db, order)
-    from app.services import carton_procurement as core
     from app.services.carton_supplier_changes import response_states
     from app.services.carton_replenishment_receipts import options_by_line, receipt_links
     ids = [line.id for line in (projection["lines"] if projection is not None else core.get_order_lines(db, order.id))]

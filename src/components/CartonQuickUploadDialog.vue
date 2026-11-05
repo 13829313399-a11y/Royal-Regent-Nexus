@@ -32,6 +32,7 @@ const canWrite = computed(() => !!department.value && departments.value.includes
 const canConfirm = computed(() => canWrite.value)
 const context = computed(() => JSON.stringify([props.factoryId, props.audience, viewerKey(auth)]))
 const sharedFactories = ref<string[]>([])
+const sharingMode = ref<'SUPPLIER' | 'INTERNAL'>('SUPPLIER')
 const hasUnknown = computed(() => queue.value.some(row => row.state === 'unknown'))
 const batchStarted = computed(() => queue.value.some(row => row.state !== 'pending'))
 const activeLocked = computed(() => activeFile.value?.state === 'saved' || activeFile.value?.state === 'unknown')
@@ -58,7 +59,7 @@ function reset() {
   mode.value = 'file'; queue.value = []; activeId.value = ''; text.value = ''; Object.assign(textSelection, uploadSelection())
   status.value = 'PENDING'; error.value = ''; success.value = ''; fileError.value = ''
   department.value = departments.value.length === 1 ? departments.value[0]! : ''
-  chosenTargets.value = []; sharedFactories.value = []
+  chosenTargets.value = []; sharedFactories.value = []; sharingMode.value = 'SUPPLIER'
   candidates.value = []; candidateError.value = ''; loaded.value = false; associationTouched.value = false
 }
 function changeOpen(value: boolean) {
@@ -161,6 +162,7 @@ async function submit() {
   const request = frozen.value || { factory: props.factoryId, file: undefined,
     body: { request_id: createRandomUuid(), owner_department: department.value as AssetDepartment,
       shared_factory_ids: props.audience === 'supplier' ? [...sharedFactories.value] : [],
+      ...(props.audience !== 'supplier' ? { sharing_mode: sharingMode.value } : {}),
       targets: candidates.value.filter(x => chosenTargets.value.includes(x.fingerprint)).map(targetRef), target_scope: targetScope.value,
       text: text.value, contract_number: contract.value.trim(), status: status.value,
       association: chosenTargets.value.length ? 'MANUAL' as const : 'NONE' as const,
@@ -192,6 +194,7 @@ async function submitFiles() {
       request: row => ({ factory: props.factoryId, file: row.file, body: {
         request_id: createRandomUuid(), owner_department: department.value as AssetDepartment,
         shared_factory_ids: props.audience === 'supplier' ? [...sharedFactories.value] : [],
+        ...(props.audience !== 'supplier' ? { sharing_mode: sharingMode.value } : {}),
         targets: candidates.value.filter(target => row.chosenTargets.includes(target.fingerprint)).map(targetRef), target_scope: targetScope.value,
         text: '', contract_number: row.contract, status: status.value, association: row.chosenTargets.length ? 'MANUAL' : 'NONE',
       } }),
@@ -232,9 +235,10 @@ onBeforeUnmount(() => { generation++; searchGeneration++; clearTimeout(timer); s
             </ul>
           </section>
           <fieldset :disabled="busy || !!frozen || mode === 'file' && activeLocked" class="min-w-0 space-y-4 disabled:opacity-70">
-            <p v-if="mode === 'file' && queue.length > 1" class="text-xs text-muted-foreground">归属部门、状态和共享厂区用于本批待保存文件；下方关联订单只用于当前选中的文件。</p>
+            <p v-if="mode === 'file' && queue.length > 1" class="text-xs text-muted-foreground">归属部门、状态和共享范围用于本批待保存文件；关联订单只用于当前选中的文件。</p>
             <label v-if="departments.length > 1" class="block text-sm font-semibold">归属部门<select v-model="department" :disabled="hasUnknown" aria-label="资料归属部门" class="mt-1 h-10 w-full rounded-lg border border-input bg-card px-3 font-normal"><option value="">请选择本次归属部门</option><option v-for="d in departments" :key="d" :value="d">{{ departmentLabel[d] }}</option></select><span class="mt-1 block text-xs font-normal text-muted-foreground">多部门账号需明确选择，当前页面不代替归属选择。</span></label>
             <p v-else class="text-xs text-muted-foreground">归属：{{ department ? departmentLabel[department] : '暂无资料读写权限' }}</p>
+            <label v-if="audience !== 'supplier'" class="block text-sm font-semibold">共享范围<select v-model="sharingMode" :disabled="hasUnknown" aria-label="上传共享范围" class="mt-1 h-10 w-full rounded-lg border border-input bg-card px-3 font-normal"><option value="SUPPLIER">内部与对应供应商共享</option><option value="INTERNAL">仅内部可见</option></select><span class="mt-1 block text-xs font-normal text-muted-foreground">同厂有权限的业务与仓库可查看；共享给供应商不要求关联订单。</span></label>
             <div class="grid grid-cols-2 gap-2" role="group" aria-label="资料输入方式"><Button type="button" :disabled="hasUnknown || mode === 'file' && batchStarted" :variant="mode === 'file' ? 'default' : 'outline'" :aria-pressed="mode === 'file'" @click="mode = 'file'">文件</Button><Button type="button" :disabled="hasUnknown || mode === 'file' && batchStarted" :variant="mode === 'text' ? 'default' : 'outline'" :aria-pressed="mode === 'text'" @click="mode = 'text'">文字</Button></div>
             <div v-if="mode === 'file'" class="min-w-0 space-y-2 rounded-lg border border-dashed border-border p-3" @dragover.prevent @drop.prevent="addFiles(Array.from($event.dataTransfer?.files ?? []))">
               <label class="block text-sm font-semibold">{{ queue.length ? '继续添加文件' : '文件' }}<input type="file" multiple :disabled="hasUnknown" accept=".pdf,.xls,.xlsx,.xlsm,.jpg,.jpeg,.png,.webp" aria-label="选择资料文件" class="mt-1 block w-full min-w-0 rounded-lg border border-input p-2 text-xs font-normal" @change="selectFile"></label>

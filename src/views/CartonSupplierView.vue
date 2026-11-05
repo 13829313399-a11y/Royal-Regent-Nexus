@@ -1244,8 +1244,8 @@ function refreshOnFocus() {
   if (document.visibilityState === 'hidden' || Date.now() - lastReadStarted < 45000) return
   if (!busy.value && !loading.value && !auxiliaryLoading && !specialLoading.value && !discovering.value && !importOpen.value && auth.can('carton_supplier:read', '*', '*') && serviceFactories.value.length) void load(true)
 }
-onMounted(() => { automaticRefresh = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); void refresh(); window.addEventListener('keydown', onDetailKeydown) })
-onBeforeUnmount(() => { if (automaticRefresh) clearInterval(automaticRefresh); window.removeEventListener('focus', refreshOnFocus); window.removeEventListener('keydown', onDetailKeydown) })
+onMounted(() => { automaticRefresh = setInterval(refreshOnFocus, 45000); window.addEventListener('focus', refreshOnFocus); document.addEventListener('visibilitychange', refreshOnFocus); void refresh(); window.addEventListener('keydown', onDetailKeydown) })
+onBeforeUnmount(() => { if (automaticRefresh) clearInterval(automaticRefresh); window.removeEventListener('focus', refreshOnFocus); document.removeEventListener('visibilitychange', refreshOnFocus); window.removeEventListener('keydown', onDetailKeydown) })
 async function acknowledgeCancellation(order: SupplierOrder) {
   if (busy.value || !canApprove.value) return
   const context = importContext.value

@@ -66,7 +66,7 @@ def test_private_supplier_share_confirm_cross_factory_links_and_revoke(monkeypat
 def test_same_factory_unbound_sharing_history_and_original_session(monkeypatch):
     with make_client(monkeypatch) as client:
         setup_portal(client);login_as(client,'admin');enable(monkeypatch)
-        asset=ok(upload(client,text='unbound original',association='NONE'))
+        asset=ok(upload(client,text='unbound original',association='NONE',sharing_mode='INTERNAL'))
         grant('engineer_peer','pmc-warehouse');login_as(client,'engineer_peer')
         assert asset['id'] in {x['id'] for x in ok(client.get(BASE,params=F))['items']}
         asset=ok(action(client,asset,'READY'));asset=ok(action(client,asset,'HISTORY'))

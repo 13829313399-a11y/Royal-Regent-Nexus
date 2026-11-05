@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
+import { cartonPositionsApi } from '@/api/cartonPositions'
 import Component from '../CartonSupplierReceiving.vue'
 import type { PortalWorkspace, ShipmentLine } from '@/api/cartonSupplierPortal'
 import { isSupplierOrderSource, supplierPaperCompatible, type SupplierOrderSource } from '@/features/carton-procurement/supplierOrderSource'
@@ -50,6 +51,46 @@ beforeEach(() => {
 })
 
 describe('supplier-origin ordinary order entry', () => {
+  it('shows delivery notes while auxiliary data loads and opens a deferred deep link only after readiness', async () => {
+    let finish!: (rows: Awaited<ReturnType<typeof cartonPositionsApi.locations>>) => void
+    vi.mocked(cartonPositionsApi.locations).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = mount(Component, options)
+    try {
+      await flushPromises()
+      expect(wrapper.text()).toContain('DN-1')
+      expect(wrapper.text()).toContain('正在读取收料所需的客户和仓位资料')
+      expect(button(wrapper, '核实实际收到').attributes('disabled')).toBeDefined()
+      await wrapper.setProps({ shipmentId: 'SHIPMENT' }); await flushPromises()
+      expect(wrapper.find('[aria-label="核实供应商实际送货"]').exists()).toBe(false)
+      finish([{ id: 'BIN', factory_id: 'huaxing', status: 'ACTIVE', warehouse: 'A', bin_code: '01' } as Awaited<ReturnType<typeof cartonPositionsApi.locations>>[number]])
+      await flushPromises()
+      expect(wrapper.find('[aria-label="核实供应商实际送货"]').exists()).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+  it('keeps displayed notes blocked when the main refresh fails even if auxiliary reads succeed', async () => {
+    const wrapper = mount(Component, options)
+    try {
+      await flushPromises()
+      api.workspace.mockRejectedValueOnce(new Error('送货单暂时无法核对'))
+      await wrapper.findAll('button').find(row => row.text() === '刷新')!.trigger('click'); await flushPromises()
+      expect(wrapper.text()).toContain('DN-1')
+      expect(wrapper.text()).toContain('送货单暂时无法核对')
+      expect(button(wrapper, '核实实际收到').attributes('disabled')).toBeDefined()
+      expect(api.receive).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+  it('keeps the main list visible and blocks acceptance when auxiliary data fails', async () => {
+    vi.mocked(cartonPositionsApi.locations).mockRejectedValueOnce(new Error('仓位读取超时'))
+    const wrapper = mount(Component, options)
+    try {
+      await flushPromises()
+      expect(wrapper.text()).toContain('DN-1')
+      expect(wrapper.text()).toContain('仓位读取超时')
+      expect(button(wrapper, '核实实际收到').attributes('disabled')).toBeDefined()
+      await wrapper.findAll('button').find(row => row.text() === '重试读取')!.trigger('click'); await flushPromises()
+      expect(button(wrapper, '核实实际收到').attributes('disabled')).toBeUndefined()
+    } finally { wrapper.unmount() }
+  })
   it.each([
     { price: null, free: false, shown: '', hint: '原单未填写单价', action: 'PENDING' },
     { price: '0', free: false, shown: '0', hint: '原单单价为0，未确认免费', action: 'PENDING' },

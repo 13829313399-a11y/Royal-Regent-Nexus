@@ -42,12 +42,14 @@ def assignment_dict(item: EmployeeAssignment, org: IamOrgUnit | None, at: dateti
             "source_request_id": item.source_request_id, "ended_reason": item.ended_reason}
 
 
-def resolve_identity_at(db: Session, user_id: str, at: datetime | None = None) -> dict:
+def resolve_identity_at(db: Session, user_id: str, at: datetime | None = None, *, read_inputs=None) -> dict:
     at = instant(at) if at else utc_now()
-    profile = db.get(EmployeeProfile, user_id)
-    rows = db.execute(select(EmployeeAssignment, IamOrgUnit).select_from(EmployeeAssignment).join(IamOrgUnit)
+    if read_inputs is not None:
+        read_inputs.check(db, user_id)
+    profile = read_inputs.profiles.get(user_id) if read_inputs is not None else db.get(EmployeeProfile, user_id)
+    rows = read_inputs.assignments[user_id] if read_inputs is not None else db.execute(select(EmployeeAssignment, IamOrgUnit).select_from(EmployeeAssignment).join(IamOrgUnit)
                       .where(EmployeeAssignment.user_id == user_id).order_by(EmployeeAssignment.valid_from, EmployeeAssignment.id)).all()
-    departments = {(d.org_unit_id, d.department_code) for d in db.scalars(select(IamOrgDepartment).where(IamOrgDepartment.status == "active"))}
+    departments = read_inputs.active_departments if read_inputs is not None else {(d.org_unit_id, d.department_code) for d in db.scalars(select(IamOrgDepartment).where(IamOrgDepartment.status == "active"))}
     active = [assignment_dict(a, org, at) for a, org in rows
               if profile and assignment_active(a, profile, at) and org.status == "active" and (a.org_unit_id, a.department_code) in departments]
     primary = next((a for a in active if a["is_primary"]), None)

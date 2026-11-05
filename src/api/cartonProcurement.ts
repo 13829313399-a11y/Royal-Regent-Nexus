@@ -797,11 +797,11 @@ export const cartonProcurementApi = {
       if (!response.data.items.length || items.length >= response.data.total) return items
     }
   },
-  async selectedOrders(factoryId: string, orderNos: string[]) {
+  async selectedOrders(factoryId: string, orderNos: string[], signal?: AbortSignal) {
     const items: CartonOrderResponse[] = []
     for (let offset = 0; offset < orderNos.length; offset += 100) {
       const response = await http.post<{ items: CartonOrderResponse[] }>('/carton-procurement/orders/selection',
-        { factory_id: factoryId, order_nos: orderNos.slice(offset, offset + 100) })
+        { factory_id: factoryId, order_nos: orderNos.slice(offset, offset + 100) }, { signal })
       items.push(...response.data.items)
     }
     return items

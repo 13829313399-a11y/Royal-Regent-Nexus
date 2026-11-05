@@ -20,6 +20,26 @@ beforeEach(() => { vi.clearAllMocks(); api.list.mockResolvedValue(workspace()); 
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('durable supplier change tasks', () => {
+  it('pauses hidden polling and coalesces visibility/focus refresh while preserving unsent fields', async () => {
+    vi.useFakeTimers()
+    let state = 'visible'
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state as DocumentVisibilityState)
+    const wrapper = setup()
+    try {
+      await flushPromises()
+      await wrapper.get('[aria-label="SP-1异议说明"]').setValue('保留未提交的核对内容')
+      state = 'hidden'; document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(90000)
+      expect(api.list).toHaveBeenCalledTimes(1)
+      let finish!: (value: ReturnType<typeof workspace>) => void
+      api.list.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      state = 'visible'; document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus'))
+      await flushPromises()
+      expect(api.list).toHaveBeenCalledTimes(2)
+      finish(workspace()); await flushPromises()
+      expect(wrapper.get<HTMLTextAreaElement>('[aria-label="SP-1异议说明"]').element.value).toBe('保留未提交的核对内容')
+    } finally { visibility.mockRestore() }
+  })
   it('shows each replenishment paper current promise instead of the earlier version response date', async () => {
     api.list.mockResolvedValue(workspace(task({ source_kind: 'REPLENISHMENT', document_no: 'PO-B01',
       pending: false, status: 'ACCEPTED', responded_at: '2026-10-20T09:00', promised_date: '2026-10-26',
@@ -153,7 +173,7 @@ describe('durable supplier change tasks', () => {
     expect(wrapper.text()).toContain('暂不可用')
     expect(wrapper.text()).not.toContain('0 项待确认')
     expect(wrapper.text()).not.toContain('当前没有待明确确认的版本')
-    expect(wrapper.emitted('pending-state')!.at(-1)![0]).toMatchObject({ loading: false, error: '无权读取该厂区' })
+    expect(wrapper.emitted('pending-state')!.at(-1)![0]).toMatchObject({ loading: false, error: expect.stringMatching(/华兴.*无权读取该厂区/) })
   })
   it('keeps replacement stop acknowledgements and read-only history in their selected category', async () => {
     api.list.mockResolvedValue({ items: [task({ source_kind: 'REPLENISHMENT', is_cancellation: true }), task({ source_kind: 'REGULAR', document_no: 'OTHER' })] })
