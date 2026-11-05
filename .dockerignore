@@ -1,3 +1,6 @@
+# Offline invoice sources and local private assets are not part of the main site image.
+tools/mainland-invoice-offline/
+
 .git
 .gitignore
 .netlify
