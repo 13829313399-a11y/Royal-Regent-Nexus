@@ -32,6 +32,15 @@ describe('Yinhui supplier IC source evidence', () => {
     expect(rows.reduce((total, row) => total + row.amountHkd, 0)).toBeCloseTo(17.759, 12)
     expect(rows.reduce((total, row) => total + row.internalHkd, 0)).toBeCloseTo(14, 12)
   })
+  it('retains an unpriced parent while splitting only the known group and still rejects duplicate sources', () => {
+    const input = parents().map((row, i) => i === 0 ? { ...row, pricePending: true, amountHkd: 0, internalHkd: 0 } : row)
+    const result = splitYinhuiLegacyElectronics(input, [sheet()], main, '88052')
+    expect(result).toHaveLength(4)
+    expect(result[0]).toEqual(input[0])
+    expect(result.slice(1).map(row => row.description)).toEqual(['RX 主机电子*2pcs', 'IC,DRIVER,SA8301', 'IC,OTP,JTP'])
+    expect(result.reduce((total, row) => total + row.amountHkd, 0)).toBeCloseTo(input[1]!.amountHkd, 12)
+    expect(() => splitYinhuiLegacyElectronics(input, [sheet(), sheet()], main, '88052')).toThrow(/唯一/)
+  })
   it('rejects duplicate groups, unmatched models, ambiguous parents and missing FX', () => {
     expect(() => splitYinhuiLegacyElectronics(parents(), [sheet(), sheet()], main, '88052')).toThrow(/唯一/)
     expect(() => splitYinhuiLegacyElectronics(parents(), [sheet()], main, '88490')).toThrow(/型号/)

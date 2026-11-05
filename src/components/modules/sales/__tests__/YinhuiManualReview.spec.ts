@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 vi.mock('@/api/quoteTranslation',()=>({translateQuoteDescriptions:vi.fn()}))
 import YinhuiQuoteReview from '../YinhuiQuoteReview.vue'
@@ -20,10 +20,15 @@ describe('Silverlit manual Tool Plan review',()=>{
     await wrapper.get('[data-testid="yinhui-confirm"]').setValue(true)
     expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([true])
   })
-  it('keeps confirmation blocked while a fallback Tool Plan description is still Chinese',()=>{
+  it('lets the user acknowledge and keep an untranslated fallback Tool Plan description',async()=>{
     const result=fixture();result.quoteData.tools[0]!.description='透明面盖'
     const wrapper=mount(YinhuiQuoteReview,{props:{result,confirmed:false}})
-    expect(wrapper.text()).toContain('请在核对区补全英文物料名称：透明面盖')
+    expect(wrapper.get('[data-testid="yinhui-review-notices"]').text()).toContain('透明面盖')
     expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeDefined()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="yinhui-review-notices"]').text()).toContain('保留原文输出')
+    expect(wrapper.get('[data-testid="yinhui-confirm"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="yinhui-confirm"]').setValue(true)
+    expect(wrapper.emitted('update:confirmed')?.at(-1)).toEqual([true])
   })
 })

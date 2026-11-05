@@ -47,14 +47,19 @@ export function splitYinhuiLegacyElectronics(rows: YinhuiCostRow[], sheets: Xlsx
   const groups = readYinhuiElectronicSources(sheets)
   if (!groups.length) return rows
   const replacements = new Map<YinhuiCostRow, YinhuiCostRow[]>()
+  const matchedParents = new Set<YinhuiCostRow>()
   let fx: number | undefined
   for (const group of groups) {
     if (group.model !== model) throw new Error(`银辉 ${group.source}：电子报价型号 ${group.model || '缺失'} 与当前 ${model} 不一致，无法拆分 IC`)
     const candidates = rows.filter(row => !row.isBattery && !isYinhuiIc(row.description)
       && (group.role ? roleOf(row.description) === group.role : !roleOf(row.description)))
-    if (candidates.length !== 1 || replacements.has(candidates[0]!))
+    if (candidates.length !== 1 || matchedParents.has(candidates[0]!))
       throw new Error(`银辉 ${group.source}：IC 无法唯一对应 ${group.role || '电子'} 报价，不能按顺序或跨组扣价`)
     const parent = candidates[0]!
+    matchedParents.add(parent)
+    // Keep an unpriced group intact until its total is supplied; splitting priced
+    // ICs out of an unknown total would manufacture a remainder.
+    if (parent.pricePending) continue
     const chips = group.chips.filter(chip => chip.quantity > 0).map(chip => {
       if (chip.currency === 'RMB') fx ??= sourceFx(main)
       return yinhuiIcCost(chip, fx ?? 1, parent.quantity)
