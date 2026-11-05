@@ -17,7 +17,6 @@ import {
   FileUp,
   Filter,
   GitBranch,
-  History,
   Layers3,
   ListChecks,
   Plus,
@@ -413,7 +412,7 @@ Object.entries(CUSTOMER_PROFILES_BY_FACTORY).forEach(([factoryId, profiles]) => 
       profile.ruleDescription = '按主要公共字段匹配最新排期，BuzzBee 和迪奇按产品对应 ITEM 分类页。各表在自己的取消单前追加，接单表、正单评审表关联实际明细页和行；合同、SO、客户 PO 分别映射，保留历史订单、公式和人工字段。'
       if (profile.code === 'zuru') {
         profile.templateDescription = '华兴 ZURU 统一排期（ITEM表 / 接单表 / 正单评审表）'
-        profile.ruleDescription += ' ZURU 按 PO号＋原单Line及完整SKU-SPEC识别，Customer PO逐行读取；USD单独保留，不换算HKD。不导入原周排期的MA/库存记录。'
+        profile.ruleDescription = '按 PO号、原单行号和完整货号识别 ZURU 正单，逐行读取客户PO，美元原价单独保留、不换算港币。核对后写入华兴统一排期，保留历史订单、公式及人工字段；原周排期的MA和库存记录不作为正单导入。'
       }
       if (profile.code === 'buzzbee') {
         profile.ruleDescription = '按货号对应 ITEM 分类页，新正单在合计或取消区域之前追加并显示“正式PO”，沿用原明细格式。彩盒编号保留完整包装 REF 和版本，后接人工维护的系列、备注；原单、历史内容和人工字段保留。'
@@ -2023,7 +2022,7 @@ onBeforeUnmount(() => {
             <h2>PO 与客户排期导入</h2>
             <p>同时选择客户原始PO和该客户当前排期模板，系统将按客户模板映射统一字段。</p>
           </div>
-          <span class="prototype-badge">真实文件试用 · {{ selectedCustomer ? `${selectedCustomer.name} ${selectedCustomer.version}` : '先选择客户' }}</span>
+          <span class="prototype-badge">{{ factoryName }} · {{ selectedCustomer ? selectedCustomer.name : '先选择客户' }}</span>
         </header>
 
         <section class="customer-selector" data-testid="factory-customer-selector">
@@ -2152,8 +2151,7 @@ onBeforeUnmount(() => {
 
             <article class="panel-card">
               <header class="panel-card__head">
-                <div><h3>实时导入队列</h3><p>参考HTML中的批量导入状态设计</p></div>
-                <button type="button" class="text-button"><History aria-hidden="true" /> 查看历史</button>
+                <div><h3>本次导入文件</h3><p>核对客户 PO 与对应的统一排期后开始解析。</p></div>
               </header>
               <div class="table-scroll">
                 <table class="import-queue-table">
@@ -2188,7 +2186,7 @@ onBeforeUnmount(() => {
 
             <article class="panel-card load-card">
               <header><h3>解析进度</h3><strong>{{ parsingFiles ? '处理中' : previewBatch ? '100%' : '0%' }}</strong></header>
-              <div class="progress-track"><span :style="{ width: parsingFiles ? '55%' : previewBatch ? '100%' : '0%' }" /></div>
+              <div class="progress-track" role="progressbar" aria-label="文件解析进度" :aria-valuenow="parsingFiles ? undefined : previewBatch ? 100 : 0" :aria-valuetext="parsingFiles ? '正在解析文件' : previewBatch ? '解析完成' : '待解析'" :aria-busy="parsingFiles"><span :class="{ 'is-processing': parsingFiles, 'is-complete': !parsingFiles && previewBatch }" /></div>
               <p v-if="previewBatch">{{ previewBatch.summary.total }} 条订单明细 · 17个字段 · {{ unconfirmedDuplicateIssueCount }} 项待确认 · {{ orderSummary.blocked }} 项阻断</p>
               <p v-else>选择一份或多份PO及一份客户排期后开始真实解析</p>
             </article>
@@ -2916,7 +2914,7 @@ onBeforeUnmount(() => {
 .order-workspace {
   width: min(100%, 1640px);
   margin: 0 auto;
-  color: var(--order-text, #191b23);
+  color: var(--order-text, var(--foreground));
 }
 
 .order-view {
@@ -2944,16 +2942,16 @@ onBeforeUnmount(() => {
 
 .view-heading h2 {
   margin-top: 7px;
-  color: #191b23;
+  color: var(--foreground);
   font-size: clamp(25px, 2.5vw, 34px);
-  font-weight: 900;
+  font-weight: 600;
   letter-spacing: -.035em;
 }
 
 .view-heading p {
   max-width: 850px;
   margin-top: 7px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 13px;
   line-height: 1.65;
 }
@@ -2963,7 +2961,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #003d9b;
+  color: var(--primary);
   font-size: 11px;
   font-weight: 900;
   letter-spacing: .08em;
@@ -2976,11 +2974,11 @@ onBeforeUnmount(() => {
 }
 
 .prototype-badge {
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 6px;
-  background: #dae2ff;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
   padding: 7px 10px;
-  color: #0040a2;
+  color: var(--primary);
 }
 
 .view-heading__actions {
@@ -2996,10 +2994,10 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 7px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0 14px;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
   transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
@@ -3013,19 +3011,24 @@ onBeforeUnmount(() => {
   box-shadow: none;
 }
 
+.order-workspace :is(button, a):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
 .button svg {
   width: 16px;
   height: 16px;
 }
 
 .button--primary {
-  background: #003d9b;
-  color: #fff;
-  box-shadow: 0 6px 15px rgb(0 61 155 / 15%);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: 0 6px 15px color-mix(in oklab, var(--primary) 15%, transparent);
 }
 
 .button--primary:hover {
-  background: #0052cc;
+  background: color-mix(in oklab, var(--primary) 90%, black);
 }
 
 .button--secondary {
@@ -3034,14 +3037,14 @@ onBeforeUnmount(() => {
 }
 
 .button--ghost {
-  border-color: #c3c6d6;
-  background: #fff;
-  color: #434654;
+  border-color: var(--border);
+  background: var(--card);
+  color: var(--muted-foreground);
 }
 
 .button--ghost:hover {
-  border-color: #003d9b;
-  color: #003d9b;
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .metric-grid {
@@ -3056,9 +3059,9 @@ onBeforeUnmount(() => {
   min-width: 0;
   align-items: center;
   gap: 14px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 17px;
   box-shadow: 0 7px 18px rgb(38 42 55 / 4%);
 }
@@ -3081,7 +3084,7 @@ onBeforeUnmount(() => {
   height: 22px;
 }
 
-.metric-card__icon--blue { background: #dae2ff; color: #003d9b; }
+.metric-card__icon--blue { background: color-mix(in oklab, var(--primary) 10%, var(--card)); color: var(--primary); }
 .metric-card__icon--amber { background: #ffddb3; color: #7d5200; }
 .metric-card__icon--green { background: #d5f9e6; color: #006c47; }
 .metric-card__icon--red { background: #ffdad6; color: #ba1a1a; }
@@ -3094,14 +3097,14 @@ onBeforeUnmount(() => {
 }
 
 .metric-card p {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 700;
 }
 
 .metric-card strong {
   margin-top: 2px;
-  color: #191b23;
+  color: var(--foreground);
   font-size: 26px;
   line-height: 1.1;
 }
@@ -3109,7 +3112,7 @@ onBeforeUnmount(() => {
 .metric-card small {
   margin-top: 5px;
   overflow: hidden;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3136,9 +3139,9 @@ onBeforeUnmount(() => {
 .ledger-card,
 .data-grid-card,
 .merge-table-card {
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   box-shadow: 0 7px 18px rgb(38 42 55 / 4%);
 }
 
@@ -3147,7 +3150,7 @@ onBeforeUnmount(() => {
 }
 
 .flow-card--primary {
-  border-top: 3px solid #003d9b;
+  border-top: 3px solid var(--primary);
 }
 
 .flow-card__head,
@@ -3174,7 +3177,7 @@ onBeforeUnmount(() => {
 }
 
 .flow-number {
-  color: #737685;
+  color: var(--muted-foreground);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 10px;
   font-weight: 900;
@@ -3230,8 +3233,8 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   place-items: center;
   border-radius: 8px;
-  background: #dae2ff;
-  color: #003d9b;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+  color: var(--primary);
 }
 
 .flow-card__icon--green {
@@ -3256,7 +3259,7 @@ onBeforeUnmount(() => {
 
 .flow-card p {
   margin-top: 4px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -3275,7 +3278,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   align-items: center;
   gap: 8px;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 700;
 }
@@ -3286,7 +3289,7 @@ onBeforeUnmount(() => {
   right: 8px;
   width: 14px;
   height: 1px;
-  background: #c3c6d6;
+  background: var(--border);
   content: "";
 }
 
@@ -3297,8 +3300,8 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
-  background: #e7e7f2;
-  color: #003d9b;
+  background: var(--accent);
+  color: var(--primary);
   font-size: 10px;
 }
 
@@ -3309,7 +3312,7 @@ onBeforeUnmount(() => {
   gap: 7px;
   border: 0;
   background: transparent;
-  color: #003d9b;
+  color: var(--primary);
   font-size: 12px;
   font-weight: 900;
 }
@@ -3339,7 +3342,7 @@ onBeforeUnmount(() => {
 
 .panel-card__head p {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
 }
 
@@ -3354,19 +3357,19 @@ onBeforeUnmount(() => {
   min-height: 82px;
   place-items: center;
   gap: 4px;
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: #faf8ff;
+  background: var(--background);
   padding: 10px;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 800;
 }
 
 .quick-action-grid button:hover {
-  border-color: #b2c5ff;
-  background: #f3f3fd;
-  color: #003d9b;
+  border-color: color-mix(in oklab, var(--primary) 25%, var(--border));
+  background: var(--muted);
+  color: var(--primary);
 }
 
 .quick-action-grid svg {
@@ -3379,9 +3382,9 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   gap: 11px;
   border-radius: 8px;
-  background: #2e3038;
+  background: var(--foreground);
   padding: 16px;
-  color: #f0f0fb;
+  color: var(--muted);
 }
 
 .scope-card > svg {
@@ -3425,7 +3428,7 @@ onBeforeUnmount(() => {
   gap: 6px;
   border: 0;
   background: transparent;
-  color: #003d9b;
+  color: var(--primary);
   font-size: 10px;
   font-weight: 900;
 }
@@ -3438,7 +3441,7 @@ onBeforeUnmount(() => {
 .table-scroll {
   width: 100%;
   overflow: auto;
-  scrollbar-color: #c3c6d6 transparent;
+  scrollbar-color: var(--border) transparent;
   scrollbar-width: thin;
 }
 
@@ -3449,8 +3452,8 @@ table {
 }
 
 th {
-  background: #f3f3fd;
-  color: #737685;
+  background: var(--muted);
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 900;
   letter-spacing: .04em;
@@ -3459,18 +3462,18 @@ th {
 
 th,
 td {
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
   padding: 10px 12px;
   vertical-align: middle;
 }
 
 td {
-  color: #343742;
+  color: var(--foreground);
   font-size: 11px;
 }
 
 tbody tr:hover td {
-  background: #f8f8ff;
+  background: var(--muted);
 }
 
 .activity-table {
@@ -3486,9 +3489,9 @@ tbody tr:hover td {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   margin: 0 0 20px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 14px 20px;
   list-style: none;
 }
@@ -3501,7 +3504,7 @@ tbody tr:hover td {
   margin-bottom: 14px;
   border: 1px solid #b8c7e5;
   border-radius: 10px;
-  background: linear-gradient(135deg, #f8faff, #f2fff9);
+  background: linear-gradient(135deg, var(--muted), #f2fff9);
   padding: 15px 17px;
 }
 
@@ -3519,7 +3522,7 @@ tbody tr:hover td {
   place-items: center;
   border-radius: 9px;
   background: #e1e9ff;
-  color: #003d9b;
+  color: var(--primary);
 }
 
 .customer-selector > header svg {
@@ -3538,7 +3541,7 @@ tbody tr:hover td {
 
 .customer-selector p {
   margin-top: 3px;
-  color: #596070;
+  color: var(--muted-foreground);
   line-height: 1.5;
 }
 
@@ -3554,11 +3557,11 @@ tbody tr:hover td {
   align-items: center;
   gap: 10px;
   min-width: 0;
-  border: 1px solid #cfd5e4;
+  border: 1px solid var(--border);
   border-radius: 9px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 12px;
-  color: #343742;
+  color: var(--foreground);
   text-align: left;
   transition:
     transform var(--order-motion-fast) var(--order-motion-ease),
@@ -3585,8 +3588,8 @@ tbody tr:hover td {
   height: 32px;
   place-items: center;
   border-radius: 50%;
-  background: #edf0ff;
-  color: #003d9b;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
+  color: var(--primary);
 }
 
 .customer-choice.active > span {
@@ -3610,17 +3613,16 @@ tbody tr:hover td {
 
 .customer-choice small {
   margin-top: 2px;
-  overflow: hidden;
-  color: #737685;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 
 .customer-choice em {
   border-radius: 999px;
-  background: #edf0ff;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
   padding: 4px 7px;
-  color: #0040a2;
+  color: var(--primary);
   font-style: normal;
   font-weight: 900;
   white-space: nowrap;
@@ -3643,7 +3645,7 @@ tbody tr:hover td {
   display: grid;
   justify-items: center;
   gap: 7px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 800;
 }
@@ -3654,7 +3656,7 @@ tbody tr:hover td {
   left: calc(50% + 30px);
   width: calc(100% - 60px);
   height: 1px;
-  background: #c3c6d6;
+  background: var(--border);
   content: "";
 }
 
@@ -3663,20 +3665,20 @@ tbody tr:hover td {
   width: 34px;
   height: 34px;
   place-items: center;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 50%;
-  background: #e7e7f2;
+  background: var(--accent);
   font-size: 11px;
 }
 
 .wizard-steps li.active {
-  color: #003d9b;
+  color: var(--primary);
 }
 
 .wizard-steps li.active b {
-  border-color: #003d9b;
-  background: #003d9b;
-  color: #fff;
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .wizard-steps li.done {
@@ -3714,23 +3716,23 @@ tbody tr:hover td {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  border: 2px dashed #c3c6d6;
+  border: 2px dashed var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 22px;
   text-align: center;
   transition: border-color 160ms ease, background-color 160ms ease;
 }
 
 .upload-card:hover {
-  border-color: #003d9b;
-  background: #f8f9ff;
+  border-color: var(--primary);
+  background: var(--muted);
 }
 
 .upload-card--dragging {
-  border-color: #003d9b;
-  background: #eef3ff;
-  box-shadow: inset 0 0 0 2px rgb(0 61 155 / 9%);
+  border-color: var(--primary);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--primary) 9%, transparent);
 }
 
 .upload-card--schedule.upload-card--dragging {
@@ -3755,7 +3757,7 @@ tbody tr:hover td {
 
 .upload-card__type {
   align-self: flex-start;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
   letter-spacing: .07em;
@@ -3769,8 +3771,8 @@ tbody tr:hover td {
   margin: 12px 0;
   place-items: center;
   border-radius: 50%;
-  background: #dae2ff;
-  color: #003d9b;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+  color: var(--primary);
   transition: transform 160ms ease;
 }
 
@@ -3797,7 +3799,7 @@ tbody tr:hover td {
 
 .upload-card p {
   margin-top: 5px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   line-height: 1.5;
 }
@@ -3808,7 +3810,7 @@ tbody tr:hover td {
   max-width: 100%;
   margin: 14px 0;
   overflow: hidden;
-  color: #434654;
+  color: var(--muted-foreground);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 10px;
   text-overflow: ellipsis;
@@ -3971,7 +3973,7 @@ tbody tr:hover td {
   resize: vertical;
   border: 1px solid #c9b06f;
   border-radius: 6px;
-  background: #fff;
+  background: var(--card);
   padding: 8px 10px;
   color: #232323;
   font: inherit;
@@ -4022,7 +4024,7 @@ tbody tr:hover td {
   height: 30px;
   border: 1px solid #71dba6;
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 0 8px;
   color: #24312d;
   font: inherit;
@@ -4038,9 +4040,9 @@ tbody tr:hover td {
   display: grid;
   gap: 12px;
   margin: 14px 0;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 8px;
-  background: #f6f8ff;
+  background: var(--muted);
   padding: 14px;
 }
 
@@ -4066,7 +4068,7 @@ tbody tr:hover td {
 .reconciliation-card__toggle small,
 .reconciliation-card__selected {
   margin-top: 3px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -4089,24 +4091,24 @@ tbody tr:hover td {
 
 .reconciliation-card__scope {
   margin: 0;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 11px;
   line-height: 1.5;
 }
 
 .reconciliation-card__body label {
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 800;
 }
 
 .reconciliation-card__body select,
 .reconciliation-card__body textarea {
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 6px;
-  background: #fff;
+  background: var(--card);
   padding: 8px;
-  color: #191b23;
+  color: var(--foreground);
   font: inherit;
 }
 
@@ -4124,7 +4126,7 @@ tbody tr:hover td {
 .import-queue-table td svg {
   width: 15px;
   height: 15px;
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .guide-card ul,
@@ -4167,7 +4169,7 @@ tbody tr:hover td {
 
 .guide-card span {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4175,15 +4177,15 @@ tbody tr:hover td {
   position: relative;
   overflow: hidden;
   border-radius: 8px;
-  background: #2e3038;
+  background: var(--foreground);
   padding: 19px;
-  color: #f0f0fb;
+  color: var(--muted);
 }
 
 .mapping-card > svg {
   width: 23px;
   height: 23px;
-  color: #b2c5ff;
+  color: color-mix(in oklab, var(--primary) 25%, var(--border));
 }
 
 .mapping-card h3,
@@ -4210,8 +4212,8 @@ tbody tr:hover td {
   margin-top: 14px;
   border: 0;
   border-radius: 5px;
-  background: #0052cc;
-  color: #fff;
+  background: color-mix(in oklab, var(--primary) 90%, black);
+  color: var(--primary-foreground);
   font-size: 10px;
   font-weight: 900;
 }
@@ -4236,19 +4238,32 @@ tbody tr:hover td {
   margin-top: 10px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e7e7f2;
+  background: var(--accent);
 }
 
 .progress-track span {
   display: block;
-  width: 100%;
+  width: 0;
   height: 100%;
-  background: #006c47;
+  background: var(--primary);
+}
+
+.progress-track .is-complete {
+  width: 100%;
+}
+
+.progress-track .is-processing {
+  width: 35%;
+  animation: order-parse-progress 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes order-parse-progress {
+  to { transform: translateX(185%); }
 }
 
 .load-card > p {
   margin-top: 8px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4260,10 +4275,10 @@ tbody tr:hover td {
 }
 
 .summary-strip article {
-  border: 1px solid #cfd2df;
-  border-left: 4px solid #737685;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted-foreground);
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 13px;
 }
 
@@ -4278,7 +4293,7 @@ tbody tr:hover td {
 }
 
 .summary-strip span {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
   text-transform: uppercase;
@@ -4291,7 +4306,7 @@ tbody tr:hover td {
 
 .summary-strip small {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4310,7 +4325,7 @@ tbody tr:hover td {
   padding: 13px 15px;
   border: 1px solid #8fc8ff;
   border-radius: 10px;
-  background: linear-gradient(135deg, #eef7ff 0%, #f8fbff 100%);
+  background: linear-gradient(135deg, #eef7ff 0%, var(--muted) 100%);
   box-shadow: 0 8px 18px rgb(0 76 165 / 8%);
 }
 
@@ -4424,9 +4439,9 @@ tbody tr:hover td {
 
 .filter-panel {
   align-self: start;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #f3f3fd;
+  background: var(--muted);
   padding: 14px;
 }
 
@@ -4435,7 +4450,7 @@ tbody tr:hover td {
   align-items: center;
   gap: 7px;
   margin: 0 0 13px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 900;
   letter-spacing: .07em;
@@ -4452,20 +4467,20 @@ tbody tr:hover td {
   align-items: center;
   gap: 8px;
   padding: 5px 0;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 700;
 }
 
 .filter-panel input[type="checkbox"],
 .check-option input {
-  accent-color: #003d9b;
+  accent-color: var(--primary);
 }
 
 .filter-divider {
   height: 1px;
   margin: 12px 0;
-  background: #c3c6d6;
+  background: var(--border);
 }
 
 .filter-field,
@@ -4473,7 +4488,7 @@ tbody tr:hover td {
   display: grid;
   gap: 5px;
   margin-top: 11px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -4483,11 +4498,11 @@ tbody tr:hover td {
 .ledger-toolbar select {
   width: 100%;
   height: 34px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 0 8px;
-  color: #343742;
+  color: var(--foreground);
   font-size: 10px;
 }
 
@@ -4496,11 +4511,11 @@ tbody tr:hover td {
   align-items: flex-start;
   gap: 7px;
   margin-top: 15px;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 6px;
-  background: #e8edff;
+  background: var(--accent);
   padding: 10px;
-  color: #0040a2;
+  color: var(--primary);
 }
 
 .logic-note > svg {
@@ -4534,7 +4549,7 @@ tbody tr:hover td {
 .data-grid-card__toolbar {
   min-height: 54px;
   gap: 12px;
-  border-bottom: 1px solid #d7d9e3;
+  border-bottom: 1px solid var(--border);
   padding: 10px 13px;
 }
 
@@ -4549,7 +4564,7 @@ tbody tr:hover td {
   width: 17px;
   height: 17px;
   flex: 0 0 auto;
-  color: #003d9b;
+  color: var(--primary);
 }
 
 .data-grid-card__toolbar span {
@@ -4558,7 +4573,7 @@ tbody tr:hover td {
 }
 
 .data-grid-card__toolbar small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4568,11 +4583,11 @@ tbody tr:hover td {
   height: 34px;
   align-items: center;
   gap: 7px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #f8f8ff;
+  background: var(--muted);
   padding: 0 9px;
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .inline-search {
@@ -4619,11 +4634,11 @@ tbody tr:hover td {
   position: sticky;
   left: 0;
   z-index: 3;
-  background: #f3f3fd;
+  background: var(--muted);
 }
 
 .unified-table td.sticky-left {
-  background: #fff;
+  background: var(--card);
 }
 
 .unified-table .resolution-column {
@@ -4690,7 +4705,7 @@ tbody tr:hover td {
   min-width: 0;
   border: 1px solid #91b6a5;
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 7px 8px;
   color: #18392c;
   font-size: 10px;
@@ -4811,8 +4826,8 @@ tbody tr:hover td {
 }
 
 .product-role-badge--child {
-  border-color: #bdc8de;
-  background: #f2f5fb;
+  border-color: var(--border);
+  background: var(--muted);
   color: #44536f;
 }
 
@@ -4835,7 +4850,7 @@ tbody tr:hover td {
   border-radius: 4px;
   background: transparent;
   padding: 4px 6px;
-  color: #003d9b;
+  color: var(--primary);
   font-size: 9px;
   font-weight: 900;
   white-space: nowrap;
@@ -4843,7 +4858,7 @@ tbody tr:hover td {
 
 .trace-button:hover,
 .version-button:hover {
-  background: #dae2ff;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
 }
 
 .version-button svg {
@@ -4854,9 +4869,9 @@ tbody tr:hover td {
 .table-footer {
   min-height: 42px;
   gap: 12px;
-  border-top: 1px solid #d7d9e3;
+  border-top: 1px solid var(--border);
   padding: 8px 12px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -4889,12 +4904,12 @@ tbody tr:hover td {
 
 .table-footer button {
   background: transparent;
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .table-footer b {
-  background: #003d9b;
-  color: #fff;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .ledger-kpis {
@@ -4908,9 +4923,9 @@ tbody tr:hover td {
   display: flex;
   align-items: center;
   gap: 13px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 15px;
 }
 
@@ -4920,8 +4935,8 @@ tbody tr:hover td {
   height: 42px;
   place-items: center;
   border-radius: 7px;
-  background: #dae2ff;
-  color: #003d9b;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+  color: var(--primary);
 }
 
 .ledger-kpis article > span.amber { background: #ffddb3; color: #7d5200; }
@@ -4940,7 +4955,7 @@ tbody tr:hover td {
 }
 
 .ledger-kpis p {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 10px;
 }
 
@@ -4951,14 +4966,14 @@ tbody tr:hover td {
 
 .ledger-kpis small {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
 .ledger-toolbar {
   gap: 8px;
   min-height: 58px;
-  border-bottom: 1px solid #d7d9e3;
+  border-bottom: 1px solid var(--border);
   padding: 10px 13px;
 }
 
@@ -4975,10 +4990,10 @@ tbody tr:hover td {
   width: 34px;
   height: 34px;
   place-items: center;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #fff;
-  color: #434654;
+  background: var(--card);
+  color: var(--muted-foreground);
 }
 
 .icon-square svg {
@@ -4988,7 +5003,7 @@ tbody tr:hover td {
 
 .ledger-count {
   margin-left: auto;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -5001,7 +5016,7 @@ tbody tr:hover td {
 }
 
 .strong {
-  color: #003d9b;
+  color: var(--primary);
   font-weight: 900;
 }
 
@@ -5016,9 +5031,9 @@ tbody tr:hover td {
 .schedule-files article {
   position: relative;
   gap: 13px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 16px;
 }
 
@@ -5026,7 +5041,7 @@ tbody tr:hover td {
   width: 28px;
   height: 28px;
   flex: 0 0 auto;
-  color: #003d9b;
+  color: var(--primary);
 }
 
 .schedule-files article > div {
@@ -5057,7 +5072,7 @@ tbody tr:hover td {
 
 .schedule-files small {
   margin-top: 4px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -5065,11 +5080,11 @@ tbody tr:hover td {
   position: absolute;
   top: -8px;
   left: 12px;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 4px;
-  background: #dae2ff;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
   padding: 2px 6px;
-  color: #0040a2;
+  color: var(--primary);
   font-size: 8px;
   font-weight: 900;
 }
@@ -5080,8 +5095,8 @@ tbody tr:hover td {
   height: 34px;
   place-items: center;
   border-radius: 50%;
-  background: #003d9b;
-  color: #fff;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .merge-arrow svg {
@@ -5097,14 +5112,14 @@ tbody tr:hover td {
 }
 
 .merge-summary-grid article {
-  border: 1px solid #cfd2df;
-  border-left: 4px solid #737685;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted-foreground);
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 13px;
 }
 
-.merge-summary-grid article.new { border-left-color: #003d9b; }
+.merge-summary-grid article.new { border-left-color: var(--primary); }
 .merge-summary-grid article.update { border-left-color: #006c47; }
 .merge-summary-grid article.conflict { border-left-color: #ba1a1a; }
 
@@ -5114,9 +5129,9 @@ tbody tr:hover td {
   display: block;
 }
 
-.merge-summary-grid span { color: #737685; font-size: 9px; font-weight: 900; }
+.merge-summary-grid span { color: var(--muted-foreground); font-size: 9px; font-weight: 900; }
 .merge-summary-grid strong { margin-top: 2px; font-size: 22px; }
-.merge-summary-grid small { margin-top: 2px; color: #737685; font-size: 8px; }
+.merge-summary-grid small { margin-top: 2px; color: var(--muted-foreground); font-size: 8px; }
 
 .schedule-layout {
   display: grid;
@@ -5138,10 +5153,10 @@ tbody tr:hover td {
   font-weight: 900;
 }
 
-.merge-status--new { background: #dae2ff; color: #0040a2; }
+.merge-status--new { background: color-mix(in oklab, var(--primary) 10%, var(--card)); color: var(--primary); }
 .merge-status--update { background: #d5f9e6; color: #005235; }
 .merge-status--conflict { background: #ffdad6; color: #93000a; }
-.merge-status--unchanged { background: #e7e7f2; color: #596070; }
+.merge-status--unchanged { background: var(--accent); color: var(--muted-foreground); }
 
 .rule-card > label:not(.check-option) {
   margin-top: 10px;
@@ -5152,16 +5167,16 @@ tbody tr:hover td {
   align-items: center;
   gap: 7px;
   margin-top: 11px;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 700;
 }
 
 .output-card {
   border-radius: 8px;
-  background: #2e3038;
+  background: var(--foreground);
   padding: 18px;
-  color: #f0f0fb;
+  color: var(--muted);
 }
 
 .output-card > svg {
@@ -5208,15 +5223,15 @@ tbody tr:hover td {
   gap: 7px;
   border: 0;
   border-radius: 5px;
-  background: #0052cc;
-  color: #fff;
+  background: color-mix(in oklab, var(--primary) 90%, black);
+  color: var(--primary-foreground);
   font-size: 10px;
   font-weight: 900;
 }
 
 .output-card button:disabled {
-  background: #596070;
-  color: #c3c6d6;
+  background: var(--muted-foreground);
+  color: var(--border);
   cursor: not-allowed;
 }
 
@@ -5251,9 +5266,9 @@ tbody tr:hover td {
 
 .draft-rule-label {
   margin-bottom: 12px;
-  border: 1px solid #b2c5ff;
-  background: #edf0ff;
-  color: #0040a2;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
+  color: var(--primary);
 }
 
 .schedule-source-alert > svg,
@@ -5290,10 +5305,10 @@ tbody tr:hover td {
 }
 
 .exception-kpis article {
-  border: 1px solid #cfd2df;
-  border-left: 4px solid #737685;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted-foreground);
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px;
 }
 
@@ -5320,7 +5335,7 @@ tbody tr:hover td {
 }
 
 .exception-kpis span {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
   font-weight: 900;
 }
@@ -5332,7 +5347,7 @@ tbody tr:hover td {
 
 .exception-kpis small {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
@@ -5342,9 +5357,9 @@ tbody tr:hover td {
   align-items: end;
   gap: 9px;
   margin-bottom: 12px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 11px;
 }
 
@@ -5354,7 +5369,7 @@ tbody tr:hover td {
 }
 
 .exception-toolbar > label > span {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -5362,11 +5377,11 @@ tbody tr:hover td {
 .exception-toolbar select {
   width: 100%;
   height: 36px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 0 9px;
-  color: #343742;
+  color: var(--foreground);
   font-size: 10px;
 }
 
@@ -5375,7 +5390,7 @@ tbody tr:hover td {
   height: 36px;
   align-items: center;
   gap: 7px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
   padding: 0 10px;
 }
@@ -5383,7 +5398,7 @@ tbody tr:hover td {
 .exception-search svg {
   width: 15px;
   height: 15px;
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .exception-search input {
@@ -5391,7 +5406,7 @@ tbody tr:hover td {
   border: 0;
   outline: 0;
   background: transparent;
-  color: #343742;
+  color: var(--foreground);
   font-size: 10px;
 }
 
@@ -5404,9 +5419,9 @@ tbody tr:hover td {
 .exception-list-card {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
 }
 
 .exception-list {
@@ -5417,8 +5432,8 @@ tbody tr:hover td {
   display: grid;
   grid-template-columns: 70px minmax(0, 1fr) 110px;
   gap: 12px;
-  border-bottom: 1px solid #e0e1e9;
-  border-left: 4px solid #737685;
+  border-bottom: 1px solid var(--border);
+  border-left: 4px solid var(--muted-foreground);
   padding: 14px;
   transition: opacity 160ms ease, background-color 160ms ease;
 }
@@ -5440,7 +5455,7 @@ tbody tr:hover td {
 }
 
 .exception-item.acknowledged {
-  background: #f6f6fb;
+  background: var(--muted);
   opacity: .7;
 }
 
@@ -5475,7 +5490,7 @@ tbody tr:hover td {
 }
 
 .exception-item__severity small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
@@ -5492,19 +5507,19 @@ tbody tr:hover td {
 }
 
 .exception-item__title h3 {
-  color: #252832;
+  color: var(--foreground);
   font-size: 12px;
 }
 
 .exception-item__title > span {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   white-space: nowrap;
 }
 
 .exception-item__main > p {
   margin-top: 5px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   line-height: 1.55;
 }
@@ -5519,7 +5534,7 @@ tbody tr:hover td {
 .exception-item dl div {
   min-width: 0;
   border-radius: 5px;
-  background: #f3f3fd;
+  background: var(--muted);
   padding: 6px;
 }
 
@@ -5530,13 +5545,13 @@ tbody tr:hover td {
 }
 
 .exception-item dt {
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .exception-item dd {
   margin-top: 2px;
   overflow: hidden;
-  color: #343742;
+  color: var(--foreground);
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5548,9 +5563,9 @@ tbody tr:hover td {
   gap: 7px;
   margin-top: 9px;
   border-radius: 5px;
-  background: #edf0ff;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
   padding: 7px 8px;
-  color: #0040a2;
+  color: var(--primary);
 }
 
 .exception-item__recommendation svg {
@@ -5583,14 +5598,14 @@ tbody tr:hover td {
 
 .exception-action {
   border: 0;
-  background: #003d9b;
-  color: #fff;
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .exception-acknowledge {
-  border: 1px solid #c3c6d6;
-  background: #fff;
-  color: #596070;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted-foreground);
 }
 
 .empty-exception {
@@ -5598,7 +5613,7 @@ tbody tr:hover td {
   justify-items: center;
   gap: 5px;
   padding: 40px;
-  color: #596070;
+  color: var(--muted-foreground);
   text-align: center;
 }
 
@@ -5637,18 +5652,18 @@ tbody tr:hover td {
   align-items: center;
   gap: 8px;
   border-radius: 5px;
-  background: #f3f3fd;
+  background: var(--muted);
   padding: 8px;
 }
 
 .exception-rule-card li b {
-  color: #003d9b;
+  color: var(--primary);
   font-size: 9px;
 }
 
 .exception-rule-card li span,
 .exception-boundary-card li {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 8px;
   line-height: 1.45;
 }
@@ -5705,9 +5720,9 @@ tbody tr:hover td {
   align-items: end;
   gap: 10px;
   margin-bottom: 12px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 12px;
 }
 
@@ -5717,7 +5732,7 @@ tbody tr:hover td {
 }
 
 .schedule-toolbar-card label > span {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -5725,11 +5740,11 @@ tbody tr:hover td {
 .schedule-toolbar-card select {
   width: 100%;
   height: 36px;
-  border: 1px solid #c3c6d6;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 0 9px;
-  color: #343742;
+  color: var(--foreground);
   font-size: 10px;
 }
 
@@ -5741,10 +5756,10 @@ tbody tr:hover td {
 }
 
 .factory-schedule-kpis article {
-  border: 1px solid #cfd2df;
-  border-left: 4px solid #003d9b;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 13px;
 }
 
@@ -5767,7 +5782,7 @@ tbody tr:hover td {
 }
 
 .factory-schedule-kpis span {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -5779,15 +5794,15 @@ tbody tr:hover td {
 
 .factory-schedule-kpis small {
   margin-top: 2px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
 .month-schedule-section {
   margin-bottom: 12px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 13px;
 }
 
@@ -5811,7 +5826,7 @@ tbody tr:hover td {
 .month-schedule-section p,
 .month-schedule-section > header > span {
   margin-top: 3px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -5824,23 +5839,23 @@ tbody tr:hover td {
 .month-card-grid button {
   display: grid;
   gap: 4px;
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: #f8f8ff;
+  background: var(--muted);
   padding: 11px;
-  color: #343742;
+  color: var(--foreground);
   text-align: left;
   transition: border-color 160ms ease, background-color 160ms ease;
 }
 
 .month-card-grid button.active,
 .month-card-grid button:hover {
-  border-color: #003d9b;
-  background: #edf0ff;
+  border-color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
 }
 
 .month-card-grid span {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
 }
@@ -5850,7 +5865,7 @@ tbody tr:hover td {
 }
 
 .month-card-grid small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
@@ -5863,9 +5878,9 @@ tbody tr:hover td {
 
 .customer-month-section {
   margin-bottom: 12px;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
   padding: 13px;
 }
 
@@ -5889,7 +5904,7 @@ tbody tr:hover td {
 .customer-month-section p,
 .customer-month-section > header > span {
   margin-top: 3px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -5900,9 +5915,9 @@ tbody tr:hover td {
 }
 
 .customer-summary-grid > article {
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: #f8f8ff;
+  background: var(--muted);
   padding: 11px;
 }
 
@@ -5914,7 +5929,7 @@ tbody tr:hover td {
 }
 
 .customer-summary-grid__head > span {
-  color: #003d9b;
+  color: var(--primary);
   font-size: 10px;
   font-weight: 900;
 }
@@ -5942,7 +5957,7 @@ tbody tr:hover td {
 
 .customer-summary-grid dl div {
   border-radius: 5px;
-  background: #fff;
+  background: var(--card);
   padding: 7px;
 }
 
@@ -5953,12 +5968,12 @@ tbody tr:hover td {
 }
 
 .customer-summary-grid dt {
-  color: #737685;
+  color: var(--muted-foreground);
 }
 
 .customer-summary-grid dd {
   margin-top: 2px;
-  color: #343742;
+  color: var(--foreground);
   font-weight: 900;
 }
 
@@ -5973,7 +5988,7 @@ tbody tr:hover td {
 .empty-customer-summary {
   grid-column: 1 / -1;
   padding: 24px;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 10px;
   text-align: center;
 }
@@ -5987,9 +6002,9 @@ tbody tr:hover td {
 .factory-schedule-table-card {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #cfd2df;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--card);
 }
 
 .table-scroll--schedule {
@@ -6027,8 +6042,8 @@ tbody tr:hover td {
 }
 
 .delivery-chip--planned {
-  background: #dae2ff;
-  color: #0040a2;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+  color: var(--primary);
 }
 
 .delivery-chip--upcoming {
@@ -6063,7 +6078,7 @@ tbody tr:hover td {
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e0e1e9;
+  background: var(--border);
 }
 
 .production-progress i {
@@ -6079,7 +6094,7 @@ tbody tr:hover td {
 
 .empty-schedule {
   padding: 34px;
-  color: #737685;
+  color: var(--muted-foreground);
   text-align: center;
 }
 
@@ -6101,7 +6116,7 @@ tbody tr:hover td {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 9px;
   line-height: 1.45;
 }
@@ -6123,7 +6138,7 @@ tbody tr:hover td {
 }
 
 .feedback-boundary-card > p {
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
   line-height: 1.55;
 }
@@ -6134,9 +6149,9 @@ tbody tr:hover td {
   gap: 8px;
   margin-top: 11px;
   border-radius: 6px;
-  background: #edf0ff;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
   padding: 10px;
-  color: #0040a2;
+  color: var(--primary);
   font-size: 9px;
   line-height: 1.5;
 }
@@ -6152,11 +6167,11 @@ tbody tr:hover td {
   align-items: center;
   gap: 11px;
   margin-top: 14px;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 7px;
-  background: #edf0ff;
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
   padding: 12px 14px;
-  color: #0040a2;
+  color: var(--primary);
 }
 
 .downstream-note > svg {
@@ -6191,7 +6206,7 @@ tbody tr:hover td {
   gap: 9px;
   border: 1px solid #71dba6;
   border-radius: 7px;
-  background: #fff;
+  background: var(--card);
   padding: 11px 13px;
   color: #005235;
   font-size: 11px;
@@ -6213,7 +6228,7 @@ tbody tr:hover td {
   place-items: center;
   border: 0;
   background: transparent;
-  color: #596070;
+  color: var(--muted-foreground);
 }
 
 .order-toast button svg {
@@ -6244,9 +6259,9 @@ tbody tr:hover td {
   max-height: min(820px, calc(100vh - 48px));
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--card);
   box-shadow: 0 24px 70px rgb(25 27 35 / 24%);
 }
 
@@ -6260,7 +6275,7 @@ tbody tr:hover td {
 }
 
 .blocker-resolution-dialog > header {
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
   background: #fff8f7;
 }
 
@@ -6285,7 +6300,7 @@ tbody tr:hover td {
 
 .blocker-resolution-dialog > header p {
   margin-top: 5px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 10px;
 }
 
@@ -6297,8 +6312,8 @@ tbody tr:hover td {
   place-items: center;
   border: 0;
   border-radius: 50%;
-  background: #f3f3fd;
-  color: #596070;
+  background: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .blocker-resolution-dialog > header > button svg {
@@ -6335,7 +6350,7 @@ tbody tr:hover td {
 }
 
 .blocker-resolution-progress small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -6384,7 +6399,7 @@ tbody tr:hover td {
 
 .blocker-resolution-item__heading span {
   margin-top: 3px;
-  color: #596070;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 
@@ -6420,14 +6435,14 @@ tbody tr:hover td {
   display: grid;
   gap: 6px;
   margin-top: 14px;
-  border: 1px solid #b2c5ff;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
   border-radius: 8px;
-  background: #f7f8ff;
+  background: var(--muted);
   padding: 12px;
 }
 
 .blocker-resolution-reason > span {
-  color: #003d9b;
+  color: var(--primary);
   font-size: 10px;
   font-weight: 900;
 }
@@ -6435,9 +6450,9 @@ tbody tr:hover td {
 .blocker-resolution-reason textarea {
   width: 100%;
   resize: vertical;
-  border: 1px solid #aeb8d7;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fff;
+  background: var(--card);
   padding: 9px;
   font: inherit;
   font-size: 10px;
@@ -6446,12 +6461,12 @@ tbody tr:hover td {
 }
 
 .blocker-resolution-reason textarea:focus {
-  border-color: #0052cc;
+  border-color: color-mix(in oklab, var(--primary) 90%, black);
   box-shadow: 0 0 0 2px rgb(0 82 204 / 12%);
 }
 
 .blocker-resolution-reason small {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
   text-align: right;
 }
@@ -6463,8 +6478,8 @@ tbody tr:hover td {
 
 .blocker-resolution-dialog > footer {
   justify-content: flex-end;
-  border-top: 1px solid #e0e1e9;
-  background: #f8f8ff;
+  border-top: 1px solid var(--border);
+  background: var(--muted);
 }
 
 .trace-drawer {
@@ -6472,20 +6487,20 @@ tbody tr:hover td {
   inset: 0 0 0 auto;
   width: min(520px, 100%);
   overflow-y: auto;
-  border-left: 1px solid #c3c6d6;
-  background: #fff;
+  border-left: 1px solid var(--border);
+  background: var(--card);
   padding: 20px;
   box-shadow: -15px 0 35px rgb(25 27 35 / 12%);
 }
 
 .trace-drawer header {
   gap: 12px;
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
   padding-bottom: 14px;
 }
 
 .trace-drawer header span {
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 9px;
   font-weight: 900;
   letter-spacing: .08em;
@@ -6503,8 +6518,8 @@ tbody tr:hover td {
   place-items: center;
   border: 0;
   border-radius: 50%;
-  background: #f3f3fd;
-  color: #596070;
+  background: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .trace-drawer header button svg {
@@ -6515,13 +6530,13 @@ tbody tr:hover td {
 .trace-status {
   margin: 15px 0;
   border-radius: 7px;
-  background: #f3f3fd;
+  background: var(--muted);
   padding: 12px;
 }
 
 .trace-status p {
   margin: 8px 0 0;
-  color: #434654;
+  color: var(--muted-foreground);
   font-size: 10px;
   line-height: 1.5;
 }
@@ -6530,7 +6545,7 @@ tbody tr:hover td {
   display: grid;
   gap: 0;
   margin: 0;
-  border: 1px solid #d7d9e3;
+  border: 1px solid var(--border);
   border-radius: 7px;
   overflow: hidden;
 }
@@ -6538,7 +6553,7 @@ tbody tr:hover td {
 .trace-drawer dl div {
   display: grid;
   grid-template-columns: 90px 1fr;
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
 }
 
 .trace-drawer dl div:last-child {
@@ -6553,8 +6568,8 @@ tbody tr:hover td {
 }
 
 .trace-drawer dt {
-  background: #f3f3fd;
-  color: #737685;
+  background: var(--muted);
+  color: var(--muted-foreground);
   font-weight: 900;
 }
 
@@ -6577,13 +6592,13 @@ tbody tr:hover td {
   grid-template-columns: 90px 1fr;
   gap: 4px 8px;
   margin: 0;
-  border-bottom: 1px solid #e0e1e9;
+  border-bottom: 1px solid var(--border);
   padding: 9px 0;
   font-size: 9px;
 }
 
 .trace-drawer section p b {
-  color: #596070;
+  color: var(--muted-foreground);
 }
 
 .trace-drawer section p span {
@@ -6592,7 +6607,7 @@ tbody tr:hover td {
 
 .trace-drawer section p small {
   grid-column: 2;
-  color: #737685;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 
@@ -6925,7 +6940,7 @@ tbody tr:hover td {
 }
 
 .view-heading h2 {
-  font-size: clamp(28px, 2.7vw, 38px);
+  font-size: clamp(1.65rem, 2.5vw, 2.25rem);
 }
 
 .view-heading p {
@@ -6983,7 +6998,7 @@ tbody tr:hover td {
   .schedule-files article,
   .customer-summary-grid > article
 ):hover {
-  border-color: #aeb4c8;
+  border-color: var(--border);
   box-shadow: 0 12px 28px rgb(31 38 57 / 10%);
   transform: translateY(-2px);
 }
@@ -7087,11 +7102,11 @@ tbody tr:hover td {
 
 @keyframes order-drop-pulse {
   from {
-    box-shadow: inset 0 0 0 2px rgb(0 61 155 / 9%), 0 8px 20px rgb(0 61 155 / 8%);
+    box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--primary) 9%, transparent), 0 8px 20px color-mix(in oklab, var(--primary) 8%, transparent);
   }
 
   to {
-    box-shadow: inset 0 0 0 3px rgb(0 61 155 / 15%), 0 14px 30px rgb(0 61 155 / 14%);
+    box-shadow: inset 0 0 0 3px color-mix(in oklab, var(--primary) 15%, transparent), 0 14px 30px color-mix(in oklab, var(--primary) 14%, transparent);
   }
 }
 

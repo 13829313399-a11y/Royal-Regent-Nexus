@@ -123,8 +123,8 @@ function navigate(section: CustomerOrderCenterSection) {
       <div class="order-sidebar__heading">
         <span class="order-sidebar__mark"><CalendarRange aria-hidden="true" /></span>
         <div>
-          <h1>客户订单中心</h1>
-          <p>订单台账 V0.2</p>
+          <component :is="activeSection === 'jp-intake' ? 'p' : 'h1'" class="order-sidebar__title">客户订单中心</component>
+          <p class="order-sidebar__subtitle">客户订单与统一排期</p>
         </div>
       </div>
 
@@ -178,6 +178,7 @@ function navigate(section: CustomerOrderCenterSection) {
           :key="`mobile-${item.id}`"
           type="button"
           :class="{ active: activeSection === item.id }"
+          :aria-current="activeSection === item.id ? 'page' : undefined"
           @click="navigate(item.id)"
         >
           <component :is="item.icon" aria-hidden="true" />
@@ -221,24 +222,24 @@ function navigate(section: CustomerOrderCenterSection) {
 .po-test-bridge { margin-bottom: 16px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--accent); color: var(--foreground); line-height: 1.6; overflow-wrap: anywhere; }
 .po-test-bridge button, .po-test-bridge a { display: inline-flex; align-items: center; min-height: 36px; margin-right: 16px; color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
 .customer-order-center {
-  --order-primary: #003d9b;
-  --order-primary-strong: #002c72;
-  --order-primary-container: #0052cc;
-  --order-secondary: #006c47;
-  --order-secondary-container: #8af5be;
-  --order-background: #faf8ff;
-  --order-surface: #fff;
-  --order-surface-low: #f3f3fd;
-  --order-surface-high: #e7e7f2;
-  --order-outline: #737685;
-  --order-outline-soft: #c3c6d6;
-  --order-text: #191b23;
-  --order-muted: #434654;
+  --order-primary: var(--primary);
+  --order-primary-strong: color-mix(in oklab, var(--primary) 90%, black);
+  --order-primary-container: var(--primary);
+  --order-secondary: var(--primary);
+  --order-secondary-container: color-mix(in oklab, var(--primary) 10%, var(--card));
+  --order-background: var(--background);
+  --order-surface: var(--card);
+  --order-surface-low: var(--muted);
+  --order-surface-high: var(--accent);
+  --order-outline: var(--muted-foreground);
+  --order-outline-soft: var(--border);
+  --order-text: var(--foreground);
+  --order-muted: var(--muted-foreground);
 
   min-height: 100vh;
   background: var(--order-background);
   color: var(--order-text);
-  font-family: Inter, "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  font-family: inherit;
 }
 
 .order-topbar {
@@ -250,7 +251,7 @@ function navigate(section: CustomerOrderCenterSection) {
   align-items: center;
   gap: 22px;
   border-bottom: 1px solid var(--order-outline-soft);
-  background: rgb(250 248 255 / 94%);
+  background: color-mix(in oklab, var(--card) 94%, transparent);
   padding: 0 18px;
   backdrop-filter: blur(12px);
 }
@@ -284,7 +285,7 @@ function navigate(section: CustomerOrderCenterSection) {
   gap: 7px;
   border-radius: 6px;
   padding: 0 10px;
-  color: #08736d;
+  color: var(--order-primary);
   font-size: 13px;
   font-weight: 800;
   text-decoration: none;
@@ -314,8 +315,8 @@ function navigate(section: CustomerOrderCenterSection) {
   height: 38px;
   gap: 9px;
   border: 1px solid var(--order-outline-soft);
-  border-radius: 6px;
-  background: #ededf8;
+  border-radius: 10px;
+  background: var(--order-surface);
   padding: 0 13px;
   color: var(--order-outline);
   transition: border-color 180ms ease, background-color 180ms ease, box-shadow 220ms ease;
@@ -323,7 +324,7 @@ function navigate(section: CustomerOrderCenterSection) {
 
 .order-global-search:focus-within {
   border-color: var(--order-primary);
-  box-shadow: 0 0 0 3px rgb(0 61 155 / 10%);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 20%, transparent);
 }
 
 .order-global-search svg {
@@ -400,7 +401,7 @@ function navigate(section: CustomerOrderCenterSection) {
   place-items: center;
   border-radius: 8px;
   background: var(--order-primary);
-  color: #fff;
+  color: var(--primary-foreground);
 }
 
 .order-sidebar__mark svg {
@@ -408,24 +409,23 @@ function navigate(section: CustomerOrderCenterSection) {
   height: 20px;
 }
 
-.order-sidebar h1,
+.order-sidebar__title,
 .order-sidebar p {
   margin: 0;
 }
 
-.order-sidebar h1 {
-  color: var(--order-primary);
+.order-sidebar__title {
+  color: var(--order-text);
   font-size: 18px;
-  font-weight: 900;
+  font-weight: 600;
   line-height: 1.3;
 }
 
-.order-sidebar__heading p {
+.order-sidebar__subtitle {
   margin-top: 2px;
   color: var(--order-muted);
   font-size: 12px;
-  font-weight: 800;
-  letter-spacing: .12em;
+  line-height: 1.5;
 }
 
 .order-new-button {
@@ -435,19 +435,19 @@ function navigate(section: CustomerOrderCenterSection) {
   justify-content: center;
   gap: 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--order-primary-container);
-  color: #fff;
+  color: var(--primary-foreground);
   font-size: 14px;
-  font-weight: 900;
-  box-shadow: 0 7px 16px rgb(0 61 155 / 18%);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 6%);
   transition: background-color 180ms ease, box-shadow 220ms ease, transform 180ms ease;
 }
 
 .order-new-button:hover {
-  background: var(--order-primary);
+  background: var(--order-primary-strong);
   transform: translateY(-1px);
-  box-shadow: 0 10px 22px rgb(0 61 155 / 24%);
+  box-shadow: 0 4px 12px color-mix(in oklab, var(--primary) 16%, transparent);
 }
 
 .order-new-button:active {
@@ -490,8 +490,8 @@ function navigate(section: CustomerOrderCenterSection) {
 
 .order-sidebar__nav button.active {
   background: var(--order-secondary-container);
-  color: #005235;
-  font-weight: 900;
+  color: var(--order-primary);
+  font-weight: 600;
 }
 
 .order-sidebar__nav svg {
@@ -504,7 +504,7 @@ function navigate(section: CustomerOrderCenterSection) {
   margin-top: auto;
   border: 1px solid var(--order-outline-soft);
   border-radius: 8px;
-  background: #fff;
+  background: var(--order-surface);
   padding: 13px;
 }
 
@@ -563,6 +563,11 @@ function navigate(section: CustomerOrderCenterSection) {
   display: none;
 }
 
+.customer-order-center :is(button, a):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
 @media (max-width: 980px) {
   .order-global-search { display: none; }
   .order-sidebar {
@@ -588,24 +593,24 @@ function navigate(section: CustomerOrderCenterSection) {
 
   .order-mobile-nav button {
     display: inline-flex;
-    min-height: 38px;
+    min-height: 44px;
     flex: 0 0 auto;
     align-items: center;
     gap: 7px;
     border: 1px solid var(--order-outline-soft);
-    border-radius: 6px;
-    background: #fff;
+    border-radius: 8px;
+    background: var(--order-surface);
     padding: 0 11px;
     color: var(--order-muted);
     font-size: 12px;
-    font-weight: 800;
+    font-weight: 600;
     transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease;
   }
 
   .order-mobile-nav button.active {
-    border-color: #58d398;
+    border-color: var(--order-primary);
     background: var(--order-secondary-container);
-    color: #005235;
+    color: var(--order-primary);
   }
 
   .order-mobile-nav button:active {
