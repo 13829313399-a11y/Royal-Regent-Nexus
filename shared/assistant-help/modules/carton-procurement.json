@@ -85,7 +85,7 @@
       {
         "path": "backend/app/services/carton_supplier_portal.py",
         "symbol": "link_shipment_line",
-        "sha256": "9efb86bcfdcc2da2ef4d16d95c9115a38f768ff8c43a3a81560ec32455f86bcb"
+        "sha256": "29105799e5ca05a66d63ca4bf5d3a1be48bd53017fc1ddb9428ab4945022e467"
       },
       {
         "path": "backend/app/services/carton_contract_merge.py",
@@ -195,17 +195,17 @@
       {
         "path": "backend/app/services/carton_supplier_changes.py",
         "symbol": "def respond(",
-        "sha256": "a9c8dbce19733e107cf9b9afffe3a5f2e007b4e417ba47c98fb4347a23faa8ff"
+        "sha256": "b46401fa104e76427f199cd3193e62346b3606206c31363bf7e6f6d5e5ebedd8"
       },
       {
         "path": "src/components/CartonSupplierChangeTasks.vue",
         "symbol": "async function respond(",
-        "sha256": "32444ba42dc1c8c275db83447c731d3925af6982c562cae697562e7554ee03e1"
+        "sha256": "3c4028f89ffadd40af2e98839a4b981e2ca86448c608231a55a4f363832dfa8f"
       },
       {
         "path": "backend/app/services/carton_replenishment_supplier.py",
         "symbol": "def sources(",
-        "sha256": "f4e2939419f32846c4270c67d9fe0c81b83e9926cdbee8e47a8c62ceb815ce6c"
+        "sha256": "08eb95655686e99c92b959dfe2c5abe07188a15bd6c61844181916826a4dcfd2"
       },
       {
         "path": "backend/app/services/carton_special_receiving.py",
@@ -533,8 +533,8 @@
         "sha256": "4c34b5e121584d382e7ab461c0d9d3b1b7ad02a01b30653cfd646a2aebe8fb8e"
       }
     ],
-    "knowledge_version": "2026-11-04-carton-multi-file-upload",
-    "verified_commit": "working-tree: shared ordinary ordering rules and batch source contract reviewed",
+    "knowledge_version": "2026-11-04-supplier-read-batching",
+    "verified_commit": "working-tree: supplier read batching and partial factory loading; canonical quantity and permission rules retained; not deployed",
     "status": "verified"
   }
 ]
