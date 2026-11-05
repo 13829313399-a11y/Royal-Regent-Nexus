@@ -259,7 +259,7 @@ def source_purchase_order_ids(db,asset,*,schedule_target=None):
     from app.services import carton_procurement as core
     from app.models.carton_procurement import CartonOrder
     result=set()
-    state=core.schedule_order_state(db,asset.factory_id)
+    state=None
     for target in [schedule_target] if schedule_target else current(db,asset):
         if target['kind']=='REGULAR':
             order=db.get(CartonOrder,target['id'])
@@ -272,6 +272,7 @@ def source_purchase_order_ids(db,asset,*,schedule_target=None):
         rows=core.import_batch_out(batch).parse_summary.get('rows',[])
         source=next((r for r in rows if r.get('source_sheet')==target['sheet'] and r.get('source_row')==target['row']),None)
         if not source:continue
+        if state is None:state=core.schedule_order_state(db,asset.factory_id)
         for identifier in state.get(source.get('schedule_identity'),{}).get('order_ids',[]):
             order=db.get(CartonOrder,identifier)
             if order and order.factory_id==asset.factory_id and not order.deleted_at and order.status!='CANCELLED' and identity(dict(

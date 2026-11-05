@@ -67,12 +67,8 @@ def fixed_supplier(db, factory):
     return supplier
 
 
-def supplier_factories(db, user):
-    """Dongkang service factories with issued formal or published special requests."""
-    if not supplier_permission(user, "carton_supplier:read", "*"):
-        return []
-    suppliers = db.scalars(select(CartonSupplier).where(CartonSupplier.supplier_code == "HEYUAN-DONGKANG",
-        CartonSupplier.status == "ACTIVE").order_by(CartonSupplier.factory_id)).all()
+def _supplier_has_sources(db, supplier):
+    """Service evidence for one factory; never confers actor authorization."""
     from app.models.carton_special_requests import SpecialRequest
     from app.services import carton_mark_sharing as sharing
     def has_shared_sources(supplier):
@@ -84,8 +80,7 @@ def supplier_factories(db, user):
         return bool(shared_ids and db.scalar(select(CartonMarkAsset.id).where(
             CartonMarkAsset.factory_id == supplier.factory_id, CartonMarkAsset.is_archived.is_(False),
             CartonMarkAsset.id.in_(shared_ids)).limit(1)))
-    return [supplier for supplier in suppliers if supplier_permission(
-        user, "carton_supplier:read", supplier.factory_id) and (db.scalar(
+    return bool(db.scalar(
         select(CartonOrder.id).join(CartonPurchaseOrderIssue, and_(
             CartonPurchaseOrderIssue.order_id == CartonOrder.id,
             CartonPurchaseOrderIssue.factory_id == CartonOrder.factory_id)).where(
@@ -96,7 +91,17 @@ def supplier_factories(db, user):
                     SpecialRequest.status != "SUBMITTED").limit(1)) or has_shared_sources(supplier) or db.scalar(select(CartonAuditEvent.id).where(
                         CartonAuditEvent.factory_id == supplier.factory_id,
                         or_(and_(CartonAuditEvent.entity_type == "carton_supplier_payables", CartonAuditEvent.event_type == "SUPPLIER_PAYABLES_ACTION"),
-                            and_(CartonAuditEvent.entity_type == "carton_price_correction", CartonAuditEvent.event_type == "RECEIPT_PRICE_CORRECTION_ACTION"))).limit(1)))]
+                            and_(CartonAuditEvent.entity_type == "carton_price_correction", CartonAuditEvent.event_type == "RECEIPT_PRICE_CORRECTION_ACTION"))).limit(1)))
+
+
+def supplier_factories(db, user):
+    """Dongkang service factories with issued formal or published special requests."""
+    if not supplier_permission(user, "carton_supplier:read", "*"):
+        return []
+    suppliers = db.scalars(select(CartonSupplier).where(CartonSupplier.supplier_code == "HEYUAN-DONGKANG",
+        CartonSupplier.status == "ACTIVE").order_by(CartonSupplier.factory_id)).all()
+    return [supplier for supplier in suppliers if supplier_permission(
+        user, "carton_supplier:read", supplier.factory_id) and _supplier_has_sources(db, supplier)]
 
 
 def supplier_permission(user, permission, factory):
@@ -108,8 +113,14 @@ def supplier_permission(user, permission, factory):
 
 def supplier_access(db, user, factory, permission="carton_supplier:read"):
     factory = require_carton_factory(factory)
-    supplier = next((item for item in supplier_factories(db, user) if item.factory_id == factory), None)
-    if supplier is None or not supplier_permission(user, permission, factory):
+    # A scoped guard needs only this factory's evidence, not a scan of every
+    # service factory. Keep read and operation permissions live on every call.
+    if not supplier_permission(user, "carton_supplier:read", factory) or not supplier_permission(user, permission, factory):
+        raise HTTPException(403, "账号无权访问此厂区的供应商订单")
+    suppliers = db.scalars(select(CartonSupplier).where(CartonSupplier.factory_id == factory,
+        CartonSupplier.supplier_code == "HEYUAN-DONGKANG", CartonSupplier.status == "ACTIVE"))
+    supplier = next((item for item in suppliers if _supplier_has_sources(db, item)), None)
+    if supplier is None:
         raise HTTPException(403, "账号无权访问此厂区的供应商订单")
     return supplier
 

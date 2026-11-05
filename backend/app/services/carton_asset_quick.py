@@ -145,7 +145,7 @@ def save(db,user,factory,body,prepared,refresh_actor=None):
     except BaseException:db.rollback();raise
 
 
-def output(db,user,asset,*,supplier=None,view_factory=None,schedule_rows_by_factory=None):
+def output(db,user,asset,*,supplier=None,view_factory=None,schedule_rows_by_factory=None,supplier_candidates=None):
     if supplier is None and view_factory in (None,asset.factory_id):supplier=access.external_actor(db,user,asset)
     access.ensure(db,user,asset,supplier=supplier,view_factory=view_factory)
     state=lifecycle.current(db,asset)
@@ -162,7 +162,8 @@ def output(db,user,asset,*,supplier=None,view_factory=None,schedule_rows_by_fact
     if supplier:
         purchase_ids=targets.purchase_order_ids(db,asset)
         special_ids={(x['kind'],x['id']) for x in visible_targets if x.get('supplier_id')==supplier.id}
-        visible_targets=[x for x in targets.candidates(db,user,asset.factory_id,supplier=supplier)
+        candidates=targets.candidates(db,user,asset.factory_id,supplier=supplier) if supplier_candidates is None else supplier_candidates
+        visible_targets=[x for x in candidates
             if x['kind']=='REGULAR' and x['id'] in purchase_ids or (x['kind'],x['id']) in special_ids]
     return dict(id=asset.id,factory_id=asset.factory_id,owner_department=asset.owner_department,
         sharing_mode=audience['sharing_mode'],shared_supplier_name=audience['shared_supplier_name'],
@@ -193,8 +194,16 @@ def listing(db,user,factory,department=None,*,history=False):
     result=[]
     # Local to this listing; never retain schedule rows across requests/writes.
     schedule_rows_by_factory={}
+    supplier_candidates=None
     for asset in db.scalars(query.order_by(CartonMarkAsset.created_at.desc(),CartonMarkAsset.id)):
-        if access.visible(db,user,asset,library=True,supplier=supplier,view_factory=factory):result.append(output(db,user,asset,supplier=supplier,view_factory=factory,schedule_rows_by_factory=schedule_rows_by_factory))
+        if access.visible(db,user,asset,library=True,supplier=supplier,view_factory=factory):
+            # The viewer, supplier and factory are fixed for this list. Build the
+            # authorized order choices once, then retain each source's own links.
+            # Details, mutations and the next listing always query afresh.
+            if supplier is not None and supplier_candidates is None:
+                supplier_candidates=targets.candidates(db,user,factory,supplier=supplier)
+            result.append(output(db,user,asset,supplier=supplier,view_factory=factory,
+                schedule_rows_by_factory=schedule_rows_by_factory,supplier_candidates=supplier_candidates))
     return dict(items=result,total=len(result))
 
 
